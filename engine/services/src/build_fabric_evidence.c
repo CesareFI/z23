@@ -593,244 +593,348 @@ static struct zcl_result bf_compile_observation(
     return build_fabric_observation_verify(workspace, job, action, row);
 }
 
-// long-function-ok:proof-policy-transaction — selection, proof-set creation,
-// and trust promotion must use one verified snapshot of the receipt ledger.
-static struct zcl_result bf_proof_evaluate(
-    struct node_db *ndb, const char *workspace, const char *action_id,
-    int64_t now, bool materialize, bool promote,
-    struct build_fabric_proof_evaluation *out)
+struct bf_eval_ctx {
+    struct node_db *ndb;
+    const char *workspace;
+    const struct db_build_action *action;
+    const struct vcs_zcode_task_v1 *task;
+    const struct vcs_zcode_candidate_v1 *candidate;
+    const struct vcs_zcode_proof_policy_v1 *policy;
+    int64_t now;
+    int64_t validation_now;
+};
+
+/* Selection consults the shadow/review flags after the durable fields are
+ * populated. The snapshot starts zeroed so a receipt that has not gone
+ * through either classifier cannot inherit indeterminate stack bits and
+ * masquerade as a failed shadow or an approved review. */
+struct bf_snapshot {
+    struct bf_verified_receipt valid[VCS_ZCODE_PROOF_SET_MAX_RECEIPTS];
+    size_t count;
+    bool have_selected;
+    uint8_t selected_output[32];
+};
+
+static bool bf_eval_args_valid(struct node_db *ndb, const char *workspace,
+    const char *action_id, const struct build_fabric_proof_evaluation *out,
+    int64_t now)
 {
-    if (out) memset(out, 0, sizeof(*out));
-    if (!ndb || !ndb->open || !workspace || !workspace[0] || !action_id ||
-        !out || now < 0)
-        return ZCL_ERR(-1, "proof evaluation requires complete inputs");
-    struct db_build_action action;
-    if (!db_build_action_find(ndb, action_id, &action) ||
-        !action.task_root_sha3[0] || !action.candidate_root_sha3[0] ||
-        !action.proof_policy_root_sha3[0])
+    return ndb && ndb->open && workspace && workspace[0] && action_id &&
+           out && now >= 0;
+}
+
+static struct zcl_result bf_eval_action_find(struct node_db *ndb,
+    const char *action_id, struct db_build_action *action)
+{
+    if (!db_build_action_find(ndb, action_id, action) ||
+        !action->task_root_sha3[0] || !action->candidate_root_sha3[0] ||
+        !action->proof_policy_root_sha3[0])
         return ZCL_ERR(-1, "canonical ZCODE action not found");
-    uint8_t *wire = NULL; size_t wire_len = 0;
+    return ZCL_OK;
+}
+
+static struct zcl_result bf_load_task(const char *workspace,
+    const char *root_hex, struct vcs_zcode_task_v1 *task)
+{
+    uint8_t *wire = NULL;
+    size_t wire_len = 0;
     uint8_t root[32], checked_root[32];
-    struct vcs_zcode_task_v1 task;
-    if (!bf_load_dev_object(workspace, action.task_root_sha3, &wire,
-                            &wire_len, root) ||
-        vcs_zcode_task_parse(wire, wire_len, &task) != VCS_ZCODE_DEV_OK ||
-        vcs_zcode_task_root(&task, checked_root) != VCS_ZCODE_DEV_OK ||
+    if (!bf_load_dev_object(workspace, root_hex, &wire, &wire_len, root) ||
+        vcs_zcode_task_parse(wire, wire_len, task) != VCS_ZCODE_DEV_OK ||
+        vcs_zcode_task_root(task, checked_root) != VCS_ZCODE_DEV_OK ||
         memcmp(root, checked_root, 32) != 0) {
-        free(wire); return ZCL_ERR(-1, "task CAS object is absent or corrupt");
+        free(wire);
+        return ZCL_ERR(-1, "task CAS object is absent or corrupt");
     }
-    free(wire); wire = NULL;
-    struct vcs_zcode_candidate_v1 candidate;
-    if (!bf_load_dev_object(workspace, action.candidate_root_sha3, &wire,
-                            &wire_len, root) ||
-        vcs_zcode_candidate_parse(wire, wire_len, &candidate) !=
+    free(wire);
+    return ZCL_OK;
+}
+
+static struct zcl_result bf_load_candidate(const char *workspace,
+    const char *root_hex, struct vcs_zcode_candidate_v1 *candidate)
+{
+    uint8_t *wire = NULL;
+    size_t wire_len = 0;
+    uint8_t root[32], checked_root[32];
+    if (!bf_load_dev_object(workspace, root_hex, &wire, &wire_len, root) ||
+        vcs_zcode_candidate_parse(wire, wire_len, candidate) !=
             VCS_ZCODE_DEV_OK ||
-        vcs_zcode_candidate_root(&candidate, checked_root) !=
+        vcs_zcode_candidate_root(candidate, checked_root) !=
             VCS_ZCODE_DEV_OK ||
         memcmp(root, checked_root, 32) != 0) {
         free(wire);
         return ZCL_ERR(-1, "candidate CAS object is absent or corrupt");
     }
-    free(wire); wire = NULL;
-    struct vcs_zcode_proof_policy_v1 policy;
-    if (!bf_load_dev_object(workspace, action.proof_policy_root_sha3, &wire,
-                            &wire_len, root) ||
-        vcs_zcode_proof_policy_parse(wire, wire_len, &policy) !=
+    free(wire);
+    return ZCL_OK;
+}
+
+static struct zcl_result bf_load_policy(const char *workspace,
+    const char *root_hex, struct vcs_zcode_proof_policy_v1 *policy)
+{
+    uint8_t *wire = NULL;
+    size_t wire_len = 0;
+    uint8_t root[32], checked_root[32];
+    if (!bf_load_dev_object(workspace, root_hex, &wire, &wire_len, root) ||
+        vcs_zcode_proof_policy_parse(wire, wire_len, policy) !=
             VCS_ZCODE_DEV_OK ||
-        vcs_zcode_proof_policy_root(&policy, checked_root) !=
+        vcs_zcode_proof_policy_root(policy, checked_root) !=
             VCS_ZCODE_DEV_OK ||
         memcmp(root, checked_root, 32) != 0) {
         free(wire);
         return ZCL_ERR(-1, "proof policy CAS object is absent or corrupt");
     }
     free(wire);
-    struct db_build_receipt rows[VCS_ZCODE_PROOF_SET_MAX_RECEIPTS + 1u];
-    int row_count = 0;
-    struct zcl_result receipt_query = bf_candidate_receipts_read(
-        ndb, &action, rows, &row_count);
-    if (!receipt_query.ok) return receipt_query;
-    /* Selection consults the shadow/review flags after the durable fields are
-     * populated below.  Zero the complete snapshot so a receipt that has not
-     * gone through either classifier cannot inherit indeterminate stack bits
-     * and masquerade as a failed shadow or an approved review. */
-    struct bf_verified_receipt
-        valid[VCS_ZCODE_PROOF_SET_MAX_RECEIPTS] = {0};
-    size_t valid_count = 0;
-    int64_t validation_now = now < task.expires_unix
-        ? now : task.expires_unix - 1;
+    return ZCL_OK;
+}
+
+static struct zcl_result bf_load_proof_inputs(const char *workspace,
+    const struct db_build_action *action, struct vcs_zcode_task_v1 *task,
+    struct vcs_zcode_candidate_v1 *candidate,
+    struct vcs_zcode_proof_policy_v1 *policy)
+{
+    struct zcl_result step =
+        bf_load_task(workspace, action->task_root_sha3, task);
+    if (!step.ok) return step;
+    step = bf_load_candidate(workspace, action->candidate_root_sha3,
+                             candidate);
+    if (!step.ok) return step;
+    return bf_load_policy(workspace, action->proof_policy_root_sha3, policy);
+}
+
+/* Reads the receipt row's own action and reports whether it belongs to the
+ * evaluated candidate and names a known work kind. */
+static struct zcl_result bf_row_action(const struct bf_eval_ctx *c,
+    const struct db_build_receipt *row, struct db_build_action *receipt_action,
+    uint8_t *expected_kind, bool *relevant)
+{
+    *relevant = false;
+    if (!row->work_receipt_sha3[0])
+        return ZCL_OK;
+    if (!db_build_action_find(c->ndb, row->action_id, receipt_action))
+        return ZCL_ERR(-1, "proof receipt action is unavailable");
+    if (strcmp(receipt_action->task_root_sha3, c->action->task_root_sha3) != 0 ||
+        strcmp(receipt_action->candidate_root_sha3,
+               c->action->candidate_root_sha3) != 0 ||
+        strcmp(receipt_action->proof_policy_root_sha3,
+               c->action->proof_policy_root_sha3) != 0)
+        return ZCL_OK;
+    *expected_kind = vcs_build_action_v1_work_kind(receipt_action->kind);
+    *relevant = *expected_kind != 0;
+    return ZCL_OK;
+}
+
+static bool bf_receipt_verified(const struct bf_eval_ctx *c,
+    const struct vcs_zcode_work_receipt_v1 *receipt,
+    const struct db_build_action *receipt_action,
+    const struct db_build_receipt *row, uint8_t expected_kind)
+{
+    uint8_t action_root[32], input_root[32];
+    return vcs_zcode_work_receipt_verify(receipt, receipt->signer_pubkey) ==
+            VCS_ZCODE_DEV_OK &&
+        vcs_zcode_work_receipt_validate_for_candidate(
+            c->task, c->candidate, receipt, c->validation_now) ==
+            VCS_ZCODE_DEV_OK &&
+        zcl_hex_decode_lower(receipt_action->action_id, action_root, 32) &&
+        zcl_hex_decode_lower(receipt_action->input_root_sha3,
+                             input_root, 32) &&
+        memcmp(receipt->action_root, action_root, 32) == 0 &&
+        memcmp(receipt->input_root, input_root, 32) == 0 &&
+        receipt->work_kind == expected_kind &&
+        bf_receipt_current(receipt, row, c->policy, c->now);
+}
+
+/* Verifies one receipt row. On acceptance with room left (slot != NULL) the
+ * verified receipt is written to *slot and *accepted is set. */
+static struct zcl_result bf_read_row(const struct bf_eval_ctx *c,
+    const struct db_build_receipt *row, struct bf_verified_receipt *slot,
+    bool *accepted)
+{
+    *accepted = false;
+    struct db_build_action receipt_action;
+    uint8_t expected_kind = 0;
+    bool relevant = false;
+    struct zcl_result found = bf_row_action(
+        c, row, &receipt_action, &expected_kind, &relevant);
+    if (!found.ok || !relevant) return found;
+    struct db_build_job receipt_job;
+    bool compile_action = strcmp(
+        receipt_action.kind, VCS_BUILD_ACTION_KIND_V1) == 0;
+    if (compile_action &&
+        !db_build_job_find(c->ndb, receipt_action.job_id, &receipt_job))
+        return ZCL_ERR(-1, "proof receipt job is unavailable");
+    struct vcs_zcode_work_receipt_v1 receipt;
+    uint8_t receipt_root[32];
+    struct zcl_result loaded = bf_receipt_load(
+        c->workspace, row->work_receipt_sha3, &receipt, receipt_root);
+    if (!loaded.ok) return loaded;
+    bool verified = bf_receipt_verified(
+        c, &receipt, &receipt_action, row, expected_kind);
+    if (!verified) return ZCL_OK;
+    bool bound = false, approved = false, local = false;
+    struct zcl_result authority = bf_observation_authority(
+        c->ndb, row, &receipt, c->now, &bound, &approved, &local);
+    if (!authority.ok) return authority;
+    if (!bound) return ZCL_OK;
+    struct zcl_result observation = bf_compile_observation(c->workspace,
+        &receipt_job, &receipt_action, row, &receipt, compile_action,
+        &verified);
+    if (!observation.ok)
+        return (approved || local) ? observation : ZCL_OK;
+    bool package_test_passed = false;
+    uint8_t evidence_output[32];
+    memcpy(evidence_output, receipt.output_root, sizeof(evidence_output));
+    struct zcl_result package_result = bf_package_evidence_verify(
+        c->workspace, c->task, c->candidate, c->policy, &receipt,
+        receipt_action.kind, &verified, &package_test_passed,
+        evidence_output);
+    if (!package_result.ok) return package_result;
+    if (!verified || !slot) return ZCL_OK;
+    slot->row = *row;
+    slot->receipt = receipt;
+    memcpy(slot->root, receipt_root, 32);
+    memcpy(slot->evidence_output, evidence_output, 32);
+    slot->work_kind = expected_kind;
+    slot->approved = approved;
+    slot->local = local;
+    slot->package_test_passed = package_test_passed;
+    *accepted = true;
+    return ZCL_OK;
+}
+
+static struct zcl_result bf_collect_receipts(const struct bf_eval_ctx *c,
+    const struct db_build_receipt *rows, int row_count,
+    struct bf_snapshot *snap)
+{
     for (int i = 0; i < row_count; i++) {
-        if (!rows[i].work_receipt_sha3[0])
-            continue;
-        struct db_build_action receipt_action;
-        if (!db_build_action_find(ndb, rows[i].action_id, &receipt_action))
-            return ZCL_ERR(-1, "proof receipt action is unavailable");
-        if (strcmp(receipt_action.task_root_sha3,
-                   action.task_root_sha3) != 0 ||
-            strcmp(receipt_action.candidate_root_sha3,
-                   action.candidate_root_sha3) != 0 ||
-            strcmp(receipt_action.proof_policy_root_sha3,
-                   action.proof_policy_root_sha3) != 0)
-            continue;
-        uint8_t expected_kind =
-            vcs_build_action_v1_work_kind(receipt_action.kind);
-        if (expected_kind == 0) continue;
-        struct db_build_job receipt_job;
-        bool compile_action = strcmp(
-            receipt_action.kind, VCS_BUILD_ACTION_KIND_V1) == 0;
-        if (compile_action && !db_build_job_find(
-                                  ndb, receipt_action.job_id, &receipt_job))
-            return ZCL_ERR(-1, "proof receipt job is unavailable");
-        struct vcs_zcode_work_receipt_v1 receipt;
-        uint8_t receipt_root[32];
-        struct zcl_result loaded = bf_receipt_load(
-            workspace, rows[i].work_receipt_sha3, &receipt, receipt_root);
-        if (!loaded.ok) return loaded;
-        bool verified = vcs_zcode_work_receipt_verify(&receipt,
-                                           receipt.signer_pubkey) ==
-                VCS_ZCODE_DEV_OK &&
-            vcs_zcode_work_receipt_validate_for_candidate(
-                &task, &candidate, &receipt, validation_now) ==
-                VCS_ZCODE_DEV_OK;
-        uint8_t action_root[32], input_root[32];
-        verified = verified && zcl_hex_decode_lower(
-            receipt_action.action_id, action_root, 32) &&
-            zcl_hex_decode_lower(receipt_action.input_root_sha3,
-                                 input_root, 32) &&
-            memcmp(receipt.action_root, action_root, 32) == 0 &&
-            memcmp(receipt.input_root, input_root, 32) == 0 &&
-            receipt.work_kind == expected_kind &&
-            bf_receipt_current(&receipt, &rows[i], &policy, now);
-        if (!verified) continue;
-        bool bound = false, approved = false, local = false;
-        struct zcl_result authority = bf_observation_authority(ndb, &rows[i],
-            &receipt, now, &bound, &approved, &local);
-        if (!authority.ok) return authority;
-        if (!bound) continue;
-        struct zcl_result observation = bf_compile_observation(workspace,
-            &receipt_job, &receipt_action, &rows[i], &receipt, compile_action, &verified);
-        if (!observation.ok) {
-            if (approved || local) return observation;
-            continue;
-        }
-        bool package_test_passed = false;
-        uint8_t evidence_output[32];
-        memcpy(evidence_output, receipt.output_root, sizeof(evidence_output));
-        struct zcl_result package_result = bf_package_evidence_verify(
-            workspace, &task, &candidate, &policy, &receipt,
-            receipt_action.kind, &verified, &package_test_passed, evidence_output);
-        if (!package_result.ok) return package_result;
-        if (!verified || valid_count >= VCS_ZCODE_PROOF_SET_MAX_RECEIPTS)
-            continue;
-        valid[valid_count].row = rows[i];
-        valid[valid_count].receipt = receipt;
-        memcpy(valid[valid_count].root, receipt_root, 32);
-        memcpy(valid[valid_count].evidence_output, evidence_output, 32);
-        valid[valid_count].work_kind = expected_kind;
-        valid[valid_count].approved = approved;
-        valid[valid_count].local = local;
-        valid[valid_count].package_test_passed = package_test_passed;
-        valid_count++;
+        bool accepted = false;
+        struct bf_verified_receipt *slot =
+            snap->count < VCS_ZCODE_PROOF_SET_MAX_RECEIPTS
+                ? &snap->valid[snap->count] : NULL;
+        struct zcl_result row = bf_read_row(c, &rows[i], slot, &accepted);
+        if (!row.ok) return row;
+        if (accepted) snap->count++;
     }
-    if (bf_observations_conflict(valid, valid_count))
-        return ZCL_ERR(-1, VCS_PROOF_OBSERVATION_CONFLICT);
-    /* Failed observations remain immutable in CAS and in the receipt ledger,
-     * but cannot satisfy any positive proof dimension or be promoted. */
-    valid_count = bf_successful_observations(valid, valid_count);
-    for (size_t i = 0; i < valid_count; i++)
-        if (valid[i].work_kind == VCS_ZCODE_WORK_REVIEW &&
-            bf_receipt_trusted(&valid[i]))
-            valid[i].review_approved = bf_review_approves_evidence(
-                workspace, &task, &candidate, valid, valid_count, i,
-                validation_now);
-    out->valid_receipts = valid_count;
-    size_t selected = SIZE_MAX, best = 0, best_ties = 0;
-    for (size_t i = 0; i < valid_count; i++) {
-        if (valid[i].local &&
-            valid[i].work_kind == VCS_ZCODE_WORK_BUILD &&
-            strcmp(valid[i].row.action_id, action_id) == 0) {
-            selected = i;
-            break;
-        }
-    }
-    for (size_t i = 0; selected == SIZE_MAX && i < valid_count; i++) {
-        if (!valid[i].approved ||
-            valid[i].work_kind != VCS_ZCODE_WORK_BUILD)
-            continue;
-        uint8_t signers[VCS_ZCODE_PROOF_SET_MAX_RECEIPTS][32];
-        size_t count = 0;
-        for (size_t j = 0; j < valid_count; j++) {
-            if (!valid[j].approved ||
-                valid[j].work_kind != VCS_ZCODE_WORK_BUILD ||
-                memcmp(valid[i].evidence_output,
-                                             valid[j].evidence_output,
-                                             32) != 0)
-                continue;
-            bool duplicate = false;
-            for (size_t k = 0; k < count; k++)
-                if (memcmp(signers[k], valid[j].receipt.signer_pubkey, 32) == 0)
-                    duplicate = true;
-            if (!duplicate)
-                memcpy(signers[count++], valid[j].receipt.signer_pubkey, 32);
-        }
-        if (count > best) { best = count; selected = i; best_ties = 1; }
-        else if (count == best && best > 0 && selected != SIZE_MAX &&
-                 memcmp(valid[selected].evidence_output,
-                        valid[i].evidence_output, 32) != 0)
-            best_ties++;
-    }
-    if (best_ties > 1) selected = SIZE_MAX;
-    bool have_selected_output = selected != SIZE_MAX;
-    uint8_t selected_output[32] = {0};
-    if (have_selected_output)
-        memcpy(selected_output, valid[selected].evidence_output, 32);
-    uint8_t proof_roots[VCS_ZCODE_PROOF_SET_MAX_RECEIPTS][32];
+    return ZCL_OK;
+}
+
+static void bf_mark_reviews(const struct bf_eval_ctx *c,
+    struct bf_snapshot *snap)
+{
+    for (size_t i = 0; i < snap->count; i++)
+        if (snap->valid[i].work_kind == VCS_ZCODE_WORK_REVIEW &&
+            bf_receipt_trusted(&snap->valid[i]))
+            snap->valid[i].review_approved = bf_review_approves_evidence(
+                c->workspace, c->task, c->candidate, snap->valid,
+                snap->count, i, c->validation_now);
+}
+
+/* The build output a local build proves for this action wins; otherwise the
+ * first approved build receipt names the output. */
+static size_t bf_select_build(const struct bf_snapshot *snap,
+                              const char *action_id)
+{
+    for (size_t i = 0; i < snap->count; i++)
+        if (snap->valid[i].local &&
+            snap->valid[i].work_kind == VCS_ZCODE_WORK_BUILD &&
+            strcmp(snap->valid[i].row.action_id, action_id) == 0)
+            return i;
+    for (size_t i = 0; i < snap->count; i++)
+        if (snap->valid[i].approved &&
+            snap->valid[i].work_kind == VCS_ZCODE_WORK_BUILD)
+            return i;
+    return SIZE_MAX;
+}
+
+static size_t bf_count_distinct_approved(const struct bf_snapshot *snap)
+{
     uint8_t distinct[VCS_ZCODE_PROOF_SET_MAX_RECEIPTS][32];
-    size_t distinct_count = 0, proof_count = 0;
-    bool have_local = false, have_remote = false;
-    size_t local_build = SIZE_MAX;
-    for (size_t i = 0; i < valid_count; i++) {
-        if (have_selected_output &&
-            valid[i].work_kind == VCS_ZCODE_WORK_BUILD &&
-            memcmp(valid[i].evidence_output, selected_output, 32) == 0) {
-            if (valid[i].local) {
-                have_local = true;
-                local_build = i;
-            }
-            else have_remote = true;
-        }
-        if (valid[i].approved) {
-            bool duplicate = false;
-            for (size_t j = 0; j < distinct_count; j++)
-                if (memcmp(distinct[j], valid[i].receipt.signer_pubkey, 32) == 0)
-                    duplicate = true;
-            if (!duplicate)
-                memcpy(distinct[distinct_count++],
-                       valid[i].receipt.signer_pubkey, 32);
-        }
+    size_t distinct_count = 0;
+    for (size_t i = 0; i < snap->count; i++) {
+        if (!snap->valid[i].approved) continue;
+        bool duplicate = false;
+        for (size_t j = 0; j < distinct_count; j++)
+            if (memcmp(distinct[j], snap->valid[i].receipt.signer_pubkey,
+                       32) == 0)
+                duplicate = true;
+        if (!duplicate)
+            memcpy(distinct[distinct_count++],
+                   snap->valid[i].receipt.signer_pubkey, 32);
     }
-    out->approved_distinct_signers = distinct_count;
-    out->local_reproduced = false;
-    if (have_local && have_remote && local_build != SIZE_MAX) {
-        for (size_t i = 0; i < valid_count; i++) {
-            if (valid[i].local ||
-                valid[i].work_kind != VCS_ZCODE_WORK_BUILD ||
-                memcmp(valid[i].evidence_output, selected_output, 32) != 0)
-                continue;
-            struct build_fabric_shadow_match shadow = {0};
-            valid[i].shadow_checked = true;
-            valid[i].clean_shadow = build_fabric_clean_shadow_compare(
-                ndb, workspace, valid[local_build].row.receipt_id,
-                valid[i].row.receipt_id, &shadow).ok;
-            if (valid[i].clean_shadow) {
-                out->local_reproduced = true;
-            }
-        }
+    return distinct_count;
+}
+
+/* Finds the local build receipt and whether any remote build receipt carries
+ * the selected output. */
+static void bf_scan_selected_builds(const struct bf_snapshot *snap,
+                                    size_t *local_build, bool *have_remote)
+{
+    *local_build = SIZE_MAX;
+    *have_remote = false;
+    if (!snap->have_selected) return;
+    for (size_t i = 0; i < snap->count; i++) {
+        if (snap->valid[i].work_kind != VCS_ZCODE_WORK_BUILD ||
+            memcmp(snap->valid[i].evidence_output,
+                   snap->selected_output, 32) != 0)
+            continue;
+        if (snap->valid[i].local)
+            *local_build = i;
+        else
+            *have_remote = true;
     }
+}
+
+/* Compares each remote build receipt against the local build in a clean
+ * shadow; true when at least one matches. */
+static bool bf_shadow_compare_remotes(struct node_db *ndb,
+    const char *workspace, struct bf_snapshot *snap, size_t local_build)
+{
+    bool reproduced = false;
+    for (size_t i = 0; i < snap->count; i++) {
+        struct bf_verified_receipt *remote = &snap->valid[i];
+        if (remote->local || remote->work_kind != VCS_ZCODE_WORK_BUILD ||
+            memcmp(remote->evidence_output, snap->selected_output, 32) != 0)
+            continue;
+        struct build_fabric_shadow_match shadow = {0};
+        remote->shadow_checked = true;
+        remote->clean_shadow = build_fabric_clean_shadow_compare(
+            ndb, workspace, snap->valid[local_build].row.receipt_id,
+            remote->row.receipt_id, &shadow).ok;
+        if (remote->clean_shadow)
+            reproduced = true;
+    }
+    return reproduced;
+}
+
+static bool bf_policy_satisfied(
+    const struct vcs_zcode_proof_policy_v1 *policy,
+    const struct build_fabric_proof_evaluation *out)
+{
+    bool local_required = (policy->required_proofs &
+                           VCS_ZCODE_PROOF_LOCAL_REPRODUCTION) != 0;
+    return (!(policy->required_proofs & VCS_ZCODE_PROOF_COMPILE) ||
+            out->compile_satisfied) &&
+        (!(policy->required_proofs & VCS_ZCODE_PROOF_TEST) ||
+         out->test_satisfied) &&
+        (!(policy->required_proofs & VCS_ZCODE_PROOF_FUZZ) ||
+         out->fuzz_satisfied) &&
+        (!(policy->required_proofs & VCS_ZCODE_PROOF_REVIEW) ||
+         out->review_satisfied) &&
+        (!local_required || out->local_reproduced) &&
+        out->release_identity_satisfied;
+}
+
+static void bf_fill_counts(const struct vcs_zcode_proof_policy_v1 *policy,
+    const struct bf_snapshot *snap,
+    struct build_fabric_proof_evaluation *out)
+{
+    const struct bf_verified_receipt *valid = snap->valid;
+    size_t valid_count = snap->count;
     bool independent =
-        (policy.flags & VCS_ZCODE_POLICY_INDEPENDENT_SIGNERS) != 0;
-    out->compile_receipts = have_selected_output
+        (policy->flags & VCS_ZCODE_POLICY_INDEPENDENT_SIGNERS) != 0;
+    out->compile_receipts = snap->have_selected
         ? bf_count_kind(valid, valid_count, VCS_ZCODE_WORK_BUILD,
-                        selected_output, independent)
+                        snap->selected_output, independent)
         : 0;
     out->test_receipts = bf_count_tests(valid, valid_count, independent);
     out->fuzz_receipts = bf_count_kind(
@@ -838,56 +942,71 @@ static struct zcl_result bf_proof_evaluate(
     out->review_receipts = bf_count_kind(
         valid, valid_count, VCS_ZCODE_WORK_REVIEW, NULL, independent);
     out->matching_receipts = out->compile_receipts;
-    size_t compile_needed = policy.minimum_compile_receipts;
-    if (policy.minimum_matching_receipts > compile_needed)
-        compile_needed = policy.minimum_matching_receipts;
-    size_t approved_compile_receipts = have_selected_output
+    size_t compile_needed = policy->minimum_compile_receipts;
+    if (policy->minimum_matching_receipts > compile_needed)
+        compile_needed = policy->minimum_matching_receipts;
+    size_t approved_compile_receipts = snap->have_selected
         ? bf_count_approved_kind(
-            valid, valid_count, VCS_ZCODE_WORK_BUILD, selected_output,
-            independent)
+            valid, valid_count, VCS_ZCODE_WORK_BUILD,
+            snap->selected_output, independent)
         : 0;
     out->quorum_satisfied = approved_compile_receipts >= compile_needed;
     out->compile_satisfied = out->compile_receipts >= compile_needed &&
         (out->local_reproduced || out->quorum_satisfied);
-    out->test_satisfied = out->test_receipts >= policy.minimum_test_receipts;
-    out->fuzz_satisfied = out->fuzz_receipts >= policy.minimum_fuzz_receipts;
+    out->test_satisfied = out->test_receipts >= policy->minimum_test_receipts;
+    out->fuzz_satisfied = out->fuzz_receipts >= policy->minimum_fuzz_receipts;
     out->review_satisfied =
-        out->review_receipts >= policy.minimum_reviews;
+        out->review_receipts >= policy->minimum_reviews;
     out->release_identity_satisfied =
-        (policy.flags & VCS_ZCODE_POLICY_RELEASE_BYTE_IDENTITY) == 0;
-    bool local_required = (policy.required_proofs &
-                           VCS_ZCODE_PROOF_LOCAL_REPRODUCTION) != 0;
-    out->policy_satisfied =
-        (!(policy.required_proofs & VCS_ZCODE_PROOF_COMPILE) ||
-         out->compile_satisfied) &&
-        (!(policy.required_proofs & VCS_ZCODE_PROOF_TEST) ||
-         out->test_satisfied) &&
-        (!(policy.required_proofs & VCS_ZCODE_PROOF_FUZZ) ||
-         out->fuzz_satisfied) &&
-        (!(policy.required_proofs & VCS_ZCODE_PROOF_REVIEW) ||
-         out->review_satisfied) &&
-        (!local_required || out->local_reproduced) &&
-        out->release_identity_satisfied;
-    if (have_selected_output)
-        zcl_hex_encode(selected_output, 32, out->output_root_sha3);
-    for (size_t i = 0; i < valid_count; i++) {
-        bool contributes = false;
-        if (have_selected_output &&
-            valid[i].work_kind == VCS_ZCODE_WORK_BUILD &&
-            memcmp(valid[i].evidence_output,
-                   selected_output, 32) == 0)
-            contributes = (!valid[i].shadow_checked ||
-                           valid[i].clean_shadow) &&
-                          (bf_receipt_trusted(&valid[i]) ||
-                           bf_has_local_match(valid, valid_count, i));
-        else if (valid[i].work_kind == VCS_ZCODE_WORK_TEST ||
-                 valid[i].work_kind == VCS_ZCODE_WORK_FUZZ)
-            contributes = bf_receipt_trusted(&valid[i]);
-        else if (valid[i].work_kind == VCS_ZCODE_WORK_REVIEW)
-            contributes = bf_receipt_trusted(&valid[i]) &&
-                          valid[i].review_approved;
-        if (contributes) memcpy(proof_roots[proof_count++], valid[i].root, 32);
-    }
+        (policy->flags & VCS_ZCODE_POLICY_RELEASE_BYTE_IDENTITY) == 0;
+    out->policy_satisfied = bf_policy_satisfied(policy, out);
+}
+
+static void bf_fill_evaluation(struct node_db *ndb, const char *workspace,
+    const struct vcs_zcode_proof_policy_v1 *policy, struct bf_snapshot *snap,
+    struct build_fabric_proof_evaluation *out)
+{
+    size_t local_build;
+    bool have_remote;
+    bf_scan_selected_builds(snap, &local_build, &have_remote);
+    out->approved_distinct_signers = bf_count_distinct_approved(snap);
+    out->local_reproduced = false;
+    if (have_remote && local_build != SIZE_MAX)
+        out->local_reproduced =
+            bf_shadow_compare_remotes(ndb, workspace, snap, local_build);
+    bf_fill_counts(policy, snap, out);
+}
+
+static bool bf_receipt_contributes(const struct bf_snapshot *snap, size_t i)
+{
+    const struct bf_verified_receipt *entry = &snap->valid[i];
+    if (snap->have_selected && entry->work_kind == VCS_ZCODE_WORK_BUILD &&
+        memcmp(entry->evidence_output, snap->selected_output, 32) == 0)
+        return (!entry->shadow_checked || entry->clean_shadow) &&
+               (bf_receipt_trusted(entry) ||
+                bf_has_local_match(snap->valid, snap->count, i));
+    if (entry->work_kind == VCS_ZCODE_WORK_TEST ||
+        entry->work_kind == VCS_ZCODE_WORK_FUZZ)
+        return bf_receipt_trusted(entry);
+    if (entry->work_kind == VCS_ZCODE_WORK_REVIEW)
+        return bf_receipt_trusted(entry) && entry->review_approved;
+    return false;
+}
+
+/* Builds the canonical proof set from the contributing receipts. *have_proof
+ * is false when no receipt contributes and no proof set exists. */
+static struct zcl_result bf_publish_proof_set(const char *workspace,
+    bool materialize, const struct bf_snapshot *snap,
+    struct build_fabric_proof_evaluation *out, bool *have_proof)
+{
+    uint8_t proof_roots[VCS_ZCODE_PROOF_SET_MAX_RECEIPTS][32];
+    size_t proof_count = 0;
+    *have_proof = false;
+    if (snap->have_selected)
+        zcl_hex_encode(snap->selected_output, 32, out->output_root_sha3);
+    for (size_t i = 0; i < snap->count; i++)
+        if (bf_receipt_contributes(snap, i))
+            memcpy(proof_roots[proof_count++], snap->valid[i].root, 32);
     if (proof_count == 0) return ZCL_OK;
     qsort(proof_roots, proof_count, 32, bf_root_compare);
     uint8_t proof_wire[VCS_ZCODE_PROOF_SET_WIRE_MAX], proof_root[32];
@@ -902,38 +1021,54 @@ static struct zcl_result bf_proof_evaluate(
                             workspace, proof_root, proof_wire, proof_len)))
         return ZCL_ERR(-1, "canonical proof set could not enter CAS");
     zcl_hex_encode(proof_root, 32, out->proof_set_root_sha3);
-    if (!promote) return ZCL_OK;
+    *have_proof = true;
+    return ZCL_OK;
+}
+
+static bool bf_class_quorum(const struct bf_snapshot *snap, size_t i,
+    const struct build_fabric_proof_evaluation *out)
+{
+    const struct bf_verified_receipt *entry = &snap->valid[i];
+    if (entry->work_kind == VCS_ZCODE_WORK_BUILD)
+        return snap->have_selected && out->quorum_satisfied &&
+            (!entry->shadow_checked || entry->clean_shadow) &&
+            memcmp(entry->evidence_output, snap->selected_output, 32) == 0;
+    if (entry->work_kind == VCS_ZCODE_WORK_TEST)
+        return out->test_satisfied;
+    if (entry->work_kind == VCS_ZCODE_WORK_FUZZ)
+        return out->fuzz_satisfied;
+    if (entry->work_kind == VCS_ZCODE_WORK_REVIEW)
+        return out->review_satisfied && entry->review_approved;
+    return false;
+}
+
+/* The trust state a remote-observed receipt is promoted to, or NULL to leave
+ * it as observed. */
+static const char *bf_promoted_trust_state(struct bf_snapshot *snap, size_t i,
+    const struct build_fabric_proof_evaluation *out)
+{
+    if (bf_has_local_match(snap->valid, snap->count, i))
+        return "LOCAL_REPRODUCED";
+    if (bf_class_quorum(snap, i, out) && snap->valid[i].approved)
+        return "QUORUM_MATCHED";
+    return NULL;
+}
+
+static struct zcl_result bf_promote_receipts(struct node_db *ndb,
+    struct bf_snapshot *snap, const struct build_fabric_proof_evaluation *out)
+{
     if (!node_db_begin(ndb))
         return ZCL_ERR(-1, "cannot begin receipt trust promotion");
     bool saved = true;
-    for (size_t i = 0; i < valid_count && saved; i++) {
-        if (strcmp(valid[i].row.trust_state, "REMOTE_OBSERVED") != 0)
+    for (size_t i = 0; i < snap->count && saved; i++) {
+        struct bf_verified_receipt *entry = &snap->valid[i];
+        if (strcmp(entry->row.trust_state, "REMOTE_OBSERVED") != 0)
             continue;
-        bool local_match = bf_has_local_match(valid, valid_count, i);
-        bool class_quorum = false;
-        if (valid[i].work_kind == VCS_ZCODE_WORK_BUILD)
-            class_quorum = have_selected_output && out->quorum_satisfied &&
-                (!valid[i].shadow_checked || valid[i].clean_shadow) &&
-                memcmp(valid[i].evidence_output,
-                       selected_output, 32) == 0;
-        else if (valid[i].work_kind == VCS_ZCODE_WORK_TEST)
-            class_quorum = out->test_satisfied;
-        else if (valid[i].work_kind == VCS_ZCODE_WORK_FUZZ)
-            class_quorum = out->fuzz_satisfied;
-        else if (valid[i].work_kind == VCS_ZCODE_WORK_REVIEW)
-            class_quorum = out->review_satisfied &&
-                           valid[i].review_approved;
-        if (local_match)
-            (void)snprintf(valid[i].row.trust_state,
-                           sizeof(valid[i].row.trust_state),
-                           "LOCAL_REPRODUCED");
-        else if (class_quorum && valid[i].approved)
-            (void)snprintf(valid[i].row.trust_state,
-                           sizeof(valid[i].row.trust_state),
-                           "QUORUM_MATCHED");
-        else
-            continue;
-        saved = db_build_receipt_save(ndb, &valid[i].row);
+        const char *state = bf_promoted_trust_state(snap, i, out);
+        if (!state) continue;
+        (void)snprintf(entry->row.trust_state,
+                       sizeof(entry->row.trust_state), "%s", state);
+        saved = db_build_receipt_save(ndb, &entry->row);
     }
     saved = saved && node_db_commit(ndb);
     if (!saved) {
@@ -942,6 +1077,57 @@ static struct zcl_result bf_proof_evaluate(
         return ZCL_ERR(-1, "receipt trust promotion could not persist");
     }
     return ZCL_OK;
+}
+
+static struct zcl_result bf_proof_evaluate(
+    struct node_db *ndb, const char *workspace, const char *action_id,
+    int64_t now, bool materialize, bool promote,
+    struct build_fabric_proof_evaluation *out)
+{
+    if (out) memset(out, 0, sizeof(*out));
+    if (!bf_eval_args_valid(ndb, workspace, action_id, out, now))
+        return ZCL_ERR(-1, "proof evaluation requires complete inputs");
+    struct db_build_action action;
+    struct zcl_result step = bf_eval_action_find(ndb, action_id, &action);
+    if (!step.ok) return step;
+    struct vcs_zcode_task_v1 task;
+    struct vcs_zcode_candidate_v1 candidate;
+    struct vcs_zcode_proof_policy_v1 policy;
+    step = bf_load_proof_inputs(workspace, &action, &task, &candidate,
+                                &policy);
+    if (!step.ok) return step;
+    struct db_build_receipt rows[VCS_ZCODE_PROOF_SET_MAX_RECEIPTS + 1u];
+    int row_count = 0;
+    step = bf_candidate_receipts_read(ndb, &action, rows, &row_count);
+    if (!step.ok) return step;
+    struct bf_snapshot snap = {0};
+    struct bf_eval_ctx ctx = {
+        .ndb = ndb, .workspace = workspace, .action = &action,
+        .task = &task, .candidate = &candidate, .policy = &policy,
+        .now = now,
+        .validation_now = now < task.expires_unix
+            ? now : task.expires_unix - 1,
+    };
+    step = bf_collect_receipts(&ctx, rows, row_count, &snap);
+    if (!step.ok) return step;
+    if (bf_observations_conflict(snap.valid, snap.count))
+        return ZCL_ERR(-1, VCS_PROOF_OBSERVATION_CONFLICT);
+    /* Failed observations remain immutable in CAS and in the receipt ledger,
+     * but cannot satisfy any positive proof dimension or be promoted. */
+    snap.count = bf_successful_observations(snap.valid, snap.count);
+    bf_mark_reviews(&ctx, &snap);
+    out->valid_receipts = snap.count;
+    size_t selected = bf_select_build(&snap, action_id);
+    snap.have_selected = selected != SIZE_MAX;
+    if (snap.have_selected)
+        memcpy(snap.selected_output, snap.valid[selected].evidence_output,
+               32);
+    bf_fill_evaluation(ndb, workspace, &policy, &snap, out);
+    bool have_proof = false;
+    step = bf_publish_proof_set(workspace, materialize, &snap, out,
+                                &have_proof);
+    if (!step.ok || !have_proof || !promote) return step;
+    return bf_promote_receipts(ndb, &snap, out);
 }
 
 struct zcl_result build_fabric_proof_evaluate(

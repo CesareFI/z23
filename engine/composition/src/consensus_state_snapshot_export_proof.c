@@ -86,6 +86,131 @@ static bool copy_receipt_blob(sqlite3_stmt *st, int column, uint8_t out[32])
     return true;
 }
 
+/* The source_receipt row's text columns and the schema version they name. */
+struct export_receipt_head {
+    int commit_type;
+    const unsigned char *commit;
+    int commit_len;
+    uint8_t version;
+    bool schema_ok;
+};
+
+/* Only the v2 receipt schema may back an export; v1 is inspection-only. */
+static void export_receipt_head_read(sqlite3_stmt *st, int rc,
+                                     struct export_receipt_head *h)
+{
+    h->commit_type = rc == SQLITE_ROW ? sqlite3_column_type(st, 10)
+                                      : SQLITE_NULL;
+    h->commit = h->commit_type == SQLITE_TEXT
+                    ? sqlite3_column_text(st, 10) : NULL;
+    h->commit_len = h->commit ? sqlite3_column_bytes(st, 10) : -1;
+    const unsigned char *schema =
+        rc == SQLITE_ROW && sqlite3_column_type(st, 1) == SQLITE_TEXT
+            ? sqlite3_column_text(st, 1) : NULL;
+    int schema_len = schema ? sqlite3_column_bytes(st, 1) : -1;
+    h->version = CONSENSUS_STATE_SOURCE_RECEIPT_INVALID;
+    h->schema_ok = schema && schema_len >= 0 &&
+        consensus_state_source_receipt_schema_version(
+            (const char *)schema, (size_t)schema_len, &h->version) &&
+        h->version == CONSENSUS_STATE_SOURCE_RECEIPT_V2;
+}
+
+static bool export_receipt_blobs_copy(
+    sqlite3_stmt *st, struct consensus_state_source_receipt *receipt)
+{
+    return copy_receipt_blob(st, 2, receipt->source_epoch_digest) &&
+           copy_receipt_blob(st, 3, receipt->source_tree_root) &&
+           copy_receipt_blob(st, 4, receipt->running_binary_digest) &&
+           copy_receipt_blob(st, 5, receipt->toolchain_digest) &&
+           copy_receipt_blob(st, 6, receipt->build_inputs_digest) &&
+           copy_receipt_blob(st, 7, receipt->chain_corpus_digest);
+}
+
+static bool export_receipt_scalars_typed(sqlite3_stmt *st,
+                                         const struct export_receipt_head *h,
+                                         int64_t fold_cursor)
+{
+    return sqlite3_column_type(st, 8) == SQLITE_INTEGER &&
+           (sqlite3_column_int(st, 8) == 0 ||
+            sqlite3_column_int(st, 8) == 1) &&
+           sqlite3_column_type(st, 9) == SQLITE_INTEGER &&
+           (sqlite3_column_int(st, 9) == CONSENSUS_STATE_VALIDATION_FULL ||
+            sqlite3_column_int(st, 9) ==
+                CONSENSUS_STATE_VALIDATION_CHECKPOINT_FOLD) &&
+           h->commit_type == SQLITE_TEXT && h->commit_len >= 0 &&
+           consensus_state_source_receipt_commit_valid(
+               h->version, (const char *)h->commit, (size_t)h->commit_len) &&
+           sqlite3_column_type(st, 11) == SQLITE_INTEGER &&
+           sqlite3_column_int64(st, 11) == fold_cursor;
+}
+
+/* Decodes the single source_receipt row into *receipt and requires that no
+ * second row follows. */
+static bool export_receipt_row_read(
+    sqlite3_stmt *st, int rc, const struct export_receipt_head *h,
+    int64_t fold_cursor, struct consensus_state_source_receipt *receipt)
+{
+    bool ok = rc == SQLITE_ROW && h->commit &&
+              sqlite3_column_type(st, 0) == SQLITE_INTEGER &&
+              sqlite3_column_int(st, 0) == 1 && h->schema_ok &&
+              export_receipt_blobs_copy(st, receipt) &&
+              export_receipt_scalars_typed(st, h, fold_cursor) &&
+              copy_receipt_blob(st, 12, receipt->receipt_digest);
+    if (!ok)
+        return false;
+    receipt->schema_version = h->version;
+    memcpy(receipt->producer_commit, h->commit, (size_t)h->commit_len);
+    receipt->producer_commit[h->commit_len] = '\0';
+    receipt->source_clean = sqlite3_column_int(st, 8) == 1;
+    receipt->validation_profile = (uint8_t)sqlite3_column_int(st, 9);
+    receipt->fold_cursor = sqlite3_column_int64(st, 11);
+    return sqlite3_step(st) == SQLITE_DONE; // raw-sql-ok:progress-kv-kernel-store
+}
+
+static bool export_receipt_provenance_ok(
+    const struct consensus_state_source_receipt *receipt,
+    const uint8_t chain_corpus_digest[32], bool checkpoint_content_export)
+{
+    uint8_t executable[32];
+    return zcl_bytes_any_set(receipt->source_epoch_digest, 32) &&
+           zcl_bytes_any_set(receipt->source_tree_root, 32) &&
+           zcl_bytes_any_set(receipt->toolchain_digest, 32) &&
+           zcl_bytes_any_set(receipt->build_inputs_digest, 32) &&
+           consensus_state_source_receipt_commit_valid(
+               receipt->schema_version, receipt->producer_commit,
+               strnlen(receipt->producer_commit,
+                       sizeof(receipt->producer_commit))) &&
+           memcmp(receipt->chain_corpus_digest, chain_corpus_digest, 32) == 0 &&
+           /* Fold-binary provenance vs checkpoint-content proof. The default
+            * export binds the receipt to the running binary that folded the
+            * state. The checkpoint-content path (caller-gated by an exact
+            * compiled-checkpoint + PoW-header content match in
+            * prove_checkpoint_content) instead only requires the receipt's
+            * running-binary digest to be well-formed (nonzero) — the state's
+            * authority comes from the SHA3 + header-root proof, not from
+            * re-running the exact fold binary. No downstream gate re-checks
+            * this digest, so the emitted bundle is byte-identical in shape. */
+           (checkpoint_content_export
+                ? zcl_bytes_any_set(receipt->running_binary_digest, 32)
+                : (running_binary_digest(executable) &&
+                   memcmp(receipt->running_binary_digest, executable, 32) ==
+                       0));
+}
+
+/* Recomputes the source epoch and receipt digests; *recomputed receives the
+ * receipt digest. */
+static bool export_receipt_digests_ok(
+    const struct consensus_state_source_receipt *receipt,
+    uint8_t recomputed[32])
+{
+    uint8_t source_epoch[32];
+    consensus_state_source_epoch_digest(receipt, source_epoch);
+    consensus_state_source_receipt_digest(receipt, recomputed);
+    return memcmp(receipt->source_epoch_digest, source_epoch, 32) == 0 &&
+           memcmp(receipt->receipt_digest, recomputed, 32) == 0 &&
+           zcl_bytes_any_set(recomputed, 32);
+}
+
 static bool prove_source_receipt(sqlite3 *db, int64_t fold_cursor,
                                  const uint8_t chain_corpus_digest[32],
                                  bool checkpoint_content_export,
@@ -105,91 +230,16 @@ static bool prove_source_receipt(sqlite3 *db, int64_t fold_cursor,
     }
     memset(receipt, 0, sizeof(*receipt));
     int rc = sqlite3_step(st); // raw-sql-ok:progress-kv-kernel-store
-    int commit_type = rc == SQLITE_ROW ? sqlite3_column_type(st, 10)
-                                       : SQLITE_NULL;
-    const unsigned char *commit = commit_type == SQLITE_TEXT
-                                      ? sqlite3_column_text(st, 10) : NULL;
-    int commit_len = commit ? sqlite3_column_bytes(st, 10) : -1;
-    const unsigned char *schema =
-        rc == SQLITE_ROW && sqlite3_column_type(st, 1) == SQLITE_TEXT
-            ? sqlite3_column_text(st, 1) : NULL;
-    int schema_len = schema ? sqlite3_column_bytes(st, 1) : -1;
-    uint8_t receipt_version = CONSENSUS_STATE_SOURCE_RECEIPT_INVALID;
-    bool schema_ok = schema && schema_len >= 0 &&
-        consensus_state_source_receipt_schema_version(
-            (const char *)schema, (size_t)schema_len, &receipt_version) &&
-        receipt_version == CONSENSUS_STATE_SOURCE_RECEIPT_V2;
-    bool ok = rc == SQLITE_ROW && commit &&
-              sqlite3_column_type(st, 0) == SQLITE_INTEGER &&
-              sqlite3_column_int(st, 0) == 1 &&
-              schema_ok &&
-              copy_receipt_blob(st, 2, receipt->source_epoch_digest) &&
-              copy_receipt_blob(st, 3, receipt->source_tree_root) &&
-              copy_receipt_blob(st, 4, receipt->running_binary_digest) &&
-              copy_receipt_blob(st, 5, receipt->toolchain_digest) &&
-              copy_receipt_blob(st, 6, receipt->build_inputs_digest) &&
-              copy_receipt_blob(st, 7, receipt->chain_corpus_digest) &&
-              sqlite3_column_type(st, 8) == SQLITE_INTEGER &&
-              (sqlite3_column_int(st, 8) == 0 ||
-               sqlite3_column_int(st, 8) == 1) &&
-              sqlite3_column_type(st, 9) == SQLITE_INTEGER &&
-              (sqlite3_column_int(st, 9) == CONSENSUS_STATE_VALIDATION_FULL ||
-               sqlite3_column_int(st, 9) ==
-                   CONSENSUS_STATE_VALIDATION_CHECKPOINT_FOLD) &&
-              commit_type == SQLITE_TEXT &&
-              commit_len >= 0 &&
-              consensus_state_source_receipt_commit_valid(
-                  receipt_version, (const char *)commit,
-                  (size_t)commit_len) &&
-              sqlite3_column_type(st, 11) == SQLITE_INTEGER &&
-              sqlite3_column_int64(st, 11) == fold_cursor &&
-              copy_receipt_blob(st, 12, receipt->receipt_digest);
-    if (ok) {
-        receipt->schema_version = receipt_version;
-        memcpy(receipt->producer_commit, commit, (size_t)commit_len);
-        receipt->producer_commit[commit_len] = '\0';
-        receipt->source_clean = sqlite3_column_int(st, 8) == 1;
-        receipt->validation_profile =
-            (uint8_t)sqlite3_column_int(st, 9);
-        receipt->fold_cursor = sqlite3_column_int64(st, 11);
-        rc = sqlite3_step(st); // raw-sql-ok:progress-kv-kernel-store
-        ok = rc == SQLITE_DONE;
-    }
+    struct export_receipt_head head;
+    export_receipt_head_read(st, rc, &head);
+    bool ok = export_receipt_row_read(st, rc, &head, fold_cursor, receipt);
     sqlite3_finalize(st);
-    uint8_t executable[32];
     uint8_t recomputed[32];
-    uint8_t source_epoch[32];
     if (ok)
-        ok = zcl_bytes_any_set(receipt->source_epoch_digest, 32) &&
-             zcl_bytes_any_set(receipt->source_tree_root, 32) &&
-             zcl_bytes_any_set(receipt->toolchain_digest, 32) &&
-             zcl_bytes_any_set(receipt->build_inputs_digest, 32) &&
-             consensus_state_source_receipt_commit_valid(
-                 receipt->schema_version, receipt->producer_commit,
-                 strnlen(receipt->producer_commit,
-                         sizeof(receipt->producer_commit))) &&
-             memcmp(receipt->chain_corpus_digest, chain_corpus_digest, 32) == 0 &&
-             /* Fold-binary provenance vs checkpoint-content proof. The default
-              * export binds the receipt to the running binary that folded the
-              * state. The checkpoint-content path (caller-gated by an exact
-              * compiled-checkpoint + PoW-header content match in
-              * prove_checkpoint_content) instead only requires the receipt's
-              * running-binary digest to be well-formed (nonzero) — the state's
-              * authority comes from the SHA3 + header-root proof, not from
-              * re-running the exact fold binary. No downstream gate re-checks
-              * this digest, so the emitted bundle is byte-identical in shape. */
-             (checkpoint_content_export
-                  ? zcl_bytes_any_set(receipt->running_binary_digest, 32)
-                  : (running_binary_digest(executable) &&
-                     memcmp(receipt->running_binary_digest, executable, 32) ==
-                         0));
-    if (ok) {
-        consensus_state_source_epoch_digest(receipt, source_epoch);
-        consensus_state_source_receipt_digest(receipt, recomputed);
-        ok = memcmp(receipt->source_epoch_digest, source_epoch, 32) == 0 &&
-             memcmp(receipt->receipt_digest, recomputed, 32) == 0 &&
-             zcl_bytes_any_set(recomputed, 32);
-    }
+        ok = export_receipt_provenance_ok(receipt, chain_corpus_digest,
+                                          checkpoint_content_export);
+    if (ok)
+        ok = export_receipt_digests_ok(receipt, recomputed);
     if (!ok) {
         LOG_WARN(EXPORT_PROOF_SUBSYS,
                  "source provenance receipt missing, malformed, stale, or "
@@ -314,20 +364,9 @@ static bool prove_checkpoint_content(
     return true;
 }
 
-bool consensus_export_prove_source(
-    sqlite3 *source,
-    const struct consensus_state_snapshot_export_request *request,
-    struct consensus_state_bundle_manifest *manifest,
-    struct consensus_state_source_receipt *receipt,
-    struct consensus_state_bundle_proof_summary
-        proofs[CONSENSUS_STATE_BUNDLE_PROOF_COUNT],
-    struct consensus_state_bundle_proof_parent *parent,
-    struct consensus_state_export_result *result)
+static bool export_check_coins_authority(
+    sqlite3 *source, struct consensus_state_export_result *result)
 {
-    int64_t prove_t0 = consensus_export_clock_ms();
-    consensus_export_progress_emit(
-        "consensus_export_prove_source start height=%d",
-        request->expected_height);
     if (coins_ram_active())
         return consensus_export_fail(
             result, CONSENSUS_EXPORT_MISSING_PROOF,
@@ -349,7 +388,14 @@ bool consensus_export_prove_source(
             "coins source lacks durable migration and self-folded proof "
             "(proven_authority=%d refold_marker=%d)",
             proven_authority ? 1 : 0, refold_marker ? 1 : 0);
+    return true;
+}
 
+static bool export_check_applied_height(
+    sqlite3 *source,
+    const struct consensus_state_snapshot_export_request *request,
+    struct consensus_state_export_result *result)
+{
     int32_t applied = -1;
     bool applied_found = false;
     if (!coins_kv_get_applied_height(source, &applied, &applied_found))
@@ -361,7 +407,12 @@ bool consensus_export_prove_source(
             "coins applied-height does not equal expected H+1 "
             "(applied=%d found=%d expected=%d)",
             applied, applied_found ? 1 : 0, request->expected_height + 1);
+    return true;
+}
 
+static bool export_check_shielded_history(
+    sqlite3 *source, struct consensus_state_export_result *result)
+{
     int64_t sprout_cursor = -1;
     int64_t sapling_cursor = -1;
     int64_t nullifier_cursor = -1;
@@ -386,17 +437,30 @@ bool consensus_export_prove_source(
             (long long)sprout_cursor, sprout_found ? 1 : 0,
             (long long)sapling_cursor, sapling_found ? 1 : 0,
             (long long)nullifier_cursor, nullifier_found ? 1 : 0);
+    return true;
+}
 
-    uint64_t header_cursor = 0;
-    if (!read_cursor(source, "header_admit", &header_cursor) ||
-        header_cursor < (uint64_t)request->expected_height + 1)
+static bool export_check_header_cursor(
+    sqlite3 *source,
+    const struct consensus_state_snapshot_export_request *request,
+    uint64_t *header_cursor, struct consensus_state_export_result *result)
+{
+    *header_cursor = 0;
+    if (!read_cursor(source, "header_admit", header_cursor) ||
+        *header_cursor < (uint64_t)request->expected_height + 1)
         return consensus_export_fail(
             result, CONSENSUS_EXPORT_MISSING_PROOF,
             "header reducer cursor does not cover requested height "
             "(cursor=%llu required=%lld)",
-            (unsigned long long)header_cursor,
+            (unsigned long long)*header_cursor,
             (long long)request->expected_height + 1);
+    return true;
+}
 
+static void export_manifest_init(
+    struct consensus_state_bundle_manifest *manifest,
+    const struct consensus_state_snapshot_export_request *request)
+{
     memset(manifest, 0, sizeof(*manifest));
     manifest->height = request->expected_height;
     memcpy(manifest->block_hash, request->expected_block_hash, 32);
@@ -406,16 +470,17 @@ bool consensus_export_prove_source(
     manifest->sapling_source_cursor = 0;
     manifest->nullifier_source_cursor = 0;
     manifest->source_fold_cursor = (int64_t)request->expected_height + 1;
-    uint8_t chain_corpus_digest[32];
-    if (!consensus_export_prove_header_chain(
-            source, request->expected_height, request->expected_block_hash,
-            chain_corpus_digest, parent))
-        return consensus_export_fail(
-            result, CONSENSUS_EXPORT_MISSING_PROOF,
-            "complete genesis-to-height header proof is unavailable "
-            "(height=%d)",
-            request->expected_height);
+}
 
+/* Proves the source receipt and binds the manifest to it. */
+static bool export_prove_receipt(
+    sqlite3 *source,
+    const struct consensus_state_snapshot_export_request *request,
+    struct consensus_state_bundle_manifest *manifest,
+    struct consensus_state_source_receipt *receipt,
+    const uint8_t chain_corpus_digest[32],
+    struct consensus_state_export_result *result)
+{
     /* Checkpoint-content export authority: a compiled-checkpoint + PoW-header
      * content proof that authorizes relaxing the receipt's fold-binary-identity
      * bind below. It TIGHTENS the admission (exact checkpoint coins SHA3 + count
@@ -440,7 +505,53 @@ bool consensus_export_prove_source(
             "(validation_profile=%u required=%u)",
             (unsigned)manifest->validation_profile,
             (unsigned)CONSENSUS_STATE_VALIDATION_FULL);
+    return true;
+}
 
+/* Bind the SERVED tip's own block hash. H* (== expected_height, proven by the
+ * caller) IS the reducer's provable served tip, so the height is already bound
+ * exactly — the remaining property is that the served tip owns
+ * expected_block_hash. Read that height's hash witness CONVENTION-AWARE via
+ * tip_finalize_stage_block_hash_at (the finalized ok=1 row at
+ * expected_height-1 carries the LOOKAHEAD hash(expected_height); an anchor seed
+ * row at expected_height carries its own hash) — the same served-tip hash
+ * binding derive_coins_best uses at applied-1. Do NOT resolve via the cursor:
+ * a fold-to-anchor producer's tip_finalize cursor sits at expected_height+1
+ * (the H+1 steady-state convention), so tip_finalize_stage_resolve_durable_tip
+ * floats one above the served tip through the finalized lookahead — a
+ * different notion from the served H* that false-rejects a complete
+ * producer. */
+static bool export_check_served_tip(
+    sqlite3 *source,
+    const struct consensus_state_snapshot_export_request *request,
+    struct consensus_state_export_result *result)
+{
+    uint8_t served_tip_hash[32] = {0};
+    bool served_tip_witness_found = tip_finalize_stage_block_hash_at(
+        source, request->expected_height, served_tip_hash);
+    if (served_tip_witness_found &&
+        memcmp(served_tip_hash, request->expected_block_hash, 32) == 0)
+        return true;
+    char derived_hex[65], expected_hex[65];
+    for (int i = 0; i < 32; i++) {
+        snprintf(derived_hex + 2 * i, 3, "%02x", served_tip_hash[i]);
+        snprintf(expected_hex + 2 * i, 3, "%02x",
+                 request->expected_block_hash[i]);
+    }
+    return consensus_export_fail(
+        result, CONSENSUS_EXPORT_MISSING_PROOF,
+        "durable served tip does not own expected height=%d "
+        "witness_found=%d derived=%s expected=%s",
+        request->expected_height, served_tip_witness_found ? 1 : 0,
+        derived_hex, expected_hex);
+}
+
+/* The frozen source must be the exact durable reducer generation. */
+static bool export_check_generation(
+    sqlite3 *source,
+    const struct consensus_state_snapshot_export_request *request,
+    struct consensus_state_export_result *result)
+{
     /* Refresh the durable refold mode before computing H*: its floor is a
      * cached atomic, so a stale process value can otherwise validate the
      * wrong lattice. H* and the convention-aware durable tip must both name
@@ -460,85 +571,115 @@ bool consensus_export_prove_source(
             "frozen source is not the exact durable reducer generation "
             "(hstar=%d served_floor=%d expected=%d)",
             hstar, served_floor, request->expected_height);
-    /* Bind the SERVED tip's own block hash. H* (== expected_height, proven
-     * just above) IS the reducer's provable served tip, so the height is
-     * already bound exactly — the remaining property is that the served tip
-     * owns expected_block_hash. Read that height's hash witness CONVENTION-
-     * AWARE via tip_finalize_stage_block_hash_at (the finalized ok=1 row at
-     * expected_height-1 carries the LOOKAHEAD hash(expected_height); an anchor
-     * seed row at expected_height carries its own hash) — the same served-tip
-     * hash binding derive_coins_best uses at applied-1. Do NOT resolve via the
-     * cursor: a fold-to-anchor producer's tip_finalize cursor sits at
-     * expected_height+1 (the H+1 steady-state convention), so
-     * tip_finalize_stage_resolve_durable_tip floats one above the served tip
-     * through the finalized lookahead — a different notion from the served H*
-     * that false-rejects a complete producer. */
-    uint8_t served_tip_hash[32] = {0};
-    bool served_tip_witness_found = tip_finalize_stage_block_hash_at(
-        source, request->expected_height, served_tip_hash);
-    if (!served_tip_witness_found ||
-        memcmp(served_tip_hash, request->expected_block_hash, 32) != 0) {
-        char derived_hex[65], expected_hex[65];
-        for (int i = 0; i < 32; i++) {
-            snprintf(derived_hex + 2 * i, 3, "%02x", served_tip_hash[i]);
-            snprintf(expected_hex + 2 * i, 3, "%02x",
-                     request->expected_block_hash[i]);
-        }
+    return export_check_served_tip(source, request, result);
+}
+
+static void export_header_proof_fill(
+    struct consensus_state_bundle_proof_summary *proof,
+    const struct consensus_state_snapshot_export_request *request,
+    uint64_t header_cursor, const uint8_t chain_corpus_digest[32])
+{
+    snprintf(proof->component, sizeof(proof->component), "header_admit");
+    proof->cursor = header_cursor;
+    proof->first_height = 0;
+    proof->last_height = request->expected_height;
+    proof->row_count = (uint64_t)request->expected_height + 1;
+    proof->hash_bound_count = proof->row_count;
+    memcpy(proof->component_digest, chain_corpus_digest, 32);
+}
+
+/* Proves one reducer stage: its cursor covers the frozen generation and its
+ * source rows are complete. */
+static bool export_prove_stage(
+    sqlite3 *source, size_t i,
+    const struct consensus_state_snapshot_export_request *request,
+    const struct consensus_state_bundle_manifest *manifest,
+    const struct consensus_state_source_receipt *receipt,
+    struct consensus_state_bundle_proof_summary *proofs,
+    struct consensus_state_bundle_proof_parent *parent,
+    struct consensus_state_export_result *result)
+{
+    uint64_t cursor = 0;
+    if (!read_cursor(source, k_stages[i].name, &cursor))
         return consensus_export_fail(
             result, CONSENSUS_EXPORT_MISSING_PROOF,
-            "durable served tip does not own expected height=%d "
-            "witness_found=%d derived=%s expected=%s",
-            request->expected_height, served_tip_witness_found ? 1 : 0,
-            derived_hex, expected_hex);
-    }
+            "required reducer cursor is unavailable stage=%s",
+            k_stages[i].name);
+    uint64_t required = k_stages[i].served_tip_cursor
+                            ? (uint64_t)request->expected_height
+                            : (uint64_t)request->expected_height + 1;
+    bool cursor_ok = k_stages[i].served_tip_cursor
+                         ? cursor >= required && cursor <= required + 1
+                         : cursor >= required;
+    if (!cursor_ok)
+        return consensus_export_fail(
+            result, CONSENSUS_EXPORT_MISSING_PROOF,
+            "reducer cursor does not cover frozen generation stage=%s "
+            "cursor=%llu required=%llu",
+            k_stages[i].name, (unsigned long long)cursor,
+            (unsigned long long)required);
+    if (strcmp(k_stages[i].name, "utxo_apply") == 0 &&
+        cursor != (uint64_t)request->expected_height + 1)
+        return consensus_export_fail(
+            result, CONSENSUS_EXPORT_MISSING_PROOF,
+            "utxo cursor does not equal frozen coin generation "
+            "cursor=%llu expected=%lld",
+            (unsigned long long)cursor,
+            (long long)request->expected_height + 1);
+    if (!consensus_export_prove_stage_rows(
+            source, &k_stages[i], request->expected_height, cursor,
+            manifest->validation_profile, receipt->source_epoch_digest,
+            &proofs[i + 1], parent, i + 1))
+        return consensus_export_fail(
+            result, CONSENSUS_EXPORT_MISSING_PROOF,
+            "complete reducer proof rows unavailable stage=%s",
+            k_stages[i].name);
+    return true;
+}
+
+bool consensus_export_prove_source(
+    sqlite3 *source,
+    const struct consensus_state_snapshot_export_request *request,
+    struct consensus_state_bundle_manifest *manifest,
+    struct consensus_state_source_receipt *receipt,
+    struct consensus_state_bundle_proof_summary
+        proofs[CONSENSUS_STATE_BUNDLE_PROOF_COUNT],
+    struct consensus_state_bundle_proof_parent *parent,
+    struct consensus_state_export_result *result)
+{
+    int64_t prove_t0 = consensus_export_clock_ms();
+    consensus_export_progress_emit(
+        "consensus_export_prove_source start height=%d",
+        request->expected_height);
+    uint64_t header_cursor = 0;
+    if (!export_check_coins_authority(source, result) ||
+        !export_check_applied_height(source, request, result) ||
+        !export_check_shielded_history(source, result) ||
+        !export_check_header_cursor(source, request, &header_cursor, result))
+        return false;
+
+    export_manifest_init(manifest, request);
+    uint8_t chain_corpus_digest[32];
+    if (!consensus_export_prove_header_chain(
+            source, request->expected_height, request->expected_block_hash,
+            chain_corpus_digest, parent))
+        return consensus_export_fail(
+            result, CONSENSUS_EXPORT_MISSING_PROOF,
+            "complete genesis-to-height header proof is unavailable "
+            "(height=%d)",
+            request->expected_height);
+    if (!export_prove_receipt(source, request, manifest, receipt,
+                              chain_corpus_digest, result) ||
+        !export_check_generation(source, request, result))
+        return false;
 
     memset(proofs, 0, sizeof(*proofs) * CONSENSUS_STATE_BUNDLE_PROOF_COUNT);
-    snprintf(proofs[0].component, sizeof(proofs[0].component),
-             "header_admit");
-    proofs[0].cursor = header_cursor;
-    proofs[0].first_height = 0;
-    proofs[0].last_height = request->expected_height;
-    proofs[0].row_count = (uint64_t)request->expected_height + 1;
-    proofs[0].hash_bound_count = proofs[0].row_count;
-    memcpy(proofs[0].component_digest, chain_corpus_digest, 32);
-
-    for (size_t i = 0; i < sizeof(k_stages) / sizeof(k_stages[0]); i++) {
-        uint64_t cursor = 0;
-        if (!read_cursor(source, k_stages[i].name, &cursor))
-            return consensus_export_fail(
-                result, CONSENSUS_EXPORT_MISSING_PROOF,
-                "required reducer cursor is unavailable stage=%s",
-                k_stages[i].name);
-        uint64_t required = k_stages[i].served_tip_cursor
-                                ? (uint64_t)request->expected_height
-                                : (uint64_t)request->expected_height + 1;
-        bool cursor_ok = k_stages[i].served_tip_cursor
-                             ? cursor >= required && cursor <= required + 1
-                             : cursor >= required;
-        if (!cursor_ok)
-            return consensus_export_fail(
-                result, CONSENSUS_EXPORT_MISSING_PROOF,
-                "reducer cursor does not cover frozen generation stage=%s "
-                "cursor=%llu required=%llu",
-                k_stages[i].name, (unsigned long long)cursor,
-                (unsigned long long)required);
-        if (strcmp(k_stages[i].name, "utxo_apply") == 0 &&
-            cursor != (uint64_t)request->expected_height + 1)
-            return consensus_export_fail(
-                result, CONSENSUS_EXPORT_MISSING_PROOF,
-                "utxo cursor does not equal frozen coin generation "
-                "cursor=%llu expected=%lld",
-                (unsigned long long)cursor,
-                (long long)request->expected_height + 1);
-        if (!consensus_export_prove_stage_rows(
-                source, &k_stages[i], request->expected_height, cursor,
-                manifest->validation_profile, receipt->source_epoch_digest,
-                &proofs[i + 1], parent, i + 1))
-            return consensus_export_fail(
-                result, CONSENSUS_EXPORT_MISSING_PROOF,
-                "complete reducer proof rows unavailable stage=%s",
-                k_stages[i].name);
-    }
+    export_header_proof_fill(&proofs[0], request, header_cursor,
+                             chain_corpus_digest);
+    for (size_t i = 0; i < sizeof(k_stages) / sizeof(k_stages[0]); i++)
+        if (!export_prove_stage(source, i, request, manifest, receipt,
+                                proofs, parent, result))
+            return false;
     consensus_state_bundle_proof_manifest_digest(
         proofs, CONSENSUS_STATE_BUNDLE_PROOF_COUNT,
         manifest->proof_manifest_digest);

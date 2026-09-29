@@ -136,6 +136,65 @@ static bool candidate_closed_schema(sqlite3 *db)
     return ok;
 }
 
+static bool int_col_is(sqlite3_stmt *stmt, int column, int expected)
+{
+    return sqlite3_column_type(stmt, column) == SQLITE_INTEGER &&
+           sqlite3_column_int(stmt, column) == expected;
+}
+
+static bool int64_col_is(sqlite3_stmt *stmt, int column, int64_t expected)
+{
+    return sqlite3_column_type(stmt, column) == SQLITE_INTEGER &&
+           sqlite3_column_int64(stmt, column) == expected;
+}
+
+static bool step_done(sqlite3_stmt *stmt)
+{
+    return sqlite3_step(stmt) == SQLITE_DONE; // raw-sql-ok:read-only-introspection
+}
+
+static bool meta_head_matches(sqlite3_stmt *stmt,
+                              const struct consensus_state_bundle_manifest *m)
+{
+    return consensus_state_sqlite_text_equal(
+               stmt, 0, CONSENSUS_STATE_CANDIDATE_SCHEMA) &&
+           int64_col_is(stmt, 1, m->height) &&
+           blob32_equal(stmt, 2, m->block_hash) &&
+           int_col_is(stmt, 3, 1) &&
+           int_col_is(stmt, 4, m->source_clean ? 1 : 0) &&
+           int_col_is(stmt, 5, m->validation_profile) &&
+           int64_col_is(stmt, 6, 0);
+}
+
+static bool meta_state_matches(sqlite3_stmt *stmt,
+                               const struct consensus_state_bundle_manifest *m)
+{
+    return blob32_equal(stmt, 7, m->utxo_root) &&
+           int64_col_is(stmt, 8, (sqlite3_int64)m->utxo_count) &&
+           int64_col_is(stmt, 9, m->total_supply) &&
+           blob32_equal(stmt, 10, m->anchor_digest) &&
+           int64_col_is(stmt, 11, (sqlite3_int64)m->anchor_count) &&
+           blob32_equal(stmt, 12, m->sprout_frontier_root) &&
+           int64_col_is(stmt, 13, m->sprout_frontier_height) &&
+           blob32_equal(stmt, 14, m->sapling_frontier_root) &&
+           int64_col_is(stmt, 15, m->sapling_frontier_height) &&
+           blob32_equal(stmt, 16, m->nullifier_digest) &&
+           int64_col_is(stmt, 17, (sqlite3_int64)m->nullifier_count);
+}
+
+static bool meta_provenance_matches(
+    sqlite3_stmt *stmt, const struct consensus_state_bundle_manifest *m,
+    const uint8_t admission_receipt[32])
+{
+    return int64_col_is(stmt, 18, 0) && int64_col_is(stmt, 19, 0) &&
+           int64_col_is(stmt, 20, 0) &&
+           int64_col_is(stmt, 21, m->source_fold_cursor) &&
+           blob32_equal(stmt, 22, m->proof_manifest_digest) &&
+           blob32_equal(stmt, 23, m->source_digest) &&
+           blob32_equal(stmt, 24, m->artifact_digest) &&
+           blob32_equal(stmt, 25, admission_receipt);
+}
+
 static bool candidate_meta_matches(
     sqlite3 *db, const struct consensus_state_bundle_manifest *m,
     const uint8_t admission_receipt[32])
@@ -154,52 +213,77 @@ static bool candidate_meta_matches(
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK)
         return false;
     int rc = sqlite3_step(stmt); // raw-sql-ok:read-only-introspection
-    bool ok = rc == SQLITE_ROW &&
-        consensus_state_sqlite_text_equal(
-            stmt, 0, CONSENSUS_STATE_CANDIDATE_SCHEMA) &&
-        sqlite3_column_type(stmt, 1) == SQLITE_INTEGER &&
-        sqlite3_column_int64(stmt, 1) == m->height &&
-        blob32_equal(stmt, 2, m->block_hash) &&
-        sqlite3_column_type(stmt, 3) == SQLITE_INTEGER &&
-        sqlite3_column_int(stmt, 3) == 1 &&
-        sqlite3_column_type(stmt, 4) == SQLITE_INTEGER &&
-        sqlite3_column_int(stmt, 4) == (m->source_clean ? 1 : 0) &&
-        sqlite3_column_type(stmt, 5) == SQLITE_INTEGER &&
-        sqlite3_column_int(stmt, 5) == m->validation_profile &&
-        sqlite3_column_type(stmt, 6) == SQLITE_INTEGER &&
-        sqlite3_column_int64(stmt, 6) == 0 &&
-        blob32_equal(stmt, 7, m->utxo_root) &&
-        sqlite3_column_type(stmt, 8) == SQLITE_INTEGER &&
-        sqlite3_column_int64(stmt, 8) == (sqlite3_int64)m->utxo_count &&
-        sqlite3_column_type(stmt, 9) == SQLITE_INTEGER &&
-        sqlite3_column_int64(stmt, 9) == m->total_supply &&
-        blob32_equal(stmt, 10, m->anchor_digest) &&
-        sqlite3_column_type(stmt, 11) == SQLITE_INTEGER &&
-        sqlite3_column_int64(stmt, 11) == (sqlite3_int64)m->anchor_count &&
-        blob32_equal(stmt, 12, m->sprout_frontier_root) &&
-        sqlite3_column_type(stmt, 13) == SQLITE_INTEGER &&
-        sqlite3_column_int64(stmt, 13) == m->sprout_frontier_height &&
-        blob32_equal(stmt, 14, m->sapling_frontier_root) &&
-        sqlite3_column_type(stmt, 15) == SQLITE_INTEGER &&
-        sqlite3_column_int64(stmt, 15) == m->sapling_frontier_height &&
-        blob32_equal(stmt, 16, m->nullifier_digest) &&
-        sqlite3_column_type(stmt, 17) == SQLITE_INTEGER &&
-        sqlite3_column_int64(stmt, 17) == (sqlite3_int64)m->nullifier_count &&
-        sqlite3_column_type(stmt, 18) == SQLITE_INTEGER &&
-        sqlite3_column_int64(stmt, 18) == 0 &&
-        sqlite3_column_type(stmt, 19) == SQLITE_INTEGER &&
-        sqlite3_column_int64(stmt, 19) == 0 &&
-        sqlite3_column_type(stmt, 20) == SQLITE_INTEGER &&
-        sqlite3_column_int64(stmt, 20) == 0 &&
-        sqlite3_column_type(stmt, 21) == SQLITE_INTEGER &&
-        sqlite3_column_int64(stmt, 21) == m->source_fold_cursor &&
-        blob32_equal(stmt, 22, m->proof_manifest_digest) &&
-        blob32_equal(stmt, 23, m->source_digest) &&
-        blob32_equal(stmt, 24, m->artifact_digest) &&
-        blob32_equal(stmt, 25, admission_receipt) &&
-        sqlite3_step(stmt) == SQLITE_DONE; // raw-sql-ok:read-only-introspection
+    bool ok = rc == SQLITE_ROW && meta_head_matches(stmt, m) &&
+              meta_state_matches(stmt, m) &&
+              meta_provenance_matches(stmt, m, admission_receipt) &&
+              step_done(stmt);
     sqlite3_finalize(stmt);
     return ok;
+}
+
+/* The candidate source_receipt row's text columns and the schema version they
+ * name. */
+struct cand_receipt_head {
+    int commit_type;
+    const char *commit;
+    int commit_len;
+    uint8_t version;
+    bool schema_ok;
+};
+
+static void cand_receipt_head_read(sqlite3_stmt *stmt, int rc,
+                                   struct cand_receipt_head *h)
+{
+    h->commit_type = rc == SQLITE_ROW ? sqlite3_column_type(stmt, 9)
+                                      : SQLITE_NULL;
+    h->commit = h->commit_type == SQLITE_TEXT
+        ? (const char *)sqlite3_column_text(stmt, 9) : NULL;
+    h->commit_len = h->commit ? sqlite3_column_bytes(stmt, 9) : -1;
+    const char *schema =
+        rc == SQLITE_ROW && sqlite3_column_type(stmt, 0) == SQLITE_TEXT
+            ? (const char *)sqlite3_column_text(stmt, 0) : NULL;
+    int schema_len = schema ? sqlite3_column_bytes(stmt, 0) : -1;
+    h->version = CONSENSUS_STATE_SOURCE_RECEIPT_INVALID;
+    h->schema_ok = schema && schema_len >= 0 &&
+        consensus_state_source_receipt_schema_version(
+            schema, (size_t)schema_len, &h->version);
+}
+
+static bool cand_receipt_blobs_copy(
+    sqlite3_stmt *stmt, struct consensus_state_source_receipt *receipt)
+{
+    return blob32_copy(stmt, 1, receipt->source_epoch_digest) &&
+           blob32_copy(stmt, 2, receipt->source_tree_root) &&
+           blob32_copy(stmt, 3, receipt->running_binary_digest) &&
+           blob32_copy(stmt, 4, receipt->toolchain_digest) &&
+           blob32_copy(stmt, 5, receipt->build_inputs_digest) &&
+           blob32_copy(stmt, 6, receipt->chain_corpus_digest);
+}
+
+static bool cand_receipt_scalars_typed(sqlite3_stmt *stmt)
+{
+    return sqlite3_column_type(stmt, 7) == SQLITE_INTEGER &&
+           (sqlite3_column_int(stmt, 7) == 0 ||
+            sqlite3_column_int(stmt, 7) == 1) &&
+           sqlite3_column_type(stmt, 8) == SQLITE_INTEGER &&
+           (sqlite3_column_int(stmt, 8) == CONSENSUS_STATE_VALIDATION_FULL ||
+            sqlite3_column_int(stmt, 8) ==
+                CONSENSUS_STATE_VALIDATION_CHECKPOINT_FOLD);
+}
+
+static bool cand_receipt_bound(
+    const struct consensus_state_source_receipt *receipt,
+    const struct consensus_state_bundle_manifest *m)
+{
+    uint8_t digest[32], source_epoch[32];
+    consensus_state_source_epoch_digest(receipt, source_epoch);
+    consensus_state_source_receipt_digest(receipt, digest);
+    return receipt->fold_cursor == m->source_fold_cursor &&
+           receipt->source_clean == m->source_clean &&
+           receipt->validation_profile == m->validation_profile &&
+           memcmp(source_epoch, receipt->source_epoch_digest, 32) == 0 &&
+           memcmp(digest, receipt->receipt_digest, 32) == 0 &&
+           memcmp(digest, m->source_digest, 32) == 0;
 }
 
 static bool candidate_source_receipt(
@@ -217,73 +301,96 @@ static bool candidate_source_receipt(
         return false;
     memset(receipt, 0, sizeof(*receipt));
     int rc = sqlite3_step(stmt); // raw-sql-ok:read-only-introspection
-    int commit_type = rc == SQLITE_ROW ? sqlite3_column_type(stmt, 9)
-                                       : SQLITE_NULL;
-    const char *commit = commit_type == SQLITE_TEXT
-        ? (const char *)sqlite3_column_text(stmt, 9) : NULL;
-    int commit_len = commit ? sqlite3_column_bytes(stmt, 9) : -1;
-    const char *schema =
-        rc == SQLITE_ROW && sqlite3_column_type(stmt, 0) == SQLITE_TEXT
-            ? (const char *)sqlite3_column_text(stmt, 0) : NULL;
-    int schema_len = schema ? sqlite3_column_bytes(stmt, 0) : -1;
-    uint8_t receipt_version = CONSENSUS_STATE_SOURCE_RECEIPT_INVALID;
-    bool schema_ok = schema && schema_len >= 0 &&
-        consensus_state_source_receipt_schema_version(
-            schema, (size_t)schema_len, &receipt_version);
-    bool ok = rc == SQLITE_ROW && commit &&
-        schema_ok &&
-        commit_type == SQLITE_TEXT &&
-        commit_len >= 0 &&
+    struct cand_receipt_head head;
+    cand_receipt_head_read(stmt, rc, &head);
+    bool ok = rc == SQLITE_ROW && head.commit && head.schema_ok &&
+        head.commit_type == SQLITE_TEXT && head.commit_len >= 0 &&
         consensus_state_source_receipt_commit_valid(
-            receipt_version, commit, (size_t)commit_len) &&
-        blob32_copy(stmt, 1, receipt->source_epoch_digest) &&
-        blob32_copy(stmt, 2, receipt->source_tree_root) &&
-        blob32_copy(stmt, 3, receipt->running_binary_digest) &&
-        blob32_copy(stmt, 4, receipt->toolchain_digest) &&
-        blob32_copy(stmt, 5, receipt->build_inputs_digest) &&
-        blob32_copy(stmt, 6, receipt->chain_corpus_digest) &&
-        sqlite3_column_type(stmt, 7) == SQLITE_INTEGER &&
-        (sqlite3_column_int(stmt, 7) == 0 ||
-         sqlite3_column_int(stmt, 7) == 1) &&
-        sqlite3_column_type(stmt, 8) == SQLITE_INTEGER &&
-        (sqlite3_column_int(stmt, 8) == CONSENSUS_STATE_VALIDATION_FULL ||
-         sqlite3_column_int(stmt, 8) ==
-             CONSENSUS_STATE_VALIDATION_CHECKPOINT_FOLD) &&
+            head.version, head.commit, (size_t)head.commit_len) &&
+        cand_receipt_blobs_copy(stmt, receipt) &&
+        cand_receipt_scalars_typed(stmt) &&
         blob32_copy(stmt, 11, receipt->receipt_digest) &&
         sqlite3_column_type(stmt, 10) == SQLITE_INTEGER;
     if (ok) {
-        receipt->schema_version = receipt_version;
-        memcpy(receipt->producer_commit, commit, (size_t)commit_len);
-        receipt->producer_commit[commit_len] = '\0';
+        receipt->schema_version = head.version;
+        memcpy(receipt->producer_commit, head.commit, (size_t)head.commit_len);
+        receipt->producer_commit[head.commit_len] = '\0';
         receipt->source_clean = sqlite3_column_int(stmt, 7) == 1;
         receipt->validation_profile = (uint8_t)sqlite3_column_int(stmt, 8);
         receipt->fold_cursor = sqlite3_column_int64(stmt, 10);
-        uint8_t digest[32], source_epoch[32];
-        consensus_state_source_epoch_digest(receipt, source_epoch);
-        consensus_state_source_receipt_digest(receipt, digest);
-        ok = receipt->fold_cursor == m->source_fold_cursor &&
-             receipt->source_clean == m->source_clean &&
-             receipt->validation_profile == m->validation_profile &&
-             memcmp(source_epoch, receipt->source_epoch_digest, 32) == 0 &&
-             memcmp(digest, receipt->receipt_digest, 32) == 0 &&
-             memcmp(digest, m->source_digest, 32) == 0 &&
-             sqlite3_step(stmt) == SQLITE_DONE; // raw-sql-ok:read-only-introspection
+        ok = cand_receipt_bound(receipt, m) && step_done(stmt);
     }
     sqlite3_finalize(stmt);
     return ok;
+}
+
+static const char *const k_cand_proof_names[
+    CONSENSUS_STATE_BUNDLE_PROOF_COUNT] = {
+    "header_admit", "validate_headers", "body_fetch", "body_persist",
+    "script_validate", "proof_validate", "utxo_apply", "tip_finalize",
+};
+
+static const bool k_cand_proof_hash_bound[
+    CONSENSUS_STATE_BUNDLE_PROOF_COUNT] = {
+    true, true, true, false, true, true, true, false,
+};
+
+static bool cand_proof_types_ok(sqlite3_stmt *stmt)
+{
+    return sqlite3_column_type(stmt, 0) == SQLITE_INTEGER &&
+           sqlite3_column_type(stmt, 1) == SQLITE_TEXT &&
+           sqlite3_column_type(stmt, 2) == SQLITE_INTEGER &&
+           sqlite3_column_type(stmt, 3) == SQLITE_INTEGER &&
+           sqlite3_column_type(stmt, 4) == SQLITE_INTEGER &&
+           sqlite3_column_type(stmt, 5) == SQLITE_INTEGER &&
+           sqlite3_column_type(stmt, 6) == SQLITE_INTEGER &&
+           sqlite3_column_type(stmt, 7) == SQLITE_BLOB;
+}
+
+static bool cand_proof_cursor_ok(size_t i, int64_t cursor, uint64_t minimum,
+                                 uint64_t rows)
+{
+    return cursor >= 0 && (uint64_t)cursor >= minimum &&
+           (i != 6 || (uint64_t)cursor == rows) &&
+           (i != 7 || (uint64_t)cursor <= minimum + 1);
+}
+
+/* Reads proof row i and, when it matches the manifest, fills *proof. */
+static bool cand_proof_row(sqlite3_stmt *stmt, size_t i,
+                           const struct consensus_state_bundle_manifest *m,
+                           uint64_t rows,
+                           struct consensus_state_bundle_proof_summary *proof)
+{
+    if (sqlite3_step(stmt) != SQLITE_ROW) // raw-sql-ok:read-only-introspection
+        return false;
+    if (!cand_proof_types_ok(stmt))
+        return false;
+    int64_t cursor = sqlite3_column_int64(stmt, 2);
+    uint64_t minimum = i == 7 ? (uint64_t)m->height : rows;
+    if (!(sqlite3_column_int64(stmt, 0) == (sqlite3_int64)i &&
+          consensus_state_sqlite_text_equal(stmt, 1, k_cand_proof_names[i]) &&
+          cand_proof_cursor_ok(i, cursor, minimum, rows) &&
+          sqlite3_column_int64(stmt, 3) == 0 &&
+          sqlite3_column_int64(stmt, 4) == m->height &&
+          sqlite3_column_int64(stmt, 5) == (sqlite3_int64)rows &&
+          sqlite3_column_int64(stmt, 6) ==
+              (sqlite3_int64)(k_cand_proof_hash_bound[i] ? rows : 0) &&
+          blob32_copy(stmt, 7, proof->component_digest)))
+        return false;
+    snprintf(proof->component, sizeof(proof->component), "%s",
+             k_cand_proof_names[i]);
+    proof->cursor = (uint64_t)cursor;
+    proof->first_height = 0;
+    proof->last_height = m->height;
+    proof->row_count = rows;
+    proof->hash_bound_count = k_cand_proof_hash_bound[i] ? rows : 0;
+    return true;
 }
 
 static bool candidate_proofs(
     sqlite3 *db, const struct consensus_state_bundle_manifest *m,
     const struct consensus_state_source_receipt *receipt)
 {
-    static const char *const names[CONSENSUS_STATE_BUNDLE_PROOF_COUNT] = {
-        "header_admit", "validate_headers", "body_fetch", "body_persist",
-        "script_validate", "proof_validate", "utxo_apply", "tip_finalize",
-    };
-    static const bool hash_bound[CONSENSUS_STATE_BUNDLE_PROOF_COUNT] = {
-        true, true, true, false, true, true, true, false,
-    };
     sqlite3_stmt *stmt = NULL;
     if (sqlite3_prepare_v2(db,
             "SELECT ordinal,component,cursor,first_height,last_height,row_count,"
@@ -296,50 +403,10 @@ static bool candidate_proofs(
     memset(proofs, 0, sizeof(proofs));
     uint64_t rows = (uint64_t)m->height + 1;
     bool ok = true;
-    for (size_t i = 0; ok && i < CONSENSUS_STATE_BUNDLE_PROOF_COUNT; i++) {
-        int rc = sqlite3_step(stmt); // raw-sql-ok:read-only-introspection
-        if (rc != SQLITE_ROW) {
-            ok = false;
-            break;
-        }
-        bool types_ok = sqlite3_column_type(stmt, 0) == SQLITE_INTEGER &&
-            sqlite3_column_type(stmt, 1) == SQLITE_TEXT &&
-            sqlite3_column_type(stmt, 2) == SQLITE_INTEGER &&
-            sqlite3_column_type(stmt, 3) == SQLITE_INTEGER &&
-            sqlite3_column_type(stmt, 4) == SQLITE_INTEGER &&
-            sqlite3_column_type(stmt, 5) == SQLITE_INTEGER &&
-            sqlite3_column_type(stmt, 6) == SQLITE_INTEGER &&
-            sqlite3_column_type(stmt, 7) == SQLITE_BLOB;
-        if (!types_ok) {
-            ok = false;
-            break;
-        }
-        int64_t cursor = sqlite3_column_int64(stmt, 2);
-        uint64_t minimum = i == 7 ? (uint64_t)m->height : rows;
-        ok = sqlite3_column_int64(stmt, 0) == (sqlite3_int64)i &&
-             consensus_state_sqlite_text_equal(stmt, 1, names[i]) &&
-             cursor >= 0 &&
-             (uint64_t)cursor >= minimum &&
-             (i != 6 || (uint64_t)cursor == rows) &&
-             (i != 7 || (uint64_t)cursor <= minimum + 1) &&
-             sqlite3_column_int64(stmt, 3) == 0 &&
-             sqlite3_column_int64(stmt, 4) == m->height &&
-             sqlite3_column_int64(stmt, 5) == (sqlite3_int64)rows &&
-             sqlite3_column_int64(stmt, 6) ==
-                 (sqlite3_int64)(hash_bound[i] ? rows : 0) &&
-             blob32_copy(stmt, 7, proofs[i].component_digest);
-        if (ok) {
-            snprintf(proofs[i].component, sizeof(proofs[i].component), "%s",
-                     names[i]);
-            proofs[i].cursor = (uint64_t)cursor;
-            proofs[i].first_height = 0;
-            proofs[i].last_height = m->height;
-            proofs[i].row_count = rows;
-            proofs[i].hash_bound_count = hash_bound[i] ? rows : 0;
-        }
-    }
+    for (size_t i = 0; ok && i < CONSENSUS_STATE_BUNDLE_PROOF_COUNT; i++)
+        ok = cand_proof_row(stmt, i, m, rows, &proofs[i]);
     if (ok)
-        ok = sqlite3_step(stmt) == SQLITE_DONE; // raw-sql-ok:read-only-introspection
+        ok = step_done(stmt);
     sqlite3_finalize(stmt);
     uint8_t digest[32];
     if (ok) {
@@ -350,6 +417,47 @@ static bool candidate_proofs(
                     receipt->chain_corpus_digest, 32) == 0;
     }
     return ok;
+}
+
+/* One coins row as stored, after the column types were checked. */
+struct cand_coin {
+    const uint8_t *txid, *script;
+    int64_t vout, value, height;
+    int script_size, txid_size, coinbase;
+};
+
+static bool cand_coin_types_ok(sqlite3_stmt *stmt)
+{
+    return sqlite3_column_type(stmt, 0) == SQLITE_BLOB &&
+           sqlite3_column_type(stmt, 1) == SQLITE_INTEGER &&
+           sqlite3_column_type(stmt, 2) == SQLITE_INTEGER &&
+           sqlite3_column_type(stmt, 3) == SQLITE_BLOB &&
+           sqlite3_column_type(stmt, 4) == SQLITE_INTEGER &&
+           sqlite3_column_type(stmt, 5) == SQLITE_INTEGER;
+}
+
+static void cand_coin_load(sqlite3_stmt *stmt, struct cand_coin *coin)
+{
+    coin->txid = sqlite3_column_blob(stmt, 0);
+    coin->script = sqlite3_column_blob(stmt, 3);
+    coin->vout = sqlite3_column_int64(stmt, 1);
+    coin->value = sqlite3_column_int64(stmt, 2);
+    coin->script_size = sqlite3_column_bytes(stmt, 3);
+    coin->height = sqlite3_column_int64(stmt, 4);
+    coin->coinbase = sqlite3_column_int(stmt, 5);
+    coin->txid_size = sqlite3_column_bytes(stmt, 0);
+}
+
+static bool cand_coin_bad(const struct cand_coin *coin, int64_t supply,
+                          uint64_t count, int32_t max_height)
+{
+    return !coin->txid || coin->txid_size != 32 || coin->vout < 0 ||
+           coin->vout > UINT32_MAX || !MoneyRange(coin->value) ||
+           supply > MAX_MONEY - coin->value || coin->script_size < 0 ||
+           coin->script_size > MAX_SCRIPT_SIZE || coin->height < 0 ||
+           coin->height > max_height ||
+           (coin->coinbase != 0 && coin->coinbase != 1) ||
+           count == UINT64_MAX;
 }
 
 static bool candidate_coins(
@@ -368,37 +476,21 @@ static bool candidate_coins(
     bool ok = true;
     int rc;
     while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) { // raw-sql-ok:read-only-introspection
-        bool types_ok = sqlite3_column_type(stmt, 0) == SQLITE_BLOB &&
-            sqlite3_column_type(stmt, 1) == SQLITE_INTEGER &&
-            sqlite3_column_type(stmt, 2) == SQLITE_INTEGER &&
-            sqlite3_column_type(stmt, 3) == SQLITE_BLOB &&
-            sqlite3_column_type(stmt, 4) == SQLITE_INTEGER &&
-            sqlite3_column_type(stmt, 5) == SQLITE_INTEGER;
-        if (!types_ok) {
+        struct cand_coin coin;
+        if (!cand_coin_types_ok(stmt)) {
             ok = false;
             break;
         }
-        const uint8_t *txid = sqlite3_column_blob(stmt, 0);
-        const uint8_t *script = sqlite3_column_blob(stmt, 3);
-        int64_t vout = sqlite3_column_int64(stmt, 1);
-        int64_t value = sqlite3_column_int64(stmt, 2);
-        int script_size = sqlite3_column_bytes(stmt, 3);
-        int64_t height = sqlite3_column_int64(stmt, 4);
-        int coinbase = sqlite3_column_int(stmt, 5);
-        if (!txid || sqlite3_column_bytes(stmt, 0) != 32 || vout < 0 ||
-            vout > UINT32_MAX || !MoneyRange(value) ||
-            supply > MAX_MONEY - value ||
-            script_size < 0 ||
-            script_size > MAX_SCRIPT_SIZE || height < 0 || height > m->height ||
-            (coinbase != 0 && coinbase != 1) || count == UINT64_MAX) {
+        cand_coin_load(stmt, &coin);
+        if (cand_coin_bad(&coin, supply, count, m->height)) {
             ok = false;
             break;
         }
         utxo_commitment_sha3_write_record(
-            &context, txid, (uint32_t)vout, value,
-            script_size ? script : NULL, (uint32_t)script_size,
-            (uint32_t)height, (uint8_t)coinbase);
-        supply += value;
+            &context, coin.txid, (uint32_t)coin.vout, coin.value,
+            coin.script_size ? coin.script : NULL, (uint32_t)coin.script_size,
+            (uint32_t)coin.height, (uint8_t)coin.coinbase);
+        supply += coin.value;
         count++;
     }
     if (rc != SQLITE_DONE)
@@ -410,45 +502,107 @@ static bool candidate_coins(
            memcmp(root, m->utxo_root, 32) == 0;
 }
 
+/* Pre-identifies the per-pool MAX(height) anchor so the full
+ * O(anchors x Pedersen-hash) recompute collapses to O(pools). Only the tip
+ * rows carry consensus-load-bearing tree contents; historical rows get the
+ * byte-integrity floor. Same boundary as the bulk import path
+ * (chainstate_legacy_reader.c:376-378) and the source-bundle validator. */
+static bool dest_anchor_tip_heights(sqlite3 *db, int64_t tip_height[2])
+{
+    sqlite3_stmt *tq = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT pool,MAX(height) FROM ("
+            "SELECT 0 AS pool,height FROM sprout_anchors UNION ALL "
+            "SELECT 1 AS pool,height FROM sapling_anchors) GROUP BY pool",
+            -1, &tq, NULL) != SQLITE_OK)
+        return false;
+    bool tq_ok = true;
+    int trc;
+    while ((trc = sqlite3_step(tq)) == SQLITE_ROW) { // raw-sql-ok:read-only-introspection
+        if (sqlite3_column_type(tq, 0) != SQLITE_INTEGER ||
+            sqlite3_column_type(tq, 1) != SQLITE_INTEGER) {
+            tq_ok = false;
+            break;
+        }
+        int pool = sqlite3_column_int(tq, 0);
+        int64_t h = sqlite3_column_int64(tq, 1);
+        if (pool != 0 && pool != 1) {
+            tq_ok = false;
+            break;
+        }
+        tip_height[pool] = h;
+    }
+    if (trc != SQLITE_DONE)
+        tq_ok = false;
+    sqlite3_finalize(tq);
+    return tq_ok;
+}
+
+/* One anchors row as stored, after the column types were checked. */
+struct dest_anchor {
+    int pool, tree_size, root_size;
+    const uint8_t *root, *tree_blob;
+    int64_t height;
+};
+
+static bool dest_anchor_types_ok(sqlite3_stmt *stmt)
+{
+    return sqlite3_column_type(stmt, 0) == SQLITE_INTEGER &&
+           sqlite3_column_type(stmt, 1) == SQLITE_BLOB &&
+           sqlite3_column_type(stmt, 2) == SQLITE_INTEGER &&
+           sqlite3_column_type(stmt, 3) == SQLITE_BLOB;
+}
+
+static void dest_anchor_load(sqlite3_stmt *stmt, struct dest_anchor *a)
+{
+    a->pool = sqlite3_column_int(stmt, 0);
+    a->root = sqlite3_column_blob(stmt, 1);
+    a->height = sqlite3_column_int64(stmt, 2);
+    a->tree_blob = sqlite3_column_blob(stmt, 3);
+    a->tree_size = a->tree_blob ? sqlite3_column_bytes(stmt, 3) : 0;
+    a->root_size = sqlite3_column_bytes(stmt, 1);
+}
+
+static bool dest_anchor_bad(const struct dest_anchor *a, uint64_t count,
+                            int32_t max_height)
+{
+    return (a->pool != 0 && a->pool != 1) || !a->root ||
+           a->root_size != 32 || !a->tree_blob || a->tree_size <= 0 ||
+           a->height < 0 || a->height > max_height || count == UINT64_MAX;
+}
+
+/* Byte-integrity floor for EVERY row (torn/truncated/garbled/trailing bytes
+ * are refused regardless of position). Recompute + bind the stored key ONLY
+ * for the per-pool MAX(height) anchor; historical rows delegate root/key
+ * agreement to the whole-file digest + this tip bind. */
+static bool dest_anchor_tree_valid(const struct dest_anchor *a,
+                                   const int64_t tip_height[2])
+{
+    struct incremental_merkle_tree tree;
+    if (a->pool == ANCHOR_POOL_SPROUT)
+        sprout_tree_init(&tree);
+    else
+        sapling_tree_init(&tree);
+    struct byte_stream stream;
+    stream_init_from_data(&stream, a->tree_blob, (size_t)a->tree_size);
+    if (!incremental_tree_deserialize(&tree, &stream) ||
+        stream_remaining(&stream) != 0)
+        return false;
+    if (a->height == tip_height[a->pool]) {
+        struct uint256 computed;
+        incremental_tree_root(&tree, &computed);
+        if (memcmp(computed.data, a->root, 32) != 0)
+            return false;
+    }
+    return true;
+}
+
 bool consensus_state_snapshot_destination_anchors_valid(
     sqlite3 *db, const struct consensus_state_bundle_manifest *m)
 {
-    /* Tip-frontier-only Pedersen: pre-identify the per-pool MAX(height) anchor
-     * so the full O(anchors x Pedersen-hash) recompute collapses to O(pools).
-     * Only the tip rows carry consensus-load-bearing tree contents; historical
-     * rows get the byte-integrity floor. Same boundary as the bulk import path
-     * (chainstate_legacy_reader.c:376-378) and the source-bundle validator. */
     int64_t tip_height[2] = {-1, -1};
-    {
-        sqlite3_stmt *tq = NULL;
-        if (sqlite3_prepare_v2(db,
-                "SELECT pool,MAX(height) FROM ("
-                "SELECT 0 AS pool,height FROM sprout_anchors UNION ALL "
-                "SELECT 1 AS pool,height FROM sapling_anchors) GROUP BY pool",
-                -1, &tq, NULL) != SQLITE_OK)
-            return false;
-        bool tq_ok = true;
-        int trc;
-        while ((trc = sqlite3_step(tq)) == SQLITE_ROW) { // raw-sql-ok:read-only-introspection
-            if (sqlite3_column_type(tq, 0) != SQLITE_INTEGER ||
-                sqlite3_column_type(tq, 1) != SQLITE_INTEGER) {
-                tq_ok = false;
-                break;
-            }
-            int pool = sqlite3_column_int(tq, 0);
-            int64_t h = sqlite3_column_int64(tq, 1);
-            if (pool != 0 && pool != 1) {
-                tq_ok = false;
-                break;
-            }
-            tip_height[pool] = h;
-        }
-        if (trc != SQLITE_DONE)
-            tq_ok = false;
-        sqlite3_finalize(tq);
-        if (!tq_ok)
-            return false;
-    }
+    if (!dest_anchor_tip_heights(db, tip_height))
+        return false;
 
     sqlite3_stmt *stmt = NULL;
     if (sqlite3_prepare_v2(db,
@@ -466,57 +620,23 @@ bool consensus_state_snapshot_destination_anchors_valid(
     bool ok = true;
     int rc;
     while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) { // raw-sql-ok:read-only-introspection
-        bool types_ok = sqlite3_column_type(stmt, 0) == SQLITE_INTEGER &&
-            sqlite3_column_type(stmt, 1) == SQLITE_BLOB &&
-            sqlite3_column_type(stmt, 2) == SQLITE_INTEGER &&
-            sqlite3_column_type(stmt, 3) == SQLITE_BLOB;
-        if (!types_ok) {
+        struct dest_anchor a;
+        if (!dest_anchor_types_ok(stmt)) {
             ok = false;
             break;
         }
-        int pool = sqlite3_column_int(stmt, 0);
-        const uint8_t *root = sqlite3_column_blob(stmt, 1);
-        int64_t height = sqlite3_column_int64(stmt, 2);
-        const uint8_t *tree_blob = sqlite3_column_blob(stmt, 3);
-        int tree_size = tree_blob ? sqlite3_column_bytes(stmt, 3) : 0;
-        if ((pool != 0 && pool != 1) || !root ||
-            sqlite3_column_bytes(stmt, 1) != 32 || !tree_blob ||
-            tree_size <= 0 || height < 0 || height > m->height ||
-            count == UINT64_MAX) {
+        dest_anchor_load(stmt, &a);
+        if (dest_anchor_bad(&a, count, m->height) ||
+            !dest_anchor_tree_valid(&a, tip_height)) {
             ok = false;
             break;
-        }
-        struct incremental_merkle_tree tree;
-        if (pool == ANCHOR_POOL_SPROUT)
-            sprout_tree_init(&tree);
-        else
-            sapling_tree_init(&tree);
-        struct byte_stream stream;
-        stream_init_from_data(&stream, tree_blob, (size_t)tree_size);
-        /* Byte-integrity floor for EVERY row (torn/truncated/garbled/trailing
-         * bytes are refused regardless of position). */
-        if (!incremental_tree_deserialize(&tree, &stream) ||
-            stream_remaining(&stream) != 0) {
-            ok = false;
-            break;
-        }
-        /* Tip-frontier Pedersen: recompute + bind the stored key ONLY for the
-         * per-pool MAX(height) anchor. Historical rows delegate root/key
-         * agreement to the whole-file digest + this tip bind. */
-        if (height == tip_height[pool]) {
-            struct uint256 computed;
-            incremental_tree_root(&tree, &computed);
-            if (memcmp(computed.data, root, 32) != 0) {
-                ok = false;
-                break;
-            }
         }
         consensus_state_bundle_anchor_digest_row(
-            &context, (uint8_t)pool, root, (uint64_t)height, tree_blob,
-            (uint32_t)tree_size);
-        if (height > frontier_height[pool]) {
-            frontier_height[pool] = height;
-            memcpy(frontier_root[pool], root, 32);
+            &context, (uint8_t)a.pool, a.root, (uint64_t)a.height,
+            a.tree_blob, (uint32_t)a.tree_size);
+        if (a.height > frontier_height[a.pool]) {
+            frontier_height[a.pool] = a.height;
+            memcpy(frontier_root[a.pool], a.root, 32);
         }
         count++;
     }
@@ -533,6 +653,13 @@ bool consensus_state_snapshot_destination_anchors_valid(
         memcmp(digest, m->anchor_digest, 32) == 0;
 }
 
+static bool dest_nullifier_types_ok(sqlite3_stmt *stmt)
+{
+    return sqlite3_column_type(stmt, 0) == SQLITE_INTEGER &&
+           sqlite3_column_type(stmt, 1) == SQLITE_BLOB &&
+           sqlite3_column_type(stmt, 2) == SQLITE_INTEGER;
+}
+
 bool consensus_state_snapshot_destination_nullifiers_valid(
     sqlite3 *db, const struct consensus_state_bundle_manifest *m)
 {
@@ -547,10 +674,7 @@ bool consensus_state_snapshot_destination_nullifiers_valid(
     bool ok = true;
     int rc;
     while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) { // raw-sql-ok:read-only-introspection
-        bool types_ok = sqlite3_column_type(stmt, 0) == SQLITE_INTEGER &&
-            sqlite3_column_type(stmt, 1) == SQLITE_BLOB &&
-            sqlite3_column_type(stmt, 2) == SQLITE_INTEGER;
-        if (!types_ok) {
+        if (!dest_nullifier_types_ok(stmt)) {
             ok = false;
             break;
         }
@@ -604,8 +728,7 @@ static bool candidate_meta_value(sqlite3 *db, const char *key,
     return ok;
 }
 
-static bool candidate_reducer_state(
-    sqlite3 *db, const struct consensus_state_bundle_manifest *m)
+static bool cand_anchor_state(sqlite3 *db)
 {
     sqlite3_stmt *stmt = NULL;
     bool ok = sqlite3_prepare_v2(db,
@@ -620,28 +743,33 @@ static bool candidate_reducer_state(
              sqlite3_column_int64(stmt, 1) == 0;
     }
     if (ok)
-        ok = sqlite3_step(stmt) == SQLITE_DONE; // raw-sql-ok:read-only-introspection
+        ok = step_done(stmt);
     if (stmt)
         sqlite3_finalize(stmt);
-    if (!ok)
-        return false;
+    return ok;
+}
+
+static bool cand_progress_meta(
+    sqlite3 *db, const struct consensus_state_bundle_manifest *m)
+{
     uint8_t value[32];
     size_t size = 0;
 #define META_EQ(key, length, expression) \
     (candidate_meta_value(db, (key), value, sizeof(value), &size) && \
      size == (length) && (expression))
-    ok = META_EQ("coins_applied_height", 8,
-                 zcl_read_i64_le(value) == (int64_t)m->height + 1) &&
-         META_EQ("coins_kv_migration_complete", 1, value[0] == 1) &&
-         META_EQ("coins_kv_self_folded", 1, value[0] == 1) &&
-         META_EQ(NULLIFIER_BACKFILL_ACTIVATION_KEY, 1, value[0] == '0') &&
-         META_EQ(REDUCER_TRUSTED_BASE_HEIGHT_KEY, 8,
-                 zcl_read_i64_le(value) == m->height) &&
-         META_EQ(REDUCER_TRUSTED_BASE_HASH_KEY, 32,
-                 memcmp(value, m->block_hash, 32) == 0);
+    bool ok = META_EQ("coins_applied_height", 8,
+                      zcl_read_i64_le(value) == (int64_t)m->height + 1) &&
+              META_EQ("coins_kv_migration_complete", 1, value[0] == 1) &&
+              META_EQ("coins_kv_self_folded", 1, value[0] == 1) &&
+              META_EQ(NULLIFIER_BACKFILL_ACTIVATION_KEY, 1, value[0] == '0') &&
+              META_EQ(REDUCER_TRUSTED_BASE_HEIGHT_KEY, 8,
+                      zcl_read_i64_le(value) == m->height) &&
+              META_EQ(REDUCER_TRUSTED_BASE_HASH_KEY, 32,
+                      memcmp(value, m->block_hash, 32) == 0);
 #undef META_EQ
     if (!ok)
         return false;
+    sqlite3_stmt *stmt = NULL;
     if (sqlite3_prepare_v2(db,
             "SELECT count(*) FROM progress_meta", -1, &stmt, NULL) != SQLITE_OK)
         return false;
@@ -649,86 +777,91 @@ static bool candidate_reducer_state(
          sqlite3_column_type(stmt, 0) == SQLITE_INTEGER &&
          sqlite3_column_int64(stmt, 0) == 6;
     sqlite3_finalize(stmt);
-    if (!ok)
-        return false;
+    return ok;
+}
 
+static bool cand_stage_cursors(
+    sqlite3 *db, const struct consensus_state_bundle_manifest *m)
+{
     static const char *const stages[] = {
         "body_fetch", "body_persist", "header_admit", "proof_validate",
         "script_validate", "tip_finalize", "utxo_apply", "validate_headers",
     };
+    sqlite3_stmt *stmt = NULL;
     if (sqlite3_prepare_v2(db,
             "SELECT name,cursor,updated_at FROM stage_cursor ORDER BY name",
             -1, &stmt, NULL) != SQLITE_OK)
         return false;
+    bool ok = true;
     for (size_t i = 0; ok && i < sizeof(stages) / sizeof(stages[0]); i++) {
         int rc = sqlite3_step(stmt); // raw-sql-ok:read-only-introspection
         int64_t want = strcmp(stages[i], "tip_finalize") == 0
                            ? m->height : (int64_t)m->height + 1;
         ok = rc == SQLITE_ROW &&
              consensus_state_sqlite_text_equal(stmt, 0, stages[i]) &&
-             sqlite3_column_type(stmt, 1) == SQLITE_INTEGER &&
-             sqlite3_column_int64(stmt, 1) == want &&
-             sqlite3_column_type(stmt, 2) == SQLITE_INTEGER &&
-             sqlite3_column_int64(stmt, 2) == 0;
+             int64_col_is(stmt, 1, want) && int64_col_is(stmt, 2, 0);
     }
     if (ok)
-        ok = sqlite3_step(stmt) == SQLITE_DONE; // raw-sql-ok:read-only-introspection
+        ok = step_done(stmt);
     sqlite3_finalize(stmt);
-    if (!ok)
-        return false;
+    return ok;
+}
 
+static bool cand_utxo_apply_log(
+    sqlite3 *db, const struct consensus_state_bundle_manifest *m)
+{
+    sqlite3_stmt *stmt = NULL;
     if (sqlite3_prepare_v2(db,
             "SELECT height,status,ok,spent_count,added_count,total_value_delta,"
             "first_failure_kind,first_failure_detail,applied_at "
             "FROM utxo_apply_log", -1, &stmt, NULL) != SQLITE_OK)
         return false;
     int rc = sqlite3_step(stmt); // raw-sql-ok:read-only-introspection
-    ok = rc == SQLITE_ROW &&
+    bool ok = rc == SQLITE_ROW &&
          sqlite3_column_type(stmt, 0) == SQLITE_INTEGER &&
          consensus_state_sqlite_text_equal(stmt, 1, "anchor") &&
          sqlite3_column_type(stmt, 2) == SQLITE_INTEGER &&
          sqlite3_column_int64(stmt, 0) == m->height &&
          sqlite3_column_int(stmt, 2) == 1 &&
-         sqlite3_column_type(stmt, 3) == SQLITE_INTEGER &&
-         sqlite3_column_int64(stmt, 3) == 0 &&
-         sqlite3_column_type(stmt, 4) == SQLITE_INTEGER &&
-         sqlite3_column_int64(stmt, 4) == 0 &&
-         sqlite3_column_type(stmt, 5) == SQLITE_INTEGER &&
-         sqlite3_column_int64(stmt, 5) == 0 &&
+         int64_col_is(stmt, 3, 0) && int64_col_is(stmt, 4, 0) &&
+         int64_col_is(stmt, 5, 0) &&
          sqlite3_column_type(stmt, 6) == SQLITE_NULL &&
          sqlite3_column_type(stmt, 7) == SQLITE_NULL &&
-         sqlite3_column_type(stmt, 8) == SQLITE_INTEGER &&
-         sqlite3_column_int64(stmt, 8) == 0 &&
-         sqlite3_step(stmt) == SQLITE_DONE; // raw-sql-ok:read-only-introspection
+         int64_col_is(stmt, 8, 0) && step_done(stmt);
     sqlite3_finalize(stmt);
-    if (!ok)
-        return false;
+    return ok;
+}
+
+static bool cand_tip_finalize_log(
+    sqlite3 *db, const struct consensus_state_bundle_manifest *m)
+{
+    sqlite3_stmt *stmt = NULL;
     if (sqlite3_prepare_v2(db,
             "SELECT height,status,ok,work_delta_high,work_delta_low,"
             "utxo_size_after,reorg_depth,finalized_at,tip_hash "
             "FROM tip_finalize_log", -1, &stmt, NULL) != SQLITE_OK)
         return false;
-    rc = sqlite3_step(stmt); // raw-sql-ok:read-only-introspection
-    ok = rc == SQLITE_ROW &&
+    int rc = sqlite3_step(stmt); // raw-sql-ok:read-only-introspection
+    bool ok = rc == SQLITE_ROW &&
          sqlite3_column_type(stmt, 0) == SQLITE_INTEGER &&
          consensus_state_sqlite_text_equal(stmt, 1, "anchor") &&
          sqlite3_column_type(stmt, 2) == SQLITE_INTEGER &&
          sqlite3_column_int64(stmt, 0) == m->height &&
          sqlite3_column_int(stmt, 2) == 1 &&
-         sqlite3_column_type(stmt, 3) == SQLITE_INTEGER &&
-         sqlite3_column_int64(stmt, 3) == 0 &&
-         sqlite3_column_type(stmt, 4) == SQLITE_INTEGER &&
-         sqlite3_column_int64(stmt, 4) == 0 &&
-         sqlite3_column_type(stmt, 5) == SQLITE_INTEGER &&
-         sqlite3_column_int64(stmt, 5) == (sqlite3_int64)m->utxo_count &&
-         sqlite3_column_type(stmt, 6) == SQLITE_INTEGER &&
-         sqlite3_column_int64(stmt, 6) == 0 &&
-         sqlite3_column_type(stmt, 7) == SQLITE_INTEGER &&
-         sqlite3_column_int64(stmt, 7) == 0 &&
-         blob32_equal(stmt, 8, m->block_hash) &&
-         sqlite3_step(stmt) == SQLITE_DONE; // raw-sql-ok:read-only-introspection
+         int64_col_is(stmt, 3, 0) && int64_col_is(stmt, 4, 0) &&
+         int64_col_is(stmt, 5, (sqlite3_int64)m->utxo_count) &&
+         int64_col_is(stmt, 6, 0) && int64_col_is(stmt, 7, 0) &&
+         blob32_equal(stmt, 8, m->block_hash) && step_done(stmt);
     sqlite3_finalize(stmt);
     return ok;
+}
+
+static bool candidate_reducer_state(
+    sqlite3 *db, const struct consensus_state_bundle_manifest *m)
+{
+    return cand_anchor_state(db) && cand_progress_meta(db, m) &&
+           cand_stage_cursors(db, m) && cand_utxo_apply_log(db, m) &&
+           cand_tip_finalize_log(db, m);
 }
 
 bool consensus_state_candidate_validate_reopened(
