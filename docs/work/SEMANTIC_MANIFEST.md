@@ -1453,9 +1453,21 @@ keep or drop a word only when every pattern provably matches or misses
 it: a pattern with a `\` escape, or one that holds the goals or the
 epoch, makes the value any text, unless the word is itself the goals or
 the epoch. A reading is not used when a `$(shell)` or `!=` command make
-runs as it reads the makefiles names (as above, for a missing include)
-the last component with no pattern of a path the reading globbed, or the
-directories before its first pattern: that command may create a match.
+runs as it reads the makefiles, no later than the directive that decided
+the reading, names (as above, for a missing include) the last component
+with no pattern of a path the reading globbed, or the directories before
+its first pattern: that command may create a match. Such a command is
+one on a line of the root makefile at or before that directive, or on
+any line of another makefile, and the names it holds are followed through
+the definitions make has read by then. A command on a later line of the
+root makefile runs after make read the directive, and make reads the
+makefiles once: under the premises a missing include it could make is
+UNKNOWN or skipped and an existing one is current, so nothing restarts
+it. What such a command creates is in the tree the next build reads,
+which that build's own plan globs. The real Makefile's compile epoch
+hashes the link flags, Tor archives included, and
+`$(eval $(call BUILD_NODE_TOOL,...))` expands rules whose recipes link
+them; both come after the Tor marker's directive.
 The planner reads one tree, the one the plan is for. Five named premises
 carry what the text does not hold:
 

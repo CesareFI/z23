@@ -274,6 +274,11 @@ bool fxm_parse_writes(const struct fxm *m);
  * line or a computed name holding it may set any variable, and counts.
  * The empty name is in every command. */
 bool fxm_commands_name(const struct fxm *m, const char *name);
+/* The same over what make runs and reads no later than root line
+ * `before` (another makefile's lines always count): a command on a later
+ * root line runs after make read that line. */
+bool fxm_commands_name_by(const struct fxm *m, const char *name,
+                          uint32_t before);
 /* Count, and name the first of, the commands make runs as it reads the
  * makefiles (those above, and an $(eval) of text a reference or $$(
  * computes) that are not provably read-only: one simple command of a

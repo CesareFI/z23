@@ -11,16 +11,20 @@
  * when both sides provably expand to nothing. "Provably" is a reading that
  * only ever errs toward "may expand to something": each text expands to a
  * bounded set of alternatives, or to any text (any) when it holds a
- * function the reading does not model, a variable with a ?=, +=, != or
- * define, one another file, a target-specific value, an $(eval) or an
- * undefine can set, one no line assigns (the environment's), one that no
- * branch before the directive surely assigned, or a $(shell) other than
- * the compile epoch's. A variable several branches assign holds the union
- * of their values. $(wildcard) globs the tree the plan reads (empty, or
- * any text). What the reading rests on beyond the text is a named premise
- * (ZCL_DEVLOOP_PREMISE_*): two on every skip, the goals' or the epoch's
- * where it reads them, recorded with the paths it globbed. A reading whose
- * globbed path a command make runs as it reads names is not used. */
+ * function the reading does not model, a variable with a ?= (but
+ * ZCL_TARGET and ZCL_TOR, read at their default under
+ * host-target-default-tor), +=, != or define, one another file, a
+ * target-specific value, an $(eval) or an undefine can set, one no line
+ * assigns (the environment's), one that no branch before the directive
+ * surely assigned, or a $(shell) other than the compile epoch's. A
+ * variable several branches assign holds the union of their values, less
+ * those of a branch make provably does not take (fxg_dead). $(wildcard)
+ * globs the tree the plan reads (empty, or any text). What the reading
+ * rests on beyond the text is a named premise (ZCL_DEVLOOP_PREMISE_*): two
+ * on every skip, the goals', the epoch's or the defaults' where it reads
+ * them, recorded with the paths it globbed. A reading whose globbed path
+ * a command make runs as it reads, no later than the deciding directive,
+ * names is not used. */
 #define FXG_ALTS 64
 #define FXG_TEXT 4096
 #define FXG_DEPTH 24
@@ -80,6 +84,7 @@ struct fxg {
     size_t used;
     struct fxg_frame frames[FXM_COND_MAX];
     struct zcl_devloop_facts_guard rec; /* the reading of one directive */
+    uint32_t rec_at; /* ...and its root line */
     bool rec_full;
 };
 

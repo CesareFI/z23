@@ -712,6 +712,7 @@ static bool fxg_try(struct fxg *g, uint32_t k, int want)
         (void)snprintf(g->rec.guard, sizeof(g->rec.guard), "%.*s", (int)n,
                        l->raw);
         fxg_where(g->m, 0, l->at, g->rec.guard_at, sizeof(g->rec.guard_at));
+        g->rec_at = k;
         g->rec.premises |= ZCL_DEVLOOP_PREMISE_BUILD_READS_PLANNED_TREE |
                             ZCL_DEVLOOP_PREMISE_NO_COMMAND_LINE_OVERRIDE;
         g->used = mark;
@@ -850,7 +851,9 @@ static void fxg_glob_dir(const char *glob, char *out, size_t cap)
     (void)snprintf(out, cap, "%.*s", (int)(end - glob), glob);
 }
 
-/* A command make runs as it reads may create a path the reading in g->rec
+/* A command make runs as it reads, no later than the directive the reading
+ * in g->rec decided (a later one runs after make read it, and under the
+ * premises nothing restarts make), may create a path that reading
  * globbed (it names that path's last literal component or the directories
  * before its first pattern): the reading cannot stand. */
 static bool fxg_rec_named(struct fxg *g)
@@ -859,7 +862,8 @@ static bool fxg_rec_named(struct fxg *g)
     for (size_t k = 0; k < g->rec.nglobs; k++) {
         fxg_glob_name(g->rec.glob[k], name, sizeof(name));
         fxg_glob_dir(g->rec.glob[k], dir, sizeof(dir));
-        if (fxm_commands_name(g->m, name) || fxm_commands_name(g->m, dir))
+        if (fxm_commands_name_by(g->m, name, g->rec_at) ||
+            fxm_commands_name_by(g->m, dir, g->rec_at))
             return true;
     }
     return false;

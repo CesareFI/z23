@@ -407,17 +407,29 @@ static bool fxm_parse_line(const struct fxm_line *l)
     return l->ctx != FXM_RECIPE && !(l->body && l->raw[0] == '\t');
 }
 
+/* Line k of m->lines is read by make no later than root line `before`: a
+ * root line at or above it, or any line of another makefile (read where
+ * its include is, taken as any time). FXM_NONE: every line. */
+static bool fxm_read_by(const struct fxm *m, size_t k, uint32_t before)
+{
+    return before == FXM_NONE || k >= m->root_lines || k <= before;
+}
+
 /* Add to names each variable a definition holding one of them sets, until
  * none is new; false when an $(eval) line or a computed name holds one (it
- * may set any variable) or the list cannot grow. */
-static bool fxm_taint(const struct fxm *m, struct fxc_strs *names)
+ * may set any variable) or the list cannot grow. Only lines make reads by
+ * root line `before` count: a later definition gives no value to what
+ * runs before it. */
+static bool fxm_taint(const struct fxm *m, struct fxc_strs *names,
+                      uint32_t before)
 {
     bool grew = true;
     while (grew) {
         grew = false;
         for (size_t k = 0; k < m->nlines; k++) {
             const struct fxm_line *l = &m->lines[k];
-            if (!fxm_holds(l->raw, strlen(l->raw), names))
+            if (!fxm_read_by(m, k, before) ||
+                !fxm_holds(l->raw, strlen(l->raw), names))
                 continue;
             if (l->ctx != FXM_DEF) {
                 if (strstr(l->raw, "eval") != NULL)
@@ -453,18 +465,24 @@ static bool fxm_line_runs(const struct fxm_line *l, const struct fxc_strs *names
     return false;
 }
 
-bool fxm_commands_name(const struct fxm *m, const char *name)
+bool fxm_commands_name_by(const struct fxm *m, const char *name,
+                          uint32_t before)
 {
     struct fxc_strs names = {0};
     /* The empty name (a root directory) is in any command's text: no
      * variable needs following. */
     bool named = !fxc_strs_add(&names, name) ||
-                 (name[0] != '\0' && !fxm_taint(m, &names));
+                 (name[0] != '\0' && !fxm_taint(m, &names, before));
     for (size_t k = 0; !named && k < m->nlines; k++)
-        named = fxm_parse_line(&m->lines[k]) &&
+        named = fxm_read_by(m, k, before) && fxm_parse_line(&m->lines[k]) &&
                 fxm_line_runs(&m->lines[k], &names);
     fxc_strs_free(&names);
     return named;
+}
+
+bool fxm_commands_name(const struct fxm *m, const char *name)
+{
+    return fxm_commands_name_by(m, name, FXM_NONE);
 }
 
 /* s[0..n) holds name, or a variable whose definition does (transitively;
@@ -473,7 +491,8 @@ static bool fxm_text_names(const struct fxm *m, const char *s, size_t n,
                            const char *name)
 {
     struct fxc_strs names = {0};
-    bool named = !fxc_strs_add(&names, name) || !fxm_taint(m, &names) ||
+    bool named = !fxc_strs_add(&names, name) ||
+                 !fxm_taint(m, &names, FXM_NONE) ||
                  fxm_holds(s, n, &names);
     fxc_strs_free(&names);
     return named;
@@ -543,7 +562,7 @@ static bool fxm_pct_names(const struct fxm *m, const char *s, size_t n,
             named = l->name[0] == '\0' || !fxc_strs_add(&names, l->name);
     }
     if (!named && names.n > 0)
-        named = !fxm_taint(m, &names) || fxm_holds(s, n, &names);
+        named = !fxm_taint(m, &names, FXM_NONE) || fxm_holds(s, n, &names);
     fxc_strs_free(&names);
     return named;
 }
