@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * test_dev_proof_stress_env — regression for the proof's test-dimension
- * environment.
+ * test_dev_proof_stress_env — regressions for the proof worker's test
+ * environment and libclang runtime admission.
  *
  * Roughly sixteen registered groups carry a guard shaped exactly like:
  *
@@ -39,12 +39,71 @@
 
 #include <stdlib.h>
 #include <string.h>
+#if defined(__linux__) || defined(__APPLE__)
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 #if defined(__APPLE__)
 #include <fcntl.h>
 #include <stdio.h>
 #include <sys/resource.h>
-#include <sys/wait.h>
-#include <unistd.h>
+#endif
+
+#if defined(__linux__) && defined(__x86_64__)
+static bool dps_clang_runtime_environment(int mode)
+{
+    if (mode == 0)
+        return unsetenv("CLANG_MANIFEST_LLVM_DIR") == 0 &&
+               unsetenv("CLANG_MANIFEST_SYSTEM_LIB") == 0;
+    char untrusted[PATH_MAX];
+    if ((mode == 1 || mode == 2) &&
+        !test_mkdtemp(untrusted, sizeof untrusted, "proof_clang_runtime"))
+        return false;
+    if (mode == 1)
+        return setenv("CLANG_MANIFEST_LLVM_DIR", untrusted, 1) == 0 &&
+               unsetenv("CLANG_MANIFEST_SYSTEM_LIB") == 0;
+    return setenv("CLANG_MANIFEST_LLVM_DIR", "/usr", 1) == 0 &&
+           setenv("CLANG_MANIFEST_SYSTEM_LIB",
+                  mode == 2 ? untrusted :
+                              "/usr/lib/libclang.so.22.1", 1) == 0;
+}
+
+static int dps_clang_runtime_child(int mode)
+{
+    char why[80] = {0};
+    if (!dps_clang_runtime_environment(mode)) return 1;
+    bool accepted = zcl_dev_proof_test_clang_runtime_check(why, sizeof(why));
+    if (mode == 0) return accepted ? 0 : 2;
+    if (mode == 3) {
+        const char *path = zcl_dev_proof_test_clang_runtime_path();
+        return accepted && path &&
+               strcmp(path, "/usr/lib/libclang.so.22.1") == 0 ? 0 : 4;
+    }
+    const char *expected = mode == 1 ? "proof_clang_runtime_unpinned" :
+                                       "proof_clang_system_lib_untrusted";
+    return !accepted && strcmp(why, expected) == 0 ? 0 : 5;
+}
+
+static int test_dps_clang_runtime(void)
+{
+    int failures = 0;
+    TEST_CASE("dev_proof: system libclang accepts only pinned root-owned paths")
+    {
+        int last = access("/usr/include/clang-c/Index.h", F_OK) == 0 &&
+                   access("/usr/lib/libclang.so.22.1", F_OK) == 0 ? 3 : 2;
+        for (int mode = 0; mode <= last; mode++) {
+            pid_t child = fork();
+            ASSERT(child >= 0);
+            if (child == 0) _exit(dps_clang_runtime_child(mode));
+            int status = 0;
+            ASSERT(waitpid(child, &status, 0) == child);
+            ASSERT(WIFEXITED(status));
+            ASSERT(WEXITSTATUS(status) == 0);
+        }
+    }
+    TEST_END
+    return failures;
+}
 #endif
 
 static int test_dps_absent_becomes_present(void)
@@ -157,6 +216,9 @@ int test_dev_proof_stress_env(void)
     int failures = 0;
     failures += test_dps_absent_becomes_present();
     failures += test_dps_unconditional_overwrite();
+#if defined(__linux__) && defined(__x86_64__)
+    failures += test_dps_clang_runtime();
+#endif
 #if defined(__APPLE__)
     failures += test_dps_mac_child_descriptors();
 #endif

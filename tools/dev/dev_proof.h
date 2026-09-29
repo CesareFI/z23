@@ -446,6 +446,9 @@ int zcl_dev_proof_test_capsule_argv(bool write, const char *capsule_path,
  * ZCL_STRESS_TESTS lands in this process's own environ (and therefore in
  * every execvp()'d test child) without driving a full proof cycle. */
 bool zcl_dev_proof_test_stress_env_prepare(char *why, size_t why_len);
+/* Exercise the proof worker's actual runtime admission before it forks. */
+bool zcl_dev_proof_test_clang_runtime_check(char *why, size_t why_len);
+const char *zcl_dev_proof_test_clang_runtime_path(void);
 /* Seam for the warm-status-line regression: the exact reader
  * `dev proof status`/`dev proof wait` uses to turn one warm-start sidecar
  * into the single line a developer reads beside an admitted receipt, so a

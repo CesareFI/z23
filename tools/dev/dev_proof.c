@@ -77,6 +77,12 @@
  * checkout: Makefile ZCL_REPRO_ROOT, fed to -ffile-prefix-map. */
 #define PROOF_PLAN_VIRTUAL_ROOT "/zclassic23"
 #define PROOF_PLAN_MAX_BYTES 65536u
+#if defined(__linux__) && defined(__x86_64__)
+#define PROOF_CLANG_DEBIAN_LIB "/lib/x86_64-linux-gnu/libclang-18.so.18"
+#define PROOF_CLANG_ARCH_LIB "/usr/lib/libclang.so.22.1"
+#define PROOF_CLANG_ARCH_LLVM "/usr/lib/libLLVM.so.22.1"
+static const char *proof_clang_runtime_path(void);
+#endif
 
 struct proof_paths {
     char root[PATH_MAX];
@@ -8895,7 +8901,7 @@ static bool dp_test_needs_bind(const struct dp_worker *w,
         sha3_256_write(&sha, root, sizeof(root));
 #if defined(__linux__) && defined(__x86_64__)
         if (strcmp(argv[i], "clang-manifest") == 0) {
-            const char *lib = getenv("CLANG_MANIFEST_SYSTEM_LIB");
+            const char *lib = proof_clang_runtime_path();
             if (lib) {
                 if (!hash_file("zcl.dev_proof_clang_runtime.v1", lib, root)) {
                     proof_why(why, why_len, "proof_clang_runtime_hash_failed");
@@ -8904,6 +8910,18 @@ static bool dp_test_needs_bind(const struct dp_worker *w,
                 sha3_256_write(&sha, (const uint8_t *)lib,
                                strlen(lib) + 1);
                 sha3_256_write(&sha, root, sizeof(root));
+                if (strcmp(lib, PROOF_CLANG_ARCH_LIB) == 0) {
+                    if (!hash_file("zcl.dev_proof_clang_runtime.v1",
+                                   PROOF_CLANG_ARCH_LLVM, root)) {
+                        proof_why(why, why_len,
+                                  "proof_clang_runtime_hash_failed");
+                        return false;
+                    }
+                    sha3_256_write(&sha,
+                                   (const uint8_t *)PROOF_CLANG_ARCH_LLVM,
+                                   sizeof(PROOF_CLANG_ARCH_LLVM));
+                    sha3_256_write(&sha, root, sizeof(root));
+                }
             }
         }
 #endif
@@ -9653,15 +9671,77 @@ static bool proof_clang_system_path_trusted(const char *path, bool directory)
            (directory ? S_ISDIR(sb.st_mode) : S_ISREG(sb.st_mode));
 }
 
-static bool proof_clang_system_lib_trusted(void)
+static bool proof_clang_arch_files_trusted(const char *lib)
 {
-    return proof_clang_system_path_trusted("/", true) &&
-           proof_clang_system_path_trusted("/usr", true) &&
-           proof_clang_system_path_trusted("/usr/lib", true) &&
-           proof_clang_system_path_trusted("/lib", true) &&
-           proof_clang_system_path_trusted("/lib/x86_64-linux-gnu", true) &&
+    return proof_clang_system_path_trusted("/usr/include", true) &&
+           proof_clang_system_path_trusted("/usr/include/clang-c", true) &&
            proof_clang_system_path_trusted(
-               "/lib/x86_64-linux-gnu/libclang-18.so.18", false);
+               "/usr/include/clang-c/Index.h", false) &&
+           proof_clang_system_path_trusted("/usr/lib/clang", true) &&
+           proof_clang_system_path_trusted("/usr/lib/clang/22", true) &&
+           proof_clang_system_path_trusted(
+               "/usr/lib/clang/22/include", true) &&
+           proof_clang_system_path_trusted(
+               "/usr/lib/clang/22/include/stddef.h", false) &&
+           proof_clang_system_path_trusted(lib, false) &&
+           proof_clang_system_path_trusted(PROOF_CLANG_ARCH_LLVM, false);
+}
+
+static bool proof_clang_system_lib_trusted(const char *lib)
+{
+    if (!proof_clang_system_path_trusted("/", true) ||
+        !proof_clang_system_path_trusted("/usr", true) ||
+        !proof_clang_system_path_trusted("/usr/lib", true))
+        return false;
+    if (strcmp(lib, PROOF_CLANG_DEBIAN_LIB) == 0)
+        return proof_clang_system_path_trusted("/lib", true) &&
+               proof_clang_system_path_trusted("/lib/x86_64-linux-gnu", true) &&
+               proof_clang_system_path_trusted(lib, false);
+    if (strcmp(lib, PROOF_CLANG_ARCH_LIB) == 0)
+        return proof_clang_arch_files_trusted(lib);
+    return false;
+}
+
+static const char *proof_clang_runtime_path(void)
+{
+    const char *selected = getenv("CLANG_MANIFEST_SYSTEM_LIB");
+    if (selected) return selected;
+    static const char *installed_headers[] = {
+        "/usr/lib/llvm-20/include/clang-c/Index.h",
+        "/usr/lib/llvm-21/include/clang-c/Index.h",
+        "/usr/lib/llvm-19/include/clang-c/Index.h",
+        "/usr/lib/llvm-18/include/clang-c/Index.h"
+    };
+    for (size_t i = 0; i < sizeof(installed_headers) /
+                                sizeof(installed_headers[0]); i++)
+        if (access(installed_headers[i], F_OK) == 0) return NULL;
+    if (access(PROOF_CLANG_DEBIAN_LIB, F_OK) == 0)
+        return PROOF_CLANG_DEBIAN_LIB;
+    if (access("/usr/include/clang-c/Index.h", F_OK) == 0 &&
+        access(PROOF_CLANG_ARCH_LIB, F_OK) == 0)
+        return PROOF_CLANG_ARCH_LIB;
+    return NULL;
+}
+
+static bool proof_clang_auto_runtime_check(char *why, size_t why_len)
+{
+    const char *paths[] = {PROOF_CLANG_DEBIAN_LIB,
+                           PROOF_CLANG_ARCH_LIB};
+    for (size_t i = 0; i < sizeof(paths) / sizeof(paths[0]); i++) {
+        if (i == 1 && access("/usr/include/clang-c/Index.h", F_OK) != 0)
+            continue;
+        struct stat sb;
+        int rc = stat(paths[i], &sb);
+        if (rc == 0 && !proof_clang_system_lib_trusted(paths[i])) {
+            proof_why(why, why_len, "proof_clang_system_lib_untrusted");
+            return false;
+        }
+        if (rc != 0 && errno != ENOENT) {
+            proof_why(why, why_len, "proof_clang_system_lib_unavailable");
+            return false;
+        }
+    }
+    return true;
 }
 #endif
 
@@ -9675,9 +9755,10 @@ static bool proof_clang_runtime_check(char *why, size_t why_len)
         return false;
     }
     if (clang_lib) {
-        if (!clang_prefix || strcmp(clang_lib,
-                "/lib/x86_64-linux-gnu/libclang-18.so.18") != 0 ||
-            !proof_clang_system_lib_trusted()) {
+        if (!clang_prefix ||
+            (strcmp(clang_lib, PROOF_CLANG_ARCH_LIB) == 0 &&
+             strcmp(clang_prefix, "/usr") != 0) ||
+            !proof_clang_system_lib_trusted(clang_lib)) {
             proof_why(why, why_len, "proof_clang_system_lib_untrusted");
             return false;
         }
@@ -9685,16 +9766,7 @@ static bool proof_clang_runtime_check(char *why, size_t why_len)
         /* The source-header fallback is a Make choice, so no environment
          * selection reaches us. Refuse a present mutable system library
          * before the candidate Makefile can build the test helper. */
-        struct stat sb;
-        int rc = stat("/lib/x86_64-linux-gnu/libclang-18.so.18", &sb);
-        if (rc == 0 && !proof_clang_system_lib_trusted()) {
-            proof_why(why, why_len, "proof_clang_system_lib_untrusted");
-            return false;
-        }
-        if (rc != 0 && errno != ENOENT) {
-            proof_why(why, why_len, "proof_clang_system_lib_unavailable");
-            return false;
-        }
+        return proof_clang_auto_runtime_check(why, why_len);
     }
 #elif defined(__linux__) || defined(__APPLE__)
     /* Unsupported custom prefixes may load same-user runtime libraries.
@@ -9708,6 +9780,21 @@ static bool proof_clang_runtime_check(char *why, size_t why_len)
     return true;
 }
 
+#if defined(ZCL_TESTING)
+bool zcl_dev_proof_test_clang_runtime_check(char *why, size_t why_len)
+{
+    return proof_clang_runtime_check(why, why_len);
+}
+
+const char *zcl_dev_proof_test_clang_runtime_path(void)
+{
+#if defined(__linux__) && defined(__x86_64__)
+    return proof_clang_runtime_path();
+#else
+    return NULL;
+#endif
+}
+#endif
 static bool proof_worker_generation(const struct proof_paths *paths,
                                     const char *local, const char *base,
                                     const char *generation,

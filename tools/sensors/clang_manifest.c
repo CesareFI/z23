@@ -55,6 +55,9 @@
 static const char *const k_cm_suffix[] = {"-v", "-Wno-unknown-warning-option",
                                           "-Wno-error", "--no-default-config"};
 #define CM_SUFFIX_N (sizeof(k_cm_suffix) / sizeof(k_cm_suffix[0]))
+#if defined(CM_HOST_RESOURCE_DIR)
+static const char k_cm_resource_arg[] = "-resource-dir=" CM_HOST_RESOURCE_DIR;
+#endif
 
 char *cm_take_string(CXString s)
 {
@@ -164,11 +167,22 @@ static bool cm_c_language_mode(struct cm_core *c, const char *source,
     return true;
 }
 
+#if defined(CM_HOST_RESOURCE_DIR)
+static bool cm_has_resource_arg(const char *const *argv, size_t argc)
+{
+    for (size_t k = 0; k < argc; k++)
+        if (strcmp(argv[k], "-resource-dir") == 0 ||
+            strncmp(argv[k], "-resource-dir=", 14) == 0)
+            return true;
+    return false;
+}
+#endif
+
 static bool cm_filter_args(struct cm_state *st, char **argv, int argc,
                            const char *source, struct cm_args *out)
 {
     struct cm_core *c = &st->core;
-    out->parse = zcl_calloc((size_t)argc + CM_SUFFIX_N + 1, sizeof(char *),
+    out->parse = zcl_calloc((size_t)argc + CM_SUFFIX_N + 2, sizeof(char *),
                             "clang_manifest.parse_args");
     out->identity = zcl_calloc((size_t)argc + 1, sizeof(char *),
                                "clang_manifest.identity_args");
@@ -190,6 +204,10 @@ static bool cm_filter_args(struct cm_state *st, char **argv, int argc,
         return false;
     for (size_t k = 0; k < CM_SUFFIX_N; k++)
         out->parse[out->nparse++] = k_cm_suffix[k];
+#if defined(CM_HOST_RESOURCE_DIR)
+    if (!cm_has_resource_arg(out->parse, out->nparse))
+        out->parse[out->nparse++] = k_cm_resource_arg;
+#endif
     return true;
 }
 

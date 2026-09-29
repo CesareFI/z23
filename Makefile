@@ -7432,8 +7432,9 @@ $(BIN_DIR)/arena_view: tools/arena_view.c \
 # and is never linked into z23, z23-dev, the test harness or core; Z23 reads
 # only the manifest bytes, through the libclang-free reader in
 # contexts/commons/modules/vcs/src/semantic_manifest*.c. Installed C API
-# headers take precedence. Linux x86_64 can use the pinned source headers
-# below with its matching system libclang 18. An explicit LLVM prefix wins.
+# headers take precedence. Linux x86_64 also accepts root-controlled Debian
+# libclang 18 with pinned source headers or /usr's libclang 22 C API. An
+# explicit LLVM prefix wins.
 .PHONY: clang-manifest
 CLANG_MANIFEST_LLVM_DIR ?= $(patsubst %/include/clang-c/Index.h,%,$(firstword \
 	$(wildcard /usr/lib/llvm-20/include/clang-c/Index.h \
@@ -7447,6 +7448,11 @@ ifeq ($(shell uname -m),x86_64)
 ifneq ($(wildcard /lib/x86_64-linux-gnu/libclang-18.so.18),)
 CLANG_MANIFEST_LLVM_DIR := vendor/clang-c-18
 CLANG_MANIFEST_SYSTEM_LIB := /lib/x86_64-linux-gnu/libclang-18.so.18
+else ifneq ($(wildcard /usr/include/clang-c/Index.h),)
+ifneq ($(wildcard /usr/lib/libclang.so.22.1),)
+CLANG_MANIFEST_LLVM_DIR := /usr
+CLANG_MANIFEST_SYSTEM_LIB := /usr/lib/libclang.so.22.1
+endif
 endif
 endif
 endif
@@ -7460,6 +7466,9 @@ CLANG_MANIFEST_RPATH_ARG :=
 else
 CLANG_MANIFEST_LIB_ARG = -L$(CLANG_MANIFEST_LLVM_DIR)/lib -lclang
 CLANG_MANIFEST_RPATH_ARG = -Wl,-rpath,$(CLANG_MANIFEST_LLVM_DIR)/lib
+endif
+ifeq ($(CLANG_MANIFEST_LLVM_DIR):$(CLANG_MANIFEST_SYSTEM_LIB),/usr:/usr/lib/libclang.so.22.1)
+CLANG_MANIFEST_RESOURCE_CPPFLAG := -DCM_HOST_RESOURCE_DIR='"/usr/lib/clang/22"'
 endif
 CLANG_MANIFEST_CORE_SRCS := tools/sensors/clang_manifest_core.c \
 	tools/sensors/clang_manifest_cc.c \
@@ -7507,6 +7516,32 @@ $(BIN_DIR)/z23-clang-manifest: $(CLANG_MANIFEST_SRCS) tools/sensors/clang_manife
 	        exit 1; \
 	    fi; \
 	fi
+	@if [ "$(CLANG_MANIFEST_LLVM_DIR)" = /usr ] && \
+	   [ "$(CLANG_MANIFEST_SYSTEM_LIB)" = /usr/lib/libclang.so.22.1 ]; then \
+	    for path in / /usr /usr/include /usr/include/clang-c /usr/lib \
+	                /usr/lib/clang /usr/lib/clang/22 /usr/lib/clang/22/include; do \
+	        case "$$(stat -L -c '%u:%a' "$$path" 2>/dev/null)" in \
+	            0:755|0:555) ;; \
+	            *) echo 'clang-manifest: system header path is not root-controlled'; exit 1 ;; \
+	        esac; \
+	    done; \
+	    case "$$(stat -L -c '%u:%a' /usr/include/clang-c/Index.h 2>/dev/null)" in \
+	        0:644|0:755) ;; \
+	        *) echo 'clang-manifest: system header is not root-controlled'; exit 1 ;; \
+	    esac; \
+	    case "$$(stat -L -c '%u:%a' /usr/lib/libclang.so.22.1 2>/dev/null)" in \
+	        0:644|0:755) ;; \
+	        *) echo 'clang-manifest: system libclang is not root-controlled'; exit 1 ;; \
+	    esac; \
+	    case "$$(stat -L -c '%u:%a' /usr/lib/libLLVM.so.22.1 2>/dev/null)" in \
+	        0:644|0:755) ;; \
+	        *) echo 'clang-manifest: system libLLVM is not root-controlled'; exit 1 ;; \
+	    esac; \
+	    case "$$(stat -L -c '%u:%a' /usr/lib/clang/22/include/stddef.h 2>/dev/null)" in \
+	        0:644|0:755) ;; \
+	        *) echo 'clang-manifest: system resource headers are not root-controlled'; exit 1 ;; \
+	    esac; \
+	fi
 	@if [ -z "$(CLANG_MANIFEST_LLVM_DIR)" ] || \
 	    [ ! -f "$(CLANG_MANIFEST_LLVM_DIR)/include/clang-c/Index.h" ]; then \
 	    echo "clang-manifest: libclang C API not found."; \
@@ -7521,6 +7556,7 @@ $(BIN_DIR)/z23-clang-manifest: $(CLANG_MANIFEST_SRCS) tools/sensors/clang_manife
 	echo "$(CC) -DCM_TYPE_PRETTY_PRINTED=$$pretty ... -o $@"; \
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
 	    $(ZCL_WARN_STRINGOP_OVERFLOW) -DCM_TYPE_PRETTY_PRINTED=$$pretty \
+	    $(CLANG_MANIFEST_RESOURCE_CPPFLAG) \
 	    -D_POSIX_C_SOURCE=200809L $(ZCL_PLATFORM_CPPFLAGS) \
 	    -I$(CLANG_MANIFEST_LLVM_DIR)/include -Itools/sensors \
 	    -Icontexts/commons/modules/vcs/include \

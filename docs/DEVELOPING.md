@@ -1046,6 +1046,15 @@ exits 0 without producing the path, fails the proof as
 need never gates a group out of a universal selection, and a proof that
 selects no such group runs no extra step.
 
+On Linux x86_64, `make clang-manifest` recognizes root-controlled
+`/usr/include/clang-c`, `/usr/lib/libclang.so.22.1`, and
+`/usr/lib/clang/22/include` when no LLVM prefix or Debian libclang 18 was
+selected. The sensor supplies that resource directory to libclang's parse
+unless the caller supplied a resource directory. Its manifest names and hashes
+the headers actually read. The proof worker checks the system paths and binds
+the selected libclang and libLLVM bytes into the helper digest; an unknown or
+writable runtime path refuses before proof execution.
+
 Windows installs the same receipt policy as native PE hooks in an
 immutable content-addressed generation. Admission launches no console window;
 its bounded Git children use the parent Git-for-Windows image and a
