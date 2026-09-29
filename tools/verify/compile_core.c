@@ -1,7 +1,10 @@
 /* Copyright 2026 Rhett Creighton; SPDX-License-Identifier: Apache-2.0.
  * purpose: Unprivileged, fixed-profile qualification for a direct-source verifier.
  * This produces no attestation: a driver digest cannot bind cc1, assembler,
- * loader, shared libraries, specs, or the complete filesystem lookup set. */
+ * loader, shared libraries, specs, or the complete filesystem lookup set.
+ * HISTORICAL: the GCC 13/14 direct-source probe core, retired by
+ * z23verify.fixed_result.v2; no v2 consumer accepts its output. Kept only
+ * because real_tu_probe.sh still runs it. */
 #define _POSIX_C_SOURCE 200809L
 #if !defined(_WIN32) && !defined(_DEFAULT_SOURCE)
 #define _DEFAULT_SOURCE

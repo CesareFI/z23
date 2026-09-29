@@ -41,20 +41,26 @@ inside its qualified jail. The receiver's changing physical proof cwd belongs
 in the local execution receipt, after fresh `-E` and a cross-cwd byte-equality
 check. The LTO build-only profile cannot use this key.
 
-`closure_sha3` is SHA3-256 of a length-prefixed domain text
-`z23verify.fixed_result.closure.v2`, then **twelve** raw 32-byte roots in
-order, then length-prefixed `/zclassic23`, source spelling, and complete
-`argv_norm`. The first is the portable source-content tree. The next eleven
-match root-owned `fixed_result.pins.v1` exactly:
+`argv_norm` keeps its own decimal `len:bytes` text on purpose: it is a record
+text field, which must be NUL-free, so it cannot hold binary u64 prefixes.
+Every other preimage uses the contract framing F(x) = 8-byte little-endian
+length then x (`docs/work/verifier-contract-v2.md`).
+
+`closure_sha3` is SHA3-256 of F(`z23verify.fixed_result.closure.v2`), then
+the **twelve** roots, each F(label) F(32 raw bytes), then
+F(`recorded_cwd`) F(`/zclassic23`), F(`source`) F(source spelling) and
+F(`argv_norm`) F(complete `argv_norm`). The twelve roots are the root-owned
+pins v2 (`fixed_result.pins`) exactly, labels and order included:
 
 ```text
-profile_args  source_image  tool_image  worker  launcher  check_image
-environment   policy        seccomp     bwrap   tree_checker
+source_content_sha3  profile_args_sha3  source_image_sha3  tool_image_sha3
+worker_sha3          launcher_sha3      check_image_sha3   environment_sha3
+policy_sha3          seccomp_filter_sha3  bwrap_sha3       tree_checker_sha3
 ```
 
-`profile_args` maps the launcher's `fast_args_sha3` field, whose value must
-pin the test-fast profile in this version. `source_image` is the
-installed UID-bound tree, separate from the portable source-content root.
+`source_content` is the portable source-content tree; `source_image` is the
+installed UID-bound tree. `profile_args` must be the test-fast profile digest
+in this version; the strict profile refuses.
 
 The check image must contain the signer, publisher, receiver admission code,
 key constructor, pinned current-main proof executor, and all check logic.
@@ -63,18 +69,12 @@ bytes. The signer key and box key are independently reloaded, pinned, and
 checked by the admission policy; neither is treated as a substitute for a
 compiler input root. Revocation must refuse any old observation.
 
-The length prefix is one unsigned 64-bit little-endian byte count. The
-environment root must equal SHA3-256 of these exact bytes:
+The environment root must equal environment root v2: SHA3-256 of
+F(`z23verify.fixed_result.env.v2`) then F(`env`) F(entry) for `LC_ALL=C`,
+`TZ=UTC`, `TMPDIR=/tmp` and `PATH=/usr/bin:/bin`, in that order. The v1 LF
+text root (`19c5ed02…a3ec`) is retired.
 
-```text
-z23verify.fixed_result.env.v1
-LC_ALL=C
-TZ=UTC
-TMPDIR=/tmp
-PATH=/usr/bin:/bin
-```
-
-The final LF is included. `toolchain_id` is
+`toolchain_id` is
 `z23.gcc14.fast_result.v2:<lowercase tool-image root>`.
 `pp_sha3` is the SHA3-256 of the receiver's fresh checker `-E` stream;
 the existing `zcl_verify_attest_store_key` then binds the five expected fields.
@@ -103,6 +103,7 @@ FAIL observations. A nonzero checker/compiler under otherwise eligible inputs
 must block the request and cannot be silently treated as a cold miss.
 
 The local probe exercises formatting only. Its synthetic root vector yields
-`closure_sha3=65c84f25e8eb3be2c3b41a6f6946fbf05a1c5302d395819d05faf39f9adf9018`.
+`closure_sha3=0502f53a553bfad57377ab92bbe4b1e97fa2367a36ed2a2dacbaf7f041985cec`;
+the `verify_contract` test group pins the same vector.
 It launches zero compilers and avoids zero proof launches. It is not an
 eligibility or performance witness.

@@ -1,7 +1,10 @@
 /* Copyright 2026 Rhett Creighton; SPDX-License-Identifier: Apache-2.0.
  * Fixed result.c closure format. This only combines independently supplied
  * roots; it cannot verify a mount namespace or authorize an attestation.
- * Its argv is the local direct-source probe, not the production epoch rule. */
+ * Its argv is the local direct-source probe, not the production epoch rule.
+ * HISTORICAL: closure v1 (toolchain z23.gcc13.x86_64.fixed_result.v1, LF
+ * environment text). Retired by z23verify.fixed_result.v2; no v2 consumer
+ * accepts its output. Kept only because tree_closure_probe.sh still runs it. */
 #define _GNU_SOURCE
 #include "base/hex.h"
 #include "base/serialize_le.h"
