@@ -21,6 +21,8 @@
 #include "platform/time_compat.h"
 #include "vcs/blob_store.h"
 #include "vcs/package_store.h"
+#include "vcs/proof_ticket.h"
+#include "sha3/sha3.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -663,6 +665,221 @@ static int ptm_case_receiver_boundary(void)
     return failures;
 }
 
+/* ── work avoided across a restart ──────────────────────────────────── */
+
+/* 160 obligations. The first run proves 150 of them (A and B), C then
+ * contradicts one; everything is published to the package CAS and the
+ * receiver is dropped: a process restart. A fresh process rebuilds from the
+ * CAS, admits all 160, and launches the executor only for what the rebuilt
+ * history does not cover. The executor itself counts every launch; it does
+ * a unit's real proving work: a digest over its output bytes and two
+ * independent signed tickets. */
+#define PTW_UNITS 160u
+#define PTW_PROVEN 150u
+#define PTW_CONFLICT 7u
+#define PTW_OUTPUT_BYTES (64u * 1024u)
+#define PTW_WIRES (2u * PTW_UNITS + 1u)
+
+struct ptw {
+    struct ptf f;
+    struct vcs_component_proof_key_v1 keys[PTW_UNITS];
+    struct vcs_proof_obligation obs[PTW_UNITS];
+    struct vcs_proof_admission_result res[PTW_UNITS];
+    uint32_t runs[PTW_UNITS];
+    uint8_t wires[PTW_WIRES][VCS_PROOF_TICKET_WIRE_BYTES];
+    size_t wire_count, stored;
+    uint8_t output[PTW_OUTPUT_BYTES];
+    uint64_t executed, exec_us;
+    uint64_t checkpointed[PTF_C + 1];
+    char dir[256];
+};
+
+static bool ptw_execute(struct ptw *w, uint32_t u)
+{
+    int64_t t0 = platform_time_monotonic_us();
+    w->runs[u]++;
+    w->executed++;
+    uint8_t digest[32];
+    memset(w->output, (int)(u & 0xffu), sizeof(w->output));
+    zcl_sha3_256(w->output, sizeof(w->output), digest);
+    bool ok = w->wire_count + 2u <= PTW_WIRES &&
+              ptf_emit(&w->f, PTF_A, &w->keys[u], ptf_pass(),
+                       w->wires[w->wire_count], NULL) &&
+              ptf_emit(&w->f, PTF_B, &w->keys[u], ptf_pass(),
+                       w->wires[w->wire_count + 1u], NULL);
+    w->wire_count += ok ? 2u : 0u;
+    w->exec_us += (uint64_t)(platform_time_monotonic_us() - t0);
+    return ok;
+}
+
+/* Publish every new ticket plus fresh checkpoints, then drop the process's
+ * receiver: nothing in memory survives to the next phase. */
+static bool ptw_publish_and_forget(struct ptw *w, uint64_t created,
+                                   size_t *rows)
+{
+    struct vcs_package_store *store =
+        vcs_package_store_open(w->dir, UINT64_C(64) * 1024 * 1024);
+    if (!store) return false;
+    bool ok = true;
+    uint8_t root[32], cp[VCS_PROOF_CHECKPOINT_WIRE_BYTES];
+    for (; ok && w->stored < w->wire_count; w->stored++)
+        ok = vcs_proof_ticket_store_put(store, w->wires[w->stored],
+                                        VCS_PROOF_TICKET_WIRE_BYTES, root);
+    /* Only a grown log gets a new checkpoint: one signed root per size. */
+    for (int s = PTF_A; ok && s <= PTF_C; s++) {
+        uint64_t count = vcs_proof_issuer_log_count(w->f.logs[s]);
+        if (count == w->checkpointed[s]) continue;
+        ok = vcs_proof_issuer_log_checkpoint(w->f.logs[s],
+                                             created + (uint64_t)s, cp) &&
+             vcs_proof_ticket_store_put(store, cp, sizeof(cp), root);
+        w->checkpointed[s] = count;
+    }
+    struct vcs_package_store_summary page_rows[VCS_PACKAGE_STORE_PAGE_MAX];
+    struct vcs_package_store_page page;
+    uint8_t cursor[32];
+    uint64_t generation = 0;
+    *rows = 0;
+    for (bool more = ok, resume = false; more; resume = true) {
+        ok = vcs_package_store_page_summaries(
+                 store, resume ? cursor : NULL, VCS_PACKAGE_STORE_PAGE_MAX,
+                 resume ? generation : 0, page_rows, &page) ==
+             VCS_PACKAGE_STORE_PAGE_OK;
+        more = ok && page.has_more;
+        generation = page.generation;
+        memcpy(cursor, page.next_root, sizeof(cursor));
+        *rows += ok ? page.count : 0u;
+    }
+    vcs_package_store_close(store);
+    vcs_proof_receiver_free(w->f.rx);
+    w->f.rx = vcs_proof_receiver_new();
+    return ok && w->f.rx != NULL;
+}
+
+struct ptw_phase {
+    size_t rows;
+    uint64_t rebuild_us, executed, exec_us;
+    struct vcs_proof_admission_report rep;
+};
+
+/* A new process: reopen the store, rebuild, admit, and execute only FRESH. */
+static bool ptw_restart(struct ptw *w, size_t rows, uint32_t units,
+                        struct ptw_phase *p)
+{
+    memset(p, 0, sizeof(*p));
+    p->rows = rows;
+    struct vcs_package_store *store =
+        vcs_package_store_open(w->dir, UINT64_C(64) * 1024 * 1024);
+    if (!store) return false;
+    size_t tickets = 0, cps = 0, skipped = 0;
+    int64_t t0 = platform_time_monotonic_us();
+    bool ok = vcs_proof_receiver_rebuild_bounded(w->f.rx, store, rows,
+                                                 &tickets, &cps, &skipped);
+    p->rebuild_us = (uint64_t)(platform_time_monotonic_us() - t0);
+    vcs_package_store_close(store);
+    struct vcs_proof_change change = {.component_id = "restart",
+                                      .scope_known = true};
+    struct vcs_proof_admission_context ctx = ptf_context(&w->f);
+    ok = ok && vcs_proof_admission_run(&ctx, &change, w->obs, units, w->res,
+                                       &p->rep);
+    uint64_t executed = w->executed, exec_us = w->exec_us;
+    memset(w->runs, 0, sizeof(w->runs));
+    for (uint32_t u = 0; ok && u < units; u++)
+        if (w->res[u].status == VCS_PROOF_ADMIT_FRESH)
+            ok = ptw_execute(w, u);
+    p->executed = w->executed - executed;
+    p->exec_us = w->exec_us - exec_us;
+    return ok;
+}
+
+static void ptw_print(const char *phase, uint32_t units,
+                      const struct ptw_phase *p)
+{
+    printf("\nproof_restart_work phase=%s units=%u catalog_rows=%zu "
+           "rebuild_us=%llu executed=%llu reused=%u refused=%u fresh=%u "
+           "without_history=%u avoided=%llu exec_us=%llu\n", phase, units,
+           p->rows, (unsigned long long)p->rebuild_us,
+           (unsigned long long)p->executed, p->rep.proofs_reused,
+           p->rep.proofs_refused, p->rep.proofs_fresh, units,
+           (unsigned long long)(units - p->executed),
+           (unsigned long long)p->exec_us);
+}
+
+static int ptw_case_restart_work(void)
+{
+    int failures = 0;
+    TEST_CASE("proof_ticket: restart rebuild launches only uncovered work") {
+        struct ptw *w = calloc(1, sizeof(*w));
+        ASSERT(w != NULL);
+        ASSERT(ptf_init(&w->f));
+        for (uint32_t u = 0; u < PTW_UNITS; u++) {
+            char text[48];
+            snprintf(text, sizeof(text), "restart/%u", u);
+            w->keys[u] = w->f.base;
+            ptf_root(VCS_CPK_UNIT_ID, text, w->keys[u].roots[VCS_CPK_UNIT_ID]);
+            w->obs[u] = (struct vcs_proof_obligation){
+                .name = "restart", .component_id = "restart",
+                .action_class = VCS_PROOF_ACTION_CHECK,
+                .preimage = &w->keys[u]};
+        }
+        test_make_tmpdir(w->dir, sizeof(w->dir), "proof_ticket", "restartwork");
+        /* Cold: nothing known, every one of the first 150 runs. */
+        struct ptw_phase cold;
+        ASSERT(ptw_restart(w, 1, PTW_PROVEN, &cold));
+        ASSERT_EQ(cold.executed, (uint64_t)PTW_PROVEN);
+        ASSERT(ptf_emit(&w->f, PTF_C, &w->keys[PTW_CONFLICT], ptf_fail(),
+                        w->wires[w->wire_count++], NULL));
+        size_t rows = 0;
+        ASSERT(ptw_publish_and_forget(w, 1790000100u, &rows));
+        ASSERT_EQ(rows, (size_t)(2u * PTW_PROVEN + 1u + 3u));
+        ASSERT(rows > VCS_PACKAGE_STORE_PAGE_MAX);
+        ptw_print("cold", PTW_PROVEN, &cold);
+
+        /* Restart 1: 160 obligations over the rebuilt history. */
+        struct ptw_phase warm;
+        ASSERT(ptw_restart(w, rows, PTW_UNITS, &warm));
+        ptw_print("restart", PTW_UNITS, &warm);
+        for (uint32_t u = 0; u < PTW_UNITS; u++) {
+            enum vcs_proof_admission_status want =
+                u == PTW_CONFLICT ? VCS_PROOF_ADMIT_REFUSED :
+                u < PTW_PROVEN ? VCS_PROOF_ADMIT_REUSED : VCS_PROOF_ADMIT_FRESH;
+            ASSERT_EQ(w->res[u].status, want);
+            ASSERT_EQ(w->runs[u], want == VCS_PROOF_ADMIT_FRESH ? 1u : 0u);
+        }
+        ASSERT_EQ(warm.executed, (uint64_t)(PTW_UNITS - PTW_PROVEN));
+        ASSERT_EQ(warm.rep.proofs_reused, PTW_PROVEN - 1u);
+        ASSERT_EQ(warm.rep.proofs_refused, 1u);
+        ASSERT_EQ(warm.rep.proofs_fresh, PTW_UNITS - PTW_PROVEN);
+        ASSERT_STR_EQ(w->res[PTW_CONFLICT].reason,
+                      VCS_PROOF_OBSERVATION_CONFLICT);
+
+        /* Restart 2: the new results survive too; nothing runs again. */
+        ASSERT(ptw_publish_and_forget(w, 1790000200u, &rows));
+        struct ptw_phase settled;
+        ASSERT(ptw_restart(w, rows, PTW_UNITS, &settled));
+        ptw_print("second_restart", PTW_UNITS, &settled);
+        ASSERT_EQ(settled.executed, (uint64_t)0);
+        ASSERT_EQ(settled.rep.proofs_reused, PTW_UNITS - 1u);
+        ASSERT_EQ(settled.rep.proofs_refused, 1u);
+        ASSERT_EQ(settled.rep.proofs_fresh, 0u);
+
+        /* The same obligations on a receiver that forgot its history. */
+        vcs_proof_receiver_free(w->f.rx);
+        w->f.rx = vcs_proof_receiver_new();
+        ASSERT(w->f.rx != NULL);
+        struct vcs_proof_admission_report forgot;
+        struct vcs_proof_change change = {.component_id = "restart",
+                                          .scope_known = true};
+        struct vcs_proof_admission_context ctx = ptf_context(&w->f);
+        ASSERT(vcs_proof_admission_run(&ctx, &change, w->obs, PTW_UNITS,
+                                       w->res, &forgot));
+        ASSERT_EQ(forgot.proofs_fresh, PTW_UNITS);
+        test_rm_rf(w->dir);
+        ptf_free(&w->f);
+        free(w);
+    } TEST_END
+    return failures;
+}
+
 /* ── per-change admission ───────────────────────────────────────────── */
 
 enum { PTA_A0, PTA_A1, PTA_ATEST, PTA_B0, PTA_B1, PTA_BUNIT, PTA_BLINK,
@@ -960,6 +1177,7 @@ int test_proof_ticket_measure(void)
     failures += ptm_case_rebuild_density();
     failures += ptm_case_late_page_conflict();
     failures += ptm_case_receiver_boundary();
+    failures += ptw_case_restart_work();
     failures += pta_cases();
     return failures;
 }

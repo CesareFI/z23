@@ -472,8 +472,8 @@ static struct zcl_result bf_runtime_recover_pending(
         datadir, vcs_package_store_quota_bytes());
     if (!store)
         return ZCL_ERR(-1, "build worker proof store unavailable");
-    struct zcl_result recovered = build_fabric_proof_pending_publish(
-        ndb, store, worker_id, seed, 65536u, 65536u);
+    struct zcl_result recovered = build_fabric_proof_pending_recover(
+        ndb, store, worker_id, seed);
     vcs_package_store_close(store);
     return recovered;
 }

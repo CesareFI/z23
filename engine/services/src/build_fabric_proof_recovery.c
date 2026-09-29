@@ -517,3 +517,11 @@ struct zcl_result build_fabric_proof_pending_publish(
         ndb, store, &pending, next_head, max_catalog_rows, generation,
         history_hashes, history_count, chunk_hashes, chunk_count);
 }
+
+struct zcl_result build_fabric_proof_pending_recover(
+    struct node_db *ndb, struct vcs_package_store *store,
+    const char *worker_id, const uint8_t signer_seed[32])
+{
+    return build_fabric_proof_pending_publish(
+        ndb, store, worker_id, signer_seed, 65536u, 65536u);
+}

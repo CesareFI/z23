@@ -82,5 +82,8 @@ struct vcs_proof_admission_context ptf_context(struct ptf *f);
 /* Equivocation, artifact and CAS cases (test_proof_ticket_logs.c), run by
  * the proof_ticket_reuse group. Returns the failure count. */
 int ptf_log_cases(void);
+/* Restart-anywhere history cases (proof_ticket_history_cases.c), run by the
+ * same group. Returns the failure count. */
+int ptf_history_cases(void);
 
 #endif /* ZCL_TEST_PROOF_TICKET_FIXTURE_H */

@@ -4882,6 +4882,8 @@ static int test_bf_input_closure_root(void)
     return failures;
 }
 
+int bf_proof_history_cases(void);
+
 int test_build_fabric(void)
 {
     int failures = 0;
@@ -4899,6 +4901,7 @@ int test_build_fabric(void)
     failures += test_bf_proof_pending_publish_ancestor();
     failures += test_bf_proof_pending_publish_race();
     failures += test_bf_proof_pending_publish_missing_chunk();
+    failures += bf_proof_history_cases();
     failures += test_bf_async_proof_events();
     failures += test_bf_async_timing_samples();
     failures += test_bf_async_timing_capacity();

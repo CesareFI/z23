@@ -639,6 +639,7 @@ int test_proof_ticket_reuse(void)
     failures += ptt_case_freshness();
     failures += ptt_case_revocation();
     failures += ptf_log_cases();
+    failures += ptf_history_cases();
     ptf_free(&g_f);
     return failures;
 }
