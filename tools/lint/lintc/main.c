@@ -268,6 +268,8 @@ static const struct lint_gate k_gates[] = {
       check_arm_symbol_single_selftest },
     { "check-macos-acceptance", check_macos_acceptance_run,
       check_macos_acceptance_selftest },
+    { "check-sqlite-cursor-lifetime", check_sqlite_cursor_lifetime_run,
+      check_sqlite_cursor_lifetime_selftest },
 };
 
 /* Premise-selection subcommands; they are tools, not gates, so --list and

@@ -455,5 +455,7 @@ int check_arm_symbol_single_run(int argc, char **argv);
 int check_arm_symbol_single_selftest(void);
 int check_macos_acceptance_run(int argc, char **argv);
 int check_macos_acceptance_selftest(void);
+int check_sqlite_cursor_lifetime_run(int argc, char **argv);
+int check_sqlite_cursor_lifetime_selftest(void);
 
 #endif

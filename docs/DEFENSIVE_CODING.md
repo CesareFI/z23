@@ -150,6 +150,34 @@ macros (each logs `error` with `file`/`line`/`func` + varargs):
 **CI lint:** the shape-tier `check-silent-errors-*` gates grep `app/` for
 `return -1;` not paired with `LOG_ERR`/`log_json`/`fprintf`.
 
+### Release a stepped sqlite cursor BEFORE the log-and-return macros
+
+**Problem:** the `LOG_*` / `GUARD*` macros above RETURN from the caller, so a
+`sqlite3_finalize()` written after them is dead code. A parked SELECT keeps
+its connection's WAL read snapshot pinned; every later writer on that
+connection then fails with `SQLITE_BUSY_SNAPSHOT` (the 2026-09-29 node.db
+write-plane wedge: fixes 278f328c56, ad6920b8d4).
+
+**Rule:** finalize (or reset) FIRST, then log-and-return:
+
+```c
+    int rc = sqlite3_step(s);
+    sqlite3_finalize(s);
+    if (rc != SQLITE_DONE)
+        LOG_FAIL("domain", "step failed: %s", sqlite3_errmsg(db));
+```
+
+The same applies inside `AR_QUERY_*` / `AR_ADHOC_*` `bind_code` / `row_code`:
+a returning macro there skips the expansion's own `AR_FINALIZE`, so release
+explicitly first (`AR_FINALIZE(s); LOG_FAIL(...)` — see `market_seller_key`
+`msk_read`).
+
+**CI lint:** `make check-sqlite-cursor-lifetime` (in `make lint`) tracks each
+in-function-prepared statement variable from `sqlite3_prepare*` / the AR
+preparing macros through step and release, and fails on a returning macro
+fired while a cursor is live. Cached statements owned by a handle
+(`ws->stmt_*`, reset on next use, released at close) are out of scope.
+
 ---
 
 ## 5. Native command handlers must log on every error path
@@ -1405,6 +1433,7 @@ add/remove a gate.
 - `check-outparam-init-before-return`
 - `check-equihash-params`
 - `check-determinism-ratchet`
+- `check-sqlite-cursor-lifetime`
 <!-- LINT-GATES-END -->
 
 (`check-consensus-parity` [E13, the parity mechanism — see

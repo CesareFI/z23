@@ -2963,6 +2963,7 @@ $(filter-out $(ZCL_VENDOR_LIB)/libsecp256k1.a,$(VENDOR_LIBS)):
         check-api-reference-generated check-describe-budget \
         check-no-new-repair-rung \
         check-no-bare-tmp-fixture \
+        check-sqlite-cursor-lifetime \
         fuzz-ci-leaks \
         soak-smoke soak-7day soak-ci test-crash-bootstrap \
         test-reindex-smoke test-reindex-killmid \
@@ -6037,6 +6038,7 @@ LINTC_SRCS = tools/lint/lintc/lib.c tools/lint/lintc/gate_boot_wiring.c tools/li
     tools/lint/lintc/gate_macos_acceptance.c \
     tools/lint/lintc/gate_macos_acceptance_parse.c \
     tools/lint/lintc/gate_macos_acceptance_selftest.c \
+    tools/lint/lintc/gate_sqlite_cursor_lifetime.c \
     $(LINTC_PREMISE_SRCS) \
     tools/lint/lintc/main.c
 LINTC_OBJS = $(LINTC_SRCS:tools/lint/lintc/%.c=build/lintc-obj/%.o)
@@ -13556,6 +13558,17 @@ check-no-bare-tmp-fixture: $(LINTC_TOOL)
 	@echo "══ LINT: no new bare /tmp fixture literal ══"
 	@./tools/lint/check_no_bare_tmp_fixture.sh --selftest && ./tools/lint/check_no_bare_tmp_fixture.sh
 
+# Gate — sqlite cursor lifetime. A stepped sqlite3_stmt must be
+# sqlite3_finalize/sqlite3_reset'd BEFORE any returning error macro
+# (LOG_FAIL/LOG_ERR/LOG_NULL/LOG_RETURN/GUARD*) fires in the same function:
+# those macros RETURN from the caller, so a finalize written after them is
+# dead code and the parked SELECT pins the connection's WAL read snapshot —
+# every later writer on that connection fails SQLITE_BUSY_SNAPSHOT (the
+# 2026-09-29 node.db write-plane wedge class; fixes 278f328c56, ad6920b8d4).
+check-sqlite-cursor-lifetime: $(LINTC_TOOL)
+	@echo "══ LINT: sqlite cursor lifetime (finalize before returning macro) ══"
+	@./tools/scripts/check_sqlite_cursor_lifetime.sh --selftest && ./tools/scripts/check_sqlite_cursor_lifetime.sh
+
 # Sovereign-cure ratchet — no NEW caller of coins_kv_seed_from_node_db (the
 # BORROWED zclassicd-chainstate seed the self-verified-tip cure is deleting,
 # docs/work/self-verified-tip-plan.md Act 3). Callers are listed in
@@ -14779,7 +14792,8 @@ LINT_GATES := \
     check-no-unattended-publish \
     check-tor-dial-prewarm \
     check-fleet-source-status \
-    check-dev-linker-threads
+    check-dev-linker-threads \
+    check-sqlite-cursor-lifetime
 
 # The driver execs gate scripts directly, so every gate backed by a built tool
 # (check-core-seal, check-observability-pairing, the package root projection
