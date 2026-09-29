@@ -30,68 +30,32 @@ historical fixture passes, then deploy/restart intentionally.
 
 ## (0) LIVE OPS TRAPS — public service vs private candidates
 
-- **A failed embedded Tor must never hold RPC or the site.** On 2026-09-08 a
-  ship restart raced the departing process: it still held the RPC port, the
-  P2P port, the file-service port and Tor's bootstrap SocksPort. Tor's config
-  parse failed and its thread exited -1 with nobody watching, and
-  `boot_rpc_http_start()`'s bind failed — and because `rpc_http` was the one
-  REQUIRED service in the frontend kernel, `zcl_service_kernel_start_all()`
-  unwound its siblings and returned before `https_explorer`'s start hook was
-  ever called. The chain was at tip the whole time; the public site was down
-  for 27 minutes, and the systemd status line said only `descriptor=no`,
-  which is exactly what a healthy slow bootstrap says. Three rules come out of
-  it. Onion publication and the clearnet frontend share nothing: never make
-  RPC, the explorer or any operator surface wait on a Tor start, and never let
-  one frontend service's start failure cancel the services registered after it
+- **A failed embedded Tor must never hold RPC or the site.** Onion publication
+  and the clearnet frontend share nothing: never make RPC, the explorer or any
+  operator surface wait on a Tor start, and never let one frontend service's
+  start failure cancel the services registered after it
   (`ZCL_SERVICE_INDEPENDENT`, `engine/modules/kernel/include/kernel/service_kernel.h`).
   A start that can fail transiently needs a named condition and a retry, not a
-  one-shot — `tor.start_failed`
-  (`engine/conditions/src/tor_start_failed.c`,
-  `engine/composition/src/boot_tor_watch.c`) is the shape. And a readiness
-  line must distinguish "not up yet" from "failed and stayed failed": the
-  legs now carry `tor=failed(port_in_use)` / `tor=starting` / `tor=ok`
-  beside `descriptor=no`, and `frontend=<service> <n>s` while a start hook
-  runs long. The RPC front door itself is still a one-shot — a bind that
-  fails at boot is not retried, only prevented from taking the site with it.
+  one-shot; `tor.start_failed` (`engine/conditions/src/tor_start_failed.c`,
+  `engine/composition/src/boot_tor_watch.c`) is the shape. A readiness line
+  must distinguish "not up yet" from "failed and stayed failed": the legs carry
+  `tor=failed(port_in_use)` / `tor=starting` / `tor=ok` beside `descriptor=no`,
+  and `frontend=<service> <n>s` while a start hook runs long. The RPC front
+  door is a one-shot: a bind that fails at boot is not retried, only prevented
+  from taking the site with it.
 
-- **FIXED 2026-09-07 — `tools/ship.sh --targets=local` used to write the new
-  worker binaries straight into the RUNNING node's executable directory,
-  which broke the moment that directory was an immutable
-  `~/.local/lib/z23/releases/<id>/` staged release (`dr-xr-xr-x`, files
-  `-r-xr-xr-x`) instead of a writable checkout path: the raw
-  `install: cannot remove '…': Permission denied` left the OLD worker file
-  untouched, and ship's own byte-verify then reported the confusing
-  "local worker install bytes differ" — never the real cause. `make deploy`'s
-  own daemon-install step already refuses cleanly for exactly this directory
-  (`$$service_bin_dir is not a writable directory`, Makefile target
-  `deploy`); `deploy_local()`'s worker install did not check first, so it hit
-  the OS error before that clean refusal ever ran.
-  `ship_local_release_layout()` (`tools/scripts/ship_progress_lib.sh`) now
-  classifies the running node's directory — "release" (under
-  `$HOME/.local/lib/z23/releases/` and not writable) versus "writable" —
-  BEFORE anything is written, and `deploy_local()` refuses up front with one
-  actionable message for the release case (worker backup/restore is skipped
-  there: there is nothing to back up) while the writable case is unchanged.
-  Building a fresh immutable release directory for local ship to swap the
-  service onto, the way every remote host already does via
-  `stage_remote()`/`deploy_remote()`, needs `make deploy` to accept an
-  already-staged release directory instead of writing `SERVICE_BIN` in
-  place — tracked as follow-on work; it was not attempted here because it
-  cannot be proven without restarting the canonical service, which no lane
-  may do. Separately, `ship_exe_of()` also used to hand callers a path with
-  the kernel's literal `" (deleted)"` text still glued onto the basename
-  whenever the running executable had been unlinked (a checkout rebuild
-  relinking the same pathname under a still-running process) — harmless for
-  the `dirname` use (no further `/` in the suffix) but broken for hashing or
-  executing those exact bytes. It now strips the suffix before resolving,
-  matching `make deploy`'s own prior-binary capture; a new
-  `ship_exe_live_of()` hands the two callers that read/exec the running
-  bytes directly (`prior_sha`, the local fleet-report `status` line) the
-  `/proc/<pid>/exe` handle, which stays bound to the running inode even
-  after deletion. Pinned by `tools/ship.sh --selftest` (`make
-  check-ship-remote-transaction`): the release/writable classifier against
-  fixture paths, and a live copy-then-delete-the-binary fixture proving
-  `ship_exe_of`/`ship_exe_live_of` still resolve and hash cleanly.
+- **`tools/ship.sh --targets=local` refuses an immutable release directory.**
+  `ship_local_release_layout()` (`tools/scripts/ship_progress_lib.sh`)
+  classifies the running node's directory ("release": under
+  `$HOME/.local/lib/z23/releases/` and not writable, versus "writable")
+  before anything is written, and `deploy_local()` refuses up front with one
+  actionable message for the release case. Swapping the service onto a fresh
+  immutable release locally needs `make deploy` to accept an already-staged
+  release directory; that is open. `ship_exe_of()` strips the kernel's literal
+  `" (deleted)"` suffix before resolving; `ship_exe_live_of()` hands callers
+  that read or exec the running bytes the `/proc/<pid>/exe` handle, which stays
+  bound to the running inode after deletion. Pinned by `tools/ship.sh
+  --selftest` (`make check-ship-remote-transaction`).
 - **Public connected-node tables can lag or cache old peer identity.** Verify
   the live socket before trusting a crawler row — a node that switched
   services can still show the prior service string in a public peer table
@@ -160,15 +124,13 @@ historical fixture passes, then deploy/restart intentionally.
   (`make hotswap-try` / `make hotswap-apply` do this for you). A bare
   `build/bin/z23-dev <cmd>` falls back to the canonical default
   datadir/ports and talks to the live node, not the dev lane.
-- **`--importblockindex` ignores even an explicit `-datadir=` — it writes the
+- **`--importblockindex` ignores even an explicit `-datadir=`: it writes the
   DEFAULT datadir's `node.db` unless given the target as a positional.** The
   safe form for a side datadir is
   `build/bin/z23 --importblockindex <zclassicd-datadir> <side-datadir>/node.db`
-  (exactly what the `-full-fold` FATAL prints). Proven 2026-08-02: a
-  `-datadir=<producer> --importblockindex $HOME/.zclassic` invocation bulk-wrote
-  3,192,879 headers into the CANONICAL `~/.zclassic-c23/node.db` while the live
-  node was running (survived — the rows were additive duplicates the live node
-  already had — but that is the live lane and the write was unintentional).
+  (exactly what the `-full-fold` FATAL prints). A `-datadir=<producer>
+  --importblockindex $HOME/.zclassic` invocation writes into the CANONICAL
+  `~/.zclassic-c23/node.db` while the live node is running.
 - **Do not hand-maintain `compile_commands.json`.** Run `make agent-index`.
   It derives commands from the real `DEV_OBJS` recipes, including generated
   headers and the target-specific `-Og`/hot-bucket `-O2` split, then records
@@ -184,53 +146,37 @@ historical fixture passes, then deploy/restart intentionally.
   fast-restart will trust an unproven node.db. Pinned by
   `test_shutdown_marker` (mutated header / WAL / no-marker existing file
   defer, missing file still runs the cheap blocking check).
-- **FIXED 2026-08-10 (d032f1c36, integrated commit) — node_db newer-schema refusal used to
-  fire only AFTER the open ceremony had already written to the datadir.**
-  The old order ran quick_check (whose failure path quarantines/renames
-  node.db and rebuilds it empty), create_schema() (re-creating baseline
-  tables a newer schema may have deliberately dropped), and the
-  schema_migrations bootstrap INSERT before `node_db_migrate`'s -2
-  refusal — a "refused" open mutated the file it claimed to protect, and
-  teardown of that half-opened `node_db` could print
-  `double free or corruption (!prev)` (surfaced 2026-08-09 in
-  test_file_market "restart reconstructs verified content reader"). The
-  integrated first fix moved the refusal ahead of quick_check/schema/migration.
-  The completed guard now runs `node_db_schema_preflight_existing()` before
-  `db_open_raw` itself, so READWRITE|CREATE and `journal_mode=WAL` are still
-  unreachable until the existing marker is proved readable and supported.
-  It distinguishes absent/empty, supported, newer, and
-  `SCHEMA_VERSION_UNKNOWN`; a malformed, missing, wrong-width, contradictory,
-  unsupported, or unreadable marker fails closed. WAL selection matters:
-  immutable inode-bound inspection is used only for a quiet WAL with no
-  wal-index, while an existing WAL+SHM pair is read normally so committed
+- **node_db's newer-schema refusal must precede every write to the datadir.**
+  `node_db_schema_preflight_existing()` runs before `db_open_raw`, so
+  READWRITE|CREATE and `journal_mode=WAL` are unreachable until the existing
+  marker is proved readable and supported. It distinguishes absent/empty,
+  supported, newer, and `SCHEMA_VERSION_UNKNOWN`; a malformed, missing,
+  wrong-width, contradictory, unsupported, or unreadable marker fails closed.
+  Immutable inode-bound inspection is used only for a quiet WAL with no
+  wal-index; an existing WAL+SHM pair is read normally so committed
   uncheckpointed frames remain authoritative. Pinned by
   `test_db_migration_idempotent`: DELETE, clean-WAL and uncheckpointed-WAL
-  refusals; malformed/missing/contradictory stores; 8 refused open/close
+  refusals; malformed/missing/contradictory stores; refused open/close
   rounds; and complete node.db/WAL/SHM/journal family SHA3, size, existence and
   metadata equality. `node_db_open_abort()` leaves the struct close-harmless
   (db NULL, open false, state destroyed), including double-close. Do not
-  reintroduce any write-capable open before this preflight.
-- **FIXED 2026-08-10 (82f94e65d) — a group that passes isolated but fails
-  in the monolithic suite is not always a poisoned victim; check
-  context-dependent OUTPUT SIZE first.** `test_test_group_selector`
-  asserted on the tail of a `make -n t-fast-exact` dry run through a
-  128 KiB head-truncating capture. The dry run's size depends on
-  session-scoped build freshness: warm (isolated `make t-fast`) it is a
-  few KB; cold (the parallel suite, a direct runner process, an expired
-  session lease) every stale session/link/stamp recipe prints (~0.6 MB
-  measured) and the tail evidence falls off the buffer. Deterministic
-  cold repro: `test_parallel_fast --jobs=1
-  --exact=test_test_group_selector --no-cache` directly, not via make.
-  Fixed by sizing the capture past the all-stale bound (8 MiB static),
-  not by touching any assertion. When bisecting "contamination", diff
-  the victim's captured bytes between contexts before blaming another
-  group.
+  reintroduce any write-capable open before this preflight (quick_check,
+  create_schema and the schema_migrations bootstrap all write).
+- **A group that passes isolated but fails in the monolithic suite is not
+  always a poisoned victim; check context-dependent OUTPUT SIZE first.** A
+  capture of a `make -n t-fast-exact` dry run is a few KB warm and about
+  0.6 MB cold (every stale session/link/stamp recipe prints), so a small
+  head-truncating buffer drops the tail evidence. Reproduce cold with
+  `test_parallel_fast --jobs=1 --exact=<group> --no-cache` directly. Size the
+  capture past the all-stale bound; do not touch the assertion. When
+  bisecting "contamination", diff the victim's captured bytes between contexts
+  before blaming another group.
 
 ---
 
 ## (1) STALE FACTS — old belief → current truth
 
-- **getblockcount serves active_chain_height.** FALSE at HEAD. It serves `reducer_frontier_provable_tip_cached()` (H*, the provable frontier), commit `e75b5c62c`. Internal code still uses `active_chain_height` for lookahead, but only external/served RPCs use H*. → `engine/controllers/src/blockchain_controller_blocks.c:50-66`.
+- **getblockcount serves active_chain_height.** FALSE at HEAD. It serves `reducer_frontier_provable_tip_cached()` (H*, the provable frontier). Internal code still uses `active_chain_height` for lookahead, but only external/served RPCs use H*. → `engine/controllers/src/blockchain_controller_blocks.c:50-66`.
 - **P2P start_height advertises active_chain_height (or the sync-window tip).** FALSE. It advertises `reducer_frontier_provable_tip_cached()` (H*) — only the provable height, never the lookahead tip that can rewind under a reorg. → `core/modules/net/src/msg_version.c:155` (comment at `:149-154`).
 - **getbestblockhash / getblockchaininfo serve active_chain_height and are inconsistent with getblockcount.** FALSE. All three serve H* and are internally consistent: `getblockchaininfo.blocks` returns `reducer_frontier_provable_tip_cached()` and resolves the tip hash at that same H* height. → `blockchain_controller_blocks.c:69-93` (getbestblockhash via `rpc_provable_tip` at H*); `engine/controllers/src/blockchain_controller_chain.c:55-93` (getblockchaininfo: H* at `:84`, `active_chain_at(H*)` at `:85-86`).
 - **Bare `build/bin/zclassic-cli` is always the z23 status target.** FALSE. It can follow local defaults, cookies, datadirs, or environment and answer from another RPC target. For z23 stability checks use the C-owned native agent commands first (`z23 status`, `z23 agent`, `z23 agentdiagnose`, `z23 getmirrorstatus`), or make direct RPC explicit with `build/bin/zcl-rpc getblockcount` / `build/bin/zclassic-cli -rpcport=18232 getblockcount`. A bare CLI height mismatch is an operator-interface ambiguity until the target lane is proven.
@@ -282,19 +228,24 @@ historical fixture passes, then deploy/restart intentionally.
 §2 item 5 of `docs/work/consensus-parity-supplemental-audit-2026-06-08.md`.
 - **Upstream-hole (stale-replay artifact) returns JOB_IDLE, not JOB_BLOCKED.** Intentional. `JOB_BLOCKED` feeds the supervisor escalation/restart ladder, and a watchdog self-restart is what manufactures this hole class — re-blocking would re-trigger the watchdog that created it (a loop). The alarm is LOGGED+COUNTED, not escalated. **Breaks if changed to JOB_BLOCKED:** escalation loop. → `engine/jobs/src/utxo_apply_stage.c:405-418` (`:409-414` comment, `:415` `upstream_hole_note()`). **Generalized:** the same JOB_IDLE-plus-typed-DEPENDENCY-blocker shape is shared via `stage_upstream_log_hole_note()`/`_clear()` (`engine/jobs/include/jobs/stage_helpers.h`) and wired into ALL SEVEN downstream stages' `found==0` floor-violation sites — `body_fetch_stage.c`, `body_persist_stage.c`, `script_validate_stage.c`, `proof_validate_stage.c`, and `tip_finalize_stage.c` (its `utxo_apply_log` row-missing site; the sibling `validate_headers_stage.c` window-resolve-miss class below uses its own dedicated id, not this helper). Do not re-propose adding this; do check whether a NEW `found==0` site (a new stage, a new upstream log) has been wired to the same helper.
 - **`stage_body_read_hold()`/`_clear()` (`stage_helpers.h`) name a typed TRANSIENT blocker `<stage>.body_read_failed` when `stage_read_block()` fails for a height body_persist already hash+merkle verified.** Wired into `script_validate_stage.c`, `proof_validate_stage.c`, and `utxo_apply_stage.c` (all three read the SAME already-verified body). `body_persist_stage.c`'s own read failure is a DIFFERENT case (`requeue_body_for_refetch`) — it owns the hash/merkle verification itself and clears `BLOCK_HAVE_DATA` to trigger a real network re-fetch; do not replace it with this helper.
-- **`tip_finalize.uv_cursor_gap` typed DEPENDENCY blocker (`tip_finalize_stage_observe.c`) fires when `cursor_in > utxo_apply_cursor`.** This is an ANOMALY, not a normal wait — the pipeline order guarantees utxo_apply commits a height before tip_finalize consumes it, so this should be unreachable except via an out-of-band utxo_apply cursor repair. Folded into the existing `tip_finalize_observe_note_cursor_gap()` (previously WARN + counter only, no registry blocker) rather than added inline in `tip_finalize_stage.c`, to keep that file under its file-size-ceiling baseline.
+- **`tip_finalize.uv_cursor_gap` typed DEPENDENCY blocker (`tip_finalize_stage_observe.c`) fires when `cursor_in > utxo_apply_cursor`.** This is an ANOMALY, not a normal wait — the pipeline order guarantees utxo_apply commits a height before tip_finalize consumes it, so this should be unreachable except via an out-of-band utxo_apply cursor repair. Folded into the existing `tip_finalize_observe_note_cursor_gap()` rather than added inline in `tip_finalize_stage.c`.
 - **`validate_headers.window_resolve_miss` is shared by TWO call sites via `vh_window_miss_note()` (`validate_headers_stage.c`): `step_validate`'s forward path AND `recheck_failed_rows`' repair path.** Both call `vh_resolve_bi()` and hit the identical unresolvable-height class; a resolve-miss stuck in the recheck loop pins H* exactly like a stuck forward step (an unrepaired `ok=0` `validate_headers_log` row caps `reducer_frontier_compute_hstar` regardless of how far the forward cursor climbed).
 - **The "waiting for Sapling params to load" wait (there is NO enum named `JOB_WAIT_PARAMS` — do not invent one) instead of erroring.** Intentional and recoverable. Two distinct shapes: the contextual path returns `SV_CTX_WAIT_PARAMS` (`script_validate_contextual.c:101-103`, enum at `jobs/script_validate_contextual.h:29` documented as "recoverable, JOB_IDLE"), driven through `script_validate_stage.c:446` (the `SV_CTX_WAIT_PARAMS` case); the proof_validate path sets `internal_error=true` / `first_failure_proof_type="params_not_loaded"` (`proof_validate_stage.c:119-124`). Params load in a background boot thread; boot only WARNs on failure (`engine/composition/src/boot_services.c:836`). Returning a hard error would permanently reject valid canonical shielded blocks. A persistent wait looks like a hang but is correct when params fail to load — fix the params path (`-paramsdir=<dir>` pointing at a valid `sapling-spend.params`/`sapling-output.params` pair, or install the default `~/.zcash-params`). There is no `-nosaplingverify` flag — that string does not parse; the argv loop WARNs on any unrecognized `-flag` instead of silently no-op'ing. (The job-result enum is `JOB_BLOCKED`/`JOB_IDLE`/`JOB_FATAL` etc. in `jobs/job.h:36-37` — there is no `JOB_WAIT_PARAMS`.)
-- **`-import-complete-shielded` REFUSING a bind whose chainstate best block != the target's fold-resume anchor (coins island root) is the bind guard, intentional.** A zclassicd whose on-disk chainstate lags its live tip (it had stopped flushing its block DB) used to import a frontier keyed BELOW the island root with both activation cursors flipped to 0 — the fold then hard-wedged at the first Sapling-commitment block above the island (`hashFinalSaplingRoot` mismatch, `utxo_apply.apply_failed`, H* pinned). The import now refuses pre-transaction (`shielded_history_import_bind_guard_probe` in `engine/services/src/shielded_history_import_bind_guard.c`, called by both the verb in `engine/entry/main.c` and the service itself; nothing committed), and the boot-side refresh (`utxo_apply_anchor_gap_blocker_refresh_with_ndb` in `engine/jobs/src/utxo_apply_anchors.c`) keeps the NAMED permanent blocker `utxo_apply.anchor_backfill_gap` raised on an ALREADY-manufactured mismatch (cursors 0 + latest Sapling frontier row below the island root + the header-committed root at the island root moved) — detection only, no auto-repair. The root comparison is what keeps the boot guard silent on healthy nodes (a folded node's latest anchor legitimately lags the coins tip over a commitment-free tail; the header root cannot have moved). **Do not "fix" the refusal by weakening the equality** — bind == island root is the only consistent bind. → `tests/harness/src/test_shielded_bind_guard.c`.
+- **`-import-complete-shielded` REFUSING a bind whose chainstate best block != the target's fold-resume anchor (coins island root) is the bind guard, intentional.** A zclassicd whose on-disk chainstate lags its live tip would import a frontier keyed BELOW the island root with both activation cursors flipped to 0, and the fold would hard-wedge at the first Sapling-commitment block above the island (`hashFinalSaplingRoot` mismatch, `utxo_apply.apply_failed`, H* pinned). The import refuses pre-transaction (`shielded_history_import_bind_guard_probe` in `engine/services/src/shielded_history_import_bind_guard.c`, called by both the verb in `engine/entry/main.c` and the service itself; nothing committed), and the boot-side refresh (`utxo_apply_anchor_gap_blocker_refresh_with_ndb` in `engine/jobs/src/utxo_apply_anchors.c`) keeps the NAMED permanent blocker `utxo_apply.anchor_backfill_gap` raised on an ALREADY-manufactured mismatch (cursors 0 + latest Sapling frontier row below the island root + the header-committed root at the island root moved) — detection only, no auto-repair. The root comparison is what keeps the boot guard silent on healthy nodes (a folded node's latest anchor legitimately lags the coins tip over a commitment-free tail; the header root cannot have moved). **Do not "fix" the refusal by weakening the equality** — bind == island root is the only consistent bind. → `tests/harness/src/test_shielded_bind_guard.c`.
 - **Some `_v2`/`_v3`/`.v1` suffixes on names are load-bearing wire/ABI/format tags, not naming cruft.** A "canonicalize the names, drop version suffixes" sweep must NOT touch these — renaming breaks the dynamic-load ABI, silently drops a captured on-disk format section, or breaks wire/schema string matching against already-deployed consumers. Verified categories, with real symbols checked to exist at the time this was written:
   - **Hot-swap manifest symbol, resolved by exact string via `dlsym()`.** `struct zcl_hotswap_manifest_v2` (`engine/modules/hotswap/include/hotswap/hotswap.h:87`) is exported as the data symbol literally named `zcl_hotswap_manifest_v2`, and `hotswap_loader.c:649` calls `dlsym(handle, "zcl_hotswap_manifest_v2")` — an exact byte-for-byte string lookup. `ZCL_HOTSWAP_MANIFEST_SCHEMA_V2` (`hotswap.h:49`) is a distinct schema-version constant checked against `manifest->schema_version` (`hotswap_loader.c:217-218`). Renaming the symbol (even to `_v3`) breaks every already-built `.so` module's dlsym resolution; bumping the constant without a real schema change breaks admission of existing modules. **Breaks if "cleaned up":** every hot-swap module fails to load with "missing zcl_hotswap_manifest_v2".
   - **The v3 shielded-snapshot format tag** (`engine/composition/src/boot_shielded_seed.c`, `engine/composition/include/config/boot_shielded_seed.h`; also referenced in this repo's root `CLAUDE.md` Tenacity section as "must not discard a captured v3 shielded section"). `shielded_v3` is not a stray variable suffix — it names a specific legacy USS snapshot format (Sapling+Sprout frontiers + nullifiers) that a v1/v2-oriented refold-reset path must not silently drop. Renaming or "flattening" the `v3` tag away from call sites (`boot_refold_staged.c:1081-1296`) makes it look like ordinary current-state code and invites a future edit to discard the captured section.
   - **Wire/schema string tags embedded as literal JSON values**, e.g. `"zcl.hotswap_module.v1"` (`hotswap_activate.c:236`), `"zcl.hotswap_generation.v2"` (`hotswap_loader.c:327`), `ZCL_SERVICE_MANIFEST_V1` (`engine/composition/services/catalog.def`), `"zcl.consensus_state_bundle.v1"` / `"zcl.consensus_state_install_verify_receipt.v1/record"` (`engine/composition/src/consensus_state_snapshot_install.c`, `engine/composition/src/consensus_state_install_verify_receipt.c:69`). These are the wire-format's own version discriminant, on the same footing as a protocol magic number — a consumer or diagnostic parser matches the literal string, so dropping the trailing `.v1`/`.v2` is a breaking schema change disguised as a rename, not a cleanup.
-  - **The `test_hotswap_module_v2` test group — CHECKED 2026-07-25, load-bearing, do NOT rename.** It looks like the textbook "one canonical name, no `-v2` suffix" violation and has been proposed as one. It is not. The module ABI is versioned and the loader hard-refuses any module not carrying the CURRENT one — that constant has since moved to `ZCL_HOTSWAP_MODULE_ABI_V3` (the manifest gained the sealed-core sections a module compiled against), so read the current value out of `engine/modules/hotswap/include/hotswap/hotswap_module.h` rather than trusting a number quoted here. The group tests the MULTI-LEAF ABI v2 admit/probe/batch-commit path specifically, and one of its six assertions is that an **old-ABI (v1) module is refused LOUDLY at `stage=abi`** (`test_hotswap_module_v2.c:263-275`). Its sibling `test_hotswap_module.c` is a DIFFERENT, co-existing group covering the single-leaf ABI plus the epoch/refcount dlclose drain — so `v2` is not a stale version marker on one canonical thing, it is the discriminator between two things that exist at the same time. Renaming it would both collide semantically with the sibling group and erase the ABI distinction that is the group's entire subject. **Breaks if "cleaned up":** the rename reads as cosmetic, the two groups become indistinguishable by name, and the next reader has no signal that v1-refusal coverage lives in the `_v2` file.
+  - **The `test_hotswap_module_v2` test group is load-bearing; do NOT rename.** It looks like a "no `-v2` suffix" violation. It is not. The module ABI is versioned and the loader hard-refuses any module not carrying the CURRENT one — that constant has since moved to `ZCL_HOTSWAP_MODULE_ABI_V3` (the manifest gained the sealed-core sections a module compiled against), so read the current value out of `engine/modules/hotswap/include/hotswap/hotswap_module.h` rather than trusting a number quoted here. The group tests the MULTI-LEAF ABI v2 admit/probe/batch-commit path specifically, and one of its six assertions is that an **old-ABI (v1) module is refused LOUDLY at `stage=abi`** (`test_hotswap_module_v2.c:263-275`). Its sibling `test_hotswap_module.c` is a DIFFERENT, co-existing group covering the single-leaf ABI plus the epoch/refcount dlclose drain — so `v2` is not a stale version marker on one canonical thing, it is the discriminator between two things that exist at the same time. Renaming it would both collide semantically with the sibling group and erase the ABI distinction that is the group's entire subject. **Breaks if "cleaned up":** the rename reads as cosmetic, the two groups become indistinguishable by name, and the next reader has no signal that v1-refusal coverage lives in the `_v2` file.
   - **What IS fair game:** a `_v2`/`_v3` suffix that is genuinely just an unused leftover local variable or file name with no dlsym/wire/format consumer anywhere in the tree — verify with `z23 code sym/refs` (or a scoped grep) that nothing resolves the literal string before touching it.
-- **A "every `make <target>` named in docs must exist" gate was evaluated on 2026-07-25 and DECLINED — do not re-propose it without new evidence.** It sounds like an obvious sibling of `check-no-stale-pinned-facts`, and it is not worth its cost. Measured: 373 defined targets vs 166 doc-mentioned ones, and **zero** real violations. A naive scan reports ~34, and every one is a false positive of two kinds: (a) English prose — "make a", "make sure", "make it", "make progress", "make this", "make every" — because `make <word>` is an ordinary verb phrase; and (b) **macro-generated rules**, which no grep of `^target:` can see. `test_parallel_wpo` and `zclassic23-chaos` are both produced by `$(eval $(call BUILD_NODE_TOOL,...))` (`Makefile:1136,2477`) and look missing to a text scan while being perfectly real — confirm with `make -pn | grep -oE '^<target>:'`, which resolves macro-generated targets correctly. The only genuinely absent doc-mentioned target is `mvp-live`, and `docs/work/mvp-live-gate.md:99` already labels it "(suggested — not yet wired)", which is honest and would need an exemption anyway. **The adjacent class that WAS worth gating** — Makefile *tool rules that no longer build* — had six real violations and is now covered by `check-standalone-tools-link`; spend effort there, not here.
+- **Do not gate "every `make <target>` named in docs must exist".** A text scan
+  reports false positives only: English prose ("make sure", "make it") and
+  macro-generated rules no grep of `^target:` can see (`test_parallel_wpo` and
+  `zclassic23-chaos` come from `$(eval $(call BUILD_NODE_TOOL,...))`; confirm with
+  `make -pn | grep -oE '^<target>:'`). The class worth gating, Makefile tool
+  rules that no longer build, is covered by `check-standalone-tools-link`.
 - **`.codeindex/` refusing to open when the directory is group- or world-writable is the security boundary, not a papercut — do NOT make it self-heal.** The check is `dir_st.st_mode & (S_IWGRP | S_IWOTH)` in `rebuild_lock_open()` (`cognition/modules/codeindex/src/codeindex_build.c`), and `tests/harness/src/test_codeindex.c` pins it: it `chmod 0777`s the fixture and asserts `codeindex_open()` returns NULL ("Mode drift fails closed before SQLite can consume the canonical pathname"). The symptom is loud and looks like a regression — every group that reads the index fails with `rebuild failed`, and `test_code_capsule` goes red on a tree where nothing relevant changed. **The cause is environmental**: the C code creates the directory `0755`, but a shell `mkdir -p` under the common `umask 0002` leaves it `0775`, and `mkdir` then returns `EEXIST` on every later run so nothing ever tightens it. **Fix: `chmod g-w,o-w .codeindex`.** It is gitignored build state — deleting it is also fine. **Breaks if "fixed" with an auto-chmod:** tightening the mode afterwards does not undo anything an attacker already planted there, which is precisely why the refusal happens *before* the path reaches SQLite. (Bonus trap: `codeindex_build.c` is one of the files carried in `tools/lint/file_size_policy_baseline.txt`, so an auto-chmod patch that grows it past its recorded line count fails E1 too — a second, unrelated-looking failure with the same single cause.)
-- ~~The compile-epoch object directory relocating on every edit is deliberate, and the whole-tree key it uses is load-bearing.~~ **RETIRED 2026-07-27 — the epoch is now toolchain+flags-keyed, and the guarantee was replaced, not dropped.** `zcl_compile_epoch` used to bind the whole-tree source id + mutation token, so any edit relocated all ~1,200 objects. It now binds only compiler/toolchain fingerprint, profile, effective compile/link flags, and `BUILD_SYSTEM_ID` (`build-epoch-key.sh build-system-id` = root Makefile, which holds every flag variable and per-object override, + the four epoch driver scripts), so a source edit recompiles only make's stale TUs inside the STABLE epoch while a Makefile/flags/toolchain edit still busts every epoch. The replacement guarantees: per-TU freshness rides make's timestamp+depfile graph; `clientversion.o` carries `ZCL_BUILD_SOURCE_ID` and depends on `$(BUILD_IDENTITY_STAMP)` in every profile, so any source-identity move rebuilds it and relinks every binary (all link rules take the stamp); every publish path still re-verifies the exact source record after compiling, and the per-TU compile driver still requires a session stamp naming the current source id/mutation. The known residual vs the old design: a compile that races an edit *in the same seconds window* can leave one object whose mtime postdates the reverted source — the publish-time verify-record still refuses the binary, but the old ABA quarantine-by-namespace is gone by design (accepted; the failed `perf/stable-objdir-and-gold-linker` branch had the same exposure and its review did not flag it). **Do not re-add a per-object attestation/verifier pass** — that was the branch's measured ~11% wall-time regression; the win comes from make's normal incrementality. The branch's other two defects are closed: a per-object CFLAGS edit moves `BUILD_SYSTEM_ID` (proven: dev epoch re-keys, full rebuild scheduled), and `check-build-epoch-integrity`'s cache key now includes the driver itself plus every script the probes read (proven: editing an input forces a real rerun). See `docs/BENCHMARKS_LOG.md`.
+- **The compile epoch is toolchain+flags-keyed, not source-keyed.** `zcl_compile_epoch` binds only the compiler/toolchain fingerprint, profile, effective compile/link flags, and `BUILD_SYSTEM_ID` (`build-epoch-key.sh build-system-id` = root Makefile, which holds every flag variable and per-object override, plus the four epoch driver scripts). A source edit recompiles only make's stale TUs inside the STABLE epoch; a Makefile/flags/toolchain edit busts every epoch. Per-TU freshness rides make's timestamp+depfile graph; `clientversion.o` carries `ZCL_BUILD_SOURCE_ID` and depends on `$(BUILD_IDENTITY_STAMP)` in every profile, so any source-identity move relinks every binary; every publish path re-verifies the exact source record after compiling, and the per-TU compile driver requires a session stamp naming the current source id/mutation. Residual: a compile that races an edit in the same seconds window can leave one object whose mtime postdates the reverted source; the publish-time verify-record still refuses the binary. **Do not re-add a per-object attestation/verifier pass** (about 11% wall-time regression); the win comes from make's normal incrementality. A per-object CFLAGS edit moves `BUILD_SYSTEM_ID`, and `check-build-epoch-integrity`'s cache key includes the driver and every script the probes read. See `docs/BENCHMARKS_LOG.md`.
 - **An existing compile epoch may carry `.unverified` after an interrupted
   acquisition.** The selected profile's included recovery witness acquires and
   quarantines that generation, then forces exactly one Make restart before

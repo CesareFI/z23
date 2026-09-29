@@ -214,8 +214,7 @@ remains the rule for the entry documents regardless of gate coverage.
 
 **Script:** `tools/scripts/check_test_registration.sh`
 
-**The failure it was written for.** From the script's header: on 2026-06-22,
-three test entry points — `test_refold_from_anchor_fatal`,
+**The failure it was written for.** Three test entry points — `test_refold_from_anchor_fatal`,
 `test_refold_auto_arm`, and `test_anchor_selfmint` — lived in dedicated
 `tests/harness/src/test_<name>.c` files and were **compiled and linked into the test
 binaries**, yet appeared in neither the canonical test group catalog of the parallel
