@@ -487,6 +487,29 @@ static bool pic_emit_as(struct vcs_proof_issuer_log *log,
            vcs_proof_issuer_log_append(log, &t, wire);
 }
 
+/* Throwaway trusted issuer `i`: a ticket on bc, then its own unit. X1
+ * checkpoints once over both; X2 and X3 checkpoint after the first too
+ * (X2 drops that one, so its second is an orphan). */
+static bool pic_paged_issuer(struct pic_paged *p, int i)
+{
+    char unit[48];
+    snprintf(unit, sizeof(unit), "unit/iso/paged/own/%d", i);
+    pic_key(unit, &p->own[i]);
+    memset(p->seed[i], 0, 32);
+    p->seed[i][0] = 0xc1;
+    p->seed[i][1] = (uint8_t)i;
+    p->log[i] = vcs_proof_issuer_log_new(p->seed[i]);
+    if (!p->log[i] || !pic_emit_as(p->log[i], &p->bc, p->x[i][0]))
+        return false;
+    vcs_proof_issuer_log_pubkey(p->log[i], p->pub[i]);
+    uint8_t dropped[PIC_CPW];
+    uint8_t *first = i == 1 ? dropped : p->x3_cp1;
+    uint8_t *last = i == 0 ? p->x1_cp : i == 1 ? p->x2_orphan : p->x3_cp2a;
+    return (i == 0 || vcs_proof_issuer_log_checkpoint(p->log[i], 93, first)) &&
+           pic_emit_as(p->log[i], &p->own[i], p->x[i][1]) &&
+           vcs_proof_issuer_log_checkpoint(p->log[i], 94, last);
+}
+
 static bool pic_paged_emit(struct pic_paged *p)
 {
     pic_key("unit/iso/paged/bc", &p->bc);
@@ -494,25 +517,7 @@ static bool pic_paged_emit(struct pic_paged *p)
               ptf_emit(&g_i, PTF_C, &p->bc, ptf_pass(), p->c[0], NULL) &&
               vcs_proof_issuer_log_checkpoint(g_i.logs[PTF_B], 91, p->cp_b) &&
               vcs_proof_issuer_log_checkpoint(g_i.logs[PTF_C], 92, p->cp_c);
-    uint8_t unused[PIC_CPW];
-    for (int i = 0; ok && i < PIC_X; i++) {
-        char unit[48];
-        snprintf(unit, sizeof(unit), "unit/iso/paged/own/%d", i);
-        pic_key(unit, &p->own[i]);
-        memset(p->seed[i], 0, 32);
-        p->seed[i][0] = 0xc1;
-        p->seed[i][1] = (uint8_t)i;
-        p->log[i] = vcs_proof_issuer_log_new(p->seed[i]);
-        ok = p->log[i] && pic_emit_as(p->log[i], &p->bc, p->x[i][0]);
-        if (ok) vcs_proof_issuer_log_pubkey(p->log[i], p->pub[i]);
-        if (ok && i > 0)
-            ok = vcs_proof_issuer_log_checkpoint(
-                p->log[i], 93, i == 1 ? unused : p->x3_cp1);
-        ok = ok && pic_emit_as(p->log[i], &p->own[i], p->x[i][1]) &&
-             vcs_proof_issuer_log_checkpoint(
-                 p->log[i], 94, i == 0 ? p->x1_cp :
-                                i == 1 ? p->x2_orphan : p->x3_cp2a);
-    }
+    for (int i = 0; ok && i < PIC_X; i++) ok = pic_paged_issuer(p, i);
     uint8_t again[PIC_CPW];
     ok = ok && pic_resign(p->seed[2], (const uint8_t (*)[PIC_W])p->x[2], 2,
                           93, 95, again, p->x3_cp2b) &&
