@@ -317,6 +317,55 @@ static int sbit_t_computed_targets(void)
     return failures;
 }
 
+/* A line that is no definition, directive or rule its text spells, and
+ * that holds a reference, may expand to a rule: a variable holding "x:" or
+ * ":", a top-level $(call), $(foreach) or $(if). A static rule's target
+ * pattern, or a % pattern a computed target list is built from, may match
+ * a missing include too. Each widens while it names the include; the rest
+ * are recorded under computed-targets-not-includes. */
+#define SBI_BARE(lines)                                                        \
+    "all: build/a.o\n" SBI_OBJ_RULE "-include build/gen.mk\n" lines "\n"       \
+    SBI_GEN_RULE
+#define SBI_TPL ": tools/tpl.mk ; cp tools/tpl.mk "
+#define SBI_TPL_RECIPE "\n\tcp tools/tpl.mk $@"
+#define SBI_OBJS_IN "OBJS := $(patsubst tools/%.in,build/%.mk,$(wildcard tools/*.in))\n"
+static int sbit_t_computed_lines(void)
+{
+    int failures = 0;
+    static const char *const changed[] = {"tools/x.sh"};
+    static const struct sbi_case cases[] = {
+        {"t28", SBI_BARE("R := build/gen.mk:\n$(R)" SBI_TPL_RECIPE), NULL, NULL},
+        {"t30", SBI_BARE("C := :\nbuild/gen.mk$(C)" SBI_TPL_RECIPE), NULL, NULL},
+        {"t36", SBI_BARE("RULE = $(1)" SBI_TPL "$(1)\n$(call RULE,build/gen.mk)"),
+         NULL, NULL},
+        {"t37", SBI_BARE("$(foreach f,build/gen.mk,$(f)" SBI_TPL "$(f))"), NULL, NULL},
+        {"t38", SBI_BARE("$(if 1,build/gen.mk" SBI_TPL "build/gen.mk)"), NULL, NULL},
+        {"t10", SBI_BARE(SBI_OBJS_IN "$(OBJS): build/%.mk: tools/%.in\n\tcp $< $@"),
+         "tools/gen.in", "x\n"},
+        {"t11", SBI_BARE("$(subst Q,.,build/genQmk): build/%.mk: tools/%.in\n\tcp $< $@"),
+         "tools/gen.in", "x\n"},
+        {"t12", SBI_BARE("$(subst Q,%,build/Q.mk): tools/tpl.mk" SBI_TPL_RECIPE),
+         NULL, NULL},
+        {"t33", SBI_BARE(SBI_OBJS_IN "$(OBJS): tools/tpl.mk" SBI_TPL_RECIPE),
+         "tools/gen.in", "x\n"},
+    };
+    struct sbi_run r = {0};
+    const struct zcl_devloop_facts_plan_premise *p = &r.rep.make_premise;
+    TEST_CASE("semantic_build_inputs: a line that may expand to a rule "
+             "making a missing include widens; one naming none is recorded") {
+        ASSERT(sbi_cases_widen(cases, SBI_COUNT(cases)));
+        ASSERT(sbi_consume("sbi_ct_bare", SBI_BARE("R := $(subst Q,.,build/genQmk):\n"
+                           "$(R)" SBI_TPL_RECIPE), changed, 1, &r) &&
+               sbi_narrowed(&r));
+        ASSERT(p->premises == ZCL_DEVLOOP_PREMISE_COMPUTED_TARGETS_NOT_INCLUDES &&
+               strcmp(p->include, "build/gen.mk") == 0);
+        ASSERT(strcmp(p->target, "$(R)") == 0 &&
+               strcmp(p->target_at, "Makefile:6") == 0 && p->ntargets == 2);
+    } TEST_END
+    zcl_devloop_facts_report_free(&r.rep);
+    return failures;
+}
+
 /* The premises every skip rests on, and the plan's. */
 #define SBI_EVERY_SKIP (ZCL_DEVLOOP_PREMISE_BUILD_READS_PLANNED_TREE | \
                         ZCL_DEVLOOP_PREMISE_NO_COMMAND_LINE_OVERRIDE)
@@ -393,9 +442,12 @@ static int sbit_t_plan_record(void)
  * assigned or a variable is exported (any command may then run anything:
  * echo is no longer a reader; make passes exported variables such as
  * LD_PRELOAD to $(shell)), or when an $(eval) runs text a reference or $$(
- * computes. */
+ * computes. An $(eval) line may expand to a rule too: it records
+ * computed-targets-not-includes as well. */
+#define SBI_EVAL_PREMISE ZCL_DEVLOOP_PREMISE_COMPUTED_TARGETS_NOT_INCLUDES
 struct sbi_pcase {
     const char *id, *makefile, *command;
+    unsigned premises;
 };
 
 static int sbit_t_premise_forms(void)
@@ -404,18 +456,18 @@ static int sbit_t_premise_forms(void)
     static const char *const changed[] = {"tools/x.sh"};
     bool all = true;
     static const struct sbi_pcase cases[] = {
-        {"u01", "X := $(call shell,tools/mkgen.sh)\n", "tools/mkgen.sh"},
-        {"u05", "SHELL := tools/wrap.sh\nX := $(shell echo hi)\n", "echo hi"},
+        {"u01", "X := $(call shell,tools/mkgen.sh)\n", "tools/mkgen.sh", 0},
+        {"u05", "SHELL := tools/wrap.sh\nX := $(shell echo hi)\n", "echo hi", 0},
         {"v14", ".SHELLFLAGS := -c tools/mkgen.sh;eval\nX := $(shell echo hi)\n",
-         "echo hi"},
+         "echo hi", 0},
         {"shell_target", "build/a.o: SHELL := tools/wrap.sh\nX := $(shell echo hi)\n",
-         "echo hi"},
+         "echo hi", 0},
         {"path_export", "export PATH := tools/bin:$(PATH)\nX := $(shell cat tools/t)\n",
-         "cat tools/t"},
-        {"v12", "FR != cat tools/frag\n$(eval $(FR))\n", "$(FR)"},
+         "cat tools/t", 0},
+        {"v12", "FR != cat tools/frag\n$(eval $(FR))\n", "$(FR)", SBI_EVAL_PREMISE},
         {"u06", "S := shell\n$(eval X := $$($(S) tools/mkgen.sh))\n",
-         "X := $$($(S) tools/mkgen.sh)"},
-        {"export", "export LD_PRELOAD := tools/x.so\nX := $(shell echo hi)\n", "echo hi"},
+         "X := $$($(S) tools/mkgen.sh)", SBI_EVAL_PREMISE},
+        {"export", "export LD_PRELOAD := tools/x.so\nX := $(shell echo hi)\n", "echo hi", 0},
     };
     TEST_CASE("semantic_build_inputs: a call form, a reassigned shell or a "
              "computed $(eval) records the plan premise") {
@@ -427,7 +479,8 @@ static int sbit_t_premise_forms(void)
             (void)snprintf(tag, sizeof(tag), "sbi_pf_%s", cases[k].id);
             (void)snprintf(mk, sizeof(mk), "%s%s", cases[k].makefile, SBI_P_TAIL);
             ok = sbi_consume(tag, mk, changed, 1, &r) && sbi_narrowed(&r) &&
-                 p->premises == SBI_PLAN_PREMISE && p->nincludes == 1 &&
+                 p->premises == (SBI_PLAN_PREMISE | cases[k].premises) &&
+                 p->nincludes == 1 &&
                  strcmp(p->include, "build/gen.mk") == 0 &&
                  strcmp(p->command, cases[k].command) == 0;
             if (!ok)
@@ -445,5 +498,6 @@ int sbi_guard_suite(void)
 {
     return sbit_t_parse_time_writers() | sbit_t_parse_time_quiet() |
            sbit_t_guarded_include() | sbit_t_guard_record() | sbit_t_plan_record() |
-           sbit_t_dot_slash() | sbit_t_computed_targets() | sbit_t_premise_forms();
+           sbit_t_dot_slash() | sbit_t_computed_targets() | sbit_t_computed_lines() |
+           sbit_t_premise_forms();
 }
