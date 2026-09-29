@@ -1227,23 +1227,42 @@ _test_next:;
     return failures;
 }
 
-/* The regen phase commits generated-doc drift after a clean rebase and
- * re-requests proof for the new tip. */
+/* The regen phase folds generated-doc drift after a clean rebase INTO the
+ * candidate's own last commit: no "Regenerate ..." commit appears, the tip
+ * keeps its subject and author, its tree carries the regenerated file, the
+ * amend is signed by the same ambient configuration as every landing commit,
+ * and the id the proof is bound to is exactly the id that gets pushed. */
 static int test_dev_land_regen_commits_drift(void)
 {
     int failures = 0;
-    TEST("land: the regen phase commits generated-doc drift after a clean "
-        "rebase and re-requests proof for the new tip") {
+    TEST("land: the regen phase folds generated-doc drift into the tip "
+        "commit after a clean rebase, and proves and pushes that tip") {
         struct dlx_rig rig;
         struct dlx_call c;
-        char landwt[1300], subject[512], head[64];
+        char landwt[1300], out[512], head[64], base[64], parent[64];
+        char intent[160];
         const char *log_subject[] = { "log", "-1", "--pretty=%s", NULL };
+        const char *log_author[] = { "log", "-1", "--pretty=%an <%ae>",
+                                     NULL };
+        const char *log_sig[] = { "log", "-1", "--pretty=%G?", NULL };
         const char *head_args[] = { "rev-parse", "HEAD", NULL };
+        const char *parent_args[] = { "rev-parse", "HEAD~1", NULL };
+        const char *tip_parent[] = { "rev-parse", "keep-tip~1", NULL };
+        const char *tip_author[] = { "log", "-1", "--pretty=%an <%ae>",
+                                     "keep-tip", NULL };
+        const char *keep[] = { "branch", "keep-tip", rig.tip, NULL };
+        const char *inventory[] = { "show",
+                                    "HEAD:docs/CAPABILITY_INVENTORY.jsonl",
+                                    NULL };
+        const char *remote[] = { "rev-parse", "main", NULL };
         dlx_isolate("regendocs_a");
         ASSERT(dlx_rig_make_docregen(
             &rig, "regendocs_a_rig",
             "@printf 'regen\\n' >> docs/CAPABILITY_INVENTORY.jsonl", "@:",
             "@:"));
+        ASSERT(dlx_git(rig.clone, keep) == 0);
+        ASSERT(dlx_sign_arm(rig.clone, "regendocs_a_key"));
+        ASSERT(dlx_origin_main(&rig, base));
         setenv("ZCL_LAND_PROOF_STUB", "running", 1);
         setenv("ZCL_LAND_ALLOW_UNSIGNED", "1", 1);
         dlx_submit(&c, &rig, rig.tip);
@@ -1258,17 +1277,56 @@ static int test_dev_land_regen_commits_drift(void)
         ASSERT(strcmp(dlx_str(&c, "state"), "started") == 0);
         dlx_end(&c);
         dlx_land_wt(landwt, sizeof(landwt));
-        ASSERT(dlx_git_out(landwt, log_subject, subject, sizeof(subject)) ==
-              0);
-        ASSERT(strcmp(subject, "Regenerate generated docs after "
-                              "change.txt") == 0);
-        /* The proof is requested for the NEW tip, not the pre-regen one:
-         * the regen commit sits on top of it. */
+        /* No new commit: the tip keeps its subject and author, sits on the
+         * same parent the submitted tip had, and is a NEW id only because
+         * its tree now carries the regenerated file. */
+        ASSERT(dlx_git_out(landwt, log_subject, out, sizeof(out)) == 0);
+        ASSERT_STR_EQ(out, "change.txt");
         ASSERT(dlx_git_out(landwt, head_args, head, sizeof(head)) == 0);
         ASSERT(strcmp(head, rig.tip) != 0);
+        ASSERT(dlx_git_out(landwt, parent_args, parent, sizeof(parent)) ==
+               0);
+        ASSERT(dlx_git_out(rig.clone, tip_parent, out, sizeof(out)) == 0);
+        ASSERT_STR_EQ(parent, out);
+        ASSERT_STR_EQ(parent, base);
+        ASSERT(dlx_git_out(rig.clone, tip_author, out, sizeof(out)) == 0);
+        {
+            char author[512];
+            ASSERT(dlx_git_out(landwt, log_author, author,
+                               sizeof(author)) == 0);
+            ASSERT_STR_EQ(author, out);
+        }
+        ASSERT(dlx_git_out(landwt, inventory, out, sizeof(out)) == 0);
+        ASSERT_STR_EQ(out, "orig\nregen");
+        /* Signed through the ambient commit.gpgsign configuration. */
+        ASSERT(dlx_git_out(landwt, log_sig, out, sizeof(out)) == 0);
+        ASSERT_STR_EQ(out, "G");
+        /* The proof is bound to the AMENDED tip on the exact base. */
+        dlx_begin(&c, "status");
+        ASSERT(dlx_run(&c) && dlx_ok(&c));
+        {
+            const struct json_value *flight =
+                json_get(&c.reply.data, "in_flight");
+            ASSERT(flight != NULL);
+            (void)snprintf(intent, sizeof(intent), "%s@%s", head, base);
+            ASSERT_STR_EQ(json_get_str(json_get(flight, "proof_intent")),
+                          intent);
+        }
+        dlx_end(&c);
+        /* And the pushed id is exactly the proved one. */
+        setenv("ZCL_LAND_PROOF_STUB", "pass", 1);
+        dlx_begin(&c, "step");
+        ASSERT(dlx_run(&c));
+        ASSERT(dlx_ok(&c));
+        ASSERT_STR_EQ(dlx_str(&c, "state"), "landed");
+        ASSERT_STR_EQ(dlx_str(&c, "tip_pushed"), head);
+        dlx_end(&c);
+        ASSERT(dlx_git_out(rig.bare, remote, out, sizeof(out)) == 0);
+        ASSERT_STR_EQ(out, head);
         dlx_restore();
         PASS();
     } _test_next:;
+    dlx_restore();
     return failures;
 }
 
@@ -8495,13 +8553,19 @@ int test_dev_land(void)
 
 
     TEST("land: a rebase conflict confined to the regenerated artifacts is "
-        "resolved from the code and recorded as a signed regeneration "
-        "commit, not refused") {
+        "resolved from the code and folded, signed, into the candidate's "
+        "own commit, not refused") {
         struct dlx_rig rig;
         struct dlx_call c;
-        char tip[64], landwt[1300], subject[512], sig[64];
+        char tip[64], landwt[1300], subject[512], sig[64], base[64];
         const char *log_subject[] = { "log", "-1", "--pretty=%s", NULL };
         const char *log_sig[] = { "log", "-1", "--pretty=%G?", NULL };
+        const char *parent_args[] = { "rev-parse", "HEAD~1", NULL };
+        const char *inventory[] = { "show",
+                                    "HEAD:docs/CAPABILITY_INVENTORY.jsonl",
+                                    NULL };
+        const char *map[] = { "show", "HEAD:docs/CODEBASE_MAP.md", NULL };
+        const char *mine[] = { "show", "HEAD:mine.txt", NULL };
         dlx_isolate("regenauto");
         ASSERT(dlx_rig_make(&rig, "regenauto_rig"));
         ASSERT(dlx_sign_arm(rig.clone, "regenauto_key"));
@@ -8527,15 +8591,24 @@ int test_dev_land(void)
         dlx_land_wt(landwt, sizeof(landwt));
         ASSERT(dlx_git_out(landwt, log_subject, subject, sizeof(subject)) ==
               0);
-        ASSERT(strncmp(subject,
-                       "Regenerate the capability inventory and codebase "
-                       "map after rebasing onto ",
-                       strlen("Regenerate the capability inventory and "
-                              "codebase map after rebasing onto ")) == 0);
+        /* No regeneration commit: the candidate's own commit, directly on
+         * the new main, carries its subject and the regenerated files. */
+        ASSERT_STR_EQ(subject, "the submitted work");
+        ASSERT(dlx_origin_main(&rig, base));
+        ASSERT(dlx_git_out(landwt, parent_args, subject, sizeof(subject)) ==
+               0);
+        ASSERT_STR_EQ(subject, base);
+        ASSERT(dlx_git_out(landwt, inventory, subject, sizeof(subject)) ==
+               0);
+        ASSERT_STR_EQ(subject, "theirs\nregenerated by dev.land");
+        ASSERT(dlx_git_out(landwt, map, subject, sizeof(subject)) == 0);
+        ASSERT_STR_EQ(subject, "theirs\nregenerated by dev.land");
+        ASSERT(dlx_git_out(landwt, mine, subject, sizeof(subject)) == 0);
+        ASSERT_STR_EQ(subject, "mine");
         /* Signed by AMBIENT config: dev.land passes no signing flag, and
          * main rejects an unsigned commit. */
         ASSERT(dlx_git_out(landwt, log_sig, sig, sizeof(sig)) == 0);
-        ASSERT(strcmp(sig, "N") != 0);
+        ASSERT_STR_EQ(sig, "G");
         unsetenv("ZCL_LAND_REGEN_MAKE_STUB");
         dlx_restore();
         PASS();
@@ -8793,11 +8866,11 @@ static int test_dev_land_merge_tip_regenerates(void)
         const char *subject[] = { "log", "-1", "--format=%s", NULL };
         const char *sig_head[] = { "log", "-1", "--format=%G?", "HEAD",
                                    NULL };
-        const char *sig_cand[] = { "log", "-1", "--format=%G?", "HEAD~1",
-                                   NULL };
-        const char *parent[] = { "show", "-s", "--format=%P", "HEAD~1",
+        const char *parent[] = { "show", "-s", "--format=%P", "HEAD",
                                  NULL };
-        const char *body[] = { "log", "-1", "--format=%B", "HEAD~1", NULL };
+        const char *body[] = { "log", "-1", "--format=%B", "HEAD", NULL };
+        const char *inv[] = { "show", "HEAD:docs/CAPABILITY_INVENTORY.jsonl",
+                              NULL };
         const char *a_txt[] = { "show", "HEAD:a.txt", NULL };
         const char *b_txt[] = { "show", "HEAD:b.txt", NULL };
         const char *c_txt[] = { "show", "HEAD:c.txt", NULL };
@@ -8826,10 +8899,12 @@ static int test_dev_land_merge_tip_regenerates(void)
         dlx_end(&c);
         dlx_land_wt(landwt, sizeof(landwt));
         ASSERT(dlx_git_out(landwt, subject, out, sizeof(out)) == 0);
-        ASSERT(strncmp(out, "Regenerate the capability inventory after "
-                            "rebasing onto ",
-                       strlen("Regenerate the capability inventory after "
-                              "rebasing onto ")) == 0);
+        /* The merge-bearing tip was cut into ONE linear commit first, and
+         * the regenerated inventory is amended into THAT commit: its
+         * subject is the linearization's, never a regeneration's. */
+        ASSERT_STR_EQ(out, "Prepare candidate for linear publication");
+        ASSERT(dlx_git_out(landwt, inv, out, sizeof(out)) == 0);
+        ASSERT_STR_EQ(out, "theirs2\nregenerated by dev.land");
         /* The candidate's hand resolution survived; main's later train and
          * the candidate's later work are both present. */
         ASSERT(dlx_git_out(landwt, a_txt, out, sizeof(out)) == 0);
@@ -8838,12 +8913,10 @@ static int test_dev_land_merge_tip_regenerates(void)
         ASSERT_STR_EQ(out, "theirs2");
         ASSERT(dlx_git_out(landwt, c_txt, out, sizeof(out)) == 0);
         ASSERT_STR_EQ(out, "mine2");
-        /* One linear candidate commit on the new main, then the
-         * regeneration commit, both signed by the lander's signer. */
+        /* One single-parent candidate commit on the new main, signed by
+         * the lander's signer, and nothing on top of it. */
         ASSERT(dlx_git_out(landwt, parent, out, sizeof(out)) == 0);
         ASSERT_STR_EQ(out, m.m2);
-        ASSERT(dlx_git_out(landwt, sig_cand, out, sizeof(out)) == 0);
-        ASSERT_STR_EQ(out, "G");
         ASSERT(dlx_git_out(landwt, sig_head, out, sizeof(out)) == 0);
         ASSERT_STR_EQ(out, "G");
         ASSERT(dlx_git_out(landwt, body, out, sizeof(out)) == 0);

@@ -133,10 +133,13 @@ rewrite the declared counts from the code-measured ones). It then runs
 `make check-generated-artifact-contradictions` and `make check-doc-counts` in
 the landing worktree; a gate that still refuses fails the row with
 `dimension=rebase` and that gate's own line, never a landing. On success the
-regenerated content is committed with a subject naming what was regenerated
-and the base it was rebased onto — signed by ambient `commit.gpgsign`
-configuration, with no signing flag of its own — and the row's `detail`
-carries `rebase: regenerated <paths>`.
+regenerated paths are amended into the rebased tip commit
+(`git commit --amend --no-edit --only -- <paths>`), keeping its subject,
+author and parents — signed by ambient `commit.gpgsign` configuration, with
+no signing flag of its own — and the row's `detail` carries
+`rebase: regenerated <paths>`. Only a tip main already holds (the rebase
+skipped every candidate commit) gets a separate commit instead, because
+amending it would rewrite published history.
 
 The table is closed. A conflict touching any other path — even alongside
 these — stays an ordinary conflict, reported exactly as before, because
@@ -161,14 +164,15 @@ run through `make` only, the same process rule as the rest of this leaf —
 then diffs the one tracked path each target owns
 (`docs/CAPABILITY_INVENTORY.jsonl`, `docs/agent/EXECUTOR_HEURISTICS.md`,
 `docs/CODEBASE_MAP.md`). If nothing changed, nothing is committed and the
-row's tip is untouched. If something changed, it commits exactly those
-paths — signed by ambient `commit.gpgsign` configuration, the same as the
-conflict auto-resolve's commit — with the subject `Regenerate generated docs
-after <the submission's tip commit subject, truncated to 60 bytes>`. The row
-schema gains no separate field for this commit: `local` already names "the
-tip everything downstream proves and pushes", and a regen commit on top of
-the rebased tip is exactly that field's job, so the proof that follows runs
-on the regen'd tip automatically. If a generator or the diff/commit step
+row's tip is untouched. If something changed, it amends exactly those paths
+into the rebased tip commit, keeping its subject and author — signed by
+ambient `commit.gpgsign` configuration, the same as the conflict
+auto-resolve — so main never gains a separate "Regenerate ..." commit. (A
+tip main already holds cannot be amended; that case alone keeps the old
+`Regenerate generated docs after <tip subject>` commit.) The amended id
+replaces `local`, the one field the proof intent, publication intent,
+receipts and push all read, so the proof runs on, and the push publishes,
+exactly the amended tip. If a generator or the diff/commit step
 itself fails, the row fails with `dimension=regen` and the first actionable
 line from the failing target's output — never a landing on a tree a
 generator refused to reproduce. A generator can also rewrite one of these

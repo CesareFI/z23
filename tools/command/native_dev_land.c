@@ -650,9 +650,10 @@ static bool dl_tor_source_config(const char *wt, char *out, size_t cap)
  *          rebase's own conflict-only auto-resolve of the same artifacts
  *          (see "rebase conflicts on the artifacts every train
  *          regenerates" below), which fires only when a rebase conflicts
- *          on them. A regen commit it makes is folded into `local`: this
- *          row schema gains no separate field for it, because `local` is
- *          already "the tip everything downstream proves and pushes". */
+ *          on them. Both AMEND their regenerated docs into the rebased
+ *          tip, and the amended id replaces `local`: this row schema gains
+ *          no separate field for it, because `local` is already "the tip
+ *          everything downstream proves and pushes". */
 struct dl_row {
     long long seq;
     long long priority_seq;
@@ -4081,9 +4082,74 @@ static bool dl_regen_subject(const bool *seen, const char *base, char *out,
     return w >= 0 && (size_t)w < cap - used;
 }
 
+/* Record the regenerated artifacts by AMENDING them into the rebased
+ * candidate's last commit, never as a follow-up commit on main.
+ *
+ * WHY THE TIP, NOT THE REPLAYED COMMIT THAT CONFLICTED. The auto-resolve
+ * above settles each conflicted replay by taking main's side, so an
+ * intermediate replayed commit carries main's copy of the artifact; the
+ * generators then run ONCE, on the finished tree, and describe the code of
+ * that tree, which is HEAD's. Only HEAD's tree is proved and published.
+ * Folding into the commit being replayed would mean running generators
+ * mid-rebase for trees nobody proves, for no difference in what lands.
+ *
+ * `--amend --no-edit` keeps the tip's message, author and parents; `--only`
+ * with the explicit closed-table paths records the tip's own tree plus
+ * exactly those paths, whatever else the index holds. Signing is the
+ * ambient commit.gpgsign configuration -- no -S and no --no-gpg-sign,
+ * exactly as native_dev_train_command.c's regenerate-docs commit relies on
+ * it; main rejects an unsigned commit, so a flag invented here would be a
+ * second, divergent way to state the same policy.
+ *
+ * The one HEAD that cannot be amended is one main already holds (the
+ * rebase skipped every candidate commit): rewriting it would rewrite
+ * published history, so that case alone keeps the separate commit. */
+static int dl_regen_fold(const struct dl_dirs *d, struct dl_row *row,
+                         const bool *seen, char *why, size_t why_cap)
+{
+    const char *published_args[] = { "--no-replace-objects", "merge-base",
+                                     "--is-ancestor", "HEAD", row->base,
+                                     NULL };
+    const char *args[DL_REGEN_N + 8];
+    char subject[512];
+    size_t n = 0;
+    int ancestor_rc = dl_git(d->wt, published_args, NULL, 0,
+                           DL_GIT_TIMEOUT_MS);
+    args[n++] = "commit";
+    args[n++] = "-q";
+    if (ancestor_rc == 1) {       /* HEAD is the candidate's own commit */
+        args[n++] = "--amend";
+        args[n++] = "--no-edit";
+    } else if (ancestor_rc == 0 &&   /* main already holds HEAD */
+               dl_regen_subject(seen, row->base, subject, sizeof(subject))) {
+        args[n++] = "-m";
+        args[n++] = subject;
+    } else {
+        (void)snprintf(why, why_cap, "%s",
+                       "regen commit failed after auto-resolving the "
+                       "rebase");
+        return -1;
+    }
+    args[n++] = "--only";
+    args[n++] = "--";
+    for (size_t i = 0; i < DL_REGEN_N; i++) {
+        if (seen[i])
+            args[n++] = DL_REGEN_ARTIFACTS[i].path;
+    }
+    args[n] = NULL;
+    if (dl_git(d->wt, args, NULL, 0, DL_GIT_TIMEOUT_MS) != 0) {
+        (void)snprintf(why, why_cap, "%s",
+                       "regen commit failed after auto-resolving the "
+                       "rebase");
+        return -1;
+    }
+    return 1;
+}
+
 /* Run each conflicted artifact's generator (deduped by make target), then
  * the two gates that say the regenerated tree is self-consistent, then
- * commit whatever the generators actually changed. Returns 1 on success,
+ * fold whatever the generators actually changed into the tip
+ * (dl_regen_fold()). Returns 1 on success,
  * -1 with `why` on a hard failure — a generator that will not run, a gate
  * that still refuses, or a commit that will not be made is not a conflict
  * any more. */
@@ -4091,10 +4157,8 @@ static int dl_regen_run(const struct dl_dirs *d, struct dl_row *row,
                         const bool *seen, char *why, size_t why_cap)
 {
     const char *diff_args[DL_REGEN_N + 4];
-    const char *add_args[DL_REGEN_N + 4];
-    const char *commit_args[5];
-    char subject[512], line[256];
-    size_t dn = 0, an = 0;
+    char line[256];
+    size_t dn = 0;
 
     for (size_t i = 0; i < DL_REGEN_N; i++) {
         bool duplicate = false;
@@ -4156,46 +4220,17 @@ static int dl_regen_run(const struct dl_dirs *d, struct dl_row *row,
     diff_args[dn++] = "diff";
     diff_args[dn++] = "--quiet";
     diff_args[dn++] = "--";
-    add_args[an++] = "add";
-    add_args[an++] = "--";
     for (size_t i = 0; i < DL_REGEN_N; i++) {
-        if (!seen[i])
-            continue;
-        diff_args[dn++] = DL_REGEN_ARTIFACTS[i].path;
-        add_args[an++] = DL_REGEN_ARTIFACTS[i].path;
+        if (seen[i])
+            diff_args[dn++] = DL_REGEN_ARTIFACTS[i].path;
     }
     diff_args[dn] = NULL;
-    add_args[an] = NULL;
     /* Exit 0 means the generators reproduced exactly what the upstream
      * side already held. Nothing to record: that is a clean outcome, not
      * a failure. */
     if (dl_git(d->wt, diff_args, NULL, 0, DL_GIT_TIMEOUT_MS) == 0)
         return 1;
-
-    if (!dl_regen_subject(seen, row->base, subject, sizeof(subject))) {
-        (void)snprintf(why, why_cap, "%s",
-                       "regen commit failed after auto-resolving the "
-                       "rebase");
-        return -1;
-    }
-    commit_args[0] = "commit";
-    commit_args[1] = "-q";
-    commit_args[2] = "-m";
-    commit_args[3] = subject;
-    commit_args[4] = NULL;
-    /* No --no-gpg-sign and no -S: this repo's ambient commit.gpgsign /
-     * gpg.format config signs a plain `git commit`, exactly the way
-     * native_dev_train_command.c's own regenerate-docs commit relies on
-     * it. main rejects an unsigned commit, so a signing flag invented
-     * here would be a second, divergent way to state the same policy. */
-    if (dl_git(d->wt, add_args, NULL, 0, DL_GIT_TIMEOUT_MS) != 0 ||
-        dl_git(d->wt, commit_args, NULL, 0, DL_GIT_TIMEOUT_MS) != 0) {
-        (void)snprintf(why, why_cap, "%s",
-                       "regen commit failed after auto-resolving the "
-                       "rebase");
-        return -1;
-    }
-    return 1;
+    return dl_regen_fold(d, row, seen, why, why_cap);
 }
 
 /* Why an auto-resolve that already settled one replayed commit handed a
@@ -4444,7 +4479,7 @@ static bool dl_tip_checkout(const struct dl_dirs *d, struct dl_row *row,
  * `regen_note` is an OUT parameter, always initialised: it is filled only
  * when a conflict on the regenerated artifacts above was auto-resolved,
  * and stays empty on every other path — so a caller can tell a rebase
- * that added a regeneration commit to the tip from one that did not,
+ * that amended regenerated docs into the tip from one that did not,
  * without having to re-derive it from git. */
 static int dl_rebase(const struct dl_dirs *d, struct dl_row *row,
                      const char *observed_main, char *why, size_t why_cap,
@@ -5688,10 +5723,18 @@ static bool dl_step_regen(const struct dl_dirs *d, struct dl_row *row,
     int rc;
     (void)snprintf(row->phase, sizeof(row->phase), "regen");
     log = (char *)zcl_malloc(DL_LOG_CAP, "dev.land.regen.log");
-    rc = log ? zcl_dev_land_regen_phase(d->wt, row->tip, regen_head,
-                                        sizeof(regen_head), log, DL_LOG_CAP,
-                                        regen_why, sizeof(regen_why))
+    rc = log ? zcl_dev_land_regen_phase(d->wt, row->base, row->tip,
+                                        regen_head, sizeof(regen_head), log,
+                                        DL_LOG_CAP, regen_why,
+                                        sizeof(regen_why))
              : -1;
+    /* A success that cannot name HEAD would leave row->local on the
+     * pre-amend id, and the proof would then prove a tree nobody pushes. */
+    if (rc >= 0 && !dl_sha_ok(regen_head)) {
+        rc = -1;
+        (void)snprintf(regen_why, sizeof(regen_why), "%s",
+                       "regen could not name the tip it left behind");
+    }
     if (log) {
         dl_log(row, log);
         free(log);
@@ -5709,8 +5752,10 @@ static bool dl_step_regen(const struct dl_dirs *d, struct dl_row *row,
             dl_step_reply(reply, row, "failed");
         return false;
     }
-    if (dl_sha_ok(regen_head))
-        (void)snprintf(row->local, sizeof(row->local), "%s", regen_head);
+    /* The amended tip replaces the rebased one everywhere downstream: proof
+     * intent (local@base and tree), publication intent, receipts and the
+     * push all read row->local, and none of them has run yet. */
+    (void)snprintf(row->local, sizeof(row->local), "%s", regen_head);
     return true;
 }
 
@@ -5723,8 +5768,8 @@ static bool dl_step_after_rebase(const struct dl_dirs *d, struct dl_row *row,
                                  const char *regen_note)
 {
     /* The rebase settled a conflict on the generated artifacts by
-     * regenerating them, which put a commit on the tip that the submitter
-     * never wrote. Say so -- in the row and in the attempt log -- rather
+     * regenerating them, which amended content into the tip that the
+     * submitter never wrote. Say so -- in the row and in the attempt log -- rather
      * than presenting a rewritten tree as an ordinary rebase. */
     if (regen_note[0]) {
         (void)snprintf(row->detail, sizeof(row->detail), "%s", regen_note);

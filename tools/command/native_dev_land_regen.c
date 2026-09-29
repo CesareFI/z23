@@ -1,7 +1,8 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * purpose: dev.land regen phase mechanics — run the three generated-doc
  *          targets in the landing worktree after a successful rebase and
- *          commit whatever they actually changed, so a submission never
+ *          amend whatever they actually changed into the rebased
+ *          candidate's last commit, so a submission never
  *          fails at push time for staleness a train assembler would
  *          otherwise fix by hand. Also prepares the final restart plan
  *          after the landing step finishes its other prerequisites.
@@ -15,7 +16,7 @@
  * path. The table below is CLOSED and mirrors DL_REGEN_ARTIFACTS in
  * native_dev_land.c, which exists for the same reason: nothing here is
  * discovered from a diff or a directory scan, so nothing outside these
- * three paths can ever be added to a regen commit by surprise.
+ * three paths can ever be folded into a candidate by surprise.
  *
  * WHY UNCONDITIONAL, NOT ONLY ON CONFLICT. native_dev_land.c's own
  * DL_REGEN_* machinery only regenerates these kinds of artifacts when a
@@ -23,8 +24,9 @@
  * never touches them, and still leaves the tree exactly as stale as the
  * submitter's own checkout was — the missing case that used to cost every
  * train a hand-made "Regenerate generated docs after ..." commit. This
- * phase runs after EVERY successful rebase, conflicted or not, so a
- * submission is never the reason for that follow-up commit again.
+ * phase runs after EVERY successful rebase, conflicted or not, and amends
+ * the regenerated paths into the rebased tip (dlrg_fold()), so main's
+ * history carries no separate regeneration commit for them at all.
  *
  * PROCESS RULE. Same as native_dev_land.c: `git` and `make` are the only
  * programs this file runs, always through util/spawn.h's
@@ -378,21 +380,18 @@ static void dlrg_tip_subject(const char *wt, const char *tip_sha, char *out,
     (void)snprintf(out, cap, "%.12s", tip_sha ? tip_sha : "");
 }
 
-/* Commit whatever changed across `changed_paths[0..changed_n)`. `why` is
- * set only on failure. Returns 1 committed, -1 failed. */
+/* Commit whatever changed across `changed_paths[0..changed_n)` as its OWN
+ * commit — the fallback dlrg_fold() takes only when HEAD is already
+ * published (see there). `--only` with the explicit closed-table paths
+ * records exactly those paths and nothing else the index might hold.
+ * `why` is set only on failure. Returns 1 committed, -1 failed. */
 static int dlrg_commit(const char *wt, const char *tip_sha,
                        const char *const *changed_paths, size_t changed_n,
                        char *why, size_t why_cap)
 {
-    const char *add_args[DLRG_N + 3];
-    const char *commit_args[5];
+    const char *commit_args[DLRG_N + 8];
     char subject_tip[DLRG_SUBJECT_MAX + 1], subject[160];
-    size_t an = 0;
-    add_args[an++] = "add";
-    add_args[an++] = "--";
-    for (size_t i = 0; i < changed_n; i++)
-        add_args[an++] = changed_paths[i];
-    add_args[an] = NULL;
+    size_t cn = 0;
     dlrg_tip_subject(wt, tip_sha, subject_tip, sizeof(subject_tip));
     if (snprintf(subject, sizeof(subject), "Regenerate generated docs "
                                            "after %s",
@@ -401,19 +400,112 @@ static int dlrg_commit(const char *wt, const char *tip_sha,
                       "regen commit subject would not fit");
         return -1;
     }
-    commit_args[0] = "commit";
-    commit_args[1] = "-q";
-    commit_args[2] = "-m";
-    commit_args[3] = subject;
-    commit_args[4] = NULL;
+    commit_args[cn++] = "commit";
+    commit_args[cn++] = "-q";
+    commit_args[cn++] = "-m";
+    commit_args[cn++] = subject;
+    commit_args[cn++] = "--only";
+    commit_args[cn++] = "--";
+    for (size_t i = 0; i < changed_n; i++)
+        commit_args[cn++] = changed_paths[i];
+    commit_args[cn] = NULL;
     /* No -S / --no-gpg-sign, matching native_dev_land.c's own dl_regen_run:
      * this repo's ambient commit.gpgsign config signs a plain `git commit`
      * in the landing worktree, and a signing flag invented here would be a
      * second, divergent way to state the same policy. */
-    if (dlrg_git(wt, add_args, NULL, 0) != 0 ||
-        dlrg_git(wt, commit_args, NULL, 0) != 0) {
+    if (dlrg_git(wt, commit_args, NULL, 0) != 0) {
         (void)snprintf(why, why_cap, "%s",
                       "regen commit failed after the doc generators ran");
+        return -1;
+    }
+    return 1;
+}
+
+/* 1 when HEAD is already reachable from `base_sha` (published on main),
+ * 0 when it is the candidate's own commit, -1 when git cannot say. */
+static int dlrg_head_published(const char *wt, const char *base_sha)
+{
+    const char *args[] = { "--no-replace-objects", "merge-base",
+                           "--is-ancestor", "HEAD", base_sha, NULL };
+    int rc = dlrg_git(wt, args, NULL, 0);
+    return rc == 0 ? 1 : rc == 1 ? 0 : -1;
+}
+
+/* True only when every path the amend changed between `before` and HEAD is
+ * a closed-table artifact and HEAD kept `before`'s parents: the amend added
+ * regenerated docs to the candidate and nothing else. */
+static bool dlrg_fold_confined(const char *wt, const char *before)
+{
+    char names[4096], parents_before[512], parents_after[512];
+    char *line, *save = NULL;
+    const char *diff_args[] = { "diff", "--name-only", before, "HEAD", "--",
+                                NULL };
+    const char *pb_args[] = { "show", "-s", "--format=%P", before, NULL };
+    const char *pa_args[] = { "show", "-s", "--format=%P", "HEAD", NULL };
+    if (dlrg_git(wt, diff_args, names, sizeof(names)) != 0 ||
+        strlen(names) + 1 >= sizeof(names) ||
+        dlrg_git(wt, pb_args, parents_before, sizeof(parents_before)) != 0 ||
+        dlrg_git(wt, pa_args, parents_after, sizeof(parents_after)) != 0 ||
+        strcmp(parents_before, parents_after) != 0)
+        return false;
+    for (line = strtok_r(names, "\n", &save); line;
+         line = strtok_r(NULL, "\n", &save)) {
+        bool listed = false;
+        for (size_t i = 0; i < DLRG_N; i++)
+            listed = listed || strcmp(line, DLRG_ARTIFACTS[i].path) == 0;
+        if (!listed)
+            return false;
+    }
+    return true;
+}
+
+/* Fold the regenerated paths into the rebased candidate's LAST commit
+ * instead of stacking a "Regenerate generated docs after ..." commit on top
+ * of it: `git commit --amend --no-edit --only -- <paths>` keeps the tip's
+ * message and author, keeps its parents (a merge keeps every parent; the
+ * landing step never presents one anyway, since dl_linearize() cuts any
+ * merge-bearing candidate into one linear commit first), and records the
+ * tip's own tree plus exactly the closed-table paths — never anything else
+ * the index might hold. Signing is the same ambient commit.gpgsign
+ * configuration the separate commit used; no flag is invented here.
+ *
+ * The one case that cannot fold is a HEAD already reachable from the base
+ * (every candidate commit was dropped by the rebase): amending it would
+ * rewrite published history, so that case alone keeps the old separate
+ * commit. */
+static int dlrg_fold(const char *wt, const char *base_sha,
+                     const char *tip_sha, const char *const *changed_paths,
+                     size_t changed_n, char *why, size_t why_cap)
+{
+    const char *amend_args[DLRG_N + 8];
+    char before[80];
+    size_t an = 0;
+    int published = dlrg_head_published(wt, base_sha);
+    if (published < 0 || !dlrg_rev_parse(wt, "HEAD", before)) {
+        (void)snprintf(why, why_cap, "%s",
+                      "regen cannot establish whether HEAD is published");
+        return -1;
+    }
+    if (published)
+        return dlrg_commit(wt, tip_sha, changed_paths, changed_n, why,
+                           why_cap);
+    amend_args[an++] = "commit";
+    amend_args[an++] = "-q";
+    amend_args[an++] = "--amend";
+    amend_args[an++] = "--no-edit";
+    amend_args[an++] = "--only";
+    amend_args[an++] = "--";
+    for (size_t i = 0; i < changed_n; i++)
+        amend_args[an++] = changed_paths[i];
+    amend_args[an] = NULL;
+    if (dlrg_git(wt, amend_args, NULL, 0) != 0) {
+        (void)snprintf(why, why_cap, "%s",
+                      "regen amend failed after the doc generators ran");
+        return -1;
+    }
+    if (!dlrg_fold_confined(wt, before)) {
+        (void)snprintf(why, why_cap, "%s",
+                      "regen amend changed more than the regenerated docs");
         return -1;
     }
     return 1;
@@ -622,7 +714,8 @@ static bool dlrg_plan_refresh(const char *wt, size_t touched,
                      transcript_cap, used, why, why_cap) == 0;
 }
 
-int zcl_dev_land_regen_phase(const char *wt, const char *tip_sha,
+int zcl_dev_land_regen_phase(const char *wt, const char *base_sha,
+                             const char *tip_sha,
                              char *new_head, size_t new_head_cap,
                              char *transcript, size_t transcript_cap,
                              char *why, size_t why_cap)
@@ -636,6 +729,11 @@ int zcl_dev_land_regen_phase(const char *wt, const char *tip_sha,
     why[0] = '\0';
     if (transcript && transcript_cap)
         transcript[0] = '\0';
+    /* The fold below must know which commits are already published. */
+    if (!dlrg_sha_ok(base_sha)) {
+        (void)snprintf(why, why_cap, "%s", "regen needs the exact base sha");
+        return -1;
+    }
 
     if (!dlrg_has_makefile(wt))
         return dlrg_finish_unchanged(wt, new_head);
@@ -649,7 +747,8 @@ int zcl_dev_land_regen_phase(const char *wt, const char *tip_sha,
 
     changed_n = dlrg_collect_changed(wt, changed);
     if (changed_n > 0) {
-        if (dlrg_commit(wt, tip_sha, changed, changed_n, why, why_cap) < 0)
+        if (dlrg_fold(wt, base_sha, tip_sha, changed, changed_n, why,
+                      why_cap) < 0)
             return -1;
         committed = 1;
     }

@@ -35,9 +35,16 @@ bool zcl_dev_land_proof_tools_prepare(const char *wt, char *why,
                                       size_t why_cap);
 
 /* Run the regen phase in the already-rebased landing worktree `wt` (HEAD is
- * the row's rebased tip, ancestor of `tip_sha`). `tip_sha` is the original
- * submitted commit id, used only to read its subject line for the regen
- * commit's own subject; it is never checked out or moved.
+ * the row's rebased tip). `base_sha` is the exact main the tip was rebased
+ * onto (row->base). When a regenerated artifact changed, the changed
+ * closed-table paths -- and nothing else -- are AMENDED into HEAD, keeping
+ * its message, author and parents, signed by the same ambient
+ * commit.gpgsign configuration as any other landing commit. Only a HEAD
+ * that is already reachable from `base_sha` (the rebase dropped every
+ * candidate commit) cannot be amended without rewriting published history;
+ * that case alone still gets a separate "Regenerate generated docs after
+ * <tip subject>" commit, where `tip_sha` (the original submitted commit id,
+ * never checked out or moved) supplies the subject.
  *
  * If any regenerated artifact's on-disk identity (inode/size/mtime/ctime)
  * changed -- whether or not the bytes it wrote differ from what git already
@@ -60,13 +67,12 @@ bool zcl_dev_land_proof_tools_prepare(const char *wt, char *why,
  *
  * On success only:
  *   `new_head` (>= 41 bytes) receives HEAD's full commit id AFTER this
- *   call: identical to HEAD on entry when nothing changed, or the new
- *   regen commit's id when one was made. The caller folds this into
- *   row->local — the row schema gains no new field for the regen commit;
- *   row->local already IS "the tip the rest of the step proves and
- *   pushes", and a regen commit sitting on top of the rebased tip is
- *   exactly that same field's job. */
-int zcl_dev_land_regen_phase(const char *wt, const char *tip_sha,
+ *   call: identical to HEAD on entry when nothing changed, otherwise the
+ *   amended tip's id. The caller MUST replace row->local with it: the
+ *   pre-amend id no longer names the tree the proof must prove and the
+ *   push must publish. */
+int zcl_dev_land_regen_phase(const char *wt, const char *base_sha,
+                             const char *tip_sha,
                              char *new_head, size_t new_head_cap,
                              char *transcript, size_t transcript_cap,
                              char *why, size_t why_cap);

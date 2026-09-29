@@ -394,6 +394,10 @@ Regenerate the entire report from source with:
 make docs-capability-inventory
 ```
 
+Commit regenerated docs in the commit whose change caused them (`git commit
+--amend`), never as a separate "Regenerate ..." commit. The lander folds any
+drift it finds after rebasing into the candidate's tip commit in the same way.
+
 When the navigator cannot answer a prose or non-symbol question, use `git grep`
 or `git ls-files`; never recursively scan the repository root. Scratch
 datadirs, test debris, and untracked worktrees can contain full duplicate trees.
