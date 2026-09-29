@@ -160,18 +160,22 @@ dht_assert_port() {
     else
         if ! "$DHT_ACCEPTANCE_C23" ports-rebind "$p"; then
             # Name the holder so an orphaned fixture from a dead session is
-            # a one-line reap instead of a forensic exercise. No listener
-            # means the probe failed for another reason; say that too.
+            # a one-line reap instead of a forensic exercise. lsof is the
+            # one listener-identity source that exists on both supported
+            # hosts; a host without it, or a probe failure with no visible
+            # listener, still gets an explicit refusal - just an unnamed
+            # one.
             local holder_pid holder_cmd
-            holder_pid="$(ss -ltnp 2>/dev/null |
-                sed -n "s/.*[:.]$p[[:space:]].*pid=\([0-9]*\).*/\1/p" |
-                head -1)"
-            if [ -n "$holder_pid" ]; then
-                holder_cmd="$(tr '\0' ' ' </proc/$holder_pid/cmdline 2>/dev/null |
-                    cut -c1-160)"
-                dht_die "port $p unavailable on this host: held by pid $holder_pid ${holder_cmd:-(cmdline unreadable)}"
+            if command -v lsof >/dev/null 2>&1; then
+                holder_pid="$(lsof -nP -iTCP:"$p" -sTCP:LISTEN -Fp 2>/dev/null |
+                    sed -n 's/^p\([0-9]*\)$/\1/p' | head -1)"
             fi
-            dht_die "port $p unavailable or probe failed on this host (no listener found)"
+            if [ -n "$holder_pid" ]; then
+                holder_cmd="$(ps -o command= -p "$holder_pid" 2>/dev/null |
+                    cut -c1-160)"
+                dht_die "port $p unavailable on this host: held by pid $holder_pid ${holder_cmd:-(command unreadable)}"
+            fi
+            dht_die "port $p unavailable or probe failed on this host (no listener identity found)"
         fi
     fi
     for owned in "${DHT_OWNED_PORTS[@]:-}"; do
