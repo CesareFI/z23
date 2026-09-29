@@ -88,5 +88,8 @@ int ptf_history_cases(void);
 /* Per-issuer rebuild isolation cases (proof_ticket_isolation_cases.c), run
  * by the same group. Returns the failure count. */
 int ptf_isolation_cases(void);
+/* Rebuild branch-work bound cases (proof_ticket_branch_work_cases.c), run
+ * by the same group. Returns the failure count. */
+int ptf_branch_work_cases(void);
 
 #endif /* ZCL_TEST_PROOF_TICKET_FIXTURE_H */
