@@ -960,7 +960,6 @@ MUTATION_LIB_SRCS = tools/dev/mutation_ops.c tools/dev/mutation_run.c
 # the contract's framing, so they link wherever verify_attest links. The
 # root launcher and compiler worker in tools/verify compile them directly.
 VERIFY_CONTRACT_SRCS = tools/verify/fixed_result_contract.c \
-	tools/verify/fixed_result_source.c \
 	tools/verify/fixed_result_key_v2.c
 # The fixed-result signer and root publisher cores. Their CLIs are standalone
 # binaries built from a signed commit (docs/work/verifier-install-packet.md);
@@ -992,6 +991,7 @@ DEV_ONLY_SRCS = tools/dev/devloop_cli.c tools/dev/devloop_cycle.c \
 	tools/dev/dev_proof_observation.c \
 	tools/dev/dev_proof_observation_lookup.c tools/dev/verify_store.c $(SHADOW_SELECT_SRCS) \
 	tools/dev/verify_receiver.c tools/dev/verify_receiver_input.c \
+	tools/verify/fixed_result_source.c \
 	$(MUTATION_LIB_SRCS)
 DEVLOOP_SRCS = $(filter-out $(DEV_ONLY_SRCS),$(DEVLOOP_ALL_SRCS))
 
@@ -3092,6 +3092,8 @@ TEST_DEV_EXECUTOR_SRCS = tools/dev/devloop_cycle.c tools/dev/dev_failure_store.c
 	tools/dev/dev_proof_observation_lookup.c tools/dev/verify_store.c $(SHADOW_SELECT_SRCS) \
 	tools/dev/verify_receiver.c tools/dev/verify_receiver_input.c \
 	$(MUTATION_LIB_SRCS) $(VERIFY_SIGNER_SRCS)
+	tools/verify/fixed_result_source.c \
+	$(MUTATION_LIB_SRCS)
 SPEC_SRCS = $(wildcard tests/harness/spec/*.c)
 CHAOS_SIM_SRCS = tools/sim/sim_peer.c
 # The landing queue's two library translation units. land_main.c owns a
