@@ -9,10 +9,10 @@
  * runs at exactly the two points msg_version.c calls it: the listener's
  * inbound VERSION and the dialer's VERACK. The header-sync decision is the
  * product entry point syncsvc_begin_peer_sync. The identity prober and the
- * clock are injected, so no model case depends on sockets or wall-clock
- * timing. One last case runs the real prober against a loopback listener to
- * prove its socket path; every step there is a blocking call bounded by a
- * socket timeout, never a sleep.
+ * clocks are injected, so no model case depends on sockets or wall-clock
+ * timing. The probe cases run the real prober against loopback listeners
+ * (Noise, silent, trickling, holding) and the real probe thread with a gated
+ * prober; every wait there is bounded, and none is a sleep.
  * Part of the sync_service group (test_sync_service.c calls the entry). */
 
 #include "test/test_core.h"
@@ -24,11 +24,14 @@
 #include "sync/sync_planner.h"
 #include "sync/sync_state.h"
 #include "platform/socket_compat.h"
+#include "platform/time_compat.h"
 #include "util/safe_alloc.h"
 
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #define MODEL_MAX_NODES 4
 #define MODEL_MAX_CONNS 8
@@ -720,17 +723,31 @@ static int test_configured_inbound_outbound_unchanged(void)
 
 /* ── the network prober's socket path, over loopback ─────────────────── */
 
+enum listener_mode {
+    LISTEN_NOISE,    /* answer as the Noise XX responder */
+    LISTEN_CLOSE,    /* accept, then close without a byte */
+    LISTEN_TRICKLE,  /* answer XX message 2 one byte at a time */
+    LISTEN_HOLD,     /* accept and never send, until the probe closes */
+};
+
 struct probe_listener {
     platform_socket_t fd;
     uint16_t port;
-    bool speak_noise;          /* false: accept, then close without a byte */
+    enum listener_mode mode;
     uint8_t priv[32];
     bool established;          /* the responder saw XX message 3 */
     uint8_t seen_static[32];   /* the initiator static it authenticated */
+    size_t trickled;           /* bytes of message 2 sent in trickle mode */
+    size_t msg2_len;
+    pthread_mutex_t mu;
+    pthread_cond_t cv;
+    bool accepted;
 };
 
 static bool probe_listener_open(struct probe_listener *l)
 {
+    pthread_mutex_init(&l->mu, NULL);
+    pthread_cond_init(&l->cv, NULL);
     l->fd = platform_socket_open(AF_INET, SOCK_STREAM, 0, true, false);
     if (l->fd == PLATFORM_SOCKET_INVALID)
         return false;
@@ -778,6 +795,43 @@ static void probe_listener_respond(struct probe_listener *l,
     noise_transport_free(t);
 }
 
+/* Read XX message 1, then send the real message 2 one byte per 50 ms of
+ * silence from the probe; stop as soon as the probe closes or answers. */
+static void probe_listener_trickle(struct probe_listener *l,
+                                   platform_socket_t s)
+{
+    struct noise_transport *t = noise_transport_begin(
+        false, l->priv, chain_params_get()->pchMessageStart, NULL, NULL);
+    uint8_t buf[256];
+    uint8_t *wire = NULL, *plain = NULL;
+    size_t wire_len = 0, plain_len = 0;
+    int n = platform_socket_receive(s, buf, sizeof(buf));
+    bool fed = t && n > 0 && noise_transport_feed(t, buf, (size_t)n, &wire,
+                                                  &wire_len, &plain,
+                                                  &plain_len);
+    l->msg2_len = fed ? wire_len : 0;
+    for (size_t i = 0; fed && i < wire_len; i++) {
+        if (platform_socket_wait_readable(s, 50) != 0 ||
+            platform_socket_send(s, wire + i, 1) != 1)
+            break;
+        l->trickled++;
+    }
+    free(wire);
+    free(plain);
+    noise_transport_free(t);
+}
+
+/* Hold the connection open without a byte until the probe closes it. */
+static void probe_listener_hold(platform_socket_t s)
+{
+    uint8_t buf[64];
+    for (int i = 0; i < 30; i++) {
+        if (platform_socket_wait_readable(s, 1000) > 0 &&
+            platform_socket_receive(s, buf, sizeof(buf)) <= 0)
+            return;
+    }
+}
+
 static void *probe_listener_main(void *arg)
 {
     struct probe_listener *l = arg;
@@ -785,13 +839,38 @@ static void *probe_listener_main(void *arg)
     size_t plen = sizeof(peer);
     platform_socket_t s =
         platform_socket_accept(l->fd, (struct sockaddr *)&peer, &plen);
+    pthread_mutex_lock(&l->mu);
+    l->accepted = s != PLATFORM_SOCKET_INVALID;
+    pthread_cond_broadcast(&l->cv);
+    pthread_mutex_unlock(&l->mu);
     if (s == PLATFORM_SOCKET_INVALID)
         return NULL;
     (void)platform_socket_set_receive_timeout(s, 5000);
-    if (l->speak_noise)
+    if (l->mode == LISTEN_NOISE)
         probe_listener_respond(l, s);
+    else if (l->mode == LISTEN_TRICKLE)
+        probe_listener_trickle(l, s);
+    else if (l->mode == LISTEN_HOLD)
+        probe_listener_hold(s);
     (void)platform_socket_close(s);
     return NULL;
+}
+
+static void probe_listener_finish(struct probe_listener *l, pthread_t tid)
+{
+    /* Wakes a listener still blocked in accept when the dial never came. */
+    (void)platform_socket_shutdown_both(l->fd);
+    (void)pthread_join(tid, NULL);
+    (void)platform_socket_close(l->fd);
+    pthread_mutex_destroy(&l->mu);
+    pthread_cond_destroy(&l->cv);
+}
+
+static void loopback_target(struct net_service *target, uint16_t port)
+{
+    memset(target, 0, sizeof(*target));
+    net_addr_set_ipv4(&target->addr, (const unsigned char[4]){127, 0, 0, 1});
+    target->port = port;
 }
 
 /* Run the real prober against one loopback listener. */
@@ -803,15 +882,10 @@ static bool probe_loopback(struct probe_listener *l, const uint8_t probe_priv[32
         pthread_create(&tid, NULL, probe_listener_main, l) != 0)
         return false;
     struct net_service target;
-    memset(&target, 0, sizeof(target));
-    net_addr_set_ipv4(&target.addr, (const unsigned char[4]){127, 0, 0, 1});
-    target.port = l->port;
+    loopback_target(&target, l->port);
     bool ok = configured_sync_peer_probe_socket_for_testing(
         &target, probe_priv, chain_params_get()->pchMessageStart, out);
-    /* Wakes a listener still blocked in accept when the dial never came. */
-    (void)platform_socket_shutdown_both(l->fd);
-    (void)pthread_join(tid, NULL);
-    (void)platform_socket_close(l->fd);
+    probe_listener_finish(l, tid);
     return ok;
 }
 
@@ -827,7 +901,7 @@ static int test_configured_inbound_probe_socket(void)
 
         struct probe_listener noise_l;
         memset(&noise_l, 0, sizeof(noise_l));
-        noise_l.speak_noise = true;
+        noise_l.mode = LISTEN_NOISE;
         model_key(noise_l.priv, 1);
         uint8_t want[32];
         ASSERT(model_public_key(noise_l.priv, want));
@@ -840,10 +914,257 @@ static int test_configured_inbound_probe_socket(void)
 
         struct probe_listener mute_l;
         memset(&mute_l, 0, sizeof(mute_l));
-        mute_l.speak_noise = false;
+        mute_l.mode = LISTEN_CLOSE;
         ASSERT(!probe_loopback(&mute_l, probe_priv, out));
         PASS();
     } _test_next:;
+    return failures;
+}
+
+/* A probe clock that moves one second per reading. */
+static _Atomic int64_t g_fake_probe_ms;
+static int64_t fake_probe_clock_ms(void)
+{
+    return atomic_fetch_add(&g_fake_probe_ms, 1000) + 1000;
+}
+
+static int test_configured_inbound_probe_deadline(void)
+{
+    int failures = 0;
+    TEST("configured inbound: a target that trickles XX message 2 one byte "
+         "at a time ends the probe at its absolute deadline") {
+        uint8_t probe_priv[32], out[32];
+        model_key(probe_priv, 201);
+        struct probe_listener l;
+        memset(&l, 0, sizeof(l));
+        l.mode = LISTEN_TRICKLE;
+        model_key(l.priv, 1);
+        atomic_store(&g_fake_probe_ms, 0);
+        configured_sync_peers_set_probe_clock_ms_for_testing(fake_probe_clock_ms);
+        int64_t real_start = platform_time_monotonic_us();
+        bool ok = probe_loopback(&l, probe_priv, out);
+        int64_t real_ms = (platform_time_monotonic_us() - real_start) / 1000;
+        configured_sync_peers_set_probe_clock_ms_for_testing(NULL);
+        ASSERT(!ok);
+        /* The deadline, not the peer, ended it: bytes kept arriving, the
+         * whole message never did, and the probe clock passed the deadline. */
+        ASSERT(l.msg2_len > 0);
+        ASSERT(l.trickled > 0 && l.trickled < l.msg2_len);
+        ASSERT(atomic_load(&g_fake_probe_ms) >=
+               CONFIGURED_SYNC_PEER_PROBE_DEADLINE_MS);
+        ASSERT(real_ms < CONFIGURED_SYNC_PEER_PROBE_DEADLINE_MS);
+        PASS();
+    } _test_next:;
+    configured_sync_peers_set_probe_clock_ms_for_testing(NULL);
+    return failures;
+}
+
+struct socket_probe_run {
+    struct net_service target;
+    uint8_t priv[32];
+    bool ok;
+};
+
+static void *socket_probe_main(void *arg)
+{
+    struct socket_probe_run *run = arg;
+    uint8_t out[32];
+    run->ok = configured_sync_peer_probe_socket_for_testing(
+        &run->target, run->priv, chain_params_get()->pchMessageStart, out);
+    return NULL;
+}
+
+static bool listener_wait_accepted(struct probe_listener *l)
+{
+    struct timespec until;
+    clock_gettime(CLOCK_REALTIME, &until);
+    until.tv_sec += 5;
+    pthread_mutex_lock(&l->mu);
+    while (!l->accepted &&
+           pthread_cond_timedwait(&l->cv, &l->mu, &until) == 0) {
+    }
+    bool accepted = l->accepted;
+    pthread_mutex_unlock(&l->mu);
+    return accepted;
+}
+
+static int test_configured_inbound_probe_stop(void)
+{
+    int failures = 0;
+    TEST("configured inbound: a stop request ends a probe waiting on a silent "
+         "target within a wait slice") {
+        struct probe_listener l;
+        memset(&l, 0, sizeof(l));
+        l.mode = LISTEN_HOLD;
+        pthread_t ltid, ptid;
+        ASSERT(probe_listener_open(&l));
+        ASSERT(pthread_create(&ltid, NULL, probe_listener_main, &l) == 0);
+        struct socket_probe_run run;
+        memset(&run, 0, sizeof(run));
+        loopback_target(&run.target, l.port);
+        model_key(run.priv, 201);
+        bool started = pthread_create(&ptid, NULL, socket_probe_main, &run) == 0;
+        bool accepted = started && listener_wait_accepted(&l);
+        int64_t stop_at = platform_time_monotonic_us();
+        configured_sync_peers_stop();
+        if (started)
+            (void)pthread_join(ptid, NULL);
+        int64_t stop_ms = (platform_time_monotonic_us() - stop_at) / 1000;
+        probe_listener_finish(&l, ltid);
+        configured_sync_peers_reset_for_testing();
+        ASSERT(started && accepted);
+        ASSERT(!run.ok);
+        /* Far inside the per-target deadline the probe would otherwise use. */
+        ASSERT(stop_ms < 2000);
+        PASS();
+    } _test_next:;
+    configured_sync_peers_reset_for_testing();
+    return failures;
+}
+
+/* A threaded test prober held at a gate until the test opens it or a stop
+ * request arrives. */
+static pthread_mutex_t g_gate_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_gate_cv = PTHREAD_COND_INITIALIZER;
+static bool g_gate_open;
+static int g_gate_calls;
+static bool g_gate_saw_stop;
+
+static bool gate_prober(const struct net_service *target, uint8_t out[32])
+{
+    pthread_mutex_lock(&g_gate_mu);
+    g_gate_calls++;
+    pthread_cond_broadcast(&g_gate_cv);
+    while (!g_gate_open && !configured_sync_peers_probe_should_stop()) {
+        struct timespec until;
+        clock_gettime(CLOCK_REALTIME, &until);
+        until.tv_nsec += 10 * 1000 * 1000;
+        if (until.tv_nsec >= 1000000000L) {
+            until.tv_sec++;
+            until.tv_nsec -= 1000000000L;
+        }
+        (void)pthread_cond_timedwait(&g_gate_cv, &g_gate_mu, &until);
+    }
+    g_gate_saw_stop = configured_sync_peers_probe_should_stop();
+    pthread_mutex_unlock(&g_gate_mu);
+    return !g_gate_saw_stop && model_prober(target, out);
+}
+
+static void gate_set(bool open)
+{
+    pthread_mutex_lock(&g_gate_mu);
+    g_gate_open = open;
+    pthread_cond_broadcast(&g_gate_cv);
+    pthread_mutex_unlock(&g_gate_mu);
+}
+
+static bool gate_wait_calls(int calls)
+{
+    struct timespec until;
+    clock_gettime(CLOCK_REALTIME, &until);
+    until.tv_sec += 5;
+    pthread_mutex_lock(&g_gate_mu);
+    while (g_gate_calls < calls &&
+           pthread_cond_timedwait(&g_gate_cv, &g_gate_mu, &until) == 0) {
+    }
+    bool reached = g_gate_calls >= calls;
+    pthread_mutex_unlock(&g_gate_mu);
+    return reached;
+}
+
+static int test_configured_inbound_probe_thread(void)
+{
+    int failures = 0;
+    TEST("configured inbound: one probe thread at a time, joined before the "
+         "next spawns, and joined by stop while it waits") {
+        static struct model_node a, b, x;
+        model_reset();
+        configured_sync_peers_set_prober_for_testing(NULL);
+        configured_sync_peers_set_threaded_prober_for_testing(gate_prober);
+        g_gate_calls = 0;
+        g_gate_saw_stop = false;
+        gate_set(false);
+        ASSERT(model_node_init(&a, "A", 7, 18233, 1));
+        ASSERT(model_node_init(&b, "B", 8, 18234, 2));
+        ASSERT(model_node_init(&x, "X", 7, 18299, 9));
+        x.up = false;
+        ASSERT(model_configure(&b, &a));
+        struct model_conn c[2];
+        ASSERT(model_connect(&c[0], &a, &b, a.priv, true, 40001));
+        ASSERT(model_connect(&c[1], &a, &b, x.priv, true, 40002));
+        c[0].in->state = c[1].in->state = PEER_ACTIVE;
+
+        ASSERT(configured_sync_peer_request_probe(c[0].in) == 1);
+        ASSERT(gate_wait_calls(1));
+        ASSERT(configured_sync_peer_request_probe(c[0].in) == 0);  /* busy */
+        ASSERT(!syncsvc_peer_is_configured_inbound(c[0].in));
+        gate_set(true);
+        ASSERT(configured_sync_peers_join_probe_for_testing());
+        ASSERT(syncsvc_peer_is_configured_inbound(c[0].in));
+
+        /* The impostor session asks again after the retry spacing: a new
+         * thread spawns, learns A's key again, and the impostor stays out. */
+        g_model_now += CONFIGURED_SYNC_PEER_PROBE_RETRY_SECS;
+        ASSERT(configured_sync_peer_request_probe(c[1].in) == 1);
+        ASSERT(configured_sync_peers_join_probe_for_testing());
+        ASSERT(g_gate_calls == 2);
+        ASSERT(!syncsvc_peer_is_configured_inbound(c[1].in));
+
+        /* Stop ends a probe held at the gate and joins its thread. */
+        gate_set(false);
+        g_model_now += CONFIGURED_SYNC_PEER_PROBE_RETRY_SECS;
+        ASSERT(configured_sync_peer_request_probe(c[1].in) == 1);
+        ASSERT(gate_wait_calls(3));
+        configured_sync_peers_stop();
+        ASSERT(g_gate_saw_stop);
+        ASSERT(!configured_sync_peers_join_probe_for_testing());
+        g_model_now += CONFIGURED_SYNC_PEER_PROBE_RETRY_SECS;
+        ASSERT(configured_sync_peer_request_probe(c[1].in) == 0);
+        PASS();
+    } _test_next:;
+    gate_set(true);
+    configured_sync_peers_set_threaded_prober_for_testing(NULL);
+    model_reset();
+    return failures;
+}
+
+static int test_configured_inbound_revocation(void)
+{
+    int failures = 0;
+    TEST("configured inbound: addnode remove revokes a bound session at the "
+         "next check, and a probe that learns a new key revokes the old one") {
+        static struct model_node a, b, a2;
+        model_reset();
+        ASSERT(model_node_init(&a, "A", 7, 18233, 1));
+        ASSERT(model_node_init(&b, "B", 8, 18234, 2));
+        ASSERT(model_configure(&b, &a));
+        struct model_conn c[2];
+        ASSERT(model_connect(&c[0], &a, &b, a.priv, true, 40001));
+        ev_inbound_version(&c[0]);
+        model_settle(c, 1);
+        ASSERT(model_begin(c[0].in));
+        struct net_service target;
+        memset(&target, 0, sizeof(target));
+        net_addr_set_ipv4(&target.addr, a.ip);
+        target.port = a.port;
+        ASSERT(configured_sync_peer_forget(&target));
+        ASSERT(!syncsvc_peer_is_configured_inbound(c[0].in));
+        ASSERT(!model_begin(c[0].in));
+
+        /* Re-added; then the host at A's address changes its key. */
+        ASSERT(model_configure(&b, &a));
+        ASSERT(model_begin(c[0].in));
+        a.up = false;
+        ASSERT(model_node_init(&a2, "A2", 7, 18233, 11));
+        ASSERT(model_connect(&c[1], &a2, &b, a2.priv, true, 40002));
+        ev_inbound_version(&c[1]);
+        model_settle(&c[1], 1);
+        g_model_now += CONFIGURED_SYNC_PEER_PROBE_RETRY_SECS;
+        ASSERT(model_begin(c[1].in));
+        ASSERT(!syncsvc_peer_is_configured_inbound(c[0].in));
+        PASS();
+    } _test_next:;
+    model_reset();
     return failures;
 }
 
@@ -859,6 +1180,10 @@ int check_sync_service_configured_inbound(void)
     failures += test_configured_inbound_same_limits_as_outbound();
     failures += test_configured_inbound_outbound_unchanged();
     failures += test_configured_inbound_probe_socket();
+    failures += test_configured_inbound_probe_deadline();
+    failures += test_configured_inbound_probe_stop();
+    failures += test_configured_inbound_probe_thread();
+    failures += test_configured_inbound_revocation();
     model_reset();
     configured_sync_peers_set_prober_for_testing(NULL);
     configured_sync_peers_set_clock_for_testing(NULL);

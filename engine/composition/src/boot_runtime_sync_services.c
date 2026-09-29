@@ -10,6 +10,7 @@
  *   - gap_fill          (background body gap-fill)
  *   - zclassicd_oracle  (external-node height oracle)
  *   - rolling_anchor    (rolling SHA3 anchor supervisor contract)
+ *   - configured_sync_probe (identity probe of operator-named sync peers)
  *
  * They are runtime-service start/stop WRAPPERS invoked through the runtime
  * service-kernel spec table (boot_register_runtime_services() in
@@ -32,6 +33,7 @@
 #include "services/rolling_anchor_service.h"
 #include "services/segment_sealer_service.h"
 #include "services/utxo_mirror_sync_service.h"
+#include "services/configured_sync_peers.h"
 #include "net/connman.h"
 #include "net/download.h"
 #include "chain/chainparams.h"  /* fMineBlocksOnDemand (regtest legacy-mirror skip) */
@@ -347,6 +349,41 @@ bool boot_utxo_mirror_sync_register(struct boot_svc_ctx *svc)
         .name = "utxo_mirror_sync",
         .start = boot_utxo_mirror_sync_start,
         .stop = boot_utxo_mirror_sync_stop,
+        .ctx = svc,
+        .flags = ZCL_SERVICE_OPTIONAL,
+    };
+    return zcl_service_kernel_register(&svc->runtime_kernel, &spec);
+}
+
+/* The configured-sync-peer identity probe spawns on demand, so start only
+ * attaches the local Noise identity. Stop ends a running probe within one
+ * wait slice and joins its thread. */
+static bool boot_configured_sync_probe_start(void *ctx)
+{
+    struct boot_svc_ctx *svc = ctx;
+    if (!svc || !svc->connman)
+        return false;
+    configured_sync_peers_attach_network(&svc->connman->manager);
+    return true;
+}
+
+static void boot_configured_sync_probe_stop(void *ctx)
+{
+    (void)ctx;
+    configured_sync_peers_stop();
+}
+
+/* Register the identity probe into the runtime service kernel (the
+ * boot_utxo_mirror_sync_register pattern). Called from
+ * boot_register_runtime_services(). */
+bool boot_configured_sync_probe_register(struct boot_svc_ctx *svc)
+{
+    if (!svc)
+        return false;
+    const struct zcl_service_spec spec = {
+        .name = "configured_sync_probe",
+        .start = boot_configured_sync_probe_start,
+        .stop = boot_configured_sync_probe_stop,
         .ctx = svc,
         .flags = ZCL_SERVICE_OPTIONAL,
     };

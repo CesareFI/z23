@@ -4,7 +4,7 @@
  * an inbound session proven to carry that identity may serve headers.
  * The rule and its security argument live in services/configured_sync_peers.h. */
 
-// supervisor-ok:bounded-identity-probe — the only thread is a one-shot identity probe with bounded socket timeouts, joined before the next one starts
+// supervisor-ok:bounded-identity-probe — the only thread is a one-shot identity probe with an absolute per-target deadline, joined before the next one starts and by configured_sync_peers_stop
 // one-result-type-ok:configured-sync-peer-predicates — exported bools are pure membership/eligibility answers, not fallible operations
 #include "services/configured_sync_peers.h"
 
@@ -24,11 +24,11 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Bounds for one identity probe: TCP connect, then each handshake read or
- * write. XX message 2 is 96 bytes; anything past PROBE_MAX_BYTES without an
- * established session is not a Noise responder. */
-#define PROBE_CONNECT_TIMEOUT_MS 5000
-#define PROBE_IO_TIMEOUT_MS      5000
+/* Bounds for one identity probe. Connect, every read and every write share
+ * one absolute deadline per target; each wait lasts at most one slice so a
+ * stop request is seen promptly. XX message 2 is 96 bytes; anything past
+ * PROBE_MAX_BYTES without an established session is not a Noise responder. */
+#define PROBE_WAIT_SLICE_MS      100
 #define PROBE_MAX_BYTES          1024
 
 struct configured_target {
@@ -282,44 +282,115 @@ static void probe_finished(const struct net_service *target, bool ok,
 
 /* One probe thread at a time. It carries its own copy of the local static
  * key and network magic, so it never reads the net manager, which shutdown
- * may free while a bounded probe is still waiting on a socket. */
+ * may free while a probe is still waiting on a socket. */
 struct probe_job {
     size_t count;
     struct net_service targets[CONFIGURED_SYNC_PEERS_MAX];
     uint8_t identity_priv[32];
     unsigned char magic[MESSAGE_START_SIZE];
+    configured_sync_peer_prober_fn prober;  /* NULL: the network prober */
 };
 
 static pthread_mutex_t g_probe_thread_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_t g_probe_tid;
 static bool g_probe_tid_live;
-static _Atomic bool g_probe_thread_done;
+static _Atomic bool g_probe_busy;
+static _Atomic bool g_probe_stop;
+static configured_sync_peer_prober_fn g_test_threaded_prober;
+static int64_t (*g_test_clock_ms)(void);
+
+static int64_t probe_now_ms(void)
+{
+    if (g_test_clock_ms)
+        return g_test_clock_ms();
+    return platform_time_monotonic_us() / 1000;
+}
+
+bool configured_sync_peers_probe_should_stop(void)
+{
+    return atomic_load(&g_probe_stop) || thread_registry_shutdown_requested();
+}
+
+/* Wait until `sock` is readable (or writable) without passing `deadline_ms`,
+ * in slices short enough to notice a stop request. An interrupted wait
+ * resumes against the same absolute deadline. */
+static bool probe_wait(platform_socket_t sock, bool writable,
+                       int64_t deadline_ms)
+{
+    for (;;) {
+        int64_t left = deadline_ms - probe_now_ms();
+        if (left <= 0 || configured_sync_peers_probe_should_stop())
+            return false;  // raw-return-ok:deadline-or-stop-ends-the-probe
+        int slice = left < PROBE_WAIT_SLICE_MS ? (int)left : PROBE_WAIT_SLICE_MS;
+        int ready = writable ? platform_socket_wait_writable(sock, slice)
+                             : platform_socket_wait_readable(sock, slice);
+        if (ready > 0)
+            return true;
+        if (ready < 0 &&
+            !platform_socket_error_interrupted(platform_socket_last_error()))
+            return false;  // raw-return-ok:socket-error-ends-the-probe
+    }
+}
+
+static bool probe_retryable(int result)
+{
+    if (result >= 0)
+        return false;
+    int error = platform_socket_last_error();
+    return platform_socket_error_would_block(error) ||
+           platform_socket_error_interrupted(error);
+}
 
 static bool probe_send(platform_socket_t sock, const uint8_t *bytes,
-                       size_t len)
+                       size_t len, int64_t deadline_ms)
 {
-    return len == 0 || platform_socket_send_all(sock, bytes, len);
+    size_t sent = 0;
+    while (sent < len) {
+        if (!probe_wait(sock, true, deadline_ms))
+            return false;  // raw-return-ok:deadline-or-stop-ends-the-probe
+        int n = platform_socket_send_nonblocking(sock, bytes + sent,
+                                                 len - sent);
+        if (n > 0)
+            sent += (size_t)n;
+        else if (!probe_retryable(n))
+            return false;  // raw-return-ok:peer-refused-the-handshake-bytes
+    }
+    return true;
+}
+
+/* Bytes read, 0 when the peer closed, -1 on deadline, stop or error. */
+static int probe_receive(platform_socket_t sock, uint8_t *buf, size_t cap,
+                         int64_t deadline_ms)
+{
+    for (;;) {
+        if (!probe_wait(sock, false, deadline_ms))
+            return -1;  // raw-return-ok:deadline-stop-or-error-is-the-probe-answer
+        int n = platform_socket_receive_nonblocking(sock, buf, cap);
+        if (!probe_retryable(n))
+            return n;
+    }
 }
 
 /* Drive the initiator side until the session is established. Feeding XX
  * message 2 yields message 3, which is sent so the responder also sees a
  * completed handshake; the socket then closes before any VERSION, so the
- * responder's connection manager never evaluates it as a peer. */
+ * responder's connection manager never evaluates it as a peer. Bytes that
+ * arrive slowly do not extend `deadline_ms`. */
 static bool probe_handshake(platform_socket_t sock, struct noise_transport *t,
-                            uint8_t out_static[32])
+                            int64_t deadline_ms, uint8_t out_static[32])
 {
     uint8_t buf[256];
     size_t total = 0;
     while (total < PROBE_MAX_BYTES) {
-        int n = platform_socket_receive(sock, buf, sizeof(buf));
+        int n = probe_receive(sock, buf, sizeof(buf), deadline_ms);
         if (n <= 0)
-            return false;  // raw-return-ok:peer-closed-or-timed-out-before-xx-msg2
+            return false;  // raw-return-ok:peer-closed-or-deadline-before-xx-msg2
         total += (size_t)n;
         uint8_t *wire = NULL, *plain = NULL;
         size_t wire_len = 0, plain_len = 0;
         bool fed = noise_transport_feed(t, buf, (size_t)n, &wire, &wire_len,
                                         &plain, &plain_len);
-        bool sent = fed && probe_send(sock, wire, wire_len);
+        bool sent = fed && probe_send(sock, wire, wire_len, deadline_ms);
         free(wire);
         free(plain);
         if (!sent)
@@ -333,37 +404,48 @@ static bool probe_handshake(platform_socket_t sock, struct noise_transport *t,
     return false;
 }
 
+/* A non-blocking connect that honours the deadline and stop requests. */
+static bool probe_connect(const struct net_service *target,
+                          int64_t deadline_ms, zcl_socket_t *sock_out)
+{
+    zcl_socket_t sock = ZCL_INVALID_SOCKET;
+    enum zcl_connect_start started = connect_socket_start(target, &sock);
+    if (started == ZCL_CONNECT_START_ERROR)
+        return false;  // raw-return-ok:unreachable-target-is-the-probe-answer
+    if (started != ZCL_CONNECT_START_CONNECTED &&
+        (!probe_wait(sock, true, deadline_ms) || !connect_socket_check(sock))) {
+        (void)close_socket(&sock);
+        return false;  // raw-return-ok:unreachable-target-is-the-probe-answer
+    }
+    *sock_out = sock;
+    return true;
+}
+
 /* Dial `target`, complete Noise XX as initiator with `identity_priv`, and
- * return the responder's authenticated static key. Blocking and bounded by
- * PROBE_CONNECT_TIMEOUT_MS plus PROBE_IO_TIMEOUT_MS per read or write. Only
- * table targets reach it, and the table admits no Tor, loopback or
- * unspecified address (configured_sync_peer_note). */
+ * return the responder's authenticated static key. Connect, every read and
+ * every write share one absolute deadline of CONFIGURED_SYNC_PEER_PROBE_DEADLINE_MS, and a
+ * stop request ends the probe within PROBE_WAIT_SLICE_MS. Only table targets
+ * reach it, and the table admits no Tor, loopback or unspecified address
+ * (configured_sync_peer_note). */
 static bool probe_noise_identity(const struct net_service *target,
                                  const uint8_t identity_priv[32],
                                  const unsigned char *magic,
                                  uint8_t out_static[32])
 {
+    int64_t deadline_ms = probe_now_ms() + CONFIGURED_SYNC_PEER_PROBE_DEADLINE_MS;
     zcl_socket_t sock = ZCL_INVALID_SOCKET;
-    if (!connect_socket_directly(target, &sock, PROBE_CONNECT_TIMEOUT_MS) ||
-        sock == ZCL_INVALID_SOCKET)
-        return false;  // raw-return-ok:unreachable-target-is-the-probe-answer
-    /* connect_socket_directly leaves the socket non-blocking, where a read
-     * returns at once with nothing and the timeouts below never apply. */
-    if (!zcl_set_socket_nonblocking(sock, false)) {
-        (void)platform_socket_close(sock);
-        return false;  // raw-return-ok:unusable-socket-is-the-probe-answer
-    }
-    (void)platform_socket_set_receive_timeout(sock, PROBE_IO_TIMEOUT_MS);
-    (void)platform_socket_set_send_timeout(sock, PROBE_IO_TIMEOUT_MS);
+    if (configured_sync_peers_probe_should_stop() ||
+        !probe_connect(target, deadline_ms, &sock))
+        return false;  // raw-return-ok:stopped-or-unreachable-target
     uint8_t *msg1 = NULL;
     size_t msg1_len = 0;
     struct noise_transport *t =
         noise_transport_begin(true, identity_priv, magic, &msg1, &msg1_len);
-    bool ok = t && probe_send(sock, msg1, msg1_len) &&
-              probe_handshake(sock, t, out_static);
+    bool ok = t && probe_send(sock, msg1, msg1_len, deadline_ms) &&
+              probe_handshake(sock, t, deadline_ms, out_static);
     free(msg1);
     noise_transport_free(t);
-    (void)platform_socket_close(sock);
+    (void)close_socket(&sock);
     return ok;
 }
 
@@ -372,13 +454,17 @@ static void *probe_thread(void *arg)
     struct probe_job *job = arg;
     for (size_t i = 0; i < job->count; i++) {
         uint8_t remote[32];
-        bool ok = probe_noise_identity(&job->targets[i], job->identity_priv,
-                                       job->magic, remote);
+        bool ok = !configured_sync_peers_probe_should_stop() &&
+                  (job->prober
+                       ? job->prober(&job->targets[i], remote)
+                       : probe_noise_identity(&job->targets[i],
+                                              job->identity_priv, job->magic,
+                                              remote));
         probe_finished(&job->targets[i], ok, ok ? remote : NULL);
     }
     memory_cleanse(job->identity_priv, sizeof(job->identity_priv));
     free(job);
-    atomic_store(&g_probe_thread_done, true);
+    atomic_store(&g_probe_busy, false);
     return NULL;
 }
 
@@ -390,7 +476,8 @@ static bool probe_due_locked(const struct configured_target *t, int64_t now)
            now - t->probe_finished_s >= CONFIGURED_SYNC_PEER_PROBE_RETRY_SECS;
 }
 
-/* Mark every due target at `ip` running and copy it into `out`. */
+/* Mark every due target at `ip` running and copy it into `out` (or only
+ * count them when `out` is NULL). */
 static size_t collect_due_locked(const struct net_addr *ip,
                                  struct net_service *out, int64_t now)
 {
@@ -399,8 +486,11 @@ static size_t collect_due_locked(const struct net_addr *ip,
         struct configured_target *t = &g_configured[i];
         if (!net_addr_eq(&t->svc.addr, ip) || !probe_due_locked(t, now))
             continue;
-        t->probe_running = true;
-        out[n++] = t->svc;
+        if (out) {
+            t->probe_running = true;
+            out[n] = t->svc;
+        }
+        n++;
     }
     return n;
 }
@@ -421,39 +511,68 @@ static size_t request_probe_with_test_prober(const struct net_addr *ip,
     return n;
 }
 
-static size_t request_probe_on_thread(const struct net_addr *ip)
+/* Cheap pre-check, one lock and no allocation: a thread-path probe could
+ * start for `ip` now. */
+static bool probe_thread_wanted(const struct net_addr *ip)
 {
-    size_t n = 0;
-    pthread_mutex_lock(&g_probe_thread_lock);
-    if (g_probe_tid_live && !atomic_load(&g_probe_thread_done)) {
-        pthread_mutex_unlock(&g_probe_thread_lock);
-        return 0;  // one probe thread at a time; the next tick retries
-    }
-    if (g_probe_tid_live) {
-        (void)pthread_join(g_probe_tid, NULL);
-        g_probe_tid_live = false;
-    }
-    struct probe_job *job = zcl_calloc(1, sizeof(*job), "configured_sync_probe");
-    if (job) {
-        pthread_mutex_lock(&g_configured_lock);
-        const struct net_manager *nm = g_network;
-        if (nm && nm->noise_enabled) {
+    if (atomic_load(&g_probe_busy) || configured_sync_peers_probe_should_stop())
+        return false;  // raw-return-ok:a-probe-is-running-or-stopping
+    pthread_mutex_lock(&g_configured_lock);
+    bool can_probe = g_test_threaded_prober ||
+                     (g_network && g_network->noise_enabled);
+    bool wanted = can_probe &&
+                  collect_due_locked(ip, NULL, configured_now_s()) > 0;
+    pthread_mutex_unlock(&g_configured_lock);
+    return wanted;
+}
+
+/* Fill `job` under the table lock: the prober, the key and the due targets. */
+static size_t probe_job_fill(struct probe_job *job, const struct net_addr *ip)
+{
+    pthread_mutex_lock(&g_configured_lock);
+    const struct net_manager *nm = g_network;
+    job->prober = g_test_threaded_prober;
+    if (job->prober || (nm && nm->noise_enabled)) {
+        if (!job->prober) {
             memcpy(job->identity_priv, nm->identity_priv, 32);
             memcpy(job->magic, nm->message_start, sizeof(job->magic));
-            job->count = collect_due_locked(ip, job->targets,
-                                            configured_now_s());
         }
-        pthread_mutex_unlock(&g_configured_lock);
-        n = job->count;
+        job->count = collect_due_locked(ip, job->targets, configured_now_s());
     }
-    atomic_store(&g_probe_thread_done, false);
-    // thread-supervision-ok:bounded-one-shot identity probe; caller-owned tid joined before the next probe is spawned, and each socket step is bounded by PROBE_CONNECT_TIMEOUT_MS / PROBE_IO_TIMEOUT_MS
+    pthread_mutex_unlock(&g_configured_lock);
+    return job->count;
+}
+
+/* Join a finished probe thread. Caller holds g_probe_thread_lock. */
+static void probe_join_locked(void)
+{
+    if (!g_probe_tid_live)
+        return;
+    (void)pthread_join(g_probe_tid, NULL);
+    g_probe_tid_live = false;
+}
+
+static size_t request_probe_on_thread(const struct net_addr *ip)
+{
+    if (!probe_thread_wanted(ip))
+        return 0;
+    pthread_mutex_lock(&g_probe_thread_lock);
+    if (atomic_load(&g_probe_busy) || configured_sync_peers_probe_should_stop()) {
+        pthread_mutex_unlock(&g_probe_thread_lock);
+        return 0;
+    }
+    probe_join_locked();
+    struct probe_job *job = zcl_calloc(1, sizeof(*job), "configured_sync_probe");
+    size_t n = job ? probe_job_fill(job, ip) : 0;
+    atomic_store(&g_probe_busy, n > 0);
+    // thread-supervision-ok:bounded one-shot identity probe; caller-owned tid joined before the next probe and by configured_sync_peers_stop, with one CONFIGURED_SYNC_PEER_PROBE_DEADLINE_MS deadline per target and a stop check every PROBE_WAIT_SLICE_MS
     if (n > 0 && thread_registry_spawn("cfg-sync-probe", probe_thread, job,
                                        &g_probe_tid) == 0) {
         g_probe_tid_live = true;
         pthread_mutex_unlock(&g_probe_thread_lock);
         return n;
     }
+    atomic_store(&g_probe_busy, false);
     for (size_t i = 0; job && i < job->count; i++)
         probe_finished(&job->targets[i], false, NULL);
     if (job)
@@ -488,6 +607,16 @@ void configured_sync_peer_observe_session(const struct p2p_node *node)
         (void)configured_sync_peer_request_probe(node);
 }
 
+void configured_sync_peers_stop(void)
+{
+    atomic_store(&g_probe_stop, true);
+    pthread_mutex_lock(&g_probe_thread_lock);
+    probe_join_locked();
+    atomic_store(&g_probe_busy, false);
+    pthread_mutex_unlock(&g_probe_thread_lock);
+    configured_sync_peers_attach_network(NULL);
+}
+
 /* ── test seams ───────────────────────────────────────────────────────── */
 
 void configured_sync_peers_set_prober_for_testing(
@@ -498,13 +627,38 @@ void configured_sync_peers_set_prober_for_testing(
     pthread_mutex_unlock(&g_configured_lock);
 }
 
+void configured_sync_peers_set_threaded_prober_for_testing(
+    configured_sync_peer_prober_fn prober)
+{
+    pthread_mutex_lock(&g_configured_lock);
+    g_test_threaded_prober = prober;
+    pthread_mutex_unlock(&g_configured_lock);
+}
+
 void configured_sync_peers_set_clock_for_testing(int64_t (*now_seconds)(void))
 {
     g_test_clock = now_seconds;
 }
 
+void configured_sync_peers_set_probe_clock_ms_for_testing(
+    int64_t (*now_ms)(void))
+{
+    g_test_clock_ms = now_ms;
+}
+
+bool configured_sync_peers_join_probe_for_testing(void)
+{
+    pthread_mutex_lock(&g_probe_thread_lock);
+    bool joined = g_probe_tid_live;
+    probe_join_locked();
+    pthread_mutex_unlock(&g_probe_thread_lock);
+    return joined;
+}
+
 void configured_sync_peers_reset_for_testing(void)
 {
+    configured_sync_peers_stop();
+    atomic_store(&g_probe_stop, false);
     pthread_mutex_lock(&g_configured_lock);
     memset(g_configured, 0, sizeof(g_configured));
     g_configured_count = 0;

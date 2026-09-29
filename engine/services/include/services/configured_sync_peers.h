@@ -63,6 +63,10 @@
  * sessions with a wrong key cannot turn into a probe flood. */
 #define CONFIGURED_SYNC_PEER_PROBE_RETRY_SECS 30
 
+/* One identity probe of one target ends within this many milliseconds,
+ * however slowly the target answers. */
+#define CONFIGURED_SYNC_PEER_PROBE_DEADLINE_MS 10000
+
 /* Record an operator-named target. Returns true when it is recorded (or was
  * already present), false for NULL, an address that can never authenticate
  * an inbound source (Tor, loopback, unspecified), or a full table. */
@@ -113,12 +117,29 @@ size_t configured_sync_peer_request_probe(const struct p2p_node *inbound);
  * session from a target's IP that has not bound. */
 void configured_sync_peer_observe_session(const struct p2p_node *node);
 
-/* Test seams. A test prober runs synchronously inside the request, and a
- * test clock replaces the monotonic clock, so a regression never depends on
- * wall-clock timing or real sockets. Pass NULL to restore the defaults. */
+/* Stop probing: refuse new probes, end a running one within one wait slice,
+ * join its thread and detach the net manager. Registered as the runtime
+ * service stop (boot_runtime_sync_services.c). */
+void configured_sync_peers_stop(void);
+
+/* True once stop or process shutdown was requested. A prober checks it
+ * between waits. */
+bool configured_sync_peers_probe_should_stop(void);
+
+/* Test seams. A test prober runs synchronously inside the request; a
+ * threaded test prober runs on the real probe thread instead of the socket
+ * prober. The test clocks replace the monotonic clock for the retry spacing
+ * (seconds) and the probe deadline (milliseconds). Pass NULL to restore the
+ * defaults. Reset stops and joins any probe, then clears the stop request. */
 void configured_sync_peers_set_prober_for_testing(
     configured_sync_peer_prober_fn prober);
+void configured_sync_peers_set_threaded_prober_for_testing(
+    configured_sync_peer_prober_fn prober);
 void configured_sync_peers_set_clock_for_testing(int64_t (*now_seconds)(void));
+void configured_sync_peers_set_probe_clock_ms_for_testing(
+    int64_t (*now_ms)(void));
+/* Join the probe thread if one was spawned; true when it joined one. */
+bool configured_sync_peers_join_probe_for_testing(void);
 void configured_sync_peers_reset_for_testing(void);
 /* The network prober's socket path against any address, loopback included,
  * so a harness listener can prove the dial, handshake and timeouts. */

@@ -469,6 +469,12 @@ void boot_rolling_anchor_stop(void *ctx);    /* rolling SHA3 anchor stop */
  * file-static service instance are private to that TU. */
 bool boot_segment_sealer_register(struct boot_svc_ctx *svc);
 
+/* ── configured_sync_probe (boot_runtime_sync_services.c) ───────
+ * Stops and joins the configured-sync-peer identity probe at shutdown
+ * (services/configured_sync_peers.h). Called from
+ * boot_register_runtime_services(). */
+bool boot_configured_sync_probe_register(struct boot_svc_ctx *svc);
+
 /* ── boot_bg_verification.c ─────────────────────────────────────
  * Runtime service-kernel start/stop adapters for the two background
  * re-verification services. Registered by boot_register_runtime_services()

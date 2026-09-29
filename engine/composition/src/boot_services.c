@@ -363,7 +363,8 @@ static bool boot_register_runtime_services(struct boot_svc_ctx *svc)
         !boot_mem_pressure_register(svc) ||
         !boot_utxo_mirror_sync_register(svc) ||
         !boot_supervisor_backstop_register(svc) ||
-        !boot_segment_sealer_register(svc))
+        !boot_segment_sealer_register(svc) ||
+        !boot_configured_sync_probe_register(svc))
         return false;
 
     /* Register the node.db-writing payment worker last so reverse-order
