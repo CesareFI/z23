@@ -912,6 +912,60 @@ static void fxm_missing_made(struct fxm *m)
     }
 }
 
+/* A target word of t may name a depfile: it ends in .d, or in a pattern
+ * or a value no text spells. */
+static bool fxm_depfile_target(const char *t)
+{
+    while (*t != '\0') {
+        size_t n = 0;
+        while (fxm_space(*t))
+            t++;
+        while (t[n] != '\0' && !fxm_space(t[n]))
+            n++;
+        if (n > 0 && (strchr("%*?]\x01\x03", t[n - 1]) != NULL ||
+                      (n >= 2 && t[n - 2] == '.' && t[n - 1] == 'd')))
+            return true;
+        t += n;
+    }
+    return false;
+}
+
+/* Rule line l may remake a makefile make reads: its expanded targets name
+ * one (a pattern, match-anything or .DEFAULT too), or a depfile while an
+ * include names depfiles, or it is computed and its text names one; a
+ * line that may be a rule, the same. */
+static bool fxm_line_remakes(struct fxm *m, const struct fxm_line *l)
+{
+    size_t n = l->from > 0 ? l->from - 1 : 0;
+    const char *t;
+    if (n == 0 || (l->ctx != FXM_RULE && !(l->ctx == FXM_DEF && l->body)))
+        return fxm_computed_names(m, l, 0, NULL, &m->files);
+    m->lists = true;
+    t = fxm_expand(m, l->raw, l->raw[n - 1] == '&' ? n - 1 : n);
+    m->lists = false;
+    if (t == NULL || fxm_names_target(t, ".DEFAULT") ||
+        (m->inc_depfile && fxm_depfile_target(t)))
+        return true;
+    for (size_t f = 0; f < m->files.n; f++)
+        if (fxm_names_target(t, m->files.v[f]))
+            return true;
+    return fxm_computed_names(m, l, n, t, &m->files);
+}
+
+/* GNU make remakes each makefile it read that a rule targets and, when
+ * one changed, reads them all again (MAKE_RESTARTS set): what the first
+ * parse ran is then done before any directive of the next. An include
+ * outside the tree counts as remade. */
+bool fxm_makefiles_remade(struct fxm *m)
+{
+    if (m->inc_outside)
+        return true;
+    for (size_t k = 0; k < m->nlines; k++)
+        if (fxm_line_remakes(m, &m->lines[k]))
+            return true;
+    return false;
+}
+
 static bool fxm_is_include(const char *p)
 {
     return (strncmp(p, "include", 7) == 0 && fxm_space(p[7])) ||

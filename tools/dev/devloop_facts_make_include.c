@@ -72,14 +72,18 @@ static void fxm_include_word(struct fxm *m, const char *w, bool optional)
         m->unknown = true;
         return;
     }
-    if (w[0] == '/' || strstr(w, "..") != NULL)
-        return; /* outside the tree: not a tracked input */
+    if (w[0] == '/' || strstr(w, "..") != NULL) {
+        m->inc_outside = true; /* not a tracked input; a rule may remake it */
+        return;
+    }
     if (fxm_exists(m->root, w)) {
         m->unknown |= !fxm_load(m, w);
         return;
     }
-    if (fxm_depfile_word(w, strlen(w)))
+    if (fxm_depfile_word(w, strlen(w))) {
+        m->inc_depfile = true;
         return;
+    }
     m->unknown |= !optional || !fxc_strs_add(&m->missing, w) ||
                   !fxm_inc_add(m, w);
 }
@@ -101,8 +105,9 @@ static void fxm_include_words(struct fxm *m, char *s, bool optional)
     }
 }
 
-/* The include line's argument text p, less its depfile words, into in. */
-static bool fxm_include_text(const char *p, struct fxm_buf *in)
+/* The include line's argument text p, less its depfile words (noted in
+ * m->inc_depfile), into in. */
+static bool fxm_include_text(struct fxm *m, const char *p, struct fxm_buf *in)
 {
     in->n = 0;
     if (!fxm_put(in, "", 0))
@@ -110,11 +115,14 @@ static bool fxm_include_text(const char *p, struct fxm_buf *in)
     while (*p != '\0') {
         const char *w;
         int depth = 0;
+        bool dep;
         while (fxm_space(*p))
             p++;
         for (w = p; *p != '\0' && (depth > 0 || !fxm_space(*p)); p++)
             depth += (*p == '(' || *p == '{') - (*p == ')' || *p == '}');
-        if (p > w && !fxm_depfile_word(w, (size_t)(p - w)) &&
+        dep = p > w && fxm_depfile_word(w, (size_t)(p - w));
+        m->inc_depfile |= dep;
+        if (p > w && !dep &&
             (!fxm_put(in, w, (size_t)(p - w)) || !fxm_put(in, " ", 1)))
             return false;
     }
@@ -130,7 +138,7 @@ void fxm_include(struct fxm *m, const char *line)
     struct fxm_buf *in = &m->a, *out = &m->b;
     while (*p != '\0' && !fxm_space(*p))
         p++;
-    m->unknown |= !fxm_include_text(p, in);
+    m->unknown |= !fxm_include_text(m, p, in);
     m->lists = true;
     for (int r = 0; !m->unknown && left && r < FXM_ROUNDS; r++) {
         struct fxm_buf *t = in;
@@ -851,19 +859,68 @@ static void fxg_glob_dir(const char *glob, char *out, size_t cap)
     (void)snprintf(out, cap, "%.*s", (int)(end - glob), glob);
 }
 
-/* A command make runs as it reads, no later than the directive the reading
- * in g->rec decided (a later one runs after make read it, and under the
- * premises nothing restarts make), may create a path that reading
+/* Branch line p tests that MAKE_RESTARTS is empty: ifeq (or else ifeq)
+ * with one side $(MAKE_RESTARTS) or $(strip $(MAKE_RESTARTS)), braces
+ * too, and the other empty. */
+static bool fxg_restarts_test(const char *p)
+{
+    static const char *const forms[] = {
+        "$(MAKE_RESTARTS)", "${MAKE_RESTARTS}", "$(strip $(MAKE_RESTARTS))",
+        "${strip ${MAKE_RESTARTS}}"};
+    const char *a, *b;
+    size_t an, bn;
+    while (fxm_space(*p))
+        p++;
+    if (fxm_starts_word(p, "else"))
+        for (p += 4; fxm_space(*p); p++)
+            ;
+    if (!fxm_starts_word(p, "ifeq") || !fxg_sides(p + 4, &a, &an, &b, &bn))
+        return false;
+    if (an == 0) {
+        a = b;
+        an = bn;
+        bn = 0;
+    }
+    for (size_t k = 0; bn == 0 && k < sizeof(forms) / sizeof(*forms); k++)
+        if (an == strlen(forms[k]) && strncmp(a, forms[k], an) == 0)
+            return true;
+    return false;
+}
+
+/* Root line t sits in a branch only make's first parse takes: one a
+ * MAKE_RESTARTS-is-empty test opens (fxg_restarts_test), while no line
+ * can set MAKE_RESTARTS. Make sets it to the restart count on every
+ * parse after the first. */
+static bool fxg_first_parse(struct fxg *g, uint32_t t)
+{
+    size_t lo, hi;
+    if (t == FXG_NO || !g->nest_ok || fxg_patterned(g, "MAKE_RESTARTS"))
+        return false;
+    fxg_range(g, "MAKE_RESTARTS", &lo, &hi);
+    for (uint32_t b = g->up[t]; hi == lo && b != FXG_NO; b = g->up[b])
+        if (g->cls[b] != FXG_C_ELSE && fxg_restarts_test(g->m->lines[b].raw))
+            return true;
+    return false;
+}
+
+/* A command make runs as it reads may create a path the reading in g->rec
  * globbed (it names that path's last literal component or the directories
- * before its first pattern): the reading cannot stand. */
-static bool fxg_rec_named(struct fxg *g)
+ * before its first pattern): the reading cannot stand. Only one no later
+ * than the deciding directive counts when make reads the include only in
+ * its first parse (a later command runs after make read the directive):
+ * make restarts on no makefile a rule may remake (g->remade), or only the
+ * first parse takes the include's branch (fxg_first_parse). Otherwise a
+ * restarted parse reads the directive after every command ran. */
+static bool fxg_rec_named(struct fxg *g, const struct fxm_inc *inc)
 {
     char name[ZCL_DEVLOOP_GUARD_TEXT], dir[ZCL_DEVLOOP_GUARD_TEXT];
+    uint32_t t = inc->file == 0 ? fxg_line_at(g->m, inc->at) : FXG_NO;
+    uint32_t by = !g->remade || fxg_first_parse(g, t) ? g->rec_at : FXM_NONE;
     for (size_t k = 0; k < g->rec.nglobs; k++) {
         fxg_glob_name(g->rec.glob[k], name, sizeof(name));
         fxg_glob_dir(g->rec.glob[k], dir, sizeof(dir));
-        if (fxm_commands_name_by(g->m, name, g->rec_at) ||
-            fxm_commands_name_by(g->m, dir, g->rec_at))
+        if (fxm_commands_name_by(g->m, name, by) ||
+            fxm_commands_name_by(g->m, dir, by))
             return true;
     }
     return false;
@@ -879,7 +936,8 @@ static void fxg_path(struct fxg *g, const char *path)
     bool all = true;
     for (size_t k = 0; all && k < m->nincs; k++)
         if (strcmp(m->incs[k].path, path) == 0)
-            all = fxg_inc_skipped(g, &m->incs[k]) && !fxg_rec_named(g) &&
+            all = fxg_inc_skipped(g, &m->incs[k]) &&
+                  !fxg_rec_named(g, &m->incs[k]) &&
                   fxg_report_add(g, &m->incs[k]);
     if (!all) {
         if (r != NULL)
@@ -924,6 +982,7 @@ static void fxg_skip_all(struct fxm *m)
     if (g->cls != NULL && g->site_at != NULL && g->up != NULL &&
         g->prev != NULL && g->arena != NULL) {
         memset(g->site_at, 0xff, lines * sizeof(*g->site_at));
+        g->remade = fxm_makefiles_remade(m);
         if (fxg_collect(g) && !g->open_all)
             while (k < m->missing.n) {
                 size_t n = m->missing.n;

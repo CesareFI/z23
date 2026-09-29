@@ -170,6 +170,8 @@ struct fxm {
     struct fxm_inc *incs; /* each include line word that names a missing file */
     size_t nincs, capincs;
     size_t root_lines; /* the root makefile's lines come first */
+    bool inc_depfile;  /* an include names a depfile (not read here) */
+    bool inc_outside;  /* ...or a file outside the tree */
     struct zcl_devloop_facts_report *report; /* guards read not taken */
 };
 
@@ -301,5 +303,14 @@ void fxm_target_computed(struct fxm *m, const struct fxm_line *l, size_t n,
  * holds a reference (what it expands to may be a rule): the same reading as
  * fxm_target_computed over its whole text. */
 void fxm_line_computed(struct fxm *m, const struct fxm_line *l);
+/* The same readings as a question over paths: rule line l, its targets
+ * raw[0..n) expanded to t, is computed and its text names one of paths;
+ * or (t NULL) l is a line that may be a rule and names one. */
+bool fxm_computed_names(const struct fxm *m, const struct fxm_line *l,
+                        size_t n, const char *t, const struct fxc_strs *paths);
+/* make.c: a makefile make reads (the root one, an existing include, a
+ * depfile, one outside the tree) may be remade by a rule, and make then
+ * reads every makefile again after what the first parse ran. */
+bool fxm_makefiles_remade(struct fxm *m);
 
 #endif

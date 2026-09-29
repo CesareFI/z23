@@ -587,15 +587,15 @@ static size_t fxm_static_end(const struct fxm_line *l, size_t n)
     return n;
 }
 
-/* A computed rule's text names a missing include: its targets raw[0..n)
- * the path or basename, directly or through a variable, or its targets
- * with a static rule's target pattern, raw[0..pn), a % pattern matching
- * the path. */
+/* A computed rule's text names one of paths (the missing includes, or
+ * the makefiles make reads): its targets raw[0..n) the path or basename,
+ * directly or through a variable, or its targets with a static rule's
+ * target pattern, raw[0..pn), a % pattern matching the path. */
 static bool fxm_rule_names(const struct fxm *m, const struct fxm_line *l,
-                           size_t n, size_t pn)
+                           size_t n, size_t pn, const struct fxc_strs *paths)
 {
-    for (size_t k = 0; k < m->missing.n; k++) {
-        const char *path = m->missing.v[k], *base = strrchr(path, '/');
+    for (size_t k = 0; k < paths->n; k++) {
+        const char *path = paths->v[k], *base = strrchr(path, '/');
         if (fxm_text_names(m, l->raw, n, path) ||
             fxm_text_names(m, l->raw, n, base != NULL ? base + 1 : path) ||
             fxm_pct_names(m, l->raw, pn, path))
@@ -611,7 +611,7 @@ static void fxm_computed_rule(struct fxm *m, const struct fxm_line *l,
                               size_t n, size_t pn)
 {
     struct zcl_devloop_facts_plan_premise *p;
-    if (fxm_rule_names(m, l, n, pn)) {
+    if (fxm_rule_names(m, l, n, pn, &m->missing)) {
         m->unknown = true;
         return;
     }
@@ -676,6 +676,20 @@ void fxm_line_computed(struct fxm *m, const struct fxm_line *l)
     while (n > 0 && fxm_space(l->raw[n - 1]))
         n--;
     fxm_computed_rule(m, l, n, n);
+}
+
+bool fxm_computed_names(const struct fxm *m, const struct fxm_line *l,
+                        size_t n, const char *t, const struct fxc_strs *paths)
+{
+    if (t != NULL)
+        return (fxm_calls_in(l->raw, n) || fxm_marked(t)) &&
+               fxm_rule_names(m, l, n, fxm_static_end(l, n), paths);
+    n = strlen(l->raw);
+    if (l->ctx != FXM_ACTIVE || l->body || !fxm_ref_line(l->raw))
+        return false;
+    while (n > 0 && fxm_space(l->raw[n - 1]))
+        n--;
+    return fxm_rule_names(m, l, n, n, paths);
 }
 
 /* A target word that makes any file: match-anything (%) or .DEFAULT. */

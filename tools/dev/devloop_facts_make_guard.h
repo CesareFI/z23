@@ -23,8 +23,9 @@
  * rests on beyond the text is a named premise (ZCL_DEVLOOP_PREMISE_*): two
  * on every skip, the goals', the epoch's or the defaults' where it reads
  * them, recorded with the paths it globbed. A reading whose globbed path
- * a command make runs as it reads, no later than the deciding directive,
- * names is not used. */
+ * a command make runs as it reads names is not used; only one no later
+ * than the deciding directive counts when make reads the include in its
+ * first parse alone (fxg_rec_named). */
 #define FXG_ALTS 64
 #define FXG_TEXT 4096
 #define FXG_DEPTH 24
@@ -85,6 +86,7 @@ struct fxg {
     struct fxg_frame frames[FXM_COND_MAX];
     struct zcl_devloop_facts_guard rec; /* the reading of one directive */
     uint32_t rec_at; /* ...and its root line */
+    bool remade;     /* make may remake a makefile it read and restart */
     bool rec_full;
 };
 
@@ -99,6 +101,10 @@ size_t fxg_close(const char *s, size_t k, size_t n);
 /* s[0..n) expanded as make would at root line t. */
 void fxg_text(struct fxg *g, const char *s, size_t n, uint32_t t, int depth,
               struct fxg_val *out);
+
+/* An $(eval), a computed name or a line the reading cannot follow may set
+ * name. */
+bool fxg_patterned(const struct fxg *g, const char *name);
 
 /* make_include.c: the sites of name, [*lo, *hi). */
 void fxg_range(const struct fxg *g, const char *name, size_t *lo, size_t *hi);

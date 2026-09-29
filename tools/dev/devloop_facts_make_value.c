@@ -126,7 +126,7 @@ static void fxg_cat_text(struct fxg *g, struct fxg_val *v, const char *s,
 }
 
 
-static bool fxg_patterned(const struct fxg *g, const char *name)
+bool fxg_patterned(const struct fxg *g, const char *name)
 {
     for (size_t k = 0; k < g->npats; k++)
         if (fxm_glob(g->pats[k], name))
