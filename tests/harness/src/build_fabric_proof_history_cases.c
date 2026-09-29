@@ -600,6 +600,41 @@ _test_next:
     return failures;
 }
 
+/* Another handle changes a pin after the history walk listed the catalog:
+ * the store refuses this handle's pin with an I/O refusal, not a stale
+ * page. Recovery must still see a moved catalog and retry. */
+static int bfh_case_recover_history_pin_refused(void)
+{
+    int failures = 0;
+    struct bfh h;
+    printf("build_fabric: a pin refused by a moved catalog is a typed retry... ");
+    {
+        ASSERT(bfh_init(&h, "proof_recover_pinrefused"));
+        uint8_t blob[8] = {'p', 'i', 'n', 'n', 'e', 'd', 0, 2};
+        struct bfh_pinner pin = {.dir = h.dir};
+        ASSERT(vcs_proof_ticket_store_put(h.store, blob, sizeof(blob),
+                                          pin.root));
+        ASSERT(bfh_stage_ticket_only(&h));
+        build_fabric_proof_test_before_history_pin(bfh_flip_pin, &pin);
+        struct zcl_result recovered = build_fabric_proof_pending_recover(
+            &h.ndb, h.store, bfh_worker_id, h.f.seed[PTF_A]);
+        build_fabric_proof_test_before_history_pin(NULL, NULL);
+        ASSERT_EQ(pin.fired, 1u);
+        ASSERT(pin.wrote);
+        ASSERT(recovered.ok);
+        ASSERT(bfh_head_is(&h, h.second_head));
+        ASSERT_EQ(bfh_pending_count(&h), 0);
+        bfh_free(&h);
+        printf("OK\n");
+    }
+    if (0) {
+_test_next:
+        build_fabric_proof_test_before_history_pin(NULL, NULL);
+        bfh_free(&h);
+    }
+    return failures;
+}
+
 int bf_proof_history_cases(void);
 
 int bf_proof_history_cases(void)
@@ -612,5 +647,6 @@ int bf_proof_history_cases(void)
     failures += bfh_case_recover_moved_catalog();
     failures += bfh_case_recover_restless_catalog();
     failures += bfh_case_recover_pinned_catalog();
+    failures += bfh_case_recover_history_pin_refused();
     return failures;
 }

@@ -30,12 +30,40 @@ void build_fabric_proof_test_before_finalize(void (*hook)(void *),
     bfpr_before_finalize_hook = hook;
     bfpr_before_finalize_context = context;
 }
+static void (*bfpr_before_history_pin_hook)(void *);
+static void *bfpr_before_history_pin_context;
+void build_fabric_proof_test_before_history_pin(void (*hook)(void *),
+                                                void *context)
+{
+    bfpr_before_history_pin_hook = hook;
+    bfpr_before_history_pin_context = context;
+}
+
+/* One-shot: fire once, after the history walk and before its first pin. */
+static void bfpr_fire_before_history_pin(void)
+{
+    void (*hook)(void *) = bfpr_before_history_pin_hook;
+    void *context = bfpr_before_history_pin_context;
+    bfpr_before_history_pin_hook = NULL;
+    bfpr_before_history_pin_context = NULL;
+    if (hook) hook(context);
+}
 #endif
 
 static bool bfpr_unsettled(enum vcs_package_store_page_result result)
 {
     return result == VCS_PACKAGE_STORE_PAGE_STALE ||
            result == VCS_PACKAGE_STORE_PAGE_INCOMPLETE;
+}
+
+/* This handle no longer sees the catalog it walked: another writer moved
+ * it. The store reports a pin refused for that reason as an I/O refusal. */
+static bool bfpr_catalog_unsettled(struct vcs_package_store *store)
+{
+    size_t rows = 0;
+    uint64_t generation = 0;
+    return bfpr_unsettled(
+        vcs_package_store_catalog_rows(store, &rows, &generation));
 }
 
 /* *moved reports a walk the catalog changed under (stale or incomplete). */
@@ -133,9 +161,14 @@ static bool bfpr_pin_issuer_history(struct vcs_package_store *store,
             break;
         }
         if (!bfpr_issuer_wire(wire, len, issuer)) continue;
+#ifdef ZCL_TESTING
+        bfpr_fire_before_history_pin();
+#endif
         enum vcs_package_store_result pinned =
             vcs_package_store_pin(store, roots[i], true);
-        *moved = pinned == VCS_PACKAGE_STORE_ERR_UNKNOWN_PACKAGE;
+        *moved = pinned == VCS_PACKAGE_STORE_ERR_UNKNOWN_PACKAGE ||
+                 (pinned == VCS_PACKAGE_STORE_ERR_IO &&
+                  bfpr_catalog_unsettled(store));
         if (pinned != VCS_PACKAGE_STORE_OK ||
             !vcs_package_chunk_hash(wire, len, roots[*hash_count_out]))
             ok = false;

@@ -57,6 +57,10 @@ struct zcl_result build_fabric_proof_pending_recover(
 /* Inject a second store writer at the final publication boundary. */
 void build_fabric_proof_test_before_finalize(void (*hook)(void *),
                                               void *context);
+/* Inject a second store writer between the history walk and its first pin
+ * (one-shot). */
+void build_fabric_proof_test_before_history_pin(void (*hook)(void *),
+                                                void *context);
 #endif
 
 #endif /* ZCL_SERVICES_BUILD_FABRIC_PROOF_RECOVERY_H */
