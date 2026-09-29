@@ -2072,6 +2072,61 @@ cj_fetch_fastobj_carrier() {
         cj_die "node $node never received the carrier $root whole: $plan"
 }
 
+# The toolchain capsule root a node compiles under, read from the node's own
+# `zcode work toolchain` on the node's own host.
+cj_toolchain_capsule() {
+    local out
+    out="$("cj_$1" zcode work toolchain)"
+    cj_require_ok "node $1 toolchain capsule" "$out"
+    cj_field data.capsule_root "$out" ''
+}
+
+# The zero-compiler claim holds only between identical toolchains. A fastobj
+# key binds the toolchain capsule root (compiler driver, backend and
+# assembler bytes, sysroot, target probes, ABI files; vcs/fastobj.h), and a
+# schema-v2 build receipt binds the same root (vcs/package_build.h). Two
+# hosts whose capsules differ, even by one distribution patch of the
+# assembler, MUST therefore miss every carried object and MUST file a
+# different receipt. A hit across capsules would be the cache handing out an
+# object another toolchain produced, so it is refused by name. The same
+# capsule keeps the full claim: zero compilers and B's exact receipt.
+# A pure decision over values already read from the nodes, so the ordering
+# selftest runs it without a node. Prints same_capsule or different_capsule.
+cj_carrier_rebuild_verdict() {
+    local cap_b="$1" cap_c="$2" entries="$3" hits="$4" misses="$5"
+    local reproduced="$6" warm_id="$7" ref_id="$8" h
+    for h in "$cap_b" "$cap_c"; do
+        [[ "$h" =~ ^[0-9a-f]{64}$ ]] ||
+            { cj_die "TOOLCHAIN_CAPSULE_UNREADABLE: '$h'"; return 1; }
+    done
+    for h in "$warm_id" "$ref_id"; do
+        [[ "$h" =~ ^[0-9a-f]{64}$ ]] ||
+            { cj_die "CARRIER_RECEIPT_UNREADABLE: '$h'"; return 1; }
+    done
+    [[ "$entries" =~ ^[1-9][0-9]*$ ]] && [[ "$hits" =~ ^[0-9]+$ ]] &&
+    [[ "$misses" =~ ^[0-9]+$ ]] ||
+        { cj_die "CARRIER_COUNTS_UNREADABLE: entries=$entries hits=$hits misses=$misses"; return 1; }
+    [ "$reproduced" = True ] ||
+        { cj_die "node C's warm rebuild did not match its install build"; return 1; }
+    if [ "$cap_b" = "$cap_c" ]; then
+        [ "$misses" = 0 ] ||
+            { cj_die "node C spawned compilers (misses=$misses) on a full cache under node B's own toolchain capsule"; return 1; }
+        [ "$hits" = "$entries" ] ||
+            { cj_die "node C hit $hits of $entries carried objects — the caches disagree"; return 1; }
+        [ "$warm_id" = "$ref_id" ] ||
+            { cj_die "the two nodes filed different receipts for the same rebuild under one capsule: $ref_id vs $warm_id"; return 1; }
+        printf 'same_capsule\n'
+    else
+        [ "$hits" = 0 ] ||
+            { cj_die "CROSS_TOOLCHAIN_OBJECT_REUSED: node C reused $hits carried objects compiled under another toolchain capsule"; return 1; }
+        [ "$misses" = "$entries" ] ||
+            { cj_die "node C compiled $misses of $entries translation units under its own capsule"; return 1; }
+        [ "$warm_id" != "$ref_id" ] ||
+            { cj_die "RECEIPT_CAPSULE_UNBOUND: two toolchain capsules filed one receipt $warm_id"; return 1; }
+        printf 'different_capsule\n'
+    fi
+}
+
 # ── 11/12  one bounded change to a package that already exists ───────────
 # Steps 1-9 prove the commons can CREATE something. This proves the other
 # half, and it is the half a stranger actually wants: take software that
@@ -2822,30 +2877,36 @@ cj_journey_publisher_disappears() {
         cj_die "node C admitted a different entry count than node B compiled: $admit_out"
 
     # The zero-spawn rebuild. C reproduces the library it holds with the
-    # carried cache attached: every TU is a hit, no compiler runs, and the
-    # filed receipt is the same bytes node B filed in step 10.
+    # carried cache attached. Under node B's own toolchain capsule every TU
+    # is a hit, no compiler runs, and the filed receipt is the same bytes
+    # node B filed in step 10. Under a different capsule every carried
+    # object must be refused (cj_carrier_rebuild_verdict).
+    local cap_b cap_c
+    cap_b="$(cj_toolchain_capsule b)"
+    cap_c="$(cj_toolchain_capsule c)"
     warm="$("cj_c" zcode package reproduce \
         --input="{\"name_or_root\":\"$CJ_TEXTSTAT_ROOT\",\"datadir\":\"$DHT_DD_C\",\"fast_cache\":\"$cache_c\"}")"
     cj_require_ok "node C cached reproduce (warm, publisher gone)" "$warm"
     printf '%s\n' "$warm" >"$DHT_WORK/carrier-reproduce-warm.json"
-    [ "$(cj_field data.reproduced "$warm" False)" = True ] ||
-        cj_die "node C's warm rebuild did not match its install build: $warm"
     warm_misses="$(cj_field data.fast_cache.misses "$warm" -1)"
     warm_hits="$(cj_field data.fast_cache.hits "$warm" -1)"
-    [ "$warm_misses" = 0 ] 2>/dev/null ||
-        cj_die "node C spawned compilers (misses=$warm_misses) on a full cache: $warm"
-    [ "$warm_hits" = "$CJ_CARRIER_ENTRIES" ] 2>/dev/null ||
-        cj_die "node C hit $warm_hits of $CJ_CARRIER_ENTRIES carried objects — the caches disagree: $warm"
-    warm_id="$(cj_field data.receipt_id "$warm")"
-    [ "$warm_id" = "$CJ_CARRIER_RECEIPT" ] ||
-        cj_die "the two nodes filed different receipts for the same rebuild: $CJ_CARRIER_RECEIPT vs $warm_id"
-    [ "$(cj_sha3_on b "$DHT_DD_B/zcode/receipts/$CJ_CARRIER_RECEIPT")" = \
-      "$(cj_sha3_on c "$DHT_DD_C/zcode/receipts/$warm_id")" ] ||
-        cj_die "the filed carrier receipts are not byte-identical across nodes"
+    warm_id="$(cj_field data.receipt_id "$warm" '')"
+    CJ_CARRIER_TOOLCHAIN="$(cj_carrier_rebuild_verdict "$cap_b" "$cap_c" \
+        "$CJ_CARRIER_ENTRIES" "$warm_hits" "$warm_misses" \
+        "$(cj_field data.reproduced "$warm" False)" "$warm_id" \
+        "$CJ_CARRIER_RECEIPT")" ||
+        cj_die "node C's carried-cache rebuild broke its toolchain rule: $warm"
     cj_note "carrier ${CJ_CARRIER_ROOT:0:16}… carried $CJ_CARRIER_ENTRIES objects node-B → node-C — publisher gone"
-    cj_note "node C rebuilt with zero compilers: hits=$warm_hits misses=0, identical receipt ${warm_id:0:16}…"
+    if [ "$CJ_CARRIER_TOOLCHAIN" = same_capsule ]; then
+        [ "$(cj_sha3_on b "$DHT_DD_B/zcode/receipts/$CJ_CARRIER_RECEIPT")" = \
+          "$(cj_sha3_on c "$DHT_DD_C/zcode/receipts/$warm_id")" ] ||
+            cj_die "the filed carrier receipts are not byte-identical across nodes"
+        cj_note "node C rebuilt with zero compilers: hits=$warm_hits misses=0, identical receipt ${warm_id:0:16}…"
+    else
+        cj_note "host C's toolchain capsule ${cap_c:0:16}… differs from host B's ${cap_b:0:16}…: C reused 0 of $CJ_CARRIER_ENTRIES carried objects, compiled each under its own capsule, and reproduced the package (receipt ${warm_id:0:16}…)"
+    fi
 
-    local src_c bin_c sample_c out_c cc_b cc_c ts_c
+    local src_c bin_c sample_c out_c ts_c
     src_c="$(cj_node_dir c)/checkout-c"
     cj_require_ok "node C accepted-source checkout" \
         "$(cj_checkout_accepted c "$src_c")"
@@ -2865,11 +2926,12 @@ cj_journey_publisher_disappears() {
         cj_die "node C ran the application but answered '$out_c' instead of '$CJ_APP_OUTPUT'"
 
     # Byte-identical binaries are only a claim when the two hosts compile with
-    # the same toolchain; a legitimate cross-host cc difference must narrow the
-    # claim, not silently fail it nor silently pass it.
-    cc_b="$(cj_on b sh -c 'cc --version | head -1')"
-    cc_c="$(cj_on c sh -c 'cc --version | head -1')"
-    if [ "$cc_b" = "$cc_c" ]; then
+    # the same toolchain; a legitimate cross-host toolchain difference must
+    # narrow the claim, not silently fail it nor silently pass it. The
+    # toolchain is the capsule the carrier step already read, not the cc
+    # version banner: two hosts can print the same banner over different
+    # assembler bytes.
+    if [ "$CJ_CARRIER_TOOLCHAIN" = same_capsule ]; then
         [ "$(cj_sha3_on b "$CJ_APP_BIN_B")" = \
           "$(cj_sha3_on c "$bin_c")" ] ||
             cj_die "B and C built different programs from the same accepted source"
@@ -2879,7 +2941,7 @@ cj_journey_publisher_disappears() {
             cj_die "B and C built different bytes for the reused package"
         cj_note "identical program and library bytes on B and C (same toolchain)"
     else
-        cj_note "cc differs between host B and host C; proven here: identical accepted source root, identical carrier, identical behavior"
+        cj_note "the toolchain capsule differs between host B and host C; proven here: identical accepted source root, identical carrier, identical behavior"
     fi
     # The step-10 change survives the same disappearance, and the test is the
     # one a person can read: a third machine that never met the publisher runs
@@ -2961,7 +3023,11 @@ cj_strip() {
     # application rebuilt it without running a single compiler.
     cj_strip_row "CACHE TRAVELED" \
         "$CJ_CARRIER_ENTRIES objects node-B → node-C as one ordinary package"
-    cj_strip_cont "node C rebuilt with zero compilers — same receipt ${CJ_CARRIER_ROOT:0:12}…"
+    if [ "$CJ_CARRIER_TOOLCHAIN" = same_capsule ]; then
+        cj_strip_cont "node C rebuilt with zero compilers — same receipt ${CJ_CARRIER_ROOT:0:12}…"
+    else
+        cj_strip_cont "host C's toolchain differs: 0 objects reused, rebuilt under its own"
+    fi
     # The eight stages above built something from nothing. This last row is the
     # harder half of the same promise: the same eight stages run again on
     # software that already existed and that this journey did not write, and
@@ -3100,7 +3166,11 @@ cj_write_facts() {
         printf 'tamper_refused        = 4 of 4, each by name\n'
         printf 'carrier_root          = %s\n' "$CJ_CARRIER_ROOT"
         printf 'carrier_entries       = %s objects, node-B cache exported as one content.v2 package\n' "$CJ_CARRIER_ENTRIES"
-        printf 'carrier_rebuild       = node C reproduced with zero compilers, byte-identical receipt\n'
+        if [ "$CJ_CARRIER_TOOLCHAIN" = same_capsule ]; then
+            printf 'carrier_rebuild       = node C reproduced with zero compilers, byte-identical receipt\n'
+        else
+            printf 'carrier_rebuild       = node C toolchain capsule differs from node B; 0 carried objects reused, every unit compiled under its own capsule, package reproduced\n'
+        fi
         printf 'central_services      = 0\n'
         # A 64-hex root plus a parenthetical does not fit the width this file
         # is rendered at, so the naming lives on its own line and the two
@@ -3210,6 +3280,7 @@ cj_journey_turn_faster
 # it. Same-host kills A's process; multi-host already placed B and C on
 # other machines.
 CJ_PUBLISHER_SURVIVAL=0
+CJ_CARRIER_TOOLCHAIN=""
 CJ_TURN_SURVIVED=0
 cj_journey_publisher_disappears
 
@@ -3228,7 +3299,12 @@ CJ_STEPS_PROVEN=12
 CJ_STEPS_TOTAL=12
 [ "$CJ_SIGNED_RECEIPTS_CONSUMED" -ge 2 ] ||
     cj_die "fewer than two cross-node signed source receipts were consumed"
-CJ_VERDICT="{\"schema\":\"$CJ_VERDICT_SCHEMA\",\"verdict\":\"$CJ_VERDICT_TOKEN\",\"steps_proven\":$CJ_STEPS_PROVEN,\"steps_total\":$CJ_STEPS_TOTAL,\"complete\":true,\"reuse_before_creation\":true,\"no_false_reuse_claim\":true,\"peer_to_peer_fetch\":true,\"fetched_source_inert\":true,\"explicit_local_admission\":true,\"independent_remote_build\":true,\"approved_signer_required\":true,\"explicit_human_acceptance\":true,\"accepted_work_published\":true,\"remote_source_reproduced\":true,\"signed_source_reproduction_receipts_consumed\":$CJ_SIGNED_RECEIPTS_CONSUMED,\"ask_to_running_program_seconds\":$CJ_SECS_RUNNING,\"reuse_ratio\":{\"basis\":\"exact_c23_source_closure_bytes\",\"reused_bytes\":$CJ_REUSED_C23_BYTES,\"closure_bytes\":$CJ_C23_CLOSURE_BYTES,\"basis_points\":$CJ_REUSE_RATIO_BPS,\"nodes\":2},\"byte_identical_artifacts\":true,\"tamper_refused_by_name\":[\"source\",\"dependency\",\"receipt\",\"artifact\"],\"application_ran\":true,\"compile_cache_carried_as_package\":true,\"zero_compiler_rebuild\":true,\"carrier_receipt_identical\":true,\"existing_package_changed\":true,\"behavior_change_measured_before_and_after\":true,\"changed_version_is_its_own_root\":true,\"central_services_contacted\":0,\"human_first_terminal_output\":true}"
+case "$CJ_CARRIER_TOOLCHAIN" in
+    same_capsule) CJ_ZERO_COMPILER_REBUILD=true ;;
+    different_capsule) CJ_ZERO_COMPILER_REBUILD=false ;;
+    *) cj_die "the carrier rebuild never recorded its toolchain verdict" ;;
+esac
+CJ_VERDICT="{\"schema\":\"$CJ_VERDICT_SCHEMA\",\"verdict\":\"$CJ_VERDICT_TOKEN\",\"steps_proven\":$CJ_STEPS_PROVEN,\"steps_total\":$CJ_STEPS_TOTAL,\"complete\":true,\"reuse_before_creation\":true,\"no_false_reuse_claim\":true,\"peer_to_peer_fetch\":true,\"fetched_source_inert\":true,\"explicit_local_admission\":true,\"independent_remote_build\":true,\"approved_signer_required\":true,\"explicit_human_acceptance\":true,\"accepted_work_published\":true,\"remote_source_reproduced\":true,\"signed_source_reproduction_receipts_consumed\":$CJ_SIGNED_RECEIPTS_CONSUMED,\"ask_to_running_program_seconds\":$CJ_SECS_RUNNING,\"reuse_ratio\":{\"basis\":\"exact_c23_source_closure_bytes\",\"reused_bytes\":$CJ_REUSED_C23_BYTES,\"closure_bytes\":$CJ_C23_CLOSURE_BYTES,\"basis_points\":$CJ_REUSE_RATIO_BPS,\"nodes\":2},\"byte_identical_artifacts\":true,\"tamper_refused_by_name\":[\"source\",\"dependency\",\"receipt\",\"artifact\"],\"application_ran\":true,\"compile_cache_carried_as_package\":true,\"zero_compiler_rebuild\":$CJ_ZERO_COMPILER_REBUILD,\"carrier_receipt_identical\":$CJ_ZERO_COMPILER_REBUILD,\"carrier_toolchain\":\"$CJ_CARRIER_TOOLCHAIN\",\"cross_capsule_objects_reused\":0,\"existing_package_changed\":true,\"behavior_change_measured_before_and_after\":true,\"changed_version_is_its_own_root\":true,\"central_services_contacted\":0,\"human_first_terminal_output\":true}"
 # The multi-host leg adds its fact only when it actually ran: the publisher
 # disappeared and node C still reproduced and ran the exact accepted bytes.
 if [ "$CJ_PUBLISHER_SURVIVAL" = 1 ]; then

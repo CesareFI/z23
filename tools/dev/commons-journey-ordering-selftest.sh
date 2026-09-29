@@ -159,5 +159,77 @@ else
     pass "matching remote platform passes preflight"
 fi
 
+# The carried-cache rebuild on host C is judged by the toolchain capsule each
+# node reports, never by the cc banner. A physical three-host run had host B
+# and host C print the same `cc --version` and `as --version` banners while
+# their assembler bytes differed by one distribution patch, so their capsule
+# roots differed; the product correctly missed every carried object and the
+# old assertion demanded zero compilers anyway.
+verdict_fn="$(awk '/^cj_carrier_rebuild_verdict\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$JOURNEY")"
+if [ -z "$verdict_fn" ]; then
+    fail "cj_carrier_rebuild_verdict() not found: the carrier rebuild has no toolchain-capsule verdict"
+else
+    grep -qF 'cj_carrier_rebuild_verdict "$cap_b" "$cap_c"' <<<"$survival" ||
+        fail "the survival step no longer judges the carrier rebuild by toolchain capsule"
+    grep -qF 'cap_b="$(cj_toolchain_capsule b)"' <<<"$survival" &&
+    grep -qF 'cap_c="$(cj_toolchain_capsule c)"' <<<"$survival" ||
+        fail "the survival step no longer reads each node's own toolchain capsule"
+    if grep -qF 'cc --version' <<<"$survival"; then
+        fail "the survival step judges toolchain identity by the cc banner"
+    fi
+    eval "$verdict_fn"
+    cap_1=5c82d3bc9d023caaf15a93b0db74f97aa0430f0c6458ae87b5d20aea6b3fcc8a
+    cap_2=b0a1234afb88c1cbfb507b3d41c0f4b4422a428de33637b272818d33ce67d732
+    rc_b=0e3af17f6df1afc80000000000000000000000000000000000000000000000b0
+    rc_c=7691f79bdbcc05bcd5289bac4d07bb78fdcb5bf5a95d1baf72ad56abb5f61135
+    carrier_ok() {
+        local want="$1" label="$2" got; shift 2
+        if got="$( (cj_carrier_rebuild_verdict "$@") 2>&1)" && [ "$got" = "$want" ]; then
+            pass "carrier verdict $want: $label"
+        else
+            fail "carrier verdict should be $want for $label, got: $got"
+        fi
+    }
+    carrier_refused() {
+        local want="$1" label="$2" got; shift 2
+        if got="$( (cj_carrier_rebuild_verdict "$@") 2>&1)"; then
+            fail "carrier verdict accepted $label: $got"
+        elif ! grep -qF -- "$want" <<<"$got"; then
+            fail "carrier verdict refused $label but not by '$want': $got"
+        else
+            pass "carrier verdict refuses $label by '$want'"
+        fi
+    }
+    #            capsule_b capsule_c entries hits misses reproduced warm_id ref_id
+    carrier_ok same_capsule "one capsule, every object reused, B's receipt" \
+        "$cap_1" "$cap_1" 2 2 0 True "$rc_b" "$rc_b"
+    carrier_ok different_capsule "the recorded physical run: no object reused" \
+        "$cap_1" "$cap_2" 2 0 2 True "$rc_c" "$rc_b"
+    carrier_refused "spawned compilers" "one capsule with compiler spawns" \
+        "$cap_1" "$cap_1" 2 0 2 True "$rc_c" "$rc_b"
+    carrier_refused "caches disagree" "one capsule with a partial hit set" \
+        "$cap_1" "$cap_1" 2 1 0 True "$rc_b" "$rc_b"
+    carrier_refused "different receipts" "one capsule with a different receipt" \
+        "$cap_1" "$cap_1" 2 2 0 True "$rc_c" "$rc_b"
+    carrier_refused CROSS_TOOLCHAIN_OBJECT_REUSED "two capsules sharing objects" \
+        "$cap_1" "$cap_2" 2 2 0 True "$rc_c" "$rc_b"
+    carrier_refused CROSS_TOOLCHAIN_OBJECT_REUSED "two capsules sharing one object" \
+        "$cap_1" "$cap_2" 2 1 1 True "$rc_c" "$rc_b"
+    carrier_refused "compiled 1 of 2" "two capsules with a unit left uncompiled" \
+        "$cap_1" "$cap_2" 2 0 1 True "$rc_c" "$rc_b"
+    carrier_refused RECEIPT_CAPSULE_UNBOUND "two capsules filing one receipt" \
+        "$cap_1" "$cap_2" 2 0 2 True "$rc_b" "$rc_b"
+    carrier_refused "did not match" "a rebuild that did not reproduce" \
+        "$cap_1" "$cap_2" 2 0 2 False "$rc_c" "$rc_b"
+    carrier_refused TOOLCHAIN_CAPSULE_UNREADABLE "an unread capsule" \
+        "$cap_1" "" 2 0 2 True "$rc_c" "$rc_b"
+    carrier_refused CARRIER_RECEIPT_UNREADABLE "an unread receipt" \
+        "$cap_1" "$cap_2" 2 0 2 True "" "$rc_b"
+    carrier_refused CARRIER_COUNTS_UNREADABLE "unread cache counters" \
+        "$cap_1" "$cap_2" 2 -1 -1 True "$rc_c" "$rc_b"
+    carrier_refused CARRIER_COUNTS_UNREADABLE "an empty carrier" \
+        "$cap_1" "$cap_1" 0 0 0 True "$rc_b" "$rc_b"
+fi
+
 [ "$FAIL" -eq 0 ] || exit 1
 printf 'commons-journey-ordering: OK\n'
