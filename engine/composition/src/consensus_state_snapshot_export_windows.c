@@ -71,11 +71,28 @@ bool consensus_export_open_temp(struct consensus_export_output_binding *output,
 bool consensus_export_finalize_temp(
     struct consensus_export_output_binding *output,
     const struct consensus_state_bundle_manifest *manifest,
+    const _Atomic bool *cancel,
     struct consensus_state_export_result *result)
 {
     (void)output;
     (void)manifest;
+    (void)cancel;
     return export_windows_refused(result);
+}
+
+/* Windows exports refuse at entry, so no prove/copy/validate walk ever runs
+ * to interrupt: the handler arm is a deliberate no-op here. The flag read
+ * itself is portable and identical on every platform. */
+bool consensus_export_cancelled(const _Atomic bool *cancel)
+{
+    return cancel && atomic_load_explicit(cancel, memory_order_relaxed);
+}
+
+void consensus_export_install_cancel_handler(sqlite3 *db,
+                                             const _Atomic bool *cancel)
+{
+    (void)db;
+    (void)cancel;
 }
 
 bool consensus_export_prove_write(

@@ -42,7 +42,8 @@ int main(void)
         destination == NULL &&
         !consensus_export_prove_write((sqlite3 *)(uintptr_t)1, &request,
                                       &output, &manifest, &result) &&
-        !consensus_export_finalize_temp(&output, &manifest, &result) &&
+        !consensus_export_finalize_temp(&output, &manifest,
+                                        request.cancel_requested, &result) &&
         !consensus_state_snapshot_export((sqlite3 *)(uintptr_t)1, &request,
                                          &result) &&
         result.status == CONSENSUS_EXPORT_REFUSED;

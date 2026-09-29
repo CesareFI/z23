@@ -111,6 +111,10 @@ bool consensus_state_snapshot_export_from_progress_snapshot(
 
     struct consensus_state_bundle_manifest manifest;
     memset(&manifest, 0, sizeof(manifest));
+    /* Cancel coverage for the whole prove+copy: the snapshot is PRIVATE to
+     * this export, so a progress handler can live on it for the connection's
+     * lifetime (never on the owned progress.kv singleton). */
+    consensus_export_install_cancel_handler(snap, request->cancel_requested);
     /* The snapshot's BEGIN read transaction (a private handle, no process lock)
      * spans the whole proof + copy for a consistent view; the reducer writes
      * concurrently on the primary handle without contention. */
@@ -125,7 +129,8 @@ bool consensus_state_snapshot_export_from_progress_snapshot(
     sqlite3_close(snap);
 
     if (ok)
-        ok = consensus_export_finalize_temp(output, &manifest, result);
+        ok = consensus_export_finalize_temp(output, &manifest,
+                                            request->cancel_requested, result);
     if (!ok) {
         consensus_export_output_close(output);
         if (!output->abandon_on_close)

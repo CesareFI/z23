@@ -4,6 +4,7 @@
 #ifndef ZCL_CONSENSUS_STATE_SNAPSHOT_EXPORT_H
 #define ZCL_CONSENSUS_STATE_SNAPSHOT_EXPORT_H
 
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -15,6 +16,13 @@ enum consensus_state_export_status {
     CONSENSUS_EXPORT_STORE_ERROR = 2,
     CONSENSUS_EXPORT_OUTPUT_ERROR = 3,
     CONSENSUS_EXPORT_EXPORTED = 4,
+    /* The caller's cancel_requested flag was observed: the prove/copy walks
+     * were interrupted, the partial staging transaction was rolled back, the
+     * anonymous staging inode was discarded, and NOTHING was published. A
+     * cancellation is a clean operator-requested abort, not a source,
+     * proof, or output defect — callers (e.g. the standing bundle exporter
+     * at shutdown) must not account it as an export failure. */
+    CONSENSUS_EXPORT_CANCELLED = 5,
 };
 
 struct consensus_state_snapshot_export_request {
@@ -47,6 +55,21 @@ struct consensus_state_snapshot_export_request {
      * Default false = unchanged fold-binary-bound export. */
     bool checkpoint_content_export;
     uint8_t checkpoint_sapling_root[32];
+    /* Optional cooperative cancel. When non-NULL, the long prove/copy/validate
+     * walks poll this flag: a SQLite progress handler installed on every
+     * private export connection (the live WAL snapshot, the anonymous staging
+     * destination, and the independent re-validation handle) interrupts the
+     * running statement within ~CONSENSUS_EXPORT_CANCEL_POLL_OPS opcodes of
+     * the flag being set, and the shared prove/write core additionally checks
+     * it once up front so an already-requested cancel never starts a
+     * multi-minute prove. Cancellation abandons the export fail-closed:
+     * ROLLBACK of the partial bundle, no link, no publication, result status
+     * CONSENSUS_EXPORT_CANCELLED. A cancel landing between polls may still
+     * complete and publish normally — that is safe (the artifact is fully
+     * validated either way); the flag buys prompt shutdown, not a
+     * correctness gate. NULL (the memset/default) = never cancel. The flag
+     * must outlive the export call and is only ever read. */
+    const _Atomic bool *cancel_requested;
 };
 
 struct consensus_state_export_result {

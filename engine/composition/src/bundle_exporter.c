@@ -199,6 +199,15 @@ static _Atomic int64_t g_bx_last_export_duration_us = 0;
 static _Atomic int64_t g_bx_exports_ok           = 0;
 static _Atomic int64_t g_bx_exports_failed       = 0;
 static atomic_bool g_bx_running = false;
+/* Shutdown cancellation for the in-flight export. g_bx_running stops the
+ * worker loop BETWEEN attempts; this flag is handed to the exporter as
+ * request->cancel_requested so a multi-minute prove/copy/validate walk ALSO
+ * aborts mid-attempt (SQLite progress handlers on the private snapshot,
+ * staging, and re-validation connections). bundle_exporter_stop() sets it
+ * before joining the worker; bundle_exporter_start() clears it before
+ * spawning. A cancelled attempt is NOT an export failure: no failure
+ * accounting, no degradation blocker. */
+static atomic_bool g_bx_cancel = false;
 static _Atomic supervisor_child_id g_bx_supervisor_id = SUPERVISOR_INVALID_ID;
 static struct liveness_contract g_bx_contract;
 /* ── Small helpers ──────────────────────────────────────────────── */
@@ -600,6 +609,33 @@ bool bundle_exporter_export_due_for_test(int64_t h, int64_t last_h,
 }
 #endif
 /* ── One export attempt ─────────────────────────────────────────── */
+/* Serve a freshly minted generation THIS boot. The boot rom_seed scan
+ * (engine/composition/src/boot_frontend_services.c boot_rom_seed_start ->
+ * rom_seed_scan_datadir) is single-shot and already ran, so a generation
+ * produced now would otherwise not be offered until the next boot. Register
+ * it with the seeder immediately — the same post-produce reseed the fetch
+ * path performs (engine/composition/src/boot_bundle_fetch.c).
+ * rom_seed_register re-derives every digest from the bytes on disk; a
+ * failure here is logged and non-fatal (this same boot's rom_seed scan, or
+ * a later boot, still picks it up) and keeps no durable state of its own. */
+static void bx_reseed_fresh(const char *datadir, const char *name)
+{
+    char rel[ROM_SEED_NAME_MAX];
+    int rn = snprintf(rel, sizeof rel, "%s/%s",
+                      ROM_SEED_BUNDLES_SUBDIR, name);
+    if (rn > 0 && (size_t)rn < sizeof rel) {
+        enum rom_register_result rrc =
+            rom_seed_register(datadir, rel, NULL, NULL);
+        if (rrc == ROM_REG_OK)
+            LOG_INFO("bundle_exporter",
+                     "reseed: registered %s with rom_seed — this node now "
+                     "serves the fresh generation to the swarm", rel);
+        else
+            LOG_WARN("bundle_exporter",
+                     "reseed: could not register %s (rc=%d) — the next "
+                     "rom_seed scan will pick it up", rel, (int)rrc);
+    }
+}
 static void bx_try_export_once(void)
 {
     pthread_mutex_lock(&g_bx.lock);
@@ -702,6 +738,10 @@ static void bx_try_export_once(void)
     req.output_name = name;
     req.expected_height = h;
     memcpy(req.expected_block_hash, hash, 32);
+    /* Shutdown must interrupt the prove/copy/validate walks mid-attempt, not
+     * wait them out: the exporter polls this flag on every private
+     * connection it touches. */
+    req.cancel_requested = &g_bx_cancel;
     struct consensus_state_export_result res;
     memset(&res, 0, sizeof res);
     int64_t t0 = GetTimeMicros();
@@ -719,35 +759,19 @@ static void bx_try_export_once(void)
         LOG_INFO("bundle_exporter",
                  "exported %s height=%d duration_us=%lld",
                  name, h, (long long)dur);
-        /* Serve it THIS boot. The boot rom_seed scan
-         * (engine/composition/src/boot_frontend_services.c boot_rom_seed_start ->
-         * rom_seed_scan_datadir) is single-shot and already ran, so a
-         * generation produced now would otherwise not be offered until the
-         * next boot. Register it with the seeder immediately — the same
-         * post-produce reseed the fetch path performs
-         * (engine/composition/src/boot_bundle_fetch.c). rom_seed_register re-derives every
-         * digest from the bytes on disk; a failure here is logged and non-fatal
-         * (this same boot's rom_seed scan, or a later boot, still picks it up)
-         * and keeps no durable state of its own. */
-        char rel[ROM_SEED_NAME_MAX];
-        int rn = snprintf(rel, sizeof rel, "%s/%s",
-                          ROM_SEED_BUNDLES_SUBDIR, name);
-        if (rn > 0 && (size_t)rn < sizeof rel) {
-            enum rom_register_result rrc =
-                rom_seed_register(datadir, rel, NULL, NULL);
-            if (rrc == ROM_REG_OK)
-                LOG_INFO("bundle_exporter",
-                         "reseed: registered %s with rom_seed — this node now "
-                         "serves the fresh generation to the swarm", rel);
-            else
-                LOG_WARN("bundle_exporter",
-                         "reseed: could not register %s (rc=%d) — the next "
-                         "rom_seed scan will pick it up", rel, (int)rrc);
-        }
+        bx_reseed_fresh(datadir, name);
         bx_rotate(bundles_dir, keep, datadir);
         /* A minted generation is the definition of "not degraded": the record
          * and the failure streak both go. */
         bx_attempt_succeeded();
+    } else if (res.status == CONSENSUS_EXPORT_CANCELLED) {
+        /* A shutdown abort is not an export outage: no failure streak, no
+         * backoff, no degradation blocker — and nothing was published. The
+         * worker loop sees !g_bx_running right after this return and exits. */
+        bx_note_refusal("export cancelled (shutdown)");
+        LOG_INFO("bundle_exporter",
+                 "export cancelled by shutdown at height=%d after %lldus",
+                 h, (long long)dur);
     } else {
         bx_note_refusal("%s", res.reason[0] ? res.reason : "export refused");
         atomic_fetch_add(&g_bx_exports_failed, 1);
@@ -911,6 +935,7 @@ bool bundle_exporter_start(sqlite3 *pdb, const char *datadir)
         LOG_WARN("bundle_exporter",
                  "supervisor_start failed; exporter runs unsupervised");
     }
+    atomic_store(&g_bx_cancel, false);
     atomic_store(&g_bx_running, true);
     int rc = thread_registry_spawn("zcl_bundle_exp", bx_worker_main, NULL,
                                    &g_bx.worker);
@@ -930,6 +955,11 @@ bool bundle_exporter_start(sqlite3 *pdb, const char *datadir)
 }
 void bundle_exporter_stop(void)
 {
+    /* Interrupt any in-flight prove/copy/validate FIRST (the export polls
+     * this flag on its private connections within ~20k SQLite opcodes), then
+     * stop the loop and join: without this, pthread_join could wait out a
+     * multi-minute export walk. */
+    atomic_store(&g_bx_cancel, true);
     atomic_store(&g_bx_running, false);
     pthread_t th;
     bool joinable = false;

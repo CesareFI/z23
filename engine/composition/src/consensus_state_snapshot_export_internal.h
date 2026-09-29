@@ -42,6 +42,19 @@ bool consensus_export_fail(struct consensus_state_export_result *result,
                            enum consensus_state_export_status status,
                            const char *fmt, ...);
 
+/* Cooperative cancel plumbing for request->cancel_requested.
+ * consensus_export_cancelled() reads the flag once (relaxed). The install
+ * helper arms a SQLite progress handler on a PRIVATE export connection (the
+ * live WAL snapshot, the anonymous staging destination, or the finalize-time
+ * re-validation handle) so every long prove/copy/validate statement aborts
+ * with SQLITE_INTERRUPT within ~CONSENSUS_EXPORT_CANCEL_POLL_OPS opcodes of
+ * the flag being set; a NULL flag installs nothing, and the handler dies with
+ * its connection. Never install on the OWNED progress.kv singleton handle —
+ * that connection is shared with the reducer. */
+bool consensus_export_cancelled(const _Atomic bool *cancel);
+void consensus_export_install_cancel_handler(sqlite3 *db,
+                                             const _Atomic bool *cancel);
+
 /* Observability-only: a monotonic millisecond clock plus a "[export] <msg>"
  * stderr+LOG_INFO emitter, shared by the prove (consensus_state_snapshot_
  * export_proof.c) and write (consensus_state_snapshot_export_write.c) passes
@@ -107,6 +120,7 @@ bool consensus_export_open_temp(struct consensus_export_output_binding *output,
 bool consensus_export_finalize_temp(
     struct consensus_export_output_binding *output,
     const struct consensus_state_bundle_manifest *manifest,
+    const _Atomic bool *cancel,
     struct consensus_state_export_result *result);
 
 /* Shared by the offline-mint and live exporter entry TUs

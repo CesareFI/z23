@@ -38,6 +38,32 @@ bool consensus_export_fail(struct consensus_state_export_result *result,
     return false;
 }
 
+/* Cancel-poll cadence for the SQLite progress handler: the VDBE invokes the
+ * callback once per this many evaluated opcodes on the handled connection.
+ * 20000 opcodes is single-digit milliseconds of worst-case cancel latency on
+ * any host and costs one relaxed atomic load per poll. */
+#define CONSENSUS_EXPORT_CANCEL_POLL_OPS 20000
+
+bool consensus_export_cancelled(const _Atomic bool *cancel)
+{
+    return cancel && atomic_load_explicit(cancel, memory_order_relaxed);
+}
+
+static int consensus_export_cancel_xprogress(void *arg)
+{
+    return consensus_export_cancelled((const _Atomic bool *)arg) ? 1 : 0;
+}
+
+void consensus_export_install_cancel_handler(sqlite3 *db,
+                                             const _Atomic bool *cancel)
+{
+    if (!db || !cancel)
+        return;
+    sqlite3_progress_handler(db, CONSENSUS_EXPORT_CANCEL_POLL_OPS,
+                             consensus_export_cancel_xprogress,
+                             (void *)cancel);
+}
+
 /* Case-insensitive prefix test used to reject an export output name that would
  * collide with a live store family. */
 static bool export_name_has_prefix_ci(const char *name, const char *prefix)
@@ -362,6 +388,7 @@ static bool manifests_equal(
 bool consensus_export_finalize_temp(
     struct consensus_export_output_binding *output,
     const struct consensus_state_bundle_manifest *manifest,
+    const _Atomic bool *cancel,
     struct consensus_state_export_result *result)
 {
     if (!output || output->temp_fd < 0 || !output_sidecars_absent(output))
@@ -393,6 +420,7 @@ bool consensus_export_finalize_temp(
     }
     int defensive = 0;
     int trusted = 1;
+    consensus_export_install_cancel_handler(check, cancel);
     bool ok = sqlite3_db_config(check, SQLITE_DBCONFIG_DEFENSIVE, 1,
                                 &defensive) == SQLITE_OK &&
               sqlite3_db_config(check, SQLITE_DBCONFIG_TRUSTED_SCHEMA, 0,
@@ -492,10 +520,20 @@ bool consensus_export_prove_write(
     memset(&parent, 0, sizeof(parent));
     sqlite3 *destination = NULL;
 
+    /* Entry gate: a cancel that landed before the walk starts must not launch
+     * a multi-minute prove. Mid-walk cancels arrive through the progress
+     * handlers (installed below and by the live entry on its snapshot). */
+    if (consensus_export_cancelled(request->cancel_requested))
+        return consensus_export_fail(result, CONSENSUS_EXPORT_CANCELLED,
+                                     "export cancelled before the prove started");
+
     bool ok = consensus_export_prove_source(
         source, request, manifest, &receipt, proofs, &parent, result);
     if (ok)
         ok = consensus_export_open_temp(output, &destination, result);
+    if (destination)
+        consensus_export_install_cancel_handler(destination,
+                                                request->cancel_requested);
     if (ok)
         ok = consensus_export_write_bundle(source, destination, manifest,
                                            &receipt, proofs, &parent, result);
@@ -507,6 +545,12 @@ bool consensus_export_prove_write(
         }
         destination = NULL;
     }
+    /* An interrupted statement surfaces as an ordinary proof/output failure;
+     * when the cancel flag is set, name it what it is so the caller never
+     * accounts a shutdown abort as an export outage. */
+    if (!ok && consensus_export_cancelled(request->cancel_requested))
+        (void)consensus_export_fail(result, CONSENSUS_EXPORT_CANCELLED,
+                                    "export cancelled by shutdown request");
     return ok;
 }
 
@@ -605,7 +649,8 @@ bool consensus_state_snapshot_export(
     progress_store_tx_unlock();
 
     if (ok)
-        ok = consensus_export_finalize_temp(output, &manifest, result);
+        ok = consensus_export_finalize_temp(output, &manifest,
+                                            request->cancel_requested, result);
     if (!ok) {
         consensus_export_output_close(output);
         if (!output->abandon_on_close)

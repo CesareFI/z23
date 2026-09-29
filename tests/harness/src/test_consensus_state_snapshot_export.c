@@ -841,6 +841,107 @@ static void cse_run_rung_ladder_tests(int *failures_ptr)
 
     *failures_ptr = failures;
 }
+
+/* ── Cooperative cancel (request->cancel_requested) ─────────────────────
+ * The zcl_bundle_exp shutdown-hang class: the prove/copy/validate walks run
+ * 30-60+ minutes on a full-history datadir, so a stop request must interrupt
+ * them, not wait them out. Mechanism under test: a SQLite progress handler
+ * installed on every PRIVATE export connection (live WAL snapshot, anonymous
+ * staging destination, finalize-time re-validation handle) aborts the running
+ * statement with SQLITE_INTERRUPT within ~20k opcodes of the flag being set,
+ * and the shared prove/write core checks the flag once up front so an
+ * already-requested cancel never starts a prove. Runs against the pristine
+ * complete source generation (called right after the first successful
+ * export above, before any fixture mutation). */
+static void cse_run_cancel_test(sqlite3 *db, const uint8_t tip_hash[32],
+                                int output_dir_fd, const char *export_dir,
+                                int *failures_ptr)
+{
+    int failures = *failures_ptr;
+    _Atomic bool cancel = false;
+    char cancelled_output[512];
+    char live_cancelled_output[512];
+    char control_output[512];
+    snprintf(cancelled_output, sizeof(cancelled_output),
+             "%s/cancelled.bundle.db", export_dir);
+    snprintf(live_cancelled_output, sizeof(live_cancelled_output),
+             "%s/live-cancelled.bundle.db", export_dir);
+    snprintf(control_output, sizeof(control_output),
+             "%s/cancel-control.bundle.db", export_dir);
+
+    /* The mechanism itself: armed on a scratch connection with the flag
+     * CLEAR it must not interfere; with the flag SET it must interrupt a
+     * running long statement mid-flight. */
+    sqlite3 *scratch = NULL;
+    bool scratch_ok = sqlite3_open(":memory:", &scratch) == SQLITE_OK;
+    consensus_export_install_cancel_handler(scratch, &cancel);
+    CSE_CHECK("cancel: armed handler does not interfere while the flag is clear",
+              scratch_ok &&
+              sqlite3_exec(scratch, "SELECT 1", NULL, NULL, NULL) ==
+                  SQLITE_OK);
+    atomic_store(&cancel, true);
+    static const char long_query[] =
+        "WITH RECURSIVE cnt(x) AS ("
+        "SELECT 1 UNION ALL SELECT x+1 FROM cnt WHERE x<100000000)"
+        "SELECT count(*) FROM cnt";
+    CSE_CHECK("cancel: progress handler interrupts a running statement",
+              scratch_ok &&
+              sqlite3_exec(scratch, long_query, NULL, NULL, NULL) ==
+                  SQLITE_INTERRUPT);
+    if (scratch)
+        sqlite3_close(scratch);
+    atomic_store(&cancel, false);
+
+    struct consensus_state_snapshot_export_request request = {
+        .output_dir_fd = output_dir_fd,
+        .output_name = "cancelled.bundle.db",
+        .expected_height = 1,
+        .cancel_requested = &cancel,
+    };
+    memcpy(request.expected_block_hash, tip_hash, 32);
+
+    /* Entry gate through the offline mint entry: a pre-set flag aborts with
+     * CONSENSUS_EXPORT_CANCELLED and no name ever appears in the output
+     * directory. */
+    atomic_store(&cancel, true);
+    struct consensus_state_export_result cancel_result;
+    memset(&cancel_result, 0, sizeof(cancel_result));
+    bool cancel_exported =
+        consensus_state_snapshot_export(db, &request, &cancel_result);
+    CSE_CHECK("cancel: pre-set flag aborts the offline export, publishing "
+              "nothing",
+              !cancel_exported &&
+              cancel_result.status == CONSENSUS_EXPORT_CANCELLED &&
+              access(cancelled_output, F_OK) != 0);
+
+    /* The same gate through the LIVE snapshot entry — the exact path the
+     * standing bundle exporter drives on a serving node. */
+    request.output_name = "live-cancelled.bundle.db";
+    struct consensus_state_export_result live_result;
+    memset(&live_result, 0, sizeof(live_result));
+    bool live_exported =
+        consensus_state_snapshot_export_from_progress_snapshot(&request,
+                                                               &live_result);
+    CSE_CHECK("cancel: pre-set flag aborts the live snapshot export, "
+              "publishing nothing",
+              !live_exported &&
+              live_result.status == CONSENSUS_EXPORT_CANCELLED &&
+              access(live_cancelled_output, F_OK) != 0);
+    atomic_store(&cancel, false);
+
+    /* Control: the same source with the flag cleared still exports — the
+     * flag never poisons the source or the output directory. */
+    request.output_name = "cancel-control.bundle.db";
+    struct consensus_state_export_result control_result;
+    memset(&control_result, 0, sizeof(control_result));
+    CSE_CHECK("cancel: cleared flag exports the same source normally",
+              consensus_state_snapshot_export(db, &request, &control_result) &&
+              control_result.status == CONSENSUS_EXPORT_EXPORTED &&
+              control_result.height == 1);
+    (void)unlink(control_output);
+
+    *failures_ptr = failures;
+}
 #endif
 
 static int test_consensus_state_snapshot_export_platform_arm(void)
@@ -1015,6 +1116,10 @@ static int test_consensus_state_snapshot_export_platform_arm(void)
     CSE_CHECK("final artifact is immutable", lstat(output, &st) == 0 &&
               S_ISREG(st.st_mode) &&
               (st.st_mode & (S_IWUSR | S_IWGRP | S_IWOTH)) == 0);
+
+    /* Cooperative cancel: entry gate + progress-handler interrupt + control.
+     * Own fixture scope; the pristine source generation is still intact. */
+    cse_run_cancel_test(db, hash[1], output_dir_fd, export_dir, &failures);
 
     struct consensus_state_snapshot_install_request install_request = {
         .bundle_path = output,
