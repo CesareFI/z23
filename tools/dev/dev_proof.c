@@ -9033,6 +9033,14 @@ size_t zcl_dev_proof_test_dimension_argv(const char *binary, const char *only,
  * for the whole test run. */
 #define DP_LINT_HOLD_MAX_MS 180000
 
+/* Hosts with fewer available CPUs than this finish tests before lint. */
+#define DP_LINT_OVERLAP_MIN_CPUS 24u
+
+static bool dp_lint_waits_for_tests(uint32_t available_cpus)
+{
+    return available_cpus < DP_LINT_OVERLAP_MIN_CPUS;
+}
+
 /* Where the scan of a growing test log stands between polls. */
 struct dp_log_scan {
     long offset;
@@ -9067,15 +9075,22 @@ struct dp_lint_hold {
     int64_t held_ms;
 };
 
-/* Keep the test child's own watch running while lint is held, until the
- * runner says its run-alone pass is over, the runner has finished, or the
- * cap is reached. */
+/* Hold lint while the test child runs. With `finish_tests_first` the whole
+ * test child finishes first; otherwise lint starts when the runner says its
+ * run-alone pass is over, the runner has finished, or the cap is reached. */
 static struct dp_lint_hold dp_lint_hold_wait(struct proof_dimension_run *test,
-                                             int64_t hold_max_ms)
+                                             int64_t hold_max_ms,
+                                             bool finish_tests_first)
 {
-    struct dp_log_scan scan = {0};
     int64_t began = platform_time_monotonic_ms();
     struct dp_lint_hold hold = {.reason = "cap"};
+    if (finish_tests_first) {
+        dimension_runs_wait(test, 1);
+        hold.reason = "test_finished";
+        hold.held_ms = platform_time_monotonic_ms() - began;
+        return hold;
+    }
+    struct dp_log_scan scan = {0};
     for (;;) {
         if (dp_log_line_seen(test->log, ZCL_TEST_EXCLUSIVE_PASS_DONE, &scan)) {
             hold.reason = "exclusive_pass_done";
@@ -9103,15 +9118,15 @@ struct dp_dimension_plan {
     struct zcl_dev_proof_dimension *test;
     const struct zcl_dev_proof_budget *test_budget;
     int64_t hold_max_ms;
+    bool finish_tests_first;
 };
 
 /* Lint proves the source; the test dimension proves the built runner.
- * Neither feeds the other, so they overlap and the proof pays for about the
- * longer of the two. The runner starts first. Its run-alone pass exists so
- * that wall-clock contracts see an idle box, and lint's opening burst would
- * otherwise land right on it, so lint starts only once the runner reports
- * that pass over. runs[] keeps lint first, preserving the fail-closed order.
- * On failure every child that did start has been waited on and finished. */
+ * Neither feeds the other. The runner starts first. On a host with enough
+ * CPUs lint overlaps the runner once its run-alone pass is over, so the proof
+ * pays for about the longer of the two; a smaller host finishes the runner
+ * before lint starts. runs[] keeps lint first, preserving the fail-closed
+ * order. On failure every child that did start has been waited on. */
 static bool dp_dimensions_launch(const struct dp_dimension_plan *p,
                                  struct proof_dimension_run runs[2],
                                  size_t *run_count, struct dp_lint_hold *hold,
@@ -9130,7 +9145,8 @@ static bool dp_dimensions_launch(const struct dp_dimension_plan *p,
         *run_count = with_test ? 1 : 0;
         return true;
     }
-    if (with_test) *hold = dp_lint_hold_wait(test, p->hold_max_ms);
+    if (with_test)
+        *hold = dp_lint_hold_wait(test, p->hold_max_ms, p->finish_tests_first);
     if (!dimension_start(p->paths, p->root, &runs[0], ZCL_DEV_PROOF_LINT,
                          p->lint_argv, p->lint, false, p->lint_budget, why,
                          why_len)) {
@@ -9154,11 +9170,18 @@ static void dp_lint_hold_note(const char *phases, const struct dp_lint_hold *h)
 }
 
 #if defined(ZCL_TESTING)
+bool zcl_dev_proof_test_lint_waits_for_tests(uint32_t available_cpus)
+{
+    return dp_lint_waits_for_tests(available_cpus);
+}
+
 bool zcl_dev_proof_dimensions_run_for_test(const char *logs_dir,
                                            const char *const lint_argv[],
                                            const char *const test_argv[],
-                                           int64_t hold_max_ms, int rcs[2],
-                                           char *hold, size_t hold_size)
+                                           int64_t hold_max_ms,
+                                           bool finish_tests_first,
+                                           int rcs[2], char *hold,
+                                           size_t hold_size)
 {
     if (!logs_dir || !lint_argv || !test_argv || !rcs || !hold) return false;
     struct proof_paths *paths =
@@ -9172,7 +9195,8 @@ bool zcl_dev_proof_dimensions_run_for_test(const char *logs_dir,
     struct dp_dimension_plan plan = {
         .paths = paths, .root = ".", .lint_argv = lint_argv, .lint = &lint,
         .lint_budget = &budget, .test_argv = test_argv, .test = &test,
-        .test_budget = &budget, .hold_max_ms = hold_max_ms};
+        .test_budget = &budget, .hold_max_ms = hold_max_ms,
+        .finish_tests_first = finish_tests_first};
     struct proof_dimension_run runs[2];
     size_t count = 0;
     struct dp_lint_hold held;
@@ -9214,7 +9238,9 @@ static bool dp_worker_dimensions_run_clean(struct dp_worker *w,
         .lint_argv = w->lint_argv, .lint = lint,
         .lint_budget = &w->lint_budget, .test_argv = test_argv,
         .test = test, .test_budget = &test_budget,
-        .hold_max_ms = DP_LINT_HOLD_MAX_MS};
+        .hold_max_ms = DP_LINT_HOLD_MAX_MS,
+        .finish_tests_first = dp_lint_waits_for_tests(
+            platform_available_cpu_count())};
     struct dp_lint_hold hold;
     if (!dp_dimensions_launch(&plan, runs, &run_count, &hold, why, why_len))
         return false;

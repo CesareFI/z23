@@ -3104,12 +3104,15 @@ static bool ic_log_holds(const char *path, const char *needle)
  * lint exit, the test exit, and why lint was released. */
 static bool ic_lint_hold_run(const char *state, const char *lint_script,
                              const char *test_script, int64_t hold_max_ms,
+                             bool finish_tests_first,
                              int rcs[2], char hold[64])
 {
     const char *lint_argv[] = {"/bin/sh", "-c", lint_script, NULL};
     const char *test_argv[] = {"/bin/sh", "-c", test_script, NULL};
     return zcl_dev_proof_dimensions_run_for_test(state, lint_argv, test_argv,
-                                                 hold_max_ms, rcs, hold, 64);
+                                                 hold_max_ms,
+                                                 finish_tests_first, rcs, hold,
+                                                 64);
 }
 
 /* The runner's run-alone pass exists so wall-clock contracts see an idle
@@ -3146,8 +3149,8 @@ static int test_ic_proof_lint_waits_for_exclusive_pass(void)
                  excl, done, excl, ran);
         int rcs[2] = {-1, -1};
         char hold[64] = {0};
-        ASSERT(ic_lint_hold_run(state, lint_script, test_script, 30000, rcs,
-                                hold));
+        ASSERT(ic_lint_hold_run(state, lint_script, test_script, 30000, false,
+                                rcs, hold));
         ASSERT(!ic_log_holds(log, "lint=overlapped"));
         ASSERT(ic_log_holds(log, "lint=clear"));
         ASSERT_EQ(rcs[0], 0);
@@ -3157,8 +3160,8 @@ static int test_ic_proof_lint_waits_for_exclusive_pass(void)
         /* A runner that never prints the line still releases lint when it
          * exits, and lint still runs to its own verdict. */
         (void)remove(ran);
-        ASSERT(ic_lint_hold_run(state, "echo lint-ran", "echo no-line", 30000,
-                                rcs, hold));
+        ASSERT(ic_lint_hold_run(state, "echo lint-ran", "echo no-line",
+                                30000, false, rcs, hold));
         ASSERT(ic_log_holds(log, "lint-ran"));
         ASSERT_EQ(rcs[0], 0);
         ASSERT_EQ(rcs[1], 0);
@@ -3169,11 +3172,84 @@ static int test_ic_proof_lint_waits_for_exclusive_pass(void)
                  "i=0; while [ ! -e '%s' ] && [ $i -lt 200 ]; do sleep 0.05; "
                  "i=$((i+1)); done; [ -e '%s' ]", ran, ran);
         snprintf(lint_script, sizeof(lint_script), "touch '%s'", ran);
-        ASSERT(ic_lint_hold_run(state, lint_script, test_script, 200, rcs,
-                                hold));
+        ASSERT(ic_lint_hold_run(state, lint_script, test_script, 200, false,
+                                rcs, hold));
         ASSERT_EQ(rcs[0], 0);
         ASSERT_EQ(rcs[1], 0);
         ASSERT(strcmp(hold, "cap") == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* On a small host lint waits for the whole test child, even after the runner
+ * prints its exclusive-pass marker while later groups still run. */
+static int test_ic_proof_lint_waits_for_test_completion(void)
+{
+    int failures = 0;
+    TEST("proof launch: a small host starts lint after all tests finish") {
+        char state[4096], excl[4200], done[4200], ran[4200], log[4200];
+        ic_budget_fixture("lint_hold", state);
+        snprintf(excl, sizeof(excl), "%s/exclusive-active", state);
+        snprintf(done, sizeof(done), "%s/exclusive-done", state);
+        snprintf(ran, sizeof(ran), "%s/lint-ran", state);
+        snprintf(log, sizeof(log), "%s/seam.lint.log", state);
+        (void)remove(excl);
+        (void)remove(done);
+        (void)remove(ran);
+        char test_script[16384], lint_script[16384];
+        snprintf(test_script, sizeof(test_script),
+                 "touch '%s'; echo '%s groups=1'; sleep 0.4; "
+                 "rm -f '%s'; touch '%s'",
+                 excl, ZCL_TEST_EXCLUSIVE_PASS_DONE, excl, done);
+        snprintf(lint_script, sizeof(lint_script),
+                 "if [ -e '%s' ] || [ ! -e '%s' ]; "
+                 "then echo lint=overlapped; "
+                 "else echo lint=clear; fi; touch '%s'",
+                 excl, done, ran);
+        int rcs[2] = {-1, -1};
+        char hold[64] = {0};
+        ASSERT(ic_lint_hold_run(state, lint_script, test_script, 30000, true,
+                                rcs, hold));
+        ASSERT(!ic_log_holds(log, "lint=overlapped"));
+        ASSERT(ic_log_holds(log, "lint=clear"));
+        ASSERT_EQ(rcs[0], 0);
+        ASSERT_EQ(rcs[1], 0);
+        ASSERT(strcmp(hold, "test_finished") == 0);
+
+        /* A runner without the marker still finishes before lint. */
+        (void)remove(ran);
+        ASSERT(ic_lint_hold_run(state, "echo lint-ran", "echo no-line",
+                                30000, true, rcs, hold));
+        ASSERT(ic_log_holds(log, "lint-ran"));
+        ASSERT_EQ(rcs[0], 0);
+        ASSERT_EQ(rcs[1], 0);
+        ASSERT(strcmp(hold, "test_finished") == 0);
+
+        /* A failed test still permits lint to record its own verdict. */
+        snprintf(test_script, sizeof(test_script),
+                 "echo test-fail; exit 7");
+        ASSERT(ic_lint_hold_run(state, "echo lint-after-failure", test_script,
+                                30000, true, rcs, hold));
+        ASSERT(ic_log_holds(log, "lint-after-failure"));
+        ASSERT_EQ(rcs[0], 0);
+        ASSERT_EQ(rcs[1], 7);
+        ASSERT(strcmp(hold, "test_finished") == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* The launch overlaps lint with tests only on a host with enough CPUs. */
+static int test_ic_proof_lint_overlap_needs_cpus(void)
+{
+    int failures = 0;
+    TEST("proof launch: hosts under 24 CPUs finish tests before lint") {
+        ASSERT(zcl_dev_proof_test_lint_waits_for_tests(1));
+        ASSERT(zcl_dev_proof_test_lint_waits_for_tests(16));
+        ASSERT(zcl_dev_proof_test_lint_waits_for_tests(23));
+        ASSERT(!zcl_dev_proof_test_lint_waits_for_tests(24));
+        ASSERT(!zcl_dev_proof_test_lint_waits_for_tests(28));
         PASS();
     } _test_next:;
     return failures;
@@ -10025,6 +10101,8 @@ int test_impact_composition(void)
     failures += test_ic_proof_base_probe_cancels_superseded_worker();
     failures += test_ic_proof_steps_run_concurrently();
     failures += test_ic_proof_lint_waits_for_exclusive_pass();
+    failures += test_ic_proof_lint_waits_for_test_completion();
+    failures += test_ic_proof_lint_overlap_needs_cpus();
     failures += test_ic_proof_step_inherits_no_extra_fd();
 #endif
     failures += test_ic_proof_generation_prefers_ram_when_it_fits();

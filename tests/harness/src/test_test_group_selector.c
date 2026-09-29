@@ -1086,6 +1086,20 @@ static int test_process_sensitive_groups_are_catalog_exclusive(void)
          * failure. */
         ASSERT(zcl_test_group_requires_exclusive_run(
             "test_replay_canary_verdict"));
+        /* Shared-pool load trips these groups' silence watchdog. */
+        ASSERT(zcl_test_group_requires_exclusive_run(
+            "test_crypto_registry"));
+        ASSERT(zcl_test_group_requires_exclusive_run(
+            "test_dev_platform_shard_02"));
+        ASSERT(zcl_test_group_requires_exclusive_run(
+            "test_dev_platform_shard_03"));
+        ASSERT(zcl_test_group_requires_exclusive_run(
+            "test_devagent_ticketkey"));
+        ASSERT(zcl_test_group_requires_exclusive_run(
+            "test_character_sheet"));
+        /* The code-index scale gate measures a load-sensitive build ratio. */
+        ASSERT(zcl_test_group_requires_exclusive_run(
+            "test_codeindex_scale"));
         /* This group launches the current runner recursively to prove exact
          * selection.  Competing with the 32-worker parent pool can kill the
          * nested positive control under transient memory pressure, grading

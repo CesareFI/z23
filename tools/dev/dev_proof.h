@@ -420,15 +420,21 @@ size_t zcl_dev_proof_test_dimension_argv(const char *binary, const char *only,
  * cached (reused) group. */
 bool zcl_dev_proof_test_log_account(const char *path,
                                     struct zcl_dev_proof_dimension *dim);
-/* Seam for the lint/test launch: starts test_argv, holds lint_argv until the
- * test log carries ZCL_TEST_EXCLUSIVE_PASS_DONE (or the test child ends, or
- * hold_max_ms passes), then waits for both. Logs land in logs_dir. rcs[0] is
- * lint's exit, rcs[1] the test's; `hold` names why lint started. */
+/* Seam for the host-size decision: true when a host with `available_cpus`
+ * finishes the test child before starting lint. */
+bool zcl_dev_proof_test_lint_waits_for_tests(uint32_t available_cpus);
+/* Seam for the lint/test launch: starts test_argv, then holds lint_argv. With
+ * finish_tests_first the test child ends first; otherwise lint starts when the
+ * test log carries ZCL_TEST_EXCLUSIVE_PASS_DONE, the test child ends, or
+ * hold_max_ms passes. Both are then waited for. Logs land in logs_dir. rcs[0]
+ * is lint's exit, rcs[1] the test's; `hold` names why lint started. */
 bool zcl_dev_proof_dimensions_run_for_test(const char *logs_dir,
                                            const char *const lint_argv[],
                                            const char *const test_argv[],
-                                           int64_t hold_max_ms, int rcs[2],
-                                           char *hold, size_t hold_size);
+                                           int64_t hold_max_ms,
+                                           bool finish_tests_first,
+                                           int rcs[2], char *hold,
+                                           size_t hold_size);
 /* Seam for the capsule argv builder: the exact flags the worker hands the
  * advisory preflight (write=true), and the use form (write=false) a
  * qualified reuse path would hand a consumer, so a test can prove both

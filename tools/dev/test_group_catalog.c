@@ -122,6 +122,18 @@ bool zcl_test_group_catalog_contains(const char *full_id)
     return catalog_matches(full_id, NULL) > 0;
 }
 
+static bool catalog_contention_sensitive(const char *full_id)
+{
+    static const char *const groups[] = {
+        "test_crypto_registry", "test_dev_platform_shard_02",
+        "test_dev_platform_shard_03", "test_devagent_ticketkey",
+        "test_character_sheet", "test_codeindex_scale"
+    };
+    for (size_t i = 0; i < sizeof(groups) / sizeof(groups[0]); i++)
+        if (strcmp(full_id, groups[i]) == 0) return true;
+    return false;
+}
+
 bool zcl_test_group_requires_exclusive_run(const char *full_id)
 {
     if (!full_id || !zcl_test_group_catalog_contains(full_id))
@@ -134,7 +146,8 @@ bool zcl_test_group_requires_exclusive_run(const char *full_id)
            strcmp(full_id, "test_validate_parallel_determinism") == 0 ||
            strcmp(full_id, "test_simnet_perf") == 0 ||
            strcmp(full_id, "test_replay_canary_verdict") == 0 ||
-           strcmp(full_id, "test_test_group_selector") == 0;
+           strcmp(full_id, "test_test_group_selector") == 0 ||
+           catalog_contention_sensitive(full_id);
 }
 
 enum zcl_test_proof_contract
