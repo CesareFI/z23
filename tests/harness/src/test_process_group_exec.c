@@ -89,7 +89,9 @@ static int pge_wait_gone(pid_t p, int seconds)
         if (!pge_alive(p))
             return 1;
         struct timespec ts = {.tv_sec = 0, .tv_nsec = 100 * 1000 * 1000};
-        nanosleep(&ts, NULL);
+        nanosleep(&ts, NULL); /* real-clock: observing the kernel deliver a
+                               * parent-death SIGTERM to a real child; no
+                               * fake-clock seam spans processes */
     }
     return !pge_alive(p);
 }
@@ -100,7 +102,9 @@ static int pge_wait_file(const char *pidfile, pid_t *out)
         if (pge_read_pid(pidfile, out))
             return 1;
         struct timespec ts = {.tv_sec = 0, .tv_nsec = 100 * 1000 * 1000};
-        nanosleep(&ts, NULL);
+        /* Real /bin/sh fork writing the pidfile through the kernel's
+         * filesystem — no injected clock spans processes. */
+        nanosleep(&ts, NULL); /* real-clock: real fork+filesystem visibility */
     }
     return 0;
 }
@@ -178,7 +182,9 @@ static int test_plain_setsid_survives(void)
         ASSERT(waitpid(shell, &status, 0) == shell);
         /* Still alive one second later: remote legs depend on this. */
         struct timespec ts = {.tv_sec = 1, .tv_nsec = 0};
-        nanosleep(&ts, NULL);
+        nanosleep(&ts, NULL); /* real-clock: proving the kernel did NOT send
+                               * the parent-death signal requires waiting on
+                               * the real scheduler; absence has no seam */
         ASSERT(pge_alive(fixture));
         ASSERT(kill(fixture, SIGTERM) == 0);
         ASSERT(pge_wait_gone(fixture, 5));
