@@ -30,10 +30,9 @@ void build_fabric_proof_test_fault(enum build_fabric_proof_fault fault)
     atomic_store(&g_bfpc_fault, (int)fault);
 }
 
-bool bfpc_fault(enum build_fabric_proof_fault fault)
+enum build_fabric_proof_fault bfpc_test_fault_armed(void)
 {
-    return fault != BUILD_FABRIC_PROOF_FAULT_NONE &&
-           atomic_load(&g_bfpc_fault) == (int)fault;
+    return (enum build_fabric_proof_fault)atomic_load(&g_bfpc_fault);
 }
 #endif
 

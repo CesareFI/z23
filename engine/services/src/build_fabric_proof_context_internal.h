@@ -82,8 +82,9 @@ void bfpc_issuer_pause(struct build_fabric_proof_context *ctx,
                        const char *state);
 
 #ifdef ZCL_TESTING
-bool bfpc_fault(enum build_fabric_proof_fault fault);
-#define BFPC_FAULT(fault) bfpc_fault(fault)
+/* The armed test fault, BUILD_FABRIC_PROOF_FAULT_NONE when none is. */
+enum build_fabric_proof_fault bfpc_test_fault_armed(void);
+#define BFPC_FAULT(fault) (bfpc_test_fault_armed() == (fault))
 #else
 #define BFPC_FAULT(fault) false
 #endif

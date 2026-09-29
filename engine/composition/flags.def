@@ -1815,6 +1815,8 @@ Z23_FLAG("ZCL_PROMPT_TEMPLATE_ROW_FLOOR", "env_build", "8", "-",
           "undocumented; first use tools/lint/lintc/gate_def_parsers.c:auto")
 Z23_FLAG("ZCL_PROMPT_TEMPLATES_DEF", "env_build", "-", "-",
           "undocumented; first use tools/lint/lintc/gate_def_parsers.c:auto")
+Z23_FLAG("ZCL_PROOF_ISSUE_COST_10K", "env_test", "-", "-",
+          "Set to 1 to add the 10k-row point, about two minutes of fixture writes, to the build_fabric proof-issuance cost case in tests/harness/src/build_fabric_proof_wiring_cases.c.")
 Z23_FLAG("ZCL_PROOF_RAM_RESERVE_BYTES", "env_runtime", "-", "-",
           "undocumented; first use tools/dev/dev_proof.c:auto")
 Z23_FLAG("ZCL_PROOF_TIMEOUT_MS", "env_runtime", "-", "-",
