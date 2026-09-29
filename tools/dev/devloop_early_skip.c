@@ -312,7 +312,8 @@ static void es_graph_dirs_pass(struct es_graph *g, const char *const *argv,
  * this source-text key cannot model. */
 static bool es_flag_unmodeled(const char *arg)
 {
-    if (strstr(arg, "__has_include") || strstr(arg, "__has_embed") ||
+    if (strstr(arg, "_Pragma") ||
+        strstr(arg, "__has_include") || strstr(arg, "__has_embed") ||
         strstr(arg, "__DATE__") || strstr(arg, "__TIME__") ||
         strstr(arg, "__TIMESTAMP__") || strstr(arg, "##") ||
         strstr(arg, "%:%:"))
@@ -586,6 +587,63 @@ static size_t es_literal_end(const char *text, size_t len, size_t i)
     return j < len ? j : len - 1;
 }
 
+enum es_marker_bits {
+    ES_MARK_INCLUDE = 1u, ES_MARK_EMBED = 2u,
+    ES_MARK_VOLATILE = 4u, ES_MARK_PASTE = 8u,
+    ES_MARK_PRAGMA = 16u,
+};
+
+static bool es_marker_at(const char *text, size_t len, size_t i,
+                         const char *marker)
+{
+    size_t n = strlen(marker);
+    return n <= len - i && memcmp(text + i, marker, n) == 0;
+}
+
+static unsigned es_marker_bits_at(const char *text, size_t len, size_t i)
+{
+    unsigned bits = 0;
+    if (text[i] == '_') {
+        if (es_marker_at(text, len, i, "__has_include"))
+            bits |= ES_MARK_INCLUDE;
+        if (es_marker_at(text, len, i, "__has_embed"))
+            bits |= ES_MARK_EMBED;
+        if (es_marker_at(text, len, i, "__DATE__") ||
+            es_marker_at(text, len, i, "__TIME__") ||
+            es_marker_at(text, len, i, "__TIMESTAMP__"))
+            bits |= ES_MARK_VOLATILE;
+        if (es_marker_at(text, len, i, "_Pragma"))
+            bits |= ES_MARK_PRAGMA;
+    }
+    if (es_marker_at(text, len, i, "##") ||
+        es_marker_at(text, len, i, "%:%:"))
+        bits |= ES_MARK_PASTE;
+    return bits;
+}
+
+/* These compiler operators are tokens; bytes in an ordinary literal cannot
+ * expand to them. Keep the original text intact for include resolution and
+ * the test-input vet. A malformed literal is never a vouched closure. */
+static unsigned es_live_markers(const char *text, size_t len, bool *uncertain)
+{
+    unsigned bits = 0;
+    *uncertain = false;
+    for (size_t i = 0; i < len; i++) {
+        if (text[i] == '"' ||
+            (text[i] == '\'' && !es_digit_separator(text, i))) {
+            size_t end = es_literal_end(text, len, i);
+            if (end <= i || text[end] != text[i]) {
+                *uncertain = true;
+                return bits;
+            }
+            i = end;
+        } else {
+            bits |= es_marker_bits_at(text, len, i);
+        }
+    }
+    return bits;
+}
+
 /* Blank a // comment from `i` up to its line end; a backslash-newline that
  * would continue it only leaves more text to scan. */
 static size_t es_blank_line_comment(char *text, size_t len, size_t i)
@@ -678,21 +736,27 @@ static void es_node_load(struct es_graph *g, uint32_t idx)
         es_node_bad(g, idx, "trigraph", g->nodes[idx].path);
     len = es_splice_lines(text, len);
     es_strip_comments(text, len);
+    bool uncertain = false;
+    unsigned markers = es_live_markers(text, len, &uncertain);
+    if (uncertain)
+        es_node_bad(g, idx, "literal-unclosed", g->nodes[idx].path);
     /* A file's appearance can flip these predicates without any include or
      * embed edge. The closure key cannot vouch for those search results. */
-    if (strstr(text, "__has_include"))
+    if (markers & ES_MARK_INCLUDE)
         es_node_bad(g, idx, "has-include", g->nodes[idx].path);
-    if (strstr(text, "__has_embed"))
+    if (markers & ES_MARK_EMBED)
         es_node_bad(g, idx, "has-embed", g->nodes[idx].path);
     /* Wall-clock expansion and file mtime can change while source bytes do
      * not. A prior early PASS therefore cannot cover these inputs. */
-    if (strstr(text, "__DATE__") || strstr(text, "__TIME__") ||
-        strstr(text, "__TIMESTAMP__"))
+    if (markers & ES_MARK_VOLATILE)
         es_node_bad(g, idx, "volatile-macro", g->nodes[idx].path);
     /* Token pasting can synthesize those spellings (and include probes)
      * without any full token appearing in the bytes scanned above. */
-    if (strstr(text, "##") || strstr(text, "%:%:"))
+    if (markers & ES_MARK_PASTE)
         es_node_bad(g, idx, "macro-paste", g->nodes[idx].path);
+    /* Pragmas can depend on external file metadata and destringize text. */
+    if (markers & ES_MARK_PRAGMA)
+        es_node_bad(g, idx, "pragma", g->nodes[idx].path);
     if (!es_scan(g, idx, text, len))
         es_node_bad(g, idx, "closure-bound", g->nodes[idx].path);
     char seen[64] = "";

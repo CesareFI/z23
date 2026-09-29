@@ -1277,6 +1277,10 @@ static int de_test_skip_volatile_macros(struct de_state *s)
              "volatile-macro"},
             {"int early_hole_a(void) { return __TIMESTAMP__[0]; }\n",
              "volatile-macro"},
+            {"int early_hole_a(void) { return 1'000 + __TIME__[0]; }\n",
+             "volatile-macro"},
+            {"_Pragma(\"GCC dependency \\\"external.dat\\\"\")\n"
+             "int early_hole_a(void) { return 1; }\n", "pragma"},
             {"#define CAT(a, b) a ## b\n"
              "int early_hole_a(void) { return CAT(__DA, TE__)[0]; }\n",
              "macro-paste"},
@@ -1295,6 +1299,41 @@ static int de_test_skip_volatile_macros(struct de_state *s)
     return failures;
 }
 
+static int de_test_skip_inert_literals(struct de_state *s)
+{
+    int failures = 0;
+    TEST("devloop_early: volatile spellings inside literals do not disable "
+         "an unchanged closure") {
+        static const char *const bodies[] = {
+            "int early_hole_a(void) { return \"__DATE__\"[0]; }\n",
+            "int early_hole_a(void) { return \"__TIME__\"[0]; }\n",
+            "int early_hole_a(void) { return \"__TIMESTAMP__\"[0]; }\n",
+            "int early_hole_a(void) { return \"__has_include\"[0]; }\n",
+            "int early_hole_a(void) { return \"__has_embed\"[0]; }\n",
+            "int early_hole_a(void) { return \"##\"[0]; }\n",
+            "int early_hole_a(void) { return \"%:%:\"[0]; }\n",
+            "int early_hole_a(void) { return \"_Pragma __has_include\"[0]; }\n",
+            "int early_hole_a(void) { return \"escaped \\\" __TIME__\"[0]; }\n",
+        };
+        for (size_t i = 0; i < sizeof(bodies) / sizeof(bodies[0]); i++) {
+            ASSERT(de_hole_setup(s));
+            ASSERT(de_write(s->fx.root, DE_HOLE_A, bodies[i]));
+            de_hole_decide(s, DE_HOLE_FLAGS);
+            ASSERT(de_hole_is(s, "no-record", ""));
+            ASSERT(zcl_devloop_early_skip_record(s->fx.root, &s->hole,
+                                                  "", 1000));
+            de_hole_decide(s, DE_HOLE_FLAGS);
+            ASSERT(de_hole_is(s, "closure-unchanged", ""));
+            ASSERT(de_write(s->fx.root, DE_HOLE_A,
+                            "int early_hole_a(void) { return \"changed\"[0]; }\n"));
+            de_hole_decide(s, DE_HOLE_FLAGS);
+            ASSERT(de_hole_is(s, "key-changed", ""));
+        }
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int de_test_skip_flags(struct de_state *s)
 {
     int failures = 0;
@@ -1307,6 +1346,7 @@ static int de_test_skip_flags(struct de_state *s)
             "--sysroot=/opt/root", "--sysroot /opt/root",
             "-isysroot /opt/root", "-iwithprefix vendor", "-I-",
             "@build/flags.rsp",
+            "-DREAD_EXTERNAL=_Pragma(\"GCC dependency\")",
         };
         char flags[8192];
         ASSERT(de_hole_setup(s));
@@ -1392,6 +1432,7 @@ static int de_test_restart(void)
         failures += de_test_skip_digraph_paste_flag(s);
         failures += de_test_skip_ambient_include(s);
         failures += de_test_skip_volatile_macros(s);
+        failures += de_test_skip_inert_literals(s);
         failures += de_test_skip_flags(s);
     }
     if (s)
