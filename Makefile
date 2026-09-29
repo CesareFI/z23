@@ -1028,8 +1028,12 @@ DEV_SRCS = $(NODE_ENTRY_SRCS) $(ALL_SRCS) $(DEV_ONLY_SRCS)
 DEV_OBJS = $(patsubst %.c,$(DEV_OBJ_DIR)/%.o,$(DEV_SRCS))
 DEV_OBJ_COMPLETE = $(DEV_OBJ_DIR)/.complete
 DEV_PACKAGE_VERIFY_OBJ = $(DEV_OBJ_DIR)/tools/package_verify.o
-DEV_PACKAGE_VERIFY_NODE_OBJS = $(patsubst %.c,$(DEV_OBJ_DIR)/%.o,\
-	$(ALL_SRCS) $(DEV_ONLY_SRCS))
+DEV_PACKAGE_VERIFY_GUI_STUB_OBJ = $(DEV_OBJ_DIR)/tools/package_verify_wallet_gui.o
+DEV_PACKAGE_VERIFY_NODE_OBJS = $(filter-out \
+	$(DEV_OBJ_DIR)/contexts/wallet/views/src/wallet_gui.o \
+	$(DEV_OBJ_DIR)/contexts/wallet/views/src/wallet_gui_bot.o,\
+	$(patsubst %.c,$(DEV_OBJ_DIR)/%.o,$(ALL_SRCS) $(DEV_ONLY_SRCS))) \
+	$(DEV_PACKAGE_VERIFY_GUI_STUB_OBJ)
 DEV_PACKAGE_VERIFY_LINK_RSP = $(DEV_OBJ_DIR)/package-verify-link-inputs.rsp
 DEV_PACKAGE_VERIFY_BIN = $(BIN_DIR)/zclassic23-package-verify-dev
 DEV_PACKAGE_VERIFY_ENSURE_STAMP = $(BUILD_DIR)/dev-package-verifier.ensure
@@ -5253,7 +5257,7 @@ $(DEV_PACKAGE_VERIFY_BIN): $(DEV_PACKAGE_VERIFY_LINK_RSP) \
 	trap 'rm -f "$$tmp"' EXIT HUP INT TERM; \
 	$(CC) $(DEV_RESTART_CFLAGS) $(DEV_RESTART_LDFLAGS) -o "$$tmp" \
 	  "@$(DEV_PACKAGE_VERIFY_LINK_RSP)" \
-	  $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS); \
+	  $(TOR_LIBS) $(LIBS); \
 	$(BUILD_EPOCH_SESSION_TOOL) verify "$(DEV_SESSION)" "$(DEV_LEASE)" \
 	  "$(DEV_OBJ_ROOT)" "$(BIN_DIR)/dev" "$(BUILD_EPOCH_KEEP)" \
 	  "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" \
@@ -5266,6 +5270,13 @@ $(DEV_PACKAGE_VERIFY_BIN): $(DEV_PACKAGE_VERIFY_LINK_RSP) \
 $(DEV_PACKAGE_VERIFY_LINK_RSP): $(DEV_PACKAGE_VERIFY_OBJ) \
 		$(DEV_PACKAGE_VERIFY_NODE_OBJS)
 	@$(if $(ZCL_MAKE_NO_EXEC),,$(file >$@,$(DEV_PACKAGE_VERIFY_OBJ) $(DEV_PACKAGE_VERIFY_NODE_OBJS))) test -s "$@"
+
+$(DEV_PACKAGE_VERIFY_GUI_STUB_OBJ): contexts/wallet/views/src/wallet_gui.c \
+		$(BUILD_FAST_EPOCH_OBJECT_PREREQ) $(BUILD_EPOCH_OBJECT_FORCE) | $(DEV_LEASE)
+	@$(BUILD_FAST_EPOCH_OBJECT_COMMAND) dep "$@" "$<" \
+	  "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" \
+	  "$(DEV_COMPILE_EPOCH)" "$(BUILD_COMPILER_ID)" "$(DEV_SESSION)" -- \
+	  $(CC) $(DEV_COMPILE_CFLAGS) -UHAVE_GTK -UHAVE_WEBKIT $(ZCL_TU_RANDOM_SEED)
 
 # This plan is the ONLY consumer that pulls the fast-test object tree into an
 # ordinary `make z23-dev`: TEST_PARALLEL_FAST_LINK_RSP and
