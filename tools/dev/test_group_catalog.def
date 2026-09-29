@@ -315,6 +315,9 @@ ZCL_TEST_GROUP(verify_contract)
 ZCL_TEST_GROUP(verify_signer)
 ZCL_TEST_GROUP(proof_ticket_reuse)
 ZCL_TEST_GROUP(proof_ticket_measure)
+/* The fixed-result verifier images and seccomp filter: pinned roots, the
+ * no-root completeness proof, kernel enforcement, and the RED fixtures. */
+ZCL_TEST_GROUP(verifier_images)
 ZCL_TEST_GROUP(dev_shadow_select)
 ZCL_TEST_GROUP(dev_activation)
 ZCL_TEST_GROUP(devagent_surface)
