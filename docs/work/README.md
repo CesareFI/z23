@@ -87,6 +87,7 @@ citation, `git log --follow -- docs/work/<name>.md` recovers older intent.
 | [`secure-transport-design.md`](./secure-transport-design.md) | DESIGN | Noise_XX transport protocol contract (implemented, default off) |
 | [`separate-verifier.md`](./separate-verifier.md) | DESIGN | separate-account proof verifier: threat model, root setup and teardown, and slices; slice 1a (signed record, root-pinned key, admission) is `tools/dev/verify_attest.{h,c}` |
 | [`verifier-contract-v2.md`](./verifier-contract-v2.md) | DESIGN | `z23verify.fixed_result.v2`: byte encoding of pins, launch request, result packet, launch receipt, signed record v2, store key and layout; retired v1 artifacts and refusal tokens |
+| [`verifier-install-packet.md`](./verifier-install-packet.md) | DESIGN | root install and qualification packet for the fixed-result launcher, worker, signer and publisher: build hashes, accounts, trust files, key, units, qualification, RED fixtures, teardown |
 | [`wire-next-wave-specs.md`](./wire-next-wave-specs.md) | DESIGN | next-wave `simnet_wire` lane specs (eclipse/partition, bandwidth/reorder, app-layer flows) |
 | [`session-substrate-probes.md`](./session-substrate-probes.md) | DESIGN | measured rootless-sandboxing capability probes for the multi-user-server program |
 | [`LLM-C23-APP-PLATFORM-CHECKLIST.md`](./LLM-C23-APP-PLATFORM-CHECKLIST.md) | DESIGN | future LLM/App platform execution checklist (Phases 3–5); not the current execution queue, cannot displace the sovereign cure |
