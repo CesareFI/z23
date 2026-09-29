@@ -30,6 +30,13 @@ same afterwards.
   three hosts. Toolchain capsule roots:
   - A and B: `5c82d3bc9d023caaf15a93b0db74f97aa0430f0c6458ae87b5d20aea6b3fcc8a`
   - C: `b0a1234afb88c1cbfb507b3d41c0f4b4422a428de33637b272818d33ce67d732`
+- Tie-break runs 11-14: `5de24cac1f`. The `z23` sha256 was
+  `edff14d4c9e92af8ec5d386e1406e1dda11200093acb66eab17b165c3f141650`,
+  identical on all three hosts.
+- Post-fix runs 15 and 16: `d3aded7383` (batched staged-drain durability).
+  The `z23` sha256 was
+  `80a99142e910ad011fe8816aea1f12edd28b37e930ac77c7962fb267b7173d34`,
+  identical on all three hosts.
 
 ## Runs
 
@@ -44,6 +51,13 @@ same afterwards.
 | 7 | + configured-inbound sync, probe socket non-blocking | FAIL | overlay: B's identity probe returned at once, so B stayed in `finding_peers` |
 | 8 | `ce0a212fa3` | **PASS 12/12**, 617 s | none |
 | 9 | same | FAIL | step 11: the remote proof session was lost to connection churn |
+| 10 | `d0216b92bb` (scratch tree) | PASS verdict 12/12; driver TERM'd after the verdict, rc unrecorded | none |
+| 11 | `5de24cac1f` | FAIL | step 12: node C's initial sync crawled past its budget (fault 5) |
+| 12 | `5de24cac1f` | **PASS 12/12**, 470 s | none |
+| 13 | `5de24cac1f` | **PASS 12/12**, 450 s | none |
+| 14 | `5de24cac1f` | **PASS 12/12**, 492 s | none |
+| 15 | `d3aded7383` | **PASS 12/12**, 469 s | none |
+| 16 | `d3aded7383` | **PASS 12/12**, 504 s | none |
 
 Wall times are the driver's own run time; queue time for the shared build
 slot is excluded.
@@ -158,7 +172,37 @@ Every step verdict was PASS, and the verdict line reported
      then
      `configured-inbound header sync: peer=<A>:49584 id=2 proved over its own Noise session the identity this node authenticated at an operator-named -addnode/-connect target; ...`.
 
-## Open blocker: reconnects between two configured peers destroy both sessions
+5. **A fresh latecomer's staged sync intermittently crawled past its budget.**
+   - **Symptom:** run 11 died at "node C (initial sync) did not reach height
+     124" while C's peer session stayed handshaked and B advertised 124. C's
+     staged pipeline then finished all 124 blocks roughly 45 s after the
+     driver's 90 s wait expired.
+   - **Cause:** C's own debug bundle names the wait:
+     `event_log_barrier_appends:227` and
+     `event_log_barrier_us_total:69105790` — `event_log_append`'s two
+     per-append fsync barriers (about 300 ms each on node C's HDD host)
+     executed on the shared supervisor tick runner, stretching staged ticks
+     to ~10 s. Every SQLite timing in the same bundle stayed in microseconds,
+     so node.db was not the wait. The reducer's crash-ordered
+     batched-durability scope existed but armed only above the 500-block
+     accelerated-cadence threshold, which a 124-block latecomer never
+     reaches. When the net intake worker happened to hold the same scope
+     open, appends deferred and the run passed (runs 12-14); when intake went
+     idle, staged ticks paid the barriers (run 11).
+   - **Fix:** `catchup_cadence_deferred_sync_active()` arms the same
+     batched-durability scope around each staged drain for any backlog past
+     one block (default threshold 2, `d3aded7383`). The flush still runs at
+     every stage-batch commit and at scope exit, and at tip (gap <= 1)
+     per-operation durability is unchanged.
+   - **Regression:** `case_small_backlog_defer_sync_gate` in
+     `test_catchup_cadence` and `spt_case_small_chain_durability` in
+     `test_supervisor_production_tree`, red on the old wiring and green
+     after.
+
+## Open blocker: reconnects between two configured peers destroy both sessions (closed below)
+
+Note: the following mechanism record was written against run 9, before the
+tie-break landed; the closure section follows it.
 
 Run 9 reached step 11 and then lost its remote proof. B's log shows the
 cycle every 30 s:
@@ -193,8 +237,33 @@ The fix belongs in the sealed core. Either rule would do:
 The engine cannot suppress a core dial or eviction, so this change needs an
 owner decision.
 
+## Closed: the owner-authorized tie-break holds both mutual-dial edges
+
+The owner authorized the sealed-core change on 2026-09-29 and it landed
+(75e8efc199, pinned by 309aa1872a, driven by 48baac36a5): when a handshaked
+outbound and an inbound from the same IP authenticated the same Noise static
+key, both nodes keep the session dialed by the lower key and drop the other,
+and the losing side's connect target counts as connected while the kept
+inbound carries that key. Run 12's node B log shows both rules working on
+the physical hosts:
+
+- `configured-inbound header sync: peer=<A>:36854 id=3 proved over its own
+  Noise session the identity this node authenticated at an operator-named
+  -addnode/-connect target; ...` (engine/services/src/peer_sync_gate.c:96)
+- `mutual-dial tie-break: peer=<C>:20026 kept=outbound local=65b9bd15 ...`
+  (core/modules/net/src/connman_zcl23_dial.c:250). After node C synced, B
+  dialed the latecomer and C's outbound to B completed its handshake — a
+  fresh mutual dial on the B<->C edge. The tie-break settled it with one
+  surviving session, the same rule that holds A<->B, and the run passed.
+
+Runs 15 and 16 are two consecutive physical 12/12 passes on the fix's
+landed SHA `d3aded7383` (469 s and 504 s), the repeatable-green bar
+for this acceptance.
+
 Separately, in run 4 node A's own shutdown hit `database is locked` on
 node.db while the wallet flush was retrying. The harness's TERM grace then
 expired, which caused the unclean stop. Fault 3 makes the node recover from
 that stop. The driver now gives each stop the node's own shutdown grace
-before escalating to KILL. The lock contention itself remains open.
+before escalating to KILL. The lock contention itself remains open, tracked
+separately from fault 5: during run 11's crawl every SQLite timing in node
+C's debug bundle stayed in microseconds.
