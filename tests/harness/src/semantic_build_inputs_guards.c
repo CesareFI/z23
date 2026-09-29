@@ -259,18 +259,14 @@ static int sbit_t_guarded_include(void)
 #define SBI_PLAN_PREMISE ZCL_DEVLOOP_PREMISE_PARSE_COMMANDS_NO_INCLUDE_WRITES
 
 /* A skipped include is recorded with the directive, its premises and the
- * paths it globbed, so a reviewer can falsify the narrow. A plan that
- * reads an optional include, missing (p02: a parse-time script) or
- * existing, or a skip that rests on a glob, records the premise
- * parse-commands-no-include-writes when a parse-time command is not
- * provably read-only. */
+ * paths it globbed, so a reviewer can falsify the narrow. A skip that
+ * rests on a glob records the plan premise too. */
 static int sbit_t_guard_record(void)
 {
     int failures = 0;
     static const char *const changed[] = {"tools/x.sh"};
-    struct sbi_run e = {0}, v = {0}, s = {0}, u = {0}, x = {0};
+    struct sbi_run e = {0}, v = {0};
     const struct zcl_devloop_facts_guard *g;
-    const struct zcl_devloop_facts_plan_premise *p = &s.rep.make_premise;
     TEST_CASE("semantic_build_inputs: a skipped include records its reading") {
         ASSERT(sbi_consume_files("sbi_guard_rec_e", SBI_EPOCH, NULL, changed, 1, &e));
         ASSERT(e.rep.nguards == 1);
@@ -290,6 +286,23 @@ static int sbit_t_guard_record(void)
         ASSERT(g->premises == (ZCL_DEVLOOP_PREMISE_NO_REPAIR_GOAL | SBI_EVERY_SKIP));
         ASSERT(g->nglobs == 1 && strcmp(g->glob[0], "vendor/lib/liba.a") == 0 &&
                strcmp(g->found[0], "vendor/lib/liba.a") == 0);
+    } TEST_END
+    zcl_devloop_facts_report_free(&e.rep);
+    zcl_devloop_facts_report_free(&v.rep);
+    return failures;
+}
+
+/* A plan that reads an optional include, missing (p02: a parse-time
+ * script) or existing, records the premise parse-commands-no-include-writes
+ * when a parse-time command is not provably read-only. */
+static int sbit_t_plan_record(void)
+{
+    int failures = 0;
+    static const char *const changed[] = {"tools/x.sh"};
+    struct sbi_run s = {0}, u = {0}, x = {0};
+    const struct zcl_devloop_facts_plan_premise *p = &s.rep.make_premise;
+    const struct zcl_devloop_facts_plan_premise *q = &x.rep.make_premise;
+    TEST_CASE("semantic_build_inputs: a parse-time script records the plan premise") {
         ASSERT(sbi_consume("sbi_pp_s", "X := $(shell tools/mkgen.sh)\n" SBI_P_TAIL,
                            changed, 1, &s) && sbi_narrowed(&s));
         ASSERT(p->premises == SBI_PLAN_PREMISE && p->nincludes == 1 && p->nskips == 0 &&
@@ -301,13 +314,10 @@ static int sbit_t_guard_record(void)
         ASSERT(sbi_consume_with("sbi_pp_x", "X := $(shell tools/mkgen.sh)\n" SBI_P_TAIL,
                                 "build/gen.mk", "# old\n", changed, 1, &x) &&
                sbi_narrowed(&x));
-        ASSERT(x.rep.make_premise.premises == SBI_PLAN_PREMISE &&
-               x.rep.make_premise.nincludes == 0 && x.rep.make_premise.nexisting == 1 &&
-               strcmp(x.rep.make_premise.include, "build/gen.mk") == 0 &&
-               strcmp(x.rep.make_premise.command, "tools/mkgen.sh") == 0);
+        ASSERT(q->premises == SBI_PLAN_PREMISE && q->nincludes == 0 && q->nexisting == 1 &&
+               strcmp(q->include, "build/gen.mk") == 0 &&
+               strcmp(q->command, "tools/mkgen.sh") == 0);
     } TEST_END
-    zcl_devloop_facts_report_free(&e.rep);
-    zcl_devloop_facts_report_free(&v.rep);
     zcl_devloop_facts_report_free(&s.rep);
     zcl_devloop_facts_report_free(&u.rep);
     zcl_devloop_facts_report_free(&x.rep);
@@ -367,6 +377,6 @@ static int sbit_t_premise_forms(void)
 int sbi_guard_suite(void)
 {
     return sbit_t_parse_time_writers() | sbit_t_parse_time_quiet() |
-           sbit_t_guarded_include() | sbit_t_guard_record() |
+           sbit_t_guarded_include() | sbit_t_guard_record() | sbit_t_plan_record() |
            sbit_t_premise_forms();
 }
