@@ -2,7 +2,7 @@
 
 # Fixed result.c launcher staging
 
-This packet prepares pinned material for one strict, non-LTO `result.c`
+This packet prepares pinned material for one test-fast, non-LTO `result.c`
 compile. It does not install a key, start a socket or service, run `bwrap`,
 write a launch receipt, or admit reuse. `fixed_result_launcher preflight`
 returns exit 2 even when every pinned byte matches. That remains true until
@@ -19,20 +19,22 @@ source, tool, and check images at the paths in
 
 The staged policy's SHA3-256 is
 `1315fa7fb2a718829a881955bf7415c3b4bdabc30d89ddeda0e0781983cc4abe`.
-The strict argument profile's SHA3-256 is
-`5fb3b13597488c20a9f5aeca2b654fad92b39714d93069c12c082206977aadaf`.
-`env_sha3` is SHA3-256 of the literal ASCII bytes ending in LF:
+The profile is `test_fast`: `tools/verify/fixed_result_fast.args`, installed
+as `/etc/z23verify/fixed_result_fast.args`, SHA3-256
+`5e8a1cafce7350ff3c335c6a714f59c75c1e646de82eb03d076f68bdad244e1c`. The
+strict profile (`5fb3b135…aadaf`) is retired; a pins file, receipt or record
+that names it refuses `contract_profile_mismatch`.
 
-```text
-z23verify.fixed_result.env.v1
-LC_ALL=C
-TZ=UTC
-TMPDIR=/tmp
-PATH=/usr/bin:/bin
-```
+Every byte string below is one framing, `z23verify.fixed_result.v2`: F(x) is
+the 8-byte little-endian length of x followed by x, and an artifact is
+F(domain) then F(label) F(value) per field in a fixed order.
+[`docs/work/verifier-contract-v2.md`](../../docs/work/verifier-contract-v2.md)
+spells out every artifact; `tools/verify/fixed_result_contract.h` is the one
+encoder and parser. The environment root is SHA3-256 of
+F(`z23verify.fixed_result.env.v2`) then F(`env`) F(entry) for `LC_ALL=C`,
+`TZ=UTC`, `TMPDIR=/tmp` and `PATH=/usr/bin:/bin`, in that order. Any other
+environment, including `TMPDIR=/work`, refuses `contract_env_mismatch`.
 
-Its current digest is
-`19c5ed02759b18a210013d167d7277a014dde893e1b8edaab69abc029700a3ec`.
 The policy names the root image paths, fixed host UIDs, `/zclassic23`,
 read-only tool/source mounts, private `/work` and `/tmp`, no network, and the
 exact seccomp-filter path. A flag saying seccomp mode 2 or a read-only mount
@@ -40,23 +42,22 @@ flag alone does not establish this policy. An installed launcher must prove
 the actual namespace/filter and the host-side UID before issuing a receipt.
 
 `/etc/z23verify/fixed_result.pins` is one root-owned nlink-1 regular file
-with mode 0444 and root-owned, nonwritable ancestors. Its exact LF-only field
-order is:
+with mode 0444 and root-owned, nonwritable ancestors. It is a pins v2 file:
+F(`z23verify.fixed_result.pins.v2`), F(`profile`) F(`test_fast`), then the
+twelve roots below, each F(label) F(32 raw bytes), in exactly this order,
+which is also key v2's order:
 
 ```text
-z23verify.fixed_result.pins.v1
-strict_args_sha3=<64 lowercase hex>
-source_image_sha3=<64 lowercase hex>
-tool_image_sha3=<64 lowercase hex>
-worker_sha3=<64 lowercase hex>
-launcher_sha3=<64 lowercase hex>
-check_image_sha3=<64 lowercase hex>
-env_sha3=<64 lowercase hex>
-policy_sha3=<64 lowercase hex>
-seccomp_filter_sha3=<64 lowercase hex>
-bwrap_sha3=<64 lowercase hex>
-tree_closure_sha3=<64 lowercase hex>
+source_content_sha3   profile_args_sha3   source_image_sha3
+tool_image_sha3       worker_sha3         launcher_sha3
+check_image_sha3      environment_sha3    policy_sha3
+seccomp_filter_sha3   bwrap_sha3          tree_checker_sha3
 ```
+
+`z23-fixed-result-launcher pins-encode <12 hex roots>` writes that file to
+stdout without privilege and refuses a zero root, the strict profile or
+another environment by its contract token. The v1 LF text pins file
+(`z23verify.fixed_result.pins.v1`) refuses `contract_version_v1_retired`.
 
 The three image roots are the installed, UID-bound `tree_sha3` values printed by the pinned
 `z23-tree-closure hash <absolute-image-path> 0` helper, not a list of only
@@ -67,8 +68,10 @@ three images during preflight. The administrator verifies these values and
 the reviewed executable bytes before staging pins. A writable source
 checkout, an unreviewed binary, or a pin supplied by the signer is not a
 root of trust.
-The receiver's portable strict-v2 source identity uses `content_sha3`
-and independently rechecks current source, headers, search namespace, and
+The receiver's portable source identity is the `content_sha3` the same
+helper prints; it is pinned as `source_content_sha3`, and preflight requires
+the installed source image to print both pinned values. The receiver
+independently rechecks current source, headers, search namespace, and
 preprocessed bytes. It must not equate a developer-owned checkout's UID-bound
 tree hash to the root-owned installed image hash. `check_image_sha3` must
 include an independently pinned current-main proof executor and publisher;
@@ -84,65 +87,40 @@ successful installer output is
 An absent or changed pin, image, filter, worker, launcher, bwrap, or tree
 checker refuses by name; there is no fallback to same-UID signing.
 
-## Launch receipt contract for the next slice
+## Launch receipt v2 for the next slice
 
 The root launcher alone may create
 `/var/lib/z23verify/launches/<32-lowercase-hex-id>/` (root:root 0700).
-After a normal worker exit and a live host-UID/mount witness, it copies all
-four worker FDs into root-owned, nlink-1, mode-0400 siblings named `object.o`,
-`deps.d`, `stderr.bin`, and `preprocessed.i`. It writes `launch.v1` last as a
-root-owned, nlink-1, mode-0444 file. The receipt is fixed-order ASCII with
-terminal LF:
+The worker receives a launch request v2 (F(`z23verify.fixed_result.request.v2`),
+`profile`=`test_fast`, `recorded_cwd`=`/zclassic23`, one
+`build/test-obj/epochs/<64 hex>/platform/modules/base/src/result.o` target)
+and answers with a result packet v2 (F(`z23verify.fixed_result.packet.v2`))
+plus four FDs, named once each and in this order: `object.o`, `deps.d`,
+`stderr.bin`, `preprocessed.i`. The worker's scratch spellings (`result.o`,
+`result.i`) never leave the worker; an unknown, duplicate or reordered name
+refuses by name.
 
-```text
-z23verify.launch.v1
-launch_id=<32 lowercase hex>
-request_nonce=<32 lowercase hex>
-recorded_cwd=/zclassic23
-source=platform/modules/base/src/result.c
-target=<exact build/test-rel-obj/epochs/<64 hex>/platform/modules/base/src/result.o>
-strict_args_sha3=<64 lowercase hex>
-source_image_sha3=<64 lowercase hex>
-tool_image_sha3=<64 lowercase hex>
-worker_sha3=<64 lowercase hex>
-launcher_sha3=<64 lowercase hex>
-bwrap_sha3=<64 lowercase hex>
-check_image_sha3=<64 lowercase hex>
-env_sha3=<64 lowercase hex>
-policy_sha3=<64 lowercase hex>
-mount_namespace_dev=<decimal>
-mount_namespace_ino=<decimal>
-compiler_ruid=60093
-compiler_euid=60093
-compiler_suid=60093
-compiler_rgid=60093
-compiler_egid=60093
-compiler_sgid=60093
-supplementary_groups=0
-cap_effective=0
-cap_permitted=0
-cap_inheritable=0
-cap_ambient=0
-no_new_privs=1
-seccomp_mode=2
-seccomp_filter_sha3=<64 lowercase hex>
-worker_exit=0
-object_size=<decimal>
-object_sha3=<64 lowercase hex>
-dep_size=<decimal>
-dep_sha3=<64 lowercase hex>
-stderr_size=<decimal>
-stderr_sha3=<64 lowercase hex>
-pp_size=<decimal>
-pp_sha3=<64 lowercase hex>
-```
+After a normal worker exit and a live host-UID/mount witness, the launcher
+copies all four worker FDs into root-owned, nlink-1, mode-0400 siblings under
+those canonical names. It writes `launch.bin` last as a root-owned, nlink-1,
+mode-0444 file: a launch receipt v2, F(`z23verify.fixed_result.receipt.v2`)
+then 46 labeled fields — profile, launch ID, request nonce, `/zclassic23`,
+the source path, the epoch target, `z23.gcc14.fast_result.v2:<tool image
+hex>`, the twelve pins v2 roots, the scratch directory, both exec-argv v2
+hashes, the mount namespace, the fixed compiler identity (UID/GID 60093, no
+groups, no capabilities, no_new_privs 1, seccomp mode 2, worker exit 0), and
+size plus SHA3 for each of the four artifacts. The v1 LF text receipt
+(`z23verify.launch.v1`) refuses `contract_version_v1_retired`.
 
 The launcher sends the signer a root-authenticated one-packet statement with
 launch ID and receipt SHA3 plus descriptor copies of the root-owned receipt
 and four artifacts. The signer copies those bytes into private staging; the
 offline root publisher independently descriptor-opens the private root launch
-record and compares its exact bytes and pins before publishing. A launch
-receipt is evidence of this one execution only. The receiver still derives
-the expected closure from its own current inputs and policy and verifies the
-signed record and artifact bytes. An unqualified or missing launch receipt
-is a cold/refused proof, never a HIT.
+record and compares its exact bytes and pins before publishing
+`<store-key>/<record-sha3>/{attest.bin,object.o,deps.d,stderr.bin,launch.bin}`.
+The signed record v2 names that receipt's SHA3, the contract, the fast
+profile digest and the target. A launch receipt is evidence of this one
+execution only. The receiver still derives the expected closure from its own
+current inputs and policy, rebinds `launch.bin` against its own pins, and
+verifies the signed record and artifact bytes. An unqualified, missing or
+different launch receipt is a cold/refused proof, never a HIT.

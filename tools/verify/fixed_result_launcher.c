@@ -1,10 +1,12 @@
 /* Copyright 2026 Rhett Creighton; SPDX-License-Identifier: Apache-2.0.
- * Root-owned fixed-result launcher preflight. No observation is issued by
+ * Root-owned fixed-result launcher preflight over the test_fast profile and
+ * pins v2 (z23verify.fixed_result.v2). No observation is issued by
  * this binary until the separate worker/ACK and publisher protocol qualifies. */
 #define _GNU_SOURCE
 #include "base/hex.h"
 #include "platform/os_proc.h"
 #include "sha3/sha3.h"
+#include "verify/fixed_result_contract.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -23,7 +25,7 @@
 
 #define POLICY "/etc/z23verify/fixed_result.policy"
 #define PINS "/etc/z23verify/fixed_result.pins"
-#define ARGS "/etc/z23verify/fixed_result_strict.args"
+#define ARGS "/etc/z23verify/fixed_result_fast.args"
 #define FILTER "/etc/z23verify/fixed_result.seccomp.bpf"
 #define WORKER "/usr/local/libexec/z23-fixed-result-worker"
 #define BWRAP "/usr/bin/bwrap"
@@ -31,14 +33,6 @@
 #define SOURCE_IMAGE "/var/lib/z23verify/images/fixed_result/source"
 #define TOOL_IMAGE "/var/lib/z23verify/images/fixed_result/tool"
 #define CHECK_IMAGE "/var/lib/z23verify/images/fixed_result/check"
-
-static const char *const pin_names[] = {
-    "strict_args_sha3", "source_image_sha3", "tool_image_sha3",
-    "worker_sha3", "launcher_sha3", "check_image_sha3", "env_sha3",
-    "policy_sha3", "seccomp_filter_sha3", "bwrap_sha3", "tree_closure_sha3"
-};
-
-enum { PIN_COUNT = sizeof(pin_names) / sizeof(pin_names[0]) };
 
 static const char *const policy_text =
     "z23verify.fixed_result.policy.v1\n"
@@ -65,14 +59,6 @@ static int refuse(const char *reason)
 {
     fprintf(stderr, "fixed_result_launcher_refuse=%s\n", reason);
     return 2;
-}
-
-static bool lower_hex(const char *s, size_t len)
-{
-    for (size_t i = 0; i < len; i++)
-        if (!((s[i] >= '0' && s[i] <= '9') ||
-              (s[i] >= 'a' && s[i] <= 'f'))) return false;
-    return true;
 }
 
 /* Walk every ancestor; a safe leaf under a writable/symlinked directory is
@@ -173,7 +159,7 @@ static bool read_fixed_bytes(int fd, char *out, size_t length)
     return true;
 }
 
-static bool read_exact_root_file(const char *path, char *out, size_t cap,
+static bool read_exact_root_file(const char *path, uint8_t *out, size_t cap,
                                  size_t *length)
 {
     if (!trusted_path(path, 0, false)) return false;
@@ -182,74 +168,34 @@ static bool read_exact_root_file(const char *path, char *out, size_t cap,
     struct stat before, after;
     bool ok = fstat(fd, &before) == 0 &&
               safe_root_file(&before, (off_t)cap - 1) && before.st_size > 0;
-    if (ok) ok = read_fixed_bytes(fd, out, (size_t)before.st_size);
+    if (ok) ok = read_fixed_bytes(fd, (char *)out, (size_t)before.st_size);
     bool after_ok = fstat(fd, &after) == 0;
     int close_result = close(fd);
     if (!ok || !after_ok || close_result != 0 ||
         !stable_file(&before, &after) || !safe_root_file(&after, (off_t)cap - 1))
         return false;
-    if (memchr(out, '\0', (size_t)before.st_size)) return false;
-    out[before.st_size] = '\0';
     *length = (size_t)before.st_size;
     return true;
 }
 
-static bool parse_pins(const char *bytes, size_t length,
-                       char pin[PIN_COUNT][65])
+static bool pin_file(const char *path, const uint8_t expected[32])
 {
-    static const char schema[] = "z23verify.fixed_result.pins.v1\n";
-    if (memchr(bytes, '\0', length)) return false;
-    size_t remaining = length;
-    if (remaining < sizeof(schema) - 1 ||
-        strncmp(bytes, schema, sizeof(schema) - 1) != 0) return false;
-    const char *p = bytes + sizeof(schema) - 1;
-    remaining -= sizeof(schema) - 1;
-    for (size_t i = 0; i < PIN_COUNT; i++) {
-        size_t key = strlen(pin_names[i]);
-        if (remaining < key + 1 + 64 + 1) return false;
-        if (strncmp(p, pin_names[i], key) != 0 || p[key] != '=') return false;
-        p += key + 1;
-        if (!lower_hex(p, 64) || p[64] != '\n') return false;
-        memcpy(pin[i], p, 64);
-        pin[i][64] = '\0';
-        if (strspn(pin[i], "0") == 64) return false;
-        p += 65;
-        remaining -= key + 1 + 65;
-    }
-    return remaining == 0;
+    char actual[65], want[65];
+    zcl_hex_encode(expected, 32u, want);
+    return hash_file(path, actual) && strcmp(actual, want) == 0;
 }
 
-static bool pin_file(const char *path, const char expected[65])
-{
-    char actual[65];
-    return hash_file(path, actual) && strcmp(actual, expected) == 0;
-}
-
-static bool pin_self(const char expected[65])
+static bool pin_self(const uint8_t expected[32])
 {
     if (os_proc_self_exe_identity() != OS_PROC_IMAGE_IDENTITY_RUNNING_IMAGE)
         return false;
     FILE *image = os_proc_open_self_exe();
     if (!image) return false;
-    char actual[65];
+    char actual[65], want[65];
     bool ok = hash_fd(fileno(image), actual);
     if (fclose(image) != 0) return false;
-    return ok && strcmp(actual, expected) == 0;
-}
-
-static bool pinned_environment(const char expected[65])
-{
-    static const char env[] =
-        "z23verify.fixed_result.env.v1\n"
-        "LC_ALL=C\nTZ=UTC\nTMPDIR=/tmp\nPATH=/usr/bin:/bin\n";
-    struct sha3_256_ctx h;
-    uint8_t digest[32];
-    char actual[65];
-    sha3_256_init(&h);
-    sha3_256_write(&h, (const uint8_t *)env, sizeof(env) - 1);
-    sha3_256_finalize(&h, digest);
-    zcl_hex_encode(digest, sizeof(digest), actual);
-    return strcmp(actual, expected) == 0;
+    zcl_hex_encode(expected, 32u, want);
+    return ok && strcmp(actual, want) == 0;
 }
 
 static void exec_tree_child(int write_fd, const char *path)
@@ -288,7 +234,30 @@ static bool wait_tree(pid_t pid, bool captured)
            WEXITSTATUS(status) == 0;
 }
 
-static bool tree_root_matches(const char *path, const char expected[65])
+/* The tree checker prints "tree_sha3=<64> content_sha3=<64> ...". The tree
+ * root is the image pin; the content root, when asked for, is the
+ * portable source_content pin the receiver measures independently. */
+static bool tree_line_matches(const char *output, size_t used,
+                              const uint8_t tree[32],
+                              const uint8_t *content)
+{
+    static const char t[] = "tree_sha3=", c[] = " content_sha3=";
+    const size_t t_len = sizeof(t) - 1u, c_len = sizeof(c) - 1u;
+    char want[65];
+    if (used < t_len + 64u + c_len + 64u + 1u ||
+        strncmp(output, t, t_len) != 0 ||
+        strncmp(output + t_len + 64u, c, c_len) != 0 ||
+        output[t_len + 64u + c_len + 64u] != ' ')
+        return false;
+    zcl_hex_encode(tree, 32u, want);
+    if (memcmp(output + t_len, want, 64u) != 0) return false;
+    if (!content) return true;
+    zcl_hex_encode(content, 32u, want);
+    return memcmp(output + t_len + 64u + c_len, want, 64u) == 0;
+}
+
+static bool tree_root_matches(const char *path, const uint8_t tree[32],
+                              const uint8_t *content)
 {
     if (!trusted_path(path, 0, true)) return false;
     int pipefd[2];
@@ -303,58 +272,84 @@ static bool tree_root_matches(const char *path, const char expected[65])
     close(pipefd[0]);
     if (!wait_tree(pid, ok)) return false;
     output[used] = '\0';
-    return used > 10 + 64 && strncmp(output, "tree_sha3=", 10) == 0 &&
-           lower_hex(output + 10, 64) && output[74] == ' ' &&
-           memcmp(output + 10, expected, 64) == 0;
+    return tree_line_matches(output, used, tree, content);
 }
 
-static const char *check_policy_and_pins(char pins[PIN_COUNT][65])
+/* Pins v2 (fixed_result_contract.h): a v1 text pins file, a strict
+ * profile digest or any framing fault refuses by its contract token. */
+static const char *check_policy_and_pins(struct zcl_fixed_result_v2_roots *pins)
 {
-    char pins_bytes[2048], policy_bytes[2048];
+    uint8_t pins_bytes[2048], policy_bytes[2048];
     size_t pins_length = 0, policy_length = 0;
+    const char *why = NULL;
     if (!read_exact_root_file(PINS, pins_bytes, sizeof(pins_bytes),
-                              &pins_length) ||
-        !parse_pins(pins_bytes, pins_length, pins)) return "pins_unsafe";
+                              &pins_length)) return "pins_unsafe";
+    if (!zcl_fr_pins_parse(pins_bytes, pins_length, pins, &why)) return why;
     if (!read_exact_root_file(POLICY, policy_bytes, sizeof(policy_bytes),
                               &policy_length) ||
         policy_length != strlen(policy_text) ||
         memcmp(policy_bytes, policy_text, policy_length) != 0 ||
-        !pin_file(POLICY, pins[7])) return "policy_mismatch";
+        !pin_file(POLICY, pins->policy)) return "policy_mismatch";
     return NULL;
 }
 
-static const char *check_files(char pins[PIN_COUNT][65])
+/* zcl_fr_pins_parse already refused any environment root but the fixed
+ * v2 environment and any profile digest but the fast profile. */
+static const char *check_files(const struct zcl_fixed_result_v2_roots *pins)
 {
-    if (!pin_file(ARGS, pins[0])) return "strict_args_mismatch";
-    if (!pin_file(WORKER, pins[3])) return "worker_mismatch";
-    if (!pin_self(pins[4])) return "launcher_mismatch";
-    if (!pin_file(FILTER, pins[8])) return "filter_mismatch";
-    if (!pin_file(BWRAP, pins[9])) return "bwrap_mismatch";
-    if (!pin_file(TREE, pins[10])) return "tree_checker_mismatch";
-    if (!pinned_environment(pins[6])) return "environment_mismatch";
+    if (!pin_file(ARGS, pins->profile_args)) return "fast_args_mismatch";
+    if (!pin_file(WORKER, pins->worker)) return "worker_mismatch";
+    if (!pin_self(pins->launcher)) return "launcher_mismatch";
+    if (!pin_file(FILTER, pins->seccomp_filter)) return "filter_mismatch";
+    if (!pin_file(BWRAP, pins->bwrap)) return "bwrap_mismatch";
+    if (!pin_file(TREE, pins->tree_checker)) return "tree_checker_mismatch";
     return NULL;
 }
 
-static const char *check_images(char pins[PIN_COUNT][65])
+static const char *check_images(const struct zcl_fixed_result_v2_roots *pins)
 {
-    if (!tree_root_matches(SOURCE_IMAGE, pins[1]))
+    if (!tree_root_matches(SOURCE_IMAGE, pins->source_image,
+                           pins->source_content))
         return "source_image_mismatch";
-    if (!tree_root_matches(TOOL_IMAGE, pins[2]))
+    if (!tree_root_matches(TOOL_IMAGE, pins->tool_image, NULL))
         return "tool_image_mismatch";
-    if (!tree_root_matches(CHECK_IMAGE, pins[5]))
+    if (!tree_root_matches(CHECK_IMAGE, pins->check_image, NULL))
         return "check_image_mismatch";
     return NULL;
 }
 
+/* pins-encode HEX... : the twelve roots in pins v2 order, written to
+ * stdout as a pins v2 file for root to stage. Needs no privilege and
+ * trusts nothing; preflight re-checks every root against the files. */
+static int pins_encode(int count, char **hex)
+{
+    struct zcl_fixed_result_v2_roots pins;
+    uint8_t out[2048];
+    size_t len = 0;
+    const char *why = NULL;
+    if (count != (int)ZCL_FR_ROOT_COUNT)
+        return refuse("request_shape_unsupported");
+    for (size_t i = 0; i < ZCL_FR_ROOT_COUNT; i++)
+        if (strlen(hex[i]) != 64u ||
+            !zcl_hex_decode_lower(hex[i], zcl_fr_root_slot(&pins, i), 32u))
+            return refuse(ZCL_FR_WHY_FIELD_MALFORMED);
+    if (!zcl_fr_pins_encode(&pins, out, sizeof(out), &len, &why))
+        return refuse(why);
+    return fwrite(out, 1, len, stdout) == len && fflush(stdout) == 0
+               ? 0 : refuse("pins_write_failed");
+}
+
 int main(int argc, char **argv)
 {
+    if (argc >= 2 && strcmp(argv[1], "pins-encode") == 0)
+        return pins_encode(argc - 2, argv + 2);
     if (argc != 2 || strcmp(argv[1], "preflight") != 0)
         return refuse("request_shape_unsupported");
     if (getuid() != 0 || geteuid() != 0) return refuse("root_required");
-    char pins[PIN_COUNT][65];
-    const char *reason = check_policy_and_pins(pins);
-    if (reason == NULL) reason = check_files(pins);
-    if (reason == NULL) reason = check_images(pins);
+    struct zcl_fixed_result_v2_roots pins;
+    const char *reason = check_policy_and_pins(&pins);
+    if (reason == NULL) reason = check_files(&pins);
+    if (reason == NULL) reason = check_images(&pins);
     if (reason != NULL) return refuse(reason);
     puts("pinned_material_ok=1 attest_eligible=0");
     return refuse("isolation_unqualified");

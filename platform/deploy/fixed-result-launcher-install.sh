@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # Copyright 2026 Rhett Creighton; SPDX-License-Identifier: Apache-2.0.
 # One-time root staging for the fixed result.c verifier. It starts no service.
+# The profile is test_fast (tools/verify/fixed_result_fast.args) and the
+# staged fixed_result.pins is a pins v2 file (z23verify.fixed_result.v2),
+# written by `z23-fixed-result-launcher pins-encode`; the preflight below
+# refuses a v1 text pins file or the retired strict profile by name.
 set -euo pipefail
 
 refuse() { printf 'fixed_result_install_refuse=%s\n' "$1" >&2; exit 2; }
@@ -31,7 +35,7 @@ for parent in /etc/z23verify /usr/local/libexec /var/lib/z23verify \
 done
 hash() { openssl dgst -sha3-256 "$1" | awk '{print $NF}'; }
 for name in fixed_result_launcher fixed_result_worker z23-tree-closure \
-            fixed_result_strict.args fixed_result_launch_policy.v1 \
+            fixed_result_fast.args fixed_result_launch_policy.v1 \
             fixed_result.seccomp.bpf fixed_result.pins; do
     [[ -f $stage/$name && ! -L $stage/$name ]] || refuse stage_file_missing
     [[ $(stat --format='%u:%h' "$stage/$name") == '0:1' ]] ||
@@ -39,9 +43,9 @@ for name in fixed_result_launcher fixed_result_worker z23-tree-closure \
     mode=$(stat --format=%a "$stage/$name")
     [[ $mode == 444 || $mode == 555 ]] || refuse stage_file_mode_unsafe
 done
-[[ $(hash "$stage/fixed_result_strict.args") == \
-   5fb3b13597488c20a9f5aeca2b654fad92b39714d93069c12c082206977aadaf ]] ||
-    refuse strict_profile_mismatch
+[[ $(hash "$stage/fixed_result_fast.args") == \
+   5e8a1cafce7350ff3c335c6a714f59c75c1e646de82eb03d076f68bdad244e1c ]] ||
+    refuse fast_profile_mismatch
 [[ $(hash "$stage/fixed_result_launch_policy.v1") == \
    1315fa7fb2a718829a881955bf7415c3b4bdabc30d89ddeda0e0781983cc4abe ]] ||
     refuse policy_mismatch
@@ -57,7 +61,7 @@ for item in \
     "$stage/fixed_result_launcher:/usr/local/libexec/z23-fixed-result-launcher" \
     "$stage/fixed_result_worker:/usr/local/libexec/z23-fixed-result-worker" \
     "$stage/z23-tree-closure:/usr/local/libexec/z23-tree-closure" \
-    "$stage/fixed_result_strict.args:/etc/z23verify/fixed_result_strict.args" \
+    "$stage/fixed_result_fast.args:/etc/z23verify/fixed_result_fast.args" \
     "$stage/fixed_result_launch_policy.v1:/etc/z23verify/fixed_result.policy" \
     "$stage/fixed_result.seccomp.bpf:/etc/z23verify/fixed_result.seccomp.bpf" \
     "$stage/fixed_result.pins:/etc/z23verify/fixed_result.pins"; do
@@ -88,8 +92,8 @@ install -o root -g root -m 0555 "$stage/fixed_result_worker" \
     /usr/local/libexec/z23-fixed-result-worker
 install -o root -g root -m 0555 "$stage/z23-tree-closure" \
     /usr/local/libexec/z23-tree-closure
-install -o root -g root -m 0444 "$stage/fixed_result_strict.args" \
-    /etc/z23verify/fixed_result_strict.args
+install -o root -g root -m 0444 "$stage/fixed_result_fast.args" \
+    /etc/z23verify/fixed_result_fast.args
 install -o root -g root -m 0444 "$stage/fixed_result_launch_policy.v1" \
     /etc/z23verify/fixed_result.policy
 install -o root -g root -m 0444 "$stage/fixed_result.seccomp.bpf" \
