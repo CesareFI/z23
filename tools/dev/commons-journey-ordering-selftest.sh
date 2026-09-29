@@ -309,16 +309,14 @@ fi
 # stand-in daemon is the shipped listen-report helper holding a real
 # ephemeral port. It proves harness supervision, not node behaviour.
 REPO_ROOT_SELFTEST="$(cd "$SELF_DIR/../.." && pwd)"
-# The lint driver invokes this script directly, not the check-* make target,
-# so nothing else guarantees the two binaries the runtime scenario copies.
-# Build them here (a no-op when current), exactly like the watcher-stop
-# selftest builds its own dev-bin. Nothing in the default build set makes
-# either tool, so a fresh checkout or proof generation has neither.
-( cd "$REPO_ROOT_SELFTEST" && make process-group-exec tools/arena-product-journey-c23 ) >/dev/null ||
-    { fail "cannot build process-group-exec / arena_product_journey_c23"; exit 2; }
+# The runtime scenario execs and copies two binaries. The lint umbrellas
+# build them through LINT_BUILT_PREREQS before any gate script runs — a
+# nested make here would be the unlink/write race that destabilizes sibling
+# gates sharing the proof generation worktree — so their absence is a
+# wiring bug to refuse, not something this script repairs.
 for ORPH_NEED in process-group-exec arena_product_journey_c23; do
     [ -x "$REPO_ROOT_SELFTEST/build/bin/$ORPH_NEED" ] ||
-        { fail "missing build/bin/$ORPH_NEED despite make; the runtime orphan scenario cannot run"; exit 2; }
+        { fail "missing build/bin/$ORPH_NEED (LINT_BUILT_PREREQS did not build it); the runtime orphan scenario cannot run"; exit 2; }
 done
 SPAWN_FN="$(awk '/^dht_spawn\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$LIFECYCLE")"
 [ -n "$SPAWN_FN" ] || { fail "dht_spawn() not found in $LIFECYCLE"; exit 2; }

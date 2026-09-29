@@ -14811,13 +14811,19 @@ LINT_GATES := \
 # output from an earlier development build. Keep one set for all three
 # umbrellas: run_lint.sh dispatches the same gate set in cold, cached, and
 # cold-audit modes, so their build prerequisites must not drift apart.
+# The ordering gate's runtime orphan scenario execs and copies both the
+# launcher and the journey helper; nothing in the default build set makes
+# either, so a fresh proof generation has neither until they are named here
+# (a nested make inside the gate itself is the 2026-09-06 unlink/write race
+# and destabilizes the sibling gates sharing the generation worktree).
 LINT_BUILT_PREREQS = tools/core_seal tools/check_observability_pairing \
 	$(BIN_DIR)/check_no_hardlink_seeding \
 	$(ZCODE_PACKAGE_REGISTRY_CHECK_BIN) $(JSONQ_BIN) \
 	$(FILE_SIZE_POLICY_BIN) $(Z23_BOOTSTRAP_BIN) $(EQUIHASH_FACT_TOOL) \
 	$(BIN_DIR)/z23_bounded_run $(BIN_DIR)/agent_sha3 $(RETRIEVAL_EVAL_BIN) \
 	$(BIN_DIR)/z23-fleet-observe \
-	$(TOR_PROVENANCE_BIN) $(GIT_HOOK_BIN) $(HOTSWAP_ACTION_PLAN)
+	$(TOR_PROVENANCE_BIN) $(GIT_HOOK_BIN) $(HOTSWAP_ACTION_PLAN) \
+	$(PROCESS_GROUP_EXEC_BIN) $(BIN_DIR)/arena_product_journey_c23
 # tor-provenance-ready runs BEFORE the lint driver ever forks a gate script:
 # run_lint.sh (both the parallel dispatcher above and the serial LINT_GATES
 # chain below) executes gate SCRIPTS directly, not Make recipes, so a
