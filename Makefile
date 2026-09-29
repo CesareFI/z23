@@ -4748,8 +4748,12 @@ native-agent-ui-alpha:
 	@$(MAKE) --no-print-directory c23-portable-release
 	@$(MAKE) --no-print-directory native-ui-driver
 	@$(MAKE) --no-print-directory native-agent-ui-physical-acceptance
+	# Shard 03 owns the golden restart row (zcl.swarm_restart_resume.v1):
+	# the only step in this composition that earns the verdict's
+	# interrupted-download-resume and zero-retransmission facts. Without
+	# it those two printed claims rest on nothing this target ran.
 	@$(MAKE) --no-print-directory t-fast-exact \
-	  ONLY='test_qr,test_syncdiag_rpc,test_zcode_publish'
+	  ONLY='test_qr,test_syncdiag_rpc,test_zcode_publish,test_zcode_swarm_net_shard_03'
 	@$(MAKE) --no-print-directory zcode-c23-commons-alpha
 	@$(MAKE) --no-print-directory native-ui-driver
 	@C23_BETA_NATIVE_UI_JOURNEY=1 \
