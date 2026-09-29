@@ -74,7 +74,7 @@
  *
  * v1 per-package cap: 64 MiB (VCS_PACKAGE_STORE_MAX_PACKAGE_BYTES).
  *
- * Release envelopes (slice 1) are admitted through the node-bound
+ * Release envelopes are admitted through the node-bound
  * acceptance layer: the store owns one derived in-memory vcs_package_accept
  * context; an envelope is persisted only when acceptance returns OK or
  * DUPLICATE (idempotent redelivery). On open and refresh, the complete
@@ -390,7 +390,7 @@ enum vcs_package_store_result vcs_package_store_put_release(
     const struct vcs_package_release *release,
     enum vcs_package_accept_result *accept_out);
 
-/* Admit a declarative build recipe wire (slice 5). Parses and validates it
+/* Admit a declarative build recipe wire. Parses and validates it
  * against the closed recipe grammar, computes the recipe root into
  * root_out (when non-NULL), and persists the wire atomically under
  * recipes/<recipe-root-hex>. Re-admitting an identical recipe is an
@@ -499,14 +499,11 @@ bool vcs_package_store_dump_state_json(struct json_value *out,
 
 /* ── the NON-BLOCKING totals read (telemetry collector plane) ─────────
  *
- * WHY THIS EXISTS AND WHY IT IS NOT THE DUMPER ABOVE. The dumper takes the
- * global lock and then the store lock BLOCKING, and both are held across
- * real work: the global lock spans the whole crash-recovery open, and the
- * store lock spans CAS file writes. A telemetry collector runs on the same
- * native/RPC thread that serves `status`, so blocking behind either one
- * makes this node go dark exactly while it is busiest. This is the same
- * trylock-or-say-so shape progress_store_tx_trylock() gives the reducer
- * frontier dumper.
+ * The dumper takes the global lock and then the store lock BLOCKING, and both
+ * are held across real work (crash-recovery open, CAS file writes). A
+ * telemetry collector runs on the thread that serves `status`, so blocking
+ * would make this node go dark while busiest; this is a trylock-or-say-so
+ * read, like progress_store_tx_trylock().
  *
  * Cost, so the never-blocks contract can be checked by reading it: every
  * field is an O(1) load off the store struct, including the incrementally

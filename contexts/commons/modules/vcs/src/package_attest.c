@@ -5,7 +5,7 @@
  * compiler, no execution, no keys (verify-only, exactly the
  * package_release.* doctrine). The node NEVER compiles or executes
  * downloaded code; attestations are produced by the separate
- * zclassic23-package-verify program (slice 6). */
+ * zclassic23-package-verify program. */
 
 #include "vcs/package_attest.h"
 

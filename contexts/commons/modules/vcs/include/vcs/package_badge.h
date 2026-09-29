@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * package_badge — the ZCODE Badge: PERMANENT achievement evidence
- * (slice 10). One badge binds a badge type, the recipient contributor's
+ *. One badge binds a badge type, the recipient contributor's
  * secp256k1 public key, the achievement period, the package-or-evidence
  * root, the issuing policy id, a unique per-issuer sequence, and the
  * issuer's secp256k1 key — all under one issuer signature. A badge is

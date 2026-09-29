@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * package_badge_commit — the badge issuance commit record (slice 10),
+ * package_badge_commit — the badge issuance commit record,
  * split out of package_badge.c. The commit record is the idempotence
  * authority: it is written LAST, after every badge wire in a plan is
  * durable, so a crash mid-issue leaves a resumable partial state and a

@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * package_score — the bounded DETERMINISTIC ZCODE contribution score
- * (slice 7). One release maps to one score, computed purely from the
+ *. One release maps to one score, computed purely from the
  * release's own content and its lineage's content: no wall-clock, no
  * randomness, no network, no node state — same inputs, same score. The
  * period caps take the contributor's reward history as an explicit input,
@@ -57,7 +57,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* ── scoring constants (owner directive, 2026-07-27; named, frozen) ─── */
+/* ── scoring constants (owner directive; named, frozen) ─── */
 
 #define VCS_SCORE_CATEGORY_NEW_PACKAGE_POINTS 500u
 #define VCS_SCORE_CATEGORY_PACKAGE_UPDATE_MIN 100u

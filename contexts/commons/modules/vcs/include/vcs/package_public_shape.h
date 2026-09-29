@@ -7,8 +7,8 @@
  * DEFAULT REFUSE. The store tracks every root the node has ever admitted:
  * packages it published, carriers it fetched, in-flight downloads, work
  * exchanged with peers, and the inner package roots reconstructed out of a
- * carrier. Completeness alone used to make all of them announceable and
- * serveable. It does not any more. A root reaches the public swarm only by
+ * carrier. Completeness alone does not make them announceable or serveable.
+ * A root reaches the public swarm only by
  * matching one of the closed set of shapes below; everything else is
  * refused by name.
  *

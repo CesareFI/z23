@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * package_eligible — the ZCODE reward eligibility gate list (slice 7).
+ * package_eligible — the ZCODE reward eligibility gate list.
  * A release earns NOTHING until EVERY gate passes; this layer assembles
  * the frozen gate list from facts the caller gathered (manifest/CAS
  * verification, envelope signature, license, parent lineage, the slice-6
@@ -28,7 +28,7 @@
  *                              clang outcome PASS
  *   7. tests-pass              the quorum class is test-pass
  *   8. verifier-quorum         >= 2 approved independent verifier keys
- *                              signed matching attestations (slice 6)
+ *                              signed matching attestations
  *
  * TRUST MODEL: the headline acceptance signal is BIT-IDENTICAL
  * REPRODUCTION (contexts/commons/modules/vcs/package_reproduce.*) — an independent rebuild of

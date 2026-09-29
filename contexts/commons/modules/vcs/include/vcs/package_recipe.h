@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * package_recipe — the declarative C23 build recipe (slice 5). One recipe
+ * package_recipe — the declarative C23 build recipe. One recipe
  * declares EVERYTHING an external verifier needs to build and test a
  * package without ever running downloaded code: the public headers, the
  * sources, the test sources, the include directories, the preprocessor

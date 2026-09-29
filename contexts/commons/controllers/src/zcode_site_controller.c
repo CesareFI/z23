@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * ZCODE Library HTML site controller (slice 13). See
+ * ZCODE Library HTML site controller. See
  * controllers/zcode_site_controller.h for the route list and the truth /
  * safe-downloading discipline. Rendering lives in
  * contexts/commons/views/src/zcode_view{,_pages}.c; this file owns routing, the

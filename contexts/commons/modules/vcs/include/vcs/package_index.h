@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * package_index — the local ZCODE package search index (slice 3). This is
+ * package_index — the local ZCODE package search index. This is
  * a REBUILDABLE PROJECTION over the persisted store bytes under
  * <datadir>/zcode/{releases,manifests}: the CAS manifest/release wires stay
  * authoritative and this index holds no truth of its own — like

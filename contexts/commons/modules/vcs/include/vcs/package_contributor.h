@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * package_contributor — the ZCODE contributor profile projection (slice 4).
+ * package_contributor — the ZCODE contributor profile projection.
  *
  * IDENTITY RULE: the secp256k1 publisher public key is the ONLY
  * authoritative contributor identity. Everything else here is derived or

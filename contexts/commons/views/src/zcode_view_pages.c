@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * ZCODE Library HTML site views (slice 13) — the detail pages: package
+ * ZCODE Library HTML site views — the detail pages: package
  * (release envelope + publisher signature + manifest + attestations +
  * swarm advertisers), publisher (contributor profile + ZCODE Score +
  * rank + badges + packages), leaderboards, and the badge index. See

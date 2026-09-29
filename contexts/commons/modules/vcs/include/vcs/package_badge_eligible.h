@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * package_badge_eligible — ZCODE Badge eligibility (slice 10): which
+ * package_badge_eligible — ZCODE Badge eligibility: which
  * badge a contributor qualifies for RIGHT NOW, derived from EXISTING
  * facts only — the slice-8 reward-history ledger (settled earned-score
  * facts), the slice-9 rankings projection, and the slice-3 publish
@@ -11,7 +11,7 @@
  * not exist yet (POPULAR_PACKAGE, RARE_PACKAGE_SEEDER — slices 11-12)
  * are named UNAVAILABLE and are never eligible — no fake data, ever.
  * Manual reward categories (bug-fix, security-fix, build reproduction)
- * settle only after owner review (slice 14), so BUG_HUNTER,
+ * settle only after owner review, so BUG_HUNTER,
  * SECURITY_RESEARCHER, and REPRODUCIBLE_BUILDER read SETTLED facts only
  * and are honestly not-eligible until those facts exist.
  *

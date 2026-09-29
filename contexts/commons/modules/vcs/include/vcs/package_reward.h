@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * package_reward — the simulated ZCODE reward ledger and daily settlement
- * queue (slice 8). SIMULATION ONLY: every settled batch is recorded under
+ * queue. SIMULATION ONLY: every settled batch is recorded under
  * the configured PLACEHOLDER token id; the real ZCODE ZSLP token is never
  * created, minted, or sent here, and v1 has no automatic on-chain payout
  * (the real transfer is the owner-reviewed slice-14 flow). Rewards accrue

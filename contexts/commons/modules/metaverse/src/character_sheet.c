@@ -541,11 +541,8 @@ bool character_seed_equal(const struct character_seed *a,
 #define CS_PREIMAGE_MAX (CS_ROOT_TAG_LEN + 4u + 2u + CHARACTER_NAME_MAX + 17u)
 
 /* Big-endian through the tree's ONE byte-order codec (base/serialize_le.h),
- * never a private shift ladder. This file used to carry its own four-line
- * pack; check-byte-order-codec-single refused it, and rightly — twelve
- * divergent private hex codecs are what base/hex.h exists to remember, and a
- * preimage is exactly the place where one byte in the wrong order silently
- * changes every character's identity. */
+ * never a private shift ladder: a preimage is where a wrong byte order
+ * silently changes every character's identity. */
 static size_t cs_put_be32(uint8_t *p, uint32_t v)
 {
     zcl_write_u32_be(p, v);

@@ -1019,7 +1019,7 @@ enum vcs_package_store_result vcs_package_store_put_chunk_no_evict(
                                 chunk, chunk_len, true);
 }
 
-/* ── admission: recipes (slice 5) ───────────────────────────────────── */
+/* ── admission: recipes ───────────────────────────────────── */
 
 enum vcs_package_store_result vcs_package_store_put_recipe(
     struct vcs_package_store *store, const uint8_t *wire, size_t wire_len,

@@ -146,9 +146,8 @@ bool muse_candidate_fold(const char *workspace, const char *rundir,
         MR_GIT_TIMEOUT_MS);
     if (rc != 0) {
         char note[MUSE_FOLD_NOTE_MAX];
-        /* Name the CALL and its EXIT STATUS. A bare "git failed" is what
-         * the 2026-09-19 production run effectively reported, and it is
-         * why that failure can no longer be diagnosed at all. */
+        /* Name the CALL and its EXIT STATUS; a bare "git failed" cannot be
+         * diagnosed. */
         (void)snprintf(note, sizeof(note),
             "the tracked diff could not be captured: `git -C <workspace> "
             "diff HEAD --` exited %d (stderr is not captured; 128 is "

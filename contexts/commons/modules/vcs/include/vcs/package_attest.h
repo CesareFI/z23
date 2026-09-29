@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * package_attest — the signed ZCODE external-verifier attestation (slice 6).
+ * package_attest — the signed ZCODE external-verifier attestation.
  * One attestation binds a package root, the exact signed release envelope
  * attested, the declarative build recipe root used, the per-compiler
  * outcomes (gcc/clang, each with id + version + outcome), the sanitizer

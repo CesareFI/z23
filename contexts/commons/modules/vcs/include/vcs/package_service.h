@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * package_service — the ZCODE local service book (slice 11): the durable
+ * package_service — the ZCODE local service book: the durable
  * per-contributor-key accounting the slice-11 policy (contexts/commons/modules/vcs/
  * package_policy.*) decides over. LOCAL facts only: verified bytes THIS
  * node verifiably served to / received from each contributor key,
@@ -154,7 +154,7 @@ enum vcs_service_record_result vcs_service_record_publish(
 
 /* Record one named offence (duplicate-request, unrequested-bytes,
  * invalid-chunk, announce-flood, request-flood). Offences accumulate per
- * key; the transport (slice 12) disconnects at
+ * key; the transport disconnects at
  * VCS_POLICY_OFFENCE_DISCONNECT_THRESHOLD. */
 enum vcs_service_record_result vcs_service_record_offence(
     struct vcs_service_book *book, const uint8_t contributor[33],

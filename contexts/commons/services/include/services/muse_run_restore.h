@@ -51,14 +51,9 @@
  *
  * EVERY FAILURE NAMES ITSELF. `why` (bounded by why_cap, always
  * terminated, "" on success) says WHICH step broke: the tracked-diff
- * capture, the tempfile, or the hash. That distinction is not cosmetic.
- * On 2026-09-19 this call failed in production and the run reported only
- * candidate "none". Which step broke, and why, is STILL not known, and
- * cannot be recovered: nothing captured it. That is the whole argument
- * for this parameter — a refusal nobody can diagnose is one that gets
- * retried at full price instead of repaired. The three notes each name
- * the call and its exit status, so the next occurrence is readable from
- * the evidence alone. `why` may be NULL. */
+ * capture, the tempfile, or the hash, each naming the call and its exit
+ * status, so a refusal can be diagnosed from the evidence alone.
+ * `why` may be NULL. */
 bool muse_candidate_fold(const char *workspace, const char *rundir,
     char *hex_out, size_t hex_cap, char **fold_out, char *why,
     size_t why_cap);

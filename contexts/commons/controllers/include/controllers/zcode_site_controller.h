@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * ZCODE Library HTML site controller (slice 13) — the `/zcode*` route
+ * ZCODE Library HTML site controller — the `/zcode*` route
  * family, wired into BOTH transport dispatch chains (onion_service.c and
  * https_server.c) the same way the ZCL Names site is:
  *

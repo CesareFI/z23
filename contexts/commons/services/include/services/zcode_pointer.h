@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * zcode_pointer — the ZCODE ZNAM pointer layer (slice 4). A ZNAM name may
+ * zcode_pointer — the ZCODE ZNAM pointer layer. A ZNAM name may
  * carry a ZCODE pointer record set: a package pointer (e.g. "ringbuffer")
  * naming the latest release root plus metadata, or a publisher profile
  * (e.g. "rhett") naming the contributor's profile metadata. This layer

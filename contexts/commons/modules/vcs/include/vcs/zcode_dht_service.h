@@ -46,8 +46,7 @@
  * The cost is fixed-size: this bounds an array of struct service_publication
  * in the service and one stack copy in the publication store loader, so it
  * cannot be raised freely. The on-disk store is count-prefixed and its length
- * is checked against that count, so a file written under the old ceiling
- * still loads unchanged. */
+ * is checked against that count. */
 #define VCS_ZCODE_DHT_SERVICE_MAX_PUBLICATIONS 16u
 #define VCS_ZCODE_DHT_RECORD_DISCOVERY_MAX_RESULTS 64u
 #define VCS_ZCODE_DHT_SERVICE_MAX_RECORDS_PER_PEER 256u

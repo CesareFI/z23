@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * package_policy — the ZCODE local P2P ratio + anti-spam policy (slice 11).
+ * package_policy — the ZCODE local P2P ratio + anti-spam policy.
  * Pure decision functions over explicit facts; see the header for the
  * owner-directive rules. No wall-clock, no filesystem, no network. */
 

@@ -13,9 +13,7 @@
 
 #define GRANT_LOG "metaverse.grant"
 
-/* The action token table that used to live here — thirteen names indexed by a
- * bit POSITION — was the second half of the duplication this file no longer
- * carries. Names come from metaverse/property_action.h's one table now. */
+/* Action names come from metaverse/property_action.h's one table. */
 
 static const char *const k_verdict_tokens[METAVERSE_GRANT_VERDICT_COUNT] = {
     "OK",

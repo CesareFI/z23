@@ -3,7 +3,7 @@
  * package_recipe — implementation of the declarative C23 build recipe
  * codec declared in vcs/package_recipe.h. Pure bytes: no filesystem, no
  * compiler, no execution. The node NEVER compiles or executes downloaded
- * code; compilation belongs to the external verifier (slice 6). */
+ * code; compilation belongs to the external verifier. */
 
 #include "vcs/package_recipe.h"
 

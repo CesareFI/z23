@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * ZCODE Library HTML site views (slice 13) — page shell, HTTP wrappers,
+ * ZCODE Library HTML site views — page shell, HTTP wrappers,
  * the landing page, the package search page, and the honest 404 pages.
  * See views/zcode_view.h for the contract; the detail pages (package,
  * publisher, leaderboard, badges) live in zcode_view_pages.c to stay

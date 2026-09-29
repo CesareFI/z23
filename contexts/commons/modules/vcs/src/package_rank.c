@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * package_rank — implementation of the ZCODE Rankings projection declared
- * in vcs/package_rank.h (slice 9).
+ * in vcs/package_rank.h.
  *
  * Two halves, strictly separated:
  *

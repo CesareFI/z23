@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * ZCODE Library HTML site views (slice 13) — the server-rendered pages for
+ * ZCODE Library HTML site views — the server-rendered pages for
  * the `/zcode*` route family, served identically over the embedded Tor
  * onion service and the public HTTPS listener. Rendering only: the
  * controller (contexts/commons/controllers/src/zcode_site_controller.c) owns routing and

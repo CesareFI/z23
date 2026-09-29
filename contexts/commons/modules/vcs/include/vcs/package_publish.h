@@ -28,7 +28,7 @@
  *      exact manifest size and every chunk hashes to the committed value.
  *      Plan runs this WITHOUT persisting; commit re-runs it and persists
  *      through the store's verify-before-store discipline.
- *   9. The build recipe (slice 5): a recipe wire is REQUIRED. It must
+ *   9. The build recipe: a recipe wire is REQUIRED. It must
  *      parse canonically, its fields must validate (the closed declarative
  *      grammar — vcs/package_recipe.h), its root must equal the release
  *      envelope's recipe_root, and every path it references must resolve

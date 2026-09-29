@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * package_swarm_node — the ZCODE package swarm engine (slice 12): the
+ * package_swarm_node — the ZCODE package swarm engine: the
  * manifest-first, rarest-first, multi-peer download scheduler plus the
  * serving decisions and the slice-11 accounting wiring, over the frozen
  * content.v2 swarm wire codec (package_swarm.*). This layer is PURE: it

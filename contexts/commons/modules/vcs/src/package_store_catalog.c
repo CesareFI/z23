@@ -1084,7 +1084,7 @@ struct vcs_package_accept *store_replay_releases(const char *root)
     return projection;
 }
 
-/* ── admission: releases (slice 1 consumption) ────────────────────── */
+/* ── admission: releases ────────────────────── */
 
 static enum vcs_package_store_result store_release_persist(
     struct vcs_package_store *store,

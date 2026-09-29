@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * package_rank — the ZCODE Rankings (slice 9): daily / weekly / monthly /
+ * package_rank — the ZCODE Rankings: daily / weekly / monthly /
  * all-time contributor leaderboards, a REBUILDABLE PROJECTION over the
  * slice-8 reward-history ledger (contexts/commons/modules/vcs/package_reward.*) — never a
  * second truth. The projection reads only SETTLED earned-score facts; a

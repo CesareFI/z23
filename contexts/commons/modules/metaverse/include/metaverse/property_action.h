@@ -17,10 +17,8 @@
  *   receipt. There is no "harmless" action; that is what makes the class
  *   meaningful.
  *
- * The word `list` used to mean both "enumerate the catalog" (a read) and
- * "list this for sale" (a market mutation), on the two sides of the same
- * socket. That single identifier is now impossible: the read is
- * ENUMERATE_PROPERTIES and the mutation is LIST_FOR_SALE.
+ * `list` is never a single identifier: the read is ENUMERATE_PROPERTIES and
+ * the mutation is LIST_FOR_SALE.
  *
  * ── ONE ROW, THIRTEEN COLUMNS, NOTHING RESTATED ──────────────────────────
  * METAVERSE_ACTION_TABLE carries every fact any consumer needs about an
@@ -59,13 +57,10 @@
 #include <stdint.h>
 
 /* There is exactly ONE operation vocabulary in this tree, and it is this
- * file. The token exists so a test can PROVE that rather than trust it:
- * metaverse/property_action.h and metaverse/property_grant.h used to declare
- * the same thirteen identifiers with different values, and including both in
- * one translation unit was a hard redefinition error. A guard that includes
- * both and compiles is the only honest evidence the duplication is gone, so
- * arm it on this token. Its value is 1 for as long as that stays true; it is
- * never to be defined to 0 or removed to make something else compile. */
+ * file. The token lets a test PROVE that: a guard that includes both this file
+ * and metaverse/property_grant.h and compiles is the evidence. Its value is 1
+ * and it is never to be defined to 0 or removed to make something else
+ * compile. */
 #define METAVERSE_VOCABULARY_UNIFIED 1
 
 /* ── The query vocabulary ────────────────────────────────────────────────
@@ -168,8 +163,8 @@ enum metaverse_action {
  * actually be attempted. */
 typedef uint32_t metaverse_action_set;
 
-/* Column folds. Defined, used to build the masks and the compile-time
- * proofs below, then undefined — they are scaffolding, not API. */
+/* Column folds: build the masks and compile-time proofs below, then are
+ * undefined — scaffolding, not API. */
 #define MV_ACT_FOLD_OR(id_, bit_, ...) | (bit_)
 #define MV_ACT_FOLD_SUM(id_, bit_, ...) + (bit_)
 #define MV_ACT_FOLD_WIRE_OR(id_, bit_, name_, wire_, ...) | (1u << (wire_))

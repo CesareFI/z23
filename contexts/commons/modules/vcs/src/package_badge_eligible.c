@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * package_badge_eligible — ZCODE Badge eligibility and the plan/commit
- * issuance flow (slice 10). See vcs/package_badge_eligible.h for the
+ * issuance flow. See vcs/package_badge_eligible.h for the
  * frozen contract. The evaluator is pure (facts + "today" in, verdict
  * out); the facts builder derives from the slice-3 package index, the
  * slice-8 reward ledger, and the slice-9 rank projections; the issue

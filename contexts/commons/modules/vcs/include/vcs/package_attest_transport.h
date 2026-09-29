@@ -72,11 +72,8 @@
 #include <stdint.h>
 
 /* The DHT record namespace attestation pointers live in. Canonical
- * lower-case ASCII, inside VCS_ZCODE_DHT_RECORD_NAMESPACE_MAX (31).
- * Allocated by owner decision on 2026-08-25, alongside the existing
- * zclassic23.source / .package / .service / .pid / .other. ONE
- * definition, so a future reassignment is one line here and a spec row,
- * never a search through call sites. */
+ * lower-case ASCII, inside VCS_ZCODE_DHT_RECORD_NAMESPACE_MAX (31), beside
+ * zclassic23.source / .package / .service / .pid / .other. ONE definition. */
 #define VCS_PACKAGE_ATTEST_DHT_NAMESPACE "zclassic23.attestation"
 
 /* The blob-carriage claim, enforced at compile time rather than

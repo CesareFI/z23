@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * package_badge — the ZCODE Badge codec, policy lens, durable badge
- * store, and plan/commit persistence primitives (slice 10). See
+ * store, and plan/commit persistence primitives. See
  * vcs/package_badge.h for the frozen contract (wire format, badge id,
  * store layout, dedup rule). This layer parses, serializes, hashes,
  * verifies, and persists only; signing happens outside (the command

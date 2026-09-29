@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * package_reward — implementation of the simulated ZCODE reward ledger
- * and daily settlement queue declared in vcs/package_reward.h (slice 8).
+ * and daily settlement queue declared in vcs/package_reward.h.
  *
  * SIMULATION ONLY: settlement writes durable score facts under the
  * configured PLACEHOLDER token id; no real ZCODE ZSLP token is ever

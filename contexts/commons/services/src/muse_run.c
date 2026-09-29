@@ -511,14 +511,10 @@ static bool mr_run_gate(const char *workspace, const char *group,
 
 /* THE GATE BUILD IS PARALLEL OR IT DOES NOT FIT. Every turn that changes
  * a file makes the gate target stale, so this build relinks the test
- * runner on EVERY judged run — it is the gate's fixed cost, not an
- * occasional one. Serial, that link was MEASURED on this host at 137 s
- * against a gate budget of 90 s (15% of a 600 s wall cap), so a file unit
- * could never be judged at all: the model did its work, the change set
- * was preserved, and the run still refused on the build's deadline. The
- * same build with -j finished in 18 s. The job count is bounded rather
+ * runner on EVERY judged run — the gate's fixed cost. Serial, that link
+ * exceeds the gate budget; with -j it fits. The job count is bounded rather
  * than the whole machine because this runs inside a resident background
- * worker that shares the host with the lanes it is judging for. */
+ * worker that shares the host. */
 #define MR_GATE_BUILD_JOBS_MAX 16u
 
 static bool mr_build_gate(const char *workspace, int timeout_ms,

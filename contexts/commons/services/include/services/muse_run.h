@@ -269,17 +269,12 @@ struct muse_run_result {
 };
 
 /* THE CHANGE SET IS NAMED BEFORE IT IS JUDGED, OR THE RUN REFUSES. The
- * candidate fold (services/muse_run_restore.h) is the only thing that
- * turns a measured change into a DURABLE artifact, and it is spawned git
- * like every other measurement: it can fail. It failed in production on
- * 2026-09-19, silently, and the run published verdict "pass" with
- * candidate "none" — which the worker's own completion predicate then
- * refused, throwing a 106k-token turn away with nothing anywhere saying
- * why. So the fold now runs BEFORE the gate build, a fold that cannot be
- * produced is a NAMED refusal (candidate_note) rather than a "none" that
- * reads like an absence, and a named candidate is part of the closed
- * pass predicate: muse_run and the worker can no longer disagree about
- * whether a pass exists.
+ * candidate fold (services/muse_run_restore.h) is the only thing that turns a
+ * measured change into a DURABLE artifact, and it is spawned git, so it can
+ * fail. It runs BEFORE the gate build; a fold that cannot be produced is a
+ * NAMED refusal (candidate_note) rather than a "none" that reads like an
+ * absence, and a named candidate is part of the closed pass predicate, so
+ * muse_run and the worker agree on whether a pass exists.
  */
 
 /* Runs one task to a terminal verdict: restart pre-check, one bounded

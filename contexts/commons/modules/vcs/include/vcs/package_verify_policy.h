@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * package_verify_policy — the approved-verifier allowlist and the quorum
- * rule for ZCODE external-verifier attestations (slice 6). A release counts
+ * rule for ZCODE external-verifier attestations. A release counts
  * as VERIFIED only when >= VCS_VERIFY_QUORUM_REQUIRED (2) APPROVED,
  * INDEPENDENT verifier keys sign MATCHING attestations (same package root,
  * same release id, same recipe root, same result class — the codec's

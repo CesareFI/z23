@@ -79,17 +79,11 @@
 
 /* ── Actions and queries ─────────────────────────────────────────────────── */
 
-/* This file used to declare a SECOND action vocabulary — the same thirteen
- * identifiers as bit POSITIONS, beside metaverse/property_action.h's bit
- * VALUES, with a colliding METAVERSE_ACTION_COUNT. No translation unit
- * included both, and that was the only reason the tree compiled. The
- * vocabulary now lives in exactly one place, metaverse/property_action.h,
- * included above: enums, masks, names, wire values, and every predicate come
- * from its one table. Nothing is restated here.
- *
- * The persisted numbers are unchanged. A grant's action set was always the
- * OR of `1u << position`, which is bit-for-bit the same mask as the OR of the
- * bit values, so every grant already on disk means exactly what it meant. */
+/* The action vocabulary lives in exactly one place, metaverse/property_action.h,
+ * included above: enums, masks, names, wire values and every predicate come
+ * from its one table. Nothing is restated here. A grant's persisted action set
+ * is the OR of `1u << position`, bit-for-bit the same as the OR of the bit
+ * values. */
 
 /* ── Scope ───────────────────────────────────────────────────────────────── */
 

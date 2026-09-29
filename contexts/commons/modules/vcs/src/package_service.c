@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * package_service — the ZCODE local service book (slice 11). See the
+ * package_service — the ZCODE local service book. See the
  * header for the persistence convention, the credit discipline, and the
  * determinism contract. This file owns the durable event wires under
  * <zcode_dir>/service/events and the in-memory replay; every policy

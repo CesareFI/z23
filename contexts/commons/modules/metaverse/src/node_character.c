@@ -90,23 +90,11 @@ uint64_t node_work_weighted_total(const struct node_work *work)
 /* How many doublings of work `v` represents: its BIT LENGTH, so 0 -> 0,
  * 1 -> 1, and UINT64_MAX -> 64.
  *
- * The obvious choice is floor(log2(v)), and it is wrong here in two ways that
- * a test caught:
- *
- *   - floor(log2(1)) is 0, so a node observed doing a little work scored the
- *     same energy as a node nobody has seen at all. Archetype already refuses
- *     to collapse those two states — a node with any observed work is a SEEDER
- *     rather than a WANDERER — and energy contradicting archetype about the
- *     same node is a defect, not a rounding choice. Any observed work must be
- *     worth more than none.
- *
- *   - floor(log2(UINT64_MAX)) is 63, so the ceiling at 64 doublings was
- *     unreachable by exactly one doubling. A ceiling nothing can reach is not
- *     a ceiling; it is a wrong constant that hides until someone saturates.
- *
- * Bit length fixes both: the range is exactly 0..64 doublings, the top is
- * attainable, and the bottom distinguishes "seen doing something" from "not
- * seen".
+ * Not floor(log2(v)): that scores 1 as 0, the same as a node nobody has seen,
+ * contradicting archetype (any observed work makes a SEEDER, not a WANDERER),
+ * and makes the ceiling of 64 doublings unreachable (floor(log2(UINT64_MAX))
+ * is 63). Bit length gives exactly 0..64, an attainable top, and a bottom that
+ * separates "seen doing something" from "not seen".
  *
  * A plain loop rather than a builtin or <stdbit.h>: this must produce the same
  * answer under gcc, clang and the mingw cross-compiler, and it runs at most 64

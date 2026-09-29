@@ -190,8 +190,7 @@ void vcs_devloop_publication_bind_accepted_candidate(
  * phase="bootstrap_baseline" verdict, then release the lock. If the lock is
  * already held by another caller, returns immediately with
  * VCS_DEVLOOP_ANCHOR_DEFERRED and baseline_needed=false (someone else is
- * already running it). This is the same work the old in-process double-fork
- * detach used to do in its grandchild; callers that want that off the
+ * already running it). Callers that want that off the
  * foreground path (e.g. the interactive dev loop) are responsible for
  * detaching it themselves — see tools/dev/devloop_baseline.c, which is
  * ZCL_DEV_BUILD-only and lives outside contexts/commons/modules/vcs precisely so contexts/commons/modules/vcs can stay

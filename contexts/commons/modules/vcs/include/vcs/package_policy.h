@@ -223,7 +223,7 @@ const char *vcs_policy_no_credit_string(enum vcs_policy_no_credit kind);
 /* ── offence kinds (local per-key accounting; named, accumulating) ──── */
 
 /* The enum order is frozen: it appears in typed JSON. Weights live with
- * the transport (slice 12); this slice names and counts. */
+ * the transport; this slice names and counts. */
 enum vcs_policy_offence {
     VCS_POLICY_OFFENCE_DUPLICATE_REQUEST = 0, /* replayed request id */
     VCS_POLICY_OFFENCE_UNREQUESTED_BYTES,     /* data we never asked for */
@@ -235,7 +235,7 @@ enum vcs_policy_offence {
 
 const char *vcs_policy_offence_string(enum vcs_policy_offence kind);
 
-/* The local disconnect threshold the transport (slice 12) applies: a peer
+/* The local disconnect threshold the transport applies: a peer
  * whose accumulated offence total reaches this count is disconnected. */
 #define VCS_POLICY_OFFENCE_DISCONNECT_THRESHOLD 100u
 
