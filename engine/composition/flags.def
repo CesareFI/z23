@@ -1079,6 +1079,10 @@ Z23_FLAG("ZCL_HOST_GC_RAM_ROOT", "env_build", "/dev/shm/z23p", "-",
           "fixture seam for the tmpfs twin of the dev-proof generation pool the z23p sweep now also reaps; first use tools/scripts/host_gc.sh:auto")
 Z23_FLAG("ZCL_HOST_GC_REPO", "env_build", "$GC_HOME/github/zclassic23", "-",
           "fixture seam for the root checkout the units/scratch sweeps consult; first use tools/scripts/host_gc.sh:auto")
+Z23_FLAG("ZCL_HOST_GC_REPOTMP_MIN_AGE_D", "env_build", "2", "-",
+          "days a stale entry under the main checkout's own test-tmp/.zcl_test_render survives; first use tools/scripts/host_gc.sh:auto")
+Z23_FLAG("ZCL_HOST_GC_REPOTMP_BATCH_MAX", "env_build", "20000", "-",
+          "most stale main-checkout scratch entries one repotmp run reaps, so a first-run backlog cannot starve later categories; first use tools/scripts/host_gc.sh:auto")
 Z23_FLAG("ZCL_HOST_GC_SCRATCH_DIR", "env_build", "$GC_HOME/.local/state/zclassic23/scratch", "-",
           "root the scratch sweep walks for orphaned lane/unit/train scratch dirs; first use tools/scripts/host_gc.sh:auto")
 Z23_FLAG("ZCL_HOST_GC_SCRATCH_MIN_AGE_D", "env_build", "7", "-",

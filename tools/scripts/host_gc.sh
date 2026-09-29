@@ -135,6 +135,20 @@ PRESSURE_MIN_FREE_PCT="${ZCL_HOST_GC_PRESSURE_MIN_FREE_PCT:-15}"
 PRESSURE_CRITICAL_FREE_PCT="${ZCL_HOST_GC_PRESSURE_CRITICAL_FREE_PCT:-5}"
 BINBAK_MIN_AGE_D="${ZCL_HOST_GC_BINBAK_MIN_AGE_D:-60}"
 TESTTMP_MIN_AGE_D="${ZCL_HOST_GC_TESTTMP_MIN_AGE_D:-1}"
+# Per-entry age floor for the main checkout's own test-tmp/.zcl_test_render
+# (category repotmp). Two days, matching tools/scripts/test_tmp_clean.sh:
+# fresh failure diagnostics survive a day of triage; nothing older is
+# anything but landfill.
+REPOTMP_MIN_AGE_D="${ZCL_HOST_GC_REPOTMP_MIN_AGE_D:-2}"
+# One run reaps at most this many stale entries, oldest arbitrary (readdir
+# order). The backlog on a host that never had the category is a one-time
+# hundred-thousand-entry population; du+rm on all of it in one run would
+# starve every later category for the hour — the measured dry-run cost of
+# the uncapped population was >10 min on the live host, while a bounded
+# 5000-entry batch costs ~19 s end to end including the full scan. 20000
+# keeps one hourly run at about a minute and drains the measured 204k-entry
+# backlog in roughly half a day of hourly runs; steady state is seconds.
+REPOTMP_BATCH_MAX="${ZCL_HOST_GC_REPOTMP_BATCH_MAX:-20000}"
 WORKTREE_IDLE_D="${ZCL_HOST_GC_WORKTREE_IDLE_D:-3}"
 ORPHAN_MIN_AGE_H="${ZCL_HOST_GC_ORPHAN_MIN_AGE_H:-24}"
 QUARANTINE_TTL_D="${ZCL_HOST_GC_QUARANTINE_TTL_D:-14}"
@@ -167,8 +181,9 @@ nothing is removed, moved, or killed.
   --dry-run      classify and report only (the default)
   --status       print one screen of host hygiene facts and exit
   --only CAT     run a single category. CAT is one of:
-                 ccache zcc z23p tmp tmplitter journal binbak testtmp orphan
-                 deadexec worktree units scratch wtbuild landtmp landed lowdisk
+                 ccache zcc z23p tmp tmplitter journal binbak testtmp repotmp
+                 orphan deadexec worktree units scratch wtbuild landtmp
+                 landed lowdisk
   --wt-build-idle-h=N      hours an idle worktree's build/ output is kept (12)
   --reap-landed-worktrees  also remove clean, fully landed, idle worktrees
 
@@ -329,7 +344,7 @@ add_result() {
 # feature either.
 cat_totals() {
     printf '%s' "$CAT_RESULTS" | awk '
-        BEGIN { n = split("ccache zcc z23p tmp tmplitter journal binbak testtmp orphan deadexec worktree units scratch wtbuild landtmp landed quarantine", o, " ") }
+        BEGIN { n = split("ccache zcc z23p tmp tmplitter journal binbak testtmp repotmp orphan deadexec worktree units scratch wtbuild landtmp landed quarantine", o, " ") }
         { b[$1] += $2; c[$1] += $3 }
         END { for (i = 1; i <= n; i++) printf "%s %d %d\n", o[i], c[o[i]] + 0, b[o[i]] + 0 }'
 }
@@ -1744,6 +1759,79 @@ sweep_testtmp() {
     say "testtmp: $n stale scratch dirs, $(human "$total")"
 }
 
+# =========================================================== CATEGORY repotmp
+# The main checkout's own test-tmp (and its .zcl_test_render twin). Every
+# other scratch sweep skips it: z23_lane_worktrees excludes GC_REPO by
+# design, is_protected() shields the whole checkout tree, and sweep_testtmp
+# keys on the scratch dir's own mtime — which a single fresh child keeps
+# young forever, so the main checkout's test-tmp only grows (207,068
+# entries measured on 2026-09-29; `du` over it no longer finished inside
+# an 11-minute budget). This category reaps stale ENTRIES inside those two
+# dirs, age-keyed like tools/scripts/test_tmp_clean.sh; the checkout, the
+# scratch dirs themselves and every fresh entry stay put. The dirs are
+# gitignored scratch by the tree's own contract — durable evidence lives in
+# build/ artifact dirs and state ledgers, never here.
+sweep_repotmp() {
+    want repotmp || return 0
+    hdr "main-checkout test scratch (entries older than ${REPOTMP_MIN_AGE_D}d under $GC_REPO)"
+    local d child n=0 total=0 bytes shown cb
+    local -a stale=()
+    for d in "$GC_REPO/test-tmp" "$GC_REPO/.zcl_test_render"; do
+        [ -d "$d" ] || continue
+        stale=()
+        while IFS= read -r -d '' child; do
+            stale+=("$child")
+        done < <(find "$d" -mindepth 1 -maxdepth 1 -mtime +"$REPOTMP_MIN_AGE_D" -print0 2>/dev/null)
+        [ "${#stale[@]}" -gt 0 ] || continue
+        local backlog=${#stale[@]}
+        if [ "$backlog" -gt "$REPOTMP_BATCH_MAX" ]; then
+            stale=("${stale[@]:0:$REPOTMP_BATCH_MAX}")
+        fi
+        bytes=0
+        if [ "${#stale[@]}" -le 200 ]; then
+            for child in "${stale[@]}"; do
+                cb="$(dir_bytes "$child")"
+                bytes=$(( bytes + cb ))
+            done
+        else
+            # One batched du: per-entry du on a 200k-entry scratch dir would
+            # dominate the sweep, and per-entry log lines would flood the
+            # log. The summary line below carries the aggregate.
+            bytes="$(printf '%s\0' "${stale[@]}" | xargs -0 du -sb 2>/dev/null | awk '{s+=$1} END{print s+0}')"
+        fi
+        shown=0
+        for child in "${stale[@]}"; do
+            if [ "$APPLY" = 1 ]; then
+                # chmod follows a symlink to its target, so only real trees
+                # get the u+w pass; removing a symlink needs no chmod.
+                [ -L "$child" ] || chmod -R u+w -- "$child" 2>/dev/null || true
+                if ! rm -rf -- "$child" 2>/dev/null || [ -e "$child" ] || [ -L "$child" ]; then
+                    log_line "repotmp-failed" "$child" 0 "rm refused"
+                    continue
+                fi
+            fi
+            n=$(( n + 1 ))
+            if [ "$shown" -lt 20 ]; then
+                say "repotmp: $([ "$APPLY" = 1 ] && echo removed || echo would remove) $child"
+                shown=$(( shown + 1 ))
+            elif [ "$shown" -eq 20 ]; then
+                say "repotmp: … further entries under $d not listed"
+                shown=$(( shown + 1 ))
+            fi
+        done
+        total=$(( total + bytes ))
+        if [ "$backlog" -gt "${#stale[@]}" ]; then
+            log_line "repotmp-remove" "$d" "$bytes" "batch of ${#stale[@]} of $backlog stale entries older than ${REPOTMP_MIN_AGE_D}d; backlog drains over future runs"
+            say "repotmp: $([ "$APPLY" = 1 ] && echo removed || echo would remove) ${#stale[@]} of $backlog stale entries under $d ($(human "$bytes")); the backlog drains over future runs"
+        else
+            log_line "repotmp-remove" "$d" "$bytes" "${#stale[@]} stale entries older than ${REPOTMP_MIN_AGE_D}d"
+            say "repotmp: $([ "$APPLY" = 1 ] && echo removed || echo would remove) ${#stale[@]} entries under $d ($(human "$bytes"))"
+        fi
+    done
+    add_result repotmp "$total" "$n"
+    [ "$n" -gt 0 ] || say "repotmp: nothing stale under $GC_REPO"
+}
+
 # ============================================================ CATEGORY orphan
 # A process is an orphan when its parent is gone (ppid 1), it is old enough
 # that it cannot be mid-startup, and the checkout it came from has been
@@ -2083,6 +2171,7 @@ sweep_tmplitter
 sweep_journal
 sweep_binbak
 sweep_testtmp
+sweep_repotmp
 sweep_orphan
 sweep_deadexec
 sweep_worktree

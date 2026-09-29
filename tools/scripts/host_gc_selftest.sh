@@ -148,6 +148,7 @@ run_hostgc() {
         ZCL_HOST_GC_SCRATCH_MIN_AGE_D=0 \
         ZCL_HOST_GC_Z23P_MIN_AGE_H=0 \
         ZCL_HOST_GC_TMPLITTER_MIN_AGE_D=0 \
+        ZCL_HOST_GC_REPOTMP_MIN_AGE_D=0 \
         ZCL_HOST_GC_SYSTEMCTL_BIN="${ZCL_HOST_GC_SYSTEMCTL_BIN:-$SYSTEMCTL_STUB}" \
         PATH="$DF_STUB_DIR:$PATH" \
         "$@" \
@@ -611,6 +612,47 @@ out="$(HGT_DF_AVAIL_KB=1048576 run_hostgc wtbuild apply)"
     || pass "wtbuild under low disk reclaims output idle for more than 2h"
 [ -f "$WT_FX/wt-recent/build/obj/a.o" ] || fail "wtbuild under low disk removed output built just now"
 # The live occupant of wt-live stays for the landed section below.
+
+# --------------------------------------------------------------- repotmp
+# The main checkout's own test-tmp: z23_lane_worktrees skips GC_REPO and
+# is_protected shields the whole tree, so without this category the one
+# scratch dir every developer shares grows without bound (measured 207k
+# entries on 2026-09-29). The sweep reaps stale ENTRIES under it; the
+# checkout itself, its tracked content and fresh entries stay put.
+mkdir -p -- "$REPO_FX/test-tmp/stale-rig" "$REPO_FX/test-tmp/fresh-rig"
+printf 'stale\n' > "$REPO_FX/test-tmp/stale-rig/f"
+printf 'fresh\n' > "$REPO_FX/test-tmp/fresh-rig/f"
+touch_old "$REPO_FX/test-tmp/stale-rig/f"
+touch_old "$REPO_FX/test-tmp/stale-rig"
+
+out="$(run_hostgc repotmp dry-run)"
+assert_contains "$out" "stale-rig" "repotmp dry-run names a stale main-checkout scratch entry"
+assert_not_contains "$out" "fresh-rig" "repotmp dry-run never names a fresh entry"
+[ -d "$REPO_FX/test-tmp/stale-rig" ] || fail "repotmp dry-run removed scratch"
+# The summary table is fed by cat_totals' own category list; a category that
+# runs, reaps, and logs but is missing from that list reports TOTAL 0B while
+# doing real work — exactly the silent drop this row assertion exists for.
+grep -Eq '^  repotmp +[1-9][0-9]* item\(s\)' <<<"$out" \
+    && pass "repotmp appears in the summary table with its count" \
+    || fail "repotmp missing from the summary table (cat_totals category list)"
+
+out="$(run_hostgc repotmp apply)"
+[ -e "$REPO_FX/test-tmp/stale-rig" ] && fail "repotmp apply left stale main-checkout scratch behind" \
+    || pass "repotmp apply removed the stale entry"
+[ -e "$REPO_FX/test-tmp/fresh-rig" ] || fail "repotmp apply removed a fresh entry"
+[ -f "$REPO_FX/base.txt" ] || fail "repotmp removed tracked main-checkout content"
+
+# The batch cap bounds one run's work and reports the backlog it left.
+mkdir -p -- "$REPO_FX/test-tmp/cap-a" "$REPO_FX/test-tmp/cap-b"
+touch_old "$REPO_FX/test-tmp/cap-a"
+touch_old "$REPO_FX/test-tmp/cap-b"
+out="$(ZCL_HOST_GC_REPOTMP_BATCH_MAX=1 run_hostgc repotmp apply)"
+assert_contains "$out" "of 2 stale entries" "repotmp batch run reports the remaining backlog"
+left="$(find "$REPO_FX/test-tmp" -mindepth 1 -maxdepth 1 -name 'cap-*' | wc -l)"
+[ "$left" = 1 ] || fail "repotmp batch cap reaped $left entries, expected exactly 1"
+out="$(ZCL_HOST_GC_REPOTMP_BATCH_MAX=1 run_hostgc repotmp apply)"
+left="$(find "$REPO_FX/test-tmp" -mindepth 1 -maxdepth 1 -name 'cap-*' | wc -l)"
+[ "$left" = 0 ] || fail "repotmp second batch left $left entries, expected 0"
 
 # --------------------------------------------------------------- landtmp
 # The landing worktree's test scratch: reclaimed only when the land queue
