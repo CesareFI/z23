@@ -45,8 +45,14 @@ static int boot_wallet_catch_up_start(const struct wallet *w,
 static void boot_wallet_catch_up_settle(struct wallet *w,
                                         const struct wallet_rescan_report *r)
 {
+    /* Only a read of every body clears the marker. coverage_ok tolerates
+     * a 1% short read once coins are found, and an unread block can still
+     * hold one. */
+    bool read_all = r->blocks_scanned == r->blocks_in_range;
+    const char *blocker = r->blocker[0] ? r->blocker
+                                        : WALLET_RESCAN_BLOCKER_INCOMPLETE;
     zcl_mutex_lock(&w->cs);
-    if (r->coverage_ok) {
+    if (read_all) {
         memset(&w->scan_retry, 0, sizeof(w->scan_retry));
         zcl_mutex_unlock(&w->cs);
         return;
@@ -59,13 +65,13 @@ static void boot_wallet_catch_up_settle(struct wallet *w,
     w->scan_retry.pending = true;
     w->scan_retry.from = from;
     snprintf(w->scan_retry.blocker, sizeof(w->scan_retry.blocker), "%s",
-             r->blocker);
+             blocker);
     zcl_mutex_unlock(&w->cs);
     LOG_WARN("wallet",
              "%s: boot catch-up read %" PRId64 " of %" PRId64 " blocks in "
              "%d..%d (%" PRId64 " without a body, %" PRId64 " unreadable); "
              "wallet scanned through %d only, next boot rescans from %d",
-             r->blocker, r->blocks_scanned, r->blocks_indexed,
+             blocker, r->blocks_scanned, r->blocks_in_range,
              r->start_height, r->stop_height, r->blocks_missing_data,
              r->blocks_read_failed, from - 1, from);
 }

@@ -31,7 +31,8 @@
  *   E. Boot catch-up reads bodies from the network directory.
  *   F. Boot catch-up that cannot read its range keeps its last fully
  *      scanned height, persists a retry, and clears it once a later
- *      catch-up reads the range.
+ *      catch-up reads the range; one unread body in the range keeps the
+ *      retry even when the rescan's 99% floor calls the read coverage_ok.
  */
 
 #include "test/test_core.h"
