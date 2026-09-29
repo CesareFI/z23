@@ -32,12 +32,20 @@ void build_fabric_proof_test_before_finalize(void (*hook)(void *),
 }
 #endif
 
+static bool bfpr_unsettled(enum vcs_package_store_page_result result)
+{
+    return result == VCS_PACKAGE_STORE_PAGE_STALE ||
+           result == VCS_PACKAGE_STORE_PAGE_INCOMPLETE;
+}
+
+/* *moved reports a walk the catalog changed under (stale or incomplete). */
 static bool bfpr_catalog_roots(struct vcs_package_store *store,
                                size_t max_rows, uint8_t (**roots)[32],
-                               size_t *count)
+                               size_t *count, bool *moved)
 {
     *roots = NULL;
     *count = 0;
+    *moved = false;
     if (!max_rows || max_rows > SIZE_MAX / sizeof(**roots))
         LOG_RETURN(false, "build_fabric", "invalid proof catalog row budget");
     uint8_t (*all)[32] = zcl_malloc(max_rows * sizeof(*all),
@@ -59,6 +67,7 @@ static bool bfpr_catalog_roots(struct vcs_package_store *store,
             vcs_package_store_page_summaries(
                 store, resume ? cursor : NULL, limit,
                 resume ? generation : 0, page_rows, &page);
+        *moved = bfpr_unsettled(result);
         if (result != VCS_PACKAGE_STORE_PAGE_OK || page.count > remaining ||
             (page.has_more && page.count == 0)) break;
         generation = page.generation;
@@ -96,17 +105,19 @@ static bool bfpr_issuer_wire(const uint8_t *wire, size_t len,
     return false;
 }
 
+/* *moved: the catalog changed under the walk, or a listed package vanished
+ * before it could be read or pinned. A retry may then succeed. */
 static bool bfpr_pin_issuer_history(struct vcs_package_store *store,
                                     const uint8_t issuer[32],
                                     size_t max_catalog_rows,
                                     uint8_t (**hashes_out)[32],
-                                    size_t *hash_count_out)
+                                    size_t *hash_count_out, bool *moved)
 {
     *hashes_out = NULL;
     *hash_count_out = 0;
     uint8_t (*roots)[32] = NULL;
     size_t count = 0;
-    if (!bfpr_catalog_roots(store, max_catalog_rows, &roots, &count))
+    if (!bfpr_catalog_roots(store, max_catalog_rows, &roots, &count, moved))
         LOG_RETURN(false, "build_fabric", "pin issuer catalog unavailable");
     bool ok = true;
     for (size_t i = 0; ok && i < count; i++) {
@@ -117,12 +128,15 @@ static bool bfpr_pin_issuer_history(struct vcs_package_store *store,
         if (got == VCS_BLOB_ERR_SHAPE || got == VCS_BLOB_ERR_CAPACITY)
             continue;
         if (got != VCS_BLOB_OK) {
+            *moved = got == VCS_BLOB_ERR_ABSENT;
             ok = false;
             break;
         }
         if (!bfpr_issuer_wire(wire, len, issuer)) continue;
-        if (vcs_package_store_pin(store, roots[i], true) !=
-                VCS_PACKAGE_STORE_OK ||
+        enum vcs_package_store_result pinned =
+            vcs_package_store_pin(store, roots[i], true);
+        *moved = pinned == VCS_PACKAGE_STORE_ERR_UNKNOWN_PACKAGE;
+        if (pinned != VCS_PACKAGE_STORE_OK ||
             !vcs_package_chunk_hash(wire, len, roots[*hash_count_out]))
             ok = false;
         else
@@ -134,6 +148,22 @@ static bool bfpr_pin_issuer_history(struct vcs_package_store *store,
         *hash_count_out = 0;
     }
     return ok;
+}
+
+static struct zcl_result bfpr_pin_history(struct vcs_package_store *store,
+                                          const uint8_t issuer[32],
+                                          size_t max_catalog_rows,
+                                          uint8_t (**hashes_out)[32],
+                                          size_t *hash_count_out)
+{
+    bool moved = false;
+    if (bfpr_pin_issuer_history(store, issuer, max_catalog_rows, hashes_out,
+                                hash_count_out, &moved))
+        return ZCL_OK;
+    if (moved)
+        return ZCL_ERR(BUILD_FABRIC_PROOF_ERR_CATALOG_CHANGED,
+                       "proof-pending-publish-history-catalog-changed");
+    return ZCL_ERR(-1, "proof-pending-publish-history-pin-refused");
 }
 
 static bool bfpr_signed_pair(
@@ -331,6 +361,44 @@ static struct zcl_result bfpr_validate_pending(
     return ZCL_OK;
 }
 
+struct bfpr_epoch {
+    enum vcs_package_store_page_result result;
+    uint64_t generation;
+};
+
+static struct bfpr_epoch bfpr_epoch_now(struct vcs_package_store *store)
+{
+    struct bfpr_epoch epoch = {VCS_PACKAGE_STORE_PAGE_INPUT, 0};
+    size_t rows = 0;
+    epoch.result = vcs_package_store_catalog_rows(store, &rows,
+                                                  &epoch.generation);
+    return epoch;
+}
+
+/* Replay publishes nothing, so any generation change across it came from
+ * another writer: a pin, or an add and an evict that leave the row count
+ * unchanged. Such a refusal is the typed, retryable one. */
+static struct zcl_result bfpr_restore_history(
+    struct vcs_package_store *store, const uint8_t signer_seed[32],
+    const uint8_t expected_head[32], size_t max_catalog_rows,
+    size_t max_tickets, struct vcs_proof_issuer_log **restored,
+    uint64_t *generation, uint8_t (**chunk_hashes)[32], size_t *chunk_count)
+{
+    struct bfpr_epoch before = bfpr_epoch_now(store);
+    *restored = vcs_proof_issuer_log_restore_from_store_at_generation(
+        signer_seed, store, expected_head, max_catalog_rows, max_tickets,
+        generation, chunk_hashes, chunk_count);
+    if (*restored) return ZCL_OK;
+    struct bfpr_epoch after = bfpr_epoch_now(store);
+    if (bfpr_unsettled(before.result) || bfpr_unsettled(after.result) ||
+        (before.result == VCS_PACKAGE_STORE_PAGE_OK &&
+         after.result == VCS_PACKAGE_STORE_PAGE_OK &&
+         before.generation != after.generation))
+        return ZCL_ERR(BUILD_FABRIC_PROOF_ERR_CATALOG_CHANGED,
+                       "proof-pending-replay-catalog-changed");
+    return ZCL_ERR(-1, "proof-pending-replay-incomplete-history");
+}
+
 static struct zcl_result bfpr_pending_replay_impl(
     struct node_db *ndb, struct vcs_package_store *store,
     const char *worker_id, const uint8_t signer_seed[32],
@@ -361,12 +429,10 @@ static struct zcl_result bfpr_pending_replay_impl(
     uint64_t generation = 0;
     uint8_t (*chunk_hashes)[32] = NULL;
     size_t chunk_count = 0;
-    struct vcs_proof_issuer_log *restored =
-        vcs_proof_issuer_log_restore_from_store_at_generation(
-            signer_seed, store, expected_head, max_catalog_rows,
-            max_tickets, &generation, &chunk_hashes, &chunk_count);
-    if (!restored)
-        return ZCL_ERR(-1, "proof-pending-replay-incomplete-history");
+    struct vcs_proof_issuer_log *restored = NULL;
+    ZCL_CHECK(bfpr_restore_history(store, signer_seed, expected_head,
+                                   max_catalog_rows, max_tickets, &restored,
+                                   &generation, &chunk_hashes, &chunk_count));
     bool exact = bfpr_replay_selects_staged(restored, &pending, &ticket, &cp);
     vcs_proof_issuer_log_free(restored);
     if (!exact) {
@@ -498,9 +564,8 @@ struct zcl_result build_fabric_proof_pending_publish(
         return ZCL_ERR(-1, "proof-pending-publish-head-changed");
     uint8_t (*history_hashes)[32] = NULL;
     size_t history_count = 0;
-    if (!bfpr_pin_issuer_history(store, issuer, max_catalog_rows,
-                                 &history_hashes, &history_count))
-        return ZCL_ERR(-1, "proof-pending-publish-history-pin-refused");
+    ZCL_CHECK(bfpr_pin_history(store, issuer, max_catalog_rows,
+                               &history_hashes, &history_count));
 
     /* Pinning changes store generation. Replay again against the fully
      * pinned issuer closure before the conditional DB publication. */

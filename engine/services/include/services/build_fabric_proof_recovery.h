@@ -37,8 +37,9 @@ struct zcl_result build_fabric_proof_pending_publish(
     size_t max_catalog_rows, size_t max_tickets);
 
 /* A publication refused because the package catalog moved underneath it
- * (stale generation, or more rows than the derived budget). Nothing was
- * published; the staged row stays pending and a later retry is safe. */
+ * (stale generation, more rows than the derived budget, or a generation
+ * change with no new rows, such as a pin or an add and an evict). Nothing
+ * was published; the staged row stays pending and a later retry is safe. */
 #define BUILD_FABRIC_PROOF_ERR_CATALOG_CHANGED 1101
 
 /* Worker-start recovery of a staged proof publication. Each attempt derives

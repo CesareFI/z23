@@ -514,6 +514,92 @@ _test_next:
     return failures;
 }
 
+void vcs_proof_receiver_test_before_recheck(void (*hook)(void *),
+                                            void *context);
+
+struct bfh_pinner {
+    const char *dir;
+    uint8_t root[32];
+    bool pinned;
+    unsigned fired;
+    bool rearm;
+    bool wrote;
+};
+
+/* A second handle flips one package's pin while recovery replays history:
+ * the catalog generation moves, its row count does not. */
+static void bfh_flip_pin(void *context)
+{
+    struct bfh_pinner *p = context;
+    p->fired++;
+    if (!p->rearm) vcs_proof_receiver_test_before_recheck(NULL, NULL);
+    struct vcs_package_store *writer = vcs_package_store_open(p->dir, BFH_QUOTA);
+    p->pinned = !p->pinned;
+    p->wrote = writer &&
+               vcs_package_store_pin(writer, p->root, p->pinned) ==
+                   VCS_PACKAGE_STORE_OK;
+    if (writer) vcs_package_store_close(writer);
+}
+
+static int bfh_case_recover_pinned_catalog(void)
+{
+    int failures = 0;
+    struct bfh h;
+    printf("build_fabric: a pin that moves the catalog mid-replay is a typed retry... ");
+    {
+        ASSERT(bfh_init(&h, "proof_recover_pinned"));
+        uint8_t blob[8] = {'p', 'i', 'n', 'n', 'e', 'd', 0, 1};
+        struct bfh_pinner pin = {.dir = h.dir, .rearm = true};
+        ASSERT(vcs_proof_ticket_store_put(h.store, blob, sizeof(blob),
+                                          pin.root));
+        ASSERT(bfh_stage_ticket_only(&h));
+        size_t rows = 0, rows_after = 0;
+        uint64_t generation = 0, generation_after = 0;
+        vcs_proof_receiver_test_before_recheck(bfh_flip_pin, &pin);
+        struct zcl_result recovered = build_fabric_proof_pending_recover(
+            &h.ndb, h.store, bfh_worker_id, h.f.seed[PTF_A]);
+        vcs_proof_receiver_test_before_recheck(NULL, NULL);
+        ASSERT(pin.wrote);
+        ASSERT(!recovered.ok);
+        ASSERT_EQ(recovered.code, BUILD_FABRIC_PROOF_ERR_CATALOG_CHANGED);
+        ASSERT(pin.fired > 1u);
+        ASSERT(bfh_head_is(&h, h.first_head));
+        ASSERT_EQ(bfh_pending_count(&h), 1);
+        /* One more pin: the row count holds while the generation moves. */
+        ASSERT(vcs_package_store_refresh(h.store));
+        ASSERT_EQ(vcs_package_store_catalog_rows(h.store, &rows, &generation),
+                  VCS_PACKAGE_STORE_PAGE_OK);
+        bfh_flip_pin(&pin);
+        ASSERT(pin.wrote);
+        ASSERT(vcs_package_store_refresh(h.store));
+        ASSERT_EQ(vcs_package_store_catalog_rows(h.store, &rows_after,
+                                                 &generation_after),
+                  VCS_PACKAGE_STORE_PAGE_OK);
+        ASSERT_EQ(rows_after, rows);
+        ASSERT(generation_after != generation);
+        /* A single pin inside the replay: the retry publishes. */
+        pin.fired = 0;
+        pin.rearm = false;
+        vcs_proof_receiver_test_before_recheck(bfh_flip_pin, &pin);
+        recovered = build_fabric_proof_pending_recover(
+            &h.ndb, h.store, bfh_worker_id, h.f.seed[PTF_A]);
+        vcs_proof_receiver_test_before_recheck(NULL, NULL);
+        ASSERT_EQ(pin.fired, 1u);
+        ASSERT(pin.wrote);
+        ASSERT(recovered.ok);
+        ASSERT(bfh_head_is(&h, h.second_head));
+        ASSERT_EQ(bfh_pending_count(&h), 0);
+        bfh_free(&h);
+        printf("OK\n");
+    }
+    if (0) {
+_test_next:
+        vcs_proof_receiver_test_before_recheck(NULL, NULL);
+        bfh_free(&h);
+    }
+    return failures;
+}
+
 int bf_proof_history_cases(void);
 
 int bf_proof_history_cases(void)
@@ -525,5 +611,6 @@ int bf_proof_history_cases(void)
 #endif
     failures += bfh_case_recover_moved_catalog();
     failures += bfh_case_recover_restless_catalog();
+    failures += bfh_case_recover_pinned_catalog();
     return failures;
 }
