@@ -54,6 +54,7 @@
 #include "storage/dbwrapper.h"
 #include "test/importblockindex_fixture.h"
 #include "util/blocker.h"
+#include "util/thread_registry.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -259,6 +260,59 @@ bool test_importblockindex_fixture_build_minimal(const char *src_dir)
 {
     struct ibr_block_fixture fx;
     return src_dir && ibr_build_fixture(src_dir, &fx, 1);
+}
+
+/* Shutdown abort: the bulk LevelDB walk polls the thread-registry shutdown
+ * flag at the top of every 4096-row cadence (first row included), so a
+ * shutdown requested before (or during) the import breaks out, rolls the
+ * open bulk transaction back, and returns not-ok — the zcl_snap_idx thread
+ * no longer holds a shutdown join hostage for the full walk. */
+static int ibr_test_shutdown_abort(void)
+{
+    int failures = 0;
+
+    ibr_mkdir_p("./test-tmp");
+    char base[300];
+    test_fmt_tmpdir(base, sizeof(base), "importblockindex_roundtrip", "abort");
+    ibr_mkdir_p(base);
+
+    char src_dir[340];
+    snprintf(src_dir, sizeof(src_dir), "%s/legacy-src-abort", base);
+    ibr_mkdir_p(src_dir);
+
+    bool built = test_importblockindex_fixture_build_minimal(src_dir);
+    IBR_CHECK("abort scenario: minimal fixture builds", built);
+    if (built) {
+        char db_path[380];
+        snprintf(db_path, sizeof(db_path), "%s/node_abort.db", base);
+
+        thread_registry_reset_for_test();
+        thread_registry_request_shutdown();
+        int count = -1;
+        bool ok = snapshot_import_block_index(src_dir, db_path,
+                                              /*header_only=*/true, &count);
+        thread_registry_reset_for_test();
+        IBR_CHECK("abort scenario: import aborts under shutdown", !ok);
+        IBR_CHECK("abort scenario: no rows imported", count == 0);
+
+        struct node_db ndb;
+        bool opened = node_db_open(&ndb, db_path);
+        IBR_CHECK("abort scenario: target node.db opens", opened);
+        if (opened) {
+            IBR_CHECK("abort scenario: blocks table left empty",
+                      db_block_count(&ndb) == 0);
+            node_db_close(&ndb);
+        }
+
+        /* Control: flag clear, the SAME import succeeds — the abort above
+         * is the registry flag, not a broken fixture. */
+        count = -1;
+        ok = snapshot_import_block_index(src_dir, db_path,
+                                         /*header_only=*/true, &count);
+        IBR_CHECK("abort control: import succeeds once the flag clears",
+                  ok && count == 1);
+    }
+    return failures;
 }
 
 /* Assert every fixture row (hash/prev_hash/merkle_root/time/bits) landed in
@@ -829,6 +883,8 @@ int test_importblockindex_roundtrip(void)
             }
         }
     }
+
+    failures += ibr_test_shutdown_abort();
 
     return failures;
 }

@@ -136,6 +136,62 @@ static bool import_block_index_stamp_cursors(struct node_db *ndb,
     return snapshot_tx_commit_checked(ndb, "T1 commit cursor stamp");
 }
 
+/* Populate one blocks-table row from the deserialized source index record.
+ * Per-block Sprout/Sapling value deltas travel in the source
+ * CDiskBlockIndex, so populate the projection columns here instead of
+ * forcing the boot-time backfill to re-read every block body from disk.
+ * These are display/projection values (not consensus); the boot backfill
+ * computes the identical per-block delta (sapling = Σ value_balance, sprout
+ * = Σ vpub_old − vpub_new). hashFinalSaplingRoot is a CONSENSUS field
+ * committed in every block HEADER; the source CDiskBlockIndex carries it,
+ * so a header-only import already has the chain-committed tip Sapling root
+ * without any block body. Persist it into the projection column now —
+ * otherwise blocks.sapling_root stays all-zero until full block connection,
+ * and the complete shielded-history import (-import-complete-shielded)
+ * cannot bind its tip frontier against a zero column (it refuses,
+ * all-or-nothing). Full connection later writes the IDENTICAL value (the
+ * header field), so this is a pure projection fill, never a consensus
+ * decision. header_only strips the body-location metadata so the node
+ * fetches bodies lazily via P2P instead of trying to read files it does not
+ * have; the zeroed positions are never read because HAVE_DATA/HAVE_UNDO are
+ * cleared — the node gates all block-file reads on those status bits. Also
+ * folds the row into *max_height (seeds the fast-boot cursors). */
+static void import_block_index_fill_row(struct db_block *db_blk,
+                                        struct disk_block_index *dbi,
+                                        const uint8_t *block_hash,
+                                        bool header_only,
+                                        int *max_height)
+{
+    memset(db_blk, 0, sizeof(*db_blk));
+    memcpy(db_blk->hash, block_hash, 32);
+    db_blk->height = dbi->nHeight;
+    memcpy(db_blk->prev_hash, dbi->hashPrev.data, 32);
+    db_blk->version = dbi->nVersion;
+    memcpy(db_blk->merkle_root, dbi->hashMerkleRoot.data, 32);
+    db_blk->time = dbi->nTime;
+    db_blk->bits = dbi->nBits;
+    memcpy(db_blk->nonce, dbi->nNonce.data, 32);
+    db_blk->solution = dbi->nSolution;
+    db_blk->solution_len = dbi->nSolutionSize;
+    db_blk->num_tx = (int)dbi->nTx;
+    db_blk->sapling_value = dbi->nSaplingValue;
+    db_blk->sprout_value = dbi->has_sprout_value ? dbi->nSproutValue : 0;
+    memcpy(db_blk->sapling_root, dbi->hashFinalSaplingRoot.data, 32);
+    if (dbi->nHeight > *max_height)
+        *max_height = dbi->nHeight;
+    if (header_only) {
+        db_blk->status = (int)dbi->nStatus & ~(BLOCK_HAVE_DATA | BLOCK_HAVE_UNDO);
+        db_blk->file_num = 0;
+        db_blk->data_pos = 0;
+        db_blk->undo_pos = 0;
+    } else {
+        db_blk->status = (int)dbi->nStatus;
+        db_blk->file_num = dbi->nFile;
+        db_blk->data_pos = (int)dbi->nDataPos;
+        db_blk->undo_pos = (int)dbi->nUndoPos;
+    }
+}
+
 static void *import_block_index_thread(void *arg)
 {
     struct block_index_import_args *a = arg;
@@ -229,7 +285,23 @@ static void *import_block_index_thread(void *arg)
     }
     tx_open = true;
 
+    /* Shutdown poll: the bulk walk below iterates every 'b' row of the
+     * source LevelDB (millions on a full zclassicd index, minutes on a slow
+     * disk) with no other stop check, so a SIGTERM mid-import held the
+     * zcl_snap_idx thread past the shutdown join. Poll the registry flag
+     * every 4096 iterated rows (and on the very first row): on abort, log,
+     * break to the shared !ok path — the open bulk transaction is rolled
+     * back, nothing half-written, and a->result stays -1. A stop abort is
+     * not an import failure; the import simply re-runs on the next boot. */
+    int rows_seen = 0;
     while (db_iter_valid(&it)) {
+        if ((rows_seen++ & 4095) == 0 && thread_registry_shutdown_requested()) {
+            LOG_INFO("snapshot",
+                     "T1: block index import aborted: shutdown requested "
+                     "(%d rows imported)", a->count);
+            ok = false;
+            break;
+        }
         size_t key_len;
         const char *key_data = db_iter_key(&it, &key_len);
 
@@ -281,59 +353,8 @@ static void *import_block_index_thread(void *arg)
 
         /* Insert into SQLite blocks table */
         struct db_block db_blk;
-        memset(&db_blk, 0, sizeof(db_blk));
-        memcpy(db_blk.hash, block_hash, 32);
-        db_blk.height = dbi.nHeight;
-        memcpy(db_blk.prev_hash, dbi.hashPrev.data, 32);
-        db_blk.version = dbi.nVersion;
-        memcpy(db_blk.merkle_root, dbi.hashMerkleRoot.data, 32);
-        db_blk.time = dbi.nTime;
-        db_blk.bits = dbi.nBits;
-        memcpy(db_blk.nonce, dbi.nNonce.data, 32);
-        db_blk.solution = dbi.nSolution;
-        db_blk.solution_len = dbi.nSolutionSize;
-        db_blk.num_tx = (int)dbi.nTx;
-        /* Per-block Sprout/Sapling value deltas travel in the source
-         * CDiskBlockIndex, so populate the projection columns here instead
-         * of forcing the boot-time backfill to re-read every block body from
-         * disk. These are display/projection values (not consensus); the
-         * boot backfill computes the identical per-block delta
-         * (sapling = Σ value_balance, sprout = Σ vpub_old − vpub_new). */
-        db_blk.sapling_value = dbi.nSaplingValue;
-        db_blk.sprout_value = dbi.has_sprout_value ? dbi.nSproutValue : 0;
-        /* hashFinalSaplingRoot is a CONSENSUS field committed in every block
-         * HEADER; the source CDiskBlockIndex carries it (deserialized above),
-         * so a header-only import already has the chain-committed tip Sapling
-         * root without any block body. Persist it into the projection column
-         * now — otherwise blocks.sapling_root stays all-zero until full block
-         * connection, and the complete shielded-history import
-         * (-import-complete-shielded) cannot bind its tip frontier against a
-         * zero column (it refuses, all-or-nothing). Full connection later
-         * writes the IDENTICAL value (the header field), so this is a pure
-         * projection fill, never a consensus decision. */
-        memcpy(db_blk.sapling_root, dbi.hashFinalSaplingRoot.data, 32);
-        if (dbi.nHeight > max_height)
-            max_height = dbi.nHeight;
-        if (a->header_only) {
-            /* We have the header (incl. nSolution, so validate_headers
-             * passes) but NOT the source's block files — strip the
-             * body-location metadata so the node fetches bodies lazily
-             * via P2P instead of trying to read files it doesn't have.
-             * This is the fast-sync model for seeding the header chain
-             * from a running zclassicd. */
-            db_blk.status = (int)dbi.nStatus & ~(BLOCK_HAVE_DATA | BLOCK_HAVE_UNDO);
-            /* Positions stay 0 (the model requires non-negative); they are
-             * never read because HAVE_DATA/HAVE_UNDO are cleared — the node
-             * gates all block-file reads on those status bits. */
-            db_blk.file_num = 0;
-            db_blk.data_pos = 0;
-            db_blk.undo_pos = 0;
-        } else {
-            db_blk.status = (int)dbi.nStatus;
-            db_blk.file_num = dbi.nFile;
-            db_blk.data_pos = (int)dbi.nDataPos;
-            db_blk.undo_pos = (int)dbi.nUndoPos;
-        }
+        import_block_index_fill_row(&db_blk, &dbi, block_hash,
+                                    a->header_only, &max_height);
 
         if (!db_block_save(&ndb, &db_blk)) {
             LOG_WARN("snapshot", "T1: block save failed at height %d", db_blk.height);
