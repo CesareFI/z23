@@ -59,7 +59,7 @@ citation, `git log --follow -- docs/work/<name>.md` recovers older intent.
 | [`NEON_CRYPTO_MATRIX.md`](./NEON_CRYPTO_MATRIX.md) | LIVE | per-crypto-family x86-64/arm64 tier matrix: gating, the test group proving bit-identity, the bench that times each tier, and honest no-clean-NEON-equivalent markers |
 | [`ZCODE_PLAN.md`](./ZCODE_PLAN.md) | FOUNDATION | original 15-slice ZCODE package-hosting order; slices 1–13 remain live foundations, while payout slices 14–15 are deferred behind the development network; `contexts/commons/modules/vcs/include/vcs/package_reward.h` cites its "ZCL fuel economics" section by name |
 | [`MARKETPLACE_PLAN.md`](./MARKETPLACE_PLAN.md) | DESIGN | deferred application-protocol marketplace design; no consensus surface |
-| [`MARKETPLACE_NEXT.md`](./MARKETPLACE_NEXT.md) | RETAINED | 2026-08-08 marketplace dependency ordering; unchecked boxes are not current work |
+| [`MARKETPLACE_NEXT.md`](./MARKETPLACE_NEXT.md) | RETAINED | marketplace dependency ordering; unchecked boxes are not current work |
 | [`MARKET_ONION_DELIVERY.md`](./MARKET_ONION_DELIVERY.md) | DESIGN | B5 onion-routed chunk delivery: offer v2 endpoint_type=onion wire, `/market/chunk` onion route, session-binding replacement, stub fail-closed policy, and the honest non-goals (timing, gossip metadata) |
 | [`ZC23_DISTRIBUTION_OPTIONS.md`](./ZC23_DISTRIBUTION_OPTIONS.md) | RETAINED | the Phase C1 menu; C2 chose from it and `ZC23_DISTRIBUTION_RULES.md` §2 cites option **2A** by number, so the numbering stays as-is |
 | [`shielded-history-importer.md`](./shielded-history-importer.md) | LIVE | reference for the shipped `-import-complete-shielded` operational cure; operational-vs-sovereign trust-mode split |
@@ -174,16 +174,16 @@ Parallel-worker mechanics are adapted in
 [`agent-protocol.md`](./agent-protocol.md); project authority, integration, and
 completion remain defined by `AGENTS.md` and `docs/DEVELOPING.md`.
 
-## Late-indexed records (reconciled 2026-08-23)
+## Late-indexed records
 
 | File | Authority | Purpose |
 |---|---|---|
 | [`ZC23_FAMILY_COMMONS.md`](./ZC23_FAMILY_COMMONS.md) | DESIGN | additive pre-genesis protocol foundation: family commons + evidence economics objects and commands |
-| [`C23_P2P_CORE_INVENTORY.md`](./C23_P2P_CORE_INVENTORY.md) | DESIGN | reviewed P2P core-consolidation code inventory (2026-08-12); a map, not a plan |
+| [`C23_P2P_CORE_INVENTORY.md`](./C23_P2P_CORE_INVENTORY.md) | DESIGN | reviewed P2P core-consolidation code inventory; a map, not a plan |
 | [`canonical-unit-reconciliation.md`](./canonical-unit-reconciliation.md) | DESIGN | systemd drop-in reconciliation runbook: lexical apply order, detecting an `ExecStart=` collision, reading `/proc/<pid>/cmdline` for ground truth vs. `systemctl show`, and the hazard of another actor rewriting drop-ins mid-reconciliation |
 | [`LIVE_TRANSACTION_DEMONSTRATIONS.md`](./LIVE_TRANSACTION_DEMONSTRATIONS.md) | LIVE | runbook: which cataloged transaction shapes are demonstrated live, and how |
 | [`REFLEX_REACTOR.md`](./REFLEX_REACTOR.md) | LIVE | local zero-wait reflex reactor: edit C23, receive first exact next-build result |
-| [`REFLEX_SUBSTRATE_AUDIT.md`](./REFLEX_SUBSTRATE_AUDIT.md) | EVIDENCE | measured coverage/latency audit of the merged reflex implementation (2026-08-12) |
+| [`REFLEX_SUBSTRATE_AUDIT.md`](./REFLEX_SUBSTRATE_AUDIT.md) | EVIDENCE | measured coverage/latency audit of the merged reflex implementation |
 | [`SHOP_COMMAND.md`](./SHOP_COMMAND.md) | DESIGN | owner-approved `app shop` one-command sovereign storefront specification; not an execution queue |
 | [`TRANSACTION_LAB.md`](./TRANSACTION_LAB.md) | LIVE | transaction laboratory notebook; keeps its two questions separate |
 | [`TRANSACTION_MICRO_LAB.md`](./TRANSACTION_MICRO_LAB.md) | LIVE | owner-gated 100-transaction demonstration runbook; never ordinary development work |

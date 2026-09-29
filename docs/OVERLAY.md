@@ -39,8 +39,8 @@ anyone touching `core/modules/net/src/tor_integration.c`, `onion_service.c`, or
   `-onion-rotate` deliberately archives the old identity. Hermetic onion
   tests (`test_onion_stream`, `test_onion_persistence`,
   `test_onion_directory`, …) pass on a host with zero network egress.
-- **No SOCKS exists anywhere in this architecture** (owner decision,
-  2026-08-22). Outbound onion dials open raw dynhost streams that a
+- **No SOCKS exists anywhere in this architecture** (owner decision).
+  Outbound onion dials open raw dynhost streams that a
   socketpair bridge presents to connman as ordinary connected fds
   (`core/modules/net/src/onion_stream.c`), so reactor, handshake, and message
   layers are transport-unaware.

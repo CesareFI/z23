@@ -118,8 +118,8 @@ the grandfather fix are documented in `docs/CONSENSUS_PARITY_DOCTRINE.md`.
 **I5 — Crash-only.** Every derived state is rebuildable from the source; every
 recovery is bounded, automatic, and terminates in SERVING. The process may die
 at any instruction; the boot path must converge without an operator. Anchors:
-crash-only auto-reindex instead of FATAL crash-loop (`706a7c00a`); never-give-up
-unit (`StartLimitIntervalSec=0`, stepped backoff, `0b45e93a5`).
+crash-only auto-reindex instead of FATAL crash-loop; never-give-up
+unit (`StartLimitIntervalSec=0`, stepped backoff).
 
 **I6 — Measure the real distribution.** test_parallel green is a regression
 floor, not a liveness proof: a fully green hermetic suite can coexist with the
@@ -190,9 +190,7 @@ EV_OPERATOR_NEEDED + Condition, with the node held SERVING-degraded where safe.
 
 The gates ARE the product, and they are the only honest verification of the
 refactor — **they land FIRST.** Budget: ~1–1.5 h/night + ~30 min/week on the
-existing 32-core box. Each must emit a verdict sentinel (never exit-0 alone —
-`a91770f88` passed build+lint+tests with its new seed path never executing; only
-repro-on-copy proved it fires). The five-gate program (G1 full-history replay
+existing 32-core box. Each must emit a verdict sentinel (never exit-0 alone: a change can pass build+lint+tests with its new seed path never executing, and only repro-on-copy proves it fires). The five-gate program (G1 full-history replay
 canary, G2 chain-derived golden extremals, G3 crash-boot soak, G4 recipe smokes,
 G5 push-time execution) and its land status are in
 [`tenacity-roadmap.md`](work/tenacity-roadmap.md).

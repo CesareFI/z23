@@ -6,7 +6,6 @@ Maintenance reference for native arm64 macOS work: what is expected green,
 what the platform seam selects per host, which host quirks have already cost
 gate cycles, and the first fix move for each gate that can go red here.
 
-Written against tree `4909a816d9` (then tip of `origin/main`) on 2026-08-26.
 Measured facts below carry the command or `file:line` they come from; the rest
 is code citation. Prose rots, code is authoritative — re-verify a line number
 before editing the file it names. The measured host is the maintainer's arm64

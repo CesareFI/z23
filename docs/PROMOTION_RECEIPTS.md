@@ -5,23 +5,17 @@ immutable proof server. The record of that moment has to be worth something
 later, to someone who was not there and does not trust the person handing them
 the repository.
 
-## What was wrong with the record we had
+## Why a receipt, not a tag
 
-`tools/scripts/proof_server_pin.sh` records a promotion as a **local annotated
-git tag**. That was the right instinct — it self-records at the one moment
+`tools/scripts/proof_server_pin.sh` records a promotion at the one moment
 `tools/ship.sh` provably holds the binding, right after the running daemon
-confirms it reports the candidate's source id — and the wrong storage:
+confirms it reports the candidate's source id. A local annotated git tag is the
+wrong storage for that record: it is never pushed (origin holds only `main`),
+it can be deleted or moved leaving no trace, and it is unsigned, so the
+evidence would be exactly as trustworthy as one local mutable ref.
 
-| property | local git tag | what that means |
-|---|---|---|
-| replication | never pushed (origin holds only `main`) | the record dies with the disk; a fresh clone has none |
-| immutability | `git tag -d` / `git tag -f` | a record can be removed or moved leaving no trace |
-| authorship | unsigned | you have to trust whoever hands you the repo |
 
-So the evidence that the immutable proof server ran a given build was exactly as
-trustworthy as one local mutable ref.
-
-## The record we have now
+## The record
 
 `platform/deploy/promotion-receipts.jsonl` — one JSON object per line, append-only,
 following the same shape conventions as `platform/deploy/release-candidates.jsonl` (see

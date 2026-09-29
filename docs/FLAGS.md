@@ -59,7 +59,7 @@ you know why the flag exists.
 
 ## The gate
 
-`make check-flag-registry` (in `lint-fast` since 2026-09-11, ~1.7 s, so a
+`make check-flag-registry` (in `lint-fast`, ~1.7 s, so a
 lane sees a moved or stale first-use pointer in seconds instead of at the
 landing proof) parses the catalog and scans every git-tracked `*.c`, `*.h`,
 `*.sh`, and `Makefile` for reads. It fails closed on a hollow scan (zero

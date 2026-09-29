@@ -9,7 +9,7 @@ or canonical datadir. Commands run in a transient user service with 8 GiB
 
 ## Measured baseline
 
-Measurements taken on 2026-08-26 before provisioning:
+Measurements taken before provisioning:
 
 | Host | RAM | CPU | Storage | Largest observed build | Existing swap |
 | --- | ---: | ---: | --- | ---: | --- |

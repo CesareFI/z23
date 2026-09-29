@@ -336,7 +336,7 @@ in-band path — not the dedicated listener — is the deployment shape: arm
 snapshot from the connection it already opened.
 
 The service word and the eight dispatch rows live in the sealed consensus core
-(`core/modules/net`), added under the owner unseal ritual on 2026-09-10. The
+(`core/modules/net`), added under the owner unseal ritual. The
 core half is a seam and nothing more: two function pointers the engine installs
 at boot. With them unset — every node that has not named a source directory —
 the bit stays clear and the eight commands are ignored, exactly as before.

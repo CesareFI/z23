@@ -1,6 +1,6 @@
 # C23 P2P Core Consolidation Inventory
 
-Status: reviewed consolidation slice, 2026-08-12. This is a code inventory, not a
+Status: reviewed consolidation slice. This is a code inventory, not a
 new architecture or authority plane. Consensus, wallet, node operation, and
 deployment are out of scope.
 

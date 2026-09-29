@@ -81,17 +81,13 @@ is delivery-event latency jitter (`simnet_wire.c:387-391`,
 `SIMNET_WIRE_REORDER_SPAN_US`, `simnet_wire_internal.h:29-31`) — reordering
 already exists as *jitter noise*, not as an *adversarial scripted reorder*.
 
-**F4. Step C is in-flight and NOT clean.** Branch `sim/wire-byzantine-c`
-(`git log --oneline -5`) is at commit `c3c248181 WIP checkpoint: simnet_wire
-step C byzantine bridge (18 test failures)`, then a merge-from-main on top.
-It adds `engine/modules/sim/src/simnet_wire_byzantine.c` (536 lines), extends
+**F4. Step C (the byzantine bridge) is not part of this wave's baseline.** It adds `engine/modules/sim/src/simnet_wire_byzantine.c` (536 lines), extends
 `simnet_wire.h`/`simnet_wire_internal.h`/`simnet_wire.c`/`simnet_wire_peer.c`,
 and swaps `wire->mp.block_submit` from the step A/B stub
 (`simnet_wire_stub_submit_block`, `simnet_wire.c:199-208`, which
 `LOG_FAIL`s on any submit) to `simnet_wire_byzantine_submit_block` — a real
 block-accepting path, but scoped to the byzantine-artifact tier only. Do not
-assume Step C is done; the lanes below treat it as "expected to land soon"
-but the app-layer flow lane (item 2 below) needs its own non-byzantine
+assume Step C is done; the lanes below treat it as expected to land, but the app-layer flow lane (item 2 below) needs its own non-byzantine
 `block_submit`/mempool-relay wiring regardless of whether C lands clean,
 since C's submit path is purpose-built for injected-bad-artifact assertions,
 not general tx/block relay.
@@ -431,8 +427,7 @@ L5 is a trivial one-file doc fix, run it any time, zero conflict risk. L6
 produces no code this wave — run it in parallel with everything else, gates
 nothing.
 
-**Haiku+codex→Sonnet-verify workflow** (per project doctrine, proven
-2026-07-09): for L1/L2/L3/L4, consider implementing with
+**Haiku+codex→Sonnet-verify workflow** (per project doctrine): for L1/L2/L3/L4, consider implementing with
 `codex exec --dangerously-bypass-approvals-and-sandbox` inside a Haiku
 subagent, then have a separate Sonnet subagent independently run
 `make -j8 build-only && make t ONLY=simnet_wire && make lint` plus read the

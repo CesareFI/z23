@@ -1,6 +1,6 @@
-# NAT traversal, onion hosting, and fast P2P transport — design notes (2026-07-27)
+# NAT traversal, onion hosting, and fast P2P transport — design notes
 
-> **Owner decision (2026-08-22): onion P2P transport landed on the raw
+> **Owner decision: onion P2P transport runs on the raw
 > dynhost stream API, NO SOCKS.** zclassic23 never proxies P2P through a
 > SOCKS port. Outbound onion dials use the fork's raw bidirectional stream
 > API (`dynhost_stream_open/write/close`,

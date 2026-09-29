@@ -1,6 +1,6 @@
 # Agent spend policy (Slice 3) — scoped agent authority over digital assets
 
-Status: design (2026-07-26). Owner roadmap order: (1) fast reliable zclassicd-parity
+Status: design. Owner roadmap order: (1) fast reliable zclassicd-parity
 sync [done, arch 100/100] → (2) control of digital assets [this doc is the
 remaining foundation piece] → (3) semantic system understanding → (4) network
 peers overview → (5) explorer → (6) ZNAM + P2P file market.

@@ -1,7 +1,7 @@
 # From-genesis refold: fold-rate bottlenecks + fix plan
 
 > **Superseded as a description of the current live-sync scheduler
-> (2026-09-05, see [`../zrc/0011-fast-sync-over-the-peer-link.md`](../zrc/0011-fast-sync-over-the-peer-link.md)).**
+> (see [`../zrc/0011-fast-sync-over-the-peer-link.md`](../zrc/0011-fast-sync-over-the-peer-link.md)).**
 > The "#2 — scheduler ceiling" section below describes a flat
 > 2s-tick/100-batch staged-sync scheduler with no catch-up override; that
 > scheduler shape no longer matches the tree. Live catchup is now gated by

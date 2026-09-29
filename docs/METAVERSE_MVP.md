@@ -65,6 +65,6 @@ table does not choose the next repository task.
 
 The v1 bar remains [`docs/MVP.md`](./MVP.md) (MRS 8/8) and its critical path
 remains [`docs/work/FORWARD_PLAN.md`](./work/FORWARD_PLAN.md). The owner
-opened this metaverse lane on 2026-08-08 in parallel; nothing here
+opened this metaverse lane in parallel; nothing here
 deprioritizes C3/C5/C6/C8, touches consensus (the core seal stays frozen),
 or relaxes any owner-gated deploy/custody rule.

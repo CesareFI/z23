@@ -265,7 +265,7 @@ make -j"$(sysctl -n hw.ncpu)" z23 zclassic23-package-verify zclassic23-acme
 platform/packaging/release/build_release.sh --platform darwin-arm64
 ```
 
-The runtime cutter was proved natively on Apple Silicon on 2026-08-30. It
+The runtime cutter is proved natively on Apple Silicon. It
 uses `lipo -archs` as the Mach-O slice authority, accepts exactly thin arm64,
 uses Apple's `strip -S -x`, falls back to stock `shasum -a 256` and BSD
 `stat`, and retains the four-member runtime set. The verifier is deliberately

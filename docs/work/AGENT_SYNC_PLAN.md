@@ -1,32 +1,14 @@
 # Agent sync plan — every agent on one board, one target, one typed protocol
 
-This 2026-09-04 handoff records the interim train protocol. The active
+This plan records the interim train protocol. The active
 publication contract is [`CANONICAL_LIFECYCLE.md`](./CANONICAL_LIFECYCLE.md):
 eligible nodes may prepare and prove candidates concurrently; only the final
 expected-base `main` update is serialized by Git. The single PROVING owner
-below is historical behavior, not an integration requirement.
-
-This document is the handoff plan for the next developer.
+below is not an integration requirement.
 
 Goal: every agent, human or model, on any fleet box, sees the same small typed state, uses the same few verbs, and gets green work onto `main` in minutes. Nothing in the protocol blocks. Every step is a state transition recorded as an event. Every verdict comes from a gate, never from a report.
 
-Measured on 2026-09-04 from node1. Recheck each number before acting; these are dated observations, not invariants.
-
-## 1. Where it stands
-
-| Fact | Value |
-|---|---|
-| Linked worktrees on node1's checkout | 214 |
-| Local branches other than `main` | 190 |
-| Documents an agent reads before its first commit | 4 |
-| Push-hook proof cost | 15 to 45 min per train, one proof per box |
-| Trains | one per box per round, alternating by board claim/result |
-| Fleet board | JSONL per host, ssh sync every 2 min (interim); native `zcode fleet say/read` is node2's lane |
-| Native agent channel | `msg_send` / `msg_inbox` over the onion mesh, verified node1 to node2 2026-09-04 |
-| GLM flash through opencode on node1 | 0 of 40 logs contain an edit; exit code is 1 on every run, success or not |
-| GLM flash through the C23 harness | HTTPS probe 200 in 1.4 s through the tree's own TLS client |
-
-## 2. Architecture
+## 1. Architecture
 
 Three planes. All typed. None blocking.
 
@@ -56,7 +38,7 @@ PASS --> VERIFIED (diff touches one file, ceiling ok, signed) --> TRAIN
 
 The orchestrator never waits on a model. It dispatches, returns, and is woken by the receipt file. A unit gets three attempts, then a finisher (Sonnet) or a drop.
 
-## 3. The verbs, as C23 leaves under the existing `dev.agent` branch
+## 2. The verbs, as C23 leaves under the existing `dev.agent` branch
 
 | Leaf | Answers | Writes |
 |---|---|---|
@@ -71,7 +53,7 @@ The orchestrator never waits on a model. It dispatches, returns, and is woken by
 
 The rules table is one X-macro file. Documents cite it; they do not restate it. Fleet-wide claims and posts stay on node2's `zcode fleet say/read`. These leaves are checkout-local facts and refusals.
 
-## 4. How a flash unit is run
+## 3. How a flash unit is run
 
 1. Scaffold first, by a strong model: declaration, prototype, stub with the full contract in its header, pinned test group. The stub compiles and returns NOT_IMPLEMENTED. The test is red.
 2. The unit's task file is composed mechanically: the stub, the test, the reply pattern from a neighbouring handler, the spawn API (`platform/modules/util/include/util/spawn.h`), and on retry the previous gate log. Around 20 KB. The model sees nothing else.
@@ -81,15 +63,15 @@ The rules table is one X-macro file. Documents cite it; they do not restate it. 
 
 Why not opencode: 40 headless runs on node1 produced no edit marker in any log, and exit code 1 on every run regardless of outcome. The exit code and the transcript carry no verdict. The harness does.
 
-## 5. Steps and bars
+## 4. Steps and bars
 
-1. Land the eight leaves (this lane) and `ZCL_PROOF_TIMEOUT_MS`. Bar: every `devagent_*` group green on `main`.
+1. Land the eight leaves and `ZCL_PROOF_TIMEOUT_MS`. Bar: every `devagent_*` group green on `main`.
 2. Retire the prose: `docs/work/agent-protocol.md`, `docs/agent/LANE_LAUNCH.md`, and `docs/agent/LANE_REPORT.md` shrink to "run `dev agent start`" plus the why. Bar: a fresh Haiku unit given only that output commits a green one-file change, five of five.
 3. Train protocol in code: `zcode land` (node2's lane) posts the state transitions above itself. Bar: a lane that is lint-fast green at claim time reaches `main` in under 5 minutes, ten times running.
 4. Worktree hygiene: `dev agent done` marks a worktree reclaimable; an hourly timer applies `tools/scripts/worktree_gc.sh`. Bar: under 30 worktrees for a week untouched.
 5. `fleet bottlenecks` names the constraint hourly on the front page.
 
-## 6. Do not relearn
+## 5. Do not relearn
 
 - Origin has one branch, `main`. No GitHub issues, no board on a branch.
 - Never `git stash`, `add -A` mid-rebase, `cherry-pick -q`, `--no-verify`, `ZCL_SKIP_PREPUSH=1`.

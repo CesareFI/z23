@@ -32,7 +32,7 @@ verb holds. The table below keeps them apart.
 
 ## Verified baseline
 
-Re-derived on 2026-08-30 from the commands named; do not trust the cells
+Derived from the commands named; do not trust the cells
 without re-running them.
 
 | | Linux x86_64 | macOS arm64 | Windows x86_64 |

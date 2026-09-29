@@ -246,7 +246,7 @@ never "trust these bytes", and the target node converges to a named source root
 [`tools/command/native_dev_hotswap.c`](../../tools/command/native_dev_hotswap.c))
 compile, ABI-validate, self-test and activate one module in the resident dev
 process. [`docs/work/HOTSWAP.md`](./HOTSWAP.md) records the measured local cost:
-a warm 20-edit resident bench on 2026-08-01 saw 227.280 ms p50 and 232.141 ms
+a warm 20-edit resident bench saw 227.280 ms p50 and 232.141 ms
 p95 edit-to-visible against a 250 ms gate, against minutes for a full rebuild
 and restart.
 

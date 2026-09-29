@@ -6,15 +6,10 @@ probe that checks the box still agrees.
 
 ## The problem this solves
 
-On 2026-07-28 the live binary `~/.local/bin/zclassic23-live` was replaced at
-11:10 and the canonical unit restarted at 11:12. Nothing recorded it. The deploy
-was reconstructed afterwards from file mtimes, and `docs/HANDOFF.md` went on
-naming a build (`981a8d01e9a1fd35…`) that was not running and, as far as the
-repository can tell, never was — that string does not resolve to a commit and
-does not match the running binary's baked identity.
-
-The expectation was stored. The ground truth was queryable. Nothing compared
-them on a schedule.
+A live binary can be replaced and its unit restarted with nothing recording it,
+leaving a handoff page that names a build that is not running. The expectation
+is stored and the ground truth is queryable; this pin compares them on a
+schedule.
 
 ## The candidate triple
 
@@ -103,7 +98,7 @@ That fourth verdict exists because editing a drop-in and reloading changes what
 the unit *will* run without changing what it *is* running, and `systemctl show`
 displays only the new value with no hint that the live process predates it. The
 identity checks cannot see it — the binary is byte-identical on both sides.
-Observed on this host at 2026-07-29 06:27:
+Example verdict:
 
 ```
 "pending_restart":true,

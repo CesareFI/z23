@@ -76,7 +76,7 @@ Window inventory (everything > S; all IS, survey-verified): the 8 stage cursors 
 
 | # | Wedge class (detector — IS) | Today's remedy (dies) | New remedy |
 |---|---|---|---|
-| 1 | coin tear (Invariant-B detector, `c8018a388`) | frontier tear branch + `_coin.c` re-mint + reconcile_light | `window_rebuild(WR_COIN_TEAR)` |
+| 1 | coin tear (Invariant-B detector) | frontier tear branch + `_coin.c` re-mint + reconcile_light | `window_rebuild(WR_COIN_TEAR)` |
 | 2 | height splice / cursor oscillation / stale tip_finalize pair | poison_rewind + header_solution repair | splice branch (4f step 1) prevents at write time; residue ⇒ `WR_HEIGHT_SPLICE` |
 | 3 | stale/holed verdict at frontier (the h=3142977 class) | refill/purge/tipfin rungs, stale_validate_headers_repair | `WR_STALE_VERDICT` |
 | 4 | torn coins anchor at boot (`boot.c:1707-1712` — the deletion canary) | L1 torn-anchor heal, then FATAL | `WR_TORN_ANCHOR` (pre-stage; direct call) |
@@ -126,9 +126,9 @@ re-derive LOC estimates here.
 - **Size:** ~300 LOC scan tool + table + test group; 1 session (scan is one-time).
 
 ### 7. Crash-boot soak gate — sample the off-diagonal torn-state space *(OPEN)*
-- **Goal:** hand-enumerated unit tears cannot cover real multi-store crash states; exercise restore/recovery the way it fails. 0 of this session's 4 failures were catchable by any gate as configured — this and #5 fix the measurement channel.
+- **Goal:** hand-enumerated unit tears cannot cover real multi-store crash states; exercise restore/recovery the way it fails. No gate as configured could catch a multi-store crash state; this and #5 fix the measurement channel.
 - **Mechanism:** nightly (~40 min, ~10 cycles): reflink-copy the frozen wedge fixture + a fresh live snapshot; boot HEAD; `kill -9` at randomized phases (boot, mid-advance, mid-reindex); reboot; assert SERVING, tip ≥ floor, no FATAL, no restart loop, within budget. Also the standing watch on the never-give-up unit: an infinite reindex loop is a red soak, not a mystery.
-- **Acceptance:** soak red on the pre-`706a7c00a` binary against the wedge fixture, then 7 consecutive green nights at HEAD.
+- **Acceptance:** soak red on a binary without the fix against the wedge fixture, then 7 consecutive green nights at HEAD.
 - **Size:** ~250 LOC harness + timer unit; 1 session.
 
 ### 8. One-command tenacious bootstrap — make the proven recipe the only path *(OPEN)*

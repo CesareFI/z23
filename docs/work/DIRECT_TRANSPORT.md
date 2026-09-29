@@ -1,6 +1,6 @@
 # Direct transports: UDP fast path, IP discovery, and disclosure control
 
-> **Owner decision (2026-08-23): build the UDP datagram fast path, PEX-lite
+> **Owner decision: build the UDP datagram fast path, PEX-lite
 > clearnet discovery, and per-node disclosure posture as one parallel wave
 > beside the mesh acceptance track.** Onion remains the always-on private
 > fallback ([`NAT_AND_ONION_TRANSPORT.md`](./NAT_AND_ONION_TRANSPORT.md)
@@ -47,7 +47,7 @@ New `core/modules/net/udp_transport.{h,c}`:
   construction: UDP egress yields before chain-critical traffic, and the
   cap is enforced numerically, not by convention.
 
-**Status 2026-09-07 — the DATAGRAM profile landed, and only that.**
+**Status — only the DATAGRAM profile is implemented.**
 `engine/modules/gamelink/` implements the unreliable-sequenced half of
 this component: the fixed header, ChaCha20-Poly1305 per packet under an
 HKDF-SHA3-256 subkey of the paired session, sequence-as-nonce with a
@@ -136,7 +136,7 @@ proof-of-possession + rate limits; scope discipline forbids QUIC ambitions;
 the UDP layer can never touch consensus or block-relay paths because it
 does not share code with them.
 
-## Resilience layer: sticky connectivity (added 2026-08-23)
+## Resilience layer: sticky connectivity
 
 Goal: start the node anywhere and it finds peers — fast path first,
 onion always as guaranteed fallback — without router configuration.
