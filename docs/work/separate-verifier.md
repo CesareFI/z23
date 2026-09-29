@@ -355,6 +355,143 @@ under the current debug/LTO profiles: a real Z23 unit compiled directly from
 verifier must compile the real source with equivalent path and working
 directory semantics, then bind the implementation bytes of all tools it used.
 
+## Receiver in the landing proof
+
+`tools/dev/verify_receiver.{h,c}` and `verify_receiver_input.c` let a proof
+use a signed observation for `platform/modules/base/src/result.c` (test-fast)
+instead of compiling it. Proven by `test_verify_receiver`.
+
+### Where admission lives: the driver, with zcc as a thin client
+
+Two designs were considered:
+
+- (a) The driver pre-materializes the object into the epoch tree.
+- (b) The driver admits the bytes into a private directory, and zcc copies
+  them into the epoch target.
+
+We chose (b). Design (a) cannot work, for three reasons:
+
+- The epoch directory is named by `TEST_FAST_COMPILE_EPOCH`, and that name
+  is only known after make parses the Makefile.
+- The object rule depends on `$(ZCC_BIN)` and `$(VIEW_GEN_HEADERS)`. The
+  same make rebuilds both, so a pre-placed object is older than its
+  prerequisites and make compiles over it.
+- `build-epoch-session.sh` recover mode quarantines a whole epoch directory
+  that holds `.unverified` and no live lease. It also collects non-current
+  epochs beyond the three it keeps.
+
+In (b) the object travels zcc's normal staged publication, so it survives
+exactly as a compiled object would.
+
+The driver is the lander's pinned `z23-dev`, not the candidate's build. It
+does all admission before the bundle make:
+
+1. Load the root-pinned verifier key. With none installed, the result is
+   `cold(no_verifier_key)` and nothing else is read.
+2. Load the pins through `zcl_verify_store_pins_load`, and the root-owned
+   profile `/etc/z23verify/fixed_result_fast.args`.
+3. Run its own `-E` in the generation, with `/usr/bin/cc`, the fixed
+   four-entry environment, and `-MT` set to the placeholder target. The
+   placeholder has an all-zero epoch and the same 121-byte length, so the
+   depfile wraps identically.
+4. Hash the source content (below) over the files that `-E` read, and
+   require it to equal the pin.
+5. Build key v2 through `zcl_fixed_result_expected_v2`. Its synthetic `-c`
+   argv writes into the private directory as `/proc/self/fd/<n>`.
+6. Call the store lookup.
+7. On a HIT, require the donor depfile after its own 121-byte target to equal
+   the driver's own depfile tail, byte for byte. The donor depfile names the
+   donor's epoch, so it is never published as it stands.
+8. Write `argv`, `object.o`, `depfile.tail` and `stderr.bin` into
+   `<state>/receiver.<key>`, which must lie outside the generation. The
+   store's shared publication lock stays held until the step ends.
+
+`ZCC_ADMITTED` and `ZCC_LOG` are removed from the inherited proof
+environment and set only for an admitted step.
+
+zcc serves only in proof mode (`ZCC_VERIFIED`), only for `dep` mode, and
+only for this source and a well-formed epoch target. It also requires make's
+compiler tokens to equal the admitted `argv` exactly. It writes the object
+and `<exact target>` + the driver's depfile tail, then logs
+`VERIFIED admitted:fixed_result.v2 <target>`. In every other case it
+compiles and logs `MISS admitted:<why>`.
+
+zcc holds no authority; its argv check is a correctness guard, not a trust
+boundary. After make the driver rehashes three things:
+
+- the published object, which must equal the admitted bytes;
+- the exact-target depfile;
+- every source input it measured.
+
+The step result is decided from those rehashes. A candidate that bypasses
+zcc can produce any object at all, but it cannot make the driver report a
+HIT for bytes the driver did not admit.
+
+### Source content root v2
+
+The receiver's source content root is SHA3-256 of
+`F("z23verify.fixed_result.source_content.v2")`, then
+`F("path") F(rel) F("bytes") F(content)` for each file the receiver's own
+`-E` read. Files come from the depfile, in sorted order, and are opened
+beneath the generation with no link followed.
+
+Owner and mode are excluded. A 0600 proof generation and a root-owned 0444
+image of the same bytes therefore agree. The launcher preflight's
+`content_sha3` covers the whole tree with its modes, which a proof
+generation cannot reproduce. That preflight must be changed to compute the
+same v2 root before production pins can match. This is open.
+
+### phases.txt rows
+
+```text
+object_reuse_admit=hit(<store_key>,<record_sha3>) | cold(<token>) | block(<token>)
+compile_launches_avoided=<n>
+object_reuse_cost=wall_us=<n> cpu_us=<n> bytes=<n> compile_launches=<n>
+```
+
+A `block(...)` fails the step with `object_reuse_blocked_<token>`. When the
+build itself fails, the build's own message takes precedence.
+
+Cold tokens:
+
+- `no_verifier_key`
+- `receiver_platform_unsupported`
+- pins: `store_pins_path_unsafe`, `store_pins_missing`, `store_pins_unsafe`,
+  `store_pins_changed`
+- profile and generation: `receiver_profile_{missing,path_unsafe,unsafe,mismatch,shape}`,
+  `receiver_cwd_unsupported`, `receiver_preprocess_{failed,deadline,empty,spawn_failed,wait_failed}`,
+  `receiver_generation_unreadable`,
+  `receiver_work_unsafe`, `receiver_work_inside_generation`
+- inputs: `receiver_depfile_unparsed`, `receiver_inputs_missing`,
+  `receiver_input_path_unsafe`, `receiver_input_unreadable`, `receiver_file_*`
+- `receiver_source_content_mismatch`, `receiver_depfile_mismatch`
+- every store and attest refusal that is not blocking, for example:
+  `store_path_unsafe`, `store_owner_same_uid`, `attest_no_observation`,
+  `attest_record_v1_unbound`, `attest_receipt_mismatch`,
+  `contract_receipt_artifact_mismatch`
+- after make: `admitted_not_consumed` and `admitted_<zcc reason>`, for
+  example `admitted_argv_mismatch`
+
+Block tokens:
+
+- the store's blocking verdicts, for example `attest_exit_nonzero`,
+  `attest_eligible_conflict`, `store_lock_unavailable`,
+  `store_scan_incomplete`
+- after make: `admitted_object_mismatch`, `admitted_object_missing`,
+  `receiver_depfile_mismatch`, `admitted_target_invalid`,
+  `admitted_served_overflow`, `receiver_source_changed`
+
+### Still needed from root
+
+The following are all absent today, so production reports
+`cold(no_verifier_key)`:
+
+- `/etc/z23verify/verifier.pub`
+- `fixed_result.pins`, with `source_content` computed as v2 above
+- `fixed_result_fast.args`
+- the store and its policy
+- the installed images and accounts
+
 ## Threat model
 
 1. The candidate controls its Makefile, build scripts, generators, tests,
@@ -537,7 +674,7 @@ Each slice fails closed by default.
      loader, and the admission decision, proven by `test_verify_attest`.
    - 1b: the compiler wrapper's verified mode, which refuses everything until
      a key is pinned; the proof environment sets it, and the proof note gains
-     `object_reuse_admit=unqualified(no_verifier_key)`. RED: an object
+     `object_reuse_admit=cold(no_verifier_key)` (see "Receiver in the landing proof"). RED: an object
      planted in the same-account cache is served by a proof-mode compile
      today. GREEN: it compiles for real.
 2. **Daemon compile core.** tools/verify/z23_verifyd.c (planned; not yet in
