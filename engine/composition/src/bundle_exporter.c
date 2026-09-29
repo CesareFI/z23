@@ -1,7 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * bundle_exporter — the STANDING live consensus-state bundle exporter (lane C1
- * of the Instant-Sync program). See engine/composition/include/config/bundle_exporter.h for
+ * bundle_exporter — the STANDING live consensus-state bundle exporter. See engine/composition/include/config/bundle_exporter.h for
  * the contract and the precise provenance claim this proves.
  *
  * Structure mirrors contexts/wallet/services/src/wallet_backup_service.c: a dedicated worker
@@ -45,10 +44,9 @@
 #include <stdlib.h>
 #include <string.h>
 /* ── Recovery policy (both platform arms) ───────────────────────────
- * The exporter used to decide qualification and the producer session ONCE, at
- * boot, and never again. A node upgraded twice a day therefore stopped minting
- * forever the first time its executable changed (see bx_recover_session for the
- * exact mechanism). Recovery is now a normal tick step, with three constants:
+ * Qualification and the producer session are re-evaluated on each tick, so a
+ * changed executable does not stop minting forever (see bx_recover_session for
+ * the mechanism). Constants:
  *
  * BX_DEGRADED_AFTER_FAILURES — how many CONSECUTIVE failed attempts before the
  *   outage is named as bundle_exporter.degraded. 3, not 1: the first attempt
@@ -222,13 +220,9 @@ static void bx_note_refusal(const char *fmt, ...)
     snprintf(g_bx.last_refusal, sizeof g_bx.last_refusal, "%s", buf);
     pthread_mutex_unlock(&g_bx.lock);
 }
-/* A degraded exporter is a SILENT production outage, and that is the whole
- * reason this exists. Measured on the canonical node 2026-08-19: the last mint
- * was 2026-07-24, 165,288 blocks behind its own tip, because a binary upgrade
- * left the stored producer session foreign to the running build. The refusal
- * was correct; the silence, and the absence of any in-process recovery, were
- * not. The exporter now RETRIES on its own tick with bounded backoff
- * (bx_recover_session) and only names the outage after
+/* A degraded exporter is a silent production outage unless named. The
+ * exporter RETRIES on its own tick with bounded backoff (bx_recover_session)
+ * and only names the outage after
  * BX_DEGRADED_AFTER_FAILURES consecutive failures, with the LITERAL cause
  * leading the reason.
  *
@@ -237,11 +231,9 @@ static void bx_note_refusal(const char *fmt, ...)
  * cleared by this process the moment a mint succeeds or the session is
  * re-derived (bx_attempt_succeeded).
  *
- * REASON BUDGET — this used to overflow. blocker_init copies into a
- * BLOCKER_REASON_MAX (256) field through the shared visible-cut policy, and
- * the old framing produced intended_len=275 for a real producer-session
- * refusal: the record was stored with a "[cut" marker and the operator lost
- * the tail. `degradation` carries the one thing an operator needs — the exact
+ * REASON BUDGET — blocker_init copies into a BLOCKER_REASON_MAX (256) field
+ * through the shared visible-cut policy, which truncates with a "[cut" marker.
+ * `degradation` carries the one thing an operator needs — the exact
  * refusal, e.g. producer_session_mismatch_detail's "field=X expected=Y
  * actual=Z" — so it leads and gets the first 160 bytes. The framing below is
  * bounded at 90 bytes (39 lead-in + 6 days + 11 + 10 height + 24 tail), so the

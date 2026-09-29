@@ -131,24 +131,15 @@ static bool reset_shielded_history_incomplete_in_tx(struct sqlite3 *db,
 
 /* Co-commit the initial Sapling frontier row for a v2 snapshot (Sapling
  * frontier only — no v3 Sprout/nullifier section) in the SAME transaction as
- * reset_shielded_history_incomplete_in_tx above.  This closes the birth-defect
- * gap the sapling_anchor_frontier_unavailable condition guards: without it the
- * v2 path committed anchor_kv_reset_mark_empty_below_in_tx(seed_h) with an
- * EMPTY sapling_anchors table, so the reset and the frontier row lived in two
- * different transactions (the row was only seeded later by the separate
- * boot_seed_sapling_anchor_frontier_after_reset backstop) — an interruption
- * between them, or an unloaded in-RAM tree, left the empty-below cursor over an
- * empty table and the first shielded-output block above the seed wedged
- * fail-closed.  Seeding it here makes the invariant "reset-mark-empty-below
- * always co-commits the frontier row it marks-empty-below" hold atomically.
+ * reset_shielded_history_incomplete_in_tx above, so the empty-below cursor
+ * never commits without its initial frontier row (see the
+ * sapling_anchor_frontier_unavailable condition).
  *
- * Fail-SAFE and consensus-neutral: anchor_kv_seed_frontier_row recomputes the
- * frontier's own root and REFUSES (writes nothing, logs) unless it equals the
+ * Fail-safe and consensus-neutral: anchor_kv_seed_frontier_row recomputes the
+ * frontier's own root and refuses (writes nothing, logs) unless it equals the
  * header-committed hashFinalSaplingRoot at seed_h, so an absent / unparseable /
- * misaligned frontier is a clean no-op that defers to the existing
- * after-reset + runtime-condition backstop.  Best-effort by contract: a false
- * return here never fails the outer seed (the reset already succeeded and the
- * backstops remain), so callers ignore it. */
+ * misaligned frontier is a no-op that defers to the after-reset and
+ * runtime-condition backstops. Best-effort: callers ignore failure. */
 static void seed_v2_sapling_frontier_row_in_tx(
     struct sqlite3 *rpdb, struct main_state *ms, int seed_h,
     const uint8_t *sapling, uint32_t sapling_len)

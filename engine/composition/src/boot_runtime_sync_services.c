@@ -195,10 +195,8 @@ void boot_gap_fill_stop(void *ctx)
 /* Start the external zclassicd height oracle (runtime svc).
  *
  * MAINNET-ONLY. This service polls a co-located zclassicd on 127.0.0.1:8232 in
- * the background, and it used to ignore its ctx entirely — so a `-regtest`
- * fixture with a deliberately dead `-connect` sink still dialed the operator's
- * live daemon. A mainnet daemon's height is meaningless to a regtest or testnet
- * node anyway; the only thing the dial could produce was the leak. */
+ * the background and honours its ctx: a mainnet daemon's height is meaningless
+ * to a regtest or testnet node, and the dial would leak into the live daemon. */
 bool boot_zclassicd_oracle_start(void *ctx)
 {
     struct boot_svc_ctx *svc = ctx;

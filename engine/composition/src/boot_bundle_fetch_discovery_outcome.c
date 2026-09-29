@@ -7,10 +7,9 @@
  * for the public dump-function contract and CLAUDE.md "Adding state
  * introspection" for the convention this follows.
  *
- * bbf_discover_from_peers() previously only LOGGED its quorum outcome;
- * nothing durable recorded which of the three shapes ("reached" |
- * "degraded_single_seed" | "no_quorum_fell_open_to_ibd") a given boot landed
- * in. bbf_record_discovery_outcome() persists that + peer/response counts as
+ * bbf_record_discovery_outcome() persists which of the three shapes
+ * ("reached" | "degraded_single_seed" | "no_quorum_fell_open_to_ibd")
+ * bbf_discover_from_peers() landed in, + peer/response counts, as
  * three small progress.kv keys (text + two int64 counts, same idiom as
  * controllers/sovereignty_controller.c's t_ready/t_sovereign stamps);
  * boot_bundle_fetch_discovery_dump_state_json() (registered as the

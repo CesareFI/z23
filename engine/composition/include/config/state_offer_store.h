@@ -2,12 +2,11 @@
  * Purpose: What a first-boot node does with the state offers its peers send.
  *
  * ZRC-0011 phase 1a, consumer half. A node with no fast-start state source
- * previously had exactly one thing to do: fold from genesis, loudly, through
- * bootstrap.no_state_source (engine/conditions/src/no_state_source.c). Its
- * peers may well have been holding a recent bundle the whole time; the peer
- * link simply never carried the question. Now it does — offers arrive appended
- * to "zfileaddr" (core/modules/net/include/net/state_offer.h) — and this module
- * is what the node does with them.
+ * folds from genesis, loudly, through bootstrap.no_state_source
+ * (engine/conditions/src/no_state_source.c). Peers may hold a recent bundle;
+ * offers arrive appended to "zfileaddr"
+ * (core/modules/net/include/net/state_offer.h) and this module is what the
+ * node does with them.
  *
  * The shape is a BOUNDED WAIT, not a stall. The node keeps doing the work it
  * would have done anyway (headers, from-genesis fold) from the first instant.

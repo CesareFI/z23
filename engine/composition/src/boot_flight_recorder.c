@@ -222,7 +222,7 @@ void boot_flight_recorder_finish(struct node_db *ndb)
 
     /* E2 boot-loop-failsafe: this boot's own row is now persisted (just
      * above), so the boot-loop detector's window count includes it. See
-     * config/boot_loop_guard.h for the incident this closes. */
+     * config/boot_loop_guard.h. */
     boot_loop_guard_check(ndb);
 }
 

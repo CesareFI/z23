@@ -107,10 +107,8 @@ static bool bbf_download_progress(uint32_t chunks_done, uint32_t num_chunks,
  * compiled CHECKPOINT_ROM, and that checkpoint is a MAINNET one (see
  * boot_bundle_pick_manifest's fallback to get_sha3_utxo_checkpoint()->height).
  * A regtest or testnet node therefore has nothing to gain from the fetch and
- * everything to leak by attempting it: on 2026-07-28 a `-regtest` fixture that
- * named a deliberately dead `-connect` sink still ran this weld, reached the
- * operator's LIVE node on its file-service port, and pulled ~1 GB of real
- * mainnet chain state into what was supposed to be an empty regtest datadir.
+ * everything to leak by attempting it: a `-regtest` fixture must never reach
+ * the operator's live node or pull mainnet chain state into a regtest datadir.
  * The gate is "is mainnet", not "is not regtest": a testnet node must not pull
  * a mainnet bundle either.
  *
@@ -739,7 +737,7 @@ static bool bbf_discover_from_peers(const char *datadir,
              "artifact)" : "not advertised (header chain via P2P)");
     /* Outcome category under ranked discovery: proceeding on a >=2-seed
      * byte-identical winner is "reached"; proceeding on a lone-seed winner is
-     * "degraded_single_seed" (no longer a refusal — trust binds at install,
+     * "degraded_single_seed" (not a refusal — trust binds at install,
      * not at discovery; see bbf_quorum_pick's STEP 0 comment). */
     {
         int win_count = 0;

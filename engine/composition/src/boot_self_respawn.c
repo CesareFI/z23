@@ -1,7 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * purpose: implement the shared off-systemd self-respawn decision + re-exec.
- * See engine/composition/include/config/boot_self_respawn.h for the contract and the live
- * incident this closes. */
+ * See engine/composition/include/config/boot_self_respawn.h for the contract. */
 
 #include "config/boot_self_respawn.h"
 

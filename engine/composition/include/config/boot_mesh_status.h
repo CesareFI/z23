@@ -12,8 +12,7 @@
  *
  * Session binding note: noise_transport_snapshot's transcript_hash and
  * connection_generation are transcript-derived and identical on both sides;
- * the wire binds only that shared session evidence (the process-local
- * per-side connection_serial left the protocol in 2114f5257). The responder
+ * the wire binds only that shared session evidence. The responder
  * verifies transcript/generation/remote-static against its live snapshot,
  * and the requester verifies the receipt's echoed pair against the CURRENT
  * snapshot of the sending node. A receipt arriving on a newer or different

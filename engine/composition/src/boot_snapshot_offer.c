@@ -436,7 +436,7 @@ static void *build_snapshot_offer_thread(void *arg)
         goto done;
     }
 
-    /* Sticky/global-sync (Lane F #9c): when enabled, any SOVEREIGN at-tip
+    /* Sticky/global-sync: when enabled, any SOVEREIGN at-tip
      * zclassic23 node may build and offer a snapshot, not only file-service
      * profile nodes. Assisted nodes were rejected above before export or
      * manifest construction. The

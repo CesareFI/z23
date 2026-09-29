@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0.
  *
- * Purpose: Lane A1 — emit the contained full-history consensus-state bundle
+ * Purpose: emit the contained full-history consensus-state bundle
  * out of the mint datadir once the producer source receipt is finalized.
  * Quiesces the in-RAM fold overlay, drives the exporter, and turns any refusal
  * into a typed PERMANENT blocker without touching the verified anchor snapshot
@@ -50,7 +50,7 @@
 #include "util/log_macros.h"
 #include "core/utiltime.h"                       /* GetTimeMicros */
 
-/* Lane A1 — emit the contained full-history zcl.consensus_state_bundle.v1 into
+/* Emit the contained full-history zcl.consensus_state_bundle.v1 into
  * the mint datadir once the producer source receipt has been finalized. This is
  * the exporter's (config/consensus_state_snapshot_export.h) ONLY viable caller:
  * its receipt-binding proof requires the exporting process to be the EXACT

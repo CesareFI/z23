@@ -204,7 +204,7 @@ enum mesh_terminal_receipt_status boot_mesh_terminal_decide(
     if (now_unix < open->issued_unix || now_unix >= open->expires_unix)
         return MESH_TERMINAL_RECEIPT_EXPIRED;
     /* Live-session binding: transcript and generation are transcript-
-     * derived and shared by both sides (mesh status, 2114f5257). */
+     * derived and shared by both sides (mesh status). */
     if (memcmp(open->transcript_hash, session->transcript_hash, 32) != 0 ||
         open->connection_generation != session->connection_generation ||
         memcmp(open->requester_noise_static, session->remote_static, 32) != 0)

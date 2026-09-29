@@ -311,8 +311,8 @@ bool db_service_attach(struct db_service *svc, struct node_db *node_db)
 /* WAL checkpoint thread.
  *
  * sqlite3 autocheckpoint can be silently deferred when a long-running
- * reader holds the WAL open — observed in practice as multi-GB
- * .db-wal files after a few hours of catch-up. The pthread below
+ * reader holds the WAL open, leaving multi-GB
+ * .db-wal files. The pthread below
  * forces SQLITE_CHECKPOINT_TRUNCATE every 5 minutes regardless of
  * autocheckpoint state. It uses the same node_db lock contract as
  * every other writer so it won't race with the worker thread. */
@@ -341,10 +341,9 @@ static void *db_service_ckpt_main(void *arg)
          * outcome and the frame counts land in the process-wide checkpoint
          * ledger inside node_db_wal_checkpoint(), and the queue-wait /
          * execution split lands in db_service_wal_checkpoint(). This thread's
-         * only remaining job is to say when the call did not complete, which
-         * used to be one unstructured line to stderr with no counter behind
-         * it: the sole failure signal for the ONLY checkpointer that actually
-         * runs on a live node. */
+         * only remaining job is to say when the call did not complete; it is
+         * the sole failure signal for the only checkpointer that runs on a
+         * live node. */
         if (!db_service_wal_checkpoint(svc)) {
             LOG_WARN("db_service",
                      "[wal-checkpoint] periodic checkpoint did not complete "

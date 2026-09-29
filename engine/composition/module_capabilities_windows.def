@@ -14,11 +14,9 @@
  * with the portable table so a package declares everything reachable on any
  * supported target.
  *
- * Generated as a reviewed snapshot on 2026-08-30 from the complete native
- * MinGW C23 epoch:
- *   build/dev-obj/epochs/e352e6957ebde912f5961fb012d612872b28b877aa890300f7bcf805b33013dc
- *   2060 translation-unit objects after excluding the generated
- *   restart-base.o aggregate.
+ * Generated as a reviewed snapshot from the complete native MinGW C23 epoch
+ * (translation-unit objects, excluding the generated restart-base.o
+ * aggregate).
  * Ordering is alphabetical by source path and carries no meaning. */
 
 ZCL_MODULE_CAPABILITY("engine/conditions/src/sapling_anchor_frontier_unavailable.c", CAP_FS_READ|CAP_FS_WRITE, "")

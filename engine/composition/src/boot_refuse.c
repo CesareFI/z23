@@ -36,15 +36,12 @@ bool boot_gate_export_refusal(const char *name)
  * the typed FATAL block with the operator's own next command, and return false
  * so app_init stops and main exits 1. Never true.
  *
- * WHY THIS EXISTS, measured on a fleet node 2026-09-09/10. The node.db gate
- * parked here instead, and parking is only honest while the process is still
- * worth something to an operator. This gate fires at stage crypto_ready — no
- * RPC bound, serving=false — so the parked process answered nothing, while the
- * unit is Type=notify and READY= is never sent from a park. systemd therefore
- * showed `activating (start)` for 15.9 h (the drop-in's TimeoutStartSec), the
- * step reporter printed 1,909 `verdict=telemetry` records, and the operator's
- * `systemctl status` never said the word failed. A refusal that exits reaches
- * that same operator in seconds, and Restart= then owns the retry. */
+ * Parking is only honest while the process is still worth something to an
+ * operator. This gate fires at stage crypto_ready — no RPC bound,
+ * serving=false — and the unit is Type=notify with READY= never sent from a
+ * park, so systemd would show `activating (start)` until TimeoutStartSec
+ * without ever saying failed. A refusal that exits reaches the operator in
+ * seconds, and Restart= then owns the retry. */
 bool boot_refuse_at_permanent_gate(const char *gate_name, const char *message,
                                    const struct boot_error_next *next,
                                    size_t next_count, const char *evidence)

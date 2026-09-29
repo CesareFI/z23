@@ -13,7 +13,7 @@
 extern "C" {
 #endif
 
-/* LIVE INCIDENT this closes: an "orderly shutdown + self-respawn" (latched by
+/* Contract: an "orderly shutdown + self-respawn" (latched by
  * the chain-tip watchdog on a genuine-liveness stall, by the supervisor
  * backstop on a frozen root sweep, or by the checkpoint-bundle install-ready
  * condition arming an install-on-next-boot) must re-exec the binary in-process
@@ -24,9 +24,9 @@ extern "C" {
  *      worker missed its bounded join window, so the destructive frees are
  *      skipped and the process _exit(0)s early (all durable state is already
  *      persisted at that point).
- *   2. (historically) a shutdown-stage deadline force-_exit()ing from the
- *      alarm handler.
- * Off systemd, either early exit left the node DOWN — the re-exec never ran.
+ *   2. a shutdown-stage deadline force-_exit()ing from the alarm handler.
+ * Off systemd, either early exit would leave the node DOWN — the re-exec
+ * would never run.
  * This module lets those exit points honor the request themselves: re-exec is
  * strictly SAFER than the frees the straggler guard skips (execv atomically
  * discards the detached worker threads, so there is no use-after-free window),

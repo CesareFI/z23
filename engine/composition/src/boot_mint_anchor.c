@@ -36,12 +36,8 @@
  *       coins_kv every ZCL_FOLD_INRAM_FLUSH_EVERY blocks (default 50,000) and
  *       coins_ram_reconcile_boot rewinds the cursor to that flush watermark on
  *       the next boot, so a crash loses at most one flush window, not the fold.
- * The worst-case resume rewind is thus one flush window; lower
- * ZCL_FOLD_INRAM_FLUSH_EVERY to tighten it. A finer (per-batch) synchronous
- * checkpoint of the full in-RAM working set is intentionally NOT added here — it
- * would trade the fold's dominant throughput lever (a low fsync cadence) for a
- * marginal resume-granularity gain, and the mechanisms above already make the
- * mint resumable without it. */
+ * The worst-case resume rewind is one flush window; lower
+ * ZCL_FOLD_INRAM_FLUSH_EVERY to tighten it. */
 #include "config/boot.h"
 #include "config/boot_internal.h"  /* boot_full_fold_is_armed/_finish (-full-fold) */
 #include "config/boot_mint_anchor_drive.h"
@@ -66,7 +62,7 @@
 #include "storage/coins_ram.h"                  /* coins_ram_active,
                                                  * coins_ram_commitment */
 #include "storage/snapshot_shielded.h"          /* snapshot_shielded_collect_from_db */
-#include "storage/event_log_singleton.h"        /* event_log_set_singleton (S1.2) */
+#include "storage/event_log_singleton.h"        /* event_log_set_singleton */
 #include "storage/consensus_state_bundle_codec.h" /* CONSENSUS_STATE_VALIDATION_* */
 #include "storage/progress_store.h"             /* progress_store_db */
 #include "jobs/mint_skip_crypto.h"              /* mint_skip_crypto_get */
@@ -118,10 +114,7 @@ static int32_t mint_applied_through(sqlite3 *pdb)
  * metric. mint_applied_through above reads the durable coins_applied_height
  * key, which under -fold-inram is written only at coins_ram FLUSH boundaries
  * (every ZCL_FOLD_INRAM_FLUSH_EVERY blocks, coins_ram.c) — it reads -1 for the
- * whole first flush window and then lags by up to a window, so a drive loop
- * gated on it can neither see progress (a false "stall") nor see the anchor
- * being reached (a false "incomplete" after a COMPLETE fold whose tail is
- * still overlay-resident). Returns -1 when nothing has been applied. */
+ * first flush window and lags by up to a window afterwards. Returns -1 when nothing has been applied. */
 static int32_t mint_frontier_through(void)
 {
     uint64_t cursor = utxo_apply_stage_cursor();
@@ -251,35 +244,25 @@ bool boot_mint_anchor_run(const char *datadir)
      * eight-stage pipeline the supervisor uses, under the activation mutex (no
      * race with the background ticks) AND with the reducer-drive guard held so
      * the supervisor yields its 2s stage ticks for the whole drain. Unlike the
-     * budgeted reducer_kick, each call folds back-to-back until convergence
-     * instead of stopping every 2s and returning here to re-read the frontier —
-     * so the genesis..anchor fold is not chopped into 2s slices. The
-     * header_admit ceiling (boot_mint_anchor_reset) caps the fold AT the anchor,
+     * budgeted reducer_kick, each call folds back-to-back until convergence.
+     * The header_admit ceiling (boot_mint_anchor_reset) caps the fold AT the anchor,
      * so the pipeline converges there and the kick returns 0 advances. We loop
      * until the utxo_apply frontier reaches the anchor; we also break on a
      * no-progress plateau so a bodies-missing datadir cannot spin forever (the
      * caller then reports the mint as incomplete, not a false anchor). */
     /* Progress metric: the IMMEDIATE utxo_apply stage frontier
-     * (mint_frontier_through), NOT the durable coins_applied_height. Under
-     * -fold-inram the durable key only moves at coins_ram flush boundaries
-     * (every ZCL_FOLD_INRAM_FLUSH_EVERY blocks), so gating on it makes the
-     * stall detector blind for a whole flush window AND leaves the anchor
-     * break unreachable when the fold's tail is overlay-resident. On resume
-     * the stage cursor already reflects the durable resume point. */
-    /* S1.2 — skip event_log emission during the offline mint. The mint's only
-     * output (utxo-anchor.snapshot) is built from coins_kv (progress.kv,
-     * written directly by utxo_apply) + node.db shielded state; it never reads
-     * the event_log or its projections. So the fold-thread EV_BLOCK_HEADER
-     * emission — serialize + pwrite + fsync per block — is
-     * pure overhead here. Every fold-path emitter routes through
-     * event_log_singleton() and is NULL-tolerant (skips on NULL), so unwiring
+     * (mint_frontier_through), NOT the durable coins_applied_height, which under
+     * -fold-inram only moves at coins_ram flush boundaries. On resume the
+     * stage cursor already reflects the durable resume point. */
+    /* Skip event_log emission during the offline mint: its only output
+     * (utxo-anchor.snapshot) is built from coins_kv (progress.kv) + node.db
+     * shielded state and never reads the event_log. Every fold-path emitter
+     * routes through event_log_singleton() and is NULL-tolerant, so unwiring
      * the singleton suppresses all of them for the mint's duration.
      *
-     * Two env escapes keep the emission on for A/B measurement:
-     *   ZCL_EVENTLOG_SYNC_PER_APPEND=1  (the S1.1 kill switch — restore the OLD
-     *                                    per-append-fsync baseline: emission ON)
-     *   ZCL_MINT_KEEP_EVENTLOG=1        (keep emission ON but let S1.1 batch it
-     *                                    — isolates the S1.2 delta). */
+     * Env escapes keep emission on:
+     *   ZCL_EVENTLOG_SYNC_PER_APPEND=1  (per-append-fsync baseline, emission ON)
+     *   ZCL_MINT_KEEP_EVENTLOG=1        (emission ON, batched). */
     bool keep_eventlog = (getenv("ZCL_EVENTLOG_SYNC_PER_APPEND") != NULL) ||
                          (getenv("ZCL_MINT_KEEP_EVENTLOG") != NULL);
     if (!keep_eventlog) {
@@ -288,12 +271,10 @@ bool boot_mint_anchor_run(const char *datadir)
                 "[mint-anchor] S1.2: event_log emission suppressed for the fold "
                 "(artifact reads coins_kv + shielded only)\n");
     }
-    /* S1.3: progress.kv synchronous=OFF for the fold's duration. This is the
-     * same IBD durability trade the live sync path already makes via
-     * progress_store_set_sync_mode() from the staged-sync supervisor tick —
-     * which never runs here (the mint boots its stages offline, with no
-     * liveness contracts), so without this the whole genesis→anchor fold pays
-     * an fsync barrier on every stage-batch COMMIT. The crash-ordering
+    /* progress.kv synchronous=OFF for the fold's duration: the same IBD
+     * durability trade the live sync path makes via
+     * progress_store_set_sync_mode() from the supervisor tick, which does not
+     * run in the offline mint. The crash-ordering
      * invariant survives: block bodies are fdatasync()ed BEFORE each COMMIT
      * by the pre-commit veto hook, so a lost COMMIT can only leave the cursor
      * BEHIND the bodies — the fold resumes from the earlier cursor and
@@ -353,9 +334,7 @@ bool boot_mint_anchor_run(const char *datadir)
             break;
         /* Bounded drain chunk: returns within ZCL_MINT_KICK_BUDGET_MS (or at
          * the first frontier-stalled round) so THIS loop reliably regains
-         * control to log progress and run the stall detector below — an
-         * unbounded kick can otherwise spin silently for hours with no
-         * progress line and no stall guard ever running. */
+         * control to log progress and run the stall detector below. */
         (void)reducer_kick_unbudgeted(ctl);
         if (!wal_manual && coins_ram_active()) {
             mint_wal_autocheckpoint(pdb, 0);
@@ -399,9 +378,8 @@ bool boot_mint_anchor_run(const char *datadir)
             }
         } else if (++stall_kicks < kStallLimit) {
             /* No progress and nothing legitimately paused. Nap before the
-             * next round: without it the 64-kick budget is spent in about a
-             * second, so a fold that merely needs a moment to warm up reads
-             * as permanently walled. */
+             * next round so a slow warm-up does not exhaust the 64-kick
+             * budget. */
             mint_drive_nap_ms(200);
         } else {
             /* Fail CLOSED with a named blocker: register
@@ -582,27 +560,24 @@ bool boot_mint_anchor_run(const char *datadir)
                     anchor, anchor + 1);
         }
     }
-    /* Producer-END part 2 (lane A1): emit the contained full-history
-     * zcl.consensus_state_bundle.v1 into the datadir. The exporter's ONLY
-     * viable caller is this in-process point (its proof binds the running
-     * binary to the fold), so it runs here right after the receipt is
-     * finalized. Only a FULL-validation mint yields a serving bundle; a
-     * -mint-anchor-fast (checkpoint_fold) generation is non-serving by
-     * construction and the exporter would correctly refuse it, so skip the
-     * attempt for that profile rather than fail the one-shot. A skipped
-     * finalize (unstamped build) has no receipt to export against. A real
-     * export failure returns false so main.c's `minted ? 0 : 1` surfaces it to
-     * systemd — the verified anchor snapshot + receipt stay intact regardless. */
+    /* Producer-END part 2: emit the contained full-history
+     * zcl.consensus_state_bundle.v1 into the datadir. The exporter's proof
+     * binds the running binary to the fold, so this in-process point is its
+     * only caller. Only a FULL-validation mint yields a serving bundle; a
+     * -mint-anchor-fast (checkpoint_fold) generation is non-serving, so the
+     * attempt is skipped for that profile. A skipped finalize (unstamped
+     * build) has no receipt to export against. A real export failure returns
+     * false so main.c's `minted ? 0 : 1` surfaces it; the verified anchor
+     * snapshot + receipt stay intact regardless. */
     bool bundle_ok = true;
     if (receipt_finalized) {
         if (!mint_skip_crypto_get()) {
             /* Stamp the EARNED migration-complete + self-folded markers before
              * export. The checkpoint HARD-ASSERT above (_exit on mismatch)
              * proved this coins_kv reproduces the compiled checkpoint, so the
-             * markers are earned here — and a fresh full-validation producer has
+             * markers are earned here; a fresh full-validation producer has
              * no other stamper. The exporter's proof refuses a source lacking
-             * BOTH markers, so without this a full-validation bundle export
-             * always refuses. Fail CLOSED: page + PERMANENT blocker + exit
+             * BOTH markers. Fail CLOSED: page + PERMANENT blocker + exit
              * non-zero, never an unearned marker on a non-agreement path. */
             if (!boot_mint_anchor_stamp_sovereign_markers(pdb)) {
                 event_emitf(EV_OPERATOR_NEEDED, 0,

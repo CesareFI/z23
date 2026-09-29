@@ -1,4 +1,4 @@
-/* The `ops.telemetry.runtime` branch. Owned by the runtime telemetry lane.
+/* The `ops.telemetry.runtime` branch.
  *
  * All three leaves are READY: they render the typed runtime snapshot
  * (platform/modules/util/include/util/telemetry/runtime_fields.def) through the one render

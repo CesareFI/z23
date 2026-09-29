@@ -1298,7 +1298,7 @@ retry_authority_store:
         }
     }
 
-    /* Lane S OPTION A: publish the durable applied frontier BEFORE the Sapling
+    /* Publish the durable applied frontier BEFORE the Sapling
      * rebuild runs, in its own committed transaction (the snapshot-load tx
      * above already COMMITted, and the Phase-2 stage-cursor tx below has not
      * begun yet — no tx is open here). sapling_tree_rebuild reads the durable

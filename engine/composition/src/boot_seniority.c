@@ -44,8 +44,7 @@
  * of magnitude; it is short only so a stuck rebuild is retried promptly. */
 #define BSEN_POLL_SECS 30
 
-/* Heartbeat deadline. Comfortably above the 120-330 s fold commits observed
- * on this chain: the rebuild takes cs_main and node.db, so a slow tick is a
+/* Heartbeat deadline. Comfortably above the 120-330 s fold commits: the rebuild takes cs_main and node.db, so a slow tick is a
  * busy node, not a wedged worker, and a false TIME_DEADLINE stall would be
  * exactly the kind of alarm an operator learns to ignore. */
 #define BSEN_DEADLINE_SECS 600

@@ -32,10 +32,8 @@
  * test on a rendering path; "does a caller treat this output as the chain
  * itself" is.
  *
- * Until 2026-08-26 these two were merely NOT LISTED anywhere, which is an
- * accident rather than a decision: a future lane that passed the generic
- * checks could have admitted them and no gate would have objected. This file
- * is the decision, and check-hotswap-denied-leaves is its enforcement.
+ * Leaves not listed here are not thereby denied: this file is the explicit
+ * decision, and check-hotswap-denied-leaves is its enforcement.
  *
  * ── HOW IT IS ENFORCED ─────────────────────────────────────────────────────
  * check-hotswap-denied-leaves (make lint; --selftest proves it fires on a

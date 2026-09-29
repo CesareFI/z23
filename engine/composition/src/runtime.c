@@ -266,9 +266,7 @@ struct coins_view_cache *app_runtime_coins_tip(void)
  * engine/modules/storage and core/modules/validation need the live node.db handle and the
  * boot-owned chain-activation controller. config/ composes the process and
  * therefore sits ABOVE lib/; calling back down is fine, being called up by
- * name is not. Each lib/ module declares a port, and this file fills it in
- * with the very functions those call sites used to name directly, so the
- * behaviour is unchanged.
+ * name is not. Each lib/ module declares a port, and this file fills it in.
  *
  * A constructor rather than an app_init step: the node and the test runner
  * then get identical wiring with no start-order question, matching what

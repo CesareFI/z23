@@ -2,9 +2,7 @@
  *
  * purpose: The rules a coding agent must follow in THIS checkout, as DATA.
  *
- * Every rule below was, until now, a paragraph an agent had to remember and
- * repeatedly got wrong — and the right answer is not the same in the two
- * shapes a Z23 checkout comes in. A standalone clone pushes to origin/main
+ * The right answer is not the same in the two shapes a Z23 checkout comes in. A standalone clone pushes to origin/main
  * and gates its own commit; a linked worktree shares one object store with
  * several sibling lanes, must never push, and must never `git stash`. The
  * SAME sentence is wrong in the other shape, so the situation is part of

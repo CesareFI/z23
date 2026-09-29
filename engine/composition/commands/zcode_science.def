@@ -216,8 +216,8 @@ ZCL_COMMAND_READY_COMMAND(
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     zcl_native_handle_zcode_science_work_commit)
 
-/* S4 (2026-08-03, additive): the closed benchmark/reproduction executor.
- * One leaf, plan -> confirm:true commit -> receipt, feeding the landed S3
+/* S4: the closed benchmark/reproduction executor.
+ * One leaf, plan -> confirm:true commit -> receipt, feeding the S3
  * work.plan/commit admission path — never a parallel one. */
 ZCL_COMMAND_READY_COMMAND(
     "zcode.science.work.execute", "zcode.science.work", "",
@@ -342,7 +342,7 @@ ZCL_COMMAND_READY_COMMAND(
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     zcl_native_handle_zcode_science_vote_submit)
 
-/* S5 (2026-08-03, additive): local discovery PageRank over the rebuildable
+/* S5: local discovery PageRank over the rebuildable
  * science projection. Explanatory only — rank, votes, and mass are never
  * proof-acceptance, routing, reward, or protocol-control input, and the
  * evidence-admission path never reads this projection. */
@@ -396,11 +396,9 @@ ZCL_COMMAND_READY_COMMAND(
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_DETERMINISTIC,
     zcl_native_handle_zcode_science_rank_snapshot)
 
-/* Acceptance-proof glue (2026-08-03, additive): the operator surface for
- * zcode_science_rebuild — drop the six SQL projection tables and re-derive
- * them from the workspace CAS. Previously reachable only from tests; the
- * two-node acceptance proof (tools/dev/science_acceptance.sh) drives it to
- * demonstrate the projection is disposable and the CAS is the truth. */
+/* The operator surface for zcode_science_rebuild — drop the six SQL
+ * projection tables and re-derive them from the workspace CAS (the projection
+ * is disposable; the CAS is the truth). */
 ZCL_COMMAND_READY_COMMAND(
     "zcode.science.rebuild", "zcode.science", "",
     "Rebuild the science projection from the CAS",
@@ -425,7 +423,7 @@ ZCL_COMMAND_READY_COMMAND(
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     zcl_native_handle_zcode_science_rebuild)
 
-/* G1/S7 carrier (2026-08-04, additive): science objects ride the existing
+/* G1/S7 carrier: science objects ride the existing
  * package swarm as one-chunk content.v2 blob packages (vcs/blob_store.h)
  * — no new wire, no new store. publish mirrors a committed workspace-CAS
  * wire into the package store and files signed generic POINTER/PROVIDER

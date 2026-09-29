@@ -88,8 +88,7 @@ void boot_register_worker_supervisor(
  * supervisor is observe-only — it never re-arms that blocker's escape deadline
  * or clears it — so without an explicit retire the blocker sits in the registry
  * with an elapsed, ever-more-negative deadline for hours after the worker
- * resumed ticking (the live serve-node symptom: worker.stall.op.projection_-
- * backfill overdue by ~3.6 h, fire_count=1, no escalation). A looping worker
+ * resumed ticking. A looping worker
  * calls this once per iteration right after it publishes progress: a recovered
  * worker clears its own stale blocker within one loop, while a still-wedged
  * worker never reaches this call and correctly leaves the blocker standing —

@@ -143,8 +143,7 @@ block_index_projection_t *boot_ensure_block_index_projection(const char *datadir
  * check plus quarantine-rebuild is strictly better. Storage class is NOT
  * part of this decision — exactly as for node.db. The class decides how the
  * background scan is PACED (config/boot_fast_restart.h), not whether the
- * boot thread runs it: a 2.36 GB quick_check on flash still cost 60+ s of
- * unreachable RPC, and no disk is fast enough to justify holding READY. */
+ * boot thread runs it: no disk is fast enough to justify holding READY. */
 static bool boot_projection_defer_quick_check(const char *path)
 {
     struct platform_file_metadata metadata;

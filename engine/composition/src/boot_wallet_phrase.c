@@ -296,10 +296,9 @@ bool boot_wallet_create_new(struct wallet *w, struct wallet_sqlite *ws,
      *   - a declared dev/soak/test/copy/standby lane.
      *   - -wallet-no-phrase-backup, in as many words.
      *
-     * The refusal used to fire for all four, and the first one is the shipped
-     * canonical unit's own first boot: platform/deploy/zclassic23.service passes
-     * -operator-lane=canonical and carries Restart=always, so a brand-new
-     * install exited 1 and restarted forever without ever creating a wallet.
+     * The canonical lane must be waived: the shipped unit
+     * (platform/deploy/zclassic23.service) passes -operator-lane=canonical
+     * with Restart=always, so refusing would loop a fresh install forever.
      * -allow-plaintext-wallet is deliberately NOT on that list: choosing to
      * keep keys in the clear is not choosing to have no written backup.
      *

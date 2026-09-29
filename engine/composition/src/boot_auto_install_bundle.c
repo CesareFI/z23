@@ -259,8 +259,7 @@ static void csir_write_failed_marker(const char *bundle_path)
  * successfully: without this, an earlier failed attempt at the same path
  * (e.g. a watchdog-killed boot) permanently excludes the now-GOOD bundle
  * from autodetect on every later scan (boot_autodetect_consensus_bundle
- * skips marked bundles) — observed live 2026-07-27 on the canonical
- * datadir (marker 04:28, good bundle 05:37). Best-effort: a remove()
+ * skips marked bundles). Best-effort: a remove()
  * failure is loud but non-fatal, the install itself is durable.
  * Contract: config/consensus_state_install_runtime.h. */
 void boot_auto_install_clear_failed_marker(const char *bundle_path)
@@ -487,9 +486,8 @@ void boot_post_install_fold_span_check(struct main_state *ms,
  * ladder (the header-only clamp lives only in RAM on the first-boot import
  * path, and the checkpoint_bundle_install_ready arm-and-respawn can pre-empt
  * every shutdown save), so the map can carry the bundle PUBLISHER's HAVE_DATA
- * + (nFile, nDataPos) for bodies this node never wrote — measured live as a
- * ~1.3M calls/s read_block_pread storm on absent blk files that wedged a
- * supervised tick child. Drop each claim whose blk file is absent/unreadable
+ * + (nFile, nDataPos) for bodies this node never wrote, which would storm
+ * read_block_pread on absent blk files. Drop each claim whose blk file is absent/unreadable
  * HERE — post-install, before the staged pipeline starts — mirroring the
  * -load-snapshot-at-own-height gate (boot_refold_staged.c), then retract the
  * active-chain tip to the installed height so P2P fills the gap bottom-up. */
@@ -694,8 +692,7 @@ static bool nss_failed_bundle_present(const char *datadir)
 }
 
 /* Best-effort classification of WHY no state source landed, from observable
- * datadir state (the rich per-seed fetch outcome is Lane 2's to plumb; this
- * distinguishes what the boot seam can see today). */
+ * datadir state (this distinguishes what the boot seam can see). */
 static void nss_classify(struct app_context *ctx,
                          struct no_state_source_facts *out)
 {
@@ -709,9 +706,8 @@ static void nss_classify(struct app_context *ctx,
          * never ATTEMPTED. boot_bundle_fetch_should_run does not consult the
          * seed set, so without this branch a structurally-off fetch reported
          * `no_seed` — indistinguishable from "seeds were contacted and none
-         * served a usable manifest", which is what made the 2026-07-27 bare
-         * cold start read as a network/discovery problem when it was a wiring
-         * one. */
+         * served a usable manifest", so a wiring problem does not read as a
+         * network/discovery one. */
         out->fetch = NO_STATE_SOURCE_FETCH_SEEDS_EMPTY;
     } else {
         /* Eligible + attempted, but nothing installable landed. A persisted

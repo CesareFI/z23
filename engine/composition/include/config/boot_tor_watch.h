@@ -6,11 +6,10 @@
  * thread exists. When Tor's own config parse fails (the classic case: its
  * bootstrap SocksPort is still held by an outgoing instance) the thread runs
  * tor_run_main, gets -1 back, prints "Tor: exited with code -1" and returns.
- * Nothing in the tree noticed: tor_integration_is_requested() stayed true,
- * tor_integration_is_enabled() went false, and the node ran on with no onion
- * and no retry until a human restarted it (node1, 2026-09-08 03:07-03:35Z).
+ * tor_integration_is_requested() stays true while
+ * tor_integration_is_enabled() goes false.
  *
- * This watch turns that silence into a named, retried condition:
+ * This watch turns that into a named, retried condition:
  *
  *   - FAILED is an OBSERVATION, not a flag somebody sets: Tor was requested
  *     and is not running. Both halves come from core's own predicates, so a
@@ -61,14 +60,10 @@
  * no free text ever reaches the systemd status line.
  *
  * ORDERED BY SPECIFICITY, and that ordering is load-bearing: one failed Tor
- * start logs several warnings, and the LAST one is the vaguest. The node1
- * incident logged, in this order,
- *     [warn] Could not bind to 127.0.0.1:PORT: Address already in use.
- *     [warn] Failed to parse/validate config: Failed to bind one of the ...
- *     [err]  Reading config failed--see warnings above.
- * so quoting the last line would have told the operator "bad config" about a
- * config that was fine. The scan therefore keeps the LOWEST non-NONE class it
- * sees, and quotes the line that produced it. */
+ * start logs several warnings (e.g. "Could not bind ... Address already in
+ * use", then "Failed to parse/validate config", then "Reading config
+ * failed") and the LAST one is the vaguest. The scan keeps the LOWEST
+ * non-NONE class it sees, and quotes the line that produced it. */
 enum boot_tor_fault {
     BOOT_TOR_FAULT_NONE = 0,
     BOOT_TOR_FAULT_PORT_IN_USE,      /* "Could not bind to ...: Address already in use" */

@@ -222,8 +222,8 @@ static bool icb_read_source_receipt(sqlite3 *bundle_db,
 /* True iff this node's validated header chain has reached `height` and the block
  * at that height on the selected header chain carries `block_hash`. The assisted
  * above-checkpoint chain-binding needs the bundle-height header (and its Sapling
- * frontier) present; a fresh FRESHEST bundle deferred here retries, never .fails
- * (the cded07d40 bug class). Read-only header-chain walk — no chain mutation. */
+ * frontier) present; a fresh FRESHEST bundle deferred here retries, never .fails.
+ * Read-only header-chain walk — no chain mutation. */
 static bool install_bundle_header_ready(struct main_state *ms, int32_t height,
                                         const uint8_t block_hash[32])
 {

@@ -15,8 +15,8 @@
  *   1c. A durable "install-on-next-boot" request, modeled EXACTLY on the proven
  *       boot_auto_refold_* self-respawn pattern: a bounded, fsync-durable
  *       request that boot consumes and runs through the same installer, then
- *       clears. This is the entry point the shielded-gap self-heal (Move 2)
- *       arms; Move 2 itself is deliberately NOT wired here.
+ *       clears. The shielded-gap self-heal arms it; that self-heal is
+ *       not wired here.
  *
  * Every install still routes through consensus_state_snapshot_install_activate
  * (atomic + rollback point); this module adds no new state writer. Fail-closed
@@ -88,7 +88,7 @@ bool consensus_state_install_restore_checkpoint_header_frontier(
  * a result instead of _exit()ing. `out` is always populated (reason set on
  * every refusal); pass NULL only if the detail is unwanted. Returns ok iff the
  * state landed AND post-install invalidation verified; best-effort marker/mirror
- * failures still return ok (the terminal verb likewise exits SUCCESS on them). */
+ * failures still return ok. */
 struct zcl_result consensus_state_install_from_bundle(
     struct node_db *ndb, struct main_state *ms, const char *bundle_path,
     const char *datadir, struct consensus_state_install_runtime_result *out);
@@ -130,17 +130,13 @@ char *boot_autodetect_consensus_bundle(const char *datadir);
  * 1c above). When the local header chain already extends above the installed
  * checkpoint height — the Move 2 self-heal case on an already-synced node —
  * every body in (installed_height, local_tip] must already be on disk before
- * the reducer folds over it; a missing/pruned body in that span would
- * otherwise pin utxo_apply mid-fold with no named cause. On a gap this raises
- * the NAMED blocker refold.body_gap at the first missing height so the
- * reducer's body_fetch stage — already primed to resume at
- * installed_height+1 by the forced stage cursors (consensus_state_snapshot_
- * install_activate) — fills it, never a silent stall. A no-op when the local
- * chain has not yet advanced past installed_height: the common fresh-install
- * case, where body_fetch simply resumes at installed_height+1 and the tail
- * arrives via normal P2P sync with nothing local left to check. Also a safe
- * no-op when ms is NULL or installed_height < 0 (nothing to check yet). Never
- * fails the boot — a detected gap only logs + raises the blocker. */
+ * the reducer folds over it. On a gap this raises the named blocker
+ * refold.body_gap at the first missing height so the reducer's body_fetch
+ * stage (primed to resume at installed_height+1 by the forced stage cursors
+ * in consensus_state_snapshot_install_activate) fills it. A no-op when the
+ * local chain has not advanced past installed_height, or when ms is NULL or
+ * installed_height < 0. Never fails the boot — a detected gap only logs and
+ * raises the blocker. */
 void boot_post_install_fold_span_check(struct main_state *ms,
                                        int32_t installed_height);
 
@@ -148,17 +144,14 @@ void boot_post_install_fold_span_check(struct main_state *ms,
  * boot_snapshot_drop_bodiless_have_data_above_seed() (impl in
  * engine/composition/src/boot_refold_staged.c, contract in config/boot.h),
  * reused here (impl in engine/composition/src/boot_auto_install_bundle.c)
- * after a successful complete-state install (1b/1c above). The boot after a
- * header-seed import loads <datadir>/block_index.bin VERBATIM through the
- * block-index ladder (the header-only clamp lives only in RAM on the
- * first-boot import path, and an arm-and-respawn can pre-empt every shutdown
- * save), so the map can carry the bundle PUBLISHER's HAVE_DATA +
- * (nFile, nDataPos) for bodies this node never wrote; left in place, every
- * have-data-gated walker (pv_lookahead, the have-data window extender,
- * catchup) read-storms blk files absent on this node and the staged pipeline
- * wedges. Drops each claim whose blk file is absent/unreadable HERE —
- * post-install, before the staged pipeline starts — mirroring the
- * -load-snapshot-at-own-height gate, then retracts the active-chain tip to
+ * after a successful complete-state install (1b/1c above). The block index
+ * loaded from <datadir>/block_index.bin can carry the bundle publisher's
+ * HAVE_DATA + (nFile, nDataPos) for bodies this node never wrote, which
+ * have-data-gated walkers (pv_lookahead, the have-data window extender,
+ * catchup) would read against absent blk files. Drops each claim whose blk
+ * file is absent/unreadable, post-install and before the staged pipeline
+ * starts (as the -load-snapshot-at-own-height gate does), then retracts the
+ * active-chain tip to
  * installed_height so P2P fills the gap bottom-up. trust_existing_block_files
  * selects the cheap stat() keep (a legacy-import datadir's own blk files) vs
  * the strict read-back-and-hash-bind keep. Returns the number of dropped
@@ -169,10 +162,8 @@ size_t boot_post_install_drop_borrowed_have_data(
 
 /* Clear a stale "<bundle_path>.failed" never-stuck marker after that bundle
  * installed successfully (wired at both install success branches in
- * engine/composition/src/boot_auto_install_bundle.c). Without this, an earlier failed
- * attempt at the same path (e.g. a watchdog-killed boot) permanently
- * excludes the now-GOOD bundle from autodetect on every later scan —
- * boot_autodetect_consensus_bundle skips marked bundles by design.
+ * engine/composition/src/boot_auto_install_bundle.c). Otherwise the marker
+ * keeps boot_autodetect_consensus_bundle skipping the now-good bundle.
  * Best-effort: a remove() failure is logged, never fatal; a missing marker
  * (ENOENT) is a silent no-op. Exposed as its own entry point so the wiring
  * is directly unit-testable without a full bundle install. */
@@ -221,7 +212,7 @@ void boot_install_bundle_clear(const char *datadir);
  *                           (A1), bumping its bounded attempt budget;
  *   do_from_anchor        — run the transparent-only from-anchor cutover this
  *                           boot (suppressed whenever a complete install fired).
- * No behavior change vs the inline computation it replaced. */
+ */
 struct boot_state_source_selection {
     bool auto_installed_bundle;
     bool consumed_auto_refold;

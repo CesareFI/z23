@@ -39,49 +39,34 @@ struct rom_fetch_peer;
 
 /* ── Peer-discovered seeds (no operator flag, no compiled host list) ──────
  *
- * PROBLEM this solves. Before this seam the seed set came from ONE of three
- * operator actions (-fileservice=, -connect=, -addnode=) plus a compiled
- * clearnet list that is DELIBERATELY EMPTY (config/bundle_fetch_seeds.h). A
- * stranger who runs the node with no flags assembles ZERO seeds, so the
- * instant-on fetch is never attempted and the node falls back to a
- * from-genesis IBD. Nothing was wrong with the fetch, and nothing was wrong
- * with the ADVERTISEMENT either — the seed set simply never CONSUMED what the
- * node already knew.
+ * Seed sources: operator flags (-fileservice=, -connect=, -addnode=), a compiled
+ * clearnet list that is deliberately empty (config/bundle_fetch_seeds.h), and
+ * the cached endpoints below.
  *
- * WHAT ALREADY EXISTED (no new mechanism is introduced here). A node that runs
- * its file service tells every ZCL23 peer so, over the "zfileaddr" P2P
- * message, carrying its actual file-service PORT:
+ * A node running its file service advertises its port to every ZCL23 peer via
+ * the "zfileaddr" P2P message:
  *   send    core/modules/net/src/msg_version.c   (after the ZCL23 handshake)
  *   handle  core/modules/net/src/msgprocessor.c  handle_zfileaddr
  *   store   engine/composition/src/boot_msg_callbacks.c boot_save_file_service
  *           -> db_file_service_save, table file_services
  *           (ip[16], port, p2p_port, last_seen, is_zcl23)
- *   read    db_file_service_recent()  — whose own header comment already says
- *           "for download scheduling", a consumer that did not exist.
- * Live nodes really do advertise, and on DIFFERENT ports (18034 and 18035
- * observed on one node's peer set), which is exactly why this is a message
- * carrying a port and not a service bit.
+ *   read    db_file_service_recent()
+ * Ports differ per node, so the port travels in the message.
  *
- * WHAT THIS ADDS. The missing consumer: those cached endpoints become an
- * ADDITIONAL, LOWEST-PRECEDENCE source for bbf_assemble_seeds. Operator-named
- * seeds keep their slots and their precedence, and the discovery quorum still
- * prefers the explicit -fileservice candidate.
+ * Cached endpoints are an additional, lowest-precedence source for
+ * bbf_assemble_seeds; operator-named seeds keep their slots and precedence.
  *
- * WHAT THIS DOES NOT ADD — the whole point. A peer-discovered seed is an
- * ADDRESS, not an authority. It is fed through the identical path an
- * -fileservice= seed is fed through: same transport MAC, same per-chunk SHA3,
- * same whole-file SHA3 against the committed manifest, same
+ * A peer-discovered seed is an address, not an authority. It takes the same
+ * path as an -fileservice= seed: same transport MAC, per-chunk SHA3,
+ * whole-file SHA3 against the committed manifest, and the
  * CHECKPOINT_ROM/CHECKPOINT_CONTENT install gate binding the result to the
- * COMPILED checkpoint. A hostile peer that advertises and then serves garbage
- * costs one bounded fetch and is dropped. Nothing here relaxes any check. */
+ * compiled checkpoint. */
 
 /* One cached peer file-service endpoint offered as a candidate seed. */
 struct boot_bundle_peer_seed {
     char     host[64];   /* numeric address text; never a .onion (see below) */
-    /* The port the peer ITSELF advertised in its zfileaddr message. Carried
-     * per peer and never defaulted to FS_PORT: seeders legitimately run on
-     * other ports, and dialing a port the peer did not name is a guess.
-     * ZERO means "this peer never advertised a file service" and is the
+    /* The port the peer itself advertised in its zfileaddr message; never
+     * defaulted to FS_PORT. ZERO means "this peer never advertised a file service" and is the
      * not-a-seed case bbf_assemble_seeds filters out. */
     uint16_t port;
 };
@@ -102,9 +87,7 @@ void boot_bundle_fetch_set_peer_source(boot_bundle_peer_source_fn fn,
 /* Production arming: read the file_services table ONCE via
  * db_file_service_recent() (most-recently-seen first), keep the usable rows in
  * a small static table, and register the pure provider over it. Safe and
- * silent when `ndb` is NULL/closed or the table is empty — that is a
- * first-ever boot, and the behaviour is exactly the pre-existing one. Never
- * fails boot. Call before boot_bundle_fetch_maybe(). */
+ * silent when `ndb` is NULL/closed or the table is empty. Never fails boot. Call before boot_bundle_fetch_maybe(). */
 struct node_db;
 void boot_bundle_fetch_arm_peer_seeds(struct node_db *ndb);
 
@@ -180,9 +163,8 @@ bool boot_bundle_fetch_download(const char *datadir,
  * manifest(s) from the seed set over the file-service "RLS" wire and RANKS them
  * newest-first (highest advertised height), preferring a >=2-seed / explicit
  * -fileservice candidate at a given height but never refusing a lone newest one
- * (STEP 0: the export is not cross-node byte-deterministic, so a per-height
- * triple quorum almost never forms; quorum is a bandwidth-DoS guard, not a trust
- * source — trust binds at install). It persists the winner as the local hint,
+ * (the export is not cross-node byte-deterministic; quorum is a
+ * bandwidth-DoS guard, not a trust source — trust binds at install). It persists the winner as the local hint,
  * then downloads newest-first with bounded fallback to the next-highest on a
  * miss. The big bytes are always swarmed + content-verified against the
  * committed manifest, and the install path binds the result to the compiled

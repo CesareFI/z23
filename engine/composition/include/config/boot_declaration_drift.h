@@ -38,8 +38,8 @@
  * record, readable via `boot_declaration_drift_last_scope()` and written to
  * the log line at raise time.
  *
- * Handoff status (2026-07-24)
- * ---------------------------
+ * Status
+ * ------
  * Neither detecting organ exists in-tree yet: there is no configuration
  * reload path under config/, and no observer that compares the service
  * catalog against running reality. The ids, classes, escape actions,
@@ -49,8 +49,7 @@
  * `boot_service_declaration_divergence_raise()` on detect, the matching
  * `_clear()` on convergence, and install a reconciler through
  * `boot_declaration_drift_set_reconciler()`. Until then the escapes have no
- * reconciler installed and say so instead of pretending to fix anything. No
- * fake caller was invented to make the tests pass.
+ * reconciler installed and say so instead of pretending to fix anything.
  */
 
 #ifndef ZCL_CONFIG_BOOT_DECLARATION_DRIFT_H

@@ -86,7 +86,7 @@ static bool output_name_valid(const char *name)
         strchr(name, '#') || strchr(name, '%') || strcmp(name, ".") == 0 ||
         strcmp(name, "..") == 0)
         return false;
-    /* A4: refuse a name that would clobber EITHER live store — the consensus.db
+    /* Refuse a name that would clobber EITHER live store — the consensus.db
      * kernel authority (post-flip) or the progress.kv projection store. */
     if (export_name_has_prefix_ci(name, CONSENSUS_DB_FILENAME) ||
         export_name_has_prefix_ci(name, CONSENSUS_DB_LEGACY_KERNEL_FILENAME))

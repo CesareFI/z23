@@ -3,13 +3,8 @@
  * purpose: The index of verified-fact topics. This file, plus the topic
  *          files it includes, is the whole fact table compiled into z23-dev.
  *
- * WHY THIS EXISTS. Owner directive, 2026-09-05: "always be building things
- * you need to know into z23 so you don't have to burn tokens to learn in the
- * future." Before this table, the same maps of the landing path, the board
- * protocol and the lint system were re-derived from source by each AI reader
- * that needed them, at roughly a hundred thousand tokens a time, several
- * times a day, and the result died with that reader's context. A map that is
- * not in the tree is not knowledge; it is a bill that comes due again.
+ * WHY THIS EXISTS. Maps of the landing path, the board protocol and the lint
+ * system live in the tree so readers need not re-derive them from source.
  *
  * Include with BOTH macros defined; either may be a no-op:
  *

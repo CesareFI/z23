@@ -154,8 +154,8 @@ bool boot_zcode_dht_package_pointer_publish_gate(
    * transport_root and imports it. That only works when this store holds the
    * root as a complete signed transport carrier — not as the inner package
    * root, and not as one of the derived object sets that ride alongside a
-   * carrier. A wrong-shaped root used to pass here and fail only at the
-   * consumer with "carrier metadata missing". */
+   * carrier. A wrong-shaped root is refused here rather than at the
+   * consumer. */
   struct vcs_package_public_verdict verdict;
   enum vcs_package_public_shape shape = vcs_package_public_shape_classify(
       store, spec->transport_root, &verdict);

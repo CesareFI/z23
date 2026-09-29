@@ -33,8 +33,7 @@
 #define BBF_PEER_SOURCE_MAX 16
 
 /* The registered peer-endpoint provider. Process-global, like the rest of the
- * boot seams; NULL (the default) means the assembler behaves exactly as it did
- * before this source existed. */
+ * boot seams; NULL (the default) means no provider endpoints are added. */
 static boot_bundle_peer_source_fn g_peer_source = NULL;
 static void *g_peer_source_ctx = NULL;
 
@@ -117,12 +116,9 @@ static bool bbf_host_already_seeded(const struct rom_fetch_peer *peers,
 
 /* Derive a file-service seed from ONE `-connect=` value.
  *
- * `-connect` means the peer the operator named. This used to strip ANY port
- * and refill FS_PORT, so `-connect=127.0.0.1:39099` — a deliberately DEAD
- * fixture sink — was contacted as 127.0.0.1:18034, the operator's LIVE file
- * service. On 2026-07-28 that pulled ~1 GB of mainnet chain state into a
- * sealed regtest datadir. A dead sink whose deadness lives in a NON-DEFAULT
- * port is not a dead sink if that port is discarded.
+ * `-connect` means the peer the operator named. A custom port is never
+ * discarded and refilled with FS_PORT: a fixture sink whose deadness lives in
+ * a NON-DEFAULT port would otherwise reach a live file service.
  *
  * Rule:
  *   - no port: seed file-service at HOST:FS_PORT (the operator named a host)

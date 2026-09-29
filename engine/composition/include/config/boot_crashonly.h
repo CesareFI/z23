@@ -93,9 +93,9 @@ enum boot_gate_action {
 
 /* Crash-only gate for a boot-phase storage incoherence that runs BEFORE the
  * node can serve degraded (coins-view integrity, progress.kv open, the
- * post-anchor sapling rebuild). These sites historically _exit(EXIT_FAILURE),
- * which under systemd Restart=always is an unbounded crash-loop with no
- * in-binary remedy. Convert that into the SAME bounded re-derive ladder the
+ * post-anchor sapling rebuild). A bare _exit(EXIT_FAILURE) at these
+ * sites is an unbounded crash-loop under systemd Restart=always with no
+ * in-binary remedy. This converts that into the SAME bounded re-derive ladder the
  * post-restore integrity gate uses: record a bounded -reindex-chainstate
  * request keyed on a per-boot-storage episode (anchor 0 = "boot storage
  * incoherence"), so the restart re-derives the UTXO set from blocks/ instead

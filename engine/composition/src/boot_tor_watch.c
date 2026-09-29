@@ -1,7 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * boot_tor_watch — see config/boot_tor_watch.h for the contract and for the
- * 2026-09-08 incident this exists to make impossible to repeat silently. */
+ * boot_tor_watch — see config/boot_tor_watch.h for the contract. */
 
 #include "config/boot_tor_watch.h"
 

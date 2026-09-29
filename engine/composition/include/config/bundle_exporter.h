@@ -1,7 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * bundle_exporter — the STANDING live consensus-state bundle exporter (lane C1
- * of the Instant-Sync program). On a qualified serving node it holds a producer
+ * bundle_exporter — the STANDING live consensus-state bundle exporter. On a qualified serving node it holds a producer
  * receipt session open (so the live reducer keeps stamping script_validate /
  * proof_validate rows with THIS binary's source epoch) and runs a supervised
  * periodic job that, every N durable blocks, monotonic-re-finalizes the source
@@ -21,21 +20,18 @@
  * (consensus_export_prove_stage_rows), and the finalized receipt's
  * running_binary_digest must equal SHA3(/proc/self/exe) right then.
  *
- * A BINARY UPGRADE NO LONGER STOPS THE MINT. The durable producer session is
+ * A BINARY UPGRADE DOES NOT STOP THE MINT. The durable producer session is
  * bound to the executable IMAGE digest, so every relink makes it foreign and
- * consensus_state_producer_receipt_begin refuses — which used to end minting
- * permanently, since nothing re-ran the gate in-process. The exporter now
+ * consensus_state_producer_receipt_begin refuses. The exporter
  * retries on its own tick with bounded backoff and, when the source epoch
  * already stamped into this datadir is byte-identical to this build's,
  * retires the foreign session row and re-derives one from the running binary.
  * When the epoch actually CHANGED, it does not: those rows carry the old epoch
  * and no bundle could be proven from them, so that case stays fail-closed and
- * is named with its literal cause. It does NOT (yet) produce bundles from a bundle-INSTALLED
- * node: the A3 activate install clears the script/proof validate logs below the
- * install height, so those rows are absent and the genesis..H* stage-row proof
- * cannot be reconstructed without base-evidence composition (a documented
- * follow-up that needs coordination with the A3 install to record the installed
- * bundle's proof digest as base evidence).
+ * is named with its literal cause. It does NOT (yet) produce bundles from a
+ * bundle-INSTALLED node: the activate install clears the script/proof validate
+ * logs below the install height, so those rows are absent and the genesis..H*
+ * stage-row proof cannot be reconstructed without base-evidence composition.
  *
  * FAIL-SAFE: nothing here can fail a boot. When provenance does not qualify, the
  * session is not opened and the reason is a dumpstate-visible named degradation

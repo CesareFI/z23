@@ -13,12 +13,8 @@
  * public source. Both callers loop over this array, so an empty list is a
  * zero-iteration loop and simply contributes no compiled seed.
  *
- * Why empty rather than "one harmless seed": the entry that used to sit here
- * was annotated as a third-party public seed "not operated by this project".
- * That annotation was wrong — it was an address of one of this project's own
- * boxes, and the annotation is exactly why an earlier pass that removed the
- * other operator endpoints left this one behind. A provenance claim nobody
- * can check from inside the repository is not a safeguard; an empty list is.
+ * Why empty rather than "one harmless seed": a provenance claim nobody can
+ * check from inside the repository is not a safeguard; an empty list is.
  *
  * Trust note: any such seed is unauthenticated (clearnet, no TLS, no
  * ZClassic state commitment) — an unreachable, hostile, or simply

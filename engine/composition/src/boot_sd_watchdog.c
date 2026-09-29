@@ -20,10 +20,9 @@
  * that forgets to check supervisor health first. The node-health snapshot
  * below is collected independently of the supervisor tree, so a
  * wedged/dead zcl_supervisor thread would otherwise leave every
- * supervisor-driven stage frozen while this tick kept pinging happily
- * (health looking fine from a stale-but-not-yet-detected angle) — this is
- * the PREFERRED escalation path from the design: a frozen sweep stops the
- * ping, systemd's own WatchdogSec timer then kills + restarts the unit. The
+ * supervisor-driven stage frozen while this tick kept pinging. A frozen
+ * sweep stops the ping, and systemd's own WatchdogSec timer then kills +
+ * restarts the unit (the preferred escalation path). The
  * independent off-systemd fallback (no ping to stop) is
  * platform/modules/util/src/supervisor_backstop.c.
  *
@@ -66,15 +65,12 @@
  *      WATCHDOG_USEC/4 from CHEAP ATOMICS ONLY (runtime progress,
  *      boot_progress, supervisor sweep heartbeat). It never runs a collect
  *      and never takes a node lock, so ring contention cannot starve the
- *      heartbeat. Before this split the ping rode the same ring as the
- *      collect: a >WatchdogSec collect block stopped the ping on a fully
- *      healthy, progressing node. The loop had a second half: it treated
- *      the CONTENT of a fresh health verdict as a hang signal. Intentional
- *      long-lived postures (first body-history proof, owner trust review)
- *      therefore stopped the pet even while the process, supervisor, RPC,
- *      and health collector remained live. Restarting cannot satisfy those
- *      gates and only prevents the work that can. Together those were the
- *      2026-08-02 and 2026-08-05 kill loops.
+ *      heartbeat. The ping does not depend on the collect finishing, nor on
+ *      the CONTENT of a fresh health verdict: intentional long-lived
+ *      postures (first body-history proof, owner trust review) must not stop
+ *      the pet while the process, supervisor, RPC, and health collector
+ *      remain live. Restarting cannot satisfy those gates and only prevents
+ *      the work that can.
  *
  * Health verdict content and collection cadence are handled by the
  * condition/remedy/operator planes; neither decides process liveness. A
@@ -108,16 +104,8 @@ static int64_t boot_sd_watchdog_freshness_bound_us(void);
 
 /* ── Earned readiness ────────────────────────────────────────────
  *
- * READY=1 used to rest on ONE fact: the onion descriptor was published
- * (and on NO fact at all when onion was never requested — the gate
- * returned false and the notify went out unconditionally). It was also
- * emitted from the top of the pet loop, BEFORE and independent of the
- * pet's own liveness decision, so a dead message pump, a dead dial
- * scheduler, or a frozen supervisor sweep did not hold it back. A node
- * could therefore tell systemd it was ready while nothing inside it was
- * running.
- *
- * Now each leg is confirmed on its own evidence and the legs are ANDed.
+ * READY=1 must not be sent while a dead message pump, dead dial scheduler,
+ * or frozen supervisor sweep is undetected. Each leg is confirmed on its own evidence and the legs are ANDed.
  * No leg is inferred from another — in particular a published descriptor
  * says nothing about whether a peer can reach us, which is why the
  * status line reports `rendezvous=unconfirmed` verbatim: nothing in this
@@ -327,10 +315,9 @@ static bool boot_sd_watchdog_runtime_pillars(bool sweep_alive,
 
 /* ── What a runtime pillar is allowed to measure ─────────────────────────
  *
- * Every pillar below used to be one question: "did this loop get back to the
- * top of itself within WATCHDOG_USEC?" That question is not about the loop. It
- * is about how much work the loop was handed and how fast the machine
- * underneath it runs, and it graded honest nodes dead for the wrong reasons:
+ * "Did this loop get back to the top of itself within WATCHDOG_USEC?" measures
+ * how much work the loop was handed and how fast the machine runs, not
+ * liveness, and would grade honest nodes dead:
  *
  *   - The DIAL SCHEDULER. One pass of thread_open_connections() is permitted
  *     by its own code to block for DEFAULT_CONNECT_TIMEOUT on the clearnet
@@ -339,8 +326,6 @@ static bool boot_sd_watchdog_runtime_pillars(bool sweep_alive,
  *     That permitted budget is larger than the entire watchdog window, so on
  *     any node dialing a slow or dead hidden service the marker goes stale by
  *     construction while the thread is doing exactly what it was told to do.
- *     Observed on the development fleet: five-minute gaps between passes,
- *     every one of them ending in a successful dial.
  *
  *   - The MESSAGE PUMP. A cycle serves whatever the connected peers asked
  *     for. On a rotating disk one run of getblock takes longer than the
@@ -350,8 +335,7 @@ static bool boot_sd_watchdog_runtime_pillars(bool sweep_alive,
  *     for as long as the slowest child's on_tick takes — again a disk-speed
  *     measurement, not a wedge.
  *
- * The fix is not a bigger number; a bigger number is the same defect further
- * away. The gate asks whether the kernel reports completed work on the thread,
+ * A bigger number is not the answer. The gate asks whether the kernel reports completed work on the thread,
  * or whether the thread explicitly entered an operation-specific bounded wait.
  * CPU time, major faults and block-I/O bytes cover computing, paging and
  * completed device work. A deadline-bound wait lease covers the intentional
@@ -359,7 +343,7 @@ static bool boot_sd_watchdog_runtime_pillars(bool sweep_alive,
  * Once that declared deadline passes, silence is dead again. See
  * util/thread_work_probe.h.
  *
- * So each pillar is now `marker fresh OR that thread is working OR an explicit
+ * So each pillar is `marker fresh OR that thread is working OR an explicit
  * bounded wait is still within its deadline`. What this cannot see is a thread
  * spinning in a livelock: it burns CPU and reads as working. That is a
  * different failure with a different detector (the supervisor tree's
@@ -598,19 +582,14 @@ static void *boot_sd_watchdog_pet_main(void *arg)
             recent);
         boot_sd_watchdog_maybe_notify_ready();
         bool pet = boot_sd_watchdog_pet_decide(runtime_gate_alive);
-        /* Say it out loud, on the edge only. Withholding the ping asks
-         * systemd to SIGABRT this process WatchdogSec later, and until now it
-         * happened in total silence: the only trace was `status=134` in the
-         * journal, with nothing anywhere naming which leg refused. Diagnosing
-         * one instance cost hours of archive archaeology that a single line
-         * here would have answered. Edge-triggered, so a long refusal logs
-         * once, not once per period. */
+        /* Log on the edge only. Withholding the ping asks systemd to SIGABRT
+         * this process WatchdogSec later; the log names which leg refused.
+         * Edge-triggered, so a long refusal logs once, not once per period. */
         static bool s_last_pet = true;
         if (pet != s_last_pet) {
-            /* `runtime=0` alone cost hours of archaeology: it names the
-             * conjunction, not the term. Print every pillar's raw observation
-             * so the journal answers "which leg refused, and by how much"
-             * without a rebuild. */
+            /* `runtime=0` names the conjunction, not the term. Print every
+             * pillar's raw observation so the journal shows which leg refused
+             * and by how much. */
             char pillars[256];
             boot_sd_watchdog_describe_pillars(pillars, sizeof(pillars));
             if (pet) {

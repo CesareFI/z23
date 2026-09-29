@@ -3,11 +3,8 @@
  * purpose: What the short names in this tree actually mean, so a reader
  *          stops guessing from the prefix.
  *
- * Owner, 2026-09-05: AIs were reading "zfc" as a general Z23 prefix. It is
- * not one — it names two FlyClient snapshot-sync messages and nothing else,
- * and .zfctmp is an unrelated temp-file suffix. A name that looks like a
- * family but is not one costs a reader a wrong model, which is more
- * expensive than not knowing.
+ * "zfc" is not a general Z23 prefix: it names two FlyClient snapshot-sync
+ * messages and nothing else, and .zfctmp is an unrelated temp-file suffix.
  *
  * Row shape and the rule against weakening an anchor: see index.def and
  * docs/zrc/0006-knowledge-in-the-checkout.md. */

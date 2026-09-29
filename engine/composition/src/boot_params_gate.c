@@ -11,12 +11,10 @@
  * sapling_get_output_pk(), whose sole callers build a shielded output the
  * operator is SENDING.
  *
- * So a missing parameter directory costs exactly one capability. This gate
- * used to park the whole node for it — no listener, no RPC, no peers, no
- * validation, no serving — which is every capability. The gate was placed on
- * the node when the thing actually unavailable was the wallet's spend path.
+ * So a missing parameter directory costs exactly one capability, not the
+ * whole node (listener, RPC, peers, validation, serving).
  *
- * Now: install the compiled-in verifying keys, name the one capability that
+ * Install the compiled-in verifying keys, name the one capability that
  * really is gone, page the operator once, and let the node sync, validate and
  * serve. Proving stays fail-closed on its own — with no proving keys loaded
  * the native prover remains NATIVE_PROVER_UNINITIALIZED, and both
@@ -132,10 +130,9 @@ bool boot_params_gate_on_load_refused(const char *params_dir)
      * nothing that failed its pin is parsed or installed — and that does not
      * change here.
      *
-     * What changes is the conclusion. The loader used to declare a PERMANENT
-     * params_missing blocker meaning "proof validation cannot proceed" for the
-     * life of the process, conflating the same two capabilities this file
-     * separates for the absent case. VALIDATION reads only the verifying-key
+     * The conclusion is not a PERMANENT params_missing blocker ("proof
+     * validation cannot proceed"): that would conflate the two capabilities
+     * this file separates for the absent case. VALIDATION reads only the verifying-key
      * prefix, compiled in and SHA-256 pinned; it was never on disk, so a
      * corrupt download cannot touch it. PROVING needs the ~777 MB only the
      * file carries. A refused file therefore costs exactly what an absent one

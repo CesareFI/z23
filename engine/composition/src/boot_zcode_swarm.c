@@ -868,8 +868,7 @@ bool boot_zcode_swarm_frame(struct msg_processor *mp, struct p2p_node *node,
     if (boot_fleet_board_frame(mp, node, payload, payload_len, ctx))
         return true;
     /* Multiplexed streams (the confined terminal among them): one lookup
-     * by service name inside the primitive replaces what used to be a
-     * per-service link in this chain. Same reasoning as mesh status — a
+     * by service name inside the primitive. Same reasoning as mesh status — a
      * stream's OPEN is answered on the pairing authority alone, never
      * gated on swarm hosting. */
     if (mesh_stream_frame(mp, node, payload, payload_len,

@@ -98,12 +98,8 @@ static void boot_file_service_stop(void *ctx)
  * there into the SAME rom_seed catalog, but ONLY through the receipt-gated
  * path (config/rom_bundle_admission.h) — a bundle with no adjoining verified
  * consensus_state_replay_receipt.v1 is never registered, so this node never
- * serves it. This is how a bundle+receipt pair produced/verified on one
- * machine turns any node holding a replicated copy into a P2P recovery
- * source, closing the "lives on ONE disk" single point of failure without
- * weakening rom_seed's own untrusted-delivery model (docs/ROM_DELIVERY.md) —
- * every fetcher still re-verifies content after download regardless of what
- * either scan path admitted. */
+ * serves it. Every fetcher still re-verifies content after download
+ * (docs/ROM_DELIVERY.md) regardless of what either scan path admitted. */
 static bool boot_rom_seed_start(void *ctx)
 {
     struct boot_svc_ctx *svc = ctx;
@@ -153,8 +149,7 @@ static bool boot_rpc_http_start(void *ctx)
         LOG_FAIL("rpc_http", "front door failed to start on port %d",
                  svc->app_ctx->rpc_port);
 
-    /* Readiness follows the listening workers. Clearing warmup first let a
-     * failed bind return through the service kernel as a ready frontend. */
+    /* Readiness follows the listening workers: warmup clears only after bind. */
     set_rpc_warmup_finished();
     return true;
 }
@@ -163,11 +158,9 @@ static void boot_rpc_http_stop(void *ctx)
 {
     (void)ctx;
     rpc_http_stop();
-    /* Symmetry with boot_rpc_http_start's set_rpc_warmup_finished(). The
-     * service kernel supports stop_all -> start_all (and start_all's own
-     * partial-failure rollback stops this service mid-call), so leaving the
-     * flag disarmed would bring the node back up answering RPC as "ready"
-     * while it re-initialises — a wrong answer instead of a clear one. */
+    /* Symmetry with boot_rpc_http_start's set_rpc_warmup_finished(): the
+     * kernel supports stop_all -> start_all, so the warmup flag is re-armed
+     * on stop rather than answering RPC as "ready" during re-initialisation. */
     set_rpc_warmup_started("RPC server restarting");
 }
 
@@ -177,11 +170,7 @@ static void boot_rpc_http_stop(void *ctx)
  * the explorer and the miner — and can never drift from what boots.
  *
  * INDEPENDENT, not OPTIONAL. A front door that will not bind is still a
- * failure and still degrades the node — but on 2026-09-08 it was the ONLY
- * required service in this kernel, so one transient bind conflict on the
- * RPC port unwound file_service and rom_seed and returned before
- * https_explorer's start was ever called. The public site was down for 27
- * minutes for a reason that had nothing to do with the public site. The
+ * failure and degrades the node, but must not unwind the other services: the
  * explorer does not need the front door to bind in order to listen. */
 struct zcl_service_spec boot_frontend_rpc_http_spec(struct boot_svc_ctx *svc)
 {
@@ -262,48 +251,35 @@ static void boot_api_cache_stop(void *ctx)
     api_stop_cache();
 }
 
-/* The clearnet certificate lives under <datadir>/ssl, and which file is
- * which is the whole point:
+/* The clearnet certificate lives under <datadir>/ssl:
  *
  *   fullchain.pem / privkey.pem
  *       the CA-issued pair. Written ONLY by `zclassic23-acme`. Preferred
- *       whenever it is readable, and adopted with no restart the moment it
+ *       whenever it is readable, and adopted with no restart when it
  *       appears or is renewed (https_server_watch_certificate).
  *   self-signed-placeholder.pem / self-signed-placeholder-key.pem
- *       the certificate the node signs for itself. It exists to break the
- *       bootstrap deadlock below, and it is deliberately NOT written to the
- *       two names above, so no reader on disk can mistake one for the other.
+ *       the node's self-signed certificate, kept at distinct names so it
+ *       cannot be mistaken for the CA-issued pair.
  *   acme-challenge
  *       the one line the worker hands the node during a validation
  *       (net/acme_arm_file.h).
  *
- * THE BOOTSTRAP DEADLOCK. TLS-ALPN-01 is answered by this very listener, and
- * a listener needs key material to bind. No certificate, no listener; no
- * listener, no validation; no validation, no certificate. A brand-new host
- * could never get its first certificate without a human hand-placing one.
- * The self-signed pair breaks that cycle and nothing else: the challenge
- * response does not need the placeholder to be trusted — the certificate
- * authority is handed a challenge certificate built on the spot for the
- * duration of that one handshake — it needs only a listener to be there to
- * do the handing.
+ * Bootstrap: TLS-ALPN-01 is answered by this listener, and a listener needs
+ * key material to bind. The self-signed pair lets the listener exist so the
+ * first CA certificate can be issued; the challenge response does not need
+ * the placeholder to be trusted.
  *
- * A PLACEHOLDER IS NEVER QUIETLY PASSED OFF AS THE REAL THING. It is at a
- * different path, its subject says what it is in words, and the front door
- * announces at start (and on every swap) whether what it serves names itself
- * as its own issuer — see net/acme_selfsigned.h. */
+ * The front door announces at start (and on every swap) whether what it
+ * serves names itself as its own issuer — see net/acme_selfsigned.h. */
 /* Name <datadir>/public-install to the HTTPS front door, which then owns
  * GET / and GET /install.sh as well as the bootstrap and release bytes under
  * it — unless the shim stamped there names no bootstrap anyone could install.
  * That shim is the all-zero-digest copy from this repository: it refuses
- * before it opens a socket, so serving it answers the documented
- * `curl -fsSL https://<site>/install.sh | sh` with a program that installs
- * nothing, while hiding this node's own source-build installer
- * (contexts/commons/views/src/install_sh_view.c) behind it. Nothing a
- * stranger could have had is withheld by declining: no binary is fetched
- * either way, and the built-in route builds from source.
+ * before it opens a socket, and serving it would hide this node's own
+ * source-build installer (contexts/commons/views/src/install_sh_view.c).
  *
- * An absent or unreadable shim leaves the tree armed exactly as before — a
- * stamped origin may hold only bootstrap or release bytes. */
+ * An absent or unreadable shim leaves the tree armed — a stamped origin may
+ * hold only bootstrap or release bytes. */
 static void boot_https_arm_public_install(const char *datadir)
 {
     char install_root[1024];
@@ -355,18 +331,15 @@ static bool boot_https_explorer_start(void *ctx)
     /* Point the TLS-ALPN-01 responder at the file the worker writes. The
      * responder reads it lazily and only when a client has already
      * negotiated "acme-tls/1", so an ordinary browser handshake never
-     * touches the filesystem. Without this call the node's half of the
-     * challenge is inert and every order fails validation. */
+     * touches the filesystem. */
     acme_alpn_challenge_set_handoff_file(handoff_path);
 
     /* Optional TLS servername (-httpsdomain=). NULL is fine: with a single
      * cert the server presents that cert regardless of SNI. */
     const char *https_domain = svc->app_ctx->https_domain;
 
-    /* The access() check is not weakened: whatever pair is chosen below is
-     * still required to be readable before a listener is started. What
-     * changed is that there is now a second pair to fall back to, not that
-     * a listener may start with nothing. */
+    /* Whichever pair is chosen below must be readable before a listener is
+     * started; the self-signed pair is the fallback. */
     const char *serve_cert = cert_path;
     const char *serve_key = key_path;
     if (access(cert_path, R_OK) != 0 || access(key_path, R_OK) != 0) {
@@ -402,24 +375,18 @@ static bool boot_https_explorer_start(void *ctx)
      * the placeholder is on the wire, this is how the first real certificate
      * replaces it; if a real certificate is on the wire, this is how the
      * worker's ninety-day renewal reaches the listener. Set before start so
-     * the start path records the watched pair's identity as of now rather
-     * than defaulting the watch to whatever it was handed. */
+     * the start path records the watched pair's identity. */
     https_server_watch_certificate(cert_path, key_path);
 
     /* ADDITIONAL names on this same listener (-httpsaltdomain=NAME), each
      * with its own certificate selected by TLS SNI. The pair for a name
-     * lives one directory over from the main one —
-     * <datadir>/ssl/NAME/fullchain.pem and .../privkey.pem — so nothing new
-     * has to be learned to add a second name: it is the same two filenames
-     * `zclassic23-acme` already writes, with --cert/--key pointed at that
-     * directory. Watched, never required: a name whose certificate has not
-     * been issued yet is simply not served from its own certificate yet, and
-     * costs the main name and every other name nothing.
+     * lives in <datadir>/ssl/NAME/fullchain.pem and .../privkey.pem (the same
+     * filenames `zclassic23-acme` writes). Watched, never required: a name
+     * without an issued certificate is not served from its own certificate
+     * yet, and does not affect other names.
      *
-     * The directory is created here for the same reason <datadir>/ssl is:
-     * the certificate worker should not have to make it, and an operator
-     * reading the datadir can see which names this node is configured for
-     * before any certificate exists. */
+     * The directory is created here, like <datadir>/ssl, so the certificate
+     * worker need not make it. */
     for (int i = 0; i < svc->app_ctx->n_https_alt_domains; i++) {
         const char *alt = svc->app_ctx->https_alt_domains[i];
         char alt_dir[1024], alt_cert[1152], alt_key[1152];
@@ -530,12 +497,9 @@ bool boot_onion_tor_start_early(const struct app_context *app)
     if (!app || !app->datadir)
         return false;
 
-    /* The old "<datadir>/onion-keys exists" fallback is gone. It existed to
-     * start Tor for an operator who had an onion identity but forgot -tor;
-     * with Tor on by default there is nobody left for it to rescue, and on a
-     * stub build it was actively wrong — a directory a real-Tor build left
-     * behind would have sent this down the start path for a Tor that cannot
-     * bootstrap. Say which binary this is instead.
+    /* No "<datadir>/onion-keys exists" fallback: Tor is on by default, and a
+     * stub build must not start a Tor that cannot bootstrap. Say which binary
+     * this is instead.
      *
      * Argv that ASKED for an onion never reaches here at all:
      * app_tor_policy_refusal_code() refused the boot at parse time. */
@@ -579,10 +543,8 @@ bool boot_onion_tor_start_early(const struct app_context *app)
     return true;
 }
 
-/* The retry entry point handed to the Tor watch. It is deliberately the SAME
- * wrapper the frontend kernel starts Tor with, so a retry can never diverge
- * from a boot: whatever a first start does (identity, handler, torrc), a
- * retry does. tor_integration_start() and onion_service_start() both return
+/* The retry entry point handed to the Tor watch: the SAME wrapper the
+ * frontend kernel starts Tor with, so a retry matches a boot. tor_integration_start() and onion_service_start() both return
  * early when they are already up, so calling this again is a no-op the
  * moment Tor is healthy. */
 static bool boot_onion_tor_start(void *ctx)
@@ -592,11 +554,9 @@ static bool boot_onion_tor_start(void *ctx)
         return false;
     bool ok = boot_onion_tor_start_early(svc->app_ctx);
 
-    /* Arm the watch AFTER the first start attempt so the very first failure
-     * is already covered: the watch's detect reads core's live predicates,
-     * not anything this call returned. Arming is idempotent — a retry
-     * re-entering through boot_onion_tor_start() will not reset the
-     * schedule. */
+    /* Arm the watch AFTER the first start attempt so the first failure is
+     * covered; its detect reads core's live predicates. Arming is idempotent
+     * and does not reset the schedule on retry. */
     if (boot_profile_has_onion(svc->app_ctx) &&
         app_tor_real_build_linked())
         boot_tor_watch_arm(&svc->tor_watch, svc->app_ctx->datadir,
@@ -618,10 +578,8 @@ static void boot_onion_tor_stop(void *ctx)
  *
  * This is a plain command registration rather than a service spec because it
  * must happen while the RPC table is still being built: app_init_services
- * calls it alongside the wallet and ZSLP registrations, long before
- * boot_rpc_http_start hands that table to the listener. It lives in this file
- * because this file already owns the store's lifecycle (the payment processor
- * below), not in boot_services.c, which is at its size ceiling. */
+ * calls it alongside the wallet and ZSLP registrations, before
+ * boot_rpc_http_start hands that table to the listener. */
 void boot_register_store_buyer_rpc(struct boot_svc_ctx *svc)
 {
     if (!svc || !svc->app_ctx || !boot_profile_has_store(svc->app_ctx))
@@ -679,7 +637,7 @@ bool boot_register_store_payment_runtime(struct boot_svc_ctx *svc)
     return zcl_service_kernel_register(&svc->runtime_kernel, &payment);
 }
 
-/* ZCODE package store (slice 2): local content-addressed store under
+/* ZCODE package store: local content-addressed store under
  * <datadir>/zcode, disabled by default (-packagehost=1 enables). A failure
  * to open is loud but never fatal — hosting simply stays off. */
 static bool boot_zcode_store_start(void *ctx)
@@ -702,7 +660,7 @@ static void boot_zcode_store_stop(void *ctx)
 {
     (void)ctx;
     /* The swarm engine borrows the global store: it must be freed
-     * BEFORE the store closes (slice 12). */
+     * BEFORE the store closes. */
     boot_zcode_swarm_shutdown();
     boot_mesh_pairing_shutdown();
     if (vcs_package_store_global())
@@ -714,7 +672,7 @@ static void boot_zcode_store_stop(void *ctx)
  * is started. Returns false on the first registration failure. */
 bool boot_register_frontend_services(struct boot_svc_ctx *svc)
 {
-    /* ZCODE package swarm (slice 12): net↔vcs engine hooks. The engine
+    /* ZCODE package swarm: net↔vcs engine hooks. The engine
      * itself is created lazily on first use when -packagehost=1 and the
      * store is open; wiring the hooks is always safe. */
     boot_zcode_swarm_wire(svc);

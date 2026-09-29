@@ -25,9 +25,9 @@ extern "C" {
  *
  * ── Tier-2 fast restart: verified-clean quick_check skip ──────────────
  *
- * A warm boot used to spend ~9s (hours on a multi-GB production node.db) in
- * blocking `PRAGMA quick_check` even when the DB was checkpointed and closed
- * cleanly. write_clean() records a content binding for node.db into the marker
+ * A blocking `PRAGMA quick_check` costs seconds (hours on a multi-GB
+ * node.db) even when the DB was checkpointed and closed cleanly.
+ * write_clean() records a content binding for node.db into the marker
  * (marker format v2 below). On the next boot, node_db_open() skips the
  * blocking check when:
  *   1. verified-clean: the previous shutdown wrote a v2 binding
@@ -86,7 +86,7 @@ struct shutdown_clean_binding {
      * below parsed. Independent of the v2 node.db-identity binding above:
      * the quick_check skip (P1) only needs the v2 fields; the forward-pass /
      * reconcile / chain_restore_finalize skip (P2) additionally needs these.
-     * A marker written by a pre-P2 binary has valid=true, fr_valid=false —
+     * A marker without these fields has valid=true, fr_valid=false —
      * quick_check may still be skipped, the fast-restart path is not taken. */
     bool     fr_valid;
     int64_t  fr_tip_height;

@@ -13,41 +13,27 @@
  *   tools/lint/repo_shape.sh              ZCL_LIB_MODULES[], for the gates
  *   cognition/modules/codeindex/src/codeindex_group.c   k_lib_modules[], an X-macro paste
  *
- * It used to be a third copy of a set the Makefile and the scanner each kept
- * by hand, checked against each other. Deleting those copies removes the
- * cross-check they provided, so the check moved to the one witness that is
- * still independent of this file: the lib/ tree itself. A lib/<mod>/ directory
- * exists whether or not anyone declared it, and both
+ * The lib/ tree is the independent witness for the SET: a lib/<mod>/
+ * directory exists whether or not anyone declared it, and both
  * tools/scripts/check_lib_module_order.sh and test_codeindex.c case 6 compare
- * this file's set against it. Rank has no such witness — no build step needs
- * it, so no build step can police it — which is why the gate also enforces the
- * rank rule against the MEASURED link graph (tools/dev/module-linkgraph.sh).
+ * this file's set against it. Rank has no such witness, so the gate also
+ * enforces the rank rule against the MEASURED link graph
+ * (tools/dev/module-linkgraph.sh).
  *
  * A module missing from this file is not a lint warning, it is a module
  * missing from the build.
  *
- * How the order was derived — re-measured 2026-08-29 on today's tree, and
- * re-derivable at any time with two commands:
+ * The order is re-derivable with two commands:
  *   make build-only -j"$(nproc)"          # the ONLY tree the gate measures
  *   tools/dev/module-linkgraph.sh --fas --obj-root build/obj
- * The graph is 248 lib->lib edges over the 46 lib modules that have any edge
- * at all (contexts/explorer/modules/presentation has none), with 40 strongly-connected components
- * of which two are non-trivial: {metrics sync validation net rpc storage} and
- * {util health}. The sequence below leaves 4 back edges, and that is OPTIMAL,
- * not merely good: --fas solves each component exactly (minimum feedback arc
- * set decomposes over components) and reports the floor as 3 + 1 = 4, so no
- * reordering of this file can do better. Deleting those 4 and running `tsort`
- * over the residue confirms it is acyclic. core/modules/script sat in the big
- * component until 2026-08-29, when the unused zcashconsensus C-ABI shim — the
- * TU that carried script's entire upward reach — was deleted. The 4 are
- * grandfathered in
+ * The lib->lib graph has two non-trivial strongly-connected components:
+ * {metrics sync validation net rpc storage} and {util health}. The sequence
+ * below leaves 4 back edges, the optimal floor: --fas solves each component
+ * exactly (minimum feedback arc set decomposes over components), and `tsort`
+ * over the residue is acyclic. The 4 are grandfathered in
  * tools/scripts/lib_module_order_baseline.txt and the gate ratchets: the
- * baseline may only shrink, and shrinking it now requires BREAKING A CYCLE,
- * not reordering.
- *
- * Every number in this comment is output of the two commands above, not
- * inherited from an earlier measurement. Re-run them before editing the order,
- * and replace the numbers with what you actually see.
+ * baseline may only shrink, and shrinking it requires BREAKING A CYCLE, not
+ * reordering. Re-run the commands before editing the order.
  *
  * Adding a module: put it at the LOWEST rank that keeps the gate green
  * (i.e. below everything it references). Never reorder to make a violation
@@ -184,9 +170,7 @@ LIB_MODULE("keys")
 
 /* Consensus state, the chain index, transport and observability. Six of these
  * — metrics sync validation net rpc storage — are one strongly connected
- * component, so 3 of the 4 back edges necessarily live in here. core/modules/script
- * sat in that component too until the 2026-08-29 zcashconsensus purge removed
- * its only upward reach. */
+ * component, so 3 of the 4 back edges necessarily live in here. */
 LIB_MODULE("coins")
 LIB_MODULE("chain")
 LIB_MODULE("sync")
@@ -222,15 +206,9 @@ LIB_MODULE("metaverse")
  * its grant translation and its audit chain), which is why it ranks here,
  * above contexts/commons/modules/metaverse: the broker translates a wire frame into a canonical
  * metaverse action and asks metaverse_grant_check() to rule on it, rather
- * than keeping a second opinion about what an action means.
- *
- * It used to sit at rank 11, below everything, because it also held the Noise
- * handshake and the session record layer — which core/modules/net calls, and core/modules/net
- * ranks 25. One module doing both jobs could not be ranked correctly for
- * either: below net for the transport, above metaverse for the broker. The
- * Noise half moved to core/modules/noise (rank 11, where this line used to be) and
- * core/modules/net now depends on that, so both halves rank where they belong and no
- * back edge was created in either direction. */
+ * than keeping a second opinion about what an action means. The Noise
+ * handshake and session record layer live in core/modules/noise (rank 11);
+ * core/modules/net depends on that. */
 LIB_MODULE("session")
 LIB_MODULE("sim")
 LIB_MODULE("policy")

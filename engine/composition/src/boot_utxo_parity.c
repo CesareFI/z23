@@ -86,9 +86,7 @@ static bool boot_utxo_parity_start(void *ctx)
      * resolves on the loopback RPC port above is a MAINNET one: comparing a
      * regtest or testnet node against it is a guaranteed false compare — and,
      * worse, an outbound dial into the operator's live daemon from a fixture
-     * that was supposed to be sealed. A `-regtest` fixture was observed polling
-     * it every 60 s on 2026-07-28, three log lines after the legacy mirror
-     * correctly skipped. The cheap local finalization observer above stays
+     * that was supposed to be sealed. The cheap local finalization observer above stays
      * installed on every network; only the reference dial is gated. */
     const char *net = boot_nonmain_network_name(svc);
     if (net) {

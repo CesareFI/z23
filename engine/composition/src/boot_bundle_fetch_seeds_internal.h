@@ -42,11 +42,9 @@ void bbf_add_peer_at_port(struct rom_fetch_peer *peers, size_t *np, size_t cap,
  *      the function behaves exactly as it did before the source existed.
  *
  * Why connect-only gets the -connect hosts rather than an EMPTY set: `-connect=`
- * means "reach ONLY these peers", not "reach nothing". Emptying the set turned
- * the instant-on weld structurally OFF for every connect-only boot — the
- * measured 2026-07-27 bare cold start passed `-connect=<peer>` and so never
- * contacted a single file-service seed, then reported the miss as
- * `fetch=no_seed`, indistinguishable from a genuine discovery miss. Reusing the
+ * means "reach ONLY these peers", not "reach nothing". Emptying the set would turn
+ * the instant-on weld structurally OFF for every connect-only boot, reported
+ * as `fetch=no_seed`, indistinguishable from a genuine discovery miss. Reusing the
  * explicitly named peers honours the containment promise exactly: no compiled
  * seed, no gossiped address, nothing the operator did not name.
  *

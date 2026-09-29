@@ -1,8 +1,6 @@
 /* The `ops.telemetry.watch` leaf. Owned by the sync/watch lane.
  *
- * It lives in its own file because the change feed is built by a different
- * lane than the top-level rollups in root.def, and two lanes editing one file
- * is how merges go wrong.
+ * It lives in its own file, separate from the top-level rollups in root.def.
  */
 
 /* watch is the only STREAM-mode leaf in the registry, and it is a CURSOR POLL,

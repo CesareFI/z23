@@ -3,11 +3,9 @@
  * app_init). The ordered rungs that select where the in-memory block index
  * comes from — projection rebuild, flat file, sqlite cache, kill-9 projection
  * rebuild, flat-union taint check, blocks-table hydrate, LevelDB — live here as
- * a const rung table iterated in order, replacing the prior hand-written
- * if/else chain and keeping boot.c under the E1 file-size ceiling. The
- * flat_union_tainted guard (the LevelDB rung's mid-boot flat-save gate, the
- * reason a prior lane deferred this fold) is a first-class field of the shared
- * context. Per-rung fire counters are surfaced via the boot_block_index_rungs
+ * a const rung table iterated in order, keeping boot.c under the E1 file-size
+ * ceiling. The flat_union_tainted guard (the LevelDB rung's mid-boot
+ * flat-save gate) is a first-class field of the shared context. Per-rung fire counters are surfaced via the boot_block_index_rungs
  * dump_state entry (see CLAUDE.md "Adding state introspection"). */
 #ifndef CONFIG_BOOT_BLKIDX_LADDER_H
 #define CONFIG_BOOT_BLKIDX_LADDER_H

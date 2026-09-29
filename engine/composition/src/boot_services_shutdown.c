@@ -153,8 +153,7 @@ static bool shutdown_quiesce_network_and_flush_coins(struct boot_svc_ctx *svc,
     /* The FLUSH above is unconditional -- durability never waits on a
      * diagnostics capture. The CLOSE below is not: an undrained capture is
      * still an owned reader of these views, exactly as it is of connman.
-     * Closing under a live reader is the use-after-free this whole branch
-     * exists to avoid. */
+     * Closing under a live reader is a use-after-free. */
     if (diagnostics_drained) {
         coins_view_cache_free(svc->coins_tip);
         coins_view_sqlite_close(svc->coins_sqlite);
@@ -306,15 +305,11 @@ static bool shutdown_persist_runtime_state(struct boot_svc_ctx *svc,
             fprintf(stderr, "[shutdown] WAL checkpoint failed\n");
             ok = false;
         }
-        /* Flush, PRAGMA and checkpoint above are unconditional: they ARE
-         * durability. Only the close is gated -- app_runtime_node_db()
-         * hands this same handle to diagnostics dumpers, and an undrained
-         * capture can still be inside one (the omniscience dumper reaches
-         * node_db via db_parity_sample_recent). node_db_close() flips
-         * ndb->open and calls sqlite3_close() with no lock, so closing here
-         * races that reader. Before this stage was allowed to continue past
-         * a failed drain, _exit(1) made the window unreachable; now it is
-         * reachable, so it must be guarded. */
+        /* Flush, PRAGMA and checkpoint above are unconditional: they are
+         * durability. Only the close is gated: app_runtime_node_db() hands
+         * this handle to diagnostics dumpers, and node_db_close() flips
+         * ndb->open and calls sqlite3_close() with no lock, so closing while
+         * an undrained capture is inside a dumper races that reader. */
         if (diagnostics_drained) {
             if (!db_service_close_write(svc->db_service))
                 ok = false;
@@ -409,7 +404,7 @@ bool boot_offline_shutdown_durable_already(bool one_shot_output_durable)
 }
 
 /* app_shutdown_offline's call site: arms the offline-worker-drain deadline
- * exactly as before (never skipped — a genuinely wedged worker must still be
+ * (never skipped — a genuinely wedged worker must still be
  * bounded), and records the durable-already gate so a fired deadline on
  * THIS stage is decided as an already-durable success (shutdown_stagewatch_
  * set_stage_durable_override), never a global durability override for any
@@ -425,13 +420,12 @@ void app_shutdown_svc(struct boot_svc_ctx *svc)
 {
     extern volatile sig_atomic_t g_shutdown_requested;
 
-    /* Per-stage deadlines (shutdown_stagewatch_enter below) replace the old
-     * single alarm(90) cliff: each stage is timed + budgeted, a fired deadline
-     * names its stage and escalates truthfully, and a datadir receipt records
-     * the verdict so a forced-but-durable stop is never mis-reported as
-     * failure. See util/shutdown_stagewatch.h. */
+    /* Per-stage deadlines (shutdown_stagewatch_enter below): each stage is
+     * timed + budgeted, a fired deadline names its stage, and a datadir
+     * receipt records the verdict so a forced-but-durable stop is not
+     * reported as failure. See util/shutdown_stagewatch.h. */
     shutdown_stagewatch_begin(svc->datadir);
-    boot_loop_guard_note_shutdown_intent();   /* E2: exit-reason breadcrumb */
+    boot_loop_guard_note_shutdown_intent();   /* exit-reason breadcrumb */
 
     atomic_store(svc->running, false);
     process_block_set_gap_fill_kick(NULL, NULL);
@@ -440,7 +434,7 @@ void app_shutdown_svc(struct boot_svc_ctx *svc)
     process_block_set_tip_publication_hooks(NULL, NULL, NULL);
     g_shutdown_requested = 1;
     thread_registry_request_shutdown();
-    /* K3: stop the block-body read-ahead worker before main_state teardown (it
+    /* Stop the block-body read-ahead worker before main_state teardown (it
      * reads active_chain_at + preads blk*.dat). Idempotent + safe if never
      * started. */
     boot_block_prefetch_stop();
@@ -470,15 +464,11 @@ void app_shutdown_svc(struct boot_svc_ctx *svc)
      * budget — for every active capture before the first dumper dependency is
      * quiesced.
      *
-     * Ownership is still never abandoned: a capture that does not drain is
-     * never detached, and nothing it reads is freed (see the
-     * diagnostics_drained guards in shutdown_quiesce_network_and_flush_coins
-     * and shutdown_release_owned_resources). What changed is the CONSEQUENCE.
-     * This used to _exit(1) here, which threw away the coins flush, the WAL
-     * checkpoint and the clean marker — the whole durability barrier — over a
-     * best-effort postmortem capture, and the next boot then paid a ~180 s
-     * sqlite.quick_check. A blocked dumper must never cost the node its
-     * durability, so shutdown now says so loudly and keeps going. */
+     * A capture that does not drain is never detached and nothing it reads
+     * is freed (see the diagnostics_drained guards in
+     * shutdown_quiesce_network_and_flush_coins and
+     * shutdown_release_owned_resources). A blocked dumper must not cost the
+     * node its durability, so shutdown logs loudly and continues. */
     shutdown_stagewatch_enter("diagnostics-drain", 60, false, true);
     bool diagnostics_drained = diagnostics_controller_shutdown();
     if (!diagnostics_drained)
@@ -487,17 +477,14 @@ void app_shutdown_svc(struct boot_svc_ctx *svc)
                 "budget; retaining every dependency it reads and continuing "
                 "to durability\n");
 
-    /* I-7b phase-1: detach hot path observers from the feeder while
+    /* Detach hot path observers from the feeder while
      * the network is still draining. New block_msg arrivals between
      * here and quiesce will short-circuit at the global hook. */
 
     shutdown_stagewatch_enter("frontend-stop", 15, false, true);
     shutdown_stop_frontend_services(svc);
-    /* Production evidence (2026-08-15) showed that 30s + two 15s graces
-     * killed an otherwise healthy node before durability when an optional
-     * discovery worker was still owned. Discovery waits are now promptly
-     * interruptible; retain a 120s diagnostic budget as defense in depth for
-     * legitimate socket/message cleanup and final coins I/O, still below the
+    /* Discovery waits are interruptible; the 120s diagnostic budget covers
+     * legitimate socket/message cleanup and final coins I/O, below the
      * service manager's 300s hard stop. */
     shutdown_stagewatch_enter("network-quiesce", 120, true, true);
     bool durability_ok =
@@ -511,8 +498,7 @@ void app_shutdown_svc(struct boot_svc_ctx *svc)
      * that could move their frontier has been joined. */
     boot_fast_restart_capture_shutdown_facts(svc->state);
     /* runtime-persist holds the final WAL checkpoint + wallet flush + mempool
-     * save — the slow-after-a-long-fold stage that used to breach the 90s
-     * cliff. Durability-critical: never skipped, only graced. */
+     * save. Durability-critical: never skipped, only graced. */
     shutdown_stagewatch_enter("runtime-persist", 45, true, true);
     if (!shutdown_persist_runtime_state(svc, diagnostics_drained))
         durability_ok = false;
@@ -549,13 +535,10 @@ void app_shutdown_svc(struct boot_svc_ctx *svc)
      * a fired deadline now forces a TRUTHFUL clean exit (0), not a false fail. */
     shutdown_stagewatch_mark_durable();
 
-    /* Durability secured; only best-effort teardown follows. The block-index flat cache is written AFTER the marker (it previously preceded the checkpoint and lost the marker on a mid-teardown kill). */
-    /* The flat snapshot alone took 18 seconds on the measured 7200 rpm host;
-     * the former 20-second ceiling then forced a clean exit before the
-     * projection binding committed. Every following boot consequently paid a
-     * full 3.2-million-row projection scan. This cache remains best-effort,
-     * but 120 seconds lets honest rotating media finish while staying below
-     * systemd's 300-second stop ceiling in the normal, already-quiesced path. */
+    /* Durability secured; only best-effort teardown follows. The block-index flat cache is written after the marker. */
+    /* Best-effort cache; the 120 s deadline lets slow rotating media finish
+     * the projection binding while staying below systemd's 300 s stop
+     * ceiling. */
     shutdown_stagewatch_enter("fast-restart-persist", 120, false, true);
     shutdown_persist_fast_restart_state(svc);
     /* Every worker was joined before persistence; destructive release is now
