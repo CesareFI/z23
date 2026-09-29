@@ -582,6 +582,36 @@ enum vcs_package_store_page_result vcs_package_store_page_summaries(
     return VCS_PACKAGE_STORE_PAGE_OK;
 }
 
+enum vcs_package_store_page_result vcs_package_store_catalog_rows(
+    struct vcs_package_store *store, size_t *rows, uint64_t *generation)
+{
+    if (rows) *rows = 0;
+    if (generation) *generation = 0;
+    if (!store || !rows || !generation)
+        LOG_RETURN(VCS_PACKAGE_STORE_PAGE_INPUT, STORE_LOG,
+                   "invalid catalog size arguments");
+    pthread_mutex_lock(&store->lock);
+    if (!store_process_lock(store)) {
+        pthread_mutex_unlock(&store->lock);
+        LOG_RETURN(VCS_PACKAGE_STORE_PAGE_IO, STORE_LOG,
+                   "lock store for catalog size");
+    }
+    enum vcs_package_store_page_result result = VCS_PACKAGE_STORE_PAGE_OK;
+    if (!store_generation_check(store))
+        result = VCS_PACKAGE_STORE_PAGE_STALE;
+    else if (store->catalog_incomplete)
+        result = VCS_PACKAGE_STORE_PAGE_INCOMPLETE;
+    else {
+        *rows = store->pkg_count;
+        *generation = store->shared_generation;
+    }
+    store_process_unlock(store);
+    pthread_mutex_unlock(&store->lock);
+    if (result != VCS_PACKAGE_STORE_PAGE_OK)
+        LOG_ERROR(STORE_LOG, "catalog size refused (%d)", (int)result);
+    return result;
+}
+
 static enum vcs_package_store_page_result store_validate_chunks(
     const struct vcs_package_store *store,
     const uint8_t (*hashes)[32], size_t count)

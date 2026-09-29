@@ -15,6 +15,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Worker-start recovery re-derives its catalog budget at most this many
+ * times when the catalog moves underneath one attempt. */
+#define BFPR_RECOVER_ATTEMPTS 4u
+/* The staged ticket and checkpoint replay may itself add to the catalog. */
+#define BFPR_RECOVER_TRANSFER_ROWS 2u
+
 #ifdef ZCL_TESTING
 static void (*bfpr_before_finalize_hook)(void *);
 static void *bfpr_before_finalize_context;
@@ -446,9 +452,11 @@ static struct zcl_result bfpr_guarded_finalize(
             &commit, &committed);
     free(all_hashes);
     if (guard == VCS_PACKAGE_STORE_PAGE_STALE)
-        return ZCL_ERR(-1, "proof-pending-publish-stale-generation");
+        return ZCL_ERR(BUILD_FABRIC_PROOF_ERR_CATALOG_CHANGED,
+                       "proof-pending-publish-stale-generation");
     if (guard == VCS_PACKAGE_STORE_PAGE_INCOMPLETE)
-        return ZCL_ERR(-1, "proof-pending-publish-incomplete-catalog");
+        return ZCL_ERR(BUILD_FABRIC_PROOF_ERR_CATALOG_CHANGED,
+                       "proof-pending-publish-incomplete-catalog");
     if (guard != VCS_PACKAGE_STORE_PAGE_OK)
         return ZCL_ERR(-1, "proof-pending-publish-store-guard-refused");
     if (!committed)
@@ -518,10 +526,85 @@ struct zcl_result build_fabric_proof_pending_publish(
         history_hashes, history_count, chunk_hashes, chunk_count);
 }
 
+/* Size the catalog this handle will scan, first catching a stale handle up
+ * with writes made through other handles. */
+static struct zcl_result bfpr_catalog_size(struct vcs_package_store *store,
+                                           size_t *rows)
+{
+    uint64_t generation = 0;
+    enum vcs_package_store_page_result sized =
+        vcs_package_store_catalog_rows(store, rows, &generation);
+    if (sized == VCS_PACKAGE_STORE_PAGE_STALE) {
+        if (!vcs_package_store_refresh(store))
+            return ZCL_ERR(-1, "proof-pending-recover-store-refresh-refused");
+        sized = vcs_package_store_catalog_rows(store, rows, &generation);
+    }
+    if (sized == VCS_PACKAGE_STORE_PAGE_STALE)
+        return ZCL_ERR(BUILD_FABRIC_PROOF_ERR_CATALOG_CHANGED,
+                       "proof-pending-recover-catalog-changed-while-sizing");
+    if (sized != VCS_PACKAGE_STORE_PAGE_OK)
+        return ZCL_ERR(-1, "proof-pending-recover-catalog-size-refused");
+    if (*rows > SIZE_MAX - BFPR_RECOVER_TRANSFER_ROWS)
+        return ZCL_ERR(-1, "proof-pending-recover-catalog-size-overflow");
+    return ZCL_OK;
+}
+
+/* One publication at a budget covering the catalog as sized now plus the
+ * two staged wires replay may itself transfer into it. */
+static struct zcl_result bfpr_recover_once(
+    struct node_db *ndb, struct vcs_package_store *store,
+    const char *worker_id, const uint8_t signer_seed[32],
+    uint64_t leaf_count, bool *catalog_moved)
+{
+    *catalog_moved = false;
+    size_t rows = 0;
+    struct zcl_result before = bfpr_catalog_size(store, &rows);
+    if (!before.ok) {
+        *catalog_moved = before.code == BUILD_FABRIC_PROOF_ERR_CATALOG_CHANGED;
+        return before;
+    }
+    size_t budget = rows + BFPR_RECOVER_TRANSFER_ROWS;
+    size_t tickets = leaf_count < budget ? (size_t)leaf_count : budget;
+    struct zcl_result published = build_fabric_proof_pending_publish(
+        ndb, store, worker_id, signer_seed, budget, tickets);
+    if (published.ok) return published;
+    size_t after = 0;
+    struct zcl_result sized = bfpr_catalog_size(store, &after);
+    *catalog_moved =
+        published.code == BUILD_FABRIC_PROOF_ERR_CATALOG_CHANGED ||
+        sized.code == BUILD_FABRIC_PROOF_ERR_CATALOG_CHANGED ||
+        (sized.ok && after > budget);
+    if (*catalog_moved)
+        LOG_WARN("build_fabric", "proof recovery at %zu catalog rows saw the "
+                 "catalog move (now %zu): %s", budget, after,
+                 published.message);
+    return published;
+}
+
 struct zcl_result build_fabric_proof_pending_recover(
     struct node_db *ndb, struct vcs_package_store *store,
     const char *worker_id, const uint8_t signer_seed[32])
 {
-    return build_fabric_proof_pending_publish(
-        ndb, store, worker_id, signer_seed, 65536u, 65536u);
+    if (!ndb || !store || !worker_id || !signer_seed)
+        return ZCL_ERR(-1, "proof-pending-recover-invalid-input");
+    struct db_build_worker_proof_pending pending;
+    int found = db_build_worker_proof_pending_find_checked(
+        ndb, worker_id, &pending);
+    if (found < 0)
+        return ZCL_ERR(-1, "proof-pending-recover-missing-or-corrupt-row");
+    if (found == 0) return ZCL_OK;
+    struct vcs_proof_checkpoint_v1 staged;
+    if (!vcs_proof_checkpoint_decode(pending.checkpoint_wire,
+                                     sizeof(pending.checkpoint_wire),
+                                     &staged) || staged.leaf_count == 0)
+        return ZCL_ERR(-1, "proof-pending-recover-staged-checkpoint-invalid");
+    for (unsigned attempt = 0; attempt < BFPR_RECOVER_ATTEMPTS; attempt++) {
+        bool moved = false;
+        struct zcl_result recovered = bfpr_recover_once(
+            ndb, store, worker_id, signer_seed, staged.leaf_count, &moved);
+        if (recovered.ok || !moved) return recovered;
+    }
+    return ZCL_ERR(BUILD_FABRIC_PROOF_ERR_CATALOG_CHANGED,
+                   "proof-pending-recover-catalog-changed attempts=%u",
+                   BFPR_RECOVER_ATTEMPTS);
 }

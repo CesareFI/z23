@@ -3,8 +3,10 @@
  *          A real child process dies between the writes of one staged
  *          publication; a fresh open of the same database and store must
  *          publish nothing partial, keep old eligible observations HIT and
- *          conflicts REFUSE, then finish the exact staged head through
- *          worker-start recovery. */
+ *          conflicts REFUSE, then finish the exact staged head. Worker-start
+ *          recovery sizes its budget from the catalog itself, re-derives it
+ *          when the catalog moves, and returns a typed retryable error when
+ *          the catalog never holds still. */
 
 #include "test/test_core.h"
 #include "test/proof_ticket_fixture.h"
@@ -377,6 +379,141 @@ _test_next:
 }
 #endif
 
+/* ── Worker-start recovery over a moving or oversized catalog ─────────── */
+
+static bool bfh_fill(struct vcs_package_store *store, uint32_t first,
+                     uint32_t count)
+{
+    for (uint32_t i = first; i < first + count; i++) {
+        uint8_t blob[8] = {'f', 'i', 'l', 'l', (uint8_t)i, (uint8_t)(i >> 8),
+                           (uint8_t)(i >> 16), (uint8_t)(i >> 24)};
+        uint8_t root[32];
+        if (!vcs_proof_ticket_store_put(store, blob, sizeof(blob), root))
+            return false;
+    }
+    return true;
+}
+
+/* Stage the second publication with only its ticket transferred, as a crash
+ * between CAS writes leaves it. Recovery must add the checkpoint itself. */
+static bool bfh_stage_ticket_only(struct bfh *h)
+{
+    return db_build_worker_proof_pending_stage(&h->ndb, &h->pending) &&
+           bfh_put(h->store, h->pending.ticket_wire,
+                   sizeof(h->pending.ticket_wire), NULL);
+}
+
+struct bfh_mover {
+    const char *dir;
+    uint32_t next;
+    unsigned fired;
+    bool rearm;
+    bool wrote;
+};
+
+/* A second store handle adds one unrelated package at the final commit
+ * boundary, so the recovering handle's catalog generation goes stale. */
+static void bfh_move_catalog(void *context)
+{
+    struct bfh_mover *m = context;
+    m->fired++;
+    struct vcs_package_store *writer = vcs_package_store_open(m->dir, BFH_QUOTA);
+    m->wrote = writer && bfh_fill(writer, m->next++, 1);
+    if (writer) vcs_package_store_close(writer);
+    if (m->rearm) build_fabric_proof_test_before_finalize(bfh_move_catalog, m);
+}
+
+static int bfh_case_recover_moved_catalog(void)
+{
+    int failures = 0;
+    struct bfh h;
+    printf("build_fabric: recovery re-derives its budget after the catalog moves... ");
+    {
+        ASSERT(bfh_init(&h, "proof_recover_moved"));
+        ASSERT(bfh_fill(h.store, 0, VCS_PACKAGE_STORE_PAGE_MAX + 4u));
+        ASSERT(bfh_stage_ticket_only(&h));
+        /* A fixed budget is any budget short of the catalog: replay itself
+         * transfers the staged checkpoint, so the catalog as sized before
+         * the call is one row short and the head can never publish. The
+         * runtime once passed 65536 rows whatever the catalog held. */
+        size_t rows = 0;
+        uint64_t generation = 0;
+        ASSERT_EQ(vcs_package_store_catalog_rows(h.store, &rows, &generation),
+                  VCS_PACKAGE_STORE_PAGE_OK);
+        ASSERT(rows > VCS_PACKAGE_STORE_PAGE_MAX);
+        ASSERT(!build_fabric_proof_pending_publish(
+            &h.ndb, h.store, bfh_worker_id, h.f.seed[PTF_A], rows, 8).ok);
+        ASSERT(bfh_head_is(&h, h.first_head));
+        ASSERT_EQ(bfh_pending_count(&h), 1);
+        struct bfh_mover mover = {.dir = h.dir, .next = 1000000u};
+        build_fabric_proof_test_before_finalize(bfh_move_catalog, &mover);
+        struct zcl_result recovered = build_fabric_proof_pending_recover(
+            &h.ndb, h.store, bfh_worker_id, h.f.seed[PTF_A]);
+        build_fabric_proof_test_before_finalize(NULL, NULL);
+        ASSERT_EQ(mover.fired, 1u);
+        ASSERT(mover.wrote);
+        ASSERT(recovered.ok);
+        ASSERT(bfh_head_is(&h, h.second_head));
+        ASSERT_EQ(bfh_pending_count(&h), 0);
+        struct vcs_proof_receiver *rx = bfh_anchored(&h, h.second_head);
+        ASSERT(rx != NULL);
+        failures += bfh_expect_history(&h, rx, VCS_PROOF_REUSE_HIT_PASS);
+        vcs_proof_receiver_free(rx);
+        bfh_free(&h);
+        printf("OK\n");
+    }
+    if (0) {
+_test_next:
+        build_fabric_proof_test_before_finalize(NULL, NULL);
+        bfh_free(&h);
+    }
+    return failures;
+}
+
+static int bfh_case_recover_restless_catalog(void)
+{
+    int failures = 0;
+    struct bfh h;
+    printf("build_fabric: a catalog that never holds still is a typed retry... ");
+    {
+        ASSERT(bfh_init(&h, "proof_recover_restless"));
+        ASSERT(bfh_stage_ticket_only(&h));
+        struct bfh_mover mover = {.dir = h.dir, .next = 2000000u,
+                                  .rearm = true};
+        build_fabric_proof_test_before_finalize(bfh_move_catalog, &mover);
+        struct zcl_result recovered = build_fabric_proof_pending_recover(
+            &h.ndb, h.store, bfh_worker_id, h.f.seed[PTF_A]);
+        build_fabric_proof_test_before_finalize(NULL, NULL);
+        ASSERT(!recovered.ok);
+        ASSERT_EQ(recovered.code, BUILD_FABRIC_PROOF_ERR_CATALOG_CHANGED);
+        ASSERT(mover.fired > 1u);
+        ASSERT(mover.wrote);
+        /* Refused, not forgotten: old head, exact pending intent, and the
+         * old history still decides. */
+        ASSERT(bfh_head_is(&h, h.first_head));
+        ASSERT_EQ(bfh_pending_count(&h), 1);
+        struct vcs_proof_receiver *rx = bfh_anchored(&h, h.first_head);
+        ASSERT(rx == NULL); /* CAS already holds the staged checkpoint */
+        rx = bfh_rebuilt(&h);
+        ASSERT(rx != NULL);
+        failures += bfh_expect_history(&h, rx, VCS_PROOF_REUSE_HIT_PASS);
+        vcs_proof_receiver_free(rx);
+        /* Once the catalog settles the same call publishes. */
+        ASSERT(build_fabric_proof_pending_recover(
+            &h.ndb, h.store, bfh_worker_id, h.f.seed[PTF_A]).ok);
+        ASSERT(bfh_head_is(&h, h.second_head));
+        ASSERT_EQ(bfh_pending_count(&h), 0);
+        bfh_free(&h);
+        printf("OK\n");
+    }
+    if (0) {
+_test_next:
+        build_fabric_proof_test_before_finalize(NULL, NULL);
+        bfh_free(&h);
+    }
+    return failures;
+}
+
 int bf_proof_history_cases(void);
 
 int bf_proof_history_cases(void)
@@ -386,5 +523,7 @@ int bf_proof_history_cases(void)
     for (int point = 0; point < BFH_CRASH_POINTS; point++)
         failures += bfh_case_crash((enum bfh_crash_point)point);
 #endif
+    failures += bfh_case_recover_moved_catalog();
+    failures += bfh_case_recover_restless_catalog();
     return failures;
 }

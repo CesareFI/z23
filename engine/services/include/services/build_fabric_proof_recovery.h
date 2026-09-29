@@ -36,8 +36,18 @@ struct zcl_result build_fabric_proof_pending_publish(
     const char *worker_id, const uint8_t signer_seed[32],
     size_t max_catalog_rows, size_t max_tickets);
 
-/* Worker-start recovery of a staged proof publication at the runtime's
- * fixed catalog and ticket budgets. */
+/* A publication refused because the package catalog moved underneath it
+ * (stale generation, or more rows than the derived budget). Nothing was
+ * published; the staged row stays pending and a later retry is safe. */
+#define BUILD_FABRIC_PROOF_ERR_CATALOG_CHANGED 1101
+
+/* Worker-start recovery of a staged proof publication. Each attempt derives
+ * its finite budgets from the store itself: the catalog's current row count
+ * (plus the two staged wires replay may transfer) and the staged
+ * checkpoint's leaf count, so no catalog size is ever out of reach. When the
+ * catalog moves underneath an attempt it re-derives and retries a bounded
+ * number of times, then returns BUILD_FABRIC_PROOF_ERR_CATALOG_CHANGED.
+ * Any other refusal is returned as is. Refusal publishes nothing. */
 struct zcl_result build_fabric_proof_pending_recover(
     struct node_db *ndb, struct vcs_package_store *store,
     const char *worker_id, const uint8_t signer_seed[32]);

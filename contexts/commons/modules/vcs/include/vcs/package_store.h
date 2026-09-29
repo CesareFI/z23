@@ -346,6 +346,12 @@ enum vcs_package_store_page_result vcs_package_store_page_summaries(
     size_t limit, uint64_t expected_generation,
     struct vcs_package_store_summary *rows,
     struct vcs_package_store_page *page);
+/* The whole catalog's row count and generation, under the same locks and
+ * refusals as a page read (STALE handle, INCOMPLETE catalog). A caller that
+ * must scan the complete catalog derives its finite row budget from this
+ * instead of guessing one. Outputs are zero on every refusal. */
+enum vcs_package_store_page_result vcs_package_store_catalog_rows(
+    struct vcs_package_store *store, size_t *rows, uint64_t *generation);
 
 /* Publish a fully reconstructed in-memory view while the store's generation
  * still matches. The callback only swaps prepared pointers and cannot call a
