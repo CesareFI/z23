@@ -1359,7 +1359,8 @@ reason, up to a byte bound), `universe` (`applied`, `complete`, `reason`,
 `make_guards` (`premises`, and each missing include the root makefile
 provably skips: `include`, `include_at`, `guard`, `guard_at`, `premises`,
 `globbed` with each path's `found`, up to a byte bound, with
-`skipped_total` and `skipped_listed`) and
+`skipped_total` and `skipped_listed`, and `plan`: the premises the whole
+reading rests on with the `include` and `command` they name) and
 `tus`, one page of entries from `facts_offset` (at least one per page),
 each with its path, the four identities (`source`, `fact`, `interface`,
 `implementation`; `action` and `artifact` null with a reason when their
@@ -1463,7 +1464,20 @@ for. Four named premises carry what the text does not hold:
 Each skipped include is recorded in the plan's `facts.make_guards.skipped`
 with the directive read (`guard`, `guard_at`), the premises that reading
 used and every path it globbed with what that found, so a reviewer can
-falsify the narrow; `facts.make_guards.premises` names all four premises.
+falsify the narrow; `facts.make_guards.premises` names every premise.
+
+One more premise is the whole plan's, not a skip's:
+`parse-scripts-no-include-writes`, a `$(shell)` or `!=` command make runs
+as it reads the makefiles that is not provably read-only does not create
+an optional include that is missing. A command is provably read-only when
+it is one simple command of `printf`, `echo`, `cat`, `uname`, `nproc`,
+`pwd`, `true`, `false`, `test`, `basename`, `dirname` or `pkg-config`
+with no make reference, substitution, quote, redirection, separator,
+assignment or glob in its text. When an optional include make reads is
+still missing (after the skips) and any other command runs,
+`facts.make_guards.plan` records the premise with the first missing
+include (`include`, `includes` in all), and the first such command as
+written with where it is (`command`, `command_at`, `commands` in all).
 Of the Makefile's identity markers, `epoch-recovery-ready.mk` is skipped
 when no epoch object directory holds `.unverified` (under
 `epoch-one-component`). `vendor-inputs-ready.mk` and `tor-inputs-ready.mk`
@@ -1611,7 +1625,10 @@ none of them runs as part of building that commit's objects:
   includes, above);
 - a missing optional include a parse-time program creates without any
   text naming it (`$(shell tools/mkgen.sh)` whose script writes
-  `build/gen.mk`): the script is an opaque program. Refusing every
+  `build/gen.mk`), read under the named premise
+  `parse-scripts-no-include-writes` and recorded in
+  `facts.make_guards.plan` (Guarded includes, above): the script is an
+  opaque program. Refusing every
   parse-time command but a known read-only one while an optional include
   is missing instead makes every real plan UNKNOWN: the gitignored
   `contexts/commons/apps/local_gui_apps.mk` is missing in every checkout,

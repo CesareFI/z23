@@ -88,6 +88,7 @@ struct fxm_line {
                          * .PHONY goals, 2 one may name a file */
     bool body;      /* FXM_DEF: a line a define holds */
     uint32_t at;    /* the line of its file it starts on */
+    uint32_t file;  /* ...and that file, an index of files */
 };
 
 struct fxm_rule {
@@ -264,6 +265,12 @@ bool fxm_parse_writes(const struct fxm *m);
  * definition of a variable the text holds does, transitively; an $(eval)
  * line or a computed name holding it may set any variable, and counts. */
 bool fxm_commands_name(const struct fxm *m, const char *name);
+/* Count, and name the first of, the commands make runs as it reads the
+ * makefiles (a $(shell) body or a != value, outside recipes) that are not
+ * provably read-only: one simple command of a program that writes no file,
+ * with nothing make or the shell could turn into another command. */
+void fxm_parse_unproven(const struct fxm *m,
+                        struct zcl_devloop_facts_plan_premise *p);
 /* A match-anything rule (%:) or .DEFAULT exists while an optional include
  * is missing: it makes that include by a recipe no rule names it in. */
 bool fxm_anything_made(const struct fxm *m);

@@ -1431,14 +1431,12 @@ static int sbit_t_guarded_include(void)
                                       SBI_MISSING_COND, ""), k_sbi_liba, false},
         {"environment", SBI_GUARD("", "ifneq ($(FOO),)", ""), NULL, false},
         {"q20", SBI_GUARD("", "ifeq ($(wildcard d/*),)", ""), k_sbi_dot, false},
-        {"q84", SBI_GUARD("", "ifeq ($(wildcard d/*/m),)", ""), k_sbi_dotdir,
-         false},
+        {"q84", SBI_GUARD("", "ifeq ($(wildcard d/*/m),)", ""), k_sbi_dotdir, false},
         {"q51", SBI_GUARD("L := a%\n", "ifeq ($(filter a\\%,$(L)),)\nelse", ""),
          NULL, false},
         {"q80", SBI_GUARD("", "ifeq ($(wildcard d/s/),d/s/)", ""), k_sbi_ds, false},
         {"q82", SBI_GUARD("", "ifeq ($(wildcard d//x),d//x)", ""), k_sbi_dx, false},
-        {"q83", SBI_GUARD("", "ifeq ($(wildcard d/*),d/a d/b)", ""), k_sbi_dab,
-         false},
+        {"q83", SBI_GUARD("", "ifeq ($(wildcard d/*),d/a d/b)", ""), k_sbi_dab, false},
         {"filter_out_all", SBI_GUARD("", "ifeq ($(filter-out a,a),)", ""), NULL,
          false},
         {"glob_created", SBI_GUARD("X := $(shell mkdir -p d && touch d/flag)\n",
@@ -1455,9 +1453,8 @@ static int sbit_t_guarded_include(void)
 }
 
 /* The premises every skip rests on. */
-#define SBI_EVERY_SKIP                                                         \
-    (ZCL_DEVLOOP_PREMISE_BUILD_READS_PLANNED_TREE |                            \
-     ZCL_DEVLOOP_PREMISE_NO_COMMAND_LINE_OVERRIDE)
+#define SBI_EVERY_SKIP (ZCL_DEVLOOP_PREMISE_BUILD_READS_PLANNED_TREE | \
+                        ZCL_DEVLOOP_PREMISE_NO_COMMAND_LINE_OVERRIDE)
 
 /* A skipped include is recorded with the directive, its premises and the
  * paths it globbed, so a reviewer can falsify the narrow. */
@@ -1494,6 +1491,32 @@ static int sbit_t_guard_record(void)
     return failures;
 }
 
+/* p02: a parse-time script narrows under parse-scripts-no-include-writes. */
+static int sbit_t_plan_premise(void)
+{
+    int failures = 0;
+    static const char *const ch[] = {"tools/x.sh"};
+    struct sbi_run s = {0}, u = {0}, e = {0};
+    const struct zcl_devloop_facts_plan_premise *p = &s.rep.make_premise;
+    TEST_CASE("semantic_build_inputs: a parse-time script records its premise") {
+        ASSERT(sbi_consume("sbi_pp_s", "X := $(shell tools/mkgen.sh)\n" SBI_P_TAIL,
+                           ch, 1, &s) && sbi_narrowed(&s));
+        ASSERT(p->premises == ZCL_DEVLOOP_PREMISE_PARSE_SCRIPTS_NO_INCLUDE_WRITES &&
+               strcmp(p->include, "build/gen.mk") == 0 && p->nincludes == 1);
+        ASSERT(strcmp(p->command, "tools/mkgen.sh") == 0 && p->ncommands == 1 &&
+               strcmp(p->command_at, "Makefile:1") == 0);
+        ASSERT(sbi_consume("sbi_pp_u", "X := $(shell uname -m)\n" SBI_P_TAIL, ch,
+                           1, &u) && u.rep.make_premise.premises == 0);
+        ASSERT(sbi_consume_with("sbi_pp_e", "X := $(shell tools/mkgen.sh)\n"
+                                SBI_P_TAIL, "build/gen.mk", "# old\n", ch, 1, &e) &&
+               e.rep.make_premise.premises == 0);
+    } TEST_END
+    zcl_devloop_facts_report_free(&s.rep);
+    zcl_devloop_facts_report_free(&u.rep);
+    zcl_devloop_facts_report_free(&e.rep);
+    return failures;
+}
+
 int test_semantic_build_inputs(void)
 {
     return sbit_t_narrow() | sbit_t_makefile_mention() | sbit_t_bare_dir() |
@@ -1516,5 +1539,5 @@ int test_semantic_build_inputs(void)
           sbit_t_generated_joins() | sbit_t_generated_unreadable() |
           sbit_t_generated_reviewed() | sbit_t_parse_time_writers() |
           sbit_t_parse_time_quiet() | sbit_t_guarded_include() |
-          sbit_t_guard_record();
+          sbit_t_guard_record() | sbit_t_plan_premise();
 }

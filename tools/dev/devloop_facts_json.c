@@ -360,6 +360,11 @@ static const struct {
     {ZCL_DEVLOOP_PREMISE_NO_COMMAND_LINE_OVERRIDE, "no-command-line-override",
      "no command-line or make -e environment value overrides a variable the "
      "makefile sets with = or :="},
+    {ZCL_DEVLOOP_PREMISE_PARSE_SCRIPTS_NO_INCLUDE_WRITES,
+     "parse-scripts-no-include-writes",
+     "a command make runs as it reads the makefiles that is not provably "
+     "read-only (a script, a program, any shell text) does not create an "
+     "optional include that is missing"},
 };
 
 static void fx_premise_names(unsigned bits, struct fxw *w)
@@ -427,11 +432,29 @@ static void fx_guard_json(const struct zcl_devloop_facts_guard *g,
     fw_raw(w, "]}");
 }
 
+/* "plan":{premises,include,includes,command,command_at,commands}: what the
+ * whole make reading rests on, beyond each skip. */
+static void fx_plan_premise_json(const struct zcl_devloop_facts_plan_premise *p,
+                                 struct fxw *w)
+{
+    fw_key(w, "plan");
+    fw_raw(w, "{");
+    fw_key(w, "premises");
+    fx_premise_names(p->premises, w);
+    fw_kstr(w, "include", p->include);
+    fw_knum(w, "includes", p->nincludes);
+    fw_kstr(w, "command", p->command);
+    fw_kstr(w, "command_at", p->command_at);
+    fw_knum(w, "commands", p->ncommands);
+    fw_raw(w, "}");
+}
+
 /* "make_guards":{"premises":[{"name","reads"}...],"skipped":[...],
- * "skipped_total":N,"skipped_listed":N}: the named premises a guard reading
- * may rest on, and each missing include the root makefile provably skips
- * with the directive read not taken, the premises it used and every path
- * it globbed, as many as fit FX_GUARDS_PAGE. */
+ * "skipped_total":N,"skipped_listed":N,"plan":{...}}: the named premises a
+ * guard reading may rest on, each missing include the root makefile
+ * provably skips with the directive read not taken, the premises it used
+ * and every path it globbed, as many as fit FX_GUARDS_PAGE, and the
+ * premises the whole reading rests on. */
 static void fx_guards_json(const struct zcl_devloop_facts_report *r,
                            struct fxw *w)
 {
@@ -459,6 +482,7 @@ static void fx_guards_json(const struct zcl_devloop_facts_report *r,
     fw_raw(w, "]");
     fw_knum(w, "skipped_total", r->nguards);
     fw_knum(w, "skipped_listed", listed);
+    fx_plan_premise_json(&r->make_premise, w);
     fw_raw(w, "}");
 }
 

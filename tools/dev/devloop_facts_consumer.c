@@ -503,6 +503,7 @@ void zcl_devloop_facts_report_free(struct zcl_devloop_facts_report *report)
     free(report->guards);
     report->guards = NULL;
     report->nguards = 0;
+    memset(&report->make_premise, 0, sizeof(report->make_premise));
     report->tus = NULL;
     report->ntus = 0;
 }

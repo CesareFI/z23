@@ -842,8 +842,26 @@ static void fxg_skip_all(struct fxm *m)
     fxg_free(g);
 }
 
+/* The plan rests on parse-scripts-no-include-writes when an optional
+ * include make reads is missing and a command make runs as it reads is not
+ * provably read-only. */
+static void fxg_plan_premise(struct fxm *m)
+{
+    struct zcl_devloop_facts_plan_premise *p = &m->report->make_premise;
+    fxm_parse_unproven(m, p);
+    if (p->ncommands == 0) {
+        memset(p, 0, sizeof(*p));
+        return;
+    }
+    p->premises = ZCL_DEVLOOP_PREMISE_PARSE_SCRIPTS_NO_INCLUDE_WRITES;
+    p->nincludes = m->missing.n;
+    (void)snprintf(p->include, sizeof(p->include), "%s", m->missing.v[0]);
+}
+
 void fxm_guards(struct fxm *m)
 {
+    if (m->report != NULL)
+        memset(&m->report->make_premise, 0, sizeof(m->report->make_premise));
     if (m->unknown || m->missing.n == 0)
         return;
     fxg_skip_all(m);
@@ -854,4 +872,6 @@ void fxm_guards(struct fxm *m)
         m->unknown = fxm_commands_name(m, p) ||
                      fxm_commands_name(m, base != NULL ? base + 1 : p);
     }
+    if (!m->unknown && m->missing.n > 0 && m->report != NULL)
+        fxg_plan_premise(m);
 }

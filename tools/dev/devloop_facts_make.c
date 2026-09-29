@@ -1234,6 +1234,7 @@ static void fxm_keep_line(struct fxm *m, uint8_t ctx, uint32_t rule)
     l->from = m->from < FXM_LINE_MAX ? (uint32_t)m->from : 0;
     l->body = m->body && ctx == FXM_DEF;
     l->at = m->pos[1];
+    l->file = m->cur_file;
     l->text = zcl_strdup(t, "facts_consumer.mkline");
     l->raw = zcl_strdup(m->line.p, "facts_consumer.mkraw");
     l->name = zcl_strdup(ctx == FXM_DEF ? m->name : "", "facts_consumer.mkname");

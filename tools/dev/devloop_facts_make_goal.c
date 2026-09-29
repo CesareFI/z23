@@ -2,6 +2,7 @@
  * purpose: The goal half of the facts consumer's make reader: which .PHONY goals a line can name through a value no text spells, and what make may write as it reads the makefiles. */
 #include "devloop_facts_make.h"
 
+#include <stdio.h>
 #include <string.h>
 
 /* A variable that reaches a goal position: its value may be a goal or a
@@ -416,4 +417,66 @@ bool fxm_anything_made(const struct fxm *m)
         if (fxm_makes_anything(m->rules[r].targets))
             return true;
     return false;
+}
+
+/* Programs that write no file whatever their arguments. */
+static const char *const fxm_readers[] = {
+    "printf", "echo", "cat", "uname", "nproc", "pwd", "true", "false",
+    "test", "basename", "dirname", "pkg-config"};
+
+/* The command s[0..n) is provably read-only: one simple command of a
+ * reader with no reference, substitution, quote, redirection, separator
+ * or assignment make or the shell could turn into another command. */
+static bool fxm_read_only(const char *s, size_t n)
+{
+    size_t w;
+    while (n > 0 && fxm_space(*s))
+        s++, n--;
+    for (size_t k = 0; k < n; k++)
+        if (strchr(";&|`$()<>{}\\\n'\"=*?[~#", s[k]) != NULL)
+            return false;
+    for (w = 0; w < n && !fxm_space(s[w]);)
+        w++;
+    for (size_t k = 0; k < sizeof(fxm_readers) / sizeof(*fxm_readers); k++)
+        if (strlen(fxm_readers[k]) == w && memcmp(fxm_readers[k], s, w) == 0)
+            return true;
+    return false;
+}
+
+/* Note the command s[0..n) of line l when it is not provably read-only. */
+static void fxm_unproven_add(const struct fxm *m, const struct fxm_line *l,
+                             const char *s, size_t n,
+                             struct zcl_devloop_facts_plan_premise *p)
+{
+    if (fxm_read_only(s, n))
+        return;
+    if (p->ncommands++ > 0)
+        return;
+    while (n > 0 && fxm_space(*s))
+        s++, n--;
+    (void)snprintf(p->command, sizeof(p->command), "%.*s", (int)n, s);
+    (void)snprintf(p->command_at, sizeof(p->command_at), "%s:%u",
+                   l->file < m->files.n ? m->files.v[l->file] : "?", l->at);
+}
+
+void fxm_parse_unproven(const struct fxm *m,
+                        struct zcl_devloop_facts_plan_premise *p)
+{
+    for (size_t k = 0; k < m->nlines; k++) {
+        const struct fxm_line *l = &m->lines[k];
+        const char *v = fxm_bang_value(l);
+        if (!fxm_parse_line(l))
+            continue;
+        if (v != NULL)
+            fxm_unproven_add(m, l, v, strlen(v), p);
+        for (const char *d = strchr(l->raw, '$'); d != NULL; d = strchr(d + 1, '$')) {
+            const char *o = d + 1, *e;
+            if ((*o != '(' && *o != '{') || !fxm_starts_word(o + 1, "shell"))
+                continue;
+            e = fxm_ref_end((char *)d);
+            if (e == NULL)
+                e = o + strlen(o);
+            fxm_unproven_add(m, l, o + 6, e > o + 6 ? (size_t)(e - o - 6) : 0, p);
+        }
+    }
 }
