@@ -123,10 +123,46 @@ static bool zproject_infer_name(const char *workspace, char *out, size_t cap)
     return n > 0 && (size_t)n < cap;
 }
 
-static bool zproject_infer_license(const char *workspace, char *out,
-                                   size_t cap)
+/* SPDX identifier for the permissive licenses this plan recognizes. */
+static const char *zproject_license_of(const char *text)
 {
+    static const struct { const char *needle; const char *spdx; } rows[] = {
+        { "MIT License", "MIT" },
+        { "Permission is hereby granted", "MIT" },
+        { "BSD 2-Clause", "BSD-2-Clause" },
+        { "BSD 3-Clause", "BSD-3-Clause" },
+        { "ISC License", "ISC" },
+        { "Zlib License", "Zlib" },
+        { "Zero-Clause BSD", "0BSD" },
+        { "0BSD", "0BSD" },
+    };
+    if (strstr(text, "Apache License") || strstr(text, "Apache-2.0"))
+        return "Apache-2.0";
+    if (strcmp(text, "MIT\n") == 0 || strcmp(text, "MIT") == 0)
+        return "MIT";
+    for (size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); i++)
+        if (strstr(text, rows[i].needle))
+            return rows[i].spdx;
+    return NULL;
+}
+
 #if defined(_WIN32)
+static bool zproject_license_unchanged(
+    const struct platform_directory_child_info *info,
+    const struct platform_directory_child_info *after)
+{
+    return after->volume == info->volume && after->file_low == info->file_low &&
+        after->file_high == info->file_high && after->size == info->size &&
+        after->modified_seconds == info->modified_seconds &&
+        after->modified_nanoseconds == info->modified_nanoseconds &&
+        after->changed_seconds == info->changed_seconds &&
+        after->changed_nanoseconds == info->changed_nanoseconds;
+}
+
+/* Reads the workspace LICENSE (at most 8 KiB) into `text` and returns its
+ * length, or -1. */
+static int64_t zproject_read_license(const char *workspace, char text[8193])
+{
     struct platform_directory_transaction root;
     struct platform_directory_child file;
     struct platform_directory_child_info info;
@@ -137,36 +173,33 @@ static bool zproject_infer_license(const char *workspace, char *out,
         !platform_directory_child_info(&file, &info) || info.size > 8192u) {
         platform_directory_child_close(&file);
         platform_directory_transaction_close(&root);
-        return false;
+        return -1;
     }
-    char text[8193];
     size_t used = (size_t)info.size;
     struct platform_directory_child_info after;
     bool ok = platform_directory_child_read_exact(&file, text, used, 0) &&
         platform_directory_child_info(&file, &after) &&
-        after.volume == info.volume && after.file_low == info.file_low &&
-        after.file_high == info.file_high && after.size == info.size &&
-        after.modified_seconds == info.modified_seconds &&
-        after.modified_nanoseconds == info.modified_nanoseconds &&
-        after.changed_seconds == info.changed_seconds &&
-        after.changed_nanoseconds == info.changed_nanoseconds;
+        zproject_license_unchanged(&info, &after);
     platform_directory_child_close(&file);
     platform_directory_transaction_close(&root);
-    if (!ok)
-        return false;
+    return ok ? (int64_t)used : -1;
+}
 #else
+/* Reads the workspace LICENSE (at most 8 KiB, not a symlink) into `text`
+ * and returns its length, or -1. */
+static int64_t zproject_read_license(const char *workspace, char text[8193])
+{
     int root = open(workspace, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
     if (root < 0)
-        return false;
+        return -1;
     int fd = openat(root, "LICENSE", O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
     close(root);
     if (fd < 0)
-        return false;
-    char text[8193];
+        return -1;
     size_t used = 0;
     bool ok = true;
-    while (used < sizeof(text) - 1u) {
-        ssize_t got = read(fd, text + used, sizeof(text) - 1u - used);
+    while (used < 8192u) {
+        ssize_t got = read(fd, text + used, 8192u - used);
         if (got < 0 && errno == EINTR)
             continue;
         if (got < 0) {
@@ -178,30 +211,22 @@ static bool zproject_infer_license(const char *workspace, char *out,
         used += (size_t)got;
     }
     char extra;
-    if (ok && used == sizeof(text) - 1u && read(fd, &extra, 1) != 0)
+    if (ok && used == 8192u && read(fd, &extra, 1) != 0)
         ok = false;
     close(fd);
-    if (!ok)
-        return false;
+    return ok ? (int64_t)used : -1;
+}
 #endif
+
+static bool zproject_infer_license(const char *workspace, char *out,
+                                   size_t cap)
+{
+    char text[8193];
+    int64_t used = zproject_read_license(workspace, text);
+    if (used < 0)
+        return false;
     text[used] = '\0';
-    const char *license = NULL;
-    if (strstr(text, "Apache License") || strstr(text, "Apache-2.0"))
-        license = "Apache-2.0";
-    else if (strcmp(text, "MIT\n") == 0 || strcmp(text, "MIT") == 0 ||
-             strstr(text, "MIT License") ||
-             strstr(text, "Permission is hereby granted"))
-        license = "MIT";
-    else if (strstr(text, "BSD 2-Clause"))
-        license = "BSD-2-Clause";
-    else if (strstr(text, "BSD 3-Clause"))
-        license = "BSD-3-Clause";
-    else if (strstr(text, "ISC License"))
-        license = "ISC";
-    else if (strstr(text, "Zlib License"))
-        license = "Zlib";
-    else if (strstr(text, "Zero-Clause BSD") || strstr(text, "0BSD"))
-        license = "0BSD";
+    const char *license = zproject_license_of(text);
     if (!license || strlen(license) >= cap)
         return false;
     (void)snprintf(out, cap, "%s", license);
@@ -227,78 +252,66 @@ static bool zproject_config_valid(const struct zproject_init_plan *plan)
     return vcs_package_release_validate(&release) == VCS_PACKAGE_RELEASE_OK;
 }
 
-static bool zproject_plan_derive(const struct json_value *input,
-                                 struct zproject_init_plan *plan,
-                                 struct vcs_package_prepared *scan,
-                                 char *detail, size_t detail_cap)
+static void zproject_detail(char *detail, size_t detail_cap, const char *text)
 {
-    memset(plan, 0, sizeof(*plan));
-    const char *workspace = zproject_str(input, "workspace");
-    bool has_config = false;
-    enum vcs_package_prepare_error err = vcs_package_scan_layout(
-        workspace, scan, &has_config, detail, detail_cap);
-    if (err != VCS_PACKAGE_PREPARE_OK) {
-        char prior[256];
-        (void)snprintf(prior, sizeof(prior), "%s", detail ? detail : "");
-        if (detail && detail_cap)
-            (void)snprintf(detail, detail_cap, "%s: %s",
-                           vcs_package_prepare_error_string(err), prior);
-        return false;
-    }
-    if (has_config) {
-        if (detail && detail_cap)
-            (void)snprintf(detail, detail_cap,
-                           "zcode-package.json already exists; overwrite refused");
-        return false;
-    }
-    if (!zproject_has_manifest_path(&scan->manifest, "LICENSE")) {
-        if (detail && detail_cap)
-            (void)snprintf(detail, detail_cap,
-                           "LICENSE is required before project initialization");
-        return false;
-    }
+    if (detail && detail_cap)
+        (void)snprintf(detail, detail_cap, "%s", text);
+}
+
+static bool zproject_plan_name(const struct json_value *input,
+                               const char *workspace,
+                               struct zproject_init_plan *plan, char *detail,
+                               size_t detail_cap)
+{
     const char *name = zproject_str(input, "name");
-    const char *semver = zproject_str(input, "semver");
-    const char *license = zproject_str(input, "license");
     if (name) {
         if (strlen(name) >= sizeof(plan->name))
             return false;
         (void)snprintf(plan->name, sizeof(plan->name), "%s", name);
     } else if (!zproject_infer_name(workspace, plan->name,
                                     sizeof(plan->name))) {
-        if (detail && detail_cap)
-            (void)snprintf(detail, detail_cap,
-                           "package name could not be inferred; supply name");
+        zproject_detail(detail, detail_cap,
+                        "package name could not be inferred; supply name");
         return false;
     }
+    const char *semver = zproject_str(input, "semver");
     (void)snprintf(plan->semver, sizeof(plan->semver), "%s",
                    semver ? semver : "0.1.0-dev.1");
+    return true;
+}
+
+static bool zproject_plan_license(const struct json_value *input,
+                                  const char *workspace,
+                                  struct zproject_init_plan *plan,
+                                  char *detail, size_t detail_cap)
+{
+    const char *license = zproject_str(input, "license");
     if (license) {
         if (strlen(license) >= sizeof(plan->license))
             return false;
         (void)snprintf(plan->license, sizeof(plan->license), "%s", license);
     } else if (!zproject_infer_license(workspace, plan->license,
                                        sizeof(plan->license))) {
-        if (detail && detail_cap)
-            (void)snprintf(detail, detail_cap,
-                           "permissive SPDX license could not be inferred; "
-                           "new original work defaults to Apache-2.0 — "
-                           "supply license or use Apache-2.0 LICENSE text");
+        zproject_detail(detail, detail_cap,
+                        "permissive SPDX license could not be inferred; "
+                        "new original work defaults to Apache-2.0 — "
+                        "supply license or use Apache-2.0 LICENSE text");
         return false;
     }
-    if (!zproject_config_valid(plan)) {
-        if (detail && detail_cap)
-            (void)snprintf(detail, detail_cap,
-                           "name, semver or license violates the existing package schema");
-        return false;
-    }
-    /* Programs are declared, never inferred by prepare — so the one place
-     * that may propose them is this plan, whose whole contract is that a
-     * person reads it before anything is written. Every `app/<stem>.c` in
-     * the scanned tree becomes a proposed program; the reader deletes the
-     * line for anything that is not meant to install. A nested app/x/y.c is
-     * not a program and is left alone. */
-    char programs_json[1024];
+    return true;
+}
+
+/* Programs are declared, never inferred by prepare — so the one place
+ * that may propose them is this plan, whose whole contract is that a
+ * person reads it before anything is written. Every `app/<stem>.c` in
+ * the scanned tree becomes a proposed program; the reader deletes the
+ * line for anything that is not meant to install. A nested app/x/y.c is
+ * not a program and is left alone. Returns the bytes written to
+ * `programs_json`, or -1 with `detail` set. */
+static int zproject_propose_programs(struct vcs_package_prepared *scan,
+                                     char *programs_json, size_t json_cap,
+                                     char *detail, size_t detail_cap)
+{
     size_t programs_used = 0;
     programs_json[0] = '\0';
     for (size_t i = 0; i < scan->manifest.count; i++) {
@@ -310,24 +323,28 @@ static bool zproject_plan_derive(const struct json_value *input,
             if (detail && detail_cap)
                 (void)snprintf(detail, detail_cap, "program %s: %s", path,
                                vcs_package_recipe_error_string(rerr));
-            return false;
+            return -1;
         }
         int used = snprintf(programs_json + programs_used,
-                            sizeof(programs_json) - programs_used, "%s\"%s\"",
+                            json_cap - programs_used, "%s\"%s\"",
                             programs_used ? ", " : "", path);
-        if (used <= 0 ||
-            (size_t)used >= sizeof(programs_json) - programs_used) {
-            if (detail && detail_cap)
-                (void)snprintf(detail, detail_cap,
-                               "too many programs to name in a bounded plan");
-            return false;
+        if (used <= 0 || (size_t)used >= json_cap - programs_used) {
+            zproject_detail(detail, detail_cap,
+                            "too many programs to name in a bounded plan");
+            return -1;
         }
         programs_used += (size_t)used;
     }
-    /* app/main.c installs as the package's own short name, so it collides
-     * with app/<short name>.c. Naming it here keeps it correctable in the
-     * plan instead of surfacing as a rejected prepare after init commit. */
-    const char *short_name = zproject_short_name(plan->name);
+    return (int)programs_used;
+}
+
+/* app/main.c installs as the package's own short name, so it collides
+ * with app/<short name>.c. Naming it here keeps it correctable in the
+ * plan instead of surfacing as a rejected prepare after init commit. */
+static bool zproject_check_program_outputs(const struct vcs_package_prepared *scan,
+                                           const char *short_name, char *detail,
+                                           size_t detail_cap)
+{
     for (size_t i = 0; i < scan->recipe.programs.count; i++) {
         char output[VCS_PACKAGE_PATH_MAX];
         if (!vcs_package_recipe_program_output(scan->recipe.programs.items[i],
@@ -354,7 +371,17 @@ static bool zproject_plan_derive(const struct json_value *input,
             }
         }
     }
-    char programs_field[sizeof(programs_json) + 32u];
+    return true;
+}
+
+/* Renders the configuration and derives the plan id. */
+static bool zproject_plan_finish(struct zproject_init_plan *plan,
+                                 const struct vcs_package_prepared *scan,
+                                 const char *programs_json,
+                                 size_t programs_used, char *detail,
+                                 size_t detail_cap)
+{
+    char programs_field[1024 + 32u];
     programs_field[0] = '\0';
     if (programs_used > 0)
         (void)snprintf(programs_field, sizeof(programs_field),
@@ -372,9 +399,8 @@ static bool zproject_plan_derive(const struct json_value *input,
         "}\n", plan->name, plan->semver, plan->license, programs_field);
     if (n <= 0 || (size_t)n >= sizeof(plan->configuration) ||
         !vcs_package_manifest_root(&scan->manifest, plan->source_root)) {
-        if (detail && detail_cap)
-            (void)snprintf(detail, detail_cap,
-                           "bounded initialization plan could not be derived");
+        zproject_detail(detail, detail_cap,
+                        "bounded initialization plan could not be derived");
         return false;
     }
     static const uint8_t domain[] = "zcl.zcode_project_init_plan.local.v1";
@@ -386,6 +412,54 @@ static bool zproject_plan_derive(const struct json_value *input,
                    strlen(plan->configuration));
     sha3_256_finalize(&ctx, plan->plan_id);
     return true;
+}
+
+static bool zproject_plan_derive(const struct json_value *input,
+                                 struct zproject_init_plan *plan,
+                                 struct vcs_package_prepared *scan,
+                                 char *detail, size_t detail_cap)
+{
+    memset(plan, 0, sizeof(*plan));
+    const char *workspace = zproject_str(input, "workspace");
+    bool has_config = false;
+    enum vcs_package_prepare_error err = vcs_package_scan_layout(
+        workspace, scan, &has_config, detail, detail_cap);
+    if (err != VCS_PACKAGE_PREPARE_OK) {
+        char prior[256];
+        (void)snprintf(prior, sizeof(prior), "%s", detail ? detail : "");
+        if (detail && detail_cap)
+            (void)snprintf(detail, detail_cap, "%s: %s",
+                           vcs_package_prepare_error_string(err), prior);
+        return false;
+    }
+    if (has_config) {
+        zproject_detail(detail, detail_cap,
+                        "zcode-package.json already exists; overwrite refused");
+        return false;
+    }
+    if (!zproject_has_manifest_path(&scan->manifest, "LICENSE")) {
+        zproject_detail(detail, detail_cap,
+                        "LICENSE is required before project initialization");
+        return false;
+    }
+    if (!zproject_plan_name(input, workspace, plan, detail, detail_cap) ||
+        !zproject_plan_license(input, workspace, plan, detail, detail_cap))
+        return false;
+    if (!zproject_config_valid(plan)) {
+        zproject_detail(detail, detail_cap,
+                        "name, semver or license violates the existing package schema");
+        return false;
+    }
+    char programs_json[1024];
+    int programs_used = zproject_propose_programs(scan, programs_json,
+                                                  sizeof(programs_json),
+                                                  detail, detail_cap);
+    if (programs_used < 0 ||
+        !zproject_check_program_outputs(scan, zproject_short_name(plan->name),
+                                        detail, detail_cap))
+        return false;
+    return zproject_plan_finish(plan, scan, programs_json,
+                                (size_t)programs_used, detail, detail_cap);
 }
 
 static bool zproject_render_plan(struct json_value *out,
@@ -775,6 +849,131 @@ static bool zproject_write_all(int fd, const char *text)
 }
 #endif
 
+#if defined(_WIN32)
+/* Creates zcode-package.json atomically and durably; replies on failure. */
+static bool zproject_write_metadata(struct zcl_command_reply *reply,
+                                    const char *workspace,
+                                    const struct zproject_init_plan *plan)
+{
+    struct platform_directory_transaction root;
+    struct platform_directory_child staged;
+    platform_directory_transaction_init(&root);
+    platform_directory_child_init(&staged);
+    if (!platform_directory_transaction_open(&root, workspace)) {
+        zproject_fail_at(reply, "PROJECT_INIT_OPEN", "init_commit",
+                         "workspace could not be reopened as a private real directory",
+                         "zcode project init plan");
+        return false;
+    }
+    char staged_leaf[80];
+    int staged_n = snprintf(staged_leaf, sizeof(staged_leaf),
+                            ".zcode-package.%ld.tmp", (long)_getpid());
+    bool staged_created = false;
+    size_t configuration_len = strlen(plan->configuration);
+    bool written = staged_n > 0 && (size_t)staged_n < sizeof(staged_leaf) &&
+        platform_directory_child_create(&root, staged_leaf, &staged) &&
+        (staged_created = true) &&
+        platform_directory_child_write_exact(&staged, plan->configuration,
+                                             configuration_len, 0) &&
+        platform_directory_child_flush(&staged) &&
+        platform_directory_child_replace(&root, &staged,
+                                         VCS_PACKAGE_DEPS_META_PATH, true) &&
+        platform_directory_transaction_flush(&root);
+    platform_directory_child_close(&staged);
+    if (!written && staged_created)
+        (void)platform_directory_child_unlink(&root, staged_leaf, true);
+    platform_directory_transaction_close(&root);
+    if (!written)
+        zproject_fail_at(reply, "PROJECT_INIT_OVERWRITE_REFUSED", "init_commit",
+                         "metadata exists or its atomic durable creation failed",
+                         "zcode project status");
+    return written;
+}
+
+static void zproject_remove_metadata(const char *workspace)
+{
+    struct platform_directory_transaction cleanup_root;
+    platform_directory_transaction_init(&cleanup_root);
+    if (platform_directory_transaction_open(&cleanup_root, workspace)) {
+        (void)platform_directory_child_unlink(
+            &cleanup_root, VCS_PACKAGE_DEPS_META_PATH, true);
+        platform_directory_transaction_close(&cleanup_root);
+    }
+}
+#else
+/* Creates zcode-package.json exclusively and durably; replies on failure. */
+static bool zproject_write_metadata(struct zcl_command_reply *reply,
+                                    const char *workspace,
+                                    const struct zproject_init_plan *plan)
+{
+    int root = open(workspace, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    if (root < 0) {
+        zproject_fail_at(reply, "PROJECT_INIT_OPEN", "init_commit",
+                         "workspace could not be reopened without following a symlink",
+                         "zcode project init plan");
+        return false;
+    }
+    int fd = openat(root, VCS_PACKAGE_DEPS_META_PATH,
+                    O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW,
+                    0644);
+    if (fd < 0) {
+        close(root);
+        zproject_fail_at(reply, "PROJECT_INIT_OVERWRITE_REFUSED", "init_commit",
+                         "zcode-package.json already exists or cannot be created exclusively",
+                         "zcode project status");
+        return false;
+    }
+    bool written = zproject_write_all(fd, plan->configuration) && fsync(fd) == 0;
+    int close_rc = close(fd);
+    if (close_rc != 0)
+        written = false;
+    if (written && fsync(root) != 0)
+        written = false;
+    if (!written)
+        (void)unlinkat(root, VCS_PACKAGE_DEPS_META_PATH, 0);
+    close(root);
+    if (!written)
+        zproject_fail_at(reply, "PROJECT_INIT_WRITE_FAILED", "init_commit",
+                         "exclusive metadata write did not reach durable completion",
+                         "zcode project init plan");
+    return written;
+}
+
+static void zproject_remove_metadata(const char *workspace)
+{
+    int cleanup_root = open(workspace, O_RDONLY | O_DIRECTORY | O_CLOEXEC |
+                                       O_NOFOLLOW);
+    if (cleanup_root >= 0) {
+        (void)unlinkat(cleanup_root, VCS_PACKAGE_DEPS_META_PATH, 0);
+        close(cleanup_root);
+    }
+}
+#endif
+
+static bool zproject_push_init_summary(
+    struct zcl_command_reply *reply, const struct vcs_package_prepared *prepared)
+{
+    char package_hex[65];
+    zcl_hex_encode(prepared->package_root, 32, package_hex);
+    struct json_value expert;
+    json_init(&expert); json_set_object(&expert);
+    bool ok = json_push_kv_str(&expert, "package_root", package_hex) &&
+              json_push_kv_str(&reply->data, "state", "READY") &&
+              json_push_kv_bool(&reply->data, "created", true) &&
+              json_push_kv_str(&reply->data, "path",
+                               VCS_PACKAGE_DEPS_META_PATH) &&
+              json_push_kv_str(&reply->data, "name", prepared->release.name) &&
+              json_push_kv_str(&reply->data, "semver",
+                               prepared->release.semver) &&
+              json_push_kv_str(&reply->data, "license",
+                               prepared->release.license) &&
+              json_push_kv_str(&reply->data, "next_safe_command",
+                               "zcode project status") &&
+              json_push_kv(&reply->data, "expert", &expert);
+    json_free(&expert);
+    return ok;
+}
+
 void zcl_native_handle_zcode_project_init_commit(
     const struct zcl_command_request *request, struct zcl_command_reply *reply)
 {
@@ -810,75 +1009,8 @@ void zcl_native_handle_zcode_project_init_commit(
                          "zcode project init plan");
         return;
     }
-#if defined(_WIN32)
-    struct platform_directory_transaction root;
-    struct platform_directory_child staged;
-    platform_directory_transaction_init(&root);
-    platform_directory_child_init(&staged);
-    if (!platform_directory_transaction_open(&root, workspace)) {
-        zproject_fail_at(reply, "PROJECT_INIT_OPEN", "init_commit",
-                         "workspace could not be reopened as a private real directory",
-                         "zcode project init plan");
+    if (!zproject_write_metadata(reply, workspace, &plan))
         return;
-    }
-    char staged_leaf[80];
-    int staged_n = snprintf(staged_leaf, sizeof(staged_leaf),
-                            ".zcode-package.%ld.tmp", (long)_getpid());
-    bool staged_created = false;
-    size_t configuration_len = strlen(plan.configuration);
-    bool written = staged_n > 0 && (size_t)staged_n < sizeof(staged_leaf) &&
-        platform_directory_child_create(&root, staged_leaf, &staged) &&
-        (staged_created = true) &&
-        platform_directory_child_write_exact(&staged, plan.configuration,
-                                             configuration_len, 0) &&
-        platform_directory_child_flush(&staged) &&
-        platform_directory_child_replace(&root, &staged,
-                                         VCS_PACKAGE_DEPS_META_PATH, true) &&
-        platform_directory_transaction_flush(&root);
-    platform_directory_child_close(&staged);
-    if (!written && staged_created)
-        (void)platform_directory_child_unlink(&root, staged_leaf, true);
-    platform_directory_transaction_close(&root);
-    if (!written) {
-        zproject_fail_at(reply, "PROJECT_INIT_OVERWRITE_REFUSED", "init_commit",
-                         "metadata exists or its atomic durable creation failed",
-                         "zcode project status");
-        return;
-    }
-#else
-    int root = open(workspace, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
-    if (root < 0) {
-        zproject_fail_at(reply, "PROJECT_INIT_OPEN", "init_commit",
-                         "workspace could not be reopened without following a symlink",
-                         "zcode project init plan");
-        return;
-    }
-    int fd = openat(root, VCS_PACKAGE_DEPS_META_PATH,
-                    O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW,
-                    0644);
-    if (fd < 0) {
-        close(root);
-        zproject_fail_at(reply, "PROJECT_INIT_OVERWRITE_REFUSED", "init_commit",
-                         "zcode-package.json already exists or cannot be created exclusively",
-                         "zcode project status");
-        return;
-    }
-    bool written = zproject_write_all(fd, plan.configuration) && fsync(fd) == 0;
-    int close_rc = close(fd);
-    if (close_rc != 0)
-        written = false;
-    if (written && fsync(root) != 0)
-        written = false;
-    if (!written)
-        (void)unlinkat(root, VCS_PACKAGE_DEPS_META_PATH, 0);
-    close(root);
-    if (!written) {
-        zproject_fail_at(reply, "PROJECT_INIT_WRITE_FAILED", "init_commit",
-                         "exclusive metadata write did not reach durable completion",
-                         "zcode project init plan");
-        return;
-    }
-#endif
     struct vcs_package_prepare_options options = {
         .dir = workspace,
         .publisher_sequence = 1,
@@ -892,46 +1024,14 @@ void zcl_native_handle_zcode_project_init_commit(
     enum vcs_package_prepare_error err = vcs_package_prepare(
         &options, &prepared, detail, sizeof(detail));
     if (err != VCS_PACKAGE_PREPARE_OK) {
-#if defined(_WIN32)
-        struct platform_directory_transaction cleanup_root;
-        platform_directory_transaction_init(&cleanup_root);
-        if (platform_directory_transaction_open(&cleanup_root, workspace)) {
-            (void)platform_directory_child_unlink(
-                &cleanup_root, VCS_PACKAGE_DEPS_META_PATH, true);
-            platform_directory_transaction_close(&cleanup_root);
-        }
-#else
-        int cleanup_root = open(workspace, O_RDONLY | O_DIRECTORY | O_CLOEXEC |
-                                           O_NOFOLLOW);
-        if (cleanup_root >= 0) {
-            (void)unlinkat(cleanup_root, VCS_PACKAGE_DEPS_META_PATH, 0);
-            close(cleanup_root);
-        }
-#endif
+        zproject_remove_metadata(workspace);
         vcs_package_prepared_free(&prepared);
         zproject_fail_at(reply, "PROJECT_INIT_VALIDATION_FAILED", "init_commit",
                          detail[0] ? detail : "created metadata did not prepare",
                          "zcode project init plan");
         return;
     }
-    char package_hex[65];
-    zcl_hex_encode(prepared.package_root, 32, package_hex);
-    struct json_value expert;
-    json_init(&expert); json_set_object(&expert);
-    bool ok = json_push_kv_str(&expert, "package_root", package_hex) &&
-              json_push_kv_str(&reply->data, "state", "READY") &&
-              json_push_kv_bool(&reply->data, "created", true) &&
-              json_push_kv_str(&reply->data, "path",
-                               VCS_PACKAGE_DEPS_META_PATH) &&
-              json_push_kv_str(&reply->data, "name", prepared.release.name) &&
-              json_push_kv_str(&reply->data, "semver",
-                               prepared.release.semver) &&
-              json_push_kv_str(&reply->data, "license",
-                               prepared.release.license) &&
-              json_push_kv_str(&reply->data, "next_safe_command",
-                               "zcode project status") &&
-              json_push_kv(&reply->data, "expert", &expert);
-    json_free(&expert);
+    bool ok = zproject_push_init_summary(reply, &prepared);
     vcs_package_prepared_free(&prepared);
     if (!ok)
         zproject_fail_at(reply, "PROJECT_INIT_OUTPUT", "init_commit",
