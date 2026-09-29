@@ -136,25 +136,36 @@ static const char *frt_read_all(int fd, uint8_t *buf, size_t len)
     return more == 0 ? NULL : ZCL_FRT_WHY_FILE_CHANGED;
 }
 
+/* Custody first, then every byte, then the same inode and size again. */
+static const char *frt_read_checked(int fd,
+                                    const struct zcl_frt_custody *custody,
+                                    uint8_t **buf, size_t *size)
+{
+    struct stat before, after;
+    if (fstat(fd, &before) != 0) return ZCL_FRT_WHY_FILE_UNSAFE;
+    const char *reason = frt_custody_check(&before, custody);
+    if (reason) return reason;
+    *size = (size_t)before.st_size;
+    *buf = zcl_malloc(*size ? *size : 1u, "frt file");
+    if (!*buf) return ZCL_FRT_WHY_NO_MEMORY;
+    reason = frt_read_all(fd, *buf, *size);
+    if (!reason && (fstat(fd, &after) != 0 || !frt_same(&before, &after)))
+        reason = ZCL_FRT_WHY_FILE_CHANGED;
+    return reason;
+}
+
 bool zcl_frt_read_fd(int fd, const struct zcl_frt_custody *custody,
                      uint8_t **out, size_t *len, const char **why)
 {
-    struct stat before, after;
     if (!out || !len || !custody || fd < 0) {
         frt_why(why, ZCL_FRT_WHY_ARGUMENTS);
         return false;
     }
     *out = NULL;
     *len = 0;
-    const char *reason = fstat(fd, &before) == 0
-                             ? frt_custody_check(&before, custody)
-                             : ZCL_FRT_WHY_FILE_UNSAFE;
-    size_t size = reason ? 0u : (size_t)before.st_size;
-    uint8_t *buf = reason ? NULL : zcl_malloc(size ? size : 1u, "frt file");
-    if (!reason && !buf) reason = ZCL_FRT_WHY_NO_MEMORY;
-    if (!reason) reason = frt_read_all(fd, buf, size);
-    if (!reason && (fstat(fd, &after) != 0 || !frt_same(&before, &after)))
-        reason = ZCL_FRT_WHY_FILE_CHANGED;
+    uint8_t *buf = NULL;
+    size_t size = 0;
+    const char *reason = frt_read_checked(fd, custody, &buf, &size);
     if (reason) {
         free(buf);
         frt_why(why, reason);

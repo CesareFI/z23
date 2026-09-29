@@ -486,6 +486,26 @@ static const char *frp_same_device(int a, int b)
     return sa.st_dev == sb.st_dev ? NULL : ZCL_FRP_WHY_CROSS_DEVICE;
 }
 
+/* publish-tmp/<record>.<pid>/, root-private, on the store's device. */
+static int frp_temp_dir(const struct zcl_frt_trust *t, int tmp, int store,
+                        const struct frp_work *w, char name[96],
+                        const char **why)
+{
+    *why = frp_same_device(tmp, store);
+    if (*why) return -1;
+    int k = snprintf(name, 96, "%s.%ld", w->record_hex, (long)getpid());
+    if (k <= 0 || k >= 96 || mkdirat(tmp, name, 0700) != 0) {
+        *why = ZCL_FRP_WHY_WRITE;
+        return -1;
+    }
+    int dir = zcl_frt_open_dir(tmp, name, t->publisher_uid, true, why);
+    if (dir < 0) {
+        (void)unlinkat(tmp, name, AT_REMOVEDIR);
+        *why = ZCL_FRP_WHY_WRITE;
+    }
+    return dir;
+}
+
 static const char *frp_place(const struct zcl_frt_trust *t, int state,
                              int store, int key_fd, const struct frp_work *w)
 {
@@ -493,18 +513,11 @@ static const char *frp_place(const struct zcl_frt_trust *t, int state,
     int tmp = zcl_frt_open_dir(state, "publish-tmp", t->publisher_uid, true,
                                &why);
     if (tmp < 0) return ZCL_FRP_WHY_STORE_UNSAFE;
-    why = frp_same_device(tmp, store);
     char name[96];
-    int k = snprintf(name, sizeof(name), "%s.%ld", w->record_hex,
-                     (long)getpid());
-    if (!why && (k <= 0 || (size_t)k >= sizeof(name) ||
-                 mkdirat(tmp, name, 0700) != 0))
-        why = ZCL_FRP_WHY_WRITE;
     int set[FRP_FILES];
     size_t n = frp_publish_set(w, set);
-    int dir = why ? -1 : zcl_frt_open_dir(tmp, name, t->publisher_uid, true,
-                                          &why);
-    if (!why && (dir < 0 || !frp_fill(dir, w, set, n))) why = ZCL_FRP_WHY_WRITE;
+    int dir = frp_temp_dir(t, tmp, store, w, name, &why);
+    if (!why && !frp_fill(dir, w, set, n)) why = ZCL_FRP_WHY_WRITE;
     if (!why && renameat2(tmp, name, key_fd, w->record_hex,
                           RENAME_NOREPLACE) != 0)
         why = errno == EEXIST ? ZCL_FRP_WHY_RECORD_EXISTS : ZCL_FRP_WHY_WRITE;
