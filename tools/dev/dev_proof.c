@@ -4735,6 +4735,24 @@ static void dp_pressure_remove_young(const struct warm_reap_entry *entry,
     (void)close(fd);
 }
 
+/* One turn of the pressure pass below: evict `entry` by whichever route its
+ * idle state allows, note what went, and mark it considered -- a generation
+ * git declined to delete is not a candidate a later turn should retry. */
+static void dp_pressure_evict(const struct proof_paths *paths,
+                              struct warm_reap_entry *entry, int64_t now,
+                              size_t *removed_out, uint64_t *reclaimed)
+{
+    size_t removed = 0;
+    uint64_t before = *reclaimed;
+    if (entry->young)
+        dp_pressure_remove_young(entry, &removed, reclaimed);
+    else
+        dp_reap_remove(paths, entry, &removed, reclaimed);
+    if (removed) dp_pressure_note(paths, entry, now, *reclaimed - before);
+    if (removed && removed_out) (*removed_out)++;
+    entry->path[0] = 0;
+}
+
 /* Reclaim RAM before asking for it. The reaper above is hygiene that runs
  * after this proof has already taken its generation, and by then the
  * reservation has been granted or refused; a pool full of abandoned donors
@@ -4787,19 +4805,8 @@ static void dp_pool_pressure_reap(const struct proof_paths *paths,
          attempts++) {
         size_t victim = dp_pressure_oldest(entries, count);
         if (victim == count) break;
-        size_t removed = 0;
-        uint64_t before = reclaimed;
-        if (entries[victim].young)
-            dp_pressure_remove_young(&entries[victim], &removed,
-                                     &reclaimed);
-        else
-            dp_reap_remove(paths, &entries[victim], &removed, &reclaimed);
-        if (removed) dp_pressure_note(paths, &entries[victim], now,
-                                      reclaimed - before);
-        if (removed && removed_out) (*removed_out)++;
-        /* Considered once: a generation git declined to delete is not a
-         * candidate the next turn of this loop should retry. */
-        entries[victim].path[0] = 0;
+        dp_pressure_evict(paths, &entries[victim], now, removed_out,
+                          &reclaimed);
     }
     if (bytes_out) *bytes_out += reclaimed;
     free(entries);
