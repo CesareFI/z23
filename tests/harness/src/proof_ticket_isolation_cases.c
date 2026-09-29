@@ -149,10 +149,9 @@ static const char *pic_reason_of(const struct vcs_proof_ticket_class *cls,
     return "absent";
 }
 
-/* A second log under `seed` re-signs `wires` (the same tickets at the same
- * sequences), checkpointing once after the first at `created` and once
- * after all of them at `created_last`. The first checkpoint is returned
- * in `first` (NULL:
+/* A second log under `seed` re-signs `wires` (same tickets, same sequences),
+ * checkpointing once after the first at `created` and once after all of them
+ * at `created_last`. The first checkpoint is returned in `first` (NULL:
  * dropped, so the second is an orphan whose parent nobody stored). */
 static bool pic_resign(const uint8_t seed[32], const uint8_t (*wires)[PIC_W],
                        size_t count, uint64_t created, uint64_t created_last,

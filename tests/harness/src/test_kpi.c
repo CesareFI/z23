@@ -2,46 +2,12 @@
  *
  * test_kpi — the cognition/modules/kpi gate.
  *
- * The module exists to make ONE claim that nothing else in this tree makes:
- * a number nobody could read and a number that honestly measured zero are
- * DIFFERENT FACTS, and the ledger keeps them apart all the way down to the
- * bytes on disk. Everything below is arranged around proving that, because a
- * test that only checked rendered strings would pass on an encoder that had
- * quietly collapsed the two.
- *
- *  1. CANONICAL MEANS BYTE-IDENTICAL. The same metric set encodes to the same
- *     bytes twice, and changing any single value changes them. If it did not,
- *     two frames could not be compared with a memcmp and the ledger's whole
- *     premise — that a frame is a fingerprint of a measurement — is gone.
- *
- *  2. UNAVAILABLE != 0, ON DISK. The same metric encoded UNAVAILABLE and
- *     encoded PRESENT-with-value-0 must produce different bytes, and must
- *     survive a decode still distinguishable. This is the assertion the whole
- *     module is built around, so it is checked directly rather than inferred
- *     from a rendered field.
- *
- *  3. A BASELINE IS THE PRIOR FRAME, NOT THIS ONE. Two appends to a temp
- *     ledger must leave the second run reading the FIRST run's values as
- *     `previous`. Reading after appending would make every run its own
- *     baseline and every delta zero — a ledger that reports a tree which
- *     never changes.
- *
- *  4. A FIRST RUN IS no_baseline, NEVER unchanged. "Equal to nothing" is not
- *     a measurement, and calling it unchanged would report a first run as a
- *     run in which nothing moved.
- *
- *  5. A MISSING ARTIFACT IS UNAVAILABLE, AND THE FRAME IS STILL WRITTEN. The
- *     unavailability is itself the fact being recorded; a run that refused to
- *     record it would leave a gap indistinguishable from a run nobody made.
- *
- *  6. DIRECTION IS RESPECTED. The same movement — a number going down — is
- *     `improved` for a LOWER_IS_BETTER metric and `regressed` for a
- *     HIGHER_IS_BETTER one. A verdict that ignored direction would grade
- *     deleting tests as progress.
- *
- * Every ledger here lives under this test's own temp directory. The real
- * .codeindex/kpi.chainlog is never opened: a gate that appended to the
- * developer's ledger would be writing the history it is supposed to audit.
+ * Proves the ledger keeps "unavailable" and "measured zero" distinct down to
+ * the bytes on disk: canonical encoding is byte-identical, UNAVAILABLE != 0
+ * after decode, the baseline is the prior frame (first run is no_baseline),
+ * a missing artifact still writes a frame, and direction decides the verdict.
+ * Ledgers live under this test's temp directory; the real .codeindex/kpi.chainlog
+ * is never opened.
  */
 
 #include "test/test_core.h"

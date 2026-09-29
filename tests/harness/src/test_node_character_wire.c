@@ -1,33 +1,25 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * node_character_wire, tested as the set of PROPERTIES a receiving node relies
- * on when a stranger hands it 132 bytes. The claims worth defending are not
- * "this identity encodes to these bytes" — though one golden frame is here
- * too, and it is the cross-platform anchor — they are the rules that make a
- * received sheet safe to look at:
+ * node_character_wire, tested as the PROPERTIES a receiving node relies on
+ * when a stranger hands it 132 bytes (plus one golden frame as the
+ * cross-platform anchor):
  *
  *   (a) the encoding round-trips EXACTLY, and re-encoding a decoded frame
- *       reproduces it byte for byte, so nothing is lost or invented in
- *       transit;
- *   (b) no struct padding reaches the wire — a sheet built over 0xAB stack
- *       garbage and one built over zeroed stack encode identically;
- *   (c) VERIFY ACCEPTS EXACTLY THE SELF-CONSISTENT FRAMES. This is asserted
- *       against an INDEPENDENT ORACLE over every single-bit mutation of a real
- *       frame: for each of the 1056 flips, the oracle rebuilds a sheet from
- *       the mutated root, birthday and counters and says whether the mutated
- *       derived fields still match; the verifier must agree with it every
- *       time. A tampered form byte, a tampered birthday and a tampered chart
- *       byte are all refused as consequences of that one property rather than
- *       as three hand-picked cases — and each is also asserted by name,
- *       because a named case is what a reader checks;
- *   (d) the STANDING BOUNDARY: what the receiver believes is derived from the
- *       receiver's own observations and never from the wire, so a sender
- *       cannot talk itself into energy; a claim covered by local observation
- *       is corroborated, and every other claim renders as unverified;
- *   (e) the derivation is total: no input, including a hostile one, yields an
- *       out-of-range field or a half-filled sheet.
- *
- * A golden-value test alone would pass while every one of (a)-(e) was broken.
+ *       reproduces it byte for byte;
+ *   (b) no struct padding reaches the wire: a sheet built over 0xAB stack
+ *       garbage and one over zeroed stack encode identically;
+ *   (c) VERIFY ACCEPTS EXACTLY THE SELF-CONSISTENT FRAMES, asserted against
+ *       an INDEPENDENT ORACLE over every single-bit mutation of a real
+ *       frame (1056 flips): the oracle rebuilds a sheet from the mutated
+ *       root, birthday and counters and says whether the derived fields
+ *       still match; the verifier must agree every time. Tampered form,
+ *       birthday and chart bytes are also asserted by name;
+ *   (d) the STANDING BOUNDARY: what the receiver believes derives from its
+ *       own observations, never from the wire; a claim covered by local
+ *       observation is corroborated, every other claim renders as
+ *       unverified;
+ *   (e) the derivation is total: no input, including a hostile one, yields
+ *       an out-of-range field or a half-filled sheet.
  */
 #include "test/test_core.h"
 
@@ -71,11 +63,8 @@ static const struct node_work k_example_work = {
     .peers_bootstrapped = 12ull,
 };
 
-/* The exact 132 bytes the example encodes to. This is the ONE golden value in
- * the file and it earns its place: it is the anchor that says Linux, macOS and
- * Windows — and -O0 and -O2 on any of them — produce the same frame. A
- * property test cannot state that, because both sides of every property would
- * drift together. */
+/* The exact 132 bytes the example encodes to: the ONE golden value, the
+ * anchor that Linux, macOS and Windows (at any -O) produce the same frame. */
 static const char k_example_hex[] =
     "5a323343485201019f2c4a187703d16be455902fbc1108a73d62f0498e17cb5a"
     "26d8710ca3946f30000007ea08180e341f00000044000001600b090200000008"
@@ -361,11 +350,9 @@ int test_node_character_wire(void)
 
     /* ── (b) no struct padding reaches the wire ─────────────────────────── */
     {
-        /* Two sheets built over deliberately different stack garbage. If the
-         * encoder ever copied a struct wholesale, the padding bytes — which C
-         * leaves undefined and which gcc and clang really do leave
-         * uninitialised at -O2 — would differ here. This is the exact shape of
-         * a defect a previous lane found at -O2 and not at -O0. */
+        /* Two sheets built over different stack garbage. If the encoder
+         * copied a struct wholesale, the undefined padding bytes (left
+         * uninitialised by gcc and clang at -O2) would differ here. */
         struct node_character_sheet dirty, clean;
         uint8_t a[NODE_CHARACTER_WIRE_BYTES], b[NODE_CHARACTER_WIRE_BYTES];
 
@@ -447,12 +434,11 @@ int test_node_character_wire(void)
                       "single-bit mutations",
                       agrees);
             NCW_CHECK("some mutations are refused", any_refused);
-            /* The frames a flip leaves self-consistent are the ones whose
-             * mutated bytes nothing derives from — spare identity-root bytes,
-             * and counter bits too low to move a doubling. They are accepted
-             * as a DIFFERENT well-formed claim, never as a corroborated one.
-             * A build where this went false would mean every flip was caught,
-             * which would mean the sweep had stopped testing anything. */
+            /* Frames a flip leaves self-consistent are those whose mutated
+             * bytes nothing derives from (spare root bytes, counter bits too
+             * low to move a doubling). They are accepted as a DIFFERENT
+             * well-formed claim, never a corroborated one; if this went
+             * false the sweep would have stopped testing anything. */
             NCW_CHECK("some mutations stay self-consistent and are accepted",
                       any_accepted);
             NCW_CHECK("an accepted mutation still leaves standing unverified",
@@ -510,10 +496,9 @@ int test_node_character_wire(void)
                   NCW_TAMPER(OFF_WORK + 1u, ^= 0xffu));
 #undef NCW_TAMPER
 
-        /* An energy claim with nothing behind it: zero every counter and keep
-         * the standing the real counters produced. Internal consistency is
-         * what refuses this, and it is the reason the counters are on the wire
-         * at all. */
+        /* An energy claim with nothing behind it: zero every counter and
+         * keep the standing the real counters produced. Internal
+         * consistency refuses it. */
         memcpy(t, frame, sizeof t);
         memset(t + OFF_WORK, 0, 32);
         NCW_CHECK("a large energy with no counters behind it is refused",
@@ -608,8 +593,8 @@ int test_node_character_wire(void)
                   "sheet's",
                   r.believed.energy > 0);
 
-        /* The claim a node would forge if it could: everything saturated. The
-         * frame verifies — it is internally consistent — and buys nothing. */
+        /* The claim a node would forge if it could: everything saturated.
+         * The frame verifies and buys nothing. */
         {
             struct node_work maxed = { UINT64_MAX, UINT64_MAX, UINT64_MAX,
                                        UINT64_MAX };

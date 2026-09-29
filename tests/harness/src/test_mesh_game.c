@@ -1,18 +1,11 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Proves the `game` service's wire contract over the same two-peer
- * loopback the stream primitive is proven on: real p2p nodes at each end
- * of the shared fixture's in-process Noise pair, the production decoder
- * opening every frame, only the socket elided.
+ * Proves the `game` service wire contract over the two-peer loopback used by
+ * the stream primitive: real p2p nodes at each end of the fixture Noise pair,
+ * the production decoder opening every frame, only the socket elided.
  *
- * What is asserted is the thing a game will rely on and the thing an
- * attacker will try. The round trip — HELLO in the OPEN, then ROSTER,
- * MATCH_OPEN, MATCH_STATE, MATCH_CLOSE — has to walk end to end. And each
- * refusal has to arrive BY ITS OWN NAME on the wire, because a game
- * service that failed open would let a paired peer claim another
- * operator's machines or describe a match larger than it declared. Every
- * check reads the token out of the CLOSE payload rather than trusting
- * that the stream merely ended.
+ * The round trip HELLO, ROSTER, MATCH_OPEN, MATCH_STATE, MATCH_CLOSE walks end
+ * to end, and each refusal arrives by its own name in the CLOSE payload.
  */
 
 #include "test/test_core.h"
@@ -37,8 +30,7 @@
 
 #define GAME_TEST_WIRE_MAX 8192u
 #define GAME_TEST_WINDOW 8192u
-/* A pairing window that brackets any clock this test could read: the lane
- * under test grades the row, not the hour the box thinks it is. */
+/* A pairing window that brackets any clock this test could read. */
 #define GAME_TEST_PAIRED_AT INT64_C(1)
 #define GAME_TEST_EXPIRES INT64_C(4102444800)
 /* prefix + kind + stream id + reason + payload length. */

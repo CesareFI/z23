@@ -285,17 +285,8 @@ int test_node_character(void)
 
     /* ── the exact values, pinned ────────────────────────────────────────
      *
-     * Every check above constrains SHAPE — ordering, saturation, totality,
-     * determinism — and a mutation run proved that is not enough: the four
-     * weights and both byte offsets could each be changed and this file
-     * still passed. The header calls those weights "the whole editorial
-     * content of this file", so leaving them unpinned meant the one thing
-     * most worth defending was the one thing nothing defended.
-     *
-     * These are deliberately golden values, which the rest of this file
-     * avoids. That is the point: a rule cannot pin a constant. Changing a
-     * weight is a policy decision about what a node's work is worth, and it
-     * must break a test and be argued, not slip through as a typo. */
+     * Golden values for the four weights and the byte offsets: changing a
+     * weight is a policy decision and must break this test. */
     {
         uint8_t root[32];
         nc_root(root, 555);
@@ -323,10 +314,8 @@ int test_node_character(void)
         NC_CHECK("less than a megabyte served weighs nothing",
                  node_work_weighted_total(&crumb) == 0u);
 
-        /* Byte order and byte offsets. nc_be16 reads root[0..1] big-endian,
-         * silhouette comes from root[7], marking from root[19]. A mutation
-         * run showed all three could move undetected, in a file whose
-         * header claims byte-order independence. */
+        /* nc_be16 reads root[0..1] big-endian; silhouette comes from root[7],
+         * marking from root[19]. */
         uint8_t probe[32];
         memset(probe, 0, sizeof probe);
         probe[0] = 0x01;   /* big-endian high byte -> 256 */

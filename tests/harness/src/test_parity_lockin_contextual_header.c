@@ -3,30 +3,23 @@
  *
  * L2 LOCK-IN — ContextualCheckBlockHeader skipped >1000 below tip.
  *
- * Parity-audit round 2 (docs/work/parity-audit-round2-findings.md, L2):
- * process_block_should_skip_contextual_header() returns TRUE — i.e. the
- * incoming header SKIPS contextual_check_block_header() on the synchronous
- * path — whenever the active tip is past height 100000 AND the header's
- * parent sits more than 1000 blocks below that tip
- * (process_block_contextual_header.c:74-76, case (a)). zclassicd runs
- * ContextualCheckBlockHeader unconditionally in AcceptBlockHeader and again
- * in ConnectTip (main.cpp:4472, :3373-3388), so a contextually-invalid
- * header below tip-1000 (bad-diffbits / bad-equihash-solution-size /
- * time-too-old / bad-version / bad-fork-at-checkpoint) is consensus-gated
- * there but only background-rechecked here.
+ * process_block_should_skip_contextual_header() returns TRUE (the header skips
+ * contextual_check_block_header() on the synchronous path) when the active tip
+ * is past height 100000 and the header's parent is more than 1000 blocks below
+ * it (process_block_contextual_header.c, case (a)). zclassicd runs
+ * ContextualCheckBlockHeader unconditionally (main.cpp:4472, :3373-3388), so
+ * such headers are only background-rechecked here
+ * (docs/work/parity-audit-round2-findings.md, L2).
  *
- * THESE PINS ASSERT THE CURRENT (LOOSENED) BEHAVIOR so that a future
- * tightening (removing the skip, which the doc says is replay-gated) flips
- * them deliberately:
+ * These pins assert the CURRENT (loosened) behavior so that removing the skip
+ * flips them deliberately:
  *   - tip > 100001, parent < tip-1000              -> skip == true
  *   - tip > 100001, parent within 1000 of tip      -> skip == false
- *   - tip <= 100000 (the case (a) guard), far below -> skip == false
+ *   - tip <= 100000, far below                     -> skip == false
  *
- * Case (b) (the post-FlyClient sparse-window tail) is deliberately
- * NEUTRALIZED here by passing nPowAveragingWindow == 0, so the verdict is
- * driven only by case (a) — the loosening this pin freezes. The active-chain
- * height is supplied via a registered active_chain_authority so the result is
- * deterministic and independent of any open progress-store DB.
+ * Case (b) (sparse-window tail) is neutralized by nPowAveragingWindow == 0.
+ * The active-chain height comes from a registered active_chain_authority, so
+ * the result is independent of any progress-store DB.
  */
 
 #include "test/test_core.h"
@@ -118,8 +111,7 @@ int test_parity_lockin_contextual_header(void)
         L2_CHECK("L2 PIN: parent == tip-1000 (boundary) -> NOT skipped (false)",
                  skip_edge == false);
 
-        /* One below the boundary: parent == tip-1001 is strictly < tip-1000
-         * -> skipped. */
+        /* One below the boundary (tip-1001) is skipped. */
         struct block_index below;
         block_index_init(&below);
         below.nHeight = 200000 - 1001;

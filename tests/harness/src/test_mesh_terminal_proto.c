@@ -455,11 +455,9 @@ static int receipt_matches_open(void)
         ASSERT_EQ(mesh_terminal_receipt_v1_matches_open(&receipt, &trial_open),
                   MESH_TERMINAL_PROTO_FIELD);
 
-        /* TIME is only reachable with an honestly-signed receipt: the
-         * open is root-bound (any change to it is FIELD, above), so a
-         * mistimed answer must come from the responder's own signing. A
-         * receipt that predates the open, lands after the window shut,
-         * or outlives the window is each refused by name. */
+        /* TIME is reachable only with an honestly-signed receipt (the open is
+         * root-bound). A receipt that predates the open, lands after the
+         * window shut, or outlives the window is refused by name. */
         struct mesh_terminal_receipt_v1 mistimed;
         ASSERT(make_receipt(&mistimed, &open, MESH_TERMINAL_RECEIPT_OK,
                             (const uint8_t *)"ok", 2, seed));
@@ -500,11 +498,10 @@ static int receipt_closed_after_window(void)
         static const uint8_t seed[32] = {7};
 
         make_open(&open);
-        /* A session that ran an hour closes long after the 60-second answer
-         * window; the CLOSED receipt only has to postdate the open's
-         * issue. The receipt's own lifetime anchor moves with its fresh
-         * observation (expires must sit within 60 s of observed for the
-         * receipt shape to validate at all). */
+        /* A long-running session closes after the 60-second answer window;
+         * the CLOSED receipt only has to postdate the open's issue, and its
+         * lifetime anchor moves with its fresh observation (expires within
+         * 60 s of observed). */
         ASSERT(make_receipt(&receipt, &open, MESH_TERMINAL_RECEIPT_CLOSED,
                             capsule, sizeof(capsule) - 1, seed));
         receipt.observed_unix = open.issued_unix + 3600;

@@ -129,14 +129,10 @@ static void manifest_from_artifact(const struct rom_artifact *a,
 
 /* ── Adversarial fixture: a seeder that ACCEPTS then hangs-then-drops ────
  *
- * Distinct failure mode from "nothing listening" (immediate ECONNREFUSED,
- * already covered by test_parallel_download / test_verified_multi_seeder's
- * dead-peer case): this endpoint completes the TCP handshake — so
- * rf_connect() succeeds — then stalls a bounded moment and closes without
- * ever completing the ROM handshake/reply, so the client observes an EOF
- * mid-protocol rather than a refused connect. Used to prove multi-seeder
- * failover past a seeder that goes unresponsive DURING a transfer, not just
- * one that was never reachable. */
+ * Unlike "nothing listening" (immediate ECONNREFUSED), this endpoint completes
+ * the TCP handshake, stalls a bounded moment, then closes without completing
+ * the ROM handshake, so the client sees an EOF mid-protocol. Proves failover
+ * past a seeder that goes unresponsive DURING a transfer. */
 struct rf_hang_seeder {
     int listen_fd;
     uint16_t port;      /* OS-assigned; read back after bind(port 0) */
@@ -157,19 +153,16 @@ static void *rf_hang_seeder_thread(void *arg)
         if (cfd < 0)
             continue;
         atomic_fetch_add(&h->accepts, 1);
-        /* Hang briefly (simulates a wedged/overloaded seeder mid-transfer),
-         * then drop the connection without ever replying — the client sees
-         * this as an EOF partway through the wire protocol, not a refusal. */
+        /* Hang briefly (a wedged seeder mid-transfer), then drop the connection
+         * without replying: the client sees an EOF, not a refusal. */
         platform_sleep_ms(150);
         close(cfd);
     }
     return NULL;
 }
 
-/* Binds an OS-assigned loopback port (port 0) and reads the assignment back
- * out of the still-open listener, so there is no window in which another
- * process could take it. A fixed port here would fail whenever anything else
- * held it — including a second copy of this suite. */
+/* Binds an OS-assigned loopback port (port 0) and reads it back from the
+ * still-open listener, so no other process can take it in between. */
 static bool rf_hang_seeder_start(struct rf_hang_seeder *h)
 {
     memset(h, 0, sizeof(*h));
@@ -211,18 +204,13 @@ static void rf_hang_seeder_stop(struct rf_hang_seeder *h)
 
 /* ── Latency fixture: a loopback relay that charges for DISTANCE ────────
  *
- * Loopback hides the one cost that dominates a real fetch — the round trip.
- * This relay sits between the client and the real serve path and charges
- * `one_way_ms` every time the byte flow TURNS AROUND (a send followed by a
- * receive, or the reverse), plus a full round trip when the connection is
- * opened. It is a latency model, not a throttle: a stream running in one
- * direction pays nothing extra however long it runs, so a big chunk transfer
- * is NOT slowed and only the protocol's round trips show up in the clock.
- *
- * That separation is the whole point. "How many round trips does this cost"
- * is a property of the client's wire choreography; "how fast is this peer"
- * is a property of the peer. Measuring the first must never be done by
- * shortening a budget that grades the second. */
+ * The relay sits between the client and the real serve path and charges
+ * `one_way_ms` each time the byte flow TURNS AROUND (send then receive, or the
+ * reverse), plus a round trip when the connection opens. It is a latency model,
+ * not a throttle: a one-direction stream pays nothing extra, so only the
+ * protocol's round trips show up in the clock. Round-trip count is a property
+ * of the client's wire choreography and must not be measured by shortening a
+ * budget that grades the peer's speed. */
 #define RF_RELAY_MAX_CONNS 64
 
 struct rf_lat_relay {
@@ -281,8 +269,7 @@ static void *rf_lat_conn_thread(void *arg)
         close(cfd);
         return NULL;
     }
-    /* The TCP open itself is a round trip the client already paid for on a
-     * real link; charge it once, here, before any payload moves. */
+    /* The TCP open is a round trip a real link charges; charge it once before any payload. */
     platform_sleep_ms(2 * r->one_way_ms);
 
     uint8_t *buf = malloc(65536);
@@ -753,11 +740,10 @@ static int test_rate_cap_retry(void)
     TEST("rom_fetch: sequential driver retries through the stock per-peer "
          "rate window instead of dying at the second chunk") {
         rom_seed_reset();
-        /* Pin the per-peer window to exactly ONE 4 MB chunk per wall-second
-         * (the charge-then-compare window in rom_seed_rate_charge): chunk 0
-         * fills it, chunk 1 is refused until the wall-second ticks over. The
-         * pre-retry driver failed the whole download here; the bounded
-         * backoff (ROM_FETCH_CHUNK_RETRY_MS > 1 s) must carry it through.
+        /* Pin the per-peer window to ONE 4 MB chunk per wall-second (the
+         * charge-then-compare window in rom_seed_rate_charge): chunk 1 is refused
+         * until the second ticks over, and the bounded backoff
+         * (ROM_FETCH_CHUNK_RETRY_MS > 1 s) must carry the download through.
          * The global window stays out of the way. */
         rom_seed_set_peer_bps_cap(ROM_SEED_CHUNK_SIZE);
         rom_seed_set_global_bps_cap(1ull << 30);
@@ -1087,19 +1073,16 @@ static int test_verified_multi_seeder(void)
 
 /* ── (g) Interrupt and resume across a REAL severed connection ──────────
  *
- * test_verified_multi_seeder above proves resume from a HAND-BUILT durable
- * .part + journal. This proves the same property end to end against a real
- * interruption: a download running on its own thread, the seeder stopped out
- * from under it mid-transfer, and then the SAME call re-issued.
+ * Unlike test_verified_multi_seeder (hand-built .part + journal), a download
+ * runs on its own thread, the seeder is stopped mid-transfer, and the SAME call
+ * is re-issued.
  *
- * The cut lands deterministically with no clock and no sleep. A download's
- * progress callback runs under rom_fetch's own callback mutex AFTER the
- * chunk is durably journaled, so the first worker to land a chunk parks
- * there and every other worker queues behind it — no further chunk index can
- * be claimed until this test releases them. The test wakes on that first
- * landed chunk, stops the server, and only then lets the download go. With 9
- * chunks and 8 workers it can therefore never complete, and at least one
- * chunk is always durably on disk before the link dies. */
+ * The cut is deterministic, with no clock or sleep: the progress callback runs
+ * under rom_fetch's callback mutex AFTER the chunk is durably journaled, so the
+ * first worker to land a chunk parks there and the rest queue behind it. The
+ * test wakes on that chunk, stops the server, then releases the workers. With 9
+ * chunks and 8 workers the download never completes and at least one chunk is
+ * durably on disk before the link dies. */
 
 struct rf_cut_ctx {
     pthread_mutex_t mu;
@@ -1312,11 +1295,9 @@ static int test_verified_real_interrupt_resume(void)
 
 /* ── (h) Multi-seeder failover past a HUNG (not just dead) seeder ──────
  *
- * test_verified_multi_seeder above already proves failover past a peer
- * nothing is listening on (immediate ECONNREFUSED). This proves the
- * distinct failure mode where the seeder DOES accept the TCP connection —
- * so it looked reachable — then goes unresponsive mid-protocol and drops
- * the connection without ever completing the ROM handshake/reply. */
+ * Unlike the dead-peer case (immediate ECONNREFUSED), the seeder accepts the
+ * TCP connection, then goes unresponsive mid-protocol and drops it without
+ * completing the ROM handshake/reply. */
 static int test_verified_multi_seeder_hang_failover(void)
 {
     int failures = 0;
@@ -1409,11 +1390,10 @@ static int test_verified_multi_seeder_hang_failover(void)
 
 /* ── (h2) Typed refusal frame decode (pure) ──────────────────────────
  *
- * The server answers a declined ROM chunk request with a typed refusal frame
- * whose 4-byte size field is FS_ROM_REFUSAL_SENTINEL (impossible as a real
- * chunk size). This proves the client's decode cleanly separates a refusal
- * from a data reply AND from a corrupt/garbage size — the exact confusion that
- * made a busy seeder's refusal surface as "implausible chunk size <garbage>". */
+ * A declined ROM chunk request is answered with a typed refusal frame whose
+ * 4-byte size field is FS_ROM_REFUSAL_SENTINEL (impossible as a real chunk
+ * size). The client's decode must separate a refusal from a data reply and from
+ * a corrupt/garbage size. */
 static int test_refusal_frame_decode(void)
 {
     int failures = 0;
@@ -1456,16 +1436,13 @@ static int test_refusal_frame_decode(void)
     return failures;
 }
 
-/* ── (h3) Default-caps parallel multi-chunk fetch (THE regression) ─────
+/* ── (h3) Default-caps parallel multi-chunk fetch ─────────
  *
  * Eight verified-parallel workers fetch a >=8-chunk artifact from ONE seeder
- * under the REAL shipped rom_seed caps (no test override). This is the exact
- * shape the cold-start stopwatch drove: on the pre-fix defaults — per-peer
- * inflight cap 2 and a per-peer byte window of exactly one chunk/second — six
- * of eight workers were refused every round and the refusal (an encrypted
- * FS_DONE frame) misparsed as a garbage size, so the download aborted with
- * chunks_served ~0. With the typed refusal frame + the inflight-8 / 8-chunks-
- * per-second window, every chunk crosses the wire and the whole file verifies. */
+ * under the REAL shipped rom_seed caps (no override). With the typed refusal
+ * frame and the inflight-8 / 8-chunks-per-second window every chunk crosses
+ * the wire and the whole file verifies; a refusal misparsed as a garbage size
+ * would abort the download. */
 static int test_default_caps_parallel_multichunk(void)
 {
     int failures = 0;
@@ -1548,19 +1525,13 @@ static int test_default_caps_parallel_multichunk(void)
 
 /* ── (i2) BOOT LATENCY: what one artifact fetch costs in ROUND TRIPS ───
  *
- * A fresh node's instant-on fetch is a pre-flight probe followed by a
- * per-chunk verified download. On loopback every one of those steps looks
- * free; on a real link — and far more so on a Tor circuit — each DIAL costs a
- * TCP/circuit open plus the two-round-trip X25519 key confirmation before a
- * single byte of payload can be asked for.
+ * An instant-on fetch is a pre-flight probe plus a per-chunk verified download;
+ * on a real link or Tor circuit each DIAL costs a connection open plus the
+ * two-round-trip X25519 key confirmation.
  *
- * This test pins the number that decides that cost: how many dials one
- * K-chunk download performs. It asserts a BOUND on dials, never a wall-clock
- * duration and never a budget — a slow-but-honest seeder is not what is being
- * graded here, and nothing in this test may be read as licence to shorten a
- * timeout. The elapsed milliseconds are PRINTED (through the latency relay,
- * which charges only for round trips) so the consequence of the dial count is
- * visible, but the pass/fail gate is the deterministic dial count alone. */
+ * Pins how many dials one K-chunk download performs. Asserts a BOUND on dials,
+ * never a duration or a budget (nothing here licenses shortening a timeout).
+ * Elapsed ms are printed through the latency relay for visibility only. */
 struct rf_lat_result {
     uint64_t probe_dials;
     uint64_t download_dials;
@@ -1570,11 +1541,10 @@ struct rf_lat_result {
     bool     ok;
 };
 
-/* One measured pass: probe + full verified download. `one_way_ms < 0` dials
- * the serve path DIRECTLY (no relay at all) — the control pass that says what
- * the bytes and the disk cost on this machine with no distance and no relay
- * copying. `one_way_ms >= 0` inserts the relay charging that much per
- * direction change. `cdir` must be empty of this artifact. */
+/* One measured pass: probe + full verified download. `one_way_ms < 0` dials the
+ * serve path DIRECTLY (control pass, no relay); `one_way_ms >= 0` inserts the
+ * relay charging that much per direction change. `cdir` must be empty of this
+ * artifact. */
 static struct rf_lat_result rf_measure_pass(uint16_t server_port,
                                             const struct rom_fetch_manifest *m,
                                             const char *cdir, int one_way_ms)
@@ -1636,9 +1606,8 @@ static int test_dial_cost_of_a_download(void)
         fs_server_stop();
         rom_seed_reset();
         rom_peer_scoring_test_reset();
-        /* Raise the byte-rate caps: this measurement is about round trips,
-         * not about the seeder's uplink policy (which test_default_caps_
-         * parallel_multichunk covers under the shipped defaults). */
+        /* Raise the byte-rate caps: this measures round trips, not seeder uplink
+         * policy (covered by test_default_caps_parallel_multichunk). */
         rom_seed_set_peer_bps_cap(1ull << 30);
         rom_seed_set_global_bps_cap(1ull << 30);
 
@@ -1649,10 +1618,8 @@ static int test_dial_cost_of_a_download(void)
         char *cdir = test_mkdtemp(croot, sizeof(croot), "zcl_romfetch_latcli");
         ASSERT(cdir != NULL);
 
-        /* 16 full chunks: 2 chunks per worker, so a per-chunk dial policy
-         * costs twice what a per-session one does and the two cannot be
-         * confused. (The reported before/after profile was taken the same way
-         * at 32 chunks; the count here is trimmed to keep the group fast.) */
+        /* 16 full chunks: 2 per worker, so a per-chunk dial policy costs twice a
+         * per-session one and the two cannot be confused. */
         const uint32_t want_chunks = 16;
         uint64_t size = (uint64_t)want_chunks * (uint64_t)ROM_SEED_CHUNK_SIZE;
         ASSERT(write_sparse_bundle(sdir, "consensus-state-bundle-lat.sqlite",
@@ -1675,14 +1642,10 @@ static int test_dial_cost_of_a_download(void)
         char final_path[1200];
         snprintf(final_path, sizeof(final_path), "%s/%s", cdir, m.filename);
 
-        /* One pass at 200 ms each way — a 400 ms round trip, well past any
-         * clearnet link and a fraction of a Tor circuit. The wall clock is
-         * REPORTED, never asserted: a loaded machine can only add time, and a
-         * timing assertion here would be a flake generator and, worse, an
-         * invitation to "fix" it by shortening a budget. The pass/fail gate
-         * is the deterministic dial count alone. probe_ms is what ONE dial
-         * plus one exchange costs at this distance — the unit price the dial
-         * count is multiplied by. */
+        /* One pass at 200 ms each way (400 ms round trip). The wall clock is
+         * REPORTED, never asserted: a timing assertion would flake and invite
+         * shortening a budget. The gate is the deterministic dial count alone;
+         * probe_ms is the unit price of one dial plus one exchange. */
         struct rf_lat_result far_ = rf_measure_pass(port, &m, cdir, 200);
         ASSERT(far_.ok);
         ASSERT(rom_fetch_verify_file(final_path, &m));
@@ -1696,11 +1659,9 @@ static int test_dial_cost_of_a_download(void)
 
         uint64_t dl_dials = far_.download_dials;
 
-        /* THE assertion. One dial per WORKER is the contract; one dial per
-         * CHUNK is the cost this test exists to keep from coming back. The
-         * margin allows a worker to re-dial a session a seeder legitimately
-         * dropped, while staying strictly below the chunk count so a return
-         * to per-chunk dialling cannot slip through. */
+        /* One dial per WORKER is the contract; one per CHUNK is the cost to keep
+         * out. The margin allows a re-dial of a session a seeder legitimately
+         * dropped, while staying below the chunk count. */
         ASSERT(dl_dials <= (uint64_t)ROM_FETCH_MAX_WORKERS + 2u);
         ASSERT(dl_dials < (uint64_t)want_chunks);
 
@@ -1720,25 +1681,17 @@ static int test_dial_cost_of_a_download(void)
 
 /* ── (i3) BOOT LATENCY: what a DEAD seed costs a download ──────────────
  *
- * The other half of onion boot latency is the seed that is not there. A dial
- * that never completes costs the full transport-scaled connect budget — 10 s
- * to a socket, 120 s to build a Tor circuit — and that budget is correct: a
- * circuit really is slower to establish, and shortening it to notice a dead
- * peer sooner would also abandon honest onion seeders mid-handshake. What is
- * NOT correct is paying it over and over. Every worker walking past the same
- * dead seeds, on every chunk, multiplies one absence into minutes.
+ * A dial that never completes costs the full transport-scaled connect budget
+ * (10 s socket, 120 s Tor circuit), which is correct and must not be shortened.
+ * What must not happen is paying it repeatedly: every worker walking past the
+ * same dead seeds on every chunk.
  *
- * This measures that directly: one live seeder, three seeds that are simply
- * not listening, and a full verified download. The instrument is the count of
- * FAILED dials, which is deterministic and completely insensitive to how
- * loaded the machine is — it is a number of events, not a duration. The
- * shipped default byte caps are used deliberately: a stock seeder answers
- * back-to-back requests with a typed refusal, and every refusal sends the
- * worker on around the ring, into the dead seeds, again.
+ * One live seeder, three seeds not listening, a full verified download; the
+ * instrument is the count of FAILED dials (a number of events, not a duration).
+ * The shipped default byte caps are used: a stock seeder answers back-to-back
+ * requests with a typed refusal, which sends the worker around the ring again.
  *
- * Nothing here asserts on time, and nothing here may be satisfied by making a
- * budget smaller. The only thing asserted is that the same absence is not
- * rediscovered once per chunk. */
+ * Asserted only: the same absence is not rediscovered once per chunk. */
 static int test_dead_seed_is_dialled_once_per_job(void)
 {
     int failures = 0;
@@ -1747,14 +1700,10 @@ static int test_dead_seed_is_dialled_once_per_job(void)
         fs_server_stop();
         rom_seed_reset();
         rom_peer_scoring_test_reset();
-        /* A seeder under real pressure. The per-peer cap is set to two chunks
-         * a second — a busy seeder, not a broken one — so the eight workers
-         * get typed BUSY refusals through most of this download, exactly as
-         * they would against a popular seed. That matters because a refusal is
-         * what sends a worker on around the ring; without it the dead seeds
-         * are met only once, on a worker's first chunk, and the repeated cost
-         * this test is about never appears. Capping the SEEDER is a property
-         * of the fixture; no client budget is touched. */
+        /* A busy seeder: the per-peer cap is two chunks a second, so the workers
+         * get typed BUSY refusals through most of the download. A refusal sends a
+         * worker around the ring; without it the dead seeds are met once and the
+         * repeated cost never appears. Only the SEEDER is capped. */
         rom_seed_set_peer_bps_cap(2ull * (uint64_t)ROM_SEED_CHUNK_SIZE);
         rom_seed_set_global_bps_cap(4ull * (uint64_t)ROM_SEED_CHUNK_SIZE);
 
@@ -1765,8 +1714,7 @@ static int test_dead_seed_is_dialled_once_per_job(void)
         char *cdir = test_mkdtemp(croot, sizeof(croot), "zcl_romfetch_deadcli");
         ASSERT(cdir != NULL);
 
-        /* 9 chunks against 8 workers, so at least one worker fetches twice and
-         * the per-chunk cost is separable from the per-worker one. */
+        /* 9 chunks against 8 workers: one worker fetches twice, separating per-chunk from per-worker cost. */
         uint64_t size = 8ull * (uint64_t)ROM_SEED_CHUNK_SIZE + 4096;
         ASSERT(write_sparse_bundle(sdir, "consensus-state-bundle-dead.sqlite",
                                    size));
@@ -1793,11 +1741,9 @@ static int test_dead_seed_is_dialled_once_per_job(void)
                                       &manifest_chunks));
         ASSERT(manifest_chunks == art.num_chunks);
 
-        /* The live seeder first, then three addresses nothing is listening on.
-         * Ports 1-3 on loopback refuse immediately, so the WALL CLOCK of this
-         * test says nothing about the production budget — which is the point:
-         * the budget is unchanged and unmeasured here, only the number of
-         * times it would have been spent. */
+        /* The live seeder first, then three addresses nothing listens on (ports
+         * 1-3 refuse immediately, so wall clock says nothing about the
+         * production budget; only the number of times it would be spent). */
         const size_t npeers = 4;
         struct rom_fetch_peer peers[4];
         memset(peers, 0, sizeof(peers));
@@ -1824,13 +1770,10 @@ static int test_dead_seed_is_dialled_once_per_job(void)
                (unsigned)ROM_FETCH_MAX_WORKERS,
                (unsigned long long)dead_dials);
 
-        /* THE assertion. Each worker may discover each dead seed once — that
-         * is the herd of workers starting at the same instant, before any of
-         * them has recorded the absence, and it is bounded by the seed set,
-         * not by the artifact. What must not happen is the count scaling with
-         * the number of chunks (or with the refusals a rate-limited seeder
-         * legitimately sends), which is what re-walking the ring per chunk
-         * produced. */
+        /* Each worker may discover each dead seed once (workers starting together
+         * before any records the absence), bounded by the seed set, not the
+         * artifact. The count must not scale with chunks or with the refusals a
+         * rate-limited seeder sends. */
         ASSERT(dead_dials <= (uint64_t)(npeers - 1) *
                              (uint64_t)ROM_FETCH_MAX_WORKERS);
 
@@ -1851,12 +1794,10 @@ static int test_dead_seed_is_dialled_once_per_job(void)
 
 /* ── (i) Native command layer: typed blocker + typed refusal ───────────
  *
- * rom_fetch.c/test_rom_fetch.c above prove the ENGINE fails closed; these
- * prove the OPERATOR-FACING surface (engine/controllers/src/rom_fetch_controller.c)
- * turns every engine failure into a structured `zcl_command_reply` — a typed
- * code + message the operator (or Claude) can act on — never a silent
- * return and never an unbounded hang, per CLAUDE.md "every native command
- * handler must set an error body". */
+ * The engine fails closed (above); these prove the operator-facing surface
+ * (engine/controllers/src/rom_fetch_controller.c) turns every engine failure
+ * into a structured `zcl_command_reply` with a typed code + message, never a
+ * silent return or unbounded hang (every native handler must set an error body). */
 
 static int test_bundle_handler_no_seeder_blocker(void)
 {
@@ -2088,28 +2029,22 @@ static int test_directory_discovery(void)
 }
 
 /* Two cases spend nearly all of this group's wall clock waiting out real,
- * production-sized budgets that are themselves part of what they prove:
+ * production-sized budgets that are part of what they prove:
  *
- *   - test_verified_real_interrupt_resume: after the cut, the stopped
- *     seeder's workers keep their idle sessions until the file service's
- *     30 s per-connection deadline, and the interrupted call then fails
- *     closed only after ROM_FETCH_CHUNK_RETRIES backoff rounds against the
- *     now-dead port (~67 s measured);
- *   - test_bundle_handler_no_seeder_blocker: the operator command spends the
- *     same 25 x ROM_FETCH_CHUNK_RETRY_MS retry budget against a port nothing
- *     listens on before it names its typed blocker (~28 s measured).
+ *   - test_verified_real_interrupt_resume: after the cut, the stopped seeder's
+ *     workers keep idle sessions until the file service's 30 s per-connection
+ *     deadline, then the call fails closed after ROM_FETCH_CHUNK_RETRIES
+ *     backoff rounds against the dead port;
+ *   - test_bundle_handler_no_seeder_blocker: the command spends the 25 x
+ *     ROM_FETCH_CHUNK_RETRY_MS retry budget against a port nothing listens on
+ *     before naming its typed blocker.
  *
- * Neither budget may be shortened here. Both cases already own everything
- * they touch (their own mkdtemp directories, an OS-assigned or dead port,
- * and their own rom_seed / peer-scoring resets), so each runs in a forked
- * child alongside the rest of the group instead of after it: the group pays
- * for its slowest case rather than the sum of all of them. The fork happens
- * before any case here starts a server or thread, so each child begins from
- * the same pristine state the case always started from, and reports its
- * failure count through its exit status. If fork fails, the case runs inline
- * after every other case instead: test_loopback_e2e asserts the process-wide
- * rom_fetch status counters of a process that has attempted nothing else, so
- * neither case may ever run ahead of it in this process. */
+ * Neither budget may be shortened. Each case owns everything it touches, so it
+ * runs in a forked child alongside the rest of the group (the group pays for
+ * its slowest case) and reports failures through its exit status. The fork
+ * happens before any case starts a server or thread. If fork fails the case
+ * runs inline after every other case: test_loopback_e2e asserts process-wide
+ * rom_fetch status counters, so neither may run ahead of it. */
 struct rf_forked_case {
     int (*run)(void);
     pid_t pid; /* < 0: fork failed, run inline at reap time */

@@ -2,94 +2,39 @@
  *
  * A leaf declared READ must not WRITE the datadir it is pointed at.
  *
- * THE BUG THIS EXISTS TO CATCH (reproduced live, 2026-07-29):
+ * Booting through node_db_open() (quick_check with rename-aside,
+ * create_schema, node_db_migrate, DELETEs of snapshot staging rows) on the
+ * default datadir would modify an operator's live database. Each leaf is
+ * invoked against a FIXTURE datadir (always an explicit `datadir` input)
+ * and only what it leaves on disk is checked, in these states:
  *
- *   $ z23 app service access --input='{"service":"reference"}'
- *   [boot] sqlite.quick_check ...
- *   db: applied 35 migration(s), now at version 36
+ *   absent    - empty datadir: no "node.db*" file may appear.
+ *   present   - migrated node.db with seeded snapshot_staging rows: same
+ *               size, FNV-1a hash and staging counts; no node.db.corrupt-*.
+ *   foreign   - a real SQLite database that is not a node database: it
+ *               must keep the same tables (catches create_schema).
+ *   garbage   - a node.db that is not SQLite: still present, identical.
+ *   walset    - both stores in WAL mode: the directory FILE SET is
+ *               unchanged (read-only WAL opens create -shm/-wal sidecars).
+ *   walopen   - the same with a live writer attached; the read must not be
+ *               "assume immutable" (it would return pre-log data) and the
+ *               writer must still commit.
  *
- * `app.service.access` is declared ZCL_COMMAND_READY_READ /
- * ZCL_COMMAND_AUTH_PUBLIC / ZCL_COMMAND_TRAIT_IDEMPOTENT, and its handler
- * called node_db_open() — the BOOT ceremony. That opens
- * <datadir>/node.db with SQLITE_OPEN_READWRITE|SQLITE_OPEN_CREATE and then,
- * in order: runs PRAGMA quick_check and on failure rename()s node.db,
- * node.db-wal and node.db-shm aside to node.db.corrupt-<ts>; runs
- * create_schema(); runs node_db_migrate(); and finally executes
- *   DELETE FROM snapshot_staging_utxos
- *   DELETE FROM node_state WHERE key LIKE 'snapshot_staging_%'
- * (engine/models/src/database.c, node_db_open_impl(boot_ceremony=true)).
+ * The absent/present/garbage states are also asserted for the kernel
+ * store, <datadir>/consensus.db (progress_store_open opens it
+ * READWRITE|CREATE and quarantines a failed one).
  *
- * Because `datadir` falls back to zcl_native_command_datadir() when the
- * caller passes none, a bare invocation of a *read* leaf did all of that to
- * the operator's LIVE node database. node.db is WAL, so the running node
- * holding it open blocks none of it. Five more leaves had the same defect:
- * zcode.release.prove, zcode.domain.list, zcode.domain.status,
- * zcode.contributor.show, zcode.package.resolve.
+ * The reply is not asserted on: a read leaf may refuse or answer with
+ * data; it may not change the directory.
  *
- * WHAT IS ASSERTED HERE — the property, not the implementation. Each leaf
- * is invoked against a FIXTURE datadir (never a live one; always an
- * explicit `datadir` input) in four states, and the only thing checked is
- * what the leaf left behind on disk:
+ * The population is derived: case 8 walks zcl_command_catalog() and
+ * requires every READY, non-branch, READ-effect leaf with a `datadir`
+ * input to be exercised here or named in g_rlw_uncovered with a reason.
+ * The uncovered list is shrink-only and the derived population is
+ * floor-gated so an unlinked catalog cannot pass vacuously.
  *
- *   absent    — an empty datadir. Afterwards NO file whose name begins
- *               "node.db" may exist. (Catches OPEN_CREATE.)
- *   present   — a migrated node.db carrying seeded snapshot_staging rows.
- *               Afterwards the file's byte length and FNV-1a content hash
- *               must be identical, both staging row counts must be
- *               identical, and no node.db.corrupt-* may exist. (Catches
- *               node_db_migrate and the two DELETEs.)
- *   foreign   — a real SQLite database that is NOT a node database: an
- *               operator's own file that happens to sit at node.db.
- *               Afterwards it must hold the same tables. (Catches
- *               create_schema, which the present case CANNOT see: forty
- *               CREATE TABLE IF NOT EXISTS statements against an
- *               already-migrated database change no bytes, which is why
- *               app.store.products reached node_db_open_runtime for months
- *               with the present case green.)
- *   garbage   — a node.db that is not a SQLite file at all. Afterwards it
- *               must still be there, byte-identical, under its own name.
- *               (Catches db_quarantine_files' rename.)
- *   walset    — both stores in WAL mode, which is what the node actually
- *               writes. Afterwards the directory's FILE SET must be exactly
- *               the set that went in. (Catches the WAL sidecars: a read-only
- *               connection to a WAL database materializes <db>-shm and
- *               <db>-wal and cannot unlink them on close, so a "read" leaves
- *               two files behind and voids any copy-proof taken beforehand.
- *               Invisible to every case above, which hash files that were
- *               already there and so cannot see one APPEAR.)
- *   walopen   — the same, with a live writer attached, where the fix must
- *               NOT be "assume the database is immutable": that read returns
- *               the database's pre-log past. The set must still be unchanged
- *               and the writer must still be able to commit.
- *
- * node.db is not the only database a read leaf can be pointed at, so the
- * absent/present/garbage states are asserted for the KERNEL store too —
- * <datadir>/consensus.db, the append-only fact log that is the authority
- * for every stage cursor. progress_store_open() opens it READWRITE|CREATE, runs a
- * rename migration, ensures its schema, and on a failed integrity check
- * rename()s it aside to consensus.db.corrupt-<ts> and installs a fresh
- * empty one. core.sync.frontier.offline reached exactly that, and while
- * this file watched only node.db* it would not have seen the damage.
- *
- * The reply is deliberately NOT asserted on: a read leaf is free to answer
- * "blocked, no node.db here" or to answer with data. The contract under
- * test is that pointing a read leaf at a directory never changes it.
- *
- * WHO IS UNDER TEST — derived, not remembered. The first version of this
- * file listed its six subjects as string literals, and the very next read
- * leaf to take a `datadir` (core.wallet.recovery.status) was added, called
- * node_db_open(), renamed a user's node.db to node.db.corrupt-<ts> while
- * answering "ok": true, and this file said nothing. A hand list cannot
- * catch the leaf nobody remembered to add to it. So case 6 walks the
- * compiled command registry (zcl_command_catalog()) and requires that
- * EVERY READY, non-branch, READ-effect leaf whose declared input keys
- * include `datadir` is either exercised here or named in g_rlw_uncovered
- * with a reason. Neither list may contain a leaf the registry does not,
- * the uncovered list is shrink-only, and the derived population is
- * floor-gated so an unlinked catalog cannot pass by proving nothing.
- *
- * Sibling: test_offline_datadir_query.c covers the two SCOPE_OFFLINE_COPY
- * leaves' answers; this file covers every read leaf's SIDE EFFECTS. */
+ * Sibling: test_offline_datadir_query.c covers the SCOPE_OFFLINE_COPY
+ * leaves' answers; this file covers every read leaf's side effects. */
 
 #define _POSIX_C_SOURCE 200809L
 
@@ -119,20 +64,10 @@
 
 /* ── the leaves under test ─────────────────────────────────────────────
  *
- * Every one of these is declared with a READ macro in a engine/composition/commands
- * .def file and takes a caller-supplied `datadir`. k1/k2 are the other
- * inputs, without which the handler returns before it ever reaches the
- * datadir and the case would prove nothing.
- *
- * THIS TABLE IS NOT THE POPULATION. It used to be: six string literals,
- * hand-maintained, and the SEVENTH read leaf that took a `datadir`
- * (core.wallet.recovery.status) walked straight past it and shipped
- * calling node_db_open() — the exact defect this file exists to catch,
- * missed by this file. The population now comes from the compiled command
- * registry (t_registry_coverage below): every READY, non-branch,
- * READ-effect leaf whose declared input keys include `datadir`. Each one
- * must appear either here or in g_rlw_uncovered with a stated reason, so
- * a new read leaf can no longer be silently absent. */
+ * Each is a READ leaf taking a caller-supplied `datadir`; k1/k2 are the
+ * other inputs the handler needs to reach the datadir. This table is not
+ * the population: t_registry_coverage derives that from the compiled
+ * registry, and every derived leaf must be here or in g_rlw_uncovered. */
 
 typedef void (*rlw_handler_fn)(const struct zcl_command_request *,
                                struct zcl_command_reply *);
@@ -142,32 +77,23 @@ struct rlw_leaf {
     rlw_handler_fn fn;
     const char *k1, *v1;
     const char *k2, *v2;
-    /* Where this leaf's payload actually LIVES under the datadir, when it
-     * is not node.db or consensus.db. NULL for the sqlite leaves.
-     *
-     * Case 5 asks every leaf to disclose that it could not read. It does
-     * that by making the payload store unreadable, so it has to know
-     * which store that is: corrupting node.db proves nothing about a leaf
-     * that never opens node.db, and asserting a refusal from one would be
-     * asserting a lie. This names the directory to break instead —
-     * relative to the datadir, made unreadable by putting a plain file
-     * where the directory belongs. */
+    /* Where the payload lives under the datadir when it is not node.db or
+     * consensus.db; NULL for the sqlite leaves. Case 5 makes this
+     * directory unreadable (a plain file where it belongs) to check the
+     * leaf discloses that it could not read. */
     const char *payload_dir;
 };
 
-/* A syntactically valid compressed secp256k1 key; it needs to parse, not to
- * exist. */
+/* A syntactically valid compressed secp256k1 key. */
 #define RLW_PUBKEY \
     "02b4632d08485ff1df2db55b9dafd23347d1c47a457072a1e87be26896549a8737"
 
-/* core.identity.resolve wants a bare 32-byte key (64 hex, not all-zero),
- * not the 33-byte compressed form above. */
+/* core.identity.resolve wants a bare 32-byte key (64 hex, not all-zero). */
 #define RLW_ZID_PUBKEY \
     "b4632d08485ff1df2db55b9dafd23347d1c47a457072a1e87be26896549a8737"
 
-/* metaverse.property.show wants "<kind>:<64 lowercase hex>". The root need
- * only be well-formed and non-zero; nothing at it has to exist, because
- * "the authority holds nothing here" is the answer being exercised. */
+/* metaverse.property.show wants "<kind>:<64 lowercase hex>"; well-formed
+ * and non-zero is enough. */
 #define RLW_PROPERTY_ID "content:" RLW_ZID_PUBKEY
 #define RLW_DATADIR_VALUE "@fixture-datadir@"
 
@@ -195,16 +121,12 @@ static const struct rlw_leaf g_rlw_leaves[] = {
       "workspace", RLW_DATADIR_VALUE, "work", RLW_ZID_PUBKEY, NULL },
     { "zcode.work.preflight", zcl_native_handle_zcode_work_preflight,
       "workspace", RLW_DATADIR_VALUE, "work", RLW_ZID_PUBKEY, NULL },
-    /* The same handler under its discoverable name. It is listed
-     * separately on purpose: the coverage check keys on the leaf path, and
-     * an alias that quietly took `datadir` without being exercised is
-     * exactly how a read leaf acquires a live datadir nobody has proved it
-     * leaves alone. */
+    /* The same handler under its discoverable name; the coverage check
+     * keys on the leaf path, so the alias is listed separately. */
     { "zcode.work.show", zcl_native_handle_zcode_work_status,
       "workspace", RLW_DATADIR_VALUE, "work", RLW_ZID_PUBKEY, NULL },
-    /* A pull receipt is read from <datadir>/zcode by root. The one-shot
-     * read never opens the datadir package store; the fixture holds no
-     * receipt, so the answer is WORK_RECEIPT_NOT_FOUND and nothing moves. */
+    /* Pull receipt read from <datadir>/zcode by root; the fixture holds
+     * none, so the answer is WORK_RECEIPT_NOT_FOUND and nothing moves. */
     { "zcode.work.receipt", zcl_native_handle_zcode_work_receipt,
       "receipt_root", RLW_ZID_PUBKEY, NULL, NULL, NULL },
     { "story.focus", zcl_native_handle_story_focus,
@@ -215,81 +137,47 @@ static const struct rlw_leaf g_rlw_leaves[] = {
       "work", RLW_ZID_PUBKEY, "event", "user_accepts", NULL },
     { "story.diff", zcl_native_handle_story_diff,
       "before", RLW_ZID_PUBKEY, "after", RLW_ZID_PUBKEY, NULL },
-    /* Task-carrier board: declared READ with a `datadir` input only, so
-     * the harness injects the fixture datadir and the seen-set projection
-     * answers from the local record store without writing to it. The
-     * task-namespace siblings take transport roots, not a datadir, so the
-     * derived population names only the board here. */
+    /* Task-carrier board: `datadir` input only; the seen-set projection
+     * answers from the local record store without writing. */
     { "zcode.task.board", zcl_native_handle_zcode_task_board,
       NULL, NULL,               NULL, NULL, NULL },
-    /* The seventh. Declared READ, `datadir` defaults to the operator's LIVE
-     * one, and it opened node.db with node_db_open() — so pointed at a
-     * damaged database it renamed the user's wallet to
-     * node.db.corrupt-<ts>, installed a fresh empty one, and answered
-     * "ok": true. Data destruction reported as success, from a command the
-     * catalog advertises as a read. It now opens through
-     * zcl_native_node_db_open_readonly(). */
+    /* Reads through zcl_native_node_db_open_readonly(); a damaged database
+     * must not be renamed aside. */
     { "core.wallet.recovery.status",
       zcl_native_handle_wallet_recovery_status,
       NULL, NULL,               NULL, NULL, NULL },
-    /* The fleet roster reads the pairing and observation projections for a
-     * game that rewards machines. An operator pointing it at a copied
-     * datadir has to be able to hash that copy afterwards and get the same
-     * answer, so it opens through zcl_native_node_db_require_readonly()
-     * and is exercised here rather than trusted to. */
+    /* Fleet roster reads pairing and observation projections through
+     * zcl_native_node_db_require_readonly(), so a copied datadir hashes
+     * the same afterwards. */
     { "ops.mesh.roster",        zcl_native_handle_fleet_roster,
       NULL, NULL,               NULL, NULL, NULL },
-    /* The two leaves this file used to only NAME as open defects.
-     *
-     * app.store.products reached node_db_open_runtime — READWRITE|CREATE,
-     * create_schema(), node_db_migrate() — so pointing this read leaf at a
-     * datadir rewrote that datadir's schema. It now opens through
-     * zcl_native_node_db_require_readonly().
-     *
-     * core.sync.frontier.offline reached progress_store_open, which opens
-     * <datadir>/consensus.db READWRITE|CREATE, runs a rename migration,
-     * ensures its schema, and QUARANTINES it — rename()s the append-only
-     * fact log aside and installs a fresh empty one — on a failed integrity
-     * check. It now opens through zcl_native_kernel_store_open_readonly(),
-     * and the kernel-store observations below watch consensus.db the same
-     * way the node.db ones watch node.db. */
+    /* app.store.products opens through
+     * zcl_native_node_db_require_readonly(); core.sync.frontier.offline
+     * opens consensus.db through zcl_native_kernel_store_open_readonly(),
+     * so the kernel-store observations below watch it. */
     { "app.store.products",     zcl_native_handle_store_products,
       NULL, NULL,               NULL, NULL, NULL },
     { "core.sync.frontier.offline",
       zcl_native_handle_core_sync_frontier_offline,
       NULL, NULL,               NULL, NULL, NULL },
-    /* The shop posture read, exercised the day coverage was demanded of it.
-     * Its payload is node.db (wallet at-rest posture + store schema), read
-     * through the same guarded zcl_native_node_db_open_readonly as every
-     * sqlite leaf above — the probe's own first cut opened the database
-     * with a hand-rolled open_v2(READONLY), which on a WAL node.db with no
-     * live wal-index CREATES the -shm/-wal sidecars it cannot unlink — so
-     * payload_dir stays NULL. The identity seed and directory/apps.csv are
-     * presence disclosures whose absence is a named gap, not the payload
-     * store. Over a present-but-unreadable node.db the leaf refuses by
-     * name (NODE_DB_UNREADABLE) rather than answering ok with every field
-     * "unknown". */
+    /* Shop posture read: payload is node.db (wallet posture + schema),
+     * opened through zcl_native_node_db_open_readonly, so payload_dir stays
+     * NULL. The identity seed and directory/apps.csv are presence
+     * disclosures. An unreadable node.db is refused by name
+     * (NODE_DB_UNREADABLE), never answered ok with "unknown" fields. */
     { "app.shop.status",        zcl_native_handle_shop_status,
       NULL, NULL,               NULL, NULL, NULL },
-    /* The slice-C evidence readout. Its payload is the <datadir>/zcode
-     * file store — releases, receipts, attestations, declarations, the
-     * reward ledger — and it opens no database at all, so case 5 breaks
-     * the same zcode/manifests directory the property leaves disclose:
-     * a present-but-unreadable store member must be the named
-     * ZCODE_STORE_UNREADABLE refusal, never an empty-looking "no_record"
-     * answer (absent and unreadable are not the same). */
+    /* Evidence readout: payload is the <datadir>/zcode file store and no
+     * database, so case 5 breaks zcode/manifests; an unreadable store is
+     * the named ZCODE_STORE_UNREADABLE refusal, never an empty "no_record". */
     { "app.shop.reputation",    zcl_native_handle_shop_reputation,
       "publisher", RLW_PUBKEY,  NULL, NULL, "zcode/manifests" },
-    /* The slice-D want board's two read leaves. Their payload is the
-     * shop_wants table in node.db, read through the same guarded
-     * zcl_native_node_db_require_readonly as every sqlite leaf above (so
-     * payload_dir stays NULL), preceded by a table-presence probe: a
-     * pre-v66 node.db is the named WANT_STORE_NOT_MIGRATED refusal, never
-     * an empty-looking board over a store that does not exist. The
-     * moderation policy file is a presence disclosure whose absence is
-     * the boot default, not the payload store. status gets a well-formed
-     * id so the handler reaches the datadir (WANT_NOT_FOUND is the
-     * exercised answer); list needs nothing. */
+    /* Want board reads: payload is the shop_wants table in node.db via the
+     * guarded read-only open (payload_dir NULL), preceded by a
+     * table-presence probe; a pre-v66 node.db is the named
+     * WANT_STORE_NOT_MIGRATED refusal. The moderation policy file is a
+     * presence disclosure. status gets a well-formed id so the handler
+     * reaches the datadir. */
     { "app.shop.want.list",     zcl_native_handle_shop_want_list,
       NULL, NULL,               NULL, NULL, NULL },
     { "app.shop.want.status",   zcl_native_handle_shop_want_status,
@@ -302,13 +190,9 @@ static const struct rlw_leaf g_rlw_leaves[] = {
     { "app.shop.want.fulfill.status",
       zcl_native_handle_shop_want_fulfill_status,
       "fulfill_id", RLW_ZID_PUBKEY, NULL, NULL, NULL },
-    /* Six of the pre-existing gaps, moved off the uncovered list because
-     * they now have an on-disk proof rather than a promise. All six already
-     * opened correctly; what was missing was anyone checking. They are
-     * exercised with real inputs on purpose — a leaf that refuses before it
-     * reaches the datadir proves nothing about the datadir, so
-     * core.identity.resolve gets a selector and core.storage.query.offline
-     * gets a statement it will actually run. */
+    /* Real inputs, so each leaf reaches the datadir: core.identity.resolve
+     * gets a selector and core.storage.query.offline a runnable
+     * statement. */
     { "core.epoch.status",      zcl_native_handle_core_epoch_status,
       NULL, NULL,               NULL, NULL, NULL },
     { "core.epoch.verify",      zcl_native_handle_core_epoch_verify,
@@ -320,43 +204,26 @@ static const struct rlw_leaf g_rlw_leaves[] = {
     { "core.storage.query.offline",
       zcl_native_handle_core_storage_query_offline,
       "sql", "SELECT 1",        NULL, NULL, NULL },
-    /* core.storage.schema.offline: the rolling-upgrade verdict leaf. Its
-     * classifier (node_db_schema_preflight_existing) never calls
-     * sqlite3_open at all for the present/absent/foreign/garbage cases —
-     * it stat()s the path and reads the raw SQLite header with a plain
-     * open(O_RDONLY) — so it is exercised here with no input beyond
-     * datadir, the same as the other zero-argument leaves above. */
+    /* core.storage.schema.offline: the classifier stat()s the path and
+     * reads the raw SQLite header with open(O_RDONLY), so it needs no
+     * input beyond datadir. */
     { "core.storage.schema.offline",
       zcl_native_handle_core_storage_schema_offline,
       NULL, NULL,               NULL, NULL, NULL },
-    /* Narrower than the five above, and stated so: bootstatus reads
-     * <datadir>/boot_status.json and never opens a database at all, so what
-     * is proven here is only that it creates nothing and quarantines
-     * nothing. That is the whole of its exposure, but do not read its
-     * presence in this table as database coverage. */
+    /* bootstatus reads <datadir>/boot_status.json and opens no database;
+     * only proves it creates and quarantines nothing. */
     { "core.node.bootstatus",   zcl_native_handle_core_node_bootstatus,
       NULL, NULL,               NULL, NULL, NULL },
-    /* The property catalog, covered on the day it landed rather than added
-     * to the stated-gap list. Both leaves reach store bytes BY PATH and
-     * never call vcs_package_store_open(), whose open-time recovery sweep
-     * deletes orphan CAS objects and commits staged packages — a read leaf
-     * routed through it would rewrite the operator's datadir exactly the
-     * way this file's original six did. Exercised with real inputs (a kind
-     * the catalog actually scans, a well-formed property id) so the
-     * handler reaches the datadir instead of refusing ahead of it.
-     *
-     * Their payload is not in either database — it is the frozen
-     * <datadir>/zcode tree — so that is the store case 5 breaks for them.
-     * Breaking node.db instead would have asserted a refusal from a leaf
-     * that had no reason to refuse, which is worse than no coverage. */
+    /* Property catalog: both leaves reach store bytes by path and never
+     * call vcs_package_store_open() (its recovery sweep deletes orphan CAS
+     * objects). Real inputs so the handler reaches the datadir. The
+     * payload is the frozen <datadir>/zcode tree, so case 5 breaks that. */
     { "metaverse.property.list", zcl_native_handle_metaverse_property_list,
       "kind", "content",        NULL, NULL, "zcode/manifests" },
     { "metaverse.property.show", zcl_native_handle_metaverse_property_show,
       "property_id", RLW_PROPERTY_ID, NULL, NULL, "zcode/manifests" },
     /* Build-ledger reads use the same read-only node.db attachment as the
-     * older application leaves above.  Exercise each one from the day it is
-     * registered so an absent, foreign, or damaged operator database can
-     * never be migrated or quarantined by a command advertised as READ. */
+     * older application leaves. */
     { "metaverse.build.status", zcl_native_handle_metaverse_build_status,
       "job_id", RLW_ZID_PUBKEY, NULL, NULL, NULL },
     { "metaverse.build.receipt", zcl_native_handle_metaverse_build_receipt,
@@ -364,12 +231,9 @@ static const struct rlw_leaf g_rlw_leaves[] = {
     { "metaverse.build.worker.list",
       zcl_native_handle_metaverse_build_worker_list,
       NULL, NULL, NULL, NULL, NULL },
-    /* The S3 science projection reads, covered on the day they landed.
-     * All four answer from the rebuildable SQL projection in node.db (the
-     * CAS is only consulted through the same read-only attachment), so
-     * payload_dir stays NULL like the other sqlite leaves. Exercised with
-     * a well-formed root so the handler reaches the datadir instead of
-     * refusing ahead of it. */
+    /* S3 science projection reads answer from the rebuildable SQL
+     * projection in node.db, so payload_dir stays NULL. Well-formed root
+     * so the handler reaches the datadir. */
     { "zcode.science.study.show",
       zcl_native_handle_zcode_science_study_show,
       "study_root", RLW_ZID_PUBKEY, NULL, NULL, NULL },
@@ -382,37 +246,31 @@ static const struct rlw_leaf g_rlw_leaves[] = {
     { "zcode.science.work.receipt",
       zcl_native_handle_zcode_science_work_receipt,
       "root", RLW_ZID_PUBKEY, NULL, NULL, NULL },
-    /* The S5 discovery read, covered on the day it landed. Its payload is
-     * the same read-only node.db projection (filter-first in SQL, then the
-     * workspace CAS, which defaults to <datadir>/zcode and simply yields an
-     * empty corpus when absent), so payload_dir stays NULL. Exercised with
-     * a real category so the handler reaches the datadir. */
+    /* S5 discovery read: read-only node.db projection, then the workspace
+     * CAS (defaults to <datadir>/zcode; an absent one is an empty corpus),
+     * so payload_dir stays NULL. Real category so the handler reaches the
+     * datadir. */
     { "zcode.science.discover",
       zcl_native_handle_zcode_science_discover,
       "category", "active",     NULL, NULL, NULL },
-    /* The local package-store catalog, covered on the day it landed rather
-     * than added to the stated-gap list. Absent <datadir>/zcode/manifests
-     * is a passed empty list and never opens the store (open runs recovery
-     * GC). payload_dir is zcode/manifests so a file there is
-     * STORE_UNREADABLE, not an empty shelf. */
+    /* Local package-store catalog. Absent <datadir>/zcode/manifests is an
+     * empty list and never opens the store (open runs recovery GC);
+     * payload_dir is zcode/manifests so a file there is STORE_UNREADABLE. */
     { "zcode.package.library",  zcl_native_handle_zcode_package_library,
       NULL, NULL,               NULL, NULL, "zcode/manifests" },
-    /* Live ANNOUNCE catalog. One-shot (no global engine) returns
-     * live:false and an empty list without opening the store. A
-     * non-directory zcode/manifests is STORE_UNREADABLE, same as library. */
+    /* Live ANNOUNCE catalog: one-shot returns live:false and an empty list
+     * without opening the store; a non-directory zcode/manifests is
+     * STORE_UNREADABLE. */
     { "zcode.package.offered",  zcl_native_handle_zcode_package_offered,
       NULL, NULL,               NULL, NULL, "zcode/manifests" },
-    /* Local sovereignty policy inspection is a READ leaf even though the
-     * sibling mutate leaf persists policy.v1.  Its loader must not create
-     * zcode/policy on an absent datadir or repair an unreadable policy store. */
+    /* Policy inspection is a READ leaf: its loader must not create
+     * zcode/policy on an absent datadir or repair an unreadable store. */
     { "zcode.network.policy.list",
       zcl_native_handle_zcode_network_policy_list,
       NULL, NULL,               NULL, NULL, "zcode/policy" },
-    /* Sovereign-space reads use either the public delegation/key material or
-     * the immutable workspace CAS.  The two plan leaves receive their array
-     * and integer inputs in rlw_add_complex_input below; naming only a kind
-     * here would let the manifest plan reject before touching its datadir and
-     * would turn this into vacuous coverage. */
+    /* Sovereign-space reads use public delegation/key material or the
+     * immutable workspace CAS. The plan leaves get their array and integer
+     * inputs in rlw_add_complex_input so they reach the datadir. */
     { "metaverse.space.plan", zcl_native_handle_metaverse_space_plan,
       "kind", "space_manifest", "name", "read-leaf-probe", "zcode/dht" },
     { "metaverse.space.show", zcl_native_handle_metaverse_space_show,
@@ -444,10 +302,8 @@ static void rlw_push_single_root_array(struct json_value *input,
     json_free(&roots);
 }
 
-/* Supply the non-string shapes needed to drive the two plan handlers through
- * validation and into their caller-selected datadir.  Keep this keyed by the
- * registered path so the leaf table remains the one coverage population and
- * does not grow an optional callback field that every simple row must fill. */
+/* Supply the non-string inputs the two plan handlers need to get past
+ * validation and reach their datadir. Keyed by registered path. */
 static void rlw_add_complex_input(const struct rlw_leaf *lf,
                                   struct json_value *input)
 {
@@ -479,17 +335,9 @@ static void rlw_add_complex_input(const struct rlw_leaf *lf,
 
 /* ── the read leaves this file does NOT exercise, and why ──────────────
  *
- * Every entry is a READ leaf that takes a `datadir` and is not in the
- * table above. Being on this list is a STATED GAP, never an exemption:
- * t_registry_coverage refuses any derived leaf that is on neither list, so
- * the only way a new read leaf gets past this file is by someone writing
- * a line here and saying why. The count is ceilinged (RLW_UNCOVERED_MAX)
- * and shrink-only — this list can get shorter, never longer.
- *
- * These are the pre-existing gap: the hand table only ever named six
- * leaves, so the rest of the derived population was absent and nothing said
- * so. Deriving the population from the registry is what made them visible;
- * covering them is follow-on work, one entry deleted per leaf exercised. */
+ * Every READ leaf with a `datadir` not in the table above is listed here
+ * with a reason. t_registry_coverage refuses any derived leaf on neither
+ * list; the count is ceilinged (RLW_UNCOVERED_MAX) and shrink-only. */
 #define RLW_UNCOVERED_REASON_PREEXISTING                                 \
     "pre-existing gap: declared READ, takes datadir, never exercised "   \
     "here. Made visible by the registry-derived coverage check; delete "  \
@@ -534,19 +382,15 @@ static const struct rlw_uncovered g_rlw_uncovered[] = {
 #define RLW_UNCOVERED_COUNT \
     ((int)(sizeof(g_rlw_uncovered) / sizeof(g_rlw_uncovered[0])))
 
-/* SHRINK-ONLY ceiling. Raising it is the one edit that would turn this
- * whole coverage check back into the hand list it replaced. */
+/* SHRINK-ONLY ceiling. */
 #define RLW_UNCOVERED_MAX 28
 
-/* Anti-vacuous floor on the derived population itself: a coverage check
- * over an empty registry passes every assertion and proves nothing. Sits
- * below the live count (43) with headroom for ordinary removals. */
+/* Anti-vacuous floor on the derived population (below the live count). */
 #define RLW_DERIVED_FLOOR 35
 
 /* ── on-disk observation helpers ───────────────────────────────────── */
 
-/* FNV-1a over the whole file. 0 means "could not read" (callers treat an
- * unreadable snapshot as a failed observation, never as a match). */
+/* FNV-1a over the whole file. 0 means "could not read". */
 static uint64_t rlw_file_hash(const char *path, int64_t *size_out)
 {
     if (size_out)
@@ -568,7 +412,7 @@ static uint64_t rlw_file_hash(const char *path, int64_t *size_out)
     fclose(f);
     if (size_out)
         *size_out = total;
-    /* Never hand back the "unreadable" sentinel for a real read. */
+    /* Never return the "unreadable" sentinel for a real read. */
     return h ? h : 1;
 }
 
@@ -592,14 +436,10 @@ static int rlw_count_entries(const char *dir, const char *prefix)
     return n;
 }
 
-/* The datadir's recursive FILE SET, as a sorted newline-joined list of typed
- * relative paths. The per-file hashes above cannot see a file or directory
- * APPEARING, and appearing is the whole of both classes of defect caught
- * here: SQLite WAL sidecars at the root and supposedly read-only loaders
- * materializing nested payload directories. Every byte the reader was asked
- * about can remain correct while the operator's tree changes. False on
- * overflow or an unreadable directory, which callers treat as a failed
- * observation. lstat() deliberately records symlinks without following them. */
+/* The datadir's recursive FILE SET, as a sorted newline-joined list of
+ * typed relative paths, since per-file hashes cannot see a file or
+ * directory appearing. False on overflow or an unreadable directory.
+ * lstat() records symlinks without following them. */
 #define RLW_SET_MAX_ENTRIES 128
 #define RLW_SET_NAME_MAX 512
 
@@ -687,10 +527,8 @@ static bool rlw_dir_set(const char *dir, char *out, size_t out_size)
     return true;
 }
 
-/* Is the database at `path` in WAL mode? Header byte 18 is the "file format
- * write version": 2 for WAL. Read straight out of the file rather than by
- * asking the code under test, so the anti-vacuous check below cannot be
- * satisfied by the same bug it is guarding. */
+/* Is the database at `path` in WAL mode? Header byte 18 is 2 for WAL;
+ * read from the file so the code under test cannot satisfy it. */
 static bool rlw_is_wal(const char *path)
 {
     FILE *f = fopen(path, "rb");
@@ -727,8 +565,7 @@ static void rlw_list_dir(const char *tag, const char *dir)
     closedir(d);
 }
 
-/* SELECT one integer, read-only. -1 on any failure (an unreadable database
- * is never silently reported as a count of zero). */
+/* SELECT one integer, read-only. -1 on any failure. */
 static int64_t rlw_scalar(const char *db_path, const char *sql)
 {
     sqlite3 *db = NULL;
@@ -756,19 +593,14 @@ static void rlw_mkfixture(char *dir, size_t n, const char *tag)
     mkdir("./test-tmp", 0700);
     test_rm_rf(dir);
     mkdir(dir, 0700);
-    /* zcode.contributor.show and zcode.package.resolve rebuild a package
-     * index over <datadir>/zcode before they touch node.db; without the
-     * directory they return early and the case proves nothing. */
+    /* Package-index leaves need zcode/ or they return before node.db. */
     char zdir[1200];
     snprintf(zdir, sizeof(zdir), "%s/zcode", dir);
     mkdir(zdir, 0700);
 }
 
-/* The shared fixture above deliberately supplies zcode/ so two old package
- * reads reach node.db.  Sovereign-space reads have the stronger contract:
- * discovery/planning against a never-used datadir must not materialize even
- * that top-level directory.  Remove the compatibility fixture for exactly
- * those leaves so their absent case starts, and must finish, literally empty. */
+/* The shared fixture supplies zcode/; sovereign-space reads must not
+ * materialize even that directory, so remove it for those leaves. */
 static bool rlw_require_truly_empty_space_fixture(const struct rlw_leaf *lf,
                                                   const char *dir)
 {
@@ -779,9 +611,7 @@ static bool rlw_require_truly_empty_space_fixture(const struct rlw_leaf *lf,
     return rmdir(zdir) == 0;
 }
 
-/* The byte pattern used for every "this is not a database" fixture. Chosen
- * to be something an operator could plausibly have left in the datadir, so
- * the failure reads as data loss rather than as a fuzz artefact. */
+/* Bytes for every "this is not a database" fixture. */
 static const char *const g_rlw_junk =
     "this is an operator file, not a SQLite database\n";
 
@@ -797,12 +627,9 @@ static bool rlw_write_junk(const char *path)
 
 /* ── kernel-store (consensus.db) fixture ───────────────────────────────
  *
- * A VALID but otherwise empty SQLite file at <datadir>/consensus.db. Empty
- * on purpose: there is nothing to migrate and nothing to read, so any byte
- * that changes afterwards is DDL the leaf itself wrote (progress_store_open
- * ensures the kernel schema). One real table, not a zero-byte placeholder,
- * so the file has a genuine SQLite header and passes an integrity check —
- * a quarantine after this would be unambiguous damage, not a rescue. */
+ * A valid but empty SQLite file at <datadir>/consensus.db with one real
+ * table, so any changed byte is DDL the leaf wrote and a quarantine is
+ * unambiguous damage. */
 static bool rlw_seed_kernel_store(const char *dir, char *path_out,
                                   size_t path_size)
 {
@@ -821,9 +648,8 @@ static bool rlw_seed_kernel_store(const char *dir, char *path_out,
     return ok;
 }
 
-/* A migrated node.db carrying rows in exactly the two places the boot
- * ceremony deletes from. Returns false if the fixture did not come out the
- * way the assertions below assume. */
+/* A migrated node.db with rows in the two places the boot ceremony
+ * deletes from. Returns false if the fixture is not as assumed. */
 static bool rlw_seed_node_db(const char *dir, const char *db_path)
 {
     (void)dir;
@@ -858,25 +684,10 @@ static bool rlw_seed_node_db(const char *dir, const char *db_path)
 
 /* ── leaf invocation ───────────────────────────────────────────────── */
 
-/* Same call, but hands back whether the leaf DISCLOSED that the read did not
- * happen. Not writing to a corrupt database is only half the contract; the
- * other half is that the caller is told. A leaf that opens a 47-byte text
- * file, gets nothing back, and answers "no results" has damaged nothing and
- * still told a lie — and two fee-spending pre-flights key on exactly that
- * distinction, so the lie costs money.
- *
- * There are three honest shapes, and which one is right depends on whether the
- * chain read is the leaf's payload or an optional enrichment:
- *   - refuse outright (error code set), for the leaves whose whole answer
- *     comes out of node.db; or
- *   - answer the rest and mark the section "read": false with a reason, for
- *     zcode.contributor.show, where the package index is the real payload
- *     and the ZNAM pointer is a garnish; or
- *   - readiness surfaces answer "ready": false with a typed blocker, current
- *     state, and next action. Degrading is fine. Degrading
- *     silently is not: "read": true with "found": false over a database
- *     nobody could open is indistinguishable from "nobody claims this key".
- * Both count as disclosure. A bare empty answer counts as neither. */
+/* Same call, but reports whether the leaf DISCLOSED that the read did not
+ * happen. Honest shapes: refuse with an error code; answer the rest with a
+ * section marked "read": false and a reason; or answer "ready": false with
+ * a typed blocker. A bare empty answer counts as none of them. */
 static bool rlw_invoke_refused(const struct rlw_leaf *lf, const char *datadir,
                                char *code_out, size_t code_size)
 {
@@ -908,11 +719,8 @@ static bool rlw_invoke_refused(const struct rlw_leaf *lf, const char *datadir,
             strcmp(blocker, "NONE") != 0 && current && current[0] &&
             next && next[0];
     }
-    /* The degrade-and-disclose shape: any section that carries an explicit
-     * "read": false is a leaf saying, in the reply body, that it did not
-     * look. Walk the top-level sections rather than naming one, so a leaf
-     * that grows a second optional chain read is covered without editing
-     * this test. */
+    /* Degrade-and-disclose: any top-level section with "read": false
+     * says in the reply that it did not look. */
     if (!refused && reply.data.type == JSON_OBJ) {
         for (size_t i = 0; i < reply.data.num_children && !refused; i++) {
             const struct json_value *sec = &reply.data.children[i];
@@ -1019,9 +827,7 @@ static int t_absent_node_db_is_not_created(void)
         RLW_CHECK(name, same_tree);
 
         int left = rlw_count_entries(dir, "node.db");
-        /* Same question for the kernel store, under both the current name
-         * and the legacy one consensus_db_kernel_store_path() falls back
-         * to: an empty datadir must not gain a fact log either. */
+        /* Same for the kernel store, under the current and legacy names. */
         int kleft = rlw_count_entries(dir, CONSENSUS_DB_FILENAME);
         int pleft = rlw_count_entries(dir, CONSENSUS_DB_LEGACY_KERNEL_FILENAME);
         if (left != 0 || kleft != 0 || pleft != 0)
@@ -1069,8 +875,7 @@ static int t_present_node_db_is_not_mutated(void)
 
     int64_t utxos_before = rlw_scalar(db_path, q_utxos);
     int64_t state_before = rlw_scalar(db_path, q_state);
-    /* Anti-vacuous: with zero seeded rows the DELETEs would be invisible and
-     * this whole case would pass on a database the boot ceremony wiped. */
+    /* Anti-vacuous: with zero seeded rows the DELETEs are invisible. */
     RLW_CHECK("present: 2 snapshot_staging_utxos rows to lose",
               utxos_before == 2);
     RLW_CHECK("present: 2 snapshot_staging_% node_state rows to lose",
@@ -1140,19 +945,10 @@ static int t_present_node_db_is_not_mutated(void)
 
 /* ── case 3: a valid database that is not a NODE database ───────────────
  *
- * The byte-identity case above cannot see the smaller half of the ceremony.
- * create_schema() is `CREATE TABLE IF NOT EXISTS` forty times over and
- * node_db_migrate() is a no-op at the current version, so re-running both
- * against an already-migrated node.db and closing it leaves the file
- * byte-identical — app.store.products reached node_db_open_runtime for
- * months and the present case stayed green throughout.
- *
- * What that path actually does is INSTALL A SCHEMA into whatever file it
- * was handed. So point every read leaf at a real SQLite database that is
- * not a node database — an operator's own file that happens to sit at
- * <datadir>/node.db — and require that it comes back with the same tables
- * it went in with. A read leaf may find nothing there; it may not fix
- * that by writing the tables it wanted to read. */
+ * Re-running create_schema()/node_db_migrate() on a migrated node.db is
+ * byte-identical, so the present case cannot see a schema install. Point
+ * every read leaf at a real SQLite file that is not a node database and
+ * require the same tables come back. */
 
 static int64_t rlw_table_count(const char *db_path)
 {
@@ -1233,10 +1029,8 @@ static int t_garbage_node_db_is_not_quarantined(void)
 
     RLW_CHECK("garbage: fixture node.db written", rlw_write_junk(db_path));
 
-    /* Same fixture for the kernel store. This is the one that used to be
-     * silently destroyed: progress_store_open's integrity check fails on a
-     * non-database, and its recovery is to rename the file to
-     * consensus.db.corrupt-<ts> and install a fresh empty fact log. */
+    /* Same fixture for the kernel store: progress_store_open renames a
+     * non-database aside and installs a fresh empty fact log. */
     char kernel_path[1200];
     snprintf(kernel_path, sizeof(kernel_path), "%s/%s", dir,
              CONSENSUS_DB_FILENAME);
@@ -1292,17 +1086,11 @@ static int t_garbage_node_db_is_not_quarantined(void)
 
 /* ── case 5: a corrupt node.db must REFUSE, not answer empty ───────── */
 
-/* sqlite3_open_v2 is lazy — it does not read the header, so a non-database
- * opens with SQLITE_OK and only fails at the first statement. A helper that
- * returned OK there would hand every caller a live-looking handle over a
- * file it had never read, and each caller's own "no rows" path would then
- * report an empty answer. Absent and unreadable would be the same answer
- * again, which is the entire thing this module exists to prevent. */
-/* Make <dir>/<rel> unreadable AS A DIRECTORY by putting a plain file where
- * the directory belongs, creating each parent along the way. opendir()
- * then fails with ENOTDIR: the store is unmistakably PRESENT and
- * unmistakably not enumerable, which is precisely the state that must not
- * be reported as an empty inventory. */
+/* sqlite3_open_v2 is lazy and opens a non-database with SQLITE_OK; the
+ * failure only shows at the first statement, so absent and unreadable
+ * must not be reported as the same answer.
+ * Make <dir>/<rel> unreadable as a directory by putting a plain file
+ * where it belongs, creating parents (opendir() fails with ENOTDIR). */
 static bool rlw_break_dir(const char *dir, const char *rel)
 {
     char path[1400];
@@ -1332,9 +1120,7 @@ static int t_garbage_node_db_is_refused_not_empty(void)
 
     RLW_CHECK("refuse: fixture node.db written", rlw_write_junk(db_path));
 
-    /* Not every leaf's payload is in a database. Break whatever store each
-     * one actually reads, or the assertion below would be demanding a
-     * refusal over a file the leaf never opens. */
+    /* Break whatever store each leaf actually reads. */
     for (int i = 0; i < RLW_LEAF_COUNT; i++) {
         char what[256];
 
@@ -1346,8 +1132,8 @@ static int t_garbage_node_db_is_refused_not_empty(void)
         RLW_CHECK(what, rlw_break_dir(dir, g_rlw_leaves[i].payload_dir));
     }
 
-    /* The kernel store is unreadable here too, so a leaf whose payload
-     * comes out of consensus.db has the same duty to say so. */
+    /* The kernel store is unreadable too, so a leaf whose payload is in
+     * consensus.db must disclose it. */
     char kernel_path[1200];
     snprintf(kernel_path, sizeof(kernel_path), "%s/%s", dir,
              CONSENSUS_DB_FILENAME);
@@ -1373,48 +1159,18 @@ static int t_garbage_node_db_is_refused_not_empty(void)
 
 /* ── case 6: a WAL datadir must come back with the same FILE SET ────────
  *
- * THE BUG THIS CASE EXISTS TO CATCH (reproduced against the vendored sqlite
- * 3.49.0, 2026-07-30): SQLITE_OPEN_READONLY is not enough to leave a WAL
- * database alone. A read-only connection still has to materialize the
- * wal-index before it can read consistently, so sqlite CREATES <db>-shm and
- * <db>-wal beside the database — and it cannot unlink them again on close,
- * because that needs the write lock a read-only connection does not hold. A
- * directory holding one 8192-byte node.db came out of the helper's own
- * sequence (open_v2 READONLY, PRAGMA query_only, PRAGMA schema_version,
- * close) holding node.db, node.db-shm (32768 bytes) and node.db-wal.
- *
- * Both stores under a datadir are WAL — engine/models/src/database.c sets
- * journal_mode=WAL for node.db, engine/modules/storage/src/progress_store.c for
- * consensus.db — so this was the ORDINARY case, not an edge.
- *
- * Every case above was structurally blind to it. They hash the main database
- * file and count a `.corrupt` prefix; nothing enumerated the directory, and a
- * file APPEARING changes no hash of a file that was already there. The
- * `present` case in particular has been running read leaves against a WAL
- * node.db all along (its fixture goes through node_db_open, which sets
- * journal_mode=WAL) and stayed green while the sidecars piled up beside it.
- *
- * Why the file set and not just "no -wal": the harm is to a copy-proof.
- * The recovery doctrine is copy the datadir, hash it, ask a read leaf about
- * the copy, and trust the hash still describes the disk. Two files appearing
- * voids that silently. And a read running as a different uid than the node —
- * an operator or a CI job inspecting a copy as root — leaves the sidecars
- * owned by the wrong user, in the way of the node's own later open. So what
- * is asserted is the property the proof depends on: the set of names in that
- * directory is the set that went in. */
+ * A READONLY connection to a WAL database still creates <db>-shm and
+ * <db>-wal and cannot unlink them on close. Both node.db and consensus.db
+ * are WAL, so this is the ordinary case. Per-file hashes cannot see a file
+ * appearing, so the property asserted is that the set of names in the
+ * directory is the set that went in (a copy-proof depends on it). */
 
-/* How many of the leaves must still ANSWER over a healthy WAL datadir. Eight
- * do today (the rest refuse for their own reasons — no releases seeded, no
- * such domain, an unanchored key); the floor sits below that with room for
- * ordinary churn, and is the guard against a "fix" that keeps the directory
- * clean by refusing to open a WAL database at all. */
+/* Floor on how many leaves must still ANSWER over a healthy WAL datadir;
+ * guards against keeping the directory clean by refusing to open WAL. */
 #define RLW_WAL_ANSWER_FLOOR 5
 
-/* A kernel store in WAL mode, matching what progress_store_open() would leave
- * on disk. rlw_seed_kernel_store above is left on sqlite's default rollback
- * journal, so the cases that use it cannot see a sidecar; this one is the
- * production shape, and this case needs it or it would only be testing
- * node.db. */
+/* A kernel store in WAL mode, matching what progress_store_open() leaves
+ * on disk (rlw_seed_kernel_store uses the default rollback journal). */
 static bool rlw_seed_kernel_store_wal(const char *dir, char *path_out,
                                       size_t path_size)
 {
@@ -1431,9 +1187,8 @@ static bool rlw_seed_kernel_store_wal(const char *dir, char *path_out,
                   == SQLITE_OK &&
               sqlite3_exec(db, "CREATE TABLE rlw_fixture(x INTEGER)", NULL,
                            NULL, NULL) == SQLITE_OK;
-    /* A clean close checkpoints and unlinks the sidecars, so the fixture
-     * directory holds exactly the two database files — which is what a
-     * cleanly-shut-down node's datadir, and any copy of one, looks like. */
+    /* A clean close checkpoints and unlinks the sidecars, leaving exactly
+     * the two database files. */
     sqlite3_close(db);
     return ok;
 }
@@ -1453,16 +1208,13 @@ static int t_wal_datadir_file_set_is_unchanged(void)
               rlw_seed_kernel_store_wal(dir, kernel_path,
                                         sizeof(kernel_path)));
 
-    /* ANTI-VACUOUS. If either fixture stopped being a WAL database this whole
-     * case would pass while proving nothing about the defect it exists for —
-     * a rollback-journal database needs no wal-index and grows no sidecars. */
+    /* Anti-vacuous: a rollback-journal database grows no sidecars. */
     RLW_CHECK("walset: node.db really is in WAL mode (header byte 18 == 2)",
               rlw_is_wal(db_path));
     RLW_CHECK("walset: consensus.db really is in WAL mode",
               rlw_is_wal(kernel_path));
 
-    /* And the fixture must START clean, or "no sidecars afterwards" would be
-     * measuring a directory that never had a chance to be dirty. */
+    /* The fixture must start clean. */
     char before[4096];
     bool got_before = rlw_dir_set(dir, before, sizeof(before));
     RLW_CHECK("walset: fixture file set observed before the calls", got_before);
@@ -1477,11 +1229,9 @@ static int t_wal_datadir_file_set_is_unchanged(void)
     uint64_t kernel_hash_before = rlw_file_hash(kernel_path,
                                                 &kernel_size_before);
 
-    /* ANTI-VACUOUS, and the one that matters most here. "No sidecars were
-     * created" is trivially satisfiable by an open that FAILS: refuse every
-     * leaf and the directory is certainly untouched. So count the leaves that
-     * answered, and require that a healthy WAL datadir still gets read. This
-     * is what stops the fix from being "stop opening WAL databases". */
+    /* Anti-vacuous: a refusing open trivially leaves the directory
+     * untouched, so count the leaves that answered and require that a
+     * healthy WAL datadir still gets read. */
     int answered = 0;
     for (int i = 0; i < RLW_LEAF_COUNT; i++) {
         char code[64] = { 0 };
@@ -1510,8 +1260,7 @@ static int t_wal_datadir_file_set_is_unchanged(void)
     RLW_CHECK("walset: the datadir's file set is exactly what went in",
               same_set);
 
-    /* Named separately from the set comparison so a failure says WHICH files
-     * arrived rather than only that the set differs. */
+    /* Separate from the set comparison so a failure names the files. */
     int node_sidecars = rlw_count_entries(dir, "node.db-");
     int kernel_sidecars = rlw_count_entries(dir, "consensus.db-");
     if (node_sidecars != 0 || kernel_sidecars != 0)
@@ -1521,8 +1270,7 @@ static int t_wal_datadir_file_set_is_unchanged(void)
     RLW_CHECK("walset: no consensus.db-wal/-shm was created by a read",
               kernel_sidecars == 0);
 
-    /* The old assertions still have to hold on a WAL fixture: not creating
-     * sidecars is worthless if the fix got there by rewriting the database. */
+    /* The earlier assertions still hold on a WAL fixture. */
     int64_t size_after = -1;
     uint64_t hash_after = rlw_file_hash(db_path, &size_after);
     int64_t kernel_size_after = -1;
@@ -1545,16 +1293,10 @@ static int t_wal_datadir_file_set_is_unchanged(void)
 
 /* ── case 7: a WAL datadir a LIVE writer is attached to ─────────────────
  *
- * The fix cannot be "always use the immutable open". Measured on the same
- * sqlite: pointed at a WAL database a writer was attached to, an
- * immutable=1 read returned 1 row where the truth was 2 — it does not consult
- * the log. Trading two stray files for silently stale answers would be the
- * worse bug on a project whose read leaves default to the operator's LIVE
- * node, so this case pins the other half of the contract.
- *
- * With a writer attached the wal-index already exists, so there is nothing
- * left for a read to create — the file set must STILL come back unchanged,
- * and the writer must still be able to write afterwards. */
+ * The immutable open is not an option: it does not consult the log and
+ * returns stale rows. With a writer attached the wal-index exists, so the
+ * file set must still be unchanged and the writer must still be able to
+ * write afterwards. */
 static int t_wal_datadir_with_live_writer(void)
 {
     int failures = 0;
@@ -1570,9 +1312,8 @@ static int t_wal_datadir_with_live_writer(void)
               rlw_seed_kernel_store_wal(dir, kernel_path,
                                         sizeof(kernel_path)));
 
-    /* The stand-in for the running node: a READWRITE connection that stays
-     * open across every read below, with an uncommitted-to-the-main-file
-     * INSERT sitting in its log. */
+    /* Stand-in for the running node: a READWRITE connection that stays
+     * open with an INSERT in its log. */
     struct node_db live;
     memset(&live, 0, sizeof(live));
     bool live_open = node_db_open(&live, db_path) && live.open;
@@ -1584,8 +1325,7 @@ static int t_wal_datadir_with_live_writer(void)
                                " VALUES('rlw_live','1')",
                                NULL, NULL, NULL) == SQLITE_OK);
 
-    /* Its own sidecars are legitimately there, and are NOT this test's to
-     * object to — what must not change is the set. */
+    /* The writer's own sidecars are legitimate; the set must not change. */
     RLW_CHECK("walopen: the live writer's wal-index exists",
               rlw_count_entries(dir, "node.db-") > 0);
 
@@ -1621,8 +1361,7 @@ static int t_wal_datadir_with_live_writer(void)
               rlw_count_entries(dir, "node.db.corrupt") == 0 &&
               rlw_count_entries(dir, "consensus.db.corrupt") == 0);
 
-    /* The read must not have wedged the writer — a read leaf that leaves the
-     * live node unable to commit has done damage of a different kind. */
+    /* The read must not have wedged the writer. */
     if (live_open) {
         RLW_CHECK("walopen: the live writer can still write afterwards",
                   sqlite3_exec(live.db,
@@ -1638,22 +1377,9 @@ static int t_wal_datadir_with_live_writer(void)
 
 /* ── case 9: a writer that attaches AFTER the read-only open ────────────
  *
- * Case 7 pins the writer-was-already-there half. This is the other half, and
- * it is the one the open-time check cannot see: the handle is returned to a
- * leaf that queries it AFTERWARDS, so "no wal-index means no writer is
- * attached" has to hold for the handle's whole life, not just for the instant
- * it was checked.
- *
- * Reproduced on the vendored sqlite 3.49.0 before the fix, with this exact
- * ordering — open the immutable snapshot, THEN attach a writer and commit,
- * THEN query the handle: it answered the pre-commit row count, with no error
- * and no log line. That is the one failure this file cannot ship, because
- * these leaves default to the operator's LIVE node and a diagnostic that
- * quietly reports a running node's past is worse than one that refuses.
- *
- * The bar is deliberately either/or: the handle may report the FRESH state, or
- * it may refuse. What it must never do is report the stale count as if it were
- * current. */
+ * The handle is queried after it is returned, so "no wal-index means no
+ * writer" must hold for the handle's whole life. The handle may report the
+ * fresh state or refuse; it must never report the stale count as current. */
 static int t_wal_snapshot_writer_arrives_after_open(void)
 {
     int failures = 0;
@@ -1664,19 +1390,15 @@ static int t_wal_snapshot_writer_arrives_after_open(void)
 
     RLW_CHECK("walrace: fixture node.db seeded",
               rlw_seed_node_db(dir, db_path));
-    /* The premise of the whole case: a quiescent WAL database, which is the
-     * state that takes the immutable open. */
+    /* Premise: a quiescent WAL database, which takes the immutable open. */
     RLW_CHECK("walrace: fixture node.db really is in WAL mode",
               rlw_is_wal(db_path));
     RLW_CHECK("walrace: fixture starts with no node.db-wal/-shm",
               rlw_count_entries(dir, "node.db-") == 0);
 
-    /* rlw_scalar() is deliberately NOT used to check the starting count: a
-     * plain READONLY open of a quiescent WAL database is exactly what
-     * materializes the two sidecars, so measuring the fixture that way would
-     * destroy the state this case needs. The count is read through the handle
-     * under test instead, which also proves the guard does not false-positive
-     * on an untouched database. */
+    /* The starting count is read through the handle under test, not
+     * rlw_scalar(): a plain READONLY open of a quiescent WAL database
+     * materializes the sidecars this case needs absent. */
     const char *const count_sql =
         "SELECT COUNT(*) FROM snapshot_staging_utxos";
 
@@ -1703,15 +1425,9 @@ static int t_wal_snapshot_writer_arrives_after_open(void)
                   seen == 2);
     }
 
-    /* 2. and only NOW does the writer arrive, commit, and stay attached —
-     *    which is what keeps its wal-index on disk with the commit in it.
-     *
-     *    A bare READWRITE connection, NOT node_db_open(): the boot ceremony
-     *    node_db_open() runs would DELETE the seeded snapshot_staging rows on
-     *    its way in, so the count this case measures would move for a reason
-     *    that has nothing to do with the race. Case 7 wants the ceremony
-     *    because it models a node booting on the datadir; this case wants
-     *    exactly one committed row and no other change. */
+    /* 2. Now the writer arrives, commits, and stays attached. A bare
+     *    READWRITE connection, not node_db_open(): the boot ceremony
+     *    would delete the seeded staging rows and move the count. */
     sqlite3 *live = NULL;
     bool live_open = st == ZCL_NODE_DB_RO_OK &&
                      sqlite3_open_v2(db_path, &live, SQLITE_OPEN_READWRITE,
@@ -1751,19 +1467,17 @@ static int t_wal_snapshot_writer_arrives_after_open(void)
         RLW_CHECK("walrace: the handle reports the fresh state or refuses — "
                   "never the pre-commit count",
                   refused || fresh);
-        /* And the fresh truth really is 3, so a refusal above was a refusal to
-         * report 2 and not a refusal to see a row that was never committed. A
-         * plain READONLY open is safe to use for this NOW — the writer's own
-         * wal-index is already on disk, so there is nothing left to create. */
+        /* The fresh truth really is 3, so a refusal above was a refusal to
+         * report 2. A plain READONLY open is safe now: the writer's
+         * wal-index is already on disk. */
         RLW_CHECK("walrace: the committed truth on disk is 3 rows",
                   rlw_scalar(db_path, count_sql) == 3);
     }
 
     zcl_native_node_db_close_readonly(&ro, &ro_shim);
 
-    /* The read must not have damaged or wedged anything: the writer's own
-     * sidecars are its business, but nothing may be quarantined and the writer
-     * must still be able to commit. */
+    /* Nothing may be quarantined and the writer must still be able to
+     * commit. */
     RLW_CHECK("walrace: nothing was quarantined",
               rlw_count_entries(dir, "node.db.corrupt") == 0);
     if (live_open) {
@@ -1780,12 +1494,10 @@ static int t_wal_snapshot_writer_arrives_after_open(void)
     return failures;
 }
 
-/* ── case 8: the population comes from the registry, not from memory ──
+/* ── case 8: the population comes from the registry ──────────────────
  *
- * The defect this case exists to catch is the one that hit this very file:
- * a seventh read leaf was added, took a `datadir`, opened it with the boot
- * ceremony, and this test — which enumerated its subjects as six string
- * literals — never noticed. The list is derived now. */
+ * Every READ leaf that takes a `datadir` is derived from the command
+ * registry, so a newly added leaf cannot be silently absent. */
 
 /* Is `key` one comma-separated token of `csv`? (Substring matching would
  * accept "datadirs" and "no_datadir".) */
@@ -1867,7 +1579,7 @@ static int t_registry_coverage(void)
         }
         if (listed) {
             uncovered_seen++;
-            /* An entry with no reason is silent absence with extra steps. */
+            /* An entry needs a stated reason. */
             snprintf(what, sizeof(what),
                      "coverage: %s is listed uncovered WITH a stated reason",
                      s->path);
@@ -1886,8 +1598,7 @@ static int t_registry_coverage(void)
            "uncovered_matched=%d\n",
            derived, RLW_LEAF_COUNT, RLW_UNCOVERED_COUNT, uncovered_seen);
 
-    /* Anti-vacuous: every assertion above is over the derived set, so an
-     * empty or unlinked catalog would pass them all. */
+    /* Anti-vacuous: an empty or unlinked catalog would pass every check. */
     {
         char what[192];
         snprintf(what, sizeof(what),
@@ -1896,9 +1607,8 @@ static int t_registry_coverage(void)
         RLW_CHECK(what, derived >= RLW_DERIVED_FLOOR);
     }
 
-    /* Every table entry must name a leaf that still exists and still is a
-     * datadir READ leaf. A stale line is how a list starts drifting back
-     * into decoration. */
+    /* Every table entry must name a leaf that still exists and is a
+     * datadir READ leaf. */
     for (int j = 0; j < RLW_LEAF_COUNT; j++) {
         bool found = false;
         for (size_t i = 0; i < reg->count && !found; i++)

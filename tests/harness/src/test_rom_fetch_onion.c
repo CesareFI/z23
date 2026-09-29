@@ -2,36 +2,29 @@
  *
  * The ROM artifact fetch path over Tor (core/modules/net/src/rom_fetch_transport.c).
  *
- * Before this route existed, a Tor-only machine had NO way to fetch a
- * consensus-state bundle or a C23 source bundle at all: rf_connect() was a
- * bare getaddrinfo(), which cannot resolve a .onion name in principle. This
- * group proves the route exists and that it is a ROUTE, not a preference:
+ * rf_connect() cannot resolve a .onion name via getaddrinfo, so this group
+ * proves the onion route exists and is a route, not a preference:
  *
- *   1. A .onion seeder is dialed over the SAME raw-stream path the P2P
- *      dialer uses (net/onion_stream.h -> the embedded Tor fork's dynhost
- *      streams), and the resulting fd carries bytes both ways. The dial is
- *      observed at the backend, which receives the exact onion hostname --
- *      getaddrinfo could never have produced a connected fd for that name,
- *      so the backend seeing it IS the proof of routing.
- *   2. A clearnet seeder still takes the resolver path, unchanged: it
- *      connects to a real loopback listener while the onion backend is
- *      never opened and the onion stage ledger never moves.
- *   3. A malformed .onion name fails CLOSED at the fetch layer -- refused
- *      without resolution and without a circuit. It must never degrade to
- *      DNS, and it must never degrade to clearnet.
- *   4. Reachability and speed stay separate axes. The onion budgets are
- *      their own numbers, strictly larger than the clearnet ones, and the
- *      clearnet numbers are untouched -- asserted as VALUES, never by
- *      timing a wall clock.
+ *   1. A .onion seeder is dialed over the raw-stream path the P2P dialer uses
+ *      (net/onion_stream.h -> the embedded Tor fork's dynhost streams) and the
+ *      fd carries bytes both ways. The backend receives the exact onion
+ *      hostname, which proves routing.
+ *   2. A clearnet seeder still takes the resolver path: it connects to a
+ *      loopback listener while the onion backend is never opened and the
+ *      onion stage ledger never moves.
+ *   3. A malformed .onion name fails closed at the fetch layer, without
+ *      resolution or a circuit; it never degrades to DNS or clearnet.
+ *   4. Reachability and speed are separate axes: the onion budgets are their
+ *      own numbers, strictly larger than clearnet, and the clearnet numbers
+ *      are unchanged, asserted as values, not by timing.
  *
- * No live Tor network is required or used: the raw-stream backend is a
- * loopback double, exactly as tests/harness/src/test_onion_bridge.c does it. What
- * this group therefore proves is the ROUTING and the BUDGET SHAPE, not the
- * behaviour of a real circuit.
+ * No live Tor network is used: the raw-stream backend is a loopback double, as
+ * in test_onion_bridge.c, so this proves routing and budget shape, not real
+ * circuit behaviour.
  *
- * Nothing here touches verification. The per-chunk digest+MAC check, the
- * chunk-root fold and the whole-file digest all live in rom_fetch.c and are
- * covered by the rom_fetch group; transport cannot reach them. */
+ * Verification is untouched: the per-chunk digest+MAC check, chunk-root fold
+ * and whole-file digest live in rom_fetch.c and are covered by the rom_fetch
+ * group. */
 
 #define _DEFAULT_SOURCE   /* usleep */
 #include "test/test_core.h"
@@ -66,8 +59,7 @@ struct rf_stub {
     _Atomic bool terminal;
     _Atomic bool closed;
 
-    /* What the fetch layer asked the circuit for. This is the observation
-     * that distinguishes "routed to Tor" from "routed to the resolver". */
+    /* What the fetch layer asked the circuit for: distinguishes "routed to Tor" from "routed to the resolver". */
     char     dialed_host[ONION_V3_ADDRESS_LEN + 1];
     uint16_t dialed_port;
     unsigned opens;
@@ -196,9 +188,7 @@ static bool make_onion_host(char host[ONION_V3_ADDRESS_LEN + 1])
     return onion_v3_address_from_pubkey(pub, host);
 }
 
-/* The dial hands back a BLOCKING fd with SO_RCVTIMEO armed (that is the
- * contract rf_connect owes every caller above it), so a plain recv loop is
- * the right shape here -- it cannot hang unbounded. */
+/* The dial returns a blocking fd with SO_RCVTIMEO armed (the rf_connect contract), so a plain recv loop cannot hang. */
 static bool read_exact_blocking(platform_socket_t fd, uint8_t *out, size_t want)
 {
     /* platform_socket_receive already retries on EINTR/WSAEINTR. */
@@ -217,8 +207,7 @@ static bool write_all_blocking(platform_socket_t fd, const uint8_t *buf,
     return platform_socket_send_all(fd, buf, len);
 }
 
-/* A real clearnet listener on an ephemeral loopback port -- no hardcoded
- * port, nothing outside this process. */
+/* A real clearnet listener on an ephemeral loopback port. */
 static bool loopback_listen(platform_socket_t *fd_out, uint16_t *port_out)
 {
     *fd_out = PLATFORM_SOCKET_INVALID;
@@ -271,8 +260,7 @@ int test_rom_fetch_onion(void)
             ok = fd != PLATFORM_SOCKET_INVALID;
         }
 
-        /* The circuit backend -- not the resolver -- was asked for exactly
-         * this endpoint. */
+        /* The circuit backend, not the resolver, was asked for exactly this endpoint. */
         pthread_mutex_lock(&g_mu);
         ok = ok && g_stub.opens == 1 &&
              strcmp(g_stub.dialed_host, host) == 0 &&
@@ -285,8 +273,7 @@ int test_rom_fetch_onion(void)
         ok = ok && st.dial_started == 1 && st.circuit_ready == 1 &&
              st.bridge_up == 1;
 
-        /* And the fd behaves like the clearnet one: blocking, bytes both
-         * ways. This is the fs_handshake/frame path's only requirement. */
+        /* The fd behaves like the clearnet one: blocking, bytes both ways. */
         uint8_t tx[126], rx[126];
         for (size_t i = 0; i < sizeof(tx); i++)
             tx[i] = (uint8_t)(0x5a + (i & 0x1f));
@@ -356,10 +343,7 @@ int test_rom_fetch_onion(void)
         stub_reset();
         rom_fetch_set_onion_backend_for_test(&g_stub_backend);
 
-        /* Every one of these carries the .onion suffix, so each is claimed
-         * by the onion route and must die there rather than fall through to
-         * getaddrinfo (which would leak the name to a resolver) or to
-         * clearnet (which would be a downgrade). */
+        /* Each carries the .onion suffix, so the onion route claims it and it must die there, not fall through to getaddrinfo (a name leak) or clearnet (a downgrade). */
         static const char *const bad[] = {
             "notavalidonion.onion",
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.onion",
@@ -367,9 +351,7 @@ int test_rom_fetch_onion(void)
         };
         bool ok = true;
         for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
-            /* Classification is the proof this spelling is claimed before
-             * rf_connect's resolver branch. The strict onion parser below may
-             * refuse it, but it may never fall through to DNS. */
+            /* Classification proves the spelling is claimed before the resolver branch; the strict parser may refuse it but it never falls through to DNS. */
             ok = ok && net_name_is_onion(bad[i]);
             platform_socket_t fd = rom_fetch_dial_for_test(bad[i], 39412);
             if (fd != PLATFORM_SOCKET_INVALID) {
@@ -378,10 +360,7 @@ int test_rom_fetch_onion(void)
             }
         }
 
-        /* DNS names are case-insensitive and may carry one terminal root dot,
-         * so suffix detection must claim these spellings too. The canonical
-         * onion decoder is intentionally stricter: both are refused inside
-         * the onion route, before either a resolver or a circuit is opened. */
+        /* Suffix detection is case-insensitive and tolerates one terminal root dot; the stricter onion decoder refuses both inside the onion route, before any resolver or circuit. */
         char canonical[ONION_V3_ADDRESS_LEN + 1];
         char uppercase[ONION_V3_ADDRESS_LEN + 1];
         char trailing_dot[ONION_V3_ADDRESS_LEN + 2];
@@ -433,23 +412,17 @@ int test_rom_fetch_onion(void)
         memset(&b, 0, sizeof(b));
         rom_fetch_dial_budgets_for_test(&b);
 
-        /* The clearnet budgets are exactly what they were before a Tor route
-         * existed. A regression here is a behaviour change on a path this
-         * work promised not to touch. */
+        /* The clearnet budgets are unchanged by the Tor route. */
         bool ok = b.clearnet_connect_ms == 10000 &&
                   b.clearnet_io_ms == 120000 &&
                   b.clearnet_probe_io_ms == 15000;
 
-        /* Connect is reachability; io is speed. Neither may be derived from
-         * the other, and an onion budget may never be tightened below the
-         * clearnet one -- that is how an honest slow transport gets graded
-         * dead. */
+        /* Connect is reachability; io is speed; neither derives from the other, and an onion budget is never tighter than the clearnet one. */
         ok = ok && b.onion_connect_ms > b.clearnet_connect_ms &&
              b.onion_io_ms > b.clearnet_io_ms &&
              b.onion_probe_io_ms > b.clearnet_probe_io_ms;
 
-        /* The onion connect budget is the P2P dialer's own measured circuit
-         * budget, not a second opinion invented here. */
+        /* The onion connect budget is the P2P dialer's measured circuit budget. */
         ok = ok && b.onion_connect_ms == ONION_STREAM_CONNECT_TIMEOUT_MS;
 
         if (ok) printf("OK\n");

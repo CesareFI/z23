@@ -215,9 +215,9 @@ static void mesh_wire_fixture_close(struct mesh_wire_fixture *f)
         node_db_close(&f->ndb);
 }
 
-/* The request as the requester lane composes it: bound to the REQUESTER's
- * session snapshot (the responder verifies the shared transcript/generation
- * evidence; per-side serials left the wire in 2114f5257). */
+/* The request as the requester composes it: bound to the REQUESTER's
+ * session snapshot (the responder verifies shared transcript/generation
+ * evidence). */
 static void mesh_wire_request(const struct mesh_wire_fixture *f,
                               const uint8_t pairing_id[32],
                               uint64_t issued, uint64_t expires,
@@ -278,9 +278,8 @@ int test_mesh_status_wire(void)
     TEST("mesh status wire: unpaired request is refused NOT_PAIRED, signed") {
         ASSERT(mesh_wire_fixture_open(&f, dir));
         fixture_open = true;
-        /* The session binding is genuinely shared: transcript and generation
-         * match across sides, and each side's snapshot names the other's
-         * identity-file public static. */
+        /* Transcript and generation match across sides; each snapshot names
+         * the other's identity-file public static. */
         ASSERT(f.ini_snap.established && f.res_snap.established);
         ASSERT(memcmp(f.ini_snap.transcript_hash, f.res_snap.transcript_hash,
                       32) == 0);
@@ -324,8 +323,8 @@ int test_mesh_status_wire(void)
         mesh_wire_request(&f, pairing_id, MESH_WIRE_NOW - 10,
                           MESH_WIRE_NOW + 20, &request);
 
-        /* Frame-level roundtrip: the exact "ZMSTAT" frame crosses the live
-         * Noise session in both directions before the decision runs. */
+        /* The "ZMSTAT" frame crosses the live Noise session both ways before
+         * the decision runs. */
         uint8_t request_wire[MESH_STATUS_REQUEST_V1_WIRE_BYTES];
         ASSERT_EQ(mesh_status_request_v1_encode(&request, request_wire),
                   MESH_STATUS_PROTO_OK);
@@ -526,7 +525,7 @@ int test_mesh_status_wire(void)
                                                 &f.ini_snap, wrong_master,
                                                 f.resp_online_pub));
         /* A self-consistent signature under an arbitrary embedded online key
-         * is not responder lineage. The expected active delegation key wins. */
+         * is not responder lineage; the expected active delegation key wins. */
         uint8_t wrong_seed[32], wrong_online[32], wrong_secret[32];
         mesh_fill32(wrong_seed, 0xD4);
         ed25519_keypair(wrong_online, wrong_secret, wrong_seed);
@@ -556,7 +555,7 @@ int test_mesh_status_wire(void)
                                                 f.resp_master_pub,
                                                 f.resp_online_pub));
         /* A receipt delivered on a DIFFERENT session never completes the
-         * pending entry, even though it verifies against the request. */
+         * pending entry. */
         uint8_t other_ini_priv[32], other_res_priv[32], other_pub[32];
         char error[160], other_req[320], other_resp[320];
         snprintf(other_req, sizeof(other_req), "%s/other_req", dir);
@@ -721,13 +720,13 @@ int test_mesh_status_wire(void)
         PASS();
     }
 
-    /* ── Fleet view projection: pure state derivation, probe planning, and
-     * tally — the exact production mapping, no sockets or fixture. ── */
+    /* ── Fleet view projection: state derivation, probe planning and tally,
+     * with no sockets or fixture. ── */
 
     TEST("mesh machines: derive state from record, begin, poll, receipt") {
         const char *detail = NULL;
-        /* Expired and revoked durable records are never probed; the begin
-         * and poll arguments must be ignored entirely. */
+        /* Expired and revoked records are never probed; begin and poll
+         * arguments are ignored. */
         ASSERT_EQ(mesh_machine_derive_state("expired", MESH_STATUS_BEGIN_OK,
                                             MESH_STATUS_POLL_OK,
                                             MESH_STATUS_RECEIPT_OK, &detail),
@@ -832,8 +831,7 @@ int test_mesh_status_wire(void)
                       "active", MESH_STATUS_BEGIN_OK, MESH_STATUS_POLL_REFUSED,
                       MESH_STATUS_RECEIPT_SESSION_MISMATCH, &detail),
                   MESH_MACHINE_REFUSED);
-        /* The detail is the hyphenated wire token, ready for
-         * "refused:<token>" composition. */
+        /* The detail is the hyphenated wire token for "refused:<token>". */
         ASSERT_STR_EQ(detail, "session-mismatch");
         ASSERT_EQ(mesh_machine_derive_state(
                       "active", MESH_STATUS_BEGIN_OK,
@@ -853,9 +851,8 @@ int test_mesh_status_wire(void)
                       &detail),
                   MESH_MACHINE_UNKNOWN);
         ASSERT_STR_EQ(detail, "request_lost");
-        /* Upstream receipt-binding: a connected peer without a unique active
-         * delegation is an authority gap, UNKNOWN — never UNREACHABLE, since
-         * the session itself is live. */
+        /* A connected peer without a unique active delegation is an authority
+         * gap: UNKNOWN, never UNREACHABLE (the session is live). */
         ASSERT_EQ(mesh_machine_derive_state(
                       "active", MESH_STATUS_BEGIN_PEER_IDENTITY_UNAVAILABLE,
                       MESH_STATUS_POLL_PENDING, MESH_STATUS_RECEIPT_INTERNAL,
@@ -866,10 +863,10 @@ int test_mesh_status_wire(void)
     }
 
     TEST("mesh machines: fleet burst always fits the status pending table") {
-        /* Upstream admission refuses a still-full pending table instead of
-         * evicting the oldest live request; a fleet cap above the table
-         * bound would self-congest a machines call into BUSY rows. The
-         * compile-time twin of this pin lives in boot_mesh_machines.c. */
+        /* Admission refuses a full pending table instead of evicting the
+         * oldest live request; a fleet cap above the table bound would
+         * self-congest into BUSY rows (compile-time twin in
+         * boot_mesh_machines.c). */
         ASSERT(MESH_MACHINES_FLEET_MAX <= MESH_STATUS_PENDING_MAX);
         PASS();
     }
@@ -889,8 +886,8 @@ int test_mesh_status_wire(void)
         for (size_t i = 0; i < 10; i++)
             ASSERT_EQ(probes[i], i < MESH_MACHINES_FLEET_MAX);
 
-        /* Only active records are ever probed; expired and revoked are
-         * durable truths that need no wire round trip. */
+        /* Only active records are probed; expired and revoked are durable
+         * and need no wire round trip. */
         const char *mixed[5] = {
             "active", "expired", "revoked", "active", "wedged",
         };

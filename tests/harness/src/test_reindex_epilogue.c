@@ -1,11 +1,9 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Unit test for reindex_epilogue_derive — the post-reindex derivation that
- * closes tenacity-roadmap item 3. The load-bearing assertion KILLS the named
- * top defect: a reindex that leaves coins_applied_height stale-HIGH over a
- * freshly-rebuilt coin set manufactures the `coins_applied > hstar` coin-tear
- * shape, which (with the never-give-up unit) degrades into an infinite reindex
- * loop. The epilogue must DERIVE every durable value from the replayed mirror:
+ * Unit test for reindex_epilogue_derive, the post-reindex derivation. A reindex
+ * leaving coins_applied_height stale-HIGH over a rebuilt coin set produces the
+ * `coins_applied > hstar` coin-tear; the epilogue must derive every durable
+ * value from the replayed mirror:
  *   - reseed coins_kv from node.db `utxos` (+ migration stamp);
  *   - recompute + stamp the SHA3 commitment;
  *   - raise coins_applied_height to tip+1 FIRST, then clamp the tip_finalize
@@ -62,13 +60,10 @@ static void re_hash(struct uint256 *out, int h)
     out->data[3] = (uint8_t)((h >> 16) & 0xFF);
 }
 
-/* Install a single synthetic block as the active tip at `tip_h`. The tip is
- * ABOVE the compiled SHA3 finality anchor so the H* hard-floor does not mask
- * the derivation (reducer_frontier clamps H* up to that anchor; below it H*
- * would pin at the floor regardless). The seed gate's linkage walk reads the
- * node.db `blocks` projection, which the fixture leaves empty (pass-with-warn),
- * so no pprev ancestry is needed. install_tip_slot sets the slot + publishes
- * the height WITHOUT a 3M-step pprev fill. */
+/* Install a single synthetic block as the active tip at `tip_h`, above the
+ * compiled SHA3 finality anchor so the H* hard-floor does not mask the
+ * derivation. install_tip_slot sets the slot and publishes the height without
+ * a pprev fill. */
 static bool re_build_chain(struct re_chain *sc, struct main_state *ms, int tip_h)
 {
     re_hash(&sc->hash, tip_h);
@@ -169,10 +164,8 @@ static bool re_shielded_markers_are(sqlite3 *db, int64_t want)
            sprout == want && sapling == want && nf == want;
 }
 
-/* This test exercises the epilogue, not the multi-million-block replay loop.
- * Seed its exact durable completion witness directly after using the real
- * begin/reset API; production advances this key one height per block in the
- * same transaction as anchors/nullifiers. */
+/* Seeds the replay completion witness directly (production advances this key
+ * one height per block in the same transaction as anchors/nullifiers). */
 static bool re_seed_completed_shielded_replay(sqlite3 *db, int64_t target)
 {
     char next[24];
@@ -258,11 +251,8 @@ int test_reindex_epilogue(void)
     RE_CHECK("fixture: reducer log schema complete",
              reducer_frontier_ensure_schema(pdb));
 
-    /* ── PRECONDITION: the pre-reindex TORN state. coins_applied stale-HIGH
-     * ABOVE the rebuilt tip AND above the finality anchor (the tear generator
-     * named in the KNOWN DEFECT — coins_applied > the utxo_apply frontier),
-     * upstream cursors stale trailing-low (the raise-only seed must bring them
-     * up to tip+1). */
+    /* ── PRECONDITION: torn state. coins_applied stale-HIGH above the rebuilt
+     * tip and the finality anchor; upstream cursors stale-low. */
     const int32_t STALE_HIGH = TIP + 1000;
     {
         char *err = NULL;
@@ -279,9 +269,8 @@ int test_reindex_epilogue(void)
     RE_CHECK("precond: stale validate_headers cursor",
              re_set_cursor(pdb, "validate_headers", 3));
 
-    /* GATE-FIRES PROOF (in-test): BEFORE the epilogue, coins_applied is far
-     * above the utxo_apply frontier (which sits at the anchor — no rows above
-     * it) — the exact coins_applied > frontier tear shape the epilogue erases. */
+    /* GATE-FIRES PROOF: before the epilogue, coins_applied is far above the
+     * utxo_apply frontier (the tear shape the epilogue erases). */
     {
         int32_t ca = 0; bool found = false;
         coins_kv_get_applied_height(pdb, &ca, &found);
@@ -293,8 +282,8 @@ int test_reindex_epilogue(void)
     }
 
     /* ── RUN THE EPILOGUE. Force the final NF marker write to fail after the
-     * two anchor rows were updated. The one completion transaction must roll
-     * all three back to positive, then an un-faulted retry may accept. */
+     * two anchor rows updated: the completion transaction must roll all three
+     * back, then an un-faulted retry may accept. */
     RE_CHECK("fixture: completion interruption trigger installs",
              sqlite3_exec(
                  pdb,
@@ -403,10 +392,8 @@ int test_reindex_epilogue(void)
     node_db_close(&ndb);
     test_cleanup_tmpdir(dir);
 
-    /* ── SNAPSHOT IMPORT REGRESSION: a verified snapshot import must derive
-     * the exact same durable authority surface as the full replay path. This
-     * is the fast-rebuild teeth: snapshot import is no longer just a node.db
-     * mirror copy plus a coins_best_block cache write. */
+    /* ── SNAPSHOT IMPORT: a verified snapshot import derives the same durable
+     * authority surface as the full replay path. */
     test_reset_shared_globals();
     blocker_module_init();
     blocker_reset_for_testing();

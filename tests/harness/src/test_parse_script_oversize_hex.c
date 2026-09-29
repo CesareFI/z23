@@ -1,25 +1,11 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Regression test for the parse_script() stack buffer overflow in
- * core/math/src/core_io.c.
+ * Regression test: parse_script() must bound-check a "0x..." token's byte_len
+ * against MAX_SCRIPT_SIZE before ParseHex writes into the stack buffer
+ * `raw[MAX_SCRIPT_SIZE]` (core/math/src/core_io.c).
  *
- * For a "0x..." hex token, parse_script derives byte_len = strlen(token+2)/2
- * from an UNBOUNDED token length, then formerly called
- * ParseHex(token+2, raw, byte_len) into `unsigned char raw[MAX_SCRIPT_SIZE]`
- * (10000) BEFORE checking byte_len against MAX_SCRIPT_SIZE. A token with
- * more than 20000 hex chars made byte_len > 10000, so ParseHex wrote past
- * the end of the stack array `raw` -> stack buffer overflow (under ASan the
- * old code traps here).
- *
- * The fix reorders the bound check ahead of the write:
- *   if (byte_len > MAX_SCRIPT_SIZE || out->size + byte_len > MAX_SCRIPT_SIZE)
- *       { ok = false; break; }
- * so an oversize token cleanly returns false with no overflow.
- *
- * This test feeds a "0x" token of 30000 'a' chars (byte_len = 15000 > 10000)
- * and asserts parse_script returns false and out->size stays within bounds
- * (no overflow / no partial advance). It also asserts a valid short
- * "0xdeadbeef" token still parses to a 4-byte script.
+ * A "0x" token of 30000 'a' chars (byte_len 15000) must return false with
+ * out->size within bounds; a valid "0xdeadbeef" still parses to 4 bytes.
  */
 
 #include "test/test_core.h"
@@ -33,8 +19,7 @@ int test_parse_script_oversize_hex(void)
 {
     int failures = 0;
     TEST_CASE("parse_script rejects oversize 0x hex without overflow") {
-        /* "0x" + 30000 'a' -> hex_len 30000, byte_len 15000 > MAX_SCRIPT_SIZE
-         * (10000). The old code wrote 15000 bytes into raw[10000]. */
+        /* "0x" + 30000 'a' -> byte_len 15000 > MAX_SCRIPT_SIZE (10000). */
         size_t hex_chars = 30000;
         char *big = zcl_malloc(hex_chars + 3, "test_oversize_hex");
         ASSERT(big != NULL);
@@ -47,7 +32,7 @@ int test_parse_script_oversize_hex(void)
         bool ok = parse_script(big, &s);
         free(big);
 
-        /* Fixed code returns false; old code overflowed the stack first. */
+        /* Returns false with no overflow. */
         ASSERT(ok == false);
         /* Output never advanced past the fixed-size script buffer. */
         ASSERT(s.size <= MAX_SCRIPT_SIZE);

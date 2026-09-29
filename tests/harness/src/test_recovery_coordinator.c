@@ -1,11 +1,9 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Proof for the folded recovery_coordinator. Its cheap rungs (cursor
- * warm-restart, bounded range re-derive, segment refetch-by-hash) are no
- * longer dispatched here — the reducer_frontier_reconcile_light and
- * segment_corruption conditions own them at equal/higher cadence (covered by
- * test_reducer_frontier_reconcile_light / test_segment_corruption). The
- * coordinator's sole remaining job is the naming fallback: on an unresolved
+ * Proof for the folded recovery_coordinator. The cheap rungs (cursor warm-restart,
+ * bounded range re-derive, segment refetch-by-hash) belong to the
+ * reducer_frontier_reconcile_light and segment_corruption conditions. The
+ * coordinator's sole job is the naming fallback: on an unresolved
  * CRITICAL that no cheap self-healing condition owns, name a typed blocker so
  * a silent halt is unrepresentable.
  *

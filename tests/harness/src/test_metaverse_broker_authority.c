@@ -1,42 +1,30 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * The broker's REAL authority, end to end: a real temporary datadir, a real
- * content property, the real property catalog, the real property grant store,
- * and a live canonical decision taken on every single request.
+ * The broker's authority end to end: a real temporary datadir, content
+ * property, property catalog and grant store, with a live canonical
+ * decision on every request and no fixture symbol or data on the path.
  *
- * THE CLAIM UNDER TEST is not "a provider exists". It is:
+ * Converse claim: an authority the operator changes while a broker session
+ * is running changes that session's very next answer. A broker that
+ * snapshotted its grant at bind time would pass every positive test and
+ * fail the negatives; t6_stale_snapshot_would_pass() shows the same rules
+ * over a pre-revoke snapshot still say YES.
  *
- *   real datadir -> real content property -> confined INSPECT -> LIVE canonical
- *   grant decision -> real catalog projection -> bounded response, with no
- *   fixture symbol and no fixture data anywhere on the path.
- *
- * and its converse, which is the part that actually protects an operator: an
- * authority the operator changes while a broker session is RUNNING changes that
- * session's very next answer. A broker that snapshotted its grant at bind time
- * would pass every positive test in this file and fail every negative one, so
- * the negatives are the point. t6_stale_snapshot_would_pass() makes that
- * concrete rather than rhetorical: it runs the same rules over a snapshot taken
- * before a revoke and shows they still say YES.
- *
- * Coverage, in the lane's numbering:
- *   T1  a real content property, minted into a real datadir, inspected through
- *       the real catalog under a real canonical grant
+ *   T1  a real content property inspected through the real catalog under
+ *       a real canonical grant
  *   T2  the production path names no fixture symbol and resolves no fixture id
  *   T3  no grant source => fail closed; registration alone grants nothing
  *   T4  revoke while the SAME session runs => the next request is DENIED
  *   T5  the authority clock moves past expiry => the next request is DENIED
  *   T6  why a snapshotting implementation would pass T4/T5 anyway
  *   T10 fork order: no grant and no signing key exist before the child is
- *       spawned, and the mode's source order is spawn -> audit -> bind
+ *       spawned; source order is spawn -> audit -> bind
  *   T11 no datadir or catalog work runs under the grant-store mutex
  *   T12 a mutation refuses by name and mints NO canonical receipt
  *   T13 the authority-generation recheck fires, retries once, then declines
- *   T15 ENUMERATE_PROPERTIES is never served as INSPECT_PROPERTY, whether or
- *       not the request names a property
+ *   T15 ENUMERATE_PROPERTIES is never served as INSPECT_PROPERTY
  *
- * (T7-T9, the idempotency ring, belong to the second pass and are not here.
- * T14 is a pin on tests/harness/src/test_metaverse_vocabulary.c, which this file
- * does not touch.)
+ * T14 is a pin in test_metaverse_vocabulary.c.
  */
 
 #define _GNU_SOURCE
@@ -67,15 +55,13 @@
     else { printf("FAIL\n"); failures++; } \
 } while (0)
 
-/* The principal the canonical grant names. The broker takes the actor from the
- * bound grant, never from the wire, so this is also the only actor any request
- * in this file can be evaluated as. */
+/* The principal the canonical grant names; the broker takes the actor from
+ * the bound grant, never the wire. */
 #define BA_HOLDER "w1d-inspecting-agent"
 
 /* ── the authority clock ─────────────────────────────────────────────────────
- * Expiry is measured against the grant service's clock, not the wire's, so a
- * test can walk past an expiry by moving this instead of sleeping. The offset
- * is what T5 pushes. */
+ * Expiry is measured against the grant service's clock; tests move this
+ * offset instead of sleeping. */
 static int64_t g_now_unix = 1800000000LL;
 static int64_t g_height;
 
@@ -87,9 +73,8 @@ static void ba_clock(int64_t *now_unix, int64_t *height, void *ctx)
 }
 
 /* ── the real property ───────────────────────────────────────────────────────
- * A real blob in a real store under a real /tmp datadir. Its id is the store's
- * OWN manifest root, so nothing in this file mints an identifier of its own and
- * the catalog is answering about bytes that are actually on disk. */
+ * A real blob in a real store under a temporary datadir; its id is the
+ * store's own manifest root. */
 struct ba_fixture {
     char dd[256];
     uint8_t root[32];
@@ -120,8 +105,7 @@ static bool ba_make_property(struct ba_fixture *f, const char *tag)
     return metaverse_property_id_parse(f->id_text, &f->id);
 }
 
-/* One canonical grant over exactly that property. SCOPE_IDS, so the grant
- * authorizes one root and nothing else. */
+/* One canonical grant over exactly that property (SCOPE_IDS). */
 static void ba_grant(struct metaverse_grant *g, const struct ba_fixture *f,
                      metaverse_query_set queries, metaverse_action_set actions)
 {
@@ -148,9 +132,8 @@ static void ba_req(struct mvap_request *r, uint32_t verb,
         memcpy(r->property_id, f->root, MVAP_PROPERTY_ID_LEN);
 }
 
-/* Bind a session to the composed production provider. The reference is a file
- * static because the session BORROWS it and must not outlive it — there is no
- * grant inside the session to hold instead. */
+/* Bind a session to the composed production provider. The reference is a
+ * file static because the session borrows it. */
 static struct agent_authority_ref g_authority;
 
 static bool ba_bind(struct agent_broker_session *s, char *why, size_t why_cap)
@@ -159,9 +142,7 @@ static bool ba_bind(struct agent_broker_session *s, char *why, size_t why_cap)
     return agent_broker_session_bind(s, &g_authority, why, why_cap);
 }
 
-/* Read a tracked source file. Used by the two structural checks below; a file
- * we cannot read is a FAILURE, never a skip — a check that quietly does nothing
- * is worse than no check. */
+/* Read a tracked source file; an unreadable file is a failure, never a skip. */
 static size_t ba_slurp(const char *path, char *out, size_t cap)
 {
     FILE *fp = fopen(path, "re");
@@ -184,9 +165,8 @@ static int t1_real_property_inspect(void)
         return failures;
     }
 
-    /* The catalog answers about it directly — the projection this whole path
-     * is supposed to be reading, asserted here so a later broker answer can be
-     * compared against the authority rather than against itself. */
+    /* The catalog answers about it directly, so a later broker answer can
+     * be compared against the authority. */
     struct metaverse_property_view view;
     struct zcl_result r = property_catalog_show(f.dd, &f.id, &view);
     BA_CHECK("T1: the real catalog reports the blob present",
@@ -216,24 +196,23 @@ static int t1_real_property_inspect(void)
              resp.status == MVAP_OK);
     BA_CHECK("T1: the answer names the catalog's kind, not the agent's claim",
              strstr(resp.body, "\"kind\":\"content\"") != NULL);
-    /* The detail is the real projection's own language: the authority that
-     * answered, and the evidence grade it earned. A fixture cannot produce
-     * this, because no fixture consults vcs.blob_store. */
+    /* The detail is the real projection's language (authority and evidence
+     * grade); no fixture consults vcs.blob_store. */
     BA_CHECK("T1: the answer carries the real authority source",
              strstr(resp.body, "authority=vcs.blob_store") != NULL);
     BA_CHECK("T1: the answer carries the real settlement class",
              strstr(resp.body, "settlement=content_addressed") != NULL);
 
-    /* NO FIXTURE DATA. The fixture ids are SHA3 over a fixed domain tag, so no
-     * authoritative model can mint one; asserting the served root is not one is
-     * asserting the answer came from the store. */
+    /* No fixture data: fixture ids are SHA3 over a fixed domain tag, so the
+    uint8_t fix[MVAP_PROPERTY_ID_LEN];
+     * served root must not be one. */
     uint8_t fix[MVAP_PROPERTY_ID_LEN];
     agent_broker_fixture_property_id(0, fix);
     BA_CHECK("T1: the property served is the store's root, not a fixture id",
              memcmp(fix, f.root, MVAP_PROPERTY_ID_LEN) != 0);
 
-    /* And the same session refuses a property the grant does not name, so the
-     * positive result above is a decision and not a rubber stamp. */
+    /* A property the grant does not name is refused, so the above is a
+     * decision and not a rubber stamp. */
     struct mvap_request other;
     ba_req(&other, MVAP_VERB_INSPECT, NULL, 2);
     memcpy(other.property_id, fix, MVAP_PROPERTY_ID_LEN);
@@ -249,9 +228,8 @@ static int t1_real_property_inspect(void)
 
 /* ── T2 ─────────────────────────────────────────────────────────────────────*/
 
-/* Two independent proofs, because each alone is weak: the source scan proves
- * the production translation units do not NAME the fixture, and the behavioural
- * check proves the composed provider does not ANSWER for fixture data. */
+/* Two proofs: the source scan shows production units do not name the
+ * fixture; the behavioural check shows the provider does not answer for it. */
 static int t2_no_fixture_on_the_production_path(void)
 {
     int failures = 0;
@@ -283,9 +261,8 @@ static int t2_no_fixture_on_the_production_path(void)
         }
     }
 
-    /* Behavioural: the composed production provider, asked about a fixture
-     * property under a grant that covers it, finds nothing — because the real
-     * catalog holds nothing at that root. */
+    /* Behavioural: a fixture property under a covering grant finds nothing
+     * because the real catalog holds nothing at that root. */
     struct ba_fixture f;
     if (!ba_make_property(&f, "t2")) {
         BA_CHECK("T2: the real datadir was created", false);
@@ -293,7 +270,7 @@ static int t2_no_fixture_on_the_production_path(void)
     }
     struct metaverse_grant g;
     ba_grant(&g, &f, METAVERSE_QUERY_INSPECT_PROPERTY, 0);
-    /* Widen to KINDS so the refusal below cannot be the id scope talking. */
+    /* Widen to KINDS so the refusal cannot be the id scope. */
     g.scope_form = METAVERSE_SCOPE_KINDS;
     g.id_count = 0;
     g.kinds = metaverse_kind_bit(METAVERSE_KIND_CONTENT);
@@ -316,8 +293,8 @@ static int t2_no_fixture_on_the_production_path(void)
     BA_CHECK("T2: the production provider resolves NO fixture property",
              resp.status == MVAP_ERR_NOT_FOUND);
 
-    /* The real property under the same grant IS served, so the refusal above
-     * is about the fixture and not about the grant. */
+    /* The real property under the same grant is served, so the refusal
+     * above is about the fixture. */
     struct mvap_request real_req;
     ba_req(&real_req, MVAP_VERB_INSPECT, &f, 2);
     struct mvap_response real_resp;
@@ -344,8 +321,8 @@ static int t3_no_grant_source_fails_closed(void)
     property_grant_service_configure(&(struct property_grant_env){
         .clock = ba_clock });
 
-    /* A grant EXISTS in the store — the point is that the provider will not
-     * reach for it unless the operator named it. */
+    /* A grant exists in the store; the provider does not reach for it
+     * unless the operator named it. */
     struct metaverse_grant g;
     ba_grant(&g, &f, METAVERSE_QUERY_INSPECT_PROPERTY, 0);
     BA_CHECK("T3: a grant exists in the store",
@@ -361,8 +338,8 @@ static int t3_no_grant_source_fails_closed(void)
              strstr(why, "UNGRANTED") != NULL &&
              strstr(agent_broker_provider_last_refusal(), "UNGRANTED") != NULL);
 
-    /* And the ungranted session refuses a request for a REAL property that a
-     * grant in the store would have permitted. */
+    /* The ungranted session refuses a real property a stored grant would
+     * have permitted. */
     struct mvap_request req;
     ba_req(&req, MVAP_VERB_INSPECT, &f, 1);
     struct mvap_response resp;
@@ -371,21 +348,18 @@ static int t3_no_grant_source_fails_closed(void)
              resp.status == MVAP_ERR_DENIED_NO_GRANT);
     BA_CHECK("T3: nothing was dispatched", s.requests_denied == 1);
 
-    /* Two named sources is also a refusal: an operator who wrote both did not
-     * name ONE authority, and picking one for them is guessing. */
+    /* Two named sources is a refusal; picking one would be guessing. */
     agent_broker_provider_compose_explicit(f.dd, g.grant_id, "/tmp/does-not-exist");
     BA_CHECK("T3: naming both a grant id and a grant spec is refused",
              !ba_bind(&s, why, sizeof(why)));
 
-    /* A named grant id that the store does not hold fails closed too — the
-     * store is ephemeral, and "the store forgot" must not become "allow". */
+    /* A named grant id the store does not hold fails closed. */
     agent_broker_provider_compose_explicit(f.dd, "0123456789abcdef0123456789abcdef",
                                            NULL);
     BA_CHECK("T3: an unknown grant id binds nothing",
              !ba_bind(&s, why, sizeof(why)));
 
-    /* No datadir is a refusal rather than a guess, because the guess would be
-     * the operator's live node. */
+    /* No datadir is a refusal rather than a guess at the live node. */
     agent_broker_provider_compose_explicit(NULL, g.grant_id, NULL);
     BA_CHECK("T3: no datadir is refused rather than guessed",
              !ba_bind(&s, why, sizeof(why)) && strstr(why, "datadir") != NULL);
@@ -397,17 +371,11 @@ static int t3_no_grant_source_fails_closed(void)
 
 /* ── T4 / T5 / T6 ───────────────────────────────────────────────────────────*/
 
-/* T4. Revoke the LIVE grant while this very session object keeps running.
+/* T4. Revoke the LIVE grant while this session object keeps running.
  *
- * WHY A SNAPSHOTTING IMPLEMENTATION FAILS THIS (T6): if the session held
- * `struct agent_grant grant` by value — as it did before this lane — the copy
- * was taken once at bind and every authorize read that copy. The revoke below
- * changes the store and changes nothing about the copy, so request #2 would be
- * authorized by a grant the operator had already revoked, for as long as the
- * agent stayed connected. Revocation would be a property of NEW sessions only.
- * The session now holds `const struct agent_authority_ref *`, which carries an
- * id and a refuse-only narrowing and no rights at all, so there is nothing left
- * in it that could answer. */
+ * A snapshotting session (T6) would keep authorizing from its bind-time
+ * copy. The session instead holds `const struct agent_authority_ref *`,
+ * an id plus refuse-only narrowing and no rights. */
 static int t4_revoke_lands_on_a_running_session(void)
 {
     int failures = 0;
@@ -446,10 +414,8 @@ static int t4_revoke_lands_on_a_running_session(void)
     BA_CHECK("T4: the refusal happened at authorize, before any catalog work",
              strstr(resp.body, "\"stage\":\"authorize\"") != NULL);
 
-    /* T6, executable: the pure rules over a snapshot taken BEFORE the revoke
-     * still say OK. The rules did not change; what changed is that the decision
-     * path re-reads the store instead of a copy. This is exactly the answer a
-     * snapshotting broker would have given above. */
+    /* T6: the pure rules over a pre-revoke snapshot still say OK; what
+     * differs is that the decision path re-reads the store. */
     struct property_grant_authority_snapshot stale;
     memset(&stale, 0, sizeof(stale));
     stale.grant = g;                       /* the record as it was at bind */
@@ -464,8 +430,7 @@ static int t4_revoke_lands_on_a_running_session(void)
              "is what a snapshotting broker would have answered",
              metaverse_grant_query_check(&stale.grant, NULL, 0, &q) ==
                  METAVERSE_GRANT_OK);
-    /* And over the CURRENT record they refuse, so the difference is the read,
-     * not the ruleset. */
+    /* Over the CURRENT record they refuse, so the difference is the read. */
     struct metaverse_grant now;
     BA_CHECK("T6: the same rules over the CURRENT record refuse",
              property_grant_service_get(g.grant_id, &now) ==
@@ -478,16 +443,9 @@ static int t4_revoke_lands_on_a_running_session(void)
     return failures;
 }
 
-/* T5. Expiry, on the authority's own clock.
- *
- * WHY A SNAPSHOTTING IMPLEMENTATION FAILS THIS (T6): expiry is evaluated
- * against `now` at decision time, so a session that kept a copy would still be
- * evaluating the copy's `expires_unix` — which it would pass, since the copy is
- * fine; what it would miss is that the decision must be taken against the
- * authority's clock reading NOW. The provider takes both the record and the
- * clock from the same snapshot, on every call, so an expiry that fell one
- * microsecond ago is seen by the next request of a session that is already
- * running. */
+/* T5. Expiry, on the authority's own clock: the provider takes the record
+ * and the clock from the same snapshot on every call, so an expiry that
+ * just passed is seen by the next request of a running session. */
 static int t5_expiry_lands_on_a_running_session(void)
 {
     int failures = 0;
@@ -544,8 +502,8 @@ static int t10_fork_order(void)
     property_grant_service_configure(&(struct property_grant_env){
         .clock = ba_clock });
 
-    /* Write a grant SPECIFICATION — the composition input that carries the most
-     * authority-shaped material. Composing it must still mint nothing. */
+    /* A grant SPECIFICATION carries the most authority-shaped material;
+     * composing it must still mint nothing. */
     char spec[512];
     snprintf(spec, sizeof(spec), "%s/grant.json", f.dd);
     FILE *fp = fopen(spec, "we");
@@ -561,8 +519,7 @@ static int t10_fork_order(void)
 
     agent_broker_provider_compose_explicit(f.dd, NULL, spec);
 
-    /* BEFORE the fork — which is where composition runs — the process holds no
-     * grant and no receipt signing key. */
+    /* Before the fork the process holds no grant and no receipt signing key. */
     struct metaverse_grant listed[4];
     uint8_t pk[METAVERSE_PUBKEY_LEN];
     BA_CHECK("T10: composition mints NO grant",
@@ -570,7 +527,7 @@ static int t10_fork_order(void)
     BA_CHECK("T10: composition establishes NO receipt signing key",
              !property_grant_service_signer_pubkey(pk));
 
-    /* Binding is what the broker does AFTER the fork, and it is what mints. */
+    /* Binding happens after the fork, and it is what mints. */
     struct agent_broker_session s;
     char why[192];
     BA_CHECK("T10: bind mints the grant the specification described",
@@ -585,9 +542,8 @@ static int t10_fork_order(void)
     BA_CHECK("T10: the minted grant really authorizes the real property",
              resp.status == MVAP_OK);
 
-    /* The ordering itself, read out of the mode that performs it: spawn the
-     * confined child, then open the audit log, then bind the authority. A trace
-     * rather than a comment, so re-ordering the calls fails here. */
+    /* The order, read out of the mode's source: spawn the confined child,
+     * open the audit log, bind the authority. */
     static char buf[512 * 1024];
     size_t n = ba_slurp("cognition/modules/session/src/agent_broker_modes.c", buf,
                         sizeof(buf));
@@ -608,9 +564,8 @@ static int t10_fork_order(void)
 
 /* ── T11 / T13 ──────────────────────────────────────────────────────────────*/
 
-/* The catalog probe. It answers like a catalog and records two things: whether
- * the grant-store mutex was held while it ran (T11), and how many times it was
- * called (T13). */
+/* The catalog probe: records whether the grant-store mutex was held while
+ * it ran (T11) and how many times it was called (T13). */
 struct ba_probe {
     int calls;
     int lock_held_calls;
@@ -627,12 +582,9 @@ static bool ba_lookup(const struct metaverse_property_id *id,
     if (property_grant_service_test_store_lock_busy())
         p->lock_held_calls++;
 
-    /* DELIBERATE PERTURBATION, and it is legal precisely because of what T11
-     * asserts one line above: the store mutex is NOT held while this callback
-     * runs, so mutating the store from here cannot re-enter it. Minting a decoy
-     * grant moves the store-wide authority generation without touching the
-     * grant under decision, which is the cleanest way to make a decision go
-     * stale mid-flight. */
+    /* Deliberate perturbation, legal because the store mutex is not held
+     * here (T11): minting a decoy grant moves the store-wide authority
+     * generation without touching the grant under decision. */
     if (p->perturb_calls > 0) {
         p->perturb_calls--;
         struct metaverse_grant decoy;
@@ -737,8 +689,8 @@ static int t13_authority_generation_recheck(void)
              property_grant_service_recheck(&snap) ==
                  PROPERTY_GRANT_AUTHORITY_CHANGED);
 
-    /* (b) ONE retry: perturb exactly once, from inside the catalog callback, so
-     *     the first attempt's recheck fails and the second succeeds. */
+    /* (b) ONE retry: perturb once from the catalog callback, so the first
+     *     recheck fails and the second succeeds. */
     struct ba_probe probe;
     memset(&probe, 0, sizeof(probe));
     snprintf(probe.controller, sizeof(probe.controller), "%s", BA_HOLDER);
@@ -760,8 +712,7 @@ static int t13_authority_generation_recheck(void)
                  PROPERTY_GRANT_OK);
     BA_CHECK("T13: it really did run twice", probe.calls == 2);
 
-    /* (c) Perturbed EVERY time, the service declines rather than answering
-     *     over a state nobody can show still exists. */
+    /* (c) Perturbed EVERY time, the service declines. */
     probe.calls = 0;
     probe.perturb_calls = 16;
     BA_CHECK("T13: a decision disturbed every time returns AUTHORITY_CHANGED",
@@ -779,11 +730,10 @@ static int t13_authority_generation_recheck(void)
 
 /* ── T12 ────────────────────────────────────────────────────────────────────*/
 
-/* Nothing in this tree EXECUTES a property mutation: the grant service
- * authorizes, debits a budget and seals a receipt, and hosts, transfers and
- * pays nothing. The only honest answer to HOST is therefore a refusal that says
- * so — and, critically, no canonical receipt, because a receipt is evidence
- * that something happened. */
+/* Nothing here executes a property mutation: the grant service authorizes,
+ * debits a budget and seals a receipt only. HOST is therefore refused by
+ * name, with no canonical receipt (a receipt is evidence something
+ * happened). */
 static int t12_mutation_refuses_and_mints_nothing(void)
 {
     int failures = 0;
@@ -793,9 +743,8 @@ static int t12_mutation_refuses_and_mints_nothing(void)
         return failures;
     }
     struct metaverse_grant g;
-    /* The grant DOES hold HOST, so the refusal below cannot be the grant
-     * talking — it is the executor that is missing, and the two must not be
-     * reported with the same word. */
+    /* The grant holds HOST, so the refusal is the missing executor, not
+     * the grant. */
     ba_grant(&g, &f, METAVERSE_QUERY_INSPECT_PROPERTY,
              metaverse_action_bit(METAVERSE_ACTION_HOST));
     property_grant_service_reset();
@@ -822,9 +771,8 @@ static int t12_mutation_refuses_and_mints_nothing(void)
     BA_CHECK("T12: the refusal is not confused with a missing right",
              resp.status != MVAP_ERR_DENIED_ACTION);
 
-    /* NO EVIDENCE WAS MINTED. Neither a canonical action receipt nor a broker
-     * confinement receipt id: the response carries an all-zero receipt id and
-     * the grant's canonical chain is empty. */
+    /* No evidence minted: an all-zero receipt id and an empty canonical
+     * chain. */
     struct metaverse_receipt receipts[4];
     BA_CHECK("T12: no canonical action receipt exists for the grant",
              property_grant_service_receipts(g.grant_id, receipts, 4) == 0);
@@ -833,16 +781,14 @@ static int t12_mutation_refuses_and_mints_nothing(void)
     BA_CHECK("T12: the response carries no receipt id",
              memcmp(resp.receipt_id, zero, sizeof(zero)) == 0);
 
-    /* The grant's budget was not touched either — a refusal that charged for
-     * the thing it refused would be its own kind of lie. */
+    /* The grant's budget was not touched either. */
     struct metaverse_grant after;
     BA_CHECK("T12: nothing was charged to the grant",
              property_grant_service_get(g.grant_id, &after) ==
                      PROPERTY_GRANT_OK &&
              after.spent_zat == 0);
 
-    /* A query under the same session still works, so the refusal is scoped to
-     * mutations and is not the seam falling over. */
+    /* A query under the same session still works. */
     struct mvap_request q;
     struct mvap_response qresp;
     ba_req(&q, MVAP_VERB_INSPECT, &f, 2);
@@ -856,31 +802,18 @@ static int t12_mutation_refuses_and_mints_nothing(void)
 
 /* ── T15 ────────────────────────────────────────────────────────────────────*/
 
-/* ENUMERATION IS NOT INSPECTION, AND THE PROPERTY ID DOES NOT DECIDE WHICH IS
- * WHICH.
+/* Enumeration is not inspection, and the property id does not decide which
+ * is which.
  *
- * The two reads used to arrive at the provider as the same value: the join
- * table gave both query verbs the reserved INSPECT action bit, so by the time
- * anything downstream looked, INSPECT_PROPERTY and ENUMERATE_PROPERTIES were
- * indistinguishable. The refusal that was supposed to name enumeration
- * unavailable therefore keyed on the only thing left — an absent property id —
- * and an ENUMERATE that named a real property walked past it and was answered
- * with that property's inspection.
- *
- * So the proof is a 2x2 and not one case: {INSPECT, ENUMERATE} x {no id, a
- * real id}. Three of the four corners were already right; the fourth is the
- * defect, and a test that only covered the corner that worked is how it
- * survived. The grant below is KINDS-scoped and carries BOTH reads, so nothing
- * here can be refused for scope or for a missing right — the only thing left
- * that can refuse is which query was asked. */
+ * The proof is a 2x2: {INSPECT, ENUMERATE} x {no id, a real id}. The
+ * grant is KINDS-scoped and carries BOTH reads, so only which query was
+ * asked can refuse. */
 static int t15_enumeration_is_never_served_as_inspection(void)
 {
     int failures = 0;
 
-    /* First, the vocabulary itself: the two reads must be two values, and
-     * neither may present an action bit to anyone. A join that answers "what
-     * action is this read" at all is a join that can answer it the same way
-     * twice, which is the whole defect one level down. */
+    /* The vocabulary: the two reads are two values and neither presents
+     * an action bit. */
     enum metaverse_query qi = METAVERSE_QUERY_NONE, ql = METAVERSE_QUERY_NONE;
     BA_CHECK("T15: INSPECT names the canonical INSPECT_PROPERTY",
              mvap_verb_to_query(MVAP_VERB_INSPECT, &qi) &&
@@ -899,8 +832,7 @@ static int t15_enumeration_is_never_served_as_inspection(void)
                  (enum metaverse_action)METAVERSE_ACTION_RESERVED_INSPECT) ==
                  MVAP_VERB_NONE);
 
-    /* And no row anywhere carries the reserved bit as its action, so there is
-     * no verb at all whose dispatch could still depend on it. */
+    /* No row carries the reserved bit as its action. */
     bool reserved_bit_is_on_no_row = true;
     for (uint32_t w = 1; w < (uint32_t)MVAP_VERB__COUNT; w++) {
         enum metaverse_action a;
@@ -911,8 +843,7 @@ static int t15_enumeration_is_never_served_as_inspection(void)
     BA_CHECK("T15: no wire verb dispatches on the reserved INSPECT bit",
              reserved_bit_is_on_no_row);
 
-    /* The decode step keeps them apart too: two verbs in, two canonical
-     * queries out, over identical requests. */
+    /* Decode keeps them apart: two verbs in, two canonical queries out. */
     struct mvap_request probe_i, probe_l;
     memset(&probe_i, 0, sizeof(probe_i));
     probe_i.verb = MVAP_VERB_INSPECT;
@@ -986,10 +917,8 @@ static int t15_enumeration_is_never_served_as_inspection(void)
         BA_CHECK(label, resp.status == corners[i].want);
     }
 
-    /* The corner that was broken, said the other way round: the enumeration
-     * naming a real property must not come back carrying THAT PROPERTY'S
-     * inspection answer. Before the split it came back with exactly that —
-     * MVAP_OK, the catalog's kind, and the blob store's authority line. */
+    /* An enumeration naming a real property must not come back carrying
+     * that property's inspection answer. */
     struct mvap_request enumerate_named;
     ba_req(&enumerate_named, MVAP_VERB_LIST, &f, 160);
     struct mvap_response eresp;
@@ -1000,9 +929,8 @@ static int t15_enumeration_is_never_served_as_inspection(void)
     BA_CHECK("T15: and it names the refusal that actually applies",
              strstr(eresp.body, "QUERY_UNAVAILABLE") != NULL);
 
-    /* The same session still serves the inspection of that very property, so
-     * the refusals above are about which query was asked and not about the
-     * session, the grant, or the property having become unreachable. */
+    /* The same session still serves that property's inspection, so the
+     * refusals above are about which query was asked. */
     struct mvap_request inspect_named;
     ba_req(&inspect_named, MVAP_VERB_INSPECT, &f, 161);
     struct mvap_response iresp;

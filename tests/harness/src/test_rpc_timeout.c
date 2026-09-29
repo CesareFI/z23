@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Tests for the HTTP RPC request timeout watchdog (wave 6 #1).
+ * Tests for the HTTP RPC request timeout watchdog.
  *
  * These exercise the module synchronously via `rpc_timeout_sweep()`
  * with a controlled `now_us` argument so we never sleep in the test

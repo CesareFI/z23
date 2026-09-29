@@ -1,26 +1,13 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * test_mint_anchor_fresh_datadir — the COMPOSITION test: a fresh datadir
- * driven through the
- * REAL -mint-anchor path (preflight -> reducer drive) must ALWAYS end in a
- * named terminal state, never a silent timeout/stall/FATAL-cascade. Each
- * scenario below wraps the drive in a wall-clock budget and asserts BOTH (1)
- * the budget was not exceeded and (2) the outcome is one of the states the
- * design allows for that scenario. A timeout is scored as a FAILURE, not a
- * skip — that is the whole point: this test catches a mint-fold livelock
- * (a silent multi-hour grind with zero progress-log output) because scenario
- * (b) below bounds the SAME walled-frontier shape to <30s wall clock.
+ * test_mint_anchor_fresh_datadir — a fresh datadir driven through the real
+ * -mint-anchor path (preflight -> reducer drive) must always end in a named
+ * terminal state, never a silent timeout/stall/FATAL-cascade. Each scenario
+ * wraps the drive in a wall-clock budget and asserts the budget held and the
+ * outcome is an allowed state; a timeout is a FAILURE, not a skip.
  *
- * Reuses fixtures rather than inventing new synthesis, per plan:
- *   - engine/composition/src/boot_mint_anchor_preflight.c's boot_mint_anchor_preflight_run_all
- *     (unit-style direct call — no forked binary) for scenario (a), same
- *     pattern as test_mint_anchor_preflight.c's fresh-datadir case.
- *   - the header-only synthetic-chain + reducer_kick_unbudgeted +
- *     boot_mint_anchor_report_frontier_walled harness from
- *     test_mint_fold_livelock (test_reducer_step_drain_harness.c scenario A)
- *     for scenario (b).
- *   - the single-mined-block healthy-fold harness from test_mint_fold_livelock
- *     scenario B for scenario (c).
+ * Reuses fixtures from test_mint_anchor_preflight.c (scenario a) and
+ * test_mint_fold_livelock / test_reducer_step_drain_harness.c (b, c).
  *
  * Scenarios:
  *   (a) COMPLETELY fresh empty datadir: boot_mint_anchor_preflight_run_all
@@ -143,9 +130,7 @@ static int test_mfd_scenario_a_fresh_empty_preflight_refuses(void)
     test_fmt_tmpdir(dir, sizeof(dir), "mint_anchor_fresh_datadir", "a_empty");
     mfd_mkdir_p(dir);
 
-    /* Hermetic: the bodies check falls back to the legacy zclassicd source
-     * ($HOME/.zclassic/blocks), which exists on a dev box — point it at an
-     * empty dir so "fresh" means fresh everywhere. */
+    /* Hermetic: point the legacy zclassicd bodies source at an empty dir. */
     char empty_legacy[300];
     snprintf(empty_legacy, sizeof(empty_legacy), "%s/empty-legacy", dir);
     mfd_mkdir_p(empty_legacy);
@@ -190,7 +175,7 @@ static int test_mfd_scenario_a_fresh_empty_preflight_refuses(void)
     return failures;
 }
 
-/* ── shared stage-harness plumbing (lifted from test_mint_fold_livelock /
+/* ── shared stage-harness plumbing (from test_mint_fold_livelock /
  * test_reducer_step_drain_harness.c) ─────────────────────────────────────── */
 
 static bool mfd_seed_genesis_utxo_apply_row(sqlite3 *db)
@@ -218,13 +203,12 @@ static bool mfd_stub_pass_validator(const struct block_index *bi,
 }
 
 /* ── Scenario (b): synthetic imported datadir, headers-only, NO bodies ───
- * header_admit / validate_headers
- * can march the whole backlog while body_fetch is walled at h=0. A bounded
- * number of reducer_kick_unbudgeted calls must converge (frontier stops
- * moving) inside the wall-clock budget, then the drive loop's fail-closed
- * reporter must register the typed PERMANENT blocker naming the wall. */
+ * A bounded number of reducer_kick_unbudgeted calls must converge (frontier
+ * stops moving) inside the wall-clock budget, then the drive loop's
+ * fail-closed reporter must register the typed PERMANENT blocker naming the
+ * wall. */
 
-#define MFD_B_BUDGET_US   (30ll * 1000 * 1000)  /* 30s: the incident ran HOURS */
+#define MFD_B_BUDGET_US   (30ll * 1000 * 1000) /* 30s */
 #define MFD_B_MAX_KICKS   8
 
 static int test_mfd_scenario_b_headers_no_bodies_walls_frontier(void)
@@ -292,11 +276,9 @@ static int test_mfd_scenario_b_headers_no_bodies_walls_frontier(void)
     struct chain_activation_controller ctl;
     activation_controller_init(&ctl, &ms, NULL, cp, netdir);
 
-    /* Drive a BOUNDED number of kicks — exactly what boot_mint_anchor's real
-     * drive loop does between its own stall-detector checks — and time the
-     * WHOLE loop. The regression this guards: before the fix, a single kick
-     * could grind the entire upstream backlog (hours) with zero progress
-     * output; here the frontier must stop moving well inside the budget. */
+    /* Drive a bounded number of kicks, as the real drive loop does between
+     * stall checks, and time the whole loop: the frontier must stop moving
+     * well inside the budget. */
     uint64_t ua_before = utxo_apply_stage_cursor();
     uint64_t ua_prev = ua_before;
     int kicks_run = 0;
@@ -332,8 +314,8 @@ static int test_mfd_scenario_b_headers_no_bodies_walls_frontier(void)
               frontier_converged && kicks_run <= MFD_B_MAX_KICKS);
     MFD_CHECK("(b) utxo_apply frontier did NOT reach the ceiling (walled)",
               ua_after == ua_before);
-    /* THE incident signal: header_admit must NOT have ground the entire N-
-     * header backlog inside the bounded drive — nowhere near N. */
+    /* header_admit must not have ground the whole N-header backlog inside
+     * the bounded drive. */
     MFD_CHECK("(b) upstream backlog NOT ground (ha_after well under N)",
               ha_after < (uint64_t)N);
     if (ha_after >= (uint64_t)N)
@@ -446,10 +428,8 @@ static bool mfd_build_regtest_block(struct block *blk, int height,
 }
 
 /* ── Scenario (c): synthetic datadir with headers+ONE body, tiny ceiling ──
- * The healthy-fold path: mirrors test_mint_fold_livelock scenario B. Proves
- * the frontier-stall break added for scenario (b) does NOT false-fire and
- * truncate a datadir that actually has everything it needs — the fold must
- * reach the (tiny) ceiling and CONVERGE with no blocker registered. */
+ * The healthy fold reaches the ceiling and converges with no blocker
+ * registered (the scenario-(b) stall break must not false-fire). */
 
 #define MFD_C_BUDGET_US (15ll * 1000 * 1000)  /* 15s: one Equihash-mined block */
 
@@ -544,10 +524,8 @@ static int test_mfd_scenario_c_headers_and_bodies_reaches_ceiling(void)
         }
         MFD_CHECK("(c) body persisted (this datadir HAS its bodies)", persisted);
 
-        /* The real -mint-anchor drive: ceiling at h=1, drive via the SAME
-         * reducer_kick_unbudgeted used in scenario (b). This datadir has
-         * everything the fold needs, so it must reach the ceiling — the
-         * scenario-(b) frontier-stall break must NOT truncate it. */
+        /* The real -mint-anchor drive: ceiling at h=1, driven by the same
+         * reducer_kick_unbudgeted as scenario (b); it must reach the ceiling. */
         mint_fold_ceiling_set(1);
         struct chain_activation_controller ctl;
         activation_controller_init(&ctl, &ms, NULL, cp, netdir);

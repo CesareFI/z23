@@ -99,10 +99,7 @@ int test_peer_eviction(void)
                  idx == 3);
     }
     {
-        /* n=3 -> quartile=0 (no longevity protection at all): confirms
-         * the "evict newest" rule still never picks the oldest candidate
-         * when a newer unprotected one is available, independent of
-         * quartile protection kicking in. */
+        /* n=3 -> quartile=0: the newest-evicted rule never picks the oldest when a newer unprotected candidate exists. */
         struct peer_eviction_candidate c[3] = {
             { .connected_time = NOW - 1000 },
             { .connected_time = NOW - 300 },
@@ -158,10 +155,8 @@ int test_peer_eviction(void)
                  peer_eviction_select(c, 2, NOW) == -1);
     }
 
-    /* whitelisted peer is skipped even when the only other candidate
-     * would otherwise be protected by relay activity, proving the two
-     * exclusions (outbound/whitelisted) are independent of the
-     * protection classes. */
+    /* A whitelisted peer is skipped even when the only other candidate is
+     * relay-protected: the two exclusions are independent of protection classes. */
     {
         struct peer_eviction_candidate c[2] = {
             { .whitelisted = true, .connected_time = NOW - 5 },

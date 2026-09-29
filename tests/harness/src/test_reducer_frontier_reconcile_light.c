@@ -290,8 +290,8 @@ static bool put_proof_status(sqlite3 *db, int height, int ok_flag,
     return ok;
 }
 
-/* An ok=1/status='verified' proof or script verdict row with a NULL block_hash
- * — the pre-stamping label_splice residue the re-bind arm targets. */
+/* An ok=1/status='verified' proof or script verdict row with a NULL block_hash:
+ * the pre-stamping label_splice residue the re-bind arm targets. */
 static bool put_verdict_null_hash(sqlite3 *db, const char *table, int height)
 {
     char sql[128];
@@ -492,12 +492,11 @@ static bool seed_coins_applied(sqlite3 *db, int64_t height)
     sqlite3_finalize(st);
     if (!ok) return false;
     /* Stamp full coins_kv proven-authority so compute_hstar treats the baked
-     * TRUSTED_ANCHOR as a REAL finality floor (these reconcile fixtures model a
-     * seeded datadir whose H* clamps at the anchor and whose coins lead it).
-     * compute_hstar's phantom-anchor guard otherwise drops the floor to 0 when
-     * the store is not proven authority — correct for a fresh datadir, wrong
-     * here. Needs all three rungs: applied_height above, the migration stamp,
-     * and a non-empty `coins` table. */
+     * TRUSTED_ANCHOR as a REAL finality floor (these fixtures model a seeded
+     * datadir whose H* clamps at the anchor and whose coins lead it). Its
+     * phantom-anchor guard otherwise drops the floor to 0 when the store is
+     * not proven authority. Needs all three rungs: applied_height above, the
+     * migration stamp, and a non-empty `coins` table. */
     char *err = NULL;
     if (sqlite3_exec(db,
             "CREATE TABLE IF NOT EXISTS coins(k BLOB PRIMARY KEY, v BLOB);"
@@ -613,8 +612,8 @@ static bool setup_fixture(struct rfrl_fixture *fx, const char *tag)
     if (!progress_store_open(fx->dir))
         return false;
     /* progress.kv is closed+reopened per fixture; drop the dry-run detect memo
-     * so a reused db pointer + reset total_changes cannot wrongly hit a prior
-     * fixture's cached result (production never reopens, so this is test-only). */
+     * so a reused db pointer + reset total_changes cannot hit a prior
+     * fixture's cached result (test-only; production never reopens). */
     stage_reducer_frontier_reset_detect_memo_for_testing();
     if (!seed_schema(progress_store_db()))
         return false;
@@ -678,9 +677,9 @@ static const struct json_value *rfrl_json_condition(
     return NULL;
 }
 
-/* Cross-thread lock probe: acquires + releases the progress lock from a
- * second thread. A refusal path that leaks the (recursive) lock is invisible
- * to the calling thread; the probe's join hangs the test binary instead. */
+/* Cross-thread lock probe: acquires + releases the progress lock from a second
+ * thread. A refusal path that leaks the (recursive) lock is invisible to the
+ * calling thread; the probe's join hangs the test binary instead. */
 static void *progress_lock_probe(void *arg)
 {
     progress_store_tx_lock();
@@ -705,20 +704,16 @@ static void *active_chain_lock_probe(void *arg)
 }
 
 /* ── Lock-order probe: cs_main OUTER, progress_store_tx_lock INNER ─────────
- * active_chain_height() / active_chain_tip() acquire progress_store_tx_lock
- * internally, and roughly two dozen call sites reach them while holding
- * main_state.cs_main (sync_monitor.c, sticky_escalator_trigger.c,
- * body_backfill_service.c, gap_fill_service.c, accept_to_mempool.c, several
- * self-heal Conditions). reconcile_block_index_flags is the ONLY place in the
- * tree that needs both locks, so if it takes progress_store_tx_lock first it
- * closes an ABBA cycle and the whole progress store is lost for the lifetime
- * of the process — which is what wedges a boot inside
- * script_validate_stage_init.
+ * active_chain_height() / active_chain_tip() take progress_store_tx_lock
+ * internally, and about two dozen call sites reach them while holding
+ * main_state.cs_main. reconcile_block_index_flags is the only place needing
+ * both locks; taking progress_store_tx_lock first would close an ABBA cycle
+ * and lose the progress store for the life of the process.
  *
  * The probe holds cs_main from a second thread and runs the REAL reconcile in
- * a third. Whatever else it does, the reconcile must reach its cs_main wait
- * WITHOUT owning the global progress-store transaction lock. Under the
- * inverted order the trylock below can never succeed. */
+ * a third. The reconcile must reach its cs_main wait WITHOUT owning the global
+ * progress-store transaction lock; under the inverted order the trylock below
+ * never succeeds. */
 struct rfrl_order_probe {
     sqlite3 *db;
     struct main_state *ms;
@@ -752,12 +747,12 @@ static void *rfrl_csmain_holder(void *arg)
     return NULL;
 }
 
-/* The OTHER direction, and the one the cs_main-holder probe above is blind
- * to. The reducer drive owns progress_store_tx_lock for the whole of
- * STAGE_DRAIN_IMPL and takes cs_main inside it (body_fetch's step), so the
- * live steady-state nesting is progress OUTER -> cs_main INNER. A reconcile
- * that BLOCKS on the progress store while holding cs_main is the other half
- * of that cycle. This holder stands in for a drain in flight. */
+/* The OTHER direction, which the cs_main-holder probe above cannot see. The
+ * reducer drive owns progress_store_tx_lock for all of STAGE_DRAIN_IMPL and
+ * takes cs_main inside it (body_fetch's step), so the steady-state nesting is
+ * progress OUTER -> cs_main INNER. A reconcile that BLOCKS on the progress
+ * store while holding cs_main is the other half of that cycle. This holder
+ * stands in for a drain in flight. */
 static bool g_order_progress_held;
 
 static void *rfrl_progress_holder(void *arg)
@@ -785,11 +780,10 @@ static void *rfrl_reconcile_worker(void *arg)
 }
 
 /* Enters reconcile_block_index_flags directly. The public entry point takes
- * and releases the progress store in read_frontier_snapshot() BEFORE it ever
- * reaches the section that holds both locks, so a test that contends the
- * progress store just parks the worker in that safe prologue and never
- * exercises the ordering at all — it passes with a blocking acquire as
- * happily as with a trylock. This worker skips the prologue. */
+ * and releases the progress store in read_frontier_snapshot() BEFORE reaching
+ * the both-locks section, so a test contending the progress store would park
+ * in that safe prologue and pass with a blocking acquire as happily as with a
+ * trylock. This worker skips the prologue. */
 static void *rfrl_flags_worker(void *arg)
 {
     struct rfrl_order_probe *p = arg;
@@ -825,8 +819,7 @@ int test_reducer_frontier_reconcile_light(void)
 
     {
         /* Mirror reducer_frontier_reconcile_light_impl's init for the
-         * -1-sentinel refill-hole fields the classifiers read: a plain
-         * memset(0) reads as a refill hole at height 0. */
+         * -1-sentinel refill-hole fields (memset(0) reads as a hole at 0). */
         struct stage_reducer_frontier_reconcile_result zero;
         memset(&zero, 0, sizeof(zero));
         zero.lowest_validate_headers_refill_hole = -1;
@@ -908,9 +901,8 @@ int test_reducer_frontier_reconcile_light(void)
                    dry.body_fetch_cursor_after == A + 2 &&
                    dry.clamped_body_fetch &&
                    !dry.clamped_body_persist &&
-                   /* OWN-frame (task #31): clamp band [hstar, hstar+1]
-                    * capped at coins_applied = min(A+2, A+2) = A+2 —
-                    * the served-tip ceiling the step itself rests at. */
+                   /* OWN-frame: clamp band [hstar, hstar+1] capped at
+                    * coins_applied = A+2, the ceiling the step rests at. */
                    dry.tip_finalize_cursor_after == A + 2);
         RFRL_CHECK("dry-run does not mutate",
                    fx.idx[2]->nStatus == before2 &&
@@ -1019,9 +1011,8 @@ int test_reducer_frontier_reconcile_light(void)
                    cursor_value(db, "validate_headers") == A + 2 &&
                    cursor_value(db, "body_fetch") == A + 2 &&
                    cursor_value(db, "body_persist") == A + 2 &&
-                   /* tip_finalize is OWN-frame: served tip = A+2, backed by
-                    * the intact transition row at A+1 and coins applied
-                    * through A+1 (coins_applied A+2, NEXT-frame). */
+                   /* tip_finalize is OWN-frame: served tip = A+2, backed by the
+                    * transition row at A+1 and coins applied through A+1. */
                    cursor_value(db, "tip_finalize") == A + 2);
 
         teardown_fixture(&fx);
@@ -1045,14 +1036,12 @@ int test_reducer_frontier_reconcile_light(void)
         RFRL_CHECK("validate-hash-split: apply succeeds",
                    stage_reducer_frontier_reconcile_light(
                        db, &fx.ms, &rr));
-        /* New coin-tear semantics: a stale validate hash with utxo_apply SOLID
-         * is NOT a coin tear (coins track utxo_apply's own log, not the
-         * hash-split-pinned H*). The split still caps H* and must be healed,
-         * but now via the downstream refill rather than the dead tear-gated
-         * pre-refusal clamp — it re-walks validate_headers AND its dependent
-         * cursors (body_fetch, tip_finalize) back to the split height A+2 to
-         * re-derive the column; body_persist already holds its rows so it is
-         * not clamped. No coin-tear refusal is involved. */
+        /* A stale validate hash with utxo_apply SOLID is NOT a coin tear (coins
+         * track utxo_apply's own log, not the hash-split-pinned H*). The split
+         * still caps H* and is healed via the downstream refill: it re-walks
+         * validate_headers AND its dependent cursors (body_fetch, tip_finalize)
+         * back to the split height A+2; body_persist already holds its rows so
+         * it is not clamped. */
         RFRL_CHECK("validate-hash-split: downstream refill heals the split",
                    rr.repaired &&
                    !rr.refused_coin_tear &&
@@ -1101,16 +1090,12 @@ int test_reducer_frontier_reconcile_light(void)
                    setup_fixture(&fx, "cointear"));
         sqlite3 *db = progress_store_db();
         /* REAL coin tear: a HOLE in utxo_apply's OWN ok=1 log below the coins
-         * frontier. Mark utxo_apply ok=0 at A+2 (status='verified', so neither
-         * the value_overflow nor stale_script replays — which key on
-         * status='value_overflow'/'internal_error' in script_validate — engage)
-         * so utxo_apply's contiguous prefix stops at A+1, then seed coins above
-         * it at A+3. coins_applied(A+3) > utxo_apply_contig(A+1)+1 is a genuine
-         * tear: coins applied above utxo_apply's own solid log. (Pre-fix this
-         * test relied on tip_finalize lagging at A+1 to push coins past the
-         * global MIN H* — a FALSE positive the new ua_contig compare ignores.)
-         * tipfin_backfill's G3 refuses on the ok=0 utxo_apply row, so the tear
-         * survives every pre-refusal repair and the L1 refusal stands. */
+         * frontier. utxo_apply ok=0 at A+2 (status='verified', so neither the
+         * value_overflow nor stale_script replays engage) stops its contiguous
+         * prefix at A+1; coins seeded at A+3 give coins_applied >
+         * utxo_apply_contig+1, a genuine tear. tipfin_backfill's G3 refuses on
+         * the ok=0 row, so the tear survives every pre-refusal repair and the
+         * L1 refusal stands. */
         RFRL_CHECK("seed real utxo_apply hole below coins frontier",
                    put_simple_log(db, "utxo_apply_log", A + 2, 0) &&
                    seed_coins_applied(db, A + 3));
@@ -1143,10 +1128,9 @@ int test_reducer_frontier_reconcile_light(void)
                    rr.hstar == A + 1 &&
                    rr.served_floor == A + 3 &&
                    rr.coins_applied_height == A + 2 &&
-                   /* OWN-frame: served tip capped at coins_applied's own
-                    * frame (coins_applied A+2 is NEXT-frame => applied
-                    * through A+1 => can serve the transition row at A+1,
-                    * i.e. served tip A+2). */
+                   /* OWN-frame: served tip capped at coins_applied's frame
+                    * (A+2 NEXT-frame => applied through A+1 => serves the
+                    * transition row at A+1, served tip A+2). */
                    rr.tip_finalize_cursor_after == A + 2 &&
                    cursor_value(db, "tip_finalize") == A + 2 &&
                    rr.clamped_tip_finalize);
@@ -1172,9 +1156,8 @@ int test_reducer_frontier_reconcile_light(void)
                    rr.hstar == A + 3 &&
                    rr.coins_applied_height == A + 3 &&
                    /* OWN-frame: hstar allows served A+3..A+4 but coins
-                    * (NEXT-frame A+3 => applied through A+2 => transition
-                    * rows provable through A+2) cap the served-tip claim
-                    * at A+3 — exactly where the step itself rests. */
+                    * (NEXT-frame A+3 => applied through A+2) cap the served-tip
+                    * claim at A+3, where the step itself rests. */
                    rr.tip_finalize_cursor_after == A + 3 &&
                    cursor_value(db, "tip_finalize") == A + 3 &&
                    rr.clamped_tip_finalize);
@@ -1275,12 +1258,11 @@ int test_reducer_frontier_reconcile_light(void)
         bool got = condition_engine_get_registered_snapshot(
             "reducer_frontier_reconcile_light", &snap);
         sqlite3 *db = progress_store_db();
-        /* STEP 4: the cursor-desync repair runs and clamps the cursors, but a
-         * cursor clamp does NOT advance the provable frontier H*
-         * (reducer_frontier_compute_hstar stays at A+1, still pinned by
-         * tip_finalize). The H*-only witness therefore must NOT clear on cursor
-         * churn — it stays active with one accrued attempt. (Pre-STEP-4 the
-         * any-cursor-change clear-edge false-greened here; that edge is gone.) */
+        /* STEP 4: the cursor-desync repair clamps the cursors, but a cursor
+         * clamp does NOT advance the provable frontier H*
+         * (reducer_frontier_compute_hstar stays at A+1, pinned by
+         * tip_finalize). The H*-only witness must NOT clear on cursor churn:
+         * it stays active with one accrued attempt. */
         bool ok = got &&
                   reducer_frontier_reconcile_light_test_remedy_calls() == 1 &&
                   cursor_value(db, "body_fetch") == A + 2 &&
@@ -1366,10 +1348,8 @@ int test_reducer_frontier_reconcile_light(void)
         json_free(&dump);
 
         /* A second tick must still NOT false-clear: with H* unchanged the
-         * witness stays false, so the condition remains active and un-cleared,
-         * and a single bounded attempt does not page the operator. (Whether the
-         * now-clamped symptom re-detects is irrelevant to the contract under
-         * test — only that cursor churn never witnesses a clear.) */
+         * witness stays false, the condition stays active and un-cleared, and
+         * a single bounded attempt does not page the operator. */
         condition_engine_tick();
         got = condition_engine_get_registered_snapshot(
             "reducer_frontier_reconcile_light", &snap);
@@ -1393,14 +1373,12 @@ int test_reducer_frontier_reconcile_light(void)
         RFRL_CHECK("setup coin-tear condition fixture",
                    setup_fixture(&fx, "cointear_condition"));
         sqlite3 *db = progress_store_db();
-        /* REAL coin tear (same shape as the detect-path coin-tear case above):
-         * a utxo_apply ok=0 hole at A+2 caps utxo_apply's own contiguous prefix
-         * at A+1 while coins_applied sits at A+3, so
-         * coins_applied > utxo_apply_contig+1 holds. The earlier seed leaned on
-         * tip_finalize lagging at A+1 (a FALSE tear the new ua_contig compare
-         * no longer escalates); this is a genuine hole below the cursor that
-         * survives every pre-refusal repair, so the Condition still escalates
-         * to operator_needed without mutating any cursor or block flag. */
+        /* REAL coin tear (same shape as the detect-path case above): a
+         * utxo_apply ok=0 hole at A+2 caps its contiguous prefix at A+1 while
+         * coins_applied sits at A+3, so coins_applied > utxo_apply_contig+1.
+         * The hole survives every pre-refusal repair, so the Condition
+         * escalates to operator_needed without mutating any cursor or block
+         * flag. */
         RFRL_CHECK("coin-tear condition: seed real utxo_apply hole",
                    put_simple_log(db, "utxo_apply_log", A + 2, 0) &&
                    seed_coins_applied(db, A + 3));
@@ -1478,11 +1456,11 @@ int test_reducer_frontier_reconcile_light(void)
     }
 
     {
-        /* Stale-script replay refusal (TOCTOU fix): the hole's preconditions
-         * pass but the block is unreadable (fixture nFile == -1), so the
-         * replay refuses AFTER the cursor snapshot — on a path that now runs
-         * under the progress lock held from snapshot to rewind COMMIT. The
-         * probe thread proves every traversed refusal path released it. */
+        /* Stale-script replay refusal: the hole's preconditions pass but the
+         * block is unreadable (fixture nFile == -1), so the replay refuses
+         * AFTER the cursor snapshot, under the progress lock held from
+         * snapshot to rewind COMMIT. The probe thread proves every traversed
+         * refusal path released it. */
         struct rfrl_fixture fx;
         RFRL_CHECK("setup stale-script fixture",
                    setup_fixture(&fx, "stale_script"));
@@ -1632,9 +1610,8 @@ int test_reducer_frontier_reconcile_light(void)
     {
         /* Dispatcher-order pin: a lower stale-script transient owns the shared
          * stale_script_* result fields even when a higher script-side
-         * validate/script hash_split is also present. The hash-split probe may
-         * remain observable through its own fields, but it must not overwrite
-         * the lower repair height that the replay ladder will address first. */
+         * validate/script hash_split is present; the hash-split probe must not
+         * overwrite the lower repair height the replay ladder addresses first. */
         struct rfrl_fixture fx;
         RFRL_CHECK("setup stale-script + higher hash-split fixture",
                    setup_fixture(&fx, "stale_script_before_split"));
@@ -1668,11 +1645,9 @@ int test_reducer_frontier_reconcile_light(void)
     }
 
     {
-        /* A coin-backfill refusal must be terminal for the current L1 pass:
-         * the missing coin owns the prevout_unresolved hole. Falling through
-         * to ordinary cursor repair lets a harmless body/tip clamp report
-         * `repaired` even though the blocker is still unresolved, which is the
-         * live soak shape this test pins. */
+        /* A coin-backfill refusal is terminal for the current L1 pass: the
+         * missing coin owns the prevout_unresolved hole, so ordinary cursor
+         * repair must not report `repaired` while the blocker stands. */
         struct rfrl_fixture fx;
         RFRL_CHECK("setup coin-backfill terminal refusal fixture",
                    setup_fixture(&fx, "coin_backfill_terminal"));
@@ -1699,11 +1674,10 @@ int test_reducer_frontier_reconcile_light(void)
     }
 
     {
-        /* A coin-backfill refusal is a named, actionable self-heal failure,
-         * not a quiet no-op. The fixture block is intentionally unreadable
-         * (nFile == -1), so the prevout_unresolved hole refuses through the
-         * backfill ladder and the condition must report FAILED rather than
-         * SKIP. */
+        /* A coin-backfill refusal is a named self-heal failure, not a quiet
+         * no-op: the fixture block is unreadable (nFile == -1), so the
+         * prevout_unresolved hole refuses through the backfill ladder and the
+         * condition must report FAILED, not SKIP. */
         struct rfrl_fixture fx;
         RFRL_CHECK("setup coin-backfill refusal condition fixture",
                    setup_fixture(&fx, "coin_backfill_refusal"));
@@ -1779,10 +1753,10 @@ int test_reducer_frontier_reconcile_light(void)
     }
 
     /* ── non-canonical residue purge (the relabel-offset class) ──
-     * Rows recorded for the WRONG block at their height (hash != the
-     * canonical active-chain block) must be purged — including the false
-     * ok=0 bad-cb-height verdicts no other repair touches — while a
-     * GENUINE consensus reject (ok=0 with the canonical hash) survives. */
+     * Rows recorded for the WRONG block at their height (hash != canonical
+     * active-chain block), including false ok=0 bad-cb-height verdicts, are
+     * purged; a GENUINE consensus reject (ok=0 with the canonical hash)
+     * survives. */
     {
         struct rfrl_fixture fx;
         RFRL_CHECK("noncanon: setup fixture", setup_fixture(&fx, "noncanon"));
@@ -1886,8 +1860,8 @@ int test_reducer_frontier_reconcile_light(void)
     }
 
     /* Non-canonical evidence below the known coins frontier is replay-domain,
-     * not purge-domain. Deleting it creates a rowless hole below coins where
-     * forward refills intentionally refuse to run. */
+     * not purge-domain: deleting it creates a rowless hole below coins where
+     * forward refills refuse to run. */
     {
         struct rfrl_fixture fx;
         RFRL_CHECK("noncanon-below-coins: setup fixture",
@@ -1922,10 +1896,10 @@ int test_reducer_frontier_reconcile_light(void)
         teardown_fixture(&fx);
     }
 
-    /* A mixed-fork UTXO suffix must be removed as one kernel unit.  The
-     * pre-lock result deliberately carries a stale coin frontier to reproduce
-     * the live race: purge must re-read the durable frontier under its lock,
-     * clamp there, and remove future log/delta/anchor state. */
+    /* A mixed-fork UTXO suffix is removed as one kernel unit. The pre-lock
+     * result carries a stale coin frontier: purge must re-read the durable
+     * frontier under its lock, clamp there, and remove future
+     * log/delta/anchor state. */
     {
         struct rfrl_fixture fx;
         RFRL_CHECK("noncanon-utxo-suffix: setup fixture",
@@ -1966,8 +1940,7 @@ int test_reducer_frontier_reconcile_light(void)
 
     /* ── P3: peer-gate BYPASS for internal re-derivations ──
      * A rowless script_validate_log + proof_validate_log hole below the
-     * cursors (noncanonical-purge residue) re-derives from local persisted
-     * state alone, so
+     * cursors re-derives from local persisted state alone, so
      * peers-present-but-none-ahead must NOT suppress the healer. */
     {
         struct rfrl_fixture fx;
@@ -1978,9 +1951,8 @@ int test_reducer_frontier_reconcile_light(void)
                    delete_height(db, "script_validate_log", A + 2) &&
                    delete_height(db, "proof_validate_log", A + 2));
 
-        /* One peer, NOT ahead: services=0 keeps connman_max_peer_height at
-         * -1 while node_count=1, so peer_lag_allows_repair returns false —
-         * pre-P3 the whole detect was discarded here every 5 s. */
+        /* One peer, NOT ahead: services=0 keeps connman_max_peer_height at -1
+         * while node_count=1, so peer_lag_allows_repair returns false. */
         struct connman cm;
         struct p2p_node p1;
         struct p2p_node *peers[1];
@@ -2030,10 +2002,9 @@ int test_reducer_frontier_reconcile_light(void)
     }
 
     /* ── P3: gate PRESERVED for plain cursor churn (no repair evidence) ──
-     * Same peer state (present, not ahead) with every refill hole absent and
-     * no tear/residue: the tip_finalize clamp alone is not peer-independent
-     * evidence, so detect stays suppressed — silently (no evidence to name,
-     * so no WARN either). */
+     * Same peer state (present, not ahead) with no refill hole, tear or
+     * residue: the tip_finalize clamp alone is not peer-independent evidence,
+     * so detect stays suppressed, silently (no WARN). */
     {
         struct rfrl_fixture fx;
         RFRL_CHECK("churn suppress: setup fixture",
@@ -2096,11 +2067,10 @@ int test_reducer_frontier_reconcile_light(void)
     }
 
     /* ── P3: LOUD suppression — actionable evidence discarded at the gate
-     * must WARN (throttled), never silently idle. The default fixture's
-     * empty body_fetch_log reports lowest_body_fetch_refill_hole=A+2, which
-     * is actionable but NOT in the internal-rederivation bypass list
-     * (re-fetching a body needs a peer to serve it), so the gate suppresses
-     * it and the suppression must be named in node.log. */
+     * must WARN (throttled), never silently idle. The default fixture's empty
+     * body_fetch_log reports lowest_body_fetch_refill_hole=A+2, actionable but
+     * NOT in the internal-rederivation bypass list (re-fetching a body needs a
+     * peer), so the gate suppresses it and node.log must name the suppression. */
     {
         struct rfrl_fixture fx;
         RFRL_CHECK("loud suppress: setup fixture",
@@ -2160,15 +2130,12 @@ int test_reducer_frontier_reconcile_light(void)
         teardown_fixture(&fx);
     }
 
-    /* ── F6: the peer gate compares the PROVABLE tip (H*), not the download
-     * tip ───────────────────────────────────────────────────────────────────
-     * The common wedge: the fold is stalled below the header tip, so the
-     * download tip (active_chain_height) already sits at/above the peers' static
-     * handshake starting_height while H* lags well behind. A block-serving peer
-     * whose starting_height is AHEAD of H* but BEHIND the download tip is real
-     * evidence the local provable tip is stale — the repair must be admitted.
-     * The old download-tip comparison suppressed it (peer "not ahead"); the H*
-     * comparison admits it. */
+    /* ── F6: the peer gate compares the PROVABLE tip (H*), not the download tip ──
+     * With the fold stalled below the header tip, the download tip
+     * (active_chain_height) sits at/above peers' static handshake
+     * starting_height while H* lags. A block-serving peer whose
+     * starting_height is AHEAD of H* but BEHIND the download tip is evidence
+     * the provable tip is stale, so the repair must be admitted. */
     {
         struct rfrl_fixture fx;
         RFRL_CHECK("F6: setup fixture", setup_fixture(&fx, "f6_hstar_gate"));
@@ -2228,13 +2195,12 @@ int test_reducer_frontier_reconcile_light(void)
     }
 
     /* ── Label-splice re-bind (direct arm): deep NULL-block_hash suffix ──
-     * Models today's live wedge — proof/script cursors at N+164, an ok=1/
-     * NULL-block_hash suffix over (N, N+163], utxo_apply at N+1, tip_finalize N.
-     * The arm rewinds ONLY the proof/script VALIDATION cursors to the lowest
-     * NULL (floored at MIN(utxo_apply, tip_finalize)) and deletes the NULL
-     * suffix. Deep span (163) exceeds the small block_rollback cap (100),
-     * proving the larger validation-rebind cap is what admits it. Pure
-     * progress-store arm — no main_state needed. */
+     * Proof/script cursors at N+164, an ok=1/NULL-block_hash suffix over
+     * (N, N+163], utxo_apply at N+1, tip_finalize N. The arm rewinds ONLY the
+     * proof/script VALIDATION cursors to the lowest NULL (floored at
+     * MIN(utxo_apply, tip_finalize)) and deletes the NULL suffix. The 163-deep
+     * span exceeds the block_rollback cap (100), so the larger validation-rebind
+     * cap is what admits it. Pure progress-store arm; no main_state needed. */
     {
         char dir[256];
         test_make_tmpdir(dir, sizeof(dir),
@@ -2339,19 +2305,18 @@ int test_reducer_frontier_reconcile_light(void)
     }
 
     /* ── Label-splice re-bind (WIRING via the public reconcile entry) ──
-     * The impl must CALL the arm. Seed a NULL-block_hash proof/script suffix at
-     * the utxo_apply frontier; the ONLY thing that rewinds the proof/script
-     * VALIDATION cursors is the re-bind arm, so on main (arm unwired) they stay
-     * at A+4 — this is the RED assertion. */
+     * The impl must CALL the arm: seed a NULL-block_hash proof/script suffix
+     * at the utxo_apply frontier; only the re-bind arm rewinds the proof/script
+     * VALIDATION cursors (otherwise they stay at A+4). */
     {
         struct rfrl_fixture fx;
         RFRL_CHECK("rebind-wire: setup", setup_fixture(&fx, "rebind_wire"));
         sqlite3 *db = progress_store_db();
 
-        /* utxo_apply STUCK at A+2 (its log ok=1 only through A+1); proof/script
+        /* utxo_apply STUCK at A+2 (log ok=1 only through A+1); proof/script
          * validated ahead to A+4 with a NULL-block_hash suffix at A+2, A+3.
-         * active window tip pinned at A+1 (== hstar) so the noncanonical purge
-         * scans empty, exactly like the live wedge. */
+         * Active window tip pinned at A+1 (== hstar) so the noncanonical purge
+         * scans empty. */
         RFRL_CHECK("rebind-wire: shape the wedge",
                    delete_height(db, "utxo_apply_log", A + 2) &&
                    delete_height(db, "utxo_apply_log", A + 3) &&
@@ -2377,8 +2342,8 @@ int test_reducer_frontier_reconcile_light(void)
                    count_null_block_hash(db, "proof_validate_log",
                                          A + 2, A + 4) == 2);
 
-        /* Apply: the wired impl runs the arm — proof/script cursors rewind and
-         * the NULL suffix is deleted. On main (arm unwired) these stay at A+4. */
+        /* Apply: the wired impl runs the arm; proof/script cursors rewind and
+         * the NULL suffix is deleted. */
         struct stage_reducer_frontier_reconcile_result rr;
         RFRL_CHECK("rebind-wire: apply runs the arm (RED->GREEN)",
                    stage_reducer_frontier_reconcile_light(db, &fx.ms, &rr) &&
@@ -2395,12 +2360,11 @@ int test_reducer_frontier_reconcile_light(void)
         teardown_fixture(&fx);
     }
 
-    /* ── Conflation regression: a fired re-bind outranks a coin_backfill refusal
-     * The remedy decision (rfrl_remedy_outcome) is a PURE function of the
-     * result. A successful label_splice re-bind must report OK even when an
-     * unrelated coin_backfill owner-refusal is set at a later height. The
-     * control (no re-bind) proves the coin refusal alone WOULD fail the remedy
-     * — the exact masking the live node hit. */
+    /* A fired re-bind outranks a coin_backfill refusal. The remedy decision
+     * (rfrl_remedy_outcome) is a PURE function of the result: a successful
+     * label_splice re-bind reports OK even with an unrelated coin_backfill
+     * owner-refusal at a later height; the control (no re-bind) shows the coin
+     * refusal alone would fail the remedy. */
     {
         struct stage_reducer_frontier_reconcile_result rr;
         memset(&rr, 0, sizeof(rr));
@@ -2419,8 +2383,8 @@ int test_reducer_frontier_reconcile_light(void)
                        COND_REMEDY_OK);
     }
 
-    /* ── ABBA regression: the reconcile must not own progress_store_tx_lock
-     * while it waits for cs_main. See the rfrl_order_probe comment above. */
+    /* ABBA regression: the reconcile must not own progress_store_tx_lock
+     * while it waits for cs_main (see rfrl_order_probe above). */
     {
         struct rfrl_fixture fx;
         RFRL_CHECK("lock-order: setup fixture",
@@ -2454,16 +2418,15 @@ int test_reducer_frontier_reconcile_light(void)
             bool tx_free = false;
             bool parked = false;
             if (worker_started) {
-                /* Settle: long enough for the worker to reach whichever lock
-                 * it blocks on. It cannot complete — cs_main is held. */
+                /* Settle: let the worker reach the lock it blocks on (it
+                 * cannot complete while cs_main is held). */
                 rfrl_order_sleep_ms(300);
                 parked = !__atomic_load_n(&probe.finished, __ATOMIC_ACQUIRE);
 
                 /* Decisive poll. The correct order parks on cs_main owning
-                 * nothing, so the progress lock is free and STAYS free. The
-                 * inverted order parks holding it, so this never succeeds.
-                 * (Early polls can legitimately miss: the reconcile takes and
-                 * releases the progress lock a few times on its way in.) */
+                 * nothing, so the progress lock stays free; the inverted order
+                 * parks holding it. Early polls can miss: the reconcile takes
+                 * and releases the progress lock a few times on its way in. */
                 for (int i = 0; i < 250 && !tx_free; i++) {
                     if (progress_store_tx_trylock()) {
                         progress_store_tx_unlock();
@@ -2496,21 +2459,14 @@ int test_reducer_frontier_reconcile_light(void)
         teardown_fixture(&fx);
     }
 
-    /* ── ABBA regression, the other direction: a reducer drain owns the
-     * progress store and the reconcile must DECLINE rather than park on it.
-     *
+    /* ABBA regression, other direction: a reducer drain owns the progress
+     * store and the reconcile must DECLINE rather than park on it.
      * STAGE_DRAIN_IMPL holds progress_store_tx_lock across every step and
      * body_fetch takes cs_main inside it, so blocking here while holding
-     * cs_main is the exact counterpart edge. The case above cannot see this:
-     * it only ever holds cs_main, so a reconcile that blocks on the progress
-     * store still looks well-behaved to it.
-     *
-     * The property is NOT "returns quickly": the reconcile legitimately
-     * blocks on the progress store in read_frontier_snapshot(), which holds
-     * no cs_main and so cannot be half of a cycle. What must never happen is
-     * parking on the progress store while OWNING cs_main. So the assertion
-     * is the exact mirror of the case above: with the progress store held,
-     * cs_main must stay free. */
+     * cs_main is the counterpart edge. The reconcile may block on the
+     * progress store in read_frontier_snapshot() (no cs_main held); it must
+     * never park on it while OWNING cs_main. Mirror of the case above: with
+     * the progress store held, cs_main must stay free. */
     {
         struct rfrl_fixture fx;
         RFRL_CHECK("lock-order: setup fixture (progress-held)",
@@ -2543,14 +2499,10 @@ int test_reducer_frontier_reconcile_light(void)
             RFRL_CHECK("lock-order: flags worker starts (progress-held)",
                        worker_started);
 
-            /* No "did it park?" probe-validity step is needed here: the seam
-             * calls reconcile_block_index_flags directly, so entry into the
-             * both-locks section is structural rather than hoped for.
-             *
-             * Both assertions below fail against a BLOCKING acquire, which is
-             * what makes this test worth having: that version parks inside
-             * the section still owning cs_main, so it neither returns nor
-             * releases cs_main until the drain lets go. */
+            /* The seam calls reconcile_block_index_flags directly, so entry
+             * into the both-locks section is structural. Both assertions fail
+             * against a BLOCKING acquire, which parks inside the section still
+             * owning cs_main until the drain lets go. */
             bool declined = false;
             bool csmain_free = false;
             if (worker_started) {

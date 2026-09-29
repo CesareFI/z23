@@ -312,11 +312,9 @@ int check_rpc_convert_values_msg_send_inbox(void)
 
     printf("rpc_convert_values msg_send/msg_inbox peer-id and flag rows... ");
     {
-        /* msg_send on the default p2p channel: argument 0 is a numeric
-         * peer ID and must come out as JSON_INT, not JSON_STR — this is
-         * the exact row that fixed "Peer not found or disconnected" for
-         * every peer, because the handler reads it with json_get_int()
-         * (which returns 0 for a string). */
+        /* msg_send on the default p2p channel: argument 0 is a numeric peer
+         * ID and must come out as JSON_INT, not JSON_STR (the handler reads
+         * it with json_get_int(), which returns 0 for a string). */
         bool ok = rpc_should_convert_param("msg_send", 0);
 
         const char *p2p_params[] = { "60", "hello" };
@@ -343,13 +341,9 @@ int check_rpc_convert_msg_send_non_numeric(void)
 
     printf("rpc_convert_values msg_send rejects a non-numeric peer id... ");
     {
-        /* Before the msg_send row existed, a non-numeric first argument
-         * was sent through as a JSON string and the node's
-         * json_get_int() silently read it as peer 0. Now that argument 0
-         * is a convert-table entry, an unquoted non-numeric token is not
-         * valid JSON, and rpc_convert_values() must refuse with a typed
-         * failure (false) instead of ever producing a JSON_STR or
-         * JSON_INT 0 for it. */
+        /* Argument 0 is a convert-table entry, so an unquoted non-numeric
+         * token is invalid JSON and rpc_convert_values() must refuse with a
+         * typed failure (false), never producing JSON_STR or JSON_INT 0. */
         const char *bad_params[] = { "not-a-peer-id", "hello" };
         struct json_value bad_result;
         bool ok = !rpc_convert_values("msg_send", bad_params, 2, &bad_result);
@@ -910,8 +904,7 @@ int check_rpc_tls_start_self_signed(void)
         int kfd = mkstemp(key_path);
         bool ok = false;
         /* Private datadir: rpc_http_start writes <datadir>/.cookie, so a
-         * shared "/tmp" would have two concurrent runs overwriting and then
-         * unlinking each other's credential file. */
+         * shared "/tmp" would let concurrent runs clobber each other. */
         char rpcdir[512];
         rpc_test_tmpdir(rpcdir, sizeof(rpcdir), "tls");
         const uint16_t tls_port = rpc_test_free_port();
@@ -984,13 +977,11 @@ int check_rpc_tls_without_env_and_port_oracle(void)
     printf("rpc port listening oracle... ");
     {
         /* node_rpc_port_listening is the liveness oracle
-         * core.consensus.producer-session.retire refuses a live node on.
-         * It must track the kernel's view of the port exactly: true only
-         * while a loopback listener holds it, false the instant it closes,
-         * and false for ports no listener can hold. The node_rpc_call*
-         * paths cannot answer this question — they return non-NULL
-         * self-describing error bodies on refused connects, which is how
-         * "any reply means running" once read a stopped node as live. */
+         * core.consensus.producer-session.retire refuses a live node on. It
+         * must track the kernel's view exactly: true only while a loopback
+         * listener holds the port, false once it closes, and false for ports
+         * no listener can hold. node_rpc_call* paths cannot answer this;
+         * they return non-NULL error bodies on refused connects. */
         int fd = socket(AF_INET, SOCK_STREAM, 0);
         struct sockaddr_in addr;
         memset(&addr, 0, sizeof(addr));

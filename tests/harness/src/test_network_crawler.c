@@ -709,11 +709,8 @@ int test_network_crawler(void)
         network_crawler_test_reset();
         network_crawler_test_set_probe_fn(onion_aware_probe);
         onion_probe_counters_reset();
-        /* No onion dials at all this phase: everything onion banks NOT
-         * PROBED, which is the shape the defect needed (ncrawl_bank_unprobed
-         * stamps last_probe_us = now, so a fresh unprobed row is never the
-         * smallest-last_probe_us victim and a pure oldest-first eviction
-         * always took a real measurement instead). */
+        /* No onion dials this phase: every onion banks NOT PROBED with a fresh
+         * last_probe_us, which must never make it the eviction victim. */
         network_crawler_test_set_onion_limits(0, 1, 1000, 0);
 
         /* Fill the bounded census to capacity with MEASURED clearnet rows. */

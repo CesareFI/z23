@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Reorg safety test — wave 10 #1, the capstone test.
+ * Reorg safety test.
  *
  * Strategy
  * --------

@@ -1,23 +1,14 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * test_rom_fetch_controller — proves the ONE documented, discoverable
- * command an operator reads zcl.sync_benchmark.v1 phase timings from:
- * `ops.debug.rom_fetch.status` (engine/controllers/src/rom_fetch_controller.c,
- * zcl_native_handle_rom_fetch_status). The command already returned the
- * ROM-fetch engine's own state (rom_fetch_dump_state_json); this lane merged
- * in the sync-benchmark receipt under a "sync_benchmark" key so the same
- * typed command answers "how long did sync actually take" without an
- * operator hand-parsing <datadir>/sync_benchmark.json.
+ * test_rom_fetch_controller: proves `ops.debug.rom_fetch.status`
+ * (engine/controllers/src/rom_fetch_controller.c,
+ * zcl_native_handle_rom_fetch_status) returns the ROM-fetch engine state plus
+ * the sync-benchmark receipt under a "sync_benchmark" key.
  *
- * This test drives the instrument directly (sync_benchmark_init/
- * phase_begin/phase_end/write_receipt) against a test_mkdtemp scratch dir —
- * never a real datadir — to synthesize a receipt with SOME phases stamped
- * and others deliberately left unwired, then calls the command handler and
- * asserts the reply's "sync_benchmark" object carries exactly that shape:
- * every stamped phase's elapsed_ms present and non-negative, and the two
- * phases this lane's design explicitly leaves unwired on the automatic path
- * (peer_discovery, manifest) reported as null with a reason — never a
- * fabricated number, never a silently missing field. */
+ * Drives the instrument directly against a test_mkdtemp scratch dir with some
+ * phases stamped and others unwired, then asserts every stamped phase has a
+ * non-negative elapsed_ms and the unwired peer_discovery / manifest phases
+ * are null with a reason, never a fabricated number. */
 
 #include "test/test_core.h"
 
@@ -55,10 +46,8 @@ static int case_status_merges_sync_benchmark_receipt(void)
         sync_benchmark_set_artifact(
             "5340df085eda2edaba3fb53f39bedb51bcab6c1f1484a0929c7bc3b25ab747d");
 
-        /* Stamp a representative subset of the eight phases — exactly the
-         * ones this lane's design wires on the automatic boot path — and
-         * leave PEER_DISCOVERY / MANIFEST / ARTIFACT_DOWNLOAD untouched
-         * (those stay manual-command-only per the lane's documented gap). */
+        /* Stamp a representative subset of the eight phases and leave
+         * PEER_DISCOVERY / MANIFEST / ARTIFACT_DOWNLOAD untouched (manual-command-only). */
         sync_benchmark_phase_begin(SYNC_BENCH_HEADERS);
         sync_benchmark_phase_end(SYNC_BENCH_HEADERS);
         sync_benchmark_phase_begin(SYNC_BENCH_ARTIFACT_VERIFY);

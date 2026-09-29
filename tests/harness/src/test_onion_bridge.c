@@ -11,16 +11,13 @@
  *      connect_socket_start() gives a clearnet peer: connected SOCK_STREAM,
  *      non-blocking, no pending error.
  *   3. A circuit that reaches CONNECTED and then goes terminal inside the
- *      same connect wait is scored a FAILED dial. Accepting it handed the
- *      P2P layer a socket whose pump exits immediately: the node logged
- *      "onion circuit established" and peer_connected, then the peer died
- *      before its version frame could be written, with no line naming why.
+ *      same connect wait is scored a FAILED dial; accepting it would hand
+ *      the P2P layer a socket whose pump exits immediately.
  *   4. A backend that refuses writes while its queue drains (the fork's
  *      1 s flush tick) must NOT cost the connection or drop the refused
- *      bytes — that silently truncated the P2P stream mid-frame.
+ *      bytes.
  *   5. The stage ledger names every stage this layer owns, so the
- *      acceptance contract can assert on a counter instead of grepping
- *      a rotated log.
+ *      acceptance contract can assert on a counter.
  *
  * The loopback double stands in for dynhost: its "Tor thread" is a real
  * thread, so the read/event callbacks fire off the caller's thread exactly
@@ -302,9 +299,8 @@ int test_onion_bridge(void)
         struct net_service svc;
         bool ok = make_onion_service(&svc, 39150);
 
-        /* Seed one OLD successful session for the same endpoint.  The fresh
-         * dial below must classify from its own generation delta, never let
-         * this historical success make a new unadopted bridge look complete. */
+        /* Seed one OLD successful session for the same endpoint; the fresh
+         * dial must classify from its own generation delta. */
         peer_lifecycle_reset_for_test();
         struct p2p_node old_peer = {0};
         old_peer.addr.svc = svc;
@@ -405,10 +401,9 @@ int test_onion_bridge(void)
 
         if (ok) {
 #if defined(_WIN32)
-            /* Windows cannot query a socket's blocking mode (no F_GETFL
-             * analogue); the nonblocking contract is exercised by the
-             * read_exact/write_all retry loops, which blow their budgets
-             * on a blocking fd. */
+            /* Windows cannot query a socket's blocking mode; the retry
+             * loops in read_exact/write_all blow their budgets on a
+             * blocking fd. */
             printf("\nonion_bridge: NOTE (Windows): O_NONBLOCK flag query "
                    "unavailable; nonblocking behavior covered by the I/O "
                    "loops ");
@@ -499,9 +494,9 @@ int test_onion_bridge(void)
            "peer... ");
     {
         stub_reset();
-        /* ~1 s of refusals at the pump's 25 ms retry cadence: well inside
-         * ONION_TX_BACKPRESSURE_MS, and exactly the shape of the fork's
-         * "queue full until the next flush tick". */
+        /* ~1 s of refusals at the pump's 25 ms retry cadence: inside
+         * ONION_TX_BACKPRESSURE_MS, the shape of "queue full until the
+         * next flush tick". */
         g_stub.refuse_writes_ticks = 40;
         struct net_service svc;
         bool ok = make_onion_service(&svc, 39150);

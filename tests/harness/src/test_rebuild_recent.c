@@ -40,7 +40,7 @@
 
 /* Published bounds (mirror the #defines in repair_controller_rebuild.c).
  * Kept in sync deliberately; if those change, this test must be updated.
- * 10000 since 4d4e8c436 — must cover one full cold-import seed window
+ * 10000: must cover one full cold-import seed window
  * (~5.5-7k blocks). */
 #define RR_MAX_RANGE      10000
 #define RR_DEFAULT_MARGIN 10

@@ -1,17 +1,13 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Unit tests for the reducer_drive_watchdog condition (Lane 0.3) + the
- * "reducer_drive" dumpstate subsystem it owns (Lane 0.4).
+ * Unit tests for the reducer_drive_watchdog condition and the "reducer_drive"
+ * dumpstate subsystem.
  *
- * The condition compares two consecutive detect() ticks of the (test-
- * injected) utxo_apply cursor once the drive has been active longer than
- * a (test-forced) threshold. condition_tick_one() gates a NOT-YET-active
- * condition's detect() calls by real wall-clock poll_secs, so this test
- * installs the same fake clock_iface_t the sync_watchdog condition tests
- * use to advance wall time without sleeping. reducer_drive_age_us() itself
- * reads GetTimeMicros() (real time, not the fake clock — see
- * core/modules/core/src/utiltime.c), so a short real nanosleep is used to get a
- * nonzero age; the forced threshold of 0s means any nonzero age trips it.
+ * The condition compares two consecutive detect() ticks of the injected
+ * utxo_apply cursor once the drive has been active past a forced threshold.
+ * A fake clock_iface_t advances wall time for condition_tick_one's poll_secs
+ * gate; reducer_drive_age_us() reads real GetTimeMicros(), so a short nanosleep
+ * gives a nonzero age (threshold 0s trips on any nonzero age).
  */
 
 #include "test/test_core.h"
@@ -92,13 +88,10 @@ static void rdw_reset(void)
     blocker_reset_for_testing();
     reducer_drive_watchdog_test_reset();
     sticky_escalator_test_reset();
-    /* reducer_drive_guard has no test-reset hook of its own (it is a bare
-     * enter/exit counter) — make sure no earlier test group left a drive
-     * "active" behind by forcing it fully closed. */
+    /* reducer_drive_guard has no reset hook: force any leftover drive closed. */
     while (reducer_drive_active())
         reducer_drive_exit();
-    /* register_reducer_drive_watchdog re-registers the blocker escape after
-     * blocker_reset_for_testing() wiped the escape registry above. */
+    /* Re-register the blocker escape wiped by blocker_reset_for_testing(). */
     register_reducer_drive_watchdog();
 }
 
@@ -113,20 +106,14 @@ static void rdw_cleanup(void)
     clock_reset_default();
 }
 
-/* (g) R1 catch-up round cadence: while the live catch-up gate is
- * open (peers connected AND network-tip gap >= ZCL_CATCHUP_GAP_THRESHOLD
- * — the same gate the catch-up drain-batch/tick overrides use), the
- * batched pre-commit durability hook pays the body+event_log fdatasync
- * once per ZCL_CATCHUP_FSYNC_COMMIT_INTERVAL commits (default 8, i.e.
- * about one per drain ROUND) instead of once per batch COMMIT. Every
- * flush that DOES run keeps its exact veto verdict, and closing the gate
- * (converged / at-tip) restores the strict per-commit regime on the very
- * next commit. The connman/peer fixture mirrors test_catchup_cadence.c
- * (real struct connman via sync_monitor_set_context; log_head driven by
- * the catchup_cadence test override). GetTimeMicros() is unfrozen here
- * (case f restored the real clock). Extracted from
- * test_reducer_drive_watchdog so the harness body stays under its
- * cyclomatic-complexity pin; returns this case's failure count. */
+/* (g) R1 catch-up round cadence: while the catch-up gate is open (peers
+ * connected and network-tip gap >= ZCL_CATCHUP_GAP_THRESHOLD), the batched
+ * pre-commit hook pays the body+event_log fdatasync once per
+ * ZCL_CATCHUP_FSYNC_COMMIT_INTERVAL commits (default 8) instead of per batch
+ * commit, each flush keeps its exact veto verdict, and closing the gate restores
+ * per-commit fsync on the next commit. Fixture mirrors test_catchup_cadence.c.
+ * Separate function to stay under the cyclomatic-complexity pin; returns its
+ * failure count. */
 static int rdw_test_r1_cadence(void)
 {
     int failures = 0;
@@ -250,9 +237,8 @@ int test_reducer_drive_watchdog(void)
         }
         RDW_CHECK("blocker detail names the driver label", found_reason);
 
-        /* ---- (a2) ACT (Pillar 1): the blocker carries a deadline-gated
-         * escape, and blocker_supervisor_sweep() ACTUATES it into the recovery
-         * ladder once the deadline lapses — not just a named blocker. ---- */
+        /* ---- (a2) the blocker carries a deadline-gated escape that
+         * blocker_supervisor_sweep() actuates into the recovery ladder. ---- */
         bool esc_wired = false;
         for (int i = 0; i < n; i++) {
             if (strcmp(snaps[i].id, "reducer_drive_stuck") == 0) {
@@ -266,9 +252,8 @@ int test_reducer_drive_watchdog(void)
 
         bool armed_before = sticky_escalator_test_armed();
         int dispatched_before = blocker_escape_dispatched_count();
-        /* Push the blocker's monotonic clock past the escape deadline (60s) so
-         * the sweep fires the escape edge. Then restore the real clock so the
-         * later sub-tests are unaffected. */
+        /* Push the blocker clock past the 60s escape deadline so the sweep fires,
+         * then restore the real clock. */
         blocker_advance_clock_for_testing(70LL * 1000 * 1000);
         int fired = blocker_supervisor_sweep();
         bool ok_escape = !armed_before &&
@@ -362,11 +347,8 @@ int test_reducer_drive_watchdog(void)
             RDW_CHECK("dump emits all documented fields with live values",
                      okd);
 
-            /* Drive+fsync telemetry (Gap 1 + Gap 2): the four drain-exit
-             * counters and the two fsync-timing fields are always emitted
-             * (even before anything has ever been observed — 0 is a valid,
-             * present value), unlike stage_spin which is omitted entirely
-             * when empty. */
+            /* Drive+fsync telemetry (drain-exit counters, fsync timing) is always
+             * emitted, 0 included, unlike stage_spin. */
             bool okt = true;
             okt = okt && json_get(&v, "drain_exit_converged_total") != NULL;
             okt = okt && json_get(&v, "drain_exit_budget_total") != NULL;
@@ -387,11 +369,7 @@ int test_reducer_drive_watchdog(void)
             RDW_CHECK("dump carries the drain-exit + fsync-timing fields",
                      okt);
 
-            /* Append-path attribution (storage/event_log.h): event_log_deferred
-             * says which mode the log is in right now, which does not answer how
-             * many appends actually paid the two-fsync price during a fold —
-             * that split is the whole point of these three. All three are always
-             * emitted so a before/after diff over a fold is one dump apart. */
+            /* event_log_deferred, plus the append-path split: all always emitted. */
             bool oka = true;
             oka = oka && json_get(&v, "event_log_deferred") != NULL;
             oka = oka && json_get(&v, "event_log_barrier_appends") != NULL;
@@ -406,14 +384,9 @@ int test_reducer_drive_watchdog(void)
         test_cleanup_tmpdir(dir);
     }
 
-    /* ---- (e) drain-exit telemetry: reducer_drain.c's exit-stats snapshot
-     * deconflates converged vs budget-ceiling (see reducer_drain.c's doc
-     * comment). Drive the counters directly via the ZCL_TESTING reset +
-     * snapshot pair — the exact break-site attribution is exercised end to
-     * end by test_mint_fold_livelock (Scenario A: frontier-stall increments
-     * NEITHER counter; Scenario B: a converged kick increments
-     * exit_converged_total) in test_reducer_step_drain_harness.c. Here we
-     * only guard the snapshot/reset plumbing itself. ---- */
+    /* ---- (e) drain-exit telemetry: drive the reducer_drain.c exit-stats counters
+     * via the ZCL_TESTING reset + snapshot pair; break-site attribution is covered
+     * by test_mint_fold_livelock. Guards only the snapshot/reset plumbing. ---- */
     {
         reducer_drain_exit_stats_reset_for_testing();
         struct reducer_drain_exit_stats des;
@@ -425,24 +398,12 @@ int test_reducer_drive_watchdog(void)
         RDW_CHECK("drain-exit stats: reset zeroes all four fields", ok);
     }
 
-    /* ---- (f) batch_fsync_slow condition: injected slow flush trips it,
-     * a raised budget clears it, and a healthy (fast, unmodified) flush
-     * never false-fires. GetTimeMicros() (which the precommit timing wrap
-     * uses) routes through the SAME overridable platform.clock the fake
-     * wall clock above installs (clock_now_wall_ms — see
-     * platform/modules/platform/include/platform/time_compat.h), so it is frozen
-     * whenever that fake clock is still active — a real nanosleep would
-     * measure 0us elapsed, not the injected delay. Restore the REAL clock
-     * for this section so the injected-delay timing is genuine. To keep
-     * each detect() a "first tick" (last_poll_unix == 0, which
-     * condition_tick_one always polls regardless of poll_secs — see
-     * framework/condition.c), each phase gets its OWN fresh
-     * condition_engine_reset_for_testing() + re-register instead of
-     * waiting out real wall-clock poll_secs between ticks: the fsync
-     * timing atomics (engine/reducer/services/src/reducer_body_fsync.c) are a
-     * SEPARATE module and are untouched by a condition-engine reset, so
-     * the EWMA carries across phases exactly as it would across real
-     * ticks. ---- */
+    /* ---- (f) batch_fsync_slow: an injected slow flush trips it, a raised budget
+     * clears it, a healthy flush never false-fires. GetTimeMicros() routes through
+     * the overridable platform.clock, so restore the real clock here or an injected
+     * delay measures 0us. Each phase gets a fresh condition_engine_reset_for_testing()
+     * so detect() is a "first tick" (bypasses poll_secs); the fsync-timing atomics
+     * are a separate module, so the EWMA carries across phases. ---- */
     {
         clock_reset_default();
         blocker_module_init();
@@ -450,12 +411,8 @@ int test_reducer_drive_watchdog(void)
         reducer_body_fsync_test_reset();
         batch_fsync_slow_test_reset();
 
-        /* (f1) healthy path: an unmodified (fast) precommit flush (no
-         * pending bodies, no open event log — real work, sub-millisecond)
-         * must never trip the condition. Drive the predicate against a
-         * tight 10ms test budget (not just the generous 4s production
-         * default), so "healthy" is proven against the SAME budget the
-         * slow-flush case below uses. */
+        /* (f1) an unmodified fast flush never trips the condition, proven against
+         * the same 10ms budget the slow case uses. */
         condition_engine_reset_for_testing();
         register_batch_fsync_slow();
         batch_fsync_slow_test_set_budget_us(10000); /* 10ms */
@@ -466,20 +423,10 @@ int test_reducer_drive_watchdog(void)
         RDW_CHECK("batch_fsync_slow: healthy fast flush does not false-fire",
                  ok_healthy);
 
-        /* (f2) ONE injected 320ms-slow flush against the same 10ms budget
-         * trips the condition on EITHER EWMA path, which is what makes this
-         * deterministic. The update is
-         *     next = (prev == 0) ? sample : prev + (sample - prev) / 16
-         * so if f1's real flush measured exactly 0us (the "never sampled"
-         * sentinel) the EWMA seeds to the full 320000us; if f1 measured any
-         * non-zero time the EWMA instead damps to ~320000/16 = 20000us.
-         * BOTH clear the 10ms budget, the damped path by 2x.
-         * The delay must stay above 16 * budget for that to hold: an 80ms
-         * injection damps to ~5000us, which is UNDER the 10ms budget, so it
-         * tripped only when f1 happened to measure 0us — a coin-flip on
-         * scheduling noise. A fresh engine reset + re-register gives this
-         * its own "first tick" (bypasses the poll_secs gate) without a real
-         * 20s wait. */
+        /* (f2) One injected 320ms flush against the 10ms budget trips on either EWMA
+         * path: next = (prev == 0) ? sample : prev + (sample - prev) / 16, so it
+         * seeds to 320000us or damps to ~20000us; both exceed 10ms. The delay must
+         * stay above 16 * budget. A fresh engine reset gives a "first tick". */
         condition_engine_reset_for_testing();
         register_batch_fsync_slow();
         batch_fsync_slow_test_set_budget_us(10000); /* 10ms, same as f1 */
@@ -508,13 +455,9 @@ int test_reducer_drive_watchdog(void)
                      found_reason);
         }
 
-        /* (f3) raise the budget WAY above the (now-elevated) EWMA on the
-         * SAME (still-active) episode — an active episode's witness is
-         * checked on EVERY tick regardless of poll_secs (see
-         * framework/condition.c's condition_tick_one), so no reset/clock
-         * trick is needed here; this is the deterministic way to prove the
-         * witness clears on a fresh read without waiting out 16 rounds of
-         * 1/16 EWMA decay. */
+        /* (f3) raise the budget far above the elevated EWMA on the same active
+         * episode: an active episode is checked every tick, so the witness clears
+         * without a reset or waiting out EWMA decay. */
         reducer_body_fsync_test_set_inject_delay_us(0);
         batch_fsync_slow_test_set_budget_us(60LL * 1000 * 1000); /* 60s */
         condition_engine_tick();

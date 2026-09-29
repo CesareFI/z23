@@ -3,12 +3,10 @@
  * Differential proof that moving ZNAM and ZSLP onto the shared overlay cursors
  * changed NOTHING on the wire.
  *
- * ZNAM name registrations and ZSLP token records are already in mainnet blocks.
- * A parse-behaviour change there is a chain-interpretation change, not a
- * refactor, so "the unit tests still pass" is not the bar. This file carries a
- * frozen byte-for-byte copy of the pre-migration hand-rolled parsers and
- * builders (the `ref_` functions below, lifted from the parent commit) and runs
- * both implementations over the same corpus:
+ * ZNAM name registrations and ZSLP token records are in mainnet blocks, so a parse
+ * change is a chain-interpretation change. This file carries a frozen byte-for-byte
+ * copy of the hand-rolled parsers and builders (the `ref_` functions) and runs both
+ * implementations over the same corpus:
  *
  *   - a valid record for every command / transaction type
  *   - every truncation of every valid record
@@ -23,13 +21,10 @@
  * and asserts the accept/reject verdict AND the entire decoded struct match
  * byte for byte. Builders are compared byte for byte over a value grid.
  *
- * Part 4 settles a separate question: engine/controllers/src/blog_controller.c
- * used to carry a private fork of read_push that was missing the OP_0
- * (canonical empty push) branch and the NULL guards. The fork is deleted; this
- * proves the deletion could not have changed what that scan recovers, by
- * running the old fork and the real read_push through the identical scan loop
- * over the same corpus. It also COUNTS the inputs where the two primitives
- * disagree, so the equivalence is a measured result and not an empty win. */
+ * Part 4: the removed private fork of read_push in blog_controller.c lacked the
+ * OP_0 branch and NULL guards. Running that fork and the real read_push through the
+ * identical scan loop shows the removal cannot change what the scan recovers, and
+ * counts the inputs where the two disagree so the equivalence is measured. */
 
 #include "test/test_core.h"
 #include "znam/znam.h"
@@ -37,12 +32,12 @@
 #include "script/op_return_push.h"
 #include "core/uint256.h"
 
-/* ══ The frozen pre-migration implementations ═══════════════════════════
+/* ══ The frozen reference implementations ═══════════════════════════════
  *
- * Copied verbatim from contexts/naming/modules/znam/src/znam.c and contexts/market/modules/zslp/src/slp.c at the
- * parent commit, with only the identifiers renamed and the observability log
- * in slp_copy_str_field dropped (it never affected the decode). Do not
- * "improve" anything below: its whole value is being the code that shipped. */
+ * Verbatim copies of the hand-rolled ZNAM (contexts/naming/modules/znam/src/znam.c)
+ * and ZSLP (contexts/market/modules/zslp/src/slp.c) parsers and builders, with
+ * only identifiers renamed and the slp_copy_str_field log dropped. Do not
+ * "improve" them: their value is being the code that shipped. */
 
 static uint64_t ref_be_to_u64(const uint8_t *data, size_t len)
 {
@@ -466,8 +461,7 @@ static size_t ref_znam_build_set_text(uint8_t *out, size_t out_len,
     return ref_znam_build_finish(off, ok);
 }
 
-/* The private fork that lived in engine/controllers/src/blog_controller.c: a copy
- * of read_push MINUS the OP_0 branch and MINUS the NULL-argument guards. */
+/* Frozen copy of the blog_controller.c push reader minus the OP_0 branch and the NULL guards. */
 static const uint8_t *ref_blog_read_push_field(const uint8_t *p,
                                                const uint8_t *end,
                                                const uint8_t **data,
@@ -677,12 +671,10 @@ static int blog_take_hostname(const uint8_t *p, const uint8_t *end,
     return 0;
 }
 
-/* The onion-hostname scan from blog_discover_onion_peers_wallet, run with BOTH
- * push primitives in lockstep over one script. Fills host_fork/host_real with
- * what each recovers, and adds to *step_diffs once for every read the two
- * primitives answered differently — counted only at cursor positions the scan
- * actually reaches, so the number means "the missing branch was hit on a real
- * read", not "a 0x00 byte exists somewhere". */
+/* The onion-hostname scan from blog_discover_onion_peers_wallet, run with both
+ * push primitives in lockstep. Fills host_fork/host_real and adds to *step_diffs
+ * for every read where the two primitives differ, counted only at cursor
+ * positions the scan reaches. */
 static int blog_scan_both(const uint8_t *script, size_t script_len,
                           char *host_fork, char *host_real, size_t host_cap,
                           long *step_diffs)
@@ -861,8 +853,7 @@ int test_overlay_parse_parity(void)
         for (int iter = 0; iter < 120000; iter++) {
             size_t n = 1 + (size_t)(prng_next() % (sizeof(buf) - 1));
             for (size_t i = 0; i < n; i++) buf[i] = (uint8_t)prng_next();
-            /* Half the samples get real framing so the deep field paths are
-             * reached instead of dying at the lokad check. */
+            /* Half the samples get real framing so deep field paths are reached. */
             if (iter % 2 == 0 && n >= 8) {
                 buf[0] = 0x6a;
                 buf[1] = 0x04;

@@ -128,10 +128,9 @@ static struct block_index *rpc_safety_insert_block(struct main_state *ms,
     return bi;
 }
 
-/* A real serialized header is the durable authority's storage form: the
- * stub port below serves exactly these bytes (as node.db would), and the
- * test's expectations are independently deserialized from the same bytes —
- * never hardcoded hex literals. */
+/* A real serialized header is the durable authority's storage form: the stub
+ * port below serves these bytes and expectations are deserialized from them,
+ * never hardcoded hex. */
 static uint8_t rpc_safety_hdr_bytes[256];
 static size_t rpc_safety_hdr_len;
 static bool rpc_safety_hdr_seeded;
@@ -185,12 +184,9 @@ static bool rpc_safety_build_chain(struct main_state *ms,
 {
     static struct uint256 hashes[16];
 
-    /* Initialize ms BEFORE the count check: every caller declares
-     * `struct main_state ms;` uninitialized and runs main_state_free(&ms)
-     * unconditionally at the end of the case, so a return above this line
-     * would hand main_state_free() the caller's stale stack. Same reasoning
-     * as api_test_build_chain() in test_api_fixtures.c; see
-     * tools/lint/check_outparam_init_before_return.sh. */
+    /* Initialize ms BEFORE the count check: callers run main_state_free(&ms)
+     * unconditionally, so an early return must not leave it uninitialized
+     * (see tools/lint/check_outparam_init_before_return.sh). */
     main_state_init(ms);
 
     if (count <= 0 || count > (int)(sizeof(hashes) / sizeof(hashes[0])))
@@ -316,9 +312,8 @@ int test_rpc_safety(void)
 
     printf("rpc_safety: wallet freshness follows authoritative H*... ");
     {
-        /* struct wallet embeds a 64k-entry tx table (~40 MB): stack space,
-         * not intent. Heap it like test_accept_to_mempool does so the group
-         * runs inside every host's default main-thread stack. */
+        /* struct wallet embeds a ~40 MB tx table: heap it (as
+         * test_accept_to_mempool does) to fit the default main-thread stack. */
         struct wallet *wallet = zcl_calloc(1, sizeof(*wallet),
                                            "rpc-safety-wallet");
         if (!wallet) {
@@ -640,10 +635,9 @@ int test_rpc_safety(void)
         json_free(&txid_arg);
         json_free(&verbose_arg);
 
-        /* The wallet projection is finalized from the exact block body
-         * before the global transaction catalog is guaranteed to catch up.
-         * Removing the catalog row reproduces that window: chain lookup must
-         * still agree with confirmed wallet/intent history. */
+        /* The wallet projection is finalized before the global transaction
+         * catalog catches up; removing the catalog row reproduces that
+         * window, and chain lookup must still agree with wallet history. */
         struct byte_stream wallet_raw;
         stream_init(&wallet_raw, 512);
         struct db_wallet_tx wallet_row;
@@ -691,10 +685,8 @@ int test_rpc_safety(void)
         json_free(&verbose_arg);
         stream_free(&wallet_raw);
 
-        /* The finalized in-memory wallet leads even the wallet SQLite row.
-         * Prove lookup remains exact in that smaller projection window too.
-         * Heap like the other wallets here: struct wallet is ~40 MB and this
-         * host's main stack cannot carry it. */
+        /* The finalized in-memory wallet leads even the wallet SQLite row;
+         * lookup must stay exact. Heap the ~40 MB struct wallet. */
         struct wallet *owned_wallet = zcl_calloc(1, sizeof(*owned_wallet),
                                                  "rpc-safety-owned-wallet");
         ok = ok && owned_wallet != NULL;
@@ -743,8 +735,7 @@ int test_rpc_safety(void)
         json_free(&verbose_arg);
 
         /* A non-wallet peer must expose a just-confirmed transaction while
-         * every derived index is absent.  This is the real chain-fold window
-         * seen by the two-node payment acceptance. */
+         * every derived index is absent. */
         if (ok) {
             wallet_rpc_context_set_base(NULL, &ms, dir,
                                         NULL, NULL, NULL);
@@ -949,12 +940,11 @@ int test_rpc_safety(void)
         json_free(&params);
 
         /* Slim-flat condition: fixture index entries carry zero merkle/nonce
-         * (like a warm boot from the flat cache); with a durable header
-         * authority registered, getblockheader must hydrate both fields
-         * through the runtime port instead of rendering zeros. Expectations
-         * are deserialized from the same serialized header bytes the stub
-         * authority serves — no hardcoded hex. The same call also pins the
-         * era-bits difficulty against legacy zclassicd's rendered value. */
+         * (warm boot from the flat cache); with a durable header authority
+         * registered, getblockheader must hydrate both through the runtime
+         * port. Expectations are deserialized from the stub authority's
+         * bytes. The call also pins the era-bits difficulty against legacy
+         * zclassicd. */
         rpc_safety_seed_known_header();
         struct block_header want_hdr;
         block_header_init(&want_hdr);
@@ -1231,11 +1221,10 @@ int test_rpc_safety(void)
         json_set_array(&params);
         json_init(&result);
 
-        /* getblockchaininfo must NOT borrow the unresolved active tip (height
-         * 3). When the H* slot is unresolved it now returns a VALID IBD-shaped
-         * object (parseable JSON) rather than the old bare "No provable tip"
-         * error string — but it still reports the PROVABLE height (H* == 1),
-         * never the active/lookahead tip, with initialblockdownload=true. */
+        /* getblockchaininfo must NOT borrow the unresolved active tip
+         * (height 3): with the H* slot unresolved it returns a valid
+         * IBD-shaped object reporting the PROVABLE height (H* == 1) with
+         * initialblockdownload=true. */
         ok = ok && rpc_table_execute(&chain_tbl, "getblockchaininfo",
                                      &params, &result);
         {

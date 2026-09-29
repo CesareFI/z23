@@ -56,7 +56,7 @@ static bool write_file(const char *dir, const char *name,
     return true;
 }
 
-/* ── (a0) Deregister: the inverse of register (GAP-2) ───────────────── */
+/* ── (a0) Deregister: the inverse of register ───────────────── */
 
 static int test_deregister(void)
 {
@@ -82,7 +82,7 @@ static int test_deregister(void)
         ASSERT(rom_seed_serve_lookup(art.chunk_root, 0, &hit)
                == ROM_SERVE_FREE_OK);
 
-        /* The served directory listing carries the parsed height (GAP-4). */
+        /* The served directory listing carries the parsed height. */
         char json[1024];
         size_t jn = rom_seed_directory_json(json, sizeof(json));
         ASSERT(jn > 0);
@@ -430,7 +430,7 @@ static int test_scan_and_directory(void)
     return failures;
 }
 
-/* ── (e) bundles/ subdir scan — swarm-widening reseed (Lane A2) ────────
+/* ── (e) bundles/ subdir scan — swarm-widening reseed ────────
  *
  * boot_bundle_fetch.c lands verified downloads under <datadir>/bundles/, and
  * the installer deliberately RETAINS the source .sqlite there after install.

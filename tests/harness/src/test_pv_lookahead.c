@@ -561,10 +561,9 @@ static bool la_reader_counting_dead(struct block *out,
     return false;
 }
 
-/* 7a primary born-red: one worker, 8 bodiless HAVE_DATA heights. Read
- * attempts over the window must go to ZERO once the retry budget lapses
- * (pre-fix: ~60+ reads per 0.4 s and climbing), and the lifetime total must
- * stay bounded by heights x per-sweep strike budget. */
+/* 7a: one worker, 8 bodiless HAVE_DATA heights. Read attempts over the
+ * window go to ZERO once the retry budget lapses, and the lifetime total
+ * stays bounded by heights x per-sweep strike budget. */
 static int la_test_bodiless_storm(void)
 {
     int failures = 0;
@@ -747,12 +746,9 @@ int test_pv_lookahead(void)
     /* 2) REAL verifier (sapling params + ed25519): h0 proof-free (real ok),
      * h1 garbage joinsplit sig (real proof_invalid/joinsplit_sig). */
     if (!la_params_available()) {
-        /* Honest, LOUD self-skip (counted by test_parallel's "SKIP (" sentinel
-         * scan) — this scenario needs the real Sapling prover/verifier to
-         * drive a genuine joinsplit-signature-invalid verdict; the ~770MB
-         * param files are not in the repo and are not fetched by hosted CI.
-         * Every other differential scenario in this file uses the injected
-         * la_verifier and needs no params at all. */
+        /* Loud self-skip (counted by test_parallel's "SKIP (" sentinel
+         * scan): a genuine joinsplit-signature-invalid verdict needs the
+         * real Sapling verifier and its params, absent on hosted CI. */
         printf("  SKIP (real verifier differential) — ~/.zcash-params "
                "absent; this leg needs the real Sapling prover to drive a "
                "genuine joinsplit-signature-invalid verdict, not the "
@@ -823,14 +819,10 @@ int test_pv_lookahead(void)
      * of parking behind h3, and h4..h7 must consume the warmed verdicts;
      * rows/counters remain serial-identical.
      *
-     * h3 itself is a RACE by design and the count is asserted as a range.  The
-     * worker loop re-sweeps from the lowest gapped height once the claim window
-     * is exhausted (pv_lookahead.c), because on the live/replay path a gap means
-     * "body has not landed yet", not "body is missing".  So once this fixture
-     * makes h3 readable, either the drive reaches it first (inline miss, 4 hits)
-     * or a re-sweeping worker verifies it first (5 hits).  Both are correct and
-     * indistinguishable in the verdict: the serial-identical check below is the
-     * guarantee, and it stays exact.  Only WHO computed h3 varies. */
+     * h3 is a RACE by design and its count is asserted as a range: the
+     * worker loop re-sweeps from the lowest gapped height, so either the
+     * drive reaches it first (inline miss, 4 hits) or a re-sweeping worker
+     * verifies it first (5 hits). The verdict is identical either way. */
     {
         struct la_result serial, pooled;
         la_fold_from(&serial, "g_ser", 8, false, -1, false, false,
@@ -845,9 +837,9 @@ int test_pv_lookahead(void)
                    pooled.warm_ok);
         PVLA_CHECK("gap: wrong h4 hash misses without consuming exact slot",
                    pooled.wrong_hash_missed);
-        /* Six takes either way: h3..h7 plus the wrong-hash probe above. h4..h7
-         * are always hits; h3 is the raced height, so hits is 4 or 5 and the
-         * remainder are misses. drained/cursor stay exact. */
+        /* Six takes either way: h3..h7 plus the wrong-hash probe. h4..h7
+         * are always hits; h3 is the raced height, so hits is 4 or 5.
+         * drained/cursor stay exact. */
         PVLA_CHECK("gap: h4..h7 are hits, h3 raced, six takes total",
                    pooled.hits >= 4 && pooled.hits <= 5 &&
                    pooled.hits + pooled.misses == 6 &&

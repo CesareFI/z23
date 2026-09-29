@@ -1,47 +1,31 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * test_loader_owns_seed_gate — regression gate for the two DEPLOYED
- * daily-driver fixes that previously had NO test (a refactor could revert
- * either and re-wedge the live node with green CI).
+ * test_loader_owns_seed_gate — pins two boot gates.
  *
- * FIX 1 — loader_owns_seed (engine/composition/src/boot_services.c app_init_services).
- *   When -load-snapshot-at-own-height is set, the loader at boot.c has already
- *   re-seeded coins_kv from the body-digest-verified assisted snapshot at its
- *   OWN height and
- *   raised the tip_finalize trusted base there; it is the authoritative seed
- *   for this boot. Both fallback seeders
- *   (boot_refold_from_anchor_arm_if_torn AND
- *   block_index_loader_seed_stages_from_cold_import) MUST be skipped — they
- *   re-seed from the COMPILED checkpoint, dropping the trusted base and
- *   re-wedging forward sync. The skip decision is the PURE predicate
- *   boot_loader_owns_seed(ctx): true iff ctx && ctx->load_snapshot_at_own_height
- *   != NULL. This test pins:
- *     (1) flag SET    -> true  (skip fallbacks; loader owns the seed)
+ * loader_owns_seed (engine/composition/src/boot_services.c app_init_services):
+ *   with -load-snapshot-at-own-height the loader has already re-seeded
+ *   coins_kv from the body-digest-verified snapshot and raised the
+ *   tip_finalize trusted base, so both fallback seeders
+ *   (boot_refold_from_anchor_arm_if_torn and
+ *   block_index_loader_seed_stages_from_cold_import) must be skipped: they
+ *   re-seed from the compiled checkpoint and drop the trusted base. The pure
+ *   predicate boot_loader_owns_seed(ctx) is true iff ctx &&
+ *   ctx->load_snapshot_at_own_height != NULL:
+ *     (1) flag SET    -> true
  *     (2) flag UNSET  -> false (a normal boot still runs the cold-import seed)
  *     (3) ctx == NULL -> false (no crash, no skip)
- *   REGRESSION: if the gate is reverted to ignore load_snapshot_at_own_height
- *   (e.g. always-false / drop the field from the condition), case (1) flips to
- *   false and this test FAILs — exactly the seed-clobber that re-wedges the
- *   live node.
  *
- * FIX 3 — forged-snapshot anchor-hash FATAL
- *   (engine/composition/src/boot_refold_staged.c boot_load_snapshot_at_own_height_reset).
- *   The loaded snapshot's anchor_block_hash MUST byte-equal the in-binary
- *   PoW-proven header hash at the snapshot height; on mismatch the loader
- *   FATALs (refuses a forged / wrong-chain snapshot) rather than seeding
- *   contaminated coins. The match decision is the PURE predicate
- *   boot_snapshot_anchor_hash_matches(index_hash, snapshot_hash): true iff the
- *   two 32-byte hashes are byte-identical. This test pins:
- *     (1) identical 32 bytes        -> true  (chain location matches)
- *     (2) one differing byte        -> false (forged/wrong chain; FATAL fires)
+ * forged-snapshot anchor-hash FATAL
+ *   (engine/composition/src/boot_refold_staged.c boot_load_snapshot_at_own_height_reset):
+ *   the snapshot's anchor_block_hash must byte-equal the in-binary PoW-proven
+ *   header hash at the snapshot height, else the loader FATALs. The pure
+ *   predicate boot_snapshot_anchor_hash_matches(index_hash, snapshot_hash):
+ *     (1) identical 32 bytes        -> true
+ *     (2) one differing byte        -> false
  *     (3) all-zero vs real          -> false (the empty-anchor forgery)
  *     (4) NULL on either side       -> false (refuse, no deref)
- *   REGRESSION: if the memcmp is weakened to always-pass (return true), case
- *   (2)/(3) flip to true and this test FAILs — exactly the forged-snapshot
- *   acceptance that seeds contaminated coins.
  *
- * Both predicates are PURE (no side effects), so this test runs in-process with
- * no fork, no datadir, no progress store — fully deterministic and fast.
+ * Both predicates are pure: in-process, no fork, no datadir, no progress store.
  */
 
 #define _GNU_SOURCE
@@ -130,12 +114,9 @@ int test_loader_owns_seed_gate(void)
     }
 
     /* ── D1: boot_seed_is_shieldless_past_sapling ───────────────────────
-     * A v1 (transparent-only) seed on a chain past Sapling activation is a
-     * guaranteed delayed wedge (utxo_apply.{anchor,nullifier}_backfill_gap at the
-     * first shielded tx). The loader refuses it up front. v2/v3 (live/dev-lane
-     * format) carry shielded state and pass. Mainnet Sapling activation = 476969.
-     * REGRESSION: weaken the gate to always-false and case (a)/(c) flip -> the
-     * shieldless-seed footgun returns (delayed permanent wedge). */
+     * A v1 (transparent-only) seed past Sapling activation (mainnet 476969)
+     * would wedge at the first shielded tx (utxo_apply.{anchor,nullifier}_backfill_gap),
+     * so the loader refuses it up front. v2/v3 carry shielded state and pass. */
     {
         const int64_t SAPLING = 476969;
         const int64_t PAST    = 3189353;  /* real near-tip height */
@@ -166,11 +147,8 @@ int test_loader_owns_seed_gate(void)
 
     /* ── D3: boot_seed_oneshot_headers_ready ────────────────────────────
      * The seed one-shot (-coldstart-seed-oneshot) has no P2P/IBD: it can only
-     * seed at a height whose header the imported block index already holds.
-     * Answerable the instant the block index is loaded, so the loader fails FAST
-     * with a named prerequisite instead of burning a full boot then FATAL-ing.
-     * REGRESSION: invert the comparison and a fresh (no-header) datadir would be
-     * declared "ready" -> burns the boot then FATALs deep in the seed reset. */
+     * seed at a height whose header the imported block index already holds, so
+     * the loader fails fast with a named prerequisite. */
     {
         const int64_t SEED = 3189353;
 

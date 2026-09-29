@@ -1,8 +1,8 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Tests for the network-omniscience operator READ surface (engine/modules/storage/src/
- * census_read.c) that backs the `net census|node|versions|graph` commands and
- * the explorer /network page. The reader folds TWO real writer stores:
+ * Tests for the network-omniscience operator READ surface
+ * (engine/modules/storage/src/census_read.c) behind the `net census|node|versions|graph`
+ * commands and the explorer /network page. The reader folds two writer stores:
  *   <datadir>/peers_projection.db : node_census, census_observations (ip BLOB)
  *   <datadir>/topology.db         : topology_edges, topology_sweeps (ip TEXT)
  *
@@ -22,8 +22,7 @@
  *
  * Every SELECT in census_read.c is exercised against the fixtures.
  *
- * One TEST()/ASSERT() block per function (the TEST macro uses a single fixed
- * `_test_next:` label per function).
+ * One TEST()/ASSERT() block per function (the TEST macro uses one fixed label).
  */
 
 #include "test/test_core.h"
@@ -463,10 +462,8 @@ static int test_crawler_default_gate(void)
         struct network_crawler_config cfg;
         memset(&cfg, 0, sizeof(cfg));
         network_crawler_config_defaults(&cfg);
-        /* The dialer defaults ON so a plain boot obsesses about the whole
-         * network; -netcrawl=0 / ZCL_NETWORK_CRAWLER=0 opt out (resolved in
-         * network_crawler_start via ncrawl_config_from_env). The rate limits
-         * stay bounded for always-on. */
+        /* The dialer defaults ON; -netcrawl=0 / ZCL_NETWORK_CRAWLER=0 opt out
+         * (network_crawler_start via ncrawl_config_from_env). Rate limits stay bounded. */
         ASSERT(cfg.enabled);
         ASSERT(cfg.max_per_round >= 1 &&
                cfg.max_per_round <= NCRAWL_MAX_PER_ROUND);

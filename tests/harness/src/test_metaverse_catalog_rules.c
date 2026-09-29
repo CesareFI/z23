@@ -45,7 +45,7 @@
 #include "vcs/package_store.h"
 
 /* Test-only seam for deterministic mutation between the hash and final
- * fingerprint pass. Production callers only see the ordinary property API. */
+ * fingerprint pass. */
 #include "../../metaverse/src/metaverse_priv.h"
 
 #include <dirent.h>
@@ -246,10 +246,7 @@ static int action_case_names_and_masks(char *buf, size_t buf_cap)
         }
         MV_CHECK("actions: every table row names itself back", ok);
     }
-    /* Both bits below name a real action on their own, so NULL here can only
-     * be caused by the value having two bits — not by one of them being
-     * unnameable, which is what the old INSPECT|HOST pair could not
-     * distinguish. */
+    /* Both bits name a real action, so NULL can only come from two bits set. */
     MV_CHECK("actions: a multi-bit value has no single name",
              metaverse_action_name(METAVERSE_ACTION_HOST |
                                    METAVERSE_ACTION_PUBLISH_REVISION) == NULL &&
@@ -266,9 +263,7 @@ static int action_case_names_and_masks(char *buf, size_t buf_cap)
                                           buf_cap) &&
              strncmp(buf, "host,publish_revision,", 22) == 0 &&
              strstr(buf, "revoke") != NULL &&
-             /* The reserved name is legible on its own but must never appear
-              * in a rendered ACTION set — that is the whole point of the
-              * split, and a substring search is what catches a reissue. */
+             /* The reserved name must never appear in a rendered ACTION set. */
              strstr(buf, "inspect") == NULL);
     MV_CHECK("actions: a buffer too small refuses instead of truncating "
              "(a short list must not read as fewer rights)",
@@ -280,25 +275,19 @@ static int action_case_names_and_masks(char *buf, size_t buf_cap)
 static int action_case_semantics(void)
 {
     int failures = 0;
-    /* MUTATING is column 6 — state OUTSIDE this node — so the complement is
-     * every action whose effect stays local: HOST (this node's own storage),
-     * DELEGATE and REVOKE (this node's own grant records). Derived from the
-     * table, not from the header comment above it, which says HOST is the one
-     * absent action and is wrong about DELEGATE and REVOKE. */
+    /* MUTATING is state outside this node; the complement is every local
+     * action: HOST, DELEGATE and REVOKE (derived from the table). */
     MV_CHECK("actions: HOST/DELEGATE/REVOKE are the only non-external verbs",
              (METAVERSE_ACTION_ALL & ~(uint32_t)METAVERSE_ACTION_MUTATING) ==
                  (METAVERSE_ACTION_HOST | METAVERSE_ACTION_DELEGATE |
                   METAVERSE_ACTION_REVOKE));
-    /* "Not external" is not "harmless". Conflating the two is exactly the
-     * design error that made MUTATING equal ALL in review, so the two columns
-     * are asserted apart here: HOST is outside MUTATING AND still audited. */
+    /* "Not external" is not "harmless": HOST is outside MUTATING and still audited. */
     MV_CHECK("actions: a local-only action still mints a receipt",
              !metaverse_action_is_mutation(METAVERSE_ACTION_HOST) &&
              metaverse_action_requires_receipt(METAVERSE_ACTION_HOST) &&
              metaverse_action_requires_plan_commit(METAVERSE_ACTION_HOST) &&
              metaverse_action_changes_state(METAVERSE_ACTION_HOST));
-    /* Every action changes something, so the two masks must NOT coincide in
-     * the other direction either. */
+    /* The masks must not coincide in the other direction either. */
     MV_CHECK("actions: CHANGES_STATE is ALL and MUTATING is strictly smaller",
              (uint32_t)METAVERSE_ACTION_CHANGES_STATE ==
                  (uint32_t)METAVERSE_ACTION_ALL &&
@@ -398,13 +387,10 @@ int t_adapter_registry(void)
 
 /* ── 3a: the MVP scope partition is a pinned decision ───────────────────── */
 
-/* docs/METAVERSE_MVP.md criterion MM3: the catalog is complete OR honestly
- * scoped. This table IS the scope decision — the four datadir-provable kinds
- * are in MVP scope, the four runtime/node.db kinds are explicitly out — and
- * it is asserted against the live registry so a kind silently moving between
- * the two sets (or an unwired kind losing its reason) fails here. The
- * MV_MVP_SCOPE marker naming this contract lives with the declarations in
- * contexts/commons/modules/metaverse/src/adapter_registry.c. */
+/* docs/METAVERSE_MVP.md MM3: the catalog is complete or honestly scoped.
+ * The four datadir-provable kinds are in MVP scope, the four runtime/node.db
+ * kinds out; asserted against the live registry (MV_MVP_SCOPE in
+ * contexts/commons/modules/metaverse/src/adapter_registry.c). */
 int t_mvp_scope_decision(void)
 {
     int failures = 0;
@@ -415,11 +401,8 @@ int t_mvp_scope_decision(void)
     static const enum metaverse_kind k_out_of_scope[] = {
         METAVERSE_KIND_HOSTED_SERVICE, METAVERSE_KIND_ENDPOINT_ONION,
         METAVERSE_KIND_STOREFRONT_PRODUCT, METAVERSE_KIND_CONTRACT_SWAP,
-        /* Content-addressed but not ENUMERABLE from a datadir: a character is
-         * verified by recomputing it from the birth seed presented with it,
-         * and no path on disk lists the seeds this node holds. Out of scope
-         * for the same reason as the four above — no honest datadir-only
-         * projection exists — arrived at from the opposite direction. */
+        /* Content-addressed but not enumerable from a datadir: no path lists
+         * the birth seeds this node holds. */
         METAVERSE_KIND_CHARACTER_SHEET,
     };
     size_t in_wired = 0, out_reasoned = 0;
@@ -448,11 +431,8 @@ int t_mvp_scope_decision(void)
 
 /* ── 3b: settlement classes ───────────────────────────────────────── */
 
-/* An independent second opinion on the kind table's fourth column. The
- * table is the authority; this array is written from the SUBSYSTEM
- * behaviour (does the model hash bytes, record a chain ordering, or just
- * assert?) so that silently reclassifying a kind to make something else
- * pass fails here. */
+/* Independent check of the kind table's fourth column, written from
+ * subsystem behaviour so a silent reclassification fails here. */
 struct mv_expected_settlement {
     enum metaverse_kind kind;
     enum metaverse_settlement settlement;
@@ -462,8 +442,7 @@ static const struct mv_expected_settlement k_expected_settlement[] = {
     /* The id IS the manifest root; verification hashes bytes. */
     { METAVERSE_KIND_CONTENT,     METAVERSE_SETTLEMENT_CONTENT_ADDRESSED },
     { METAVERSE_KIND_ZCODE_PACKAGE, METAVERSE_SETTLEMENT_CONTENT_ADDRESSED },
-    /* OP_RETURN first-come-first-served: an ordering, settled by work, and
-     * both models record the ZCL height that fixes it. */
+    /* OP_RETURN first-come-first-served: work-settled ordering at a ZCL height. */
     { METAVERSE_KIND_ZNAM_NAME,   METAVERSE_SETTLEMENT_PROOF_OF_WORK },
     { METAVERSE_KIND_ZSLP_ASSET,  METAVERSE_SETTLEMENT_PROOF_OF_WORK },
     /* Nothing outside this process has agreed these exist. */
@@ -473,16 +452,11 @@ static const struct mv_expected_settlement k_expected_settlement[] = {
       METAVERSE_SETTLEMENT_LOCAL_DECLARATION },
     { METAVERSE_KIND_STOREFRONT_PRODUCT,
       METAVERSE_SETTLEMENT_LOCAL_DECLARATION },
-    /* models/swap_contract.h stores funding_txid but no funding HEIGHT,
-     * and `chain` may be one whose height this node refuses to claim it
-     * can observe. Chain-anchored, not measurable here. */
+    /* No funding HEIGHT is stored and the chain may be unobservable:
+     * chain-anchored, not measurable here. */
     { METAVERSE_KIND_CONTRACT_SWAP,
       METAVERSE_SETTLEMENT_CHAIN_ANCHORED_INCOMPLETE },
-    /* The id is the hash of the character's own birth seed plus the rules
-     * revision, and metaverse/character_sheet.h recomputes the whole sheet
-     * from it: a verifier hashes what it was handed. No registry, no chain,
-     * no peer — the same mechanism as content and zcode_package, reached
-     * without any store existing at all. */
+    /* Recomputed from the birth seed: a verifier hashes what it was handed. */
     { METAVERSE_KIND_CHARACTER_SHEET,
       METAVERSE_SETTLEMENT_CONTENT_ADDRESSED },
 };
@@ -504,10 +478,7 @@ static int settlement_case_classified_and_matches(void)
             enum metaverse_settlement s = metaverse_kind_settlement(kk);
             bool found = false;
 
-            /* Exactly one class, and never the invalid zero. The compiler
-             * already refuses a table row with no fourth column and a
-             * fourth column outside the enum; this catches the remaining
-             * case, a kind whose class is UNKNOWN or out of range. */
+            /* Exactly one class, never the invalid zero or an UNKNOWN/out-of-range one. */
             if (s <= METAVERSE_SETTLEMENT_UNKNOWN ||
                 s >= METAVERSE_SETTLEMENT_COUNT)
                 classified = false;
@@ -595,8 +566,7 @@ static int settlement_case_measurable_and_independence(void)
                  METAVERSE_SETTLEMENT_CHAIN_ANCHORED_INCOMPLETE) &&
              !metaverse_settlement_work_measurable(
                  METAVERSE_SETTLEMENT_UNKNOWN));
-    /* Settlement is NOT a re-spelling of chain_bound evidence: the two
-     * axes must be able to disagree, or one of them is redundant. */
+    /* Settlement is not chain_bound evidence: the axes can disagree. */
     MV_CHECK("settlement: the class is a property of the kind, not of the "
              "evidence grade",
              metaverse_kind_settlement(METAVERSE_KIND_CONTENT) !=
@@ -952,8 +922,7 @@ static int surfaced_case_local_declaration_view(void)
     int failures = 0;
     struct json_value j;
 
-    /* Settlement and evidence are separate axes: a locally-declared
-     * property still gets a full view, and the view says both. */
+    /* Settlement and evidence are separate axes: both appear in the view. */
     json_init(&j);
     MV_CHECK("surface: a locally-declared kind renders the blunt "
              "wording alongside its evidence fields",
@@ -970,8 +939,7 @@ static int surfaced_case_local_declaration_view(void)
 static int surfaced_case_property_views(void)
 {
     int failures = 0;
-    /* The per-property view, which is what `metaverse property show`
-     * renders. */
+    /* The per-property view (`metaverse property show`). */
     failures += surfaced_case_content_view();
     failures += surfaced_case_pow_view();
     failures += surfaced_case_local_declaration_view();

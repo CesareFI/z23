@@ -1,26 +1,18 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * test_refold_retro_validate — the ONE end-to-end fixture proving the sovereign
- * cure on a small chain: MINT a SHA3-verified anchor snapshot at height M, run
- * the production -refold-from-anchor reset to re-seed coins_kv from that anchor,
- * fold forward M->N over synthetic on-disk stage logs, and assert H* (the
- * provable tip, reducer_frontier_compute_hstar) CLIMBS from M to N with no halt.
- * Then RETROACTIVELY VALIDATE: independently re-seed a second coins_kv from the
- * SAME verified anchor, fold ONLY M->K, and assert its coins_kv_commitment at K
- * equals (a) the boundary root the M->N fold recorded at K and (b) an
- * independent snapshot commitment captured at K.
+ * test_refold_retro_validate — end-to-end fixture for the sovereign cure on a
+ * small chain: MINT a SHA3-verified anchor snapshot at height M, run the
+ * production -refold-from-anchor reset to re-seed coins_kv, fold forward M->N
+ * over synthetic stage logs, and assert H* (reducer_frontier_compute_hstar)
+ * climbs from M to N with no halt. Then re-seed a second coins_kv from the same
+ * anchor, fold only M->K, and assert its coins_kv_commitment at K equals the
+ * boundary root the M->N fold recorded at K and an independent snapshot
+ * commitment captured at K.
  *
- * This closes the gap the task names: existing tests prove the pieces in
- * isolation (test_refold_from_anchor_fatal: refold->authority@anchor+1, no climb;
- * test_refold_progress_floor: H* climb on synthetic logs, no verified anchor;
- * test_keystone_utxo_binding: boundary-root round-trip, no real fold) but NO
- * single test chains MINT -> refold-climb -> retro-commitment-equality.
- *
- * The fixture lowers the compiled anchor (reducer_frontier_test_set_compiled_anchor)
- * and installs a test checkpoint (checkpoints_set_sha3_override_for_test) whose
- * sha3_hash IS the real commitment of a hand-built coins_kv set, so the IDENTICAL
- * production logic runs at a handful of rows instead of 3 million. The gate is
- * H* CLIMB + commitment equality — never "booted without FATAL".
+ * The compiled anchor is lowered (reducer_frontier_test_set_compiled_anchor)
+ * and a test checkpoint (checkpoints_set_sha3_override_for_test) carries the
+ * real commitment of a hand-built coins_kv set, so the production logic runs at
+ * a handful of rows. The gate is H* climb plus commitment equality.
  */
 
 #define _GNU_SOURCE
@@ -59,10 +51,7 @@ void reducer_frontier_test_set_compiled_anchor(int32_t height);
 #define RV_TIP_N    ((int32_t)400)
 #define RV_RETRO_K  ((int32_t)300)   /* M < K <= N, K % 100 == 0 (a boundary) */
 
-/* ── synthetic stage-log fold harness (the same shape boot_refold_from_anchor_reset
- *    leaves behind: 8 stage cursors at the anchor + empty *_log tables that the
- *    pipeline then fills anchor+1..tip). We fill the *_log tables + cursors by
- *    hand so reducer_frontier_compute_hstar reads an identical durable image. ── */
+/* ── synthetic stage-log fold harness: 8 stage cursors at the anchor plus empty *_log tables filled anchor+1..tip by hand so compute_hstar reads an identical durable image. ── */
 
 static void rv_synth_hash(uint8_t out[32], int32_t h)
 {
@@ -168,9 +157,7 @@ static bool rv_put_consistent(sqlite3 *db, int32_t h)
 
 static bool rv_set_cursor(sqlite3 *db, const char *name, int64_t cursor)
 {
-    /* The production stage_cursor schema (platform/modules/util/src/stage.c) carries a
-     * NOT NULL updated_at column — boot_refold_from_anchor_reset materializes
-     * it, so write all three columns. */
+    /* The production stage_cursor schema has a NOT NULL updated_at column; write all three columns. */
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db,
             "INSERT OR REPLACE INTO stage_cursor(name,cursor,updated_at) "
@@ -224,9 +211,7 @@ static bool rv_hstar(sqlite3 *db, int32_t *out)
     return ok;
 }
 
-/* Deterministic coin: txid derived from index, one output. The set we build at M
- * is the "anchor UTXO set"; each folded block ADDS one coin (no spends keeps the
- * canonical-order commitment trivially deterministic + monotone). */
+/* Deterministic coin: txid derived from index, one output. Each folded block adds one coin (no spends), keeping the commitment deterministic and monotone. */
 static bool rv_add_coin(sqlite3 *db, int32_t idx, int32_t height)
 {
     uint8_t txid[32];
@@ -267,8 +252,7 @@ int test_refold_retro_validate(void)
     char dir[256];
     test_make_tmpdir(dir, sizeof(dir), "refold_retro", "main");
 
-    /* ── PHASE 0: lowered anchor + the ANCHOR coin set + the override checkpoint
-     *    whose sha3_hash IS that set's real commitment at height M. ── */
+    /* ── PHASE 0: lowered anchor, the anchor coin set, and the override checkpoint whose sha3_hash is that set's commitment at M. ── */
     reducer_frontier_test_set_compiled_anchor(RV_ANCHOR_M);
 
     RV_CHECK("progress_store opens", progress_store_open(dir));
@@ -331,9 +315,7 @@ int test_refold_retro_validate(void)
     for (int i = 0; i < 32; i++) cp.block_hash[i] = (uint8_t)(0xAB ^ i);
     checkpoints_set_sha3_override_for_test(&cp);
 
-    /* ── PHASE 1: MINT the verified anchor snapshot at M (production writer). The
-     *    body SHA3 == coins_kv_commitment == cp.sha3_hash by construction, so the
-     *    artifact is SHA3-verified vs the compiled checkpoint. ── */
+    /* ── PHASE 1: MINT the anchor snapshot at M (production writer); body SHA3 == coins_kv_commitment == cp.sha3_hash. ── */
     char snap_path[400];
     snprintf(snap_path, sizeof(snap_path), "%s/utxo-anchor.snapshot", dir);
     setenv("ZCL_MINT_ANCHOR_OUT", snap_path, 1);
@@ -363,10 +345,7 @@ int test_refold_retro_validate(void)
         }
     }
 
-    /* ── PHASE 2: run the PRODUCTION -refold-from-anchor reset. It re-seeds
-     *    coins_kv from the verified snapshot, HARD-ASSERTS it reproduces the
-     *    checkpoint, and forces the 8 cursors to M. Assert coins_kv becomes the
-     *    proven authority at M+1 (the positive-control invariant). ── */
+    /* ── PHASE 2: run the production -refold-from-anchor reset: re-seeds coins_kv from the snapshot, asserts it reproduces the checkpoint, forces the 8 cursors to M. coins_kv becomes proven authority at M+1. ── */
     char ndbpath[460];
     snprintf(ndbpath, sizeof(ndbpath), "%s/node.db", dir);
     struct node_db ndb;
@@ -395,18 +374,12 @@ int test_refold_retro_validate(void)
                  coins_kv_count(pdb) == (int64_t)cp.utxo_count);
     }
 
-    /* Mark the from-anchor refold active so reducer_frontier_floor() holds the
-     * floor AT the anchor (M) — the same flag the boot path sets after the reset.
-     * (boot_refold_from_anchor_reset itself does not set it; the caller does.) */
+    /* Mark the from-anchor refold active so reducer_frontier_floor() holds the floor at M (the boot path sets this flag after the reset). */
     RV_CHECK("mark refold-from-anchor active (resume target N)",
              refold_progress_mark_started_from_anchor(pdb, RV_TIP_N));
     RV_CHECK("refold_from_anchor_active() true", refold_from_anchor_active());
 
-    /* ── PHASE 3: PROVE H* CLIMBS M -> N. Before any fold the cursors sit at M and
-     *    the *_log tables are empty above M, so H* == M (the floor). Fold forward
-     *    one block at a time, filling every stage log + advancing the cursors, and
-     *    recording the boundary root at each MMR boundary exactly as the live path
-     *    does (tip_finalize_post_step.c:216-220). ── */
+    /* ── PHASE 3: PROVE H* CLIMBS M -> N. Before any fold H* == M (the floor). Fold forward one block at a time, filling every stage log, advancing the cursors, and recording the boundary root at each MMR boundary (tip_finalize_post_step.c). ── */
     int32_t hstar_start = -1;
     RV_CHECK("compute H* at anchor", rv_hstar(pdb, &hstar_start));
     RV_CHECK("H* starts AT the anchor (M)", hstar_start == RV_ANCHOR_M);
@@ -424,8 +397,7 @@ int test_refold_retro_validate(void)
                     && rv_set_all_cursors(pdb, h + 1);
         if (!step_ok) { climbed_monotone = false; break; }
 
-        /* at an MMR boundary, RECORD the per-height UTXO root over the live set
-         * AS IT STANDS AFTER this block — the retro-validation target. */
+        /* at an MMR boundary, record the UTXO root over the live set after this block. */
         if (h % MMR_COMMITMENT_INTERVAL == 0) {
             uint8_t root[32] = {0};
             if (coins_kv_commitment(pdb, root) != 0 ||
@@ -462,14 +434,12 @@ int test_refold_retro_validate(void)
     }
     RV_CHECK("captured boundary root at K", captured_K);
 
-    /* publish the served provable tip the cutover serve points read, then confirm
-     * the lock-free cache reflects the tip — the value getblockcount would serve. */
+    /* publish the served provable tip and confirm the lock-free cache reflects it. */
     reducer_frontier_provable_tip_set(hstar_end);
     RV_CHECK("served provable-tip cache == tip (cutover value)",
              reducer_frontier_provable_tip_cached() == RV_TIP_N);
 
-    /* capture the boundary root the M->N fold recorded at K from the durable
-     * table (the readback the catch-up / rebuild side uses — no refold). */
+    /* capture the boundary root recorded at K from the durable table. */
     uint8_t recorded_root_at_K[32] = {0};
     {
         bool found = false;
@@ -478,11 +448,7 @@ int test_refold_retro_validate(void)
                                             &found) && found);
     }
 
-    /* ── PHASE 4: RETROACTIVE VALIDATION. Independently re-seed a SECOND coins_kv
-     *    from the SAME verified anchor snapshot, fold ONLY M->K, and assert its
-     *    commitment at K == (a) the recorded boundary root, (b) the live boundary
-     *    root captured during the M->N fold. Equality proves the verified-anchor
-     *    fold reproduces the stopgap state at K EXACTLY. ── */
+    /* ── PHASE 4: RETROACTIVE VALIDATION. Re-seed a second coins_kv from the same anchor, fold only M->K, and assert its commitment at K equals the recorded and the live boundary roots. ── */
     char dir2[256];
     test_make_tmpdir(dir2, sizeof(dir2), "refold_retro2", "main");
 
@@ -492,8 +458,7 @@ int test_refold_retro_validate(void)
     RV_CHECK("pdb2 handle", pdb2 != NULL);
     RV_CHECK("pdb2 coins_kv schema", coins_kv_ensure_schema(pdb2));
 
-    /* Re-seed pdb2 from the SAME minted, SHA3-verified snapshot (uss_open binds it
-     * to the checkpoint root before a single coin lands). */
+    /* Re-seed pdb2 from the same minted snapshot (uss_open binds it to the checkpoint root). */
     {
         char err[128] = {0};
         struct uss_header hdr;
@@ -509,7 +474,7 @@ int test_refold_retro_validate(void)
         }
         RV_CHECK("retro: re-seeded from verified anchor", loaded);
     }
-    /* the independent re-seed reproduces the anchor commitment exactly. */
+    /* the re-seed reproduces the anchor commitment exactly. */
     {
         uint8_t got[32] = {0};
         RV_CHECK("retro: independent seed commitment == anchor root",
@@ -517,8 +482,7 @@ int test_refold_retro_validate(void)
                  memcmp(got, anchor_root, 32) == 0);
     }
 
-    /* Fold ONLY M->K on pdb2, applying the IDENTICAL per-block coin the M->N fold
-     * applied (rv_add_coin(h,h)) — the canonical UTXO set at K must be identical. */
+    /* Fold only M->K on pdb2 with the identical per-block coin (rv_add_coin(h,h)). */
     bool fold2_ok = true;
     for (int32_t h = RV_ANCHOR_M + 1; h <= RV_RETRO_K; h++)
         if (!rv_add_coin(pdb2, h, h)) { fold2_ok = false; break; }
@@ -539,8 +503,7 @@ int test_refold_retro_validate(void)
 
     bool retro_matches = match_recorded && match_live;
 
-    /* NEGATIVE control: a state-wrong coin at K must CHANGE the commitment, so the
-     * retro-validation could NOT spuriously pass on a corrupted set. */
+    /* NEGATIVE control: a state-wrong coin at K must change the commitment. */
     {
         const int32_t idx = 5;  /* same derivation as rv_add_coin(idx, ...) */
         uint8_t txid[32];

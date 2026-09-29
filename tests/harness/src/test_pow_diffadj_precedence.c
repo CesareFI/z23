@@ -51,16 +51,13 @@
     else { printf("FAIL\n"); failures++; }              \
 } while (0)
 
-/* Number of linked block_index nodes to build. The averaging loop in
- * GetNextWorkRequired walks pprev nPowAveragingWindow (17) times starting at
- * pindexLast; pindexFirst must still be non-NULL after the walk or the
- * function bails out to powLimit. 17 hops need 18 nodes; build a few extra so
- * the median-time-past walk (11 deep) also has data at every node. */
+/* Linked block_index nodes to build: the averaging loop walks pprev
+ * nPowAveragingWindow (17) times and pindexFirst must stay non-NULL, so 18
+ * nodes plus extras for the 11-deep median-time-past walk. */
 #define PDP_CHAIN_LEN 24
 
-/* nBits for every block in the synthetic chain: clearly TIGHTER (harder) than
- * any network powLimit, so the averaging retarget result is unmistakably NOT
- * nProofOfWorkLimit. 0x1c0fffff is a typical mid-history ZClassic target. */
+/* nBits for every block: tighter than any network powLimit, so the averaging
+ * result is unmistakably not nProofOfWorkLimit. */
 #define PDP_CHAIN_NBITS 0x1c0fffffu
 
 static const char *pdp_net_id(enum chain_network net)
@@ -80,10 +77,9 @@ static enum chain_network pdp_current_net(void)
     return CHAIN_MAIN;
 }
 
-/* Build a chain of PDP_CHAIN_LEN block_index nodes ending at height
- * `tip_height`, each spaced `spacing` seconds apart, all with nBits =
- * PDP_CHAIN_NBITS. chain[PDP_CHAIN_LEN-1] is pindexLast (the tip). Times are
- * monotonically increasing so median-time-past is well-defined. */
+/* Build PDP_CHAIN_LEN block_index nodes ending at `tip_height`, `spacing`
+ * seconds apart, all with nBits = PDP_CHAIN_NBITS; chain[PDP_CHAIN_LEN-1] is
+ * pindexLast. Times increase monotonically. */
 static void pdp_build_chain(struct block_index chain[PDP_CHAIN_LEN],
                             int tip_height, int64_t spacing, int64_t base_time)
 {
@@ -106,18 +102,16 @@ int test_pow_diffadj_precedence(void)
     enum chain_network saved_net = pdp_current_net();
 
     /* ───────────────────────────────────────────────────────────────────
-     * PRIMARY (TESTNET, scale=false): at a BUTTERCUP-window height, a late
-     * block (time > prev + spacing*12) must NOT take the min-diff branch —
-     * zcl23 falls through to the AVERAGING retarget. Pin: GetNextWorkRequired
-     * returns the averaging result, NOT nProofOfWorkLimit.
+     * PRIMARY (TESTNET, scale=false): at a BUTTERCUP-window height a late
+     * block must NOT take the min-diff branch; GetNextWorkRequired returns
+     * the averaging result, NOT nProofOfWorkLimit.
      * ─────────────────────────────────────────────────────────────────── */
     {
         chain_params_select(CHAIN_TESTNET);
         const struct chain_params *cp = chain_params_get();
         const struct consensus_params *params = &cp->consensus;
 
-        /* Sanity-pin the params this case relies on (so a chainparams edit
-         * that changes the premise fails here, not silently). */
+        /* Pin the params this case relies on. */
         PDP_CHECK("testnet: scale==false",
                   params->scaleDifficultyAtUpgradeFork == false);
         PDP_CHECK("testnet: nPowAveragingWindow==17",
@@ -127,12 +121,10 @@ int test_pow_diffadj_precedence(void)
         PDP_CHECK("testnet: BUTTERCUP activates at 78856",
                   buttercup_act == 78856);
 
-        /* pindexLast at height (buttercup_act - 1) ⇒ nHeight = buttercup_act,
-         * the FIRST height of the BUTTERCUP averaging window
-         * [buttercup_act, buttercup_act + window). Also confirm the second,
-         * unconditional min-diff branch (nPowAllowMinDifficultyEnabled) does
-         * NOT fire here: it needs pindexLast->nHeight >= 299187, and our tip
-         * height (78855) is far below that. */
+        /* pindexLast at height (buttercup_act - 1): the first height of the
+         * BUTTERCUP averaging window. The unconditional min-diff branch
+         * (nPowAllowMinDifficultyEnabled) needs height >= 299187 and does not
+         * fire. */
         const int tip_height = buttercup_act - 1;     /* 78855 */
         const int next_height = tip_height + 1;        /* 78856 */
         PDP_CHECK("testnet: tip below min-diff-after height (second branch "
@@ -149,8 +141,7 @@ int test_pow_diffadj_precedence(void)
         const unsigned int powlimit_bits =
             arith_uint256_get_compact(&pow_limit, false);
 
-        /* A late block: time exceeds prev by MORE than spacing*12 — the exact
-         * input that triggers the min-diff return in the BUTTERCUP branch. */
+        /* A late block: time exceeds prev by MORE than spacing*12. */
         struct block_header late;
         block_header_init(&late);
         late.nTime = (uint32_t)(block_index_get_time(pindexLast) + spacing * 12 + 1);
@@ -158,11 +149,9 @@ int test_pow_diffadj_precedence(void)
 
         unsigned int got = GetNextWorkRequired(pindexLast, &late, params);
 
-        /* Independently compute what the AVERAGING path yields (the branch we
-         * claim zcl23 takes): every block has identical nBits, so bnAvg ==
-         * that target, fed into CalculateNextWorkRequired with the chain's
-         * median times. This is the EXACT value GetNextWorkRequired must
-         * return when the min-diff branch is (correctly, today) skipped. */
+        /* The averaging path's value: every block has identical nBits, so
+         * bnAvg == that target, fed into CalculateNextWorkRequired with the
+         * chain's median times. */
         struct arith_uint256 bnAvg;
         arith_uint256_set_compact(&bnAvg, PDP_CHAIN_NBITS, NULL, NULL);
         const struct block_index *pindexFirst = pindexLast;
@@ -185,16 +174,14 @@ int test_pow_diffadj_precedence(void)
                   got != powlimit_bits);
         PDP_CHECK("testnet late block returns the AVERAGING result",
                   got == avg_expected);
-        /* Belt-and-suspenders: the averaging result itself is the tighter
-         * chain target region, not the loose powLimit. */
+        /* The averaging result is the tighter chain target, not powLimit. */
         PDP_CHECK("testnet averaging result is tighter than powLimit",
                   avg_expected != powlimit_bits);
     }
 
     /* ───────────────────────────────────────────────────────────────────
-     * COMPANION (MAINNET, scale=true): the SAME shape at a mainnet
-     * BUTTERCUP-window height DOES take the min-diff branch — mainnet is
-     * unaffected by the precedence bug. Pin: GetNextWorkRequired returns
+     * COMPANION (MAINNET, scale=true): the same shape at a mainnet
+     * BUTTERCUP-window height DOES take the min-diff branch and returns
      * nProofOfWorkLimit.
      * ─────────────────────────────────────────────────────────────────── */
     {

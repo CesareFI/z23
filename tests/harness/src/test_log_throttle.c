@@ -1,12 +1,10 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * Unit tests for the shared log_throttle de-storm primitive (util/log_throttle).
- * These pin the EXACT cadence the three reducer sites (tip_finalize cursor-gap +
- * precondition, reducer_frontier coin-tear, reconcile_light gate-suppress) rely
- * on: emit on first key / key change / keepalive-elapsed, with the suppressed
- * repeat count reported as the prior key's count on a change and the running
- * count on a keep-alive. The clock is caller-supplied, so these are pure and
- * deterministic — no real time. */
+ * They pin the cadence its reducer callers rely on: emit on first key / key
+ * change / keepalive-elapsed, reporting the prior key's suppressed count on a
+ * change and the running count on a keep-alive. The clock is caller-supplied,
+ * so the tests are deterministic. */
 
 #include "test/test_core.h"
 

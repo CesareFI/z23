@@ -2,38 +2,21 @@
  *
  * test_retrieval — the cognition/modules/retrieval gate.
  *
- * A ranking is only worth quoting if it has properties, and "it returned
- * some documents" is not one. These are the ones that make a ranked answer
- * something one node can hand another:
+ * Ranking properties, on a five-document corpus with expected orders worked
+ * out by hand from the BM25 formula. Assertions are on ORDER and integer
+ * document frequencies, not float equality.
  *
- *  1. THE ANSWERS ARE THE KNOWN ANSWERS. A five-document corpus is written
- *     out here in full, and every expected order below was worked out from
- *     the BM25 formula by hand against those exact texts, not read off a
- *     run. Assertions are on ORDER and on integer document frequencies, not
- *     on float equality: a score that agrees to the last bit at -O2 and not
- *     at -O0 would fail a test that proves nothing anyone needs.
- *
- *  2. RARITY OUTRANKS PRESENCE. A term in one document out of five must beat
- *     a term in two, at equal length and equal frequency. This is the whole
- *     reason to leave substring matching behind, so it is asserted directly.
- *
- *  3. LENGTH IS NORMALISED. Same term, same count, shorter document wins.
- *
- *  4. THE ORDER IS TOTAL. Two documents that score identically come back in
- *     ascending id, every time. The corpus below contains a deliberate exact
- *     tie for this. Without it the answer depends on qsort's behaviour on
- *     equal elements, which is free to differ between two honest nodes.
- *
- *  5. A POISONED INDEX ANSWERS NOTHING. An insertion is failed on purpose
- *     through the allocation fault hook; from there the index must refuse
- *     every query rather than answer from a corpus with a hole in it. A
- *     retrieval index that degrades quietly is worse than one that stops.
- *
- *  6. TOKENIZING IS NOT LOCALE-SHAPED. Case folds, punctuation and
- *     underscores separate, bytes outside ASCII separate rather than joining
- *     words, and a run longer than the token limit is chunked rather than
- *     truncated — no input silently loses text.
- */
+ *  1. The answers are the known answers.
+ *  2. Rarity outranks presence: a term in one document beats a term in two
+ *     at equal length and frequency.
+ *  3. Length is normalised: same term and count, shorter document wins.
+ *  4. The order is total: equal scores come back in ascending id (the corpus
+ *     holds an exact tie).
+ *  5. A poisoned index answers nothing: after an injected allocation failure
+ *     every query is refused.
+ *  6. Tokenizing is not locale-shaped: case folds, punctuation and
+ *     underscores separate, non-ASCII bytes separate, and a run longer than
+ *     the token limit is chunked rather than truncated. */
 
 #include "test/test_core.h"
 
@@ -52,14 +35,11 @@
 
 /* ── the corpus ────────────────────────────────────────────────────────
  *
- * Token counts, counted by hand and asserted below:
- *   1 net      10    2 sync     10    3 crypto  10
- *   4 receipt  13    5 test     13          total 56, avgdl 11.2
+ * Token counts: 1 net 10, 2 sync 10, 3 crypto 10, 4 receipt 13, 5 test 13;
+ * total 56, avgdl 11.2.
  *
- * "receipt" appears in documents 4 and 5, both of length 13, once each — an
- * exact scoring tie, which is what proves the tie-break. Document 3 holds
- * "receipts", a different token; that is deliberate, and it is also why this
- * index is a retrieval aid and not a search engine. */
+ * "receipt" appears once each in documents 4 and 5 (both length 13): an exact
+ * scoring tie. Document 3 holds "receipts", a different token. */
 static const char *const k_names[] = { "net", "sync", "crypto", "receipt",
                                        "test" };
 static const char *const k_texts[] = {
@@ -102,8 +82,7 @@ static struct zcl_retrieval *corpus_build(void)
     return r;
 }
 
-/* Name of the nth hit, or "" when there is no nth hit. Comparing names
- * rather than ids keeps the expectations readable. */
+/* Name of the nth hit, or "" when there is none. */
 static const char *hit_name(const struct zcl_retrieval *r,
                             const struct zcl_retrieval_hit *h, size_t n,
                             size_t count)
@@ -192,10 +171,7 @@ static int case_known_answers(void)
     n = zcl_retrieval_query(r, "!!! ...", h, 8);
     RT_CHECK("a query with no tokens returns nothing", n == 0);
 
-    /* RARITY. idf(sha3)=log(4)=1.386 over one document; idf(node)=log(2.4)
-     * =0.876 over two. Documents 2 and 3 are both ten tokens, so the length
-     * factor is identical and only rarity separates them. Document 4 holds
-     * "node" too but is thirteen tokens, so it comes last. */
+    /* RARITY. idf(sha3)=log(4)=1.386 over one document; idf(node)=log(2.4)=0.876 over two. Documents 2 and 3 have equal length, so only rarity separates them; document 4 has thirteen tokens and comes last. */
     n = zcl_retrieval_query(r, "node sha3", h, 8);
     RT_CHECK("three documents answer 'node sha3'", n == 3);
     RT_CHECK("the rare term wins outright",
@@ -207,9 +183,7 @@ static int case_known_answers(void)
     RT_CHECK("and the scores fall in that order",
              h[0].score > h[1].score && h[1].score > h[2].score);
 
-    /* THE TIE. Documents 4 and 5 hold "receipt" once each and are both
-     * thirteen tokens: the scores are equal by construction, so the answer
-     * is decided entirely by the tie-break. */
+    /* THE TIE. Documents 4 and 5 score equal by construction; the tie-break decides. */
     n = zcl_retrieval_query(r, "receipt", h, 8);
     RT_CHECK("two documents hold the term", n == 2);
     RT_CHECK("the tie really is a tie", n == 2 && h[0].score == h[1].score);
@@ -275,9 +249,7 @@ static int case_reproducible(void)
     }
     RT_CHECK("six queries give identical lists on both, ties included", same);
 
-    /* Querying twice on ONE index must also agree — the accumulator is
-     * allocated per query, and a query that left state behind would show up
-     * here as a second answer that differs from the first. */
+    /* Querying twice on one index agrees: the accumulator is per query. */
     struct zcl_retrieval_hit h1[8], h2[8];
     size_t n1 = zcl_retrieval_query(a, "node sha3", h1, 8);
     size_t n2 = zcl_retrieval_query(a, "node sha3", h2, 8);
@@ -320,26 +292,21 @@ static int case_tokenizer(void)
                  zcl_retrieval_doc_len(r, 1) == 3);
     RT_CHECK("case is folded", zcl_retrieval_df(r, "beta") == 1);
 
-    /* An identifier separates on underscores. This is the original's rule
-     * and it is the useful one here: a query naming a function finds the
-     * record even when the record spells the name a little differently. */
+    /* An identifier separates on underscores. */
     RT_CHECK("an identifier splits on underscores",
              zcl_retrieval_add(r, "ident", "zcl_receipt_encode") == 2 &&
                  zcl_retrieval_doc_len(r, 2) == 3);
     RT_CHECK("and its parts are indexed",
              zcl_retrieval_df(r, "encode") == 1);
 
-    /* Bytes outside ASCII separate. They must not join two words into one
-     * token, and they must not be folded by anything locale-dependent. */
+    /* Bytes outside ASCII separate words and are not locale-folded. */
     RT_CHECK("a non-ASCII byte separates rather than joins",
              zcl_retrieval_add(r, "utf8", "caf\xc3\xa9 noir") == 3 &&
                  zcl_retrieval_doc_len(r, 3) == 2 &&
                  zcl_retrieval_df(r, "caf") == 1 &&
                  zcl_retrieval_df(r, "noir") == 1);
 
-    /* A run longer than the token limit is chunked, not truncated: 300
-     * characters is 127 + 127 + 46. Truncating would silently drop text a
-     * caller had every reason to think was indexed. */
+    /* A run longer than the token limit is chunked, not truncated: 300 characters is 127 + 127 + 46. */
     char longrun[301];
     memset(longrun, 'x', 300);
     longrun[300] = '\0';
@@ -352,8 +319,7 @@ static int case_tokenizer(void)
              zcl_retrieval_add(r, "empty", "") == 5 &&
                  zcl_retrieval_doc_len(r, 5) == 0);
 
-    /* Repeats coalesce into one posting with a frequency, so the same term
-     * three times is still one document. */
+    /* Repeats coalesce into one posting with a frequency. */
     RT_CHECK("a repeated term is one document, not three",
              zcl_retrieval_add(r, "rep", "beta beta beta") == 6 &&
                  zcl_retrieval_df(r, "beta") == 2 &&
@@ -377,10 +343,7 @@ static int case_poisoned(void)
     RT_CHECK("it answers before the failure",
              zcl_retrieval_query(r, "sha3", h, 8) == 1);
 
-    /* Fail the first posting list this insertion has to grow. "a" is already
-     * in the corpus and its list has room, so the failure lands on the NEXT
-     * token — part-way through the document, which is the case that matters:
-     * some of it is in the index and the rest never will be. */
+    /* Fail the first posting list the insertion must grow ("a" already has room), so the failure lands part-way through the document. */
     zcl_alloc_fault_fail_next("retrieval_postings");
     RT_CHECK("an insertion that cannot allocate returns no id",
              zcl_retrieval_add(r, "sixth", "a document that never lands") == 0);

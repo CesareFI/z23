@@ -1,21 +1,12 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * test_refold_cadence — the PARITY-SAFETY guard for the mint/refold fold
- * cadence override (engine/jobs/src/refold_cadence.c).
+ * test_refold_cadence — parity guard for the mint/refold fold cadence
+ * override (engine/jobs/src/refold_cadence.c).
  *
- * The override changes HOW MANY blocks each reducer stage folds per drain (the
- * batch) and HOW OFTEN the supervisor drives them (the tick period). The
- * load-bearing safety property is that on a NORMAL live node — no refold in
- * progress, no -mint-anchor fold ceiling set — the override is INERT:
- * refold_cadence_drain_batch returns its argument UNCHANGED and
- * refold_cadence_tick_period_us returns 0 (⇒ the caller uses its unmodified
- * 2s period_secs). This test pins that: a future edit that changes the
- * normal-mode batch or period fails here.
- *
- * It also proves the override FIRES (and honors its env knobs) when either gate
- * is active — a -mint-anchor mint (mint_fold_ceiling_set) or a -refold-*
- * fold (refold_progress cache) — and that clearing the gate RESTORES the inert
- * identity, so the accelerated cadence cannot leak into the live path. */
+ * With no refold in progress and no -mint-anchor fold ceiling, the override
+ * is inert: the drain batch is returned unchanged and the tick period is 0.
+ * When either gate is active it applies (and honors its env knobs); clearing
+ * the gate restores the inert identity. */
 
 #include "test/test_core.h"
 

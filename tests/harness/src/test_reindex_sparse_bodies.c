@@ -1,65 +1,43 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * test_reindex_sparse_bodies — regression gate for the body-coverage-aware
- * auto-reindex-chainstate DECISION (lane 2B, "Track B"): a datadir where
- * coins are seeded near a tip height H but the on-disk block bodies are
- * SPARSE (present only for a tail window [H-k, H], not contiguously from
- * genesis) must REFUSE the destructive -reindex-chainstate remedy instead
- * of consuming the armed auto_reindex_request sentinel — a full
- * reindex-chainstate needs to replay bodies from genesis through the
- * target height, and a sparse-bodies datadir cannot supply that replay, so
- * consuming the request would wipe the seeded coins for a rebuild that
- * cannot even complete (see docs/HANDOFF.md's
- * "destructive auto-reindex-chainstate that wipes seeded coins + re-arms
- * on bodyless datadirs" gap, and 52b440e8f "fix(boot): don't wipe a
- * hash-verified coins-best that covers the reindex anchor" — that landed
- * fix covers the coins-best-vs-anchor-height axis; this gate is the
- * COMPANION axis, body coverage vs. reindex target).
+ * test_reindex_sparse_bodies — a datadir where coins are seeded near a tip
+ * height H but block bodies are SPARSE (present only for a tail window
+ * [H-k, H], not contiguously from genesis) must REFUSE the destructive
+ * -reindex-chainstate remedy instead of consuming the armed
+ * auto_reindex_request sentinel: a full reindex-chainstate replays bodies
+ * from genesis through the target height, which a sparse datadir cannot
+ * supply. Companion to the coins-best-vs-anchor-height axis.
  *
- * WEAK-SYMBOL SEAM (test_always_sync_selfheal.c G1/G3 pattern): the
- * decision predicate this test gates, `boot_reindex_coverage_would_refuse`,
- * is lane 2B's own not-yet-merged work (a sibling worktree, separate from
- * this one). Declared here as a `__attribute__((weak))` extern with the
- * EXACT signature this test ASSUMES:
+ * WEAK-SYMBOL SEAM (test_always_sync_selfheal.c pattern): the decision
+ * predicate `boot_reindex_coverage_would_refuse` is declared here as a
+ * `__attribute__((weak))` extern:
  *
  *     bool boot_reindex_coverage_would_refuse(int32_t scan_reindex_best,
  *                                             int32_t scan_max_have_data_h)
  *
- * where `scan_reindex_best` is the height the reindex-chainstate replay
- * would need to reach (the coins-best / wedge-tip height a boot pass wants
- * to fully rebuild through) and `scan_max_have_data_h` is the highest
- * height with body coverage CONTIGUOUS FROM GENESIS (-1 if genesis itself
- * lacks a body marker). This assumption is PROMINENT here and in the
- * landing lane's summary — if 2B lands a different name or parameter
- * order, the orchestrator reconciles this file's weak decl (a one-line
- * fix; the rest of the test is contract-shaped, not implementation-shaped).
+ * `scan_reindex_best` is the height the replay must reach;
+ * `scan_max_have_data_h` is the highest height with body coverage CONTIGUOUS
+ * FROM GENESIS (-1 if genesis lacks a body marker). Until the symbol links,
+ * this file compiles and SKIPs cleanly.
  *
- * Until that symbol links, this file compiles and SKIPs cleanly (no
- * fixture built, no assertion run) — it becomes the integration
- * regression gate the moment 2B's real decision function links.
- *
- * FIXTURE (a synthetic mini-datadir, NOT a full node datadir — no
- * node.db/progress.kv/block index involved; this test exercises the
- * DECISION given two integers, not the scan that produces them):
+ * FIXTURE (a synthetic mini-datadir; the test exercises the DECISION given
+ * two integers, not the scan that produces them):
  *
  *     <dir>/blocks/h<N>.body   — an empty marker file per height N whose
- *                                body is present on disk. Written only for
- *                                N in [H-k, H] ("sparse bodies").
+ *                                body is present, for N in [H-k, H] only.
  *     <dir>/coins_best         — "<height> <hash_verified 0|1>\n", the
  *                                seeded coins-best marker at height H.
- *     <dir>/auto_reindex_request — the REAL on-disk sentinel format (see
+ *     <dir>/auto_reindex_request — the real on-disk sentinel (see
  *                                storage/boot_auto_reindex.h), armed via
- *                                the REAL boot_auto_reindex_request().
+ *                                boot_auto_reindex_request().
  *
- * tools/scripts/make-sparse-bodies-fixture.sh builds the IDENTICAL layout
- * for local manual repro against a real binary once 2B's scan lands.
+ * tools/scripts/make-sparse-bodies-fixture.sh builds the identical layout
+ * for manual repro.
  *
- * This test does NOT call boot.c / boot_index.c / boot_crashonly.c (lane
- * 2B's own files) — it drives the weak decision hook directly and, in its
- * place, simulates the two effects a real boot pass wiring the decision in
- * would perform: clearing the sentinel on a refusal
- * (boot_auto_reindex_clear, a real storage primitive) and re-detecting the
- * same wedge on a second pass (a second boot_auto_reindex_request call). */
+ * The test drives the weak decision hook directly and simulates the two
+ * effects of a boot pass wiring it in: clearing the sentinel on a refusal
+ * (boot_auto_reindex_clear) and re-detecting the same wedge on a second pass
+ * (a second boot_auto_reindex_request call). */
 
 #include "test/test_core.h"
 
@@ -99,12 +77,9 @@ static bool rsb_touch_body(const char *dir, int32_t height)
 }
 
 /* Highest N such that every height in [0, N] has a body marker present
- * (contiguous coverage FROM GENESIS) — the first missing marker terminates
- * the scan. -1 means even genesis (height 0) has no marker. Bounded by
- * `upper_bound` so a fixture bug can never spin this loop unboundedly.
- * TEST-LOCAL scan logic standing in for whatever real coverage scan 2B's
- * boot-reindex decision performs internally — out of scope here; this
- * test only exercises the DECISION given the two resulting integers. */
+ * (contiguous coverage FROM GENESIS); -1 means even genesis has none. Bounded
+ * by `upper_bound`. Test-local stand-in for the real coverage scan: this test
+ * exercises the DECISION given the two resulting integers. */
 static int32_t rsb_scan_max_have_data_h(const char *dir, int32_t upper_bound)
 {
     char path[600];
@@ -216,20 +191,17 @@ int test_reindex_sparse_bodies(void)
              "(a reindex-chainstate replay from genesis cannot complete, "
              "would only wipe the seeded coins)", refuses);
 
-    /* Simulate the wiring a real boot pass will perform once 2B's decision
-     * is wired at the sentinel-consume chokepoint: a refusal clears the
-     * stale request instead of consuming it. */
+    /* Simulated boot wiring at the sentinel-consume chokepoint: a refusal
+     * clears the stale request instead of consuming it. */
     if (refuses)
         boot_auto_reindex_clear(dir);
     RSB_CHECK("sentinel CLEARED after the refusal (pass 1) — never consumed "
              "into a destructive reindex", !boot_auto_reindex_pending(dir));
 
-    /* Simulated SECOND PASS: the node restarts, re-detects the identical
-     * wedge (same coins-best, same sparse bodies) and arms a fresh request
-     * exactly like the real boot-time detector would — the decision must
-     * refuse AGAIN (deterministic on unchanged inputs, not a one-shot
-     * fluke) and the sentinel must NOT be left pending once the pass
-     * completes: no re-arm, no unbounded reindex-then-clear loop. */
+    /* Second pass: the node restarts, re-detects the identical wedge and arms
+     * a fresh request. The decision must refuse AGAIN (deterministic on
+     * unchanged inputs) and the sentinel must not be left pending: no re-arm,
+     * no reindex-then-clear loop. */
     int n2 = boot_auto_reindex_request(dir, H, BOOT_AUTO_REINDEX_REASON_UNSPECIFIED);
     RSB_CHECK("sentinel re-arms via the boot pass's OWN detection (pass 2, "
              "not a leftover from pass 1)", n2 >= 1);

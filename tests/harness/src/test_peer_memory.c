@@ -1,38 +1,25 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * PEER MEMORY — a node that has ever met this network must be able to get
- * back on it without contacting a hardcoded seed.
+ * PEER MEMORY - a node that has met this network must be able to get back on
+ * it without a hardcoded seed: it remembers the peers it talked to, keeps
+ * them across an unclean stop, and prefers its own measured experience over
+ * any list it was handed.
  *
- * Bootstrap used to lean on a tiny shipped onion seed array, and the single
- * onion seed we shipped had been dead for weeks without any node noticing.
- * The structural answer is that a node remembers the peers it actually
- * talked to, keeps them across an unclean stop, and prefers its own measured
- * experience over any list it was handed. These tests hold that answer to
- * account.
- *
- *   1.  An ONION peer survives a peers.dat round-trip, and two distinct
- *       onion peers stay distinct. This is the regression test for the
- *       defect that made the whole store a no-op on a Tor-first network:
- *       format version 1 wrote only ip[16], and net_addr_from_onion() leaves
- *       ip[16] all zero, so every onion peer serialized to the same sixteen
- *       zero bytes and reloaded as an unroutable address.
+ *   1.  An ONION peer survives a peers.dat round-trip, and distinct onion
+ *       peers stay distinct (net_addr_from_onion() leaves ip[16] zero; format
+ *       v1 wrote only ip[16]).
  *   2.  The ranking fields survive: last_success, last_try, attempts.
- *   3.  A peer learned by a process that is then SIGKILLed is still there
- *       for the next boot — both stores, no graceful shutdown involved.
+ *   3.  A peer learned by a process that is then SIGKILLed is still there for
+ *       the next boot, in both stores.
  *   4.  Hostile input degrades to empty and never crashes: truncated body,
  *       random bytes, a bogus torv3 flag, an oversized version, a legacy v1
- *       onion row, and the negative-attempts entry that would otherwise win
- *       every selection draw.
- *   5.  Bounded aging: a record this node proved dead does not come back,
- *       and a peer that keeps failing is deprioritised rather than re-drawn
- *       at full preference.
- *   6.  addrman_proven_count() counts only addresses we actually connected
- *       to — the input to "do I still need the shipped seed list?".
+ *       onion row, and a negative-attempts entry.
+ *   5.  Bounded aging: a proven-dead record does not come back, and a peer
+ *       that keeps failing is deprioritised.
+ *   6.  addrman_proven_count() counts only addresses we actually connected to.
  *
- * NOT proved here: the full two-node boot leg (node A learns node B over a
- * real socket, A is killed, A reboots with an empty seed array and
- * reconnects). See the header comment on test 3 for exactly where the seam
- * is. All file I/O is local (./test-tmp); no network, no live datadir.
+ * Not proved here: the full two-node boot leg over a real socket (see test
+ * 3). All file I/O is local (./test-tmp); no network, no live datadir.
  */
 
 #define _POSIX_C_SOURCE 200809L
@@ -135,9 +122,8 @@ static bool pm_load_bytes_survives(const unsigned char *buf, size_t len,
     addrman_init(&am);
     struct byte_stream r;
     stream_init_from_data(&r, (unsigned char *)buf, len);
-    /* Mirror the node's own contract (connman_load_addrman): a store that
-     * fails to parse is DISCARDED, never partially adopted. A half-read table
-     * is exactly the state an attacker would want us to keep. */
+    /* As connman_load_addrman: a store that fails to parse is discarded,
+     * never partially adopted. */
     if (!addrman_deserialize(&am, &r))
         addrman_clear(&am);
     size_t n = addrman_size(&am);
@@ -280,8 +266,8 @@ static int test_peer_memory_platform_arm(void)
 
         bool ok = addrman_add(&am, &a1, &src, 0);
         ok = ok && addrman_add(&am, &a2, &src, 0);
-        /* Two DISTINCT onion peers in memory — under format version 1 both
-         * serialized to the same sixteen zero bytes. */
+        /* Two distinct onion peers in memory (both serialized identically
+         * under format v1). */
         ok = ok && addrman_size(&am) == 2;
 
         struct addr_man am2;
@@ -292,8 +278,7 @@ static int test_peer_memory_platform_arm(void)
             struct addr_info got;
             struct net_service want1 = { .addr = a1.svc.addr, .port = 8033 };
             struct net_service want2 = { .addr = a2.svc.addr, .port = 8034 };
-            /* The exact torv3 pubkey and port must come back, or a reboot
-             * cannot dial the peer it remembers. */
+            /* The exact torv3 pubkey and port must come back. */
             ok = ok && addrman_find_info(&am2, &want1, &got);
             ok = ok && got.addr.svc.addr.has_torv3;
             ok = ok && memcmp(got.addr.svc.addr.torv3, a1.svc.addr.torv3,
@@ -335,9 +320,8 @@ static int test_peer_memory_platform_arm(void)
         if (ok) {
             struct addr_info got;
             ok = addrman_find_info(&am2, &a.svc, &got);
-            /* Without last_try on disk, every entry reloads as "never
-             * tried" and the ten-minute cooldown in addr_info_get_chance()
-             * is silently dropped at every restart. */
+            /* Without last_try on disk the ten-minute cooldown in
+             * addr_info_get_chance() is dropped at every restart. */
             ok = ok && got.last_success == t_ok;
             ok = ok && got.last_try == t_try;
             ok = ok && got.attempts >= 1;
@@ -348,18 +332,11 @@ static int test_peer_memory_platform_arm(void)
         else { printf("FAIL\n"); failures++; }
     }
 
-    /* ── 3. a SIGKILLed process still leaves its peers behind ──────────
-     *
-     * The child learns a peer, persists it through the same two stores the
-     * node uses (peers.dat and anchors.dat), and is then killed with SIGKILL
-     * — no graceful shutdown, no atexit, no flush. The parent reads both
-     * files back and must find the onion peer intact.
-     *
-     * WHAT THIS DOES NOT PROVE: the socket leg. A real node learns the peer
-     * from a completed handshake and writes it from the dial-scheduler
-     * thread; here the test calls the persistence entry points directly. The
-     * store layer and the kill are real; "node A handshakes node B over a
-     * socket" is not exercised. */
+    /* 3. A SIGKILLed process still leaves its peers behind: the child persists
+     * a peer through peers.dat and anchors.dat and is killed with no graceful
+     * shutdown; the parent must find the onion peer intact. The socket leg
+     * (handshake, dial-scheduler thread) is not exercised; the persistence
+     * entry points are called directly. */
     printf("peer_memory: peer learned before SIGKILL survives... ");
     {
         char dir[256]; pm_tmp_dir(dir, sizeof(dir), "kill9");
@@ -473,9 +450,8 @@ static int test_peer_memory_platform_arm(void)
             size_t loaded = 0;
             ok = pm_load_bytes_survives(junk, sizeof(junk), &loaded);
         }
-        /* A store written by a future build cannot be parsed record-by-record
-         * — its rows are a different width — so it must be refused whole
-         * rather than mis-read into plausible-looking addresses. */
+        /* A future-version store has different row widths and is refused
+         * whole. */
         if (ok) {
             unsigned char hdr[128];
             memset(hdr, 0, sizeof(hdr));
@@ -489,13 +465,10 @@ static int test_peer_memory_platform_arm(void)
         else { printf("FAIL\n"); failures++; }
     }
 
-    /* ── 4c. the negative-attempts selection bomb is defused ───────────
-     *
-     * addr_info_get_chance() computes pow(0.66, attempts). A negative
-     * attempts count turns that decay into growth: at -100 the chance is
-     * 0.66^-100, so the entry wins every draw it appears in and outbound
-     * selection collapses onto one address. peers.dat records what peers
-     * told us, so the value must never be trusted on the way in. */
+    /* 4c. The negative-attempts selection bomb is defused: addr_info_get_chance()
+     * computes pow(0.66, attempts), so a negative count grows instead of
+     * decaying and would win every draw. The value is never trusted on the
+     * way in. */
     printf("peer_memory: negative attempts cannot win every draw... ");
     {
         struct addr_info bomb;
@@ -510,9 +483,7 @@ static int test_peer_memory_platform_arm(void)
         double chance = addr_info_get_chance(NULL, &bomb, now);
         bool ok = isfinite(chance) && chance <= 1.0;
 
-        /* And a store carrying that value must not hand it to selection. A
-         * forged body changes exactly the attempts field, so the load path is
-         * what is under test rather than some incidental header damage. */
+        /* A store carrying that value must not hand it to selection. */
         if (ok) {
             struct pm_forged f;
             memset(&f, 0, sizeof(f));
@@ -545,11 +516,9 @@ static int test_peer_memory_platform_arm(void)
             stream_free(&s);
         }
 
-        /* A torv3 flag byte that is neither 0 nor 1, and a flag that claims
-         * an onion identity backed by an all-zero pubkey, must both resolve
-         * to "not an onion" rather than to a half-built address. Combined
-         * with an all-zero ip that leaves nothing dialable, so the row is
-         * dropped outright. */
+        /* A torv3 flag that is neither 0 nor 1, or claims an onion identity
+         * with an all-zero pubkey, resolves to "not an onion"; with an all-zero
+         * ip the row is dropped. */
         if (ok) {
             const uint8_t bogus_flags[] = { 2, 0xff, 1 };
             for (size_t k = 0; ok && k < sizeof(bogus_flags); k++) {
@@ -574,12 +543,8 @@ static int test_peer_memory_platform_arm(void)
         else { printf("FAIL\n"); failures++; }
     }
 
-    /* ── 4d. a legacy v1 onion row is dropped, not resurrected as junk ──
-     *
-     * Under format version 1 an onion peer wrote sixteen zero bytes. Reading
-     * such a row back as an address would produce an all-zero endpoint with
-     * a real port, which the dialer would then try — repeatedly, for every
-     * onion peer the old build ever saw. Those rows must be discarded. */
+    /* 4d. A legacy v1 onion row (all-zero ip, real port) is discarded rather
+     * than resurrected as an undialable endpoint. */
     printf("peer_memory: legacy v1 onion rows are discarded... ");
     {
         /* A version-1 row for an onion peer: all-zero ip, real port. */
@@ -613,18 +578,9 @@ static int test_peer_memory_platform_arm(void)
         else { printf("FAIL\n"); failures++; }
     }
 
-    /* ── 4e. a bucket table we cannot use costs the LAYOUT, not the peers ─
-     *
-     * The table at the tail of the store says where the writer had each
-     * address bucketed. If that hint is unusable — a build with different
-     * table geometry, or the file truncated inside the table — the addresses
-     * themselves are still perfectly good and we can recompute their buckets
-     * from the addresses under our own key. Throwing away the whole address
-     * book over the hint would leave the node with nothing but the shipped
-     * seeds, which is the failure this store exists to prevent.
-     *
-     * An address must not merely load: it must land in a bucket, because an
-     * address in no bucket can never be selected for a dial. */
+    /* 4e. An unusable bucket-table hint (different geometry, or truncated
+     * table) costs the layout, not the peers: addresses are re-bucketed under
+     * our own key, and must land in a bucket or they can never be selected. */
     printf("peer_memory: an unusable bucket table keeps the addresses... ");
     {
         bool ok = true;
@@ -778,13 +734,9 @@ static int test_peer_memory_platform_arm(void)
         else { printf("FAIL (fresh=%g failing=%g)\n", c_fresh, c_fail); failures++; }
     }
 
-    /* ── 6. proven_count separates measured peers from hearsay ─────────
-     *
-     * This is the number the bootstrap path reads to decide whether it still
-     * needs the shipped seed list. Table size is the wrong number: the fixed
-     * seeds land in addrman on a cold boot and persist there forever, so
-     * addrman_size() would report "I remember peers" for a node that has
-     * never completed a single connection. */
+    /* 6. proven_count separates measured peers from hearsay. The bootstrap
+     * path reads it (not addrman_size(), which counts fixed seeds too) to
+     * decide whether it still needs the shipped seed list. */
     printf("peer_memory: proven_count ignores hearsay and seed injections... ");
     {
         struct addr_man am;
@@ -793,10 +745,8 @@ static int test_peer_memory_platform_arm(void)
         pm_set_ipv4(&src, 5, 5, 5, 5);
         int64_t now = (int64_t)platform_time_wall_time_t();
 
-        /* Routable addresses on purpose: addrman_add() refuses the RFC 5737
-         * documentation ranges (192.0.2/24, 198.51.100/24, 203.0.113/24)
-         * outright, so a test written with those would add nothing and then
-         * "pass" whatever it asserted about an empty table. */
+        /* Routable addresses: addrman_add() refuses the RFC 5737
+         * documentation ranges. */
         bool ok = true;
         for (int i = 0; i < 5; i++) {
             struct net_address a;
@@ -820,8 +770,7 @@ static int test_peer_memory_platform_arm(void)
         size_t proven_after = addrman_proven_count(&am);
         ok = ok && proven_after == 1;
 
-        /* And it survives the restart, which is what makes the decision
-         * stable across boots rather than resetting to "cold node". */
+        /* The proven count survives a restart. */
         size_t proven_reloaded = 0;
         struct addr_man am2;
         ok = ok && pm_roundtrip(&am, &am2);
@@ -840,11 +789,9 @@ static int test_peer_memory_platform_arm(void)
         }
     }
 
-    /* ── 7. anchor-set equivalence is membership, not order ───────────
-     *
-     * The prompt flush writes anchors.dat whenever the healthy outbound set
-     * changes. The live node array reorders on every eviction, so an
-     * order-sensitive compare would rewrite the file continuously. */
+    /* 7. anchor-set equivalence is membership, not order: the live node array
+     * reorders on every eviction, so an order-sensitive compare would rewrite
+     * anchors.dat continuously. */
     printf("peer_memory: anchor set comparison ignores ordering... ");
     {
         struct anchor_peer_set a, b, c;

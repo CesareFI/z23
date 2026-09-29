@@ -551,8 +551,8 @@ int check_rpc_getnodelog_level_filter(void)
         if (ok)
             ok = check_rpc_getnodelog_write_level_log(log_path);
 
-        /* Fake "now" = 2026-06-23T18:34:30Z: every dated line above is
-         * within the 60 s since window. */
+        /* Fake "now" = 2026-06-23T18:34:30Z: every dated line above is within the
+         * 60 s since window. */
         struct rpc_fake_clock fake = { .wall_ms = 1782239670000LL };
         const clock_iface_t iface = {
             .now_monotonic_ns = rpc_fake_now_mono,
@@ -602,11 +602,8 @@ int check_rpc_ere_matcher(void)
     int failures = 0;
 
     /* The in-tree ERE matcher behind `getnodelog`. Every expectation below
-     * was taken from glibc regcomp/regexec with REG_EXTENDED|REG_NOSUB — the
-     * implementation this replaced — so this pins the contract the help text
-     * states rather than whatever the new code happens to do. The same
-     * comparison was run over 400,000 generated pattern/subject pairs while
-     * developing the matcher; these are the cases worth keeping. */
+     * was taken from glibc regcomp/regexec with REG_EXTENDED|REG_NOSUB, so
+     * this pins the contract the help text states. */
     printf("ere matcher: POSIX-extended grammar matches the old contract... ");
     {
         static const struct {
@@ -689,7 +686,7 @@ int check_rpc_ere_matcher(void)
     }
 
     /* A pattern the matcher cannot honour must be REFUSED with a reason, so
-     * a pattern that used to work never silently stops matching. */
+     * an accepted pattern never silently stops matching. */
     printf("ere matcher: an unhonourable pattern is refused, not ignored... ");
     {
         static const char *refused[] = {

@@ -2,53 +2,34 @@
  *
  * test_reducer_block_ingest_gate — the MVP "it works" gate.
  *
- * WHAT THIS PROVES (the v1 "it works" guarantee)
- * ----------------------------------------------
- * The authoritative tip-advance engine is the REDUCER (the log -> projection
- * -> Jobs pipeline: header_admit -> validate_headers -> body_fetch ->
- * body_persist -> script_validate -> proof_validate -> utxo_apply ->
- * tip_finalize), NOT the legacy connect_block engine. This gate stands up a
- * fresh regtest node-db / progress.kv at genesis entirely in-process, mines
- * ONE real regtest block (height genesis+1) with a valid Equihash (48,5) PoW
- * via the in-process miner, drives it through the REDUCER FRONT DOOR
- * (reducer_ingest_block — the SAME entry every live intake caller uses:
- * msg_blocks / msg_compact / submitblock / miner / rebuild), and asserts:
+ * The authoritative tip-advance engine is the reducer (header_admit ->
+ * validate_headers -> body_fetch -> body_persist -> script_validate ->
+ * proof_validate -> utxo_apply -> tip_finalize), not the legacy
+ * connect_block engine. This gate stands up a fresh regtest node-db /
+ * progress.kv at genesis in-process, mines one real regtest block (height
+ * genesis+1) with a valid Equihash (48,5) PoW, drives it through the reducer
+ * front door (reducer_ingest_block, the entry every live intake caller
+ * uses), and asserts:
  *
  *   1. block genesis+1 is finalized by the reducer, with the active-chain
  *      window bounded to the prepared genesis+1/genesis+2 span;
- *   2. the UTXO commitment recomputes consistently WITH the applied block —
- *      the mined coinbase output is now live in the UTXO set, the live count
- *      went up by exactly one, and the SHA3 commitment changed.
+ *   2. the UTXO commitment recomputes with the applied block: the coinbase
+ *      output is live, the live count rose by exactly one, and the SHA3
+ *      commitment changed.
  *
- * WHY THE FRONT DOOR CAN BE DRIVEN HERE (vs the older e2e test's caveat)
- * --------------------------------------------------------------------
- * reducer_ingest_block()'s first gate is check_block(pblock, out, ctl->params,
- * check_pow=true, ...). That gate ALWAYS verifies a real Equihash witness, but
- * the verifier (core/modules/crypto_registry/src/scheme_equihash_200_9.c) size-demuxes
- * (N,K) from the solution LENGTH: a 36-byte solution selects regtest's (48,5)
- * (core/modules/crypto/src/equihash.c::equihash_solution_params). So a regtest block
- * mined by mine_block_pow() (which solves the real (48,5) PoW) PASSES the same
- * stateless gate the reducer applies — proven independently by
- * test_regtest_generate. With the controller initialised on regtest params,
- * the front door accepts the mined block end-to-end. No stubs, no injected
- * readers: the eight stages run on their PRODUCTION defaults (the body is
- * persisted to disk by the front door and read back by
- * stage_default_block_reader; a coinbase-only block has no transparent inputs
- * and no shielded proofs, so script_validate / proof_validate pass trivially).
+ * The front door's first gate is check_block(..., check_pow=true), which
+ * verifies a real Equihash witness; the verifier size-demuxes (N,K) from the
+ * solution length (core/modules/crypto/src/equihash.c::
+ * equihash_solution_params), so a 36-byte solution selects regtest's (48,5)
+ * and a block from mine_block_pow() passes it. No stubs or injected readers:
+ * the stages run on production defaults, and a coinbase-only block passes
+ * script_validate / proof_validate trivially.
  *
- * THE ONE-BLOCK-LOOKAHEAD NOTE
- * ----------------------------
- * tip_finalize finalizes height H by reading active_chain_at(H+1) and setting
- * the window tip to that successor. With exactly genesis(0) + block(1) there is
- * no height-2 successor, so tip_finalize legitimately does not write a
- * "finalized" row for height 1 yet — but utxo_apply DOES apply block 1's
- * coinbase delta, the window extends to height 1 (so active_chain_height == 1),
- * and the front-door read-back accepts the active tip via the pending-body
- * path (utxo_apply_stage_succeeded_at). This gate now stages height 2 as the
- * explicit lookahead witness; a full drain may leave the visible active-chain
- * window at height 1 or at that prepared lookahead height 2, so finality is
- * asserted through the reducer rows and the window is bounded to the prepared
- * span.
+ * One-block lookahead: tip_finalize finalizes height H by reading
+ * active_chain_at(H+1). This gate stages height 2 as the lookahead witness; a
+ * full drain may leave the visible window at height 1 or 2, so finality is
+ * asserted through the reducer rows and the window is bounded to the
+ * prepared span.
  */
 
 #include "test/test_core.h"
@@ -179,14 +160,11 @@ static bool rbi_build_regtest_block(struct block *blk, int height,
     return true;
 }
 
-/* Seed a genesis (height 0) utxo_apply_log row marking it already-applied with
- * a zero coin delta (the genesis coinbase is not counted in this harness's
- * baseline, matching tip_finalize's added-spent model). This lets tip_finalize
- * finalize height 0 if its reorg-rewind ever sends the cursor back to the
- * genesis anchor — tip_finalize reads utxo_apply_log[next_h] before finalizing,
- * and seed_anchor advanced the utxo_apply cursor past genesis WITHOUT writing a
- * height-0 row. With this row present, the cold-start anchor finalizes cleanly
- * into block 1 instead of wedging at cursor 0. Returns false on SQL failure. */
+/* Seed a genesis (height 0) utxo_apply_log row as already applied with a zero
+ * coin delta. seed_anchor advanced the utxo_apply cursor past genesis without
+ * writing that row, and tip_finalize reads utxo_apply_log[next_h] before
+ * finalizing, so the row lets the anchor finalize into block 1 instead of
+ * wedging at cursor 0. Returns false on SQL failure. */
 static bool rbi_seed_genesis_utxo_apply_row(sqlite3 *db)
 {
     if (!db) return false;
@@ -274,14 +252,10 @@ int test_reducer_block_ingest_gate(void)
            "(MVP: one real regtest block -> reducer front door -> tip+1) ===\n");
     int failures = 0;
 
-    /* OPT-IN gate. This drives the real reducer (block_index, active_chain,
-     * the eight stage stat counters) through process-global singletons, so it
-     * is only deterministic in a FRESH process. The parallel runner reuses one
-     * worker process across many groups, so global state left by a prior group
-     * pollutes this one — run it isolated (its dedicated `make mvp-it-works`
-     * target uses --only, a fresh process). The default `make ci` suite skips
-     * it. Full-suite isolation (resetting every reducer global at entry) is a
-     * tracked follow-up; until then this stays opt-in to keep CI green. */
+    /* OPT-IN gate. This drives the real reducer through process-global
+     * singletons, so it is deterministic only in a fresh process; the
+     * parallel runner reuses workers across groups. Run it isolated (`make
+     * mvp-it-works` uses --only); the default `make ci` suite skips it. */
     if (!getenv("ZCL_STRESS_TESTS")) {
         printf("reducer_block_ingest_gate: SKIP "
                "(set ZCL_STRESS_TESTS=1 and run isolated via "
@@ -312,16 +286,11 @@ int test_reducer_block_ingest_gate(void)
     test_fmt_tmpdir(dir, sizeof(dir), "reducer_block_ingest_gate", "main");
     rbi_mkdir_p(dir);
 
-    /* Point the GLOBAL datadir at our hermetic tmp dir so the front door's
-     * write_block_to_disk(ctl->datadir, ...) and the stages' default block
-     * reader (which uses GetDataDir(net_specific=true)) agree on ONE on-disk
-     * blocks/ directory. Without this, the body is written under ctl->datadir
-     * but read from ~/.zclassic-c23/regtest — the read fails and no stage can
-     * apply the block. We derive the net-specific path GetDataDir returns and
-     * use it verbatim for the controller, then pre-create its blocks/ dir. */
-    /* SetDataDir already clears the cache and populates cachedDataDirNet =
-     * <dir>/regtest; do NOT ClearDataDirCache() here or GetDataDir falls back
-     * to the shared default ~/.zclassic-c23/regtest and races other groups. */
+    /* Point the global datadir at the hermetic tmp dir so the front door's
+     * write_block_to_disk(ctl->datadir, ...) and the stages' block reader
+     * (GetDataDir(net_specific=true)) share one blocks/ directory. Use the
+     * net-specific path GetDataDir returns for the controller and pre-create
+     * its blocks/ dir. */
     SetDataDir(dir);
     char netdir[512];
     GetDataDir(true /*net-specific (regtest subdir)*/, netdir, sizeof(netdir));
@@ -380,18 +349,15 @@ int test_reducer_block_ingest_gate(void)
         ms.pindex_best_header = genesis;
     }
 
-    /* Seed the whole eight-stage pipeline to treat genesis as the already-
-     * processed anchor: tip_finalize_stage_seed_anchor stamps the anchor row
-     * AND advances every upstream stage cursor to height 1, so only height 1
-     * (the block we ingest) flows through. This is the SAME cold-start seed
-     * the snapshot-apply path uses (engine/services/src/snapshot_apply.c). */
+    /* Seed the pipeline to treat genesis as the processed anchor:
+     * tip_finalize_stage_seed_anchor stamps the anchor row and advances every
+     * upstream cursor to height 1 (the snapshot-apply cold-start seed,
+     * engine/services/src/snapshot_apply.c). */
     RBI_CHECK("tip_finalize anchor seed at genesis",
               tip_finalize_stage_seed_anchor(0, genesis_hash.data, false));
 
-    /* Init the eight reducer stages against this chainstate (production
-     * defaults — no injected readers/validators). header_admit must be inited
-     * before tip_finalize seeds it above is harmless; seed_anchor only writes
-     * cursors. We init AFTER the anchor seed so each stage loads cursor=1. */
+    /* Init the eight reducer stages on production defaults. Init after the
+     * anchor seed so each stage loads cursor=1. */
     bool stages_ok =
         header_admit_stage_init(&ms) &&
         validate_headers_stage_init(&ms) &&
@@ -410,11 +376,10 @@ int test_reducer_block_ingest_gate(void)
         RBI_CHECK("seed genesis utxo_apply_log row",
                   rbi_seed_genesis_utxo_apply_row(progress_store_db()));
 
-    /* Build the activation controller — the object whose mutex the front door
-     * serializes on and whose params drive check_block. datadir must outlive
-     * the controller (stored by pointer) and must equal the stages' GetDataDir
-     * net-specific path so the on-disk block body the front door writes is the
-     * one the stages read back. `netdir` stays in scope through teardown. */
+    /* Build the activation controller (its mutex serializes the front door;
+     * its params drive check_block). datadir is stored by pointer, so it must
+     * outlive the controller and equal the stages' net-specific GetDataDir
+     * path; `netdir` stays in scope through teardown. */
     struct chain_activation_controller ctl;
     activation_controller_init(&ctl, &ms, NULL, cp, netdir);
 
@@ -422,11 +387,8 @@ int test_reducer_block_ingest_gate(void)
     int height_before = active_chain_height(&ms.chain_active);
     RBI_CHECK("genesis tip height is 0", height_before == 0);
 
-    /* Snapshot the authoritative coins_kv set the reducer writes. coins_kv
-     * is empty here — genesis seeded only the utxo_apply_log row — so
-     * count_before==0 and commit_before is the empty-set hash, preserving the
-     * gate's baseline. (Runs after utxo_apply_stage_init, so the coins schema
-     * exists.) */
+    /* Snapshot the coins_kv set the reducer writes; it is empty here, so
+     * count_before==0 and commit_before is the empty-set hash. */
     uint64_t count_before = (uint64_t)coins_kv_count(progress_store_db());
     uint8_t commit_before[32];
     bool have_commit_before =
@@ -460,11 +422,8 @@ int test_reducer_block_ingest_gate(void)
     block_free(&blk1);  /* rebuilt+admitted+persisted by the helper below */
 
     /* ── (3b) Prepare blocks 1 and 2 in the "headers + bodies synced" state ──
-     * Block 2 is the one-block-lookahead SUCCESSOR tip_finalize needs to be able
-     * to finalize block 1 (it finalizes height H by reading the fully-data'd
-     * block at H+1). A live node is exactly here once it has synced the header
-     * and body for both heights but not yet connected them — which is the state
-     * reducer_ingest_block is designed to converge. */
+     * Block 2 is the lookahead successor tip_finalize needs to finalize
+     * block 1. */
     struct block blk1b, blk2;
     block_init(&blk1b);
     block_init(&blk2);
@@ -487,12 +446,10 @@ int test_reducer_block_ingest_gate(void)
     RBI_CHECK("block 2 (lookahead successor) mined + admitted + body-on-disk",
               prepared2);
 
-    /* ── (4) Drive block 1's BODY through the REDUCER FRONT DOOR ───────────
-     * reducer_ingest_block runs check_block (real Equihash gate) then drains the
-     * eight stages under the activation mutex. With block 2 already data'd as the
-     * lookahead successor, the drain applies block 1 (utxo_apply) AND finalizes
-     * it (tip_finalize), advancing the authoritative tip to height 1. The front
-     * door returns the verdict for the just-ingested block. */
+    /* ── (4) Drive block 1's body through the reducer front door ───────────
+     * reducer_ingest_block runs check_block (real Equihash gate) then drains
+     * the eight stages under the activation mutex. With block 2 as the
+     * lookahead successor, the drain applies and finalizes block 1. */
     bool front_door_ok = false;
     if (prepared2) {
         ms.pindex_best_header = bi2;  /* finalize down to the successor */
@@ -503,13 +460,9 @@ int test_reducer_block_ingest_gate(void)
         front_door_ok = reducer_ingest_block(&ctl, &blk1b, REDUCER_SRC_MINED,
                                              true /*force: locally requested*/,
                                              &out);
-        /* Drive remaining stage work to FULL convergence: within the single
-         * front-door call, block 1's finalization can trail until block 2's
-         * lookahead row is consumed. reducer_kick() drains only within a
-         * bounded per-call latency budget, so under CPU load (e.g. the full
-         * parallel suite) one kick may not finish — loop until a kick makes
-         * ZERO advances (true convergence). Without this the tip-advance
-         * assertion races the drain and flakes. The cap is a runaway guard. */
+        /* Drive stage work to full convergence: reducer_kick() drains only
+         * within a bounded latency budget, so loop until a kick makes zero
+         * advances (the cap is a runaway guard). */
         for (int it = 0; it < 1000 && reducer_kick(&ctl) > 0; it++) {
             /* keep draining */
         }
@@ -550,12 +503,9 @@ int test_reducer_block_ingest_gate(void)
               height_after <= height_before + 2);
     RBI_CHECK("block 1 is finalized by tip_finalize (reducer, not legacy)",
               tip_finalize_stage_finalized_total() >= 1);
-    /* The block under test physically landed on the active chain: a durable
-     * "finalized" tip_finalize_log row records block 1's hash. tip_finalize's
-     * one-block-lookahead convention is that the row at height H stores the hash
-     * of the canonical block at H+1 (it finalizes H by reading active_chain_at
-     * (H+1) and stamps that successor as the new tip). So block 1 (height 1)
-     * landing is witnessed by the row at height 0 carrying block 1's hash. */
+    /* Block 1 landed on the active chain: tip_finalize's one-block-lookahead
+     * convention stores at height H the hash of the block at H+1, so block 1
+     * is witnessed by the row at height 0 carrying its hash. */
     {
         uint8_t fin_hash[32] = {0};
         bool finalized_row = tip_finalize_stage_finalized_tip_at(

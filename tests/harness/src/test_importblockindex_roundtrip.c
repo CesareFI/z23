@@ -2,38 +2,27 @@
  *
  * test_importblockindex_roundtrip — execution coverage for
  * snapshot_import_block_index() (engine/controllers/src/
- * snapshot_controller_import.c), the function engine/entry/main.c's
- * `--importblockindex <src-datadir> [<target-node.db>]` dispatches to
- * directly. That CLI flag is the mandatory first step of the two-step
- * cold-sync recipe (~3.17M headers in ~52s on the real zclassicd datadir,
- * see CLAUDE.md "Tenacity & recovery") and, before this test, had ZERO
- * execution coverage — a regression here silently breaks every fresh mint.
+ * snapshot_controller_import.c), which engine/entry/main.c's
+ * `--importblockindex <src-datadir> [<target-node.db>]` dispatches to. That
+ * flag is the first step of the two-step cold-sync recipe.
  *
- * The function is called from two real production sites that pass
- * DIFFERENT header_only values:
- *   - engine/entry/main.c's --importblockindex CLI: always header_only=true
- *     (positions force-zeroed; header-only, bodies fetched lazily via P2P).
- *   - the parallel snapshot-bundle loader (same file,
- *     snapshot_import_job_start -> import_block_index_thread via
- *     thread_registry_spawn): header_only=false (positions copied
- *     VERBATIM from the source LevelDB record) — this is the code path
- *     where nDataPos preservation is load-bearing, including the
- *     historical bug shape where a low file-0 offset (e.g. 1711) got
- *     silently translated/doubled instead of passed through untouched.
+ * The function has two production call shapes with different header_only:
+ *   - the --importblockindex CLI: header_only=true (positions force-zeroed,
+ *     bodies fetched lazily via P2P).
+ *   - the parallel snapshot-bundle loader (import_block_index_thread):
+ *     header_only=false; positions are copied VERBATIM from the source
+ *     LevelDB record, so nDataPos preservation is load-bearing (a low file-0
+ *     offset such as 1711 must pass through untouched).
  *
- * Both shapes are exercised here against the SAME synthetic legacy
- * blocks/index LevelDB (built with the real disk_block_index_serialize()
- * wire format, not hand-rolled bytes) so a regression in either call shape
- * of the shared import function is caught.
+ * Both shapes run against the SAME synthetic legacy blocks/index LevelDB
+ * (built with the real disk_block_index_serialize() wire format).
  *
- * Scenario C (below) covers lane C4's per-row import-time trust hardening:
- * every row must hash-bind to its own LevelDB key and pass the PoW target
- * check, or the row is quarantined (skipped, counted, typed blocker) while
- * the batch continues. Because that hash-bind now requires a REAL header
- * hash (not an arbitrary placeholder), the base fixture below "mines" each
- * row (bumps nTime until CheckProofOfWork passes at the mainnet powLimit —
- * cheap, SHA256d, ~8192 expected tries) instead of using a fixed synthetic
- * hash pattern.
+ * Scenario C covers per-row import-time trust: every row must hash-bind to its
+ * own LevelDB key and pass the PoW target check, or it is quarantined
+ * (skipped, counted, typed blocker) while the batch continues. Because the
+ * hash-bind needs a REAL header hash, the fixture "mines" each row (bumps
+ * nTime until CheckProofOfWork passes at the mainnet powLimit, ~8192 expected
+ * SHA256d tries).
  *
  * make t ONLY=importblockindex_roundtrip
  */
@@ -78,11 +67,9 @@ static int ibr_mkdir_p(const char *p)
     return -1;
 }
 
-/* The mainnet powLimit as compact nBits — the SAME value the real
- * GetNextWorkRequired() genesis case uses (core/chainparams/src/pow.c:45).
- * It is the EASIEST target CheckProofOfWork will ever legally accept (a
- * weaker/easier target is rejected outright), so it gives fixture rows the
- * best odds of an inexpensive "mine". */
+/* The mainnet powLimit as compact nBits — the value the GetNextWorkRequired()
+ * genesis case uses (core/chainparams/src/pow.c:45). It is the easiest target
+ * CheckProofOfWork accepts, so mining fixture rows is cheap. */
 static uint32_t ibr_pow_limit_bits(void)
 {
     const struct chain_params *cp = chain_params_get();
@@ -91,21 +78,11 @@ static uint32_t ibr_pow_limit_bits(void)
     return arith_uint256_get_compact(&pow_limit, false);
 }
 
-/* Bump dbi->nTime until the row's real (post-mutation) header hash
- * satisfies the PoW target at `bits`, writing the winning hash to
- * *out_hash. A genuine zclassicd row always already satisfies its own
- * network difficulty; this is purely a cheap (SHA256d, no Equihash) way to
- * manufacture a fixture row that does too, at ~1/8192 expected tries for
- * the mainnet powLimit. Bounded so a structural break here fails loudly
- * instead of hanging.
- *
- * Compares against the decoded target directly (the same arith_uint256
- * compare CheckProofOfWork itself does internally) instead of calling
- * CheckProofOfWork() per attempt — CheckProofOfWork logs on every failed
- * attempt, and ~8192 expected tries per row (x dozens of rows across every
- * scenario) would otherwise flood the test log. The row actually imported
- * by production code IS run through the real CheckProofOfWork — this
- * helper only searches for a winning nTime. */
+/* Bump dbi->nTime until the row's real (post-mutation) header hash satisfies
+ * the PoW target at `bits`, writing the winning hash to *out_hash. Compares
+ * against the decoded target directly instead of calling CheckProofOfWork()
+ * per attempt, which logs on every failure. Bounded so a structural break
+ * fails loudly instead of hanging. */
 static bool ibr_mine_pow(struct disk_block_index *dbi, uint32_t bits,
                          struct uint256 *out_hash)
 {
@@ -128,9 +105,8 @@ static bool ibr_mine_pow(struct disk_block_index *dbi, uint32_t bits,
 }
 
 /* Serialize `dbi` with the real wire format and write it under LevelDB key
- * 'b' || key_hash[32] — the shared row-write shape scenarios A/B/C/D all
- * use, so a corrupt-row test can write a row keyed by something OTHER than
- * dbi's own real hash (the hash-bind-mismatch case). */
+ * 'b' || key_hash[32] — the row-write shape scenarios A-D share; the key may
+ * differ from dbi's own hash (hash-bind-mismatch case). */
 static bool ibr_write_row(struct db_wrapper *dbw,
                           const struct disk_block_index *dbi,
                           const uint8_t key_hash[32])
@@ -163,20 +139,13 @@ struct ibr_block_fixture {
 };
 
 /* Synthesize a tiny legacy `<src_dir>/blocks/index` LevelDB with N
- * CDiskBlockIndex-shaped 'b'-prefixed records, using the REAL
- * disk_block_index_serialize() wire format (not hand-rolled bytes).
- * Chains hashPrev height-to-height like a real header chain. Block h=1
- * deliberately carries the historical file-0 low-offset bug shape
- * (nFile=0, nDataPos=1711) — the exact value class ("h=1's payload
- * position 1711") an old candidate once silently translated to 3414
- * instead of passing through untouched. Records the expected values into
- * fx[] for the caller's later assertions. Returns false on any failure.
- *
- * Every row's `hash` is now the REAL disk_block_index_get_hash() of its own
- * header, mined (nTime bumped) until it also satisfies CheckProofOfWork at
- * the mainnet powLimit (see ibr_mine_pow) — lane C4's import-time hash-bind
- * + PoW-target check requires exactly that, the same as a genuine
- * zclassicd row already satisfies for its real network difficulty. */
+ * CDiskBlockIndex-shaped 'b'-prefixed records in the real
+ * disk_block_index_serialize() wire format, chained hashPrev height-to-height.
+ * Block h=1 carries a low file-0 offset (nFile=0, nDataPos=1711) that must
+ * pass through unchanged. Every row's `hash` is the real
+ * disk_block_index_get_hash() of its header, mined (see ibr_mine_pow) so it
+ * also satisfies CheckProofOfWork at the mainnet powLimit. Expected values are
+ * recorded into fx[]. Returns false on any failure. */
 static bool ibr_build_fixture(const char *src_dir,
                               struct ibr_block_fixture *fx, int n)
 {
@@ -205,15 +174,12 @@ static bool ibr_build_fixture(const char *src_dir,
         b->merkle_root[1] = (uint8_t)(h & 0xff);
         b->merkle_root[31] = 0x02;
 
-        /* VALID_TRANSACTIONS | HAVE_DATA | HAVE_UNDO — a normal
-         * fully-connected zclassicd block-index record. */
+        /* VALID_TRANSACTIONS | HAVE_DATA | HAVE_UNDO. */
         b->status = (unsigned int)(BLOCK_VALID_TRANSACTIONS |
                                    BLOCK_HAVE_DATA | BLOCK_HAVE_UNDO);
-        /* Split across two files for realism; heights 0-15 -> file 0
-         * (where the historical bug shape lived), 16-31 -> file 1. */
+        /* Heights 0-15 -> file 0, 16-31 -> file 1. */
         b->nfile = (h < 16) ? 0 : 1;
-        /* The historical bug shape: h=1, file 0, a SMALL offset (1711) —
-         * exactly the case an old candidate mistranslated. */
+        /* h=1: file 0, a SMALL offset (1711). */
         b->ndatapos = (h == 1) ? 1711u : (2000u + (uint32_t)h * 100u);
         b->nundopos = b->ndatapos + 500u;
         b->sapling_value = (int64_t)h * 1000;
@@ -316,8 +282,7 @@ static int ibr_test_shutdown_abort(void)
 }
 
 /* Assert every fixture row (hash/prev_hash/merkle_root/time/bits) landed in
- * the target blocks table unchanged, regardless of header_only mode — those
- * fields are never touched by the header_only branch. */
+ * the target blocks table unchanged; header_only never touches those fields. */
 static void ibr_check_header_fields(int *failure_count, struct node_db *ndb,
                                     const struct ibr_block_fixture *fx, int n)
 {
@@ -370,9 +335,9 @@ int test_importblockindex_roundtrip(void)
         return failures + 1;
 
     /* ==================================================================
-     * Scenario A — header_only=true: the LITERAL --importblockindex CLI
-     * dispatch shape (importblockindex_cli_mode, engine/entry/main_cli_modes.c:3083). Positions must be force-zeroed
-     * (never leaked/garbled from the source), HAVE_DATA/HAVE_UNDO cleared.
+     * Scenario A — header_only=true: the --importblockindex CLI dispatch
+     * shape (importblockindex_cli_mode, engine/entry/main_cli_modes.c).
+     * Positions must be force-zeroed, HAVE_DATA/HAVE_UNDO cleared.
      * ================================================================== */
     {
         char db_path[380];
@@ -419,11 +384,8 @@ int test_importblockindex_roundtrip(void)
         int count_before = db_block_count(&ndb);
         node_db_close(&ndb);
 
-        /* Idempotency: re-run the SAME import against the SAME target. The
-         * function's own `DELETE FROM blocks` at the top of
-         * import_block_index_thread makes this a real assertion — a
-         * regression that dropped/moved that reset would double the row
-         * count here (2N), not just leave it at N. */
+        /* Idempotency: re-import into the SAME target. The import's
+         * `DELETE FROM blocks` reset makes a dropped reset show as 2N rows. */
         int count2 = -1;
         bool ok2 = snapshot_import_block_index(src_dir, db_path,
                                                /*header_only=*/true, &count2);
@@ -440,12 +402,8 @@ int test_importblockindex_roundtrip(void)
     }
 
     /* ==================================================================
-     * Scenario B — header_only=false: the OTHER real caller shape of the
-     * same shared function (the parallel snapshot-bundle loader's
-     * import_block_index_thread invocation, which leaves header_only at
-     * its struct-memset default of false). Positions must be copied
-     * VERBATIM — this is the path where the historical "nDataPos 1711
-     * translated to 3414" bug shape actually bites.
+     * Scenario B — header_only=false: the snapshot-bundle loader shape.
+     * Positions must be copied VERBATIM.
      * ================================================================== */
     {
         char db_path[380];
@@ -478,9 +436,8 @@ int test_importblockindex_roundtrip(void)
                   "for every height (no translation)", positions_exact);
         IBR_CHECK("scenario B: status copied verbatim (unmasked)", status_exact);
 
-        /* The direct regression check named in the plan: the file-0
-         * low-offset entry (h=1, nFile=0, nDataPos=1711) must land as
-         * EXACTLY 1711 — not 3414, not any other translated value. */
+        /* The file-0 low-offset entry (h=1, nFile=0, nDataPos=1711) must land
+         * as EXACTLY 1711. */
         struct db_block row1;
         bool h1_ok = db_block_find_by_height(&ndb, 1, &row1);
         IBR_CHECK("scenario B: file-0 low-offset entry (h=1) nDataPos is "
@@ -514,14 +471,10 @@ int test_importblockindex_roundtrip(void)
     }
 
     /* ==================================================================
-     * Scenario C — lane C4 per-row trust hardening: hash-bind + PoW-
-     * target check at import time (default production ROM checkpoint —
-     * both bad rows fail the UNCONDITIONAL checks, not the stride/above-
-     * checkpoint full-Equihash path). Layout: h=0 good, h=1 bad hash-bind
-     * (written under a key that does NOT match its own header hash), h=2
-     * bad PoW-target (correct hash-bind, but nBits demands an impossibly
-     * hard target), h=3 good again — proving the batch CONTINUES past two
-     * consecutive bad rows instead of aborting the whole import. */
+     * Scenario C — per-row trust: hash-bind + PoW-target check at import
+     * time (default ROM checkpoint, so both bad rows fail the UNCONDITIONAL
+     * checks). h=0 good, h=1 bad hash-bind, h=2 bad PoW-target, h=3 good:
+     * the batch continues past two consecutive bad rows. */
     {
         char src_dir_c[340];
         snprintf(src_dir_c, sizeof(src_dir_c), "%s/legacy-src-corrupt", base);
@@ -554,8 +507,7 @@ int test_importblockindex_roundtrip(void)
         }
         IBR_CHECK("scenario C fixture: write h=0 (good)", built);
 
-        /* h=1: bad hash-bind — written under an arbitrary key that is NOT
-         * this row's real header hash. */
+        /* h=1: bad hash-bind — keyed by something other than the real hash. */
         struct disk_block_index dbi1;
         struct uint256 hash1_real;
         uint8_t claimed_hash1[32];
@@ -579,11 +531,8 @@ int test_importblockindex_roundtrip(void)
         }
         IBR_CHECK("scenario C fixture: write h=1 (bad hash-bind)", built);
 
-        /* h=2: bad PoW-target — hash-bind is CORRECT (key == this row's
-         * real header hash), but nBits demands a target so hard
-         * (target=65536, vs. mainnet powLimit ~2^243) that no header hash
-         * can plausibly satisfy it; no mining needed, it fails by
-         * construction. */
+        /* h=2: bad PoW-target — hash-bind correct, nBits demands target=65536
+         * (vs. powLimit ~2^243), so it fails by construction. */
         struct disk_block_index dbi2;
         struct uint256 hash2;
         if (built) {
@@ -604,8 +553,7 @@ int test_importblockindex_roundtrip(void)
         }
         IBR_CHECK("scenario C fixture: write h=2 (bad PoW-target)", built);
 
-        /* h=3: good row again — proves the batch continues past TWO
-         * consecutive bad rows rather than aborting the import. */
+        /* h=3: good row again — the batch continued past two bad rows. */
         struct disk_block_index dbi3;
         struct uint256 hash3;
         if (built) {
@@ -675,14 +623,11 @@ int test_importblockindex_roundtrip(void)
     }
 
     /* ==================================================================
-     * Scenario D — the stride/above-checkpoint full-Equihash-solution
-     * gate (import_row_verify's expensive path) actually fires. Overrides
-     * the ROM state checkpoint to height=0 so height=1 counts as "above
-     * checkpoint" without needing a multi-million-row fixture; the row
-     * has a correct hash-bind and a correct PoW target (mined) but a
-     * garbage 1344-byte "solution" — a structurally-sized but invalid
-     * Equihash proof, which only the full check (not hash-bind, not the
-     * cheap target check) can catch.
+     * Scenario D — the stride/above-checkpoint full-Equihash gate
+     * (import_row_verify's expensive path) fires. The ROM checkpoint is
+     * overridden to height=0 so height=1 is "above checkpoint"; the row has a
+     * correct hash-bind and mined PoW but a garbage 1344-byte solution that
+     * only the full check catches.
      * ================================================================== */
     {
         struct rom_state_checkpoint low_cp;
@@ -750,22 +695,12 @@ int test_importblockindex_roundtrip(void)
     }
 
     /* ==================================================================
-     * Scenario E — throughput profile (profile-first, no unmeasured
-     * claims). Measures the actual marginal per-row cost import_row_verify
-     * adds on TOP of the pre-existing bulk-memcpy import: one
-     * disk_block_index_get_hash() (the hash-bind recompute; the ORIGINAL
-     * code never touched the header bytes to get a hash, it only memcpy'd
-     * the LevelDB key) plus one CheckProofOfWork() call (cheap — compact
-     * decode + a couple of 256-bit compares, no disk/crypto beyond the
-     * hash already computed). Both run unconditionally on every row; the
-     * stride/above-checkpoint full check_equihash_solution() is
-     * deliberately excluded (it is the expensive part this design
-     * INTENTIONALLY does not run on every row — see the import_row_verify
-     * doc comment in snapshot_controller_import.c). 1,000,000 iterations
-     * on a fixed pre-mined header, extrapolated x3.1 to the real
-     * --importblockindex row count; asserted against a generous ceiling
-     * so a future regression here fails loudly instead of silently
-     * eating the "~2x the unverified ~60-74s baseline" budget. */
+     * Scenario E — throughput profile. Measures the marginal per-row cost
+     * import_row_verify adds: one disk_block_index_get_hash() plus one
+     * CheckProofOfWork(). The full check_equihash_solution() is excluded (it
+     * runs only on the stride/above-checkpoint rows). 1,000,000 iterations on
+     * a pre-mined header, extrapolated x3.1 to the real row count, asserted
+     * against a generous ceiling. */
     {
         uint32_t pow_bits = ibr_pow_limit_bits();
         struct disk_block_index dbi;
@@ -818,8 +753,7 @@ int test_importblockindex_roundtrip(void)
      * chain parent through SQLite's partial unique-height index. The source
      * has main 0->1->2->3 plus a stale sibling at h=2; the unique highest
      * tip h=3 selects the main h=2 by hashPrev, independent of LevelDB key
-     * order. This is the real fresh-import failure shape that previously
-     * produced hundreds of detached islands on the 3.18M-row copy. */
+     * order. */
     {
         char src_dir_f[340];
         snprintf(src_dir_f, sizeof(src_dir_f), "%s/legacy-src-fork", base);

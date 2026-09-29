@@ -1,45 +1,25 @@
 /* SPDX-License-Identifier: Apache-2.0
  * Copyright 2026 Rhett Creighton
  *
- * NET-NEW consensus edge-case tests for domain/consensus/locktime.{c,h}.
+ * Consensus edge-case tests for domain/consensus/locktime.{c,h}.
  *
- * test_domain_consensus_locktime.c and test_bip113_bip65.c already pin the
- * happy-path BIP65/BIP113 boundaries, the height/time domain flip, the
- * sequence override, and the Overwinter expiry boundary. This file
- * deliberately does NOT restate any of those. It targets the degenerate
- * and overflow corners that a "must never fork" node has to answer
- * identically forever:
+ * test_domain_consensus_locktime.c and test_bip113_bip65.c pin the
+ * happy-path boundaries; this file targets the degenerate and overflow
+ * corners that must answer identically forever:
  *
- *   - Vacuous-truth finality of a tx with ZERO inputs past the lock-time
- *     boundary (the for-loop body never runs → "final"). This mirrors the
- *     vacuous-truth in Bitcoin Core's IsFinalTx / a degenerate tx that
- *     somehow reaches the predicate; pinning it stops a future "tighten
- *     the empty-vin case" edit from silently changing the verdict.
- *   - The EXACT lock_time == LOCKTIME_THRESHOLD (5e8) corner, where the
- *     domain-selection comparison (`< THRESHOLD`, strict) and the
- *     finality comparison (`< cutoff`, strict) interact. The lt=5e8 case
- *     is the first value in the TIME domain and must compare against
- *     n_block_time, never n_block_height.
- *   - The maximum lock_time (0xFFFFFFFF) in the time domain, just below /
- *     above the cutoff — guards the int64 widening of a uint32 lock_time.
- *   - Negative n_block_height fed to a height-domain lock_time: the int64
- *     widening must keep a positive lock_time from ever comparing `< neg`,
- *     so the tx stays non-final (conservative).
- *   - is_expired with a NEGATIVE n_height: the `(uint32_t)n_height` cast
- *     in locktime.c wraps a negative height to a huge unsigned value. We
- *     PIN the current consensus behavior so any future change is loud, and
- *     pair it with expiry_height==0 (never-expires) to prove the cast is
- *     gated behind the zero check.
- *   - is_expired at the MAXIMUM expiry_height (0xFFFFFFFF) — boundary of
- *     the uint32 expiry domain.
- *   - is_expiring_soon near INT_MAX, where n_next_block_height + 3 would
- *     overflow signed int: confirm the predicate still returns a verdict
- *     (it must not crash / it must be deterministic) and is consistent
- *     with is_expired at the saturated height.
+ *   - vacuous-truth finality of a tx with zero inputs past the boundary;
+ *   - lock_time == LOCKTIME_THRESHOLD (5e8), the first time-domain value,
+ *     compared against n_block_time, never n_block_height;
+ *   - the maximum lock_time (0xFFFFFFFF) around the cutoff (int64 widening);
+ *   - negative n_block_height with a height-domain lock_time stays non-final;
+ *   - is_expired with a negative n_height: the (uint32_t) cast wraps; the
+ *     verdict is pinned, and expiry_height==0 (never expires) gates the cast;
+ *   - is_expired at expiry_height 0xFFFFFFFF;
+ *   - is_expiring_soon near INT_MAX (n_next_block_height + 3 overflows signed
+ *     int): deterministic and consistent with is_expired.
  *
- * Pure: no clock, no RNG, no I/O, no node, no network. Every case invokes
- * the real domain_consensus_* function and asserts the exact verdict.
- */
+ * Pure: no clock, no RNG, no I/O. Every case calls the real
+ * domain_consensus_* function and asserts the exact verdict. */
 
 #include "test/test_core.h"
 
@@ -80,11 +60,9 @@ int test_locktime_edge(void)
 {
     int failures = 0;
 
-    /* ── 1. Zero-input tx past the lock-time boundary → vacuously final.
-     * lock_time=100 (height domain), height=0 is below the cutoff so the
-     * `lt < cutoff` early-out does NOT fire; the for-loop over inputs runs
-     * zero times → returns true. A degenerate no-input tx is reported
-     * final; pin it so a future edit can't silently change the verdict. */
+    /* ── 1. Zero-input tx past the lock-time boundary is vacuously final:
+     * lock_time=100 at height 0 skips the early-out and the empty input loop
+     * returns true. Pinned so an edit cannot change the verdict. */
     {
         struct transaction tx;
         memset(&tx, 0, sizeof(tx));
@@ -156,9 +134,8 @@ int test_locktime_edge(void)
         le_tx_free(&tx);
     }
 
-    /* ── 5. is_expired with a NEGATIVE height. locktime.c casts to uint32,
-     * so a negative height wraps to a huge unsigned value. PIN the current
-     * consensus verdict (so any future change is loud) and prove the zero
+    /* ── 5. is_expired with a NEGATIVE height: locktime.c casts to uint32, so
+     * it wraps to a huge value. Pin that verdict and prove the zero
      * expiry_height guard short-circuits before the cast. */
     {
         struct transaction tx;
@@ -202,21 +179,18 @@ int test_locktime_edge(void)
         /* INT_MAX (~2.1e9) < UINT32_MAX (~4.29e9) → not expired. */
         DCLE_CHECK("expiry=UINT32_MAX not expired at INT_MAX height",
                    !domain_consensus_tx_is_expired(&tx, INT_MAX));
-        /* Strict GT (matching zclassicd IsExpiredTx): NO uint32 height can
-         * EXCEED UINT32_MAX, so expiry_height=UINT32_MAX means the tx NEVER
-         * expires — not even at the saturated boundary (a height whose uint32
-         * cast == UINT32_MAX, e.g. -1). (Was `>=`, which wrongly expired it
-         * exactly there.) */
+        /* Strict GT (zclassicd IsExpiredTx): no uint32 height exceeds
+         * UINT32_MAX, so expiry_height=UINT32_MAX never expires, even at a
+         * height whose uint32 cast == UINT32_MAX (e.g. -1). */
         DCLE_CHECK("expiry=UINT32_MAX never expires (strict >, cast==UINT32_MAX)",
                    !domain_consensus_tx_is_expired(&tx, -1));
         free(tx.vin);
     }
 
-    /* ── 7. is_expiring_soon near INT_MAX: n_next_block_height + 3 would
-     * overflow signed int. The predicate must still return a deterministic
-     * verdict and stay consistent with is_expired at a high height. We do
-     * NOT trigger UB ourselves; we exercise a large-but-safe height and the
-     * exact threshold-window boundary, then a coinbase (never expires). */
+    /* ── 7. is_expiring_soon near INT_MAX (n_next_block_height + 3 would
+     * overflow signed int): a deterministic verdict consistent with
+     * is_expired at a high height, using a large-but-safe height and the
+     * exact window boundary, then a coinbase (never expires). */
     {
         struct transaction tx;
         memset(&tx, 0, sizeof(tx));

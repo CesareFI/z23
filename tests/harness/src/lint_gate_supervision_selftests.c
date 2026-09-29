@@ -333,12 +333,10 @@ int t_gate21_supervisor_worker_lockin(void)
     return failures;
 }
 
-/* META-GATE: every gate hardened this wave must FAIL LOUD (exit 2) on an empty
- * scan set instead of reporting "clean" exit 0 (a hollow pass). Each gate
- * exposes a ZCL_*_SCAN_* override of its scan root so we can point it at a
- * guaranteed-empty dir (it EXISTS — a bare -d check would pass — but holds zero
- * source files, the exact hollow vector). See
- * docs/work/lint-gate-hollowness-audit.md. */
+/* META-GATE: every hardened gate must FAIL LOUD (exit 2) on an empty scan set
+ * instead of reporting "clean" exit 0 (a hollow pass). Each gate exposes a
+ * ZCL_*_SCAN_* override of its scan root, pointed here at an existing but
+ * empty dir. See docs/work/lint-gate-hollowness-audit.md. */
 /* Run a hot-swap manifest gate against a specific manifest fixture by exporting
  * ZCL_HOTSWAP_MANIFEST (resolved to an absolute path). */
 int run_hotswap_gate_with_manifest(const char *script_rel,
@@ -362,9 +360,8 @@ int t_hotswap_eligible_scope_gate(void)
          * (exit 1) — proof it is not hollow. */
         ASSERT(run_hotswap_gate_with_manifest(HOTSWAP_SCOPE_SCRIPT_REL,
                                               HOTSWAP_BAD_SCOPE_MANIFEST_REL) == 1);
-        /* An app-layer TU that does NOT invoke ZCL_HOTSWAP_EXPORT_LEAVES (so it
-         * could never actually export a generation) also trips the gate —
-         * proof the macro-presence check added in Wave 3.1 is not hollow. */
+        /* An app-layer TU that does NOT invoke ZCL_HOTSWAP_EXPORT_LEAVES could
+         * never export a generation, so it also trips the gate. */
         ASSERT(run_hotswap_gate_with_manifest(HOTSWAP_SCOPE_SCRIPT_REL,
                                               HOTSWAP_NO_MACRO_MANIFEST_REL) == 1);
         /* Recovery: back on the real manifest the gate passes again. */
@@ -413,11 +410,9 @@ int t_hotswap_swappable_shape_gate(void)
     return failures;
 }
 
-/* The READY-read-only half of the hard line. Before the swappable def carried a
- * leaf column this gate checked shape FOLDERS only: a leaf that was mutating or
- * non-READY reached the runtime unchallenged, invisible only because the six
- * allowlisted files happened to match config/hotswap_eligible.def. Both seeded
- * fixtures below MUST trip, or the widened batch has no static guard. */
+/* The READY-read-only half of the hard line: the swappable def carries a leaf
+ * column, so a leaf that is mutating or non-READY must be caught. Both seeded
+ * fixtures below MUST trip. */
 int t_hotswap_swappable_leaf_contract_gate(void)
 {
     int failures = 0;
@@ -457,11 +452,10 @@ int t_hotswap_static_state_gate(void)
 }
 
 /* The static-state scan must cover the UNION of the eligible AND swappable
- * manifests. It used to read engine/composition/hotswap_eligible.def only; a TU reachable
- * ONLY through engine/composition/hotswap_swappable.def could carry mutable file-scope
- * state, get a zero-initialized copy inside its module .so, and silently lose
- * live process state — no crash, just wrong answers. This proves the swappable
- * half of the scan really fires. */
+ * manifests: a TU reachable only through engine/composition/hotswap_swappable.def
+ * with mutable file-scope state would get a zero-initialized copy inside its
+ * module .so and lose live process state. This proves the swappable half of
+ * the scan fires. */
 int t_hotswap_static_state_covers_swappable(void)
 {
     int failures = 0;
@@ -554,27 +548,14 @@ int t_privileged_transition_receipt_gate(void)
 
 /* Gate check-dumper-never-blocks: a `*_dump_state_json` OR `*_dump_state_fill`
  * body must never reach a blocking primitive, because both run on the
- * native/RPC thread while the reducer fold owns progress_store_tx_lock — take
- * that lock blocking there and `dumpstate`/`status` go dark exactly when the
- * node is busiest.
+ * native/RPC thread while the reducer fold owns progress_store_tx_lock.
  *
- * It lives in THIS group, not lint_gate_operator_contracts.c, on subject
- * matter: this file's checks EXECUTE gate scripts to prove a runtime-liveness
- * invariant, while operator_contracts asserts on the TEXT of tools and docs.
- * "The observability plane keeps answering while the reducer runs" is the same
- * family of question as "is anything on the liveness tree actually running".
- *
- * The matrix itself lives in the script's `--selftest`, which builds a
- * throwaway scan root and an empty baseline in its own mktemp dir and asserts
- * every case: a clean sandbox passes; a blocking call inside a
- * `*_dump_state_fill` trips (the collector blind spot — a table-driven
- * provider is where the reads moved, and the pre-widening scan could not see
- * it); the SAME call in a non-dumper function in the same file stays clean, so
- * the scan is still body-scoped; the original `*_dump_state_json` spelling
- * still trips; an empty scan root is a loud exit 2, never a hollow pass; and
- * the real tree is clean. Dispatching the flag beats restating the matrix in C
- * — the shell already owns the sandbox, and a second copy is a second thing to
- * keep in step. */
+ * The matrix lives in the script's `--selftest` (throwaway scan root and empty
+ * baseline in its own mktemp dir): a clean sandbox passes; a blocking call in a
+ * `*_dump_state_fill` or `*_dump_state_json` trips; the same call in a
+ * non-dumper function stays clean (body-scoped scan); an empty scan root is a
+ * loud exit 2; the real tree is clean. This group dispatches the flag rather
+ * than restating the matrix in C. */
 int t_dumper_never_blocks_gate(void)
 {
     int failures = 0;

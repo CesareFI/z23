@@ -177,12 +177,9 @@ int t_native_agent_api_contract(void)
         ASSERT(repo_path(agent_doc_path, sizeof(agent_doc_path),
                          "docs/AGENT_API.md") == 0);
         ASSERT(read_entire_file(main_path, &main_buf) == 0);
-        /* P1 split (pure code motion): the CLI client + run-and-exit modes
-         * moved from engine/entry/main.c to engine/entry/main_cli_modes.c, and the flag ladder +
-         * usage text to engine/composition/src/args.c. This "node entry point exposes the
-         * agent surface" contract now spans all three node-entry/args sources,
-         * so concatenate them into main_buf — the assertions below assert the
-         * combined surface, exactly as they did when it all lived in main.c. */
+        /* The node entry point spans main.c, main_cli_modes.c and args.c;
+         * concatenate them into main_buf so the assertions cover the combined
+         * agent surface. */
         {
             char main_cli_modes_path[PATH_MAX];
             char args_path[PATH_MAX];
@@ -247,18 +244,11 @@ int t_native_agent_api_contract(void)
         ASSERT(read_entire_file(diag_ctrl_path, &diag_ctrl_buf) == 0);
         ASSERT(read_entire_file(diag_reg_path, &diag_reg_buf) == 0);
         ASSERT(read_entire_file(diag_manifest_path, &diag_manifest_buf) == 0);
-        /* The DIAG_* rows moved out of diagnostics_dumpers.def into eight
-         * per-domain files; the .def itself is now a pure aggregator holding
-         * only #includes. The contract asserted below is about the ROW SET,
-         * not about which file a row sits in, so resolve the aggregator's
-         * include list and concatenate — the same set the preprocessor sees.
-         *
-         * The list is PARSED rather than hardcoded because naming the eight
-         * files here would let a ninth domain escape every assertion below
-         * without anyone noticing. The >= 8 floor is the anti-hollowness
-         * guard: without it, an include pattern that stopped matching would
-         * leave diag_manifest_buf holding nothing but comments, and every
-         * strstr() below would fail with a message blaming the wrong thing. */
+        /* The DIAG_* rows live in per-domain files; diagnostics_dumpers.def is
+         * a pure #include aggregator. Resolve its include list and concatenate,
+         * so the assertions cover the row set the preprocessor sees. The list
+         * is parsed, not hardcoded, so a new domain is covered automatically;
+         * the >= 8 floor guards against a pattern that stops matching. */
         {
             static const char inc_needle[] =
                 "#include \"controllers/diagnostics_dumpers_";
@@ -488,9 +478,8 @@ int t_native_agent_api_contract(void)
                != NULL);
         ASSERT(strstr(agent_operator_buf,
                       "suppressed_by_mirror_contract") != NULL);
-        /* Conditions are captured in one registry pass (operator-snapshot
-         * refactor) — the summary reads condition_engine_get_summary, not
-         * the per-count getters. */
+        /* Conditions are captured in one registry pass; the summary reads
+         * condition_engine_get_summary, not the per-count getters. */
         ASSERT(strstr(agent_summary_buf,
                       "condition_engine_get_summary") != NULL);
         ASSERT(strstr(agent_summary_buf, "agent_fast_collect") != NULL);

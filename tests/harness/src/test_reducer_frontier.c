@@ -1,18 +1,9 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Regression tests for the L0 authority reducer_frontier_compute_hstar.
- *
- * Each case builds a throwaway in-memory progress.kv with the REAL stage-log
- * schema (the same CREATE TABLE text the production *_log_store.c modules
- * emit), populates it for a specific tear topology, then asserts the exact
- * (hstar, served_floor) the algorithm must return. Assertions check exact
- * equality so they fail if compute_hstar drifts by even one height —
- * mutation-sensitive by construction.
- *
- * The fixture writes rows with plain sqlite3_exec/INSERT — this is TEST
- * scaffolding building the durable image, not production reducer code, so it
- * does not route through the AR lifecycle (no model, no progress.kv handle).
- * compute_hstar itself is the SELECT-only unit under test. */
+ * Regression tests for reducer_frontier_compute_hstar. Each case builds an
+ * in-memory progress.kv with the real stage-log schema for one tear topology
+ * and asserts the exact (hstar, served_floor). Fixture rows use plain
+ * sqlite3_exec: test scaffolding, not production reducer code. */
 
 #include "test/test_core.h"
 #include "json/json.h"
@@ -92,19 +83,9 @@ static void *body_note_raise_writer(void *arg)
     return NULL;
 }
 
-/* reducer_frontier_nearest_self_verified_base() and its result struct are
- * declared only in the PRIVATE header engine/jobs/src/reducer_frontier_rewind_
- * bases.h (deliberately not on the public engine/jobs/include/jobs/ path — see
- * that file's own PURPOSE comment). This is the driver-facing selector the
- * sovereignty invariant under test (case_sovereign_base_ignores_borrowed_
- * higher_stamp below) exists to pin, so the test calls the REAL linked
- * symbol directly rather than only exercising it indirectly through the JSON
- * dump's own separately-implemented nearest-tracking. Mirrors the private
- * declaration byte-for-byte (same idiom as e.g. test_always_sync_selfheal.c's
- * local `extern bool stage_rederive_range(...)` and test_stage_repair_
- * script_refill.c's `extern bool stage_reducer_frontier_try_unapplied_hole_
- * clamp(...)` — a test-only extern of a private production symbol, no
- * production header/Makefile include-path change). */
+/* Private-header declaration mirrored byte-for-byte (engine/jobs/src/
+ * reducer_frontier_rewind_bases.h): the sovereignty case below calls the real
+ * linked selector directly. */
 struct reducer_frontier_rewind_base {
     int32_t height;
     bool    self_derived;
@@ -115,9 +96,7 @@ struct reducer_frontier_rewind_base {
 extern bool reducer_frontier_nearest_self_verified_base(
     int32_t at_or_below, struct reducer_frontier_rewind_base *out);
 
-/* The anchor the production algorithm clamps to. Fixtures sit just above it
- * so the contiguous-prefix walk has something to traverse without building
- * three million rows. */
+/* The trusted anchor the algorithm clamps to; fixtures sit just above it. */
 #define A REDUCER_FRONTIER_TRUSTED_ANCHOR  /* 3056758 */
 
 /* ── fixture builder ─────────────────────────────────────────────────── */
@@ -167,13 +146,10 @@ static bool build_schema(sqlite3 *db)
 }
 
 /* Stamp coins_kv proven-authority on the fixture db. `applied_height` is the
- * NEXT height to apply, so a fixture that claims coverage through H must pass
- * H+1. compute_hstar treats the baked TRUSTED_ANCHOR as a real floor only when
- * this proven frontier covers it. Without that coverage, its phantom-anchor
- * guard lowers the floor to 0 — correct for a fresh OR partially-folded
- * datadir. The three authority rungs mirror coins_kv_is_proven_authority: an
- * 8-byte LE coins_applied_height, the 1-byte migration-complete stamp, and a
- * non-empty `coins` table. Returns false on any SQLite error. */
+ * NEXT height to apply, so coverage through H needs H+1. compute_hstar treats
+ * the baked TRUSTED_ANCHOR as a floor only when this frontier covers it,
+ * else the floor drops to 0. Mirrors coins_kv_is_proven_authority: 8-byte LE
+ * coins_applied_height, 1-byte migration-complete stamp, non-empty `coins`. */
 static bool stamp_proven_authority(sqlite3 *db, int64_t applied_height)
 {
     char *err = NULL;
@@ -226,10 +202,9 @@ static bool set_cursor(sqlite3 *db, const char *name, int64_t cursor)
     return ok;
 }
 
-/* Insert an ok row into a *_log table that has a (height, ok) shape plus an
- * optional 32-byte hash blob in `hash_col` (NULL hash_col => no hash). For
- * validate_headers_log the hash column is NOT NULL, so a hash is always
- * supplied there via hbyte. */
+/* Insert an ok row into a *_log table with (height, ok) plus an optional
+ * 32-byte hash blob in `hash_col` (NULL => none). validate_headers_log's hash
+ * is NOT NULL, so a hash is always supplied there via hbyte. */
 static bool put_log_row(sqlite3 *db, const char *table, const char *hash_col,
                         int32_t height, int ok, const uint8_t hash[32],
                         const char *status)
@@ -238,8 +213,8 @@ static bool put_log_row(sqlite3 *db, const char *table, const char *hash_col,
     bool profile_bound = strcmp(table, "script_validate_log") == 0 ||
                          strcmp(table, "proof_validate_log") == 0 ||
                          strcmp(table, "utxo_apply_log") == 0;
-    /* Successful consensus-validation rows must carry the exact production
-     * evidence label. Failure rows retain their caller-supplied diagnosis. */
+    /* Successful validation rows carry the exact production evidence label;
+     * failure rows keep the caller's diagnosis. */
     const char *row_status = profile_bound && ok == 1 ? "verified" : status;
     if (hash_col && row_status)
         snprintf(sql, sizeof(sql),
@@ -410,14 +385,10 @@ static bool set_hash_value(sqlite3 *db, const char *table,
     return ok;
 }
 
-/* Set every reducer cursor to `c` (the next-height frame == tip+1 in these
- * fixtures). tip_finalize is given the SAME value: under the served-tip
- * convention (task #31) its real cursor would be `c-1`, but
- * reducer_frontier_compute_hstar / reducer_anchor_candidate_ok normalize
- * tip_finalize's cursor to the next-height frame (cursor+1) before scanning,
- * so a tip_finalize cursor of either `c` (legacy +1 lattice) or `c-1` (new
- * served-tip value) yields the SAME H* here — these cases pin H* identically
- * across the convention change. */
+/* Set every reducer cursor to `c` (next-height frame == tip+1). tip_finalize
+ * gets the same value: compute_hstar and reducer_anchor_candidate_ok
+ * normalize its cursor to the next-height frame, so `c` and `c-1` yield the
+ * same H*. */
 static bool set_all_cursors(sqlite3 *db, int64_t c)
 {
     return set_cursor(db, "validate_headers", c)
@@ -431,13 +402,10 @@ static bool set_all_cursors(sqlite3 *db, int64_t c)
 
 /* ── cases ───────────────────────────────────────────────────────────── */
 
-/* A provenance marker is not a coverage proof. This is the production shape
- * that blocked checkpoint recovery on an old partially-synced node: coins and
- * every success-checked stage agree through K, the authority marker is valid,
- * but K is far below the newly compiled checkpoint A. A stale future anchor
- * row may still exist from an interrupted prior seed; its cursor preconditions
- * are not met and it must affect only the independently reported served_floor.
- * H* must remain the real folded K, never be fabricated upward to A. */
+/* A provenance marker is not a coverage proof: coins and every stage agree
+ * through K, the authority marker is valid, but K is far below the compiled
+ * checkpoint A. A stale future anchor row must affect only served_floor;
+ * H* stays the real folded K, never raised to A. */
 static int case_partial_authority_does_not_enable_compiled_floor(void)
 {
     int failures = 0;
@@ -617,12 +585,10 @@ static int case_validation_evidence_contained(void)
     return failures;
 }
 
-/* (b) Torn fixture mirroring the live tear: utxo_apply has run forward (high
- *     cursor + ok=1 coin rows), but script_validate hit a not_script_valid
- *     ok=0 laggard at A+4. The contiguous-prefix MIN across logs caps at the
- *     block BEFORE that failure (A+3), even though utxo_apply/coins are
- *     applied much further. tip_finalize has stale ok=0 debris above A+3 AND
- *     a fresh ok=1 at A+3, so served_floor == A+3. */
+/* (b) Torn fixture: utxo_apply ran forward, but script_validate has an ok=0
+ * laggard at A+4. The contiguous-prefix MIN caps H* at A+3. tip_finalize has
+ * stale ok=0 debris above A+3 and a fresh ok=1 at A+3, so served_floor is
+ * A+3. */
 static int case_torn(void)
 {
     int failures = 0;
@@ -636,9 +602,8 @@ static int case_torn(void)
     for (int32_t h = A + 1; h <= A + 3; h++)
         built = built && put_consistent_height(db, h);
 
-    /* script_validate FAILS at A+4 (not_script_valid). validate_headers is
-     * authoritative ahead (ok=1) and body/proof are ok=1 too, but the MIN
-     * over logs is bounded by script_validate's break at A+4 => prefix A+3. */
+    /* script_validate fails at A+4; the other logs are ok=1 there, so the
+     * MIN over logs caps the prefix at A+3. */
     uint8_t h4[32]; synth_hash(h4, A + 4, 0);
     built = built
         && put_log_row(db, "validate_headers_log", "hash", A + 4, 1, h4, NULL)
@@ -650,15 +615,14 @@ static int case_torn(void)
         && put_log_row(db, "utxo_apply_log", NULL, A + 4, 1, NULL, NULL)
         && put_log_row(db, "utxo_apply_log", NULL, A + 5, 1, NULL, NULL)
         && put_log_row(db, "utxo_apply_log", NULL, A + 6, 1, NULL, NULL)
-        /* tip_finalize: stale ok=0 debris above A+3 (the laggard never
-         * advanced) — must NOT raise served_floor above the real ok=1. */
+        /* stale ok=0 debris above A+3 must NOT raise served_floor. */
         && put_log_row(db, "tip_finalize_log", NULL, A + 4, 0, NULL, "stale")
         && put_log_row(db, "tip_finalize_log", NULL, A + 5, 0, NULL, "stale");
     RF_CHECK("torn: rows built", built);
     RF_CHECK("torn: vh hash", true);
 
-    /* Cursors mirror the live drift: validate_headers authoritative far
-     * ahead, utxo_apply ahead, tip_finalize lagging at the failure. */
+    /* Cursors: validate_headers far ahead, utxo_apply ahead, tip_finalize
+     * lagging at the failure. */
     bool cur = set_cursor(db, "validate_headers", A + 7)
             && set_cursor(db, "body_fetch", A + 7)
             && set_cursor(db, "body_persist", A + 7)
@@ -688,12 +652,10 @@ static int case_torn(void)
     int32_t hstar = -1, served = -1;
     bool ok = reducer_frontier_compute_hstar(db, &hstar, &served);
     RF_CHECK("torn: returns true", ok);
-    /* The prefix caps at A+3 (block before script_validate's ok=0). If the
-     * algorithm wrongly trusted the forward utxo_apply cursor or ignored the
-     * script_validate hole, hstar would be A+6 and this fails. */
+    /* The prefix caps at A+3; trusting the forward utxo_apply cursor would
+     * give A+6. */
     RF_CHECK("torn: hstar == A+3", hstar == A + 3);
-    /* served_floor is the deepest ok=1 finalize (A+3) — the stale ok=0 debris
-     * at A+4/A+5 must NOT raise it. */
+    /* served_floor is the deepest ok=1 finalize (A+3). */
     RF_CHECK("torn: served_floor == A+3", served == A + 3);
     /* H* must never exceed served_floor in a torn view (invariant). */
     RF_CHECK("torn: hstar <= served_floor", hstar <= served);
@@ -702,11 +664,10 @@ static int case_torn(void)
     return failures;
 }
 
-/* (b2) Sparse imported base: the reducer logs are intentionally absent across
- *      the imported/checkpointed middle, then a seed-anchor row marks a later
- *      trusted base and dense rows continue above it. H* must start from that
- *      valid seed anchor, not the compiled SHA3 checkpoint, and must ignore a
- *      stale higher active-tip anchor whose upstream cursors never reached it. */
+/* (b2) Sparse imported base: reducer logs are absent across the imported
+ * middle, then a seed-anchor row marks a later trusted base with dense rows
+ * above it. H* starts from that anchor, not the compiled checkpoint, and
+ * ignores a stale higher anchor whose upstream cursors never reached it. */
 static int case_sparse_seed_anchor(void)
 {
     int failures = 0;
@@ -738,13 +699,10 @@ static int case_sparse_seed_anchor(void)
 
 static bool put_int64_le_meta(sqlite3 *db, const char *key, int64_t v);
 
-/* (b2.1) Blocks-less verified bundle base: the loader writes BOTH the
- * tip_finalize anchor row and the durable trusted-base declaration at `base`,
- * then sets reducer cursors to at least base+1. On a fresh bundle datadir the
- * first post-base reducer rows may be ABSENT until P2P body fetch catches up.
- * That rowless state must keep H* at the trusted base, not collapse to the
- * compiled checkpoint. A real ok=0 row remains covered by the collapse case
- * below. */
+/* (b2.1) Blocks-less verified bundle base: the loader writes the tip_finalize
+ * anchor row and the trusted-base declaration at `base` and sets cursors to
+ * at least base+1. Rowless state above base keeps H* at the trusted base; a
+ * real ok=0 row is covered by the collapse case below. */
 static int case_durable_base_accepts_rowless_first(void)
 {
     int failures = 0;
@@ -759,9 +717,7 @@ static int case_durable_base_accepts_rowless_first(void)
     RF_CHECK("rowless-base: durable trusted base key",
              put_int64_le_meta(db, REDUCER_TRUSTED_BASE_HEIGHT_KEY, base));
 
-    /* No rows at base+1 in any reducer log. Cursors past base+1 model the
-     * loader's block-index-derived stage cursors before those rows are
-     * re-derived. */
+    /* No rows at base+1 in any log; cursors sit past base+1. */
     RF_CHECK("rowless-base: cursors", set_all_cursors(db, base + 2));
 
     int32_t hstar = -1, served = -1;
@@ -815,32 +771,16 @@ static int case_durable_base_survives_header_failure(void)
     return failures;
 }
 
-/* (b3) RECURRING POST-COLD-IMPORT WEDGE GUARD — the anchor-collapse class.
+/* (b3) Anchor-collapse guard. A cold import seeded a trusted base at `base`
+ * (tip_finalize anchor row and durable REDUCER_TRUSTED_BASE_HEIGHT_KEY) over
+ * a log-less region [A+1 .. base-1]. The block at base+1 spends a coin the
+ * import never installed, so script_validate records ok=0 there while every
+ * other stage is ok=1.
  *
- * Models the live tear class exactly: a cold import seeded a trusted base at
- * `base` (declared BOTH as a tip_finalize status='anchor' row AND the durable
- * REDUCER_TRUSTED_BASE_HEIGHT_KEY, the way the import path writes it) over a
- * LOG-LESS imported region [A+1 .. base-1] — a terminal UTXO snapshot carries
- * no per-height reducer rows. Forward progress then reached base+2, but the
- * canonical block at base+1 legitimately spends a coin the (orphan-seeded)
- * import never installed, so script_validate HONESTLY recorded ok=0
- * (prevout_unresolved) there while every other stage at base+1 is ok=1.
- *
- * reducer_anchor_candidate_ok(base) probes the first row above the base
- * (base+1), finds script_validate ok=0, and REJECTS the base — both via the
- * tip_finalize anchor-row scan and via the durable-base-key raise — so the
- * trusted anchor collapses to the compiled SHA3 checkpoint A. The imported span
- * being log-less, H* then falls all the way to A while served_floor still
- * reports the imported tip. That ~88k-height gap is the wedge the I4.3 sweep
- * latches into operator_needed.
- *
- * This case PINS that hstar == A is the CORRECT, consensus-safe answer: H* must
- * NEVER float up to the trusted base / served_floor over a REAL ok=0 — that was
- * adversarially refuted as consensus-UNSAFE (it would seal a torn coin set as
- * finalized-by-construction). The durable remedy is upstream (refuse the torn
- * import at write time) plus making the I4.3 *verdict* honest in
- * invariant_sentinel; neither changes this value. A future "unwedge by raising
- * H*" regression fails here, loudly. */
+ * reducer_anchor_candidate_ok(base) probes base+1, finds script_validate
+ * ok=0 and rejects the base, so the anchor collapses to the compiled
+ * checkpoint A while served_floor still reports the imported tip. hstar == A
+ * is the consensus-safe answer: H* must never float up over a real ok=0. */
 static bool put_int64_le_meta(sqlite3 *db, const char *key, int64_t v)
 {
     uint8_t blob[8];
@@ -868,16 +808,14 @@ static int case_anchor_collapse_after_forward_ok0(void)
 
     const int32_t base = A + 100;   /* the cold-import terminal tip */
 
-    /* Trusted base declared the way the import path writes it: a seed-anchor
-     * row AND the durable height key. */
+    /* Trusted base declared as the import path writes it: seed-anchor row
+     * and the durable height key. */
     RF_CHECK("collapse: seed anchor row", put_tip_anchor(db, base));
     RF_CHECK("collapse: durable trusted base key",
              put_int64_le_meta(db, REDUCER_TRUSTED_BASE_HEIGHT_KEY, base));
 
-    /* [A+1 .. base-1] is intentionally LOG-LESS (no rows) — the imported span.
-     * base+1 = the canonical spend block: every stage ok=1 EXCEPT script_validate,
-     * which honestly recorded ok=0 (prevout_unresolved on the missing coin). No
-     * tip_finalize row at base+1 (the block is block-not-finalized-by-reducer). */
+    /* [A+1 .. base-1] is log-less. base+1: every stage ok=1 except
+     * script_validate (ok=0, prevout_unresolved); no tip_finalize row. */
     uint8_t h1[32]; synth_hash(h1, base + 1, 0);
     bool row =
         put_log_row(db, "validate_headers_log", "hash", base + 1, 1, h1, NULL)
@@ -888,24 +826,18 @@ static int case_anchor_collapse_after_forward_ok0(void)
         && put_log_row(db, "utxo_apply_log", NULL, base + 1, 1, NULL, NULL);
     RF_CHECK("collapse: spend-block rows", row);
 
-    /* Forward progress reached base+2 across every stage (coins forged ahead,
-     * the live drift) so the candidate gate PROBES the ok=0 at base+1 rather
-     * than stopping short of it. */
+    /* Cursors reach base+2 so the candidate gate probes the ok=0 at base+1. */
     RF_CHECK("collapse: cursors", set_all_cursors(db, base + 2));
-    /* coins_applied forged forward to base+1 — the live coins-ahead tear. */
     RF_CHECK("collapse: coins_applied meta",
              put_int64_le_meta(db, "coins_applied_height", base + 1));
 
     int32_t hstar = -1, served = -1;
     bool ok = reducer_frontier_compute_hstar(db, &hstar, &served);
     RF_CHECK("collapse: returns true", ok);
-    /* The trusted base is rejected over the real ok=0; H* collapses to the
-     * compiled SHA3 checkpoint. This MUST stay A — raising it would seal a torn
-     * coin set as final (refuted consensus-unsafe). */
+    /* The base is rejected over the real ok=0; H* collapses to A. */
     RF_CHECK("collapse: hstar == anchor (refuses to float over real ok=0)",
              hstar == A);
-    /* served_floor still reports the imported tip's seed anchor — the wedge is
-     * precisely H* << served_floor (the log-less span read as an ~88k hole). */
+    /* served_floor still reports the imported tip's seed anchor. */
     RF_CHECK("collapse: served_floor == base (imported tip)", served == base);
     RF_CHECK("collapse: hstar < served_floor (the torn-view gap)",
              hstar < served);
@@ -914,11 +846,10 @@ static int case_anchor_collapse_after_forward_ok0(void)
     return failures;
 }
 
-/* (c) Clamp-up: the only logged rows are an ok=0 failure just ABOVE the
- *     anchor, so the contiguous prefix would compute to (anchor) and a hash
- *     split below the anchor must never pull it lower. Even with an empty
- *     finalize log (served_floor 0), H* is clamped UP to the trusted anchor,
- *     never below it. */
+/* (c) Clamp-up: the only logged row is an ok=0 failure just above the
+ * anchor, so the prefix is the anchor and a hash split below it must never
+ * pull it lower. H* is clamped up to the anchor even with an empty finalize
+ * log. */
 static int case_clamp_up(void)
 {
     int failures = 0;
@@ -927,10 +858,8 @@ static int case_clamp_up(void)
     RF_CHECK("clamp: schema", build_schema(db));
     RF_CHECK("clamp: proven authority", stamp_proven_authority(db, A + 1));
 
-    /* script_validate fails immediately at anchor+1 -> contiguous prefix is
-     * exactly the anchor. No tip_finalize ok=1 rows at all. */
-    /* validate_headers_log has no `status` column (its hash is NOT NULL), so
-     * supply status=NULL there; script_validate_log carries the status text. */
+    /* script_validate fails at anchor+1, so the prefix is the anchor.
+     * validate_headers_log has no `status` column: status=NULL there. */
     uint8_t zero[32] = {0};
     bool built =
         put_log_row(db, "script_validate_log", "block_hash", A + 1, 0, NULL,
@@ -952,9 +881,8 @@ static int case_clamp_up(void)
     return failures;
 }
 
-/* (d) Hash split: validate_headers and script_validate both present with
- *     non-NULL hashes that DISAGREE at A+3. H* must cap at A+2 even though
- *     every log shows ok=1 through A+5. Guards C3. */
+/* (d) Hash split: validate_headers and script_validate hashes disagree at
+ * A+3, so H* caps at A+2 though every log is ok=1 through A+5. */
 static int case_hash_split(void)
 {
     int failures = 0;
@@ -988,8 +916,7 @@ static int case_hash_split(void)
     int32_t hstar = -1, served = -1;
     bool ok = reducer_frontier_compute_hstar(db, &hstar, &served);
     RF_CHECK("split: returns true", ok);
-    /* H* caps at A+2 (block before the split). If C3 were skipped hstar would
-     * be A+5 and this fails. */
+    /* H* caps at A+2, the block before the split. */
     RF_CHECK("split: hstar == A+2", hstar == A + 2);
     /* served_floor still reaches the deepest ok=1 finalize (A+5). */
     RF_CHECK("split: served_floor == A+5", served == A + 5);
@@ -998,12 +925,9 @@ static int case_hash_split(void)
     return failures;
 }
 
-/* (e) Hash split at the VERY FIRST height above the anchor (A+1): every log
- *     is ok=1 through A+3 so the contiguous prefix would reach A+3, but the
- *     two hashes disagree at A+1. C3 must cap H* at A (anchor) — exercising
- *     its "never below the anchor" lower clamp, h-1 == anchor here. This is
- *     the only fixture that drives H* down onto the anchor floor via C3, so a
- *     regression that drops the lower clamp is caught. */
+/* (e) Hash split at A+1: the prefix would reach A+3, but the hashes disagree
+ * at the first height above the anchor, so H* clamps to the anchor. Drives
+ * the "never below the anchor" lower clamp. */
 static int case_split_at_floor(void)
 {
     int failures = 0;
@@ -1032,9 +956,8 @@ static int case_split_at_floor(void)
     int32_t hstar = -1, served = -1;
     bool ok = reducer_frontier_compute_hstar(db, &hstar, &served);
     RF_CHECK("floor: returns true", ok);
-    /* The split is at the first height above the anchor; H* must clamp to the
-     * anchor itself, never A (=A+1-1) which already equals the anchor — and
-     * NEVER below it. */
+    /* Split at the first height above the anchor: H* is the anchor itself,
+     * never below it. */
     RF_CHECK("floor: hstar == anchor", hstar == A);
     RF_CHECK("floor: hstar >= TRUSTED_ANCHOR", hstar >= A);
 
@@ -1042,14 +965,11 @@ static int case_split_at_floor(void)
     return failures;
 }
 
-/* (f) Pre-flip schema: proof_validate_log has NO block_hash column at all — the
- *     live canonical / pre-migration datadir shape (see
- *     proof_validate_null_hash_rearm.c). The C3 split scan MUST (1) not error on
- *     the absent column (before the schema-aware fix it aborted the whole H*
- *     fold with "no such column: p.block_hash", the exact bundle-install crash)
- *     and (2) still derive agreement from the witnesses the schema DOES carry
- *     (validate_headers.hash, header_admit.hash, script_validate.block_hash,
- *     utxo_apply_delta.branch_hash), clamping on a real disagreement there. */
+/* (f) Pre-flip schema: proof_validate_log has no block_hash column (see
+ * proof_validate_null_hash_rearm.c). The split scan must not error on the
+ * absent column and must still derive agreement from the witnesses the
+ * schema carries (validate_headers.hash, header_admit.hash,
+ * script_validate.block_hash, utxo_apply_delta.branch_hash). */
 static int case_preflip_no_proof_block_hash(void)
 {
     int failures = 0;
@@ -1058,8 +978,7 @@ static int case_preflip_no_proof_block_hash(void)
     RF_CHECK("preflip: schema", build_schema(db));
     RF_CHECK("preflip: proven authority", stamp_proven_authority(db, A + 1));
 
-    /* Recreate proof_validate_log WITHOUT the later-added block_hash column,
-     * reproducing the pre-flip on-disk shape exactly. */
+    /* Recreate proof_validate_log without block_hash (pre-flip shape). */
     char *err = NULL;
     RF_CHECK("preflip: drop proof block_hash column",
              sqlite3_exec(db,
@@ -1070,8 +989,8 @@ static int case_preflip_no_proof_block_hash(void)
                  NULL, NULL, &err) == SQLITE_OK);
     sqlite3_free(err);
 
-    /* A+1..A+5 consistent across every carried witness; proof rows are ok=1
-     * with NO block_hash (the column does not exist). */
+    /* A+1..A+5 consistent across every carried witness; proof rows ok=1
+     * with no block_hash. */
     bool built = true;
     for (int32_t h = A + 1; h <= A + 5; h++) {
         uint8_t hh[32];
@@ -1094,8 +1013,7 @@ static int case_preflip_no_proof_block_hash(void)
     bool ok = reducer_frontier_compute_hstar(db, &hstar, &served);
     /* (1) No missing-column abort: compute_hstar returns true. */
     RF_CHECK("preflip: compute returns true (no missing-column abort)", ok);
-    /* (2) The honestly-resolved prefix reaches A+5 — an absent proof witness is
-     *     NOT a split. Pre-fix this branch errored out entirely. */
+    /* (2) The resolved prefix reaches A+5: an absent witness is not a split. */
     RF_CHECK("preflip: hstar == A+5", hstar == A + 5);
 
     /* A real disagreement in a CARRIED witness (script) at A+3 still clamps. */
@@ -1226,15 +1144,11 @@ static const struct json_value *dumped_cursor(const struct json_value *out,
     return NULL;
 }
 
-/* Run-ahead visibility. A stage cursor above H* has consumed heights nothing
- * has verified — on the 2026-07-27 one-block fork at 3195363 five cursors read
- * 3195370 against H*=3195362, all of it work over the LOSING branch that the
- * reorg repair clamped back. The dump printed those as bare numbers and a
- * reader took them for a better height than H*. Both directions are pinned
- * here: a run-ahead cursor is reported as unproven, and a cursor level with H*
- * is NOT. header_admit and body_fetch are the two cursors outside the
- * H*-bearing log set, so moving them cannot move H* — which also proves the
- * marking is a comparison derived at query time, not a stored verdict. */
+/* Run-ahead visibility: a stage cursor above H* has consumed heights nothing
+ * verified, and the dump must report it as unproven, while a cursor level
+ * with H* is not. header_admit and body_fetch sit outside the H*-bearing log
+ * set, so moving them cannot move H*: the marking is derived at query time,
+ * not stored. */
 static int case_dump_marks_run_ahead_stage_cursors(void)
 {
     int failures = 0;
@@ -1326,9 +1240,7 @@ static int case_dump_marks_run_ahead_stage_cursors(void)
                             "stage_cursors_trust_note")),
                         "only proven height") != NULL);
 
-        /* The serializer is where a field goes to die here, so pin the WIRE
-         * text, not just the in-memory value: json_write is the same writer
-         * the dumpstate reply travels through. */
+        /* Pin the wire text via json_write, the dumpstate reply's writer. */
         static char wire[32768];
         size_t need = json_write(&out, wire, sizeof(wire));
         RF_CHECK("runahead: serialized dump not truncated",
@@ -1344,10 +1256,8 @@ static int case_dump_marks_run_ahead_stage_cursors(void)
     }
     json_free(&out);
 
-    /* The incident shape itself: five cursors run ahead together while the
-     * verified height does not move (raising a cursor without rows above the
-     * tip cannot raise a log frontier, exactly as the losing branch's work
-     * could not raise H*). The aggregate must count all five. */
+    /* Five cursors run ahead together while the verified height does not
+     * move; the aggregate must count all five. */
     bool ran_ahead = db != NULL
         && set_cursor(db, "validate_headers", hstar + 8)
         && set_cursor(db, "body_fetch", hstar + 8)
@@ -1487,9 +1397,7 @@ static int case_dump_reports_hstar_log_hole(void)
                  strcmp(json_get_str(json_get(&out,
                            "first_hstar_blocker_reason")),
                         "missing-success-row") == 0);
-        /* kind=log_hole names its repair owner — repair_owner="" here is the
-         * 3166989 regression (a rowless hole stalled 3 h with no named
-         * owner). */
+        /* kind=log_hole names its repair owner (never empty). */
         RF_CHECK("dump-hole: blocker repair owner",
                  strcmp(json_get_str(json_get(&out,
                            "first_hstar_blocker_repair_owner")),
@@ -1862,8 +1770,8 @@ static int case_dump_reports_rewind_bases(void)
     RF_CHECK("rewind: rows built", built);
     RF_CHECK("rewind: cursors", set_all_cursors(db, A + 6));
 
-    /* One self-derived sealed candidate at A+2 — closer to the tip (A+5) than
-     * the compiled checkpoint (at A). */
+    /* One self-derived sealed candidate at A+2, closer to the tip than the
+     * compiled checkpoint at A. */
     struct seal_record r;
     memset(&r, 0, sizeof(r));
     r.height = A + 2;
@@ -1921,12 +1829,9 @@ static int case_dump_reports_rewind_bases(void)
                      sha3_hex && strlen(sha3_hex) == 64);
         }
 
-        /* The seal candidate at A+2 is strictly closer to H*=A+5 than the
-         * compiled checkpoint at A, so it MUST be the nearest — regardless
-         * of whether an optional finalized_utxo_sha3 entry is also present
-         * (it is best-effort / process-global and not under this test's
-         * control). Bound the distance both ways instead of asserting an
-         * exact kind match. */
+        /* The seal candidate at A+2 is closer to H* than the checkpoint, so
+         * it is the nearest; the optional finalized_utxo_sha3 entry is
+         * process-global, so bound the distance instead of asserting kind. */
         int64_t nearest_distance =
             json_get_int(json_get(&out, "nearest_rewind_distance"));
         RF_CHECK("rewind: nearest distance is non-negative",
@@ -1941,26 +1846,17 @@ static int case_dump_reports_rewind_bases(void)
     return failures;
 }
 
-/* THE sovereignty invariant (docs/work/self-verified-tip-plan.md): a rewind
- * base is only trustworthy if THIS node self-derived it — a borrowed
- * finalized_utxo_sha3 stamp (self_derived=false, written once at snapshot
- * import, never re-derived by forward fold) must NEVER win over a genuinely
- * self-verified rung (self_derived=true — here the compiled SHA3 checkpoint
- * at the fixed anchor A), even when the borrowed stamp sits at a HIGHER
- * height (closer to H*, i.e. a smaller/cheaper rewind under naive
- * height-only selection).
+/* Sovereignty invariant (docs/work/self-verified-tip-plan.md): a rewind base
+ * must be self-derived. A borrowed finalized_utxo_sha3 stamp
+ * (self_derived=false) must never win over a self-verified rung (the
+ * compiled checkpoint at A), even at a higher height.
  *
- * Fixture: rows [A+1..A+5] fully consistent (H*=A+5), a borrowed
- * finalized_utxo_sha3 stamped at A+4 (self_derived=false, HIGHER than the
- * compiled checkpoint at A), and NO self-verified candidate closer than the
- * compiled checkpoint (no seal_kv slot seeded). Proves BOTH halves at once:
- *   (1) reducer_frontier_nearest_self_verified_base() — the function the
- *       generic recovery driver (rewind_driver.c) actually calls — returns
- *       the LOWER self-verified height A, never the higher borrowed A+4.
- *   (2) the LEGACY height-only nearest_rewind_base_* JSON keys (unchanged,
- *       still height-first over any provenance) DO pick the higher borrowed
- *       A+4 — proving the two selectors now genuinely disagree, which is
- *       exactly the bug this fix closes. */
+ * Fixture: rows [A+1..A+5] consistent (H*=A+5), a borrowed stamp at A+4, no
+ * closer self-verified candidate. Proves:
+ *   (1) reducer_frontier_nearest_self_verified_base() (used by
+ *       rewind_driver.c) returns the lower self-verified A, not A+4.
+ *   (2) the legacy height-only nearest_rewind_base_* JSON keys still pick
+ *       the borrowed A+4, so the two selectors disagree. */
 static int case_sovereign_base_ignores_borrowed_higher_stamp(void)
 {
     int failures = 0;
@@ -1986,12 +1882,10 @@ static int case_sovereign_base_ignores_borrowed_higher_stamp(void)
     RF_CHECK("sovereign-base: rows built", built);
     RF_CHECK("sovereign-base: cursors", set_all_cursors(db, A + 6));
 
-    /* Wire a real node_db + db_service into app_runtime so enumerate_rewind_
-     * bases()'s app_runtime_node_db() resolves to a live handle (same seam
-     * test_dbquery_secret_denylist.c proves against: node_db_open ->
-     * db_service_init/attach/start -> app_runtime_set_current) and stamp a
-     * BORROWED finalized_utxo_sha3 at A+4 — strictly HIGHER than the
-     * self-verified compiled checkpoint at A. */
+    /* Wire a real node_db + db_service into app_runtime so
+     * enumerate_rewind_bases() resolves a live handle (same seam as
+     * test_dbquery_secret_denylist.c), and stamp a BORROWED
+     * finalized_utxo_sha3 at A+4, higher than the checkpoint at A. */
     struct node_db ndb;
     struct db_service dbsvc;
     struct app_runtime_context runtime;
@@ -2013,8 +1907,7 @@ static int case_sovereign_base_ignores_borrowed_higher_stamp(void)
     RF_CHECK("sovereign-base: borrowed utxo_sha3 stamp saved",
              utxo_commitment_sha3_save(ndb.db, borrowed_hash, A + 4, 7));
 
-    /* (1) The driver-facing selector: must return the LOWER self-verified
-     * compiled checkpoint (A), never the higher borrowed stamp (A+4). */
+    /* (1) The driver-facing selector returns the lower self-verified A. */
     struct reducer_frontier_rewind_base base;
     memset(&base, 0, sizeof(base));
     bool found = reducer_frontier_nearest_self_verified_base(A + 5, &base);
@@ -2031,10 +1924,7 @@ static int case_sovereign_base_ignores_borrowed_higher_stamp(void)
                  base.height != A + 4);
     }
 
-    /* (2) The legacy height-only JSON keys (nearest_rewind_base_*, unchanged
-     * "nearest by height, any provenance" semantics): they DO pick the
-     * higher borrowed stamp — proving the fix is a genuine behavior change,
-     * not a no-op relabeling. */
+    /* (2) The legacy height-only keys pick the higher borrowed stamp. */
     struct json_value out;
     json_init(&out);
     bool dumped = reducer_frontier_dump_state_json(&out, NULL);
@@ -2059,9 +1949,8 @@ static int case_sovereign_base_ignores_borrowed_higher_stamp(void)
                  strcmp(json_get_str(json_get(&out,
                            "nearest_self_verified_base_kind")),
                         "compiled_checkpoint") == 0);
-        /* The two keys now genuinely disagree — the exact bug this fix
-         * closes (a height-first selector would have rewound to the
-         * borrowed A+4 instead of the sovereign A). */
+        /* The two keys disagree: a height-first selector would rewind to
+         * the borrowed A+4. */
         RF_CHECK("sovereign-base: legacy and self-verified nearest heights "
                  "now DIFFER (the fix)",
                  json_get_int(json_get(&out, "nearest_rewind_base_height"))
@@ -2079,12 +1968,10 @@ static int case_sovereign_base_ignores_borrowed_higher_stamp(void)
     return failures;
 }
 
-/* Lane E3: the body torn-read repair note + quarantine + typed blocker that
+/* The body torn-read repair note, quarantine and typed blocker that
  * stage_repair_read_active_block_checked records when a HAVE_DATA body cannot
- * be read (torn bytes / wrong block). Proves the note/quarantine/blocker logic
- * and the clear-on-successful-read (revalidation) path in isolation; the
- * end-to-end HAVE_DATA-drop + refetch chain is proven in
- * test_have_data_unreadable.c. */
+ * be read, and the clear-on-successful-read path. The end-to-end refetch
+ * chain is in test_have_data_unreadable.c. */
 static int case_body_read_repair_note(void)
 {
     int failures = 0;
@@ -2116,8 +2003,7 @@ static int case_body_read_repair_note(void)
              !blocker_exists("reducer_frontier.body_read_torn"));
 
     /* Crossing REDUCER_FRONTIER_BODY_READ_QUARANTINE_MAX raises ONE typed
-     * TRANSIENT blocker naming height/nFile/reason — a NAMED blocker, never a
-     * silent defer. */
+     * TRANSIENT blocker naming height/nFile/reason. */
     reducer_frontier_body_read_note_record(
         3143721, 49, 129998574, REDUCER_FRONTIER_BODY_READ_DISK, &hash_a);
     RF_CHECK("body_read_note: quarantine raises typed blocker",
@@ -2138,9 +2024,8 @@ static int case_body_read_repair_note(void)
                  named);
     }
 
-    /* Revalidation flow: a successful read of the noted height retires the
-     * note AND its blocker (this is exactly the clear_at() call the
-     * read_active_block_checked success path makes). */
+    /* A successful read of the noted height retires the note and its
+     * blocker. */
     struct reducer_frontier_body_read_note completed_note;
     bool captured = reducer_frontier_body_read_note_snapshot(&completed_note);
     if (captured)
@@ -2149,9 +2034,8 @@ static int case_body_read_repair_note(void)
              !reducer_frontier_body_read_note_active() &&
              !blocker_exists("reducer_frontier.body_read_torn"));
 
-    /* Lowest-height-first: a LOWER failing height supersedes and restarts the
-     * count (it must heal first so the frontier climbs); a HIGHER failing
-     * height never displaces a lower pending one. */
+    /* A lower failing height supersedes and restarts the count; a higher
+     * one never displaces a lower pending one. */
     reducer_frontier_body_read_note_record(
         3100000, 7, 42, REDUCER_FRONTIER_BODY_READ_WRONG, &hash_low);
     RF_CHECK("body_read_note: fresh lower note counts from 1",
@@ -2268,8 +2152,7 @@ static int case_body_read_repair_note(void)
     return failures;
 }
 
-/* Raw stage_cursor row for `name`, or -1 if absent (the value the F1 derived
- * reader must equal in every consistent state). */
+/* Raw stage_cursor row for `name`, or -1 if absent. */
 static int64_t raw_stage_cursor(sqlite3 *db, const char *name)
 {
     sqlite3_stmt *st = NULL;
@@ -2284,8 +2167,7 @@ static int64_t raw_stage_cursor(sqlite3 *db, const char *name)
     return v;
 }
 
-/* Convenience: the F1 log-derived cursor for `name` as an int64 (-1 on read
- * error), so a case can compare it to raw_stage_cursor directly. */
+/* The log-derived cursor for `name` as int64 (-1 on read error). */
 static int64_t derived_stage_cursor(sqlite3 *db, const char *name)
 {
     uint64_t out = 0;
@@ -2297,21 +2179,17 @@ static int64_t derived_stage_cursor(sqlite3 *db, const char *name)
 
 /* ── F1: log-derived stage cursor equivalence ────────────────────────────
  *
- * reducer_frontier_stage_cursor_derived is the F1 READ authority: each stage's
- * frontier is its own *_log's contiguous ok=1 prefix, in the stage's cursor
- * frame, CLAMPED to the still-written stage_cursor row (the log may only veto
- * the cursor DOWN to the proven prefix, never raise it). This case pins the
- * dual-write / single-read equivalence across the states the F1 plan calls out:
- *   (1) CONSISTENT forward fold: derived == raw stage_cursor for every stage
- *       (byte-identical — the durable cursor and the log agree).
- *   (2) TORN (a durable hole below the cursor): the derived value drops to the
- *       proven log frontier (LOWER than the raw cursor forced past the hole) —
- *       the log wins — while the raw stage_cursor row is unchanged, and only
- *       the holed stage diverges.
- *   (3) INSTALL (anchor row + cursors forced over a log-LESS region): the
- *       derived frontier floors at the install/anchor height, matching the
- *       forced cursor EXACTLY (semantics (b)/(c) of the F1 plan).
- *   (4) LOGLESS stage (body_fetch — no success-checked *_log): derived == raw. */
+ * reducer_frontier_stage_cursor_derived is each stage's *_log contiguous ok=1
+ * prefix in the cursor frame, clamped to the stage_cursor row (the log may
+ * only veto the cursor down). States pinned:
+ *   (1) CONSISTENT: derived == raw for every stage.
+ *   (2) TORN (durable hole below the cursor): derived drops to the proven
+ *       prefix, raw is unchanged, only the holed stage diverges.
+ *   (3) INSTALL (anchor row + cursors over a log-less region): derived
+ *       floors at the anchor height, matching the forced cursor.
+ *   (4) LOGLESS stage (body_fetch): derived == raw.
+ *   (5) HEAL-UNDER-STATIC-CURSOR: a vetoed memo entry drops once the
+ *       blocking row flips ok=1 without the raw cursor moving. */
 static int case_derived_stage_cursor_equivalence(void)
 {
     int failures = 0;
@@ -2375,8 +2253,8 @@ static int case_derived_stage_cursor_equivalence(void)
             cur = cur && set_cursor(db, upstream[i], tip + 1);
         cur = cur && set_cursor(db, "tip_finalize", tip);
         RF_CHECK("derived-equiv: torn cursors", cur);
-        /* Punch a hole: delete script_validate_log's row at A+3, so its
-         * contiguous ok=1 prefix stops at A+2 while its cursor stays tip+1. */
+        /* Delete script_validate_log's row at A+3 so its prefix stops at A+2
+         * while its cursor stays tip+1. */
         char del_sql[128];
         snprintf(del_sql, sizeof(del_sql),
                  "DELETE FROM script_validate_log WHERE height=%d", A + 3);
@@ -2385,8 +2263,7 @@ static int case_derived_stage_cursor_equivalence(void)
 
         int64_t dsv = derived_stage_cursor(db, "script_validate");
         int64_t rsv = raw_stage_cursor(db, "script_validate");
-        /* The log vetoes the cursor down to the proven frontier (A+2)+1 = A+3,
-         * strictly below the durable cursor (tip+1 = A+6). */
+        /* The log vetoes the cursor down to (A+2)+1 = A+3, below tip+1. */
         RF_CHECK("derived-equiv: torn script_validate derived == log frontier",
                  dsv == A + 3);
         RF_CHECK("derived-equiv: torn script_validate raw cursor unchanged",
@@ -2413,8 +2290,8 @@ static int case_derived_stage_cursor_equivalence(void)
         RF_CHECK("derived-equiv: install seed anchor row", put_tip_anchor(db, base));
         RF_CHECK("derived-equiv: install durable trusted base",
                  put_int64_le_meta(db, REDUCER_TRUSTED_BASE_HEIGHT_KEY, base));
-        /* No reducer log rows above `base` (the log-less bundle region). Force
-         * cursors the way consensus_state_snapshot_install_activate does. */
+        /* No log rows above `base`; force cursors as
+         * consensus_state_snapshot_install_activate does. */
         bool cur = true;
         for (size_t i = 0; i < n_up; i++)
             cur = cur && set_cursor(db, upstream[i], base + 1);
@@ -2449,12 +2326,7 @@ static int case_derived_stage_cursor_equivalence(void)
         sqlite3_close(db);
     }
 
-    /* (5) HEAL-UNDER-STATIC-CURSOR — a vetoed memo entry must drop once the
-     * blocking row flips ok=1 WITHOUT the raw cursor moving (the C3
-     * cold-start freeze: validate_headers' ok=0 solution-backfill rows are
-     * rewritten by recheck while the header-tip-pinned cursor never moves;
-     * raw-keyed invalidation alone pinned the floor for a full block
-     * interval per hole). */
+    /* (5) HEAL-UNDER-STATIC-CURSOR: see the case header. */
     {
         sqlite3 *db = NULL;
         reducer_frontier_stage_cursor_derived_reset_memo_for_testing();
@@ -2472,8 +2344,7 @@ static int case_derived_stage_cursor_equivalence(void)
             cur = cur && set_cursor(db, upstream[i], tip + 1);
         cur = cur && set_cursor(db, "tip_finalize", tip);
         RF_CHECK("derived-heal: cursors", cur);
-        /* The live freeze row class: an ok=0 validate verdict sitting below
-         * the static cursor. */
+        /* An ok=0 validate verdict below the static cursor. */
         char fail_sql[160];
         snprintf(fail_sql, sizeof(fail_sql),
                  "UPDATE validate_headers_log SET ok=0, "
@@ -2497,9 +2368,8 @@ static int case_derived_stage_cursor_equivalence(void)
         RF_CHECK("derived-heal: recheck rewrites the row ok=1",
                  sqlite3_exec(db, heal_sql, NULL, NULL, NULL) == SQLITE_OK);
 
-        /* The very next derived read must see the healed frontier even
-         * though raw is unchanged (pre-fix: stale memo returned A+3 until a
-         * new network header moved the cursor). */
+        /* The next derived read sees the healed frontier though raw is
+         * unchanged. */
         RF_CHECK("derived-heal: healed row drops the stale-LOW memo",
                  derived_stage_cursor(db, "validate_headers") == tip + 1);
         sqlite3_close(db);

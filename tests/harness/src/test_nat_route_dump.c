@@ -4,31 +4,9 @@
  * (core/modules/net/src/nat_route_dump.c) — the pure walker over the byte image
  * macOS's sysctl({CTL_NET, PF_ROUTE, 0, AF_INET, NET_RT_DUMP, 0}) returns.
  *
- * WHY THIS FILE EXISTS
- * --------------------
- * The Darwin arm of nat_get_gateway() cannot be executed on Linux, so the
- * part of it that can actually be wrong was deliberately factored out of
- * the syscall: message bounds, BSD sockaddr padding, default-route
- * selection, and the gateway's byte order are all pure functions of a byte
- * buffer. This file builds those buffers by hand and runs the real parser
- * against them, on this host, in this suite.
- *
- * HOW THE FIXTURES ARE BUILT
- * --------------------------
- * Not with the parser's own offsets — that would only prove the parser
- * agrees with itself. The messages are laid out through `struct
- * darwin_rt_msghdr` / `struct darwin_sockaddr_in` below, transcribed field
- * for field from Darwin's <net/route.h> and <netinet/in.h>. macOS (x86_64
- * and arm64) and Linux (x86_64) share the same LP64 alignment rules, so
- * offsetof/sizeof over the transcription reproduce Darwin's real offsets
- * here — the static_asserts pin them. If the parser's hardcoded offsets
- * ever disagree with that layout, these tests fail.
- *
- * WHAT THAT DOES AND DOES NOT PROVE: it proves the walker's logic and the
- * offsets it assumes. It does NOT prove the sysctl shim itself, which is
- * compiled only under __APPLE__ and has never been executed here; that shim
- * static_asserts the same offsets against the REAL system headers, so a
- * Darwin build fails loudly rather than mis-parsing. */
+ * Fixtures are laid out through a transcription of Darwin's rt_msghdr and
+ * sockaddr_in (static_asserts pin the offsets), not the parser's own offsets.
+ * The Darwin sysctl shim itself is not exercised here. */
 
 #include "test/test_core.h"
 

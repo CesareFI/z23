@@ -1,22 +1,19 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * test_load_verify_boot — the additive load-verify normal-boot routing gate.
+ * test_load_verify_boot — the load-verify normal-boot routing gate.
  *
- * The load-bearing property: a baked anchor snapshot is LOADED into coins_kv on a
- * normal boot ONLY when its recomputed body SHA3 EQUALS the compiled SHA3 UTXO
- * checkpoint; a snapshot whose SHA3 MISMATCHES is REFUSED (never seeds a bad set),
- * and the boot falls back to the proven path. This test pins the public gate
- * (boot_load_verify_snapshot_eligible) AND the exact loader binding the seed uses
- * (uss_open with expected_sha3 = the compiled checkpoint), against a scaled-down
- * synthetic snapshot whose body SHA3 IS an installed checkpoint override.
+ * A baked anchor snapshot is loaded into coins_kv on a normal boot only when
+ * its recomputed body SHA3 equals the compiled SHA3 UTXO checkpoint; a
+ * mismatching snapshot is refused and boot falls back to the proven path.
+ * Pins the public gate (boot_load_verify_snapshot_eligible) and the seed's
+ * loader binding (uss_open with expected_sha3 = the checkpoint) against a
+ * scaled-down synthetic snapshot whose body SHA3 is an installed override.
  *
- *   (a) MATCH   : snapshot SHA3 == checkpoint  → eligible=true; the verified set
- *                 iterates into coins_kv at the anchor count.
- *   (b) MISMATCH: snapshot SHA3 != checkpoint  → uss_open(.,expected=cp) returns
- *                 NULL AND eligible=false → REFUSED, coins_kv stays untouched.
- *   (c) ABSENT  : no snapshot file            → eligible=false (safe fallback).
- *   (d) HEALTHY : coins_kv already the proven authority → eligible=false even with
- *                 a matching snapshot present (a synced node is never reset).
+ *   (a) MATCH   : eligible=true; the verified set iterates into coins_kv.
+ *   (b) MISMATCH: uss_open returns NULL and eligible=false; coins_kv untouched.
+ *   (c) ABSENT  : no snapshot file; eligible=false.
+ *   (d) HEALTHY : coins_kv already proven authority; eligible=false even with
+ *                 a matching snapshot present.
  */
 
 #include "test/test_core.h"
@@ -61,11 +58,7 @@ static void lv_wle32(uint8_t *p, uint32_t v)
 static void lv_wle64(uint8_t *p, uint64_t v)
 { for (int i=0;i<8;i++) p[i]=(uint8_t)(v>>(8*i)); }
 
-/* Build a tiny but valid USS snapshot body (N records) and return the body SHA3
- * + the assembled file bytes. `tamper` flips one body byte so the on-disk SHA3
- * differs from the header's claimed root (but we DELIBERATELY do NOT update the
- * header root, so the header still claims `body_sha3` — the loader's full-body
- * recompute catches the divergence, modeling a corrupted/forged artifact). */
+/* Build a small valid USS snapshot body (N records); returns the body SHA3 and the file bytes. `tamper` flips one body byte but leaves the header root as claimed, so the loader's full-body recompute catches it. */
 struct lv_built {
     uint8_t  file[8192];
     size_t   file_len;
@@ -102,15 +95,13 @@ static void lv_build_snapshot(struct lv_built *b, bool tamper)
     b->count = 3;
     b->total = total;
 
-    /* Hash the CLEAN body — that is the root the header claims AND the override
-     * checkpoint will carry. */
+    /* Hash the clean body: the root the header claims and the override checkpoint carries. */
     struct sha3_256_ctx ctx;
     sha3_256_init(&ctx);
     sha3_256_write(&ctx, body, body_len);
     sha3_256_finalize(&ctx, b->body_sha3);
 
-    /* Optionally tamper a body byte AFTER hashing → on-disk body no longer
-     * matches the header root. */
+    /* Optionally tamper a body byte after hashing so the body no longer matches the header root. */
     if (tamper) body[20] ^= 0xff;
 
     uint8_t header[104] = {0};
@@ -150,9 +141,7 @@ static bool lv_artifact_sha256(const char *path, uint8_t out[32])
 static bool lv_progress_path(char *out, size_t cap, const char *dir,
                              const char *suffix)
 {
-    /* A4: the kernel authority store is consensus.db after the flip; these
-     * fixtures corrupt/inspect the authority, so they must target consensus.db
-     * (the file the boot loader actually opens and quarantines). */
+    /* The kernel authority store is consensus.db; fixtures that corrupt/inspect it must target that file. */
     int n = snprintf(out, cap, "%s/consensus.db%s", dir, suffix);
     return n > 0 && (size_t)n < cap;
 }
@@ -390,8 +379,7 @@ static int lv_stage_cursor(sqlite3 *db, const char *name)
     return out;
 }
 
-/* File-scope seed callback (mirrors engine/composition/src/boot_refold_staged.c
- * mint_load_record_cb): insert one snapshot record into coins_kv. */
+/* File-scope seed callback (mirrors boot_refold_staged.c mint_load_record_cb). */
 struct lv_seed_lc { sqlite3 *db; uint64_t n; bool ok; };
 static bool lv_seed_cb(const struct uss_record *r, void *vctx)
 {
@@ -419,15 +407,13 @@ int test_load_verify_boot(void)
     LV_CHECK("coins_kv schema", coins_kv_ensure_schema(pdb));
     LV_CHECK("coins_kv empty", coins_kv_count(pdb) == 0);
 
-    /* node.db (mint_snapshot_path needs a non-NULL ndb; with ZCL_MINT_ANCHOR_OUT
-     * set it never derefs the path, but the eligibility guard requires non-NULL). */
+    /* node.db: the eligibility guard requires a non-NULL ndb (the path is never dereferenced with ZCL_MINT_ANCHOR_OUT set). */
     char dbpath[320];
     snprintf(dbpath, sizeof(dbpath), "%s/node.db", dir);
     struct node_db ndb;
     LV_CHECK("node_db opens", node_db_open(&ndb, dbpath));
 
-    /* Point the mint-snapshot path helper directly at our sidecar via the env
-     * override the production path-derivation honors. */
+    /* Point the mint-snapshot path helper at our sidecar via the production env override. */
     char snap_path[400];
     snprintf(snap_path, sizeof(snap_path), "%s/utxo-anchor.snapshot", dir);
     setenv("ZCL_MINT_ANCHOR_OUT", snap_path, 1);
@@ -453,9 +439,7 @@ int test_load_verify_boot(void)
     LV_CHECK("(a) matching snapshot → eligible",
              boot_load_verify_snapshot_eligible(&ndb, pdb));
 
-    /* (a) the verified set actually LOADS via the same loader binding the seed
-     * uses (uss_open with expected_sha3 = the checkpoint), and iterates into
-     * coins_kv at the anchor count. */
+    /* (a) the verified set loads via the seed's loader binding (uss_open with expected_sha3 = checkpoint) and iterates into coins_kv at the anchor count. */
     {
         char err[128] = {0};
         struct uss_header hdr;
@@ -465,8 +449,7 @@ int test_load_verify_boot(void)
         LV_CHECK("(a) uss_open binds checkpoint root + verifies", h != NULL);
         if (h) {
             LV_CHECK("(a) header count == checkpoint", hdr.count == cp->utxo_count);
-            /* Seed coins_kv exactly like engine/composition/src/boot_refold_staged.c's
-             * mint_load_record_cb does (file-scope lv_seed_cb below). */
+            /* Seed coins_kv like mint_load_record_cb (lv_seed_cb below). */
             struct lv_seed_lc lc = { .db = pdb, .n = 0, .ok = true };
             int64_t emitted = uss_iter(h, lv_seed_cb, &lc);
             LV_CHECK("(a) seeded all records", emitted == (int64_t)hdr.count && lc.ok);
@@ -476,9 +459,7 @@ int test_load_verify_boot(void)
         }
     }
 
-    /* (d) HEALTHY: coins_kv now holds the set; mark the migration-complete stamp
-     * + applied height so it is the PROVEN authority → eligible must be FALSE even
-     * though the matching snapshot is still present (never reset a synced node). */
+    /* (d) HEALTHY: with the migration-complete stamp and applied height set, coins_kv is proven authority and eligible is false even with the matching snapshot present. */
     {
         char *terr = NULL;
         sqlite3_exec(pdb, "BEGIN IMMEDIATE", NULL, NULL, &terr);
@@ -496,14 +477,11 @@ int test_load_verify_boot(void)
     LV_CHECK("reset coins_kv for mismatch case", coins_kv_reset_for_reseed(pdb));
     LV_CHECK("coins_kv empty again", coins_kv_count(pdb) == 0);
 
-    /* (b) MISMATCH: write a snapshot whose on-disk body SHA3 != the header's
-     * claimed root == the checkpoint. uss_open(.,expected=cp) must REFUSE it
-     * (NULL) and the gate must be FALSE → a bad set NEVER seeds. */
+    /* (b) MISMATCH: on-disk body SHA3 != header root == checkpoint; uss_open(.,expected=cp) refuses and the gate is false. */
     {
         struct lv_built bad_snap;
         lv_build_snapshot(&bad_snap, /*tamper=*/true);
-        /* Header still claims ok_snap.body_sha3 (== checkpoint) but the body was
-         * tampered → full-body recompute diverges. */
+        /* Header still claims the checkpoint root but the body is tampered; the full-body recompute diverges. */
         LV_CHECK("write tampered snapshot", lv_write(snap_path, &bad_snap));
 
         char err[128] = {0};
@@ -518,15 +496,12 @@ int test_load_verify_boot(void)
                  coins_kv_count(pdb) == 0);
     }
 
-    /* (b2) MISMATCH via wrong-checkpoint: a clean snapshot whose root != the
-     * compiled checkpoint (different override). uss_open binds expected_sha3 and
-     * rejects at the header memcmp BEFORE the body recompute. */
+    /* (b2) MISMATCH via wrong checkpoint: uss_open rejects at the header memcmp before the body recompute. */
     {
         struct lv_built ok2;
         lv_build_snapshot(&ok2, /*tamper=*/false);
         LV_CHECK("rewrite clean snapshot", lv_write(snap_path, &ok2));
-        /* Install a DIFFERENT checkpoint root (flip a byte) so the snapshot's
-         * (valid) root no longer equals the checkpoint. */
+        /* Install a different checkpoint root (flip a byte) so the valid snapshot root no longer matches. */
         struct sha3_utxo_checkpoint cp_wrong = cp_ovr;
         cp_wrong.sha3_hash[0] ^= 0xff;
         checkpoints_set_sha3_override_for_test(&cp_wrong);
@@ -541,9 +516,7 @@ int test_load_verify_boot(void)
         LV_CHECK("(b2) coins_kv still untouched", coins_kv_count(pdb) == 0);
     }
 
-    /* (e) P1-6: after a snapshot is SELF-SHA3 verified, the explicit
-     * -load-snapshot-at-own-height loader may quarantine a broken local
-     * authority store and rebuild it from that verified set. */
+    /* (e) After a snapshot is self-SHA3 verified, -load-snapshot-at-own-height may quarantine a broken local authority store and rebuild it from that set. */
     {
         checkpoints_set_sha3_override_for_test(&cp_ovr);
         LV_CHECK("(e) rewrite matching snapshot for authority-store recovery",
@@ -609,9 +582,7 @@ int test_load_verify_boot(void)
         LV_CHECK("(e0) restore exact pending artifact",
                  lv_write(snap_path, &ok_snap));
 
-        /* Restart on the same healthy authority store. The marker must defeat
-         * RESUME-FAST, rerun the verified loader, and clear only after the
-         * durable tip/trusted-base seed succeeds. */
+        /* Restart on the same healthy store: the marker must defeat RESUME-FAST, rerun the verified loader, and clear only after the durable tip/trusted-base seed succeeds. */
         boot_load_snapshot_at_own_height_reset(&ndb, snap_path, dir, NULL,
                                                true);
         int32_t interrupted_applied = -1;
@@ -753,10 +724,7 @@ int test_load_verify_boot(void)
                      pdb, ok_artifact_sha256, &marker_matches) &&
                  marker_matches);
 
-        /* Model a kill after the standalone applied-height COMMIT: authority
-         * is true, but the in-progress marker must still force a destructive
-         * verified reseed. A poison coin proves the fast-resume path did not
-         * run. */
+        /* Model a kill after the applied-height COMMIT: authority is true but the in-progress marker must force a verified reseed; a poison coin proves the fast-resume path did not run. */
         uint8_t poison_txid[32] = {0xE7};
         LV_CHECK("(e0b) arm applied-height crash marker",
                  boot_snapshot_install_marker_begin(
@@ -807,11 +775,7 @@ int test_load_verify_boot(void)
                  found && applied == 1235);
     }
 
-    /* (f) RESUME-FAST repair: if the persisted coins_kv authority has already
-     * advanced beyond the snapshot seed, the explicit loader must not merely
-     * skip re-seeding. It also has to seed the trusted reducer base at the
-     * applied coins frontier, or H* falls back to the old checkpoint/log hole
-     * and the public API reports a stale height after boot. */
+    /* (f) RESUME-FAST repair: when persisted coins_kv authority is already past the snapshot seed, the loader must still seed the trusted reducer base at the applied coins frontier, or H* falls back to the checkpoint. */
     {
         struct main_state ms;
         main_state_init(&ms);
@@ -875,11 +839,7 @@ int test_load_verify_boot(void)
         free(owned_blocks);
     }
 
-    /* (g) A canonical USS v2 artifact must carry its header-bound Sapling
-     * frontier through the real production installer, durable receipt reopen,
-     * and RESUME-FAST.  This is the proof that the typed recovery report's
-     * embedded_frontier_verified=true bit describes installed authority, not
-     * merely a parsable trailer. */
+    /* (g) A canonical USS v2 artifact carries its header-bound Sapling frontier through the production installer, durable receipt reopen, and RESUME-FAST, so embedded_frontier_verified=true describes installed authority. */
     {
         progress_store_close();
         char v2_dir[256];

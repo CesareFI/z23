@@ -1,21 +1,17 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * test_reducer_step_drain_harness — a DETERMINISTIC, single-stepped drive of the
- * eight-stage reducer pipeline for ONE self-mined regtest block with NO
- * successor (exactly the `generate 1` scenario). It calls each stage's step_once
- * ONE AT A TIME and asserts that stage's progress.kv log row + cursor, so the
- * exact stage that records a wrong ok=0 is pinpointed in-process — turning the
- * live, run-to-run-contradicting node diagnostics into a reproducible unit test.
+ * test_reducer_step_drain_harness — a DETERMINISTIC, single-stepped drive of
+ * the eight-stage reducer pipeline for ONE self-mined regtest block with NO
+ * successor (the `generate 1` scenario). It calls each stage's step_once ONE
+ * AT A TIME and asserts that stage's progress.kv log row + cursor, so a
+ * wrong ok=0 is pinpointed to its stage.
  *
  * It runs the PRODUCTION step bodies with NO stubs: real Equihash mining
- * (mine_block_pow, regtest 48,5), real body write/read to disk, the identical
- * *_stage_step_once functions reducer_drain_all_stages calls. The only
- * difference from reducer_ingest_block is single-stepping with an assertion
- * between each stage instead of summing advance counts.
+ * (mine_block_pow, regtest 48,5), real body write/read, the identical
+ * *_stage_step_once functions reducer_drain_all_stages calls.
  *
  * Scaffolding (setup / block builder / genesis seed) is lifted from
  * test_reducer_forward_progress_gate.c. Process-globals → opt-in isolated run:
- *   make t ONLY=reducer_step_drain_harness
  */
 
 #include "test/test_core.h"
@@ -209,19 +205,15 @@ static bool sd_no_stage_spin_blocker(void)
     return true;
 }
 
-/* R2 (quiescent-round batch skip): once the pipeline has converged, a further
- * reducer_kick must discover "no work" WITHOUT re-opening one empty
- * BEGIN IMMEDIATE/ROLLBACK write transaction per stage — eight per converged
- * drain round, the measured ~57% `batch_empty_total` term (stage_batch.c's
- * transaction accounting). Two kicks back-to-back: the first SETTLES any
- * residue (and lets the drain record the quiescent cursor vector); the second
- * must open at most the two PRODUCER stages' probe batches — header_admit and
- * body_fetch have network/inbox inputs that can arrive without any
- * stage-cursor movement, so they always re-probe; the six consumer stages are
- * skipped while the exact cursor vector they converged on is unchanged. BASE
- * behavior: all eight stages open an empty batch every converged round
- * (opened delta 8). Extracted so the harness body stays under its
- * cyclomatic-complexity pin; returns this check's failure count. */
+/* Quiescent-round batch skip: once converged, a further reducer_kick must
+ * find "no work" WITHOUT re-opening one empty BEGIN IMMEDIATE/ROLLBACK
+ * transaction per stage. Two kicks back-to-back: the first SETTLES residue
+ * (and records the quiescent cursor vector); the second may open at most
+ * the two PRODUCER stages' probe batches (header_admit and body_fetch have
+ * network/inbox inputs that arrive without cursor movement); the six
+ * consumer stages are skipped while their converged cursor vector is
+ * unchanged. Extracted for the cyclomatic-complexity pin; returns this
+ * check's failure count. */
 static int sd_quiescent_rekick_check(bool stages_ok, struct main_state *ms,
                                      const struct chain_params *cp,
                                      const char *netdir)
@@ -248,13 +240,11 @@ static int sd_quiescent_rekick_check(bool stages_ok, struct main_state *ms,
     return failures;
 }
 
-/* S1.4b: the paused= marker on the mint-progress.log line. The deferred
- * Sapling commitment-tree rebuild pins utxo_apply for its whole run
- * (g_sapling_tree_rebuilding); the mint drive loop holds its stall detector
- * and waits (bounded). A flatlined rate=0.0 line with no marker reads as a
- * wall — that is exactly how a healthy mint gets killed mid-wait — so the
- * line must name the pause. Extracted so the harness body stays under its
- * cyclomatic-complexity pin; returns this check's failure count. */
+/* The paused= marker on the mint-progress.log line: the deferred Sapling
+ * commitment-tree rebuild pins utxo_apply (g_sapling_tree_rebuilding) and
+ * the mint drive loop waits (bounded); a flatlined rate=0.0 line with no
+ * marker reads as a wall, so the line must name the pause. Extracted for
+ * the cyclomatic-complexity pin; returns this check's failure count. */
 static int sd_mint_log_pause_marker_check(const char *mint_log_path)
 {
     int failures = 0;
@@ -330,17 +320,14 @@ int test_reducer_step_drain_harness(void)
                  !reducer_at_tip_authority_ready(&at));
     }
 
-    /* ── wf/foldpath-loud-errors: window-extend failure is now LOUD ────────
-     * reducer_extend_window_to_candidate() used to (void)-discard the
-     * active_chain_extend_window{,_have_data} result; a failed extend (alloc
-     * failure only) is now counted + LOG_WARN'd. A FRESH chain has capacity==0
-     * (active_chain_init), so the FIRST extend unconditionally attempts a
-     * zcl_malloc("active_chain") grow (active_chain_grow_locked) — arming the
-     * alloc-fault hook on that exact label forces the swallowed error to fire
-     * deterministically, without touching the harness's real fold state below.
+    /* ── wf/foldpath-loud-errors: window-extend failure is LOUD ────────────
+     * A failed active_chain_extend_window{,_have_data} (alloc failure only)
+     * is counted + LOG_WARN'd. A FRESH chain has capacity==0, so the FIRST
+     * extend attempts a zcl_malloc("active_chain") grow; arming the
+     * alloc-fault hook on that label fires the error deterministically.
      * Synthetic block_index idiom mirrors mw_mk_idx in
-     * test_most_work_selector.c. pindex_best_header stays NULL so the fallback
-     * (most-work candidate) branch is exercised. */
+     * test_most_work_selector.c. pindex_best_header stays NULL so the
+     * most-work fallback branch is exercised. */
     {
         struct main_state fault_ms;
         memset(&fault_ms, 0, sizeof(fault_ms));
@@ -374,9 +361,8 @@ int test_reducer_step_drain_harness(void)
             SD_CHECK("window-extend fault: failed extend leaves window untouched",
                      fault_ms.chain_active.height == -1);
 
-            /* Healthy retry, identical inputs, no fault armed: must succeed AND
-             * must NOT trip the failure counter (zero happy-path behavior
-             * change — the (void)-vs-checked wrapper is a no-op on success). */
+            /* Healthy retry, identical inputs, no fault armed: must succeed
+             * and must NOT trip the failure counter. */
             reducer_extend_window_to_candidate(&fault_ms, true);
             SD_CHECK("window-extend healthy: counter does not increment",
                      reducer_window_extend_failure_count() == before + 1);
@@ -429,9 +415,8 @@ int test_reducer_step_drain_harness(void)
                      active_chain_extend_window_have_data_fast_count() ==
                          fast_before + 1);
 
-            /* One outer stage batch must perform one window exposure even
-             * when many cursor steps call the shared helper. This is the
-             * production 500-step catch-up shape. */
+            /* One outer stage batch performs one window exposure even when
+             * many cursor steps call the shared helper. */
             sqlite3 *batch_db = NULL;
             bool batch_open = sqlite3_open(":memory:", &batch_db) == SQLITE_OK &&
                               stage_batch_begin(batch_db);
@@ -577,8 +562,7 @@ int test_reducer_step_drain_harness(void)
         SD_CHECK("STEP persist: body on disk + BLOCK_HAVE_DATA set",
                  persisted && bi1 && (bi1->nStatus & BLOCK_HAVE_DATA));
 
-        /* (4) SINGLE-STEP the body-dependent stages, asserting each row. The
-         * first stage to write ok=0 here is the bug. */
+        /* (4) SINGLE-STEP the body-dependent stages, asserting each row. */
         (void)body_fetch_stage_step_once();
         int64_t bf_ok = -1; char bf_src[64] = {0};
         bool bf_row = sd_log_int(db, "body_fetch_log", "ok", 1, &bf_ok);
@@ -628,11 +612,10 @@ int test_reducer_step_drain_harness(void)
     }
 
     /* ── INTEGRATION: drive the REAL reducer_ingest_block on a SECOND
-     * successor-less block (block 2 on top of the now-tip block 1). This is the
-     * exact `generate` path — push(height=-1) + the two-drain sequence + the L2
-     * finalize, all inside reducer_ingest_block — so if it diverges from the
-     * single-stepped drive above, the bug is in the integration, not the
-     * stages. ──────────────────────────────────────────────────────────── */
+     * successor-less block (block 2 on top of tip 1): the exact `generate`
+     * path (push(height=-1) + two-drain sequence + L2 finalize). A
+     * divergence from the single-stepped drive above is in the integration,
+     * not the stages. ────────────────────────────────────────────── */
     if (stages_ok && active_chain_height(&ms.chain_active) == 1) {
         struct chain_activation_controller ctl;
         activation_controller_init(&ctl, &ms, NULL, cp, netdir);
@@ -665,13 +648,12 @@ int test_reducer_step_drain_harness(void)
         activation_controller_destroy(&ctl);
     }
 
-    /* ── S1.4: mint-progress.log per-stage step-EWMA telemetry. -mint-anchor
-     * producers run WITHOUT RPC, so dumpstate's stage_step_us_ewma() is
-     * unreachable from them — this on-disk log line is the only offline
-     * surface. Force one tick (throttle bypassed) after the eight stages
-     * above have actually stepped, and assert the line names the slowest
-     * stage + carries the full per-stage snapshot. start_us=0 keeps this
-     * independent of GetTimeMicros/core/utiltime. ────────────────────────── */
+    /* ── mint-progress.log per-stage step-EWMA telemetry. -mint-anchor
+     * producers run WITHOUT RPC, so this on-disk log line is the only
+     * offline surface. Force one tick (throttle bypassed) after the eight
+     * stages have stepped; the line must name the slowest stage + carry the
+     * full per-stage snapshot. start_us=0 keeps this independent of
+     * GetTimeMicros. ───────────────────────────────────────────────── */
     if (stages_ok) {
         char mint_log_path[512];
         snprintf(mint_log_path, sizeof(mint_log_path),
@@ -702,8 +684,7 @@ int test_reducer_step_drain_harness(void)
         failures += sd_mint_log_pause_marker_check(mint_log_path);
     }
 
-    /* ── R2 (quiescent-round batch skip) — see sd_quiescent_rekick_check
-     * above. ──────────────────────────────────────────────────────────── */
+    /* ── R2 (quiescent-round batch skip) — see sd_quiescent_rekick_check ── */
     failures += sd_quiescent_rekick_check(stages_ok, &ms, cp, netdir);
 
     /* ── teardown ──────────────────────────────────────────────────────── */
@@ -728,19 +709,12 @@ int test_reducer_step_drain_harness(void)
 }
 
 /* ── Regression guard: regtest on-demand GENESIS SELF-SEED ────────────────────
- * The sibling harness above MANUALLY seeds the genesis anchor (the line the
- * import/snapshot/reindex paths run), so it cannot catch the regression where a
- * FRESH genesis-only regtest node fails to self-seed. Before the
- * fMineBlocksOnDemand-gated genesis-seed in reducer_ingest_block
- * (engine/reducer/services/src/reducer_ingest_service.c), the first `generate` on such a
- * node left utxo_apply unseeded (utx=-1) so the block never finalized
- * ("block-not-finalized-by-reducer", tip stuck at 0). This drives the REAL
- * reducer_ingest_block front door on an UNSEEDED genesis node (NO manual seed)
- * and asserts the ingest SELF-SEEDS genesis + advances the tip 0->1. If the fix
- * regresses, reducer_ingest_block(block 1) leaves the tip at 0 and this FAILS
- * loudly instead of silently regressing.
- * Hermetic in-process mirror of a copy-prove run (generate 5 -> 5,
- * rejects=0). */
+ * The sibling harness seeds the genesis anchor manually, so it cannot catch a
+ * FRESH genesis-only regtest node failing to self-seed. This drives the REAL
+ * reducer_ingest_block front door on an UNSEEDED genesis node (NO manual
+ * seed; see the fMineBlocksOnDemand-gated seed in
+ * engine/reducer/services/src/reducer_ingest_service.c) and asserts the
+ * ingest self-seeds genesis and advances the tip 0->1. */
 int test_reducer_ondemand_genesis_seed(void);
 int test_reducer_ondemand_genesis_seed(void)
 {
@@ -815,10 +789,9 @@ int test_reducer_ondemand_genesis_seed(void)
         tip_finalize_stage_init(&ms);
     SD_CHECK("all eight reducer stages init", stages_ok);
 
-    /* THE PRECONDITION that makes this a real guard: NOTHING seeded the genesis
-     * anchor (no sd_seed_genesis_utxo_apply_row, no tip_finalize_stage_seed_anchor
-     * — unlike the sibling harness). The cursor MUST be unseeded at genesis;
-     * the fix is what seeds it from inside reducer_ingest_block. */
+    /* PRECONDITION of this guard: NOTHING seeded the genesis anchor (unlike
+     * the sibling harness); the cursor MUST be unseeded at genesis and
+     * reducer_ingest_block seeds it. */
     SD_CHECK("precondition: tip is genesis (height 0)",
              active_chain_height(&ms.chain_active) == 0);
     SD_CHECK("precondition: tip_finalize cursor UNSEEDED (0)",
@@ -882,26 +855,21 @@ int test_reducer_ondemand_genesis_seed(void)
 
 /* ── Regression guard: MINT-FOLD LIVELOCK ────────────────────────
  * A single reducer_kick_unbudgeted call draining up to hard_cap(64) *
- * ZCL_REFOLD_DRAIN_BATCH(2000) = 128k blocks back-to-back with NO wall-clock
- * budget and NO frontier-progress check is unsafe. When the utxo_apply frontier is
- * WALLED at a low height (a bodiless/failed block) while header_admit /
- * validate_headers keeps advancing toward the mint ceiling, every round still
- * reports adv>0, so an unbudgeted kick can run for HOURS inside one call. The
- * boot_mint_anchor drive loop only logs progress and runs its 64-kick stall
- * detector BETWEEN kicks — so the process spins silently: no mint-progress.log
- * line, stall guard never runs — the tenacity doctrine's forbidden quiet stop.
+ * ZCL_REFOLD_DRAIN_BATCH(2000) blocks with NO wall-clock budget and NO
+ * frontier-progress check is unsafe: with the utxo_apply frontier WALLED at
+ * a low height while header_admit / validate_headers keep advancing, every
+ * round reports adv>0 and one call can run for hours with no
+ * mint-progress.log line.
  *
- * Scenario A (walled frontier): a synthetic header-only chain (no bodies) with
- * the mint ceiling armed and a small drain batch. One kick must RETURN having
- * NOT ground the whole upstream backlog (the frontier-stall convergence), so
- * the drive loop regains control. Then the drive loop's fail-closed reporter
- * must register the typed PERMANENT blocker `mint_fold.frontier_walled`
- * naming the walled stage (body_fetch here) with all eight cursors.
+ * Scenario A (walled frontier): a header-only chain (no bodies), mint
+ * ceiling armed, small drain batch. One kick must RETURN without grinding
+ * the whole backlog, then the drive loop's reporter must register the typed
+ * PERMANENT blocker `mint_fold.frontier_walled` naming the walled stage
+ * (body_fetch) with all eight cursors.
  *
- * Scenario B (healthy fold, no false-fire): one real mined regtest block
- * driven through the SAME reducer_kick_unbudgeted must still fold to the
- * ceiling (frontier advances; the new break must not truncate a healthy
- * fold), and a follow-up kick converges to 0. */
+ * Scenario B (healthy fold): one real mined regtest block through the SAME
+ * reducer_kick_unbudgeted must still fold to the ceiling, and a follow-up
+ * kick converges to 0. */
 
 #include "config/boot.h"                /* boot_mint_anchor_report_frontier_walled */
 #include "jobs/mint_fold_ceiling.h"     /* mint_fold_ceiling_set / _get */
@@ -1007,14 +975,10 @@ int test_mint_fold_livelock(void)
         ML_CHECK("walled: kick advanced upstream work (adv>0)", advanced > 0);
         ML_CHECK("walled: frontier did NOT move (utxo_apply walled)",
                  ua_after == ua_before);
-        /* Drain-exit telemetry (drive+fsync telemetry gap 1): the
-         * frontier-stall break is deliberately bucketed into NEITHER
-         * counter (see reducer_drain.c's doc comment) — it is a distinct
-         * "walled fold" fact with its own dedicated signal
-         * (mint_fold.frontier_walled below), not a throughput/convergence
-         * one. This is the regression proof that a walled fold does NOT
-         * masquerade as healthy convergence nor get misdiagnosed as an
-         * IO/budget stall. */
+        /* Drain-exit telemetry: the frontier-stall break is bucketed into
+         * NEITHER counter (see reducer_drain.c); its signal is
+         * mint_fold.frontier_walled below. A walled fold must not
+         * masquerade as convergence or as an IO/budget stall. */
         ML_CHECK("walled: frontier-stall break counts as NEITHER converged "
                  "nor budget",
                  des_after.exit_converged_total ==
@@ -1022,11 +986,9 @@ int test_mint_fold_livelock(void)
                  des_after.exit_budget_total == des_before.exit_budget_total);
         ML_CHECK("walled: drain-exit stats record the round's own advances",
                  des_after.last_round_advances > 0);
-        /* THE regression signal: with the frontier walled, the kick must
-         * return at the first frontier-stalled round — one round admits at
-         * most BATCH headers (+1 slack), nowhere near the N-header backlog.
-         * Before the fix the kick ground the ENTIRE backlog (ha_after == N,
-         * or hard_cap*batch rounds — hours at live scale) inside ONE call. */
+        /* With the frontier walled, the kick must return at the first
+         * frontier-stalled round: one round admits at most BATCH headers
+         * (+1 slack), nowhere near the N-header backlog. */
         ML_CHECK("walled: kick returned after ONE round, backlog NOT ground",
                  ha_after <= (uint64_t)(2 * BATCH) && ha_after < (uint64_t)N);
         /* Wall ceiling scales with measured host load; nominal stays 60s. */
@@ -1048,11 +1010,9 @@ int test_mint_fold_livelock(void)
                    (unsigned long long)ha_after, advanced,
                    (long long)elapsed_us);
 
-        /* False-fire proof: the walled frontier is a genuine wall (body_fetch
-         * idle, utxo_apply idle), not a spin — the advance-or-blocker
-         * reconciliation must NOT name any stage as spinning. header_admit /
-         * validate_headers advance their OWN cursors (so they are progress, not
-         * spin), and the frontier-stall break exits well before K rounds. */
+        /* False-fire proof: the walled frontier is a genuine wall, not a
+         * spin; no stage may be named as spinning (header_admit /
+         * validate_headers advance their OWN cursors). */
         ML_CHECK("walled: no stage_spin_* blocker fired (no false-fire)",
                  sd_no_stage_spin_blocker());
 
@@ -1192,9 +1152,8 @@ int test_mint_fold_livelock(void)
             }
             ML_CHECK("healthy: body persisted", persisted);
 
-            /* The mint context (ceiling at h=1) + the REAL unbudgeted kick.
-             * The frontier-stall break must NOT truncate this healthy fold:
-             * the kick folds block 1 through utxo_apply within the call. */
+            /* The mint context (ceiling at h=1) + the REAL unbudgeted kick:
+             * the frontier-stall break must NOT truncate this healthy fold. */
             mint_fold_ceiling_set(1);
             struct chain_activation_controller ctl;
             activation_controller_init(&ctl, &ms, NULL, cp, netdir);
@@ -1211,11 +1170,8 @@ int test_mint_fold_livelock(void)
             reducer_drain_exit_stats_snapshot(&des_after);
             ML_CHECK("healthy: converged at the ceiling (second kick = 0)",
                      again == 0);
-            /* Drain-exit telemetry (drive+fsync telemetry gap 1): a kick
-             * that returns 0 (genuine convergence, no more work at the
-             * ceiling) must land in exit_converged_total, NOT
-             * exit_budget_total — the opposite of the walled-frontier
-             * scenario above. */
+            /* A kick that returns 0 (genuine convergence) must land in
+             * exit_converged_total, NOT exit_budget_total. */
             ML_CHECK("healthy: converged kick increments "
                      "exit_converged_total, not exit_budget_total",
                      des_after.exit_converged_total ==
@@ -1224,9 +1180,8 @@ int test_mint_fold_livelock(void)
                          des_before.exit_budget_total &&
                      des_after.last_round_advances == 0);
 
-            /* False-fire proof (advance-or-blocker contract): a healthy fold
-             * moves every advancing stage's own cursor, so the reconciliation
-             * must NOT have named any stage as spinning. */
+            /* False-fire proof: a healthy fold moves every advancing stage's
+             * own cursor, so no stage may be named as spinning. */
             ML_CHECK("healthy: no stage_spin_* blocker fired (no false-fire)",
                      sd_no_stage_spin_blocker());
 
@@ -1255,15 +1210,12 @@ int test_mint_fold_livelock(void)
     return failures;
 }
 
-/* ── Regression guard: ADVANCE-OR-BLOCKER contract (0.5) ──────────────────────
- * The drain core's per-round reconciliation: a stage that reports advances>0
- * while its OWN cursor never moves is, after K consecutive rounds, a named
- * "stage_spin_<name>" blocker (TRANSIENT, owner reducer_drain) carrying the
- * stage, round count, steps reported, and frozen cursor height — and cursor
- * movement clears it. This drives reducer_drain_spin_observe() directly (the
- * exact predicate the drain core applies per stage per round) with a synthetic
- * stub stage that reports advance=1 every round but leaves its cursor frozen,
- * so the contract is tested without spinning up the eight production stages. */
+/* ── Regression guard: ADVANCE-OR-BLOCKER contract ───────────────────────────
+ * A stage that reports advances>0 while its OWN cursor never moves becomes,
+ * after K consecutive rounds, a named "stage_spin_<name>" blocker (TRANSIENT,
+ * owner reducer_drain) carrying stage, round count, steps and frozen cursor
+ * height; cursor movement clears it. Drives reducer_drain_spin_observe()
+ * directly with a synthetic stage that reports advance=1 but never moves. */
 int test_reducer_drain_spin_contract(void);
 int test_reducer_drain_spin_contract(void)
 {
@@ -1294,8 +1246,8 @@ int test_reducer_drain_spin_contract(void)
     SD_CHECK("spin: blocker class is TRANSIENT",
              blocker_class_for(blk_id) == (int)BLOCKER_TRANSIENT);
 
-    /* Payload: names the stage, the round count, steps reported, frozen cursor,
-     * and is owned by reducer_drain. */
+    /* Payload: names the stage, round count, steps reported and frozen
+     * cursor, and is owned by reducer_drain. */
     {
         struct blocker_snapshot snaps[BLOCKER_CAP];
         int n = blocker_snapshot_all(snaps, BLOCKER_CAP);

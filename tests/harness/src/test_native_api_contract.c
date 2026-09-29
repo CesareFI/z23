@@ -1,13 +1,8 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * Native-command API contract tests (docs/NATIVE_COMMAND_INTERFACE.md,
- * docs/API_REFERENCE.md).
- *
- * test_command_registry_catalog.c already proves the catalog is well-formed,
- * that a SAMPLE of branch menus stay shallow, that search is bounded to
- * five, and that one leaf (ops.state) fails closed on a missing required
- * key. This file sweeps invariants that sample did not cover for the WHOLE
- * catalog, without contacting a live node:
+ * docs/API_REFERENCE.md). Sweeps, for the WHOLE catalog and without a live
+ * node, invariants beyond test_command_registry_catalog.c:
  *
  *   1. every BRANCH leaf's menu (zcl.command_menu.v1) lists exactly its own
  *      immediate children, in the fixed 5-field child summary shape;
@@ -218,9 +213,8 @@ static int test_every_branch_menu_lists_only_own_children(void)
             }
             json_free(&doc);
         }
-        /* root.def + core.def + apps.def + ops.def + dev.def declare ~40
-         * branches today; this floor catches an accidental catalog thin-out
-         * without pinning an exact count that would rot on every new leaf. */
+        /* root/core/apps/ops/dev.def declare ~40 branches; this floor catches
+         * an accidental catalog thin-out without pinning an exact count. */
         ASSERT(branches_checked > 20);
         PASS();
     } _test_next:;
@@ -513,8 +507,8 @@ static bool run_dev_failure_api_fixture(void)
     len = exec_dev_handler(
         "dev.diagnose.show", zcl_native_handle_dev_diagnose_show, repo,
         &ref, "normal", out, sizeof(out), &exit_code);
-    /* Bound raised 2048 -> 2144 to absorb OS-B2's per-command latency contract
-     * (budget_ms/elapsed_ms/budget_exceeded, ~55 bytes) now in every envelope. */
+    /* Response size bound, including the per-command latency fields
+     * (budget_ms/elapsed_ms/budget_exceeded, ~55 bytes) in every envelope. */
     API_REQUIRE(len > 0 && len <= 2144 && exit_code == ZCL_COMMAND_EXIT_OK);
     json_init(&root);
     API_REQUIRE(json_read(&root, out, len));
@@ -665,22 +659,15 @@ static int test_native_app_catalog_uses_strict_builtin_source(void)
 }
 
 /* ── wf/status-front-door ─────────────────────────────────────────
- *
- * The flagless `z23 status` front door (core.status.brief,
- * status_brief_native_handler.c) must always answer truthfully and fast.
- * Two contracts, tested directly against zcl_native_status_brief_body
- * (below the command-registry envelope, which test_command_registry_
- * catalog.c's test_status_brief_* already covers):
- *
- *   - schema-skew tolerance: a PRESENT schema in the known
- *     zcl.public_status.* family that isn't the exact version validated
- *     strictly (an older node's v1, a future v4) degrades to a
- *     best-effort brief instead of the old one-size-fits-all "invalid
- *     zcl.public_status.v2" error; an ABSENT schema, or a genuinely
- *     malformed field on a MATCHING v2 document, still fails closed.
- *   - the ~250ms front-door deadline: a peer that accepts the TCP
- *     connection but never answers must not be able to hold the call for
- *     the generic 10s RPC ceiling. */
+ * The flagless `z23 status` front door (core.status.brief) is tested
+ * against zcl_native_status_brief_body:
+ *   - schema-skew tolerance: a PRESENT schema in the zcl.public_status.*
+ *     family that is not the exact version degrades to a best-effort brief;
+ *     an ABSENT schema, or a malformed field on a MATCHING v2 document,
+ *     still fails closed.
+ *   - the ~250ms front-door deadline: a peer that accepts the connection
+ *     but never answers must not hold the call for the generic 10s RPC
+ *     ceiling. */
 
 static const char *g_status_body_rpc_fixture;
 
@@ -798,9 +785,7 @@ static int test_status_brief_body_schema_skew_tolerance(void)
         json_free(&data);
         free(body);
 
-        /* (b) An entirely ABSENT schema key is unaffected by the new
-         * tolerance (there is no schema value to match against the known
-         * family) -- still the pre-existing version-skew hard failure. */
+        /* (b) An ABSENT schema key still fails with the version-skew error. */
         static const char no_schema[] = "{\"served_height\":42}";
         g_status_body_rpc_fixture = no_schema;
         err = (struct zcl_native_body_err){0};
@@ -809,9 +794,7 @@ static int test_status_brief_body_schema_skew_tolerance(void)
         ASSERT_EQ((int)err.status, (int)ZCL_NATIVE_BODY_INTERNAL);
         ASSERT(strstr(err.message, "predates the CLI contract") != NULL);
 
-        /* (c) A MATCHING v2 schema with a genuinely malformed field must
-         * still fail closed -- schema-skew tolerance never weakens strict
-         * validation of the exact contract version this build targets. */
+        /* (c) A MATCHING v2 schema with a malformed field still fails closed. */
         static const char malformed_v2[] =
             "{\"schema\":\"zcl.public_status.v2\","
             "\"served_height\":\"not-an-int\","
@@ -839,16 +822,11 @@ static int test_status_brief_body_front_door_deadline(void)
     TEST("zcl_native_status_brief_body: a peer that accepts the connection "
         "but never answers is bounded by the ~250ms front-door deadline, "
         "not the generic 10s RPC ceiling") {
-        /* Force the REAL out-of-process HTTP path -- no test hook -- so
-         * this proves the actual socket-level deadline plumbing, not a
-         * mock. */
+        /* Force the REAL out-of-process HTTP path (no test hook). */
         node_rpc_client_set_test_hook(NULL);
 
-        /* A bound+listening socket completes the client's connect() via the
-         * kernel accept queue with nobody ever calling accept() -- exactly
-         * "TCP up, nobody home to answer" (see rpc_client.c's "node
-         * accepted the connection but did not answer" branch, and the same
-         * pattern in test_cli_auth_robust.c). */
+        /* A bound+listening socket completes connect() via the kernel accept
+         * queue with nobody calling accept(): "TCP up, nobody home". */
         blackhole = socket(AF_INET, SOCK_STREAM, 0);
         ASSERT(blackhole >= 0);
         struct sockaddr_in addr = { 0 };
@@ -884,10 +862,8 @@ static int test_status_brief_body_front_door_deadline(void)
 
         (void)unsetenv("ZCL_STATUS_DEADLINE_MS");
 
-        /* Well under the generic 10s (ZCL_RPC_DEADLINE_MS default) ceiling
-         * -- proves the ~200ms front-door budget actually bounds the call
-         * rather than falling back to the env-wide default. Generous
-         * margin against CI scheduling jitter. */
+        /* Well under the generic 10s (ZCL_RPC_DEADLINE_MS) ceiling: proves
+         * the front-door budget bounds the call. Margin for CI jitter. */
         ASSERT(elapsed_ms < 3000);
         ASSERT(body == NULL);
         ASSERT_EQ((int)err.status, (int)ZCL_NATIVE_BODY_UNAVAILABLE);
@@ -1098,13 +1074,8 @@ static int test_wallet_mutating_native_e2e(void)
         ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "stage")), "plan");
         ASSERT(!json_get_bool(json_get(&reply.data, "committed")));
         ASSERT(!reply.error.mutated);
-        /* No next-action, and specifically not one naming this same leaf.
-         * push_next_array() rejects a next whose path equals the running
-         * command, so emitting one failed the WHOLE envelope and this leaf
-         * answered RESPONSE_BUDGET_EXCEEDED instead of a plan. The previous
-         * version of this test asserted next_count >= 1 and passed throughout,
-         * because it only ever inspected the in-memory reply and never asked
-         * whether that reply could be serialized. */
+        /* No next-action naming this same leaf: push_next_array() rejects it
+         * and the whole envelope would fail. */
         ASSERT_EQ(reply.next_count, 0);
         ASSERT_EQ(g_wallet_send_calls, 0);
         /* The committing input travels as data, and must validate against
@@ -1120,9 +1091,7 @@ static int test_wallet_mutating_native_e2e(void)
                                                    why, sizeof(why)));
         ASSERT(json_get_bool(json_get(&commit_next, "confirm")));
         json_free(&commit_next);
-        /* THE check the old assertion was missing: the plan reply must
-         * actually serialize. A reply that cannot be rendered is not a plan,
-         * whatever its fields say. */
+        /* The plan reply must actually serialize. */
         {
             char rendered[8192];
             enum zcl_command_exit rc = ZCL_COMMAND_EXIT_OK;
@@ -1271,8 +1240,7 @@ static int test_wallet_mutating_native_e2e(void)
         zcl_command_reply_free(&reply);
         json_free(&shield_plan);
 
-        /* The full 512-byte binary memo must survive in commit_input. This
-         * catches the old 512-byte buffer's confirm-only fallback. */
+        /* The full 512-byte binary memo must survive in commit_input. */
         char max_memo_hex[1025];
         memset(max_memo_hex, 'a', sizeof(max_memo_hex) - 1);
         max_memo_hex[sizeof(max_memo_hex) - 1] = '\0';
@@ -1512,11 +1480,9 @@ static int test_wallet_mutating_native_e2e(void)
     return failures;
 }
 
-/* The ordinary wallet contract above deliberately uses canned RPC bodies so
- * it can pin plan/commit behavior without allocating consensus state. This
- * second bridge is the transaction-lab proof: the public typed handlers call
- * the REAL raw-transaction RPC actors, and the exact signed bytes returned by
- * those actors are decoded and mined through simnet/connect_block. */
+/* Transaction-lab proof: the typed handlers call the REAL raw-transaction
+ * RPC actors, and the returned signed bytes are decoded and mined through
+ * simnet/connect_block. */
 struct raw_simnet_bridge {
     struct rpc_table *table;
     struct simnet *sim;
@@ -1856,12 +1822,9 @@ static int test_raw_native_pipeline_mines_exact_signed_bytes(void)
 }
 
 /* ── mutating app.* feature leaves: E2E over a stubbed app RPC ─────────────
- * The promoted write leaves (engine/composition/commands/app_features.def) are
- * dedicated handlers in engine/controllers/src/app_write_native_handlers.c. Driven
- * here with no live node through the ZCL_TESTING RPC hook, proving three things
- * the catalog test cannot: the plan leg never reaches the RPC, the confirmed
- * leg does exactly once, and a backing RPC that succeeds WITHOUT doing the job
- * (a ZNAM write answering status="ready" because the node carries no wallet)
+ * Driven through the ZCL_TESTING RPC hook with no live node: the plan leg
+ * never reaches the RPC, the confirmed leg does exactly once, and a backing
+ * RPC that succeeds WITHOUT doing the job (status="ready" with no wallet)
  * is reported BLOCKED with mutated=false rather than PASSED. */
 static int g_app_name_register_calls;
 static int g_app_blog_anchor_calls;
@@ -2172,8 +2135,8 @@ static int test_app_write_native_e2e(void)
         zcl_command_reply_free(&reply);
         json_free(&bad_in);
 
-        /* 5. Blog anchor exposes the previously missing ZBLG plan/commit
-         * boundary. The event ID is public commitment material, never a key. */
+        /* 5. Blog anchor plan/commit boundary. The event ID is public
+         * commitment material, never a key. */
         const struct zcl_command_spec *blog_spec =
             find_spec(reg, "app.blog.anchor");
         ASSERT(blog_spec != NULL);
@@ -2340,10 +2303,8 @@ static int test_app_write_native_e2e(void)
         ASSERT(strstr(content_rendered, "content_path") == NULL);
         zcl_command_reply_free(&reply);
 
-        /* A syntactically valid but contradictory node receipt must fail
-         * closed and must not claim mutation. This also pins the parser's
-         * ownership boundary: the committed decision is copied before the
-         * response body is released. */
+        /* A contradictory node receipt fails closed and claims no mutation;
+         * the committed decision is copied before the body is released. */
         g_app_market_content_malformed = true;
         zcl_command_reply_init(&reply, content_spec->output_schema);
         zcl_native_handle_market_content_register(&content_req, &reply);
@@ -2549,14 +2510,9 @@ static int test_app_write_native_e2e(void)
 }
 
 /* ── a bare {ok:false} ZSLP refusal must surface the node's own code/message ─
- * WITNESS: when the plan leg of a ZSLP transfer is refused by the node with a
- * bare `{"ok":false,"code":"WALLET_NOT_ENCRYPTED","message":...}` body (no
- * "error" key and no "status" field), zslp_intent_native_handler.c fell
- * through the RPC-error check straight into the status-mismatch branch and
- * reported the unrelated "ZSLP intent expected planned, got absent" —
- * hiding WALLET_NOT_ENCRYPTED entirely. The sibling path in
- * tools/command/native_overlay_intent_command.c already decodes this bare
- * shape; this proves the ZSLP native handler does the same. */
+ * A body with no "error" key and no "status" field (e.g.
+ * WALLET_NOT_ENCRYPTED) must be decoded as native_overlay_intent_command.c
+ * does, not reported as a status mismatch. */
 static char *zslp_wallet_not_encrypted_stub_rpc(const char *method,
                                                 const char *params_json)
 {
@@ -2568,14 +2524,9 @@ static char *zslp_wallet_not_encrypted_stub_rpc(const char *method,
     return NULL;
 }
 
-/* The ZSLP plan leg's own MISSING_INPUT refusal must actually fire. The JSON
- * reader answers "" for a key that is ABSENT, never NULL
- * (platform/modules/json/src/json.c), so a bare != NULL test on a required
- * text field is true even when the caller sent nothing at all: the refusal
- * that names the missing field was unreachable, and a plan with no
- * idempotency key reached a custody reservation with only the node behind it.
- * Absent AND empty must both be refused, and refused before any RPC leaves
- * this process. */
+/* The ZSLP plan leg refuses an absent AND an empty required text field with
+ * MISSING_INPUT before any RPC (the JSON reader returns "" for absent keys,
+ * never NULL). */
 static int test_zslp_plan_requires_named_inputs(void)
 {
     int failures = 0;
@@ -2698,16 +2649,10 @@ static int test_zslp_intent_refusal_surfaces_node_message(void)
 }
 
 /* ── a node that answers only PART of a reply must read as a slow node ─────
- * The node writes HTTP response headers before its handler blocks, so a
- * deadline that fires while the handler waits on the node.db write lock left
- * node_rpc_call returning the header fragment. Every caller parses that
- * return value, so `core.wallet.utxo.list` reported TOOL_ERROR "RPC
- * listunspent returned an unparseable body" — a body-shape complaint for what
- * is really a busy node. rpc_client.c now names the truncation instead.
- *
- * Driven through zcl_command_registry_execute_json against a REAL socket (no
- * test hook) and asserted on the RENDERED BYTES the caller receives, because
- * that is the only layer where the wrong error text is visible. */
+ * A deadline firing while the handler waits leaves only the header
+ * fragment; rpc_client.c names the truncation instead of a body-shape
+ * error. Driven through zcl_command_registry_execute_json over a REAL
+ * socket and asserted on the RENDERED BYTES. */
 struct partial_reply_server {
     int listen_fd;
     int accepted_fd;
@@ -2768,9 +2713,8 @@ static void *delayed_vault_plan_serve(void *arg)
         return NULL;
     s->accepted_fd = fd;
 
-    /* A close with unread request bytes may become an RST on Darwin and
-     * discard the response.  Consume the exact bounded POST before modeling
-     * a slow proof operation, so this fixture observes only the deadline. */
+    /* Consume the bounded POST first: closing with unread request bytes
+     * may RST on Darwin and drop the response. */
     if (!partial_reply_consume_request(fd)) {
         close(fd);
         s->accepted_fd = -1;
@@ -2877,20 +2821,15 @@ static int test_vault_proof_commit_uses_long_rpc_deadline(void)
 static void *partial_reply_serve(void *arg)
 {
     struct partial_reply_server *s = arg;
-    /* Send the response HEADERS and nothing else, then close the connection.
-     * This is the exact server-watchdog shape from a proof request whose
-     * method deadline fires: recv() sees EOF rather than a client timeout. */
+    /* Send the response HEADERS only, then close: the shape of a proof
+     * request whose method deadline fired (recv() sees EOF). */
     int fd = accept(s->listen_fd, NULL, NULL);
     if (fd < 0)
         return NULL;
     s->accepted_fd = fd;
 
-    /* The fixture is the response producer; it must not close while the
-     * client is still producing its POST.  Closing a TCP socket with unread
-     * request bytes permits the kernel to send RST, so the victim sometimes
-     * failed its second send() before it could observe the intended partial
-     * response.  Consume exactly the bounded request framing first.  This is
-     * a causal handshake, not a sleep or retry. */
+    /* Consume the bounded request framing before closing: closing with
+     * unread request bytes can RST the client before it reads the reply. */
     if (!partial_reply_consume_request(fd)) {
         close(fd);
         s->accepted_fd = -1;
@@ -2949,10 +2888,8 @@ static int test_partial_rpc_reply_names_the_timeout(void)
         (void)fprintf(cf, "dummyuser:dummypass\n");
         (void)fclose(cf);
         node_rpc_client_init(dir, (int)port);
-        /* This case proves EOF classification, not command latency. Under a
-         * focused proof pool the helper thread may compete with 14 other
-         * groups; give it a scheduler allowance large enough that starvation
-         * cannot turn the intended partial reply into a client timeout. */
+        /* Proves EOF classification, not latency; allow a generous
+         * scheduler window so starvation cannot become a client timeout. */
         ASSERT(setenv("ZCL_RPC_DEADLINE_MS", "2000", 1) == 0);
 
         const struct zcl_command_spec *s =
@@ -3031,12 +2968,9 @@ static int test_board_unavailable_guides_instance_selection(void)
     return failures;
 }
 
-/* A REAL installed node whose running image predates the fleet_board RPC
- * answers JSON-RPC -32601 "Method not found" — it responded, it is just
- * missing the method (generation skew). node_rpc_call may hand that back
- * bare (its own envelope already stripped by rpc_client.c) or enveloped
- * (a stub, or a transport that left the envelope on) — cover both shapes,
- * distinct from board_unavailable_rpc's NULL (no answer at all) above. */
+/* A node whose image lacks the fleet_board RPC answers JSON-RPC -32601
+ * "Method not found", bare or enveloped; distinct from a NULL (no answer)
+ * reply. */
 static char *board_method_not_found_bare_rpc(const char *method,
                                              const char *params)
 {

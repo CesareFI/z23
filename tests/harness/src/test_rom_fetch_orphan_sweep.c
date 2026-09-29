@@ -3,18 +3,15 @@
  * The eviction policy for abandoned ROM downloads
  * (engine/composition/src/rom_fetch_orphan_sweep.c).
  *
- * Every fixture here is named for what it represents, not indexed, because
- * the whole point of the sweep is WHICH pair it may touch:
+ * Fixtures are named for what they represent:
  *
  *   an_orphaned_pair            no registered target, long idle  → removed
  *   a_fresh_pair                no registered target, just wrote → kept
  *   a_registered_targets_pair   idle, but its target is offered  → kept
  *   a_lone_part / a_lone_journal    not a pair at all            → untouched
  *
- * Deterministic with no clock injection and no sleeping: the "idle" fixtures
- * get an explicit absolute mtime far in the past via utimensat, so their age
- * is a property of the fixture rather than of how long the test took to run.
- * The scratch datadir comes from test_mkdtemp — never a real datadir. */
+ * Deterministic: "idle" fixtures get an explicit past mtime via utimensat.
+ * The scratch datadir comes from test_mkdtemp. */
 
 #include "test/test_core.h"
 
@@ -28,8 +25,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-/* Bytes written into each fixture half — small, distinct, and above nothing
- * in particular: the sweep never reads a pair's contents. */
+/* Bytes written into each fixture half; the sweep never reads contents. */
 #define OS_PART_BYTES    600u
 #define OS_JOURNAL_BYTES 120u
 

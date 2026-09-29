@@ -211,10 +211,9 @@ static int test_integrity_xor_load_missing(void)
 }
 
 /* ── Height-tracked checkpoint (UTXO_COMMITMENT_HEIGHT_KEY) ─────────
- * Backs the boot-flight-recorder lane's incremental XOR checkpoint fix:
  * utxo_mirror_delta_apply / mirror_rebuild_from_coins_kv stamp a covering
- * height alongside the checkpoint so utxo_commitment_boot_check_and_refresh
- * can skip its O(n) `utxos` scan when the stamp is already trustworthy. */
+ * height with the checkpoint so utxo_commitment_boot_check_and_refresh can
+ * skip its O(n) `utxos` scan when the stamp is trustworthy. */
 
 static int test_integrity_xor_at_height_roundtrip(void)
 {
@@ -502,9 +501,7 @@ static int test_integrity_bg_hash_verify_owns_datadir(void)
     int failures = 0;
 
     TEST("integrity: bg_hash_verify owns the caller's datadir bytes") {
-        /* Boot resolves the net-specific datadir into a stack buffer that is
-         * gone before the worker preads a body. Retaining that pointer aliased
-         * a dead frame straight into the blk path. */
+        /* Boot resolves the datadir into a stack buffer; the worker must copy it. */
         char caller_path[512];
         snprintf(caller_path, sizeof(caller_path), "%s", "/tmp");
         struct bg_hash_verification_service svc;

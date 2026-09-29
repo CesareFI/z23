@@ -32,8 +32,8 @@
 #include <stdlib.h>
 #include <unistd.h>
 
-/* A representative 4-byte network magic (value is arbitrary for the test; both
- * sides use the same). Chosen not to collide with a random ephemeral prefix. */
+/* A representative 4-byte network magic, the same on both sides and chosen
+ * not to collide with a random ephemeral prefix. */
 static const unsigned char TEST_MAGIC[4] = { 0x24, 0xe9, 0x27, 0x64 };
 
 static void mk_id(uint8_t out[32], uint8_t seed)
@@ -286,10 +286,9 @@ int test_noise_transport_parity(void)
             noise_transport_free(r);
         }
 
-        /* (5a) garbage handshake fails closed. A well-formed-length (32-byte)
-         * msg1 whose ephemeral is the low-order point u=1 (not the magic): the
-         * responder reads it, then the ee DH while writing msg2 yields the
-         * all-zero shared secret x25519_safe rejects, so it fails closed. */
+        /* (5a) garbage handshake fails closed: a 32-byte msg1 whose
+         * ephemeral is the low-order point u=1 makes the ee DH yield the
+         * all-zero shared secret x25519_safe rejects. */
         {
             uint8_t rpriv[32];
             mk_id(rpriv, 0x77);

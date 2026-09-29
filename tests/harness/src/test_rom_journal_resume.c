@@ -1,44 +1,30 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * ROM download resume journal (net/rom_journal.h) — crash-resume proof, in
- * the spirit of tests/harness/src/test_kill9_recovery.c: prove that an abrupt
- * stop mid-download never loses more than the in-flight chunk, and never
- * re-trusts a chunk it did not itself digest-verify.
+ * ROM download resume journal (net/rom_journal.h) — crash-resume proof: an
+ * abrupt stop mid-download never loses more than the in-flight chunk and never
+ * re-trusts a chunk it did not digest-verify itself.
  *
- * Drives the REAL per-chunk-verified download path (net/rom_fetch.h) against
- * a real fixture seeder (net/file_service.h's fs_server_start, same as
- * test_rom_fetch.c's loopback E2E) — no mocks. "Crash mid-download" is
- * simulated by hand-building the exact `.part` + `.part.journal` state a
- * real rom_fetch_download_verified() run would have left durable at the
- * chunk boundary (same pwrite -> fdatasync(.part) -> mark -> fdatasync
- * ordering rom_fetch.c uses) — this is not a shortcut around the durability
- * contract, it constructs precisely the state that contract promises to
- * leave behind, then "restarts" through the real driver's resume path.
+ * Drives the real per-chunk-verified download path (net/rom_fetch.h) against a
+ * real fixture seeder (fs_server_start, as in test_rom_fetch.c); no mocks. A
+ * crash is simulated by hand-building the `.part` + `.part.journal` state a
+ * real rom_fetch_download_verified() run leaves durable at a chunk boundary
+ * (pwrite -> fdatasync(.part) -> mark -> fdatasync), then restarting through
+ * the real driver's resume path.
  *
- * Byte accounting is proven server-side: rom_seed's `chunks_served` counter
- * (rom_seed_note_chunk_served, wired at every successful "ROM" chunk serve
- * in file_service.c) is authoritative ground truth for how many chunks
- * crossed the wire — client-side thread timing can't fudge it.
+ * Byte accounting is server-side: rom_seed's `chunks_served` counter
+ * (rom_seed_note_chunk_served) is ground truth for chunks that crossed the wire.
  *
- *   - test_rom_journal_kill9_resume: N-1 of N chunks durable pre-crash,
- *     restart re-fetches EXACTLY the missing chunk, whole-file verify passes.
- *   - test_rom_journal_header_mismatch_discard: a stale journal+part left by
- *     a DIFFERENT artifact (mismatched chunk_root) is discarded wholesale —
- *     no partial trust — and the real content is fetched fresh.
- *   - test_rom_journal_bad_chunk_then_recovery: a chunk that fails content
- *     verification is never journaled (so a resume never trusts it), the
- *     serving endpoint gets deprioritized (net/rom_peer_scoring.h, lane 2C),
- *     and a subsequent attempt with the correct digest completes by
- *     refetching ONLY that chunk — the previously-good chunk is never
- *     re-served. The verify failure here is driven by an intentionally wrong
- *     committed digest rather than a second malicious server (rom_seed's
- *     registration always re-derives digests from real bytes, so forging a
- *     peer that serves non-committed content under a chosen root isn't
- *     constructible through the public API) — the code path exercised is
- *     byte-for-byte the same one a lying peer would hit: rom_fetch_verify_chunk
- *     only ever compares received bytes against the caller's committed digest,
- *     never peer identity.
- */
+ *   - test_rom_journal_kill9_resume: N-1 of N chunks durable pre-crash;
+ *     restart re-fetches exactly the missing chunk; whole-file verify passes.
+ *   - test_rom_journal_header_mismatch_discard: a stale journal+part from a
+ *     different artifact (mismatched chunk_root) is discarded wholesale and
+ *     the real content is fetched fresh.
+ *   - test_rom_journal_bad_chunk_then_recovery: a chunk failing content
+ *     verification is never journaled, the endpoint is deprioritized
+ *     (net/rom_peer_scoring.h), and a retry with the correct digest refetches
+ *     only that chunk. The failure is driven by a deliberately wrong committed
+ *     digest; rom_fetch_verify_chunk only compares bytes against the committed
+ *     digest, never peer identity, so this is the path a lying peer hits. */
 
 #include "test/test_core.h"
 #include "platform/file_sync.h"
@@ -102,8 +88,7 @@ static int test_rom_peer_scoring_basic(void)
         /* A different port is a different endpoint. */
         ASSERT(!rom_peer_is_deprioritized("10.0.0.1", 9002));
 
-        /* Repeat offence on the same endpoint refreshes in place, not a
-         * second entry. */
+        /* Repeat offence on the same endpoint refreshes in place. */
         ASSERT(rom_peer_note_bad_chunk("10.0.0.1", 9001, 4, "mac"));
         ASSERT(rom_peer_is_deprioritized("10.0.0.1", 9001));
 
@@ -130,13 +115,11 @@ static int test_rom_peer_scoring_bounded(void)
             ASSERT(rom_peer_is_deprioritized(addr, 9000));
         }
 
-        /* List full of live entries: one more DISTINCT endpoint is a bounded
-         * drop, never an unbounded grow — and never crashes. */
+        /* List full of live entries: one more distinct endpoint is a bounded drop, never unbounded growth. */
         ASSERT(!rom_peer_note_bad_chunk("10.0.2.1", 9000, 0, "digest"));
         ASSERT(!rom_peer_is_deprioritized("10.0.2.1", 9000));
 
-        /* A repeat offence against an EXISTING entry still refreshes fine
-         * even while the list is full. */
+        /* A repeat offence against an existing entry still refreshes while the list is full. */
         ASSERT(rom_peer_note_bad_chunk("10.0.1.1", 9000, 1, "mac"));
 
         rom_peer_scoring_test_reset();
@@ -205,11 +188,7 @@ static int64_t seed_chunks_served(void)
     return n;
 }
 
-/* fs_send_chunk_fast() returns once the reply bytes are handed off; the
- * server worker increments its authoritative counter immediately afterward.
- * A fast client can therefore observe the reply a scheduler quantum before
- * the counter under heavy parallel-suite load. Wait only for that one-sided
- * handoff, then retain the exact-count assertion at every call site. */
+/* fs_send_chunk_fast() returns once the reply is handed off and the server worker bumps its counter just after; under parallel load a fast client can see the reply first. Wait only for that handoff, then keep the exact-count assertion at every call site. */
 static int64_t seed_chunks_served_wait_at_least(int64_t expected)
 {
     int64_t observed = seed_chunks_served();
@@ -268,9 +247,7 @@ static int test_rom_journal_kill9_resume(void)
                                       &manifest_chunks));
         ASSERT(manifest_chunks == 3);
 
-        /* Build the exact .part + .part.journal a real download_verified()
-         * run would have left durable after chunks 0 and 1 (N-1 of N), then
-         * died before chunk 2. */
+        /* Build the .part + .part.journal a real download_verified() would leave after chunks 0 and 1, then die before chunk 2. */
         char part_path[1200];
         snprintf(part_path, sizeof(part_path), "%s/%s%s", cdir, m.filename,
                  ROM_FETCH_PART_SUFFIX);
@@ -384,10 +361,7 @@ static int test_rom_journal_header_mismatch_discard(void)
         char jrnl_path[1264];
         snprintf(jrnl_path, sizeof(jrnl_path), "%s.journal", part_path);
 
-        /* A journal claiming full completion under a DIFFERENT artifact's
-         * identity (wrong chunk_root), and a .part full of bytes that are
-         * NOT the committed content. This is what a stale download of some
-         * other artifact reusing the same filename would leave behind. */
+        /* A journal claiming completion under a different artifact's identity (wrong chunk_root) and a .part of non-committed bytes. */
         uint8_t wrong_root[32];
         memcpy(wrong_root, m.chunk_root, 32);
         wrong_root[0] ^= 0xFF;
@@ -411,8 +385,7 @@ static int test_rom_journal_header_mismatch_discard(void)
 
         int64_t served_after = seed_chunks_served_wait_at_least(
             served_before + (int64_t)m.num_chunks);
-        /* Nothing carried over from the stale state: every chunk of the
-         * real artifact crossed the wire fresh. */
+        /* Nothing carried over: every chunk of the real artifact crossed the wire fresh. */
         ASSERT(served_after - served_before == (int64_t)m.num_chunks);
 
         char final_path[1200];
@@ -481,8 +454,7 @@ static int test_rom_journal_bad_chunk_then_recovery(void)
         ASSERT(manifest_chunks == 2);
         ASSERT(!rom_peer_is_deprioritized("127.0.0.1", port));
 
-        /* Pre-seed chunk 0 as durable + verified (deterministic — mirrors
-         * the kill-9 test's crash-boundary construction). */
+        /* Pre-seed chunk 0 as durable and verified (as in the kill-9 crash-boundary construction). */
         char part_path[1200];
         snprintf(part_path, sizeof(part_path), "%s/%s%s", cdir, m.filename,
                  ROM_FETCH_PART_SUFFIX);
@@ -507,9 +479,7 @@ static int test_rom_journal_bad_chunk_then_recovery(void)
         close(fd);
         rom_journal_close(j);
 
-        /* A committed digest for chunk 1 that does NOT match what the peer
-         * actually has — the same failure shape a lying/corrupt peer would
-         * produce (verify only ever compares bytes-vs-committed-digest). */
+        /* A committed digest for chunk 1 that does not match the peer's bytes: the same shape a lying peer produces. */
         uint8_t (*bad_sha3)[32] = malloc((size_t)ROM_SEED_MAX_CHUNKS * 32);
         ASSERT(bad_sha3 != NULL);
         memcpy(bad_sha3, good_sha3, (size_t)manifest_chunks * 32);
@@ -520,13 +490,11 @@ static int test_rom_journal_bad_chunk_then_recovery(void)
                                             manifest_chunks, cdir, NULL, NULL));
         int64_t served_after =
             seed_chunks_served_wait_at_least(served_before + 1);
-        /* Chunk 1 was fetched over the wire (the server has no notion of
-         * client-side digest correctness) but chunk 0 was NOT re-served. */
+        /* Chunk 1 was fetched but chunk 0 was not re-served. */
         ASSERT(served_after - served_before == 1);
         free(bad_sha3);
 
-        /* The endpoint is now deprioritized — my rom_peer_scoring wiring at
-         * the digest-mismatch site in rom_fetch.c fired. */
+        /* The endpoint is now deprioritized (rom_peer_scoring wiring at the digest-mismatch site). */
         ASSERT(rom_peer_is_deprioritized("127.0.0.1", port));
 
         /* State left resumable: chunk 0 still durably marked, chunk 1 not. */
@@ -540,8 +508,7 @@ static int test_rom_journal_bad_chunk_then_recovery(void)
         ASSERT(!rom_journal_is_done(check, 1));
         rom_journal_close(check);
 
-        /* Recovery: the correct digest for chunk 1 completes the download,
-         * refetching ONLY that chunk. */
+        /* Recovery: the correct digest for chunk 1 completes the download, refetching only that chunk. */
         served_before = seed_chunks_served();
         ASSERT(rom_fetch_download_verified("127.0.0.1", port, &m, good_sha3,
                                            manifest_chunks, cdir, NULL, NULL));

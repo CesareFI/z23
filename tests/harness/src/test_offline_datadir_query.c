@@ -1,21 +1,14 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Regression tests for the ZCL_COMMAND_SCOPE_OFFLINE_COPY native leaves
+ * Tests for the ZCL_COMMAND_SCOPE_OFFLINE_COPY native leaves
  * (tools/command/native_offline_query.c):
  *
  *   core.storage.query.offline    (zcl_native_handle_core_storage_query_offline)
  *   core.sync.frontier.offline    (zcl_native_handle_core_sync_frontier_offline)
  *
- * Both read a datadir directly off disk with NO node contact and NO RPC —
- * the point being a STOPPED or COPIED datadir is inspectable without
- * booting a full node against it. Each test builds a real on-disk fixture
- * datadir (not :memory:, since the handlers under test open real files at
- * a caller-supplied path) then calls the handler function directly.
- *
- * The reducer-frontier fixture mirrors test_reducer_frontier.c's
- * case_consistent (proven-authority anchor + a contiguous ok=1 run above
- * it) — same shape, written through progress_store_open() at a real
- * directory instead of an in-memory handle. */
+ * Both read a datadir off disk with no node contact and no RPC. Each test
+ * builds a real on-disk fixture datadir and calls the handler directly. The
+ * reducer-frontier fixture mirrors test_reducer_frontier.c case_consistent. */
 
 #include "test/test_core.h"
 

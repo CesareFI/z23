@@ -61,14 +61,11 @@ static bool write_cgroup_memory_stat(const char *dir, const char *body)
 static int cgroup_stat_whole_key_checks(const char *dir)
 {
     int failures = 0;
-    /* node3 2026-09-10 shape: 12 GiB ceiling, ~10.2 GiB charged, ~7 GiB of
-     * it page cache walked up by the boot integrity scan, RSS 3.68 GiB.
+    /* 12 GiB ceiling, ~10.2 GiB charged, ~7 GiB page cache, RSS 3.68 GiB.
      *
-     * file_mapped, file_dirty and file_writeback are listed BEFORE `file`
-     * on purpose. With `file` first, a prefix-only matcher takes the right
-     * row anyway and the separator guarantee is never exercised; ordered
-     * this way, a matcher that does not require the separating space reads
-     * 134217728 for `file` and the test fails. */
+     * file_mapped, file_dirty and file_writeback are listed BEFORE `file` so
+     * a matcher that does not require the separating space reads 134217728
+     * for `file` and the test fails. */
     if (!write_cgroup_memory_stat(dir, "anon 3951034368\n"
                                        "file_mapped 134217728\n"
                                        "file_dirty 268435456\n"
@@ -235,8 +232,7 @@ static int os_proc_seccomp_filters_parse_checks(void)
     int failures = 0;
 #if defined(ZCL_TESTING) && defined(__linux__)
     uint32_t out = 12345;
-    /* A 4095-byte status read that cut "Seccomp_filters: 12" down to "1" —
-     * no trailing '\n' because the buffer ran out mid-number. */
+    /* "Seccomp_filters: 12" cut down to "1": no trailing newline. */
     OSPROC_CHECK("a digit run truncated before '\\n' fails closed",
                  !os_proc_parse_seccomp_filters_for_test(
                      "Name:\tz23\n"
@@ -256,19 +252,9 @@ static int os_proc_seccomp_filters_parse_checks(void)
     return failures;
 }
 
-/* self-exe open path (magic pathname, never a once-resolved one):
- * os_proc_self_exe_open_path() exists so a caller that must itself
- * stat()/open() the running image BY NAME (e.g. to feed a general
- * path-taking reader) never types the pseudo-file literally: on Linux it
- * hands back "/proc/self/exe" verbatim, which the kernel re-resolves to
- * the CURRENT running inode on every traversal, unlike a once-resolved
- * os_proc_exe_path() string that a later replace-at-that-path deploy
- * could make stale. A live rename of the test binary out from under
- * itself mid-test is impractical to construct here, so the check below
- * proves the weaker but still load-bearing fact: right now, opening the
- * running image BY this path and opening it through
- * os_proc_open_self_exe() (the kernel-pinned descriptor) name the exact
- * same file. */
+/* os_proc_self_exe_open_path() hands back "/proc/self/exe" verbatim, which
+ * the kernel re-resolves to the CURRENT inode on every traversal. Opening
+ * by this path and via os_proc_open_self_exe() must name the same file. */
 static int os_proc_self_exe_open_path_checks(void)
 {
     int failures = 0;
@@ -387,9 +373,7 @@ int test_os_proc(void)
     {
         int64_t age = os_proc_uptime_seconds();
         OSPROC_CHECK("uptime_seconds is non-negative", age >= 0);
-        /* Sanity ceiling: this test process cannot possibly be older than
-         * 10 years — catches a units bug (ticks vs seconds) rather than a
-         * real long-running process. */
+        /* Sanity ceiling of 10 years catches a units bug (ticks vs seconds). */
         OSPROC_CHECK("uptime_seconds is not absurdly large",
                      age < (int64_t)10 * 365 * 24 * 3600);
     }
@@ -443,12 +427,9 @@ int test_os_proc(void)
 
     /* ── running-image identity rung ──────────────────────────────── */
     {
-        /* The rung is published to operators as the diagnostics
-         * `binary_identity_scope`, so it is a CLAIM about custody, not a
-         * decoration. These two checks are what stops it being widened for
-         * cosmetic platform parity: a platform may only carry the strong
-         * rung when it opens the running image without resolving a
-         * pathname, and it may only carry ANY rung when the open works. */
+        /* The rung is published as diagnostics `binary_identity_scope`: the
+         * strong rung requires opening the image without resolving a
+         * pathname, and any rung requires the open to work. */
         enum os_proc_image_identity rung = os_proc_self_exe_identity();
 #if defined(__linux__)
         /* Linux earns RUNNING_IMAGE and only Linux: /proc/self/exe is the
@@ -464,10 +445,8 @@ int test_os_proc(void)
         OSPROC_CHECK("platform with no running-image read reports unavailable",
                      rung == OS_PROC_IMAGE_IDENTITY_UNAVAILABLE);
 #endif
-        /* The ladder and the implementation must agree in BOTH directions:
-         * a non-UNAVAILABLE rung that cannot actually open the image is an
-         * overclaim, and an UNAVAILABLE rung on a platform that opens it
-         * fine is a label nobody updated. */
+        /* A rung that cannot open the image is an overclaim; an UNAVAILABLE
+         * rung on a platform that opens it is stale. */
         FILE *probe = os_proc_open_self_exe();
         bool opened = probe != NULL;
         if (probe)
@@ -542,12 +521,8 @@ int test_os_proc(void)
                      got.rss_bytes != 1 && got.rss_bytes > 0);
     }
 
-    /* ── per-thread work counters ────────────────────────────────────
-     * These are what lets a liveness check tell a thread that is merely SLOW
-     * from one that is WEDGED, so a blind read here silently disarms a
-     * watchdog somewhere else. On Linux it must genuinely work; a tid that
-     * names no thread must genuinely fail rather than return zeros that a
-     * caller could mistake for a real reading. */
+    /* ── per-thread work counters ──────────────────────────────────
+     * A tid that names no thread must fail rather than return zeros. */
     {
         struct os_proc_thread_work w;
         long self = os_proc_self_tid();

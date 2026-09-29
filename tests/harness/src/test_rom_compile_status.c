@@ -5,14 +5,13 @@
  * (tools/command/rom_compile_render.c). Two halves:
  *   1. The live dump function returns the documented zcl.rom_compile.v1
  *      shape (schema, 8 stages in the ha/vh/bf/bp/sv/pv/ua/tf order, the
- *      five-layer ladder) and honestly reports idle/active per the
- *      refold_progress test-only cache setter — no live progress store
- *      required (the dump function degrades gracefully with the store
- *      closed, same as reducer_frontier_dump_state_json).
- *   2. The renderer, driven with a SYNTHETIC fixture (not the live dumper —
- *      deterministic and independent of process-global stage cursors),
- *      renders the expected percent and ETA text.
- *
+ *   1. The live dump function returns the documented zcl.rom_compile.v1
+ *      shape (schema, 8 stages in the ha/vh/bf/bp/sv/pv/ua/tf order, the
+ *      five-layer ladder) and reports idle/active per the refold_progress
+ *      test-only cache setter, with the progress store closed.
+ *   2. The renderer, driven with a SYNTHETIC fixture (deterministic,
+ *      independent of process-global stage cursors), renders the expected
+ *      percent and ETA text.
  * One TEST()/_test_next: pair per function (the shared ASSERT() macro
  * hardcodes `goto _test_next`, so two TEST blocks in one function would
  * collide on the label) — each case below is its own static function. */
@@ -132,14 +131,12 @@ static void rcs_nf(uint8_t out[32], uint8_t tag)
     out[31] = 0x43;
 }
 
-/* Import -> resume telemetry, end to end against a REAL progress.kv: before
- * a shielded-history import both activation cursors are positive, both gap
+/* Import -> resume telemetry against a REAL progress.kv: before a
+ * shielded-history import both activation cursors are positive, both gap
  * blockers are latched, and imported counts are zero; after simulating the
- * exact atomic transition shielded_history_import_from_chainstate performs
- * (write rows, flip both markers to zero in one transaction, refresh both
- * blockers) the dumper reports gap=false, the durable row counts the import
- * actually wrote, and status=complete. This is the "is it actually
- * recovering?" question the LANE exists to answer as a typed view. */
+ * atomic transition shielded_history_import_from_chainstate performs, the
+ * dumper reports gap=false, the durable row counts written, and
+ * status=complete. */
 static int test_rom_compile_dump_shielded_import_transition(void)
 {
     int failures = 0;
@@ -156,8 +153,7 @@ static int test_rom_compile_dump_shielded_import_transition(void)
         blocker_reset_for_testing();
 
         /* Pre-import: a snapshot/borrowed seed activated both pools above
-         * genesis — the wedge state utxo_apply.{anchor,nullifier}_backfill_gap
-         * names. */
+         * genesis (utxo_apply.{anchor,nullifier}_backfill_gap). */
         const int64_t boundary = 50;
         ASSERT(anchor_kv_initialize_history(db, boundary));
         ASSERT(nullifier_kv_initialize_history(db, boundary));
@@ -195,9 +191,9 @@ static int test_rom_compile_dump_shielded_import_transition(void)
                      "gap_anchor_backfill_pending");
         json_free(&pre);
 
-        /* Simulate the exact atomic cure: write the complete historical rows,
-         * then flip BOTH markers to zero in one transaction — the same
-         * sequence shielded_history_import_from_chainstate performs. */
+        /* Simulate the atomic cure shielded_history_import_from_chainstate
+         * performs: write the historical rows, flip BOTH markers to zero in
+         * one transaction. */
         struct incremental_merkle_tree spr_tree, sap_tree;
         sprout_tree_init(&spr_tree);
         sapling_tree_init(&sap_tree);
@@ -612,10 +608,9 @@ static int test_rom_compile_render_shielded_import_gap(void)
                      "anchor:    sprout_cursor=3050000 "
                      "sapling_cursor=3050000 gap_blocker=active "
                      "imported(sprout=0 sapling=0)") != NULL);
-        /* The nullifier pool in this fixture is still healthy — its detail
-         * line still renders because the SECTION gate is anchor_gap ||
-         * nullifier_gap, not per-pool; both pools get their own line so the
-         * operator can tell which one is still gated. */
+        /* The nullifier pool is healthy here; its detail line still renders
+         * because the SECTION gate is anchor_gap || nullifier_gap, and each
+         * pool gets its own line. */
         ASSERT(strstr(text, "nullifier: activation_cursor=0 "
                            "gap_blocker=clear imported(sprout=64 "
                            "sapling=96)") != NULL);

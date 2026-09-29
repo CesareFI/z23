@@ -34,12 +34,10 @@
     else { printf("FAIL\n"); failures++; } \
 } while (0)
 
-/* Mirrors csa_mint_capture() in test_coinbase_subsidy_adversarial.c:
- * redirect stderr to a scratch file for the duration of `fn`, then hand
- * back whatever landed in it. Best-effort: on any plumbing failure this
- * still runs `fn` (uncaptured) so the caller's other assertions, if any,
- * remain meaningful — but here the captured text is exactly what's under
- * test, so callers treat an empty capture-setup failure as a real FAIL. */
+/* Mirrors csa_mint_capture() in test_coinbase_subsidy_adversarial.c: redirect
+ * stderr to a scratch file for the duration of `fn`, then hand back what
+ * landed. On plumbing failure it still runs `fn` uncaptured; callers treat an
+ * empty capture as a real FAIL. */
 static bool log_level_capture(void (*fn)(void), char *out, size_t out_len)
 {
     if (out && out_len > 0)
@@ -90,10 +88,8 @@ static void emit_test_info(void)
     LOG_INFO("test_log_level", "info line marker=%s", "IMARK");
 }
 
-/* The exact source line the LOG_ERROR call below sits on, kept in sync by
- * hand (the "matches the call site" assertion re-derives it independently
- * via __LINE__, so a future edit that moves the call without updating this
- * constant fails loudly instead of silently). */
+/* The source line of the LOG_ERROR call below, kept in sync by hand; the
+ * assertion re-derives it via __LINE__ so a moved call fails loudly. */
 enum { kEmitTestErrorLine = __LINE__ + 3 };
 static void emit_test_error(void)
 {
@@ -228,26 +224,20 @@ int test_log_level(void)
 
     failures += test_log_level_origin_checks();
 
-    /* Restore whatever level this process had on entry so later test
-     * groups in the same binary (test_zcl runs groups sequentially) are
-     * unaffected by this group's probing. */
+    /* Restore the entry level for later groups in the same binary. */
     zcl_log_level_set(prev);
 
     return failures;
 }
 
-/* Split out of test_log_level() to keep that function under the cyclomatic
- * complexity cap: the origin=<file>:<line> stamping checks (the reason this
- * test file exists) below, and only those, live here. */
+/* Split out of test_log_level() to keep it under the cyclomatic complexity
+ * cap: the origin=<file>:<line> stamping checks live here. */
 static int test_log_level_origin_checks(void)
 {
     int failures = 0;
 
-    /* ── ERROR-and-above lines carry a trailing origin=<basename>:<line>
-     * token matching the call site (the fix this file exists to prove:
-     * an AI reading node.log can `grep -a -m1 'origin='` straight to the
-     * fault instead of trusting the first incidental file:line string in
-     * ambient instrumentation) ── */
+    /* ── ERROR-and-above lines carry a trailing origin=<basename>:<line> token
+     * matching the call site. ── */
     {
         char buf[512];
         char want[64];
@@ -310,9 +300,8 @@ static int test_log_level_origin_checks(void)
                   captured && origin_occurrences == 2 && real_stamp_at_end);
     }
 
-    /* ── `grep -a -m1 'origin='` on a fixture log of 200 INFO lines plus
-     * one ERROR line finds the ERROR line, exactly as
-     * docs/DEVELOPING.md tells an AI to read a failing node.log ── */
+    /* ── `grep -a -m1 'origin='` on a 200-INFO-line fixture log plus one ERROR
+     * line finds the ERROR line (docs/DEVELOPING.md). ── */
     {
         char path[PATH_MAX];
         int fd = test_mkstemp(path, sizeof(path), "log_level_origin_fixture");

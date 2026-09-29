@@ -80,11 +80,9 @@ static bool nk_all_history_markers_are(sqlite3 *db, int64_t want)
            sprout == want && sapling == want && nf == want;
 }
 
-/* The reset primitives REFUSE autocommit (they require the caller's open
- * transaction, unlike anchor_kv_reset which falls back to its own IMMEDIATE tx).
- * Run each inside its own BEGIN IMMEDIATE..COMMIT so the unit test exercises the
- * same in-tx contract the boot/refold callers hold. A refusal inside the txn
- * (e.g. a negative below-height) rolls back and returns false. */
+/* The reset primitives require the caller's open transaction; run each in its
+ * own BEGIN IMMEDIATE..COMMIT. A refusal inside the txn rolls back and
+ * returns false. */
 static bool nk_reset_complete_tx(sqlite3 *db)
 {
     char *err = NULL;
@@ -136,9 +134,7 @@ int test_nullifier_kv(void)
     sqlite3 *db = progress_store_db();
     NK_CHECK("db handle", db != NULL);
 
-    /* First adoption is atomic: if the marker insert fails, schema creation
-     * rolls back too, so a crash/failure cannot leave a table that later looks
-     * complete merely because it exists. */
+    /* First adoption is atomic: a failed marker insert rolls schema creation back. */
     NK_CHECK("table absent before ensure", !nullifier_kv_table_exists(db));
     NK_CHECK("failure trigger installs",
              sqlite3_exec(db,
@@ -154,9 +150,8 @@ int test_nullifier_kv(void)
              sqlite3_exec(db, "DROP TRIGGER fail_nf_marker", NULL, NULL,
                           NULL) == SQLITE_OK);
 
-    /* A precreated empty table plus absent marker models the old DDL/marker
-     * crash window. Initializing at a nonzero reducer cursor must stamp the
-     * unknown prefix, never infer completeness from table existence. */
+    /* A precreated empty table with no marker at a nonzero reducer cursor
+     * must stamp the unknown prefix, never infer completeness. */
     NK_CHECK("ensure_schema", nullifier_kv_ensure_schema(db));
     NK_CHECK("table present after ensure", nullifier_kv_table_exists(db));
     NK_CHECK("precreated table initializes conservative cursor",
@@ -382,12 +377,9 @@ int test_nullifier_kv(void)
                  !found);
     }
 
-    /* anchor_kv reset primitives: the two OPPOSITE marker semantics are named
-     * at the call site by distinct typed entry points (Hazard #1 split). Same
-     * tables, same tx, same rows cleared — they differ ONLY in the adoption
-     * cursor and therefore in how a later missing root is classified. Pinning
-     * both the cursor value AND the classification is the load-bearing guard:
-     * the empty-below cursor is the exact marker class behind the H* wedge. */
+    /* anchor_kv reset primitives: two typed entry points, same tables and
+     * rows cleared, differing only in the adoption cursor and so in how a
+     * later missing root is classified. Pins cursor value and classification. */
     NK_CHECK("mark_complete stamps both anchor cursors zero",
              anchor_kv_reset_mark_complete_in_tx(db) &&
              ak_both_anchor_cursors_are(db, 0));
@@ -411,25 +403,18 @@ int test_nullifier_kv(void)
                  anchor_kv_latest_tree(db, ANCHOR_POOL_SAPLING, &t, NULL, NULL)
                      == ANCHOR_KV_HISTORY_INCOMPLETE);
     }
-    /* Argument validation is preserved from the pre-split primitive: a negative
-     * below-height is refused; a zero below-height is accepted and behaves as
-     * mark_complete (byte-identical to the old reset_in_tx(db, 0)). */
+    /* A negative below-height is refused; zero is accepted and behaves as
+     * mark_complete. */
     NK_CHECK("mark_empty_below refuses a negative height",
              !anchor_kv_reset_mark_empty_below_in_tx(db, -1));
     NK_CHECK("mark_empty_below(0) is equivalent to mark_complete",
              anchor_kv_reset_mark_empty_below_in_tx(db, 0) &&
              ak_both_anchor_cursors_are(db, 0));
 
-    /* nullifier_kv reset primitives: the two OPPOSITE completeness semantics are
-     * named at the call site by distinct typed entry points (the exact twin of
-     * the anchor_kv reset split). Same table, same in-tx contract, same rows
-     * cleared — they differ ONLY in the adoption cursor they stamp, and
-     * therefore in whether a pre-activation nullifier can be proven fresh. The
-     * empty-below cursor is the exact marker class behind the PERMANENT
-     * utxo_apply.nullifier_backfill_gap blocker. Pinning both the DELETE, the
-     * cursor value, AND the classification it drives is the load-bearing guard.
-     * (The malformed-marker section above left a junk cursor; the reset writes a
-     * clean explicit cursor over it.) */
+    /* nullifier_kv reset primitives: two typed entry points that differ only
+     * in the adoption cursor stamped, and so in whether a pre-activation
+     * nullifier can be proven fresh. Pins the DELETE, the cursor value, and
+     * the classification it drives. */
     {
         uint8_t rc[32];
         nk_nf(rc, 0x5E);
@@ -462,9 +447,8 @@ int test_nullifier_kv(void)
                      nullifier_kv_activation_cursor(db, &cursor, &found) &&
                      found && cursor == 4242);
         }
-        /* Argument validation is preserved from the pre-split primitive: a
-         * negative below-height is refused; a zero below-height is accepted and
-         * behaves as mark_complete (byte-identical to the old reset_in_tx(0)). */
+        /* A negative below-height is refused; zero is accepted and behaves as
+         * mark_complete. */
         NK_CHECK("mark_empty_below refuses a negative height",
                  !nk_reset_empty_below_tx(db, -1));
         NK_CHECK("mark_empty_below(0) is equivalent to mark_complete",

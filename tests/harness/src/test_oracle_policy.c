@@ -2,26 +2,14 @@
  *
  * Tests for the oracle_policy module (engine/services/src/oracle_policy.c).
  *
- * oracle_policy is the gate that lets zclassicd-disagreement evidence
- * pause live chain extension. It is a lock-guarded singleton state
- * machine — NORMAL → HALTED (N distinct disagreement heights inside the
- * sliding window) or NORMAL → PANIC (a disagreement at or below the
- * evidence-prefix end height). chain_extension_allowed() is the yes/no
- * gate chain_advance consults before committing a new tip.
+ * oracle_policy is a lock-guarded singleton state machine — NORMAL → HALTED
+ * (N distinct disagreement heights inside the sliding window) or NORMAL →
+ * PANIC (a disagreement at or below the evidence-prefix end height).
  *
- * Because the module is a process-global singleton, every test starts
- * from oracle_policy_reset_for_test() and then re-arms it with an
- * explicit oracle_policy_init() config so the thresholds are
- * deterministic and independent of the compile-time SHA3 windows. We
- * push the observation window wide (a large window_secs) so the few
- * rapid disagreements a test records all stay "live" regardless of
- * wall-clock granularity.
- *
- * Parallel-runner note: these tests mutate process-global singleton
- * state, so they must run inside a single test_oracle_policy() process
- * (which they do — the parallel runner forks one process per registered
- * test function). They do not touch SQLite, the network, or any other
- * test's globals.
+ * Every test starts from oracle_policy_reset_for_test() and re-arms with an
+ * explicit oracle_policy_init() config, with a wide window so records stay
+ * live. The tests mutate process-global state and run in a single
+ * test_oracle_policy() process; they touch no SQLite or network.
  */
 
 #include "test/test_core.h"
@@ -263,8 +251,7 @@ int test_oracle_policy(void)
     failures += t_prefix_disagreement_panics();
     failures += t_record_before_init_noop();
 
-    /* Leave the singleton in a clean, allowed state for any later test
-     * group sharing this process. */
+    /* Leave the singleton clean and allowed for later groups. */
     oracle_policy_reset_for_test();
     return failures;
 }

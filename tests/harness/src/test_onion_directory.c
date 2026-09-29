@@ -1,56 +1,28 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * test_onion_directory — one group over the ONE onion directory
- * (core/modules/net/src/onion_directory.c + the transitive half of
- * try_onion_seed_fetch in connman.c). Two teams built a directory at the
- * same path for overlapping purposes; this file is the union of both
- * their test suites, and every assertion from each is kept.
+ * test_onion_directory: one group over the onion directory
+ * (core/modules/net/src/onion_directory.c and the transitive half of
+ * try_onion_seed_fetch in connman.c). Contracts pinned:
  *
- * FOUR contracts are pinned here.
+ *  1. Freshness: the pure freshness rule, expiry on a refresh round, census
+ *     observations moving (or not moving) last_seen, and age/policy fields
+ *     on every served row.
+ *  2. Parsing the "onion" field of a fetched /directory.json: validation,
+ *     dedupe, self-skip, per-object field binding, the per-response cap, one
+ *     malformed record not hiding later honest ones, and the follow budget.
+ *  3. serve_search matches registered ZNAM names as well as raw hostnames,
+ *     and every page showing a name also shows the RAW address.
+ *  4. onion_hostname_valid() is the single v3 hostname predicate.
+ *  5. App advertisement: every served row carries "apps":[...]; the harvest
+ *     normalizes and persists it (junk rejected, capped, deduped; the one
+ *     column hearsay may refresh on an existing row); the seller-discovery
+ *     read returns only FRESH non-self rows, re-validated at read time. The
+ *     clearnet_ip -> clearnet_port adjacency connman's string scan relies on
+ *     is pinned.
  *
- *  1. The peer directory used to be written once at boot and never again:
- *     no refresh, no last_seen maintenance, no expiry, and
- *     /directory.json handed out up to 500 rows with nothing on them a
- *     reader could use to tell a minute-old row from a week-old one.
- *     Covered: the pure freshness rule, expiry on a refresh round, census
- *     observations moving (or deliberately NOT moving) last_seen, and the
- *     age/policy fields on every served row.
- *
- *  2. try_onion_seed_fetch string-scanned a fetched /directory.json for
- *     clearnet_ip and threw the "onion" field away, so an onion peer
- *     could never teach this node about another onion peer. Covered: both
- *     parsers for that field (validation, dedupe, self-skip, per-object
- *     field binding, the per-response cap, and that ONE malformed record
- *     cannot hide the honest records that follow it) and the follow
- *     budget that stops one response from dominating the pool.
- *
- *  3. serve_search matched only the raw .onion hostname, so a query for a
- *     registered ZNAM name returned "No results" even with the row
- *     folded. The name join is asserted both ways, and every page that
- *     shows a name is asserted to show the RAW address beside it.
- *
- *  4. ONE v3 hostname predicate. onion_hostname_valid() is the single
- *     definition in the tree; the shape assertions below run against it,
- *     not against a second copy that could drift.
- *
- *  5. Track 2 — the app-service advertisement. Every served row carries
- *     "apps":[...] (the app-catalog Apps the host serves on its onion;
- *     the self row's list comes from the ONE site-route registry), the
- *     harvest normalizes and persists it (junk ids rejected, capped,
- *     deduped; the one column hearsay may refresh on an existing row),
- *     and the seller-discovery read returns only FRESH, non-self rows
- *     with read-time re-validation. Old consumers ignore the unknown key:
- *     the clearnet_ip → clearnet_port adjacency connman's string-scan
- *     relies on is pinned below.
- *
- * The load-bearing property throughout: a directory record is a HINT
- * ABOUT WHERE TO LOOK, never proof of who is there. So every path here
- * may only ever ADD a place to try. The asserts that matter most are the
- * negative ones — hearsay never overwrites a first-hand row, a failed
- * probe never moves last_seen, an observation for an unknown host never
- * inserts, and nothing in this file can remove a peer from any other
- * source's reach.
- */
+ * A directory record is a hint about where to look, never proof of who is
+ * there: hearsay never overwrites a first-hand row, a failed probe never
+ * moves last_seen, an observation for an unknown host never inserts. */
 
 #include "test/test_core.h"
 
@@ -184,14 +156,10 @@ static int od_parse_relay_hints(void)
              n == 2 && strcmp(hints[0].apps, "yardsale,blog") == 0 &&
              hints[1].apps[0] == '\0');
 
-    /* THE SCHEMA HELD. A node that does not know a peer's port or height
-     * now emits JSON null for it (net/onion_service.h) rather than the
-     * mainnet literal it used to invent. The key stays in place, so this
-     * parser — the tree's own consumer of the document, and the one that
-     * decides whether an absence gets re-laundered into a fact when we
-     * re-serve the row — reads it back as 0 = UNKNOWN and stores nothing.
-     * The clearnet_ip -> clearnet_port adjacency connman's string scan
-     * depends on is untouched by the change and is asserted below. */
+    /* Unknown port or height is JSON null (net/onion_service.h); the key
+     * stays in place and this parser reads it as 0 = UNKNOWN and stores
+     * nothing. The clearnet_ip -> clearnet_port adjacency connman's string
+     * scan depends on is asserted below. */
     static const char NULLS[] =
         "{\"nodes\":["
         "{\"onion\":\"" OD_HOST_A "\",\"name\":\"\",\"apps\":[\"blog\"],"
@@ -814,10 +782,7 @@ static bool od_register_name(sqlite3 *db, const char *name,
 
 /* ── 5. the ONE v3 hostname predicate ──────────────────────────── */
 
-/* These used to run against onion_hostname_is_valid_v3, a byte-identical
- * second copy of onion_hostname_valid. The copy is gone; the assertions
- * are not — they now hold the single surviving definition to exactly the
- * same shape rule, which is the point of collapsing the two. */
+/* The single surviving hostname predicate is held to the v3 shape rule. */
 static int od_test_hostname_shape(void)
 {
     int failures = 0;
@@ -900,18 +865,12 @@ static int od_test_scan(void)
 
 /* ── 7. observation semantics + freshness columns ──────────────── */
 
-/* Ported onto the surviving lifecycle API. The dropped implementation
- * had three entry points (ensure_table / observe / expire) that
- * duplicated this file's; the SEMANTICS they asserted are what mattered
- * and every one of them is kept here:
+/* Semantics of the lifecycle API:
  *   ADVERTISED  -> onion_service_directory_learn()   (INSERT OR IGNORE)
  *   REACHED     -> onion_service_directory_observe(reachable = true)
  *   UNREACHABLE -> onion_service_directory_observe(reachable = false)
- * One assertion could not survive verbatim: "observe before node.db
- * exists is a silent no-op" tested that the dropped writer opened
- * READWRITE and never created the file. The surviving writer is gated on
- * the SERVICE, not on the file — it refuses while no datadir is
- * published — so that guard is asserted in its own terms below. */
+ * The writer is gated on the SERVICE (it refuses while no datadir is
+ * published), not on the file. */
 static int od_test_observe(const char *datadir)
 {
     int failures = 0;
@@ -1017,14 +976,10 @@ static int od_test_observe(const char *datadir)
 
 /* ── 8. expiry ─────────────────────────────────────────────────── */
 
-/* The dropped onion_directory_expire(datadir, now, max_age) is gone; the
- * surviving sweep runs inside onion_service_directory_refresh() against
- * ONION_DIR_EXPIRE_SECS. Same three properties asserted: the stale
- * non-self row goes, the SELF row survives however old it is, and a row
- * inside the window is untouched. The two argument-validation assertions
- * on the dropped signature become the equivalent guard on the survivor:
- * a refresh with no published datadir fails rather than silently
- * reporting success. */
+/* The sweep runs inside onion_service_directory_refresh() against
+ * ONION_DIR_EXPIRE_SECS: the stale non-self row goes, the SELF row survives
+ * however old it is, a row inside the window is untouched, and a refresh
+ * with no published datadir fails rather than reporting success. */
 static int od_test_expiry(const char *datadir)
 {
     int failures = 0;
@@ -1073,15 +1028,10 @@ static int od_test_expiry(const char *datadir)
 
 /* ── 8b. the refresh round READS a cache; it never dials ───────── */
 
-/* The round runs on the shared supervisor tick runner (30 s liveness
- * deadline) and used to call peer_strategy_discover_self() — NAT-PMP, then
- * UPnP SSDP + SOAP, then naked IP discovery — every ONION_DIR_REFRESH_SECS.
- * That function's own comment records that it blocks for tens of seconds on
- * a gateway that ignores it. Freezing every other supervised child for that
- * long, every 15 minutes, is the failure class the systemd watchdog has
- * SIGABRT'd this node for. The endpoint is now PUBLISHED by the probe and
- * the round only reads it, which is what these assertions pin: what lands
- * in the self row is exactly what was published, and nothing else. */
+/* The refresh round runs on the shared supervisor tick runner (30 s liveness
+ * deadline), so it must not dial (NAT-PMP/UPnP discovery can block for tens
+ * of seconds). The endpoint is PUBLISHED by the probe and the round only
+ * reads it: what lands in the self row is exactly what was published. */
 static int od_test_self_clearnet(const char *datadir)
 {
     int failures = 0;
@@ -1135,34 +1085,15 @@ static int od_test_self_clearnet(const char *datadir)
 
 /* ── 8c. the two fields a stranger ACTS on: port and height ────── */
 
-/* MEASURED LIVE, 2026-08-26, from the first-party onion seed that
- * core/chainparams/src/chainparams.c hardcodes as the door for a Tor-only
- * stranger with no contacts. Its own self row said:
+/* Port and height are what a stranger acts on. Each onion dial costs a cold
+ * node up to 60 s of Tor round-trip, so a wrong port wastes the bootstrap
+ * budget while an honest null costs nothing and leaves the hostname, which
+ * bootstraps, intact. So neither is ever a compiled-in default (8033 / 0).
  *
- *   {"onion":"5wvfod...cqd.onion","port":8033,"height":0,"self":true}
- *
- * The node was listening on :8055 (`-port=8055` in its own /proc cmdline)
- * and its landing page reported height 3,229,378 in the same minute, and
- * every peer row in that document also said port 8033, height 0 — so the
- * defect was systemic across the list, not a quirk of the self row. (The
- * landing page's number is itself the unfiltered MAX(height); the
- * connected tip was two lower. Both are pinned below.)
- *
- * Both fields were compiled-in constants: the self INSERT bound the
- * literals `8033` and `0`, and learn() substituted 8033 for any
- * advertisement that carried no port. Nothing measured either.
- *
- * The cost is asymmetric and that is why absence beats a default: each
- * onion dial costs a cold node up to 60 s of blocking Tor round-trip, so
- * one wrong port spends a stranger's whole bootstrap budget proving the
- * only door it had is dead — while an honest null costs nothing and
- * leaves the hostname, which is what actually bootstraps, intact.
- *
- * Four links, each pinned separately: the pure port rule, the height
- * read, what register_self WRITES (including over an existing row — the
- * clause whose absence would have made every source fix invisible on a
- * live seed), and what learn() stores for an absence. What the renderers
- * EMIT is pinned end-to-end through the real router in section 10. */
+ * Four links, each pinned separately: the pure port rule, the height read,
+ * what register_self WRITES (including over an existing row), and what
+ * learn() stores for an absence. What the renderers EMIT is pinned
+ * end-to-end through the real router in section 10. */
 static int od_test_port_and_height(const char *datadir)
 {
     int failures = 0;
@@ -1463,7 +1394,7 @@ static int od_test_served_pages(const char *datadir)
 
     static uint8_t resp[262144];
 
-    /* SEARCH BY NAME — the case that returned "No results" before. */
+    /* SEARCH BY NAME. */
     memset(resp, 0, sizeof(resp));
     size_t n = onion_service_handle_request("GET", "/search?q=alice", NULL, 0,
                                             resp, sizeof(resp) - 1);
@@ -1566,9 +1497,8 @@ static int od_test_served_pages(const char *datadir)
              strstr(js, "\"onion\":\"" HOST_A "\"") != NULL);
     OD_CHECK("directory.json carries per-row age",
              strstr(js, "\"age_secs\":") != NULL);
-    /* The contact record, under the surviving column names: last_success
-     * + dial_success_count for contact, fail_count for failures (the
-     * dropped table called that one dial_fail_count). */
+    /* The contact record: last_success + dial_success_count for contact,
+     * fail_count for failures. */
     OD_CHECK("directory.json carries the contact record",
              strstr(js, "\"last_success\":") != NULL &&
              strstr(js, "\"dial_success_count\":") != NULL &&
@@ -1583,15 +1513,11 @@ static int od_test_served_pages(const char *datadir)
 
     /* ── THE TWO FIELDS A STRANGER ACTS ON, end to end ──
      *
-     * Through the REAL router, on the REAL document. The live first-party
-     * seed served {"port":8033,"height":0,"self":true} while listening on
-     * :8055 at height 3,229,378, and every peer row said the same — so
-     * these assert both halves: the self row reports what the node
-     * measured, and a row it knows nothing about says so. */
-    /* The self row sorts first (ORDER BY self DESC), so row 0 is ours.
-     * Bound the self assertions to that object: other rows in this
-     * fixture legitimately carry a port a peer STATED, including 8033,
-     * and the rule being pinned is "never INVENT", not "never report". */
+     * Through the REAL router: the self row reports what the node
+     * measured, and a row it knows nothing about says so. The self row
+     * sorts first (ORDER BY self DESC), so row 0 is ours; bound the self
+     * assertions to that object, since other rows legitimately carry a port
+     * a peer STATED, including 8033. */
     char selfobj[1400] = "";
     {
         const char *o = strchr(js, '{');            /* envelope */
@@ -1628,8 +1554,8 @@ static int od_test_served_pages(const char *datadir)
     /* THE SCHEMA HELD, for all three classes of consumer in the tree.
      *
      * 1. connman's clearnet STRING SCAN (try_onion_seed_fetch_depth) reads
-     *    clearnet_port within 50 chars of clearnet_ip. Untouched, and
-     *    clearnet_port stays a number. */
+     *    clearnet_port within 50 chars of clearnet_ip; clearnet_port stays
+     *    a number. */
     {
         const char *cip = strstr(js, "\"clearnet_ip\":");
         const char *cpt = cip ? strstr(cip, "\"clearnet_port\":") : NULL;
@@ -1706,34 +1632,27 @@ static int od_test_served_pages(const char *datadir)
 
     onion_service_stop();
 
-    /* The guard the dropped expire()'s NULL-datadir assertion tested, in
-     * the survivor's terms: with the service stopped there is no
-     * directory to refresh, and the round says so instead of reporting a
-     * silent success. */
+    /* With the service stopped there is no directory to refresh, and the
+     * round says so instead of reporting success. */
     struct onion_directory_refresh_stats st;
     OD_CHECK("a refresh with no published datadir fails, never silently ok",
              !onion_service_directory_refresh(&st));
     return failures;
 }
 
-/* ── Response-bound pins: the handler's return feeds the vendored send
- * loop verbatim, so an inflated snprintf return once made that loop read
- * past the 64 KB production response buffer onto the wire. The serve
- * paths must (a) never report more bytes than the caller's buffer holds,
- * even on routes whose full render wants far more, and (b) keep a FULL
- * directory complete inside the production 64 KB response — trailer,
- * ROM-seed artifacts, headers, honest Content-Length — instead of
- * silently cutting the tail off. ── */
+/* Response-bound pins: the handler's return feeds the vendored send loop
+ * verbatim, so the serve paths must (a) never report more bytes than the
+ * caller's buffer holds, and (b) keep a FULL directory complete inside the
+ * production 64 KB response (trailer, ROM-seed artifacts, headers, honest
+ * Content-Length). ── */
 static int od_test_response_bounds(const char *datadir)
 {
     int failures = 0;
 
     onion_service_start(datadir);
 
-    /* Fill the directory well past one response: hundreds of fresh rows
-     * force both row loops to stop on their capacity guards with rows
-     * still waiting, which is exactly the fill that used to push the
-     * trailer and header render past the buffer end. */
+    /* Fill the directory well past one response so both row loops stop on
+     * their capacity guards with rows still waiting. */
     sqlite3 *wdb = od_open(datadir);
     if (!wdb) {
         OD_CHECK("response-bounds fixture db opened", false);
@@ -1853,17 +1772,15 @@ int test_onion_directory(void)
     failures += od_test_self_clearnet(datadir);
     failures += od_test_name_join(datadir);
     failures += od_test_app_peers(datadir);
-    /* Runs immediately before the served-pages group: it establishes the
-     * measured height and the unknown/stated ports that group then reads
-     * back out of the REAL document. */
+    /* Runs before the served-pages group: it establishes the measured
+     * height and the unknown/stated ports that group reads back. */
     failures += od_test_port_and_height(datadir);
     failures += od_test_served_pages(datadir);
     failures += od_test_response_bounds(datadir);
 
-    /* Sub-test in its own file (test_onion_directory_stale_hearsay.c):
-     * the freshness boundary from both sides, and the bound on what a
-     * flood of expired relayed stamps costs the log. Runs last — it
-     * re-points the onion context at its own datadir. */
+    /* Sub-test in test_onion_directory_stale_hearsay.c: the freshness
+     * boundary from both sides and the bound on log cost from a flood of
+     * expired relayed stamps. Runs last: it re-points the onion context. */
     { extern int od_stale_hearsay_bound(void);
       failures += od_stale_hearsay_bound(); }
 

@@ -349,27 +349,22 @@ int test_params_vk_embedded(void)
 
     /* ── 1b. A REFUSED parameter directory falls back, strands nothing ──
      *
-     * The case this section exists for: the four files are present, so the
-     * boot gate says PRESENT and the loader runs, but one of them is corrupt.
-     * Two separate things then have to hold.
+     * The four files are present, so the loader runs, but one is corrupt.
+     * Two things must hold.
      *
      *   Refusal is total. sapling_init_params returns false and NOTHING it
-     *   parsed is left published. The fail-closed guards in
+     *   parsed stays published: the fail-closed guards in
      *   sapling_check_spend/_output/sprout_verify_groth16 read "a NULL VK
-     *   means not ready", so a failure path that leaves a non-NULL pointer to
-     *   freed storage is not a leak — it is a verifier reading freed heap and
-     *   returning whatever that heap says. The pointer is the observable, so
-     *   this asserts on the pointer.
+     *   means not ready", so a stale pointer to freed storage would be a
+     *   verifier reading freed heap. This asserts on the pointer.
      *
-     *   Validation survives it. The verifying keys are compiled in and were
-     *   never on disk, so a corrupt download costs the PROVING capability and
-     *   nothing else.
+     *   Validation survives it. The verifying keys are compiled in, so a
+     *   corrupt download costs the PROVING capability and nothing else.
      *
-     * The scratch directory symlinks the three big files (read-only, and no
-     * copy of 777 MB) and plants ONE flipped bit in a private copy of
-     * sprout-verifying.key. That specific file is the only one whose failure
-     * lands AFTER the three Groth16 keys are parsed, which is exactly the
-     * ordering that used to strand them. ~/.zcash-params is never written. */
+     * The scratch directory symlinks the three big files and plants ONE
+     * flipped bit in a private copy of sprout-verifying.key, the only file
+     * whose failure lands AFTER the three Groth16 keys are parsed.
+     * ~/.zcash-params is never written. */
     {
         const char *home = getenv("HOME");
         char real_dir[1024];
@@ -393,10 +388,9 @@ int test_params_vk_embedded(void)
 
         if (staged) {
             {
-                /* Mainnet: the network where a PHGR13 failure is fatal to the
-                 * load, which is the ordering under test. Restored below so
-                 * this section cannot change the network another group in this
-                 * process is running on. */
+                /* Mainnet, where a PHGR13 failure is fatal to the load.
+                 * Restored below so the network of other groups is
+                 * unchanged. */
                 const struct chain_params *prev = chain_params_get();
                 bool had_prev = (prev != NULL);
                 enum chain_network prev_net = CHAIN_MAIN;
@@ -408,7 +402,7 @@ int test_params_vk_embedded(void)
                 }
                 chain_params_select(CHAIN_MAIN);
 
-                /* Deterministic baseline. Another group in this process may
+                /* Deterministic baseline: another group in this process may
                  * have loaded parameters or installed a PHGR13 fixture VK. */
                 sapling_free_params();
                 sprout_phgr_set_vk(NULL);
@@ -429,17 +423,12 @@ int test_params_vk_embedded(void)
                          sprout_test_published_phgr_vk() == NULL);
 
 #ifdef ZCL_UAF_PROBE
-                /* Opt-in reproducer for the defect the assertions above pin.
-                 * Build with -DZCL_UAF_PROBE and run under valgrind or ASan:
-                 * it drives the exact dereference the production verifier
-                 * performs (bls12_381.c groth16_verify, "struct g1_point vk_x
-                 * = vk->ic[0];") against whatever the refused load left
-                 * published. Against the current code the pointer is NULL and
-                 * nothing is dereferenced; against the pre-fix ordering it
-                 * reported "Invalid read of size 32 ... free'd by
-                 * sapling_init_params", which is a consensus verifier reading
-                 * freed heap. Off by default — a plain run must not depend on
-                 * a checker being present. */
+                /* Opt-in reproducer (build with -DZCL_UAF_PROBE, run under
+                 * valgrind or ASan): drives the dereference the production
+                 * verifier performs (bls12_381.c groth16_verify, "struct
+                 * g1_point vk_x = vk->ic[0];") against whatever the refused
+                 * load left published; the pointer must be NULL. Off by
+                 * default so a plain run needs no checker. */
                 {
                     const struct groth16_vk *pub_vk =
                         sapling_test_published_spend_vk();
@@ -470,10 +459,8 @@ int test_params_vk_embedded(void)
                 }
 
                 /* The A side of the A/B below: the SAME real mainnet shielded
-                 * transaction, through the SAME production entry point, is
-                 * REJECTED while no verifying key is published. Without this,
-                 * the acceptance after the fallback would not prove that the
-                 * fallback is what made validation work. */
+                 * transaction through the SAME entry point is REJECTED while
+                 * no verifying key is published. */
                 VK_CHECK("before the fallback, a real mainnet shielded proof "
                          "is REJECTED (fail-closed)",
                          !vk_contextual_ok(NULL));
@@ -488,12 +475,11 @@ int test_params_vk_embedded(void)
                 VK_CHECK("fallback does NOT arm proving",
                          !zclassic_sapling_prover_is_ready());
 
-                /* The installed Sapling keys are the SAME keys a good
-                 * parameter directory would have installed — parsed here from
-                 * the real files' prefixes and compared field by field. This
-                 * is the property that makes the fallback consensus-safe: no
-                 * proof is accepted that a fully-parameterised node would
-                 * reject, because the verifier is bit-for-bit identical. */
+                /* The installed Sapling keys equal those a good parameter
+                 * directory would install (parsed from the real files'
+                 * prefixes, compared field by field): the fallback verifier
+                 * is bit-for-bit identical, so it accepts nothing a
+                 * fully-parameterised node would reject. */
                 {
                     struct groth16_vk from_file = {0};
                     char p[1200];
@@ -517,23 +503,19 @@ int test_params_vk_embedded(void)
                     free(out_file.ic);
                 }
 
-                /* The B side: the SAME transaction, the SAME entry point, now
-                 * ACCEPTED — against the compiled-in PHGR13 key, which is the
-                 * very key whose file was the one corrupted above. A/B against
-                 * the rejection asserted before the install, so acceptance
-                 * here is attributable to the fallback and nothing else. */
+                /* The B side: the SAME transaction and entry point is now
+                 * ACCEPTED against the compiled-in PHGR13 key, attributable
+                 * to the fallback alone. */
                 {
                     struct vk_js_inputs js;
                     VK_CHECK("a REAL mainnet shielded proof validates on the "
                              "fallback keys", vk_contextual_ok(&js));
 
-                    /* And the verifier is not a rubber stamp: one flipped
-                     * proof byte, same public inputs, must be rejected. Driven
-                     * through sprout_verify_phgr13 rather than the contextual
-                     * path because every byte of the transaction is covered by
-                     * the JoinSplit signature, so a tampered tx would be
-                     * rejected for its signature before the proof was ever
-                     * checked — which would test nothing about the key. */
+                    /* The verifier is not a rubber stamp: one flipped proof
+                     * byte, same public inputs, must be rejected. Driven
+                     * through sprout_verify_phgr13 because a tampered tx
+                     * would fail its JoinSplit signature before the proof
+                     * was checked. */
                     VK_CHECK("fixture JoinSplit public inputs recovered",
                              js.valid);
                     if (js.valid) {
@@ -580,11 +562,10 @@ int test_params_vk_embedded(void)
 
     /* ── 3. Proving stays fail-closed ─────────────────────────────────── */
     {
-        /* This is the safety property that lets the boot gate stand down.
-         * No proving keys were loaded, so the prover must not claim to be
-         * ready — sapling.c's build_output_description() writes a 192-byte
-         * zero proof when no proving key is present, and the wallet's refusal
-         * on this flag is what keeps that branch unreachable. */
+        /* No proving keys were loaded, so the prover must not claim to be
+         * ready: build_output_description() writes a 192-byte zero proof when
+         * no proving key is present, and the wallet's refusal on this flag
+         * keeps that branch unreachable. */
         VK_CHECK("prover is NOT ready with verifying keys alone",
                  !zclassic_sapling_prover_is_ready());
 
@@ -646,30 +627,24 @@ int test_params_vk_embedded(void)
 
     /* ── 5. Proving parameters that arrive AFTER the fallback ──────────
      *
-     * The whole point of the fallback is that the missing capability can come
-     * back. A node boots with no ~/.zcash-params, installs the compiled-in
-     * verifying keys, syncs and validates; later the proving parameters are
-     * fetched (core/modules/sapling/params_fetch.c) and sapling_init_params() is called
-     * on the directory that now holds them. Shielded sending has to work from
-     * that moment, without a restart.
-     *
-     * Three states are asserted in one sequence, because only the sequence
-     * shows the transitions:
+     * A node boots without ~/.zcash-params, installs the compiled-in
+     * verifying keys and validates; later the proving parameters are fetched
+     * (core/modules/sapling/params_fetch.c) and sapling_init_params() runs on
+     * the directory holding them. Shielded sending must work from then on,
+     * without a restart. Three states, in sequence:
      *
      *   verifying keys only  → prover NOT ready, sending refused
      *   a directory that FAILS its pin → still NOT ready, still refused, and
      *                          nothing published or freed from those bytes
-     *   the real directory   → ready, and the readiness is earned by a real
-     *                          Spend+Output+binding bundle that the node's own
-     *                          consensus verifier accepted
+     *   the real directory   → ready, earned by a real Spend+Output+binding
+     *                          bundle the node's own consensus verifier
+     *                          accepted
      *
-     * This section runs last on purpose: it leaves proving parameters resident
-     * in the process, and sections 2-4 assert the opposite. It restores the
-     * process to "nothing loaded" on the way out anyway.
+     * Runs last because it leaves proving parameters resident (sections 2-4
+     * assert the opposite); it restores "nothing loaded" on the way out.
      *
-     * Needs a real parameter directory for the upgrade half.  Without one,
-     * the validation-only state is asserted explicitly instead of emitting a
-     * SKIP that would make an exact proof incomplete. */
+     * The upgrade half needs a real parameter directory. Without one, the
+     * validation-only state is asserted explicitly instead of a SKIP. */
     {
         const char *home = getenv("HOME");
         char real_dir[1024];
@@ -707,8 +682,7 @@ int test_params_vk_embedded(void)
             }
             chain_params_select(CHAIN_MAIN);
 
-            /* Deterministic baseline: no keys, no proving backend. Another
-             * group in this process may have done a full load already. */
+            /* Deterministic baseline: no keys, no proving backend. */
             sapling_free_params();
             sprout_phgr_set_vk(NULL);
             zclassic_test_prover_reset();
@@ -722,9 +696,8 @@ int test_params_vk_embedded(void)
                      sapling_get_spend_pk(NULL) == NULL &&
                      sapling_get_output_pk(NULL) == NULL);
 
-            /* The exact pointers the consensus verifiers are reading. A later
-             * load must not swap or free what these point at while validation
-             * is running — this process's verifiers hold no lock. */
+            /* The exact pointers the consensus verifiers read; a later load
+             * must not swap or free them (verifiers hold no lock). */
             const struct groth16_vk *spend_pub =
                 sapling_test_published_spend_vk();
             const struct groth16_vk *output_pub =
@@ -741,10 +714,9 @@ int test_params_vk_embedded(void)
             VK_CHECK("B: no proving key was published from refused bytes",
                      sapling_get_spend_pk(NULL) == NULL &&
                      sapling_get_output_pk(NULL) == NULL);
-            /* And the refusal did not cost the node its validation. The
-             * published pointers are the SAME objects, not merely non-NULL:
-             * a refused upgrade that freed and reinstalled them would be a
-             * verifier reading freed heap. */
+            /* The refusal must not cost validation: the published pointers
+             * are the SAME objects (a freed and reinstalled key would be a
+             * verifier reading freed heap). */
             VK_CHECK("B: validation survives the refusal, same VK objects",
                      sapling_test_published_spend_vk() == spend_pub &&
                      sapling_test_published_output_vk() == output_pub &&
@@ -759,10 +731,9 @@ int test_params_vk_embedded(void)
             VK_CHECK("C: the late proving parameters LOAD",
                      sapling_init_params(real_dir));
 
-            /* THE regression. Before the fix, sapling_init_params() saw the
-             * params_loaded flag that the fallback had set and returned true
-             * without reading a byte, so this stayed false forever and
-             * shielded sending stayed dead until the process restarted. */
+            /* Regression: sapling_init_params() must not return true early on
+             * the params_loaded flag the fallback set; proving readiness must
+             * become true without a restart. */
             VK_CHECK("C: proving is armed — sending is possible",
                      zclassic_sapling_prover_is_ready());
             VK_CHECK("C: the proving keys are resident",

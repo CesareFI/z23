@@ -12,10 +12,8 @@
 
 #include "test/test_core.h"
 
-/* The lint-gate self-test family fork+execs POSIX bash gate scripts; native
- * Windows has no fork/exec/waitpid, so on _WIN32 every check compiles out and
- * the registered group entry points (test_make_lint_gates.c) report a loud
- * skip instead. */
+/* The lint-gate self-test family fork+execs POSIX bash gate scripts; on
+ * _WIN32 every check compiles out and the group entry points report a skip. */
 #if defined(ZCL_TESTING) && !defined(_WIN32)
 
 #include "lint_gate_selftests.h"
@@ -27,11 +25,9 @@ int run_git_hooks_gate_with_path(const char *hooks_path)
                                     hooks_path);
 }
 
-/* Like run_git_hooks_gate_with_path, but ALSO points the gate's ZCL_GIT_HOOK_
- * ROOT seam at a private fixture root (see build_git_hooks_fixture below) so
- * the "build/githooks" literal resolves to that fixture's installed hooks
- * instead of this checkout's own — the gate's verdict must never depend on
- * whether an operator happened to already run `make install-hooks` here. */
+/* Like run_git_hooks_gate_with_path, but also points ZCL_GIT_HOOK_ROOT at a
+ * private fixture root so the verdict never depends on this checkout's own
+ * installed hooks. */
 int run_git_hooks_gate_with_path_root(const char *hooks_path, const char *root)
 {
     return run_gate_script_with_env2(GIT_HOOKS_SCRIPT_REL,
@@ -58,22 +54,9 @@ int run_git_hooks_gate_with_precommit_file(const char *hook_path,
         "ZCL_GIT_HOOK_ROOT", root);
 }
 
-/* ── hermetic git-hooks-installed fixture ──────────────────────────────
- *
- * check_git_hooks_installed.sh resolves its "actual installed hooks"
- * comparison against ZCL_GIT_HOOK_ROOT (default: this process's cwd, i.e.
- * the real checkout) — so without an override, every check below silently
- * asserts on whatever hook state an operator happened to leave lying around
- * in THIS checkout, not on the gate's own logic. A fresh clone/worktree has
- * no build/githooks until `make install-hooks` runs, so that leakage reads
- * as a gate bug on a fresh checkout and a pass on a primed one.
- *
- * The fix: build a private, throwaway installed-hooks tree under test-tmp/
- * using tools/scripts/install_git_hooks.sh — the SAME script `make
- * install-hooks` runs — pointed at an isolated Git repo instead of the real
- * checkout, then pass that root to the gate via the existing ZCL_GIT_HOOK_
- * ROOT seam. The real checkout's own installed state (or lack of it) never
- * enters the picture. */
+/* hermetic git-hooks-installed fixture: check_git_hooks_installed.sh
+ * compares against ZCL_GIT_HOOK_ROOT, so a private installed-hooks tree is
+ * built under test-tmp/ with tools/scripts/install_git_hooks.sh. */
 #define GIT_HOOKS_FIXTURE_ROOT_PREFIX "test-tmp/_git_hooks_fixture_root_tmp"
 #define INSTALL_GIT_HOOKS_SCRIPT_REL "tools/scripts/install_git_hooks.sh"
 
@@ -103,13 +86,8 @@ static int run_git_init(const char *dir)
     return -1;
 }
 
-/* Runs the REAL install recipe against the isolated fixture root. Mirrors
- * `make install-hooks` (ZCL_GIT_HOOK_HOST=$(GIT_HOOK_HOST)
- * tools/scripts/install_git_hooks.sh) but with the checkout-writing seams
- * (ZCL_GIT_HOOK_SOURCE_ROOT / ZCL_GIT_HOOK_ROOT / ZCL_GIT_HOOK_NATIVE_BIN)
- * pointed at the fixture instead of the real worktree. This whole self-test
- * family compiles out on _WIN32 (see the file-top comment), so the host is
- * always posix here. */
+/* Runs the real install recipe (mirrors `make install-hooks`) with the
+ * checkout-writing seams pointed at the fixture root. */
 static int run_install_git_hooks(const char *source_root, const char *root,
                                  const char *native_bin)
 {
@@ -158,9 +136,8 @@ static int build_git_hooks_fixture(char *fixture_root, size_t cap)
     (void)test_rm_rf_recursive(fixture_root);
     if (mkdir(fixture_root, 0755) != 0)
         return -1;
-    /* install_git_hooks.sh refuses a ROOT that is not a Git worktree, and
-     * writes its core.hooksPath scoped --worktree to this private repo
-     * only — never the real checkout's config. */
+    /* install_git_hooks.sh refuses a non-worktree ROOT and scopes
+     * core.hooksPath --worktree to this private repo only. */
     if (run_git_init(fixture_root) != 0)
         return -1;
     if (snprintf(dir, sizeof(dir), "%s/build", fixture_root) >= (int)sizeof(dir)
@@ -313,27 +290,12 @@ int t_git_hooks_gate_rejects_noop_pre_commit(void)
     return failures;
 }
 
-/* P1-3 — systemd memory budget: the live repo units must fit under the host
- * budget, and the script's parser self-test covers over-budget, infinity,
- * invalid-size, absent-cap, and drop-in override behavior.
- *
- * The baseline run checks the REAL committed deploy service units against
- * a REAL host's memory — that is the whole point of this gate (see
- * check_systemd_memory_budget.sh's own header). Left to its default, the
- * script reads /proc/meminfo of whatever machine happens to run this test,
- * which is only meaningful when that machine's RAM matches the actual
- * deploy target. That coincidentally holds on the maintainer's dev host
- * (maintainer-host-class hardware — see docs/HANDOFF.md), so it passed there
- * silently, but a hosted CI runner's RAM (a few GB) is nowhere near the
- * ~93 GiB deploy target, so the SAME finite MemoryMax sum that legitimately
- * fits the real host reads as over-budget there — not a real regression,
- * just this test reading the wrong machine's memory. .github/workflows/
- * build.yml's lint job already pins ZCL_SYSTEMD_MEMORY_BUDGET_MEMTOTAL_BYTES
- * to the real deploy target for exactly this reason (see that job's own
- * comment); pin the SAME value here so this test verifies the same real
- * invariant identically on every host, never the ambient host's own RAM. */
-/* The maintainer host, ~93 GiB — keep numerically identical to build.yml's
- * ZCL_SYSTEMD_MEMORY_BUDGET_MEMTOTAL_BYTES. */
+/* Systemd memory budget: the live repo units must fit under the host budget;
+ * the script parser self-test covers over-budget, infinity, invalid-size,
+ * absent-cap, and drop-in override behavior. The baseline run pins
+ * ZCL_SYSTEMD_MEMORY_BUDGET_MEMTOTAL_BYTES (as build.yml does) so the
+ * verdict is independent of host RAM. */
+/* ~93 GiB; keep identical to build.yml's ZCL_SYSTEMD_MEMORY_BUDGET_MEMTOTAL_BYTES. */
 #define ZCL_TEST_DEPLOY_TARGET_MEMTOTAL_BYTES "100300546048"
 int t_systemd_memory_budget(void)
 {
@@ -356,10 +318,9 @@ int t_systemd_memory_budget(void)
     return failures;
 }
 
-/* Unattended quality lanes must yield to every active mint service and bound
- * their dated logs without touching status, artifacts, or symlinks.  The
- * standalone test replaces systemctl/logger and the lane bodies with hermetic
- * fixtures, so it is safe inside the ordinary parallel test group. */
+/* Unattended quality lanes yield to every active mint service and bound
+ * their dated logs without touching status, artifacts, or symlinks. The
+ * standalone test uses hermetic systemctl/logger/lane fixtures. */
 int t_quality_job_guard(void)
 {
     int failures = 0;
@@ -370,19 +331,10 @@ int t_quality_job_guard(void)
     return failures;
 }
 
-/* tools/scripts/import-copy-prove-selftest.sh — hermetic proof that the ONE
- * canonical copy-prove driver (tools/scripts/import-copy-prove.sh) computes
- * the mode-appropriate gate set and overall verdict correctly, in BOTH
- * --mode=import and --mode=bundle, using faked $NODE_BIN/$RPC_BIN fixture
- * scripts under a throwaway mktemp sandbox: no real node binary, no real
- * zclassicd, no real chainstate/bundle, no network ports. It does not (and
- * cannot) prove anything about the real importer/installer — only that the
- * driver gates correctly the moment a real cure runs. See the script's own
- * header for the full rationale.
- *
- * Watched for PROGRESS, not runtime (run_gate_script_watched): a saturated or
- * slow-disk box takes longer and still passes, and a genuine wedge is
- * reported as a distinct finding from a failed assertion. */
+/* tools/scripts/import-copy-prove-selftest.sh: hermetic proof that the
+ * copy-prove driver computes the mode-appropriate gate set and verdict in
+ * --mode=import and --mode=bundle with faked node/RPC fixtures. Watched for
+ * progress, not runtime (run_gate_script_watched). */
 int t_import_copy_prove_selftest(void)
 {
     int failures = 0;
@@ -391,10 +343,8 @@ int t_import_copy_prove_selftest(void)
         int rc = run_gate_script_watched(IMPORT_COPY_PROVE_SELFTEST_REL,
                                          GATE_SELFTEST_MAX_SILENT_SECS,
                                          GATE_SELFTEST_SILENCE_DERIVATION);
-        /* Two assertions, on purpose: the first names a HANG (diagnosed above
-         * with the measured silence and the load average), the second names a
-         * LOGIC failure. One combined assertion could not tell them apart,
-         * and "probably just the flake" starts exactly there. */
+        /* Two assertions on purpose: the first names a HANG, the second a
+         * LOGIC failure. */
         ASSERT(rc != GATE_SCRIPT_WEDGED);
         ASSERT(rc == 0);
         PASS();
@@ -402,31 +352,11 @@ int t_import_copy_prove_selftest(void)
     return failures;
 }
 
-/* tools/scripts/fresh-boot-weld-prove-selftest.sh — hermetic proof that the
- * zero-flag cold-boot weld copy-prove driver
- * (tools/scripts/fresh-boot-weld-prove.sh) classifies every boot outcome
- * (install+climb, tamper-refused, chain-binding-blocked, installed-but-frozen,
- * RPC-never-answers, a denylisted work dir) into the correct verdict and exit
- * code, using a faked $ZCL_NODE_BIN fixture script: no real node binary, no
- * real chain state, no live checkpoint bundle. Mirrors
- * t_import_copy_prove_selftest's run_gate_script_watched convention.
- *
- * ── THIS TEST USED TO BE LOAD-SENSITIVE. IT IS NOT ANY MORE. ──────────────
- * Measured on the same commit and the same binary: FAILED at 48s inside a
- * 32-worker suite run, PASSED at 64.0s run standalone immediately afterwards.
- * The only variable was machine load. Two independent causes, both fixed at
- * the source rather than by widening a bound:
- *   1. the fixture published H* on a wall clock (one height per real second)
- *      while the driver asserts it saw H* land exactly at the checkpoint, so
- *      a slow first sample missed the window forever. The fixture now
- *      advances one height per OBSERVED SAMPLE — a count, not a duration.
- *   2. the driver's sample loop consulted its deadline before taking any
- *      sample, so a busy box could skip the observation entirely. It now
- *      takes the two samples its predicate needs first (MIN_SAMPLES) and
- *      consults the clock second.
- * The script's own selftest now carries an assertion that pins this: a run
- * with an ALREADY-EXPIRED window (--deadline=0) must still PASS in exactly
- * two samples. That is the regression test for the flake. */
+/* tools/scripts/fresh-boot-weld-prove-selftest.sh: hermetic proof that the
+ * cold-boot weld driver classifies every boot outcome into the correct
+ * verdict and exit code, using a faked $ZCL_NODE_BIN. The fixture advances
+ * one height per sample and the driver takes its minimum samples before its
+ * deadline, so the result is load-independent. */
 int t_fresh_boot_weld_prove_selftest(void)
 {
     int failures = 0;
@@ -443,9 +373,8 @@ int t_fresh_boot_weld_prove_selftest(void)
 }
 
 /* Return 0 when no tracked, active file refers to the retired tools/z path,
- * 1 when git grep finds a reference, and -1 on a harness error. Dated work
- * archives are evidence, not an active operator surface; this test source is
- * excluded because it owns the tombstone assertion and search pattern. */
+ * 1 when git grep finds one, -1 on a harness error. Work archives and this
+ * test source (which owns the tombstone pattern) are excluded. */
 int tracked_active_tree_has_no_tools_z_reference(void)
 {
     const char *root = repo_root();
@@ -842,16 +771,13 @@ int t_production_comments_do_not_carry_refactor_scaffold_labels(void)
     return failures;
 }
 
-/* check-no-dev-history-in-contracts — rejects dev-history phrasing ("STEP-0
- * STATUS", "stub bodies"/"stub body", "lane <N><letter>", "future slice")
- * from production contract surfaces (any *.h under an include/ dir, any
- * *.def table). Proof:
- * (1) the clean tree passes; (2) a fixture named with the *_test.* allowlist
- * suffix is IGNORED even though it lives under a real include/ dir and
- * carries every banned phrase; (3) the SAME violating content under a
- * non-allowlisted fixture name trips the gate; (4) removing it recovers
- * green; (5) the gate is actually wired into the Makefile LINT_GATES list
- * and documented in DEFENSIVE_CODING.md's canonical block. */
+/* check-no-dev-history-in-contracts - rejects dev-history phrasing ("STEP-0
+ * STATUS", "stub bodies", "lane <N><letter>", "future slice") from
+ * production contract surfaces (*.h under include/, *.def). Proof:
+ * (1) the clean tree passes; (2) a fixture with the *_test.* allowlist
+ * suffix is ignored despite banned phrases; (3) the same content under a
+ * non-allowlisted name trips the gate; (4) removing it recovers green;
+ * (5) the gate is in LINT_GATES and DEFENSIVE_CODING.md's canonical block. */
 int t_no_dev_history_in_contracts(void)
 {
     int failures = 0;
@@ -916,28 +842,21 @@ int t_no_dev_history_in_contracts(void)
     return failures;
 }
 
-/* check-no-uncited-victory — the one live-state page (docs/HANDOFF.md) may not
- * carry a victory phrase ("at tip", "cured", "wedge closed", ...) without a
- * machine-checkable citation token in the SAME paragraph. Exists because the
- * repo shipped 9+ false "cured / at tip" claims in six weeks (~103 wedge-FIXED
- * -> re-wedge cycles). Proof:
- * (1) the clean tree passes (the real HANDOFF.md is citation-clean);
- * (2) a planted fixture doc with an UNCITED victory paragraph trips the gate —
- *     scanned via the ZCL_LINT_MODE doc-override run_gate_script supports;
- * (3) a planted fixture doc whose victory paragraph carries a citation token
- *     (VERDICT=PASS / gap_vs_oracle) passes;
+/* check-no-uncited-victory - docs/HANDOFF.md may not carry a victory phrase
+ * ("at tip", "cured", "wedge closed", ...) without a machine-checkable
+ * citation token in the same paragraph. Proof:
+ * (1) the clean tree passes;
+ * (2) a fixture doc with an uncited victory paragraph trips the gate
+ *     (via the ZCL_LINT_MODE doc-override);
+ * (3) one carrying a citation token (VERDICT=PASS / gap_vs_oracle) passes;
  * (4) removing the fixtures recovers green;
- * (5) the gate is wired into the Makefile LINT_GATES list and documented in
- *     DEFENSIVE_CODING.md's canonical block. */
-/* check-no-invented-node-credentials — production frontends and repair
- * paths read node RPC credentials from conf/cookie/boot configuration
- * and must refuse by name when none exist. Five files once carried (or
- * defaulted to) the guessable development pair; this ratchet keeps them
- * absent. Proof here is source-level because exercising each refusal
- * needs a configured node; the wallet-view helper additionally keeps
- * its positive refusal marker pinned below. The env-overridable
- * default in tools/harvest_checkpoints.sh stays: shell tooling is a
- * thin invocation layer over credentials the operator supplies. */
+ * (5) the gate is in LINT_GATES and DEFENSIVE_CODING.md's canonical block. */
+/* check-no-invented-node-credentials - production frontends and repair
+ * paths read node RPC credentials from conf/cookie/boot configuration and
+ * refuse by name when none exist. Proof is source-level; the wallet-view
+ * helper keeps its positive refusal marker pinned below. The
+ * env-overridable default in tools/harvest_checkpoints.sh stays (shell
+ * tooling over operator-supplied credentials). */
 int t_wallet_view_never_invents_rpc_credentials(void)
 {
     static const char *const guarded[] = {
@@ -950,8 +869,7 @@ int t_wallet_view_never_invents_rpc_credentials(void)
     int failures = 0;
     char path[PATH_MAX];
 
-    /* One TEST per function: the harness's ASSERT expands to a literal
-     * `_test_next` label, so two blocks cannot share a scope. */
+    /* One TEST per function: ASSERT expands to a literal `_test_next` label. */
     TEST("[lint-gate] no invented node credentials remain in guarded files") {
         for (size_t i = 0; i < sizeof(guarded) / sizeof(guarded[0]); i++) {
             char *buf = NULL;
@@ -973,8 +891,7 @@ int t_wallet_view_never_invents_rpc_credentials(void)
             free(buf);
         }
 
-        /* Positive pin: the wallet view keeps its named refusal so the
-         * guard cannot be satisfied by deleting the protection. */
+        /* Positive pin: the wallet view keeps its named refusal. */
         char *wbuf = NULL;
         int wallet_readable =
             repo_path(path, sizeof(path),
@@ -1000,8 +917,7 @@ int t_no_uncited_victory(void)
 
     int baseline_rc = run_gate_script(NO_UNCITED_VICTORY_SCRIPT_REL, NULL);
 
-    /* Uncited victory: >= 10 lines (clears the hollow-gate floor) with a
-     * victory paragraph that carries no citation token. */
+    /* Uncited victory: >= 10 lines (clears the hollow-gate floor), no citation token. */
     const char *uncited_body =
         "# fixture handoff\n"
         "\n"
@@ -1025,8 +941,7 @@ int t_no_uncited_victory(void)
             : -1;
     unlink_rel(NO_UNCITED_VICTORY_FIXTURE_REL);
 
-    /* Cited victory: same victory phrase, but the paragraph carries citation
-     * tokens, so the gate must pass. */
+    /* Cited victory: the paragraph carries citation tokens, so the gate passes. */
     const char *cited_body =
         "# fixture handoff\n"
         "\n"
@@ -1083,25 +998,18 @@ int t_no_uncited_victory(void)
     return failures;
 }
 
-/* check-no-stray-root-files — the repository root is a curated list: git's
+/* check-no-stray-root-files - the repository root is a curated list: git's
  * tracked top-level entries plus a short allowlist of generated/local ones
  * (build/, vendor/, test-tmp/, compile_commands.json, tool caches). Proof:
- * (1) the clean tree passes; (2) its existing test-only override classifies
- *     Makefile as a stray, without writing into the live source root;
- * (3) removing that override recovers green; (4) the gate is wired into the Makefile
- *     LINT_GATES list and documented in DEFENSIVE_CODING.md's canonical
- *     block. Runs on the real worktree (it reads git ls-files). */
+ * (1) the clean tree passes; (2) its test-only override classifies Makefile
+ * as a stray, without writing into the live source root; (3) removing the
+ * override recovers green; (4) the gate is in LINT_GATES and
+ * DEFENSIVE_CODING.md's canonical block. Runs on the real worktree. */
 #define ROOT_STRAY_SCRIPT_REL  "tools/lint/check_no_stray_root_files.sh"
 
 /* Evidence for a failed run_gate_script(ROOT_STRAY_SCRIPT_REL, ...) call:
- * three landing proofs failed baseline_rc == 0 for this gate, and by the
- * time anyone looked the gate was clean again — the stray was transient and
- * nobody could name the writer. run_gate_script_arg() already redirects the
- * gate's stdout+stderr into lint_gate_out_path(); this just reads that same
- * file back (bounded, so a runaway gate can't flood the test log) and lists
- * the root directory *right now* so a still-present stray gets named even
- * if the gate's own text is stale by the time this prints. Read-only: no
- * new fork/exec beyond what run_gate_script* already did. */
+ * reads back the gate's redirected output (bounded) and lists the root
+ * directory now, so a transient stray is named. Read-only. */
 #define ROOT_STRAY_CAPTURE_MAX (8 * 1024)
 
 static void print_root_stray_gate_capture(void)
@@ -1205,26 +1113,17 @@ int t_no_stray_root_files(void)
     return failures;
 }
 
-/* check-lint-gate-wiring — the umbrella's two files must agree. Adding a lint
- * gate is a TWO-FILE operation (Makefile target + LINT_GATES line; then the
- * gate_command() case entry in tools/lint/run_lint.sh, because the parallel
- * driver execs each gate's script directly and never reads the Make recipe).
- * Three gates landed with only the first half on 2026-08-26 and `make lint`
- * was FATAL (exit 2) tree-wide, reporting NO gate results at all, until they
- * were wired. Proof here:
- * (1) the real tree passes — the umbrella is fully wired right now;
- * (2) the gate's own --selftest passes, which is what proves it can still FAIL:
- *     it plants a listed-but-unwired gate, a wired-but-unlisted one, a listed
- *     name with no Make target, a table entry naming a missing script, and an
- *     unreadable LINT_GATES, and asserts each is rejected AND named, plus a
- *     positive control so none of that can be an unconditional failure;
- * (3) pointed at a tree with no run_lint.sh it FAILS rather than reporting a
- *     vacuous clean — the direction that matters for a gate that reads two
- *     files and could find neither;
- * (4) the gate is itself in the Makefile LINT_GATES list, in run_lint.sh's own
- *     case table, and in DEFENSIVE_CODING.md's canonical block. (1) cannot
- *     cover this: a lane that drops the gate from the list removes the only
- *     thing that would have noticed. */
+/* check-lint-gate-wiring - the umbrella's two files must agree: a gate is
+ * a Makefile target + LINT_GATES line and a gate_command() case in
+ * tools/lint/run_lint.sh. Proof:
+ * (1) the real tree passes;
+ * (2) the gate's --selftest passes (plants a listed-but-unwired gate, a
+ *     wired-but-unlisted one, a listed name with no Make target, a missing
+ *     script, an unreadable LINT_GATES; each is rejected and named, plus a
+ *     positive control);
+ * (3) a tree with no run_lint.sh FAILS rather than reporting clean;
+ * (4) the gate is itself in LINT_GATES, run_lint.sh's case table, and
+ *     DEFENSIVE_CODING.md's canonical block. */
 int t_lint_gate_wiring_gate(void)
 {
     int failures = 0;
@@ -1236,11 +1135,9 @@ int t_lint_gate_wiring_gate(void)
     int baseline_rc = run_gate_script(LINT_GATE_WIRING_SCRIPT_REL, NULL);
     int selftest_rc = run_gate_script_selftest(LINT_GATE_WIRING_SCRIPT_REL);
 
-    /* An empty directory has neither Makefile nor driver. Fail-closed means
-     * this is an error, never "nothing to check, therefore clean".
-     * Deliberately mkdtemp and NOT repo_path("test-tmp/..."): this check runs
-     * in the pooled REALROOT lane, so it must not write into the worktree
-     * another lane's gate is scanning. */
+    /* An empty directory has neither Makefile nor driver: an error, never
+     * "clean". Uses mkdtemp, not repo_path("test-tmp/..."), so the pooled
+     * REALROOT lane never writes into a worktree another gate scans. */
     char empty_dir[PATH_MAX];
     const char *tmp_root = getenv("TMPDIR");
     if (tmp_root == NULL || tmp_root[0] == '\0') {
@@ -1298,11 +1195,10 @@ int t_lint_gate_wiring_gate(void)
     return failures;
 }
 
-/* All three lint umbrellas execute the same run_lint.sh gate catalog. Their
- * built tools therefore belong to one shared prerequisite set: otherwise a
- * cold cached/audit invocation can reach a gate before its helper exists.
- * Grade the real Makefile and two in-memory mutations so this check proves
- * both the helper-membership and exact-target-set directions. */
+/* All three lint umbrellas execute the same run_lint.sh gate catalog, so
+ * their built tools form one shared prerequisite set. Grade the real
+ * Makefile and two in-memory mutations for helper-membership and exact
+ * target-set. */
 static const char *make_logical_line_end(const char *start)
 {
     const char *line = start;
@@ -1401,17 +1297,11 @@ int t_lint_umbrellas_share_built_prereqs(void)
     return failures;
 }
 
-/* A cold generation links its own build/bin/z23-lint in the PRE-FORK step
- * (tools/dev/dev_proof.c: proof_prefork_argv), before either the LINT or
- * TEST proof dimension starts. The test dimension's exclusive pre-pass
- * (test_make_lint_gates) execs lint-gate shims that shell out to that same
- * binary; without this target a cold generation can run those shims before
- * anything has linked it, and the shim fails with rc=127 "No such file or
- * directory". Scan the real source for both halves of the fix: the make
- * target that builds it, and the helper-root hash that binds it into the
- * receipt's helper digest -- a generation could build the binary and still
- * forget to fold it into helper_root, which would silently drop it from
- * what the receipt proves. */
+/* A cold generation links its own build/bin/z23-lint in the pre-fork step
+ * (tools/dev/dev_proof.c: proof_prefork_argv), before either proof dimension
+ * starts, because lint-gate shims exec that binary. Scan the real source for
+ * both halves: the make target that builds it and the helper-root hash that
+ * binds it into the receipt's helper digest. */
 static bool dev_proof_prerequisite_argv_has_lint(const char *source)
 {
     if (!source) return false;
@@ -1443,11 +1333,8 @@ int t_dev_proof_helpers_include_lint_tool(void)
     int hash_ok = read_ok && dev_proof_helper_root_hashes_lint(source);
 
     char *missing_prereq = read_ok ? strdup(source) : NULL;
-    /* "build/bin/z23-lint" names the pre-fork build target AND the
-     * docs-fresh prebuild further down: blank every occurrence in the
-     * block, not only the first, or the surviving copy alone still
-     * satisfies the scan. Same blank-every-occurrence shape as the hash
-     * loop below. */
+    /* "build/bin/z23-lint" names the pre-fork target and the docs-fresh
+     * prebuild: blank every occurrence, as in the hash loop below. */
     int prereq_hit_count = 0;
     char *cursor = missing_prereq;
     while (cursor && (cursor = strstr(cursor, "\"build/bin/z23-lint\""))) {
@@ -1465,9 +1352,8 @@ int t_dev_proof_helpers_include_lint_tool(void)
     char *hash_end = hash_block
         ? strstr(hash_block, "sha3_256_finalize(&helpers, helper_root);")
         : NULL;
-    /* "lint_tool_root" appears twice on the same write line (the argument
-     * and the sizeof() beside it): blank every occurrence in the block, not
-     * only the first, or the sizeof() copy alone still satisfies the scan. */
+    /* "lint_tool_root" appears twice on the write line: blank every
+     * occurrence so the sizeof() copy alone cannot satisfy the scan. */
     int hash_hit_count = 0;
     if (hash_block) {
         char *cursor = hash_block;
@@ -1498,23 +1384,12 @@ int t_dev_proof_helpers_include_lint_tool(void)
     return failures;
 }
 
-/* ORDER IS THE FIX. Both proof dimensions run inside one generation
- * worktree, so anything either of them builds after the fork can be relinked
- * under the other's feet -- a link unlinks its output before it writes it,
- * and that is how a landing proof's lint-gate shard exec'd a half-written
- * build/bin/z23-lint and got rc=127 twice.
- *
- * The proof worker therefore admits and builds everything shared BEFORE
- * it starts either child. Pin that order in the real source, in the sequence
- * it has to hold: the generation's inputs are admitted, then the one
- * pre-fork make runs, then the helper digest is taken, and only then does
- * the first dimension_start() appear. A rewrite that moves the build back
- * below the fork -- the exact regression -- fails here.
- *
- * The worker is now one named step per proof phase, so the order is pinned
- * twice over: once inside the pre-fork step itself, and once in the step
- * that calls the pre-fork step before the step that forks. Either half
- * going missing fails here. */
+/* Order is the invariant: both proof dimensions share one generation
+ * worktree, so everything shared is admitted and built before either child
+ * forks (a post-fork relink can expose a half-written build/bin/z23-lint).
+ * Pin the sequence in the real source: inputs admitted, one pre-fork make,
+ * helper digest, then the first dimension_start(); and pin it twice: inside
+ * the pre-fork step and in the step that calls it before the forking step. */
 static bool dev_proof_prefork_precedes_the_fork(const char *source)
 {
     if (!source) return false;
@@ -1542,12 +1417,11 @@ int t_dev_proof_prefork_runs_before_the_dimensions(void)
                   read_entire_file(path, &source) == 0;
     int order_ok = read_ok && dev_proof_prefork_precedes_the_fork(source);
 
-    /* The mutation is the regression itself: blank the pre-fork build call
-     * so nothing builds the shared set before the children start. */
+    /* Mutation: blank the pre-fork build call so nothing builds the shared set. */
     char *moved = read_ok ? strdup(source) : NULL;
     char *build_hit = moved ? strstr(moved, "proof_prefork_build(") : NULL;
     if (build_hit) {
-        /* Blank every call, so the declaration alone cannot satisfy it. */
+        /* Blank every call so the declaration alone cannot satisfy it. */
         char *cursor = moved;
         for (;;) {
             char *hit = strstr(cursor, "proof_prefork_build(");

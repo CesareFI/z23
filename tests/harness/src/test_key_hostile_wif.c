@@ -1,11 +1,10 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * Hostile-WIF hardening tests — importprivkey/signrawtransaction reach
- * privkey_get_pubkey with attacker-supplied scalars, and the old
- * assert(ret) pattern let a WIF encoding 0 or >= the secp256k1 group
- * order abort() the whole node (assert is live in release builds).
- *
+ * privkey_get_pubkey with attacker-supplied scalars; a WIF encoding 0 or
+ * >= the secp256k1 group order must not abort() the node.
  * Contract under test:
+ *
  *   - decode_secret rejects out-of-range scalars at the boundary
  *     (zero, the group order) and accepts in-range ones (order - 1);
  *   - privkey_get_pubkey / privkey_sign / privkey_sign_compact are

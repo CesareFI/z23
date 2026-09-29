@@ -53,10 +53,8 @@ static void live_config(struct mesh_terminal_worker_config *cfg)
 
 /* Drain worker output into a rolling buffer until `needle` appears or the
  * deadline passes. Returns true when found. `err` (optional) captures a
- * terminal worker error — BYTE_LIMIT in particular is how the output
- * budget case ends, with the needle possibly never arriving. On failure
- * the caller can print `saw` (NUL-terminated, escaped by the caller) —
- * a red must name what the pump actually delivered. */
+ * terminal worker error (BYTE_LIMIT ends the output-budget case with the
+ * needle possibly never arriving). On failure the caller can print `saw`. */
 static bool drain_until(struct mesh_terminal_worker *w, const char *needle,
                         int timeout_seconds, struct zcl_result *err,
                         char *saw, size_t saw_cap)
@@ -124,11 +122,9 @@ static int check(int failures, bool ok, const char *label)
 }
 
 /* Platform-neutral bookkeeping: geometry_in_bounds and
- * mesh_terminal_worker_budget_would_overrun are pure functions of
- * primitive types shared by every platform arm, including the Windows
- * ConPTY arm this Linux harness never builds or runs. Proving their
- * boundaries here needs no spawned shell, no PTY, and no mingw build —
- * it runs on every host that runs this test group at all. */
+ * mesh_terminal_worker_budget_would_overrun are pure functions shared by every
+ * platform arm (including the Windows ConPTY arm), so no shell or PTY is
+ * needed. */
 static int test_mesh_terminal_worker_bookkeeping(void)
 {
     printf("\n=== mesh terminal worker bookkeeping (platform-neutral) ===\n");

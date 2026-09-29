@@ -1462,18 +1462,9 @@ int test_node_health_service(void)
         else { printf("FAIL\n"); failures++; }
     }
 
-    /* The health snapshot used to answer "am I synced" a SECOND time, from a
-     * block_source_policy decision that only knows heights and source health.
-     * That answer overwrote the sync FSM's, and the FSM is the one that
-     * refuses at-tip while the node cannot prove it holds the block bodies
-     * for its own history. So a node with a 126k-block body hole had its
-     * refusal overturned in the health snapshot and then published
-     * `sync_state:"at_tip", healthy:true` on /api/status, /api/v1/health,
-     * `healthcheck full`, and the starter-bundle mint gate.
-     *
-     * These two cases pin both directions: an unproven archive cannot be
-     * upgraded, and a proven one still can (so the gate is a gate, not a
-     * removal of the feature). */
+    /* The FSM refuses at-tip while body history is unproven; the health
+     * snapshot must not overturn that. An unproven archive cannot be
+     * upgraded, and a proven one still can. */
     printf("node_health_service: unproven body archive refuses the "
            "source-policy at-tip upgrade... ");
     {
@@ -1519,7 +1510,6 @@ int test_node_health_service(void)
             sync_set_state(SYNC_BLOCKS_DOWNLOAD, "test");
             node_health_collect(&health, NULL, &ms);
 
-            /* Before the fix both of these were manufactured here. */
             ok = !health.synced;
             ok = ok && health.sync_state != SYNC_AT_TIP;
             /* The FSM's real answer survives into the snapshot. */

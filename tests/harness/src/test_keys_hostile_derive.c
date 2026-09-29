@@ -4,9 +4,9 @@
  * decoders — BIP32 derivation, xpub serialization, the Base58/Base58Check
  * codec, and Sapling witness deserialization all sit on paths that carry
  * externally-supplied bytes (watch-only xpub import, RPC address arguments,
- * explorer URL segments, stored witness blobs). Every one of them used to
- * hold a live assert(): -DNDEBUG is NOT set for the node, so an assert on a
- * hostile input aborted the whole process instead of returning an error.
+ * explorer URL segments, stored witness blobs). -DNDEBUG is NOT set for the
+ * node, so a live assert() on hostile input would abort the process instead of
+ * returning an error.
  *
  * Contract under test:
  *   - pubkey_derive is total: an empty parent, an uncompressed parent, or a
@@ -24,10 +24,9 @@
  *     refuses every (N,K) outside the bit-packers' width assumptions, so a
  *     future chain-params entry cannot reach them unchecked.
  *
- * As in test_key_hostile_wif.c, REACHING THE END OF THIS FUNCTION AT ALL is
- * the no-abort proof: every call below is an input that previously tripped a
- * live assert(), so a regression does not show up as a failed check — it
- * shows up as the test binary dying before it prints its summary.
+ * As in test_key_hostile_wif.c, reaching the end of this function is the
+ * no-abort proof: each call below is an input that would trip a live
+ * assert(), so a regression kills the binary before its summary prints.
  */
 
 #include "test/test_core.h"
@@ -138,7 +137,7 @@ int test_keys_hostile_derive(void)
                   memcmp(back.pubkey.vch, parent_pub.vch,
                          COMPRESSED_PUBLIC_KEY_SIZE) == 0);
 
-        /* Uncompressed key: no room in the 74-byte body. Used to assert. */
+        /* Uncompressed key: no room in the 74-byte body. */
         struct ext_pubkey bad = epk;
         KHD_CHECK("fixture: uncompressed ext_pubkey built",
                   pubkey_decompress(&bad.pubkey) &&

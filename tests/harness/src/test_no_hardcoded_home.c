@@ -1,20 +1,14 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Regression test for no hardcoded build-user home directory in deployed
+ * Regression test: no hardcoded build-user home directory in deployed
  * binaries, and the path helpers respect $HOME.
  *
- * Part 1: scan every built binary under build/bin (test_zcl itself,
- * zclassic23, export_snapshot, zcl-nodectl, zcl-rpc, zclassic-cli) for
- * the building user's literal $HOME byte string. Expected: zero matches in
- * every binary. A hit means a contributor has hardcoded the build machine's
- * home directory, and the binary will either misbehave or fail to start on
- * another operator's machine. The needle is the runtime $HOME so the test is
- * operator-agnostic — it catches anyone's home, not one specific user's.
+ * Part 1: scan every built binary under build/bin (except test_zcl) for the
+ * runtime $HOME byte string; expect zero matches. The needle is the runtime
+ * $HOME, so the test is operator-agnostic.
  *
- * Part 2: exercise the extracted zcl-nodectl default-path helper with
- * an arbitrary HOME. Confirms the runtime behavior — setting
- * HOME=/tmp/alt-home produces `/tmp/alt-home/.zclassic-c23/...` paths,
- * not the compile-time default and not the build user's home.
+ * Part 2: the zcl-nodectl default-path helper with an arbitrary HOME must
+ * yield `$HOME/.zclassic-c23/...`, not a compile-time default.
  */
 
 #include <stdio.h>

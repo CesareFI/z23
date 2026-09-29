@@ -2,41 +2,21 @@
  *
  * MVP criterion #2 CI gate: Tor onion bootstrap in <60s.
  *
- * Boots the same tor_integration path the main node uses
+ * Boots the tor_integration path the main node uses
  * (engine/composition/src/boot_services.c:1303-1316) into a temp datadir, polls
- * `tor_integration_is_ready()` at 1Hz for up to 90 seconds, and
- * asserts the ready flag flips true within 60 seconds.  Also asserts
- * the reported .onion address is a well-formed v3 hidden service
- * name (56 lowercase base32 chars + ".onion").
+ * `tor_integration_is_ready()` at 1Hz for up to 90 seconds, asserts the ready
+ * flag flips within 60 seconds, and asserts the .onion address is a well-formed
+ * v3 name (56 lowercase base32 chars + ".onion").
  *
- * Gating
- * ------
- * Skipped unless the caller sets `ZCL_STRESS_TESTS=1`.  Reasons:
- *   - Real bootstrap takes 10-40s (cold) to ~30s (warm), ~1000x the
- *     sub-second budget the default `make test` suite assumes.
- *   - Requires outbound network access to Tor directory authorities;
- *     sandboxed CI environments without outbound will always fail.
- *   - Touches the vendored Tor pthread — the rest of make test only
- *     exercises torrc generation + address propagation (test_tor.c).
- *
- * Invocation:
+ * Gated on `ZCL_STRESS_TESTS=1`: real bootstrap takes 10-40s, needs outbound
+ * access to Tor directory authorities, and starts the vendored Tor pthread.
  *   ZCL_STRESS_TESTS=1 build/bin/test_zcl
- *   ZCL_STRESS_TESTS=1 ZCL_TEST_ONLY=onion build/bin/test_zcl  (focused run)
+ *   ZCL_STRESS_TESTS=1 ZCL_TEST_ONLY=onion build/bin/test_zcl
  *
- * MVP linkage: flips `MVP.md` criterion #2 from ☐ to ✅.  Forward-
- * looking CI gate — not RED-first (no failing branch existed when
- * it was written).
- *
- * Isolation
- * ---------
- * Picks an ephemeral free loopback port (p2p_port → SocksPort = p2p_port +
- * 11966), so no concurrently-running node — production 8033/19999, a soak
- * lane, or a sibling proof on this shared host — can collide.
- * Datadir is a test_make_tmpdir() fixture under ./test-tmp/ and is
- * `rm -rf`'d on exit, pass or fail.  The tor_integration static
- * state is process-local; stopping at end restores the same initial
- * state that `test_tor_initial_state` observed at boot.
- */
+ * Isolation: an ephemeral loopback port (p2p_port -> SocksPort = p2p_port +
+ * 11966) avoids collisions with concurrent nodes. The datadir is a
+ * test_make_tmpdir() fixture removed on exit. tor_integration static state is
+ * process-local and stopping restores the initial state. */
 
 #include "platform/socket_compat.h"
 #include "platform/time_compat.h"
@@ -75,9 +55,8 @@ static uint16_t onion_free_port(void)
     return port;
 }
 
-/* Recursively remove a directory tree (rm -rf).  Local copy to avoid
- * leaking a `remove_tree` symbol across translation units — test_tor.c
- * has its own static version. */
+/* Recursively remove a directory tree (rm -rf); local copy so no `remove_tree`
+ * symbol leaks across translation units. */
 static void p11_remove_tree(const char *path)
 {
     DIR *d = opendir(path);
@@ -115,12 +94,8 @@ static bool is_valid_onion_v3(const char *addr)
     return true;
 }
 
-/* A no-op .onion request handler.  Tor's dynhost module only wires
- * into the app layer when a handler is registered
- * (tor_integration.c:272).  The bootstrap test doesn't care about
- * serving HTTP — it only wants the .onion address published — but
- * registering a handler matches the production call shape at
- * boot_services.c:1306 so we exercise the same code path. */
+/* A no-op .onion request handler: dynhost wires into the app layer only when a
+ * handler is registered (tor_integration.c:272); matches the production call shape. */
 static size_t p11_noop_handler(const char *method, const char *path,
                                 const uint8_t *body, size_t body_len,
                                 uint8_t *response, size_t response_max,
@@ -144,28 +119,17 @@ int test_onion_bootstrap(void)
         return 0;
     }
 
-    /* Defensive: if a previous test in the same process already
-     * started Tor (shouldn't happen — test_tor.c never calls
-     * tor_integration_start), stop it so we start from a clean
-     * state machine. */
+    /* Stop Tor if an earlier test in this process started it, for a clean state machine. */
     tor_integration_stop();
 
     char datadir[256];
     test_make_tmpdir(datadir, sizeof(datadir), "p11", "onion_bootstrap");
 
-    /* Match the production wiring at boot_services.c:1303-1316 —
-     * register a request handler before starting so dynhost's
-     * external-handler branch is exercised. */
+    /* Match the production wiring (boot_services.c:1303-1316): register a handler first. */
     tor_integration_set_handler(p11_noop_handler, NULL);
 
-    /* Pick an actually-free loopback port instead of a fixed one. The
-     * original fixed 18033 → SocksPort 29999 collided the moment a soak or
-     * test lane on this shared host also used 18033: tor refused to bind,
-     * and this gate reported UNOBSERVED (addr=NULL) for reasons that had
-     * nothing to do with Tor reachability. An ephemeral port can still be
-     * grabbed between the probe and tor's bind, but that race is rare and
-     * self-evident, while a fixed port collides with every peer lane that
-     * copies the same "safe" constant. */
+    /* Pick a free loopback port: a fixed one collides with concurrent soak/test
+     * lanes and tor then fails to bind. A probe-to-bind race is rare and self-evident. */
     const uint16_t p2p_port = onion_free_port();
 
     if (!tor_integration_start(datadir, p2p_port)) {
@@ -174,51 +138,20 @@ int test_onion_bootstrap(void)
         return 1;
     }
 
-    /* ── The 60s MVP budget is REPORTED here, never asserted ───────────────
+    /* ── The 60s MVP budget is REPORTED, never asserted ───────────────────
      *
-     * MEASURED, this tree, same commit and same binary: this group FAILED
-     * inside a full gate run with "not ready after 90s ceiling; addr=NULL",
-     * and PASSED standalone immediately afterwards in 14.1s wall. A 90-second
-     * ceiling was missed by a 14-second operation: a ~6x degradation under
-     * load, not a marginal overrun.
-     *
-     * Two things follow, and both are the reason this code changed shape.
-     *
-     * First, HEADROOM IS NOT A FIX. 90s for a 14s operation looks like a
-     * comfortable hang detector and it still flipped the verdict, because Tor
-     * circuit establishment is not CPU work that degrades linearly — it is
-     * network round trips against a directory and three relays, contending
-     * with everything else on the box for I/O and sockets. No multiple of a
-     * quiet-machine measurement is a safe bound for that. Raising 90 would
-     * only move the cliff.
-     *
-     * Second, and worse: on a genuinely slow machine this does not flake, it
-     * fails EVERY TIME. Its operator concludes the project does not work on
-     * their hardware. This project deliberately keeps 7200rpm boxes measured
-     * under 2 MB/s on the network because a slow box is the only instrument
-     * that shows where the code assumes fast storage — so a suite that a slow
-     * box can never pass destroys the very signal we want.
-     *
-     * So the verdict now splits along the line this project already refuses
-     * to cross for peers: REACHABILITY and SPEED compose, they never collapse
-     * into one scalar.
-     *   * Did we get a well-formed v3 onion? -> ASSERTED, hard. Load cannot
-     *     change the shape of an address, so this is a real, load-free
-     *     verdict, and a genuine bootstrap regression still fails here.
-     *   * How long did it take?              -> REPORTED against the 60s SLO,
-     *     with the load average beside it, so a regression in the SLO is
-     *     visible in the transcript without being a red build on a busy box.
-     *   * Did it finish inside the observation window at all? -> if not,
-     *     UNOBSERVED with full diagnostics. Deliberately NOT the word
-     *     SKIP: the runner counts "SKIP (" as unexecuted coverage and the
-     *     push gate refuses any receipt carrying one, so spelling this SKIP
-     *     makes a busy box unable to push while proving nothing about the
-     *     code. The group still RUNS, still hard-fails a broken
-     *     tor_integration_start, and is still barred from the verdict cache.
-     *     "Tor did not finish bootstrapping in 90s on
-     *     this box, on this network" is a statement about the box and the
-     *     network. It is not evidence about our code, and grading it FAIL is
-     *     precisely the mistake of measuring the machine's spare capacity. */
+     * Tor circuit establishment is network round trips, not CPU work, so it
+     * degrades non-linearly under load and no multiple of a quiet-machine
+     * measurement is a safe bound; a slow box would fail every time. Reachability
+     * and speed are kept separate:
+     *   * Well-formed v3 onion?   -> ASSERTED, hard (load cannot change its shape).
+     *   * How long?               -> REPORTED against the 60s SLO with the load
+     *     average, not a red build on a busy box.
+     *   * Finished inside the window at all? -> if not, UNOBSERVED with diagnostics.
+     *     Not spelled SKIP: the runner counts "SKIP (" as unexecuted coverage and
+     *     the push gate refuses such a receipt. The group still runs, still
+     *     hard-fails a broken tor_integration_start, and is barred from the verdict
+     *     cache. A slow bootstrap is a statement about the box, not our code. */
     const int budget_sec = 60;
     const int ceiling_sec = 90;
     bool ready = false;

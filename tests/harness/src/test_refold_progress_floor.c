@@ -84,11 +84,9 @@ static bool build_schema(sqlite3 *db)
 }
 
 /* Stamp coins_kv proven-authority (the 3 rungs coins_kv_is_proven_authority
- * checks) so compute_hstar treats the anchor as a REAL finality floor. The new
- * phantom-anchor guard in compute_hstar drops the floor to 0 when the store is
- * NOT proven authority — correct for a fresh datadir, but the NORMAL-boot
- * sub-case below models a real seeded datadir whose H* clamps at the anchor.
- * Raw SQL (this TU has no coins_kv.h). Returns false on any SQLite error. */
+ * checks) so compute_hstar treats the anchor as a REAL finality floor; its
+ * phantom-anchor guard drops the floor to 0 otherwise. Raw SQL (this TU has
+ * no coins_kv.h). Returns false on any SQLite error. */
 static bool rp_stamp_proven_authority(sqlite3 *db, int64_t applied_height)
 {
     uint8_t ah[8];

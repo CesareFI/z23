@@ -70,12 +70,9 @@ static int test_rom_manifest_request_parse(void)
     return failures;
 }
 
-/* Pins the exact-length + non-NULL-output contract that used to differ
- * between the Windows and POSIX arms of fs_parse_rom_manifest_request:
- * Windows required n == FS_ROM_MANIFEST_REQUEST_SIZE and refused a NULL
- * root_out; POSIX accepted n >= the size (silently ignoring trailing
- * bytes) and treated root_out as optional, returning true having
- * written nothing. Both axes now fail closed everywhere. */
+/* Pins the exact-length + non-NULL-output contract of
+ * fs_parse_rom_manifest_request on every platform: n must equal
+ * FS_ROM_MANIFEST_REQUEST_SIZE and root_out must be non-NULL. */
 static int test_rom_manifest_request_overlong_and_null(void)
 {
     int failures = 0;
@@ -436,9 +433,9 @@ static int test_rom_capacity_max_chunks(void)
         ASSERT(ROM_SEED_MAX_ARTIFACT_BYTES == UINT64_C(34359738368)); /* 32 GiB */
         ASSERT(ROM_SEED_MANIFEST_BLOB_MAX == 8u + ROM_SEED_MAX_CHUNKS * 32u);
 
-        /* The old 4 GiB ceiling is gone: a header seed just past 4 GiB is now
-         * accepted by the size-band guard, the cap boundary is inclusive, and
-         * one byte over is rejected before any allocation. */
+        /* A header seed just past 4 GiB is accepted by the size-band guard, the
+         * cap boundary is inclusive, and one byte over is rejected before any
+         * allocation. */
         const uint64_t four_gib = UINT64_C(4) * 1024 * 1024 * 1024;
         ASSERT(rom_seed_kind_content_ok(ROM_ARTIFACT_HEADER_SEED, NULL, 0,
                                         four_gib + 1)); /* was rejected pre-bump */

@@ -130,9 +130,8 @@ static int test_onion_identity_stable_across_boots(void)
     return failures;
 }
 
-/* A corrupt (short) seed must be a named refusal, never a silent remint —
- * silently reminting would change the shop's address without anyone
- * noticing. */
+/* A corrupt (short) seed must be a named refusal, never a silent remint
+ * (which would change the address unnoticed). */
 static int test_onion_identity_corrupt_seed_refused(void)
 {
     int failures = 0;
@@ -320,11 +319,10 @@ static int test_onion_persist_args_parse(void)
 }
 
 /* A fleet member that pins its peers by .onion address needs its OWN onion
- * to stay fixed too, so -tor + at least one -addnode=<x>.onion peer must
- * default -onion-persist ON even with no explicit flag — while a plain -tor
- * node (no pinned onion peer) keeps the more private ephemeral default, and
- * an explicit -onion-persist=0 must still force ephemeral even with a
- * pinned onion peer. */
+/* A node that pins peers by .onion address needs its OWN onion fixed too:
+ * -tor + at least one -addnode=<x>.onion defaults -onion-persist ON, a plain
+ * -tor node keeps the ephemeral default, and an explicit -onion-persist=0
+ * forces ephemeral even with a pinned onion peer. */
 static int test_onion_persist_fleet_default(void)
 {
     int failures = 0;

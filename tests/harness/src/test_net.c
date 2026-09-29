@@ -152,8 +152,8 @@ static bool p25_mock_process_messages(void *ctx, struct p2p_node *node)
 {
     struct p25_ctx *c = ctx;
     atomic_fetch_add(&c->callbacks_run, 1);
-    /* Simulate a few microseconds of work under NO lock — this is the
-     * whole point of the fix: callbacks run without cs_nodes held. */
+    /* Simulate a few microseconds of work under NO lock: callbacks run
+     * without cs_nodes held. */
     for (volatile int i = 0; i < 100; i++) { /* spin */ }
     int tick = atomic_fetch_add(&g_p25_counter, 1);
     if (c->disconnect_1_in_n > 0 &&
@@ -894,8 +894,8 @@ static int test_net_net_service_get_key_torv3_distinctness(void)
     printf("net_service_get_key torv3 distinctness... ");
     {
         /* Two DIFFERENT onion services on the same port must produce
-         * different keys, and must not collide with any IP service —
-         * previously all torv3 services shared the all-zero ip[16] key. */
+         * different keys, and must not collide with any IP service
+         * (torv3 services must not share an all-zero ip[16] key). */
         struct net_service o1, o2, ip4;
         net_service_init(&o1);
         net_service_init(&o2);
@@ -3652,8 +3652,7 @@ static int test_net_swarm_sync_init_rejects_null_chunk_hashes(void)
     int failures = 0;
 
     /* guard: swarm_sync_init must reject a manifest that omits
-     * chunk_hashes. Otherwise verify-before-apply silently degrades to
-     * verify-against-zeros (pre-fix behavior). */
+     * chunk_hashes (verify-before-apply must not verify against zeros). */
     printf("swarm_sync: init rejects NULL chunk_hashes... ");
     {
         struct sync_manifest m;
@@ -3818,12 +3817,9 @@ static int test_net_fc_rate_and_swarm_cas_race_checks(void)
     }
 
     /* ── g_swarm_active TOCTOU (atomic CAS gate) ──────────── */
-    /* The zmanifest handler previously did a plain read/write pair
-     * on g_swarm_active: check `!g_swarm_active`, then later set
-     * `g_swarm_active = true` under g_swarm_mutex. Two peers racing
-     * could both observe false and both call swarm_sync_init. The
-     * fix swapped that for atomic_compare_exchange_strong so exactly
-     * one caller transitions the slot. */
+    /* The zmanifest handler claims the swarm slot with
+     * atomic_compare_exchange_strong so exactly one of two racing peers
+     * transitions g_swarm_active and calls swarm_sync_init. */
 
     printf("swarm_cas: no-race fast path claims once... ");
     {
@@ -4040,13 +4036,11 @@ static int test_net_p74_watchdog_enters_active_after_61s_stall(void)
     int failures = 0;
 
     /* ── tip-stall backpressure watchdog ─────────────────────
-     * Drive the watchdog with an explicit clock + queue size to
-     * verify (a) it enters BACKPRESSURE_ACTIVE on the documented
-     * (stall_time AND queue_bytes) condition, (b) it rejects new
-     * inv/block messages while active, (c) it clears on tip
-     * advance, and (d) — under ZCL_STRESS_TESTS — that the
-     * rejection layer actually caps memory pressure when a peer
-     * floods us with orphan blocks during a stuck-tip episode. */
+     * Explicit clock + queue size verify (a) it enters
+     * BACKPRESSURE_ACTIVE on the (stall_time AND queue_bytes) condition,
+     * (b) it rejects new inv/block messages while active, (c) it clears
+     * on tip advance, and (d) under ZCL_STRESS_TESTS the rejection layer
+     * caps memory pressure from an orphan-block flood. */
 
     printf("p74_watchdog: enters ACTIVE after 61s stall + 256MB queue... ");
     {
@@ -4160,29 +4154,21 @@ static int test_net_p74_watchdog_at_tip_in_flight_cap_estimate_ex(void)
                failures++; }
     }
 
-    /* ── P4: download-backpressure backstop reachability + honest
-     * queued accounting + re-arm latch (peer-retention sibling P1-P3
-     * live in test_header_sync_stall.c) ────
+    /* ── download-backpressure backstop reachability + queued
+     * accounting + re-arm latch (peer-retention siblings live in
+     * test_header_sync_stall.c) ────
      *
-     * The estimate is in_flight × BACKPRESSURE_AVG_BLOCK_BYTES +
-     * queued × DL_QUEUED_ENTRY_BYTES.  The OOM backstop must be
-     * STRUCTURALLY reachable in both download regimes: the trigger
-     * is strict (bytes > DOWNLOAD_QUEUE_HIGH_WATER), so the
-     * worst-case estimate at each in-flight cap must strictly
-     * exceed the high-water mark with margin (under the rev-1
-     * constants 1024 × 256 KiB == HIGH_WATER exactly and
-     * enter_active was arithmetically dead at tip).  Queued entries
-     * are hash+bookkeeping only (~64 B), so a queued-only backlog
-     * must NEVER activate (kills the observed false trigger: 3,066
-     * queued ≈ 196 KB real, mis-estimated as 6 GB).
+     * The estimate is in_flight x BACKPRESSURE_AVG_BLOCK_BYTES +
+     * queued x DL_QUEUED_ENTRY_BYTES. The OOM backstop must be reachable
+     * in both download regimes: the trigger is strict
+     * (bytes > DOWNLOAD_QUEUE_HIGH_WATER), so the worst-case estimate at
+     * each in-flight cap must exceed the high-water mark with margin.
+     * Queued entries are hash+bookkeeping only (~64 B), so a queued-only
+     * backlog must never activate.
      *
-     * These three cases drive the watchdog through
-     * tip_watchdog_test_set_dl_counts — the counts feed the REAL
-     * download_queue_bytes_estimate formula, so reverting the
-     * estimator to the old (in_flight + queued) × body-size
-     * conflation (the 6 GB false-trigger bug) makes the queued-only
-     * case activate and FAIL.  tip_watchdog_test_set_queue_bytes
-     * would bypass the formula entirely and pin nothing. */
+     * The cases drive tip_watchdog_test_set_dl_counts so the counts feed
+     * the real download_queue_bytes_estimate formula;
+     * tip_watchdog_test_set_queue_bytes would bypass it. */
 
     printf("p74_watchdog: at-tip in-flight cap estimate exceeds "
            "high water and activates... ");
@@ -4252,12 +4238,10 @@ static int test_net_p74_watchdog_no_re_entry_after_cooldown_until(void)
         p74_register_observers();
         tip_watchdog_test_reset();
 
-        /* 100,000 queued hashes at the honest per-entry footprint is
-         * ~6.4 MB — nowhere near 256 MiB.  Tripping from queued alone
-         * would need ~4M entries; assert the accounting keeps it cold
-         * under an arbitrarily long stall.  This is the case that
-         * pins the estimator itself: under the old conflated formula
-         * 100k queued × body-size ≈ 48 GiB would activate here. */
+        /* 100,000 queued hashes at the per-entry footprint is ~6.4 MB,
+         * nowhere near 256 MiB; queued alone would need ~4M entries.
+         * Pins the estimator: a (in_flight + queued) x body-size formula
+         * would activate here. */
         size_t queued_only = (size_t)100000 * (size_t)DL_QUEUED_ENTRY_BYTES;
         bool below_high = queued_only <= DOWNLOAD_QUEUE_HIGH_WATER;
 
@@ -4308,10 +4292,9 @@ static int test_net_blocked_emits(void)
         tip_watchdog_test_set_now_ns(t1);
         bool after_cooldown = tip_watchdog_tick(); /* cooldown → INACTIVE */
 
-        /* Tip still stalled, estimate still above high water.  The
-         * pre-latch state machine re-entered here on the very next
-         * tick — the observed active→cooldown→active flapping on an
-         * unchanged backlog.  The latch must hold INACTIVE. */
+        /* Tip still stalled, estimate still above high water: the latch
+         * must hold INACTIVE (no active->cooldown->active flapping on an
+         * unchanged backlog). */
         bool reentered = false;
         for (int i = 1; i <= 3; i++) {
             tip_watchdog_test_set_now_ns(t1 + (int64_t)i * 10 * SEC);
@@ -4354,22 +4337,12 @@ static int test_net_zcl_stress_tests(void)
 {
     int failures = 0;
 
-    /* RSS-cap stress (opt-in via ZCL_STRESS_TESTS).
-     *
-     * Live incident reproducer: simulate a synthetic peer pushing
-     * 1000 "block" messages into the should_reject path while the
-     * tip is pinned past the stall threshold. Pre-fix the rejection
-     * layer didn't exist, every block_msg parsed into a 2 MB body,
-     * and total scratch climbed to ~6 GB. With the watchdog in
-     * place the messages get rejected at the dispatch boundary —
-     * we count the rejections and assert the count matches.
-     *
-     * This isn't a true RSS measurement (would require fork + child
-     * sampling /proc/self/status under realistic block-msg parse +
-     * connect_block load, which is out of scope for a unit test).
-     * It IS the operational invariant: while ACTIVE, every inbound
-     * inv/block must be dropped at the dispatch boundary, no
-     * exceptions. */
+    /* RSS-cap stress (opt-in via ZCL_STRESS_TESTS): a synthetic peer
+     * pushes 1000 "block" messages into the should_reject path while the
+     * tip is pinned past the stall threshold. Not an RSS measurement; it
+     * asserts the operational invariant that while ACTIVE every inbound
+     * inv/block is dropped at the dispatch boundary, and counts the
+     * rejections. */
     if (getenv("ZCL_STRESS_TESTS")) {
         printf("p74_watchdog: 1000-orphan-block flood under stuck tip "
                "drops every message... ");
@@ -4579,7 +4552,7 @@ static int test_net_zcl_stress_tests_2(void)
                failures++; }
     }
 
-    /* ── Client-puzzle PoW guard for zchunkreq/zblkreq (lane I3) ────
+    /* ── Client-puzzle PoW guard for zchunkreq/zblkreq ────
      * See msgprocessor_snapshot_serve.c for the stateless design note:
      * challenge = SHA3-256(domain || request-kind || request-index-le ||
      * time-bucket-le), using requester-visible fields only. */
@@ -4840,12 +4813,10 @@ static int test_net_connman_noisetransport_census_accumulates_acr(void)
     /* ================================================================
      * connman: Noise transport ADVERTISEMENT census
      *
-     * Observation only — nothing in the node branches on it. The Noise
-     * default stays OFF because every peer on the live network speaks
-     * unencrypted v1; this census is the evidence a future flip would
-     * need, so what has to hold is that it accumulates honestly across
-     * peer churn: a live count that tracks the last sample, a high-water
-     * that never regresses, and a running total that only grows.
+     * Observation only; nothing branches on it. It must accumulate
+     * honestly across peer churn: a live count that tracks the last
+     * sample, a high-water that never regresses, and a running total that
+     * only grows.
      * ================================================================ */
     printf("connman: noisetransport census accumulates across churn... ");
     {
@@ -4972,18 +4943,15 @@ static int test_net_lookup_onion_parse_accept_refuse(void)
 
 /* Send-queue budget (getdata-flood / slow-reader DoS guard).
  *
- * A single getdata can request up to MAX_INV_SZ (50000) blocks and a
- * slow-reader peer may never drain its socket, so serving the whole
- * batch could buffer tens of GB of send_segments -> OOM. The fix
- * charges every queued send_segment against a process-wide and a
- * per-peer budget; process_getdata stops serving once over budget
- * (without disconnecting), and every drain/disconnect path releases
- * the bytes so the counter never leaks. This test exercises that
- * accounting end-to-end through the public p2p_node send path.
+ * A getdata can request up to MAX_INV_SZ (50000) blocks and a slow reader
+ * may never drain its socket. Every queued send_segment is charged
+ * against a process-wide and a per-peer budget; process_getdata stops
+ * serving once over budget (without disconnecting) and every
+ * drain/disconnect path releases the bytes. This test exercises that
+ * accounting through the public p2p_node send path.
  *
- * The three steps below share one env/manager/peer fixture and one `ok`
- * short-circuit chain — later steps (the drain-to-baseline checks) only
- * mean anything if the earlier queuing actually happened. */
+ * The three steps share one env/manager/peer fixture and one `ok` chain:
+ * later steps only mean anything if the earlier queuing happened. */
 struct net_send_budget_fixture {
     struct net_manager nm;
     struct net_address addr;
@@ -5087,16 +5055,11 @@ static void net_send_budget_drain_returns_to_baseline(
 static void net_send_budget_second_peer_drain_symmetry(
     struct net_send_budget_fixture *fx, bool *ok)
 {
-    /* Direct check of the disconnect-cleanup drain symmetry: a
-     * manually built queue freed with send_segment_free (the exact
-     * primitive connman's forced-disconnect path now uses) must also
-     * leave the counter at baseline. */
+    /* Disconnect-cleanup drain symmetry. */
     size_t b2 = net_send_total_bytes();
-    /* Build a segment via the same public send path on a fresh
-     * node, then free the node — whose drain calls the exact
-     * send_segment_free primitive connman's forced-disconnect
-     * cleanup now uses — to confirm the counter returns to baseline
-     * a second time. */
+    /* A segment built via the public send path on a fresh node is released
+     * by freeing the node (the send_segment_free primitive connman's
+     * forced-disconnect path uses); the counter must return to baseline. */
     struct p2p_node *n2 = p2p_node_create(&fx->nm, ZCL_INVALID_SOCKET,
                                           &fx->addr, "flood-peer-2", true);
     *ok = *ok && (n2 != NULL);
@@ -5131,20 +5094,12 @@ static int test_net_send_budget_caps(void)
 /* Send-queue HARD ceiling: a peer that stops reading cannot make us
  * hold unbounded memory.
  *
- * The budget exercised just above is ADVISORY — net_send_over_budget()
- * only bites where a serve path remembers to call it, and exactly one
- * path in the tree did. Everything else (headers, addr, inv, snapshot
- * chunks, block pieces) appended to node->send_size unconditionally, so
- * a peer that pipelined requests and then stopped reading its socket
- * made the node retain arbitrary memory.
- *
- * The fixture is the real attack, not a mock: a socketpair whose far
- * end is never read and whose kernel send buffer is squeezed to the
- * minimum, so send() returns EAGAIN and the queue is the only place
- * the bytes can go. Before the ceiling existed this loop queued every
- * one of its 512 messages (≈4 MB for ONE peer, and unbounded in the
- * real thing); with it, the queue stops at the ceiling and the peer is
- * disconnected for not draining. */
+ * net_send_over_budget() is advisory and only bites where a serve path
+ * calls it; every send path must also stop at the ceiling. The fixture is
+ * a socketpair whose far end is never read and whose kernel send buffer
+ * is squeezed to the minimum, so send() returns EAGAIN and the queue is
+ * the only place bytes can go. The queue must stop at the ceiling and the
+ * peer must be disconnected for not draining. */
 struct net_send_ceiling_fixture {
     struct net_manager nm;
     struct net_address addr;
@@ -5239,8 +5194,7 @@ static void net_send_ceiling_queue_until_refused(
         }
     }
 
-    /* The queue REFUSED, and it did so long before 512 messages: this
-     * is the property the old code did not have. */
+    /* The queue REFUSED, and long before 512 messages. */
     *ok = *ok && (fx->refused_at > 0) && (fx->refused_at < 512);
     /* Nothing ever went past the ceiling. */
     *ok = *ok && (fx->peak <= fx->hard_cap);
@@ -5330,19 +5284,12 @@ static int test_net_send_queue_hard_ceiling(void)
 
 /* accepted inbound socket is non-blocking
  *
- * accept(2) hands back a NEW socket that does not inherit the listener's
- * non-blocking mode, and Winsock does not propagate FIONBIO either. The
- * send path treats EWOULDBLOCK as its normal answer and never sets
- * SO_SNDTIMEO, so a blocking peer socket can park the reactor inside
- * send() while it holds cs_send -- and cs_nodes on the connman write
- * path. On POSIX that stays hidden because socket_send_data() passes
- * MSG_DONTWAIT per call; on Windows MSG_DONTWAIT is 0, so the stall is
- * real there and invisible here.
- *
- * Winsock offers no way to READ a socket's blocking mode back, so the
- * assertion below can only be made on the POSIX side. That is still the
- * right regression lock: the bug is one missing statement on a shared
- * code path, and this pins that statement's presence. */
+ * accept(2) returns a socket that does not inherit the listener's
+ * non-blocking mode (Winsock does not propagate FIONBIO either), and the
+ * send path never sets SO_SNDTIMEO, so a blocking peer socket could park
+ * the reactor in send() under cs_send/cs_nodes. POSIX passes MSG_DONTWAIT
+ * per call; Windows does not. Winsock cannot read a socket's blocking mode
+ * back, so the assertion is POSIX-only. */
 struct accept_nonblocking_fixture {
     struct net_manager nm;
     zcl_socket_t client;
@@ -5536,11 +5483,9 @@ static bool p2p_inventory_ring_growth_and_eviction(struct p2p_inventory_fixture 
 {
     /* Known-ring index under growth + oldest-half eviction: 50002
      * distinct hashes walk the capacity ladder to the first full-ring
-     * eviction. Membership must stay EXACT throughout — evicted hashes
-     * become unknown, survivors stay known — or relays silently
-     * re-advertise old inventory / drop fresh one. This is also the
-     * getblocks cost path: dedup used to linear-scan the whole ring
-     * per pushed item (25M compares for a single 500-item batch). */
+     * eviction. Membership must stay EXACT throughout (evicted hashes
+     * become unknown, survivors stay known). Dedup must not linearly scan
+     * the whole ring per pushed item on the getblocks path. */
     for (uint32_t i = 0; i < 50002u; i++) {
         struct uint256 bh;
         memset(&bh, 0, sizeof(bh));
@@ -5549,11 +5494,9 @@ static bool p2p_inventory_ring_growth_and_eviction(struct p2p_inventory_fixture 
         inv_item_init_typed(&fx->binv, MSG_TX, &bh);
         p2p_node_add_inventory_known(fx->node, &fx->binv);
     }
-    /* Ring hit MAX_INVENTORY_KNOWN mid-walk, dropped its oldest half,
-     * and every add past that point (plus the evicting add itself)
-     * appended into the kept half. That end state is independent of
-     * what the earlier dedup checks left in the ring (they were
-     * evicted with it), so compute rather than hard-code it. */
+    /* The ring hit MAX_INVENTORY_KNOWN mid-walk, dropped its oldest half,
+     * and every later add appended into the kept half; compute that end
+     * state rather than hard-coding it. */
     bool ok = (fx->node->inventory_known_count ==
                MAX_INVENTORY_KNOWN / 2 +
                    (50002u - MAX_INVENTORY_KNOWN) + 1);
@@ -6051,12 +5994,9 @@ static void test_net_onion_escalated_flood_no_bare_429_honest_solver(
     (void)onion_ratelimit_admit("GET", "/search?q=trigger", NULL, 0,
                                 NULL);
 
-    /* One saturated escalated second: more puzzle-less requests
-     * than the whole budget. Every answer must be a challenge —
-     * the old ordering rejected on the budget first, so a flood
-     * could eat every slot and honest solvers would never even be
-     * offered the puzzle that admits them. The final challenge is
-     * the one the honest client solves. */
+    /* One saturated escalated second: every puzzle-less request must get a
+     * challenge (the puzzle check precedes the budget, so a flood cannot
+     * starve honest solvers). The final challenge is the one solved. */
     struct onion_pow_challenge solver_challenge = {0};
     bool all_challenged = true;
     for (int i = 0; i <= cap + 10; i++) {
@@ -6100,13 +6040,10 @@ static void test_net_onion_puzzleless_flood_cannot_unescalate(
     struct onion_admission_fixture *fx, int *failures)
 {
     printf("onion_ratelimit: a puzzle-less flood cannot read as quiet and un-escalate... ");
-    /* Sixteen more saturated escalated seconds of puzzle-less
-     * flood — well past the 15-clear-window hysteresis. Feeding
-     * the budget on every escalated attempt (even refused ones)
-     * is what keeps these windows honest: if puzzle-less traffic
-     * skipped the counter, a flood would read as quiet, fire the
-     * de-escalation, and toggle the guard off without ever
-     * stopping. */
+    /* Sixteen more saturated escalated seconds of puzzle-less flood, past
+     * the 15-clear-window hysteresis. Refused attempts still feed the
+     * budget counter, so the flood never reads as quiet and the guard
+     * never toggles off. */
     bool found_before = false;
     int64_t before_deesc = onion_dump_int("deescalate_total",
                                           &found_before);
@@ -6234,8 +6171,7 @@ static bool swarm_corrupt_fixture_setup(struct swarm_corrupt_fixture *fx)
     ok = ok && swarm_sync_init(&fx->ss, &fx->m, fx->dir);
     ok = ok && (swarm_sync_assign_chunk(&fx->ss, 42) == 0);
 
-    /* Single-bit flip → chunk hash diverges from manifest. This is
-     * exactly the acceptance scenario from AGENT-2.md. */
+    /* Single-bit flip: chunk hash diverges from the manifest. */
     fx->bad = zcl_calloc(1, sizeof(*fx->bad), "p24_bad");
     ok = ok && fx->bad != NULL;
     if (fx->good && fx->bad) {
@@ -6672,10 +6608,8 @@ static int test_net_snapshot_offer_gate_duplicate_offers(void)
 /* ── BitTorrent-style parallel chunk sync tests ──────── */
 
 /* Shared fixture: a 100-UTXO node.db that every "parallel_sync:" and
- * "swarm_sync:" step below reads (some also read test_sync_dir). If the
- * database cannot even be created, the original code jumped straight to
- * cleanup and skipped every one of those steps; an early return after a
- * failed open reproduces that exactly. */
+ * "swarm_sync:" step below reads (some also read test_sync_dir). A failed
+ * create must not skip those steps silently. */
 static bool parallel_sync_fixture_setup(sqlite3 **out_db,
                                         char *dir_buf, size_t dir_len)
 {

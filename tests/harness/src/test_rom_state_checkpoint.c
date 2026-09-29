@@ -1,26 +1,14 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * test_rom_state_checkpoint — golden assertion for the compiled ROM state
- * checkpoint (the "shielded ROM keystone",
- * core/chainparams/src/checkpoints.c:g_rom_state_checkpoint).
- *
- * The keystone extends the transparent-only sha3_utxo_checkpoint to a
- * COMPLETE state commitment at height 3,056,758: the coins fold PLUS the
- * combined Sprout/Sapling anchor history, both commitment-tree frontier
- * roots, and the combined nullifier history. The values were produced by an
- * independent from-genesis fold of the real chain (producer bundle
- * consensus-state-bundle-3056758.sqlite) and re-derived from raw bundle
- * rows by tools/rom_two_builder_compare.c.
- *
- * This test is the bake's cross-check:
- *   (1) it INDEPENDENTLY re-derives rom_state_root from the struct fields
- *       (SHA3-256 over the pinned preimage below, written out by hand here
- *       — mirrors rtb_rom_state_root in tools/rom_two_builder_compare.c) and
- *       asserts equality with the baked constant, so a transcription slip in
- *       ANY field fails LOUD;
- *   (2) it asserts the coins fields are byte-identical to the existing
- *       g_sha3_checkpoint (the two structs must never drift apart);
- *   (3) it asserts the test-override seam works.
+ * test_rom_state_checkpoint: golden assertion for the compiled ROM state
+ * checkpoint (core/chainparams/src/checkpoints.c:g_rom_state_checkpoint) at
+ * height 3,056,758: the coins fold plus the Sprout/Sapling anchor history,
+ * both frontier roots and the nullifier history.
+ *   (1) re-derives rom_state_root from the struct fields (mirrors
+ *       rtb_rom_state_root in tools/rom_two_builder_compare.c) and asserts
+ *       equality with the baked constant;
+ *   (2) asserts the coins fields match g_sha3_checkpoint;
+ *   (3) asserts the test-override seam works.
  */
 
 #include "test/test_core.h"

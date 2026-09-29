@@ -5,38 +5,22 @@
  * boot_refold_from_anchor_arm_if_torn) PLUS the no-snapshot honest-halt safety
  * guard.
  *
- * THE GAP THIS CLOSES
- * -------------------
- * Before this test the only attempted proof of the from-anchor auto-arm was a
- * ~12 GB live-fixture copy-prove — fragile, slow, and the frozen wedge fixture
- * is a DIFFERENT corruption class so it never exercised this code path. There
- * was NO deterministic, CI-able test that:
- *   (T1) the PURE detect predicate block_index_loader_torn_import_detect fires
- *        on the minimal torn signature (durable prevout_unresolved hole above
- *        the checkpoint, inside the forward-apply ceiling, with coin_backfill's
- *        durable refusal marker) and NO-fires on each negative control;
- *   (T2) boot_refold_from_anchor_arm_if_torn, given a MATCHING SHA3-verified
- *        anchor snapshot, RE-SEEDS coins_kv from that snapshot, HARD-ASSERTs it
- *        against the compiled checkpoint, arms the from-anchor cursors, and
- *        survives (no FATAL) — coins_kv becomes the proven authority at
- *        applied == checkpoint+1, refold_from_anchor_active() == true;
- *   (T3 — THE SAFETY REGRESSION) the SAME torn signature but NO reachable
- *        verified snapshot makes the auto-arm DECLINE: it returns false WITHOUT
- *        resetting, the child SURVIVES (it does NOT fall into the contaminated
- *        node.db reseed + the hard-assert _exit(EXIT_FAILURE)), coins_kv is NOT
- *        reset, and refold_from_anchor_active() stays false. If the decline
- *        guard is removed, this child FATALs with EXIT_FAILURE — the negative
- *        control that pins the guard.
+ * Proves:
+ *   (T1) the pure detect predicate block_index_loader_torn_import_detect fires
+ *        on the minimal torn signature (durable prevout_unresolved hole above the
+ *        checkpoint, inside the forward-apply ceiling, with coin_backfill's
+ *        refusal marker) and does not fire on each negative control;
+ *   (T2) boot_refold_from_anchor_arm_if_torn, given a matching SHA3-verified
+ *        anchor snapshot, re-seeds coins_kv from it, hard-asserts against the
+ *        compiled checkpoint, arms the from-anchor cursors and survives
+ *        (applied == checkpoint+1, refold_from_anchor_active() == true);
+ *   (T3, safety) the same signature with no reachable verified snapshot makes
+ *        the auto-arm decline: returns false without resetting, the child
+ *        survives, coins_kv is not reset, refold_from_anchor_active() stays false.
  *
- * Determinism: T2/T3 run in a forked child so a (regression) FATAL is observed
- * as a child exit code, never killing the suite. The fixture snapshot is built
- * with coins_kv_snapshot_write over a tiny synthetic coins_kv set, whose body
- * SHA3 EQUALS coins_kv_commitment by construction (same per-record encoder) —
- * so the reset's recompute matches the installed checkpoint EXACTLY, no 12 GB
- * datadir required.
- *
- * Scratch files live under ./test-tmp/ per the project's no-/tmp convention.
- */
+ * T2/T3 run in a forked child so a regression FATAL shows as an exit code. The
+ * fixture snapshot (coins_kv_snapshot_write over a tiny synthetic set) has a body
+ * SHA3 equal to coins_kv_commitment by construction. Scratch under ./test-tmp/. */
 
 #include "test/test_core.h"
 
@@ -70,8 +54,7 @@
     else { printf("FAIL\n"); failures++; }                \
 } while (0)
 
-/* A scaled-down checkpoint height (far below the production 3,056,758 anchor).
- * The detect window is (checkpoint, ceiling]; the seeded hole sits ABOVE this. */
+/* Scaled-down checkpoint height; the detect window is (checkpoint, ceiling] and the seeded hole sits above it. */
 #define RAA_CP_HEIGHT   1000
 #define RAA_HOLE_H      1016   /* hole above the checkpoint */
 #define RAA_FRONTIER    1017   /* coins_applied_height (next-height cursor) */
@@ -158,8 +141,7 @@ static bool raa_set_applied(sqlite3 *db, int32_t next_cursor)
     return ok;
 }
 
-/* Seed `n` synthetic live outputs into coins_kv. Deterministic, so the
- * resulting commitment + snapshot are reproducible across the fork. */
+/* Seed `n` deterministic synthetic live outputs into coins_kv. */
 static bool raa_seed_coins(sqlite3 *db, int n)
 {
     if (!coins_kv_ensure_schema(db))
@@ -195,14 +177,10 @@ static bool raa_seed_torn_progress(sqlite3 *pk, const char *status_token,
     return true;
 }
 
-/* A main_state whose active chain sits at the frontier (so detect's ceiling
- * raise covers the hole). Installs a body-PRESENT (BLOCK_HAVE_DATA) slot at
- * EVERY height in [RAA_CP_HEIGHT .. height] (ascending installs accumulate the
- * lower slots), so the from-anchor body-span gate
- * (boot_refold_body_span_contiguous, checked in arm_if_torn before the reset)
- * sees a contiguous fold span (checkpoint, frontier] and does not decline the
- * arm. Without the full span only the tip slot existed and the gate would
- * correctly refuse on the first missing body at checkpoint+1. */
+/* A main_state whose active chain sits at the frontier, with a body-present
+ * (BLOCK_HAVE_DATA) slot at every height in [RAA_CP_HEIGHT .. height], so the
+ * body-span gate (boot_refold_body_span_contiguous) sees a contiguous span
+ * (checkpoint, frontier] and does not decline the arm. */
 static void raa_install_tip(struct main_state *ms, int height)
 {
     for (int h = RAA_CP_HEIGHT; h <= height; h++) {
@@ -274,21 +252,15 @@ static bool raa_build_matching_snapshot(const char *snap_path,
     return ok;
 }
 
-/* ── T2 / T3 forked-child bodies. Return the child exit code via _exit. ─────
- *
- * Exit-code protocol (so the parent can distinguish a clean PASS from a
- * regression FATAL):
- *   77 = the child's own assertions PASSED (the expected outcome)
- *   1  = a child assertion FAILED, OR a reset FATAL (_exit(EXIT_FAILURE)=1)
- *        reached the process — the regression signature for T3
- *   other = unexpected. */
+/* ── T2 / T3 forked-child bodies. Exit codes: 77 = child assertions passed;
+ * 1 = an assertion failed or a reset FATAL (_exit(EXIT_FAILURE)) reached the
+ * process (T3 regression signature); other = unexpected. */
 #define RAA_CHILD_PASS 77
 
 /* Child precondition shared by T2 and T3: open progress.kv at `dir`, seed the
  * torn signature, build the main_state with the tip at the frontier, install
- * the checkpoint override, open node.db. The checkpoint override is passed in
- * (built in the parent so its sha3_hash matches the on-disk snapshot when one
- * exists). */
+ * the checkpoint override (built in the parent so its sha3_hash matches the
+ * on-disk snapshot), open node.db. */
 static void raa_child_common_setup(const char *dir,
                                    const struct sha3_utxo_checkpoint *cp,
                                    struct node_db *ndb_out,
@@ -370,11 +342,9 @@ static void raa_t2_child(const char *dir, const struct sha3_utxo_checkpoint *cp)
     _exit(fails == 0 ? RAA_CHILD_PASS : 1);
 }
 
-/* T3 child: NO snapshot at the mint path. The auto-arm must DECLINE (return
- * false) WITHOUT resetting, and the child must SURVIVE. If the decline guard is
- * removed, the reset falls into the node.db `utxos` reseed (the contaminated /
- * empty mirror) and the hard-assert _exit(EXIT_FAILURE)s — the parent observes
- * exit 1 and T3 goes RED. */
+/* T3 child: NO snapshot at the mint path. The auto-arm must decline (return
+ * false) without resetting, and the child must survive; without the guard it
+ * falls into the node.db reseed and _exit(EXIT_FAILURE)s. */
 static void raa_t3_child(const char *dir, const struct sha3_utxo_checkpoint *cp)
 {
     struct node_db ndb;
@@ -539,9 +509,8 @@ static int test_refold_auto_arm_platform_arm(void)
         int code = raa_run_child(raa_t3_child, dir, &cp_match);
         RAA_CHECK("T3: no-snapshot auto-arm DECLINES + child SURVIVES "
                   "(no FATAL)", code == RAA_CHILD_PASS);
-        /* The negative-control note: if the decline guard is removed, the reset
-         * falls to the node.db reseed + hard-assert _exit(EXIT_FAILURE) → the
-         * child exits 1 and this check goes RED. */
+        /* Negative control: without the decline guard the reset falls to the node.db
+         * reseed + hard-assert and the child exits 1. */
 
         unsetenv("ZCL_MINT_ANCHOR_OUT");
         test_cleanup_tmpdir(dir);

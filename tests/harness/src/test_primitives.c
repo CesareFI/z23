@@ -54,12 +54,8 @@ int test_primitives(void)
 
     printf("transaction_alloc zero-size leaves pointers NULL (no calloc(0) stub leak)... ");
     {
-        /* Regression for fuzz_block-discovered 1-byte leak in
-         * transaction_deserialize: calling transaction_alloc(_, _, 0)
-         * previously left tx->vout = calloc(0,_) as a glibc-unique
-         * 1-byte pointer, which the deserializer then overwrote
-         * unconditionally at the "read num_vout" step — leaking the
-         * stub. Zero-size must mean "no array", not "1-byte dummy". */
+        /* transaction_alloc(_, _, 0) must not leave a calloc(0,_) 1-byte
+         * pointer that the deserializer would overwrite and leak. Zero-size must mean "no array", not "1-byte dummy". */
         struct transaction a;
         transaction_init(&a);
         bool ok_a = transaction_alloc(&a, 0, 0);
@@ -78,9 +74,8 @@ int test_primitives(void)
         bool clean_c = ok_c && c.vin != NULL && c.vout == NULL &&
                        c.num_vin == 3 && c.num_vout == 0;
 
-        /* Simulate the deserializer overwrite: previously this step
-         * leaked the prior 1-byte stub at a.vout. With the fix it's
-         * a NULL→new assignment, which is allocation-neutral. */
+        /* Simulate the deserializer overwrite: a NULL→new assignment is
+         * allocation-neutral. */
         a.vout = zcl_calloc(2, sizeof(struct tx_out), "test_vout");
         a.num_vout = 2;
 

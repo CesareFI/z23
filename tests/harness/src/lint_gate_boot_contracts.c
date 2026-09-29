@@ -104,8 +104,7 @@ int t_lib_runtime_gauges_are_callback_injected(void)
     char *buf = NULL;
     TEST("lib runtime gauges and peer preference are callback injected") {
         char path[PATH_MAX];
-        /* The external-gauge injection moved with app_start_metrics into
-         * engine/composition/src/boot_node_utilities.c (boot composition-root unit). */
+        /* The external-gauge injection lives in engine/composition/src/boot_node_utilities.c. */
         ASSERT(repo_path(path, sizeof(path),
                          "engine/composition/src/boot_node_utilities.c") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
@@ -147,13 +146,10 @@ int t_boot_shutdown_persistence_order_contract(void)
     int failures = 0;
     char *buf = NULL;
     TEST("shutdown writes clean marker before the block-index flat save") {
-        /* Durability-first ordering: node.db is WAL-checkpointed + closed, then
-         * the verified-clean marker is written, and ONLY THEN the best-effort
-         * block-index flat save runs. A kill during the slow flat save must not
-         * be able to strand the marker, so the marker write must precede the
-         * flat-save call. (This replaces the older "fast < connman_join"
-         * contract, which required the flat save before the checkpoint.)
-         * The shutdown pipeline lives in boot_services_shutdown.c. */
+        /* Durability-first: node.db is WAL-checkpointed + closed, then the
+         * verified-clean marker is written, and only then the best-effort
+         * block-index flat save runs, so a kill during the flat save cannot
+         * strand the marker. The pipeline lives in boot_services_shutdown.c. */
         char path[PATH_MAX];
         ASSERT(repo_path(path, sizeof(path),
                          "engine/composition/src/boot_services_shutdown.c") == 0);
@@ -187,15 +183,12 @@ int t_boot_shutdown_persistence_order_contract(void)
         /* Periodic health callbacks can read node.db. Their sweeper must be
          * joined before the DB checkpoint/close begins. */
         ASSERT(health_stop < wal_checkpoint);
-        /* Two call sites, and exactly two. The online path stops the sweeper
-         * above, before the DB checkpoint. Every offline one-shot
-         * (-mint-anchor, -full-fold, -coldstart-seed-oneshot) starts the
-         * sweeper through boot_phase's lazy health_start() and must stop it in
-         * boot_offline_join_workers_or_exit before the plain registry join:
-         * the sweeper obeys its own lifecycle boundary and not the registry's
-         * global shutdown flag, so an offline exit that skips this loops
-         * forever and never returns. Pin both sites by the text around them,
-         * not by the count alone, so a third unreviewed call still fails. */
+        /* Exactly two call sites. The online path stops the sweeper before the
+         * DB checkpoint; offline one-shots (-mint-anchor, -full-fold,
+         * -coldstart-seed-oneshot) must stop it in
+         * boot_offline_join_workers_or_exit before the registry join, since the
+         * sweeper ignores the registry shutdown flag. Pinned by surrounding
+         * text so a third call still fails. */
         ASSERT(count_occurrences(buf, "health_stop();") == 2);
         ASSERT(strstr(buf, "health_stop();\n"
                            "    /* Stop + join the self-heal condition runner "
@@ -548,12 +541,9 @@ int t_flyclient_proof_builder_is_callback_injected(void)
         ASSERT(strstr(buf, "services/" "snapshot_sync_" "service.h") == NULL);
         free(buf);
         buf = NULL;
-        /* mp->block_hashes_range's only caller (the zblkreq SERVE handler,
-         * mp_serve_block_req) lives in msgprocessor_snapshot_serve.c since
-         * the core/modules/net/src/msgprocessor_snapshot.c SERVE-side split — see
-         * msgprocessor_snapshot_internal.h. Same injected-callback
-         * boundary applies there: it must call mp->block_hashes_range,
-         * never reach into boot/db/model internals directly. */
+        /* The only caller of mp->block_hashes_range is the zblkreq SERVE handler
+         * (msgprocessor_snapshot_serve.c); it must call the injected callback,
+         * never reach into boot/db/model internals. */
         ASSERT(repo_path(path, sizeof(path),
                          "core/modules/net/src/msgprocessor_snapshot_serve.c") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
@@ -759,11 +749,8 @@ int t_net_sync_planners_are_lib_owned(void)
         ASSERT(strstr(buf, "msg_processor_set_header_chainstate_hooks") != NULL);
         free(buf);
         buf = NULL;
-        /* The background_utxo_replay worker drives the post-snapshot activation
-         * connect + chainstate commit. It lives in its own boot unit
-         * (boot_utxo_replay.c, split out of boot_background_workers.c for the
-         * file-size ratchet), so its activation_request_connect /
-         * csr_commit_tip call sites live there — still boot-owned
+        /* The background_utxo_replay worker lives in boot_utxo_replay.c; its
+         * activation_request_connect / csr_commit_tip call sites stay boot-owned
          * (engine/composition/src), never in core/modules/net. */
         ASSERT(repo_path(path, sizeof(path),
                          "engine/composition/src/boot_utxo_replay.c") == 0);
@@ -780,7 +767,7 @@ int t_net_sync_planners_are_lib_owned(void)
         ASSERT(strstr(buf, "activation_clear_anchor") != NULL);
         ASSERT(strstr(buf, "bii_repair_post_activation_anchor") != NULL);
         /* Header-tip mutation routes through the chain-state repository's
-         * validated promote (operator-snapshot refactor). */
+         * validated promote. */
         ASSERT(strstr(buf, "csr_promote_header_tip") != NULL);
         ASSERT(strstr(buf, "chain_set_active_tip") != NULL);
         free(buf);
@@ -846,10 +833,9 @@ int t_process_block_node_db_access_is_runtime_owned(void)
         ASSERT(repo_path(path, sizeof(path),
                          "core/modules/validation/src/process_block.c") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
-        /* The accessors live behind storage/node_db_runtime.h, a lib/-owned
-         * port config/ registers into. Naming config/ from lib/ would make
-         * the composition root and the foundation mutually dependent, so the
-         * negative guard below is joined by check-lib-layering (gate #15). */
+        /* The accessors live behind storage/node_db_runtime.h, a lib/-owned port
+         * config/ registers into; the negative guard below is joined by
+         * check-lib-layering (gate #15). */
         ASSERT(strstr(buf, "node_db_runtime_handle_open") != NULL);
         ASSERT(strstr(buf, "config/runtime.h") == NULL);
         ASSERT(strstr(buf, "models/database.h") == NULL);
@@ -861,14 +847,8 @@ int t_process_block_node_db_access_is_runtime_owned(void)
         ASSERT(read_entire_file(path, &buf) == 0);
         ASSERT(strstr(buf, "node_db_runtime_handle_open") != NULL);
         ASSERT(strstr(buf, "node_db_runtime_state_set") != NULL);
-        /* sync_flush_if_needed + wal_checkpoint positive-assertions removed:
-         * their only use site here (flush_coins_if_needed, the dead
-         * forward-writer) was deleted in the dead-code removal — process_block
-         * no longer flushes coins to the node.db mirror (the staged pipeline
-         * owns coin writes; the mirror is rebuilt one-way by
-         * utxo_mirror_sync_service). The runtime-owned invariant stays enforced
-         * by the accessors present (handle_open, state_set) + the negative
-         * models/database.h guard. */
+        /* The runtime-owned invariant is enforced by the accessors present
+         * (handle_open, state_set) plus the negative models/database.h guard. */
         ASSERT(strstr(buf, "models/database.h") == NULL);
         free(buf);
         buf = NULL;
@@ -1093,12 +1073,8 @@ int t_process_block_node_db_access_is_runtime_owned(void)
         free(buf);
         buf = NULL;
 
-        /* The process-block hooks were extracted to boot_tip_hooks.c
-         * (behavior-neutral, Wave D). boot_services.c wires them via the seam
-         * call; the inline NULL teardown moved with the shutdown pipeline to
-         * boot_services_shutdown.c. The hook bodies + the non-NULL
-         * registration live in boot_tip_hooks.c. node_db is still reached via
-         * svc (runtime-owned) in all three. */
+        /* Process-block hooks live in boot_tip_hooks.c and are wired via the seam
+         * call; node_db is reached via svc (runtime-owned) in all three. */
         ASSERT(repo_path(path, sizeof(path), "engine/composition/src/boot_services.c") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
         ASSERT(strstr(buf, "boot_register_process_block_hooks(svc)") != NULL);

@@ -2,13 +2,10 @@
  *
  * Group `mesh_observation_compose` — the reader-side fold.
  *
- * WHAT THIS GROUP DEFENDS. The recurring defect in this tree is a gate that
- * reports confidently having examined nothing: a tripwire that said HEALTHY
- * over ZERO rungs, a cache audit that said PASS on "0 verified, 0 divergent",
- * a mesh gate whose passing condition (`state == active`) could never be
- * true. Every check below therefore carries a FAIL-ARM: an input for which
- * the check MUST report the negative. A suite that only proved the happy path
- * would be worthless here.
+ * Defends against a gate that reports confidently having examined nothing
+ * (HEALTHY over zero rungs, PASS on "0 verified, 0 divergent", a passing
+ * condition that can never be true). Every check carries a FAIL-ARM: an input
+ * for which the check MUST report the negative.
  *
  * The properties, each with its arm:
  *   1. Zero observations yields UNVERIFIED and never healthy.
@@ -302,10 +299,9 @@ static int t_stale_record_is_not_fresh(void)
 
 /* ── 2. N = 1 ─────────────────────────────────────────────────────────── */
 
-/* FAIL-ARM against the inverted shape at quorum_oracle_service.c:311, where a
- * lone honest node with one hash lands on SPLIT — "the network disagrees"
- * asserted from a sample of one. One record is neither agreement nor
- * disagreement; it is "I cannot corroborate". */
+/* FAIL-ARM against an inverted shape where a lone honest node with one hash
+ * lands on SPLIT ("the network disagrees" from a sample of one). One record is
+ * neither agreement nor disagreement; it is "I cannot corroborate". */
 static int t_only_self_is_unverified(void)
 {
     int failures = 0;
@@ -499,10 +495,10 @@ static int t_unanimous_counterevidence_is_disagreeing(void)
     return failures;
 }
 
-/* THE ANTI-TRUST ARM. The records are byte-identical across both calls; only
- * the READER's own chain lookup changes. If the fold ever polled the records
- * against each other instead of recomputing against the reader's own data,
- * the state could not move. */
+/* THE ANTI-TRUST ARM. Records are byte-identical across both calls; only the
+ * reader's own chain lookup changes. If the fold polled the records against
+ * each other instead of recomputing against the reader's data, the state
+ * could not move. */
 static int t_reader_recomputes_it_does_not_trust(void)
 {
     int failures = 0;
@@ -538,16 +534,11 @@ static int t_reader_recomputes_it_does_not_trust(void)
     return failures;
 }
 
-/* No slot has ordering privilege — there is no "primary" and no referee.
- *
- * The fixture is built so TWO different heights qualify at the SAME rung:
- * two nodes sit at the reader's tip (deepest rung tip-144) and two sit one
- * block back (deepest rung tip-145). A fold that took "the first qualifying
- * height it walked into" would pick whichever the slot order presented first
- * and would answer AGREEING or DISAGREEING depending on the shuffle. A fold
- * that picks the deepest qualifying height answers the same every time.
- * FAIL-ARM: replacing the deepest-wins pick with a first-wins pick makes
- * these three calls disagree with each other. */
+/* No slot has ordering privilege: no "primary", no referee. TWO heights
+ * qualify at the same rung: two nodes sit at the reader's tip (deepest rung
+ * tip-144) and two one block back (tip-145). The deepest qualifying height
+ * must answer the same regardless of slot order. FAIL-ARM: a first-wins pick
+ * makes these three calls disagree. */
 static int t_no_slot_has_ordering_privilege(void)
 {
     int failures = 0;
@@ -584,9 +575,8 @@ static int t_no_slot_has_ordering_privilege(void)
         mesh_observation_compose(rot, 5, &reader, &k_obs_budget, OBS_NOW, &rc);
         ASSERT(obs_conclusion_eq(&fwd, &rc));
 
-        /* the arm is live: this input really does decide, so the equalities
-         * above compare a decided result rather than three UNVERIFIEDs, and
-         * the rung actually used is the deepest one both cohorts could offer */
+        /* the arm is live: this input decides, and the rung used is the
+         * deepest one both cohorts could offer */
         ASSERT(fwd.state == MESH_DISAGREEING);
         ASSERT_EQ(fwd.checked_height, OBS_BASE_TIP - 1 - 144);
     } TEST_END
@@ -761,11 +751,10 @@ static int t_reader_without_chain_cannot_conclude(void)
 
 /* ── 6. the hardware-franchise arm ────────────────────────────────────── */
 
-/* RULING 2, mechanised. Two record sets identical in every CHAIN field; one
- * carries the measured HDD-box numbers (fsync 72.6 ms, pread truncated to
- * -1, a 9-second min ping, a probe that consumed its whole budget, a lost
- * trylock). The two conclusions must be indistinguishable. A slow node is
- * reachable and slow, never failed. */
+/* RULING 2. Two record sets identical in every CHAIN field, one carrying
+ * measured HDD-box numbers (fsync 72.6 ms, pread truncated to -1, a 9-second
+ * min ping, a probe that consumed its whole budget, a lost trylock), must
+ * conclude identically: a slow node is reachable and slow, never failed. */
 static int t_slow_box_is_reachable_not_failed(void)
 {
     int failures = 0;
@@ -816,11 +805,9 @@ static int t_slow_box_is_reachable_not_failed(void)
     return failures;
 }
 
-/* The same ruling for the build target. A fleet that spans Linux, macOS and
- * Windows only stays honest if the platform a record came from can be READ
- * without ever being GRADED. FAIL-ARM: two runs whose records differ in
- * nothing but `os`/`arch` must produce byte-identical conclusions, and the
- * all-macOS run in particular must not be downgraded for being macOS. */
+/* The same ruling for the build target: the platform a record came from can
+ * be read without being graded. FAIL-ARM: runs differing only in `os`/`arch`
+ * yield byte-identical conclusions; the all-macOS run is not downgraded. */
 static int t_platform_is_weighted_never_graded(void)
 {
     int failures = 0;
@@ -846,9 +833,9 @@ static int t_platform_is_weighted_never_graded(void)
                      sizeof(linux_fleet[i].rec.self.arch), "%s", "x86_64");
         }
 
-        /* Identical chain content. The ONLY difference is the build target —
-         * and the macOS records also carry the honest tor_stub_build that
-         * platform forces, which must not be read as a fault either. */
+        /* Identical chain content; the only difference is the build target,
+         * and the macOS records carry the tor_stub_build that platform forces,
+         * which must not read as a fault. */
         struct mesh_obs_slot mac_fleet[2];
         memcpy(mac_fleet, linux_fleet, sizeof(linux_fleet));
         for (int i = 0; i < 2; i++) {
@@ -890,11 +877,9 @@ static int t_platform_is_weighted_never_graded(void)
     return failures;
 }
 
-/* RULING 2 as a source-text lint, in C — `printf ... | grep -q` under
- * pipefail returns 141 on a MATCH and would invert exactly this assertion.
- * FAIL-LOUD: an unreadable or short file is a FAILURE, never a skip, because
- * a lint that examined zero bytes reporting clean is this project's
- * signature bug. */
+/* RULING 2 as a source-text lint in C (`printf ... | grep -q` under pipefail
+ * returns 141 on a MATCH and would invert the assertion). FAIL-LOUD: an
+ * unreadable or short file is a failure, never a skip. */
 static int obs_open_repo_file(const char *rel, FILE **out)
 {
     char path[512];
@@ -930,9 +915,8 @@ static int t_composer_cannot_see_timing(void)
             "fsync_us", "pread_us", "min_ping_us", "stage_elapsed_us",
             "rotational", "cores", "ram_bytes", "sample_elapsed_us",
             "hw_fingerprint",
-            /* A platform is WEIGHTED by a reader, never a bar a machine is
-             * graded against. The day the composer can name a build target
-             * is the day "macOS" or "Windows" can become a failing grade. */
+            /* A platform is weighted by a reader, never a bar a machine is
+             * graded against. */
             "arch",
         };
         for (size_t i = 0; i < sizeof(forbidden) / sizeof(forbidden[0]); i++) {

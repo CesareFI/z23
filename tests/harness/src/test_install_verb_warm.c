@@ -4,10 +4,9 @@
  *
  * The terminal install verb runs BEFORE tip_finalize_stage_init, so the
  * runtime authority pair (tip_finalize_observe) and the provable-tip cache
- * (reducer_frontier) are still unpublished when the chain-binding evidence
- * gate (chain_frontier_snapshot_collect) reads them — without a warm, every
- * install target, copy or live, refuses "selected frontier changed or is
- * not durable" regardless of its durable state. The
+ * (reducer_frontier) are unpublished when the chain-binding evidence gate
+ * (chain_frontier_snapshot_collect) reads them; without a warm every
+ * install target refuses "selected frontier changed or is not durable". The
  * verb warms both caches from the DURABLE store via
  * tip_finalize_stage_warm_authority_caches. These cases prove:
  *
@@ -17,9 +16,8 @@
  *   3. an empty datadir never manufactures a positive H* out of nothing,
  *   4. an already-published cache is never clobbered by the warm.
  *
- * The fixture writes rows with plain sqlite3 INSERT — TEST scaffolding
- * building the durable image, not production reducer code (mirrors
- * test_hstar_integrity.c). */
+ * The fixture writes rows with plain sqlite3 INSERT (test scaffolding for
+ * the durable image; mirrors test_hstar_integrity.c). */
 
 #include "test/test_core.h"
 
@@ -218,9 +216,8 @@ static bool ivw_put_tagged(sqlite3 *db, const char *table,
 }
 
 /* The finalize row the production step writes: status "ok" (non-anchor) with
- * the LOOKAHEAD tip_hash — the row at height h binds hash(h+1), exactly the
- * convention tip_finalize_stage_block_hash_at discriminates ("the ok=1 row at
- * height-1 binds the LOOKAHEAD new_tip = active_chain_at(height)"). */
+ * the LOOKAHEAD tip_hash: the row at height h binds hash(h+1), the
+ * convention tip_finalize_stage_block_hash_at discriminates. */
 static bool ivw_put_finalize(sqlite3 *db, int32_t h)
 {
     uint8_t tip_hash[32];
@@ -283,10 +280,10 @@ static bool ivw_put_consistent_height(sqlite3 *db, int32_t h)
 
 /* (1)+(2) The warm publishes exactly the durable-derived values and a second
  * warm changes nothing: the computed H* into the provable-tip cache, and the
- * resolver's self-consistent runtime pair — with the served-tip cursor at
- * tip+1 that pair is (tip+1, hash(tip+1)) (the row at tip binds the lookahead
- * hash), while the chain gate's authority evidence at H*=tip resolves from
- * the durable row at tip-1 via tip_finalize_stage_block_hash_at. */
+ * resolver's runtime pair, which with the served-tip cursor at tip+1 is
+ * (tip+1, hash(tip+1)); the chain gate's authority evidence at H*=tip
+ * resolves from the durable row at tip-1 via
+ * tip_finalize_stage_block_hash_at. */
 static int case_warm_publishes_durable(void)
 {
     int failures = 0;
@@ -326,8 +323,8 @@ static int case_warm_publishes_durable(void)
     IVW_CHECK("post-warm: runtime pair owns its hash (hash(tip+1))",
               memcmp(auth_hash, want_runtime_hash, 32) == 0);
 
-    /* The chain gate's authority evidence at H*=tip: the durable own-hash at
-     * the served height via the convention-aware reader. */
+    /* The chain gate's authority evidence at H*=tip: the durable own-hash
+     * at the served height. */
     uint8_t gate_hash[32];
     memset(gate_hash, 0, sizeof(gate_hash));
     uint8_t want_gate_hash[32];
@@ -373,9 +370,9 @@ static int case_warm_empty_datadir(void)
     return failures;
 }
 
-/* A fresh node has a real in-memory genesis tip before reducer stage tables
- * exist. The warm must publish exactly H*=0 alongside that runtime authority
- * so clean-genesis instant-on can distinguish it from an unpublished cache. */
+/* A fresh node has an in-memory genesis tip before reducer stage tables
+ * exist; the warm must publish exactly H*=0 alongside that authority so
+ * clean-genesis instant-on can tell it from an unpublished cache. */
 static int case_warm_clean_genesis(void)
 {
     int failures = 0;
@@ -432,8 +429,8 @@ static int case_warm_never_clobbers_published(void)
     IVW_CHECK("clobber: warm published durable tip",
               reducer_frontier_provable_tip_cached() == tip);
 
-    /* Simulate a NEWER runtime publication (a live advance): the warm must
-     * not republish the older durable value over it. */
+    /* Simulate a NEWER runtime publication: the warm must not republish
+     * the older durable value over it. */
     reducer_frontier_provable_tip_set(tip + 5);
     tip_finalize_stage_warm_authority_caches(db, NULL, "test_warm_late");
     IVW_CHECK("clobber: newer published H* survives the warm",
@@ -486,8 +483,8 @@ static int case_post_install_invalidation(void)
 {
 #if defined(_WIN32)
     /* The post-install derived-state engine
-     * (engine/composition/src/consensus_state_install_runtime.c) is a fail-closed
-     * refusal on Windows, and its ZCL_TESTING hooks do not exist there. */
+     * (engine/composition/src/consensus_state_install_runtime.c) refuses on
+     * Windows and its ZCL_TESTING hooks do not exist there. */
     printf("install_verb_warm: SKIP (Windows): post-install derived-state "
            "invalidation (install runtime refuses on Windows)\n");
     return 0;

@@ -3,19 +3,12 @@
  * test_ldb_snapshot: exercises the snapshot-dir helper against a LevelDB
  * tree this test builds and owns.
  *
- * Hermetic by construction. The fixture LevelDB is created under the
- * per-process ./test-tmp/ directory, populated, and flushed to on-disk SST
- * files with leveldb_compact_range. The test then keeps the source DB OPEN
- * — so the source LOCK is genuinely held, which is the exact condition
- * ldb_snapshot_make exists to work around — snapshots it, opens the
- * snapshot, and iterates it.
- *
- * This test reads and writes NOTHING outside its own temp directory. It
- * used to build a source path from $HOME/.zclassic/blocks/index and open
- * that if present, which made the result depend on whether the live
- * zclassicd oracle was running and what it had written. Holding our own
- * LOCK reproduces the same "source is locked by someone else" condition
- * deterministically, and every count below is exact instead of a floor.
+ * Hermetic: the fixture LevelDB is created under ./test-tmp/, populated, and
+ * flushed to SST files with leveldb_compact_range. The test keeps the source
+ * DB OPEN so the source LOCK is genuinely held (the condition ldb_snapshot_make
+ * exists to work around), snapshots it, opens the snapshot and iterates it.
+ * Nothing outside its own temp directory is read or written, and every count
+ * below is exact.
  */
 
 #include "test/test_core.h"

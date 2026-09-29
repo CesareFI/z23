@@ -1,30 +1,19 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * test_mint_skip_crypto — proves the OFFLINE FAST-MINT state-only fold yields
- * the IDENTICAL coins_kv set (same SHA3 commitment + count) as the
- * full-validated fold, on a small synthetic chain.
+ * test_mint_skip_crypto - proves the offline fast-mint state-only fold yields
+ * the identical coins_kv set (SHA3 commitment + count) as the full-validated
+ * fold, on a small synthetic chain.
  *
- * It runs the SAME three-stage tail of the staged pipeline — script_validate ->
- * proof_validate -> utxo_apply — TWICE on one synthetic chain, in two isolated
+ * Runs script_validate -> proof_validate -> utxo_apply twice in isolated
  * datadirs:
+ *   Run A (full): mint_skip_crypto OFF; real verify_script and proof verifier.
+ *   Run B (state-only): mint_skip_crypto ON; both crypto stages write
+ *     checkpoint_fold and skip their verifier; utxo_apply folds the same
+ *     bodies.
  *
- *   Run A (full validation): mint_skip_crypto OFF (the default). script_validate
- *     runs the REAL per-input verify_script (the OP_TRUE prevouts pass);
- *     proof_validate runs the REAL proof verifier (the blocks carry no shielded
- *     proofs, so it verifies vacuously). utxo_apply folds the bodies.
- *   Run B (state-only): mint_skip_crypto ON. Both crypto stages skip their
- *     verifier and write checkpoint_fold, never verified. utxo_apply folds the
- *     SAME bodies — UNCHANGED.
- *
- * EXPECT: coins_kv_commitment(A) == coins_kv_commitment(B) AND count(A) ==
- * count(B). This is the load-bearing fact: state-only == validated for the UTXO
- * set, so the mint's SHA3==checkpoint hard-assert is satisfied by the exact same
- * set either way.
- *
- * EQUIVALENCE FLOOR (the toggle is the only difference): Run A actually ran
- * crypto (inputs_verified_total > 0); Run B skipped it (inputs_verified_total
- * == 0). This proves the OFF path runs real verify_script and the ON path does
- * not — so a normal boot (toggle unset) runs full crypto. */
+ * Expect commitment(A) == commitment(B) and count(A) == count(B).
+ * Equivalence floor: Run A verified inputs (inputs_verified_total > 0), Run B
+ * did not (== 0), so a normal boot runs full crypto. */
 
 #include "test/test_core.h"
 #include "test/block_fixtures.h"
@@ -95,16 +84,13 @@ bool boot_mint_anchor_genesis_reset(struct node_db *ndb);
     else { printf("FAIL\n"); failures++; } \
 } while (0)
 
-/* One synthetic chain shared by both runs, modeled on test_utxo_apply_stage so
- * the utxo_apply STATE fold ACCEPTS every block (no coinbase-protect, no
- * subsidy-ceiling reject) — otherwise both runs would reject identically and
- * the equivalence would be vacuous. Each block has:
- *   vtx[0] coinbase paying a tiny OP_TRUE output (50+h, well under subsidy);
- *   vtx[1] spends an EXTERNAL OP_TRUE prevout (ext[h], value 1000+h) with an
- *          empty scriptSig (valid against OP_TRUE) into a 900+h OP_TRUE output.
- * The external prevout is resolved by BOTH the script_validate prevout resolver
- * (so verify_script passes in the full run) AND the utxo_apply lookup (so the
- * state fold resolves the spent value), exactly as test_utxo_apply_stage does. */
+/* One synthetic chain shared by both runs (as test_utxo_apply_stage) so the
+ * utxo_apply fold accepts every block. Each block has:
+ *   vtx[0] coinbase paying a tiny OP_TRUE output (50+h);
+ *   vtx[1] spends an external OP_TRUE prevout (ext[h], 1000+h) with an empty
+ *          scriptSig into a 900+h OP_TRUE output.
+ * The external prevout is resolved by both the script_validate resolver and
+ * the utxo_apply lookup. */
 struct external_utxo {
     struct uint256 txid;
     uint32_t       vout;
@@ -290,11 +276,9 @@ static bool msc_identity_same(const struct stat *a, const struct stat *b)
 
 #if defined(_WIN32)
 
-/* Child body for the Windows arm of msc_make_killed_wal: re-executed suite
- * process, dispatched via ZCL_TEST_FORK_ROLE (see test_core.h). Reads the
- * target dir and lane from env, commits the row, drops a ready-token FILE
- * (Windows has no pipe(2) across re-exec), then sleeps forever until the
- * parent TerminateProcess()es it — the kill -9 analogue. */
+/* Child body for the Windows arm of msc_make_killed_wal: re-executed via
+ * ZCL_TEST_FORK_ROLE (see test_core.h); commits the row, drops a ready-token
+ * FILE, then sleeps until the parent TerminateProcess()es it. */
 static int msc_wal_writer_child(void)
 {
     const char *dir = getenv("ZCL_MSC_WAL_DIR");
@@ -362,10 +346,9 @@ int msc_fork_role_dispatch(const char *role)
 
 #endif /* _WIN32 */
 
-/* Leave a committed row only in a kill-9-surviving WAL.  The child keeps the
+/* Leave a committed row only in a kill-9-surviving WAL: the child keeps the
  * SQLite connection open until the parent kills it, so no graceful close can
- * checkpoint the row into the kernel store.  A4: the kernel store the preflight
- * inspects is consensus.db after the flip. */
+ * checkpoint it into the kernel store (consensus.db) the preflight inspects. */
 static bool msc_make_killed_wal(const char *dir, bool producer)
 {
     char path[512];
@@ -494,11 +477,10 @@ static bool seed_body_persist(sqlite3 *db, int n)
     return ok;
 }
 
-/* Run the script_validate -> proof_validate -> utxo_apply tail over `n` heights
- * in a fresh datadir. `skip` selects full-validation (false) vs state-only
- * (true). On success writes the resulting commitment + count + whether real
- * script crypto ran into the out params. Returns the count of script_validate
- * heights drained (== n on a clean fold). */
+/* Run the script_validate -> proof_validate -> utxo_apply tail over `n`
+ * heights in a fresh datadir; `skip` selects full validation (false) or
+ * state-only (true). Writes the commitment, count and whether real script
+ * crypto ran; returns the script_validate heights drained (== n when clean). */
 static bool stage_rows_match(sqlite3 *db, const char *table, int rows,
                              const char *status, const uint8_t epoch[32])
 {
@@ -772,10 +754,9 @@ static int test_mint_anchor_progress_resume(void)
     return failures;
 }
 
-/* Nanosecond identity of two stat results, platform-split at file scope —
- * preprocessing directives may not sit inside a macro argument list, so the
- * MSC_CHECK call above goes through this helper. UCRT struct stat carries
- * second-resolution times only. */
+/* Nanosecond identity of two stat results, platform-split at file scope
+ * (preprocessing directives cannot sit inside a macro argument list). UCRT
+ * struct stat has second-resolution times only. */
 #if defined(_WIN32)
 static bool msc_stat_times_equal(const struct stat *a, const struct stat *b)
 {
@@ -836,9 +817,8 @@ static int test_mint_anchor_lane_containment(void)
     MSC_CHECK("producer lane: remove malformed ok fixture row",
               exec_sql(db, "DELETE FROM utxo_apply_log WHERE height=9"));
 
-    /* Pre-lane state is deliberately ambiguous: old full and old fast
-     * producers wrote the same durable rows. It may only be conservatively
-     * adopted as checkpoint_fold, never promoted to full. */
+    /* Pre-lane state is ambiguous (old full and fast producers wrote the same
+     * rows): it may only be adopted as checkpoint_fold, never promoted. */
     MSC_CHECK("producer lane: legacy applied frontier fixture",
               msc_set_applied_height(db, 43));
     MSC_CHECK("producer lane: legacy refold fixture",
@@ -1014,9 +994,8 @@ static int deny_delete_authorizer(void *opaque, int action, const char *a,
     return action == SQLITE_DELETE ? SQLITE_DENY : SQLITE_OK;
 }
 
-/* A brand-new producer datadir has no legacy node.db header_admit_log
- * mirror; the genesis reset must treat that as already-reset, not refuse
- * (regression: fresh -mint-anchor datadir FATALed on the missing table). */
+/* A brand-new producer datadir has no legacy node.db header_admit_log mirror;
+ * the genesis reset treats that as already-reset, not a refusal. */
 static int test_mint_anchor_reset_fresh_datadir(void)
 {
     int failures = 0;
@@ -1187,23 +1166,15 @@ static int test_source_epoch_authority_types(void)
     return failures;
 }
 
-/* Source-wiring pins for the mint-anchor/full-fold offline shutdown path,
- * split out of test_mint_skip_crypto to keep that function's own complexity
- * unchanged (this is a fresh function, budgeted at <=15 decision points on
- * its own):
- *   - -mint-anchor's app_init exits before app_init_services (the offline
- *     driver never starts P2P/frontend services).
- *   - main.c's -mint-anchor branch calls the OFFLINE shutdown (never the
- *     full app_shutdown) before it sets its `minted ? 0 : 1` exit code.
- *   - app_shutdown_offline's offline-worker-drain deadline stays armed
- *     UNCONDITIONALLY (boot_offline_arm_worker_drain_stage, boot_services_
- *     shutdown.c) -- a genuinely wedged worker must still be bounded, never
- *     idle silently -- and records boot_offline_shutdown_durable_already's
- *     result as a per-stage override (shutdown_stagewatch_set_stage_
- *     durable_override, pure-tested in test_debug_bundle.c) so a fired
- *     deadline there is decided as an already-durable success for a
- *     completed one-shot, while -coldstart-seed-oneshot still passes
- *     `false` and is decided pre-durability exactly as before.
+/* Source-wiring pins for the mint-anchor/full-fold offline shutdown path:
+ *   - -mint-anchor's app_init exits before app_init_services.
+ *   - main.c's -mint-anchor branch calls the OFFLINE shutdown before it sets
+ *     its `minted ? 0 : 1` exit code.
+ *   - app_shutdown_offline's worker-drain deadline stays armed
+ *     unconditionally (boot_offline_arm_worker_drain_stage) and records
+ *     boot_offline_shutdown_durable_already's result as a per-stage override
+ *     (shutdown_stagewatch_set_stage_durable_override); -coldstart-seed-oneshot
+ *     still passes `false`.
  *   - the offline shutdown flushes + closes the wallet sqlite handle before
  *     freeing the in-memory wallet. */
 /* main.c's -mint-anchor branch: app_init exits before services start, and
@@ -1216,25 +1187,17 @@ static int msc_check_mint_anchor_shutdown_ordering(const char *boot_src,
     const char *offline_marker = boot_src
         ? strstr(boot_src, "-mint-anchor: offline reducer stages initialized")
         : NULL;
-    /* Match the call, not its argument list. The boot split (boot.c ->
-     * boot_steps.c) moved app_init's locals into a step-state struct, so the
-     * middle argument is now `s->params` where it was `params`; the call site
-     * itself, and the ordering this checks, did not move. Pinning the whole
-     * argument list made the check silently unfindable — a NULL here fails the
-     * assertion rather than reporting that the contract broke. */
+    /* Match the call, not its argument list; a NULL here fails the
+     * assertion. */
     const char *services_start = boot_src
         ? strstr(boot_src, "app_init_services(ctx,")
         : NULL;
     MSC_CHECK("mint-anchor app_init exits before app_init_services",
               offline_marker && services_start && offline_marker < services_start);
 
-    /* Follow the branch, not the function that used to hold it. The
-     * complexity-15 split of main() moved the -mint-anchor one-shot out of
-     * main() into main_app_init_and_one_shots(), where the context is a
-     * pointer (`ctx->mint_anchor`) and the exit code leaves through an
-     * out-param instead of a direct return. Same branch, same ordering;
-     * pinning the old spelling made the window NULL, which fails the
-     * assertion instead of reporting that the contract broke. */
+    /* Follow the branch in main_app_init_and_one_shots() (context pointer
+     * `ctx->mint_anchor`, exit code via out-param); a NULL window fails the
+     * assertion. */
     const char *mint_branch = main_src
         ? strstr(main_src, "if (ctx->mint_anchor) {")
         : NULL;
@@ -1279,15 +1242,10 @@ static int msc_check_offline_shutdown_wallet_order(const char *boot_src)
 }
 
 /* A completed -mint-anchor / -full-fold's bundle is already durable before
- * app_shutdown_offline runs (boot_mint_anchor.c's pre-export durability
- * restore + boot_mint_anchor_bundle_export.c's atomic publish). The
- * offline-worker-drain stage's deadline stays armed regardless (a genuinely
- * wedged worker must still be bounded); boot.c records the durable-already
- * gate as a per-stage override via boot_offline_arm_worker_drain_stage
- * (boot_services_shutdown.c), so a fired deadline there is decided
- * truthfully as an already-durable success -- pin that wiring, and that
- * -coldstart-seed-oneshot still passes `false` (decided pre-durability
- * exactly as before). */
+ * app_shutdown_offline runs. The offline-worker-drain deadline stays armed;
+ * boot.c records the durable-already gate as a per-stage override via
+ * boot_offline_arm_worker_drain_stage (boot_services_shutdown.c). Pin that
+ * wiring, and that -coldstart-seed-oneshot still passes `false`. */
 static int msc_check_offline_drain_wiring(const char *boot_src,
                                           const char *main_src)
 {
@@ -1333,12 +1291,9 @@ static int msc_check_offline_drain_wiring(const char *boot_src,
     return failures;
 }
 
-/* The heartbeat sweeper (zcl_health_sweep) only obeys its OWN lifecycle
- * boundary (health_stop), never the registry's global shutdown flag -- and
- * every offline one-shot starts it via boot_phase's lazy health_start(). If
- * the offline join never stops it first, its loop runs forever and the
- * plain pthread_join in thread_registry_join_all_owned hangs the process
- * silently. Pin that boot_offline_join_workers_or_exit calls health_stop()
+/* The heartbeat sweeper obeys only health_stop, not the registry shutdown
+ * flag; if the offline join does not stop it first, thread_registry_join_all_owned
+ * hangs. Pin that boot_offline_join_workers_or_exit calls health_stop()
  * before joining. */
 static int msc_check_offline_health_sweep_stop(void)
 {
@@ -1390,11 +1345,8 @@ int test_mint_skip_crypto(void)
     }
 #endif
 #if defined(_WIN32)
-    /* progress_store is fail-closed on Windows ("native Windows consensus
-     * store disabled: retained-directory SQLite VFS is not qualified"; that
-     * refusal is the acceptance in
-     * progress_store_windows_refusal_acceptance.c), so neither fold can open
-     * its store and the equivalence claim is unobservable here. */
+    /* progress_store is fail-closed on Windows, so neither fold can open its
+     * store and the equivalence is unobservable there. */
     printf("mint_skip_crypto: SKIP (Windows): progress_store refuses on "
            "Windows by design (see the refusal acceptance)\n");
     return 0;
@@ -1424,9 +1376,8 @@ int test_mint_skip_crypto(void)
     MSC_CHECK("coins_kv commitment identical",
               memcmp(full.commitment, skip.commitment, 32) == 0);
 
-    /* Equivalence floor — the toggle is the ONLY difference: full validation
-     * actually ran verify_script (inputs verified > 0); the state-only fold
-     * skipped it (0). Proves the OFF path (a normal boot) runs real crypto. */
+    /* Equivalence floor: full validation ran verify_script (inputs verified
+     * > 0); the state-only fold skipped it (0). */
     MSC_CHECK("full validation ran verify_script (inputs_verified > 0)",
               full.inputs_verified > 0);
     MSC_CHECK("state-only fold SKIPPED verify_script (inputs_verified == 0)",
@@ -1446,10 +1397,8 @@ int test_mint_skip_crypto(void)
     MSC_CHECK("checkpoint fold cannot raise BLOCK_VALID_SCRIPTS",
               !skip.all_script_valid);
 
-    /* Sanity: a non-empty set actually folded. Each block creates 2 outputs
-     * (coinbase + spend) and spends an EXTERNAL coin (not in this set), so 2
-     * coins survive per block → 2*N coins. A non-trivial, non-empty fold makes
-     * the commitment-equality above load-bearing (not a vacuous empty==empty). */
+    /* Sanity: 2 outputs per block survive (coinbase + spend), so 2*N coins;
+     * a non-empty fold keeps the equality above non-vacuous. */
     MSC_CHECK("folded a non-trivial UTXO set",
               full.count == (int64_t)(2 * N));
 

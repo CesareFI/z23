@@ -655,10 +655,7 @@ static int test_mmb_merge_guard_blocks_wraparound(void)
 {
     int failures = 0;
     TEST("mmb : merge guard fires before height wraparound") {
-        /* Construct a corrupt in-memory MMB with two height=UINT32_MAX-1
-         * mountains (bypassing mmb_deserialize's cap). A 
-         * mmb_append would have wrapped height to UINT32_MAX then 0,
-         * silently destroying the trust root on the next merge. */
+        /* Two height=UINT32_MAX-1 mountains, bypassing the deserialize cap. */
         struct mmb m;
         mmb_init(&m);
         m.num_leaves = 2;
@@ -680,10 +677,7 @@ static int test_mmb_merge_guard_blocks_wraparound(void)
         int rc = mmb_append(&m, &leaf);
         ASSERT(rc < 0);  /* refused */
 
-        /* Guard fired after the rightmost-pair merge decision (which
-         * is a no-op here since idx 1 and 2 have different heights)
-         * but before the deferred-merge mutation of the dangerous
-         * pair. mountains[0]/[1] must be intact. */
+        /* Guard fires before the deferred-merge mutation; mountains[0]/[1] stay intact. */
         ASSERT(m.mountains[0].height == UINT32_MAX - 1);
         ASSERT(m.mountains[1].height == UINT32_MAX - 1);
         ASSERT(memcmp(m.mountains[0].peak, peak0_before, 32) == 0);
@@ -700,12 +694,7 @@ static int test_mmb_merge_guard_blocks_wraparound(void)
         m.mountains[1].height = MMB_MAX_HEIGHT;
         memcpy(peak0_before, m.mountains[0].peak, 32);
         memcpy(peak1_before, m.mountains[1].peak, 32);
-        /* Swap in a trick: give the rightmost pair the dangerous
-         * height by pre-seeding then calling mmb_append — the new
-         * height-0 leaf goes to idx 2, rightmost-pair check compares
-         * idx 1 (MMB_MAX_HEIGHT) vs idx 2 (0) and does not fire.
-         * Then the deferred scan finds idx 0/1 at the cap and trips
-         * the guard there. Either way: guard fires + state intact. */
+        /* The deferred scan finds idx 0/1 at the cap and trips the guard. */
         make_test_leaf(&leaf, 1001);
         rc = mmb_append(&m, &leaf);
         ASSERT(rc < 0);

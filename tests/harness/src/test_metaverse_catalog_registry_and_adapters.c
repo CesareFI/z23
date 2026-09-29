@@ -9,10 +9,9 @@
  * nothing rendered as owned, show refuses rather than answering
  * absent).
  *
- * Split out of test_metaverse_catalog.c (which keeps the includes,
- * the fixture helpers shared across siblings — hex formatting and the
- * in-process command runner — and the group entry point) so no family
- * member crosses the 1,500-line ceiling. */
+ * Split out of test_metaverse_catalog.c (which keeps the includes, shared
+ * fixture helpers and the group entry point) to stay under the 1,500-line
+ * ceiling. */
 
 
 #include "test/test_core.h"
@@ -475,8 +474,8 @@ int t_readonly_contract(void)
     mv_hex32(root, root_hex);
     snprintf(id_text, sizeof(id_text), "content:%s", root_hex);
 
-    /* Plant a CAS object no manifest references. The store's open-time
-     * orphan GC exists precisely to delete this. */
+    /* Plant a CAS object no manifest references; the open-time orphan GC
+     * deletes it. */
     snprintf(orphan_dir, sizeof(orphan_dir), "%s/cas/sha3/%.2s", zcode_dir,
              orphan_hex);
     (void)mkdir(orphan_dir, 0755);
@@ -495,8 +494,7 @@ int t_readonly_contract(void)
         lo = lo <= '9' ? lo - '0' : 10 + (lo - 'a');
         orphan_hash[i] = (uint8_t)((hi << 4) | lo);
     }
-    /* The getter this change adds: a CAS presence answer that needs no
-     * store handle, and therefore no recovery sweep. */
+    /* CAS presence answer that needs no store handle, hence no recovery sweep. */
     MV_CHECK("readonly: the CAS probe finds a present object without opening "
              "a store",
              vcs_package_cas_present_in(zcode_dir, orphan_hash));
@@ -531,9 +529,8 @@ int t_readonly_contract(void)
     MV_CHECK("readonly: the orphan CAS object survived the read",
              access(orphan_path, F_OK) == 0);
 
-    /* The contrast that makes the point: the pre-existing way to ask a
-     * store anything is to OPEN it, and opening runs the orphan GC. A read
-     * command routed through that would have deleted the operator's file. */
+    /* Contrast: the existing way to ask a store anything is to OPEN it,
+     * which runs the orphan GC and would delete the operator's file. */
     store = vcs_package_store_open(dd, 4u * 1024u * 1024u);
     MV_CHECK("readonly: the store reopens", store != NULL);
     vcs_package_store_close(store);
@@ -686,17 +683,11 @@ int t_registry_path(void)
 
 /* ── an unreadable store must not read as an empty one ───────────────────
  *
- * A catalog that answers "0 properties" over a store it could not open has
- * told the operator they own nothing. That is the same conflation this
- * project already paid for on node.db, and it is worse here: the whole
- * purpose of this surface is to state what you hold.
- *
- * The store is made PRESENT and unreadable by putting a plain file where
- * <datadir>/zcode/manifests belongs, so opendir() fails with ENOTDIR. What
- * is asserted is disclosure, not a particular verb: list may answer as
- * long as it says "store": {"read": false} and names the affected kinds
- * unavailable; show must refuse outright, because a bare "absent" from it
- * IS the lie. */
+ * The store is made present and unreadable by putting a plain file where
+ * <datadir>/zcode/manifests belongs (opendir() fails with ENOTDIR). Asserted
+ * is disclosure: list may answer if it says "store": {"read": false} and
+ * names the affected kinds unavailable; show must refuse outright, because a
+ * bare "absent" would be a false answer. */
 static int unreadable_case_plant_blocker(const char *dd, char *mpath,
                                           size_t mpath_cap)
 {

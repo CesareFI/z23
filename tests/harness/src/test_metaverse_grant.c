@@ -1,47 +1,19 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Property grant engine tests — the rules (contexts/commons/modules/metaverse) and the
- * PLAN → COMMIT → RECEIPT state machine (services/property_grant_service.h).
+ * Property grant engine tests: the rules (contexts/commons/modules/metaverse) and the
+ * PLAN -> COMMIT -> RECEIPT state machine (services/property_grant_service.h).
  *
- * ── The seam these tests drive, and why ───────────────────────────────────
- * Nothing is mocked except the two things the service declares as seams: the
- * property catalog (a separate lane owns the real one) and the clock. The
- * grant rules, the store, the receipt codec, the SHA3 hash chain, and the real
- * Ed25519 signer are all the shipped code. In particular the tamper cases
- * corrupt the REAL store through the service's declared test-only hook rather
- * than hand-building a fake chain — a tamper proof against a fake store proves
- * nothing about the real one.
+ * Only the property catalog and the clock are faked; the rules, store, receipt
+ * codec, hash chain and Ed25519 signer are shipped code. Tamper cases corrupt
+ * the real store through the service's test-only hook.
+ * Proves: codec round-trips; PLAN refuses each violation with its own named
+ * reason; COMMIT re-checks stale revision, owner, revocation and catalog;
+ * revocation covers a delegation subtree (revoked flag and generation each
+ * proven alone on the pure evaluator); idempotent replay; tamper-evident
+ * receipt chain; delegation only narrows; budget and rate window bind; a
+ * commit that mints no receipt leaves the store bit-identical.
  *
- * Proves:
- *  1. Codecs round-trip: property ids and action sets, including the rejects.
- *  2. PLAN FAILS FAST: an action outside the grant's set, a property outside
- *     scope, a wrong kind, a disallowed counterparty, a budget-exceeding value,
- *     value on a free action, the wrong holder, and both expiry forms are all
- *     refused at PLAN with their own named reason — not deferred to COMMIT.
- *  3. COMMIT RE-CHECKS: a property revised between plan and commit is rejected
- *     STALE_REVISION; a property whose controller changed is OWNER_MISMATCH; a
- *     grant revoked between plan and commit is GRANT_REVOKED; an absent catalog
- *     is CATALOG_UNAVAILABLE. The plan is never trusted.
- *  4. REVOCATION is total across a delegation subtree: revoking a parent makes
- *     every child fail ANCESTOR_REVOKED with no write to the child — and the
- *     two halves of that check (the ancestor's revoked flag and its revocation
- *     GENERATION) are each proven ALONE against the pure evaluator, because
- *     through the service they always move together and so mask each other.
- *  5. IDEMPOTENCY: the same key committed twice returns the SAME receipt, does
- *     not debit twice, and does not append a second chain link.
- *  6. The receipt chain is TAMPER-EVIDENT: editing a stored receipt, re-signing
- *     it with a foreign key, and cutting a link are each detected and located.
- *  7. Delegation attenuates: depth, actions, budget, and scope may only narrow.
- *  8. The cumulative budget and the rate window both bind.
- *  9. A COMMIT THAT MINTS NO RECEIPT COSTS NOTHING: the grant record comes back
- *     bit-identical (spend, rate window start and counter, everything), a
- *     quoted asking price never touches the budget on any path, the authority
- *     generation moves exactly when the store does, and the whole
- *     mutate-and-restore window runs under one hold of the store mutex.
- *
- * House idiom note: exactly one TEST block per function. ASSERT jumps to
- * `_test_next`, and a function holding two TEST blocks would jump BACKWARD
- * into an already-run block. */
+ * One TEST block per function: ASSERT jumps to `_test_next`. */
 
 #include "test/test_core.h"
 
@@ -106,8 +78,7 @@ static struct metaverse_property_id make_id(enum metaverse_kind kind,
     return id;
 }
 
-/* Install the fakes and clear every store. Every case starts from here so no
- * case can pass because of a previous case's leftovers. */
+/* Install the fakes and clear every store so no case inherits leftovers. */
 static void fixture_reset(const struct metaverse_property_id *prop)
 {
     property_grant_service_reset();
@@ -165,8 +136,7 @@ static struct metaverse_action_request request_for(
     return r;
 }
 
-/* Commit `n` 1000-zatoshi BUYs, each under its own idempotency key. Returns 0
- * on success, -1 on the first refusal. */
+/* Commit `n` 1000-zatoshi BUYs, each under its own key. 0 on success, -1 on first refusal. */
 static int commit_n(const struct metaverse_grant *g,
                     const struct metaverse_property_id *prop, int n)
 {
@@ -238,17 +208,13 @@ static int t_action_set_codec(void)
         ASSERT(metaverse_action_mask_format(set, rendered, sizeof(rendered)));
         ASSERT_STR_EQ(rendered, "host,publish_revision");
 
-        /* Both separators name the same right on the way IN, and the
-         * canonical underscore spelling is what comes back OUT. */
+        /* Both separators are accepted on input; output is canonical underscore. */
         metaverse_action_set hyphenated = 0;
         ASSERT(metaverse_action_set_parse("host,publish-revision",
                                           &hyphenated));
         ASSERT(hyphenated == set);
 
-        /* One bad element fails the whole parse — a silently dropped element
-         * narrows a grant the operator believed they had written. The good
-         * element here must be a REAL action, or the parse would fail on it
-         * instead and this would stop testing the typo. */
+        /* One bad element fails the whole parse; the good element must be a real action. */
         metaverse_action_set bad = 0xFFFF;
         ASSERT(!metaverse_action_set_parse("host,hosst", &bad));
 
@@ -272,12 +238,7 @@ static int t_value_actions(void)
         ASSERT(!metaverse_action_moves_value(METAVERSE_ACTION_HOST));
         ASSERT(!metaverse_action_moves_value(METAVERSE_ACTION_DELEGATE));
 
-        /* "May carry a value" and "is charged for it" are two columns, and
-         * LIST_FOR_SALE is the row that separates them: an asking PRICE is a
-         * number the request legitimately carries while moving nothing, so
-         * billing it against the operator's cumulative exposure would charge
-         * them for an advertisement. Asserting only moves_value here would
-         * leave the two columns indistinguishable. */
+        /* "May carry a value" and "is charged" differ: LIST_FOR_SALE carries a price but moves nothing. */
         ASSERT(metaverse_action_accepts_value(METAVERSE_ACTION_LIST_FOR_SALE));
         ASSERT(!metaverse_action_moves_value(METAVERSE_ACTION_LIST_FOR_SALE));
         ASSERT(!metaverse_action_accepts_value(METAVERSE_ACTION_HOST));
@@ -286,21 +247,14 @@ static int t_value_actions(void)
     return failures;
 }
 
-/* ── 1b. the reserved bit ────────────────────────────────────────────────
- *
- * The reserved bit used to BE an action. Five tests in this file used it as a
- * convenient free-action vehicle; they now use HOST, and the claim they used
- * to carry incidentally — "inspect is not an action" — is asserted here, on
- * purpose, instead of five times by accident. */
+/* ── 1b. the reserved bit ───────────────────────────────────────────────
+ * "inspect" is not an action; asserted here directly. */
 
 static int t_reserved_inspect_names_no_action(void)
 {
     int failures = 0;
     TEST("the reserved inspect bit is legible but names no action") {
-        /* Legible, so an old persisted mask still renders — and invalid, so
-         * rendering it can never be mistaken for holding it. Both halves
-         * matter: drop the first and old records become unreadable, drop the
-         * second and a stale mask silently confers a right. */
+        /* Renders legibly but is invalid, so a stale mask never confers a right. */
         ASSERT(metaverse_action_name(METAVERSE_ACTION_RESERVED_INSPECT) != NULL);
         ASSERT_EQ(strcmp(metaverse_action_name(METAVERSE_ACTION_RESERVED_INSPECT),
                          "inspect"), 0);
@@ -310,7 +264,6 @@ static int t_reserved_inspect_names_no_action(void)
                       (enum metaverse_action)METAVERSE_ACTION_RESERVED_INSPECT),
                   0);
 
-        /* Every route by which a name could become an action refuses it. */
         ASSERT_EQ((int)metaverse_action_from_name("inspect"), 0);
         enum metaverse_action parsed = METAVERSE_ACTION_HOST;
         ASSERT(!metaverse_action_parse("inspect", &parsed));
@@ -320,9 +273,7 @@ static int t_reserved_inspect_names_no_action(void)
         ASSERT(!metaverse_action_mask_valid(METAVERSE_ACTION_RESERVED_INSPECT));
         ASSERT_EQ((int)(METAVERSE_ACTION_ALL & METAVERSE_ACTION_RESERVED), 0);
 
-        /* An operation nobody can name gets no permissions: every fact column
-         * is false, so no downstream branch can pick it up as a special
-         * case. */
+        /* An unnameable operation gets no permissions: every fact column is false. */
         enum metaverse_action rb =
             (enum metaverse_action)METAVERSE_ACTION_RESERVED_INSPECT;
         ASSERT(!metaverse_action_changes_local_state(rb));
@@ -346,28 +297,22 @@ static int t_reserved_inspect_authorizes_nothing(void)
     TEST("a grant carrying the reserved bit authorizes nothing at PLAN") {
         struct metaverse_property_id prop = make_id(METAVERSE_KIND_CONTENT, 61);
         fixture_reset(&prop);
-        /* Written raw, not through ACT(): this is exactly the shape a mask
-         * persisted before the split deserializes into. */
+        /* Written raw, not through ACT(): the shape a legacy mask deserializes into. */
         struct metaverse_grant g = grant_over_id(&prop, 0, 0);
         g.actions = METAVERSE_ACTION_RESERVED_INSPECT;
 
-        /* It never gets into the store: an unnameable bit makes the whole
-         * record malformed, so the mask is refused at the boundary rather
-         * than carried around and filtered at every later read. */
+        /* An unnameable bit makes the record malformed, refused at the boundary. */
         ASSERT(!metaverse_grant_well_formed(&g));
         ASSERT_EQ((int)property_grant_service_mint(&g),
                   (int)PROPERTY_GRANT_GRANT_MALFORMED);
 
-        /* Control: the SAME record with a real action mints, so the refusal
-         * above is caused by the reserved bit and by nothing else in it. */
+        /* Control: the same record with a real action mints. */
         struct metaverse_grant ok = g;
         ok.actions = ACT(HOST);
         ASSERT(metaverse_grant_well_formed(&ok));
         ASSERT_EQ((int)property_grant_service_mint(&ok), (int)PROPERTY_GRANT_OK);
 
-        /* And a record that reached memory by some other route — restored
-         * from an old on-disk mask, say — still authorizes nothing. It is
-         * evaluated directly here because the store will not hold it. */
+        /* A record that reached memory another way still authorizes nothing; evaluated directly. */
         snprintf(g.grant_id, sizeof(g.grant_id),
                  "11111111111111111111111111111111");
         struct metaverse_action_request req =
@@ -377,11 +322,7 @@ static int t_reserved_inspect_authorizes_nothing(void)
         ASSERT_EQ((int)metaverse_grant_check(&g, NULL, 0, &req),
                   (int)METAVERSE_GRANT_MALFORMED);
 
-        /* Asking for the reserved bit ITSELF is a malformed REQUEST. Asked
-         * against the well-formed grant so the verdict cannot come from the
-         * record — and note the grant does not hold that bit, so a check that
-         * merely intersected masks would answer ACTION_NOT_GRANTED and quietly
-         * treat "inspect" as a real right the caller happened to lack. */
+        /* Asking for the reserved bit is a malformed request, not ACTION_NOT_GRANTED. */
         struct metaverse_action_request bad =
             request_for(&prop, METAVERSE_ACTION_HOST, NULL, 0);
         bad.now_unix = 1700000000;
@@ -400,10 +341,8 @@ static int t_reserved_inspect_authorizes_nothing(void)
     return failures;
 }
 
-/* ── 1c. reads are a separate vocabulary ─────────────────────────────────
- *
- * The tests that used to reach the read path through METAVERSE_ACTION_INSPECT
- * reach it here instead, through the grant's own query field. */
+/* ── 1c. reads are a separate vocabulary ────────────────────────────────
+ * Reads go through the grant's query field. */
 
 static const char k_query_grant_id[] = "cccccccccccccccccccccccccccccccc";
 
@@ -452,8 +391,7 @@ static int t_query_not_granted(void)
     TEST("a query the grant does not hold is ACTION_NOT_GRANTED") {
         struct metaverse_property_id prop = make_id(METAVERSE_KIND_CONTENT, 62);
         struct metaverse_grant g = query_grant(&prop);
-        /* One taxonomy: a missing READ right reports the same verdict as a
-         * missing action right, so a caller needs no second reason table. */
+        /* A missing READ right reports the same verdict as a missing action right. */
         struct metaverse_query_request q =
             query_for(&prop, METAVERSE_QUERY_ENUMERATE_PROPERTIES);
         ASSERT_EQ((int)metaverse_grant_query_check(&g, NULL, 0, &q),
@@ -505,8 +443,7 @@ static int t_query_expiry_and_revocation(void)
         struct metaverse_query_request q =
             query_for(&prop, METAVERSE_QUERY_INSPECT_PROPERTY);
 
-        /* Control: with nothing expired this is the OK case, so each verdict
-         * below is caused by the one field that changes. */
+        /* Control: nothing expired, so OK. */
         ASSERT_EQ((int)metaverse_grant_query_check(&g, NULL, 0, &q),
                   (int)METAVERSE_GRANT_OK);
 
@@ -534,9 +471,7 @@ static int t_query_and_action_sets_do_not_leak(void)
     TEST("holding every ACTION confers no read right, and the reverse") {
         struct metaverse_property_id prop = make_id(METAVERSE_KIND_CONTENT, 62);
 
-        /* The whole point of the split: the two sets do not leak into each
-         * other. An implementation that folded them into one word would
-         * answer OK for both halves below. */
+        /* The two sets do not leak into each other. */
         struct metaverse_grant all_actions =
             grant_over_id(&prop, METAVERSE_ACTION_ALL, 0);
         snprintf(all_actions.grant_id, sizeof(all_actions.grant_id),
@@ -585,9 +520,7 @@ static int t_query_enumerate_names_no_property(void)
         ASSERT_EQ((int)metaverse_grant_query_check(&e, NULL, 0, &eq),
                   (int)METAVERSE_GRANT_OK);
 
-        /* "You may enumerate" is not "you may see everything": the id scope
-         * still decides which rows the caller may be shown, and the
-         * out-of-scope one is not among them. */
+        /* Enumerate right is not see-everything: the id scope still filters rows. */
         ASSERT(metaverse_grant_in_scope(&e, &prop));
         ASSERT(!metaverse_grant_in_scope(&e, &other));
         PASS();
@@ -681,8 +614,7 @@ static int t_plan_counterparty(void)
             request_for(&prop, METAVERSE_ACTION_SELL, k_stranger, 1000);
         ASSERT_EQ((int)property_grant_service_plan(g.grant_id, &bad, &plan),
                   (int)PROPERTY_GRANT_COUNTERPARTY_NOT_ALLOWED);
-        /* The allowlisted counterparty passes, so the refusal was the
-         * allowlist and not some unrelated part of the request. */
+        /* The allowlisted counterparty passes, so the refusal was the allowlist. */
         struct metaverse_action_request ok =
             request_for(&prop, METAVERSE_ACTION_SELL, k_buyer, 1000);
         ASSERT_EQ((int)property_grant_service_plan(g.grant_id, &ok, &plan),
@@ -724,10 +656,7 @@ static int t_plan_value_shape(void)
             grant_over_id(&prop, ACT(HOST) | ACT(BUY), 100000);
         ASSERT_EQ((int)property_grant_service_mint(&g), (int)PROPERTY_GRANT_OK);
 
-        /* HOST is the free action here: it is granted, it is in scope, and
-         * its own column says it accepts no value — so the ONLY thing left
-         * for the plan to object to is the value, which is what makes the
-         * verdict attributable. */
+        /* HOST is granted, in scope and takes no value, so only the value can be refused. */
         ASSERT(!metaverse_action_accepts_value(METAVERSE_ACTION_HOST));
         struct property_grant_plan plan;
         struct metaverse_action_request free_with_value =
@@ -822,8 +751,7 @@ static int t_commit_stale_revision(void)
         struct metaverse_receipt rc[4];
         ASSERT_EQ((int)property_grant_service_receipts(g.grant_id, rc, 4), 0);
 
-        /* Re-planning against the CURRENT revision commits cleanly, so the
-         * rejection was the staleness and not a broken commit path. */
+        /* Re-planning against the current revision commits cleanly. */
         ASSERT_EQ((int)property_grant_service_plan(g.grant_id, &r, &plan),
                   (int)PROPERTY_GRANT_OK);
         ASSERT_EQ((int)plan.property_revision, 8);
@@ -966,8 +894,7 @@ static int t_revoke_kills_grant(void)
                   (int)PROPERTY_GRANT_OK);
         ASSERT_EQ((int)res.receipt.seq, 1);
 
-        /* A plan taken BEFORE the revoke must also die at commit — this is the
-         * whole reason COMMIT re-runs the capability check. */
+        /* A plan taken before the revoke also dies at commit. */
         struct property_grant_plan pre;
         ASSERT_EQ((int)property_grant_service_plan(g.grant_id, &r, &pre),
                   (int)PROPERTY_GRANT_OK);
@@ -1034,19 +961,9 @@ static int t_revoke_kills_subtree(void)
     return failures;
 }
 
-/* The ancestor check has TWO independent halves — the ancestor's `revoked`
- * flag and its revocation GENERATION — and the subtree case above cannot tell
- * them apart. property_grant_service_revoke() sets the flag and bumps the
- * counter together, so through the service the two facts always move as one:
- * delete either half and the other still refuses, and the case above still
- * passes. That makes the mechanism the header actually describes ("revocation
- * is a generation, not a flag" — the property that lets a child be killed
- * without being written to, and that a rewritten record with a cleared flag
- * cannot escape) unproven by any assertion.
- *
- * The pure evaluator is where the two facts CAN be varied independently, so
- * these two cases pin one half each: same grant, same request, one field
- * changed, and a live control showing the refusal came from that field alone. */
+/* The ancestor check has two independent halves, the ancestor's `revoked` flag
+ * and its revocation generation. Through the service they move together, so
+ * these cases vary each alone on the pure evaluator with a live control. */
 static void ancestor_pair(struct metaverse_grant *parent,
                           struct metaverse_grant *child,
                           const struct metaverse_property_id *prop)
@@ -1080,13 +997,11 @@ static int t_ancestor_generation_alone_kills(void)
         r.height = 900000;
         const struct metaverse_grant *anc[1] = { &parent };
 
-        /* Control: the generations agree and the child is live, so anything
-         * below is caused by the one field that changes. */
+        /* Control: generations agree and the child is live. */
         ASSERT_EQ((int)metaverse_grant_check(&child, anc, 1, &r),
                   (int)METAVERSE_GRANT_OK);
 
-        /* The ancestor's counter moved and NOTHING else did — the flag stays
-         * clear, so only the generation comparison can refuse this. */
+        /* Only the ancestor's counter moved; the flag is clear. */
         parent.revocation_generation = 1;
         ASSERT(!parent.revoked);
         ASSERT_EQ((int)metaverse_grant_check(&child, anc, 1, &r),
@@ -1112,8 +1027,7 @@ static int t_ancestor_revoked_flag_alone_kills(void)
         ASSERT_EQ((int)metaverse_grant_check(&child, anc, 1, &r),
                   (int)METAVERSE_GRANT_OK);
 
-        /* The flag is set and the generation still MATCHES the lineage record,
-         * so only the flag check can refuse this. */
+        /* The flag is set and the generation matches; only the flag can refuse. */
         parent.revoked = true;
         ASSERT_EQ((int)parent.revocation_generation,
                   (int)child.lineage[0].revocation_generation);
@@ -1216,14 +1130,8 @@ static int t_distinct_key_is_not_replay(void)
     return failures;
 }
 
-/* A replay must match the REQUEST, not just the key. Matching on
- * (grant, key) alone means a caller that reuses a key for a DIFFERENT action,
- * property, value or counterparty is handed the earlier, unrelated receipt
- * with status OK and `replayed` set: its own request never runs, and nothing
- * in the answer says so. The two ways out of that are both worse than a
- * refusal — replaying answers a question nobody asked, and executing the new
- * request would mean one key names two receipts — so the mismatch itself is
- * the named refusal. */
+/* A replay must match the request, not just the key: a reused key with a
+ * different action, property, value or counterparty is refused by name. */
 static int t_replay_must_match_the_request(void)
 {
     int failures = 0;
@@ -1255,9 +1163,7 @@ static int t_replay_must_match_the_request(void)
                   (int)PROPERTY_GRANT_OK);
         ASSERT_EQ((int)first.receipt.seq, 1);
 
-        /* Four requests that differ from the receipt in exactly one field.
-         * Each is planned successfully — the grant genuinely permits it — and
-         * each is refused at COMMIT because the key is spoken for. */
+        /* Four requests each differing in one field; planned fine, refused at COMMIT. */
         struct metaverse_action_request diff[4] = {
             request_for(&prop, METAVERSE_ACTION_BUY, NULL, 30000),
             request_for(&prop, METAVERSE_ACTION_HOST, NULL, 0),
@@ -1281,8 +1187,7 @@ static int t_replay_must_match_the_request(void)
         }
         g_cat.id = prop;
 
-        /* The stored receipt is exactly what it was, there is still only one,
-         * and nothing was charged for the four refusals. */
+        /* The stored receipt is unchanged and nothing was charged. */
         struct metaverse_receipt rc[8];
         ASSERT_EQ((int)property_grant_service_receipts(g.grant_id, rc, 8), 1);
         ASSERT_EQ((int)rc[0].seq, 1);
@@ -1356,9 +1261,7 @@ static int t_tamper_foreign_signature(void)
         struct metaverse_receipt rc[8];
         ASSERT_EQ((int)property_grant_service_receipts(g.grant_id, rc, 8), 2);
 
-        /* The forger rewrites the amount AND re-seals it properly with their
-         * own key, so body_hash and chain_hash are internally consistent. Only
-         * pinning the expected signer catches this. */
+        /* Forger rewrites the amount and re-seals with their own key; only pinning the signer catches it. */
         uint8_t fseed[32], fpk[32], fsk[32];
         memset(fseed, 0x11, sizeof(fseed));
         ed25519_keypair(fpk, fsk, fseed);
@@ -1390,9 +1293,7 @@ static int t_tamper_cut_link(void)
         struct metaverse_receipt rc[8];
         ASSERT_EQ((int)property_grant_service_receipts(g.grant_id, rc, 8), 3);
 
-        /* Re-point receipt 3 at the FIRST receipt, as if #2 never existed, and
-         * seal it correctly with the node's own key. Body and signature are
-         * perfect; only the link is wrong. */
+        /* Receipt 3 re-pointed at the first and sealed correctly; only the link is wrong. */
         uint8_t signer[METAVERSE_PUBKEY_LEN];
         ASSERT(property_grant_service_signer_pubkey(signer));
         uint8_t seed[32], pk[32], sk[32];
@@ -1542,8 +1443,7 @@ static int t_delegation_attenuates(void)
     return failures;
 }
 
-/* Counterparty lists attenuate: an empty child list under a listing parent
- * would be the widest grant of all. */
+/* An empty child counterparty list would be the widest grant. */
 static int t_delegation_attenuates_counterparties(void)
 {
     int failures = 0;
@@ -1618,17 +1518,8 @@ static int t_budget_is_cumulative(void)
     return failures;
 }
 
-/* ── 8b. The cumulative ceiling bounds the WHOLE delegation subtree ────────
- *
- * A per-child attenuation check is not a budget either, for exactly the reason
- * the header gives about per-action ceilings: a 5000-zat parent that may mint
- * two 5000-zat children has authorized 5000 and is exposed to 10000, and the
- * number the operator wrote down is decorative again. Delegation cannot fix
- * this by reserving the child's declared maximum at mint time — that charges
- * the operator for money a child may never spend, and it would make revoking
- * an unused child a refund rather than a no-op. The ceiling therefore binds
- * where value actually MOVES: a commit charges its grant AND every ancestor,
- * and is refused unless all of them can pay. */
+/* ── 8b. The cumulative ceiling bounds the whole delegation subtree ──────
+ * A commit charges its grant and every ancestor and is refused unless all can pay. */
 
 static int t_parent_budget_bounds_its_children(void)
 {
@@ -1643,10 +1534,7 @@ static int t_parent_budget_bounds_its_children(void)
         ASSERT_EQ((int)property_grant_service_mint(&parent),
                   (int)PROPERTY_GRANT_OK);
 
-        /* Two siblings, each minted with the parent's FULL remaining budget.
-         * Each is a legal attenuation ON ITS OWN — which is the whole point:
-         * nothing at mint time is wrong, so nothing at mint time can be the
-         * check that saves the operator. */
+        /* Two siblings each minted with the parent's full remaining budget; each is a legal attenuation alone. */
         struct metaverse_grant a = grant_over_id(&prop, ACT(BUY), 5000);
         struct metaverse_grant b = grant_over_id(&prop, ACT(BUY), 5000);
         ASSERT_EQ((int)property_grant_service_delegate(parent.grant_id, &a),
@@ -1654,10 +1542,7 @@ static int t_parent_budget_bounds_its_children(void)
         ASSERT_EQ((int)property_grant_service_delegate(parent.grant_id, &b),
                   (int)PROPERTY_GRANT_OK);
 
-        /* BOTH quotes are taken BEFORE either commits, so the refusal below
-         * cannot come from a plan-time reading of the parent's budget: at plan
-         * time the parent has spent nothing. It can only come from the charge
-         * the commit itself puts on the lineage. */
+        /* Both quotes are taken before either commits, so the refusal comes from the commit's lineage charge. */
         struct metaverse_action_request r =
             request_for(&prop, METAVERSE_ACTION_BUY, NULL, 5000);
         struct property_grant_plan pa, pb;
@@ -1720,8 +1605,7 @@ static int t_lineage_charge_reaches_a_grandparent(void)
         ASSERT_EQ((int)leaf.depth, 2);
         ASSERT_EQ((int)leaf.lineage_count, 2);
 
-        /* The MIDDLE grant spends most of its own budget. Nothing about the
-         * leaf's record changes, so the leaf still believes it holds 9000. */
+        /* The middle grant spends most of its budget; the leaf's record is unchanged. */
         struct metaverse_action_request big =
             request_for(&prop, METAVERSE_ACTION_BUY, NULL, 8000);
         struct property_grant_plan pm;
@@ -1755,10 +1639,7 @@ static int t_lineage_charge_reaches_a_grandparent(void)
                   (int)PROPERTY_GRANT_OK);
         ASSERT_EQ((int)now.spent_zat, 800);
 
-        /* ATOMICITY. The leaf can afford 1000 (8200 left) and so can the ROOT
-         * (1200 left); the MIDDLE grant cannot (200 left). The root is the
-         * first ancestor charged, so this is the case where a partial charge
-         * would leave the root debited for a commit that never happened. */
+        /* Atomicity: the root is charged first, so a partial charge would leave it debited. */
         struct metaverse_action_request over =
             request_for(&prop, METAVERSE_ACTION_BUY, NULL, 1000);
         struct property_grant_plan po;
@@ -1814,21 +1695,9 @@ static int t_rate_window(void)
     return failures;
 }
 
-/* ── 9. THE FAILED-COMMIT INVERSE ───────────────────────────────────────────
- *
- * A commit that produces no receipt must leave the store exactly as it found
- * it. Between the grant record taking the action's effect and the receipt being
- * sealed, the store HAS moved and no evidence exists yet; the only honest exit
- * from that window is an exact restore.
- *
- * That window used to be closed by hand-written arithmetic ("give the debit
- * back"), which was a second copy of a charge rule that lives in
- * metaverse_grant_record_commit() — and it had drifted from it in two places at
- * once. It is now a whole-record restore. These four cases are the proof, and
- * the reason they can exist at all is the service's ZCL_TESTING-only seal hook:
- * the real sealer cannot fail from inside a commit (it refuses only a NULL
- * argument or a zero seq), so the failure path had no test and the arithmetic
- * rotted unobserved. */
+/* ── 9. THE FAILED-COMMIT INVERSE ────────────────────────────────────────
+ * A commit that produces no receipt must restore the grant record exactly.
+ * The ZCL_TESTING-only seal hook makes the failure path reachable. */
 
 struct seal_probe {
     int calls;
@@ -1840,11 +1709,8 @@ static bool seal_probe_hook(void *ctx)
 {
     struct seal_probe *p = ctx;
     p->calls++;
-    /* THE MUTATE-AND-RESTORE WINDOW STRADDLES THIS CALL. If a future edit ever
-     * releases the store mutex anywhere between the record's effect and the
-     * restore, this trylock succeeds, the count stays at zero, and
-     * t_failed_commit_window_stays_locked goes red — which is the only way to
-     * assert a lock-scope invariant rather than read it and hope. */
+    /* The mutate-and-restore window straddles this call; releasing the store mutex
+     * inside it makes the trylock succeed and the count stay zero. */
     if (property_grant_service_test_store_lock_busy()) p->lock_held_calls++;
     if (p->fail_next > 0) {
         p->fail_next--;
@@ -1853,9 +1719,7 @@ static bool seal_probe_hook(void *ctx)
     return true;
 }
 
-/* The whole stored record, zeroed first so that two reads of an unchanged
- * record compare equal byte-for-byte and a field added later is covered without
- * anyone remembering to add it here. */
+/* The whole stored record, zeroed first so unchanged reads compare byte-equal. */
 static bool grant_record(const char *grant_id, struct metaverse_grant *out)
 {
     memset(out, 0, sizeof(*out));
@@ -1873,8 +1737,7 @@ static int t_quoted_value_is_never_charged(void)
             grant_over_id(&prop, ACT(LIST_FOR_SALE), 2500);
         ASSERT_EQ((int)property_grant_service_mint(&g), (int)PROPERTY_GRANT_OK);
 
-        /* LIST_FOR_SALE names 5000 — twice the whole ceiling — and is still
-         * allowed, because an advertisement moves nothing. */
+        /* LIST_FOR_SALE names 5000, above the ceiling, and is allowed: it moves nothing. */
         struct metaverse_action_request r =
             request_for(&prop, METAVERSE_ACTION_LIST_FOR_SALE, NULL, 5000);
         struct property_grant_plan plan;
@@ -1888,9 +1751,7 @@ static int t_quoted_value_is_never_charged(void)
         ASSERT(grant_record(g.grant_id, &after));
         ASSERT_EQ((int)after.spent_zat, 0);
 
-        /* The same quote, sealed unsuccessfully. A rollback that credited the
-         * quoted price would drive spent_zat NEGATIVE — the operator's ceiling
-         * would WIDEN because a commit failed. */
+        /* Same quote, sealed unsuccessfully: crediting it would drive spent_zat negative. */
         struct seal_probe probe;
         memset(&probe, 0, sizeof(probe));
         probe.fail_next = 1;
@@ -1910,9 +1771,7 @@ static int t_quoted_value_is_never_charged(void)
         ASSERT(grant_record(g.grant_id, &after2));
         ASSERT_EQ((int)after2.spent_zat, 0);
         ASSERT_EQ((int)metaverse_grant_budget_remaining(&after2), 2500);
-        /* And the grant is still USABLE. A negative spend makes the record
-         * malformed, so a widened ceiling does not even stay usable — it turns
-         * the grant into one nothing can be planned against. */
+        /* And the grant is still usable. */
         ASSERT(metaverse_grant_well_formed(&after2));
         ASSERT_EQ((int)property_grant_service_plan(g.grant_id, &r, &plan2),
                   (int)PROPERTY_GRANT_OK);
@@ -1938,9 +1797,7 @@ static int t_failed_commit_restores_the_rate_window(void)
         ASSERT(grant_record(g.grant_id, &before));
         ASSERT_EQ((int)before.window_used, 2);
 
-        /* Past the window, so the next commit ROLLS it: window_start_unix moves
-         * forward and the counter resets before it counts. The old rollback
-         * decremented the counter and had no inverse at all for the start. */
+        /* Past the window the next commit rolls it; the rollback restores start and counter. */
         g_now += 61;
         struct seal_probe probe;
         memset(&probe, 0, sizeof(probe));
@@ -1982,8 +1839,7 @@ static int t_evidence_and_generation_move_together(void)
             request_for(&prop, METAVERSE_ACTION_LIST_FOR_SALE, NULL, 5000);
         struct metaverse_receipt seen[4];
 
-        /* (a) A commit that produces NOTHING moves nothing: not the record, not
-         *     the chain, not the plan, and so not the generation either. */
+        /* (a) A commit that produces nothing moves nothing, including the generation. */
         struct metaverse_grant before;
         ASSERT(grant_record(g.grant_id, &before));
         uint64_t gen_before = property_grant_service_authority_generation();
@@ -2015,10 +1871,7 @@ static int t_evidence_and_generation_move_together(void)
                         gen_before),
                   0);
 
-        /* (b) A commit that DOES produce evidence moves the generation — and
-         *     note this grant's RECORD is unchanged either way (an asking price
-         *     charges nothing), so the generation is tracking the STORE, not
-         *     one record. */
+        /* (b) A commit that produces evidence moves the generation, which tracks the store. */
         uint64_t gen_mid = property_grant_service_authority_generation();
         struct property_grant_plan plan2;
         ASSERT_EQ((int)property_grant_service_plan(g.grant_id, &r, &plan2),
@@ -2037,11 +1890,8 @@ static int t_evidence_and_generation_move_together(void)
     return failures;
 }
 
-/* Read a source file whole. Same idiom as the broker-authority lane's fork-order
- * case: some invariants are about the SHAPE of a critical section, and a
- * sampled runtime probe can only ever prove the lock was held at the instants
- * it sampled. Returns 0 when the file cannot be read (the suite runs from the
- * repository root). */
+/* Read a source file whole (suite runs from the repository root); 0 if unreadable.
+ * Lock-scope invariants are asserted on source shape, not sampled instants. */
 static size_t slurp_source(const char *rel, char *out, size_t cap)
 {
     FILE *f = fopen(rel, "rb");
@@ -2081,10 +1931,7 @@ static int t_failed_commit_window_stays_locked(void)
         ASSERT_EQ(probe.calls, 1);
         ASSERT_EQ(probe.lock_held_calls, 1);
 
-        /* The same holds when the seal SUCCEEDS: the record is mutated there
-         * too, and the receipt append and the generation bump have to land in
-         * the same critical section or a reader could see the debit without
-         * the evidence. */
+        /* Also holds when the seal succeeds: receipt append and generation bump share the critical section. */
         struct property_grant_plan plan2;
         ASSERT_EQ((int)property_grant_service_plan(g.grant_id, &r, &plan2),
                   (int)PROPERTY_GRANT_OK);
@@ -2096,12 +1943,7 @@ static int t_failed_commit_window_stays_locked(void)
         ASSERT_EQ(probe.lock_held_calls, 2);
         ASSERT(property_grant_service_test_set_seal_hook(NULL, NULL));
 
-        /* THE PROBE ABOVE SAMPLES ONE INSTANT; the invariant is about the whole
-         * window. A release anywhere inside it must re-acquire before the code
-         * that follows, because everything after the window needs the lock — so
-         * a re-acquire inside the window is the tell-tale of ANY release, and
-         * that is a property of the source region, not of one instant. Read it
-         * and assert on it. */
+        /* A re-acquire inside the window is the tell-tale of any release; asserted on the source region. */
         static char src[131072];
         size_t n = slurp_source("engine/services/src/property_grant_commit.c", src,
                                 sizeof(src));
@@ -2119,8 +1961,7 @@ static int t_failed_commit_window_stays_locked(void)
         const char *relock = strstr(win, "pthread_mutex_lock(");
         ASSERT(relock == NULL || relock > win_end);
 
-        /* And every exit from the window restores the record BEFORE it
-         * unlocks, so no exit can leave the mutation visible. */
+        /* Every exit restores the record before it unlocks. */
         const char *cur = win;
         int unlocks = 0;
         for (;;) {
@@ -2133,12 +1974,7 @@ static int t_failed_commit_window_stays_locked(void)
         }
         ASSERT(unlocks >= 2);   /* the debit refusal and the seal refusal */
 
-        /* The lineage charge moves ANCESTOR records inside the same window,
-         * and an ancestor left debited for a commit that minted no receipt is
-         * the same defect one record over. So from the charge onward, every
-         * exit restores the ancestors it charged before it unlocks. The scan
-         * starts AT the charge because the exits above it have charged no
-         * ancestor and correctly restore none. */
+        /* From the lineage charge onward, every exit restores charged ancestors before unlocking. */
         const char *charge = strstr(win,
                                     "metaverse_grant_record_descendant_charge(");
         ASSERT(charge != NULL && charge < win_end);
@@ -2176,11 +2012,7 @@ static int t_env_swap_invalidates_a_decision(void)
                   (int)PROPERTY_GRANT_OK);
         uint64_t before = property_grant_service_authority_generation();
 
-        /* A CHANGED CLOCK CHANGES EXPIRY VERDICTS. The snapshot carries the
-         * instant it was taken against, so a decision already computed is not
-         * retroactively rewritten — but a decision still in flight would
-         * otherwise recheck CLEAN across a change of which clock, and which
-         * catalog, is authoritative, and answer as though nothing moved. */
+        /* A changed clock changes expiry verdicts; an in-flight decision must not recheck clean. */
         struct property_grant_env env;
         memset(&env, 0, sizeof(env));
         env.catalog_lookup = fake_lookup;
@@ -2259,8 +2091,7 @@ static int t_reason_tokens_are_contract(void)
             "ANCESTOR_REVOKED");
         ASSERT_STR_EQ(property_grant_reason_token(PROPERTY_GRANT_REASON_COUNT),
                       "UNKNOWN_REASON");
-        /* No two reasons share a token — a duplicate would make two different
-         * refusals indistinguishable to an operator. */
+        /* No two reasons share a token. */
         for (int i = 0; i < PROPERTY_GRANT_REASON_COUNT; i++) {
             for (int j = i + 1; j < PROPERTY_GRANT_REASON_COUNT; j++) {
                 ASSERT(strcmp(property_grant_reason_token(

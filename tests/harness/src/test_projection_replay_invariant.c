@@ -1,19 +1,16 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * PRIME DIRECTIVE proof — "everything is a pure fold of the log."
+ * PRIME DIRECTIVE proof: "everything is a pure fold of the log."
  *
- * docs/FRAMEWORK.md states the Prime Directive: the append-only event_log
- * is the single source of truth, and every projection is a *pure fold*
- * over it. The defining invariant of an event-sourced architecture is:
+ * docs/FRAMEWORK.md: the append-only event_log is the single source of
+ * truth and every projection is a *pure fold* over it. Invariant:
  *
  *     replaying the SAME event log into a FRESH projection yields a state
- *     byte-identical to the projection that was folded INCREMENTALLY as
- *     the events were appended.
+ *     byte-identical to the projection folded INCREMENTALLY as the events
+ *     were appended.
  *
- * If that ever fails, the projection is carrying hidden state (path
- * dependence) and is no longer a pure function of the log — the whole
- * "rebuildable from the log" promise (fast-sync, crash recovery, the
- * shadow-vs-legacy diffs) collapses.
+ * Failure means the projection carries hidden state (path dependence) and
+ * "rebuildable from the log" (fast-sync, crash recovery) no longer holds.
  *
  * test_reorg_parity.c proves a narrow instance of this for the in-memory
  * coins_view_cache commitment across ONE hand-built reorg. This test
@@ -44,12 +41,9 @@
  *
  * Negative control (TEETH)
  * ------------------------
- *   The equality check must FAIL on genuine drift. We build a third
- *   "perturbed" projection that folds the log with ONE fold step dropped
- *   (we hide the last event from it by truncating its catch-up range) and
- *   assert the equality predicate REPORTS the drift. A self-comparison
- *   that always passes would be vacuous; this proves the assertion has
- *   teeth. Mutation-tested: see commit body.
+ *   A third "perturbed" projection folds the log with ONE fold step dropped
+ *   (the last event is hidden by truncating its catch-up range) and the
+ *   equality predicate must REPORT the drift, so the check is not vacuous.
  *
  * Scratch dirs under ./test-tmp/pri_<pid>_<tag>/ (no-/tmp convention).
  */
@@ -324,14 +318,11 @@ static bool mp_append_admit(event_log_t *log, uint32_t key, int64_t fee,
     mp_make_txid(ev.txid, key);
     ev.fee = fee; ev.weight = weight;
     ev.admitted_unix = 1700000000u + key;
-    /* The parser contract requires raw_tx_len == size_bytes. We carry a
-     * zero-length raw_tx (size_bytes == 0): the projection's spend
-     * extraction short-circuits on an empty body, so we don't feed it a
-     * synthetic byte string it would (correctly) reject as a malformed tx.
-     * The fold invariant is fully exercised by the metadata fields the
-     * projection actually counts: fee, weight, and presence — all carried
-     * by every event and compared in mp_proj_equal(). `weight` here
-     * stands in as the size_bytes the equality predicate spot-checks. */
+    /* The parser contract requires raw_tx_len == size_bytes. A zero-length
+     * raw_tx (size_bytes == 0) is carried: spend extraction short-circuits
+     * on an empty body. The fold invariant is exercised by the metadata the
+     * projection counts (fee, weight, presence), compared in mp_proj_equal();
+     * `weight` stands in as the size_bytes. */
     (void)size_bytes;
     ev.size_bytes = 0; ev.raw_tx = NULL; ev.raw_tx_len = 0;
 

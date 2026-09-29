@@ -508,7 +508,7 @@ static int phc_case_late_page_fork(void)
 
 /* ── compaction never erases signed fork evidence ───────────────────── */
 
-/* Review reproducer: A's second ticket at sequence 0 sorts below every
+/* A's second ticket at sequence 0 sorts below every
  * honest root, so root-order eviction would take it first. */
 static bool phc_lowest_fork(const uint8_t (*honest)[32], size_t count,
                             uint8_t forked[VCS_PROOF_TICKET_WIRE_BYTES],
@@ -878,7 +878,7 @@ static bool phc_throwaway_fork(uint32_t key, uint8_t pub[32],
     return ok;
 }
 
-/* Review reproducer: throwaway keys with self-signed forks must not fill
+/* Throwaway keys with self-signed forks must not fill
  * the pins pool the store's own history needs. */
 static int phc_case_stranger_forks_unpinned(void)
 {
@@ -964,7 +964,7 @@ static int phc_case_untrusted_fork_unpinned(void)
     return failures;
 }
 
-/* Review guard: a pinned checkpoint pair whose parent checkpoint is later
+/* A pinned checkpoint pair whose parent checkpoint is later
  * compacted is still a known fork, or the rebuild refuses. */
 static int phc_case_cp_pair_parent_evicted(void)
 {

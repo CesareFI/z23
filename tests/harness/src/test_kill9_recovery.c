@@ -2,114 +2,47 @@
  *
  * MVP criterion #7 CI gate: recover from `kill -9` in <2 min.
  *
- * Exercises the SIGKILL-mid-block-apply recovery surface that 
- * (`ac782fef5`) protects.  For each of 10 cycles:
- *   1. Parent `fork()`s a child.
- *   2. Child opens the shared datadir, walks a connect-block-style write
- *      sequence inside a BEGIN/COMMIT transaction (insert a batch of
- *      UTXOs at height h+1, update the coins_best_block tip pointer,
- *      insert the block-index row), with a small per-step delay to
- *      widen the kill window.
- *   3. Parent sleeps a randomised short duration (0.5ms–40ms), then
- *      `kill(pid, SIGKILL)` — covers different points across the
- *      transaction (pre-begin, mid-insert, pre-commit, post-commit).
- *   4. Parent `waitpid()`s, then reopens the datadir through
- *      `coins_view_sqlite_open()` — the same entry point the live node
- *      takes on boot.
- *   5. Parent asserts: the reopen succeeds (the boot-time atomicity
- *      check + auto-rewind already covered by
- *      `test_coins_view_atomicity` kicks in if the child died in the
- *      "UTXOs ahead of tip" window), and the post-recovery state has
- *      no UTXO row above the tip height — the exact invariant
- *      `test_coins_view_atomicity` asserts, but now exercised under a
- *      real SIGKILL instead of a hand-crafted mismatch.
+ * Exercises SIGKILL mid-block-apply recovery. For each of 10 cycles the parent
+ * forks a child that walks a connect-block-style write sequence inside
+ * BEGIN/COMMIT (UTXO batch at h+1, coins_best_block tip, block-index row),
+ * kills it after a random 0.5-40 ms, then reopens the datadir through
+ * `coins_view_sqlite_open()`. The reopen must succeed (boot-time atomicity
+ * check and auto-rewind, see `test_coins_view_atomicity`) and leave no UTXO row
+ * above the tip height. All 10 cycles must finish under the 2-minute budget.
  *
- * Total elapsed time across all 10 cycles must stay under the
- * 2-minute MVP budget.
+ * Proves: SQLite BEGIN/COMMIT atomicity survives SIGKILL, the boot-time
+ * invariant (`utxos.height` never exceeds tip.height) auto-heals a
+ * single-block overshoot (<=32 rows), and the datadir never needs manual repair.
+ * Does not prove full-binary cold restart, protocol resync, or block validation.
  *
- * What this test proves
- * ---------------------
- *   - SQLite's BEGIN/COMMIT atomicity survives `SIGKILL` — the journal
- *     rollback path is never half-applied.
- *   - `coins_view_sqlite_open`'s boot-time invariant (`utxos.height
- *     must never exceed tip.height`) auto-heals the crash-mid-flush
- *     shape (single-block overshoot ≤32 rows — see
- *     `test_coins_view_atomicity:t_utxos_one_ahead_auto_rewound`).
- *   - A `SIGKILL` anywhere during a realistic write loop does not
- *     leave the datadir in a shape the operator would have to fix
- *     by hand.
+ * Two further crash windows, each its own fork+SIGKILL cycle set:
  *
- * What this test does NOT prove
- * -----------------------------
- *   - Full-binary cold restart recovery (that's MVP criterion #6's
- *     soak test — `platform/deploy/zclassic23.service` under systemd).
- *   - Protocol-level resync after restart (covered by MVP criterion
- * #3, `test_cold_start_sync`).
- *   - Block validation correctness (covered by
- *     `test_chain_stall_repro`, `test_chain_rollback`,
- *     `test_consensus_reject_events`).
- *
- * It proves the narrower but load-bearing claim: "on-disk state is
- * atomically recoverable after `SIGKILL`", which is the hard part of
- * MVP criterion #7.
- *
- * Two further crash windows (plan lane 2.4, robustness matrix
- * extension), each its own fork+SIGKILL cycle set reusing the SAME
- * pattern above:
- *
- *   - MID-MINT-FOLD (p11_7mf_*): drives the REAL durable-marker API the
- *     offline `-mint-anchor` producer uses (`mint_anchor_producer_lane_bind`
- *     / `mint_anchor_progress_mark` / `_can_resume`, engine/composition/src/
- *     mint_anchor_progress.c) plus the REAL coins_kv per-block apply shape
- *     (`coins_kv_add_many` + `coins_kv_set_applied_height_in_tx` inside one
- *     BEGIN IMMEDIATE, storage/coins_kv.h) — the same atomic unit
- *     `utxo_apply_stage.c`'s forward-apply step commits. On every reopen it
- *     asserts the qed-harvested invariant by name: the durable
- *     coins_applied_height cursor's implied row count
- *     (`(applied_through+1) * rows_per_step`) must equal `coins_kv_count()`
- *     EXACTLY — the cursor can never be ahead of (or behind) the content it
- *     claims, which is exactly what the drain pre-commit veto guarantees in
- *     production. `mint_anchor_progress_can_resume()` must authorize one of
- *     exactly two clean outcomes at every reopen: a non-legacy RESUME when
- *     fold progress exists, or — since cf71eb314 — the sanctioned GENESIS
- *     RESET when the marker matches but nothing was ever applied (an empty
- *     resume would skip the reset that truncates coins_kv and wedge the
- *     producer against its node.db mirror). Any other refusal is the silent
- *     wedge this test exists to catch; a final
- *     uninterrupted drain to the last step plus `mint_anchor_progress_clear`
- *     proves the OTHER named terminal (verified completion) is always
- *     reachable regardless of interruption history.
+ *   - MID-MINT-FOLD (p11_7mf_*): drives the real durable-marker API of the
+ *     offline `-mint-anchor` producer (`mint_anchor_producer_lane_bind` /
+ *     `mint_anchor_progress_mark` / `_can_resume`,
+ *     engine/composition/src/mint_anchor_progress.c) and the real coins_kv
+ *     per-block apply (`coins_kv_add_many` + `coins_kv_set_applied_height_in_tx`
+ *     inside one BEGIN IMMEDIATE). On every reopen the cursor's implied row
+ *     count `(applied_through+1) * rows_per_step` must equal `coins_kv_count()`
+ *     exactly, and `_can_resume()` must authorize a non-legacy RESUME when fold
+ *     progress exists or the sanctioned GENESIS RESET when the marker matches but
+ *     nothing was applied. Any other refusal is a wedge. A final uninterrupted
+ *     drain plus `mint_anchor_progress_clear` proves verified completion is
+ *     always reachable.
  *
  *   - MID-IMPORTBLOCKINDEX (p11_7ib_*): forks real calls to
  *     `snapshot_import_block_index()` (engine/controllers/src/
- *     snapshot_controller_import.c) — the function `--importblockindex`
- *     dispatches to, the MANDATORY FIRST STEP of the two-step cold-sync
- *     recipe (CLAUDE.md "Tenacity & recovery"). Self-calibrates the SIGKILL
- *     delay window from one timed uninterrupted run (portable across dev
- *     boxes without a hardcoded duration guess) then asserts the `blocks`
- *     table is EMPTY or FULLY populated on every reopen — never partial —
- *     and that the fast-boot cursors (pprev_repaired_height /
- *     shielded_backfill_height) are never stamped unless the row count is
- *     also full (the same cursor-ahead-of-content shape, on a different
- *     write path). A final uninterrupted re-run proves the fully-imported
- *     terminal is always reachable.
+ *     snapshot_controller_import.c), the first step of the two-step cold-sync
+ *     recipe. The kill delay is calibrated from one timed uninterrupted run. The
+ *     `blocks` table must be empty or fully populated on every reopen, and the
+ *     fast-boot cursors (pprev_repaired_height / shielded_backfill_height) must
+ *     never be stamped unless the row count is full. A final uninterrupted
+ *     re-run proves the fully-imported terminal is reachable.
  *
- * Gating
- * ------
- * Skipped unless `ZCL_STRESS_TESTS=1`.  The test spawns child processes and
- * does real SQLite/LevelDB I/O against a tempdir — measured at low tens of
- * seconds on the dev box across all three phases.  Keeping it out of
- * `make test` default protects the default suite's sub-minute budget.
- *
- * Invocation
- * ----------
+ * Gating: skipped unless `ZCL_STRESS_TESTS=1` (child processes, real SQLite and
+ * LevelDB I/O; keeps `make test` under a minute).
  *   ZCL_STRESS_TESTS=1 build/bin/test_zcl
  *   ZCL_STRESS_TESTS=1 ZCL_TEST_ONLY=kill9 build/bin/test_zcl (focused)
- *
- * MVP linkage
- * -----------
- * Flips `MVP.md` criterion #7 from ☐ to ✅.  Forward-looking CI
- * gate, not RED-first.
  */
 
 #include "platform/time_compat.h"
@@ -150,12 +83,8 @@
 int test_kill9_recovery(void);
 
 /* ── Datadir helpers ────────────────────────────────────────
- *
- * Mirror the minimal SQLite schema builder from
- * `test_coins_view_atomicity.c` so this test is self-contained and
- * doesn't drag in node_db's full migration cost.  The helpers there
- * are file-static; duplicating (not extracting) keeps both tests
- * independent. */
+ * Minimal SQLite schema builder, duplicated from `test_coins_view_atomicity.c`
+ * (file-static there) so the tests stay independent. */
 
 static int p11_7_mkdir_p(const char *p)
 {
@@ -226,17 +155,10 @@ static int p11_7_count_utxos_above_tip(sqlite3 *db)
 }
 
 /* ── Child worker: realistic write loop, designed to be killed ──
- *
- * Each "block" application is wrapped in its own BEGIN/COMMIT —
- * matches the per-block atomicity guarantee the live node relies on.
- * A small nanosleep between steps widens the kill window so the
- * randomised parent delay has a real chance of landing mid-cycle.
- *
- * On success (not killed), the child exits 0 after applying the full
- * block batch.  On SIGKILL, the process dies leaving whichever
- * BEGIN/COMMIT rounds had already landed and possibly one
- * partially-staged transaction the SQLite journal will roll back on
- * the parent's next open. */
+ * Each "block" is its own BEGIN/COMMIT, matching the live node's per-block
+ * atomicity. A small nanosleep between steps widens the kill window. On
+ * success the child exits 0; on SIGKILL the SQLite journal rolls back any
+ * partial transaction on the next open. */
 
 #if !defined(_WIN32)
 static int p11_7_mid_apply_fd = -1;
@@ -266,8 +188,7 @@ static void p11_7_child_worker(const char *dbpath, int start_height)
     if (sqlite3_open(dbpath, &db) != SQLITE_OK)
         _exit(1);
 
-    /* WAL mode matches production (see boot_services.c); gives the
-     * fastest recovery path on reopen. */
+    /* WAL mode matches production (boot_services.c). */
     sqlite3_exec(db, "PRAGMA journal_mode=WAL", NULL, NULL, NULL);
     sqlite3_exec(db, "PRAGMA synchronous=NORMAL", NULL, NULL, NULL);
 
@@ -278,12 +199,10 @@ static void p11_7_child_worker(const char *dbpath, int start_height)
         if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL) != SQLITE_OK)
             _exit(2);
 
-        /* Insert the block-index row first — matches the live write
-         * order in connect_block. */
+        /* Block-index row first, matching connect_block's write order. */
         uint8_t hash[32];
         memset(hash, (uint8_t)(0xA0 ^ (h & 0xFF)), 32);
-        /* Mix the iteration into the hash so each block has a unique
-         * primary key. */
+        /* Mix the iteration into the hash for a unique primary key. */
         hash[0] ^= (uint8_t)(h >> 8);
 
         sqlite3_stmt *s = NULL;
@@ -315,9 +234,7 @@ static void p11_7_child_worker(const char *dbpath, int start_height)
 #if !defined(_WIN32)
         p11_7_hold_mid_apply(db);
 #endif
-        /* Update the tip pointer LAST — the ordering that makes the
-         * "UTXOs ahead of tip" pathology observable if we get killed
-         * between the UTXO inserts and the tip update. */
+        /* Tip pointer LAST, so a kill between UTXO inserts and the tip update leaves UTXOs ahead of tip. */
         sqlite3_prepare_v2(db,
             "INSERT OR REPLACE INTO node_state(key,value) "
             "VALUES('coins_best_block',?)", -1, &s, NULL);
@@ -328,9 +245,7 @@ static void p11_7_child_worker(const char *dbpath, int start_height)
         if (sqlite3_exec(db, "COMMIT", NULL, NULL, NULL) != SQLITE_OK)
             _exit(3);
 
-        /* Widen the kill window: ~1ms per block.  30 blocks * 1ms ≈
-         * 30ms total — covers the full 0.5-40ms randomised parent
-         * kill range. */
+        /* ~1ms per block; 30 blocks cover the 0.5-40ms kill range. */
         struct timespec ts = { .tv_sec = 0, .tv_nsec = 1000000L };
         nanosleep(&ts, NULL);
     }
@@ -426,9 +341,7 @@ static int p11_7_one_cycle(const char *dbpath, int cycle_idx,
         return 1;
     }
 
-    /* Randomised kill delay: 0.5ms to ~40ms.  Covers cases where the
-     * child is (a) still opening the DB, (b) mid-transaction, (c)
-     * between COMMIT rounds, (d) already finished (delay > 30ms). */
+    /* Randomised kill delay 0.5-40ms: opening, mid-transaction, between commits, or already finished. */
     long delay_us = 500 + (long)(rand_r(rng_state) % 40000);
     struct timespec delay_ts = {
         .tv_sec = 0,
@@ -451,9 +364,7 @@ static int p11_7_one_cycle(const char *dbpath, int cycle_idx,
     bool mid_apply_observed = false;
     pid_t pid = p11_7_spawn_cycle(dbpath, start_height, cycle_idx, &mid_apply_observed);
     if (pid < 0) return 1;
-    /* Randomised kill delay: 0.5ms to ~40ms.  Covers cases where the
-     * child is (a) still opening the DB, (b) mid-transaction, (c)
-     * between COMMIT rounds, (d) already finished (delay > 30ms). */
+    /* Randomised kill delay 0.5-40ms: opening, mid-transaction, between commits, or already finished. */
     long delay_us = 500 + (long)(rand_r(rng_state) % 40000);
     struct timespec delay_ts = {
         .tv_sec = 0,
@@ -484,9 +395,7 @@ static int p11_7_one_cycle(const char *dbpath, int cycle_idx,
     if (!p11_7_mid_apply_verified(cycle_idx, mid_apply_observed, killed)) return 1;
 #endif
 
-    /* Parent reopens through the live node's entry point.  This is
-     * where the "UTXOs ahead of tip → auto-rewind-or-refuse" invariant
-     * fires (see test_coins_view_atomicity). */
+    /* Reopen through the live node's entry point, where the "UTXOs ahead of tip" auto-rewind fires. */
     sqlite3 *rdb = NULL;
     if (sqlite3_open(dbpath, &rdb) != SQLITE_OK) {
         printf("FAIL (cycle %d: reopen failed after %s)\n",
@@ -498,12 +407,9 @@ static int p11_7_one_cycle(const char *dbpath, int cycle_idx,
     struct coins_view_sqlite cvs;
     bool opened = coins_view_sqlite_open(&cvs, rdb);
     if (!opened) {
-        /* The boot-time integrity check refused.  That's an acceptable
-         * outcome if the overshoot exceeds the auto-rewind threshold
-         * (32 rows per test_coins_view_atomicity:t_utxos_one_ahead_too_many_rejected).
-         * But for our workload (4 UTXOs per block, 30 blocks max), the
-         * overshoot should always be ≤ a few rows — auto-heal should
-         * succeed every time.  A refusal here is a regression. */
+        /* A refusal is acceptable only past the auto-rewind threshold (32 rows,
+         * test_coins_view_atomicity:t_utxos_one_ahead_too_many_rejected); this
+         * workload overshoots by a few rows, so a refusal is a regression. */
         printf("FAIL (cycle %d: coins_view_sqlite_open refused after %s)\n",
                cycle_idx, killed ? "SIGKILL" : "clean exit");
         sqlite3_close(rdb);
@@ -528,14 +434,10 @@ static int p11_7_one_cycle(const char *dbpath, int cycle_idx,
 /* ════════════════════════════════════════════════════════════════════════
  * MID-MINT-FOLD kill9 phase
  *
- * Drives the REAL durable-marker API the offline `-mint-anchor` producer
- * uses (engine/composition/src/mint_anchor_progress.c) and the REAL per-block coins_kv
- * apply shape (storage/coins_kv.h: coins_kv_add_many +
- * coins_kv_set_applied_height_in_tx inside ONE BEGIN IMMEDIATE — the same
- * atomic unit utxo_apply_stage.c's forward-apply step commits) against a
- * fresh progress.kv, killing the child mid-fold and reopening through the
- * SAME `mint_anchor_progress_can_resume()` gate a real restart of the
- * producer calls before resuming.
+ * Drives the real durable-marker API of the offline `-mint-anchor` producer and
+ * the real per-block coins_kv apply (one BEGIN IMMEDIATE, the same unit as
+ * utxo_apply_stage.c's forward-apply) against a fresh progress.kv, killing the
+ * child mid-fold and reopening through `mint_anchor_progress_can_resume()`.
  * ════════════════════════════════════════════════════════════════════════ */
 
 #define MF_ROWS_PER_STEP 3
@@ -543,10 +445,8 @@ static int p11_7_one_cycle(const char *dbpath, int cycle_idx,
 #define MF_BATCH         8
 
 /* Deterministic per-step coin rows: step h contributes MF_ROWS_PER_STEP
- * outputs, each with a txid derived from h so a later coins_kv_exists probe
- * can name exactly which step's content is being checked. `txids` must
- * outlive the coins_kv_add_many call (it binds SQLITE_TRANSIENT copies, but
- * the caller still owns the array through the call). */
+ * outputs with txids derived from h. `txids` must outlive the
+ * coins_kv_add_many call. */
 static void mf_step_rows(int32_t step, struct coins_kv_add_row rows[MF_ROWS_PER_STEP],
                          uint8_t txids[MF_ROWS_PER_STEP][32])
 {
@@ -566,11 +466,9 @@ static void mf_step_rows(int32_t step, struct coins_kv_add_row rows[MF_ROWS_PER_
     }
 }
 
-/* Child worker: fold steps [start_step, end_step) — each step is ONE
- * BEGIN IMMEDIATE / coins_kv_add_many + coins_kv_set_applied_height_in_tx /
- * COMMIT, mirroring the real forward-apply step's atomic unit. A small
- * nanosleep between steps widens the SIGKILL window, same convention as
- * p11_7_child_worker above. */
+/* Child worker: fold steps [start_step, end_step), each one BEGIN IMMEDIATE /
+ * coins_kv_add_many + coins_kv_set_applied_height_in_tx / COMMIT. A small
+ * nanosleep widens the SIGKILL window. */
 static void mf_child_worker(const char *dir, int32_t start_step, int32_t end_step)
 {
     if (!progress_store_open(dir))
@@ -633,9 +531,7 @@ static int p11_7mf_run_phase(void)
     test_cleanup_tmpdir(dir);
     p11_7_mkdir_p(dir);
 
-    /* Fixture checkpoint: only its OWN internal consistency matters here
-     * (mark/can_resume compare against the SAME struct every call) — it does
-     * not need to match a compiled checkpoint. */
+    /* Fixture checkpoint: only its own consistency matters (mark/can_resume compare the same struct). */
     struct sha3_utxo_checkpoint cp;
     memset(&cp, 0, sizeof(cp));
     cp.height = MF_N_STEPS - 1;
@@ -644,10 +540,7 @@ static int p11_7mf_run_phase(void)
     memset(cp.block_hash, 0xEE, sizeof(cp.block_hash));
     memset(cp.sha3_hash, 0xAB, sizeof(cp.sha3_hash));
 
-    /* Setup: bind the producer lane + write the durable in-progress marker —
-     * exactly the durable state the real -mint-anchor producer leaves before
-     * folding a single block. This is the marker mint_anchor_progress_can_
-     * resume() below authenticates on every reopen. */
+    /* Setup: bind the producer lane and write the in-progress marker the real producer leaves before folding. */
     {
         if (!progress_store_open(dir)) {
             printf("FAIL (mint-fold: progress_store_open setup failed)\n");
@@ -760,8 +653,7 @@ static int p11_7mf_run_phase(void)
         }
 #endif
 
-        /* Reopen — the same durable-marker inspection a real restart of the
-         * offline -mint-anchor producer performs before resuming a fold. */
+        /* Reopen: the durable-marker inspection a restart performs before resuming. */
         if (!progress_store_open(dir)) {
             printf("FAIL (mint-fold cycle %d: reopen failed after %s)\n",
                    i, killed ? "SIGKILL" : "clean exit");
@@ -775,13 +667,9 @@ static int p11_7mf_run_phase(void)
         bool can_resume = mint_anchor_progress_can_resume(db, &cp, &applied_through,
                                                            &legacy_adopted);
         if (!can_resume) {
-            /* cf71eb314 contract: an intact matched marker with NOTHING
-             * durably applied authorizes a genesis reset (can_resume=false)
-             * rather than an empty resume — resuming would skip the reset
-             * that truncates coins_kv. That refusal is clean ONLY when it is
-             * provably the empty case: no durable frontier and nothing
-             * adopted. Any other false here is the silent wedge this test
-             * exists to catch (a kill after real progress must resume). */
+            /* An intact matched marker with nothing durably applied authorizes a
+             * genesis reset (can_resume=false), clean only when there is no durable
+             * frontier and nothing adopted. Any other false is a wedge. */
             int32_t empty_frontier = 0;
             bool have_frontier = true; /* poison — must come back false */
             if (legacy_adopted ||
@@ -799,8 +687,7 @@ static int p11_7mf_run_phase(void)
                 progress_store_close();
                 break;
             }
-            /* Mirror boot_refold_staged.c's false branch: re-bind the lane,
-             * re-mark, and fold again from step 0. */
+            /* Mirror boot_refold_staged.c's false branch: re-bind, re-mark, fold from step 0. */
             bool rearmed = mint_anchor_producer_lane_bind(
                                db, /*checkpoint_fold=*/true) &&
                            mint_anchor_progress_mark(db, &cp);
@@ -825,12 +712,8 @@ static int p11_7mf_run_phase(void)
             break;
         }
 
-        /* THE qed-harvested assertion: the durable applied-through cursor
-         * must never be AHEAD of the coin content it implies. Exactly
-         * (applied_through+1) * MF_ROWS_PER_STEP rows must exist — no more,
-         * no less — regardless of where inside the per-step BEGIN/COMMIT the
-         * SIGKILL landed. This is the drain pre-commit veto's invariant,
-         * proven here under a real SIGKILL instead of by construction. */
+        /* The applied-through cursor never runs ahead of its content: exactly
+         * (applied_through+1) * MF_ROWS_PER_STEP rows exist wherever the SIGKILL landed. */
         int64_t expect_count = applied_through < 0
                                     ? 0
                                     : (int64_t)(applied_through + 1) * MF_ROWS_PER_STEP;
@@ -847,8 +730,7 @@ static int p11_7mf_run_phase(void)
             break;
         }
 
-        /* Point check at the exact boundary: the last-applied step's own
-         * coin is present; the next (not-yet-applied) step's coin is absent. */
+        /* The last-applied step's coin is present; the next step's is absent. */
         bool boundary_ok = true;
         if (applied_through >= 0) {
             uint8_t txids[MF_ROWS_PER_STEP][32];
@@ -873,11 +755,7 @@ static int p11_7mf_run_phase(void)
         progress_store_close();
     }
 
-    /* Terminal: drain any remaining steps UNINTERRUPTED, then clear the
-     * durable marker — models the real producer's "snapshot written +
-     * hard-verified" completion step. Proves the OTHER named terminal
-     * (verified completion) is always reachable regardless of how many
-     * SIGKILLs preceded it. */
+    /* Terminal: drain remaining steps uninterrupted, then clear the marker (verified completion). */
     if (!failures) {
         int32_t start_step = 0;
         if (!mf_read_start_step(dir, &start_step)) {
@@ -915,9 +793,7 @@ static int p11_7mf_run_phase(void)
                 failures++;
             } else {
                 bool cleared = mint_anchor_progress_clear(db);
-                /* MINT_ANCHOR_MARKER_LEN (48) is private to
-                 * mint_anchor_progress.c — size generously rather than
-                 * duplicate the private constant. */
+                /* MINT_ANCHOR_MARKER_LEN is private to mint_anchor_progress.c; size generously. */
                 uint8_t marker_after[64] = {0};
                 size_t marker_after_n = 0;
                 bool marker_after_found = true; /* poison — must come back false */
@@ -957,14 +833,9 @@ static int p11_7mf_run_phase(void)
  * MID-IMPORTBLOCKINDEX kill9 phase
  *
  * Forks real calls to snapshot_import_block_index() (engine/controllers/src/
- * snapshot_controller_import.c) — the function `--importblockindex`
- * dispatches to, the mandatory first step of the two-step cold-sync recipe.
- * Its internal shape is an autocommit `DELETE FROM blocks` (+ tip reset)
- * followed by ONE BEGIN..COMMIT bulk-insert transaction (our fixture stays
- * well under its 100000-row batch-commit boundary, so it is a single
- * all-or-nothing unit): a SIGKILL anywhere in that sequence must leave
- * `blocks` EMPTY (pre-insert / rolled back) or FULLY populated (post-commit)
- * on reopen — never partial.
+ * snapshot_controller_import.c), the first step of the cold-sync recipe: an
+ * autocommit `DELETE FROM blocks` then one BEGIN..COMMIT bulk insert. A
+ * SIGKILL anywhere must leave `blocks` empty or fully populated, never partial.
  * ════════════════════════════════════════════════════════════════════════ */
 
 #define IB9_N_BLOCKS 2000
@@ -977,10 +848,9 @@ static uint32_t ib9_pow_limit_bits(void)
     return arith_uint256_get_compact(&pow_limit, false);
 }
 
-/* Import admission now hash-binds every LevelDB key to its serialized header
- * and checks the resulting hash against the network powLimit.  Manufacture a
- * valid test header by varying nTime; Equihash is deliberately outside this
- * crash-atomicity fixture because all rows are below the import stride. */
+/* Import admission hash-binds each LevelDB key to its header and checks the
+ * hash against powLimit; test headers vary nTime. Equihash is outside this
+ * fixture because all rows are below the import stride. */
 static bool ib9_mine_pow(struct disk_block_index *dbi, uint32_t bits,
                          struct uint256 *out_hash)
 {
@@ -1085,9 +955,7 @@ static int p11_7ib_run_phase(void)
     char db_path[380];
     snprintf(db_path, sizeof(db_path), "%s/node.db", base);
 
-    /* Calibration run: time ONE full uninterrupted import to size the kill
-     * delay window to THIS box's actual disk/CPU speed instead of a guessed
-     * constant — portable across dev boxes. */
+    /* Calibration: time one uninterrupted import to size the kill window to this box. */
     int64_t t_cal0 = platform_time_monotonic_us();
     int cal_count = -1;
     bool cal_ok = snapshot_import_block_index(src_dir, db_path, /*header_only=*/true,
@@ -1204,10 +1072,7 @@ static int p11_7ib_run_phase(void)
             break;
         }
 
-        /* Cursor-ahead-of-content check on THIS write path: the fast-boot
-         * cursors are stamped ONLY after the full commit + index rebuild, so
-         * they must be absent whenever count==0 and, when present, must
-         * equal exactly count-1 — never a stale/garbled value. */
+        /* Fast-boot cursors are stamped only after commit + index rebuild: absent when count==0, else exactly count-1. */
         int64_t pprev_h = -2, shielded_h = -2;
         bool pprev_found = node_db_state_get_int(&ndb, "pprev_repaired_height", &pprev_h);
         bool shielded_found = node_db_state_get_int(&ndb, "shielded_backfill_height",
@@ -1216,8 +1081,7 @@ static int p11_7ib_run_phase(void)
         bool cursors_at_tip = pprev_found && shielded_found &&
             pprev_h == IB9_N_BLOCKS - 1 &&
             shielded_h == IB9_N_BLOCKS - 1;
-        /* Full rows with absent cursors is the safe crash window after the
-         * row commit but before the atomic cursor stamp: boot recomputes them.
+        /* Full rows with absent cursors is the safe window before the cursor stamp; boot recomputes them.
          * Empty rows may never retain cursors, and a mixed pair is never safe. */
         bool cursors_consistent = count == 0 ? cursors_absent :
                                                 (cursors_absent || cursors_at_tip);
@@ -1235,10 +1099,7 @@ static int p11_7ib_run_phase(void)
         node_db_close(&ndb);
     }
 
-    /* Terminal: one uninterrupted re-run proves the fully-imported state is
-     * ALWAYS reachable regardless of how the prior cycles left the table —
-     * the function's own DELETE+rebuild is itself a valid, named resume
-     * strategy (proven idempotent by test_importblockindex_roundtrip). */
+    /* Terminal: one uninterrupted re-run proves the imported state is always reachable (DELETE+rebuild is idempotent, see test_importblockindex_roundtrip). */
     if (!failures) {
         int final_count = -1;
         bool final_ok = snapshot_import_block_index(src_dir, db_path,
@@ -1279,12 +1140,9 @@ int test_kill9_recovery(void)
 {
     int failures = 0;
 #if defined(_WIN32)
-    /* Windows has no fork(): the crash-victim child is this same binary
-     * re-exec'd with ZCL_TEST_FORK_ROLE set (see test_spawn_self_with_role).
-     * Run the worker body — which always _exit()s — with its parameters
-     * passed through the environment. TerminateProcess from the parent is
-     * the uncatchable SIGKILL analogue, so the crash-window semantics are
-     * identical. */
+    /* Windows has no fork(): the victim is this binary re-exec'd with
+     * ZCL_TEST_FORK_ROLE, parameters via the environment; TerminateProcess is
+     * the SIGKILL analogue. */
     const char *fork_role = getenv("ZCL_TEST_FORK_ROLE");
     if (fork_role && fork_role[0]) {
         if (strcmp(fork_role, "p11_7") == 0) {
@@ -1333,7 +1191,6 @@ int test_kill9_recovery(void)
 
     char dbpath[512];
     snprintf(dbpath, sizeof(dbpath), "%s/node.db", dir);
-    /* Remove any stale DB from an earlier aborted run — fresh start. */
     unlink(dbpath);
     {
         char wal[520];
@@ -1431,10 +1288,8 @@ int test_kill9_recovery(void)
     /* Cleanup */
     test_cleanup_tmpdir(dir);
 
-    /* Extended crash-window matrix (plan lane 2.4): mid-mint-fold and
-     * mid-importblockindex, each an independent fork+SIGKILL cycle set with
-     * its own cleanup. Both run regardless of the UTXO-apply phase's result
-     * so a single-phase regression doesn't hide failures in the others. */
+    /* Extended crash-window matrix: mid-mint-fold and mid-importblockindex, each with its own
+     * cleanup and run regardless of the UTXO-apply result. */
     failures += p11_7mf_run_phase();
     failures += p11_7ib_run_phase();
 

@@ -35,9 +35,7 @@ struct xs64 {
 
 static uint64_t xs64_next(struct xs64 *r)
 {
-    /* Marsaglia xorshift64. Not cryptographic — that's the point: we
-     * want a reproducible stream so the test can assert the expected
-     * sequence under a known seed. */
+    /* Marsaglia xorshift64: not cryptographic; a reproducible stream. */
     uint64_t x = atomic_load(&r->state);
     x ^= x << 13;
     x ^= x >> 7;
@@ -138,9 +136,7 @@ int test_rng(void)
         };
         rng_set_default(&iface);
 
-        /* Compute the expected sequence from a separate identical
-         * instance so a regression in xs64_next itself is also
-         * caught by the assertion (the two must agree). */
+        /* Compute the expected sequence from an identical instance. */
         struct xs64 expected;
         atomic_store(&expected.state, (uint64_t)0xDEADBEEFCAFEBABEULL);
 

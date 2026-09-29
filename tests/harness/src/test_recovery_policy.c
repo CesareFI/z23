@@ -2,20 +2,11 @@
  *
  * Tests for the recovery_policy module.
  *
- * These tests are pure (no SQLite / no chain state) because the policy
- * module deliberately has no dependencies on them — it is a decision
- * gate, not a mutation. Every test builds a fresh `struct recovery_policy`
- * on the stack, drives `policy_check_*` with specific inputs, and
- * asserts both the returned decision and the event(s) it produced.
- *
- * Event assertions use a local sync observer registered for the three
- * recovery_policy events; the observer increments per-decision counters
- * so individual tests can verify "this call produced exactly one ALLOW".
- *
- * The operator-ack-file behaviour is covered with a temp file: the test
- * points `operator_ack_file` at it, runs the check, reads the file back,
- * and asserts the contents. The operator-prompt hook is covered with a
- * tiny mock function.
+ * Pure tests (no SQLite / chain state): each builds a fresh
+ * `struct recovery_policy`, drives `policy_check_*`, and asserts the returned
+ * decision and the event(s) produced. A local sync observer counts events per
+ * decision. The operator-ack-file behaviour is covered with a temp file and
+ * the prompt hook with a mock function.
  */
 
 #include "test/test_core.h"
@@ -28,9 +19,8 @@
 #include <string.h>
 #include <unistd.h>
 
-/* Ack files are real files that these tests write, read back, and unlink.
- * At a fixed /tmp path a second copy of the suite would unlink one between
- * this run's write and its read-back, so every ack path is per-process. */
+/* Ack paths are per-process so concurrent copies of the suite do not unlink
+ * each other's files. */
 static const char *rp_ack_path(char *buf, size_t n, const char *tag)
 {
     mkdir("test-tmp", 0755);

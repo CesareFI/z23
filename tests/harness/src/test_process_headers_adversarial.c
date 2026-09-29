@@ -108,9 +108,8 @@ static void ph_record_header_vote(uint32_t peer_id, int height,
              hash_hex ? hash_hex : "");
 }
 
-/* Case 5 authority shims: replay the EXACT inconsistent authority pair
- * found at the finalize frontier — height = tip-1 while
- * the hash resolves to the tip block itself. */
+/* Case 5 authority shims: replay an inconsistent authority pair (height =
+ * tip-1 while the hash resolves to the tip block itself). */
 static int64_t g_ph_auth_height = -1;
 static uint8_t g_ph_auth_hash[32];
 static bool ph_auth_is_authoritative(void) { return true; }
@@ -276,12 +275,11 @@ int test_process_headers_adversarial(void)
         if (orphan_mined) {
             node.disconnect = false;
             atomic_store(&node.misbehavior, 0);
-            /* The all-rejected recovery probe (bad-prevblk → getheaders from
-             * our best header) would legitimately fire here; arm its per-peer
-             * rate limit so the send path stays untouched (no-socket test
-             * design — a failed send would close the stub node and mask the
-             * penalty assertions below). The probe decision itself is pinned
-             * in test_sync_service. */
+            /* The all-rejected recovery probe (bad-prevblk -> getheaders from
+             * our best header) would fire here; arm its per-peer rate limit
+             * so the send path stays untouched (a failed send would close the
+             * stub node and mask the penalty assertions). The probe decision
+             * itself is pinned in test_sync_service. */
             int64_t probe_armed = (int64_t)platform_time_wall_time_t();
             atomic_store(&node.last_reject_probe_time, probe_armed);
             size_t map0 = ms.map_block_index.size;
@@ -312,15 +310,13 @@ int test_process_headers_adversarial(void)
         }
     }
 
-    /* ── 5. tip-header re-delivery must NOT relabel heights (the
-     *       height-splice regression class). Re-use h1/h2 from case 3 (accepted at
-     *       h=1,2). Serve h2 as the window tip and register an authority
-     *       publishing the INCONSISTENT pair captured at the
-     *       finalize frontier (height = tip-1, hash = tip). The deleted
-     *       label-trust install in accept_block_header would re-height the
-     *       tip 2->1 and rewrite its parent 1->0, cascading a -1 splice over
-     *       every header above; the derive-from-parent rule must leave the
-     *       graph untouched and a successor must still land at parent+1. */
+    /* ── 5. tip-header re-delivery must NOT relabel heights. Re-use h1/h2
+     *       from case 3 (accepted at h=1,2). Serve h2 as the window tip and
+     *       register an authority publishing an INCONSISTENT pair (height =
+     *       tip-1, hash = tip). Trusting that label would re-height the tip
+     *       2->1 and rewrite its parent 1->0, cascading a -1 splice over every
+     *       header above; the derive-from-parent rule must leave the graph
+     *       untouched and a successor must still land at parent+1. */
     if (mined) {
         struct uint256 h2_hash;
         block_header_get_hash(&h2, &h2_hash);
@@ -380,19 +376,18 @@ int test_process_headers_adversarial(void)
     }
 
     /* ── 6. push_getheaders_from continuation-suppression must be LOUD +
-     *       COUNTED, never a silent header-sync stop (the header-continuation
-     *       wedge class). Uses a fresh EMPTY main_state so the null-hash
-     *       re-anchor finds no hashed frontier and returns after counting,
-     *       and the snapshot guard returns before touching the send path —
-     *       both stay off the node send mutex. */
+     *       COUNTED, never a silent header-sync stop. Uses a fresh EMPTY
+     *       main_state so the null-hash re-anchor finds no hashed frontier
+     *       and returns after counting, and the snapshot guard returns before
+     *       touching the send path; both stay off the node send mutex. */
     {
         struct main_state ms2;
         main_state_init(&ms2);
         struct msg_processor mp2;
         msg_processor_init(&mp2, &ms2, NULL, NULL, cp, dir, &g_ph_nm, NULL);
 
-        /* (a) null-hash anchor: counted no-hash suppression (pre-fix this
-         *     was a silent `return;` that killed the continuation). */
+        /* (a) null-hash anchor: counted no-hash suppression, never a silent
+         *     `return;`. */
         {
             struct block_index ghost;
             memset(&ghost, 0, sizeof(ghost));
@@ -407,9 +402,8 @@ int test_process_headers_adversarial(void)
                          a.getheaders_suppressed_no_hash + 1);
         }
 
-        /* (b) active snapshot exchange: counted snapshot suppression (pre-fix
-         *     this was the silent latch that wedged header sync after one
-         *     in-flight batch). */
+        /* (b) active snapshot exchange: counted snapshot suppression, never
+         *     a silent latch. */
         {
             struct msg_headers_stats a, b;
             msg_headers_get_stats(&a);
@@ -426,11 +420,10 @@ int test_process_headers_adversarial(void)
         main_state_free(&ms2);
     }
 
-    /* ── 7. sibling silent-drop sites in the same file, same defect class:
-     *       inbound `headers` dropped receive-side, push_getheaders() and
-     *       push_getheaders_span() dropped send-side while a snapshot
-     *       exchange owns the wire, and the getheaders-serving defer while
-     *       a peer snapshot transfer is in progress — all must count and
+    /* ── 7. sibling silent-drop sites: inbound `headers` dropped receive-side,
+     *       push_getheaders() and push_getheaders_span() dropped send-side
+     *       while a snapshot exchange owns the wire, and the getheaders-
+     *       serving defer during a peer snapshot transfer must all count and
      *       (rising-edge) log instead of silently returning. */
     {
         struct main_state ms3;
@@ -488,7 +481,7 @@ int test_process_headers_adversarial(void)
         }
 
         /* (d) process_getheaders: request deferred while we are serving a
-         *     snapshot to this peer — counted (was a bare printf). */
+         *     snapshot to this peer — counted. */
         {
             struct msg_headers_stats a, b;
             msg_headers_get_stats(&a);
@@ -510,10 +503,9 @@ int test_process_headers_adversarial(void)
     }
 
     /* ── 8. getheaders SERVE side: the reply must stay under the 2 MiB wire
-     *       cap. ~2000 Equihash headers (1344-byte solution ≈ 1.5 KB each)
-     *       serialize to ~2.9 MB > MAX_PROTOCOL_MESSAGE_LENGTH, and the peer
-     *       drops the whole oversized reply. getheaders_try_append_header()
-     *       bounds the batch by bytes so the framed reply always fits. */
+     *       cap. ~2000 Equihash headers (1344-byte solution) serialize to
+     *       ~2.9 MB > MAX_PROTOCOL_MESSAGE_LENGTH, so
+     *       getheaders_try_append_header() bounds the batch by bytes. */
     {
         struct block_header big;
         block_header_init(&big);
@@ -542,23 +534,18 @@ int test_process_headers_adversarial(void)
         stream_free(&body);
     }
 
-    /* ── 9. batch-order relink heal refuses a STALE ANCHOR (the
-     *       refuse-don't-mutate contract). The heal may only rewrite an
-     *       entry's parent/height/skip/chain-work when the claimed prev
-     *       resolves IN THE MAP to exactly the batch's previous anchor;
-     *       accept_block_header has already repaired each entry against
-     *       the map, so any residual disagreement means the anchor went
-     *       stale (orphaned twin, concurrent re-key, freed slot) and the
-     *       rewrite would split the ladder onto an out-of-map twin.
+    /* ── 9. batch-order relink heal refuses a STALE ANCHOR (refuse, don't
+     *       mutate). The heal may only rewrite an entry's parent/height/skip/
+     *       chain-work when the claimed prev resolves IN THE MAP to exactly
+     *       the batch's previous anchor; any residual disagreement means the
+     *       anchor went stale (orphaned twin, concurrent re-key, freed slot)
+     *       and a rewrite would split the ladder onto an out-of-map twin.
      *
-     *       Hermetic staging: admit A normally, then install a hand-built
-     *       TWIN of A (same hash bytes, outside the map) as the active-
-     *       chain window tip, so the next batch's sequence anchor is not
-     *       what the map resolves. Pre-fix behavior: B(prev=A) mutates
-     *       onto the twin — ancestry pointing OUTSIDE the map, invisible
-     *       to every map walker. Post-fix: refused without mutation, the
-     *       cursor keeps the last map-agreed anchor, and the next header
-     *       in the same batch still admits cleanly. */
+     *       Staging: admit A normally, then install a hand-built TWIN of A
+     *       (same hash bytes, outside the map) as the active-chain window tip.
+     *       B(prev=A) must be refused without mutation, the cursor keeps the
+     *       last map-agreed anchor, and the next header in the batch still
+     *       admits cleanly. */
     {
         struct main_state ms4;
         main_state_init(&ms4);

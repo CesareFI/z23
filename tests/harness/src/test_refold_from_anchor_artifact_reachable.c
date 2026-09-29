@@ -1,7 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * test_refold_from_anchor_artifact_reachable — SYNC-STRENGTH Workflow-1
- * Lane-4 (fold-from-checkpoint copy-prove harness). Pins the two production
+ * test_refold_from_anchor_artifact_reachable — pins the two production
  * predicates the cold-start/recovery seam is built on
  * (engine/composition/src/boot_refold_staged.c):
  *
@@ -266,31 +265,19 @@ int test_refold_from_anchor_artifact_reachable(void)
      * anchor height — never 0/genesis — and mark the refold_from_anchor
      * floor flag. ───────────────────────────────────────────────────────
      *
-     * Two DISTINCT cursor conventions collide at the anchor (documented at
-     * engine/jobs/src/tip_finalize_anchor.c:333-345, discovered empirically
-     * while writing this test — step (iii) of boot_refold_from_anchor_reset
-     * first stamps all 8 cursors to the bare anchor via
-     * stage_repair_force_stage_cursor, but step (iv)'s
-     * tip_finalize_stage_seed_anchor() then calls
-     * stage_anchor_upstream_cursors_to(db, anchor+1, ...), which RAISES the
-     * 7 upstream stages from anchor to anchor+1):
-     *   - the 7 UPSTREAM stages (header_admit, validate_headers, body_fetch,
-     *     body_persist, script_validate, proof_validate, utxo_apply) use the
-     *     "next height to process" convention — cursor == anchor+1 (the same
-     *     convention as coins_applied_height, asserted separately below).
-     *   - tip_finalize alone uses the "served tip" convention — cursor ==
-     *     anchor exactly (cursor C means "served tip at C").
-     * Both conventions land STRICTLY ABOVE 0/genesis, which is the
-     * discriminating claim this test exists to pin; the exact ±1 split is
-     * asserted precisely (rather than loosely as ">= anchor") so a future
-     * regression that quietly changes either convention is caught.
+     * Two cursor conventions meet at the anchor
+     * (engine/jobs/src/tip_finalize_anchor.c): the reset stamps all 8 cursors
+     * to the bare anchor, then tip_finalize_stage_seed_anchor() raises the 7
+     * upstream stages to anchor+1:
+     *   - upstream stages (header_admit, validate_headers, body_fetch,
+     *     body_persist, script_validate, proof_validate, utxo_apply) use "next
+     *     height to process": cursor == anchor+1 (as coins_applied_height).
+     *   - tip_finalize uses "served tip": cursor == anchor exactly.
+     * The exact split is asserted so a change to either convention is caught.
      *
-     * Uses REDUCER_FRONTIER_TRUSTED_ANCHOR (the REAL compiled mainnet anchor,
-     * 3,056,758) rather than the small override height above: cursor
-     * forcing (stage_repair_force_stage_cursor) is independent of the
-     * checkpoint height override, and pinning to the production constant
-     * makes the "not genesis" claim unambiguous (0 vs 3,056,758, not 0 vs
-     * 4321). */
+     * Uses REDUCER_FRONTIER_TRUSTED_ANCHOR (the real compiled mainnet anchor)
+     * rather than the small override height above, so "not genesis" is
+     * unambiguous; cursor forcing is independent of the checkpoint override. */
     {
         char pdir[300];
         snprintf(pdir, sizeof(pdir), "%s/cursor_pos", dir);
@@ -380,13 +367,11 @@ int test_refold_from_anchor_artifact_reachable(void)
                   "next-height convention)",
                   applied == cp_real.height + 1);
 
-        /* boot_refold_from_anchor_reset() itself does NOT mark the durable
-         * refold_from_anchor floor flag — engine/composition/src/boot.c's do_from_anchor
-         * caller does that in a separate step right after the reset
+        /* boot_refold_from_anchor_reset() does NOT mark the durable
+         * refold_from_anchor floor flag; boot.c's do_from_anchor caller does
+         * that right after the reset
          * (refold_progress_mark_started_from_anchor(progress_store_db(),
-         * resume_target), boot.c:3870). Mirror that exact production
-         * sequence here rather than assert a behavior the reset function
-         * never promised on its own. */
+         * resume_target)). Mirror that production sequence here. */
         RAA_CHECK("cursor: refold_progress_mark_started_from_anchor "
                   "(the boot.c caller's next step) succeeds",
                   pk && refold_progress_mark_started_from_anchor(

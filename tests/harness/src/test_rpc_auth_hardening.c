@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * RPC authentication hardening tests — wave 12, AGENT3 item #2.
+ * RPC authentication hardening tests.
  *
  * Tests:
  *   1. Brute-force lockout: 1000 bad passwords from same IP → banned
@@ -356,16 +356,13 @@ static int test_loopback_subnet_exemption(void)
 
 /* ── /metrics endpoint is gated by Basic auth ─────────────
  *
- * Before the fix, `GET /metrics` on the TLS listener returned a full
- * Prometheus body to any unauthenticated client — usable for
- * peer-count / tx-volume fingerprinting. After the fix, the endpoint
- * requires the same Basic-auth cookie the wallet RPCs use.
- *
- * This test drives a real rpc_http_start, reads the generated
- * .cookie, and sends three requests over a loopback socket:
- *   1. No Authorization  → expect 401.
- *   2. Wrong credentials → expect 401.
- *   3. Correct cookie    → expect 200 with a Prometheus body.
+ * `GET /metrics` on the TLS listener requires the same Basic-auth cookie as
+ * the wallet RPCs (an open endpoint fingerprints peer count / tx volume).
+ * Drives a real rpc_http_start, reads the generated .cookie, and sends three
+ * loopback requests:
+ *   1. No Authorization  -> 401.
+ *   2. Wrong credentials -> 401.
+ *   3. Correct cookie    -> 200 with a Prometheus body.
  */
 
 static bool metrics_read_cookie(const char *dir, char *out, size_t outsz)

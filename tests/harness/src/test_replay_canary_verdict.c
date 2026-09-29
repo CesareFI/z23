@@ -1,29 +1,22 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * test_replay_canary_verdict — the hermetic, in-CI half of the standing
- * replay canary (tenacity-roadmap item 5).
+ * replay canary.
  *
- * It does NOT spawn a mainnet node (too heavy for CI). It drives the
- * harness's verdict LOGIC through `replay_canary.sh --self-test=<mode>`,
- * which injects synthetic RPC outputs from a fixture dir instead of
- * spawning a node, and asserts the two contracts that make the canary
- * trustworthy:
+ * It spawns no mainnet node. It drives the harness's verdict logic through
+ * `replay_canary.sh --self-test=<mode>`, which injects synthetic RPC outputs
+ * from a fixture dir, and asserts two contracts:
  *
- *   1. GATE-FIRES-ON-KNOWN-BAD: each seeded-bad fixture produces a FAIL
- *      sentinel with the correct `reason` and a non-zero exit — proving
- *      the canary red-fails BEFORE any green night can count. The two
- *      named acceptance cases are fail-rejects (a seeded consensus reject)
- *      and fail-sha3 (a commitment != the compiled checkpoint).
+ *   1. Gate fires on known-bad: each seeded-bad fixture produces a FAIL
+ *      sentinel with the correct `reason` and a non-zero exit. The two named
+ *      cases are fail-rejects (a seeded consensus reject) and fail-sha3 (a
+ *      commitment != the compiled checkpoint).
  *
- *   2. NEVER-EXIT-0-AS-PROOF: a SIGKILL of the harness mid-run leaves NO
- *      fresh PASS sentinel. Proof requires a *positive* fresh PASS record,
- *      never the absence of a non-zero exit. We verify this directly:
- *      kill the harness while it is blocked, then assert no PASS sentinel
- *      with a fresh timestamp exists.
+ *   2. Never exit 0 as proof: a SIGKILL of the harness mid-run leaves no
+ *      fresh PASS sentinel. Proof requires a positive fresh PASS record.
  *
- * Every run uses a private fixture dir + verdict dir under /tmp so the
- * live node, the live datadir, and the operator's real verdict dir are
- * never touched. */
+ * Every run uses a private fixture dir and verdict dir under /tmp, so the
+ * live node, datadir and real verdict dir are never touched. */
 
 #include "test/test_core.h"
 #include "crypto/sha256.h"
@@ -178,10 +171,9 @@ static void seed_fixtures(const char *fx, const char *mode)
         "{\"height\":3145329,\"bestblock\":\"abc123\","
         "\"transactions\":100,\"txouts\":1354769,"
         "\"total_amount\":\"10364137.94674881\"}\n");
-    /* zclassicd coarse stats — same VALUES, but total_amount is an
-     * UNQUOTED JSON number (zclassicd's real format, verified live), so
-     * this exercises the harness's json_amount tolerance: the cross-node
-     * supply compare must still match the node's quoted form. */
+    /* zclassicd coarse stats: same values, but total_amount is an unquoted
+     * JSON number (zclassicd's real format), exercising the harness's
+     * json_amount tolerance. */
     write_file(fx, "zd_gettxoutsetinfo.json",
         "{\"height\":3145329,\"bestblock\":\"abc123\","
         "\"transactions\":100,\"txouts\":1354769,"
@@ -472,18 +464,15 @@ static int test_fail_crossnode_fires(void)
     return failures;
 }
 
-/* A budget overrun is NOT a divergence. bg_validation never reached COMPLETE,
- * so no sha3, no cross-node equality and no reject count was ever compared —
- * there is no parity evidence to report in either direction. Typing that FAIL
- * let mvp_gate.sh raise C8 "full-history parity alarm" (held 7 days) out of a
- * stopwatch: an honest slow box sustaining 33 blk/s against the ~112 blk/s the
- * 8 h budget assumes reported a disagreement it never found. BLOCKED (exit 2)
- * is inert to the pager, which is the point — the run must be re-attempted
- * with a bigger budget or faster hardware, not treated as a consensus finding.
+/* A budget overrun is not a divergence. bg_validation never reached
+ * COMPLETE, so no sha3, cross-node equality or reject count was compared and
+ * there is no parity evidence either way. It is BLOCKED (exit 2), inert to
+ * the pager, so the run is re-attempted with a bigger budget or faster
+ * hardware instead of being treated as a consensus finding.
  *
- * The distinction this pins: bg_validation FAILED still FAILs (a consensus
- * reject surfaces there and IS consensus-grade). Only "did not finish" is
- * demoted. See test_fail_bg_validation_failed for the other side. */
+ * bg_validation FAILED still FAILs (a reject surfaces there and is
+ * consensus-grade); only "did not finish" is demoted. See
+ * test_fail_bg_validation_failed. */
 static int test_timeout_blocks_rather_than_fails(void)
 {
     int failures = 0;
@@ -501,11 +490,10 @@ static int test_timeout_blocks_rather_than_fails(void)
     return failures;
 }
 
-/* The orchestrator-mandated elapsed-time band — the named-defect guard for
- * THIS track. A from-anchor COMPLETE that arrives implausibly fast (the seed
- * never applied) blows the floor; one that silently degrades to a genesis-
- * scale replay blows the ceiling. Both must FAIL with a typed reason BEFORE
- * the cross-node equality can mask a degraded-but-matching tip. */
+/* The elapsed-time band: a from-anchor COMPLETE that arrives implausibly
+ * fast (seed never applied) blows the floor; one that degrades to a
+ * genesis-scale replay blows the ceiling. Both FAIL with a typed reason
+ * before cross-node equality can mask a degraded-but-matching tip. */
 static int test_fail_elapsed_too_fast_fires(void)
 {
     int failures = 0;
@@ -588,21 +576,16 @@ static bool canary_wait_stamp(const char *stamp, pid_t pid, bool *gone)
     }
 }
 
-/* THE named top defect, hardened two ways:
+/* Never exit 0 as proof:
  *
- *   1. A STALE PASS from a previous successful run is pre-seeded in the
- *      verdict dir. The harness MUST remove it at run start (reset_verdict)
- *      so it can never leak as this run's proof.
- *   2. The harness is then killed after reset_verdict cleared the stale
- *      sentinel, but before it could write a fresh one. Its self-test path
- *      blocks on a never-fed FIFO via ZCL_CANARY_SELFTEST_BLOCK_FIFO.
- *      The post-kill read must therefore
- *      find NO sentinel at all → absence-of-fresh-PASS resolves FAIL.
+ *   1. A stale PASS from a previous run is pre-seeded in the verdict dir;
+ *      the harness must remove it at run start (reset_verdict).
+ *   2. The harness is killed after reset_verdict but before it writes a
+ *      fresh sentinel (its self-test blocks on a never-fed FIFO via
+ *      ZCL_CANARY_SELFTEST_BLOCK_FIFO). The post-kill read must find no
+ *      sentinel, so absence of a fresh PASS resolves FAIL.
  *
- * This proves the staleness contract is REAL (the stale PASS is gone) and
- * that a kill landing inside an actual run (past the harness exec, past
- * reset, before the verdict write) leaves no fresh PASS — not merely that a
- * kill before the harness ever started writes nothing. */
+ * This proves a kill inside an actual run leaves no fresh PASS. */
 static int test_sigkill_midrun_clears_stale_no_fresh_pass(void)
 {
     int failures = 0;
@@ -721,11 +704,9 @@ static int test_sigkill_midrun_clears_stale_no_fresh_pass(void)
     return failures;
 }
 
-/* A completing run must REPLACE a stale PASS with a FRESH one: the sentinel's
- * started_ts after the run must reflect THIS run (not the stale 2001 value),
- * proving reset_verdict + write_verdict together overwrite the leftover so a
- * reader band-checking freshness (Makefile guard, live Condition) sees the
- * current verdict, never the previous run's. */
+/* A completing run must replace a stale PASS with a fresh one: started_ts
+ * reflects this run, so a freshness reader (Makefile guard, live Condition)
+ * never sees the previous run's verdict. */
 static int test_pass_replaces_stale_sentinel(void)
 {
     int failures = 0;
@@ -780,9 +761,9 @@ static int test_pass_replaces_stale_sentinel(void)
 }
 
 /* A replay can run for hours while build/bin is replaced. The harness must
- * bind its verdict to identity captured before the run, not re-query a mutable
- * executable pathname when it writes PASS. This fixture blocks after capture,
- * swaps the fake executable from source A to source B, then completes. */
+ * bind its verdict to identity captured before the run, not re-query a
+ * mutable executable path when it writes PASS. This fixture swaps the fake
+ * executable from source A to source B after capture, then completes. */
 static int test_identity_is_captured_once_before_replay(void)
 {
     int failures = 0;
@@ -925,16 +906,11 @@ static int test_from_genesis_sentinel_name(void)
     return failures;
 }
 
-/* A self-test run whose binary-identity capture fails (nonexistent/
- * non-executable ZCL_CANARY_SELFTEST_NODE_BIN) could not attempt a replay at
- * all — it must write a BLOCKED sentinel (exit 2), never a FAIL (exit 1),
- * so an operator/ops-surface reader can tell "the canary's own prerequisite
- * was unmet" apart from "the canary ran and found a consensus-grade
- * anomaly" (lane E2 objective 2). This exercises `blocked()` end to end:
- * the sentinel write, the distinct exit code, and (per
- * canary_sentinel_watch.h's documented contract) that only verdict=="FAIL"
- * pages — a verdict other than PASS/FAIL, like BLOCKED, is inert there by
- * construction, so no node-side assertion is needed here. */
+/* A self-test whose binary-identity capture fails (nonexistent or
+ * non-executable ZCL_CANARY_SELFTEST_NODE_BIN) could not attempt a replay:
+ * it must write a BLOCKED sentinel (exit 2), never a FAIL (exit 1), so a
+ * reader can tell an unmet prerequisite from a consensus-grade anomaly.
+ * Only verdict=="FAIL" pages (canary_sentinel_watch.h); BLOCKED is inert. */
 static int test_blocked_on_identity_capture_failure(void)
 {
     int failures = 0;
@@ -983,10 +959,10 @@ static int test_blocked_on_identity_capture_failure(void)
     return failures;
 }
 
-/* A missing co-located zclassicd is an unmet external prerequisite, not a
- * consensus finding.  Exercise the real live-mode preflight with a guaranteed
- * invalid RPC port: it must fail fast, leave a durable BLOCKED sentinel, and
- * never spawn the mainnet candidate or wait for the eight-hour replay budget. */
+/* A missing co-located zclassicd is an unmet prerequisite, not a consensus
+ * finding. The live-mode preflight, given an invalid RPC port, must fail
+ * fast, leave a durable BLOCKED sentinel, and never spawn the mainnet
+ * candidate or wait out the replay budget. */
 static int test_blocked_on_oracle_rpc_unreachable(void)
 {
     int failures = 0;
@@ -1030,34 +1006,22 @@ static int test_blocked_on_oracle_rpc_unreachable(void)
 
 /* ── Static source guards ──────────────────────────────────────────
  *
- * These four checks pin shell-level invariants that the fixture harness
- * above cannot reach without spawning a real mainnet node (explicitly out
- * of scope for this hermetic suite — see the file header). Each guards a
- * concrete defect class:
+ * These checks pin shell-level invariants the fixture harness cannot reach
+ * without a real mainnet node:
  *
- *   1. The "UC: unbound variable" crash (visible via
- *      `journalctl -u zclassic23-replay-canary-nightly`): run_live's
- *      budget-timeout branch populated SD/DIAG/TX/ZD but not UC, so
- *      evaluate_verdict's leading "every blob present" gate died on an
- *      unbound reference under `set -u` BEFORE fail() could run, leaving
- *      no sentinel at all. Two defenses now exist — a script-wide default
- *      (SD=""; DIAG=""; UC=""; TX=""; ZD="") and an explicit UC= in the
- *      timeout branch — this guard pins both so a future edit cannot drop
- *      either half.
- *   2. "cannot attempt a replay" conditions (missing binary, no disk, a
- *      bad source datadir, a failed header import) must route through
- *      blocked(), not a bare `exit`, so they leave a durable, typed
- *      sentinel distinct from a replay MISMATCH.
- *   3. The genesis track's ONLY real peer must be dialed via -connect=
- *      (which sets g_connect_only and disables DNS-seed/addrman outbound
- *      discovery), never -addnode= (which only adds a candidate and
- *      leaves discovery live) — violating the isolation invariant lets
- *      a run reach public IPs outside the isolated fixture network.
- *   4. isolated_mainnet_env.sh's iso_die (not directly test-mapped in
- *      agent_impact_rules.def — nearest mapped test is this file) must
- *      still route a fatal isolation-setup problem through blocked() when
- *      the sourcing script defines it, so THAT class of "cannot run"
- *      failure is durable too. */
+ *   1. Every blob variable is always bound (script-wide default
+ *      SD=""; DIAG=""; UC=""; TX=""; ZD="" plus an explicit UC= in the
+ *      timeout branch), so evaluate_verdict never dies on an unbound
+ *      reference under `set -u` before fail() writes a sentinel.
+ *   2. "Cannot attempt a replay" conditions (missing binary, no disk, bad
+ *      source datadir, failed header import) route through blocked(), not a
+ *      bare `exit`, leaving a typed sentinel distinct from a MISMATCH.
+ *   3. The genesis track's only real peer is dialed via -connect= (which
+ *      disables DNS-seed/addrman discovery), never -addnode=, so a run
+ *      cannot reach public IPs outside the isolated fixture network.
+ *   4. isolated_mainnet_env.sh's iso_die still routes a fatal isolation
+ *      setup problem through blocked() when the sourcing script defines it.
+ */
 
 static bool read_script_source(const char *root, const char *rel,
                                char *buf, size_t bufsz)
@@ -1141,10 +1105,8 @@ static int test_source_guard_genesis_uses_connect_not_addnode(void)
         static char body[65536];
         ASSERT(read_script_source(root, CANARY_REL, body, sizeof(body)));
 
-        /* The actual invocation must use -connect=. (Not asserting the
-         * absence of the string "-addnode=127.0.0.1:8034" anywhere in the
-         * file: the fix's own explanatory comment quotes the old, wrong
-         * flag on purpose — this checks the live call site, not prose.) */
+        /* The live invocation must use -connect=. (Checks the call site, not
+         * prose that quotes the old flag.) */
         ASSERT(strstr(body, "iso_spawn_mainnet_node \"-nolegacyimport -connect=127.0.0.1:$ZD_P2P\"") != NULL);
         PASS();
     } _test_next:;

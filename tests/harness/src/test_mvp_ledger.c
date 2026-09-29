@@ -1071,8 +1071,7 @@ _test_next:;
     return failures;
 }
 
-/* A parent is closed by its OWN acceptance, and the dev.land ledger's rows
- * cost and pay on their own terms. */
+/* A parent is closed by its own acceptance; dev.land rows cost and pay separately. */
 static int test_mvp_ledger_xp_parents(void)
 {
     int failures = 0;

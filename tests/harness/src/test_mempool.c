@@ -666,7 +666,7 @@ int test_mempool(void)
      * process_mempool happy path — all tx hashes flow into
      * node->inventory_to_send via p2p_node_push_inventory, proving
      * the heap-allocated scratch buffer carries the full result set
-     * end to end (previously a 1.6 MB stack alloc).
+     * end to end.
      * ================================================================ */
     printf("process_mempool: 100 tx happy path pushes all inv... ");
     {
@@ -758,11 +758,7 @@ int test_mempool(void)
      * invalid tx (out-of-range vout value) is rejected with
      * TX_ACCEPT_INVALID, the mempool stays empty, and the sending
      * peer's ban-score is incremented by PEER_OFFENCE_INVALID_MESSAGE.
-     * Exercises the check_transaction → peer scoring wiring that was
-     * missing. Prior to the fix, the same tx would have
-     * entered the mempool with fee=0 and the peer would have kept
-     * their reputation intact.
-     * ================================================================ */
+     * Exercises the check_transaction → peer scoring wiring. */
     printf("invalid tx → INVALID + peer ban-score... ");
     {
         /* Baseline scoring config — clean env so defaults apply. */
@@ -986,7 +982,7 @@ int test_mempool(void)
             mempool_entry_init(&entry, &tx, 1000, 1700000000, 1e6, 100,
                                true, false, 0);
             /* add_unchecked MUST report success — a silent insert
-             * failure (the bug) would still return true here, so we
+             * failure would still return true here, so we
              * also independently re-prove tracking below. */
             bool added = tx_mempool_add_unchecked(&pool, &tx.hash, &entry);
             ok = ok && added;
@@ -1002,10 +998,8 @@ int test_mempool(void)
         ok = ok && (pool.next_tx_used == (size_t)N);
         ok = ok && (pool.next_tx_cap > (size_t)OUTPOINT_MAP_CAP);
 
-        /* Pick an outpoint inserted FAR past the old 4096 boundary and
-         * prove double-spend detection still fires for it. With the
-         * pre-fix silent saturation, this outpoint would never have
-         * been recorded and the conflict check below would miss it. */
+        /* Pick an outpoint inserted far past the old 4096 boundary and prove
+         * double-spend detection still fires for it. */
         int probe = 5000; /* > 4096 */
         struct transaction conflict;
         transaction_init(&conflict);

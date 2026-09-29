@@ -13,23 +13,16 @@
 
 #include "test/test_core.h"
 
-/* The lint-gate self-test family fork+execs POSIX bash gate scripts; native
- * Windows has no fork/exec/waitpid, so on _WIN32 every helper compiles out and
- * the registered group entry points (test_make_lint_gates.c) report a loud
- * skip instead. */
+/* The lint-gate self-test family fork+execs POSIX bash gate scripts; on
+ * _WIN32 every helper compiles out and the group entry points report a skip. */
 #if defined(ZCL_TESTING) && !defined(_WIN32)
 
 #include "lint_gate_selftests.h"
 #include "platform/clock.h"
 
-/* Per-process scratch path under the (possibly sandboxed) repo root.
- *
- * Anything the REALROOT lane writes has to be pid-unique. The sandbox lane
- * gets isolation for free — repo_path() resolves into a private hardlink tree
- * — but the real-worktree checks now run inside the 32-worker pool, so two of
- * them sharing one fixed filename would truncate each other's file mid-read.
- * Everything still lands under ./test-tmp/, which check-no-stray-root-files
- * requires. */
+/* Per-process scratch path under the (possibly sandboxed) repo root. Names
+ * are pid-unique because real-worktree checks run concurrently; everything
+ * lands under ./test-tmp/, which check-no-stray-root-files requires. */
 int repo_path_pid(char *out, size_t outsz, const char *rel_prefix,
                   const char *suffix)
 {
@@ -41,9 +34,7 @@ int repo_path_pid(char *out, size_t outsz, const char *rel_prefix,
     return repo_path(out, outsz, rel);
 }
 
-/* The stdout+stderr sink every gate-script run redirects into. One fixed
- * "test-tmp/zcl_gate_lint.out" was safe only while this family ran as a single
- * exclusive group; the shards and the realroot lane run concurrently now. */
+/* The pid-unique stdout+stderr sink every gate-script run redirects into. */
 int lint_gate_out_path(char *out, size_t outsz)
 {
     return repo_path_pid(out, outsz, "test-tmp/zcl_gate_lint", ".out");
@@ -269,57 +260,11 @@ int write_file(const char *path, const char *contents)
     return ok ? 0 : -1;
 }
 
-/* fork() can transiently fail with EAGAIN (or ENOMEM, on some kernels
- * under similar pressure) when many concurrent gate-script forks race
- * other heavy work in the same run (e.g. several whole-program LTO links
- * from a parallel `make -j` or a dev-loop watcher cycle). Every gate-script
- * runner below (run_check_raw_malloc_script and the run_gate_script*
- * family) forks once per invocation and treats fork() < 0 as a hard
- * harness failure (-1), which several self-tests assert is 0 for a clean
- * baseline run (ASSERT(baseline_rc == 0)); a transient EAGAIN/ENOMEM
- * therefore rotates through those assertions as a spurious failure that
- * has nothing to do with the gate itself. Retry a small, bounded number of
- * times with a short sleep before giving up — a non-transient fork
- * failure (or exhausted retries) still returns -1 exactly as callers
- * already expect.
- *
- * SIZING (widened 2026-07-30 — see t_fuzz_artifact_ledger_gate flake hunt,
- * shard 07). The original margin here was 3 attempts * 20 ms fixed = 60 ms
- * of total backoff. That is thin next to what this SAME host tolerates for
- * the SAME class of contention one line later: every gate-script runner
- * below execs a bash script (check_fuzz_artifact_replay.sh among others)
- * that itself forks git/grep/sed/sort/find under the identical resource
- * pressure — and bash's own fork()-retry-on-EAGAIN loop (observable via the
- * "fork: retry: Resource temporarily unavailable" message bash prints while
- * it retries, confirmed present in the bash 5.2 binary on this host) backs
- * off across multiple *seconds*, not milliseconds, before giving up. This
- * harness was giving up roughly two orders of magnitude faster than the
- * shell forking the next process over, under the exact same contention —
- * so a burst of resource pressure long enough for bash to shrug off could
- * still exhaust this retry and turn "the gate is fine" into "harness
- * failure -1", which is indistinguishable from a real violation in
- * ASSERT(baseline_rc == 0).
- *
- * This was reproduced empirically only via 32-worker `make test-parallel`
- * runs on a host also running several other worktrees' builds concurrently
- * (load average 10-14 measured during this investigation); it did not
- * reproduce in 3 additional isolated full-suite runs taken back to back on
- * this same busy host, so the window is real but narrow. Deliberately not
- * fixed by inducing artificial memory/process-table exhaustion to force a
- * reproduction — that would risk starving the other concurrent worktrees
- * and the live node sharing this host, which is out of bounds.
- *
- * Widened to 8 attempts with exponential backoff (20ms, 40, 80, 160, 320,
- * 500, 500 — capped, ~1.6s worst-case total): an order of magnitude closer
- * to what bash itself already tolerates for the same fork() pressure,
- * while remaining a small fraction of both the 300s per-test-group timeout
- * and this gate's own ~14s isolated wall time, so a normal (non-contended)
- * run pays nothing extra — retries only fire when fork() itself is
- * actually failing. Each retry is now logged (not just final exhaustion),
- * so if this flake recurs its captured test-tmp/test_parallel_*.log will
- * show exactly how many attempts fired and which errno, instead of leaving
- * a bare "FAIL (baseline_rc == 0)" with no way to tell a harness fork
- * failure from a real gate violation. */
+/* fork() can transiently fail with EAGAIN/ENOMEM under load. Every
+ * gate-script runner forks once and treats fork() < 0 as harness failure
+ * (-1), so retry up to 8 attempts with exponential backoff (20 ms doubling,
+ * capped at 500 ms, ~1.6 s worst case) before giving up. Each retry is
+ * logged with its errno. */
 #define ZCL_FORK_RETRY_ATTEMPTS 8
 #define ZCL_FORK_RETRY_BACKOFF_INITIAL_NS (20L * 1000L * 1000L)  /* 20 ms */
 #define ZCL_FORK_RETRY_BACKOFF_CAP_NS     (500L * 1000L * 1000L) /* 500 ms */
@@ -351,9 +296,7 @@ pid_t fork_with_retry(void)
             errno = fork_errno;
         }
     }
-    /* Retries exhausted: make this distinguishable from an ordinary gate
-     * failure (rc != 0) in test output — a bare -1 from run_gate_script()
-     * otherwise looks identical to any other harness-level failure. */
+    /* Retries exhausted: distinguish from an ordinary gate failure (rc != 0). */
     fprintf(stderr,
             "[lint-gate] fork() failed all %d attempts (errno=%d %s) — "
             "harness failure under sustained resource pressure, not a gate "
@@ -379,15 +322,12 @@ static void epoch_selftest_progress_channel(const char *script_rel)
 
 /* Generalized gate-script runner: fork/exec the script at repo-relative
  * path `script_rel`, optionally with ZCL_LINT_MODE set to `mode` (NULL to
- * leave unset) and optionally with one argv word `arg` (NULL for none).
+ * leave unset) and optionally one argv word `arg` (NULL for none).
  * Returns the script's exit status (0 = clean, non-zero = violations), or -1
- * on harness failure. Mirrors run_check_raw_malloc_script but parameterized so
- * the four E-series gates share one driver.
+ * on harness failure.
  *
- * `arg` exists for gates that own their own trip/recover matrix behind a
- * `--selftest` flag. Dispatching that flag is strictly better than restating
- * the matrix in C: the shell already builds and tears down the fixture
- * sandbox, and two copies of the same matrix are two things to keep in step. */
+ * `arg` serves gates that own their trip/recover matrix behind a `--selftest`
+ * flag; the shell already builds and tears down the fixture sandbox. */
 int run_gate_script_arg(const char *script_rel, const char *mode,
                         const char *arg)
 {
@@ -462,11 +402,10 @@ int run_gate_script_selftest(const char *script_rel)
 }
 
 /* Like run_gate_script but ALSO exports ZCL_SUPERVISOR_WORKER_FILES so the
- * widened Gate #21 background-worker scan reads a planted fixture file
- * instead of the live engine/composition/src/boot_background_workers.c. `worker_files`
- * is a space-separated repo-relative path list; it is resolved to absolute
- * paths before export so the gate (which runs from repo root) finds it
- * regardless of cwd. Mirrors run_gate_script's fork/exec/redirect plumbing. */
+ * Gate #21 background-worker scan reads a planted fixture instead of
+ * engine/composition/src/boot_background_workers.c. `worker_files` is a
+ * space-separated repo-relative path list, resolved to absolute paths before
+ * export. */
 int run_gate_script_with_worker_files(const char *script_rel,
                                              const char *mode,
                                              const char *worker_files_rel)
@@ -531,11 +470,9 @@ int run_gate_script_with_worker_files(const char *script_rel,
     return -1;
 }
 
-/* Like run_gate_script but exports ONE arbitrary env var (name=value) into the
- * gate's environment. Used by the META-GATE that points each hardened gate at
- * an empty scan dir (via its ZCL_*_SCAN_* override) and asserts exit 2 — the
- * proof that a fail-silent gate is now fail-LOUD on an empty scan set.
- * Mirrors run_gate_script's fork/exec/redirect plumbing. */
+/* Like run_gate_script but exports ONE arbitrary env var (name=value). Used
+ * by the META-GATE, which points each hardened gate at an empty scan dir and
+ * asserts exit 2. */
 int run_gate_script_with_env(const char *script_rel,
                                     const char *env_name,
                                     const char *env_value)
@@ -594,10 +531,8 @@ int run_gate_script_with_env(const char *script_rel,
 }
 
 /* Like run_gate_script_with_env but exports TWO env vars. Used by the
- * service-result-convergence self-test, which needs to point the gate at
- * both an isolated scan dir AND an isolated baseline file simultaneously so
- * it never touches the real tree/baseline. Mirrors the same fork/exec/
- * redirect plumbing as its siblings. */
+ * service-result-convergence self-test to isolate both the scan dir and the
+ * baseline file. */
 int run_gate_script_with_env2(const char *script_rel,
                                      const char *env_name1,
                                      const char *env_value1,
@@ -710,11 +645,9 @@ static int run_gate_script_envv(const char *script_rel,
 }
 
 /* Like run_gate_script_with_env2 but exports THREE env vars. Used by the
- * git-hooks-installed self-tests, which point the gate at a hermetic
- * fixture root (ZCL_GIT_HOOK_ROOT) in ADDITION to the hooks-path/file
- * override each check already carries; without it the gate resolves this
- * checkout's own installed hooks, and the verdict depends on whether an
- * operator ran `make install-hooks` here. */
+ * git-hooks-installed self-tests, which also point the gate at a hermetic
+ * fixture root (ZCL_GIT_HOOK_ROOT) so the verdict does not depend on this
+ * checkout's installed hooks. */
 int run_gate_script_with_env3(const char *script_rel,
                               const char *env_name1, const char *env_value1,
                               const char *env_name2, const char *env_value2,
@@ -747,42 +680,20 @@ void lint_gate_loadavg(char *out, size_t outsz)
     snprintf(out, outsz, "%s", buf[0] ? buf : "unknown");
 }
 
-/* ── run_gate_script_watched — a PROGRESS watchdog, not a stopwatch ────────
+/* ── run_gate_script_watched: a progress watchdog, not a stopwatch ─────────
  *
- * WHY THIS IS NOT `timeout <N> <script>`.
+ * The bound is on silence, not elapsed time: the parent resets it whenever
+ * the child's output file grows, so a slow box still passes and a wedged
+ * script (no output) is killed.
  *
- * This helper used to exec the script under `timeout -k 5 180`. That grades
- * the MACHINE, not the script: a total-duration ceiling fires on a saturated
- * or slow-disk box running perfectly correct code, and the resulting failure
- * is indistinguishable from a real defect. It is the same defect class as a
- * systemd WatchdogSec that SIGABRTs a healthy node because concurrent builds
- * saturated the box — measured on this project's own fleet. A bigger ceiling
- * does not fix it; it only lengthens the fuse and delays a genuine hang.
+ * `max_silent_secs` must be derived from the longest deliberate silence in
+ * the script (its own poll windows); the caller passes that derivation in
+ * `why_bound`, printed on every timeout.
  *
- * What actually distinguishes a wedged script from a slow one is PROGRESS. A
- * gate script under test emits a line per assertion, so:
- *
- *   * a slow box emits the same lines, further apart  -> keep waiting;
- *   * a wedged script emits nothing at all            -> kill and report.
- *
- * So the bound here is on SILENCE, not on elapsed time, and the parent resets
- * it every time the child's output file grows. A box that is 20x slower still
- * passes, which is the point: this project wants slow machines on the network
- * and in CI, because they are the only instrument that finds the places where
- * the code assumes fast storage.
- *
- * `max_silent_secs` must be derived from the LONGEST DELIBERATE SILENCE in
- * the script being run (its own poll windows), not from its total runtime;
- * the caller passes that derivation in `why_bound` and it is printed on every
- * timeout so the next reader can check the arithmetic.
- *
- * Returns the script's exit status, or GATE_SCRIPT_WEDGED when it was killed
- * for going silent (diagnosed on stderr, with the measured silence, the total
- * elapsed and the load average), or -1 on a harness error. GATE_SCRIPT_WEDGED
- * is deliberately NOT 1: a hang and a failed assertion are different findings
- * and must never share an exit code.
- *
- * No `/usr/bin/timeout` dependency remains; the watchdog is this loop. */
+ * Returns the script's exit status, GATE_SCRIPT_WEDGED when killed for
+ * silence (diagnosed on stderr), or -1 on a harness error.
+ * GATE_SCRIPT_WEDGED is deliberately not 1: a hang and a failed assertion
+ * never share an exit code. */
 int run_gate_script_watched(const char *script_rel, int max_silent_secs,
                             const char *why_bound)
 {
@@ -944,25 +855,12 @@ int plant_long_function_file(const char *rel, const char *func_name,
     return 0;
 }
 
-/* ── META-GATE: fail-silent gates are now fail-LOUD on an empty scan ──────────
- *
- * A hollow gate reports "clean" exit 0 while a real violation is present: its
- * scan set silently emptied (a renamed/moved dir) and the violation loop ran
- * zero times. The fix (docs/work/lint-gate-hollowness-audit.md) is a non-empty
- * scan-set preflight that aborts exit 2 when the scan set is below a known
- * floor. Each hardened gate exposes a ZCL_*_SCAN_* env override of its scan
- * root so this meta-gate can feed it a GUARANTEED-EMPTY dir and assert exit 2
- * — the direct proof that "scanned nothing" is no longer a quiet pass.
- *
- * For each gate: (1) point its scan override at an empty dir → assert exit 2;
- * (2) run it with NO override → assert exit 0 (the real tree still passes).
- * This is the "plant → assert trip → remove → assert green" pattern, with the
- * empty scan dir as the planted fixture. */
-/* One gate's empty-scan check: feed the gate an empty scan dir via its
- * override env var → assert exit 2 (fail-LOUD); run with no override → assert
- * exit 0 (real tree still clean). One TEST block per call (the TEST macro
- * defines a function-scoped `_test_next` label, so it must not repeat in a
- * single function). Returns 0 on pass, nonzero on failure. */
+/* META-GATE: a gate whose scan set is empty must fail loud (exit 2), never
+ * report a hollow clean pass (docs/work/lint-gate-hollowness-audit.md).
+ * One gate's check: an empty scan dir via its ZCL_*_SCAN_* override must exit
+ * 2; with no override, exit 0. One TEST block per call (the TEST macro's
+ * `_test_next` label is function-scoped). Returns 0 on pass, nonzero on
+ * failure. */
 int meta_gate_empty_scan_trips(const char *script_rel,
                                       const char *env_name,
                                       const char *empty_value)

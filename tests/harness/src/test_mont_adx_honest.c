@@ -4,30 +4,16 @@
  * name: if bn254_accel_implementation() claims ADCX/ADOX carry chains, the
  * machine code the linker actually produced must contain ADCX and ADOX.
  *
- * WHY THIS EXISTS. bn254_accel.c shipped the string
- * "BMI2+ADX (MULX+ADCX+ADOX)" for a function built from _mulx_u64 +
- * _addcarryx_u64 with a literal 0 carry-in at every call site. C cannot pin two
- * carry chains to two flag bits, so GCC lowered every one of those to a plain
- * ADC: the object disassembled to mulx=64, adcx=0, adox=0. The tier was also
- * 0.82x/0.81x SLOWER than the portable C it displaced. Nothing in the tree
- * noticed, because every check compared the string to a comment and the comment
- * to another comment. This test compares the string to the BYTES.
+ * If bn254_accel_implementation() claims ADCX/ADOX carry chains, the linked
+ * machine code must contain ADCX and ADOX. C cannot pin two carry chains to
+ * two flag bits, so a compiler may lower them to plain ADC.
  *
- * It is deliberately a code-reading test and not a timing test: a perf
- * assertion in the unit suite would be flaky on a shared host, whereas the
- * instruction encoding is a fact about the artifact.
- *
- * HOW. x86-64 encodes the two instructions with the same 0F 38 F6 opcode,
- * separated only by a mandatory prefix:
- *     ADCX r64, r/m64   =  66 [REX.W] 0F 38 F6 /r
- *     ADOX r64, r/m64   =  F3 [REX.W] 0F 38 F6 /r
- * so we scan a bounded window from the function entry for 0F 38 F6 and classify
- * each hit by the 66/F3 prefix that precedes it (allowing one optional REX byte
- * 0x40-0x4F in between). Presence counting only — no length decoding, so a
- * stray byte pattern could in principle inflate a count. That is why the bar is
- * a MINIMUM COUNT rather than "at least one": the real routine emits 40 of each
- * (4 CIOS rounds x [4 rows + 1 carry fold] x 2 phases), and no plausible run of
- * unrelated bytes supplies 32 of both inside one window. */
+ * A code-reading test, not a timing test: the instruction encoding is a fact
+ * about the artifact. ADCX = 66 [REX.W] 0F 38 F6 /r, ADOX = F3 [REX.W] 0F 38
+ * F6 /r; we scan a bounded window from the function entry and classify each
+ * 0F 38 F6 hit by its prefix (one optional REX byte between). Presence
+ * counting only, so the bar is a minimum count: the real routine emits 40 of
+ * each (4 CIOS rounds x [4 rows + 1 carry fold] x 2 phases). */
 
 #include "test/test_core.h"
 #include "sapling/bn254_accel.h"

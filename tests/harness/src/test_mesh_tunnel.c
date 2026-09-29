@@ -2,15 +2,12 @@
  *
  * Proves the TCP tunnel service over a two-peer loopback: two real p2p
  * nodes at each end of the shared fixture's in-process Noise pair, the
- * production stream encoder and decoder carrying every frame, and REAL
- * loopback sockets at both ends — a client dialing the local entrance and
- * a stand-in server on the port the acceptor is allowed to reach. Covers
- * the two admission gates (an unpaired peer never reaches the service, and
- * a port no allow row names is refused by that name), bytes crossing both
- * ways, the credit window stopping a sender a reader stopped reading from,
- * the listing showing the tunnel and then showing it gone, and close in
- * both directions. Every refusal is checked by the token on the wire,
- * because a tunnel that failed open would hand a peer a local port.
+ * production stream encoder and decoder carrying every frame, and real
+ * loopback sockets at both ends. Covers the two admission gates (an unpaired
+ * peer never reaches the service; a port no allow row names is refused by
+ * that name), bytes both ways, the credit window stopping a sender whose
+ * reader stopped, the listing, and close in both directions. Every refusal is
+ * checked by the token on the wire.
  */
 
 #include "test/test_core.h"
@@ -35,8 +32,7 @@
 #include <string.h>
 
 #define TUNNEL_TEST_WIRE_MAX 32768u
-/* A pairing window that brackets any clock this test could read: the lane
- * under test grades the row, not the hour the box thinks it is. */
+/* A pairing window that brackets any clock this test could read. */
 #define TUNNEL_TEST_PAIRED_AT INT64_C(1)
 #define TUNNEL_TEST_EXPIRES INT64_C(4102444800)
 /* The offset of a CLOSE frame's service payload: prefix, kind, id, reason,
@@ -519,9 +515,8 @@ int test_mesh_tunnel(void)
         ASSERT(served != PLATFORM_SOCKET_INVALID);
         tunnel_beat(&wire, 2);
 
-        /* Everything the local socket will take, in one go and with no
-         * beat in between, so what the tunnel then moves is decided by
-         * credit alone and not by how the writer paced itself. */
+        /* Write everything the local socket takes at once, so credit alone
+         * decides what the tunnel moves. */
         uint8_t *flood = zcl_calloc(1, TUNNEL_TEST_FLOOD_BYTES, "tunnel_flood");
         ASSERT(flood != NULL);
         memset(flood, 'z', TUNNEL_TEST_FLOOD_BYTES);
@@ -536,12 +531,10 @@ int test_mesh_tunnel(void)
         free(flood);
         ASSERT(wrote > (size_t)TUNNEL_TEST_CREDIT_ROUNDS * MESH_TUNNEL_CHUNK);
 
-        /* One beat is one credit window: the sender may spend the credit
-         * it holds and not a byte more, and only the WINDOW that comes
-         * back in that beat lets it spend again. So after a fixed number
-         * of beats the bytes moved are bounded by that many windows —
-         * which is the whole back-pressure claim, in a form no kernel
-         * buffer size can flatter. */
+        /* One beat is one credit window: the sender spends the credit it
+         * holds and no more, so after a fixed number of beats the bytes moved
+         * are bounded by that many windows — back-pressure independent of
+         * kernel buffer size. */
         tunnel_beat(&wire, TUNNEL_TEST_CREDIT_ROUNDS);
         struct mesh_tunnel_row rows[MESH_TUNNEL_LISTENERS_MAX];
         size_t total = 0;

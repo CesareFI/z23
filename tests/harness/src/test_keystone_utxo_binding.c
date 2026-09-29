@@ -50,13 +50,10 @@ static void kb_make_leaf(struct mmb_leaf *leaf, uint32_t height,
                         sapling, work, utxo_root);
 }
 
-/* The boundary-root persist path the tip_finalize reducer step uses runs
- * INSIDE the stage's already-open transaction (batch BEGIN IMMEDIATE +
- * per-step SAVEPOINT). Historically the own-BEGIN coins_kv_boundary_root_set
- * failed there ("cannot start a transaction within a transaction") — the
- * pre-flip 100%-WARN-storm root cause. progress_meta_set is now batch-aware
- * (SAVEPOINT nesting), so BOTH variants must succeed in that context and
- * commit atomically with the outer txn. */
+/* The boundary-root persist path used by the tip_finalize reducer step runs
+ * INSIDE the stage's open transaction (batch BEGIN IMMEDIATE + per-step
+ * SAVEPOINT). progress_meta_set is batch-aware (SAVEPOINT nesting), so BOTH
+ * variants must succeed there and commit atomically with the outer txn. */
 static int test_boundary_root_in_tx(void)
 {
     int failures = 0;

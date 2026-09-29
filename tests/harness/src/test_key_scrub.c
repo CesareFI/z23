@@ -1,18 +1,8 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Wave 10 #5: Sapling key scrubbing tests.
- *
- * Verifies that intermediate key material (digests, scalars, expanded
- * spending keys) is zeroed after use in ZIP32 derivation and PRF
- * functions. Uses a callback-based approach: we instrument the
- * derivation functions by calling them, then verify the output is
- * correct (proving the functions still work) and that known
- * intermediate buffers don't leak into the final output in ways that
- * would indicate missing cleanse calls.
- *
- * The real proof is structural (code review + the memory_cleanse
- * calls), but these tests exercise every scrubbed code path to catch
- * regressions. */
+ * Sapling key scrubbing tests: every scrubbed ZIP32 derivation and PRF path
+ * still produces correct output. The scrubbing itself is structural (the
+ * memory_cleanse calls); these tests exercise each path. */
 
 #include "test/test_core.h"
 #include "sapling/zip32.h"

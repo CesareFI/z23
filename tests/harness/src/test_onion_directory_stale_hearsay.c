@@ -2,39 +2,27 @@
  *
  * Sub-test of the `onion_directory` group (dispatched from
  * test_onion_directory.c, which owns that group's entry point). Two
- * contracts, both about ONE field: the hearsay stamp a peer relays
- * alongside a directory record.
+ * contracts about the hearsay stamp a peer relays alongside a directory
+ * record.
  *
- *  1. THE FRESHNESS BOUNDARY IS EXACT, AND IT IS ONE RULE. A record is
- *     FRESH strictly inside ONION_DIR_STALE_SECS, STALE from that
- *     threshold up to ONION_DIR_EXPIRE_SECS, and EXPIRED at the expiry
- *     threshold itself — every comparison is `<`, so both thresholds
- *     belong to the OLDER bucket. A stamp in the future reads FRESH and
- *     reports age 0, never a negative age.
+ *  1. THE FRESHNESS BOUNDARY IS EXACT. A record is FRESH strictly inside
+ *     ONION_DIR_STALE_SECS, STALE from that threshold up to
+ *     ONION_DIR_EXPIRE_SECS, and EXPIRED at the expiry threshold itself
+ *     (every comparison is `<`, so both thresholds belong to the OLDER
+ *     bucket). A future stamp reads FRESH with age 0, never negative.
  *
- *     onion_service_directory_learn() is held to the same rule from the
- *     other side: a relayed stamp inside the expiry window is recorded,
- *     one at or past the threshold is refused outright and leaves NO row
- *     behind. Refused, deliberately NOT clamped up to the expiry floor: a
- *     clamped row would be served on by our own /directory.json as merely
- *     STALE, the next hop would clamp it to the floor again, and a host
- *     nobody has reached in weeks would ride the relay graph forever with
- *     its apparent age reset at every hop. The refusal terminates that
- *     chain.
+ *     onion_service_directory_learn() follows the same rule: a relayed stamp
+ *     inside the expiry window is recorded; one at or past it is refused and
+ *     leaves NO row. It is refused, not clamped up to the expiry floor: a
+ *     clamped row would be relayed onward as merely STALE and clamped again
+ *     at every hop, so a long-dead host would circulate forever.
  *
- *  2. THE REFUSAL IS BOUNDED IN THE LOG. Live evidence (a mesh operator's
- *     node, 2026-08-23): the seeds it dials serve directories whose rows
- *     froze ~45 days ago, so every discovery pass re-offered the same
- *     expired records and the per-record ERROR line took 707 of the node's
- *     last 3000 log lines — 23% of the log volume spent restating an
- *     EXPECTED condition, at a level that means this node is broken. A
- *     flood of stale records must now cost at most one line per report,
- *     the report must still happen (bounded is not silent), and the
- *     retired per-record wording must not come back.
+ *  2. THE REFUSAL IS BOUNDED IN THE LOG. A flood of stale records costs at
+ *     most one line per report, the report still happens (bounded is not
+ *     silent), and the retired per-record wording does not come back.
  *
- * The negative assertions are the load-bearing ones: nothing here may
- * make an expired record usable, and nothing here may make the refusal
- * silent.
+ * The negative assertions carry the weight: nothing here may make an expired
+ * record usable, and nothing may make the refusal silent.
  */
 
 #include "test/test_core.h"
@@ -115,10 +103,8 @@ static int sh_freshness_boundary(void)
 }
 
 /* ── Local datadir helpers ────────────────────────────────────────
- * The sibling suite's equivalents are static to its own translation
- * unit. These read only; the ONE rule they are checking against still
- * lives in the library, so a second reader here cannot drift into
- * disagreeing with it. */
+ * Read-only equivalents of the sibling suite's static helpers; the rule they
+ * check against still lives in the library. */
 static sqlite3 *sh_open_db(const char *datadir)
 {
     char path[1024];
@@ -150,13 +136,11 @@ static int64_t sh_row_last_seen(sqlite3 *db, const char *host)
 
 /* ── 2. learn() holds the same boundary ───────────────────────────
  *
- * learn() samples the wall clock itself, so the threshold cannot be
- * pinned to the second here the way the pure rule above is pinned. It is
- * approached from both sides with a margin larger than any plausible
- * tick: a stamp well inside the window must be RECORDED, one at or past
- * the threshold must be REFUSED. A clock that advances mid-test pushes
- * both cases further into the outcome already asserted, so neither
- * direction can flake. */
+ * learn() samples the wall clock itself, so the threshold cannot be pinned to
+ * the second. It is approached from both sides with a margin larger than any
+ * plausible tick: a stamp well inside the window is RECORDED, one at or past
+ * the threshold is REFUSED; a clock advancing mid-test only pushes each case
+ * further into its asserted outcome. */
 static int sh_learn_boundary(sqlite3 *db)
 {
     int failures = 0;
@@ -181,9 +165,7 @@ static int sh_learn_boundary(sqlite3 *db)
     SH_CHECK("the refused threshold stamp left no row behind",
              sh_row_last_seen(db, SH_HOST_EDGE) == -1);
 
-    /* 3914217s is a real age observed on a mesh operator's node on
-     * 2026-08-23 — a stamp from 2026-07-09 that a live seed was still
-     * relaying as current. */
+    /* 3914217s (~45 days): a stamp a live seed kept relaying as current. */
     SH_CHECK("a relayed stamp 45 days past expiry is refused",
              !onion_service_directory_learn(SH_HOST_GONE, 8033, 5,
                                             now - 3914217, NULL));
@@ -208,10 +190,9 @@ static int sh_learn_boundary(sqlite3 *db)
 /* ── 3. The refusal is bounded in the log ─────────────────────────
  *
  * Same stderr-capture shape as brt_capture() in
- * test_blocker_reason_truncation.c: redirect stderr into a scratch file
- * for the duration of `fn`, then hand back whatever landed in it.
- * Returns false if the plumbing itself failed, which the caller treats as
- * a real FAIL — the captured text IS the thing under test. */
+ * test_blocker_reason_truncation.c: redirect stderr into a scratch file for
+ * the duration of `fn` and return what landed in it. Returns false if the
+ * plumbing failed, which the caller treats as a FAIL. */
 static bool sh_capture(void (*fn)(void), char *out, size_t out_len)
 {
     if (out && out_len > 0)
@@ -252,9 +233,8 @@ static bool sh_capture(void (*fn)(void), char *out, size_t out_len)
     return true;
 }
 
-/* Distinct hosts, every one of them relaying a ~45-day-old stamp: the
- * shape any node meets on every discovery pass against a seed whose
- * directory froze at first sighting, only compressed into one burst. */
+/* Distinct hosts, each relaying a ~45-day-old stamp, in one burst (the shape
+ * of a discovery pass against a seed whose directory froze). */
 #define SH_FLOOD_N 600
 static int g_flood_accepted;
 
@@ -295,9 +275,8 @@ static int sh_log_bounded(void)
     int failures = 0;
     static char log[262144];
 
-    /* The captured text IS the thing under test, so the threshold that
-     * decides whether it exists at all is set here rather than inherited
-     * from whatever ran before. Restored immediately after. */
+    /* The captured text is the thing under test, so the threshold deciding
+     * whether it exists is set here, then restored. */
     enum zcl_log_level saved_level = zcl_log_level_get();
     zcl_log_level_set(ZCL_LOG_ALL);
     bool captured = sh_capture(sh_flood_stale, log, sizeof(log));
@@ -309,22 +288,19 @@ static int sh_log_bounded(void)
 
     int lines = sh_count(log, "already past expiry");
 
-    /* BOUNDED IS NOT SILENT. A burst this size must be reported: the
-     * count bound in note_stale_hearsay() exists precisely so a flood
-     * does not sit unmentioned until the window rolls. */
+    /* Bounded is not silent: a burst this size must still be reported (the
+     * count bound in note_stale_hearsay()). */
     SH_CHECK("a large stale burst is still reported at least once",
              lines >= 1);
 
-    /* AND THE LOG DOES NOT SCALE WITH THE RECORDS. The pinned property is
-     * the ratio, not the exact report cadence, so tuning the bound in
-     * note_stale_hearsay() does not have to be mirrored here. Under the
-     * per-record ERROR this replaced, `lines` would be SH_FLOOD_N. */
+    /* The log does not scale with the records: the pinned property is the
+     * ratio, not the exact report cadence (a per-record ERROR would give
+     * `lines` == SH_FLOOD_N). */
     SH_CHECK("the log grows by at most one line per 20 stale records",
              lines * 20 <= SH_FLOOD_N);
 
-    /* The retired per-record wording must not creep back. It named no
-     * host, so no reader could tell WHICH record was stale; the aggregate
-     * names the oldest one it saw. */
+    /* The retired per-record wording must not return: it named no host; the
+     * aggregate names the oldest record it saw. */
     SH_CHECK("the retired per-record message is gone",
              sh_count(log, "relayed stamp is already past expiry") == 0);
 
@@ -334,20 +310,17 @@ static int sh_log_bounded(void)
              strstr(log, "ignored ") != NULL &&
                  strstr(log, "in the last ") != NULL);
 
-    /* ERROR means "this node is broken". A peer relaying a directory it
-     * never refreshes is expected input, and our handling of it is
-     * correct and complete — so this domain says nothing at ERROR here. */
+    /* ERROR means "this node is broken"; a peer relaying a never-refreshed
+     * directory is expected input, so nothing is logged at ERROR here. */
     SH_CHECK("the aggregate is not raised at ERROR level",
              sh_count(log, "ERROR [net.onion_directory]") == 0);
     return failures;
 }
 
 /* ── Sub-test entry point ─────────────────────────────────────────
- * Named for its subject, NOT for its file. A filename-matching name
- * would make this a test-registration entry point in its own right
- * (tools/scripts/check_test_registration.sh) and demand its own catalog
- * row; it is a sub-test of the registered `onion_directory` group and is
- * dispatched from that group's entry point in test_onion_directory.c. */
+ * Named for its subject, not its file: a filename-matching name would be a
+ * test-registration entry point (tools/scripts/check_test_registration.sh).
+ * Dispatched from the `onion_directory` group in test_onion_directory.c. */
 int od_stale_hearsay_bound(void);
 
 int od_stale_hearsay_bound(void)

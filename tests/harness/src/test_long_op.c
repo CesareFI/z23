@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Tests for util/long_op.h (WS-2a).
+ * Tests for util/long_op.h.
  *
  * Cover:
  *   - begin + tick + end happy path (long_op_is_active toggles)
@@ -96,12 +96,7 @@ static int test_long_op_tick_rate_limit(void)
     struct long_op_scope op;
     long_op_begin(&op, "test.rate_limit");
 
-    /* 100 ticks in tight loop. Each updates last_tick_us but only the
-     * first one (which has prev = begin_us == now, so delta=0) sees
-     * delta < 30s — none should emit beyond what the first begin
-     * implies. With the implementation, the very first tick sees
-     * prev=begin_us so delta is ~0us, which is < 30s, so NO emit.
-     * Subsequent ticks see delta < 30s also. Expect 0 emits. */
+    /* 100 tight-loop ticks: every delta is < 30s, so none emit. */
     for (int i = 0; i < 100; i++) {
         long_op_tick(&op);
     }
@@ -181,11 +176,8 @@ int test_long_op(void)
 {
     int failures = 0;
     printf("[test_long_op] starting\n");
-    /* Ensure the event log is alive — test_parallel runs each test
-     * group in a child process with no init, so observers register
-     * but event_emit() short-circuits on g_log.initialized==false
-     * until we explicitly init. The sequential runner calls this
-     * once early; we replicate that here so we work either way. */
+    /* Init the event log: parallel runs start each group in a child with no init,
+     * and event_emit() short-circuits until g_log.initialized. */
     event_log_init();
     failures += test_long_op_happy_path();
     failures += test_long_op_tick_rate_limit();

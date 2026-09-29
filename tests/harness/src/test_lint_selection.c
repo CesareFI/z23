@@ -11,8 +11,7 @@
  * scrubbed Git environment. The candidate is the working tree; the base is
  * a commit verified through a fresh private store. NOT proven here: the
  * real gates' unit lists (`z23-lint select --dry` enumerates those from the
- * live Makefile; docs/experiments/2026-09-25-lint-premise-selection.md
- * records a run over real main commits). */
+ * live Makefile). */
 #include "test/test_core.h"
 
 #include "lint/lintc/premise.h"

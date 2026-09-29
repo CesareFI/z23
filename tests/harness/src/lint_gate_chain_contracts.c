@@ -49,17 +49,15 @@
 #define WRITER_FRONTIER_SCRIPT_REL \
     "tools/lint/check_no_writer_below_sealed_frontier.sh"
 /* A non-designated production caller of the sealed-segment WRITE API
- * (chain_segment_seal_range), planted under engine/services/src so the gate's
- * app/lib/config scan sees it. engine/services/src IS the designated sealer's
- * own directory, so the fixture basename must not collide with the real
- * segment_sealer_service.c — it doesn't (different file, same dir is fine;
- * the gate allowlists by exact path, not by directory). */
+ * (chain_segment_seal_range), planted under engine/services/src; the gate
+ * allowlists by exact path, so the fixture basename differs from the real
+ * segment_sealer_service.c. */
 #define WRITER_FRONTIER_FIXTURE_DST \
     "engine/services/src/_writer_below_sealed_frontier_fixture_tmp.c"
 
-/* TENACITY I3 ratchet — a NEW repair/reconcile/backfill rung in app/ with no
- * baseline entry and no `// repair-rung-ok:` marker trips the gate; adding the
- * marker (citing a write-time-invariant test) exempts it; removing the file
+/* Ratchet: a NEW repair/reconcile/backfill rung in app/ with no baseline
+ * entry and no `// repair-rung-ok:` marker trips the gate; the marker
+ * (citing a write-time-invariant test) exempts it; removing the file
  * restores green. */
 int t_no_new_repair_rung(void)
 {
@@ -257,7 +255,7 @@ int t_no_new_coin_backfill_caller(void)
     return failures;
 }
 
-/* Sealed-segment substrate hardening — only the designated sealer/RPC/healer
+/* Sealed-segment hardening — only the designated sealer/RPC/healer
  * surface may call the ROM write API (chain_segment_seal_range /
  * chain_segment_manifest_rebuild); a planted call from any other production
  * file must trip the gate, the documented `// writer-below-frontier-ok`
@@ -302,11 +300,8 @@ int t_no_writer_below_sealed_frontier(void)
     return failures;
 }
 
-/* E9 — operator-needed sink: the live tree satisfies the pairing
- * (emit + alerts.c subscriber), so the gate passes. (HARD gate; the
- * negative control is covered by the sandbox check in the standalone
- * script and would require mutating platform/modules/util/src/alerts.c, which we do
- * not do in-tree.) */
+/* Operator-needed sink: the live tree satisfies the pairing (emit +
+ * alerts.c subscriber), so the gate passes. */
 int t_e9_operator_needed_sink(void)
 {
     int failures = 0;
@@ -462,20 +457,13 @@ int t_block_index_flat_atomic_save_contract(void)
 {
     int failures = 0;
     char *buf = NULL;
-    /* Task #32 strengthened the contract: the block index now persists
-     * as a SINGLE file with the 48-byte integrity header embedded inside
-     * block_index.bin, published with ONE atomic rename. The old pin
-     * encoded the TWO-file shape (body rename, then a separate
-     * bii_write_sidecar_raw sidecar rename) — that shape is a bug
-     * class: a crash between the two renames strands a fresh body under a
-     * stale sidecar. The pin below enforces that:
+    /* The block index persists as a SINGLE file with the 48-byte integrity
+     * header embedded in block_index.bin, published with ONE atomic rename:
      *   - the writer streams a SHA3 over the payload in emit_payload,
-     *   - it publishes via bii_write_embedded (the shared
-     *     placeholder-header → payload → back-patch → one-rename helper),
-     *   - it does NOT fall back to the legacy two-file sidecar writer
-     *     (bii_write_sidecar_raw is absent from the writer path).
-     * The single-rename + fsync + tmp-unlink atomicity itself lives in
-     * ssio_write_embedded, asserted separately below. */
+     *   - it publishes via bii_write_embedded (placeholder header, payload,
+     *     back-patch, one rename),
+     *   - it does NOT use the legacy two-file sidecar writer.
+     * The atomicity itself lives in ssio_write_embedded, asserted below. */
     TEST("block index flat save is a single atomic embedded-header file") {
         char path[PATH_MAX];
         ASSERT(repo_path(path, sizeof(path),
@@ -496,18 +484,11 @@ int t_block_index_flat_atomic_save_contract(void)
         free(buf);
         buf = NULL;
 
-        /* The atomic publish (tmp, sync, single rename) lives in the
-         * shared embedded writer.
-         *
-         * The sync is pinned by its PORTABLE spelling: platform_file_sync()
-         * (platform/modules/platform/include/platform/file_sync.h) is `fsync(fd)`
-         * everywhere but Windows, where fsync(2) does not exist and the
-         * durable equivalent is `_commit(fd)`. Pinning the raw `fsync(` call
-         * would force the writer to be non-portable to keep this contract,
-         * so the pin names the seam instead. The contract itself is
-         * unchanged and just as strict: the tmp descriptor must be flushed
-         * to stable storage, and that flush must sit strictly between the
-         * fopen and the publishing platform replace. */
+        /* The atomic publish (tmp, sync, single rename) lives in the shared
+         * embedded writer. The sync is pinned by its portable spelling
+         * platform_file_sync() (fsync(fd), or _commit(fd) on Windows); the
+         * flush must sit strictly between the fopen and the publishing
+         * platform replace. */
         ASSERT(repo_path(path, sizeof(path),
                          "engine/modules/storage/src/sha3_sidecar_io.c") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
@@ -576,11 +557,9 @@ int t_projection_deferral_is_not_block_rejected_contract(void)
     int failures = 0;
     char *buf = NULL;
     TEST("projection deferral is chain advance diagnostic, not block reject") {
-        /* The one-engine deletion removed legacy connect_tip(); the reducer
-         * consensus path (tip_finalize_post_step.c) is now the sole producer
-         * of the projection-deferred DIAGNOSTIC. The contract anchor follows
-         * the live consensus path: a deferred projection write is a
-         * diagnostic counter on the new path, never a block reject. */
+        /* The reducer consensus path (tip_finalize_post_step.c) is the sole
+         * producer of the projection-deferred DIAGNOSTIC: a deferred
+         * projection write is a diagnostic counter, never a block reject. */
         char path[PATH_MAX];
         ASSERT(repo_path(path, sizeof(path),
                          "engine/jobs/src/tip_finalize_post_step.c") == 0);
@@ -617,12 +596,9 @@ int t_trusted_peer_stall_guard_contract(void)
     int failures = 0;
     char *buf = NULL;
     TEST("trusted-peer stall guards stay wired on msgprocessor rules A+B") {
-        /* The trusted-peer stall exemption and the P2 frontier-parity
-         * term exist only as condition terms on stall rules A and B —
-         * deleting either guard is invisible to every unit test (the
-         * rules still fire, just for the wrong peers). Pin the exact
-         * source text so removal breaks this gate and forces a
-         * conscious update here. Brittle by design. */
+        /* The trusted-peer stall exemption and the P2 frontier-parity term
+         * exist only as condition terms on stall rules A and B; the exact
+         * source text is pinned so removal breaks this gate. */
         char path[PATH_MAX];
         ASSERT(repo_path(path, sizeof(path), "core/modules/net/src/msgprocessor.c") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);

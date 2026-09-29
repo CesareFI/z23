@@ -4,32 +4,21 @@
  * node status reason means an operator has to intervene
  * (engine/controllers/include/controllers/operator_needed_policy.def).
  *
- * WHY THIS EXISTS: the public REST status endpoint
- * (engine/controllers/src/api_controller_status.c) and the agent first-call
- * summary (cognition/controllers/src/event_agent_summary.c) each used to carry their
- * own inline if/else-if ladder assigning `operator_needed`, plus their own
- * copies of every rung's `status` and `summary` string. The node could
- * therefore give two different answers to "does an operator need to act". The
- * two ladders had already drifted: the agent ladder observes four signals the
- * REST ladder does not (peer-telemetry availability, catch-up stall,
- * download-dispatch stall, projection lag).
- *
- * The consolidation is behaviour-PRESERVING: every expected value below was
- * transcribed from the two inline ladders as they stood on the parent commit,
- * so this file is the golden that says the extraction changed nothing an
- * operator reads. It is also the file that fails if someone later flips a
- * verdict in the .def without meaning to.
+ * The public REST status endpoint (engine/controllers/src/api_controller_status.c)
+ * and the agent first-call summary
+ * (cognition/controllers/src/event_agent_summary.c) share one table for
+ * `operator_needed` and each rung's `status` and `summary`, so the node
+ * gives one answer to "does an operator need to act". The expected values
+ * below are the golden for that table, and fail if a verdict in the .def
+ * flips unintentionally.
  *
  * The two assertions worth reading twice:
- *   - PEER_SNAPSHOT_BUSY must stay operator_needed=false EVEN WITH WARNINGS
- *     PRESENT. That rung exists so a momentarily-contended peer snapshot
- *     (peer_count UNKNOWN, not zero) cannot fall through to NO_PEERS and page
- *     an operator about peers that were never counted. Flipping it to true
- *     manufactures a false page on every busy telemetry read.
+ *   - PEER_SNAPSHOT_BUSY stays operator_needed=false EVEN WITH WARNINGS
+ *     PRESENT: a contended peer snapshot leaves peer_count UNKNOWN, not
+ *     zero, and must not fall through to NO_PEERS and page an operator.
  *   - exactly ONE reason's verdict may depend on warning_count
- *     (HEALTHCHECK_UNHEALTHY). If a second reason starts varying with the
- *     count, the "does an operator need to act" question has grown a second
- *     input and the ladder is drifting again. */
+ *     (HEALTHCHECK_UNHEALTHY); a second would give the question a second
+ *     input. */
 
 #include "test/test_core.h"
 
@@ -44,8 +33,7 @@
     else { printf("FAIL\n"); failures++; }                        \
 } while (0)
 
-/* The golden table, transcribed from the two inline ladders on the parent
- * commit. Deliberately hand-written and NOT generated from the .def: a golden
+/* The golden table. Hand-written, NOT generated from the .def: a golden
  * derived from the thing it checks proves nothing. */
 struct onp_expect {
     enum node_status_reason reason;
@@ -157,12 +145,9 @@ static int case_truth_table(void)
     return failures;
 }
 
-/* The peer-telemetry-busy rung is the one place the two parent ladders
- * genuinely disagreed (the agent summary had it; the REST status endpoint had
- * no such observation to make). It is deliberately NOT operator_needed, and it
- * must stay that way regardless of warning count: the whole point is that a
- * contended peer read leaves peer_count UNKNOWN rather than zero, so escalating
- * would page an operator about peers nobody counted. */
+/* PEER_SNAPSHOT_BUSY is NOT operator_needed regardless of warning count: a
+ * contended peer read leaves peer_count UNKNOWN rather than zero, and
+ * escalating would page an operator about peers nobody counted. */
 static int case_peer_snapshot_busy_never_pages(void)
 {
     int failures = 0;
@@ -175,8 +160,8 @@ static int case_peer_snapshot_busy_never_pages(void)
     ONP_CHECK("PEER_SNAPSHOT_BUSY does not page at 1000 warnings",
               node_status_reason_operator_needed(
                   ZCL_STATUS_REASON_PEER_SNAPSHOT_BUSY, 1000) == false);
-    /* And it must NOT be the same verdict as the rung it exists to prevent
-     * falling through to. If these ever agree, the guard is pointless. */
+    /* And it must NOT share the verdict of the rung it exists to prevent
+     * falling through to. */
     ONP_CHECK("PEER_SNAPSHOT_BUSY and NO_PEERS disagree (the guard has a job)",
               node_status_reason_operator_needed(
                   ZCL_STATUS_REASON_PEER_SNAPSHOT_BUSY, 0) !=
@@ -185,8 +170,7 @@ static int case_peer_snapshot_busy_never_pages(void)
     return failures;
 }
 
-/* Exactly one reason's verdict may depend on warning_count. A second one
- * appearing means the question grew a second input behind everyone's back. */
+/* Exactly one reason's verdict may depend on warning_count. */
 static int case_only_one_reason_reads_warning_count(void)
 {
     int failures = 0;
@@ -269,8 +253,7 @@ static int case_status_vocabulary_is_closed(void)
     ONP_CHECK("the healthy reason is NONE",
               strcmp(node_status_reason_status(ZCL_STATUS_REASON_NONE),
                      "healthy") == 0);
-    /* Every "blocked" reason must page. A blocked node that does not ask for
-     * an operator is the exact two-answers bug this consolidation removes. */
+    /* Every "blocked" reason must page. */
     bool blocked_all_page = true;
     for (int i = 0; i < (int)ZCL_STATUS_REASON__COUNT; i++) {
         enum node_status_reason r = (enum node_status_reason)i;

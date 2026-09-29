@@ -3,8 +3,7 @@
  * recv observation wrapper. No sleeps, child processes or production hook.
  * Define RLF_SOURCE as the absolute production .c path; RLF_STANDALONE adds main.
  */
-/* Wired into the registered resident_launch group by A: self-identify the
- * production source when the build does not pass -DRLF_SOURCE. Quote-include
+/* Self-identify the production source when the build does not pass -DRLF_SOURCE. Quote-include
  * resolves relative to this file (tests/harness/src -> repo root is ../../..). */
 #ifndef RLF_SOURCE
 #define RLF_SOURCE "../../../platform/modules/platform/src/resident_launch.c"

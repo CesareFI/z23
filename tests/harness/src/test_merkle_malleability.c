@@ -14,15 +14,10 @@
  * collide to the SAME root, and that the `mutated` flag — the exact
  * predicate this codebase rejects on — distinguishes them.
  *
- * Teeth: every merkle root asserted here is checked against an
- * INDEPENDENT hand reference computed with hash256() directly (not via
- * merkle_hash_pair), so the tree-walk (odd-leaf padding, per-level
- * reduction) is validated by construction rather than by trusting the
- * function under test. The CVE cases assert BOTH the collision (the
- * vulnerability exists — same root for [A,B,C] and [A,B,C,C]) AND
- * mutated==true on the padded list (the defense fires): delete the
- * `*mutated = true` line in compute_merkle_root_mutated and the
- * "mutated flag set" assertions here go RED while the roots stay equal.
+ * Teeth: every merkle root asserted here is checked against an independent
+ * hand reference computed with hash256() directly (not via merkle_hash_pair).
+ * The CVE cases assert both the collision (same root for [A,B,C] and
+ * [A,B,C,C]) and mutated==true on the padded list.
  *
  * Deterministic: no RNG, no clock, no globals, no node process.
  */

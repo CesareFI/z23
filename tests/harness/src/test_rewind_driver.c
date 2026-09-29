@@ -2,14 +2,9 @@
  *
  * Dedicated unit test for the generic recovery driver
  * rewind_to_nearest_self_verified_base() (engine/jobs/src/rewind_driver.c).
- *
- * The driver has SEVEN distinct branches, previously exercised only
- * incidentally by ONE scenario (the tip_label_divergence -> driver wiring case
- * in test_validation_pack_conditions.c, which only reached branch 3). This
- * group drives each branch directly against a throwaway progress.kv built with
- * the same real stage-log schema the production *_log_store.c modules emit
- * (the test_reducer_frontier.c fixture style) so H* / base-selection are the
- * REAL computations, not mocks:
+ * Each of its seven branches runs directly against a throwaway progress.kv
+ * built with the real stage-log schema (test_reducer_frontier.c fixture
+ * style), so H* / base-selection are real computations:
  *
  *   1. no progress-db open            -> false (hard store error, no escalate)
  *   2. H*-compute failure             -> false (malformed durable base key)
@@ -19,15 +14,12 @@
  *   6. refused_no_inverse / not-ok    -> escalate ONCE (2nd call never multiplies)
  *   7. success                        -> ok + clears + reports base/rewound
  *
- * Plus THE sovereignty property: when both a borrowed finalized_utxo_sha3
- * (HIGHER) and a self-verified rung (LOWER, the compiled checkpoint) exist, the
- * driver rewinds to the LOWER self-verified one — a borrowed root can never win.
+ * Plus the sovereignty property: with both a borrowed finalized_utxo_sha3
+ * (HIGHER) and a self-verified rung (LOWER, the compiled checkpoint), the
+ * driver rewinds to the LOWER self-verified one.
  *
- * Fixtures write rows with plain sqlite3_exec/INSERT — TEST scaffolding
- * building the durable image, not production reducer code, so it does not route
- * through the AR lifecycle (mirrors test_reducer_frontier.c's own note). The
- * driver + reducer_frontier_compute_hstar + stage_rederive_range are the units
- * under test. */
+ * Fixtures write rows with plain sqlite3_exec/INSERT (test scaffolding for
+ * the durable image, not production reducer code). */
 
 #include "test/test_core.h"
 
@@ -52,18 +44,16 @@
     else { printf("FAIL\n"); failures++; }                         \
 } while (0)
 
-/* The compiled SHA3 UTXO checkpoint anchor the driver's base selector always
- * exposes as a self-verified rung (self_derived=true, height A). Fixtures sit
- * just above it so the contiguous-prefix walk has a few heights to traverse
- * without building three million rows. */
+/* The compiled SHA3 UTXO checkpoint anchor the base selector always exposes
+ * as a self-verified rung (self_derived=true, height A). Fixtures sit just
+ * above it so the contiguous-prefix walk stays short. */
 #define A REDUCER_FRONTIER_TRUSTED_ANCHOR  /* 3056758 */
 
 /* ── fixture builders (test_reducer_frontier.c parity, trimmed) ─────────── */
 
 /* Base schema: every table reducer_frontier_compute_hstar / stage_rederive_
- * range read/write EXCEPT body_fetch_log — deliberately omitted so the
- * store-error case can trigger a "no such table" failure inside the body-stage
- * rewind loop. rd_build_schema_full() adds body_fetch_log for the paths that
+ * range use EXCEPT body_fetch_log, omitted so the store-error case hits a
+ * "no such table" failure. rd_build_schema_full() adds it for the paths that
  * must commit. */
 static bool rd_exec(sqlite3 *db, const char *sql)
 {
@@ -278,9 +268,8 @@ static bool rd_put_consistent_height(sqlite3 *db, int32_t h)
 }
 
 /* A rewindable utxo frontier row at height h (ok=1 utxo_apply_log + a
- * matching empty inverse delta). Placed at the base height A so the coins
- * inverse-rewind of [A, utxo_cursor) has a complete row set to walk and
- * COMMITS instead of refusing. */
+ * matching empty inverse delta), placed at base height A so the coins
+ * inverse-rewind of [A, utxo_cursor) has a complete row set and commits. */
 static bool rd_put_utxo_frontier_row(sqlite3 *db, int32_t h)
 {
     uint8_t hh[32];
@@ -350,10 +339,9 @@ static int case_no_progress_db(void)
     return failures;
 }
 
-/* Branch 2: H*-compute failure -> false. A malformed (TEXT-typed) durable
- * trusted-base key makes reducer_frontier_compute_hstar fail closed (the
- * proven test_reducer_frontier.c "TEXT authority fails closed" topology), so
- * the driver returns false BEFORE any base selection / escalation. */
+/* Branch 2: H*-compute failure -> false. A TEXT-typed durable trusted-base
+ * key makes reducer_frontier_compute_hstar fail closed, so the driver returns
+ * false before any base selection / escalation. */
 static int case_hstar_compute_failure(void)
 {
     int failures = 0;
@@ -388,11 +376,9 @@ static int case_hstar_compute_failure(void)
 
 /* Branch 3: no self-verified base at/below H* -> escalate ONCE.
  * A schema-only progress.kv (no proven-authority stamp) drops H* to 0 via
- * compute_hstar's phantom-anchor guard — cleanly, not a DB error — so the
- * ceiling is 0 and the compiled checkpoint at A (=3,056,758) is ABOVE it: no
- * self-verified base exists at/below the ceiling and the driver names its typed
- * dependency blocker. A second call against the same persistent cause must NOT
- * multiply that named blocker. */
+ * compute_hstar's phantom-anchor guard, so the checkpoint at A is above the
+ * ceiling and the driver names its typed dependency blocker. A second call
+ * with the same cause must not multiply it. */
 static int case_no_base_escalates_once(void)
 {
     int failures = 0;
@@ -432,10 +418,9 @@ static int case_no_base_escalates_once(void)
 }
 
 /* Branch 4: base already at/above H* -> no-op, and clears any stale blocker.
- * Proven authority + a clamp-up ok=0 at A+1 pins H*=A; the compiled checkpoint
- * base at A satisfies base.height >= H*, so the driver clears the escalation
- * blocker and reports out.nothing. A stale blocker is pre-set to prove the
- * clear fires. */
+ * Proven authority + a clamp-up ok=0 at A+1 pins H*=A; the checkpoint base at
+ * A satisfies base.height >= H*, so the driver clears the escalation blocker
+ * and reports out.nothing. A stale blocker is pre-set to prove the clear. */
 static int case_base_at_or_above_hstar_noop(void)
 {
     int failures = 0;
@@ -476,11 +461,10 @@ static int case_base_at_or_above_hstar_noop(void)
 }
 
 /* Branch 5: stage_rederive_range hard store error -> false.
- * H*=A+5 with the compiled checkpoint base at A (< H*), and a full rewindable
- * utxo frontier over [A, A+6) so the coins inverse-rewind SUCCEEDS — but the
- * base schema OMITS body_fetch_log, so the very first body-stage delete in the
- * rewind loop hits "no such table" and stage_rederive_range returns false. The
- * driver propagates that as a hard store error (false), NOT an escalation. */
+ * H*=A+5, checkpoint base at A, and a full rewindable utxo frontier over
+ * [A, A+6) so the coins inverse-rewind succeeds, but the schema omits
+ * body_fetch_log so the first body-stage delete hits "no such table". The
+ * driver propagates a hard store error (false), not an escalation. */
 static int case_stage_rederive_store_error(void)
 {
     int failures = 0;
@@ -518,13 +502,11 @@ static int case_stage_rederive_store_error(void)
     return failures;
 }
 
-/* Branch 6: stage_rederive_range LCC refusal (refused_no_inverse) -> escalate
- * ONCE. Same H*=A+5 / base-A topology, but the first suffix height A+1 carries
- * a malformed inverse blob. H* still reaches A+5 because the success log and
- * branch hash are present; the coin rewind of [A+1,A+6) REFUSES rather than
- * manufacture a coin hole.
- * The driver names its typed blocker; a second identical drive must not
- * multiply it. */
+/* Branch 6: stage_rederive_range refuses (refused_no_inverse) -> escalate
+ * ONCE. Same H*=A+5 / base-A topology, but suffix height A+1 carries a
+ * malformed inverse blob, so the coin rewind of [A+1,A+6) refuses rather than
+ * manufacture a coin hole. A second identical drive must not multiply the
+ * blocker. */
 static int case_rederive_refused_escalates_once(void)
 {
     int failures = 0;
@@ -571,10 +553,9 @@ static int case_rederive_refused_escalates_once(void)
 }
 
 /* Branch 7: success -> commit a rewind, clear the blocker, report the base +
- * rewound flags. H*=A+5, compiled checkpoint base at A (< H*), a full
- * rewindable frontier over [A, A+6), and the FULL schema (body_fetch_log
- * present) so the whole rewind transaction commits. A stale escalation blocker
- * is pre-set to prove the success path clears it. */
+ * rewound flags. H*=A+5, checkpoint base at A, a full rewindable frontier
+ * over [A, A+6), and the FULL schema (with body_fetch_log). A stale
+ * escalation blocker is pre-set to prove the success path clears it. */
 static int case_success(void)
 {
     int failures = 0;
@@ -617,8 +598,7 @@ static int case_success(void)
     RD_CHECK("success: stale escalation blocker CLEARED", !blocker_exists(bid));
 
     /* Idempotent: the cursors now sit at the base, so a second drive is a
-     * clean no-op (nothing left above H*... below the base) — proves the
-     * committed rewind actually moved the cursors. */
+     * clean no-op. */
     struct rewind_driver_result out2;
     bool rv2 = rewind_to_nearest_self_verified_base(INT32_MAX, "unit-success",
                                                     "success", &out2);
@@ -632,11 +612,9 @@ static int case_success(void)
 
 /* THE sovereignty property: with BOTH a borrowed finalized_utxo_sha3 (HIGHER,
  * at A+4) and a self-verified rung (LOWER, the compiled checkpoint at A), the
- * driver rewinds to the LOWER self-verified base — a borrowed root can never
- * become the rewind target while any self-verified rung is available. Mirrors
- * test_reducer_frontier.c's case_sovereign_base_ignores_borrowed_higher_stamp
- * node_db wiring, but asserts the DRIVER's selection (out.base_*), not just the
- * selector. */
+ * driver rewinds to the LOWER self-verified base; a borrowed root never
+ * becomes the rewind target while a self-verified rung exists. Asserts the
+ * driver's selection (out.base_*), not just the selector. */
 static int case_sovereign_rewinds_to_lower_self_verified(void)
 {
     int failures = 0;
@@ -656,8 +634,7 @@ static int case_sovereign_rewinds_to_lower_self_verified(void)
 
     /* Wire a real node_db + db_service so enumerate_rewind_bases()'s
      * app_runtime_node_db() resolves, and stamp a BORROWED finalized_utxo_sha3
-     * at A+4 — strictly HIGHER (nearer H*, cheaper under naive height-only
-     * selection) than the self-verified compiled checkpoint at A. */
+     * at A+4, HIGHER than the self-verified compiled checkpoint at A. */
     struct node_db ndb;
     struct db_service dbsvc;
     struct app_runtime_context runtime;

@@ -175,10 +175,9 @@ int test_ratify_mint_anchor(void)
         test_cleanup_tmpdir(dir);
     }
 
-    /* Case (d): the GENERALIZED seam ratifier stamps BOTH sovereign markers on an
-     * exact (height, coins_sha3, count) match — the flip the promotion service
-     * calls after its isolated re-derivation matches the recorded seam — WITHOUT
-     * re-arming the mint resume marker (that stays checkpoint-wrapper-specific). */
+    /* Case (d): the generalized seam ratifier stamps BOTH sovereign markers on
+     * an exact (height, coins_sha3, count) match, without re-arming the mint
+     * resume marker (checkpoint-wrapper-specific). */
     {
         char dir[256];
         struct sha3_utxo_checkpoint cp;

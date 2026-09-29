@@ -12,8 +12,8 @@
  * What each section plants:
  *
  *  A. GOLDEN VERSION-1 FRAMES. Byte-exact request and response records,
- *     hand-derived from the wire layout as it stood at base commit
- *     96a0d0e49 (see the derivation note above k_golden_*), not captured
+ *     hand-derived from the wire layout,
+ *     (see the derivation note above k_golden_*), not captured
  *     from the encoder. Plants: a "compatible" rewrite that silently changes
  *     a field offset, width, or endianness. Old frames must decode to the
  *     SAME canonical operation forever.
@@ -789,18 +789,14 @@ static int check_list_for_sale_is_a_mutation(struct agent_audit_log *audit)
 {
     int failures = 0;
 
-    /* The contradiction this whole workflow exists to delete: one identifier
-     * that meant "enumerate" on one side of the socket and "advertise for
-     * sale" on the other. On the wire, value 2 is the READ. */
+    /* Value 2 on the wire is the enumeration READ. */
     VC_CHECK("wire value 2 is the enumeration read, not the sale listing",
              !mvap_verb_is_mutation(MVAP_VERB_LIST) &&
              mvap_verb_from_name("LIST") == MVAP_VERB_LIST);
 
-    /* LIST_FOR_SALE is appended at a NEW wire value and the version is
-     * bumped (contract §2). Once the protocol declares version 2, the verb
-     * must be present, must be a mutation, and must not have displaced the
-     * enumeration read. This arms itself off MVAP_VERSION so it cannot coast
-     * unnoticed. */
+    /* LIST_FOR_SALE is appended at a new wire value and the version is
+     * bumped (contract §2): once version 2, the verb must be a mutation and
+     * must not displace the enumeration read. */
     uint32_t lfs = mvap_verb_from_name("LIST_FOR_SALE");
     if (MVAP_VERSION >= 2u) {
         VC_CHECK("version 2 carries LIST_FOR_SALE at an appended wire value",
@@ -963,11 +959,8 @@ static int check_transfer_moves_value_everywhere(void)
              metaverse_grant_check(&hg, NULL, 0, &mreq) ==
                  METAVERSE_GRANT_VALUE_ON_FREE_ACTION);
 
-    /* (3) THE BROKER TRANSLATION must give the SAME answer. This is the
-     *     divergence: the broker's value predicate omitted TRANSFER, so a
-     *     valued TRANSFER came back BAD_REQUEST — meaning a TRANSFER through
-     *     the broker was only ever expressible with value 0, i.e. free of
-     *     the cumulative budget the operator wrote down. */
+    /* (3) THE BROKER TRANSLATION must give the SAME answer: a valued
+     *     TRANSFER must not be rejected as BAD_REQUEST. */
     struct agent_grant bg;
     wide_grant(&bg);
     struct mvap_request breq;
@@ -1001,10 +994,8 @@ static int check_transfer_moves_value_everywhere(void)
     VC_CHECK("a committed TRANSFER debits the broker's budget",
              bg3.spent_zats == 500);
 
-    /* The whole value column, checked for agreement rather than one row: for
-     * every verb that has a metaverse counterpart, "may carry value" must be
-     * the same answer on both sides. One row disagreeing is what this
-     * workflow is deleting; the loop is what stops the next one appearing. */
+    /* For every verb with a metaverse counterpart, "may carry value" must
+     * agree on both sides. */
     struct {
         uint32_t verb;
         enum metaverse_action action;
@@ -1076,29 +1067,20 @@ static int check_no_bypass_of_the_evaluator(struct agent_audit_log *audit)
         scoped_request(&req, MVAP_VERB_PUBLISH_REVISION, 0, "");
         req.request_id = 4000u + (uint32_t)i;
 
-        /* Each case narrows the LIVE authority, not a session copy — the
-         * session is already bound above and holds no grant to narrow. The
-         * re-install after the switch is what a running session sees. */
+        /* Each case narrows the LIVE authority, not a session copy. */
         switch (i) {
         case 0: memset(gr.grant_id, 0, sizeof(gr.grant_id)); break;
         case 1: gr.revoked = true; break;
         case 2: gr.expires_unix_ms = 10; break;
-        /* actions_mask is the CANONICAL metaverse_action_set, not a wire-keyed
-         * one, so the bit to clear is the canonical bit. Shifting by the wire
-         * value would clear a different action entirely (wire 4 would land on
-         * LIST_FOR_SALE's 0x10) and the verb under test would stay granted. */
+        /* actions_mask is the canonical metaverse_action_set, not wire-keyed,
+         * so the bit to clear is the canonical bit. */
         case 3: gr.actions_mask &=
                     ~(uint32_t)METAVERSE_ACTION_PUBLISH_REVISION; break;
         case 4: req.property_id[0] ^= 0xFFu; break;
         case 5: gr.kinds_mask = 0;
                 req.kind = MVAP_KIND_ZCODE; break;
-        /* The PER-ACTION ceiling, isolated. wide_grant() sets both ceilings to
-         * 1000, so a 5000 request breaks the cumulative budget too and the
-         * canonical evaluator — which runs first, by design — answers
-         * DENIED_BUDGET. That is a true answer to a different question. Lift
-         * the cumulative budget clear of the request so the only limit left to
-         * violate is max_value_zats, and this case tests the ceiling it
-         * names. DENIED_BUDGET has its own case above. */
+        /* The per-action ceiling, isolated: lift the cumulative budget clear of
+         * the request so max_value_zats is the only limit left to violate. */
         case 6: scoped_request(&req, MVAP_VERB_BUY, 5000, "");
                 gr.budget_zats = 1000000;
                 req.request_id = 4006u; break;
@@ -1185,12 +1167,9 @@ static int check_no_bypass_of_the_evaluator(struct agent_audit_log *audit)
     /* And the mask arithmetic itself: allowing verb N must not allow verb M.
      * A shared or shifted bit here would hand out a right nobody granted. */
     {
-        /* A grant holds TWO sets: actions_mask is the canonical
-         * metaverse_action_set, queries_mask is keyed by wire value. Granting
-         * one wire verb must light exactly one bit in exactly one of them and
-         * nothing in the other — a shared or shifted bit would hand out a
-         * right nobody granted, and folding the two sets into one word would
-         * make "may read" and "may act" the same right. */
+        /* A grant holds two sets: actions_mask (canonical metaverse_action_set)
+         * and queries_mask (keyed by wire value). Granting one wire verb must
+         * light exactly one bit in exactly one of them. */
         bool one_verb_one_bit = true;
         for (uint32_t v = 1; v < (uint32_t)MVAP_VERB__COUNT; v++) {
             struct agent_grant g;
@@ -1419,18 +1398,9 @@ static int check_production_broker_has_no_fixture(void)
 #endif /* !_WIN32 */
 
 /* ── the unified-header regression guard ─────────────────────────────────
- *
- * At base commit metaverse/property_action.h and metaverse/property_grant.h
- * define the SAME identifiers with different values, and no translation unit
- * includes both. That is not a coincidence to be preserved — it is the
- * defect. Once the vocabulary is one declaration, a TU including both must
- * compile, and this file becomes that TU.
- *
- * This is the one check that cannot be live before the unification lands:
- * including both headers today is a hard redefinition error, which would
- * take the whole build down and with it every other check above. It arms
- * itself off METAVERSE_VOCABULARY_UNIFIED, which the canonical header
- * defines. */
+ * metaverse/property_action.h and property_grant.h must share one
+ * vocabulary declaration so a TU can include both. Armed by
+ * METAVERSE_VOCABULARY_UNIFIED, which the canonical header defines. */
 static int check_headers_unified(void)
 {
     int failures = 0;
@@ -1438,10 +1408,7 @@ static int check_headers_unified(void)
     /* Both spellings now resolve in ONE translation unit and agree. */
     VC_CHECK("the two metaverse headers share one action vocabulary",
              (uint32_t)METAVERSE_ACTION_TRANSFER == 0x00000200u);
-    /* 13 was the OLD single-vocabulary count, with INSPECT counted as an
-     * action. The split is 12 actions + 2 queries = 14 operations; the guard
-     * armed and caught this assertion still holding the pre-split number,
-     * which is what it was built to do. */
+    /* 12 actions + 2 queries = 14 operations. */
     VC_CHECK("the action count is one number, not two",
              (int)METAVERSE_ACTION_COUNT == 12);
     VC_CHECK("queries are a second closed set, counted separately",
@@ -1469,10 +1436,7 @@ int test_metaverse_vocabulary(void)
 {
     printf("\n=== metaverse_vocabulary ===\n");
 
-    /* Hermetic datadir for the whole run. Nothing in this group should reach
-     * a datadir at all; pinning it is what proves that rather than assuming
-     * it, and it is what stops a check being answered by the operator's live
-     * node. */
+    /* Hermetic datadir for the whole run: nothing here may reach a real one. */
     char dd[256];
     test_make_tmpdir(dd, sizeof dd, "metaverse_vocabulary", "datadir");
     SetDataDir(dd);
@@ -1502,11 +1466,8 @@ int test_metaverse_vocabulary(void)
                      "receipts");
     failures += check_receipt_binds_response_to_audit(bind_dir);
 
-    /* Un-register the fixture provider the checks above bound their sessions
-     * to. The next check FORKS and runs the shipped broker mode, and a forked
-     * child inherits whatever this process has installed — leaving the fixture
-     * registered would have the child serving a fixture catalog for a reason
-     * that has nothing to do with the shipped code. */
+    /* Un-register the fixture provider: the next check forks the shipped
+     * broker mode, which would inherit it. */
     agent_broker_provider_install(NULL);
 
     failures += check_production_broker_has_no_fixture();

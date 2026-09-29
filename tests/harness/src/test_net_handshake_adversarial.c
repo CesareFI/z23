@@ -2,33 +2,27 @@
  *
  * Adversarial coverage of the P2P version/verack handshake plus the
  * addr/getaddr message family (core/modules/net/src/msg_version.c and
- * core/modules/net/src/msgprocessor_inv.c). Complements test_net_msg_dos (which
- * covers inv/getdata/headers floods post-handshake) by covering the
- * HANDSHAKE + ADDR surface that group does not.
+ * core/modules/net/src/msgprocessor_inv.c). Complements test_net_msg_dos
+ * (inv/getdata/headers floods post-handshake) by covering the HANDSHAKE +
+ * ADDR surface.
  *
- * Every case drives the REAL, current handler — process_version() /
- * process_verack() directly (both are the public test seam declared in
- * net/msg_internal.h; mp_handle_version/mp_handle_verack are thin
- * dispatch-table adapters around them, see msgprocessor_handshake.c),
- * or the full msg_process_messages() dispatch loop with a real,
- * checksummed wire message for behavior that lives in the dispatch
- * table itself (the "before handshake" gate) rather than in a single
- * handler. No handler source is modified — these tests only pin the
- * existing defensive contract.
+ * Every case drives the REAL handler: process_version() / process_verack()
+ * directly (the public test seam in net/msg_internal.h; mp_handle_version/
+ * mp_handle_verack are thin adapters, see msgprocessor_handshake.c), or the
+ * full msg_process_messages() dispatch loop with a real checksummed wire
+ * message for behavior in the dispatch table itself (the "before handshake"
+ * gate). No handler source is modified.
  *
- * p2p_node.socket is a real socketpair() end (not ZCL_INVALID_SOCKET):
- * p2p_node_end_message() opportunistically calls socket_send_data()
- * on the FIRST queued segment, and send() on an invalid fd fails with
- * EBADF, which p2p_node_close_socket() turns into node->disconnect =
- * true as a side effect — that would corrupt the very disconnect
- * assertions these tests make. A real socketpair fd makes send()
- * succeed (small handshake messages fit well under the default AF_UNIX
- * buffer), so disconnect reflects only the protocol decision under
- * test.
+ * p2p_node.socket is a real socketpair() end, not ZCL_INVALID_SOCKET:
+ * p2p_node_end_message() send()s the FIRST queued segment, and send() on an
+ * invalid fd fails with EBADF, which p2p_node_close_socket() turns into
+ * node->disconnect = true, corrupting the disconnect assertions. A real fd
+ * lets send() succeed (small handshake messages fit the AF_UNIX buffer), so
+ * disconnect reflects only the protocol decision under test.
  *
- * Determinism: no wall-clock reads. All timestamps are fixed epoch
- * constants; addr-timestamp sanitization is tested directly against
- * addr_info_is_terrible() with a fixed "now" anchor. */
+ * Determinism: no wall-clock reads. All timestamps are fixed epoch constants;
+ * addr-timestamp sanitization is tested against addr_info_is_terrible() with
+ * a fixed "now" anchor. */
 
 #include "test/test_core.h"
 #include "platform/socket_compat.h"
@@ -71,18 +65,17 @@ static bool hs_fixture_setup(struct hs_fixture *f, bool inbound)
     f->mp.net_mgr = &f->nm;
 
 #ifdef ZCL_TESTING
-    /* g_has_external_ip in msg_version.c is a file-static global; make
-     * sure no earlier test in this process left it set (defensive —
-     * this group never sets it itself). */
+    /* g_has_external_ip in msg_version.c is a file-static global; ensure no
+     * earlier test in this process left it set. */
     msg_version_clear_external_ip_for_test();
 #endif
 
     platform_socket_t fds[2];
     if (!platform_socket_pair(fds))
         return false;
-    /* Production P2P sockets are nonblocking.  Keep the fixture faithful so
-     * a large eager addr response queues on EAGAIN instead of deadlocking
-     * the test on Darwin's smaller AF_UNIX socket buffer. */
+    /* Production P2P sockets are nonblocking; stay faithful so a large eager
+     * addr response queues on EAGAIN instead of deadlocking on Darwin's
+     * smaller AF_UNIX buffer. */
     if (!platform_socket_set_nonblocking((platform_socket_t)fds[0], true)) {
         close(fds[0]);
         close(fds[1]);
@@ -133,9 +126,8 @@ static void hs_fixture_teardown(struct hs_fixture *f)
 }
 
 /* ── Wire-message builder for full msg_process_messages() driving ──
- * (only needed for behavior that lives in the dispatch loop itself —
- * the "before handshake" gate and the addr/getaddr handlers, which
- * are reached only through the dispatch table). */
+ * (for behavior in the dispatch loop itself: the "before handshake" gate and
+ * the addr/getaddr handlers). */
 
 static void hs_build_wire_message(struct net_message *msg, const char *command,
                                   const struct byte_stream *payload)
@@ -160,9 +152,9 @@ static void hs_build_wire_message(struct net_message *msg, const char *command,
     msg->in_data = true;
 }
 
-/* Queue exactly one real wire message and run it through the actual
- * inbound dispatch loop (msgprocessor.c::msg_process_messages). Frees
- * any previous single-message buffer this helper installed. */
+/* Queue exactly one real wire message and run it through the inbound dispatch
+ * loop (msgprocessor.c::msg_process_messages). Frees any previous
+ * single-message buffer this helper installed. */
 static bool hs_drive_message(struct msg_processor *mp, struct p2p_node *node,
                              const char *command, struct byte_stream *payload)
 {
@@ -187,13 +179,11 @@ static bool hs_drive_message(struct msg_processor *mp, struct p2p_node *node,
     return msg_process_messages(mp, node);
 }
 
-/* p2p_node_end_message() synchronously calls send() on a segment that is
- * first in the queue (see net.c::socket_send_data). With a real
- * socketpair fd that send() actually succeeds, so by the time a driving
- * helper returns, any reply the handler queued has already been written
- * to the socket AND dequeued/freed on our side — node->send_head is back
- * to empty. The only way to observe what was actually sent is to read
- * the OTHER end of the socketpair (f.peer_fd). */
+/* p2p_node_end_message() synchronously send()s the first queued segment (see
+ * net.c::socket_send_data). With a real socketpair fd that succeeds, so when
+ * a driving helper returns, any queued reply is already written and dequeued
+ * (node->send_head is empty). Observe what was sent by reading the OTHER end
+ * of the socketpair (f.peer_fd). */
 
 #define HS_CAPTURE_CAP 8192
 
@@ -216,9 +206,9 @@ static void hs_capture_sent(platform_socket_t peer_fd, struct hs_capture *cap)
     }
 }
 
-/* Locate cmd's message-header start within a captured byte run (wire
- * layout: msgstart[4] command[12] size[4] checksum[4] payload...).
- * Returns the header start offset, or -1 if not found. */
+/* Locate cmd's message-header start within a captured byte run (wire layout:
+ * msgstart[4] command[12] size[4] checksum[4] payload...). Returns the header
+ * start offset, or -1 if not found. */
 static ssize_t hs_find_command_header(const struct hs_capture *cap,
                                       const char *cmd)
 {
@@ -268,10 +258,9 @@ static void hs_build_version_payload(struct byte_stream *out, int32_t proto,
 }
 
 /* A version payload whose subver compact-size length claims 1000 bytes
- * (>= MAX_SUBVER_LENGTH=256). Deliberately does NOT include 1000 bytes
- * of subver data — version_message_deserialize() rejects on the length
- * field alone, before it ever reads the (absent) bytes, so this stays
- * a small, well-formed-except-for-the-length-claim payload. */
+ * (>= MAX_SUBVER_LENGTH=256) without including them:
+ * version_message_deserialize() rejects on the length field alone, before
+ * reading the (absent) bytes. */
 static void hs_build_oversized_subver_payload(struct byte_stream *out)
 {
     struct net_address addr;
@@ -318,10 +307,9 @@ static void hs_build_addr_payload(struct byte_stream *out,
         net_address_serialize(&addrs[i], out, true);
 }
 
-/* addr message declaring only a compact-size count with NO actual
- * entries. process_addr() reads the count then checks it against
- * MAX_ADDR_TO_SEND before ever reading an entry (msgprocessor_inv.c),
- * so a well-formed-but-empty payload is enough to reach the cap. */
+/* addr message declaring only a compact-size count with NO entries.
+ * process_addr() checks the count against MAX_ADDR_TO_SEND before reading any
+ * entry (msgprocessor_inv.c), so an empty payload reaches the cap. */
 static void hs_build_addr_count_only_payload(struct byte_stream *out,
                                              uint64_t count)
 {
@@ -344,8 +332,7 @@ static int test_version_too_old_rejected(void)
 
         /* Rides on msg_version.c:process_version()'s
          * `ver.protocol_version < MIN_PEER_PROTO_VERSION` check, which
-         * LOG_FAILs (logs + returns false) before node->version is ever
-         * assigned or any reply is queued. */
+         * LOG_FAILs before node->version is assigned or any reply queued. */
         bool ok = process_version(&f.mp, &f.node, &payload);
         ASSERT(!ok);
         ASSERT(f.node.disconnect);
@@ -362,10 +349,10 @@ static int test_version_too_old_rejected(void)
     return failures;
 }
 
-/* ── 2. any message before version -> rejected without crash, peer
- * state intact. Rides on msgprocessor.c's dispatch loop
- * (`e->requires_handshake && node->version == 0` gate) — the handler
- * (process_ping) is never even invoked. */
+/* ── 2. any message before version -> rejected without crash, peer state
+ * intact. Rides on msgprocessor.c's dispatch loop
+ * (`e->requires_handshake && node->version == 0`); process_ping is never
+ * invoked. */
 
 static int test_message_before_version_rejected(void)
 {
@@ -383,8 +370,8 @@ static int test_message_before_version_rejected(void)
         ASSERT(ok); /* msg_process_messages itself always returns true */
         ASSERT(f.node.disconnect);
         ASSERT_EQ(f.node.version, 0); /* handler never ran to set anything */
-        /* process_ping would have queued a "pong" reply if it had been
-         * dispatched — its absence proves the handler was never called. */
+        /* process_ping would have queued a "pong"; its absence proves the
+         * handler was never called. */
         struct hs_capture cap;
         hs_capture_sent(f.peer_fd, &cap);
         ASSERT_EQ(cap.len, 0);
@@ -396,11 +383,10 @@ static int test_message_before_version_rejected(void)
     return failures;
 }
 
-/* ── 3. duplicate version -> handled per the real code: rejected via
- * the top-of-function `node->version != 0` guard (emits
- * EV_PEER_MISBEHAVE + LOG_FAILs before even deserializing the second
- * payload), connection state left exactly as after the first (valid)
- * version — not corrupted. */
+/* ── 3. duplicate version -> rejected via the top-of-function
+ * `node->version != 0` guard (EV_PEER_MISBEHAVE + LOG_FAIL before
+ * deserializing the second payload); connection state stays as after the
+ * first (valid) version. */
 
 static int test_duplicate_version_rejected(void)
 {
@@ -418,8 +404,7 @@ static int test_duplicate_version_rejected(void)
         int version_after_first = f.node.version;
         stream_free(&first);
 
-        /* Drain whatever the first (successful) handshake wrote before
-         * driving the duplicate, so the post-duplicate capture below
+        /* Drain the first handshake's writes so the post-duplicate capture
          * reflects only the duplicate call. */
         struct hs_capture drain;
         hs_capture_sent(f.peer_fd, &drain);
@@ -445,9 +430,8 @@ static int test_duplicate_version_rejected(void)
     return failures;
 }
 
-/* ── 4. self-connection: version carrying our own nonce -> detected,
- * connection dropped. Rides on msg_version.c's
- * `ver.nonce == mp->net_mgr->local_host_nonce` guard. */
+/* ── 4. self-connection: version carrying our own nonce -> detected, dropped.
+ * Rides on msg_version.c's `ver.nonce == mp->net_mgr->local_host_nonce`. */
 
 static int test_self_connection_detected(void)
 {
@@ -477,8 +461,8 @@ static int test_self_connection_detected(void)
 }
 
 /* ── 5. addr message declaring more than MAX_ADDR_TO_SEND -> rejected +
- * disconnected, no unbounded processing. Rides on
- * msgprocessor_inv.c::process_addr() -> msg_count_exceeds(). */
+ * disconnected. Rides on msgprocessor_inv.c::process_addr() ->
+ * msg_count_exceeds(). */
 
 static int test_addr_over_cap_rejected(void)
 {
@@ -496,8 +480,8 @@ static int test_addr_over_cap_rejected(void)
         bool ok = hs_drive_message(&f.mp, &f.node, "addr", &payload);
         ASSERT(ok);
         ASSERT(f.node.disconnect);
-        /* No addrman entries were added — the handler bailed before the
-         * per-entry loop, so random_size stays at zero. */
+        /* No addrman entries were added: the handler bailed before the
+         * per-entry loop, so random_size stays zero. */
         ASSERT_EQ(f.nm.addrman.random_size, 0);
 
         stream_free(&payload);
@@ -536,8 +520,8 @@ static int test_legacy_zcl23_addr_batch_bounded_compatible(void)
         ASSERT(f.nm.addrman.random_size <= MAX_ADDR_TO_SEND);
         stream_free(&payload);
 
-        /* A historical eager batch can be followed by the ordinary getaddr
-         * response during the same handshake without tripping the rate cap. */
+        /* An eager batch can be followed by the ordinary getaddr response in
+         * the same handshake without tripping the rate cap. */
         addrs = zcl_malloc(MAX_ADDR_TO_SEND * sizeof(*addrs),
                            "hs_legacy_zcl23_getaddr_addrs");
         ASSERT(addrs != NULL);
@@ -564,10 +548,9 @@ static int test_legacy_zcl23_addr_batch_bounded_compatible(void)
     return failures;
 }
 
-/* ── 6. getaddr response is bounded by the wire cap (MAX_ADDR_TO_SEND)
- * and answers at most once per peer. Rides on
- * msgprocessor_inv.c::process_getaddr() (the `addrs[MAX_ADDR_TO_SEND]`
- * stack array + `node->sent_addr` guard). */
+/* ── 6. getaddr response is bounded by the wire cap (MAX_ADDR_TO_SEND) and
+ * answers at most once per peer. Rides on msgprocessor_inv.c::process_getaddr()
+ * (the `addrs[MAX_ADDR_TO_SEND]` array + `node->sent_addr` guard). */
 
 static int test_getaddr_bounded_and_answered_once(void)
 {
@@ -577,14 +560,11 @@ static int test_getaddr_bounded_and_answered_once(void)
         ASSERT(hs_fixture_setup(&f, true));
         f.node.version = PROTOCOL_VERSION;
 
-        /* Feed 50 distinct routable addresses through the real addr
-         * handler so addrman has something to return. addrman_get_addr()
-         * filters entries via addr_info_is_terrible(..., GetAdjustedTime())
-         * — the REAL current time, not the fixed HS_FIXED_NOW anchor used
-         * elsewhere in this file — so these entries need a genuinely
-         * recent nTime or the real "terrible" rule (tested directly and
-         * deterministically in test_addr_timestamp_sanitization_rule)
-         * would filter every one of them out as stale. */
+        /* Feed 50 distinct routable addresses through the real addr handler.
+         * addrman_get_addr() filters via addr_info_is_terrible(...,
+         * GetAdjustedTime()), the REAL current time (not HS_FIXED_NOW), so the
+         * entries need a genuinely recent nTime (the rule is tested
+         * deterministically in test_addr_timestamp_sanitization_rule). */
         struct net_address addrs[50];
         uint32_t recent = (uint32_t)platform_time_wall_time_t() - 60;
         for (int i = 0; i < 50; i++)
@@ -616,9 +596,8 @@ static int test_getaddr_bounded_and_answered_once(void)
         ASSERT(sent_count <= MAX_ADDR_TO_SEND);
         ASSERT(f.node.sent_addr);
 
-        /* Repeat getaddr on the same peer: sent_addr already true, so
-         * process_getaddr's early-return means no second "addr" reply
-         * is queued/sent. */
+        /* Repeat getaddr on the same peer: sent_addr is already true, so
+         * process_getaddr returns early and no second "addr" reply is sent. */
         ASSERT(hs_drive_message(&f.mp, &f.node, "getaddr", &empty));
         struct hs_capture cap2;
         hs_capture_sent(f.peer_fd, &cap2);
@@ -631,10 +610,10 @@ static int test_getaddr_bounded_and_answered_once(void)
     return failures;
 }
 
-/* ── 6a. The eager addr exchange performed on a ZCL23 verack uses the same
- * wire cap as the receiver.  Populate the public addrman storage seam with
- * enough fresh entries that addrman's ordinary 23% selection would exceed
- * MAX_ADDR_TO_SEND if process_verack supplied its historical 2500 limit. */
+/* ── 6a. The eager addr exchange on a ZCL23 verack uses the same wire cap as
+ * the receiver. Populate the public addrman storage seam with enough fresh
+ * entries that addrman's 23% selection would exceed MAX_ADDR_TO_SEND if
+ * process_verack supplied its historical 2500 limit. */
 
 static int test_eager_zcl23_addr_exchange_bounded(void)
 {
@@ -695,16 +674,12 @@ static int test_eager_zcl23_addr_exchange_bounded(void)
     return failures;
 }
 
-/* ── 6b. a real addr message drives the topology graph, not just
- * addrman: process_addr() (msgprocessor_inv.c) records one
- * storage/topology_store.h edge per deserialized entry, keyed on the
- * already-handshaked peer as observer. The fixture's baked-in node addr
- * (198.51.100.7, an RFC5737 documentation address) is deliberately
- * non-routable for the other handshake cases in this file, but
- * topology_store's own net_addr_is_routable() gate would silently
- * reject every edge with it as observer — override it with a genuine
- * public address (mirrors hs_make_pub_addr's convention) so this test
- * exercises the accept path, not the reject path. */
+/* ── 6b. a real addr message drives the topology graph, not just addrman:
+ * process_addr() (msgprocessor_inv.c) records one storage/topology_store.h
+ * edge per deserialized entry, keyed on the handshaked peer as observer. The
+ * fixture's node addr (198.51.100.7, RFC5737) is non-routable and
+ * topology_store's net_addr_is_routable() gate would reject every edge, so
+ * override it with a public address (mirrors hs_make_pub_addr). */
 
 static int test_addr_message_records_topology_edge(void)
 {
@@ -743,11 +718,10 @@ static int test_addr_message_records_topology_edge(void)
     return failures;
 }
 
-/* ── 7. addr timestamp sanitization: far-future / far-past timestamps
- * are the real "terrible" predicate (addrman.c::addr_info_is_terrible)
- * that addrman_get_addr() filters the getaddr response through. Tested
- * directly against the real, current predicate with a fixed anchor —
- * no wall clock, fully deterministic. */
+/* ── 7. addr timestamp sanitization: far-future / far-past timestamps are the
+ * "terrible" predicate (addrman.c::addr_info_is_terrible) that
+ * addrman_get_addr() filters the getaddr response through. Tested directly
+ * with a fixed anchor: no wall clock. */
 
 static int test_addr_timestamp_sanitization_rule(void)
 {
@@ -783,10 +757,9 @@ static int test_addr_timestamp_sanitization_rule(void)
     return failures;
 }
 
-/* ── 8. oversized/garbage user-agent in version -> bounded/rejected,
- * no overflow. Rides on p2p_message.c::version_message_deserialize()'s
- * `subver_len >= MAX_SUBVER_LENGTH` bound, which fires before any
- * subver bytes are read. */
+/* ── 8. oversized/garbage user-agent in version -> bounded/rejected, no
+ * overflow. Rides on p2p_message.c::version_message_deserialize()'s
+ * `subver_len >= MAX_SUBVER_LENGTH` bound, checked before any subver bytes. */
 
 static int test_oversized_user_agent_rejected(void)
 {
@@ -810,9 +783,9 @@ static int test_oversized_user_agent_rejected(void)
     return failures;
 }
 
-/* ── 9. control: an honest peer's handshake still completes end to end
- * after all of the above. Proves these adversarial cases pin real
- * defensive behavior without breaking the ordinary path. */
+/* ── 9. control: an honest peer's handshake still completes end to end, so
+ * the adversarial cases pin defensive behavior without breaking the ordinary
+ * path. */
 
 static int test_honest_handshake_completes(void)
 {
@@ -844,7 +817,7 @@ static int test_honest_handshake_completes(void)
     return failures;
 }
 
-/* Noise XX sends msg1 before the ordinary message loop runs.  That raw
+/* Noise XX sends msg1 before the ordinary message loop runs; that raw
  * handshake traffic must not suppress the version message. */
 static int test_outbound_version_after_transport_bytes(void)
 {
@@ -868,17 +841,14 @@ static int test_outbound_version_after_transport_bytes(void)
 }
 
 /* ── 10-12. Mempool sync-on-connect (msg_tx.c::msg_tx_maybe_request_mempool,
- * wired into process_verack() in msg_version.c). A fresh node never
- * proactively pulled a peer's mempool before this; now it sends ONE
- * outbound "mempool" message right after the verack round-trip confirms
- * the handshake, gated on relay_txes and on not being deep in IBD. */
+ * wired into process_verack() in msg_version.c): ONE outbound "mempool"
+ * message right after the verack round-trip confirms the handshake, gated on
+ * relay_txes and on not being deep in IBD. */
 
-/* sync_get_state() is a process-wide FSM shared with every other test
- * group forked from test_parallel — restore to SYNC_IDLE around any case
- * that forces IBD so later cases in this same forked process (all of
- * test_net_handshake_adversarial runs in one process) see the ordinary
- * default. Mirrors test_msg_handlers.c's test_msg_sync_to_idle /
- * test_msg_sync_to_blocks_download. */
+/* sync_get_state() is a process-wide FSM shared with every test group forked
+ * from test_parallel; restore SYNC_IDLE around any case that forces IBD so
+ * later cases in this process see the default. Mirrors test_msg_handlers.c's
+ * test_msg_sync_to_idle / test_msg_sync_to_blocks_download. */
 static void hs_force_sync_idle(void)
 {
     enum sync_state cur = sync_get_state();
@@ -905,10 +875,9 @@ static void hs_force_sync_headers_download(void)
     (void)sync_set_state(SYNC_HEADERS_DOWNLOAD, "hs mempool test setup");
 }
 
-/* ── 10. Honest, relay-capable peer: exactly ONE outbound "mempool" is
- * queued right after the verack round-trip, and a second (duplicate)
- * verack from the same peer does NOT queue a second one — pins the
- * per-peer node->mempool_requested once-only guard. */
+/* ── 10. Honest, relay-capable peer: exactly ONE outbound "mempool" is queued
+ * after the verack round-trip; a duplicate verack does NOT queue a second
+ * (per-peer node->mempool_requested once-only guard). */
 
 static int test_mempool_requested_once_for_relay_peer(void)
 {
@@ -928,8 +897,8 @@ static int test_mempool_requested_once_for_relay_peer(void)
         ASSERT(f.node.relay_txes);
         stream_free(&version_payload);
 
-        /* Drain the version-triggered replies (verack/version/sendheaders)
-         * so the capture below reflects only the verack-triggered send. */
+        /* Drain the version-triggered replies (verack/version/sendheaders) so
+         * the capture reflects only the verack-triggered send. */
         struct hs_capture drain;
         hs_capture_sent(f.peer_fd, &drain);
 
@@ -943,9 +912,8 @@ static int test_mempool_requested_once_for_relay_peer(void)
         hs_capture_sent(f.peer_fd, &cap);
         ASSERT(hs_captured_has_command(&cap, "mempool"));
 
-        /* A second verack from the same peer (e.g. misbehaving/duplicate)
-         * must NOT queue a second "mempool" — the guard is per-peer, not
-         * per-call. */
+        /* A second verack from the same peer must NOT queue a second
+         * "mempool": the guard is per-peer, not per-call. */
         ASSERT(hs_drive_message(&f.mp, &f.node, "verack", &empty));
         struct hs_capture cap2;
         hs_capture_sent(f.peer_fd, &cap2);
@@ -998,9 +966,8 @@ static int test_mempool_not_requested_for_non_relay_peer(void)
     return failures;
 }
 
-/* ── 12. Deep in IBD (bulk historical sync): even a relay-capable peer's
- * verack must NOT trigger a mempool pull — mempool inventory is
- * irrelevant while headers/blocks are still catching up. */
+/* ── 12. Deep in IBD: even a relay-capable peer's verack must NOT trigger a
+ * mempool pull (mempool inventory is irrelevant while catching up). */
 
 static int test_mempool_not_requested_during_ibd(void)
 {
@@ -1041,22 +1008,18 @@ static int test_mempool_not_requested_during_ibd(void)
     return failures;
 }
 
-/* ── Published build identity ──────────────────────────────────────────
- *
- * A node states which build family it is running by appending a stable
- * `(src:<12 hex>)` prefix to its subversion string. These cases pin the three
- * properties that make that
- * safe to have on a network with no referee:
+/* ── Published build identity ────────────────────────────────────────
+ * A node states which build family it runs by appending a stable
+ * `(src:<12 hex>)` prefix to its subversion string. These cases pin:
  *
  *   1. what we publish is a prefix of the source identity the BUILD baked in,
  *      not anything a running process was handed;
- *   2. a peer that publishes nothing readable is "unknown" — never an error,
- *      never a penalty, never a reason to treat it differently;
- *   3. the handshake itself is unchanged, so a peer running the previous
- *      build still connects in both directions.
+ *   2. a peer that publishes nothing readable is "unknown": never an error,
+ *      never a penalty;
+ *   3. the handshake itself is unchanged, so a peer on the previous build
+ *      still connects in both directions.
  *
- * See net/version.h for the contract, including why this is INFORMATION and
- * must never become a gate. */
+ * See net/version.h for the contract: this is INFORMATION, never a gate. */
 
 #define HS_ID_A "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 #define HS_ID_B "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
@@ -1065,10 +1028,10 @@ static int test_mempool_not_requested_during_ibd(void)
 #define HS_ID_NONHEX "gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg"
 
 /* 1. What this binary publishes comes from the source identity the build
- * baked into it — the same value zcl_build_source_id_sha256() reports and
- * tools/scripts/source_identity_lib.sh reads back out of the executable.
- * Nothing at run time can move it: it is a compile-time constant reached
- * through the one accessor, with no environment, config, or RPC input. */
+ * baked in (the value zcl_build_source_id_sha256() reports and
+ * tools/scripts/source_identity_lib.sh reads back out of the executable): a
+ * compile-time constant behind one accessor, with no environment, config, or
+ * RPC input. */
 static int test_published_build_identity_is_the_baked_source_id(void)
 {
     int failures = 0;
@@ -1114,9 +1077,8 @@ static int test_published_build_identity_is_the_baked_source_id(void)
 }
 
 /* 2. Reader contract, driven directly. The parser sees untrusted remote
- * bytes, so its refusals matter as much as its acceptances: every refusal
- * must leave the caller with an empty string and a false, never a partial
- * value the caller might print as if a peer had claimed it. */
+ * bytes: every refusal leaves the caller an empty string and false, never a
+ * partial value. */
 static int test_build_identity_reader_refuses_cleanly(void)
 {
     int failures = 0;
@@ -1164,13 +1126,11 @@ static int test_build_identity_reader_refuses_cleanly(void)
     return failures;
 }
 
-/* 3. THE NON-GATING PROOF. Every one of these peers — two on different
- * builds, one on today's build that publishes nothing, a legacy zcashd, a
- * foreign implementation, and ten deliberately malformed tokens — must reach
- * EXACTLY the same handshake outcome: connected, zero misbehaviour, no
- * disconnect. The identity is read and reported; it decides nothing. The
- * moment one of these rows diverges, the field has become a whitelist and
- * this assertion fails. */
+/* 3. THE NON-GATING PROOF. Every one of these peers (two on different builds,
+ * one on today's build publishing nothing, a legacy zcashd, a foreign
+ * implementation, and ten malformed tokens) must reach EXACTLY the same
+ * handshake outcome: connected, zero misbehaviour, no disconnect. If a row
+ * diverges, the field has become a whitelist and this assertion fails. */
 
 struct hs_build_id_case {
     const char *name;
@@ -1257,14 +1217,11 @@ static int test_peer_build_identity_is_read_but_never_gates(void)
     return failures;
 }
 
-/* 4. WIRE COMPATIBILITY. The longer subversion must survive the exact
- * version-message codec an older peer runs — the same compact-size length
- * prefix and the same MAX_SUBVER_LENGTH bound, neither of which this change
- * touches — and must still classify as a ZClassic23 peer through the same
- * unmodified classifier. Driving our OWN advertised string through our own
- * inbound handshake exercises serialize -> deserialize -> classify end to
- * end, because that reader code is byte-for-byte the reader an older build
- * is already running. */
+/* 4. WIRE COMPATIBILITY. The longer subversion must survive the version-message
+ * codec an older peer runs (same compact-size prefix and MAX_SUBVER_LENGTH
+ * bound) and still classify as a ZClassic23 peer through the unmodified
+ * classifier. Driving our OWN advertised string through our own inbound
+ * handshake exercises serialize -> deserialize -> classify end to end. */
 static int test_peer_advertising_the_new_subversion_still_handshakes(void)
 {
     int failures = 0;
@@ -1304,11 +1261,10 @@ static int test_peer_advertising_the_new_subversion_still_handshakes(void)
     return failures;
 }
 
-/* 5. The reverse direction: a peer running TODAY's build sends exactly the
- * subversion today's build sends, and must get the ordinary handshake plus a
- * version message it can parse. Its deserializer bound is MAX_SUBVER_LENGTH
- * and its length field is a compact size; assert what we put on the wire
- * satisfies both. */
+/* 5. The reverse direction: a peer running TODAY's build sends the subversion
+ * today's build sends and must get the ordinary handshake plus a parseable
+ * version message; what we put on the wire satisfies MAX_SUBVER_LENGTH and
+ * the compact-size length field. */
 static int test_previous_build_peer_still_interoperates(void)
 {
     int failures = 0;
@@ -1333,8 +1289,8 @@ static int test_previous_build_peer_still_interoperates(void)
         const char *ua = msg_version_user_agent();
         size_t ua_len = strlen(ua);
         ASSERT(ua_len < MAX_SUBVER_LENGTH);
-        /* A compact size below 253 is a single byte; anything larger would
-         * change the framing an old peer expects at this offset. */
+        /* A compact size below 253 is one byte; larger would change the
+         * framing an old peer expects at this offset. */
         ASSERT(ua_len < 253);
 
         /* The advertised string appears verbatim on the wire, immediately

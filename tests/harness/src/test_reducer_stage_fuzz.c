@@ -1,70 +1,44 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * test_reducer_stage_fuzz — adversarial fuzz / invariant coverage for the
- * eight Wave-S reducer stages (the heart of the system).
+ * eight reducer stages:
  *
  *   engine/jobs/src/{header_admit,validate_headers,body_fetch,body_persist,
  *                 script_validate,proof_validate,utxo_apply,tip_finalize}_stage.c
  *
- * The promise this test defends
- * -----------------------------
  * A reducer stage is a Job: a cursor-stamped step that consumes the next
- * durable unit and returns exactly one of four typed outcomes
- * (JOB_ADVANCED / JOB_BLOCKED / JOB_IDLE / JOB_FATAL — see jobs/job.h).
- * The "no silent halt" architecture mandate means a stage must NEVER:
+ * durable unit and returns exactly one of four typed outcomes (JOB_ADVANCED /
+ * JOB_BLOCKED / JOB_IDLE / JOB_FATAL — see jobs/job.h). A stage must NEVER:
  *   - crash, read OOB, or hang on malformed input;
  *   - return a value outside the four-state enum;
  *   - silently ADVANCE its cursor on garbage;
  *   - move its cursor forward on a rejected step.
+ * This is the runtime complement of the "no silent ready" static gate.
  *
- * These are exactly the runtime complement of the E8 "no silent ready"
- * static gate: that gate proves the code can't *compile* a silent-success
- * path; this proves the stages don't silently succeed at *runtime* on a
- * battery of adversarial inputs.
+ * The fuzz mutates both surfaces a stage reads:
+ *   - the in-memory active chain (hashes, heights, version, bits, status
+ *     flags, pprev links): NULL phashBlock, NULL pprev mid-chain,
+ *     BLOCK_HAVE_DATA cleared, version/bits zeroed, height scrambled;
+ *   - progress.kv (own cursor + upstream cursor and *_log rows): cursors ahead
+ *     of tip, behind genesis, at the int32 boundary, in the uint64 wraparound
+ *     region; log rows missing, duplicated, out-of-order, ok=garbage;
+ *   - injected readers (stages with a reader seam): truncated, oversized,
+ *     zero-tx and garbage-merkle bodies.
  *
- * What "adversarial input" means for a reducer stage
- * --------------------------------------------------
- * Every stage reads from two surfaces:
- *   (a) the in-memory active chain (block_index entries: hashes, heights,
- *       version, bits, status flags, pprev links); and
- *   (b) progress.kv (its own persisted cursor + the upstream stage's
- *       cursor and *_log rows).
- * The fuzz mutates BOTH surfaces:
- *   - cursors: ahead of tip, behind genesis, the int32 boundary, the
- *     uint64 wraparound region (huge values that a stage casts to int);
- *   - log rows: missing, duplicated, out-of-order, ok=garbage, wrong hash;
- *   - block_index: NULL phashBlock, NULL pprev mid-chain, BLOCK_HAVE_DATA
- *     cleared, version/bits zeroed, height scrambled;
- *   - injected readers (for the downstream stages that expose a reader
- *     seam): return truncated/oversized/zero-tx/garbage-merkle bodies.
+ * Determinism: every iteration's choices come from a splitmix64 RNG seeded
+ * from one base seed, printed at the top; on any failure the per-iteration
+ * sub-seed is printed so the case can be replayed.
  *
- * Determinism / seed-replay
- * -------------------------
- * Every fuzz iteration's adversarial choices come from a splitmix64 RNG
- * seeded from a single base seed. The base seed is printed once at the
- * top; on ANY assertion failure the per-iteration sub-seed is printed so
- * the exact case can be replayed by re-running with that seed. (Bugs
- * become 64-bit seeds — the project's core principle.)
+ * All eight stages are driven in isolation through their public
+ * *_stage_step_once / _drain entry points against synthetic fixtures.
+ * header_admit reads the live active chain; validate_headers..tip_finalize
+ * read upstream cursor + log rows stamped directly. tip_finalize's "live chain
+ * advanced" precondition needs a booted pipeline, so only the isolable part is
+ * driven (see TIP_FINALIZE).
  *
- * Stages driven in isolation
- * ---------------------------
- * All eight stages are driven through their public *_stage_step_once /
- * _drain entry points against synthetic fixtures, the same way the
- * per-stage unit tests do. header_admit reads the live active chain;
- * validate_headers..tip_finalize read upstream cursor + log rows that we
- * stamp directly. The downstream stages that expose a reader/validator
- * seam get an adversarial injector. tip_finalize's "live chain advanced"
- * precondition genuinely needs the in-memory chain to be wired the way a
- * booted pipeline wires it; we drive what we can in isolation and document
- * the boot-boundary parts inline (see TIP_FINALIZE section).
- *
- * Teeth
- * -----
- * The invariant checker `expect_typed_no_silent_advance()` is mutation-
- * tested at the bottom (the `self_check` block): we feed it a fabricated
- * "stage advanced but cursor didn't move" observation and confirm the
- * checker flags it. If the checker had no teeth, that block would fail.
- */
+ * Teeth: expect_typed_no_silent_advance() is mutation-tested at the bottom
+ * (the `self_check` block): a fabricated "advanced but cursor didn't move"
+ * observation must be flagged. */
 
 #include "test/test_core.h"
 #include "bloom/merkle.h"
@@ -149,21 +123,13 @@ static bool exec_sql(sqlite3 *db, const char *sql)
 
 /* ── the central invariant checker (mutation-tested below) ─────────────
  *
- * Given an observation of one step (its result, and the cursor before
- * and after), decide whether the stage upheld the Job contract.
- *
- * Returns true iff the observation is contract-conformant:
- *   - result is one of the four enum values (never out-of-band);
+ * Given one step's result and the cursor before and after, returns true iff
+ * the stage upheld the Job contract:
+ *   - result is one of the four enum values;
  *   - on JOB_ADVANCED the cursor moved STRICTLY forward;
  *   - on JOB_BLOCKED / JOB_IDLE / JOB_FATAL the cursor did NOT move.
- *
- * The "non-empty typed reason" half of the invariant for BLOCKED/FATAL is
- * enforced structurally by the stage primitive itself (stage_run_once
- * coerces a BLOCKED-with-empty-id to JOB_FATAL, and a claimed-ADVANCE that
- * fails to move the cursor to JOB_FATAL — see platform/modules/util/src/stage.c). So an
- * observed JOB_BLOCKED here is guaranteed to have carried a non-empty
- * blocker id; we assert the cursor-stillness that the contract layers on
- * top. */
+ * The non-empty typed reason for BLOCKED/FATAL is enforced by the stage
+ * primitive itself (stage_run_once in platform/modules/util/src/stage.c). */
 static bool obs_conformant(job_result_t r,
                            uint64_t cursor_before,
                            uint64_t cursor_after)
@@ -180,14 +146,11 @@ static bool obs_conformant(job_result_t r,
     }
 }
 
-/* Read the DURABLY persisted cursor for `name` straight from
- * stage_cursor. We measure the invariant against the persisted value, not
- * the stage's in-memory accessor: the in-memory mirror lags the persisted
- * value until the first stage_run_once syncs it, so an accessor-based
- * before/after would spuriously look like "the cursor moved" on the very
- * first step after we stamp an adversarial cursor directly into the
- * table. The durable cursor is the one the saga contract is about — it is
- * what survives a crash and what the next boot replays from. */
+/* Read the DURABLY persisted cursor for `name` straight from stage_cursor.
+ * The in-memory accessor lags the persisted value until the first
+ * stage_run_once, so an accessor-based before/after would look like a move on
+ * the first step after an adversarial cursor is stamped. The durable cursor
+ * is what survives a crash and what the next boot replays from. */
 static uint64_t persisted_cursor(const char *name)
 {
     sqlite3 *db = progress_store_db();
@@ -714,16 +677,14 @@ static void fuzz_downstream(uint64_t *rng, int iter, const struct down_spec *sp)
     test_cleanup_tmpdir(dir);
 }
 
-/* TIP_FINALIZE — reads utxo_apply cursor + utxo_apply_log, AND has a
- * genuine "live chain advanced to the next active tip" precondition that
- * a fully booted pipeline satisfies by wiring the in-memory active chain
- * + block work. We CAN drive it in isolation against a garbage upstream
- * with an injected utxo-counter; what we DON'T reproduce in isolation is
- * the cross-subsystem chain-work / active-tip handoff that only exists
- * once boot_services has wired the coordinator. In isolation the stage
- * legitimately reports IDLE/BLOCKED on the missing precondition — which
- * is itself a typed, non-silent outcome, so the invariant still holds.
- * (Boot-boundary part documented; not faked.) */
+/* TIP_FINALIZE — reads utxo_apply cursor + utxo_apply_log, and has a "live
+ * chain advanced to the next active tip" precondition that a booted pipeline
+ * satisfies by wiring the in-memory active chain + block work. It is driven
+ * in isolation against a garbage upstream with an injected utxo-counter; the
+ * cross-subsystem chain-work / active-tip handoff (boot_services wiring the
+ * coordinator) is not reproduced. In isolation the stage reports IDLE/BLOCKED
+ * on the missing precondition, a typed non-silent outcome, so the invariant
+ * still holds. */
 static void fuzz_tip_finalize(uint64_t *rng, int iter)
 {
     char dir[256];

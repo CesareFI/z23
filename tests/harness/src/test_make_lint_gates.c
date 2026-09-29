@@ -1,56 +1,41 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * The `make_lint_gates` self-test family: it runs the self-test of every lint
- * gate.
+ * gate, so a loosened gate pattern cannot silently stop catching violations.
+ * Every check has the same shape:
  *
- * Problem: a lint gate is the only thing stopping a whole class of bug from
- * coming back — `check-raw-sqlite`, for one, is all that stops new raw
- * `sqlite3_step` calls from reintroducing a UTXO-wipe. If someone loosens a
- * gate's pattern ("oh, it's annoying on this PR, let me add another
- * exemption"), the gate silently stops catching violations. Every check in
- * this family prevents that, in the same shape:
- *
- *   1. Copy a known-bad fixture into the scanned tree under a unique temp name
- *      so the gate's scan actually sees it.
+ *   1. Copy a known-bad fixture into the scanned tree under a unique temp name.
  *   2. Run the gate.
  *   3. Assert exit code != 0 (the gate caught the fixture).
  *   4. Remove the temp file and rerun to confirm the gate passes again.
  *
- * The checks themselves live in the sibling lint_gate_*.c files, grouped by
- * the gate family they guard; lint_gate_selftests.h is the map and the shared
- * surface. This file owns the entry table (g_lint_gate_entries — the ONE list
- * of every check and the lane it belongs to), the partition that hands each
- * entry to exactly one registered test group, and the per-lane runners.
+ * The checks live in the sibling lint_gate_*.c files, grouped by gate family;
+ * lint_gate_selftests.h is the map and shared surface. This file owns the
+ * entry table (g_lint_gate_entries, the one list of every check and its lane),
+ * the partition that hands each entry to exactly one registered test group,
+ * and the per-lane runners.
  *
- * ── Why this is split across several registered groups ────────────────────
- * Every check either plants a fixture into a scanned tree or execs a gate
- * script, so historically the whole family ran as ONE group, and that group
- * was marked exclusive (run_group_exclusive in test_parallel.c) because its
- * fixtures were planted into the LIVE source tree where another group's scan
- * could readdir them mid-unlink. Exclusive means the parallel pool is EMPTY
- * while it runs: measured on a 32-worker box this one group was ~95s of a
- * ~130s suite, with 31 workers idle for all of it.
- *
- * The fix is the lane split below. Each entry declares what it actually needs:
+ * ── Lanes and registered groups ───────────────────────────────────────────
+ * Each entry declares what it needs, so the family runs as several groups
+ * instead of one exclusive group:
  *
  *   LINT_LANE_SANDBOX    plants fixtures, but runs entirely inside a private
- *                        reflink-or-copy clone of the worktree, so neither
- *                        bytes nor metadata change in the live tree. Pool-eligible;
- *                        spread over LINT_GATE_SHARD_COUNT shard groups.
+ *                        reflink-or-copy clone of the worktree, leaving the
+ *                        live tree untouched. Pool-eligible; spread over
+ *                        LINT_GATE_SHARD_COUNT shard groups.
  *   LINT_LANE_REALROOT   needs the real .git (git grep / git ls-files /
  *                        .git/hooks) or is hermetic (its own mktemp sandbox),
  *                        but never mutates a tracked path. Pool-eligible.
- *   LINT_LANE_EXCLUSIVE  retains the root-file check and stale sandbox cleanup
- *                        in the historic group for compatibility. It keeps the
- *                        name `make_lint_gates` and stays the exclusive
- *                        pre-pass — which also guarantees the tree is quiet
- *                        while the shards build their sandboxes.
+ *   LINT_LANE_EXCLUSIVE  the root-file check and stale sandbox cleanup. Keeps
+ *                        the name `make_lint_gates` and stays the exclusive
+ *                        pre-pass, so the tree is quiet while shards build
+ *                        their sandboxes.
  *
- * The group name `make_lint_gates` is deliberately KEPT and the shards are
- * named `make_lint_gates_shard_NN`, because --only is a substring match
- * (test_parallel.c) — so `make t ONLY=make_lint_gates` still runs the whole
- * family, and the agent_impact_rules.def rows plus agent_controller.c that
- * name `make_lint_gates` keep resolving with no edit.
+ * The group name `make_lint_gates` is kept and the shards are named
+ * `make_lint_gates_shard_NN`, because --only is a substring match
+ * (test_parallel.c): `make t ONLY=make_lint_gates` runs the whole family and
+ * the agent_impact_rules.def rows plus agent_controller.c naming it keep
+ * resolving.
  *
  * Gated by `ZCL_TESTING` so the shell-out + make invocation only fires when
  * the suite is built by `make test`; standalone compilations of test_zcl
@@ -62,22 +47,18 @@
 
 #include <string.h>
 
-/* How many pool-eligible shard groups the sandbox lane is spread over. Each
- * one is a registered catalog row (see LINT_SHARD_LIST below) and builds its
- * own sandbox, so this is also the number of concurrent private clones. */
+/* How many pool-eligible shard groups the sandbox lane is spread over; each
+ * is a registered catalog row (LINT_SHARD_LIST) with its own sandbox. */
 #define LINT_GATE_SHARD_COUNT 8
 #define LINT_SHARD_LIST(X) \
     X(01, 0) X(02, 1) X(03, 2) X(04, 3) \
     X(05, 4) X(06, 5) X(07, 6) X(08, 7)
 
-/* Which of this family's registered group names must run alone.
- *
- * The scheduler (test_parallel.c) asks this file rather than pattern-matching
- * the name itself, so the policy lives next to the table that makes it true.
- * The match is EXACT on purpose: a prefix or substring test here would mark
- * every shard exclusive too, silently re-serialising the whole split and
- * handing back every second it bought. test_make_lint_gates_partition asserts
- * this predicate in both directions so that regression cannot land quietly.
+/* Which of this family's registered group names must run alone. The
+ * scheduler (test_parallel.c) asks this file so the policy lives next to the
+ * table. The match is EXACT: a prefix/substring test would mark every shard
+ * exclusive and re-serialise the split. test_make_lint_gates_partition asserts
+ * this predicate in both directions.
  *
  * Defined outside ZCL_TESTING: the scheduler links against it either way. */
 bool lint_gates_group_is_exclusive(const char *group_name)
@@ -87,10 +68,9 @@ bool lint_gates_group_is_exclusive(const char *group_name)
     return strcmp(group_name, "make_lint_gates") == 0;
 }
 
-/* The eight private-sandbox shards are safe to run together, but each copies
- * and scans a source tree. Two concurrent 16-worker suites repeatedly starved
- * a different shard past the unchanged 300 s group timeout. Keep this family
- * in one bounded, parallel quiet phase before unrelated suite work. */
+/* The eight private-sandbox shards are safe together, but each copies and
+ * scans a source tree; keep the family in one bounded parallel quiet phase
+ * before unrelated suite work. */
 bool lint_gates_group_requires_quiet_pool(const char *group_name)
 {
     if (!group_name) return false;
@@ -108,14 +88,11 @@ bool lint_gates_group_requires_quiet_pool(const char *group_name)
 #include "platform/os_proc.h"
 #include "platform/time_compat.h"
 
-/* Per-process sandbox-root override. A shard group chdir()s into its own
- * private sandbox and calls repo_root_set_override() with that path; from
- * then on every repo_path()/run_gate_script()/fixture-plant in that process
- * resolves INTO the sandbox (fixtures planted there, and the sandbox's own
- * copy of the gate script is exec'd, so `dirname $0/../..` roots the scan at
- * the sandbox). That is what makes the shards safe to run concurrently with
- * each other and with the rest of the pool. Checked BEFORE the cache so it
- * wins over an already-cached real-root value. */
+/* Per-process sandbox-root override. A shard group chdir()s into its private
+ * sandbox and calls repo_root_set_override() with that path; every
+ * repo_path()/run_gate_script()/fixture-plant then resolves INTO the sandbox
+ * (including the sandbox's own copy of the gate script). Checked BEFORE the
+ * cache so it wins over a cached real-root value. */
 static char g_repo_root_override[PATH_MAX];
 static int g_repo_root_override_set = 0;
 
@@ -145,13 +122,10 @@ const char *repo_root(void)
         return NULL;
     }
 
-    /* The binary lives at <root>/build/bin/<name>; walk UP from the exe
-     * until a directory holding both the Makefile and the raw-sqlite
-     * fixture appears. A single dirname() here once left root at
-     * build/bin, the entry stat failed, and the WHOLE suite silently
-     * no-op-SKIPped (PASS in 1s) — every source-text gate in this file
-     * was dead. Bounded walk so a stray Makefile high in the tree can't
-     * send the shell-outs somewhere surprising. */
+    /* The binary lives at <root>/build/bin/<name>; walk UP from the exe until
+     * a directory holding both the Makefile and the raw-sqlite fixture
+     * appears. Bounded so a stray Makefile high in the tree cannot misroot the
+     * shell-outs. */
     for (int depth = 0; depth < 6; depth++) {
         char *slash = strrchr(exe, '/');
         if (!slash || slash == exe) break;
@@ -196,11 +170,8 @@ typedef int (*lint_gate_fn)(void);
 enum lint_lane {
     LINT_LANE_SANDBOX = 0,
     LINT_LANE_REALROOT,
-    /* Real-root-safe like REALROOT, but slow enough that sharing a group with
-     * anything else makes that group the suite's critical path. Measured
-     * standalone: fresh-boot-weld 45.8s, import-copy-prove 25.2s — together
-     * they were a 106s serial lane, i.e. the whole reason the old runner took
-     * ~95s. Each gets its own registered group. */
+    /* Real-root-safe like REALROOT, but slow enough (fresh-boot-weld ~46s,
+     * import-copy-prove ~25s) that each gets its own registered group. */
     LINT_LANE_HEAVY,
     LINT_LANE_EXCLUSIVE,
 };
@@ -362,37 +333,28 @@ static const struct lint_gate_entry g_lint_gate_entries[] = {
 
 /* ── Partition ────────────────────────────────────────────────────────────
  * Owner of every entry: a shard index in [0, LINT_GATE_SHARD_COUNT) for the
- * sandbox lane, or one of the two negative tags. Pure function of the table,
- * so every process computes the SAME partition and
- * test_make_lint_gates_partition can prove it total and disjoint. */
+ * sandbox lane, or one of the two negative tags. A pure function of the table,
+ * so every process computes the same partition. */
 
 #define LINT_OWNER_REALROOT   (-1)
 #define LINT_OWNER_EXCLUSIVE  (-2)
 #define LINT_OWNER_NONE       (-3)
 /* Heavy lane owners are LINT_OWNER_HEAVY_BASE + k for the k-th HEAVY entry in
- * table order, so heavy_01 owns the first and heavy_02 the second. */
+ * table order. */
 #define LINT_OWNER_HEAVY_BASE (100)
 #define LINT_GATE_HEAVY_COUNT (2)
 
-/* Per-check cost in milliseconds, used to balance the shards.
- *
- * These are MEASURED, not guessed: run the family under ZCL_LINT_GATE_TIMING=1
- * and read the `[lint-gate-timing] ... ms=` lines. They are taken with the
- * whole family running concurrently, so they carry the contention every shard
- * actually experiences in the pool; they only need to RANK correctly.
- *
- * The previous hand-estimated table was badly wrong in both directions and
- * produced shards of 7s and 60s: t_agent_fast_ci_contract was weighted 10 and
- * measures ~26s, t_gate22_framework_filename_suffix was 10 and measures ~12s,
- * while t_gate_p1_file_purpose was weighted 600 and does not even reach the
- * 500ms floor. Anything not listed is sub-500ms noise. */
+/* Per-check cost in milliseconds, used to balance the shards. Measured: run
+ * the family under ZCL_LINT_GATE_TIMING=1 and read the `[lint-gate-timing]
+ * ... ms=` lines, taken with the whole family running concurrently. Values
+ * only need to RANK correctly. Anything not listed is sub-500ms noise. */
 static int lint_entry_weight(lint_gate_fn fn)
 {
     if (fn == t_silent_errors_bool_fixture)              return 59651;
     if (fn == t_no_dev_history_in_contracts)             return 51629;
     if (fn == t_agent_fast_ci_contract)                  return 26287;
-    /* Measured: the cutover selftest's slow-box cases poll real clocks
-     * (~14s), plus the host-watchdog and deploy_verify selftests. */
+    /* The cutover selftest's slow-box cases poll real clocks (~14s), plus the
+     * host-watchdog and deploy_verify selftests. */
     if (fn == t_slow_disk_progress_verdicts_contract)    return 15500;
     if (fn == t_lint_gates_fail_loud_on_empty_scan)      return 21827;
     if (fn == t_gate22_framework_filename_suffix)        return 12435;
@@ -407,10 +369,9 @@ static int lint_entry_weight(lint_gate_fn fn)
     if (fn == t_log_macro_return_type_gate)              return 3728;
     if (fn == t_long_functions_lib_warn_tier)            return 3608;
     if (fn == t_e12_honest_witness)                      return 2202;
-    /* Measured standalone, not under family contention (the dev host's build
-     * lock was held by another lane): one real-tree run at ~1.17s plus the
-     * script's 6-case --selftest at ~1.33s. Re-measure under
-     * ZCL_LINT_GATE_TIMING=1 and correct it if the shards skew. */
+    /* Measured standalone: a real-tree run ~1.17s plus the script's 6-case
+     * --selftest ~1.33s. Re-measure under ZCL_LINT_GATE_TIMING=1 if shards
+     * skew. */
     if (fn == t_dumper_never_blocks_gate)                return 2500;
     if (fn == t_blocker_escape_registered_gate)          return 2198;
     if (fn == t_shape_include_direction)                 return 1874;
@@ -428,9 +389,8 @@ static int lint_entry_weight(lint_gate_fn fn)
 }
 
 /* Longest-processing-time-first bin packing: walk the sandbox entries
- * heaviest-first and drop each into the currently lightest shard. Recomputed
- * per query (a hundred-odd entries over 8 bins is nothing) so there is no
- * cached state to drift out of sync with the table. */
+ * heaviest-first, dropping each into the currently lightest shard. Recomputed
+ * per query so no cached state can drift from the table. */
 static int lint_owner_of(size_t idx)
 {
     if (idx >= LINT_GATE_ENTRY_COUNT) return LINT_OWNER_NONE;
@@ -441,8 +401,8 @@ static int lint_owner_of(size_t idx)
         int k = 0;
         for (size_t i = 0; i < idx; i++)
             if (g_lint_gate_entries[i].lane == LINT_LANE_HEAVY) k++;
-        /* A third HEAVY entry with no group to run it would silently vanish;
-         * the partition test asserts the count instead of letting that pass. */
+        /* A HEAVY entry with no group would vanish; the partition test
+         * asserts the count. */
         if (k >= LINT_GATE_HEAVY_COUNT) return LINT_OWNER_NONE;
         return LINT_OWNER_HEAVY_BASE + k;
     }
@@ -483,9 +443,8 @@ static int lint_owner_of(size_t idx)
 
 /* ── Runners ──────────────────────────────────────────────────────────── */
 
-/* Run every entry this owner owns, in table order. Under
- * ZCL_LINT_GATE_TIMING=1 each check's wall time is reported on stderr; that is
- * the data lint_entry_weight() above is derived from. */
+/* Run every entry this owner owns, in table order. Under ZCL_LINT_GATE_TIMING=1
+ * each check's wall time goes to stderr (the data lint_entry_weight() uses). */
 static int lint_run_owned(int owner)
 {
     const char *timing = getenv("ZCL_LINT_GATE_TIMING");
@@ -508,29 +467,18 @@ static int lint_run_owned(int owner)
 
 /* Build an inode-independent clone ("sandbox") of the worktree at sb_root.
  * Everything except build/.git/.cache/test-tmp/.claude is copied with
- * --reflink=auto: CoW on supporting filesystems, a safe regular copy
- * elsewhere. Hardlinks are forbidden because merely creating/removing one
- * changes the live inode ctime and falsely supersedes source proof epochs;
- * fixture chmod/write would be worse. test-tmp is created fresh. Returns 0.
+ * --reflink=auto (CoW where supported, else a regular copy). Hardlinks are
+ * forbidden: creating/removing one changes the live inode ctime and falsely
+ * supersedes source proof epochs. test-tmp is created fresh. Returns 0.
  *
- * build/ is skipped wholesale (gigabytes of objects and node binaries) with
- * TWO exceptions: build/bin/file_size_policy, the E1 file-size gate, and
- * build/bin/z23-lint, the shared C23 lint runtime several gate scripts now
- * exec as a one-line shim (e.g. check_no_writer_below_sealed_frontier.sh).
- * Both are compiled binaries rather than scripts, so unlike every other gate
- * they do not ride into the sandbox with the source tree, and a self-test
- * would otherwise exec a path that does not exist. Both copies are
- * best-effort — a tree where one was never built must not fail every
- * shard's sandbox construction; t_e1_file_size_bands checks for its binary
- * and says so instead, and a z23-lint-backed gate fails loud with the same
- * "No such file or directory" a missing dependency always produces.
+ * build/ is skipped except build/bin/file_size_policy (the E1 file-size gate)
+ * and build/bin/z23-lint (the shared lint runtime several gate scripts exec);
+ * both are binaries, so they do not ride in with the source tree. Both copies
+ * are best-effort: an unbuilt tree must not fail every shard's construction.
  *
- * Uses fork_with_retry(), not a bare fork(): this runs once per shard (up to
- * LINT_GATE_SHARD_COUNT times concurrently) from the same large test_zcl
- * process the run_gate_script* family forks from, so it is exposed to the
- * exact same transient EAGAIN/ENOMEM under 32-worker load that
- * fork_with_retry's own comment (lint_gate_helpers.c) documents — a bare
- * fork() here was the weaker link, since it had *zero* retry margin. */
+ * Uses fork_with_retry(), not a bare fork(): this runs concurrently per shard
+ * from the large test_zcl process and needs the same EAGAIN/ENOMEM retry
+ * margin documented in lint_gate_helpers.c. */
 static int lint_sandbox_build(const char *real_root, const char *sb_root)
 {
     pid_t pid = fork_with_retry();
@@ -567,14 +515,9 @@ static int lint_sandbox_build(const char *real_root, const char *sb_root)
     return (WIFEXITED(st) && WEXITSTATUS(st) == 0) ? 0 : -1;
 }
 
-/* Remove sandbox bases left by a PREVIOUS run that was killed (SIGKILL/
- * SIGTERM) before its own teardown could run — the normal path rm -rf's its
- * base, but a hard kill leaks it.
- *
- * Only bases whose owning process is GONE are reaped. The shards run
- * concurrently now, so an unconditional sweep would delete a live sibling's
- * sandbox out from under it mid-scan. Called from the exclusive lane, which
- * runs alone before any shard starts. */
+/* Remove sandbox bases leaked by a killed run. Only bases whose owning process
+ * is GONE are reaped (shards run concurrently). Called from the exclusive
+ * lane, which runs before any shard starts. */
 static void lint_purge_stale_sandboxes(const char *real_root)
 {
     char tmp[PATH_MAX];
@@ -640,13 +583,9 @@ static int lint_resolve_real_root(char *out, size_t outsz)
 }
 
 /* One shard: build a private sandbox, run this shard's slice inside it, tear
- * the sandbox down.
- *
- * On ANY sandbox failure this FAILS LOUD rather than falling back to the real
- * worktree. The old single-group runner could fall back safely because it held
- * the tree exclusively; a shard cannot — planting fixtures into the live tree
- * while ~800 other groups run is exactly the flake this split exists to avoid.
- * A named failure is the honest outcome. */
+ * it down. Any sandbox failure FAILS LOUD instead of falling back to the real
+ * worktree: planting fixtures in the live tree while other groups run is the
+ * flake the split avoids. */
 static int lint_run_shard(int shard)
 {
     char real_root[PATH_MAX];
@@ -677,10 +616,8 @@ static int lint_run_shard(int shard)
         return 1;
     }
 
-    /* Enter the sandbox: repo_root_set_override makes repo_path() resolve into
-     * it, and chdir() makes cwd match so the checks that use RELATIVE paths
-     * (long-function keep/baseline files, gate scratch output) land in the
-     * SAME tree the gate scans. */
+    /* Enter the sandbox: repo_root_set_override points repo_path() into it and
+     * chdir() makes RELATIVE-path checks land in the same tree the gate scans. */
     if (chdir(sb_root) != 0) {
         printf("[lint-gate] FAIL: shard %d could not enter its sandbox %s "
                "(%s)\n", shard, sb_root, strerror(errno));
@@ -690,17 +627,12 @@ static int lint_run_shard(int shard)
     repo_root_set_override(sb_root);
     unlink_lint_fixtures();          /* defensive clean start in this sandbox */
 
-    /* The sandbox is a copy of the worktree with .git deliberately EXCLUDED
-     * (see lint_sandbox_build). Gates that verify their own scan coverage
-     * against a git-derived expectation (gate_lib.sh gate_git_oracle) are
-     * fail-closed by design: no git index means no independent oracle, which
-     * is UNPROVEN (exit 2), never a quiet pass. That refusal is correct — and
-     * inside a deliberately git-less clone it is also unavoidable, so opt those
-     * checks out here, once, for every gate this shard runs. Their coverage is
-     * proven where the oracle actually exists: each gate's own `--selftest`,
-     * which `make lint` runs against the real checkout on every invocation.
-     * Do NOT paper over this per-test; a new git-oracle gate belongs on this
-     * list. */
+    /* The sandbox has .git deliberately EXCLUDED (see lint_sandbox_build).
+     * Gates that verify their scan coverage against a git-derived expectation
+     * (gate_lib.sh gate_git_oracle) fail closed without a git index, so opt
+     * them out here for every gate this shard runs; each gate's own
+     * `--selftest` proves coverage where the oracle exists. A new git-oracle
+     * gate belongs on this list. */
     (void)setenv("ZCL_SUPDOM_COVERAGE",    "0", 1);
     (void)setenv("ZCL_THREADSUP_COVERAGE", "0", 1);
     (void)setenv("ZCL_SUPREG_COVERAGE",    "0", 1);
@@ -724,11 +656,11 @@ static int lint_run_shard(int shard)
 }
 
 /* ── Registered entry points ──────────────────────────────────────────────
- * The shard bodies are macro-generated from ONE list so adding or removing a
- * shard is a single edit here plus the matching ZCL_TEST_GROUP row in
- * tools/dev/test_group_catalog.def. check-test-registration only treats a FILENAME-matching
- * `int test_<name>(void)` as an entry point, so these generated definitions
- * are invisible to it while the catalog rows still bind name -> symbol. */
+ * The shard bodies are generated from ONE list; adding or removing a shard is
+ * one edit here plus the ZCL_TEST_GROUP row in tools/dev/test_group_catalog.def.
+ * check-test-registration only treats a FILENAME-matching `int test_<name>(void)`
+ * as an entry point, so these definitions are invisible to it while the
+ * catalog rows bind name -> symbol. */
 
 #define LINT_SHARD_ENTRY(tag, idx) \
     int test_make_lint_gates_shard_##tag(void) { return lint_run_shard(idx); }
@@ -746,8 +678,8 @@ int test_make_lint_gates_realroot(void)
     return lint_run_owned(LINT_OWNER_REALROOT);
 }
 
-/* One group per HEAVY check. heavy_01 is the import-copy-prove driver
- * selftest (~25s), heavy_02 the fresh-boot-weld one (~46s); both hermetic. */
+/* One group per HEAVY check: heavy_01 is the import-copy-prove driver
+ * selftest, heavy_02 the fresh-boot-weld one; both hermetic. */
 int test_make_lint_gates_heavy_01(void)
 {
     char real_root[PATH_MAX];
@@ -766,10 +698,9 @@ int test_make_lint_gates_heavy_02(void)
     return lint_run_owned(LINT_OWNER_HEAVY_BASE + 1);
 }
 
-/* The exclusive lane — stale sandbox cleanup and the read-only root probe.
- * Keeps the historic group name, so `--only=make_lint_gates` (a
- * substring match) still selects this plus every shard, and every impact rule
- * naming `make_lint_gates` keeps resolving. */
+/* The exclusive lane: stale sandbox cleanup and the read-only root probe.
+ * Keeps the group name `make_lint_gates` so `--only=make_lint_gates` (a
+ * substring match) selects it plus every shard. */
 int test_make_lint_gates(void)
 {
     char real_root[PATH_MAX];
@@ -778,18 +709,16 @@ int test_make_lint_gates(void)
 
     printf("\n=== make_lint_gates tests ===\n");
 
-    /* Reap any sandbox base leaked by a hard-killed prior run. Safe here and
-     * only here: this lane runs alone, before any shard exists. */
+    /* Reap leaked sandbox bases; safe only here, before any shard exists. */
     lint_purge_stale_sandboxes(real_root);
 
     return lint_run_owned(LINT_OWNER_EXCLUSIVE);
 }
 
 /* ── The coverage proof ───────────────────────────────────────────────────
- * Sharding a test is exactly how coverage silently disappears, so the
- * partition is itself a registered test. It executes no gate (milliseconds).
- * Drop an entry from the table, mis-tag a lane, or widen
- * lint_gates_group_is_exclusive, and one of these fails. */
+ * The partition is itself a registered test (no gate executes). Dropping an
+ * entry, mis-tagging a lane, or widening lint_gates_group_is_exclusive fails
+ * one of these. */
 
 static int t_partition_covers_every_check(void)
 {
@@ -818,8 +747,7 @@ static int t_partition_covers_every_check(void)
     }
 
     TEST("[lint-gate] partition owns every check exactly once") {
-        /* Fail-loud floor: a table that shrank to nothing must not report a
-         * clean partition. Mirrors the >=100 floors the gate scripts use. */
+        /* Fail-loud floor: a table that shrank to nothing is not clean. */
         ASSERT(LINT_GATE_ENTRY_COUNT >= 100);
         ASSERT(bad_owner == 0);
         ASSERT(uncovered == 0);
@@ -864,14 +792,11 @@ static int t_partition_shards_all_carry_work(void)
 
     TEST("[lint-gate] every group carries work; the root probe retains its base group") {
         ASSERT(empty_shards == 0);
-        /* Every heavy group owns exactly one check, and there is a group for
-         * every HEAVY entry — tag a third one without adding its group and
-         * lint_owner_of() returns NONE, which the coverage test above catches
-         * and this makes legible. */
+        /* Every heavy group owns exactly one check, and every HEAVY entry has
+         * a group (an ungrouped one makes lint_owner_of() return NONE). */
         ASSERT(empty_heavy == 0);
         ASSERT(heavy_lane_entries == LINT_GATE_HEAVY_COUNT);
-        /* The trust-order matrix now owns a private Git fixture. Pin both
-         * owners so coverage stays stable across fixture isolation. */
+        /* Pin both owners so coverage stays stable across fixture isolation. */
         ASSERT(trust_order_owner == LINT_OWNER_REALROOT);
         ASSERT(stray_root_owner == LINT_OWNER_EXCLUSIVE);
         ASSERT(exclusive_count == 1);
@@ -957,10 +882,9 @@ int test_make_lint_gates_partition(void)
 
 #include <stdio.h>
 
-/* These groups prove POSIX shell lint scripts by fork+execing them against
- * planted fixtures in private worktrees. Native Windows has no fork/exec
- * contract. Keep every catalog symbol present and report the unobserved
- * family explicitly; the Windows lane runs `make lint` itself separately. */
+/* These groups fork+exec POSIX shell lint scripts against planted fixtures;
+ * native Windows has no such contract. Catalog symbols stay present and report
+ * the unobserved family explicitly; the Windows lane runs `make lint` itself. */
 static int lint_gate_skip_windows(const char *group)
 {
     printf("[lint-gate] SKIP (Windows): %s requires POSIX fork/exec; "

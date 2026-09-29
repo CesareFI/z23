@@ -1,8 +1,8 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Regression tests for rolling_anchor_service supervisor ownership.
- * The service used to run from lib/health; it now owns a chain-domain
- * liveness contract and must stay idempotent across start/stop. */
+ * Regression tests for rolling_anchor_service supervisor ownership: the
+ * service owns a chain-domain liveness contract and must stay idempotent
+ * across start/stop. */
 
 #include "test/test_core.h"
 

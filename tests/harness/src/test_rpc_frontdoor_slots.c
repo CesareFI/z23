@@ -2,15 +2,11 @@
  *
  * The RPC front door must never be permanently brickable.
  *
- * A long-running node was observed answering every single RPC with an
- * instant 503 {"code":-32603,"message":"RPC server busy"} while its
- * listener thread sat healthily in accept() and 54 client sockets sat
- * in CLOSE-WAIT, each still holding its unread request, all still owned
- * by the process. The admission queue in engine/modules/rpc/src/httpserver.c had
- * become a ONE-WAY RATCHET: its only decrementer was a worker returning
- * from handle_client(), so once the worker pool stopped returning, the
- * count stuck at RPC_HTTP_QUEUE_CAP for the life of the process and
- * every queued fd leaked with it — nothing else would ever close them.
+ * The admission queue in engine/modules/rpc/src/httpserver.c must not be a
+ * one-way ratchet: if its only decrementer were a worker returning from
+ * handle_client(), a stalled worker pool would pin the count at
+ * RPC_HTTP_QUEUE_CAP and leak every queued fd (CLOSE-WAIT sockets holding
+ * unread requests), answering every RPC with an instant 503.
  *
  * These tests drive the real admission path (enqueue_client() and its
  * reclaim rule, through the rpc_http_test_queue_* surface) over
@@ -22,9 +18,8 @@
  *   leave the front door permanently refusing, and no queued fd
  *   outlives the queue.
  *
- * Every case below except the honest-backpressure one FAILS against the
- * pre-fix code, which had no hang-up probe, no residency deadline, and
- * no way at all to give a slot back.
+ * Every case below except the honest-backpressure one needs the hang-up
+ * probe, the residency deadline and slot give-back.
  *
  * Ownership discipline in this file mirrors the server's: the moment a
  * server-side fd is handed to the queue the test drops its own handle
@@ -138,7 +133,7 @@ static void sim_close(struct sim_client *c)
  * the listener accepted. Unlike socketpair(2), a TCP close with unread bytes
  * pending reports POLLIN alone — no POLLHUP until the data is drained — so
  * only this helper reproduces the CLOSE-WAIT-with-unread-bytes sockets from
- * the live incident. (On Windows these cases SKIP: WSAPoll's RDHUP
+ * a live node. (On Windows these cases SKIP: WSAPoll's RDHUP
  * signaling is unverified there.) */
 static bool tcp_pair_open(int *client_fd, int *server_fd)
 {
@@ -204,8 +199,8 @@ static bool fd_is_closed(int fd)
 }
 
 /* Half-close: FIN without closing our own end. The server end sits in
- * CLOSE-WAIT until the server closes it — exactly the leaked state from
- * the incident. Full close() would also reclaim the fd number and hide a
+ * CLOSE-WAIT until the server closes it.
+ * Full close() would also reclaim the fd number and hide a
  * leak; shutdown(SHUT_WR) keeps our end open so a leaked server fd stays
  * visible as a non-zero queue depth. */
 static void rfs_half_close(platform_socket_t fd)
@@ -448,9 +443,7 @@ static bool rfs_case_survives_hangup_run(size_t cap, struct rpc_http_queue_stats
         if (!rpc_http_test_queue_admit(c.server)) {
             /* Refused. Every queued peer is a client that already
              * hung up, so the queue owns nothing servable and MUST
-             * be able to take this one. Against the pre-fix ratchet
-             * this failed on round cap and every round after it,
-             * for the life of the process. */
+             * be able to take this one. */
             if (!rpc_http_test_queue_admit(c.server)) {
                 ok = false;
                 sim_close(&c);
@@ -511,16 +504,13 @@ static bool rfs_case_no_fd_leak_on_empty(size_t cap, struct rpc_http_queue_stats
 
 #if !defined(_WIN32)
 /* ── A partial request followed by close must not hold a slot ──
- *
- * The live brick: dozens of TCP sockets in CLOSE-WAIT each holding
- * ~250 unread bytes. A close() with unread data pending reports
- * POLLIN alone (no POLLHUP until the bytes are drained), and the old
- * hang-up probe treated "peek returns data" as "peer is alive" — so a
- * queue full of such entries never shed one and every later client got
- * an instant 503 while workers idled. socketpair(2) cannot reproduce
+ * A partial request followed by close leaves a TCP socket in CLOSE-WAIT with
+ * unread bytes. A close() with unread data pending reports POLLIN alone (no
+ * POLLHUP until the bytes are drained), so a hang-up probe must not treat
+ * "peek returns data" as "peer is alive". socketpair(2) cannot reproduce
  * this (it reports POLLHUP); only real TCP can. */
 /* One TCP client sends a partial request and half-closes: the server end
- * holds unread bytes plus FIN, the CLOSE-WAIT shape from the incident.
+ * holds unread bytes plus FIN, the CLOSE-WAIT shape.
  * Waits out loopback delivery so the reclaim below sees the steady state. */
 static bool rfs_open_dead_partial(struct sim_client *dead, int *held_dead)
 {
@@ -604,7 +594,7 @@ static bool rfs_case_survives_partial_close_run(size_t cap, struct rpc_http_queu
             (void)poll(NULL, 0, 100); /* FINs arrive before first reclaim */
         if (!rpc_http_test_queue_admit(c.server)) {
             /* Every queued peer already hung up: refusing here is the
-             * one-way ratchet the incident bricked on. */
+             * one-way ratchet. */
             ok = false;
             sim_close(&c);
             break;
@@ -631,9 +621,9 @@ static bool rfs_case_survives_partial_close_run(size_t cap, struct rpc_http_queu
  * The cases above drive the admission queue over socketpairs with
  * full close(). This one runs the REAL server on 127.0.0.1, opens N
  * TCP connections, and half-closes every one of them — FIN sent,
- * our end still open — which is the exact CLOSE-WAIT shape from the
- * incident. Half the clients die mid-request (partial bytes, then
- * FIN); half go silent after connect (then FIN). The server's
+ * our end still open — which is the CLOSE-WAIT shape. Half the clients die
+ * mid-request (partial bytes, then FIN); half go silent after connect (then
+ * FIN). The server's
  * connection count must return to zero inside the idle budget with
  * no further admission to trigger it, and the door must still
  * answer a fresh client afterwards. Scratch datadir only (repo

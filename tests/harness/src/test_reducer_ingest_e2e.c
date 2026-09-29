@@ -1,46 +1,20 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * test_reducer_ingest_e2e - in-process end-to-end proof of the authoritative
- * reducer-as-ingest path.
+ * test_reducer_ingest_e2e - in-process end-to-end proof of the reducer
+ * ingest path: tip_finalize moves the in-memory active-chain window,
+ * utxo_apply authors the UTXO projection plus the per-block inverse delta
+ * and drives reorg unwind, and tip_finalize runs post-finalize side effects.
  *
- * WHY THIS TEST EXISTS
- * --------------------
- * The eight-stage Wave-S reducer must be able to ingest a block end-to-end:
- *   - tip_finalize moves the in-memory active-chain window,
- *   - utxo_apply authors the UTXO projection plus the per-block inverse delta
- *     and drives reorg unwind,
- *   - tip_finalize runs the post-finalize side effects.
- * Every live intake caller (msg_blocks / msg_compact / mining / miner /
- * rebuild / invalidate) can route through reducer_ingest_block. This test
- * drives the same *_stage_drain functions reducer_drain_to_convergence()
- * calls, proving the consensus capability works end-to-end in-process.
+ * Equihash constraint: reducer_ingest_block's first gate is check_block with
+ * check_pow=true, which always verifies a real Equihash 200,9 solution, so
+ * no synthetic block passes it. The accept / invalid-UTXO / reorg scenarios
+ * therefore drive the real stage drains (as reducer_drain_to_convergence
+ * does) with no stubbed verification, and one case calls the literal
+ * reducer_ingest_block() to assert a no-Equihash block is rejected.
  *
- * THE Equihash CONSTRAINT (why the accept case is driven at the stage
- * level, not via the literal reducer_ingest_block front door)
- * -----------------------------------------------------------------
- * reducer_ingest_block()'s first gate is check_block(pblock, out,
- * ctl->params, check_pow=true, ...), and check_block_header_impl() ALWAYS
- * verifies a real Equihash 200,9 solution via CRYPTO_PROOF_EQUIHASH_200_9
- * (core/modules/validation/check_block.c:148 - it ignores regtest's 48,5). No
- * in-process unit test can solve mainnet Equihash, so NO synthetically
- * constructed block can pass that stateless gate (the force flag does NOT
- * relax it - chain_activation_service.c:662). That gate is upstream
-     * consensus that legacy process_new_block runs IDENTICALLY and is proven
-     * elsewhere (test_domain_consensus_check_block). It is NOT the stateful
-     * reducer capability under test. So:
- *   - the ACCEPT / INVALID-UTXO / REORG scenarios drive the real reducer
- *     consensus machinery (real UTXO delta, real tip-set, real inverse
- *     delta) the way reducer_drain_to_convergence does - NO stubbed
- *     verification of that machinery;
- *   - a dedicated case ALSO calls the literal reducer_ingest_block() and
- *     asserts that a no-Equihash block is rejected by the stateless gate,
- *     proving the front-door contract that the live callers depend on.
- *
- * Real consensus, no stubs: the UTXO delta (compute_block_delta inside
- * utxo_apply_stage) and the reorg inverse-delta are the real consensus
- * code; the projection commitment is the real SHA3-256 fingerprint. Only
- * the upstream proof_validate cursor/log is seeded; those stage contracts are
- * covered in their own suites, exactly as test_stage_reorg_unwind_parity does.
+ * The UTXO delta, reorg inverse delta and SHA3-256 projection commitment are
+ * real; only the upstream proof_validate cursor/log is seeded (covered in
+ * its own suites, as in test_stage_reorg_unwind_parity).
  */
 
 #include "test/test_core.h"
@@ -93,7 +67,7 @@ struct rie_ext_coin {
 };
 
 /* One branch: real bodies + hashes + block_index entries (index by height,
- * 0 == genesis). Mirrors test_stage_reorg_unwind_parity::branch. */
+ * 0 == genesis). */
 struct rie_branch {
     struct block       *bodies;
     struct uint256     *hashes;
@@ -133,10 +107,8 @@ static void make_coinbase(struct transaction *tx, uint8_t branch_tag, int h)
     transaction_init(tx);
     (void)transaction_alloc(tx, 1, 1);
     outpoint_set_null(&tx->vin[0].prevout);
-    /* BIP34-style embedded height: every real ZClassic coinbase at h>0
-     * carries it, and the validation-pack coinbase-label check reads it
-     * back at finalize (tip_finalize_run_post_finalize). Minimal
-     * CScriptNum push, same encoding the consensus parser expects. */
+    /* BIP34-style embedded height as a minimal CScriptNum push; the
+     * coinbase-label check reads it back at finalize. */
     {
         uint8_t sig[6];
         uint8_t num[4];
@@ -168,9 +140,8 @@ static void make_spend(struct transaction *tx, uint8_t branch_tag, int h,
     spend_txid(&tx->hash, branch_tag, h);
 }
 
-/* A spend tx consuming a NON-EXISTENT coin (the invalid-block case): the
- * input references an outpoint that is in NO UTXO set, so the real UTXO
- * delta (compute_block_delta) rejects with spend_unknown_utxo. */
+/* A spend of a non-existent coin (invalid-block case): compute_block_delta
+ * rejects with spend_unknown_utxo. */
 static void make_bad_spend(struct transaction *tx, uint8_t branch_tag, int h)
 {
     transaction_init(tx);
@@ -198,8 +169,7 @@ static void finalize_block(struct block *b, int h)
 }
 
 /* Build one branch. spend kind: 0 = none, 1 = spend ext, 2 = bad spend.
- * Genesis at height 0 (coinbase only, shared tag 0). nChainWork is set
- * strictly increasing so tip_finalize's work-monotonicity check passes. */
+ * Genesis at height 0; nChainWork strictly increases (work monotonicity). */
 static bool branch_build(struct rie_branch *br, uint8_t tag, int n,
                          int spend_at, int spend_kind,
                          const struct rie_ext_coin *ext)
@@ -442,8 +412,7 @@ static bool seed_proof_validate(sqlite3 *db, const struct rie_branch *br,
     return ok;
 }
 
-/* Read the tip_finalize_log status string at `height` (the model that
- * records finalize verdicts). Returns false if no row. */
+/* Read the tip_finalize_log status string at `height`; false if no row. */
 static bool tf_log_status_at(sqlite3 *db, int height,
                              char *out, size_t out_sz)
 {
@@ -464,9 +433,8 @@ static bool tf_log_status_at(sqlite3 *db, int height,
     return found;
 }
 
-/* The highest height with a "finalized" tip_finalize_log row, or -1. This
- * is the reducer's "last finalized" height — distinct from the stage's
- * g_last_advance_height (which also advances over rejected/upstream_failed
+/* The highest height with a "finalized" tip_finalize_log row, or -1
+ * (distinct from g_last_advance_height, which also advances over rejected
  * heights). */
 static int tf_max_finalized_height(sqlite3 *db)
 {
@@ -482,11 +450,8 @@ static int tf_max_finalized_height(sqlite3 *db)
     return h;
 }
 
-/* utxo counter that mirrors the live UTXO-set size after a height: the
- * tip_finalize utxo_count_diverged check compares this against
- * (added - spent) summed over utxo_apply_log. The real per-block sums are
- * recorded by utxo_apply; we report the running cumulative coin count so
- * the check passes for a healthy chain. */
+/* Running cumulative coin count for tip_finalize's utxo_count_diverged
+ * check (added - spent over utxo_apply_log). */
 struct rie_counter_ctx { int64_t base_count; };
 static bool rie_utxo_counter(int height_after, int64_t *out_count, void *user)
 {
@@ -509,12 +474,10 @@ static bool rie_utxo_counter(int height_after, int64_t *out_count, void *user)
     return true;
 }
 
-/* Drive the reducer's eight-stage drain the way reducer_drain_to_convergence
- * does (chain_activation_service.c:534) for the stages this test owns:
- * utxo_apply (real UTXO delta + reorg unwind) then tip_finalize (real
- * tip-set keystone + post-finalize). The upstream five stages are seeded
- * via proof_validate_log/cursor (they are covered in their own suites and
- * contribute no consensus mutation). Loops to convergence. */
+/* Drive the eight-stage drain as reducer_drain_to_convergence does for the
+ * stages this test owns: utxo_apply then tip_finalize, looping to
+ * convergence. The upstream five stages are seeded via
+ * proof_validate_log/cursor. */
 static int rie_drain_to_convergence(void)
 {
     int total = 0;
@@ -528,11 +491,9 @@ static int rie_drain_to_convergence(void)
     return total;
 }
 
-/* Seed the pre-fork base UTXO set into coins_kv — the authoritative live
- * UTXO store the reducer reads/writes after the projection dual-write was
- * removed. Seeding coins_kv (not the projection) keeps the reorg runs
- * symmetric: a base coin spent on the loser then restored on unwind returns
- * to the SAME seeded coins_kv state a direct build never touched. */
+/* Seed the pre-fork base UTXO set into coins_kv, the authoritative UTXO
+ * store. Seeding coins_kv keeps reorg runs symmetric: a base coin spent on
+ * the loser and restored on unwind matches a direct build. */
 static void seed_base_coins(sqlite3 *pdb, const struct rie_ext_coin *ext, int n)
 {
     (void)coins_kv_ensure_schema(pdb);
@@ -555,8 +516,8 @@ struct rie_env {
     bool ok;
 };
 
-/* Open progress/log, init the active chain + stages, seed the base
- * coins, and install the reader/lookup over `active`. */
+/* Open progress/log, init the active chain + stages, seed the base coins,
+ * and install the reader/lookup over `active`. */
 static bool rie_env_open(struct rie_env *e, const char *tag,
                          struct rie_branch *active,
                          const struct rie_ext_coin *ext, int n_ext)
@@ -580,11 +541,9 @@ static bool rie_env_open(struct rie_env *e, const char *tag,
     e->ctx.active = active;
     e->ctx.ext = ext;
     e->ctx.n_ext = n_ext;
-    /* tip_finalize's utxo_count_diverged check compares the live count
-     * AFTER height H against the stage's own cumulative per-block sums
-     * (added-spent over utxo_apply_log, ok=1). That model counts ONLY the
-     * coins the stages created/spent — NOT externally-seeded base coins —
-     * so the counter base is 0 (matching tip_finalize_stage.c:453-456). */
+    /* utxo_count_diverged compares the live count after H against the
+     * stage's cumulative per-block sums, which exclude seeded base coins,
+     * so the counter base is 0. */
     e->cc.base_count = 0;
 
     if (!utxo_apply_stage_init(&e->ms)) return false;
@@ -609,11 +568,9 @@ static void rie_env_close(struct rie_env *e)
     memset(e, 0, sizeof(*e));
 }
 
-/* Register a branch's block_index entries in the block map (so the
- * authority's hash-based active_chain readback resolves), and install the
- * candidate tip into chain[] — modelling the chain extension that must be
- * in place before tip_finalize can finalize height H by reading
- * active_chain_at(H+1). Returns the tip block_index. */
+/* Register a branch's block_index entries in the block map and install the
+ * candidate tip into chain[] (the extension tip_finalize needs to read
+ * active_chain_at(H+1)). Returns the tip block_index. */
 static struct block_index *install_branch(struct rie_env *e,
                                           struct rie_branch *br)
 {
@@ -649,10 +606,9 @@ int test_reducer_ingest_e2e(void)
     ext[1].script[0] = 0x76; ext[1].script[1] = 0xa9; ext[1].script[2] = 0xBC;
     ext[1].script_len = 3;
 
-    /* ── Front-door contract: reducer_ingest_block rejects bad PoW ─────
-     * A synthetic block can never pass the stateless Equihash gate, so the
-     * accept path below is legitimately exercised at the stage level, not the
-     * front door. */
+    /* Front door: reducer_ingest_block rejects bad PoW. A synthetic block
+     * can never pass the stateless Equihash gate, so accept is driven at
+     * the stage level. */
     {
         RIE_CHECK("front-door: reducer is authoritative",
                   reducer_is_authoritative());
@@ -673,18 +629,11 @@ int test_reducer_ingest_e2e(void)
         branch_free(&B);
     }
 
-    /* ── SCENARIO 1: a VALID block is ingested by the reducer ──────────
-     * Genesis + two coinbase blocks (h1, h2). The reducer's stage drain
-     * (utxo_apply real UTXO delta + tip_finalize real tip-set keystone)
-     * must accept them: the in-mem tip physically advances to the top
-     * ingested block, the UTXO projection reflects every block's coinbase,
-     * the tip cursor advances. No stubs in the UTXO/tip path.
-     *
-     * tip_finalize uses a one-block LOOKAHEAD: it finalizes height H by
-     * reading new_tip = active_chain_at(H+1), so it can finalize H only
-     * while the chain extends to H+1. For an n-height chain (0..n-1) it
-     * finalizes 0..n-2 (cursor -> n-1) and sets the in-mem tip to the top
-     * block at n-1. */
+    /* SCENARIO 1: a valid block is ingested. Genesis + two coinbase blocks;
+     * the stage drain must advance the in-mem tip to the top block and
+     * reflect every coinbase in the UTXO projection.
+     * tip_finalize looks ahead one block (new_tip = active_chain_at(H+1)),
+     * so an n-height chain finalizes 0..n-2 and the tip sits at n-1. */
     {
         const int N = 3;                /* genesis h0 + h1 + h2 */
         struct rie_branch C;
@@ -704,18 +653,11 @@ int test_reducer_ingest_e2e(void)
             int adv = rie_drain_to_convergence();
             RIE_CHECK("accept: reducer drain advanced", adv >= C.n - 1);
 
-            /* ── wf/foldpath-loud-errors: runtime seed-anchor re-seed is LOUD ──
-             * reducer_ingest_block's two runtime tip_finalize-anchor re-seed
-             * calls used to (void)-discard tip_finalize_stage_seed_anchor()'s
-             * result — a silent-stall SEED. reducer_ingest_try_seed_anchor now
-             * LOG_WARNs + counts a failure WITHOUT aborting the ingest.
-             *   - Forced failure: height<0 hits seed_anchor's arg guard
-             *     (tip_finalize_anchor.c:208) → deterministic false → counted.
-             *   - Healthy re-seed of genesis AFTER the drain: the finalize
-             *     cursor is now above 0, so the monotonic guard (cursor>=target
-             *     → return true) makes this a guaranteed-true idempotent no-op —
-             *     it must NOT trip the counter (zero happy-path behavior
-             *     change). */
+            /* Runtime seed-anchor re-seed is loud: reducer_ingest_try_seed_anchor
+             * LOG_WARNs and counts a failure without aborting ingest.
+             *   - Forced failure: height<0 hits the arg guard, counted.
+             *   - Healthy re-seed of genesis after the drain is a monotonic
+             *     idempotent no-op and must not trip the counter. */
             {
                 uint64_t before =
                     reducer_ingest_seed_anchor_reseed_failure_count();
@@ -733,15 +675,11 @@ int test_reducer_ingest_e2e(void)
                               == before + 1);
             }
 
-            /* The reducer must finalize every valid height below the top
-             * (lookahead finalizes 0..n-2) and physically advance the in-mem
-             * tip to the top ingested block. */
+            /* Every valid height below the top is finalized (lookahead 0..n-2). */
             RIE_CHECK("accept: tip_finalize cursor at n-1",
                       tip_finalize_stage_cursor() == (uint64_t)(C.n - 1));
-            /* THE KEYSTONE (step 1): the reducer (not legacy) must have
-             * driven the in-mem chain_active tip forward to the top ingested
-             * block. The highest FINALIZED height must be n-2 (the lookahead
-             * finalizes the block whose child is the top). */
+            /* The reducer drove the in-mem tip to the top block; the
+             * highest finalized height is n-2 (lookahead). */
             struct block_index *tip = active_chain_tip(&e.ms.chain_active);
             RIE_CHECK("accept: in-mem tip is the top ingested block (keystone)",
                       tip == want_tip && tip->nHeight == C.n - 1);
@@ -753,8 +691,7 @@ int test_reducer_ingest_e2e(void)
                                        status, sizeof(status)) &&
                       strcmp(status, "finalized") == 0);
 
-            /* coins_kv (the authoritative UTXO set) reflects every ingested
-             * block: all three coinbases are live in the STAGE-authored set. */
+            /* coins_kv reflects all three coinbases. */
             sqlite3 *pdb = progress_store_db();
             bool all_cb_live = true;
             for (int h = 0; h < C.n; h++) {
@@ -773,23 +710,11 @@ int test_reducer_ingest_e2e(void)
         branch_free(&C);
     }
 
-    /* ── SCENARIO 2: an INVALID block is rejected, chain does not progress
-     * past it ──────────────────────────────────────────────────────────
-     * Genesis h0 + valid h1 + INVALID h2 (h2 spends a coin in NO UTXO set).
-     * The real UTXO delta (compute_block_delta inside utxo_apply) rejects
-     * h2 with spend_unknown and utxo_apply must:
-     *   - FINALIZE the valid h1 (status "finalized"), but
-     *   - HOLD the utxo_apply cursor at invalid h2 with a typed blocker, so
-     *     no durable ok=0 row can let later heights apply above the hole.
-     * tip_finalize must never write a "finalized" row for h2 and the chain
-     * must not finalize beyond it.
-     * The invalid block's spend output is never applied to the UTXO set.
-     * No stubbed verification — the rejection is the real consensus UTXO
-     * check. (Note: tip_finalize's one-block lookahead provisionally points
-     * the in-mem tip pointer at h2 when finalizing h1; the reducer
-     * consensus guarantee proven here is that h2 is NEVER FINALIZED and the
-     * cursor does not advance past it — see the e2e report's lookahead
-     * note.) */
+    /* SCENARIO 2: an invalid block is rejected and the chain does not
+     * progress past it. Genesis h0 + valid h1 + invalid h2 (spends a coin
+     * in no UTXO set). compute_block_delta rejects h2, so utxo_apply
+     * finalizes h1 and holds its cursor at h2 with a typed blocker.
+     * h2 is never finalized and its outputs are never applied. */
     {
         const int N = 3;                /* genesis h0 + valid h1 + bad h2 */
         struct rie_branch D;
@@ -827,13 +752,11 @@ int test_reducer_ingest_e2e(void)
                       utxo_apply_stage_cursor() == 2);
             RIE_CHECK("invalid: typed blocker records rejected h2",
                       blocker_exists("utxo_apply.apply_failed"));
-            /* The chain does not finalize beyond the rejection: the highest
-             * FINALIZED height is the valid h1, never the invalid h2. */
+            /* The highest finalized height is the valid h1, never h2. */
             RIE_CHECK("invalid: highest finalized height is the valid h1",
                       tf_max_finalized_height(progress_store_db()) == 1);
 
-            /* The invalid block's spend output is ABSENT from the UTXO set
-             * (compute_block_delta never applied the rejected delta). */
+            /* The invalid block's spend output is absent from the UTXO set. */
             sqlite3 *pdb = progress_store_db();
             struct uint256 bad_out;
             spend_txid(&bad_out, 0x55, 2);
@@ -851,16 +774,11 @@ int test_reducer_ingest_e2e(void)
         branch_free(&D);
     }
 
-    /* ── SCENARIO 3: a heavier competing branch REORGS, byte-exact ─────
-     * RUN A: ingest losing branch L (genesis + L1..L3, L2 spends EXT_L),
-     *        then install the heavier winning branch W (genesis + W1..W4,
-     *        W2 spends EXT_W) and drive the reducer — utxo_apply's real
-     *        reorg unwind (inverse delta) + tip_finalize re-finalize must
-     *        converge the STAGE-authored UTXO set onto W.
-     * RUN B: ingest W directly from the fork point (never saw L).
-     * PROOF: commitment(A) == commitment(B) byte-for-byte (SHA3 over the
-     *        UTXO set) and count(A)==count(B) — the reorg-parity invariant.
-     * This is the real inverse-delta consensus path, no stubs. */
+    /* SCENARIO 3: a heavier competing branch reorgs byte-exact.
+     * RUN A: ingest L (genesis + L1..L3), then W (genesis + W1..W4); the
+     * inverse-delta unwind + re-finalize must converge the UTXO set onto W.
+     * RUN B: ingest W directly from the fork point.
+     * PROOF: commitment(A) == commitment(B) and count(A) == count(B). */
     {
         struct rie_branch L, W, W2;
         bool built = branch_build(&L, 0x11, 4, 2, 1, &ext[0]) &&  /* loser  */
@@ -889,9 +807,8 @@ int test_reducer_ingest_e2e(void)
                 RIE_CHECK("reorg A: tip at L",
                           tipL && tipL->nHeight == L.n - 1);
 
-                /* The heavier branch arrives: install W's index + tip and
-                 * extend proof_validate. The reader now serves W. The
-                 * reducer must reorg-unwind L and forward-apply W. */
+                /* Install W's index + tip and extend proof_validate; the
+                 * reducer must unwind L and apply W. */
                 e.ctx.active = &W;
                 for (int h = 1; h < W.n; h++)  /* h0 shared genesis already in */
                     block_map_insert(&e.ms.map_block_index,
@@ -913,8 +830,7 @@ int test_reducer_ingest_e2e(void)
                           tipW && tipW->nHeight == W.n - 1 &&
                           tipW == &W.blocks[W.n - 1]);
 
-                /* coins_kv is the authoritative store — read its count + SHA3
-                 * commitment for the cross-run reorg-parity proof. */
+                /* coins_kv count + SHA3 commitment for the parity proof. */
                 sqlite3 *pdb = progress_store_db();
                 countA = (uint64_t)coins_kv_count(pdb);
                 haveA = (coins_kv_commitment(pdb, cA) == 0);
@@ -955,7 +871,7 @@ int test_reducer_ingest_e2e(void)
                 struct block_index *tip = active_chain_tip(&e.ms.chain_active);
                 RIE_CHECK("reorg B: tip at W", tip && tip->nHeight == W2.n - 1);
 
-                /* coins_kv parity source for the cross-run proof. */
+                /* coins_kv parity source. */
                 sqlite3 *pdb = progress_store_db();
                 countB = (uint64_t)coins_kv_count(pdb);
                 haveB = (coins_kv_commitment(pdb, cB) == 0);
@@ -987,10 +903,8 @@ int test_reducer_ingest_e2e(void)
     RIE_CHECK("teardown: reducer remains authoritative",
               reducer_is_authoritative());
 
-    /* Advance-or-blocker false-fire proof: healthy folds + a legitimately
-     * blocked invalid height (scenario 2) must never name a stage as spinning
-     * — every advancing stage moved its own cursor, and the blocked stage was
-     * idle (advance=0), not a spin. */
+    /* Advance-or-blocker false-fire proof: healthy folds plus a legitimately
+     * blocked invalid height (scenario 2) never name a stage as spinning. */
     {
         struct blocker_snapshot snaps[BLOCKER_CAP];
         int bn = blocker_snapshot_all(snaps, BLOCKER_CAP);

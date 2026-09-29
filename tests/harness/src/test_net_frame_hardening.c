@@ -7,11 +7,8 @@
  * the bounded stream reader / LOG_FAIL) instead of over-reading, trusting a
  * declared size, or leaving partially-applied state.
  *
- * The companion audit (build/netharden_findings.md, lane netharden) traced
- * every inbound wire read in core/modules/net and the primitives it feeds
- * and found every site already guarded; this group pins those refusals so
- * the hardening cannot silently regress. Each audited site family is fed
- * the three hostile shapes named by the audit:
+ * This group pins those refusals so the hardening cannot silently regress.
+ * Each audited site family is fed three hostile shapes:
  *
  *   1. TRUNCATED      — the frame ends mid-field.
  *   2. OVERSIZED      — a declared count/length exceeds its protocol cap

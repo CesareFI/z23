@@ -7,8 +7,7 @@
  * tests are simple table-driven assertions. */
 
 /* realpath() needs __USE_MISC; -D_POSIX_C_SOURCE=200809L alone does not
- * declare it. Without this the TU only builds by accident of the glibc
- * fortify inline at -O3. */
+ * declare it. */
 #define _DEFAULT_SOURCE
 
 #include "test/test_core.h"
@@ -181,12 +180,8 @@ int test_path_check(void)
     /* ── fs_arg: rejects control characters ──────────────────── */
     {
         char with_nul[8] = "abc\0def";  /* strnlen will stop at \0 */
-        /* strnlen('abc\0', max>3) returns 3; that's the full string the
-         * checker sees, and it's printable — so this string is accepted.
-         * The real NUL guard is: caller passing a string that *contains*
-         * a NUL as data is impossible via JSON since JSON strings can't
-         * have embedded NULs that survive the decoder. Verify the
-         * non-NUL control-char rejection instead. */
+        /* strnlen stops at an embedded NUL, so the checker sees a printable
+         * string; verify non-NUL control-char rejection instead. */
         PC_CHECK("fs_arg with NUL-truncated string still accepted",
             path_check_fs_arg(with_nul, 8));
     }

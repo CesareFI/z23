@@ -9,21 +9,11 @@
 #include <unistd.h>
 
 
-/* ── One identity, one byte order ──────────────────────────────────
- *
- * A chain token id IS its GENESIS txid, and every wallet-facing surface
- * speaks that txid's DISPLAY order: the intent service answers
- * app.tokens.create with uint256_get_hex (contexts/market/services/src/
- * zslp_transaction_intent_service.c), app.tokens.mint/send/burn parse the
- * answer back with uint256_set_hex (contexts/market/controllers/src/
- * zslp_intent_controller.c), and the store access gate keys the ledger the
- * same way (engine/controllers/src/store_access_gate.c). The projection
- * reads below must render the SAME string. When they render the stored
- * blob forward instead, an operator who pastes a listed id into mint names
- * a DIFFERENT token, and zslp_controller_render_validity — which recovers
- * the 32 bytes from this very field with uint256_set_hex — looks up the
- * mirrored key and reports validated_height=-1 with every strict column
- * dead for a token that really minted. */
+/* One identity, one byte order: a chain token id is its GENESIS txid, and
+ * every wallet-facing surface uses the txid DISPLAY order. The projection
+ * reads below must render that same string, or an id pasted into mint names
+ * a different token and zslp_controller_render_validity reports
+ * validated_height=-1. */
 
 static void tzslp_hex_forward(const uint8_t *bytes, size_t n, char *out)
 {
@@ -378,8 +368,7 @@ int test_model_zslp(void)
     printf("validate_token_key: accepts 11-char 'ZCL23ACCESS' "
            "(has Z/L/S non-hex — real codebase token)... ");
     {
-        /* This one is load-bearing — store_controller.c:178 seeds
-         * 'ZCL23ACCESS' as a token_id for token-gated access. */
+        /* store_controller seeds "ZCL23ACCESS" as a token_id for token-gated access. */
         if (zslp_service_validate_token_key("ZCL23ACCESS").ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
@@ -393,9 +382,7 @@ int test_model_zslp(void)
     printf("validate_token_key: rejects 10-char all-hex "
            "(ambiguous with truncated txid)... ");
     {
-        /* Pre-fix "abcdef1234" was accepted as alphanumeric; canonicalized
-         * to "ABCDEF1234", indistinguishable from a truncated hex txid
-         * prefix of the same shape — the exact collision. */
+        /* Hex-shaped ids that are not full txids are rejected: they would collide with a truncated txid prefix. */
         if (!zslp_service_validate_token_key("abcdef1234").ok)
             printf("OK\n");
         else { printf("FAIL (collision gate missing)\n"); failures++; }

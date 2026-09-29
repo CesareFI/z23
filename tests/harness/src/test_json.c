@@ -384,10 +384,8 @@ int test_json(void)
 
     printf("json accessors NULL-safe (missing RPC param must not crash)... ");
     {
-        /* Regression: json_get_str(json_at(params, N)) on an ABSENT param N
-         * returned NULL from json_at(), then json_get_str(NULL) dereferenced
-         * v->type and SIGSEGV'd the whole node (observed live: diag_rpc_dumpstate
-         * called with no subsystem arg crashed the process). Every read accessor
+        /* json_get_str(json_at(params, N)) on an ABSENT param N gets NULL from
+         * json_at(). Every read accessor
          * must treat NULL as the type's zero value, never dereference it. */
         bool ok = true;
         ok = ok && (json_at(NULL, 0) == NULL);

@@ -1,41 +1,24 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Group `mesh_observation_dump` — the OPERATOR-FACING renderer,
+ * Group `mesh_observation_dump`: the operator-facing renderer,
  * engine/controllers/src/diagnostics_mesh_observation.c.
  *
- * The two groups either side of this one already defend the emitter
- * (`mesh_observation`) and the fold (`mesh_observation_compose`). Nothing
- * defended the thing an operator actually reads. That gap had a structural
- * cause and not merely an absence of effort: the coverage list rendered
- * straight out of one file-static slot array, so no test could hand it an
- * input. The fix follows the precedent of
- * agent_push_security_posture_snapshot_json — a pure render seam that takes
- * the already-collected data as an argument — and this group drives that
- * seam.
+ * The neighbouring groups defend the emitter (`mesh_observation`) and the fold
+ * (`mesh_observation_compose`). This group drives the pure render seam that
+ * takes the already-collected data as an argument (as
+ * agent_push_security_posture_snapshot_json does).
  *
- * WHAT THIS GROUP DEFENDS.
- *
- *   1. Coverage is REPORTED, not implied. Zero collected records renders an
- *      EMPTY `records` array, never a missing key. A reader must be able to
- *      tell "I looked and found nobody" from "this build does not say".
+ *   1. Coverage is reported, not implied: zero collected records renders an
+ *      empty `records` array, never a missing key.
  *   2. Every slot appears, in order, one object each, whatever its outcome.
- *      A slot that was never probed is not omitted — omitting it would turn
- *      "I did not look" into silence.
- *   3. Elapsed is published beside the budget on EVERY outcome, so a spent
- *      budget and a refusal are never byte-identical rows. That is the
- *      file's own stated invariant.
- *   4. A machine's PLATFORM is readable beside its onion. `os`/`arch` are
- *      carried verbatim, including a token this build has never heard of,
- *      because refusing an unknown platform would drop the first node of
- *      every new one.
- *   5. AND, the honest half of 4: an emitter that said NOTHING renders as
- *      having said nothing. Not this reader's own build target, not
- *      "linux", not "unknown". Every check below carries that fail-arm,
- *      because a defaulted platform is exactly the confident-about-nothing
- *      failure this surface exists to refuse.
- *   6. The live dumpers themselves, with no sample and no chain, report
- *      UNVERIFIED with their coverage counts, never empty-but-healthy.
- */
+ *   3. Elapsed is published beside the budget on every outcome, so a spent
+ *      budget and a refusal are never byte-identical rows.
+ *   4. A machine's platform is readable beside its onion; `os`/`arch` are
+ *      carried verbatim, including tokens this build has never heard of.
+ *   5. An emitter that said nothing renders as having said nothing: not this
+ *      reader's own build target, not "linux", not "unknown".
+ *   6. The live dumpers, with no sample and no chain, report UNVERIFIED with
+ *      their coverage counts, never empty-but-healthy. */
 
 #include "test/test_core.h"
 
@@ -63,9 +46,8 @@ static void dump_slot_platform(struct mesh_obs_slot *s, const char *os,
     snprintf(s->rec.self.arch, sizeof(s->rec.self.arch), "%s", arch);
 }
 
-/* The rendered `records` array, or NULL. Fails loud rather than returning a
- * plausible empty: a helper that quietly answered "no records" would make
- * every check below vacuous. */
+/* The rendered `records` array, or NULL; fails loud rather than returning a
+ * plausible empty. */
 static const struct json_value *dump_records(const struct json_value *out)
 {
     const struct json_value *r = json_get(out, "records");
@@ -83,10 +65,8 @@ static const struct json_value *dump_row(const struct json_value *out,
     return json_at(r, i);
 }
 
-/* Read a string field, or NULL when the key is absent — the two must stay
- * distinguishable, because "rendered as empty" and "not rendered at all"
- * are different answers and only one of them is honest for a silent
- * emitter. */
+/* Read a string field, or NULL when the key is absent ("rendered empty" and
+ * "not rendered" are different answers). */
 static const char *dump_str(const struct json_value *row, const char *key)
 {
     const struct json_value *v = row ? json_get(row, key) : NULL;
@@ -95,9 +75,8 @@ static const char *dump_str(const struct json_value *row, const char *key)
     return json_get_str(v);
 }
 
-/* Assert a string field is PRESENT and equal. A missing key must fail as a
- * missing key, never crash the group — a signal is a worse witness than a
- * named assertion, and this suite has to stay readable when it goes red. */
+/* Assert a string field is present and equal; a missing key fails as a
+ * named assertion, never a crash. */
 #define ASSERT_FIELD_STR(row, key, want) do {                                 \
     const char *_fv = dump_str((row), (key));                                 \
     ASSERT(_fv != NULL);                                                      \
@@ -120,9 +99,7 @@ static int t_zero_records_renders_an_empty_list(void)
         ASSERT(r != NULL);            /* the key EXISTS */
         ASSERT_EQ(json_size(r), (size_t)0);
 
-        /* Positive control: the same renderer does produce rows when given
-         * rows, so the empty above is a measurement and not a renderer that
-         * never works. */
+        /* Positive control: the renderer does produce rows when given rows. */
         struct mesh_obs_slot one;
         dump_slot_init(&one, "zero1.onion", MESH_OBS_CONFIRMED);
         struct json_value out2 = {0};
@@ -150,9 +127,8 @@ static int t_every_slot_appears_in_order(void)
         dump_slot_init(&s[1], "bbb.onion", MESH_OBS_NOT_PROBED);
         dump_slot_init(&s[2], "ccc.onion", MESH_OBS_DEADLINE);
         dump_slot_init(&s[3], "ddd.onion", MESH_OBS_REFUSED);
-        /* Bytes arriving and bytes PARSING are different claims and each
-         * row must carry both, or a reader cannot tell a reachable box that
-         * served garbage from one it never reached. */
+        /* Bytes arriving and bytes parsing are different claims; each row
+         * carries both. */
         s[0].parsed = true;
         s[0].fetched_unix = 1756064010;
         s[2].fetched_unix = 1756064030;
@@ -275,8 +251,7 @@ static int t_platform_is_rendered_beside_the_onion(void)
         ASSERT(lin != NULL);
         ASSERT(mac != NULL);
 
-        /* beside its onion, in the SAME row — not a separate list a reader
-         * would have to join by index */
+        /* beside its onion, in the same row */
         ASSERT_FIELD_STR(lin, "onion", "lin.onion");
         ASSERT_FIELD_STR(lin, "record_os", "linux");
         ASSERT_FIELD_STR(lin, "record_arch", "x86_64");
@@ -301,8 +276,7 @@ static int t_unknown_platform_is_carried_verbatim(void)
         s.parsed = true;
         dump_slot_platform(&s, "haiku", "riscv64");
 
-        /* precondition: this build genuinely does not name that target, so
-         * the check below is about an UNKNOWN token and not a known one */
+        /* precondition: this build does not name that target */
         ASSERT(strcmp(mesh_obs_platform_os(), "haiku") != 0);
         ASSERT(strcmp(mesh_obs_platform_arch(), "riscv64") != 0);
 
@@ -333,9 +307,8 @@ static int t_silent_emitter_renders_as_silent(void)
     TEST_CASE("dump: an emitter that said nothing renders as having said "
               "nothing, never as this reader's own platform")
     {
-        /* Two slots that said nothing, for the two ways it happens: a
-         * record that parsed but omitted the fields, and a slot whose fetch
-         * never produced a record at all. */
+        /* Two silent slots: a record that parsed but omitted the fields, and
+         * a slot whose fetch produced no record. */
         struct mesh_obs_slot s[2];
         dump_slot_init(&s[0], "quiet.onion", MESH_OBS_CONFIRMED);
         s[0].parsed = true;                    /* os/arch left "" */
@@ -356,9 +329,7 @@ static int t_silent_emitter_renders_as_silent(void)
             ASSERT(arch != NULL);
             ASSERT_STR_EQ(os, "");
             ASSERT_STR_EQ(arch, "");
-            /* and it is not this reader's own build target leaking in. On
-             * this build mesh_obs_platform_os() is a real token, never "",
-             * so the two cannot be confused. */
+            /* and not this reader's own build target (a real token, never ""). */
             ASSERT(strcmp(mesh_obs_platform_os(), "") != 0);
             ASSERT(strcmp(mesh_obs_platform_arch(), "") != 0);
             ASSERT(strcmp(os, mesh_obs_platform_os()) != 0);
@@ -394,8 +365,7 @@ static int t_unsampled_node_reports_unverified(void)
         ASSERT_FIELD_STR(&out, "unavailable_reason", "no_sample_yet");
         ASSERT_FIELD_STR(&out, "schema", MESH_OBS_SCHEMA);
 
-        /* An unsampled record must NOT carry a health verdict — the
-         * surface deliberately emits no `_health`, because a rollup grants
+        /* An unsampled record carries no `_health`: a rollup would grant
          * all_ok over zero reporting dumpers. */
         ASSERT(json_get(&out, "_health") == NULL);
 
@@ -442,9 +412,7 @@ static int t_compose_dump_reports_coverage_first(void)
 }
 
 /* A full array is rendered whole. MESH_OBS_SLOTS_MAX + 1 is the live
- * dumper's own bound (its own record plus the collected set); a renderer
- * that silently truncated would under-report coverage, which is the one
- * direction this surface must never fail in. */
+ * dumper's own bound; truncation would under-report coverage. */
 static int t_full_slot_array_renders_whole(void)
 {
     int failures = 0;

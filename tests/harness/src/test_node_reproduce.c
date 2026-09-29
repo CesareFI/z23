@@ -3,27 +3,18 @@
  * test_node_reproduce — the comparator and the receipt codec behind
  * `z23 zcode node verify`.
  *
- * The property under test is not "does it print match sometimes". It is:
- *
- *   1. It CANNOT be talked into the worthless check. Two receipts of the
- *      same producer class — the publisher's hash compared with the
- *      publisher's hash — are refused, not compared. Every producer
- *      combination is enumerated here, so a future edit that relaxes the
- *      rule fails a test rather than quietly turning the feature into
- *      theatre.
- *   2. PARTIAL is never a pass. A receipt that names even one component it
- *      could not rebuild yields PARTIAL and a false return, even when every
- *      byte it DID compare matched. This is the single assertion that keeps
- *      "green" meaning something.
+ *   1. It cannot be talked into the worthless check. Two receipts of the same
+ *      producer class (publisher's hash vs publisher's hash) are refused;
+ *      every producer combination is enumerated.
+ *   2. PARTIAL is never a pass. A receipt naming even one component it could
+ *      not rebuild yields PARTIAL and a false return, even when every
+ *      compared byte matched.
  *   3. A mismatch is DIAGNOSED. Source, toolchain and claim are separated in
- *      evidence order, and when the evidence cannot separate them the answer
- *      is UNDIAGNOSED rather than a guess. A guess here would either libel a
- *      publisher or excuse a real compromise.
- *   4. The codec refuses what it does not understand. An unknown directive
- *      is a rejection, and an over-long artifact or unverified list is a
- *      rejection rather than a truncation — a silently truncated list is
- *      exactly the "component quietly excluded from the verdict" this whole
- *      surface exists to prevent.
+ *      evidence order; when evidence cannot separate them the answer is
+ *      UNDIAGNOSED, not a guess.
+ *   4. The codec refuses what it does not understand: an unknown directive,
+ *      and an over-long artifact or unverified list, are rejections rather
+ *      than truncations.
  *
  * Pure: nothing here builds, spawns, or touches a datadir. */
 
@@ -254,9 +245,7 @@ static int t_rows_and_empty(void)
                  strstr(rep.rows[0].detail, "100") &&
                  strstr(rep.rows[0].detail, "250"));
 
-    /* An artifact only one side emitted is a NAMED row, never a silent drop:
-     * dropping it is how a build that stopped emitting something keeps
-     * printing green. */
+    /* An artifact only one side emitted is a NAMED row, never a silent drop. */
     nr_fill(&a, VCS_NODE_PRODUCER_RECEIVED, SRC_A, TC_A, 0x11, 100);
     nr_fill(&b, VCS_NODE_PRODUCER_LOCAL_REBUILD, SRC_A, TC_A, 0x11, 100);
     b.artifact_count = 0;
@@ -347,9 +336,7 @@ static int t_codec_rejections(void)
            "1111111111111111111111111111111111111111111111111111111111111111\n");
     NR_BAD("rejects an unknown producer",
            VCS_NODE_REPRO_SCHEMA "\nproducer publisher\n");
-    /* THE ONE THAT MATTERS MOST: a directive this build does not understand
-     * may be exactly the one that would have changed the verdict, so it is a
-     * rejection and never a skip. */
+    /* An unknown directive may change the verdict: rejection, never a skip. */
     NR_BAD("rejects an unknown directive rather than skipping it",
            VCS_NODE_REPRO_SCHEMA "\nproducer received\ntrust_me yes\n");
     NR_BAD("rejects a short source_id",
@@ -372,8 +359,8 @@ static int t_codec_rejections(void)
            VCS_NODE_REPRO_SCHEMA "\nproducer received\nunverified libfoo.a\n");
 #undef NR_BAD
 
-    /* Over-long lists are REJECTED, not truncated. A truncated unverified
-     * list is a component silently excluded from the verdict. */
+    /* Over-long lists are REJECTED, not truncated: a truncated unverified list
+     * silently excludes a component from the verdict. */
     char big[VCS_NODE_REPRO_MAX_WIRE_BYTES];
     int w = snprintf(big, sizeof(big), "%s\nproducer received\n",
                      VCS_NODE_REPRO_SCHEMA);

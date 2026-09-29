@@ -25,11 +25,7 @@
     else { printf("FAIL\n"); failures++; } \
 } while (0)
 
-/* Make sure the writer connection uses WAL so the read snapshot is
- * MVCC-isolated rather than serialized via SHARED locks. We test both
- * paths: WAL gives true concurrent isolation; rollback-journal mode
- * still captures a snapshot but blocks subsequent writers. We pick WAL
- * for cleanliness — it's what the node uses everywhere. */
+/* WAL gives the read snapshot MVCC isolation (the node uses WAL everywhere). */
 static sqlite3 *open_writer_wal(const char *path)
 {
     sqlite3 *db = NULL;
@@ -157,11 +153,7 @@ int test_projection(void)
             "SELECT value FROM counters WHERE name='x'", &v);
         PRJ_CHECK("pre-close read OK", rc == 0 && v == 1);
 
-        /* Manually flip closed flag via projection_close on a dup
-         * is unsafe (double free). Instead use the same handle's
-         * close + then verify is_open returns false. We can't query
-         * after close (handle is freed). Verify the is_open accessor
-         * gates a NULL. */
+        /* is_open gates a NULL handle; a freed handle cannot be queried. */
         projection_close(p);
         PRJ_CHECK("is_open(NULL) false", !projection_is_open(NULL));
 

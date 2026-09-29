@@ -1,14 +1,10 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * test_no_state_source — the LOUD no-state-source blocker. A fresh node with
- * NO bundle, NO fetchable manifest, and
- * NO block bodies must not silently fall through to folding an empty genesis
- * datadir and pin on a MISLEADING downstream symptom (proof_validate.stale_upstream_
- * hash at h=0). boot_select_state_source must name the REAL problem the
- * instant it concludes with no state source — the typed bootstrap.no_state_source
- * blocker — carrying the fetch outcome, bundle status, and the operator hint,
- * and clear it on the honest witness (H* climb / a state source landing), never
- * on wall time.
+ * test_no_state_source: a fresh node with no bundle, no fetchable manifest and
+ * no block bodies must raise the typed bootstrap.no_state_source blocker
+ * (fetch outcome, bundle status, operator hint) instead of folding an empty
+ * genesis datadir; it clears on the honest witness (H* climb / a state source
+ * landing), never on wall time.
  *
  * Scenarios:
  *   (a) fresh, genesis-only, opt-out fetch: boot_select_state_source RAISES

@@ -120,10 +120,10 @@ static job_result_t step_advance_by_one(struct stage_step_ctx *c)
     return JOB_ADVANCED;
 }
 
-/* ── Wave A2 lock-order concurrency fixture ─────────────────────────────
+/* ── lock-order concurrency fixture ─────────────────────────────────────
  * Two threads, one per store handle, each holding its OWN tx lock + BEGIN
- * IMMEDIATE for a beat. They must not deadlock (different mutex domains,
- * WAL single-writer resolved by busy_timeout) and both must commit. */
+ * IMMEDIATE for a beat. They must not deadlock (different mutex domains, WAL
+ * single-writer resolved by busy_timeout) and both must commit. */
 struct lo_thread_arg {
     _Atomic bool committed;
     int hold_ms;
@@ -176,11 +176,10 @@ static void *lo_projection_writer(void *p)
 }
 
 /* ── compaction-vs-held-lock fixture ─────────────────────────────────
- * A background thread that takes the projection tx lock, marks itself
- * "started", sleeps to simulate a slow writer, marks itself "released" and
- * unlocks. The main thread's compact_if_needed() call must not observe the
- * lock as free (and so must not start its VACUUM) until `released` is
- * already true. */
+ * A background thread takes the projection tx lock, marks itself "started",
+ * sleeps to simulate a slow writer, marks itself "released" and unlocks. The
+ * main thread's compact_if_needed() must not observe the lock as free (or
+ * start its VACUUM) until `released` is true. */
 struct pc_lock_holder_arg {
     _Atomic bool started;
     _Atomic bool released;
@@ -198,8 +197,8 @@ static void *pc_lock_holder(void *p)
     return NULL;
 }
 
-/* Count quarantine sidecar files (consensus.db*.corrupt.*) in dir. Used to
- * assert the quick_check quarantine fired exactly when expected. */
+/* Count quarantine sidecar files (consensus.db*.corrupt.*) in dir, to assert
+ * the quick_check quarantine fired exactly when expected. */
 static int ps_count_corrupt(const char *dir)
 {
     DIR *d = opendir(dir);
@@ -232,12 +231,10 @@ static int ps_count_corrupt_projection(const char *dir)
     return n;
 }
 /* ── the projection integrity scan, off the boot thread ───────────────
- *
- * A 2.36 GB progress.kv with no clean-close receipt parked the boot thread
- * inside one unpaced PRAGMA quick_check for 62 minutes, with RPC, P2P and
- * sd_notify READY all downstream of it. These fixtures pin the fix and, just
- * as importantly, pin what the fix must NOT do: skip the scan, shorten it,
- * or let an unfinished scan be recorded as a clean close. */
+ * An unpaced PRAGMA quick_check on a multi-GB progress.kv with no clean-close
+ * receipt must not park the boot thread. These fixtures pin that the scan is
+ * deferred but never skipped, shortened, or recorded as a clean close while
+ * unfinished. */
 
 /* The boot ceremony's answer, stubbed: this file exists, so defer. */
 static bool ps_defer_probe_yes(const char *path)
@@ -246,9 +243,8 @@ static bool ps_defer_probe_yes(const char *path)
 }
 
 /* Seed a healthy projection store carrying one recognisable row, close it
- * cleanly, then delete the receipt the close wrote — which is exactly the
- * on-disk state a kill or a restart before projection_store_close leaves,
- * and the state that arms the full scan. */
+ * cleanly, then delete the receipt the close wrote: the on-disk state a kill
+ * or restart before projection_store_close leaves, which arms the full scan. */
 static bool ps_seed_projection_without_receipt(const char *dir,
                                                const char *fpath)
 {
@@ -305,12 +301,11 @@ static bool ps_corrupt_projection_page(const char *fpath)
 }
 
 
-/* A TRUNCATE checkpoint that a live reader blocked is not a dirty close.
- * The store now has one more reader than it used to — the background
- * integrity scan's read-only handle — and treating that BUSY as "dirty"
- * threw the receipt away and cost the next boot a full multi-GB scan for
- * nothing. What must NEVER happen is the opposite error: a receipt that
- * does not match the bytes on disk. Both halves are pinned here. */
+/* A TRUNCATE checkpoint that a live reader blocked (the background integrity
+ * scan's read-only handle) is not a dirty close: treating that BUSY as "dirty"
+ * would discard the receipt and cost the next boot a full scan. The opposite
+ * error, a receipt that does not match the bytes on disk, must never happen.
+ * Both halves are pinned here. */
 static int ps_test_projection_receipt_reader_blocked(void)
 {
     int failures = 0;
@@ -343,8 +338,8 @@ static int ps_test_projection_receipt_reader_blocked(void)
 }
 
 /* A healthy store with no receipt: the open returns with the store LIVE and
- * the scan owed, not run. Consumers work while it is owed, and the verdict
- * is what re-enables the fast-open receipt. */
+ * the scan owed, not run. Consumers work meanwhile; the verdict re-enables the
+ * fast-open receipt. */
 static int ps_test_projection_scan_deferred(void)
 {
     int failures = 0;
@@ -373,8 +368,8 @@ static int ps_test_projection_scan_deferred(void)
     PS_CHECK("proj defer: nothing was quarantined on the boot thread",
              ps_count_corrupt_projection(dir) == 0);
 
-    /* The real paced scanner, on the real file, through the production
-     * progress handler — the same call the post-READY thread makes. */
+    /* The real paced scanner on the real file, through the production
+     * progress handler (the call the post-READY thread makes). */
     struct boot_bg_quick_check_pace pace;
     memset(&pace, 0, sizeof(pace));
     bool scan_ok = boot_fast_restart_bg_quick_check_scan_for_test(pending,
@@ -394,8 +389,8 @@ static int ps_test_projection_scan_deferred(void)
     return failures;
 }
 
-/* An unfinished scan must never be cashed in as a clean close — otherwise
- * deferring the scan would DELETE it on the next boot instead of moving it. */
+/* An unfinished scan is never cashed in as a clean close; otherwise deferring
+ * the scan would DELETE it on the next boot instead of moving it. */
 static int ps_test_projection_scan_unfinished(void)
 {
     int failures = 0;
@@ -414,7 +409,7 @@ static int ps_test_projection_scan_unfinished(void)
              projection_store_open(dir) &&
              projection_store_integrity_pending(pending, sizeof(pending)));
 
-    /* Shut down before the scanner ever reports (a kill, or a shutdown that
+    /* Shut down before the scanner reports (a kill, or a shutdown that
      * cancelled the scan cooperatively). */
     projection_store_close();
     PS_CHECK("proj unfinished: no receipt is written for a scan that never "
@@ -429,14 +424,11 @@ static int ps_test_projection_scan_unfinished(void)
     return failures;
 }
 
-/* A verdict that arrives from the background scanner AFTER the store has
- * already closed must write nothing — close() and the scanner's report both
- * race for the single-use pending flag. Before the fix, the scanner could
- * win that exchange, then get descheduled while close() ran to completion
- * and blanked g_path; the condemn path would then snapshot an EMPTY path
- * and arm the quarantine at "" + ".quarantine" — a stray file in the
- * process CWD that the next open, which looks beside progress.kv, would
- * never see. */
+/* A verdict arriving from the background scanner AFTER the store has closed
+ * must write nothing. close() and the scanner's report race for the
+ * single-use pending flag; if the scanner wins, then close() blanks g_path,
+ * the condemn path would snapshot an EMPTY path and arm the quarantine at ""
+ * + ".quarantine", a stray file in the CWD the next open would never see. */
 static int ps_test_projection_scan_after_close(void)
 {
     int failures = 0;
@@ -457,8 +449,8 @@ static int ps_test_projection_scan_after_close(void)
              projection_store_open(dir) &&
              projection_store_integrity_pending(pending, sizeof(pending)));
 
-    /* Close before the scanner ever reports — the store, and g_path with
-     * it, are gone by the time the verdict below shows up. */
+    /* Close before the scanner reports: the store, and g_path with it, are
+     * gone by the time the verdict shows up. */
     projection_store_close();
     projection_store_integrity_scan_result(false);
 
@@ -468,9 +460,8 @@ static int ps_test_projection_scan_after_close(void)
     PS_CHECK("proj after close: nor a stray quarantine in the process CWD",
              access(".quarantine", F_OK) != 0);
 
-    /* The store itself was never corrupted (only the report arrived late),
-     * so a plain reopen through the normal synchronous gate must succeed
-     * with nothing owed. */
+    /* The store itself was never corrupted (only the report arrived late), so
+     * a plain synchronous reopen must succeed with nothing owed. */
     projection_store_set_quick_check_defer_probe(NULL);
     PS_CHECK("proj after close: the store reopens through the normal "
              "blocking gate",
@@ -509,8 +500,8 @@ static int ps_test_projection_scan_rebuild(const char *dir, const char *armed)
 }
 
 /* A corrupt store found by the BACKGROUND scan must reach the same end state
- * as the synchronous gate: writes refused at once, the file renamed aside,
- * a fresh empty store in its place, projections re-derived. */
+ * as the synchronous gate: writes refused at once, the file renamed aside, a
+ * fresh empty store in its place, projections re-derived. */
 static int ps_test_projection_scan_quarantine(void)
 {
     int failures = 0;
@@ -569,8 +560,8 @@ int test_progress_store(void)
         PS_CHECK("handle is non-NULL", progress_store_db() != NULL);
 
         char fpath[512];
-        /* After the A3 flip the kernel store file is consensus.db (a legacy
-         * progress.kv would be migrated in place first). */
+        /* The kernel store file is consensus.db (a legacy progress.kv is
+         * migrated in place first). */
         snprintf(fpath, sizeof(fpath), "%s/consensus.db", dir);
         struct stat st;
         PS_CHECK("consensus.db file exists",
@@ -843,14 +834,10 @@ int test_progress_store(void)
                  progress_meta_get(db, "sentinel", out, sizeof(out),
                                    &got, &found) && !found);
 
-        /* Batch-aware nesting (J3): the batch-unaware verbs
-         * progress_meta_set / progress_meta_delete used to issue an
-         * unconditional own BEGIN IMMEDIATE, which SQLite rejects when a
-         * transaction is already open ("cannot start a transaction within a
-         * transaction"). They now detect an open txn
-         * (sqlite3_get_autocommit()==0) and nest as a SAVEPOINT, so a bare call
-         * inside an outer BEGIN succeeds and commits atomically with that outer
-         * transaction. */
+        /* Batch-aware nesting: progress_meta_set / progress_meta_delete detect
+         * an open txn (sqlite3_get_autocommit()==0) and nest as a SAVEPOINT
+         * instead of a rejected BEGIN IMMEDIATE, so a bare call inside an
+         * outer BEGIN commits atomically with that transaction. */
         PS_CHECK("BEGIN for nested set",
                  sqlite3_exec(db, "BEGIN IMMEDIATE",
                               NULL, NULL, NULL) == SQLITE_OK);
@@ -912,17 +899,14 @@ int test_progress_store(void)
         test_cleanup_tmpdir(dir);
     }
 
-    /* ── integrity quick_check + quarantine self-heal (competition
-     *    robustness) ─────────────────────────────────────────────────────
-     *
-     * A corrupt progress.kv must NOT pin the node silently. On open the store
-     * runs PRAGMA quick_check; a non-"ok" verdict quarantines the file aside
-     * (rename → progress.kv.corrupt.<ts>...) and reopens a FRESH, empty store
-     * so boot can re-seed coins_kv from the snapshot/anchor and re-fold. This
-     * mirrors node.db's db_quick_check_ok path. We prove three things:
+    /* ── integrity quick_check + quarantine self-heal ──────────────────────
+     * On open the store runs PRAGMA quick_check; a non-"ok" verdict
+     * quarantines the file aside (rename -> progress.kv.corrupt.<ts>...) and
+     * reopens a FRESH, empty store so boot can re-seed and re-fold; mirrors
+     * node.db's db_quick_check_ok path. Proves three things:
      *   (a) a HEALTHY store reopens with NO quarantine (no false positive),
-     *   (b) a deliberately page-garbled store is detected → quarantine file
-     *       appears → reopen succeeds with a fresh, queryable, EMPTY store,
+     *   (b) a page-garbled store is detected, quarantined, and reopens as a
+     *       fresh, queryable, EMPTY store,
      *   (c) it is auto-terminating (one quarantine, not a loop). */
     {
         char dir[256];
@@ -1028,15 +1012,12 @@ int test_progress_store(void)
     }
 
     /* ── FUTURE schema marker (binary downgrade) refuses the open ──────────
-     *
      * A consensus.db written by a NEWER binary (schema marker version >
-     * CONSENSUS_DB_SCHEMA_VERSION) must refuse the open outright rather than
-     * being silently treated as healthy — see
-     * consensus_db_schema_is_downgrade() / progress_store_open(). Prove: (1)
-     * a healthy current-version marker opens fine, (2) bumping the marker to
-     * a future version makes the NEXT open fail (no handle), (3) the file on
-     * disk is untouched (still readable, marker unchanged) — this is a
-     * refusal, not a quarantine or a rewrite. */
+     * CONSENSUS_DB_SCHEMA_VERSION) must refuse the open outright (see
+     * consensus_db_schema_is_downgrade() / progress_store_open()). Proves:
+     * (1) a current-version marker opens, (2) a future-version marker makes
+     * the NEXT open fail (no handle), (3) the file is untouched: a refusal,
+     * not a quarantine or a rewrite. */
     {
         char dir[256];
         test_make_tmpdir(dir, sizeof(dir), "progress_store", "downgrade");
@@ -1101,18 +1082,14 @@ int test_progress_store(void)
         test_cleanup_tmpdir(dir);
     }
 
-    /* ── projection_store integrity quick_check + quarantine self-heal
-     *    (Class C projection corruption robustness) ─────────────────────
-     *
+    /* ── projection_store integrity quick_check + quarantine self-heal ────
      * projection_store's progress.kv projection tables (address_index /
-     * txindex / created_outputs) are fully rebuildable, but a corrupt file
-     * left in place would otherwise surface as a mid-fold SQLITE_CORRUPT deep
-     * inside a projection job with no named blocker. This mirrors the
-     * consensus.db quarantine gate proven above — both stores run the SAME
-     * shared gate (sqlite_integrity_gate.c). We prove the same three things:
-     *   (a) a HEALTHY store reopens with NO quarantine (no false positive),
-     *   (b) a deliberately page-garbled store is detected → quarantine file
-     *       appears → reopen succeeds with a fresh, queryable, EMPTY store,
+     * txindex / created_outputs) are rebuildable, but a corrupt file left in
+     * place would surface as a mid-fold SQLITE_CORRUPT with no named blocker.
+     * Both stores run the SAME shared gate (sqlite_integrity_gate.c). Proves:
+     *   (a) a HEALTHY store reopens with NO quarantine,
+     *   (b) a page-garbled store is detected, quarantined, and reopens as a
+     *       fresh, queryable, EMPTY store,
      *   (c) it is auto-terminating (one quarantine, not a loop). */
     for (unsigned receipt_version = 1; receipt_version <= 2; receipt_version++) {
         char dir[256];
@@ -1248,11 +1225,11 @@ int test_progress_store(void)
         test_cleanup_tmpdir(dir);
     }
 
-    /* ── Wave A2 (D4): projection_store split — independent connection +
-     *    lock-order concurrency ────────────────────────────────────────────
+    /* ── projection_store split: independent connection + lock-order
+     *    concurrency ────────────────────────────────────────────────
      * The projection handle is a SECOND sqlite3 connection to the SAME
-     * progress.kv file. Two threads writing concurrently — kernel handle under
-     * progress_store_tx_lock, projection handle under projection_store_tx_lock —
+     * progress.kv file. Two threads writing concurrently (kernel handle under
+     * progress_store_tx_lock, projection handle under projection_store_tx_lock)
      * must not deadlock (disjoint mutex domains; WAL single-writer resolved by
      * busy_timeout) and both must commit their own row. */
     {
@@ -1335,13 +1312,9 @@ int test_progress_store(void)
     }
 
     /* ── progress.kv stays inside its size bound under churn ─────────
-     *
-     * A field box carried a 2,874 MB progress.kv while a sibling at the same
-     * chain height carried 1 MB. Nothing here compacted, so the file tracked
-     * the high-water mark of everything the node had ever indexed and never
-     * gave a page back. This case reproduces the mechanism at small scale:
-     * fill a projection table, delete almost all of it, and prove the FILE
-     * shrinks rather than just the row count. */
+     * Compaction keeps the file from tracking the high-water mark of
+     * everything ever indexed. Fill a projection table, delete almost all of
+     * it, and prove the FILE shrinks, not just the row count. */
     {
         char dir[256];
         test_make_tmpdir(dir, sizeof(dir), "progress_store", "compact");
@@ -1386,9 +1359,8 @@ int test_progress_store(void)
         PS_CHECK("compact: the store grew", projection_store_usage(&grown) &&
                  grown.file_bytes > 4 * 1024 * 1024);
 
-        /* Delete nearly everything. In plain SQLite those pages go to the
-         * FREELIST inside the file — the file does not shrink by itself,
-         * which is precisely the defect. */
+        /* Delete nearly everything. The freed pages stay in the file's
+         * FREELIST; the file does not shrink by itself. */
         if (pdb) {
             projection_store_tx_lock();
             (void)sqlite3_exec(pdb, "DELETE FROM compact_churn WHERE k >= 40",
@@ -1437,8 +1409,8 @@ int test_progress_store(void)
             PS_CHECK("compact: the surviving rows survived", rows == 40);
         }
 
-        /* Running it again is a no-op: the store is already dense, so the
-         * bound must not put the node into a rewrite loop. */
+        /* Running it again is a no-op: the store is dense, so the bound must
+         * not cause a rewrite loop. */
         PS_CHECK("compact: a compacted store is not compacted again",
                  !projection_store_compact_if_needed(1024 * 1024, 250, NULL,
                                                      NULL));
@@ -1449,27 +1421,20 @@ int test_progress_store(void)
     }
 
     /* ── compaction never runs a VACUUM while a writer holds the tx lock ──
-     *
-     * A flash reviewer flagged that projection_store_compact_if_needed()
-     * might ignore projection_store_tx_trylock()'s busy return and VACUUM
-     * anyway. It does not: the compaction path calls the BLOCKING
+     * projection_store_compact_if_needed() calls the BLOCKING
      * projection_store_tx_lock(), the same recursive mutex every writer
      * (address_index_service, txindex_projection_service) takes via
-     * projection_store_tx_trylock() before touching the handle. So a
-     * compaction attempted while another writer holds the lock cannot run
-     * concurrently with it — it can only block until the writer releases,
-     * then proceed. Prove the ordering directly: a background thread holds
-     * the lock across a sleep, and the compaction call in this thread must
-     * not observe the lock as free (and therefore must not start its
-     * VACUUM) until that thread has actually released it. */
+     * projection_store_tx_trylock(), so it can only block until the writer
+     * releases. A background thread holds the lock across a sleep; the
+     * compaction call here must not observe the lock as free (and start its
+     * VACUUM) until that thread has released it. */
     {
         char dir[256];
         test_make_tmpdir(dir, sizeof(dir), "progress_store", "compact_lock");
         PS_CHECK("lock: kernel open", progress_store_open(dir));
         PS_CHECK("lock: projection open", projection_store_open(dir));
 
-        /* Make the store over-bound so compact_if_needed actually attempts
-         * a VACUUM rather than returning early on the bound check. */
+        /* Make the store over-bound so compact_if_needed attempts a VACUUM. */
         sqlite3 *pdb = projection_store_db();
         if (pdb) {
             projection_store_tx_lock();
@@ -1504,7 +1469,7 @@ int test_progress_store(void)
         PS_CHECK("lock: holder thread spawned", spawn_rc == 0);
 
         if (spawn_rc == 0) {
-            /* Wait for the holder to actually own the lock before racing
+            /* Wait for the holder to own the lock before racing
              * compact_if_needed against it. */
             for (int spins = 0; spins < 2000 && !atomic_load(&holder.started);
                  spins++)
@@ -1516,11 +1481,9 @@ int test_progress_store(void)
             bool compacted = projection_store_compact_if_needed(
                 1024 * 1024, 250, &before, &after);
 
-            /* The call above only returns after it acquired the (blocking)
-             * tx lock, which the holder does not release until `released`
-             * flips true. If compact_if_needed ran its VACUUM concurrently
-             * with the held lock, this would be observed as `released`
-             * still false right after the call returns — it never is. */
+            /* The call above returns only after acquiring the blocking tx
+             * lock, which the holder releases when `released` flips true; a
+             * concurrent VACUUM would show `released` still false here. */
             PS_CHECK("compact: never observed as running before the holder "
                      "released the lock",
                      atomic_load(&holder.released));

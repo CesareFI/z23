@@ -1,70 +1,51 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * test_onion_pair_watch_live — the LIVE two-node Tor pairing exercise, run
- * as a registered TEST, not as a lint gate.
+ * test_onion_pair_watch_live: the LIVE two-node Tor pairing exercise, run
+ * as a registered TEST (network-bound, can take minutes), not as a lint gate.
  *
- * tools/scripts/onion_pair_watch.sh's `--selftest` flag is already hermetic
- * (drives named_verdict()/append_probe() in-process, no spawn, <1s) and the
- * static gate `make check-onion-pair-watch` keeps using it directly — that
- * invocation never boots a node and is documented as such at its Makefile
- * target ("Does not spawn nodes."). What has never been exercised in any
- * gate is the script's LIVE path: no `--selftest`, two real regtest nodes
- * with `-tor -onion-persist`, a real Tor bootstrap, and a real onion
- * rendezvous. That is a genuine coverage gap this group fills, and it is a
- * TEST (network-bound, can legitimately take minutes) rather than a lint
- * gate (which must stay static and network-free).
+ * `onion_pair_watch.sh --selftest` is hermetic and used by the static gate
+ * `make check-onion-pair-watch`. This group covers the script's LIVE path:
+ * two real regtest nodes with `-tor -onion-persist`, a real Tor bootstrap,
+ * and a real onion rendezvous.
  *
- * Isolation
- * ---------
- * Runs the shipped script exactly as an operator would, via fork/exec, with
- * its own throwaway PAIR_PROBE_FILE ledger (never the operator's live
- * ledger) and the isolation quads onion_pair_watch.sh itself rents from the
- * documented 39250+ probe band. No production datadir, no live node.
+ * Isolation: runs the shipped script via fork/exec with its own throwaway
+ * PAIR_PROBE_FILE ledger and the isolation quads the script rents from the
+ * 39250+ probe band. No production datadir, no live node.
  *
- * Progress vs. wedged
- * --------------------
- * The script now prints "pair-watch: waiting <stage> <elapsed>s/<deadline>s"
- * to stderr every 30s while any of its four deadline loops is polling, so a
- * loaded box that is simply slower still shows forward progress. This group
- * watches for SILENCE (no growth in the captured output file), not for
- * total elapsed time — the same distinction run_gate_script_watched() uses
- * for lint gates (lint_gate_helpers.c). The silence bound here is derived
- * from the LONGEST gap the script can legitimately leave between progress
- * lines: 30s (the print interval) plus margin, never from total runtime.
+ * Progress vs. wedged: the script prints "pair-watch: waiting <stage>
+ * <elapsed>s/<deadline>s" to stderr every 30s while polling. This group
+ * watches for SILENCE (no growth in the captured output), not total elapsed
+ * time, as run_gate_script_watched() does (lint_gate_helpers.c). The silence
+ * bound is the 30s print interval plus margin.
  *
  * Outcome mapping
  * ----------------
  *   exit 0 (PAIR_PROBE=PAIRED)                    -> PASS
- *   exit 1 with a named "Tor did not finish inside -> UNOBSERVED (this is a
+ *   exit 1 with a named "Tor did not finish inside -> UNOBSERVED (a
  *     its window" verdict (ONION_HOSTNAME_TIMEOUT,     box/network fact, not
- *     DESCRIPTOR_NOT_UPLOADED, CLIENT_TOR_NOT_READY,   a code verdict — see
- *     INTRODUCE1_NOT_SEEN, RENDEZVOUS1_NOT_SEEN,        test_onion_bootstrap.c
- *     CIRCUIT_NOT_READY, P2P_FRAMING_NOT_SEEN)          for the same doctrine)
+ *     DESCRIPTOR_NOT_UPLOADED, CLIENT_TOR_NOT_READY,   a code verdict; see
+ *     INTRODUCE1_NOT_SEEN, RENDEZVOUS1_NOT_SEEN,        test_onion_bootstrap.c)
+ *     CIRCUIT_NOT_READY, P2P_FRAMING_NOT_SEEN)
  *   exit 1 with ENV_MISSING_BINARY                    -> UNOBSERVED: the
  *     (build/bin/z23, zclassic23 or zcl-rpc absent)      environment has no
- *     runtime binaries. A proof generation never builds them (only z23-dev
- *     and the test runner), so the pairing cannot be observed there — a
- *     fact about the box, not about the code.
+ *     runtime binaries (a proof generation builds only z23-dev and the
+ *     test runner).
  *   any other nonzero exit, or a wedge                -> FAIL, with the
  *     (PORT_QUAD_EXHAUSTED, SPAWN_A_FAILED,              script's last 20
  *     RPC_A_NOT_READY, SPAWN_B_FAILED, RPC_B_NOT_READY,  lines
  *     DIAL_NOT_ATTEMPTED)
  *
- * Deliberately NOT SKIP: this project's push gate refuses any receipt
- * carrying a "SKIP (" line, and a busy box's honest "Tor missed its window"
- * observation must never be spelled that way (see test_onion_bootstrap.c and
- * test_testcache.c's "onion bootstrap window prints UNOBSERVED, never SKIP"
- * check). The group still RUNS, still fails loudly on a real script/harness
- * defect, and its verdict is never cached as green from an UNOBSERVED leg.
+ * Deliberately NOT SKIP: the push gate refuses any receipt carrying a
+ * "SKIP (" line (see test_onion_bootstrap.c and test_testcache.c's "onion
+ * bootstrap window prints UNOBSERVED, never SKIP" check). An UNOBSERVED leg
+ * is never cached as green.
  *
- * Gating: like test_onion_bootstrap (real Tor network egress, tens of
- * seconds to a few minutes, unsuitable for the default parallel pool),
- * this body only runs under ZCL_STRESS_TESTS=1.
+ * Gating: like test_onion_bootstrap, the body only runs under
+ * ZCL_STRESS_TESTS=1.
  *
  *   ZCL_STRESS_TESTS=1 make t-fast ONLY=onion_pair_watch_live
  *
- * Environment (forwarded to the script when present in this process's own
- * environment, letting the operator or a mutation proof shrink the windows):
+ * Environment forwarded to the script when set:
  *   PAIR_WATCH_ONION_WAIT, PAIR_WATCH_RPC_WAIT, PAIR_WATCH_POLL
  */
 
@@ -89,9 +70,9 @@ static int64_t opw_now_ns(void)
     return (int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec;
 }
 
-/* Named verdicts meaning "the real Tor/network exercise did not complete
- * inside its own deadline windows" — a box/network fact, mapped UNOBSERVED,
- * never FAIL and never SKIP. */
+/* Named verdicts meaning the Tor/network exercise did not complete inside
+ * its own deadline windows: a box/network fact, mapped UNOBSERVED, never
+ * FAIL and never SKIP. */
 static bool opw_is_timeout_verdict(const char *tail)
 {
     static const char *const tokens[] = {
@@ -111,10 +92,8 @@ static bool opw_is_timeout_verdict(const char *tail)
 }
 
 /* The script found no build/bin/z23, zclassic23 or zcl-rpc to spawn. A proof
- * generation never builds the runtime binaries, so the pairing cannot be
- * observed there: a fact about the environment, mapped UNOBSERVED (never FAIL,
- * never SKIP) and never cached as green. On a dev box it means `make` has not
- * produced the binaries yet. */
+ * generation never builds them, so the pairing cannot be observed there:
+ * mapped UNOBSERVED (never FAIL, never SKIP) and never cached as green. */
 static bool opw_is_missing_binary_verdict(const char *tail)
 {
     return tail && strstr(tail, "PAIR_PROBE=ENV_MISSING_BINARY") != NULL;
@@ -122,10 +101,8 @@ static bool opw_is_missing_binary_verdict(const char *tail)
 
 static bool opw_is_paired(const char *tail)
 {
-    /* Exact token match: DESCRIPTOR_NOT_UPLOADED etc. also start with
-     * "PAIR_PROBE=" so this must not be a bare substring test against
-     * "PAIR_PROBE=PAIRED" alone (it is not a prefix of the others, but be
-     * defensive and require the token end in whitespace/newline/EOS). */
+    /* Exact token match: require the token to end in whitespace/newline/EOS
+     * so other PAIR_PROBE= verdicts never match. */
     const char *p = strstr(tail, "PAIR_PROBE=PAIRED");
     if (!p) return false;
     char after = p[strlen("PAIR_PROBE=PAIRED")];
@@ -141,9 +118,8 @@ static char *opw_tail_lines(const char *path, int max_lines)
     char *buf = NULL;
     size_t len = 0;
     char line[4096];
-    /* Simple ring of the last max_lines lines via a small fixed array of
-     * offsets is overkill here; read the whole (bounded) file and keep the
-     * tail by line count — this file is at most a few hundred KB. */
+    /* Read the whole (bounded, a few hundred KB at most) file and keep the
+     * tail by line count. */
     char **lines = calloc((size_t)max_lines, sizeof(char *));
     int count = 0, head = 0;
     while (fgets(line, sizeof(line), f)) {
@@ -171,13 +147,11 @@ static char *opw_tail_lines(const char *path, int max_lines)
     return buf;
 }
 
-/* Fork/exec onion_pair_watch.sh (LIVE path — no --selftest), capture combined
+/* Fork/exec onion_pair_watch.sh (LIVE path, no --selftest), capture combined
  * stdout+stderr to out_path, and watch for SILENCE rather than total elapsed
- * time: the script now prints a progress line every 30s of any deadline-loop
- * wait, so 90s of total silence (3 missed progress lines) is a genuine wedge,
- * never an honest slow box. Returns the script's exit status, or -1 on a
- * harness-level failure (fork/exec plumbing), or -2 if killed for going
- * silent. */
+ * time: the script prints a progress line every 30s, so 90s of silence is a
+ * wedge. Returns the script's exit status, -1 on a harness-level failure
+ * (fork/exec), or -2 if killed for going silent. */
 #define OPW_WEDGED (-2)
 static int opw_run_watched(const char *script_abs, const char *ledger_abs,
                             const char *out_path, int max_silent_secs)
@@ -278,10 +252,8 @@ int test_onion_pair_watch_live(void)
     snprintf(ledger, sizeof(ledger), "%s/pair_probe.jsonl", tmpdir);
     snprintf(out_path, sizeof(out_path), "%s/run.out", tmpdir);
 
-    /* Silence bound: the script's own progress cadence is 30s while any
-     * deadline loop is waiting. Triple it for margin — a genuinely wedged
-     * script (not merely a slow box, which still prints on schedule) is the
-     * only thing that goes this quiet. */
+    /* Silence bound: the script prints progress every 30s while waiting;
+     * triple that for margin. Only a wedged script goes this quiet. */
     const int max_silent_secs = 90;
 
     int rc = opw_run_watched(script, ledger, out_path, max_silent_secs);

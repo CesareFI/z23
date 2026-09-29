@@ -1,41 +1,26 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * FULL-REQUEST IDEMPOTENCY: what makes "the same request_id" mean "the same
- * request".
+ * FULL-REQUEST IDEMPOTENCY: "the same request_id" must mean "the same request".
+ * The broker replay ring must match on the full request, not request_id alone:
+ * a reused request_id with different content must not return another query's
+ * answer, and a cached query must not outlive a revocation.
  *
- * THE DEFECT THESE TESTS PIN SHUT. The broker's replay ring used to match on
- * `request_id` alone, with the verb compared at the call site and nothing else
- * compared anywhere. Two things followed, and an ordinary well-behaved client
- * could reach both:
- *
- *   - request_id=7 INSPECT property A, then request_id=7 INSPECT property B,
- *     returned A's answer to a question about B. A confused-deputy read that
- *     the broker manufactured itself, with no refusal on any path.
- *   - Queries were cached, so repeating a request_id after a revocation
- *     returned the old OK without consulting the authority at all. Live
- *     authority, undone by a retry.
- *
- * Coverage, in the lane's numbering:
- *   B1  the canonical request digest: every field of the preimage changes it,
- *       and the two spellings of "the current protocol version" do not
- *   B2  a slot is served only when its stored FIELDS are the same request, so
- *       a digest collision is refused rather than answered
+ * Coverage:
+ *   B1  the canonical request digest: every preimage field changes it, and the
+ *       two spellings of "the current protocol version" do not
+ *   B2  a slot is served only when its stored FIELDS match the request, so a
+ *       digest collision is refused
  *   T7  a request_id reused for another PROPERTY is refused by name
- *   T8  a request_id reused with a changed KIND, VALUE, PARAM, VERB or
- *       protocol version is refused; the byte-identical repeat is not
+ *   T8  a request_id reused with a changed KIND, VALUE, PARAM, VERB or protocol
+ *       version is refused; the byte-identical repeat is not
  *   T9  an old QUERY cannot outlive a revocation through the ring
- *   TR  a replay is DISTINGUISHABLE from a first execution in both the reply
- *       body and the audit row, executes nothing, and cannot be repointed
+ *   TR  a replay is DISTINGUISHABLE from a first execution in the reply body
+ *       and the audit row, executes nothing, and cannot be repointed
  *
- * T7-T9 run against the REAL production provider — a real /tmp datadir, real
- * content blobs, a real canonical grant, and the real property catalog. TR
- * needs a mutation that actually COMMITS in order to have a first execution to
- * distinguish a replay from, and no production seam in this tree executes a
- * property mutation (that is T12's subject in test_metaverse_broker_authority);
- * so TR, and only TR, drives the test-build fixture seam. That is stated here
- * rather than buried, because "which of these ran against the real thing" is
- * the first question worth asking of this file.
- */
+ * T7-T9 run against the real production provider (real /tmp datadir, content
+ * blobs, canonical grant, property catalog). TR needs a committing mutation and
+ * no production seam executes one (see test_metaverse_broker_authority T12), so
+ * TR alone drives the test-build fixture seam. */
 
 #define _GNU_SOURCE
 
@@ -76,11 +61,8 @@ static void bi_clock(int64_t *now_unix, int64_t *height, void *ctx)
 }
 
 /* ── two real properties in one real datadir ────────────────────────────────
- * Both roots are the blob store's OWN manifest roots, so nothing here mints an
- * identifier and the catalog answers about bytes that are actually on disk.
- * TWO of them, because T7's whole point is that the second question must not be
- * answered with the first one's answer — which requires both to be legitimately
- * in scope, so that the refusal can only be the idempotency layer talking. */
+ * Both roots are the blob store's own manifest roots. Two are needed so T7's
+ * refusal can only come from the idempotency layer. */
 struct bi_fixture {
     char dd[256];
     uint8_t root[2][32];

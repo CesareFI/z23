@@ -1,50 +1,39 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * test_reducer_body_fsync_crash — DETERMINISTIC kill -9 fault injection
- * INSIDE the R1 catch-up round-cadence window
+ * INSIDE the catch-up round-cadence window
  * (engine/reducer/services/src/reducer_body_fsync.c): the process is
  * SIGKILLed after batch commits whose body+event_log fdatasync was DEMOTED
- * (skipped by the cadence) and BEFORE the next round flush could cover them.
+ * (skipped by the cadence) and BEFORE the next round flush covers them.
  *
- * Four proofs (owner safety bar for the R1 demotion):
+ *   (1) WINDOW: the per-commit flush report shows exactly ONE flush-covered
+ *       commit (the round flush at commit 8 of
+ *       ZCL_CATCHUP_FSYNC_COMMIT_INTERVAL=8) among the ten commits before
+ *       the kill; commits 9 and 10 ran with the barrier demoted.
+ *   (2) ACKNOWLEDGED WRITES SURVIVE: every flush-covered commit is durable
+ *       in the reopened store: the durable stage cursor covers it and its
+ *       body record is intact on disk.
+ *   (3) FRONTIER NEVER PRECEDES DATA: the durable cursor C never exceeds
+ *       the count R of intact body records (C <= R), and records 1..C are
+ *       present and correct. Cycle B also EMULATES the power-loss tail by
+ *       truncating the blk file to the last flush-covered record, observes
+ *       the bounded lag (C > R by at most INTERVAL-1 commits), and has the
+ *       resumer DETECT and REPAIR it (re-write the missing bodies, the
+ *       fixture analog of requeue_body_for_refetch) before continuing.
+ *   (4) IDENTICAL FINAL STATE: after resume, the durable state (stage
+ *       cursor AND blk*.dat bytes) is byte-identical to an uninterrupted
+ *       golden run's.
  *
- *   (1) WINDOW: the crasher dies deterministically inside the cadence
- *       window — the per-commit flush report must show exactly ONE
- *       flush-covered commit (the round flush at commit 8 of
- *       ZCL_CATCHUP_FSYNC_COMMIT_INTERVAL=8) among the ten commits that
- *       ran before the kill, so commits 9 and 10 committed with their
- *       durability barrier demoted and no later flush ever ran.
- *   (2) ACKNOWLEDGED WRITES SURVIVE: after the kill, every flush-covered
- *       (acknowledged-durable) commit is durable in the reopened store —
- *       the durable stage cursor covers it and its body record is intact
- *       on disk.
- *   (3) FRONTIER NEVER PRECEDES DATA: the durable cursor C read back after
- *       the crash never exceeds the count R of intact body records on
- *       disk (C <= R), and records 1..C are all present and correct.
- *       Cycle B additionally EMULATES the power-loss tail by truncating
- *       the blk file back to the last flush-covered record (the exact
- *       bytes the demotion left un-fdatasynced), observes the bounded lag
- *       (C > R by at most INTERVAL-1 commits), and has the resumer DETECT
- *       and REPAIR it (re-write the missing bodies — the fixture-level
- *       analog of requeue_body_for_refetch / the boot rescan keyed on the
- *       same fail-closed body read) before continuing.
- *   (4) IDENTICAL FINAL STATE: after resume, the crash-truncated datadir's
- *       durable state — stage cursor AND blk*.dat bytes — is byte-identical
- *       to an uninterrupted golden run's.
+ * PROCESS MODEL (mirrors test_fold_inram_crash_proof.c): every leg touching
+ * a store runs in its own fork()ed child. The crasher reports per-commit
+ * flush coverage over a pipe and then raise(SIGKILL)s itself INSIDE the
+ * batched scope, so the kill point is ordinal-deterministic, never
+ * wall-clock.
  *
- * PROCESS MODEL (mirrors test_fold_inram_crash_proof.c): every leg that
- * touches a store runs in its own fork()ed child; the parent never holds
- * a store open across a fork. The crasher reports per-commit flush
- * coverage over a pipe (dprintf, unbuffered) and then raise(SIGKILL)s
- * itself INSIDE the batched scope — mid-scope, after demoted commits,
- * before any covering flush — so the kill point is ordinal-deterministic,
- * never wall-clock.
- *
- * The fixture drives the REAL seams: stage_batch_begin/end with the REAL
- * reducer_batched_durability_precommit hook (registered by
- * reducer_enter_batched_body_sync), REAL stage_run_once cursor writes,
- * REAL write_block_to_disk in deferred mode, and the REAL catch-up gate
- * (connman fixture identical to test_reducer_drive_watchdog.c case g).
+ * The fixture drives the REAL seams: stage_batch_begin/end with the real
+ * reducer_batched_durability_precommit hook, real stage_run_once cursor
+ * writes, real write_block_to_disk in deferred mode, and the real catch-up
+ * gate (connman fixture as in test_reducer_drive_watchdog.c case g).
  *
  * make t ONLY=reducer_body_fsync_crash
  */

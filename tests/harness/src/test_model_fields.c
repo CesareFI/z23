@@ -2,15 +2,11 @@
  *
  * Tests for models/model_fields.h — the one-declaration column mapping.
  *
- * The point of the mechanism is that a model's SQL column order, its SELECT
- * read index and its INSERT bind position are all DERIVED from a single field
- * list, so they cannot drift apart. These tests do not take that on trust:
- * they build a real SQLite table out of the derived column list, round-trip a
- * record through the derived binder and reader, and then insert a column in
- * the MIDDLE of a second list and show that the derived reader follows while a
- * hand-written reader holding the old literal indices reads the wrong field.
- * That last case is the defect the mechanism exists to make impossible; it is
- * asserted here so the claim stays true.
+ * A model's SQL column order, SELECT read index and INSERT bind position are
+ * all derived from a single field list. These tests build a real SQLite table
+ * from the derived column list, round-trip a record through the derived binder
+ * and reader, then insert a column mid-list and show the derived reader
+ * follows while a hand-written literal-index reader reads the wrong field.
  */
 
 #include "test/test_core.h"
@@ -65,10 +61,7 @@ struct mf_row {
     ZCL_MODEL_ENUM         (state,      state, int),       \
     ZCL_MODEL_I64          (updated_at, updated_at)
 
-/* V2: V1 with ONE column inserted in the middle, between `sequence` and
- * `version`. Under the old hand-maintained scheme this is the change that
- * silently shifted ten read indices and ten bind positions. Here it is one
- * added line and nothing else. */
+/* V2: V1 with ONE column inserted between `sequence` and `version`. */
 #define MF_V2_FIELDS \
     ZCL_MODEL_BLOB         (id,         id, 32),           \
     ZCL_MODEL_TEXT         (name,       name),             \
@@ -202,11 +195,8 @@ static int t_round_trip(void)
 }
 
 /* ── 2. THE drift case ────────────────────────────────────────────────────
- * A column is inserted in the middle of the list. The derived reader must
- * follow it with no other edit. The literal-index reader, which is exactly
- * what every unconverted model still carries, must NOT — and that is asserted
- * here, because "this bug is now impossible" is only worth saying if the bug
- * is demonstrably still possible the old way. */
+ * A column inserted mid-list: the derived reader must follow with no other
+ * edit; the literal-index reader must not. */
 
 /* The hand-written reader as it stood for V1: literal indices, frozen. */
 static void mf_legacy_read_v1_indices(struct mf_row *out, sqlite3_stmt *s)
@@ -232,9 +222,8 @@ static int t_column_inserted_in_the_middle(void)
            (int)MF_V1_IX_COUNT == (int)MF_V2_IX_COUNT &&
            strcmp(MF_V1_COLUMNS, MF_V2_COLUMNS) != 0);
 
-    /* `height` moved from the end of the scalar run to the middle, and every
-     * index between its old and new home moved with it — nobody edited an
-     * index to make that happen. */
+    /* `height` moved to the middle and every index between moved with it,
+     * with no index edited. */
     MF_RUN("mf: derived indices shifted with the list, not by hand",
            (int)MF_V1_IX_height == 7 && (int)MF_V2_IX_height == 4 &&
            (int)MF_V2_IX_version == (int)MF_V1_IX_version + 1 &&
@@ -270,10 +259,8 @@ static int t_column_inserted_in_the_middle(void)
     MF_RUN("mf: derived reader is still correct after the insertion",
            got_row && mf_same(&in, &derived));
 
-    /* The frozen literal indices now read `height` where `version` lives and
-     * so on down the row. This is the silent corruption the mechanism
-     * removes; if it ever stops happening, this test has stopped proving
-     * anything and must be rewritten, not deleted. */
+    /* The frozen literal indices now read `height` where `version` lives:
+     * the silent corruption the mechanism removes. */
     MF_RUN("mf: frozen literal indices DO silently mis-read the same row",
            got_row &&
            legacy.version == (int32_t)in.height &&

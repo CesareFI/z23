@@ -161,13 +161,9 @@ int t_canonical_deploy_proof_binding_contract(void)
         ASSERT(strstr(verify_buf, "${ZCL_DATADIR:-") == NULL);
         ASSERT(strstr(verify_buf, "${ZCL_RPCPORT:-") == NULL);
         ASSERT(strstr(verify_buf, "${ZCL_RPCCONNECT:-") == NULL);
-        /* Published build identity (core/modules/net/include/net/version.h). The gate
-         * must classify the advertised subversion rather than compare it to
-         * one frozen string: before this rule existed it demanded the exact
-         * pre-change "/ZClassic23:0.1.0/", so the first stamped build to be
-         * deployed would have failed its own deploy verification. Both native
-         * forms are accepted and only a token naming a DIFFERENT build is
-         * refused — absence must never become a deploy failure. */
+        /* Published build identity (version.h): classify the advertised
+         * subversion; only a token naming a DIFFERENT build is refused,
+         * absence is never a deploy failure. */
         ASSERT(strstr(verify_buf, "advertised_subver_verdict") != NULL);
         ASSERT(strstr(verify_buf,
                       "\"/ZClassic23:0.1.0(src:$adv_want_prefix)/\"") != NULL);
@@ -387,10 +383,8 @@ int t_dev_lane_deploy_contract(void)
                       "GNU make returns 2 for a failed recipe") != NULL);
         ASSERT(strstr(coldstart, "SRC_BUNDLE_SNAP_CANDIDATES") != NULL);
         ASSERT(strstr(coldstart, "-load-snapshot-at-own-height") != NULL);
-        /* -a is load-bearing, not style: node.log can carry a NUL byte, and
-         * plain grep then prints NOTHING and exits 0, so `hit` comes back
-         * empty and the cold-start probe reports the bundle marker ABSENT on
-         * a run that actually succeeded. Pin the -a so it cannot regress. */
+        /* -a is load-bearing: node.log can carry a NUL byte, and plain grep
+         * then prints nothing and exits 0. */
         ASSERT(strstr(coldstart, "grep -am1 -F -- \"$BUNDLE_SUCCESS_PATTERN\"")
                != NULL);
         ASSERT(strstr(coldstart, "fast_rebuild_authority_ready") != NULL);
@@ -1059,9 +1053,7 @@ int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "Public start here") != NULL);
         ASSERT(strstr(buf, "make dev-bin") != NULL);
         /* Same contract, phrased as the README phrases it: how a
-         * contributor finds a valid `ONLY=` group. The old pin
-         * ("returned registered parallel group") was test jargon the
-         * README rewrite dropped rather than a fact a reader wants. */
+         * contributor finds a valid `ONLY=` group. */
         ASSERT(strstr(buf, "`make t-list` lists every registered group")
                != NULL);
         ASSERT(strstr(buf, "build/bin/z23 core sync diagnose")
@@ -1116,12 +1108,9 @@ int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "git rev-parse --local-env-vars") != NULL);
         ASSERT(strstr(buf, "unset \"$name\"") != NULL);
         ASSERT(strstr(buf, "make install-quality-linger") != NULL);
-        /* Behavioural, not textual: the pre-push changed-set resolver builds a
-         * throwaway repository and asserts that a CLEAN worktree whose HEAD is
-         * ahead of its upstream still yields the committed file list. Every
-         * other assertion in this function greps a script; this one runs the
-         * property, because the defect it guards was invisible to grep — the
-         * gate said PASS while executing zero test groups. */
+        /* Behavioural: the pre-push changed-set resolver builds a throwaway
+         * repository and asserts a CLEAN worktree whose HEAD is ahead of its
+         * upstream still yields the committed file list. */
         ASSERT(run_gate_script_arg("tools/agent_fast_ci.sh", NULL,
                                    "changed-set-selftest") == 0);
         int epoch_selftest_rc = run_gate_script(
@@ -1151,23 +1140,12 @@ int t_agent_fast_ci_contract(void)
 /* Every automated verdict on the deploy surface must distinguish a SLOW box
  * from a BROKEN one, and must never reach a failure by the clock alone.
  *
- * The three sites here each used to answer "did it finish inside N seconds?".
- * That question has no honest answer: N encodes an assumption about the disk.
- * deploy_verify.sh had already been widened 120s -> 600s after a healthy
- * deploy false-FAILed, which is the same defect with a bigger number; the
- * host watchdog wrote NODE-DOWN off ONE missed 5s probe; and the cutover
- * REVERSED a live datadir promotion if the promoted node had not reached the
- * pre-cutover H* in 300s. On a 7200rpm box measured under 2 MB/s all three
- * grade an honest machine broken, and a fleet that does that keeps only its
- * fast-storage boxes.
- *
- * This gate pins the replacement mechanism as TEXT, so reintroducing a
- * duration verdict fails here instead of on someone's slow box:
+ * Pinned as TEXT:
  *   - a fault requires OBSERVED SILENCE, not elapsed time,
- *   - the observable includes delayacct_blkio_ticks, which is the one counter
- *     that climbs while a process is BLOCKED on a slow disk,
+ *   - the observable includes delayacct_blkio_ticks, which climbs while a
+ *     process is BLOCKED on a slow disk,
  *   - slow and wedged never share an exit code or a message,
- *   - and each script proves it on itself with a hermetic selftest, run below.
+ *   - each script proves it on itself with a hermetic selftest, run below.
  */
 int t_slow_disk_progress_verdicts_contract(void)
 {
@@ -1198,12 +1176,9 @@ int t_slow_disk_progress_verdicts_contract(void)
         ASSERT(strstr(verify, "unverified_progressing") != NULL);
         ASSERT(strstr(verify, "DEPLOY UNVERIFIED (still progressing)") != NULL);
         ASSERT(strstr(verify, "exit 3") != NULL);
-        /* An idle tip is the one innocent post-RPC silence: a synced node's
-         * height token freezes by design and its /proc counters go quiet —
-         * byte-for-byte the token shape of a wedge. The discriminator is
-         * getblockchaininfo's headers==blocks, and it must acquit with exit 3
-         * (candidate stays), never roll back. Seen live twice on 2026-08-29:
-         * healthy deploys convicted as wedged at an idle tip. */
+        /* An idle tip is the one innocent post-RPC silence: the height
+         * token freezes by design. The discriminator is getblockchaininfo's
+         * headers==blocks; it acquits with exit 3 (candidate stays). */
         ASSERT(strstr(verify, "chain_tip_from_text") != NULL);
         ASSERT(strstr(verify, "DEPLOY UNVERIFIED (idle at tip)") != NULL);
         ASSERT(strstr(verify, "rpc_call getblockchaininfo") != NULL);
@@ -1231,11 +1206,8 @@ int t_slow_disk_progress_verdicts_contract(void)
                       "deploy: ROLLED_BACK (verification still in progress)")
                != NULL);
         /* Both systemctl restarts in the deploy recipe are bounded by
-         * timeout(1). The unit is Type=notify, so a boot that never sends
-         * READY — the canonical case is a prior binary parked at
-         * node_db_unopened because the candidate migrated node.db forward —
-         * would hold this recipe, and the repo tree with it, open forever.
-         * Seen live 2026-08-29. */
+         * timeout(1); the unit is Type=notify, so a boot that never sends
+         * READY would otherwise hold the recipe forever. */
         ASSERT(strstr(makefile, "restart_timeout=180") != NULL);
         ASSERT(strstr(makefile,
                       "timeout $$restart_timeout systemctl --user restart zclassic23")
@@ -1304,11 +1276,9 @@ int t_slow_disk_progress_verdicts_contract(void)
 
         /* ── the rotating-disk WatchdogSec drop-in ──────────────────────── */
         /* WatchdogSec is a pure duration and measures nothing. The drop-in is
-         * a legitimate absolute CEILING, but it must say so and must name the
-         * progress-based renewal that sits under it (the WATCHDOG=1 pet in
-         * engine/composition/src/boot_sd_watchdog.c, gated on boot_progress freshness) —
-         * otherwise the next slow box gets "fixed" by raising the number
-         * again, which is the same defect with a bigger one. */
+         * an absolute CEILING and must name the progress-based renewal under
+         * it (the WATCHDOG=1 pet in engine/composition/src/boot_sd_watchdog.c,
+         * gated on boot_progress freshness). */
         ASSERT(repo_path(path, sizeof(path),
                          "platform/deploy/zclassic23-spinning-disk-watchdog.conf") == 0);
         ASSERT(read_entire_file(path, &disk_watchdog) == 0);

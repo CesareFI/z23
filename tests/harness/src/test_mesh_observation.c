@@ -8,9 +8,8 @@
  * FAIL-ARMS rather than happy paths:
  *
  *   - A deadline may only ever produce the fourth outcome. Silence is never
- *     REFUSED, and `elapsed_us` is populated on all four outcomes — the exact
- *     defect at network_crawler_probe.c:479-498, where latency was assigned
- *     only on success so "3.1 s, alive" was byte-identical to "refused".
+ *     REFUSED, and `elapsed_us` is populated on all four outcomes, so
+ *     "3.1 s, alive" is never byte-identical to "refused".
  *   - A zeroed struct reads "I did not look", never "it failed".
  *   - An unsampled node has NOTHING to publish and says so; it never serves
  *     an empty-but-healthy document.
@@ -312,9 +311,8 @@ static int t_enums_cross_the_wire_as_tokens(void)
     return failures;
 }
 
-/* A -1 that means "the probe never ran" must survive as -1. If it were
- * normalised to 0 the reader would believe the box did a 0 us pread. This is
- * measured reality on the fleet's HDD boxes: fsync 72649 us, pread -1. */
+/* A -1 meaning "the probe never ran" must survive as -1, not be normalised
+ * to 0 (which would read as a 0 us pread). */
 static int t_round_trip_is_byte_stable(void)
 {
     int failures = 0;

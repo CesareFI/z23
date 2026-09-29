@@ -8,14 +8,12 @@
  *                            uint32_t iterations,
  *                            uint8_t *out, size_t out_len);
  *
- * Expected outputs below were derived from the reference C implementation
- * itself and independently corroborate the canonical RFC PBKDF2-HMAC-SHA512
- * test vector for (P="password", S="salt", c=1, dkLen=64):
+ * Expected outputs come from the reference C implementation and match the
+ * canonical vector for (P="password", S="salt", c=1, dkLen=64):
  *   867f70cf1ade02cff3752599a3a53dc4af34c7a669815ae5d513554e1c8cf252
  *   c02d470a285a0501bad999bfe943c08f050235d7d68b1da55e63f73b60a57fce
  *
- * One TEST_CASE per test_*() entrypoint (TEST_END defines a label, so two
- * per function would not compile).
+ * One TEST_CASE per test_*() entrypoint (TEST_END defines a label).
  */
 
 #include "test/test_core.h"

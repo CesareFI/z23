@@ -2,24 +2,18 @@
  *
  * Adaptive client-puzzle admission gate (core/modules/net/puzzle.{c,h}).
  *
- * Proves the reusable anti-abuse primitive that fronts expensive server-side
- * work (store z-address mint, snapshot serve, file stream):
+ * The reusable anti-abuse primitive fronting expensive server-side work:
  *   1. pure verify/solve round-trip + negative binding (wrong seed/token/ts);
  *   2. a server-issued challenge is solved and admitted;
- *   3. a solution is SINGLE-USE — an exact replay is refused;
- *   4. difficulty RISES under sustained load and FALLS back to the floor when
- *      idle — with NO reset edge (the property the EWMA exists to give over a
- *      tumbling window);
- *   5. puzzle_gate_admit_external's single-use ring (used by the snapshot
- *      serve path, which verifies its own legacy PoW) rejects replays, and
- *      feeds the same load EWMA a verified admission does;
- *   6. the nonce-start contract: a search from zero is a pure function of
- *      (seed, token, ts), so two independent honest solvers collide and the
- *      single-use ring refuses the second — puzzle_solve_random() is what a
- *      real client must use.
+ *   3. a solution is single-use (exact replay refused);
+ *   4. difficulty rises under sustained load and falls to the floor when
+ *      idle, with no reset edge (EWMA, not a tumbling window);
+ *   5. puzzle_gate_admit_external's single-use ring rejects replays and
+ *      feeds the same load EWMA;
+ *   6. a from-zero nonce search is a pure function of (seed, token, ts), so
+ *      two honest solvers collide; puzzle_solve_random() avoids that.
  *
- * None of this touches a consensus predicate — it only decides whether to
- * spend server resources on an unauthenticated request. */
+ * No consensus predicate is touched: it only gates spending server resources. */
 
 #include "test/test_core.h"
 #include "net/puzzle.h"
@@ -140,10 +134,8 @@ static int test_gate_difficulty_rises_and_falls(void)
         puzzle_gate_challenge_at(&g, wall, us, seed, &bits, NULL);
         ASSERT_EQ(bits, 12);
 
-        /* Drive ~40 accepted solves spread across ~1 second of monotonic
-         * time (well inside the half-life). Each needs a distinct digest so
-         * the single-use ring does not reject it: vary the timestamp by 1s
-         * per solve (still inside skew), solving against the SAME seed/bits. */
+        /* ~40 accepted solves over ~1s of monotonic time (inside the half-life),
+         * varying the timestamp by 1s per solve so digests are distinct. */
         int64_t prev_rate = -1;
         int64_t last_us = us;
         for (int i = 0; i < 40; i++) {
@@ -168,11 +160,9 @@ static int test_gate_difficulty_rises_and_falls(void)
          * while loaded (this is the property the window→EWMA swap fixes). */
         ASSERT(puzzle_gate_rate_ewma_milli(&g) > 0);
 
-        /* Idle → the rate decays back under soft and difficulty returns to the
-         * floor. The tick caps a single elapsed step at 5s (so one stale
-         * sample can never produce a decay cliff), so age the estimate over
-         * many small steps — exactly how a live gate ticks as challenges keep
-         * arriving. 60 five-second steps ≈ 300s ≫ half-life. */
+        /* Idle: the rate decays under soft and difficulty returns to the floor.
+         * A tick caps one elapsed step at 5s, so age the estimate over 60
+         * five-second steps (~300s, well past the half-life). */
         int64_t t = last_us;
         for (int i = 0; i < 60; i++) {
             t += 5000000;   /* 5s, at/under the tick's dt cap */
@@ -244,10 +234,8 @@ static int test_gate_admit_external_replay(void)
 
 /* ── 5b. admit_external feeds the load EWMA ────────────────────────────────
  *
- * This is the whole point of giving admit_external a caller: a surface that
- * verifies its own proof still makes the shared gate's difficulty respond to
- * real traffic. An idle gate reads zero; a run of distinct admissions must
- * push the measured rate up and the difficulty off the floor. */
+ * A surface that verifies its own proof still drives the shared gate's
+ * difficulty: distinct admissions raise the measured rate off the floor. */
 static int test_gate_admit_external_feeds_load(void)
 {
     int failures = 0;
@@ -284,11 +272,9 @@ static int test_gate_admit_external_feeds_load(void)
 
 /* ── 6. Nonce-start contract: from-zero collides, random does not ──────────
  *
- * The defect this pins is why the snapshot-serve surface cannot turn its
- * single-use ring on: its solver walks nonces from zero over inputs that two
- * honest peers can share, so both produce the same proof and the second is
- * refused as a replay. Proven here on the primitive rather than inherited
- * from a comment. */
+ * A from-zero solver over shared (seed, token, ts) yields the same proof for
+ * two honest peers, so the single-use ring would refuse the second as a
+ * replay; proven here on the primitive. */
 static int test_puzzle_solve_nonce_start(void)
 {
     int failures = 0;
@@ -323,18 +309,14 @@ static int test_puzzle_solve_nonce_start(void)
         ASSERT(puzzle_gate_verify(&g, token, now, n1));
         ASSERT(!puzzle_gate_verify(&g, token, now, n2));  /* honest, refused */
 
-        /* puzzle_solve_random searches from an independent random offset, so
-         * repeated solves over the same inputs land on different nonces and
-         * each is admitted in turn. Two draws matching is ~2^-64 per pair;
-         * assert only that BOTH still verify and that a run of them is
-         * admitted, so the case can never flake. */
+        /* puzzle_solve_random starts from an independent random offset, so
+         * repeated solves land on different nonces; assert only that both
+         * verify and a run of them is admitted (no flake). */
         for (int i = 0; i < 8; i++) {
             uint64_t nr = 0;
             ASSERT(puzzle_solve_random(seed_live, token, now, live_bits, &nr));
             ASSERT(puzzle_verify(seed_live, token, now, nr, live_bits));
-            /* nr == n1 only if the random start happened to land exactly on
-             * the from-zero answer's basin; skip that astronomically rare
-             * case rather than assert against it. */
+            /* nr == n1 only if the random start hit the from-zero answer; skip that rare case. */
             if (nr != n1)
                 ASSERT(puzzle_gate_verify(&g, token, now, nr));
         }

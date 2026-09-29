@@ -199,7 +199,7 @@ int test_invariant_sentinel(void)
                   v.violated && strcmp(v.invariant, "I4.1") == 0 &&
                   strstr(v.detail, "tip_finalize") != NULL);
 
-        /* I4.3: hole below the utxo_apply cursor (the 3142977 shape) */
+        /* I4.3: hole below the utxo_apply cursor */
         isn_healthy_inputs(&in);
         in.ua_log_frontier = (int32_t)(in.cur_utxo_apply - 30);
         invariant_sentinel_sweep_evaluate(&in, &v);
@@ -279,14 +279,11 @@ int test_invariant_sentinel(void)
                   !invariant_sentinel_confirm_violation(&v));
     }
 
-    /* ── check 5: commitment audit — DECOUPLED, streak-gated, self-clearing.
-     * The `utxos` table is a rebuildable projection of the coins_kv authority
-     * and the checkpoint is a frozen out-of-band cache, so a mismatch is a
-     * benign skew, not chain corruption: it must NEVER raise a chain_linkage
-     * HOLD (decoupled — that HOLD rolling
-     * back a PoW-proven tip_finalize is itself a wedge), needs 2 CONSECUTIVE candidate verdicts to
-     * fire (swallow the mirror-rebuild torn-scan race), and self-clears on a
-     * growth resync or via the auto-terminating owner. ───────────────────── */
+    /* ── check 5: commitment audit — decoupled, streak-gated, self-clearing.
+     * A mismatch is benign skew between the rebuildable `utxos` projection and
+     * the frozen checkpoint: it never raises a chain_linkage HOLD, needs 2
+     * consecutive candidate verdicts to fire, and self-clears on a growth
+     * resync or via the auto-terminating owner. ── */
     {
         invariant_sentinel_reset_for_testing();
         blocker_reset_for_testing();
@@ -357,8 +354,7 @@ int test_invariant_sentinel(void)
                       !blocker_exists("coins.commitment_spot_check") &&
                       !chain_linkage_hold_active());
 
-            /* LIVE-WEDGE SELF-HEAL: re-latch (2 shrinks), then a GROWTH audit
-             * clears the latched blocker via resync — the exact 3164076 cure. */
+            /* Re-latch (2 shrinks), then a GROWTH audit clears the blocker via resync. */
             (void)invariant_sentinel_commitment_audit_once(); /* streak 1 */
             (void)invariant_sentinel_commitment_audit_once(); /* streak 2 -> fire */
             ISN_CHECK("setup: blocker re-latched on sustained shrink",

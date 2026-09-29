@@ -1,41 +1,32 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * mind — the per-node resident that owns rebuilding a checkout's code index,
- * and the rule that makes owning it worth anything: a stale index is REFUSED,
- * never rebuilt inside a query.
+ * mind — the per-node resident that owns rebuilding a checkout's code
+ * index; a stale index is refused, never rebuilt inside a query.
  *
  * Coverage:
- *   1. state — the typed registry round-trips, a foreign or absent file
- *      registers nothing, and the heartbeat round-trips every per-checkout
- *      field including the group rows.
- *   2. owner marker — claim/read/expiry/release, a foreign pid cannot drop
- *      another process's claim, and an unparseable marker reads as NO claim
- *      rather than refusing every query on the box.
+ *   1. state — the typed registry round-trips; a foreign or absent file
+ *      registers nothing; the heartbeat round-trips every per-checkout field
+ *      including group rows.
+ *   2. owner marker — claim/read/expiry/release; a foreign pid cannot drop
+ *      another process's claim; an unparseable marker reads as no claim.
  *   3. resident — takes the lock, builds the first generation, publishes a
- *      heartbeat naming the index root and its age, rebuilds exactly once
- *      more after a content edit, and on retirement releases the claim and
- *      removes its lock record. A second resident refuses while the first
- *      holds the lock, and one with no registry refuses to start at all.
- *   4. the refusal — with a live claim, a stale open returns NULL and records
- *      a typed index_stale refusal naming the owner, and the store's own
- *      cold-build receipt is UNCHANGED, which is the proof that no rebuild
- *      happened rather than an assertion that one did not.
- *   5. peer capsule — a mind row rides a signed mesh-status receipt, survives
- *      encode/decode, and parses back; an expired receipt is refused and
- *      takes its mind row with it.
- *   6. fleet fact questions — executor_for and trap_of answer from the same
- *      table dev.know reads; an unknown subject is UNKNOWN, not
+ *      heartbeat, rebuilds once after a content edit, and on retirement
+ *      releases the claim and lock record. A second resident refuses while
+ *      the first holds the lock; one with no registry refuses to start.
+ *   4. the refusal — with a live claim a stale open returns NULL with a typed
+ *      index_stale refusal naming the owner, and the store's cold-build
+ *      receipt is unchanged (proof that no rebuild happened).
+ *   5. peer capsule — a mind row rides a signed mesh-status receipt and
+ *      survives encode/decode; an expired receipt is refused with its row.
+ *   6. fleet fact questions — executor_for and trap_of answer from the table
+ *      dev.know reads; an unknown subject is UNKNOWN, not
  *      not_yet_available; next_passage still names the missing story walker.
  *
- * All scratch work happens under ./test-tmp/ (project no-/tmp convention),
- * with ZCL_MIND_STATE_DIR pointed at the fixture so nothing touches the
- * operator's own mind state. */
+ * Scratch lives under ./test-tmp/ with ZCL_MIND_STATE_DIR pointed at the
+ * fixture, so nothing touches the operator's mind state. */
 
 
-/* realpath() is declared by glibc only under _DEFAULT_SOURCE; without this
- * the fortify inline hides that at -O2 and the file is a hard C23 error at
- * -O0 and on any other libc. The macro is read when <features.h> is first
- * pulled in, so it has to come before the first include. */
+/* realpath() is declared by glibc only under _DEFAULT_SOURCE; the macro must precede the first include. */
 #if !defined(_WIN32) && !defined(_DEFAULT_SOURCE)
 #define _DEFAULT_SOURCE
 #endif
@@ -64,12 +55,10 @@
 #define MIND_FIX   "test-tmp/mind"
 #define MIND_TREE  MIND_FIX "/tree"
 #define MIND_STATE MIND_FIX "/state"
-/* Two sources and a header: enough for a real generation with real group
- * rows, small enough that a rebuild is not the cost of this test. */
+/* Two sources and a header: a real generation with group rows, cheap to rebuild. */
 #define MIND_FILE_COUNT 3
 
-/* The fixture checkout, absolute: the registry refuses a relative root, and
- * so does every writer this tree has ever had a bug about. */
+/* The fixture checkout, absolute: the registry refuses a relative root. */
 static char g_mind_tree_abs[4096];
 
 static bool mind_mk_write(const char *dir, const char *rel,
@@ -111,8 +100,7 @@ static const char *mind_alpha_v2(void)
            "int mind_alpha(void)\n{\n    return 11;\n}\n";
 }
 
-/* The registry the resident reads. Written through the library so the test
- * proves the same writer the operator's install instructions describe. */
+/* The registry the resident reads, written through the library's own writer. */
 static bool mind_register(const char *root)
 {
     struct zcl_mind_registry reg;
@@ -156,8 +144,7 @@ static int test_mind_state_round_trip(void)
         ASSERT(zcl_mind_registry_path(path, sizeof(path)));
         FILE *f = fopen(path, "wb");
         ASSERT(f != NULL);
-        /* No schema header: this is somebody else's file, and a mind that
-         * claimed the paths in it would own checkouts nobody registered. */
+        /* No schema header: a foreign file must not register paths. */
         fputs("/absolute/other\n", f);
         ASSERT_EQ(fclose(f), 0);
         ASSERT(!zcl_mind_registry_load(&reg));
@@ -237,9 +224,7 @@ static int test_mind_owner_marker(void)
         ASSERT(codeindex_owner_is_live(MIND_TREE, now));
         ASSERT(codeindex_owner_is_live(
             MIND_TREE, now + CODEINDEX_OWNER_HEARTBEAT_MAX_AGE_S));
-        /* One second past the window the claim is gone, so a box whose
-         * resident died goes back to rebuilding rather than refusing for
-         * ever behind an owner that no longer exists. */
+        /* One second past the window the claim is gone, so a dead resident's box goes back to rebuilding. */
         ASSERT(!codeindex_owner_is_live(
             MIND_TREE, now + CODEINDEX_OWNER_HEARTBEAT_MAX_AGE_S + 1));
 
@@ -305,23 +290,17 @@ static int test_mind_resident_first_cycle(void)
         ASSERT(beat.beat_unix > 0);
         ASSERT_EQ(beat.checkouts[0].last_rebuild_unix, beat.beat_unix);
 
-        /* The metrics this leaf owns. files and symbols are separate facts:
-         * three fixture files, and more symbols than files because the two
-         * sources and the header each declare their own. */
+        /* files and symbols are separate facts: three files, more symbols than files. */
         ASSERT_EQ(beat.checkouts[0].files, (long long)MIND_FILE_COUNT);
         ASSERT(beat.checkouts[0].symbols >= beat.checkouts[0].files);
         ASSERT(beat.checkouts[0].refs >= 0);
-        /* Include edges come from compiler depfiles, and a fixture tree that
-         * was never compiled has none. Zero is the honest number here, and
-         * asserting a positive one would be asserting about the build, not
-         * about the index. */
+        /* Include edges come from compiler depfiles; a never-compiled fixture has none, so zero is correct. */
         ASSERT(beat.checkouts[0].includes >= 0);
         ASSERT(beat.checkouts[0].index_bytes > 0);
         ASSERT_EQ(beat.checkouts[0].build_cold_files,
                   (long long)MIND_FILE_COUNT);
 
-        /* Retirement releases the claim. A marker left by a dead resident
-         * would refuse every query here for two more minutes for nothing. */
+        /* Retirement releases the claim; a leftover marker would refuse queries for the claim window. */
         ASSERT(!codeindex_owner_read(MIND_TREE, NULL, NULL));
         char lock[ZCL_MIND_PATH_MAX];
         ASSERT(zcl_mind_lock_path(lock, sizeof(lock)));
@@ -345,8 +324,7 @@ static int test_mind_resident_rebuild_economy(void)
         ASSERT_EQ(after_edit.checkouts[0].rebuilds, (long long)1);
         ASSERT(!after_edit.checkouts[0].stale);
 
-        /* Nothing changed since: the resident observes and claims, and does
-         * not rebuild. This is the whole economy of the unit. */
+        /* Nothing changed: the resident observes and claims, and does not rebuild. */
         ASSERT_EQ(zcl_mind_serve(NULL, NULL, 1), 0);
         struct zcl_mind_heartbeat quiet;
         ASSERT(zcl_mind_heartbeat_read(&quiet));
@@ -388,14 +366,10 @@ static int test_mind_stale_query_is_refused(void)
         ASSERT(record.owner_heartbeat_age_s >= 0);
         ASSERT_EQ(strlen(record.index_root), (size_t)64);
 
-        /* The proof that nothing rebuilt: the store's own cold-build
-         * receipt still describes the generation from before the edit.
-         * Asserting "no rebuild happened" any other way would be asserting
-         * about elapsed time, which a loaded box makes meaningless. */
+        /* No rebuild happened: the store's cold-build receipt still describes the pre-edit generation. */
         ASSERT_EQ(mind_cold_build_ms(MIND_TREE), before);
 
-        /* Release the claim and the same open rebuilds again, because a
-         * checkout nobody owns is a checkout each reader owns. */
+        /* Release the claim and the same open rebuilds, because an unowned checkout is owned by each reader. */
         ASSERT(codeindex_owner_release(MIND_TREE, (long long)getpid()));
         struct codeindex *served = codeindex_open_source_view(MIND_TREE);
         ASSERT(served != NULL);
@@ -408,8 +382,7 @@ static int test_mind_stale_query_is_refused(void)
 
 /* ── 5. the peer capsule ──────────────────────────────────────────────── */
 
-/* Build the capsule a responder would sign: the machine identity object it
- * already carries, plus this node's mind row. */
+/* Build the capsule a responder would sign: its machine identity object plus this node's mind row. */
 static bool mind_capsule_bytes(uint8_t *out, size_t cap, size_t *len)
 {
     struct json_value capsule, mind;
@@ -495,9 +468,7 @@ static int test_mind_peer_capsule(void)
         ASSERT_EQ(peer.checkouts, (long long)local.checkout_count);
         ASSERT_EQ(peer.group_count, local.checkouts[0].group_count);
 
-        /* Expiry is the capsule's only lifetime. A receipt whose window is
-         * longer than the protocol allows is refused whole, so the mind row
-         * it carried is never read at all. */
+        /* A receipt whose window exceeds the protocol lifetime is refused whole, mind row included. */
         struct mesh_status_receipt_v1 expired = receipt;
         expired.expires_unix =
             expired.observed_unix + MESH_STATUS_MAX_LIFETIME_SECONDS + 1;
@@ -660,11 +631,7 @@ int test_mind(void)
 {
     int failures = 0;
     (void)test_rm_rf_recursive(MIND_FIX);
-    /* mind_mk_write creates every parent, so writing the tree also creates
-     * MIND_FIX. The state directory has no file under it yet and must be
-     * made on purpose; ZCL_MIND_STATE_DIR then points every path in this
-     * process at the fixture, so nothing here touches the operator's own
-     * mind state. */
+    /* mind_mk_write creates parents but the state directory must be made on purpose; ZCL_MIND_STATE_DIR then points every path at the fixture. */
     if (!write_mind_fixture(mind_alpha_v1()) ||
         !mind_mk_write(MIND_STATE, ".keep", "")) {
         printf("  mind: fixture write... FAIL\n");
@@ -695,8 +662,7 @@ int test_mind(void)
 }
 
 #else  /* _WIN32 */
-/* The resident is a POSIX service: a flock singleton and a cooperative
- * SIGTERM retirement. Skipped loudly rather than faked. */
+/* The resident is a POSIX service (flock singleton, cooperative SIGTERM retirement); skipped loudly elsewhere. */
 int test_mind(void)
 {
     printf("mind: SKIP (Windows): the resident is a POSIX flock singleton\n");

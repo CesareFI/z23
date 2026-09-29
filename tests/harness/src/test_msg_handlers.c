@@ -200,15 +200,10 @@ static int test_dandelion_initial_state(void)
 
 /* ── msg_blocks_should_mark_seen tests ───────────────────────
  *
- * bug: block_mark_seen was called BEFORE process_new_block.
- * If the block was received + indexed but not activated (e.g.
- * ACTIVATION_SKIP_ALREADY_RUNNING under 6-peer concurrent arrival),
- * it was permanently dedup'd and never retried.
- *
- * mark_seen is gated on "block reached active chain"
- * via msg_blocks_should_mark_seen(). The helper is a pure function
- * so it can be exercised without full P2P plumbing.
- */
+ * mark_seen is gated on "block reached active chain" via
+ * msg_blocks_should_mark_seen(), a pure function: a block that was indexed
+ * but not activated (e.g. ACTIVATION_SKIP_ALREADY_RUNNING) must stay
+ * retryable. */
 
 static int test_p148_should_mark_seen_rejects_null(void)
 {
@@ -233,11 +228,8 @@ static int test_p148_should_mark_seen_rejects_orphan(void)
 {
     int failures = 0;
     TEST("should_mark_seen rejects block NOT in active chain") {
-        /* Mirrors the bug shape: block was indexed (has a pindex)
-         * but activation SKIP'd, so it's not in the active chain.
-         * Pre-fix, block_mark_seen was unconditional. Post-fix, we
-         * must NOT mark seen — the dedup ring would otherwise hide
-         * the block from subsequent arrival + retry. */
+        /* Block was indexed but activation SKIP'd, so it is not in the active
+         * chain and must NOT be marked seen (the dedup ring would hide retries). */
         struct active_chain ac;
         active_chain_init(&ac);
 
@@ -425,17 +417,13 @@ static int test_process_block_msg_reducer_pending_stays_retryable(void)
     return failures;
 }
 
-/* ── Lane 3 hardening: PEER_OFFENCE_UNREQUESTED wiring ─────────────
+/* ── PEER_OFFENCE_UNREQUESTED wiring ─────────────────────────────────
  *
- * process_block_msg() (msg_blocks.c) scores PEER_OFFENCE_UNREQUESTED
- * when dl_mark_received() returns UINT32_MAX for no in-flight slot on the delivered
- * hash from ANY peer — a plain "block" message is only ever a getdata
- * response in this protocol (unsolicited fast-relay goes through
- * process_cmpctblock(), a different message entirely), so that is
- * normally a provable unsolicited push. These three tests pin: scored
- * when never requested, NOT scored when it was requested, and NOT
- * scored inside the drain/timeout grace window (the one case where
- * "never in-flight" does not prove "never requested" — see
+ * process_block_msg() (msg_blocks.c) scores PEER_OFFENCE_UNREQUESTED when
+ * dl_mark_received() returns UINT32_MAX (no in-flight slot) for the delivered
+ * hash from any peer: a "block" message is only a getdata response here.
+ * Pinned: scored when never requested, not scored when requested, not scored
+ * inside the drain/timeout grace window (see
  * tests/harness/src/test_download.c::test_dl_last_forced_settle_time). */
 
 static void unreq_setup_node(struct p2p_node *node, uint32_t id)
@@ -459,10 +447,8 @@ static int test_process_block_msg_scores_unrequested(void)
     TEST("msg_handlers: process_block_msg scores PEER_OFFENCE_UNREQUESTED "
          "when the block was never requested from anyone") {
         peer_scoring_init();
-        /* Hermetic: the download manager is a process-wide singleton —
-         * a prior test in this SAME forked group process may have left
-         * a drain/timeout grace window active, which would silently
-         * suppress the very assertion under test. */
+        /* Hermetic: a prior test in this forked process may have left the
+         * process-wide download manager in a drain/timeout grace window. */
         dl_init(get_download_mgr());
 
         struct block blk;
@@ -605,10 +591,8 @@ static int test_process_block_msg_no_score_within_settle_grace(void)
         peer_scoring_init();
         struct download_manager *dm = get_download_mgr();
         dl_init(dm);
-        /* A drain (or a timeout reassignment — see test_download.c)
-         * force-clears in-flight state without telling the peer, so a
-         * legitimately-requested body can still arrive afterward with
-         * no trace it was ever asked for. */
+        /* A drain or timeout reassignment force-clears in-flight state, so a
+         * requested body can arrive with no trace it was asked for. */
         (void)dl_drain_for_backpressure(dm);
 
         struct block blk;
@@ -808,8 +792,7 @@ static int test_process_block_msg_queues_reducer_during_catchup(void)
         ASSERT(!block_already_seen(&hash));
 
         /* The periodic evaluator may commit while this worker owns the final
-         * historical body. Its post-submit reducer drain must survive the
-         * raw-state edge or that last body can remain staged forever. */
+         * historical body; its post-submit reducer drain must survive. */
         ASSERT(sync_try_transition(SYNC_BLOCKS_DOWNLOAD, SYNC_AT_TIP,
                                    "unit periodic edge"));
         atomic_store_explicit(&submit_ctx.release, 1,
@@ -866,10 +849,9 @@ static int test_msg_block_intake_full_stays_retryable(void)
         struct msg_block_intake_stats stats;
         msg_processor_get_block_intake_stats(&mp, &stats);
         ASSERT(stats.capacity > 0);
-        /* Fill with DISTINCT hashes: re-deliveries of a hash already in the
-         * ring reuse that slot (p2p-block-already-queued) and must never
-         * reach the full arm — that starvation mode has its own regression
-         * below. The full arm is only for first-seen bodies. */
+        /* Fill with distinct hashes: re-deliveries of a queued hash reuse its
+         * slot (p2p-block-already-queued) and never reach the full arm, which
+         * is only for first-seen bodies. */
         for (uint64_t i = 0; i <= stats.capacity && !saw_full; i++) {
             struct block other;
             block_init(&other);
@@ -941,16 +923,11 @@ static int test_msg_block_intake_duplicate_reuses_slot(void)
         struct validation_state state;
         struct msg_block_intake_stats stats;
 
-        /* Timeout reassignment / grace deliveries re-send a body that is
-         * already queued. Every re-delivery must reuse the existing slot:
-         * capacity+1 copies of one hash consume at most two slots (one in
-         * the ring, one being submitted by the worker) so a first-seen
-         * body is still admitted — the pre-fix duplicate-starvation mode
-         * filled all slots with one hash and destroyed the new body.
-         *
-         * The worker may dequeue the first copy before the second arrives,
-         * so one re-delivery can legitimately take a fresh slot; assert
-         * only the accounting invariants that hold either way. */
+        /* Re-delivered bodies (timeout reassignment / grace) must reuse the
+         * existing slot: capacity+1 copies of one hash take at most two slots
+         * (ring + worker), so a first-seen body is still admitted. The worker
+         * may dequeue the first copy early, so assert only invariants that
+         * hold either way. */
         validation_state_init(&state);
         ASSERT(msg_processor_enqueue_p2p_block(&mp, &blk, &hash,
                                                89, &state));
@@ -1055,18 +1032,13 @@ static int test_msg_process_messages_yields_after_bounded_batch(void)
     return failures;
 }
 
-/* ── D1: swarm aggregate SHA3 UTXO-snapshot mismatch is NOT a
+/* ── D1: swarm aggregate SHA3 UTXO-snapshot mismatch is not a
  * silent-accept ───────────────────────────────────────────────────
  *
- * core/modules/net/src/msgprocessor_snapshot.c's swarm chunk-download path used
- * to print "SHA3 UTXO verification: FAILED" on an aggregate-root
- * mismatch and then fall straight through into the exact same cleanup
- * as a PASSED verify — no peer_scoring_record, no blocker, no record
- * that the sync did not complete trustworthily. These tests pin the
- * fix via msgprocessor_test_swarm_utxo_sha3_verify: PASSED records
- * nothing and returns true; a mismatch records PEER_OFFENCE_INVALID_PROOF,
- * names the "snapshot_sync.utxo_sha3_mismatch" typed DEPENDENCY blocker,
- * and returns false (sync NOT complete). */
+ * Via msgprocessor_test_swarm_utxo_sha3_verify: PASSED records nothing and
+ * returns true; a mismatch records PEER_OFFENCE_INVALID_PROOF, names the
+ * "snapshot_sync.utxo_sha3_mismatch" typed DEPENDENCY blocker, and returns
+ * false (sync not complete). */
 
 static int test_swarm_utxo_sha3_verify_passed_is_quiet(void)
 {
@@ -1134,8 +1106,7 @@ static int test_swarm_utxo_sha3_verify_mismatch_is_not_silent(void)
         ASSERT_EQ(atomic_load(&node.misbehavior),
                   peer_offence_weight(PEER_OFFENCE_INVALID_PROOF));
 
-        /* Typed blocker named — visible to dumpstate blocker / the
-         * blocker_stall_meta_detector safety net, not invisible. */
+        /* Typed blocker named (visible to dumpstate blocker). */
         ASSERT(blocker_exists("snapshot_sync.utxo_sha3_mismatch"));
         struct blocker_snapshot snaps[16];
         int n = blocker_snapshot_all(snaps, 16);

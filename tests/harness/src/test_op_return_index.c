@@ -1,38 +1,24 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * Tests for the OP_RETURN catalog projection (op_return_index):
- *
- *  1. op_return_index_extract (pure): ZNAM/ZSLP-lokad tag rendering,
- *     an unrecognized ("unknown lokad") 4-byte tag, non-printable tags
- *     falling back to hex, a malformed/truncated push falling back to a
- *     raw-byte tag, and payload_len/payload_sha3 correctness.
- *  2. explorer_index_block wiring: a block with a tx carrying TWO
- *     OP_RETURN outputs (ZNAM-tagged + an unknown-tagged one) plus a
- *     plain P2PKH output gets exactly 2 op_return_index rows (proving
- *     the catalog is per-OUTPUT, unlike the legacy per-tx op_returns
- *     table, which is left untouched at 1 row) and 0 rows for the
- *     non-OP_RETURN output; re-indexing the same block is idempotent.
- *  3. op_return_index_fold_block_digest (pure): deterministic given the
- *     same inputs, sensitive to height/rows, and folds height with
- *     zero rows too (so the digest also proves no height was skipped);
- *     plus the DECLARED RANGE — base_height/base_digest are part of every
- *     preimage, so two different bases over the same heights and rows
- *     produce different digests.
- *  3b. The persisted cursor record: base_height/base_digest round-trip,
- *     a cursor outside its declared range is refused, and a LEGACY v1
- *     record is rejected LOUDLY (never reinterpreted as v2), with
- *     truncate as the documented escape.
- *  4. The supervised backfill service end-to-end on real on-disk
- *     blocks: op_return_backfill_run_once folds the whole chain up to
- *     the (test-set) provable tip in one bounded batch, is idempotent
- *     once caught up, and op_return_index_truncate + a fresh backfill
- *     run reproduces the exact same row set and running digest
- *     ("rebuildable + integrity").
- *  5. DECLARED PARTIAL COVERAGE: on a snapshot-seeded datadir (bodies
- *     below the seed floor structurally absent) the fold adopts the floor
- *     as its base and fills forward from there instead of spinning below
- *     it forever — the live defect this range-declaring digest exists
- *     for. */
+ *  1. op_return_index_extract (pure): ZNAM/ZSLP-lokad tag rendering, unknown
+ *     4-byte tag, non-printable tags as hex, malformed/truncated push as a
+ *     raw-byte tag, payload_len/payload_sha3.
+ *  2. explorer_index_block wiring: a tx with two OP_RETURN outputs plus a
+ *     P2PKH output gets exactly 2 op_return_index rows (per output, unlike
+ *     the legacy per-tx op_returns table, left at 1 row); re-indexing is
+ *     idempotent.
+ *  3. op_return_index_fold_block_digest (pure): deterministic, sensitive to
+ *     height/rows, folds height with zero rows too; base_height/base_digest
+ *     are part of every preimage (the declared range).
+ *  3b. Persisted cursor record: base round-trip, out-of-range cursor
+ *     refused, legacy v1 record rejected loudly (truncate is the escape).
+ *  4. The supervised backfill service on real on-disk blocks:
+ *     op_return_backfill_run_once folds to the provable tip in one bounded
+ *     batch, is idempotent, and truncate + fresh backfill reproduces the
+ *     same rows and running digest.
+ *  5. Declared partial coverage: on a snapshot-seeded datadir the fold
+ *     adopts the seed floor as its base and fills forward. */
 
 #include "test/test_core.h"
 #include "validation/main_state.h"
@@ -547,11 +533,10 @@ static int test_cursor_state(void)
     return failures;
 }
 
-/* Split out of test_cursor_state (cyclomatic complexity): the legacy-state
- * backoff/throttle regression — a legacy_v1 refusal logs/re-classifies once
- * then backs off across 100 repeated polls, catalog_completeness's own WARN
- * is equally throttled, and both clear the moment the rebuild lands. `ndb`
- * already carries the planted legacy v1 record from the caller. */
+/* Split out of test_cursor_state (cyclomatic complexity): a legacy_v1 refusal
+ * logs/re-classifies once then backs off across 100 polls, the
+ * catalog_completeness WARN is throttled likewise, and both clear when the
+ * rebuild lands. `ndb` carries the planted legacy v1 record. */
 static int test_cursor_state_legacy_backoff(struct node_db *ndb)
 {
     int failures = 0;
@@ -592,10 +577,9 @@ static int test_cursor_state_legacy_backoff(struct node_db *ndb)
     return failures;
 }
 
-/* Split further out of test_cursor_state_legacy_backoff (cyclomatic
- * complexity): catalog_completeness's own WARN throttle, both sides of the
- * rebuild. `ndb` still carries the legacy v1 record; this also performs the
- * documented-escape truncate. */
+/* Split out of test_cursor_state_legacy_backoff (cyclomatic complexity):
+ * catalog_completeness WARN throttle, both sides of the rebuild. `ndb` still
+ * carries the legacy v1 record; also performs the documented-escape truncate. */
 static int test_cursor_state_legacy_catalog_warn(struct node_db *ndb)
 {
     int failures = 0;
@@ -626,9 +610,8 @@ static int test_cursor_state_legacy_catalog_warn(struct node_db *ndb)
                       OP_RETURN_INDEX_STATE_V2 &&
                   op_return_index_get_cursor(ndb, &cur) &&
                   cur.base_height == 0 && cur.height == -1;
-        /* The rebuild also clears the cached refusal/backoff — the next
-         * legacy sighting (should the record ever regress) would log
-         * immediately rather than inherit a stale backoff. */
+        /* The rebuild also clears the cached refusal/backoff so a later legacy
+         * sighting logs immediately. */
         ok = ok && atomic_load(&ndb->oprindex_legacy_backoff_secs) == 0 &&
              !op_return_index_legacy_state_cached(ndb);
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
@@ -860,10 +843,8 @@ static int test_backfill_e2e(void)
     return failures;
 }
 
-/* Regression: on a seeded datadir the genesis index entry carries
- * BLOCK_HAVE_DATA with a fake (file=0, pos=0) — its body is never on disk,
- * so a pread hashes whatever sits at offset 0 and the backfill wedged on
- * h=0 forever (~100k mismatch lines in node.log). The fold must skip the
+/* On a seeded datadir the genesis index entry carries BLOCK_HAVE_DATA with a
+ * fake (file=0, pos=0), so its body is never on disk. The fold must skip the
  * read for h=0 (genesis has no OP_RETURN outputs) and advance. */
 static int test_backfill_genesis_fake_pos(void)
 {
@@ -913,9 +894,8 @@ static int test_backfill_genesis_fake_pos(void)
     return failures;
 }
 
-/* Read one integer out of `z23 dumpstate op_return_index`. Reading the shipped
- * dumper (rather than a test-only accessor) keeps the assertion honest: the
- * number the operator sees is the number under test. */
+/* Read one integer out of `z23 dumpstate op_return_index` (the shipped dumper,
+ * not a test-only accessor). */
 static int64_t oprix_dump_int(const char *key)
 {
     struct json_value out;
@@ -929,20 +909,12 @@ static int64_t oprix_dump_int(const char *key)
     return v;
 }
 
-/* HOT-LOOP REGRESSION. A body the index flags BLOCK_HAVE_DATA but that does
- * NOT read back is not a transient — nothing in this process repairs a height
- * this far below the fold frontier (have_data_unreadable only inspects tip+1
- * and the reducer stages). Live 2026-08-23 on node1 this service re-read h=1
- * every ~3 s for 14.5 h: 12,435 identical failures, 12,435 identical WARN
- * lines, and not one of them could ever have succeeded.
- *
- * The batch must back off and latch into a named condition instead. `holes` is
- * the pre-existing counter the fold bumps once per failed read, so it counts
- * the READS: pre-fix it climbed once per run (a true hot loop), post-fix it
- * moves once and then the backoff eats the tick without a read, a 2 MB buffer
- * or a log line. The blocker is the report, not a silencer — the deferrals are
- * counted and the outcome stays BLOCKED, so the supervisor's NO_PROGRESS quiet
- * clock still runs. */
+/* HOT-LOOP: a body the index flags BLOCK_HAVE_DATA that does not read back is
+ * not transient (nothing repairs a height this far below the fold frontier),
+ * so the batch must back off and latch into a named condition. `holes` is the
+ * counter bumped once per failed read: it must move once, then the backoff
+ * eats the tick without a read, a 2 MB buffer or a log line. The deferrals
+ * are counted and the outcome stays BLOCKED, so the NO_PROGRESS clock runs. */
 static int test_backfill_unreadable_body_backoff(void)
 {
     int failures = 0;
@@ -953,12 +925,10 @@ static int test_backfill_unreadable_body_backoff(void)
     if (e2e_fixture_init(&f)) printf("OK\n");
     else { printf("FAIL\n"); return 1; }
 
-    /* Tear h=1's position: keep BLOCK_HAVE_DATA (the index still CLAIMS the
-     * body) but point it into the middle of h=0's record, where no frame
-     * header sits. This is the live shape — a foreign writer's appends over a
-     * hardlinked blk file leave exactly this: a flagged entry whose recorded
-     * (nFile,nDataPos) names bytes that are not that block. h=0 is left alone
-     * so the fold takes its first step and then wedges at h=1. */
+    /* Tear h=1: keep BLOCK_HAVE_DATA but point its position into the middle
+     * of h=0 record, where no frame header sits (a flagged entry whose
+     * (nFile,nDataPos) names bytes that are not that block). h=0 is left
+     * alone so the fold wedges at h=1. */
     int32_t good_file = f.blocks[1].nFile;
     uint32_t good_pos = f.blocks[1].nDataPos;
     f.blocks[1].nFile = f.blocks[0].nFile;
@@ -990,8 +960,7 @@ static int test_backfill_unreadable_body_backoff(void)
         for (int i = 0; i < RUNS; i++)
             (void)op_return_backfill_run_once();
         int64_t holes = oprix_dump_int("holes");
-        /* Pre-fix this was 1 + RUNS: one wasted block read, one 2 MB buffer
-         * and one WARN line per run, forever. */
+        /* One wasted block read, one 2 MB buffer and one WARN per run would be a hot loop. */
         if (holes == holes_after_first) printf("OK\n");
         else {
             printf("FAIL (holes=%lld, expected %lld — still hot-looping)\n",
@@ -1040,17 +1009,11 @@ static int test_backfill_unreadable_body_backoff(void)
     return failures;
 }
 
-/* The live defect this whole change exists for: on a snapshot-seeded datadir
- * the bodies below reducer_trusted_base_height were NEVER downloaded, so the
- * from-genesis fold could never take its first step. The canonical node sat at
- * total_rows=0, cursor_height=0, holes=2883, with
- * op_return_index.below_snapshot_seed fired 2,877 times and remedy=OWNER.
- *
- * The fold must instead ADOPT the seed floor as its declared base and fill
- * forward from there, with the coverage limit converted into a named standing
+/* On a snapshot-seeded datadir the bodies below reducer_trusted_base_height
+ * were never downloaded. The fold must adopt the seed floor as its declared
+ * base and fill forward, converting the coverage limit into a named standing
  * declaration (index_fold_declare_partial_coverage) rather than a per-tick
- * spin. Fixture: heights 0 and 1 have no body (below the seed floor of 1),
- * height 2 does. */
+ * spin. Fixture: heights 0 and 1 have no body (seed floor 1), height 2 does. */
 static int test_backfill_declared_partial_coverage(void)
 {
     int failures = 0;

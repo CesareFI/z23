@@ -297,15 +297,12 @@ static int test_rss_high_rule(void)
     return failures;
 }
 
-/* ── Lane 1a: header_gap_growing, peer_count_collapsed,
- * sync_state_stuck, consensus_reject_spike ─────────────────────
+/* ── header_gap_growing, peer_count_collapsed, sync_state_stuck,
+ * consensus_reject_spike ─────────────────────────────────────────
  *
- * All four hysteresis gauges use the node's own uptime counter as
- * their clock basis (not wall-clock GetTime()), specifically so a
- * hermetic test can drive "time" deterministically by passing
- * increasing `uptime_seconds` values to metrics_prometheus_set_node_gauges()
- * instead of sleeping — see the Prometheus backend's "New (Lane 1a)
- * hysteresis gauges" comment. */
+ * These hysteresis gauges use the node's own uptime counter as clock basis,
+ * so a test drives "time" by passing increasing `uptime_seconds` to
+ * metrics_prometheus_set_node_gauges() instead of sleeping. */
 
 static int test_header_gap_growing_rule(void)
 {

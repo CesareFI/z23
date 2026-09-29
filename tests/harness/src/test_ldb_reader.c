@@ -3,27 +3,19 @@
  * test_ldb_reader: differential + adversarial coverage for the C23
  * read-only LevelDB reader (engine/modules/storage/src/ldb_reader_*.c).
  *
- * Hermetic. The fixture LevelDB is built by the vendored C++ library
- * inside this process's own ./test-tmp/ directory, then copied so each
- * implementation reads its own tree — the C++ open recovers and rewrites
- * its target, and letting it touch the tree the C23 side reads would
- * quietly erase the write-ahead-log replay this test exists to prove.
- *
- * Two questions are asked:
+ * Hermetic. The fixture LevelDB is built by the vendored C++ library in
+ * ./test-tmp/, then copied so each implementation reads its own tree (the C++
+ * open recovers and rewrites its target, which would erase the write-ahead-log
+ * replay this test proves).
  *
  *   1. Does the C23 reader return EXACTLY what libleveldb.a returns? The
- *      fixture deliberately contains overwrites (a user key at several
- *      sequence numbers) and deletions (tombstones that must hide older
- *      values), plus unflushed writes left in the .log. Those are the
- *      three ways a reader can be subtly wrong and still look fine on a
- *      write-once fixture.
+ *      fixture has overwrites (several sequence numbers per user key),
+ *      deletions (tombstones hiding older values), and unflushed writes in
+ *      the .log.
  *
- *   2. Does it REFUSE damaged input instead of inventing an answer? A
- *      truncated table, a flipped bit inside a data block, a corrupted
- *      write-ahead-log record, a garbage CURRENT, and a shredded footer
- *      each have to produce a named error and no crash. Silently wrong
- *      chain-state bytes are the worst failure this project can have, so
- *      "returned something" is not a passing result here.
+ *   2. Does it REFUSE damaged input? A truncated table, a flipped bit in a
+ *      data block, a corrupted write-ahead-log record, a garbage CURRENT, and
+ *      a shredded footer each must produce a named error and no crash.
  */
 
 #include "test/test_core.h"
@@ -87,10 +79,8 @@ static bool lr_build_fixture(const char *dir)
     bool ok = true;
 
     /* Pass 0 — every key, then an explicit compaction so these land in
-     * real SSTables that the MANIFEST records. Relying on the automatic
-     * 4 MB memtable flush is not enough: leveldb abandons an in-flight
-     * memtable compaction when the database is closing, leaving an
-     * orphan .ldb the MANIFEST never references. */
+     * SSTables the MANIFEST records (leveldb abandons an in-flight memtable
+     * compaction on close, leaving an unreferenced .ldb). */
     for (int i = 0; i < LR_RECORDS && ok; i++) {
         char k[32];
         lr_key(k, sizeof(k), i);
@@ -130,10 +120,8 @@ static bool lr_build_fixture(const char *dir)
     if (ok)
         leveldb_compact_range(db, NULL, 0, NULL, 0);
 
-    /* Pass 2 — left UNFLUSHED on purpose. These writes exist only in the
-     * write-ahead log, so a reader that parses tables alone returns the
-     * pass-1 values here and reports no error at all. The tombstones in
-     * this pass additionally have to hide values that ARE in a table. */
+    /* Pass 2 — left UNFLUSHED: these writes exist only in the write-ahead
+     * log, and its tombstones must hide values that ARE in a table. */
     for (int i = 0; i < LR_RECORDS / 4 && ok; i++) {
         char k[32];
         lr_key(k, sizeof(k), i);
@@ -434,9 +422,8 @@ int test_ldb_reader(void)
         }
     }
 
-    /* The C23 side above read a tree the C++ library never recovered, so
-     * matching it proves the write-ahead log was replayed. Make that
-     * explicit rather than implied. */
+    /* The C23 side read a tree the C++ library never recovered, so matching
+     * it proves the write-ahead log was replayed. */
     printf("ldb_reader: write-ahead log actually replayed... ");
     {
         char *err = NULL;

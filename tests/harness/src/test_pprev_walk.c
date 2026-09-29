@@ -18,8 +18,7 @@ static struct block_index *bi_new(int height)
 
 /* ── pprev_walk_safe itself ────────────────────────────────────────────
  *
- * The wrappers above all route through pprev_walk_safe, but the walker
- * itself was never called directly. Pinned: bad arguments refuse with
+ * The wrappers above route through pprev_walk_safe; it is also called directly. Pinned: bad arguments refuse with
  * NULL and no violation record, the predicate stops the walk exactly at
  * the node it rejects, a NULL predicate walks to the chain end, and a
  * cycle refuses with a violation recorded. Violations are process-global,

@@ -2,13 +2,9 @@
  *
  * Tests for the ibd_throttle service.
  *
- * Strategy
- * --------
- * Most assertions exercise `ibd_throttle_refill()` directly — it's
- * the pure primitive and doesn't touch globals, time, or sleep.
- * The lifecycle / hot-path / event-emission branches are covered
- * with a fast configuration (burst 3, rate 10000/s) so the blocking
- * tests finish in well under a second without real time scaling.
+ * Most assertions exercise the pure `ibd_throttle_refill()` directly; the
+ * lifecycle / hot-path / event branches use a fast configuration (burst 3,
+ * rate 10000/s) so blocking tests finish in well under a second.
  */
 
 #include "platform/time_compat.h"
@@ -60,10 +56,8 @@ struct it_worker_arg {
 static void *it_acquire_worker(void *a)
 {
     struct it_worker_arg *w = a;
-    /* Rendezvous with the main thread immediately before entering the
-     * blocking acquire() loop. Replaces a blind fixed sleep with a
-     * deterministic synchronization point so the main thread knows the
-     * worker is about to block before it calls ibd_throttle_stop(). */
+    /* Rendezvous with the main thread right before the blocking acquire()
+     * loop, so it knows the worker is about to block before stop(). */
     zcl_barrier_wait(w->barrier);
     (void)ibd_throttle_acquire();
     atomic_store(w->done, true);
@@ -225,34 +219,16 @@ int test_ibd_throttle(void)
         int64_t dur_ms = (int64_t)(t1.tv_sec - t0.tv_sec) * 1000 +
                          (t1.tv_nsec - t0.tv_nsec) / 1000000;
         IT_CHECK("it: acquire returns true after blocking", got == true);
-        /* Lower bound only. The bucket is drained and refills at 500/s, so the
-         * call CANNOT return before ~2ms have passed — and a busy machine only
-         * ever makes the observed wait longer, never shorter. That direction is
-         * forced; the other one is not.
-         *
-         * There used to be an "it: blocked less than 100ms" assertion here. It
-         * asserted nothing about ibd_throttle: an over-100ms reading means the
-         * OS did not schedule this thread promptly, which is a fact about the
-         * box, not about the token bucket. The refill arithmetic it was
-         * standing in for is covered exactly and without a clock by the pure
-         * ibd_throttle_refill() cases above (4-8). Kept as an opt-in
-         * measurement below so the number is still available on demand. */
+        /* Lower bound only: the drained bucket refills at 500/s, so the call
+         * cannot return before ~2ms. An upper bound on one sample is a fact
+         * about the box; the refill arithmetic is covered by the pure cases
+         * (4-8). */
         IT_CHECK("it: blocked at least ~1ms before refill",
                  dur_ms >= 1);
 
-        /* Upper bound, kept in the DEFAULT suite, via best-of-N.
-         *
-         * Deleting it lost real coverage: a 200x oversleep planted in
-         * ibd_throttle_acquire's wait loop leaves every other assertion here
-         * green, because the pure refill cases (4-8) never touch the sleep
-         * path and the lower bound only gets easier to satisfy.
-         *
-         * A single wall-clock sample cannot carry the bound — an over-100ms
-         * reading usually means the OS did not schedule us, which is a fact
-         * about the box. The MINIMUM over several attempts can: it needs only
-         * ONE unimpeded sample, so load has to starve every attempt to make it
-         * fire, while a genuine oversleep inflates all of them equally and
-         * still trips it. Same reason a benchmark quotes its best run. */
+        /* Upper bound via best-of-N: a single wall-clock sample is a fact
+         * about the box, but the minimum over several attempts needs only one
+         * unimpeded sample, while a genuine oversleep inflates all of them. */
         int64_t best_ms = dur_ms;
         for (int attempt = 0; attempt < 8 && best_ms >= 100; attempt++) {
             (void)ibd_throttle_try_acquire();   /* drain again */
@@ -293,10 +269,8 @@ int test_ibd_throttle(void)
         zcl_barrier_init(&barrier, 2);
         struct it_worker_arg arg = { .done = &done, .barrier = &barrier };
         pthread_create(&th, NULL, it_acquire_worker, &arg);
-        /* Deterministically rendezvous with the worker right before it
-         * enters the blocking acquire() loop (replaces a fixed 5ms
-         * nanosleep guess). After the barrier the worker is about to
-         * block on a drained bucket; stop() must unstick it. */
+        /* Rendezvous with the worker right before it enters the blocking
+         * acquire(); stop() must then unstick it. */
         zcl_barrier_wait(&barrier);
         ibd_throttle_stop();
         pthread_join(th, NULL);

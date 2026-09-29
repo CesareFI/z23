@@ -3,16 +3,13 @@
  * test_params_fetch.c — the adversary's half of the proving-parameter
  * transfer.
  *
- * The feature's whole claim is that a hostile peer cannot get one byte it
- * authored onto disk. These tests are written to try to make that false:
- * they flip a bit, truncate a stream, inflate a length field, lie about the
- * manifest, interrupt the transfer and resume it, and check that the file
- * that lands is byte-exact or does not land at all.
+ * A hostile peer must not get one byte it authored onto disk. These tests
+ * flip bits, truncate streams, inflate length fields, lie about the
+ * manifest, and interrupt and resume the transfer, then check the landed
+ * file is byte-exact or absent.
  *
- * The fast tests use small synthetic files with the real chunking, because
- * putting 777 MB in the suite would be an act of vandalism. The real-file
- * path is proved separately (it runs here only when ~/.zcash-params is
- * present) and its cost is reported in the lane notes.
+ * Fast tests use small synthetic files with the real chunking; the
+ * real-file path runs only when ~/.zcash-params is present.
  */
 
 #include "sapling/params_fetch.h"
@@ -38,13 +35,10 @@
 
 /* ── A synthetic "pinned file" ──────────────────────────────────────
  *
- * The production pin table is a compile-time constant, so these tests cannot
- * add an entry to it. Instead they exercise the same primitives the session
- * uses — leaf hash, Merkle fold, per-chunk length derivation — over a
- * synthetic file, and separately drive a real session against the smallest
- * pinned file (sprout-verifying.key, 1449 bytes, one chunk) where a real
- * session is required.
- */
+ * The production pin table is compile-time, so these tests exercise the
+ * session's primitives (leaf hash, Merkle fold, per-chunk length) over a
+ * synthetic file, and drive a real session only against the smallest pinned
+ * file (sprout-verifying.key, 1449 bytes, one chunk). */
 
 static char g_dir[512];
 
@@ -780,9 +774,8 @@ static int test_pins_match_real_files(void)
 
     const char *home = getenv("HOME");
     int checked = 0;
-    /* Recomputing every pin streams ~777 MB. The two small files are always
-     * checked; the two large ones are checked when the stress gate is on,
-     * which is the gate the lane is required to run. */
+    /* Recomputing every pin streams ~777 MB: the two small files are always
+     * checked, the two large ones only when the stress gate is on. */
     const bool full = getenv("ZCL_STRESS_TESTS") != NULL;
     for (int i = 0; i < ZCL_PARAM_FILE_COUNT && home; i++) {
         if (!full && zcl_param_pins[i].bytes > (16ull * 1024ull * 1024ull))
@@ -873,13 +866,10 @@ static int test_serve_roundtrip(void)
     int failures = 0;
     printf("  [serve] armed serving feeds a fetch\n");
 
-    /* Arm serving from the scratch directory the earlier tests installed
-     * into. Deliberately NOT the real ~/.zcash-params: arming streams every
-     * file it finds, and making the fast suite read 777 MB to prove a
-     * round-trip that 1449 bytes proves just as well would be vandalism. The
-     * two files installed above (sprout-verifying.key and, if it ran,
-     * sapling-output.params) are enough, and the two that are absent are
-     * exactly the "must not serve what we do not have" case. */
+    /* Arm serving from the scratch directory, not the real ~/.zcash-params
+     * (arming streams every file it finds). The files installed above are
+     * enough, and the absent ones are the "must not serve what we do not
+     * have" case. */
     struct stat st;
     char probe[900];
     snprintf(probe, sizeof(probe), "%s/%s", g_dir, zcl_param_pins[3].name);

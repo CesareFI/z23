@@ -4,24 +4,17 @@
  * Tests for the node_health storage seam.
  *
  * node_health_collect() performs exactly three persistent reads against
- * the node DB; this file exercises the sqlite adapter that now backs them
- * through node_health_store_port — against ISOLATED in-memory / temp-file
+ * the node DB; this file exercises the sqlite adapter behind them via
  * fixture DBs, never the live node DB:
  *
  *   tip_height_from_blocks  "SELECT COALESCE(MAX(height), -1) FROM blocks"
  *   utxo_count              "SELECT count(*) FROM utxos"
  *   wal_size_bytes          sqlite3_db_filename(...,"main") + stat("-wal")
  *
- * We assert the COALESCE(-1) empty-table behaviour, the MAX over multiple
- * rows, the exact UTXO count, and that wal_size_bytes returns false for an
- * in-memory DB (no on-disk filename) yet succeeds against a file-backed DB
- * once a WAL exists. NULL-arg guards round it out.
- *
- * NOTE on coupling: test_node_health_service.c drives the full
- * node_health_collect() over its own in-memory node_db; that group is
- * unrelated to this fixture-based adapter test and is left untouched. This
- * file is hermetic (its own throwaway DBs).
- */
+ * Asserts the COALESCE(-1) empty-table behaviour, the MAX over multiple rows,
+ * the exact UTXO count, wal_size_bytes false for an in-memory DB and true for
+ * a file-backed DB once a WAL exists, and NULL-arg guards. Hermetic: its own
+ * throwaway DBs. */
 
 #include "test/test_core.h"
 

@@ -1,45 +1,28 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Ban persistence round-trip (core/modules/net/src/net.c: ban_db_write()/
- * ban_db_read(), and ban_addr()/unban_addr()/clear_banned() auto-
- * persisting to <datadir>/banlist.dat whenever net_manager::datadir is
- * set — see connman_load_addrman()/connman_save_addrman() in connman.c
- * for how that field gets populated at boot).
- *
- * Before this, nm->banned[] was purely in-memory: any restart amnestied
- * every banned attacker. Coverage:
+ * Ban persistence round-trip (core/modules/net/src/net.c ban_db_write()/
+ * ban_db_read(); ban_addr()/unban_addr()/clear_banned() persist to
+ * <datadir>/banlist.dat whenever net_manager::datadir is set). Coverage:
  *   1. ban -> reload in a FRESH net_manager -> still banned.
- *   2. expiry: an already-expired ban is neither persisted live nor
- *      resurrected on reload (lazy prune, both in is_banned() and at
- *      ban_db_write()/ban_db_read() time).
- *   3. unban_addr() persists too — a reload after unban does not
- *      resurrect the address.
- *   4. a missing banlist.dat is a clean cold-start miss (false, not an
- *      error) — matches addr_db_read()'s existing convention.
- *   5. a corrupt banlist.dat is quarantined and treated as "no
- *      persisted bans" rather than crashing boot (bans are advisory
- *      hardening, never fatal to boot).
- *   6. the in-memory table is hard-capped at NET_BAN_TABLE_MAX: an
- *      auto-ban flood driven through the REAL scoring path evicts the
- *      soonest-expiring auto entry instead of growing, and never aborts.
- *   7. a manual ban made before such a flood survives it (manual entries
- *      are never evicted), and the writes the AUTO debounce held back are
- *      flushed by net_manager_free().
- *   8. with only manual entries left, an auto insert is refused and the
- *      table is left unchanged.
- *   9. every mutation site moves the generation counter; is_banned()'s
- *      lazy prune does not.
- *  10. a ban that lands DURING a banlist.dat write survives that write
- *      and a simulated restart (the lost-update regression: the write
- *      used to clear the dirty flag unconditionally after installing a
- *      file that predated the mutation).
+ *   2. an already-expired ban is neither persisted live nor resurrected.
+ *   3. unban_addr() persists too.
+ *   4. a missing banlist.dat is a clean cold-start miss (false, not an error).
+ *   5. a corrupt banlist.dat is quarantined and read as "no persisted bans".
+ *   6. the in-memory table is capped at NET_BAN_TABLE_MAX: an auto-ban flood
+ *      through the real scoring path evicts the soonest-expiring auto entry
+ *      and never aborts.
+ *   7. a manual ban survives such a flood; writes the AUTO debounce held back
+ *      are flushed by net_manager_free().
+ *   8. with only manual entries left, an auto insert is refused.
+ *   9. every mutation site moves the generation counter; is_banned()'s lazy
+ *      prune does not.
+ *  10. a ban landing DURING a banlist.dat write survives that write and a
+ *      simulated restart (the dirty flag is not cleared past the snapshot).
  *  11. concurrent writers serialize on the single-flight write mutex and
  *      leave the file equal to the live table.
  *
- * One TEST()/ASSERT() block per function — this codebase's TEST macro
- * uses a single fixed `_test_next:` goto label per function (see
- * test/test_core.h), so more than one TEST block in the same
- * function is a duplicate-label compile error.
+ * One TEST()/ASSERT() block per function (TEST uses a fixed `_test_next:`
+ * goto label; see test/test_core.h).
  */
 
 #include "test/test_core.h"
@@ -504,11 +487,9 @@ static int test_nbp_ban_during_write_survives_restart(void)
         ASSERT(!is_banned(&probe, &racer));
         net_manager_free(&probe);
 
-        /* But the write must NOT have reported the table clean: the racer
-         * moved the generation past the write's snapshot, so the dirty flag
-         * is the only thing that gets the racer flushed before a restart.
-         * This is the regression: the flag used to be cleared
-         * unconditionally, amnestying the racer at restart. */
+        /* The write must NOT report the table clean: the racer moved the
+         * generation past the write's snapshot, so the dirty flag is what
+         * gets the racer flushed before a restart. */
         ASSERT(g_nbp_race_after.dirty);
 
         /* Simulated restart: the destroy flush honours the dirty flag, and

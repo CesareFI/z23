@@ -1,60 +1,40 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * test_reducer_forward_progress_gate — the MULTI-BLOCK forward-progress +
- * REORG gate (the hermetic live-wedge repro harness).
+ * REORG gate (a hermetic repro of a tip that holds without finalizing).
  *
- * WHY THIS GATE EXISTS (the live-wedge axis)
- * ------------------------------------------
- * test_reducer_block_ingest_gate proves ONE mined regtest block finalizes
- * through the reducer front door to tip+1. The #1 v1 blocker, though, is the
- * LIVE WEDGE: on the mainnet datadir the tip HOLDS at some height without
- * finalizing forward — tip_finalize oscillates, finalized_total stalls. A
- * single-block gate cannot catch a wedge that only appears after several
- * sequential finalizations. This gate extends the proven it-works pattern to
- * MANY blocks and asserts MONOTONIC forward progress, so if the reducer ever
- * stalls or oscillates mid-run, it is reproduced HERMETICALLY (a deterministic,
- * in-process repro of the v1 blocker — far cheaper to debug than the live node).
+ * A single-block gate cannot catch a wedge that only appears after several
+ * sequential finalizations, so this gate mines many blocks and asserts
+ * MONOTONIC forward progress.
  *
- * WHAT THIS PROVES
- * ----------------
  *   PART 1 (forward progress): mine + ingest N = 32 sequential regtest blocks
- *     through reducer_ingest_block (the SAME front door live intake uses),
- *     looping reducer_kick to convergence after each. Assert the authoritative
- *     active_chain_height reaches exactly 32 with NO stall and NO oscillation:
- *     finalized_total strictly increases each step and never retreats, and the
- *     tip never goes backward. If the tip stalls at H<32 or oscillates, the
- *     live-wedge failure mode is reproduced and the stall height + the exact
- *     eight stage cursors are captured in the output.
+ *     through reducer_ingest_block (the front door live intake uses), looping
+ *     reducer_kick to convergence after each. active_chain_height must reach
+ *     exactly 32 with NO stall and NO oscillation: finalized_total strictly
+ *     increases and never retreats, and the tip never goes backward. A stall
+ *     captures the stall height + the eight stage cursors.
  *
- *   PART 2 (reorg): from a fork point near the tip (within ZCL_FINALITY_DEPTH),
- *     mine a competing branch that is HEAVIER (one block longer above the fork),
- *     install it on the active chain, and drive the reducer to convergence.
- *     Assert the reducer REORGS: the authoritative tip switches to the heavier
- *     branch, the displaced (losing-branch) coinbase UTXOs are removed, the new
- *     branch's coinbases are present, and the UTXO commitment is BYTE-EXACT to a
- *     from-scratch recompute of the winning chain (the consensus stake — a wrong
- *     inverse silently corrupts the UTXO set with no crash).
+ *   PART 2 (reorg): from a fork point near the tip (within
+ *     ZCL_FINALITY_DEPTH), mine a HEAVIER competing branch (one block longer
+ *     above the fork), install it, and drive the reducer to convergence. The
+ *     authoritative tip must switch to the heavier branch, the displaced
+ *     coinbase UTXOs must be removed, the new branch's coinbases present, and
+ *     the UTXO commitment BYTE-EXACT to a from-scratch recompute of the
+ *     winning chain.
  *
- * THE ONE-BLOCK-LOOKAHEAD CONVENTION (carried from the it-works gate)
- * ------------------------------------------------------------------
- * tip_finalize finalizes height H by reading active_chain_at(H+1) and stamping
- * that successor as the tip; it records the row for height H in the log row at
- * key H-1. So to finalize up to height N you must have block N+1 data'd. PART 1
- * mines N+1 blocks (1..33) and ingests blocks 1..32; block 33 is the lookahead
- * successor that lets block 32 finalize.
+ * One-block lookahead: tip_finalize finalizes height H by reading
+ * active_chain_at(H+1), and records the row for H at key H-1. To finalize up
+ * to N, block N+1 must be data'd: PART 1 mines blocks 1..33 and ingests
+ * 1..32.
  *
- * THE FINALITY FLOOR (why PART 2 forks NEAR the tip, not at height 16)
- * -------------------------------------------------------------------
- * utxo_apply's reorg unwind is gated by reorg_is_allowed(tip, fork): a reorg
- * deeper than ZCL_FINALITY_DEPTH (=10) is CORRECTLY REFUSED (a consensus safety
- * feature, not a wedge). With the tip at 32, a fork at height 16 (depth 16)
- * would be refused. PART 2 therefore forks within the finality window so the
- * unwind actually proceeds — exactly the reorg a live node performs.
+ * Finality floor: utxo_apply's reorg unwind is gated by
+ * reorg_is_allowed(tip, fork); a reorg deeper than ZCL_FINALITY_DEPTH (=10)
+ * is correctly refused. PART 2 therefore forks within the finality window.
  *
  * No stubs, no injected readers: the eight stages run on their PRODUCTION
- * defaults (bodies persisted to disk by the front door / helper and read back
- * by stage_default_block_reader; coinbase-only blocks have no transparent inputs
- * and no shielded proofs, so script_validate / proof_validate pass trivially).
+ * defaults (bodies persisted to disk and read back by
+ * stage_default_block_reader; coinbase-only blocks need no script or proof
+ * validation).
  */
 
 #include "test/test_core.h"
@@ -109,14 +89,11 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-/* src-private test hook (engine/reducer/jobs/src/reducer_frontier.c, the witness-test
- * mirror pattern): lower the L0/L1 compiled anchor floor so the PRODUCTION
- * reorg re-bind path (reducer_frontier_reconcile_light: purge non-canonical
- * verdicts -> refill -> re-validate) operates at the regtest heights PART 2
- * mines. Off-test the floor is the mainnet SHA3 checkpoint (3,056,758); a
- * hermetic harness cannot build a contiguous chain to that height, so it runs
- * the identical reconcile logic at low heights via this override. -1 restores
- * the compiled checkpoint. */
+/* src-private test hook (engine/reducer/jobs/src/reducer_frontier.c): lower
+ * the L0/L1 compiled anchor floor so the PRODUCTION reorg re-bind path
+ * (reducer_frontier_reconcile_light: purge non-canonical verdicts -> refill
+ * -> re-validate) operates at the regtest heights PART 2 mines. Off-test the
+ * floor is the mainnet SHA3 checkpoint (3,056,758). -1 restores it. */
 void reducer_frontier_test_set_compiled_anchor(int32_t height);
 
 #define RFP_CHECK(name, expr) do {                            \
@@ -125,9 +102,8 @@ void reducer_frontier_test_set_compiled_anchor(int32_t height);
     else { printf("FAIL\n"); failures++; }                    \
 } while (0)
 
-/* How many sequential blocks PART 1 drives the reducer forward. A wedge that
- * only surfaces after a handful of finalizations is the whole point — 32 is
- * deep enough to surface the live-wedge oscillation while staying fast. */
+/* How many sequential blocks PART 1 drives the reducer forward; deep enough
+ * to surface a wedge that appears after several finalizations. */
 #define RFP_N 32
 
 static int rfp_mkdir_p(const char *p)
@@ -137,9 +113,8 @@ static int rfp_mkdir_p(const char *p)
     return -1;
 }
 
-/* ── Block builder — identical shape to the it-works gate's
- * rbi_build_regtest_block (one coinbase tx, real merkle root, regtest powLimit
- * compact nBits). `script_salt` perturbs the miner pubkey-hash so a competing
+/* ── Block builder — one coinbase tx, real merkle root, regtest powLimit
+ * compact nBits. `script_salt` perturbs the miner pubkey-hash so a competing
  * branch's coinbase gets a DISTINCT txid at the same height (salt 0 = the
  * canonical chain, salt != 0 = a fork). Returns false on any build failure. */
 static bool rfp_build_regtest_block(struct block *blk, int height,
@@ -200,8 +175,7 @@ static bool rfp_build_regtest_block(struct block *blk, int height,
 }
 
 /* Seed a genesis (height 0) utxo_apply_log row marking it already-applied with
- * a zero coin delta, so the cold-start anchor finalizes cleanly into block 1
- * (identical to the it-works gate's rbi_seed_genesis_utxo_apply_row). */
+ * a zero coin delta, so the cold-start anchor finalizes cleanly into block 1. */
 static bool rfp_seed_genesis_utxo_apply_row(sqlite3 *db)
 {
     if (!db) return false;
@@ -225,9 +199,8 @@ struct rfp_ingest_ctx {
 
 /* Mine a regtest block at `height` on `prev_hash`, admit its header (creating
  * the block_index + linking pprev), write its body to disk, and mark the index
- * BLOCK_HAVE_DATA — the "headers + bodies synced but not connected" state.
- * On success fills the out-params (caller block_free's *out_blk). Mirrors the
- * it-works gate's rbi_mine_admit_persist. The window/best-header anchor is
+ * BLOCK_HAVE_DATA ("headers + bodies synced but not connected"). Fills the
+ * out-params (caller block_free's *out_blk). The window/best-header anchor is
  * forward-extended to this block so the reducer can finalize down to it. */
 static bool rfp_mine_admit_persist(struct rfp_ingest_ctx *c, int height,
                                    const struct uint256 *prev_hash,
@@ -305,9 +278,8 @@ int test_reducer_forward_progress_gate(void)
            "then a heavier-fork reorg) ===\n", RFP_N);
     int failures = 0;
 
-    /* OPT-IN gate (same rationale as the it-works gate): drives reducer
-     * process-globals, deterministic only in a FRESH process. Run isolated via
-     * `make mvp-forward-progress` (a dedicated --only fresh process). */
+    /* OPT-IN gate: drives reducer process-globals, deterministic only in a
+     * FRESH process. Run isolated via `make mvp-forward-progress`. */
     if (!getenv("ZCL_STRESS_TESTS")) {
         printf("reducer_forward_progress_gate: SKIP "
                "(set ZCL_STRESS_TESTS=1 and run isolated via "
@@ -332,8 +304,8 @@ int test_reducer_forward_progress_gate(void)
     rfp_mkdir_p(dir);
 
     /* SetDataDir already clears the cache and populates cachedDataDirNet =
-     * <dir>/regtest; do NOT ClearDataDirCache() here or GetDataDir falls back
-     * to the shared default ~/.zclassic-c23/regtest and races other groups. */
+     * <dir>/regtest; do NOT ClearDataDirCache() or GetDataDir falls back to
+     * the shared default ~/.zclassic-c23/regtest. */
     SetDataDir(dir);
     char netdir[512];
     GetDataDir(true /*net-specific (regtest subdir)*/, netdir, sizeof(netdir));
@@ -408,17 +380,16 @@ int test_reducer_forward_progress_gate(void)
     int height_genesis = active_chain_height(&ms.chain_active);
     RFP_CHECK("genesis tip height is 0", height_genesis == 0);
 
-    /* coins_kv is the authoritative UTXO set the stages author (the projection
-     * dual-write was removed); read the genesis baseline from it. */
+    /* coins_kv is the authoritative UTXO set the stages author. */
     uint64_t count_genesis = (uint64_t)coins_kv_count(progress_store_db());
 
     struct rfp_ingest_ctx ictx = { .cp = cp, .ms = &ms, .ctl = &ctl,
                                    .datadir = netdir };
 
     /* ── (2) PART 1 — mine N+1 blocks (1..N+1) in the "headers+bodies synced"
-     * state. Block N+1 is the one-block-lookahead successor that lets block N
-     * finalize. Keep all blocks + their hashes/block_index pointers alive (the
-     * reorg in PART 2 reuses the fork-point hash). ──────────────────────── */
+     * state; block N+1 is the lookahead successor that lets block N finalize.
+     * Keep all blocks + hashes/block_index pointers alive (PART 2 reuses the
+     * fork-point hash). ─────────────────────────────────────────────────── */
     struct block      *blocks = zcl_calloc(RFP_N + 2, sizeof(struct block),
                                            "rfp_blocks");
     struct uint256    *hashes = zcl_calloc(RFP_N + 2, sizeof(struct uint256),
@@ -458,10 +429,9 @@ int test_reducer_forward_progress_gate(void)
         part1_ready = mined_all;
     }
 
-    /* ── (3) PART 1 drive: ingest blocks 1..N sequentially through the FRONT
-     * DOOR, looping reducer_kick to convergence after each, asserting the
-     * authoritative tip and finalized_total advance MONOTONICALLY and never
-     * retreat. A stall/oscillation here is the LIVE WEDGE reproduced. ─────── */
+    /* ── (3) PART 1 drive: ingest blocks 1..N through the FRONT DOOR, looping
+     * reducer_kick to convergence after each; the tip and finalized_total
+     * must advance MONOTONICALLY and never retreat. ────────────────────── */
     int      reached_height = height_genesis;
     uint64_t prev_finalized = tip_finalize_stage_finalized_total();
     if (part1_ready) {
@@ -484,15 +454,11 @@ int test_reducer_forward_progress_gate(void)
             int      hh = active_chain_height(&ms.chain_active);
             uint64_t fin = tip_finalize_stage_finalized_total();
 
-            /* Forward-progress invariant (post-67062bbf6 "publish each block on
-             * arrival"): the tip must FINALIZE block h (hh >= h),
-             * finalized_total must strictly increase (a stall would freeze it),
-             * and the tip must never retreat (an oscillation would). Ordinarily
-             * the visible lookahead permits hh <= h+1. All fixture bodies are
-             * already persisted, though, so one reducer kick may legitimately
-             * drain the complete N-block run; accept that terminal convergence
-             * and leave the loop before the next iteration can mistake an
-             * already-complete run for a frozen finalized_total. */
+            /* Forward-progress invariant: the tip must FINALIZE block h
+             * (hh >= h), finalized_total must strictly increase, and the tip
+             * must never retreat. Ordinarily hh <= h+1; since all fixture
+             * bodies are persisted one kick may drain the whole N-block run,
+             * which is accepted as terminal convergence. */
             bool completed = hh >= RFP_N && hh <= RFP_N + 1;
             bool advanced  = (hh >= h) && (hh <= h + 1 || completed);
             bool monotone  = (hh >= reached_height) && (fin >= prev_finalized);
@@ -535,9 +501,9 @@ int test_reducer_forward_progress_gate(void)
         RFP_CHECK("PART1: no spend-unknown across the run",
                   utxo_apply_stage_spend_unknown_total() == 0);
 
-        /* Each block added exactly one coinbase UTXO over the genesis baseline.
-         * With tip at N finalized and block N+1 also data'd as the pending
-         * successor, utxo_apply has applied N+1 coinbases. */
+        /* Each block added exactly one coinbase UTXO over the genesis
+         * baseline; with block N+1 pending as successor, utxo_apply has
+         * applied N+1 coinbases. */
         sqlite3 *pdb = progress_store_db();
         uint64_t count_after = (uint64_t)coins_kv_count(pdb);
         printf("reducer_forward_progress_gate: utxo count %llu -> %llu\n",
@@ -562,11 +528,11 @@ int test_reducer_forward_progress_gate(void)
     }
 
     /* ── (4) PART 2 — REORG ─────────────────────────────────────────────────
-     * Fork NEAR the tip (within ZCL_FINALITY_DEPTH so the unwind is allowed),
-     * mine a HEAVIER competing branch (one block longer above the fork), install
-     * it on the active chain, and drive the reducer to convergence. Assert the
-     * reducer reorgs and the resulting UTXO set is byte-exact to a from-scratch
-     * build of the winning chain. Skipped if PART 1 wedged (no clean base). */
+     * Fork NEAR the tip (within ZCL_FINALITY_DEPTH), mine a HEAVIER
+     * competing branch (one block longer above the fork), install it, and
+     * drive the reducer to convergence: it must reorg and the UTXO set must
+     * be byte-exact to a from-scratch build of the winning chain. Skipped
+     * if PART 1 wedged. ──────────────────────────────────────────────── */
     bool part2_ran = false;
     bool reorg_ok = false;
     if (part1_ready && !wedge_reproduced) {
@@ -577,9 +543,8 @@ int test_reducer_forward_progress_gate(void)
         RFP_CHECK("PART2: fork depth within finality floor",
                   (RFP_N - F) <= ZCL_FINALITY_DEPTH);
 
-        /* Mine W: heights F+1 .. N+1 on top of the SHARED fork-point hash
-         * hashes[F]. W's tip is at height N+1 — strictly longer (heavier) than
-         * L's tip at N, so it must win. */
+        /* Mine W: heights F+1 .. N+1 on the SHARED fork-point hash
+         * hashes[F]; W's tip (N+1) is heavier than L's tip (N). */
         const int W_LEN = RFP_N + 1 - F;   /* number of W blocks above fork */
         struct block      *wblk  = zcl_calloc((size_t)W_LEN, sizeof(struct block),
                                               "rfp_wblk");
@@ -600,12 +565,9 @@ int test_reducer_forward_progress_gate(void)
         for (int i = 0; i < W_LEN && w_mined; i++) {
             int h = F + 1 + i;
             const struct uint256 *prev = (i == 0) ? &hashes[F] : &whash[i - 1];
-            /* Make W's coinbase genuinely DISTINCT from L's at the same height:
-             * salt=1 perturbs the miner pubkey-hash so W's coinbase TXID differs
-             * from L's, and a bumped nTime diverges the block header hash too.
-             * (Without a distinct coinbase txid, L and W coinbases would be the
-             * identical UTXO at each height and the "displaced L removed" check
-             * would be vacuous.) */
+            /* Make W's coinbase DISTINCT from L's at the same height: salt=1
+             * changes the coinbase TXID and a bumped nTime changes the header
+             * hash (otherwise the "displaced L removed" check is vacuous). */
             if (!rfp_build_regtest_block(&wblk[i], h, prev, cp,
                                          1 /*fork salt*/, &wcbv[i])) {
                 w_mined = false; break;
@@ -615,16 +577,12 @@ int test_reducer_forward_progress_gate(void)
             block_get_hash(&wblk[i], &whash[i]);
             wcbid[i] = wblk[i].vtx[0].hash;
 
-            /* The header_admit producer is FORWARD-only: its cursor is already
-             * past the fork heights (which hold L's blocks), so it would not
-             * create W's index. Create the W block_index via the SAME canonical
-             * path the reducer producer uses (add_to_block_index) so every field
-             * — nBits, nVersion, and the CUMULATIVE nChainWork (pprev + this
-             * block's proof) — is populated correctly. W's header points at the
-             * shared fork-point parent (hashes[F]) then the prior W block, so
-             * add_to_block_index links pprev and accumulates work; with W one
-             * block longer than L above the fork, W's TIP outweighs L's tip and
-             * the reducer's chainwork-greater gate passes. */
+            /* The header_admit producer is FORWARD-only: its cursor is past
+             * the fork heights, so it would not create W's index. Create the
+             * W block_index via the canonical add_to_block_index so nBits,
+             * nVersion and the CUMULATIVE nChainWork are populated; W's
+             * header points at hashes[F] then the prior W block, and W's tip
+             * outweighs L's so the chainwork-greater gate passes. */
             struct block_index *bi = add_to_block_index(&ms, &wblk[i].header);
             if (!bi) { w_mined = false; break; }
             bi->nStatus |= BLOCK_HAVE_DATA | BLOCK_VALID_SCRIPTS;
@@ -650,10 +608,9 @@ int test_reducer_forward_progress_gate(void)
             struct block_index *w_tip = wbi[W_LEN - 1]; /* height N+1 */
 
             /* Install W on the active chain (the live driver's most-work tip
-             * swap) and point best-header at W's tip so the stages extend
-             * toward W. active_chain_move_window_tip reassembles chain[] along
-             * W's pprev path — the structural reorg the reducer then OBSERVES
-             * via branch_hash / pprev divergence. */
+             * swap) and point best-header at W's tip.
+             * active_chain_move_window_tip reassembles chain[] along W's pprev
+             * path, the structural reorg the reducer OBSERVES. */
             ms.pindex_best_header = w_tip;
             bool installed = active_chain_move_window_tip(&ms.chain_active,
                                                           w_tip);
@@ -663,22 +620,17 @@ int test_reducer_forward_progress_gate(void)
 
             uint64_t reorg_before = utxo_apply_stage_reorg_unwound_total();
 
-            /* Wire the PRODUCTION self-heal condition layer exactly as the live
-             * node runs it. After a reorg, utxo_apply's fail-closed label_splice
-             * gate REFUSES to apply a W block while the script_validate_log
-             * verdict at that height is still hash-bound to the displaced L
-             * block — that refusal is correct, and the bare reducer drain cannot
-             * clear it. The live re-bind path is the
-             * reducer_frontier_reconcile_light Condition (ticked by the
-             * self_heal supervisor every 5 s): it purges the now-non-canonical
-             * L-bound verdicts at the reorged heights and rewinds the producer
-             * cursors so the stages refill them for W, after which utxo_apply
-             * re-binds + applies. A faithful reorg drive must therefore run BOTH
-             * engines — the reducer drain AND the condition engine — the same
-             * two the live node runs. (Zero peers => the reconcile peer gate
-             * allows the local repair; the tip-staleness detect gate is forced
-             * open each round as the deterministic stand-in for the production
-             * "tip stalled >= 60 s".) */
+            /* Wire the PRODUCTION self-heal condition layer as the live node
+             * runs it. After a reorg, utxo_apply's fail-closed label_splice
+             * gate REFUSES a W block while the script_validate_log verdict at
+             * that height is still hash-bound to the displaced L block, and
+             * the bare drain cannot clear it. The
+             * reducer_frontier_reconcile_light Condition purges the
+             * non-canonical verdicts and rewinds producer cursors so the
+             * stages refill them for W. The drive runs BOTH the reducer drain
+             * AND the condition engine. (Zero peers => the reconcile peer
+             * gate allows the local repair; the tip-staleness detect gate is
+             * forced open each round.) */
             struct connman cm;
             memset(&cm, 0, sizeof(cm));
             net_manager_init(&cm.manager);
@@ -688,28 +640,24 @@ int test_reducer_forward_progress_gate(void)
             sync_monitor_set_context(&cm, NULL, &ms);
             register_reducer_frontier_reconcile_light();
             /* Lower the L0/L1 compiled anchor floor (mainnet 3,056,758) to
-             * genesis so the reconcile's purge/refill window [hstar+1, ...]
-             * covers the regtest reorg heights instead of being empty. The
-             * production logic is identical; only the security floor moves,
-             * and only inside this hermetic test. */
+             * genesis so the reconcile's purge/refill window covers the
+             * regtest reorg heights; only the floor moves, only in this
+             * hermetic test. */
             reducer_frontier_test_set_compiled_anchor(0);
 
             /* Converge: one reducer_kick + one condition tick per round until
-             * the post-reorg coin state itself is stable. The first repair tick
-             * only purges stale L rows and rewinds upstream cursors; script/proof
-             * refill holes become visible after the next reducer drain recreates
-             * W's body_persist rows. Production waits for the 30s condition
-             * backoff between those repair passes; this deterministic harness
-             * clears that backoff so it can prove the same multi-pass repair
-             * without sleeping. Do not stop merely because the active tip is
-             * stable: the coin/refill work can still be in flight below it. */
+             * the post-reorg coin state is stable. The first repair tick only
+             * purges stale L rows and rewinds upstream cursors; refill holes
+             * appear after the next drain recreates W's body_persist rows.
+             * Production waits for a 30s condition backoff between passes;
+             * this harness clears it. Do not stop merely because the active
+             * tip is stable: coin/refill work can still be in flight. */
             {
                 int prev_tip = -2, idle = 0;
                 for (int it = 0; it < 8000; it++) {
                     int kicked = reducer_kick(&ctl);
                     /* Stand in for ">= 60 s since the last tip advance" so the
-                     * detect gate stays open across the whole convergence (a
-                     * forward finalization mid-loop would otherwise reset it). */
+                     * detect gate stays open across the convergence. */
                     sync_monitor_test_set_tip_advance_ts(1);
                     reducer_frontier_reconcile_light_test_clear_backoff();
                     condition_engine_tick();
@@ -734,8 +682,8 @@ int test_reducer_forward_progress_gate(void)
                 }
             }
 
-            /* Tear down the condition layer; the assertions below are pure
-             * reads of the reorged coins_kv + active chain. */
+            /* Tear down the condition layer; the assertions below only
+             * read the reorged coins_kv + active chain. */
             reducer_frontier_test_set_compiled_anchor(-1); /* restore mainnet floor */
             sync_monitor_set_context(NULL, NULL, NULL);
             sync_monitor_test_set_tip_advance_ts(0);
@@ -754,15 +702,10 @@ int test_reducer_forward_progress_gate(void)
 
             RFP_CHECK("PART2: utxo_apply performed a reorg unwind",
                       reorg_after > reorg_before);
-            /* Since 67062bbf6 ("tip_finalize: publish each block on arrival —
-             * kill the anchor +1 skip"), the reducer installs the FULL heavier
-             * W branch on first arrival, so the post-reorg active tip is N+1.
-             * (The retired +1-lattice held the served tip at N with N+1 pending;
-             * this assertion was a reader still calibrated to that convention —
-             * its sibling printf already expects RFP_N+1, and the byte-exact
-             * UTXO match below confirms the set reflects W through N+1.) Verify
-             * the active tip block at N+1 is the W head AND height N is also a W
-             * block — a full branch switch, not a partial splice. */
+            /* The reducer installs the FULL heavier W branch on first
+             * arrival, so the post-reorg active tip is N+1. Verify the tip
+             * block at N+1 is the W head AND height N is also a W block: a
+             * full branch switch, not a partial splice. */
             struct block_index *fin_at_n =
                 active_chain_at(&ms.chain_active, RFP_N);
             struct block_index *fin_at_tip =
@@ -807,11 +750,10 @@ int test_reducer_forward_progress_gate(void)
             printf("reducer_forward_progress_gate: PART2 reorg count=%llu\n",
                    (unsigned long long)count_reorg);
 
-            /* Byte-exact from-scratch reorg parity (coins_kv-vs-coins_kv over
-             * the SHA3 commitment) is the dedicated job of
-             * test_stage_reorg_unwind_parity. Here we assert the reorged
-             * coins_kv is STRUCTURALLY correct: every displaced L coinbase is
-             * gone, every W coinbase is present, and the commitment recomputes. */
+            /* Byte-exact reorg parity over the SHA3 commitment belongs to
+             * test_stage_reorg_unwind_parity. Here coins_kv must be
+             * STRUCTURALLY correct: every displaced L coinbase gone, every W
+             * coinbase present, and the commitment recomputes. */
             reorg_ok = have_reorg_commit && count_reorg > 0 &&
                        l_total > 0 && l_absent == l_total &&
                        w_present == W_LEN;

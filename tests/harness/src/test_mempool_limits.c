@@ -2,16 +2,11 @@
  *
  * Tests for engine/services/mempool_limits.
  *
- * Every case builds a fresh `struct tx_mempool`, populates it
- * with hand-crafted fake transactions (size and fee controlled
- * per-test), and drives the service synchronously. The only
- * lifecycle test starts and immediately stops the expire thread
- * to prove start()/stop() don't leak or hang — it doesn't wait
- * for a real tick.
+ * Every case builds a fresh `struct tx_mempool` with hand-crafted fake
+ * transactions and drives the service synchronously.
  *
- * Double-spend note: `tx_mempool_add_unchecked` rejects adds
- * whose inputs are already present in the pool, so every test
- * tx gets a unique prevout derived from its index.
+ * `tx_mempool_add_unchecked` rejects adds whose inputs are already present,
+ * so every test tx gets a unique prevout derived from its index.
  */
 
 #include "test/test_core.h"
@@ -431,19 +426,10 @@ int test_mempool_limits(void)
     }
 
     /* ── 13. fee/byte sort does NOT overflow at MoneyRange fees ──
-     *
-     * Regression for the integer-overflow eviction-ordering bug:
-     * the comparator cross-multiplies fee*size. With both txs the
-     * same (large) size, A's fee/byte > B's fee/byte iff A.fee >
-     * B.fee — so under count-cap=1 the lower-fee B must be evicted.
-     *
-     * We pick fees from the *measured* size so the OLD int64 product
-     * fee*size wraps past INT64_MAX: feeA*size just exceeds
-     * INT64_MAX (wraps negative) while feeB*size stays positive.
-     * Under the buggy code the sort inverts (A's negative product
-     * sorts as "worst") and A — the genuinely higher-fee tx — gets
-     * evicted instead of B. Both fees stay within MoneyRange
-     * (<= MAX_MONEY) so this is a reachable on-chain scenario. */
+     * The comparator cross-multiplies fee*size. Fees are chosen from the
+     * measured size so feeA*size exceeds INT64_MAX while feeB*size does not;
+     * with count-cap=1 the lower-fee B must still be evicted. Both fees stay
+     * within MoneyRange (<= MAX_MONEY). */
     printf("mempool_limits: fee/byte no int64 overflow at MoneyRange... ");
     {
         struct tx_mempool pool;
@@ -478,8 +464,7 @@ int test_mempool_limits(void)
         cfg.max_tx_count = 1;
         int evicted = mempool_limits_enforce(&pool, &cfg);
 
-        /* Correct: B (lower fee, equal size) is evicted; A survives.
-         * Buggy int64 code evicts A and keeps B. */
+        /* B (lower fee, equal size) is evicted; A survives. */
         bool ok = sized && inrange && added && evicted == 1;
         ok = ok && tx_mempool_size(&pool) == 1;
         ok = ok &&  tx_mempool_exists(&pool, &tx_a.hash);

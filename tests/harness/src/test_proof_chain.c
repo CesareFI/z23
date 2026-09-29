@@ -3,38 +3,22 @@
  * test_proof_chain — the light-client proof-chain walker
  * (tools/command/native_proof_chain_command.c, `zcode proof walk`).
  *
- * WHAT THIS GUARDS. The walker's product is the seven-rung report, and
- * the only way that report can lie is by reporting a rung as passing when
- * it was skipped, or by letting a later rung's pass paper over an earlier
- * break. So every case below breaks exactly ONE rung and asserts three
- * things at once:
+ * Every case breaks exactly ONE rung of the seven-rung report and asserts:
+ *   1. that rung reports `failed` (or `not_checked` when evidence is withheld),
+ *   2. every other rung keeps its own independent verdict,
+ *   3. `verified_prefix` (consecutive passing rungs from 1) stops at the break.
  *
- *   1. that rung reports `failed` (or `not_checked`, where evidence was
- *      withheld rather than supplied-and-broken),
- *   2. every OTHER rung still reports its own honest, independent verdict
- *      — a broken rung 1 does not silently poison rung 2, and
- *   3. `verified_prefix` — the count of CONSECUTIVE passing rungs from 1
- *      — stops at the break, so no later pass can lift it.
+ * Rung 7 (identity_anchor) needs a folded chain, so it is opt-in on `datadir`.
+ * Cases 1-14 pass none and assert it `not_checked`, `chain_complete` false,
+ * `node_free` true. Cases 15-19 supply an on-disk zid_identities projection:
+ * only an ACTIVE anchor reaches verified_prefix 7; rotated / revoked /
+ * unanchored / unreadable each get a distinct verdict.
  *
- * Rung 7 (identity_anchor) is the one rung that needs a folded chain, so
- * it is opt-in on `datadir`. Cases 1-14 pass no datadir and therefore
- * assert it `not_checked` with `chain_complete` false and `node_free`
- * true. Cases 15-19 hand it a real on-disk zid_identities projection and
- * walk the whole ladder: an ACTIVE anchor is the only way to
- * verified_prefix 7 / chain_complete true, and rotated / revoked /
- * unanchored / unreadable each get their own distinct verdict. That is
- * the regression guard the ladder was missing — a rung 7 that silently
- * reverted to "always not_checked", or one that started passing on a
- * revoked key, now fails here.
- *
- * The fixture is hermetic and real: three signed zid release documents
- * folded into a real zid anchor-domain tree, a real ZANC OP_RETURN over
- * the bagged root, a real transaction carrying it, a real merkle path,
- * and two REAL Equihash-mined regtest headers (48,5 solves in << 1 ms).
- * Everything crosses the hex/wire boundary, so the wire path is what is
- * proven, not internal structs. No network and no node: the rung-7 cases
- * write their own throwaway node.db under ./test-tmp (the
- * test_identity_command.c shape) and never touch a live datadir. */
+ * The fixture is hermetic: three signed zid release documents folded into a
+ * zid anchor-domain tree, a ZANC OP_RETURN over the bagged root, a carrying
+ * transaction, a merkle path, and two Equihash-mined regtest headers. All input
+ * crosses the hex/wire boundary. Rung-7 cases write a throwaway node.db under
+ * ./test-tmp and never touch a live datadir. */
 
 #include "test/test_core.h"
 

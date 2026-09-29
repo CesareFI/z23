@@ -237,8 +237,8 @@ static int test_arrival_rate(void)
     int failures = 0;
     printf("block-arrival rate vs nBits-implied difficulty...\n");
 
-    /* A plausible mainnet-shaped compact target. Its absolute value never
-     * matters: the fold only ever uses difficulty RATIOS. */
+    /* A plausible mainnet-shaped compact target; the fold uses only
+     * difficulty RATIOS. */
     const uint32_t NBITS = 0x1c07ffff;
     struct nm_arrival_sample w[NM_ARRIVAL_MAX_WINDOW_BLOCKS];
     struct network_arrival_rate ar;
@@ -253,7 +253,7 @@ static int test_arrival_rate(void)
     NS_CHECK(ar.implied_hashrate_ratio_milli >= 990 &&
              ar.implied_hashrate_ratio_milli <= 1010);
 
-    /* (b) NORMAL VARIANCE: 40% slow (210 s). Well inside Poisson noise for a
+    /* (b) NORMAL VARIANCE: 40% slow (210 s) is inside Poisson noise for a
      *     24-block window — must NOT fire. */
     n = ns_window(w, 24, 210, NBITS);
     network_monitor_fold_arrival_rate(w, n, 150, &ar);
@@ -273,10 +273,9 @@ static int test_arrival_rate(void)
     NS_CHECK(ar.implied_hashrate_ratio_milli >= 240 &&
              ar.implied_hashrate_ratio_milli <= 260);
 
-    /* (d) The nBits baseline is load-bearing, not decoration: the SAME 600 s
-     *     spacing with difficulty that has already RETARGETED down 4x (a
-     *     larger compact target == easier == lower difficulty) is the chain
-     *     correctly re-calibrating, and must NOT fire. */
+    /* (d) The nBits baseline is load-bearing: the SAME 600 s spacing after
+     *     difficulty RETARGETED down 4x is the chain re-calibrating and must
+     *     NOT fire. */
     ns_window(w, 24, 600, NBITS);
     for (int i = 12; i < 24; i++)
         w[i].nbits = 0x1c1ffffc; /* ~4x easier ⇒ ~1/4 the difficulty */
@@ -284,9 +283,8 @@ static int test_arrival_rate(void)
     NS_CHECK(ar.ready);
     NS_CHECK(ar.difficulty_ratio_milli < 1000); /* difficulty really fell */
 
-    /* Conversely: on-target spacing while difficulty CLIMBED 4x means the
-     *     chain is being mined far harder than its opening calibration —
-     *     also not a minority signal. */
+    /* Conversely: on-target spacing while difficulty CLIMBED 4x is not a
+     * minority signal either. */
     ns_window(w, 24, 150, 0x1c01ffff); /* harder baseline */
     network_monitor_fold_arrival_rate(w, 24, 150, &ar);
     NS_CHECK(ar.ready && !ar.rate_below_floor);
@@ -465,8 +463,7 @@ static int test_live_surface(void)
     NS_CHECK(json_get(&out, "_health") != NULL);
     json_free(&out);
 
-    /* Clear it back to healthy so the shared process state is not left armed
-     * for any other group in the same binary. */
+    /* Clear it back to healthy so no other group sees an armed state. */
     memset(&pv, 0, sizeof(pv));
     network_monitor_partition_verdict(60, 7778, &pv);
     network_monitor_netsplit_publish(&pv);

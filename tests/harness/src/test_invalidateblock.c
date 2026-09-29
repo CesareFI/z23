@@ -4,28 +4,20 @@
  * the operator recovery lever (Bitcoin Core invalidateblock /
  * reconsiderblock semantics).
  *
- * What is unit-testable here (pure, in-memory, no LevelDB / no live
- * activation controller):
+ * Pure, in-memory, no LevelDB / no live activation controller:
  *
- *   (a) invalidate a tip block → it is marked BLOCK_FAILED_VALID and
- *       chain selection (find_most_work_chain) now picks the sibling
- *       fork instead. The "tip changes" outcome is observed through the
- *       canonical selector the production reorg path uses.
- *   (b) reconsiderblock → the failure marks are cleared and the original
+ *   (a) invalidate a tip block -> it is marked BLOCK_FAILED_VALID and
+ *       find_most_work_chain (the canonical selector the production reorg
+ *       path uses) picks the sibling fork instead.
+ *   (b) reconsiderblock -> the failure marks are cleared and the original
  *       chain is selectable again.
- *   (c) invalidate a DEEPER block → the block AND its descendant subtree
+ *   (c) invalidate a DEEPER block -> the block AND its descendant subtree
  *       are marked failed (FAILED_VALID on the target, FAILED_CHILD on
- *       descendants), so the whole branch drops out of selection.
+ *       descendants).
  *
- * The full disconnect-and-reorg of the *active* chain (which calls the
- * real disconnect_tip against coins/undo + LevelDB via the activation
- * controller) is an integration concern — exercised by test_reorg_safety
- * for the disconnect machinery and by `make deploy` + `z23 status` for the
- * end-to-end lever. Here we prove the mark/clear core + that the
- * canonical selector honors it, which is the consensus-relevant contract.
- *
- * Fixture style mirrors test_reorg_safety.c (synthetic block_index forks)
- * and test_process_block_revalidate.c (main_state + block_map_insert).
+ * The full disconnect-and-reorg of the active chain is covered by
+ * test_reorg_safety. Fixture style mirrors test_reorg_safety.c and
+ * test_process_block_revalidate.c.
  */
 
 #include "test/test_core.h"
@@ -306,12 +298,11 @@ int test_invalidateblock(void)
 
     /* ── 7. Hash identity: duplicate active object still disconnects ──
      *
-     * Snapshot seeding and header ingestion may retain distinct block_index
-     * objects for the same block hash. The block map resolves `target`, while
-     * the active-chain slot contains `active_twin`. invalidateblock is
-     * hash-addressed and must retreat through the active object's parent;
-     * pointer-only containment leaves a FAILED active tip published while
-     * reporting success (physical matrix regression, 2026-08-14). */
+     * Distinct block_index objects can exist for one block hash. The block
+     * map resolves `target`, while the active-chain slot holds
+     * `active_twin`. invalidateblock is hash-addressed and must retreat
+     * through the active object's parent; pointer-only containment would
+     * leave a FAILED active tip published while reporting success. */
     {
         struct main_state ms;
         memset(&ms, 0, sizeof(ms));
@@ -382,9 +373,8 @@ int test_invalidateblock(void)
                      PROCESS_BLOCK_MEMPOOL_RESTORE_DISCONNECTED);
         IB_CHECK("mempool hook: failed ancestry retracts best header",
                  ms.pindex_best_header == g);
-        /* Production's reducer reconnect repopulates the raw window before the
-         * reconsider-side exact-block mempool reconciliation. Mirror that
-         * post-reducer observation in this controller-free unit fixture. */
+        /* Production's reducer reconnect repopulates the raw window before
+         * the reconsider-side mempool reconciliation; mirror that here. */
         IB_CHECK("mempool hook: model reducer reconnect window",
                  active_chain_move_window_tip(&ms.chain_active, tip));
         IB_CHECK("mempool hook: reconsider succeeds",
@@ -406,15 +396,11 @@ int test_invalidateblock(void)
 
     /* ── 9. Canonical tip FLOOR: refuse a below-tip higher-work fork ──
      *
-     * The exact never-stuck wound (process_block_core.c:106-120): a
-     * stale-import fork tip at a LOWER height but HIGHER nChainWork (bad
-     * work accounting from old LDB data) must NOT trigger a backwards
-     * reorg. find_most_work_chain returns the active TIP instead — else
-     * the chain reorgs backward, the staged activation finality guard
-     * logs below_finality_depth forever, and the node wedges. The floor
-     * is DIRECTIONAL: a higher-work fork ABOVE the tip is still selected
-     * (a legitimate forward reorg). Both directions are asserted so a
-     * regression to either a blanket refusal or no floor at all fails.
+     * A fork tip at a LOWER height but HIGHER nChainWork (bad work
+     * accounting) must NOT trigger a backwards reorg: find_most_work_chain
+     * returns the active TIP instead. The floor is DIRECTIONAL: a
+     * higher-work fork ABOVE the tip is still selected. Both directions
+     * are asserted.
      */
     {
         struct main_state ms;
@@ -427,8 +413,8 @@ int test_invalidateblock(void)
         struct block_index *a2 = mk_idx(&ms, 2, 20, 0x0B, a1);
         struct block_index *a3 = mk_idx(&ms, 3, 30, 0x0C, a2);
         struct block_index *a4 = mk_idx(&ms, 4, 40, 0x0D, a3);
-        /* Stale-import fork tip: height 1 (BELOW tip h=4) but work 99
-         * (ABOVE tip work 40) — the pathological backwards candidate. */
+        /* Fork tip: height 1 (BELOW tip h=4) but work 99 (ABOVE tip work
+         * 40) — the pathological backwards candidate. */
         struct block_index *s1 = mk_idx(&ms, 1, 99, 0x5A, g);
 
         active_chain_move_window_tip(&ms.chain_active, g);
@@ -438,9 +424,8 @@ int test_invalidateblock(void)
         active_chain_move_window_tip(&ms.chain_active, a4);
         ms.pindex_best_header = s1; /* the import thinks s1 is "best" */
 
-        /* s1 has the max nChainWork, so without the floor the selector
-         * would pick it and reorg backward 3 blocks. The floor must
-         * return the tip a4 instead. */
+        /* s1 has the max nChainWork; without the floor the selector would
+         * reorg backward 3 blocks. The floor must return the tip a4. */
         IB_CHECK("floor: below-tip higher-work fork → selector returns TIP",
                  find_most_work_chain(&ms) == a4);
         IB_CHECK("floor: below-tip fork s1 is NOT selected",

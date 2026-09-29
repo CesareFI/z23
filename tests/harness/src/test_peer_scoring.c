@@ -21,8 +21,8 @@
 /* Construct a minimal p2p_node on the stack. peer_misbehaving() only
  * reads node->misbehavior, ->disconnect, ->id, ->addr, ->addr_name, and
  * ->whitelisted on the score path. The ban path also calls ban_addr()
- * which uses nm->banned under nm->cs_banned — we zero the manager and
- * accept that the ban-list path grows via realloc(NULL). */
+ * which uses nm->banned under nm->cs_banned; the manager is zeroed and
+ * the ban list grows via realloc(NULL). */
 static void setup_node(struct p2p_node *node, const char *name, bool whitelisted)
 {
     memset(node, 0, sizeof(*node));
@@ -255,8 +255,7 @@ static int test_localhost_exempt(void)
         setup_manager(&nm);
         setup_localhost(&node);
         /* No hidden-service P2P route installed, so a loopback source is
-         * still evidence of a same-host peer — see the onion-ingress tests
-         * below for what happens once Tor is forwarding to this listener. */
+         * a same-host peer (see the onion-ingress tests below). */
         net_set_onion_ingress_port(0);
 
         for (int i = 0; i < 10; i++)
@@ -270,19 +269,14 @@ static int test_localhost_exempt(void)
     return failures;
 }
 
-/* LANE C REGRESSION — an onion-reachable node sees EVERY inbound peer as
- * 127.0.0.1, because stock Tor forwards hidden-service streams to the local
- * listener as an ordinary TCP connection from loopback. While a loopback
- * source bought a blanket trusted-peer exemption, that exemption covered
- * every inbound peer such a node has, and every DoS defence that ends in
- * peer_scoring_record() was a no-op against all of them.
- *
- * The two halves of the fix are asserted together here because either one
- * alone is wrong: score the peer but keep banning by ADDRESS and the first
- * offender takes the node's whole front door with it (127.0.0.1 on the ban
- * list is checked at accept(), before any bytes, and persists in
+/* An onion-reachable node sees EVERY inbound peer as 127.0.0.1 (Tor forwards
+ * hidden-service streams to the local listener from loopback), so a blanket
+ * loopback exemption would make every DoS defence ending in
+ * peer_scoring_record() a no-op. Both halves are asserted together: score
+ * the peer but keep banning by ADDRESS and the first offender bans the
+ * node's whole front door (127.0.0.1 is checked at accept() and persists in
  * banlist.dat); skip the address ban but keep the exemption and nothing is
- * ever punished at all. */
+ * ever punished. */
 static int test_onion_ingress_scored_never_self_banned(void)
 {
     int failures = 0;
@@ -299,9 +293,8 @@ static int test_onion_ingress_scored_never_self_banned(void)
         node.accepted_local_port = 8033;
 
         /* No hidden-service route installed: loopback still means
-         * same-host, and the peer keeps the exemption. This is the
-         * pre-change behaviour, and it is the behaviour every local
-         * multi-node fixture depends on. */
+         * same-host and the peer keeps the exemption (local multi-node
+         * fixtures depend on this). */
         net_set_onion_ingress_port(0);
         ASSERT(!net_peer_is_onion_ingress(&node));
         for (int i = 0; i < 10; i++)
@@ -631,12 +624,10 @@ static int test_inbound_cap_config(void)
     return failures;
 }
 
-/* F2 REGRESSION — the loopback relaxation is a RAISED cap, never an
- * unlimited one, and it can never take more than a quarter of inbound
- * capacity. Stock settings are 125 total connections minus 8 reserved
- * outbound = 117 inbound slots; the numbers below are asserted as exact
- * slot counts out of that 117, because "the code path exists" is not the
- * property that matters here — the numeric ceiling is. */
+/* The loopback relaxation is a RAISED cap, never an unlimited one, and can
+ * never take more than a quarter of inbound capacity. Stock settings are
+ * 125 connections minus 8 reserved outbound = 117 inbound slots; asserted
+ * as exact slot counts out of that 117. */
 static int test_loopback_inbound_ceiling(void)
 {
     int failures = 0;
@@ -661,7 +652,7 @@ static int test_loopback_inbound_ceiling(void)
         setenv("ZCL_NET_LOOPBACK_INBOUND_MAX", "8", 1);
         ASSERT_EQ(peer_scoring_max_inbound_loopback(max_inbound), 8);
 
-        /* 0 restores the pre-exemption behaviour: no raised cap at all. */
+        /* 0: no raised cap at all. */
         setenv("ZCL_NET_LOOPBACK_INBOUND_MAX", "0", 1);
         ASSERT_EQ(peer_scoring_max_inbound_loopback(max_inbound), 0);
 
@@ -714,10 +705,8 @@ static int test_last_peer_ban_secs_config(void)
 static void register_nodes(struct net_manager *nm, struct p2p_node **nodes,
                            size_t count)
 {
-    /* Production always constructs this recursive mutex in
-     * net_manager_init(). A zero-filled pthread mutex happens to tolerate
-     * trylock on some libc implementations, but Darwin correctly gives no
-     * such portable guarantee. Exercise the production lock contract. */
+    /* Production constructs this recursive mutex in net_manager_init();
+     * exercise the production lock contract. */
     zcl_mutex_init(&nm->cs_nodes);
     nm->nodes = nodes;
     nm->num_nodes = count;
@@ -792,7 +781,7 @@ static int test_second_peer_keeps_full_ban(void)
         peer_scoring_record(&nm, &bad, PEER_OFFENCE_INVALID_BLOCK, "bad block");
 
         ASSERT_EQ((int)nm.num_banned, 1);
-        /* Full 24h, byte-identical to pre-change behaviour. */
+        /* Full 24h ordinary ban. */
         ASSERT(nm.banned[0].ban_until >= before + 24 * 60 * 60);
         ASSERT(!(blocker_exists("net.last_peer_ban")));
 

@@ -282,10 +282,7 @@ static int e1_gate_binary_present(void)
  *
  *   1. baseline: the tree as committed is clean (exit 0).
  *   2. a 900-line file planted in app/ is in the 801..1500 BUFFER band and
- *      must NOT fail. This is the regression the redesign exists to prevent:
- *      the predecessor gate hard-failed at 801 lines, so adding three lines
- *      to an 877-line file broke the build and forced a split in the middle
- *      of unrelated work.
+ *      must NOT fail.
  *   3. a 1600-line file planted in lib/ is over the 1500 HARD LIMIT and is
  *      not in the baseline, so it MUST fail — and say which file and why.
  *      Planting this one in lib/ (not app/) also pins that the old
@@ -363,9 +360,7 @@ int t_e1_file_size_bands(void)
  * never touch the real tree or the real baseline file:
  *
  *   - a baselined file sitting AT its recorded count is clean;
- *   - growing it by five lines FAILS. The baseline is shrink-only, so this
- *     is the mechanism that keeps the 23 legacy over-limit files closing
- *     instead of drifting;
+ *   - growing it by five lines FAILS (the baseline is shrink-only);
  *   - pointing the scan at an empty directory exits 2. A gate that scanned
  *     nothing must never report clean — that is worse than no gate. */
 int t_e1_file_size_baseline_and_hollow_scan(void)

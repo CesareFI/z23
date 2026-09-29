@@ -1,46 +1,21 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Confinement visibility + the confinement/hot-swap filesystem collision.
+ * Confinement witness honesty and the confinement/hot-swap collision
+ * (confinement is built but default off; engine/composition/src/boot.c).
  *
- * Two things are proven here, both about confinement that is BUILT but
- * DEFAULT OFF (engine/composition/src/boot.c:sr_sandbox_enter / sr_confine_enter):
+ * (1) The `confinement` witness reports UNCONFINED when nothing entered,
+ *     distinguishes "not requested" from "requested but unconfined", and in
+ *     a live Landlock domain reports the interface, ABI and grant set.
+ * (2) Boot grants only the DATA directory, but hot-swap modules live under
+ *     /tmp or <src>/build/hotswap, so open() fails with a bare EACCES
+ *     (Landlock hooks file_open, not access(2), so prechecks pass).
+ *     os_sandbox_explain_denied_path() turns that into a typed refusal.
+ * (3) A retrofit Landlock join issues prctl(2) + landlock_restrict_self(2),
+ *     which both -confine seccomp allow-sets omit; the guard must refuse
+ *     the attempt instead of being killed.
  *
- * (1) The `confinement` witness (platform/modules/platform/src/os_sandbox_witness.c) is
- *     honest in both directions: it says UNCONFINED when nothing entered, it
- *     distinguishes "nobody requested confinement" from "confinement was
- *     requested and the process is running unconfined anyway", and once a
- *     Landlock domain is live it reports the interface, its ABI, and the
- *     actual grant set the domain was built from.
- *
- * (2) THE COLLISION, which nobody has hit yet because both features are off:
- *     boot scopes the Landlock filesystem grant to the DATA directory, but a
- *     hot-swap module lives under /tmp or <src>/build/hotswap (engine/modules/hotswap/
- *     src/hotswap_loader.c:hotswap_path_is_acceptable). Neither is granted.
- *     So a dev node started with confinement AND swapping enabled fails at
- *     hotswap_activate.c's open(so_path, O_RDONLY|O_CLOEXEC|O_NOFOLLOW) with
- *     a bare EACCES that the current message ("could not pin and hash a
- *     regular module artifact") does not explain.
- *
- *     Landlock hooks file_open, NOT access(2) — so the precheck's
- *     access(so_path, R_OK) still SUCCEEDS and the request sails through
- *     every existing guard before dying at the open. That is exactly why the
- *     failure names nothing today. This suite pins that behaviour and proves
- *     os_sandbox_explain_denied_path() turns it into a typed refusal that
- *     names the restriction and the missing grant.
- *
- * (3) A second latent kill in the same family: a retrofit Landlock join
- *     (os_sandbox_landlock_apply_to_self(), which the health-sweep and
- *     metrics loops call EVERY tick) issues prctl(2) + landlock_restrict_
- *     self(2). Both -confine seccomp allow-sets omit both syscalls, so under
- *     -confine that per-tick call is a SECCOMP_RET_KILL_PROCESS, not a failed
- *     join. The guard must REFUSE the attempt instead of taking the node
- *     down; this proves the refusal, without asserting today's allow-set
- *     membership (a future widening must stay legal).
- *
- * Everything that mutates process state runs in a FRESHLY FORKED child and is
- * judged by its exit status — the same one-way-builder discipline as
- * test_os_sandbox.c. The parent group process is never confined.
- */
+ * State-mutating checks run in a freshly forked child judged by exit status;
+ * the parent group process is never confined. */
 
 #define _GNU_SOURCE
 
@@ -110,16 +85,14 @@ static bool touch_file(const char *path)
 {
     int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
     if (fd < 0) return false;
-    /* ELF-ish content is irrelevant: the collision fires at open(), long
-     * before dlopen ever inspects a byte. */
+    /* Content is irrelevant: the collision fires at open(). */
     bool ok = write(fd, "not-an-elf\n", 11) == 11;
     close(fd);
     return ok;
 }
 
-/* Rewrite `buf` in place with its canonical path. Every fixture path is
- * canonicalized up front so the string comparisons below hold on a host where
- * /tmp is a symlink — the recorded grants are canonical by construction. */
+/* Rewrite `buf` in place with its canonical path (so /tmp symlinks match
+ * the recorded grants). */
 static bool canon_path(char *buf, size_t cap)
 {
     char real[PATH_MAX];
@@ -192,8 +165,7 @@ static int c_witness_records_grants(void)
     if (!r || !w) return 13;
     if (os_sandbox_fs_grant_at(1, NULL, NULL) != NULL) return 14;
 
-    /* The ABI is CACHED at build time: re-probing from a confined process is
-     * a kill under -confine, so the witness must never need a live probe. */
+    /* The ABI is cached at build time: a live probe under -confine is a kill. */
     if (os_sandbox_landlock_abi_cached() < 1) return 15;
 
     /* Inside the grant: allowed. Outside: provably denied. */
@@ -252,13 +224,10 @@ static int c_dumper_inside_domain(void)
 
 /* ── (2) the confinement / hot-swap collision ──────────────────────────── */
 
-/* Pin the exact shape of the bug: with the datadir-only domain live, a
- * hot-swap module path
- *   - still passes every existing hot-swap precheck (access(2) is not a
- *     Landlock hook, so the guard cannot see the wall), and
- *   - dies at the same open() hotswap_activate.c uses, with EACCES.
- * Both legal module homes (/tmp and .../build/hotswap) are outside the grant,
- * so the collision is not specific to the source tree. */
+/* With the datadir-only domain live, a hot-swap module path passes every
+ * precheck (access(2) is not a Landlock hook) and dies at the
+ * hotswap_activate.c open() with EACCES. Both legal module homes lie outside
+ * the grant. */
 static int c_hotswap_module_open_is_denied(void)
 {
     char why[256] = {0};
@@ -267,11 +236,8 @@ static int c_hotswap_module_open_is_denied(void)
 
     if (!enter_datadir_only_domain()) return 42;
 
-    /* The precheck STILL passes under confinement — Landlock hooks file_open,
-     * not access(2), so nothing before the open can see the wall. Reported,
-     * not asserted: if a future kernel starts hooking access(2) the precheck
-     * would instead say "file does not exist / unreadable", which names the
-     * confinement no better. Either way the collision below stands. */
+    /* The precheck still passes: Landlock hooks file_open, not access(2).
+     * Reported, not asserted. */
     why[0] = '\0';
     bool precheck_ok = hotswap_path_is_acceptable(g_modpath, why, sizeof(why));
     printf("confinement: [obs] precheck under confinement: %s (%s)\n",
@@ -309,8 +275,7 @@ static int c_refusal_message_names_the_wall(void)
     if (!strstr(why, g_datadir)) return 57;   /* names the grant that exists */
     if (!strstr(why, "confinement")) return 58;
 
-    /* A granted path yields no message, so the call doubles as the predicate
-     * at the refusal site without a second branch. */
+    /* A granted path yields no message (doubles as the predicate). */
     char inside[256];
     snprintf(inside, sizeof(inside), "%s/node.db", g_datadir);
     if (os_sandbox_explain_denied_path(inside, true, why, sizeof(why)) != 0)
@@ -343,18 +308,15 @@ static int c_retrofit_join_refuses_under_allowlist(void)
     if (!os_sandbox_no_new_privs()) return 71;
     if (!os_sandbox_seccomp_allow(allow, n).ok) return 72;
 
-    /* From here on every syscall outside the allow-set kills this child. The
-     * witness must be readable (pure atomic loads)... */
+    /* Every syscall outside the allow-set kills this child; the witness
+     * must stay readable (pure atomic loads)... */
     if (os_sandbox_retrofit_join_permitted() != expect_permitted) return 73;
 
-    /* ...and the per-tick retrofit join the health/metrics loops make must
-     * return a non-ok instead of issuing the syscall that would kill us. A
-     * SIGSYS here surfaces as a negative code in the parent, so this child
-     * returning at all is itself the proof. */
+    /* The per-tick retrofit join must return non-ok rather than issue the
+     * killing syscall; returning at all is the proof. */
     struct zcl_result r = os_sandbox_landlock_apply_to_self();
     if (expect_permitted) {
-        /* Widened allow-set: the join is legal, only its outcome is untested
-         * here (no domain exists in this child, so it reports unavailable). */
+        /* Widened allow-set: the join is legal (no domain here: unavailable). */
         if (r.ok) return 74;
     } else {
         if (r.ok) return 75;
@@ -376,8 +338,7 @@ int test_os_sandbox_hotswap_interaction(void)
         return 1;
     }
 
-    /* Unconfined baseline — asserted in the PARENT, which stays unconfined
-     * for the whole group. This is the state every node runs in today. */
+    /* Unconfined baseline, asserted in the parent (never confined). */
     CH_CHECK("unconfined process reports unconfined", os_sandbox_unconfined());
     CH_CHECK("no confinement requested -> empty requested_profile",
              os_sandbox_requested_profile() != NULL &&
@@ -410,8 +371,7 @@ int test_os_sandbox_hotswap_interaction(void)
 
     int abi = os_sandbox_landlock_abi();
     if (abi < 1) {
-        /* Degraded kernel: the collision cannot be demonstrated, but the
-         * fail-open contract above already holds. Skip loudly. */
+        /* Degraded kernel: skip loudly. */
         printf("confinement: SKIP (Landlock unavailable, abi=%d) — "
                "fail-open contract still covered above\n", abi);
         tear_down_fixture();

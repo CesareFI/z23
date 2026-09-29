@@ -203,17 +203,14 @@ int test_merkle_tree(void)
         if (!ok) failures++;
     }
 
-    /* Scale tests split into separate function to avoid stack exhaustion.
-     * Each scale test allocates ~5.6KB of structs on the stack; with many tests
-     * in one function frame the compiler may not reuse stack slots, causing
-     * overflow when subsequent test functions are called. */
+    /* Scale tests are split out: each allocates ~5.6KB of stack structs that one
+     * frame may not reuse, risking overflow. */
     failures += test_merkle_tree_scale();
 
     return failures;
 }
 
-/* Split from test_merkle_tree to keep stack usage bounded per call frame.
- * __attribute__((noinline)) prevents LTO from merging the frames. */
+/* Split from test_merkle_tree to bound stack usage; noinline stops LTO merging frames. */
 __attribute__((noinline))
 static int test_merkle_tree_scale(void)
 {
@@ -293,12 +290,8 @@ static int test_merkle_tree_scale(void)
 
     printf("Sapling TREE serialize/deserialize preserves root (25K)... ");
     {
-        /* 25000 appends fill 14 of the 32 parent levels (has_left/has_right
-         * both set), which is the structure that drives tree
-         * serialize/deserialize: every active parent level is emitted and
-         * read back. A larger count only re-fills the cached-empty upper
-         * half identically — it adds Pedersen hashes, not coverage. The
-         * dedicated large-scale stress anchor stays at 50K below. */
+        /* 25000 appends fill 14 of 32 parent levels (has_left/has_right set), which
+         * drives serialize/deserialize; more only adds hashes. The 50K stress anchor is below. */
         struct incremental_merkle_tree t;
         sapling_tree_init(&t);
         struct uint256 cm;
@@ -631,15 +624,13 @@ static int test_merkle_tree_scale(void)
     }
 
     /* ================================================================ */
-    /* Witness cursor depth bug regression test                         */
+    /* Witness cursor depth survives serialize/deserialize             */
     /* ================================================================ */
 
     printf("Witness cursor depth preserved after serialize/deserialize... ");
     {
-        /* Build a tree where the witness has an active cursor at non-trivial depth.
-         * The bug: deserialize set cursor.depth = full tree depth (32) instead of
-         * cursor_depth. This produces wrong root when incremental_tree_root pads
-         * with empty hashes up to cursor.depth. */
+        /* Regression: deserialize must set cursor.depth = cursor_depth, not the full
+         * tree depth (32), or incremental_tree_root pads to the wrong depth. */
         struct incremental_merkle_tree t;
         sapling_tree_init(&t);
         struct uint256 cm;
@@ -731,16 +722,9 @@ static int test_merkle_tree_scale(void)
         struct uint256 cm;
         memset(cm.data, 0, 32);
 
-        /* Build tree with 25000 elements, witness at 12500, then advance the
-         * witness by 1000 more. This produces num_filled=7 (the full
-         * MAX_WITNESS_FILLS-bounded fill array) with an active cursor at
-         * depth 14 — the same structural witness shape the serialize/
-         * deserialize roundtrip exercises at 100K (which only reaches
-         * cursor depth 16, still far short of the 32-deep tree). num_filled,
-         * the active cursor, and the multi-level fill array are all
-         * populated identically, so every roundtrip + cursor-preservation
-         * assertion below is exercised. The 50K stress test further down
-         * remains the dedicated large-scale anchor. */
+        /* 25000 elements, witness at 12500, advanced by 1000: num_filled=7 with an
+         * active cursor at depth 14, the same structural shape as the 100K roundtrip.
+         * The 50K stress test remains the large-scale anchor. */
         struct incremental_witness w;
         bool w_init = false;
         for (int i = 0; i < 25000; i++) {
@@ -877,11 +861,8 @@ static int test_merkle_tree_scale(void)
                 break;
             }
 
-            /* Teeth: reconstruct the final anchor from the exact leaf and
-             * serialized sibling/direction pairs. A length-only assertion
-             * missed the historical level-0 inversion (leaf-as-sibling with
-             * the opposite direction), which made every generated spend path
-             * unusable by the canonical Sapling circuit. */
+            /* Teeth: reconstruct the anchor from the leaf and serialized
+             * sibling/direction pairs; a length-only check misses a level-0 inversion. */
             struct uint256 cur = {{0}};
             cur.data[0] = (uint8_t)(positions[j] - 1);
             for (size_t level = 0;

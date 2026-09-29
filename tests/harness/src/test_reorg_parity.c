@@ -2,16 +2,11 @@
  *
  * Reorg parity proof for the reducer-era UTXO invariants.
  *
- * The reducer architecture requires a chain REORG to produce a
- * byte-identical UTXO/coin state regardless of path. That is, unwinding a
- * lighter branch A and applying a heavier branch B must yield the EXACT SAME
- * coin set as building branch B directly from the fork point — never having
- * seen A at all.
- *
- * This is the disconnect/UTXO-unwind parity proof. A forward-only replay is
- * NOT sufficient: a node that can only roll forward halts on the first mainnet
- * reorg. The new tip path must unwind to byte-exact state, and this test is
- * the offline proof of that invariant for the reducer's reorg path.
+ * A chain REORG must produce a byte-identical UTXO/coin state regardless of
+ * path: unwinding a lighter branch A and applying a heavier branch B must
+ * yield the EXACT SAME coin set as building B directly from the fork point.
+ * A forward-only replay is not sufficient; this is the offline proof of the
+ * disconnect/UTXO-unwind path.
  *
  * Strategy
  * --------
@@ -26,41 +21,21 @@
  * --------------------------------
  *   The `utxo_commitment` (XOR-hash accumulator of SHA256(txid||vout||
  *   value||height) over the whole UTXO set, plus a count) is the
- *   canonical byte-level fingerprint of the coin set. Two views with
- *   equal commitments hold byte-identical UTXO sets.
+ *   byte-level fingerprint of the coin set; equal commitments mean
+ *   byte-identical UTXO sets.
  *
- *   The in-memory incremental accumulator (`cache->commitment`) is
- *   maintained only on the forward path (update_coins add/remove);
- *   disconnect_block does NOT decrement it. Trusting it directly after a
- *   reorg would be path-DEPENDENT (stale). The fix (CLOSED — see below)
- *   is an authoritative QUERY that recomputes from the coin set:
- *   coins_view_cache_recompute_commitment() — the in-memory analogue of
- *   the live node's utxo_commitment_compute_db() (which iterates the
- *   SQLite `utxos` table). This test exercises that query and asserts the
- *   reorged view and the direct-build view converge to an identical
- *   fingerprint, plus per-outpoint presence/value/height equality so a
- *   commitment collision cannot mask a divergence.
+ *   The incremental accumulator (`cache->commitment`) is maintained only on
+ *   the forward path; disconnect_block does NOT decrement it, so it is
+ *   path-DEPENDENT after a reorg. The authoritative query is
+ *   coins_view_cache_recompute_commitment(), an O(N) recompute over the
+ *   coin set (the in-memory analogue of utxo_commitment_compute_db()); it
+ *   leaves the forward-only value unchanged byte-for-byte. This test asserts
+ *   the reorged and direct-build views converge to an identical fingerprint,
+ *   plus per-outpoint presence/value/height equality so a commitment
+ *   collision cannot mask a divergence.
  *
- *   BUG (now CLOSED): "cache->commitment is path-dependent across reorgs."
- *   ROOT: disconnect_block never decrements the XOR accumulator, so the
- *   incremental field encodes connect/disconnect HISTORY rather than the
- *   current coin set. FIX (this branch): rather than mutate the validation
- *   hot path (disconnect_block), the authoritative commitment is now a
- *   path-INDEPENDENT recompute over the live coin SET
- *   (coins_view_cache_recompute_commitment in core/modules/coins). The forward-only
- *   incremental value is unchanged byte-for-byte (same per-UTXO hash
- *   inputs; XOR is commutative), so persisted snapshots stay valid; the
- *   recompute is O(N) on-demand, off the per-block hot path. This test now
- *   ASSERTS path-independence: the queried recompute over the reorged view
- *   equals a from-scratch recompute, and equals the direct-build view.
- *
- *   This mirrors the projection convergence idiom: the proof passes only when
- *   the two paths converge to an identical fingerprint
- *   (every outpoint that should exist does, and nothing extra leaks).
- *
- * Reuses the block/tx/coinbase builders and disconnect/connect helpers
- * patterned on test_reorg_safety.c (the 50-block fork capstone) — same
- * real consensus paths (disconnect_block / update_coins /
+ * Uses the builders and helpers of test_reorg_safety.c, with the same real
+ * consensus paths (disconnect_block / update_coins /
  * update_coins_with_undo), no stubs.
  */
 
@@ -223,15 +198,9 @@ static bool connect_block_with_undo(struct block *blk, int height,
 
 /* Recompute a PATH-INDEPENDENT UTXO commitment for `view` by XOR-ing in
  * every still-available output across the supplied candidate txid set.
- *
- * This is the explicit-universe twin of the production query
- * coins_view_cache_recompute_commitment() (which iterates the cache's own
- * live entries). Both derive the fingerprint from the coin SET, not the
- * incremental `view->commitment` accumulator, so both are independent of
- * any reorg history. We keep this universe-driven helper to cross-check the
- * production query against an INDEPENDENT recompute over a known outpoint
- * set: if a cache entry leaked or went missing, the universe-driven count
- * and the cache-iterating count would disagree. */
+ * The explicit-universe twin of coins_view_cache_recompute_commitment():
+ * both derive the fingerprint from the coin SET, so a leaked or missing
+ * cache entry makes their counts disagree. */
 static void recompute_commitment(struct coins_view_cache *view,
                                  const struct uint256 *txids, size_t ntx,
                                  struct utxo_commitment *out)
@@ -465,9 +434,9 @@ int test_reorg_parity(void)
     universe[nu++] = b_blk[2].vtx[1].hash;       /* B2 spend output */
 
     /* ── CORE PARITY PROOF (byte-exact UTXO set) ───────────────
-     * Reorged view (A → unwind → B) must hold a byte-identical coin
-     * SET to the direct-built B. Proven via a path-independent
-     * recomputed commitment (the live node's authoritative model). */
+     * The reorged view (A -> unwind -> B) must hold a byte-identical coin
+     * SET to the direct-built B, via the path-independent recomputed
+     * commitment. */
 
     struct utxo_commitment c_reorg, c_direct;
     recompute_commitment(&v_reorg, universe, nu, &c_reorg);
@@ -478,15 +447,11 @@ int test_reorg_parity(void)
     RP_CHECK("parity: recomputed UTXO count matches",
              c_reorg.count == c_direct.count);
 
-    /* ── PATH-INDEPENDENCE (BUG CLOSED) ────────────────────────────
-     * The production authoritative query coins_view_cache_recompute_
-     * commitment() derives the fingerprint from the live coin SET, so it
-     * must be path-INDEPENDENT: the reorged view (A → unwind → B) and the
-     * direct-built B (never saw A) must query IDENTICAL commitment + count,
-     * and each must equal the universe-driven recompute above. This is the
-     * fix for the formerly-open bug "cache->commitment path-dependent
-     * across reorgs": we never read the stale incremental accumulator for
-     * the authoritative answer — we recompute from the set. */
+    /* ── PATH-INDEPENDENCE ─────────────────────────────────────────
+     * coins_view_cache_recompute_commitment() derives the fingerprint from
+     * the live coin SET: the reorged view and the direct-built B must query
+     * IDENTICAL commitment + count, each equal to the universe recompute
+     * above; the stale incremental accumulator is never read. */
     struct utxo_commitment q_reorg, q_direct;
     coins_view_cache_recompute_commitment(&v_reorg, &q_reorg);
     coins_view_cache_recompute_commitment(&v_direct, &q_direct);
@@ -505,11 +470,9 @@ int test_reorg_parity(void)
              utxo_commitment_equal(&q_direct, &c_direct) &&
              q_direct.count == c_direct.count);
 
-    /* Sanity that the bug was REAL: the stale incremental accumulator on the
-     * reorged view differs from the authoritative recompute (it still
-     * carries branch-A's unwound entries). The fix is to NEVER trust this
-     * field across a reorg — the assertions above use the recompute, which
-     * is correct regardless. This is a diagnostic print, not a gate. */
+    /* Diagnostic, not a gate: the incremental accumulator on the reorged
+     * view differs from the recompute (it keeps A's unwound entries), so
+     * only the recompute is trusted across a reorg. */
     if (!utxo_commitment_equal(&v_reorg.commitment, &q_reorg)) {
         printf("[confirmed] stale incremental accumulator differs from "
                "authoritative recompute after reorg: incremental.count=%llu "
@@ -520,12 +483,9 @@ int test_reorg_parity(void)
     }
 
     /* ── FORWARD-ONLY VALUE UNCHANGED (snapshot compatibility) ─────
-     * v_direct was built forward-only (no disconnect), so its incremental
-     * accumulator IS the authoritative value. The recompute query must
-     * return that SAME value byte-for-byte — proving the fix did not alter
-     * the forward-only commitment that persisted snapshots are pinned to.
-     * (Same per-UTXO hash inputs; XOR is commutative, so set-iteration
-     * order is irrelevant.) */
+     * v_direct was built forward-only, so its incremental accumulator IS
+     * the authoritative value; the recompute must return the same value
+     * byte-for-byte (persisted snapshots are pinned to it). */
     RP_CHECK("parity: forward-only incremental == recompute (byte-exact)",
              utxo_commitment_equal(&v_direct.commitment, &q_direct) &&
              v_direct.commitment.count == q_direct.count);
@@ -549,9 +509,8 @@ int test_reorg_parity(void)
              coins_identical(&v_reorg, &v_direct, &b_blk[2].vtx[1].hash));
 
     /* ── NO LEAK: branch A's outputs must be ABSENT after reorg ──
-     * A1/A3 coinbases and A2's spend output must not exist in the
-     * reorged view (they were never re-created by B). The genesis and
-     * B-chain coverage above proves presence; here we prove absence. */
+     * A1/A3 coinbases and A2's spend output must not exist in the reorged
+     * view (B never re-created them). */
     {
         bool gone = !coins_view_cache_have_coins(&v_reorg, &a1_cb_hash) &&
                     !coins_view_cache_have_coins(&v_reorg,
@@ -570,8 +529,8 @@ int test_reorg_parity(void)
     }
 
     /* ── IDEMPOTENT BACK-AND-FORTH: A→B→A→B == direct B ────────
-     * Start a fresh reorging view and cycle twice, ending on B.
-     * Final state must still equal the direct-built B (no residue). */
+     * Cycle twice on a fresh view, ending on B; state must equal the
+     * direct-built B. */
     {
         struct coins_view_cache v_cyc;
         struct coins_view nvc;
@@ -613,9 +572,8 @@ int test_reorg_parity(void)
         }
         RP_CHECK("parity: A->B->A->B cycle succeeds", ok);
 
-        /* Recomputed (path-independent) commitment after two full
-         * back-and-forth cycles must still equal the direct-built B: no
-         * residue accumulates in the actual coin set. */
+        /* The recomputed commitment after two back-and-forth cycles equals
+         * the direct-built B: no residue in the coin set. */
         struct utxo_commitment c_cyc, c_dir2;
         recompute_commitment(&v_cyc, universe, nu, &c_cyc);
         recompute_commitment(&v_direct, universe, nu, &c_dir2);
@@ -624,10 +582,7 @@ int test_reorg_parity(void)
         RP_CHECK("parity: cycled recomputed count == direct-build count",
                  ok && c_cyc.count == c_dir2.count);
 
-        /* Same invariant through the PRODUCTION query: after two full
-         * A->B->A->B cycles the queried commitment must still equal the
-         * direct build — path-independence holds no matter how convoluted
-         * the connect/disconnect history. */
+        /* Same invariant through the PRODUCTION query. */
         struct utxo_commitment q_cyc, q_dir2;
         coins_view_cache_recompute_commitment(&v_cyc, &q_cyc);
         coins_view_cache_recompute_commitment(&v_direct, &q_dir2);
@@ -650,16 +605,10 @@ int test_reorg_parity(void)
     }
 
     /* ── ADVERSARIAL #1: in-block create+spend rolled back ─────────
-     * A single block X both CREATES a UTXO (tx1 spends genesis -> output O1)
-     * and SPENDS it (tx2 spends O1 -> output O2) — the created coin lives and
-     * dies entirely within one block. Connecting the block leaves the cache
-     * with genesis spent, O1 spent, O2 present. Disconnecting that ONE block
-     * must reverse the intra-block dependency in the correct order (undo tx2
-     * first to restore O1, then undo tx1 to restore genesis), yielding a coin
-     * set BYTE-EXACT with the pre-block state (genesis present & unspent, O1
-     * and O2 absent). This stresses disconnect_block's reverse-order undo of a
-     * within-block create/spend chain — a case the cross-block A2 spend above
-     * does NOT exercise. */
+     * Block X creates a UTXO (tx1 spends genesis -> O1) and spends it (tx2
+     * O1 -> O2). Disconnecting X must undo tx2 first, then tx1, yielding a
+     * coin set BYTE-EXACT with the pre-block state (genesis unspent, O1 and
+     * O2 absent). */
     {
         struct coins_view_cache v_pre, v_post;
         struct coins_view nvp1, nvp2;
@@ -743,14 +692,10 @@ int test_reorg_parity(void)
     }
 
     /* ── ADVERSARIAL #2: spend/unspend symmetry across a reorg ─────
-     * The complement of the B2-spends-genesis case above. Here the OLD tip
-     * (branch S) SPENDS a pre-fork output; the WINNING fork (branch U) does
-     * NOT touch it. After reorg the disconnected spend must be REVERSED so the
-     * pre-fork output re-enters the UTXO set UNSPENT — and the result must be
-     * byte-exact with a direct build of U that never spent it (proving the
-     * unspend is real, not a stale leak). This is the inverse direction of the
-     * existing proof and guards the "restored input -> ADD" disconnect path
-     * for a genuine reorg (not just a single-tip rollback).
+     * The old tip (branch S) SPENDS a pre-fork output; the winning fork
+     * (branch U) does not. After the reorg the pre-fork output must be
+     * UNSPENT again and byte-exact with a direct build of U (the "restored
+     * input -> ADD" disconnect path).
      *
      * Fork point: a 2-output funding coinbase F at height 0 (its output 1 is
      * the contested coin). Branch S (height 1) spends F:1. Branch U (heights

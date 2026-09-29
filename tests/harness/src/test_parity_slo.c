@@ -196,9 +196,7 @@ static int test_remedy_witness_registration(void)
         }
     }
 
-    /* Drive detect/remedy/witness directly via the engine tick, since the
-     * condition's remedy/witness are file-static (not test-exported —
-     * matching net_partition_suspected's shape: only detect is exported). */
+    /* Drive detect/remedy/witness via the engine tick; only detect is test-exported. */
     condition_engine_tick();
     PS_CHECK("engine remedy raised the named blocker",
              blocker_exists("consensus.parity_slo_breach"));

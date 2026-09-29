@@ -2,33 +2,21 @@
  *
  * The mutation harness, proved on a subject whose answer is already known.
  *
- * A harness that measures test quality is worth nothing if it is not itself
- * measured, and there are exactly three ways it can lie:
+ * The harness must not lie in three ways: call a mutant KILLED that nothing
+ * killed, call a mutant SURVIVED that a test caught, or leave the mutated
+ * file altered on disk.
  *
- *   1. It can call a mutant KILLED that nothing killed — flattering a suite.
- *   2. It can call a mutant SURVIVED that the test did catch — inventing a
- *      hole and sending a reader to fix a test that is already right.
- *   3. It can leave the file it mutated on disk, which is worse than not
- *      existing at all. `dev.agent.mutate` shipped with exactly that shape
- *      of bug: its write path opened the source "wb" — truncating on the
- *      spot — so a write that failed afterwards left the file cut in half.
+ * This group builds a two-function subject with one rule the runner checks
+ * and one it never calls, runs a real campaign (real compiler and link), and
+ * asserts KILLED for the first and SURVIVED for the second. It then asserts
+ * the subject's SHA3-256 is unchanged after a completed run and after a run
+ * stopped partway.
  *
- * So this group builds a two-function subject with one rule the runner
- * checks and one rule it never calls, runs a REAL campaign over it with a
- * real compiler and a real link, and asserts the harness says KILLED about
- * the first and SURVIVED about the second. Then it asserts the subject's
- * SHA3-256 is unchanged — after a completed run AND after a run stopped
- * partway, which is the case that corrupts a checkout.
+ * The subject is chmod 0444 for the whole campaign: mutants compile from a
+ * scratch copy and the target is never opened for writing.
  *
- * The strongest assertion here is the cheapest one: the subject file is
- * chmod 0444 for the whole campaign. This harness compiles mutants from a
- * scratch copy and never opens the target for writing, so a read-only
- * subject is not an obstacle; a harness that edited in place could not get
- * past its first mutant. That is structural proof rather than a hopeful
- * assertion about a restore path.
- *
- * Everything runs under the suite's own temp directory. No datadir, no
- * node, no network, and no file in the checkout is touched.
+ * Everything runs under the suite's temp directory: no datadir, node,
+ * network, or checkout file is touched.
  */
 
 #include "test/test_core.h"
@@ -112,29 +100,10 @@ static const char *tmh_cc(void)
     return cc && cc[0] ? cc : "cc";
 }
 
-/* $CC is a COMMAND LINE, not a program name, and the difference is not
- * academic here.
- *
- * This tree sets CC to the compiler-cache wrapper followed by the compiler --
- * "<abs>/build/bin/zcc cc" -- and make exports that to every recipe. So a run
- * from `make t-fast` sees TWO tokens where a run straight from a shell sees
- * none at all. Handing the whole string to execve as argv[0] asks the kernel
- * for a program whose filename contains a space, which cannot exist, so the
- * fixture failed to build and the group failed.
- *
- * It failed only under the build. Every by-hand run passed, because a
- * developer's shell has no CC. That is the worst shape a defect can have: it
- * is invisible exactly where people look for it, and it fails only in the
- * gate, where it reads as flakiness.
- *
- * Split on spaces and tabs, and no quote handling on purpose: make splits CC
- * the same way, so a compiler path containing a space would have broken the
- * build long before it reached this test.
- *
- * `buf` receives a mutable copy and must outlive the argv pointing into it.
- * Returns the token count, or 0 if CC does not fit -- never a partial argv,
- * because a truncated compiler invocation would fail somewhere much less
- * obvious than here. */
+/* $CC is a command line (e.g. "<abs>/build/bin/zcc cc"), not a program name:
+ * split it on spaces and tabs into argv, as make does, with no quote handling.
+ * `buf` receives a mutable copy and must outlive argv. Returns the token
+ * count, or 0 if CC does not fit -- never a partial argv. */
 static int tmh_cc_split(char *buf, size_t bufsz, char *out[], int max)
 {
     const char *cc = tmh_cc();
@@ -185,10 +154,8 @@ static bool tmh_prepare(const char *dir)
     argv[n++] = runner_o;
     argv[n++] = runner_c;
     argv[n] = NULL;
-    /* Name the compiler and the directory on failure. Without this the group
-     * reports only "FAIL ... (tmh_prepare(dir))", which is true and useless:
-     * it does not distinguish a compiler that could not be spawned from one
-     * that ran and rejected the fixture. */
+    /* Name the compiler and directory on failure so a spawn error is
+     * distinguishable from a rejected fixture. */
     if (zcl_mut_spawn(dir, argv, 120000, NULL, NULL) != 0) {
         fprintf(stderr, "tmh_prepare: fixture compile failed in %s using "
                         "CC=\"%s\" (argv[0]=\"%s\")\n",

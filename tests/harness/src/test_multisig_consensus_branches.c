@@ -1,34 +1,16 @@
 /* SPDX-License-Identifier: Apache-2.0
  * Copyright 2026 Rhett Creighton
  *
- * Unit tests for the OP_CHECKMULTISIG branch of the ZClassic script VM
- * (domain/consensus/src/script_interp.c:589-657), the surface left
- * UNTESTED by test_domain_consensus_script_interp.c (which only hits
- * the 0-of-1 structural accept and a non-DER early reject):
+ * Unit tests for the OP_CHECKMULTISIG branch of the script VM
+ * (domain/consensus/src/script_interp.c): 2-of-3 happy path, keys exhausted,
+ * SIG_COUNT and PUBKEY_COUNT bounds, NULLDUMMY and NULLFAIL rules.
  *
- *   - HAPPY PATH       : a 2-of-3 multisig where the synthetic checker
- *                        accepts -> fSuccess pushes vch_true {1}.
- *   - keys-exhaust     : sigs outnumber the keys the checker accepts
- *                        -> fSuccess=false, residual empty, no error.
- *   - SIG_COUNT bound  : nSigsCount > nKeysCount.
- *   - PUBKEY_COUNT     : nKeysCount > 20.
- *   - NULLDUMMY rule   : SCRIPT_VERIFY_NULLDUMMY + non-empty dummy.
- *   - NULLFAIL rule    : SCRIPT_VERIFY_NULLFAIL + non-empty failing sig.
+ * check_transaction_signature_encoding runs before the checker callback, so
+ * test sigs are DER-shaped (sig[0]==0x30) and fake_checker.accept_byte is 0x30.
  *
- * IMPLEMENTATION NOTE (the encoding-gate fact): inside the multisig
- * loop, check_transaction_signature_encoding runs BEFORE the checker
- * callback (script_interp.c:620). It validates sig[0..len-2] as raw
- * DER and treats the last byte as a hashtype; a raw DER sig starts
- * with 0x30. So for the checker to be REACHED and ACCEPT, the test sig
- * must be DER-shaped and fake_checker.accept_byte must be 0x30 (the
- * checker keys on sig[0]). Empty sigs (len==0) bypass the gate but can
- * never match accept_byte==0x30, so they take the fail branch.
- *
- * Every case runs through seal_eval, which cross-checks the domain
- * entry point against the lib wrapper byte-for-byte (same bool, same
- * ScriptError, same residual stack) — so each case gets the parity
- * seal for free. fake_checker / fc_init / seal_eval are copied verbatim
- * from test_domain_consensus_script_interp.c. */
+ * Every case runs through seal_eval, which cross-checks the domain entry point
+ * against the lib wrapper (bool, ScriptError, residual stack). fake_checker /
+ * fc_init / seal_eval are copied from test_domain_consensus_script_interp.c. */
 
 #include "test/test_core.h"
 
@@ -162,9 +144,7 @@ int test_multisig_consensus_branches(void)
     make_pk(pk);
 
     /* ---- HAPPY PATH: 2-of-3 multisig, checker accepts both sigs ----
-     * <OP_0 dummy> <sigA> <sigB> OP_2 <pkX> <pkY> <pkZ> OP_3 CHECKMULTISIG
-     * accept_byte=0x30 matches the DER sig prefix, so the checker
-     * accepts; fSuccess stays true and the op pushes vch_true {1}. */
+     * <OP_0 dummy> <sigA> <sigB> OP_2 <pkX> <pkY> <pkZ> OP_3 CHECKMULTISIG */
     {
         struct fake_checker fc;
         fc_init(&fc, 0x30, true);
@@ -183,11 +163,7 @@ int test_multisig_consensus_branches(void)
     }
 
     /* ---- (a) keys exhaust before sigs match -> fSuccess=false ----
-     * 1-of-2 with a single EMPTY sig: the empty sig bypasses the
-     * encoding gate but never matches accept_byte, so the checker
-     * rejects it against both keys. Keys run out -> fSuccess=false,
-     * structurally completes pushing an empty (false) element. ok=true,
-     * SCRIPT_ERR_OK, residual {} — and domain==lib. */
+     * 1-of-2 with one empty sig: ok=true, SCRIPT_ERR_OK, residual {}. */
     {
         struct fake_checker fc;
         fc_init(&fc, 0x30, true);
@@ -203,9 +179,7 @@ int test_multisig_consensus_branches(void)
                   seal_eval(&s, 0, &fc.base, 0, true, SCRIPT_ERR_OK));
     }
 
-    /* ---- (b) nSigsCount > nKeysCount -> SCRIPT_ERR_SIG_COUNT ----
-     * Declare 2 sigs over only 1 key. The SIG_COUNT bound check fires
-     * before any sig is read. */
+    /* ---- (b) nSigsCount > nKeysCount -> SCRIPT_ERR_SIG_COUNT ---- */
     {
         struct fake_checker fc;
         fc_init(&fc, 0x30, true);
@@ -221,9 +195,7 @@ int test_multisig_consensus_branches(void)
                   seal_eval(&s, 0, &fc.base, 0, false, SCRIPT_ERR_SIG_COUNT));
     }
 
-    /* ---- (c) nKeysCount=21 -> SCRIPT_ERR_PUBKEY_COUNT ----
-     * Push the key count 21 (minimal-encoded {0x15}); the bound check
-     * (nKeysCount > 20) rejects it before reading any keys/sigs. */
+    /* ---- (c) nKeysCount=21 -> SCRIPT_ERR_PUBKEY_COUNT (bound is 20) ---- */
     {
         struct fake_checker fc;
         fc_init(&fc, 0x30, true);
@@ -236,10 +208,7 @@ int test_multisig_consensus_branches(void)
                             SCRIPT_ERR_PUBKEY_COUNT));
     }
 
-    /* ---- (d) NULLDUMMY + non-empty dummy -> SCRIPT_ERR_SIG_NULLDUMMY -
-     * An otherwise-valid 1-of-1 (checker accepts the DER sig) but the
-     * dummy element is a non-empty 1-byte push. With NULLDUMMY set, the
-     * non-zero-length dummy is rejected after the sig loop succeeds. */
+    /* ---- (d) NULLDUMMY + non-empty dummy -> SCRIPT_ERR_SIG_NULLDUMMY ---- */
     {
         struct fake_checker fc;
         fc_init(&fc, 0x30, true);
@@ -257,11 +226,7 @@ int test_multisig_consensus_branches(void)
     }
 
     /* ---- (e) NULLFAIL + non-empty failing sig -> SIG_NULLFAIL ----
-     * 1-of-1 where the checker REJECTS the (DER, non-empty) sig because
-     * accept_byte (0xAA) != sig[0] (0x30). The sig still passes the
-     * encoding gate, so the checker is reached and returns false ->
-     * fSuccess=false. With NULLFAIL set, a non-empty failing sig is a
-     * hard error. */
+     * The DER sig passes the encoding gate, the checker rejects it. */
     {
         struct fake_checker fc;
         fc_init(&fc, 0xAA, true);                 /* rejects 0x30 sig */

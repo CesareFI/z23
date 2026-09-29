@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Tests for RPC error envelope consistency (wave 10 #8).
+ * Tests for RPC error envelope consistency.
  * Verifies that json_rpc_error, json_rpc_error_full, and
  * json_rpc_error_response all produce the target shape:
  *   {error: {code, message[, method]}}
@@ -245,21 +245,12 @@ int test_rpc_error_envelope(void)
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
 
-    /* ── Response serialization: >4 MiB heap-OOB-read regression ──────
+    /* ── Response serialization: >4 MiB responses ──────────────────
      *
-     * Old bug: handle_client() used a fixed 4 MiB buffer and fed
-     * json_write()'s UNCLAMPED required length straight to write(). For
-     * any response larger than 4 MiB that read (resp_len - 4 MiB) bytes
-     * PAST the heap allocation and shipped adjacent heap memory to the
-     * authenticated client (crash/DoS under ASan + info-leak).
-     *
-     * rpc_http_test_serialize_response() is the production sizing path:
-     * it sizes with a zero-length json_write() probe, then allocates
-     * exactly len+1, so the length handed to write() can never exceed
-     * the allocation. These cases drive a response well over 4 MiB and
-     * assert the contract holds — the body is fully sized and the
-     * returned length equals what json_write() reports for the same
-     * value (never an out-of-band send). */
+     * rpc_http_test_serialize_response() sizes with a zero-length
+     * json_write() probe and allocates len+1, so the length handed to
+     * write() never exceeds the allocation. The body must be fully sized
+     * and its length must equal json_write()'s required length. */
 
     printf(">4MiB response is fully sized, never OOB... ");
     {
@@ -300,8 +291,7 @@ int test_rpc_error_envelope(void)
         bool ser_ok = rpc_http_test_serialize_response(&response, &buf, &len);
 
         bool ok = built && env_ok && ser_ok;
-        /* Must actually exceed the old 4 MiB buffer or the test proves
-         * nothing about the bug class. */
+        /* Must exceed the 4 MiB buffer size or the test proves nothing. */
         ok = ok && required > 4u * 1024u * 1024u;
         /* The length we would send must equal the required length, and
          * the buffer must be a real, separately-sized allocation — never

@@ -1,39 +1,28 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * test_refold_body_span_contiguous — the deterministic proof for CUTOVER
- * DEFECT 2: the from-anchor fold body-span gate
+ * test_refold_body_span_contiguous — the from-anchor fold body-span gate
  * (engine/composition/src/boot_refold_staged.c: boot_refold_body_span_contiguous).
  *
- * THE GAP THIS CLOSES
- * -------------------
- * The from-anchor cure (-refold-from-anchor / the torn-import auto-arm) replays
- * on-disk block BODIES over (anchor_height, resume_target]. If a body in that
- * span is pruned/missing, utxo_apply pins mid-fold at the missing height (the
- * prevout_unresolved wedge, relocated) with NO named blocker — a silent stall.
- * The gate must, BEFORE arming the fold, verify every body in the span is
+ * The from-anchor cure replays on-disk block BODIES over
+ * (anchor_height, resume_target]. A pruned/missing body in that span would
+ * stall utxo_apply with no named blocker, so the gate verifies every body is
  * present (BLOCK_HAVE_DATA in the active-chain block_index) and, on a hole,
- * REFUSE + raise the NAMED blocker refold.body_gap recording the first missing
- * height — never a silent stall.
+ * refuses and raises the named blocker refold.body_gap with the first missing
+ * height.
  *
- * The checks:
- *   (C1) a CONTIGUOUS span [anchor+1 .. tip] (every slot has BLOCK_HAVE_DATA)
- *        passes (returns true, no blocker raised);
+ *   (C1) a CONTIGUOUS span [anchor+1 .. tip] passes, no blocker raised;
  *   (C2) an empty span (resume_target <= anchor_height) passes trivially;
- *   (C3) a span with a HOLE (one height missing BLOCK_HAVE_DATA) REFUSES
- *        (returns false), reports first_missing == the hole height, AND raises
- *        the named blocker refold.body_gap;
- *   (C4) a span with a MISSING block_index slot (a real header-gap, not just a
- *        cleared data bit) also REFUSES and names the first missing height;
- *   (C5) ms == NULL refuses (cannot prove contiguity without the chain);
- *   (C6) raise_blocker=false reports the gap WITHOUT touching the blocker
- *        registry (the pure-predicate use the gate supports for callers that
- *        only want to query contiguity).
+ *   (C3) a HOLE (one height missing BLOCK_HAVE_DATA) refuses, reports
+ *        first_missing == the hole height, and raises refold.body_gap;
+ *   (C4) a MISSING block_index slot (header gap) also refuses and names the
+ *        first missing height;
+ *   (C5) ms == NULL refuses;
+ *   (C6) raise_blocker=false reports the gap without touching the blocker
+ *        registry.
  *
  * Synthetic block_index: heights are inserted via chainstate_insert_block_index
- * and installed ascending with active_chain_install_tip_slot (each install
- * accumulates lower slots; a skipped height is the hole). No datadir, no disk
- * block bodies — the gate reads only the BLOCK_HAVE_DATA bit, exactly the live
- * signal. */
+ * and installed ascending with active_chain_install_tip_slot; a skipped
+ * height is the hole. No datadir, no disk block bodies. */
 
 #include "test/test_core.h"
 
@@ -212,14 +201,11 @@ int test_refold_body_span_contiguous(void)
         blocker_reset_for_testing();
     }
 
-    /* ── C7: LOCAL body rebind on a gap (header-only-import self-heal). ──────
-     * A gap should trigger scan_block_files_mark_data ONCE — but only when the
-     * rebind datadir is set AND local blk*.dat exist. The scan over a dummy
-     * block file marks nothing (no real bodies), so the gap persists and the
-     * blocker is still raised — the point here is the GATING/WIRING (the scan
-     * FIRES on a real gap when local files are present, and never otherwise);
-     * proof-N covers the end-to-end "marks HAVE_DATA from real bodies → fold
-     * arms". */
+    /* ── C7: LOCAL body rebind on a gap. ──────────────────────────────────
+     * A gap triggers scan_block_files_mark_data ONCE, only when the rebind
+     * datadir is set AND local blk*.dat exist. The scan over a dummy file
+     * marks nothing, so the gap persists and the blocker is still raised;
+     * this checks the gating, not the end-to-end rebind. */
 
     /* C7a: datadir set + a local blk00000.dat present → the rebind scan fires
      * exactly ONCE (once-per-process guard), even across two calls. */

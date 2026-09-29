@@ -203,10 +203,8 @@ static int test_scan_admits_only_receipt_bound(void)
         uint8_t *other = malloc(size);
         ASSERT(good != NULL && other != NULL);
         gen_content(good, size, true);
-        /* Distinct content from `good` so its digest genuinely differs (still
-         * SQLite-magic-valid — the receipt gate, not the structural gate, is
-         * what must refuse it: the datadir's one receipt can bind only one
-         * bundle's digest). */
+        /* Distinct content from `good` (still SQLite-magic-valid): the receipt
+         * gate must refuse it, since the datadir's one receipt binds one digest. */
         gen_content(other, size, true);
         other[20] ^= 0xFF;
 

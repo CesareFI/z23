@@ -2,42 +2,23 @@
 /*
  * Product acceptance contract for the resident-launch consumer.
  *
- * platform/resident_launch.h (9bc54830ad, "the launcher half of the app-run
- * path") is covered at the platform seam by test_resident_launch.c. The
- * consumer half is fleet peer C's production slice: the composition leaf
- * app.invoke.package (engine/composition/commands/apps.def →
- * tools/command/native_package_resident_command.c), its accepted-artifact
- * authority (contexts/commons/services/src/package_resident.c over the zcode
- * package lifecycle), its snapshot/launch owner
- * (contexts/commons/services/src/package_resident_launch.c), and the shipped
- * resident app contexts/commons/packages/ztasks. This group drives that REAL
- * product path end to end:
+ * platform/resident_launch.h is covered at the platform seam by
+ * test_resident_launch.c. This group drives the real consumer path
+ * (app.invoke.package, package_resident.c, package_resident_launch.c, the
+ * shipped ztasks app) end to end:
  *
- *   a. an accepted-artifact record (installed receipt → positioned-file
- *      triple + image SHA3) is produced by the production lifecycle and
- *      re-derived from product state at invocation time;
- *   b. a resident launch of that exact record verifies the mapped image;
- *   c. the child speaks z23-res-run-v1 frames on fd 3 (READY gate + one
- *      bounded input frame + one bounded result frame);
- *   d. the child's result is observable through the product reply;
- *   e. cancel/reap works (an unresponsive resident is refused inside the
- *      consumer's own bound and leaves no child behind);
- *   f. serving-generation supersession and atomic rollback — NOT WIRED
- *      in C's slice. Stage f is the independent acceptance TRAP for C's
- *      coming implementation (the fixed finish line, born-RED today):
- *      N serving as an authoritative product-state record → N+1 READY
- *      through the fd3 gate BEFORE any switch → atomic switch with no
- *      double-serving window → a late/stale N invocation refused → rapid
- *      N+2 supersession of a pending N+1 → forced-candidate-failure
- *      containment → EXACT-A rollback (same 64-hex digest) → restart
- *      persistence. Every trap check FAILS today naming the missing
- *      product behavior; the invocation contract it drives is the
- *      stage-f block of the ADAPTER SEAM below.
+ *   a. an accepted-artifact record is produced by the production lifecycle
+ *      and re-derived from product state at invocation time;
+ *   b. a resident launch of that record verifies the mapped image;
+ *   c. the child speaks z23-res-run-v1 frames on fd 3 (READY gate, one
+ *      input frame, one result frame);
+ *   d. the result is observable through the product reply;
+ *   e. an unresponsive resident is refused inside the consumer bound and
+ *      leaves no child behind;
+ *   f. serving-generation supersession and atomic rollback (ADAPTER SEAM).
  *
- * Stage 0 is NOT the contract: it validates this file's reference child
- * fixture through the platform seam alone, speaking exactly the wire of C's
- * shipped ztasks child, so the bytes the consumer exchanges are proven
- * bytes, not guesses.
+ * Stage 0 validates this file's reference child fixture through the platform
+ * seam alone; it is not part of the contract.
  */
 #if !defined(_WIN32) && !defined(_DEFAULT_SOURCE)
 #define _DEFAULT_SOURCE
@@ -86,86 +67,36 @@
 #endif
 
 /* ── THE ADAPTER SEAM ─────────────────────────────────────────────────────
- * RLC_LEAF is the ONE name this contract depends on: the composition command
- * leaf that is the product consumer of platform/resident_launch.h. Per fleet
- * agreement 2026-09-14 (C mail 397/399, A ACK 400) the consumer is
- * app.invoke.package, owned by C, and it LANDED in this integration lane
- * (C patch 277ee6a3…, grant fix e7cf550e…). If the consumer ever moves,
- * change THIS ONE CONSTANT — no other product name is hardcoded here.
+ * RLC_LEAF is the ONE name this contract depends on: app.invoke.package, the
+ * composition command leaf that consumes platform/resident_launch.h.
  *
- * The invocation contract is C's CONCRETE schema (renegotiated here per the
- * fleet agreement, replacing this file's original placeholder keys):
- *   input keys:  datadir (string: the zcode lifecycle datadir that owns the
- *                installed receipt), package_root (string, 64 lower-hex),
- *                receipt_id (string, 64 lower-hex: the exact installed build
- *                receipt), artifact_sha3 (string, 64 lower-hex: the receipt
- *                output digest the operator explicitly accepts), program
- *                (string: the exact install-relative receipt output, must be
- *                under bin/), input_text (string, ≤1024: the one bounded
- *                command frame), accept_execution (JSON boolean true — a
- *                string/number is refused by the registry's leaf-scoped bool
- *                rule; building or installing never grants execution).
- *   child side:  the launch nonce reaches the child as argv[2]
- *                (`<snapshot> --resident <nonce>`, empty environment); the
- *                child answers one READY frame, reads one z23-res-run-v1
- *                input frame, and answers one z23-res-run-v1 result frame on
- *                fd 3 (RESIDENT_LAUNCH_CHILD_FD).
- *   reply data:  artifact_sha3, program, result (the child's payload),
- *                mapped_proof, nonce, pid, start_token, verification_us,
- *                first_result_us, completed_us, child_reaped, next_action.
- *                Failure replies carry NO data.pid: the bounded invocation
- *                cancels and reaps BEFORE replying, so stage e proves the
- *                reap process-level (no waitable child remains), never from
- *                a reply field.
- *   semantics:   ONE bounded invocation — verify, snapshot, spawn, READY,
- *                one frame in, one frame out, cancel/reap. There is no
- *                long-lived resident and no product-held accepted-version
- *                record: every invocation names its exact receipt. Rollback
- *                today is the OPERATOR explicitly invoking a prior accepted
- *                receipt (next_action says so); serving-generation
- *                supersession and atomic rollback are NOT WIRED (stage f).
+ * Invocation input keys: datadir, package_root (64 lower-hex), receipt_id (64
+ * lower-hex), artifact_sha3 (64 lower-hex), program (install-relative, under
+ * bin/), input_text (<=1024), accept_execution (JSON boolean true).
+ * Child: launch nonce is argv[2]; it answers READY, reads one z23-res-run-v1
+ * input frame and answers one result frame on fd 3.
+ * Reply data: artifact_sha3, program, result, mapped_proof, nonce, pid,
+ * start_token, verification_us, first_result_us, completed_us, child_reaped,
+ * next_action. Failure replies carry no data.pid (cancel/reap precedes the
+ * reply), so stage e proves the reap at process level.
+ * Semantics: one bounded invocation (verify, snapshot, spawn, READY, one frame
+ * in and out, cancel/reap); rollback is the operator invoking a prior receipt.
  *
- *   stage f serving-generation contract — THE FIXED FINISH LINE C codes
- *   against (NOT implemented today; every trap check in rlc_stage_f_trap
- *   is born-RED naming the missing piece). Deliberately small: no new
- *   lifecycle, no new state machine — ONE small serving record.
- *   serving record: per (datadir, app) the consumer owns one product-state
- *     record {package_root, receipt_id, artifact_sha3, program,
- *     generation}: the authoritative serving generation. The zcode
- *     lifecycle remains the install authority; this record only names
- *     which installed receipt currently SERVES.
- *   input keys (serving mode; the one-shot keys above still apply where
- *     an action binds exact bytes):
- *     app (string "publisher/package": the serving identity),
- *     action (string):
- *       "invoke"   (default; run the serving record — no receipt keys),
- *       "accept"   (admit the named receipt as the pending candidate:
- *                  verify + snapshot + spawn + nonce-bound READY + one
- *                  bounded probe frame through the fd3 gate BEFORE any
- *                  switch; serving is untouched; a second accept retires
- *                  the first pending candidate, cancelling and reaping
- *                  it),
- *       "activate" (atomically switch serving to the pending candidate
- *                  after re-proving it through the same gate; exactly one
- *                  serving generation exists at every instant — no
- *                  double-serving window),
- *       "rollback" (restore the exact prior accepted generation: same
- *                  64-hex artifact digest, never equivalent bytes, never
- *                  a pathname).
- *   reply data (serving mode adds): generation (int), serving_sha3,
- *     serving_receipt_id; accept adds pending_sha3, pending_receipt_id,
- *     candidate_nonce, candidate_start_token (the staleness binding) and
- *     superseded_sha3 (when a pending candidate was retired); activate
- *     adds switched_from_sha3.
- *   staleness: a result or invocation bound to a superseded generation
- *     (nonce + start_token + generation) is refused by name and cannot
- *     regain authority after a switch.
- *   failure evidence: a refused activation, a stale-generation refusal,
- *     or a failed serving invocation names the still-accepted serving
- *     64-hex digest in error.evidence.
- *   persistence: the record lives in product state (the datadir), never
- *     in process memory — after a consumer restart the same authoritative
- *     generation must still serve. */
+ * Stage f serving-generation contract: per (datadir, app) one product-state
+ * record {package_root, receipt_id, artifact_sha3, program, generation}.
+ * Extra input: app ("publisher/package"), action:
+ *   "invoke"   run the serving record;
+ *   "accept"   verify + spawn + READY + probe as pending candidate, serving
+ *              untouched; a second accept retires the first;
+ *   "activate" atomically switch serving to the pending candidate after
+ *              re-proof; no double-serving window;
+ *   "rollback" restore the exact prior 64-hex artifact digest.
+ * Serving replies add generation, serving_sha3, serving_receipt_id; accept
+ * adds pending_sha3, pending_receipt_id, candidate_nonce,
+ * candidate_start_token, superseded_sha3; activate adds switched_from_sha3.
+ * A result bound to a superseded generation is refused by name; failures name
+ * the serving digest in error.evidence. The record lives in the datadir, so
+ * it survives a consumer restart. */
 #define RLC_LEAF "app.invoke.package"
 
 #define RLC_CHECK(name, expr) do {                                        \
@@ -285,17 +216,12 @@ static bool rlc_hex64(const char *s)
 
 /* ── reference fixtures ─────────────────────────────────────────────────── */
 
-/* The reference children are REAL ELF images built by the Makefile from
- * tests/harness/fixtures/resident_launch_contract_child.c and carried as
- * order-only prerequisites of every test binary, so a missing image is a
- * broken build, never a skip. A script cannot be the resident image: the
- * pinned descriptor is O_CLOEXEC, and fexecve of a shebang script re-opens
- * /dev/fd/N for the interpreter AFTER exec closed it (ENOENT on Linux).
- * rlc_child_v1 speaks exactly the landed consumer's wire (nonce as argv[2],
- * READY, one run frame round-trip; argv[3] "park" parks forever as the
- * cancel target); rlc_child_broken exits 1 without framing — the candidate
- * the READY gate must refuse. Paths are relative to the repository root,
- * the runner's cwd (the RB_SO_A idiom in test_hotswap_rollback.c). */
+/* The reference children are real ELF images built by the Makefile from
+ * tests/harness/fixtures/resident_launch_contract_child.c (a shebang script
+ * cannot be the image: fexecve reopens /dev/fd/N after O_CLOEXEC closed it).
+ * rlc_child_v1 speaks the consumer wire (nonce as argv[2], READY, one run
+ * frame; argv[3] "park" parks forever); rlc_child_broken exits 1 without
+ * framing. Paths are relative to the repository root. */
 #define RLC_FIXTURE_CHILD "build/fixtures/rlc_child_v1"
 #define RLC_FIXTURE_BROKEN "build/fixtures/rlc_child_broken"
 
@@ -379,18 +305,12 @@ static bool rlc_send_frame(struct resident_launch *launch, const char *text)
 }
 
 /* ── the smallest real installed package fixtures ─────────────────────────
- * The consumer binds ONLY an exact installed receipt: the artifact digest
- * comes from the verified install receipt, never from whichever bytes occupy
- * a pathname. So the contract installs REAL packages through the production
- * zcode lifecycle (publish → plan → commit), exactly like test_zcode_add.c:
- *   - ztasks, C's shipped resident app, from its REAL bytes under
- *     contexts/commons/packages/ztasks/ (the same package C's Mac factory
- *     run installed; tarball sha256 304a984e… matches the patch bytes);
- *   - rlc/parker, a minimal resident program that answers READY then parks
- *     forever — the unresponsive candidate stage e must see refused inside
- *     the consumer's own bound with nothing left behind.
- * The e2e lane forks build/bin/zclassic23-package-verify-dev — it MUST
- * exist; a missing binary is a loud failure, never a silent skip. */
+ * The consumer binds only an exact installed receipt, so the contract installs
+ * real packages through the production zcode lifecycle (publish, plan, commit):
+ *   - ztasks, the shipped resident app, from contexts/commons/packages/ztasks/;
+ *   - rlc/parker, a resident program that answers READY then parks forever.
+ * The e2e lane forks build/bin/zclassic23-package-verify-dev, which MUST
+ * exist; a missing binary is a loud failure, never a skip. */
 
 #define RLC_ZTASKS_DIR "contexts/commons/packages/ztasks"
 #define RLC_ZTASKS_PROGRAM "bin/ztasks"
@@ -587,10 +507,8 @@ static bool rlc_publish(const char *zcode, const char *name,
     return ok;
 }
 
-/* Plan + commit one published package through the REAL production lifecycle,
- * then bind the exact installed receipt: installed_inspect names the filed
- * receipt id and receipt_read re-derives the accepted program digest. This
- * is the production accepted-artifact producer the contract asserts on. */
+/* Plan + commit one published package through the production lifecycle,
+ * then bind the exact installed receipt (id + accepted program digest). */
 static bool rlc_install(const char *base, const char *name,
                         const uint8_t root[32], const char *program,
                         uint8_t receipt_id_out[32],
@@ -634,9 +552,7 @@ static bool rlc_install(const char *base, const char *name,
     return false;
 }
 
-/* The parker's resident program: answers READY under the nonce, then parks
- * forever — the unresponsive candidate the consumer's bounded result wait
- * must refuse, leaving no child behind. */
+/* The parker resident program: answers READY, then parks forever. */
 #define RLC_PARKER_MAIN \
     "#include <stdint.h>\n" \
     "#include <string.h>\n" \
@@ -744,8 +660,7 @@ static bool rlc_install_fixtures(const char *base, const char *zcode,
     return true;
 }
 
-/* One explicit consumer invocation under C's concrete schema (see the
- * ADAPTER SEAM): every key named, accept_execution a JSON boolean. */
+/* One explicit consumer invocation under the ADAPTER SEAM schema. */
 static void rlc_call_package(struct rlc_call *c,
                              const struct zcl_command_spec *spec,
                              const char *datadir, const char *root_hex,
@@ -764,9 +679,7 @@ static void rlc_call_package(struct rlc_call *c,
 
 /* ── stage-f trap fixtures ──────────────────────────────────────────────── */
 
-/* One installed generation binding, hex-encoded for the serving-mode
- * calls: the identity the stage-f trap threads through accept/activate/
- * rollback. */
+/* One installed generation binding, hex-encoded for the serving-mode calls. */
 struct rlc_binding {
     uint8_t root[32];
     uint8_t receipt[32];
@@ -808,10 +721,8 @@ static char *rlc_splice_text(const char *text, size_t len,
     return out;
 }
 
-/* One edited ztasks generation (different program bytes → a different
- * artifact digest) to play N+1 / N+2 / B against N in the stage-f trap:
- * the REAL package files with the empty-list render line patched,
- * published as a higher semver and installed by its exact root. */
+/* One edited ztasks generation (different program bytes, different artifact
+ * digest), published as a higher semver and installed by its exact root. */
 enum rlc_preview_fault { RLC_PREVIEW_OK, RLC_PREVIEW_WRONG_ID,
                          RLC_PREVIEW_CRASH, RLC_PREVIEW_BAD_ABI };
 
@@ -905,10 +816,8 @@ static bool rlc_install_ztasks_variant(const char *base, const char *zcode,
     return true;
 }
 
-/* Force a serving generation's failure the hostile way: same-length
- * corruption of the installed program bytes, so the receipt-bound
- * re-hash (never a pathname, never equivalent bytes) is what refuses.
- * The fixture datadir is test-owned. */
+/* Force a serving generation failure: same-length corruption of the installed
+ * program bytes, so the receipt-bound re-hash refuses. */
 /* Real installed programs, real confined preview, and the same native actions
  * as the window. No desktop or synthetic compatibility callback required. */
 static bool rlc_task_wait(struct task_update *update)
@@ -1292,7 +1201,7 @@ static int rlc_preview_fault_cases(struct rlc_preview_context *ctx)
 }
 
 /* Each sample edits package C, builds a distinct artifact, then observes its
- * new output through the confined Try path while N remains accepted. */
+ * output through the confined Try path while N remains accepted. */
 static int rlc_task_preview_latency(const char *base, const char *zcode,
                                     const struct rlc_binding *n)
 {
@@ -1384,10 +1293,9 @@ static bool rlc_candidate_locator(const char *base, const char *root_hex,
 
 #define RLC_APP "ztasks/ztasks"
 
-/* One serving-mode invocation of the stage-f contract (see the ADAPTER
- * SEAM stage-f block): app + action select the serving-record operation;
- * the receipt triple + program are present only where the action binds
- * exact bytes (accept, or a stale named invoke). */
+/* One serving-mode invocation of the stage-f contract: app + action select
+ * the serving-record operation; receipt keys are present only where the
+ * action binds exact bytes. */
 static void rlc_call_serving(struct rlc_call *c,
                              const struct zcl_command_spec *spec,
                              const char *datadir, const char *app,
@@ -1413,10 +1321,8 @@ static void rlc_call_serving(struct rlc_call *c,
 
 
 /* ── stage 0: reference-child fixture self-check (platform seam only) ─────
- * Green today: proves the fixture above speaks the exact wire bytes of the
- * landed consumer (READY gate, one nonce-bound run frame round-trip,
- * cancel/reap) through the real resident_launch seam. NOT part of the
- * product contract. */
+ * Proves the fixture speaks the exact wire of the consumer (READY gate, one
+ * nonce-bound run frame round-trip, cancel/reap). NOT part of the contract. */
 static int rlc_fixture_selfcheck(const char *child,
                                  const struct resident_launch_accepted *acc)
 {
@@ -1587,13 +1493,10 @@ static int rlc_stage_run(const struct zcl_command_spec *spec,
     return failures;
 }
 
-/* ── stage f labeled greens: exactly what C's one-shot slice proves ──────
- * C's bounded invocation never mutates package state, so a failed
- * candidate leaves every installed receipt bit-identical — proven by
- * re-deriving the accepted artifact from the installed receipt and by an
- * EXPLICIT re-invocation naming the same receipt. Labeled for exactly
- * what it is: operator re-invocation, NOT rollback proof (C's own
- * warning: rerunning a prior root is not atomic rollback proof). */
+/* ── stage f labeled greens ──────────────────────────────────────────────
+ * A failed one-shot candidate leaves every installed receipt bit-identical:
+ * re-derive the accepted artifact and re-invoke the same receipt. This is
+ * operator re-invocation, NOT atomic rollback proof. */
 static int rlc_stage_f_labeled(const struct zcl_command_spec *spec,
                                const char *datadir, const char *root_hex,
                                const char *receipt_hex, const char *sha3_hex)
@@ -1626,34 +1529,18 @@ static int rlc_stage_f_labeled(const struct zcl_command_spec *spec,
 }
 
 /* ── stage f TRAP: the serving-generation acceptance sequence ────────────
- * The independent finish line for C's coming implementation, born-RED
- * today: every check drives the product leaf handler under the stage-f
- * contract of the ADAPTER SEAM and FAILS with a message naming the
- * missing product behavior. The sequence is the owner directive of
- * 2026-09-15:
- *   f1 N accepted as pending candidate (serving record as product state)
- *   f2 N activated → the authoritative serving generation
- *   f3 N+1 becomes READY through the fd3 gate BEFORE any switch
- *   f4 atomic switch N → N+1 (no double-serving window observable)
- *   f5 a late/stale N invocation after the switch cannot regain authority
- *   f6 rapid N+2 supersedes a pending N+1 (obsolete candidate reaped),
- *      then the successor explicitly activates into serving — an accept
- *      alone can never switch serving (f3), so without this activate f7
- *      could not legitimately expect N+2 serving (sequencing correction
- *      per C review)
- *   f7 a VALID pending candidate is accepted, then its activate re-proof
- *      fails after its install locator becomes unavailable: the serving
- *      generation is untouched, evidence naming its digest — a genuine
- *      reproof failure, never a refusal of a malformed identifier
- *      (correction per C review). Accept itself probes through the fd3
- *      gate, so a candidate that never answers can never become pending;
- *      the failure must be injected between accept and activate.
- *   f8 rollback: A serving → B accepted → B activated → forced B failure
- *      → EXACT A restored (same 64-hex digest) → A produces a valid result
- *   f9 restart: the same authoritative generation still serves (the
- *      record lives in product state, never process memory)
- * n, n1, n2, b are the installed ztasks generations 0.2.0/0.3.0/0.4.0/
- * 0.5.0. The separate stage-e parker still proves bounded cancellation. */
+ * Drives the product leaf under the stage-f contract of the ADAPTER SEAM:
+ *   f1 N accepted as pending candidate
+ *   f2 N activated: the authoritative serving generation
+ *   f3 N+1 READY through the fd3 gate BEFORE any switch
+ *   f4 atomic switch N to N+1
+ *   f5 a stale N invocation cannot regain authority
+ *   f6 N+2 supersedes pending N+1, then activates explicitly
+ *   f7 activate re-proof fails after the install locator becomes
+ *      unavailable: serving untouched, evidence names its digest
+ *   f8 rollback restores EXACT A (same 64-hex digest)
+ *   f9 restart: the same generation still serves
+ * n, n1, n2, b are ztasks generations 0.2.0/0.3.0/0.4.0/0.5.0. */
 
 /* Accept the named candidate through the serving gate, leaving the call
  * open for reply inspection; the caller ends it. */
@@ -1667,10 +1554,8 @@ static bool rlc_accept(struct rlc_call *c,
     return rlc_invoke(c) && rlc_ok(c);
 }
 
-/* f6/f7 shared plumbing, extracted to keep rlc_stage_f_trap under the
- * shrink-only cyclomatic-complexity ratchet: activate the pending
- * candidate, then prove the serving invoke answers the wanted exact
- * digest and render. */
+/* f6/f7 shared plumbing: activate the pending candidate, then prove the
+ * serving invoke answers the wanted exact digest and render. */
 static bool rlc_activate_pending_and_verify(const struct zcl_command_spec *spec,
                                             const char *datadir,
                                             const struct rlc_binding *want,
@@ -1823,8 +1708,7 @@ static int rlc_stage_f_trap(const struct zcl_command_spec *spec,
     rlc_end(&acc_n1);
     rlc_end(&inv_pre);
 
-    /* f4 — atomic switch N → N+1: one transition, no double-serving
-     * window, the old resident cancelled/reaped. */
+    /* f4 - atomic switch N to N+1: no double-serving window. */
     struct rlc_call act_n1, inv_n1;
     rlc_call_serving(&act_n1, spec, datadir, RLC_APP, "activate",
                      NULL, NULL, NULL, NULL, "list");
@@ -1852,9 +1736,7 @@ static int rlc_stage_f_trap(const struct zcl_command_spec *spec,
     rlc_end(&act_n1);
     rlc_end(&inv_n1);
 
-    /* f5 — a late/stale N invocation after the switch cannot regain
-     * authority: refused by name under the nonce + start_token +
-     * generation binding, evidence naming the authoritative digest. */
+    /* f5 - a stale N invocation after the switch is refused by name. */
     struct rlc_call stale, inv_post;
     rlc_call_serving(&stale, spec, datadir, RLC_APP, "invoke",
                      n->root_hex, n->receipt_hex, n->sha3,
@@ -1878,11 +1760,8 @@ static int rlc_stage_f_trap(const struct zcl_command_spec *spec,
     rlc_end(&stale);
     rlc_end(&inv_post);
 
-    /* f6 — rapid N+2 supersedes a pending N+1: the obsolete candidate is
-     * cancelled/reaped (no leak), N+2 becomes pending, serving untouched.
-     * The successor then activates explicitly: per f3 an accept can never
-     * switch serving, so f7 may only expect N+2 serving after this
-     * activate (sequencing correction per C review). */
+    /* f6 - rapid N+2 supersedes pending N+1 (obsolete candidate reaped),
+     * then N+2 activates explicitly. */
     struct rlc_call acc_x, acc_y;
     bool ok_x = rlc_accept(&acc_x, spec, datadir, n);
     bool ok_y = rlc_accept(&acc_y, spec, datadir, n2);
@@ -1903,10 +1782,8 @@ static int rlc_stage_f_trap(const struct zcl_command_spec *spec,
     rlc_end(&acc_x);
     rlc_end(&acc_y);
 
-    /* f7 — first complete READY and the bounded probe for valid N. Keep
-     * its bytes intact but move its isolated install locator before fresh
-     * activation proof, then restore it after refusal. Accept itself must
-     * never bypass the full probe simply to manufacture a pending parker. */
+    /* f7 - valid N accepted, then its install locator is made unavailable
+     * before activation; the refused activation is restored afterwards. */
     printf("resident_launch_contract: TRAP f7 born-RED — candidate failure "
            "containment unwired: a failed activation has no still-accepted "
            "serving digest to name and no untouched generation to "
@@ -1917,10 +1794,8 @@ static int rlc_stage_f_trap(const struct zcl_command_spec *spec,
               "+ evidence)",
               rlc_failed_activation_isolated(spec, datadir, n, n2));
 
-    /* f8 — rollback: A (n2) serving → B accepted → B activated → forced B
-     * failure (same-length corruption of the installed bytes) → EXACT A
-     * restored: the same 64-hex digest, never equivalent bytes, never a
-     * pathname — and A produces a valid result. */
+    /* f8 - rollback: A serving, B accepted and activated, forced B failure,
+     * then EXACT A restored (same 64-hex digest) and produces a valid result. */
     struct rlc_call acc_b, act_b, inv_broken, roll, inv_a;
     rlc_call_serving(&acc_b, spec, datadir, RLC_APP, "accept",
                      b->root_hex, b->receipt_hex, b->sha3,
@@ -1962,9 +1837,7 @@ static int rlc_stage_f_trap(const struct zcl_command_spec *spec,
     rlc_end(&roll);
     rlc_end(&inv_a);
 
-    /* f9 — restart persistence: the handler carries no cross-call process
-     * state, so a serving invoke after a consumer restart can only answer
-     * from a record that lives in product state (the datadir). */
+    /* f9 - restart: serving can only answer from a record in product state. */
     struct rlc_call inv_restart;
     rlc_call_serving(&inv_restart, spec, datadir, RLC_APP, "invoke",
                      NULL, NULL, NULL, NULL, "list");
@@ -1985,8 +1858,7 @@ static int rlc_stage_f_trap(const struct zcl_command_spec *spec,
 }
 
 
-/* Process-death injection is registered only in the forked test consumer.
- * It never changes production code or the SQLite transaction result. */
+/* Process-death injection is registered only in the forked test consumer. */
 #define RLC_CRASH_APP "ztasks/crash-proof"
 static unsigned rlc_crash_write_target;
 static unsigned rlc_crash_writes;
@@ -2182,13 +2054,9 @@ static int rlc_stage_f_process_crashes(const struct zcl_command_spec *spec,
 
 #endif /* !defined(_WIN32) */
 
-/* The fixture zcode datadir must satisfy the production resident-store
- * ancestor-ownership gate: EVERY ancestor owned by us or root and
- * non-group/world-writable (or sticky). The repo's test-tmp tree fails
- * that gate on hosts with a group-writable parent (e.g. a 0775 ~/github),
- * so this fixture roots its datadir in the sticky system temp directory —
- * the same compliant ancestor shape a real datadir gets under a 0700
- * home. The OS reaps the tree; aborted runs never pile into the repo. */
+/* The fixture datadir must satisfy the resident-store ancestor-ownership
+ * gate (every ancestor owned by us or root, not group/world-writable or
+ * sticky), so it is rooted in the sticky system temp directory. */
 static char *rlc_private_base(char *buf, size_t n)
 {
     const char *tmp = getenv("TMPDIR");
@@ -2243,8 +2111,7 @@ int test_resident_launch_contract(void)
               rlc_accept_of(child, &child_acc));
 
     /* The fixture datadir is the zcode lifecycle store the consumer binds
-     * its accepted-artifact records from; the reference ELF fixtures
-     * themselves live in build/. */
+     * its accepted-artifact records from. */
     char base[256];
     rlc_private_base(base, sizeof(base));
     char zcode[4400];
@@ -2286,9 +2153,7 @@ int test_resident_launch_contract(void)
         failures += rlc_stage_run(spec, base, ztasks_root_hex,
                                   ztasks_receipt_hex, ztasks_sha3);
 
-        /* The failed candidate for stages e and f: ONE parker invocation,
-         * whose refusal both proves bounded cancel/reap and stands as the
-         * failed candidate that rollback would have to recover from. */
+        /* The failed candidate for stages e and f: one parker invocation. */
         struct rlc_call park;
         rlc_call_package(&park, spec, base, parker_root_hex,
                          parker_receipt_hex, parker_sha3, RLC_PARKER_PROGRAM,
@@ -2309,11 +2174,8 @@ int test_resident_launch_contract(void)
                                         ztasks_receipt_hex, ztasks_sha3);
         rlc_end(&park);
 
-        /* The trap's generation ladder: three edited ztasks generations
-         * (distinct program bytes → distinct artifact digests) installed
-         * through the same real lifecycle, playing N+1 / N+2 / B against
-         * N (0.2.0). Installed AFTER the labeled greens so stage e's
-         * world is untouched; the trap itself is born-RED today. */
+        /* Generation ladder: three edited ztasks generations (distinct digests)
+         * installed through the real lifecycle, playing N+1 / N+2 / B against N. */
         struct rlc_binding n1, n2, b;
         bool variants =
             rlc_install_ztasks_variant(base, zcode, "0.3.0", 3,

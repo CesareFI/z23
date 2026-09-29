@@ -1,33 +1,19 @@
 /* SPDX-License-Identifier: Apache-2.0
  * Copyright 2026 Rhett Creighton
  *
- * test_replay_verify — exercises the offline integrity/PoW sweep service
+ * test_replay_verify: the offline integrity/PoW sweep service
  * (engine/services/src/replay_verify_service.c).
  *
- * Three layers, all datadir-independent except the optional live block:
- *
- *   1. Cheap unit assertions (NULL guards, missing-datadir → error) —
- *      always run.
- *
- *   2. CI TEETH (always run, self-contained, zero datadir): build a tiny
- *      block-log fixture with the writable block_log_file adapter and run
- *      the SAME canonical sweep (replay_verify_run_port → check_block) over
- *      it. The fixture proves the verifier is NOT a no-op:
- *        - a contiguous chain verifies with zero LINKAGE failures (the
- *          linkage cursor is computed correctly), while
- *        - every block in it is flagged as a PoW failure (the fixture
- *          blocks carry no valid Equihash 200,9 solution, so a wired
- *          check_pow MUST reject them — if PoW verification were silently
- *          skipped this assertion fails), and
- *        - corrupting one block's hashPrevBlock is CAUGHT as a linkage
- *          failure (negative control with teeth), and
- *        - a non-deserializable record is CAUGHT as an operational stop.
- *      No reimplemented crypto: the per-block verdict is check_block.
- *
- *   3. Live block (real legacy datadir, ZCL_LEGACY_DATADIR or ~/.zclassic).
- *      Skipped with PASS in CI / when zclassicd holds the LevelDB LOCK, so
- *      a fresh checkout (or a box with the live node running) never fails.
- */
+ *   1. Cheap unit assertions (NULL guards, missing datadir -> error).
+ *   2. CI teeth (self-contained, no datadir): a tiny block-log fixture run
+ *      through the canonical sweep (replay_verify_run_port -> check_block):
+ *        - a contiguous chain has zero linkage failures;
+ *        - every block is flagged as a PoW failure (no valid Equihash
+ *          solution, so a wired check_pow must reject);
+ *        - a corrupted hashPrevBlock is caught as a linkage failure;
+ *        - a non-deserializable record is an operational stop.
+ *   3. Live block (real legacy datadir, ZCL_LEGACY_DATADIR): skipped with
+ *      PASS in CI or when zclassicd holds the LevelDB LOCK. */
 
 #include "test/test_core.h"
 #include "services/replay_verify_service.h"
@@ -53,17 +39,10 @@
     else { printf("FAIL\n"); failures++; }               \
 } while (0)
 
-/* Explicit opt-in only. There is deliberately no $HOME/.zclassic fallback:
- * that directory belongs to a running zclassicd, and replay_verify_run →
- * block_log_legacy_open → bilr_open → db_wrapper_open is an ordinary
- * read-WRITE LevelDB open — it creates if missing, takes the LOCK, and can
- * run log recovery against a live daemon's block index.
- *
- * This was the second instance of the same fallback; the first was removed
- * from test_block_log_legacy.c. It was not theoretical: the live index
- * logged fresh LevelDB recoveries advancing about two per full-suite run
- * while this fallback was in place. Point ZCL_LEGACY_DATADIR at a datadir
- * you own (a stopped node, or a copy) to exercise the live block. */
+/* Explicit opt-in only, no $HOME/.zclassic fallback: that directory belongs
+ * to a running zclassicd, and replay_verify_run opens its LevelDB read-write
+ * (creates if missing, takes the LOCK, can run recovery on a live index).
+ * Point ZCL_LEGACY_DATADIR at a datadir you own (a stopped node or a copy). */
 static const char *rv_resolve_live_datadir(void)
 {
     const char *env = getenv("ZCL_LEGACY_DATADIR");
@@ -76,12 +55,10 @@ static const char *rv_resolve_live_datadir(void)
 
 /* ── Fixture-block builders ─────────────────────────────────────────
  *
- * A minimal but fully deserializable block: one coinbase transaction,
- * header version 4, a non-zero nBits, and a merkle root that matches the
- * single tx. These blocks deliberately carry NO valid Equihash solution
- * (nSolutionSize stays 0), so check_block(check_pow=true) rejects them on
- * the PoW gate — which is exactly the negative control we want for the
- * "verifier actually runs PoW" assertion. */
+ * A minimal deserializable block: one coinbase tx, header version 4, a
+ * non-zero nBits, and a matching merkle root. nSolutionSize stays 0, so
+ * check_block(check_pow=true) rejects it on the PoW gate (the negative
+ * control for "verifier actually runs PoW"). */
 
 static void rv_fixture_coinbase(struct transaction *tx, uint8_t marker)
 {
@@ -267,9 +244,8 @@ static int rv_ci_fixture_teeth(void)
                  rep.linkage_failures == 0);
         RV_CHECK("ci: matching storage hashes", rep.hash_failures == 0);
 
-        /* TEETH #2: PoW verification is actually wired. These fixture
-         * blocks have no valid Equihash solution, so a live check_pow MUST
-         * flag every one of them. If PoW were silently skipped this fails. */
+        /* TEETH #2: PoW verification is wired: fixture blocks have no valid
+         * Equihash solution, so check_pow must flag every one. */
         RV_CHECK("ci: invalid PoW caught on every block (not a no-op)",
                  rep.pow_failures == rep.blocks_checked &&
                  rep.pow_failures == 3);
@@ -283,9 +259,8 @@ static int rv_ci_fixture_teeth(void)
     /* The index hash must identify the block payload. */
     failures += rv_ci_wrong_hash_teeth();
 
-    /* 2. NEGATIVE CONTROL — corrupted linkage is CAUGHT.
-     * Reopen the same dir, then build a fresh dir whose middle block points
-     * at the wrong prev hash. We assert the linkage failure is detected. */
+    /* 2. NEGATIVE CONTROL: a fresh dir whose middle block points at the
+     * wrong prev hash; the linkage failure must be detected. */
     {
         char tmpl2[PATH_MAX];
         char *dir2 = test_mkdtemp(tmpl2, sizeof(tmpl2), "zcl_rv_badlink");
@@ -332,10 +307,8 @@ static int rv_ci_fixture_teeth(void)
         }
     }
 
-    /* 3. NEGATIVE CONTROL — non-deserializable bytes are an OPERATIONAL stop.
-     * Append a record whose payload is not a valid serialized block; the
-     * sweep must return a non-OK operational result (deser_failed), never
-     * silently report success. */
+    /* 3. NEGATIVE CONTROL: a record whose payload is not a serialized block
+     * must give a non-OK operational result (deser_failed). */
     {
         char tmpl3[PATH_MAX];
         char *dir3 = test_mkdtemp(tmpl3, sizeof(tmpl3), "zcl_rv_corrupt");

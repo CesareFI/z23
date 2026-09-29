@@ -1,8 +1,8 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * Unit tests for util/parse_num.h — zcl_parse_i64, the shared base-10
- * int64_t string parser that folds the two near-identical local
- * parsers that used to live in the chaos simulator and the
+ * int64_t string parser that replaces two near-identical local
+ * parsers of the chaos simulator and the
  * recovery-policy service.
  *
  * Pure: deterministic, no I/O, no global state, no clock. Table-driven. */

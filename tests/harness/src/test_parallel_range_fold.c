@@ -508,14 +508,9 @@ static int prf_equivalence_and_measure(void)
            serial_us > 0 ? (double)N * 1e6 / serial_us : 0.0,
            (unsigned long long)scount);
 
-    /* FOLD-RATE REGRESSION FLOOR — "sync stays FAST" enshrined.
-     * The tail fold is O(1) work per block (constant-cost delta apply, no
-     * pprev-walk / no H* recompute). If a regression reintroduces an
-     * O(chain)/O(chain^2) per-block term (see
-     * docs/work/refold-fold-rate-bottlenecks.md), us/blk explodes and this
-     * trips. The floor is set GENEROUSLY (5000 us/blk => >200 blk/s on this
-     * in-RAM fixture, orders of magnitude above the observed ~sub-us/blk and
-     * well clear of machine load jitter) so it fires ONLY on an algorithmic
+    /* Fold-rate regression floor: the tail fold is O(1) work per block. An
+     * O(chain) per-block term makes us/blk explode. The floor (5000 us/blk,
+     * >200 blk/s) is generous so it fires only on an algorithmic
      * regression, never on a loaded box. */
     {
         double us_per_blk = serial_us / (double)N;

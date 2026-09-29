@@ -1,14 +1,11 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Tests for net/rom_seed_policy.h — defaults, bounds validation +
- * persistence round-trip, the admit/disable decision (the interface the
- * seed engine's serve path consults — exercising it here IS the
- * "disable stops serving" proof, since there is no sibling serve path in
- * this tree yet), the generosity-boost window, and live counters.
+ * Tests for net/rom_seed_policy.h — defaults, bounds validation, persistence
+ * round-trip, the admit/disable decision, the generosity-boost window, and
+ * live counters.
  *
- * One TEST(...) block per function (the ASSERT()/ASSERT_EQ() macros `goto
- * _test_next`, a single hardcoded label — see test/test_core.h — so two
- * TEST blocks sharing one function collide on that label). */
+ * One TEST(...) block per function (ASSERT() macros `goto _test_next`, a
+ * single hardcoded label; see test/test_core.h). */
 
 #include "test/test_core.h"
 #include "json/json.h"
@@ -44,17 +41,10 @@ static int t_fresh_policy_loads_defaults(void)
     return failures;
 }
 
-/* A bare read must never have a disk side effect — rom_seed_policy_get()
- * (and therefore rom_seed_policy_dump_state_json()) is reachable from any
- * passive whole-registry sweep (e.g. the `unhealthy` health rollup,
- * engine/controllers/src/diagnostics_health_rollup.c), which runs in
- * processes that never set up a test-isolated datadir; a write here would
- * plant a file in whatever datadir that caller happens to be pointed at
- * (this is exactly how a bare rom_seed_policy_get() from the health
- * rollup used to leak a file into the operator's real datadir — see the
- * PERSISTENCE section of net/rom_seed_policy.h). An explicit owner
- * mutation still persists — proven by t_apply_takes_effect_and_survives_
- * reload below. */
+/* A bare read must never write to disk: rom_seed_policy_get() is reachable
+ * from passive registry sweeps in processes with no isolated datadir. An
+ * explicit owner mutation still persists (see
+ * t_apply_takes_effect_and_survives_reload). */
 static int t_bare_get_never_writes_to_disk(void)
 {
     int failures = 0;
@@ -196,10 +186,9 @@ static int t_apply_takes_effect_and_survives_reload(void)
     return failures;
 }
 
-/* The seed engine's serve path is expected to gate every new upload
- * through rom_seed_policy_admit_upload(); since no sibling serve path is
- * in this tree yet, exercising that exact call is the "disable stops
- * serving" proof for this lane. */
+/* The seed engine's serve path gates every new upload through
+ * rom_seed_policy_admit_upload(); exercising that call proves "disable stops
+ * serving". */
 static int t_admit_enabled_under_cap(void)
 {
     int failures = 0;

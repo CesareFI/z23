@@ -2,39 +2,30 @@
  *
  * test_receipt — the engine/modules/receipt gate.
  *
- * A receipt exists so a node can rely on what another node established
- * without re-running it, which means the only interesting properties are the
- * ones that stop a receipt from lying. Those are what this file proves.
+ * A receipt lets a node rely on what another node established without
+ * re-running it, so this file proves the properties that stop a receipt from
+ * lying:
  *
- *  1. THE CANONICAL BYTES ARE CANONICAL. Encode is fixed width and its size
- *     is asserted at compile time; here, a round trip returns exactly the
- *     receipt that went in, a buffer one byte short is refused, and a decode
- *     of anything other than the exact length is refused. Two receipts that
- *     differ in one bit of one field get two different ids.
+ *  1. THE CANONICAL BYTES ARE CANONICAL. Encode is fixed width (size asserted
+ *     at compile time); a round trip returns the same receipt, a buffer one
+ *     byte short is refused, a decode of any other length is refused, and a
+ *     one-bit difference in one field yields a different id.
  *
- *  2. A REFUSAL LEAVES NOTHING BEHIND. Every rejected decode must zero its
- *     output, or a caller that ignored the return value would read a
- *     half-filled receipt as a real one. Proven by poisoning the struct
- *     first and requiring it zeroed after.
+ *  2. A REFUSAL LEAVES NOTHING BEHIND. Every rejected decode zeroes its
+ *     output (proven by poisoning the struct first).
  *
- *  3. ONLY A PASS WITH A VECTOR PUBLISHES AS A PASS. HOLLOW is the case that
- *     matters: it is the verdict that looks like success and is not, and this
- *     tree has twice paid for a green that executed nothing.
+ *  3. ONLY A PASS WITH A VECTOR PUBLISHES AS A PASS. HOLLOW looks like
+ *     success and is not.
  *
- *  4. AN INELIGIBLE GROUP GETS NO RECEIPT AT ALL. Not an empty one. With no
- *     ledger wired — today's real state — every group is UNKNOWN and every
- *     build refuses, naming the group.
+ *  4. AN INELIGIBLE GROUP GETS NO RECEIPT. With no ledger wired every group
+ *     is UNKNOWN and every build refuses, naming the group.
  *
  *  5. BELIEF IS NEVER READ OFF THE WIRE. A node with no run of its own
- *     believes UNVERIFIED however good the receipt looks, a differing vector
- *     is REFUTED, and a differing CHECK COUNT is REFUTED even when the
- *     digests would have matched — because that means the two nodes did not
- *     run the same set of checks.
+ *     believes UNVERIFIED; a differing vector is REFUTED, and so is a
+ *     differing CHECK COUNT even when the digests match.
  *
- *  6. A RED-DELTA MUST ACTUALLY BE A DELTA. A red-delta whose base tree is
- *     absent, or identical to the tree it claims to have fixed, is refused:
- *     "tests pass" is satisfiable by changing nothing, and the whole value of
- *     this kind is that a born-red witness is not.
+ *  6. A RED-DELTA MUST BE A DELTA. One whose base tree is absent, or
+ *     identical to the tree it claims to have fixed, is refused.
  */
 
 #include "test/test_core.h"
@@ -44,12 +35,8 @@
 #include <stdio.h>
 #include <string.h>
 
-/* One line per check, outcome first, name after. Deliberately ONE printf and
- * not the two-call "name... " then "OK" shape used elsewhere: a reader that
- * parses per-check outcomes off a transcript sees a split line as a case that
- * asserted nothing, and 91 groups in this tree currently read that way. This
- * is the module whose entire purpose is a digest over an ordered (check,
- * outcome) sequence, so it had better be parseable itself. */
+/* One line per check, outcome first, name after, in ONE printf so a
+ * transcript parser never sees a split line as a check that asserted nothing. */
 #define RC_CHECK(name, expr) do {                                   \
     const bool rc_ok_ = (expr);                                     \
     if (!rc_ok_) failures++;                                        \
@@ -71,9 +58,8 @@ static bool is_all_zero(const void *p, size_t n)
     return acc == 0;
 }
 
-/* A ledger that says yes to everything, so the cases that are not ABOUT
- * eligibility can build a receipt. Named for what it is: no such ledger
- * exists in the tree, and one must never. */
+/* A ledger that says yes to everything, for cases not ABOUT eligibility. No
+ * such ledger exists in the tree, and one must never. */
 static enum zcl_receipt_eligibility yes_to_everything(const char *group,
                                                       void *user)
 {
@@ -215,8 +201,7 @@ static int case_refusal_is_clean(void)
              !zcl_receipt_decode(&poisoned, wire, sizeof(wire)));
     wire[group_at + 2] = saved;
 
-    /* Two receipts whose group READS the same but whose padding differs would
-     * otherwise carry two different ids for one claim. */
+    /* Padding differences must not give one claim two ids. */
     saved = wire[group_at + ZCL_RECEIPT_GROUP_MAX - 1];
     wire[group_at + ZCL_RECEIPT_GROUP_MAX - 1] = 'x';
     RC_CHECK("a non-zero tail after the NUL is refused",
@@ -376,8 +361,7 @@ static int case_belief(void)
     RC_CHECK("a different vector is REFUTED",
              zcl_receipt_corroborate(&r, g_other_vec, 131) ==
                  ZCL_RECEIPT_REFUTED);
-    /* Same digest, different number of checks: the two nodes did not run the
-     * same set, and calling that agreement is the worst available answer. */
+    /* Same digest, different check count: the nodes did not run the same set. */
     RC_CHECK("a different check COUNT is REFUTED, not corroborated",
              zcl_receipt_corroborate(&r, g_vec, 130) == ZCL_RECEIPT_REFUTED);
 
@@ -431,8 +415,7 @@ static int case_red_delta(void)
                  g_root, g_root, "test_receipt", g_vec, 131, "tc", "env",
                  g_producer, g_why, sizeof(g_why)));
 
-    /* A plain pass has no such tree and must not carry a stale one, or the
-     * field would be inside the id while meaning nothing. */
+    /* A plain pass carries no such tree: a stale one would sit inside the id. */
     struct zcl_proof_receipt plain;
     RC_CHECK("a plain pass does not carry a base tree",
              zcl_receipt_build(&plain, &open_ledger, ZCL_RECEIPT_KIND_PASS,

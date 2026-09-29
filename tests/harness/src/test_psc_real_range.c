@@ -6,32 +6,27 @@
  *
  * The P0 oracle (test_parallel_range_fold.c) proved the parallel fold
  * bit-identical to a serial replay of utxo_apply_compute_block_delta over an
- * IN-RAM fixture. This P1 oracle raises the bar to the PRODUCTION paths:
- *
- *   (1) MERGE BAR — fold a small regtest chain genesis..N through the REAL
- *       eight-stage reducer pipeline (the SAME machinery
- *       test_fold_inram_crash_proof.c drives: real mine_block_pow,
- *       header_admit/validate_headers/body_fetch/body_persist/script_validate/
- *       proof_validate/utxo_apply/tip_finalize, blocks written to a real
- *       blocks/ dir), then recompute the terminal transparent set with the
- *       PARALLEL compiler reading those SAME on-disk bodies through the
- *       PRODUCTION provider (psc_prod_block_provider = active_chain_at + the
- *       lock-free read_block_from_disk_index_pread), and assert the parallel
- *       terminal SHA3 (coins_kv_commitment's encoder), coin count, and supply
- *       are BIT-IDENTICAL to the durable coins_kv the serial utxo_apply wrote.
+ * IN-RAM fixture. This oracle covers the PRODUCTION paths:
+ *   (1) MERGE BAR — fold a small regtest chain genesis..N through the real
+ *       eight-stage reducer pipeline (as test_fold_inram_crash_proof.c does:
+ *       real mine_block_pow, header_admit .. tip_finalize, blocks written to
+ *       a real blocks/ dir), then recompute the terminal transparent set
+ *       with the PARALLEL compiler reading those on-disk bodies through the
+ *       production provider (psc_prod_block_provider = active_chain_at +
+ *       read_block_from_disk_index_pread), and assert the parallel terminal
+ *       SHA3 (coins_kv_commitment's encoder), coin count, and supply are
+ *       BIT-IDENTICAL to the durable coins_kv the serial utxo_apply wrote.
  *
  *   (2) AUDIT + dumpstate psc — psc_audit_run over the full range reports a
- *       MATCH and dumpstate psc reflects it; an audit over a deliberately short
- *       range reports a MISMATCH (fewer coins) — proving the opt-in audit
- *       surfaces both verdicts without touching the serial fold.
+ *       MATCH and dumpstate psc reflects it; a deliberately short range
+ *       reports a MISMATCH (fewer coins). The audit is opt-in and does not
+ *       touch the serial fold.
  *
  *   (3) MEASUREMENT — serial utxo_apply us/block vs parallel compile us/block
- *       over the on-disk fixture (small N; the scaled compute-parallelism
- *       number is measured by the P0 group at N=4000).
+ *       over the on-disk fixture (small N).
  *
- * Shielded/nullifier state stays serial in P1: this fixture carries none, and
- * the audit compares the TRANSPARENT coins set only (coins_kv_commitment), so a
- * pass asserts the shielded path is untouched by construction.
+ * Shielded/nullifier state stays serial: this fixture carries none, and the
+ * audit compares the TRANSPARENT coins set only (coins_kv_commitment).
  *
  * make t ONLY=psc_real_range
  */
@@ -96,9 +91,9 @@ static bool prr_mkdir_p(const char *p)
     return errno == EEXIST;
 }
 
-/* One-coinbase regtest block — a slim copy of
- * test_fold_inram_crash_proof.c:fip_build_regtest_block. Deterministic in every
- * field but nSolution/nNonce (found by mine_block_pow). */
+/* One-coinbase regtest block, a slim copy of
+ * test_fold_inram_crash_proof.c:fip_build_regtest_block. Deterministic
+ * except nSolution/nNonce (found by mine_block_pow). */
 static bool prr_build_regtest_block(struct block *blk, int height,
                                     const struct uint256 *prev_hash,
                                     const struct chain_params *cp)
@@ -172,8 +167,7 @@ struct prr_fixture {
 
 /* Build genesis + n_blocks regtest blocks on a REAL datadir, initialise all
  * eight reducer stages, admit headers, persist bodies. Slim copy of
- * test_fold_inram_crash_proof.c:fip_setup (no activation controller — this test
- * drives utxo_apply directly). */
+ * test_fold_inram_crash_proof.c:fip_setup; drives utxo_apply directly. */
 static bool prr_setup(const char *dir, int n_blocks, struct prr_fixture *fx)
 {
     memset(fx, 0, sizeof(*fx));
@@ -269,9 +263,9 @@ static void prr_teardown(struct prr_fixture *fx)
     test_rm_rf_recursive(fx->dir);
 }
 
-/* Drive validate_headers..proof_validate to convergence (none touch coins_kv),
- * then utxo_apply one height at a time up to n_blocks — timing ONLY the
- * utxo_apply loop so the serial number is a clean per-block apply cost. */
+/* Drive validate_headers..proof_validate to convergence (none touch
+ * coins_kv), then utxo_apply one height at a time up to n_blocks, timing
+ * ONLY the utxo_apply loop. */
 static bool prr_serial_fold(struct prr_fixture *fx, double *out_utxo_us)
 {
     for (int round = 0; round < 128; round++) {
@@ -353,8 +347,8 @@ int test_psc_real_range(void)
               serial_commit_rc == 0 && serial_count == PRR_N_BLOCKS && supply_ok);
     char serial_hex[65]; prr_hex(serial_sha3, serial_hex);
 
-    /* Ensure the active-chain window spans [1,N] for the production provider's
-     * active_chain_at height→block_index resolution (ancestor walk from tip). */
+    /* The active-chain window spans [1,N] for the provider's active_chain_at
+     * resolution. */
     active_chain_move_window_tip(&fx.ms.chain_active, fx.tip_bi);
 
     /* ── parallel: recompute the terminal set from the SAME on-disk bodies via

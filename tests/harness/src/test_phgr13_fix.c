@@ -1,27 +1,9 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
- *
- * Regression test for PHGR13 consensus fix — wave 9 #1.
- *
- * Validates both bugs identified in PHGR13_INVESTIGATION.md:
- *
- *  Bug #1 (VK parser): sprout-verifying.key is libsnark native format
- *  with Montgomery-form LE limbs, '\n' separators, and text-encoded
- *  integers in the accumulation_vector. The old parser assumed flat
- *  big-endian canonical Fq bytes, always returning false.
- *
- *  Bug #2 (G2 decompressor): CompressedG2 wire format uses FE2IP
- *  encoding (c1*q + c0 as 512-bit BE integer), not concat(c1, c0).
- *
- * Test approach
- * -------------
- * 1. Read sprout-verifying.key from disk, parse with ppzksnark_vk_read.
- *    Assert it returns true and ic_len == 10.
- *
- * 2. Validate that the VK's G1 and G2 points are on their respective
- *    curves (cheap check that exercises the field arithmetic path).
- *
- * 3. Test the FE2IP decoder against a known Zcash test vector.
- */
+ * Regression test for the PHGR13 consensus fix: (1) the sprout-verifying.key
+ * parser (libsnark native format: Montgomery-form LE limbs, text-encoded
+ * accumulation_vector integers); (2) the CompressedG2 FE2IP decoder
+ * (c1*q + c0 as a 512-bit BE integer). Parses the VK, checks its G1/G2 points
+ * are on-curve, and tests FE2IP against known vectors. */
 
 #include "test/test_core.h"
 #include "sapling/bn254.h"
@@ -90,11 +72,8 @@ int test_phgr13_fix(void)
     printf("\n=== PHGR13 fix ===\n");
     int failures = 0;
 
-    /* ── 0. The G2 generator the verifier pairs against MUST be on-curve.
-     * This is the regression that was MISSING: a corrupted g2_gen constant
-     * silently false-rejects EVERY Sprout proof at pairing check 1,
-     * and the same verifier is on the consensus path. Runs
-     * unconditionally — needs no params file, so CI always exercises it. */
+    /* ── 0. The verifier's G2 generator must be on-curve (a corrupted constant
+     * false-rejects every Sprout proof). Needs no params file. ── */
     {
         struct bn_g2 g2_one;
         bn254_g2_one(&g2_one);
@@ -190,28 +169,12 @@ int test_phgr13_fix(void)
 
     /* ── 5. FE2IP decoder: known roundtrip test ───────────── */
     {
-        /* Construct a known Fq2 element, encode as FE2IP, decode, compare.
-         * c0 = 7, c1 = 13, combined = 13*q + 7 */
         struct bn_fq c0_orig, c1_orig;
         bn_fq_from_u64(&c0_orig, 7);
         bn_fq_from_u64(&c1_orig, 13);
 
-        /* Encode FE2IP: combined = c1*q + c0 as 64-byte BE */
-        /* c1*q + c0 in raw form: c1=13, c0=7 */
-        /* combined = 13 * q + 7 */
-        /* q = 0x30644e72e131a029b85045b68181585d97816a916871ca8d3c208c16d87cfd47 */
-        /* 13*q = 0x027342c9224020219f2838b4d0f14b8d2e412e67f55c1af0e29a72f2b5a60ca39 */
-        /* Wait, 13*q is 259 bits — fits in 33 bytes */
-        /* combined = 13*q + 7. This fits in 260 bits ≤ 512 bits. */
-        /* For the test I need the 64-byte BE encoding. Let me compute: */
-        /* Actually, I can compute this using bn_fq_to_bytes_be on c0 and c1,
-         * then manually compute the FE2IP encoding. But that requires big
-         * integer multiply which I don't want to duplicate.
-         *
-         * Simpler: use the existing fq2_decode_fe2ip to verify a roundtrip
-         * of a trivially simple case where combined is small. For c0=1, c1=0:
-         * combined = 0*q + 1 = 1. The 64-byte BE is 63 zero bytes then 0x01.
-         */
+        /* FE2IP = c1*q + c0 as a 64-byte BE integer. Roundtrip a trivial
+         * case: c0=1, c1=0 is 63 zero bytes then 0x01. */
         uint8_t fe2ip_data[64];
         memset(fe2ip_data, 0, 64);
         fe2ip_data[63] = 1; /* combined = 1 → c0 = 1, c1 = 0 */
@@ -233,10 +196,7 @@ int test_phgr13_fix(void)
         /* Test with combined = q → c0 = 0, c1 = 1 */
         uint8_t q_be[64];
         memset(q_be, 0, 64);
-        /* q in BE: at bytes 32..63 (lower 256 bits of the 512-bit field) */
-        /* q = 30644e72 e131a029 b85045b6 8181585d 97816a91 6871ca8d 3c208c16 d87cfd47 */
         bn_fq_to_bytes_be(q_be + 32, &one); /* This gives 1 in canonical BE... */
-        /* Actually, q is not representable as an Fq element. Let me encode q directly: */
         /* q as 32-byte BE: */
         static const uint8_t q_bytes[32] = {
             0x30, 0x64, 0x4e, 0x72, 0xe1, 0x31, 0xa0, 0x29,

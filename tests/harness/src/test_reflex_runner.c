@@ -783,7 +783,7 @@ static int t_reap_is_bounded_after_eof(void)
     return failures;
 }
 
-/* F1 regression: the runner's post-Landlock descriptor close must not
+/* The runner's post-Landlock descriptor close must not
  * reopen /proc/self/fd (Landlock now refuses it) when close_range is
  * unavailable. The only way to drive a REAL leaf down that fallback is the
  * ZCL_TESTING-only wire flag (never an env var: the runner execs with an
@@ -809,7 +809,7 @@ static int t_green_survives_leaf_close_without_close_range(void)
     return failures;
 }
 
-/* F4(a): a story that writes a second well-formed pre-load-kind frame
+/* A story that writes a second well-formed pre-load-kind frame
  * after it runs, aimed at every descriptor above 2 since it cannot know the
  * report pipe's number. The runner must name this a duplicated frame and
  * never say green. */
@@ -834,7 +834,7 @@ static int t_hostile_story_duplicate_frame_is_red(void)
     return failures;
 }
 
-/* F4(b): a story that closes every descriptor above 2 (the report pipe
+/* A story that closes every descriptor above 2 (the report pipe
  * among them, whatever its number) then never returns. The runner must see
  * EOF, still kill the leaf at the deadline, name it the bounded-reap
  * reason, and survive. */
@@ -864,7 +864,7 @@ static int t_leaf_closes_pipe_then_outlives_deadline(void)
     return failures;
 }
 
-/* F2: SIG_IGN on SIGCHLD survives exec, and under it the kernel auto-reaps
+/* SIG_IGN on SIGCHLD survives exec, and under it the kernel auto-reaps
  * every exiting child, so a runner that kept it could never waitid() its
  * leaf (nor its startup deny probes). The resident spawns a fresh runner
  * while SIGCHLD is ignored; the runner must reset the disposition itself and

@@ -2,23 +2,14 @@
  *
  * test_importblockindex_cli_dispatch — proves the literal
  * `zclassic23 --importblockindex <src-datadir> [<target-node.db>]` CLI
- * invocation (step 1 of the two-step cold-sync recipe — CLAUDE.md
- * "Tenacity & recovery", docs/SYNC.md Method 3) is actually ROUTED by
- * engine/entry/main.c's argv dispatch chain to the real importer, not silently
- * swallowed by an earlier branch (`is_cli_mode()` -> cli_main, the
- * `argc == 1` status shortcut, or an unrelated `if` returning first).
+ * invocation (step 1 of the two-step cold-sync recipe, docs/SYNC.md Method 3)
+ * is ROUTED by engine/entry/main.c's argv dispatch chain to the real importer,
+ * not swallowed by an earlier branch (`is_cli_mode()`, the `argc == 1` status
+ * shortcut, or an unrelated `if`).
  *
- * test_importblockindex_roundtrip.c already gives snapshot_import_block_index()
- * itself (engine/controllers/src/snapshot_controller_import.c) full execution
- * coverage by calling it directly. This test covers the layer above it —
- * the argv routing in main() — by forking the REAL built binary exactly the
- * way an operator (or the two-step recipe) invokes it. Before this test,
- * that routing layer had zero execution coverage: a regression that
- * re-routes or drops the dispatch (e.g. a reordered `if`-chain, a widened
- * `is_cli_mode()`, or an early return inserted above it) would silently turn
- * the documented cold-sync recipe into a no-op, exactly the shape of the
- * historical `-cold-import=`/`-fastimport=` flag removal that CLAUDE.md and
- * docs/SYNC.md warn about.
+ * test_importblockindex_roundtrip.c covers snapshot_import_block_index()
+ * directly; this test covers the argv routing in main() by forking the real
+ * built binary the way an operator invokes it.
  *
  * Skips (does not fail) if build/bin/zclassic23 is missing or stale vs the
  * source files that define this behavior — matching the guard pattern in
@@ -58,9 +49,8 @@ static long icd_file_mtime(const char *path)
     return (long)st.st_mtime;
 }
 
-/* Witness sources for the CLI dispatch + the importer it calls. If either
- * is newer than the binary, the binary predates the behavior this test
- * exercises — SKIP with a clear message instead of a confusing failure. */
+/* Witness sources for the CLI dispatch and importer; if newer than the binary,
+ * SKIP with a clear message. */
 static const char *const icd_stale_witnesses[] = {
     "engine/entry/main.c",
     "engine/controllers/src/snapshot_controller_import.c",
@@ -84,19 +74,15 @@ static bool icd_bin_is_fresh(const char **stale_path_out)
 
 static void icd_mkdir_p(const char *path)
 {
-    /* Best-effort: a failure here surfaces as the test's own ASSERTs
-     * failing downstream (e.g. the target db never appearing), which is
-     * more actionable than a silent partial-setup skip. */
+    /* Best-effort: failure surfaces as the test's own ASSERTs downstream. */
     if (mkdir(path, 0700) != 0 && errno != EEXIST)
         fprintf(stderr, "icd_mkdir_p: mkdir(%s) failed: %s\n",
                 path, strerror(errno));
 }
 
-/* Fork/exec argv (argv[0] is cosmetic; the real exec target is always
- * ICD_BIN), capture combined stdout+stderr into out (NUL-terminated,
- * truncated to cap-1 bytes; excess child output is drained and discarded
- * so the child never blocks on a full pipe). Returns the child's exit
- * code, or a negative sentinel on spawn/wait failure or signal death. */
+/* Fork/exec argv (the exec target is always ICD_BIN), capturing stdout+stderr
+ * into out (NUL-terminated, truncated to cap-1; excess is drained). Returns the
+ * child's exit code, or a negative sentinel on spawn/wait failure or signal. */
 static int icd_run(char *const argv[], char *out, size_t cap)
 {
     int pipefd[2];
@@ -130,8 +116,7 @@ static int icd_run(char *const argv[], char *out, size_t cap)
             memcpy(out + pos, buf, take);
             pos += take;
         }
-        /* Excess bytes beyond `room` are intentionally dropped — we keep
-         * draining the pipe so a chatty child never blocks on write(). */
+        /* Excess bytes beyond `room` are dropped; keep draining the pipe. */
     }
     out[pos < cap ? pos : cap - 1] = 0;
     close(pipefd[0]);
@@ -148,10 +133,8 @@ static bool icd_contains(const char *hay, const char *needle)
     return hay && needle && strstr(hay, needle) != NULL;
 }
 
-/* One `_test_next:` label per function is a hard C constraint of the
- * TEST()/ASSERT() macros (see test_flyclient.c for the established
- * one-case-per-function convention), so each case below is its own
- * static helper. */
+/* One `_test_next:` label per function is a constraint of the TEST()/ASSERT()
+ * macros, so each case is its own static helper. */
 
 static int icd_test_dispatch_reaches_importer(const char *src_dir,
                                                const char *target_db)
@@ -192,13 +175,9 @@ static int icd_test_flaglike_target_refused(const char *src_dir)
     return failures;
 }
 
-/* Determinism fix #1: --importblockindex used to dispatch ONLY as the
- * literal argv[1] (a raw strcmp(argv[1], "--importblockindex")). Any other
- * position fell through every check in main()'s argv chain and silently
- * ran a normal node boot — the historical footgun this whole test group
- * guards against (see the file header). This proves the anywhere-in-argv
- * scan (engine/entry/main.c main()) dispatches the real importer when a node flag
- * (-datadir=) precedes the verb, matching the documented usage. */
+/* --importblockindex dispatches from any argv position: the anywhere-in-argv
+ * scan (engine/entry/main.c main()) routes to the real importer when a node
+ * flag (-datadir=) precedes the verb. */
 static int icd_test_nonfirst_position_dispatches(const char *src_dir,
                                                   const char *target_db)
 {
@@ -226,11 +205,8 @@ static int icd_test_nonfirst_position_dispatches(const char *src_dir,
     return failures;
 }
 
-/* Determinism fix #2: a missing/invalid source path used to either fall
- * through to a normal boot (missing source arg entirely — argc<3 made the
- * old literal-argv[1] check simply not match) or fail deep inside the
- * importer with a generic, easy-to-miss "Block-index import failed". Both
- * shapes now REFUSE loudly and immediately, named and non-zero-exit. */
+/* A missing/invalid source path REFUSES loudly and immediately, named and
+ * with a non-zero exit. */
 static int icd_test_bad_path_refuses(void)
 {
     int failures = 0;
@@ -273,17 +249,9 @@ static int icd_test_missing_source_arg_refuses(void)
     return failures;
 }
 
-/* Determinism fix #3 (boot.c bulk-vs-P2P dispatch, engine/composition/src/boot.c +
- * engine/composition/src/boot_legacy_import.c boot_need_blocks_table_hydrate): the CLI
- * importer itself has exactly one code path (there is no incremental
- * alternative inside snapshot_import_block_index), so a fresh target
- * node.db always takes it — proven here via the LOG_INFO `mode=bulk`
- * marker every dispatch emits. The companion NORMAL-BOOT determinism fix
- * (an earlier loader rung's stale small map no longer blocks the
- * `blocks`-table bulk hydrate rung) is unit-tested directly against
- * boot_need_blocks_table_hydrate in test_boot_phase.c — a full boot fork
- * here would need real P2P networking to observe, which this CLI-only
- * harness deliberately does not spin up. */
+/* The CLI importer has one code path, so a fresh target node.db always takes
+ * it, proven via the LOG_INFO `mode=bulk` marker every dispatch emits. The
+ * normal-boot bulk-hydrate rung is unit-tested in test_boot_phase.c. */
 static int icd_test_fresh_datadir_chooses_bulk(const char *src_dir,
                                                const char *target_db)
 {

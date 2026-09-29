@@ -184,26 +184,19 @@ int test_node_db_catchup_service(void)
               !node_db_catchup_sparse_tip_slot_pending(true, 1, 2, true));
     NDC_CHECK("ordinary projections never enter sparse tip wait",
               !node_db_catchup_sparse_tip_slot_pending(false, 1, 2, false));
-    /* Two-or-more missing TOP slots (chain_tip=3, projection_tip=1: heights
-     * 2 AND 3 both missing active-chain indices). A fresh catchup pass would
-     * start at height 2, find it missing, and publish target=1 — the same
-     * projection_tip it already has, no progress — so the watcher must
-     * suppress the restart just as it does for a single missing slot. This
-     * is the exact defect this predicate was generalized to cover. */
+    /* Two-or-more missing TOP slots (chain_tip=3, projection_tip=1): a
+     * fresh pass would publish the same projection_tip, so the watcher
+     * suppresses the restart as for a single missing slot. */
     NDC_CHECK("sparse watcher waits when two-or-more top slots are missing",
               node_db_catchup_sparse_tip_slot_pending(true, 1, 3, false));
-    /* Missing slot strictly interior (below projection_tip + 1) while the
-     * next-needed slot IS present: a fresh catchup pass starting at
-     * projection_tip + 1 makes real progress (the interior hole is a lean
-     * hole handled inline by the run, not a reason to wait), so the watcher
-     * must allow the restart. */
+    /* Missing slot strictly interior while the next-needed slot IS present:
+     * a fresh pass makes real progress, so the watcher allows the restart. */
     NDC_CHECK("sparse watcher allows restart when the next slot is present "
               "despite an interior hole",
               !node_db_catchup_sparse_tip_slot_pending(true, 1, 5, true));
 
-    /* A torn index (cp -a of a running node) can hand the catchup walk a
-     * block_index carrying BLOCK_HAVE_DATA yet a NULL phashBlock. That must
-     * fail-closed with a named log — never a SIGSEGV in sync_block_lean. */
+    /* A torn index can carry BLOCK_HAVE_DATA with a NULL phashBlock; that
+     * must fail-closed with a named log, never SIGSEGV in sync_block_lean. */
     {
         struct node_db ndb;
         bool opened = node_db_open(&ndb, ":memory:");
@@ -229,11 +222,10 @@ int test_node_db_catchup_service(void)
         if (opened) node_db_close(&ndb);
     }
 
-    /* Drive the full walk against a torn projection: a real decodable block
-     * on disk reached through an active-chain slot whose phashBlock is NULL,
-     * with a missing lower slot (h=0). The run must complete with a named
-     * lean-hole outcome, never crash, and never advance the projection tip
-     * onto the unidentifiable slot. */
+    /* Drive the full walk against a torn projection: a decodable block
+     * reached through an active-chain slot whose phashBlock is NULL, with a
+     * missing lower slot. The run must complete with a named lean-hole
+     * outcome, never crash, never advance the tip onto that slot. */
     {
         char dir2[256];
         test_make_tmpdir(dir2, sizeof(dir2), "node_db_catchup", "torn_walk");
@@ -281,10 +273,8 @@ int test_node_db_catchup_service(void)
         snprintf(ndb_path, sizeof(ndb_path), "%s/node.db", dir2);
         bool opened = node_db_open(&ndb, ndb_path);
 
-        /* A pre-run sentinel: if the walk SIGSEGVs on the hash-less slot,
-         * the process dies here and the group fails with a signal. Reaching
-         * the assertions with result reassigned proves the walk returned a
-         * named outcome (a catchup abort returns -1 via LOG_ERR) instead. */
+        /* Pre-run sentinel: a SIGSEGV on the hash-less slot kills the
+         * process here; reaching the assertions proves a named outcome. */
         int result = -99;
         if (wrote && installed && opened)
             result = node_db_catchup_service_run(&ndb, &ac, NULL, dir2);
@@ -295,11 +285,10 @@ int test_node_db_catchup_service(void)
         NDC_CHECK("catchup refuses to advance the projection onto a torn slot",
                   tip < 1);
 
-        /* Repair only the torn identity and run the same on-disk block through
-         * the real catchup transaction. This reaches advance_wallet_witnesses
-         * with sync_in_batch=false while the catchup's plain BEGIN is open —
-         * the exact post-bundle path that previously misclassified its own
-         * transaction as foreign and aborted on the first block. */
+        /* Repair only the torn identity and run the same block through the
+         * real catchup transaction: advance_wallet_witnesses runs with
+         * sync_in_batch=false while the catchup's plain BEGIN is open and
+         * must not treat it as foreign. */
         torn.phashBlock = &block_hash;
         int repaired_result = opened
             ? node_db_catchup_service_run(&ndb, &ac, NULL, dir2) : -1;
@@ -438,14 +427,10 @@ int test_node_db_catchup_service(void)
         NDC_CHECK("the restarted walk completes with identical state",
                   resC == FIX_N && tipC == tipA);
 
-        /* (r1) ONE transient SQLITE_BUSY on the post-batch-commit
-         * BEGIN IMMEDIATE. This is the class a wait cures: the batch
-         * already committed durably and the walk holds no snapshot, so
-         * the reopen retries in place and the pass completes with the
-         * identical state. Aborting here instead is what stopped catchup
-         * on the node1 devfleet node — with catchup stopped the boot
-         * watchdog withholds its ping, systemd kills the node, and the
-         * next boot repeats the whole thing at a random height. */
+        /* (r1) ONE transient SQLITE_BUSY on the post-batch-commit BEGIN
+         * IMMEDIATE. A wait cures it: the batch already committed and the
+         * walk holds no snapshot, so the reopen retries in place and the
+         * pass completes with the identical state. */
         struct node_db ndbR;
         bool openR = built && node_db_open(&ndbR, pathR);
         node_db_catchup_lock_guard_test_reset();
@@ -500,35 +485,19 @@ int test_node_db_catchup_service(void)
                   capturedS && strstr(logS, firstS) != NULL &&
                   strstr(logS, lastS) != NULL);
 
-        /* (r2b) Regression guard: that plain fail-closed abort above must
-         * pair its one catchup_active_begin() with exactly one finish.
-         * LOG_ERR (base/log_macros.h) logs AND returns, so the
-         * catchup_active_finish() immediately above the LOG_ERR call at
-         * the "aborting" site is this pass's ONLY finish — the
-         * unconditional one at the bottom of node_db_catchup_service_run
-         * is unreachable once that LOG_ERR fires. A future edit that adds
-         * a second finish there (misreading LOG_ERR as a plain log call,
-         * as LOG_WARN/LOG_ERROR are) would drive the depth counter to -1
-         * instead of 0 — invisible to node_db_catchup_service_active()'s
-         * `> 0` test right here, but it would make the counter misreport
-         * the NEXT walk as inactive, defeating the db_maintenance
-         * deferral this service exists to provide. Check both: the
-         * coarse active flag now, and the raw depth (must land on 0, not
-         * -1) so such a regression is caught even though -1 also reads
-         * as "inactive". */
+        /* (r2b) The plain fail-closed abort must pair its one
+         * catchup_active_begin() with exactly one finish. LOG_ERR logs AND
+         * returns, so the finish above the "aborting" site is this pass's
+         * ONLY finish. Check the coarse active flag and the raw depth
+         * (must land on 0, not -1). */
         NDC_CHECK("catchup reports inactive right after a plain failed pass",
                   !node_db_catchup_service_active());
         NDC_CHECK("the active-depth counter is paired to zero, not -1",
                   node_db_catchup_test_active_depth() == 0);
 
-        /* A following real walk (no injected failure — the busy budget
-         * armed above is already fully spent) must drain the rest of the
-         * same database's pending work and land the depth counter back on
-         * zero again. Under the double-finish regression described above,
-         * the prior pass leaves the counter at -1, so this fresh
-         * begin/finish would net -1 instead of 0 — proving the "fresh
-         * begin" case is paired too, not only the failure case just
-         * exercised. */
+        /* A following real walk (the busy budget is spent) drains the
+         * remaining work and lands the depth counter back on zero: the
+         * fresh begin/finish is paired too. */
         int resS2 = openS
             ? node_db_catchup_service_run(&ndbS, &ac, NULL, dirF) : -1;
         NDC_CHECK("a following real walk drains the rest of the work",
@@ -633,10 +602,8 @@ int test_node_db_catchup_service(void)
                       res_halfopen == 1 && tip_halfopen == FIX_N + 1);
 
             /* Differential restart proof: a resumed 1..5 then 6 walk must
-             * produce exactly the same height-6 chained receipt as a fresh
-             * continuous 1..6 walk. If the production start-1 read is
-             * deleted, changed to start, or replaced by a zero seed, these
-             * receipts diverge while all per-row writes still look green. */
+             * produce the same height-6 chained receipt as a continuous
+             * 1..6 walk; a changed start-1 read makes them diverge. */
             node_db_catchup_lock_guard_test_reset();
             struct node_db ndbD;
             bool openD = sixth && node_db_open(&ndbD, pathD);

@@ -2,43 +2,12 @@
  *
  * test_regtest_generate — regression test for the regtest `generate` RPC.
  *
- * THE BUG THIS GUARDS
- * -------------------
- * The `generate N` RPC (engine/controllers/src/mining_controller.c) built a
- * block template and submitted it straight through the reducer front door
- * (reducer_ingest_block) WITHOUT ever solving the Equihash proof-of-work.
- * The reducer's first gate is check_block(..., check_pow=true, ...), which
- * verifies a real Equihash witness (size-demuxed to the chain's (N,K) — for
- * regtest that is (48,5), a 36-byte solution). With nNonce=0 and an empty
- * nSolution the block was rejected at intake every time, so the tip never
- * advanced: the S3 chaos harness saw bootstrap tip stuck at genesis (h0).
- *
- * THE FIX
- * -------
- * core/modules/mining/src/miner.c::mine_block_pow() now solves the Equihash PoW
- * (core/modules/crypto/src/equihash.c::equihash_basic_solve) and searches nonces
- * until the block hash is <= the nBits target. rpc_generate() calls it
- * before submitting, so each generated block carries a valid witness and
- * passes the SAME stateless gate the reducer applies.
- *
- * WHAT THIS TEST ASSERTS (real consensus, no stubs)
- * -------------------------------------------------
- *   1. mine_block_pow() produces a block that passes check_block() with
- *      check_pow=TRUE — i.e. the exact gate reducer_ingest_block() runs
- *      (reducer_ingest_service.c: check_block(pblock, out, params,
- *      true, true, true)). Before the fix this is impossible.
- *   2. The solved solution is a real Equihash answer (the verifier accepts
- *      it) AND the block hash is <= the regtest target.
- *   3. N=3 blocks can be mined as a chain (each building on the prior),
- *      modelling `generate 3` advancing the tip by 3, and each block's
- *      coinbase creates a spendable output of subsidy+fees (the UTXO that
- *      lands in the set once utxo_apply runs) — proving the new coinbase
- *      UTXO is present, value-correct, and at the right height.
- *
- * It runs in milliseconds: regtest Equihash (48,5) solves in << 1 ms and
- * the regtest target accepts roughly 1-in-16 solutions, so a block is
- * found in a few dozen nonce attempts.
- */
+ * mine_block_pow() (core/modules/mining/src/miner.c) must produce blocks that
+ * pass check_block() with check_pow=true, the reducer intake gate that
+ * `generate N` feeds. Asserts: (1) the block passes that gate; (2) the
+ * solution is a real Equihash witness (regtest (48,5)) and the hash is <= the
+ * target; (3) N=3 blocks chain, each coinbase creating a value-correct
+ * spendable output at the right height. */
 
 #include "test/test_core.h"
 
@@ -132,9 +101,7 @@ int test_regtest_generate(void)
     printf("\n=== regtest generate: mine valid PoW blocks through the "
            "reducer's consensus gate ===\n");
 
-    /* The default test runner inits CHAIN_MAIN; switch to regtest for this
-     * group and restore on the way out so the sequential runner is unaffected
-     * (the parallel runner forks per group, so it is naturally isolated). */
+    /* Switch to regtest for this group and restore afterwards. */
     chain_params_select(CHAIN_REGTEST);
     const struct chain_params *cp = chain_params_get();
 
@@ -164,7 +131,7 @@ int test_regtest_generate(void)
         if (built) printf("OK (subsidy=%lld)\n", (long long)cb_value);
         else { printf("FAIL\n"); failures++; block_free(&blk); break; }
 
-        /* THE FIX UNDER TEST: solve Equihash + PoW. */
+        /* Solve Equihash + PoW. */
         bool mined = mine_block_pow(&blk, height, cp, 0);
         printf("regtest_generate: mine_block_pow h%d (solve Equihash 48,5 "
                "+ nonce search)... ", height);

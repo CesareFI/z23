@@ -3,22 +3,13 @@
  * Peer lifecycle observability: a session that opens in node.log must close
  * in node.log.
  *
- * The live failure this pins: the connect side wrote a structured
- * "peer_connected" JSON line, while the close side only called event_emitf()
- * into the event ring, which never reaches node.log. A hub node's log held 293
- * peer_connected lines and ZERO disconnect lines of any kind — connections
- * vanished with no line, no reason and no counter, and a whole class of
- * peering failure was undiagnosable from the log a reader actually has.
- *
  * Two prongs:
  *   (A) behavioural — p2p_log_peer_close() renders one well-formed line per
- *       call, with the named reason, the named source, the state the session
- *       reached, direction and lifetime, for EVERY reason enumerator;
+ *       call, with the named reason, source, state reached, direction and
+ *       lifetime, for EVERY reason enumerator;
  *   (B) structural — the single place a p2p_node leaves nodes[] emits the
- *       terminal line, and the teardown path does too, so no removal path is
- *       silent. Prong B is a source scan because there is no way to fake a
- *       whole connman socket loop in-process, and a comment cannot keep a
- *       future edit honest. */
+ *       terminal line, and the teardown path does too (source scan; a
+ *       connman socket loop cannot be faked in-process). */
 
 #include "test/test_core.h"
 #include "net/net.h"
@@ -306,9 +297,8 @@ static int test_null_node_is_inert(void)
 
 /* ── Prong B: no removal path is silent ────────────────────────────── */
 
-/* Walk up from the test binary to the tree holding the Makefile AND the two
- * net sources this lane owns, so the scan hits the right files regardless of
- * the cwd the suite runs in. Bounded walk. */
+/* Walk up from the test binary to the tree holding the Makefile and the two
+ * net sources; bounded. */
 #define CONNMAN_REL "core/modules/net/src/connman.c"
 #define NETSRC_REL  "core/modules/net/src/net.c"
 #define NETLISTEN_REL "core/modules/net/src/net_listen.c"
@@ -383,9 +373,7 @@ static int test_sweep_is_the_only_removal_and_it_logs(void)
         char *src = slurp(CONNMAN_REL);
         ASSERT(src != NULL);
 
-        /* One removal site. If a second appears, this assertion is the
-         * prompt to give it a terminal line too rather than let peers start
-         * vanishing silently again. */
+        /* One removal site; a second needs its own terminal line. */
         ASSERT(count_occurrences(src, "cm->manager.num_nodes--") == 1);
 
         const char *removal = strstr(src, "cm->manager.num_nodes--");
@@ -393,9 +381,8 @@ static int test_sweep_is_the_only_removal_and_it_logs(void)
         const char *emit =
             strstr(src, "p2p_log_peer_close(node, \"peer_disconnected\"");
         ASSERT(emit != NULL);
-        /* Emitted before the node is unlinked, and before the forced
-         * PEER_DISCONNECTED overwrite, so the line reports the state the
-         * session actually reached. */
+        /* Emitted before the unlink and the forced PEER_DISCONNECTED
+         * overwrite, so the line reports the state actually reached. */
         ASSERT(emit < removal);
         const char *forced = strstr(src, "node->state = PEER_DISCONNECTED;");
         ASSERT(forced != NULL);
@@ -405,8 +392,7 @@ static int test_sweep_is_the_only_removal_and_it_logs(void)
         ASSERT(count_occurrences(src, "p2p_node_close_socket(") == 1);
         ASSERT(strstr(src, "p2p_node_close_socket(") > emit);
 
-        /* Both timeout incidents are machine-readable, and the free-form
-         * printf they replaced is gone. */
+        /* Both timeout incidents are machine-readable JSON lines. */
         ASSERT(count_occurrences(src, "\"peer_handshake_timeout\"") == 1);
         ASSERT(count_occurrences(src, "\"peer_connect_timeout\"") == 1);
         ASSERT(!contains(src, "handshake timeout after"));
@@ -432,14 +418,9 @@ static int test_teardown_path_is_not_silent(void)
         ASSERT(node_free != NULL);
         ASSERT(emit < node_free);
 
-        /* Both directions publish an open line, so opens and closes pair.
-         * The two directions no longer live in one file: the outbound dial
-         * stays in net.c and the inbound accept path moved to net_listen.c,
-         * so the open lines must be counted across BOTH. Counting only net.c
-         * would silently drop the inbound half and let a deleted open line
-         * read as a pass. The needles carry the source's own backslash
-         * escapes -- these live inside a C string literal, not as bare
-         * quotes. */
+        /* Both directions publish an open line; the outbound dial is in net.c
+         * and the inbound accept in net_listen.c, so count across both. The
+         * needles carry the source's own backslash escapes. */
         char *listen_src = slurp(NETLISTEN_REL);
         ASSERT(listen_src != NULL);
         ASSERT(count_occurrences(src, "\\\"inbound\\\":false") +

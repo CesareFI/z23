@@ -2,51 +2,23 @@
  *
  * The ACTION-BIT half of the metaverse vocabulary gate.
  *
- * WHY THIS IS A SEPARATE FILE AND NOT A SECOND SECTION OF
- * test_metaverse_vocabulary.c: at the base commit of this work
- * (96a0d0e49) metaverse/property_action.h defines METAVERSE_ACTION_* as bit
- * VALUES and metaverse/property_grant.h defines the SAME identifiers as bit
- * POSITIONS. Nothing in the tree includes both, which is the only reason the
- * tree compiles; one #include away it is a hard redefinition error. This file
- * therefore takes the property_action.h side and its sibling takes the
- * property_grant.h side, so the suite can assert facts from both without
- * being the translation unit that detonates the collision.
+ * Separate from test_metaverse_vocabulary.c because property_action.h defines
+ * METAVERSE_ACTION_* as bit values while property_grant.h defines the same
+ * identifiers as bit positions; no unit may include both. This file takes the
+ * property_action.h side and its sibling the property_grant.h side.
  *
- * When the vocabulary is unified into one declaration, the two files merge
- * and the merge itself is the proof — see the METAVERSE_VOCABULARY_UNIFIED
- * block in test_metaverse_vocabulary.c.
+ * It exports helpers only (no test_metaverse_vocabulary_bits(void)): the
+ * test-registration gate treats a function named for its file as an entry
+ * point; the group entry point is test_metaverse_vocabulary().
  *
- * There is deliberately no `test_metaverse_vocabulary_bits(void)` here: the
- * test-registration gate treats a function bearing its file's name as an
- * entry point that must be dispatched by a runner. This file exports helpers
- * only; the group entry point is test_metaverse_vocabulary().
- *
- * What is proven here, and what drift each check plants:
- *
- *   1. Every action carries exactly ONE bit, every bit is unique, and the
- *      union is exactly METAVERSE_ACTION_ALL. Plants: a row silently sharing
- *      another's bit (two rights that grant each other), a row with two bits
- *      set (a mask that widens on OR), and a bit above the table read as "a
- *      future action" rather than as malformed.
- *   2. The bit values that the contract PRESERVES are static_asserted to
- *      their literals. Plants: a regenerated table that renumbers a
- *      persisted right. This is a COMPILE failure, not a test failure, so it
- *      cannot be argued with at runtime.
- *   3. LIST keeps bit 0x10 across its rename to LIST_FOR_SALE, and bit 0x1
- *      (INSPECT, which leaves the action space to become a query) is never
- *      reissued to one of the twelve actions. Plants: a rename that quietly
- *      moves a persisted bit, and a "free" bit recycled onto a new right.
- *   4. Every property kind has one unique wire name, one authority source,
- *      and EXACTLY one adapter row. Plants: a kind with two rows (two
- *      readers disagreeing about one object) or none (a kind that vanishes
- *      from the catalog and so is indistinguishable from a kind that owns
- *      nothing).
- *   5. HOST changes LOCAL state only. Plants: the reading of "mutating" that
- *      collapses the two state columns into one word — the broker calls HOST
- *      a mutation because it changes local state, the metaverse action table
- *      excludes it from MUTATING because it changes no EXTERNAL state, and
- *      both are right about different columns. A unification that makes them
- *      "agree" by deleting one column breaks this.
+ *   1. Each action has exactly one unique bit; the union is
+ *      METAVERSE_ACTION_ALL.
+ *   2. Preserved bit values are static_asserted (a compile failure).
+ *   3. LIST keeps 0x10 as LIST_FOR_SALE; 0x1 (INSPECT) is never reissued.
+ *   4. Each property kind has one wire name, one authority source, and
+ *      exactly one adapter row.
+ *   5. HOST changes LOCAL state only: the broker calls it a mutation, the
+ *      metaverse MUTATING column (external state) excludes it; both hold.
  */
 
 #include "test/test_core.h"
@@ -64,15 +36,11 @@
     else { printf("FAIL\n"); failures++; } \
 } while (0)
 
-/* ── contract §2: every PRESERVED bit value, pinned at COMPILE time ───────
+/* ── every PRESERVED bit value, pinned at COMPILE time ───────────────────
  *
- * These eleven identifiers keep both their name and their numeric value
- * across the canonical split (contract §1 renames only LIST -> LIST_FOR_SALE
- * and moves INSPECT out of the action space). Altering ANY of them — by hand
- * or by regenerating the table from a reordered source — stops this
- * translation unit from compiling. That is the single-source-of-truth bind:
- * a generated mapping cannot be changed without this file objecting, and no
- * duplicate switch elsewhere can satisfy it in the table's place. */
+ * These eleven identifiers keep name and value across the canonical split
+ * (LIST -> LIST_FOR_SALE; INSPECT leaves the action space); changing any of
+ * them stops this translation unit from compiling. */
 _Static_assert(METAVERSE_ACTION_HOST == 0x00000002u,
                "persisted action bit HOST must stay 0x2");
 _Static_assert(METAVERSE_ACTION_PUBLISH_REVISION == 0x00000004u,
@@ -102,10 +70,8 @@ _Static_assert(METAVERSE_KIND_COUNT == 10,
                "METAVERSE_KIND_TABLE holds 9 kinds plus UNKNOWN; update this "
                "gate and the adapter registry in the SAME change");
 
-/* Contract §1: HOST is one of the twelve ACTIONS, and it changes local state
- * only. METAVERSE_ACTION_MUTATING is the "changes EXTERNAL state" column, so
- * HOST must be absent from it while still being a defined action. Collapsing
- * the two columns into one word is exactly the drift this pins. */
+/* HOST is one of the twelve ACTIONS and changes local state only, so it is
+ * absent from METAVERSE_ACTION_MUTATING (the "changes EXTERNAL state" column). */
 _Static_assert((METAVERSE_ACTION_MUTATING & METAVERSE_ACTION_HOST) == 0u,
                "HOST changes LOCAL state only: it must not appear in the "
                "external-state (MUTATING) mask");
@@ -193,10 +159,8 @@ static int check_list_rename_preserves_bit(void)
 {
     int failures = 0;
 
-    /* Contract §1: LIST_FOR_SALE is the rename of LIST and KEEPS bit 0x10.
-     * Exactly one of the two spellings may be live — keeping both would be
-     * the "retain both implementations to avoid a decision" failure — and
-     * whichever is live must resolve to 0x10. */
+    /* LIST_FOR_SALE renames LIST and keeps bit 0x10; exactly one spelling is
+     * live and it resolves to 0x10. */
     uint32_t old_name = metaverse_action_from_name("list");
     uint32_t new_name = metaverse_action_from_name("list_for_sale");
 
@@ -207,9 +171,8 @@ static int check_list_rename_preserves_bit(void)
     VB_CHECK("listing changes EXTERNAL state (it advertises off this node)",
              (METAVERSE_ACTION_MUTATING & 0x00000010u) != 0u);
 
-    /* Bit 0x1 is RESERVED once INSPECT leaves the action space: decoded for
-     * compatibility, never reissued. So it may name "inspect" or nothing at
-     * all, but it must never come back as one of the twelve actions. */
+    /* Bit 0x1 is reserved once INSPECT leaves the action space: it may name
+     * "inspect" or nothing, never one of the twelve actions. */
     const char *reserved = metaverse_action_name(0x00000001u);
     bool reserved_ok = (reserved == NULL) || strcmp(reserved, "inspect") == 0;
     VB_CHECK("bit 0x1 is reserved and never reissued to a new action",
@@ -247,9 +210,7 @@ static int check_kind_rows_are_singular(void)
 
         const struct metaverse_adapter *a = metaverse_adapter_for(kind);
         if (a) {
-            /* A row is EITHER wired (list+show) OR an explicit gap naming a
-             * reason. "Neither" is a kind that answers nothing and says
-             * nothing; "both" is a reason nobody will ever read. */
+            /* A row is either wired (list+show) or an explicit gap naming a reason. */
             bool wired = (a->list != NULL && a->show != NULL);
             bool stated_gap = (a->unavailable_reason != NULL &&
                                a->unavailable_reason[0] != '\0' &&

@@ -168,14 +168,11 @@ int test_peer_snapshot_conditions(void)
     }
 
     {
-        /* outbound=1, inbound=13 (the observed fleet shape): the remedy must
-         * never shed inbound peers to chase an OUTBOUND floor deficit — that
-         * can only starve legitimate joiners, never raise healthy_outbound.
-         * It must instead act on the side that CAN clear the condition: an
-         * addnode with only pure-TCP failure history has its backoff/last
-         * attempt cleared so the dialer retries it immediately (the existing
-         * "request more outbound dials" action; see
-         * engine/conditions/src/peer_floor_violated.c). */
+        /* outbound=1, inbound=13: the remedy must never shed inbound peers to
+         * chase an OUTBOUND floor deficit. It acts on the side that can clear
+         * the condition: an addnode with only pure-TCP failure history has its
+         * backoff/last attempt cleared so the dialer retries it immediately
+         * (engine/conditions/src/peer_floor_violated.c). */
         struct fake_clock_peer_snapshot clock;
         fake_clock_install(&clock, 1500);
         struct connman cm;
@@ -195,8 +192,7 @@ int test_peer_snapshot_conditions(void)
         for (int i = 0; i < N_INBOUND; i++) {
             inbound[i].id = (uint64_t)(100 + i);
             inbound[i].inbound = true;
-            /* Peer 0 is a brand-new joiner still mid-handshake — the exact
-             * shape that used to sit in version_sent and get rotated out. */
+            /* Peer 0 is a brand-new joiner still mid-handshake (version_sent). */
             inbound[i].state = (i == 0) ? PEER_VERSION_SENT : PEER_ACTIVE;
         }
 
@@ -330,18 +326,11 @@ int test_peer_snapshot_conditions(void)
     }
 
     {
-        /* Regression for the missing cooldown_secs/cooldown_max_rearms: an
-         * INBOUND peer stays far ahead of local height. The remedy
-         * (connman_force_outbound_rotation) only disconnects OUTBOUND
-         * peers, so an inbound peer that keeps reporting a high height
-         * makes this a persistent, never-witnessed fault — max_attempts=1
-         * is reached on the very first remedy call. Before this fix
-         * cooldown_secs was 0 ("legacy"), so condition_cooldown_rearm()
-         * refused to reset the attempt budget and the engine latched
-         * EV_OPERATOR_NEEDED forever without ever calling the remedy again
-         * (observed live: paging every 3600s for 27h, zero re-attempts).
-         * Drive the same persistent lag past max_attempts and assert the
-         * engine re-arms and calls the remedy again instead of latching. */
+        /* An INBOUND peer stays far ahead of local height. The remedy only
+         * disconnects OUTBOUND peers, so this is a persistent fault reaching
+         * max_attempts=1 on the first call. The engine must re-arm (via
+         * cooldown_secs / cooldown_max_rearms) and call the remedy again
+         * rather than latch EV_OPERATOR_NEEDED. */
         struct fake_clock_peer_snapshot clock;
         fake_clock_install(&clock, 6000);
         struct connman cm;
@@ -383,11 +372,9 @@ int test_peer_snapshot_conditions(void)
         ok = ok && snap.cooldown_secs == 600;
         ok = ok && snap.cooldown_max_rearms == 0;
 
-        /* Same fault persists well past both the engine's cooldown_secs
-         * (600) and the remedy's own internal SYNC_VIOLATION_COOLDOWN_SECS
-         * (3600) repeat-suppression, past max_attempts. Without
-         * cooldown_secs this would stay latched at operator_needed forever
-         * and the remedy would never run again. */
+        /* The same fault persists well past the engine cooldown_secs (600) and
+         * the remedy's SYNC_VIOLATION_COOLDOWN_SECS (3600), past max_attempts;
+         * without cooldown_secs it would stay latched at operator_needed. */
         fake_clock_set(&clock, 10202);
         condition_engine_tick();
         ok = ok && sync_violation_lag_test_remedy_calls() == 2;

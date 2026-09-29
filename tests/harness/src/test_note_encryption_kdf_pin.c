@@ -11,13 +11,10 @@
  *       BLAKE2b-256 personal "ZcashKDF\0..\0<nonce>",
  *       block = hsig || dhsecret || epk || pk_enc (128B)
  *
- * These three functions are consensus-adjacent: they produce the symmetric
- * keys that gate ChaCha20-Poly1305 over shielded note plaintexts. A silent
- * change in BLAKE2b personalization, block layout, or byte ordering would
- * make this node unable to decrypt notes produced by every other Zcash/
- * ZClassic implementation. The expected vectors below were captured from the
- * real functions over fixed inputs and are pinned byte-for-byte: any drift in
- * the KDF construction breaks the seal.
+ * These functions are consensus-adjacent: they produce the symmetric keys
+ * that gate ChaCha20-Poly1305 over shielded note plaintexts. The expected
+ * vectors were captured from the real functions over fixed inputs and are
+ * pinned byte-for-byte; any drift in the KDF construction breaks the seal.
  *
  * sapling/note_encryption.h is included directly by this file.
  */

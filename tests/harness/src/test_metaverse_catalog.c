@@ -22,14 +22,11 @@
  *      is local_signature because the envelope's signature is verified IN
  *      THAT CALL. Deleting the envelope DROPS the grade to
  *      local_content_hash instead of keeping an unearned claim.
- *   6. THE READ-ONLY CONTRACT (t_readonly_contract) — the parent-failing
- *      case. `metaverse property list` must not mutate the datadir, and
- *      before vcs_package_cas_present_in() the only way to ask the store
- *      about its CAS was vcs_package_store_open(), whose recovery sweep
- *      DELETES orphan CAS objects. The test plants an orphan, proves the
- *      catalog leaves it untouched, and then proves store_open removes it —
- *      the contrast that makes the read-only path necessary rather than
- *      merely tidy.
+ *   6. Read-only contract (t_readonly_contract): `metaverse property list`
+ *      must not mutate the datadir. The test plants an orphan CAS object,
+ *      proves the catalog leaves it untouched, and that
+ *      vcs_package_store_open() (whose recovery sweep deletes orphans) would
+ *      remove it, which is why vcs_package_cas_present_in() exists.
  *   7. The CLI path: both leaves through zcl_command_registry_input_validate
  *      plus the handler they BIND, so the declared input keys are proven
  *      callable and an undeclared key is still refused.
@@ -193,10 +190,8 @@ const struct json_value *mv_find_kind(const struct json_value *data,
     return NULL;
 }
 
-/* Render one kind's view straight from view_begin, i.e. the state every
- * adapter starts from. No fixture needed: the settlement class and the
- * not-measured work block are derived from the KIND, so they are already
- * correct before any store is read. */
+/* Render one kind's view straight from view_begin, the state every adapter
+ * starts from; settlement class and work block derive from the KIND. */
 bool mv_render_begin(enum metaverse_kind kind, struct json_value *out)
 {
     struct metaverse_property_id id;

@@ -1,35 +1,21 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * test_refold_premature_clear — CUTOVER DEFECT 1 regression.
+ * test_refold_premature_clear: a from-anchor refold must not clear early.
  *
- * A from-ANCHOR refold captures its resume target ONCE at boot
- * (refold_progress_mark_started_from_anchor, durable REFOLD_FROM_ANCHOR_TARGET_KEY).
- * The off-the-drive reconcile tick clears the refold (restoring below-anchor
- * self-repair) when the fold's utxo_apply cursor reaches that target. In the
- * unfixed code the tick calls refold_progress_clear_if_reached(db, ua,
- * target=-1), which decodes the FROZEN durable boot target.
+ * A from-anchor refold captures its resume target once at boot
+ * (refold_progress_mark_started_from_anchor, durable
+ * REFOLD_FROM_ANCHOR_TARGET_KEY). The reconcile tick clears the refold when
+ * utxo_apply reaches that target. If the chain advances after boot, the
+ * frozen target is below the live tip, so clearing at the frozen target drops
+ * refold_from_anchor / refold_in_progress while the fold is still climbing.
  *
- * BUG: when the active chain advances AFTER boot (new blocks arrive during a
- * multi-hour fold), the true tip is well ABOVE the frozen resume target. The
- * fold is still climbing from the stale target to the real tip, but the clear
- * fires as soon as utxo_apply crosses the FROZEN boot height — dropping
- * refold_from_anchor / refold_in_progress and restoring below-anchor self-repair
- * WHILE the fold is still mid-climb. That is the re-wedge surface.
+ * The fixture arms a refold at boot height R, then advances the live tip to
+ * R+N. A tick whose utxo_apply cursor reached only R must KEEP the refold
+ * armed. The tick is given the live tip each call
+ * (refold_tick_clear_against_live_tip) and raises the durable target to
+ * MAX(stored, live_tip) before clearing.
  *
- * REPRO (this test): model the reconcile tick's contract directly. The fixture
- * arms a from-anchor refold at the boot height R, then the live tip advances to
- * R+N. A reconcile tick whose utxo_apply cursor reached only R must KEEP the
- * refold armed (it has not caught the live tip). The tick is given the live tip
- * each call (refold_tick_clear_against_live_tip) so the clear edge keys on the
- * CURRENT tip, not the frozen boot height.
- *
- * On the UNFIXED code the tick decodes the stale durable target (== R) and
- * clears at ua==R — the "STILL armed" assertions FAIL, proving the premature
- * clear. FIX A re-writes the durable target to MAX(stored, live_tip) before the
- * clear, so the clear is a no-op until the fold reaches the live tip.
- *
- * Hermetic: a throwaway :memory: progress.kv image. No node, no drive, no locks
- * beyond the progress_store recursive tx lock the helpers take internally. */
+ * Hermetic: a throwaway :memory: progress.kv image. */
 
 #include "test/test_core.h"
 
@@ -48,12 +34,10 @@
     else { printf("FAIL\n"); failures++; }                         \
 } while (0)
 
-/* Model the reconcile tick's clear contract: given the LIVE tip, decide whether
- * the from-anchor refold may clear. This mirrors the exact sequence the fixed
- * reconcile tick runs (detect_reducer_frontier_reconcile_light):
+/* Model the reconcile tick's clear contract for a given LIVE tip, mirroring
+ * detect_reducer_frontier_reconcile_light:
  *   1. bump the durable target up to the live tip (never lowers);
- *   2. clear iff utxo_apply has reached the (now-current) target.
- * The unfixed tick skipped step 1 and passed target=-1 directly. */
+ *   2. clear iff utxo_apply has reached the (now-current) target. */
 static bool refold_tick_clear_against_live_tip(sqlite3 *db, int32_t ua,
                                                int32_t live_tip)
 {
@@ -82,10 +66,9 @@ static int32_t read_durable_target(sqlite3 *db)
                      ((uint32_t)tbuf[2] << 16) | ((uint32_t)tbuf[3] << 24));
 }
 
-/* The scenario: arm a from-anchor refold with resume_target=R, then the active
- * chain advances to R+N during the fold. utxo_apply has only reached R (the
- * frozen boot height). The reconcile tick must NOT clear the refold yet — the
- * fold has not reached the live tip R+N. */
+/* Arm a from-anchor refold with resume_target=R, then the chain advances to
+ * R+N during the fold. utxo_apply has only reached R; the reconcile tick must
+ * NOT clear the refold yet. */
 static int case_advance_during_fold(void)
 {
     int failures = 0;
@@ -107,9 +90,8 @@ static int case_advance_during_fold(void)
     RP_CHECK("armed: in_progress", refold_in_progress());
     RP_CHECK("armed: durable target == R", read_durable_target(db) == R);
 
-    /* The reconcile tick: the chain has advanced to live_tip; the fold has only
-     * reached R so far. The clear must NOT fire — the fold is still climbing
-     * R..live_tip. (Unfixed: clears here, decoding the frozen target == R.) */
+    /* The chain has advanced to live_tip; the fold has only reached R. The
+     * clear must NOT fire. */
     RP_CHECK("tick at ua=R is no-op ok",
              refold_tick_clear_against_live_tip(db, /*ua=*/R, live_tip));
     RP_CHECK("STILL from_anchor active (not prematurely cleared)",
@@ -119,8 +101,7 @@ static int case_advance_during_fold(void)
     RP_CHECK("durable target now tracks live_tip",
              read_durable_target(db) == live_tip);
 
-    /* Intermediate progress: utxo_apply climbs but is still below the live tip.
-     * Still no clear. */
+    /* Intermediate progress below the live tip: still no clear. */
     RP_CHECK("tick at ua=live_tip-1 is no-op ok",
              refold_tick_clear_against_live_tip(db, live_tip - 1, live_tip));
     RP_CHECK("STILL from_anchor active at live_tip-1",

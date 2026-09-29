@@ -262,12 +262,8 @@ static int rl_cycle_checks(void)
               strcmp(receipt.mapped_proof, "cdhash_suspended") == 0) &&
              receipt.start_token > 0);
 #if defined(__linux__)
-    /* Regression: the post-exec re-proof must actually RUN. The no-follow
-     * content-path open on /proc/<pid>/exe always refused the kernel magic
-     * link with ELOOP, so this proof silently never executed on Linux and
-     * the receipt could never carry "proc_exe_triple" — the fallback name
-     * "fexecve_inode" here means the second proof was skipped, not that it
-     * passed. */
+    /* The post-exec re-proof must actually run: the receipt names
+     * "proc_exe_triple"; "fexecve_inode" means the proof was skipped. */
     RL_CHECK("the /proc/<pid>/exe re-proof ran and named itself on the"
              " receipt",
              strcmp(receipt.mapped_proof, "proc_exe_triple") == 0);
@@ -352,15 +348,10 @@ static bool rl_flip_byte(const char *path, size_t offset)
     return ok;
 }
 
-/* Regression: a same-size, same-inode content swap between prepare and
- * spawn must refuse BEFORE fork — ESTALE, a named byte change, and no
- * child. Between prepare and spawn there was previously no content proof
- * at all, and a metadata triple cannot see a same-jiffy swap on
- * multigrain-timestamp kernels (>=6.6): the wrong bytes were exec'd. The
- * flipped byte sits in zero padding appended past the ELF layout, so the
- * swapped image is still perfectly executable — if the refusal ever
- * regresses, spawn visibly succeeds instead of failing for an unrelated
- * exec reason. */
+/* A same-size, same-inode content swap between prepare and spawn must
+ * refuse before fork: ESTALE, a named byte change, and no child. The
+ * flipped byte sits in zero padding past the ELF layout, so the swapped
+ * image still executes and a missing refusal shows as a successful spawn. */
 static int rl_swap_refusal_checks(const char *dir)
 {
     int failures = 0;
@@ -398,7 +389,7 @@ static int rl_swap_refusal_checks(const char *dir)
              !spawned && errno == ESTALE && !swap.spawned && swap.pid == 0 &&
              strstr(error, "bytes changed") != NULL);
     if (spawned) {
-        /* Unfixed launchers exec the wrong bytes here: reap the child so
+        /* Reap the child if the refusal failed so
          * the regression leaves no process behind. */
         char cleanup_error[RESIDENT_LAUNCH_ERROR_MAX];
         (void)resident_launch_cancel(&swap, 300, cleanup_error,

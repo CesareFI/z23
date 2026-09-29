@@ -197,14 +197,13 @@ int test_mem_pressure(void)
                  mem_pressure_current() == MEM_CRITICAL);
     }
 
-    /* ── page cache is not pressure (node3 2026-09-10 shape) ────────── */
+    /* ── page cache is not pressure ─────────────────────────────────── */
     {
         /* Denominator is 12884901888 (12 GiB memory.high) throughout;
          * default thresholds 50/75/90. */
 
-        /* A sequential scan walked 7 GiB of droppable page cache into the
-         * charge. Numerator 3416776704 = 26% -> NOMINAL. Before this fix
-         * the raw charge read 84% -> HIGH and fired every shrink sink. */
+        /* 7 GiB of droppable page cache in the charge: numerator
+         * 3416776704 = 26% -> NOMINAL (the raw charge would read HIGH). */
         set_cgroup_override(10932969472, 12884901888,
                             clean_stat(7516192768, 0, 0));
         mem_pressure_poll_tick();
@@ -231,11 +230,8 @@ int test_mem_pressure(void)
         MP_CHECK("unreadable memory.stat publishes unknown, not zero",
                  dumped_state_int("evictable_bytes") == -1);
 
-        /* One row unreadable is still an unreadable memory.stat: `file` is
-         * present but `shmem` is -1, so the share of the cache that needs
-         * swap is unknown and nothing may be subtracted -> raw charge,
-         * 84% -> HIGH. Subtracting the whole `file` row here would read
-         * 26% -> NOMINAL and silence every sink. */
+        /* One row unreadable is an unreadable memory.stat: `shmem` is -1, so
+         * nothing may be subtracted -> raw charge, 84% -> HIGH. */
         set_cgroup_override(10932969472, 12884901888,
                             clean_stat(7516192768, -1, 0));
         mem_pressure_poll_tick();
@@ -243,8 +239,7 @@ int test_mem_pressure(void)
                  mem_pressure_current() == MEM_HIGH);
 
         /* Same rule for an unreadable `unevictable`: charge 11811160064 =
-         * 91% -> CRITICAL. Subtracting the 4 GiB `file` row would read
-         * 58% -> ELEVATED. */
+         * 91% -> CRITICAL (subtracting `file` would read ELEVATED). */
         set_cgroup_override(11811160064, 12884901888,
                             clean_stat(4294967296, 0, -1));
         mem_pressure_poll_tick();
@@ -284,11 +279,8 @@ int test_mem_pressure(void)
         MP_CHECK("shmem and unevictable leave the droppable tier",
                  mem_pressure_current() == MEM_NOMINAL);
 
-        /* HDD box mid bulk block/WAL flush: the whole 7 GiB `file` tier is
-         * dirty or under writeback, so none of it can be dropped and the
-         * cgroup is throttled against it. 84% -> HIGH. Counting dirty and
-         * writeback pages as droppable read 0% -> NOMINAL here, which is
-         * the hole this case closes. */
+        /* Mid bulk flush: the whole 7 GiB `file` tier is dirty or under
+         * writeback, so none of it is droppable. 84% -> HIGH. */
         set_cgroup_override(10932969472, 12884901888,
                             (struct os_proc_cgroup_mem_stat){
                                 .file = 7516192768, .shmem = 0,
@@ -324,13 +316,10 @@ int test_mem_pressure(void)
         MP_CHECK("a torn read publishes unknown, not zero",
                  dumped_state_int("evictable_bytes") == -1);
 
-        /* node3 2026-09-10 exact shape: a DERIVED-only guard (comparing
-         * file-minus-exclusions against the charge) misses this one --
-         * shmem=3 GiB, file=12 GiB, current=10.18 GiB derives evictable =
-         * 12 GiB - 3 GiB = 9 GiB, which reads as UNDER the 10.18 GiB charge
-         * and never trips. The raw `file` row alone (12 GiB) already
-         * exceeds `current` (10.18 GiB), which is what a RAW-row check must
-         * catch: UNKNOWN, raw charge classified -> 84% -> HIGH. */
+        /* A DERIVED-only guard misses this: shmem=3 GiB, file=12 GiB,
+         * current=10.18 GiB derives evictable = 9 GiB, under the charge.
+         * The raw `file` row alone (12 GiB) exceeds `current`, which a
+         * RAW-row check must catch: UNKNOWN, raw charge -> 84% -> HIGH. */
         set_cgroup_override(10932969472, 12884901888,
                             clean_stat(12884901888, 3221225472, 0));
         mem_pressure_poll_tick();

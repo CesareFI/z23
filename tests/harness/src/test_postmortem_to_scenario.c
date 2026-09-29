@@ -1,17 +1,12 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * Unit tests for the postmortem-capsule -> chaos-scenario skeleton bridge
- * (tools/postmortem_to_scenario.c, Super-Reliability program lane B5).
+ * (tools/postmortem_to_scenario.c).
  *
- * Builds synthetic capsules with the REAL postmortem_capture_write() API
- * (never hand-crafts the .cap format), runs the converter's core function
- * in-process, then feeds the emitted skeleton through the REAL chaos
- * scenario parser (tools/sim/chaos.c's run_scenario()) to prove it
- * actually PARSES -- the same in-process-inclusion pattern
- * tests/harness/src/test_chaos_harness.c already uses to unit-test chaos.c
- * itself. Both included .c files define only `static` symbols, so two
- * separate translation units (this file and test_chaos_harness.c) each
- * including the same source text is safe -- no link collision.
+ * Capsules come from the real postmortem_capture_write(); the emitted skeleton
+ * is fed through the real chaos parser (run_scenario()) to prove it parses.
+ * Both included .c files define only static symbols, so including chaos.c here
+ * and in test_chaos_harness.c is link-safe.
  */
 
 #include "test/test_core.h"
@@ -281,12 +276,9 @@ int test_postmortem_to_scenario(void)
         failures++;
     }
 
-    /* ── A genuinely-failing skeleton (unmet manual `expect`) reports
-     * failure loudly via the same artifact path a real chaos regression
-     * would use, rather than silently passing. This also exercises
-     * chaos.c's write_failure_artifacts() (otherwise unreferenced once
-     * main() is compiled out under CHAOS_NO_MAIN in this translation
-     * unit) the same way test_chaos_harness.c does. ─────────────────── */
+    /* A failing skeleton (unmet manual `expect`) reports failure via the same
+     * artifact path a real chaos regression uses, exercising chaos.c's
+     * write_failure_artifacts(). */
     char fail_scenario_path[350];
     snprintf(fail_scenario_path, sizeof(fail_scenario_path),
              "%s/fails_on_purpose.scenario", root);

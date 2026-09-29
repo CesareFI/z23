@@ -1,10 +1,8 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * test_mint_anchor_preflight — proves boot_mint_anchor_preflight_run_all()
- * (engine/composition/src/boot_mint_anchor_preflight.c) names EVERY unmet -mint-anchor
- * producer precondition in ONE call instead of the historical one-FATAL-at-
- * a-time surfacing (missing legacy block index -> FATAL on one run; missing
- * bodies -> silent stall on the next).
+ * (engine/composition/src/boot_mint_anchor_preflight.c) names every unmet -mint-anchor
+ * producer precondition in one call.
  *
  *   (a) a fresh empty datadir reports AT LEAST the legacy-block-index and
  *       bodies-present holes in ONE run_all call (both named, both ok=false,

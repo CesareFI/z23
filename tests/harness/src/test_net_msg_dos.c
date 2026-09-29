@@ -1,71 +1,34 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * Adversarial/DoS coverage for the P2P message-handling path. A hostile
- * peer fully controls the wire bytes; these cases pin the bounded-and-safe
- * contract of the handlers that see them FIRST — before any consensus or
- * business logic runs:
+ * peer controls the wire bytes; the handlers that see them first must stay
+ * bounded and safe:
  *
- *   A. Oversized declared counts (inv/getdata/addr/notfound) — the classic
- *      "claim 10M items, send 3 bytes" allocation-bomb shape. Each of
- *      these handlers reads a compact-size element count and must reject
- *      it BEFORE looping/allocating once it exceeds the protocol cap
- *      (MAX_INV_SZ / MAX_ADDR_TO_SEND) — no huge alloc, no unbounded loop,
- *      peer disconnected AND scored via PEER_OFFENCE_FLOOD so the same
- *      peer address still accrues toward the ban threshold across
- *      reconnects (this file's fix: msg_tx.c/msg_blocks.c/
- *      msgprocessor_inv.c previously disconnected without scoring — see
- *      case A which pins the now-added peer_scoring_record calls).
- *   B. Truncated/short payloads (inv/getdata declare N items, deliver
- *      fewer bytes than N requires) — clean failure, no partial mutation.
- *   C. A message whose declared size exceeds MAX_PROTOCOL_MESSAGE_LENGTH
- *      at the framing layer (net_message_read_data) — rejected BEFORE any
- *      allocation against the process-wide recv budget.
- *   D. An unknown/garbage command string through the real dispatch loop
- *      (msg_process_messages) — silently ignored (Bitcoin Core parity:
- *      unknown commands are not misbehaviour), connection untouched, and
- *      a subsequent honest `ping` on the SAME connection still dispatches
- *      normally afterward.
- *   E. A duplicate/replayed `headers` batch — the second delivery of
- *      identical bytes is idempotent: accepted again (not an error) but
- *      counted as already-known (not newly-added), no duplicate block-tree
- *      entries, and no misbehaviour score for replaying old data.
- *   F. A legal-sized `addr` batch entirely of non-routable (RFC1918)
- *      addresses — accepted at the envelope level (under the cap, so no
- *      misbehaviour) but every entry is silently filtered by addrman's own
- *      net_addr_is_routable() gate; none are ever inserted.
- *   G. A `ping` with a deliberately wrong checksum — dropped before
- *      dispatch (bounded cost: one hash256 over the capped payload),
- *      connection NOT penalized. Pins the intentional Bitcoin-Core-parity
- *      choice (same reasoning as case D) rather than leaving it
- *      undocumented/untested.
- *   H. A `reject` message with a declared msg_type length that exceeds
- *      the fixed local buffer — pins that the fields after it (code,
- *      reason_len, reason) are read from the correct wire offset (a
- *      real fix: the old code silently skipped storing the oversized
- *      string but forgot to advance the read cursor past it, misaligning
- *      every field that followed). H2 covers the same field but with a
- *      declared length that exceeds the actual remaining message bytes
- *      ("claimed > actual").
- *   I. getdata requesting more unservable blocks than the notfound
- *      reply-batch size (64) in one message -> every one of them still
- *      gets a notfound reply, split across multiple notfound messages.
- *      Before the fix, process_getdata's not_found accumulator was a
- *      fixed 64-slot array that silently stopped recording past the
- *      64th miss — a legal single getdata (up to MAX_INV_SZ=50000 items)
- *      requesting a longer unservable span got no reply at all for the
- *      items past the 64th, so the requester's download manager sat out
- *      its full per-block timeout instead of the prompt notfound-driven
- *      requeue (net/download.h::dl_mark_notfound).
- *   J. ZMSG transport telemetry — accepted, duplicate, and acknowledgment
- *      frames increment distinct monotone counters and retain last-event
- *      timestamps, so an operator can tell delivery from an inbox echo.
+ *   A. Oversized declared counts (inv/getdata/addr/notfound) are rejected
+ *      before any loop or allocation; the peer is disconnected and scored
+ *      via PEER_OFFENCE_FLOOD so the ban score accrues across reconnects.
+ *   B. Truncated payloads fail cleanly with no partial mutation.
+ *   C. A declared size above MAX_PROTOCOL_MESSAGE_LENGTH is rejected at the
+ *      framing layer (net_message_read_data) before any allocation.
+ *   D. An unknown command through msg_process_messages is silently ignored
+ *      (Bitcoin Core parity); a following `ping` still dispatches.
+ *   E. A replayed `headers` batch is idempotent: no duplicate block-tree
+ *      entries and no misbehaviour score.
+ *   F. A legal-sized `addr` batch of non-routable (RFC1918) addresses is
+ *      accepted at the envelope level; addrman inserts none.
+ *   G. A `ping` with a wrong checksum is dropped before dispatch at bounded
+ *      cost and the connection is not penalized (Core parity, as in D).
+ *   H. A `reject` whose msg_type length exceeds the local buffer still reads
+ *      the following fields from the correct wire offset; H2 covers a
+ *      declared length beyond the remaining bytes.
+ *   I. A getdata for more unservable blocks than the notfound batch size
+ *      (64) gets a notfound for every item, split across messages.
+ *   J. ZMSG telemetry: accepted, duplicate, and acknowledgment frames
+ *      increment distinct monotone counters and keep last-event timestamps.
  *
- * Sections A/B/E/F/H/H2 use a stack p2p_node + memset (mirrors
- * test_process_headers_adversarial.c) since the code paths under test
- * return before touching any node mutex. Sections C/D/G/I touch
- * mutex-guarded node/dispatch machinery, and J queues ACK frames; these use
- * a heap node from
- * p2p_node_create (properly mutex-initialized). */
+ * Sections A/B/E/F/H/H2 use a stack p2p_node + memset since those paths
+ * return before touching any node mutex. Sections C/D/G/I/J use a heap node
+ * from p2p_node_create (mutex-initialized). */
 
 #include "test/test_core.h"
 #include "util/util.h"
@@ -95,10 +58,8 @@
     else { printf("FAIL\n"); failures++; } \
 } while (0)
 
-/* Non-localhost/non-whitelisted peer so peer_misbehaving() actually
- * scores it (is_trusted_peer() in net.c exempts 127.0.0.0/8 + whitelisted
- * peers from all scoring — using that address would make every
- * misbehavior assertion below vacuously true). */
+/* Non-localhost/non-whitelisted peer so peer_misbehaving() scores it
+ * (is_trusted_peer() exempts 127.0.0.0/8 and whitelisted peers). */
 static void dos_setup_stack_node(struct p2p_node *node)
 {
     memset(node, 0, sizeof(*node));
@@ -251,9 +212,8 @@ int test_net_msg_dos(void)
         struct byte_stream s;
         stream_init(&s, 32);
         stream_write_compact_size(&s, 50001); /* MAX_INV_SZ (50000) + 1 */
-        /* Tiny payload: the classic "claim 10M items, send 3 bytes" shape.
-         * A vulnerable handler would loop/allocate against the DECLARED
-         * count; the guard must fire before touching a single inv item. */
+        /* Tiny payload, huge declared count: the guard must fire before
+         * touching a single inv item. */
         bool ret = process_inv(&mp, &node, &s);
         DOS_CHECK("inv oversized: handler returns false", ret == false);
         DOS_CHECK("inv oversized: peer disconnected", node.disconnect == true);
@@ -279,11 +239,9 @@ int test_net_msg_dos(void)
     }
 
     /* ── A2b. getblocks: no service before the handshake completes ──
-     * The dispatcher only refuses node->version == 0, leaving the
-     * post-version / pre-verack window where serving would spend the
-     * relay's costliest path (500 ring pushes per message) on an
-     * unauthenticated peer. Handshake-gated here instead. A legit
-     * post-handshake control serves genesis and nothing else. */
+     * The dispatcher only refuses node->version == 0, so the post-version /
+     * pre-verack window is gated here. A post-handshake control serves
+     * genesis only. */
     {
         struct block_locator loc;
         block_locator_init(&loc);
@@ -360,15 +318,9 @@ int test_net_msg_dos(void)
     }
 
     /* ── A5. addr: repeated max-legal-size batches -> rate limited ──
-     * A single addr message under MAX_ADDR_TO_SEND (1000) is legal and
-     * free of any per-message penalty (see A3 for the oversized-count
-     * case). Nothing previously stopped a peer from repeating
-     * max-legal-size batches back-to-back forever though — this pins
-     * the ADDR_RATE_WINDOW_SECS/ADDR_RATE_MAX_PER_WINDOW fixed-window
-     * limiter in msgprocessor_inv.c::process_addr(): the first three
-     * 1000-entry batches (3000 total, AT the cap) are free; the fourth
-     * (4000 total) crosses ADDR_RATE_MAX_PER_WINDOW and scores +
-     * disconnects, same as any other flood category. */
+     * Pins the ADDR_RATE_WINDOW_SECS/ADDR_RATE_MAX_PER_WINDOW limiter in
+     * msgprocessor_inv.c::process_addr(): three 1000-entry batches (at the
+     * cap) are free; the fourth crosses it and scores + disconnects. */
     {
         const struct msg_dispatch_entry *e = dos_find_entry("addr");
         DOS_CHECK("addr dispatch entry found (rate-limit case)", e != NULL);
@@ -449,9 +401,8 @@ int test_net_msg_dos(void)
         struct net_message m;
         net_message_init(&m, magic);
         struct msg_header hdr;
-        /* 3 MiB: above MAX_PROTOCOL_MESSAGE_LENGTH (2 MiB) but below the
-         * header-level MAX_SIZE (32 MiB) ceiling, so it reaches the
-         * data-phase check inside net_message_read_data. */
+        /* 3 MiB: above MAX_PROTOCOL_MESSAGE_LENGTH (2 MiB), below the
+         * header-level MAX_SIZE (32 MiB), so the data-phase check fires. */
         msg_header_init_full(&hdr, magic, "block", 3 * 1024 * 1024);
         int hn = net_message_read_header(&m, (const char *)&hdr,
                                          MSG_HEADER_SIZE);
@@ -481,12 +432,9 @@ int test_net_msg_dos(void)
         net_addr_set_ipv4(&addr.svc.addr, ip4);
         addr.svc.port = 8033;
 
-        /* A real connected socketpair (not ZCL_INVALID_SOCKET): the
-         * dispatched `ping` handler replies with a `pong`, which drives a
-         * genuine send() — on an invalid fd that send() would fail and
-         * socket_send_data() would legitimately close the connection,
-         * which would make the "connection intact" assertion below a
-         * false negative rather than a real signal. */
+        /* A real connected socketpair: the `ping` handler replies with a
+         * `pong` via send(); an invalid fd would close the connection and
+         * falsify the "connection intact" assertion. */
         platform_socket_t sv[2];
         bool have_sv = platform_socket_pair(sv);
         DOS_CHECK("dispatch: socketpair created", have_sv);
@@ -626,12 +574,9 @@ int test_net_msg_dos(void)
         }
     }
 
-    /* ── F. addr: batch of non-routable addresses -> legal envelope
-     *      (under MAX_ADDR_TO_SEND, no misbehaviour), but every entry is
-     *      silently filtered by addrman_add()'s net_addr_is_routable()
-     *      gate — none are ever inserted. A flood of RFC1918/loopback
-     *      junk cannot grow addrman or otherwise cost more than the
-     *      per-entry deserialize itself. ── */
+    /* ── F. addr: non-routable batch -> legal envelope (under
+     *      MAX_ADDR_TO_SEND, no misbehaviour); addrman_add()'s
+     *      net_addr_is_routable() gate filters every entry. ── */
     {
         const struct msg_dispatch_entry *e = dos_find_entry("addr");
         DOS_CHECK("addr dispatch entry found (non-routable case)", e != NULL);
@@ -666,17 +611,11 @@ int test_net_msg_dos(void)
         }
     }
 
-    /* ── G. framing: checksum mismatch -> message dropped BEFORE dispatch,
-     *      no crash, no allocation growth. Pins the intentional (Bitcoin
-     *      Core parity) choice not to score a checksum failure as
-     *      misbehaviour: unlike a bad start-magic or an oversized
-     *      declared size, a bad checksum alone does not prove the sender
-     *      is malicious rather than corrupt/buggy — same reasoning as
-     *      case D's "unknown command is not misbehaviour". The cost is
-     *      still bounded: one hash256 over the (already framing-capped)
-     *      payload, no allocation beyond the message's own capped
-     *      recv_alloc. Connection stays open and honest traffic
-     *      afterward on the SAME connection still dispatches. ── */
+    /* ── G. framing: checksum mismatch -> dropped before dispatch, no crash.
+     *      Not scored as misbehaviour (Core parity; a bad checksum does not
+     *      prove malice, as with D's unknown command). Cost is bounded to
+     *      one hash256 over the framing-capped payload; the connection
+     *      stays open and honest traffic still dispatches. ── */
     {
         unsigned char magic[MESSAGE_START_SIZE] = {0x24, 0xe9, 0x27, 0x64};
         struct net_address addr;
@@ -753,14 +692,9 @@ int test_net_msg_dos(void)
     }
 
     /* ── H. reject: oversized declared msg_type length -> the fields that
-     *      follow (code, reason_len, reason) are read from the CORRECT
-     *      wire offset. Before the fix, an oversized msg_type length was
-     *      silently skipped WITHOUT advancing the read cursor, so `code`
-     *      and `reason` were parsed from the tail of msg_type's own bytes
-     *      instead of their real position — a misparse, not just a
-     *      truncation. process_reject never surfaces its parsed fields
-     *      (advisory-only, printf'd), so this pins the fix via the read
-     *      cursor's final position instead. ── */
+     *      follow (code, reason_len, reason) are read from the correct wire
+     *      offset. process_reject never surfaces its parsed fields, so this
+     *      pins the read cursor's final position. ── */
     {
         const struct msg_dispatch_entry *e = dos_find_entry("reject");
         DOS_CHECK("reject dispatch entry found", e != NULL);
@@ -772,9 +706,8 @@ int test_net_msg_dos(void)
             stream_init(&s, 1100);
             stream_write_compact_size(&s, 1000); /* msg_type len >= 32 */
             unsigned char filler[1000];
-            /* 0xAB decodes as a compact-size marker (>=253) if misread as
-             * a length prefix, so an old-code misparse would NOT land on
-             * the expected offset by coincidence. */
+            /* 0xAB reads as a compact-size marker (>=253) if misparsed as a
+             * length prefix, so a misparse cannot land on the offset. */
             memset(filler, 0xAB, sizeof(filler));
             stream_write_bytes(&s, filler, sizeof(filler));
             stream_write_u8(&s, 0x42); /* code */
@@ -852,11 +785,8 @@ int test_net_msg_dos(void)
             bool ret = process_getdata(&mp, node, &s);
             DOS_CHECK("getdata 70-miss: handler returns true", ret == true);
 
-            /* Walk the queued send_segments and sum the item count declared
-             * in each notfound message's payload (skip the fixed wire
-             * header, then read the compact-size count) — proves every one
-             * of the 70 misses got a reply, none silently dropped past the
-             * old 64-item cap. */
+            /* Sum the item count declared in each queued notfound payload
+             * (skip the wire header, read the compact-size count). */
             size_t total_notfound_items = 0;
             size_t segment_count = 0;
             for (struct send_segment *seg = node->send_head; seg;
@@ -953,12 +883,9 @@ int test_net_msg_dos(void)
         }
     }
 
-    /* ── K. trickle inv: a queue longer than one frame must emit a
-     *      WIRE-CAPPED inv (≤ MAX_INV_SZ items) and retain the remainder
-     *      for the next trickle tick — never one oversized frame that
-     *      receivers drop wholesale. Pins msgprocessor.c::msg_send_messages'
-     *      clamp + memmove retention driven through the real per-peer send
-     *      body (fast-sync offer, stale-header rules, dandelion gate). ── */
+    /* ── K. trickle inv: a queue longer than one frame emits a wire-capped
+     *      inv (<= MAX_INV_SZ items) and retains the remainder for the next
+     *      tick (msgprocessor.c::msg_send_messages clamp + memmove). ── */
     {
         struct net_address kaddr;
         net_address_init(&kaddr);
@@ -969,9 +896,7 @@ int test_net_msg_dos(void)
             &nm, ZCL_INVALID_SOCKET, &kaddr, "trickle-clamp", true);
         DOS_CHECK("trickle clamp: node created", node != NULL);
         if (node) {
-            /* Post-handshake so msg_send_messages runs its full body past
-             * the version gate (the node sits at CONNECTED otherwise);
-             * handshake-complete upgrades to ACTIVE inside. */
+            /* Post-handshake so msg_send_messages runs its full body. */
             node->state = PEER_HANDSHAKE_COMPLETE;
             node->version = PROTOCOL_VERSION;
 
@@ -991,8 +916,7 @@ int test_net_msg_dos(void)
             DOS_CHECK("trickle clamp: first tick succeeds", ok == true);
 
             /* Sum declared item counts across every inv frame queued this
-             * tick (command-filtered: the full send body may also queue
-             * ping/getheaders-type frames on this same connection). */
+             * tick (command-filtered; other frames may be queued too). */
             size_t inv_frames = 0, items_sent = 0;
             for (struct send_segment *seg = node->send_head; seg;
                 seg = seg->next) {
@@ -1065,16 +989,13 @@ int test_net_msg_dos(void)
 }
 
 /* ── net_framing_dos ──────────────────────────────────────────────────
- * The message FRAMING layer (net_message_read_header / read_data and the
- * p2p_node_receive_bytes reassembler) sees a hostile peer's bytes before any
- * command dispatch. It runs without a net_manager back-pointer, so it cannot
- * score the peer directly: it TAGS node->framing_offence, and the connman
- * receive caller drains + scores it once via p2p_node_score_framing_offence().
- * These cases pin that tag→drain→score contract for the concrete free abuse
- * vectors (bad start-magic, oversize headers, oversize payloads) plus the
- * handshake-level protocol violations scored in msg_version.c. Before this
- * group these paths disconnected (or not) but never moved the per-connection
- * misbehavior score, so a flooder never crossed the ban threshold. */
+ * Framing (net_message_read_header / read_data and the
+ * p2p_node_receive_bytes reassembler) sees hostile bytes before dispatch.
+ * It has no net_manager back-pointer, so it tags node->framing_offence and
+ * the connman receive caller drains and scores it once via
+ * p2p_node_score_framing_offence(). These cases pin that tag->drain->score
+ * contract (bad start-magic, oversize headers, oversize payloads) plus the
+ * handshake violations scored in msg_version.c. */
 int test_net_framing_dos(void);
 int test_net_framing_dos(void)
 {

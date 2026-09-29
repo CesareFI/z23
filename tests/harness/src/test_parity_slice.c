@@ -1,44 +1,29 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * test_parity_slice — MVP C8 (consensus parity) HERMETIC slice gate.
+ * test_parity_slice: hermetic slice gate for MVP C8 (consensus parity).
  *
- * C8's full claim ("0 UTXO mismatches vs the zclassicd oracle, continuously")
- * needs a live zclassicd over RPC 8232 and is out of scope for a hermetic
- * gate. This slice regression-protects the parity SERVICE's mismatch-detection
- * MACHINERY — the counter path the live claim relies on — using the existing
- * in-process FIXTURE reference (no sockets, no oracle, no params).
+ * The full claim (0 UTXO mismatches vs the zclassicd oracle over RPC 8232)
+ * needs a live oracle. This slice protects the parity service's
+ * mismatch-detection machinery using the in-process FIXTURE reference (no
+ * sockets, no oracle, no params): a paired control over the service's own
+ * `mismatches` stat (via utxo_parity_dump_state_json), driven by real UTXO
+ * sets through the live SHA3 commitment.
  *
- * The teeth are a paired control over the service's own `mismatches` stat
- * (read back through utxo_parity_dump_state_json, which backs the native
- * dumpstate command), driven by REAL UTXO sets through the live SHA3 commitment:
+ *   (A) CONSISTENT  reducer-vs-fixture set at one height: MATCH, mismatches==0.
+ *   (B) INJECTED    an extra outpoint makes the local SHA3 diverge: status
+ *                   DRIFT, drift flag persisted, mismatches>0.
  *
- *   (A) CONSISTENT  reducer-vs-fixture set at one height → the service reports
- *                   a MATCH and mismatches==0 (the parity assertion).
- *   (B) INJECTED    an extra outpoint is added to the local set so its SHA3
- *                   genuinely diverges from the reference at the same height →
- *                   the service DETECTS it: status DRIFT, drift flag persisted,
- *                   and mismatches>0 (the negative control — no tautology).
+ * (A)/(B) exercise the EXACT branch. The production oracle is exact=false, so
+ * the live claim runs the COARSE branch (utxo_audit_service.c:158-173):
  *
- * (B) is a real changed-set injection (an extra UTXO that moves the canonical
- * SHA3), not a synthetic hash edit, so a MATCH that counted a mismatch, or a
- * changed set that counted none, fails the gate.
+ *   (C1) COARSE same-height  -> MATCH, empty remote SHA3, bucketed in
+ *                               coarse_checks, no drift.
+ *   (C2) COARSE height-skew  -> LOCAL_ONLY, never a DRIFT, never counted.
+ *   (C3) COARSE confirmation -> clears a prior exact DRIFT flag.
  *
- * (A)/(B) exercise the EXACT reference branch. The PRODUCTION zclassicd oracle
- * is exact=false (gettxoutsetinfo attests height only), so the live C8 claim
- * runs through the COARSE branch (utxo_audit_service.c:158-173), which had no
- * hermetic coverage. (C1)-(C3) close that:
- *
- *   (C1) COARSE same-height  → MATCH, EMPTY remote SHA3, bucketed in
- *                              coarse_checks (never matches/mismatches), no drift.
- *   (C2) COARSE height-skew  → LOCAL_ONLY, never a DRIFT, never counted.
- *   (C3) COARSE confirmation → CLEARS a prior exact DRIFT flag, so a height-only
- *                              attestation cannot let a stale byte-drift page forever.
- *
- * Process-global singletons (g_parity, the condition engine, event observers)
- * are driven here, so the body is OPT-IN behind ZCL_STRESS_TESTS and runs for
- * real in a fresh process via `make mvp-parity-slice`
- * (ZCL_TEST_ONLY=parity_slice).
- */
+ * Process-global singletons are driven, so the body is opt-in behind
+ * ZCL_STRESS_TESTS and runs via `make mvp-parity-slice`
+ * (ZCL_TEST_ONLY=parity_slice). */
 
 #include "test/test_core.h"
 
@@ -242,12 +227,10 @@ static int slice_case_injected_mismatch_detected(void)
     return failures;
 }
 
-/* (C1) COARSE source, heights agree. The PRODUCTION zclassicd oracle is
- * exact=false (gettxoutsetinfo attests height only, no UTXO SHA3), so the
- * live C8 claim runs through the coarse branch (utxo_audit_service.c:158-173),
- * NOT the exact branch (A)/(B) exercise. The contract: a coarse same-height
- * confirmation is a MATCH with an EMPTY remote SHA3 (it cannot prove bytes),
- * never a DRIFT, and is bucketed in coarse_checks — never matches/mismatches. */
+/* (C1) COARSE source, heights agree. The production zclassicd oracle is
+ * exact=false (height only), so the live claim runs the coarse branch
+ * (utxo_audit_service.c:158-173). A coarse same-height confirmation is a
+ * MATCH with an empty remote SHA3, never a DRIFT, bucketed in coarse_checks. */
 static int slice_case_coarse_match_no_drift(void)
 {
     int failures = 0;
@@ -293,10 +276,8 @@ static int slice_case_coarse_match_no_drift(void)
     return failures;
 }
 
-/* (C2) COARSE source, height SKEW. A coarse reference ahead of/behind the
- * applied set is LOCAL_ONLY — never a DRIFT, never counted in either bucket,
- * and never sets the paging flag. This is what keeps a coarse oracle during
- * catch-up from looking like either a confirmed match or a false drift. */
+/* (C2) COARSE source, height SKEW: LOCAL_ONLY, never a DRIFT, never counted
+ * in either bucket, never sets the paging flag. */
 static int slice_case_coarse_skew_local_only(void)
 {
     int failures = 0;
@@ -378,9 +359,9 @@ static int slice_case_coarse_clears_prior_exact_drift(void)
         ASSERT(node_db_state_get_int(&ndb, "utxo_drift_detected", &drift));
         ASSERT(drift == 1);   /* the Condition is now paging */
 
-        /* (2) Coarse same-height confirmation must CLEAR the latched flag.
-         * slice_wire resets the g_parity counters but NOT the node.db state
-         * row, so the flag we assert cleared is the one (1) actually set. */
+        /* (2) Coarse same-height confirmation must clear the latched flag.
+         * slice_wire keeps the node.db state row, so the flag cleared is the
+         * one (1) set. */
         struct utxo_reference_source csrc;
         struct utxo_reference_source_fixture cfx;
         utxo_reference_source_fixture_init(&csrc, &cfx, "slice-c3-coarse",
@@ -411,10 +392,8 @@ int test_parity_slice(void)
            "(MVP C8: parity service mismatch-detection machinery, hermetic) ===\n");
     int failures = 0;
 
-    /* Drives the parity service process-globals (g_parity stats), so keep it
-     * OPT-IN behind ZCL_STRESS_TESTS to match the established MVP-gate
-     * discipline; the gate runs for real via ZCL_TEST_ONLY=parity_slice /
-     * `make mvp-parity-slice` in a fresh process. */
+    /* Drives parity service process-globals, so OPT-IN behind
+     * ZCL_STRESS_TESTS; runs for real via `make mvp-parity-slice`. */
     if (!getenv("ZCL_STRESS_TESTS")) {
         printf("parity_slice: SKIP "
                "(set ZCL_STRESS_TESTS=1 and run isolated via "
@@ -425,9 +404,9 @@ int test_parity_slice(void)
     /* (A)/(B): the EXACT branch (a byte-faithful reference) — match + drift. */
     failures += slice_case_consistent_zero_mismatch();   /* (A) 0 mismatches  */
     failures += slice_case_injected_mismatch_detected();  /* (B) detects drift */
-    /* (C1)-(C3): the COARSE (exact=false) branch the PRODUCTION zclassicd
-     * oracle actually hits — height-only attestation that never declares a
-     * byte DRIFT and clears a stale exact drift. Previously untested. */
+    /* (C1)-(C3): the COARSE (exact=false) branch the production zclassicd
+     * oracle hits: height-only attestation never declares a byte DRIFT and
+     * clears a stale exact drift. */
     failures += slice_case_coarse_match_no_drift();          /* (C1) coarse MATCH */
     failures += slice_case_coarse_skew_local_only();         /* (C2) coarse skew  */
     failures += slice_case_coarse_clears_prior_exact_drift();/* (C3) coarse clears*/

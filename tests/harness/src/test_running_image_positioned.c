@@ -3,10 +3,7 @@
  * executable end to end with no cursor, and that the file identity, size and
  * timestamps are unchanged across the entire read.
  *
- * Rehomed from tools/tests/test_running_image_positioned.c, which only ran
- * when a human invoked tools/scripts/winacceptance.sh. The subject is now the
- * suite binary itself rather than a one-file standalone, which is a strictly
- * larger image to read; the probe body is the original verbatim. */
+ * Reads the running executable of this process. */
 #include "test/test_core.h"
 
 #include "base/bytes.h"

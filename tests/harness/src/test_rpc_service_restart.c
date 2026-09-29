@@ -4,34 +4,18 @@
  * stop -> start cycle of the rpc_http service, and must RE-ENTER RPC warmup
  * when it does.
  *
- * The defect this pins
- * --------------------
  * boot_rpc_http_start() clears RPC warmup with set_rpc_warmup_finished(),
- * and that function used to enforce "called exactly once" with a live
- * assert(rpc_in_warmup). assert() does not vanish in this build (-DNDEBUG is
- * set only for the vendored LevelDB compile), so it was a real abort(). The
- * paired stop hook only called rpc_http_stop() and never restored the flag,
- * so the SECOND start_all in a stop_all -> start_all cycle killed the node.
- *
- * The service kernel genuinely supports that cycle:
+ * which asserts "called exactly once". The paired stop hook must restore the
+ * flag, or the second start_all in a stop_all -> start_all cycle aborts.
  * zcl_service_kernel_stop_all() clears kernel->started and start_all()
- * re-runs every .start hook. start_all()'s own partial-failure rollback
- * already stops rpc_http mid-call when a later required service fails, so
- * only the absence of a retry kept this off the live path.
+ * re-runs every .start hook.
  *
- * Two properties, not one
- * -----------------------
- * Surviving the restart is not enough on its own. A node that comes back up
- * still reporting "ready" while it re-initialises answers RPC from half-built
- * state, which is worse than the crash. So this test pins BOTH edges:
+ * Both edges are pinned, because a node that comes back up still reporting
+ * "ready" answers RPC from half-built state:
  *   - stop  RE-ARMS warmup (clients get RPC_IN_WARMUP + a reason)
  *   - start CLEARS it again (methods answer)
- * over the REAL hooks, obtained from boot_frontend_rpc_http_spec() — the same
- * value boot_register_frontend_services() installs into the frontend kernel,
- * so this test cannot drift from what actually boots.
- *
- * REGRESSION: revert the fix and case 6 aborts the whole test process with
- * SIGABRT rather than failing a check.
+ * over the REAL hooks from boot_frontend_rpc_http_spec(), the value
+ * boot_register_frontend_services() installs into the frontend kernel.
  */
 
 #define _POSIX_C_SOURCE 200809L
@@ -155,11 +139,9 @@ static void rsr_site_stop(void *ctx)
     (void)ctx;
 }
 
-/* THE 27-minute node1 outage of 2026-09-08, on the real hook: the RPC port
- * was still held by the departing process, boot_rpc_http_start() returned
- * false, and because rpc_http was the kernel's one REQUIRED service,
- * start_all() returned before https_explorer's start was ever called. The
- * site was down for a reason that had nothing to do with the site. */
+/* On the real hook: the RPC port is still held by the departing process,
+ * boot_rpc_http_start() returns false, and the independent site service's
+ * start must still run. */
 static int rsr_site_survived_refused_front_door(void)
 {
     printf("rpc_service_restart: a refused front door does not cancel the "
@@ -262,9 +244,9 @@ int test_rpc_service_restart(void)
     struct zcl_service_kernel kernel;
     zcl_service_kernel_init(&kernel);
     struct zcl_service_spec spec = boot_frontend_rpc_http_spec(&g_svc);
-    /* Stands in for https_explorer: registered AFTER rpc_http, exactly as
-     * boot_register_frontend_services() registers it, so a front door that
-     * cannot bind is proved not to cancel the public site. */
+    /* Stands in for https_explorer, registered AFTER rpc_http as
+     * boot_register_frontend_services() does: a front door that cannot bind
+     * must not cancel the public site. */
     struct zcl_service_spec site = {
         .name = "https_explorer",
         .start = rsr_site_start,
@@ -321,9 +303,8 @@ int test_rpc_service_restart(void)
 
     failures += rsr_retry_after_bind_conflict(&kernel, held_fd);
 
-    /* Close the cycle unconditionally. A failed INDEPENDENT service leaves
-     * its siblings RUNNING (that is the point), so the kernel is started
-     * either way and the next start_all is a restart, not a first start. */
+    /* Close the cycle unconditionally: a failed independent service leaves its
+     * siblings RUNNING, so the next start_all is a restart. */
     zcl_service_kernel_stop_all(&kernel);
 
     printf("rpc_service_restart: stopped RPC re-enters warmup... ");
@@ -387,10 +368,8 @@ int test_rpc_service_restart(void)
         }
     }
 
-    /* THE regression line. On the unfixed build the stop hook never re-armed
-     * warmup, so the flag is already false when boot_rpc_http_start() calls
-     * set_rpc_warmup_finished() a second time — its assertion fails and takes
-     * this process down with SIGABRT instead of returning a verdict. */
+    /* set_rpc_warmup_finished() a second time must not abort: the stop hook
+     * re-armed warmup. */
     printf("rpc_service_restart: the service restarts without killing "
            "the node... ");
     if (zcl_service_kernel_start_all(&kernel)) {

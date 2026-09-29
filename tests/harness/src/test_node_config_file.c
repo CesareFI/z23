@@ -4,23 +4,18 @@
  * Contract for the node's own config file: ReadConfigFile(),
  * GetConfigFilePath() and ArgvDataDir() in platform/modules/util/src/util.c.
  *
- * The reason this file exists rather than a couple of smoke assertions is
- * that a config reader is a SETTINGS-PRECEDENCE machine, and every way it
- * can be wrong is silent. A file that overrode argv would let a stale
- * on-disk line quietly beat the service unit's ExecStart on the next boot,
- * and nothing would print. A path resolver that fell back to the default
- * datadir would read the OPERATOR'S LIVE NODE's config while the caller
- * had explicitly named a throwaway instance. Neither shows up as a crash.
+ * A config reader is a settings-precedence machine and its failures are
+ * silent: a file that overrode argv would let a stale line beat the service
+ * unit's ExecStart, and a path resolver that fell back to the default
+ * datadir would read the live node's config for a throwaway instance.
  *
- * So the cases below pin the four properties that make the reader safe to
- * put in front of main():
+ * The cases pin four properties:
  *
  *   1. argv wins, always. A key already in the table is left byte-identical.
  *   2. -datadir and -conf inside the file are ignored — the file's own path
- *      is derived FROM the datadir, so a datadir line could relocate the
- *      directory the file was just read out of.
- *   3. resolving a path creates nothing. `z23 help` on a fresh box must not
- *      leave a data directory behind as a side effect of looking for config.
+ *      is derived FROM the datadir, so such a line could relocate it.
+ *   3. resolving a path creates nothing (`z23 help` on a fresh box leaves
+ *      no data directory).
  *   4. a missing file is the normal case: -1, no table mutation, no noise.
  *
  * Pure and hermetic: every case drives a tmpdir under ./test-tmp, no node,
@@ -35,9 +30,8 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-/* Write `body` to <dir>/z23.conf. Returns false if the file could not be
- * created, so a filesystem problem fails the case instead of silently
- * testing the missing-file path. */
+/* Write `body` to <dir>/z23.conf; false on failure so a filesystem problem
+ * cannot masquerade as the missing-file path. */
 static bool ncf_write_conf(const char *dir, const char *body)
 {
     char path[1024];
@@ -50,9 +44,8 @@ static bool ncf_write_conf(const char *dir, const char *body)
     return true;
 }
 
-/* Reset the argument table through the production entry point rather than
- * by poking g_nargs: ParseParameters() is what main() calls, so a change to
- * how it seeds the table is a change these tests should see. */
+/* Reset the argument table via ParseParameters(), the production entry
+ * point main() uses. */
 static void ncf_set_argv(const char *const *argv, int argc)
 {
     ParseParameters(argc, argv);
@@ -127,9 +120,7 @@ static int test_line_shapes(void)
         char path[1024];
         snprintf(path, sizeof(path), "%s/%s", dir, ZCL_NODE_CONFIG_FILENAME);
 
-        /* The leading '-' is optional so a line copy-pasted straight out of
-         * a unit's ExecStart works unchanged; both spellings must land on
-         * the same key. */
+        /* The leading '-' is optional so a line copied from ExecStart works. */
         ASSERT(ncf_write_conf(dir,
             "# a comment line\n"
             "\n"
@@ -145,10 +136,10 @@ static int test_line_shapes(void)
         int applied = ReadConfigFile(path);
         ASSERT_EQ(applied, 4);
         ASSERT_STR_EQ(GetArg("-packagehost", ""), "dashed");
-        /* `key = value` must not become a flag literally named "buildworker ". */
+        /* `key = value` must not become a flag named "buildworker ". */
         ASSERT_STR_EQ(GetArg("-buildworker", ""), "spaced");
         /* A bare flag is true, matching ParseParameters' present-but-empty
-         * rule, which GetBoolArg reads as true. */
+         * rule. */
         ASSERT_STR_EQ(GetArg("-listen", "absent"), "");
         ASSERT(GetBoolArg("-listen", false));
         ASSERT_STR_EQ(GetArg("-note", ""), "keep");
@@ -189,9 +180,8 @@ static int test_path_resolution_creates_nothing(void)
     TEST("node-config: resolving the path mints no data directory") {
         char dir[512];
         test_fmt_tmpdir(dir, sizeof(dir), "node_conf", "nocreate");
-        /* Deliberately NOT created: GetConfigFilePath must be willing to
-         * name a file inside a directory that does not exist, and must not
-         * bring the directory into being as a side effect. */
+        /* Not created: GetConfigFilePath names a file in a missing directory
+         * without creating it. */
         test_rm_rf(dir);
 
         char out[1024];
@@ -238,16 +228,15 @@ static int test_argv_datadir_scans_past_a_subcommand(void)
     TEST("node-config: -datadir is found after a non-flag token") {
         char out[512];
 
-        /* THE case this function exists for. ParseParameters stops at the
-         * first token that does not begin with '-', so for a CLI invocation
-         * the argument table is empty and would name the DEFAULT datadir —
-         * the operator's live node — instead of the instance named here. */
+        /* ParseParameters stops at the first non-'-' token, so a CLI
+         * invocation has an empty table that would name the default
+         * datadir instead of the instance named here. */
         const char *cli[] = { "z23", "zcode", "work", "toolchain",
                               "-datadir=/tmp/z23-cli-instance" };
         ASSERT(ArgvDataDir(5, cli, out, sizeof(out)));
         ASSERT_STR_EQ(out, "/tmp/z23-cli-instance");
 
-        /* The table genuinely cannot answer it: proven, not assumed. */
+        /* The table cannot answer it. */
         ncf_set_argv(cli, 5);
         ASSERT_STR_EQ(GetArg("-datadir", "unset"), "unset");
 
@@ -273,14 +262,14 @@ static int test_argv_datadir_absent_and_degenerate(void)
         ASSERT(!ArgvDataDir(2, none, out, sizeof(out)));
         ASSERT_STR_EQ(out, "");
 
-        /* `-datadir=` with nothing after it is not a directory. Accepting it
-         * would resolve the config path to "/z23.conf". */
+        /* `-datadir=` with nothing after it is not a directory; accepting it
+         * would resolve to "/z23.conf". */
         const char *empty[] = { "z23", "-datadir=" };
         ASSERT(!ArgvDataDir(2, empty, out, sizeof(out)));
         ASSERT_STR_EQ(out, "");
 
-        /* argv[0] is never scanned: a binary that happens to live at a path
-         * containing "-datadir=" must not be read as a setting. */
+        /* argv[0] is never scanned: a "-datadir=" in the binary's path is
+         * not a setting. */
         const char *argv0[] = { "/opt/-datadir=/wrong/z23" };
         ASSERT(!ArgvDataDir(1, argv0, out, sizeof(out)));
         ASSERT_STR_EQ(out, "");
@@ -295,12 +284,11 @@ static int test_argv_datadir_absent_and_degenerate(void)
 
 /* ── LogAcceptCategory ─────────────────────────────────────────────────
  *
- * Pinned against the production argument table (seeded through
- * ParseParameters, never by poking internals): NULL category is always
- * accepted, a named category is refused without -debug, and the three
- * spellings of "all categories" (-debug, -debug=1, exact category name)
- * are accepted while an unrelated category stays refused. One function
- * per TEST, as the harness's hardcoded `goto _test_next` requires. */
+ * Uses the production argument table (seeded via ParseParameters): NULL
+ * category is always accepted, a named category is refused without -debug,
+ * and -debug, -debug=1 and the exact category name accept while an
+ * unrelated category stays refused. One function per TEST (the harness's
+ * `goto _test_next`). */
 static int test_log_accept_null_category(void)
 {
     int failures = 0;
@@ -375,8 +363,7 @@ int test_node_config_file(void)
     failures += test_log_accept_debug_spellings();
     failures += test_log_accept_exact_category();
 
-    /* Leave the table as the suite found it: these cases rewrote it several
-     * times and a later group must not inherit a fixture's -datadir. */
+    /* Restore the table so later groups do not inherit a fixture's -datadir. */
     const char *reset[] = { "z23" };
     ncf_set_argv(reset, 1);
 

@@ -1,43 +1,29 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * test_mint_proof_harness — PROOF + MEASUREMENT harness for the anchor-set
- * mint (the one-time genesis->anchor UTXO fold the in-binary checkpoint
- * mint depends on). This group is INDEPENDENT of the mint *writer* code: it
- * exercises only the existing fold primitives (utxo_apply_compute_block_delta
- * + coins_kv_{add,spend,commitment}) and the snapshot sidecar reader
- * (uss_open/uss_iter), so it can be built and run in parallel with the mint
- * build.
- *
- * The mint is only trustworthy if (1) the fold is DETERMINISTIC — the same
- * blocks folded twice yield a byte-identical coins_kv_commitment — and (2)
- * the snapshot the mint emits round-trips: a sidecar written from a coins_kv
- * state, reloaded, reproduces the same set commitment. Part 3 measures how
- * long the serial fold actually takes so we can size the genesis->anchor
- * wall-clock and the value of LB-1 parallelism.
+ * test_mint_proof_harness — proof and measurement harness for the anchor-set
+ * mint (the genesis->anchor UTXO fold). Independent of the mint writer code:
+ * it exercises only the fold primitives (utxo_apply_compute_block_delta +
+ * coins_kv_{add,spend,commitment}) and the snapshot sidecar reader
+ * (uss_open/uss_iter).
  *
  * THREE PARTS:
  *   1. FOLD-DETERMINISM — fold a small synthetic regtest chain into coins_kv
- *      on an isolated datadir, record coins_kv_commitment; reset + fold the
- *      identical blocks again on a SECOND isolated datadir; assert the two
- *      commitments are identical AND stable across a db close/reopen.
- *   2. SNAPSHOT ROUND-TRIP — write a ZCLUTXO sidecar (the exact format
- *      engine/entry/main.c gen_utxo_snapshot_mode emits) from a coins_kv state, reload
- *      it with uss_open(verify_full_sha3=true) into a FRESH coins_kv, and
- *      assert the reloaded set's coins_kv_commitment == the original. Because
- *      the sidecar body and coins_kv_commitment share the single canonical
- *      encoder (utxo_sha3_serialize_record / _sha3_write_record), the body
- *      SHA3 the loader verifies equals coins_kv_commitment directly — this is
- *      asserted too.
- *   3. SERIAL FOLD-RATE — fold a window of REAL on-disk blocks (parsed from
- *      an isolated COPY of a blk*.dat file via the existing legacy .dat
- *      walker) through the real per-block UTXO delta into coins_kv, time it,
- *      report blocks/sec, and extrapolate the genesis->anchor (3,056,758
- *      blocks) serial wall-clock.
+ *      on an isolated datadir and record coins_kv_commitment; fold the
+ *      identical blocks on a second isolated datadir; the two commitments
+ *      are identical and stable across a db close/reopen.
+ *   2. SNAPSHOT ROUND-TRIP — write a ZCLUTXO sidecar (the format
+ *      engine/entry/main.c gen_utxo_snapshot_mode emits) from a coins_kv
+ *      state, reload it with uss_open(verify_full_sha3=true) into a fresh
+ *      coins_kv, and assert the reloaded commitment equals the original. The
+ *      sidecar body SHA3 equals coins_kv_commitment because both use the
+ *      single canonical encoder; this is asserted too.
+ *   3. SERIAL FOLD-RATE — fold a window of real on-disk blocks (from an
+ *      isolated COPY of a blk*.dat) through the real per-block UTXO delta,
+ *      time it, report blocks/sec, and extrapolate the genesis->anchor
+ *      (3,056,758 blocks) serial wall-clock.
  *
- * EVERY datadir here is an isolated unique ./test-tmp/mintproof_<pid>_* path
- * or an explicit /tmp/... copy. The live ~/.zclassic-c23 and the shared
- * default regtest datadir are NEVER touched (read-only mmap of a COPIED .dat
- * file for part 3, never the live blocks/).
+ * Every datadir is an isolated ./test-tmp/mintproof_<pid>_* path; live
+ * datadirs are never touched.
  */
 
 #include "test/test_core.h"
@@ -66,11 +52,8 @@
 #include <time.h>
 #include <unistd.h>
 
-/* The walker that frames + deserializes a blk*.dat file lives in
- * engine/controllers/src/legacy_import_scan.{h,c}; that header is src-private and
- * drags in wallet/scan deps, so we declare just the two symbols we use here
- * (the visitor typedef + the walker). Definitions are linked into the test
- * binary from legacy_import_scan.c. */
+/* Declares the two legacy_import_scan.c symbols used here (the visitor
+ * typedef and the walker); that header is src-private. */
 typedef bool (*legacy_import_block_visitor_fn)(const struct block *blk,
                                                int height,
                                                void *ctx);
@@ -85,8 +68,7 @@ int legacy_import_walk_block_file(const uint8_t *fdata,
     else { printf("FAIL\n"); failures++; }                 \
 } while (0)
 
-/* The anchor height the mint must fold to (live zclassicd SHA3 anchor;
- * docs reference h=3,056,758). */
+/* The anchor height the mint must fold to. */
 #define MP_ANCHOR_HEIGHT 3056758LL
 
 /* ── tmp-dir helpers (isolated, unique-per-pid) ───────────────────────── */
@@ -105,15 +87,10 @@ static double mp_now_sec(void)
 }
 
 /* ── A tiny synthetic regtest chain (parts 1 & 2) ─────────────────────────
- * No real PoW — the fold operates BELOW the Equihash gate (it consumes a
- * block body and computes its UTXO delta). Each height h is one coinbase tx
- * creating one output; height h>=2 also spends a dedicated per-height
- * EXTERNAL non-coinbase coin (supplied by the lookup), so the fold exercises
- * both the add and spend paths. The spent coin is non-coinbase so the
- * coinbase-spend-protection rule does not fire, and the spend output is
- * strictly below the input value (a fee) so the no-inflation rule passes —
- * the fold then resolves cleanly and the determinism property is the thing
- * under test. */
+ * No real PoW: the fold operates below the Equihash gate. Each height h is
+ * one coinbase tx creating one output; h>=2 also spends a per-height
+ * EXTERNAL non-coinbase coin (from the lookup) at a fee, so both the add
+ * and spend paths run. */
 
 static void mp_cb_txid(struct uint256 *out, int h)
 {
@@ -176,9 +153,8 @@ static bool mp_build_block(struct block *b, int h)
     return true;
 }
 
-/* Lookup for the synthetic chain's spends: the coin spent at height h is the
- * external NON-coinbase coin 0xE7||h (value MP_EXT_VALUE). Returning
- * is_coinbase=false keeps the coinbase-spend-protection rule from firing. */
+/* Lookup for the synthetic spends: the coin spent at height h is the
+ * external non-coinbase coin 0xE7||h (value MP_EXT_VALUE). */
 struct mp_lookup_ctx { int max_h; };
 static bool mp_lookup(const struct uint256 *txid, uint32_t vout,
                       struct utxo_apply_lookup *out, void *user)
@@ -565,15 +541,10 @@ static int mp_part2_roundtrip(void)
 
 /* ── PART 3: serial fold-rate over REAL on-disk blocks ────────────────── */
 
-/* Visitor over real blocks parsed from a copied blk*.dat. Folds each block
- * into coins_kv (real per-block delta + add/spend). For early heights most
- * txs are coinbases (one output, no spend), which is the dominant fold cost;
- * for blocks that spend coins whose prevout is not in our partial set the
- * delta resolves "absent" — we still add the created outputs (the cost we are
- * measuring is the per-output coins_kv write throughput, identical to the
- * mint's). A NULL lookup makes every external prevout "absent": the delta
- * then reports the spends but we apply coins_kv_spend regardless (a missing
- * row is a no-op), so the write volume matches the real fold. */
+/* Visitor over real blocks from a copied blk*.dat: folds each block into
+ * coins_kv. A NULL lookup makes every external prevout "absent"; spends are
+ * applied regardless (a missing row is a no-op), so the write volume matches
+ * the real fold. */
 struct mp_foldrate_ctx {
     sqlite3 *db;
     int64_t blocks;
@@ -583,9 +554,8 @@ struct mp_foldrate_ctx {
     bool ok;
 };
 
-/* The legacy .dat walker stops early only when the visitor returns false, so
- * we cap the fold window via this single-test global the wrapper visitor
- * honors (this group is single-threaded). */
+/* The walker stops early only when the visitor returns false, so the fold
+ * window is capped via this single-threaded global. */
 static int64_t g_mp_window_cap = 0;
 
 static bool mp_foldrate_visitor(const struct block *blk, int height, void *ctx)
@@ -690,9 +660,8 @@ static int mp_part3_foldrate(void)
     }
     printf("    source (read-only): %s\n", src_blk);
 
-    /* Copy a ~96 MB prefix to an isolated tmp path so we NEVER fold against
-     * the live datadir. 96 MB of early blk00000.dat is well over 1,000
-     * blocks. */
+    /* Copy a ~96 MB prefix to an isolated path so the live datadir is never
+     * folded against. */
     char dir[256], dat_copy[320];
     test_make_tmpdir(dir, sizeof(dir), "mintproof", "p3");
     snprintf(dat_copy, sizeof(dat_copy), "%s/blk_copy.dat", dir);
@@ -710,8 +679,7 @@ static int mp_part3_foldrate(void)
     sqlite3 *db = progress_store_db();
     (void)coins_kv_ensure_schema(db);
 
-    /* Read the copy into memory (it is our private copy; mmap of a regular
-     * file is fine, but a plain read keeps the harness simple). */
+    /* Read the private copy into memory. */
     long fsize = 0;
     uint8_t *fdata = NULL;
     {
@@ -734,10 +702,8 @@ static int mp_part3_foldrate(void)
     struct mp_foldrate_ctx fc = { .db = db, .ok = true };
 
     if (fdata) {
-        /* Limit the walk to ~the first WINDOW blocks by truncating fdata to a
-         * size that contains at least WINDOW blocks; the walker stops at EOF.
-         * Early blocks are tiny so 96 MB holds far more than WINDOW; we cap
-         * the visitor itself. */
+        /* Cap the walk at WINDOW blocks via the visitor; early blocks are
+         * tiny, so 96 MB holds far more. */
         const int64_t WINDOW = 1000;
 
         char *err = NULL;

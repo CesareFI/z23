@@ -1,12 +1,12 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * Shared surface of the `make_lint_gates` self-test group: the fixture and
- * gate-script path constants every check plants or execs, plus the declaration
- * of every check function and the helpers they share.
+ * gate-script path constants every check plants or execs, plus the
+ * declarations of every check function and shared helper.
  *
  * The group is one test — `test_make_lint_gates()` in test_make_lint_gates.c,
  * which owns the entry table and the sandbox worker pool — whose checks are
- * split across lint_gate_*.c by the gate family under test:
+ * split across lint_gate_*.c by gate family:
  *
  *   lint_gate_helpers.c               file/exec plumbing every check reuses
  *   lint_gate_defensive_selftests.c   raw sqlite3_step, raw malloc, coins
@@ -31,8 +31,8 @@
  *   lint_gate_chain_contracts.c       repair-ladder, borrowed-seed, writer
  *                                     frontier and chain-index contracts
  *
- * Everything declared here is internal to that group: only
- * tests/harness/src/lint_gate_*.c and test_make_lint_gates.c include this file. */
+ * Internal to that group: only tests/harness/src/lint_gate_*.c and
+ * test_make_lint_gates.c include this file. */
 
 #ifndef ZCL_LINT_GATE_SELFTESTS_H
 #define ZCL_LINT_GATE_SELFTESTS_H
@@ -59,9 +59,9 @@
 #define FIXTURE_SRC_REL "tests/harness/fixtures/raw_sqlite_step_fixture.c"
 #define FIXTURE_DST_REL "engine/controllers/src/_lint_gate_fixture_tmp.c"
 #define NODE_DB_EXEC_FIXTURE_SRC_REL "tests/harness/fixtures/raw_sqlite_exec_node_db_fixture.c"
-/* Direct self-test script calls intentionally leave
- * ZCL_LINT_PRODUCTION_SCAN unset, so this fixture remains visible to its own
- * gate while production scans and the live dev watcher ignore it. */
+/* Direct self-test script calls leave ZCL_LINT_PRODUCTION_SCAN unset, so this
+ * fixture stays visible to its own gate while production scans and the live
+ * dev watcher ignore it. */
 #define NODE_DB_EXEC_FIXTURE_DST_REL \
     "engine/controllers/src/_node_db_exec_lint_fixture_probe_tmp.c"
 #define COINS_FIXTURE_SRC_REL "tests/harness/fixtures/coins_lookup_guard_fixture.c"
@@ -108,22 +108,22 @@
 #define PRIV_RECEIPT_SCRIPT_REL \
     "tools/lint/check_privileged_transition_receipt.sh"
 /* Gate — no ordinal comparison of enum sync_trust_state. The script owns a
- * private Git fixture repository for its trip/recover selftest. */
+ * private Git fixture repo for its trip/recover selftest. */
 #define TRUST_ORDER_SCRIPT_REL \
     "tools/scripts/check_no_trust_state_ordering.sh"
 #define GIT_HOOKS_PRE_PUSH_REL "tools/dev/z23_git_hook.c"
-/* Fixture path PREFIXES, not whole paths: these two checks live in the
- * REALROOT lane, which runs inside the worker pool, so they are resolved
- * through repo_path_pid() and carry the pid. */
+/* Fixture path prefixes, not whole paths: these two checks run in the
+ * REALROOT lane inside the worker pool and are resolved via repo_path_pid()
+ * with the pid. */
 #define GIT_HOOKS_PRE_PUSH_FIXTURE_REL \
     "test-tmp/_pre_push_hook_fixture_tmp.c"
 #define GIT_HOOKS_PRECOMMIT_REL "tools/githooks/pre-commit"
 #define GIT_HOOKS_PRECOMMIT_FIXTURE_REL \
     "test-tmp/_pre_commit_hook_fixture_tmp"
-/* Gate — the lint umbrella's two files (Makefile LINT_GATES and
- * run_lint.sh's gate_command() case table) must agree in both directions.
- * Hermetic: its --selftest builds throwaway fixture trees under TMPDIR and it
- * never writes into the worktree, so it belongs to the REALROOT lane. */
+/* Gate — the lint umbrella's two files (Makefile LINT_GATES and run_lint.sh's
+ * gate_command() case table) must agree in both directions. Hermetic: its
+ * --selftest builds fixture trees under TMPDIR, so it belongs to the REALROOT
+ * lane. */
 #define LINT_GATE_WIRING_SCRIPT_REL \
     "tools/lint/check_lint_gate_wiring.sh"
 #define NO_DEV_HISTORY_SCRIPT_REL \
@@ -132,9 +132,9 @@
     "platform/modules/util/include/util/_dev_history_lint_fixture_tmp.h"
 #define NO_DEV_HISTORY_ALLOWLIST_FIXTURE_DST \
     "platform/modules/util/include/util/_dev_history_lint_fixture_test.h"
-/* Gate — no UNCITED victory claim in docs/HANDOFF.md. The gate takes a
- * scanned-doc override via ZCL_LINT_MODE (which run_gate_script's 2nd arg
- * sets), so we point it at a planted fixture .md instead of the live page. */
+/* Gate — no uncited victory claim in docs/HANDOFF.md. The scanned doc is
+ * overridden via ZCL_LINT_MODE (run_gate_script's 2nd arg), pointing at a
+ * planted fixture .md. */
 #define NO_UNCITED_VICTORY_SCRIPT_REL \
     "tools/scripts/check_no_uncited_victory.sh"
 #define NO_UNCITED_VICTORY_FIXTURE_REL \
@@ -142,26 +142,21 @@
 #define NO_UNCITED_VICTORY_CITED_FIXTURE_REL \
     "test-tmp/_uncited_victory_cited_fixture_tmp.md"
 
-/* Gate E1 — the file-size policy, a C23 binary (tools/file_size_policy.c),
- * not a script. Three bands: 800 is the advisory TARGET (silent), 801..1500
- * is an ALLOWED buffer that never fails and needs no baseline row, and over
- * 1500 FAILS unless the file is carried in the shrink-only legacy baseline.
- * The two self-tests below pin four cases: buffer-band allowed, over-limit
- * fails, a baselined file that grows fails, and a zero-file scan refuses. */
+/* Gate E1 — the file-size policy, a C23 binary (tools/file_size_policy.c).
+ * Bands: 800 is the advisory target (silent), 801..1500 an allowed buffer, and
+ * over 1500 fails unless carried in the shrink-only legacy baseline. The
+ * self-tests pin: buffer-band allowed, over-limit fails, a baselined file that
+ * grows fails, and a zero-file scan refuses. */
 #define E1_GATE_REL      "build/bin/file_size_policy"
-/* Buffer band: planted at 900 lines into the real app/ tree, this must NOT
- * fail. It is the whole point of the redesign — the predecessor gate failed
- * the build here and forced emergency splits during unrelated work. */
+/* Buffer band: planted at 900 lines into app/, this must not fail. */
 #define E1_BUFFER_FIXTURE_DST \
     "engine/controllers/src/_e1_size_buffer_fixture_tmp.c"
-/* Over the hard limit: planted at 1600 lines into the real lib/ tree, not in
- * any baseline, this MUST fail. One policy now — app/ and lib/ are the same
- * numbers, so this fixture also proves the old ENFORCED/WARN split is gone. */
+/* Over the hard limit: planted at 1600 lines into lib/, not in any baseline,
+ * this must fail (app/ and lib/ share one policy). */
 #define E1_OVER_LIMIT_FIXTURE_DST \
     "engine/modules/storage/src/_e1_size_over_limit_fixture_tmp.c"
-/* Baseline-growth and hollow-scan cases run against ISOLATED scan roots and
- * an ISOLATED baseline so they never touch the real tree or the real
- * baseline file — the SVC_CONV / LONGFN convention. */
+/* Baseline-growth and hollow-scan cases run against isolated scan roots and an
+ * isolated baseline (SVC_CONV / LONGFN convention). */
 #define E1_BASELINE_ENV  "ZCL_FILE_SIZE_POLICY_BASELINE"
 #define E1_SCAN_ROOTS_ENV "ZCL_FILE_SIZE_POLICY_SCAN_ROOTS"
 #define E1_ISO_SCAN_DIR_REL "test-tmp/_e1_size_iso_scan_dir_tmp"
@@ -169,19 +164,17 @@
 #define E1_ISO_BASELINE_REL "test-tmp/_e1_size_iso_baseline_tmp.txt"
 #define E1_EMPTY_SCAN_DIR_REL "test-tmp/_e1_size_empty_scan_dir_tmp"
 #define E1_MISSING_SCAN_DIR_REL "test-tmp/_e1_size_missing_scan_dir_tmp"
-/* Gate #12 — check_long_functions.sh, extended to engine/composition/src/ (ENFORCED,
- * ratchet-baselined) and lib/ excl. tests/harness/include/test/ (WARN, non-blocking). Both
- * sub-tiers run against an ISOLATED test-tmp/ scan dir + baseline (via
- * ZCL_LONGFN_ENFORCED_ROOTS/_BASELINE and ZCL_LONGFN_LIB_ROOTS/
- * _LIB_BASELINE) so the self-test never touches the real scanned trees or
- * the real baseline files — same convention as SVC_CONV above. */
+/* Gate #12 — check_long_functions.sh over engine/composition/src/ (enforced,
+ * ratchet-baselined) and lib/ excl. tests/harness/include/test/ (warn). Both
+ * tiers run against an isolated test-tmp/ scan dir + baseline
+ * (ZCL_LONGFN_ENFORCED_ROOTS/_BASELINE, ZCL_LONGFN_LIB_ROOTS/_LIB_BASELINE),
+ * as SVC_CONV above. */
 #define LONGFN_SCRIPT_REL          "tools/scripts/check_long_functions.sh"
 #define LONGFN_ENFORCED_DIR_REL    "test-tmp/_longfn_enforced_scan_dir_tmp"
 #define LONGFN_ENFORCED_FIXTURE_REL \
     "test-tmp/_longfn_enforced_scan_dir_tmp/fixture.c"
-/* A permanent, always-clean sibling file so the gate's non-empty-scan-set
- * floor stays satisfied once fixture.c is removed during recovery — same
- * reason SVC_CONV_KEEP_REL exists above. */
+/* A permanent clean sibling file keeps the gate's non-empty-scan floor
+ * satisfied once fixture.c is removed during recovery (as SVC_CONV_KEEP_REL). */
 #define LONGFN_ENFORCED_KEEP_REL \
     "test-tmp/_longfn_enforced_scan_dir_tmp/keep.c"
 #define LONGFN_ENFORCED_BASELINE_REL "test-tmp/_longfn_enforced_baseline_tmp.txt"
@@ -193,25 +186,17 @@
 #define SYSMEM_SCRIPT_REL "tools/scripts/check_systemd_memory_budget.sh"
 #define QUALITY_GUARD_TEST_REL "tools/scripts/test_quality_job_guard.sh"
 /* ── the two hermetic copy-prove selftests, and how their bound is derived ──
- * Both are driven through run_gate_script_watched(), whose bound is on
- * SILENCE, not on runtime — see the long rationale on that function. Neither
- * number below is a runtime budget, and neither may be raised to make a
- * failing assertion pass; a failure from these scripts is a logic verdict,
- * reported with its own distinct exit status.
+ * Both run through run_gate_script_watched(), whose bound is on SILENCE, not
+ * runtime. Neither number below is a runtime budget and neither may be raised
+ * to make a failing assertion pass; a failure is a logic verdict with its own
+ * exit status.
  *
- * DERIVATION (identical for both, so they share one value):
- *   Each script prints a line per hermetic assertion, so the only silent
- *   stretches are the driver's own polling windows. The longest one either
- *   script contains is a 20 s sample/deadline window with no intervening
- *   output (fresh-boot-weld's --deadline=20 positive leg; import-copy-prove's
- *   --deadline=15 phase with 5 s polls). Silent stretches are built from
- *   `sleep N`, which does not stretch under CPU load, so the elastic part is
- *   only the fork/exec around them. 120 s = 6x the longest deliberate
- *   silence. Measured on this 32-cpu box at loadavg ~22, the whole
- *   fresh-boot-weld selftest runs in ~75 s wall with a longest observed
- *   silence well under 25 s.
- *   Raise this ONLY if a script gains a genuinely longer silent poll — and
- *   prefer making that poll emit progress instead. */
+ * Derivation: each script prints a line per assertion, so the only silent
+ * stretches are polling windows, the longest a 20 s sample/deadline window
+ * (fresh-boot-weld --deadline=20; import-copy-prove --deadline=15 with 5 s
+ * polls). Silences are `sleep N`, which does not stretch under load. 120 s =
+ * 6x the longest deliberate silence. Raise it only if a script gains a longer
+ * silent poll, and prefer making that poll emit progress. */
 #define GATE_SELFTEST_MAX_SILENT_SECS 120
 #define GATE_SELFTEST_SILENCE_DERIVATION \
     "Derivation: the script prints a line per assertion; its longest " \
@@ -221,33 +206,27 @@
     "tools/scripts/import-copy-prove-selftest.sh"
 #define FRESH_BOOT_WELD_PROVE_SELFTEST_REL \
     "tools/scripts/fresh-boot-weld-prove-selftest.sh"
-/* Gate E14 — condition cooldown re-arm (a page-loop bug class).
- * The script's own selftest plants an isolated tmp-dir fixture (never the
- * real engine/conditions/src tree) proving a network-dependent COND_CRITICAL
- * condition without cooldown_secs trips exit 2, and every sibling case
- * (cooldown-bearing, .progressing-exempt, local-only, WARN-severity,
- * hollow-scan) stays/becomes clean. */
+/* Gate E14 — condition cooldown re-arm. The script's selftest plants an
+ * isolated tmp-dir fixture: a network-dependent COND_CRITICAL condition
+ * without cooldown_secs trips exit 2; cooldown-bearing, .progressing-exempt,
+ * local-only, WARN-severity and hollow-scan cases stay clean. */
 #define CONDITION_COOLDOWN_SCRIPT_REL "tools/scripts/check_condition_cooldown.sh"
 #define MARKDOWN_LINK_SCRIPT_REL "tools/lint/check_markdown_links.sh"
 #define FUZZ_ARTIFACT_REPLAY_SCRIPT_REL "tools/lint/check_fuzz_artifact_replay.sh"
 #define E10_SHAPE_SCRIPT_REL "tools/lint/framework_shape_check.sh"
-/* Same direct-selftest convention as NODE_DB_EXEC_FIXTURE_DST_REL: visible
- * without ZCL_LINT_PRODUCTION_SCAN, ignored by production/watch scans. */
+/* Same direct-selftest convention as NODE_DB_EXEC_FIXTURE_DST_REL. */
 #define E10_SHAPE_FIXTURE_DST \
     "engine/_e10_offshape_fixture_probe_tmp.c"
-/* check-telemetry-ontology: the fixture pair is CHECKED IN (a .fixture suffix
- * keeps it out of every source glob), so the trip case runs against the REAL
- * ontology and the REAL floors — a shrunken scan would trip for the wrong
- * reason and prove nothing. */
+/* check-telemetry-ontology: the fixture pair is checked in (a .fixture suffix
+ * keeps it out of source globs), so the trip case runs against the real
+ * ontology and floors. */
 #define TELEMETRY_ONTOLOGY_SCRIPT_REL "tools/lint/check_telemetry_ontology.sh"
 #define TELEMETRY_ONTOLOGY_EXTRA_ENV "ZCL_TELEMETRY_SCAN_EXTRA_MANIFEST"
 #define TELEMETRY_ONTOLOGY_EXTRA_REL "tools/lint/fixtures/telemetry_scan_extra.txt"
 #define TELEMETRY_ONTOLOGY_MANIFEST_ENV "ZCL_TELEMETRY_SCAN_MANIFEST"
-/* check-dumper-never-blocks: the script owns its own fixture sandbox behind
- * `--selftest` (a throwaway scan root + an empty baseline, never a plant into
- * the real tree), so this side only dispatches the flag and asserts 0. It
- * covers the collector blind spot — a blocking primitive inside a
- * `*_dump_state_fill` provider, which the pre-widening scan could not see. */
+/* check-dumper-never-blocks: the script owns its fixture sandbox behind
+ * `--selftest`, so this side only dispatches the flag and asserts 0. Covers a
+ * blocking primitive inside a `*_dump_state_fill` provider. */
 #define DUMPER_BLOCKING_SCRIPT_REL "tools/scripts/check_dumper_never_blocks.sh"
 #define E10_SQL_SCRIPT_REL "tools/lint/check_no_raw_sqlite_in_controllers.sh"
 #define E10_SQL_FIXTURE_DST \
@@ -255,19 +234,16 @@
 #define E10_SQL_SERVICE_FIXTURE_DST \
     "engine/services/src/_e10_receipt_sql_fixture_tmp.c"
 #define E11_SCRIPT_REL   "tools/scripts/check_doc_accuracy.sh"
-/* Not gitignored on purpose: E11's repo-wide prong scans tracked files plus
- * not-yet-added files git does not ignore, so an ignored path would make the
- * trip case silently vacuous. */
+/* Not gitignored: E11's repo-wide prong scans tracked and non-ignored files,
+ * so an ignored path would make the trip case vacuous. */
 #define E11_FIXTURE_DST  "docs/_e11_doc_count_fixture_tmp.md"
 #define MODEL_AR_SCRIPT_REL "tools/scripts/check_model_ar_lifecycle.sh"
 #define MODEL_AR_FIXTURE_DST "engine/models/src/_model_ar_lifecycle_fixture_tmp.c"
 #define E2_SCRIPT_REL    "tools/scripts/check_one_result_type.sh"
 #define E2_FIXTURE_DST   "engine/services/src/_e2_one_result_fixture_tmp.c"
 /* Phase 3 shrinking-floor ratchet (sibling to E2): counts exported bool
- * DEFINITIONS per file rather than "does the file mention zcl_result
- * anywhere". Run entirely against an isolated test-tmp/ scan dir + baseline
- * (via ZCL_SERVICE_RESULT_CONVERGENCE_SCAN_DIR / _BASELINE) so the self-test
- * never touches the real engine/services/src tree or the real baseline. */
+ * definitions per file. Runs against an isolated test-tmp/ scan dir and
+ * baseline (ZCL_SERVICE_RESULT_CONVERGENCE_SCAN_DIR / _BASELINE). */
 #define SVC_CONV_SCRIPT_REL   "tools/scripts/check_service_result_convergence.sh"
 #define SVC_CONV_SCAN_DIR_REL "test-tmp/_svc_conv_scan_dir_tmp"
 #define SVC_CONV_KEEP_REL     "test-tmp/_svc_conv_scan_dir_tmp/keep.c"
@@ -277,14 +253,13 @@
 #define E3_FIXTURE_DST   "engine/conditions/src/_e3_shape_include_fixture_tmp.c"
 #define E4_SCRIPT_REL    "tools/scripts/check_projections_pure.sh"
 #define E4_FIXTURE_DST   "engine/modules/storage/src/_e4_pure_fixture_projection.c"
-/* Gate #45 — domain/ source purity (HARD). The fixture is a domain/ src file
- * carrying a forbidden include; clean tree → exit 0, fixture → exit != 0. */
+/* Gate #45 — domain/ source purity (hard). The fixture is a domain/ src file
+ * with a forbidden include; clean tree exits 0, fixture non-zero. */
 #define DOMAIN_PURITY_SCRIPT_REL  "tools/scripts/check_domain_purity.sh"
 #define DOMAIN_PURITY_FIXTURE_DST "contexts/wallet/domain/src/_domain_purity_fixture_tmp.c"
-/* Gate #49 — inter-shape include direction (RATCHET). The fixture is an
- * engine/models/src/ file with an upward #include "services/..."; clean tree
- * (pre-existing services/ -> controllers/ entries grandfathered in the
- * baseline) -> exit 0, fixture -> exit != 0. */
+/* Gate #49 — inter-shape include direction (ratchet). The fixture is an
+ * engine/models/src/ file with an upward #include "services/..."; the clean
+ * tree (grandfathered baseline entries) exits 0, the fixture non-zero. */
 #define SHAPE_DIR_SCRIPT_REL  "tools/scripts/check_shape_include_direction.sh"
 #define SHAPE_DIR_FIXTURE_DST "engine/models/src/_shape_dir_fixture_tmp.c"
 #define E5_SCRIPT_REL    "tools/scripts/check_stage_advances_or_blocks.sh"
@@ -296,62 +271,53 @@
 #define FSUF_SCRIPT_REL  "tools/lint/check_framework_filename_suffix.sh"
 /* A foreign-shape suffix (*_controller) planted under engine/services/src. */
 #define FSUF_FIXTURE_DST "engine/services/src/_fsuf_fixture_tmp_controller.c"
-/* Gate E13 — check-consensus-parity (HARD, no baseline). Scans
- * core/params, core/chainparams, core/modules/validation, core/modules/chain, core/modules/mining,
- * app/jobs, core/consensus for a forbidden miner-signaled/versionbits
- * mechanism token; the fixture plants a verbatim forbidden identifier
- * (VersionBitsState) so the trip is a faithful stand-in for the doctrine
- * violation, not an arbitrary string. */
+/* Gate E13 — check-consensus-parity (hard, no baseline). Scans the consensus
+ * trees for a forbidden miner-signaled/versionbits token; the fixture plants
+ * the verbatim identifier VersionBitsState. */
 #define CONSENSUS_PARITY_SCRIPT_REL "tools/scripts/check_consensus_parity.sh"
 #define CONSENSUS_PARITY_FIXTURE_DST \
     "core/modules/validation/src/_consensus_parity_fixture_tmp.c"
-/* Gate check-silent-errors-bool — RATCHET (shrink-only
- * silent_bool_errors_baseline.txt). Scans app/{controllers,services,jobs,
- * conditions,models,views,supervisors}/src for a swallowed
- * call-guard failure: `if (!some_call(...)) return false;` with no LOG_*
- * and no `// raw-return-ok:` marker. */
+/* Gate check-silent-errors-bool — ratchet (shrink-only
+ * silent_bool_errors_baseline.txt). Flags a swallowed call-guard failure
+ * `if (!some_call(...)) return false;` with no LOG_* and no
+ * `// raw-return-ok:` marker. */
 #define SILENT_BOOL_SCRIPT_REL "tools/lint/check_silent_bool_errors.sh"
 #define SILENT_BOOL_FIXTURE_DST \
     "engine/services/src/_silent_bool_fixture_tmp.c"
 /* Gate P2 (docs/work/palace-design.md §3) — check-group-purpose. Runs against
- * a test-tmp/ COPY of the real codeindex_group.c (via ZCL_GROUP_PURPOSE_SRC)
- * so the self-test never mutates the real source file. */
+ * a test-tmp/ copy of codeindex_group.c (ZCL_GROUP_PURPOSE_SRC). */
 #define GRPPURPOSE_SCRIPT_REL      "tools/lint/check_group_purpose.sh"
 #define GRPPURPOSE_REAL_SRC_REL    "cognition/modules/codeindex/src/codeindex_group.c"
 #define GRPPURPOSE_OK_FIXTURE_REL  "test-tmp/_group_purpose_fixture_ok_tmp.c"
 #define GRPPURPOSE_BAD_FIXTURE_REL "test-tmp/_group_purpose_fixture_bad_tmp.c"
-/* Gate P1 (docs/work/palace-design.md §3) — check-file-purpose. The gate scans
- * an ISOLATED fixture tree under test-tmp/ (via ZCL_FILE_PURPOSE_ROOT), never
- * the real codebase; the two canned fixtures live in tests/harness/fixtures/. */
+/* Gate P1 (docs/work/palace-design.md §3) — check-file-purpose. Scans an
+ * isolated fixture tree under test-tmp/ (ZCL_FILE_PURPOSE_ROOT); the two
+ * canned fixtures live in tests/harness/fixtures/. */
 #define FILEPURPOSE_SCRIPT_REL      "tools/lint/check_file_purpose.sh"
 #define FILEPURPOSE_ROOT_REL        "test-tmp/_file_purpose_root_tmp"
 #define FILEPURPOSE_PLANT_REL       "test-tmp/_file_purpose_root_tmp/engine/" \
                                     "services/src/_file_purpose_lint_fixture_tmp.c"
 #define FILEPURPOSE_BAD_FIXTURE_REL "tests/harness/fixtures/file_purpose_missing_fixture.c"
 #define FILEPURPOSE_OK_FIXTURE_REL  "tests/harness/fixtures/file_purpose_present_fixture.c"
-/* Gate P3 (docs/work/palace-design.md §3) — check-no-orphan-placement. The
- * gate judges an EXPLICIT path list (via ZCL_ORPHAN_PLACEMENT_FILES) instead
- * of git ls-files; placement is decided from the path alone, so no file needs
- * to exist on disk. */
+/* Gate P3 (docs/work/palace-design.md §3) — check-no-orphan-placement. Judges
+ * an explicit path list (ZCL_ORPHAN_PLACEMENT_FILES) from the path alone, so
+ * no file needs to exist on disk. */
 #define ORPHAN_SCRIPT_REL "tools/lint/check_no_orphan_placement.sh"
 #define LOG_MACRO_RETURN_SCRIPT_REL \
     "tools/lint/check_log_macro_return_type.sh"
 #define LOG_MACRO_RETURN_FIXTURE_DST \
     "engine/services/src/_log_macro_return_type_fixture_tmp.c"
 #define E12_SCRIPT_REL   "tools/lint/check_honest_witness.sh"
-/* A condition .c with a PURE-INVERSE witness (the canonical Law-7 lie:
- * "return !detect_x()"), planted under engine/conditions/src so the gate's
- * scan scope sees it. */
+/* A condition .c with a pure-inverse witness ("return !detect_x()") planted
+ * under engine/conditions/src. */
 #define E12_FIXTURE_DST  "engine/conditions/src/_e12_honest_witness_fixture_tmp.c"
-/* Gate #21 background-worker lock-in: the widened check_supervisor_domain.sh
- * also scans the boot worker file (engine/composition/src/boot_background_workers.c) and
- * fails any spawn (pthread_create / thread_registry_spawn) not paired with a
- * supervisor_register_in_domain. The fixtures are planted under test-tmp/ and
- * fed to the gate via ZCL_SUPERVISOR_WORKER_FILES so the assertion does not
- * depend on the live worker file's state. */
+/* Gate #21 background-worker lock-in: check_supervisor_domain.sh also scans
+ * boot_background_workers.c and fails any spawn (pthread_create /
+ * thread_registry_spawn) not paired with a supervisor_register_in_domain.
+ * Fixtures under test-tmp/ are fed via ZCL_SUPERVISOR_WORKER_FILES. */
 #define SUPDOM_SCRIPT_REL     "tools/lint/check_supervisor_domain.sh"
-/* A worker that spawns a thread but registers NO domain contract — the lie
- * the widened gate must catch (an unsupervised background worker). */
+/* A worker that spawns a thread with no domain contract (an unsupervised
+ * background worker); the widened gate must catch it. */
 #define SUPDOM_BAD_WORKER_REL "test-tmp/_supdom_unsupervised_worker_fixture_tmp.c"
 /* The same worker WITH a supervisor_register_in_domain pairing — passes. */
 #define SUPDOM_OK_WORKER_REL  "test-tmp/_supdom_supervised_worker_fixture_tmp.c"
@@ -449,10 +415,9 @@ int t_no_writer_below_sealed_frontier(void);
 int t_e9_operator_needed_sink(void);
 int t_systemd_memory_budget(void);
 int t_quality_job_guard(void);
-/* Returned by run_gate_script_watched when the script was killed for making
- * no progress. Deliberately not 1 and not any exit status a gate script can
- * produce: a HANG and a failed assertion are different findings, and a caller
- * must be able to say which one it saw. */
+/* Returned by run_gate_script_watched when the script was killed for making no
+ * progress; distinct from any exit status a gate script produces, so a hang is
+ * distinguishable from a failed assertion. */
 #define GATE_SCRIPT_WEDGED (-2)
 void lint_gate_loadavg(char *out, size_t outsz);
 int run_gate_script_watched(const char *script_rel, int max_silent_secs,

@@ -89,11 +89,9 @@ static int test_explain_sync_names_dominant_blocker(void)
     return failures;
 }
 
-/* `explain sync` must show the stage cursors AND say which of them are above
- * the verified height. It showed neither: the block tested the frontier's
- * stage_cursors for JSON_OBJ while reducer_frontier emits an ARRAY, so the
- * whole section was silently dropped from the plain-language surface. Third
- * case: a node that sends no depth field must read "UNAVAILABLE", never as an
+/* `explain sync` shows the stage cursors and says which are above the
+ * verified height (reducer_frontier emits stage_cursors as an ARRAY). Third
+ * case: a node that sends no depth field reads "UNAVAILABLE", never an
  * all-clear. */
 static int test_explain_sync_marks_run_ahead_cursors(void)
 {
@@ -335,9 +333,8 @@ static int test_producer_status_synthetic(void)
         ASSERT(db != NULL);
         ASSERT(stage_set_named_cursor(db, "utxo_apply", 12345));
         ASSERT(stage_set_named_cursor(db, "tip_finalize", 12300));
-        /* Capture one clock value. Two separate SQLite statements using
-         * strftime('now') can straddle a second boundary under full-suite
-         * load, turning the exact 60-second fixture into 59 or 61 seconds. */
+        /* Capture one clock value: two strftime('now') statements can straddle
+         * a second boundary under load. */
         int64_t now = (int64_t)platform_time_wall_time_t();
         char seed_sql[1024];
         int seed_n = snprintf(seed_sql, sizeof(seed_sql),
@@ -1189,10 +1186,8 @@ static int test_unknown_command_diagnostic_has_typed_shape(void)
         const struct zcl_command_registry *reg = zcl_command_catalog();
         ASSERT(reg != NULL);
 
-        /* "stat" substring-matches the real "core.status" path/tags in the
-         * existing (non-fuzzy) command-search index, so a did-you-mean line
-         * is expected — proves the wiring, not a claim about typo-distance
-         * quality (we reuse the index as-is, no new fuzzy matcher). */
+        /* "stat" substring-matches "core.status" in the existing command-search
+         * index, so a did-you-mean line is expected. */
         char buf[1024];
         size_t n = zcl_native_render_unknown_command(reg, "stat", buf,
                                                       sizeof(buf));

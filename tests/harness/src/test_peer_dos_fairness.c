@@ -482,13 +482,10 @@ int test_peer_dos_fairness(void)
     }
 
     /* ================================================================
-     * 5. THE SAME DEFECT AT THE FRAMING LAYER. net_message_read_data
-     *    refuses a frame for three different reasons and used to tag all
-     *    three as the peer's bad bytes. Two of them are facts about THIS
-     *    machine: the recv budget is process-wide (so other connections,
-     *    or simply a busy box, can fill it) and realloc answers to system
-     *    memory pressure. A node under load was handing INVALID_PAYLOAD
-     *    to whichever honest peers happened to be mid-message.
+     * 5. FRAMING LAYER. net_message_read_data refuses a frame for three
+     *    reasons; two are facts about THIS machine (the process-wide recv
+     *    budget, realloc under memory pressure) and must not be tagged as
+     *    the peer's bad bytes.
      *
      *    Both directions again: legal-but-unaffordable must not score,
      *    over-the-protocol-cap must still score.
@@ -572,24 +569,17 @@ int test_peer_dos_fairness(void)
     }
 
     /* ================================================================
-     * 6. SLOWNESS IS NOT MISBEHAVIOUR. The header-span scheduler used to
-     *    charge PEER_OFFENCE_TIMEOUT to any peer that failed to finish an
-     *    assigned span within a 30s wall-clock deadline. That deadline is
-     *    an assumption about the peer's disk and link, not a protocol
-     *    rule — an honest node on a 7200rpm disk under 2 MB/s misses it
-     *    routinely, and so does a fast peer whose reply we were too busy
-     *    to read. Scoring it made ban-score a measure of hardware.
-     *
-     *    The remedy that matters (reclaim the span, give the work to
-     *    someone else) is a resource action and is unchanged. What must
-     *    not happen is score.
+     * 6. SLOWNESS IS NOT MISBEHAVIOUR. A missed wall-clock span deadline is an
+     *    assumption about the peer's disk and link, not a protocol rule, so
+     *    the scheduler reclaims the span (a resource action) but must not
+     *    score the peer.
      * ================================================================ */
     printf("no production path maps a wall-clock deadline onto ban-score... ");
     {
         /* Honest about its own reach: driving the real span scheduler to a
          * timeout needs a live msg_processor, a claimed span and a wound-on
          * clock, which this fixture does not build. What IS checkable here,
-         * and is the property that actually regressed, is a source
+         * is a source
          * invariant: no production file may pair PEER_OFFENCE_TIMEOUT with
          * peer_scoring_record. If someone reintroduces "you were slow, have
          * some ban-score" anywhere, this fails.

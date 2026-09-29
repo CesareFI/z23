@@ -1,30 +1,28 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * test_package_capability_claim — the receiver-side capability re-derivation
+ * test_package_capability_claim: the receiver-side capability re-derivation
  * (contexts/commons/modules/vcs/src/package_verify_capabilities.c).
  *
- * WHAT THIS GROUP IS FOR. Every zcode-package.json carries a "capabilities"
- * array, and tools/lint/check_package_capabilities.sh keeps it exactly equal
- * to what the shipped sources reach — in THIS tree, against THIS tree's
+ * Every zcode-package.json carries a "capabilities" array, and
+ * tools/lint/check_package_capabilities.sh keeps it equal to what the
+ * shipped sources reach in THIS tree against THIS tree's
  * config/module_capabilities.def. A package that travels to a stranger
- * carries the array and none of the derivation. The unit under test is what
- * lets the stranger derive it again from the package bytes plus a table the
- * stranger holds, and the cases below are the four the design lives or dies
- * on:
+ * carries the array and none of the derivation; the unit under test lets the
+ * stranger derive it again from the package bytes plus a table the stranger
+ * holds. Cases:
  *
- *   REFUSED   — sources call connect() while the manifest claims [].
- *   VERIFIED  — an inert package with [] is cleared, so the suite cannot be
- *               satisfied by an implementation that simply always refuses.
- *   UNPROVEN  — no table is not "reaches nothing". Never VERIFIED.
- *   SUBSTITUTED TABLE — detected two independent ways: an out-of-band digest
+ *   REFUSED   - sources call connect() while the manifest claims [].
+ *   VERIFIED  - an inert package with [] is cleared, so an implementation
+ *               that always refuses cannot satisfy the suite.
+ *   UNPROVEN  - no table is not "reaches nothing". Never VERIFIED.
+ *   SUBSTITUTED TABLE - detected two independent ways: an out-of-band digest
  *               pin, and the anchor floor compiled into the receiver.
  *
- * Both ENDS of every list are pinned. A validator that cannot see the last
- * element of a list fails open for its entire life, and this repository has
- * already been bitten by exactly that (`printf | while read` dropping the
- * final field, same day). So a reach in the LAST shipped file and a reach in
- * a NON-LAST one are separate cases, as are a claim entry in the last and a
- * non-last array position. */
+ * Both ENDS of every list are pinned: a validator that cannot see the last
+ * element of a list fails open (e.g. `printf | while read` dropping the
+ * final field). A reach in the LAST shipped file and in a NON-LAST one are
+ * separate cases, as are a claim entry in the last and a non-last array
+ * position. */
 
 #include "test/test_core.h"
 
@@ -48,10 +46,9 @@
         }                                                        \
     } while (0)
 
-/* The real table this tree ships. The unit reads it as data, so the test
- * reads it as data too — a change to the row shape that this reader can no
- * longer parse must turn this group red rather than quietly halve the
- * vocabulary every package is graded against. */
+/* The real table this tree ships. The unit reads it as data, and so does
+ * the test: a row shape this reader can no longer parse must turn the group
+ * red. */
 #define PCC_REAL_TABLE "engine/composition/capability_symbols.def"
 
 /* ── fixture plumbing ────────────────────────────────────────────── */
@@ -93,8 +90,8 @@ static bool pcc_write(const char *dir, const char *rel, const char *body)
 
 /* A sound minimal table: every anchor the receiver floors on, a handful of
  * other classified rows, and enough CAP_HARMLESS filler to clear the
- * hollowness floor. Written by the test rather than copied from the tree so
- * that the substitution cases can perturb exactly one row. */
+ * hollowness floor. Written by the test so the substitution cases can
+ * perturb exactly one row. */
 static bool pcc_write_table(const char *path, const char *connect_class,
                             const char *extra_rows)
 {
@@ -114,9 +111,8 @@ static bool pcc_write_table(const char *path, const char *connect_class,
     fprintf(f, "ZCL_CAPABILITY_SYMBOL(\"setuid\", CAP_PRIVILEGE, \"\")\n");
     fprintf(f, "ZCL_CAPABILITY_SYMBOL(\"fopen\", CAP_FS_READ, \"\")\n");
     fprintf(f, "ZCL_CAPABILITY_SYMBOL(\"fwrite\", CAP_FS_WRITE, \"\")\n");
-    /* A row whose class sits on the NEXT line, because seven rows in the
-     * real table do exactly that and a reader that skipped only spaces and
-     * tabs dropped all seven silently. */
+    /* A row whose class sits on the NEXT line, as seven rows in the real
+     * table do; a reader that skipped only spaces and tabs dropped them. */
     fprintf(f, "ZCL_CAPABILITY_SYMBOL(\"a_very_long_wrapped_symbol_name\",\n"
                "    CAP_FS_READ, \"\")\n");
     for (int i = 0; i < 80; i++)
@@ -399,9 +395,8 @@ static int t_unproven_unreadable_source(void)
     struct pcc_case c;
     if (!pcc_case_open(&c, "unreadable")) return 1;
 
-    /* The manifest names a file the package does not carry. Skipping it
-     * would make a manifest that names a file it does not ship look like a
-     * smaller, cleaner package. */
+    /* The manifest names a file the package does not carry: skipping it
+     * would make the package look smaller and cleaner. */
     bool built = pcc_write_table(c.table, "CAP_NETWORK", NULL) &&
                  pcc_write(c.dir, "src/present.c", "int a(void){return 0;}\n") &&
                  pcc_write_manifest(c.dir, "",
@@ -632,12 +627,11 @@ static int t_scanner_exclusions(void)
     struct pcc_case c;
     if (!pcc_case_open(&c, "exclusions")) return 1;
 
-    /* The fixture is scanned as TEXT and never compiled, which is what lets
-     * `struct t` stay undefined here: the point is the token stream the
-     * receiver walks, not a translation unit. Defining the struct would add
-     * a member DECLARATION named connect, and a declaration is NOT excluded
-     * — the same deliberate over-approximation as a local variable named
-     * socket. This case pins what IS excluded, and nothing more. */
+    /* The fixture is scanned as TEXT and never compiled, so `struct t` stays
+     * undefined: the point is the token stream the receiver walks. A member
+     * DECLARATION named connect is NOT excluded (deliberate
+     * over-approximation, like a local variable named socket). This case
+     * pins what IS excluded, and nothing more. */
     bool built =
         pcc_write_table(c.table, "CAP_NETWORK", NULL) &&
         pcc_write(c.dir, "src/quiet.c",
@@ -727,10 +721,9 @@ static int t_real_table(void)
     struct vcs_pkgcap_report r;
     pcc_run(&c, PCC_REAL_TABLE, NULL, &r);
 
-    /* The unit must be able to read the tree's own table. A red here means
-     * the row shape moved and every package would be graded against a
-     * vocabulary this reader only half understood — which is why the unit
-     * refuses rather than grades when a row does not parse. */
+    /* The unit must be able to read the tree's own table; a red here means
+     * the row shape moved, and the unit refuses rather than grades when a
+     * row does not parse. */
     PCC_CHECK("H: the real capability table is readable and sound",
               r.rule != VCS_PKGCAP_RULE_NO_TABLE &&
                   r.rule != VCS_PKGCAP_RULE_TABLE_HOLLOW &&
