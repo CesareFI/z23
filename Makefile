@@ -960,6 +960,7 @@ MUTATION_LIB_SRCS = tools/dev/mutation_ops.c tools/dev/mutation_run.c
 # the contract's framing, so they link wherever verify_attest links. The
 # root launcher and compiler worker in tools/verify compile them directly.
 VERIFY_CONTRACT_SRCS = tools/verify/fixed_result_contract.c \
+	tools/verify/fixed_result_source.c \
 	tools/verify/fixed_result_key_v2.c
 # The fixed-result signer and root publisher cores. Their CLIs are standalone
 # binaries built from a signed commit (docs/work/verifier-install-packet.md);

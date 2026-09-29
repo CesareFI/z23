@@ -7,6 +7,7 @@
 #include "verify_receiver_internal.h"
 
 #include "verify/fixed_result_contract.h"
+#include "verify/fixed_result_source.h"
 
 #include "base/hex.h"
 #include "base/safe_alloc.h"
@@ -27,9 +28,6 @@
 
 #define VR_PP_DEADLINE_US (30ll * 1000000ll)
 #define VR_INPUTS_MAX 4096u
-#define VR_SOURCE_FILE_MAX (4u * 1024u * 1024u)
-#define VR_SOURCE_TOTAL_MAX (64u * 1024u * 1024u)
-#define VR_DEPTH_MAX 32u
 
 /* ── Bounded files ─────────────────────────────────────────────────────── */
 
@@ -412,61 +410,15 @@ const char *zcl_verify_receiver_depfile_inputs(const uint8_t *dep,
 
 /* ── Portable source content root ──────────────────────────────────────── */
 
-/* Open `rel` beneath `root_fd` without following any link. */
-int vr_open_beneath(int root_fd, const char *rel)
-{
-    char path[PATH_MAX];
-    if (snprintf(path, sizeof(path), "%s", rel) >= (int)sizeof(path))
-        return -1;
-    int dir = dup(root_fd);
-    char *save = NULL, *part = strtok_r(path, "/", &save);
-    unsigned depth = 0;
-    while (dir >= 0 && part && depth++ < VR_DEPTH_MAX) {
-        char *next = strtok_r(NULL, "/", &save);
-        int flags = O_RDONLY | O_NOFOLLOW | O_CLOEXEC |
-                    (next ? O_DIRECTORY : O_NONBLOCK);
-        int child = openat(dir, part, flags);
-        (void)close(dir);
-        if (!next) return child;
-        dir = child;
-        part = next;
-    }
-    if (dir >= 0) (void)close(dir);
-    return -1;
-}
-
+/* The one reader and definition the launcher's pin also uses. */
 const char *zcl_verify_receiver_source_content(int root_fd,
                                                char *const *paths,
                                                size_t count,
                                                uint8_t out[32])
 {
-    struct sha3_256_ctx h;
-    struct zcl_fr_writer w;
-    size_t total = 0;
     if (root_fd < 0 || !paths || count == 0) return "receiver_inputs_missing";
-    sha3_256_init(&h);
-    zcl_fr_writer_hash(&w, &h);
-    zcl_fr_put(&w, ZCL_VERIFY_RECEIVER_SOURCE_CONTENT_DOMAIN,
-               sizeof(ZCL_VERIFY_RECEIVER_SOURCE_CONTENT_DOMAIN) - 1u);
-    for (size_t i = 0; i < count; i++) {
-        if (!vr_relative_ok(paths[i]) ||
-            (i > 0 && strcmp(paths[i - 1], paths[i]) >= 0))
-            return "receiver_input_path_unsafe";
-        int fd = vr_open_beneath(root_fd, paths[i]);
-        if (fd < 0) return "receiver_input_unreadable";
-        struct vr_bytes b = {0};
-        const char *why = vr_read_fd(fd, VR_SOURCE_FILE_MAX, false, &b);
-        (void)close(fd);
-        if (!why && b.n > VR_SOURCE_TOTAL_MAX - total) why = "receiver_file_limit";
-        if (why) { free(b.p); return why; }
-        total += b.n;
-        zcl_fr_put_text(&w, "path", paths[i]);
-        zcl_fr_put(&w, "bytes", 5u);
-        zcl_fr_put(&w, b.p, b.n);
-        free(b.p);
-    }
-    sha3_256_finalize(&h, out);
-    return w.ok ? NULL : "receiver_out_of_memory";
+    return zcl_fr_source_content_at(root_fd, (const char *const *)paths, count,
+                                    out);
 }
 
 const char *vr_read_beneath(int root_fd, const char *rel, size_t limit,
@@ -474,7 +426,7 @@ const char *vr_read_beneath(int root_fd, const char *rel, size_t limit,
 {
     out->p = NULL;
     out->n = 0;
-    int fd = vr_open_beneath(root_fd, rel);
+    int fd = zcl_fr_open_beneath(root_fd, rel);
     if (fd < 0) return "receiver_file_missing";
     const char *why = vr_read_fd(fd, limit, false, out);
     (void)close(fd);

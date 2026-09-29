@@ -68,12 +68,20 @@ three images during preflight. The administrator verifies these values and
 the reviewed executable bytes before staging pins. A writable source
 checkout, an unreviewed binary, or a pin supplied by the signer is not a
 root of trust.
-The receiver's portable source identity is the `content_sha3` the same
-helper prints; it is pinned as `source_content_sha3`, and preflight requires
-the installed source image to print both pinned values. The receiver
-independently rechecks current source, headers, search namespace, and
-preprocessed bytes. It must not equate a developer-owned checkout's UID-bound
-tree hash to the root-owned installed image hash. `check_image_sha3` must
+The receiver's portable source identity is not the helper's `content_sha3`,
+which includes modes. It is the source content root v2 of the fixed
+`result.c` chain, as defined in `docs/work/verifier-contract-v2.md`
+section 3a.
+
+- `z23-fixed-result-launcher source-content <source image>` prints it.
+- It is pinned as `source_content_sha3`.
+- Preflight recomputes it over the installed image with the same reader
+  the receiver uses.
+
+The receiver independently rechecks the current source, headers, search
+namespace and preprocessed bytes. It must not equate a developer-owned
+checkout's UID-bound tree hash to the root-owned installed image hash.
+`check_image_sha3` must
 include an independently pinned current-main proof executor and publisher;
 a candidate-built `zcc` cannot establish admission authority.
 

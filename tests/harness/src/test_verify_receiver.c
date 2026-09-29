@@ -18,6 +18,7 @@ int test_verify_receiver(void) { return 0; }
 #include "verify_receiver_internal.h"
 #include "verify_store.h"
 #include "verify/fixed_result_contract.h"
+#include "verify/fixed_result_source.h"
 #include "test/verify_contract_fixture.h"
 
 #include <errno.h>
@@ -944,6 +945,77 @@ static bool vrt_restore(const struct vrt_fx *f, const char *rel,
     return ok;
 }
 
+/* ── 1b. the launcher's pin is the receiver's measurement ─────────────── */
+
+static bool vrt_chain_root(const char *dir, uint8_t out[32])
+{
+    int fd = open(dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    const char *why = fd >= 0 ? zcl_fr_source_chain_root(fd, out) : "open";
+    if (fd >= 0) (void)close(fd);
+    if (why) fprintf(stderr, "verify receiver chain root %s: %s\n", dir, why);
+    return why == NULL;
+}
+
+static int vrt_test_pin_equals_receiver(struct vrt_fx *f)
+{
+    int failures = 0;
+    TEST("verify receiver: the launcher's source_content pin equals the "
+         "receiver's root for the real result.c chain") {
+        uint8_t receiver[32], checkout[32], donor[32], generation[32];
+        uint8_t moded[32];
+        char path[PATH_MAX];
+        ASSERT(f->input_count == ZCL_FR_SOURCE_CHAIN_COUNT);
+        for (size_t i = 0; i < ZCL_FR_SOURCE_CHAIN_COUNT; i++)
+            ASSERT(strcmp(f->inputs[i], zcl_fr_source_chain[i]) == 0);
+        int gen_fd = open(f->gen, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+        ASSERT(gen_fd >= 0);
+        const char *why = zcl_verify_receiver_source_content(
+            gen_fd, f->inputs, f->input_count, receiver);
+        (void)close(gen_fd);
+        ASSERT(why == NULL);
+        ASSERT(vrt_chain_root(f->gen, generation));
+        ASSERT(vrt_chain_root(f->cwd, checkout));
+        ASSERT(vrt_chain_root(f->donor, donor));
+        ASSERT(memcmp(receiver, generation, 32u) == 0);
+        ASSERT(memcmp(receiver, checkout, 32u) == 0);
+        ASSERT(memcmp(receiver, donor, 32u) == 0);
+        ASSERT(memcmp(receiver, f->pins.source_content, 32u) == 0);
+        /* Owner and mode are not part of it; one byte is. */
+        ASSERT(vrt_path(path, f->gen, VRT_SOURCE));
+        ASSERT(chmod(path, 0600) == 0);
+        ASSERT(vrt_chain_root(f->gen, moded));
+        ASSERT(chmod(path, 0644) == 0);
+        ASSERT(memcmp(moded, receiver, 32u) == 0);
+        struct vr_bytes saved = {0};
+        ASSERT(vrt_edit(f, VRT_SOURCE, " ", &saved));
+        ASSERT(vrt_chain_root(f->gen, moded));
+        ASSERT(vrt_restore(f, VRT_SOURCE, &saved));
+        ASSERT(memcmp(moded, receiver, 32u) != 0);
+
+        /* The definition refuses what it cannot name uniquely. */
+        static const uint8_t x[] = "x";
+        const uint8_t *bytes[2] = {x, x};
+        const size_t lens[2] = {1u, 1u};
+        const char *order[2] = {"b", "a"}, *dup[2] = {"a", "a"};
+        const char *dot[1] = {"a/../b"}, *abs_path[1] = {"/a"};
+        const char *empty[1] = {"a//b"};
+        ASSERT(!zcl_fr_source_content_v2(order, bytes, lens, 2u, moded, &why));
+        ASSERT(strcmp(why, ZCL_FR_WHY_FIELD_ORDER) == 0);
+        ASSERT(!zcl_fr_source_content_v2(dup, bytes, lens, 2u, moded, &why));
+        ASSERT(strcmp(why, ZCL_FR_WHY_FIELD_ORDER) == 0);
+        ASSERT(!zcl_fr_source_content_v2(dot, bytes, lens, 1u, moded, &why));
+        ASSERT(strcmp(why, ZCL_FR_WHY_FIELD_MALFORMED) == 0);
+        ASSERT(!zcl_fr_source_content_v2(abs_path, bytes, lens, 1u, moded, &why));
+        ASSERT(strcmp(why, ZCL_FR_WHY_FIELD_MALFORMED) == 0);
+        ASSERT(!zcl_fr_source_content_v2(empty, bytes, lens, 1u, moded, &why));
+        ASSERT(strcmp(why, ZCL_FR_WHY_FIELD_MALFORMED) == 0);
+        ASSERT(!zcl_fr_source_content_v2(order, bytes, lens, 0u, moded, &why));
+        ASSERT(strcmp(why, ZCL_FR_WHY_ARGUMENTS) == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static const char *vrt_header(const struct vrt_fx *f)
 {
     for (size_t i = 0; i < f->input_count; i++)
@@ -1229,6 +1301,7 @@ int test_verify_receiver(void)
         PASS();
     } _test_next:;
     if (!failures) failures += vrt_test_hit(f);
+    if (!failures) failures += vrt_test_pin_equals_receiver(f);
     if (!failures) failures += vrt_test_cold_trust(f);
     if (!failures) failures += vrt_test_cold_record(f);
     if (!failures) failures += vrt_test_cold_source(f);

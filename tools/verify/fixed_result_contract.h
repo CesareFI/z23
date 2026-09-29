@@ -303,5 +303,21 @@ bool zcl_fr_failure_encode(const struct zcl_fr_failure *failure,
                            const char **why);
 bool zcl_fr_failure_parse(const uint8_t *bytes, size_t len,
                           struct zcl_fr_failure *out, const char **why);
+/* ── Source content root v2 ───────────────────────────────────────────── */
+
+/* The portable source identity pinned as `source_content_sha3`: SHA3-256
+ * of F(ZCL_FR_DOMAIN_SOURCE_CONTENT) then, for each file,
+ * F("path") F(relative path) F("bytes") F(file bytes). Paths must be
+ * strictly ascending by strcmp (so sorted and unique), relative, and free
+ * of empty, "." and ".." components. Owner, mode and file type are not
+ * part of it. The receiver hashes the files its own -E read; the launcher
+ * hashes the fixed result.c chain in the installed source image.
+ * Refusals: contract_arguments_invalid, contract_field_malformed,
+ * contract_field_order. */
+#define ZCL_FR_DOMAIN_SOURCE_CONTENT "z23verify.fixed_result.source_content.v2"
+bool zcl_fr_source_content_v2(const char *const *paths,
+                              const uint8_t *const *bytes,
+                              const size_t *lens, size_t count,
+                              uint8_t out[32], const char **why);
 
 #endif

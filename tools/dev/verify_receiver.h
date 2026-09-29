@@ -48,8 +48,6 @@
     "build/test-obj/epochs/" \
     "0000000000000000000000000000000000000000000000000000000000000000" \
     "/platform/modules/base/src/result.o"
-#define ZCL_VERIFY_RECEIVER_SOURCE_CONTENT_DOMAIN \
-    "z23verify.fixed_result.source_content.v2"
 #define ZCL_VERIFY_RECEIVER_PROFILE_PATH "/etc/z23verify/fixed_result_fast.args"
 #define ZCL_VERIFY_RECEIVER_COMPILER "/usr/bin/cc"
 
@@ -85,11 +83,9 @@ struct zcl_verify_receiver {
     unsigned compile_launches; /* compiler launches zcc logged in the step */
 };
 
-/* The receiver's portable source identity: SHA3-256 of
- * F(ZCL_VERIFY_RECEIVER_SOURCE_CONTENT_DOMAIN) then, for each path in
- * sorted order, F("path") F(relative path) F("bytes") F(file bytes).
- * Paths are relative, contain no "." or ".." component, and are opened
- * beneath `root_fd` one component at a time without following links.
+/* The receiver's portable source identity over the files its own -E read:
+ * the source content root v2 (zcl_fr_source_content_v2), measured by the
+ * same reader the launcher uses for its pin (zcl_fr_source_content_at).
  * Owner and mode are not part of it, so a 0600 proof generation and a
  * root-owned 0444 image of the same bytes agree. Returns NULL or a token. */
 const char *zcl_verify_receiver_source_content(int root_fd,

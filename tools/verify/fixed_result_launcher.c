@@ -7,6 +7,7 @@
 #include "platform/os_proc.h"
 #include "sha3/sha3.h"
 #include "verify/fixed_result_contract.h"
+#include "verify/fixed_result_source.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -234,12 +235,12 @@ static bool wait_tree(pid_t pid, bool captured)
            WEXITSTATUS(status) == 0;
 }
 
-/* The tree checker prints "tree_sha3=<64> content_sha3=<64> ...". The tree
- * root is the image pin; the content root, when asked for, is the
- * portable source_content pin the receiver measures independently. */
+/* The tree checker prints "tree_sha3=<64> content_sha3=<64> ...". Its tree
+ * root is the image pin. The source_content pin is not its content root:
+ * it is the source content root v2 over the fixed chain, measured below by
+ * the same reader and definition the proof receiver uses. */
 static bool tree_line_matches(const char *output, size_t used,
-                              const uint8_t tree[32],
-                              const uint8_t *content)
+                              const uint8_t tree[32])
 {
     static const char t[] = "tree_sha3=", c[] = " content_sha3=";
     const size_t t_len = sizeof(t) - 1u, c_len = sizeof(c) - 1u;
@@ -250,14 +251,10 @@ static bool tree_line_matches(const char *output, size_t used,
         output[t_len + 64u + c_len + 64u] != ' ')
         return false;
     zcl_hex_encode(tree, 32u, want);
-    if (memcmp(output + t_len, want, 64u) != 0) return false;
-    if (!content) return true;
-    zcl_hex_encode(content, 32u, want);
-    return memcmp(output + t_len + 64u + c_len, want, 64u) == 0;
+    return memcmp(output + t_len, want, 64u) == 0;
 }
 
-static bool tree_root_matches(const char *path, const uint8_t tree[32],
-                              const uint8_t *content)
+static bool tree_root_matches(const char *path, const uint8_t tree[32])
 {
     if (!trusted_path(path, 0, true)) return false;
     int pipefd[2];
@@ -272,7 +269,17 @@ static bool tree_root_matches(const char *path, const uint8_t tree[32],
     close(pipefd[0]);
     if (!wait_tree(pid, ok)) return false;
     output[used] = '\0';
-    return tree_line_matches(output, used, tree, content);
+    return tree_line_matches(output, used, tree);
+}
+
+/* The source content root v2 of the fixed chain beneath `dir`. */
+static const char *source_content_of(const char *dir, uint8_t out[32])
+{
+    int fd = open(dir, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    if (fd < 0) return "source_content_unreadable";
+    const char *why = zcl_fr_source_chain_root(fd, out);
+    close(fd);
+    return why;
 }
 
 /* Pins v2 (fixed_result_contract.h): a v1 text pins file, a strict
@@ -308,18 +315,37 @@ static const char *check_files(const struct zcl_fixed_result_v2_roots *pins)
 
 static const char *check_images(const struct zcl_fixed_result_v2_roots *pins)
 {
-    if (!tree_root_matches(SOURCE_IMAGE, pins->source_image,
-                           pins->source_content))
+    uint8_t content[32];
+    if (!tree_root_matches(SOURCE_IMAGE, pins->source_image))
         return "source_image_mismatch";
-    if (!tree_root_matches(TOOL_IMAGE, pins->tool_image, NULL))
+    if (source_content_of(SOURCE_IMAGE, content) != NULL ||
+        memcmp(content, pins->source_content, 32u) != 0)
+        return "source_content_mismatch";
+    if (!tree_root_matches(TOOL_IMAGE, pins->tool_image))
         return "tool_image_mismatch";
-    if (!tree_root_matches(CHECK_IMAGE, pins->check_image, NULL))
+    if (!tree_root_matches(CHECK_IMAGE, pins->check_image))
         return "check_image_mismatch";
     return NULL;
 }
 
+/* source-content DIR : the source_content pin value (the first root given
+ * to pins-encode) for the source image at DIR, as 64 lowercase hex. Needs
+ * no privilege; preflight measures the installed image the same way. */
+static int source_content(int count, char **dir)
+{
+    uint8_t root[32];
+    char hex[65];
+    if (count != 1) return refuse("request_shape_unsupported");
+    const char *why = source_content_of(dir[0], root);
+    if (why) return refuse(why);
+    zcl_hex_encode(root, 32u, hex);
+    return printf("%s\n", hex) == 65 && fflush(stdout) == 0
+               ? 0 : refuse("source_content_write_failed");
+}
+
 /* pins-encode HEX... : the twelve roots in pins v2 order, written to
- * stdout as a pins v2 file for root to stage. Needs no privilege and
+ * stdout as a pins v2 file for root to stage. The first, source_content,
+ * is what `source-content <source image>` prints. Needs no privilege and
  * trusts nothing; preflight re-checks every root against the files. */
 static int pins_encode(int count, char **hex)
 {
@@ -341,6 +367,8 @@ static int pins_encode(int count, char **hex)
 
 int main(int argc, char **argv)
 {
+    if (argc >= 2 && strcmp(argv[1], "source-content") == 0)
+        return source_content(argc - 2, argv + 2);
     if (argc >= 2 && strcmp(argv[1], "pins-encode") == 0)
         return pins_encode(argc - 2, argv + 2);
     if (argc != 2 || strcmp(argv[1], "preflight") != 0)

@@ -15,7 +15,8 @@ trap 'rm -rf -- "$work"' EXIT
 cc_flags=(-std=c23 -Wall -Wextra -Werror -pedantic -Itools
           -Iplatform/modules/sha3/include -Iplatform/modules/base/include
           -Iplatform/modules/platform/include)
-common=(tools/verify/fixed_result_contract.c platform/modules/sha3/src/sha3.c
+common=(tools/verify/fixed_result_contract.c tools/verify/fixed_result_source.c
+        platform/modules/base/src/safe_alloc.c platform/modules/sha3/src/sha3.c
         platform/modules/platform/src/os_proc.c)
 /usr/bin/cc "${cc_flags[@]}" tools/verify/fixed_result_launcher.c \
     "${common[@]}" -o "$work/launcher"
@@ -125,7 +126,28 @@ if platform/deploy/fixed-result-launcher-install.sh install \
 fi
 grep -Fx 'fixed_result_install_refuse=root_required' "$work/err" >/dev/null ||
     fail same_uid_install_wrong_refusal
+# The source_content pin: the v2 root of the fixed chain, independent of
+# owner and mode, and refused through a link.
+content=$("$work/launcher" source-content "$repo") ||
+    fail source_content_refused
+[[ $content =~ ^[0-9a-f]{64}$ ]] || fail source_content_shape
+for rel in platform/modules/base/include/base/format_attribute.h \
+           platform/modules/base/include/base/result.h \
+           platform/modules/base/src/result.c; do
+    mkdir -p "$work/src/${rel%/*}"
+    cp -- "$rel" "$work/src/$rel"
+    chmod 0600 "$work/src/$rel"
+done
+[[ $("$work/launcher" source-content "$work/src") == "$content" ]] ||
+    fail source_content_mode_dependent
+mv -- "$work/src/platform/modules/base/include/base/result.h" "$work/result.h"
+ln -s -- "$work/result.h" "$work/src/platform/modules/base/include/base/result.h"
+if "$work/launcher" source-content "$work/src" > "$work/out" 2> "$work/err"
+then fail source_content_followed_link; fi
+grep -Fx 'fixed_result_launcher_refuse=source_content_unreadable' \
+    "$work/err" >/dev/null || fail source_content_link_wrong_refusal
 printf 'pins_v2_parser=GREEN forged_label=RED trailing_bytes=RED '
 printf 'truncated=RED v1_pins=RED strict_profile=RED env_root=RED '
-printf 'same_uid=REFUSE compiler_invocations=3 executed_launcher=5 '
-printf 'installer_refusals=1 proof_launches_avoided=0 attest_eligible=0\n'
+printf 'same_uid=REFUSE compiler_invocations=3 executed_launcher=8 '
+printf 'installer_refusals=1 source_content=GREEN source_content_link=RED '
+printf 'proof_launches_avoided=0 attest_eligible=0\n'

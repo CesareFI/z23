@@ -1129,4 +1129,45 @@ bool zcl_fr_failure_parse(const uint8_t *bytes, size_t len,
     }
     if (reason) memset(out, 0, sizeof(*out));
     return fr_finish(reason, 0u, NULL, why);
+/* ── Source content root v2 ───────────────────────────────────────────── */
+
+/* Relative, non-empty, no trailing slash, no empty, "." or ".." component. */
+static bool fr_source_path_ok(const char *p)
+{
+    size_t n = p ? strlen(p) : 0u;
+    if (n == 0u || p[0] == '/' || p[n - 1u] == '/') return false;
+    for (const char *s = p; s < p + n; s += strcspn(s, "/") + 1u) {
+        size_t c = strcspn(s, "/");
+        if (c == 0u || (c <= 2u && strncmp(s, "..", c) == 0)) return false;
+    }
+    return true;
+}
+
+bool zcl_fr_source_content_v2(const char *const *paths,
+                              const uint8_t *const *bytes,
+                              const size_t *lens, size_t count,
+                              uint8_t out[32], const char **why)
+{
+    static const char domain[] = ZCL_FR_DOMAIN_SOURCE_CONTENT;
+    struct sha3_256_ctx h;
+    struct zcl_fr_writer w;
+    const char *reason = paths && bytes && lens && out && count > 0u
+                             ? NULL : ZCL_FR_WHY_ARGUMENTS;
+    sha3_256_init(&h);
+    zcl_fr_writer_hash(&w, &h);
+    zcl_fr_put(&w, domain, sizeof(domain) - 1u);
+    for (size_t i = 0; !reason && i < count; i++) {
+        if (!fr_source_path_ok(paths[i]) || (!bytes[i] && lens[i] > 0u))
+            reason = ZCL_FR_WHY_FIELD_MALFORMED;
+        else if (i > 0u && strcmp(paths[i - 1u], paths[i]) >= 0)
+            reason = ZCL_FR_WHY_FIELD_ORDER;
+        else {
+            zcl_fr_put_text(&w, "path", paths[i]);
+            zcl_fr_put(&w, "bytes", 5u);
+            zcl_fr_put(&w, bytes[i], lens[i]);
+        }
+    }
+    if (!reason) sha3_256_finalize(&h, out);
+    fr_why(why, reason);
+    return reason == NULL;
 }
