@@ -871,6 +871,36 @@ static int pta_case_conflict(struct pta *p)
     return failures;
 }
 
+static int pta_case_eligible_failure(struct pta *p)
+{
+    int failures = 0;
+    TEST_CASE("proof_admission: eligible FAIL remains blocking under unknown scope") {
+        ASSERT(pta_build(p, true, p->header_version));
+        ptf_root(VCS_CPK_SOURCE_CLOSURE, "failed-only-source",
+                 p->keys[PTA_BUNIT].roots[VCS_CPK_SOURCE_CLOSURE]);
+        struct vcs_proof_sync_report rep;
+        ASSERT(ptf_emit(&p->f, PTF_C, &p->keys[PTA_BUNIT],
+                        ptf_fail(), NULL, NULL));
+        ASSERT(ptf_sync(&p->f, PTF_C, 0, &rep));
+        ASSERT(pta_admit(p, "eligible-failure"));
+        ASSERT_EQ(p->res[PTA_BUNIT].decision.outcome,
+                  VCS_PROOF_REUSE_HIT_FAIL);
+        ASSERT_EQ(p->res[PTA_BUNIT].status, VCS_PROOF_ADMIT_REFUSED);
+        ASSERT_STR_EQ(p->res[PTA_BUNIT].reason, "eligible_failure");
+        ASSERT_EQ(p->rep.proofs_refused, 1u);
+        ASSERT_STR_EQ(p->rep.fallback_reason, VCS_PROOF_FALLBACK_FAILED);
+        p->change.scope_known = false;
+        ASSERT(pta_admit(p, "eligible-failure-unknown-scope"));
+        ASSERT_EQ(p->res[PTA_BUNIT].status, VCS_PROOF_ADMIT_REFUSED);
+        ASSERT_EQ(p->res[PTA_BUNIT].decision.outcome,
+                  VCS_PROOF_REUSE_HIT_FAIL);
+        ASSERT_EQ(p->rep.proofs_refused, 1u);
+        ASSERT_STR_EQ(p->rep.fallback_reason, VCS_PROOF_FALLBACK_FAILED);
+        p->change.scope_known = true;
+    } TEST_END
+    return failures;
+}
+
 static int pta_case_refused_policy(struct pta *p)
 {
     int failures = 0;
@@ -912,6 +942,7 @@ static int pta_cases(void)
         failures += pta_case_header_edit(p);
         failures += pta_case_unknown_scope(p);
         failures += pta_case_conflict(p);
+        failures += pta_case_eligible_failure(p);
         failures += pta_case_refused_policy(p);
     }
     ptf_free(&p->f);

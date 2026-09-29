@@ -30,8 +30,8 @@ struct vcs_proof_change {
     const char *component_id;
     uint8_t contract_root_before[VCS_PROOF_ROOT_BYTES];
     uint8_t contract_root_after[VCS_PROOF_ROOT_BYTES];
-    /* false: the frontier is unknown, so every obligation marked in_reach
-     * runs fresh without consulting any ticket. */
+    /* false: every in-reach obligation without blocking eligible history
+     * runs fresh. Eligible FAIL and conflict remain blocking after lookup. */
     bool scope_known;
 };
 
@@ -51,15 +51,17 @@ enum vcs_proof_admission_status {
 };
 
 #define VCS_PROOF_ADMIT_WHY_UNKNOWN_SCOPE "unknown_scope"
+#define VCS_PROOF_ADMIT_WHY_ELIGIBLE_FAIL "eligible_failure"
 
 struct vcs_proof_admission_result {
     enum vcs_proof_admission_status status;
-    const char *reason;            /* decision reason or unknown_scope */
+    const char *reason;            /* decision, eligible_failure or unknown_scope */
     struct vcs_proof_reuse_decision decision;
 };
 
 /* fallback_reason values, in precedence order. */
 #define VCS_PROOF_FALLBACK_CONFLICT "conflict"
+#define VCS_PROOF_FALLBACK_FAILED "failed"
 #define VCS_PROOF_FALLBACK_POLICY "policy"
 #define VCS_PROOF_FALLBACK_UNKNOWN_SCOPE "unknown-scope"
 #define VCS_PROOF_FALLBACK_DEPENDENCY "dependency-change"
@@ -72,7 +74,7 @@ struct vcs_proof_admission_report {
     uint32_t proof_invalidated;      /* fresh or refused; unusable */
     uint32_t proofs_reused;          /* all obligations reused */
     uint32_t proofs_fresh;           /* all obligations run fresh */
-    uint32_t proofs_refused;         /* named refusal; not runnable */
+    uint32_t proofs_refused;         /* blocks admission; diagnostic rerun is separate */
     uint32_t integration_edges_rerun;
     uint32_t false_hit_refusals;     /* artifact bytes did not match */
     const char *fallback_reason;
@@ -86,8 +88,9 @@ struct vcs_proof_admission_context {
 };
 
 /* Decide every obligation. `results` must hold `count`. Returns false only
- * for caller errors (logged). A refused or conflicting obligation is
- * REFUSED, not runnable; its reason and fallback remain in the report. */
+ * for caller errors (logged). Eligible FAIL, conflict and policy refusal
+ * block admission; a fresh diagnostic rerun needs a separate request and
+ * cannot erase retained eligible history. */
 bool vcs_proof_admission_run(const struct vcs_proof_admission_context *ctx,
                              const struct vcs_proof_change *change,
                              const struct vcs_proof_obligation *obligations,
@@ -100,7 +103,7 @@ bool vcs_proof_admission_run(const struct vcs_proof_admission_context *ctx,
  *   build_actions_invalidated=<n>/<total>
  *   proof_obligations_invalidated=<n>/<total> proofs_reused=<n>
  *   proofs_fresh=<n> proofs_refused=<n> integration_edges_rerun=<n>
- *   fallback_reason=<conflict|policy|unknown-scope|dependency-change|none>
+ *   fallback_reason=<conflict|failed|policy|unknown-scope|dependency-change|none>
  * Returns false when `cap` is too small (nothing partial is claimed). */
 bool vcs_proof_admission_report_line(
     const struct vcs_proof_change *change,

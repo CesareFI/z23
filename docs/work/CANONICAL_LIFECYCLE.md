@@ -250,11 +250,12 @@ Four identities are kept separate. None stands in for another:
   `contract_root_before/after`, `build_actions_invalidated`,
   `proof_obligations_invalidated`, `proofs_reused`, `proofs_fresh`,
   `proofs_refused`, `integration_edges_rerun` and `fallback_reason`. The
-  fallback reason is one of `conflict`, `policy`, `unknown-scope`, `dependency-change` or
-  `none`, in that order of precedence. Unknown scope forces in-reach
-  obligations fresh only after checking for contradictory or refused history;
-  a refusal remains non-runnable. Invalidated counts include both fresh and
-  refused obligations.
+  fallback reason is one of `conflict`, `failed`, `policy`, `unknown-scope`,
+  `dependency-change` or `none`, in that order of precedence. Unknown scope
+  forces in-reach obligations fresh only after checking for eligible FAIL,
+  contradictory or refused history. Those outcomes block admission; a fresh
+  diagnostic run requires a separate request and cannot erase them.
+  Invalidated counts include both fresh and refused obligations.
 
 The registered `proof_ticket_reuse` group covers the refusals above. It
 changes one byte in each of the nineteen key fields and also swaps two flags.

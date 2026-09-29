@@ -15,6 +15,7 @@
 
 struct pad_flags {
     bool conflict;
+    bool eligible_fail;
     bool policy;
 };
 
@@ -42,12 +43,15 @@ static void pad_decide(const struct vcs_proof_admission_context *ctx,
         LOG_WARN(PAD_LOG, "obligation %s refused: %s",
                  o->name ? o->name : "(unnamed)", res->decision.reason);
     const struct vcs_proof_reuse_decision *d = &res->decision;
-    bool reused = d->outcome == VCS_PROOF_REUSE_HIT_PASS ||
-                  d->outcome == VCS_PROOF_REUSE_HIT_FAIL;
-    res->status = d->outcome == VCS_PROOF_REUSE_REFUSE
+    res->status = d->outcome == VCS_PROOF_REUSE_REFUSE ||
+                  d->outcome == VCS_PROOF_REUSE_HIT_FAIL
         ? VCS_PROOF_ADMIT_REFUSED
-        : reused ? VCS_PROOF_ADMIT_REUSED : VCS_PROOF_ADMIT_FRESH;
-    res->reason = d->reason;
+        : d->outcome == VCS_PROOF_REUSE_HIT_PASS
+            ? VCS_PROOF_ADMIT_REUSED : VCS_PROOF_ADMIT_FRESH;
+    res->reason = d->outcome == VCS_PROOF_REUSE_HIT_FAIL
+        ? VCS_PROOF_ADMIT_WHY_ELIGIBLE_FAIL : d->reason;
+    if (d->outcome == VCS_PROOF_REUSE_HIT_FAIL)
+        flags->eligible_fail = true;
     if (d->outcome == VCS_PROOF_REUSE_REFUSE) {
         if (d->reason &&
             strcmp(d->reason, VCS_PROOF_OBSERVATION_CONFLICT) == 0)
@@ -82,6 +86,7 @@ static const char *pad_fallback(const struct vcs_proof_change *change,
                                 const struct pad_flags *flags)
 {
     if (flags->conflict) return VCS_PROOF_FALLBACK_CONFLICT;
+    if (flags->eligible_fail) return VCS_PROOF_FALLBACK_FAILED;
     if (flags->policy) return VCS_PROOF_FALLBACK_POLICY;
     if (!change->scope_known) return VCS_PROOF_FALLBACK_UNKNOWN_SCOPE;
     if (memcmp(change->contract_root_before, change->contract_root_after,
