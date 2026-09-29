@@ -1,12 +1,15 @@
 /* Copyright 2026 Rhett Creighton; SPDX-License-Identifier: Apache-2.0.
- * One test-fast non-LTO GCC14 result.c compiler worker. It holds no signing key and makes no
- * attestation decision. Production mode requires the two installed UIDs and
- * a read-only jail; local qualification mode always reports ineligible. */
+ * One test-fast non-LTO GCC14 result.c compiler worker speaking the
+ * z23verify.fixed_result.v2 launch request and result packet. It holds no
+ * signing key and makes no attestation decision. Production mode requires
+ * the two installed UIDs and a read-only jail; local qualification mode
+ * always reports ineligible. */
 #define _GNU_SOURCE
 #include "base/hex.h"
 #include "base/serialize_le.h"
 #include "platform/os_proc.h"
 #include "sha3/sha3.h"
+#include "verify/fixed_result_contract.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -28,20 +31,19 @@
 #include <unistd.h>
 
 #define LAUNCHER_UID 0u
-#define COMPILER_UID 60093u
+#define COMPILER_UID ZCL_FR_COMPILER_UID
 #define PROFILE "/etc/z23verify/fixed_result_fast.args"
-#define SOURCE "platform/modules/base/src/result.c"
+#define SOURCE ZCL_FR_SOURCE
 #define MAX_ARGS 183u
 #define MAX_PROFILE 65536u
 #define MAX_REQUEST 8192u
+#define MAX_PACKET 2048u
 
-static const char profile_sha3[] =
-    "5e8a1cafce7350ff3c335c6a714f59c75c1e646de82eb03d076f68bdad244e1c";
+/* The only v2 environment (fixed_result_contract.h); main() refuses to
+ * start if this table and the contract ever disagree. */
 static char *const compiler_env[] = {
     "LC_ALL=C", "TZ=UTC", "TMPDIR=/tmp", "PATH=/usr/bin:/bin", NULL
 };
-static const char env_sha3[] =
-    "19c5ed02759b18a210013d167d7277a014dde893e1b8edaab69abc029700a3ec";
 
 static const char *refusal;
 static volatile sig_atomic_t cancelled;
@@ -71,26 +73,9 @@ static int fail(const char *why)
     return 2;
 }
 
-static bool hex64(const char *s)
-{
-    if (strlen(s) != 64) return false;
-    for (size_t i = 0; i < 64; i++)
-        if (!((s[i] >= '0' && s[i] <= '9') ||
-              (s[i] >= 'a' && s[i] <= 'f'))) return false;
-    return true;
-}
-
 static bool target_ok(const char *target)
 {
-    static const char prefix[] = "build/test-obj/epochs/";
-    static const char suffix[] = "/platform/modules/base/src/result.o";
-    size_t n = strlen(target), a = sizeof(prefix) - 1, b = sizeof(suffix) - 1;
-    if (n != a + 64 + b || strncmp(target, prefix, a) != 0 ||
-        strcmp(target + a + 64, suffix) != 0) return false;
-    char digest[65];
-    memcpy(digest, target + a, 64);
-    digest[64] = '\0';
-    return hex64(digest);
+    return zcl_fr_target_check(target, strlen(target)) == NULL;
 }
 
 static bool cwd_ok(const char *cwd)
@@ -131,7 +116,7 @@ static bool profile_bytes(const char *path, char bytes[MAX_PROFILE],
     sha3_256_write(&hash, (const uint8_t *)bytes, (size_t)got);
     sha3_256_finalize(&hash, digest);
     zcl_hex_encode(digest, sizeof(digest), encoded);
-    if (strcmp(encoded, profile_sha3) != 0) {
+    if (strcmp(encoded, ZCL_FR_PROFILE_SHA3) != 0) {
         refusal = "profile_digest_mismatch";
         return false;
     }
@@ -366,33 +351,15 @@ static void gcc_args(char *args[MAX_ARGS + 16],
     args[n] = NULL;
 }
 
-static void hash_u64(struct sha3_256_ctx *h, uint64_t value)
-{
-    uint8_t bytes[8];
-    zcl_write_u64_le(bytes, value);
-    sha3_256_write(h, bytes, sizeof(bytes));
-}
-
-static bool argv_sha3(char *const args[MAX_ARGS + 16], char hex[65])
+/* Exec argv v2: SHA3-256 of F(exec_argv domain) then F("arg") F(arg). */
+static bool argv_sha3(char *const args[MAX_ARGS + 16], uint8_t out[32])
 {
     size_t count = 0;
     while (count < MAX_ARGS + 16 && args[count]) count++;
     if (count == MAX_ARGS + 16) return false;
-    static const char domain[] = "z23verify.fixed_result.exec_argv.v1\n";
-    struct sha3_256_ctx h;
-    sha3_256_init(&h);
-    sha3_256_write(&h, (const uint8_t *)domain, sizeof(domain) - 1);
-    hash_u64(&h, count);
-    for (size_t i = 0; i < count; i++) {
-        size_t len = strlen(args[i]);
-        if (len > PATH_MAX * 2) return false;
-        hash_u64(&h, len);
-        sha3_256_write(&h, (const uint8_t *)args[i], len);
-    }
-    uint8_t digest[32];
-    sha3_256_finalize(&h, digest);
-    zcl_hex_encode(digest, sizeof(digest), hex);
-    return true;
+    for (size_t i = 0; i < count; i++)
+        if (strlen(args[i]) > PATH_MAX * 2) return false;
+    return zcl_fr_exec_argv_sha3((const char *const *)args, count, out);
 }
 
 static pid_t start_gcc(char *const args[MAX_ARGS + 16], const char *err)
@@ -446,12 +413,12 @@ static bool wait_gcc_loop(pid_t pid, const struct timespec *start, int *status)
 
 static bool run_gcc(char *const profile[MAX_ARGS + 1], const char *target,
                     const char *out, const char *dep, const char *err,
-                    bool preprocess, char digest_hex[65])
+                    bool preprocess, uint8_t digest[32])
 {
     if (cancelled) { refusal = "compiler_cancelled"; return false; }
     char *args[MAX_ARGS + 16];
     gcc_args(args, profile, target, out, dep, preprocess);
-    if (!argv_sha3(args, digest_hex)) {
+    if (!argv_sha3(args, digest)) {
         refusal = "compiler_argv_malformed";
         return false;
     }
@@ -522,7 +489,7 @@ static bool compile_request_ok(const char *cwd, const char *target)
 
 static bool compile_one(const char *cwd, const char *target, const char *outdir,
                         bool installed, char paths[4][PATH_MAX],
-                        char argv_hashes[2][65])
+                        uint8_t argv_hashes[2][32])
 {
     if (!compile_request_ok(cwd, target)) return false;
     if (installed && !installed_jail_ok(cwd)) return false;
@@ -573,7 +540,7 @@ static bool request_peer_ok(void)
     return true;
 }
 
-static bool receive_frame(char buffer[MAX_REQUEST])
+static bool receive_frame(uint8_t buffer[MAX_REQUEST], size_t *len)
 {
     struct pollfd ready = {.fd = STDIN_FILENO, .events = POLLIN};
     if (poll(&ready, 1, 30000) != 1 || !(ready.revents & POLLIN) || cancelled) {
@@ -581,39 +548,28 @@ static bool receive_frame(char buffer[MAX_REQUEST])
         return false;
     }
     ssize_t n = recv(STDIN_FILENO, buffer, MAX_REQUEST, MSG_TRUNC);
-    if (n <= 0 || n >= MAX_REQUEST || memchr(buffer, '\0', (size_t)n)) {
+    if (n <= 0 || n >= MAX_REQUEST) {
         refusal = "request_frame_malformed";
         return false;
     }
-    buffer[n] = '\0';
+    *len = (size_t)n;
     return true;
 }
 
-static bool parse_request(char buffer[MAX_REQUEST], char **cwd, char **target)
+/* Launch request v2: profile test_fast, recorded_cwd /zclassic23 and one
+ * epoch target. A v1 text request or any framing fault refuses by its
+ * contract token. */
+static bool receive_request(char target[ZCL_FR_TARGET_LEN + 1u])
 {
-    static const char schema[] = "z23.vcc.fixed_result.fast.v1\n";
-    if (strncmp(buffer, schema, sizeof(schema) - 1) != 0) {
-        refusal = "request_schema_unknown";
+    uint8_t buffer[MAX_REQUEST];
+    size_t len = 0;
+    const char *why = NULL;
+    if (!request_peer_ok() || !receive_frame(buffer, &len)) return false;
+    if (!zcl_fr_request_parse(buffer, len, target, &why)) {
+        refusal = why;
         return false;
     }
-    char *first = buffer + sizeof(schema) - 1, *sep = strchr(first, '\n');
-    if (!sep) { refusal = "request_frame_malformed"; return false; }
-    *sep++ = '\0';
-    char *end = strchr(sep, '\n');
-    if (!end || end[1] != '\0') {
-        refusal = "request_frame_malformed";
-        return false;
-    }
-    *end = '\0';
-    *cwd = first;
-    *target = sep;
     return true;
-}
-
-static bool receive_request(char buffer[MAX_REQUEST], char **cwd, char **target)
-{
-    return request_peer_ok() && receive_frame(buffer) &&
-           parse_request(buffer, cwd, target);
 }
 
 static bool open_result_fds(const char paths[4][PATH_MAX], int fd[4])
@@ -639,26 +595,33 @@ static bool open_result_fds(const char paths[4][PATH_MAX], int fd[4])
     return true;
 }
 
+/* Result packet v2 plus the four artifact FDs in canonical order: object.o,
+ * deps.d, stderr.bin, preprocessed.i. */
 static bool send_result(const char paths[4][PATH_MAX], const char *scratch,
-                        const char *target, const char hashes[2][65])
+                        const char *target, const uint8_t hashes[2][32])
 {
-    int fd[4];
-    if (!open_result_fds(paths, fd)) return false;
-    char frame[512];
-    int used = snprintf(frame, sizeof(frame),
-                        "z23vcc.result.fast.v1\n"
-                        "scratch=%s\n"
-                        "target=%s\n"
-                        "compile_argv_sha3=%s\n"
-                        "preprocess_argv_sha3=%s\n"
-                        "env_sha3=%s\n",
-                        scratch, target, hashes[1], hashes[0], env_sha3);
-    if (used <= 0 || used >= (int)sizeof(frame)) {
-        for (size_t i = 0; i < 4; i++) close(fd[i]);
+    struct zcl_fr_packet packet;
+    uint8_t frame[MAX_PACKET];
+    size_t used = 0;
+    const char *why = NULL;
+    memset(&packet, 0, sizeof(packet));
+    if (strlen(scratch) != ZCL_FR_SCRATCH_LEN ||
+        strlen(target) != ZCL_FR_TARGET_LEN) {
         refusal = "artifact_frame_limit";
         return false;
     }
-    struct iovec io = {.iov_base = frame, .iov_len = (size_t)used};
+    memcpy(packet.scratch, scratch, ZCL_FR_SCRATCH_LEN);
+    memcpy(packet.target, target, ZCL_FR_TARGET_LEN);
+    memcpy(packet.compile_argv_sha3, hashes[1], 32u);
+    memcpy(packet.preprocess_argv_sha3, hashes[0], 32u);
+    zcl_fr_env_fixed_root(packet.environment_sha3);
+    if (!zcl_fr_packet_encode(&packet, frame, sizeof(frame), &used, &why)) {
+        refusal = why;
+        return false;
+    }
+    int fd[4];
+    if (!open_result_fds(paths, fd)) return false;
+    struct iovec io = {.iov_base = frame, .iov_len = used};
     union { struct cmsghdr align; char bytes[CMSG_SPACE(sizeof(fd))]; } control = {0};
     struct msghdr msg = {.msg_iov = &io, .msg_iovlen = 1,
                          .msg_control = control.bytes,
@@ -668,7 +631,7 @@ static bool send_result(const char paths[4][PATH_MAX], const char *scratch,
     c->cmsg_type = SCM_RIGHTS;
     c->cmsg_len = CMSG_LEN(sizeof(fd));
     memcpy(CMSG_DATA(c), fd, sizeof(fd));
-    bool ok = sendmsg(STDIN_FILENO, &msg, MSG_NOSIGNAL) == used;
+    bool ok = sendmsg(STDIN_FILENO, &msg, MSG_NOSIGNAL) == (ssize_t)used;
     for (size_t i = 0; i < 4; i++) close(fd[i]);
     if (!ok) refusal = "artifact_send_failed";
     return ok;
@@ -713,7 +676,7 @@ static void cleanup_scratch(const char *dir)
 static int qualify_main(char **argv)
 {
     char paths[4][PATH_MAX];
-    char argv_hashes[2][65];
+    uint8_t argv_hashes[2][32];
     if (!compile_one(argv[2], argv[3], argv[4], false, paths, argv_hashes))
         return fail(refusal ? refusal : "qualification_failed");
     printf("object=%s\ndep=%s\nstderr=%s\npreprocessed=%s\n"
@@ -727,14 +690,13 @@ static int serve_main(void)
 {
     if (close_range(3, ~0u, 0) != 0)
         return fail("inherited_fd_close_failed");
-    char frame[MAX_REQUEST];
-    char *cwd, *target;
-    if (!receive_request(frame, &cwd, &target)) return fail(refusal);
+    char target[ZCL_FR_TARGET_LEN + 1u];
+    if (!receive_request(target)) return fail(refusal);
     char scratch[] = "/work/result.XXXXXX";
     if (!mkdtemp(scratch)) return fail("scratch_unavailable");
     char paths[4][PATH_MAX];
-    char argv_hashes[2][65];
-    if (!compile_one(cwd, target, scratch, true, paths, argv_hashes)) {
+    uint8_t argv_hashes[2][32];
+    if (!compile_one(ZCL_FR_CWD, target, scratch, true, paths, argv_hashes)) {
         cleanup_scratch(scratch);
         return fail(refusal ? refusal : "compile_failed");
     }
@@ -758,6 +720,8 @@ int main(int argc, char **argv)
     if (sigaction(SIGTERM, &action, NULL) != 0 ||
         sigaction(SIGINT, &action, NULL) != 0)
         return fail("signal_setup_failed");
+    if (zcl_fr_env_check((const char *const *)compiler_env, 4u) != NULL)
+        return fail(ZCL_FR_WHY_ENV);
     if (argc == 5 && strcmp(argv[1], "qualify") == 0)
         return qualify_main(argv);
     if (argc == 2 && strcmp(argv[1], "serve") == 0)

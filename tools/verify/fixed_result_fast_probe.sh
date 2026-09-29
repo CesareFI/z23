@@ -36,9 +36,10 @@ target=$(sed -n '/^__TARGET__$/ {n;p;q}' "$work/make.out")
     fail target_malformed
 
 /usr/bin/cc -std=c23 -Wall -Wextra -Werror -pedantic \
-    -Iplatform/modules/sha3/include -Iplatform/modules/base/include \
+    -Itools -Iplatform/modules/sha3/include -Iplatform/modules/base/include \
     -Iplatform/modules/platform/include \
-    tools/verify/fixed_result_worker.c platform/modules/sha3/src/sha3.c \
+    tools/verify/fixed_result_worker.c tools/verify/fixed_result_contract.c \
+    platform/modules/sha3/src/sha3.c \
     platform/modules/platform/src/os_proc.c \
     -o "$work/worker"
 /usr/bin/cc -std=c23 -Wall -Wextra -Werror -pedantic \
