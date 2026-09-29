@@ -1562,108 +1562,144 @@ static void watch_idle_selftest_clear_request(const char *root)
         (void)unlink(path);
 }
 
-bool zcl_devloop_watch_idle_exit_selftest(void)
-{
-    struct watch_idle_clock clock = { .mono_us = 1000 };
-    const clock_iface_t iface = {
-        .now_monotonic_ns = watch_idle_clock_mono_ns,
-        .now_wall_ms = watch_idle_clock_wall_ms,
-        .self = &clock,
-    };
-    const int64_t budget_us = (int64_t)ZCL_DEVLOOP_WATCH_IDLE_BUDGET_MS * 1000;
-    char base[PATH_MAX], plain[PATH_MAX], land_parent[PATH_MAX],
-        land_wt[PATH_MAX], queue_lock[PATH_MAX];
-    char heartbeat[192];
-    struct watch_context ctx = {0};
-    bool ok = true;
-    int n;
-    int lock_fd;
+struct idle_fixture {
+    struct watch_idle_clock clock;
+    int64_t budget_us;
+    char base[PATH_MAX], plain[PATH_MAX], land_parent[PATH_MAX];
+    char land_wt[PATH_MAX], queue_lock[PATH_MAX];
+    struct watch_context ctx;
+};
 
-    n = snprintf(base, sizeof(base), "test-tmp/devloop_idle_%ld",
-                 (long)getpid());
-    if (n <= 0 || (size_t)n >= sizeof(base))
+static bool idle_join(char *dst, size_t cap, const char *dir, const char *tail)
+{
+    int n = snprintf(dst, cap, "%s%s", dir, tail);
+    return n > 0 && (size_t)n < cap;
+}
+
+/* Builds the plain and landing-worktree directories under test-tmp. */
+static bool idle_fixture_setup(struct idle_fixture *f)
+{
+    char root[64];
+    snprintf(root, sizeof(root), "test-tmp/devloop_idle_%ld", (long)getpid());
+    if (!idle_join(f->base, sizeof(f->base), root, "") ||
+        !idle_join(f->plain, sizeof(f->plain), f->base, "/plain") ||
+        !idle_join(f->land_parent, sizeof(f->land_parent), f->base, "/land") ||
+        !idle_join(f->land_wt, sizeof(f->land_wt), f->land_parent, "/wt") ||
+        !idle_join(f->queue_lock, sizeof(f->queue_lock), f->land_parent,
+                   "/queue.lock"))
         return false;
-    n = snprintf(plain, sizeof(plain), "%s/plain", base);
-    if (n <= 0 || (size_t)n >= sizeof(plain))
+    if (!mkdirs(f->plain) || !mkdirs(f->land_wt))
         return false;
-    n = snprintf(land_parent, sizeof(land_parent), "%s/land", base);
-    if (n <= 0 || (size_t)n >= sizeof(land_parent))
-        return false;
-    n = snprintf(land_wt, sizeof(land_wt), "%s/wt", land_parent);
-    if (n <= 0 || (size_t)n >= sizeof(land_wt))
-        return false;
-    n = snprintf(queue_lock, sizeof(queue_lock), "%s/queue.lock", land_parent);
-    if (n <= 0 || (size_t)n >= sizeof(queue_lock))
-        return false;
-    if (!mkdirs(plain) || !mkdirs(land_wt))
-        return false;
-    lock_fd = open(queue_lock, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+    int lock_fd = open(f->queue_lock,
+                       O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
     if (lock_fd < 0)
         return false;
     if (close(lock_fd) != 0)
         return false;
-    if (!realpath(plain, ctx.root))
-        return false;
+    return realpath(f->plain, f->ctx.root) != NULL;
+}
 
-    clock_set_default(&iface);
+/* Restarts the idle window at mono time 1000. */
+static void idle_restart(struct idle_fixture *f)
+{
+    f->clock.mono_us = 1000;
+    f->ctx.idle_since_us = platform_time_monotonic_us();
+}
 
-    if (!watch_root_is_landing(land_wt) || watch_root_is_landing(plain) ||
-        watch_root_is_landing(ctx.root) || watch_root_is_landing(NULL) ||
-        watch_root_is_landing(""))
-        ok = false;
-
-    ctx.idle_since_us = platform_time_monotonic_us();
-    ctx.proof_worker_pid = 0;
-    clock.mono_us = 1000 + budget_us;
-    if (!watch_idle_poll_should_exit(&ctx))
+static bool idle_check_expiry(struct idle_fixture *f)
+{
+    char heartbeat[192];
+    bool ok = watch_root_is_landing(f->land_wt) &&
+              !watch_root_is_landing(f->plain) &&
+              !watch_root_is_landing(f->ctx.root) &&
+              !watch_root_is_landing(NULL) && !watch_root_is_landing("");
+    f->ctx.idle_since_us = platform_time_monotonic_us();
+    f->ctx.proof_worker_pid = 0;
+    f->clock.mono_us = 1000 + f->budget_us;
+    if (!watch_idle_poll_should_exit(&f->ctx))
         ok = false;
     if (!watch_stopped_heartbeat_line(heartbeat, sizeof(heartbeat), true) ||
         !strstr(heartbeat, "\"schema\":\"zcl.dev_watch_heartbeat.v1\"") ||
         !strstr(heartbeat, "\"status\":\"stopped\"") ||
         !strstr(heartbeat, "\"reason\":\"idle_exit\""))
         ok = false;
+    return ok;
+}
 
-    clock.mono_us = 1000;
-    ctx.idle_since_us = platform_time_monotonic_us();
-    clock.mono_us = 1000 + budget_us / 2;
-    watch_idle_touch(&ctx);
-    clock.mono_us = 1000 + budget_us;
-    if (watch_idle_poll_should_exit(&ctx))
-        ok = false;
+/* Activity inside the window keeps the watcher alive. */
+static bool idle_check_touch(struct idle_fixture *f)
+{
+    idle_restart(f);
+    f->clock.mono_us = 1000 + f->budget_us / 2;
+    watch_idle_touch(&f->ctx);
+    f->clock.mono_us = 1000 + f->budget_us;
+    return !watch_idle_poll_should_exit(&f->ctx);
+}
 
-    clock.mono_us = 1000;
-    ctx.idle_since_us = platform_time_monotonic_us();
-    clock.mono_us = 1000 + budget_us / 2;
-    if (!watch_idle_selftest_write_request(ctx.root) ||
-        !zcl_dev_proof_queue_has_pending(ctx.root) ||
-        watch_idle_poll_should_exit(&ctx))
+/* A pending proof request holds the watcher until it is cleared. */
+static bool idle_check_pending_request(struct idle_fixture *f)
+{
+    bool ok = true;
+    idle_restart(f);
+    f->clock.mono_us = 1000 + f->budget_us / 2;
+    if (!watch_idle_selftest_write_request(f->ctx.root) ||
+        !zcl_dev_proof_queue_has_pending(f->ctx.root) ||
+        watch_idle_poll_should_exit(&f->ctx))
         ok = false;
-    watch_idle_selftest_clear_request(ctx.root);
-    clock.mono_us = 1000 + budget_us;
-    if (zcl_dev_proof_queue_has_pending(ctx.root) ||
-        watch_idle_poll_should_exit(&ctx))
+    watch_idle_selftest_clear_request(f->ctx.root);
+    f->clock.mono_us = 1000 + f->budget_us;
+    if (zcl_dev_proof_queue_has_pending(f->ctx.root) ||
+        watch_idle_poll_should_exit(&f->ctx))
         ok = false;
+    return ok;
+}
 
-    clock.mono_us = 1000;
-    ctx.idle_since_us = platform_time_monotonic_us();
-    ctx.proof_worker_pid = 2;
-    clock.mono_us = 1000 + budget_us;
-    if (watch_idle_poll_should_exit(&ctx))
-        ok = false;
-    ctx.proof_worker_pid = 0;
+/* A live proof worker holds the watcher. */
+static bool idle_check_worker(struct idle_fixture *f)
+{
+    idle_restart(f);
+    f->ctx.proof_worker_pid = 2;
+    f->clock.mono_us = 1000 + f->budget_us;
+    bool ok = !watch_idle_poll_should_exit(&f->ctx);
+    f->ctx.proof_worker_pid = 0;
+    return ok;
+}
 
-    if (!realpath(land_wt, ctx.root))
+/* A landing worktree never idles out. */
+static bool idle_check_landing(struct idle_fixture *f)
+{
+    bool ok = realpath(f->land_wt, f->ctx.root) != NULL;
+    idle_restart(f);
+    f->clock.mono_us = 1000 + f->budget_us * 2;
+    if (!watch_root_is_landing(f->ctx.root) ||
+        watch_idle_poll_should_exit(&f->ctx))
         ok = false;
-    clock.mono_us = 1000;
-    ctx.idle_since_us = platform_time_monotonic_us();
-    clock.mono_us = 1000 + budget_us * 2;
-    if (!watch_root_is_landing(ctx.root) ||
-        watch_idle_poll_should_exit(&ctx))
-        ok = false;
+    return ok;
+}
+
+bool zcl_devloop_watch_idle_exit_selftest(void)
+{
+    struct idle_fixture f = {.clock = {.mono_us = 1000},
+                             .budget_us = (int64_t)
+                                 ZCL_DEVLOOP_WATCH_IDLE_BUDGET_MS * 1000};
+    const clock_iface_t iface = {
+        .now_monotonic_ns = watch_idle_clock_mono_ns,
+        .now_wall_ms = watch_idle_clock_wall_ms,
+        .self = &f.clock,
+    };
+    if (!idle_fixture_setup(&f))
+        return false;
+
+    clock_set_default(&iface);
+    bool ok = idle_check_expiry(&f);
+    ok = idle_check_touch(&f) && ok;
+    ok = idle_check_pending_request(&f) && ok;
+    ok = idle_check_worker(&f) && ok;
+    ok = idle_check_landing(&f) && ok;
 
     clock_reset_default();
-    watch_idle_selftest_clear_request(plain);
-    (void)unlink(queue_lock);
+    watch_idle_selftest_clear_request(f.plain);
+    (void)unlink(f.queue_lock);
     return ok;
 }
 
@@ -2435,100 +2471,126 @@ static bool watch_stream_flush(struct watch_context *ctx)
 }
 
 #if defined(ZCL_TESTING)
-bool zcl_devloop_watch_stream_backpressure_selftest(const char *repo_root)
-{
-    if (!repo_root || !repo_root[0])
-        return false;
-    struct watch_context ctx = {0};
-    if (snprintf(ctx.root, sizeof(ctx.root), "%s", repo_root) <= 0 ||
-        strlen(repo_root) >= sizeof(ctx.root))
-        return false;
-    char why[160] = {0};
-    if (!zcl_devloop_cycle_stream_reset(repo_root, 0, why, sizeof(why)))
-        return false;
-
+struct bp_test {
+    const char *repo_root;
+    struct watch_context ctx;
     char events[5][256];
     size_t lengths[5];
+    char why[160];
+    char out[512];
+    size_t out_len;
+    int64_t epoch;
+};
+
+static bool bp_events_build(struct bp_test *t)
+{
     for (size_t i = 0; i < 5; i++) {
         int n = snprintf(
-            events[i], sizeof(events[i]),
+            t->events[i], sizeof(t->events[i]),
             "{\"schema\":\"zcl.dev_cycle.v1\",\"producer\":\"watch-test\","
             "\"status\":\"impact_ready\",\"action\":\"reflex\","
             "\"reason\":\"event-%zu\",\"phase\":\"IMPACT_READY\","
             "\"runtime_published\":false,\"elapsed_ms\":%zu,\"files\":[]}",
             i + 1, i + 1);
-        if (n <= 0 || (size_t)n >= sizeof(events[i]))
+        if (n <= 0 || (size_t)n >= sizeof(t->events[i]))
             return false;
-        lengths[i] = (size_t)n;
+        t->lengths[i] = (size_t)n;
     }
-    for (size_t i = 0; i < 4; i++)
-        if (!watch_stream_enqueue(&ctx, events[i], lengths[i]))
-            return false;
-
-    /* The fifth event is the born-red assertion: a full local queue must seal
-     * its first four exact epochs and retain the new event, not stop watching. */
-    if (!watch_stream_enqueue(&ctx, events[4], lengths[4]) ||
-        ctx.pending_count != 1)
-        return false;
-    char out[512];
-    size_t out_len = 0;
-    int64_t epoch = 0, after = 0;
-    if (zcl_devloop_cycle_state_read(
-            repo_root, out, sizeof(out), &out_len, &epoch, why,
-            sizeof(why)) != ZCL_DEVLOOP_STATE_FOUND || epoch != 4 ||
-        out_len != lengths[3] || memcmp(out, events[3], out_len) != 0)
-        return false;
-    for (size_t i = 0; i < 4; i++) {
-        if (zcl_devloop_cycle_state_read_after(
-                repo_root, after, out, sizeof(out), &out_len, &epoch,
-                why, sizeof(why)) != ZCL_DEVLOOP_STATE_FOUND ||
-            epoch != after + 1 || out_len != lengths[i] ||
-            memcmp(out, events[i], out_len) != 0)
-            return false;
-        after = epoch;
-    }
-    if (zcl_devloop_cycle_state_read_after(
-            repo_root, after, out, sizeof(out), &out_len, &epoch,
-            why, sizeof(why)) != ZCL_DEVLOOP_STATE_FOUND ||
-        epoch != 5 || out_len != lengths[4] ||
-        memcmp(out, events[4], out_len) != 0 ||
-        !watch_stream_flush(&ctx) || ctx.pending_count != 0)
-        return false;
-    if (zcl_devloop_cycle_state_read(
-            repo_root, out, sizeof(out), &out_len, &epoch, why,
-            sizeof(why)) != ZCL_DEVLOOP_STATE_FOUND || epoch != 5 ||
-        out_len != lengths[4] || memcmp(out, events[4], out_len) != 0)
-        return false;
-
-    /* Losing the volatile generation underneath a full pending queue makes
-     * the fifth enqueue's automatic flush fail closed. No pending body drops. */
-    for (size_t i = 0; i < 4; i++)
-        if (!watch_stream_enqueue(&ctx, events[i], lengths[i]))
-            return false;
-    if (ctx.pending_count != 4 ||
-        !zcl_devloop_cycle_stream_reset(repo_root, 5, why, sizeof(why)) ||
-        watch_stream_enqueue(&ctx, events[4], lengths[4]) ||
-        ctx.pending_count != 4)
-        return false;
-    if (zcl_devloop_cycle_state_read(
-            repo_root, out, sizeof(out), &out_len, &epoch, why,
-            sizeof(why)) != ZCL_DEVLOOP_STATE_FOUND || epoch != 5)
-        return false;
-    size_t pending_before = ctx.pending_count;
-    if (watch_stream_enqueue(&ctx, "{}", ZCL_DEVLOOP_CYCLE_JSON_MAX) ||
-        ctx.pending_count != pending_before ||
-        zcl_devloop_cycle_state_read(
-            repo_root, out, sizeof(out), &out_len, &epoch, why,
-            sizeof(why)) != ZCL_DEVLOOP_STATE_FOUND || epoch != 5)
-        return false;
-    ctx.pending_count = 5; /* impossible live state: guard before slot access */
-    if (watch_stream_enqueue(&ctx, events[4], lengths[4]) ||
-        ctx.pending_count != 5 ||
-        zcl_devloop_cycle_state_read(
-            repo_root, out, sizeof(out), &out_len, &epoch, why,
-            sizeof(why)) != ZCL_DEVLOOP_STATE_FOUND || epoch != 5)
-        return false;
     return true;
+}
+
+static bool bp_enqueue(struct bp_test *t, size_t i)
+{
+    return watch_stream_enqueue(&t->ctx, t->events[i], t->lengths[i]);
+}
+
+/* The newest published state is `want_epoch` and carries event `idx`. */
+static bool bp_latest_is(struct bp_test *t, int64_t want_epoch, size_t idx)
+{
+    return zcl_devloop_cycle_state_read(
+               t->repo_root, t->out, sizeof(t->out), &t->out_len, &t->epoch,
+               t->why, sizeof(t->why)) == ZCL_DEVLOOP_STATE_FOUND &&
+           t->epoch == want_epoch && t->out_len == t->lengths[idx] &&
+           memcmp(t->out, t->events[idx], t->out_len) == 0;
+}
+
+/* The newest published state is still `want_epoch`. */
+static bool bp_epoch_is(struct bp_test *t, int64_t want_epoch)
+{
+    return zcl_devloop_cycle_state_read(
+               t->repo_root, t->out, sizeof(t->out), &t->out_len, &t->epoch,
+               t->why, sizeof(t->why)) == ZCL_DEVLOOP_STATE_FOUND &&
+           t->epoch == want_epoch;
+}
+
+/* The state after `after` is the next epoch and carries event `idx`. */
+static bool bp_next_is(struct bp_test *t, int64_t after, int64_t want_epoch,
+                       size_t idx)
+{
+    return zcl_devloop_cycle_state_read_after(
+               t->repo_root, after, t->out, sizeof(t->out), &t->out_len,
+               &t->epoch, t->why, sizeof(t->why)) ==
+               ZCL_DEVLOOP_STATE_FOUND &&
+           t->epoch == want_epoch && t->out_len == t->lengths[idx] &&
+           memcmp(t->out, t->events[idx], t->out_len) == 0;
+}
+
+/* The fifth event is the born-red assertion: a full local queue must seal
+ * its first four exact epochs and retain the new event, not stop watching. */
+static bool bp_full_queue_seals(struct bp_test *t)
+{
+    for (size_t i = 0; i < 4; i++)
+        if (!bp_enqueue(t, i))
+            return false;
+    if (!bp_enqueue(t, 4) || t->ctx.pending_count != 1)
+        return false;
+    if (!bp_latest_is(t, 4, 3))
+        return false;
+    int64_t after = 0;
+    for (size_t i = 0; i < 4; i++) {
+        if (!bp_next_is(t, after, after + 1, i))
+            return false;
+        after = t->epoch;
+    }
+    return bp_next_is(t, after, 5, 4) && watch_stream_flush(&t->ctx) &&
+           t->ctx.pending_count == 0 && bp_latest_is(t, 5, 4);
+}
+
+/* Losing the volatile generation underneath a full pending queue makes the
+ * fifth enqueue's automatic flush fail closed. No pending body drops. */
+static bool bp_lost_generation_fails_closed(struct bp_test *t)
+{
+    for (size_t i = 0; i < 4; i++)
+        if (!bp_enqueue(t, i))
+            return false;
+    if (t->ctx.pending_count != 4 ||
+        !zcl_devloop_cycle_stream_reset(t->repo_root, 5, t->why,
+                                        sizeof(t->why)) ||
+        bp_enqueue(t, 4) || t->ctx.pending_count != 4)
+        return false;
+    if (!bp_epoch_is(t, 5))
+        return false;
+    size_t pending_before = t->ctx.pending_count;
+    if (watch_stream_enqueue(&t->ctx, "{}", ZCL_DEVLOOP_CYCLE_JSON_MAX) ||
+        t->ctx.pending_count != pending_before || !bp_epoch_is(t, 5))
+        return false;
+    t->ctx.pending_count = 5; /* impossible live state: guard before slot access */
+    return !bp_enqueue(t, 4) && t->ctx.pending_count == 5 &&
+           bp_epoch_is(t, 5);
+}
+
+bool zcl_devloop_watch_stream_backpressure_selftest(const char *repo_root)
+{
+    if (!repo_root || !repo_root[0])
+        return false;
+    struct bp_test t = {.repo_root = repo_root};
+    if (snprintf(t.ctx.root, sizeof(t.ctx.root), "%s", repo_root) <= 0 ||
+        strlen(repo_root) >= sizeof(t.ctx.root))
+        return false;
+    if (!zcl_devloop_cycle_stream_reset(repo_root, 0, t.why, sizeof(t.why)))
+        return false;
+    return bp_events_build(&t) && bp_full_queue_seals(&t) &&
+           bp_lost_generation_fails_closed(&t);
 }
 #endif
 
@@ -2588,6 +2650,86 @@ static bool watch_emit_edit_seen(struct watch_context *ctx)
     return true;
 }
 
+static bool watch_impact_counters(struct json_value *doc)
+{
+    static const char *const names[] = {
+        "make_processes", "shell_processes", "git_operations",
+        "publication_operations", "remote_operations", "storage_ack_waits",
+        "full_program_links", "network_operations", "sqlite_operations",
+        "full_tree_scans",
+    };
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++)
+        if (!json_push_kv_int(doc, names[i], 0))
+            return false;
+    return true;
+}
+
+static bool watch_impact_identity(struct json_value *doc,
+                                 const struct watch_edit_epoch *epoch)
+{
+    return json_push_kv_str(doc, "edit_epoch", epoch->id) &&
+        json_push_kv_str(doc, "parent_epoch", epoch->parent) &&
+        json_push_kv_str(doc, "dependency_generation",
+                         epoch->dependency_generation) &&
+        json_push_kv_str(doc, "dependency_generation_kind",
+                         epoch->dependency_generation_kind) &&
+        json_push_kv_str(doc, "affected_owner", epoch->owner) &&
+        json_push_kv_str(doc, "affected_component", epoch->component);
+}
+
+static bool watch_impact_header(struct json_value *doc,
+                                const struct watch_edit_epoch *epoch)
+{
+    return json_push_kv_str(doc, "schema", "zcl.dev_cycle.v1") &&
+        json_push_kv_str(doc, "producer", "reflex-reactor") &&
+        json_push_kv_str(doc, "status", "impact_ready") &&
+        json_push_kv_str(doc, "action", "reflex") &&
+        json_push_kv_str(doc, "reason", "immutable_edit_epoch") &&
+        json_push_kv_str(doc, "phase", "IMPACT_READY") &&
+        json_push_kv_bool(doc, "runtime_published", false) &&
+        json_push_kv_bool(doc, "proof_complete", false) &&
+        json_push_kv_int(doc, "elapsed_us",
+                         epoch->impact_ready_us - epoch->seen_us) &&
+        json_push_kv_int(doc, "immutable_epoch_creation_us",
+                         epoch->immutable_epoch_creation_us) &&
+        json_push_kv_int(doc, "impact_calculation_us",
+                         epoch->impact_calculation_us) &&
+        json_push_kv_int(doc, "changed_bytes_read",
+                         (int64_t)epoch->changed_bytes_read) &&
+        json_push_kv_int(doc, "file_count", (int64_t)epoch->blob_count) &&
+        watch_impact_identity(doc, epoch) &&
+        watch_impact_counters(doc);
+}
+
+/* Appends one edited file's path to `files` and its blob summary to `blobs`. */
+static bool watch_impact_blob(struct json_value *files,
+                              struct json_value *blobs,
+                              const struct watch_edit_blob *blob)
+{
+    char previous_hex[65] = {0}, new_hex[65] = {0};
+    if (blob->previous_present)
+        ci_merkle_hex(&blob->previous_digest, previous_hex);
+    if (blob->new_present)
+        ci_merkle_hex(&blob->new_digest, new_hex);
+    struct json_value file, item;
+    json_init(&file); json_set_str(&file, blob->path);
+    bool ok = json_push_back(files, &file);
+    json_free(&file);
+    json_init(&item); json_set_object(&item);
+    ok = ok && json_push_kv_str(&item, "path", blob->path) &&
+        json_push_kv_bool(&item, "previous_known", blob->previous_known) &&
+        json_push_kv_bool(&item, "previous_present", blob->previous_present) &&
+        json_push_kv_str(&item, "previous_blob_sha3", previous_hex) &&
+        json_push_kv_int(&item, "previous_size",
+                         (int64_t)blob->previous_size) &&
+        json_push_kv_bool(&item, "new_present", blob->new_present) &&
+        json_push_kv_str(&item, "new_blob_sha3", new_hex) &&
+        json_push_kv_int(&item, "new_size", (int64_t)blob->new_size) &&
+        json_push_back(blobs, &item);
+    json_free(&item);
+    return ok;
+}
+
 static bool watch_emit_impact_ready(struct watch_context *ctx,
                                     const struct watch_edit_epoch *epoch)
 {
@@ -2597,68 +2739,10 @@ static bool watch_emit_impact_ready(struct watch_context *ctx,
     json_init(&doc); json_set_object(&doc);
     json_init(&files); json_set_array(&files);
     json_init(&blobs); json_set_array(&blobs);
-    bool ok = json_push_kv_str(&doc, "schema", "zcl.dev_cycle.v1") &&
-        json_push_kv_str(&doc, "producer", "reflex-reactor") &&
-        json_push_kv_str(&doc, "status", "impact_ready") &&
-        json_push_kv_str(&doc, "action", "reflex") &&
-        json_push_kv_str(&doc, "reason", "immutable_edit_epoch") &&
-        json_push_kv_str(&doc, "phase", "IMPACT_READY") &&
-        json_push_kv_bool(&doc, "runtime_published", false) &&
-        json_push_kv_bool(&doc, "proof_complete", false) &&
-        json_push_kv_int(&doc, "elapsed_us",
-                         epoch->impact_ready_us - epoch->seen_us) &&
-        json_push_kv_int(&doc, "immutable_epoch_creation_us",
-                         epoch->immutable_epoch_creation_us) &&
-        json_push_kv_int(&doc, "impact_calculation_us",
-                         epoch->impact_calculation_us) &&
-        json_push_kv_int(&doc, "changed_bytes_read",
-                         (int64_t)epoch->changed_bytes_read) &&
-        json_push_kv_int(&doc, "file_count", (int64_t)epoch->blob_count) &&
-        json_push_kv_str(&doc, "edit_epoch", epoch->id) &&
-        json_push_kv_str(&doc, "parent_epoch", epoch->parent) &&
-        json_push_kv_str(&doc, "dependency_generation",
-                         epoch->dependency_generation) &&
-        json_push_kv_str(&doc, "dependency_generation_kind",
-                         epoch->dependency_generation_kind) &&
-        json_push_kv_str(&doc, "affected_owner", epoch->owner) &&
-        json_push_kv_str(&doc, "affected_component", epoch->component) &&
-        json_push_kv_int(&doc, "make_processes", 0) &&
-        json_push_kv_int(&doc, "shell_processes", 0) &&
-        json_push_kv_int(&doc, "git_operations", 0) &&
-        json_push_kv_int(&doc, "publication_operations", 0) &&
-        json_push_kv_int(&doc, "remote_operations", 0) &&
-        json_push_kv_int(&doc, "storage_ack_waits", 0) &&
-        json_push_kv_int(&doc, "full_program_links", 0) &&
-        json_push_kv_int(&doc, "network_operations", 0) &&
-        json_push_kv_int(&doc, "sqlite_operations", 0) &&
-        json_push_kv_int(&doc, "full_tree_scans", 0);
+    bool ok = watch_impact_header(&doc, epoch);
     ok = watch_trace_emit(ctx, &doc, ok);
-    for (size_t i = 0; ok && i < epoch->blob_count; i++) {
-        const struct watch_edit_blob *blob = &epoch->blobs[i];
-        char previous_hex[65] = {0}, new_hex[65] = {0};
-        if (blob->previous_present)
-            ci_merkle_hex(&blob->previous_digest, previous_hex);
-        if (blob->new_present)
-            ci_merkle_hex(&blob->new_digest, new_hex);
-        struct json_value file, item;
-        json_init(&file); json_set_str(&file, blob->path);
-        ok = json_push_back(&files, &file);
-        json_free(&file);
-        json_init(&item); json_set_object(&item);
-        ok = ok && json_push_kv_str(&item, "path", blob->path) &&
-            json_push_kv_bool(&item, "previous_known",
-                              blob->previous_known) &&
-            json_push_kv_bool(&item, "previous_present",
-                              blob->previous_present) &&
-            json_push_kv_str(&item, "previous_blob_sha3", previous_hex) &&
-            json_push_kv_int(&item, "previous_size",
-                             (int64_t)blob->previous_size) &&
-            json_push_kv_bool(&item, "new_present", blob->new_present) &&
-            json_push_kv_str(&item, "new_blob_sha3", new_hex) &&
-            json_push_kv_int(&item, "new_size", (int64_t)blob->new_size) &&
-            json_push_back(&blobs, &item);
-        json_free(&item);
-    }
+    for (size_t i = 0; ok && i < epoch->blob_count; i++)
+        ok = watch_impact_blob(&files, &blobs, &epoch->blobs[i]);
     ok = ok && json_push_kv(&doc, "files", &files) &&
         json_push_kv(&doc, "blobs", &blobs) &&
         json_push_kv_str(&doc, "agent_next_action",
