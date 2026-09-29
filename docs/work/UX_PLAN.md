@@ -1,4 +1,4 @@
-# UX program — beautiful end-to-end UX for Z23 (2026-07-27)
+# UX program — beautiful end-to-end UX for Z23
 
 Owner directive: build a beautiful UX into z23 end to end, agent-built.
 

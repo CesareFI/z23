@@ -3,7 +3,7 @@
 > Scoped product specification, not a current-work queue. Current ordering
 > lives only in [`FORWARD_PLAN.md`](./FORWARD_PLAN.md).
 
-Owner-approved 2026-08-09 (after external review). Goal: run one command,
+Owner-approved. Goal: run one command,
 get a live private shop: stable onion identity + storefront + wallet +
 content + discovery + payment config, ending with a printed "your shop is
 live" verification. Compose existing primitives; never duplicate them.
@@ -28,7 +28,7 @@ live" verification. Compose existing primitives; never duplicate them.
 
 ### A. Persistent onion identity (the load-bearing primitive)
 
-Today dynhost mints an EPHEMERAL service every start
+Without `-onion-persist`, dynhost mints an EPHEMERAL service every start
 (`core/modules/net/src/tor_integration.c:50-52,140-147`); `tor_write_torrc`
 writes SocksPort+DataDirectory only (`:116-138`);
 `read_onion_from_hostname_file()` (`:185-194`) reads a hostname file
@@ -40,7 +40,7 @@ the stable address + a rotation path. The explorer dump
 report the persisted address across restarts. Tests: identity stable
 across two boots, rotation changes it, ephemeral default unchanged.
 
-Landed 2026-08-09: `-onion-persist` (opt-in; default was ephemeral)
+Implemented: `-onion-persist` (opt-in unless the default below applies)
 mints or reuses a seed-backed identity in
 `<datadir>/tor_data/onion_service/` and installs it as the dynhost
 service, so the explorer dump's `onion_address` is stable across
@@ -48,7 +48,7 @@ restarts; `-onion-rotate` (requires `-onion-persist`) archives the old
 identity and logs the old+new addresses. Test group:
 `test_onion_persistence`.
 
-Landed 2026-09-05: the default flips to ON when `-tor` is combined with
+The default is ON when `-tor` is combined with
 at least one `-addnode=<peer>.onion` peer — a node pinning fleet peers by
 onion needs its own onion to stay fixed too, and a fleet member otherwise
 depends on every operator remembering the flag in their unit file.
@@ -79,7 +79,7 @@ or a new store-adjacent def, following existing patterns).
 `app shop status` (read): the same verification block on demand, plus
 each unmet prerequisite named with its remedy (never a silent partial).
 
-Landed 2026-08-10: `app.shop.init` (READY_COMMAND, plan/commit) and
+Implemented: `app.shop.init` (READY_COMMAND, plan/commit) and
 `app.shop.status` (READY_READ) in `engine/composition/commands/store.def`, handlers in
 `contexts/market/controllers/src/shop_native_handler.c` with the datadir-local
 probe/provision half in `shop_native_probes.c`. Commit refuses by name on
@@ -89,12 +89,10 @@ and on the stub-Tor build; it ensures the slice-A identity, copies
 `store_ensure_schema` against the live `<datadir>/node.db`, and announces
 via the new `<datadir>/directory/apps.csv` (ONION_DIR_EXTRA_APPS_REL),
 which core/modules/net's register_self() folds into the node's own
-`/directory.json` apps row each round. Test group: `test_shop`. (Fix
-2026-08-10: the plan's commit instruction rides in `commit_input` /
-`commit_command` data fields — a self-referential `next[]` entry made the
-envelope's push_next_array drop the whole bare-plan reply to an empty
-RESPONSE_BUDGET_EXCEEDED; both leaves declare ZCL_COMMAND_LIST_BUDGET for
-remedy-string headroom, pinned by a registry-level budget regression.)
+`/directory.json` apps row each round. Test group: `test_shop`. The plan's commit instruction rides in `commit_input` /
+`commit_command` data fields (a self-referential `next[]` entry would make the
+envelope's push_next_array drop the whole bare-plan reply); both leaves declare ZCL_COMMAND_LIST_BUDGET for
+remedy-string headroom, pinned by a registry-level budget regression.
 
 ### C. `app shop reputation` (provable facts only)
 
@@ -105,7 +103,7 @@ packages, paid fulfillments (when patronage settle lands), availability
 challenge pass rate (when the challenge loop lands). Rule: never claim
 more than the cryptography proves.
 
-Landed 2026-08-10: `app.shop.reputation` (READY_READ) in
+Implemented: `app.shop.reputation` (READY_READ) in
 `engine/composition/commands/store.def`, handler in
 `contexts/market/controllers/src/shop_native_reputation.c`. The subject is one ZCODE
 publisher key (66-hex; the join key across signed releases, attestation
@@ -140,7 +138,7 @@ No bounty/want-ad exists (`bounty` grep: zero). Closest shape:
 a "wanted" ad is the same shape with reversed terms. Shop surfaces must
 leave room for a buyer-side request board; do not build it in A–C.
 
-Landed 2026-08-10: the demand board `app.shop.want.*` (branch row in
+Implemented: the demand board `app.shop.want.*` (branch row in
 `engine/composition/commands/app_features.def`, leaf rows in
 `engine/composition/commands/store.def`, handlers in
 `contexts/market/controllers/src/shop_native_want.c`). A want is a signed,
@@ -174,7 +172,7 @@ read leaves are registered in `test_read_leaf_no_datadir_write`.
 
 ### E. Seller fulfillment evidence (landed; award remains out of scope)
 
-Landed 2026-08-10:
+Implemented:
 `app.shop.want.fulfill.{post,list,status,withdraw,review}`.
 `post` seals `zcl.shop.fulfill.v1` with a seller Ed25519 key and binds the
 want id, replay nonce, direct `SHA3-256(delivered bytes)`, the bytes'

@@ -1,4 +1,4 @@
-# ZC23 distribution — options for the owner decision (2026-08-09)
+# ZC23 distribution — options for the owner decision
 
 Phase C1 of [`MARKETPLACE_NEXT.md`](./MARKETPLACE_NEXT.md). This document
 **presents options; it decides nothing.** C2 is the owner picking among

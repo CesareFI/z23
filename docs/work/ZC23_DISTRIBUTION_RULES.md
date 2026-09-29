@@ -1,4 +1,4 @@
-# ZC23 distribution — the rules (C2, owner-decided 2026-08-09)
+# ZC23 distribution — the rules (C2, owner-decided)
 
 > Retained simulation-only policy record, not a current-work queue. Current
 > ordering lives only in [`FORWARD_PLAN.md`](./FORWARD_PLAN.md).
@@ -102,7 +102,7 @@ simulation-only). C3, in order:
 4. Public schedule file + epoch receipts anyone can re-derive ("verified
    by acceptance proofs, never trusted" applies to the money too).
 
-## 8. Codified in (C2 proposer slice, 2026-08-09)
+## 8. Codified in (C2 proposer slice)
 
 Step 1 above landed as a simulation-only proposer, alongside the frozen era
 curve (never inside it): `contexts/commons/modules/vcs/src/zcode_epoch_schedule.c` (header

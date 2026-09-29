@@ -1,4 +1,4 @@
-# Onion-routed market chunk delivery — design record (2026-08-09)
+# Onion-routed market chunk delivery — design record
 
 > Status: **proven** (offer v2 wire, `/market/chunk` onion-only route,
 > buyer onion branch, node-level prefer-onion default with refuse-not-downgrade,

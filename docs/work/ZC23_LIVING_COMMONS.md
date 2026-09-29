@@ -10,7 +10,7 @@
 > and policy specification, not a current-work queue. Current ordering lives
 > only in [`FORWARD_PLAN.md`](./FORWARD_PLAN.md).
 
-Status: owner-directed specification, updated 2026-08-07. This document freezes the
+Status: owner-directed specification. This document freezes the
 safe pre-genesis policy and implementation order for creation-backed ZC23
 issuance. It authorizes specifications, codecs, validation, rebuildable
 projections, read-only views, and simulations only. It does **not** authorize a
@@ -609,221 +609,52 @@ epochs, exact active-chain/reorg proofs, independent review, custody gates,
 owner authorization, and a separately reviewed immutable genesis policy root.
 Nothing in this document grants that authorization.
 
-## Implementation ledger
+## Implementation status
 
-Updated 2026-08-07. This is an implementation record, not token or deployment
-authorization.
+This is an implementation record, not token or deployment authorization. Every
+DONE slice is simulation-only or read-only, and each passed focused tests, the
+full lint set and the pre-push source-wide suite. Local byte-reproduction of the
+shipped binary (two clean whole-program LTO builds from different source paths)
+is same-host `local_reproduction` only: it earns no independent-reproduction
+credit and does not satisfy the real genesis gate.
 
-| State | Slice | Source commit | Integrated `main` | Evidence |
-|---|---|---|---|---|
-| DONE | LC0 covenant and terminology freeze | `03f13639d` | `1ff4db5a0` | full lint 134/134; pre-push source-wide suite |
-| DONE | LC1 fixed creation-attribution wire, identity KAT, checked eight-decimal arithmetic | `0ff09fb68` | `9a8cc8672` | born-red unresolved-symbol gate, focused green, pre-push source-wide suite |
-| DONE | LC1 independent CAS cross-object verifier | `f0d1af5a1` | `f9a5c61cb` | focused attribution/Score verticals, full lint 134/134, pre-push source-wide suite |
-| DONE | LC2 ordered epoch creation-set wire and cap/no-tail arithmetic | `4cfaf6ebf` | `c41a51de1` | born-red unresolved-symbol gate, root KAT, full lint 134/134, pre-push source-wide suite |
-| DONE | LC2 CAS attribution summation and observed-MINT equality gate | `4381781b8` | `36f6f3ae5` | one-atom under/over rejection, focused attribution/Score verticals, full lint 134/134 before integration, combined-tree lint-fast, pre-push source-wide suite |
-| DONE | LC3 read-only canonical-CAS projection | `a3424aba6` | `a3424aba6` | absent-workspace non-creation, populated byte-identical rebuild, exact parsed totals, full lint 134/134, pre-push source-wide suite |
-| DONE | LC3 `zcode commons` read views | `84a54696a` | `84a54696a` | born-red unresolved handlers; status/epoch/creation/lineage/verify/rebuild green; command-key and generated-reference gates; full lint 134/134; pre-push source-wide suite |
-| DONE | LC4 simulation-only signed patronage intent | `94141b969` | `94141b969` | born-red unresolved symbols; exact wire, closed mode/trust/target enums, no-authority and simulation flags, focused green, full lint 134/134, pre-push source-wide suite |
-| DONE | LC4 intent CAS authority revalidation | `c1123dbab` | `6da2651dd` | exact patron/recipient binding, task, policy, package/creation target and network reloads; focused green, full lint 134/134, normal pre-push source-wide suite |
-| DONE | LC4 fully simulated funding receipt | `c804a20ae` | `c804a20ae` | exact intent reload, deterministic plan root, no-live-funds/no-transaction-bytes gates, focused green, full lint 134/134, pre-push source-wide suite |
-| DONE | LC4 pure settlement/refund receipt | `f618eb6c5` | `f618eb6c5` | 504-byte wire KAT, truncation zeroing, closed simulation flags, complete-or-empty evidence, signature mutation, focused green, full lint 134/134, pre-push source-wide suite |
-| DONE | LC4 settlement/refund CAS authority revalidation | `264df17ee` | `e2185eb7c` | historical intent/funding reload, full creation-evidence rederivation, exact target and recipient binding, maturity/reorg/refund gates, focused green, full lint 134/134, normal pre-push source-wide suite |
-| DONE | Shared people-and-AI mission and API contract | `d9eea8e09` | `d9eea8e09` | exact mission language, same API/evidence rules, no-world-ownership boundary, READY-versus-PLANNED truth, generated API reference, full lint 134/134, normal pre-push source-wide suite |
-| DONE | LC4 offer/funding plan-commit and exact-root show commands | `788f93149` | `c9c3e786a` | signed exact-wire input, caller-pinned context, CAS revalidation, absent-workspace plan non-creation, simulation/funding truth labels, planned settlement/refund/list fail closed, focused green and full lint 134/134 |
-| DONE | Simulation-only transaction classification | `e90c17ed6` | `e90c17ed6` | exact non-chain declaration for funding CAS commit; API reverse-mapping gate green; 901 active pre-push test groups green |
-| DONE | LC5 bounded signed continuity-policy wire | `a9cff6c45` | `d2facab04` | exact wire KAT, closed event/capsule enums, checked cycle and amount caps, anti-churn invariants, focused green, full lint 134/134, normal pre-push source-wide suite |
-| DONE | LC5 continuity-policy CAS authority rederivation | `eb258785a` | `d2facab04` | historical package/release/proof-policy/capsule reloads, package-lineage and cap checks, focused green, normal pre-push source-wide suite |
-| DONE | LC5 `zcode continuity plan\|commit\|status` commands | `90bb3d3cd` | `90bb3d3cd` | read-only plan on an absent workspace, exact signed CAS commit, exact-root status revalidation, lossless `uint64_t` display, no-funds/no-income/no-score/no-emission labels, focused green, full lint 134/134, normal pre-push source-wide suite |
-| DONE | LC5 unique continuity-event validation | `ba9f8d0d0` | `dfa62d73f` | domain-separated event key KAT; one package/capsule transition or defect root credits once; born-red/security category splitting rejected; continuity policy and evidence independently reloaded; focused green, full lint 134/134, normal pre-push source-wide suite |
-| DONE | LC4 rebuildable patronage list | `fc0813d2a` | `fc0813d2a` | deterministic CAS projection, historically signed intent/funding/continuity verification, first-failure reporting, absent-workspace non-creation, every row truthfully `funded:false` and `persisted:false`; focused green, full lint 134/134, normal pre-push 910-group suite |
-| DONE | Living Commons parser truncation sweeps | `cbaae2112` | `cbaae2112` | every truncation of creation-attribution, epoch-creation, patronage-intent/funding/settlement and continuity-policy wires fails closed; focused GCC groups green; Clang 20 ASan+UBSan green with fail-fast UBSan; full lint 134/134; normal pre-push 910-group suite |
-| DONE | Six-arm Living Commons parser fuzzer | `a0cfe7fe4` | `a0cfe7fe4` | shared libFuzzer owner, one seed per canonical parser, ASan+UBSan and leak detection; 1,537,885 mutations in 31 seconds at 49,609/s with no finding; full lint 134/134 |
-| DONE | Historical binding time and complete public-source lineage | `7c2ebdea0` | `84a816754` | born-red expiry and arbitrary-lineage failures; event-time binding verification; signed release parent and recursively verified predecessor paths; focused green; normal pre-push 901/901 active groups |
-| DONE | Neutral creation identity and security-label normalization | `66a81064e` | `66a81064e` | patron-independent event-key KAT; release-lineage continuity without funding; `SECURITY_FIX` normalized to born-red eligibility and award; focused green; normal pre-push 901/901 active groups |
-| DONE | O0 reproduction owner/reuse contract freeze | `209aac342` | `209aac342` | Score v1 frozen; existing CAS, proof, build, artifact, identity, transport and chain-test owners mapped; no live authority granted |
-| DONE | O1 simulation-only policy candidate and approved reproducer set | `08d7f1af2` | `08d7f1af2` | exact canonical roots, closed flags and award table, approval epoch/time bounds, focused green, full lint 134/134, normal pre-push 911-group suite |
-| DONE | Shared mission/API and explicit scratch-workspace safety | `6df06b721` | `6df06b721` | exact people-and-AI mission, ready `zcode guide`, canonical/live workspace refusal, generated API reference, full lint 134/134, normal pre-push 911-group suite |
-| DONE | O2 portable simulation-only reproduction challenge | `c41cebd99` | `c41cebd99` | 512-byte request KAT, public-root and confinement bindings, noncreating plan, idempotent scratch-CAS commit, focused green, full lint 134/134, normal pre-push 911-group suite |
-| DONE | O3 policy-bound reproduction qualification | `307556653` | `307556653` | complete Score/proof/request/build/manifest/policy/identity CAS rederivation; missing output, missing approval identity, stale epoch and contradictory-result rejections; command readiness derives from the evaluator; physical independence remains explicitly unproven; focused/API gates and full lint 134/134 |
-| DONE | O4 scratch attribution and epoch plan/commit | `3b45e7991` | `c7ddc1fd9` | full policy/Score/reproduction/binding/package/release/license reload; deterministic fixture anchors; exact award/mint equality; changed branch, missing predecessor, duplicate candidate, policy substitution and one-atom drift rejection; six typed shadow leaves; focused/API gates, full lint 134/134 and normal pre-push source-wide suite |
-| DONE | O5 three-party portable reproduction acceptance | `6b933d4ea` | `6b933d4ea` | requester, reproducer and observer in distinct processes/workspaces/stores; root-addressed content/package transfer; independent qualification and byte-identical projection rebuild; real swarm/DHT corruption, cancellation, fallback, resume and restart owners composed by one exact 6/6 gate; `actual_off_host_credit=false`; full lint 134/134 and normal pre-push 902-group suite |
-| DONE | O6 four linked protocol shadow simulations | `fc7b88bab`, `e237f13fa` | `e237f13fa` | actual base/SHA3/codec package verticals; three distinct mature creations followed by one empty epoch; exact predecessor and cumulative 300,000,000-atom equality; byte-identical rebuild after every epoch; boundary reorg and deterministic replacement roots; cross-epoch duplicate refusal; read-only typed report; focused creation/Score/catalog/API gates, full lint 134/134 and normal pre-push 902-group suite; `same_host_fixture_only`, real genesis gate false |
-| DONE | O7 fixture-only C23 seed and shadow-election foundation | `d623a3043` | `37a8c8aa6` | exact 721-byte dual-signed seed wire; generated/vendor/copied exclusion; height+MTP maturity and reorg gates; canonical evidence snapshot; 26-epoch decay and 10,000 weight cap; unbiased weighted selection without replacement; one ZID per seat; concentration metrics; four frozen election KAT roots; focused green, full lint 134/134, 10,000 ASan+UBSan fuzz iterations and normal pre-push 903-group suite; `simulation_only=true`, `authority_conferred=false` |
-| BLOCKED | Real SHA3 off-host independence gate | `fc62b9c4a` | `fc62b9c4a` | SHA3 Score remains honestly 4/5; local evidence and O5 same-host simulation do not prove physical independence or authorize a real shadow epoch, token genesis, mint or custody |
+| State | Slice |
+|---|---|
+| DONE | LC0 covenant and terminology freeze |
+| DONE | LC1 fixed creation-attribution wire, identity KAT, checked eight-decimal arithmetic |
+| DONE | LC1 independent CAS cross-object verifier |
+| DONE | LC2 ordered epoch creation-set wire and cap/no-tail arithmetic |
+| DONE | LC2 CAS attribution summation and observed-MINT equality gate |
+| DONE | LC3 read-only canonical-CAS projection |
+| DONE | LC3 `zcode commons` read views |
+| DONE | LC4 simulation-only signed patronage intent |
+| DONE | LC4 intent CAS authority revalidation |
+| DONE | LC4 fully simulated funding receipt |
+| DONE | LC4 pure settlement/refund receipt |
+| DONE | LC4 settlement/refund CAS authority revalidation |
+| DONE | Shared people-and-AI mission and API contract |
+| DONE | LC4 offer/funding plan-commit and exact-root show commands |
+| DONE | Simulation-only transaction classification |
+| DONE | LC5 bounded signed continuity-policy wire |
+| DONE | LC5 continuity-policy CAS authority rederivation |
+| DONE | LC5 `zcode continuity plan\ |
+| DONE | LC5 unique continuity-event validation |
+| DONE | LC4 rebuildable patronage list |
+| DONE | Living Commons parser truncation sweeps |
+| DONE | Six-arm Living Commons parser fuzzer |
+| DONE | Historical binding time and complete public-source lineage |
+| DONE | Neutral creation identity and security-label normalization |
+| DONE | O0 reproduction owner/reuse contract freeze |
+| DONE | O1 simulation-only policy candidate and approved reproducer set |
+| DONE | Shared mission/API and explicit scratch-workspace safety |
+| DONE | O2 portable simulation-only reproduction challenge |
+| DONE | O3 policy-bound reproduction qualification |
+| DONE | O4 scratch attribution and epoch plan/commit |
+| DONE | O5 three-party portable reproduction acceptance |
+| DONE | O6 four linked protocol shadow simulations |
+| DONE | O7 fixture-only C23 seed and shadow-election foundation |
+| BLOCKED | Real SHA3 off-host independence gate |
 
-Historical-truth hardening began from fetched `origin/main` `7091051aa`
-through lane integration `a96275b52`. Before the first slice was pushed, new
-main `6b410bd34` was integrated through `84a816754`; no concurrent wallet file
-was edited or overwritten. Normal hook-enabled pushes advanced remote main
-through `84a816754`, `66a81064e`, and `fc62b9c4a`. Each push passed the
-repository pre-push lane: 910 registered, 901 active run, zero cached, nine
-policy-gated, zero failures. The final source also passed full lint 134/134,
-the dedicated ZCODE ASan+UBSan lifecycle, default whole-program LTO, same-tree
-byte reproduction
-(`868e83bececddce7e6c0ba36b48962c46fcd7af5346f2c0ba92b23d6d3c1f118`,
-22,809,352 bytes), and two-path local reproduction
-(`ac79afa294c101aa77e8d81caaf4d65c1e61c30e9bbf00cb16627568caae58e6`,
-22,809,432 bytes). Both reproduction
-results are local and earn no independent-reproduction credit.
-
-Before freezing this ledger, concurrent `origin/main` `8df6c3961` was merged
-through `d77ccce74`. The disjoint vault changes were preserved exactly; the
-Living Commons documentation did not overwrite them.
-
-The `36f6f3ae5` push integrated concurrent `main` commit `00a0c54c8` through
-lane merge `4c8e7abe2`; no concurrent file was overwritten. Two complete
-pre-push attempts were blocked only by host-variable `test_simnet_perf`
-detector measurements. The exact group then passed on the same combined SHA
-(clean growth 1065 permille, injected growth 3437 permille), and the final
-normal, hook-enabled push passed. The failed attempts are not counted as
-passed gates.
-
-The `e90c17ed6` push integrated concurrent `main` commit `8265c423f` through
-lane merge `c9c3e786a`; no concurrent file was overwritten. Its first normal
-push attempt exposed an uncovered transaction-shaped command in `test_api`.
-The command was then explicitly classified as simulation-only/non-chain,
-the focused API gate and full lint passed, and the second normal push passed
-all 901 active pre-push groups. The failed attempt is not counted as a passed
-gate.
-
-Continuity authority integrated concurrent `main` through `def31919d` and
-`d2facab04`. Unique continuity evidence later integrated concurrent commit
-`64f6a8b66` through `dfa62d73f`; the combined tree exposed a pre-existing
-pipefail-sensitive parity shell assertion, fixed narrowly in `db1a0f271`.
-No concurrent implementation was overwritten, and the final normal pushes
-passed the full source-wide suite.
-
-The permanent parser truncation sweeps passed under GCC focused tests and
-under Clang 20 ASan+UBSan with `UBSAN_OPTIONS=halt_on_error=1`. Receipt
-`000022` records that the default GCC sanitizer profile is blocked before the
-selected tests by the pre-existing Sapling AVX-512 inline assembly failing to
-compile with "impossible constraints"; this is not counted as a sanitizer
-pass. Clang receipts `000023` and `000024` are passes with no sanitizer
-findings. Two different absolute-path builds produced a byte-identical shipped
-binary, 22,793,048 bytes with SHA3-256
-`29d8305557a31903e0bafca9f85f08bfda1bb26b93bb8d04ae896b83bd7e82e1`
-(`000026`). This is `local_reproduction`, not approved independent off-host
-reproduction and earns no independent-reproduction unit.
-
-The permanent `fuzz_zcode_commons` target now has ten arms covering creation
-attribution, epoch creation, patronage intent, patronage funding, patronage
-settlement/refund, continuity policy, approved reproducer set, shadow policy
-candidate, reproduction request and `c23.seed.v1` through the repository's
-shared libFuzzer object tree.
-Receipt `000027` is the born-red missing-target result; `000028` proves the
-harness builds, and `000029` records 1,537,885 leak-detecting ASan+UBSan
-mutations over the original six-arm harness with no finding. O7 additionally
-built the expanded sanitizer harness and ran 10,000 mutations with no finding.
-These bounded local runs are parser hardening, not claims of exhaustive
-input-space coverage.
-
-The final explicit `--no-cache` source-wide run executed 901 of 910 registered
-groups; nine parameter-heavy groups were policy-gated and 22 tests reported
-their documented self-skip markers. Its first attempt (`000033`) had one
-load-sensitive failure in the runner's nested exact-selector self-test. The
-exact group passed alone (`000034`), and the repository-prescribed complete
-cold retry passed 901/901 with zero cached groups (`000035`). The failed first
-attempt remains recorded and is not counted as a passed gate.
-
-Final evidence closure integrated concurrent `main` commit `58f11e335`
-through lane merge `af5865a0fa`; its service-envelope and live-state
-documentation was retained without modification.
-
-LC2's canonical set and verifier already own award truth: they independently
-reload every ordered attribution, check active-chain maturity/reorg context,
-checked-sum award atoms and require exact equality with observed MINT. The
-existing generic ZSLP MINT builder has one recipient, while the durable wallet
-intent owner binds exact transaction bytes. Therefore the final ordered
-recipient/transaction adapter remains owner-gated with real custody and is not
-replaced by a parallel canonical object. LC3 intentionally reports `partial`
-or `unknown` rather than policy-valid supply until immutable-policy and
-active-chain anchor context is wired. LC4 settlement/refund commands remain
-planned because their validators require authentic active-chain,
-immutable-policy and uniqueness callbacks; caller assertions cannot substitute
-for those authorities. LC5 policy, commands and unique continuity validation
-are complete.
-
-No live token, GENESIS, MINT, SEND, wallet, canonical datadir, production port,
-deployment, service, or consensus path was touched by these slices.
-
-O3 began from fetched `origin/main` `c41cebd9967c88332e3dfa6bd2487283c7ddce88`.
-No concurrent integration was required before source commit `307556653`.
-The evaluator intentionally reports `remote_transport_used=false` and
-`physical_independence_proven=false` for the same-host fixture. That fixture
-proves protocol wiring only and does not clear the real SHA3 off-host blocker.
-Before the O3 push, concurrent `origin/main` `468d0319281b6298f5e9669c877042c389069fac`
-was integrated through merge `10a0480b4`. Its disjoint transaction-lab files
-were preserved without modification.
-
-O4 began from fetched `origin/main` `1db74339874030462d243830222bf0f4465b55f0`.
-The first push attempt passed the complete pre-push source suite, then was
-correctly rejected because concurrent `main` advanced to
-`32f946668cc2b2df9adf562f57cc4d6f972e11a1`. That disjoint replayable
-shielded-plan work was merged without modification through `c7ddc1fd9` before
-the O4 integration retry. The failed race is not counted as a completed push.
-
-O5 began from fetched `origin/main`
-`f4e9d7653ffbe0c04f7e6e81e1cb78f3cb61ae29`. No concurrent integration was
-required before source and integration commit `6b933d4ea`. The exact
-`make zcode-reproduction-acceptance` gate passed all six selected permanent
-groups with zero cache hits. Full lint passed 134/134. The normal hook-enabled
-push ran 902 active groups with zero failures and zero cache hits; nine
-parameter-heavy groups were policy-gated and 19 tests emitted their documented
-self-skip markers. Pull verification then proved local HEAD and `origin/main`
-were both `6b933d4ea53fd087468ccfedd73c0e53bcc6aca3`.
-
-O6 began from fetched `origin/main`
-`dc4a41e5b36b9ef989ec80b0940ae2ad090236e1`. Before integration, concurrent
-vault reservation work at `9d1c2173369e2654b478df2860eb8f5ab474f1a4` was
-merged without modification through `e0046058c`. The canonical replacement-
-branch epoch roots are
-`6207eef8dacd6f6f5b9ee30b0287924a6a2d48dceed41d1445b693679e19090a`,
-`7160b9135614d8813bf05d222e0c892a7826a73bc8444f1acb294bc9145f13d9`,
-`d8dc59fae773b8e16bd084699a6bea9d4bc9096e4d821ac0245ee3228694d755`,
-and `f1e901fa6f2a4f3a85283c809d32bb65a8d65258f5f98d4129d6e460099c9dbd`.
-Their cumulative simulated issue and cumulative attribution are both exactly
-300,000,000 atoms. The first push attempt ran the complete source-wide suite
-and failed only because the new leaf's explicit protocol parent branch was
-missing; that attempt is not counted as a pass. Commit `e237f13fa` added the
-branch, regenerated the API reference, and made the exact catalog test green.
-The corrected normal push passed 902/902 active groups with zero cache hits;
-nine parameter-heavy groups were policy-gated and 19 tests emitted documented
-self-skip markers. Pull verification proved both local HEAD and `origin/main`
-at `e237f13fa404aebe5b8431e673eaf17b839afb3a`. All four rows remain
-`same_host_fixture_only`, `owner_required_green_shadow_epochs=false`, and
-`genesis_gate_satisfied=false`.
-
-O7 began from fetched `origin/main`
-`04acb417569abe051528794c1c1eaee5950882ee`. No concurrent integration was
-required before source and integration commit
-`d623a3043125f054521e26d9c4a1e01c35132f7d`. The fixed seed wire root is
-`ce3b43aabcc2a3feedaa489161bc76756d8e8a34fe14d280c0eac9293ec12c93`.
-The four fixture election roots are
-`911bf472f1eb07ee50fa706881aff82d0c56b2daa9c406697f79f4575a1c1610`,
-`89e8c26d59957de264063915eead7640ac5da1d6f17bed8125ba0edd27bd1a06`,
-`6cc3bbef00ccbd30206ac916beb62648ba223b83e5a6cc2cd2e959c95526f24b`,
-and `f46912d939cdcfbfd8937429717851cfb771702469caca60cc59666bb418a1ce`.
-The first lint attempt correctly found the test-group count ratchet at 911;
-the documentation count was updated to the code-measured 912 and the complete
-134-gate lint retry passed. The normal hook-enabled push then passed 903/903
-active groups with zero cache hits; nine parameter-heavy groups were policy-
-gated and 19 tests emitted documented self-skip markers. Pull verification
-proved local HEAD and `origin/main` both at `d623a3043`. The seed authorities,
-chain anchors and elections are test fixtures only: no production seed was
-admitted and the elections set `simulation_only=true` and
-`authority_conferred=false`.
-
-While the O7 documentation push gate ran, concurrent `main` advanced to
-`201f558b131b404949ebe07079d50db8710b21b3b`; the completed green push was
-correctly rejected as stale. Its disjoint metaverse custody-reader contention
-fix was merged without modification through `37a8c8aa6`. Both affected
-focused groups and the complete 134-gate lint set passed on the combined tree
-before the integration retry. The stale rejected push is not counted as a
-completed publication.
-
-Final O7 closure ran `make repro-verify`, which performed two clean whole-
-program LTO builds from different absolute source paths. Both shipped binaries
-were byte-identical at 22,924,056 bytes with SHA3-256
-`6d73161684a038508e222ac6ce5e0fc7b3ad4d56a5762d81be2cd3701d926c39`.
-This is same-host `local_reproduction` only; it does not prove physical
-independence, award the withheld Score unit, or satisfy the real genesis gate.
+The BLOCKED row keeps the SHA3 Score at 4/5: local evidence and the O5
+same-host simulation do not prove physical independence or authorize a real
+shadow epoch, token genesis, mint or custody.

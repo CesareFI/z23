@@ -1,11 +1,11 @@
-# ZCODE — decentralized C23 source-package hosting (foundation, 2026-07-27)
+# ZCODE — decentralized C23 source-package hosting (foundation)
 
 > User-facing entry point: [`../METAVERSE.md`](../METAVERSE.md); acceptance
 > bar: [`../METAVERSE_MVP.md`](../METAVERSE_MVP.md). This is a retained
 > foundation record, not a current-work queue. Current ordering lives only in
 > [`FORWARD_PLAN.md`](./FORWARD_PLAN.md).
 
-> **Execution order superseded on 2026-08-01.** Slices 1–13 below are the
+> **Execution order superseded.** Slices 1–13 below are the
 > shipped package-hosting foundation. The unchecked payout slices 14–15 are
 > deliberately not next. Active work is the free P2P agentic C23 development
 > network in [`ZCODE_DEVELOPMENT_NETWORK.md`](./ZCODE_DEVELOPMENT_NETWORK.md):
@@ -103,7 +103,7 @@ JSON (JSON is display-only).
         daily batched settlement — one ZSLP SEND per settlement window, not one per reward)
 15. [ ] Owner-reviewed badge issuance
 
-## ZCL fuel economics (owner directive, 2026-07-27)
+## ZCL fuel economics (owner directive)
 
 ZCL is the fuel: every ZSLP mint/send (rewards, badges) and every ZNAM
 record pays a ZCL transaction fee. Two deliverables:
@@ -181,10 +181,9 @@ All replies bounded typed JSON; publishing/rewards/badges use plan/commit.
   reject absolute paths, traversal, symlinks, device files, sockets, hidden
   executable payloads, oversized manifests, unknown modes, duplicate paths.
 
-## Current state (2026-07-27, for the next developer)
+## Current state
 
-Slices 1–13 are merged to `main` and pushed. Everything below is live in
-the tree today:
+Slices 1–13 are in `main`. Everything below is live in the tree:
 
 **Trust model (the headline).** The acceptance signal for a published
 package is **bit-identical reproduction by any third party**: an

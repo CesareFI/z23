@@ -1,18 +1,14 @@
-# Marketplace dependency map — retained 2026-08-08 checklist
+# Marketplace dependency map — retained checklist
 
-> **Retained scope record, not current work.** The 2026-08-08 owner session
-> used this ordering for the marketplace lane. Current task selection lives
+> **Retained scope record, not current work.** The owner used this ordering for the marketplace lane. Current task selection lives
 > only in [`FORWARD_PLAN.md`](./FORWARD_PLAN.md); unchecked boxes here are
 > dependency notes, not an execution queue.
 
-Historical context: the metaverse MVP lane was pushed at `d00d5a7fd`, with its
-then-current `make metaverse-verify` aggregate green. The owner selected these
-three tracks in the order retained below.
+The owner selected these three tracks in the order retained below.
 
 Subordinate to [`FORWARD_PLAN.md`](./FORWARD_PLAN.md): this does **not**
 reorder the v1 node-sovereignty lane (C3/C5/C6/C8). It is the
-metaverse/marketplace parallel lane opened by the 2026-08-08 owner
-directive. Boundaries inherited from [`MARKETPLACE_PLAN.md`](./MARKETPLACE_PLAN.md):
+metaverse/marketplace parallel lane opened by owner directive. Boundaries inherited from [`MARKETPLACE_PLAN.md`](./MARKETPLACE_PLAN.md):
 no consensus change, ZC23 stays simulation-only, live money fail-closed,
 settlement is ordinary opt-in transactions with plan/commit + fee preview.
 
@@ -38,10 +34,10 @@ plan/commit/status/retrieve` (payment → chain-verified claim →
 authorize-before-read chunk delivery → root re-derivation). The legacy
 `zmarket_offer`/`zmarket_buy` RPCs stay contained stubs by design.
 
-**2026-08-09 update — B1 finding flipped Phase B:** the buyer side was
+**B1 finding flipped Phase B:** the buyer side was
 already wired end-to-end (`app market purchase plan/commit/status/retrieve`,
 payment-gated chunk delivery, restart-safe retrieval). The genuine gap was
-the seller side. B2 (landed in `c4bf1cb40` + `aff7ecf12`) closed it:
+the seller side. B2 closed it:
 `app market offer` seals/persists/binds/announces a signed paid offer
 (fail-closed without `-externalip` + file-service port), and the purchase
 reverse-mapping gate covers the new leaf.
@@ -54,14 +50,13 @@ reverse-mapping gate covers the new leaf.
 - [x] B3. Two-node regtest acceptance script (`tools/dev/market_acceptance.sh`,
   `make test-market-acceptance`): seller offer gossip, real Sapling purchase,
   pre-confirmation retrieve refused, authorized delivery byte-identical to the
-  offer root, seller claim CONFIRMED, idempotent replays — pushed `d8caa412c`.
+  offer root, seller claim CONFIRMED, idempotent replays.
   It exposed and we fixed four product bugs (native list body shape, missing
   chunk range validators, fetch-transport wiring, txid byte order)
 - [x] B4. `make lint` + pre-push CI green on the pushed tree (919 ran,
   0 failed); docs updated (`FILE_MARKET_PROTOCOL.md`, two-laptop runbook,
   cookbook)
-- [x] B5. **Onion-routed chunk delivery** — implemented and pushed
-  (`6dcd7dafa` + `50bf175d6`): offer v2 (`endpoint_type=onion` + 32-byte
+- [x] B5. **Onion-routed chunk delivery** — implemented: offer v2 (`endpoint_type=onion` + 32-byte
   onion pubkey, dual-version decode), onion-only FAILCLOSED
   `/market/chunk` route with the same authorize-before-read gate, buyer
   SOCKS-less onion fetch with slice reassembly, node-level prefer-onion
@@ -91,7 +86,7 @@ simulation until the owner explicitly promotes it.
 - [x] C1. Options doc: [`ZC23_DISTRIBUTION_OPTIONS.md`](./ZC23_DISTRIBUTION_OPTIONS.md)
   — PoP naming (A/B/C), distribution model (evidence-scheduled vs genesis
   pool vs hybrid), earn-for-publishing mechanics, supply shape, and the
-- [x] C2. **Owner decided** (2026-08-09): Proof of Participation name,
+- [x] C2. **Owner decided**: Proof of Participation name,
   evidence-scheduled emission only (no genesis pool), 21M hard cap with
   self-tapering weekly budget, owner earns under the same rules, hosting
   earns ZC23 as the preservation class — guiding principle: incentivize
