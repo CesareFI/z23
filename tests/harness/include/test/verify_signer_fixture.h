@@ -3,7 +3,9 @@
  *          for the verify_signer group: the real worker's `qualify` output,
  *          a fixture "launcher" that writes launch receipt v2 and failure
  *          receipt v2 records, the signer, the publisher, and the receiver
- *          (cold -E and -c, key v2, zcl_verify_store_lookup_fixture).
+ *          (cold -E and -c, key v2, zcl_verify_store_lookup_site_fixture,
+ *          which runs production's policy, pins and store walk under the
+ *          fixture's own anchor).
  *
  * Every trust root is a test directory the fixture creates and every UID
  * is the test's own; the signer and publisher accept that only through
@@ -37,9 +39,13 @@ struct vsg_launch {
     bool failure;
 };
 
-/* A fresh verifier state directory: store/, locks/fixed_result.lock,
+/* A fresh site: anchor/etc/z23verify holds the trust files (store.policy,
+ * pins, profile, verifier.pub, box_signer.pub) and dir is
+ * anchor/var/lib/z23verify with store/, locks/fixed_result.lock,
  * launches/<id>/, publish-tmp/, conflicts/, staging/ and key/signer.seed. */
 struct vsg_state {
+    char anchor[PATH_MAX];
+    char etc[PATH_MAX];
     char dir[PATH_MAX];
     char staging[PATH_MAX];
     char key_dir[PATH_MAX];
@@ -51,7 +57,6 @@ struct vsg_state {
 /* Built in place; never copy it. */
 struct vsg_world {
     char root[PATH_MAX];
-    char etc[PATH_MAX];
     char build[PATH_MAX];
     char key_root[PATH_MAX];
     char cwd[PATH_MAX];
@@ -75,12 +80,12 @@ void vsg_world_free(struct vsg_world *w);
 
 bool vsg_state_make(struct vsg_world *w, struct vsg_state *s);
 
-/* Rewrite one trust file under etc/ (mode 0444 or 0644 as installed). */
-bool vsg_etc_write(const struct vsg_world *w, const char *name,
+/* Rewrite one trust file in the site's etc (0444, or 0644 for a key). */
+bool vsg_etc_write(const struct vsg_state *s, const char *name,
                    const void *bytes, size_t len);
-bool vsg_etc_pins(const struct vsg_world *w,
+bool vsg_etc_pins(const struct vsg_state *s,
                   const struct zcl_fixed_result_v2_roots *pins);
-bool vsg_etc_pubkey(const struct vsg_world *w, const char *name,
+bool vsg_etc_pubkey(const struct vsg_state *s, const char *name,
                     const uint8_t pub[32]);
 
 /* Replace a file's bytes and mode by unlink and exclusive create. */
@@ -89,20 +94,20 @@ bool vsg_file_replace(const char *dir, const char *name, const void *bytes,
 
 bool vsg_path(char out[PATH_MAX], const char *a, const char *b);
 
-struct zcl_frs_fixture vsg_signer(const struct vsg_world *w,
-                                  const struct vsg_state *s);
-struct zcl_frp_fixture vsg_publisher(const struct vsg_world *w,
-                                     const struct vsg_state *s);
+struct zcl_frs_fixture vsg_signer(const struct vsg_state *s);
+struct zcl_frp_fixture vsg_publisher(const struct vsg_state *s);
 
 /* Seal the launch in `launch_dir` with `fx`. */
 void vsg_seal(const struct zcl_frs_fixture *fx, const char *launch_dir,
               struct zcl_frs_result *out);
 
 /* The receiver: its own cold -E and -c of result.c into build/<tag>/,
- * key v2 from its own inputs, then the store lookup. `cold_object` gets
+ * key v2 from its own inputs, then the site store lookup (allow_same_uid
+ * false is the production receiver's refusal). `cold_object` gets
  * the cold object's bytes. */
 bool vsg_receive(struct vsg_world *w, const struct vsg_state *s,
-                 const char *tag, struct zcl_verify_store_result *out,
+                 const char *tag, bool allow_same_uid,
+                 struct zcl_verify_store_result *out,
                  struct vsg_bytes *cold_object);
 
 void vsg_bytes_free(struct vsg_bytes *b);

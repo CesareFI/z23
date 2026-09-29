@@ -117,20 +117,20 @@ void vsg_hex(const uint8_t *bytes, size_t len, char out[65])
 
 /* ── trust files ──────────────────────────────────────────────────────── */
 
-bool vsg_etc_write(const struct vsg_world *w, const char *name,
+bool vsg_etc_write(const struct vsg_state *s, const char *name,
                    const void *bytes, size_t len)
 {
     bool pub = strstr(name, ".pub") != NULL;
-    return vsg_file_replace(w->etc, name, bytes, len, pub ? 0644u : 0444u);
+    return vsg_file_replace(s->etc, name, bytes, len, pub ? 0644u : 0444u);
 }
 
-bool vsg_etc_pins(const struct vsg_world *w,
+bool vsg_etc_pins(const struct vsg_state *s,
                   const struct zcl_fixed_result_v2_roots *pins)
 {
     uint8_t bytes[2048];
     size_t len = 0;
     return zcl_fr_pins_encode(pins, bytes, sizeof(bytes), &len, NULL) &&
-           vsg_etc_write(w, ZCL_FRT_PINS, bytes, len);
+           vsg_etc_write(s, ZCL_FRT_PINS, bytes, len);
 }
 
 static bool vsg_pub_file(const char *dir, const char *name,
@@ -142,10 +142,27 @@ static bool vsg_pub_file(const char *dir, const char *name,
     return vsg_file_replace(dir, name, hex, 65u, mode);
 }
 
-bool vsg_etc_pubkey(const struct vsg_world *w, const char *name,
+bool vsg_etc_pubkey(const struct vsg_state *s, const char *name,
                     const uint8_t pub[32])
 {
-    return vsg_pub_file(w->etc, name, pub, 0644u);
+    return vsg_pub_file(s->etc, name, pub, 0644u);
+}
+
+/* The site's etc as root installs it, with this test's UID in the policy
+ * where production names 60092 and 0. */
+static bool vsg_site_etc(const struct vsg_world *w, const struct vsg_state *s)
+{
+    char policy[96];
+    unsigned me = (unsigned)geteuid();
+    int n = snprintf(policy, sizeof(policy),
+                     "z23verify.store.v1\nsigner_uid=%u\npublisher_uid=%u\n",
+                     me, me);
+    return n > 0 && (size_t)n < sizeof(policy) &&
+           vsg_etc_write(s, ZCL_FRT_POLICY, policy, (size_t)n) &&
+           vsg_etc_pins(s, &w->pins) &&
+           vsg_etc_write(s, ZCL_FRT_PROFILE, w->profile.p, w->profile.n) &&
+           vsg_etc_pubkey(s, ZCL_FRT_VERIFIER_PUB, w->pub) &&
+           vsg_etc_pubkey(s, ZCL_FRT_BOX_PUB, w->box_pub);
 }
 
 static bool vsg_trust_files(struct vsg_world *w)
@@ -161,10 +178,6 @@ static bool vsg_trust_files(struct vsg_world *w)
     test_vc_pins(&w->pins);
     char key_pub[PATH_MAX];
     return vsg_read(VSG_PROFILE, &w->profile) &&
-           vsg_etc_pins(w, &w->pins) &&
-           vsg_etc_write(w, ZCL_FRT_PROFILE, w->profile.p, w->profile.n) &&
-           vsg_etc_pubkey(w, ZCL_FRT_VERIFIER_PUB, w->pub) &&
-           vsg_etc_pubkey(w, ZCL_FRT_BOX_PUB, w->box_pub) &&
            test_vs_key_root_make(w->key_root) &&
            vsg_pub_file(w->key_root, "verifier.pub", w->pub, 0644u) &&
            vsg_path(key_pub, w->key_root, "verifier.pub") &&
@@ -359,12 +372,25 @@ static bool vsg_launch_dir(const struct vsg_world *w, const char *launches,
            vsg_file_replace(out, "launch.bin", l->bytes, l->len, 0444u);
 }
 
+/* anchor/etc/z23verify and anchor/var/lib/z23verify, the site layout
+ * production walks from "/". */
+static bool vsg_site_dirs(struct vsg_world *w, struct vsg_state *s)
+{
+    char name[32], etc[PATH_MAX], var[PATH_MAX], lib[PATH_MAX];
+    (void)snprintf(name, sizeof(name), "site-%u", w->states++);
+    return vsg_subdir(s->anchor, w->root, name, 0755u) &&
+           vsg_subdir(etc, s->anchor, "etc", 0755u) &&
+           vsg_subdir(s->etc, etc, "z23verify", 0755u) &&
+           vsg_subdir(var, s->anchor, "var", 0755u) &&
+           vsg_subdir(lib, var, "lib", 0755u) &&
+           vsg_subdir(s->dir, lib, "z23verify", 0755u);
+}
+
 bool vsg_state_make(struct vsg_world *w, struct vsg_state *s)
 {
-    char name[32], dir[PATH_MAX], launches[PATH_MAX];
+    char dir[PATH_MAX], launches[PATH_MAX];
     memset(s, 0, sizeof(*s));
-    (void)snprintf(name, sizeof(name), "state-%u", w->states++);
-    return vsg_subdir(s->dir, w->root, name, 0755u) &&
+    return vsg_site_dirs(w, s) && vsg_site_etc(w, s) &&
            vsg_subdir(s->staging, s->dir, "staging", 0700u) &&
            vsg_subdir(s->key_dir, s->dir, "key", 0700u) &&
            vsg_file_replace(s->key_dir, ZCL_FRS_KEY_NAME, w->seed, 32u,
@@ -389,8 +415,7 @@ bool vsg_world_make(struct vsg_world *w)
     if (!test_mkdtemp(made, sizeof(made), "z23-verify-signer") ||
         !realpath(made, w->root))
         return false;
-    return vsg_subdir(w->etc, w->root, "etc", 0755u) &&
-           vsg_subdir(w->build, w->root, "build", 0700u) &&
+    return vsg_subdir(w->build, w->root, "build", 0700u) &&
            vsg_trust_files(w) && vsg_worker(w) && vsg_receipts(w);
 }
 
@@ -416,23 +441,21 @@ void vsg_world_free(struct vsg_world *w)
 
 /* ── signer and publisher fixtures ────────────────────────────────────── */
 
-static struct zcl_frt_fixture vsg_trust(const struct vsg_world *w)
+static struct zcl_frt_fixture vsg_trust(const struct vsg_state *s)
 {
     uint32_t me = (uint32_t)geteuid();
-    return (struct zcl_frt_fixture){w->etc, me, me, me, me};
+    return (struct zcl_frt_fixture){s->etc, me, me, me, me};
 }
 
-struct zcl_frs_fixture vsg_signer(const struct vsg_world *w,
-                                  const struct vsg_state *s)
+struct zcl_frs_fixture vsg_signer(const struct vsg_state *s)
 {
-    return (struct zcl_frs_fixture){vsg_trust(w), s->key_dir, s->staging,
+    return (struct zcl_frs_fixture){vsg_trust(s), s->key_dir, s->staging,
                                     true};
 }
 
-struct zcl_frp_fixture vsg_publisher(const struct vsg_world *w,
-                                     const struct vsg_state *s)
+struct zcl_frp_fixture vsg_publisher(const struct vsg_state *s)
 {
-    return (struct zcl_frp_fixture){vsg_trust(w), s->staging, s->dir, 2000u,
+    return (struct zcl_frp_fixture){vsg_trust(s), s->staging, s->dir, 2000u,
                                     true};
 }
 
@@ -486,7 +509,8 @@ static bool vsg_cold(const struct vsg_world *w, int dirfd, bool preprocess,
 }
 
 bool vsg_receive(struct vsg_world *w, const struct vsg_state *s,
-                 const char *tag, struct zcl_verify_store_result *out,
+                 const char *tag, bool allow_same_uid,
+                 struct zcl_verify_store_result *out,
                  struct vsg_bytes *cold_object)
 {
     char outdir[PATH_MAX], path[PATH_MAX];
@@ -508,9 +532,8 @@ bool vsg_receive(struct vsg_world *w, const struct vsg_state *s,
             w->profile.n, w->cwd, c.argv, c.argc, k_vsg_env, 4u, dirfd, x, NULL);
     }
     if (ok)
-        zcl_verify_store_lookup_fixture(s->dir, (unsigned)geteuid(),
-                                        (unsigned)geteuid(), true,
-                                        &x->expected, &w->pins, &w->box, out);
+        zcl_verify_store_lookup_site_fixture(s->anchor, allow_same_uid,
+                                             &x->expected, &w->box, out);
     if (dirfd >= 0) (void)close(dirfd);
     free(e.lines);
     free(c.lines);

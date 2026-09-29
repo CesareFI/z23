@@ -90,8 +90,12 @@ What the rehearsal does:
 4. The publisher publishes.
 5. The receiver runs its own cold `-E` and `-c` through `/proc/self/fd/N`
    paths.
-6. The receiver rebuilds key v2 and gets a HIT whose object is byte-equal to
-   its cold object.
+6. The receiver rebuilds key v2 and looks it up with
+   `zcl_verify_store_lookup_site_fixture`: production's own policy, pins and
+   store walk, under a test-owned anchor holding `etc/z23verify` and
+   `var/lib/z23verify`. It gets a HIT whose object is byte-equal to its cold
+   object. Without the fixture flag the same lookup refuses
+   `store_owner_same_uid`.
 
 The object hash holds only for the pinned `result.c` and headers. The worker
 hardcodes their SHA3s, so editing them fails the group until they are
