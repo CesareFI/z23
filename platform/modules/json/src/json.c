@@ -303,76 +303,66 @@ static size_t json_escape_str(const char *s, char *buf, size_t buflen)
     return pos;
 }
 
-static size_t json_write_literal(const char *text, size_t n, char *buf,
-                                 size_t buflen)
-{
-    if (n <= buflen) memcpy(buf, text, n);
-    return n;
-}
-
-static size_t json_write_scalar(const struct json_value *v, char *buf,
-                                size_t buflen)
-{
-    char tmp[64];
-    int n;
-    switch (v->type) {
-    case JSON_BOOL:
-        return v->val.b ? json_write_literal("true", 4, buf, buflen)
-                        : json_write_literal("false", 5, buf, buflen);
-    case JSON_INT:
-        n = snprintf(tmp, sizeof(tmp), "%" PRId64, v->val.i);
-        return json_write_literal(tmp, (size_t)n, buf, buflen);
-    case JSON_REAL:
-        n = snprintf(tmp, sizeof(tmp), "%.8g", v->val.d);
-        return json_write_literal(tmp, (size_t)n, buf, buflen);
-    case JSON_STR:
-        return json_escape_str(v->val.s ? v->val.s : "", buf, buflen);
-    default:
-        return json_write_literal("null", 4, buf, buflen);
-    }
-}
-
-static size_t json_write_array(const struct json_value *v, char *buf,
-                               size_t buflen)
-{
-    size_t pos = 0;
-    if (pos < buflen) { buf[pos] = '['; } pos++;
-    for (size_t i = 0; i < v->num_children; i++) {
-        if (i > 0) { if (pos < buflen) { buf[pos] = ','; } pos++; }
-        pos += json_write(&v->children[i], buf + pos,
-                          buflen > pos ? buflen - pos : 0);
-    }
-    if (pos < buflen) { buf[pos] = ']'; } pos++;
-    return pos;
-}
-
-static size_t json_write_object(const struct json_value *v, char *buf,
-                                size_t buflen)
-{
-    size_t pos = 0;
-    if (pos < buflen) { buf[pos] = '{'; } pos++;
-    for (size_t i = 0; i < v->num_children; i++) {
-        if (i > 0) { if (pos < buflen) { buf[pos] = ','; } pos++; }
-        pos += json_escape_str(v->keys[i] ? v->keys[i] : "",
-                               buf + pos,
-                               buflen > pos ? buflen - pos : 0);
-        if (pos < buflen) { buf[pos] = ':'; } pos++;
-        pos += json_write(&v->children[i], buf + pos,
-                          buflen > pos ? buflen - pos : 0);
-    }
-    if (pos < buflen) { buf[pos] = '}'; } pos++;
-    return pos;
-}
-
 size_t json_write(const struct json_value *v, char *buf, size_t buflen)
 {
-    size_t pos;
-    if (v->type == JSON_ARR)
-        pos = json_write_array(v, buf, buflen);
-    else if (v->type == JSON_OBJ)
-        pos = json_write_object(v, buf, buflen);
-    else
-        pos = json_write_scalar(v, buf, buflen);
+    size_t pos = 0;
+    switch (v->type) {
+    case JSON_NULL:
+        if (pos + 4 <= buflen) memcpy(buf + pos, "null", 4);
+        pos += 4;
+        break;
+    case JSON_BOOL:
+        if (v->val.b) {
+            if (pos + 4 <= buflen) memcpy(buf + pos, "true", 4);
+            pos += 4;
+        } else {
+            if (pos + 5 <= buflen) memcpy(buf + pos, "false", 5);
+            pos += 5;
+        }
+        break;
+    case JSON_INT: {
+        char tmp[32];
+        int n = snprintf(tmp, sizeof(tmp), "%" PRId64, v->val.i);
+        if (pos + (size_t)n <= buflen) memcpy(buf + pos, tmp, (size_t)n);
+        pos += (size_t)n;
+        break;
+    }
+    case JSON_REAL: {
+        char tmp[64];
+        int n = snprintf(tmp, sizeof(tmp), "%.8g", v->val.d);
+        if (pos + (size_t)n <= buflen) memcpy(buf + pos, tmp, (size_t)n);
+        pos += (size_t)n;
+        break;
+    }
+    case JSON_STR:
+        pos += json_escape_str(v->val.s ? v->val.s : "", buf + pos,
+                               buflen > pos ? buflen - pos : 0);
+        break;
+    case JSON_ARR: {
+        if (pos < buflen) { buf[pos] = '['; } pos++;
+        for (size_t i = 0; i < v->num_children; i++) {
+            if (i > 0) { if (pos < buflen) { buf[pos] = ','; } pos++; }
+            pos += json_write(&v->children[i], buf + pos,
+                              buflen > pos ? buflen - pos : 0);
+        }
+        if (pos < buflen) { buf[pos] = ']'; } pos++;
+        break;
+    }
+    case JSON_OBJ: {
+        if (pos < buflen) { buf[pos] = '{'; } pos++;
+        for (size_t i = 0; i < v->num_children; i++) {
+            if (i > 0) { if (pos < buflen) { buf[pos] = ','; } pos++; }
+            pos += json_escape_str(v->keys[i] ? v->keys[i] : "",
+                                   buf + pos,
+                                   buflen > pos ? buflen - pos : 0);
+            if (pos < buflen) { buf[pos] = ':'; } pos++;
+            pos += json_write(&v->children[i], buf + pos,
+                              buflen > pos ? buflen - pos : 0);
+        }
+        if (pos < buflen) { buf[pos] = '}'; } pos++;
+        break;
+    }
+    }
     /* Always NUL-terminate, even on truncation (pos >= buflen): callers pass
      * fixed buffers and then %s-print or strlen the result, so leaving it
      * unterminated is an over-read. On truncation, terminate at the last byte. */
