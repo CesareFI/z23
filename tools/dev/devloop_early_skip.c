@@ -232,6 +232,21 @@ static bool es_path_join(const char *dir, const char *name,
     return n > 0 && (size_t)n < sizeof(joined) && es_path_fold(joined, out);
 }
 
+/* Lexical folding across a symlink can name a different file than the
+ * compiler opens. Refuse any parent segment until resolution is filesystem
+ * faithful. */
+static bool es_parent_segment(const char *path)
+{
+    for (const char *p = path; *p;) {
+        p += strspn(p, "/");
+        size_t len = strcspn(p, "/");
+        if (len == 2 && p[0] == '.' && p[1] == '.')
+            return true;
+        p += len;
+    }
+    return false;
+}
+
 /* ── the include graph, shared by every group of one decision ─────────── */
 
 struct es_node {
@@ -300,6 +315,12 @@ static void es_graph_dirs_pass(struct es_graph *g, const char *const *argv,
         const char *dir = es_flag_dir(argv, argc, &i, flag);
         if (!dir || !dir[0])
             continue;
+        char probe[ES_PATH_MAX];
+        if (es_parent_segment(dir) ||
+            !es_path_join(dir, "early_skip_probe.h", probe)) {
+            g->unmodeled = dir;
+            return;
+        }
         if (g->ndirs == ES_DIRS_MAX) {
             g->unmodeled = "(include dirs past their bound)";
             return;
@@ -312,6 +333,9 @@ static void es_graph_dirs_pass(struct es_graph *g, const char *const *argv,
  * this source-text key cannot model. */
 static bool es_flag_unmodeled(const char *arg)
 {
+    if (strncmp(arg, "-Wp,", 4) == 0 ||
+        strcmp(arg, "-Xpreprocessor") == 0)
+        return true;
     if (strstr(arg, "_Pragma") ||
         strstr(arg, "__has_include") || strstr(arg, "__has_embed") ||
         strstr(arg, "__DATE__") || strstr(arg, "__TIME__") ||
@@ -494,7 +518,9 @@ static bool es_search(struct es_graph *g, enum es_inc kind, const char *name,
     *out = ES_NONE;
     char path[ES_PATH_MAX];
     for (size_t i = kind == ES_INC_QUOTE ? 0 : g->nquote; i < g->ndirs; i++) {
-        if (es_path_join(g->dirs[i], name, path) && es_regular(g, path))
+        if (!es_path_join(g->dirs[i], name, path))
+            return false;
+        if (es_regular(g, path))
             return es_node_of(g, path, out) &&
                    es_map_put(&g->searched, cache_key, *out);
     }
@@ -515,7 +541,9 @@ static bool es_resolve(struct es_graph *g, uint32_t idx, enum es_inc kind,
             *slash = '\0';
         else
             dir[0] = '\0';
-        if (es_path_join(dir, name, path) && es_regular(g, path))
+        if (!es_path_join(dir, name, path))
+            return false;
+        if (es_regular(g, path))
             return es_node_of(g, path, out);
     }
     return es_search(g, kind, name, out);
@@ -531,6 +559,10 @@ static bool es_scan_directive(struct es_graph *g, uint32_t idx,
         es_node_bad(g, idx, kind == ES_INC_NEXT ? "include-next"
                                                 : "include-computed",
                     g->nodes[idx].path);
+        return true;
+    }
+    if (es_parent_segment(name)) {
+        es_node_bad(g, idx, "include-parent", name);
         return true;
     }
     if (!es_resolve(g, idx, kind, name, &dep))
@@ -732,6 +764,18 @@ static bool es_lone_cr(const char *text, size_t len)
     return false;
 }
 
+/* A compiler can discard a UTF-8 BOM before recognizing a directive.
+ * A byte-oriented directive scan would otherwise miss its first include. */
+static bool es_utf8_bom(const char *text, size_t len)
+{
+    for (size_t i = 0; i + 2 < len; i++)
+        if ((unsigned char)text[i] == 0xef &&
+            (unsigned char)text[i + 1] == 0xbb &&
+            (unsigned char)text[i + 2] == 0xbf)
+            return true;
+    return false;
+}
+
 static void es_node_load(struct es_graph *g, uint32_t idx)
 {
     char full[ES_PATH_MAX * 2];
@@ -748,6 +792,8 @@ static void es_node_load(struct es_graph *g, uint32_t idx)
         es_node_bad(g, idx, "trigraph", g->nodes[idx].path);
     if (es_lone_cr(text, len))
         es_node_bad(g, idx, "lone-cr", g->nodes[idx].path);
+    if (es_utf8_bom(text, len))
+        es_node_bad(g, idx, "utf8-bom", g->nodes[idx].path);
     len = es_splice_lines(text, len);
     es_strip_comments(text, len);
     bool uncertain = false;

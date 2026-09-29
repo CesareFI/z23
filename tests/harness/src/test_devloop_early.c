@@ -1077,6 +1077,49 @@ static int de_test_skip_lone_cr(struct de_state *s)
     return failures;
 }
 
+static int de_test_skip_bom(struct de_state *s)
+{
+    int failures = 0;
+    TEST("devloop_early: a compiler-accepted UTF-8 BOM refuses reuse") {
+        ASSERT(de_hole_setup(s));
+        ASSERT(de_write(s->fx.root, "tools/dev/early_skip_bom.h",
+                        "#define EARLY_SKIP_BOM 11\n"));
+        ASSERT(de_write(s->fx.root, DE_HOLE_A,
+                        "\xef\xbb\xbf#include \"early_skip_bom.h\"\n"
+                        "int early_hole_a(void) { return EARLY_SKIP_BOM; }\n"));
+        de_hole_decide(s, DE_HOLE_FLAGS);
+        ASSERT(de_hole_is(s, "unvouched", "utf8-bom"));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int de_test_skip_unmodeled_paths(struct de_state *s)
+{
+    int failures = 0;
+    TEST("devloop_early: parent segments and preprocessor flags refuse reuse") {
+        ASSERT(de_hole_setup(s));
+        ASSERT(de_write(s->fx.root, DE_HOLE_A,
+                        "#include <early_parent.h>\n"
+                        "int early_hole_a(void) { return 1; }\n"));
+        de_hole_decide(s, DE_HOLE_FLAGS " -I../external");
+        ASSERT(de_hole_is(s, "unvouched", "cflags-unmodeled"));
+        de_hole_decide(s, DE_HOLE_FLAGS " -Ialias/../external");
+        ASSERT(de_hole_is(s, "unvouched", "cflags-unmodeled"));
+        ASSERT(de_write(s->fx.root, DE_HOLE_A,
+                        "#include <alias/../early_parent.h>\n"
+                        "int early_hole_a(void) { return 1; }\n"));
+        de_hole_decide(s, DE_HOLE_FLAGS);
+        ASSERT(de_hole_is(s, "unvouched", "include-parent"));
+        ASSERT(de_write(s->fx.root, DE_HOLE_A,
+                        "int early_hole_a(void) { return 1; }\n"));
+        de_hole_decide(s, DE_HOLE_FLAGS " -Wp,-include,early_parent.h");
+        ASSERT(de_hole_is(s, "unvouched", "cflags-unmodeled"));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int de_test_skip_trigraph_include(struct de_state *s)
 {
     int failures = 0;
@@ -1483,6 +1526,8 @@ static int de_test_restart(void)
         failures += de_test_skip_digraph_include(s);
         failures += de_test_skip_directive_space(s);
         failures += de_test_skip_lone_cr(s);
+        failures += de_test_skip_bom(s);
+        failures += de_test_skip_unmodeled_paths(s);
         failures += de_test_skip_trigraph_include(s);
         failures += de_test_skip_spliced_directive(s);
         failures += de_test_skip_has_include(s);
