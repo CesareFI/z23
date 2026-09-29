@@ -3304,6 +3304,97 @@ static void check_state_write_does_not_wait_behind_catchup(int *failures)
         (*failures)++;
 }
 
+/* Poisoned WAL snapshot recovery. The db_service worker shares its one handle
+ * with bounded health reads (db_service_open_query_db). If a read transaction
+ * is leaked on that handle — an explicit BEGIN whose COMMIT/ROLLBACK never
+ * runs — it pins an old WAL snapshot. Once any other connection commits,
+ * every write on the shared handle fails instantly with BUSY_SNAPSHOT (the
+ * busy handler never runs: there is no lock to wait on, only a stale
+ * snapshot) and every checkpoint with SQLITE_LOCKED, forever, until the
+ * snapshot is rolled back. The worker must recognize a busy-class failure on
+ * a handle holding no write transaction, roll the stale snapshot back, and
+ * retry the job once. */
+struct sqlite_poison_fixture {
+    char dir[256], path[320];
+    struct node_db ndb;
+    struct db_service svc;
+    int write_calls;
+    bool wrote;
+};
+
+static bool sqlite_poison_write_job(struct node_db *ndb, void *ctx)
+{
+    struct sqlite_poison_fixture *f = ctx;
+    uint8_t value = 0x5c;
+    f->write_calls++;
+    return node_db_state_set(ndb, "poison-probe", &value, sizeof(value));
+}
+
+static bool sqlite_poison_open(struct sqlite_poison_fixture *f)
+{
+    memset(f, 0, sizeof(*f));
+    test_make_tmpdir(f->dir, sizeof(f->dir), "sqlite", "poisoned-snapshot");
+    snprintf(f->path, sizeof(f->path), "%s/node.db", f->dir);
+    db_service_init(&f->svc);
+    return node_db_open(&f->ndb, f->path) &&
+           db_service_attach(&f->svc, &f->ndb) &&
+           db_service_start_test_worker(&f->svc);
+}
+
+/* Leak an explicit deferred read transaction on the shared handle: BEGIN plus
+ * one SELECT pins the current WAL snapshot and no closer ever comes. Issued
+ * via node_db_exec because the ar_after_commit depth counter is thread-local
+ * and must stay balanced on the harness thread; the ROLLBACK that clears this
+ * arrives on the worker thread. */
+static bool sqlite_poison_pin_snapshot(struct sqlite_poison_fixture *f)
+{
+    uint8_t got = 0;
+    size_t got_len = 0;
+    if (!node_db_exec(&f->ndb, "BEGIN DEFERRED"))
+        return false;
+    (void)node_db_state_get(&f->ndb, "any-key", &got, sizeof(got), &got_len);
+    return sqlite3_txn_state(f->ndb.db, NULL) == SQLITE_TXN_READ;
+}
+
+static bool sqlite_poison_advance_wal(struct sqlite_poison_fixture *f)
+{
+    struct node_db adv = {0};
+    uint8_t value = 1;
+    bool ok = node_db_open(&adv, f->path) &&
+              node_db_state_set(&adv, "wal-advance", &value, sizeof(value));
+    node_db_close(&adv);
+    return ok;
+}
+
+static bool sqlite_poison_probe(struct sqlite_poison_fixture *f)
+{
+    uint8_t got = 0;
+    size_t got_len = 0;
+    f->wrote = db_service_run_write(&f->svc, sqlite_poison_write_job, f);
+    return f->wrote && f->write_calls == 2 &&
+           sqlite3_get_autocommit(f->ndb.db) != 0 &&
+           node_db_state_get(&f->ndb, "poison-probe", &got, sizeof(got),
+                             &got_len) &&
+           got_len == 1 && got == 0x5c;
+}
+
+static void check_db_worker_recovers_poisoned_snapshot(int *failures)
+{
+    struct sqlite_poison_fixture f;
+    bool ok = sqlite_poison_open(&f);
+    if (ok)
+        ok = sqlite_poison_pin_snapshot(&f) && sqlite_poison_advance_wal(&f);
+    if (ok)
+        ok = sqlite_poison_probe(&f);
+    db_service_stop(&f.svc);
+    node_db_close(&f.ndb);
+    test_rm_rf_recursive(f.dir);
+    printf("SQLite worker recovers poisoned WAL snapshot: %s (wrote=%d calls=%d)\n",
+           ok ? "OK" : "FAIL", f.wrote, f.write_calls);
+    if (!ok)
+        (*failures)++;
+}
+
 struct sqlite_projection_interleave {
     struct node_db *competitor;
     int calls;
@@ -3743,6 +3834,7 @@ int test_sqlite(void) {
      * transient lock, and persist the value anyway. */
     check_sqlite_48_sqlite_node_state_detached_fallback_wait(&failures);
     check_state_write_does_not_wait_behind_catchup(&failures);
+    check_db_worker_recovers_poisoned_snapshot(&failures);
 
     /* 100k-row UTXO open + random-read smoke test. Guards the
      * class of bug the brief worries about: a cache-size tweak that

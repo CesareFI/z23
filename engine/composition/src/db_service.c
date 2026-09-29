@@ -67,6 +67,49 @@ static bool db_service_perform_job(struct db_service *svc,
     }
 }
 
+/* Poisoned WAL snapshot recovery. The worker's handle is shared with bounded
+ * health reads (db_service_open_query_db), so a read transaction leaked on it
+ * — an explicit BEGIN whose COMMIT/ROLLBACK never runs — pins an old WAL
+ * snapshot. Once any other connection commits, every write on the handle
+ * fails instantly with SQLITE_BUSY_SNAPSHOT (the busy handler never runs:
+ * there is no lock to wait on, only a stale snapshot) and every checkpoint
+ * with SQLITE_LOCKED, forever, until the snapshot is rolled back. On a
+ * busy-class job failure on a handle holding an open read transaction in
+ * explicit-txn mode, roll the stale snapshot back so the job can be retried.
+ *
+ * Never touch TXN_WRITE: an open write transaction belongs to a caller-owned
+ * multi-job sequence whose owner restarts itself (node_db_catchup). Never
+ * touch autocommit mode: a busy error there is genuine cross-connection
+ * contention and the live readers are making progress. Recovery therefore
+ * fires only for the wedged steady state — no writes in flight, no writer
+ * able to start, nothing improving on its own. */
+static bool db_service_recover_poisoned_snapshot(struct db_service *svc,
+                                                 const struct db_service_job *job)
+{
+    struct node_db *ndb = svc->node_db;
+    int err, txn;
+
+    if (!ndb || !ndb->db)
+        return false;
+    err = sqlite3_extended_errcode(ndb->db);
+    if ((err & 0xff) != SQLITE_BUSY && (err & 0xff) != SQLITE_LOCKED)
+        return false;
+    txn = sqlite3_txn_state(ndb->db, NULL);
+    if (txn != SQLITE_TXN_READ || sqlite3_get_autocommit(ndb->db))
+        return false;
+    LOG_WARN("db_service",
+             "recovering poisoned WAL snapshot: job_type=%d err=%d — rolling "
+             "back the leaked read transaction and retrying the job once",
+             (int)job->type, err);
+    if (!node_db_rollback(ndb)) {
+        LOG_WARN("db_service",
+                 "poisoned-snapshot rollback failed: %s",
+                 sqlite3_errmsg(ndb->db));
+        return false;
+    }
+    return true;
+}
+
 struct db_service_batch_size_ctx {
     int batch_size;
     bool ok;
@@ -178,6 +221,12 @@ static void *db_service_worker_main(void *arg)
             continue;
 
         job->success = db_service_perform_job(svc, job);
+        /* The direct worker-thread path in db_service_submit_job() skips this
+         * on purpose: nested calls there run inside caller-owned sequences
+         * that manage their own transactions. */
+        if (!job->success &&
+            db_service_recover_poisoned_snapshot(svc, job))
+            job->success = db_service_perform_job(svc, job);
         /* Heartbeat onto the supervisor tree (atomic-only; zero behavior
          * change). Job count is the progress marker. */
         thread_liveness_beat(&g_dbw_child, ++jobs_done);
