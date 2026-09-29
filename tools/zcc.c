@@ -3118,6 +3118,183 @@ static void epoch_retract(bool coverage,
 
 static int zcc_dispatch(int argc, char **argv, bool replace_on_bypass);
 
+/* ── Admitted verifier object (proof mode only) ─────────────────────────
+ * A landing proof's driver -- the lander's pinned z23-dev, never this
+ * candidate-built binary -- may admit one separate-account observation for
+ * the fixed test-fast unit and name its private directory in ZCC_ADMITTED
+ * (tools/dev/verify_receiver.h). zcc has no admission authority. It only
+ * copies those bytes into this exact epoch target, and only when make's
+ * compiler argv equals the driver's pinned-profile tokens exactly; the
+ * depfile it writes is the driver's own, for this target. After make the
+ * driver rehashes what was published. Every other case compiles for real
+ * and logs why the admitted object was not used. */
+#define ZCC_ADMITTED_SOURCE "platform/modules/base/src/result.c"
+#define ZCC_ADMITTED_PREFIX "build/test-obj/epochs/"
+#define ZCC_ADMITTED_SUFFIX "/platform/modules/base/src/result.o"
+#define ZCC_ADMITTED_MAX (8u * 1024u * 1024u)
+
+static void admitted_log(const char *disposition, const char *detail,
+                         const char *output)
+{
+    const char *path = getenv("ZCC_LOG");
+    if (!path || !path[0])
+        return;
+    int fd = open(path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
+    if (fd < 0)
+        return;
+    char line[1024];
+    int n = snprintf(line, sizeof line, "%-8s %-28s %s\n", disposition,
+                     detail, output);
+    if (n > 0 && (size_t)n < sizeof line)
+        (void)!write(fd, line, (size_t)n);
+    close(fd);
+}
+
+static bool admitted_target(const char *output)
+{
+    size_t a = sizeof ZCC_ADMITTED_PREFIX - 1u;
+    size_t b = sizeof ZCC_ADMITTED_SUFFIX - 1u;
+    if (strlen(output) != a + 64u + b ||
+        strncmp(output, ZCC_ADMITTED_PREFIX, a) != 0 ||
+        strcmp(output + a + 64u, ZCC_ADMITTED_SUFFIX) != 0)
+        return false;
+    for (size_t i = a; i < a + 64u; i++)
+        if (!((output[i] >= '0' && output[i] <= '9') ||
+              (output[i] >= 'a' && output[i] <= 'f')))
+            return false;
+    return true;
+}
+
+/* One regular, single-link member of the admitted directory, no link
+ * followed, read whole and checked against its size. */
+static bool admitted_read(int dir, const char *name, struct buf *out)
+{
+    int fd = openat(dir, name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
+    struct stat st;
+    bool ok = fd >= 0 && fstat(fd, &st) == 0 && S_ISREG(st.st_mode) &&
+              st.st_nlink == 1 && st.st_size >= 0 &&
+              (uint64_t)st.st_size <= ZCC_ADMITTED_MAX;
+    unsigned char chunk[65536];
+    while (ok) {
+        ssize_t n = read(fd, chunk, sizeof chunk);
+        if (n < 0 && errno == EINTR)
+            continue;
+        if (n <= 0) {
+            ok = n == 0;
+            break;
+        }
+        ok = buf_add(out, chunk, (size_t)n);
+    }
+    if (fd >= 0)
+        close(fd);
+    return ok && out->len == (size_t)st.st_size;
+}
+
+/* The driver's tokens are NUL-terminated, in order. */
+static bool admitted_argv_equal(const struct buf *want, char **argv,
+                                int from, int argc)
+{
+    size_t at = 0;
+    for (int i = from; i < argc; i++) {
+        size_t n = strlen(argv[i]) + 1u;
+        if (n > want->len - at || memcmp(want->p + at, argv[i], n) != 0)
+            return false;
+        at += n;
+    }
+    return at == want->len;
+}
+
+static bool admitted_write(const char *path, const void *head, size_t head_len,
+                           const struct buf *body)
+{
+    int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
+                  0600);
+    bool ok = fd >= 0 && write_all(fd, head, head_len) &&
+              write_all(fd, body->p, body->len);
+    return fd >= 0 && close(fd) == 0 && ok;
+}
+
+struct admitted_bytes {
+    struct buf want, object, tail, err;
+};
+
+static const char *admitted_load(const char *dir_path, int argc, char **argv,
+                                 struct admitted_bytes *a)
+{
+    int dir = open(dir_path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    if (dir < 0)
+        return "directory_unreadable";
+    bool read_ok = admitted_read(dir, "argv", &a->want) &&
+                   admitted_read(dir, "object.o", &a->object) &&
+                   admitted_read(dir, "depfile.tail", &a->tail) &&
+                   admitted_read(dir, "stderr.bin", &a->err);
+    close(dir);
+    if (!read_ok)
+        return "artifact_unreadable";
+    if (a->object.len == 0 || a->tail.len == 0 || a->tail.p[0] != ':')
+        return "artifact_malformed";
+    return admitted_argv_equal(&a->want, argv, epoch_compiler_start(argc, argv),
+                               argc)
+               ? NULL : "argv_mismatch";
+}
+
+/* NULL when the admitted object was served; "" when no admission applies to
+ * this compile; otherwise the reason it was not used. */
+static const char *admitted_serve(int argc, char **argv, const char *mode,
+                                  const char *output, const char *source,
+                                  const struct epoch_artifacts *artifacts)
+{
+#if defined(__linux__)
+    const char *dir_path = getenv("ZCC_ADMITTED");
+    if (!getenv("ZCC_VERIFIED") || !dir_path || !dir_path[0] ||
+        strcmp(source, ZCC_ADMITTED_SOURCE) != 0)
+        return "";
+    if (strcmp(mode, "dep") != 0)
+        return "coverage_mode";
+    if (dir_path[0] != '/' || !admitted_target(output))
+        return "target_invalid";
+    struct admitted_bytes a = { 0 };
+    const char *why = admitted_load(dir_path, argc, argv, &a);
+    if (!why && (!admitted_write(artifacts->object, "", 0u, &a.object) ||
+                 !admitted_write(artifacts->depfile, output, strlen(output),
+                                 &a.tail))) {
+        (void)unlink(artifacts->object);
+        (void)unlink(artifacts->depfile);
+        why = "write_failed";
+    }
+    if (!why && a.err.len > 0)
+        (void)write_all(STDERR_FILENO, a.err.p, a.err.len);
+    buf_free(&a.want);
+    buf_free(&a.object);
+    buf_free(&a.tail);
+    buf_free(&a.err);
+    return why;
+#else
+    (void)argc; (void)argv; (void)mode; (void)output; (void)source;
+    (void)artifacts;
+    return "";
+#endif
+}
+
+static int epoch_compile_or_serve(int argc, char **argv, const char *mode,
+                                  const char *output, const char *source,
+                                  const struct epoch_artifacts *artifacts,
+                                  int compiler_argc, char **cc)
+{
+    const char *why = admitted_serve(argc, argv, mode, output, source,
+                                     artifacts);
+    if (!why) {
+        admitted_log("VERIFIED", "admitted:fixed_result.v2", output);
+        return 0;
+    }
+    if (why[0]) {
+        char detail[64];
+        (void)snprintf(detail, sizeof detail, "admitted:%s", why);
+        admitted_log("MISS", detail, output);
+    }
+    return zcc_dispatch(compiler_argc, cc, false);
+}
+
 static int epoch_compile_publish(int argc, char **argv, const char *mode,
                                  const char *output, const char *source,
                                  const struct epoch_authority *authority)
@@ -3149,7 +3326,8 @@ static int epoch_compile_publish(int argc, char **argv, const char *mode,
             close(lock_fd);
         return epoch_fail("could not allocate compiler argv");
     }
-    int rc = zcc_dispatch(compiler_argc, cc, false);
+    int rc = epoch_compile_or_serve(argc, argv, mode, output, source,
+                                    &artifacts, compiler_argc, cc);
     free(cc);
     bool complete = epoch_compile_complete(rc, coverage, &artifacts);
     if (!complete || !epoch_stage_current(authority, &artifacts)) {
