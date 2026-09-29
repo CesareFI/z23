@@ -1033,6 +1033,78 @@ static int de_test_skip_has_include(struct de_state *s)
     return failures;
 }
 
+static int de_test_skip_has_embed(struct de_state *s)
+{
+    int failures = 0;
+    TEST("devloop_early: an embed-presence probe cannot reuse PASS "
+         "after a file appears") {
+        ASSERT(de_hole_setup(s));
+        ASSERT(de_write(s->fx.root,
+                        "tests/harness/src/early_skip_embed_probe.h",
+                        "#if __has_embed(\"early_skip_optional.bin\")\n"
+                        "#define EARLY_SKIP_OUTER 2\n"
+                        "#else\n#define EARLY_SKIP_OUTER 1\n#endif\n"));
+        ASSERT(de_write(s->fx.root, "tests/harness/src/" DE_VOUCHED ".c",
+                        "#include \"early_skip_dep.h\"\n"
+                        "#include \"early_skip_embed_probe.h\"\n"
+                        "int early_skip_fixture_group = "
+                        "EARLY_SKIP_DEP + EARLY_SKIP_OUTER;\n"));
+        de_hole_decide(s, DE_HOLE_FLAGS);
+        bool vouched = s->hole.rows[0].vouched;
+        if (vouched) {
+            ASSERT(de_hole_is(s, "no-record", ""));
+            ASSERT(zcl_devloop_early_skip_record(s->fx.root, &s->hole,
+                                                  "", 1000));
+        } else {
+            ASSERT(de_hole_is(s, "unvouched", "has-embed"));
+        }
+        ASSERT(de_write(s->fx.root,
+                        "tests/harness/src/early_skip_optional.bin", "1"));
+        de_hole_decide(s, DE_HOLE_FLAGS);
+        ASSERT(de_hole_is(s, vouched ? "key-changed" : "unvouched",
+                          vouched ? "" : "has-embed"));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int de_test_skip_probe_flag_alias(struct de_state *s)
+{
+    int failures = 0;
+    TEST("devloop_early: a command-line alias for an embed probe cannot "
+         "reuse PASS after a file appears") {
+        const char *flags = DE_HOLE_FLAGS " -DHE=__has_embed";
+        ASSERT(de_hole_setup(s));
+        ASSERT(de_write(s->fx.root,
+                        "tests/harness/src/early_skip_flag_probe.h",
+                        "#if HE(\"early_skip_flag_optional.bin\")\n"
+                        "#define EARLY_SKIP_OUTER 2\n"
+                        "#else\n#define EARLY_SKIP_OUTER 1\n#endif\n"));
+        ASSERT(de_write(s->fx.root, "tests/harness/src/" DE_VOUCHED ".c",
+                        "#include \"early_skip_dep.h\"\n"
+                        "#include \"early_skip_flag_probe.h\"\n"
+                        "int early_skip_fixture_group = "
+                        "EARLY_SKIP_DEP + EARLY_SKIP_OUTER;\n"));
+        de_hole_decide(s, flags);
+        bool vouched = s->hole.rows[0].vouched;
+        if (vouched) {
+            ASSERT(de_hole_is(s, "no-record", ""));
+            ASSERT(zcl_devloop_early_skip_record(s->fx.root, &s->hole,
+                                                  "", 1000));
+        } else {
+            ASSERT(de_hole_is(s, "unvouched", "cflags-unmodeled"));
+        }
+        ASSERT(de_write(s->fx.root,
+                        "tests/harness/src/early_skip_flag_optional.bin",
+                        "1"));
+        de_hole_decide(s, flags);
+        ASSERT(de_hole_is(s, vouched ? "key-changed" : "unvouched",
+                          vouched ? "" : "cflags-unmodeled"));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int de_test_skip_volatile_macros(struct de_state *s)
 {
     int failures = 0;
@@ -1151,6 +1223,8 @@ static int de_test_restart(void)
         failures += de_test_skip_suffix(s);
         failures += de_test_skip_spliced_directive(s);
         failures += de_test_skip_has_include(s);
+        failures += de_test_skip_has_embed(s);
+        failures += de_test_skip_probe_flag_alias(s);
         failures += de_test_skip_volatile_macros(s);
         failures += de_test_skip_flags(s);
     }

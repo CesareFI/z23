@@ -308,12 +308,14 @@ static void es_graph_dirs_pass(struct es_graph *g, const char *const *argv,
     }
 }
 
-/* A flag that moves include resolution in a way es_resolve does not model:
- * every -i flag but -iquote (-isystem, -idirafter, -include, -imacros,
- * -isysroot, -iprefix, ...), -I-, --sysroot, and a response file that could
- * hold any of them. */
+/* A flag that moves include resolution or supplies a volatile macro which
+ * this source-text key cannot model. */
 static bool es_flag_unmodeled(const char *arg)
 {
+    if (strstr(arg, "__has_include") || strstr(arg, "__has_embed") ||
+        strstr(arg, "__DATE__") || strstr(arg, "__TIME__") ||
+        strstr(arg, "__TIMESTAMP__") || strstr(arg, "##"))
+        return true;
     if (strncmp(arg, "-iquote", 7) == 0)
         return false;
     return strncmp(arg, "-i", 2) == 0 || strcmp(arg, "-I-") == 0 ||
@@ -650,10 +652,12 @@ static void es_node_load(struct es_graph *g, uint32_t idx)
     es_sha3_hex(text, len, g->nodes[idx].digest);
     len = es_splice_lines(text, len);
     es_strip_comments(text, len);
-    /* A file's appearance can flip this predicate without any #include
-     * edge. The closure key cannot vouch for that search result. */
+    /* A file's appearance can flip these predicates without any include or
+     * embed edge. The closure key cannot vouch for those search results. */
     if (strstr(text, "__has_include"))
         es_node_bad(g, idx, "has-include", g->nodes[idx].path);
+    if (strstr(text, "__has_embed"))
+        es_node_bad(g, idx, "has-embed", g->nodes[idx].path);
     /* Wall-clock expansion and file mtime can change while source bytes do
      * not. A prior early PASS therefore cannot cover these inputs. */
     if (strstr(text, "__DATE__") || strstr(text, "__TIME__") ||
