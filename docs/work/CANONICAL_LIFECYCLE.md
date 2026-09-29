@@ -264,7 +264,47 @@ issuers and 200 obligations per candidate. It prints one
 `proof_ticket_reuse_measure` line and requires zero false hits and more than
 95% reuse of unchanged obligations. It also checks the admission report for
 four cases: a private edit, a header edit, an unknown scope and a conflict.
-Runners do not emit tickets yet, and no separate-uid verifier signs them.
+No separate-uid verifier signs tickets yet.
+
+The build worker now issues tickets on its production path, and they are
+FEEDBACK ONLY. Attach's donor scan remains the only reuse authority.
+
+- **Worker start.** `build_fabric_proof_context_open` picks one store handle
+  for `<datadir>/zcode`: the node-global handle when it owns that directory,
+  else a private one. It then:
+  1. completes any staged publication;
+  2. restores the signed issuer log at the head recorded in the worker's row;
+  3. rebuilds the receiver from CAS, anchored on every worker's durable head,
+     under the worker table's current trust.
+
+  Both the restore and the rebuild are bounded by the catalog size and retry
+  when the catalog moves. A refusal leaves a named state token in the
+  `build_fabric` dump, never a silent empty view.
+- **Issuance.** After an executed plain compile's receipt is admitted, the
+  worker signs one BUILD PASS EXECUTED ticket over its physical observation:
+  - `evidence_root` is the observation;
+  - `artifact_root` is the output bytes;
+  - `source_root` is the key's source closure.
+
+  The key is the one the worker's own checked publish placed in the
+  workspace. The worker then publishes the ticket through the pending row,
+  the ticket and checkpoint CAS writes, and the guarded head. A crash at any
+  of those boundaries is completed by the next worker start.
+- **Shadow.** Beside every attach decision, the worker computes
+  `vcs_proof_reuse_decide` for the same key. It counts attach against ticket
+  outcome, with `agree`, `disagree`, `disagree_attach_only` and
+  `disagree_ticket_only`, in the `proof` object of the build dump.
+- **No self-attestation (D2).**
+  - The candidate's author is the requesting identity. When no requester
+    identity exists, the author is the worker's own key, and the worker is
+    always the local signer.
+  - Tickets issued by either never count toward reuse.
+  - The trust-domain rule is unchanged: domain membership outranks the
+    verifier set.
+  - A single-worker node therefore reports ticket MISS with
+    `no_eligible_observation` (its own tickets are `signer_in_candidate_domain`)
+    even where attach reuses its earlier result. That disagreement is expected
+    until an independent verifier signs.
 
 Keep existing `source_root`, `changed_set_root`, `compiler_root`, `flags_root`,
 `environment_root` and `build_graph_root` vocabulary. Wire per-unit observations

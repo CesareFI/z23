@@ -20,6 +20,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if !defined(_WIN32)
+#include "build_fabric_attach_identity_internal.h"
+#endif
+
 #define BFPI_LOG "build_fabric"
 
 #ifdef ZCL_TESTING
@@ -47,15 +51,20 @@ struct zcl_result build_fabric_proof_compile_key(
 {
     if (!workspace || !action || !input_bytes_root || !out)
         return ZCL_ERR(-1, "proof compile key requires action and input");
+#if defined(_WIN32)
+    return ZCL_ERR(-1, "proof-key-unavailable: no qualified Windows executor");
+#else
+    /* The cached capsule and descriptor, as attach composes its key: no
+     * toolchain re-capture launches, only the runtime closure probes. */
+    struct vcs_toolchain_capsule_v1 capsule;
+    struct platform_toolchain_descriptor descriptor;
     uint8_t driver[32], backend[32], assembler[32];
     uint8_t runtime[32], verifier[32], policy[32] = {0};
-    ZCL_CHECK(build_fabric_executor_host_tool_hashes(driver, backend,
-                                                     assembler));
-    ZCL_CHECK(build_fabric_executor_host_runtime_roots(workspace, runtime,
-                                                       verifier));
-    struct vcs_toolchain_capsule_v1 capsule;
-    if (!vcs_toolchain_capsule_v1_capture(&capsule))
+    if (!vcs_toolchain_capsule_v1_cached(&capsule, &descriptor))
         return ZCL_ERR(-1, "proof-key-toolchain-capsule-unavailable");
+    ZCL_CHECK(bfat_cached_tool_hashes(&descriptor, driver, backend,
+                                      assembler));
+    ZCL_CHECK(bfat_runtime_roots(workspace, &descriptor, runtime, verifier));
     if (action->proof_policy_root_sha3[0] &&
         !zcl_hex_decode_lower(action->proof_policy_root_sha3, policy, 32))
         return ZCL_ERR(-1, "proof-key-policy-root-malformed");
@@ -74,6 +83,7 @@ struct zcl_result build_fabric_proof_compile_key(
     if (!vcs_build_action_v1_compile_proof_key(&inputs, out))
         return ZCL_ERR(-1, "proof-key-incomplete");
     return ZCL_OK;
+#endif
 }
 
 /* What one executed compile proves, each fact re-derived from CAS. */
