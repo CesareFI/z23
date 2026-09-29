@@ -264,6 +264,190 @@ static bool copy_cstr(char *dst, size_t cap, const char *src, size_t n)
     return true;
 }
 
+/* The URI host names the kind: "totp" or "hotp". */
+static zotpcli_err otpauth_parse_kind(const char *uri, const zurl *u,
+                                      zotpcli_entry *e)
+{
+    char host[8];
+    /* zurl_copy copies the span bytes WITHOUT a NUL (see zurl.h); host is
+     * compared as a C string below, so terminate it explicitly. Reading it
+     * unterminated is an uninitialized read that only happened to work when
+     * the stack bytes after the copy were zero. */
+    size_t host_len = zurl_copy(uri, &u->host, host, sizeof host);
+    if (host_len >= sizeof host)
+        return ZOTPCLI_ERR_URI;
+    host[host_len] = '\0';
+    if (zstr_casecmp(host, "totp") == 0)
+        e->kind = ZOTPCLI_TOTP;
+    else if (zstr_casecmp(host, "hotp") == 0)
+        e->kind = ZOTPCLI_HOTP;
+    else
+        return ZOTPCLI_ERR_URI;
+    return ZOTPCLI_OK;
+}
+
+/* "issuer:label" split at the colon into path_issuer and e->label. */
+static zotpcli_err otpauth_issuer_label(const char *decoded, size_t dlen,
+                                        const char *colon, zotpcli_entry *e,
+                                        char *path_issuer)
+{
+    size_t ilen = (size_t)(colon - decoded);
+    if (ilen == 0 || ilen > ZOTPCLI_MAX_ISSUER)
+        return ZOTPCLI_ERR_LABEL;
+    if (!copy_cstr(path_issuer, ZOTPCLI_MAX_ISSUER + 1, decoded, ilen))
+        return ZOTPCLI_ERR_LABEL;
+    if (!zutf8_validate(path_issuer)) return ZOTPCLI_ERR_LABEL;
+    size_t llen = dlen - ilen - 1;
+    if (llen == 0 || llen > ZOTPCLI_MAX_LABEL)
+        return ZOTPCLI_ERR_LABEL;
+    if (!copy_cstr(e->label, sizeof e->label, colon + 1, llen))
+        return ZOTPCLI_ERR_LABEL;
+    return ZOTPCLI_OK;
+}
+
+/* Path: "/label" or "/issuer:label", percent-encoded. Fills e->label and
+ * path_issuer (empty when the path names none). */
+static zotpcli_err otpauth_parse_path(const char *uri, const zurl *u,
+                                      zotpcli_entry *e, char *path_issuer)
+{
+    if (u->path.len < 2 || uri[u->path.off] != '/') return ZOTPCLI_ERR_URI;
+    char decoded[ZOTPCLI_MAX_LABEL + ZOTPCLI_MAX_ISSUER + 2];
+    size_t dlen = 0;
+    size_t dneed = zpct_decode(decoded, sizeof decoded,
+                               uri + u->path.off + 1, u->path.len - 1, &dlen);
+    if (dneed == SIZE_MAX || dneed >= sizeof decoded || dlen == 0 ||
+        dlen > sizeof decoded)
+        return ZOTPCLI_ERR_URI;
+    if (memchr(decoded, '\0', dlen)) return ZOTPCLI_ERR_URI;
+    decoded[dlen] = '\0';
+
+    char *colon = memchr(decoded, ':', dlen);
+    if (colon) {
+        zotpcli_err r = otpauth_issuer_label(decoded, dlen, colon, e,
+                                             path_issuer);
+        if (r != ZOTPCLI_OK) return r;
+    } else {
+        if (dlen > ZOTPCLI_MAX_LABEL) return ZOTPCLI_ERR_LABEL;
+        if (!copy_cstr(e->label, sizeof e->label, decoded, dlen))
+            return ZOTPCLI_ERR_LABEL;
+    }
+    if (!zutf8_validate(e->label)) return ZOTPCLI_ERR_LABEL;
+    return ZOTPCLI_OK;
+}
+
+/* What the query string contributed beyond plain entry fields. */
+struct otpauth_query {
+    bool have_secret;
+    bool have_q_issuer;
+    char q_issuer[ZOTPCLI_MAX_ISSUER + 1];
+};
+
+/* Numeric parameters: digits, period and counter. Returns 1 when the key was
+ * one of them (result in *rc), 0 otherwise. */
+static int otpauth_apply_numeric(const char *key, const char *val,
+                                 size_t vdec, zotpcli_entry *e,
+                                 zotpcli_err *rc)
+{
+    uint64_t num;
+    *rc = ZOTPCLI_ERR_URI;
+    if (zstr_casecmp(key, "digits") == 0) {
+        if (!parse_u64(val, vdec, &num) || num < ZOTP_MIN_DIGITS ||
+            num > ZOTPCLI_MAX_DIGITS)
+            return 1;
+        e->digits = (unsigned)num;
+    } else if (zstr_casecmp(key, "period") == 0) {
+        if (!parse_u64(val, vdec, &num) || num == 0 ||
+            num > ZOTPCLI_MAX_PERIOD)
+            return 1;
+        e->period = (unsigned)num;
+    } else if (zstr_casecmp(key, "counter") == 0) {
+        if (!parse_u64(val, vdec, &num)) return 1;
+        e->counter = num;
+    } else {
+        return 0;
+    }
+    *rc = ZOTPCLI_OK;
+    return 1;
+}
+
+/* Applies one decoded key=value pair. Unknown keys are ignored for forward
+ * compatibility. */
+static zotpcli_err otpauth_apply_param(const char *key, const char *val,
+                                       size_t vdec, zotpcli_entry *e,
+                                       struct otpauth_query *q)
+{
+    zotpcli_err rc;
+    if (zstr_casecmp(key, "secret") == 0) {
+        zotpcli_err se = zotpcli_b32_decode_secret(
+            val, e->secret, sizeof e->secret, &e->secret_len);
+        if (se != ZOTPCLI_OK) return se;
+        q->have_secret = true;
+    } else if (zstr_casecmp(key, "issuer") == 0) {
+        if (vdec > ZOTPCLI_MAX_ISSUER) return ZOTPCLI_ERR_LABEL;
+        if (!zutf8_validate(val)) return ZOTPCLI_ERR_LABEL;
+        memcpy(q->q_issuer, val, vdec + 1);
+        q->have_q_issuer = true;
+    } else if (otpauth_apply_numeric(key, val, vdec, e, &rc)) {
+        return rc;
+    } else if (zstr_casecmp(key, "algorithm") == 0) {
+        /* Only SHA-1 is implemented (RFC 4226/6238 defaults); refuse
+         * anything else rather than silently computing the wrong
+         * algorithm. */
+        if (zstr_casecmp(val, "SHA1") != 0)
+            return ZOTPCLI_ERR_URI;
+    }
+    return ZOTPCLI_OK;
+}
+
+/* One "key[=value]" query field: percent-decode both and apply them. */
+static zotpcli_err otpauth_parse_field(const zstr_span *field,
+                                       zotpcli_entry *e,
+                                       struct otpauth_query *q)
+{
+    const char *eq = memchr(field->ptr, '=', field->len);
+    size_t klen = eq ? (size_t)(eq - field->ptr) : field->len;
+    size_t vlen = eq ? field->len - klen - 1 : 0;
+    const char *vptr = eq ? eq + 1 : field->ptr + field->len;
+
+    char key[16];
+    if (klen == 0 || klen >= sizeof key) return ZOTPCLI_ERR_URI;
+    size_t kdec = 0;
+    if (zpct_decode(key, sizeof key, field->ptr, klen, &kdec) == SIZE_MAX ||
+        kdec >= sizeof key)
+        return ZOTPCLI_ERR_URI;
+    key[kdec] = '\0';
+
+    char val[ZOTPCLI_MAX_URI + 1];
+    size_t vdec = 0;
+    if (zpct_decode(val, sizeof val, vptr, vlen, &vdec) == SIZE_MAX ||
+        vdec >= sizeof val)
+        return ZOTPCLI_ERR_URI;
+    if (memchr(val, '\0', vdec)) return ZOTPCLI_ERR_URI;
+    val[vdec] = '\0';
+    return otpauth_apply_param(key, val, vdec, e, q);
+}
+
+/* Query parameters: secret, issuer, digits, period, counter, algorithm. */
+static zotpcli_err otpauth_parse_query(const char *uri, const zurl *u,
+                                       zotpcli_entry *e,
+                                       struct otpauth_query *q)
+{
+    if (!u->has_query || u->query.len == 0) return ZOTPCLI_OK;
+    char qbuf[ZOTPCLI_MAX_URI + 1];
+    if (u->query.len > ZOTPCLI_MAX_URI) return ZOTPCLI_ERR_URI;
+    if (!copy_cstr(qbuf, sizeof qbuf, uri + u->query.off, u->query.len))
+        return ZOTPCLI_ERR_URI;
+
+    zstr_split_it it;
+    zstr_span field;
+    zstr_split_init(&it, qbuf, '&');
+    while (zstr_split_next(&it, &field)) {
+        zotpcli_err err = otpauth_parse_field(&field, e, q);
+        if (err != ZOTPCLI_OK) return err;
+    }
+    return ZOTPCLI_OK;
+}
+
 zotpcli_err zotpcli_otpauth_parse_n(const char *uri, size_t len,
                                     zotpcli_entry *out)
 {
@@ -275,139 +459,25 @@ zotpcli_err zotpcli_otpauth_parse_n(const char *uri, size_t len,
     if (!zurl_scheme_is(&u, uri, "otpauth")) return ZOTPCLI_ERR_URI;
     if (!u.has_authority) return ZOTPCLI_ERR_URI;
 
-    char host[8];
-    /* zurl_copy copies the span bytes WITHOUT a NUL (see zurl.h); host is
-     * compared as a C string below, so terminate it explicitly. Reading it
-     * unterminated is an uninitialized read that only happened to work when
-     * the stack bytes after the copy were zero. */
-    size_t host_len = zurl_copy(uri, &u.host, host, sizeof host);
-    if (host_len >= sizeof host)
-        return ZOTPCLI_ERR_URI;
-    host[host_len] = '\0';
-
     zotpcli_entry e;
     zotpcli_entry_init(&e);
-    if (zstr_casecmp(host, "totp") == 0) {
-        e.kind = ZOTPCLI_TOTP;
-    } else if (zstr_casecmp(host, "hotp") == 0) {
-        e.kind = ZOTPCLI_HOTP;
-    } else {
-        return ZOTPCLI_ERR_URI;
-    }
-
-    /* Path: "/label" or "/issuer:label", percent-encoded. */
-    if (u.path.len < 2 || uri[u.path.off] != '/') return ZOTPCLI_ERR_URI;
-    char decoded[ZOTPCLI_MAX_LABEL + ZOTPCLI_MAX_ISSUER + 2];
-    size_t dlen = 0;
-    size_t dneed = zpct_decode(decoded, sizeof decoded,
-                               uri + u.path.off + 1, u.path.len - 1, &dlen);
-    if (dneed == SIZE_MAX || dneed >= sizeof decoded || dlen == 0 ||
-        dlen > sizeof decoded)
-        return ZOTPCLI_ERR_URI;
-    if (memchr(decoded, '\0', dlen)) return ZOTPCLI_ERR_URI;
-    decoded[dlen] = '\0';
+    zotpcli_err err = otpauth_parse_kind(uri, &u, &e);
+    if (err != ZOTPCLI_OK) return err;
 
     char path_issuer[ZOTPCLI_MAX_ISSUER + 1] = "";
-    char *colon = memchr(decoded, ':', dlen);
-    if (colon) {
-        size_t ilen = (size_t)(colon - decoded);
-        if (ilen == 0 || ilen > ZOTPCLI_MAX_ISSUER)
-            return ZOTPCLI_ERR_LABEL;
-        if (!copy_cstr(path_issuer, sizeof path_issuer, decoded, ilen))
-            return ZOTPCLI_ERR_LABEL;
-        if (!zutf8_validate(path_issuer)) return ZOTPCLI_ERR_LABEL;
-        size_t llen = dlen - ilen - 1;
-        if (llen == 0 || llen > ZOTPCLI_MAX_LABEL)
-            return ZOTPCLI_ERR_LABEL;
-        if (!copy_cstr(e.label, sizeof e.label, colon + 1, llen))
-            return ZOTPCLI_ERR_LABEL;
-    } else {
-        if (dlen > ZOTPCLI_MAX_LABEL) return ZOTPCLI_ERR_LABEL;
-        if (!copy_cstr(e.label, sizeof e.label, decoded, dlen))
-            return ZOTPCLI_ERR_LABEL;
-    }
-    if (!zutf8_validate(e.label)) return ZOTPCLI_ERR_LABEL;
+    err = otpauth_parse_path(uri, &u, &e, path_issuer);
+    if (err != ZOTPCLI_OK) return err;
 
-    /* Query parameters: secret, issuer, digits, period, counter,
-     * algorithm. Unknown keys are ignored for forward compatibility. */
-    bool have_secret = false;
-    bool have_q_issuer = false;
-    char q_issuer[ZOTPCLI_MAX_ISSUER + 1] = "";
+    struct otpauth_query q = {0};
+    err = otpauth_parse_query(uri, &u, &e, &q);
+    if (err != ZOTPCLI_OK) return err;
+    if (!q.have_secret) return ZOTPCLI_ERR_SECRET;
 
-    if (u.has_query && u.query.len > 0) {
-        char qbuf[ZOTPCLI_MAX_URI + 1];
-        if (u.query.len > ZOTPCLI_MAX_URI) return ZOTPCLI_ERR_URI;
-        if (!copy_cstr(qbuf, sizeof qbuf, uri + u.query.off, u.query.len))
-            return ZOTPCLI_ERR_URI;
-
-        zstr_split_it it;
-        zstr_span field;
-        zstr_split_init(&it, qbuf, '&');
-        while (zstr_split_next(&it, &field)) {
-            const char *eq = memchr(field.ptr, '=', field.len);
-            size_t klen = eq ? (size_t)(eq - field.ptr) : field.len;
-            size_t vlen = eq ? field.len - klen - 1 : 0;
-            const char *vptr = eq ? eq + 1 : field.ptr + field.len;
-
-            char key[16];
-            if (klen == 0 || klen >= sizeof key) return ZOTPCLI_ERR_URI;
-            size_t kdec = 0;
-            if (zpct_decode(key, sizeof key, field.ptr, klen, &kdec) ==
-                    SIZE_MAX ||
-                kdec >= sizeof key)
-                return ZOTPCLI_ERR_URI;
-            key[kdec] = '\0';
-
-            char val[ZOTPCLI_MAX_URI + 1];
-            size_t vdec = 0;
-            if (zpct_decode(val, sizeof val, vptr, vlen, &vdec) == SIZE_MAX ||
-                vdec >= sizeof val)
-                return ZOTPCLI_ERR_URI;
-            if (memchr(val, '\0', vdec)) return ZOTPCLI_ERR_URI;
-            val[vdec] = '\0';
-
-            uint64_t num;
-            if (zstr_casecmp(key, "secret") == 0) {
-                zotpcli_err se = zotpcli_b32_decode_secret(
-                    val, e.secret, sizeof e.secret, &e.secret_len);
-                if (se != ZOTPCLI_OK) return se;
-                have_secret = true;
-            } else if (zstr_casecmp(key, "issuer") == 0) {
-                if (vdec > ZOTPCLI_MAX_ISSUER) return ZOTPCLI_ERR_LABEL;
-                if (!zutf8_validate(val)) return ZOTPCLI_ERR_LABEL;
-                memcpy(q_issuer, val, vdec + 1);
-                have_q_issuer = true;
-            } else if (zstr_casecmp(key, "digits") == 0) {
-                if (!parse_u64(val, vdec, &num) || num < ZOTP_MIN_DIGITS ||
-                    num > ZOTPCLI_MAX_DIGITS)
-                    return ZOTPCLI_ERR_URI;
-                e.digits = (unsigned)num;
-            } else if (zstr_casecmp(key, "period") == 0) {
-                if (!parse_u64(val, vdec, &num) || num == 0 ||
-                    num > ZOTPCLI_MAX_PERIOD)
-                    return ZOTPCLI_ERR_URI;
-                e.period = (unsigned)num;
-            } else if (zstr_casecmp(key, "counter") == 0) {
-                if (!parse_u64(val, vdec, &num)) return ZOTPCLI_ERR_URI;
-                e.counter = num;
-            } else if (zstr_casecmp(key, "algorithm") == 0) {
-                /* Only SHA-1 is implemented (RFC 4226/6238 defaults);
-                 * refuse anything else rather than silently computing
-                 * the wrong algorithm. */
-                if (zstr_casecmp(val, "SHA1") != 0)
-                    return ZOTPCLI_ERR_URI;
-            }
-            /* unknown keys ignored */
-        }
-    }
-
-    if (!have_secret) return ZOTPCLI_ERR_SECRET;
-
-    if (have_q_issuer) {
+    if (q.have_q_issuer) {
         /* Fail closed when both issuers exist and disagree. */
-        if (path_issuer[0] && strcmp(path_issuer, q_issuer) != 0)
+        if (path_issuer[0] && strcmp(path_issuer, q.q_issuer) != 0)
             return ZOTPCLI_ERR_URI;
-        memcpy(e.issuer, q_issuer, sizeof e.issuer);
+        memcpy(e.issuer, q.q_issuer, sizeof e.issuer);
     } else {
         memcpy(e.issuer, path_issuer, sizeof e.issuer);
     }

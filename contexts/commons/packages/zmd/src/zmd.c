@@ -131,111 +131,108 @@ static size_t parse_bracket(const char *s, size_t n, size_t i, size_t *ts,
   return pclose + 1;
 }
 
+static bool render_inline(zmd_out *o, const char *s, size_t n, int depth);
+
+/* The inline handlers below return the index to resume at, or SIZE_MAX when
+ * the output sink failed. */
+
+/* One byte s[i] emitted as literal text. */
+static size_t inline_literal(zmd_out *o, const char *s, size_t i) {
+  return out_escaped(o, s + i, 1) ? i + 1 : SIZE_MAX;
+}
+
+static size_t inline_code(zmd_out *o, const char *s, size_t n, size_t i) {
+  size_t j = find_ch(s, n, i + 1, '`');
+  if (j == n)
+    return inline_literal(o, s, i); /* unclosed: literal backtick */
+  if (!out_lit(o, "<code>") || !out_escaped(o, s + i + 1, j - i - 1) ||
+      !out_lit(o, "</code>"))
+    return SIZE_MAX;
+  return j + 1;
+}
+
+static size_t inline_star(zmd_out *o, const char *s, size_t n, size_t i,
+                          int depth) {
+  if (i + 1 < n && s[i + 1] == '*') {
+    size_t j = find_dstar(s, n, i + 2);
+    if (j == n)
+      return inline_literal(o, s, i); /* unclosed "**": rescan the second */
+    if (!out_lit(o, "<strong>") ||
+        !render_inline(o, s + i + 2, j - i - 2, depth + 1) ||
+        !out_lit(o, "</strong>"))
+      return SIZE_MAX;
+    return j + 2;
+  }
+  size_t j = find_ch(s, n, i + 1, '*');
+  if (j == n)
+    return inline_literal(o, s, i); /* unclosed: literal star */
+  if (!out_lit(o, "<em>") ||
+      !render_inline(o, s + i + 1, j - i - 1, depth + 1) ||
+      !out_lit(o, "</em>"))
+    return SIZE_MAX;
+  return j + 1;
+}
+
+/* "![alt](url)" at s[i]. */
+static size_t inline_image(zmd_out *o, const char *s, size_t n, size_t i) {
+  size_t ts, te, us, ue;
+  size_t end = parse_bracket(s, n, i + 1, &ts, &te, &us, &ue);
+  if (end == SIZE_MAX)
+    return inline_literal(o, s, i); /* not an image: literal '!' */
+  if (!url_ok(s + us, ue - us)) {
+    /* rejected URL: the whole construct degrades to literal text */
+    return out_escaped(o, s + i, end - i) ? end : SIZE_MAX;
+  }
+  if (!out_lit(o, "<img src=\"") || !out_escaped(o, s + us, ue - us) ||
+      !out_lit(o, "\" alt=\"") || !out_escaped(o, s + ts, te - ts) ||
+      !out_lit(o, "\">"))
+    return SIZE_MAX;
+  return end;
+}
+
+/* "[text](url)" at s[i]. */
+static size_t inline_link(zmd_out *o, const char *s, size_t n, size_t i,
+                          int depth) {
+  size_t ts, te, us, ue;
+  size_t end = parse_bracket(s, n, i, &ts, &te, &us, &ue);
+  if (end == SIZE_MAX)
+    return inline_literal(o, s, i); /* not a link: literal '[' */
+  if (!url_ok(s + us, ue - us))
+    return out_escaped(o, s + i, end - i) ? end : SIZE_MAX;
+  if (!out_lit(o, "<a href=\"") || !out_escaped(o, s + us, ue - us) ||
+      !out_lit(o, "\">") ||
+      !render_inline(o, s + ts, te - ts, depth + 1) ||
+      !out_lit(o, "</a>"))
+    return SIZE_MAX;
+  return end;
+}
+
+/* A plain run up to the next candidate marker. */
+static size_t inline_plain(zmd_out *o, const char *s, size_t n, size_t i) {
+  size_t j = i + 1;
+  while (j < n && s[j] != '`' && s[j] != '*' && s[j] != '[' && s[j] != '!')
+    j++;
+  return out_escaped(o, s + i, j - i) ? j : SIZE_MAX;
+}
+
 static bool render_inline(zmd_out *o, const char *s, size_t n, int depth) {
   if (depth > ZMD_MAX_INLINE_DEPTH)
     return out_escaped(o, s, n); /* pathological nesting: literal text */
   size_t i = 0;
   while (i < n) {
     char c = s[i];
-    if (c == '`') {
-      size_t j = find_ch(s, n, i + 1, '`');
-      if (j == n) {
-        if (!out_escaped(o, s + i, 1)) /* unclosed: literal backtick */
-          return false;
-        i++;
-        continue;
-      }
-      if (!out_lit(o, "<code>") || !out_escaped(o, s + i + 1, j - i - 1) ||
-          !out_lit(o, "</code>"))
-        return false;
-      i = j + 1;
-      continue;
-    }
-    if (c == '*') {
-      if (i + 1 < n && s[i + 1] == '*') {
-        size_t j = find_dstar(s, n, i + 2);
-        if (j != n) {
-          if (!out_lit(o, "<strong>") ||
-              !render_inline(o, s + i + 2, j - i - 2, depth + 1) ||
-              !out_lit(o, "</strong>"))
-            return false;
-          i = j + 2;
-          continue;
-        }
-        /* unclosed "**": one literal star, rescan the second */
-        if (!out_escaped(o, s + i, 1))
-          return false;
-        i++;
-        continue;
-      }
-      size_t j = find_ch(s, n, i + 1, '*');
-      if (j == n) {
-        if (!out_escaped(o, s + i, 1)) /* unclosed: literal star */
-          return false;
-        i++;
-        continue;
-      }
-      if (!out_lit(o, "<em>") ||
-          !render_inline(o, s + i + 1, j - i - 1, depth + 1) ||
-          !out_lit(o, "</em>"))
-        return false;
-      i = j + 1;
-      continue;
-    }
-    if (c == '!' && i + 1 < n && s[i + 1] == '[') {
-      size_t ts, te, us, ue;
-      size_t end = parse_bracket(s, n, i + 1, &ts, &te, &us, &ue);
-      if (end == SIZE_MAX) {
-        if (!out_escaped(o, s + i, 1)) /* not an image: literal '!' */
-          return false;
-        i++;
-        continue;
-      }
-      if (!url_ok(s + us, ue - us)) {
-        /* rejected URL: the whole construct degrades to literal text */
-        if (!out_escaped(o, s + i, end - i))
-          return false;
-        i = end;
-        continue;
-      }
-      if (!out_lit(o, "<img src=\"") || !out_escaped(o, s + us, ue - us) ||
-          !out_lit(o, "\" alt=\"") || !out_escaped(o, s + ts, te - ts) ||
-          !out_lit(o, "\">"))
-        return false;
-      i = end;
-      continue;
-    }
-    if (c == '[') {
-      size_t ts, te, us, ue;
-      size_t end = parse_bracket(s, n, i, &ts, &te, &us, &ue);
-      if (end == SIZE_MAX) {
-        if (!out_escaped(o, s + i, 1)) /* not a link: literal '[' */
-          return false;
-        i++;
-        continue;
-      }
-      if (!url_ok(s + us, ue - us)) {
-        if (!out_escaped(o, s + i, end - i))
-          return false;
-        i = end;
-        continue;
-      }
-      if (!out_lit(o, "<a href=\"") || !out_escaped(o, s + us, ue - us) ||
-          !out_lit(o, "\">") ||
-          !render_inline(o, s + ts, te - ts, depth + 1) ||
-          !out_lit(o, "</a>"))
-        return false;
-      i = end;
-      continue;
-    }
-    /* plain run up to the next candidate marker */
-    size_t j = i + 1;
-    while (j < n && s[j] != '`' && s[j] != '*' && s[j] != '[' &&
-           s[j] != '!')
-      j++;
-    if (!out_escaped(o, s + i, j - i))
+    if (c == '`')
+      i = inline_code(o, s, n, i);
+    else if (c == '*')
+      i = inline_star(o, s, n, i, depth);
+    else if (c == '!' && i + 1 < n && s[i + 1] == '[')
+      i = inline_image(o, s, n, i);
+    else if (c == '[')
+      i = inline_link(o, s, n, i, depth);
+    else
+      i = inline_plain(o, s, n, i);
+    if (i == SIZE_MAX)
       return false;
-    i = j;
   }
   return true;
 }
@@ -397,104 +394,101 @@ static bool render_list(zmd_out *o, zmd_scan *sc, bool ordered) {
   return out_lit(o, ordered ? "</ol>\n" : "</ul>\n");
 }
 
+/* Fenced code: literal escaped lines until a closing fence or EOF (an
+ * unclosed fence runs to end of input, fail-visible). The opening fence is
+ * the next line. */
+static bool render_fence(zmd_out *o, zmd_scan *sc) {
+  size_t off, n;
+  next_line(sc, &off); /* opening fence; info string ignored */
+  if (!out_lit(o, "<pre><code>"))
+    return false;
+  while (sc->pos < sc->len) {
+    n = peek_line(sc, &off);
+    if (is_fence(sc->md + off, n)) {
+      next_line(sc, &off);
+      break;
+    }
+    next_line(sc, &off);
+    if (!out_escaped(o, sc->md + off, n) || !out_lit(o, "\n"))
+      return false;
+  }
+  return out_lit(o, "</code></pre>\n");
+}
+
+/* ATX heading of level lvl on the line s[0..n), which is the next line. */
+static bool render_heading(zmd_out *o, zmd_scan *sc, const char *s, size_t n,
+                           int lvl) {
+  size_t off;
+  next_line(sc, &off);
+  size_t cs = (size_t)lvl, ce = rtrim(s, n);
+  while (cs < ce && (s[cs] == ' ' || s[cs] == '\t'))
+    cs++;
+  /* optional closing sequence: trailing '#'s after whitespace */
+  if (ce > cs && s[ce - 1] == '#') {
+    size_t k = ce;
+    while (k > cs && s[k - 1] == '#')
+      k--;
+    if (k == cs || s[k - 1] == ' ' || s[k - 1] == '\t')
+      ce = rtrim(s, k);
+  }
+  const char open[4] = { '<', 'h', (char)('0' + lvl), '>' };
+  const char close[6] = { '<', '/', 'h', (char)('0' + lvl), '>', '\n' };
+  return out_raw(o, open, 4) && render_inline(o, s + cs, ce - cs, 0) &&
+         out_raw(o, close, 6);
+}
+
+/* Paragraph: consecutive lines that start no block construct. */
+static bool render_paragraph(zmd_out *o, zmd_scan *sc) {
+  if (!out_lit(o, "<p>"))
+    return false;
+  bool first = true;
+  bool br = false;
+  while (sc->pos < sc->len) {
+    size_t off, n = peek_line(sc, &off);
+    if (is_blank(sc->md + off, n) || starts_block(sc->md + off, n))
+      break;
+    next_line(sc, &off);
+    size_t ce = rtrim(sc->md + off, n);
+    if (!first && !(br ? out_lit(o, "<br>\n") : out_lit(o, "\n")))
+      return false;
+    br = n - ce >= 2;
+    if (!render_inline(o, sc->md + off, ce, 0))
+      return false;
+    first = false;
+  }
+  return out_lit(o, "</p>\n");
+}
+
+/* The block starting at the line s[0..n); the scanner is positioned at it. */
+static bool render_block(zmd_out *o, zmd_scan *sc, const char *s, size_t n) {
+  size_t off;
+  if (is_fence(s, n))
+    return render_fence(o, sc);
+  int lvl = atx_level(s, n);
+  if (lvl > 0)
+    return render_heading(o, sc, s, n, lvl);
+  if (is_hr(s, n)) {
+    next_line(sc, &off);
+    return out_lit(o, "<hr>\n");
+  }
+  if (s[0] == '>')
+    return render_quote(o, sc);
+  if (ulist_off(s, n) > 0)
+    return render_list(o, sc, false);
+  if (olist_off(s, n) > 0)
+    return render_list(o, sc, true);
+  return render_paragraph(o, sc);
+}
+
 static bool render_blocks(zmd_out *o, const char *md, size_t len) {
   zmd_scan sc = { md, len, 0 };
   while (sc.pos < sc.len) {
     size_t off, n = peek_line(&sc, &off);
-    const char *s = md + off;
-
-    if (is_blank(s, n)) {
+    if (is_blank(md + off, n)) {
       next_line(&sc, &off);
       continue;
     }
-
-    /* fenced code: literal escaped lines until a closing fence or EOF
-     * (an unclosed fence runs to end of input, fail-visible) */
-    if (is_fence(s, n)) {
-      next_line(&sc, &off); /* opening fence; info string ignored */
-      if (!out_lit(o, "<pre><code>"))
-        return false;
-      while (sc.pos < sc.len) {
-        n = peek_line(&sc, &off);
-        if (is_fence(md + off, n)) {
-          next_line(&sc, &off);
-          break;
-        }
-        next_line(&sc, &off);
-        if (!out_escaped(o, md + off, n) || !out_lit(o, "\n"))
-          return false;
-      }
-      if (!out_lit(o, "</code></pre>\n"))
-        return false;
-      continue;
-    }
-
-    int lvl = atx_level(s, n);
-    if (lvl > 0) {
-      next_line(&sc, &off);
-      size_t cs = (size_t)lvl, ce = rtrim(s, n);
-      while (cs < ce && (s[cs] == ' ' || s[cs] == '\t'))
-        cs++;
-      /* optional closing sequence: trailing '#'s after whitespace */
-      if (ce > cs && s[ce - 1] == '#') {
-        size_t k = ce;
-        while (k > cs && s[k - 1] == '#')
-          k--;
-        if (k == cs || s[k - 1] == ' ' || s[k - 1] == '\t')
-          ce = rtrim(s, k);
-      }
-      const char open[4] = { '<', 'h', (char)('0' + lvl), '>' };
-      const char close[6] = { '<', '/', 'h', (char)('0' + lvl), '>', '\n' };
-      if (!out_raw(o, open, 4) || !render_inline(o, s + cs, ce - cs, 0) ||
-          !out_raw(o, close, 6))
-        return false;
-      continue;
-    }
-
-    if (is_hr(s, n)) {
-      next_line(&sc, &off);
-      if (!out_lit(o, "<hr>\n"))
-        return false;
-      continue;
-    }
-
-    if (s[0] == '>') {
-      if (!render_quote(o, &sc))
-        return false;
-      continue;
-    }
-
-    if (ulist_off(s, n) > 0) {
-      if (!render_list(o, &sc, false))
-        return false;
-      continue;
-    }
-
-    if (olist_off(s, n) > 0) {
-      if (!render_list(o, &sc, true))
-        return false;
-      continue;
-    }
-
-    /* paragraph: consecutive lines that start no block construct */
-    if (!out_lit(o, "<p>"))
-      return false;
-    bool first = true;
-    bool br = false;
-    while (sc.pos < sc.len) {
-      n = peek_line(&sc, &off);
-      if (is_blank(md + off, n) || starts_block(md + off, n))
-        break;
-      next_line(&sc, &off);
-      size_t ce = rtrim(md + off, n);
-      if (!first && !(br ? out_lit(o, "<br>\n") : out_lit(o, "\n")))
-        return false;
-      br = n - ce >= 2;
-      if (!render_inline(o, md + off, ce, 0))
-        return false;
-      first = false;
-    }
-    if (!out_lit(o, "</p>\n"))
+    if (!render_block(o, &sc, md + off, n))
       return false;
   }
   return true;

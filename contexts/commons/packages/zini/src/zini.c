@@ -41,6 +41,148 @@ static zini *fail(zini *ini, char *section_buf, zini_error *err, size_t line,
   return nullptr;
 }
 
+static bool is_blank(char c) { return c == ' ' || c == '\t'; }
+
+/* The parse in progress: the result and the current section name. */
+struct parser {
+  zini *ini;
+  char *section; /* NUL-terminated; "" is the global section */
+  size_t section_cap;
+};
+
+/* The section's map, created when its header never appeared (the global
+ * section, or an empty-name section). */
+static zmap *section_map(struct parser *p) {
+  zmap *kv = zmap_get(p->ini->sections, p->section);
+  if (kv)
+    return kv;
+  kv = zmap_create();
+  if (!kv || !zmap_put(p->ini->sections, p->section, kv, nullptr)) {
+    zmap_destroy(kv, nullptr, nullptr);
+    return nullptr;
+  }
+  return kv;
+}
+
+/* Section header: the closing ']' must be the last body byte. Returns an
+ * error message, or nullptr. */
+static const char *parse_section(struct parser *p, const char *line, size_t i,
+                                 size_t body) {
+  if (line[body - 1] != ']')
+    return "malformed section header";
+  size_t name_len = body - i - 2;
+  const char *name = line + i + 1;
+  while (name_len > 0 && is_blank(*name)) {
+    name++;
+    name_len--;
+  }
+  while (name_len > 0 && is_blank(name[name_len - 1]))
+    name_len--;
+  if (name_len + 1 > p->section_cap) {
+    char *grown = realloc(p->section, name_len + 1);
+    if (!grown)
+      return "out of memory";
+    p->section = grown;
+    p->section_cap = name_len + 1;
+  }
+  memcpy(p->section, name, name_len);
+  p->section[name_len] = '\0';
+  if (!zmap_contains(p->ini->sections, p->section)) {
+    zmap *kv = zmap_create();
+    if (!kv || !zmap_put(p->ini->sections, p->section, kv, nullptr)) {
+      zmap_destroy(kv, nullptr, nullptr);
+      return "out of memory";
+    }
+  }
+  return nullptr;
+}
+
+/* Length of the value at line[vstart..vstart+vlen) once an inline comment is
+ * stripped (only when the comment char is preceded by whitespace). */
+static size_t value_length(const char *line, size_t vstart, size_t vlen) {
+  for (size_t k = 0; k < vlen; k++) {
+    char c = line[vstart + k];
+    if ((c == '#' || c == ';') && k > 0 && is_blank(line[vstart + k - 1])) {
+      vlen = k;
+      while (vlen > 0 && is_blank(line[vstart + vlen - 1]))
+        vlen--;
+      break;
+    }
+  }
+  return vlen;
+}
+
+/* Stores key_copy/val_copy in kv (last duplicate wins). Both copies are
+ * consumed. Returns an error message, or nullptr. */
+static const char *store_pair(struct parser *p, zmap *kv, char *key_copy,
+                              char *val_copy) {
+  void *old = nullptr;
+  if (!zmap_put(kv, key_copy, val_copy, &old)) {
+    free(key_copy);
+    free(val_copy);
+    return "out of memory";
+  }
+  free(key_copy); /* zmap duplicates the key itself */
+  if (old)
+    free(old); /* duplicate key: last wins */
+  else
+    p->ini->count++;
+  return nullptr;
+}
+
+/* key = value. Returns an error message, or nullptr. */
+static const char *parse_key_value(struct parser *p, const char *line,
+                                   size_t i, size_t body) {
+  const char *eq = memchr(line + i, '=', body - i);
+  if (!eq)
+    return "expected key=value or [section]";
+  size_t key_len = (size_t)(eq - (line + i));
+  while (key_len > 0 && is_blank(line[i + key_len - 1]))
+    key_len--;
+  if (key_len == 0)
+    return "empty key";
+
+  /* Value: trim, then strip an inline comment. */
+  size_t vstart = (size_t)(eq - line) + 1;
+  while (vstart < body && is_blank(line[vstart]))
+    vstart++;
+  size_t vlen = value_length(line, vstart, body - vstart);
+
+  zmap *kv = section_map(p);
+  if (!kv)
+    return "out of memory";
+
+  char *key_copy = malloc(key_len + 1);
+  char *val_copy = malloc(vlen + 1);
+  if (!key_copy || !val_copy) {
+    free(key_copy);
+    free(val_copy);
+    return "out of memory";
+  }
+  memcpy(key_copy, line + i, key_len);
+  key_copy[key_len] = '\0';
+  memcpy(val_copy, line + vstart, vlen);
+  val_copy[vlen] = '\0';
+  return store_pair(p, kv, key_copy, val_copy);
+}
+
+/* One line of text[at..end) with CR trimmed. Returns an error message, or
+ * nullptr. */
+static const char *parse_line(struct parser *p, const char *line,
+                              size_t line_len) {
+  size_t i = 0;
+  while (i < line_len && is_blank(line[i]))
+    i++;
+  size_t body = line_len;
+  while (body > i && is_blank(line[body - 1]))
+    body--;
+  if (i == body || line[i] == '#' || line[i] == ';')
+    return nullptr; /* blank line or full-line comment */
+  if (line[i] == '[')
+    return parse_section(p, line, i, body);
+  return parse_key_value(p, line, i, body);
+}
+
 zini *zini_parse(const char *text, size_t len, zini_error *err) {
   zini *ini = calloc(1, sizeof(*ini));
   if (!ini)
@@ -49,12 +191,11 @@ zini *zini_parse(const char *text, size_t len, zini_error *err) {
   if (!ini->sections)
     return fail(ini, nullptr, err, 0, "out of memory");
 
-  /* Current section name, NUL-terminated; "" is the global section. */
-  size_t section_cap = 16;
-  char *section = malloc(section_cap);
-  if (!section)
+  struct parser p = {ini, nullptr, 16};
+  p.section = malloc(p.section_cap);
+  if (!p.section)
     return fail(ini, nullptr, err, 0, "out of memory");
-  section[0] = '\0';
+  p.section[0] = '\0';
 
   size_t line_no = 0;
   size_t at = 0;
@@ -66,120 +207,14 @@ zini *zini_parse(const char *text, size_t len, zini_error *err) {
     size_t line_len = end - at;
     if (line_len > 0 && text[at + line_len - 1] == '\r')
       line_len--; /* tolerate CRLF */
-
-    const char *line = text + at;
-    size_t i = 0;
-    while (i < line_len && (line[i] == ' ' || line[i] == '\t'))
-      i++;
-    size_t body = line_len;
-    while (body > i && (line[body - 1] == ' ' || line[body - 1] == '\t'))
-      body--;
-
-    if (i == body || line[i] == '#' || line[i] == ';') {
-      /* blank line or full-line comment */
-    } else if (line[i] == '[') {
-      /* Section header: the closing ']' must be the last body byte. */
-      if (line[body - 1] != ']')
-        return fail(ini, section, err, line_no, "malformed section header");
-      size_t name_len = body - i - 2;
-      const char *name = line + i + 1;
-      while (name_len > 0 && (*name == ' ' || *name == '\t')) {
-        name++;
-        name_len--;
-      }
-      while (name_len > 0 &&
-             (name[name_len - 1] == ' ' || name[name_len - 1] == '\t'))
-        name_len--;
-      if (name_len + 1 > section_cap) {
-        char *grown = realloc(section, name_len + 1);
-        if (!grown)
-          return fail(ini, section, err, line_no, "out of memory");
-        section = grown;
-        section_cap = name_len + 1;
-      }
-      memcpy(section, name, name_len);
-      section[name_len] = '\0';
-      if (!zmap_contains(ini->sections, section)) {
-        zmap *kv = zmap_create();
-        if (!kv || !zmap_put(ini->sections, section, kv, nullptr)) {
-          zmap_destroy(kv, nullptr, nullptr);
-          return fail(ini, section, err, line_no, "out of memory");
-        }
-      }
-    } else {
-      /* key = value */
-      const char *eq = memchr(line + i, '=', body - i);
-      if (!eq)
-        return fail(ini, section, err, line_no,
-                    "expected key=value or [section]");
-      size_t key_len = (size_t)(eq - (line + i));
-      while (key_len > 0 &&
-             (line[i + key_len - 1] == ' ' || line[i + key_len - 1] == '\t'))
-        key_len--;
-      if (key_len == 0)
-        return fail(ini, section, err, line_no, "empty key");
-
-      /* Value: trim, then strip an inline comment (only when the comment
-       * char is preceded by whitespace). */
-      size_t vstart = (size_t)(eq - line) + 1;
-      while (vstart < body && (line[vstart] == ' ' || line[vstart] == '\t'))
-        vstart++;
-      size_t vlen = body - vstart;
-      for (size_t k = 0; k < vlen; k++) {
-        char c = line[vstart + k];
-        if ((c == '#' || c == ';') && k > 0 &&
-            (line[vstart + k - 1] == ' ' || line[vstart + k - 1] == '\t')) {
-          vlen = k;
-          while (vlen > 0 &&
-                 (line[vstart + vlen - 1] == ' ' ||
-                  line[vstart + vlen - 1] == '\t'))
-            vlen--;
-          break;
-        }
-      }
-
-      zmap *kv = zmap_get(ini->sections, section);
-      if (!kv) {
-        /* First key of a section whose header never appeared (the global
-         * section, or an empty-name section created above): create the
-         * map lazily. */
-        kv = zmap_create();
-        if (!kv || !zmap_put(ini->sections, section, kv, nullptr)) {
-          zmap_destroy(kv, nullptr, nullptr);
-          return fail(ini, section, err, line_no, "out of memory");
-        }
-      }
-
-      char *key_copy = malloc(key_len + 1);
-      char *val_copy = malloc(vlen + 1);
-      if (!key_copy || !val_copy) {
-        free(key_copy);
-        free(val_copy);
-        return fail(ini, section, err, line_no, "out of memory");
-      }
-      memcpy(key_copy, line + i, key_len);
-      key_copy[key_len] = '\0';
-      memcpy(val_copy, line + vstart, vlen);
-      val_copy[vlen] = '\0';
-
-      void *old = nullptr;
-      if (!zmap_put(kv, key_copy, val_copy, &old)) {
-        free(key_copy);
-        free(val_copy);
-        return fail(ini, section, err, line_no, "out of memory");
-      }
-      free(key_copy); /* zmap duplicates the key itself */
-      if (old)
-        free(old); /* duplicate key: last wins */
-      else
-        ini->count++;
-    }
-
+    const char *message = parse_line(&p, text + at, line_len);
+    if (message)
+      return fail(ini, p.section, err, line_no, message);
     if (end >= len)
       break;
     at = end + 1;
   }
-  free(section);
+  free(p.section);
   return ini;
 }
 

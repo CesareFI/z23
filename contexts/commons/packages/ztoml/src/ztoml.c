@@ -179,12 +179,132 @@ static int ztoml__us_ok(const char *p, size_t n) {
   return 1;
 }
 
+/* Radix-prefixed token (0x / 0o / 0b): sets the base; no sign, digits
+ * required. */
+static ztoml_err ztoml__radix_shape(ztoml *t, char c, size_t n, size_t i,
+                                    int neg, int *base) {
+  *base = c == 'x' ? 16 : c == 'o' ? 8 : 2;
+  if (neg) return ztoml__fail(t, ZTOML_ERR_SYNTAX, t->pos - n);
+  if (n - (i + 2) == 0)
+    return ztoml__fail(t, ZTOML_ERR_SYNTAX, t->pos - n);
+  return ZTOML_OK;
+}
+
+/* Decimal token: detects a float and rejects leading zeros. */
+static ztoml_err ztoml__decimal_shape(ztoml *t, const char *p, size_t n,
+                                      size_t i, int *is_float) {
+  size_t j;
+  for (j = i; j < n; j++) {
+    char c = p[j];
+    if (c == '.' || c == 'e' || c == 'E') *is_float = 1;
+  }
+  /* TOML: no leading zeros ("01", "01.5", "0_0" are invalid), and a
+   * float needs digits on both sides of '.' ("5." / ".5" invalid). */
+  if (i + 1 < n && p[i] == '0' &&
+      ((p[i + 1] >= '0' && p[i + 1] <= '9') || p[i + 1] == '_'))
+    return ztoml__fail(t, ZTOML_ERR_SYNTAX, t->pos - n + i);
+  if (i < n && p[i] == '.')
+    return ztoml__fail(t, ZTOML_ERR_SYNTAX, t->pos - n + i);
+  return ZTOML_OK;
+}
+
+/* Checks the token shape before conversion: sets the base and whether it is
+ * a float. `i` is the offset past any sign. */
+static ztoml_err ztoml__number_shape(ztoml *t, const char *p, size_t n,
+                                     size_t i, int neg, int *base,
+                                     int *is_float) {
+  *base = 10;
+  *is_float = 0;
+  if (i + 1 < n && p[i] == '0' &&
+      (p[i + 1] == 'x' || p[i + 1] == 'o' || p[i + 1] == 'b')) {
+    ztoml_err err = ztoml__radix_shape(t, p[i + 1], n, i, neg, base);
+    if (err != ZTOML_OK) return err;
+  }
+  if (*base == 10) return ztoml__decimal_shape(t, p, n, i, is_float);
+  return ZTOML_OK;
+}
+
+/* Converts the underscore-stripped float token buf (original text p[0..n)). */
+static ztoml_err ztoml__float(ztoml *t, ztoml_ev *ev, const char *buf,
+                              const char *p, size_t n) {
+  char *end = NULL;
+  double v;
+  size_t j;
+  errno = 0;
+  v = strtod(buf, &end);
+  if (end == buf || *end != '\0')
+    return ztoml__fail(t, ZTOML_ERR_SYNTAX, t->pos - n);
+  if (errno == ERANGE && (v == HUGE_VAL || v == -HUGE_VAL))
+    return ztoml__fail(t, ZTOML_ERR_BADVALUE, t->pos - n);
+  /* TOML requires digits around '.' and after e; enforce basic
+   * shape: ".5" and "5." and "1e" are rejected by strtod's end
+   * pointer only partially — check the original token. */
+  for (j = 0; j + 1 < n; j++) {
+    if (p[j] == '.' && !(p[j + 1] >= '0' && p[j + 1] <= '9'))
+      return ztoml__fail(t, ZTOML_ERR_SYNTAX, t->pos - n + j);
+  }
+  if (n > 0 && p[n - 1] == '.')
+    return ztoml__fail(t, ZTOML_ERR_SYNTAX, t->pos - 1);
+  ev->kind = ZTOML_EV_VALUE;
+  ev->vtype = ZTOML_V_FLOAT;
+  ev->f64 = v;
+  return ZTOML_OK;
+}
+
+/* Signed decimal conversion (negative tokens). */
+static ztoml_err ztoml__integer_neg(ztoml *t, ztoml_ev *ev, const char *buf,
+                                    int base, size_t n) {
+  char *end = NULL;
+  long long v = strtoll(buf, &end, base);
+  if (errno == ERANGE || end == buf || *end != '\0')
+    return ztoml__fail(t, errno == ERANGE ? ZTOML_ERR_BADVALUE
+                                          : ZTOML_ERR_SYNTAX,
+                       t->pos - n);
+  ev->i64 = (int64_t)v;
+  return ZTOML_OK;
+}
+
+/* Unsigned conversion bounded by INT64_MAX (non-negative tokens). */
+static ztoml_err ztoml__integer_pos(ztoml *t, ztoml_ev *ev,
+                                    const char *digits, int base, size_t n) {
+  char *end = NULL;
+  unsigned long long u = strtoull(digits, &end, base);
+  if (errno == ERANGE || end == digits || *end != '\0' ||
+      u > (unsigned long long)INT64_MAX)
+    return ztoml__fail(t, errno == ERANGE ||
+                              u > (unsigned long long)INT64_MAX
+                          ? ZTOML_ERR_BADVALUE
+                          : ZTOML_ERR_SYNTAX,
+                       t->pos - n);
+  ev->i64 = (int64_t)u;
+  return ZTOML_OK;
+}
+
+/* Converts the underscore-stripped integer token buf. */
+static ztoml_err ztoml__integer(ztoml *t, ztoml_ev *ev, const char *buf,
+                                int base, int neg, size_t n) {
+  const char *digits = buf;
+  ztoml_err err;
+  if (base != 10) digits += 2;
+  if (*digits == '\0')
+    return ztoml__fail(t, ZTOML_ERR_SYNTAX, t->pos - n);
+  if (base == 10 && *digits == '+') digits++;
+  errno = 0;
+  err = neg ? ztoml__integer_neg(t, ev, buf, base, n)
+            : ztoml__integer_pos(t, ev, digits, base, n);
+  if (err != ZTOML_OK) return err;
+  ev->kind = ZTOML_EV_VALUE;
+  ev->vtype = ZTOML_V_INT;
+  return ZTOML_OK;
+}
+
 static ztoml_err ztoml__number(ztoml *t, ztoml_ev *ev, const char *p,
                                size_t n) {
   char buf[80];
   size_t m;
   int neg = 0, is_float = 0, base = 10;
   size_t i = 0;
+  ztoml_err err;
   if (!ztoml__us_ok(p, n))
     return ztoml__fail(t, ZTOML_ERR_SYNTAX, t->pos - n);
   if (i < n && (p[i] == '+' || p[i] == '-')) {
@@ -200,90 +320,13 @@ static ztoml_err ztoml__number(ztoml *t, ztoml_ev *ev, const char *p,
     else ev->f64 = neg ? -NAN : NAN;
     return ZTOML_OK;
   }
-  if (i + 1 < n && p[i] == '0' &&
-      (p[i + 1] == 'x' || p[i + 1] == 'o' || p[i + 1] == 'b')) {
-    char c = p[i + 1];
-    base = c == 'x' ? 16 : c == 'o' ? 8 : 2;
-    if (neg) return ztoml__fail(t, ZTOML_ERR_SYNTAX, t->pos - n);
-    if (n - (i + 2) == 0)
-      return ztoml__fail(t, ZTOML_ERR_SYNTAX, t->pos - n);
-  }
-  if (base == 10) {
-    size_t j;
-    for (j = i; j < n; j++) {
-      char c = p[j];
-      if (c == '.' || c == 'e' || c == 'E') is_float = 1;
-    }
-    /* TOML: no leading zeros ("01", "01.5", "0_0" are invalid), and a
-     * float needs digits on both sides of '.' ("5." / ".5" invalid). */
-    if (i + 1 < n && p[i] == '0' &&
-        ((p[i + 1] >= '0' && p[i + 1] <= '9') || p[i + 1] == '_'))
-      return ztoml__fail(t, ZTOML_ERR_SYNTAX, t->pos - n + i);
-    if (i < n && p[i] == '.')
-      return ztoml__fail(t, ZTOML_ERR_SYNTAX, t->pos - n + i);
-  }
+  err = ztoml__number_shape(t, p, n, i, neg, &base, &is_float);
+  if (err != ZTOML_OK) return err;
   m = ztoml__strip_us(p, n, buf, sizeof(buf));
   if (m == SIZE_MAX)
     return ztoml__fail(t, ZTOML_ERR_RANGE, t->pos - n);
-  if (is_float) {
-    char *end = NULL;
-    double v;
-    errno = 0;
-    v = strtod(buf, &end);
-    if (end == buf || *end != '\0')
-      return ztoml__fail(t, ZTOML_ERR_SYNTAX, t->pos - n);
-    if (errno == ERANGE && (v == HUGE_VAL || v == -HUGE_VAL))
-      return ztoml__fail(t, ZTOML_ERR_BADVALUE, t->pos - n);
-    /* TOML requires digits around '.' and after e; enforce basic
-     * shape: ".5" and "5." and "1e" are rejected by strtod's end
-     * pointer only partially — check the original token. */
-    {
-      size_t j;
-      for (j = 0; j + 1 < n; j++) {
-        if (p[j] == '.' &&
-            !(p[j + 1] >= '0' && p[j + 1] <= '9'))
-          return ztoml__fail(t, ZTOML_ERR_SYNTAX, t->pos - n + j);
-      }
-      if (n > 0 && p[n - 1] == '.')
-        return ztoml__fail(t, ZTOML_ERR_SYNTAX, t->pos - 1);
-    }
-    ev->kind = ZTOML_EV_VALUE;
-    ev->vtype = ZTOML_V_FLOAT;
-    ev->f64 = v;
-    return ZTOML_OK;
-  }
-  /* Integer. */
-  {
-    const char *digits = buf;
-    char *end = NULL;
-    unsigned long long u;
-    if (base != 10) digits += 2;
-    if (*digits == '\0')
-      return ztoml__fail(t, ZTOML_ERR_SYNTAX, t->pos - n);
-    if (base == 10 && *digits == '+') digits++;
-    errno = 0;
-    if (neg) {
-      long long v = strtoll(buf, &end, base);
-      if (errno == ERANGE || end == buf || *end != '\0')
-        return ztoml__fail(t, errno == ERANGE ? ZTOML_ERR_BADVALUE
-                                              : ZTOML_ERR_SYNTAX,
-                           t->pos - n);
-      ev->i64 = (int64_t)v;
-    } else {
-      u = strtoull(digits, &end, base);
-      if (errno == ERANGE || end == digits || *end != '\0' ||
-          u > (unsigned long long)INT64_MAX)
-        return ztoml__fail(t, errno == ERANGE ||
-                                  u > (unsigned long long)INT64_MAX
-                              ? ZTOML_ERR_BADVALUE
-                              : ZTOML_ERR_SYNTAX,
-                           t->pos - n);
-      ev->i64 = (int64_t)u;
-    }
-    ev->kind = ZTOML_EV_VALUE;
-    ev->vtype = ZTOML_V_INT;
-    return ZTOML_OK;
-  }
+  if (is_float) return ztoml__float(t, ev, buf, p, n);
+  return ztoml__integer(t, ev, buf, base, neg, n);
 }
 
 static int ztoml__value_char(char c) {

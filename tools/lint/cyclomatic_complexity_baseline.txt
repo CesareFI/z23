@@ -753,7 +753,6 @@ contexts/commons/packages/zhuman/app/main.c:main:17
 contexts/commons/packages/zhuman/src/zhuman.c:zhuman_format_duration:20
 contexts/commons/packages/zhuman/src/zhuman.c:zhuman_parse_bytes:18
 contexts/commons/packages/zhuman/src/zhuman.c:zhuman_parse_duration:32
-contexts/commons/packages/zini/src/zini.c:zini_parse:56
 contexts/commons/packages/zintern/src/zintern.c:zintern_put:18
 contexts/commons/packages/zjson/tests/test_zjson.c:balanced:17
 contexts/commons/packages/zjsonp/src/zjsonp.c:scan_number:30
@@ -768,8 +767,6 @@ contexts/commons/packages/zmap/app/main.c:main:24
 contexts/commons/packages/zmath/app/main.c:main:22
 contexts/commons/packages/zmath/src/zmath.c:zmath_mul_i64:16
 contexts/commons/packages/zmath/tests/test_zmath.c:test_checked_i64:19
-contexts/commons/packages/zmd/src/zmd.c:render_blocks:41
-contexts/commons/packages/zmd/src/zmd.c:render_inline:50
 contexts/commons/packages/zmd/src/zmd.c:url_ok:24
 contexts/commons/packages/zmime/src/zmime.c:is_token_char:22
 contexts/commons/packages/zmime/src/zmime.c:take_value:17
@@ -783,7 +780,6 @@ contexts/commons/packages/zotpcli/src/zotpcli.c:parse_header:36
 contexts/commons/packages/zotpcli/src/zotpcli.c:rec_next:16
 contexts/commons/packages/zotpcli/src/zotpcli.c:zotpcli_b32_decode_secret:19
 contexts/commons/packages/zotpcli/src/zotpcli.c:zotpcli_otpauth_format:16
-contexts/commons/packages/zotpcli/src/zotpcli.c:zotpcli_otpauth_parse_n:65
 contexts/commons/packages/zotpcli/src/zotpcli.c:zotpcli_store_decode:20
 contexts/commons/packages/zpath/app/main.c:main:19
 contexts/commons/packages/zpath/src/zpath.c:zpath_normalize:23
@@ -822,14 +818,12 @@ contexts/commons/packages/ztemplate/src/ztemplate.c:ztemplate_render:18
 contexts/commons/packages/ztemplate/tests/test_ztemplate.c:ref_render:17
 contexts/commons/packages/ztime/src/ztime.c:ztime_parse_n:43
 contexts/commons/packages/ztoml/app/main.c:main:22
-contexts/commons/packages/ztoml/src/ztoml.c:ztoml__number:60
 contexts/commons/packages/ztoml/src/ztoml.c:ztoml_next:32
 contexts/commons/packages/ztoml/src/ztoml.c:ztoml_str_decode:39
 contexts/commons/packages/ztoml/tests/test_ztoml.c:test_fuzz:18
 contexts/commons/packages/ztoml/tests/test_ztoml.c:test_kat:17
 contexts/commons/packages/ztrie/tests/test_ztrie.c:test_stress_vs_model:16
 contexts/commons/packages/zu256/app/main.c:main:21
-contexts/commons/packages/zurl/src/zurl.c:zurl_parse_n:72
 contexts/commons/packages/zutf16/src/zutf16.c:zutf16_decode_cp:19
 contexts/commons/packages/zutf8/src/zutf8.c:zutf8_decode_n:25
 contexts/commons/packages/zutf8/tests/test_zutf8.c:test_encode_kats:23

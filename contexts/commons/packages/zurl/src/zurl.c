@@ -52,161 +52,160 @@ static size_t scan_chars(const char *text, size_t i, size_t end,
 
 static void zero(zurl *out) { memset(out, 0, sizeof(*out)); }
 
-bool zurl_parse_n(const char *text, size_t len, zurl *out) {
-  if (!out)
-    return false;
-  zero(out);
-  if (!text || len == 0)
-    return false;
-
-  /* scheme */
-  size_t i = 0;
+/* scheme ":" — advances *i past the colon. */
+static bool parse_scheme(const char *text, size_t len, zurl *out, size_t *i) {
   if (!is_alpha((unsigned char)text[0]))
     return false;
-  i = 1;
-  while (i < len &&
-         (is_alpha((unsigned char)text[i]) ||
-          is_digit((unsigned char)text[i]) || text[i] == '+' ||
-          text[i] == '-' || text[i] == '.'))
-    i++;
-  if (i >= len || text[i] != ':')
+  size_t k = 1;
+  while (k < len &&
+         (is_alpha((unsigned char)text[k]) ||
+          is_digit((unsigned char)text[k]) || text[k] == '+' ||
+          text[k] == '-' || text[k] == '.'))
+    k++;
+  if (k >= len || text[k] != ':')
     return false;
-  out->scheme = (zurl_span){0, i};
-  i++; /* past ':' */
+  out->scheme = (zurl_span){0, k};
+  *i = k + 1; /* past ':' */
+  return true;
+}
 
-  /* hier part: authority form or a bare path */
-  size_t path_start;
-  if (len - i >= 2 && text[i] == '/' && text[i + 1] == '/') {
-    out->has_authority = true;
-    i += 2;
-    size_t auth_start = i;
-    /* authority ends at '/', '?', '#', or end */
-    while (i < len && text[i] != '/' && text[i] != '?' && text[i] != '#')
-      i++;
-    size_t auth_end = i;
+/* Bracketed IP literal at host_start: sets the host end and any port span. */
+static bool parse_ip_literal(const char *text, size_t host_start,
+                             size_t auth_end, zurl *out, size_t *host_end,
+                             bool *has_port, zurl_span *port_span) {
+  const char *close = memchr(text + host_start, ']', auth_end - host_start);
+  if (!close)
+    return false;
+  *host_end = (size_t)(close - text) + 1;
+  out->host_is_ip_literal = true;
+  /* literal body: hex digits, ':', '.', and zone id "%..." */
+  for (size_t k = host_start + 1; k + 1 < *host_end; k++) {
+    unsigned char c = (unsigned char)text[k];
+    if (!(is_hex(c) || c == ':' || c == '.'))
+      return false;
+  }
+  if (*host_end < auth_end && text[*host_end] == ':') {
+    *has_port = true;
+    *port_span = (zurl_span){*host_end + 1, auth_end - *host_end - 1};
+  } else if (*host_end != auth_end) {
+    return false;
+  }
+  return true;
+}
 
-    /* userinfo: everything before the last '@' (an '@' in userinfo
-     * would need pct-encoding; take the last so hosts may not hide).
-     * An empty authority (e.g. "file:///path") is grammar-legal and
-     * yields an empty host span with no userinfo or port. */
-    size_t host_start = auth_start;
-    for (size_t k = auth_start; k < auth_end; k++)
-      if (text[k] == '@')
-        host_start = k + 1;
-    if (host_start != auth_start) {
-      out->has_userinfo = true;
-      out->userinfo =
-          (zurl_span){auth_start, host_start - auth_start - 1};
-      if (scan_chars(text, auth_start, host_start - 1, ":") ==
-          SIZE_MAX)
+/* Digits and dots only: exactly 4 octets 0..255. */
+static bool parse_ipv4(const char *text, size_t host_start, size_t host_end) {
+  unsigned octets = 0;
+  size_t k = host_start;
+  while (k < host_end) {
+    size_t d0 = k;
+    unsigned v = 0;
+    while (k < host_end && is_digit((unsigned char)text[k])) {
+      v = v * 10 + (unsigned)(text[k] - '0');
+      if (v > 255 || k - d0 >= 3)
         return false;
+      k++;
     }
+    if (k == d0)
+      return false; /* empty octet */
+    octets++;
+    if (k < host_end && text[k] == '.')
+      k++;
+  }
+  return octets == 4;
+}
 
-    /* host [":" port] */
-    size_t host_end = auth_end;
-    bool has_port = false;
-    zurl_span port_span = {0, 0};
-    if (host_start == auth_end) {
-      /* empty authority: nothing more to parse */
-    } else if (text[host_start] == '[') {
-      const char *close = memchr(text + host_start, ']', auth_end - host_start);
-      if (!close)
-        return false;
-      host_end = (size_t)(close - text) + 1;
-      out->host_is_ip_literal = true;
-      /* literal body: hex digits, ':', '.', and zone id "%..." */
-      for (size_t k = host_start + 1; k + 1 < host_end; k++) {
-        unsigned char c = (unsigned char)text[k];
-        if (!(is_hex(c) || c == ':' || c == '.'))
-          return false;
-      }
-      if (host_end < auth_end && text[host_end] == ':') {
-        has_port = true;
-        port_span = (zurl_span){host_end + 1, auth_end - host_end - 1};
-      } else if (host_end != auth_end) {
-        return false;
-      }
-    } else {
-      /* port is after the last ':' if that ':' is single (reg-names
-       * contain no ':'; any ':' here starts the port) */
-      for (size_t k = host_start; k < auth_end; k++)
-        if (text[k] == ':') {
-          if (has_port)
-            return false; /* second colon */
-          has_port = true;
-          port_span = (zurl_span){k + 1, auth_end - k - 1};
-          host_end = k;
-        }
-      if (host_end == host_start)
-        return false; /* empty host */
-      /* IPv4? digits and dots only, 4 octets 0..255 */
-      bool maybe4 = true;
-      for (size_t k = host_start; k < host_end; k++)
-        if (!is_digit((unsigned char)text[k]) && text[k] != '.')
-          maybe4 = false;
-      if (maybe4) {
-        unsigned octets = 0;
-        size_t k = host_start;
-        while (k < host_end) {
-          size_t d0 = k;
-          unsigned v = 0;
-          while (k < host_end && is_digit((unsigned char)text[k])) {
-            v = v * 10 + (unsigned)(text[k] - '0');
-            if (v > 255 || k - d0 >= 3)
-              return false;
-            k++;
-          }
-          if (k == d0)
-            return false; /* empty octet */
-          octets++;
-          if (k < host_end && text[k] == '.')
-            k++;
-        }
-        if (octets != 4)
-          return false;
-        out->host_is_ipv4 = true;
-      } else {
-        /* reg-name */
-        if (scan_chars(text, host_start, host_end, NULL) ==
-            SIZE_MAX)
-          return false;
-      }
+/* reg-name or IPv4 host with an optional ":port". */
+static bool parse_named_host(const char *text, size_t host_start,
+                             size_t auth_end, zurl *out, size_t *host_end,
+                             bool *has_port, zurl_span *port_span) {
+  /* port is after the last ':' if that ':' is single (reg-names
+   * contain no ':'; any ':' here starts the port) */
+  for (size_t k = host_start; k < auth_end; k++)
+    if (text[k] == ':') {
+      if (*has_port)
+        return false; /* second colon */
+      *has_port = true;
+      *port_span = (zurl_span){k + 1, auth_end - k - 1};
+      *host_end = k;
     }
-    out->host = (zurl_span){host_start, host_end - host_start};
+  if (*host_end == host_start)
+    return false; /* empty host */
+  bool maybe4 = true;
+  for (size_t k = host_start; k < *host_end; k++)
+    if (!is_digit((unsigned char)text[k]) && text[k] != '.')
+      maybe4 = false;
+  if (maybe4) {
+    if (!parse_ipv4(text, host_start, *host_end))
+      return false;
+    out->host_is_ipv4 = true;
+    return true;
+  }
+  return scan_chars(text, host_start, *host_end, NULL) != SIZE_MAX;
+}
 
-    if (has_port) {
-      out->has_port = true;
-      unsigned v = 0;
-      for (size_t k = port_span.off; k < port_span.off + port_span.len;
-           k++) {
-        if (!is_digit((unsigned char)text[k]))
-          return false;
-        v = v * 10 + (unsigned)(text[k] - '0');
-        if (v > 65535)
-          return false;
-      }
-      out->port = (uint16_t)v;
-    }
-    path_start = i;
-    /* path-abempty: empty or begins with '/' */
-  } else {
-    path_start = i;
+static bool parse_port(const char *text, zurl_span port_span, zurl *out) {
+  out->has_port = true;
+  unsigned v = 0;
+  for (size_t k = port_span.off; k < port_span.off + port_span.len; k++) {
+    if (!is_digit((unsigned char)text[k]))
+      return false;
+    v = v * 10 + (unsigned)(text[k] - '0');
+    if (v > 65535)
+      return false;
+  }
+  out->port = (uint16_t)v;
+  return true;
+}
+
+/* "//" authority: userinfo, host and port. *i starts past the "//" and ends
+ * at the end of the authority. */
+static bool parse_authority(const char *text, size_t len, zurl *out,
+                            size_t *i) {
+  out->has_authority = true;
+  size_t auth_start = *i;
+  /* authority ends at '/', '?', '#', or end */
+  while (*i < len && text[*i] != '/' && text[*i] != '?' && text[*i] != '#')
+    (*i)++;
+  size_t auth_end = *i;
+
+  /* userinfo: everything before the last '@' (an '@' in userinfo
+   * would need pct-encoding; take the last so hosts may not hide).
+   * An empty authority (e.g. "file:///path") is grammar-legal and
+   * yields an empty host span with no userinfo or port. */
+  size_t host_start = auth_start;
+  for (size_t k = auth_start; k < auth_end; k++)
+    if (text[k] == '@')
+      host_start = k + 1;
+  if (host_start != auth_start) {
+    out->has_userinfo = true;
+    out->userinfo = (zurl_span){auth_start, host_start - auth_start - 1};
+    if (scan_chars(text, auth_start, host_start - 1, ":") == SIZE_MAX)
+      return false;
   }
 
-  /* path: up to '?', '#', or end */
-  size_t path_end = path_start;
-  while (path_end < len && text[path_end] != '?' && text[path_end] != '#')
-    path_end++;
-  out->path = (zurl_span){path_start, path_end - path_start};
-  /* path characters: pchar + '/' */
-  if (scan_chars(text, path_start, path_end, ":@/") == SIZE_MAX)
+  /* host [":" port] */
+  size_t host_end = auth_end;
+  bool has_port = false;
+  zurl_span port_span = {0, 0};
+  if (host_start == auth_end) {
+    /* empty authority: nothing more to parse */
+  } else if (text[host_start] == '[') {
+    if (!parse_ip_literal(text, host_start, auth_end, out, &host_end,
+                          &has_port, &port_span))
+      return false;
+  } else if (!parse_named_host(text, host_start, auth_end, out, &host_end,
+                               &has_port, &port_span)) {
     return false;
-  /* without an authority the path cannot begin with "//" */
-  if (!out->has_authority && out->path.len >= 2 &&
-      text[path_start] == '/' && text[path_start + 1] == '/')
-    return false;
+  }
+  out->host = (zurl_span){host_start, host_end - host_start};
+  return !has_port || parse_port(text, port_span, out);
+}
 
-  i = path_end;
+/* The optional "?query" and "#fragment" from offset i; the whole input must
+ * be consumed. */
+static bool parse_query_fragment(const char *text, size_t len, size_t i,
+                                 zurl *out) {
   if (i < len && text[i] == '?') {
     out->has_query = true;
     size_t qs = ++i;
@@ -225,6 +224,45 @@ bool zurl_parse_n(const char *text, size_t len, zurl *out) {
     i = len; /* fragment runs to end of input */
   }
   return i == len;
+}
+
+/* path, then the optional query and fragment. */
+static bool parse_path_query_fragment(const char *text, size_t len,
+                                      size_t path_start, zurl *out) {
+  /* path: up to '?', '#', or end */
+  size_t path_end = path_start;
+  while (path_end < len && text[path_end] != '?' && text[path_end] != '#')
+    path_end++;
+  out->path = (zurl_span){path_start, path_end - path_start};
+  /* path characters: pchar + '/' */
+  if (scan_chars(text, path_start, path_end, ":@/") == SIZE_MAX)
+    return false;
+  /* without an authority the path cannot begin with "//" */
+  if (!out->has_authority && out->path.len >= 2 &&
+      text[path_start] == '/' && text[path_start + 1] == '/')
+    return false;
+
+  return parse_query_fragment(text, len, path_end, out);
+}
+
+bool zurl_parse_n(const char *text, size_t len, zurl *out) {
+  if (!out)
+    return false;
+  zero(out);
+  if (!text || len == 0)
+    return false;
+
+  size_t i = 0;
+  if (!parse_scheme(text, len, out, &i))
+    return false;
+
+  /* hier part: authority form or a bare path */
+  if (len - i >= 2 && text[i] == '/' && text[i + 1] == '/') {
+    i += 2;
+    if (!parse_authority(text, len, out, &i))
+      return false;
+  }
+  return parse_path_query_fragment(text, len, i, out);
 }
 
 bool zurl_parse(const char *text, zurl *out) {
