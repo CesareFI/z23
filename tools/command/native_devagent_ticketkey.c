@@ -757,328 +757,370 @@ static bool dvt_epoch(const char *top, char epoch_hex[65])
     return true;
 }
 
-void zcl_native_handle_dev_agent_ticketkey(
-    const struct zcl_command_request *request, struct zcl_command_reply *reply)
-{
-    int64_t t0_ns;
-    const struct json_value *input;
+struct dvt_request {
     const char *group;
     const char *cwd;
-    const char *tip_in;
-    const char *tip_argv[3];
     char tip[64];
     char top[8192];
     char test_rel[256];
+};
+
+static void dvt_no_test_file(struct zcl_command_reply *reply, const char *group,
+                             const char *evidence)
+{
+    char msg[256];
+    (void)snprintf(msg, sizeof(msg), "no test file for group '%s'", group);
+    dvt_fail(reply, ZCL_COMMAND_EXIT_FAILED, "UNKNOWN_GROUP", "resolve", msg,
+             evidence);
+}
+
+/* Resolves group, checkout top, the tip commit, and the group's test file;
+ * false with the reply already failed. */
+static bool dvt_resolve_request(struct zcl_command_reply *reply,
+                                const struct json_value *input,
+                                struct dvt_request *req)
+{
     char test_abs[8448];
-    FILE *tf = NULL;
-    struct dvt_blob *blobs = NULL;
-    size_t nblobs = 0;
-    char *tree_buf = NULL;
-    struct dvt_set set;
-    char epoch_hex[65];
-    struct sha3_256_ctx kctx;
-    unsigned char kdigest[32];
-    char key_hex[65];
-    char *blob_buf = NULL;
-    size_t i;
-    bool progress;
-    (void)memset(&set, 0, sizeof(set));
-
-    t0_ns = clock_now_monotonic_ns();
-    if (!request || !reply)
-        return;
-    (void)json_push_kv_str(&reply->data, "leaf", DVT_LEAF);
-    input = request->input;
-
-    group = dvt_input_str(input, "group");
-    if (!group) {
+    const char *tip_argv[3];
+    req->group = dvt_input_str(input, "group");
+    if (!req->group) {
         dvt_fail(reply, ZCL_COMMAND_EXIT_INVALID, "BAD_INPUT", "normalize",
                  "group is required and must be a non-empty string",
                  "dev.agent.ticketkey input keys: group,cwd,tip");
-        return;
+        return false;
     }
-    cwd = dvt_input_str(input, "cwd");
-    tip_in = dvt_input_str(input, "tip");
+    req->cwd = dvt_input_str(input, "cwd");
+    const char *tip_in = dvt_input_str(input, "tip");
     if (!tip_in)
         tip_in = "HEAD";
-
-    if (!dvt_group_chars_ok(group)) {
-        char msg[256];
-        (void)snprintf(msg, sizeof(msg), "no test file for group '%s'",
-                       group);
-        dvt_fail(reply, ZCL_COMMAND_EXIT_FAILED, "UNKNOWN_GROUP", "resolve",
-                 msg, "tests/harness/src/test_<group>.c");
-        return;
+    if (!dvt_group_chars_ok(req->group)) {
+        dvt_no_test_file(reply, req->group, "tests/harness/src/test_<group>.c");
+        return false;
     }
 
     /* Resolve the tip once; everything below is keyed at this commit. */
     tip_argv[0] = "rev-parse";
     tip_argv[1] = tip_in;
     tip_argv[2] = NULL;
-    if (!dvt_git_line(reply, cwd, tip_argv, "git rev-parse <tip>", tip,
-                      sizeof(tip)))
-        return;
-    if (!dvt_is_hex40(tip)) {
+    if (!dvt_git_line(reply, req->cwd, tip_argv, "git rev-parse <tip>",
+                      req->tip, sizeof(req->tip)))
+        return false;
+    if (!dvt_is_hex40(req->tip)) {
         dvt_fail(reply, ZCL_COMMAND_EXIT_FAILED, "GIT_FAILED", "execute",
                  "git rev-parse did not answer a 40-hex commit",
                  "git rev-parse <tip>");
-        return;
+        return false;
     }
 
     /* Checkout top: the test file is addressed from here, so `cwd` may be
      * any directory inside the checkout. */
-    {
-        const char *top_argv[] = {"rev-parse", "--show-toplevel", NULL};
-        if (!dvt_git_line(reply, cwd, top_argv,
-                          "git rev-parse --show-toplevel", top, sizeof(top)))
-            return;
-    }
-    if (strlen(group) + 64 >= sizeof(test_rel) ||
-        strlen(top) + sizeof(test_rel) >= sizeof(test_abs)) {
+    const char *top_argv[] = {"rev-parse", "--show-toplevel", NULL};
+    if (!dvt_git_line(reply, req->cwd, top_argv,
+                      "git rev-parse --show-toplevel", req->top,
+                      sizeof(req->top)))
+        return false;
+    if (strlen(req->group) + 64 >= sizeof(req->test_rel) ||
+        strlen(req->top) + sizeof(req->test_rel) >= sizeof(test_abs)) {
         dvt_fail(reply, ZCL_COMMAND_EXIT_FAILED, "UNKNOWN_GROUP", "resolve",
                  "group name did not fit the test-file path",
                  "tests/harness/src/test_<group>.c");
-        return;
+        return false;
     }
-    (void)snprintf(test_rel, sizeof(test_rel), "tests/harness/src/test_%s.c",
-                   group);
-    (void)snprintf(test_abs, sizeof(test_abs), "%s/%s", top, test_rel);
-    tf = fopen(test_abs, "rb");
+    (void)snprintf(req->test_rel, sizeof(req->test_rel),
+                   "tests/harness/src/test_%s.c", req->group);
+    (void)snprintf(test_abs, sizeof(test_abs), "%s/%s", req->top,
+                   req->test_rel);
+    FILE *tf = fopen(test_abs, "rb");
     if (!tf) {
-        char msg[256];
-        (void)snprintf(msg, sizeof(msg), "no test file for group '%s'",
-                       group);
-        dvt_fail(reply, ZCL_COMMAND_EXIT_FAILED, "UNKNOWN_GROUP", "resolve",
-                 msg, test_rel);
-        return;
+        dvt_no_test_file(reply, req->group, req->test_rel);
+        return false;
     }
     (void)fclose(tf);
+    return true;
+}
 
-    /* One spawn for every blob hash at tip. */
-    tree_buf = zcl_malloc(DVT_TREE_CAP, "ticketkey_tree");
+/* Length of the NUL-separated ls-tree records in tree_buf, or 0 when the
+ * tree was truncated: fail closed rather than keying a prefix of the tree. */
+static size_t dvt_tree_span(const char *tree_buf)
+{
+    size_t span = 0;
+    while (span < DVT_TREE_CAP && tree_buf[span] != '\0') {
+        size_t recl = strlen(tree_buf + span);
+        if (recl == 0)
+            break;
+        span += recl + 1;
+    }
+    return span + 1 >= DVT_TREE_CAP ? 0 : span;
+}
+
+/* One spawn for every blob hash at tip, sorted by path. */
+static bool dvt_load_tree(struct zcl_command_reply *reply,
+                          const struct dvt_request *req,
+                          struct dvt_blob **blobs, size_t *nblobs)
+{
+    char *tree_buf = zcl_malloc(DVT_TREE_CAP, "ticketkey_tree");
     if (!tree_buf) {
         dvt_fail(reply, ZCL_COMMAND_EXIT_FAILED, "GIT_FAILED", "execute",
                  "out of memory listing the tip tree",
                  "git ls-tree -r -z <tip>");
-        return;
+        return false;
     }
-    {
-        const char *args[] = {"ls-tree", "-r", "-z", tip, NULL};
-        size_t span = 0;
-        size_t recl;
-        int rc = dvt_git(cwd, args, tree_buf, DVT_TREE_CAP);
-        if (rc != 0) {
-            char msg[128];
-            free(tree_buf);
-            (void)snprintf(msg, sizeof(msg), "git ls-tree failed (exit %d)",
-                           rc);
-            dvt_fail(reply, ZCL_COMMAND_EXIT_FAILED, "GIT_FAILED", "execute",
-                     msg, "git ls-tree -r -z <tip>");
-            return;
-        }
-        /* Walk the NUL-separated records. Reaching the cap without
-         * finding the end means the tree was truncated: fail closed
-         * rather than keying a prefix of the tree. */
-        while (span < DVT_TREE_CAP && tree_buf[span] != '\0') {
-            recl = strlen(tree_buf + span);
-            if (recl == 0)
-                break;
-            span += recl + 1;
-        }
-        if (span + 1 >= DVT_TREE_CAP) {
-            free(tree_buf);
-            dvt_fail(reply, ZCL_COMMAND_EXIT_FAILED, "GIT_FAILED", "execute",
-                     "tip tree did not fit its buffer",
-                     "git ls-tree -r -z <tip>");
-            return;
-        }
-        if (!dvt_parse_tree(reply, tree_buf, span, &blobs, &nblobs)) {
-            free(tree_buf);
-            return;
-        }
+    const char *args[] = {"ls-tree", "-r", "-z", req->tip, NULL};
+    int rc = dvt_git(req->cwd, args, tree_buf, DVT_TREE_CAP);
+    if (rc != 0) {
+        char msg[128];
+        free(tree_buf);
+        (void)snprintf(msg, sizeof(msg), "git ls-tree failed (exit %d)", rc);
+        dvt_fail(reply, ZCL_COMMAND_EXIT_FAILED, "GIT_FAILED", "execute", msg,
+                 "git ls-tree -r -z <tip>");
+        return false;
     }
+    size_t span = dvt_tree_span(tree_buf);
+    if (span == 0 && tree_buf[0] != '\0') {
+        free(tree_buf);
+        dvt_fail(reply, ZCL_COMMAND_EXIT_FAILED, "GIT_FAILED", "execute",
+                 "tip tree did not fit its buffer",
+                 "git ls-tree -r -z <tip>");
+        return false;
+    }
+    bool parsed = dvt_parse_tree(reply, tree_buf, span, blobs, nblobs);
     free(tree_buf);
-    tree_buf = NULL;
+    if (!parsed)
+        return false;
     /* ls-tree order follows tree entries, not strict byte order across
      * directories, so sort explicitly for the binary search below. */
-    qsort(blobs, nblobs, sizeof(*blobs), dvt_blob_by_path);
+    qsort(*blobs, *nblobs, sizeof(**blobs), dvt_blob_by_path);
+    return true;
+}
 
-    /* (b) every blob the router assigns to this group ... */
-    for (i = 0; i < nblobs; i++) {
-        if (dvt_owned_by_group(blobs[i].path, group)) {
-            if (!dvt_set_add(&set, blobs[i].path, false)) {
-                dvt_fail(reply, ZCL_COMMAND_EXIT_FAILED, "GIT_FAILED",
-                         "execute", "out of memory building the closure",
-                         "file->group routing");
-                goto cleanup;
-            }
+/* (b) every blob the router assigns to this group, plus (a) the group's own
+ * test file, which the suite compiles. */
+static bool dvt_seed_set(struct zcl_command_reply *reply,
+                         const struct dvt_request *req,
+                         const struct dvt_blob *blobs, size_t nblobs,
+                         struct dvt_set *set)
+{
+    for (size_t i = 0; i < nblobs; i++) {
+        if (dvt_owned_by_group(blobs[i].path, req->group) &&
+            !dvt_set_add(set, blobs[i].path, false)) {
+            dvt_fail(reply, ZCL_COMMAND_EXIT_FAILED, "GIT_FAILED", "execute",
+                     "out of memory building the closure",
+                     "file->group routing");
+            return false;
         }
     }
-    /* ... plus (a) the group's own test file, which the suite compiles. */
-    if (!dvt_tree_find(blobs, nblobs, test_rel)) {
+    if (!dvt_tree_find(blobs, nblobs, req->test_rel)) {
         char msg[320];
         (void)snprintf(msg, sizeof(msg),
-                       "test file '%s' is not present at tip %s", test_rel,
-                       tip);
-        dvt_fail(reply, ZCL_COMMAND_EXIT_FAILED, "GIT_FAILED", "execute",
-                 msg, "git ls-tree -r -z <tip>");
-        goto cleanup;
+                       "test file '%s' is not present at tip %s",
+                       req->test_rel, req->tip);
+        dvt_fail(reply, ZCL_COMMAND_EXIT_FAILED, "GIT_FAILED", "execute", msg,
+                 "git ls-tree -r -z <tip>");
+        return false;
     }
-    if (!dvt_set_add(&set, test_rel, false)) {
+    if (!dvt_set_add(set, req->test_rel, false)) {
         dvt_fail(reply, ZCL_COMMAND_EXIT_FAILED, "GIT_FAILED", "execute",
-                 "out of memory building the closure", test_rel);
-        goto cleanup;
+                 "out of memory building the closure", req->test_rel);
+        return false;
     }
+    return true;
+}
 
-    /* (c) transitive headers: scan every unscanned scannable member until
-     * no scan adds a member. Vendor and non-source members join the set
-     * but are never scanned. */
-    blob_buf = zcl_malloc(DVT_BLOB_CAP, "ticketkey_blob");
+/* Reads `tip:path` into blob_buf; a blob that fills the buffer was
+ * truncated, so fail rather than scan a prefix of its includes. */
+static bool dvt_read_blob(struct zcl_command_reply *reply,
+                          const struct dvt_request *req, const char *path,
+                          char *blob_buf)
+{
+    const char *show_argv[3];
+    size_t reflen = strlen(req->tip) + 1 + strlen(path) + 1;
+    char *ref = zcl_malloc(reflen, "ticketkey_ref");
+    if (!ref) {
+        dvt_fail(reply, ZCL_COMMAND_EXIT_FAILED, "GIT_FAILED", "execute",
+                 "out of memory reading blobs", path);
+        return false;
+    }
+    (void)snprintf(ref, reflen, "%s:%s", req->tip, path);
+    show_argv[0] = "show";
+    show_argv[1] = ref;
+    show_argv[2] = NULL;
+    int rc = dvt_git(req->cwd, show_argv, blob_buf, DVT_BLOB_CAP);
+    free(ref);
+    if (rc != 0) {
+        char msg[256];
+        (void)snprintf(msg, sizeof(msg), "git show failed for '%s' (exit %d)",
+                       path, rc);
+        dvt_fail(reply, ZCL_COMMAND_EXIT_FAILED, "GIT_FAILED", "execute", msg,
+                 "git show <tip>:<path>");
+        return false;
+    }
+    if (strlen(blob_buf) + 1 >= DVT_BLOB_CAP) {
+        char msg[256];
+        (void)snprintf(msg, sizeof(msg), "blob '%s' did not fit its buffer",
+                       path);
+        dvt_fail(reply, ZCL_COMMAND_EXIT_FAILED, "GIT_FAILED", "execute", msg,
+                 "git show <tip>:<path>");
+        return false;
+    }
+    return true;
+}
+
+/* Index of the first scannable member not yet scanned, or set->len. */
+static size_t dvt_next_unscanned(const struct dvt_set *set)
+{
+    for (size_t i = 0; i < set->len; i++)
+        if (!set->scanned[i] && !set->vendor[i] && dvt_scannable(set->paths[i]))
+            return i;
+    return set->len;
+}
+
+/* (c) transitive headers: scan every unscanned scannable member until no
+ * scan adds a member. Vendor and non-source members join the set but are
+ * never scanned. */
+static bool dvt_close_headers(struct zcl_command_reply *reply,
+                              const struct dvt_request *req,
+                              const struct dvt_blob *blobs, size_t nblobs,
+                              struct dvt_set *set)
+{
+    char *blob_buf = zcl_malloc(DVT_BLOB_CAP, "ticketkey_blob");
     if (!blob_buf) {
         dvt_fail(reply, ZCL_COMMAND_EXIT_FAILED, "GIT_FAILED", "execute",
                  "out of memory reading blobs", "git show <tip>:<path>");
-        goto cleanup;
+        return false;
     }
-    do {
-        size_t idx = set.len;
-        progress = false;
-        for (i = 0; i < set.len; i++) {
-            if (!set.scanned[i] && !set.vendor[i] &&
-                dvt_scannable(set.paths[i])) {
-                idx = i;
-                break;
-            }
-        }
-        if (idx == set.len)
-            break;
-        set.scanned[idx] = 1;
-        {
-            const char *path = set.paths[idx];
-            const char *show_argv[3];
-            char *ref = NULL;
-            size_t reflen = strlen(tip) + 1 + strlen(path) + 1;
-            int rc;
-            ref = zcl_malloc(reflen, "ticketkey_ref");
-            if (!ref) {
-                dvt_fail(reply, ZCL_COMMAND_EXIT_FAILED, "GIT_FAILED",
-                         "execute", "out of memory reading blobs", path);
-                goto cleanup;
-            }
-            (void)snprintf(ref, reflen, "%s:%s", tip, path);
-            show_argv[0] = "show";
-            show_argv[1] = ref;
-            show_argv[2] = NULL;
-            rc = dvt_git(cwd, show_argv, blob_buf, DVT_BLOB_CAP);
-            free(ref);
-            if (rc != 0) {
-                char msg[256];
-                (void)snprintf(msg, sizeof(msg),
-                               "git show failed for '%s' (exit %d)", path,
-                               rc);
-                dvt_fail(reply, ZCL_COMMAND_EXIT_FAILED, "GIT_FAILED",
-                         "execute", msg, "git show <tip>:<path>");
-                goto cleanup;
-            }
-            /* spawn NUL-terminates inside the cap: a strlen of cap-1
-             * means the blob was truncated, so fail rather than scan a
-             * prefix of its includes. */
-            if (strlen(blob_buf) + 1 >= DVT_BLOB_CAP) {
-                char msg[256];
-                (void)snprintf(msg, sizeof(msg),
-                               "blob '%s' did not fit its buffer", path);
-                dvt_fail(reply, ZCL_COMMAND_EXIT_FAILED, "GIT_FAILED",
-                         "execute", msg, "git show <tip>:<path>");
-                goto cleanup;
-            }
-        }
-        if (!dvt_scan_includes(blob_buf, set.paths[idx], blobs, nblobs,
-                               &set)) {
+    bool ok = true;
+    for (size_t idx = dvt_next_unscanned(set); ok && idx != set->len;
+         idx = dvt_next_unscanned(set)) {
+        set->scanned[idx] = 1;
+        ok = dvt_read_blob(reply, req, set->paths[idx], blob_buf);
+        if (ok && !dvt_scan_includes(blob_buf, set->paths[idx], blobs, nblobs,
+                                     set)) {
             dvt_fail(reply, ZCL_COMMAND_EXIT_FAILED, "GIT_FAILED", "execute",
-                     "out of memory walking headers", set.paths[idx]);
-            goto cleanup;
+                     "out of memory walking headers", set->paths[idx]);
+            ok = false;
         }
-        progress = true;
-    } while (progress);
+    }
+    free(blob_buf);
+    return ok;
+}
 
-    /* Epoch, then the key over the canonical bytes. */
-    if (!dvt_epoch(top, epoch_hex))
-        goto cleanup;
+/* Epoch, then the key over the canonical bytes. False with the reply failed
+ * (the epoch failure leaves the reply as the epoch helper set it). */
+static bool dvt_compute_key(struct zcl_command_reply *reply,
+                            const struct dvt_request *req,
+                            const struct dvt_blob *blobs, size_t nblobs,
+                            const struct dvt_set *set, char epoch_hex[65],
+                            char key_hex[65])
+{
+    struct sha3_256_ctx kctx;
+    unsigned char kdigest[32];
+    if (!dvt_epoch(req->top, epoch_hex))
+        return false;
     sha3_256_init(&kctx);
-    for (i = 0; i < set.len; i++) {
-        const struct dvt_blob *b;
-        sha3_256_write(&kctx, (const unsigned char *)set.paths[i],
-                       strlen(set.paths[i]));
-        if (set.vendor[i]) {
+    for (size_t i = 0; i < set->len; i++) {
+        sha3_256_write(&kctx, (const unsigned char *)set->paths[i],
+                       strlen(set->paths[i]));
+        if (set->vendor[i]) {
             sha3_256_write(&kctx, (const unsigned char *)"\n", 1);
             continue;
         }
-        b = dvt_tree_find(blobs, nblobs, set.paths[i]);
+        const struct dvt_blob *b = dvt_tree_find(blobs, nblobs, set->paths[i]);
         if (!b) {
             char msg[320];
             (void)snprintf(msg, sizeof(msg),
                            "closure path '%s' left the tip tree mid-walk",
-                           set.paths[i]);
+                           set->paths[i]);
             dvt_fail(reply, ZCL_COMMAND_EXIT_FAILED, "GIT_FAILED", "execute",
                      msg, "git ls-tree -r -z <tip>");
-            goto cleanup;
+            return false;
         }
         sha3_256_write(&kctx, (const unsigned char *)":", 1);
         sha3_256_write(&kctx, (const unsigned char *)b->hash, 40);
         sha3_256_write(&kctx, (const unsigned char *)"\n", 1);
     }
-    {
-        char tail[256];
-        (void)snprintf(tail, sizeof(tail), "epoch:%s\nharness:%s\ngroup:%s\n",
-                       epoch_hex, DVT_HARNESS, group);
-        sha3_256_write(&kctx, (const unsigned char *)tail, strlen(tail));
-    }
+    char tail[256];
+    (void)snprintf(tail, sizeof(tail), "epoch:%s\nharness:%s\ngroup:%s\n",
+                   epoch_hex, DVT_HARNESS, req->group);
+    sha3_256_write(&kctx, (const unsigned char *)tail, strlen(tail));
     sha3_256_finalize(&kctx, kdigest);
     zcl_hex_encode(kdigest, sizeof(kdigest), key_hex);
+    return true;
+}
 
-    /* Output. */
-    {
-        struct json_value files;
-        json_init(&files);
-        json_set_array(&files);
-        for (i = 0; i < set.len; i++) {
-            struct json_value item;
-            json_init(&item);
-            json_set_str(&item, set.paths[i]);
-            if (!json_push_back(&files, &item)) {
-                json_free(&item);
-                json_free(&files);
-                dvt_fail(reply, ZCL_COMMAND_EXIT_FAILED, "GIT_FAILED",
-                         "execute", "out of memory rendering the closure",
-                         "files");
-                goto cleanup;
-            }
+static bool dvt_push_files(struct zcl_command_reply *reply,
+                           const struct dvt_set *set)
+{
+    struct json_value files;
+    json_init(&files);
+    json_set_array(&files);
+    for (size_t i = 0; i < set->len; i++) {
+        struct json_value item;
+        json_init(&item);
+        json_set_str(&item, set->paths[i]);
+        if (!json_push_back(&files, &item)) {
             json_free(&item);
+            json_free(&files);
+            dvt_fail(reply, ZCL_COMMAND_EXIT_FAILED, "GIT_FAILED", "execute",
+                     "out of memory rendering the closure", "files");
+            return false;
         }
-        (void)json_push_kv(&reply->data, "files", &files);
-        json_free(&files);
+        json_free(&item);
     }
-    (void)json_push_kv_str(&reply->data, "group", group);
-    (void)json_push_kv_str(&reply->data, "tip", tip);
-    (void)json_push_kv_int(&reply->data, "files_count", (int64_t)set.len);
-    (void)json_push_kv_str(&reply->data, "epoch", epoch_hex);
-    (void)json_push_kv_str(&reply->data, "harness", DVT_HARNESS);
-    (void)json_push_kv_str(&reply->data, "key", key_hex);
-    (void)json_push_kv_int(&reply->data, "elapsed_ms", dvt_elapsed_ms(t0_ns));
-    reply->status = ZCL_COMMAND_STATUS_PASSED;
-    reply->exit_code = ZCL_COMMAND_EXIT_OK;
+    (void)json_push_kv(&reply->data, "files", &files);
+    json_free(&files);
+    return true;
+}
 
-cleanup:
+static void dvt_release(struct dvt_blob *blobs, size_t nblobs,
+                        struct dvt_set *set)
+{
     if (blobs) {
-        for (i = 0; i < nblobs; i++)
+        for (size_t i = 0; i < nblobs; i++)
             free(blobs[i].path);
         free(blobs);
     }
-    if (set.paths) {
-        for (i = 0; i < set.len; i++)
-            free(set.paths[i]);
-        free(set.paths);
+    if (set->paths) {
+        for (size_t i = 0; i < set->len; i++)
+            free(set->paths[i]);
+        free(set->paths);
     }
-    free(set.vendor);
-    free(set.scanned);
-    free(blob_buf);
+    free(set->vendor);
+    free(set->scanned);
+}
+
+void zcl_native_handle_dev_agent_ticketkey(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    struct dvt_request req;
+    struct dvt_blob *blobs = NULL;
+    size_t nblobs = 0;
+    struct dvt_set set;
+    char epoch_hex[65], key_hex[65];
+    (void)memset(&set, 0, sizeof(set));
+
+    int64_t t0_ns = clock_now_monotonic_ns();
+    if (!request || !reply)
+        return;
+    (void)json_push_kv_str(&reply->data, "leaf", DVT_LEAF);
+
+    if (!dvt_resolve_request(reply, request->input, &req) ||
+        !dvt_load_tree(reply, &req, &blobs, &nblobs))
+        return;
+    if (dvt_seed_set(reply, &req, blobs, nblobs, &set) &&
+        dvt_close_headers(reply, &req, blobs, nblobs, &set) &&
+        dvt_compute_key(reply, &req, blobs, nblobs, &set, epoch_hex,
+                        key_hex) &&
+        dvt_push_files(reply, &set)) {
+        (void)json_push_kv_str(&reply->data, "group", req.group);
+        (void)json_push_kv_str(&reply->data, "tip", req.tip);
+        (void)json_push_kv_int(&reply->data, "files_count", (int64_t)set.len);
+        (void)json_push_kv_str(&reply->data, "epoch", epoch_hex);
+        (void)json_push_kv_str(&reply->data, "harness", DVT_HARNESS);
+        (void)json_push_kv_str(&reply->data, "key", key_hex);
+        (void)json_push_kv_int(&reply->data, "elapsed_ms",
+                               dvt_elapsed_ms(t0_ns));
+        reply->status = ZCL_COMMAND_STATUS_PASSED;
+        reply->exit_code = ZCL_COMMAND_EXIT_OK;
+    }
+    dvt_release(blobs, nblobs, &set);
 }

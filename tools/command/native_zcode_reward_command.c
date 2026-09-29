@@ -600,6 +600,223 @@ void zcl_native_handle_zcode_reward_score(
 
 /* ── zcode reward eligible ──────────────────────────────────────────── */
 
+/* Gate 1: the manifest root matches the envelope and every committed chunk
+ * re-verifies from the CAS. */
+static void zr_gate_manifest(const struct zr_target *t,
+                             struct vcs_reward_eligibility_input *in)
+{
+    in->manifest_parsed = true;
+    uint8_t computed[32];
+    in->root_matches = vcs_package_manifest_root(&t->manifest, computed) &&
+        memcmp(computed, t->release.package_root, 32) == 0;
+    in->chunks_checked = true;
+    for (size_t i = 0; i < t->manifest.count; i++) {
+        const struct vcs_package_file *f = &t->manifest.files[i];
+        in->chunks_total += f->chunk_count;
+        for (uint32_t c = 0; c < f->chunk_count; c++) {
+            char hex[65];
+            zcl_hex_encode(f->chunk_hashes + 32u * c, 32, hex);
+            char path[4400];
+            int n = snprintf(path, sizeof(path), "%s/cas/sha3/%.2s/%s",
+                             t->zcode_dir, hex, hex);
+            if (n < 0 || (size_t)n >= sizeof(path))
+                continue;
+            uint8_t *chunk = NULL;
+            size_t chunk_len = 0;
+            if (zr_read_object(path, VCS_PACKAGE_CHUNK_BYTES, &chunk,
+                               &chunk_len) &&
+                vcs_package_verify_chunk(f, c, chunk, chunk_len))
+                in->chunks_verified++;
+            free(chunk);
+        }
+    }
+}
+
+/* Gate 3: the envelope grammar already enforces the SPDX allowlist at parse
+ * time (an off-allowlist release can never persist); the LICENSE text file
+ * must also be in the manifest. */
+static bool zr_gate_license(const struct zr_target *t)
+{
+    for (size_t i = 0; i < t->manifest.count; i++)
+        if (strcmp(t->manifest.files[i].path,
+                   VCS_PACKAGE_PUBLISH_LICENSE_PATH) == 0)
+            return true;
+    return false;
+}
+
+/* Verdict on a parent release relative to the child; detail names the first
+ * failed link of the lineage chain. */
+static bool zr_parent_links(const struct vcs_package_release *release,
+                            const struct vcs_package_release *parent,
+                            const char *parent_hex, char *detail,
+                            size_t detail_sz)
+{
+    if (vcs_package_release_verify(parent) != VCS_PACKAGE_RELEASE_OK) {
+        snprintf(detail, detail_sz, "parent release envelope does not verify");
+        return false;
+    }
+    if (memcmp(parent->publisher_pubkey, release->publisher_pubkey, 33) != 0) {
+        snprintf(detail, detail_sz,
+                 "parent signed by a different publisher key");
+        return false;
+    }
+    if (release->publisher_sequence != parent->publisher_sequence + 1u) {
+        snprintf(detail, detail_sz,
+                 "sequence %llu does not follow parent %llu",
+                 (unsigned long long)release->publisher_sequence,
+                 (unsigned long long)parent->publisher_sequence);
+        return false;
+    }
+    snprintf(detail, detail_sz, "parent %s verifies; sequence +1", parent_hex);
+    return true;
+}
+
+/* Gate 4: parent lineage (release-id chain, same publisher key, sequence +1,
+ * parent envelope verifies). */
+static bool zr_gate_lineage(const struct zr_target *t, char *detail,
+                            size_t detail_sz)
+{
+    if (!t->release.has_parent) {
+        snprintf(detail, detail_sz, "root release (no parent)");
+        return true;
+    }
+    char parent_hex[65];
+    zcl_hex_encode(t->release.parent_root, 32, parent_hex);
+    char path[4400];
+    snprintf(path, sizeof(path), "%s/releases/%s", t->zcode_dir, parent_hex);
+    uint8_t *wire = NULL;
+    size_t wire_len = 0;
+    struct vcs_package_release parent;
+    bool parsed =
+        zr_read_object(path, VCS_PACKAGE_RELEASE_MAX_WIRE_BYTES, &wire,
+                       &wire_len) &&
+        vcs_package_release_parse(wire, wire_len, &parent) ==
+            VCS_PACKAGE_RELEASE_OK;
+    free(wire);
+    if (!parsed) {
+        snprintf(detail, detail_sz,
+                 "parent release %s not hosted or unparseable", parent_hex);
+        return false;
+    }
+    return zr_parent_links(&t->release, &parent, parent_hex, detail,
+                           detail_sz);
+}
+
+/* Reads the filed attestations (bounded) into candidates; returns how many
+ * were scanned. */
+static size_t zr_scan_attestations(const struct zr_target *t,
+                                   struct vcs_verify_candidate *candidates)
+{
+    size_t candidate_count = 0;
+    char path[4400];
+    snprintf(path, sizeof(path), "%s/attestations", t->zcode_dir);
+    DIR *dir = opendir(path);
+    if (!dir)
+        return 0;
+    struct dirent *ent;
+    while ((ent = readdir(dir)) != NULL) {
+        uint8_t scratch[32];
+        size_t scratch_len = 0;
+        if (!zcl_hex_decode_n(ent->d_name, scratch, 32, &scratch_len) ||
+            scratch_len != 32)
+            continue;
+        if (candidate_count == ZR_VERIFY_MAX_SCAN)
+            break;
+        char apath[4400];
+        int an = snprintf(apath, sizeof(apath), "%s/%s", path, ent->d_name);
+        if (an < 0 || (size_t)an >= sizeof(apath))
+            continue;
+        uint8_t *wire = NULL;
+        size_t wire_len = 0;
+        struct vcs_verify_candidate *cand = &candidates[candidate_count];
+        cand->parsed = false;
+        if (zr_read_object(apath, VCS_PACKAGE_ATTEST_MAX_WIRE_BYTES, &wire,
+                           &wire_len))
+            cand->parsed = vcs_package_attest_parse(wire, wire_len,
+                                                    &cand->attestation) ==
+                VCS_PACKAGE_ATTEST_OK;
+        free(wire);
+        candidate_count++;
+    }
+    closedir(dir);
+    return candidate_count;
+}
+
+/* The counted attestations of the quorum class carry the build facts: read
+ * gcc/clang outcomes from them directly. */
+static void zr_read_build_facts(const struct vcs_verify_candidate *candidates,
+                                size_t candidate_count,
+                                const struct vcs_verify_quorum *quorum,
+                                struct vcs_reward_eligibility_input *in)
+{
+    for (size_t i = 0; i < candidate_count && i < quorum->row_count; i++) {
+        if (quorum->rows[i].rule != VCS_VERIFY_ROW_COUNTED ||
+            quorum->rows[i].result_class != quorum->quorum_class)
+            continue;
+        const struct vcs_package_attest *a = &candidates[i].attestation;
+        for (size_t k = 0; k < a->compiler_count; k++) {
+            bool pass = a->compilers[k].outcome ==
+                VCS_PACKAGE_ATTEST_OUTCOME_PASS;
+            if (strcmp(a->compilers[k].id, "gcc") == 0 && pass)
+                in->gcc_pass = true;
+            if (strcmp(a->compilers[k].id, "clang") == 0 && pass)
+                in->clang_pass = true;
+        }
+    }
+    in->tests_pass = quorum->quorum_class == VCS_PACKAGE_ATTEST_RESULT_TEST_PASS;
+}
+
+/* The headline signal (gates 5-8): a recorded bit-identical reproduction
+ * among the filed build receipts outranks the signer quorum, which is the
+ * latency fast path over it. */
+static void zr_gate_reproduction(const struct zr_target *t,
+                                 struct vcs_reward_eligibility_input *in)
+{
+    uint8_t root[32];
+    size_t root_len = 0;
+    struct vcs_reproduce_report repro;
+    char path[4400];
+    snprintf(path, sizeof(path), "%s/receipts", t->zcode_dir);
+    if (zcl_hex_decode_n(t->root_hex, root, 32, &root_len) &&
+        root_len == 32 &&
+        vcs_package_reproduce_scan(path, root, t->release.recipe_root, &repro))
+        in->reproduction_verified = repro.reproduced;
+}
+
+static void zr_push_gate_rows(struct json_value *out,
+                              const struct vcs_reward_eligibility *elig)
+{
+    struct json_value gates, failed;
+    json_init(&gates);
+    json_set_array(&gates);
+    json_init(&failed);
+    json_set_array(&failed);
+    for (size_t i = 0; i < VCS_REWARD_GATE_COUNT; i++) {
+        const struct vcs_reward_gate_row *row = &elig->gates[i];
+        struct json_value g;
+        json_init(&g);
+        json_set_object(&g);
+        (void)json_push_kv_str(&g, "gate", vcs_reward_gate_string(row->gate));
+        (void)json_push_kv_bool(&g, "passed", row->passed);
+        (void)json_push_kv_str(&g, "detail", row->detail);
+        (void)json_push_back(&gates, &g);
+        json_free(&g);
+    }
+    (void)json_push_kv(out, "gates", &gates);
+    json_free(&gates);
+    for (size_t i = 0; i < VCS_REWARD_GATE_COUNT; i++) {
+        if (elig->gates[i].passed)
+            continue;
+        struct json_value g;
+        json_init(&g);
+        json_set_str(&g, vcs_reward_gate_string(elig->gates[i].gate));
+        (void)json_push_back(&failed, &g);
+        json_free(&g);
+    }
+    (void)json_push_kv(out, "failed_gates", &failed);
+    json_free(&failed);
+}
+
 void zcl_native_handle_zcode_reward_eligible(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply)
@@ -612,107 +829,15 @@ void zcl_native_handle_zcode_reward_eligible(
 
     struct vcs_reward_eligibility_input in;
     memset(&in, 0, sizeof(in));
-
-    /* Gate 1: the manifest root matches the envelope and every committed
-     * chunk re-verifies from the CAS. */
-    in.manifest_parsed = true;
-    {
-        uint8_t computed[32];
-        in.root_matches =
-            vcs_package_manifest_root(&t.manifest, computed) &&
-            memcmp(computed, t.release.package_root, 32) == 0;
-    }
-    in.chunks_checked = true;
-    for (size_t i = 0; i < t.manifest.count; i++) {
-        const struct vcs_package_file *f = &t.manifest.files[i];
-        in.chunks_total += f->chunk_count;
-        for (uint32_t c = 0; c < f->chunk_count; c++) {
-            char hex[65];
-            zcl_hex_encode(f->chunk_hashes + 32u * c, 32, hex);
-            char path[4400];
-            int n = snprintf(path, sizeof(path), "%s/cas/sha3/%.2s/%s",
-                             t.zcode_dir, hex, hex);
-            if (n < 0 || (size_t)n >= sizeof(path))
-                continue;
-            uint8_t *chunk = NULL;
-            size_t chunk_len = 0;
-            if (zr_read_object(path, VCS_PACKAGE_CHUNK_BYTES, &chunk,
-                               &chunk_len) &&
-                vcs_package_verify_chunk(f, c, chunk, chunk_len))
-                in.chunks_verified++;
-            free(chunk);
-        }
-    }
+    zr_gate_manifest(&t, &in);
 
     /* Gate 2. */
     in.release_verifies =
         vcs_package_release_verify(&t.release) == VCS_PACKAGE_RELEASE_OK;
-
-    /* Gate 3: the envelope grammar already enforces the SPDX allowlist at
-     * parse time (an off-allowlist release can never persist); the LICENSE
-     * text file must also be in the manifest. */
-    {
-        bool license_file = false;
-        for (size_t i = 0; i < t.manifest.count; i++) {
-            if (strcmp(t.manifest.files[i].path,
-                       VCS_PACKAGE_PUBLISH_LICENSE_PATH) == 0) {
-                license_file = true;
-                break;
-            }
-        }
-        in.license_accepted = license_file;
-    }
-
-    /* Gate 4: parent lineage (release-id chain, same publisher key,
-     * sequence +1, parent envelope verifies). */
+    in.license_accepted = zr_gate_license(&t);
     char lineage_detail[VCS_REWARD_GATE_DETAIL_MAX];
-    if (!t.release.has_parent) {
-        in.lineage_valid = true;
-        snprintf(lineage_detail, sizeof(lineage_detail),
-                 "root release (no parent)");
-    } else {
-        char parent_hex[65];
-        zcl_hex_encode(t.release.parent_root, 32, parent_hex);
-        char path[4400];
-        snprintf(path, sizeof(path), "%s/releases/%s", t.zcode_dir,
-                 parent_hex);
-        uint8_t *wire = NULL;
-        size_t wire_len = 0;
-        struct vcs_package_release parent;
-        bool parsed =
-            zr_read_object(path, VCS_PACKAGE_RELEASE_MAX_WIRE_BYTES, &wire,
-                           &wire_len) &&
-            vcs_package_release_parse(wire, wire_len, &parent) ==
-                VCS_PACKAGE_RELEASE_OK;
-        free(wire);
-        if (!parsed) {
-            in.lineage_valid = false;
-            snprintf(lineage_detail, sizeof(lineage_detail),
-                     "parent release %s not hosted or unparseable",
-                     parent_hex);
-        } else if (vcs_package_release_verify(&parent) !=
-                   VCS_PACKAGE_RELEASE_OK) {
-            in.lineage_valid = false;
-            snprintf(lineage_detail, sizeof(lineage_detail),
-                     "parent release envelope does not verify");
-        } else if (memcmp(parent.publisher_pubkey,
-                          t.release.publisher_pubkey, 33) != 0) {
-            in.lineage_valid = false;
-            snprintf(lineage_detail, sizeof(lineage_detail),
-                     "parent signed by a different publisher key");
-        } else if (t.release.publisher_sequence !=
-                   parent.publisher_sequence + 1u) {
-            in.lineage_valid = false;
-            snprintf(lineage_detail, sizeof(lineage_detail),
-                     "sequence %llu does not follow parent %llu",
-                     (unsigned long long)t.release.publisher_sequence,
-                     (unsigned long long)parent.publisher_sequence);
-        } else {
-            in.lineage_valid = true;
-            snprintf(lineage_detail, sizeof(lineage_detail),
-                     "parent %s verifies; sequence +1", parent_hex);
-        }
-    }
+    in.lineage_valid = zr_gate_lineage(&t, lineage_detail,
+                                       sizeof(lineage_detail));
     in.lineage_detail = lineage_detail;
 
     /* Gates 5-8: the slice-6 quorum. A missing allowlist is not a hard
@@ -723,7 +848,6 @@ void zcl_native_handle_zcode_reward_eligible(
     char path[4400];
     snprintf(path, sizeof(path), "%s/approved_verifiers", t.zcode_dir);
     bool policy_loaded = vcs_verifier_policy_load(&policy, path, &perr);
-    size_t candidate_count = 0;
     struct vcs_verify_candidate *candidates = zcl_malloc(
         ZR_VERIFY_MAX_SCAN * sizeof(*candidates), "zr_verify_candidates");
     if (!candidates) {
@@ -734,43 +858,8 @@ void zcl_native_handle_zcode_reward_eligible(
                                "verify candidate buffer", t.root_hex);
         return;
     }
-    if (policy_loaded) {
-        snprintf(path, sizeof(path), "%s/attestations", t.zcode_dir);
-        DIR *dir = opendir(path);
-        if (dir) {
-            struct dirent *ent;
-            while ((ent = readdir(dir)) != NULL) {
-                uint8_t scratch[32];
-                size_t scratch_len = 0;
-                if (!zcl_hex_decode_n(ent->d_name, scratch, 32,
-                                   &scratch_len) ||
-                    scratch_len != 32)
-                    continue;
-                if (candidate_count == ZR_VERIFY_MAX_SCAN)
-                    break;
-                char apath[4400];
-                int an = snprintf(apath, sizeof(apath), "%s/%s", path,
-                                  ent->d_name);
-                if (an < 0 || (size_t)an >= sizeof(apath))
-                    continue;
-                uint8_t *wire = NULL;
-                size_t wire_len = 0;
-                struct vcs_verify_candidate *cand =
-                    &candidates[candidate_count];
-                cand->parsed = false;
-                if (zr_read_object(apath, VCS_PACKAGE_ATTEST_MAX_WIRE_BYTES,
-                                   &wire, &wire_len)) {
-                    cand->parsed =
-                        vcs_package_attest_parse(wire, wire_len,
-                                                 &cand->attestation) ==
-                        VCS_PACKAGE_ATTEST_OK;
-                }
-                free(wire);
-                candidate_count++;
-            }
-            closedir(dir);
-        }
-    }
+    size_t candidate_count =
+        policy_loaded ? zr_scan_attestations(&t, candidates) : 0;
     struct vcs_verify_quorum quorum;
     memset(&quorum, 0, sizeof(quorum));
     if (policy_loaded) {
@@ -782,45 +871,10 @@ void zcl_native_handle_zcode_reward_eligible(
                             t.release.publisher_pubkey, &policy, &quorum);
     }
     in.quorum_verified = policy_loaded && quorum.verified;
-    if (in.quorum_verified) {
-        /* The counted attestations of the quorum class carry the build
-         * facts: read gcc/clang outcomes from them directly. */
-        for (size_t i = 0;
-             i < candidate_count && i < quorum.row_count; i++) {
-            if (quorum.rows[i].rule != VCS_VERIFY_ROW_COUNTED ||
-                quorum.rows[i].result_class != quorum.quorum_class)
-                continue;
-            const struct vcs_package_attest *a = &candidates[i].attestation;
-            for (size_t k = 0; k < a->compiler_count; k++) {
-                if (strcmp(a->compilers[k].id, "gcc") == 0 &&
-                    a->compilers[k].outcome ==
-                        VCS_PACKAGE_ATTEST_OUTCOME_PASS)
-                    in.gcc_pass = true;
-                if (strcmp(a->compilers[k].id, "clang") == 0 &&
-                    a->compilers[k].outcome ==
-                        VCS_PACKAGE_ATTEST_OUTCOME_PASS)
-                    in.clang_pass = true;
-            }
-        }
-        in.tests_pass =
-            quorum.quorum_class == VCS_PACKAGE_ATTEST_RESULT_TEST_PASS;
-    }
+    if (in.quorum_verified)
+        zr_read_build_facts(candidates, candidate_count, &quorum, &in);
     free(candidates);
-
-    /* The headline signal (gates 5-8): a recorded bit-identical
-     * reproduction among the filed build receipts outranks the signer
-     * quorum, which is the latency fast path over it. */
-    {
-        uint8_t root[32];
-        size_t root_len = 0;
-        struct vcs_reproduce_report repro;
-        snprintf(path, sizeof(path), "%s/receipts", t.zcode_dir);
-        if (zcl_hex_decode_n(t.root_hex, root, 32, &root_len) &&
-            root_len == 32 &&
-            vcs_package_reproduce_scan(path, root, t.release.recipe_root,
-                                       &repro))
-            in.reproduction_verified = repro.reproduced;
-    }
+    zr_gate_reproduction(&t, &in);
 
     struct vcs_reward_eligibility elig;
     vcs_reward_eligibility_evaluate(&in, &elig);
@@ -837,36 +891,7 @@ void zcl_native_handle_zcode_reward_eligible(
                             elig.reproduction_verified);
     (void)json_push_kv_int(&reply->data, "failed_count",
                            (int64_t)elig.failed_count);
-    struct json_value gates;
-    json_init(&gates);
-    json_set_array(&gates);
-    for (size_t i = 0; i < VCS_REWARD_GATE_COUNT; i++) {
-        const struct vcs_reward_gate_row *row = &elig.gates[i];
-        struct json_value g;
-        json_init(&g);
-        json_set_object(&g);
-        (void)json_push_kv_str(&g, "gate", vcs_reward_gate_string(row->gate));
-        (void)json_push_kv_bool(&g, "passed", row->passed);
-        (void)json_push_kv_str(&g, "detail", row->detail);
-        (void)json_push_back(&gates, &g);
-        json_free(&g);
-    }
-    (void)json_push_kv(&reply->data, "gates", &gates);
-    json_free(&gates);
-    struct json_value failed;
-    json_init(&failed);
-    json_set_array(&failed);
-    for (size_t i = 0; i < VCS_REWARD_GATE_COUNT; i++) {
-        if (elig.gates[i].passed)
-            continue;
-        struct json_value g;
-        json_init(&g);
-        json_set_str(&g, vcs_reward_gate_string(elig.gates[i].gate));
-        (void)json_push_back(&failed, &g);
-        json_free(&g);
-    }
-    (void)json_push_kv(&reply->data, "failed_gates", &failed);
-    json_free(&failed);
+    zr_push_gate_rows(&reply->data, &elig);
     (void)json_push_kv_bool(&reply->data, "approved_verifiers_loaded",
                             policy_loaded);
     (void)json_push_kv_int(&reply->data, "attestations_evaluated",

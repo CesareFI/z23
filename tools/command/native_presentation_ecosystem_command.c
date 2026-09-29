@@ -516,16 +516,16 @@ static bool npe_push_list(struct json_value *data, const char *key,
     return ok;
 }
 
-static bool npe_reply_snapshot(struct zcl_command_reply *reply,
-                               const struct science_ecosystem_snapshot *snap,
-                               const char *plain_text, bool launched)
+static bool npe_push_snapshot_base(
+    struct zcl_command_reply *reply,
+    const struct science_ecosystem_snapshot *snap, bool launched)
 {
     char sha3_hex[65];
     sha3_hex[0] = '\0';
     if (snap->source_root_sha3_present)
         zcl_hex_encode(snap->source_root_sha3, 32u, sha3_hex);
 
-    bool ok = json_push_kv_bool(&reply->data, "launched", launched) &&
+    return json_push_kv_bool(&reply->data, "launched", launched) &&
         json_push_kv_str(&reply->data, "delivery",
                          launched ? "native" : "text") &&
         json_push_kv_str(&reply->data, "authority", "display-only") &&
@@ -542,8 +542,14 @@ static bool npe_reply_snapshot(struct zcl_command_reply *reply,
         json_push_kv_bool(&reply->data, "packages_truncated",
                           snap->packages_truncated) &&
         npe_push_list(&reply->data, "package_list", snap->packages,
-                      snap->package_listed) &&
-        json_push_kv_int(&reply->data, "production_c23_lines",
+                      snap->package_listed);
+}
+
+static bool npe_push_snapshot_counts(
+    struct zcl_command_reply *reply,
+    const struct science_ecosystem_snapshot *snap)
+{
+    return json_push_kv_int(&reply->data, "production_c23_lines",
                          (int64_t)snap->corpus.non_test_lines) &&
         json_push_kv_int(&reply->data, "test_c23_lines",
                          (int64_t)snap->corpus.test_lines) &&
@@ -560,34 +566,27 @@ static bool npe_reply_snapshot(struct zcl_command_reply *reply,
                           snap->corpus.inventory_present) &&
         json_push_kv_bool(&reply->data, "growth_present",
                           snap->growth_present);
-    if (!ok)
-        return false;
+}
 
-    if (snap->index_present) {
-        ok = json_push_kv_int(&reply->data, "indexed_c23_files",
-                              (int64_t)snap->indexed_c23_files) &&
-            json_push_kv_int(&reply->data, "indexed_registry_nodes",
-                             (int64_t)snap->indexed_registry_nodes) &&
-            json_push_kv_int(&reply->data, "indexed_source_roots",
-                             (int64_t)snap->indexed_root_count) &&
-            json_push_kv_bool(&reply->data, "indexed_roots_truncated",
-                              snap->indexed_roots_truncated) &&
-            npe_push_list(&reply->data, "indexed_root_list",
-                          snap->indexed_roots, snap->indexed_root_listed);
-        if (ok && snap->include_edges_available) {
-            if (snap->include_edge_count == 0)
-                ok = json_push_kv_str(&reply->data, "include_edges",
-                                      "unanswered");
-            else
-                ok = json_push_kv_int(&reply->data, "include_edges",
-                                      snap->include_edge_count);
-        } else if (ok) {
-            ok = json_push_kv_str(&reply->data, "include_edges",
-                                  "unavailable");
-        }
-    } else {
-        ok = json_push_kv_str(&reply->data, "indexed_c23_files",
-                              "unavailable") &&
+static bool npe_push_include_edges(
+    struct zcl_command_reply *reply,
+    const struct science_ecosystem_snapshot *snap)
+{
+    if (!snap->include_edges_available)
+        return json_push_kv_str(&reply->data, "include_edges", "unavailable");
+    if (snap->include_edge_count == 0)
+        return json_push_kv_str(&reply->data, "include_edges", "unanswered");
+    return json_push_kv_int(&reply->data, "include_edges",
+                            snap->include_edge_count);
+}
+
+static bool npe_push_snapshot_index(
+    struct zcl_command_reply *reply,
+    const struct science_ecosystem_snapshot *snap)
+{
+    if (!snap->index_present)
+        return json_push_kv_str(&reply->data, "indexed_c23_files",
+                                "unavailable") &&
             json_push_kv_str(&reply->data, "indexed_registry_nodes",
                              "unavailable") &&
             json_push_kv_str(&reply->data, "indexed_source_roots",
@@ -595,23 +594,25 @@ static bool npe_reply_snapshot(struct zcl_command_reply *reply,
             json_push_kv_str(&reply->data, "indexed_root_list",
                              "unavailable") &&
             json_push_kv_str(&reply->data, "include_edges", "unavailable");
-    }
+    return json_push_kv_int(&reply->data, "indexed_c23_files",
+                            (int64_t)snap->indexed_c23_files) &&
+        json_push_kv_int(&reply->data, "indexed_registry_nodes",
+                         (int64_t)snap->indexed_registry_nodes) &&
+        json_push_kv_int(&reply->data, "indexed_source_roots",
+                         (int64_t)snap->indexed_root_count) &&
+        json_push_kv_bool(&reply->data, "indexed_roots_truncated",
+                          snap->indexed_roots_truncated) &&
+        npe_push_list(&reply->data, "indexed_root_list",
+                      snap->indexed_roots, snap->indexed_root_listed) &&
+        npe_push_include_edges(reply, snap);
+}
 
-    if (ok && snap->corpus.inventory_present) {
-        ok = json_push_kv_int(&reply->data, "capabilities",
-                              (int64_t)snap->corpus.capabilities) &&
-            json_push_kv_int(&reply->data, "symbols_exposed",
-                             (int64_t)snap->corpus.symbols_exposed) &&
-            json_push_kv_int(&reply->data, "symbols_test_reached",
-                             (int64_t)snap->corpus.symbols_test_reached) &&
-            json_push_kv_int(&reply->data, "duplicates",
-                             (int64_t)snap->corpus.duplicates) &&
-            json_push_kv_int(&reply->data, "untested_invariants",
-                             (int64_t)snap->corpus.untested_invariants) &&
-            json_push_kv_bool(&reply->data, "scope_agrees",
-                              snap->corpus.scope_agrees);
-    } else if (ok) {
-        ok = json_push_kv_str(&reply->data, "capabilities", "unavailable") &&
+static bool npe_push_snapshot_corpus(
+    struct zcl_command_reply *reply,
+    const struct science_ecosystem_snapshot *snap)
+{
+    if (!snap->corpus.inventory_present)
+        return json_push_kv_str(&reply->data, "capabilities", "unavailable") &&
             json_push_kv_str(&reply->data, "symbols_exposed", "unavailable") &&
             json_push_kv_str(&reply->data, "symbols_test_reached",
                              "unavailable") &&
@@ -619,47 +620,67 @@ static bool npe_reply_snapshot(struct zcl_command_reply *reply,
             json_push_kv_str(&reply->data, "untested_invariants",
                              "unavailable") &&
             json_push_kv_str(&reply->data, "scope_agrees", "n/a");
-    }
+    return json_push_kv_int(&reply->data, "capabilities",
+                            (int64_t)snap->corpus.capabilities) &&
+        json_push_kv_int(&reply->data, "symbols_exposed",
+                         (int64_t)snap->corpus.symbols_exposed) &&
+        json_push_kv_int(&reply->data, "symbols_test_reached",
+                         (int64_t)snap->corpus.symbols_test_reached) &&
+        json_push_kv_int(&reply->data, "duplicates",
+                         (int64_t)snap->corpus.duplicates) &&
+        json_push_kv_int(&reply->data, "untested_invariants",
+                         (int64_t)snap->corpus.untested_invariants) &&
+        json_push_kv_bool(&reply->data, "scope_agrees",
+                          snap->corpus.scope_agrees);
+}
 
-    if (ok && snap->growth_present) {
-        const struct science_code_growth_history *g = &snap->growth;
-        const struct science_code_growth_day *latest =
-            g->day_count ? &g->days[g->day_count - 1u] : NULL;
-        ok = json_push_kv_int(&reply->data, "growth_days",
-                              (int64_t)g->day_count) &&
-            json_push_kv_int(&reply->data, "growth_non_test_lines",
-                             (int64_t)g->non_test_lines) &&
-            json_push_kv_int(&reply->data, "growth_test_lines",
-                             (int64_t)g->test_lines);
-        if (ok && latest)
-            ok = json_push_kv_str(&reply->data, "growth_latest_date",
-                                  latest->date) &&
-                json_push_kv_str(&reply->data, "growth_latest_commit",
-                                 latest->head_commit);
-    } else if (ok) {
-        ok = json_push_kv_str(&reply->data, "growth", "unavailable") &&
-            json_push_kv_str(&reply->data, "growth_error",
-                             snap->growth_error);
-    }
+static bool npe_push_snapshot_growth(
+    struct zcl_command_reply *reply,
+    const struct science_ecosystem_snapshot *snap)
+{
+    if (!snap->growth_present)
+        return json_push_kv_str(&reply->data, "growth", "unavailable") &&
+            json_push_kv_str(&reply->data, "growth_error", snap->growth_error);
+    const struct science_code_growth_history *g = &snap->growth;
+    const struct science_code_growth_day *latest =
+        g->day_count ? &g->days[g->day_count - 1u] : NULL;
+    bool ok = json_push_kv_int(&reply->data, "growth_days",
+                               (int64_t)g->day_count) &&
+        json_push_kv_int(&reply->data, "growth_non_test_lines",
+                         (int64_t)g->non_test_lines) &&
+        json_push_kv_int(&reply->data, "growth_test_lines",
+                         (int64_t)g->test_lines);
+    if (ok && latest)
+        ok = json_push_kv_str(&reply->data, "growth_latest_date",
+                              latest->date) &&
+            json_push_kv_str(&reply->data, "growth_latest_commit",
+                             latest->head_commit);
+    return ok;
+}
 
-    if (!ok)
+static bool npe_reply_snapshot(struct zcl_command_reply *reply,
+                               const struct science_ecosystem_snapshot *snap,
+                               const char *plain_text, bool launched)
+{
+    if (!npe_push_snapshot_base(reply, snap, launched) ||
+        !npe_push_snapshot_counts(reply, snap) ||
+        !npe_push_snapshot_index(reply, snap) ||
+        !npe_push_snapshot_corpus(reply, snap) ||
+        !npe_push_snapshot_growth(reply, snap))
         return false;
-    if (!launched) {
-        ok = json_push_kv_bool(&reply->data, "text_export", true) &&
+    if (!launched)
+        return json_push_kv_bool(&reply->data, "text_export", true) &&
             json_push_kv_bool(&reply->data, "text_complete", true) &&
             json_push_kv_int(&reply->data, "text_page", 0) &&
             json_push_kv_int(&reply->data, "text_page_count", 1) &&
             json_push_kv_str(&reply->data, "plain_text", plain_text) &&
             json_push_kv_str(&reply->data, "backend",
                              "c23-deterministic-text");
-    } else {
-        ok = json_push_kv_bool(&reply->data, "text_export_available", true) &&
-            json_push_kv_str(&reply->data, "backend",
-                             zcl_present_backend_name()) &&
-            json_push_kv_str(&reply->data, "platform",
-                             zcl_present_platform_name());
-    }
-    return ok;
+    return json_push_kv_bool(&reply->data, "text_export_available", true) &&
+        json_push_kv_str(&reply->data, "backend",
+                         zcl_present_backend_name()) &&
+        json_push_kv_str(&reply->data, "platform",
+                         zcl_present_platform_name());
 }
 
 static bool npe_bind_codeindex(const char *root,

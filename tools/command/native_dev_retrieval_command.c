@@ -772,6 +772,81 @@ static bool rb_cursor(const struct zcl_command_request *request, size_t *out)
     return true;
 }
 
+static bool rb_push_identity_fields(
+    struct json_value *data, const char *task_id, const char *query,
+    const char *expected_hex, const char *pre_hex, const char *post_hex,
+    const char *codeindex_hex, const char *retrieval_projection_hex)
+{
+    return json_push_kv_str(data, "schema",
+                            "zcl.dev_retrieval_benchmark.v3") &&
+        json_push_kv_bool(data, "observational", true) &&
+        json_push_kv_bool(data, "production_ordering_changed", true) &&
+        json_push_kv_bool(data, "promotion_authorized", false) &&
+        json_push_kv_bool(data, "native_execution", true) &&
+        json_push_kv_bool(data, "ready_to_benchmark", true) &&
+        json_push_kv_str(data, "task_id", task_id) &&
+        json_push_kv_str(data, "query", query) &&
+        json_push_kv_str(data, "expected_vcs_root", expected_hex) &&
+        json_push_kv_str(data, "observed_vcs_root_pre", pre_hex) &&
+        json_push_kv_str(data, "observed_vcs_root_post", post_hex) &&
+        json_push_kv_str(data, "shared_codeindex_source_root_sha3",
+                         codeindex_hex) &&
+        json_push_kv_str(data, "retrieval_projection_root_sha3",
+                         retrieval_projection_hex);
+}
+
+static bool rb_push_page_fields(struct json_value *data, size_t rank_offset,
+                                size_t page_limit, size_t page_span,
+                                bool has_more, size_t corpus_files)
+{
+    return json_push_kv_int(data, "rank_offset", (int64_t)rank_offset) &&
+        json_push_kv_int(data, "page_limit", (int64_t)page_limit) &&
+        json_push_kv_int(data, "page_span", (int64_t)page_span) &&
+        json_push_kv_bool(data, "has_more", has_more) &&
+        json_push_kv_int(data, "next_offset",
+                         has_more ? (int64_t)(rank_offset + page_span) : 0) &&
+        json_push_kv_int(data, "corpus_files", (int64_t)corpus_files);
+}
+
+static bool rb_push_basis_fields(
+    struct json_value *data, size_t identifier_seed_symbols,
+    size_t graph_files, bool query_lookup_saturated)
+{
+    return json_push_kv_str(
+            data, "document_profile",
+            "path+group+purpose+symbol_name+signature+doc+guard") &&
+        json_push_kv_str(data, "context_basis", "full_file_bytes") &&
+        json_push_kv_str(data, "context_cost_kind", "projected_not_read") &&
+        json_push_kv_str(data, "token_basis", "ceil(context_bytes/4)") &&
+        json_push_kv_str(data, "literal_selector_basis",
+                         "frozen_pre_story_token_order_v1") &&
+        json_push_kv_str(data, "production_selector_basis",
+                         "hybrid_literal_bm25_story_v1") &&
+        json_push_kv_str(data, "identifier_graph_basis",
+                         "bm25_top20_rare_identifier_atom_df16_observed_"
+                         "reverse_refs_"
+                         "context_guard_v1") &&
+        json_push_kv_int(data, "identifier_seed_symbols",
+                         (int64_t)identifier_seed_symbols) &&
+        json_push_kv_int(data, "observed_reverse_ref_files",
+                         (int64_t)graph_files) &&
+        json_push_kv_bool(data, "query_lookup_saturated",
+                          query_lookup_saturated);
+}
+
+static bool rb_push_evidence_fields(struct json_value *data,
+                                    const char *graph_fallback_reason)
+{
+    return json_push_kv_str(data, "index_scan_completeness", "unobserved") &&
+        json_push_kv_str(data, "graph_evidence_kind",
+                         "observed_reverse_refs_not_resolved_calls") &&
+        json_push_kv_str(data, "graph_fallback_reason",
+                         graph_fallback_reason) &&
+        json_push_kv_str(data, "vector_evidence", "not_used") &&
+        json_push_kv_str(data, "gold_basis", "not_supplied_rank_only") &&
+        json_push_kv_str(data, "scope_basis", "unavailable");
+}
+
 static bool rb_render_data(
     struct zcl_command_reply *reply, const char *task_id, const char *query,
     const char *expected_hex, const char *pre_hex, const char *post_hex,
@@ -792,62 +867,14 @@ static bool rb_render_data(
     bool has_more = rank_offset + page_span < max_count;
     json_set_object(&reply->data);
     bool ok = corpus_files <= INT64_MAX &&
-        json_push_kv_str(&reply->data, "schema",
-                         "zcl.dev_retrieval_benchmark.v3") &&
-        json_push_kv_bool(&reply->data, "observational", true) &&
-        json_push_kv_bool(&reply->data, "production_ordering_changed", true) &&
-        json_push_kv_bool(&reply->data, "promotion_authorized", false) &&
-        json_push_kv_bool(&reply->data, "native_execution", true) &&
-        json_push_kv_bool(&reply->data, "ready_to_benchmark", true) &&
-        json_push_kv_str(&reply->data, "task_id", task_id) &&
-        json_push_kv_str(&reply->data, "query", query) &&
-        json_push_kv_str(&reply->data, "expected_vcs_root", expected_hex) &&
-        json_push_kv_str(&reply->data, "observed_vcs_root_pre", pre_hex) &&
-        json_push_kv_str(&reply->data, "observed_vcs_root_post", post_hex) &&
-        json_push_kv_str(&reply->data, "shared_codeindex_source_root_sha3",
-                         codeindex_hex) &&
-        json_push_kv_str(&reply->data, "retrieval_projection_root_sha3",
-                         retrieval_projection_hex) &&
-        json_push_kv_int(&reply->data, "rank_offset",
-                         (int64_t)rank_offset) &&
-        json_push_kv_int(&reply->data, "page_limit", (int64_t)page_limit) &&
-        json_push_kv_int(&reply->data, "page_span", (int64_t)page_span) &&
-        json_push_kv_bool(&reply->data, "has_more", has_more) &&
-        json_push_kv_int(&reply->data, "next_offset",
-                         has_more ? (int64_t)(rank_offset + page_span) : 0) &&
-        json_push_kv_int(&reply->data, "corpus_files", (int64_t)corpus_files) &&
-        json_push_kv_str(
-            &reply->data, "document_profile",
-            "path+group+purpose+symbol_name+signature+doc+guard") &&
-        json_push_kv_str(&reply->data, "context_basis", "full_file_bytes") &&
-        json_push_kv_str(&reply->data, "context_cost_kind",
-                         "projected_not_read") &&
-        json_push_kv_str(&reply->data, "token_basis",
-                         "ceil(context_bytes/4)") &&
-        json_push_kv_str(&reply->data, "literal_selector_basis",
-                         "frozen_pre_story_token_order_v1") &&
-        json_push_kv_str(&reply->data, "production_selector_basis",
-                         "hybrid_literal_bm25_story_v1") &&
-        json_push_kv_str(&reply->data, "identifier_graph_basis",
-                         "bm25_top20_rare_identifier_atom_df16_observed_"
-                         "reverse_refs_"
-                         "context_guard_v1") &&
-        json_push_kv_int(&reply->data, "identifier_seed_symbols",
-                         (int64_t)identifier_seed_symbols) &&
-        json_push_kv_int(&reply->data, "observed_reverse_ref_files",
-                         (int64_t)graph_files) &&
-        json_push_kv_bool(&reply->data, "query_lookup_saturated",
-                          query_lookup_saturated) &&
-        json_push_kv_str(&reply->data, "index_scan_completeness",
-                         "unobserved") &&
-        json_push_kv_str(&reply->data, "graph_evidence_kind",
-                         "observed_reverse_refs_not_resolved_calls") &&
-        json_push_kv_str(&reply->data, "graph_fallback_reason",
-                         graph_fallback_reason) &&
-        json_push_kv_str(&reply->data, "vector_evidence", "not_used") &&
-        json_push_kv_str(&reply->data, "gold_basis",
-                         "not_supplied_rank_only") &&
-        json_push_kv_str(&reply->data, "scope_basis", "unavailable");
+        rb_push_identity_fields(&reply->data, task_id, query, expected_hex,
+                                pre_hex, post_hex, codeindex_hex,
+                                retrieval_projection_hex) &&
+        rb_push_page_fields(&reply->data, rank_offset, page_limit, page_span,
+                            has_more, corpus_files) &&
+        rb_push_basis_fields(&reply->data, identifier_seed_symbols,
+                             graph_files, query_lookup_saturated) &&
+        rb_push_evidence_fields(&reply->data, graph_fallback_reason);
     struct json_value literal_json, bm25_json, identifier_graph_json;
     json_init(&literal_json);
     json_set_object(&literal_json);

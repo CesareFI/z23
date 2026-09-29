@@ -347,20 +347,382 @@ void zcl_native_handle_dev_ff(const struct zcl_command_request *request,
  * queue grants no package, signing, network, wallet, or acceptance authority;
  * later phases remain explicit blockers until their existing owners produce
  * durable receipts. */
+
+/* Receipts of one publication job, verified back from the newest phase. Each
+ * flag is set when the job has reached that phase; a phase whose predecessor
+ * receipt fails verification is a chain error. */
+struct dev_pub_chain {
+    bool source_reproduced, storage_acknowledged, provider_announced,
+         workspace_published, passport_published, release_published,
+         mapping_ready;
+    struct vcs_devloop_publication_receipt storage_receipt, provider_receipt,
+         workspace_receipt, passport_receipt, release_receipt, mapping_receipt;
+};
+
+enum dev_pub_head {
+    DEV_PUB_HEAD_SOURCE, DEV_PUB_HEAD_STORAGE, DEV_PUB_HEAD_PROVIDER,
+    DEV_PUB_HEAD_WORKSPACE, DEV_PUB_HEAD_PASSPORT, DEV_PUB_HEAD_RELEASE,
+    DEV_PUB_HEAD_MAPPING, DEV_PUB_HEAD_COUNT, DEV_PUB_HEAD_NONE = -1
+};
+
+struct dev_pub_head_text {
+    const char *status, *blocker, *next_action, *next_safe, *next_command;
+};
+
+/* next_command is NULL where the caller supplies the exact retry or collect
+ * command. */
+static const struct dev_pub_head_text k_dev_pub_head_text[DEV_PUB_HEAD_COUNT] = {
+    [DEV_PUB_HEAD_SOURCE] = {
+        "SOURCE_REPRODUCED", "physical_off_host_attestation_not_represented",
+        "Keep this accepted package available to other nodes.",
+        "dev publication status", NULL },
+    [DEV_PUB_HEAD_STORAGE] = {
+        "STORAGE_ACKNOWLEDGED", "remote_reproduction_required",
+        "Collect independent source reproduction.",
+        "dev publication collect", NULL },
+    [DEV_PUB_HEAD_PROVIDER] = {
+        "PROVIDER_ANNOUNCED", "storage_ack_required",
+        "Collect independent storage acknowledgements.",
+        "dev publication collect", NULL },
+    [DEV_PUB_HEAD_WORKSPACE] = {
+        "WORKSPACE_PUBLISHED", "provider_announcement_required",
+        "Announce the exact package from the existing node.",
+        "zcode network publish", "z23 discover search provider" },
+    [DEV_PUB_HEAD_PASSPORT] = {
+        "PASSPORT_PUBLISHED", "workspace_manifest_signature_required",
+        "Create the durable package workspace.",
+        "zcode workspace manifest plan",
+        "z23 discover schema zcode.workspace.manifest.plan" },
+    [DEV_PUB_HEAD_RELEASE] = {
+        "RELEASE_PUBLISHED",
+        "passport_and_workspace_manifest_signature_required",
+        "Publish the package identity and workspace.",
+        "zcode passport plan", "z23 discover schema zcode.passport.plan" },
+    [DEV_PUB_HEAD_MAPPING] = {
+        "PACKAGE_MAPPING_READY",
+        "offline_publisher_metadata_and_signature_required",
+        "Choose the publisher identity and prepare offline signing.",
+        "zcode package dev publish plan",
+        "z23 discover schema zcode.package.dev.publish.plan" },
+};
+
+/* The newest phase the job reached, or DEV_PUB_HEAD_NONE. */
+static int dev_pub_chain_head(const struct dev_pub_chain *c)
+{
+    const bool reached[DEV_PUB_HEAD_COUNT] = {
+        c->source_reproduced, c->storage_acknowledged, c->provider_announced,
+        c->workspace_published, c->passport_published, c->release_published,
+        c->mapping_ready,
+    };
+    for (int i = 0; i < DEV_PUB_HEAD_COUNT; i++)
+        if (reached[i]) return i;
+    return DEV_PUB_HEAD_NONE;
+}
+
+static const char *dev_pub_head_next_command(
+    int head, const char *advance_command, const char *collect_command)
+{
+    if (head == DEV_PUB_HEAD_SOURCE) return advance_command;
+    if (head == DEV_PUB_HEAD_STORAGE || head == DEV_PUB_HEAD_PROVIDER)
+        return collect_command;
+    return k_dev_pub_head_text[head].next_command;
+}
+
+struct dev_pub_chain_error { const char *code, *message; };
+
+/* Indexed by the phase whose predecessor failed verification. */
+static const struct dev_pub_chain_error
+    k_dev_pub_chain_errors[DEV_PUB_HEAD_COUNT] = {
+    [DEV_PUB_HEAD_STORAGE] = {
+        "PUBLICATION_REPRODUCTION_CHAIN_INVALID",
+        "the source reproduction phase has no verified storage ACK predecessor" },
+    [DEV_PUB_HEAD_PROVIDER] = {
+        "PUBLICATION_ACK_CHAIN_INVALID",
+        "the storage ACK phase has no verified provider predecessor" },
+    [DEV_PUB_HEAD_WORKSPACE] = {
+        "PUBLICATION_PROVIDER_CHAIN_INVALID",
+        "the provider phase has no verified workspace predecessor" },
+    [DEV_PUB_HEAD_PASSPORT] = {
+        "PUBLICATION_WORKSPACE_CHAIN_INVALID",
+        "the durable workspace phase has no verified Passport predecessor" },
+    [DEV_PUB_HEAD_RELEASE] = {
+        "PUBLICATION_PASSPORT_CHAIN_INVALID",
+        "the durable Passport phase has no verified release predecessor" },
+    [DEV_PUB_HEAD_MAPPING] = {
+        "PUBLICATION_RELEASE_CHAIN_INVALID",
+        "the durable release phase has no verified mapping predecessor" },
+};
+
+/* Walks from the newest phase toward the oldest, loading each predecessor
+ * receipt from the phase above it. The mapping receipt is bound to the job
+ * through its release predecessor, so only the earlier ones repeat the job
+ * root. Returns the failing phase index, or DEV_PUB_HEAD_NONE. */
+static int dev_pub_chain_load(
+    const char *root, const uint8_t job_root[32], bool have_progress,
+    const struct vcs_devloop_publication_receipt *progress,
+    struct dev_pub_chain *c)
+{
+    static const enum vcs_devloop_publication_phase phases[DEV_PUB_HEAD_COUNT] = {
+        VCS_DEVLOOP_PUBLICATION_PHASE_SOURCE_REPRODUCED,
+        VCS_DEVLOOP_PUBLICATION_PHASE_STORAGE_ACKNOWLEDGED,
+        VCS_DEVLOOP_PUBLICATION_PHASE_PROVIDER_ANNOUNCED,
+        VCS_DEVLOOP_PUBLICATION_PHASE_WORKSPACE_PUBLISHED,
+        VCS_DEVLOOP_PUBLICATION_PHASE_PASSPORT_PUBLISHED,
+        VCS_DEVLOOP_PUBLICATION_PHASE_RELEASE_PUBLISHED,
+        VCS_DEVLOOP_PUBLICATION_PHASE_PACKAGE_MAPPING_READY,
+    };
+    bool *flags[DEV_PUB_HEAD_COUNT] = {
+        &c->source_reproduced, &c->storage_acknowledged,
+        &c->provider_announced, &c->workspace_published,
+        &c->passport_published, &c->release_published, &c->mapping_ready,
+    };
+    struct vcs_devloop_publication_receipt *receipts[DEV_PUB_HEAD_COUNT] = {
+        NULL, &c->storage_receipt, &c->provider_receipt,
+        &c->workspace_receipt, &c->passport_receipt, &c->release_receipt,
+        &c->mapping_receipt,
+    };
+    memset(c, 0, sizeof(*c));
+    for (int i = 0; i < DEV_PUB_HEAD_COUNT; i++) {
+        *flags[i] = have_progress && progress->phase == phases[i];
+        if (i == 0) continue;
+        if (*flags[i - 1]) {
+            const struct vcs_devloop_publication_receipt *above =
+                i == 1 ? progress : receipts[i - 1];
+            *flags[i] = vcs_devloop_publication_receipt_load(
+                    root, above->predecessor_receipt_root, receipts[i]) &&
+                receipts[i]->phase == phases[i] &&
+                (i == DEV_PUB_HEAD_MAPPING ||
+                 memcmp(receipts[i]->job_root, job_root, 32) == 0);
+            if (!*flags[i]) return i;
+        } else if (*flags[i]) {
+            *receipts[i] = *progress;
+        }
+    }
+    return DEV_PUB_HEAD_NONE;
+}
+
+static bool dev_pub_chain_reached(const struct dev_pub_chain *c)
+{
+    return dev_pub_chain_head(c) != DEV_PUB_HEAD_NONE;
+}
+
+static void dev_pub_chain_fail(struct zcl_command_reply *reply, int failed,
+                               const char *job_hex)
+{
+    zcl_command_reply_fail(
+        reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
+        k_dev_pub_chain_errors[failed].code, "load", true, false,
+        k_dev_pub_chain_errors[failed].message, job_hex);
+}
+
+static bool dev_pub_require_job_root(const char *job_hex, uint8_t job_root[32],
+                                     struct zcl_command_reply *reply)
+{
+    char job_root_err[128];
+    if (zcl_native_require_hex64("job_root", job_hex, job_root, job_root_err,
+                                 sizeof(job_root_err)))
+        return true;
+    zcl_command_reply_fail(
+        reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
+        "INVALID_JOB_ROOT", "normalize", false, false, job_root_err,
+        job_hex ? job_hex : "missing job_root");
+    return false;
+}
+
+/* Renders the exact advance and collect commands for one job; false when
+ * either exceeds its fixed buffer. */
+static bool dev_pub_render_commands(const char *job_hex, char advance[256],
+                                    char collect[256])
+{
+    int advance_len = snprintf(
+        advance, 256,
+        "z23-dev dev publication advance --input='"
+        "{\"job_root\":\"%s\"}'", job_hex);
+    int collect_len = snprintf(
+        collect, 256,
+        "z23-dev dev publication collect --input='"
+        "{\"job_root\":\"%s\"}'",
+        job_hex);
+    return advance_len > 0 && advance_len < 256 && collect_len > 0 &&
+        collect_len < 256;
+}
+
+static void dev_pub_push_root(struct json_value *out, const char *key,
+                              const uint8_t root[32])
+{
+    char hex[65];
+    zcl_hex_encode(root, 32, hex);
+    (void)json_push_kv_str(out, key, hex);
+}
+
+static bool dev_pub_mirror_agrees(
+    const struct vcs_devloop_mirror_receipt *mirror,
+    const struct vcs_devloop_publication_job *job,
+    const struct dev_pub_chain *c, const uint8_t job_root[32])
+{
+    return memcmp(mirror->job_root, job_root, 32) == 0 &&
+        memcmp(mirror->vcs_commit_root, job->vcs_commit_root, 32) == 0 &&
+        memcmp(mirror->source_identity_sha256, job->source_identity_sha256,
+               32) == 0 &&
+        memcmp(mirror->proof_receipt_root, job->proof_receipt_root, 32) == 0 &&
+        memcmp(mirror->release_root, c->release_receipt.artifact_root,
+               32) == 0 &&
+        memcmp(mirror->workspace_root, c->workspace_receipt.artifact_root,
+               32) == 0 &&
+        memcmp(mirror->provider_record_root,
+               c->provider_receipt.artifact_root, 32) == 0;
+}
+
+static bool dev_pub_mirror_usable(
+    enum vcs_devloop_mirror_lookup lookup,
+    const struct vcs_devloop_mirror_receipt *mirror,
+    const struct vcs_devloop_publication_job *job,
+    const struct dev_pub_chain *c, const uint8_t job_root[32])
+{
+    if (lookup == VCS_DEVLOOP_MIRROR_INVALID) return false;
+    return lookup != VCS_DEVLOOP_MIRROR_FOUND ||
+        dev_pub_mirror_agrees(mirror, job, c, job_root);
+}
+
+static void dev_pub_status_push_chain_roots(
+    struct json_value *out, const struct dev_pub_chain *c,
+    const struct vcs_devloop_publication_receipt *progress,
+    const uint8_t *mapping_root)
+{
+    if (c->mapping_ready) {
+        dev_pub_push_root(out, "package_mapping_root", mapping_root);
+        (void)json_push_kv_int(out, "bytes_scanned",
+                               (int64_t)progress->bytes_scanned);
+        (void)json_push_kv_int(out, "new_chunks", progress->new_chunks);
+        (void)json_push_kv_int(out, "reused_chunks", progress->reused_chunks);
+    }
+    if (c->release_published)
+        dev_pub_push_root(out, "release_root", c->release_receipt.artifact_root);
+    if (c->passport_published)
+        dev_pub_push_root(out, "passport_root",
+                          c->passport_receipt.artifact_root);
+    if (c->workspace_published)
+        dev_pub_push_root(out, "workspace_root",
+                          c->workspace_receipt.artifact_root);
+    if (c->provider_announced)
+        dev_pub_push_root(out, "provider_record_root",
+                          c->provider_receipt.artifact_root);
+    if (c->storage_acknowledged)
+        dev_pub_push_root(out, "storage_ack_set_root",
+                          c->source_reproduced
+                              ? c->storage_receipt.artifact_root
+                              : progress->artifact_root);
+    if (c->source_reproduced)
+        dev_pub_push_root(out, "source_reproduction_record_root",
+                          progress->artifact_root);
+}
+
+static void dev_pub_status_push_job_roots(
+    struct json_value *out, const struct vcs_devloop_publication_job *job)
+{
+    dev_pub_push_root(out, "zvcs_commit_root", job->vcs_commit_root);
+    dev_pub_push_root(out, "source_tree_root", job->source_tree_root);
+    dev_pub_push_root(out, "proof_receipt_root", job->proof_receipt_root);
+    dev_pub_push_root(out, "source_identity_sha256",
+                      job->source_identity_sha256);
+    dev_pub_push_root(out, "source_cas_sha3", job->source_cas_sha3);
+    dev_pub_push_root(out, "generation_sha256", job->generation_sha256);
+}
+
+static const char *dev_pub_workspace_state(const struct dev_pub_chain *c)
+{
+    if (c->provider_announced) return "manifest_persisted_announced";
+    if (c->workspace_published) return "manifest_persisted_not_announced";
+    if (c->passport_published) return "passport_published_manifest_not_created";
+    if (c->release_published) return "release_published_manifest_not_created";
+    return "not_created";
+}
+
+/* Status, blocker, and next command for a job that has not reached a chain
+ * phase. */
+static const char *dev_pub_status_text(const struct dev_pub_chain *c,
+                                       bool accepted, bool advanced,
+                                       bool queued)
+{
+    int head = dev_pub_chain_head(c);
+    if (head != DEV_PUB_HEAD_NONE) return k_dev_pub_head_text[head].status;
+    if (accepted) return "PROVEN_WORK_BOUND";
+    if (advanced) return "WAITING_ACCEPTANCE";
+    return queued ? "QUEUED" : "NOT_QUEUED";
+}
+
+static const char *dev_pub_status_blocker(const struct dev_pub_chain *c,
+                                          bool accepted, bool queued)
+{
+    int head = dev_pub_chain_head(c);
+    if (head != DEV_PUB_HEAD_NONE) return k_dev_pub_head_text[head].blocker;
+    if (accepted) return "package_mapping_worker_advance_required";
+    return queued
+        ? "human_proven_work_and_offline_publisher_signature_required"
+        : "durable_publication_queue_record_missing";
+}
+
+static const char *dev_pub_status_next_command(
+    const struct dev_pub_chain *c, bool accepted, bool advanced, bool queued,
+    const char *advance_command, const char *collect_command)
+{
+    int head = dev_pub_chain_head(c);
+    if (head != DEV_PUB_HEAD_NONE)
+        return dev_pub_head_next_command(head, advance_command,
+                                         collect_command);
+    if (accepted) return advance_command;
+    if (advanced) return "z23 zcode guide";
+    return queued ? advance_command : "dev ff";
+}
+
+static void dev_pub_status_push_mirror(
+    struct json_value *out, enum vcs_devloop_mirror_lookup lookup,
+    const struct vcs_devloop_mirror_receipt *mirror,
+    const uint8_t mirror_root[32])
+{
+    char hex[65];
+    (void)json_push_kv_str(
+        out, "github_mirror",
+        lookup == VCS_DEVLOOP_MIRROR_FOUND
+            ? "recorded_declared" : "mirror_pending");
+    if (lookup != VCS_DEVLOOP_MIRROR_FOUND) return;
+    dev_pub_push_root(out, "mirror_receipt_root", mirror_root);
+    if (mirror->git_oid_len > 0) {
+        zcl_hex_encode(mirror->git_oid, mirror->git_oid_len, hex);
+        (void)json_push_kv_str(out, "mirror_git_oid", hex);
+    }
+}
+
+static void dev_pub_status_push_p2p(
+    struct json_value *out, const struct dev_pub_chain *c, bool advanced,
+    const struct vcs_devloop_publication_receipt *progress)
+{
+    char storage_ack_status[16];
+    (void)json_push_kv_str(out, "workspace_state", dev_pub_workspace_state(c));
+    (void)json_push_kv_str(out, "p2p",
+                           c->provider_announced ? "announced"
+                                                 : "not_announced");
+    (void)json_push_kv_int(out, "providers",
+                           c->provider_announced ? progress->providers : 0);
+    int storage_ack_len = snprintf(
+        storage_ack_status, sizeof(storage_ack_status), "%u/2",
+        advanced ? progress->storage_acks : 0u);
+    if (storage_ack_len > 0 &&
+        (size_t)storage_ack_len < sizeof(storage_ack_status))
+        (void)json_push_kv_str(out, "storage_ack", storage_ack_status);
+    (void)json_push_kv_str(
+        out, "reproduced",
+        c->source_reproduced ? "signed_distinct_source_reconstruction"
+                             : "no_record");
+    (void)json_push_kv_bool(out, "physical_independence_attested", false);
+}
+
 void zcl_native_handle_dev_publication_status(
     const struct zcl_command_request *request, struct zcl_command_reply *reply)
 {
     const char *job_hex = json_get_str(json_get(request->input, "job_root"));
     uint8_t job_root[32];
-    char job_root_err[128];
-    if (!zcl_native_require_hex64("job_root", job_hex, job_root, job_root_err,
-                                  sizeof(job_root_err))) {
-        zcl_command_reply_fail(
-            reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
-            "INVALID_JOB_ROOT", "normalize", false, false, job_root_err,
-            job_hex ? job_hex : "missing job_root");
-        return;
-    }
+    if (!dev_pub_require_job_root(job_hex, job_root, reply)) return;
 
     struct vcs_devloop_publication_job job;
     const char *root = dev_source_root(request);
@@ -377,143 +739,22 @@ void zcl_native_handle_dev_publication_status(
     uint8_t progress_root[32];
     bool advanced = queued && vcs_devloop_publication_progress_load(
         root, job_root, &progress, progress_root);
-    bool source_reproduced = advanced && progress.phase ==
-        VCS_DEVLOOP_PUBLICATION_PHASE_SOURCE_REPRODUCED;
-    struct vcs_devloop_publication_receipt storage_receipt = {0};
-    bool storage_acknowledged = advanced && progress.phase ==
-        VCS_DEVLOOP_PUBLICATION_PHASE_STORAGE_ACKNOWLEDGED;
-    if (source_reproduced) {
-        storage_acknowledged = vcs_devloop_publication_receipt_load(
-                root, progress.predecessor_receipt_root,
-                &storage_receipt) &&
-            storage_receipt.phase ==
-                VCS_DEVLOOP_PUBLICATION_PHASE_STORAGE_ACKNOWLEDGED &&
-            memcmp(storage_receipt.job_root, job_root, 32) == 0;
-        if (!storage_acknowledged) {
-            zcl_command_reply_fail(
-                reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
-                "PUBLICATION_REPRODUCTION_CHAIN_INVALID", "load", true,
-                false,
-                "the source reproduction phase has no verified storage ACK predecessor",
-                job_hex);
-            return;
-        }
-    } else if (storage_acknowledged) {
-        storage_receipt = progress;
-    }
-    struct vcs_devloop_publication_receipt provider_receipt = {0};
-    bool provider_announced = advanced && progress.phase ==
-        VCS_DEVLOOP_PUBLICATION_PHASE_PROVIDER_ANNOUNCED;
-    if (storage_acknowledged) {
-        provider_announced = vcs_devloop_publication_receipt_load(
-                root, storage_receipt.predecessor_receipt_root,
-                &provider_receipt) &&
-            provider_receipt.phase ==
-                VCS_DEVLOOP_PUBLICATION_PHASE_PROVIDER_ANNOUNCED &&
-            memcmp(provider_receipt.job_root, job_root, 32) == 0;
-        if (!provider_announced) {
-            zcl_command_reply_fail(
-                reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
-                "PUBLICATION_ACK_CHAIN_INVALID", "load", true, false,
-                "the storage ACK phase has no verified provider predecessor",
-                job_hex);
-            return;
-        }
-    } else if (provider_announced) {
-        provider_receipt = progress;
-    }
-    struct vcs_devloop_publication_receipt workspace_receipt = {0};
-    bool workspace_published = advanced && progress.phase ==
-        VCS_DEVLOOP_PUBLICATION_PHASE_WORKSPACE_PUBLISHED;
-    if (provider_announced) {
-        workspace_published = vcs_devloop_publication_receipt_load(
-                root, provider_receipt.predecessor_receipt_root,
-                &workspace_receipt) &&
-            workspace_receipt.phase ==
-                VCS_DEVLOOP_PUBLICATION_PHASE_WORKSPACE_PUBLISHED &&
-            memcmp(workspace_receipt.job_root, job_root, 32) == 0;
-        if (!workspace_published) {
-            zcl_command_reply_fail(
-                reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
-                "PUBLICATION_PROVIDER_CHAIN_INVALID", "load", true, false,
-                "the provider phase has no verified workspace predecessor",
-                job_hex);
-            return;
-        }
-    } else if (workspace_published) {
-        workspace_receipt = progress;
-    }
-    struct vcs_devloop_publication_receipt passport_receipt = {0};
-    bool passport_published = advanced && progress.phase ==
-        VCS_DEVLOOP_PUBLICATION_PHASE_PASSPORT_PUBLISHED;
-    if (workspace_published) {
-        passport_published = vcs_devloop_publication_receipt_load(
-                root, workspace_receipt.predecessor_receipt_root,
-                &passport_receipt) &&
-            passport_receipt.phase ==
-                VCS_DEVLOOP_PUBLICATION_PHASE_PASSPORT_PUBLISHED &&
-            memcmp(passport_receipt.job_root, job_root, 32) == 0;
-        if (!passport_published) {
-            zcl_command_reply_fail(
-                reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
-                "PUBLICATION_WORKSPACE_CHAIN_INVALID", "load", true, false,
-                "the durable workspace phase has no verified Passport predecessor",
-                job_hex);
-            return;
-        }
-    } else if (passport_published) {
-        passport_receipt = progress;
-    }
-    struct vcs_devloop_publication_receipt release_receipt = {0};
-    bool release_published = advanced && progress.phase ==
-        VCS_DEVLOOP_PUBLICATION_PHASE_RELEASE_PUBLISHED;
-    if (passport_published) {
-        release_published = vcs_devloop_publication_receipt_load(
-                root, passport_receipt.predecessor_receipt_root,
-                &release_receipt) &&
-            release_receipt.phase ==
-                VCS_DEVLOOP_PUBLICATION_PHASE_RELEASE_PUBLISHED &&
-            memcmp(release_receipt.job_root, job_root, 32) == 0;
-        if (!release_published) {
-            zcl_command_reply_fail(
-                reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
-                "PUBLICATION_PASSPORT_CHAIN_INVALID", "load", true, false,
-                "the durable Passport phase has no verified release predecessor",
-                job_hex);
-            return;
-        }
-    } else if (release_published) {
-        release_receipt = progress;
-    }
-    struct vcs_devloop_publication_receipt mapping_receipt = {0};
-    bool mapping_ready = advanced && progress.phase ==
-        VCS_DEVLOOP_PUBLICATION_PHASE_PACKAGE_MAPPING_READY;
-    if (release_published) {
-        mapping_ready = vcs_devloop_publication_receipt_load(
-                root, release_receipt.predecessor_receipt_root,
-                &mapping_receipt) &&
-            mapping_receipt.phase ==
-                VCS_DEVLOOP_PUBLICATION_PHASE_PACKAGE_MAPPING_READY;
-        if (!mapping_ready) {
-            zcl_command_reply_fail(
-                reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
-                "PUBLICATION_RELEASE_CHAIN_INVALID", "load", true, false,
-                "the durable release phase has no verified mapping predecessor",
-                job_hex);
-            return;
-        }
+    struct dev_pub_chain chain;
+    int failed = dev_pub_chain_load(root, job_root, advanced, &progress,
+                                    &chain);
+    if (failed != DEV_PUB_HEAD_NONE) {
+        dev_pub_chain_fail(reply, failed, job_hex);
+        return;
     }
     bool accepted = advanced &&
         (progress.phase ==
              VCS_DEVLOOP_PUBLICATION_PHASE_ACCEPTED_LANE_BOUND ||
-         mapping_ready || release_published || passport_published ||
-         workspace_published || provider_announced ||
-         storage_acknowledged || source_reproduced);
+         dev_pub_chain_reached(&chain));
     struct vcs_package_mapping_set mapping;
     vcs_package_mapping_set_init(&mapping);
-    const uint8_t *mapping_root = release_published
-        ? mapping_receipt.artifact_root : progress.artifact_root;
-    if (mapping_ready && !vcs_package_mapping_set_load(
+    const uint8_t *mapping_root = chain.release_published
+        ? chain.mapping_receipt.artifact_root : progress.artifact_root;
+    if (chain.mapping_ready && !vcs_package_mapping_set_load(
             root, mapping_root, &mapping)) {
         zcl_command_reply_fail(
             reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
@@ -524,24 +765,12 @@ void zcl_native_handle_dev_publication_status(
     }
     struct vcs_devloop_mirror_receipt mirror = {0};
     uint8_t mirror_root[32] = {0};
-    enum vcs_devloop_mirror_lookup mirror_lookup = provider_announced
+    enum vcs_devloop_mirror_lookup mirror_lookup = chain.provider_announced
         ? vcs_devloop_mirror_load_for_job(
               root, job_root, &mirror, mirror_root)
         : VCS_DEVLOOP_MIRROR_ABSENT;
-    if (mirror_lookup == VCS_DEVLOOP_MIRROR_INVALID ||
-        (mirror_lookup == VCS_DEVLOOP_MIRROR_FOUND &&
-         (memcmp(mirror.job_root, job_root, 32) != 0 ||
-          memcmp(mirror.vcs_commit_root, job.vcs_commit_root, 32) != 0 ||
-          memcmp(mirror.source_identity_sha256,
-                 job.source_identity_sha256, 32) != 0 ||
-          memcmp(mirror.proof_receipt_root,
-                 job.proof_receipt_root, 32) != 0 ||
-          memcmp(mirror.release_root,
-                 release_receipt.artifact_root, 32) != 0 ||
-          memcmp(mirror.workspace_root,
-                 workspace_receipt.artifact_root, 32) != 0 ||
-          memcmp(mirror.provider_record_root,
-                 provider_receipt.artifact_root, 32) != 0))) {
+    if (!dev_pub_mirror_usable(mirror_lookup, &mirror, &job, &chain,
+                               job_root)) {
         vcs_package_mapping_set_free(&mapping);
         zcl_command_reply_fail(
             reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
@@ -550,20 +779,8 @@ void zcl_native_handle_dev_publication_status(
             job_hex);
         return;
     }
-    char hex[65], next_command[256], collect_command[256];
-    int next_len = snprintf(
-        next_command, sizeof(next_command),
-        "z23-dev dev publication advance --input='"
-        "{\"job_root\":\"%s\"}'",
-        job_hex);
-    int collect_len = snprintf(
-        collect_command, sizeof(collect_command),
-        "z23-dev dev publication collect --input='"
-        "{\"job_root\":\"%s\"}'",
-        job_hex);
-    if (next_len <= 0 || (size_t)next_len >= sizeof(next_command) ||
-        collect_len <= 0 ||
-        (size_t)collect_len >= sizeof(collect_command)) {
+    char next_command[256], collect_command[256];
+    if (!dev_pub_render_commands(job_hex, next_command, collect_command)) {
         zcl_command_reply_fail(
             reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INTERNAL,
             "PUBLICATION_STATUS_RENDER_FAILED", "render", false, false,
@@ -571,134 +788,28 @@ void zcl_native_handle_dev_publication_status(
             job_hex);
         return;
     }
-    (void)json_push_kv_str(&reply->data, "schema",
-                           "zcl.dev_publication_status.v1");
+    struct json_value *out = &reply->data;
+    (void)json_push_kv_str(out, "schema", "zcl.dev_publication_status.v1");
     (void)json_push_kv_str(
-        &reply->data, "status",
-        source_reproduced ? "SOURCE_REPRODUCED" :
-        storage_acknowledged ? "STORAGE_ACKNOWLEDGED" :
-        provider_announced ? "PROVIDER_ANNOUNCED" :
-        workspace_published ? "WORKSPACE_PUBLISHED" :
-        passport_published ? "PASSPORT_PUBLISHED" :
-        release_published ? "RELEASE_PUBLISHED" :
-        mapping_ready ? "PACKAGE_MAPPING_READY" :
-        accepted ? "PROVEN_WORK_BOUND" :
-        advanced ? "WAITING_ACCEPTANCE" : queued ? "QUEUED" : "NOT_QUEUED");
-    (void)json_push_kv_bool(&reply->data, "proof_complete", true);
-    (void)json_push_kv_str(&reply->data, "publication_job_root", job_hex);
-#define DEV_PUBLICATION_ROOT(key_, field_)                                  \
-    do {                                                                     \
-        zcl_hex_encode((field_), 32, hex);                                   \
-        (void)json_push_kv_str(&reply->data, (key_), hex);                   \
-    } while (0)
-    DEV_PUBLICATION_ROOT("zvcs_commit_root", job.vcs_commit_root);
-    DEV_PUBLICATION_ROOT("source_tree_root", job.source_tree_root);
-    DEV_PUBLICATION_ROOT("proof_receipt_root", job.proof_receipt_root);
-    DEV_PUBLICATION_ROOT("source_identity_sha256",
-                         job.source_identity_sha256);
-    DEV_PUBLICATION_ROOT("source_cas_sha3", job.source_cas_sha3);
-    DEV_PUBLICATION_ROOT("generation_sha256", job.generation_sha256);
+        out, "status", dev_pub_status_text(&chain, accepted, advanced, queued));
+    (void)json_push_kv_bool(out, "proof_complete", true);
+    (void)json_push_kv_str(out, "publication_job_root", job_hex);
+    dev_pub_status_push_job_roots(out, &job);
     if (advanced)
-        DEV_PUBLICATION_ROOT("progress_receipt_root", progress_root);
+        dev_pub_push_root(out, "progress_receipt_root", progress_root);
     if (accepted)
-        DEV_PUBLICATION_ROOT(
-            "lane_receipt_root",
-            mapping_ready ? mapping.lane_receipt_root
-                          : progress.artifact_root);
-    if (mapping_ready) {
-        DEV_PUBLICATION_ROOT("package_mapping_root", mapping_root);
-        (void)json_push_kv_int(&reply->data, "bytes_scanned",
-                               (int64_t)progress.bytes_scanned);
-        (void)json_push_kv_int(&reply->data, "new_chunks",
-                               progress.new_chunks);
-        (void)json_push_kv_int(&reply->data, "reused_chunks",
-                               progress.reused_chunks);
-    }
-    if (release_published)
-        DEV_PUBLICATION_ROOT("release_root", release_receipt.artifact_root);
-    if (passport_published)
-        DEV_PUBLICATION_ROOT("passport_root", passport_receipt.artifact_root);
-    if (workspace_published)
-        DEV_PUBLICATION_ROOT("workspace_root",
-                             workspace_receipt.artifact_root);
-    if (provider_announced)
-        DEV_PUBLICATION_ROOT("provider_record_root",
-                             provider_receipt.artifact_root);
-    if (storage_acknowledged)
-        DEV_PUBLICATION_ROOT("storage_ack_set_root",
-                             source_reproduced
-                                 ? storage_receipt.artifact_root
-                                 : progress.artifact_root);
-    if (source_reproduced)
-        DEV_PUBLICATION_ROOT("source_reproduction_record_root",
-                             progress.artifact_root);
-#undef DEV_PUBLICATION_ROOT
+        dev_pub_push_root(out, "lane_receipt_root",
+                          chain.mapping_ready ? mapping.lane_receipt_root
+                                              : progress.artifact_root);
+    dev_pub_status_push_chain_roots(out, &chain, &progress, mapping_root);
+    dev_pub_status_push_p2p(out, &chain, advanced, &progress);
+    dev_pub_status_push_mirror(out, mirror_lookup, &mirror, mirror_root);
     (void)json_push_kv_str(
-        &reply->data, "workspace_state",
-        provider_announced ? "manifest_persisted_announced" :
-        workspace_published ? "manifest_persisted_not_announced" :
-        passport_published ? "passport_published_manifest_not_created" :
-        release_published ? "release_published_manifest_not_created"
-                          : "not_created");
-    (void)json_push_kv_str(&reply->data, "p2p",
-                           provider_announced ? "announced"
-                                              : "not_announced");
-    (void)json_push_kv_int(&reply->data, "providers",
-                           provider_announced ? progress.providers : 0);
-    char storage_ack_status[16];
-    int storage_ack_len = snprintf(
-        storage_ack_status, sizeof(storage_ack_status), "%u/2",
-        advanced ? progress.storage_acks : 0u);
-    if (storage_ack_len > 0 &&
-        (size_t)storage_ack_len < sizeof(storage_ack_status))
-        (void)json_push_kv_str(&reply->data, "storage_ack",
-                               storage_ack_status);
+        out, "blocker", dev_pub_status_blocker(&chain, accepted, queued));
     (void)json_push_kv_str(
-        &reply->data, "reproduced",
-        source_reproduced ? "signed_distinct_source_reconstruction"
-                          : "no_record");
-    (void)json_push_kv_bool(&reply->data,
-                            "physical_independence_attested", false);
-    (void)json_push_kv_str(
-        &reply->data, "github_mirror",
-        mirror_lookup == VCS_DEVLOOP_MIRROR_FOUND
-            ? "recorded_declared" : "mirror_pending");
-    if (mirror_lookup == VCS_DEVLOOP_MIRROR_FOUND) {
-        zcl_hex_encode(mirror_root, 32, hex);
-        (void)json_push_kv_str(&reply->data, "mirror_receipt_root", hex);
-        if (mirror.git_oid_len > 0) {
-            zcl_hex_encode(mirror.git_oid, mirror.git_oid_len, hex);
-            (void)json_push_kv_str(&reply->data, "mirror_git_oid", hex);
-        }
-    }
-    (void)json_push_kv_str(
-        &reply->data, "blocker",
-        source_reproduced ? "physical_off_host_attestation_not_represented" :
-        storage_acknowledged ? "remote_reproduction_required" :
-        provider_announced ? "storage_ack_required" :
-        workspace_published ? "provider_announcement_required" :
-        passport_published ? "workspace_manifest_signature_required" :
-        release_published ? "passport_and_workspace_manifest_signature_required" :
-        mapping_ready ? "offline_publisher_metadata_and_signature_required" :
-        accepted ? "package_mapping_worker_advance_required" :
-        queued ? "human_proven_work_and_offline_publisher_signature_required"
-               : "durable_publication_queue_record_missing");
-    (void)json_push_kv_str(
-        &reply->data, "next_command",
-        source_reproduced ? next_command :
-        storage_acknowledged ? collect_command :
-        provider_announced ?
-            collect_command :
-        workspace_published ?
-            "z23 discover search provider" :
-        passport_published ?
-            "z23 discover schema zcode.workspace.manifest.plan" :
-        release_published ?
-            "z23 discover schema zcode.passport.plan" :
-        mapping_ready ?
-            "z23 discover schema zcode.package.dev.publish.plan" :
-        accepted ? next_command :
-        advanced ? "z23 zcode guide" : queued ? next_command : "dev ff");
+        out, "next_command",
+        dev_pub_status_next_command(&chain, accepted, advanced, queued,
+                                    next_command, collect_command));
     vcs_package_mapping_set_free(&mapping);
 }
 
@@ -775,6 +886,275 @@ static bool dev_publication_lane_lookup(
     return true;
 }
 
+struct dev_pub_advance {
+    struct vcs_devloop_publication_job job;
+    struct vcs_devloop_publication_receipt progress;
+    struct dev_pub_chain chain;
+    uint8_t progress_root[32], receipt_root[32], lane_root[32];
+    char proof_set_hex[65], lane_name[16];
+    bool have_job, have_progress, lane_bound, acceptance_verified;
+    bool mapping_failed, projection_rebuilt, reused;
+};
+
+static bool dev_pub_advance_resolve_root(
+    const struct zcl_dev_publication_input *input, char resolved[PATH_MAX],
+    const char **repo_root, struct zcl_command_reply *reply)
+{
+    const char *workspace = input ? input->workspace : NULL;
+    *repo_root = input ? input->source_root : NULL;
+    if (!workspace || !workspace[0]) return true;
+    if (!dev_canonical_directory(workspace, resolved)) {
+        zcl_command_reply_fail(
+            reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
+            "PUBLICATION_WORKSPACE_INVALID", "normalize", false, false,
+            "workspace must resolve to the existing exact source store",
+            workspace);
+        return false;
+    }
+    *repo_root = resolved;
+    return true;
+}
+
+/* The accepted lane is already bound: it must still match the datadir's
+ * verified proven-work lane. */
+static bool dev_pub_advance_reverify_bound(const char *repo_root,
+                                           const struct dev_pub_advance *st)
+{
+    struct vcs_package_mapping_set mapping;
+    vcs_package_mapping_set_init(&mapping);
+    const uint8_t *mapping_set_root = st->chain.release_published
+        ? st->chain.mapping_receipt.artifact_root : st->progress.artifact_root;
+    bool loaded = !st->chain.mapping_ready ||
+        vcs_package_mapping_set_load(repo_root, mapping_set_root, &mapping);
+    const uint8_t *bound_root = st->chain.mapping_ready
+        ? mapping.lane_receipt_root : st->progress.artifact_root;
+    bool verified = loaded && memcmp(bound_root, st->lane_root, 32) == 0;
+    vcs_package_mapping_set_free(&mapping);
+    return verified;
+}
+
+static void dev_pub_advance_verify_acceptance(
+    const char *repo_root, const char *datadir, const uint8_t job_root[32],
+    struct dev_pub_advance *st)
+{
+    char workspace[PATH_MAX];
+    if (!datadir || !datadir[0] || !st->have_job) return;
+    bool lane_found = dev_canonical_directory(repo_root, workspace) &&
+        dev_publication_lane_lookup(
+            workspace, datadir, st->job.source_tree_root, st->lane_root,
+            st->proof_set_hex, st->lane_name, &st->projection_rebuilt);
+    if (lane_found && st->lane_bound) {
+        st->acceptance_verified = dev_pub_advance_reverify_bound(repo_root, st);
+    } else if (lane_found) {
+        st->lane_bound = vcs_devloop_publication_advance_proven_work(
+            repo_root, job_root, st->lane_root,
+            (int64_t)platform_time_wall_unix(), st->receipt_root, &st->reused);
+        st->acceptance_verified = st->lane_bound;
+        st->have_progress = st->lane_bound &&
+            vcs_devloop_publication_progress_load(
+                repo_root, job_root, &st->progress, st->progress_root);
+    }
+}
+
+static void dev_pub_advance_map_package(
+    const char *repo_root, const uint8_t job_root[32],
+    struct dev_pub_advance *st)
+{
+    uint8_t mapping_root[32];
+    struct vcs_package_mapping_metrics metrics;
+    if (!st->lane_bound || !st->acceptance_verified ||
+        st->chain.mapping_ready || !st->have_job || !st->have_progress)
+        return;
+    bool mapped = vcs_package_mapping_set_build(
+        repo_root, st->job.source_tree_root, st->progress.artifact_root,
+        &metrics, mapping_root);
+    if (mapped)
+        st->chain.mapping_ready =
+            vcs_devloop_publication_advance_package_mapping(
+                repo_root, job_root, mapping_root, metrics.bytes_scanned,
+                metrics.new_chunks, metrics.reused_chunks, st->receipt_root,
+                &st->reused);
+    st->mapping_failed = !mapped || !st->chain.mapping_ready;
+    st->have_progress = !st->mapping_failed &&
+        vcs_devloop_publication_progress_load(
+            repo_root, job_root, &st->progress, st->progress_root);
+}
+
+/* Per-phase roots of the advance reply; the reproduction verdict is reported
+ * without details. */
+static void dev_pub_advance_push_chain(
+    struct json_value *out, const struct dev_pub_advance *st,
+    const uint8_t *mapping_set_root, bool details)
+{
+    const struct dev_pub_chain *c = &st->chain;
+    const struct vcs_devloop_publication_receipt *progress = &st->progress;
+    if (details) {
+        if (c->mapping_ready) {
+            dev_pub_push_root(out, "package_mapping_root", mapping_set_root);
+            (void)json_push_kv_int(out, "bytes_scanned",
+                                   (int64_t)progress->bytes_scanned);
+            (void)json_push_kv_int(out, "new_chunks", progress->new_chunks);
+            (void)json_push_kv_int(out, "reused_chunks",
+                                   progress->reused_chunks);
+        }
+        if (c->release_published)
+            dev_pub_push_root(out, "release_root",
+                              c->release_receipt.artifact_root);
+        if (c->passport_published)
+            dev_pub_push_root(out, "passport_root",
+                              c->passport_receipt.artifact_root);
+        if (c->workspace_published)
+            dev_pub_push_root(out, "workspace_root",
+                              c->workspace_receipt.artifact_root);
+        if (c->provider_announced) {
+            dev_pub_push_root(out, "provider_record_root",
+                              c->provider_receipt.artifact_root);
+            (void)json_push_kv_int(out, "providers", progress->providers);
+        }
+        if (c->storage_acknowledged) {
+            dev_pub_push_root(out, "storage_ack_set_root",
+                              c->source_reproduced
+                                  ? c->storage_receipt.artifact_root
+                                  : progress->artifact_root);
+            (void)json_push_kv_int(out, "storage_acks",
+                                   progress->storage_acks);
+        }
+        if (c->source_reproduced)
+            dev_pub_push_root(out, "source_reproduction_record_root",
+                              progress->artifact_root);
+    }
+    if (c->source_reproduced) {
+        (void)json_push_kv_str(out, "reproduced",
+                               "signed_distinct_source_reconstruction");
+        (void)json_push_kv_bool(out, "physical_independence_attested", false);
+    }
+}
+
+/* Emits the lane and per-phase evidence of a lane-bound job. False when the
+ * durable mapping phase cannot be reloaded; the reply is already failed. */
+static bool dev_pub_advance_push_lane(
+    struct zcl_command_reply *reply, const char *repo_root,
+    const char *job_hex, const struct dev_pub_advance *st, bool details)
+{
+    struct vcs_package_mapping_set mapping;
+    vcs_package_mapping_set_init(&mapping);
+    const uint8_t *mapping_set_root = st->chain.release_published
+        ? st->chain.mapping_receipt.artifact_root : st->progress.artifact_root;
+    bool mapping_loaded = st->chain.mapping_ready &&
+        vcs_package_mapping_set_load(repo_root, mapping_set_root, &mapping);
+    if (st->chain.mapping_ready && !mapping_loaded) {
+        vcs_package_mapping_set_free(&mapping);
+        zcl_command_reply_fail(
+            reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
+            "PUBLICATION_MAPPING_UNAVAILABLE", "load", true, false,
+            "the durable mapping phase references missing or corrupt evidence",
+            job_hex);
+        return false;
+    }
+    if (details)
+        dev_pub_push_root(&reply->data, "lane_receipt_root",
+                          mapping_loaded ? mapping.lane_receipt_root
+                                         : st->progress.artifact_root);
+    dev_pub_advance_push_chain(&reply->data, st, mapping_set_root, details);
+    if (details && st->lane_name[0])
+        (void)json_push_kv_str(&reply->data, "lane", st->lane_name);
+    if (details && st->proof_set_hex[0])
+        (void)json_push_kv_str(&reply->data, "proof_set_root",
+                               st->proof_set_hex);
+    vcs_package_mapping_set_free(&mapping);
+    return true;
+}
+
+static const char *dev_pub_advance_status(const struct dev_pub_advance *st)
+{
+    int head = dev_pub_chain_head(&st->chain);
+    if (head != DEV_PUB_HEAD_NONE) return k_dev_pub_head_text[head].status;
+    return st->lane_bound ? "PROVEN_WORK_BOUND" : "WAITING_ACCEPTANCE";
+}
+
+static const char *dev_pub_advance_next_action(const struct dev_pub_advance *st)
+{
+    int head = dev_pub_chain_head(&st->chain);
+    if (head != DEV_PUB_HEAD_NONE) return k_dev_pub_head_text[head].next_action;
+    return st->lane_bound ? "Continue mapping the accepted source."
+                          : "Wait for exact human acceptance.";
+}
+
+static const char *dev_pub_advance_next_safe(const struct dev_pub_advance *st)
+{
+    int head = dev_pub_chain_head(&st->chain);
+    if (head != DEV_PUB_HEAD_NONE) return k_dev_pub_head_text[head].next_safe;
+    return st->lane_bound ? "dev publication advance" : "zcode work status";
+}
+
+static const char *dev_pub_advance_blocker(const struct dev_pub_advance *st)
+{
+    int head = dev_pub_chain_head(&st->chain);
+    if (st->lane_bound && !st->acceptance_verified)
+        return "proven_work_datadir_reverification_required";
+    if (head != DEV_PUB_HEAD_NONE) return k_dev_pub_head_text[head].blocker;
+    if (st->mapping_failed) return "package_mapping_retry_required";
+    return st->lane_bound
+        ? "package_mapping_worker_advance_required"
+        : "human_proven_work_and_offline_publisher_signature_required";
+}
+
+static const char *dev_pub_advance_next_command(
+    const struct dev_pub_advance *st, const char *retry_command,
+    const char *collect_command)
+{
+    int head = dev_pub_chain_head(&st->chain);
+    if (st->lane_bound && !st->acceptance_verified)
+        return "z23 discover schema dev.publication.advance";
+    if (head != DEV_PUB_HEAD_NONE)
+        return dev_pub_head_next_command(head, retry_command, collect_command);
+    return st->lane_bound ? retry_command : "z23 zcode guide";
+}
+
+static void dev_pub_advance_push_summary(
+    struct zcl_command_reply *reply, const struct dev_pub_advance *st,
+    const char *job_hex, bool details)
+{
+    struct json_value *out = &reply->data;
+    (void)json_push_kv_str(out, "schema", "zcl.dev_publication_advance.v1");
+    (void)json_push_kv_str(out, "status", dev_pub_advance_status(st));
+    (void)json_push_kv_str(out, "stage", "Publishing");
+    (void)json_push_kv_str(out, "next_action", dev_pub_advance_next_action(st));
+    (void)json_push_kv_str(out, "next_safe_command",
+                           dev_pub_advance_next_safe(st));
+    (void)json_push_kv_bool(out, "details_available", true);
+    if (details) {
+        (void)json_push_kv_str(out, "publication_job_root", job_hex);
+        dev_pub_push_root(out, "progress_receipt_root",
+                          st->have_progress ? st->progress_root
+                                            : st->receipt_root);
+    }
+    (void)json_push_kv_bool(out, "receipt_reused", st->reused);
+    (void)json_push_kv_bool(out, "acceptance_reverified",
+                            st->acceptance_verified);
+    (void)json_push_kv_bool(out, "lane_projection_rebuilt",
+                            st->projection_rebuilt);
+}
+
+static void dev_pub_advance_push_verdict(
+    struct zcl_command_reply *reply, const struct dev_pub_advance *st,
+    const char *retry_command, const char *collect_command, bool details)
+{
+    struct json_value *out = &reply->data;
+    if (details)
+        (void)json_push_kv_str(out, "blocker", dev_pub_advance_blocker(st));
+    (void)json_push_kv_bool(out, "package_written", false);
+    (void)json_push_kv_bool(out, "mapping_cache_written",
+                            st->chain.mapping_ready &&
+                                !st->chain.release_published && !st->reused);
+    (void)json_push_kv_bool(out, "network_called", false);
+    (void)json_push_kv_bool(out, "wallet_called", false);
+    if (details)
+        (void)json_push_kv_str(
+            out, "next_command",
+            dev_pub_advance_next_command(st, retry_command, collect_command));
+}
+
 void zcl_dev_publication_advance(
     const struct zcl_dev_publication_input *input,
     struct zcl_command_reply *reply)
@@ -782,33 +1162,15 @@ void zcl_dev_publication_advance(
     const char *job_hex = input ? input->job_root : NULL;
     bool details = input && input->details;
     uint8_t job_root[32];
-    char job_root_err[128];
-    if (!zcl_native_require_hex64("job_root", job_hex, job_root, job_root_err,
-                                  sizeof(job_root_err))) {
-        zcl_command_reply_fail(
-            reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
-            "INVALID_JOB_ROOT", "normalize", false, false, job_root_err,
-            job_hex ? job_hex : "missing job_root");
-        return;
-    }
+    if (!dev_pub_require_job_root(job_hex, job_root, reply)) return;
     char resolved_workspace[PATH_MAX];
-    const char *workspace = input ? input->workspace : NULL;
-    const char *repo_root = input ? input->source_root : NULL;
-    if (workspace && workspace[0]) {
-        if (!dev_canonical_directory(workspace, resolved_workspace)) {
-            zcl_command_reply_fail(
-                reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
-                "PUBLICATION_WORKSPACE_INVALID", "normalize", false, false,
-                "workspace must resolve to the existing exact source store",
-                workspace);
-            return;
-        }
-        repo_root = resolved_workspace;
-    }
-    uint8_t receipt_root[32];
-    bool reused = false;
+    const char *repo_root = NULL;
+    if (!dev_pub_advance_resolve_root(input, resolved_workspace, &repo_root,
+                                      reply))
+        return;
+    struct dev_pub_advance st = {0};
     if (!vcs_devloop_publication_advance_waiting_acceptance(
-            repo_root, job_root, receipt_root, &reused)) {
+            repo_root, job_root, st.receipt_root, &st.reused)) {
         zcl_command_reply_fail(
             reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
             "PUBLICATION_ADVANCE_FAILED", "advance", true, false,
@@ -816,212 +1178,24 @@ void zcl_dev_publication_advance(
             job_hex);
         return;
     }
-    struct vcs_devloop_publication_job job;
-    struct vcs_devloop_publication_receipt progress;
-    uint8_t loaded_progress_root[32];
-    bool have_job = vcs_devloop_publication_job_load(
-        repo_root, job_root, &job);
-    bool have_progress = vcs_devloop_publication_progress_load(
-        repo_root, job_root, &progress, loaded_progress_root);
-    const char *datadir = input ? input->datadir : NULL;
-    uint8_t lane_root[32];
-    char proof_set_hex[65] = "", lane_name[16] = "";
-    bool source_reproduced = have_progress && progress.phase ==
-        VCS_DEVLOOP_PUBLICATION_PHASE_SOURCE_REPRODUCED;
-    struct vcs_devloop_publication_receipt storage_receipt = {0};
-    bool storage_acknowledged = have_progress && progress.phase ==
-        VCS_DEVLOOP_PUBLICATION_PHASE_STORAGE_ACKNOWLEDGED;
-    if (source_reproduced) {
-        storage_acknowledged = vcs_devloop_publication_receipt_load(
-                repo_root, progress.predecessor_receipt_root,
-                &storage_receipt) &&
-            storage_receipt.phase ==
-                VCS_DEVLOOP_PUBLICATION_PHASE_STORAGE_ACKNOWLEDGED &&
-            memcmp(storage_receipt.job_root, job_root, 32) == 0;
-        if (!storage_acknowledged) {
-            zcl_command_reply_fail(
-                reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
-                "PUBLICATION_REPRODUCTION_CHAIN_INVALID", "load", true,
-                false,
-                "the source reproduction phase has no verified storage ACK predecessor",
-                job_hex);
-            return;
-        }
-    } else if (storage_acknowledged) {
-        storage_receipt = progress;
-    }
-    struct vcs_devloop_publication_receipt provider_receipt = {0};
-    bool provider_announced = have_progress && progress.phase ==
-        VCS_DEVLOOP_PUBLICATION_PHASE_PROVIDER_ANNOUNCED;
-    if (storage_acknowledged) {
-        provider_announced = vcs_devloop_publication_receipt_load(
-                repo_root, storage_receipt.predecessor_receipt_root,
-                &provider_receipt) &&
-            provider_receipt.phase ==
-                VCS_DEVLOOP_PUBLICATION_PHASE_PROVIDER_ANNOUNCED &&
-            memcmp(provider_receipt.job_root, job_root, 32) == 0;
-        if (!provider_announced) {
-            zcl_command_reply_fail(
-                reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
-                "PUBLICATION_ACK_CHAIN_INVALID", "load", true, false,
-                "the storage ACK phase has no verified provider predecessor",
-                job_hex);
-            return;
-        }
-    } else if (provider_announced) {
-        provider_receipt = progress;
-    }
-    struct vcs_devloop_publication_receipt workspace_receipt = {0};
-    bool workspace_published = have_progress && progress.phase ==
-        VCS_DEVLOOP_PUBLICATION_PHASE_WORKSPACE_PUBLISHED;
-    if (provider_announced) {
-        workspace_published = vcs_devloop_publication_receipt_load(
-                repo_root, provider_receipt.predecessor_receipt_root,
-                &workspace_receipt) &&
-            workspace_receipt.phase ==
-                VCS_DEVLOOP_PUBLICATION_PHASE_WORKSPACE_PUBLISHED &&
-            memcmp(workspace_receipt.job_root, job_root, 32) == 0;
-        if (!workspace_published) {
-            zcl_command_reply_fail(
-                reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
-                "PUBLICATION_PROVIDER_CHAIN_INVALID", "load", true, false,
-                "the provider phase has no verified workspace predecessor",
-                job_hex);
-            return;
-        }
-    } else if (workspace_published) {
-        workspace_receipt = progress;
-    }
-    struct vcs_devloop_publication_receipt passport_receipt = {0};
-    bool passport_published = have_progress && progress.phase ==
-        VCS_DEVLOOP_PUBLICATION_PHASE_PASSPORT_PUBLISHED;
-    if (workspace_published) {
-        passport_published = vcs_devloop_publication_receipt_load(
-                repo_root, workspace_receipt.predecessor_receipt_root,
-                &passport_receipt) &&
-            passport_receipt.phase ==
-                VCS_DEVLOOP_PUBLICATION_PHASE_PASSPORT_PUBLISHED &&
-            memcmp(passport_receipt.job_root, job_root, 32) == 0;
-        if (!passport_published) {
-            zcl_command_reply_fail(
-                reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
-                "PUBLICATION_WORKSPACE_CHAIN_INVALID", "load", true, false,
-                "the durable workspace phase has no verified Passport predecessor",
-                job_hex);
-            return;
-        }
-    } else if (passport_published) {
-        passport_receipt = progress;
-    }
-    struct vcs_devloop_publication_receipt release_receipt = {0};
-    bool release_published = have_progress && progress.phase ==
-        VCS_DEVLOOP_PUBLICATION_PHASE_RELEASE_PUBLISHED;
-    if (passport_published) {
-        release_published = vcs_devloop_publication_receipt_load(
-                repo_root, passport_receipt.predecessor_receipt_root,
-                &release_receipt) &&
-            release_receipt.phase ==
-                VCS_DEVLOOP_PUBLICATION_PHASE_RELEASE_PUBLISHED &&
-            memcmp(release_receipt.job_root, job_root, 32) == 0;
-    } else if (release_published) {
-        release_receipt = progress;
-    }
-    struct vcs_devloop_publication_receipt mapping_receipt = {0};
-    bool projection_rebuilt = false;
-    if (passport_published && !release_published) {
-        zcl_command_reply_fail(
-            reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
-            "PUBLICATION_PASSPORT_CHAIN_INVALID", "load", true, false,
-            "the durable Passport phase has no verified release predecessor",
-            job_hex);
+    st.have_job = vcs_devloop_publication_job_load(repo_root, job_root, &st.job);
+    st.have_progress = vcs_devloop_publication_progress_load(
+        repo_root, job_root, &st.progress, st.progress_root);
+    int failed = dev_pub_chain_load(repo_root, job_root, st.have_progress,
+                                    &st.progress, &st.chain);
+    if (failed != DEV_PUB_HEAD_NONE) {
+        dev_pub_chain_fail(reply, failed, job_hex);
         return;
     }
-    bool mapping_ready = have_progress && progress.phase ==
-        VCS_DEVLOOP_PUBLICATION_PHASE_PACKAGE_MAPPING_READY;
-    if (release_published)
-        mapping_ready = vcs_devloop_publication_receipt_load(
-                repo_root, release_receipt.predecessor_receipt_root,
-                &mapping_receipt) &&
-            mapping_receipt.phase ==
-                VCS_DEVLOOP_PUBLICATION_PHASE_PACKAGE_MAPPING_READY;
-    if (release_published && !mapping_ready) {
-        zcl_command_reply_fail(
-            reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
-            "PUBLICATION_RELEASE_CHAIN_INVALID", "load", true, false,
-            "the durable release phase has no verified mapping predecessor",
-            job_hex);
-        return;
-    }
-    bool lane_bound = have_progress &&
-        (progress.phase ==
+    st.lane_bound = st.have_progress &&
+        (st.progress.phase ==
              VCS_DEVLOOP_PUBLICATION_PHASE_ACCEPTED_LANE_BOUND ||
-         mapping_ready || release_published || passport_published ||
-         workspace_published || provider_announced ||
-         storage_acknowledged || source_reproduced);
-    bool acceptance_verified = false;
-    if (datadir && datadir[0] && have_job) {
-        char workspace[PATH_MAX];
-        bool lane_found = dev_canonical_directory(repo_root, workspace) &&
-            dev_publication_lane_lookup(
-                workspace, datadir, job.source_tree_root, lane_root,
-                proof_set_hex, lane_name, &projection_rebuilt);
-        if (lane_found && lane_bound) {
-            struct vcs_package_mapping_set mapping;
-            vcs_package_mapping_set_init(&mapping);
-            const uint8_t *mapping_set_root = release_published
-                ? mapping_receipt.artifact_root : progress.artifact_root;
-            bool loaded = !mapping_ready || vcs_package_mapping_set_load(
-                repo_root, mapping_set_root, &mapping);
-            const uint8_t *bound_root = mapping_ready
-                ? mapping.lane_receipt_root : progress.artifact_root;
-            acceptance_verified = loaded &&
-                memcmp(bound_root, lane_root, 32) == 0;
-            vcs_package_mapping_set_free(&mapping);
-        } else if (lane_found) {
-            lane_bound = vcs_devloop_publication_advance_proven_work(
-                repo_root, job_root, lane_root,
-                (int64_t)platform_time_wall_unix(), receipt_root, &reused);
-            acceptance_verified = lane_bound;
-            have_progress = lane_bound &&
-                vcs_devloop_publication_progress_load(
-                    repo_root, job_root, &progress, loaded_progress_root);
-        }
-    }
-    bool mapping_failed = false;
-    if (lane_bound && acceptance_verified && !mapping_ready && have_job &&
-        have_progress) {
-        uint8_t mapping_root[32];
-        struct vcs_package_mapping_metrics metrics;
-        bool mapped = vcs_package_mapping_set_build(
-            repo_root, job.source_tree_root, progress.artifact_root,
-            &metrics, mapping_root);
-        if (mapped)
-            mapping_ready =
-                vcs_devloop_publication_advance_package_mapping(
-                    repo_root, job_root, mapping_root,
-                    metrics.bytes_scanned, metrics.new_chunks,
-                    metrics.reused_chunks, receipt_root, &reused);
-        mapping_failed = !mapped || !mapping_ready;
-        have_progress = !mapping_failed &&
-            vcs_devloop_publication_progress_load(
-                repo_root, job_root, &progress, loaded_progress_root);
-    }
-    char receipt_hex[65];
-    zcl_hex_encode(have_progress ? loaded_progress_root : receipt_root,
-                   32, receipt_hex);
+         dev_pub_chain_reached(&st.chain));
+    dev_pub_advance_verify_acceptance(
+        repo_root, input ? input->datadir : NULL, job_root, &st);
+    dev_pub_advance_map_package(repo_root, job_root, &st);
     char retry_command[256], collect_command[256];
-    int retry_len = snprintf(
-        retry_command, sizeof(retry_command),
-        "z23-dev dev publication advance --input='"
-        "{\"job_root\":\"%s\"}'", job_hex);
-    int collect_len = snprintf(
-        collect_command, sizeof(collect_command),
-        "z23-dev dev publication collect --input='"
-        "{\"job_root\":\"%s\"}'",
-        job_hex);
-    if (retry_len <= 0 || (size_t)retry_len >= sizeof(retry_command) ||
-        collect_len <= 0 ||
-        (size_t)collect_len >= sizeof(collect_command)) {
+    if (!dev_pub_render_commands(job_hex, retry_command, collect_command)) {
         zcl_command_reply_fail(
             reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INTERNAL,
             "PUBLICATION_ADVANCE_RENDER_FAILED", "render", false, false,
@@ -1029,205 +1203,12 @@ void zcl_dev_publication_advance(
             job_hex);
         return;
     }
-    const char *status = source_reproduced ? "SOURCE_REPRODUCED" :
-        storage_acknowledged ? "STORAGE_ACKNOWLEDGED" :
-        provider_announced ? "PROVIDER_ANNOUNCED" :
-        workspace_published ? "WORKSPACE_PUBLISHED" :
-        passport_published ? "PASSPORT_PUBLISHED" :
-        release_published ? "RELEASE_PUBLISHED" :
-        mapping_ready ? "PACKAGE_MAPPING_READY" :
-        lane_bound ? "PROVEN_WORK_BOUND" : "WAITING_ACCEPTANCE";
-    const char *next_action = source_reproduced
-        ? "Keep this accepted package available to other nodes." :
-        storage_acknowledged
-        ? "Collect independent source reproduction." :
-        provider_announced
-        ? "Collect independent storage acknowledgements." :
-        workspace_published
-        ? "Announce the exact package from the existing node." :
-        passport_published
-        ? "Create the durable package workspace." :
-        release_published
-        ? "Publish the package identity and workspace." :
-        mapping_ready
-        ? "Choose the publisher identity and prepare offline signing." :
-        lane_bound
-        ? "Continue mapping the accepted source." :
-          "Wait for exact human acceptance.";
-    const char *next_safe_command = source_reproduced
-        ? "dev publication status" :
-        storage_acknowledged || provider_announced
-        ? "dev publication collect" :
-        workspace_published ? "zcode network publish" :
-        passport_published ? "zcode workspace manifest plan" :
-        release_published ? "zcode passport plan" :
-        mapping_ready ? "zcode package dev publish plan" :
-        lane_bound ? "dev publication advance" : "zcode work status";
-    (void)json_push_kv_str(&reply->data, "schema",
-                           "zcl.dev_publication_advance.v1");
-    (void)json_push_kv_str(&reply->data, "status", status);
-    (void)json_push_kv_str(&reply->data, "stage", "Publishing");
-    (void)json_push_kv_str(&reply->data, "next_action", next_action);
-    (void)json_push_kv_str(&reply->data, "next_safe_command",
-                           next_safe_command);
-    (void)json_push_kv_bool(&reply->data, "details_available", true);
-    if (details) {
-        (void)json_push_kv_str(&reply->data, "publication_job_root",
-                               job_hex);
-        (void)json_push_kv_str(&reply->data, "progress_receipt_root",
-                               receipt_hex);
-    }
-    (void)json_push_kv_bool(&reply->data, "receipt_reused", reused);
-    (void)json_push_kv_bool(&reply->data, "acceptance_reverified",
-                            acceptance_verified);
-    (void)json_push_kv_bool(&reply->data, "lane_projection_rebuilt",
-                            projection_rebuilt);
-    if (lane_bound) {
-        struct vcs_package_mapping_set mapping;
-        vcs_package_mapping_set_init(&mapping);
-        bool mapping_loaded = mapping_ready &&
-            vcs_package_mapping_set_load(
-                repo_root,
-                release_published ? mapping_receipt.artifact_root
-                                  : progress.artifact_root,
-                &mapping);
-        if (mapping_ready && !mapping_loaded) {
-            vcs_package_mapping_set_free(&mapping);
-            zcl_command_reply_fail(
-                reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
-                "PUBLICATION_MAPPING_UNAVAILABLE", "load", true, false,
-                "the durable mapping phase references missing or corrupt evidence",
-                job_hex);
-            return;
-        }
-        const uint8_t *lane_receipt = mapping_loaded
-            ? mapping.lane_receipt_root : progress.artifact_root;
-        char lane_hex[65];
-        zcl_hex_encode(lane_receipt, 32, lane_hex);
-        if (details)
-            (void)json_push_kv_str(&reply->data, "lane_receipt_root",
-                                   lane_hex);
-        if (mapping_ready) {
-            char mapping_hex[65];
-            zcl_hex_encode(
-                release_published ? mapping_receipt.artifact_root
-                                  : progress.artifact_root,
-                32, mapping_hex);
-            if (details) {
-                (void)json_push_kv_str(&reply->data,
-                                       "package_mapping_root",
-                                       mapping_hex);
-                (void)json_push_kv_int(&reply->data, "bytes_scanned",
-                                       (int64_t)progress.bytes_scanned);
-                (void)json_push_kv_int(&reply->data, "new_chunks",
-                                       progress.new_chunks);
-                (void)json_push_kv_int(&reply->data, "reused_chunks",
-                                       progress.reused_chunks);
-            }
-        }
-        if (release_published) {
-            char release_hex[65];
-            zcl_hex_encode(release_receipt.artifact_root, 32, release_hex);
-            if (details)
-                (void)json_push_kv_str(&reply->data, "release_root",
-                                       release_hex);
-        }
-        if (passport_published) {
-            char passport_hex[65];
-            zcl_hex_encode(passport_receipt.artifact_root, 32, passport_hex);
-            if (details)
-                (void)json_push_kv_str(&reply->data, "passport_root",
-                                       passport_hex);
-        }
-        if (workspace_published) {
-            char workspace_hex[65];
-            zcl_hex_encode(workspace_receipt.artifact_root, 32,
-                           workspace_hex);
-            if (details)
-                (void)json_push_kv_str(&reply->data, "workspace_root",
-                                       workspace_hex);
-        }
-        if (provider_announced) {
-            char provider_hex[65];
-            zcl_hex_encode(provider_receipt.artifact_root, 32, provider_hex);
-            if (details) {
-                (void)json_push_kv_str(&reply->data,
-                                       "provider_record_root",
-                                       provider_hex);
-                (void)json_push_kv_int(&reply->data, "providers",
-                                       progress.providers);
-            }
-        }
-        if (storage_acknowledged) {
-            char ack_set_hex[65];
-            zcl_hex_encode(source_reproduced
-                               ? storage_receipt.artifact_root
-                               : progress.artifact_root,
-                           32, ack_set_hex);
-            if (details) {
-                (void)json_push_kv_str(&reply->data,
-                                       "storage_ack_set_root", ack_set_hex);
-                (void)json_push_kv_int(&reply->data, "storage_acks",
-                                       progress.storage_acks);
-            }
-        }
-        if (source_reproduced) {
-            char reproduction_hex[65];
-            zcl_hex_encode(progress.artifact_root, 32, reproduction_hex);
-            if (details)
-                (void)json_push_kv_str(
-                    &reply->data, "source_reproduction_record_root",
-                    reproduction_hex);
-            (void)json_push_kv_str(
-                &reply->data, "reproduced",
-                "signed_distinct_source_reconstruction");
-            (void)json_push_kv_bool(
-                &reply->data, "physical_independence_attested", false);
-        }
-        if (details && lane_name[0])
-            (void)json_push_kv_str(&reply->data, "lane", lane_name);
-        if (details && proof_set_hex[0])
-            (void)json_push_kv_str(&reply->data, "proof_set_root",
-                                   proof_set_hex);
-        vcs_package_mapping_set_free(&mapping);
-    }
-    if (details) (void)json_push_kv_str(
-        &reply->data, "blocker",
-        lane_bound && !acceptance_verified
-            ? "proven_work_datadir_reverification_required" :
-        source_reproduced ? "physical_off_host_attestation_not_represented" :
-        storage_acknowledged ? "remote_reproduction_required" :
-        provider_announced ? "storage_ack_required" :
-        workspace_published ? "provider_announcement_required" :
-        passport_published ? "workspace_manifest_signature_required" :
-        release_published ? "passport_and_workspace_manifest_signature_required" :
-        mapping_ready ? "offline_publisher_metadata_and_signature_required" :
-        mapping_failed ? "package_mapping_retry_required" :
-        lane_bound ? "package_mapping_worker_advance_required"
-                   : "human_proven_work_and_offline_publisher_signature_required");
-    (void)json_push_kv_bool(&reply->data, "package_written", false);
-    (void)json_push_kv_bool(&reply->data, "mapping_cache_written",
-                            mapping_ready && !release_published && !reused);
-    (void)json_push_kv_bool(&reply->data, "network_called", false);
-    (void)json_push_kv_bool(&reply->data, "wallet_called", false);
-    if (details) (void)json_push_kv_str(
-        &reply->data, "next_command",
-        lane_bound && !acceptance_verified
-            ? "z23 discover schema dev.publication.advance" :
-        source_reproduced ? retry_command :
-        storage_acknowledged ? collect_command :
-        provider_announced ?
-            collect_command :
-        workspace_published ?
-            "z23 discover search provider" :
-        passport_published ?
-            "z23 discover schema zcode.workspace.manifest.plan" :
-        release_published ?
-            "z23 discover schema zcode.passport.plan" :
-        mapping_ready ?
-            "z23 discover schema zcode.package.dev.publish.plan" :
-        lane_bound ? retry_command :
-            "z23 zcode guide");
+    dev_pub_advance_push_summary(reply, &st, job_hex, details);
+    if (st.lane_bound &&
+        !dev_pub_advance_push_lane(reply, repo_root, job_hex, &st, details))
+        return;
+    dev_pub_advance_push_verdict(reply, &st, retry_command, collect_command,
+                                 details);
 }
 
 void zcl_native_handle_dev_publication_advance(
@@ -2178,50 +2159,79 @@ zcl_native_dev_watch_start_wait_classify(
 
 #ifdef ZCL_DEV_BUILD
 
+static bool reflex_kat_cycle_build(struct json_value *cycle)
+{
+    json_init(cycle);
+    json_set_object(cycle);
+    return json_push_kv_str(cycle, "status", "story_green") &&
+        json_push_kv_str(cycle, "phase", "STORY_GREEN") &&
+        json_push_kv_str(cycle, "action", "hotswap") &&
+        json_push_kv_str(cycle, "edit_epoch",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") &&
+        json_push_kv_str(cycle, "loaded_mapping_root",
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb") &&
+        json_push_kv_str(cycle, "story_detail", "checks=4/5;failed_mask=0x4") &&
+        json_push_kv_int(cycle, "elapsed_us", 73) &&
+        json_push_kv_bool(cycle, "runtime_published", false) &&
+        json_push_kv_bool(cycle, "proof_complete", false);
+}
+
+static bool reflex_kat_projection_matches(const struct json_value *projected)
+{
+    const char *lane = json_get_str(json_get(projected, "lane"));
+    return lane && strcmp(lane, "REFLEX") == 0 &&
+        json_get_int(json_get(projected, "feedback_us")) == 73 &&
+        strcmp(json_get_str(json_get(projected, "loaded_mapping_root")),
+               "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb") == 0 &&
+        strcmp(json_get_str(json_get(projected, "story_detail")),
+               "checks=4/5;failed_mask=0x4") == 0 &&
+        !json_get_bool(json_get(projected, "runtime_published"));
+}
+
+static bool reflex_kat_projection_ok(
+    const struct dev_reflex_policy_service_v1 *service)
+{
+    struct json_value cycle, projected;
+    bool built = reflex_kat_cycle_build(&cycle);
+    bool projected_ok = built && service->project_cycle(&cycle, 9, &projected);
+    bool vector_ok = projected_ok && reflex_kat_projection_matches(&projected);
+    if (projected_ok) json_free(&projected);
+    json_free(&cycle);
+    return vector_ok;
+}
+
+static bool reflex_kat_vtable_complete(
+    const struct dev_reflex_policy_service_v1 *service)
+{
+    return service && service->progress_phase && service->action_changing &&
+        service->project_cycle && service->handoff_validate;
+}
+
+static bool reflex_kat_event_policy_ok(
+    const struct dev_reflex_policy_service_v1 *service)
+{
+    return strcmp(service->progress_phase("story_red", "service_story"),
+                  "STORY_RED") == 0 &&
+        !service->action_changing("impact_ready", NULL) &&
+        !service->action_changing("reflex_ready", "candidate.c") &&
+        service->action_changing("story_red", "candidate.c");
+}
+
 static bool dev_reflex_policy_frozen_kat(const void *vtable,
                                          char *why, size_t why_size)
 {
     const struct dev_reflex_policy_service_v1 *service = vtable;
-    if (!service || !service->progress_phase || !service->action_changing ||
-        !service->project_cycle || !service->handoff_validate) {
+    if (!reflex_kat_vtable_complete(service)) {
         if (why && why_size)
             (void)snprintf(why, why_size, "%s", "reflex policy vtable incomplete");
         return false;
     }
-    if (strcmp(service->progress_phase("story_red", "service_story"),
-               "STORY_RED") != 0 ||
-        service->action_changing("impact_ready", NULL) ||
-        service->action_changing("reflex_ready", "candidate.c") ||
-        !service->action_changing("story_red", "candidate.c")) {
+    if (!reflex_kat_event_policy_ok(service)) {
         if (why && why_size)
             (void)snprintf(why, why_size, "%s", "event policy vector changed");
         return false;
     }
-    struct json_value cycle, projected;
-    json_init(&cycle); json_set_object(&cycle);
-    bool built = json_push_kv_str(&cycle, "status", "story_green") &&
-        json_push_kv_str(&cycle, "phase", "STORY_GREEN") &&
-        json_push_kv_str(&cycle, "action", "hotswap") &&
-        json_push_kv_str(&cycle, "edit_epoch",
-            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") &&
-        json_push_kv_str(&cycle, "loaded_mapping_root",
-            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb") &&
-        json_push_kv_str(&cycle, "story_detail", "checks=4/5;failed_mask=0x4") &&
-        json_push_kv_int(&cycle, "elapsed_us", 73) &&
-        json_push_kv_bool(&cycle, "runtime_published", false) &&
-        json_push_kv_bool(&cycle, "proof_complete", false);
-    bool projected_ok = built && service->project_cycle(&cycle, 9, &projected);
-    const char *lane = projected_ok
-        ? json_get_str(json_get(&projected, "lane")) : NULL;
-    bool vector_ok = projected_ok && lane && strcmp(lane, "REFLEX") == 0 &&
-        json_get_int(json_get(&projected, "feedback_us")) == 73 &&
-        strcmp(json_get_str(json_get(&projected, "loaded_mapping_root")),
-               "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb") == 0 &&
-        strcmp(json_get_str(json_get(&projected, "story_detail")),
-               "checks=4/5;failed_mask=0x4") == 0 &&
-        !json_get_bool(json_get(&projected, "runtime_published"));
-    if (projected_ok) json_free(&projected);
-    json_free(&cycle);
+    bool vector_ok = reflex_kat_projection_ok(service);
     struct dev_reflex_proof_handoff_v2 handoff = {
         .candidate_epoch =
             "1111111111111111111111111111111111111111111111111111111111111111",

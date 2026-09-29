@@ -1372,6 +1372,177 @@ static bool append_dimension_row(char *out, size_t out_sz, size_t *pos,
 /* Shared serializer for a fully-computed plan. When `include_closure` is set,
  * the closure_groups + closure_truncated fields are emitted too; path_groups is
  * always emitted (additive; existing readers ignore unknown keys). */
+static bool plan_json_head(const struct zcl_devloop_plan *plan, char *out,
+                           size_t out_sz, size_t *pos)
+{
+    return appendf(out, out_sz, pos,
+                   "{\"schema\":\"zcl.dev_plan.v1\",\"action\":") &&
+        append_json_string(out, out_sz, pos, plan->action_name) &&
+        appendf(out, out_sz, pos, ",\"reason\":") &&
+        append_json_string(out, out_sz, pos, plan->reason) &&
+        appendf(out, out_sz, pos,
+                ",\"consensus_risk\":%s,\"sealed_core\":%s,\"docs_only\":%s,"
+                "\"files\":[",
+                plan->consensus_risk ? "true" : "false",
+                plan->sealed_core ? "true" : "false",
+                plan->docs_only ? "true" : "false");
+}
+
+static bool plan_json_files(const struct zcl_devloop_plan *plan,
+                            const char *const *files, size_t file_count,
+                            char *out, size_t out_sz, size_t *pos)
+{
+    size_t files_listed = file_count < PLAN_FILES_LIST_MAX
+        ? file_count : PLAN_FILES_LIST_MAX;
+    for (size_t i = 0; i < files_listed; i++) {
+        if ((i && !appendf(out, out_sz, pos, ",")) ||
+            !append_json_string(out, out_sz, pos, files[i]))
+            return false;
+    }
+    return appendf(out, out_sz, pos,
+                   "],\"files_listed\":%zu,\"files_total\":%zu,"
+                   "\"files_abridged\":%s,\"foreground_proof\":",
+                   files_listed, file_count,
+                   files_listed < file_count ? "true" : "false") &&
+        append_json_string(out, out_sz, pos, plan->proof_group) &&
+        appendf(out, out_sz, pos, ",\"probe\":") &&
+        append_json_string(out, out_sz, pos, plan->probe_tool) &&
+        append_group_array(out, out_sz, pos, "path_groups",
+                           plan->path_groups, plan->path_groups_len);
+}
+
+/* C5: why each selected group is here. A reader answers "why is THIS
+ * test in my plan" without opening a source file.
+ *
+ * Two different failures are reported separately here, because they
+ * mean different things and only one of them is a soundness problem:
+ *
+ *   selections_truncated  the LEDGER overflowed — more groups were
+ *                         selected than the plan can explain, so some
+ *                         group in the arrays above has no recorded
+ *                         reason at all. That is a real gap and it
+ *                         refuses proof admission below.
+ *   selections_abridged   the DOCUMENT ran out of wire budget — every
+ *                         selection is recorded in the plan, this
+ *                         rendering just stopped listing them. The
+ *                         counts say how many exist and how many were
+ *                         listed. Not a coverage gap, so it does not
+ *                         refuse proof admission.
+ *
+ * PLAN_TAIL_RESERVE keeps enough room after the list for the
+ * per-dimension completeness verdict, which is the part a proof
+ * consumer actually reads; it must never be the thing that falls off
+ * the end. */
+static bool plan_json_selections(const struct zcl_devloop_plan *plan,
+                                 char *out, size_t out_sz, size_t *pos)
+{
+    bool sel_abridged = false;
+    size_t sel_listed = 0;
+    if (!appendf(out, out_sz, pos, ",\"selections\":["))
+        return false;
+    for (size_t i = 0; i < plan->selections_len; i++) {
+        const struct zcl_devloop_selection *s = &plan->selections[i];
+        size_t saved = *pos;
+        if (out_sz - *pos < PLAN_TAIL_RESERVE ||
+            (i && !appendf(out, out_sz, pos, ",")) ||
+            !appendf(out, out_sz, pos, "{\"group\":") ||
+            !append_json_string(out, out_sz, pos, s->group) ||
+            !appendf(out, out_sz, pos, ",\"dimension\":") ||
+            !append_json_string(out, out_sz, pos,
+                                zcl_devloop_dim_name(s->dim)) ||
+            !appendf(out, out_sz, pos, ",\"via\":") ||
+            !append_json_string(out, out_sz, pos, s->via) ||
+            !appendf(out, out_sz, pos, "}")) {
+            *pos = saved;
+            out[*pos] = '\0';
+            sel_abridged = true;
+            break;
+        }
+        sel_listed++;
+    }
+    return appendf(out, out_sz, pos,
+                   "],\"selections_listed\":%zu,\"selections_total\":%zu,"
+                   "\"selections_abridged\":%s,\"selections_truncated\":%s,"
+                   "\"dimensions\":[",
+                   sel_listed, plan->selections_len,
+                   sel_abridged ? "true" : "false",
+                   plan->selections_truncated ? "true" : "false");
+}
+
+/* Closure groups, the per-selection reasons, and the per-dimension
+ * completeness rows, ending with the proof-admission verdict. */
+static bool plan_json_closure(const struct zcl_devloop_plan *plan, char *out,
+                              size_t out_sz, size_t *pos,
+                              bool *proof_admissible, const char **proof_why)
+{
+    if (!append_group_array(out, out_sz, pos, "closure_groups",
+                            plan->closure_groups, plan->closure_groups_len) ||
+        !appendf(out, out_sz, pos,
+                 ",\"closure_truncated\":%s,\"closure_universal\":%s,"
+                 "\"closure_snapshot\":%s",
+                 plan->closure_truncated ? "true" : "false",
+                 plan->closure_universal ? "true" : "false",
+                 plan->closure_snapshot ? "true" : "false") ||
+        !plan_json_selections(plan, out, out_sz, pos))
+        return false;
+    /* C5: and what might be MISSING — one row per dimension, each naming
+     * its own completeness and the reason it is not complete. */
+    for (int d = 0; d < ZCL_DEVLOOP_DIM__COUNT; d++) {
+        if ((d && !appendf(out, out_sz, pos, ",")) ||
+            !append_dimension_row(out, out_sz, pos, (enum zcl_devloop_dim)d,
+                                  &plan->dims[d]))
+            return false;
+    }
+    /* C4: the one field a caller that needs PROOF must read. False means
+     * the groups listed above still RUN, but they are not evidence that
+     * the change is covered. */
+    *proof_admissible = zcl_devloop_plan_proof_admissible(plan, proof_why);
+    return appendf(out, out_sz, pos, "],\"proof_admissible\":%s,"
+                   "\"proof_refusal\":",
+                   *proof_admissible ? "true" : "false") &&
+        append_json_string(out, out_sz, pos, *proof_why);
+}
+
+static const char *plan_next_action(const struct zcl_devloop_plan *plan,
+                                    size_t file_count)
+{
+    if (file_count == 0) return "edit one C23 file";
+    return plan->docs_only ? "make lint" : "z23-dev dev begin";
+}
+
+/* Make the classification actionable without asking a new agent to infer
+ * whether `action=hotswap` was later refused by proof admission. A
+ * path-only document reports classification eligibility; the native
+ * acting path always requests closure and therefore also binds this bit to
+ * proof_admissible. Every refusal carries its stable code plus the exact
+ * first changed path (the complete batch remains in `files`). */
+static bool plan_json_tail(const struct zcl_devloop_plan *plan,
+                           const char *const *files, size_t file_count,
+                           bool include_closure, bool proof_admissible,
+                           const char *proof_why, char *out, size_t out_sz,
+                           size_t *pos)
+{
+    bool live_eligible = plan->action == ZCL_DEVLOOP_HOTSWAP &&
+                         (!include_closure || proof_admissible);
+    const char *why_not_live = live_eligible
+        ? ""
+        : (plan->action == ZCL_DEVLOOP_HOTSWAP && include_closure
+            ? proof_why
+            : plan->reason);
+    const char *why_not_live_path = live_eligible
+        ? ""
+        : plan_first_non_live_path(plan, files, file_count);
+    const char *next_action = plan_next_action(plan, file_count);
+    return appendf(out, out_sz, pos, ",\"live_eligible\":%s,\"why_not_live\":",
+                   live_eligible ? "true" : "false") &&
+        append_json_string(out, out_sz, pos, why_not_live) &&
+        appendf(out, out_sz, pos, ",\"why_not_live_path\":") &&
+        append_json_string(out, out_sz, pos, why_not_live_path) &&
+        appendf(out, out_sz, pos, ",\"agent_next_action\":") &&
+        append_json_string(out, out_sz, pos, next_action) &&
+        appendf(out, out_sz, pos, "}");
+}
+
 static size_t plan_json_body(const struct zcl_devloop_plan *plan,
                              const char *const *files, size_t file_count,
                              bool include_closure, char *out, size_t out_sz)
@@ -1388,159 +1559,20 @@ static size_t plan_json_body(const struct zcl_devloop_plan *plan,
      * here turns that cliff into an abridged explanation list. */
     if (out_sz > ZCL_DEVLOOP_PLAN_WIRE_MAX)
         out_sz = ZCL_DEVLOOP_PLAN_WIRE_MAX;
-    if (!appendf(out, out_sz, &pos,
-                 "{\"schema\":\"zcl.dev_plan.v1\",\"action\":") ||
-        !append_json_string(out, out_sz, &pos, plan->action_name) ||
-        !appendf(out, out_sz, &pos, ",\"reason\":") ||
-        !append_json_string(out, out_sz, &pos, plan->reason) ||
-        !appendf(out, out_sz, &pos,
-                 ",\"consensus_risk\":%s,\"sealed_core\":%s,\"docs_only\":%s,"
-                 "\"files\":[",
-                 plan->consensus_risk ? "true" : "false",
-                 plan->sealed_core ? "true" : "false",
-                 plan->docs_only ? "true" : "false"))
+    if (!plan_json_head(plan, out, out_sz, &pos) ||
+        !plan_json_files(plan, files, file_count, out, out_sz, &pos))
         return 0;
-
-    size_t files_listed = file_count < PLAN_FILES_LIST_MAX
-        ? file_count : PLAN_FILES_LIST_MAX;
-    for (size_t i = 0; i < files_listed; i++) {
-        if ((i && !appendf(out, out_sz, &pos, ",")) ||
-            !append_json_string(out, out_sz, &pos, files[i]))
-            return 0;
-    }
-    if (!appendf(out, out_sz, &pos,
-                 "],\"files_listed\":%zu,\"files_total\":%zu,"
-                 "\"files_abridged\":%s,\"foreground_proof\":",
-                 files_listed, file_count,
-                 files_listed < file_count ? "true" : "false") ||
-        !append_json_string(out, out_sz, &pos, plan->proof_group) ||
-        !appendf(out, out_sz, &pos, ",\"probe\":") ||
-        !append_json_string(out, out_sz, &pos, plan->probe_tool) ||
-        !append_group_array(out, out_sz, &pos, "path_groups",
-                            plan->path_groups, plan->path_groups_len))
+    if (include_closure &&
+        !plan_json_closure(plan, out, out_sz, &pos, &proof_admissible,
+                           &proof_why))
         return 0;
-    if (include_closure) {
-        if (!append_group_array(out, out_sz, &pos, "closure_groups",
-                                plan->closure_groups,
-                                plan->closure_groups_len) ||
-            !appendf(out, out_sz, &pos,
-                     ",\"closure_truncated\":%s,\"closure_universal\":%s,"
-                     "\"closure_snapshot\":%s",
-                     plan->closure_truncated ? "true" : "false",
-                     plan->closure_universal ? "true" : "false",
-                     plan->closure_snapshot ? "true" : "false"))
-            return 0;
-
-        /* C5: why each selected group is here. A reader answers "why is THIS
-         * test in my plan" without opening a source file.
-         *
-         * Two different failures are reported separately here, because they
-         * mean different things and only one of them is a soundness problem:
-         *
-         *   selections_truncated  the LEDGER overflowed — more groups were
-         *                         selected than the plan can explain, so some
-         *                         group in the arrays above has no recorded
-         *                         reason at all. That is a real gap and it
-         *                         refuses proof admission below.
-         *   selections_abridged   the DOCUMENT ran out of wire budget — every
-         *                         selection is recorded in the plan, this
-         *                         rendering just stopped listing them. The
-         *                         counts say how many exist and how many were
-         *                         listed. Not a coverage gap, so it does not
-         *                         refuse proof admission.
-         *
-         * PLAN_TAIL_RESERVE keeps enough room after the list for the
-         * per-dimension completeness verdict, which is the part a proof
-         * consumer actually reads; it must never be the thing that falls off
-         * the end. */
-        bool sel_abridged = false;
-        size_t sel_listed = 0;
-        if (!appendf(out, out_sz, &pos, ",\"selections\":["))
-            return 0;
-        for (size_t i = 0; i < plan->selections_len; i++) {
-            const struct zcl_devloop_selection *s = &plan->selections[i];
-            size_t saved = pos;
-            if (out_sz - pos < PLAN_TAIL_RESERVE ||
-                (i && !appendf(out, out_sz, &pos, ",")) ||
-                !appendf(out, out_sz, &pos, "{\"group\":") ||
-                !append_json_string(out, out_sz, &pos, s->group) ||
-                !appendf(out, out_sz, &pos, ",\"dimension\":") ||
-                !append_json_string(out, out_sz, &pos,
-                                    zcl_devloop_dim_name(s->dim)) ||
-                !appendf(out, out_sz, &pos, ",\"via\":") ||
-                !append_json_string(out, out_sz, &pos, s->via) ||
-                !appendf(out, out_sz, &pos, "}")) {
-                pos = saved;
-                out[pos] = '\0';
-                sel_abridged = true;
-                break;
-            }
-            sel_listed++;
-        }
-        if (!appendf(out, out_sz, &pos,
-                     "],\"selections_listed\":%zu,\"selections_total\":%zu,"
-                     "\"selections_abridged\":%s,\"selections_truncated\":%s,"
-                     "\"dimensions\":[",
-                     sel_listed, plan->selections_len,
-                     sel_abridged ? "true" : "false",
-                     plan->selections_truncated ? "true" : "false"))
-            return 0;
-        /* C5: and what might be MISSING — one row per dimension, each naming
-         * its own completeness and the reason it is not complete. */
-        for (int d = 0; d < ZCL_DEVLOOP_DIM__COUNT; d++) {
-            if ((d && !appendf(out, out_sz, &pos, ",")) ||
-                !append_dimension_row(out, out_sz, &pos,
-                                      (enum zcl_devloop_dim)d,
-                                      &plan->dims[d]))
-                return 0;
-        }
-        /* C4: the one field a caller that needs PROOF must read. False means
-         * the groups listed above still RUN, but they are not evidence that
-         * the change is covered. */
-        proof_admissible = zcl_devloop_plan_proof_admissible(plan,
-                                                              &proof_why);
-        if (!appendf(out, out_sz, &pos, "],\"proof_admissible\":%s,"
-                     "\"proof_refusal\":",
-                     proof_admissible ? "true" : "false") ||
-            !append_json_string(out, out_sz, &pos, proof_why))
-            return 0;
-    }
     /* Render this bounded, abridgable list after all mandatory closure and
      * completeness fields. Its reserve now protects only the fixed document
      * tail, so a valid multi-file plan cannot disappear merely because an
      * earlier optional execution listing consumed space needed by closure. */
-    if (!append_execution_set(plan, out, out_sz, &pos))
-        return 0;
-
-    /* Make the classification actionable without asking a new agent to infer
-     * whether `action=hotswap` was later refused by proof admission. A
-     * path-only document reports classification eligibility; the native
-     * acting path always requests closure and therefore also binds this bit to
-     * proof_admissible. Every refusal carries its stable code plus the exact
-     * first changed path (the complete batch remains in `files`). */
-    bool live_eligible = plan->action == ZCL_DEVLOOP_HOTSWAP &&
-                         (!include_closure || proof_admissible);
-    const char *why_not_live = live_eligible
-        ? ""
-        : (plan->action == ZCL_DEVLOOP_HOTSWAP && include_closure
-            ? proof_why
-            : plan->reason);
-    const char *why_not_live_path = live_eligible
-        ? ""
-        : plan_first_non_live_path(plan, files, file_count);
-    const char *next_action = file_count == 0
-        ? "edit one C23 file"
-        : (plan->docs_only
-            ? "make lint"
-            : "z23-dev dev begin");
-    if (!appendf(out, out_sz, &pos, ",\"live_eligible\":%s,\"why_not_live\":",
-                 live_eligible ? "true" : "false") ||
-        !append_json_string(out, out_sz, &pos, why_not_live) ||
-        !appendf(out, out_sz, &pos, ",\"why_not_live_path\":") ||
-        !append_json_string(out, out_sz, &pos, why_not_live_path) ||
-        !appendf(out, out_sz, &pos, ",\"agent_next_action\":") ||
-        !append_json_string(out, out_sz, &pos, next_action) ||
-        !appendf(out, out_sz, &pos, "}"))
+    if (!append_execution_set(plan, out, out_sz, &pos) ||
+        !plan_json_tail(plan, files, file_count, include_closure,
+                        proof_admissible, proof_why, out, out_sz, &pos))
         return 0;
     return pos;
 }

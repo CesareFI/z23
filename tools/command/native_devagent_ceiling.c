@@ -197,168 +197,195 @@ static long long dvl_count_lines(const char *text, size_t len)
     return lines;
 }
 
-void zcl_native_handle_dev_agent_ceiling(
-    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+struct dvl_input {
+    const char *cwd;
+    const char *base;
+    const struct json_value *requested;
+    long long ceiling_lines;
+};
+
+static const char *dvl_input_string(const struct json_value *input,
+                                    const char *key)
 {
-    const char *cwd = NULL;
-    const char *base = NULL;
-    const struct json_value *requested = NULL;
-    long long ceiling_lines = 80;
-    char out[DVL_OUT_CAP];
-    char line[DVL_LINE_CAP];
-    int rc;
+    const struct json_value *v = json_get(input, key);
+    if (v && v->type == JSON_STR && json_get_str(v) && json_get_str(v)[0])
+        return json_get_str(v);
+    return NULL;
+}
 
-    if (!reply)
+static void dvl_read_input(const struct zcl_command_request *request,
+                           struct dvl_input *in)
+{
+    in->cwd = NULL;
+    in->base = NULL;
+    in->requested = NULL;
+    in->ceiling_lines = 80;
+    if (!request || !request->input)
         return;
+    const struct json_value *v;
+    in->cwd = dvl_input_string(request->input, "cwd");
+    in->base = dvl_input_string(request->input, "base");
+    v = json_get(request->input, "requested");
+    if (v && v->type == JSON_ARR)
+        in->requested = v;
+    v = json_get(request->input, "ceiling_lines");
+    if (v && v->type == JSON_INT)
+        in->ceiling_lines = json_get_int(v);
+}
 
-    (void)json_push_kv_str(&reply->data, "leaf", DVL_LEAF);
-
-    if (request && request->input) {
-        const struct json_value *v;
-        v = json_get(request->input, "cwd");
-        if (v && v->type == JSON_STR && json_get_str(v) && json_get_str(v)[0])
-            cwd = json_get_str(v);
-        v = json_get(request->input, "base");
-        if (v && v->type == JSON_STR && json_get_str(v) && json_get_str(v)[0])
-            base = json_get_str(v);
-        v = json_get(request->input, "requested");
-        if (v && v->type == JSON_ARR)
-            requested = v;
-        v = json_get(request->input, "ceiling_lines");
-        if (v && v->type == JSON_INT)
-            ceiling_lines = json_get_int(v);
-    }
-
-    if (!base || !base[0]) {
+static bool dvl_input_valid(struct zcl_command_reply *reply,
+                            const struct dvl_input *in)
+{
+    if (!in->base || !in->base[0]) {
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                ZCL_COMMAND_EXIT_FAILED, "BAD_INPUT",
                                "validate", false, false,
                                "base is required and must be a non-empty ref",
                                "input.base missing or empty");
-        return;
+        return false;
     }
-    if (!requested || requested->num_children == 0) {
+    if (!in->requested || in->requested->num_children == 0) {
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                ZCL_COMMAND_EXIT_FAILED, "BAD_INPUT",
                                "validate", false, false,
                                "requested is required and must be a non-empty "
                                "array of path strings",
                                "input.requested missing or empty");
+        return false;
+    }
+    return true;
+}
+
+/* Records one `git diff --numstat` row ("<added>\t<deleted>\t<path>"). */
+static void dvl_record_numstat_row(char *rowbuf, struct dvl_file *files,
+                                   size_t *nfiles)
+{
+    char *tab1 = strchr(rowbuf, '\t');
+    if (!tab1)
         return;
+    *tab1 = '\0';
+    char *added_s = rowbuf;
+    char *rest = tab1 + 1;
+    char *tab2 = strchr(rest, '\t');
+    if (!tab2)
+        return;
+    *tab2 = '\0';
+    char *deleted_s = rest;
+    char *path = tab2 + 1;
+
+    long long added = strcmp(added_s, "-") == 0 ? 0
+                                                : strtoll(added_s, NULL, 10);
+    long long deleted = strcmp(deleted_s, "-") == 0
+                            ? 0 : strtoll(deleted_s, NULL, 10);
+    struct dvl_file *f = dvl_find_or_add(files, nfiles, path);
+    if (f) {
+        f->added = added;
+        f->deleted = deleted;
     }
-    if (ceiling_lines <= 0)
-        ceiling_lines = 80;
+}
 
-    static struct dvl_file files[DVL_MAX_FILES];
-    size_t nfiles = 0;
-
-    /* `git diff --numstat <base>` against the working tree. */
-    {
-        const char *argv[] = {"diff", "--numstat", base, NULL};
-        rc = dvl_git(cwd, argv, out, sizeof(out), line, sizeof(line));
-        if (rc != 0) {
-            dvl_git_failed(reply, line, rc);
-            return;
+/* `git diff --numstat <base>` against the working tree. */
+static bool dvl_load_tracked(struct zcl_command_reply *reply,
+                             const struct dvl_input *in, char *out,
+                             size_t out_sz, struct dvl_file *files,
+                             size_t *nfiles)
+{
+    char line[DVL_LINE_CAP];
+    const char *argv[] = {"diff", "--numstat", in->base, NULL};
+    int rc = dvl_git(in->cwd, argv, out, out_sz, line, sizeof(line));
+    if (rc != 0) {
+        dvl_git_failed(reply, line, rc);
+        return false;
+    }
+    const char *p = out;
+    while (*p) {
+        const char *nl = strchr(p, '\n');
+        size_t len = nl ? (size_t)(nl - p) : strlen(p);
+        if (len > 0) {
+            char rowbuf[PATH_MAX + 64];
+            size_t rowlen = len < sizeof(rowbuf) - 1 ? len : sizeof(rowbuf) - 1;
+            memcpy(rowbuf, p, rowlen);
+            rowbuf[rowlen] = '\0';
+            dvl_record_numstat_row(rowbuf, files, nfiles);
         }
-        const char *p = out;
-        while (*p) {
-            const char *nl = strchr(p, '\n');
-            size_t len = nl ? (size_t)(nl - p) : strlen(p);
-            if (len > 0) {
-                char rowbuf[PATH_MAX + 64];
-                size_t rowlen = len < sizeof(rowbuf) - 1 ? len : sizeof(rowbuf) - 1;
-                memcpy(rowbuf, p, rowlen);
-                rowbuf[rowlen] = '\0';
+        if (!nl)
+            break;
+        p = nl + 1;
+    }
+    return true;
+}
 
-                char *tab1 = strchr(rowbuf, '\t');
-                if (tab1) {
-                    *tab1 = '\0';
-                    char *added_s = rowbuf;
-                    char *rest = tab1 + 1;
-                    char *tab2 = strchr(rest, '\t');
-                    if (tab2) {
-                        *tab2 = '\0';
-                        char *deleted_s = rest;
-                        char *path = tab2 + 1;
+/* Line count of one untracked file (0 when unreadable). */
+static long long dvl_untracked_lines(const char *cwd, const char *path)
+{
+    char full[PATH_MAX + 8];
+    if (cwd && cwd[0])
+        (void)snprintf(full, sizeof(full), "%s/%s", cwd, path);
+    else
+        (void)snprintf(full, sizeof(full), "%s", path);
+    FILE *f = fopen(full, "rb");
+    if (!f)
+        return 0;
+    static char buf[1 << 20];
+    size_t got = fread(buf, 1, sizeof(buf), f);
+    long long added = dvl_count_lines(buf, got);
+    (void)fclose(f);
+    return added;
+}
 
-                        long long added = strcmp(added_s, "-") == 0
-                                             ? 0
-                                             : strtoll(added_s, NULL, 10);
-                        long long deleted = strcmp(deleted_s, "-") == 0
-                                              ? 0
-                                              : strtoll(deleted_s, NULL, 10);
-                        struct dvl_file *f = dvl_find_or_add(files, &nfiles, path);
-                        if (f) {
-                            f->added = added;
-                            f->deleted = deleted;
-                        }
-                    }
-                }
+/* Untracked files, each counted as a new file whose added is its line count
+ * and deleted is 0. */
+static bool dvl_load_untracked(struct zcl_command_reply *reply,
+                               const struct dvl_input *in, char *out,
+                               size_t out_sz, struct dvl_file *files,
+                               size_t *nfiles)
+{
+    char line[DVL_LINE_CAP];
+    const char *argv[] = {"ls-files", "--others", "--exclude-standard", NULL};
+    int rc = dvl_git(in->cwd, argv, out, out_sz, line, sizeof(line));
+    if (rc != 0) {
+        dvl_git_failed(reply, line, rc);
+        return false;
+    }
+    const char *p = out;
+    while (*p) {
+        const char *nl = strchr(p, '\n');
+        size_t len = nl ? (size_t)(nl - p) : strlen(p);
+        if (len > 0 && len < PATH_MAX) {
+            char path[PATH_MAX];
+            memcpy(path, p, len);
+            path[len] = '\0';
+            long long added = dvl_untracked_lines(in->cwd, path);
+            struct dvl_file *df = dvl_find_or_add(files, nfiles, path);
+            if (df) {
+                df->added = added;
+                df->deleted = 0;
             }
-            if (!nl)
-                break;
-            p = nl + 1;
         }
+        if (!nl)
+            break;
+        p = nl + 1;
     }
+    return true;
+}
 
-    /* Untracked files, each counted as a new file whose added is its line
-     * count and deleted is 0. */
-    {
-        const char *argv[] = {"ls-files", "--others", "--exclude-standard",
-                              NULL};
-        rc = dvl_git(cwd, argv, out, sizeof(out), line, sizeof(line));
-        if (rc != 0) {
-            dvl_git_failed(reply, line, rc);
-            return;
-        }
-        const char *p = out;
-        while (*p) {
-            const char *nl = strchr(p, '\n');
-            size_t len = nl ? (size_t)(nl - p) : strlen(p);
-            if (len > 0 && len < PATH_MAX) {
-                char path[PATH_MAX];
-                memcpy(path, p, len);
-                path[len] = '\0';
-
-                char full[PATH_MAX + 8];
-                if (cwd && cwd[0])
-                    (void)snprintf(full, sizeof(full), "%s/%s", cwd, path);
-                else
-                    (void)snprintf(full, sizeof(full), "%s", path);
-
-                FILE *f = fopen(full, "rb");
-                long long added = 0;
-                if (f) {
-                    static char buf[1 << 20];
-                    size_t got = fread(buf, 1, sizeof(buf), f);
-                    added = dvl_count_lines(buf, got);
-                    (void)fclose(f);
-                }
-                struct dvl_file *df = dvl_find_or_add(files, &nfiles, path);
-                if (df) {
-                    df->added = added;
-                    df->deleted = 0;
-                }
-            }
-            if (!nl)
-                break;
-            p = nl + 1;
-        }
-    }
-
-    /* Per file: requested, new_file, rewrite, over_ceiling. */
+/* Per file: requested, new_file, rewrite, over_ceiling. */
+static void dvl_classify_files(const struct dvl_input *in, char *out,
+                               size_t out_sz, struct dvl_file *files,
+                               size_t nfiles)
+{
     for (size_t i = 0; i < nfiles; i++) {
         struct dvl_file *f = &files[i];
-        f->requested = dvl_path_in_requested(requested, f->path);
-        f->over_ceiling = (f->added + f->deleted) > ceiling_lines;
+        f->requested = dvl_path_in_requested(in->requested, f->path);
+        f->over_ceiling = (f->added + f->deleted) > in->ceiling_lines;
 
         /* new_file: does `git show <base>:<path>` fail? A failure here is
          * the new_file=true answer, per contract, never a hard GIT_FAILED. */
         char spec[PATH_MAX + 256];
-        (void)snprintf(spec, sizeof(spec), "%s:%s", base, f->path);
+        (void)snprintf(spec, sizeof(spec), "%s:%s", in->base, f->path);
         const char *argv[] = {"show", spec, NULL};
         char show_line[DVL_LINE_CAP];
-        int show_rc = dvl_git(cwd, argv, out, sizeof(out), show_line,
+        int show_rc = dvl_git(in->cwd, argv, out, out_sz, show_line,
                               sizeof(show_line));
         if (show_rc != 0) {
             f->new_file = true;
@@ -369,79 +396,117 @@ void zcl_native_handle_dev_agent_ceiling(
             f->rewrite = f->deleted * 2 > base_lines;
         }
     }
+}
+
+struct dvl_counts {
+    long long unrequested, rewrites, over_ceiling;
+};
+
+static void dvl_push_violation(struct json_value *violations,
+                               const char *path, const char *reason)
+{
+    struct json_value entry;
+    json_init(&entry);
+    json_set_object(&entry);
+    (void)json_push_kv_str(&entry, "path", path);
+    (void)json_push_kv_str(&entry, "reason", reason);
+    (void)json_push_back(violations, &entry);
+    json_free(&entry);
+}
+
+static void dvl_collect_violations(const struct dvl_file *files, size_t nfiles,
+                                   struct json_value *violations,
+                                   struct dvl_counts *counts)
+{
+    for (size_t i = 0; i < nfiles; i++) {
+        const struct dvl_file *f = &files[i];
+        if (!f->requested) {
+            counts->unrequested++;
+            dvl_push_violation(violations, f->path, "unrequested");
+        }
+        if (f->rewrite) {
+            counts->rewrites++;
+            dvl_push_violation(violations, f->path, "rewrite");
+        }
+        if (f->over_ceiling) {
+            counts->over_ceiling++;
+            dvl_push_violation(violations, f->path, "over_ceiling");
+        }
+    }
+}
+
+static void dvl_push_files(struct json_value *files_arr,
+                           const struct dvl_file *files, size_t nfiles)
+{
+    struct json_value row;
+    json_init(&row);
+    for (size_t i = 0; i < nfiles; i++) {
+        const struct dvl_file *f = &files[i];
+        json_set_object(&row);
+        (void)json_push_kv_str(&row, "path", f->path);
+        (void)json_push_kv_int(&row, "added", f->added);
+        (void)json_push_kv_int(&row, "deleted", f->deleted);
+        (void)json_push_kv_bool(&row, "requested", f->requested);
+        (void)json_push_kv_bool(&row, "new_file", f->new_file);
+        (void)json_push_kv_bool(&row, "rewrite", f->rewrite);
+        (void)json_push_kv_bool(&row, "over_ceiling", f->over_ceiling);
+        (void)json_push_back(files_arr, &row);
+    }
+    json_free(&row);
+}
+
+void zcl_native_handle_dev_agent_ceiling(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    struct dvl_input in;
+    char out[DVL_OUT_CAP];
+
+    if (!reply)
+        return;
+
+    (void)json_push_kv_str(&reply->data, "leaf", DVL_LEAF);
+
+    dvl_read_input(request, &in);
+    if (!dvl_input_valid(reply, &in))
+        return;
+    if (in.ceiling_lines <= 0)
+        in.ceiling_lines = 80;
+
+    static struct dvl_file files[DVL_MAX_FILES];
+    size_t nfiles = 0;
+    if (!dvl_load_tracked(reply, &in, out, sizeof(out), files, &nfiles) ||
+        !dvl_load_untracked(reply, &in, out, sizeof(out), files, &nfiles))
+        return;
+    dvl_classify_files(&in, out, sizeof(out), files, nfiles);
 
     /* Verdict + violations. */
     struct json_value violations;
     json_init(&violations);
     json_set_array(&violations);
-    long long unrequested_n = 0, rewrites_n = 0, over_ceiling_n = 0;
-
-    for (size_t i = 0; i < nfiles; i++) {
-        struct dvl_file *f = &files[i];
-        struct json_value entry;
-        json_init(&entry);
-
-        if (!f->requested) {
-            unrequested_n++;
-            json_set_object(&entry);
-            (void)json_push_kv_str(&entry, "path", f->path);
-            (void)json_push_kv_str(&entry, "reason", "unrequested");
-            (void)json_push_back(&violations, &entry);
-        }
-        if (f->rewrite) {
-            rewrites_n++;
-            json_set_object(&entry);
-            (void)json_push_kv_str(&entry, "path", f->path);
-            (void)json_push_kv_str(&entry, "reason", "rewrite");
-            (void)json_push_back(&violations, &entry);
-        }
-        if (f->over_ceiling) {
-            over_ceiling_n++;
-            json_set_object(&entry);
-            (void)json_push_kv_str(&entry, "path", f->path);
-            (void)json_push_kv_str(&entry, "reason", "over_ceiling");
-            (void)json_push_back(&violations, &entry);
-        }
-        json_free(&entry);
-    }
+    struct dvl_counts counts = {0, 0, 0};
+    dvl_collect_violations(files, nfiles, &violations, &counts);
 
     struct json_value files_arr;
     json_init(&files_arr);
     json_set_array(&files_arr);
-    {
-        struct json_value row;
-        json_init(&row);
-        for (size_t i = 0; i < nfiles; i++) {
-            struct dvl_file *f = &files[i];
-            json_set_object(&row);
-            (void)json_push_kv_str(&row, "path", f->path);
-            (void)json_push_kv_int(&row, "added", f->added);
-            (void)json_push_kv_int(&row, "deleted", f->deleted);
-            (void)json_push_kv_bool(&row, "requested", f->requested);
-            (void)json_push_kv_bool(&row, "new_file", f->new_file);
-            (void)json_push_kv_bool(&row, "rewrite", f->rewrite);
-            (void)json_push_kv_bool(&row, "over_ceiling", f->over_ceiling);
-            (void)json_push_back(&files_arr, &row);
-        }
-        json_free(&row);
-    }
+    dvl_push_files(&files_arr, files, nfiles);
 
     struct json_value summary;
     json_init(&summary);
     json_set_object(&summary);
     (void)json_push_kv_int(&summary, "changed", (long long)nfiles);
-    (void)json_push_kv_int(&summary, "unrequested", unrequested_n);
-    (void)json_push_kv_int(&summary, "rewrites", rewrites_n);
-    (void)json_push_kv_int(&summary, "over_ceiling", over_ceiling_n);
+    (void)json_push_kv_int(&summary, "unrequested", counts.unrequested);
+    (void)json_push_kv_int(&summary, "rewrites", counts.rewrites);
+    (void)json_push_kv_int(&summary, "over_ceiling", counts.over_ceiling);
 
-    bool within_ceiling =
-        unrequested_n == 0 && rewrites_n == 0 && over_ceiling_n == 0;
+    bool within_ceiling = counts.unrequested == 0 && counts.rewrites == 0 &&
+                          counts.over_ceiling == 0;
     const char *status = within_ceiling ? "WITHIN_CEILING" : "CEILING_EXCEEDED";
 
     (void)json_push_kv_str(&reply->data, "status", status);
     (void)json_push_kv(&reply->data, "files", &files_arr);
     (void)json_push_kv(&reply->data, "summary", &summary);
-    (void)json_push_kv_str(&reply->data, "base", base);
+    (void)json_push_kv_str(&reply->data, "base", in.base);
 
     json_free(&files_arr);
     json_free(&summary);

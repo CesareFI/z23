@@ -753,6 +753,83 @@ static bool observation_increment(struct failure_dir *failure,
     return true;
 }
 
+struct record_fields {
+    const char *schema, *id, *workspace, *source, *mutation, *execution,
+        *phase, *first, *capsule, *retry, *digest;
+    const struct json_value *seen;
+};
+
+static void record_fields_read(const struct json_value *doc,
+                               struct record_fields *f)
+{
+    f->schema = required_string(doc, "schema");
+    f->id = required_string(doc, "failure_id");
+    f->workspace = required_string(doc, "workspace_id");
+    f->source = required_string(doc, "source_id_sha256");
+    f->mutation = required_string(doc, "first_source_mutation_sha256");
+    f->execution = required_string(doc, "first_execution_id_sha3");
+    f->phase = required_string(doc, "phase");
+    f->first = required_string(doc, "first_error");
+    f->capsule = required_string(doc, "failure_capsule");
+    f->retry = required_string(doc, "retry_command");
+    f->digest = required_string(doc, "record_sha3");
+    f->seen = json_get(doc, "first_seen_unix_ms");
+}
+
+static bool record_fields_ids_valid(const struct record_fields *f)
+{
+    return valid_hex64(f->id) && valid_hex64(f->workspace) &&
+           valid_hex64(f->source) && valid_hex64(f->mutation) &&
+           valid_hex64(f->execution) && valid_hex64(f->digest) &&
+           valid_phase(f->phase);
+}
+
+static bool record_fields_shape_valid(const struct json_value *doc,
+                                      const struct record_fields *f)
+{
+    return doc->num_children == 12 && f->schema &&
+           strcmp(f->schema, "zcl.dev_failure_record.v1") == 0 &&
+           record_fields_ids_valid(f) && f->first && f->capsule && f->retry &&
+           f->seen && f->seen->type == JSON_INT && json_get_int(f->seen) >= 0;
+}
+
+static bool record_fields_copy(const struct record_fields *f,
+                               struct zcl_dev_failure_record *out)
+{
+    return copy_string(out->failure_id, sizeof(out->failure_id), f->id) &&
+           copy_string(out->workspace_id, sizeof(out->workspace_id),
+                       f->workspace) &&
+           copy_string(out->source_id, sizeof(out->source_id), f->source) &&
+           copy_string(out->first_source_mutation,
+                       sizeof(out->first_source_mutation), f->mutation) &&
+           copy_string(out->first_execution_id,
+                       sizeof(out->first_execution_id), f->execution) &&
+           copy_string(out->phase, sizeof(out->phase), f->phase) &&
+           copy_string(out->first_error, sizeof(out->first_error), f->first) &&
+           copy_string(out->capsule, sizeof(out->capsule), f->capsule) &&
+           copy_string(out->retry_command, sizeof(out->retry_command),
+                       f->retry) &&
+           copy_string(out->record_digest, sizeof(out->record_digest),
+                       f->digest);
+}
+
+/* The stored error, capsule, and id must already be in canonical form. */
+static bool record_is_canonical(const struct zcl_dev_failure_record *out)
+{
+    char recomputed_id[65];
+    char normalized_first[ZCL_DEV_FAILURE_ERROR_MAX];
+    char normalized_capsule[ZCL_DEV_FAILURE_CAPSULE_MAX];
+    return strcmp(out->retry_command, "dev.ff") == 0 &&
+           zcl_dev_failure_normalize_error(out->first_error,
+                                           normalized_first) &&
+           strcmp(normalized_first, out->first_error) == 0 &&
+           normalize_capsule(out->capsule, normalized_capsule) &&
+           strcmp(normalized_capsule, out->capsule) == 0 &&
+           zcl_dev_failure_compute_id(out->source_id, out->phase,
+                                      out->first_error, recomputed_id) &&
+           strcmp(recomputed_id, out->failure_id) == 0;
+}
+
 static bool read_record_fd(struct failure_dir *failure,
                            const char *expected_id,
                            const char *expected_workspace,
@@ -770,59 +847,17 @@ static bool read_record_fd(struct failure_dir *failure,
         return false;
     }
     memset(out, 0, sizeof(*out));
-    const char *schema = required_string(&doc, "schema");
-    const char *id = required_string(&doc, "failure_id");
-    const char *workspace = required_string(&doc, "workspace_id");
-    const char *source = required_string(&doc, "source_id_sha256");
-    const char *mutation =
-        required_string(&doc, "first_source_mutation_sha256");
-    const char *execution = required_string(&doc, "first_execution_id_sha3");
-    const char *phase = required_string(&doc, "phase");
-    const char *first = required_string(&doc, "first_error");
-    const char *capsule = required_string(&doc, "failure_capsule");
-    const char *retry = required_string(&doc, "retry_command");
-    const char *digest = required_string(&doc, "record_sha3");
-    const struct json_value *seen = json_get(&doc, "first_seen_unix_ms");
-    bool ok = doc.num_children == 12 && schema &&
-              strcmp(schema, "zcl.dev_failure_record.v1") == 0 &&
-              valid_hex64(id) && valid_hex64(workspace) &&
-              valid_hex64(source) && valid_hex64(mutation) &&
-              valid_hex64(execution) && valid_hex64(digest) &&
-              valid_phase(phase) && first && capsule && retry &&
-              seen && seen->type == JSON_INT && json_get_int(seen) >= 0 &&
-              strcmp(id, expected_id) == 0 &&
-              strcmp(workspace, expected_workspace) == 0 &&
-              copy_string(out->failure_id, sizeof(out->failure_id), id) &&
-              copy_string(out->workspace_id, sizeof(out->workspace_id),
-                          workspace) &&
-              copy_string(out->source_id, sizeof(out->source_id), source) &&
-              copy_string(out->first_source_mutation,
-                          sizeof(out->first_source_mutation), mutation) &&
-              copy_string(out->first_execution_id,
-                          sizeof(out->first_execution_id), execution) &&
-              copy_string(out->phase, sizeof(out->phase), phase) &&
-              copy_string(out->first_error, sizeof(out->first_error), first) &&
-              copy_string(out->capsule, sizeof(out->capsule), capsule) &&
-              copy_string(out->retry_command, sizeof(out->retry_command),
-                          retry) &&
-              copy_string(out->record_digest, sizeof(out->record_digest),
-                          digest);
+    struct record_fields f;
+    record_fields_read(&doc, &f);
+    bool ok = record_fields_shape_valid(&doc, &f) &&
+              strcmp(f.id, expected_id) == 0 &&
+              strcmp(f.workspace, expected_workspace) == 0 &&
+              record_fields_copy(&f, out);
     if (ok)
-        out->first_seen_unix_ms = json_get_int(seen);
+        out->first_seen_unix_ms = json_get_int(f.seen);
     json_free(&doc);
-    char recomputed_id[65], recomputed_record[65];
-    char normalized_first[ZCL_DEV_FAILURE_ERROR_MAX];
-    char normalized_capsule[ZCL_DEV_FAILURE_CAPSULE_MAX];
-    if (!ok || strcmp(out->retry_command, "dev.ff") != 0 ||
-        !zcl_dev_failure_normalize_error(out->first_error,
-                                         normalized_first) ||
-        strcmp(normalized_first, out->first_error) != 0 ||
-        !normalize_capsule(out->capsule, normalized_capsule) ||
-        strcmp(normalized_capsule, out->capsule) != 0 ||
-        !zcl_dev_failure_compute_id(out->source_id, out->phase,
-                                            out->first_error,
-                                            recomputed_id) ||
-        strcmp(recomputed_id, out->failure_id) != 0)
+    char recomputed_record[65];
+    if (!ok || !record_is_canonical(out))
         return false;
     record_digest(out, recomputed_record);
     struct failure_observation observation;

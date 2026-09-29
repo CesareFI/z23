@@ -881,6 +881,252 @@ static void mvspace_status_push_policy(struct json_value *data,
   json_free(&row);
 }
 
+static enum metaverse_space_object_kind mvspace_kind_from_text(
+    const char *kind_text)
+{
+  if (!kind_text || strcmp(kind_text, "space_manifest") == 0)
+    return METAVERSE_SPACE_OBJECT_MANIFEST;
+  if (strcmp(kind_text, "service_descriptor") == 0)
+    return METAVERSE_SPACE_OBJECT_SERVICE_DESCRIPTOR;
+  return METAVERSE_SPACE_OBJECT_NONE;
+}
+
+struct mvspace_status_facts {
+  const char *root;
+  const char *transport;
+  enum metaverse_space_object_kind expected;
+  struct mvspace_status_identity identity;
+  struct mvspace_status_network network;
+  struct mvspace_status_visibility visibility;
+  bool policy[6];
+  bool policy_all;
+  bool store_open;
+  bool store_busy;
+  bool hosting_enabled;
+  bool authenticated_peer;
+  bool descriptor_visibility;
+  bool ready_to_publish;
+  bool ready_to_discover;
+  bool ready_to_scout;
+  uint32_t pointer_records;
+  uint32_t provider_records;
+};
+
+static bool mvspace_status_policies(const bool policy[6], int first, int last)
+{
+  for (int i = first; i <= last; i++)
+    if (!policy[i])
+      return false;
+  return true;
+}
+
+static bool mvspace_status_object_ready(const struct mvspace_status_facts *f)
+{
+  return f->root && f->visibility.visible && f->visibility.kind_matches &&
+         f->transport && f->descriptor_visibility;
+}
+
+static bool mvspace_status_node_ready(const struct mvspace_status_facts *f)
+{
+  return f->identity.chain_authorized && f->network.enabled &&
+         f->authenticated_peer && f->store_open && f->hosting_enabled;
+}
+
+static void mvspace_status_readiness(struct mvspace_status_facts *f)
+{
+  f->ready_to_publish = mvspace_status_object_ready(f) &&
+                        mvspace_status_node_ready(f) &&
+                        mvspace_status_policies(f->policy, 2, 5);
+  f->ready_to_discover = f->root && f->network.enabled &&
+                         f->authenticated_peer && f->store_open &&
+                         mvspace_status_policies(f->policy, 0, 3);
+  f->ready_to_scout = f->ready_to_discover && f->identity.chain_authorized;
+}
+
+static void mvspace_status_gather(const struct zcl_command_request *request,
+                                  const char *resolved, const char *datadir,
+                                  const char *root,
+                                  enum metaverse_space_object_kind expected,
+                                  struct mvspace_status_facts *f)
+{
+  f->root = root;
+  f->expected = expected;
+  f->identity = mvspace_status_identity_read(datadir);
+  f->network = mvspace_status_network_read();
+  f->visibility = mvspace_status_visibility_read(resolved, root, expected);
+  const char *service_type = mvspace_service_type(expected);
+  f->transport = f->visibility.transport_root[0]
+                     ? f->visibility.transport_root : NULL;
+  mvspace_status_policy_read(datadir, root, f->transport, service_type,
+                             f->policy, &f->policy_all);
+
+  struct vcs_package_store_totals totals;
+  enum vcs_package_store_totals_result totals_result =
+      mvspace_status_live_datadir(request->input, datadir)
+          ? vcs_package_store_try_totals(&totals)
+          : VCS_PACKAGE_STORE_TOTALS_CLOSED;
+  f->store_open = totals_result == VCS_PACKAGE_STORE_TOTALS_OK;
+  f->store_busy = totals_result == VCS_PACKAGE_STORE_TOTALS_BUSY;
+  f->hosting_enabled = vcs_package_store_hosting_enabled();
+  f->authenticated_peer = f->network.authenticated_peers > 0;
+  f->descriptor_visibility =
+      f->visibility.visible && f->visibility.kind_matches &&
+      f->visibility.descriptors_visible == f->visibility.descriptors_total;
+  mvspace_status_readiness(f);
+  f->pointer_records = f->network.enabled && root
+      ? mvspace_status_local_records("pointer", service_type,
+                                     "semantic_root", root) : 0;
+  f->provider_records = f->network.enabled && f->transport
+      ? mvspace_status_local_records("provider", service_type,
+                                     "transport_root", f->transport) : 0;
+}
+
+static void mvspace_status_push_network(struct json_value *out,
+                                        const struct mvspace_status_facts *f)
+{
+  struct json_value row;
+  json_init(&row);
+  json_set_object(&row);
+  json_push_kv_bool(&row, "status_reachable", f->network.reachable);
+  json_push_kv_bool(&row, "dht_ready", f->network.enabled);
+  json_push_kv_bool(&row, "authenticated_peer_ready", f->authenticated_peer);
+  json_push_kv_int(&row, "authenticated_peer_count",
+                   f->network.authenticated_peers);
+  json_push_kv(out, "network", &row);
+  json_free(&row);
+}
+
+static void mvspace_status_push_store(struct json_value *out,
+                                      const struct mvspace_status_facts *f)
+{
+  struct json_value row;
+  json_init(&row);
+  json_set_object(&row);
+  json_push_kv_bool(&row, "open", f->store_open);
+  json_push_kv_bool(&row, "busy", f->store_busy);
+  json_push_kv_bool(&row, "hosting_enabled", f->hosting_enabled);
+  json_push_kv_bool(&row, "ready", f->store_open && f->hosting_enabled);
+  json_push_kv(out, "package_store", &row);
+  json_free(&row);
+}
+
+static void mvspace_status_push_visibility(
+    struct json_value *out, const struct mvspace_status_facts *f)
+{
+  const struct mvspace_status_visibility *v = &f->visibility;
+  struct json_value row;
+  json_init(&row);
+  json_set_object(&row);
+  json_push_kv_bool(&row, "root_requested", v->requested);
+  json_push_kv_str(&row, "state",
+                   !v->requested ? "not_requested" :
+                   !v->visible ? "not_found" :
+                   !v->kind_matches ? "invalid" : "present");
+  json_push_kv_bool(&row, "manifest_visible",
+                    v->visible && v->kind == METAVERSE_SPACE_OBJECT_MANIFEST);
+  json_push_kv_int(&row, "descriptors_total", v->descriptors_total);
+  json_push_kv_int(&row, "descriptors_visible", v->descriptors_visible);
+  json_push_kv_bool(&row, "all_descriptors_visible", f->descriptor_visibility);
+  json_push_kv(out, "visibility", &row);
+  json_free(&row);
+}
+
+static void mvspace_status_push_publication(
+    struct json_value *out, const struct mvspace_status_facts *f)
+{
+  struct json_value row;
+  json_init(&row);
+  json_set_object(&row);
+  json_push_kv_str(&row, "state",
+                   f->pointer_records && f->provider_records ? "published" :
+                   f->pointer_records ? "partial" : "not_published");
+  json_push_kv_int(&row, "pointer_records", f->pointer_records);
+  json_push_kv_int(&row, "provider_records", f->provider_records);
+  json_push_kv_str(&row, "replication_state",
+                   f->provider_records ? "declared" : "none");
+  json_push_kv_bool(&row, "replication_is_possession_proof", false);
+  json_push_kv(out, "publication", &row);
+  json_free(&row);
+}
+
+static void mvspace_status_identity_blockers(
+    struct json_value *blockers, const struct mvspace_status_facts *f)
+{
+  if (!f->identity.online_key)
+    mvspace_status_blocker(blockers, "identity_online_key_unavailable");
+  if (!f->identity.delegation_present)
+    mvspace_status_blocker(blockers, "delegation_absent");
+  else if (!f->identity.delegation_valid)
+    mvspace_status_blocker(blockers, "delegation_invalid_or_expired");
+  else if (!f->identity.chain_authorized)
+    mvspace_status_blocker(blockers, "delegation_not_chain_authorized");
+  if (!f->network.reachable)
+    mvspace_status_blocker(blockers, "dht_status_unreachable");
+  else if (!f->network.enabled)
+    mvspace_status_blocker(blockers, "dht_disabled");
+  if (f->network.enabled && !f->authenticated_peer)
+    mvspace_status_blocker(blockers, "authenticated_peer_absent");
+}
+
+static void mvspace_status_store_blockers(
+    struct json_value *blockers, const struct mvspace_status_facts *f)
+{
+  if (f->store_busy)
+    mvspace_status_blocker(blockers, "package_store_busy");
+  else if (!f->store_open)
+    mvspace_status_blocker(blockers, "package_store_closed");
+  if (!f->hosting_enabled)
+    mvspace_status_blocker(blockers, "package_hosting_disabled");
+  if (!f->policy_all)
+    mvspace_status_blocker(blockers, "local_policy_not_ready");
+  if (!f->root)
+    mvspace_status_blocker(blockers, "semantic_root_not_supplied");
+  else if (!f->visibility.visible)
+    mvspace_status_blocker(blockers, "local_object_not_found");
+  else if (!f->visibility.kind_matches)
+    mvspace_status_blocker(blockers, "local_object_kind_mismatch");
+  else if (!f->descriptor_visibility)
+    mvspace_status_blocker(blockers, "advertised_descriptor_not_visible");
+}
+
+static void mvspace_status_push_blockers(
+    struct json_value *out, const struct mvspace_status_facts *f)
+{
+  struct json_value blockers;
+  json_init(&blockers);
+  json_set_array(&blockers);
+  mvspace_status_identity_blockers(&blockers, f);
+  mvspace_status_store_blockers(&blockers, f);
+  json_push_kv(out, "blockers", &blockers);
+  json_push_kv_int(out, "blocker_count", (int64_t)json_size(&blockers));
+  json_free(&blockers);
+}
+
+static void mvspace_status_next_command(
+    char *next, size_t cap, const struct mvspace_status_facts *f)
+{
+  const char *root = f->root;
+  if (!root)
+    (void)snprintf(next, cap,
+                   "z23 metaverse space status --input="
+                   "'{\"root\":\"<64hex>\"}'");
+  else if (!f->identity.chain_authorized || !f->network.enabled)
+    (void)snprintf(next, cap, "z23 zcode network status");
+  else if (!f->store_open)
+    (void)snprintf(next, cap, "z23 ops state --subsystem=zcode_store");
+  else if (!f->policy_all)
+    (void)snprintf(next, cap, "z23 zcode network policy list");
+  else if (!f->visibility.visible && f->ready_to_discover)
+    (void)snprintf(next, cap, "z23 metaverse space discover %s --kind=%s",
+                   root, f->expected == METAVERSE_SPACE_OBJECT_MANIFEST
+                             ? "space_manifest" : "service_descriptor");
+  else if (f->ready_to_publish &&
+           (!f->pointer_records || !f->provider_records))
+    (void)snprintf(next, cap, "z23 metaverse space publish %s", root);
+  else
+    (void)snprintf(next, cap, "z23 metaverse space show %s", root);
+}
+
 void zcl_native_handle_metaverse_space_status(
     const struct zcl_command_request *request, struct zcl_command_reply *reply)
 {
@@ -889,11 +1135,7 @@ void zcl_native_handle_metaverse_space_status(
   const char *root = mvspace_str(request->input, "root");
   const char *kind_text = mvspace_str(request->input, "kind");
   enum metaverse_space_object_kind expected =
-      !kind_text || strcmp(kind_text, "space_manifest") == 0
-          ? METAVERSE_SPACE_OBJECT_MANIFEST
-          : strcmp(kind_text, "service_descriptor") == 0
-                ? METAVERSE_SPACE_OBJECT_SERVICE_DESCRIPTOR
-                : METAVERSE_SPACE_OBJECT_NONE;
+      mvspace_kind_from_text(kind_text);
   uint8_t decoded[32];
   if (expected == METAVERSE_SPACE_OBJECT_NONE ||
       (root && !mvspace_root(root, decoded))) {
@@ -912,187 +1154,34 @@ void zcl_native_handle_metaverse_space_status(
                  "metaverse.space.status");
     return;
   }
-  struct mvspace_status_identity identity =
-      mvspace_status_identity_read(datadir);
-  struct mvspace_status_network network = mvspace_status_network_read();
-  struct mvspace_status_visibility visibility =
-      mvspace_status_visibility_read(resolved, root, expected);
-  const char *service_type = mvspace_service_type(expected);
-  const char *transport = visibility.transport_root[0]
-                              ? visibility.transport_root : NULL;
-  bool policy[6], policy_all = false;
-  mvspace_status_policy_read(datadir, root, transport, service_type,
-                             policy, &policy_all);
+  struct mvspace_status_facts facts = {0};
+  mvspace_status_gather(request, resolved, datadir, root, expected, &facts);
 
-  struct vcs_package_store_totals totals;
-  enum vcs_package_store_totals_result totals_result =
-      mvspace_status_live_datadir(request->input, datadir)
-          ? vcs_package_store_try_totals(&totals)
-          : VCS_PACKAGE_STORE_TOTALS_CLOSED;
-  bool store_open = totals_result == VCS_PACKAGE_STORE_TOTALS_OK;
-  bool store_busy = totals_result == VCS_PACKAGE_STORE_TOTALS_BUSY;
-  bool hosting_enabled = vcs_package_store_hosting_enabled();
-  bool authenticated_peer = network.authenticated_peers > 0;
-  bool descriptor_visibility =
-      visibility.visible && visibility.kind_matches &&
-      visibility.descriptors_visible == visibility.descriptors_total;
-  bool ready_to_publish = root && visibility.visible &&
-      visibility.kind_matches && transport && identity.chain_authorized &&
-      network.enabled && authenticated_peer && store_open &&
-      hosting_enabled && policy[2] && policy[3] && policy[4] && policy[5] &&
-      descriptor_visibility;
-  bool ready_to_discover = root && network.enabled && authenticated_peer &&
-      store_open && policy[0] && policy[1] && policy[2] && policy[3];
-  bool ready_to_scout = ready_to_discover && identity.chain_authorized;
-
-  uint32_t pointer_records = network.enabled && root
-      ? mvspace_status_local_records("pointer", service_type,
-                                     "semantic_root", root) : 0;
-  uint32_t provider_records = network.enabled && transport
-      ? mvspace_status_local_records("provider", service_type,
-                                     "transport_root", transport) : 0;
-
-  json_push_kv_str(&reply->data, "semantic_root", root ? root : "");
-  json_push_kv_str(&reply->data, "transport_root",
-                   transport ? transport : "");
-  json_push_kv_str(&reply->data, "kind",
+  struct json_value *out = &reply->data;
+  json_push_kv_str(out, "semantic_root", root ? root : "");
+  json_push_kv_str(out, "transport_root",
+                   facts.transport ? facts.transport : "");
+  json_push_kv_str(out, "kind",
                    expected == METAVERSE_SPACE_OBJECT_MANIFEST
                        ? "space_manifest" : "service_descriptor");
-  mvspace_status_push_identity(&reply->data, &identity);
-  {
-    struct json_value row;
-    json_init(&row);
-    json_set_object(&row);
-    json_push_kv_bool(&row, "status_reachable", network.reachable);
-    json_push_kv_bool(&row, "dht_ready", network.enabled);
-    json_push_kv_bool(&row, "authenticated_peer_ready",
-                      authenticated_peer);
-    json_push_kv_int(&row, "authenticated_peer_count",
-                     network.authenticated_peers);
-    json_push_kv(&reply->data, "network", &row);
-    json_free(&row);
-  }
-  {
-    struct json_value row;
-    json_init(&row);
-    json_set_object(&row);
-    json_push_kv_bool(&row, "open", store_open);
-    json_push_kv_bool(&row, "busy", store_busy);
-    json_push_kv_bool(&row, "hosting_enabled", hosting_enabled);
-    json_push_kv_bool(&row, "ready", store_open && hosting_enabled);
-    json_push_kv(&reply->data, "package_store", &row);
-    json_free(&row);
-  }
-  mvspace_status_push_policy(&reply->data, policy, policy_all);
-  {
-    struct json_value row;
-    json_init(&row);
-    json_set_object(&row);
-    json_push_kv_bool(&row, "root_requested", visibility.requested);
-    json_push_kv_str(&row, "state",
-                     !visibility.requested ? "not_requested" :
-                     !visibility.visible ? "not_found" :
-                     !visibility.kind_matches ? "invalid" : "present");
-    json_push_kv_bool(&row, "manifest_visible",
-                      visibility.visible && visibility.kind ==
-                          METAVERSE_SPACE_OBJECT_MANIFEST);
-    json_push_kv_int(&row, "descriptors_total",
-                     visibility.descriptors_total);
-    json_push_kv_int(&row, "descriptors_visible",
-                     visibility.descriptors_visible);
-    json_push_kv_bool(&row, "all_descriptors_visible",
-                      descriptor_visibility);
-    json_push_kv(&reply->data, "visibility", &row);
-    json_free(&row);
-  }
-  {
-    struct json_value row;
-    json_init(&row);
-    json_set_object(&row);
-    json_push_kv_str(&row, "state",
-                     pointer_records && provider_records ? "published" :
-                     pointer_records ? "partial" : "not_published");
-    json_push_kv_int(&row, "pointer_records", pointer_records);
-    json_push_kv_int(&row, "provider_records", provider_records);
-    json_push_kv_str(&row, "replication_state",
-                     provider_records ? "declared" : "none");
-    json_push_kv_bool(&row, "replication_is_possession_proof", false);
-    json_push_kv(&reply->data, "publication", &row);
-    json_free(&row);
-  }
-
-  struct json_value blockers;
-  json_init(&blockers);
-  json_set_array(&blockers);
-  if (!identity.online_key)
-    mvspace_status_blocker(&blockers, "identity_online_key_unavailable");
-  if (!identity.delegation_present)
-    mvspace_status_blocker(&blockers, "delegation_absent");
-  else if (!identity.delegation_valid)
-    mvspace_status_blocker(&blockers, "delegation_invalid_or_expired");
-  else if (!identity.chain_authorized)
-    mvspace_status_blocker(&blockers, "delegation_not_chain_authorized");
-  if (!network.reachable)
-    mvspace_status_blocker(&blockers, "dht_status_unreachable");
-  else if (!network.enabled)
-    mvspace_status_blocker(&blockers, "dht_disabled");
-  if (network.enabled && !authenticated_peer)
-    mvspace_status_blocker(&blockers, "authenticated_peer_absent");
-  if (store_busy)
-    mvspace_status_blocker(&blockers, "package_store_busy");
-  else if (!store_open)
-    mvspace_status_blocker(&blockers, "package_store_closed");
-  if (!hosting_enabled)
-    mvspace_status_blocker(&blockers, "package_hosting_disabled");
-  if (!policy_all)
-    mvspace_status_blocker(&blockers, "local_policy_not_ready");
-  if (!root)
-    mvspace_status_blocker(&blockers, "semantic_root_not_supplied");
-  else if (!visibility.visible)
-    mvspace_status_blocker(&blockers, "local_object_not_found");
-  else if (!visibility.kind_matches)
-    mvspace_status_blocker(&blockers, "local_object_kind_mismatch");
-  else if (!descriptor_visibility)
-    mvspace_status_blocker(&blockers, "advertised_descriptor_not_visible");
-  json_push_kv(&reply->data, "blockers", &blockers);
-  json_push_kv_int(&reply->data, "blocker_count",
-                   (int64_t)json_size(&blockers));
-  json_free(&blockers);
-
-  json_push_kv_bool(&reply->data, "ready_to_publish", ready_to_publish);
-  json_push_kv_bool(&reply->data, "ready_to_discover", ready_to_discover);
-  json_push_kv_bool(&reply->data, "ready_to_scout", ready_to_scout);
-  json_push_kv_str(&reply->data, "state",
-                   ready_to_publish && ready_to_discover && ready_to_scout
-                       ? "ready" : "blocked");
-  json_push_kv_bool(&reply->data, "retryable", true);
+  mvspace_status_push_identity(out, &facts.identity);
+  mvspace_status_push_network(out, &facts);
+  mvspace_status_push_store(out, &facts);
+  mvspace_status_push_policy(out, facts.policy, facts.policy_all);
+  mvspace_status_push_visibility(out, &facts);
+  mvspace_status_push_publication(out, &facts);
+  mvspace_status_push_blockers(out, &facts);
+  json_push_kv_bool(out, "ready_to_publish", facts.ready_to_publish);
+  json_push_kv_bool(out, "ready_to_discover", facts.ready_to_discover);
+  json_push_kv_bool(out, "ready_to_scout", facts.ready_to_scout);
+  json_push_kv_str(out, "state",
+                   facts.ready_to_publish && facts.ready_to_discover &&
+                           facts.ready_to_scout ? "ready" : "blocked");
+  json_push_kv_bool(out, "retryable", true);
   char next[256];
-  if (!root)
-    (void)snprintf(next, sizeof(next),
-                   "z23 metaverse space status --input="
-                   "'{\"root\":\"<64hex>\"}'");
-  else if (!identity.chain_authorized || !network.enabled)
-    (void)snprintf(next, sizeof(next),
-                   "z23 zcode network status");
-  else if (!store_open)
-    (void)snprintf(next, sizeof(next),
-                   "z23 ops state --subsystem=zcode_store");
-  else if (!policy_all)
-    (void)snprintf(next, sizeof(next),
-                   "z23 zcode network policy list");
-  else if (!visibility.visible && ready_to_discover)
-    (void)snprintf(next, sizeof(next),
-                   "z23 metaverse space discover %s --kind=%s",
-                   root, expected == METAVERSE_SPACE_OBJECT_MANIFEST
-                             ? "space_manifest" : "service_descriptor");
-  else if (ready_to_publish && (!pointer_records || !provider_records))
-    (void)snprintf(next, sizeof(next),
-                   "z23 metaverse space publish %s", root);
-  else
-    (void)snprintf(next, sizeof(next),
-                   "z23 metaverse space show %s", root);
-  json_push_kv_str(&reply->data, "next_safe_command", next);
-  json_push_kv_bool(&reply->data, "side_effect_free", true);
+  mvspace_status_next_command(next, sizeof(next), &facts);
+  json_push_kv_str(out, "next_safe_command", next);
+  json_push_kv_bool(out, "side_effect_free", true);
 }
 
 static bool mvspace_store(const char *datadir, bool *live,
@@ -1207,11 +1296,7 @@ void zcl_native_metaverse_space_discover_until(
   const char *root = mvspace_str(request->input, "root");
   const char *kind_text = mvspace_str(request->input, "kind");
   enum metaverse_space_object_kind kind =
-      !kind_text || strcmp(kind_text, "space_manifest") == 0
-          ? METAVERSE_SPACE_OBJECT_MANIFEST
-          : strcmp(kind_text, "service_descriptor") == 0
-                ? METAVERSE_SPACE_OBJECT_SERVICE_DESCRIPTOR
-                : METAVERSE_SPACE_OBJECT_NONE;
+      mvspace_kind_from_text(kind_text);
   uint8_t decoded[32];
   if (!mvspace_root(root, decoded) || kind == METAVERSE_SPACE_OBJECT_NONE) {
     mvspace_discovery_state(reply, "invalid", false, "validate", 0,

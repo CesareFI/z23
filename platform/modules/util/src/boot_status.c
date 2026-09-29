@@ -350,6 +350,166 @@ void boot_status_set_blocker(const char *id, const char *reason)
 }
 
 /* ── Reader (node-free) ──────────────────────────────────────────────── */
+static void boot_status_set_err(char *err, size_t errlen, const char *message)
+{
+    if (err && errlen)
+        snprintf(err, errlen, "%s", message);
+}
+
+/* Reads boot_status.json into raw as a stable, NUL-terminated snapshot and
+ * returns its length, or -1 with err set. */
+static int64_t boot_status_read_raw(const char *datadir, char raw[4096],
+                                    char *err, size_t errlen)
+{
+    char path[600];
+    snprintf(path, sizeof(path), "%s/%s", datadir, ZCL_BOOT_STATUS_FILENAME);
+
+    struct platform_positioned_file file;
+    struct platform_positioned_file_snapshot before, after;
+    platform_positioned_file_init(&file);
+    if (!platform_positioned_file_open(&file, path) ||
+        !platform_positioned_file_snapshot(&file, &before) ||
+        before.size == 0 || before.size >= 4096) {
+        if (err && errlen)
+            snprintf(err, errlen, "no valid boot_status.json at %s", path);
+        platform_positioned_file_close(&file);
+        return -1;
+    }
+    int64_t r = platform_positioned_file_read(&file, raw, (size_t)before.size,
+                                               0);
+    bool stable = r == (int64_t)before.size &&
+                  platform_positioned_file_snapshot(&file, &after) &&
+                  boot_status_snapshot_same(&before, &after);
+    platform_positioned_file_close(&file);
+    if (!stable) {
+        boot_status_set_err(err, errlen, "boot_status.json empty or unreadable");
+        return -1;
+    }
+    raw[(size_t)r] = '\0';
+    return r;
+}
+
+static bool boot_status_field_is(const struct json_value *doc, const char *key,
+                                 enum json_type type)
+{
+    const struct json_value *v = json_get(doc, key);
+    return v && v->type == type;
+}
+
+static bool boot_status_fields_typed(const struct json_value *doc)
+{
+    static const struct { const char *key; enum json_type type; } required[] = {
+        {"schema", JSON_STR}, {"phase", JSON_STR}, {"stage", JSON_STR},
+        {"stage_ordinal", JSON_INT}, {"height", JSON_INT},
+        {"rpc_bound", JSON_BOOL}, {"serving", JSON_BOOL},
+        {"started_unix", JSON_INT}, {"updated_unix", JSON_INT},
+        {"elapsed_s", JSON_INT},
+    };
+    for (size_t i = 0; i < sizeof(required) / sizeof(required[0]); i++)
+        if (!boot_status_field_is(doc, required[i].key, required[i].type))
+            return false;
+    return strcmp(json_get_str(json_get(doc, "schema")),
+                  ZCL_BOOT_STATUS_SCHEMA) == 0;
+}
+
+static bool boot_status_numbers_valid(const struct json_value *doc)
+{
+    int64_t ord64 = json_get_int(json_get(doc, "stage_ordinal"));
+    int64_t started64 = json_get_int(json_get(doc, "started_unix"));
+    int64_t updated64 = json_get_int(json_get(doc, "updated_unix"));
+    int64_t elapsed64 = json_get_int(json_get(doc, "elapsed_s"));
+    return ord64 >= 0 && ord64 < BOOT_STAGE__MAX &&
+        json_get_int(json_get(doc, "height")) >= -1 && started64 >= 0 &&
+        updated64 >= 0 && elapsed64 >= 0 &&
+        elapsed64 == (updated64 >= started64 ? updated64 - started64 : 0);
+}
+
+/* The document's phase, stage, and flags must be the ones the stage ordinal
+ * implies. */
+static bool boot_status_state_consistent(const struct json_value *doc,
+                                         bool *expected_serving)
+{
+    int64_t ord64 = json_get_int(json_get(doc, "stage_ordinal"));
+    bool expected_rpc = false;
+    *expected_serving = false;
+    const char *expected_phase = boot_status_phase_for_stage(
+        (int)ord64, &expected_rpc, expected_serving);
+    const char *expected_stage = boot_stage_name((enum boot_stage)ord64);
+    return strcmp(json_get_str(json_get(doc, "phase")), expected_phase) == 0 &&
+        strcmp(json_get_str(json_get(doc, "stage")), expected_stage) == 0 &&
+        json_get_bool(json_get(doc, "rpc_bound")) == expected_rpc &&
+        json_get_bool(json_get(doc, "serving")) == *expected_serving;
+}
+
+static void boot_status_copy_required(const struct json_value *doc,
+                                      struct boot_status_snapshot *out)
+{
+    snprintf(out->phase, sizeof(out->phase), "%s",
+             json_get_str(json_get(doc, "phase")));
+    snprintf(out->stage, sizeof(out->stage), "%s",
+             json_get_str(json_get(doc, "stage")));
+    out->stage_ordinal = (int32_t)json_get_int(json_get(doc, "stage_ordinal"));
+    out->height = json_get_int(json_get(doc, "height"));
+    out->rpc_bound = json_get_bool(json_get(doc, "rpc_bound"));
+    out->serving = json_get_bool(json_get(doc, "serving"));
+    out->started_unix = json_get_int(json_get(doc, "started_unix"));
+    out->updated_unix = json_get_int(json_get(doc, "updated_unix"));
+    out->elapsed_s = json_get_int(json_get(doc, "elapsed_s"));
+}
+
+static bool boot_status_progress_valid(
+    const struct json_value *activity, const struct json_value *current,
+    const struct json_value *target, size_t activity_cap, bool serving)
+{
+    return activity && activity->type == JSON_STR && current &&
+        current->type == JSON_INT && target && target->type == JSON_INT &&
+        json_get_str(activity)[0] &&
+        strlen(json_get_str(activity)) < activity_cap &&
+        json_get_int(current) >= 0 &&
+        json_get_int(target) >= json_get_int(current) && !serving;
+}
+
+/* Optional progress fields: all three are present or none. */
+static bool boot_status_read_progress(const struct json_value *doc,
+                                      struct boot_status_snapshot *out,
+                                      bool expected_serving)
+{
+    const struct json_value *activity = json_get(doc, "activity");
+    const struct json_value *current = json_get(doc, "progress_current");
+    const struct json_value *target = json_get(doc, "progress_target");
+    if (!activity && !current && !target)
+        return true;
+    if (!boot_status_progress_valid(activity, current, target,
+                                    sizeof(out->activity), expected_serving))
+        return false;
+    snprintf(out->activity, sizeof(out->activity), "%s",
+             json_get_str(activity));
+    out->progress_current = json_get_int(current);
+    out->progress_target = json_get_int(target);
+    return true;
+}
+
+/* Optional: absent on every boot that has not stopped on purpose. Read
+ * through a NULL-guard because json_get_str of a missing key is not a
+ * string and printing it would be the reader's own silent lie. */
+static bool boot_status_read_blocker(const struct json_value *doc,
+                                     struct boot_status_snapshot *out)
+{
+    const struct json_value *bv = json_get(doc, "blocker");
+    const struct json_value *brv = json_get(doc, "blocker_reason");
+    if ((bv || brv) &&
+        (!bv || bv->type != JSON_STR || !brv || brv->type != JSON_STR ||
+         !json_get_str(bv)[0] ||
+         strlen(json_get_str(bv)) >= sizeof(out->blocker) ||
+         strlen(json_get_str(brv)) >= sizeof(out->blocker_reason)))
+        return false;
+    snprintf(out->blocker, sizeof(out->blocker), "%s",
+             bv ? json_get_str(bv) : "");
+    snprintf(out->blocker_reason, sizeof(out->blocker_reason), "%s",
+             brv ? json_get_str(brv) : "");
+    return true;
+}
+
 bool boot_status_read(const char *datadir, struct boot_status_snapshot *out,
                       char *err, size_t errlen)
 {
@@ -363,150 +523,51 @@ bool boot_status_read(const char *datadir, struct boot_status_snapshot *out,
     out->progress_current = -1;
     out->progress_target = -1;
 
-    char path[600];
-    snprintf(path, sizeof(path), "%s/%s", datadir, ZCL_BOOT_STATUS_FILENAME);
-
-    struct platform_positioned_file file;
-    struct platform_positioned_file_snapshot before, after;
-    platform_positioned_file_init(&file);
-    if (!platform_positioned_file_open(&file, path) ||
-        !platform_positioned_file_snapshot(&file, &before) ||
-        before.size == 0 || before.size >= 4096) {
-        if (err && errlen)
-            snprintf(err, errlen, "no valid boot_status.json at %s", path);
-        platform_positioned_file_close(&file);
-        return false;
-    }
     char raw[4096];
-    int64_t r = platform_positioned_file_read(&file, raw, (size_t)before.size,
-                                               0);
-    bool stable = r == (int64_t)before.size &&
-                  platform_positioned_file_snapshot(&file, &after) &&
-                  boot_status_snapshot_same(&before, &after);
-    platform_positioned_file_close(&file);
-    if (!stable) {
-        if (err && errlen)
-            snprintf(err, errlen, "boot_status.json empty or unreadable");
+    int64_t r = boot_status_read_raw(datadir, raw, err, errlen);
+    if (r < 0)
         return false;
-    }
-    raw[(size_t)r] = '\0';
 
     struct json_value doc;
     if (!json_read(&doc, raw, (size_t)r) || doc.type != JSON_OBJ) {
         json_free(&doc);
-        if (err && errlen)
-            snprintf(err, errlen, "boot_status.json is not a JSON object");
+        boot_status_set_err(err, errlen,
+                            "boot_status.json is not a JSON object");
         return false;
     }
-
-    const struct json_value *schema = json_get(&doc, "schema");
-    const struct json_value *phase = json_get(&doc, "phase");
-    const struct json_value *stage = json_get(&doc, "stage");
-    const struct json_value *ord = json_get(&doc, "stage_ordinal");
-    const struct json_value *h = json_get(&doc, "height");
-    const struct json_value *rpc_bound = json_get(&doc, "rpc_bound");
-    const struct json_value *serving = json_get(&doc, "serving");
-    const struct json_value *started = json_get(&doc, "started_unix");
-    const struct json_value *updated = json_get(&doc, "updated_unix");
-    const struct json_value *elapsed = json_get(&doc, "elapsed_s");
-    if (!schema || schema->type != JSON_STR ||
-        strcmp(json_get_str(schema), ZCL_BOOT_STATUS_SCHEMA) != 0 ||
-        !phase || phase->type != JSON_STR ||
-        !stage || stage->type != JSON_STR ||
-        !ord || ord->type != JSON_INT || !h || h->type != JSON_INT ||
-        !rpc_bound || rpc_bound->type != JSON_BOOL ||
-        !serving || serving->type != JSON_BOOL ||
-        !started || started->type != JSON_INT ||
-        !updated || updated->type != JSON_INT ||
-        !elapsed || elapsed->type != JSON_INT) {
+    if (!boot_status_fields_typed(&doc)) {
         json_free(&doc);
-        if (err && errlen)
-            snprintf(err, errlen, "boot_status.json schema or required field type is invalid");
+        boot_status_set_err(
+            err, errlen,
+            "boot_status.json schema or required field type is invalid");
         return false;
     }
-
-    int64_t ord64 = json_get_int(ord);
-    int64_t started64 = json_get_int(started);
-    int64_t updated64 = json_get_int(updated);
-    int64_t elapsed64 = json_get_int(elapsed);
-    if (ord64 < 0 || ord64 >= BOOT_STAGE__MAX || json_get_int(h) < -1 ||
-        started64 < 0 || updated64 < 0 || elapsed64 < 0 ||
-        elapsed64 != (updated64 >= started64 ? updated64 - started64 : 0)) {
+    if (!boot_status_numbers_valid(&doc)) {
         json_free(&doc);
-        if (err && errlen)
-            snprintf(err, errlen, "boot_status.json numeric invariant is invalid");
+        boot_status_set_err(err, errlen,
+                            "boot_status.json numeric invariant is invalid");
         return false;
     }
-    bool expected_rpc = false, expected_serving = false;
-    const char *expected_phase = boot_status_phase_for_stage(
-        (int)ord64, &expected_rpc, &expected_serving);
-    const char *expected_stage = boot_stage_name((enum boot_stage)ord64);
-    if (strcmp(json_get_str(phase), expected_phase) != 0 ||
-        strcmp(json_get_str(stage), expected_stage) != 0 ||
-        json_get_bool(rpc_bound) != expected_rpc ||
-        json_get_bool(serving) != expected_serving) {
+    bool expected_serving = false;
+    if (!boot_status_state_consistent(&doc, &expected_serving)) {
         json_free(&doc);
-        if (err && errlen)
-            snprintf(err, errlen, "boot_status.json stage/phase state is contradictory");
+        boot_status_set_err(
+            err, errlen, "boot_status.json stage/phase state is contradictory");
         return false;
     }
-
-    snprintf(out->phase, sizeof(out->phase), "%s", json_get_str(phase));
-    snprintf(out->stage, sizeof(out->stage), "%s", json_get_str(stage));
-    out->stage_ordinal = (int32_t)ord64;
-    out->height = json_get_int(h);
-    out->rpc_bound = json_get_bool(rpc_bound);
-    out->serving = json_get_bool(serving);
-    out->started_unix = started64;
-    out->updated_unix = updated64;
-    out->elapsed_s = elapsed64;
-
-    const struct json_value *activity = json_get(&doc, "activity");
-    const struct json_value *progress_current =
-        json_get(&doc, "progress_current");
-    const struct json_value *progress_target =
-        json_get(&doc, "progress_target");
-    if (activity || progress_current || progress_target) {
-        if (!activity || activity->type != JSON_STR ||
-            !progress_current || progress_current->type != JSON_INT ||
-            !progress_target || progress_target->type != JSON_INT ||
-            !json_get_str(activity)[0] ||
-            strlen(json_get_str(activity)) >= sizeof(out->activity) ||
-            json_get_int(progress_current) < 0 ||
-            json_get_int(progress_target) < json_get_int(progress_current) ||
-            expected_serving) {
-            json_free(&doc);
-            if (err && errlen)
-                snprintf(err, errlen, "boot_status.json progress fields are invalid");
-            return false;
-        }
-        snprintf(out->activity, sizeof(out->activity), "%s",
-                 json_get_str(activity));
-        out->progress_current = json_get_int(progress_current);
-        out->progress_target = json_get_int(progress_target);
+    boot_status_copy_required(&doc, out);
+    if (!boot_status_read_progress(&doc, out, expected_serving)) {
+        json_free(&doc);
+        boot_status_set_err(err, errlen,
+                            "boot_status.json progress fields are invalid");
+        return false;
     }
-    /* Optional: absent on every boot that has not stopped on purpose. Read
-     * through a NULL-guard because json_get_str of a missing key is not a
-     * string and printing it would be the reader's own silent lie. */
-    {
-        const struct json_value *bv = json_get(&doc, "blocker");
-        const struct json_value *brv = json_get(&doc, "blocker_reason");
-        if ((bv || brv) &&
-            (!bv || bv->type != JSON_STR || !brv || brv->type != JSON_STR ||
-             !json_get_str(bv)[0] ||
-             strlen(json_get_str(bv)) >= sizeof(out->blocker) ||
-             strlen(json_get_str(brv)) >= sizeof(out->blocker_reason))) {
-            json_free(&doc);
-            if (err && errlen)
-                snprintf(err, errlen, "boot_status.json blocker fields are invalid");
-            return false;
-        }
-        snprintf(out->blocker, sizeof(out->blocker), "%s",
-                 bv ? json_get_str(bv) : "");
-        snprintf(out->blocker_reason, sizeof(out->blocker_reason), "%s",
-                 brv ? json_get_str(brv) : "");
+    if (!boot_status_read_blocker(&doc, out)) {
+        json_free(&doc);
+        boot_status_set_err(err, errlen,
+                            "boot_status.json blocker fields are invalid");
+        return false;
     }
-
     json_free(&doc);
     return true;
 }

@@ -316,6 +316,121 @@ static bool fleet_push_gate(struct json_value *array,
     return ok;
 }
 
+/* Writes the lint projection into lane and releases red; false (with why
+ * set) when it cannot be allocated. */
+static bool fleet_lint_finish(struct json_value *lane, struct json_value *red,
+                              const char *state, size_t lint_count,
+                              size_t red_count, size_t owner_red, char *why,
+                              size_t why_size)
+{
+    bool ok = json_push_kv_str(lane, "lint_status", state) &&
+              json_push_kv_int(lane, "lint_receipt_count", (int64_t)lint_count) &&
+              json_push_kv(lane, "red_gates", red) &&
+              json_push_kv_int(lane, "red_gate_count", (int64_t)red_count) &&
+              json_push_kv_int(lane, "owner_only_red_gate_count",
+                               (int64_t)owner_red);
+    json_free(red);
+    if (!ok) fleet_reason(why, why_size, "cannot allocate lint projection");
+    return ok;
+}
+
+/* Receipts form one hash chain: indices count from zero and each names the
+ * previous receipt's digest. */
+static bool fleet_receipt_chain_valid(const struct fleet_receipt *receipts,
+                                      size_t count)
+{
+    for (size_t i = 0; i < count; i++) {
+        if (receipts[i].index != i) return false;
+        if (i == 0 && strcmp(receipts[i].prev_sha, "GENESIS") != 0)
+            return false;
+        if (i && strcmp(receipts[i].prev_sha, receipts[i - 1].whole_sha) != 0)
+            return false;
+    }
+    return true;
+}
+
+static bool fleet_verdict_consistent(const struct fleet_receipt *receipt,
+                                     bool fail_seen, bool success_banner)
+{
+    if (strcmp(receipt->verdict, "PASS") == 0)
+        return receipt->exit_status == 0 && receipt->expect_missing == 0 &&
+               receipt->forbid_present == 0 && !fail_seen && success_banner;
+    if (strcmp(receipt->verdict, "FAIL") == 0)
+        return fail_seen;
+    return false;
+}
+
+/* Replays one lint receipt's log into gates; false when the receipt does not
+ * match this worktree, its log, or its verdict. */
+static bool fleet_apply_lint_receipt(
+    const struct fleet_receipt *receipt,
+    const struct zcl_fleet_worktree *worktree, const char *directory,
+    const char *status, const char *diff, struct fleet_gate *gates,
+    size_t *gate_count, bool *current)
+{
+    char log_path[ZCL_FLEET_PATH_MAX], log_sha[65], log_sha_after[65];
+    bool fail_seen = false, success_banner = false;
+    *current = strcmp(receipt->head, worktree->head) == 0 &&
+               strcmp(receipt->status_sha, status) == 0 &&
+               strcmp(receipt->diff_sha, diff) == 0;
+    if (strcmp(receipt->worktree, worktree->path) != 0 ||
+        strcmp(receipt->branch, worktree->branch) != 0)
+        return false;
+    if (!fleet_join(log_path, sizeof(log_path), directory, receipt->output) ||
+        !fleet_hash_file(log_path, log_sha) ||
+        strcmp(log_sha, receipt->output_sha) != 0 ||
+        !fleet_apply_log(log_path, receipt->head, *current, gates, gate_count,
+                         &fail_seen, &success_banner) ||
+        !fleet_hash_file(log_path, log_sha_after) ||
+        strcmp(log_sha_after, receipt->output_sha) != 0)
+        return false;
+    return fleet_verdict_consistent(receipt, fail_seen, success_banner);
+}
+
+static bool fleet_collect_red(struct json_value *red,
+                              const struct fleet_gate *gates,
+                              size_t gate_count, size_t *red_count,
+                              size_t *owner_red)
+{
+    for (size_t i = 0; i < gate_count; i++) {
+        if (!gates[i].red || !gates[i].current) continue;
+        if (!fleet_push_gate(red, &gates[i])) return false;
+        (*red_count)++;
+        if (zcl_dev_fleet_gate_owner_only(gates[i].name)) (*owner_red)++;
+    }
+    return true;
+}
+
+/* Reads and replays the receipts; *state names the outcome and the counts
+ * are filled for the projection. */
+static void fleet_replay_receipts(
+    const struct zcl_fleet_worktree *worktree, const char *directory,
+    struct fleet_receipt *receipts, size_t count, struct json_value *red,
+    const char **state, size_t *lint_count, size_t *red_count,
+    size_t *owner_red)
+{
+    bool valid = fleet_receipt_chain_valid(receipts, count);
+    char status[65], diff[65];
+    if (valid && !fleet_current_fingerprint(worktree, status, diff))
+        valid = false;
+    struct fleet_gate gates[FLEET_GATE_MAX] = {0};
+    size_t gate_count = 0;
+    bool current_seen = false;
+    for (size_t i = 0; valid && i < count; i++) {
+        if (!fleet_lint_receipt(receipts[i].gate)) continue;
+        (*lint_count)++;
+        valid = fleet_apply_lint_receipt(&receipts[i], worktree, directory,
+                                         status, diff, gates, &gate_count,
+                                         &current_seen);
+    }
+    if (valid && current_seen)
+        valid = fleet_collect_red(red, gates, gate_count, red_count,
+                                  owner_red);
+    *state = !valid ? "invalid" : !*lint_count ? "unobserved" :
+             current_seen ? (*red_count ? "red" : "green") : "stale";
+
+}
+
 bool zcl_dev_fleet_receipts_json(const struct zcl_fleet_worktree *worktree,
                                  struct json_value *lane, size_t *owner_red,
                                  char *why, size_t why_size)
@@ -323,16 +438,9 @@ bool zcl_dev_fleet_receipts_json(const struct zcl_fleet_worktree *worktree,
     *owner_red = 0;
     struct json_value red;
     json_init(&red); json_set_array(&red);
-    if (!worktree->present) {
-        bool ok = json_push_kv_str(lane, "lint_status", "unobserved") &&
-                  json_push_kv_int(lane, "lint_receipt_count", 0) &&
-                  json_push_kv(lane, "red_gates", &red) &&
-                  json_push_kv_int(lane, "red_gate_count", 0) &&
-                  json_push_kv_int(lane, "owner_only_red_gate_count", 0);
-        json_free(&red);
-        if (!ok) fleet_reason(why, why_size, "cannot allocate lint projection");
-        return ok;
-    }
+    if (!worktree->present)
+        return fleet_lint_finish(lane, &red, "unobserved", 0, 0, 0, why,
+                                 why_size);
     char directory[ZCL_FLEET_PATH_MAX];
     if (snprintf(directory, sizeof(directory), "%s/.cache/agent-receipts",
                  worktree->path) >= (int)sizeof(directory)) {
@@ -340,26 +448,13 @@ bool zcl_dev_fleet_receipts_json(const struct zcl_fleet_worktree *worktree,
         return false;
     }
     struct platform_directory_list files = {0};
-    if (!platform_directory_list_regular_sorted(directory, &files)) {
-        bool ok = json_push_kv_str(lane, "lint_status", "unobserved") &&
-                  json_push_kv_int(lane, "lint_receipt_count", 0) &&
-                  json_push_kv(lane, "red_gates", &red) &&
-                  json_push_kv_int(lane, "red_gate_count", 0) &&
-                  json_push_kv_int(lane, "owner_only_red_gate_count", 0);
-        json_free(&red);
-        if (!ok) fleet_reason(why, why_size, "cannot allocate lint projection");
-        return ok;
-    }
+    if (!platform_directory_list_regular_sorted(directory, &files))
+        return fleet_lint_finish(lane, &red, "unobserved", 0, 0, 0, why,
+                                 why_size);
     if (files.count > FLEET_RECEIPT_FILES_MAX) {
         platform_directory_list_free(&files);
-        bool ok = json_push_kv_str(lane, "lint_status", "invalid") &&
-                  json_push_kv_int(lane, "lint_receipt_count", 0) &&
-                  json_push_kv(lane, "red_gates", &red) &&
-                  json_push_kv_int(lane, "red_gate_count", 0) &&
-                  json_push_kv_int(lane, "owner_only_red_gate_count", 0);
-        json_free(&red);
-        if (!ok) fleet_reason(why, why_size, "cannot allocate lint projection");
-        return ok;
+        return fleet_lint_finish(lane, &red, "invalid", 0, 0, 0, why,
+                                 why_size);
     }
     struct fleet_receipt *receipts = zcl_calloc(files.count,
                                                 sizeof(*receipts),
@@ -370,74 +465,23 @@ bool zcl_dev_fleet_receipts_json(const struct zcl_fleet_worktree *worktree,
         return false;
     }
     size_t count = 0;
-    bool valid = true;
+    bool loaded = true;
     for (size_t i = 0; i < files.count; i++) {
         if (!fleet_suffix(files.entries[i].name, ".receipt")) continue;
         if (!fleet_read_receipt(directory, files.entries[i].name,
-                                &receipts[count++])) { valid = false; break; }
+                                &receipts[count++])) { loaded = false; break; }
     }
     platform_directory_list_free(&files);
     if (count > 1)
         qsort(receipts, count, sizeof(*receipts), fleet_receipt_compare);
-    for (size_t i = 0; valid && i < count; i++) {
-        if (receipts[i].index != i) valid = false;
-        else if (i == 0 && strcmp(receipts[i].prev_sha, "GENESIS") != 0)
-            valid = false;
-        else if (i && strcmp(receipts[i].prev_sha,
-                             receipts[i - 1].whole_sha) != 0) valid = false;
-    }
-    char status[65], diff[65];
-    if (valid && !fleet_current_fingerprint(worktree, status, diff)) valid = false;
-    struct fleet_gate gates[FLEET_GATE_MAX] = {0};
-    size_t gate_count = 0, lint_count = 0;
-    bool current_seen = false;
-    for (size_t i = 0; valid && i < count; i++) {
-        struct fleet_receipt *receipt = &receipts[i];
-        if (!fleet_lint_receipt(receipt->gate)) continue;
-        lint_count++;
-        char log_path[ZCL_FLEET_PATH_MAX], log_sha[65], log_sha_after[65];
-        bool fail_seen = false, success_banner = false;
-        bool current = strcmp(receipt->head, worktree->head) == 0 &&
-                       strcmp(receipt->status_sha, status) == 0 &&
-                       strcmp(receipt->diff_sha, diff) == 0;
-        current_seen = current;
-        if (strcmp(receipt->worktree, worktree->path) != 0 ||
-            strcmp(receipt->branch, worktree->branch) != 0) valid = false;
-        if (!fleet_join(log_path, sizeof(log_path), directory, receipt->output) ||
-            !fleet_hash_file(log_path, log_sha) ||
-            strcmp(log_sha, receipt->output_sha) != 0 ||
-            !fleet_apply_log(log_path, receipt->head, current, gates,
-                             &gate_count, &fail_seen, &success_banner) ||
-            !fleet_hash_file(log_path, log_sha_after) ||
-            strcmp(log_sha_after, receipt->output_sha) != 0) valid = false;
-        if (strcmp(receipt->verdict, "PASS") == 0) {
-            if (receipt->exit_status != 0 || receipt->expect_missing != 0 ||
-                receipt->forbid_present != 0 || fail_seen || !success_banner)
-                valid = false;
-        } else if (strcmp(receipt->verdict, "FAIL") == 0) {
-            if (!fail_seen) valid = false;
-        } else {
-            valid = false;
-        }
-    }
-    size_t red_count = 0;
-    if (valid && current_seen) {
-        for (size_t i = 0; i < gate_count; i++) {
-            if (!gates[i].red || !gates[i].current) continue;
-            if (!fleet_push_gate(&red, &gates[i])) { valid = false; break; }
-            red_count++;
-            if (zcl_dev_fleet_gate_owner_only(gates[i].name)) (*owner_red)++;
-        }
-    }
-    const char *state = !valid ? "invalid" : !lint_count ? "unobserved" :
-                        current_seen ? (red_count ? "red" : "green") : "stale";
-    bool ok = json_push_kv_str(lane, "lint_status", state) &&
-              json_push_kv_int(lane, "lint_receipt_count", (int64_t)lint_count) &&
-              json_push_kv(lane, "red_gates", &red) &&
-              json_push_kv_int(lane, "red_gate_count", (int64_t)red_count) &&
-              json_push_kv_int(lane, "owner_only_red_gate_count",
-                               (int64_t)*owner_red);
-    free(receipts); json_free(&red);
-    if (!ok) fleet_reason(why, why_size, "cannot allocate lint projection");
+    const char *state = "invalid";
+    size_t lint_count = 0, red_count = 0;
+    if (loaded)
+        fleet_replay_receipts(worktree, directory, receipts, count,
+                                    &red, &state, &lint_count, &red_count,
+                                    owner_red);
+    bool ok = fleet_lint_finish(lane, &red, state, lint_count, red_count,
+                                *owner_red, why, why_size);
+    free(receipts);
     return ok;
 }

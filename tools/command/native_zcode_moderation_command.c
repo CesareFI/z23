@@ -270,6 +270,123 @@ void zcl_native_handle_zcode_moderation_policy_show(
         return;
 }
 
+static bool moderation_kat_fail(char *why, size_t why_sz, const char *message)
+{
+    if (why && why_sz) (void)snprintf(why, why_sz, "%s", message);
+    return false;
+}
+
+static bool moderation_policy_view_matches(
+    const struct zcode_moderation_policy_view_v1 *view,
+    const struct vcs_zcode_family_policy_v1 *policy, const char *root_hex)
+{
+    return view->valid && strcmp(view->policy_root, root_hex) == 0 &&
+        view->excluded_reason_mask == policy->excluded_reason_mask &&
+        view->max_dependency_objects == policy->max_dependency_objects &&
+        view->max_extracted_bytes == policy->max_extracted_bytes &&
+        strcmp(view->pass_audiences, "GENERAL|CONTEXTUAL_SCIENCE") == 0 &&
+        strcmp(view->pass_behaviors, "BENIGN|DUAL_USE") == 0 &&
+        strcmp(view->incomplete_result, "UNKNOWN") == 0 &&
+        strcmp(view->new_content_state, "PENDING") == 0 &&
+        view->separate_from_accuracy_quality_security;
+}
+
+static bool moderation_kat_service_status(
+    const struct zcode_moderation_view_service_v1 *service, char *why,
+    size_t why_sz)
+{
+    struct zcode_moderation_service_status_input_v1 status_input = {0};
+    struct zcode_moderation_service_status_result_v1 status_view;
+    if (!service->render_service_status(&status_input, &status_view) ||
+        !status_view.valid || status_view.ready ||
+        strcmp(status_view.bootstrap_label,
+               "unavailable:no_signed_service_roster") != 0)
+        return moderation_kat_fail(
+            why, why_sz, "frozen moderation service-readiness vector failed");
+    status_input.projection_ready = true;
+    status_input.registered_service_count = 3;
+    status_input.eligible_service_count = 3;
+    status_input.roster_finalized = true;
+    status_input.classification_enabled = true;
+    status_input.advertisement_enabled = true;
+    status_input.chain_selection_enabled = true;
+    status_input.operator_group_diversity_declared = true;
+    if (!service->render_service_status(&status_input, &status_view) ||
+        !status_view.ready ||
+        strcmp(status_view.next_command,
+               "zcode moderation classify plan") != 0)
+        return moderation_kat_fail(
+            why, why_sz, "frozen moderation ready-roster vector failed");
+    return true;
+}
+
+static bool moderation_admission_unselected(
+    const struct zcode_moderation_admission_status_result_v1 *view)
+{
+    return view->valid && !view->enforcement_complete &&
+        !view->effective_default &&
+        strcmp(view->admission_readiness, "blocked:policy_not_selected") == 0 &&
+        strcmp(view->next_command, "zcode moderation policy list") == 0;
+}
+
+static bool moderation_admission_family_default(
+    const struct zcode_moderation_admission_status_result_v1 *view)
+{
+    return view->enforcement_complete && view->effective_default &&
+        view->default_public_view &&
+        strcmp(view->admission_readiness, "ready:family_default") == 0 &&
+        strcmp(view->official_surface_policy, "family-c23.v1") == 0 &&
+        view->activation_blocker[0] == '\0';
+}
+
+static bool moderation_kat_admission_step(
+    const struct zcode_moderation_view_service_v1 *service,
+    const struct zcode_moderation_admission_status_input_v1 *input,
+    const char *readiness, const char *next_command, char *why,
+    size_t why_sz, const char *failure)
+{
+    struct zcode_moderation_admission_status_result_v1 view;
+    if (!service->render_admission_status(input, &view) ||
+        strcmp(view.admission_readiness, readiness) != 0 ||
+        (next_command && strcmp(view.next_command, next_command) != 0))
+        return moderation_kat_fail(why, why_sz, failure);
+    return true;
+}
+
+static bool moderation_kat_admission_status(
+    const struct zcode_moderation_view_service_v1 *service, char *why,
+    size_t why_sz)
+{
+    struct zcode_moderation_admission_status_input_v1 admission_input = {0};
+    struct zcode_moderation_admission_status_result_v1 admission_view;
+    if (!service->render_admission_status(&admission_input, &admission_view) ||
+        !moderation_admission_unselected(&admission_view))
+        return moderation_kat_fail(
+            why, why_sz, "frozen unselected-policy admission vector failed");
+    admission_input.policy_selected_as_default = true;
+    if (!moderation_kat_admission_step(
+            service, &admission_input, "blocked:projection_missing",
+            "zcode moderation service status", why, why_sz,
+            "frozen missing-projection admission vector failed"))
+        return false;
+    admission_input.admission_projection_ready = true;
+    if (!moderation_kat_admission_step(
+            service, &admission_input, "blocked:closure_incomplete", NULL,
+            why, why_sz, "frozen incomplete-closure admission vector failed"))
+        return false;
+    admission_input.dependency_closure_complete = true;
+    if (!moderation_kat_admission_step(
+            service, &admission_input, "blocked:cross_surface_gate", NULL,
+            why, why_sz, "frozen cross-surface admission vector failed"))
+        return false;
+    admission_input.cross_surface_gate_passed = true;
+    if (!service->render_admission_status(&admission_input, &admission_view) ||
+        !moderation_admission_family_default(&admission_view))
+        return moderation_kat_fail(
+            why, why_sz, "frozen effective-Family admission vector failed");
+    return true;
+}
+
 static bool moderation_view_frozen_kat(const void *opaque, char *why,
                                        size_t why_sz)
 {
@@ -283,106 +400,16 @@ static bool moderation_view_frozen_kat(const void *opaque, char *why,
         !service->render_service_status ||
         !service->render_admission_status ||
         vcs_zcode_family_policy_v1_root(&policy, root) !=
-            VCS_ZCODE_COMMONS_OK) {
-        if (why && why_sz) (void)snprintf(
+            VCS_ZCODE_COMMONS_OK)
+        return moderation_kat_fail(
             why, why_sz, "frozen moderation service shape/root vector failed");
-        return false;
-    }
     zcl_hex_encode(root, sizeof(root), root_hex);
-    if (!service->render_policy(&policy, root_hex, &view) || !view.valid ||
-        strcmp(view.policy_root, root_hex) != 0 ||
-        view.excluded_reason_mask != policy.excluded_reason_mask ||
-        view.max_dependency_objects != policy.max_dependency_objects ||
-        view.max_extracted_bytes != policy.max_extracted_bytes ||
-        strcmp(view.pass_audiences, "GENERAL|CONTEXTUAL_SCIENCE") != 0 ||
-        strcmp(view.pass_behaviors, "BENIGN|DUAL_USE") != 0 ||
-        strcmp(view.incomplete_result, "UNKNOWN") != 0 ||
-        strcmp(view.new_content_state, "PENDING") != 0 ||
-        !view.separate_from_accuracy_quality_security) {
-        if (why && why_sz) (void)snprintf(
+    if (!service->render_policy(&policy, root_hex, &view) ||
+        !moderation_policy_view_matches(&view, &policy, root_hex))
+        return moderation_kat_fail(
             why, why_sz, "frozen Family policy presentation vector failed");
-        return false;
-    }
-    struct zcode_moderation_service_status_input_v1 status_input = {0};
-    struct zcode_moderation_service_status_result_v1 status_view;
-    if (!service->render_service_status(&status_input, &status_view) ||
-        !status_view.valid || status_view.ready ||
-        strcmp(status_view.bootstrap_label,
-               "unavailable:no_signed_service_roster") != 0) {
-        if (why && why_sz) (void)snprintf(
-            why, why_sz, "frozen moderation service-readiness vector failed");
-        return false;
-    }
-    status_input.projection_ready = true;
-    status_input.registered_service_count = 3;
-    status_input.eligible_service_count = 3;
-    status_input.roster_finalized = true;
-    status_input.classification_enabled = true;
-    status_input.advertisement_enabled = true;
-    status_input.chain_selection_enabled = true;
-    status_input.operator_group_diversity_declared = true;
-    if (!service->render_service_status(&status_input, &status_view) ||
-        !status_view.ready ||
-        strcmp(status_view.next_command,
-               "zcode moderation classify plan") != 0) {
-        if (why && why_sz) (void)snprintf(
-            why, why_sz, "frozen moderation ready-roster vector failed");
-        return false;
-    }
-    struct zcode_moderation_admission_status_input_v1 admission_input = {0};
-    struct zcode_moderation_admission_status_result_v1 admission_view;
-    if (!service->render_admission_status(&admission_input, &admission_view) ||
-        !admission_view.valid || admission_view.enforcement_complete ||
-        admission_view.effective_default ||
-        strcmp(admission_view.admission_readiness,
-               "blocked:policy_not_selected") != 0 ||
-        strcmp(admission_view.next_command,
-               "zcode moderation policy list") != 0) {
-        if (why && why_sz) (void)snprintf(
-            why, why_sz, "frozen unselected-policy admission vector failed");
-        return false;
-    }
-    admission_input.policy_selected_as_default = true;
-    if (!service->render_admission_status(&admission_input, &admission_view) ||
-        strcmp(admission_view.admission_readiness,
-               "blocked:projection_missing") != 0 ||
-        strcmp(admission_view.next_command,
-               "zcode moderation service status") != 0) {
-        if (why && why_sz) (void)snprintf(
-            why, why_sz, "frozen missing-projection admission vector failed");
-        return false;
-    }
-    admission_input.admission_projection_ready = true;
-    if (!service->render_admission_status(&admission_input, &admission_view) ||
-        strcmp(admission_view.admission_readiness,
-               "blocked:closure_incomplete") != 0) {
-        if (why && why_sz) (void)snprintf(
-            why, why_sz, "frozen incomplete-closure admission vector failed");
-        return false;
-    }
-    admission_input.dependency_closure_complete = true;
-    if (!service->render_admission_status(&admission_input, &admission_view) ||
-        strcmp(admission_view.admission_readiness,
-               "blocked:cross_surface_gate") != 0) {
-        if (why && why_sz) (void)snprintf(
-            why, why_sz, "frozen cross-surface admission vector failed");
-        return false;
-    }
-    admission_input.cross_surface_gate_passed = true;
-    if (!service->render_admission_status(&admission_input, &admission_view) ||
-        !admission_view.enforcement_complete ||
-        !admission_view.effective_default ||
-        !admission_view.default_public_view ||
-        strcmp(admission_view.admission_readiness,
-               "ready:family_default") != 0 ||
-        strcmp(admission_view.official_surface_policy,
-               "family-c23.v1") != 0 ||
-        admission_view.activation_blocker[0] != '\0') {
-        if (why && why_sz) (void)snprintf(
-            why, why_sz, "frozen effective-Family admission vector failed");
-        return false;
-    }
-    return true;
+    return moderation_kat_service_status(service, why, why_sz) &&
+        moderation_kat_admission_status(service, why, why_sz);
 }
 
 static const struct zcl_hotswap_service_contract k_moderation_view_contract = {
@@ -403,58 +430,72 @@ zcl_native_zcode_moderation_view_service_contract(void)
     return &k_moderation_view_contract;
 }
 
-static bool economics_service_frozen_kat(const void *opaque, char *why,
-                                         size_t why_sz)
+static bool economics_kat_service_shape(
+    const struct zcode_c23_economics_service_v1 *service)
 {
-    const struct zcode_c23_economics_service_v1 *service = opaque;
-    struct vcs_zcode_family_policy_v1 family;
-    uint8_t family_root[32], network[32], qualification[32], backlog[32];
-    struct vcs_zcode_policy_candidate_v2 policy;
+    return service && service->award_atoms && service->policy_init &&
+        service->policy_validate && service->policy_root &&
+        service->epoch_select && service->render_status &&
+        service->render_schedule_proposal &&
+        service->render_backlog_status && service->render_claim_epoch &&
+        service->schedule_class_name;
+}
+
+static bool economics_kat_policy(
+    const struct zcode_c23_economics_service_v1 *service,
+    const uint8_t family_root[32], struct vcs_zcode_policy_candidate_v2 *policy,
+    uint8_t root[32], char *why, size_t why_sz)
+{
+    uint8_t network[32], qualification[32], backlog[32], expected[32];
     struct zcode_c23_economics_status_result_v1 status;
     memset(network, 0x21, sizeof(network));
     memset(qualification, 0x22, sizeof(qualification));
     memset(backlog, 0x23, sizeof(backlog));
-    vcs_zcode_family_policy_v1_default(&family);
-    if (!service || !service->award_atoms || !service->policy_init ||
-        !service->policy_validate || !service->policy_root ||
-        !service->epoch_select || !service->render_status ||
-        !service->render_schedule_proposal ||
-        !service->render_backlog_status || !service->render_claim_epoch ||
-        !service->schedule_class_name ||
-        vcs_zcode_family_policy_v1_root(&family, family_root) !=
-            VCS_ZCODE_COMMONS_OK) {
-        if (why && why_sz) (void)snprintf(why, why_sz,
-            "frozen economics service shape/family-root vector failed");
-        return false;
-    }
-    service->policy_init(&policy, network, family_root, qualification, backlog);
-    uint8_t root[32], expected[32];
-    if (service->policy_validate(&policy) != VCS_ZCODE_COMMONS_OK ||
-        service->policy_root(&policy, root) != VCS_ZCODE_COMMONS_OK ||
+    service->policy_init(policy, network, family_root, qualification, backlog);
+    if (service->policy_validate(policy) != VCS_ZCODE_COMMONS_OK ||
+        service->policy_root(policy, root) != VCS_ZCODE_COMMONS_OK ||
         !zcl_hex_decode(ZCODE_C23_ECONOMICS_POLICY_KAT_ROOT, expected, 32) ||
         memcmp(root, expected, 32) != 0 || !service->render_status(&status) ||
         status.award_atoms[VCS_ZCODE_CREATION_V2_MODULE_PUBLICATION] !=
             UINT64_C(100000000) ||
         status.award_atoms[VCS_ZCODE_CREATION_V2_PRESERVATION] !=
             UINT64_C(12500000) || status.partial_claim_issuance ||
-        status.unused_capacity_carries) {
-        if (why && why_sz) (void)snprintf(why, why_sz,
-            "frozen policy-root/award/status vector failed");
-        return false;
-    }
+        status.unused_capacity_carries)
+        return moderation_kat_fail(
+            why, why_sz, "frozen policy-root/award/status vector failed");
+    return true;
+}
+
+static bool economics_claim_epoch_view_matches(
+    const struct zcode_c23_claim_epoch_view_v1 *view)
+{
+    return view->valid && view->persisted && view->canonical_proposal &&
+        !view->current_selection_verified && view->simulation_only &&
+        !view->issuance_enabled && !view->wallet_used &&
+        !view->funds_moved && view->epoch == 7 &&
+        view->expired_capacity_atoms == UINT64_C(300000000) &&
+        strcmp(view->verification_state,
+               "canonical:selection_not_reconstructed") == 0 &&
+        strcmp(view->next_command,
+               "zcode commons schedule claim verify") == 0;
+}
+
+static bool economics_kat_epoch(
+    const struct zcode_c23_economics_service_v1 *service,
+    const struct vcs_zcode_policy_candidate_v2 *policy, const uint8_t root[32],
+    char *why, size_t why_sz)
+{
     struct vcs_zcode_epoch_selection_v2 input = {
         .epoch = 7, .cutoff_height = 2000, .cutoff_mtp = 4000,
         .epoch_capacity_atoms = UINT64_C(300000000),
     };
     struct vcs_zcode_epoch_selection_result_v2 selected;
-    if (service->epoch_select(&input, &policy, &selected) !=
+    if (service->epoch_select(&input, policy, &selected) !=
             VCS_ZCODE_COMMONS_OK || selected.selected_count != 0 ||
         selected.expired_capacity_atoms != UINT64_C(300000000) ||
-        selected.recipient_cap_atoms != UINT64_C(100000000)) {
-        if (why && why_sz) (void)snprintf(why, why_sz,
-            "frozen empty-epoch selection vector failed");
-        return false;
-    }
+        selected.recipient_cap_atoms != UINT64_C(100000000))
+        return moderation_kat_fail(
+            why, why_sz, "frozen empty-epoch selection vector failed");
     uint8_t projection_root[32];
     memset(projection_root, 0x24, sizeof(projection_root));
     struct vcs_zcode_claim_epoch_proposal_v2 claim_epoch;
@@ -464,23 +505,31 @@ static bool economics_service_frozen_kat(const void *opaque, char *why,
             VCS_ZCODE_CLAIM_EPOCH_OK ||
         !service->render_claim_epoch(&claim_epoch, true, false,
                                      &claim_epoch_view) ||
-        !claim_epoch_view.valid || !claim_epoch_view.persisted ||
-        !claim_epoch_view.canonical_proposal ||
-        claim_epoch_view.current_selection_verified ||
-        !claim_epoch_view.simulation_only ||
-        claim_epoch_view.issuance_enabled || claim_epoch_view.wallet_used ||
-        claim_epoch_view.funds_moved || claim_epoch_view.epoch != 7 ||
-        claim_epoch_view.expired_capacity_atoms != UINT64_C(300000000) ||
-        strcmp(claim_epoch_view.verification_state,
-               "canonical:selection_not_reconstructed") != 0 ||
-        strcmp(claim_epoch_view.next_command,
-               "zcode commons schedule claim verify") != 0) {
+        !economics_claim_epoch_view_matches(&claim_epoch_view)) {
         vcs_zcode_claim_epoch_free(&claim_epoch);
-        if (why && why_sz) (void)snprintf(
+        return moderation_kat_fail(
             why, why_sz, "frozen claim-epoch view vector failed");
-        return false;
     }
     vcs_zcode_claim_epoch_free(&claim_epoch);
+    return true;
+}
+
+static bool economics_schedule_view_matches(
+    const struct zcode_c23_schedule_proposal_view_v1 *view)
+{
+    return view->epoch == 1 &&
+        view->budget_atoms == UINT64_C(2019230769230) &&
+        view->class_weights[0] == 100 && view->class_weights[1] == 40 &&
+        view->class_weights[2] == 20 && view->class_weights[3] == 5 &&
+        view->simulated && !view->persisted && !view->mint &&
+        strcmp(view->mint_authority,
+               "simulation_only;no_issuance_authority") == 0;
+}
+
+static bool economics_kat_schedule(
+    const struct zcode_c23_economics_service_v1 *service, char *why,
+    size_t why_sz)
+{
     struct vcs_zcode_epoch_schedule_proposal_v1 proposal;
     vcs_zcode_epoch_schedule_proposal_init(&proposal);
     proposal.schema_version = VCS_ZCODE_EPOCH_SCHEDULE_VERSION;
@@ -491,67 +540,78 @@ static bool economics_service_frozen_kat(const void *opaque, char *why,
     struct zcode_c23_schedule_proposal_view_v1 proposal_view;
     char class_name[16];
     if (!service->render_schedule_proposal(&proposal, false, &proposal_view) ||
-        proposal_view.epoch != 1 ||
-        proposal_view.budget_atoms != UINT64_C(2019230769230) ||
-        proposal_view.class_weights[0] != 100 ||
-        proposal_view.class_weights[1] != 40 ||
-        proposal_view.class_weights[2] != 20 ||
-        proposal_view.class_weights[3] != 5 || !proposal_view.simulated ||
-        proposal_view.persisted || proposal_view.mint ||
-        strcmp(proposal_view.mint_authority,
-               "simulation_only;no_issuance_authority") != 0 ||
+        !economics_schedule_view_matches(&proposal_view) ||
         !service->schedule_class_name(
             VCS_ZCODE_EPOCH_SCHEDULE_CLASS_REPRODUCTION, class_name,
-            sizeof(class_name)) || strcmp(class_name, "reproduction") != 0) {
-        if (why && why_sz) (void)snprintf(why, why_sz,
-            "frozen schedule-proposal view vector failed");
-        return false;
-    }
+            sizeof(class_name)) || strcmp(class_name, "reproduction") != 0)
+        return moderation_kat_fail(
+            why, why_sz, "frozen schedule-proposal view vector failed");
+    return true;
+}
+
+static bool economics_backlog_projection_missing(
+    const struct zcode_c23_backlog_status_result_v1 *view)
+{
+    return view->valid && !view->backlog_ready && !view->issuance_enabled &&
+        view->unused_capacity_expires &&
+        strcmp(view->readiness, "blocked:claim_projection_missing") == 0 &&
+        strcmp(view->next_command, "zcode commons claim plan") == 0;
+}
+
+static bool economics_kat_backlog(
+    const struct zcode_c23_economics_service_v1 *service, char *why,
+    size_t why_sz)
+{
     struct zcode_c23_backlog_status_input_v1 backlog_input = {0};
     struct zcode_c23_backlog_status_result_v1 backlog_view;
     if (!service->render_backlog_status(&backlog_input, &backlog_view) ||
-        !backlog_view.valid || backlog_view.backlog_ready ||
-        backlog_view.issuance_enabled ||
-        !backlog_view.unused_capacity_expires ||
-        strcmp(backlog_view.readiness,
-               "blocked:claim_projection_missing") != 0 ||
-        strcmp(backlog_view.next_command,
-               "zcode commons claim plan") != 0) {
-        if (why && why_sz) (void)snprintf(
+        !economics_backlog_projection_missing(&backlog_view))
+        return moderation_kat_fail(
             why, why_sz, "frozen missing-backlog projection vector failed");
-        return false;
-    }
     backlog_input.projection_ready = true;
     if (!service->render_backlog_status(&backlog_input, &backlog_view) ||
         !backlog_view.backlog_ready ||
-        strcmp(backlog_view.readiness, "ready:empty_projection") != 0) {
-        if (why && why_sz) (void)snprintf(
+        strcmp(backlog_view.readiness, "ready:empty_projection") != 0)
+        return moderation_kat_fail(
             why, why_sz, "frozen empty-backlog projection vector failed");
-        return false;
-    }
     backlog_input.claim_count = 3;
     if (!service->render_backlog_status(&backlog_input, &backlog_view) ||
-        strcmp(backlog_view.readiness, "waiting:claims_ineligible") != 0) {
-        if (why && why_sz) (void)snprintf(
+        strcmp(backlog_view.readiness, "waiting:claims_ineligible") != 0)
+        return moderation_kat_fail(
             why, why_sz, "frozen ineligible-backlog vector failed");
-        return false;
-    }
     backlog_input.eligible_claim_count = 2;
     if (!service->render_backlog_status(&backlog_input, &backlog_view) ||
         strcmp(backlog_view.readiness, "ready:epoch_plan") != 0 ||
         strcmp(backlog_view.next_command,
-               "zcode commons schedule claim plan") != 0) {
-        if (why && why_sz) (void)snprintf(
+               "zcode commons schedule claim plan") != 0)
+        return moderation_kat_fail(
             why, why_sz, "frozen eligible-backlog vector failed");
-        return false;
-    }
     backlog_input.eligible_claim_count = 4;
-    if (service->render_backlog_status(&backlog_input, &backlog_view)) {
-        if (why && why_sz) (void)snprintf(
+    if (service->render_backlog_status(&backlog_input, &backlog_view))
+        return moderation_kat_fail(
             why, why_sz, "frozen invalid-backlog subset rejection failed");
-        return false;
-    }
     return true;
+}
+
+static bool economics_service_frozen_kat(const void *opaque, char *why,
+                                         size_t why_sz)
+{
+    const struct zcode_c23_economics_service_v1 *service = opaque;
+    struct vcs_zcode_family_policy_v1 family;
+    uint8_t family_root[32], root[32];
+    struct vcs_zcode_policy_candidate_v2 policy;
+    vcs_zcode_family_policy_v1_default(&family);
+    if (!economics_kat_service_shape(service) ||
+        vcs_zcode_family_policy_v1_root(&family, family_root) !=
+            VCS_ZCODE_COMMONS_OK)
+        return moderation_kat_fail(
+            why, why_sz,
+            "frozen economics service shape/family-root vector failed");
+    return economics_kat_policy(service, family_root, &policy, root, why,
+                                why_sz) &&
+        economics_kat_epoch(service, &policy, root, why, why_sz) &&
+        economics_kat_schedule(service, why, why_sz) &&
+        economics_kat_backlog(service, why, why_sz);
 }
 
 static const struct zcl_hotswap_service_contract k_economics_contract = {

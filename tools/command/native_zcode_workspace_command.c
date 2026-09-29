@@ -709,6 +709,75 @@ void zcl_native_handle_zcode_workspace_status(
                            view.next_action);
 }
 
+static bool workspace_kat_fail(char *why, size_t why_sz, const char *message)
+{
+    if (why && why_sz) (void)snprintf(why, why_sz, "%s", message);
+    return false;
+}
+
+static void workspace_kat_input_init(
+    struct zcode_workspace_binding_input_v1 *input)
+{
+    uint8_t *passport_roots[] = {
+        input->passport.stable_api_root,
+        input->passport.recipe_root,
+        input->passport.toolchain_root,
+        input->passport.tests_root,
+        input->passport.license_root,
+        input->passport.semantic_fingerprint_root,
+        input->passport.workspace_lineage_root,
+        input->passport.source_assignment_root,
+        input->passport.quality_profiles_root,
+        input->passport.signer_root,
+    };
+    memset(input->module_release_root, 0x41, 32);
+    for (size_t i = 0; i < sizeof(passport_roots) / sizeof(passport_roots[0]);
+         i++)
+        memset(passport_roots[i], (int)(0x21u + i), 32);
+    memset(input->passport.signature, 0x31, 64);
+}
+
+static bool workspace_kat_binding(
+    const struct zcode_workspace_view_service_v1 *service,
+    const struct zcode_workspace_binding_input_v1 *input)
+{
+    struct zcode_workspace_binding_result_v1 actual;
+    struct vcs_zcode_workspace_entry_v1 expected = {.sequence = 1};
+    memcpy(expected.module_release_root, input->module_release_root, 32);
+    memcpy(expected.semantic_fingerprint_root,
+           input->passport.semantic_fingerprint_root, 32);
+    memcpy(expected.source_assignment_root,
+           input->passport.source_assignment_root, 32);
+    uint8_t expected_root[32];
+    return service && service->derive_binding && service->render_binding &&
+        service->render_status && service->render_manifest &&
+        vcs_zcode_module_passport_v1_root(
+            &input->passport, expected.module_passport_root) ==
+            VCS_ZCODE_COMMONS_OK &&
+        vcs_zcode_workspace_entry_v1_root(&expected, expected_root) ==
+            VCS_ZCODE_COMMONS_OK &&
+        service->derive_binding(input, &actual) && actual.valid &&
+        memcmp(&actual.entry, &expected, sizeof(expected)) == 0 &&
+        memcmp(actual.binding_root, expected_root, 32) == 0;
+}
+
+static bool workspace_kat_manifest_views(
+    const struct zcode_workspace_view_service_v1 *service)
+{
+    struct zcode_workspace_view_result_v1 view;
+    return service->render_manifest(
+            ZCODE_WORKSPACE_MANIFEST_VIEW_PLAN, &view) && view.valid &&
+        strcmp(view.kind, "workspace_manifest.v1") == 0 &&
+        strcmp(view.next_action,
+               "offline-sign payload, then zcode workspace manifest commit") == 0 &&
+        service->render_manifest(
+            ZCODE_WORKSPACE_MANIFEST_VIEW_COMMIT, &view) && view.valid &&
+        strcmp(view.next_action,
+               "retain manifest root; human publication stays separate") == 0 &&
+        !service->render_manifest(
+            (enum zcode_workspace_manifest_view_mode_v1)99, &view);
+}
+
 static bool workspace_view_frozen_kat(const void *opaque, char *why,
                                       size_t why_sz)
 {
@@ -720,75 +789,25 @@ static bool workspace_view_frozen_kat(const void *opaque, char *why,
             .flags = VCS_ZCODE_COMMONS_REQUIRED_FLAGS,
         },
     };
-    memset(input.module_release_root, 0x41, 32);
-    uint8_t *passport_roots[] = {
-        input.passport.stable_api_root,
-        input.passport.recipe_root,
-        input.passport.toolchain_root,
-        input.passport.tests_root,
-        input.passport.license_root,
-        input.passport.semantic_fingerprint_root,
-        input.passport.workspace_lineage_root,
-        input.passport.source_assignment_root,
-        input.passport.quality_profiles_root,
-        input.passport.signer_root,
-    };
-    for (size_t i = 0; i < sizeof(passport_roots) / sizeof(passport_roots[0]);
-         i++)
-        memset(passport_roots[i], (int)(0x21u + i), 32);
-    memset(input.passport.signature, 0x31, 64);
     struct zcode_workspace_binding_result_v1 actual;
-    struct vcs_zcode_workspace_entry_v1 expected = {.sequence = 1};
-    memcpy(expected.module_release_root, input.module_release_root, 32);
-    memcpy(expected.semantic_fingerprint_root,
-           input.passport.semantic_fingerprint_root, 32);
-    memcpy(expected.source_assignment_root,
-           input.passport.source_assignment_root, 32);
-    uint8_t expected_root[32];
-    if (!service || !service->derive_binding || !service->render_binding ||
-        !service->render_status || !service->render_manifest ||
-        vcs_zcode_module_passport_v1_root(
-            &input.passport, expected.module_passport_root) !=
-            VCS_ZCODE_COMMONS_OK ||
-        vcs_zcode_workspace_entry_v1_root(&expected, expected_root) !=
-            VCS_ZCODE_COMMONS_OK ||
-        !service->derive_binding(&input, &actual) || !actual.valid ||
-        memcmp(&actual.entry, &expected, sizeof(expected)) != 0 ||
-        memcmp(actual.binding_root, expected_root, 32) != 0) {
-        if (why && why_sz) (void)snprintf(
-            why, why_sz, "frozen workspace binding vector failed");
-        return false;
-    }
+    workspace_kat_input_init(&input);
+    if (!workspace_kat_binding(service, &input))
+        return workspace_kat_fail(why, why_sz,
+                                  "frozen workspace binding vector failed");
     struct zcode_workspace_view_result_v1 view;
     if (!service->render_binding(false, &view) || !view.valid ||
         strcmp(view.kind, "workspace_entry.v1") != 0 ||
         !service->render_status(&view) || !view.valid ||
-        strcmp(view.next_action, "zcode workspace plan") != 0) {
-        if (why && why_sz) (void)snprintf(
-            why, why_sz, "frozen workspace view/status vector failed");
-        return false;
-    }
-    if (!service->render_manifest(
-            ZCODE_WORKSPACE_MANIFEST_VIEW_PLAN, &view) || !view.valid ||
-        strcmp(view.kind, "workspace_manifest.v1") != 0 ||
-        strcmp(view.next_action,
-               "offline-sign payload, then zcode workspace manifest commit") != 0 ||
-        !service->render_manifest(
-            ZCODE_WORKSPACE_MANIFEST_VIEW_COMMIT, &view) || !view.valid ||
-        strcmp(view.next_action,
-               "retain manifest root; human publication stays separate") != 0 ||
-        service->render_manifest(
-            (enum zcode_workspace_manifest_view_mode_v1)99, &view)) {
-        if (why && why_sz) (void)snprintf(
+        strcmp(view.next_action, "zcode workspace plan") != 0)
+        return workspace_kat_fail(why, why_sz,
+                                  "frozen workspace view/status vector failed");
+    if (!workspace_kat_manifest_views(service))
+        return workspace_kat_fail(
             why, why_sz, "frozen workspace manifest view vector failed");
-        return false;
-    }
     input.sequence = 2;
-    if (service->derive_binding(&input, &actual)) {
-        if (why && why_sz) (void)snprintf(
+    if (service->derive_binding(&input, &actual))
+        return workspace_kat_fail(
             why, why_sz, "frozen missing-predecessor rejection vector failed");
-        return false;
-    }
     return true;
 }
 

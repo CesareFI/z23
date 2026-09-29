@@ -264,75 +264,85 @@ static bool corpus_productivity_frozen_kat(
     return true;
 }
 
-static bool corpus_service_frozen_kat(const void *opaque, char *why,
-                                      size_t why_sz)
+static bool corpus_kat_fail(char *why, size_t why_sz, const char *message)
 {
-    const struct zcode_c23_corpus_service_v1 *service = opaque;
-    struct zcode_c23_corpus_status_result_v1 status;
-    if (!service || !service->rules_validate || !service->shard_validate ||
-        !service->shard_page ||
-        !service->checkpoint_validate || !service->productivity_validate ||
-        !service->render_status || !service->render_rules ||
-        !service->render_impact_readiness ||
-        !service->render_status(NULL, &status) ||
-        status.projection_ready || status.admitted_total_loc != 0 ||
-        strcmp(status.rules_root, ZCODE_C23_CORPUS_KAT_FINGERPRINT) != 0 ||
-        strcmp(status.progress_stage, "checkpoint_missing") != 0 ||
-        strstr(status.next_command, ZCODE_C23_CORPUS_KAT_FINGERPRINT) == NULL) {
-        if (why && why_sz)
-            (void)snprintf(why, why_sz,
-                           "frozen empty-projection/rules-root vector failed");
-        return false;
-    }
+    if (why && why_sz) (void)snprintf(why, why_sz, "%s", message);
+    return false;
+}
+
+static bool corpus_kat_service_shape(
+    const struct zcode_c23_corpus_service_v1 *service)
+{
+    return service && service->rules_validate && service->shard_validate &&
+        service->shard_page && service->checkpoint_validate &&
+        service->productivity_validate && service->render_status &&
+        service->render_rules && service->render_impact_readiness;
+}
+
+static bool corpus_kat_empty_status_matches(
+    const struct zcode_c23_corpus_status_result_v1 *status)
+{
+    return !status->projection_ready && status->admitted_total_loc == 0 &&
+        strcmp(status->rules_root, ZCODE_C23_CORPUS_KAT_FINGERPRINT) == 0 &&
+        strcmp(status->progress_stage, "checkpoint_missing") == 0 &&
+        strstr(status->next_command, ZCODE_C23_CORPUS_KAT_FINGERPRINT) != NULL;
+}
+
+static bool corpus_kat_impact(
+    const struct zcode_c23_corpus_service_v1 *service, char *why,
+    size_t why_sz)
+{
     struct zcode_c23_impact_readiness_input_v1 impact = {0};
     struct zcode_c23_impact_readiness_result_v1 impact_view;
     if (!service->render_impact_readiness(&impact, &impact_view) ||
         !impact_view.valid || impact_view.shareable ||
         strcmp(impact_view.readiness, "blocked:proven_work_missing") != 0 ||
-        strcmp(impact_view.next_command, "zcode guide") != 0) {
-        if (why && why_sz) (void)snprintf(
-            why, why_sz, "frozen missing-work impact vector failed");
-        return false;
-    }
+        strcmp(impact_view.next_command, "zcode guide") != 0)
+        return corpus_kat_fail(why, why_sz,
+                               "frozen missing-work impact vector failed");
     impact.proven_work = true;
     impact.human_acceptance = true;
     impact.signed_release = true;
     impact.independent_family_admission = true;
     impact.complete_retrievable_package = true;
     if (!service->render_impact_readiness(&impact, &impact_view) ||
-        strcmp(impact_view.readiness, "blocked:basis_stale") != 0) {
-        if (why && why_sz) (void)snprintf(
-            why, why_sz, "frozen stale-basis impact vector failed");
-        return false;
-    }
+        strcmp(impact_view.readiness, "blocked:basis_stale") != 0)
+        return corpus_kat_fail(why, why_sz,
+                               "frozen stale-basis impact vector failed");
     impact.basis_current = true;
     if (!service->render_impact_readiness(&impact, &impact_view) ||
         !impact_view.shareable ||
         strcmp(impact_view.readiness, "ready:shareable") != 0 ||
         strcmp(impact_view.next_command,
-               "zcode commons impact share") != 0) {
-        if (why && why_sz) (void)snprintf(
-            why, why_sz, "frozen complete-chain impact vector failed");
+               "zcode commons impact share") != 0)
+        return corpus_kat_fail(why, why_sz,
+                               "frozen complete-chain impact vector failed");
+    return true;
+}
+
+static bool corpus_service_frozen_kat(const void *opaque, char *why,
+                                      size_t why_sz)
+{
+    const struct zcode_c23_corpus_service_v1 *service = opaque;
+    struct zcode_c23_corpus_status_result_v1 status;
+    if (!corpus_kat_service_shape(service) ||
+        !service->render_status(NULL, &status) ||
+        !corpus_kat_empty_status_matches(&status))
+        return corpus_kat_fail(
+            why, why_sz, "frozen empty-projection/rules-root vector failed");
+    if (!corpus_kat_impact(service, why, why_sz))
         return false;
-    }
     struct zcode_c23_corpus_rules_result_v1 rules;
     if (!service->render_rules(ZCODE_C23_CORPUS_KAT_FINGERPRINT, &rules) ||
         !rules.found || rules.global_completeness_claimed ||
         strcmp(rules.root, ZCODE_C23_CORPUS_KAT_FINGERPRINT) != 0 ||
         rules.shard_entry_max != VCS_ZCODE_C23_SHARD_ENTRY_MAX ||
-        rules.page_max != VCS_ZCODE_C23_PAGE_MAX) {
-        if (why && why_sz)
-            (void)snprintf(why, why_sz,
-                           "frozen exact-root rules rendering vector failed");
-        return false;
-    }
-    if (!corpus_shard_frozen_kat(service, why, why_sz))
-        return false;
-    if (!corpus_checkpoint_frozen_kat(service, why, why_sz))
-        return false;
-    if (!corpus_productivity_frozen_kat(service, why, why_sz))
-        return false;
-    return true;
+        rules.page_max != VCS_ZCODE_C23_PAGE_MAX)
+        return corpus_kat_fail(
+            why, why_sz, "frozen exact-root rules rendering vector failed");
+    return corpus_shard_frozen_kat(service, why, why_sz) &&
+        corpus_checkpoint_frozen_kat(service, why, why_sz) &&
+        corpus_productivity_frozen_kat(service, why, why_sz);
 }
 
 static const struct zcl_hotswap_service_contract k_corpus_contract = {

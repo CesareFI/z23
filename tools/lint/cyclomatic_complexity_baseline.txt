@@ -2501,7 +2501,6 @@ platform/modules/util/src/authority_receipt.c:authority_receipt_running_binary_d
 platform/modules/util/src/authority_receipt.c:authority_receipt_write_atomic:44
 platform/modules/util/src/blocker.c:blocker_set:19
 platform/modules/util/src/blocker.c:blocker_supervisor_sweep:25
-platform/modules/util/src/boot_status.c:boot_status_read:89
 platform/modules/util/src/cpu_topology.c:scan_darwin:18
 platform/modules/util/src/cpu_topology.c:scan_sysfs:28
 platform/modules/util/src/cpu_topology.c:scan_windows:27
@@ -3563,7 +3562,6 @@ tools/command/native_build_command.c:zcl_native_handle_metaverse_build_plan:20
 tools/command/native_code_change_plan_command.c:zcl_native_handle_code_change_plan:36
 tools/command/native_code_context_command.c:zcl_native_handle_code_context_map:63
 tools/command/native_code_coverage_command.c:zcl_native_handle_code_coverage:16
-tools/command/native_code_emitter_command.c:zcl_native_handle_code_emitter:93
 tools/command/native_code_facts_command.c:zcl_native_handle_code_facts:21
 tools/command/native_code_focus_command.c:zcl_native_handle_code_focus:28
 tools/command/native_code_guide_command.c:zcl_native_handle_code_guide:17
@@ -3578,20 +3576,17 @@ tools/command/native_dev_command.c:dev_emit_loop_status:17
 tools/command/native_dev_command.c:dev_loop_ensure:33
 tools/command/native_dev_command.c:dev_pid_is_watcher:17
 tools/command/native_dev_command.c:dev_publication_lane_lookup:33
-tools/command/native_dev_command.c:dev_reflex_policy_frozen_kat:39
 tools/command/native_dev_command.c:dev_watcher_active_at:40
 tools/command/native_dev_command.c:dev_watcher_active_windows:34
-tools/command/native_dev_command.c:zcl_dev_publication_advance:159
 tools/command/native_dev_command.c:zcl_dev_publication_collect:50
 tools/command/native_dev_command.c:zcl_native_handle_dev_app_simulate:18
 tools/command/native_dev_command.c:zcl_native_handle_dev_drive:35
 tools/command/native_dev_command.c:zcl_native_handle_dev_ff:23
-tools/command/native_dev_command.c:zcl_native_handle_dev_publication_status:118
+tools/command/native_dev_command.c:zcl_native_handle_dev_publication_status:16
 tools/command/native_dev_fleet.c:fleet_load_lanes:19
 tools/command/native_dev_fleet.c:zcl_dev_fleet_collect:25
 tools/command/native_dev_fleet_process.c:fleet_quote_arg:20
 tools/command/native_dev_fleet_receipts.c:fleet_read_receipt:53
-tools/command/native_dev_fleet_receipts.c:zcl_dev_fleet_receipts_json:72
 tools/command/native_dev_fleet_start.c:fs_collect_units:25
 tools/command/native_dev_fleet_start.c:fs_collect_worktrees:34
 tools/command/native_dev_fleet_start.c:zcl_native_handle_dev_fleet_start:133
@@ -3615,24 +3610,20 @@ tools/command/native_dev_retrieval_command.c:rb_canonical_repo_path:16
 tools/command/native_dev_retrieval_command.c:rb_compute:25
 tools/command/native_dev_retrieval_command.c:rb_identifier_graph_rank:56
 tools/command/native_dev_retrieval_command.c:rb_push_rank:27
-tools/command/native_dev_retrieval_command.c:rb_render_data:47
 tools/command/native_dev_retrieval_command.c:zcl_native_dev_retrieval_snapshot_compute:21
 tools/command/native_dev_retrieval_command.c:zcl_native_dev_retrieval_stream_jsonl:47
-tools/command/native_dev_retrieval_experiment_command.c:rxc_run:65
 tools/command/native_dev_train_command.c:dvt_human_summary:16
 tools/command/native_dev_train_command.c:zcl_native_handle_dev_train_build:34
 tools/command/native_dev_train_command.c:zcl_native_handle_dev_train_check:24
 tools/command/native_dev_train_command.c:zcl_native_handle_dev_train_status:17
 tools/command/native_devagent.c:dva_code_mask:17
 tools/command/native_devagent.c:zcl_devagent_mutate_line:29
-tools/command/native_devagent_ceiling.c:zcl_native_handle_dev_agent_ceiling:53
 tools/command/native_devagent_command.c:zcl_native_handle_dev_agent_ready:25
 tools/command/native_devagent_command.c:zcl_native_handle_dev_agent_test:25
-tools/command/native_devagent_done.c:zcl_native_handle_dev_agent_done:44
+tools/command/native_devagent_done.c:zcl_native_handle_dev_agent_done:19
 tools/command/native_devagent_hot.c:zcl_native_handle_dev_agent_hot:38
 tools/command/native_devagent_mail.c:dvm_has_ipv4:17
 tools/command/native_devagent_mutate_command.c:zcl_native_handle_dev_agent_mutate:42
-tools/command/native_devagent_outcomes.c:zcl_native_handle_dev_agent_outcomes:55
 tools/command/native_devagent_pace.c:dvp_strip_ansi:16
 tools/command/native_devagent_pace.c:zcl_native_handle_dev_agent_pace:35
 tools/command/native_devagent_queue.c:dvq_compose_task:21
@@ -3650,7 +3641,6 @@ tools/command/native_devagent_start.c:zcl_native_handle_dev_agent_start:16
 tools/command/native_devagent_ticketkey.c:dvt_epoch:24
 tools/command/native_devagent_ticketkey.c:dvt_parse_tree:22
 tools/command/native_devagent_ticketkey.c:dvt_scan_includes:32
-tools/command/native_devagent_ticketkey.c:zcl_native_handle_dev_agent_ticketkey:45
 tools/command/native_devagent_triage.c:zcl_native_handle_dev_agent_triage:31
 tools/command/native_epoch_command.c:zcl_native_handle_core_epoch_anchor:16
 tools/command/native_fleet_board_command.c:fb_call:21
@@ -3669,8 +3659,7 @@ tools/command/native_mesh_command.c:zcl_native_handle_ops_mesh_status:23
 tools/command/native_metaverse_space_command.c:mvspace_manifest:25
 tools/command/native_metaverse_space_command.c:mvspace_verbs:19
 tools/command/native_metaverse_space_command.c:zcl_native_handle_metaverse_space_publish:21
-tools/command/native_metaverse_space_command.c:zcl_native_handle_metaverse_space_status:82
-tools/command/native_metaverse_space_command.c:zcl_native_metaverse_space_discover_until:63
+tools/command/native_metaverse_space_command.c:zcl_native_metaverse_space_discover_until:60
 tools/command/native_metaverse_space_scout_command.c:scout_mission_input:16
 tools/command/native_metaverse_space_scout_command.c:scout_observe_manifest:16
 tools/command/native_metaverse_space_scout_command.c:zcl_native_handle_metaverse_space_scout_show:17
@@ -3692,7 +3681,6 @@ tools/command/native_presentation_corpus_command.c:zcl_native_presentation_corpu
 tools/command/native_presentation_development_command.c:npd_package_facts:28
 tools/command/native_presentation_development_command.c:npd_phase:16
 tools/command/native_presentation_development_command.c:zcl_native_presentation_development_model_from_facts:54
-tools/command/native_presentation_ecosystem_command.c:npe_reply_snapshot:68
 tools/command/native_presentation_ecosystem_command.c:zcl_native_handle_presentation_ecosystem:20
 tools/command/native_presentation_publication_status_command.c:zcl_native_presentation_publication_status_model_from_facts:39
 tools/command/native_presentation_release_confirmation_command.c:nprc_evidence_read:27
@@ -3747,7 +3735,6 @@ tools/command/native_zcode_contributor_command.c:zcl_native_handle_zcode_contrib
 tools/command/native_zcode_contributor_command.c:zcl_native_handle_zcode_package_resolve:17
 tools/command/native_zcode_corpus_command.c:corpus_checkpoint_frozen_kat:34
 tools/command/native_zcode_corpus_command.c:corpus_resident_load:24
-tools/command/native_zcode_corpus_command.c:corpus_service_frozen_kat:46
 tools/command/native_zcode_corpus_command.c:corpus_shard_frozen_kat:19
 tools/command/native_zcode_corpus_command.c:zcl_native_handle_zcode_commons_corpus_shard_page:32
 tools/command/native_zcode_corpus_command.c:zcl_native_handle_zcode_commons_corpus_verify:25
@@ -3766,9 +3753,7 @@ tools/command/native_zcode_focus_command.c:zfocus_load_base:17
 tools/command/native_zcode_focus_command.c:zfocus_load_rows:21
 tools/command/native_zcode_join.c:zcl_join_verdict_push_json:21
 tools/command/native_zcode_leaderboard_command.c:zl_leaderboard:32
-tools/command/native_zcode_moderation_command.c:economics_service_frozen_kat:89
 tools/command/native_zcode_moderation_command.c:moderation_backlog_input:19
-tools/command/native_zcode_moderation_command.c:moderation_view_frozen_kat:62
 tools/command/native_zcode_network_command.c:zcl_native_handle_zcode_network_delegate:39
 tools/command/native_zcode_network_command.c:zcl_native_handle_zcode_package_source_reproduce:34
 tools/command/native_zcode_network_command.c:zdn_read_master_seed:19
@@ -3782,7 +3767,6 @@ tools/command/native_zcode_node_verify_command.c:nv_toolchain:17
 tools/command/native_zcode_node_verify_command.c:zcl_native_handle_zcode_node_verify:38
 tools/command/native_zcode_package_dev_command.c:zcl_native_handle_zcode_package_dev_prepare:32
 tools/command/native_zcode_package_dev_command.c:zcl_native_handle_zcode_package_dev_seal:18
-tools/command/native_zcode_package_view_command.c:package_view_frozen_kat:53
 tools/command/native_zcode_passport_command.c:passport_job_preflight:44
 tools/command/native_zcode_passport_command.c:passport_parse_roots:19
 tools/command/native_zcode_patronage_command.c:zcl_native_handle_zcode_patronage_show:18
@@ -3804,7 +3788,6 @@ tools/command/native_zcode_release_command.c:zcl_native_handle_zcode_release_ver
 tools/command/native_zcode_release_command.c:zr_batch_load:56
 tools/command/native_zcode_release_command.c:zr_write_doc_file:33
 tools/command/native_zcode_reproduction_command.c:zrr_parse:19
-tools/command/native_zcode_reward_command.c:zcl_native_handle_zcode_reward_eligible:48
 tools/command/native_zcode_reward_command.c:zcl_native_handle_zcode_reward_score:22
 tools/command/native_zcode_reward_settle_command.c:zcl_native_handle_zcode_reward_plan:28
 tools/command/native_zcode_reward_settle_command.c:zcl_native_handle_zcode_reward_queue:17
@@ -3835,7 +3818,6 @@ tools/command/native_zcode_toolchain_command.c:zcl_native_handle_zcode_toolchain
 tools/command/native_zcode_workspace_command.c:workspace_binding_parse:32
 tools/command/native_zcode_workspace_command.c:workspace_manifest_job_preflight:36
 tools/command/native_zcode_workspace_command.c:workspace_manifest_parse:31
-tools/command/native_zcode_workspace_command.c:workspace_view_frozen_kat:36
 tools/command/native_zdesc_command.c:zcl_native_handle_zdesc_publish:50
 tools/command/native_zdesc_command.c:zdc_load_doc_wire:17
 tools/command/native_zdesc_command.c:zdc_read_seed:16
@@ -3880,7 +3862,6 @@ tools/dev/dev_failure_store.c:atomic_replace_at:21
 tools/dev/dev_failure_store.c:latest_read:23
 tools/dev/dev_failure_store.c:observation_read:20
 tools/dev/dev_failure_store.c:read_file_at:29
-tools/dev/dev_failure_store.c:read_record_fd:42
 tools/dev/dev_failure_store.c:record_json:16
 tools/dev/dev_failure_store.c:store_open:23
 tools/dev/dev_failure_store.c:zcl_dev_failure_match_latest:20
@@ -3918,7 +3899,6 @@ tools/dev/devloop_hotswap_build.c:hs_story_receipt_valid:42
 tools/dev/devloop_hotswap_build.c:zcl_devloop_hotswap_batch_event:42
 tools/dev/devloop_hotswap_build.c:zcl_devloop_hotswap_build:75
 tools/dev/devloop_plan.c:plan_add_closure:48
-tools/dev/devloop_plan.c:plan_json_body:66
 tools/dev/devloop_plan.c:zcl_devloop_path_is_relevant:19
 tools/dev/devloop_plan.c:zcl_devloop_plan_files:38
 tools/dev/devloop_plan.c:zcl_devloop_plan_proof_admissible:17
@@ -4038,7 +4018,6 @@ tools/market_acceptance_helper.c:mah_expect_offer_plan:16
 tools/market_acceptance_helper.c:mah_expect_purchase_plan:20
 tools/market_acceptance_helper.c:mah_file_manifest_root:18
 tools/market_acceptance_helper.c:mah_fixture_create:24
-tools/market_acceptance_helper.c:mah_json_command:83
 tools/market_acceptance_helper.c:main:16
 tools/metaverse_tour_fixture.c:main:40
 tools/mind/mind_resident.c:mind_serve_posix:34
@@ -4101,7 +4080,6 @@ tools/zcl_portfwd.c:main:41
 tools/zcode_adapter_runner.c:main:73
 tools/zcode_app_server_benchmark.c:handle_notification:18
 tools/zcode_app_server_benchmark.c:main:31
-tools/zcode_app_server_benchmark.c:run_benchmark:80
 tools/zcode_dev_signer.c:main:36
 tools/zcode_dht_acceptance_peer.c:attack_peer:50
 tools/zcode_package_registry_check.c:main:40

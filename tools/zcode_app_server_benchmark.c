@@ -327,6 +327,253 @@ static bool add_text_input(struct json_value *params, const char *packet)
     return ok;
 }
 
+struct bench_conn {
+    int to_child;
+    struct app_reader reader;
+    struct app_metrics metrics;
+};
+
+/* Child side of the fork: wires the pipes, pins the sandboxed app-server
+ * configuration, and execs; never returns. */
+static void bench_exec_child(const int to_child[2], const int from_child[2],
+                             int stderr_fd, const char *private_home)
+{
+    if (dup2(to_child[0], STDIN_FILENO) < 0 ||
+        dup2(from_child[1], STDOUT_FILENO) < 0 ||
+        dup2(stderr_fd, STDERR_FILENO) < 0) _exit(70);
+    close(to_child[0]); close(to_child[1]);
+    close(from_child[0]); close(from_child[1]); close(stderr_fd);
+    if (setenv("CODEX_HOME", private_home, 1) != 0) _exit(70);
+    char external_servers[32], elicitation[40], external_apps[32];
+    if (snprintf(external_servers, sizeof(external_servers), "%s%s={}",
+                 "m", "cp_servers") >= (int)sizeof(external_servers) ||
+        snprintf(elicitation, sizeof(elicitation), "%s%s",
+                 "tool_call_m", "cp_elicitation") >=
+            (int)sizeof(elicitation) ||
+        snprintf(external_apps, sizeof(external_apps), "%s%s",
+                 "enable_m", "cp_apps") >= (int)sizeof(external_apps))
+        _exit(70);
+    const char *const argv[] = {
+        "codex", "app-server", "--stdio", "--strict-config",
+        "-c", external_servers, "-c", "plugins={}",
+        "-c", "shell_environment_policy.inherit=\"none\"",
+        "-c", "shell_environment_policy.set.PATH=\"/usr/bin:/bin\"",
+        "-c", "shell_environment_policy.set.HOME=\".\"",
+        "-c", "shell_environment_policy.set.TMPDIR=\".zcode-adapter-tmp\"",
+        "--disable", "apps", "--disable", "plugins",
+        "--disable", "hooks", "--disable", "multi_agent",
+        "--disable", "browser_use", "--disable", "browser_use_external",
+        "--disable", "computer_use", "--disable", "image_generation",
+        "--disable", "in_app_browser", "--disable", "skill_search",
+        "--disable", "goals", "--disable", "guardian_approval",
+        "--disable", "tool_suggest", "--disable", "view_image",
+        "--disable", "web_search_request", "--disable", "standalone_web_search",
+        "--disable", elicitation,
+        "--disable", external_apps, "--disable", "remote_plugin",
+        NULL,
+    };
+    execvp(argv[0], (char *const *)argv);
+    _exit(127);
+}
+
+static bool bench_initialize(struct bench_conn *c)
+{
+    struct json_value params, response, client, capabilities;
+    json_init(&params); json_set_object(&params);
+    json_init(&response);
+    json_init(&client); json_set_object(&client);
+    json_init(&capabilities); json_set_object(&capabilities);
+    bool ok = c->reader.wire &&
+        json_push_kv_str(&client, "name", "z23-adapter-benchmark") &&
+        json_push_kv_str(&client, "version", "1") &&
+        json_push_kv_bool(&capabilities, "experimentalApi", true) &&
+        json_push_kv(&params, "clientInfo", &client) &&
+        json_push_kv(&params, "capabilities", &capabilities) &&
+        send_request(c->to_child, 1, "initialize", &params) &&
+        wait_response(&c->reader, c->to_child, 1, "", "", &c->metrics,
+                      &response, 30000) == 1 &&
+        !json_get(&response, "error") &&
+        send_notification(c->to_child, "initialized");
+    json_free(&client); json_free(&capabilities);
+    json_free(&params); json_free(&response);
+    return ok;
+}
+
+static bool bench_fill_thread_params(struct json_value *params,
+                                     struct json_value *config,
+                                     const struct json_value *empty,
+                                     const char *candidate, const char *model)
+{
+    const char *base =
+        "You are a contained C23 coding worker. Use only the built-in shell. "
+        "Do not call external tool servers, plugins, apps, web, images, "
+        "skills, subagents, or "
+        "network. Operate only beneath the current working directory and obey "
+        "the packet's write scopes. If the goal is outside scope, change nothing.";
+    char external_servers_key[24];
+    if (snprintf(external_servers_key, sizeof(external_servers_key), "%s%s",
+                 "m", "cp_servers") >= (int)sizeof(external_servers_key))
+        return false;
+    return json_push_kv_str(params, "cwd", candidate) &&
+        json_push_kv_bool(params, "ephemeral", true) &&
+        json_push_kv_str(params, "sandbox", "workspace-write") &&
+        json_push_kv_str(params, "approvalPolicy", "never") &&
+        json_push_kv_str(params, "model", model) &&
+        json_push_kv_str(params, "baseInstructions", base) &&
+        json_push_kv_str(params, "developerInstructions", base) &&
+        json_push_kv(config, external_servers_key, empty) &&
+        json_push_kv(config, "plugins", empty) &&
+        json_push_kv(params, "config", config);
+}
+
+static bool bench_thread_start(struct bench_conn *c, bool ok,
+                               const char *candidate, const char *model,
+                               char thread_id[96], char model_used[96],
+                               char provider[96])
+{
+    struct json_value params, response, config, empty;
+    json_init(&params); json_set_object(&params);
+    json_init(&config); json_set_object(&config);
+    json_init(&empty); json_set_object(&empty);
+    ok = ok && bench_fill_thread_params(&params, &config, &empty, candidate,
+                                        model) &&
+        send_request(c->to_child, 2, "thread/start", &params);
+    json_init(&response);
+    ok = ok && wait_response(&c->reader, c->to_child, 2, "", "", &c->metrics,
+                             &response, 30000) == 1 &&
+        !json_get(&response, "error");
+    if (ok) {
+        const struct json_value *result = json_get(&response, "result");
+        (void)snprintf(thread_id, 96, "%s",
+            json_get_str(json_get(json_get(result, "thread"), "id")));
+        (void)snprintf(model_used, 96, "%s",
+            json_get_str(json_get(result, "model")));
+        (void)snprintf(provider, 96, "%s",
+            json_get_str(json_get(result, "modelProvider")));
+    }
+    json_free(&empty); json_free(&config); json_free(&params);
+    json_free(&response);
+    return ok;
+}
+
+static bool bench_turn_start(struct bench_conn *c, bool ok,
+                             const char *candidate, const char *packet,
+                             const char *thread_id, char turn_id[96])
+{
+    struct json_value params, response, policy, roots, root;
+    json_init(&params); json_set_object(&params);
+    json_init(&policy); json_set_object(&policy);
+    json_init(&roots); json_set_array(&roots);
+    json_init(&root); json_set_str(&root, candidate);
+    ok = ok && thread_id[0] && json_push_kv_str(&params, "threadId", thread_id) &&
+        add_text_input(&params, packet) && json_push_kv_str(&params, "cwd", candidate) &&
+        json_push_kv_str(&policy, "type", "workspaceWrite") &&
+        json_push_kv_bool(&policy, "networkAccess", false) &&
+        json_push_back(&roots, &root) &&
+        json_push_kv(&policy, "writableRoots", &roots) &&
+        json_push_kv(&params, "sandboxPolicy", &policy) &&
+        send_request(c->to_child, 3, "turn/start", &params);
+    json_init(&response);
+    ok = ok && wait_response(&c->reader, c->to_child, 3, thread_id, "",
+                             &c->metrics, &response, 30000) == 1 &&
+        !json_get(&response, "error");
+    if (ok) (void)snprintf(turn_id, 96, "%s",
+        json_get_str(json_get(json_get(json_get(&response, "result"),
+                                      "turn"), "id")));
+    json_free(&root); json_free(&roots); json_free(&policy);
+    json_free(&params); json_free(&response);
+    return ok;
+}
+
+static bool bench_await_completion(struct bench_conn *c, const char *thread_id,
+                                   const char *turn_id)
+{
+    while (!c->metrics.completed) {
+        struct json_value response;
+        json_init(&response);
+        int got = wait_response(&c->reader, c->to_child, INT64_MAX, thread_id,
+                                turn_id, &c->metrics, &response,
+                                APP_TIMEOUT_MS);
+        json_free(&response);
+        if (got <= 0) return false;
+    }
+    return true;
+}
+
+static bool bench_stderr_has_bwrap_failure(const char *stderr_path,
+                                           size_t *stderr_len)
+{
+    char *stderr_wire = read_file(stderr_path, APP_STDERR_MAX, stderr_len);
+    bool failure = stderr_wire &&
+        strstr(stderr_wire, "Failed RTM_NEWADDR") != NULL;
+    free(stderr_wire);
+    return failure;
+}
+
+static bool bench_push_tokens(struct json_value *tokens,
+                              const struct app_metrics *metrics)
+{
+    return json_push_kv_int(tokens, "input", metrics->input_tokens) &&
+        json_push_kv_int(tokens, "cached_input", metrics->cached_input_tokens) &&
+        json_push_kv_int(tokens, "output", metrics->output_tokens);
+}
+
+static bool bench_push_tool_counts(struct json_value *output,
+                                   const struct app_metrics *metrics)
+{
+    return json_push_kv_int(output, "tool_calls", metrics->tool_calls) &&
+        json_push_kv_int(output, "tool_output_bytes",
+                         metrics->tool_output_bytes) &&
+        json_push_kv_int(output, "server_requests_denied",
+                         metrics->server_requests_denied) &&
+        json_push_kv_str(output, "last_server_request",
+                         metrics->last_server_request) &&
+        json_push_kv_int(output, "forbidden_tool_calls",
+                         metrics->forbidden_tool_calls);
+}
+
+/* Serializes output and prints it on its own line; false on any failure. */
+static bool bench_emit_record(const struct json_value *output)
+{
+    size_t output_len = json_write(output, NULL, 0);
+    char *output_wire = output_len
+        ? zcl_malloc(output_len + 1u, "app_server.output") : NULL;
+    bool rendered = output_wire &&
+        json_write(output, output_wire, output_len + 1u) == output_len;
+    if (rendered) printf("%s\n", output_wire);
+    free(output_wire);
+    return rendered;
+}
+
+/* Prints the benchmark record; false when it cannot be rendered. */
+static bool bench_print_result(const struct app_metrics *metrics,
+                               const char *model_used, const char *provider,
+                               int64_t elapsed_us, size_t stderr_len,
+                               bool bwrap_failure)
+{
+    struct json_value output, tokens, diagnostic;
+    json_init(&output); json_set_object(&output);
+    json_init(&tokens); json_set_object(&tokens);
+    json_init(&diagnostic); json_set_object(&diagnostic);
+    bool rendered = json_push_kv_str(&output, "schema",
+                                      "zcl.zcode_app_server_benchmark.v1") &&
+        json_push_kv_bool(&output, "completed", metrics->completed) &&
+        json_push_kv_str(&output, "turn_status", metrics->turn_status) &&
+        bench_push_tokens(&tokens, metrics) &&
+        json_push_kv(&output, "tokens", &tokens) &&
+        bench_push_tool_counts(&output, metrics) &&
+        json_push_kv_str(&output, "model", model_used) &&
+        json_push_kv_str(&output, "model_provider", provider) &&
+        json_push_kv_int(&output, "elapsed_us", elapsed_us) &&
+        json_push_kv_int(&output, "stderr_bytes", (int64_t)stderr_len) &&
+        json_push_kv_bool(&diagnostic, "bwrap_loopback_failure", bwrap_failure) &&
+        json_push_kv(&output, "diagnostic", &diagnostic);
+    bool printed = rendered && bench_emit_record(&output);
+    json_free(&diagnostic);
+    json_free(&tokens); json_free(&output);
+    return printed;
+}
+
 static int run_benchmark(const char *candidate, const char *packet,
                          const char *model, const char *private_home,
                          const char *stderr_path)
@@ -338,190 +585,36 @@ static int run_benchmark(const char *candidate, const char *packet,
     if (stderr_fd < 0) return 70;
     pid_t child = fork();
     if (child < 0) { close(stderr_fd); return 70; }
-    if (child == 0) {
-        if (dup2(to_child[0], STDIN_FILENO) < 0 ||
-            dup2(from_child[1], STDOUT_FILENO) < 0 ||
-            dup2(stderr_fd, STDERR_FILENO) < 0) _exit(70);
-        close(to_child[0]); close(to_child[1]);
-        close(from_child[0]); close(from_child[1]); close(stderr_fd);
-        if (setenv("CODEX_HOME", private_home, 1) != 0) _exit(70);
-        char external_servers[32], elicitation[40], external_apps[32];
-        if (snprintf(external_servers, sizeof(external_servers), "%s%s={}",
-                     "m", "cp_servers") >= (int)sizeof(external_servers) ||
-            snprintf(elicitation, sizeof(elicitation), "%s%s",
-                     "tool_call_m", "cp_elicitation") >=
-                (int)sizeof(elicitation) ||
-            snprintf(external_apps, sizeof(external_apps), "%s%s",
-                     "enable_m", "cp_apps") >= (int)sizeof(external_apps))
-            _exit(70);
-        const char *const argv[] = {
-            "codex", "app-server", "--stdio", "--strict-config",
-            "-c", external_servers, "-c", "plugins={}",
-            "-c", "shell_environment_policy.inherit=\"none\"",
-            "-c", "shell_environment_policy.set.PATH=\"/usr/bin:/bin\"",
-            "-c", "shell_environment_policy.set.HOME=\".\"",
-            "-c", "shell_environment_policy.set.TMPDIR=\".zcode-adapter-tmp\"",
-            "--disable", "apps", "--disable", "plugins",
-            "--disable", "hooks", "--disable", "multi_agent",
-            "--disable", "browser_use", "--disable", "browser_use_external",
-            "--disable", "computer_use", "--disable", "image_generation",
-            "--disable", "in_app_browser", "--disable", "skill_search",
-            "--disable", "goals", "--disable", "guardian_approval",
-            "--disable", "tool_suggest", "--disable", "view_image",
-            "--disable", "web_search_request", "--disable", "standalone_web_search",
-            "--disable", elicitation,
-            "--disable", external_apps, "--disable", "remote_plugin",
-            NULL,
-        };
-        execvp(argv[0], (char *const *)argv);
-        _exit(127);
-    }
+    if (child == 0)
+        bench_exec_child(to_child, from_child, stderr_fd, private_home);
     close(to_child[0]); close(from_child[1]); close(stderr_fd);
-    struct app_reader reader = {
-        .fd = from_child[0],
-        .wire = zcl_malloc(APP_LINE_MAX + 1u, "app_server.line"),
+    struct bench_conn conn = {
+        .to_child = to_child[1],
+        .reader = {
+            .fd = from_child[0],
+            .wire = zcl_malloc(APP_LINE_MAX + 1u, "app_server.line"),
+        },
     };
-    struct app_metrics metrics = {0};
-    (void)snprintf(metrics.turn_status, sizeof(metrics.turn_status), "missing");
-    struct json_value params, response;
-    json_init(&params); json_set_object(&params);
-    json_init(&response);
-    struct json_value client, capabilities;
-    json_init(&client); json_set_object(&client);
-    json_init(&capabilities); json_set_object(&capabilities);
-    bool ok = reader.wire &&
-        json_push_kv_str(&client, "name", "z23-adapter-benchmark") &&
-        json_push_kv_str(&client, "version", "1") &&
-        json_push_kv_bool(&capabilities, "experimentalApi", true) &&
-        json_push_kv(&params, "clientInfo", &client) &&
-        json_push_kv(&params, "capabilities", &capabilities) &&
-        send_request(to_child[1], 1, "initialize", &params) &&
-        wait_response(&reader, to_child[1], 1, "", "", &metrics,
-                      &response, 30000) == 1 &&
-        !json_get(&response, "error") &&
-        send_notification(to_child[1], "initialized");
-    json_free(&client); json_free(&capabilities);
-    json_free(&params); json_free(&response);
-
-    const char *base =
-        "You are a contained C23 coding worker. Use only the built-in shell. "
-        "Do not call external tool servers, plugins, apps, web, images, "
-        "skills, subagents, or "
-        "network. Operate only beneath the current working directory and obey "
-        "the packet's write scopes. If the goal is outside scope, change nothing.";
-    json_init(&params); json_set_object(&params);
-    struct json_value config;
-    json_init(&config); json_set_object(&config);
-    struct json_value empty;
-    json_init(&empty); json_set_object(&empty);
-    char external_servers_key[24];
-    if (snprintf(external_servers_key, sizeof(external_servers_key), "%s%s",
-                 "m", "cp_servers") >= (int)sizeof(external_servers_key))
-        ok = false;
-    ok = ok && json_push_kv_str(&params, "cwd", candidate) &&
-        json_push_kv_bool(&params, "ephemeral", true) &&
-        json_push_kv_str(&params, "sandbox", "workspace-write") &&
-        json_push_kv_str(&params, "approvalPolicy", "never") &&
-        json_push_kv_str(&params, "model", model) &&
-        json_push_kv_str(&params, "baseInstructions", base) &&
-        json_push_kv_str(&params, "developerInstructions", base) &&
-        json_push_kv(&config, external_servers_key, &empty) &&
-        json_push_kv(&config, "plugins", &empty) &&
-        json_push_kv(&params, "config", &config) &&
-        send_request(to_child[1], 2, "thread/start", &params);
-    json_init(&response);
-    ok = ok && wait_response(&reader, to_child[1], 2, "", "", &metrics,
-                             &response, 30000) == 1 &&
-        !json_get(&response, "error");
+    (void)snprintf(conn.metrics.turn_status, sizeof(conn.metrics.turn_status),
+                   "missing");
+    bool ok = bench_initialize(&conn);
     char thread_id[96] = {0}, model_used[96] = {0}, provider[96] = {0};
-    if (ok) {
-        const struct json_value *result = json_get(&response, "result");
-        (void)snprintf(thread_id, sizeof(thread_id), "%s",
-            json_get_str(json_get(json_get(result, "thread"), "id")));
-        (void)snprintf(model_used, sizeof(model_used), "%s",
-            json_get_str(json_get(result, "model")));
-        (void)snprintf(provider, sizeof(provider), "%s",
-            json_get_str(json_get(result, "modelProvider")));
-    }
-    json_free(&empty); json_free(&config); json_free(&params);
-    json_free(&response);
-
-    json_init(&params); json_set_object(&params);
-    struct json_value policy, roots, root;
-    json_init(&policy); json_set_object(&policy);
-    json_init(&roots); json_set_array(&roots);
-    json_init(&root); json_set_str(&root, candidate);
-    int64_t started_ms = monotonic_ms();
-    ok = ok && thread_id[0] && json_push_kv_str(&params, "threadId", thread_id) &&
-        add_text_input(&params, packet) && json_push_kv_str(&params, "cwd", candidate) &&
-        json_push_kv_str(&policy, "type", "workspaceWrite") &&
-        json_push_kv_bool(&policy, "networkAccess", false) &&
-        json_push_back(&roots, &root) &&
-        json_push_kv(&policy, "writableRoots", &roots) &&
-        json_push_kv(&params, "sandboxPolicy", &policy) &&
-        send_request(to_child[1], 3, "turn/start", &params);
-    json_init(&response);
-    ok = ok && wait_response(&reader, to_child[1], 3, thread_id, "",
-                             &metrics, &response, 30000) == 1 &&
-        !json_get(&response, "error");
+    ok = bench_thread_start(&conn, ok, candidate, model, thread_id,
+                            model_used, provider);
     char turn_id[96] = {0};
-    if (ok) (void)snprintf(turn_id, sizeof(turn_id), "%s",
-        json_get_str(json_get(json_get(json_get(&response, "result"),
-                                      "turn"), "id")));
-    json_free(&root); json_free(&roots); json_free(&policy);
-    json_free(&params); json_free(&response);
-    while (ok && !metrics.completed) {
-        json_init(&response);
-        int got = wait_response(&reader, to_child[1], INT64_MAX, thread_id,
-                                turn_id, &metrics, &response, APP_TIMEOUT_MS);
-        json_free(&response);
-        if (got <= 0) ok = false;
-    }
+    int64_t started_ms = monotonic_ms();
+    ok = bench_turn_start(&conn, ok, candidate, packet, thread_id, turn_id);
+    ok = ok && bench_await_completion(&conn, thread_id, turn_id);
     int64_t elapsed_us = (monotonic_ms() - started_ms) * 1000;
-    close(to_child[1]); close(from_child[0]); free(reader.wire);
+    close(to_child[1]); close(from_child[0]); free(conn.reader.wire);
     int status = 0;
     if (!wait_child(child, &status)) ok = false;
 
     size_t stderr_len = 0;
-    char *stderr_wire = read_file(stderr_path, APP_STDERR_MAX, &stderr_len);
-    bool bwrap_failure = stderr_wire &&
-        strstr(stderr_wire, "Failed RTM_NEWADDR") != NULL;
-    free(stderr_wire);
-    struct json_value output, tokens, diagnostic;
-    json_init(&output); json_set_object(&output);
-    json_init(&tokens); json_set_object(&tokens);
-    json_init(&diagnostic); json_set_object(&diagnostic);
-    bool rendered = json_push_kv_str(&output, "schema",
-                                      "zcl.zcode_app_server_benchmark.v1") &&
-        json_push_kv_bool(&output, "completed", metrics.completed) &&
-        json_push_kv_str(&output, "turn_status", metrics.turn_status) &&
-        json_push_kv_int(&tokens, "input", metrics.input_tokens) &&
-        json_push_kv_int(&tokens, "cached_input", metrics.cached_input_tokens) &&
-        json_push_kv_int(&tokens, "output", metrics.output_tokens) &&
-        json_push_kv(&output, "tokens", &tokens) &&
-        json_push_kv_int(&output, "tool_calls", metrics.tool_calls) &&
-        json_push_kv_int(&output, "tool_output_bytes",
-                         metrics.tool_output_bytes) &&
-        json_push_kv_int(&output, "server_requests_denied",
-                         metrics.server_requests_denied) &&
-        json_push_kv_str(&output, "last_server_request",
-                         metrics.last_server_request) &&
-        json_push_kv_int(&output, "forbidden_tool_calls",
-                         metrics.forbidden_tool_calls) &&
-        json_push_kv_str(&output, "model", model_used) &&
-        json_push_kv_str(&output, "model_provider", provider) &&
-        json_push_kv_int(&output, "elapsed_us", elapsed_us) &&
-        json_push_kv_int(&output, "stderr_bytes", (int64_t)stderr_len) &&
-        json_push_kv_bool(&diagnostic, "bwrap_loopback_failure", bwrap_failure) &&
-        json_push_kv(&output, "diagnostic", &diagnostic);
-    size_t output_len = rendered ? json_write(&output, NULL, 0) : 0;
-    char *output_wire = output_len
-        ? zcl_malloc(output_len + 1u, "app_server.output") : NULL;
-    if (!output_wire || json_write(&output, output_wire,
-                                   output_len + 1u) != output_len) rendered = false;
-    if (rendered) printf("%s\n", output_wire);
-    free(output_wire); json_free(&diagnostic);
-    json_free(&tokens); json_free(&output);
+    bool bwrap_failure = bench_stderr_has_bwrap_failure(stderr_path,
+                                                        &stderr_len);
+    bool rendered = bench_print_result(&conn.metrics, model_used, provider,
+                                       elapsed_us, stderr_len, bwrap_failure);
     return ok && rendered && WIFEXITED(status) ? 0 : 1;
 }
 

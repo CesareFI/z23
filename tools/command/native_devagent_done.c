@@ -135,186 +135,173 @@ static bool dvd_under_build(const char *path)
     return strncmp(path, "build/", 6) == 0;
 }
 
+static const char *dvd_input_string(const struct zcl_command_request *request,
+                                    const char *key)
+{
+    if (!request || !request->input)
+        return NULL;
+    const struct json_value *v = json_get(request->input, key);
+    if (v && v->type == JSON_STR && json_get_str(v) && json_get_str(v)[0])
+        return json_get_str(v);
+    return NULL;
+}
+
+/* Runs one git query whose whole stdout is the answer; on failure the reply
+ * is already failed. */
+static bool dvd_git_answer(struct zcl_command_reply *reply, const char *cwd,
+                           const char *const argv[], char *out, size_t out_sz)
+{
+    char line[DVD_LINE_CAP];
+    int rc = dvd_git(cwd, argv, out, out_sz, line, sizeof(line));
+    if (rc != 0)
+        dvd_git_failed(reply, line, rc);
+    return rc == 0;
+}
+
+/* tree_clean: no tracked change, and no untracked file outside build/. */
+static bool dvd_porcelain_clean(const char *out)
+{
+    const char *p = out;
+    while (*p) {
+        const char *nl = strchr(p, '\n');
+        size_t len = nl ? (size_t)(nl - p) : strlen(p);
+        if (len >= 3) {
+            char pathbuf[PATH_MAX];
+            size_t pathlen = len > 3 ? len - 3 : 0;
+            if (pathlen >= sizeof(pathbuf))
+                pathlen = sizeof(pathbuf) - 1;
+            memcpy(pathbuf, p + 3, pathlen);
+            pathbuf[pathlen] = '\0';
+            bool untracked_row = p[0] == '?' && p[1] == '?';
+            if (!untracked_row || !dvd_under_build(pathbuf))
+                return false;
+        }
+        if (!nl)
+            break;
+        p = nl + 1;
+    }
+    return true;
+}
+
+/* Adds each "<hash> N" row of `git log --format='%h %G?'` (unsigned) to
+ * unsigned_arr. */
+static void dvd_collect_unsigned(const char *out, struct json_value *unsigned_arr)
+{
+    const char *p = out;
+    struct json_value item;
+    json_init(&item);
+    while (*p) {
+        const char *nl = strchr(p, '\n');
+        size_t len = nl ? (size_t)(nl - p) : strlen(p);
+        if (len > 0) {
+            char rowbuf[128];
+            size_t rowlen = len < sizeof(rowbuf) - 1 ? len : sizeof(rowbuf) - 1;
+            memcpy(rowbuf, p, rowlen);
+            rowbuf[rowlen] = '\0';
+            char *space = strchr(rowbuf, ' ');
+            if (space) {
+                *space = '\0';
+                if (strcmp(space + 1, "N") == 0) {
+                    json_set_str(&item, rowbuf);
+                    (void)json_push_back(unsigned_arr, &item);
+                }
+            }
+        }
+        if (!nl)
+            break;
+        p = nl + 1;
+    }
+    json_free(&item);
+}
+
+static void dvd_push_reason(struct json_value *reasons, const char *reason)
+{
+    struct json_value item;
+    json_init(&item);
+    json_set_str(&item, reason);
+    (void)json_push_back(reasons, &item);
+    json_free(&item);
+}
+
 void zcl_native_handle_dev_agent_done(
     const struct zcl_command_request *request, struct zcl_command_reply *reply)
 {
-    const char *cwd = NULL;
     const char *base = "origin/main";
     char out[DVD_OUT_CAP];
-    char line[DVD_LINE_CAP];
-    int rc;
 
     if (!reply)
         return;
 
-    if (request && request->input) {
-        const struct json_value *v;
-        v = json_get(request->input, "cwd");
-        if (v && v->type == JSON_STR && json_get_str(v) && json_get_str(v)[0])
-            cwd = json_get_str(v);
-        v = json_get(request->input, "base");
-        if (v && v->type == JSON_STR && json_get_str(v) && json_get_str(v)[0])
-            base = json_get_str(v);
-    }
+    const char *cwd = dvd_input_string(request, "cwd");
+    const char *base_in = dvd_input_string(request, "base");
+    if (base_in)
+        base = base_in;
 
     (void)json_push_kv_str(&reply->data, "leaf", DVD_LEAF);
 
     /* base must resolve: a non-resolving base is a GIT_FAILED, per contract,
      * never a silent ahead=0. */
-    {
-        const char *argv[] = {"rev-parse", "--verify", base, NULL};
-        rc = dvd_git(cwd, argv, out, sizeof(out), line, sizeof(line));
-        if (rc != 0) {
-            dvd_git_failed(reply, line, rc);
-            return;
-        }
-    }
+    const char *verify_argv[] = {"rev-parse", "--verify", base, NULL};
+    if (!dvd_git_answer(reply, cwd, verify_argv, out, sizeof(out)))
+        return;
 
     char head[DVD_OUT_CAP];
-    {
-        const char *argv[] = {"rev-parse", "HEAD", NULL};
-        rc = dvd_git(cwd, argv, head, sizeof(head), line, sizeof(line));
-        if (rc != 0) {
-            dvd_git_failed(reply, line, rc);
-            return;
-        }
-        dvd_strip(head);
-    }
+    const char *head_argv[] = {"rev-parse", "HEAD", NULL};
+    if (!dvd_git_answer(reply, cwd, head_argv, head, sizeof(head)))
+        return;
+    dvd_strip(head);
 
     char branch[DVD_OUT_CAP];
-    {
-        const char *argv[] = {"rev-parse", "--abbrev-ref", "HEAD", NULL};
-        rc = dvd_git(cwd, argv, branch, sizeof(branch), line, sizeof(line));
-        if (rc != 0) {
-            dvd_git_failed(reply, line, rc);
-            return;
-        }
-        dvd_strip(branch);
-    }
+    const char *branch_argv[] = {"rev-parse", "--abbrev-ref", "HEAD", NULL};
+    if (!dvd_git_answer(reply, cwd, branch_argv, branch, sizeof(branch)))
+        return;
+    dvd_strip(branch);
     const char *branch_reported = strcmp(branch, "HEAD") == 0 ? "" : branch;
 
-    long long ahead = 0;
-    {
-        char range[512];
-        (void)snprintf(range, sizeof(range), "%s..HEAD", base);
-        const char *argv[] = {"rev-list", "--count", range, NULL};
-        rc = dvd_git(cwd, argv, out, sizeof(out), line, sizeof(line));
-        if (rc != 0) {
-            dvd_git_failed(reply, line, rc);
-            return;
-        }
-        dvd_strip(out);
-        char *end = NULL;
-        ahead = strtoll(out, &end, 10);
-        if (end == out)
-            ahead = 0;
-    }
+    char range[512];
+    (void)snprintf(range, sizeof(range), "%s..HEAD", base);
+    const char *count_argv[] = {"rev-list", "--count", range, NULL};
+    if (!dvd_git_answer(reply, cwd, count_argv, out, sizeof(out)))
+        return;
+    dvd_strip(out);
+    char *end = NULL;
+    long long ahead = strtoll(out, &end, 10);
+    if (end == out)
+        ahead = 0;
 
-    /* tree_clean: no tracked change, and no untracked file outside build/. */
-    bool tree_clean = true;
-    {
-        const char *argv[] = {"status", "--porcelain", NULL};
-        rc = dvd_git(cwd, argv, out, sizeof(out), line, sizeof(line));
-        if (rc != 0) {
-            dvd_git_failed(reply, line, rc);
-            return;
-        }
-        const char *p = out;
-        while (*p) {
-            const char *nl = strchr(p, '\n');
-            size_t len = nl ? (size_t)(nl - p) : strlen(p);
-            if (len >= 3) {
-                bool untracked_row = p[0] == '?' && p[1] == '?';
-                const char *path = p + 3;
-                char pathbuf[PATH_MAX];
-                size_t pathlen = len > 3 ? len - 3 : 0;
-                if (pathlen >= sizeof(pathbuf))
-                    pathlen = sizeof(pathbuf) - 1;
-                memcpy(pathbuf, path, pathlen);
-                pathbuf[pathlen] = '\0';
-
-                if (untracked_row) {
-                    if (!dvd_under_build(pathbuf))
-                        tree_clean = false;
-                } else {
-                    tree_clean = false;
-                }
-            }
-            if (!nl)
-                break;
-            p = nl + 1;
-        }
-    }
+    const char *status_argv[] = {"status", "--porcelain", NULL};
+    if (!dvd_git_answer(reply, cwd, status_argv, out, sizeof(out)))
+        return;
+    bool tree_clean = dvd_porcelain_clean(out);
 
     /* unsigned commits in base..HEAD. */
     struct json_value unsigned_arr;
     json_init(&unsigned_arr);
     json_set_array(&unsigned_arr);
     if (ahead > 0) {
-        char range[512];
-        (void)snprintf(range, sizeof(range), "%s..HEAD", base);
-        const char *argv[] = {"log", "--format=%h %G?", range, NULL};
-        rc = dvd_git(cwd, argv, out, sizeof(out), line, sizeof(line));
-        if (rc != 0) {
+        const char *log_argv[] = {"log", "--format=%h %G?", range, NULL};
+        if (!dvd_git_answer(reply, cwd, log_argv, out, sizeof(out))) {
             json_free(&unsigned_arr);
-            dvd_git_failed(reply, line, rc);
             return;
         }
-        const char *p = out;
-        struct json_value item;
-        json_init(&item);
-        while (*p) {
-            const char *nl = strchr(p, '\n');
-            size_t len = nl ? (size_t)(nl - p) : strlen(p);
-            if (len > 0) {
-                char rowbuf[128];
-                size_t rowlen = len < sizeof(rowbuf) - 1 ? len : sizeof(rowbuf) - 1;
-                memcpy(rowbuf, p, rowlen);
-                rowbuf[rowlen] = '\0';
-                char *space = strchr(rowbuf, ' ');
-                if (space) {
-                    *space = '\0';
-                    const char *sig = space + 1;
-                    if (strcmp(sig, "N") == 0) {
-                        json_set_str(&item, rowbuf);
-                        (void)json_push_back(&unsigned_arr, &item);
-                    }
-                }
-            }
-            if (!nl)
-                break;
-            p = nl + 1;
-        }
-        json_free(&item);
+        dvd_collect_unsigned(out, &unsigned_arr);
     }
 
-    bool ready = tree_clean && ahead >= 1 && unsigned_arr.num_children == 0 &&
-                strcmp(branch_reported, "main") != 0;
+    bool on_main = strcmp(branch_reported, "main") == 0;
+    bool has_unsigned = unsigned_arr.num_children != 0;
+    bool ready = tree_clean && ahead >= 1 && !has_unsigned && !on_main;
 
     struct json_value reasons;
     json_init(&reasons);
     json_set_array(&reasons);
-    {
-        struct json_value item;
-        json_init(&item);
-        if (!tree_clean) {
-            json_set_str(&item, "tree_dirty");
-            (void)json_push_back(&reasons, &item);
-        }
-        if (ahead < 1) {
-            json_set_str(&item, "no_commits_ahead");
-            (void)json_push_back(&reasons, &item);
-        }
-        if (unsigned_arr.num_children != 0) {
-            json_set_str(&item, "unsigned_commits");
-            (void)json_push_back(&reasons, &item);
-        }
-        if (strcmp(branch_reported, "main") == 0) {
-            json_set_str(&item, "on_main");
-            (void)json_push_back(&reasons, &item);
-        }
-        json_free(&item);
-    }
+    if (!tree_clean)
+        dvd_push_reason(&reasons, "tree_dirty");
+    if (ahead < 1)
+        dvd_push_reason(&reasons, "no_commits_ahead");
+    if (has_unsigned)
+        dvd_push_reason(&reasons, "unsigned_commits");
+    if (on_main)
+        dvd_push_reason(&reasons, "on_main");
 
     (void)json_push_kv_bool(&reply->data, "ready", ready);
     (void)json_push_kv_str(&reply->data, "head", head);

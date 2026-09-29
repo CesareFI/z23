@@ -690,109 +690,235 @@ static bool mah_arg_i64(const char *text, int64_t *out)
     return true;
 }
 
+/* One `json` subcommand: validates its arguments against the document and
+ * reports success; output, when set, is printed on success or failure. */
+struct mah_json_ctx {
+    const struct json_value *doc;
+    char **argv;
+    const char *output;
+};
+
+struct mah_json_command_row {
+    const char *name;
+    int argc;
+    bool (*run)(struct mah_json_ctx *ctx);
+};
+
+static bool mah_cmd_get(struct mah_json_ctx *c)
+{
+    return mah_print_value(mah_path(c->doc, c->argv[2]));
+}
+
+static bool mah_cmd_rpc_result(struct mah_json_ctx *c)
+{
+    const struct json_value *error = mah_member(c->doc, "error");
+    return (!error || error->type == JSON_NULL) &&
+        mah_print_value(mah_member(c->doc, "result"));
+}
+
+static bool mah_cmd_offer_plan(struct mah_json_ctx *c)
+{
+    int64_t size, chunks, total;
+    return mah_arg_i64(c->argv[3], &size) && mah_arg_i64(c->argv[4], &chunks) &&
+        mah_arg_i64(c->argv[5], &total) &&
+        mah_expect_offer_plan(c->doc, c->argv[2], size, chunks, total);
+}
+
+static bool mah_cmd_offer_commit(struct mah_json_ctx *c)
+{
+    c->output = mah_expect_offer_commit(c->doc, c->argv[2]);
+    return c->output != NULL;
+}
+
+static bool mah_cmd_buyer_entry(struct mah_json_ctx *c)
+{
+    int64_t price, chunks, total;
+    return mah_arg_i64(c->argv[4], &price) &&
+        mah_arg_i64(c->argv[5], &chunks) && mah_arg_i64(c->argv[6], &total) &&
+        mah_expect_buyer_entry(c->doc, c->argv[2], c->argv[3], price, chunks,
+                               total);
+}
+
+static bool mah_cmd_market_empty(struct mah_json_ctx *c)
+{
+    return mah_expect_market_empty(c->doc);
+}
+
+static bool mah_cmd_market_hidden(struct mah_json_ctx *c)
+{
+    return mah_expect_market_hidden(c->doc, c->argv[2]);
+}
+
+static bool mah_cmd_purchase_plan(struct mah_json_ctx *c)
+{
+    int64_t total;
+    if (mah_arg_i64(c->argv[3], &total))
+        c->output = mah_expect_purchase_plan(c->doc, c->argv[2], total);
+    return c->output != NULL;
+}
+
+static bool mah_cmd_purchase_commit(struct mah_json_ctx *c)
+{
+    c->output = mah_expect_purchase_commit(c->doc);
+    return c->output != NULL;
+}
+
+static bool mah_cmd_early_refusal(struct mah_json_ctx *c)
+{
+    return mah_expect_early_refusal(c->doc);
+}
+
+static bool mah_cmd_purchase_status(struct mah_json_ctx *c)
+{
+    return mah_expect_purchase_status(c->doc, c->argv[2]);
+}
+
+static bool mah_cmd_retrieve(struct mah_json_ctx *c)
+{
+    int64_t size, chunks;
+    return mah_arg_i64(c->argv[2], &size) && mah_arg_i64(c->argv[3], &chunks) &&
+        mah_expect_retrieve(c->doc, size, chunks);
+}
+
+static bool mah_cmd_claim(struct mah_json_ctx *c)
+{
+    int64_t height;
+    return mah_arg_i64(c->argv[2], &height) && mah_expect_claim(c->doc, height);
+}
+
+static bool mah_cmd_recommit(struct mah_json_ctx *c)
+{
+    return mah_expect_replay(c->doc, "txid", c->argv[2], false);
+}
+
+static bool mah_cmd_replan(struct mah_json_ctx *c)
+{
+    return mah_expect_replay(c->doc, "plan_id", c->argv[2], false);
+}
+
+static bool mah_cmd_reoffer(struct mah_json_ctx *c)
+{
+    return mah_expect_replay(c->doc, "offer_id", c->argv[2], true);
+}
+
+static bool mah_cmd_intent_plan(struct mah_json_ctx *c)
+{
+    bool replay = strcmp(c->argv[4], "replay") == 0;
+    if (replay || strcmp(c->argv[4], "fresh") == 0)
+        c->output = mah_expect_intent_plan(c->doc, c->argv[2], c->argv[3],
+                                           replay);
+    return c->output != NULL;
+}
+
+static bool mah_cmd_intent_commit(struct mah_json_ctx *c)
+{
+    bool replay = strcmp(c->argv[4], "replay") == 0;
+    if (replay || strcmp(c->argv[4], "fresh") == 0)
+        c->output = mah_expect_intent_commit(c->doc, c->argv[2], c->argv[3],
+                                             replay);
+    return c->output != NULL;
+}
+
+static bool mah_cmd_intent_status(struct mah_json_ctx *c)
+{
+    return mah_expect_intent_status(c->doc, c->argv[2], c->argv[3],
+                                    c->argv[4]);
+}
+
+static bool mah_cmd_intent_error(struct mah_json_ctx *c)
+{
+    return mah_expect_intent_error(c->doc, c->argv[2]);
+}
+
+static bool mah_cmd_amount(struct mah_json_ctx *c)
+{
+    const struct json_value *value = mah_path(c->doc, c->argv[2]);
+    int64_t amount = 0;
+    if (!value || value->type != JSON_STR ||
+        !mah_amount_zat(json_get_str(value), &amount))
+        return false;
+    printf("%" PRId64 "\n", amount);
+    return true;
+}
+
+static bool mah_cmd_address(struct mah_json_ctx *c)
+{
+    const struct json_value *data = mah_data(c->doc);
+    const char *address = mah_string(data, "address");
+    bool shielded = strcmp(c->argv[2], "sapling") == 0;
+    if ((!shielded && strcmp(c->argv[2], "transparent") != 0) ||
+        !mah_address_shape(address, shielded))
+        return false;
+    c->output = address;
+    return true;
+}
+
+static bool mah_cmd_mempool_at_least(struct mah_json_ctx *c)
+{
+    int64_t want = 0, size = -1;
+    const struct json_value *data = mah_data(c->doc);
+    return mah_arg_i64(c->argv[2], &want) && mah_int(data, "size", &size) &&
+        size >= want;
+}
+
+static bool mah_cmd_chain_tx(struct mah_json_ctx *c)
+{
+    bool confirmed = strcmp(c->argv[3], "confirmed") == 0;
+    return (confirmed || strcmp(c->argv[3], "mempool") == 0) &&
+        mah_expect_chain_tx(c->doc, c->argv[2], confirmed);
+}
+
+static bool mah_cmd_intent_list_at_least(struct mah_json_ctx *c)
+{
+    int64_t want = 0, count = -1;
+    const struct json_value *data = mah_data(c->doc);
+    return mah_arg_i64(c->argv[2], &want) && mah_bool(data, "ok", true) &&
+        mah_int(data, "count", &count) && count >= want;
+}
+
+static const struct mah_json_command_row k_mah_json_commands[] = {
+    {"get", 3, mah_cmd_get},
+    {"rpc-result", 2, mah_cmd_rpc_result},
+    {"offer-plan", 6, mah_cmd_offer_plan},
+    {"offer-commit", 3, mah_cmd_offer_commit},
+    {"buyer-entry", 7, mah_cmd_buyer_entry},
+    {"market-empty", 2, mah_cmd_market_empty},
+    {"market-hidden", 3, mah_cmd_market_hidden},
+    {"purchase-plan", 4, mah_cmd_purchase_plan},
+    {"purchase-commit", 2, mah_cmd_purchase_commit},
+    {"early-refusal", 2, mah_cmd_early_refusal},
+    {"purchase-status", 3, mah_cmd_purchase_status},
+    {"retrieve", 4, mah_cmd_retrieve},
+    {"claim", 3, mah_cmd_claim},
+    {"recommit", 3, mah_cmd_recommit},
+    {"replan", 3, mah_cmd_replan},
+    {"reoffer", 3, mah_cmd_reoffer},
+    {"intent-plan", 5, mah_cmd_intent_plan},
+    {"intent-commit", 5, mah_cmd_intent_commit},
+    {"intent-status", 5, mah_cmd_intent_status},
+    {"intent-error", 3, mah_cmd_intent_error},
+    {"amount", 3, mah_cmd_amount},
+    {"address", 3, mah_cmd_address},
+    {"mempool-at-least", 3, mah_cmd_mempool_at_least},
+    {"chain-tx", 4, mah_cmd_chain_tx},
+    {"intent-list-at-least", 3, mah_cmd_intent_list_at_least},
+};
+
 static int mah_json_command(int argc, char **argv)
 {
     struct json_value doc;
     json_init(&doc);
     if (!mah_read_json(&doc)) { json_free(&doc); return mah_fail("invalid JSON input"); }
+    struct mah_json_ctx ctx = {.doc = &doc, .argv = argv};
     bool ok = false;
-    const char *output = NULL;
-    if (strcmp(argv[1], "get") == 0 && argc == 3) {
-        ok = mah_print_value(mah_path(&doc, argv[2]));
-    } else if (strcmp(argv[1], "rpc-result") == 0 && argc == 2) {
-        const struct json_value *error = mah_member(&doc, "error");
-        ok = (!error || error->type == JSON_NULL) &&
-            mah_print_value(mah_member(&doc, "result"));
-    } else if (strcmp(argv[1], "offer-plan") == 0 && argc == 6) {
-        int64_t size, chunks, total;
-        ok = mah_arg_i64(argv[3], &size) && mah_arg_i64(argv[4], &chunks) &&
-            mah_arg_i64(argv[5], &total) &&
-            mah_expect_offer_plan(&doc, argv[2], size, chunks, total);
-    } else if (strcmp(argv[1], "offer-commit") == 0 && argc == 3) {
-        output = mah_expect_offer_commit(&doc, argv[2]); ok = output != NULL;
-    } else if (strcmp(argv[1], "buyer-entry") == 0 && argc == 7) {
-        int64_t price, chunks, total;
-        ok = mah_arg_i64(argv[4], &price) && mah_arg_i64(argv[5], &chunks) &&
-            mah_arg_i64(argv[6], &total) &&
-            mah_expect_buyer_entry(&doc, argv[2], argv[3], price, chunks, total);
-    } else if (strcmp(argv[1], "market-empty") == 0 && argc == 2) {
-        ok = mah_expect_market_empty(&doc);
-    } else if (strcmp(argv[1], "market-hidden") == 0 && argc == 3) {
-        ok = mah_expect_market_hidden(&doc, argv[2]);
-    } else if (strcmp(argv[1], "purchase-plan") == 0 && argc == 4) {
-        int64_t total;
-        if (mah_arg_i64(argv[3], &total))
-            output = mah_expect_purchase_plan(&doc, argv[2], total);
-        ok = output != NULL;
-    } else if (strcmp(argv[1], "purchase-commit") == 0 && argc == 2) {
-        output = mah_expect_purchase_commit(&doc); ok = output != NULL;
-    } else if (strcmp(argv[1], "early-refusal") == 0 && argc == 2) {
-        ok = mah_expect_early_refusal(&doc);
-    } else if (strcmp(argv[1], "purchase-status") == 0 && argc == 3) {
-        ok = mah_expect_purchase_status(&doc, argv[2]);
-    } else if (strcmp(argv[1], "retrieve") == 0 && argc == 4) {
-        int64_t size, chunks;
-        ok = mah_arg_i64(argv[2], &size) && mah_arg_i64(argv[3], &chunks) &&
-            mah_expect_retrieve(&doc, size, chunks);
-    } else if (strcmp(argv[1], "claim") == 0 && argc == 3) {
-        int64_t height;
-        ok = mah_arg_i64(argv[2], &height) &&
-            mah_expect_claim(&doc, height);
-    } else if (strcmp(argv[1], "recommit") == 0 && argc == 3) {
-        ok = mah_expect_replay(&doc, "txid", argv[2], false);
-    } else if (strcmp(argv[1], "replan") == 0 && argc == 3) {
-        ok = mah_expect_replay(&doc, "plan_id", argv[2], false);
-    } else if (strcmp(argv[1], "reoffer") == 0 && argc == 3) {
-        ok = mah_expect_replay(&doc, "offer_id", argv[2], true);
-    } else if (strcmp(argv[1], "intent-plan") == 0 && argc == 5) {
-        bool replay = strcmp(argv[4], "replay") == 0;
-        if (replay || strcmp(argv[4], "fresh") == 0)
-            output = mah_expect_intent_plan(
-                &doc, argv[2], argv[3], replay);
-        ok = output != NULL;
-    } else if (strcmp(argv[1], "intent-commit") == 0 && argc == 5) {
-        bool replay = strcmp(argv[4], "replay") == 0;
-        if (replay || strcmp(argv[4], "fresh") == 0)
-            output = mah_expect_intent_commit(
-                &doc, argv[2], argv[3], replay);
-        ok = output != NULL;
-    } else if (strcmp(argv[1], "intent-status") == 0 && argc == 5) {
-        ok = mah_expect_intent_status(&doc, argv[2], argv[3], argv[4]);
-    } else if (strcmp(argv[1], "intent-error") == 0 && argc == 3) {
-        ok = mah_expect_intent_error(&doc, argv[2]);
-    } else if (strcmp(argv[1], "amount") == 0 && argc == 3) {
-        const struct json_value *value = mah_path(&doc, argv[2]);
-        int64_t amount = 0;
-        if (value && value->type == JSON_STR &&
-            mah_amount_zat(json_get_str(value), &amount)) {
-            printf("%" PRId64 "\n", amount);
-            ok = true;
-        }
-    } else if (strcmp(argv[1], "address") == 0 && argc == 3) {
-        const struct json_value *data = mah_data(&doc);
-        const char *address = mah_string(data, "address");
-        bool shielded = strcmp(argv[2], "sapling") == 0;
-        if ((shielded || strcmp(argv[2], "transparent") == 0) &&
-            mah_address_shape(address, shielded)) {
-            output = address;
-            ok = true;
-        }
-    } else if (strcmp(argv[1], "mempool-at-least") == 0 && argc == 3) {
-        int64_t want = 0, size = -1;
-        const struct json_value *data = mah_data(&doc);
-        ok = mah_arg_i64(argv[2], &want) &&
-            mah_int(data, "size", &size) && size >= want;
-    } else if (strcmp(argv[1], "chain-tx") == 0 && argc == 4) {
-        bool confirmed = strcmp(argv[3], "confirmed") == 0;
-        if (confirmed || strcmp(argv[3], "mempool") == 0)
-            ok = mah_expect_chain_tx(&doc, argv[2], confirmed);
-    } else if (strcmp(argv[1], "intent-list-at-least") == 0 && argc == 3) {
-        int64_t want = 0, count = -1;
-        const struct json_value *data = mah_data(&doc);
-        ok = mah_arg_i64(argv[2], &want) && mah_bool(data, "ok", true) &&
-            mah_int(data, "count", &count) && count >= want;
+    for (size_t i = 0; i < sizeof(k_mah_json_commands) /
+                           sizeof(k_mah_json_commands[0]); i++) {
+        const struct mah_json_command_row *row = &k_mah_json_commands[i];
+        if (strcmp(argv[1], row->name) != 0 || argc != row->argc) continue;
+        ok = row->run(&ctx);
+        break;
     }
-    if (output) printf("%s\n", output);
+    if (ctx.output) printf("%s\n", ctx.output);
     json_free(&doc);
     return ok ? 0 : mah_fail("JSON contract mismatch");
 }
