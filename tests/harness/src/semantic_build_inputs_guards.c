@@ -380,6 +380,48 @@ static int sbit_t_pruned_branch(void)
     return failures;
 }
 
+/* A command make runs after it read the deciding directive cannot change
+ * what that directive read: under the premises nothing restarts make (a
+ * missing include it could make is UNKNOWN or skipped, an existing one is
+ * current). One at or before the directive still refuses the skip, and so
+ * does a lazy definition read before it or any line of another makefile,
+ * whenever make runs it. */
+#define SBI_FLAG_COND "ifneq ($(wildcard d/flag),)"
+#define SBI_TOUCH "$(shell mkdir -p d && touch d/flag)"
+#define SBI_TOR_AFTER(pre, post)                                               \
+    SBI_GUARD(SBI_TOR_TREE(SBI_HOST, "") pre,                                  \
+              "ifneq ($(strip $(TOR_MISSING_ARCHIVES)),)", "endif\n" post)
+#define SBI_TOR_KEY "KEY := $(shell tools/key.sh '$(TOR_ARCHIVE_PATHS)')\n"
+static const char *const k_sbi_other_mk[] = {"other.mk", "X := " SBI_TOUCH "\n",
+                                             NULL};
+static int sbit_t_after_directive(void)
+{
+    int failures = 0;
+    static const struct sbi_gcase cases[] = {
+        {"after_touch", SBI_GUARD("", SBI_FLAG_COND, "X := " SBI_TOUCH "\n"),
+         NULL, true},
+        {"after_touch_in_branch", SBI_GUARD("", "ifeq ($(wildcard d/flag),)\n"
+                                            "X := " SBI_TOUCH "\nelse", ""),
+         NULL, true},
+        {"after_eval", SBI_GUARD("", SBI_FLAG_COND, "define T\n$(1):\n"
+                                 "\tmkdir -p d && touch d/flag\nendef\n"
+                                 "$(eval $(call T,d/flag))\n"), NULL, true},
+        {"before_touch", SBI_GUARD(SBI_IF_UNAME "X := " SBI_TOUCH "\n",
+                                   SBI_FLAG_COND, "endif\n"), NULL, false},
+        {"before_lazy", SBI_GUARD("MK = " SBI_TOUCH "\n", SBI_FLAG_COND,
+                                  "X := $(MK)\n"), NULL, false},
+        {"other_file_after", SBI_GUARD("", SBI_FLAG_COND, "include other.mk\n"),
+         k_sbi_other_mk, false},
+        {"tor_key_after", SBI_TOR_AFTER("", SBI_TOR_KEY), k_sbi_tor_host, true},
+        {"tor_key_before", SBI_TOR_AFTER(SBI_TOR_KEY, ""), k_sbi_tor_host, false},
+    };
+    TEST_CASE("semantic_build_inputs: a parse-time command after the "
+             "deciding directive leaves the skip; one before it refuses it") {
+        ASSERT(sbi_guard_cases(cases, SBI_COUNT(cases)));
+    } TEST_END
+    return failures;
+}
+
 /* make drops a leading ./ from a file name (not a doubled slash): an
  * include and the rule that makes it name one file however each spells
  * it. */
@@ -660,5 +702,5 @@ int sbi_guard_suite(void)
            sbit_t_guarded_include() | sbit_t_guard_record() | sbit_t_plan_record() |
            sbit_t_dot_slash() | sbit_t_computed_targets() | sbit_t_computed_lines() |
            sbit_t_premise_forms() | sbit_t_host_target_tor() | sbit_t_pruned_branch() |
-           sbit_t_tor_record();
+           sbit_t_tor_record() | sbit_t_after_directive();
 }
