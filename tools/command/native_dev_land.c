@@ -8237,6 +8237,12 @@ static bool dl_attach_wait_input(const struct zcl_command_request *req,
     return true;
 }
 
+static void dl_attach_reply_reset(struct zcl_command_reply *reply)
+{
+    zcl_command_reply_free(reply);
+    zcl_command_reply_init(reply, "zcl.land.v1");
+}
+
 static void dl_attach_wait_expired(const struct zcl_command_request *req,
                                    struct zcl_command_reply *reply,
                                    int64_t wait_ms, bool step_busy)
@@ -8247,8 +8253,7 @@ static void dl_attach_wait_expired(const struct zcl_command_request *req,
                    (long long)json_get_int(json_get(req->input, "seq")),
                    dl_str(req, "base"), dl_str(req, "head"),
                    (long long)wait_ms);
-    zcl_command_reply_free(reply);
-    zcl_command_reply_init(reply, "zcl.land.v1");
+    dl_attach_reply_reset(reply);
     dl_fail(reply, step_busy ? "PUBLICATION_STEP_WAIT_EXPIRED"
                              : "PUBLICATION_PROOF_WAIT_EXPIRED",
             "attach",
@@ -8275,8 +8280,7 @@ static void dl_attach(const struct zcl_command_request *req,
             dl_attach_wait_expired(req, reply, wait_ms, step_busy);
             return;
         }
-        zcl_command_reply_free(reply);
-        zcl_command_reply_init(reply, "zcl.land.v1");
+        dl_attach_reply_reset(reply);
         struct timespec pause = { .tv_sec = 0, .tv_nsec = 100000000L };
         (void)nanosleep(&pause, NULL);
     }
