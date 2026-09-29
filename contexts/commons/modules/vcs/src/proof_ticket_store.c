@@ -239,13 +239,21 @@ struct pts_restore {
     uint64_t generation;
 };
 
+/* What a rebuild checks beyond the catalog, and whether it may write. A
+ * receiver rebuild pins the signed fork evidence it finds; the issuer-log
+ * restore publishes against the generation it scanned and never writes. */
+struct pts_scope {
+    const struct vcs_proof_receiver_anchor *anchors;
+    size_t anchor_count;
+    bool pin_evidence;
+};
+
 static bool pts_rebuild_bounded(struct vcs_proof_receiver *r,
                                 struct vcs_package_store *store,
                                 size_t max_catalog_rows, size_t *tickets,
                                 size_t *checkpoints, size_t *skipped,
                                 uint64_t *generation_out,
-                                const struct vcs_proof_receiver_anchor *anchors,
-                                size_t anchor_count);
+                                const struct pts_scope *scope);
 
 static void pts_restore_free(struct pts_restore *s)
 {
@@ -264,8 +272,9 @@ static bool pts_restore_begin(struct pts_restore *s, const uint8_t seed[32],
     s->fresh = vcs_proof_issuer_log_new(seed);
     if (!s->fresh) return false;
     vcs_proof_issuer_log_pubkey(s->fresh, s->pubkey);
+    static const struct pts_scope read_only = {NULL, 0, false};
     return pts_rebuild_bounded(s->receiver, s->store, max_catalog_rows,
-                               NULL, NULL, NULL, &s->generation, NULL, 0);
+                               NULL, NULL, NULL, &s->generation, &read_only);
 }
 
 static bool pts_restore_empty(struct pts_restore *s)
@@ -1139,13 +1148,25 @@ static bool pts_verify_anchor_heads(
     return true;
 }
 
+/* After the view is published or refused, make any signed fork the complete
+ * scan found durable, so compaction cannot erase it before the next start.
+ * This runs after the guarded publication because a pin moves the store
+ * generation; *generation_out still names the scanned catalog. */
+static void pts_keep_evidence(const struct vcs_proof_receiver *published,
+                              const struct vcs_proof_receiver *refused,
+                              struct vcs_package_store *store, bool ok,
+                              const struct pts_scope *scope)
+{
+    if (scope->pin_evidence)
+        (void)pr_fork_evidence_pin(ok ? published : refused, store);
+}
+
 static bool pts_rebuild_bounded(struct vcs_proof_receiver *r,
                                 struct vcs_package_store *store,
                                 size_t max_catalog_rows, size_t *tickets,
                                 size_t *checkpoints, size_t *skipped,
                                 uint64_t *generation_out,
-                                const struct vcs_proof_receiver_anchor *anchors,
-                                size_t anchor_count)
+                                const struct pts_scope *scope)
 {
     struct pts_counts n = {0};
     pts_report_counts(&n, tickets, checkpoints, skipped);
@@ -1164,11 +1185,13 @@ static bool pts_rebuild_bounded(struct vcs_proof_receiver *r,
               pts_replay(staging, &cps, &n) &&
               pts_restore_anchored_fork(r, staging) &&
               pts_preserves_prior(r, staging) &&
-              pts_verify_anchor_heads(staging, store, anchors, anchor_count);
+              pts_verify_anchor_heads(staging, store, scope->anchors,
+                                      scope->anchor_count);
     free(cps.items);
     if (ok) ok = pts_publish_rechecked(r, staging, store, &chunks, generation);
     else if (scanned)
         pts_record_forks(r, staging, store, &chunks, generation);
+    if (scanned) pts_keep_evidence(r, staging, store, ok, scope);
     if (ok && generation_out) *generation_out = generation;
     if (!ok)
         n = (struct pts_counts){0};
@@ -1183,8 +1206,9 @@ bool vcs_proof_receiver_rebuild_bounded(
     size_t max_catalog_rows, size_t *tickets, size_t *checkpoints,
     size_t *skipped)
 {
+    const struct pts_scope scope = {NULL, 0, true};
     return pts_rebuild_bounded(r, store, max_catalog_rows, tickets,
-                               checkpoints, skipped, NULL, NULL, 0);
+                               checkpoints, skipped, NULL, &scope);
 }
 
 bool vcs_proof_receiver_rebuild_anchored_bounded(
@@ -1201,7 +1225,7 @@ bool vcs_proof_receiver_rebuild_anchored_bounded(
         LOG_RETURN(false, PTS_LOG,
                    "rebuild: anchored head set is empty or over budget");
     }
+    const struct pts_scope scope = {anchors, anchor_count, true};
     return pts_rebuild_bounded(r, store, max_catalog_rows, tickets,
-                               checkpoints, skipped, generation_out, anchors,
-                               anchor_count);
+                               checkpoints, skipped, generation_out, &scope);
 }

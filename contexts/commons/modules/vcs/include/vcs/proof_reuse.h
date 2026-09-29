@@ -310,7 +310,14 @@ bool vcs_component_proof_key_load(struct vcs_package_store *store,
  * receiver marks that issuer equivocating even though the rebuilt view is
  * refused. Unrelated blobs count as *skipped. The caller supplies a
  * total catalog-row budget in addition to the per-page limit. Exhaustion
- * refuses; it never publishes a view missing a later contradiction. */
+ * refuses; it never publishes a view missing a later contradiction.
+ * After a complete scan, published or refused, each equivocating issuer's
+ * minimal signed evidence (two of its tickets at one sequence, else two of
+ * its checkpoints naming one parent) is pinned unless a pair already is:
+ * at most two blobs per issuer key, each signed by it. Compaction then
+ * cannot erase the fork, and a restarted rebuild re-derives it. A pin never
+ * evicts; a pins pool that is full is logged and leaves the fork known only
+ * to this process. Pinning moves the store generation after publication. */
 bool vcs_proof_receiver_rebuild_bounded(
     struct vcs_proof_receiver *r, struct vcs_package_store *store,
     size_t max_catalog_rows, size_t *tickets, size_t *checkpoints,

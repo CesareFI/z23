@@ -131,6 +131,69 @@ static const char *phc_reason_of(const struct vcs_proof_ticket_class *cls,
     return "absent";
 }
 
+static bool phc_pinned(struct vcs_package_store *store, const uint8_t *wire,
+                       size_t len)
+{
+    uint8_t root[32];
+    struct vcs_package_store_status st;
+    return vcs_blob_root(wire, len, root) &&
+           vcs_package_store_package_status(store, root, &st) &&
+           st.tracked && st.pinned;
+}
+
+static uint64_t phc_pins(struct vcs_package_store *store)
+{
+    return vcs_package_store_pool_usage(store, VCS_PACKAGE_STORE_POOL_PINS);
+}
+
+/* A's own key signs a second history whose sequence 0 is `unit`. */
+static bool phc_fork_ticket(const char *unit,
+                            uint8_t wire[VCS_PROOF_TICKET_WIRE_BYTES])
+{
+    struct vcs_proof_issuer_log *fork =
+        vcs_proof_issuer_log_new(g_h.seed[PTF_A]);
+    uint8_t scratch[VCS_PROOF_TICKET_WIRE_BYTES];
+    struct vcs_proof_ticket_v1 t;
+    struct vcs_component_proof_key_v1 k;
+    phc_key(unit, &k);
+    bool made = fork &&
+        ptf_emit(&g_h, PTF_STRANGER, &k, ptf_pass(), scratch, NULL) &&
+        vcs_proof_ticket_decode(scratch, sizeof(scratch), &t) &&
+        vcs_proof_issuer_log_append(fork, &t, wire);
+    vcs_proof_issuer_log_free(fork);
+    return made;
+}
+
+/* Compaction: at a quota a few bytes over the RARE pool's usage, `victim`
+ * is the best-replicated RARE package (the first the store may drop), so
+ * one unrelated write of the same size evicts exactly it. */
+static bool phc_compact(const char *dir, const uint8_t *victim, size_t len,
+                        uint8_t salt)
+{
+    struct vcs_package_store *store = vcs_package_store_open(dir, PHC_QUOTA);
+    if (!store) return false;
+    uint64_t rare = vcs_package_store_pool_usage(store,
+                                                 VCS_PACKAGE_STORE_POOL_RARE);
+    vcs_package_store_close(store);
+    store = vcs_package_store_open(dir, (rare / 3u) * 10u + 10u);
+    uint8_t root[32];
+    uint8_t junk[VCS_PROOF_TICKET_WIRE_BYTES + 1u];
+    size_t got = 0;
+    bool ok = store && len <= VCS_PROOF_TICKET_WIRE_BYTES &&
+              vcs_blob_root(victim, len, root) &&
+              vcs_package_store_set_class(store, root,
+                                          VCS_PACKAGE_STORE_CLASS_RARE,
+                                          1000u) == VCS_PACKAGE_STORE_OK;
+    if (ok) {
+        memset(junk, salt, len);
+        ok = phc_put(store, junk, len, NULL) &&
+             vcs_blob_get_from(store, root, junk, sizeof(junk), &got) ==
+                 VCS_BLOB_ERR_ABSENT;
+    }
+    if (store) vcs_package_store_close(store);
+    return ok;
+}
+
 /* ── a process that dies inside a multi-page rebuild ────────────────── */
 
 #if !defined(_WIN32)
@@ -432,9 +495,341 @@ static int phc_case_late_page_fork(void)
     return failures;
 }
 
+/* ── compaction never erases signed fork evidence ───────────────────── */
+
+/* Review reproducer: A's second ticket at sequence 0 sorts below every
+ * honest root, so root-order eviction would take it first. */
+static bool phc_lowest_fork(const uint8_t (*honest)[32], size_t count,
+                            uint8_t forked[VCS_PROOF_TICKET_WIRE_BYTES],
+                            uint8_t forked_root[32])
+{
+    for (uint64_t i = 0; i < 4096u; i++) {
+        char unit[48];
+        snprintf(unit, sizeof(unit), "unit/fork/%llu", (unsigned long long)i);
+        if (!phc_fork_ticket(unit, forked) ||
+            !vcs_blob_root(forked, VCS_PROOF_TICKET_WIRE_BYTES, forked_root))
+            return false;
+        bool lowest = true;
+        for (size_t h = 0; h < count; h++)
+            if (memcmp(forked_root, honest[h], 32) >= 0) lowest = false;
+        if (lowest) return true;
+    }
+    return false;
+}
+
+static int phc_case_evicted_fork_kept(void)
+{
+    int failures = 0;
+    TEST_CASE("proof_history: an evicted-first signed fork survives restart") {
+        ASSERT(phc_fresh());
+        uint8_t a[1][VCS_PROOF_TICKET_WIRE_BYTES];
+        uint8_t b[1][VCS_PROOF_TICKET_WIRE_BYTES];
+        ASSERT(ptf_emit(&g_h, PTF_A, &g_h.base, ptf_pass(), a[0], NULL));
+        ASSERT(ptf_emit(&g_h, PTF_B, &g_h.base, ptf_pass(), b[0], NULL));
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "proof_history", "evictfork");
+        struct vcs_package_store *store = vcs_package_store_open(dir, PHC_QUOTA);
+        ASSERT(store != NULL);
+        uint8_t cp_a[VCS_PROOF_CHECKPOINT_WIRE_BYTES];
+        uint8_t cp_b[VCS_PROOF_CHECKPOINT_WIRE_BYTES];
+        ASSERT(phc_store_log(store, PTF_A, a, 1, 52, cp_a));
+        ASSERT(phc_store_log(store, PTF_B, b, 1, 53, cp_b));
+        uint8_t honest[4][32];
+        ASSERT(vcs_blob_root(a[0], sizeof(a[0]), honest[0]));
+        ASSERT(vcs_blob_root(b[0], sizeof(b[0]), honest[1]));
+        ASSERT(vcs_blob_root(cp_a, sizeof(cp_a), honest[2]));
+        ASSERT(vcs_blob_root(cp_b, sizeof(cp_b), honest[3]));
+        uint8_t forked[VCS_PROOF_TICKET_WIRE_BYTES], forked_root[32];
+        ASSERT(phc_lowest_fork((const uint8_t (*)[32])honest, 4, forked,
+                               forked_root));
+        ASSERT(phc_put(store, forked, sizeof(forked), NULL));
+        const size_t rows = 64u;
+        struct vcs_proof_receiver *rx = phc_rebuilt(store, rows);
+        ASSERT(rx != NULL);
+        ASSERT(vcs_proof_receiver_issuer_equivocating(rx, g_h.pub[PTF_A]));
+        struct vcs_proof_ticket_class cls[PHC_CAP];
+        struct vcs_proof_reuse_decision d;
+        ASSERT(phc_decide(rx, &g_h.base, NULL, cls, &d));
+        ASSERT(d.outcome != VCS_PROOF_REUSE_HIT_PASS);
+        vcs_proof_receiver_free(rx);
+        vcs_package_store_close(store);
+        /* Compaction: the node runs near its quota and an unrelated blob of
+         * the same size (anyone may write one) makes the store evict. */
+        store = vcs_package_store_open(dir, PHC_QUOTA);
+        ASSERT(store != NULL);
+        uint64_t rare = vcs_package_store_pool_usage(
+            store, VCS_PACKAGE_STORE_POOL_RARE);
+        /* A quota that still holds what is pinned: pins never make room. */
+        uint64_t tight = (rare / 3u) * 10u + 10u;
+        if (tight < phc_pins(store) * 5u + 10u)
+            tight = phc_pins(store) * 5u + 10u;
+        vcs_package_store_close(store);
+        store = vcs_package_store_open(dir, tight);
+        ASSERT(store != NULL);
+        uint8_t junk[VCS_PROOF_TICKET_WIRE_BYTES];
+        memset(junk, 0x5a, sizeof(junk));
+        ASSERT(phc_put(store, junk, sizeof(junk), NULL));
+        uint8_t got[VCS_PROOF_TICKET_WIRE_BYTES + 1u];
+        size_t got_len = 0;
+        int evicted = 0;
+        for (int h = 0; h < 4; h++)
+            if (vcs_blob_get_from(store, honest[h], got, sizeof(got),
+                                  &got_len) == VCS_BLOB_ERR_ABSENT)
+                evicted++;
+        ASSERT(evicted > 0);
+        vcs_package_store_close(store);
+        /* Restart: the fork is still known, or the rebuild refuses. */
+        store = vcs_package_store_open(dir, PHC_QUOTA);
+        ASSERT(store != NULL);
+        rx = phc_rebuilt(store, rows);
+        ASSERT(rx == NULL ||
+               vcs_proof_receiver_issuer_equivocating(rx, g_h.pub[PTF_A]));
+        ASSERT(rx == NULL || !phc_decide(rx, &g_h.base, NULL, cls, &d) ||
+               d.outcome != VCS_PROOF_REUSE_HIT_PASS);
+        vcs_proof_receiver_free(rx);
+        /* The evidence itself is what survived: both signed tickets at A's
+         * sequence 0 are pinned, nothing else is. */
+        ASSERT_EQ(vcs_blob_get_from(store, forked_root, got, sizeof(got),
+                                    &got_len), VCS_BLOB_OK);
+        ASSERT(phc_pinned(store, forked, sizeof(forked)));
+        ASSERT(phc_pinned(store, a[0], sizeof(a[0])));
+        ASSERT_EQ(phc_pins(store), (uint64_t)(2u * VCS_PROOF_TICKET_WIRE_BYTES));
+        vcs_package_store_close(store);
+        test_rm_rf(dir);
+    } TEST_END
+    return failures;
+}
+
+static int phc_count_pinned(struct vcs_package_store *store,
+                            const uint8_t (*wires)[VCS_PROOF_TICKET_WIRE_BYTES],
+                            size_t count)
+{
+    int pinned = 0;
+    for (size_t i = 0; i < count; i++)
+        if (phc_pinned(store, wires[i], VCS_PROOF_TICKET_WIRE_BYTES)) pinned++;
+    return pinned;
+}
+
+static int phc_case_fork_evidence_bounded(void)
+{
+    int failures = 0;
+    TEST_CASE("proof_history: one signed evidence pair per issuer is pinned") {
+        ASSERT(phc_fresh());
+        uint8_t a[3][VCS_PROOF_TICKET_WIRE_BYTES];
+        uint8_t b[1][VCS_PROOF_TICKET_WIRE_BYTES];
+        ASSERT(ptf_emit(&g_h, PTF_A, &g_h.base, ptf_pass(), a[0], NULL));
+        ASSERT(ptf_emit(&g_h, PTF_B, &g_h.base, ptf_pass(), b[0], NULL));
+        /* Two more histories from A's key: three tickets at sequence 0. */
+        ASSERT(phc_fork_ticket("unit/fork/one", a[1]));
+        ASSERT(phc_fork_ticket("unit/fork/two", a[2]));
+        /* A forged third: A's name and sequence, not A's signature. */
+        uint8_t forged[VCS_PROOF_TICKET_WIRE_BYTES];
+        ASSERT(phc_fork_ticket("unit/fork/forged", forged));
+        forged[sizeof(forged) - 1u] ^= 0x01u;
+        struct vcs_proof_ticket_v1 t;
+        ASSERT(vcs_proof_ticket_decode(forged, sizeof(forged), &t));
+        ASSERT(!vcs_proof_ticket_signature_valid(&t));
+
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "proof_history", "pinbound");
+        struct vcs_package_store *store = vcs_package_store_open(dir, PHC_QUOTA);
+        ASSERT(store != NULL);
+        uint8_t cp_a[VCS_PROOF_CHECKPOINT_WIRE_BYTES];
+        uint8_t cp_b[VCS_PROOF_CHECKPOINT_WIRE_BYTES];
+        ASSERT(phc_store_log(store, PTF_A, a, 1, 54, cp_a));
+        ASSERT(phc_store_log(store, PTF_B, b, 1, 55, cp_b));
+        ASSERT(phc_put(store, a[1], sizeof(a[1]), NULL));
+        ASSERT(phc_put(store, a[2], sizeof(a[2]), NULL));
+        ASSERT(phc_put(store, forged, sizeof(forged), NULL));
+        const size_t rows = 64u;
+        const uint64_t pair = 2u * VCS_PROOF_TICKET_WIRE_BYTES;
+        for (int round = 0; round < 2; round++) {
+            struct vcs_proof_receiver *rx = phc_rebuilt(store, rows);
+            ASSERT(rx != NULL);
+            ASSERT(vcs_proof_receiver_issuer_equivocating(rx, g_h.pub[PTF_A]));
+            ASSERT(!vcs_proof_receiver_issuer_equivocating(rx, g_h.pub[PTF_B]));
+            vcs_proof_receiver_free(rx);
+            /* Exactly two of A's three signed tickets, on every rebuild. */
+            ASSERT_EQ(phc_count_pinned(store, (const uint8_t (*)
+                          [VCS_PROOF_TICKET_WIRE_BYTES])a, 3), 2);
+            ASSERT_EQ(phc_pins(store), pair);
+            ASSERT(!phc_pinned(store, forged, sizeof(forged)));
+            ASSERT(!phc_pinned(store, b[0], sizeof(b[0])));
+            ASSERT(!phc_pinned(store, cp_a, sizeof(cp_a)));
+            ASSERT(!phc_pinned(store, cp_b, sizeof(cp_b)));
+        }
+        vcs_package_store_close(store);
+
+        /* Compaction drops A's honest checkpoint. The restarted rebuild
+         * re-derives the fork from the pinned pair alone. */
+        ASSERT(phc_compact(dir, cp_a, sizeof(cp_a), 0x3c));
+        store = vcs_package_store_open(dir, PHC_QUOTA);
+        ASSERT(store != NULL);
+        struct vcs_proof_receiver *rx = phc_rebuilt(store, rows);
+        ASSERT(rx != NULL);
+        ASSERT(vcs_proof_receiver_issuer_equivocating(rx, g_h.pub[PTF_A]));
+        struct vcs_proof_ticket_class cls[PHC_CAP];
+        struct vcs_proof_reuse_decision d;
+        ASSERT(phc_decide(rx, &g_h.base, NULL, cls, &d));
+        ASSERT_EQ(d.outcome, VCS_PROOF_REUSE_MISS);
+        ASSERT_STR_EQ(d.reason, VCS_PROOF_REUSE_WHY_QUORUM);
+        ASSERT_STR_EQ(phc_reason_of(cls, d.tickets_seen, PTF_B),
+                      VCS_PROOF_TICKET_ELIGIBLE);
+        vcs_proof_receiver_free(rx);
+        ASSERT_EQ(phc_pins(store), pair);
+        vcs_package_store_close(store);
+        test_rm_rf(dir);
+    } TEST_END
+    return failures;
+}
+
+/* Two checkpoints under A's key both claim to be A's first: no two tickets
+ * conflict, so the evidence is the pair of signed checkpoints. */
+static int phc_case_checkpoint_fork_pinned(void)
+{
+    int failures = 0;
+    TEST_CASE("proof_history: a signed checkpoint fork pins both checkpoints") {
+        ASSERT(phc_fresh());
+        struct vcs_component_proof_key_v1 second;
+        phc_key("unit/second", &second);
+        uint8_t a[2][VCS_PROOF_TICKET_WIRE_BYTES];
+        uint8_t cp_one[VCS_PROOF_CHECKPOINT_WIRE_BYTES];
+        uint8_t cp_two[VCS_PROOF_CHECKPOINT_WIRE_BYTES];
+        ASSERT(ptf_emit(&g_h, PTF_A, &g_h.base, ptf_pass(), a[0], NULL));
+        ASSERT(vcs_proof_issuer_log_checkpoint(g_h.logs[PTF_A], 56, cp_one));
+        ASSERT(ptf_emit(&g_h, PTF_A, &second, ptf_pass(), a[1], NULL));
+        struct vcs_proof_issuer_log *again =
+            vcs_proof_issuer_log_new(g_h.seed[PTF_A]);
+        ASSERT(again != NULL);
+        bool same = true;
+        for (int i = 0; i < 2 && same; i++) {
+            struct vcs_proof_ticket_v1 t;
+            uint8_t wire[VCS_PROOF_TICKET_WIRE_BYTES];
+            same = vcs_proof_ticket_decode(a[i], sizeof(a[i]), &t) &&
+                   vcs_proof_issuer_log_append(again, &t, wire) &&
+                   memcmp(wire, a[i], sizeof(wire)) == 0;
+        }
+        same = same && vcs_proof_issuer_log_checkpoint(again, 57, cp_two);
+        vcs_proof_issuer_log_free(again);
+        ASSERT(same);
+
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "proof_history", "cpfork");
+        struct vcs_package_store *store = vcs_package_store_open(dir, PHC_QUOTA);
+        ASSERT(store != NULL);
+        ASSERT(phc_put(store, a[0], sizeof(a[0]), NULL));
+        ASSERT(phc_put(store, a[1], sizeof(a[1]), NULL));
+        ASSERT(phc_put(store, cp_one, sizeof(cp_one), NULL));
+        ASSERT(phc_put(store, cp_two, sizeof(cp_two), NULL));
+        struct vcs_proof_receiver *rx = phc_rebuilt(store, 64u);
+        ASSERT(rx != NULL);
+        ASSERT(vcs_proof_receiver_issuer_equivocating(rx, g_h.pub[PTF_A]));
+        vcs_proof_receiver_free(rx);
+        ASSERT(phc_pinned(store, cp_one, sizeof(cp_one)));
+        ASSERT(phc_pinned(store, cp_two, sizeof(cp_two)));
+        ASSERT(!phc_pinned(store, a[0], sizeof(a[0])));
+        ASSERT(!phc_pinned(store, a[1], sizeof(a[1])));
+        ASSERT_EQ(phc_pins(store),
+                  (uint64_t)(2u * VCS_PROOF_CHECKPOINT_WIRE_BYTES));
+        vcs_package_store_close(store);
+        store = vcs_package_store_open(dir, PHC_QUOTA);
+        ASSERT(store != NULL);
+        rx = phc_rebuilt(store, 64u);
+        ASSERT(rx != NULL);
+        ASSERT(vcs_proof_receiver_issuer_equivocating(rx, g_h.pub[PTF_A]));
+        vcs_proof_receiver_free(rx);
+        vcs_package_store_close(store);
+        test_rm_rf(dir);
+    } TEST_END
+    return failures;
+}
+
+/* ── compaction of eligible history loses reuse, never truth ────────── */
+
+static int phc_hits(const struct vcs_proof_receiver *rx,
+                    const struct vcs_component_proof_key_v1 *keys, int count)
+{
+    int hits = 0;
+    for (int i = 0; rx && i < count; i++) {
+        struct vcs_proof_ticket_class cls[PHC_CAP];
+        struct vcs_proof_reuse_decision d;
+        if (phc_decide(rx, &keys[i], NULL, cls, &d) &&
+            d.outcome == VCS_PROOF_REUSE_HIT_PASS)
+            hits++;
+    }
+    return hits;
+}
+
+static int phc_case_evicted_history(void)
+{
+    int failures = 0;
+    TEST_CASE("proof_history: compacted eligible history is a MISS or refusal") {
+        ASSERT(phc_fresh());
+        struct vcs_component_proof_key_v1 keys[2];
+        keys[0] = g_h.base;
+        phc_key("unit/second", &keys[1]);
+        uint8_t a[2][VCS_PROOF_TICKET_WIRE_BYTES];
+        uint8_t b[2][VCS_PROOF_TICKET_WIRE_BYTES];
+        for (int i = 0; i < 2; i++) {
+            ASSERT(ptf_emit(&g_h, PTF_A, &keys[i], ptf_pass(), a[i], NULL));
+            ASSERT(ptf_emit(&g_h, PTF_B, &keys[i], ptf_pass(), b[i], NULL));
+        }
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "proof_history", "evicthist");
+        struct vcs_package_store *store = vcs_package_store_open(dir, PHC_QUOTA);
+        ASSERT(store != NULL);
+        uint8_t cp_a[VCS_PROOF_CHECKPOINT_WIRE_BYTES];
+        uint8_t cp_b[VCS_PROOF_CHECKPOINT_WIRE_BYTES];
+        ASSERT(phc_store_log(store, PTF_A, a, 2, 61, cp_a));
+        ASSERT(phc_store_log(store, PTF_B, b, 2, 62, cp_b));
+        struct vcs_proof_receiver *rx = phc_rebuilt(store, 64u);
+        int before = phc_hits(rx, keys, 2);
+        vcs_proof_receiver_free(rx);
+        /* Remote PASS history is ordinary RARE content: nothing pins it. */
+        ASSERT_EQ(phc_pins(store), (uint64_t)0);
+        vcs_package_store_close(store);
+        ASSERT_EQ(before, 2);
+
+        /* B's only checkpoint is compacted: B's tickets are uncovered, the
+         * rebuild still succeeds, and both keys fall to a MISS. */
+        ASSERT(phc_compact(dir, cp_b, sizeof(cp_b), 0x11));
+        store = vcs_package_store_open(dir, PHC_QUOTA);
+        ASSERT(store != NULL);
+        rx = phc_rebuilt(store, 64u);
+        ASSERT(rx != NULL);
+        int after_checkpoint = phc_hits(rx, keys, 2);
+        struct vcs_proof_ticket_class cls[PHC_CAP];
+        struct vcs_proof_reuse_decision d;
+        ASSERT(phc_decide(rx, &keys[0], NULL, cls, &d));
+        ASSERT_EQ(d.outcome, VCS_PROOF_REUSE_MISS);
+        ASSERT_STR_EQ(d.reason, VCS_PROOF_REUSE_WHY_QUORUM);
+        vcs_proof_receiver_free(rx);
+        vcs_package_store_close(store);
+        ASSERT_EQ(after_checkpoint, 0);
+
+        /* A covered ticket of A is compacted: A's checkpoint no longer has a
+         * complete ticket branch, so the whole rebuild refuses. */
+        ASSERT(phc_compact(dir, a[1], sizeof(a[1]), 0x22));
+        store = vcs_package_store_open(dir, PHC_QUOTA);
+        ASSERT(store != NULL);
+        rx = phc_rebuilt(store, 64u);
+        ASSERT(rx == NULL);
+        vcs_package_store_close(store);
+        printf("\n  measured: HIT keys before=%d, after checkpoint evicted=%d, "
+               "after covered ticket evicted=rebuild refused (every key runs "
+               "fresh)\n", before, after_checkpoint);
+        test_rm_rf(dir);
+    } TEST_END
+    return failures;
+}
+
 int ptf_history_cases(void)
 {
     int failures = 0;
+    failures += phc_case_evicted_fork_kept();
+    failures += phc_case_fork_evidence_bounded();
+    failures += phc_case_checkpoint_fork_pinned();
+    failures += phc_case_evicted_history();
     failures += phc_case_revoked_after_reopen();
     failures += phc_case_late_page_fork();
     ptf_free(&g_h);
