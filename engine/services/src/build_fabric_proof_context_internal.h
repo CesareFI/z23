@@ -4,6 +4,7 @@
 #ifndef ZCL_BUILD_FABRIC_PROOF_CONTEXT_INTERNAL_H
 #define ZCL_BUILD_FABRIC_PROOF_CONTEXT_INTERNAL_H
 
+#include "models/build_fabric.h"
 #include "services/build_fabric_proof_context.h"
 
 #include <stdatomic.h>
@@ -55,6 +56,11 @@ struct build_fabric_proof_context {
     uint32_t quorum;
     struct vcs_proof_issuer_log *issuer;
     struct vcs_proof_receiver *receiver;
+    /* The row this issuer staged and has not yet seen finalized: the exact
+     * wires its last append signed. Issuance completes it before the next
+     * append, so the issuer never runs more than one leaf ahead. */
+    bool staged;
+    struct db_build_worker_proof_pending staged_row;
     struct bfpc_live live;
 };
 
@@ -71,9 +77,15 @@ struct zcl_result bfpc_trust_load(struct node_db *ndb, int64_t now,
                                   struct bfpc_trust *out);
 void bfpc_trust_free(struct bfpc_trust *trust);
 
-/* Replace the in-memory issuer with one restored at the worker's durable
- * head. On refusal the issuer is NULL and issuer_state names why. */
-void bfpc_issuer_resync(struct build_fabric_proof_context *ctx,
-                        struct node_db *ndb);
+/* Drop the in-memory issuer and name why; only worker start restores it. */
+void bfpc_issuer_pause(struct build_fabric_proof_context *ctx,
+                       const char *state);
+
+#ifdef ZCL_TESTING
+bool bfpc_fault(enum build_fabric_proof_fault fault);
+#define BFPC_FAULT(fault) bfpc_fault(fault)
+#else
+#define BFPC_FAULT(fault) false
+#endif
 
 #endif /* ZCL_BUILD_FABRIC_PROOF_CONTEXT_INTERNAL_H */

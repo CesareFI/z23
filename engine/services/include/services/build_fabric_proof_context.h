@@ -47,6 +47,13 @@ struct build_fabric_proof_context;
 #define BUILD_FABRIC_PROOF_STATE_REBUILD_REFUSED "refused_receiver_rebuild"
 #define BUILD_FABRIC_PROOF_STATE_ALLOCATION "refused_allocation"
 #define BUILD_FABRIC_PROOF_STATE_SYNC_REFUSED "refused_receiver_sync"
+/* A staged publication worker start could not complete. The row stays
+ * staged for the next worker start; this worker issues nothing until then. */
+#define BUILD_FABRIC_PROOF_STATE_PENDING_REFUSED "refused_pending_recovery"
+/* The in-memory issuer no longer provably extends the durable head (an
+ * append whose staging was refused, or a staged row this issuer did not
+ * write). Issuance stops until the next worker start recovers it. */
+#define BUILD_FABRIC_PROOF_STATE_ISSUE_PAUSED "refused_issue_paused"
 
 /* Rebuild and restore retry this many times when the catalog moves. */
 #define BUILD_FABRIC_PROOF_OPEN_ATTEMPTS 4u
@@ -80,14 +87,18 @@ struct build_fabric_proof_stats {
     const char *last_ticket_reason;
 };
 
-/* Worker start. Selects the one proof store handle for <datadir>/zcode (the
- * node-global handle when it owns that directory, else a private one),
- * completes any staged publication through build_fabric_proof_pending_recover,
- * restores the writable issuer log at the worker's durable head, and
- * rebuilds the receiver with vcs_proof_receiver_rebuild_with_policy bounded
- * by vcs_package_store_catalog_rows. A recovery refusal returns an error and
- * no context. Issuer or receiver refusals return a context whose state
- * tokens name the refusal; issuance or the shadow is then unavailable. */
+/* Worker start, the only place proof history is replayed. Selects the one
+ * proof store handle for <datadir>/zcode (the node-global handle when it
+ * owns that directory, else a private one), completes any staged
+ * publication through build_fabric_proof_pending_recover, restores the
+ * writable issuer log at the worker's durable head, and rebuilds the
+ * receiver with vcs_proof_receiver_rebuild_with_policy bounded by
+ * vcs_package_store_catalog_rows. Each step is O(catalog) and runs once.
+ * Only invalid arguments or a failed context allocation return an error.
+ * Every other refusal, a staged row recovery could not complete included,
+ * returns a context whose state tokens name it, and leaves the row staged;
+ * issuance or the shadow is then unavailable. Tickets are feedback, so the
+ * caller starts the worker whatever this returns. */
 struct zcl_result build_fabric_proof_context_open(
     struct node_db *ndb, const char *datadir, const char *worker_id,
     const uint8_t seed[32], struct build_fabric_proof_context **out);
@@ -113,10 +124,15 @@ struct zcl_result build_fabric_proof_compile_key(
     struct vcs_component_proof_key_v1 *out);
 
 /* After an executed plain compile's receipt is admitted: sign one
- * BUILD/PASS/EXECUTED ticket over its physical observation, stage the
- * exact ticket and checkpoint wires in the worker row, write both to CAS,
- * then publish through the pending/finalize path, and sync the live
- * receiver. The executed result stands whatever this returns. */
+ * BUILD/PASS/EXECUTED ticket over its physical observation and append it
+ * at the durable head. The cost is independent of history: it reads only
+ * the head checkpoint, stages the exact ticket and checkpoint wires in the
+ * worker row, writes both to CAS without eviction, advances the head with
+ * the row's conditional finalize, and syncs the live receiver with that one
+ * delta. A staged row this issuer left behind is completed the same way
+ * first. Nothing here replays history; a state only worker start can
+ * recover pauses issuance. The executed result stands whatever this
+ * returns. */
 struct zcl_result build_fabric_proof_issue_executed(
     struct build_fabric_proof_context *ctx, struct node_db *ndb,
     const char *workspace, const struct db_build_action *action,
@@ -143,11 +159,24 @@ enum build_fabric_proof_issue_point {
     BUILD_FABRIC_PROOF_ISSUE_AFTER_STAGE = 1,
     BUILD_FABRIC_PROOF_ISSUE_AFTER_TICKET_PUT,
     BUILD_FABRIC_PROOF_ISSUE_AFTER_CHECKPOINT_PUT,
+    BUILD_FABRIC_PROOF_ISSUE_BEFORE_FINALIZE,
 };
 /* Fires at each durable boundary of the live publication path. */
 void build_fabric_proof_test_issue_hook(
     void (*hook)(enum build_fabric_proof_issue_point point, void *context),
     void *context);
+
+/* One armed failure at a time; it stays armed until reset to NONE. */
+enum build_fabric_proof_fault {
+    BUILD_FABRIC_PROOF_FAULT_NONE = 0,
+    BUILD_FABRIC_PROOF_FAULT_OPEN_ALLOCATION,
+    BUILD_FABRIC_PROOF_FAULT_OPEN_RECOVERY,
+    BUILD_FABRIC_PROOF_FAULT_ISSUE_STAGE,
+    BUILD_FABRIC_PROOF_FAULT_ISSUE_TICKET_PUT,
+    BUILD_FABRIC_PROOF_FAULT_ISSUE_FINALIZE,
+    BUILD_FABRIC_PROOF_FAULT_SHADOW_DECIDE,
+};
+void build_fabric_proof_test_fault(enum build_fabric_proof_fault fault);
 #endif
 
 #endif /* ZCL_SERVICES_BUILD_FABRIC_PROOF_CONTEXT_H */

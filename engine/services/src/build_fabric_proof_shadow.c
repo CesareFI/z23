@@ -97,7 +97,9 @@ static const char *bfps_decide(struct build_fabric_proof_context *ctx,
     if (!ctx->receiver) return "receiver_unavailable";
     int64_t now = (int64_t)platform_time_wall_unix();
     struct bfpc_trust trust;
-    if (!bfpc_trust_load(ndb, now, &trust).ok) return "trust_unreadable";
+    if (BFPC_FAULT(BUILD_FABRIC_PROOF_FAULT_SHADOW_DECIDE) ||
+        !bfpc_trust_load(ndb, now, &trust).ok)
+        return "trust_unreadable";
     struct vcs_proof_reuse_policy policy = {
         .verifiers = (const uint8_t (*)[32])trust.verifiers,
         .verifier_count = trust.verifier_count,

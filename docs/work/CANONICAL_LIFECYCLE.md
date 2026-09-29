@@ -277,9 +277,13 @@ FEEDBACK ONLY. Attach's donor scan remains the only reuse authority.
   3. rebuilds the receiver from CAS, anchored on every worker's durable head,
      under the worker table's current trust.
 
-  Both the restore and the rebuild are bounded by the catalog size and retry
-  when the catalog moves. A refusal leaves a named state token in the
-  `build_fabric` dump, never a silent empty view.
+  Worker start is the only place history is replayed. Both the restore and
+  the rebuild are bounded by the catalog size and retry when the catalog
+  moves. A refusal leaves a named state token in the `build_fabric` dump,
+  never a silent empty view. No proof refusal refuses the worker: a staged
+  row recovery cannot complete stays staged, the issuer stays closed
+  (`refused_pending_recovery`), and the worker builds and attaches as it
+  would with no proof state.
 - **Issuance.** After an executed plain compile's receipt is admitted, the
   worker signs one BUILD PASS EXECUTED ticket over its physical observation:
   - `evidence_root` is the observation;
@@ -287,9 +291,16 @@ FEEDBACK ONLY. Attach's donor scan remains the only reuse authority.
   - `source_root` is the key's source closure.
 
   The key is the one the worker's own checked publish placed in the
-  workspace. The worker then publishes the ticket through the pending row,
-  the ticket and checkpoint CAS writes, and the guarded head. A crash at any
-  of those boundaries is completed by the next worker start.
+  workspace. Issuance is a head append whose cost does not depend on
+  history. It reads the head checkpoint and checks that the issuer sits at
+  it. It then stages the ticket and checkpoint in the pending row, writes
+  both to CAS without eviction, and advances the head with the row's
+  conditional finalize. A crash at any of those boundaries is completed by
+  the next worker start. A refusal after the stage keeps the row, and the
+  next issuance completes it first. A refusal after the in-memory append
+  but before the stage is durable pauses issuance
+  (`refused_issue_paused`) until the next worker start. Issuance does not
+  pin; worker-start recovery pins the history it completes.
 - **Shadow.** Beside every attach decision, the worker computes
   `vcs_proof_reuse_decide` for the same key. It counts attach against ticket
   outcome, with `agree`, `disagree`, `disagree_attach_only` and

@@ -21,7 +21,6 @@
 #include "platform/time_compat.h"
 #include "services/build_fabric_attach.h"
 #include "services/build_fabric_proof_context.h"
-#include "services/build_fabric_proof_recovery.h"
 #include "services/build_fabric_runtime.h"
 #include "services/build_fabric_service.h"
 #include "services/build_fabric_worker.h"
@@ -312,7 +311,7 @@ enum pw_crash_point {
     PW_AFTER_STAGE = BUILD_FABRIC_PROOF_ISSUE_AFTER_STAGE,
     PW_AFTER_TICKET = BUILD_FABRIC_PROOF_ISSUE_AFTER_TICKET_PUT,
     PW_AFTER_CHECKPOINT = BUILD_FABRIC_PROOF_ISSUE_AFTER_CHECKPOINT_PUT,
-    PW_BEFORE_COMMIT,
+    PW_BEFORE_COMMIT = BUILD_FABRIC_PROOF_ISSUE_BEFORE_FINALIZE,
 };
 
 static const char *pw_crash_name(enum pw_crash_point point)
@@ -332,12 +331,6 @@ static void pw_die_at(enum build_fabric_proof_issue_point point,
     if ((int)point == *(const int *)context) _exit(PW_CRASHED);
 }
 
-static void pw_die(void *context)
-{
-    (void)context;
-    _exit(PW_CRASHED);
-}
-
 /* The production worker start and one real execution, in a child that dies
  * at `point` without closing anything. */
 [[noreturn]] static void pw_crash_child(struct pw *p, struct pw_worker *w,
@@ -346,10 +339,7 @@ static void pw_die(void *context)
     memset(&p->ndb, 0, sizeof(p->ndb));
     if (!node_db_open(&p->ndb, p->path)) _exit(2);
     if (!pw_proof_open(p, w)) _exit(3);
-    if (point == PW_BEFORE_COMMIT)
-        build_fabric_proof_test_before_finalize(pw_die, NULL);
-    else
-        build_fabric_proof_test_issue_hook(pw_die_at, &point);
+    build_fabric_proof_test_issue_hook(pw_die_at, &point);
     struct pw_tally tally = {0};
     bool idle = false;
     if (!pw_loop_step(p, w, &tally, &idle) || tally.executed != 1) _exit(4);
@@ -657,6 +647,369 @@ _test_next:
     }
     return failures;
 }
+/* ── (d) Issuance cost against the size of the issuer's history ──────── */
+
+/* The worker's durable history as `rows` catalog rows: rows-1 signed tickets
+ * and the checkpoint over them, anchored at the worker's durable head. The
+ * fixture writes defer their fsync; the timed issuance does not. */
+static bool pw_history_fill(struct pw *p, const struct pw_worker *w,
+                            size_t rows)
+{
+    struct vcs_proof_issuer_log *log = vcs_proof_issuer_log_new(w->seed);
+    struct vcs_package_store *store =
+        vcs_package_store_open(p->dir, vcs_package_store_quota_bytes());
+    uint64_t now = (uint64_t)platform_time_wall_unix();
+    uint8_t wire[VCS_PROOF_TICKET_WIRE_BYTES];
+    uint8_t checkpoint[VCS_PROOF_CHECKPOINT_WIRE_BYTES];
+    uint8_t root[32], head[32];
+    bool deferred = vcs_package_store_deferred_sync_enabled();
+    vcs_package_store_set_deferred_sync(true);
+    bool ok = log && store && rows >= 2;
+    for (size_t i = 0; ok && i + 1 < rows; i++) {
+        struct vcs_proof_ticket_v1 t;
+        memset(&t, 0, sizeof(t));
+        t.verdict = VCS_PROOF_VERDICT_PASS;
+        t.basis = VCS_PROOF_BASIS_EXECUTED;
+        t.action_class = VCS_PROOF_ACTION_BUILD;
+        sha3_256((const uint8_t *)&i, sizeof(i), t.input_key);
+        memcpy(t.key_preimage_root, t.input_key, 32);
+        memcpy(t.source_root, t.input_key, 32);
+        memset(t.artifact_root, 0x61, 32);
+        memset(t.evidence_root, 0x62, 32);
+        t.checks_run = t.checks_passed = 1;
+        t.created_unix = now;
+        ok = vcs_proof_issuer_log_append(log, &t, wire) &&
+             vcs_proof_ticket_store_put(store, wire, sizeof(wire), root);
+    }
+    ok = ok && vcs_proof_issuer_log_checkpoint(log, now, checkpoint) &&
+         vcs_proof_ticket_store_put(store, checkpoint, sizeof(checkpoint),
+                                    head);
+    vcs_package_store_set_deferred_sync(deferred);
+    vcs_proof_issuer_log_free(log);
+    vcs_package_store_close(store);
+    if (!ok) return false;
+    char head_hex[65];
+    zcl_hex_encode(head, 32, head_hex);
+    return db_build_worker_proof_head_cas(&p->ndb, w->id, w->signer_hex, "",
+                                          head_hex);
+}
+
+/* One real compile with no proof context, then its issuance alone, timed. */
+static bool pw_issue_timed(struct pw *p, struct pw_worker *w,
+                           unsigned unit, int64_t *issue_us)
+{
+    uint8_t input_root[32];
+    struct db_build_action claimed;
+    struct db_build_receipt receipt;
+    struct build_fabric_host_accounting accounting;
+    char lease[65];
+    bool got = false;
+    if (!pw_unit(p, unit, input_root) || !pw_request(p, input_root) ||
+        !pw_claim(p, w, &claimed, lease, &got) || !got ||
+        !build_fabric_runtime_execute_step(&p->ndb, p->dir, p->dir, &claimed,
+                                           lease, w->secret, w->pubkey, NULL,
+                                           &receipt, &accounting).ok)
+        return false;
+    int64_t start = platform_time_monotonic_us();
+    struct zcl_result issued = build_fabric_proof_issue_executed(
+        w->proof, &p->ndb, p->dir, &claimed, &receipt, &accounting);
+    *issue_us = platform_time_monotonic_us() - start;
+    if (!issued.ok) printf("(issue: %s) ", issued.message);
+    return issued.ok;
+}
+
+#define PW_COST_POINTS 3u
+#define PW_COST_ISSUES 3u
+/* Flat: the cheapest issuance at each larger history stays within this
+ * factor of the cheapest at 100 rows, plus fixed slack for fsync jitter.
+ * Replaying the history per issuance measured 22-33x from 100 to 1k rows. */
+#define PW_COST_FACTOR 3
+#define PW_COST_SLACK_US 250000
+
+/* The 10k-row point spends about two minutes writing its fixture, so it runs
+ * only on request: ZCL_PROOF_ISSUE_COST_10K=1. */
+static unsigned pw_cost_points(void)
+{
+    const char *want = getenv("ZCL_PROOF_ISSUE_COST_10K");
+    return want && strcmp(want, "1") == 0 ? PW_COST_POINTS
+                                          : PW_COST_POINTS - 1u;
+}
+
+static int64_t pw_cost_min(const int64_t *cost, unsigned n)
+{
+    int64_t least = cost[0];
+    for (unsigned i = 1; i < n; i++)
+        if (cost[i] < least) least = cost[i];
+    return least;
+}
+
+/* Worker start pays for history once; each issuance after it must not. */
+static bool pw_cost_point(struct pw *p, struct pw_worker *w, size_t rows,
+                          int64_t *least)
+{
+    if (!pw_open(p, "cost") || !pw_approve(p, w)) return false;
+    int64_t t0 = platform_time_monotonic_us();
+    if (!pw_history_fill(p, w, rows)) return false;
+    int64_t t1 = platform_time_monotonic_us();
+    if (!pw_proof_open(p, w)) return false;
+    int64_t t2 = platform_time_monotonic_us();
+    struct build_fabric_proof_stats s = pw_stats(w);
+    if (s.issuer_leaves != (uint64_t)rows - 1u) return false;
+    int64_t cost[PW_COST_ISSUES];
+    for (unsigned i = 0; i < PW_COST_ISSUES; i++)
+        if (!pw_issue_timed(p, w, 200u + i, &cost[i])) return false;
+    s = pw_stats(w);
+    *least = pw_cost_min(cost, PW_COST_ISSUES);
+    printf("\n    proof_issue_cost rows=%zu fill_us=%lld start_us=%lld "
+           "issue_us=%lld,%lld,%lld", rows, (long long)(t1 - t0),
+           (long long)(t2 - t1), (long long)cost[0], (long long)cost[1],
+           (long long)cost[2]);
+    return s.issued == PW_COST_ISSUES && s.issue_refused == 0 &&
+           s.issuer_leaves == (uint64_t)rows - 1u + PW_COST_ISSUES &&
+           pw_pending(p, w) == 0;
+}
+
+static int pw_case_issue_cost(void)
+{
+    static const size_t rows[PW_COST_POINTS] = {100u, 1000u, 10000u};
+    int failures = 0;
+    struct pw p;
+    struct pw_worker a;
+    pw_worker_init(&a, 61);
+    memset(&p, 0, sizeof(p));
+    TEST("build_fabric proof wiring: issuance cost is flat in history") {
+        unsigned points = pw_cost_points();
+        int64_t least[PW_COST_POINTS];
+        for (unsigned k = 0; k < points; k++) {
+            ASSERT(pw_cost_point(&p, &a, rows[k], &least[k]));
+            pw_proof_close(&a);
+            node_db_close(&p.ndb);
+        }
+        printf("\n    ");
+        for (unsigned k = 1; k < points; k++)
+            ASSERT(least[k] <= PW_COST_FACTOR * least[0] + PW_COST_SLACK_US);
+        PASS();
+    }
+    if (0) {
+_test_next:
+        pw_proof_close(&a);
+        node_db_close(&p.ndb);
+    }
+    return failures;
+}
+
+/* ── (e) A failing proof state never changes attach or worker start ───── */
+
+static bool pw_run_unit(struct pw *p, struct pw_worker *w, unsigned unit,
+                        uint8_t root[32])
+{
+    struct pw_tally t;
+    return pw_unit(p, unit, root) && pw_request(p, root) &&
+           pw_drain(p, w, &t) && t.executed == 1u && t.reused == 0u;
+}
+
+/* A duplicate of `root` attaches once with this worker's proof state and
+ * once with none: both must decide HIT and succeed alike. */
+static bool pw_attach_unchanged(struct pw *p, struct pw_worker *w,
+                                const uint8_t root[32])
+{
+    struct build_fabric_attach_report with, without;
+    struct db_build_receipt receipt;
+    if (!pw_request(p, root)) return false;
+    struct zcl_result a = build_fabric_runtime_attach_step(
+        &p->ndb, p->dir, w->secret, w->pubkey, w->proof, &receipt, &with);
+    if (!pw_request(p, root)) return false;
+    struct zcl_result b = build_fabric_runtime_attach_step(
+        &p->ndb, p->dir, w->secret, w->pubkey, NULL, &receipt, &without);
+    return a.ok && b.ok && with.disposition == BUILD_FABRIC_ATTACH_HIT &&
+           without.disposition == with.disposition;
+}
+
+static const char *pw_fault_name(enum build_fabric_proof_fault fault)
+{
+    switch (fault) {
+    case BUILD_FABRIC_PROOF_FAULT_ISSUE_STAGE: return "stage";
+    case BUILD_FABRIC_PROOF_FAULT_ISSUE_TICKET_PUT: return "ticket put";
+    case BUILD_FABRIC_PROOF_FAULT_ISSUE_FINALIZE: return "head finalize";
+    default: return "other";
+    }
+}
+
+/* A refused stage leaves nothing durable, so the issuer pauses until worker
+ * start; a refusal after the stage keeps the row, and the next issuance
+ * completes it before its own append. The compile, its admission, attach
+ * and the next worker start are the same either way. */
+static int pw_case_issue_fault(enum build_fabric_proof_fault fault)
+{
+    int failures = 0;
+    struct pw p;
+    struct pw_worker a;
+    bool staged_kept = fault != BUILD_FABRIC_PROOF_FAULT_ISSUE_STAGE;
+    pw_worker_init(&a, 67);
+    memset(&p, 0, sizeof(p));
+    printf("build_fabric proof wiring: refused %s leaves attach and worker "
+           "start unchanged... ", pw_fault_name(fault));
+    {
+        ASSERT(pw_open(&p, "issue_fault"));
+        ASSERT(pw_approve(&p, &a));
+        ASSERT(pw_proof_open(&p, &a));
+        uint8_t first[32], second[32];
+        build_fabric_proof_test_fault(fault);
+        bool ran = pw_run_unit(&p, &a, 300, first);
+        build_fabric_proof_test_fault(BUILD_FABRIC_PROOF_FAULT_NONE);
+        ASSERT(ran);
+        struct build_fabric_proof_stats s = pw_stats(&a);
+        ASSERT_EQ(s.issued, 0u);
+        ASSERT_EQ(s.issue_refused, 1u);
+        ASSERT_EQ(pw_pending(&p, &a), staged_kept ? 1 : 0);
+        ASSERT_STR_EQ(s.issuer_state,
+                      staged_kept ? BUILD_FABRIC_PROOF_STATE_READY
+                                  : BUILD_FABRIC_PROOF_STATE_ISSUE_PAUSED);
+        ASSERT(pw_attach_unchanged(&p, &a, first));
+        /* The next compile runs; it publishes the kept row, then its own. */
+        ASSERT(pw_run_unit(&p, &a, 301, second));
+        s = pw_stats(&a);
+        ASSERT_EQ(s.issued, staged_kept ? 1u : 0u);
+        ASSERT_EQ(s.issuer_leaves, staged_kept ? 2u : 0u);
+        ASSERT_EQ(pw_pending(&p, &a), 0);
+        if (!staged_kept)
+            ASSERT_STR_EQ(s.last_issue_refusal, "issuer_unavailable");
+        /* Worker start: the durable history, nothing the fault lost. */
+        pw_proof_close(&a);
+        ASSERT(pw_reopen(&p));
+        ASSERT(pw_proof_open(&p, &a));
+        s = pw_stats(&a);
+        ASSERT_STR_EQ(s.issuer_state, BUILD_FABRIC_PROOF_STATE_READY);
+        ASSERT_EQ(s.issuer_leaves, staged_kept ? 2u : 0u);
+        ASSERT_EQ(s.receiver_tickets, staged_kept ? 2u : 0u);
+        ASSERT(pw_attach_unchanged(&p, &a, second));
+        pw_proof_close(&a);
+        node_db_close(&p.ndb);
+        printf("OK\n");
+    }
+    if (0) {
+_test_next:
+        build_fabric_proof_test_fault(BUILD_FABRIC_PROOF_FAULT_NONE);
+        pw_proof_close(&a);
+        node_db_close(&p.ndb);
+    }
+    return failures;
+}
+
+/* Worker start with no context, a staged row recovery refuses, or no store:
+ * the worker still starts, executes and attaches; only proof is closed. */
+static int pw_case_open_fault(void)
+{
+    int failures = 0;
+    struct pw p;
+    struct pw_worker a;
+    pw_worker_init(&a, 71);
+    memset(&p, 0, sizeof(p));
+    TEST("build_fabric proof wiring: a refused proof open never refuses the "
+         "worker") {
+        ASSERT(pw_open(&p, "open_fault"));
+        ASSERT(pw_approve(&p, &a));
+        uint8_t first[32], second[32], third[32];
+        /* No context at all. */
+        build_fabric_proof_test_fault(BUILD_FABRIC_PROOF_FAULT_OPEN_ALLOCATION);
+        a.proof = build_fabric_runtime_proof_open(&p.ndb, p.dir, a.id, a.seed);
+        build_fabric_proof_test_fault(BUILD_FABRIC_PROOF_FAULT_NONE);
+        ASSERT(a.proof == NULL);
+        ASSERT(pw_run_unit(&p, &a, 400, first));
+        ASSERT(pw_attach_unchanged(&p, &a, first));
+        /* A row staged by a refused publication, which recovery refuses. */
+        ASSERT(pw_proof_open(&p, &a));
+        build_fabric_proof_test_fault(BUILD_FABRIC_PROOF_FAULT_ISSUE_TICKET_PUT);
+        bool ran = pw_run_unit(&p, &a, 401, second);
+        build_fabric_proof_test_fault(BUILD_FABRIC_PROOF_FAULT_NONE);
+        ASSERT(ran);
+        ASSERT_EQ(pw_pending(&p, &a), 1);
+        pw_proof_close(&a);
+        build_fabric_proof_test_fault(BUILD_FABRIC_PROOF_FAULT_OPEN_RECOVERY);
+        a.proof = build_fabric_runtime_proof_open(&p.ndb, p.dir, a.id, a.seed);
+        build_fabric_proof_test_fault(BUILD_FABRIC_PROOF_FAULT_NONE);
+        ASSERT(a.proof != NULL);
+        struct build_fabric_proof_stats s = pw_stats(&a);
+        ASSERT_STR_EQ(s.issuer_state,
+                      BUILD_FABRIC_PROOF_STATE_PENDING_REFUSED);
+        /* The head set is incomplete while a row is staged: named, closed. */
+        ASSERT_STR_EQ(s.receiver_state,
+                      BUILD_FABRIC_PROOF_STATE_HEADS_REFUSED);
+        ASSERT_EQ(pw_pending(&p, &a), 1);
+        ASSERT(pw_run_unit(&p, &a, 402, third));
+        ASSERT(pw_attach_unchanged(&p, &a, second));
+        s = pw_stats(&a);
+        ASSERT_EQ(s.issued, 0u);
+        ASSERT_STR_EQ(s.last_issue_refusal, "issuer_unavailable");
+        ASSERT_EQ(pw_pending(&p, &a), 1);
+        pw_proof_close(&a);
+        /* No store: the datadir's zcode cannot exist beneath a file. */
+        a.proof = build_fabric_runtime_proof_open(&p.ndb, p.path, a.id,
+                                                  a.seed);
+        ASSERT(a.proof != NULL);
+        s = pw_stats(&a);
+        ASSERT_STR_EQ(s.issuer_state,
+                      BUILD_FABRIC_PROOF_STATE_STORE_UNAVAILABLE);
+        ASSERT_STR_EQ(s.receiver_state,
+                      BUILD_FABRIC_PROOF_STATE_STORE_UNAVAILABLE);
+        ASSERT(pw_attach_unchanged(&p, &a, third));
+        pw_proof_close(&a);
+        /* The next worker start completes the kept row. */
+        ASSERT(pw_proof_open(&p, &a));
+        s = pw_stats(&a);
+        ASSERT_STR_EQ(s.issuer_state, BUILD_FABRIC_PROOF_STATE_READY);
+        ASSERT_EQ(s.issuer_leaves, 1u);
+        ASSERT_EQ(pw_pending(&p, &a), 0);
+        pw_proof_close(&a);
+        node_db_close(&p.ndb);
+        PASS();
+    }
+    if (0) {
+_test_next:
+        build_fabric_proof_test_fault(BUILD_FABRIC_PROOF_FAULT_NONE);
+        pw_proof_close(&a);
+        node_db_close(&p.ndb);
+    }
+    return failures;
+}
+
+/* A shadow that cannot decide counts itself unavailable; attach decides and
+ * succeeds exactly as it does with no proof state. */
+static int pw_case_shadow_fault(void)
+{
+    int failures = 0;
+    struct pw p;
+    struct pw_worker a;
+    pw_worker_init(&a, 73);
+    memset(&p, 0, sizeof(p));
+    TEST("build_fabric proof wiring: a failed shadow never changes attach") {
+        ASSERT(pw_open(&p, "shadow_fault"));
+        ASSERT(pw_approve(&p, &a));
+        ASSERT(pw_proof_open(&p, &a));
+        uint8_t root[32];
+        ASSERT(pw_run_unit(&p, &a, 500, root));
+        uint64_t unavailable = pw_stats(&a).shadow_unavailable;
+        build_fabric_proof_test_fault(BUILD_FABRIC_PROOF_FAULT_SHADOW_DECIDE);
+        bool same = pw_attach_unchanged(&p, &a, root);
+        build_fabric_proof_test_fault(BUILD_FABRIC_PROOF_FAULT_NONE);
+        ASSERT(same);
+        struct build_fabric_proof_stats s = pw_stats(&a);
+        ASSERT_EQ(s.shadow_unavailable, unavailable + 1u);
+        ASSERT_STR_EQ(s.last_ticket_outcome, "unavailable");
+        ASSERT_STR_EQ(s.last_ticket_reason, "trust_unreadable");
+        ASSERT_EQ(s.attach_hit, 1u);
+        pw_proof_close(&a);
+        node_db_close(&p.ndb);
+        PASS();
+    }
+    if (0) {
+_test_next:
+        build_fabric_proof_test_fault(BUILD_FABRIC_PROOF_FAULT_NONE);
+        pw_proof_close(&a);
+        node_db_close(&p.ndb);
+    }
+    return failures;
+}
 #endif
 
 int bf_proof_wiring_cases(void);
@@ -671,6 +1024,12 @@ int bf_proof_wiring_cases(void)
     failures += pw_case_crash(PW_BEFORE_COMMIT);
     failures += pw_case_restart_rebuild();
     failures += pw_case_two_workers();
+    failures += pw_case_issue_cost();
+    failures += pw_case_issue_fault(BUILD_FABRIC_PROOF_FAULT_ISSUE_STAGE);
+    failures += pw_case_issue_fault(BUILD_FABRIC_PROOF_FAULT_ISSUE_TICKET_PUT);
+    failures += pw_case_issue_fault(BUILD_FABRIC_PROOF_FAULT_ISSUE_FINALIZE);
+    failures += pw_case_open_fault();
+    failures += pw_case_shadow_fault();
 #endif
     return failures;
 }

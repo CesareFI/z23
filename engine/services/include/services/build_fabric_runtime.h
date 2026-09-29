@@ -30,6 +30,12 @@ bool build_fabric_dump_state_json(struct json_value *out, const char *key);
  * execute_step runs the claimed action, admits its receipt, and then issues
  * and publishes a proof ticket; an issuance refusal is counted and logged
  * but never fails the executed, admitted result. */
+/* Worker start's proof state: the context build_fabric_proof_context_open
+ * returns, or NULL (logged) when it refuses. It never refuses the worker:
+ * the caller starts on its identity checks alone, with or without proof. */
+struct build_fabric_proof_context *build_fabric_runtime_proof_open(
+    struct node_db *ndb, const char *datadir, const char *worker_id,
+    const uint8_t seed[32]);
 struct zcl_result build_fabric_runtime_attach_step(
     struct node_db *ndb, const char *workspace,
     const uint8_t signer_secret[32], const uint8_t signer_pubkey[32],

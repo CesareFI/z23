@@ -22,6 +22,21 @@
 #define BFPC_LOG "build_fabric"
 #define BFPC_PATH_MAX 4096
 
+#ifdef ZCL_TESTING
+static _Atomic int g_bfpc_fault;
+
+void build_fabric_proof_test_fault(enum build_fabric_proof_fault fault)
+{
+    atomic_store(&g_bfpc_fault, (int)fault);
+}
+
+bool bfpc_fault(enum build_fabric_proof_fault fault)
+{
+    return fault != BUILD_FABRIC_PROOF_FAULT_NONE &&
+           atomic_load(&g_bfpc_fault) == (int)fault;
+}
+#endif
+
 static void bfpc_state(_Atomic(const char *) *slot, const char *token,
                        const char *what, const char *worker_id)
 {
@@ -162,8 +177,19 @@ static const char *bfpc_issuer_attempt(struct build_fabric_proof_context *c,
     return BUILD_FABRIC_PROOF_STATE_RESTORE_REFUSED;
 }
 
-void bfpc_issuer_resync(struct build_fabric_proof_context *ctx,
-                        struct node_db *ndb)
+void bfpc_issuer_pause(struct build_fabric_proof_context *ctx,
+                       const char *state)
+{
+    vcs_proof_issuer_log_free(ctx->issuer);
+    ctx->issuer = NULL;
+    ctx->staged = false;
+    memset(&ctx->staged_row, 0, sizeof(ctx->staged_row));
+    bfpc_state(&ctx->live.issuer_state, state, "issuer", ctx->worker_id);
+}
+
+/* Worker start only: the restore replays the issuer's whole history. */
+static void bfpc_issuer_resync(struct build_fabric_proof_context *ctx,
+                               struct node_db *ndb)
 {
     vcs_proof_issuer_log_free(ctx->issuer);
     ctx->issuer = NULL;
@@ -302,6 +328,7 @@ static void bfpc_receiver_open(struct build_fabric_proof_context *c,
 static struct build_fabric_proof_context *bfpc_new(const char *worker_id,
                                                    const uint8_t seed[32])
 {
+    if (BFPC_FAULT(BUILD_FABRIC_PROOF_FAULT_OPEN_ALLOCATION)) return NULL;
     struct build_fabric_proof_context *c =
         zcl_calloc(1, sizeof(*c), "build proof context");
     if (!c) return NULL;
@@ -322,25 +349,41 @@ static struct build_fabric_proof_context *bfpc_new(const char *worker_id,
     return c;
 }
 
-/* No store: a staged row cannot be completed, so it refuses the worker as
- * the recovery path always has; an idle worker runs without proof state. */
-static struct zcl_result bfpc_open_without_store(
-    struct build_fabric_proof_context *c, struct node_db *ndb)
+/* No store: a staged row cannot be completed and nothing can be issued or
+ * decided. Both states name it; the row, if any, stays staged. */
+static void bfpc_open_without_store(struct build_fabric_proof_context *c)
 {
-    struct db_build_worker_proof_pending pending;
-    int found = db_build_worker_proof_pending_find_checked(
-        ndb, c->worker_id, &pending);
-    if (found < 0)
-        return ZCL_ERR(-1, "build worker proof-pending read refused");
-    if (found > 0)
-        return ZCL_ERR(-1, "build worker proof store unavailable");
     bfpc_state(&c->live.issuer_state,
                BUILD_FABRIC_PROOF_STATE_STORE_UNAVAILABLE, "issuer",
                c->worker_id);
     bfpc_state(&c->live.receiver_state,
                BUILD_FABRIC_PROOF_STATE_STORE_UNAVAILABLE, "receiver",
                c->worker_id);
-    return ZCL_OK;
+}
+
+/* A staged row recovery cannot complete stays staged for the next worker
+ * start, and this issuer stays closed: restoring at the old head and
+ * appending would sign a second ticket at the staged sequence. The
+ * receiver still opens under its own rules, which refuse an incomplete
+ * head set while any row is staged. */
+static void bfpc_open_with_store(struct build_fabric_proof_context *c,
+                                 struct node_db *ndb)
+{
+    struct zcl_result recovered =
+        BFPC_FAULT(BUILD_FABRIC_PROOF_FAULT_OPEN_RECOVERY)
+            ? ZCL_ERR(-1, "proof-pending-recover-fault-injected")
+            : build_fabric_proof_pending_recover(ndb, c->store, c->worker_id,
+                                                 c->seed);
+    if (recovered.ok)
+        bfpc_issuer_resync(c, ndb);
+    else {
+        LOG_ERROR(BFPC_LOG, "proof pending recovery for worker %s: %s",
+                  c->worker_id, recovered.message);
+        bfpc_state(&c->live.issuer_state,
+                   BUILD_FABRIC_PROOF_STATE_PENDING_REFUSED, "issuer",
+                   c->worker_id);
+    }
+    bfpc_receiver_open(c, ndb);
 }
 
 struct zcl_result build_fabric_proof_context_open(
@@ -355,20 +398,10 @@ struct zcl_result build_fabric_proof_context_open(
     struct build_fabric_proof_context *c = bfpc_new(worker_id, seed);
     if (!c) return ZCL_ERR(-1, "build proof context allocation failed");
     c->store = bfpc_store_select(datadir, &c->owns_store);
-    struct zcl_result opened = ZCL_OK;
-    if (!c->store)
-        opened = bfpc_open_without_store(c, ndb);
+    if (c->store)
+        bfpc_open_with_store(c, ndb);
     else
-        opened = build_fabric_proof_pending_recover(ndb, c->store, worker_id,
-                                                    seed);
-    if (opened.ok && c->store) {
-        bfpc_issuer_resync(c, ndb);
-        bfpc_receiver_open(c, ndb);
-    }
-    if (!opened.ok) {
-        build_fabric_proof_context_close(c);
-        return opened;
-    }
+        bfpc_open_without_store(c);
     *out = c;
     return ZCL_OK;
 }

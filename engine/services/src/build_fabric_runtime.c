@@ -140,6 +140,19 @@ static struct zcl_result bf_runtime_try_attach_queued(
                                signer_secret, signer_pubkey, receipt, report);
 }
 
+struct build_fabric_proof_context *build_fabric_runtime_proof_open(
+    struct node_db *ndb, const char *datadir, const char *worker_id,
+    const uint8_t seed[32])
+{
+    struct build_fabric_proof_context *proof = NULL;
+    struct zcl_result opened = build_fabric_proof_context_open(
+        ndb, datadir, worker_id, seed, &proof);
+    if (opened.ok) return proof;
+    LOG_ERROR("build_fabric", "worker runs without proof state: %s",
+              opened.message);
+    return NULL;
+}
+
 struct zcl_result build_fabric_runtime_attach_step(
     struct node_db *ndb, const char *workspace,
     const uint8_t signer_secret[32], const uint8_t signer_pubkey[32],
@@ -365,10 +378,12 @@ static bool bf_worker_recover_at_start(struct node_db *ndb)
     if (result.ok && (strcmp(worker.worker_id, g_local_worker.worker_id) != 0 ||
                       memcmp(pubkey, g_local_pubkey, sizeof(pubkey)) != 0))
         result = ZCL_ERR(-1, "build worker recovery identity changed");
-    struct build_fabric_proof_context *proof = NULL;
-    if (result.ok)
-        result = build_fabric_proof_context_open(
-            ndb, g_worker_datadir, g_local_worker.worker_id, seed, &proof);
+    /* Proof state is feedback: whatever its open returns, the worker starts
+     * on the identity checks above alone. */
+    struct build_fabric_proof_context *proof = result.ok
+        ? build_fabric_runtime_proof_open(ndb, g_worker_datadir,
+                                          g_local_worker.worker_id, seed)
+        : NULL;
     struct build_fabric_proof_context *none = NULL;
     if (proof && !atomic_compare_exchange_strong(&g_proof, &none, proof))
         build_fabric_proof_context_close(proof);
