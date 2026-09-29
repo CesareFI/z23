@@ -2,18 +2,11 @@
  *
  * ACCEPTANCE BAR for dev.agent.hot (tools/command/native_devagent_hot.c).
  *
- * This file is the contract that one single-file unit must satisfy by editing
- * tools/command/native_devagent_hot.c and nothing else. It is written
- * against a fixture repository built here, never against the checkout it runs
- * in, so it proves behavior rather than the state of this machine. Do not
- * edit this file to make the implementation pass.
- *
- * It calls the bound handler DIRECTLY: dev.agent.hot is a dev-lane leaf and
- * an in-process call is exactly what the CLI does after input validation, so
- * the input keys are additionally validated through the real registry. No
- * case here requires a resident dev loop, and none spawns the test runner:
- * every fixture file below resolves to no owning group, so the leaf answers
- * before any checkout root is needed.
+ * Runs against a fixture repository built here, not the checkout. It calls
+ * the bound handler directly (as the CLI does after input validation), and
+ * validates the input keys through the real registry. No case needs a
+ * resident dev loop or spawns the test runner: every fixture file resolves to
+ * no owning group.
  */
 
 #include "test/test_core.h"

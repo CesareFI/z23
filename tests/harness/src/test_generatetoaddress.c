@@ -2,30 +2,14 @@
  *
  * test_generatetoaddress — a regtest node must be able to mine SPENDABLE coins.
  *
- * THE BUG THIS GUARDS
- * -------------------
- * The only on-demand mint entry point was `generate N`
- * (engine/controllers/src/mining_controller.c), and it built every block with
- *
- *     struct script coinbase_script;
- *     coinbase_script.size = 0;
- *
- * i.e. the coinbase paid to a ZERO-LENGTH scriptPubKey. The chain height
- * advanced and the blocks were consensus-valid, but the subsidy landed on a
- * script nobody owns: no destination can be extracted from it, so the wallet
- * never recognised the output, `getbalance` stayed 0, and every money-touching
- * feature (sendtoaddress, on-chain directory registration, marketplace
- * payment, atomic-swap funding) died on "Insufficient funds" with no way to
- * obtain coins on regtest at all.
- *
- * THE FIX
- * -------
- * A second RPC, `generatetoaddress numblocks "address"`, decodes the supplied
- * transparent address with the ACTIVE chain's base58 prefixes and pays every
- * coinbase to script_for_destination(dest). Both RPCs share one guard
- * (mining_on_demand_allowed) and one loop (mining_generate_to_script); the
- * only difference is the payee script. `generate` is left paying nobody so the
- * existing height-only regtest harnesses are unaffected.
+ * GUARD. `generate N` (engine/controllers/src/mining_controller.c) builds
+ * coinbases paying a ZERO-LENGTH scriptPubKey: valid blocks, but the subsidy
+ * lands on a script nobody owns, so a regtest wallet can never be funded.
+ * `generatetoaddress numblocks "address"` decodes a transparent address with
+ * the ACTIVE chain's base58 prefixes and pays every coinbase to
+ * script_for_destination(dest). Both RPCs share one guard
+ * (mining_on_demand_allowed) and one loop (mining_generate_to_script); only
+ * the payee script differs.
  *
  * WHAT THIS TEST ASSERTS (real codecs, real consensus, no stubs)
  * -------------------------------------------------------------
@@ -150,8 +134,7 @@ int test_generatetoaddress(void)
     printf("\n=== generatetoaddress: mine a regtest coinbase that a wallet "
            "address actually owns ===\n");
 
-    /* A fixed, synthetic hash160 standing in for a wallet key's id. Using a
-     * constant keeps the whole test deterministic. */
+    /* A fixed, synthetic hash160 standing in for a wallet key's id. */
     struct key_id kid;
     for (int i = 0; i < 20; i++)
         kid.id.data[i] = (uint8_t)(0xA0 + i);
@@ -161,16 +144,15 @@ int test_generatetoaddress(void)
     want.id.key = kid;
 
     /* A mainnet-prefixed address, minted BEFORE switching to regtest, for the
-     * cross-network rejection check at the end. */
+    /* A mainnet-prefixed address, minted before switching to regtest. */
     chain_params_select(CHAIN_MAIN);
     char mainnet_addr[128] = {0};
     bool main_encoded = gta_encode(&want, mainnet_addr, sizeof(mainnet_addr));
 
-    /* ── (0) the gate itself. Every code path this change adds — the
-     * generatetoaddress RPC, the regtest node.db wallet-projection feed in
-     * tip_finalize_post_step, and wallet_advance_confirmations — sits behind
-     * fMineBlocksOnDemand. Pin that it is true on regtest and FALSE on both
-     * live networks, so none of it can reach mainnet or testnet. */
+    /* ── (0) the gate itself: generatetoaddress, the regtest wallet-projection
+     * feed in tip_finalize_post_step and wallet_advance_confirmations sit
+     * behind fMineBlocksOnDemand, true on regtest and FALSE on both live
+     * networks. */
     {
         chain_params_select(CHAIN_MAIN);
         bool main_on_demand = chain_params_get()->fMineBlocksOnDemand;
@@ -214,7 +196,7 @@ int test_generatetoaddress(void)
         printf("OK\n");
     else { printf("FAIL (size=%zu)\n", (size_t)pay_script.size); failures++; }
 
-    /* ── (2)+(3) the mined block pays that address and still passes the
+    /* ── (2)+(3) the mined block pays that address and passes the
      * reducer's intake gate ─────────────────────────────────────── */
     struct uint256 prev = cp->consensus.hashGenesisBlock;
     const int height = 1;
@@ -238,9 +220,8 @@ int test_generatetoaddress(void)
             printf("OK\n");
         else { printf("FAIL\n"); failures++; }
 
-        /* THE POINT OF THE WHOLE CHANGE: the new coin is addressable, so a
-         * wallet holding this key recognises and can spend it after
-         * COINBASE_MATURITY. */
+        /* The coin is addressable: a wallet holding this key recognises and
+         * can spend it after COINBASE_MATURITY. */
         struct tx_destination back;
         memset(&back, 0, sizeof(back));
         printf("generatetoaddress: coinbase output is owned by the address "

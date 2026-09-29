@@ -1,19 +1,15 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * dev.app.scaffold — the materializer behind `z23 dev app scaffold <app>
- * <resource>`. These cases exist because a scaffold that is trusted with a
- * developer's checkout has to be provably fail-closed:
+ * <resource>` must be fail-closed:
  *
- *   1. what it writes IS what dev.app.plan previewed — same paths, and the
- *      bytes on disk equal the bytes the shared slice builder produced;
- *   2. a target that already exists with DIFFERENT content stops the whole
- *      command before any byte is written, and leaves no temp file behind;
+ *   1. what it writes is what dev.app.plan previewed (same paths, same bytes);
+ *   2. a target that exists with different content stops the whole command
+ *      before any byte is written, leaving no temp file;
  *   3. running it twice is a no-op: 0 written, N unchanged;
  *   4. an inadmissible app_id or resource name never reaches the disk.
  *
- * Each case runs against a fresh mkdtemp() scratch checkout carrying only
- * the App manifest and the registry the slice touches, so the test never
- * writes into the real tree.
+ * Each case runs against a fresh mkdtemp() scratch checkout.
  */
 
 #include "test/test_core.h"

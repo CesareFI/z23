@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Unit tests for the Wave S S-2 header_admit stage
+ * Unit tests for the header_admit stage
  * (engine/jobs/src/header_admit_stage.c).
  *
  * Coverage:
@@ -319,12 +319,9 @@ int test_header_admit_stage(void)
         struct synth_chain sc;
         synth_chain_build(&sc, 3);
         active_chain_move_window_tip(&ms.chain_active, &sc.blocks[2]);
-        /* Sabotage AFTER set_tip: a NULL pprev set first would make the
-         * chain-walker stop at the broken link and leave chain[0] NULL,
-         * which would short-circuit genesis admission to IDLE before
-         * step 1 ever runs. Setting it after set_tip preserves the
-         * chain array but still leaves bi->pprev NULL when step 1
-         * inspects it. */
+        /* Sabotage AFTER set_tip: setting a NULL pprev first would stop the
+         * chain-walker at the broken link and short-circuit genesis
+         * admission to IDLE before step 1 runs. */
         sc.blocks[1].pprev = NULL;
 
         HA_CHECK("blocked: init", header_admit_stage_init(&ms));
@@ -376,10 +373,9 @@ int test_header_admit_stage(void)
     }
 
     /* ── producer path: a staged raw header CREATES a block_index ──────
-     * Reducer step 2. When the active chain has no block at the needed
-     * height, a raw header pushed through the inbox lets the stage build the
-     * block_index via add_to_block_index. The reducer extends the chain
-     * without legacy accept_block_header. */
+     * When the active chain has no block at the needed height, a raw header
+     * pushed through the inbox lets the stage build the block_index via
+     * add_to_block_index. */
     {
         char dir[256];
         test_fmt_tmpdir(dir, sizeof(dir), "header_admit","producer");
@@ -528,11 +524,9 @@ int test_header_admit_stage(void)
     }
 
     /* ── Reorg self-heal: stale row below a matching tip is rewritten ──
-     * Mirrors the live first_divergent_height=3129671 case at small
-     * scale: the stale log row sits BELOW the (still-matching) tip. The
-     * forward-only stage would never revisit it; the reorg-rewind must
-     * detect it, rewind the cursor to the fork point, and re-admit
-     * (INSERT OR REPLACE) so the canonical hash overwrites the stale one. */
+     * The reorg-rewind detects a stale log row below the matching tip,
+     * rewinds the cursor to the fork point, and re-admits (INSERT OR REPLACE)
+     * so the canonical hash overwrites it. */
     {
         char dir[256];
         test_fmt_tmpdir(dir, sizeof(dir), "header_admit","reorg_heal");
@@ -581,13 +575,10 @@ int test_header_admit_stage(void)
     }
 
     /* ── Forward-fork self-heal: stale row at active_tip+1 ────────────
-     * Live regression: active tip H was correct, but header_admit_log already
-     * held rows for H+1.. on a different parent. The below-tip reorg scan could
-     * not see the stale row because active_chain_at(H+1) is intentionally NULL.
-     * The pre-step repair must clamp downstream cursors and rewind header_admit
-     * to H+1. Since header admission is header-only, replay must then source
-     * the canonical child from best-header ancestry instead of idling on the
-     * body-window accessor. */
+     * header_admit_log holds rows for H+1.. on a different parent while the
+     * active tip H is correct. The pre-step repair clamps downstream cursors
+     * and rewinds header_admit to H+1; replay then sources the canonical child
+     * from best-header ancestry. */
     {
         char dir[256];
         test_fmt_tmpdir(dir, sizeof(dir), "header_admit","forward_fork");
@@ -665,11 +656,8 @@ int test_header_admit_stage(void)
     }
 
     /* ── Forward-fork guard: best-header child must link to active tip ──
-     * Live follow-up: after the rewind above, blindly sourcing H+1 from
-     * pindex_best_header can re-admit the SAME fork child whose parent does
-     * not match the active tip, so the next tick rewinds again forever. A
-     * best-header fallback is useful only when it extends the already-visible
-     * active parent. */
+     * A best-header fallback is used only when it extends the active parent;
+     * otherwise the same fork child would be re-admitted and rewound forever. */
     {
         char dir[256];
         test_fmt_tmpdir(dir, sizeof(dir), "header_admit","fork_parent_guard");
@@ -732,11 +720,8 @@ int test_header_admit_stage(void)
         test_cleanup_tmpdir(dir);
     }
 
-    /* ── Forward-fork guard: h+2 fallback must link through the prior
-     *      admitted header row, not through a stale row with the right
-     *      parent. This is the live hot-loop shape after a fork rewind:
-     *      parent-only checks let h+2 re-advance the cursor even though h+1
-     *      still names the wrong header. */
+    /* ── Forward-fork guard: the h+2 fallback must link through the prior
+     *      admitted header row, not a stale row with the right parent. */
     {
         char dir[256];
         test_fmt_tmpdir(dir, sizeof(dir), "header_admit","prior_hash_guard");
@@ -782,10 +767,9 @@ int test_header_admit_stage(void)
         test_cleanup_tmpdir(dir);
     }
 
-    /* ── Checkpoint-window hole: after the first header-only finalize, the
-     *      active height can name the trusted base while chain[height] is
-     *      still absent. The exact durable trusted-base pair is sufficient to
-     *      admit its canonical child; any hash mismatch remains fail-closed. */
+    /* ── Checkpoint-window hole: with the active height naming the trusted
+     *      base while chain[height] is absent, the exact durable trusted-base
+     *      pair admits its canonical child; any hash mismatch fails closed. */
     {
         char dir[256];
         test_fmt_tmpdir(dir, sizeof(dir), "header_admit", "trusted_base_parent");

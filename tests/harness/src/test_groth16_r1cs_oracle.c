@@ -1,5 +1,5 @@
 /* Canonical R1CS TRANSCRIPT parity oracle for the Sapling SPEND circuit
- * (test-only, QAP lane).
+ * (test-only).
  *
  * Portions interoperate with librustzcash / bellman / sapling-crypto
  * (The Zcash developers / Electric Coin Company), pinned commit
@@ -8,37 +8,32 @@
  * running a throwaway recording ConstraintSystem against that pinned commit.
  *
  * WHY THIS EXISTS
- * ---------------
- * `cs_is_satisfied()` proves the honest witness satisfies A*B==C for every
- * emitted constraint. That is NECESSARY but NOT SUFFICIENT for parity with the
- * real Sapling trusted-setup proving key: the key is built per-variable from
- * WHICH MATRIX (A, B or C) each coefficient sits in, not from the reduced
- * algebraic identity. Two circuits can agree on every A*B==C check and still be
- * different QAPs — for example
+ * `cs_is_satisfied()` proves the witness satisfies A*B==C per constraint,
+ * which is necessary but not sufficient for parity with the Sapling proving
+ * key: the key is built per variable from which matrix (A, B or C) each
+ * coefficient sits in. Two circuits can satisfy the same witness and still be
+ * different QAPs, e.g.
  *
  *     (y - 1) * cond = y' - 1          and          y * cond = y' - (1 - cond)
  *
- * are the same identity, are satisfied by exactly the same witness, and are
- * DIFFERENT R1CS matrices. Only a matrix-level transcript diff can tell them
- * apart, and the second form is the one bellman emits. Both of the mismatches
- * this oracle first caught were of exactly that shape.
+ * Only a matrix-level transcript diff separates them; the second form is the
+ * one bellman emits.
  *
  * WHAT IS COMPARED
- * ----------------
- * For every constraint, the A/B/C linear combinations under a STABLE variable
- * identity that is reproducible on both sides:
+ * For every constraint, the A/B/C linear combinations under a stable
+ * variable identity:
  *
  *     kind 0 -> the constant ONE          (bellman Index::Input(0);  native var 0)
  *     kind 1 -> public INPUT n            (bellman Index::Input(n);  native var n)
  *     kind 2 -> AUX/witness variable n    (bellman Index::Aux(n);    native var n - 8)
  *
- * Those are ALLOCATION-ORDER positions, not raw internal indices. bellman keeps
- * inputs and aux in two separate index spaces; the native constraint system has
- * one shared counter and reserves slots 1..7 for the seven public inputs, so
- * native aux index = var - (num_inputs + 1).
+ * These are allocation-order positions: bellman keeps inputs and aux in two
+ * index spaces, the native system has one counter with slots 1..7 reserved
+ * for the seven public inputs, so native aux index = var - (num_inputs + 1).
  *
  * Canonicalization, identical on both sides:
- *   * duplicate terms on the same variable are SUMMED
+ *   * duplicate terms on the same variable are SUMMED (the QAP coefficient
+ *     is the sum, so split or reordered term lists are the same matrix)
  *   * zero-coefficient terms are DROPPED (after summing)
  *   * terms are sorted by (kind, index)
  *   * coefficients are canonical NON-Montgomery 32-byte little-endian
@@ -48,34 +43,23 @@
  * Section hash    = SHA3-256( row_hash[first..last] )
  * Transcript hash = SHA3-256( row_hash[0..76893] )
  *
- * Summing duplicates is the right normalization rather than a convenience: the
- * QAP coefficient for (constraint, variable) IS the sum of that variable's
- * terms in the linear combination, so two term lists that differ only by
- * splitting or reordering describe the SAME matrix and must hash the same.
- *
- * HOW THE GOLDENS WERE PRODUCED, AND HOW TO RE-DERIVE THEM
- * --------------------------------------------------------
- * A throwaway Rust tool (a recording `ConstraintSystem<Bls12>` over the pinned
- * bellman) dumps the reference transcript for the same 76893-constraint prefix
- * into a binary file in the canonical encoding above. Point this test at it:
+ * GOLDENS
+ * A recording `ConstraintSystem<Bls12>` over the pinned bellman dumps the
+ * reference transcript for the same 76893-constraint prefix in the encoding
+ * above. Point this test at it for a row-by-row diff that prints the first
+ * differing row:
  *
  *     ZCL_R1CS_REF=/path/to/ref_spend_1_21.bin build/bin/test_zcl ...
  *
- * and it does a full row-by-row diff, printing the first differing row with
- * both sides decoded. With the variable unset (the CI path) it compares the
- * native transcript against the baked golden hashes below, which ARE the
- * reference's hashes. The reference recorder was itself validated by checking
- * that all 98777 recorded matrices are satisfied by the recorded assignment.
+ * With the variable unset (CI) the native transcript is compared against the
+ * baked golden hashes, which are the reference's hashes.
  *
  * ANTI-VACUOUS GATE
- * -----------------
- * A comparison that cannot fail proves nothing, so this test also injects five
- * synthetic breakages and asserts the oracle flags every one: A/C swapped on
- * one constraint, the historical wrong select-Y split, one flipped low bit in
- * one Fr coefficient, two constraints reordered, and one input variable
- * relabelled as aux. The select-Y case additionally asserts that BOTH forms are
- * satisfied by the same witness — that is the proof that A*B==C alone could
- * never have caught it.
+ * The test injects five synthetic breakages and asserts each is flagged: A/C
+ * swapped on one constraint, the wrong select-Y split, one flipped low bit in
+ * one Fr coefficient, two constraints reordered, and one input relabelled as
+ * aux. The select-Y case also asserts both forms are satisfied by the same
+ * witness, showing A*B==C alone could not catch it.
  */
 
 #include "test/test_core.h"
@@ -102,32 +86,23 @@
     else { printf("FAIL\n"); failures++; }     \
 } while (0)
 
-/* Sections 1..21 are the prefix the Rust recording ConstraintSystem was run
- * against, so their goldens below ARE the reference's own hashes. Sections
- * 22..28 were ported afterwards, from the pinned reference SOURCE rather than a
- * recorded transcript, so their goldens are NATIVE-derived regression pins —
- * they prove the matrices do not drift, they do not by themselves prove
- * reference parity. What does prove reference parity for the whole circuit is
- * further down: the constraint total, the auxiliary-variable total taken from
- * the OFFICIAL trusted-setup proving key, and (in the params-gated groups) a
- * proof that verifies under the official verifying key. Do not paper over a
- * 22..28 mismatch by re-baking a golden without understanding it. */
+/* Sections 1..21 were recorded from the reference ConstraintSystem, so their
+ * goldens are the reference's own hashes. Sections 22..28 were ported from
+ * the pinned reference source, so their goldens are native-derived
+ * regression pins, not reference parity; parity for the whole circuit is
+ * proven by the constraint total, the aux total from the official proving
+ * key, and the params-gated proof under the official verifying key. Do not
+ * re-bake a 22..28 golden without understanding the mismatch. */
 #define R1CS_REF_SECTIONS 21u
 #define R1CS_SECTIONS 28u
 #define R1CS_PREFIX_CONSTRAINTS 76893u
 #define R1CS_PUBLIC_INPUTS 7u
 
 /* The complete circuit. 98777 is bellman's published Spend constraint count
- * (also pinned as SPEND_CIRCUIT_TOTAL_CONSTRAINTS in sapling_circuit.h).
- *
- * 98638 is not a native number either: it is the `l` query length of the
- * OFFICIAL sapling-spend.params trusted-setup file, which bellman emits with
- * exactly one entry per AUXILIARY variable. So it is the reference circuit's aux
- * count, read out of the trusted setup itself. A port that allocated one wire
- * too many or too few anywhere in 28 sections cannot hit it, which makes it the
- * strongest reference check available without a Rust recorder. Re-derived from
- * the file (not restated) by the params-gated leg in
- * tests/harness/src/test_groth16_selfverify.c. */
+ * (also SPEND_CIRCUIT_TOTAL_CONSTRAINTS in sapling_circuit.h). 98638 is the
+ * `l` query length of the official sapling-spend.params file, one entry per
+ * auxiliary variable, i.e. the reference aux count; re-derived from the file
+ * by the params-gated leg in tests/harness/src/test_groth16_selfverify.c. */
 #define R1CS_TOTAL_CONSTRAINTS 98777u
 #define R1CS_TOTAL_AUX         98638u
 
@@ -531,7 +506,7 @@ static int antivacuous_select_y(void)
     struct fr neg_one;
     fr_neg(&neg_one, &one);
 
-    /* Form W (what the native circuit used to emit): (y - 1) * cond = y' - 1 */
+    /* Form W (alternative encoding): (y - 1) * cond = y' - 1 */
     struct linear_combination wa, wb, wc;
     lc_init(&wa); lc_add_term(&wa, y, &one); lc_add_term(&wa, 0, &neg_one);
     lc_init(&wb); lc_add_term(&wb, cond, &one);

@@ -54,9 +54,8 @@ int test_header_sync_stall(void)
     int failures = 0;
 
     /* ── 1. last_useful_headers_time updated on NEW headers ──────
-     * The production call site (process_headers, msg_headers.c)
-     * credits syncsvc_note_headers_received with newly_added —
-     * headers not previously in our index — per design P1/B2. */
+     * The call site (process_headers, msg_headers.c) credits
+     * syncsvc_note_headers_received with newly_added (P1). */
     printf("header_sync_stall: tracking fields updated on new headers... ");
     {
         struct p2p_node n = make_stall_node(10000, false, 1000);
@@ -85,13 +84,9 @@ int test_header_sync_stall(void)
     }
 
     /* ── 3. P1: known-header replay earns no usefulness credit ────
-     * A withholding peer can replay headers we already have:
-     * process_headers accepts them (accepted > 0, was_known) but
-     * newly_added == 0, so the call site passes 0 here.  Crediting
-     * `accepted` instead would let such a peer refresh
-     * last_useful_headers_time forever (defeating rule A) and
-     * inflate total_headers_delivered (deflecting rule B's
-     * worst-peer eviction onto honest peers) — design B2. */
+     * A replay is accepted but newly_added == 0, so the call site passes
+     * 0. Crediting `accepted` would let a withholding peer defeat rule A
+     * and deflect rule B's eviction onto honest peers. */
     printf("header_sync_stall: known-header replay earns no credit... ");
     {
         struct p2p_node n = make_stall_node(10000, false, 1000);
@@ -111,9 +106,8 @@ int test_header_sync_stall(void)
     }
 
     /* ── 4. Stale peer disconnect fires after 120s in IBD ─────────
-     * best_header_height far below the peer's claimed tip: the
-     * parity gate (P2) stays out of the way and the rule keeps its
-     * original semantics. */
+     * best_header_height far below the peer's claimed tip: the parity
+     * gate (P2) stays out of the way. */
     printf("header_sync_stall: disconnect stale peer after 120s... ");
     {
         struct p2p_node n = make_stall_node(10000, false, 1000);
@@ -149,13 +143,9 @@ int test_header_sync_stall(void)
     }
 
     /* ── 7. P2: frontier parity skips the stale-header rule ───────
-     * The live-wedge regime: our BLOCK height is pinned far behind
-     * (IBD predicate true) while our HEADER frontier tracks the
-     * network tip.  At parity with the peer's handshake-claimed
-     * height, new headers only arrive every ~150s block — no peer
-     * can look "useful" on a 120s clock, so disconnecting is pure
-     * churn (and with P1 crediting only new-to-index headers,
-     * newly_added==0 for everyone here).  Boundary is inclusive:
+     * Our BLOCK height is far behind (IBD true) while our HEADER frontier
+     * tracks the network tip: no peer can look "useful" on a 120s clock,
+     * so disconnecting is churn. Boundary is inclusive:
      * best_header_height >= starting_height - 144 skips. */
     printf("header_sync_stall: frontier parity skips stale rule... ");
     {
@@ -173,10 +163,7 @@ int test_header_sync_stall(void)
     }
 
     /* ── 8. P2: far-below frontier keeps full discipline ──────────
-     * A genuinely withholding peer (claims a tip far above our
-     * header frontier, delivers nothing useful for 120s) is still
-     * cut — the parity gate must not weaken the rule where it
-     * matters. */
+     * A genuinely withholding peer is still cut. */
     printf("header_sync_stall: far-below frontier still disconnects... ");
     {
         struct p2p_node n = make_stall_node(10000, false, 1000);
@@ -185,10 +172,9 @@ int test_header_sync_stall(void)
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
 
-    /* A peer can be stale for header purposes while productively serving
-     * already-known bodies. Header accounting must not churn that source;
-     * once its body timestamp reaches the body-stall boundary, the existing
-     * body rules own the failover decision. */
+    /* A peer stale for header purposes but serving known bodies is not
+     * churned by header accounting; once its body timestamp reaches the
+     * body-stall boundary, the body rules own the failover decision. */
     printf("header_sync_stall: recent body source survives header stall... ");
     {
         struct p2p_node n = make_stall_node(10000, false, 1000);
@@ -202,16 +188,12 @@ int test_header_sync_stall(void)
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
 
-    /* ── 9. P3: loopback exemption seam — rule trust-agnostic,
-     * call-site guard exempts ─────────────────────────────────────
-     * Identical staleness/frontier conditions to case 4.  Pins both
-     * halves of the seam: (a) the syncsvc rule itself still says
-     * "disconnect" for a loopback peer — the exemption does NOT live
-     * inside it (it has no trust knowledge, by design); (b) the
-     * trust predicate's input classifies 127.0.0.1 as local, so the
-     * composed rule-A decision — replicated verbatim from the
-     * msgprocessor.c call site — never churns the co-located
-     * zclassicd lifeline. */
+    /* ── 9. P3: loopback exemption seam ───────────────────────────────
+     * Same conditions as case 4. (a) the syncsvc rule still says
+     * "disconnect" for a loopback peer (it is trust-agnostic); (b) the
+     * trust predicate classifies 127.0.0.1 as local, so the composed
+     * rule-A decision, replicated from the msgprocessor.c call site,
+     * exempts it. */
     printf("header_sync_stall: loopback trusted at the call-site seam... ");
     {
         struct p2p_node n = make_stall_node(10000, false, 1000);
@@ -229,12 +211,9 @@ int test_header_sync_stall(void)
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
 
-    /* ── 10. P3: whitelist exemption seam; plain remote keeps full
-     * stall discipline ─────────────────────────────────────────────
-     * Same composed call-site decision as case 9: a public address
-     * is NOT local, so only the explicit whitelist bit can exempt it;
-     * with the bit clear, the rule's verdict passes through the guard
-     * unmodified and the peer is cut. */
+    /* ── 10. P3: whitelist exemption seam ─────────────────────────────
+     * A public address is NOT local, so only the whitelist bit exempts
+     * it; with the bit clear the rule's verdict passes through. */
     printf("header_sync_stall: whitelist trusted, plain remote cut... ");
     {
         struct p2p_node n = make_stall_node(10000, false, 1000);

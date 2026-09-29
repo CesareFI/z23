@@ -15,14 +15,10 @@
  * Known-answer and structural tests for core/modules/crypto/src/hmac_sha512.c
  * (hmac_sha512_init / hmac_sha512_write / hmac_sha512_finalize).
  *
- * HMAC-SHA512 is a pure, deterministic function: a fixed (key, message)
- * pair always produces one fixed 64-byte digest. Every assertion below
- * pins an exact byte-for-byte output, so any regression in the SHA-512
- * compression function, the ipad/opad key padding, the >128-byte key
- * pre-hash branch, or the stateful multi-write buffering changes a digest
- * and fails the test. The first three vectors are the canonical published
- * RFC 4231 test cases (HMAC-SHA-512), so they additionally pin the module
- * to the standard rather than merely to its own current behavior. */
+ * HMAC-SHA512 is deterministic; every assertion pins an exact 64-byte digest,
+ * so a regression in the SHA-512 compression, the ipad/opad padding, the
+ * >128-byte key pre-hash branch, or multi-write buffering fails. The first
+ * three vectors are the RFC 4231 HMAC-SHA-512 test cases. */
 
 #include "test/test_core.h"
 #include "crypto/hmac_sha512.h"
@@ -39,9 +35,7 @@ static void hmac512_oneshot(const unsigned char *key, size_t keylen,
 }
 
 /* Lowercase-hex-encode the 64-byte digest and compare against `expected`.
- * Returns true on exact match. Self-contained (does not borrow the shared
- * check_hex, which prints its own status line and would corrupt the
- * TEST_CASE "OK" output). */
+ * Self-contained: the shared check_hex prints its own status line. */
 static bool digest_is(const unsigned char digest[HMAC_SHA512_OUTPUT_SIZE],
                       const char *expected)
 {
@@ -51,10 +45,8 @@ static bool digest_is(const unsigned char digest[HMAC_SHA512_OUTPUT_SIZE],
     return strcmp(hex, expected) == 0;
 }
 
-/* Behavior 1: RFC 4231 Test Case 2 — key="Jefe", msg="what do ya want
- * for nothing?". The canonical published HMAC-SHA-512 digest. Pins the
- * core algorithm (short-key ipad/opad path, single-block message) to the
- * standard. */
+/* Behavior 1: RFC 4231 Test Case 2 — key="Jefe", msg="what do ya want for
+ * nothing?": short-key ipad/opad path, single-block message. */
 int test_hmac_sha512_kat_rfc4231_jefe(void)
 {
     int failures = 0;
@@ -76,11 +68,9 @@ int test_hmac_sha512_kat_rfc4231_jefe(void)
     return failures;
 }
 
-/* Behavior 2: key longer than the 128-byte block size. RFC 4231 Test
- * Case 6 — a 131-byte all-0xaa key with a single-block message. This
- * forces hmac_sha512_init's else-branch, which SHA-512-compresses the
- * oversized key down to 64 bytes (zero-padded to 128) before ipad/opad.
- * Pins the key-prehash path to the published vector. */
+/* Behavior 2: key longer than the 128-byte block size (RFC 4231 Test Case 6,
+ * a 131-byte all-0xaa key): hmac_sha512_init SHA-512-compresses the key to 64
+ * bytes before ipad/opad. */
 int test_hmac_sha512_kat_oversized_key(void)
 {
     int failures = 0;
@@ -104,11 +94,8 @@ int test_hmac_sha512_kat_oversized_key(void)
     return failures;
 }
 
-/* Behavior 3: empty message determinism. HMAC-SHA512(key, "") must be
- * fully defined and stable — finalizing the inner SHA-512 over only the
- * ipad block (no application data) then the outer over that. Asserts the
- * fixed digest AND that calling hmac_sha512_write(.., 0) is equivalent to
- * not writing at all (the stateful path must not perturb the empty case). */
+/* Behavior 3: empty message. HMAC-SHA512(key, "") has a fixed digest, and
+ * hmac_sha512_write(.., 0) is equivalent to not writing. */
 int test_hmac_sha512_empty_message(void)
 {
     int failures = 0;
@@ -140,17 +127,10 @@ int test_hmac_sha512_empty_message(void)
     return failures;
 }
 
-/* Behavior 4 (PRIMARY, index 4): multi-block data across 2+ 128-byte
- * SHA-512 blocks, exercising stateful hmac_sha512_write correctness. A
- * 256-byte message (exactly two inner blocks plus the ipad prefix block)
- * fed two ways:
- *   (a) one 256-byte write, and
- *   (b) many small writes that straddle the internal 128-byte buffer
- *       boundary (60 + 68 + 1 + 127 = 256),
- * must produce the SAME fixed digest. This pins the running-buffer carry
- * logic in sha512_write (via hmac_sha512_write): a regression that mis-
- * counts a partial block or drops a chunk on a boundary changes the
- * digest or de-syncs the two paths. */
+/* Behavior 4: multi-block data across 2+ 128-byte SHA-512 blocks. A 256-byte
+ * message fed (a) in one write and (b) in writes that straddle the internal
+ * 128-byte buffer boundary (60 + 68 + 1 + 127 = 256) must produce the SAME
+ * fixed digest, pinning the running-buffer carry logic. */
 int test_hmac_sha512_multiblock_stateful_write(void)
 {
     int failures = 0;
@@ -190,14 +170,9 @@ int test_hmac_sha512_multiblock_stateful_write(void)
     return failures;
 }
 
-/* Behavior 5: key length exactly 128 (the block-size boundary). This is
- * the largest key that still takes hmac_sha512_init's keylen<=128 branch
- * (memcpy then memset of 128-keylen == 0 trailing bytes). An off-by-one
- * at the boundary (e.g. routing 128 into the prehash branch, or writing
- * one byte past rkey) would change the padded key and thus the digest.
- * Pins the boundary to the exact module output, and asserts that the
- * 128-byte key does NOT collide with its 64-byte SHA-512 prehash (which
- * is what a >128 key of the same fill would reduce to). */
+/* Behavior 5: key length exactly 128 (the block-size boundary), the largest key
+ * taking hmac_sha512_init's keylen<=128 branch. Pins the exact digest and that
+ * the 128-byte key does NOT collide with its 64-byte SHA-512 prehash. */
 int test_hmac_sha512_key_len_128_boundary(void)
 {
     int failures = 0;

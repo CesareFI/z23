@@ -1,45 +1,36 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Tests for the have_data_unreadable Condition — the continuous self-healer
- * for the "torn HAVE_DATA block wedges the tip" class observed live:
+ * Tests for the have_data_unreadable Condition, the self-healer for the "torn
+ * HAVE_DATA block wedges the tip" class:
  *
  *   find_most_work_chain: STUCK at tip h=N (best_header h=N+k, gap=k)
  *   read_block_pread_fail: h=N+1 file=-1 pos=0   (repeating)
  *
- * MECHANISM (confirmed in source):
- *   - A block above the tip carries BLOCK_HAVE_DATA in nStatus but its
- *     on-disk location is torn: nFile == -1 / nDataPos == 0 (a stale flag
- *     left by a quarantined synthetic tip; no actual body on disk).
- *   - gap_fill_service.c:168 skips any block with BLOCK_HAVE_DATA set, so the
- *     torn block is NEVER re-requested → the body never re-downloads.
- *   - connect_tip cannot read the body (read_block_from_disk_index_pread
- *     fails because nFile < 0), so the tip cannot advance → wedge.
+ * Mechanism:
+ *   - A block above the tip carries BLOCK_HAVE_DATA but its on-disk location
+ *     is torn (nFile == -1 / nDataPos == 0).
+ *   - gap_fill_service.c skips blocks with BLOCK_HAVE_DATA, so the body is
+ *     never re-requested.
+ *   - connect_tip cannot read the body, so the tip cannot advance.
  *
- * THE HEAL (engine/conditions/src/have_data_unreadable.c):
+ * The heal (engine/conditions/src/have_data_unreadable.c):
  *   detect : tip stalled >=60s AND tip+1 is marked HAVE_DATA but
- *            block_index_have_data_readable() == false (file=-1 → read fails).
- *   remedy : CLEAR the provably-bogus HAVE_DATA flag (+ nFile=-1, nDataPos=0)
- *            so gap_fill re-requests the body. Never drops real data — the
- *            read genuinely failed AND file is already -1.
- *   witness: the tip advanced past the target (re-fetch + connect succeeded),
- *            or the block became readable.
- * Anti-thrash: the Condition engine bounds this at max_attempts=3 with a
- *   backoff_secs=30 window; after exhaustion it re-arms on a 600s cooldown
- *   (unbounded re-arms) instead of latching permanently — this is an
- *   external-resource-dependent remedy (the sibling body_fetch_missing_
- *   have_data Condition drives the actual re-fetch).
+ *            block_index_have_data_readable() == false.
+ *   remedy : clear the bogus HAVE_DATA flag (+ nFile=-1, nDataPos=0) so
+ *            gap_fill re-requests the body. Never drops real data.
+ *   witness: the tip advanced past the target, or the block became readable.
+ * Anti-thrash: the engine bounds this at max_attempts=3, backoff_secs=30;
+ *   after exhaustion it re-arms on a 600s cooldown (unbounded re-arms). The
+ *   sibling body_fetch_missing_have_data Condition drives the re-fetch.
  *
- * Also covers the GENERALIZED detect target (2026-07): the LOWEST read-failed
- * height across the reducer stages, not just tip+1 — utxo_apply's own
- * select-idle record of an ARBITRARY mid-chain height it is stuck re-reading
- * (e.g. a stale-script/coin-backfill replay that rewinds its cursor), read via
- * the test-only stub seam (have_data_unreadable_test_set_select_idle_stubs).
+ * Also covers the generalized detect target: the lowest read-failed height
+ * across the reducer stages, not just tip+1 (utxo_apply's select-idle record,
+ * via have_data_unreadable_test_set_select_idle_stubs).
  *
- * Fixture pattern mirrors test_orphan_utxo_above_tip.c: a minimal in-RAM
- * main_state chain, the engine driven via condition_engine_tick(), tip
- * staleness injected via sync_monitor_test_set_tip_advance_ts(). The
- * torn-block readability gate needs NO disk file: a block with nFile=-1
- * makes block_index_have_data_readable() return false immediately.
+ * Fixture mirrors test_orphan_utxo_above_tip.c: a minimal in-RAM main_state
+ * chain, the engine driven via condition_engine_tick(), tip staleness injected
+ * via sync_monitor_test_set_tip_advance_ts(). A block with nFile=-1 makes
+ * block_index_have_data_readable() return false with no disk file.
  */
 
 #include "test/test_core.h"
@@ -102,8 +93,7 @@ static struct block_index *hdu_build_chain(struct main_state *ms, int n,
 }
 
 /* Insert a torn next-block at height `h`: header-valid, HAVE_DATA flagged,
- * but its on-disk location is missing (nFile=-1). It is NOT linked into the
- * active chain (the tip is at h-1) — this is the would-be next tip. */
+ * on-disk location missing (nFile=-1), not linked into the active chain. */
 static struct block_index *hdu_insert_torn(struct main_state *ms, int h,
                                            struct uint256 *hash,
                                            struct block_index *prev)
@@ -127,11 +117,9 @@ static struct block_index *hdu_insert_torn(struct main_state *ms, int h,
     return pi;
 }
 
-/* Same as hdu_insert_torn but distinguished from siblings AT THE SAME HEIGHT
- * by `salt` — target_index() matches by height alone, so several distinct
- * (distinct-hash) torn entries can coexist at one height, each requiring its
- * own remedy call to clear. Models several stale/retried candidate bodies
- * left behind at one height. */
+/* Like hdu_insert_torn but distinguished from same-height siblings by `salt`:
+ * target_index() matches by height alone, so several distinct-hash torn
+ * entries can coexist at one height, each needing its own remedy call. */
 static struct block_index *hdu_insert_torn_variant(struct main_state *ms,
                                                     int h, uint8_t salt,
                                                     struct uint256 *hash,
@@ -157,15 +145,14 @@ static struct block_index *hdu_insert_torn_variant(struct main_state *ms,
     return pi;
 }
 
-/* Test seams for the mid-chain (utxo_apply select-idle) candidate — see
+/* Test seams for the mid-chain (utxo_apply select-idle) candidate; see
  * have_data_unreadable_test_set_select_idle_stubs(). */
 static int64_t g_hdu_stub_height = -1;
 static int64_t hdu_stub_select_idle_height(void) { return g_hdu_stub_height; }
 static bool hdu_stub_select_idle_is_read_failure(void) { return true; }
 
-/* Insert a block_index entry at an EXPLICIT (already-computed, real) hash —
- * the "witness clears on readability" test needs a genuine on-disk block a
- * real pread can hash-verify, unlike hdu_insert_torn's fabricated hash. */
+/* Insert a block_index entry at an explicit real hash; the "witness clears on
+ * readability" test needs a block a real pread can hash-verify. */
 static struct block_index *hdu_insert_torn_at_hash(struct main_state *ms,
                                                     int h,
                                                     const struct uint256 *hash,
@@ -185,10 +172,9 @@ static struct block_index *hdu_insert_torn_at_hash(struct main_state *ms,
     return pi;
 }
 
-/* Write a minimal real block to `netdir` and return its on-disk position +
- * true hash — mirrors test_disk_block_io.c's write_test_block. `pos->nFile`
- * must be -1 on entry (append mode); write_block_to_disk fills in the real
- * (nFile,nPos) it chose. */
+/* Write a minimal real block to `netdir` and return its on-disk position and
+ * true hash (as test_disk_block_io.c's write_test_block). `pos->nFile` must be
+ * -1 on entry (append mode). */
 static bool hdu_write_real_block(const char *netdir, uint32_t ntime,
                                  struct disk_block_pos *pos,
                                  struct uint256 *hash_out)
@@ -261,7 +247,7 @@ int test_have_data_unreadable(void)
         condition_engine_set_main_state(&ms);
         register_have_data_unreadable();
 
-        /* Tip just advanced (age ~0 < 60) — even a torn block must not fire. */
+        /* Tip just advanced (age ~0 < 60): even a torn block must not fire. */
         sync_monitor_test_set_tip_advance_ts(platform_time_wall_unix());
 
         struct block_index *tip = block_map_find(&ms.map_block_index,
@@ -280,9 +266,9 @@ int test_have_data_unreadable(void)
         main_state_free(&ms);
     }
 
-    /* ── 1b. Unknown tip age is not fresh. A restored/snapshot boot may not
-     *      have observed a block-connected callback yet; if tip+1 is
-     *      provably unreadable, clear the bogus HAVE_DATA flag anyway. ── */
+    /* ── 1b. Unknown tip age is not fresh: a snapshot boot may not have seen a
+     *      block-connected callback, so an unreadable tip+1 still gets its
+     *      bogus flag cleared. ── */
     {
         condition_engine_reset_for_testing();
         have_data_unreadable_test_reset();
@@ -311,16 +297,12 @@ int test_have_data_unreadable(void)
         main_state_free(&ms);
     }
 
-    /* ── 2. Stalled tip + torn HAVE_DATA next block: detect fires, remedy
-     *      CLEARS the provably-bogus flag, and the engine witnesses the heal
-     *      (the bogus flag is gone → the block is eligible for re-download).
+    /* ── 2. Stalled tip + torn HAVE_DATA next block: detect fires, the remedy
+     *      clears the bogus flag, and the engine witnesses the heal.
      *
-     *      TEETH: the remedy MUST clear BLOCK_HAVE_DATA. gap_fill_service.c
-     *      skips any block with BLOCK_HAVE_DATA set, so leaving the flag set
-     *      (disabling the remedy) means the torn block is never re-requested
-     *      AND target_index() still finds it → the witness reports the
-     *      symptom persists → the condition is NOT cleared and the assertions
-     *      below fail. ── */
+     *      TEETH: the remedy must clear BLOCK_HAVE_DATA; otherwise gap_fill
+     *      never re-requests the block, target_index() still finds it, and the
+     *      witness reports the symptom persists. ── */
     {
         condition_engine_reset_for_testing();
         have_data_unreadable_test_reset();
@@ -335,8 +317,8 @@ int test_have_data_unreadable(void)
                                                  &hashes[9]);
         struct block_index *torn = hdu_insert_torn(&ms, 10, &torn_hash, tip);
 
-        /* Tip has been stuck for 120s (> 60s gate). tip_advance_age uses the
-         * wall clock (now - last); set last to 120s ago. */
+        /* Tip stuck for 120s (> 60s gate); tip_advance_age uses the wall
+         * clock. */
         int64_t now = platform_time_wall_unix();
         sync_monitor_test_set_tip_advance_ts(now - 120);
 
@@ -350,14 +332,14 @@ int test_have_data_unreadable(void)
                                                      &pre))
             cleared_before = pre.cleared_count;
 
-        /* One tick: detect true → active; remedy clears the bogus flag; the
-         * post-remedy witness sees the flag is gone → condition cleared. */
+        /* One tick: detect fires, remedy clears the flag, the witness sees it
+         * gone and clears the condition. */
         condition_engine_tick();
 
         bool ok = pre_flagged;
         ok = ok && have_data_unreadable_test_remedy_calls() == 1;
-        /* TEETH: the provably-bogus HAVE_DATA flag is cleared so the
-         * downloader (gap_fill skips HAVE_DATA blocks) will re-request it. */
+        /* TEETH: the bogus HAVE_DATA flag is cleared so gap_fill re-requests
+         * the body. */
         ok = ok && (torn->nStatus & BLOCK_HAVE_DATA) == 0;
         ok = ok && torn->nFile == -1 && torn->nDataPos == 0;
         HDU_CHECK("stalled tip + torn block -> remedy clears HAVE_DATA", ok);
@@ -376,14 +358,10 @@ int test_have_data_unreadable(void)
         main_state_free(&ms);
     }
 
-    /* ── 3. Anti-thrash: the remedy is self-limiting. Once the bogus flag is
-     *      cleared, the condition resolves; further ticks (with the tip still
-     *      stalled, but the block no longer falsely marked HAVE_DATA) do NOT
-     *      re-fire the remedy. The remedy only ever acts on a block that is
-     *      STILL falsely flagged — it cannot repeatedly hammer an already
-     *      healed block. Combined with the engine's bounded backoff/
-     *      max_attempts (asserted via the snapshot), this is the no-thrash
-     *      guarantee. ── */
+    /* ── 3. Anti-thrash: once the bogus flag is cleared the condition
+     *      resolves; further ticks do not re-fire the remedy, which acts only
+     *      on a still-falsely-flagged block. With the engine's bounded
+     *      backoff/max_attempts this is the no-thrash guarantee. ── */
     {
         condition_engine_reset_for_testing();
         have_data_unreadable_test_reset();
@@ -405,9 +383,8 @@ int test_have_data_unreadable(void)
         condition_engine_tick();
         int calls_after_heal = have_data_unreadable_test_remedy_calls();
 
-        /* Drive more ticks WITHOUT re-arming the flag: the tip is still
-         * stalled, but the block is no longer falsely HAVE_DATA, so detect is
-         * false and the remedy must NOT fire again — no thrash. */
+        /* More ticks without re-arming the flag: detect is false and the
+         * remedy must not fire again. */
         for (int i = 0; i < 6; i++)
             condition_engine_tick();
         int calls_total = have_data_unreadable_test_remedy_calls();
@@ -431,14 +408,11 @@ int test_have_data_unreadable(void)
         main_state_free(&ms);
     }
 
-    /* ── 4. GENERALIZED target: a read-fail at an ARBITRARY mid-chain height
-     *      (not tip+1) is detected and targeted. tip+1 does not even exist
-     *      (so the legacy candidate cannot fire); the ONLY signal is
-     *      utxo_apply's select-idle record (the test stub) naming h=5 — well
-     *      below the tip — with a read-failure reason. This is the live
-     *      class the generalization heals: a stale-script/coin-backfill
-     *      replay rewinds utxo_apply's cursor to re-derive an OLDER height
-     *      whose local body has since bit-rotted. ── */
+    /* ── 4. Generalized target: a read-fail at an arbitrary mid-chain height
+     *      is detected. tip+1 does not exist, so the only signal is
+     *      utxo_apply's select-idle record (test stub) naming h=5 with a
+     *      read-failure reason (e.g. a replay rewinding the cursor onto a
+     *      bit-rotted body). ── */
     {
         condition_engine_reset_for_testing();
         have_data_unreadable_test_reset();
@@ -449,9 +423,8 @@ int test_have_data_unreadable(void)
         condition_engine_set_main_state(&ms);
         register_have_data_unreadable();
 
-        /* Corrupt an ALREADY-APPLIED mid-chain block's on-disk location —
-         * simulates bit rot discovered long after the block was folded, not
-         * a torn just-fetched tip+1 candidate. */
+        /* Corrupt an already-applied mid-chain block's on-disk location
+         * (bit rot found after the block was folded). */
         struct block_index *mid = block_map_find(&ms.map_block_index,
                                                   &hashes[5]);
         mid->nFile = -1;
@@ -472,11 +445,11 @@ int test_have_data_unreadable(void)
         condition_engine_tick();
 
         bool ok = have_data_unreadable_test_remedy_calls() == 1;
-        /* TEETH: the mid-chain height (h=5), NOT some phantom tip+1 (h=10,
-         * which does not exist in this 10-block chain), was targeted. */
+        /* TEETH: the mid-chain height (h=5), not a phantom tip+1 (h=10), was
+         * targeted. */
         ok = ok && (mid->nStatus & BLOCK_HAVE_DATA) == 0;
         ok = ok && mid->nFile == -1 && mid->nDataPos == 0;
-        /* Every OTHER block stays untouched — only the named height heals. */
+        /* Every other block stays untouched. */
         for (int h = 0; h < 10 && ok; h++) {
             if (h == 5) continue;
             struct block_index *bi =
@@ -501,17 +474,12 @@ int test_have_data_unreadable(void)
         main_state_free(&ms);
     }
 
-    /* ── 5. Witness clears on readability (not just "flag gone"): TWO
-     *      candidates at the same height, each backed by a REAL on-disk
-     *      block (so block_index_have_data_readable() does a genuine
-     *      pread + hash-verify, not just an nFile>=0 check). Both start
-     *      torn (nFile=-1); the first remedy clears whichever one
-     *      target_index scans first, leaving the episode active. The
-     *      SURVIVING one is then pointed at its real on-disk position (as
-     *      if a P2P re-fetch landed a good copy under a flag this
-     *      Condition never touched) — the top-of-tick witness check must
-     *      clear the episode via the readability branch, WITHOUT another
-     *      remedy call. ── */
+    /* ── 5. Witness clears on readability: two candidates at one height, each
+     *      backed by a real on-disk block (a genuine pread + hash-verify). Both
+     *      start torn; the first remedy clears one, leaving the episode active.
+     *      The survivor is then pointed at its real position (a re-fetch
+     *      landed a good copy); the top-of-tick witness must clear the episode
+     *      via the readability branch without another remedy call. ── */
     {
         condition_engine_reset_for_testing();
         have_data_unreadable_test_reset();
@@ -569,9 +537,8 @@ int test_have_data_unreadable(void)
         HDU_CHECK("first remedy clears one candidate, second keeps episode "
                   "active", ok);
 
-        /* The still-flagged one is independently repaired (NOT by this
-         * Condition) — a real re-fetch landed a valid copy under the flag,
-         * at ITS OWN real on-disk position. */
+        /* The still-flagged one is repaired independently: a re-fetch landed
+         * a valid copy at its own real on-disk position. */
         struct block_index *remaining = a_have ? a : b;
         struct disk_block_pos *remaining_pos = a_have ? &pos_a : &pos_b;
         remaining->nFile = remaining_pos->nFile;
@@ -596,14 +563,12 @@ int test_have_data_unreadable(void)
         test_rm_rf(dir);
     }
 
-    /* ── 6. Exhaustion re-arms after cooldown (never latches permanently):
-     *      four independently-torn candidates at the same height each need
-     *      their own remedy call. The first three exhaust max_attempts=3 and
-     *      page the operator; the engine's continue-with-cooldown tier
-     *      (cooldown_secs=600, cooldown_max_rearms=0) re-arms the attempt
-     *      budget on the very next eligible tick (the first re-arm in an
-     *      episode is free — see condition.c's condition_cooldown_rearm) so a
-     *      4th remedy call runs and finally clears the last candidate. ── */
+    /* ── 6. Exhaustion re-arms after cooldown (never latches): four torn
+     *      candidates at one height need four remedy calls. The first three
+     *      exhaust max_attempts=3 and page the operator; the cooldown tier
+     *      (cooldown_secs=600, cooldown_max_rearms=0) re-arms the budget on the
+     *      next eligible tick (first re-arm is free, condition_cooldown_rearm)
+     *      so the 4th call clears the last candidate. ── */
     {
         condition_engine_reset_for_testing();
         have_data_unreadable_test_reset();
@@ -653,9 +618,8 @@ int test_have_data_unreadable(void)
         HDU_CHECK("three attempts exhaust the budget and page the operator",
                   okm);
 
-        /* The 4th tick: cooldown re-arms the budget (free first re-arm) so
-         * the remedy runs again — never a permanent latch — and clears the
-         * last torn candidate. */
+        /* The 4th tick: cooldown re-arms the budget (free first re-arm), the
+         * remedy runs and clears the last torn candidate. */
         hdu_fake_clock_set(&clock, 1093);
         condition_engine_tick();
 
@@ -676,16 +640,12 @@ int test_have_data_unreadable(void)
         main_state_free(&ms);
     }
 
-    /* ── 7. Body torn-read repair note (lane E3): a torn/failed canonical body
-     *      read recorded by stage_repair_read_active_block_checked raises a
-     *      typed blocker (quarantine) and is healed OFF-LOCK by this Condition
-     *      — the exact "read_active_block_checked: disk read failed h=3143721
-     *      ... repair defers" live wedge. Proves the chain: torn read => typed
-     *      blocker emitted => HAVE_DATA dropped so body_fetch refetches => on
-     *      heal the note + blocker clear (revalidation flow). This is
-     *      candidate 3, fed by the REAL reducer_frontier note channel — NOT a
-     *      stub — so it fires even when utxo_apply never reached the height
-     *      (the replay defers first). ── */
+    /* ── 7. Body torn-read repair note: a torn canonical body read recorded by
+     *      stage_repair_read_active_block_checked raises a typed blocker
+     *      (quarantine) and is healed off-lock by this Condition. Chain: torn
+     *      read => typed blocker => HAVE_DATA dropped so body_fetch refetches
+     *      => on heal the note and blocker clear. Fed by the real
+     *      reducer_frontier note channel (candidate 3), not a stub. ── */
     {
         condition_engine_reset_for_testing();
         have_data_unreadable_test_reset();
@@ -699,16 +659,15 @@ int test_have_data_unreadable(void)
         condition_engine_set_main_state(&ms);
         register_have_data_unreadable();
 
-        /* A mid-chain block (h=5) whose on-disk body has torn (nFile=-1 → an
-         * unreadable HAVE_DATA flag), exactly as read_active_block_checked
-         * discovers it during a replay. */
+        /* A mid-chain block (h=5) whose on-disk body is torn (nFile=-1), as
+         * read_active_block_checked discovers it during a replay. */
         struct block_index *mid = block_map_find(&ms.map_block_index,
                                                   &hashes[5]);
         mid->nFile = -1;
         mid->nDataPos = 0;
 
         /* stage_repair records the torn read; the quarantine bound raises the
-         * NAMED typed blocker BEFORE any condition tick. */
+         * named typed blocker before any condition tick. */
         for (int i = 0; i < REDUCER_FRONTIER_BODY_READ_QUARANTINE_MAX; i++)
             reducer_frontier_body_read_note_record(
                 5, 49, 129998574, REDUCER_FRONTIER_BODY_READ_DISK,
@@ -730,9 +689,9 @@ int test_have_data_unreadable(void)
                                                       &presnap))
             cleared_before = presnap.cleared_count;
 
-        /* Explicit disk-failure evidence bypasses the speculative 60-second
-         * tip-stall guard. The note must survive HAVE_DATA clearing so the
-         * sibling condition can queue the exact peer refetch. */
+        /* Explicit disk-failure evidence bypasses the 60-second tip-stall
+         * guard; the note survives HAVE_DATA clearing so the sibling condition
+         * can queue the peer refetch. */
         condition_engine_tick();
 
         bool ok = have_data_unreadable_test_remedy_calls() == 1;
@@ -751,8 +710,8 @@ int test_have_data_unreadable(void)
         HDU_CHECK("body_read_torn: clear retains refetch handoff note", ok2);
 
         /* The exact body reader clears the note only after a hash-verified
-         * replacement is readable. Drive that authoritative completion
-         * signal, then prove the condition and typed blocker retire. */
+         * replacement is readable; drive that signal, then prove the condition
+         * and blocker retire. */
         struct reducer_frontier_body_read_note completed_note;
         bool ok3 = reducer_frontier_body_read_note_snapshot(&completed_note) &&
                    reducer_frontier_body_read_note_clear_if(&completed_note);
@@ -785,8 +744,7 @@ int test_have_data_unreadable(void)
     }
 
     /* A same-height orphan note cannot authorize mutation of the active
-     * block. The generation/hash binding leaves the stale note intact for
-     * its writer to replace or retire after observing the reorg. */
+     * block; the stale note stays for its writer to replace or retire. */
     {
         condition_engine_reset_for_testing();
         have_data_unreadable_test_reset();

@@ -1,18 +1,14 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Proves what a fleet node's facts are actually worth.
+ * Proves what a fleet node's facts are worth.
  *
- * engine/composition/fleet_airship_rules.def is the one place that says
- * which fact earns which in-game asset, and tools/lint/
- * check_fleet_airship_rules.sh refuses a table that would pay for a fact
- * a machine reported about itself. That gate reads the file. THIS reads
- * the compiled table and the function the roster actually calls, because
- * a table that grades clean and a build that pays differently is exactly
- * the gap a reward scheme gets exploited through.
+ * engine/composition/fleet_airship_rules.def says which fact earns which
+ * in-game asset, and tools/lint/check_fleet_airship_rules.sh refuses a table
+ * that pays for a self-reported fact. That gate reads the file; THIS reads
+ * the compiled table and the function the roster calls.
  *
- * The roster case is the one the owner asked for: two paired machines,
- * one of them reachable, and the honest answer is one airship — not two,
- * and not one plus whatever the unreachable machine claimed about its own
+ * Roster case: two paired machines, one reachable, gives one airship, not
+ * two and not one plus what the unreachable machine claimed about its own
  * cores.
  */
 

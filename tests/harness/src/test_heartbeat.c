@@ -34,11 +34,7 @@ static void sleep_ms(int ms)
     nanosleep(&ts, NULL);
 }
 
-/* Monotonic elapsed microseconds since an arbitrary fixed point. Used
- * by the periodic-tick test to bound observation against REAL elapsed
- * time rather than a single fixed sleep whose duration is at the mercy
- * of scheduler jitter (CLOCK_MONOTONIC is unaffected by wall-clock
- * adjustments). */
+/* Monotonic elapsed microseconds since an arbitrary fixed point. */
 static int64_t monotonic_us(void)
 {
     struct timespec ts;
@@ -84,9 +80,8 @@ static int test_heartbeat_edge_triggered_stall(void)
         health_set_check_interval_ms(20);
         ASSERT(health_start());
 
-        /* Deadline = 1s; register, then wait > 1.1s without heartbeating.
-         * The sweeper runs every 20ms, so it has ~50+ chances to call
-         * the callback. Edge trigger must clamp to exactly one. */
+        /* Deadline = 1s; wait > 1.1s without heartbeating. The sweeper runs
+         * every 20ms; the edge trigger must clamp to exactly one call. */
         health_subsystem_id id = health_register("test.bar", 1,
                                                   stall_cb, (void *)0xBB);
         ASSERT(id >= 0);
@@ -204,18 +199,9 @@ static int test_heartbeat_periodic_tick(void)
         health_set_check_interval_ms(20);
         ASSERT(health_start());
 
-        /* period = 1s. Over 3.3s we expect ~3 fires. The test gives a
-         * generous tolerance (2..5) because sweeper jitter is real.
-         *
-         * Rather than trust a single fixed sleep_ms(3300) (whose actual
-         * duration drifts under scheduler load — wall-clock-sensitive),
-         * poll a monotonic clock in ~100ms steps and capture the live
-         * callback count at each checkpoint until REAL elapsed time has
-         * crossed 3300ms. The fire count we judge is the one observed at
-         * the confirmed 3300ms boundary, so the 2..5 band is measured
-         * against genuine elapsed time, not a possibly-short/long sleep.
-         * Detection power is intact: a missed-fire bug still yields <2,
-         * a duplicate/runaway-fire bug still yields >5, deterministically. */
+        /* period = 1s. Over 3.3s we expect ~3 fires; the 2..5 band tolerates
+         * sweeper jitter. Poll a monotonic clock so the count is judged at the
+         * real 3300ms boundary rather than after a fixed sleep. */
         health_subsystem_id id = health_register_periodic("test.tick", 1,
                                                            stall_cb, NULL);
         ASSERT(id >= 0);

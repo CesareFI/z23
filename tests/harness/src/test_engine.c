@@ -1,28 +1,15 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * The engine harness under test. Four things are worth proving here and the
- * rest is bookkeeping:
- *
- *   1. A HOSTILE ENGINE RESPONSE IS REFUSED, NOT SURVIVED. Everything the
- *      decoder reads came off a socket. Truncated JSON, absurd lengths, wrong
- *      types, deep nesting and embedded NULs each get a case, and each must
- *      end in `false` with the output zeroed — never a crash, never a partial
- *      decode that a caller then acts on.
- *
- *   2. A KEY NEVER REACHES AN ARTIFACT. The harness writes transcripts, gate
- *      logs and receipts. A credential must not be in any of them, and the
- *      reason it is not must be structural: the redacting writer is the only
- *      writer. So the test loads a real-shaped key and then tries to write it
- *      out through the harness's own emitter.
- *
- *   3. AN ENGINE THAT REPORTS SUCCESS AND CHANGES NOTHING IS A FAILURE. This
- *      is the law of the module (engine/engine.h). The case pairs a PERFECT
- *      gate reading — cold run, group ran, zero failures, pass token present —
- *      with an empty diff, and requires the verdict to be a failure anyway.
- *      A harness that reads only the gate calls that a pass and is wrong.
- *
- *   4. THE HOLLOW GREEN IS CAUGHT. groups_ran = 0 exits 0; a fully cached run
- *      prints a string containing "ALL TESTS PASSED". Neither is evidence.
+ * The engine harness under test. It proves:
+ *   1. A hostile engine response (truncated JSON, absurd lengths, wrong
+ *      types, deep nesting, embedded NULs) is refused with the output
+ *      zeroed, never partially decoded.
+ *   2. A key never reaches an artifact: the redacting writer is the only
+ *      writer.
+ *   3. An engine that reports success and changes nothing is a failure
+ *      (engine/engine.h), even with a perfect gate reading.
+ *   4. A hollow green (groups_ran = 0, or a fully cached run printing
+ *      "ALL TESTS PASSED") is not evidence.
  */
 
 #include "test/test_core.h"
@@ -539,11 +526,8 @@ static int case_patch(void)
                  !engine_patch_parse(stray, sizeof(stray) - 1, &p));
     }
     {
-        /* A model that revises itself mid-reply — writes a file, keeps
-         * thinking, then emits a corrected whole-file body for the same
-         * path — is not malformed. The LAST envelope for a path wins: one
-         * entry, holding the second body, not a refusal of the whole
-         * reply. */
+        /* A revised reply for the same path is not malformed: the LAST
+         * envelope wins, giving one entry with the second body. */
         static const char twice[] =
             "Z23-BEGIN-FILE a.c\nx\nZ23-END-FILE\n"
             "Z23-BEGIN-FILE a.c\ny\nZ23-END-FILE\n";
@@ -588,13 +572,8 @@ static int case_patch(void)
                  !engine_patch_parse(nul_reply, sizeof(nul_reply) - 1, &p));
     }
     {
-        /* A model habituated to Markdown wraps the whole envelope body in a
-         * fenced code block even though the protocol text says "no fences".
-         * Those two fence lines are not source; applying them verbatim
-         * writes a file that starts and ends with a line of backticks and
-         * fails to compile. The parser strips a bare opening fence (with an
-         * optional language tag) and a bare closing fence when they are the
-         * first and last lines of the body. */
+        /* A body wrapped in a bare opening fence (optional language tag) and
+         * a bare closing fence has both fence lines stripped. */
         static const char fenced[] =
             "Z23-BEGIN-FILE lib/foo/src/bar.c\n"
             "```c\n"
@@ -673,11 +652,8 @@ static int case_patch(void)
     EN_CHECK("a doubled separator is refused",
              !engine_patch_path_ok("lib//a.c"));
 
-    /* Line counting and the shrink guard: the pure logic behind refusing a
-     * whole-file reply that overwrote a file with a fraction of itself —
-     * the receipt audit's glm53-ramlease/a1 unit did exactly this to
-     * tests/harness/src/test_impact_composition.c, and the next turn could
-     * not read the tree back to notice. */
+    /* Line counting and the shrink guard: refuse a whole-file reply that
+     * overwrites a file with a fraction of itself. */
     EN_CHECK("an empty buffer is zero lines",
              engine_patch_count_lines("", 0) == 0
              && engine_patch_count_lines(NULL, 0) == 0);
@@ -697,12 +673,8 @@ static int case_patch(void)
              !engine_patch_is_drastic_shrink(100, 100)
              && !engine_patch_is_drastic_shrink(100, 500));
 
-    /* engine_patch_looks_like_a_path(): the filter a task-brief file-context
-     * scanner uses to tell a real path apart from ordinary prose — the
-     * cmp-capability_closure-glm53/a1 unit was handed a brief that quoted 5
-     * lines out of two ~1090-line registries and never their contents; it
-     * had no shell and correctly refused to fabricate ~1090-line whole-file
-     * bodies from memory. */
+    /* engine_patch_looks_like_a_path(): tells a real path from prose in a
+     * task-brief file-context scan. */
     EN_CHECK("a real relative source path looks like a path",
              engine_patch_looks_like_a_path(
                  "engine/composition/capability_symbols.def"));
@@ -741,10 +713,8 @@ static int case_patch(void)
                  && strstr(proto, ENGINE_PATCH_DELETE) != NULL);
     }
 
-    /* engine_unit archives what a parsed patch would apply into
-     * <state-dir>/applied.txt via this describe function, so a FAIL(NO-
-     * CHANGE) verdict can be told apart from "the parser accepted N files"
-     * without re-running the dispatch. */
+    /* The describe function archives what a parsed patch would apply, so
+     * FAIL(NO-CHANGE) is distinguishable from an accepted parse. */
     {
         static const char reply[] =
             "Z23-BEGIN-FILE lib/foo/src/bar.c\n"
@@ -988,10 +958,8 @@ static int case_verdict(void)
                  && !engine_verdict_is_pass(ENGINE_VERDICT_FAIL));
     }
 
-    /* THE LAW. A perfect gate reading plus an empty diff is a FAILURE. The
-     * engine reported success, exited 0, and wrote nothing; the gate then
-     * measured the tree as it was BEFORE the unit ran, so its green says
-     * something about the baseline and nothing whatever about the unit. */
+    /* THE LAW. A perfect gate reading plus an empty diff is a FAILURE: the
+     * gate measured the tree before the unit ran. */
     {
         struct engine_gate_reading g = perfect();
         const enum engine_verdict v = engine_verdict_of(&g, 0, false, true);
@@ -1068,9 +1036,8 @@ static int case_gate_read(void)
                  && g.saw_verdict_line && !g.cached_mode && g.groups_ran == 1
                  && g.groups_failed == 0 && g.saw_pass_token);
     }
-    /* The trap that made this function necessary: the cached headline
-     * CONTAINS the pass token, so a substring grep matches a run that
-     * executed nothing. */
+    /* The cached headline contains the pass token, so a substring grep
+     * would match a run that executed nothing. */
     {
         static const char log[] =
             "SUITE VERDICT mode=cached groups_total=743 groups_ran=0 "
@@ -1112,11 +1079,8 @@ static int case_gate_read(void)
     EN_CHECK("an empty log does not crash", engine_gate_read("", 0, &g));
     EN_CHECK("a null log is refused", !engine_gate_read(NULL, 10, &g));
     {
-        /* tools/dev/build-epoch-session.sh's exact failure text: a
-         * concurrent worktree rewrote the epoch lease mid-build. This is
-         * the harness racing itself, not the model's work, and the reading
-         * must say so so the caller can retry instead of REFUSING the
-         * unit. */
+        /* build-epoch-session.sh's epoch-lease failure is the harness
+         * racing itself, so the reading must be retryable. */
         static const char log[] =
             "make: Entering directory '/x'\n"
             "build-epoch-session: acquired profile=dev-v2 epoch=aaa "
@@ -1176,10 +1140,8 @@ static int case_err(void)
              engine_err_backoff_ms(0) < engine_err_backoff_ms(2)
              && engine_err_backoff_ms(99) <= 60000);
 
-    /* MEASURED 2026-08-30. Two unrelated vendors answered 429 — a retryable
-     * status — for an empty account, a condition no amount of waiting fixes.
-     * A status-only classifier retries a billing failure on every dispatch
-     * forever. These are the two bodies they actually sent. */
+    /* A retryable status (429) with an empty-account body is terminal: a
+     * status-only classifier would retry a billing failure forever. */
     {
         static const char zai[] =
             "1113: Insufficient balance or no resource package. Please recharge.";
@@ -1241,10 +1203,8 @@ static int case_err(void)
 
 /* ── 9. the secret-scanning lint gate proves itself on a planted key ─── */
 
-/* check-no-api-keys is only worth having if it FAILS on a real key. The gate
- * accepts a scan-set override for exactly this: point it at a fixture tree
- * with a key planted in it and require a non-zero exit. A gate that has never
- * been seen to fail is a gate nobody has tested. */
+/* check-no-api-keys must fail on a real key: point its scan-set override at
+ * a fixture tree with a key planted and require a non-zero exit. */
 static int case_key_gate(void)
 {
     int failures = 0;
@@ -1301,18 +1261,8 @@ static int case_key_gate(void)
 
 
 /* ── 10. the prompt every vendor actually receives ───────────────────────
- *
- * This case exists because of a defect it would have caught. The rules a
- * dispatched unit is held to were attached to the OpenAI request body's
- * system field, and a CLI vendor has no such field — it is handed one file.
- * Nothing put the rules in that file, so every CLI dispatch went out without
- * them, while --dry-run printed them to the operator. Every dispatch this
- * project has ever completed was a CLI dispatch.
- *
- * So the assertion is not "compose returns a string". It is: for every wire
- * in the enum, either the wire has a system channel of its own, or the bytes
- * it receives contain the rules. There is no third answer, and a wire added
- * later without a decision falls into the second branch. */
+ * For every wire, either it has its own system channel or the bytes it
+ * receives contain the rules. */
 
 static bool prompt_holds_rules(const char *s)
 {
@@ -1354,7 +1304,7 @@ static int case_prompt(void)
     EN_CHECK("and every wire still receives the task, with a truthful length",
              every_wire_keeps_task);
 
-    /* A CLI vendor is the case that was broken. Name it directly so a
+    /* A CLI vendor is named directly so a
      * regression reads as itself rather than as a loop failing. */
     size_t cli_len = 0;
     char *cli = engine_prompt_compose(ENGINE_WIRE_LOCAL_CLI, task, &cli_len);
@@ -1400,17 +1350,11 @@ static int case_prompt(void)
 
 
 /* ── the declared prompt shape ────────────────────────────────────────────
- * The registry states what a dispatch prompt must contain. These checks hold
- * it to the two things that make it worth having: a prompt missing a required
- * section is REFUSED rather than dispatched, and the refusal names the section
- * so an operator is not left comparing two blobs. The rules row is the one
- * that already went missing once, so it is checked from both directions —
- * required inline for a CLI wire, forbidden inline for an HTTP wire. */
+ * A prompt missing a required section is refused by name. The rules row is
+ * required inline for a CLI wire and forbidden inline for an HTTP wire. */
 
-/* A prompt with every section a CLI wire needs, in order. Built from the
- * registry itself, so a new row cannot be added without this fixture
- * carrying it — the alternative is a hand-written fixture that silently
- * stops covering the thing it was written for. */
+/* A prompt with every section a CLI wire needs, in order, built from the
+ * registry so a new row cannot be added without this fixture carrying it. */
 static char *shape_fixture(enum engine_wire wire, const char *skip_id,
                            bool out_of_order)
 {
@@ -1567,14 +1511,7 @@ static int case_prompt_shape(void)
 
 
 /* ── the CLI argument vector ──────────────────────────────────────────────
- * A CLI vendor's arguments used to be a fixed array inside the dispatch tool,
- * shaped around the one CLI this tree happened to use. The cost of that was
- * measured on 2026-08-30: the owner's machine had a working subscription to a
- * second CLI the whole time, every HTTPS row in the table was answering 429
- * for want of credit, and the only thing between the tree and a working
- * engine was seven hard-coded strings in a program no test links.
- *
- * The registry invariant below is the one that would have caught it. */
+ * CLI vendor arguments come from the registry, not a fixed array. */
 
 static int case_cli_argv(void)
 {
@@ -1596,9 +1533,7 @@ static int case_cli_argv(void)
                  !engine_cli_turns_parse(text, &turns) && turns == 77);
     }
 
-    /* Every CLI row is complete, and no other row pretends to be one. This is
-     * the check that fails the day someone adds a CLI vendor and stops at the
-     * program name. */
+    /* Every CLI row is complete, and no other row pretends to be one. */
     bool cli_rows_complete = true;
     bool non_cli_rows_clean = true;
     size_t cli_rows = 0;
@@ -1633,9 +1568,7 @@ static int case_cli_argv(void)
     };
     const char *argv[ENGINE_CLI_ARGV_MAX];
 
-    /* A file-mode vendor. The exact vector matters: this is what gets exec'd,
-     * and a test that only counted the entries would pass while the flags
-     * were wrong. */
+    /* A file-mode vendor: the exact exec'd vector, not just its count. */
     const struct engine_vendor *fileq = NULL;
     const struct engine_vendor *argq = NULL;
     for (size_t i = 0; i < engine_count(); i++) {
@@ -1811,9 +1744,7 @@ static int case_cli_argv(void)
                  engine_cli_argv_build(argq, &unsupported, argv,
                                        ENGINE_CLI_ARGV_MAX) == 0);
 
-        /* The kernel caps a single argv string far below the prompt ceiling.
-         * Refusing here names the real reason; letting it through would
-         * surface as "could not launch", pointing at the CLI. */
+        /* The kernel caps one argv string far below the prompt ceiling. */
         size_t over = ENGINE_CLI_ARG_PROMPT_MAX + 1u;
         char *huge = zcl_malloc(over + 1, "test_engine_cli_huge");
         if (huge) {
@@ -1902,10 +1833,8 @@ static int case_cli_observation(void)
              && observed.reasoning_tokens == 7
              && observed.total_tokens == 125);
 
-    /* Grok currently emits both accounting shapes in the wild. Older
-     * sessions report input as cache-inclusive; newer sessions report cache
-     * reads as an additive category. Preserve the exact counters and accept
-     * either shape only when its total is arithmetically consistent. */
+    /* Both Grok accounting shapes (cache-inclusive input, additive cache
+     * reads) are accepted only when the total is arithmetically consistent. */
     static const char additive_cache[] =
         "{\"text\":\"done\",\"stopReason\":\"cancelled\","
         "\"sessionId\":\"8a79ed87-5aaa-4924-b75d-f29a52ac3818\","
@@ -2008,9 +1937,7 @@ static int case_cli_observation(void)
 }
 
 
-/* ── the default engine ───────────────────────────────────────────────────
- * A caller who names no engine gets one. Which one is a row in the table, not
- * a string somewhere else that could name a row that is gone. */
+/* ── the default engine ─────────────────────────────────────────────────── */
 static int case_default_engine(void)
 {
     int failures = 0;
@@ -2025,14 +1952,9 @@ static int case_default_engine(void)
     EN_CHECK("and it is a row the registry can look up by id",
              d && engine_by_id(d->id) == d);
 
-    /* The property that makes a default safe to have at all: it must work on
-     * a host that has never been given a credential. A default needing an API
-     * key would fail on a fresh machine with a message about keys, which
-     * reads as a broken tool rather than an unmade choice. */
     EN_CHECK("the default needs no API key", d && !engine_needs_key(d));
 
-    /* And it must not be the fixture: a default that quietly sends nothing
-     * would make every unattended run look like it worked. */
+    /* The default must work with no credential and must not be the fixture. */
     EN_CHECK("the default is not the fixture engine",
              d && !engine_is_fixture(d));
     return failures;
@@ -2040,10 +1962,8 @@ static int case_default_engine(void)
 
 
 /* ── prompt templates, keyed by task kind ───────────────────────────────
- * A kind missing a required section would compose a bare header the shape
- * audit cannot tell from a filled one, so it is refused before dispatch.
- * --kind wins over a `kind:` header so an operator can re-run a task as a
- * different job without editing the file. */
+ * A kind missing a required section is refused before dispatch; --kind wins
+ * over a `kind:` header. */
 
 static const char *select_kind(const char *flag, const char *task)
 {
@@ -2114,13 +2034,8 @@ static int case_prompt_templates(void)
 }
 
 /* ── carried state (engine/engine_state.h) ───────────────────────────────
- *
- * What tools/engine_unit.c's turn loop depends on, tested here so a change
- * to the extraction or formatting rules is visible without a live dispatch:
- * a reply with a state block, a reply without one (omission means "carry
- * the previous turn's forward, unchanged"), a reply that revises itself
- * (last block wins, same rule engine_patch.c applies to a repeated path),
- * the attempt-vs-turn prepend ordering, and when a turn needs compacting. */
+ * Extraction, omission (carry forward unchanged), last-block-wins,
+ * attempt-vs-turn prepend ordering, and compaction. */
 
 static int case_state(void)
 {
@@ -2161,9 +2076,7 @@ static int case_state(void)
                                        sizeof(out), &out_len));
     }
     {
-        /* Same rule engine_patch.c applies to a path emitted twice: the
-         * model revised itself, and the LAST complete block is the one
-         * that is kept — not a refusal, not the first block. */
+        /* The last complete block wins, as in engine_patch.c. */
         static const char twice[] =
             "<state>\ntried: FIRST DRAFT, discard this\n</state>\n"
             "more thinking...\n"
@@ -2301,17 +2214,8 @@ static int case_state(void)
 }
 
 /* ── the turn loop end to end (fixture engine) ───────────────────────────
- *
- * The one thing that cannot be proven by pure-function tests above: that
- * tools/engine_unit.c actually wires carried state into the NEXT turn's
- * prompt. This runs the real, standalone binary (same reason
- * test_acme_worker.c runs zclassic23-acme instead of linking it — the
- * binary carries a TLS client, and test_cold_join_sovereign P2 asserts no
- * such object appears in a Z23 object file) with --engine fixture across
- * two turns and reads what it actually wrote to --state-dir: state.txt
- * after turn 1's canned reply, and prompt.txt (turn 2's, since each turn
- * overwrites it) proving turn 2 was handed turn 1's state.
- */
+ * Runs the standalone binary with --engine fixture across two turns and
+ * checks state.txt after turn 1 and that prompt.txt (turn 2) carries it. */
 
 static const char ENGINE_UNIT_BIN[] = "build/bin/zclassic23-engine-unit";
 
@@ -2358,9 +2262,7 @@ static int case_engine_unit_state_e2e(void)
 
     char rel_dir[512], dir[600];
     test_make_tmpdir(rel_dir, sizeof(rel_dir), "engine_state_e2e", "run");
-    /* --worktree and --state-dir are both refused as relative paths by
-     * tools/engine_unit.c (worktree_prepare()/state_dir_prepare()), so this
-     * fixture needs the absolutized form test_abs_path() exists for. */
+    /* tools/engine_unit.c refuses relative --worktree/--state-dir. */
     if (!test_abs_path(rel_dir, dir, sizeof(dir))) {
         printf("engine: FAIL (could not absolutize the e2e fixture dir)\n");
         return 1;
@@ -2478,10 +2380,8 @@ static int case_engine_unit_state_e2e(void)
              strstr(chain, "\"cumulative_proof_ms\":0") &&
              strstr(chain, "\"unit_elapsed_ms\":"));
 
-    /* worktree_prepare() now adds a detached worktree, so a leftover cannot
-     * pin a branch name. Still remove the path: a killed run would otherwise
-     * leave a registered worktree under test-tmp. Best-effort, since the
-     * assertions above already ran. */
+    /* Remove the worktree path so a killed run leaves no registered
+     * worktree under test-tmp. Best-effort. */
     char cleanup_cmd[1024];
     (void)snprintf(cleanup_cmd, sizeof(cleanup_cmd),
                    "git worktree remove %s --force >/dev/null 2>&1; "
@@ -2920,10 +2820,8 @@ static bool verify_refuses(const char *path)
         && report.first_bad_line != 0;
 }
 
-/* Formats "<cwd>/test-tmp/zcl engine <byte> receipt <pid>.chainlog" — a
- * UTF-8, space-containing fixture leaf name, rooted under test-tmp/ rather
- * than the system temp directory. Split out of case_receipt_chain() to keep
- * the getcwd() fallback's branch off that function's own complexity count. */
+/* Formats "<cwd>/test-tmp/zcl engine <byte> receipt <pid>.chainlog", a
+ * UTF-8, space-containing leaf under test-tmp/. */
 static void receipt_unicode_path(char *out, size_t n)
 {
     char cwd[PATH_MAX];
@@ -3034,10 +2932,7 @@ static int case_receipt_chain(void)
              engine_receipt_verify_chain(path, &report)
              && report.records == 3 && report.first_bad_line == 0);
 
-    /* Exercise the public UTF-8 boundary with both spaces and a non-ASCII
-     * filename. This catches accidental regressions to narrow Win32 file
-     * APIs without making the ordinary fixture depend on a source-code
-     * locale. */
+    /* UTF-8 boundary: spaces and a non-ASCII filename. */
     char unicode_path[PATH_MAX];
     (void)test_ensure_tmproot();
     receipt_unicode_path(unicode_path, sizeof(unicode_path));

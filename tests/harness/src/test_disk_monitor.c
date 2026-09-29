@@ -2,18 +2,12 @@
  *
  * Tests for the disk_monitor service.
  *
- * The trick used here to exercise the LOW and CRITICAL branches
- * without actually filling a filesystem is to set the thresholds
- * above the real free-space number on the test host. A LOW test
- * uses `warn = INT64_MAX, refuse = 1` — every real filesystem
- * satisfies `free >= 1 && free < INT64_MAX`, so we land in LOW.
- * CRITICAL uses `refuse = INT64_MAX` so every value lands in
- * CRITICAL. OK uses `warn = 1` so `free >= warn` → OK.
+ * LOW and CRITICAL are exercised by setting thresholds above the host's real
+ * free space: LOW uses `warn = INT64_MAX, refuse = 1`, CRITICAL uses
+ * `refuse = INT64_MAX`, OK uses `warn = 1`.
  *
- * These tests don't rely on the background poll thread — they
- * call `disk_monitor_poll_now()` synchronously so the test
- * doesn't have to sleep. The start/stop lifecycle is covered
- * separately.
+ * Tests call `disk_monitor_poll_now()` synchronously rather than relying on
+ * the background poll thread; start/stop lifecycle is covered separately.
  */
 
 #include "test/test_core.h"
@@ -169,10 +163,9 @@ int test_disk_monitor(void)
         cfg.refuse_free_bytes = 1;
         ZCL_TEST_SETUP(disk_monitor_start(&cfg));
         bool now_ok = disk_monitor_level() == DISK_MONITOR_OK;
-        /* EV_DISK_OK only fires on a *transition*. Since each
-         * fresh start() begins at last_level=DISK_MONITOR_OK, an
-         * initial OK poll produces no edge. Verify the atomic
-         * flag cleared, and that no stale CRITICAL event leaked. */
+        /* EV_DISK_OK fires only on a transition; a fresh start() begins at
+         * DISK_MONITOR_OK, so an initial OK poll gives no edge. Verify the
+         * atomic flag cleared and no stale CRITICAL event leaked. */
         DM_CHECK("dm: critical state cleared after restart with OK thresholds",
                  was_crit && now_ok && !disk_monitor_is_critical());
         DM_CHECK("dm: restart with OK thresholds emits no CRITICAL",

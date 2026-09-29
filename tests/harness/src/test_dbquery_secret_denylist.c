@@ -3,16 +3,9 @@
  * Tests for the native dbquery secret-material denylist
  * (engine/controllers/src/dbquery_controller.c: dbq_secret_hit()).
  *
- * Prior to this fix, `dbquery` was SELECT-only and
- * DDL/DML-blocked but had no notion of *which* SELECTs were safe:
- * `SELECT privkey FROM wallet_keys` was legal SQL that dumped the
- * plaintext keystore through any read-only query surface.
- *
- * These tests exercise diag_rpc_dbquery() directly against a real
- * node.db (":memory:") opened through the normal node_db_open() /
- * db_service_* / app_runtime_set_current() path — the exact seam the
- * live handler reads via app_runtime_node_db() — so we're proving the
- * real code path, not a mock. */
+ * `dbquery` is SELECT-only; the denylist decides which SELECTs are safe.
+ * These tests call diag_rpc_dbquery() against a real ":memory:" node.db
+ * opened through node_db_open() / db_service_* / app_runtime_set_current(). */
 
 #include "test/test_core.h"
 #include "json/json.h"
@@ -74,8 +67,7 @@ static bool ddt_query(const char *sql, struct json_value *result)
     return rc;
 }
 
-/* 1. The three secret tables are denied wholesale, in the plainest
- *    form the security eval reported: `SELECT * FROM <table>`. */
+/* 1. The three secret tables are denied wholesale (`SELECT * FROM <table>`). */
 static int t_secret_table_denied(void)
 {
     int failures = 0;
@@ -97,8 +89,7 @@ static int t_secret_table_denied(void)
     return failures;
 }
 
-/* 2. Named secret columns are denied even when the query is written
- *    against the exact reported repro string. */
+/* 2. Named secret columns are denied, including the reported repro string. */
 static int t_secret_column_denied(void)
 {
     int failures = 0;
@@ -117,8 +108,7 @@ static int t_secret_column_denied(void)
     DDT_RUN("dbquery: SELECT seed (HD seed) denied", !rc);
     json_free(&result);
 
-    /* Column keyword catches a secret-named column even projected
-     * alongside non-secret columns from the same table. */
+    /* A secret-named column is caught even beside non-secret columns. */
     rc = ddt_query("SELECT pubkey_hash, privkey FROM wallet_keys", &result);
     DDT_RUN("dbquery: privkey denied even mixed with public columns", !rc);
     json_free(&result);
@@ -126,11 +116,9 @@ static int t_secret_column_denied(void)
     return failures;
 }
 
-/* 3. Ordinary, non-secret queries still work — the denylist must not
- *    collapse into "reject everything". Includes the exact
- *    sqlite_master probe the agent-contract test suite depends on
- *    (test_syncdiag_rpc.c), which must NOT collide with the "master"
- *    keyword because of the underscore word-boundary. */
+/* 3. Ordinary queries still work, including the sqlite_master probe from
+ *    test_syncdiag_rpc.c, which must not collide with the "master" keyword
+ *    (underscore word-boundary). */
 static int t_normal_query_allowed(void)
 {
     int failures = 0;
@@ -157,11 +145,8 @@ static int t_normal_query_allowed(void)
     return failures;
 }
 
-/* 4. Obfuscated references — whitespace, case, aliasing, bracket/quote
- *    identifiers, nested subqueries — are still caught (or otherwise
- *    safely rejected, e.g. by the pre-existing "must start with
- *    SELECT" gate on a WITH-CTE form). Every case here must come back
- *    denied; none may leak a row. */
+/* 4. Obfuscated references (whitespace, case, aliases, quoted identifiers,
+ *    subqueries) are caught or rejected; every case is denied, none leaks. */
 static int t_obfuscation_denied(void)
 {
     int failures = 0;
@@ -179,8 +164,7 @@ static int t_obfuscation_denied(void)
         "SELECT * FROM [wallet_keys]",
         /* double-quoted identifier */
         "SELECT * FROM \"wallet_keys\"",
-        /* CTE form: rejected upstream by the "must start with SELECT"
-         * gate, not the secret check -- still must not leak. */
+        /* CTE form: rejected by the "must start with SELECT" gate. */
         "WITH x AS (SELECT privkey FROM wallet_keys) SELECT * FROM x",
     };
     for (size_t i = 0; i < sizeof(sqls) / sizeof(sqls[0]); i++) {
@@ -197,26 +181,15 @@ static int t_obfuscation_denied(void)
 
 /* 5. Authorizing material that is not a private key.
  *
- *    A spending key is not the only thing in node.db that authorizes a
- *    spend. `agent_sessions.session_id` is a BEARER grant: presenting it in
- *    ZCL_AGENT_SESSION is what makes a dispatch spend under that grant's
- *    caps, so reading another grant's id is a spend authority, not a fact.
- *    `zswp_contracts.secret` is the HTLC preimage: whoever holds it can
- *    redeem the counterparty's locked output on the other chain.
- *
- *    Both tables were readable through this SELECT-only surface, which a
- *    bounded agent session reaches (the policy classifies core.storage.query
- *    as a plain read and allows it). A low-cap session could therefore read
- *    a high-cap session's token and spend under it — a bound the bounded
- *    party can raise. Redacted/aggregate views of both remain available:
- *    `vault session list` for grants, `app swap list` for swaps. */
+ *    `agent_sessions.session_id` is a bearer grant (ZCL_AGENT_SESSION), and
+ *    `zswp_contracts.secret` is an HTLC preimage; reading either is spend
+ *    authority. Redacted views remain: `vault session list`, `app swap list`. */
 static int t_authorizing_material_denied(struct ddt_fixture *f)
 {
     int failures = 0;
 
-    /* Plant real authorizing material so the denial is proven against rows
-     * that exist: a grant token that would spend if presented, and an HTLC
-     * preimage that would redeem if published. */
+    /* Plant real authorizing material so the denial is proven against
+     * existing rows. */
     (void)node_db_exec(&f->ndb,
         "INSERT OR REPLACE INTO principals"
         "(address,pubkey_hex,key_kind,znam_name,role,granted_capabilities,"
@@ -264,9 +237,8 @@ static int t_authorizing_material_denied(struct ddt_fixture *f)
         json_free(&result);
     }
 
-    /* The denial must not swallow the neighbouring public tables: a swap's
-     * secret_hash is a public commitment, and principals/auth rows carry no
-     * spend authority. `secret_hash` must survive the `secret` word-boundary. */
+    /* Public tables stay readable: `secret_hash` is a public commitment and
+     * must survive the `secret` word-boundary. */
     struct json_value result;
     bool rc = ddt_query("SELECT secret_hash FROM zswp_swaps_public_probe",
                         &result);

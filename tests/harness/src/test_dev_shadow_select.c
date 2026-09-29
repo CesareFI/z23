@@ -300,9 +300,9 @@ static int ss_test_reuse_rule(void)
     return failures;
 }
 
-/* An unchanged ABI and signature plus an old PASS is the exact shape of the
- * syn-contract witness. It must not be enough: the contract test rewrite
- * moves contract_root, and without a fresh run the claim is refused anyway. */
+/* An unchanged ABI and signature plus an old PASS must not be enough: a
+ * contract test rewrite moves contract_root, and without a fresh run the
+ * claim is refused. */
 static int ss_test_unchanged_abi_is_not_enough(void)
 {
     int failures = 0;
@@ -428,10 +428,9 @@ static bool ss_row_graph_consistent(const struct zcl_shadow_result *r)
 }
 
 /* The class split adds up to the rule's bill, an ALL prediction is all
- * fallback, and the lint premise variant differs from the rule only in how
- * lint gates are priced: every corpus entry carries rows for exactly the
- * SS_LINT_PREMISE_GATES gates that declare a premise in
- * tools/lint/lintc/selection_gates.def. */
+ * fallback, and the lint premise variant differs only in pricing lint gates:
+ * every corpus entry carries rows for exactly the SS_LINT_PREMISE_GATES
+ * gates that declare a premise in tools/lint/lintc/selection_gates.def. */
 enum { SS_LINT_PREMISE_GATES = 8 };
 
 static bool ss_row_classes_consistent(const struct zcl_shadow_result *r)
@@ -476,12 +475,10 @@ static const struct zcl_shadow_result *ss_row(size_t n, const char *id)
     return NULL;
 }
 
-/* Regressions for the false-hit witnesses in
- * docs/experiments/2026-09-25-shadow-obligation-selector.md: a changed
- * build graph, generator input or shadowing header must expand the
- * prediction to the reference, and so must a moved contract (declaration,
- * layout, macro, assertion): syn-contract showed the caller closure missing
- * test_zcode_recipe behind a proof-owner file. */
+/* False-hit witnesses (docs/experiments/2026-09-25-shadow-obligation-
+ * selector.md): a changed build graph, generator input, shadowing header, or
+ * moved contract (declaration, layout, macro, assertion) must expand the
+ * prediction to the reference. */
 static bool ss_witness_guarded(size_t n)
 {
     static const char *const expand[] = {
@@ -607,11 +604,11 @@ static bool ss_load_observations(struct zcl_shadow_observations *o)
 }
 
 /* Frozen prediction against the reference run: any required obligation the
- * rule prediction did not name is RED. The live prediction is held to the
- * same observations, so a selector change that drops a witness fails here. */
-/* RED tallies. `frozen_*` compare the committed predicted.tsv (written
- * before any reference run) with observed.tsv, so they never move; `live_*`
- * hold today's code to the same observations. */
+ * prediction did not name is RED; the live prediction is held to the same
+ * observations. */
+/* RED tallies: `frozen_*` compare the committed predicted.tsv with
+ * observed.tsv and never move; `live_*` hold today's code to the same
+ * observations. */
 struct ss_red {
     uint32_t frozen_rule;
     uint32_t frozen_selector;
@@ -708,10 +705,9 @@ static int ss_test_live_report(void)
         ASSERT(ss_compare_all(n, &red));
         /* Today's prediction misses no required obligation. */
         ASSERT_EQ(red.live_rule, (uint32_t)0);
-        /* The frozen record keeps its one RED: a moved contract predicted
-         * as the selector's own set missed test_zcode_recipe, whose
-         * decoder reaches the callee through a proof-owner file the caller
-         * closure stops at. The landing selector missed five. */
+        /* The frozen record keeps its one RED: a moved contract predicted as
+         * the selector's own set missed test_zcode_recipe, reached through a
+         * proof-owner file the caller closure stops at. */
         ASSERT_EQ(red.frozen_rule, (uint32_t)1);
         ASSERT_STR_EQ(red.frozen_rule_first,
                       "syn-contract:test_zcode_recipe");

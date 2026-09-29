@@ -297,16 +297,9 @@ static bool gw_body_has(const char *body, const char *needle)
     return body && needle && strstr(body, needle) != NULL;
 }
 
-/* Assert on a reply body and SAY WHAT THE BODY WAS when it is wrong.
- *
- * A bare ASSERT(gw_body_has(b, "-32602")) reaches the transcript as one
- * line naming the needle and nothing else, so an intermittent here is
- * indistinguishable from any other -32602 miss: -32603 "arguments too
- * large", -32000 "node did not answer" and a plain success all print the
- * same. That muteness is why the bound-test intermittent survived a
- * qualification run with no diagnosis attached. These print a bounded
- * excerpt of the actual body and its length, which is the whole difference
- * between a rerun and a root cause. */
+/* Assert on a reply body and SAY WHAT THE BODY WAS when it is wrong: a bare
+ * ASSERT(gw_body_has(b, "-32602")) prints only the needle, so these print a
+ * bounded excerpt of the actual body and its length. */
 #define GW_ASSERT_BODY(b, needle) do {                                        \
     const char *gw_b_ = (b);                                                  \
     if (!gw_body_has(gw_b_, (needle))) {                                      \
@@ -791,10 +784,9 @@ static char *gw_big_send(const char *gid, size_t filler)
 }
 
 /* A node call carries its input in ONE argv string. The gateway advertises
- * 1 MiB bodies, which is true of HTTP and was never true of the fork: an
- * oversize call used to reach execv, die with E2BIG in the child, and come
- * back as the opaque "node did not answer". It must now refuse before the
- * fork, say the real number, and create nothing. */
+ * 1 MiB bodies, which is true of HTTP but not of the fork: an oversize call
+ * must refuse before the fork, say the real number, and create nothing
+ * (never die with E2BIG as the opaque "node did not answer"). */
 static int gw_t_node_input_bound(void)
 {
     int failures = 0;
@@ -807,7 +799,7 @@ static int gw_t_node_input_bound(void)
 
         /* Comfortably below: whatever the node decides, it is the NODE that
          * decides. The gateway must not pre-empt it, and the answer must
-         * never be the silence that E2BIG used to produce. */
+         * never be silence. */
         json = gw_big_send(gid, 60u * 1024u);
         ASSERT(json != NULL);
         b = gw_post_auth("/steer", json, gid, &st);
@@ -1210,8 +1202,8 @@ static int gw_t_oauth(void)
         ASSERT_EQ(st, 200);
         ASSERT(gw_body_hex(b, "access_token", token));
         ASSERT(gw_body_has(b, "\"scope\":\"brief send\""));
-        /* Owner rule 2026-09-19: an approved connector never expires. The
-         * token carries no lifetime; revoke is how access ends. */
+        /* An approved connector never expires: the token carries no
+         * lifetime; revoke is how access ends. */
         ASSERT(!gw_body_has(b, "expires_in"));
         free(b);
         ASSERT(gw_grant_row_has(token, "\"expires\":0,"));
@@ -1321,9 +1313,8 @@ _test_next:;
 /* ── F1: cross-origin approval and owner-key guessing ────────────────────
  *
  * The approval POST is the one request that turns the owner's key into a
- * live grant. A form POST needs no preflight, so CORS never protected it:
- * any page the owner had open could submit this form cross-origin. These
- * cases hold the four gates that now stand in front of it. */
+ * live grant, and a form POST needs no preflight. These cases hold the four
+ * gates in front of it. */
 static int gw_t_csrf(void)
 {
     int failures = 0;
@@ -1351,8 +1342,7 @@ static int gw_t_csrf(void)
         /* The form carries a nonce at all. */
         ASSERT(gw_csrf_of(b, page, sizeof(page)));
         free(b);
-        /* The exact request the old code accepted: right key, right
-         * fields, no nonce and no Origin. It is now refused. */
+        /* Right key and fields but no nonce and no Origin: refused. */
         sn = snprintf(form, sizeof(form),
                       "response_type=code&client_id=%s"
                       "&redirect_uri=https://client.test/csrf"
@@ -1479,11 +1469,10 @@ _test_next:;
 
 /* ── F3: JSONL row injection and the redirect allowlist ──────────────────
  *
- * A redirect_uri was written into oauth_clients.jsonl unescaped, and
- * json_read decodes \n and \" — so a crafted value appended a second,
- * fully attacker-chosen row binding any client id to any callback. The
- * endpoint is anonymous, so the value is refused at the door AND the
- * writer cannot express the forged row. */
+ * A redirect_uri written unescaped into oauth_clients.jsonl could carry a
+ * newline and quotes that append a second, attacker-chosen row. The endpoint
+ * is anonymous, so the value is refused at the door AND the writer cannot
+ * express the forged row. */
 static int gw_t_register_bounds(void)
 {
     int failures = 0;
@@ -1576,8 +1565,7 @@ _test_next:;
  * FLEET_GW_IO_TIMEOUT_MS=1000. */
 #define GW_HALF_OPEN 12
 /* How long the held children may take to be released and an ordinary
- * request served again: the rig's 1000 ms socket deadline plus the margin
- * the case has always allowed. */
+ * request served again: the rig's 1000 ms socket deadline plus margin. */
 #define GW_HALF_OPEN_BOUND_MS 1600
 
 /* Milliseconds since `from`. An unreadable clock reads as "the bound has
@@ -1640,10 +1628,10 @@ static bool gw_wait_peer_closed(const int *fds, int n,
 }
 
 /* GET until it is served or bound_ms after `from` passes. A released
- * child's socket closes a moment before the child exits and the listener
- * reaps it, so the first request after the close can still meet the cap;
- * asking again inside the same bound is the same question the case always
- * asked. SIGPIPE is held off while a refused connection may be written. */
+ * child's socket closes a moment before the listener reaps it, so the first
+ * request after the close can still meet the cap; asking again inside the
+ * same bound is the same question. SIGPIPE is held off while a refused
+ * connection may be written. */
 static char *gw_get_by(const struct timespec *from, long bound_ms,
                        const char *path, int *status)
 {
@@ -1678,8 +1666,7 @@ static int gw_t_conn_bounds(void)
             fds[i] = gw_sock_open();
             if (fds[i] < 0)
                 break;
-            /* Headers that never end: the request the old reader waited on
-             * one byte at a time, forever. */
+            /* Headers that never end. */
             (void)write(fds[i], partial, sizeof(partial) - 1);
         }
         ASSERT_EQ(i, GW_HALF_OPEN);
@@ -1689,8 +1676,7 @@ static int gw_t_conn_bounds(void)
         ASSERT(b == NULL);
         /* The deadline releases them without anyone closing a socket: every
          * held connection is closed from the gateway's side, and an ordinary
-         * request is served again, all inside the same 1.6 s bound the case
-         * used to sleep through before asking once. */
+         * request is served again, all inside the same 1.6 s bound. */
         clock_ok = clock_gettime(CLOCK_MONOTONIC, &ts) == 0;
         ASSERT(clock_ok);
         ASSERT(gw_wait_peer_closed(fds, GW_HALF_OPEN, &ts,
@@ -1978,8 +1964,8 @@ static bool gw_pool(char *qd, size_t qdcap)
 /* Poll a run file for content, not mere existence: the launcher creates
  * run.out before the child appends its rc line, so existence alone races
  * the reap read. A NULL needle keeps the plain existence check. The bound
- * is `tries` tenths of a second, as it always was; the file is looked at
- * every 10 ms inside it, so a child that finishes early is seen early. */
+ * is `tries` tenths of a second; the file is looked at every 10 ms inside
+ * it, so a child that finishes early is seen early. */
 #define GW_POLL_SLICES_PER_TRY 10
 static bool gw_poll_match(const char *path, const char *needle, int tries)
 {
@@ -2006,17 +1992,11 @@ static bool gw_poll_match(const char *path, const char *needle, int tries)
 /* ── the bound under memory pressure ─────────────────────────────────────
  *
  * The node-input verdict is arithmetic, so it must not depend on how much
- * heap the gateway has left. Swept with ulimit -v on one 132 KB call before
- * the fix, the same request answered -32700 "parse error" at 3000 KB,
- * -32603 at 3200, -32602 "arguments did not parse" at 3400, and the real
- * limit only from 3600 up: the bound was checked after the body had been
- * built into a tree, serialized, re-parsed and serialized again.
- *
- * The matrix is the same pressure, stated as headroom over the idle
- * gateway's own address space (2752 KB where it was measured, which makes
- * these exactly 3000 / 3200 / 3400 / 3600 KB there), so a gateway built
- * elsewhere is pressed just as hard rather than failing to start. Every
- * level must give the byte-identical reply the unconstrained gateway gives. */
+ * heap the gateway has left. The matrix presses the gateway with headroom
+ * over its own idle address space (2752 KB where measured, making these
+ * 3000 / 3200 / 3400 / 3600 KB there), so a gateway built elsewhere is
+ * pressed just as hard. Every level must give the byte-identical reply the
+ * unconstrained gateway gives. */
 static const unsigned gw_press_headroom_kb[] = {248u, 448u, 648u, 848u};
 #define GW_PRESS_LEVELS \
     (sizeof(gw_press_headroom_kb) / sizeof(gw_press_headroom_kb[0]))
@@ -2188,13 +2168,10 @@ _test_next:;
 
 /* ── the node's exit status is observed, never assumed ───────────────────
  *
- * The listener ignores SIGCHLD so connection children reap themselves, and
- * each connection child used to inherit that. With SIGCHLD ignored the
- * kernel reaps the node child itself, waitpid fails with ECHILD, and the
- * status it leaves behind is the zero it was initialised to — a clean exit.
- * A node that printed a well-formed envelope and then FAILED was reported
- * as a success. A fake node makes the two facts independent: the same
- * envelope, exit 3 and exit 0. */
+ * The listener ignores SIGCHLD, which connection children must not inherit:
+ * otherwise waitpid fails with ECHILD and a node that printed a well-formed
+ * envelope and then FAILED reads as a success. A fake node makes the two
+ * facts independent: the same envelope, exit 3 and exit 0. */
 static bool gw_fake_node(const char *path, int code)
 {
     char text[256];
@@ -3592,19 +3569,16 @@ _test_next:;
  * One table names every sub-suite, the shard that owns it, and (by row
  * order) the order it runs in inside that shard. Each shard is its own
  * catalog group with a private XDG state root, its own gateway child on its
- * own ephemeral loopback port, and its own fixture directories, so the
- * shards run concurrently under the parallel runner. Inside a shard the rows
- * keep the original serial order, which carries every ordering rule the
- * single group had: the gw_t_life_* legs share g_life_gid/g_life_seq and run
- * in sequence; gw_t_csrf follows any case that approves, because it spends
- * the persistent owner-key window; gw_t_brief_token follows every
- * brief-content assertion, because it seeds inbox streams into the state
- * root. The registered base group test_fleet_gateway proves the partition.
+ * own ephemeral loopback port, and its own fixture directories, so shards
+ * run concurrently under the parallel runner. Inside a shard the rows keep
+ * serial order: the gw_t_life_* legs share g_life_gid/g_life_seq and run in
+ * sequence; gw_t_csrf follows any case that approves, because it spends the
+ * persistent owner-key window; gw_t_brief_token follows every brief-content
+ * assertion, because it seeds inbox streams into the state root. The
+ * registered base group test_fleet_gateway proves the partition.
  *
- * Owners are balanced by measured wall: the unsharded group took 8-10 s
- * alone, spent mostly in node forks, the half-open deadline and the queue
- * receipt polls, and no shard here should exceed about a quarter of that.
- * Each shard logs [fleet-gateway-case] ms= per row to rebalance from. */
+ * Owners are balanced by measured wall; each shard logs
+ * [fleet-gateway-case] ms= per row to rebalance from. */
 struct gw_case {
     const char *name;
     int (*run)(void);
@@ -3706,14 +3680,11 @@ static void gw_xdg_restore(const struct gw_xdg *x)
     gw_ambient_restore(&x->datadir, "ZCL_DATADIR");
 }
 
-/* A node datadir private to this shard, empty and cookie-less, named as
- * the operator target through ZCL_DATADIR. Without it every node the rig
- * forks -- the direct grant mint and each gateway tools/call -- resolves
- * the host's default service datadir and its RPC cookie, so a brief's
- * board read went to whatever node that is: on a host with a live node,
- * that node answered this test; where it accepted but did not answer, each
- * brief waited out the full RPC deadline. Here the read is refused at the
- * cookie, before any socket, and the brief names fleet.board as missing. */
+/* A node datadir private to this shard, empty and cookie-less, named as the
+ * operator target through ZCL_DATADIR. Without it every node the rig forks
+ * resolves the host's default datadir and RPC cookie; here the board read is
+ * refused at the cookie, before any socket, and the brief names fleet.board
+ * as missing. */
 static bool gw_shard_datadir(const char *base)
 {
     char datadir[512];

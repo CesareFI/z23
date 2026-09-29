@@ -4,17 +4,8 @@
  * refuses without creating the tree while block-file cleanup and tree removal
  * refuse rather than deleting blk*.dat.
  *
- * Adopted from the `#ifdef _WIN32` arm of tools/tests/test_file_ops_copy.c.
- * The deleted tools/scripts/winacceptance.sh built that program natively, so
- * this arm was never read by a compiler; the catalog cross-links it for
- * Windows, which is the first time these lines are checked. The POSIX
- * assertions of the same program are now the `file_ops_copy` suite group in
- * tests/harness/src/test_file_ops_copy.c, where they execute on every run.
- *
- * The standalone stubbed zcl_tree_remove() to a no-op so it could link. No
- * stub is needed here: dir_copy(), block_files_clean() and dir_remove_tree()
- * all refuse in their Windows arms before reaching the shared walker, which
- * is precisely what the sentinel below proves. */
+ * dir_copy(), block_files_clean() and dir_remove_tree() refuse in their
+ * Windows arms before reaching the shared walker; the sentinel below proves it. */
 #if defined(_WIN32)
 
 #include "config/file_ops.h"

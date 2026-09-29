@@ -33,11 +33,8 @@
 #endif
 
 #if defined(_WIN32) && !defined(O_CLOEXEC)
-/* mingw's <fcntl.h> ships no O_CLOEXEC and no close-on-exec emulation. This
- * file exercises fork-free, single-process fixture I/O only; the flag is a
- * hygiene no-op here regardless of platform, so a zero fallback keeps the
- * open() calls below syntactically valid on Windows without touching the
- * value POSIX platforms see. */
+/* mingw's <fcntl.h> has no O_CLOEXEC; this file is single-process fixture
+ * I/O, so a zero fallback keeps open() valid on Windows. */
 #define O_CLOEXEC 0
 #endif
 
@@ -218,9 +215,9 @@ int file_market_content_tests(void)
     snprintf(fifo_path, sizeof(fifo_path), "%s/content-fifo", dir);
     snprintf(wrong_path, sizeof(wrong_path), "%s/wrong.bin", dir);
 #if defined(_WIN32)
-    /* No mkfifo, and symlink creation needs a privilege this host may not
-     * grant (CreateSymbolicLinkA -> ERROR_PRIVILEGE_NOT_HELD), so the
-     * non-regular-file refusal fixtures cannot be built. */
+    /* No mkfifo, and symlink creation may lack privilege
+     * (ERROR_PRIVILEGE_NOT_HELD), so the non-regular-file refusal fixtures
+     * cannot be built. */
     bool files_ready = content_write_file(filepath, payload, sizeof(payload)) &&
         content_write_file(wrong_path, payload, sizeof(payload) - 1);
     CONTENT_CHECK("regular and mismatch fixtures", files_ready);
@@ -263,9 +260,8 @@ int file_market_content_tests(void)
                 MARKET_CONTENT_STATE_ERROR);
     }
 
-    /* Counts are measured from the store, never capped at a listing
-     * window: an empty registry counts zero, an unreadable one fails
-     * closed to -1. */
+    /* Counts come from the store, uncapped: an empty registry counts zero,
+     * an unreadable one fails closed to -1. */
     {
         struct node_db closed_probe;
         memset(&closed_probe, 0, sizeof(closed_probe));
@@ -338,11 +334,9 @@ int file_market_content_tests(void)
         db_market_content_count(&ndb) == 1);
 
     rpc_market_set_state(&ndb);
-    /* The registered-content index is a serving surface: it names what
-     * this node holds bytes for. Under the boot-default profile a node
-     * has not signed off on anything yet, so the index lists nothing and
-     * says how much it withheld — it never lists a row the chunk-delivery
-     * gate would then refuse. */
+    /* The registered-content index is a serving surface. Under the
+     * boot-default profile it lists nothing and reports how much it
+     * withheld, never a row the chunk-delivery gate would refuse. */
     struct json_value hidden_index;
     json_init(&hidden_index);
     bool hidden_indexed = api_market_content_list(&hidden_index);
@@ -383,10 +377,9 @@ int file_market_content_tests(void)
         memcmp(loaded.data, payload, sizeof(payload)) == 0);
     free(loaded.data);
 
-    /* Slice-serving calls load once per <=60 KiB slice of the same
-     * immutable chunk, so the second load rides the verified-digest table:
-     * same inode identity, same bytes, and a plain-memory copy instead of
-     * another full-file SHA3. */
+    /* Slice-serving loads once per <=60 KiB slice of the same immutable
+     * chunk; the second load rides the verified-digest table (same inode
+     * identity, same bytes, memory copy instead of another SHA3). */
     struct zcl_result warm_result = file_market_content_load_chunk(
         &ndb, offer.offer_id, 0, &loaded);
     CONTENT_CHECK("warm slice load repeats the exact verified chunk",
@@ -395,12 +388,10 @@ int file_market_content_tests(void)
         memcmp(loaded.sha3, chunk_sha3, 32) == 0);
     free(loaded.data);
 
-    /* An in-place rewrite that restores its old mtime with utimensat(2)
-     * must still refuse: ctime cannot be set backwards, so the key misses,
-     * the bytes are re-hashed, and the registration digest disagrees.
-     * st_atim/st_mtim and AT_FDCWD/utimensat(2) are POSIX-only (no Windows
-     * struct stat member or call has this shape), so this sub-test is not
-     * exercised on Windows, only kept syntactically valid there. */
+    /* An in-place rewrite restoring its old mtime via utimensat(2) must
+     * still refuse: ctime cannot be set backwards, so the key misses and the
+     * bytes are re-hashed. POSIX-only (st_atim/st_mtim, utimensat), so not
+     * exercised on Windows. */
 #if !defined(_WIN32)
     struct stat before_rewrite;
     bool captured = stat(filepath, &before_rewrite) == 0;
@@ -433,10 +424,8 @@ int file_market_content_tests(void)
                   mutated && !load_ok && loaded.data == NULL);
 
     /* ── the serving index discloses its window ──────────────────── */
-    /* The registry grows past the index's 256-row listing window: the
-     * window must disclose shown and total from the same store instead
-     * of passing the newest page off as the whole registry, and an
-     * uncountable store drops the total instead of guessing. */
+    /* Past the index's 256-row listing window the index discloses shown and
+     * total from the same store; an uncountable store drops the total. */
     {
         char wdir[256], wdbpath[512];
         snprintf(wdir, sizeof(wdir), "./test-tmp/market_index_window_%d",
@@ -454,9 +443,9 @@ int file_market_content_tests(void)
         bool wopened = node_db_open(&wndb, wdbpath);
         rpc_market_set_state(&wndb);
 
-        /* 257 registry rows — one past the window. The three newest are
-         * reviewed-ok through real signed offers; everything else hides
-         * under the boot-default profile. */
+        /* 257 registry rows, one past the window. The three newest are
+         * reviewed-ok via real signed offers; the rest hide under the
+         * boot-default profile. */
         struct file_offer reviewed[3];
         bool seeded = wopened;
         for (int k = 0; seeded && k < 3; k++) {
@@ -535,17 +524,14 @@ int file_market_content_tests(void)
     }
 
     /* ── the registration confirm gate ───────────────────────────── */
-    /* Binding the owner's serving bytes is a two-step command: plan
-     * mints a token bound to the offer, the target path, and the offer's
-     * registration as it stands; commit re-derives that token from live
-     * state. A moved registration or a changed path stales the plan
-     * instead of silently re-pointing delivery, and a plan never
-     * mutates. */
+    /* Binding the owner's serving bytes is two-step: plan mints a token
+     * bound to the offer, target path and current registration; commit
+     * re-derives it from live state. A moved registration or changed path
+     * stales the plan, and a plan never mutates. */
     {
         rpc_market_set_state(&ndb);
-        /* The tamper tests above deliberately corrupted filepath's bytes,
-         * and a commit hashes the target file: the gate needs its own
-         * pristine file carrying the same root. */
+        /* The tamper tests corrupted filepath's bytes and commit hashes the
+         * target, so the gate needs its own pristine file with the root. */
         char gate_path[512];
         snprintf(gate_path, sizeof(gate_path), "%s/gate.bin", dir);
         struct file_offer gate_offer;
@@ -585,9 +571,8 @@ int file_market_content_tests(void)
                 db_market_content_count(&ndb) == rows_before);
         json_free(&gate);
 
-        /* A well-formed but wrong token re-derives to a different digest:
-         * the gate reads it as a moved bind, not a malformed token (the
-         * bare-commit leg below covers the malformed case). */
+        /* A well-formed but wrong token re-derives a different digest and
+         * reads as a moved bind (the bare-commit leg covers malformed). */
         char tampered[65];
         snprintf(tampered, sizeof(tampered), "%s", token_hex);
         tampered[0] = tampered[0] == '0' ? '1' : '0';
@@ -689,9 +674,9 @@ int file_market_content_tests(void)
                 db_market_content_count(&ndb) == rows_before + 1);
         json_free(&gate);
 
-        /* A timestamp is not a row identity. Rebinding the same offer in
-         * the same second must change the plan, and a rewrite injected after
-         * hashing must be observed by the transactional compare. */
+        /* A timestamp is not a row identity: rebinding the same offer in the
+         * same second changes the plan, and a rewrite after hashing is
+         * caught by the transactional compare. */
         char alternate_path[512], canonical_gate[MARKET_CONTENT_PATH_MAX];
         char canonical_alternate[MARKET_CONTENT_PATH_MAX];
         snprintf(alternate_path, sizeof(alternate_path), "%s/gate-alt.bin",

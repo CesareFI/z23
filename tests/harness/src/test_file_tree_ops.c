@@ -1,23 +1,21 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Focused coverage for the single fd-based file-tree primitive
- * (platform/modules/util/src/file_tree_ops.c): zcl_tree_copy / zcl_tree_remove /
- * zcl_mkdir_p.
+ * Coverage for the fd-based file-tree primitive
+ * (platform/modules/util/src/file_tree_ops.c): zcl_tree_copy /
+ * zcl_tree_remove / zcl_mkdir_p.
  *
- * Cases:
- *   - nested-tree copy: byte + mtime_ns FNV-signature parity vs the source,
- *     proving ZCL_COPY_PRESERVE_TIMES matches `cp -a`'s timestamp behavior
- *     (mirrors chainstate_dir_signature in utxo_recovery_ldb_copy.c);
+ *   - nested-tree copy: byte + mtime_ns FNV-signature parity vs the source
+ *     (ZCL_COPY_PRESERVE_TIMES matches `cp -a`; mirrors
+ *     chainstate_dir_signature in utxo_recovery_ldb_copy.c);
  *   - ZCL_COPY_UPDATE_ONLY skips a newer destination, copies an older one;
  *   - a filter skips "LOCK" + a prefix/suffix pattern;
- *   - symlink handling: a symlink root is refused, a symlink entry inside a
- *     tree is refused (the documented REFUSE choice);
+ *   - a symlink root and a symlink entry inside a tree are refused;
  *   - zcl_tree_remove empties a nested tree and treats ENOENT as success;
  *   - an unwritable destination propagates a populated error result;
  *   - the recursion depth bound trips with a real error.
  *
- * Pure filesystem I/O under a mkdtemp scratch dir, matching test_file_ops.c's
- * convention; no node / network / RNG / wall-clock dependence. */
+ * Pure filesystem I/O under a mkdtemp scratch dir; no node, network, RNG or
+ * wall clock. */
 
 #include "test/test_core.h"
 
@@ -58,12 +56,11 @@ static bool fto_read(const char *path, char *out, size_t out_size)
     return true;
 }
 
-/* Recursive, order-independent fold over (relative-name, size, mtime_ns) of
- * every regular file and directory under `root`. readdir() order is not a
- * filesystem contract, so hash each entry independently and XOR the entry
- * hashes into the tree signature. Two equal signatures across a copy prove
- * the copy preserved names, sizes and mtime_ns. Symlinks are ignored (the
- * walker refuses them, so they never appear in a valid copy). */
+/* Order-independent fold over (relative-name, size, mtime_ns) of every
+ * regular file and directory under `root`: each entry is hashed
+ * independently and XORed (readdir order is not a contract). Equal
+ * signatures across a copy prove names, sizes and mtime_ns were preserved.
+ * Symlinks are ignored (the walker refuses them). */
 static void fto_sig_walk(const char *root, const char *rel, uint64_t *sig)
 {
     DIR *d = opendir(root);
@@ -403,9 +400,8 @@ static int test_unwritable_dest(void)
 
         struct zcl_result r = zcl_tree_copy(src, dst, 0, NULL, NULL);
         if (as_root) {
-            /* root bypasses DAC write bits; the mkdir under ro succeeds.
-             * Don't assert a failure that cannot happen — just require the
-             * call returned a well-formed result. */
+            /* root bypasses DAC write bits, so only require a well-formed
+             * result. */
             ok = ok && (r.ok || r.message[0] != '\0');
         } else {
             ok = ok && !r.ok;                    /* mkdir(dst) denied */
@@ -453,9 +449,8 @@ static int test_depth_bound(void)
         ok = ok && !r.ok;                        /* depth cap tripped */
         ok = ok && r.message[0] != '\0';
 
-        /* Manual bottom-up teardown: both src and (the partially built) dst
-         * are deeper than ZCL_TREE_MAX_DEPTH, so zcl_tree_remove would itself
-         * trip the depth cap on them. rmdir leaf-first instead. */
+        /* Manual bottom-up teardown: src and the partial dst exceed
+         * ZCL_TREE_MAX_DEPTH, so zcl_tree_remove would trip the cap. */
         if (dir) {
             const char *roots[2] = { src, dst };
             for (int base = 0; base < 2; base++) {
@@ -495,8 +490,8 @@ static int test_file_tree_ops_platform_arm(void)
 #else /* _WIN32 */
 
 /* Production file_tree_ops refuses every recursive mutation on Windows
- * (platform/modules/util/src/file_tree_ops.c: "disabled pending handle-bound no-reparse
- * qualification"), so no case here can run. */
+ * ("disabled pending handle-bound no-reparse qualification"), so no case
+ * here can run. */
 static int test_file_tree_ops_platform_arm(void)
 {
     printf("test_file_tree_ops: SKIP (Windows): file_tree_ops recursive "

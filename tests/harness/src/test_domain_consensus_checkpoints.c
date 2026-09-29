@@ -188,21 +188,14 @@ int test_domain_consensus_checkpoints(void)
     }
 
     /* ──────────────── L3 LOCK-IN: checkpoint fork-guard is exact-height-only ──
-     *
-     * Parity-audit round 2 (docs/work/parity-audit-round2-findings.md, L3):
-     * domain_consensus_checkpoints_validate_header() returns true whenever no
-     * checkpoint exists at the EXACT height being checked — even when that
-     * height sits BELOW the last (deepest) checkpoint height. zclassicd
-     * additionally rejects ANY block with nHeight < lastCheckpoint.nHeight
-     * (main.cpp:4386-4392, "rejected by checkpoint lock-in at <h>"). zcl23 has
-     * no such "below the last checkpoint" guard.
-     *
-     * THIS PIN ASSERTS THE CURRENT (LOOSENED) BEHAVIOR: a header at a
-     * non-checkpointed height that is strictly below the last checkpoint
-     * (5000) is ACCEPTED with ANY hash. The exact-height mismatch still
-     * rejects (the one rule zcl23 does enforce). When a future "reject below
-     * last checkpoint" guard lands (replay-gated per the doc), the accept
-     * assertions below flip deliberately. */
+     * (docs/work/parity-audit-round2-findings.md, L3.) validate_header()
+     * returns true when no checkpoint exists at the EXACT height, even below
+     * the last checkpoint; zclassicd also rejects nHeight <
+     * lastCheckpoint.nHeight (main.cpp:4386-4392). This pins the current
+     * behavior: a header at a non-checkpointed height below the last
+     * checkpoint (5000) is ACCEPTED with any hash, while an exact-height
+     * mismatch rejects. The accepts flip if a below-last-checkpoint guard
+     * lands. */
     {
         struct checkpoint_entry e[3];
         struct checkpoint_data cd;
@@ -228,9 +221,8 @@ int test_domain_consensus_checkpoints(void)
                   domain_consensus_checkpoints_validate_header(&cd, 4999, &forged));
 
         /* A non-pinned height ABOVE the last checkpoint (h=6000) is also
-         * accepted — this is correct parity (zclassicd accepts these too);
-         * pinned here only to bracket the loosening: the gap is specifically
-         * "below last checkpoint", not "anywhere non-pinned". */
+         * accepted (parity with zclassicd); brackets the loosening to
+         * "below last checkpoint". */
         DCC_CHECK("L3: header above last checkpoint (h=6000) -> accepted (parity)",
                   domain_consensus_checkpoints_validate_header(&cd, 6000, &forged));
 
@@ -252,9 +244,8 @@ int test_domain_consensus_checkpoints(void)
         DCC_CHECK("total_blocks_estimate(empty) -> 0",
                   domain_consensus_checkpoints_total_blocks_estimate(&empty) == 0);
 
-        /* Populated: the legacy contract is "last entry's height" — NOT
-         * the maximum. This is what zclassicd ships. The mk_table layout
-         * is ascending so the two coincide here. */
+        /* Populated: the contract is the LAST entry's height, not the
+         * maximum (as zclassicd ships); mk_table is ascending. */
         struct checkpoint_entry e[3];
         struct checkpoint_data cd;
         mk_table(&cd, e);
@@ -291,9 +282,8 @@ int test_domain_consensus_checkpoints(void)
         DCC_CHECK("progress_at_now bounded (above-checkpoint)",
                   c >= 0.0 && c <= 1.0);
 
-        /* fSigchecks=false vs true: the multiplier differs, so values
-         * should differ (unless we're sitting exactly at the boundary).
-         * We pick a corpus point comfortably away from the boundary. */
+        /* fSigchecks=false vs true differ in multiplier, away from the
+         * boundary. */
         double w_sig  = domain_consensus_checkpoints_progress_at_now(
                             &cd, 100000, 1500000000, 1600000000, true);
         double w_nosig = domain_consensus_checkpoints_progress_at_now(
@@ -357,13 +347,10 @@ int test_domain_consensus_checkpoints(void)
                   checkpoints_get_total_blocks_estimate(&cd) ==
                   domain_consensus_checkpoints_total_blocks_estimate(&cd));
 
-        /* guess_verification_progress vs progress_at_now: the wrapper
-         * reads the wall clock, so to assert equality we'd need to lock
-         * the clock. Instead we assert (a) the wrapper's NULL-pindex
-         * contract (0.0), and (b) that for a fixed pindex, calling the
-         * wrapper twice in quick succession yields a value that the
-         * domain primitive can reproduce when handed `now ≈ today`.
-         * The bounded-in-[0,1] property is the load-bearing seal here. */
+        /* The wrapper reads the wall clock, so assert (a) its NULL-pindex
+         * contract (0.0) and (b) that a fixed pindex yields a value the
+         * domain primitive reproduces with `now` near today. Bounded in
+         * [0,1] is the load-bearing check. */
         DCC_CHECK("wrapper guess_progress(NULL pindex) -> 0.0",
                   checkpoints_guess_verification_progress(&cd, NULL, true) == 0.0);
 
@@ -374,13 +361,9 @@ int test_domain_consensus_checkpoints(void)
         double w_prog = checkpoints_guess_verification_progress(&cd, &bi, true);
         DCC_CHECK("wrapper guess_progress bounded in [0,1]",
                   w_prog >= 0.0 && w_prog <= 1.0);
-        /* Domain primitive with `now` pinned to the wrapper's clock
-         * read would match exactly. We assert structural equivalence:
-         * call the domain primitive with a `now` value that we know
-         * straddles the wall-clock read inside the wrapper, and verify
-         * the result is on the same side of the [0,1] interval. The
-         * exact-equality check happens implicitly via the wrapper
-         * forwarding all logic to the domain primitive. */
+        /* Call the domain primitive with a `now` that straddles the
+         * wrapper's clock read and check the result is on the same side of
+         * [0,1]; exact equality follows from the wrapper forwarding to it. */
         double d_prog_now = domain_consensus_checkpoints_progress_at_now(
                               &cd,
                               (uint64_t)bi.nChainTx,
@@ -393,9 +376,8 @@ int test_domain_consensus_checkpoints(void)
     }
 
     /* ──────────────────── sanity: real mainnet table parity ──────────── */
-    /* The selected chainparams expose a real checkpoint_data we can
-     * round-trip through both APIs to seal extraction against the
-     * production table, not just our synthetic one. */
+    /* Round-trip the selected chainparams' real checkpoint_data through both
+     * APIs, not just the synthetic table. */
     {
         const struct chain_params *p = chain_params_get();
         if (p) {

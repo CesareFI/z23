@@ -111,19 +111,13 @@ static void *hp_mock_loop(void *arg)  /* raw-pthread-ok: test-local */
                                                        &cl);
         if (cfd == PLATFORM_SOCKET_INVALID) break;
 
-        /* buf MUST start terminated. Every branch below reaches for
-         * strstr(buf, ...), and the read loop can legitimately exit with
-         * got == 0 (recv timeout, or the peer hanging up), which used to leave
-         * this whole array uninitialized — the request classification then read
-         * random stack bytes and answered an arbitrary method. That only shows
-         * up when the box is loaded enough for a recv to time out, which is
-         * precisely when it is hardest to diagnose. */
+        /* buf MUST start terminated: every branch below calls strstr(buf, ...)
+         * and the read loop can exit with got == 0 (recv timeout or hangup). */
         char buf[8192];
         buf[0] = '\0';
         size_t got = 0;
-        /* Matches LRC_TIMEOUT_SECS in engine/modules/rpc/src/legacy_rpc_client.c: the
-         * client gives up at 5s, so a shorter ceiling here can only ever make
-         * this mock the one that fails first under contention. */
+        /* Matches LRC_TIMEOUT_SECS in engine/modules/rpc/src/legacy_rpc_client.c
+         * (5s); a shorter ceiling makes the mock fail before the client. */
         (void)platform_socket_set_receive_timeout(cfd, 5000);
         for (;;) {
             int n = platform_socket_receive(cfd, buf + got,

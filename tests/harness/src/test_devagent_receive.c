@@ -1,29 +1,14 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * ACCEPTANCE BAR for dev.agent.receive
- * (tools/command/native_devagent_receive.c): the resident loop that turns a
- * directive arriving in this box's agent mail into real work with no human
- * in the path.
- *
- * Written against an isolated XDG_STATE_HOME, never the operator's real
- * state dir. No model, no network, no spawn: the receiver only composes the
- * existing dev.agent.mail, dev.agent.queue and fleet.steer grant leaves,
- * and execution stays dev.agent.worker's separate business, so every case
- * below is deterministic in-process.
- *
- * Each non-negotiable property has its own case:
- *   admission (ref alphabet, grant by label, revocation, expiry, direction
- *   shape), to-work through the existing queue, idempotence, conflict,
- *   accept-only-after-the-queue, single instance, restart safety, bounded
- *   wait, wake on new mail, SIGTERM, execution never blocking intake, and
- *   a status action that writes nothing.
+ * Acceptance bar for dev.agent.receive (tools/command/native_devagent_receive.c):
+ * a directive arriving in this box's agent mail becomes real work with no
+ * human in the path. Isolated XDG_STATE_HOME; no model, network, or spawn.
+ * Cases cover admission, queueing, idempotence, conflict, restart safety,
+ * bounded wait, wake on mail, SIGTERM, and a write-free status action.
  */
 
-/* realpath() is declared by glibc only under _DEFAULT_SOURCE; with
- * -D_POSIX_C_SOURCE alone the only declaration in scope is the fortify
- * inline, which exists solely at -O2 and above. This must precede the
- * first include: feature-test macros are read when <features.h> is first
- * pulled in, and a definition after that silently does nothing. */
+/* realpath() needs _DEFAULT_SOURCE under glibc; this must precede the first
+ * include because feature-test macros are read once. */
 #if !defined(_WIN32) && !defined(_DEFAULT_SOURCE)
 #define _DEFAULT_SOURCE
 #endif
@@ -65,19 +50,11 @@ static char g_rtx_saved_xdg[4096];
 static bool g_rtx_had_xdg;
 static int g_rtx_ts;
 
-/* ── who the rig's senders are ──────────────────────────────────────────
- *
- * A directive row carries the stamp of the credential that sent it, and
- * the receiver admits on that stamp rather than on the name beside it. The
- * rig therefore has to stamp rows the way a real sender does: every grant
- * it mints is remembered here by label, and a delivery under that label
- * carries that grant's binding.
- *
- * A delivery under a label the rig never minted carries RTX_FOREIGN_BINDING
- * — a well-formed stamp belonging to nobody, which is what an outsider
- * actually presents. It is deliberately NOT an empty stamp: an unstamped
- * row is refused one gate earlier, and a case about an ungranted sender
- * must reach the sender gate to be about anything. */
+/* ── who the rig's senders are ─────────────────────────────────────
+ * Rows carry the stamp of the credential that sent them, and the receiver
+ * admits on that stamp. Each minted grant's binding is remembered by label;
+ * a label never minted gets RTX_FOREIGN_BINDING (well-formed, belongs to
+ * nobody), not an empty stamp, which is refused one gate earlier. */
 #define RTX_FOREIGN_BINDING "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 struct rtx_ident {
@@ -125,10 +102,8 @@ static void rtx_isolate(const char *tag)
      * aborts on anything smaller, whatever the input length. */
     char real[PATH_MAX];
     test_make_tmpdir(base, sizeof(base), "devagent_receive", tag);
-    /* Canonicalize the rig's own root. The receiver records the CANONICAL
-     * workspace path, so a tmpdir sitting below a symlinked component
-     * (/tmp is /private/tmp on a Mac) would otherwise make every
-     * path comparison below fail for a reason that is not the contract. */
+    /* Canonicalize the root: the receiver records the canonical path
+     * (/tmp is /private/tmp on a Mac). */
     if (realpath(base, real) != NULL)
         (void)snprintf(base, sizeof(base), "%s", real);
     (void)snprintf(g_rtx_state, sizeof(g_rtx_state), "%s/state", base);
@@ -219,10 +194,8 @@ static bool rtx_mint(const char *label, const char *scopes, long long ttl,
     return ok;
 }
 
-/* Append one already-expired grant row in the store's own machine format.
- * The mint verb cannot produce one (its ttl floor is a second in the
- * future), and expiry is exactly the case a receiver must fail closed on,
- * so the row is written the way an older mint left it behind. */
+/* Append one already-expired grant row in the store's machine format (the
+ * mint verb's ttl floor cannot produce one). */
 static bool rtx_mint_expired(const char *label)
 {
     char path[1600];
@@ -265,10 +238,8 @@ static void rtx_direction(char *out, size_t cap, const char *gate,
                    g_rtx_ws, gate, prompt);
 }
 
-/* The same direction with a LOGICAL workspace value — which is all a remote
- * sender can carry, since dev.agent.mail refuses a body naming a foreign
- * absolute path and nothing here weakens that. `sha` is the optional HEAD
- * pin; "" leaves the header out entirely. */
+/* The same direction with a LOGICAL workspace value, all a remote sender can
+ * carry. `sha` is the optional HEAD pin; "" omits the header. */
 static void rtx_direction_sel(char *out, size_t cap, const char *selector,
                               const char *sha, const char *prompt)
 {
@@ -308,10 +279,8 @@ static void rtx_be32(unsigned char *p, uint32_t v)
     p[3] = (unsigned char)v;
 }
 
-/* One DIRC v2 index naming exactly one tracked path with the stat data the
- * caller wants recorded — the same file layout git writes, so the
- * receiver's reader is exercised, not mocked. A clean pre-state records the
- * file's real size and mtime; a dirty one records anything else. */
+/* One DIRC v2 index naming one tracked path with caller-chosen stat data, so
+ * the receiver's reader is exercised, not mocked. */
 static bool rtx_index(const char *ws, const char *name, uint32_t mode,
                       uint32_t size, uint32_t mtime)
 {
@@ -407,11 +376,8 @@ static void rtx_opts_ws(struct rcv_drive_opts *o, const char *workspace)
     o->max_beats = 1;
 }
 
-/* Post one directive through the EXISTING mail leaf. A body carrying an
- * absolute workspace is refused by the mail leaf's own path rule unless it
- * sits under the checkout, so the rig writes the inbox file the way a
- * transport does — which is also the only way a peer's directive ever
- * arrives. */
+/* Post one directive through the mail leaf. The rig writes the inbox file
+ * as a transport does, since the leaf refuses foreign absolute paths. */
 static bool rtx_deliver_bound(const char *stream, const char *peer,
                               const char *to, const char *ref,
                               const char *body, long long seq,
@@ -420,9 +386,7 @@ static bool rtx_deliver_bound(const char *stream, const char *peer,
     char dir[1200], path[1400], esc[8192];
     size_t o = 0;
     FILE *f;
-    /* The transport owns the inbox file, so it owns the directory chain
-     * under the state root too — a peer can deliver to a box whose
-     * receiver has never run. */
+    /* The transport owns the directory chain under the state root too. */
     (void)snprintf(dir, sizeof(dir), "%s", g_rtx_state);
     (void)mkdir(dir, 0700);
     (void)snprintf(dir, sizeof(dir), "%s/z23", g_rtx_state);
@@ -448,12 +412,9 @@ static bool rtx_deliver_bound(const char *stream, const char *peer,
     f = fopen(path, "ab");
     if (!f)
         return false;
-    /* One stamp per delivery, in delivery order: the mail leaf orders rows
-     * by (ts, from, seq), and two separately delivered rows are two rows
-     * even when they carry the same stream sequence. */
+    /* One stamp per delivery, in delivery order. */
     g_rtx_ts++;
-    /* An empty binding writes no field at all, which is exactly the shape
-     * of a row no credential stamped. */
+    /* An empty binding writes no field (an unstamped row). */
     (void)fprintf(f,
                   "{\"seq\":%lld,\"ts\":\"2026-09-17T00:%02d:%02dZ\","
                   "\"from\":\"%s\",\"to\":\"%s\",\"kind\":\"directive\","
@@ -610,10 +571,8 @@ static void rtx_alarm_to_term(int sig)
 #endif
 
 /* ── intake paging: a long history never deafens the receiver ────────────
- * The live defect: every beat pulled the WHOLE directive history, so it
- * grew without bound, and at most 128 rows of it were ever looked at — the
- * newest directives sort last and were silently never handled. Intake now
- * pages through the mail leaf's bounded replies from a durable cursor. */
+ * Intake pages through the mail leaf's bounded replies from a durable
+ * cursor instead of pulling the whole history each beat. */
 #if !defined(_WIN32)
 
 /* Deliver n rows from `peer` to `to`, refs "<prefix>-NNN". pad > 0 makes
@@ -987,11 +946,8 @@ _test_next:;
 }
 
 /* ── preflight: the admission pipeline, read-only ──────────────────────────
- * Born-RED for the preflight action on dev.agent.receive: before the leaf
- * knows it, an unknown action refuses BAD_INPUT and every PREPARED
- * assertion below fails; after, one directive's admission is decided with
- * no write anywhere — no mail, no queue row, no brief/received/evidence
- * file, no answer, no marker. */
+ * One directive's admission is decided with no write anywhere: no mail,
+ * queue row, brief/received/evidence file, answer, or marker. */
 
 static long long rtx_reply_int(const struct rtx_call *c, const char *key)
 {
@@ -1304,10 +1260,8 @@ static int test_receive_preflight(void)
         ASSERT_EQ(zcl_devagent_receive_drive(&o, &st), 1);
         ASSERT_EQ(st.admitted, 1);
         ASSERT_EQ(rtx_queue_count("queued", "job-done"), 1);
-        /* The dry survey decides it the same way: reconciled, not
-         * re-admitted. The live beat's answer marker is cleared first so
-         * the survey replays the row instead of skipping it as already
-         * answered — the marker is mail de-duplication, not work state. */
+        /* The dry survey reconciles rather than re-admits; the live beat's
+         * answer marker is cleared so the row is replayed. */
         ASSERT(rtx_clear_answers());
         rtx_begin(&c, "dev.agent.receive", "zcl.agent_receive.v1");
         (void)json_push_kv_str(&c.input, "action", "status");
@@ -1435,11 +1389,8 @@ int test_devagent_receive(void)
         PASS();
     }
 
-    /* Proven live on 2026-09-17: a directive sent with one grant's bearer
-     * token while claiming another grant's label got PAST this gate and was
-     * refused only by the direction parser after it — the sender check had
-     * passed on the claimed name alone. Both halves of the close are here:
-     * a stamp that belongs to a different credential, and no stamp at all. */
+    /* A stamp from a different credential, or none, is refused even under a
+     * valid sender's name. */
     TEST("a row stamped by another credential is not the sender it claims")
     {
         struct rcv_drive_opts o;
@@ -1447,8 +1398,7 @@ int test_devagent_receive(void)
         char body[4096], actor[64];
         rtx_isolate("impersonation");
         rtx_direction(body, sizeof(body), "hex_codec", "Do it.");
-        /* Two live send-capable identities. The victim is a real sender
-         * with real authority here; that is the point. */
+        /* Two live send-capable identities. */
         ASSERT(rtx_mint("victim", "send", 3600, NULL, 0));
         ASSERT(rtx_mint("actor", "send", 3600, actor, sizeof(actor)));
         /* The actor's own stamp, under the victim's name. */
@@ -1498,9 +1448,8 @@ int test_devagent_receive(void)
         char body[4096];
         rtx_isolate("unbound");
         rtx_direction(body, sizeof(body), "hex_codec", "Do it.");
-        /* The sender is live, send-capable and named exactly right. The
-         * row simply proves nothing about who wrote it, and work is
-         * dispatched on the strength of who asked. */
+        /* Live, send-capable, correctly named sender whose row proves
+         * nothing about who wrote it. */
         ASSERT(rtx_mint("chatgpt", "send", 3600, NULL, 0));
         ASSERT(rtx_deliver_bound("chatgpt", "chatgpt", "box-a", "job-nb",
                                  body, 1, ""));
@@ -1799,11 +1748,8 @@ int test_devagent_receive(void)
         memset(&st, 0, sizeof(st));
         ASSERT_EQ(zcl_devagent_receive_drive(&o, &st), 3);
         ASSERT_EQ(st.beats, 3);
-        /* Deadline-only: the loop must beat at least once and, because
-         * each idle pass parks in the directory-watcher wait for wait_ms
-         * instead of spinning, nowhere near the thousands of beats a busy
-         * poll would produce inside the same deadline. The bound is a rate
-         * ceiling, not a duration: load can only lower the count. */
+        /* Deadline-only: idle passes park in the watcher wait, so beats stay
+         * far below a busy poll's count (a rate ceiling, not a duration). */
         memset(&o, 0, sizeof(o));
         (void)snprintf(o.receiver, sizeof(o.receiver), "box-a");
         o.deadline_s = 1;
@@ -1880,9 +1826,7 @@ int test_devagent_receive(void)
         ASSERT_EQ(probe.created, 0);
         ASSERT(probe.delivered);
         ASSERT(probe.resumed_ms >= probe.sent_ms);
-        /* A stale watch sleeps for the 2000 ms ceiling after delivery.
-         * Re-arming must wake promptly; this is local intake, not execution
-         * or distributed presence acceptance. */
+        /* A stale watch sleeps to the 2000 ms ceiling; re-arming wakes promptly. */
         ASSERT(probe.resumed_ms - probe.sent_ms < 1200);
         ASSERT_EQ(rtx_queue_count("queued", "job-keep"), 1);
         ASSERT_EQ(rtx_queue_count("queued", "job-after"), 1);
@@ -1906,8 +1850,7 @@ int test_devagent_receive(void)
         rtx_path(maildir, sizeof(maildir), "mail");
         platform_directory_watcher_init(&w);
         ASSERT(platform_directory_watcher_open(&w, maildir));
-        /* A transport dropping an inbox file is exactly what must wake the
-         * resident, so it is the event the watcher is asked about. */
+        /* An inbox file dropped by a transport must wake the resident. */
         rtx_direction(body, sizeof(body), "hex_codec", "Wake up.");
         ASSERT(rtx_deliver("chatgpt", "box-a", "job-wake", body, 1));
         r = platform_directory_watcher_wait(&w, 5000, NULL, NULL);
@@ -2038,12 +1981,8 @@ int test_devagent_receive(void)
     }
 
     /* ── receiver-side workspace resolution ───────────────────────────────
-     * A directive minted on another box cannot carry this box's paths: it
-     * does not know them, and dev.agent.mail refuses a body naming an
-     * absolute path outside the caller's own checkout. So the wire carries a
-     * selector and the RECEIVER resolves it. Every case below proves one
-     * half of that: only a known selector is honoured, and the resolution
-     * itself is fail-closed. */
+     * The wire carries a selector and the receiver resolves it, fail-closed:
+     * only a known selector is honoured. */
 
     TEST("a selector resolves to the configured workspace, exactly once")
     {
@@ -2072,9 +2011,8 @@ int test_devagent_receive(void)
         ASSERT_EQ(st.admitted, 1);
         ASSERT_EQ(st.refused, 0);
         ASSERT_EQ(rtx_queue_count("queued", "job-sel"), 1);
-        /* The brief the worker is handed carries the RESOLVED absolute
-         * path, so the executor needs no change at all, and muse-scope is
-         * untouched and still relative to that workspace. */
+        /* The brief carries the RESOLVED absolute path; muse-scope stays
+         * relative to it. */
         ASSERT(rtx_read("receive/brief/job-sel.brief", brief, sizeof(brief)));
         ASSERT(strstr(brief, ws) != NULL);
         ASSERT(strstr(brief, "muse-workspace: receiver") == NULL);
@@ -2093,9 +2031,7 @@ int test_devagent_receive(void)
                       "111111") != NULL);
         ASSERT(strstr(record, "workspace_tree_sha3=") != NULL);
         ASSERT(strstr(record, ws) != NULL);
-        /* The answer carries that identity and NO path of any kind: the
-         * mail leaf refuses a body naming one, and a peer has no use for
-         * this box's filesystem. The digest is what it can check. */
+        /* The answer carries the workspace identity and no path. */
         ASSERT_EQ(rtx_answers("job-sel", "workspace_selector=receiver"), 1);
         ASSERT_EQ(rtx_answers("job-sel", "workspace_head=1111"), 1);
         ASSERT_EQ(rtx_answers("job-sel", "workspace_sha3="), 1);
@@ -2155,12 +2091,7 @@ int test_devagent_receive(void)
         (void)snprintf(climb, sizeof(climb), "%s/wt/../wt", g_rtx_base);
         ASSERT(rtx_checkout(ws, "3333333333333333333333333333333333333333"));
         ASSERT_EQ(symlink(ws, link), 0);
-        /* A configured root reached through a symlink is RESOLVED, not
-         * refused: realpath names the one real directory. Demanding that
-         * the operator's spelling already be its own canonical path
-         * refuses every workspace below a symlinked component — a Mac's
-         * /tmp is /private/tmp — which breaks availability and buys no
-         * safety, because realpath is what decides where the work lands. */
+        /* A configured root behind a symlink resolves via realpath, not refusal. */
         ASSERT(zcl_devagent_workspace_observe(link, true, &w));
         ASSERT(w.directory);
         ASSERT(w.resolved);
@@ -2182,11 +2113,8 @@ int test_devagent_receive(void)
                         sizeof(brief)));
         ASSERT(strstr(brief, ws) != NULL);
         ASSERT(strstr(brief, link) == NULL);
-        /* A directory whose NAME merely STARTS with two dots holds no ".."
-         * segment of its own, so the flag accepts it and the only refusal
-         * comes from the workspace not being there. The coarser rule —
-         * refuse any ".." right after a slash — rejected this name at the
-         * door and never started a drive at all. */
+        /* A name merely starting with two dots has no ".." segment; only the
+         * missing workspace refuses. */
         (void)snprintf(dots, sizeof(dots), "%s/..hidden", g_rtx_base);
         rtx_direction_sel(body, sizeof(body), "receiver", "", "Dotted.");
         ASSERT(rtx_deliver("chatgpt", "box-a", "job-dots", body, 2));
@@ -2277,12 +2205,7 @@ int test_devagent_receive(void)
         struct rcv_workspace w;
         char body[4096], ws[1200];
         rtx_isolate("notcheckout");
-        /* A real directory the operator pointed at by mistake: it is
-         * there, it resolves, and it holds no .git. This is the most
-         * likely of the workspace refusals in practice — a typo, or a
-         * lane directory that was removed and recreated — and it was the
-         * one with no case, so the branch could have inverted and every
-         * other workspace test would still have passed. */
+        /* An existing directory with no .git refuses. */
         (void)snprintf(ws, sizeof(ws), "%s/plain", g_rtx_base);
         ASSERT_EQ(mkdir(ws, 0700), 0);
         ASSERT(zcl_devagent_workspace_observe(ws, true, &w));
@@ -2357,11 +2280,7 @@ int test_devagent_receive(void)
         memset(&st, 0, sizeof(st));
         ASSERT_EQ(zcl_devagent_receive_drive(&o, &st), 1);
         ASSERT_EQ(st.admitted, 1);
-        /* Now make the workspace dirty. A receiver that re-resolved a
-         * settled ref would refuse this replay; one that reconciles from
-         * the RECEIVED bytes answers the same terminal evidence. The
-         * comparison must be against what was received, not against the
-         * rewritten brief, or the replay would read as a false conflict. */
+        /* Replay reconciles from the RECEIVED bytes, not the rewritten brief. */
         ASSERT(rtx_put(ws, "src/x.c", "int zx(void) { return 2; } /* x */\n"));
         ASSERT(rtx_deliver_as("retry", "chatgpt", "box-a", "job-rep", body, 1));
         memset(&st, 0, sizeof(st));
@@ -2426,10 +2345,8 @@ int test_devagent_receive(void)
         memset(&st, 0, sizeof(st));
         ASSERT_EQ(zcl_devagent_receive_drive(&o, &st), 1);
         ASSERT_EQ(st.admitted, 1);
-        /* The operator restarts the receiver against a DIFFERENT workspace
-         * and the same row arrives again. The decided ref keeps the path it
-         * was decided with; nothing is queued again and nothing can run in
-         * the new workspace. */
+        /* A decided ref keeps its original workspace after a restart against a
+         * different one; nothing is queued or run in the new one. */
         ASSERT(rtx_deliver_as("retry", "chatgpt", "box-a", "job-map", body, 1));
         rtx_opts_ws(&o, second);
         memset(&st, 0, sizeof(st));
@@ -2453,11 +2370,8 @@ int test_devagent_receive(void)
         (void)snprintf(ws, sizeof(ws), "%s/wt", g_rtx_base);
         ASSERT(rtx_checkout(ws, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
         ASSERT(rtx_mint("chatgpt", "send", 3600, NULL, 0));
-        /* g_rtx_ws is a bare directory: no .git, no index, nothing. The
-         * same-box rule is exactly what it always was — an existing
-         * absolute directory — so this must still be admitted whether or
-         * not a workspace is configured, and the resolution machinery must
-         * not start vouching for a path the sender chose. */
+        /* A bare directory: the same-box rule still admits an existing
+         * absolute directory, and resolution never vouches for a sender path. */
         rtx_direction(body, sizeof(body), "hex_codec", "Local as ever.");
         ASSERT(rtx_deliver("chatgpt", "box-a", "job-abs", body, 1));
         rtx_opts_ws(&o, ws);

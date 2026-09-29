@@ -1,18 +1,14 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * test_dev_proof_signer — adversarial proof that a push-proof receipt now
- * carries an identity, and that admission trusts that identity instead of a
- * digest anybody with write access could recompute.
+ * test_dev_proof_signer: adversarial proof that a push-proof receipt carries
+ * an identity and that admission trusts it, not a digest anyone with write
+ * access could recompute. Each negative is a case a keyless SHA3-256 seal
+ * would admit: fields edited with the seal recomputed, a receipt written by
+ * another process, or a receipt from another host that could not be
+ * attributed or refused by name.
  *
- * Before this group's subject existed, a receipt was sealed with a keyless
- * SHA3-256 digest over its own bytes. Every negative below therefore has to
- * be one the OLD code passed: a receipt whose fields were edited and whose
- * seal was recomputed admitted; a receipt written by any other process on the
- * box admitted; a receipt from another host could neither be attributed nor
- * refused by name. Each TEST states which of those it kills.
- *
- * Every fixture lives under test-tmp/ with XDG_STATE_HOME redirected into it,
- * so no assertion here reads or writes the operator's real signing key. */
+ * Fixtures live under test-tmp/ with XDG_STATE_HOME redirected into it, so
+ * the operator's real signing key is never touched. */
 
 #include "test/test_core.h"
 
@@ -207,10 +203,8 @@ static int test_dps_flipped_byte(void)
     struct zcl_dev_acceptance_receipt_v1 receipt, parsed;
     uint8_t wire[ZCL_DEV_PROOF_WIRE_BYTES];
     char why[128];
-    /* One byte inside each field the old keyless seal let an editor rewrite:
-     * a root, a dimension count, the timestamp, the completeness flag, and
-     * the stored seal itself. The old code accepted every one of these once
-     * the seal was recomputed. */
+    /* One byte in each field an editor could rewrite: a root, a dimension
+     * count, the timestamp, the completeness flag, and the stored seal. */
     static const size_t offsets[] = {80u, 300u, 560u, 620u, 640u};
     TEST("dev proof signer: any edited byte in a signed record is refused "
          "as signature_invalid, recomputed seal or not") {
@@ -300,9 +294,8 @@ static int test_dps_allowlist(void)
         ASSERT(strcmp(why, "signer_unknown") == 0);
 
         ASSERT(dps_allow_path(allow, sizeof(allow)));
-        /* Malformed and commented lines are counted and skipped, and the
-         * trusted key is the LAST line with no trailing newline — the shape
-         * a hand-edit or an `echo -n >>` actually produces. */
+        /* Malformed and commented lines are counted and skipped; the trusted
+         * key may be the last line with no trailing newline. */
         int n = snprintf(line, sizeof(line),
                          "# boxes that may push here\n"
                          "\n"
@@ -417,9 +410,8 @@ static int dps_run(const char *cwd, const char *const argv[],
     return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
 }
 
-/* Build a two-commit repository whose HEAD and HEAD~1 are the exact pair the
- * hook is asked to admit, so admit_pair() reaches its receipt read instead of
- * stopping at the ancestry check. */
+/* Build a two-commit repository whose HEAD and HEAD~1 are the pair the hook
+ * admits, so admit_pair() reaches its receipt read. */
 static bool dps_git_rig(const char *dir, char *local, char *base)
 {
     char cmd[PATH_MAX * 2];

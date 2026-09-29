@@ -2,17 +2,12 @@
  *
  * ACCEPTANCE BAR for fleet.triggers (tools/command/native_fleet_triggers_*.c).
  *
- * z23 owns its own reactions to local events instead of a human watching a
- * board or a landing queue by hand. Every case below runs against an
- * isolated XDG_STATE_HOME/HOME and a fixed injected clock, so it proves the
- * evaluator's own behavior — cursor advance, dry-run, truncation, absent
- * fields, the JSON shape, the stamped clock — rather than the state of this
- * machine's real board or landing queue.
+ * Every case runs against an isolated XDG_STATE_HOME/HOME and a fixed injected
+ * clock, proving the evaluator's own behavior — cursor advance, dry-run,
+ * truncation, absent fields, JSON shape, stamped clock.
  *
- * The handlers are called DIRECTLY, with the input additionally validated
- * through the real registry first (as dev.land's own acceptance test does),
- * so a key the .def never declared is caught here rather than passing
- * in-process and failing from a shell.
+ * Handlers are called directly, with the input also validated through the
+ * real registry so a key the .def never declared is caught here.
  */
 
 #include "test/test_core.h"
@@ -240,12 +235,8 @@ static bool ftx_run_captured(struct ftx_call *c, char *out, size_t cap)
     return ran;
 }
 
-/* Each of the following is one property from the group's ACCEPTANCE BAR
- * above, pulled out of the single group entry function purely to keep each
- * one's own decision-point count under the per-function cyclomatic-
- * complexity cap — the assertions, fixtures, and isolation are unchanged
- * from a single flat function; only where the goto ASSERT() lands (the
- * end of THIS case, not the end of the whole group) is different. */
+/* Each case below is one property of the acceptance bar above, split out to
+ * keep per-function cyclomatic complexity under the cap. */
 
 static int ftx_case_landed_ledger_once(void)
 {
@@ -385,9 +376,8 @@ static int ftx_case_unknown_field_never_fires(void)
 
     ftx_isolate("unknown_field_never_fires");
     ASSERT(zcl_trigger_landing_path(landing_path, sizeof landing_path));
-    /* No "state" key at all: every trigger reading "state" must see it as
-     * absent, not as an empty or mismatched string, and never fire — "ne"
-     * included, though the registry only declares "eq" here. */
+    /* No "state" key: every trigger reading "state" sees it as absent and
+     * never fires, "ne" included. */
     ftx_write_file(landing_path,
                   "{\"seq\":1,\"ts\":\"2026-09-06T10:00:00Z\","
                   "\"note\":\"no state field\"}\n");
@@ -620,10 +610,9 @@ _test_next:;
     return failures;
 }
 
-/* fired.jsonl the RPC hook writes a durable fixture into: proves the
- * board_post action reaches the SAME native call `fleet board post` uses
- * (the `fleet_board` RPC method), not a shell-out, and that a fired
- * trigger's text is templated over the row's own "body" field. */
+/* The board_post action reaches the same native call `fleet board post` uses
+ * (the `fleet_board` RPC method), and a fired trigger's text is templated
+ * over the row's own "body" field. */
 static char g_ftx_board_method[64];
 static char g_ftx_board_params[FLEET_BOARD_LINE_MAX + 256];
 static int g_ftx_board_calls;
@@ -695,10 +684,9 @@ static char *ftx_no_node_rpc_hook(const char *method, const char *params_json)
     return NULL; /* node_rpc_call's own "nothing answered" convention */
 }
 
-/* No node answering: the action fails closed (fb_no_node's exact refusal;
- * see native_fleet_board_command.c). The row is NOT fired, the cursor holds
- * before it (so a retry sees it again), and `check` itself fails closed
- * with a non-zero exit and a typed refusal naming the trigger. */
+/* No node answering: the action fails closed. The row is not fired, the
+ * cursor holds before it, and `check` exits non-zero with a typed refusal
+ * naming the trigger. */
 static int ftx_case_board_post_no_node(void)
 {
     int failures = 0;
@@ -752,9 +740,8 @@ _test_next:;
     return failures;
 }
 
-/* Once the node starts answering, the SAME held row fires exactly once and
- * the cursor advances — proving a failed action is retried, not lost or
- * double-fired. */
+/* Once the node answers, the same held row fires exactly once and the cursor
+ * advances: a failed action is retried, not lost or double-fired. */
 static int ftx_case_board_post_retries_then_fires(void)
 {
     int failures = 0;
@@ -815,9 +802,8 @@ _test_next:;
     return failures;
 }
 
-/* A later row waits behind a failed one: with two rows queued and the node
- * down, only the first is counted (checked=1) and the second is untouched
- * until the first succeeds. */
+/* A later row waits behind a failed one: only the first is counted
+ * (checked=1) until it succeeds. */
 static int ftx_case_later_row_waits_behind_failed(void)
 {
     int failures = 0;
@@ -857,9 +843,7 @@ static int ftx_case_later_row_waits_behind_failed(void)
     ASSERT_EQ(ftx_int(&c1, "failed"), 1);
     ftx_end(&c1);
 
-    /* Now the node answers: the first row fires and, in the SAME run, so
-     * does the second — nothing was lost, and the wait ends as soon as the
-     * blocker clears. */
+    /* Once the node answers, the first row fires and, in the same run, the second. */
     g_ftx_board_calls = 0;
     node_rpc_client_set_test_hook(ftx_board_rpc_hook);
     struct ftx_call c2;

@@ -2,16 +2,11 @@
  *
  * ACCEPTANCE BAR for dev.fleet.start (tools/command/native_dev_fleet_start.c).
  *
- * Written against fixtures built here — a throwaway Git repository with a bare
- * origin and three linked worktrees, and a throwaway board directory — never
- * against the checkout it runs in, so it proves BEHAVIOUR rather than the
- * state of this machine.
- *
- * It calls the bound handler DIRECTLY: dev.fleet.start is a dev-lane leaf and
- * an in-process call is exactly what the CLI does after input validation, so
- * the input keys are additionally validated through the real registry. That
- * matters more here than for most leaves: `include_units` is a bool, and the
- * transport's per-key type chain is the reason it is not named `units`.
+ * Runs against fixtures built here (a throwaway Git repo with a bare origin and
+ * three linked worktrees, and a throwaway board directory), never the checkout
+ * it runs in. Calls the bound handler directly, and validates the input keys
+ * through the real registry: `include_units` is a bool, and the transport's
+ * per-key type chain is why it is not named `units`.
  */
 
 #include "test/test_core.h"
@@ -92,22 +87,17 @@ static bool fsx_commit(const char *dir, const char *message)
     return fsx_git(dir, add) && fsx_git(dir, commit);
 }
 
-/* Copy HOME as it stands. Callers that pin inside a window which can fail
- * before the pin must save first: fsx_home_restore reads a NULL as "HOME was
- * absent" and unsets it, which would strip the group pin from every later
- * case rather than putting it back. */
+/* Copy HOME as it stands. Save before pinning: fsx_home_restore treats NULL as
+ * "absent" and would unset the group pin. */
 static char *fsx_home_save(void)
 {
     const char *home = getenv("HOME");
     return home ? strdup(home) : NULL;
 }
 
-/* Pin HOME to `root` for the whole group and hand back the saved value for
- * fsx_home_restore. The packet-hygiene assertions need every quoted fixture
- * path to be under the runner's home so the ~ rendering is exercised; a RAM
- * proof generation runs the whole group outside $HOME, and without this pin
- * the fixture placement (and with it the ~/ assertion) would depend on the
- * caller's directory instead of on the test. */
+/* Pin HOME to `root` for the whole group and return the saved value. The
+ * packet-hygiene assertions need fixture paths under the runner's home so the ~
+ * rendering is exercised, even when a RAM proof generation runs outside $HOME. */
 static char *fsx_home_pin(const char *root)
 {
     char *saved = fsx_home_save();
@@ -357,13 +347,10 @@ static bool fsx_board_fixture(const char *dir)
     return true;
 }
 
-/* The home-hygiene invariant, stated so it cannot go vacuous. The case above
- * checks for the literal "/home/" and "/Users/" prefixes, which say nothing
- * in a RAM proof generation: there the pinned home is under /dev/shm and
- * neither prefix could appear however badly the packet leaked. Assert the
- * home this packet was actually rendered against — the pinned fixture root —
- * is absent, and that a ~ did appear, so the absence is a substitution and
- * not an empty packet. */
+/* Home-hygiene invariant: assert the pinned fixture home this packet was
+ * rendered against is absent and that a ~ appeared, so the absence is a
+ * substitution, not an empty packet (the literal /home/ prefix check is vacuous
+ * in a RAM proof generation). */
 static int fsx_case_home_prefix_absent(const char *root, const char *board)
 {
     int failures = 0;
@@ -386,20 +373,14 @@ _test_next:;
     return failures;
 }
 
-/* The other half of the generation shape: a checkout that is NOT under the
- * operator's home at all. Nothing is rewritten there, so the packet quotes
- * absolute paths and the home is absent because no path ever touched it.
- * Pinned separately from the group's own pin, and put back before the next
- * case runs — this is the one place the group is deliberately not
- * home-rooted, and it is why the invariant may not be spelled as "a ~
- * appears somewhere". */
+/* A checkout not under the operator's home: nothing is rewritten, so the packet
+ * quotes absolute paths and the home is absent. Pinned separately and restored
+ * before the next case. */
 static int fsx_case_outside_home(const char *root, const char *board)
 {
     int failures = 0;
     char elsewhere[1024];
-    /* Saved before the window opens, not inside it: an ASSERT below can jump
-     * to _test_next before the pin runs, and a NULL there would unset HOME
-     * for the rest of the group instead of restoring the group pin. */
+    /* Saved before the window opens: an early ASSERT jump must not unset HOME. */
     char *pinned = fsx_home_save();
     TEST("start: a checkout outside the operator home still hides that home") {
         struct fsx_call c;
@@ -508,9 +489,7 @@ int test_dev_fleet_start(void)
         (void)json_push_kv_bool(&c.input, "include_units", false);
         ASSERT(fsx_run(&c));
         ASSERT(fsx_ok(&c));
-        /* alpha-1 (need, never referenced) and beta-1 (problem). alpha-2 was
-         * answered by a later result; the two automated agents' rows never
-         * count however they are shaped. */
+        /* alpha-1 (need) and beta-1 (problem); alpha-2 was answered; automated rows never count. */
         ASSERT_EQ(fsx_sec_int(&c, "board", "unanswered"), 2);
         const struct json_value *rows = fsx_rows(&c, "board");
         ASSERT(rows != NULL);
@@ -557,10 +536,7 @@ int test_dev_fleet_start(void)
         ASSERT(fsx_ok(&c));
         size_t n = fsx_serialize(&c, buf, sizeof(buf));
         ASSERT(n > 0);
-        /* The fixture lives under the runner's home, so every path this
-         * packet quotes had to be rendered through the ~ form. A packet an
-         * agent pastes into a commit or a document is exactly how an
-         * operator path reaches a tracked file. */
+        /* Every quoted fixture path must be rendered through the ~ form. */
         ASSERT(strstr(buf, "/home/") == NULL);
         ASSERT(strstr(buf, "/Users/") == NULL);
         ASSERT(strstr(buf, "~/") != NULL);
@@ -628,9 +604,7 @@ int test_dev_fleet_start(void)
         const struct json_value *bytes = json_get(&c.reply.data, "bytes");
         ASSERT(bytes && bytes->type == JSON_INT);
         ASSERT(json_get_int(bytes) <= 1024);
-        /* At least one section says it was cut, and names how many rows it
-         * had — a dropped row that says nothing is the failure this whole
-         * budget mechanism exists to prevent. */
+        /* At least one section says it was cut and names its row count. */
         static const char *const sections[] = {
             "checkout", "mission", "worktrees", "units",
             "hosts",    "board",   "main",      "next", NULL};
@@ -696,11 +670,8 @@ int test_dev_fleet_start(void)
     }
 
     TEST("start: with a cursor, only what changed since it comes back") {
-        /* A worktree's change signal is a file mtime, and a file mtime has
-         * one-second granularity — so this fixture must put the fixture's
-         * own writes, the cursor, and the change it wants to see in THREE
-         * different seconds. That is what the two waits buy, and it is the
-         * only place in this group where wall time is load-bearing. */
+        /* File mtimes have 1 s granularity: the fixture writes, the cursor and the
+         * change must fall in three different seconds (the two waits). */
         struct fsx_call c;
         char fresh[256];
         sleep(1);

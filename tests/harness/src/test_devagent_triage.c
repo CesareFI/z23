@@ -2,15 +2,9 @@
  *
  * ACCEPTANCE BAR for dev.agent.triage (tools/command/native_devagent_triage.c).
  *
- * This file is the contract that one single-file unit must satisfy by editing
- * tools/command/native_devagent_triage.c and nothing else. It is written
- * against a fixture repository built here, never against the checkout it runs
- * in, so it proves behavior rather than the state of this machine. Do not
- * edit this file to make the implementation pass.
- *
- * It calls the bound handler DIRECTLY: dev.agent.triage is a dev-lane leaf and
- * an in-process call is exactly what the CLI does after input validation, so
- * the input keys are additionally validated through the real registry.
+ * Runs against a fixture repository built here, not the checkout. It calls
+ * the bound handler directly (as the CLI does after input validation), and
+ * validates the input keys through the real registry.
  */
 
 #include "test/test_core.h"

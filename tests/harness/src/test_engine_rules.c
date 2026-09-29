@@ -1,58 +1,29 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * test_engine_rules — the gate on the auto-updating heuristic set.
+ * test_engine_rules: the gate on the auto-updating heuristic set. The loop
+ * edits its own guidance, so the assertions are about its safety:
  *
- * The thing under test decides, on its own, which rules future AI executors
- * are shown. That is a loop that edits its own guidance, so the assertions
- * here are about the SAFETY of the loop and not only about arithmetic:
+ *  1. A rule that only ever loses is retired (shown on 20 runs, gate passed
+ *     on none), with the killing unit_ids written into the row. A rule shown
+ *     20 times with min_trials 21 stays INSUFFICIENT and is left in the file.
+ *  2. A rule nobody measured stays shadow, verdict untried; it is not scored
+ *     0.
+ *  3. Promotion produces a patch and nothing else: the rule stays SHADOW in
+ *     the file and only one file under promotions/ changes. A scoring that
+ *     fires no retirement rewrites the vocabulary to identical bytes.
+ *  4. The same log scores the same bytes (byte-identical report).
+ *  5. A broken chain (one altered prev_sha3) is refused whole, not scored up
+ *     to the break.
+ *  6. The miner finds the one fail->pass pair and names the file that fixed
+ *     it, with exactly the template's text.
+ *  7. The def is rewritten atomically or not at all: new bytes go to a temp
+ *     file and one rename publishes them, so a write that dies first leaves
+ *     the original byte for byte. A rewrite decided from bytes no longer on
+ *     disk is refused whole, typed as a stale read.
  *
- *  1. A RULE THAT ONLY EVER LOSES IS TURNED OFF. Shown on 20 runs, gate
- *     passed on none, and it retires — with the unit_ids that killed it
- *     written into the row. A retirement nobody can argue with is one nobody
- *     can undo on evidence. And NOT BEFORE ITS TIME: a rule shown 20 times
- *     with the same zero passes but a min_trials of 21 stays INSUFFICIENT and
- *     is left in the file, because a floor is only allowed to decide once the
- *     declared number of runs have actually happened.
- *
- *  2. A RULE NOBODY MEASURED IS NOT A RULE THAT FAILED. A shadow rule that
- *     appeared in no receipt stays shadow, verdict untried. Scoring it 0 and
- *     acting on that would retire every rule the harness had not got to yet.
- *
- *  3. PROMOTION PRODUCES A PATCH AND NOTHING ELSE. A shadow rule that beats
- *     the obeyed baseline is still SHADOW in the file afterwards, and the
- *     only thing that changed anywhere is one file under promotions/. Off is
- *     safe, on is not: this is the assertion that keeps the loop from writing
- *     new instructions for every future executor with nobody having read them.
- *     And a scoring that fires NO retirement rewrites the vocabulary to
- *     identical bytes, so an idle pass of the loop can never cost a comma.
- *
- *  4. THE SAME LOG SCORES THE SAME BYTES. Twice over the identical input, the
- *     rendered report is byte-identical. A scoring that drifted could not be
- *     reproduced on another machine, and a number nobody else can reproduce
- *     is not evidence.
- *
- *  5. A BROKEN CHAIN IS REFUSED WHOLE. One altered prev_sha3 and the entire
- *     log is refused, not scored up to the break. A score taken from the
- *     honest prefix of a tampered ledger reads as evidence and is not one.
- *
- *  6. THE MINER FINDS THE ONE FAIL->PASS PAIR AND NAMES THE FILE THAT FIXED
- *     IT. Exactly one candidate, with exactly the text the template says.
- *
- *  7. THE DEF IS REWRITTEN ATOMICALLY, OR NOT AT ALL. The new bytes go
- *     whole into a temp file and one rename publishes them, so a write
- *     that dies before the rename — an ENOSPC, a kill, a full disk —
- *     leaves the original vocabulary standing byte for byte. A rewrite
- *     with the file's own bytes is a no-op in content: an idle pass of
- *     the loop can never cost a comma. And a rewrite decided from bytes
- *     that are no longer on disk is refused WHOLE — the editor that
- *     changed the file keeps its edit, typed as a stale read so nobody
- *     goes hunting a broken temp file for a failure that was a refusal.
- *
- * The 50-receipt chainlog is generated here, deterministically, so this gate
- * needs no sibling lane to have run and no engine to have been dispatched.
- * Everything lives under this test's own temp directory; the developer's real
- * receipts log is never opened.
- */
+ * The 50-receipt chainlog is generated here deterministically under this
+ * test's own temp directory; the developer's real receipts log is never
+ * opened. */
 
 #include "test/test_core.h"
 
@@ -73,9 +44,7 @@
     } while (0)
 
 /* ── the fixture vocabulary ──────────────────────────────────────────────
- *
- * Written as text, not built as a struct, because the parser and the
- * rewriter are both under test and a struct would skip them both. */
+ * Written as text so the parser and the rewriter are both exercised. */
 static const char k_fixture_vocab[] =
 "/* fixture vocabulary */\n"
 "\n"
@@ -96,9 +65,8 @@ static void fx_hex(char out[65], char tag, uint32_t n)
     (void)snprintf(out + 56, 9, "%08x", n);
 }
 
-/* The fixture's task id. Receipt 20 deliberately repeats receipt 5's task:
- * that repeat is the fail->pass pair the miner has to find, and the only one
- * in the log. */
+/* The fixture's task id. Receipt 20 repeats receipt 5's task: that is the
+ * single fail->pass pair the miner must find. */
 static void fx_task(char out[65], uint32_t i)
 {
     fx_hex(out, 't', i == 20u ? 5u : i);
@@ -280,9 +248,9 @@ static int case_wilson(void)
 
 /* ── 4. scoring, retiring, and the promotion asymmetry ───────────────── */
 
-/* A promotion hunk reads -, then +, then trailing context. A + emitted
- * after the trailing context is a row `git apply` would MOVE — delete in
- * place, insert below — not the one-token rewrite the patch promises. */
+/* A promotion hunk reads -, then +, then trailing context. A + after the
+ * trailing context is a row `git apply` would MOVE, not a one-token
+ * rewrite. */
 static bool patch_rewrites_in_place(const char *patch, const char *id)
 {
     char minus[96], plus[96];
@@ -356,9 +324,8 @@ static int case_decisions(void)
              bad->killer_count > 0 && bad->killer_total == 20u &&
              strcmp(bad->killer[0], "u030") == 0);
 
-    /* THE MIN-TRIALS GATE. Same twenty straight losses, one run short of its
-     * declared minimum: the floor is NOT allowed to decide yet, because
-     * "under the floor" and "measured enough to know" are different facts. */
+    /* THE MIN-TRIALS GATE. Twenty straight losses, one run short of the
+     * declared minimum: the floor must not decide yet. */
     ER_CHECK("the too-early rule has the same 20 losses",
              early->trials == 20u && early->passes == 0u);
     ER_CHECK("and a floor short of its min_trials decides nothing",
@@ -455,9 +422,8 @@ static int case_decisions(void)
     ER_CHECK("a second apply retires nothing further",
              third.retired_written == 0u);
 
-    /* A scoring that fires NO retirement must rewrite the file to identical
-     * bytes — promotions included, because a promotion never flows through
-     * the rewriter at all. An idle pass of the loop cannot cost a comma. */
+    /* A scoring that fires NO retirement rewrites the file to identical
+     * bytes (promotions never flow through the rewriter). */
     size_t flen = 0;
     char *final_def = fx_read(vpath, &flen);
     ER_CHECK("the settled vocabulary is readable", final_def != NULL);
@@ -565,11 +531,8 @@ static int case_miner(void)
                  !zcl_rule_mine_candidate(&pairs[0], "no files here\n", 14,
                                           &empty));
 
-        /* Three receipts, ONE task, pass then fail then pass. The earlier
-         * PASS is not an earlier failure: the header's rule — first failure
-         * paired with the first later pass — still has exactly one pair to
-         * emit, and dropping it would throw away the only lesson the task
-         * taught. */
+        /* Three receipts, one task: pass, fail, pass. The first failure
+         * pairs with the first later pass, leaving exactly one pair. */
         struct zcl_rule_receipt_log *trio = calloc(1, sizeof *trio);
         ER_CHECK("the pass-fail-pass trio log allocates", trio != NULL);
         if (trio) {
@@ -632,10 +595,8 @@ static int case_rewrite(void)
     size_t rlen = sizeof k_replacement - 1;
 
     /* ---- stale read: the def changed after the caller read it. The
-     * rewrite was decided from OTHER bytes; publishing it here would
-     * clobber the edit that is standing on disk. The refusal must be the
-     * TYPED stale one, not a generic write failure, and must leave both
-     * the file and the temp name exactly as they were. */
+     * refusal is the TYPED stale one, and the file and temp name are left
+     * untouched. */
     static const char k_stale_old[] = "/* bytes nobody ever planted */\n";
     ER_CHECK("a rewrite from bytes that are not on disk is refused",
              zcl_rule_def_rewrite(vpath, k_stale_old, sizeof k_stale_old - 1,
@@ -650,11 +611,9 @@ static int case_rewrite(void)
     ER_CHECK("and the refusal left no temp file behind",
              stat(tpath, &sb) != 0);
 
-    /* ---- crash safety: a write that dies BEFORE the rename. A directory
-     * pre-empting the temp name makes the temp write itself fail — the same
-     * observable state an ENOSPC or a kill mid-write leaves behind — and the
-     * assertion is the one that matters: the ORIGINAL is intact. The
-     * refusal is the IO one: the bytes matched, the write failed. */
+    /* ---- crash safety: a directory pre-empting the temp name makes the
+     * temp write fail (as ENOSPC or a kill would); the ORIGINAL is intact
+     * and the refusal is the IO one. */
     ER_CHECK("the temp name is pre-empted so the write aborts",
              mkdir(tpath, 0755) == 0);
     ER_CHECK("the aborted rewrite is refused as a write failure",

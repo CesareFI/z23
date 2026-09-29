@@ -698,22 +698,17 @@ static int test_async_dispatch_lifecycle(void)
     return failures;
 }
 
-/* regression for the SIGABRT-on-live-node incident where
- * node.log preserved only `sys.crash signal 6` — the FATAL SIGNAL
- * header and the backtrace_symbols_fd frame addresses never made it
- * because stderr was fully-buffered under systemd's StandardError
- * file redirect and _exit() skipped the flush.  Fork a child,
- * redirect its stderr to a temp file, install the crash handler,
- * raise(SIGABRT), and assert the temp file contains BOTH the header
- * literal AND at least 3 hex-shaped backtrace addresses. */
+/* Crash-handler output must survive a fully-buffered stderr and _exit():
+ * fork a child, redirect its stderr to a temp file, install the crash
+ * handler, raise(SIGABRT), and assert the file has BOTH the header literal
+ * AND at least 3 hex-shaped backtrace addresses. */
 static int test_crash_handler_stderr_survives_exit(void)
 {
     int failures = 0;
 
 #if defined(_WIN32)
     /* POSIX crash-handler lane: fork()+raise(SIGABRT) against sigaction
-     * handlers and backtrace_symbols_fd frames — AGENTS.md records
-     * signal-context self-backtraces as unavailable on Windows. */
+     * handlers and backtrace_symbols_fd (unavailable on Windows). */
     printf("crash_handler: header + ≥3 backtrace frames reach stderr... "
            "SKIP (Windows): POSIX fatal-signal backtrace lane\n");
 #else
@@ -737,10 +732,8 @@ static int test_crash_handler_stderr_survives_exit(void)
         ASSERT(pid >= 0);
 
         if (pid == 0) {
-            /* Child: redirect stderr to the temp file before anything
-             * writes to it.  dup2'ing the FD does NOT automatically
-             * empty any inherited FILE buffer — we explicitly flushed
-             * parent stderr above so there's nothing in it to carry. */
+            /* Child: redirect stderr to the temp file first; parent stderr
+             * was flushed above. */
             int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
             if (fd < 0) _exit(42);
             dup2(fd, STDERR_FILENO);
@@ -750,23 +743,19 @@ static int test_crash_handler_stderr_survives_exit(void)
             int dn = open("/dev/null", O_WRONLY);
             if (dn >= 0) { dup2(dn, STDOUT_FILENO); close(dn); }
 
-            /* Install crash handler AFTER the fork so the parent's
-             * signal disposition is untouched — otherwise a later
-             * test that happens to SIGABRT would also trigger our
-             * _exit path. */
+            /* Install the crash handler after the fork so the parent's
+             * signal disposition is untouched. */
             event_log_init();
             event_install_crash_handler();
-            /* Arm the durable, stderr-INDEPENDENT crash log. Its fd is
-             * NEVER dup2'd onto stderr, so the parent's assertion on
-             * path2 proves the fix that survives swallowed stderr. */
+            /* Arm the durable, stderr-independent crash log; its fd is never
+             * dup2'd onto stderr. */
             signal_handler_set_crash_log(path2);
 
             /* Trigger.  Handler does its write(2) + fprintf + _exit. */
             raise(SIGABRT);
 
-            /* If the handler didn't _exit (would be a real bug),
-             * fall through to a distinct exit code so the parent's
-             * WEXITSTATUS check surfaces the regression clearly. */
+            /* If the handler didn't _exit (a real bug), use a distinct exit
+             * code so the parent's WEXITSTATUS check surfaces it. */
             _exit(99);
         }
 
@@ -792,9 +781,8 @@ static int test_crash_handler_stderr_survives_exit(void)
         /* Acceptance 1: the header literal landed. */
         ASSERT(strstr(buf, "FATAL SIGNAL 6") != NULL);
 
-        /* Acceptance 2: at least 3 backtrace frames — each frame line
-         * from backtrace_symbols_fd embeds an address of form
-         * "[0x...]" or "+0x...".  Count distinct 0x hex runs. */
+        /* Acceptance 2: at least 3 backtrace frames (distinct 0x hex runs,
+         * "[0x...]" or "+0x..."). */
         int hex_hits = 0;
         for (const char *p = buf; (p = strstr(p, "0x")) != NULL; ) {
             hex_hits++;
@@ -802,12 +790,9 @@ static int test_crash_handler_stderr_survives_exit(void)
         }
         ASSERT(hex_hits >= 3);
 
-        /* Acceptance 3 (DURABLE path): the stderr-INDEPENDENT, fsync'd
-         * crash log armed via signal_handler_set_crash_log() — the actual
-         * fix for the swallowed-backtrace incident — must hold the SAME
-         * header + frames.  The child wrote crash_durable_<pid>.log via the
-         * durable fd (event.c:733-737), a fd never dup2'd onto stderr, so
-         * this proves forensics survive even if the stderr redirect is lost. */
+        /* Acceptance 3 (DURABLE path): the stderr-independent, fsync'd crash
+         * log armed via signal_handler_set_crash_log() (a fd never dup2'd
+         * onto stderr) holds the same header + frames. */
         FILE *f2 = fopen(path2, "r");
         ASSERT(f2 != NULL);
         fseek(f2, 0, SEEK_END);
@@ -841,11 +826,8 @@ static int test_crash_handler_stderr_survives_exit(void)
 
 
 /* The error accumulator's JSON has one consumer, api_json_push_recent_errors,
- * and that consumer replaces an unparseable document with an empty array
- * rather than reporting a failure. A malformed dump therefore reads to an
- * operator as "no recent errors" -- the exact opposite of the truth -- with
- * nothing in any log to say so. These tests parse the dump the same way the
- * consumer does, so that silence cannot happen again unobserved. */
+ * which replaces an unparseable document with an empty array ("no recent
+ * errors"). These tests parse the dump the same way. */
 static int test_error_ring_dump_json_parses(void)
 {
     int failures = 0;
@@ -878,9 +860,9 @@ static int test_error_ring_dump_json_parses(void)
 
             const struct json_value *errors = json_get(&doc, "errors");
             ASSERT(errors != NULL);
-            /* The ring keeps the most recent ERROR_RING_SIZE entries, so the
-             * array length is the count clamped to the ring, while "total"
-             * stays the lifetime count. */
+            /* The ring keeps the most recent ERROR_RING_SIZE entries: array
+             * length is the count clamped to the ring, "total" the lifetime
+             * count. */
             size_t expect = (size_t)(counts[c] < ERROR_RING_SIZE
                                      ? counts[c] : ERROR_RING_SIZE);
             ASSERT(errors->num_children == expect);
@@ -893,9 +875,8 @@ static int test_error_ring_dump_json_parses(void)
     return failures;
 }
 
-/* A buffer too small to hold even an empty result must be refused, not
- * written into. The clamping arithmetic in the dump is all size_t, so a size
- * under three wraps and turns every clamp into a huge value. */
+/* A buffer too small to hold even an empty result is refused, not written
+ * into (the dump's clamping is size_t and wraps under size 3). */
 static int test_error_ring_dump_json_tiny_buffer(void)
 {
     int failures = 0;

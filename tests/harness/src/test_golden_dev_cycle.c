@@ -1,41 +1,30 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * test_golden_dev_cycle — Wave 4.1 golden test: the dev-loop
- * classify->prove->publish pipeline mechanism, driven hermetically as far
- * as the existing test seams allow.
+ * test_golden_dev_cycle — the dev-loop classify->prove->publish pipeline
+ * mechanism, driven hermetically.
  *
- * This test binary is NOT built with ZCL_DEV_BUILD (see
- * tests/harness/src/test_dev_platform.c's own note on this), so the actual
- * hotswap build/dlopen and transactional-reload subprocess legs of
- * tools/dev/devloop_cycle.c:zcl_devloop_run_cycle() are compiled out for
- * this harness. The load-bearing MECHANISM invariants that ARE reachable
- * hermetically, and that this file proves:
+ * This binary is not built with ZCL_DEV_BUILD, so the hotswap build/dlopen
+ * and transactional-reload subprocess legs of
+ * tools/dev/devloop_cycle.c:zcl_devloop_run_cycle() are compiled out. It
+ * proves the mechanism invariants reachable hermetically:
  *
  *   1. classify: an eligible-TU edit classifies to hotswap, not a full
  *      rebuild (zcl_devloop_plan_files — tools/dev/devloop.h).
- *   2. a sealed core/ apply is contained before authority, even with a token
- *      exit-3 semantics, BEFORE any publish step and regardless of
- *      ZCL_DEV_BUILD (zcl_devloop_run_cycle + zcl_devloop_refusal_json —
- *      the refusal check in devloop_cycle.c runs before the ZCL_DEV_BUILD
- *      #ifdef, so it is real in every build configuration).
+ *   2. a sealed core/ apply is contained before authority (exit-3
+ *      semantics), before any publish step and regardless of ZCL_DEV_BUILD
+ *      (zcl_devloop_run_cycle + zcl_devloop_refusal_json).
  *   3. a green cycle auto-anchors with verdict+generation bound
- *      (vcs_devloop_anchor_cycle() — the exact call
- *      tools/dev/devloop_cycle.c:finish_cycle() makes on every "passed"
- *      verdict; see tests/harness/src/test_vcs_devloop.c for the same seam).
+ *      (vcs_devloop_anchor_cycle(), as finish_cycle() calls it on "passed").
  *   4. elapsed_ms is plumbed end to end into the anchored commit.
  *
- * TIMING: strict wall-clock assertions (<=1s for the hotswap classify+
- * anchor leg, <=3s for a real dev_activation restart transaction) are
- * load-flaky under the 32-worker parallel test harness — measuring wall
- * time deterministically requires a quiet machine. They are gated behind
- * the env var ZCL_GOLDEN_TIMING_STRICT=1 and SKIPPED (with a printed SKIP
- * note) otherwise, so `make t ONLY=golden_dev_cycle` stays deterministic by
- * default. Set ZCL_GOLDEN_TIMING_STRICT=1 for the manual demo / quality
- * linger run: `ZCL_GOLDEN_TIMING_STRICT=1 make t ONLY=golden_dev_cycle`. */
+ * TIMING: strict wall-clock assertions (<=1s for the hotswap classify+anchor
+ * leg, <=3s for a real dev_activation restart transaction) are load-flaky
+ * under the parallel harness. They run only with ZCL_GOLDEN_TIMING_STRICT=1
+ * and are otherwise SKIPPED with a printed note:
+ * `ZCL_GOLDEN_TIMING_STRICT=1 make t ONLY=golden_dev_cycle`. */
 
 /* realpath() needs __USE_MISC; -D_POSIX_C_SOURCE=200809L alone does not
- * declare it. Without this the TU only builds by accident of the glibc
- * fortify inline at -O3. */
+ * declare it. */
 #define _DEFAULT_SOURCE
 
 #include "test/test_core.h"

@@ -362,20 +362,10 @@ static int test_pread_accepts_frame_offset(void)
     return failures;
 }
 
-/* A position carrying NO 8-byte magic+size frame at either pos-8 or pos is
- * refused outright — even when a bare, perfectly-parseable block payload sits
- * exactly there and hashes to the entry's own hash.
- *
- * Before the fix disk_block_locate_payload() fell through to "payload=nPos,
- * size=2000000, return true": a fixed 2 MB read from a raw offset handed
- * straight to block_deserialize. That made an unframed offset *answer* — a
- * guess dressed as a read, with only the downstream hash check between it and
- * a wrong block. On a real datadir (node1 2026-08-23: blk00050.dat hardlinked
- * into a foreign live writer's datadir which overwrote the indexed region) the
- * guess parsed arbitrary bytes and produced ~52% of the node's log volume.
- * Every writer in the tree frames its records and the sibling mmap reader
- * (blocks_mmap_reader.c bmr_get_payload) already refuses this shape; the pread
- * reader now agrees. */
+/* A position with no 8-byte magic+size frame at pos-8 or pos is refused,
+ * even when a parseable block payload sits there and hashes to the entry's
+ * hash; an unframed offset must not answer. The sibling mmap reader
+ * (bmr_get_payload) refuses the same shape. */
 static int test_pread_refuses_unframed_position(void)
 {
     int failures = 0;
@@ -396,9 +386,8 @@ static int test_pread_refuses_unframed_position(void)
             printf("FAIL (serialize)\n"); failures++; goto _test_next;
         }
 
-        /* Hand-write blk00000.dat: 16 filler bytes (0x5a5a5a5a is none of
-         * the three accepted magics), then the RAW block payload with no
-         * magic+size frame in front of it. */
+        /* blk00000.dat: 16 filler bytes (0x5a5a5a5a is no accepted magic),
+         * then the raw block payload with no magic+size frame. */
         char path[512];
         snprintf(path, sizeof(path), "%s/blocks/blk00000.dat", tmpdir);
         FILE *f = fopen(path, "wb");
@@ -416,9 +405,8 @@ static int test_pread_refuses_unframed_position(void)
             printf("FAIL (write blk00000.dat)\n"); failures++; goto _test_next;
         }
 
-        /* The payload starts at 16, so a naive raw-offset read WOULD parse
-         * it. Neither 8..15 nor 16..23 is a frame header, so the position
-         * names no record and must be refused. */
+        /* The payload starts at 16, but neither 8..15 nor 16..23 is a frame
+         * header, so the position is refused. */
         struct disk_block_pos pos = { .nFile = 0, .nPos = 16 };
         struct block r;
         if (read_block_from_disk_pread(&r, &pos, tmpdir)) {
@@ -429,9 +417,8 @@ static int test_pread_refuses_unframed_position(void)
             goto _test_next;
         }
 
-        /* Same through the index-level reader: a HAVE_DATA entry pointing at
-         * a frameless offset reports unreadable instead of feeding a guessed
-         * parse into the hash check. */
+        /* Through the index-level reader: a HAVE_DATA entry at a frameless
+         * offset reports unreadable. */
         struct block_index bi;
         block_index_init(&bi);
         bi.nHeight = 9;
@@ -574,9 +561,8 @@ static int test_append_quarantines_hardlinked_tail(void)
     make_test_dir(tmpdir, sizeof(tmpdir));
 
     TEST("write_block_to_disk: append rotates past hardlinked tail") {
-        /* Exercise the IBD-only append hint, not merely the ordinary full
-         * scan.  A hard link created after the hint was recorded must still
-         * invalidate it and rotate to a new blk file. */
+        /* The IBD-only append hint: a hard link created after the hint was
+         * recorded still invalidates it and rotates to a new blk file. */
         disk_block_io_set_deferred_sync(true);
         deferred = true;
         struct disk_block_pos first;
@@ -679,11 +665,9 @@ _test_next:
     return failures;
 }
 
-/* Deferred-sync mode must produce a byte-identical block file to immediate
- * mode, must record a pending file (not fdatasync inline), and the file must
- * be readable back both before and after disk_block_io_sync_pending(). This is
- * the "batch does not change WHAT is written, only WHEN it is synced" contract
- * plus the at-tip degrade-to-identical guarantee. */
+/* Deferred-sync mode writes a byte-identical block file to immediate mode,
+ * records a pending file (no inline fdatasync), and reads back before and
+ * after disk_block_io_sync_pending(). */
 static int test_deferred_sync_byte_identical(void)
 {
     int failures = 0;
@@ -791,10 +775,9 @@ static int test_deferred_sync_byte_identical(void)
     return failures;
 }
 
-/* Between enter() and exit() the reader reuses one fd across same-file reads.
- * Interleaving two blocks in the SAME blk file at different offsets must still
- * return each block's own bytes (pread is positional); after exit() the fd is
- * closed and the stateless path resumes. */
+/* Between enter() and exit() the reader reuses one fd across same-file
+ * reads; interleaved blocks at different offsets return their own bytes;
+ * after exit() the stateless path resumes. */
 static int test_scoped_read_fd_cache(void)
 {
     int failures = 0;
@@ -856,15 +839,13 @@ static int test_scoped_read_fd_cache(void)
 }
 
 /* ── Duplicate-scan policy + position self-heal ─────────────
- * Regression coverage for the 2026-08 producer-fold wedge: blk*.dat files
- * hardlinked into a live zclassicd datadir get their tail rewritten by the
- * foreign appender, so (1) the boot scan must index the EARLIEST copy of a
- * duplicated block (most durable offset), and (2) a position that dangles
- * anyway must be repairable from the surviving local copy. */
+ * blk*.dat files hardlinked into a foreign datadir can get their tail
+ * rewritten, so the boot scan indexes the EARLIEST copy of a duplicated
+ * block and a dangling position is repairable from the surviving local
+ * copy. */
 
-/* A blk file holding TWO verbatim copies of the same block must index the
- * earliest one; after the tail copy is destroyed, the indexed copy must
- * still read back and hash-match. */
+/* A blk file holding TWO verbatim copies of one block indexes the earliest;
+ * after the tail copy is destroyed it still reads back and hash-matches. */
 static int test_scan_duplicate_keeps_earliest_copy(void)
 {
     int failures = 0;
@@ -932,9 +913,8 @@ _test_next:
 }
 
 /* block_index_repair_pos_from_disk: a stale/torn (nFile,nDataPos) is healed
- * by a hash-targeted blk-file scan + verified re-store; a hash with NO copy
- * on disk returns false and leaves the entry untouched, so the caller's
- * clear-and-hold fallback still applies. */
+ * by a hash-targeted blk-file scan + verified re-store; a hash with no copy
+ * on disk returns false and leaves the entry untouched. */
 static int test_position_repair_from_local_copy(void)
 {
     int failures = 0;
@@ -962,8 +942,7 @@ static int test_position_repair_from_local_copy(void)
         bi.hashBlock = hash_a;
         bi.phashBlock = &bi.hashBlock;
         /* Bogus position: mid-record garbage inside block B's record, with
-         * HAVE_DATA set (the real wedge shape — read paths only fire on
-         * flagged entries, and the position snapshot requires the flag). */
+         * HAVE_DATA set (read paths fire only on flagged entries). */
         block_index_disk_pos_store(&bi, pb.nFile, pb.nPos + 20);
         block_index_status_fetch_or(&bi, BLOCK_HAVE_DATA);
 
@@ -1003,9 +982,8 @@ _test_next:
     return failures;
 }
 
-/* Missing datadirs fail closed. Other bytes are not a lifetime signal: POSIX
- * permits control bytes in path components, and long-lived readers own their
- * datadir storage instead of asking this formatter to detect dead pointers. */
+/* Missing datadirs fail closed. Other bytes are not a lifetime signal:
+ * POSIX permits control bytes in path components. */
 static int test_block_pos_filename_datadir_contract(void)
 {
     int failures = 0;
@@ -1064,13 +1042,9 @@ _test_next:
 }
 
 /* ── Boot scan flat-save gate ─────────────────────────────
- * Regression for the redundant boot-time flat save (~8s on a 3M-entry
- * index): boot's post-scan save_block_index_flat is a cache refresh over
- * durable stores and must run ONLY when the boot actually mutated the
- * in-memory index — the scan's marked count, or the stale-HAVE_DATA clear
- * step's cleared count handed in by the caller. A 0/0 boot must NOT rewrite
- * block_index.bin; any nonzero mutation count MUST save (a mutation that is
- * not saved is a real bug — when in doubt, save). */
+ * Boot's post-scan save_block_index_flat runs only when boot mutated the
+ * in-memory index (scan marked count or stale-HAVE_DATA cleared count): a
+ * 0/0 boot must not rewrite block_index.bin, any nonzero count must save. */
 
 /* Fill ms with n synthetic index entries (distinct hashes; none on disk). */
 static bool seed_index_entries(struct main_state *ms, int n)

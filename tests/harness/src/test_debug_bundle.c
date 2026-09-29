@@ -5,27 +5,16 @@
  * `debugbundle` RPC / ops.debug.bundle native command and the
  * supervisor-stall auto-capture.
  *
- * Coverage:
- *   (a) debugbundle RPC end-to-end: a tmp datadir wired through
- *       diagnostics_controller_set_state, rpc_table_execute("debugbundle")
- *       returns { path, bytes, subsystems_captured, subsystems_failed,
- *       trigger=manual }; the file at the returned path exists, is exactly
- *       `bytes` long, parses as JSON, and carries the top-level contract
- *       (format, trigger, build, supervisor_stalls, subsystems with the
- *       registered dumpers keyed by name).
- *   (b) supervisor-stall trigger metadata: a direct debug_bundle_write
- *       with trigger "supervisor_stall" + child/reason lands trigger_child
- *       and trigger_stall_reason in the document.
- *   (c) no datadir: debug_bundle_write fails cleanly (false, empty path)
- *       rather than writing somewhere surprising.
+ * (a) debugbundle RPC end-to-end: returned path exists, is `bytes` long,
+ *     parses as JSON, carries the top-level contract.
+ * (b) supervisor-stall trigger metadata lands in the document.
+ * (c) no datadir: debug_bundle_write fails cleanly.
+ * (d)-(f) bounded, typed shutdown drain and the clean-marker gate.
+ * (g)-(h) offline-worker-drain deadline.
  *
- * The auto-capture writer is an owned persistent worker.  This group exercises
- * its deterministic lifecycle (start, stop/join, rejection after revocation,
- * idempotent stop, restart) without depending on scheduling of an actual
- * automatic capture.
- * Dumpers run under the same minimal fixture test_health_rollup already
- * uses — every registered dumper must tolerate an unbooted process — so
- * no extra per-subsystem setup is paid here. */
+ * The auto-capture writer is an owned persistent worker; only its
+ * deterministic lifecycle (start, stop/join, revocation, restart) is tested.
+ * Dumpers run under the test_health_rollup fixture (unbooted process). */
 
 #include "test/test_core.h"
 #include "config/boot_internal.h"
@@ -73,11 +62,8 @@ static char *dbb_read_file(const char *path, long *size_out)
 /* ── (d) bounded-drain harness ───────────────────────────────────────
  *
  * Runs diagnostics_controller_shutdown() on its own thread so the test can
- * put a DEADLINE on a call that, before the bounded drain landed, waited
- * forever on a capture lease. The live incident this pins: SIGTERM on a
- * healthy node, stage 'diagnostics-drain' blows its deadline, and the
- * watchdog force-exits UNCLEAN before the coins flush / WAL checkpoint /
- * clean marker ever run — costing the next boot a ~180 s quick_check. */
+ * put a deadline on a call that could otherwise wait forever on a capture
+ * lease. */
 struct dbb_drain_probe {
     pthread_mutex_t lock;
     pthread_cond_t  cond;
@@ -129,31 +115,16 @@ static bool dbb_parse_bundle(const char *path, struct json_value *doc,
     return ok;
 }
 
-/* (g)+(h) offline-worker-drain deadline handling, split out of
- * test_debug_bundle to keep that function's own complexity unchanged (this
- * is a fresh function, budgeted at <=15 decision points on its own).
+/* (g)+(h) offline-worker-drain deadline handling.
  *
- * A wedged worker join must never hang the process forever (never idle
- * silently on an error path), so the offline-worker-drain deadline stays
- * ARMED unconditionally -- boot_offline_arm_worker_drain_stage always calls
- * shutdown_stagewatch_enter(..., arm_alarm=true). What changes with a
- * completed one-shot (-mint-anchor / -full-fold, whose bundle already
- * fsynced and whose node.db was already WAL-checkpointed before this call)
- * is the DECISION a fired deadline makes: boot_offline_shutdown_durable_
- * already's result is recorded via shutdown_stagewatch_set_stage_durable_
- * override, scoped to only the current stage (reset by every enter()), so
- * an unrelated straggler worker there is decided as an already-durable
- * truthful success (exit 0), never a false failure -- while the ordinary
- * (non-one-shot) offline path leaves the override unset and still refuses a
- * clean verdict pre-durability (exit 1), exactly as before.
+ * The offline-worker-drain deadline stays armed unconditionally; a completed
+ * one-shot (-mint-anchor / -full-fold) records a per-stage durable override
+ * (reset by every enter()) so a fired deadline decides EXIT_CLEAN, while the
+ * ordinary offline path leaves it unset and stays EXIT_UNCLEAN.
  *
- * (g) checks the pure gate + the per-stage override mechanism directly
- * (set after entering a stage, reset by the next enter() -- the alarm
- * handler itself cannot be driven in-process, since it _exit()s).
- * (h) extends shutdown_deadline_decide's truth table with the override's
- * effective input: override-true behaves exactly like durable_secured=true
- * (EXIT_CLEAN); the ordinary path (override false, durable_secured false)
- * is unchanged (EXIT_UNCLEAN). */
+ * (g) checks the pure gate + the override mechanism (the alarm handler
+ * _exit()s, so it cannot be driven in-process).
+ * (h) extends shutdown_deadline_decide's truth table with the override. */
 static int debug_bundle_check_offline_drain_gate(const char *dir)
 {
     int failures = 0;
@@ -351,9 +322,8 @@ int test_debug_bundle(void)
     {
         diagnostics_controller_set_state(NULL, dir);   /* worker live again */
 
-        /* One capture lease held open stands in for the live failure mode:
-         * a capture blocked inside a single dumper, which the walk can only
-         * cancel at the NEXT dumper boundary. */
+        /* One held capture lease: a capture blocked in a single dumper,
+         * cancellable only at the next dumper boundary. */
         DBB_CHECK("drain: a capture lease can be taken before shutdown",
                   debug_bundle_capture_lease_acquire_for_test());
         debug_bundle_set_drain_budget_ms_for_test(200);
@@ -376,8 +346,7 @@ int test_debug_bundle(void)
                   "silent clean pass)",
                   returned && !probe.result);
 
-        /* Release the lease: the drain must then report a true, complete
-         * drain — the fix must not turn every shutdown into 'undrained'. */
+        /* Release the lease: the drain must report a true, complete drain. */
         debug_bundle_capture_lease_release_for_test();
         if (spawned)
             pthread_join(th, NULL);
@@ -389,10 +358,8 @@ int test_debug_bundle(void)
 
     /* ── (e) the abandoned drain is TYPED ────────────────────────
      *
-     * Same live-lease failure mode as (d), but through the report form:
-     * WHAT was abandoned (exactly one capture lease), WHY (the 200 ms
-     * budget expired with the worker already out), and a clean verdict
-     * once the lease is gone. */
+     * Report form: what was abandoned (one capture lease), why (200 ms budget
+     * expired), and a clean verdict once the lease is gone. */
     {
         diagnostics_controller_set_state(NULL, dir);   /* worker live again */
         DBB_CHECK("typed: a capture lease can be taken before shutdown",
@@ -436,11 +403,8 @@ int test_debug_bundle(void)
 
     /* ── (f) abandoned diagnostics never blocks the clean marker ─
      *
-     * The shutdown flow writes its verified-clean marker iff the durability
-     * barrier held. This pins shutdown_clean_marker_permitted, the pure gate
-     * app_shutdown_svc consults: abandoning ONLY diagnostics (abandoned=true
-     * above, durability_ok=true) must still permit the marker, or the next
-     * boot pays the ~180 s quick_check for a best-effort postmortem. */
+     * shutdown_clean_marker_permitted: abandoning only diagnostics with
+     * durability_ok=true still permits the marker. */
     {
         DBB_CHECK("marker: durability alone permits",
                   shutdown_clean_marker_permitted(true, true));

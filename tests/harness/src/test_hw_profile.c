@@ -79,8 +79,7 @@ static bool hwp_write_file(const char *path, const char *contents)
 }
 
 /* Builds a synthetic 4-cpu, 2-domain (asymmetric L3) sysfs tree under
- * `root`: cpu0/cpu1 share a 32 MiB L3 (domain 0), cpu2/cpu3 share a 64
- * MiB L3 (domain 1) — a miniature 7950X3D-shaped layout. */
+ * `root`: cpu0/cpu1 share a 32 MiB L3, cpu2/cpu3 a 64 MiB L3. */
 static void hwp_build_l3_fixture(const char *root)
 {
     struct { int cpu; int pkg; int core; const char *l3_size; const char *shared; } rows[] = {
@@ -100,11 +99,9 @@ static void hwp_build_l3_fixture(const char *root)
         snprintf(val, sizeof(val), "%d\n", rows[i].core);
         hwp_write_file(path, val);
 
-        /* cpu_topology's find_l3_cache() walks index0..index15 looking for
-         * level==3 and gives up (break) the first time an index dir is
-         * missing past index0 — real kernels always have index0-2
-         * (L1d/L1i/L2) ahead of the L3 entry, so plant harmless L1/L2
-         * placeholders too or the scan never reaches our L3 entry. */
+        /* find_l3_cache() walks index0..index15 and stops at the first
+         * missing index dir past index0, so plant L1/L2 placeholders ahead
+         * of the L3 entry. */
         for (int idx = 0; idx < 3; idx++) {
             snprintf(dir, sizeof(dir), "%s/cpu%d/cache/index%d", root,
                      rows[i].cpu, idx);
@@ -127,10 +124,9 @@ static void hwp_build_l3_fixture(const char *root)
     }
 }
 
-/* Plants root/devices/fakessd/block/nvmefake/nvmefakep1/partition +
- * .../nvmefake/queue/rotational=0 (SSD-shaped: partition marker present,
- * rotational lives one level up at the parent whole-disk dir), then
- * symlinks root/dev/block/<maj>:<min> at it. */
+/* Plants root/devices/fakessd/block/nvmefake/nvmefakep1/partition and
+ * .../nvmefake/queue/rotational=0 (SSD-shaped: rotational lives at the
+ * parent whole-disk dir), then symlinks root/dev/block/<maj>:<min> at it. */
 static void hwp_plant_ssd_partition(const char *root, unsigned maj,
                                     unsigned min)
 {
@@ -150,10 +146,9 @@ static void hwp_plant_ssd_partition(const char *root, unsigned maj,
 }
 
 /* Plants root/devices/fakehdd/block/sdfake/queue/rotational=1 (HDD-shaped:
- * no partition indirection, rotational lives directly in the device's own
- * dir), then symlinks root/dev/block/<maj>:<min> at it. Caller unlinks the
- * previous entry at the same maj:min first if reusing one real dev_t for
- * both the SSD and HDD case in sequence. */
+ * rotational lives in the device's own dir), then symlinks
+ * root/dev/block/<maj>:<min> at it. Caller unlinks a previous entry at the
+ * same maj:min first when reusing one dev_t. */
 static void hwp_plant_hdd_wholedisk(const char *root, unsigned maj,
                                     unsigned min)
 {
@@ -471,15 +466,10 @@ int test_hw_profile(void)
         char *root = test_mkdtemp(tmpl, sizeof(tmpl), "zcl_hwp_block_fixture");
         HWP_CHECK("block fixture mkdtemp succeeds", root != NULL);
         if (root) {
-            /* The probe never calls stat() on a real block device here —
-             * it only resolves the symlink named after whatever dev_t the
-             * caller's datadir stat() produced. Drive it via ONE real
-             * datadir's real maj:min (any two dirs under the same mkdtemp
-             * root are near-certainly on the same filesystem/device, so
-             * using two different datadirs would collide on the same
-             * maj:min symlink name): plant the SSD-shaped target, probe,
-             * then swap the same symlink to the HDD-shaped target and
-             * probe again. */
+            /* The probe only resolves the symlink named after the datadir's
+             * dev_t. Use ONE datadir's maj:min (two datadirs would collide
+             * on the same symlink name): plant the SSD-shaped target, probe,
+             * swap to the HDD-shaped target, probe again. */
             char datadir[600];
             snprintf(datadir, sizeof(datadir), "%s/test_datadir", root);
             hwp_mkdir_p(datadir);
@@ -520,8 +510,8 @@ int test_hw_profile(void)
                           hdd_known && hdd_rot);
             }
 
-            /* broken symlink case: a datadir whose maj:min has no entry
-             * under the fixture block root at all -> known == false. */
+            /* A maj:min with no entry under the fixture block root gives
+             * known == false. */
             char orphan_datadir[600];
             snprintf(orphan_datadir, sizeof(orphan_datadir), "%s/orphan_datadir",
                      root);

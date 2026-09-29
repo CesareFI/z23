@@ -13,14 +13,8 @@
 #include <signal.h>
 
 /* Reset the process-global singletons that leak across groups in the
- * single-process monolith (test_zcl). The forked runner (test_parallel)
- * gets fresh globals per group, so it never sees this; the monolith shares
- * one address space, so a group that arms a global — e.g.
- * tip_finalize_stage_init() registers an active-chain authority bound to
- * its local main_state, which dangles once that group returns — pollutes
- * every later group that reads it. Call this at the TOP of any group whose
- * assertions consult a shared global. Idempotent and safe to call anytime;
- * it only clears to the clean baseline the forked runner starts from. */
+ * single-process monolith (test_zcl); the forked runner starts clean. Call at
+ * the top of any group whose assertions consult a shared global. Idempotent. */
 void test_reset_shared_globals(void)
 {
     /* active_chain_tip() consults this authority + its block_map; a leaked
@@ -35,28 +29,19 @@ void test_reset_shared_globals(void)
     chain_linkage_reset_for_testing();
     /* pending finalized-tip slot (health drain side-effect). */
     chain_evidence_pending_tip_test_reset();
-    /* the published "can I prove I hold my own block bodies?" verdict. It
-     * gates every at-tip / synced / healthy claim, so a leaked COMPLETE from
-     * an earlier case lets a later one assert a green status it never
-     * established — the accidental green this module exists to prevent.
-     * Resetting returns it to UNKNOWN, which is the fail-closed default a
-     * fresh node has. A case that needs a proven archive must say so with
+    /* Body-history verdict gates every at-tip/synced/healthy claim; reset to
+     * the fail-closed UNKNOWN. A case needing a proven archive calls
      * body_history_test_publish_proven(). */
     body_history_reset();
-    /* fatal-signal disposition: a prior group that installed the node crash
-     * handlers leaves SIGABRT/SIGSEGV/SIGBUS/SIGFPE armed, which makes
-     * postmortem_install() refuse (it requires SIG_DFL) and breaks the
-     * fork-and-raise crash tests. Restore the baseline the forked runner has. */
+    /* A prior group may leave crash handlers armed; postmortem_install()
+     * requires SIG_DFL. Restore the baseline. */
     signal(SIGABRT, SIG_DFL);
     signal(SIGSEGV, SIG_DFL);
     signal(SIGBUS, SIG_DFL);
     signal(SIGFPE, SIG_DFL);
 #if !defined(_WIN32)
-    /* SIGCHLD: a prior alerts_init() installs SA_NOCLDWAIT (the kernel
-     * auto-reaps children), so waitpid() in fork-based tests returns ECHILD.
-     * Restore default disposition with flags cleared (sigaction, not signal(),
-     * because the SA_NOCLDWAIT *flag* must be cleared, not just the handler).
-     * No SIGCHLD exists on Windows, and no fork-based test runs there. */
+    /* A prior alerts_init() leaves SA_NOCLDWAIT set, so waitpid() returns
+     * ECHILD; clear the flag via sigaction. No SIGCHLD on Windows. */
     struct sigaction chld_dfl;
     memset(&chld_dfl, 0, sizeof(chld_dfl));
     chld_dfl.sa_handler = SIG_DFL;
@@ -130,32 +115,19 @@ void test_make_tmpdir(char *buf, size_t n, const char *prefix,
     test_fmt_tmpdir(buf, n, prefix, tag);
     test_rm_rf_recursive(buf);
     mkdir("test-tmp", 0755);
-    /* 0700, not 0755: a fixture directory stands in for a datadir, and
-     * platform_private_directory_ensure() (platform/modules/platform/src/private_directory.c)
-     * refuses any directory whose mode is not exactly 0700 — so every
-     * production atomic write a fixture drives through this directory fails
-     * with EACCES while the directory is group/other-readable. A real datadir
-     * is 0700 too, so this makes the fixture match what the write path has
-     * always required rather than relaxing the requirement. The shared
-     * test-tmp/ parent stays 0755: only the leaf is validated. */
+    /* 0700: platform_private_directory_ensure() refuses any other mode. */
 #if defined(_WIN32)
-    /* The MSVCRT mkdir mode is ignored, so a pre-created fixture inherits the
-     * parent ACL and correctly fails the production owner+SYSTEM-only datadir
-     * check.  Create Windows datadir fixtures through the same W-API boundary
-     * as production instead of weakening that check. */
+    /* MSVCRT ignores the mkdir mode; create through the W-API boundary as production does. */
     (void)platform_private_directory_ensure(buf);
 #else
     mkdir(buf, 0700);
 #endif
 }
 
-/* Absolutize `path` against the process cwd into `abs`. The
- * platform_private_* seam (private_destination / private_file) is
- * absolute-only by contract — '/'-rooted on POSIX, drive-absolute on
- * Windows — so any fixture path handed to code that resolves a private
- * destination (checkpoint flush, wallet backup dir, ...) must be in
- * absolute form. Copies `path` through unchanged when cwd is unavailable;
- * returns whether the result is absolute. */
+/* Absolutize `path` against the process cwd into `abs`; the
+ * platform_private_* seam is absolute-only (POSIX-rooted, drive-absolute on
+ * Windows). Copies `path` unchanged when cwd is unavailable; returns whether
+ * the result is absolute. */
 bool test_abs_path(const char *path, char *abs, size_t n)
 {
     if (!path || !abs || n == 0)
@@ -307,8 +279,7 @@ int test_self_child_wait(void *handle)
 void test_self_child_kill(void *handle)
 {
     if (!handle) return;
-    /* 137 = 128+9, the kill -9 flavor, so a reaped exit code still reads as
-     * "was hard-killed" rather than as an ordinary failure. */
+    /* 137 = 128+9: a reaped exit code still reads as hard-killed. */
     (void)TerminateProcess((HANDLE)handle, 137);
 }
 

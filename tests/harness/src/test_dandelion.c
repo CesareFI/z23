@@ -313,12 +313,9 @@ int test_dandelion(void)
 
     /* ── stem shuffle is non-deterministic across calls ─────
      *
-     * Pre-fix: xorshift64 seeded from platform_time_wall_time_t() ^ const → two boots
-     * inside the same wall-clock second produced identical shuffles.
-     * Post-fix: each call pulls fresh entropy from the cryptographic
-     * RNG, so back-to-back shuffles of the same input differ with
-     * probability 1 - 1/8! ≈ 99.9975%. We retry a few times to drive
-     * the false-FAIL probability below 1e-20 (8! ^ -5 ≈ 9.5e-23). */
+     * Each call draws fresh entropy, so back-to-back shuffles differ with
+     * probability 1 - 1/8!; retried a few times to make a false FAIL
+     * negligible. */
     printf("dandelion stem shuffle non-deterministic... ");
     {
         bool any_diff = false;
@@ -343,18 +340,9 @@ int test_dandelion(void)
 
     /* ── per-tx fluff coin-flip is statistically uniform ────
      *
-     * Asserts the RNG path doesn't bias the 90/10 stem/fluff decision.
-     * With p_stem = 0.9, n = 10000 the expected stem count is 9000 and
-     * σ = sqrt(n*p*(1-p)) = sqrt(900) = 30, so the ±3σ band is
-     * [8910, 9090] INCLUSIVE. A healthy crypto RNG lands in-band 99.73%
-     * of the time; a stuck, inverted, or low-entropy RNG lands far
-     * outside it. The coin is crypto-seeded (not deterministically
-     * seedable here), so to make this a zero-flake CI gate WITHOUT
-     * losing power against a real defect we draw up to 3 independent
-     * batches and pass if ANY is in-band: P(3 healthy batches all in
-     * the 0.27% tail) is about 2e-8, while a biased coin fails every
-     * batch. (Previously used strict comparisons that also wrongly
-     * rejected the inclusive boundary values 8910 and 9090.) */
+     * p_stem = 0.9, n = 10000: mean 9000, sigma 30, band [8910, 9090]
+     * inclusive (+-3 sigma). Up to 3 independent batches; pass if any is
+     * in-band (a biased RNG fails all of them). */
     printf("dandelion fluff coin-flip ±3σ uniformity (10k)... ");
     {
         const int trials = 10000;

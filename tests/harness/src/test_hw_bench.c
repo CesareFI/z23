@@ -6,7 +6,7 @@
  *   - derived-tunable formulas (hw_bench_batch_size, hw_bench_verify_workers)
  *     via the test-only measurement setter: monotonicity, clamps, and the
  *     unmeasured-passthrough fallback — deterministic, no real I/O timing.
- *   - end-to-end probe + flat-file cache round trip against a /tmp fixture
+ *   - end-to-end probe + flat-file cache round trip against a fixture
  *     datadir (NEVER a real host datadir): first init measures-or-skips and
  *     (when anything measured) persists a cache; a second init on the SAME
  *     fixture loads that cache instead of re-probing.
@@ -76,7 +76,7 @@ static bool hwb_corrupt_cache_fingerprint(const char *cache_path)
     return true;
 }
 
-/* ── fixture helpers for the hw_profile-poisoning regression below ──── */
+/* ── fixture helpers for the hw_profile rotational-probe test ──── */
 
 static bool hwb_mkdir_p(const char *path)
 {
@@ -101,10 +101,8 @@ static bool hwb_write_file(const char *path, const char *contents)
     return ok;
 }
 
-/* Plants root/devices/fakehdd/block/sdfake/queue/rotational=1 (HDD-shaped:
- * no partition indirection), then symlinks root/dev/block/<maj>:<min> at it.
- * Mirrors hwp_plant_hdd_wholedisk() in test_hw_profile.c (duplicated rather
- * than shared: one small fixture, no cross-test-file dependency). */
+/* Plants root/devices/fakehdd/block/sdfake/queue/rotational=1 (HDD-shaped),
+ * then symlinks root/dev/block/<maj>:<min> at it. */
 static void hwb_plant_hdd_wholedisk(const char *root, unsigned maj,
                                     unsigned min)
 {
@@ -175,14 +173,9 @@ int test_hw_bench(void)
                   hw_bench_verify_workers(0) >= 1);
     }
 
-    /* ── regression test: hw_bench_batch_size() must NEVER trigger the
-     * probe (the hot-path-fsync-under-a-held-mutex defect this file's
-     * boot-time-init split fixes — see reducer_drain.c's
-     * reducer_drain_to_convergence). With NO cache on disk and NO prior
-     * hw_bench_init() call, hw_bench_batch_size/verify_workers must return
-     * the topology fallback immediately, without running a single probe
-     * pass; only an EXPLICIT hw_bench_init() call may run the probe, and
-     * exactly once. ─────────────────────────────────────────────────── */
+    /* hw_bench_batch_size()/verify_workers() never trigger the probe: with no
+     * cache and no prior hw_bench_init() they return the topology fallback;
+     * only an explicit hw_bench_init() probes, exactly once. */
     {
         hw_bench_reset_for_testing();
         int probes0 = hw_bench_probe_run_count_for_testing();
@@ -208,9 +201,7 @@ int test_hw_bench(void)
             HWB_CHECK("sample file planted (probe-count fixture)",
                       hwb_plant_sample_file(root3));
 
-            /* Explicit init — like boot.c's boot-time call or
-             * bg_validation_init's own-service call — is the ONLY thing
-             * allowed to run the probe, and runs it exactly once. */
+            /* Only an explicit init runs the probe, exactly once. */
             HWB_CHECK("explicit hw_bench_init runs the probe",
                       hw_bench_init(root3));
             HWB_CHECK("hw_bench_init ran the probe exactly once",
@@ -225,12 +216,8 @@ int test_hw_bench(void)
                       "without re-probing",
                       hw_bench_probe_run_count_for_testing() == probes1);
 
-            /* A second explicit hw_bench_init() call after reset, on the
-             * SAME fixture (same fingerprint), loads the on-disk cache
-             * instead of re-probing — but only if the first probe actually
-             * measured something to cache (a real filesystem, not a mock;
-             * total measurement failure is a rare environment-dependent
-             * skip, same guard the round-trip test below uses). */
+            /* A second explicit init on the same fixture loads the on-disk
+             * cache instead of re-probing, if the first probe measured. */
             bool measured3 = hw_bench_measured();
             hw_bench_reset_for_testing();
             HWB_CHECK("second explicit init on same fixture returns true",
@@ -243,8 +230,7 @@ int test_hw_bench(void)
         hw_bench_reset_for_testing();
     }
 
-    /* ── end-to-end probe + cache round trip on a /tmp fixture ─────────
-     * NEVER a real host datadir — a fresh mkdtemp() fixture every time. */
+    /* ── end-to-end probe + cache round trip on a fresh mkdtemp() fixture ── */
     {
         char tmpl[PATH_MAX];
         char *root = test_mkdtemp(tmpl, sizeof(tmpl), "zcl_hwb_fixture");
@@ -259,10 +245,8 @@ int test_hw_bench(void)
             bool from_cache_first = hw_bench_from_cache();
             HWB_CHECK("first init on a writable+populated fixture is NOT "
                       "from cache", !from_cache_first);
-            /* A writable /tmp fixture with a real sample file should
-             * measure at least one of the two latencies; this is a real
-             * filesystem, not a mock, so treat total failure as a (rare,
-             * environment-dependent) skip rather than a hard failure. */
+            /* A real filesystem should measure at least one latency; total
+             * failure is an environment-dependent skip. */
             if (measured_first) {
                 const char *fp1 = hw_bench_fingerprint_hex();
                 HWB_CHECK("fingerprint is 16 hex chars",
@@ -274,8 +258,7 @@ int test_hw_bench(void)
                 HWB_CHECK("cache file was written after a measured probe",
                           stat(cache_path, &cst) == 0);
 
-                /* Second init on the SAME fixture (same fingerprint) must
-                 * load the cache instead of re-probing. */
+                /* A second init on the same fixture loads the cache. */
                 hw_bench_reset_for_testing();
                 HWB_CHECK("second init on same fixture returns true",
                           hw_bench_init(root));
@@ -284,8 +267,7 @@ int test_hw_bench(void)
                 HWB_CHECK("second init fingerprint matches the first",
                           strcmp(hw_bench_fingerprint_hex(), fp1) == 0);
 
-                /* Fingerprint invalidation: corrupt the cached fingerprint,
-                 * reset, init again -> must NOT trust the stale cache. */
+                /* A corrupted cached fingerprint must not be trusted. */
                 HWB_CHECK("corrupt cached fingerprint",
                           hwb_corrupt_cache_fingerprint(cache_path));
                 hw_bench_reset_for_testing();
@@ -339,21 +321,8 @@ int test_hw_bench(void)
         json_free(&v2);
     }
 
-    /* ── regression: hw_bench_init() must not starve hw_profile's sysfs
-     * rotational probe of the real datadir ──────────────────────────
-     *
-     * hw_profile_init() is a one-shot latch: whichever caller reaches it
-     * FIRST decides rotational_known for the rest of the process. Before
-     * this fix, hw_bench_init()'s internal fingerprint computation called
-     * hw_profile_init(NULL) — and since hw_bench_init() runs very early in
-     * boot (boot_datadir_lock_acquire, right before storage_pacing_init),
-     * it always won that race. storage_pacing's own later
-     * hw_profile_init(datadir) call became a silent no-op, so the sysfs
-     * "queue/rotational" answer was permanently unknown and every box —
-     * spinning disk included — fell through to the bench/probe fallback
-     * classification instead of the direct, cheap sysfs one. Prove the
-     * fix: hw_bench_init(datadir) must leave hw_profile with the REAL
-     * datadir's rotational verdict, not NULL's. */
+    /* hw_profile_init() is a one-shot latch: hw_bench_init(datadir) must leave
+     * hw_profile with the real datadir's rotational verdict, not NULL's. */
     {
         hw_bench_reset_for_testing();
         hw_profile_reset_for_testing();
@@ -385,9 +354,7 @@ int test_hw_bench(void)
                 hw_profile_set_block_root_for_testing(dev_block_dir);
                 hwb_plant_hdd_wholedisk(block_root, maj, min);
 
-                /* This is the exact call order boot_datadir_lock_acquire()
-                 * uses: hw_bench_init(datadir) first, nothing having
-                 * touched hw_profile before it. */
+                /* Boot call order: hw_bench_init(datadir) first. */
                 hw_bench_init(datadir);
 
                 bool known = false;

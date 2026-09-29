@@ -2,21 +2,14 @@
  *
  * Differential parity gate for the fixed-base windowed MSM over the constant
  * Groth16 VK IC[] points (core/modules/sapling/src/bls12_381.c: g1_comb_* +
- * groth16_vk_build_combs). The optimization replaces the per-verify 256-bit
- * double-and-add on the FIXED VK IC base points with precomputed table lookups.
+ * groth16_vk_build_combs).
  *
- * INVARIANT UNDER TEST: the comb path is VALUE-identical to the naive
- * double-and-add for every scalar, so groth16_verify / groth16_batch_verify must
- * return the SAME accept/reject verdict whether or not the VK carries comb
- * tables. This is a consensus invariant — the optimization changes HOW FAST the
- * same checks run, never WHICH proofs are accepted.
+ * Consensus invariant: the comb path is value-identical to the naive
+ * double-and-add, so groth16_verify / groth16_batch_verify return the same
+ * verdict whether or not the VK carries comb tables.
  *
- * Method (params-free, deterministic, host-invariant): build two copies of a
- * synthetic VK — one with comb tables (groth16_vk_build_combs), one without
- * (naive fallback) — and assert their verdicts are byte-for-byte equal across a
- * battery of public-input vectors (zeros, ones, small, full-256-bit, r-1, mixed)
- * and both accept AND reject controls. A single divergence in the comb-computed
- * vk_x flips a crafted-accept case to reject and fails the test.
+ * Method: two copies of a synthetic VK (with and without combs) must agree
+ * across a battery of public-input vectors, with accept and reject controls.
  */
 
 #include "sapling/bls12_381.h"

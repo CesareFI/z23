@@ -4,23 +4,20 @@
  * Unit tests for domain/consensus/coins_math.{c,h}.
  *
  * Pins the pure UTXO arithmetic extracted from core/modules/coins/ and the
- * pure slice of core/modules/validation/src/update_coins.c. Tests exercise
- * the typed zcl_result API directly AND cross-check against the
- * legacy core/modules/coins wrappers to prove the extraction is
- * behaviour-preserving.
+ * pure slice of core/modules/validation/src/update_coins.c, through the typed
+ * zcl_result API, cross-checked against the legacy coins wrappers.
  *
  * Coverage:
  *   - null/edge contracts (null coins, null undo, out-of-range pos,
  *     already-spent vout)
- *   - is_pruned / is_available / spend / cleanup match the wrappers
- *     across edge shapes (empty, all-null, mixed)
- *   - capture_undo roundtrip: spend then verify undo->txout, and
- *     on a fully-pruned coin the height/coinbase/version metadata
- *     was captured for the reorg path
- *   - compress_amount / decompress_amount roundtrip across a
- *     handpicked corpus of edge values (0, 1, 9, 10, 50e6, MAX_MONEY)
- *   - script_compress / script_decompress roundtrip for P2PKH, P2SH,
- *     P2PK compressed, and a non-recognised shape
+ *   - is_pruned / is_available / spend / cleanup match the wrappers across
+ *     edge shapes (empty, all-null, mixed)
+ *   - capture_undo roundtrip, including height/coinbase/version metadata on
+ *     a fully-pruned coin for the reorg path
+ *   - compress_amount / decompress_amount roundtrip over edge values (0, 1,
+ *     9, 10, 50e6, MAX_MONEY)
+ *   - script_compress / script_decompress roundtrip for P2PKH, P2SH, P2PK
+ *     compressed, and a non-recognised shape
  *   - script_compress_special_size lookup is total
  */
 
@@ -43,9 +40,8 @@
     else { printf("FAIL\n"); failures++; } \
 } while (0)
 
-/* Build a coins record with `n` outputs, each carrying `value` and a
- * trivial OP_CHECKSIG scriptPubKey. The caller owns the storage and
- * must call coins_free(). */
+/* Build a coins record with `n` outputs of `value` and a trivial
+ * OP_CHECKSIG scriptPubKey; the caller must call coins_free(). */
 static void mkcoins(struct coins *c, size_t n, int64_t value)
 {
     coins_init(c);

@@ -1,45 +1,24 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Golden-table staleness canary (item 2a of the golden immutable-history
- * evidence wiring lane).
+ * Golden-table staleness canary.
  *
- * test_sha3_windows.c and test_utxo_root_ladder.c both deliberately tolerate
- * an EMPTY compiled table (count == 0 is a legitimate "freshly regenerated
- * placeholder, not yet re-minted" state) — that flexibility is the right
- * call for those files' own purpose (exercising the verifier logic itself
- * regardless of how populated the table happens to be), but it means
- * neither file would notice a REGRESSION that silently dropped entries from
- * an already-populated table back toward zero: `make ci` would stay green
- * even though the corroboration coverage the tables exist to provide had
- * quietly evaporated.
- *
- * This group pins the CURRENT compiled coverage as a floor:
- *   - g_sha3_windows_count must equal the pinned expected count exactly —
- *     this table only changes when tools/gen_sha3_windows is deliberately
- *     re-run to extend coverage, an intentional, reviewable event where
- *     bumping the pin below costs one line.
- *   - g_utxo_root_ladder_count must be at or above a pinned minimum — this
- *     table is expected to grow over time as more cross-checked rungs are
- *     minted, so a floor (not an exact match) is the right assertion: it
- *     still catches a silent DROP to fewer rungs than today while never
- *     false-failing on legitimate growth.
- *
- * A regression that drops entries from either compiled table fails HERE,
- * in the hermetic default `make ci` / `make test` run — not just in the
- * NIGHTLY-only tip-coverage-lag check (see check_golden_freshness.sh /
- * `make simnet-nightly`), which additionally watches for the table simply
- * not being re-minted for a very long time even though nothing was ever
- * dropped. */
+ * test_sha3_windows.c and test_utxo_root_ladder.c tolerate an EMPTY compiled
+ * table, so neither notices entries silently dropped from a populated table.
+ * This group pins the current coverage as a floor:
+ *   - g_sha3_windows_count must equal the pinned count exactly (it only
+ *     changes when tools/gen_sha3_windows is deliberately re-run);
+ *   - g_utxo_root_ladder_count must be at or above a pinned minimum (it
+ *     grows as rungs are minted, so a floor never false-fails on growth).
+ * The NIGHTLY tip-coverage-lag check (check_golden_freshness.sh) additionally
+ * watches for a table that is never re-minted. */
 
 #include "test/test_core.h"
 
 #include "chain/sha3_windows.h"
 #include "chain/utxo_root_ladder.h"
 
-/* Pinned floor — bump ONLY when the corresponding golden table is
- * deliberately re-minted (tools/gen_sha3_windows / tools/gen_utxo_root_
- * ladder) to extend coverage. A silent drop below this value is exactly
- * the coverage-decay class this canary exists to catch. */
+/* Pinned floor: bump ONLY when the golden table is deliberately re-minted
+ * (tools/gen_sha3_windows / tools/gen_utxo_root_ladder). */
 #define SHA3_WINDOWS_EXPECTED_COUNT   3176
 #define UTXO_ROOT_LADDER_EXPECTED_MIN 1
 

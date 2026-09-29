@@ -1,9 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * Hermetic coverage for the pure formatting/classification/naive-JSON
- * primitives in contexts/explorer/views/src/format_helpers.c. Only zcl_format_zcl had
- * any dedicated coverage before this file (3 smoke-test lines inside
- * test_explorer.c) — the other 8 functions were completely untested:
+ * primitives in contexts/explorer/views/src/format_helpers.c:
  *
  *   zcl_format_time            gmtime_r wrapping + timestamp<=0/buf/max guards
  *   zcl_format_zcl_trimmed     trailing-zero trim down to a min_decimals floor
@@ -12,17 +10,9 @@
  *   zcl_is_all_digits          non-empty all-decimal-digit classifier
  *   zcl_json_extract_str/_int/_real   linear strstr-based JSON scalar pulls
  *
- * Every exact expectation below (in particular the zcl_format_zcl_trimmed
- * decimal-point-survives-at-min_decimals=0 behavior, and the naive JSON
- * extractors' exact-quote-and-colon framing that happens to make a
- * short-key-is-a-substring-of-a-longer-key collision safe) was
- * cross-checked by compiling format_helpers.c's logic standalone and
- * printing its real output before being baked in here — not hand-derived
- * from the header comment.
- *
- * Pure and deterministic: no clock, no RNG, no network, no live DB.
- * (zcl_format_time calls gmtime_r, but only on caller-supplied timestamps
- * with UTC output — no wall-clock read.) */
+ * Exact expectations were cross-checked against the real output. Pure and
+ * deterministic: no clock, RNG, network or DB (zcl_format_time only formats
+ * caller-supplied timestamps in UTC). */
 
 #include "test/test_core.h"
 

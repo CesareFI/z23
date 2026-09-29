@@ -45,12 +45,9 @@ static int test_hotswap_path_acceptance(void)
         ASSERT(hotswap_path_is_acceptable(okp, why, sizeof(why)));
         unlink(okp);
 
-        /* A real .so NOT under /tmp or a build/hotswap dir is rejected.
-         * Do not derive this fixture from HOME: isolated proof lanes put
-         * HOME under /tmp so parameter files and datadirs cannot touch the
-         * operator's home, which would turn the intended rejection path into
-         * an admitted /tmp path. /var/tmp is writable on the supported POSIX
-         * hosts but resolves outside /tmp on both Darwin and Linux. */
+        /* A real .so NOT under /tmp or a build/hotswap dir is rejected. Not
+         * derived from HOME (isolated lanes put HOME under /tmp); /var/tmp
+         * resolves outside /tmp on Darwin and Linux. */
         char rej[512];
         snprintf(rej, sizeof(rej), "/var/tmp/zcl_hs_reject_%d.so",
                  (int)getpid());
@@ -101,11 +98,9 @@ static bool manifest_self_test_ok(const struct zcl_hotswap_host *host,
     return true;
 }
 
-/* The `native.leaves` provider class (V4 host; see hotswap.h / hotswap_loader.c
- * hotswap_manifest_v2_validate()'s provider_id branch). source_identity /
- * probe_tools_csv below mirror the real native.leaves eligibility row in
- * engine/composition/hotswap_eligible.def (engine/controllers/src/status_native_handlers.c,
- * probe "core.status" — a param-free READ leaf, safe as a probe dispatch). */
+/* The `native.leaves` provider class: source_identity / probe_tools_csv mirror
+ * the real eligibility row in engine/composition/hotswap_eligible.def (probe
+ * "core.status", a param-free READ leaf). */
 static struct zcl_hotswap_manifest_v2 valid_leaf_manifest(void)
 {
     return (struct zcl_hotswap_manifest_v2) {
@@ -161,10 +156,9 @@ static int test_hotswap_leaf_manifest_v4_contract(void)
         ASSERT(!hotswap_manifest_v2_validate(&manifest, why, sizeof(why)));
         ASSERT(strstr(why, "unknown") != NULL);
 
-        /* Provider-agnostic provenance/eligibility checks (run after the
-         * provider branch): schema/struct bump, build-identity binding,
-         * source runtime-eligibility, probe metadata, digest shape, and the
-         * stateless/self-test contract. */
+        /* Provider-agnostic provenance/eligibility checks: schema/struct bump,
+         * build-identity binding, source eligibility, probe metadata, digest
+         * shape, and the stateless/self-test contract. */
         manifest = valid_leaf_manifest();
         manifest.schema_version++;
         ASSERT(!hotswap_manifest_v2_validate(&manifest, why, sizeof(why)));

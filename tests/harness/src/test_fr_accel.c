@@ -3,13 +3,9 @@
  * Differential parity oracle for the BLS12-381 Fr (4-limb) and Fp (6-limb)
  * Montgomery-multiply accelerators (core/modules/sapling/src/fr_avx512.c).
  *
- * BN254 Fq already had test_bn254_accel; Fr and Fp did not, even though every
- * Sapling Groth16 proof verifies through them and they carry the same
- * accept/reject consequence. The only in-tree parity check they had was
- * simd_bench's single vector, which is a smoke test, not an oracle. This is the
- * oracle: the accelerated path must be BIT-IDENTICAL to the portable __int128
+ * The accelerated path must be BIT-IDENTICAL to the portable __int128
  * reference on every input, or a Sapling proof could accept or reject
- * differently — a chain split.
+ * differently (a chain split).
  *
  * Corpus: boundary vectors (0, 1, p-1, p-2, and every cross product of them,
  * which is what exercises the final conditional subtraction in both directions)

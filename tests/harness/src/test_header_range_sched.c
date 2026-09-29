@@ -1,12 +1,12 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Tests for the NET-3 range-parallel header acquisition scheduler
+ * Tests for the range-parallel header acquisition scheduler
  * (engine/services/src/header_range_scheduler.c). Exercises the pure
  * decisions and the stateful span table directly — no live network:
  *
  *   1. hrs_should_parallelize gating: >=2 fast peers AND gap>batch;
  *      single-peer / small-gap / zero-batch keep the single-peer path
- *      (regression: behaves exactly like today).
+ *     .
  *   2. hrs_partition: checkpoint anchors produce disjoint, contiguous,
  *      fully-covering spans at exactly the anchor boundaries; sparse /
  *      absent anchors never fabricate a boundary hash we lack.
@@ -22,18 +22,11 @@
  *   7. The scheduler is inert without cooperation — it never touches the
  *      header-band contiguity machinery (band closure stays required):
  *      partition/assign are pure span bookkeeping over heights.
- *   8. Cross-peer sweep demotion (regression for the net-wiring defect
- *      fixed alongside this test): hrs_sweep_expired() is GLOBAL — one
- *      peer's periodic tick can sweep a DIFFERENT peer's expired span.
- *      The net wiring (msg_try_range_parallel_getheaders in msg_headers.c)
- *      used to check only "does the CALLING peer's own span own an
- *      expired deadline" and then throw away the sweep's stalled-owner
- *      buffer (NULL, 0) — so a healthy peer's tick silently freed another
- *      peer's expired span without ever reporting it for demotion. This
- *      proves the scheduler's sweep-report primitive that the fix now
- *      reads: a peer whose OWN span has not expired still sees another
- *      peer's expired span reported by the very sweep its own tick
- *      triggers, exactly once, while its own live span is untouched.
+ *   8. Cross-peer sweep demotion: hrs_sweep_expired() is global, so one
+ *      peer's periodic tick can sweep a different peer's expired span. The
+ *      sweep-report primitive must report that span's owner for demotion
+ *      exactly once, while the ticking peer's own live span is untouched
+ *      (msg_try_range_parallel_getheaders in msg_headers.c reads it).
  */
 
 #include "test/test_core.h"
@@ -50,7 +43,7 @@ int test_header_range_sched(void)
         /* >=2 fast peers AND gap>batch -> parallelize */
         ok = ok && hrs_should_parallelize(2, 5000, 2000);
         ok = ok && hrs_should_parallelize(8, 3000000, 2000);
-        /* single peer -> never (regression: exactly today's path) */
+        /* single peer -> never */
         ok = ok && !hrs_should_parallelize(1, 5000, 2000);
         ok = ok && !hrs_should_parallelize(0, 5000, 2000);
         /* gap within one batch -> not worth it */
@@ -245,7 +238,7 @@ int test_header_range_sched(void)
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
 
-    /* ── 8. Cross-peer sweep demotion (net-wiring defect regression) ── */
+    /* ── 8. Cross-peer sweep demotion ── */
     printf("header_range_sched: one peer's tick sweeps ANOTHER peer's "
            "expired span... ");
     {

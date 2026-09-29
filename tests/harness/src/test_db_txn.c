@@ -441,15 +441,8 @@ static int t_concurrent_different_dbs(void)
 
 /* ── 15. Induced mid-sequence failure rolls rows back ──────── */
 
-/* This is the test that backs the wave 3 wiring: we write several
- * rows inside a DB_TXN_SCOPE, "abort" by returning before the
- * explicit commit, and then assert that none of the writes are
- * visible to a subsequent read. It is the end-to-end check that the
- * scope actually rolls back real data, not just the event ledger.
- *
- * The helper writes three keys, commits zero of them, and falls out
- * of scope so auto_rollback fires. The caller then verifies every
- * key is absent. */
+/* Write several rows inside a DB_TXN_SCOPE and return before the explicit
+ * commit; auto_rollback must leave none of the writes visible. */
 static void induced_failure_scope(struct node_db *ndb)
 {
     DB_TXN_SCOPE(txn, ndb, "test.induced_failure");
@@ -525,11 +518,8 @@ static int t_rollback_on_induced_failure(void)
 
 /* ── 16. Scoped multi-row wipe rollback (recovery path shape) ── */
 
-/* Mirrors the shape of snapsync_begin_receive after wave-3 wiring:
- * a scoped wipe of an existing set of rows, followed by a simulated
- * mid-sequence abort before commit. The expected behaviour is that
- * the pre-existing rows are still there after rollback — the DELETE
- * never landed. */
+/* Scoped wipe of existing rows, then a simulated mid-sequence abort before
+ * commit: the pre-existing rows must survive the rollback. */
 static int t_rollback_preserves_pre_existing_rows(void)
 {
     int failures = 0;
@@ -621,8 +611,8 @@ static int t_failed_commit_rolls_back(void)
 
 /* A deferred-BEGIN writer whose read snapshot is invalidated by a
  * concurrent commit fails its first write with the extended
- * SQLITE_BUSY_SNAPSHOT code — the class the busy handler can never cure
- * (the 2026-07-27 catchup-poison drumbeat). The only cure is ROLLBACK +
+ * SQLITE_BUSY_SNAPSHOT code, which the busy handler cannot cure. The only
+ * cure is ROLLBACK +
  * a fresh BEGIN IMMEDIATE. Drives two real connections on one file-backed
  * WAL db (the class cannot occur on a single connection). */
 static int t_busy_snapshot_rollback_rebegin(void)
@@ -705,7 +695,7 @@ static int t_busy_snapshot_rollback_rebegin(void)
 
 /* ── 19. Poisoned COMMIT: abandoned write VM recovery ───────────── */
 
-/* The 2026-07-24→27 live incident: a write VM abandoned in RUN state on
+/* A write VM abandoned in RUN state on
  * the shared FULLMUTEX handle makes every COMMIT fail with "cannot commit
  * transaction - SQL statements in progress" until process restart.
  * node_db_commit's always-on seatbelt must walk the handle's statement
@@ -759,18 +749,12 @@ static int t_poisoned_commit_recovery(void)
 }
 
 
-/* ── after_commit: a hook that must not outrun durability ────────
+/* ── after_commit: a hook must not outrun durability ─────────────
  *
- * after_save fires when the STATEMENT steps. Inside a transaction that is
- * too early for anything an external observer can see, because a later
- * ROLLBACK erases the row the observer was already told about. These tests
- * drive a small fixture model through the real AR_ADHOC_SAVE lifecycle
- * against a real in-memory node_db, so the queue, the transaction boundary
- * hooks in node_db_begin/commit/rollback and AR_FINISH_SAVE are all under
- * test together rather than mocked.
- *
- * The rollback case is the whole point of the feature and is asserted first
- * among them: hooks queued and then rolled back must NOT fire. */
+ * after_save fires when the STATEMENT steps; inside a transaction a later
+ * ROLLBACK erases the row. These tests drive a fixture model through the real
+ * AR_ADHOC_SAVE lifecycle against an in-memory node_db. Hooks queued and then
+ * rolled back must NOT fire. */
 
 struct ac_row {
     int64_t id;

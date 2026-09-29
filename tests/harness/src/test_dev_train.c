@@ -104,9 +104,8 @@ static bool dvt_head(const char *dir, char sha[41])
     return true;
 }
 
-/* The fixture Makefile: dev.train.build's only non-git dependency. Its
- * three targets are exactly the ones the handler calls; each is a no-op so
- * the fixture never needs the real tree's vendor/doc machinery. */
+/* The fixture Makefile: worktree-prime, docs-capability-inventory and
+ * docs-api-reference as no-ops, the only targets dev.train.build calls. */
 static const char *const dvt_makefile =
     "worktree-prime:\n\t@true\n\n"
     "docs-capability-inventory:\n\t@true\n\n"
@@ -197,8 +196,7 @@ int test_dev_train(void)
 {
     int failures = 0;
     /* dev.train.build/check run `make` through zcl_devloop_process_run(),
-     * which refuses to exec anything in a test binary unless the fixture
-     * explicitly opts in — this group's whole point is proving that path. */
+     * which refuses to exec in a test binary unless the fixture opts in. */
     (void)setenv("ZCL_DEVLOOP_TEST_PROCESS", "1", 1);
     char parent[512];
     test_make_tmpdir(parent, sizeof(parent), "dev_train", "fixture");

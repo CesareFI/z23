@@ -3,10 +3,8 @@
  *
  * Unit tests for domain/consensus/subsidy.{c,h}.
  *
- * These tests pin the pure block-subsidy arithmetic. They DO NOT go
- * through the chain/ wrapper: they exercise the typed zcl_result API
- * directly and cross-check the result against the legacy
- * get_block_subsidy() to prove the extraction was behaviour-preserving.
+ * Pins the pure block-subsidy arithmetic through the typed zcl_result API,
+ * cross-checked against the legacy get_block_subsidy().
  */
 
 #include "test/test_core.h"
@@ -82,9 +80,8 @@ int test_domain_consensus_subsidy(void)
                   r.ok && s == (int64_t)(12.5 * COIN));
     }
 
-    /* Just past buttercup activation (mainnet activates at 706560
-     * historically; we don't hardcode the activation height here, we
-     * sample 707001 to land in the post-buttercup regime). */
+    /* Just past buttercup activation: sample 707001 to land in the
+     * post-buttercup regime without hardcoding the activation height. */
     {
         int64_t s = -1;
         struct zcl_result r = domain_consensus_block_subsidy(707001, params, &s);
@@ -92,10 +89,8 @@ int test_domain_consensus_subsidy(void)
                   r.ok && s > 0 && s < (int64_t)(12.5 * COIN));
     }
 
-    /* --- cross-check: the domain function must match the legacy
-     * wrapper for every sampled height. This is the regression seal:
-     * if anyone "improves" one side without the other, the test
-     * shouts. We sample across the entire interesting range. */
+    /* --- cross-check: the domain function matches the legacy wrapper for
+     * every sampled height across the interesting range (regression seal). */
     {
         int heights[] = {
             0, 1, 100, 1000, 10000, 19999, 20000, 100000, 500000,

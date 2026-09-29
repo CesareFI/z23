@@ -2,24 +2,15 @@
  *
  * Hermetic coverage for the one hex codec, platform/modules/base/include/base/hex.h.
  *
- * This file deliberately hand-writes every expected hex string instead of
- * deriving it — checking zcl_hex_decode() against zcl_hex_encode() would
- * pass just as happily if both were wrong in the same direction. The same
- * reason lib/test is excluded from the check-hex-codec-single scan.
+ * Expected hex strings are hand-written, not derived, so a symmetric encode/decode
+ * bug cannot pass. Pinned behavior:
  *
- * What is pinned here is the reconciliation of the twelve private codecs
- * this header replaced, which disagreed with each other:
- *
- *   - encode is LOWERCASE and always NUL-terminates (all twelve agreed;
- *     this is what is on disk and in the database, so it must not move);
- *   - decode is EXACT-LENGTH — an odd length, a short string and a long
- *     string are all rejected, where several copies never looked;
+ *   - encode is LOWERCASE and always NUL-terminates (the on-disk spelling);
+ *   - decode is EXACT-LENGTH: an odd, short or long string is rejected;
  *   - decode rejects any character outside its alphabet;
  *   - zcl_hex_decode() accepts A-F, zcl_hex_decode_lower() does not, so a
- *     value stored as a filename has exactly one spelling;
- *   - a FAILED decode zeroes the caller's buffer and writes nothing past
- *     `want`, because at least one caller ignored the return value and read
- *     the buffer anyway.
+ *     filename value has exactly one spelling;
+ *   - a FAILED decode zeroes the caller's buffer and writes nothing past `want`.
  *
  * Pure and deterministic: no clock, no RNG, no I/O, no live DB. */
 

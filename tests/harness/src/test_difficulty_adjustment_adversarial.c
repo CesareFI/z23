@@ -1,53 +1,27 @@
 /* SPDX-License-Identifier: Apache-2.0
  * Copyright 2026 Rhett Creighton
  *
- * test_difficulty_adjustment_adversarial — adversarial / security coverage of
- * the ZClassic Digishield-style difficulty-adjustment algorithm (DAA) and the
- * nBits<->target compact encoding. A wrong DAA is a consensus fork AND a
- * timestamp-manipulation attack surface, so these tests attack the retarget
- * from the angles a hostile miner would use:
+ * test_difficulty_adjustment_adversarial: adversarial coverage of the
+ * Digishield-style DAA and nBits compact encoding, driving the full
+ * GetNextWorkRequired() over a synthetic block_index chain against an
+ * independent scalar reference:
  *
- *   1. RETARGET CLAMPS. A suspiciously-fast run of blocks (timestamps packed
- *      together) must NOT raise difficulty beyond the per-adjustment max-up
- *      clamp; a suspiciously-slow run must NOT drop below the max-down clamp.
- *      We drive the full GetNextWorkRequired() over a synthetic linked
- *      block_index chain and assert the result equals an INDEPENDENT scalar
- *      reference (64-bit div-then-mul, hand-computed clamped timespan) — NOT
- *      by calling CalculateNextWorkRequired(). Each case also computes the
- *      UNCLAMPED value and asserts it differs, proving the clamp is
- *      load-bearing (a boundary flip changes the outcome).
+ *   1. RETARGET CLAMPS: fast timestamps cannot raise difficulty past the
+ *      max-up clamp, slow ones cannot drop past max-down; each case also
+ *      asserts the unclamped value differs, so the clamp is load-bearing.
+ *   2. powLimit FLOOR: difficulty never eases below powLimit, including via
+ *      IncreaseDifficultyBy() with a too-easy nBits.
+ *   3. nBits COMPACT ENCODING: SetCompact/GetCompact round-trips; a
+ *      non-canonical nBits normalizes; negative-flagged and overflow nBits
+ *      are rejected by CheckProofOfWork().
+ *   4. TIMESTAMP-MANIPULATION RESISTANCE: the retarget uses median-time-past,
+ *      so shoving the tip timestamp to +/- extremes changes nothing.
+ *   5. MIN-DIFFICULTY RULE NOT ON MAINNET: a wildly-late block takes the
+ *      averaging path, not powLimit.
  *
- *   2. powLimit FLOOR. Difficulty can never ease below powLimit: a computation
- *      that would exceed powLimit is clamped to powLimit, and an attacker-
- *      supplied too-easy nBits handed to IncreaseDifficultyBy() is clamped to
- *      powLimit. The companion "fast" case (result below powLimit) is left
- *      un-clamped, proving the floor bites only when exceeded.
- *
- *   3. nBits COMPACT ENCODING. SetCompact/GetCompact round-trips on canonical
- *      targets; a non-canonical nBits normalizes to a hand-computed canonical
- *      form; a negative-flagged nBits and an overflow nBits (both manipulated-
- *      difficulty inputs) are rejected by the public CheckProofOfWork().
- *
- *   4. TIMESTAMP-MANIPULATION RESISTANCE. The retarget consumes median-time-past
- *      of the window endpoints, not raw tip time, so a single manipulated tip
- *      timestamp (future or past) cannot move the target to an attacker-chosen
- *      value. We assert GetNextWorkRequired is byte-identical before/after the
- *      tip timestamp is shoved to +/- extremes.
- *
- *   5. MIN-DIFFICULTY RULE NOT ON MAINNET. The testnet min-difficulty escape
- *      (nPowAllowMinDifficultyEnabled) is OFF on mainnet params, and functionally
- *      a wildly-late block at a normal mainnet height (outside every upgrade
- *      window) does NOT return powLimit — it takes the averaging path.
- *
- * Pure + deterministic: synthetic block_index chains, fixed times, no clock /
- * RNG / IO. Selects mainnet params and restores the prior network on exit.
- *
- * This EXTENDS (does not duplicate) test_domain_consensus_pow (regression seal
- * vs the wrappers), test_domain_consensus_pow_seal (CheckProofOfWork boundary
- * matrix), and test_pow_diffadj_precedence (the testnet fork-window precedence
- * pin). Here the reference is computed independently in scalar space so a drift
- * in the clamp direction, the /4 damping, or the div-then-mul order diverges.
- */
+ * Pure and deterministic; selects mainnet params and restores the prior
+ * network on exit. Extends test_domain_consensus_pow,
+ * test_domain_consensus_pow_seal and test_pow_diffadj_precedence. */
 
 #include "test/test_core.h"
 
@@ -70,18 +44,13 @@
     else { printf("FAIL\n"); failures++; }                       \
 } while (0)
 
-/* Long enough that BOTH the tip and the window-start (pindexLast walked back
- * nPowAveragingWindow==17 hops) have a full 11-deep median-time-past window:
- * pindexFirst sits at index LEN-18, which must be >= 10 -> LEN >= 28. Extra
- * margin keeps the arithmetic identities below exact. */
+/* Long enough that the tip and the window-start (17 hops back) both have a
+ * full 11-deep median-time-past window: LEN >= 28, with margin. */
 #define DAA_CHAIN_LEN 40
 
-/* Small target so the retarget math (target/avgTimespan*actualTimespan) fits
- * in 64 bits and can be reproduced with a scalar reference. 0x0700ffff decodes
- * to 0xffff << 32 (~2^48), FAR tighter than any network powLimit (~2^243), so
- * the powLimit clamp never fires in the clamp-boundary cases — isolating the
- * timespan clamp under test. (Verified canonical: get_compact(0xffff<<32) ==
- * 0x0700ffff.) */
+/* Small target so the retarget math fits in 64 bits: 0x0700ffff decodes to
+ * 0xffff << 32 (~2^48), far below powLimit (~2^243), so the powLimit clamp
+ * never fires in the clamp-boundary cases. */
 #define DAA_SMALL_NBITS 0x0700ffffu
 
 static enum chain_network daa_current_net(void)
@@ -92,11 +61,9 @@ static enum chain_network daa_current_net(void)
     return CHAIN_MAIN;
 }
 
-/* Build DAA_CHAIN_LEN linked block_index nodes ending at height `tip_height`,
- * uniformly spaced `spacing` seconds apart, all with nBits == DAA_SMALL_NBITS.
- * chain[LEN-1] is the tip (pindexLast). With uniform spacing the endpoints'
- * median-time-past differ by exactly nPowAveragingWindow*spacing (see the
- * derivation in the clamp cases). */
+/* Build DAA_CHAIN_LEN linked nodes ending at `tip_height`, `spacing` seconds
+ * apart, all nBits == DAA_SMALL_NBITS; chain[LEN-1] is pindexLast. Endpoint
+ * median-time-past differs by nPowAveragingWindow*spacing. */
 static void daa_build_chain(struct block_index chain[DAA_CHAIN_LEN],
                             int tip_height, int64_t spacing, int64_t base_time)
 {
@@ -110,14 +77,11 @@ static void daa_build_chain(struct block_index chain[DAA_CHAIN_LEN],
     }
 }
 
-/* Independent scalar reference: reproduce the retarget for a 64-bit-fits target.
- * Mirrors the algorithm's arithmetic (damp toward avg by /4, clamp the actual
- * timespan to [min,max], then bnNew = target/avgTs*actTs) WITHOUT calling the
- * production DAA. `raw_timespan` is last-first BEFORE damping. If `clamp` is
- * false the timespan is used un-clamped (for the boundary-flip contrast). The
- * resulting integer is encoded with arith_uint256_get_compact (a primitive, not
- * the DAA). Returns the expected compact nBits and, via out_actts, the actual
- * timespan actually used. */
+/* Independent scalar reference for a 64-bit-fits target: damp toward avg by
+ * /4, clamp the timespan to [min,max] (unless `clamp` is false), then
+ * bnNew = target/avgTs*actTs, encoded with arith_uint256_get_compact.
+ * `raw_timespan` is last-first before damping. Returns the expected nBits;
+ * out_actts receives the timespan used. */
 static uint32_t daa_ref_retarget(uint64_t target, int64_t raw_timespan,
                                  int64_t avgTs, int64_t minTs, int64_t maxTs,
                                  bool clamp, int64_t *out_actts)
@@ -165,9 +129,8 @@ int test_difficulty_adjustment_adversarial(void)
     DAA_CHECK("small target far below powLimit (isolates timespan clamp)",
               arith_uint256_compare(&small_target_a, &pow_limit_arith) < 0);
 
-    /* Height 100000: pre-Buttercup (150s spacing) -> avgTs=2550, min=2142,
-     * max=3366. Outside every upgrade window and min-diff disabled, so
-     * GetNextWorkRequired takes the pure averaging path. */
+    /* Height 100000: pre-Buttercup (150s spacing), avgTs=2550, min=2142,
+     * max=3366; outside every upgrade window, so the pure averaging path. */
     const int tip_height = 100000;
     const int next_height = tip_height + 1;
     const int64_t spacing = consensus_pow_target_spacing(params, next_height);
@@ -179,9 +142,8 @@ int test_difficulty_adjustment_adversarial(void)
     DAA_CHECK("mainnet@100001: minTs==2142 (avg*84/100)", minTs == 2142);
     DAA_CHECK("mainnet@100001: maxTs==3366 (avg*132/100)", maxTs == 3366);
 
-    /* ─── 1a. FAST run: max-UP clamp. Blocks 1s apart -> raw window timespan
-     * 17*1=17s. Damped 2550+(17-2550)/4 = 1917 < minTs -> clamped to 2142.
-     * Difficulty must NOT rise past the max-up clamp. ─────────────────────── */
+    /* ─── 1a. FAST run: max-UP clamp. Blocks 1s apart, raw 17s; damped
+     * 2550+(17-2550)/4 = 1917 < minTs, clamped to 2142. ───────────────── */
     {
         struct block_index chain[DAA_CHAIN_LEN];
         daa_build_chain(chain, tip_height, /*spacing=*/1, 1500000000LL);
@@ -208,9 +170,8 @@ int test_difficulty_adjustment_adversarial(void)
                   ref_clamped != ref_unclamped);
     }
 
-    /* ─── 1b. SLOW run: max-DOWN clamp. Blocks 400s apart -> raw 17*400=6800s.
-     * Damped 2550+(6800-2550)/4 = 3612 > maxTs -> clamped to 3366. Difficulty
-     * must NOT drop below the max-down clamp. ─────────────────────────────── */
+    /* ─── 1b. SLOW run: max-DOWN clamp. Blocks 400s apart, raw 6800s; damped
+     * 2550+(6800-2550)/4 = 3612 > maxTs, clamped to 3366. ─────────────── */
     {
         struct block_index chain[DAA_CHAIN_LEN];
         daa_build_chain(chain, tip_height, /*spacing=*/400, 1500000000LL);
@@ -235,11 +196,9 @@ int test_difficulty_adjustment_adversarial(void)
                   ref_clamped != ref_unclamped);
     }
 
-    /* ─── 2. powLimit FLOOR. bnAvg == powLimit. A slow window (clamps to maxTs)
-     * would push bnNew = powLimit*maxTs/avgTs > powLimit -> must clamp to
-     * powLimit. A fast window (clamps to minTs) yields powLimit*minTs/avgTs <
-     * powLimit -> left un-clamped (harder), proving the floor bites only when
-     * exceeded. Reference = get_compact(powLimit), computed independently. ─── */
+    /* ─── 2. powLimit FLOOR. bnAvg == powLimit: a slow window (maxTs) would
+     * exceed powLimit and must clamp to it; a fast window (minTs) stays
+     * un-clamped. Reference = get_compact(powLimit). ─────────────────── */
     {
         int64_t slow_last = 1000000 + 100 * avgTs;   /* wildly slow -> clamps to maxTs */
         uint32_t got_slow = CalculateNextWorkRequired(
@@ -253,9 +212,8 @@ int test_difficulty_adjustment_adversarial(void)
         DAA_CHECK("FLOOR: under-limit retarget NOT clamped (harder than powLimit)",
                   got_fast != powlimit_bits);
 
-        /* IncreaseDifficultyBy: an attacker-supplied too-EASY nBits (target far
-         * above powLimit) divided by 1 stays above powLimit -> clamped to the
-         * floor. 0x2000ffff decodes to ~2^248 > powLimit(~2^243). */
+        /* IncreaseDifficultyBy: a too-EASY nBits (0x2000ffff, ~2^248 >
+         * powLimit ~2^243) is clamped to the floor. */
         struct arith_uint256 easy_a;
         arith_uint256_set_compact(&easy_a, 0x2000ffffu, NULL, NULL);
         DAA_CHECK("FLOOR: crafted easy nBits really exceeds powLimit",
@@ -294,9 +252,8 @@ int test_difficulty_adjustment_adversarial(void)
                       re == 0x04123400u && re != 0x05001234u && !neg && !ovf);
         }
 
-        /* 3c. Negative-flagged nBits: sign bit set with non-zero word and a
-         * non-zero decoded target. set_compact flags it; CheckProofOfWork
-         * rejects it regardless of the hash (a manipulated-difficulty input). */
+        /* 3c. Negative-flagged nBits: set_compact flags it and
+         * CheckProofOfWork rejects it regardless of the hash. */
         {
             struct arith_uint256 t;
             bool neg = false, ovf = false;
@@ -323,11 +280,9 @@ int test_difficulty_adjustment_adversarial(void)
         }
     }
 
-    /* ─── 4. TIMESTAMP-MANIPULATION RESISTANCE. GetNextWorkRequired consumes
-     * median-time-past of the window endpoints, so a single manipulated tip
-     * timestamp — shoved far into the future OR into the past — cannot move the
-     * retarget to an attacker-chosen value. Result must be byte-identical to the
-     * honest baseline. ───────────────────────────────────────────────────── */
+    /* ─── 4. TIMESTAMP-MANIPULATION RESISTANCE. The retarget uses
+     * median-time-past of the window endpoints, so a manipulated tip
+     * timestamp leaves the result byte-identical to the baseline. ─────── */
     {
         struct block_index chain[DAA_CHAIN_LEN];
         daa_build_chain(chain, tip_height, /*spacing=*/spacing, 1500000000LL);
@@ -340,9 +295,8 @@ int test_difficulty_adjustment_adversarial(void)
 
         unsigned int baseline = GetNextWorkRequired(pindexLast, &hdr, params);
 
-        /* Attacker inflates the tip block's own timestamp to the far future.
-         * In the 11-value median window the outlier only becomes the max, so the
-         * median (6th value) is unchanged -> MTP(last) unchanged -> no effect. */
+        /* A far-future tip timestamp only becomes the max of the 11-value
+         * median window; the median is unchanged. */
         uint32_t honest_tip = chain[DAA_CHAIN_LEN - 1].nTime;
         chain[DAA_CHAIN_LEN - 1].nTime = 0xfffffff0u;   /* year ~2106, extreme */
         unsigned int got_future = GetNextWorkRequired(pindexLast, &hdr, params);
@@ -363,19 +317,17 @@ int test_difficulty_adjustment_adversarial(void)
                   baseline != powlimit_bits);
     }
 
-    /* ─── 5. MIN-DIFFICULTY RULE IS NOT ACTIVE ON MAINNET. The testnet escape
-     * hatch is disabled on mainnet, and functionally a wildly-late block at a
-     * normal mainnet height (outside every upgrade window) takes the averaging
-     * path — it does NOT return powLimit. ─────────────────────────────────── */
+    /* ─── 5. MIN-DIFFICULTY RULE IS NOT ACTIVE ON MAINNET: a wildly-late
+     * block at a normal height takes the averaging path, not powLimit. ─── */
     {
         DAA_CHECK("MINDIFF: mainnet nPowAllowMinDifficultyEnabled == false",
                   params->nPowAllowMinDifficultyEnabled == false);
         DAA_CHECK("MINDIFF: mainnet nPowAllowMinDifficultyBlocksAfterHeight == -1",
                   params->nPowAllowMinDifficultyBlocksAfterHeight == -1);
 
-        /* Height 1,000,000: past DIFFADJ [585322,585339) and BUTTERCUP
-         * [707000,707017) windows, so scaleDifficultyAtUpgradeFork guards fail
-         * and the fork-window min-diff ramp is skipped. */
+        /* Height 1,000,000 is past the DIFFADJ [585322,585339) and BUTTERCUP
+         * [707000,707017) windows, so the fork-window min-diff ramp is
+         * skipped. */
         const int md_tip = 1000000;
         const int md_next = md_tip + 1;
         const int64_t md_spacing = consensus_pow_target_spacing(params, md_next);

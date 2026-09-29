@@ -1,16 +1,13 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * Purpose: prove the determinism measurement detects what it claims to detect
- * AND does not accuse what it should not — the direction that decides whether
- * anyone leaves it switched on.
+ * AND does not accuse what it should not.
  *
- * A determinism checker with false positives is switched off within a week, so
- * the false-accusation direction is proved explicitly here and not merely
- * assumed: the DETERMINISTIC fixture emits a transcript whose bytes GENUINELY
- * differ between runs — different durations, different temp paths, different
- * pointer values, a different environment around it — and the verdict-vector
- * digest must be bitwise identical anyway. A tool that hashed the transcript
- * would fail that case, which is exactly why this one does not. */
+ * A determinism checker with false positives is switched off, so the
+ * false-accusation direction is proved explicitly: the DETERMINISTIC
+ * fixture emits a transcript whose bytes genuinely differ between runs
+ * (durations, temp paths, pointers, environment) and the verdict-vector
+ * digest must be identical anyway. */
 
 #include "test/test_core.h"
 
@@ -25,9 +22,8 @@
 #include <string.h>
 
 /* ── transcript fixtures ──────────────────────────────────────────────────
- * Every fixture writes a REAL test_parallel replay section: the same header
- * shape and the same "<name>... <outcome>" lines the harness in
- * test/test_core.h prints. Nothing here is a mock of the format. */
+ * Every fixture writes a real test_parallel replay section: the header shape
+ * and "<name>... <outcome>" lines the harness in test/test_core.h prints. */
 
 #define FIXTURE_CAP 8192
 
@@ -54,8 +50,7 @@ static void fx_add(struct fixture *f, const char *fmt, ...)
     if (n > 0 && (size_t)n < FIXTURE_CAP - f->len) f->len += (size_t)n;
 }
 
-/* Run a fixture's text through the real scanner and return the digest of the
- * ONE group it contains. */
+/* Run a fixture's text through the real scanner and return the digest of its one group. */
 struct one_group {
     bool found;
     struct zcl_det_group_digest g;
@@ -72,8 +67,7 @@ static bool one_group_sink(void *ctx, const struct zcl_det_group_digest *g)
 static bool digest_of(const struct fixture *f, struct zcl_det_group_digest *out)
 {
 #if defined(_WIN32)
-    /* MinGW's UCRT has no fmemopen().  Exercise the same scanner with the
-     * exact fixture bytes through an anonymous test stream instead. */
+    /* MinGW's UCRT has no fmemopen(); use an anonymous test stream instead. */
     FILE *in = tmpfile();
     if (!in) return false;
     if (fwrite(f->text, 1, f->len, in) != f->len || fflush(in) != 0 ||
@@ -95,9 +89,8 @@ static bool digest_of(const struct fixture *f, struct zcl_det_group_digest *out)
     return true;
 }
 
-/* The DETERMINISTIC fixture. Its verdict vector is fixed; everything else
- * about its transcript — the wall-clock duration in the header, a temp path,
- * a pointer, a pid, an elapsed line — is made to vary on purpose. */
+/* The DETERMINISTIC fixture. Its verdict vector is fixed; the rest of its
+ * transcript (duration, temp path, pointer, pid, elapsed line) varies on purpose. */
 static void emit_deterministic(struct fixture *f, int nonce)
 {
     fx_reset(f);
@@ -113,8 +106,7 @@ static void emit_deterministic(struct fixture *f, int nonce)
     fx_add(f, "worker pid %d finished\n", 4000 + nonce);
 }
 
-/* The three failures a verdict vector must catch, each one mutation away from
- * emit_deterministic. */
+/* The three failures a verdict vector must catch, each one mutation from emit_deterministic. */
 static void emit_outcome_flipped(struct fixture *f)
 {
     emit_deterministic(f, 0);
@@ -151,9 +143,8 @@ static void emit_check_dropped(struct fixture *f)
     fx_add(f, "delta check... OK\n");
 }
 
-/* The NON-DETERMINISTIC fixture: it really reads the environment, the way the
- * defect that motivated this module did. Under CC_SET it asserts one thing;
- * with CC absent it asserts another. */
+/* The NON-DETERMINISTIC fixture: it reads the environment. Under CC_SET it
+ * asserts one thing; with CC absent it asserts another. */
 static void emit_env_sensitive(struct fixture *f)
 {
     const char *cc = getenv("ZCL_DET_FIXTURE_CC");
@@ -187,8 +178,7 @@ static int test_vector_detects_the_three_failures(void)
         emit_order_swapped(&f);
         ASSERT(digest_of(&f, &reordered));
         ASSERT(memcmp(base.digest, reordered.digest, ZCL_DET_DIGEST_LEN) != 0);
-        /* Same multiset of (name, outcome) pairs, different order. A digest
-         * that folded the pairs in unordered would miss this entirely. */
+        /* Same multiset of (name, outcome) pairs, different order; an unordered fold would miss it. */
         ASSERT_EQ(reordered.check_count, base.check_count);
 
         emit_check_dropped(&f);
@@ -210,8 +200,7 @@ static int test_no_false_accusation(void)
         struct zcl_det_group_digest da, db;
         emit_deterministic(&a, 1);
         emit_deterministic(&b, 9);
-        /* The transcripts genuinely differ — if they did not, this would prove
-         * nothing at all. */
+        /* The transcripts genuinely differ (else this proves nothing). */
         ASSERT(a.len != b.len || memcmp(a.text, b.text, a.len) != 0);
         ASSERT(digest_of(&a, &da));
         ASSERT(digest_of(&b, &db));
@@ -236,12 +225,11 @@ static int test_failure_values_are_excluded(void)
         fx_add(&b, "case... FAIL at tests/harness/src/test_x.c:42 (p != q): 0x5643aaaa != 0x5643bbbb\n");
         ASSERT(digest_of(&a, &da));
         ASSERT(digest_of(&b, &db));
-        /* Two runs of the SAME failing assertion, printing two ASLR-dependent
-         * addresses. Same assertion, same digest — otherwise every failing
-         * pointer comparison in the tree would be reported non-deterministic. */
+        /* Two runs of the same failing assertion printing different ASLR
+         * addresses must share a digest. */
         ASSERT(memcmp(da.digest, db.digest, ZCL_DET_DIGEST_LEN) == 0);
 
-        /* A DIFFERENT assertion in the same group must still move it. */
+        /* A different assertion in the same group must still move it. */
         struct fixture c;
         fx_reset(&c);
         fx_add(&c, "==================== test_x (FAIL, 1s) ====================\n");
@@ -254,10 +242,9 @@ static int test_failure_values_are_excluded(void)
 }
 
 /* ── 2b. the split-across-lines convention ────────────────────────────────
- * TEST_CASE prints "<name>... " with no newline, so a case that logs while it
- * runs puts its own output between the name and the outcome word. Measured on
- * this tree, 91 of 1013 dispatched groups do exactly that; a reader that only
- * accepted "<name>... OK" reported every one of them as asserting nothing. */
+ * TEST_CASE prints "<name>... " with no newline, so a case that logs while
+ * it runs puts its own output between the name and the outcome word (about
+ * 9% of dispatched groups); the reader must accept that form. */
 
 static int test_outcome_on_a_later_line(void)
 {
@@ -275,8 +262,7 @@ static int test_outcome_on_a_later_line(void)
         ASSERT(digest_of(&a, &da));
         ASSERT_EQ(da.check_count, 2u);
 
-        /* The interleaved chatter is exactly where a duration or a temp path
-         * lives, so changing it must not move the digest. */
+        /* Interleaved chatter is where a duration or temp path lives; it must not move the digest. */
         fx_reset(&b);
         fx_add(&b, "==================== test_late (PASS, 9s) ====================\n");
         fx_add(&b, "alpha... [boot]   sqlite.quick_check           7ms\n");
@@ -288,8 +274,7 @@ static int test_outcome_on_a_later_line(void)
         ASSERT_EQ(db.check_count, 2u);
         ASSERT(memcmp(da.digest, db.digest, ZCL_DET_DIGEST_LEN) == 0);
 
-        /* And the same two checks written the ordinary way agree with them:
-         * the two conventions are one vector, not two. */
+        /* The same two checks written the ordinary way agree: one vector, not two. */
         struct fixture plain;
         struct zcl_det_group_digest dp;
         fx_reset(&plain);
@@ -312,8 +297,7 @@ static int test_stream_refuses_to_guess(void)
         uint32_t count = 0;
         uint64_t dangling = 0;
 
-        /* A chatter line containing the separator while a check is OPEN must
-         * not re-open one and take its outcome. */
+        /* A chatter line containing the separator while a check is open does not re-open one. */
         zcl_det_stream_begin(&s);
         ASSERT(zcl_det_stream_line(&s, "alpha... starting\n"));
         ASSERT(zcl_det_stream_line(&s, "loading tables... please wait\n"));
@@ -330,7 +314,7 @@ static int test_stream_refuses_to_guess(void)
         ASSERT_EQ(count, 0u);
         ASSERT_EQ(dangling, 0llu);
 
-        /* Prose that merely STARTS with an outcome word does not close one. */
+        /* Prose that merely starts with an outcome word does not close a check. */
         zcl_det_stream_begin(&s);
         ASSERT(zcl_det_stream_line(&s, "alpha... working\n"));
         ASSERT(zcl_det_stream_line(&s, "OK: 12 rows loaded\n"));
@@ -340,17 +324,14 @@ static int test_stream_refuses_to_guess(void)
         /* Opened and never closed: DANGLING, counted, never invented. */
         ASSERT_EQ(dangling, 1llu);
 
-        /* A group that only prints progress and never an outcome yields an
-         * EMPTY vector — the honest no-vector exclusion, not a fabricated
-         * verdict. */
+        /* A group that prints only progress yields an empty vector, the honest no-vector exclusion. */
         zcl_det_stream_begin(&s);
         ASSERT(zcl_det_stream_line(&s, "peer ingest + retention pruning...\n"));
         ASSERT(zcl_det_stream_line(&s, "consensus-view fold: modal tip...\n"));
         ASSERT(zcl_det_stream_finish(&s, digest, &count, &dangling));
         ASSERT_EQ(count, 0u);
 
-        /* A complete line while a check is open drops the open one rather
-         * than pairing it with the wrong result. */
+        /* A complete line while a check is open drops the open one rather than mispairing it. */
         zcl_det_stream_begin(&s);
         ASSERT(zcl_det_stream_line(&s, "alpha... working\n"));
         ASSERT(zcl_det_stream_line(&s, "bravo... OK\n"));
@@ -389,9 +370,7 @@ static int test_parser_ignores_chatter(void)
         ASSERT(zcl_det_parse_check_line("t... UNOBSERVED (no mingw)\n", &c));
         ASSERT_EQ((int)c.outcome, (int)ZCL_DET_OUTCOME_UNOBSERVED);
 
-        /* Chatter that must NOT be read as a verdict. Each of these appearing
-         * in a vector would be a false accusation waiting to happen, because
-         * the tail of each varies run to run. */
+        /* Chatter that must not be read as a verdict (each tail varies run to run). */
         ASSERT(!zcl_det_parse_check_line("elapsed... 12.4 ms\n", &c));
         ASSERT(!zcl_det_parse_check_line("loading... OKAY, moving on\n", &c));
         ASSERT(!zcl_det_parse_check_line("... OK\n", &c));
@@ -440,18 +419,16 @@ static int test_buckets_partition(void)
         const size_t n = 4;
         struct zcl_det_partition part = {0};
         size_t cases = 0;
-        /* Slot 3 is the only SCHEDULING profile, so a split confined to it is
-         * the one shape that may come back TIMING_SENSITIVE. Slots 1 and 2 are
-         * REPEAT and ENVIRONMENT, and either of them in a split forces the
-         * stronger NONDETERMINISTIC claim. */
+        /* Slot 3 is the only scheduling profile, so a split confined to it
+         * may be TIMING_SENSITIVE; slots 1 and 2 (REPEAT, ENVIRONMENT) force NONDETERMINISTIC. */
         const enum zcl_det_perturbation order[4] = {
             ZCL_DET_P_BASE, ZCL_DET_P_BASE_REPEAT,
             ZCL_DET_P_CC_SET, ZCL_DET_P_LOAD_HIGH,
         };
 
         /* Every observed mask x every assignment of two distinct digests to
-         * the observed slots x an empty/non-empty vector per slot. 2^4 masks
-         * x 2^4 digest choices x 2^4 vector-presence choices = 4096 shapes. */
+         * the observed slots x an empty/non-empty vector per slot
+         * (2^4 x 2^4 x 2^4 = 4096 shapes). */
         for (unsigned mask = 0; mask < 16u; mask++) {
             for (unsigned dsel = 0; dsel < 16u; dsel++) {
                 for (unsigned vsel = 0; vsel < 16u; vsel++) {
@@ -485,9 +462,8 @@ static int test_buckets_partition(void)
                         ASSERT(v.split_mask != 0);
                     else
                         ASSERT_EQ(v.split_mask, 0u);
-                    /* TIMING_SENSITIVE is earned ONLY when scheduling is the
-                     * entire explanation. If any non-scheduling slot split,
-                     * the verdict must be the stronger one. */
+                    /* TIMING_SENSITIVE only when scheduling is the entire
+                     * explanation; any non-scheduling split forces the stronger verdict. */
                     if (v.klass == ZCL_DET_CLASS_TIMING_SENSITIVE) {
                         for (size_t i = 1; i < n; i++) {
                             if (!(v.split_mask & ((uint32_t)1u << i))) continue;
@@ -503,9 +479,7 @@ static int test_buckets_partition(void)
         ASSERT_EQ(cases, (size_t)4096);
         ASSERT_EQ(part.total, cases);
         ASSERT(zcl_det_partition_is_exact(&part));
-        /* All four buckets are actually reachable, or the partition would be
-         * trivially exact for the wrong reason. TIMING_SENSITIVE especially:
-         * a rule that never fires would make the separation a comment. */
+        /* All four buckets are reachable (TIMING_SENSITIVE especially), or the partition is trivially exact. */
         ASSERT(part.deterministic > 0);
         ASSERT(part.nondeterministic > 0);
         ASSERT(part.timing_sensitive > 0);
@@ -532,8 +506,7 @@ static int test_unknown_is_never_folded(void)
         ASSERT_EQ((int)v.klass, (int)ZCL_DET_CLASS_UNKNOWN);
         ASSERT_EQ((int)v.reason, (int)ZCL_DET_UNKNOWN_NOT_RUN);
 
-        /* Ran everywhere, asserted nothing anywhere: an EXCLUSION that must be
-         * named and counted, not quietly called clean. */
+        /* Ran everywhere, asserted nothing anywhere: a named, counted EXCLUSION. */
         memset(obs, 0, sizeof(obs));
         for (size_t i = 0; i < 3; i++) obs[i].observed = true;
         ASSERT(zcl_det_classify(obs, ord, 3, &v));
@@ -554,9 +527,7 @@ static int test_unknown_is_never_folded(void)
         ASSERT(!zcl_det_classify(obs, ord, 0, &v));
         ASSERT(!zcl_det_classify(obs, ord, 33, &v));
 
-        /* Slot 0 must be BASE. Every split is stated as "differs from slot
-         * 0", and if slot 0 is not the reference run that sentence is a
-         * different claim, so this is refused rather than answered. */
+        /* Slot 0 must be BASE (every split is "differs from slot 0"); otherwise refused. */
         const enum zcl_det_perturbation bad[3] = {
             ZCL_DET_P_CC_SET, ZCL_DET_P_BASE, ZCL_DET_P_BASE_REPEAT,
         };
@@ -568,11 +539,10 @@ static int test_unknown_is_never_folded(void)
 
 /* ── 4b. TIMING_SENSITIVE is separated, not folded ────────────────────────
  *
- * The rule this pins down is the eligibility rule for carrying a receipt: a
- * group that only moves under load produces a different verdict vector on a
- * busier machine, so an honest re-runner REFUTES a receipt that was never
- * wrong. That population has to be visible on its own or the refutations look
- * like fraud. */
+ * Eligibility rule for carrying a receipt: a group that only moves under
+ * load yields a different verdict vector on a busier machine, so an honest
+ * re-runner would refute a receipt that was never wrong. That population
+ * must be visible on its own. */
 static int test_timing_sensitive_is_separated(void)
 {
     int failures = 0;
@@ -585,8 +555,7 @@ static int test_timing_sensitive_is_separated(void)
         struct zcl_det_observation obs[5];
         struct zcl_det_verdict v;
 
-        /* Helper shape: everything observed, everything asserting, all
-         * digests equal to BASE unless a slot is named below. */
+        /* Helper shape: everything observed and asserting, digests equal to BASE unless named. */
         #define RESET_ALL_EQUAL()                                      \
             do {                                                       \
                 memset(obs, 0, sizeof(obs));                           \
@@ -617,7 +586,7 @@ static int test_timing_sensitive_is_separated(void)
         ASSERT(zcl_det_classify(obs, ord, 5, &v));
         ASSERT_EQ((int)v.klass, (int)ZCL_DET_CLASS_TIMING_SENSITIVE);
 
-        /* A plain re-run moved: internal, and no scheduling excuse. */
+        /* A plain re-run moved: internal, no scheduling excuse. */
         RESET_ALL_EQUAL();
         memset(obs[1].digest, 0x22, ZCL_DET_DIGEST_LEN);
         ASSERT(zcl_det_classify(obs, ord, 5, &v));
@@ -629,9 +598,9 @@ static int test_timing_sensitive_is_separated(void)
         ASSERT(zcl_det_classify(obs, ord, 5, &v));
         ASSERT_EQ((int)v.klass, (int)ZCL_DET_CLASS_NONDETERMINISTIC);
 
-        /* THE ASYMMETRY. Scheduling AND something else both split. The weaker
-         * TIMING_SENSITIVE verdict is an excuse ("your box was busy"), and a
-         * group that also moves on a plain re-run has not earned it. One
+        /* The asymmetry: scheduling and something else both split. The weaker
+         * TIMING_SENSITIVE verdict is an excuse ("your box was busy") a group
+         * that also moves on a plain re-run has not earned; one
          * non-scheduling slot outvotes any number of scheduling ones. */
         RESET_ALL_EQUAL();
         memset(obs[1].digest, 0x22, ZCL_DET_DIGEST_LEN);
@@ -639,18 +608,16 @@ static int test_timing_sensitive_is_separated(void)
         memset(obs[4].digest, 0x44, ZCL_DET_DIGEST_LEN);
         ASSERT(zcl_det_classify(obs, ord, 5, &v));
         ASSERT_EQ((int)v.klass, (int)ZCL_DET_CLASS_NONDETERMINISTIC);
-        /* and the scheduling slots are still named in the cause */
+        /* The scheduling slots are still named in the cause. */
         ASSERT(v.split_mask & (1u << 3));
         ASSERT(v.split_mask & (1u << 4));
 
-        /* The two classes are distinct values with distinct names, so a
-         * report cannot print one and mean the other. */
+        /* The two classes are distinct values with distinct names. */
         ASSERT(ZCL_DET_CLASS_TIMING_SENSITIVE != ZCL_DET_CLASS_NONDETERMINISTIC);
         ASSERT(strcmp(zcl_det_class_name(ZCL_DET_CLASS_TIMING_SENSITIVE),
                       "TIMING_SENSITIVE") == 0);
 
-        /* And the vocabulary itself: exactly the two scheduling profiles are
-         * SCHEDULING, or the rule above would quietly change meaning. */
+        /* Exactly the two scheduling profiles are SCHEDULING. */
         ASSERT_EQ((int)zcl_det_perturbation_class(ZCL_DET_P_JOBS_LOW),
                   (int)ZCL_DET_PC_SCHEDULING);
         ASSERT_EQ((int)zcl_det_perturbation_class(ZCL_DET_P_LOAD_HIGH),
@@ -717,13 +684,11 @@ static int test_end_to_end_env_sensitivity(void)
         /* CAUGHT: slot 1 had CC set and asserted one more check. */
         ASSERT_EQ((int)v_nd.klass, (int)ZCL_DET_CLASS_NONDETERMINISTIC);
         ASSERT_EQ(v_nd.split_mask, 1u << 1);
-        /* And slot 2, which restored the base environment, agrees with BASE —
-         * so the tool blames the perturbation that actually split it and not
-         * every profile after it. */
+        /* Slot 2, which restored the base environment, agrees with BASE, so
+         * only the perturbation that split it is blamed. */
         ASSERT((v_nd.split_mask & (1u << 2)) == 0);
 
-        /* NOT ACCUSED: the stable fixture, measured under the very same three
-         * environments, with a transcript that differed in every run. */
+        /* NOT ACCUSED: the stable fixture under the same three environments, with a differing transcript each run. */
         ASSERT_EQ((int)v_ok.klass, (int)ZCL_DET_CLASS_DETERMINISTIC);
         ASSERT_EQ(v_ok.split_mask, 0u);
         PASS();
@@ -777,8 +742,7 @@ static int test_receipt_roundtrip(void)
         ASSERT(memcmp(back.toolchain, r.toolchain, sizeof(r.toolchain)) == 0);
         ASSERT(memcmp(back.env_class, r.env_class, sizeof(r.env_class)) == 0);
 
-        /* Re-encoding the decoded record must reproduce the same bytes: the
-         * encoding is canonical, so no receipt has two spellings. */
+        /* Re-encoding the decoded record reproduces the same bytes (canonical). */
         uint8_t again[ZCL_DET_RECEIPT_SIZE];
         size_t len2 = 0;
         ASSERT(zcl_det_receipt_encode(&back, again, sizeof(again), &len2));
@@ -798,9 +762,8 @@ static int test_receipt_golden_bytes(void)
         uint8_t wire[ZCL_DET_RECEIPT_SIZE];
         size_t len = 0;
         ASSERT(zcl_det_receipt_encode(&r, wire, sizeof(wire), &len));
-        /* The header the layout pins: magic, version, commit, group field. If
-         * a field is added, moved or resized, this fails and the version must
-         * be bumped — which is the point of pinning it. */
+        /* The pinned header: magic, version, commit, group field. Changing a
+         * field fails this and the version must be bumped. */
         static const uint8_t want_head[] = {
             'Z', 'D', 'R', '1', 0x01, 0x00,
             0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef,
@@ -813,8 +776,7 @@ static int test_receipt_golden_bytes(void)
         ASSERT(memcmp(wire + 38, "test_determinism", 16) == 0);
         for (size_t i = 38 + 16; i < 38 + ZCL_DET_GROUP_MAX; i++)
             ASSERT_EQ(wire[i], 0);
-        /* No padding byte anywhere: every byte of the record was written by an
-         * explicit field, so the sum of the field widths IS the size. */
+        /* No padding: the sum of the field widths is the size. */
         ASSERT_EQ((size_t)ZCL_DET_RECEIPT_SIZE,
                   (size_t)(4 + 2 + ZCL_DET_RECEIPT_COMMIT_LEN +
                            ZCL_DET_GROUP_MAX + ZCL_DET_DIGEST_LEN +
@@ -863,24 +825,21 @@ static int test_receipt_rejects(void)
         bad[198] = 9; /* a verdict outside the enum */
         ASSERT(!zcl_det_receipt_decode(bad, ZCL_DET_RECEIPT_SIZE, &back));
 
-        /* A DETERMINISTIC record that also names a splitting perturbation says
-         * two things at once, and is refused. */
+        /* A DETERMINISTIC record that names a splitting perturbation is refused. */
         struct zcl_det_receipt contradictory = r;
         contradictory.split_mask = 4u;
         ASSERT(zcl_det_receipt_encode(&contradictory, bad, sizeof(bad), &len));
         ASSERT(!zcl_det_receipt_decode(bad, len, &back));
 
-        /* A NONDETERMINISTIC record that names none is the "it varies" answer
-         * this whole module refuses to accept. */
+        /* A NONDETERMINISTIC record that names no perturbation is refused ("it varies"). */
         struct zcl_det_receipt causeless = r;
         causeless.verdict = ZCL_DET_CLASS_NONDETERMINISTIC;
         causeless.split_mask = 0;
         ASSERT(zcl_det_receipt_encode(&causeless, bad, sizeof(bad), &len));
         ASSERT(!zcl_det_receipt_decode(bad, len, &back));
 
-        /* TIMING_SENSITIVE is a real verdict and obeys the same rule in both
-         * directions: it must name a cause, and it round-trips when it does.
-         * A verdict the encoding refuses to carry could not be reported. */
+        /* TIMING_SENSITIVE obeys the same rule both ways: it must name a
+         * cause and round-trips when it does. */
         struct zcl_det_receipt ts_causeless = r;
         ts_causeless.verdict = ZCL_DET_CLASS_TIMING_SENSITIVE;
         ts_causeless.split_mask = 0;
@@ -895,14 +854,12 @@ static int test_receipt_rejects(void)
         ASSERT_EQ((int)back.verdict, (int)ZCL_DET_CLASS_TIMING_SENSITIVE);
         ASSERT_EQ(back.split_mask, 1u << ZCL_DET_P_LOAD_HIGH);
 
-        /* 5 is one past the widened range and must still be refused, so the
-         * range check tracks the enum rather than being left permanently open. */
+        /* 5 is one past the widened range and must be refused (the range check tracks the enum). */
         memcpy(bad, wire, ZCL_DET_RECEIPT_SIZE);
         bad[198] = 5;
         ASSERT(!zcl_det_receipt_decode(bad, ZCL_DET_RECEIPT_SIZE, &back));
 
-        /* An UNKNOWN record with no reason, and a measured record carrying
-         * one, are both self-contradictory. */
+        /* An UNKNOWN record with no reason, and a measured one carrying one, are contradictory. */
         struct zcl_det_receipt reasonless = r;
         reasonless.verdict = ZCL_DET_CLASS_UNKNOWN;
         reasonless.reason = ZCL_DET_UNKNOWN_NONE;
@@ -914,7 +871,7 @@ static int test_receipt_rejects(void)
         ASSERT(zcl_det_receipt_encode(&overexplained, bad, sizeof(bad), &len));
         ASSERT(!zcl_det_receipt_decode(bad, len, &back));
 
-        /* A commit id of the wrong width is refused rather than truncated. */
+        /* A commit id of the wrong width is refused, not truncated. */
         struct zcl_det_receipt c;
         fill_receipt(&c);
         ASSERT(!zcl_det_receipt_set_commit(&c, "abc"));
@@ -936,14 +893,13 @@ static int test_receipt_verification(void)
         ASSERT_EQ((int)zcl_det_receipt_check(&claim, &fresh, why, sizeof(why)),
                   (int)ZCL_DET_CORROBORATED);
 
-        /* Same commit and toolchain, a different verdict vector: refuted. */
+        /* Same commit and toolchain, different verdict vector: refuted. */
         fresh = claim;
         fresh.vector[0] ^= 0xFF;
         ASSERT_EQ((int)zcl_det_receipt_check(&claim, &fresh, why, sizeof(why)),
                   (int)ZCL_DET_REFUTED);
 
-        /* A different commit says nothing about the claim. It must NOT refute
-         * it and must NOT confirm it. */
+        /* A different commit neither refutes nor confirms. */
         fresh = claim;
         ASSERT(zcl_det_receipt_set_commit(
             &fresh, "ffffffffffffffffffffffffffffffffffffffff"));
@@ -951,13 +907,13 @@ static int test_receipt_verification(void)
         ASSERT_EQ((int)zcl_det_receipt_check(&claim, &fresh, why, sizeof(why)),
                   (int)ZCL_DET_INDETERMINATE);
 
-        /* A different toolchain, likewise. */
+        /* A different toolchain likewise. */
         fresh = claim;
         zcl_det_receipt_label_digest("clang-18/musl/aarch64", fresh.toolchain);
         ASSERT_EQ((int)zcl_det_receipt_check(&claim, &fresh, why, sizeof(why)),
                   (int)ZCL_DET_INDETERMINATE);
 
-        /* A different environment class, likewise. */
+        /* A different environment class likewise. */
         fresh = claim;
         zcl_det_receipt_label_digest("gate:jobs=1", fresh.env_class);
         ASSERT_EQ((int)zcl_det_receipt_check(&claim, &fresh, why, sizeof(why)),
@@ -970,16 +926,11 @@ static int test_receipt_verification(void)
         ASSERT_EQ((int)zcl_det_receipt_check(&claim, &fresh, why, sizeof(why)),
                   (int)ZCL_DET_INDETERMINATE);
 
-        /* A DIFFERENCE THAT IS ALREADY EXPLAINED IS NOT EVIDENCE.
-         *
-         * This is the case the whole TIMING_SENSITIVE bucket exists for. The
-         * group is known to answer differently when the machine's load
-         * differs; load is a property of the moment, so neither side's
-         * environment class can pin it. An honest node re-running on a busier
-         * box therefore computes a different vector — and if that came back
-         * REFUTED, the network would manufacture an accusation against a
-         * producer who did nothing wrong and could offer nothing in reply.
-         * Reserve REFUTED for a disagreement about something reproducible. */
+        /* A difference that is already explained is not evidence. A
+         * TIMING_SENSITIVE group answers differently when machine load
+         * differs, which no environment class can pin, so an honest re-run on
+         * a busier box must not come back REFUTED. REFUTED is reserved for a
+         * disagreement about something reproducible. */
         fresh = claim;
         fresh.verdict = ZCL_DET_CLASS_TIMING_SENSITIVE;
         fresh.split_mask = 1u << ZCL_DET_P_LOAD_HIGH;
@@ -987,7 +938,7 @@ static int test_receipt_verification(void)
         ASSERT_EQ((int)zcl_det_receipt_check(&claim, &fresh, why, sizeof(why)),
                   (int)ZCL_DET_INDETERMINATE);
 
-        /* Symmetric: it holds whichever side carries the verdict. */
+        /* Symmetric: holds whichever side carries the verdict. */
         struct zcl_det_receipt ts_claim = claim;
         ts_claim.verdict = ZCL_DET_CLASS_TIMING_SENSITIVE;
         ts_claim.split_mask = 1u << ZCL_DET_P_JOBS_LOW;
@@ -996,16 +947,12 @@ static int test_receipt_verification(void)
         ASSERT_EQ((int)zcl_det_receipt_check(&ts_claim, &fresh, why, sizeof(why)),
                   (int)ZCL_DET_INDETERMINATE);
 
-        /* But two TIMING_SENSITIVE runs that DID agree still corroborate —
-         * the rule above softens a disagreement, it does not discard an
-         * agreement. */
+        /* Two TIMING_SENSITIVE runs that agree still corroborate. */
         fresh = ts_claim;
         ASSERT_EQ((int)zcl_det_receipt_check(&ts_claim, &fresh, why, sizeof(why)),
                   (int)ZCL_DET_CORROBORATED);
 
-        /* And the softening is SPECIFIC to that verdict: a plain
-         * NONDETERMINISTIC disagreement is still a refutation, or the rule
-         * would have quietly disabled refutation altogether. */
+        /* The softening is specific: a plain NONDETERMINISTIC disagreement still refutes. */
         struct zcl_det_receipt nd_claim = claim;
         nd_claim.verdict = ZCL_DET_CLASS_NONDETERMINISTIC;
         nd_claim.split_mask = 1u << ZCL_DET_P_CC_SET;
@@ -1014,13 +961,13 @@ static int test_receipt_verification(void)
         ASSERT_EQ((int)zcl_det_receipt_check(&nd_claim, &fresh, why, sizeof(why)),
                   (int)ZCL_DET_REFUTED);
 
-        /* Different groups are not comparable at all. */
+        /* Different groups are not comparable. */
         fresh = claim;
         snprintf(fresh.group, sizeof(fresh.group), "test_other");
         ASSERT_EQ((int)zcl_det_receipt_check(&claim, &fresh, why, sizeof(why)),
                   (int)ZCL_DET_INDETERMINATE);
 
-        /* And an absent receipt is never silently treated as agreement. */
+        /* An absent receipt is never treated as agreement. */
         ASSERT_EQ((int)zcl_det_receipt_check(&claim, NULL, why, sizeof(why)),
                   (int)ZCL_DET_INDETERMINATE);
         ASSERT_EQ((int)zcl_det_receipt_check(NULL, &claim, why, sizeof(why)),
@@ -1040,7 +987,7 @@ static int test_perturbation_names(void)
             const char *name =
                 zcl_det_perturbation_name((enum zcl_det_perturbation)i);
             ASSERT(name[0] != '\0');
-            /* A split must name a CAUSE, not just a label. */
+            /* A split must name a cause, not just a label. */
             ASSERT(strlen(zcl_det_perturbation_why(
                        (enum zcl_det_perturbation)i)) > 8);
             enum zcl_det_perturbation back = ZCL_DET_P__COUNT;
@@ -1054,9 +1001,7 @@ static int test_perturbation_names(void)
         ASSERT(!zcl_det_perturbation_from_name("VIBES", &p));
         ASSERT(!zcl_det_perturbation_from_name(NULL, &p));
 
-        /* A split mask is rendered through the CALLER's profile order, not the
-         * enum's. A measurement over a subset would otherwise print the wrong
-         * cause, and a wrong cause is worse than no cause. */
+        /* A split mask is rendered through the caller's profile order, not the enum's. */
         static const enum zcl_det_perturbation order[3] = {
             ZCL_DET_P_BASE, ZCL_DET_P_ENV_PAD, ZCL_DET_P_CC_SET
         };
@@ -1072,9 +1017,7 @@ static int test_perturbation_names(void)
         zcl_det_split_mask_string(0x6u, order, 3, tiny, sizeof(tiny));
         ASSERT_STR_EQ(tiny, "");
 
-        /* BASE must be index 0: the classifier compares every other profile
-         * against slot 0, and a renumbering would silently change what
-         * "the reference run" means. */
+        /* BASE must be index 0: the classifier compares every profile against slot 0. */
         ASSERT_EQ((int)ZCL_DET_P_BASE, 0);
         PASS();
     } _test_next:;

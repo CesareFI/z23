@@ -1,38 +1,23 @@
 /* SPDX-License-Identifier: Apache-2.0
  * Copyright 2026 Rhett Creighton
  *
- * Pedantic unit tests for domain/consensus/equihash.c —
- * domain_consensus_verify_equihash_solution().
+ * Pedantic unit tests for domain_consensus_verify_equihash_solution().
+ * Separate from test_domain_consensus_equihash.c: this file uses the project
+ * TEST_CASE/TEST_END harness with exactly ONE TEST_CASE per entrypoint
+ * (TEST_END defines `_test_next`). It pins:
  *
- * These tests are intentionally separate from test_domain_consensus_equihash.c:
- * that file uses the bespoke DEH_CHECK macro and packs every behaviour into a
- * single entrypoint. This file uses the project TEST_CASE/TEST_END harness with
- * EXACTLY ONE TEST_CASE per entrypoint (TEST_END defines the `_test_next`
- * label, so two per function would be a redefinition / compile error), and
- * pins four distinct behaviours of the verifier:
- *
- *   1. Null-pointer contracts — a NULL header maps to ERR_NULL_HEADER and a
- *      NULL out_valid maps to ERR_NULL_OUT, and the error path leaves *out
- *      untouched (the header promises *out_valid is written ONLY on success).
- *
- *   2. Solution-size demux — unrecognised sizes (2, 256, 0xffffffff) all map
- *      to ERR_BAD_SOL_SIZE, while the four consensus sizes (36/68/400/1344)
- *      flow into the verifier and return ZCL_OK (valid=false for zero soln).
- *
- *   3. BLAKE2b state correctness — the verifier re-derives the ZcashPoW
- *      personalised BLAKE2b state and feeds the header pre-nonce bytes in
- *      canonical little-endian order. We reconstruct that state independently
- *      in the test (per-(N,K) personalisation + hand-rolled LE feed) and pin
- *      it against precomputed constants captured directly from the crypto
- *      primitive. A regression in field order, endianness, length, or
- *      personalisation flips a pinned byte.
- *
- *   4. Regression seal — for a matrix of real-shape headers (and a true
- *      known-good (96,5) Equihash witness threaded through the header) the
- *      domain function's `valid` output must equal BOTH a direct
- *      equihash_is_valid_solution() call on an independently rebuilt state
- *      AND the legacy chain/equihash.h::check_equihash_solution() wrapper.
- *      Any parallel code path that drifts is caught here.
+ *   1. Null-pointer contracts: NULL header -> ERR_NULL_HEADER, NULL out_valid
+ *      -> ERR_NULL_OUT, and the error path leaves *out untouched.
+ *   2. Solution-size demux: unrecognised sizes (2, 256, 0xffffffff) map to
+ *      ERR_BAD_SOL_SIZE; the consensus sizes (36/68/400/1344) return ZCL_OK
+ *      (valid=false for a zero solution).
+ *   3. BLAKE2b state: the ZcashPoW personalised state and canonical
+ *      little-endian header feed are rebuilt independently and pinned against
+ *      constants captured from the crypto primitive.
+ *   4. Regression seal: over real-shape headers (and a known-good (96,5)
+ *      witness) `valid` equals both a direct equihash_is_valid_solution() on
+ *      an independently rebuilt state and the legacy
+ *      check_equihash_solution() wrapper.
  */
 
 #include "test/test_core.h"
@@ -50,9 +35,8 @@
 
 /* ── shared fixtures ──────────────────────────────────────────────────── */
 
-/* Little-endian u32 writer — the canonical Equihash challenge serialization
- * is little-endian by consensus. Mirrors le32_into() in the module under
- * test; kept local so a regression in the module cannot mask itself. */
+/* Little-endian u32 writer (Equihash challenge serialization is LE by
+ * consensus); kept local so a module regression cannot mask itself. */
 static void seal_le32(uint8_t b[4], uint32_t v)
 {
     b[0] = (uint8_t)(v        & 0xff);
@@ -62,9 +46,7 @@ static void seal_le32(uint8_t b[4], uint32_t v)
 }
 
 /* Hand-rolled "legacy stream" feed of the header pre-nonce bytes + nonce,
- * independent of the module under test. The byte order here is the
- * consensus-frozen contract; if the domain code drifts from it, the
- * differential assertions below diverge. */
+ * independent of the module; the byte order is consensus-frozen. */
 static void seal_feed_header(struct blake2b_ctx *st, const struct block_header *h)
 {
     uint8_t b4[4];
@@ -84,10 +66,9 @@ static void seal_feed_header(struct blake2b_ctx *st, const struct block_header *
     blake2b_update(st, h->nNonce.data, 32);
 }
 
-/* A known-valid (N=96, K=5) Equihash witness from the Zcash reference suite,
- * answering the BLAKE2b state seeded by the canonical input string + nonce
- * {1,0,...}. Used by the regression seal to prove the verifier still accepts
- * a real positive. */
+/* A known-valid (N=96, K=5) Equihash witness from the Zcash reference
+ * suite (canonical input string + nonce {1,0,...}), proving the verifier
+ * still accepts a real positive. */
 static const eh_index kValidIndices_96_5[32] = {
     2261, 15185, 36112, 104243, 23779, 118390, 118332, 130041,
     32642, 69878, 76925, 80080, 45858, 116805, 92842, 111026,
@@ -111,9 +92,8 @@ int test_equihash_null_guards(void)
         ASSERT(r1.code == DOMAIN_CONSENSUS_EQUIHASH_ERR_NULL_HEADER);
         ASSERT(out == true);  /* untouched */
 
-        /* NULL out_valid -> ERR_NULL_OUT (with a header carrying a valid
-         * solution size so we know it is the out-guard, not the size demux,
-         * that fires). */
+        /* NULL out_valid -> ERR_NULL_OUT (valid solution size, so it is the
+         * out-guard that fires). */
         struct block_header h;
         block_header_init(&h);
         h.nSolutionSize = 1344;
@@ -156,10 +136,9 @@ int test_equihash_solution_size_demux(void)
             ASSERT(out == true);
         }
 
-        /* The four consensus-recognised sizes demux into the verifier and
-         * return ZCL_OK. An all-zero solution is overwhelmingly invalid, so
-         * *out is written false — proving the call reached the crypto check
-         * rather than short-circuiting. */
+        /* The four consensus sizes demux into the verifier and return
+         * ZCL_OK; an all-zero solution writes *out false, proving the call
+         * reached the crypto check. */
         const size_t good[] = { 36, 68, 400, 1344 };
         for (size_t i = 0; i < sizeof(good) / sizeof(good[0]); i++) {
             struct block_header h;
@@ -184,12 +163,9 @@ int test_equihash_blake2b_state_seal(void)
     int failures = 0;
     TEST_CASE("equihash verify: ZcashPoW BLAKE2b state matches precomputed constants")
     {
-        /* (a) The ZcashPoW personalisation + digest length are selected by
-         * the (N,K) param set. The low byte of h[0] (the BLAKE2b IV XORed
-         * with the parameter block: digest_length | key<<8 | fanout<<16 |
-         * depth<<24) and outlen are distinct per parameter set, and were
-         * captured directly from equihash_initialise_state(). A drift in
-         * personalisation, digest length, or param selection flips them. */
+        /* (a) The (N,K) param set selects the ZcashPoW personalisation and
+         * digest length; the low byte of h[0] and outlen are pinned per set
+         * from equihash_initialise_state(). */
         struct { unsigned N, K; uint8_t outlen; uint64_t h0, h7; } cfg[] = {
             { 200, 9, 50, 0x6a09e667f2bdc93aULL, 0x5be0cd10137e21b1ULL },
             { 192, 7, 48, 0x6a09e667f2bdc938ULL, 0x5be0cd1e137e21b9ULL },
@@ -210,12 +186,9 @@ int test_equihash_blake2b_state_seal(void)
             ASSERT(st.h[6] == 0x48ec89c38820de31ULL); /* IV[6], personalisation-free */
         }
 
-        /* (b) Feed a fixed header through the canonical LE serialization and
-         * pin both the streaming counters and the finalized digest. The total
-         * pre-nonce+nonce length is 4+32+32+32+4+4+32 = 140 bytes = one full
-         * 128-byte BLAKE2b block (t[0]=128) plus 12 buffered bytes. The digest
-         * was captured directly from the crypto primitive over exactly these
-         * bytes; any change to field order / endianness / lengths perturbs it. */
+        /* (b) A fixed header through the canonical LE serialization: pin the
+         * streaming counters and finalized digest. 140 bytes = one 128-byte
+         * BLAKE2b block (t[0]=128) plus 12 buffered. */
         struct block_header h;
         block_header_init(&h);
         h.nVersion = 4;
@@ -248,9 +221,8 @@ int test_equihash_blake2b_state_seal(void)
         blake2b_final(&fin, digest, ep96.hash_output);
         ASSERT(memcmp(digest, kExpectDigest, ep96.hash_output) == 0);
 
-        /* (c) Field-order sensitivity: swapping prev<->merkle (which the
-         * verifier must NOT do) changes the digest, proving the pin above is
-         * load-bearing rather than coincidental. */
+        /* (c) Swapping prev<->merkle changes the digest, so the pin above is
+         * load-bearing. */
         struct block_header swapped = h;
         memcpy(swapped.hashPrevBlock.data,  h.hashMerkleRoot.data, 32);
         memcpy(swapped.hashMerkleRoot.data, h.hashPrevBlock.data,  32);
@@ -276,10 +248,9 @@ int test_equihash_serialization_matches_independent_rebuild(void)
         struct equihash_params ep;
         equihash_params_init(&ep, 96, 5);
 
-        /* Matrix of real-shape headers that perturb every challenge field
-         * independently. For each, the domain verifier's `valid` must match a
-         * state we rebuild ourselves and hand straight to the crypto
-         * primitive. They agree iff the domain serialization is byte-exact. */
+        /* Real-shape headers perturbing each challenge field independently:
+         * the domain `valid` must match a state rebuilt here and handed to
+         * the primitive. */
         for (int trial = 0; trial < 16; trial++) {
             struct block_header h;
             block_header_init(&h);
@@ -348,10 +319,9 @@ int test_equihash_legacy_wrapper_regression_seal(void)
             ASSERT(domain_valid == legacy_valid);
         }
 
-        /* (b) True positive: build the canonical (96,5) reference state, emit
-         * its minimal solution, and confirm the crypto primitive accepts it.
-         * This guards against the verification chain silently rejecting every
-         * proof (the PHGR13-style "false-reject everything" failure mode). */
+        /* (b) True positive: the canonical (96,5) reference state's minimal
+         * solution is accepted by the primitive (guards against
+         * false-rejecting everything). */
         struct equihash_params ep;
         equihash_params_init(&ep, 96, 5);
         struct blake2b_ctx ref;
@@ -370,9 +340,8 @@ int test_equihash_legacy_wrapper_regression_seal(void)
         ASSERT(soln_len == 68);
         ASSERT(equihash_is_valid_solution(&ep, &ref, soln, soln_len) == true);
 
-        /* (c) Negative companion: perturb one index of the witness and the
-         * same primitive must reject it — so (b) is a real positive, not a
-         * verifier that accepts everything. */
+        /* (c) Perturbing one witness index must make the primitive reject,
+         * so (b) is a real positive. */
         eh_index bad[32];
         memcpy(bad, kValidIndices_96_5, sizeof(bad));
         bad[0] ^= 1u;

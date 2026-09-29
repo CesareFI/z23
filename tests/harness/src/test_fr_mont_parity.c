@@ -7,18 +7,13 @@
  * accelerator (core/modules/sapling/src/fr_avx512.c: BMI2/MULX with a portable
  * __int128 fallback, runtime-dispatched on CPUID).
  *
- * Why this is consensus crypto: this multiply is the innermost operation of
- * Pedersen hashing and Groth16 verification, so it decides the Sapling
- * commitment tree root and every Sapling spend/output proof verdict — both
- * block-validity predicates. sealed core/ reaches it through
- * coins/coins.h -> sapling/incremental_merkle_tree.h -> pedersen_hash ->
- * sapling/fr.h. A single differing limb changes an anchor or flips a proof
- * verdict, which forks the node off the network permanently.
+ * Consensus crypto: this multiply is the innermost operation of Pedersen
+ * hashing and Groth16 verification, so it decides the Sapling commitment
+ * tree root and every Sapling proof verdict. A differing limb forks the node.
  *
  * fr_accel.h exposes fr_accel_mont_mul_portable / fr_accel_mont_mul_adx (and
- * the Fp pair) expressly "so a caller can drive the SAME input through every
- * path and assert byte-identical output". Until this file, nothing in the test
- * suite did; only the out-of-suite `zclassic23-simd-bench` did.
+ * the Fp pair) so the same input can be driven through every path and
+ * compared byte-for-byte.
  *
  * Legs, for BOTH Fr (4 limbs, 255-bit scalar field) and Fp (6 limbs, 381-bit
  * base field):

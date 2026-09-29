@@ -1,55 +1,43 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * test_getheaders_serve_fallback — offline regression test for the
- * getheaders SERVE path on snapshot-seeded nodes (Wedge B).
+ * test_getheaders_serve_fallback — offline regression test for the getheaders
+ * SERVE path on snapshot-seeded nodes.
  *
  * A snapshot-seeded node holds full headers in the node.db `blocks` table
  * (1344-byte Equihash nSolution included) but its hydrated in-memory block
- * index carries NO nSolution, and the flat block files below the body
- * floor are absent. Pre-fix, getheaders_index_header_servable built a
- * header with nSolutionSize=0 from such an entry, failed Equihash with
- * "invalid-solution", refused to serve, AND marked the entry
- * BLOCK_FAILED_VALID (an availability failure is not a validity verdict);
- * the successor walk then re-queried the same parent instead of advancing,
- * so the peer got a 0-header reply.
+ * index carries no nSolution, and flat block files below the body floor are
+ * absent. Serving must fall back to node.db, must not mark an availability
+ * failure BLOCK_FAILED_VALID, and the successor walk must advance past an
+ * unservable entry.
  *
- * Pins, with REAL regtest Equihash (48,5) headers mined via mine_block_pow
- * and a REAL node.db fixture behind the production node_db_runtime port
- * (db_service + app_runtime_set_current — the exact seam the live serve
- * path reads):
+ * Pins, with real regtest Equihash (48,5) headers mined via mine_block_pow and
+ * a real node.db fixture behind the production node_db_runtime port
+ * (db_service + app_runtime_set_current):
  *
- *   1. an index entry with no in-memory solution IS served when the
- *      node.db `blocks` row carries the full hash-bound header (fallback
- *      fires, served header hash-binds, and the index entry is healed so
- *      later serves take the in-memory hot path);
+ *   1. an index entry with no in-memory solution IS served when the node.db
+ *      row carries the full hash-bound header (fallback fires, the served
+ *      header hash-binds, the entry is healed for the in-memory hot path);
  *   2. an entry with no reachable store is refused WITHOUT gaining
  *      BLOCK_FAILED_VALID and WITHOUT a fabricated solution;
- *   3. the successor walk ADVANCES past an unservable entry and returns
- *      the next servable one instead of re-querying the same parent;
- *   4. a healed entry serves again off the in-memory hot path and still
- *      produces exactly the accepted header;
- *   5. the pinned-solution cache is accounted (it is budget-capped so an
- *      unauthenticated peer's header walk cannot grow it without bound);
+ *   3. the successor walk ADVANCES past an unservable entry to the next
+ *      servable one;
+ *   4. a healed entry serves again off the hot path and produces exactly the
+ *      accepted header;
+ *   5. the pinned-solution cache is accounted and budget-capped, so an
+ *      unauthenticated peer's header walk cannot grow it without bound;
  *   6. a header that solves Equihash but is filed under the WRONG hash is
- *      REFUSED — a served header must hash-bind to the entry it is served
- *      under, which "the solution is valid" alone never proves;
+ *      REFUSED: a served header must hash-bind to its entry;
  *   7. a header that hash-binds AND is marked BLOCK_VALID_TREE but whose
- *      Equihash solution is FORGED is REFUSED — the status bit is not a
- *      witness that Equihash ever ran (four persisted-index loaders set
- *      it at sampled or zero PoW strength), so the serve path re-verifies
- *      unconditionally;
+ *      Equihash solution is FORGED is REFUSED: the status bit does not witness
+ *      that Equihash ran, so the serve path re-verifies unconditionally;
  *   8. the serve-path solution cache stays inside its declared budget.
  *
- * Cost of (7), MEASURED on this host (32-core x86-64-v3, three runs,
- * single-threaded, spread under 1.8%): check_equihash_solution() costs
- * 383-390 us per header on the 200,9 span and 36.7-36.9 us on the 192,7
- * span — 192,7 is ~10x CHEAPER, not dearer (128 indices vs 512, 24-byte
- * rows vs 30). Serving one peer the whole 3.19M-header chain therefore
- * costs ~320 s of one thread. That is real, and it is also exactly what
- * main has always paid: an unconditional re-verify here is the status
- * quo, and skipping it is what would be the change. If that cost is to
- * be recovered it must be gated on something that actually witnesses an
- * Equihash check (the validate_headers stage cursor), never on nStatus.
+ * Cost of (7): check_equihash_solution() takes 383-390 us per header on the
+ * 200,9 span and 36.7-36.9 us on 192,7 (single thread, 32-core x86-64-v3), so
+ * serving one peer the 3.19M-header chain costs ~320 s of one thread. That is
+ * the status quo; if it is to be recovered it must be gated on something that
+ * witnesses an Equihash check (the validate_headers stage cursor), never on
+ * nStatus.
  */
 
 #include "test/test_core.h"
@@ -108,8 +96,8 @@ static bool gsf_mine_header(struct block_header *out, int height,
     return ok;
 }
 
-/* Store the full hash-bound header (Equihash solution included) as a
- * connected node.db `blocks` row — the row a snapshot seed has. */
+/* Store the full hash-bound header (Equihash solution included) as a connected
+ * node.db `blocks` row, as a snapshot seed has. */
 static bool gsf_db_put_header(struct node_db *ndb, int height,
                               const struct block_header *h,
                               const struct uint256 *hash)
@@ -136,9 +124,9 @@ static bool gsf_db_put_header(struct node_db *ndb, int height,
     return db_block_save(ndb, &blk);
 }
 
-/* Insert a hydrated-style index entry: every fixed header field populated
- * from the stored header, but NO nSolution (the snapshot-seed hydration
- * gap) and header-only validity (no HAVE_DATA, no FAILED bits). */
+/* Insert a hydrated-style index entry: fixed header fields populated from the
+ * stored header but NO nSolution (the snapshot-seed hydration gap), header-only
+ * validity (no HAVE_DATA, no FAILED bits). */
 static struct block_index *gsf_seed_index(struct main_state *ms,
                                           const struct block_header *h,
                                           const struct uint256 *hash,
@@ -200,8 +188,8 @@ int test_getheaders_serve_fallback(void)
     int failures = 0;
     printf("\n=== getheaders serve-path fallback tests ===\n");
 
-    /* Regtest: small Equihash (48,5) mines in milliseconds. Restore
-     * CHAIN_MAIN on the way out (sequential runner shares the process). */
+    /* Regtest: small Equihash (48,5). Restore CHAIN_MAIN on the way out (the
+     * sequential runner shares the process). */
     chain_params_select(CHAIN_REGTEST);
     const struct chain_params *cp = chain_params_get();
 
@@ -257,7 +245,7 @@ int test_getheaders_serve_fallback(void)
     msg_processor_init(&mp, &ms, NULL, NULL, cp, dir, &g_gsf_nm, NULL);
 
     /* 1. Fallback serve: no in-memory solution, node.db has the full
-     *    hash-bound header -> servable, real solution, hash-bind, heal. */
+     *    hash-bound header -> servable with the real solution; entry healed. */
     {
         struct block_header out;
         block_header_init(&out);
@@ -278,9 +266,9 @@ int test_getheaders_serve_fallback(void)
                   ok && bi_b->nStatus == BLOCK_VALID_TREE);
     }
 
-    /* 2. Availability is not a validity verdict: A has no in-memory
-     *    solution, no flat file, and no node.db row -> refuse, but do NOT
-     *    mark BLOCK_FAILED_VALID and do NOT fabricate a solution. */
+    /* 2. Availability is not a validity verdict: A has no in-memory solution,
+     *    flat file or node.db row -> refuse, without BLOCK_FAILED_VALID and
+     *    without a fabricated solution. */
     {
         struct block_header out;
         block_header_init(&out);
@@ -291,15 +279,10 @@ int test_getheaders_serve_fallback(void)
                   !ok && bi_a->nStatus == BLOCK_VALID_TREE);
         GSF_CHECK("refusal fabricates no in-memory solution",
                   !ok && bi_a->nSolutionSize == 0);
-        /* 2b. ATTRIBUTION. This refusal is DATA AVAILABILITY — no store on
-         *     this node holds the bytes — and it must be named and counted as
-         *     that. Pre-fix headers_fill_header_from_index returned "filled"
-         *     with an empty nSolution, so the bind screen relabelled it
-         *     "header-hash-mismatch": a hash-comparison verdict over a header
-         *     the node had never actually assembled. On a bundle/snapshot
-         *     -seeded datadir that is the state of EVERY height below the seed
-         *     floor, and the mislabel read as index corruption to two
-         *     independent investigations of the live fleet. */
+        /* 2b. ATTRIBUTION. This refusal is data availability (no store holds
+         *     the bytes) and must be named and counted as that, not relabelled
+         *     "header-hash-mismatch". Every height below a bundle/snapshot
+         *     seed floor is in this state. */
         GSF_CHECK("refusal is attributed to no-header-bytes, not a hash "
                   "mismatch",
                   !ok && getheaders_serve_refusals_no_header_bytes() ==
@@ -329,10 +312,8 @@ int test_getheaders_serve_fallback(void)
         gsf_free_outbound_peer(&retry_peer);
     }
 
-    /* 3. The successor walk ADVANCES: from g, past unservable A, to
-     *    servable B. Pre-fix the walk re-queried successor(g) — the same
-     *    unservable A — until the guard gave up and returned NULL (a
-     *    0-header reply to the peer). */
+    /* 3. The successor walk advances from g past unservable A to servable B,
+     *    not re-querying successor(g). */
     {
         struct block_index *next =
             getheaders_next_servable_successor(&mp, bi_g, NULL);
@@ -343,10 +324,10 @@ int test_getheaders_serve_fallback(void)
     }
     header_serve_repair_test_reset();
 
-    /* 4. Snapshot reducers already retain many complete, hash-bound headers
-     *    in header_solution_repair even when both the old body and node.db
-     *    row are absent. The runtime port must reuse that existing authority,
-     *    and the serve path must still run its independent full-PoW gate. */
+    /* 4. Snapshot reducers retain complete hash-bound headers in
+     *    header_solution_repair even when the body and node.db row are absent.
+     *    The runtime port must reuse that authority and the serve path must
+     *    still run its independent full-PoW gate. */
     GSF_CHECK("repair row for A stored",
               progress_db && stage_repair_header_solution_save(
                   progress_db, 1, &hash_a, &ha));
@@ -368,9 +349,9 @@ int test_getheaders_serve_fallback(void)
     }
 
     /* 5. No local store retains D. A refusal arms one header-only peer fetch;
-     *    its response remains inert until the serve path independently
-     *    hash-binds and full-PoW verifies it. Successful verification heals D
-     *    and completes the bounded flight without downloading a block body. */
+     *    its response is inert until the serve path hash-binds and full-PoW
+     *    verifies it, then heals D and completes the bounded flight without
+     *    downloading a block body. */
     {
         struct block_header out;
         block_header_init(&out);
@@ -395,9 +376,8 @@ int test_getheaders_serve_fallback(void)
                   cached && getheaders_index_header_servable(&mp, bi_d, &out));
     }
 
-    /* 6. The healed entry serves again off the in-memory hot path, still
-     *    hash-bound and still carrying the real solution — no re-read of
-     *    the store needed, and the same accepted header comes back. */
+    /* 6. The healed entry serves again off the in-memory hot path, hash-bound
+     *    with the real solution, without re-reading the store. */
     {
         struct block_header out;
         block_header_init(&out);
@@ -413,29 +393,19 @@ int test_getheaders_serve_fallback(void)
                          hb.nSolutionSize) == 0);
     }
 
-    /* 7. Serve-path solution cache accounting is wired: healing A, B, and D pins
-     *    their solutions, and it is bounded (never unbounded growth
-     *    driven by an unauthenticated peer's header walk). */
+    /* 7. Serve-path solution cache accounting: healing A, B and D pins their
+     *    solutions, and the cache is bounded. */
     GSF_CHECK("healed solution is counted against the serve cache budget",
               getheaders_solution_cache_bytes() >=
               ha.nSolutionSize + hb.nSolutionSize + hd.nSolutionSize);
 
-    /* 8. A header that is internally VALID but is filed under the WRONG
-     *    hash must never be served. Entry X is keyed by a hash that is not
-     *    B's, yet reassembles byte-for-byte into B's header — same prev
-     *    (pprev = A), same fields, same real Equihash solution. So every
-     *    self-contained check passes: solution size is right, Equihash
-     *    verifies, PoW verifies, the timestamp is sane. The one thing
-     *    wrong is that these bytes are not the block X claims to be.
-     *
-     *    A serve path that only asks "does this solve Equihash?" hands the
-     *    peer B's header under X's announced hash, and the peer wires it
-     *    into its chain under the wrong identity. Requiring the serialized
-     *    header to hash to the entry's own phashBlock is what closes that,
-     *    and it is the STRICTLY stronger check: "these bytes are the block
-     *    we accepted" implies the solution is valid, never the reverse.
-     *    X has no flat file and no node.db row, so no retry can rescue it
-     *    — refusal is the only correct answer. */
+    /* 8. A header that is internally valid but filed under the WRONG hash
+     *    must never be served. Entry X is keyed by a hash that is not B's yet
+     *    reassembles into B's header (same pprev, fields and real Equihash
+     *    solution), so every self-contained check passes. Requiring the
+     *    serialized header to hash to the entry's own phashBlock closes it: it
+     *    is strictly stronger than "the solution is valid". X has no flat file
+     *    or node.db row, so refusal is the only correct answer. */
     {
         struct uint256 hash_x = hash_b;
         hash_x.data[0] ^= 0x5a;   /* not B, not A, not g */
@@ -461,9 +431,8 @@ int test_getheaders_serve_fallback(void)
                 bi_x->nSolution = sol;
                 bi_x->nSolutionSize = hb.nSolutionSize;
 
-                /* Sanity: the assembled header really is valid on its own
-                 * terms, so a pass below cannot come from the fixture
-                 * being accidentally malformed. */
+                /* Sanity: the assembled header is valid on its own terms, so
+                 * a pass below cannot come from a malformed fixture. */
                 struct block_header rebuilt = hb;
                 struct uint256 rebuilt_hash;
                 block_header_get_hash(&rebuilt, &rebuilt_hash);
@@ -484,34 +453,23 @@ int test_getheaders_serve_fallback(void)
         }
     }
 
-    /* 9. F1 REGRESSION — a hash-bound header marked BLOCK_VALID_TREE whose
-     *    Equihash solution is GARBAGE must still be refused.
-     *
-     *    This is the whole reason the serve path re-verifies Equihash
-     *    unconditionally. BLOCK_VALID_TREE does not witness an Equihash
-     *    check in this codebase: block_index_blocks_hydrate.c full-checks
-     *    one row in 10,000 below the ROM checkpoint, block_index_loader.c
-     *    calls block_row_verify with a NULL header (which skips both the
-     *    hash bind and Equihash), boot_block_file_scan.c assigns the bit
-     *    unconditionally, and boot_header_seed_import.c clamps a
-     *    PEER-SUPPLIED artifact down to it. So a hostile bundle can carry
-     *    rows that hash-bind, carry the bit, pass CheckProofOfWork on the
-     *    claimed hash — and have never had Equihash run over them. Fixture
-     *    Y is exactly such a row.
-     *
-     *    Entry Y has no flat file and no node.db row, so no store retry
-     *    can rescue it: refusal is the only correct answer. A serve path
-     *    that trusts the status bit serves Y and re-broadcasts unmined
-     *    headers to the network. */
+    /* 9. A hash-bound header marked BLOCK_VALID_TREE whose Equihash solution
+     *    is garbage must still be refused. BLOCK_VALID_TREE does not witness
+     *    an Equihash check: block_index_blocks_hydrate.c full-checks one row
+     *    in 10,000 below the ROM checkpoint, block_index_loader.c calls
+     *    block_row_verify with a NULL header (skipping hash bind and Equihash),
+     *    boot_block_file_scan.c assigns the bit unconditionally, and
+     *    boot_header_seed_import.c clamps a peer-supplied artifact to it. So a
+     *    hostile bundle can carry rows that hash-bind and pass CheckProofOfWork
+     *    with no Equihash run; fixture Y is such a row. Y has no flat file or
+     *    node.db row, so refusal is the only correct answer. */
     {
         struct block_header hy = hb;
         struct uint256 hash_y;
         bool y_ready = false;
-        /* Corrupt the solution (same size, so the size check still
-         * passes), then search for a variant whose serialized bytes still
-         * satisfy CheckProofOfWork — that is the cheap grind a hostile
-         * bundle-builder does instead of mining. Regtest powLimit is
-         * 0x0f0f..., so this lands within a handful of tries. */
+        /* Corrupt the solution (same size), then grind for a variant whose
+         * bytes still satisfy CheckProofOfWork, as a hostile bundle-builder
+         * would. Regtest powLimit is 0x0f0f..., so a few tries suffice. */
         for (int attempt = 0; attempt < 4096 && !y_ready; attempt++) {
             for (size_t i = 0; i < hy.nSolutionSize; i++)
                 hy.nSolution[i] = (uint8_t)(hb.nSolution[i] ^ 0xa5 ^
@@ -559,8 +517,8 @@ int test_getheaders_serve_fallback(void)
                     bi_y->nSolution = ysol;
                     bi_y->nSolutionSize = hy.nSolutionSize;
 
-                    /* Sanity: this entry DOES hash-bind, so the refusal
-                     * below can only come from the Equihash check. */
+                    /* This entry hash-binds, so the refusal can only come
+                     * from the Equihash check. */
                     struct block_header rebuilt;
                     block_header_init(&rebuilt);
                     rebuilt.nVersion = bi_y->nVersion;
@@ -587,10 +545,9 @@ int test_getheaders_serve_fallback(void)
                               "solution is forged is REFUSED", !ok);
                     GSF_CHECK("that refusal is still not a validity verdict",
                               !ok && bi_y->nStatus == BLOCK_VALID_TREE);
-                    /* The no-header-bytes counter ATTRIBUTES; it does not
-                     * just tally refusals. This entry's bytes were right
-                     * here in the index — it failed on PoW, not on
-                     * availability — so it must NOT move that counter. */
+                    /* The no-header-bytes counter attributes: this entry's
+                     * bytes were in the index and it failed on PoW, so that
+                     * counter must not move. */
                     GSF_CHECK("a PoW refusal is NOT counted as missing "
                               "header bytes",
                               !ok &&
@@ -601,23 +558,19 @@ int test_getheaders_serve_fallback(void)
         }
     }
 
-    /* 10. F3 — the serve-path solution cache is BOUNDED, not merely
-     *    counted. 64 MiB mirrors HEADERS_SOLUTION_CACHE_MAX_BYTES in
-     *    core/modules/net/src/msg_headers.c; that constant is the whole worst case
-     *    an unauthenticated post-handshake peer can drive this cache to,
-     *    because every byte it accounts is reserved BEFORE the allocation
-     *    and rolled back on refusal, and the count is never decremented
-     *    (a freed-and-replaced buffer stays counted, which biases the
-     *    number high — the safe direction for a ceiling). */
+    /* 10. The serve-path solution cache is bounded, not merely counted. 64 MiB
+     *    mirrors HEADERS_SOLUTION_CACHE_MAX_BYTES in
+     *    core/modules/net/src/msg_headers.c: bytes are reserved before
+     *    allocation and rolled back on refusal, and the count is never
+     *    decremented (biased high, the safe direction for a ceiling). */
     GSF_CHECK("serve cache stays inside its 64 MiB budget",
               getheaders_solution_cache_bytes() <=
               (size_t)64 * 1024 * 1024);
 
-    /* 11. A peer can be node2's source for the current block, so ordinary
-     *     anti-echo relay intentionally sends it no header. Its first BIP 130
-     *     sendheaders negotiation must therefore publish one independently
-     *     verified current-tip header. Duplicates are inert: the proof is
-     *     bounded to once per connection. */
+    /* 11. A peer can be node2's source for the current block, so anti-echo
+     *     relay sends it no header. Its first BIP 130 sendheaders negotiation
+     *     must publish one independently verified current-tip header; the
+     *     proof is bounded to once per connection. */
     {
         struct p2p_node peer;
         gsf_setup_outbound_peer(&peer, bi_d->nHeight);

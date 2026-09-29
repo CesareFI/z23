@@ -1,25 +1,18 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * Regression test for the fee-estimator tx-stats map growth path
- * (core/modules/policy/src/fees.c insert_stats_entry).
- *
- * Hazard fixed: insert_stats_entry self-assigned the realloc result and
- * then memset/dereferenced it with no NULL check, so an OOM on the
- * "fee_map_entries" realloc was a null-deref (and a leak of the original
- * buffer). The fix routes the realloc through a temp pointer, returns
- * NULL via LOG_NULL on failure (insert_stats_entry returns a pointer),
- * and only assigns e->map_entries once the new block is known good.
+ * (core/modules/policy/src/fees.c insert_stats_entry): the "fee_map_entries"
+ * realloc goes through a temp pointer, returns NULL via LOG_NULL on failure,
+ * and assigns e->map_entries only once the new block is good.
  *
  * Two cases:
- *   1. test_fees_oom — drives the realloc *growth* branch many times past the
- *      initial map_cap with the temp-pointer code in place and asserts it
- *      grows cleanly with no crash, no clobber, and correct bookkeeping.
- *   2. test_fees_oom_inject — arms a one-shot allocation fault on the
+ *   1. test_fees_oom: drives the growth branch many times past the initial
+ *      map_cap and asserts clean growth, no clobber, correct bookkeeping.
+ *   2. test_fees_oom_inject: arms a one-shot allocation fault on the
  *      "fee_map_entries" realloc so insert_stats_entry returns NULL, then
- *      confirms policy_process_transaction skips the data point cleanly via
- *      its caller NULL-guard (no null-deref) and leaves the estimator state
- *      byte-for-byte unchanged. This covers the OOM path end-to-end, including
- *      the caller guard that earlier only the growth branch left untested.
+ *      confirms policy_process_transaction skips the data point via its
+ *      caller NULL-guard and leaves the estimator state byte-for-byte
+ *      unchanged.
  */
 
 #include "test/test_core.h"
@@ -40,9 +33,8 @@ int test_fees_oom(void)
 
         ASSERT(e.map_entries != NULL);
 
-        /* Shrink the map so the very next inserts cross map_cap and hit
-         * the doubling realloc branch quickly. Reallocate the backing
-         * store so the structure stays internally consistent. */
+        /* Shrink the map so the next inserts cross map_cap and hit the
+         * doubling realloc; the backing store stays consistent. */
         e.num_map_entries = 0;
         e.map_cap = 2;
         struct tx_stats_entry *small =
@@ -54,9 +46,9 @@ int test_fees_oom(void)
 
         size_t start_cap = e.map_cap;
 
-        /* Insert well past map_cap distinct fee-data points. Each call
-         * with fee==0 + had_no_deps + current_estimate routes through
-         * insert_stats_entry, forcing several doubling reallocs. */
+        /* Insert well past map_cap distinct data points (fee==0 +
+         * had_no_deps + current_estimate reach insert_stats_entry),
+         * forcing several doubling reallocs. */
         const unsigned int N = 64;
         for (unsigned int i = 0; i < N; i++) {
             struct mempool_entry me;
@@ -146,11 +138,10 @@ int test_fees_oom_inject(void)
         size_t num_before = e.num_map_entries;
         size_t cap_before = e.map_cap;
 
-        /* Arm the one-shot OOM on the growth realloc, then insert a 3rd,
-         * distinct tx. insert_stats_entry's realloc returns NULL -> it
-         * returns NULL -> policy_process_transaction hits the caller guard
-         * and returns without dereferencing. Reaching the asserts below at
-         * all proves there was no null-deref crash. */
+        /* Arm the one-shot OOM on the growth realloc and insert a 3rd
+         * distinct tx: insert_stats_entry returns NULL and
+         * policy_process_transaction returns at its caller guard; reaching
+         * the asserts proves no null-deref. */
         zcl_alloc_fault_fail_next("fee_map_entries");
         struct mempool_entry me3;
         memset(&me3, 0, sizeof(me3));

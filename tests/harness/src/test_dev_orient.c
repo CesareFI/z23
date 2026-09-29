@@ -1,17 +1,11 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * ACCEPTANCE BAR for dev.agent.orient (tools/command/native_dev_orient.c) and for
+ * Acceptance bar for dev.agent.orient (tools/command/native_dev_orient.c) and
  * the gate that keeps its rows honest (tools/lint/check_orient_facts.sh).
  *
- * The leaf half calls the bound handler DIRECTLY — the leaf is a dev-lane
- * leaf and an in-process call is exactly what the CLI does after input
- * validation — but every input first crosses the REAL registry validator, so
- * a key the .def never declared fails here rather than only from a shell.
- *
- * The gate half builds a fixture facts tree in the test's own temp dir and
- * runs the checker against it. It asserts the property that matters: a row
- * whose anchor no longer exists in its file FAILS. A gate that only ever
- * sees true rows has never been shown to reject a false one.
+ * The leaf half calls the bound handler directly, after every input crosses
+ * the real registry validator. The gate half runs the checker against a
+ * fixture facts tree and asserts a row whose anchor no longer exists FAILS.
  */
 
 #include "test/test_core.h"
@@ -96,8 +90,7 @@ static const char *dvo_row_str(const struct json_value *row, const char *key)
     return v && v->type == JSON_STR && json_get_str(v) ? json_get_str(v) : "";
 }
 
-/* The topics the table must answer. A named topic that vanished is a map an
- * agent will go re-derive by hand, which is the whole cost this removes. */
+/* The topics the table must answer. */
 static const char *const dvo_required_topics[] = {
     "landing.proof", "landing.queue", "lint.gates",
     "tests.routing", "fleet.board",   "fleet.swarm",
@@ -127,10 +120,8 @@ static bool dvo_write(const char *path, const char *text)
     return fclose(f) == 0;
 }
 
-/* Run the real gate over a fixture facts dir. Returns its exit status. The
- * dir travels in the environment the checker documents, so nothing about the
- * gate is stubbed or re-implemented here: this is the script the umbrella
- * runs. */
+/* Run the real gate over a fixture facts dir (passed via the checker's
+ * documented environment); returns its exit status. */
 static int dvo_run_checker(const char *facts_dir)
 {
     const char *const argv[] = {"./tools/lint/check_orient_facts.sh", NULL};

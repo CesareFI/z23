@@ -440,12 +440,9 @@ int test_encoding(void)
         }
     }
 
-    /* Both blocks below used a FIXED /tmp path. GetDataDir() and SetDataDir()
-     * mkdir() their argument unconditionally (platform/modules/util/src/util.c), so each
-     * run left a permanent directory behind under /tmp — and shared that one
-     * absolute path with every other checkout on the machine. The assertion is
-     * about the returned STRING, not the directory, so a per-process path
-     * under ./test-tmp/ proves exactly the same thing and cleans up. */
+    /* GetDataDir() and SetDataDir() mkdir their argument unconditionally
+     * (platform/modules/util/src/util.c). The assertion is about the returned
+     * STRING, so use a per-process path under ./test-tmp/ that cleans up. */
     printf("GetDataDir cache invalidates on ParseParameters... ");
     {
         char before[1024];
@@ -594,13 +591,10 @@ int test_encoding(void)
     }
 
     /* --- HexStr: independent-oracle sweep, including truncating buffers ------
-     *
-     * The expected string is derived here from first principles with plain bit
-     * arithmetic rather than by calling HexStr, so this cannot silently agree
-     * with a wrong implementation. It covers every length from 0 to 96 (spanning
-     * the NEON fast path's 16-byte threshold, all its vector lanes and its
-     * scalar tail) crossed with buffer sizes that are exact-fit, one short and
-     * one long. Sentinel padding before the call proves nothing beyond the
+     * Expected strings come from plain bit arithmetic, not HexStr. Covers
+     * lengths 0 to 96 (spanning the NEON fast path's 16-byte threshold, all
+     * vector lanes and the scalar tail) against exact-fit, one-short and
+     * one-long buffers; sentinel padding proves nothing beyond the
      * terminating NUL was written.
      */
     printf("HexStr oracle sweep... ");
@@ -714,12 +708,9 @@ int test_encoding(void)
     }
 
     /* --- HexStr: name the live encoder tier ---------------------------------
-     *
-     * Observability only: whichever tier HexStr_impl_name() reports has already
-     * been forced through the same known-answer gate and through the sweep
-     * above, which exercises the fast path whenever it is enabled. Recording
-     * the name here makes a future failure legible as "this build shipped the
-     * NEON tier" rather than a bare byte mismatch. */
+     * Observability only: the reported HexStr_impl_name() tier has already
+     * passed the known-answer gate and the sweep above; recording it makes a
+     * failure legible as "this build shipped the NEON tier". */
     printf("HexStr_impl_name... ");
     {
         const char *impl = HexStr_impl_name();

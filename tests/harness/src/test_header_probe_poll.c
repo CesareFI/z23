@@ -1,7 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Unit tests for the Phase 3 PR-1 header_probe_poll Job
- * (engine/jobs/src/header_probe_poll.c).
+ * Unit tests for the header_probe_poll Job (engine/jobs/src/header_probe_poll.c).
  *
  * Coverage:
  *   1. Registration is idempotent and produces a valid child id.
@@ -101,10 +100,7 @@ int test_header_probe_poll(void)
         /* Drive the supervisor loop fast for the test. */
         supervisor_set_tick_ms_for_testing(5);
 
-        /* Backdate the contract's last_tick so the loop fires
-         * promptly. We can't take the contract pointer from the Job
-         * directly, so we drive a few sweeps and check via stats +
-         * snapshot. */
+        /* Backdate last_tick so the loop fires promptly; check via stats + snapshot. */
         if (supervisor_start()) {
             sleep_ms(80);
             supervisor_stop();
@@ -128,10 +124,8 @@ int test_header_probe_poll(void)
             }
         }
 
-        /* The 30-second period means the supervisor loop won't fire
-         * the tick organically in our 80 ms test window. Validate the
-         * cadence config is right (already done in step 2) and that
-         * the registration produces a usable child id. */
+        /* The 30-second period means the supervisor will not fire the tick in
+         * this 80 ms window; validate the registration yields a usable child id. */
         HPP_CHECK("ticks_run starts at 0 (period_secs=30 keeps idle)",
                   before_ticks == 0);
     }

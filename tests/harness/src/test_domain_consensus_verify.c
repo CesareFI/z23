@@ -3,10 +3,9 @@
  *
  * Unit tests for domain/consensus/verify.{c,h}.
  *
- * The point of these tests is the *interface*: we prove that the
- * domain validator returns precise typed errors via zcl_result,
- * independently of the legacy bool-returning CheckProofOfWork it
- * delegates to during Epoch I.
+ * These tests prove the interface: the domain validator returns precise
+ * typed errors via zcl_result, independently of the legacy bool-returning
+ * CheckProofOfWork it delegates to.
  */
 
 #include "test/test_core.h"
@@ -24,9 +23,8 @@
     else { printf("FAIL\n"); failures++; } \
 } while (0)
 
-/* Build a synthetic consensus_params with a generous powLimit so we
- * can isolate the target/hash comparisons. powLimit = 0x00000000ffff..ff
- * (Bitcoin-style easy target) is far above any realistic nBits. */
+/* A synthetic consensus_params with a generous powLimit (0x00000000ffff..ff)
+ * to isolate the target/hash comparisons. */
 static void make_easy_params(struct consensus_params *out)
 {
     memset(out, 0, sizeof(*out));
@@ -70,13 +68,10 @@ int test_domain_consensus_verify(void)
                   !r.ok && r.code == DOMAIN_CONSENSUS_ERR_POW_TARGET_INVALID);
     }
 
-    /* A very strict powLimit + a much larger target means the target
-     * is below the work floor (target > powLimit numerically means
-     * easier than allowed).
-     *
-     * uint256 stores bytes little-endian: data[0] is LSB, data[31] is
-     * MSB. powLimit.data[0] = 0x01 makes powLimit = 1 (numerically), so
-     * any non-trivial nBits decompresses to a target far above that. */
+    /* A strict powLimit + a much larger target puts the target below the
+     * work floor (target > powLimit numerically is easier than allowed).
+     * uint256 is little-endian: powLimit.data[0] = 0x01 makes powLimit 1, so
+     * any non-trivial nBits decompresses far above it. */
     {
         struct consensus_params p;
         memset(&p, 0, sizeof(p));

@@ -2,15 +2,9 @@
  *
  * ACCEPTANCE BAR for dev.agent.start (tools/command/native_devagent_start.c).
  *
- * This file is the contract that one single-file unit must satisfy by editing
- * tools/command/native_devagent_start.c and nothing else. It is written
- * against a fixture repository built here, never against the checkout it runs
- * in, so it proves behavior rather than the state of this machine. Do not
- * edit this file to make the implementation pass.
- *
- * It calls the bound handler DIRECTLY: dev.agent.start is a dev-lane leaf and
- * an in-process call is exactly what the CLI does after input validation, so
- * the input keys are additionally validated through the real registry.
+ * Runs against a fixture repository built here, not the checkout. It calls
+ * the bound handler directly (as the CLI does after input validation), and
+ * validates the input keys through the real registry.
  */
 
 #include "test/test_core.h"
@@ -203,9 +197,7 @@ int test_devagent_start(void)
         ASSERT_STR_EQ(dvx_str(&c, "leaf"), DVX_PATH);
         ASSERT_EQ(dvx_sub_int(&c, "worktree", "dirty_tracked"), 1);
         ASSERT_EQ(dvx_sub_int(&c, "worktree", "untracked"), 1);
-        /* No core.hooksPath is set in this fixture, so the hooks are not
-         * armed — and saying so is the point: a lane that believes hooks are
-         * armed when they are not commits past every gate. */
+        /* No core.hooksPath is set, so hooks are not armed; say so. */
         ASSERT_STR_EQ(dvx_sub_str(&c, "worktree", "hooks_path"), "");
         ASSERT(!dvx_sub_bool(&c, "worktree", "hooks_armed"));
         dvx_end(&c);
@@ -292,8 +284,7 @@ int test_devagent_start(void)
         ASSERT(dvx_run(&c));
         ASSERT(dvx_ok(&c));
         ASSERT(dvx_arr_has(dvx_arr(&c, "next"), "make lint-fast"));
-        /* A standalone clone is not a lane, so the lane sentence must NOT be
-         * offered here — advice for the other shape is worse than none. */
+        /* A standalone clone is not a lane: the lane sentence must not be offered. */
         ASSERT(!dvx_arr_has(dvx_arr(&c, "next"),
                             "commit on your lane branch; do not push"));
         dvx_end(&c);

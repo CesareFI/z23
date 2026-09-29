@@ -2,15 +2,9 @@
  *
  * ACCEPTANCE BAR for dev.agent.pace (tools/command/native_devagent_pace.c).
  *
- * This file is the contract that one single-file unit must satisfy by editing
- * tools/command/native_devagent_pace.c and nothing else. It is written
- * against a fixture repository built here, never against the checkout it runs
- * in, so it proves behavior rather than the state of this machine. Do not
- * edit this file to make the implementation pass.
- *
- * It calls the bound handler DIRECTLY: dev.agent.pace is a dev-lane leaf and
- * an in-process call is exactly what the CLI does after input validation, so
- * the input keys are additionally validated through the real registry.
+ * Runs against a fixture repository built here, not the checkout. It calls
+ * the bound handler directly (as the CLI does after input validation), and
+ * validates the input keys through the real registry.
  */
 
 #include "test/test_core.h"
@@ -123,10 +117,8 @@ static bool dvx_arr_has(const struct json_value *arr, const char *needle)
     return false;
 }
 
-/* The exact markers a real opencode headless run emits, each wrapped in the
- * SGR reset the terminal writer puts around it. A parser that matches before
- * stripping these sees NONE of them, which is the failure this fixture
- * exists to catch — so the escapes are present in every line below. */
+/* Real opencode headless markers, each wrapped in the SGR reset the terminal
+ * writer emits; a parser that matches before stripping sees none of them. */
 #define E "\x1b[0m"
 #define SHELL   E "$ " E
 #define READ    E "\xe2\x86\x92 " E

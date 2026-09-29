@@ -2,79 +2,37 @@
  *
  * A hot-swap rollback that SUCCEEDS, end to end, against real module images.
  *
- * ── WHY THIS FILE EXISTS ──────────────────────────────────────────────────
- * The rollback shelf shipped with every one of its assertions driven to a
- * REFUSAL. test_hotswap_shelf.c says so in its own header: a rollback there
- * re-runs the dev-datadir and activation gate, which that process does not
- * satisfy, so what it proves is the CLAIM — the dup() of the shelved
- * descriptor, the in-flight flag, the refusal, and the release of both. The
- * two properties that decide whether rollback is a feature or a report were
- * therefore unverified by anything in the tree:
+ * test_hotswap_shelf.c only drives rollback to refusals. This group verifies
+ * the two properties that need a real success:
+ *   1. The toggle takes effect: after activating A, then B, rolling back makes
+ *      command dispatch run A's code again.
+ *   2. The registry generation stays strictly monotonic across a rollback (it
+ *      is the one ordering authority; hotswap_commit_image() orders by it).
  *
- *   1. THE TOGGLE TAKES EFFECT. After activating image A, then image B, then
- *      rolling back, does command dispatch actually run A's code again — or
- *      does rollback report success while the live registry snapshot still
- *      routes into B?
- *   2. THE REGISTRY GENERATION STAYS STRICTLY MONOTONIC ACROSS A REAL
- *      ROLLBACK. Generation is the ONE ordering authority the whole subsystem
- *      rests on (hotswap_commit_image() orders every commit by it and refuses
- *      to unmap anything a newer generation has not taken over). A rollback
- *      that reused or decremented a generation would hand a concurrent reader
- *      a superseded snapshot it believes is current.
+ * The loader path is real: hotswap_rollback() re-runs the admission gauntlet
+ * over a sealed image (ELF probe, SHA-256 + SHA3-256, sealed-core pin, symbol
+ * resolution, admit, probe-before-publish, one registry batch), skipping only
+ * path confinement since a shelved image has no path. Two module .so images
+ * built from tests/harness/fixtures/hotswap_rollback_module.c, differing only
+ * in the marker their handlers render, are activated and the live registry is
+ * asked which one answers. The test supplies the resident's seam (commit hook,
+ * probe hook, quiescence hook), as test_hotswap_shelf.c does.
  *
- * ── WHAT IS REAL HERE, AND WHY IT HAD TO BE ───────────────────────────────
- * Everything on the loader path. hotswap_rollback() re-enters the full
- * admission gauntlet over a SEALED IMAGE — ELF shape probe, SHA-256 + SHA3-256
- * over the mapped bytes, the sealed-core consensus pin, symbol resolution,
- * admit, probe-before-publish, and ONE all-or-nothing registry batch — and the
- * single stage it skips is path confinement, because a shelved image has no
- * path. None of that can be driven with a module struct fabricated in a test
- * translation unit: a shelf entry is BYTES. So this group activates two REAL
- * module .so images built by the Makefile from tests/harness/fixtures/
- * hotswap_rollback_module.c, differing only in the marker string their
- * handlers render, and asks the live command registry which one answers.
+ * Authority: activation needs -hotswap-activate, ZCL_HOTSWAP_ACTIVATE=1 and
+ * the exact dev datadir ~/.zclassic-c23-dev, all re-checked at rollback time.
+ * The group satisfies them by pointing HOME at a throwaway directory under
+ * ./test-tmp (restored on exit); no real datadir is named or opened.
  *
- * What is supplied by the test, exactly as test_hotswap_shelf.c supplies it,
- * is the resident's own seam: the registry commit hook, the probe hook, and
- * the quiescence hook. Those are caller-provided by design (engine/modules/hotswap never
- * links kernel headers) and the resident's versions live in
- * tools/command/native_dev_hotswap.c.
- *
- * ── THE AUTHORITY THIS PROCESS TAKES, AND THE AUTHORITY IT DOES NOT ───────
- * Activation is gated on the -hotswap-activate flag, ZCL_HOTSWAP_ACTIVATE=1,
- * and the EXACT dev datadir ~/.zclassic-c23-dev. All three are re-checked at
- * the moment of the rollback, never remembered from the forward swap. This
- * group satisfies them honestly rather than weakening them: it points HOME at
- * a throwaway directory under ./test-tmp and creates .zclassic-c23-dev inside
- * it, so `~` resolves there for the length of the group and no real datadir is
- * ever named, opened, read or written. HOME is restored before the group
- * returns. The loader never opens the datadir on this path — it classifies the
- * string — but the directory is created anyway so the classification is the
- * same one a real dev lane gets.
- *
- * ── DISCRIMINATION ────────────────────────────────────────────────────────
- * Every assertion below was chosen so that it fails against a rollback that
- * only LOOKS successful:
- *   - a rollback that reported ok while leaving B live fails the dispatch
- *     assertions (the reply names the image by marker, not by liveness);
- *   - a rollback that reused or lowered the generation fails
- *     `> previous generation` and the active-generation equality;
- *   - a rollback that republished from a remembered struct instead of the
- *     shelved bytes fails artifact_sha256 equality with the ORIGINAL
- *     activation report for that image;
- *   - a rollback that consumed the shelf on a refusal fails the "refused,
- *     then the same shelf entry still rolls back" sequence;
- *   - a rollback that leaked the descriptor it dup()ed fails the fd census.
+ * Discrimination: a rollback that leaves B live fails the dispatch marker
+ * checks; one that reuses or lowers the generation fails the generation
+ * checks; one that republishes a remembered struct fails artifact_sha256
+ * equality; one that consumes the shelf on refusal fails the refuse-then-
+ * rollback sequence; one that leaks the dup()ed descriptor fails the fd census.
  */
 
 #if !defined(__linux__)
 
-/* realpath() reaches this TU only through the glibc fortify inline that
- * -D_FORTIFY_SOURCE=2 pulls in at -O1 and above; the build's
- * -D_POSIX_C_SOURCE=200809L declares it nowhere. Without this the file
- * compiles by accident of optimisation and breaks at -O0, under
- * -U_FORTIFY_SOURCE, and on any non-glibc libc. It must precede every
- * include: after them it does nothing. See platform/modules/util/src/hw_profile.c. */
+/* Declares realpath() under the fortify inline; must precede every include. */
 #if !defined(_WIN32) && !defined(_DEFAULT_SOURCE)
 #define _DEFAULT_SOURCE
 #endif
@@ -244,9 +202,7 @@ static void rb_hooks(struct hotswap_publish_hooks *h)
 }
 
 /* ── fixture ──────────────────────────────────────────────────────────────
- *
- * HOME is redirected for the length of the group so `~/.zclassic-c23-dev`
- * resolves into a throwaway tree. Nothing real is ever named. */
+ * HOME is redirected so `~/.zclassic-c23-dev` resolves into a throwaway tree. */
 static bool rb_env_begin(void)
 {
     char cwd[PATH_MAX];
@@ -288,9 +244,8 @@ static void rb_env_end(void)
         test_rm_rf_recursive(g_home);
 }
 
-/* Resolve the two module images. Absent images are a hard failure, never a
- * skip: they are a build product this group declares as a prerequisite, so
- * "not built" means the wiring broke, not that there is nothing to prove. */
+/* Resolve the two module images. Absent images are a hard failure: they are a
+ * declared build prerequisite. */
 static bool rb_resolve_images(void)
 {
     if (!realpath(RB_SO_A, g_so_a) || !realpath(RB_SO_B, g_so_b))
@@ -324,9 +279,8 @@ static size_t rb_open_fd_count(void)
     return n;
 }
 
-/* The successful-rollback counter, read out of the subsystem's own telemetry
- * rather than inferred. It is DELIBERATELY not the failed-activation unwind
- * counter, so reading it proves the distinct thing fired. */
+/* The successful-rollback counter, read from the subsystem telemetry (distinct
+ * from the failed-activation unwind counter). */
 static int64_t rb_shelf_rollback_count(void)
 {
     struct json_value doc;
@@ -391,12 +345,9 @@ static int t_images_activate(void)
     return failures;
 }
 
-/* ── 2. THE TOGGLE, AND THE GENERATION ───────────────────────────────────
- *
- * A -> B -> rollback -> rollback. The first rollback must put A back where
- * dispatch can see it and must take a generation strictly newer than B's; the
- * second must land back on B, so rollback is the toggle its contract claims.
- */
+/* ── 2. The toggle and the generation ───────────────────────────────────
+ * A -> B -> rollback -> rollback: the first rollback restores A to dispatch
+ * with a generation strictly newer than B's; the second lands back on B. */
 static int t_rollback_toggles_dispatch(void)
 {
     int failures = 0;
@@ -511,15 +462,10 @@ static int t_rollback_toggles_dispatch(void)
     return failures;
 }
 
-/* ── 3. THE GATE IS RE-CHECKED AT THE MOMENT OF THE ROLLBACK ─────────────
- *
- * hotswap/hotswap_shelf.h states that a rollback re-runs the SAME
- * authorization the forward swap ran, now, rather than remembering it. Until a
- * rollback could succeed at all, that sentence could not be tested in either
- * direction: everything refused. Both directions are driven here, back to
- * back, over ONE shelf entry — which also proves a refusal does not consume
- * the shelf and does not leak the descriptor it duplicated.
- */
+/* ── 3. The gate is re-checked at rollback time ─────────────────────────
+ * A rollback re-runs the same authorization as the forward swap. Both
+ * directions run over ONE shelf entry; a refusal must not consume it or leak
+ * the duplicated descriptor. */
 static int t_refused_rollback_changes_nothing(void)
 {
     int failures = 0;

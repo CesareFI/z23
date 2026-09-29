@@ -786,15 +786,10 @@ static bool wtx_fixture(const struct wkr_job *job, struct wkr_result *res)
     return true;
 }
 
-/* The executor child is a fork of this test image, and the image's own
- * committed data (a ~900 MiB .bss) already exceeds a 512 MiB RLIMIT_DATA.
- * Under that ceiling the child could not map one new page, so whether the
- * fixture's fopen() of the run counter worked depended on the free heap it
- * happened to inherit through fork — which varies with how many idle
- * wakes the drive took, i.e. with host load. Give every drive the 512 MiB
- * executor budget ABOVE what this image has already committed, as the
- * production worker's image (a far smaller .bss under a 1024 MiB default)
- * has. See test_forked_exec_data_mb. */
+/* The executor child forks from this image, whose committed data (~900 MiB
+ * .bss) already exceeds a 512 MiB RLIMIT_DATA. Give every drive the 512 MiB
+ * executor budget above what the image has committed, as the production
+ * worker's smaller image gets under its default. See test_forked_exec_data_mb. */
 #define WTX_EXEC_BUDGET_MB 512
 
 static void wtx_opts(struct wkr_drive_opts *o, const char *worker,
@@ -1072,19 +1067,12 @@ static void wtx_rlimit_child(const struct wkr_caps *caps)
     _exit(bad);
 }
 
-/* THE MEMORY CEILING IS ON THE HEAP, NOT ON ADDRESS SPACE, and this is
- * the case that pins it. The executor child spawns git for every
- * measurement one Muse run makes, and git maps its packfiles and starts
- * threads — both count against RLIMIT_AS and neither is this process's
- * memory. Measured in this checkout on 2026-09-19: `git diff HEAD --`
- * exits 128 under a 512 MiB RLIMIT_AS and 0 under a 512 MiB RLIMIT_DATA,
- * and the same RLIMIT_AS number passed on one attempt and failed on the
- * next, so what that ceiling admits is not reproducible. RLIMIT_DATA
- * bounds the heap at the SAME number and leaves read-only file mappings
- * alone; the unit's cgroup MemoryMax is the outer bound over the whole
- * chain either way, so nothing here is loosened. Checked in a forked
- * child, because the limits are hard — rlim_max is lowered too — and
- * this test process must keep its own. */
+/* The memory ceiling is on the heap (RLIMIT_DATA), not address space: git maps
+ * packfiles and starts threads, which count against RLIMIT_AS but are not this
+ * process's memory, so an RLIMIT_AS cap is not reproducible for the executor's
+ * git calls. RLIMIT_DATA bounds the heap at the same number; the unit's cgroup
+ * MemoryMax remains the outer bound. Checked in a forked child because the
+ * limits are hard. */
 static int wtx_rlimit_case(void)
 {
     int failures = 0;
@@ -1500,13 +1488,9 @@ static int wtx_status_cases(void)
 {
     int failures = wtx_status_unreadable_lock() + wtx_status_invalid_claims() +
                    wtx_status_queue_errors();
-    /* ── action=status: read-only, and that is the assertion ───────────────
-     *
-     * The leaf accepted only `run`, so nothing could ask the resident
-     * anything. These tests pin the two properties that make a status action
-     * safe to poll: it answers from evidence that already exists, and it
-     * writes nothing — including not creating the very lock file it probes,
-     * which an O_CREAT open would do on a box that has never run a worker. */
+    /* ── action=status: read-only ───────────────────────────────────────────
+     * Status answers from existing evidence and writes nothing, including not
+     * creating the lock file it probes. */
     TEST("status: answers with no resident, no state root, and creates nothing")
     {
         struct wtx_call c;
@@ -1595,10 +1579,8 @@ static int wtx_status_cases(void)
         PASS();
     }
 
-    /* A claimed job is reported ONLY from evidence that already exists: the
-     * running row plus that run's own claim.json. With the claim unreadable
-     * the job stays unproven (claim_read false, fields empty) rather than
-     * being guessed from the row alone. */
+    /* A claimed job is reported only from existing evidence (running row plus
+     * that run's claim.json); with the claim unreadable it stays unproven. */
     TEST("status: an active job comes from the claim, or stays unproven")
     {
         struct wtx_call c;
@@ -2217,8 +2199,8 @@ int test_devagent_worker(void)
         char verdict[64];
         long long rc = -1;
         wtx_isolate("briefbig");
-        /* Inside the 32 KiB read cap, over the 8 KiB task: before the fix
-         * the executor ran the head and the tail was silently dropped. */
+        /* Inside the 32 KiB read cap, over the 8 KiB task: the whole brief
+         * reaches the executor. */
         ASSERT(wtx_post_brief("wtx-brief-big", 12000, "BRIEF-TAIL-BIG\n"));
         (void)remove(g_fx_count);
         g_fx_mode = 0;

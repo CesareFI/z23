@@ -4,16 +4,15 @@
  * Unit tests for contexts/wallet/domain/mnemonic.{c,h}.
  *
  * Pins the pure BIP39 encoding + PBKDF2 seed derivation extracted from
- * contexts/wallet/src/mnemonic.c. Four layers:
+ * contexts/wallet/src/mnemonic.c:
  *
  *   1. Contract / null-edge tests on the typed zcl_result API.
- *   2. BIP39 standard test vectors (Trezor/python-mnemonic reference):
- *      entropy → mnemonic, mnemonic → entropy, PBKDF2 seed with the
- *      canonical "TREZOR" passphrase.
- *   3. Round-trip property: entropy → mnemonic → entropy over
- *      synthetic random-looking inputs and all five valid lengths.
- *   4. Wrapper-vs-domain regression seal: the contexts/wallet/modules/wallet wrappers must
- *      produce byte-identical output to the pure domain functions.
+ *   2. BIP39 test vectors (Trezor/python-mnemonic): entropy -> mnemonic,
+ *      mnemonic -> entropy, PBKDF2 seed with the "TREZOR" passphrase.
+ *   3. Round-trip entropy -> mnemonic -> entropy over synthetic inputs and
+ *      all five valid lengths.
+ *   4. The wallet wrappers produce byte-identical output to the domain
+ *      functions.
  */
 
 #include "test/test_core.h"
@@ -169,11 +168,8 @@ int test_domain_wallet_mnemonic(void)
     }
 
     /* ── normalize: the one canonical form ────────────────────────
-     *
-     * Everything below is a way a user's twelve words arrive after a copy,
-     * a paste or a transcription. They are all the same phrase, so they
-     * must all normalise to the same bytes — that equality is what stops a
-     * pasted phrase from opening a valid-looking, empty, WRONG wallet. */
+     * Copy, paste and transcription variants of a phrase must normalise to
+     * the same bytes, so a pasted phrase cannot open a wrong empty wallet. */
     {
         struct { const char *in, *want; } cases[] = {
             { "abandon about",        "abandon about" },
@@ -240,9 +236,8 @@ int test_domain_wallet_mnemonic(void)
                   !v.ok && v.code == DOMAIN_WALLET_MNEMONIC_ERR_NON_ASCII);
     }
     {
-        /* The seed a sloppy spelling derives IS the canonical one — the
-         * whole point — and the canonical vector still holds, so this is
-         * not a normalisation that quietly changed every wallet. */
+        /* A sloppy spelling derives the canonical seed, and the canonical
+         * vector still holds. */
         uint8_t canon[64], messy[64];
         struct zcl_result a = domain_wallet_mnemonic_to_seed(
                 tv1_mnemonic, "TREZOR", canon, sizeof(canon));

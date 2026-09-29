@@ -3,12 +3,10 @@
  * ACCEPTANCE BAR for dev.index.* (native_dev_index_{catalog,ingest,identity,
  * parse,search,command}.c).
  *
- * Exercises the catalog/ingest/search modules directly against a fixture
- * root, never the real checkout's state: every call passes an explicit
- * state_root_override (and, for dev_index_db_open, an explicit index_override
- * too) pointing at a per-test temp directory — no environment variable is
- * read anywhere in this path, so a fixture can never touch the operator's
- * real ~/.local/state/zclassic23/index/index.db or sources.
+ * Exercises the catalog/ingest/search modules against a fixture root: every
+ * call passes an explicit state_root_override (and index_override for
+ * dev_index_db_open), and no environment variable is read, so a fixture never
+ * touches the operator's real index.db or sources.
  */
 
 #include "test/test_core.h"
@@ -103,15 +101,10 @@ static int64_t dvi_fake_wall(void *self)
     return atomic_load(&((struct dvi_fake_clock *)self)->wall_ms);
 }
 
-/* Drives one dev.index.* handler with a hand-built request whose input JSON
- * carries the DOCUMENTED CLI spelling of the two overrides ("index" and
- * "state-root", hyphenated) — the same keys the CLI flag parser
- * (nc_split_flag in native_command.c does no hyphen/underscore translation)
- * hands the handler after splitting "--index=..." / "--state-root=...".
- * Calling the handler directly (rather than through the catalog dispatcher)
- * avoids needing a ZCL_DEV_BUILD-wired handler table in the test binary,
- * while still exercising the exact json_get(request->input, "state-root")
- * lookup the bug was in. */
+/* Drives one dev.index.* handler with a hand-built request carrying the
+ * documented CLI spelling of the overrides ("index" and "state-root",
+ * hyphenated), as nc_split_flag in native_command.c hands them over. Calling
+ * the handler directly avoids needing a ZCL_DEV_BUILD-wired handler table. */
 static bool dvi_dispatch(const char *leaf, const char *index_val,
                          const char *state_root_val,
                          struct zcl_command_reply *reply)
@@ -147,9 +140,8 @@ int test_dev_index(void)
     test_make_tmpdir(parent, sizeof(parent), "dev_index", "fixture");
 
     /* One fixture root serves every source: --state-root=<root> applies to
-     * board/experiments/logs (normally zclassic23-rooted) AND landing
-     * (normally the native dev-state root) alike — see
-     * dev_index_source_resolve_root's doc comment. */
+     * board/experiments/logs and landing alike (see
+     * dev_index_source_resolve_root). */
     char root[600], board_dir[700], exp_dir[700], land_dir[700];
     (void)snprintf(root, sizeof(root), "%s/root", parent);
     (void)snprintf(board_dir, sizeof(board_dir), "%s/board", root);
@@ -207,11 +199,8 @@ int test_dev_index(void)
         PASS();
     }
 
-    /* dev_index_db_open's schema includes `CREATE VIRTUAL TABLE rows_fts
-     * USING fts5(...)`. If this vendored sqlite build lacked FTS5, that
-     * DDL — and therefore this open — would fail with "no such module:
-     * fts5", and the assert below names it rather than the test silently
-     * skipping the feature. */
+    /* dev_index_db_open's schema uses `CREATE VIRTUAL TABLE ... USING fts5`;
+     * a sqlite build without FTS5 fails this open and the assert names it. */
     if (!dev_index_db_open(true, NULL, root, &db, NULL, err, sizeof(err))) {
         printf("dev_index_db_open failed (FTS5 missing from this build?): "
               "%s\n", err);
@@ -337,9 +326,8 @@ int test_dev_index(void)
         size_t n = fread(current, 1, sizeof(current) - 1, f);
         fclose(f);
         current[n] = '\0';
-        /* "fourth" -> "fifth ": same byte length, same file size, same
-         * inode (an ordinary open/write/close, no rename) — the case an
-         * inode-or-size check alone would miss. */
+        /* "fourth" -> "fifth ": same length, size and inode (no rename),
+         * which an inode-or-size check alone would miss. */
         char *hit = strstr(current, "fourth");
         ASSERT(hit != NULL);
         memcpy(hit, "fifth ", 6);
@@ -405,10 +393,8 @@ int test_dev_index(void)
         ASSERT_STR_EQ(st.newest_ts, "2026-09-01T00:00:00Z");
         ASSERT(st.seconds_since_newest > 0);
         ASSERT(st.bytes_behind == 0);
-        /* 1, not 0: the TSV header line is a deliberate never-indexed line
-         * (dev_index_parse_experiment), and rows_skipped counts every line
-         * that produced no row this run — header included, not just
-         * genuinely malformed content. */
+        /* 1, not 0: the TSV header line is deliberately never indexed and
+         * rows_skipped counts every line that produced no row. */
         ASSERT(st.rows_skipped == 1);
         PASS();
     }

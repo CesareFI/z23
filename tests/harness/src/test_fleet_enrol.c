@@ -3,17 +3,14 @@
  * test_fleet_enrol — adversarial proof that one-paste fleet enrolment
  * admits exactly what its signatures say and nothing else.
  *
- * The whole ceremony is two strings an owner copies between two computers,
- * so every case below is a string somebody could paste: a token with one
- * byte changed, a token minted by a different key, a receipt whose facts
- * were edited after the box signed them, an invite used twice, a name
- * already taken, a roster line somebody appended by hand. Each of those is
- * a way an attacker who can put text in front of the owner would try to get
- * a machine into the fleet, or get the owner's ssh bridge pointed at one.
+ * Every case is a string somebody could paste: a token with one byte
+ * changed, a token minted by another key, a receipt edited after signing, an
+ * invite used twice, a taken name, a hand-appended roster line. Each is a way
+ * to get a machine into the fleet or point the owner's ssh bridge at one.
  *
- * Every fixture lives under test-tmp/ with XDG_STATE_HOME and HOME
- * redirected into it, so nothing here reads or writes the operator's real
- * fleet key, roster, or ~/.ssh/authorized_keys.
+ * Fixtures live under test-tmp/ with XDG_STATE_HOME and HOME redirected, so
+ * the operator's real fleet key, roster and ~/.ssh/authorized_keys are never
+ * touched.
  */
 
 #define _POSIX_C_SOURCE 200809L
@@ -35,8 +32,8 @@
 
 #define FE_NOW 1757030400
 #define FE_TTL 24
-/* 56 base32 characters then ".onion": a v3 locator with the right SHAPE and
- * no owner. Nothing dials it; the field is self-reported by construction. */
+/* 56 base32 characters then ".onion": a v3 locator with the right shape and
+ * no owner; self-reported, never dialed. */
 #define FE_ONION \
     "abcdefghijklmnopqrstuvwxyz234567abcdefghijklmnopqrstuvwx.onion"
 
@@ -46,9 +43,8 @@ static char g_fe_saved_xdg[PATH_MAX];
 static char g_fe_saved_home[PATH_MAX];
 static bool g_fe_saved;
 
-/* Point the state-root resolver and the ssh bridge at this case's own tree.
- * Called per TEST so a case that wants a virgin box — no key, no roster —
- * can have one. */
+/* Point the state-root resolver and the ssh bridge at this case's own tree;
+ * called per TEST so a case can have a virgin box (no key, no roster). */
 static void fe_isolate(const char *tag)
 {
     char base[PATH_MAX - 64];
@@ -77,8 +73,7 @@ static void fe_restore(void)
     else unsetenv("HOME");
 }
 
-/* A deterministic keypair, so a case can play the other box without
- * touching the state root. */
+/* A deterministic keypair, so a case can play the other box. */
 static void fe_key(uint8_t byte, uint8_t seed[32], uint8_t pubkey[32])
 {
     uint8_t secret[32];
@@ -111,8 +106,7 @@ static size_t fe_occurrences(const char *body, const char *needle)
     return n;
 }
 
-/* How many wire bytes a pasted record decodes to. 0 when it is not
- * decodable at all, which every caller below asserts against first. */
+/* How many wire bytes a pasted record decodes to; 0 when not decodable. */
 static size_t fe_wire_len(const char *text)
 {
     uint8_t wire[FLEET_ENROL_MACHINE_WIRE_MAX];
@@ -121,8 +115,8 @@ static size_t fe_wire_len(const char *text)
     return len;
 }
 
-/* Decode `text`, flip one bit at `offset`, and re-encode. This is exactly
- * what a hostile paste is: still valid base64url, one byte different. */
+/* Decode `text`, flip one bit at `offset`, re-encode: a hostile paste that is
+ * still valid base64url. */
 static bool fe_tamper(const char *text, size_t offset, char *out, size_t cap)
 {
     uint8_t wire[FLEET_ENROL_MACHINE_WIRE_MAX];
@@ -134,8 +128,7 @@ static bool fe_tamper(const char *text, size_t offset, char *out, size_t cap)
 }
 
 /* One sealed roster line for `name` under `box_seed`, admitted at `port` by
- * `op_seed`. The whole ceremony in one helper, so the cases below read as
- * the questions they ask rather than as setup. */
+ * `op_seed`: the whole ceremony in one helper. */
 static bool fe_row(const char *name, uint8_t op_byte, uint8_t box_byte,
                    uint16_t port, const char *ssh, char *out, size_t cap)
 {
@@ -212,8 +205,7 @@ static int test_fe_invite_tampered(void)
         fe_key(0x22, other_seed, other_pub);
         ASSERT(fleet_invite_mint("studio", FE_TTL, "", seed, pubkey, FE_NOW,
                                  token, sizeof(token), &invite, &why));
-        /* Every byte of the signed body, one at a time. A signature that
-         * covered only part of the record would let one of these through. */
+        /* Every byte of the signed body, one at a time. */
         ASSERT(fe_wire_len(token) > 0u);
         for (body = 0; body < fe_wire_len(token); ++body) {
             ASSERT(fe_tamper(token, body, forged, sizeof(forged)));
@@ -221,10 +213,8 @@ static int test_fe_invite_tampered(void)
             ASSERT(!fleet_invite_parse(forged, &parsed, NULL, 0, NULL, &why));
             ASSERT(why != NULL);
         }
-        /* And a token re-signed by another key does not become this
-         * fleet's: it verifies internally (the key inside matches the
-         * signature) but names a stranger, which is what `fleet admit`
-         * refuses as invite_not_ours. */
+        /* A token re-signed by another key verifies internally but names a
+         * stranger: `fleet admit` refuses it as invite_not_ours. */
         why = NULL;
         ASSERT(fleet_invite_mint("studio", FE_TTL, "", other_seed, other_pub,
                                  FE_NOW, forged, sizeof(forged), &invite,
@@ -250,8 +240,8 @@ static int test_fe_invite_bounds(void)
         ASSERT(fleet_enrol_name_valid("studio"));
         ASSERT(fleet_enrol_name_valid("node-4"));
         ASSERT(fleet_enrol_name_valid("a1"));
-        /* One spelling per machine: no capitals, no dots, no underscores,
-         * no edge dashes, nothing too short to say or too long to read. */
+        /* One spelling per machine: no capitals, dots, underscores or edge
+         * dashes; not too short or too long. */
         ASSERT(!fleet_enrol_name_valid("Studio"));
         ASSERT(!fleet_enrol_name_valid("studio.two"));
         ASSERT(!fleet_enrol_name_valid("studio_two"));
@@ -271,8 +261,8 @@ static int test_fe_invite_bounds(void)
         ASSERT(!fleet_invite_mint("studio", 169, "", seed, pubkey, FE_NOW,
                                   token, sizeof(token), &invite, &why));
         ASSERT_STR_EQ(why, FLEET_ENROL_WHY_TTL_INVALID);
-        /* A relay endpoint is not a place to hide a newline that would
-         * split a roster line or an authorized_keys entry. */
+        /* A relay endpoint cannot smuggle a newline into a roster line or an
+         * authorized_keys entry. */
         ASSERT(!fleet_invite_mint("studio", FE_TTL, "host\nmore", seed, pubkey,
                                   FE_NOW, token, sizeof(token), &invite, &why));
         ASSERT_STR_EQ(why, FLEET_ENROL_WHY_RELAY_INVALID);
@@ -309,23 +299,19 @@ static int test_fe_receipt(void)
                                   box_pub, NULL, receipt,
                                   sizeof(receipt), &why));
         ASSERT(fleet_receipt_parse(receipt, &parsed, NULL, 0, NULL, &why));
-        /* The invite travels inside the receipt intact, so the manager
-         * re-checks its OWN signature rather than trusting a retyped name. */
+        /* The invite travels intact so the manager re-checks its own
+         * signature. */
         ASSERT_STR_EQ(parsed.invite.name, "studio");
         ASSERT(memcmp(parsed.invite.operator_pubkey, op_pub, 32) == 0);
         ASSERT(memcmp(parsed.box_pubkey, box_pub, 32) == 0);
         ASSERT_STR_EQ(parsed.facts.hostname, "build-box-7");
         ASSERT_EQ(parsed.facts.cores, 8u);
         ASSERT_STR_EQ(parsed.ssh_pubkey, "ssh-ed25519 AAAAkey owner@box");
-        /* The locator rides beside the name, under the SAME box signature.
-         * A receipt that carried it outside the signed body would let a
-         * carrier point the fleet at an address the box never claimed. */
+        /* The locator rides under the same box signature; outside the signed
+         * body a carrier could point the fleet at an unclaimed address. */
         ASSERT_STR_EQ(parsed.onion, FE_ONION);
-        /* EVERY signed byte, one at a time — a fact, the embedded invite,
-         * the ssh key the bridge would authorize, the box key, and the
-         * signature itself. A signature covering only part of the record
-         * would let one of these through, and "some of the bytes" is
-         * exactly the bug a sampled loop would miss. */
+        /* Every signed byte, one at a time (a fact, the embedded invite, the
+         * ssh key the bridge would authorize, the box key, the signature). */
         ASSERT(fe_wire_len(receipt) > 0u);
         for (size_t at = 0; at < fe_wire_len(receipt); ++at) {
             ASSERT(fe_tamper(receipt, at, forged, sizeof(forged)));
@@ -356,8 +342,8 @@ static int test_fe_roster_seal(void)
         ASSERT_STR_EQ(machine.receipt.invite.name, "studio");
         ASSERT_EQ(machine.relay_port, (uint16_t)22200);
         ASSERT_EQ(machine.enrolled_at, (int64_t)FE_NOW);
-        /* A line somebody else sealed is not readable as this fleet's row,
-         * which is what makes hand-editing the file unable to invent one. */
+        /* A line sealed by somebody else is not readable as this fleet's
+         * row, so hand-editing cannot invent one. */
         why = NULL;
         ASSERT(!fleet_machine_parse(row, other_pub, &machine, &why));
         ASSERT_STR_EQ(why, FLEET_ENROL_WHY_ROSTER_UNREADABLE);
@@ -393,14 +379,14 @@ static int test_fe_roster_admission(void)
         ASSERT(scan.name_taken);
         ASSERT(!scan.same_box);
         ASSERT_EQ(scan.next_port, (uint16_t)(FLEET_ENROL_PORT_FIRST + 1));
-        /* The SAME box re-enrolling is not a name clash and keeps its port,
-         * so re-running admit after a lost reply grants nothing new. */
+        /* The same box re-enrolling keeps its port, so re-running admit after
+         * a lost reply grants nothing new. */
         ASSERT(fleet_roster_scan(op_pub, "studio", box_a, &scan, &why));
         ASSERT(scan.same_box);
         ASSERT(!scan.name_taken);
         ASSERT_EQ(scan.existing_port, (uint16_t)FLEET_ENROL_PORT_FIRST);
-        /* A row somebody appended under a different key raises the
-         * unverifiable count and does not raise the row count. */
+        /* A row appended under a different key raises the unverifiable count,
+         * not the row count. */
         ASSERT(fe_row("intruder", 0x64, 0x65, FLEET_ENROL_PORT_FIRST + 1, "",
                       row, sizeof(row)));
         ASSERT(fleet_roster_append(row, &why));
@@ -436,17 +422,16 @@ static int test_fe_roster_import(void)
         ASSERT(fe_row("studio", 0x81, 0x82, FLEET_ENROL_PORT_FIRST, "", row,
                       sizeof(row)));
 
-        /* A FORGED line: the manager's genuine line with one byte changed
-         * in the middle. Still valid base64url, no longer its seal. */
+        /* A forged line: the genuine line with one byte changed; valid
+         * base64url, no longer its seal. */
         ASSERT(fe_tamper(row, fe_wire_len(row) / 2, forged, sizeof(forged)));
         ASSERT(!fleet_roster_import(forged, op_pub, &machine, &appended,
                                     &why));
         ASSERT_STR_EQ(why, FLEET_ENROL_WHY_ROSTER_LINE_UNSEALED);
         ASSERT(!appended);
 
-        /* A WRONG OPERATOR KEY, both ways round: a genuine line checked
-         * against a key this box does not trust, and a line another
-         * operator sealed checked against the key it does. */
+        /* A wrong operator key both ways: a genuine line against an untrusted
+         * key, and another operator's line against the key it does match. */
         ASSERT(!fleet_roster_import(row, other_pub, &machine, &appended,
                                     &why));
         ASSERT_STR_EQ(why, FLEET_ENROL_WHY_ROSTER_LINE_UNSEALED);
@@ -456,8 +441,7 @@ static int test_fe_roster_import(void)
                                     &why));
         ASSERT_STR_EQ(why, FLEET_ENROL_WHY_ROSTER_LINE_UNSEALED);
 
-        /* None of the three reached the file, not even as a counted
-         * unverifiable row. */
+        /* None of the three reached the file, even as an unverifiable row. */
         ASSERT(fleet_roster_scan(op_pub, NULL, NULL, &scan, &why));
         ASSERT_EQ(scan.rows, 0u);
         ASSERT_EQ(scan.unverifiable, 0u);
@@ -472,7 +456,7 @@ static int test_fe_roster_import(void)
         ASSERT(fleet_roster_scan(op_pub, NULL, NULL, &scan, &why));
         ASSERT_EQ(scan.rows, 1u);
 
-        /* A different box under a name this roster already gives away is
+        /* A different box under a name the roster already gives away is
          * refused by name, even though the operator sealed it. */
         ASSERT(fe_row("studio", 0x81, 0x83, FLEET_ENROL_PORT_FIRST + 1, "",
                       twin, sizeof(twin)));
@@ -509,18 +493,11 @@ static int test_fe_replay(void)
     return failures;
 }
 
-/* THE BUG THIS PINS (proved on two hosts, 2026-09-19): fleet_invite_mint()
- * never assigned out->nonce, and `fleet invite` handed it an uninitialised
- * `struct fleet_invite` on the stack. That stack was zeros, so every invite
- * the manager ever minted carried the nonce
- * 00000000000000000000000000000000, the spent-invite ledger burned it on
- * the first admission, and the second `fleet admit` — a different machine,
- * a different receipt — refused FLEET_INVITE_REPLAYED. One manager could
- * admit exactly one computer, ever.
- *
- * Every case below pre-fills the caller's struct with a FIXED pattern, so
- * a mint that does not write the nonce produces identical nonces and fails
- * here deterministically rather than depending on what the stack held. */
+/* fleet_invite_mint() must assign out->nonce. Every case pre-fills the
+ * caller's struct with a FIXED pattern, so a mint that leaves the nonce
+ * unwritten yields identical nonces and fails deterministically (otherwise
+ * every invite carried the all-zero nonce, the spent-invite ledger burned it on
+ * the first admission, and a manager could admit exactly one computer). */
 static int test_fe_invite_nonce_fresh(void)
 {
     int failures = 0;
@@ -539,9 +516,8 @@ static int test_fe_invite_nonce_fresh(void)
         memset(zero, 0, sizeof(zero));
         memset(stale, 0xee, sizeof(stale));
         for (i = 0; i < FE_MINTS; i++) {
-            /* Half the mints are handed a zeroed struct (what the live
-             * manager's stack held) and half a poisoned one, so neither a
-             * "leave it as it came" nor a "zero it and stop" mint passes. */
+            /* Half the mints get a zeroed struct, half a poisoned one, so
+             * neither "leave it" nor "zero it" passes. */
             memset(&invite[i], (i % 2u) ? 0xee : 0x00, sizeof(invite[i]));
             ASSERT(fleet_invite_mint("studio", FE_TTL, "", op_seed, op_pub,
                                      FE_NOW, token[i], sizeof(token[i]),
@@ -550,18 +526,17 @@ static int test_fe_invite_nonce_fresh(void)
             ASSERT(memcmp(invite[i].nonce, zero, sizeof(zero)) != 0);
             ASSERT(memcmp(invite[i].nonce, stale, sizeof(stale)) != 0);
         }
-        /* Pairwise distinct. Eight draws of 128 bits collide at a rate no
-         * suite will ever observe, so a repeat here is a constant, a reset
-         * counter, or no draw at all — the three ways this defect returns. */
+        /* Pairwise distinct: a repeat means a constant, a reset counter or no
+         * draw at all. */
         for (i = 0; i < FE_MINTS; i++)
             for (j = i + 1; j < FE_MINTS; j++)
                 ASSERT(memcmp(invite[i].nonce, invite[j].nonce,
                               FLEET_ENROL_NONCE_BYTES) != 0);
-        /* The nonce is inside the signed body, so two invites for the same
-         * name from the same key are two different pasteable lines. */
+        /* The nonce is in the signed body, so two invites for one name and
+         * key are different lines. */
         ASSERT(strcmp(token[0], token[1]) != 0);
-        /* And it survives the wire: what the manager recorded is what the
-         * box being admitted presents back. */
+        /* It survives the wire: the recorded nonce is what the box presents
+         * back. */
         ASSERT(fleet_invite_parse(token[1], &parsed, NULL, 0, NULL, &why));
         ASSERT(memcmp(parsed.nonce, invite[1].nonce,
                       FLEET_ENROL_NONCE_BYTES) == 0);
@@ -570,10 +545,9 @@ static int test_fe_invite_nonce_fresh(void)
     return failures;
 }
 
-/* The defect as the owner met it: admit one machine, then admit a second.
- * This case runs the whole ceremony twice against ONE manager key and asks
- * the spent-invite ledger exactly what `fleet admit` asks it, in the same
- * order, so a nonce that repeats refuses the second box here too. */
+/* Admit one machine, then a second: the whole ceremony twice against one
+ * manager key, asking the spent-invite ledger what `fleet admit` asks it in
+ * the same order, so a repeating nonce refuses the second box. */
 static int test_fe_admit_two_machines(void)
 {
     int failures = 0;
@@ -599,9 +573,9 @@ static int test_fe_admit_two_machines(void)
         fe_key(0xc1, op_seed, op_pub);
         for (i = 0; i < 2u; i++) {
             fe_key(box_bytes[i], box_seed, box_pub);
-            /* The manager mints. The caller's struct is zeroed first, which
-             * is precisely the live condition that produced the all-zero
-             * nonce, so a mint that does not draw one fails the second lap. */
+            /* The manager mints into a zeroed struct (the live condition
+             * behind the all-zero nonce), so a mint that draws no nonce fails
+             * the second lap. */
             memset(&invite, 0, sizeof(invite));
             ASSERT(fleet_invite_mint(names[i], FE_TTL, "", op_seed, op_pub,
                                      FE_NOW, token, sizeof(token), &invite,
@@ -616,8 +590,8 @@ static int test_fe_admit_two_machines(void)
             ASSERT(fleet_receipt_parse(receipt, &parsed, receipt_wire,
                                        sizeof(receipt_wire), &receipt_len,
                                        &why));
-            /* The manager admits: the replay question first, exactly as
-             * fe_admit asks it, and only then the seal and the row. */
+            /* The manager admits: the replay question first, as fe_admit
+             * asks it, then the seal and the row. */
             ASSERT(fleet_nonce_seen(parsed.invite.nonce, &seen, &why));
             ASSERT(!seen);
             ASSERT(fleet_machine_mint(receipt_wire, receipt_len, FE_NOW,
@@ -659,9 +633,8 @@ static int test_fe_bridge(void)
         bool added = false;
         fe_isolate("bridge");
         ASSERT(fleet_bridge_line(key, 22207, "studio", line, sizeof(line)));
-        /* Written out in full on purpose: a test that asks the subject to
-         * build the string it is checking cannot notice the string
-         * changing, and every token here is a denial. */
+        /* Written out in full: a test that asks the subject to build the
+         * string cannot notice it changing, and every token is a denial. */
         ASSERT_STR_EQ(line,
                       "restrict,port-forwarding,permitlisten=\"127.0.0.1:22207\" "
                       "ssh-ed25519 AAAAC3NzaC1 owner@box z23-fleet-studio");
@@ -676,8 +649,7 @@ static int test_fe_bridge(void)
         ASSERT(mkdir(dir, 0700) == 0);
         ASSERT(fleet_bridge_authorize(line, "studio", &added, &why));
         ASSERT(added);
-        /* Idempotent per box name: a second admit of the same machine is a
-         * no-op, not a second grant. */
+        /* Idempotent per box name: a second admit is a no-op. */
         added = true;
         ASSERT(fleet_bridge_authorize(line, "studio", &added, &why));
         ASSERT(!added);
@@ -687,9 +659,8 @@ static int test_fe_bridge(void)
         read = fread(body, 1, sizeof(body) - 1u, f);
         (void)fclose(f);
         body[read] = '\0';
-        /* Exactly one grant for this box, and exactly one line in the
-         * file: a second admit that appended a duplicate would be a second
-         * standing authorization the owner never asked for. */
+        /* Exactly one grant and one line per box: a duplicate append would be
+         * a second standing authorization. */
         ASSERT(fe_occurrences(body, "z23-fleet-studio") == 1u);
         ASSERT(fe_occurrences(body, "permitlisten") == 1u);
         ASSERT(fe_occurrences(body, "\n") == 1u);
@@ -708,26 +679,24 @@ static int test_fe_onion_grammar(void)
          "refuses everything a reader could mistake for one") {
         char shorter[80], capital[80], ported[80], bad_port[80];
         size_t n = strlen(FE_ONION);
-        /* Empty is the normal state of a box with no persistent onion yet.
-         * It is a missing column, not a bad one, so it must not refuse. */
+        /* Empty (no persistent onion yet) is a missing column, not a bad
+         * one. */
         ASSERT(fleet_enrol_onion_valid(""));
         ASSERT(fleet_enrol_onion_valid(FE_ONION));
         /* An explicit port is allowed; the address is a locator. */
         ASSERT(snprintf(ported, sizeof(ported), "%s:9050", FE_ONION) > 0);
         ASSERT(fleet_enrol_onion_valid(ported));
-        /* A v2 address is 16 characters and is not this. Truncating the v3
-         * body must refuse rather than land in some shorter grammar. */
+        /* A v2 address is 16 characters; a truncated v3 body must refuse. */
         ASSERT(n < sizeof(shorter));
         memcpy(shorter, FE_ONION, n + 1u);
         memmove(shorter + 16, shorter + n - 6, 7);
         ASSERT(!fleet_enrol_onion_valid(shorter));
-        /* One spelling per address: an uppercase body is the same key and a
-         * different string, and two spellings would be two rows. */
+        /* One spelling per address: an uppercase body would be a second row. */
         memcpy(capital, FE_ONION, n + 1u);
         capital[0] = 'A';
         ASSERT(!fleet_enrol_onion_valid(capital));
-        /* '1', '0' and '8' are not in RFC 4648 base32, so a hand-typed
-         * address that swapped one for a letter is refused, not enrolled. */
+        /* '1', '0' and '8' are not RFC 4648 base32; a swapped hand-typed
+         * address is refused. */
         memcpy(capital, FE_ONION, n + 1u);
         capital[3] = '1';
         ASSERT(!fleet_enrol_onion_valid(capital));
@@ -742,8 +711,7 @@ static int test_fe_onion_grammar(void)
         ASSERT(!fleet_enrol_onion_valid(bad_port));
         ASSERT(snprintf(bad_port, sizeof(bad_port), "%s:123456", FE_ONION) > 0);
         ASSERT(!fleet_enrol_onion_valid(bad_port));
-        /* A hostname and an IP literal are not onion identities, and this
-         * field is an onion identity or nothing. */
+        /* A hostname or IP literal is not an onion identity. */
         ASSERT(!fleet_enrol_onion_valid("relay.example.com"));
         ASSERT(!fleet_enrol_onion_valid("192.0.2.1:9050"));
         PASS();
@@ -751,9 +719,8 @@ static int test_fe_onion_grammar(void)
     return failures;
 }
 
-/* A receipt whose signature is intact but whose onion field is not a
- * locator must be refused on the way IN. The manager did not mint that
- * string; a signature proves who wrote it, never that it is dialable. */
+/* A receipt with an intact signature but a non-locator onion field is refused
+ * on the way in: a signature proves who wrote it, not that it is dialable. */
 static int test_fe_onion_refused_at_mint(void)
 {
     int failures = 0;
@@ -803,9 +770,8 @@ static const char *fe_listed_name(const struct zcl_command_reply *reply,
 }
 
 /* The shipped leaf: the catalog validator, then the registered handler.
- * `reply` is initialized before any return. On false it has been freed
- * and the caller must not free it. On true the caller owns it. A
- * validator refusal never reaches the handler. */
+ * `reply` is initialized before any return; on false it has been freed, on
+ * true the caller owns it. A validator refusal never reaches the handler. */
 static bool fe_machines_call(const char *body, struct zcl_command_reply *reply,
                              char *why, size_t why_cap)
 {
@@ -974,25 +940,21 @@ static int test_fe_render(void)
         verified = json_get(&out, "verified");
         self = json_get(&out, "self_reported");
         ASSERT(verified != NULL && self != NULL);
-        /* The name leads the verified object: it is the handle the owner
-         * and their agents use to talk about this machine. */
+        /* The name leads the verified object as the machine's handle. */
         ASSERT_STR_EQ(json_get_str(json_get(verified, "name")), "studio");
         ASSERT_EQ(json_get_int(json_get(verified, "relay_port")), 22203);
         /* A hardware claim is never in the verified object, and the name is
-         * never in the self-reported one. Nobody measured the box's cores;
-         * nobody but the operator chose its name. */
+         * never in the self-reported one. */
         ASSERT(json_get(verified, "hostname") == NULL);
         ASSERT(json_get(verified, "cores") == NULL);
         ASSERT(json_get(self, "name") == NULL);
         ASSERT_STR_EQ(json_get_str(json_get(self, "onion")), FE_ONION);
-        /* The locator is a column, never the handle: it never appears in the
-         * verified object and never replaces the name. */
+        /* The locator is a column, never the handle. */
         ASSERT(json_get(verified, "onion") == NULL);
         ASSERT_STR_EQ(json_get_str(json_get(self, "hostname")), "build-box-7");
         ASSERT_EQ(json_get_int(json_get(self, "cores")), 8);
-        /* And nothing private reaches the render: the roster row carries no
-         * seed, and the rendered object carries no key material beyond the
-         * public one. */
+        /* Nothing private reaches the render: no seed, no key material beyond
+         * the public one. */
         ASSERT(json_write(&out, text, sizeof(text)) > 0);
         ASSERT(strstr(text, "seed") == NULL);
         ASSERT(strstr(text, "private") == NULL);

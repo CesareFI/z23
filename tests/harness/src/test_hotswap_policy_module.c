@@ -222,10 +222,9 @@ static int t_manifest_rows_resolve_to_one_owner(void)
         ASSERT_STR_EQ(hotswap_swappable_source_for_leaf(POLICY_LEAF),
                       POLICY_TU);
         ASSERT_STR_EQ(hotswap_module_probe_leaf(POLICY_TU), POLICY_LEAF);
-        /* The frozen policy table travels INSIDE the module, so editing the
-         * rule itself takes effect from a single-TU rebuild. A leaf body or
+        /* The frozen policy table travels INSIDE the module; a leaf body or
          * decision table outside the island would be imported from the
-         * resident node at dlopen and the swap would silently do nothing. */
+         * resident node at dlopen and the swap would do nothing. */
         ASSERT_STR_EQ(hotswap_island_owner_for_path(POLICY_ISLAND), POLICY_TU);
         const char *members = hotswap_island_members_for_source(POLICY_TU);
         ASSERT(members != NULL);

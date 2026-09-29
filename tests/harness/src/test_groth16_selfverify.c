@@ -1,12 +1,10 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 /* Positive Sapling prover capability gate.
  *
- * This test used to print FALSE for the native prover's self-verification and
- * deliberately return success. That made a broken prover indistinguishable
- * from a healthy one. The production parameter loader now runs a complete
- * Spend + Output + binding-signature bundle through the independent C23
- * consensus verifier before enabling proving. This test makes that result a
- * hard assertion and independently exercises the public Output API.
+ * The production parameter loader runs a complete Spend + Output +
+ * binding-signature bundle through the independent C23 consensus verifier
+ * before enabling proving. This test makes that result a hard assertion and
+ * independently exercises the public Output API.
  */
 
 #include "test/test_core.h"
@@ -32,10 +30,9 @@
     else { printf("FAIL\n"); failures++; }     \
 } while (0)
 
-/* First diversifier whose group_hash lands on a Jubjub point. group_hash is
- * probabilistic (~50% of tags miss), so a hard-coded diversifier is a coin
- * flip; spend section 11 witnesses g_d and section 12 asserts it is not small
- * order, both of which need a real point. */
+/* First diversifier whose group_hash lands on a Jubjub point (~50% of tags
+ * miss, so a hard-coded diversifier is a coin flip); spend sections 11 and
+ * 12 need a real point. */
 static bool find_diversifier(uint8_t d[11])
 {
     memset(d, 0, 11);
@@ -47,20 +44,17 @@ static bool find_diversifier(uint8_t d[11])
     return false;
 }
 
-/* ── Native C23 Groth16 prover baseline (H1 harness) ──────────────────
+/* ── Native C23 Groth16 prover baseline ───────────────────────────────
  *
- * NON-GATING diagnostic. The production/gated prover is native C23. This
- * section measures its circuits (sapling_output_synthesize /
- * sapling_spend_synthesize) against the
- * trusted-setup proving keys, so the spend-prover campaign can track exact
- * var/constraint counts vs target without re-deriving them each lane.
+ * NON-GATING diagnostic: measures the native circuits
+ * (sapling_output_synthesize / sapling_spend_synthesize) against the
+ * trusted-setup proving keys and reports var/constraint counts.
  *
  * A native circuit only round-trips when its auxiliary assignment matches the
- * pk L query and its query densities match the key. `a_len` is a compact query
- * density, not the total variable count, so comparing it to num_vars is
- * meaningless; groth16_prove() validates those densities while proving. This
- * table remains informational because the exact circuit gates below carry the
- * assertions. */
+ * pk L query and its query densities match the key. `a_len` is a compact
+ * query density, not the total variable count, so it is not compared to
+ * num_vars; groth16_prove() validates the densities. The exact circuit gates
+ * below carry the assertions. */
 static void native_circuit_baseline(void)
 {
     printf("\n--- H1 baseline: native C23 circuit counts (NON-GATING) ---\n");
@@ -176,9 +170,9 @@ static void native_circuit_baseline(void)
     printf("--- end H1 baseline (informational) ---\n");
 }
 
-/* Output is small enough to gate as one exact production circuit. This is
- * params-free: it proves the C23 synthesis has the trusted-setup shape and an
- * honest, fully-derived public witness before any multi-minute proof runs. */
+/* Output is gated as one exact production circuit. Params-free: proves the
+ * C23 synthesis has the trusted-setup shape and an honest, fully-derived
+ * public witness before any multi-minute proof runs. */
 static int output_circuit_shape_gate(void)
 {
     printf("\n--- H1: Sapling OUTPUT native C23 circuit gate ---\n");
@@ -233,51 +227,34 @@ static int output_circuit_shape_gate(void)
     return failures;
 }
 
-/* H3 lane: Sapling SPEND circuit port — shape + value + determinism gate.
+/* Sapling SPEND circuit port: shape + value + determinism gate.
  *
- * The spend circuit is ported gadget-by-gadget in bellman's Spend::synthesize
- * order. This gate is params-free (pure R1CS synthesis, no proving key) and
- * pins the ported prefix (sections 1..21) against ground truth:
+ * Params-free (pure R1CS synthesis, no proving key); pins the ported prefix
+ * (sections 1..21) against ground truth:
  *   (1) cumulative constraint counts per section == the reference trace's
- *       cumulative boundaries (exact, verified by the salvage-plan legs);
- *   (2) the in-circuit nk / rk wires carry the reference-correct Jubjub points,
- *       with nk additionally pinned to the librustzcash reference vector (the
- *       H2 KAT) — validating the in-circuit fixed-base multiplication against
- *       ground truth end to end;
- *  (2b) section 10's 256 in-circuit blake2s digest bits == the out-of-circuit
- *       CRH^ivk over the same preimage, and its 251 truncated bits == the
- *       pinned librustzcash ivk. A matching constraint COUNT cannot see a wrong
- *       rotation constant or SIGMA row: mutation-testing confirms a wrong
- *       BLAKE2s rotation leaves the count at 24590 and the whole system
- *       satisfied, with only this check going red;
- *  (2c) every section-10 wire is BOUND — flipping any one of them (0<->1, which
- *       keeps booleanity intact) must make the R1CS unsatisfiable. Counts and
- *       values both read only the honest witness, so neither can see an
- *       UNDER-constrained gadget, which is the soundness-relevant failure: a
- *       free digest wire would let a prover choose its own ivk. Mutation-tested
- *       by making the XOR constraint vacuous — count, digest value and
- *       satisfaction all stay green and only this check fires;
- *  (2d) sections 11..16 — the note-content half. g_d is the witnessed
- *       GH("Zcash_gd", d) point; pk_d is the reference [ivk] g_d, which is the
- *       FIRST variable-base multiplication in the circuit, so its 3252-constraint
- *       count means nothing without the value check next to it;
- *       repr(g_d)/repr(pk_d) reproduce those points' compressed encodings; and
- *       cv is BOUND to public input 3/4, so the honest witness must carry the
- *       real [value]G_v + [rcv]G_rcv or the R1CS-satisfaction check below fails;
- *  (2e) sections 17..20 — the note commitment. The 982-constraint windowed
- *       Pedersen hash is the largest single gadget after blake2s, and a window
- *       lookup with the wrong table or the wrong personalization hits the same
- *       count while committing to a different note. So both the section-17 hash
- *       point and the section-20 commitment point are diffed, x AND y, against
- *       the out-of-circuit table-driven Pedersen hash + Jubjub scalar mul, and
- *       cm.x is additionally tied to the production sapling_compute_cm() — the
- *       protocol's `cmu`, i.e. the leaf the note-commitment tree stores;
- *  (2f) sections 17..21 END TO END. Section 21 folds the note commitment 32
- *       levels up to the anchor, and it now takes its leaf straight off section
- *       20's cm.x wire. Checking each half on its own would not establish that
- *       the commitment the circuit computed is the value that entered the fold,
- *       so the anchor wire is diffed against an out-of-circuit fold seeded from
- *       sapling_compute_cm()'s OWN output over the same witnessed path;
+ *       cumulative boundaries;
+ *   (2) the in-circuit nk / rk wires carry the reference-correct Jubjub
+ *       points, nk also pinned to the librustzcash reference vector;
+ *  (2b) section 10's 256 blake2s digest bits == the out-of-circuit CRH^ivk
+ *       over the same preimage, and its 251 truncated bits == the pinned
+ *       librustzcash ivk (a matching COUNT cannot see a wrong rotation
+ *       constant or SIGMA row);
+ *  (2c) every section-10 wire is BOUND: flipping any one (keeping
+ *       booleanity) must make the R1CS unsatisfiable (count and value checks
+ *       read only the honest witness and cannot see an UNDER-constrained
+ *       gadget, which would let a prover choose its own ivk);
+ *  (2d) sections 11..16, the note-content half: g_d == GH("Zcash_gd", d);
+ *       pk_d == [ivk] g_d (the first variable-base multiplication);
+ *       repr(g_d)/repr(pk_d) match the compressed encodings; cv is BOUND to
+ *       public input 3/4, so the witness must carry the real
+ *       [value]G_v + [rcv]G_rcv;
+ *  (2e) sections 17..20, the note commitment: the section-17 hash point and
+ *       the section-20 commitment point are diffed, x AND y, against the
+ *       out-of-circuit table-driven Pedersen hash + Jubjub scalar mul, and
+ *       cm.x is tied to sapling_compute_cm() (the note-commitment tree leaf);
+ *  (2f) sections 17..21 end to end: the anchor wire is diffed against an
+ *       out-of-circuit fold seeded from sapling_compute_cm()'s own output
+ *       over the same witnessed path;
  *   (3) synthesis is deterministic (identical inputs => byte-identical witness).
  * Sections 22..28 are not yet ported, so this is a PARTIAL-prefix gate, not a
  * spend round-trip. Returns the number of failures (0 == green). */
@@ -286,7 +263,7 @@ static int spend_circuit_shape_gate(void)
     printf("\n--- H3: Sapling SPEND circuit port shape gate (sections 1-28) ---\n");
     int failures = 0;
 
-    /* Fixed witness — reuses the H2 KAT scalars so the nk wire ties to the
+    /* Fixed witness reusing the H2 KAT scalars so the nk wire ties to the
      * pinned librustzcash reference vector. */
     uint8_t ak[32];
     sapling_ask_to_ak(SPEND_ORACLE_KAT_ASK, ak);
@@ -302,10 +279,9 @@ static int spend_circuit_shape_gate(void)
     wit.rcv[1] = 0x0d;
     wit.rcm[0] = 0x5c;              /* note commitment randomness (sections 18-20) */
     wit.rcm[1] = 0x23;
-    /* The 32 authentication-path siblings section 21 folds cm.x through. Each
-     * comes from a Pedersen Merkle hash so it is a canonical Fr encoding by
-     * construction, and the position bits are not a function of depth parity
-     * alone — a swapped-every-level bug has to be visible. */
+    /* The 32 authentication-path siblings section 21 folds cm.x through:
+     * canonical Fr encodings from a Pedersen Merkle hash, with position bits
+     * that are not a function of depth parity alone. */
     for (size_t d = 0; d < SAPLING_MERKLE_DEPTH; d++) {
         uint8_t pa[32] = {0}, pb[32] = {0};
         pa[0] = (uint8_t)(0x10u + d);
@@ -322,18 +298,16 @@ static int spend_circuit_shape_gate(void)
     bool rk_ok = sapling_compute_rk(ak, wit.ar, rk_bytes);
     PROVER_CHECK("compute_rk produced rk for the fixed witness", rk_ok);
 
-    /* cv is a PUBLIC INPUT the circuit now binds (section 14), so it has to be
-     * the real value commitment. A placeholder point makes the R1CS
-     * unsatisfiable — that is the intended behaviour, not a fixture quirk. */
+    /* cv is a bound PUBLIC INPUT (section 14) and must be the real value
+     * commitment. */
     uint8_t cv_bytes[32];
     bool cv_ok = sapling_value_commit(wit.value, wit.rcv, cv_bytes);
     PROVER_CHECK("value_commit produced cv for the fixed witness", cv_ok);
 
     struct sapling_spend_inputs pub;
     memset(&pub, 0, sizeof pub);
-    /* Sections 5, 14, 22 and 28 bind rk, cv, the anchor and the nullifier, so
-     * all four are part of the fixture: a placeholder anchor or nf makes the
-     * R1CS unsatisfiable by construction, not by a fixture quirk. */
+    /* Sections 5, 14, 22 and 28 bind rk, cv, the anchor and the nullifier,
+     * so all four are real fixture values (placeholders are unsatisfiable). */
     PROVER_CHECK("derived every public input from the witness",
                  sapling_spend_derive_public(&wit, &pub));
 
@@ -388,8 +362,8 @@ static int spend_circuit_shape_gate(void)
                  cs.num_inputs == 7);
     PROVER_CHECK("full spend constraint count == 98777",
                  cs.num_constraints == 98777);
-    /* Per-section DELTAS, not only cumulative totals — a compensating pair of
-     * errors in adjacent sections cancels in the running total but not here.
+    /* Per-section DELTAS as well as cumulative totals (compensating errors
+     * in adjacent sections cancel only in the total).
      * 3252 = 13*251 - 11 is double-and-add over the 251 truncated ivk bits;
      * 1265 = 64 + 191 + 252 + 750 + 6 + 2 is expose_value_commitment;
      * 44224 = 32 * 1382 is the whole Merkle fold. */
@@ -416,11 +390,9 @@ static int spend_circuit_shape_gate(void)
                              - sections[9 + i].num_constraints
                                  == REF_DELTA[i]);
     }
-    /* Section 10 alone must cost exactly what the reference's blake2s costs for
-     * a 512-bit all-allocated input. bellman's own blake2s test asserts 21518
-     * constraints for that shape, of which 512 are the input AllocatedBit::alloc
-     * constraints the caller pays — leaving 21006 for the hash itself, which is
-     * exactly the reference spend trace's section-10 delta. */
+    /* Section 10 alone must cost what the reference blake2s costs for a
+     * 512-bit all-allocated input: 21518 constraints, of which 512 are the
+     * input allocs the caller pays, leaving 21006 for the hash. */
     PROVER_CHECK("S10 delta == 21006 (bellman blake2s, 512-bit input)",
                  nsec >= 10 && sections[9].num_constraints
                              - sections[8].num_constraints == 21006);
@@ -453,18 +425,16 @@ static int spend_circuit_shape_gate(void)
     PROVER_CHECK("in-circuit rk wire == ak + [ar] SpendAuthGenerator",
                  rk_wire_ok);
 
-    /* (2b) Section 10 VALUE gate. A matching constraint COUNT says nothing
-     *      about what the gadget computes, so read the digest back off the
-     *      circuit's own wires and diff it against ground truth twice:
+    /* (2b) Section 10 VALUE gate: read the digest back off the circuit's
+     *      wires and diff it against ground truth twice:
      *
      *        - all 256 bits vs the out-of-circuit C23 BLAKE2s over the same
-     *          preimage (the scalar implementation, KAT-pinned elsewhere), and
-     *        - the 251 bits bellman keeps after `truncate(Fs::CAPACITY)` vs the
-     *          checked-in librustzcash `SPEND_ORACLE_KAT_IVK` vector.
+     *          preimage, and
+     *        - the 251 bits after `truncate(Fs::CAPACITY)` vs the librustzcash
+     *          `SPEND_ORACLE_KAT_IVK` vector.
      *
-     *      bellman's blake2s returns Booleans that may be NEGATED views of a
-     *      wire, so the probe's negation flag has to be applied — reading the
-     *      raw wire would invert bits and fail for the wrong reason. */
+     *      blake2s returns Booleans that may be NEGATED views of a wire, so
+     *      the probe's negation flag must be applied. */
     uint8_t ivk_full[32];
     {
         struct blake2s_ctx bctx;
@@ -512,20 +482,14 @@ static int spend_circuit_shape_gate(void)
     PROVER_CHECK("in-circuit ivk truncated to 251 bits == pinned "
                  "librustzcash ivk", ivk_trunc_ok);
 
-    /* (2c) ADVERSARIAL: are section 10's wires actually BOUND, or merely
-     *      present? A count gate and a value gate both pass for an
-     *      UNDER-constrained gadget — the dangerous failure here — because both
-     *      only ever look at the honest witness. So mutate the witness: flip one
-     *      section-10 wire at a time from 0 to 1 (or back), which keeps every
-     *      booleanity constraint satisfied, and require the system to become
-     *      UNSATISFIED. A wire that can be flipped freely is a soundness hole:
-     *      it would let a prover choose a digest bit, and CRH^ivk is what binds
-     *      the spend to its viewing key.
+    /* (2c) ADVERSARIAL: are section 10's wires BOUND? Count and value gates
+     *      pass for an UNDER-constrained gadget. Flip one section-10 wire at
+     *      a time (0<->1, keeping booleanity) and require the system to
+     *      become UNSATISFIED: a free digest bit would let a prover choose
+     *      the CRH^ivk that binds the spend to its viewing key.
      *
-     *      Two populations are probed: the 256 digest wires (the gadget's
-     *      output, where a free bit is directly exploitable) and a deterministic
-     *      stride across every wire section 10 allocated (its internal
-     *      round state, carries and XOR results). */
+     *      Probed: the 256 digest wires, and a deterministic stride across
+     *      every wire section 10 allocated (round state, carries, XORs). */
     size_t sec10_first_var = (nsec >= 10) ? sections[8].num_vars : 0;
     size_t sec10_last_var  = (nsec >= 10) ? sections[9].num_vars : 0;
     size_t flips_tried = 0, flips_detected = 0;
@@ -535,10 +499,9 @@ static int spend_circuit_shape_gate(void)
         fr_zero(&zero_fr);
         size_t ignored = SIZE_MAX;
 
-        /* Sanity: the honest witness satisfies the system before any mutation,
-         * otherwise "flip detected" would be vacuous. This is also what proves
-         * the cv public input is the real value commitment — section 14 binds
-         * it, so a placeholder cv shows up here as an unsatisfiable system. */
+        /* The honest witness must satisfy the system before any mutation,
+         * otherwise "flip detected" is vacuous; this also proves the cv
+         * public input is the real value commitment (section 14 binds it). */
         PROVER_CHECK("honest witness satisfies the full 98777-constraint system",
                      cs_is_satisfied(&cs, &ignored));
 
@@ -565,8 +528,7 @@ static int spend_circuit_shape_gate(void)
             cs.witness[v] = saved;
         }
 
-        /* Restoring must return the system to satisfied — proves the probe
-         * itself did not corrupt the witness it was measuring. */
+        /* Restoring must return the system to satisfied. */
         PROVER_CHECK("witness restored after mutation probe",
                      cs_is_satisfied(&cs, &ignored));
     }
@@ -581,22 +543,19 @@ static int spend_circuit_shape_gate(void)
                  "wire = no under-constrained gadget)",
                  flips_tried > 0 && flips_detected == flips_tried);
 
-    /* (2d) Sections 11..16 VALUE gate. Every one of these is a point or a bit
-     *      string with an out-of-circuit ground truth, so none of them is
-     *      accepted on its constraint count alone:
+    /* (2d) Sections 11..16 VALUE gate, each against an out-of-circuit
+     *      ground truth:
      *
      *        11  g_d          == GH("Zcash_gd", d)
      *        13  pk_d         == sapling_ivk_to_pkd(ivk, d)  (the reference
-     *                            variable-base multiplication — this is the one
-     *                            new GADGET the six sections introduce)
+     *                            variable-base multiplication)
      *        14  cv           == sapling_value_commit(value, rcv), and the 64
      *                            value bits are the note's value little-endian
      *        15  repr(g_d)    == compressed g_d, bit for bit
      *        16  repr(pk_d)   == compressed pk_d, bit for bit
      *
-     *      Sections 12 and 16's cv/pk_d bindings are additionally covered by the
-     *      satisfaction check above: assert_not_small_order and the cv copy
-     *      constraint can only be satisfied by a witness that really holds. */
+     *      The cv/pk_d bindings are also covered by the satisfaction check
+     *      above. */
     uint8_t gd_bytes[32], pkd_bytes[32];
     struct jub_point gd_pt;
     bool gd_derived = sapling_diversifier_to_gd(&gd_pt, wit.diversifier);
@@ -642,9 +601,8 @@ static int spend_circuit_shape_gate(void)
     }
 
     /* repr(g_d) / repr(pk_d): Jubjub's compressed encoding is y with x's low
-     * bit in the top bit, so repr's 256 little-endian bits ARE the bits of the
-     * 32-byte encoding. Same shape as the section 8/9 checks — they share the
-     * gadget, so they share the ground truth too. */
+     * bit in the top bit, so repr's 256 little-endian bits ARE the bits of
+     * the 32-byte encoding. */
     const struct { const char *label; const uint8_t *want; const size_t *bits; }
     repr_cases[2] = {
         { "repr(g_d) 256 bits == compressed g_d (section 15)",
@@ -663,8 +621,8 @@ static int spend_circuit_shape_gate(void)
         PROVER_CHECK(repr_cases[i].label, ok);
     }
 
-    /* Section 14's 64 value bits, little-endian — the order section 17 hashes
-     * them in, so a reversed decomposition would be silent until then. */
+    /* Section 14's 64 value bits, little-endian (the order section 17
+     * hashes them in). */
     {
         bool ok = synth_ok;
         for (size_t b = 0; b < 64 && ok; b++) {
@@ -676,21 +634,16 @@ static int spend_circuit_shape_gate(void)
                      ok);
     }
 
-    /* (2e) Sections 17 and 20 — the note commitment. The 982-constraint window
-     *      lookups can land on the reference count while hashing the wrong
-     *      table, the wrong personalization or the wrong bit order, so read the
-     *      two points back off the circuit's own wires:
+    /* (2e) Sections 17 and 20 — the note commitment. Read the two points
+     * back off the circuit's wires:
      *
      *        section 17  note_hash == PedersenHash(NoteCommitment,
      *                                 value(64) || repr(g_d) || repr(pk_d))
      *        section 20  cm        == note_hash + [rcm] G_rcm
      *
-     *      Both references come from sapling_note_commitment_point() — the same
-     *      body the wallet's sapling_compute_cm() and sapling_compute_nf() use
-     *      out of circuit, over Edwards coordinates and a precomputed chunk
-     *      table, which is a different algorithm from the in-circuit Montgomery
-     *      windows. x AND y are compared: a matching x with a mismatched y is a
-     *      point that is not the commitment. */
+     *      Both references come from sapling_note_commitment_point(), a
+     *      different algorithm from the in-circuit Montgomery windows. x AND
+     *      y are compared. */
     uint8_t cm_api[32];
     bool cm_api_ok = synth_ok && pkd_derived
         && sapling_compute_cm(wit.diversifier, pkd_bytes, wit.value, wit.rcm,
@@ -715,9 +668,8 @@ static int spend_circuit_shape_gate(void)
         PROVER_CHECK("in-circuit cm wire == note hash + [rcm] G_rcm "
                      "(section 20)", cm_wire_ok);
 
-        /* The protocol's `cmu` — the leaf the note-commitment tree stores — is
-         * exactly this x-coordinate, so tie the wire to the production API a
-         * wallet calls, not only to a point this test assembled. */
+        /* The protocol's `cmu` (the note-commitment tree leaf) is this
+         * x-coordinate; tie the wire to the production API. */
         struct fr cm_api_fr;
         bool cm_api_wire_ok = cm_api_ok
             && fr_from_bytes(&cm_api_fr, cm_api)
@@ -726,11 +678,9 @@ static int spend_circuit_shape_gate(void)
         PROVER_CHECK("in-circuit cm.x == sapling_compute_cm() `cmu` "
                      "(section 20)", cm_api_wire_ok);
 
-        /* Section 17's own wire pair must be a real curve point carrying the
-         * hash: subtract [rcm] G_rcm from the reference commitment and compare.
-         * Doing it by subtraction rather than by re-hashing keeps ONE reference
-         * for both sections, so a wrong section-19 generator cannot cancel out
-         * of both sides at once. */
+        /* Section 17's wire pair must be a real curve point carrying the
+         * hash: subtract [rcm] G_rcm from the reference commitment and
+         * compare. Subtraction keeps ONE reference for both sections. */
         struct fr grcm_x, grcm_y;
         sapling_note_commit_randomness_generator(&grcm_x, &grcm_y);
         bool hash_wire_ok = synth_ok && cm_ref_ok;
@@ -762,13 +712,10 @@ static int spend_circuit_shape_gate(void)
                      hash_wire_ok);
     }
 
-    /* (2f) Sections 17..21 END TO END — the assertion that only exists once the
-     *      seam between them is open. Fold the witnessed authentication path out
-     *      of circuit starting from sapling_compute_cm()'s OWN cm.x, and require
-     *      the circuit's anchor wire to equal it. Section 20 correct plus section
-     *      21 correct does not imply the commitment section 20 produced is the
-     *      value section 21 folded; a wrong handover leaves both halves green and
-     *      only this check red. */
+    /* (2f) Sections 17..21 end to end: fold the witnessed authentication
+     * path out of circuit from sapling_compute_cm()'s OWN cm.x and require
+     * the circuit's anchor wire to equal it (a wrong handover between
+     * sections 20 and 21 leaves both halves green). */
     {
         uint8_t anchor_ref[32];
         struct fr anchor_ref_fr;
@@ -811,29 +758,26 @@ static int spend_circuit_shape_gate(void)
     return failures;
 }
 
-/* H2 lane: reference differential oracle (test-only librustzcash bridge).
- * Runs FIRST and unconditionally — it is params-free, so it gates even when
- * ~/.zcash-params is absent and the prover self-test below SKIPs. */
+/* Reference differential oracle (test-only librustzcash bridge). Runs FIRST
+ * and unconditionally: params-free, so it gates even when ~/.zcash-params is
+ * absent and the prover self-test below SKIPs. */
 int groth16_spend_reference_oracle(void);
 
-/* H4 lane: standing differential parity oracle over a corpus of witnesses.
- * Params-free; auto-tightens off the reference section-boundary table as the
- * H3 port advances. Lives in tests/harness/src/groth16_spend_parity.c. */
+/* Standing differential parity oracle over a corpus of witnesses.
+ * Params-free. Lives in tests/harness/src/groth16_spend_parity.c. */
 int groth16_spend_parity_oracle(void);
 
-/* Section 21: the 32-level Merkle authentication path — 44224 constraints, the
- * largest section of the spend circuit. Gated out of line (constraint count,
+/* Section 21: the 32-level Merkle authentication path (44224 constraints,
+ * the largest spend-circuit section). Gated out of line: constraint count,
  * per-level breakdown, anchor value against an out-of-circuit fold, swap
- * sensitivity and wire boundness) because it sits after sections 17..20 in
- * synthesis order and cannot be recorded in the traced prefix until those land.
- * Params-free. Lives in tests/harness/src/groth16_merkle_path.c. */
+ * sensitivity and wire boundness. Params-free. Lives in
+ * tests/harness/src/groth16_merkle_path.c. */
 int groth16_merkle_path_gate(void);
 
-/* H5 lane: adversarial + negative-control gate over the production native C23
- * prove -> independent native C23 verify round-trip, plus a
- * proving-key-parser fuzz spot-check and zeroization spot-checks. Requires
- * proving params (guarded below by the same is-ready check the rest of this
- * self-test block uses). Lives in tests/harness/src/groth16_spend_adversarial.c. */
+/* Adversarial + negative-control gate over the production native C23
+ * prove -> independent verify round-trip, plus a proving-key-parser fuzz
+ * spot-check and zeroization spot-checks. Requires proving params. Lives in
+ * tests/harness/src/groth16_spend_adversarial.c. */
 int groth16_spend_adversarial_gate(void);
 
 int test_groth16_selfverify(void);
@@ -917,14 +861,12 @@ int test_groth16_selfverify(void)
             zclassic_sapling_proving_ctx_free(pctx);
     }
 
-    /* H5: adversarial + negative-control gate over the production SPEND
-     * prove->verify round-trip. Gated on proving readiness (needs a real
-     * proof to tamper with), independent of the OUTPUT-only checks above. */
+    /* Adversarial + negative-control gate over the production SPEND
+     * prove->verify round-trip (needs proving readiness). */
     if (zclassic_sapling_prover_is_ready())
         failures += groth16_spend_adversarial_gate();
 
-    /* Non-gating: emit native C23 circuit baseline counts for the
-     * spend-prover campaign. Only meaningful once params are loaded. */
+    /* Non-gating: emit native C23 circuit baseline counts (needs params). */
     if (initialized)
         native_circuit_baseline();
 

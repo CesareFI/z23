@@ -233,9 +233,8 @@ static int test_menu_and_search(void)
     int failures = 0;
     TEST("dev platform: shallow menu and semantic search are compact JSON") {
         char body[32768];
-        /* Wave 2.2: menu/help/search are now registry-driven, so the schema is
-         * the canonical zcl.command_menu.v1 and the shape comes from the single
-         * command catalog rather than a hardcoded dev tree. */
+        /* Menu/help/search are registry-driven: the schema is
+         * zcl.command_menu.v1 and the shape comes from the command catalog. */
         size_t n = zcl_devloop_menu_json("dev", body, sizeof(body));
         ASSERT(n > 0 && n < sizeof(body));
         struct json_value root = {0};
@@ -421,12 +420,12 @@ static bool dp_group_in(const char (*groups)[ZCL_DEVLOOP_GROUP_MAX],
     return false;
 }
 
-/* F3: dev test/change plan gains symbol-closure-derived proof groups. A tiny
- * codeindex fixture with a cross-file call edge core/modules/net/src/download.c ->
- * core/modules/net/src/tor_integration.c: changing the Tor file (path group
- * "test_tor") must
- * additionally surface download.c's groups ("download"...) via the closure,
- * WITHOUT dropping the path floor. */
+/* Dev test/change plan gains symbol-closure-derived proof groups. A tiny
+ * codeindex fixture with a cross-file call edge
+ * core/modules/net/src/download.c -> core/modules/net/src/tor_integration.c:
+ * changing the Tor file (path group "test_tor") must additionally surface
+ * download.c's groups ("download"...) via the closure, without dropping the
+ * path floor. */
 static int test_change_plan_closure(void)
 {
     int failures = 0;
@@ -1091,9 +1090,8 @@ static int test_strict_dev_app_producers(void)
         ASSERT(strstr(body, "dev app scaffold blog comments") != NULL);
         json_free(&doc);
 
-        /* The old textual scraper/planner accepted both of these. The strict
-         * compiler now requires a real, valid app.def before producing a
-         * description or even a preview-only resource plan. */
+        /* The strict compiler requires a real, valid app.def before
+         * producing a description or even a preview-only resource plan. */
         ASSERT(zcl_devloop_app_describe_json(
             ".", "Blog", body, sizeof(body)) == 0);
         ASSERT(zcl_devloop_app_plan_json(
@@ -1557,17 +1555,16 @@ static int test_social_sim(void)
     return failures;
 }
 
-/* Wave 3.2 native activation engine wiring (devloop_cycle.c /
- * native_dev_command.c). devloop_cycle.c's own transactional_reload branch
- * and native_dev_command.c's dev.vcs.revert relink seam are both
+/* Native activation engine wiring (devloop_cycle.c / native_dev_command.c).
+ * The transactional_reload branch and the dev.vcs.revert relink seam are
  * ZCL_DEV_BUILD-only (they exec `make`/`systemctl`), so this build
  * (-DZCL_TESTING, no ZCL_DEV_BUILD -- see test_core_refusal_token() above)
- * cannot reach them directly. What IS reachable and load-bearing here is the
- * pure glue both call sites share (declared in devloop.h, defined in
- * devloop_cycle.c, compiled under `ZCL_DEV_BUILD || ZCL_TESTING`): the
- * ZCL_DEV_NATIVE_ACTIVATION switch itself, the dev-lane request builder, and
- * the result mapper. The switch selects retained machinery only; public
- * publication entrypoints remain contained for every value. */
+ * cannot reach them. What is reachable is the pure glue both call sites
+ * share (declared in devloop.h, defined in devloop_cycle.c under
+ * `ZCL_DEV_BUILD || ZCL_TESTING`): the ZCL_DEV_NATIVE_ACTIVATION switch, the
+ * dev-lane request builder, and the result mapper. The switch selects
+ * retained machinery only; public publication entrypoints remain
+ * contained for every value. */
 static int test_native_activation_switch(void)
 {
     int failures = 0;
@@ -1761,9 +1758,7 @@ static int test_watch_relevance(void)
 {
     int failures = 0;
     TEST("dev platform: watcher ignores transient lint fixtures, keeps real edits") {
-        /* The bug this guards: the persistent watcher fired a phantom reload
-         * cycle every test-suite run because test_make_lint_gates.c writes
-         * `_*fixture*` .c files under app/, lib/, domain/ then deletes them. */
+        /* Transient `_*fixture*` .c files written by lint tests must not fire a reload cycle. */
         static const char *const fixtures[] = {
             "app/_lint_gate_fixture_tmp.c",
             "app/_node_db_exec_lint_fixture_probe_tmp.c",
@@ -2569,10 +2564,10 @@ static bool seal_batch_linked_direct(const char *repo, const char *state_dir,
     return true;
 }
 
-/* An older build published records with link() then unlink(); a kill between
- * the two left the sealed tail event with a second link under a staging
- * name, which the single-link check refuses. The next heal sweeps the
- * staging name under the cycle lock and the journal continues. */
+/* A record published with link() then unlink() and killed between the two
+ * leaves the sealed tail event with a second link under a staging name,
+ * which the single-link check refuses. The next heal sweeps the staging
+ * name under the cycle lock and the journal continues. */
 static bool seal_batch_linked_tail(const char *repo, const char *state_dir,
                                    const char *pointer)
 {
@@ -3577,8 +3572,7 @@ static bool run_hotswap_artifact_cache_fixture(void)
         goto out;
 
     /* A pure service island compiles its owner directly; it has no command
-     * unity-member list.  Requiring one here made every service save reject
-     * before starting the compiler. */
+     * unity-member list. */
     const char *service =
         "contexts/commons/services/src/zcode_c23_corpus_service.c";
     stage = "service-island";
@@ -4158,8 +4152,8 @@ static bool dp_hf_copy_file(const char *src, const char *dst);
 /* The plan names the in-tree compile cache (CC=<root>/build/bin/zcc cc) and
  * the driver resolves `as` from a fixture dir first on PATH. zcc keys its
  * toolchain on the cc driver's path, size and mtime only, so with its
- * cache on it would serve the object the old assembler built under the new
- * root. The keyed child runs with ZCC_DISABLE=1: the new assembler runs. */
+ * cache on it would serve an object built by the old assembler. The keyed
+ * child runs with ZCC_DISABLE=1: the new assembler runs. */
 struct dp_zcc_fx {
     char root[PATH_MAX], abs[PATH_MAX], cache[PATH_MAX];
     char zcc_src[PATH_MAX], zcc[PATH_MAX], host_as[PATH_MAX];
@@ -4942,10 +4936,9 @@ static int test_shell_compiled_epoch_scope_header_invalidation(void)
         ASSERT(dp_shell_epoch_scope(&hdr_set, one, true, only_one, 1));
         ASSERT(hdr_set.proven[0]);
         /* Next epoch: a public header the first owner's translation unit
-         * includes, with no hotswap-service owner mapping.
-         * zcl_hotswap_service_source_for_path returns NULL for it, so today
-         * devloop_plan.c ~104 silently skips it and the first owner stays
-         * marked proven even though bytes it compiles from have changed. */
+         * includes, with no hotswap-service owner mapping
+         * (zcl_hotswap_service_source_for_path returns NULL); the first
+         * owner must not stay marked proven over changed bytes. */
         static const char header[] = "tools/dev/devloop_shell_owner_shared.h";
         const char *hdr_files[] = { header };
         struct zcl_devloop_epoch_proof hdr_proof;
@@ -4954,10 +4947,10 @@ static int test_shell_compiled_epoch_scope_header_invalidation(void)
         (void)zcl_devloop_epoch_reflex(
             "fixture-root", hdr_files, 1, ZCL_DEVLOOP_PUBLISH_VERIFY_ONLY,
             &hdr_set, &k_dp_fake_lanes, &hdr_proof);
-        /* A shell epoch for a second, unrelated owner must now cover the
-         * first owner again: the header could be included by its
-         * compilation unit, so it cannot stay proven against bytes this
-         * epoch never re-executed. */
+        /* A shell epoch for a second, unrelated owner must cover the first
+         * owner again: the header could be included by its compilation
+         * unit, so it cannot stay proven against bytes this epoch never
+         * re-executed. */
         g_dp_lanes.hotswap_result = ZCL_DEVLOOP_RESTART_EVENT_SHELL_COMPILED;
         g_dp_lanes.service_result = 1;
         const char *both[] = { one, two };
@@ -5506,10 +5499,10 @@ static bool run_resident_restart_fixture(void)
         strcmp(proof.priority_reason, "previous_failure") != 0)
         goto out;
 
-    /* Born-red P0 regression: a tooling edit whose mapped closure includes
-     * code_capsule must carry the epoch-generated clientversion overlay all
-     * the way through a complete resident proof. The second source keeps the
-     * fixture runner's fixed bounded changed-source probe deterministic. */
+    /* A tooling edit whose mapped closure includes code_capsule must carry
+     * the epoch-generated clientversion overlay through a complete resident
+     * proof. The second source keeps the fixture runner's bounded
+     * changed-source probe deterministic. */
     stage = "code capsule overlay proof";
     if (!dp_restart_code_capsule_ok(root, &process, why, sizeof(why)))
         goto out;
@@ -6116,12 +6109,12 @@ static int test_source_identity_failure_tokens(void)
         ASSERT(strcmp(why, "source_identity_exit_7") == 0);
         ASSERT(!zcl_dev_source_identity_failure_retryable(why));
 
-        /* 126 is the runner's OWN pre-exec setup-failure convention
+        /* 126 is the runner's own pre-exec setup-failure convention
          * (zcl_devloop_process_run's forked child: setsid, ready-pipe
-         * write, chdir, dup2 -- see ZCL_DEVLOOP_PROCESS_EXIT_SETUP_FAILED),
-         * never the capture command's exit code. A transient failure there
-         * under load is load-shaped, so it must classify distinctly from an
-         * ordinary nonzero exit and must be retryable. */
+         * write, chdir, dup2; see ZCL_DEVLOOP_PROCESS_EXIT_SETUP_FAILED),
+         * never the capture command's exit code. It is load-shaped, so it
+         * must classify distinctly from an ordinary nonzero exit and be
+         * retryable. */
         memset(&result, 0, sizeof(result));
         result.exit_code = ZCL_DEVLOOP_PROCESS_EXIT_SETUP_FAILED;
         ASSERT(zcl_dev_source_identity_classify_failure(&result, why,
@@ -6129,9 +6122,8 @@ static int test_source_identity_failure_tokens(void)
         ASSERT(strcmp(why, "source_identity_runner_setup_failed") == 0);
         ASSERT(zcl_dev_source_identity_failure_retryable(why));
 
-        /* 127 stays "exec failed" -- a real execvp failure naming a missing
-         * or unrunnable tool, which is a deterministic defect a retry
-         * cannot fix. */
+        /* 127 stays "exec failed": a deterministic missing or unrunnable
+         * tool that a retry cannot fix. */
         memset(&result, 0, sizeof(result));
         result.exit_code = 127;
         ASSERT(zcl_dev_source_identity_classify_failure(&result, why,
@@ -6146,11 +6138,10 @@ static int test_source_identity_failure_tokens(void)
         ASSERT(strcmp(why, "source_identity_output_truncated") == 0);
         ASSERT(zcl_dev_source_identity_failure_retryable(why));
 
-        /* A clean process (no timeout/signal/exit/truncation) never reaches
-         * this classifier in practice -- parse_source_record only calls it
-         * when process_ok() failed or output was truncated -- but the
-         * fallback token must still be the pre-existing undifferentiated one
-         * and must never be treated as retryable. */
+        /* A clean process never reaches this classifier in practice
+         * (parse_source_record calls it only when process_ok() failed or
+         * output was truncated), but the fallback token must stay the
+         * undifferentiated one and never be retryable. */
         memset(&result, 0, sizeof(result));
         ASSERT(zcl_dev_source_identity_classify_failure(&result, why,
                                                          sizeof(why)));
@@ -6545,18 +6536,13 @@ static int test_hotfork_descriptor_boundary(void)
 
         /* A capsule may own a SET of translation units: an owner TU plus the
          * `sibling_tus` named beside it in engine/composition/hotfork_capsules.def,
-         * all of which the builder #includes into the capsule. The kernel
-         * command-input capsule is the case that needs it — the validation
-         * chain's per-key type table, length/budget rules and dev.agent arms
-         * each live in their own TU now. An edit to ANY TU in the set must
-         * select this capsule: a sibling the capsule does not claim is never
-         * compiled into it, so its rules resolve from the RESIDENT binary
-         * through RTLD_LAZY and a mutation there cannot turn the story red.
+         * all #included into the capsule (the kernel command-input capsule
+         * is one). An edit to ANY TU in the set must select the capsule: an
+         * unclaimed sibling resolves from the RESIDENT binary through
+         * RTLD_LAZY and a mutation there cannot turn the story red.
          * Descriptor identity stays the OWNER TU however the set was
-         * entered, so one capsule keeps one name in every receipt. The
-         * owner is the validator's own small TU: the dispatcher shell
-         * command_registry.c is outside the set, so the capsule never pays
-         * for compiling it. */
+         * entered. The owner is the validator's own small TU: the
+         * dispatcher shell command_registry.c is outside the set. */
         capsule.owner_id = "kernel.command-input-validation-core.v1";
         capsule.source_tu =
             "engine/modules/kernel/src/command_registry_input_validate.c";
@@ -7609,13 +7595,12 @@ static int test_hotfork_story_file_green_and_red(void)
 
 #if defined(__linux__)
 /* A HOT_FORK story that reaches RESIDENT model code. The shop-want capsule
- * compiles only shop_native_want.c; its story builds and verifies a signed
- * want through shop_want_seal/shop_want_verify, which live in the model TU
- * contexts/market/models/src/shop_want.c outside the capsule's TU set and
- * bind RTLD_LAZY to the resident's copy (here the test binary plays the
- * resident). A body edit to that model TU keeps every ABI fact the shape
- * guard reads, so the story would answer STORY_GREEN from bytes the tree no
- * longer holds. The save must be refused by name instead. */
+ * compiles only shop_native_want.c; its story calls shop_want_seal/
+ * shop_want_verify from contexts/market/models/src/shop_want.c, outside the
+ * capsule's TU set, bound RTLD_LAZY to the resident's copy (the test binary
+ * plays the resident). A body edit to that model TU keeps every ABI fact
+ * the shape guard reads, so the save must be refused by name rather than
+ * answered STORY_GREEN from stale bytes. */
 static const char k_dp_hc_root[] = "test-tmp/dev_hotfork_closure";
 static const char k_dp_hc_cache[] = "test-tmp/dev_hotfork_closure_cache";
 static const char k_dp_hc_owner[] =
@@ -7914,19 +7899,16 @@ static int test_template_generator_concurrency(void)
     return failures;
 }
 
-/* The lint gates keep their scan scopes honest by planting short-lived source
- * files inside the production tree, and the suite runs those groups next to
- * every other group in the same checkout. A whole-tree source-identity capture
- * takes seconds, so before this contract existed a fixture that appeared or
- * vanished during one made `make` refuse to select a compile epoch — every
- * concurrent build in the worktree died having run nothing.
+/* The lint gates plant short-lived source files inside the production
+ * tree while other groups run in the same checkout, so a fixture that
+ * appears or vanishes during a whole-tree source-identity capture must not
+ * make `make` refuse to select a compile epoch.
  *
- * The Makefile already declines to compile these paths (a "/_" component is
- * never a translation unit), so binding them into the build identity bought
- * nothing. Prove both halves at once: an ephemeral fixture stays visible to
- * Git, which is what the gates grep, while leaving the source identity of the
- * tree byte-identical. Exercise it in a disposable Git worktree so its
- * directory churn cannot overlap a frozen proof generation. */
+ * The Makefile never compiles a "/_" path component, so such paths are
+ * excluded from the build identity. An ephemeral fixture stays visible to
+ * Git (which the gates grep) while the tree's source identity stays
+ * byte-identical. Runs in a disposable Git worktree so its churn cannot
+ * overlap a frozen proof generation. */
 #define DP_EPHEMERAL_FIXTURE_REL \
     "engine/services/src/_dev_platform_source_identity_fixture_tmp.c"
 
@@ -7936,11 +7918,9 @@ static int test_template_generator_concurrency(void)
  * digests cannot move when the helper takes over, and shadow mode must
  * agree on a tree that also carries a live untracked file and a symlink. */
 /* The build-epoch integrity gate must pass from a COLD cache on any host:
- * this regression pins the driver-discovery repair after a host whose plain
- * `cc` lacked cc1plus (and whose `gcc` rejected -std=c23) failed every cold
- * probe run behind a warm-cache mask. The test forces a private empty cache
- * directory, so the wrapper's cached verdict path is unreachable and the
- * compiler probes run for real every time. */
+ * pins driver discovery when a plain `cc` lacks cc1plus or a `gcc` rejects
+ * -std=c23. A private empty cache directory makes the compiler probes run
+ * for real every time. */
 static int test_cold_epoch_integrity_gate(void)
 {
     int failures = 0;
@@ -8116,12 +8096,11 @@ static int test_ephemeral_fixture_leaves_source_identity(void)
  * A stand-in with the resident watcher's process shape: a setsid() session
  * leader holding the checkout's singleton lock, plus one proof worker child
  * that closes the lock and takes `linger_ms` to honour SIGTERM. On SIGTERM
- * (a stop) or SIGUSR1 (an idle exit or loop error) the leader does what
- * devloop_watch.c does on the way out: signal the worker, release the lock,
- * then join the worker. It is double-forked so init reaps it, as it reaps
- * the real daemonized watcher. Like the launcher's child it works from the
- * checkout root, and it runs this test binary's image, so only launch
- * identity — never the executable's name — can vouch for it. */
+ * (a stop) or SIGUSR1 (an idle exit or loop error) the leader signals the
+ * worker, releases the lock, then joins the worker, as devloop_watch.c
+ * does. It is double-forked so init reaps it, works from the checkout root,
+ * and runs this test binary's image, so only launch identity, never the
+ * executable's name, can vouch for it. */
 struct dp_fake_watch {
     pid_t watcher;
     pid_t worker;

@@ -2,18 +2,13 @@
  *
  * ACCEPTANCE BAR for dev.fleet.agents (tools/command/native_dev_agents_*.c).
  *
- * Everything here is proved against fixtures built in this file — a
- * throwaway workspace root holding two small Git repositories and a
- * hand-written delegation ledger — never against the machine the test runs
- * on, so it grades BEHAVIOUR rather than whatever this box happens to be
- * doing today.
+ * Everything is proved against fixtures built here (a throwaway workspace
+ * root with two small Git repositories and a hand-written delegation
+ * ledger), never the host machine.
  *
- * NO VERDICT HERE IS DECIDED BY A CLOCK. `now` is injected through the
- * platform clock seam (clock_set_default), so the same ledger grades to the
- * same numbers on every machine forever. The one thing deliberately NOT
- * asserted is the AGE of a fixture file: those files are created while the
- * test runs, so their modification times come from the real clock and no
- * pass/fail may ride on them.
+ * No verdict is decided by a clock: `now` is injected through the platform
+ * clock seam (clock_set_default). The age of a fixture file is deliberately
+ * not asserted, since its mtime comes from the real clock.
  */
 
 #include "test/test_core.h"
@@ -103,9 +98,8 @@ static bool fax_repo(const char *root, const char *name, bool dirty)
 
 /* ── the fixture ledger ─────────────────────────────────────────────────── */
 
-/* One row. The 22 columns are the ledger's own order; only the ones a grade
- * reads carry meaning here and the rest are filled with plausible constants,
- * so a column that silently moved would change a number this file asserts. */
+/* One row. The 22 columns follow the ledger's order; only the ones a grade
+ * reads carry meaning, the rest are plausible constants. */
 #define FAX_ROW(ts, kind, task, class_, story, exec, tin, tout, wall, outcome) \
     ts "\t" kind "\tnode1\t" task "\t" class_ "\t" story "\t" exec            \
        "\tagent-tool\tmodel\tmedium\t" tin "\t" tout                          \
@@ -193,9 +187,8 @@ static void fax_begin(struct fax_call *c)
     zcl_command_reply_init(&c->reply, ZCL_AGENTS_SCHEMA);
 }
 
-/* Validate through the REAL registry first: a key the .def never declared, or
- * one the transport's type chain refuses, must fail HERE rather than pass
- * in-process and be unreachable from a shell. */
+/* Validate through the REAL registry first: a key the .def never declared
+ * or the transport's type chain refuses must fail here. */
 static bool fax_run(struct fax_call *c)
 {
     char why[192];
@@ -248,12 +241,9 @@ static const struct json_value *fax_row(const struct fax_call *c,
 }
 
 /* ── a fake fleet board, for --publish and --fleet ──────────────────────
- *
- * `--publish`/`--fleet` talk to the local node over the `fleet_board` RPC
- * method exactly like `fleet board post/list` do, so they are proved the
- * same way test_telemetry_agents.c proves an RPC-reading collector: behind
- * node_rpc_client_set_test_hook, against canned bodies. No socket, no
- * node.db, no dependence on a node happening to run. */
+ * Both talk to the local node over the `fleet_board` RPC method; proved
+ * behind node_rpc_client_set_test_hook against canned bodies, with no
+ * socket or node.db. */
 
 #define FAX_SELF_HEX \
     "1111111111111111111111111111111111111111111111111111111111111111"
@@ -688,9 +678,8 @@ _test_next:;
     return failures;
 }
 
-/* `--publish` and `--fleet`, against the same ledger/workspace fixture,
- * split into its own function so the acceptance bar's pinned complexity
- * does not grow with every new flag this leaf gains. */
+/* `--publish` and `--fleet` against the same fixture, in their own function
+ * to bound the acceptance bar's complexity. */
 static int test_fleet_agents_publish(const char *root, const char *ledger)
 {
     int failures = 0;

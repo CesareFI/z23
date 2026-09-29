@@ -708,10 +708,9 @@ int test_file_market(void)
     printf("num_chunks: silent-truncation shape rejected "
            "(225 PB + 5*CHUNK -> would report 4)... ");
     {
-        /* The pre-fix expression wraps UINT32_MAX + 5 to 4 — the
-         * exact attack shape where a malformed huge file reports a
-         * plausible small chunk count instead of the add_offer
-         * guard's num_chunks==0 reject. */
+        /* UINT32_MAX + 5 must not wrap to 4: a malformed huge file must not
+         * report a small chunk count in place of the add_offer guard's
+         * num_chunks==0 reject. */
         uint32_t n = 99;
         uint64_t shape =
             (uint64_t)UINT32_MAX * (uint64_t)FILE_MARKET_CHUNK_SIZE +
@@ -787,8 +786,8 @@ int test_file_market(void)
                 market_test_signed_offer(&attacker, 0xC2, 502, now) &&
                 db_file_offer_save(&ndb, &honest);
             /* Same content root, attacker's own signature and payment
-             * address: a perfectly valid offer that must not re-key a root
-             * an accepted listing already owns. */
+             * address: a valid offer that must not re-key a root an accepted
+             * listing already owns. */
             memcpy(attacker.root_hash, honest.root_hash, 32);
             snprintf(attacker.filename, sizeof(attacker.filename), "%s",
                      honest.filename);

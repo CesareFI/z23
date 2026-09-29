@@ -1,40 +1,29 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Ed25519 DIFFERENTIAL test — pins `ed25519_verify` in
- * core/modules/crypto/src/ed25519.c against a frozen, byte-for-byte copy of the
- * bit-at-a-time TweetNaCl-shaped implementation it grew out of.
+ * Ed25519 DIFFERENTIAL test: pins `ed25519_verify`
+ * (core/modules/crypto/src/ed25519.c) against a frozen copy of the
+ * bit-at-a-time TweetNaCl-shaped implementation.
  *
- * WHY THIS EXISTS
- * ---------------
- * ed25519_verify sits on the JoinSplit signature path. A block that
- * zclassicd accepts and we reject (or vice versa) is a chain split. Any
- * change to that function is therefore only ever allowed to be a speed
- * change, and the ONLY acceptable evidence is that the accept/reject
- * predicate did not move by a single input. This file is that evidence,
- * and it is written to stay useful for the NEXT optimisation too, not
- * just the one that motivated it.
+ * ed25519_verify is on the JoinSplit signature path, so a block zclassicd
+ * accepts and we reject (or vice versa) is a chain split; any change to it
+ * must leave the accept/reject predicate identical for every input.
  *
- * The reference below (`ref_*`) is the pre-optimisation arithmetic —
- * an independent 16x16-limb field with an unconditional 256-step
- * cswap ladder per scalar. It is deliberately NOT shared code: if
- * someone "improves" the shipped implementation again, this oracle must
- * stay frozen or the test proves nothing. It also carries the signing
- * half TweetNaCl has, which is what lets this test feed the verifier
- * VALID signatures over random 253-bit scalars — the only way to
- * exercise the point arithmetic on the ACCEPT path. A differential over
- * random garbage alone would not: both implementations reject garbage,
- * so agreement there is uninformative about the group law.
+ * The `ref_*` reference is the frozen 16x16-limb field with an
+ * unconditional 256-step cswap ladder. It is deliberately not shared code and
+ * must stay frozen. It carries the signing half so the test can feed the
+ * verifier VALID signatures over random 253-bit scalars, which is the only
+ * way to exercise the point arithmetic on the accept path.
  *
  * COVERAGE
  *   1. RFC 8032 vectors (shipped verifier must accept).
- *   2. 256 random keypair/message signatures, each verified by BOTH
- *      implementations — accept must agree.
- *   3. Every one of those signatures corrupted in R, in S, in the
- *      message and in the public key — reject must agree.
- *   4. 4096 random (sig, pk, msg) triples — reject must agree.
- *   5. Structured edge cases: identity pk, S = L, S = L-1, S = L+1,
- *      non-canonical y encodings (y = p, p+1, 2^255-1), the sign bit
- *      set on an x = 0 point, and all eight low-order points. */
+ *   2. 256 random keypair/message signatures verified by BOTH
+ *      implementations: accept must agree.
+ *   3. Each of those corrupted in R, S, the message and the public key:
+ *      reject must agree.
+ *   4. 4096 random (sig, pk, msg) triples: reject must agree.
+ *   5. Edge cases: identity pk, S = L, L-1, L+1, non-canonical y encodings
+ *      (y = p, p+1, 2^255-1), sign bit set on an x = 0 point, and all eight
+ *      low-order points. */
 
 #include "test/test_core.h"
 #include "crypto/ed25519.h"
@@ -390,10 +379,9 @@ static bool ref_ed25519_verify(const uint8_t sig[64],
     return diff == 0;
 }
 
-/* ── Reference SIGNER (TweetNaCl crypto_sign, verify-side tree has none)
- *
- * Needed only so this test can hand the shipped verifier valid
- * signatures over random scalars. Never linked into the node. */
+/* ── Reference SIGNER (TweetNaCl crypto_sign; the verify-side tree has none)
+ * Lets this test hand the shipped verifier valid signatures over random
+ * scalars. Never linked into the node. */
 
 static void ref_scalarbase(ref_gep p, const uint8_t s[32])
 {
@@ -664,26 +652,13 @@ int test_ed25519_differential(void)
             s2[63] = 0xff;
             expect_agree_and(s2, msg, sizeof(msg), pk, false, "S top byte 0xff");
         }
-        /* ── malleability, stated ABSOLUTELY and not differentially ─────
-         * (R, S) and (R, S+L) satisfy the same group equation, so a
-         * verifier without the S<L canonical check accepts both — that is
-         * the classic Ed25519 malleability, and RFC 8032 §5.1.7 plus the
-         * Zcash consensus rules forbid the second.
-         *
-         * This CANNOT be a differential assertion. The frozen reference
-         * carries its own copy of the canonical-S check, so both sides
-         * reject S+L and agree no matter what the shipped predicate does.
-         * It cannot be an S == L case either: S == L means S ≡ 0 mod L, so
-         * [S]B is the identity and the point equation fails on its own —
-         * both implementations still reject, for a reason that has nothing
-         * to do with the predicate under test. Proven, not assumed: with
-         * ed25519_S_is_canonical stubbed to `return true` — the whole
-         * malleability defence removed — every differential case in this
-         * file stayed GREEN, including the S == L / L±1 ones, and only the
-         * absolute assertion below turned red.
-         *
-         * So: the honest signature must ACCEPT and its +L malleation must
-         * REJECT, both stated against the shipped verifier directly. */
+        /* ── malleability, stated absolutely and not differentially ─────
+         * (R, S) and (R, S+L) satisfy the same group equation; RFC 8032
+         * §5.1.7 and the Zcash consensus rules forbid the second. This
+         * cannot be differential: the frozen reference has its own
+         * canonical-S check, and S == L fails the point equation on its own.
+         * So the honest signature must ACCEPT and its +L malleation must
+         * REJECT, both against the shipped verifier directly. */
         {
             uint8_t mal[64];
             memcpy(mal, sig, 64);

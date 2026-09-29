@@ -3,24 +3,17 @@
  *
  * Tests for the db_maintenance storage seam.
  *
- * db_maintenance runs exactly three SQLite maintenance ops
- * (PRAGMA wal_checkpoint(TRUNCATE) / ANALYZE / VACUUM) plus one WAL-size
- * probe; this file exercises the sqlite adapter that now backs them
- * through db_maintenance_port — against ISOLATED temp-file / in-memory
- * fixture DBs, never the live node DB.
+ * Exercises the sqlite adapter behind db_maintenance_port (wal_checkpoint
+ * TRUNCATE / ANALYZE / VACUUM plus a WAL-size probe) against isolated
+ * temp-file / in-memory DBs, never the live node DB.
  *
- * We assert each op reports success on a real WAL-mode DB, that
- * wal_checkpoint(TRUNCATE) actually shrinks the on-disk WAL to zero, that
- * a successful op clears the error buffer while NULL-conn ops fill it and
- * return false, and that wal_size_bytes mirrors node_health's behaviour
- * (false for :memory:, true once a file-backed WAL exists). NULL-arg
- * guards round it out.
+ * Asserts each op succeeds on a WAL-mode DB, TRUNCATE shrinks the WAL to
+ * zero, success clears the error buffer while NULL-conn ops fill it and
+ * return false, and wal_size_bytes is false for :memory: and true once a
+ * file-backed WAL exists. NULL-arg guards round it out.
  *
- * NOTE on coupling: test_db_maintenance.c drives the full
- * db_maintenance_run_now() service (events, status snapshot, scheduler
- * lifecycle) over its own scratch node_db; that group is unrelated to
- * this fixture-based adapter test and is left untouched. This file is
- * hermetic (its own throwaway DBs).
+ * test_db_maintenance.c covers the full db_maintenance_run_now() service
+ * separately. This file is hermetic.
  */
 
 #include "test/test_core.h"

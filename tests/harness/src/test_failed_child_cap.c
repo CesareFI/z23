@@ -1,17 +1,13 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Regression test: cap BLOCK_FAILED_CHILD propagation (OOM amplifier).
+ * Regression test: cap BLOCK_FAILED_CHILD propagation (OOM amplifier). An
+ * unguarded BIP30-class stall re-walks the full block_map (~3M entries,
+ * ~24 MB scratch + qsort) on every retry.
  *
- * An unguarded BIP30-class stall re-walks the full block_map (~3M
- * entries, ~24 MB scratch + O(N log N) qsort) on every retry, pinning
- * the node under sustained RSS + CPU.
- *
- * This test exercises process_block_propagate_failed_child directly
- * against a small fixture block_map, asserting the two cheap early
- * returns (SKIP_PARENT_FAILED, see process_block.h) that bound the walk.
- *
- * Scope: guards only. Correctness of the underlying propagation is
- * covered by test_block_scan.c::test_failed_child_propagation.
+ * Exercises process_block_propagate_failed_child against a small fixture
+ * block_map, asserting the two early returns (SKIP_PARENT_FAILED, see
+ * process_block.h) that bound the walk. Guards only; propagation correctness
+ * is covered by test_block_scan.c::test_failed_child_propagation.
  */
 
 #include "test/test_core.h"
@@ -22,16 +18,10 @@
 #include <string.h>
 
 /* ── Fixture builder ──────────────────────────────────────────────
- *
- * A straight chain genesis → h1 → h2 → h3 → h4 of block_index
- * entries, all inserted into a fresh block_map. Callers mark which
- * heights fail, then invoke the helper and inspect the results.
- *
- * The fixture uses contiguous stack memory for the block_index
- * entries (lifetime bounded by the test case). phashBlock points
- * into the block_map's internal bucket — block_map_insert stamps
- * the hash into the bucket, and the pointer is stable for the
- * lifetime of the map. */
+ * A chain genesis -> h1 -> h2 -> h3 -> h4 of block_index entries in stack
+ * memory, inserted into a fresh block_map (phashBlock points into the map's
+ * stable bucket). Callers mark failing heights, invoke the helper, and
+ * inspect the results. */
 
 #define P146_CHAIN_LEN 5  /* heights 0..4 */
 
@@ -82,10 +72,8 @@ static int t_p146_parent_failed_skip(void)
         fx.blocks[3].nStatus |= BLOCK_FAILED_CHILD;
         fx.blocks[4].nStatus |= BLOCK_FAILED_CHILD;
 
-        /* Now pindex_root = h=2 fails on retry. Its pprev (h=1) is
-         * already in BLOCK_FAILED_MASK, so we must NOT walk the map
-         * again — that would burn ~24 MB + O(N log N) at live-tip
-         * scale to accomplish nothing. */
+        /* pindex_root = h=2 fails on retry; its pprev (h=1) is already in
+         * BLOCK_FAILED_MASK, so the map must NOT be walked again. */
         fx.blocks[2].nStatus |= BLOCK_FAILED_VALID;
 
         size_t propagated = 123;  /* sentinel */

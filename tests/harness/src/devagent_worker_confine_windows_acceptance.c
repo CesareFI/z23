@@ -1,25 +1,19 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Purpose: prove dev.agent.worker's Windows confinement backend natively.
  *
- * This program is its own confined child: the backend re-enters the
- * running image with WKR_CHILD_FLAG, exactly as the production binary is
- * re-entered, and this image's child entry wires the fixture executor
- * below instead of the Muse executor. Each case drives the REAL spawn
- * (zcl_devagent_worker_spawn_confined) and the REAL receipt mapping
- * (zcl_devagent_worker_outcome / _parse_result / _gate):
+ * This program is its own confined child: the backend re-enters the running
+ * image with WKR_CHILD_FLAG, and the child entry wires the fixture executor
+ * below. Each case drives the real spawn (zcl_devagent_worker_spawn_confined)
+ * and the real receipt mapping (zcl_devagent_worker_outcome / _parse_result
+ * / _gate):
  *
- *   write   the child writes inside its run dir (and a pre-existing
- *           subdirectory), cannot write a sibling directory outside it,
- *           sees no parent secret in its environment, and the run dir is
- *           relabelled medium once the run ends;
- *   memory  the child allocates until the job memory cap denies it and
- *           dies by an out-of-memory exception -> crashed, rc 130, with
- *           its last successful total under the cap;
- *   tree    the child starts a grandchild and both hang; the wall cap
- *           kills the whole job -> timeout, rc 124, grandchild gone;
- *   cpu     the child spins past the job CPU cap -> crashed, rc 130,
- *           well before the wall cap;
- *   fail    the executor fails with rc 3 -> failed verdict, receipt rc 1;
+ *   write   writes inside its run dir, cannot write outside it, sees no
+ *           parent secret in its environment; the run dir is relabelled
+ *           medium once the run ends;
+ *   memory  allocates until the job memory cap kills it -> crashed, rc 130;
+ *   tree    a hung grandchild; the wall cap kills the job -> timeout, rc 124;
+ *   cpu     spins past the job CPU cap -> crashed, rc 130, before the wall cap;
+ *   fail    executor rc 3 -> failed verdict, receipt rc 1;
  *   refuse  the child entry run OUTSIDE the confinement runs nothing.
  *
  * Exit 77 is an honest runtime refusal (Wine, or a host where the backend

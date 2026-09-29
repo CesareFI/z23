@@ -5,25 +5,21 @@
  *
  * Two of these primitives decide whether an agent is told the truth:
  *
- *   - zcl_devagent_verdict_parse() reads test_parallel's own SUITE VERDICT
- *     line. If it returned 0 for a MISSING field, a run that executed nothing
- *     and a run that executed nothing-and-said-so would serialize identically
- *     — which is the exact failure dev.agent.test exists to make impossible.
- *     So a missing field must read back as -1, and that is asserted here.
+ *   - zcl_devagent_verdict_parse() reads test_parallel's SUITE VERDICT line.
+ *     A MISSING field must read back as -1, never 0, so a run that executed
+ *     nothing cannot serialize like one that said so.
  *
  *   - zcl_devagent_mutate_line() decides what dev.agent.mutate writes into a
- *     source file. A rule that silently matched inside a string literal or a
- *     comment would edit text the compiler never reads, and the check would
- *     report "the test did not notice" about a mutation that never happened.
+ *     source file. A rule must not match inside a string literal or a
+ *     comment, or the check would report on a mutation that never happened.
  *
  * Pure and deterministic: no clock, no RNG, no spawn, no I/O except the
  * filesystem probe in the checkout-root leg, which uses only paths the suite
  * creates under its own temp directory. */
 
 /* realpath() is declared by glibc only through the fortify inline unless a
- * feature-test macro asks for it; without this the file compiles today by
- * accident of -O2 and is a hard C23 error at -O0 or on another libc. Must
- * precede the first #include, which is where <features.h> is read. */
+ * feature-test macro asks for it; the macro is a hard requirement at -O0 or
+ * on another libc. Must precede the first #include (<features.h>). */
 #if !defined(_WIN32) && !defined(_DEFAULT_SOURCE)
 #define _DEFAULT_SOURCE
 #endif
@@ -90,9 +86,8 @@ int test_devagent_surface(void)
         PASS();
     }
 
-    /* The whole point of the -1 sentinel: a field the runner did not print
-     * must never read back as the number zero, which downstream means
-     * "measured, and it was none". */
+    /* A field the runner did not print must never read back as 0, which
+     * downstream means "measured, and it was none". */
     TEST("verdict: a MISSING numeric field reads -1, never 0") {
         struct zcl_devagent_verdict v;
         const char *line = "SUITE VERDICT mode=cold groups_total=5\n";
@@ -208,9 +203,8 @@ int test_devagent_surface(void)
         PASS();
     }
 
-    /* `x <<= 1` carries a `<=` at offset 1. Flipping it produces `x << 1` —
-     * a syntax error, which the check would report as "the compiler noticed"
-     * and teach nothing about the test's coverage. */
+    /* `x <<= 1` carries a `<=` at offset 1; flipping it yields the syntax
+     * error `x << 1`, which teaches nothing about the test's coverage. */
     TEST("mutate: a compound shift-assign is not read as a comparison") {
         struct zcl_devagent_mutation m;
         char out[256];
@@ -230,8 +224,8 @@ int test_devagent_surface(void)
                                         sizeof(out)));
         ASSERT_STR_EQ(out, "  return true;");
         ASSERT_STR_EQ(m.rule, "false_to_true");
-        /* `truest` is not `true`. With no other rule on the line the mutation
-         * must be refused, not applied to a substring of an identifier. */
+        /* `truest` is not `true`: with no other rule the mutation is
+         * refused, not applied to part of an identifier. */
         ASSERT(!zcl_devagent_mutate_line("  truest_value;", &m, out,
                                          sizeof(out)));
         PASS();
@@ -249,9 +243,8 @@ int test_devagent_surface(void)
         PASS();
     }
 
-    /* Editing inside a string literal changes bytes the compiler emits but
-     * not the logic a test group is asleep on; worse, it would report a
-     * "noticed=false" verdict about a mutation that could never fail. */
+    /* Editing inside a string literal cannot fail a test, so it would
+     * report a meaningless "noticed=false" verdict. */
     TEST("mutate: an operator inside a string literal is not a candidate") {
         struct zcl_devagent_mutation m;
         char out[256];
@@ -306,8 +299,8 @@ int test_devagent_surface(void)
         PASS();
     }
 
-    /* A buffer too small for the rewrite must refuse, not truncate the line
-     * — a truncated line is a corrupted source file. */
+    /* A buffer too small for the rewrite must refuse, not truncate the
+     * line. */
     TEST("mutate: an undersized output buffer refuses rather than truncating") {
         struct zcl_devagent_mutation m;
         char out[8];
@@ -326,20 +319,18 @@ int test_devagent_surface(void)
         ASSERT(tds_touch(dir, "tools/dev/test_group_catalog.def"));
         (void)snprintf(nested, sizeof(nested), "%s/engine/composition/commands", dir);
         ASSERT(zcl_devagent_checkout_root(nested, found, sizeof(found)));
-        /* The answer is canonical, so compare against the canonical
-         * fixture path — a symlinked TMPDIR must not flake the walk. */
+        /* The answer is canonical; compare against the canonical fixture
+         * path so a symlinked TMPDIR cannot flake the walk. */
         ASSERT(realpath(dir, here) != NULL);
         ASSERT_STR_EQ(found, here);
         test_cleanup_tmpdir(dir);
         PASS();
     }
 
-    /* Two of three markers is not a checkout: the walk must pass straight
-     * over the inner directory and settle on the complete one above it.
-     * Accepting a partial set would let dev.agent.mutate write into a
-     * directory that is not the checkout the agent meant. Both candidates
-     * live inside the fixture, so the assertion does not depend on where the
-     * suite happens to be running. */
+    /* Two of three markers is not a checkout: the walk passes over the
+     * inner directory and settles on the complete one above it, so
+     * dev.agent.mutate cannot write into a partial checkout. Both
+     * candidates live inside the fixture. */
     TEST("checkout root: a partial marker set is walked past, not accepted") {
         char outer[1024], inner[1200], deep[1400], found[1024], here[PATH_MAX];
         test_make_tmpdir(outer, sizeof(outer), "devagent", "partial");
@@ -363,11 +354,9 @@ int test_devagent_surface(void)
         PASS();
     }
 
-    /* A symlinked route to a checkout must answer the canonical path, not
-     * the alias: dev.land carries the string verbatim in a queue row, and
-     * an uncanonicalized answer is a row the queue can never read back.
-     * Proven through a symlink instead of a chdir — the parallel runner
-     * shares one cwd, so no test may move it. */
+    /* A symlinked route to a checkout answers the canonical path: dev.land
+     * stores the string in a queue row that must read back. Proven through
+     * a symlink, not a chdir (the parallel runner shares one cwd). */
     TEST("checkout root: a symlinked start answers the canonical path") {
         char dir[1024], alias[1100], found[1024], here[PATH_MAX];
         test_make_tmpdir(dir, sizeof(dir), "devagent", "canon");

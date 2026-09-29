@@ -3,12 +3,9 @@
  * The fleet AI message board and wiki: codec, signature, caps, store, and the
  * two-node gossip path.
  *
- * The gossip proof drives TWO independent node databases through the REAL
- * frame codec, in the order the wire uses them: A posts, A announces an
- * inventory frame, B decides what it is missing, B sends a GET, A serves a
- * POST frame, B ingests and verifies. Every byte that crosses is the byte the
- * wire would carry. What this does NOT prove is the socket underneath it —
- * see the group's closing note. */
+ * The gossip proof drives two independent node databases through the real
+ * frame codec: A posts and announces, B GETs, A serves a POST frame, B
+ * ingests and verifies. The socket underneath is not covered. */
 
 #include "test/test_core.h"
 
@@ -427,10 +424,8 @@ static int test_fleet_board_kind_ceiling_refuses_unknown(void)
 {
     int failures = 0;
     TEST("fleet board: a kind past the known enum is refused, not admitted") {
-        /* The v82 table's SQL CHECK admits kind 1..64 so a future kind never
-         * forces another one-way schema bump, but the C layer stays the
-         * actual gate: any kind at or above FLEET_BOARD_KIND__COUNT (today,
-         * kind 9 and up) must never reach storage or a signed RPC write. */
+        /* The SQL CHECK admits kind 1..64; the C layer is the gate: any kind
+         * >= FLEET_BOARD_KIND__COUNT never reaches storage or a signed RPC. */
         uint8_t seed[32], pk[32];
         fb_test_identity(5, seed, pk);
         const int64_t now = 200000;
@@ -947,12 +942,8 @@ static bool fb_test_busy_frame(struct node_db *db, struct msg_processor *mp,
     return restored && handled && absent && unchanged && unpenalized;
 }
 
-/* node1, 2026-09-10 09:50Z: every board append failed for minutes while other
- * subsystems held the node database's write lock, and the operator was told
- * "missing argument" — a caller bug — for what was plain contention. Two
- * connections reproduce that exactly: one holds the write lock, the other's
- * append meets SQLITE_BUSY inside the insert itself, which is a different
- * seam from an already-open transaction on this same connection. */
+/* Write-lock contention: one connection holds the write lock, and the
+ * other's append meets SQLITE_BUSY inside the insert. */
 static int test_fleet_board_busy_append_names_contention(void)
 {
     int failures = 0;
@@ -1006,9 +997,8 @@ static int test_fleet_board_busy_append_names_contention(void)
     return failures;
 }
 
-/* The other half of the same wedge: an append the store will refuse on every
- * future round must not be retried forever, and must never stop the posts
- * behind it from landing. */
+/* An append the store refuses every round must not be retried forever nor
+ * block the posts behind it. */
 static int test_fleet_board_permanent_refusal_quarantines(void)
 {
     int failures = 0;
@@ -1039,9 +1029,8 @@ static int test_fleet_board_permanent_refusal_quarantines(void)
         bool stored = true;
         enum fleet_board_result r =
             db_fleet_board_post_ingest(&db, &poison, 101, &stored);
-        /* The operator must never be told that a well-formed, signed,
-         * admissible post was a missing argument: that phrasing sent
-         * node1's wedge to entirely the wrong seam. */
+        /* A well-formed, signed, admissible post is never reported as a
+         * missing argument. */
         ASSERT(strcmp(fleet_board_result_string(r), "missing argument") != 0);
         ASSERT_EQ(r, FLEET_BOARD_ERR_STORAGE);
         ASSERT(!stored && !db_fleet_board_have(&db, poison.id));
@@ -1474,9 +1463,8 @@ static int test_fleet_board_rpc_concurrency(void)
             rpc_is_in_warmup(warmup_status, sizeof(warmup_status));
         set_rpc_warmup_finished();
 
-        /* Machine capacity is private unless an operator deliberately writes
-         * public post text. The removed shortcut must remain unavailable and
-         * must not append anything as a side effect. */
+        /* Machine capacity is private unless an operator writes public post
+         * text; the removed shortcut stays unavailable and appends nothing. */
         struct fleet_board_status before, after;
         ASSERT(db_fleet_board_status(&db, now, &before));
         struct json_value offer_params, offer_input, offer_result;
@@ -2061,10 +2049,8 @@ static int test_fleet_board_scope_store(void)
         ASSERT_EQ(fetched.post.scope, FLEET_BOARD_SCOPE_LEGACY_PUBLIC);
         ASSERT(strcmp(fleet_board_room_name(&fetched.post), "general") == 0);
 
-        /* The public gossip inventory carries every public row and never a
-         * fleet row: announcing the fleet post's id would already reveal
-         * that a fleet-private post exists. The full local inventory still
-         * lists everything the node holds. */
+        /* The public gossip inventory carries public rows only; announcing a
+         * fleet post's id would reveal it exists. */
         uint8_t ids[FLEET_BOARD_FRAME_IDS_MAX][32];
         ASSERT_EQ(db_fleet_board_recent_ids(&db, now, false, ids,
                                             FLEET_BOARD_FRAME_IDS_MAX),
@@ -2081,15 +2067,9 @@ static int test_fleet_board_scope_store(void)
     return failures;
 }
 
-/* PUBLIC scope needs no operator grant at all: a never-granted key may post
- * to a public room, but the SAME key stays refused everywhere else, and a
- * flood past the per-key quota is refused without ever touching the store.
- * Every other test in this file runs with the role gate held permissively
- * open (see the comment on test_fleet_board() below) because it is proving
- * the codec/store/gossip path in isolation from role wiring. This group is
- * the opposite: it installs the REAL gate — nothing at all — because a
- * public exemption that only works while some other check is disabled
- * would prove nothing. */
+/* PUBLIC scope needs no operator grant: a never-granted key may post to a
+ * public room but stays refused elsewhere, and a flood past the per-key quota
+ * is refused without touching the store. Runs with the REAL role gate. */
 static int test_fleet_board_public_grant_free(void)
 {
     int failures = 0;
@@ -2140,11 +2120,8 @@ static int test_fleet_board_public_unknown_scope(void)
         fb_test_identity(10, seed, pk);
         const int64_t now = 500000;
 
-        /* fleet_board_post_sign validates shape before it signs, so an
-         * illegal scope is set AFTER signing — same pattern the codec group
-         * uses for its own scope refusals above. Validation runs before
-         * verification in board_ingest_admissible, so the tampered scope is
-         * refused on its own terms rather than as a signature mismatch. */
+        /* Scope validation runs before verification, so an illegal scope set
+         * after signing is refused on its own terms. */
         struct fleet_board_post bad;
         fb_test_compose(&bad, FLEET_BOARD_KIND_NOTE, "stranger",
                         "an unknown scope value", (uint64_t)now, 3600);
@@ -2221,11 +2198,8 @@ static int test_fleet_board_public_quota(void)
     return failures;
 }
 
-/* node2, 2026-09-18 22:54Z: the canonical node banned node1 for 24 h with
- * "fleet board: this key has spent its public-post quota". The quota counts
- * one AUTHOR key on THIS node's store; the peer that relayed the post is
- * usually not that author, so scoring it banned the fleet's own relays and
- * left a fresh node dialling seeds that hung up on it. */
+/* The public-post quota counts one AUTHOR key on this node's store; the
+ * relaying peer is usually not that author and must not be scored for it. */
 static int test_fleet_board_quota_does_not_score_relay(void)
 {
     int failures = 0;
@@ -2295,17 +2269,10 @@ static int test_fleet_board_quota_does_not_score_relay(void)
 }
 
 
-/* T1 + T2: the two halves of the resident leg, proven on one store.
- *
- * FLEET_BOARD_PUBLIC_QUOTA_STORED_MAX rows are admitted 11 s apart — far
- * enough apart that the rolling window never bites — with the maximum TTL.
- * The next post is refused: the resident ceiling bites exactly where it
- * always did (T2). Then the clock moves past their TTL and the same key is
- * STILL refused (T1): the rows are dead but this node is still carrying
- * them, so they still count. Only the reclaim, which actually removes the
- * bytes, hands the slots back — and the ceiling holds whether or not that
- * reclaim ever runs, which is what a node with boot maintenance opted out
- * depends on. */
+/* T1 + T2: the resident leg. FLEET_BOARD_PUBLIC_QUOTA_STORED_MAX rows
+ * admitted 11 s apart with maximum TTL; the next post is refused (T2). After
+ * the TTL passes the key is still refused (T1) because expired rows still
+ * count until the reclaim removes them. */
 static int test_fleet_board_public_quota_counts_stored(void)
 {
     int failures = 0;
@@ -2317,9 +2284,8 @@ static int test_fleet_board_public_quota_counts_stored(void)
         uint8_t seed[32], pk[32];
         fb_test_identity(12, seed, pk);
         const int64_t base = 1000000;
-        /* 11 s apart keeps any 600 s window at ~55 arrivals, under the 60
-         * the window leg allows, so this test exercises the resident leg
-         * and only the resident leg. */
+        /* 11 s apart keeps a 600 s window under its 60-arrival limit, so only
+         * the resident leg is exercised. */
         const int64_t step = 11;
         const uint32_t ttl = FLEET_BOARD_TTL_MAX;
         int64_t last = base;
@@ -2353,10 +2319,8 @@ static int test_fleet_board_public_quota_counts_stored(void)
                   FLEET_BOARD_ERR_QUOTA);
         ASSERT(!stored);
 
-        /* T1: their signed TTL has run out, but the rows are still on this
-         * node's disk, so the key is still holding the store and is still
-         * refused. A ceiling that let go here would be a ceiling only on
-         * nodes that run the reclaim. */
+        /* T1: TTL expired but rows still on disk, so the key is still
+         * refused. */
         int64_t later = last + (int64_t)ttl + 1;
         struct fleet_board_post after_expiry;
         fb_test_compose(&after_expiry, FLEET_BOARD_KIND_NOTE, "steady",
@@ -2389,14 +2353,9 @@ static int test_fleet_board_public_quota_counts_stored(void)
     return failures;
 }
 
-/* T5: the reclaim cannot lift the burst ceiling. A key spends its whole
- * window on one-second notes, the reclaim runs while that window is still
- * open, and the key tries again inside the same window. The arrivals the
- * window leg counts are arrivals, not rows — so the rows that are still
- * inside their window survive the pass, and the 61st post in 600 seconds
- * is refused whether or not maintenance ran in between. Without the
- * arrival floor in board_where_reclaimable this is 2x the stated bound,
- * every time the reclaim fires. */
+/* T5: the reclaim cannot lift the burst ceiling. The window leg counts
+ * arrivals, so rows still inside their window survive the pass and the 61st
+ * post in 600 s is refused whether or not maintenance ran. */
 static int test_fleet_board_reclaim_keeps_burst_bound(void)
 {
     int failures = 0;
@@ -2443,9 +2402,8 @@ static int test_fleet_board_reclaim_keeps_burst_bound(void)
                   FLEET_BOARD_ERR_QUOTA);
         ASSERT(!stored);
 
-        /* Once the window they arrived in has closed, the same pass takes
-         * every one of them back and the key may post again — the floor
-         * delays the reclaim by one window, it does not disable it. */
+        /* Once their window closes the pass reclaims them all and the key
+         * may post again. */
         int64_t outside =
             now + FLEET_BOARD_PUBLIC_QUOTA_WINDOW_SECONDS + 1;
         ASSERT_EQ(db_fleet_board_reclaim_expired(&db, outside, &removed),
@@ -2462,11 +2420,8 @@ static int test_fleet_board_reclaim_keeps_burst_bound(void)
     return failures;
 }
 
-/* T3: the window leg is NOT live-aware, and must not become so. A burst of
- * short-TTL posts is still a burst after every post in it has expired: the
- * next one inside the same window is refused. This is the half of the quota
- * that answers "is this key bursting?", and the answer cannot depend on how
- * short a TTL the burst chose. */
+/* T3: the window leg is not live-aware: a burst of short-TTL posts still
+ * counts after they expire. */
 static int test_fleet_board_public_quota_window_counts_expired(void)
 {
     int failures = 0;
@@ -2521,11 +2476,9 @@ static int test_fleet_board_public_quota_window_counts_expired(void)
     return failures;
 }
 
-/* T4: the physical half. The reclaim deletes expired discussion rows, keeps
- * durable wiki revisions, and leaves a table the UNCHANGED chain verifier
- * still walks from genesis — survivors re-seq'd 1..n in arrival order. It
- * also refuses to run inside somebody else's transaction, because it owns
- * the whole one it needs. */
+/* T4: the reclaim deletes expired discussion rows, keeps durable wiki
+ * revisions, leaves a chain the unchanged verifier walks (survivors re-seq'd
+ * 1..n), and refuses to run inside another transaction. */
 static int test_fleet_board_reclaim_expired(void)
 {
     int failures = 0;
@@ -2538,9 +2491,7 @@ static int test_fleet_board_reclaim_expired(void)
         fb_test_identity(14, seed, pk);
         const int64_t now = 900000;
 
-        /* Three short-lived discussion posts, interleaved with two that
-         * outlive the reclaim, so the survivors are NOT a suffix of the
-         * chain and the relink has to be a real relink. */
+        /* Survivors are not a suffix of the chain, so the relink is real. */
         uint8_t doomed[3][32];
         uint8_t kept[2][32];
         int n_doomed = 0;
@@ -2580,9 +2531,8 @@ static int test_fleet_board_reclaim_expired(void)
         ASSERT(db_fleet_board_chain_verify(&db, &checked));
         ASSERT_EQ(checked, 6);
 
-        /* An open transaction is somebody else's; the reclaim steps aside
-         * rather than joining it, changes nothing, and says DEFERRED — the
-         * scheduler must be able to tell that apart from a broken pass. */
+        /* Inside another transaction the reclaim steps aside, changes
+         * nothing and reports DEFERRED. */
         int64_t after_ttl = now + 1000;
         int64_t removed = 99;
         ASSERT(node_db_begin(&db));
@@ -2646,15 +2596,9 @@ static int test_fleet_board_reclaim_expired(void)
     return failures;
 }
 /* ── FLEET-scope carriage over the paired mesh stream ────────────────────
- *
- * The "board" stream service, driven through the PRODUCTION callbacks over
- * the shared loopback wire: two real p2p nodes on the fixture's in-process
- * Noise pair, only the socket elided. The asking node is the one that
- * ACCEPTED the link and the answering node is the one that DIALLED it, so
- * every pull below is a pull from a box behind NAT over the session that
- * box opened. The pairing authority runs for real against the fixture's
- * node.db; only the DHT delegation lookup and the clock are stood in for,
- * exactly as the fleet ledger group does. */
+ * The "board" stream service through the production callbacks over the
+ * loopback wire; only the socket, DHT delegation lookup and clock are stood
+ * in for. The asker accepted the link; the answerer dialled it. */
 
 /* Inside the fixture delegations' signed window (1000..4000). */
 #define FBW_NOW INT64_C(2500)
@@ -2688,10 +2632,8 @@ static bool g_fbw_deny_read;
 static bool g_fbw_deny_post;
 static uint8_t g_fbw_deny_post_key[32];
 
-/* The role gate this group grades: every key may do everything, except
- * that reading fleet posts can be switched off to prove the service asks,
- * and one author key can be refused a post to prove a refusal that later
- * clears is not lost. */
+/* Role gate for this group: every key may do everything, except fleet reads
+ * can be switched off and one author can be refused. */
 static bool fbw_role_check(const uint8_t key[32], const char *leaf,
                            const char *kind, char *why, size_t why_cap,
                            void *ctx)
@@ -2889,9 +2831,8 @@ static int test_fleet_board_fleet_carriage(void)
         }
         boot_fleet_board_fleet_test_bind(&w.a);
 
-        /* No pairing row: the primitive refuses the OPEN by name before
-         * the service is asked anything. The asking node accepted the
-         * link, so it mints odd stream ids. */
+        /* No pairing row: the OPEN is refused by name. The accepting node
+         * mints odd stream ids. */
         ASSERT_EQ(fbw_raw_open_verdict(&w, 1), MESH_STREAM_REFUSED_PEER_UNPAIRED);
         ASSERT_EQ(mesh_stream_test_live_count(FLEET_BOARD_FLEET_SERVICE_NAME),
                   (size_t)0);
@@ -2938,10 +2879,8 @@ static int test_fleet_board_fleet_carriage(void)
     }
 
     TEST("fleet board carriage: two paired stores converge") {
-        /* The other box posts, and is now the one answering. Its cursor
-         * table starts empty, so it pages through everything it holds in
-         * its own arrival order: first the 40 it pulled, which the first
-         * box already has, then the one post the first box lacks. */
+        /* The other box posts and answers: it pages everything it holds in
+         * arrival order, the 40 already pulled, then the one new post. */
         ASSERT(fbw_post(&w.b, 8, FLEET_BOARD_SCOPE_FLEET, "from the other box",
                         2200, 3600, 2200, &from_b));
         boot_fleet_board_fleet_test_bind(&w.b);
@@ -3000,10 +2939,8 @@ static size_t fbw_pull_n(struct fbw *w, const uint8_t peer_box[32],
 
 #define FBW_BATCH 16
 
-/* What the cursor must never do: pass over a row. Arrivals in one second,
- * a refusal that clears later, a reclaim between pulls, and a restart of
- * the answering process are each a way an arrival-time keyset used to lose
- * a post for good. */
+/* The cursor must never pass over a row: same-second arrivals, a refusal
+ * that clears later, a reclaim between pulls, and a restart. */
 static int test_fleet_board_fleet_carriage_gap_free(void)
 {
     int failures = 0;
@@ -3174,10 +3111,8 @@ static int test_fleet_board_fleet_quota(void)
     return failures;
 }
 
-/* Run the PUBLIC-scope-with-the-real-gate tests together, with the
- * real gate — nothing installed — bracketing all of them, then hand the
- * permissive stub back so the rest of this file's tests keep the isolation
- * they were written for. */
+/* Run the PUBLIC-scope tests with the real gate installed, then restore the
+ * permissive stub. */
 static int test_fleet_board_public_no_grant_needed(void)
 {
     int failures = 0;
@@ -3193,9 +3128,8 @@ static int test_fleet_board_public_no_grant_needed(void)
     return failures;
 }
 
-/* The paired pull's resume point is a file, not only this process. After
- * one page the in-memory cursor is dropped the way a restart drops it, and
- * the next pull must ask where the file says, not from arrival 0. */
+/* The paired pull's resume point is a file: after a simulated restart the
+ * next pull asks where the file says, not from arrival 0. */
 static int test_fleet_board_fleet_cursor_resumes(void)
 {
     int failures = 0;
@@ -3248,14 +3182,8 @@ static int test_fleet_board_fleet_cursor_resumes(void)
 int test_fleet_board(void)
 {
     int failures = 0;
-    /* Every ingest below is a post signed by a key this group invented, and
-     * ingest refuses a FLEET/LEGACY-scope post from a key with no role. This
-     * group is about the codec, the store and the gossip path, so the role
-     * gate is held open for it; the gate itself — and the PUBLIC-scope
-     * exemption from it — is proven with the REAL gate installed by
-     * test_fleet_board_public_no_grant_needed() below, and by
-     * fleet_roles / fleet_role_enforcement, which uninstall this first and
-     * prove that an empty seam refuses. */
+    /* The role gate is held open here; the gate itself is proven in
+     * test_fleet_board_public_no_grant_needed() and fleet_roles. */
     zcl_fleet_role_checker_install_permissive_for_testing();
     failures += test_fleet_board_codec();
     failures += test_fleet_board_bounds();

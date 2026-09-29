@@ -3,15 +3,14 @@
  *
  * Unit tests for domain/consensus/locktime.{c,h}.
  *
- * Pins the pure BIP65/BIP113 lock-time arithmetic and Overwinter
- * expiry predicates extracted from
+ * Pins the pure BIP65/BIP113 lock-time arithmetic and Overwinter expiry
+ * predicates extracted from
  * core/modules/validation/include/validation/contextual_check_tx.h.
  *
- * The "regression seal" section calls BOTH the new domain API and
- * the legacy wrapper (is_final_tx / is_expired_tx / is_expiring_soon_tx)
- * across the lock-time boundary in both domains (height vs unix time)
- * and proves they agree byte-for-byte. This is what prevents a future
- * edit to one path from silently diverging from the other.
+ * The regression seal calls both the domain API and the legacy wrapper
+ * (is_final_tx / is_expired_tx / is_expiring_soon_tx) across the lock-time
+ * boundary in both domains (height vs unix time) and requires byte-for-byte
+ * agreement.
  */
 
 #include "test/test_core.h"
@@ -172,8 +171,7 @@ int test_domain_consensus_locktime(void)
         memset(tx.vin[0].prevout.hash.data, 0xAA, 32);
         tx.vin[0].prevout.n = 0;
         /* Strict GT, matching zclassicd IsExpiredTx (main.cpp:788): a tx is
-         * still valid in the block AT its expiry_height and only expires the
-         * block AFTER. (Was wrongly `>=` here, which expired one block early.) */
+         * still valid in the block AT its expiry_height. */
         DCL_CHECK("expiry_height=500, height=499 not expired",
                   !domain_consensus_tx_is_expired(&tx, 499));
         DCL_CHECK("expiry_height=500, height=500 (== expiry) NOT expired",
@@ -221,10 +219,9 @@ int test_domain_consensus_locktime(void)
     }
 
     /* ────────────────────────────────────────────────────────────
-     * REGRESSION SEAL: domain API ≡ legacy wrapper across lock-time
-     * boundaries (height domain, time domain, sequence override) and
-     * expiry boundary. This is the byte-for-byte equivalence proof.
-     * If a future edit drifts one path the seal fires. */
+     * REGRESSION SEAL: domain API == legacy wrapper across lock-time
+     * boundaries (height, time, sequence override) and the expiry
+     * boundary. */
 
     /* Lock-time by HEIGHT: sweep around the lt=N boundary. */
     {

@@ -1,42 +1,30 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * test_epoch — the `core epoch` command layer
- * (tools/command/native_epoch_command.c).
- *
- * The libraries under these handlers (zanc codec, the op_return catalog
- * cursor) are covered by test_zanc / test_op_return_index. This group
- * covers the WIRING, which is where the bugs have actually been: the
- * live anchor path once sent a bare JSON object where the RPC dispatcher
- * expects a params array, so it could never have worked, and nothing
- * caught it.
+ * test_epoch: the `core epoch` command layer
+ * (tools/command/native_epoch_command.c). The zanc codec and the op_return
+ * catalog cursor are covered by test_zanc / test_op_return_index; this group
+ * covers the wiring.
  *
  * Coverage:
- *   1. datadir resolution — explicit, absent (no --datadir default), and
- *      a datadir with no node.db.
- *   2. the two blocking paths — CATALOG_CURSOR_UNREADABLE (a refused
- *      persisted record) and CATALOG_EMPTY (nothing folded yet).
+ *   1. datadir resolution: explicit, absent (no --datadir default), and a
+ *      datadir with no node.db.
+ *   2. the blocking paths: CATALOG_CURSOR_UNREADABLE and CATALOG_EMPTY.
  *   3. base_height / base_digest / partial_coverage round-trip through
- *      status, anchor and verify — an epoch anchor is a commitment over a
- *      DECLARED range, so every surface that publishes the digest must
- *      publish the range with it.
- *   4. verify --height against the local checkpoint: genuine match,
- *      genuine mismatch, and the no-checkpoint case naming its reason.
- *   5. the paging path — an epoch anchor buried under more than 100
- *      newer unrelated anchors is still found. This was a SILENT WRONG
- *      ANSWER ("anchored: false" for an anchor that is on-chain).
- *   6. cross-operator agreement — two agreeing anchors, two disagreeing
- *      anchors (non-zero exit, report intact), and a local base above the
- *      height reported incomparable rather than disagreeing.
- *   7. the offline path's op_return_hex round-trips through zanc_parse,
- *      enters a simnet block, and rebuilds the exact ZANC projection.
- *   8. epoch arithmetic (cursor/1000) matches dumpstate zepoch exactly.
+ *      status, anchor and verify (an anchor commits over a declared range).
+ *   4. verify --height against the local checkpoint: match, mismatch, and
+ *      the no-checkpoint case naming its reason.
+ *   5. paging: an anchor buried under more than 100 newer unrelated anchors
+ *      is still found.
+ *   6. cross-operator agreement: agreeing anchors, disagreeing anchors
+ *      (non-zero exit, report intact), and a local base above the height
+ *      reported incomparable.
+ *   7. the offline op_return_hex round-trips through zanc_parse, enters a
+ *      simnet block, and rebuilds the ZANC projection.
+ *   8. epoch arithmetic (cursor/1000) matches dumpstate zepoch.
  *
- * Hermetic: per-pid ./test-tmp datadirs, no network, no wallet, no live
- * node. node_rpc_call is stubbed for the whole group (see epoch_rpc_stub)
- * so the anchor handler can NEVER reach a running node — the offline
- * op_return_hex branch is the only branch these tests exercise. Its bytes
- * are mined only in the RAM-only simnet fixture; nothing is broadcast.
- */
+ * Hermetic: per-pid ./test-tmp datadirs, no network, wallet or live node.
+ * node_rpc_call is stubbed (see epoch_rpc_stub), so only the offline
+ * op_return_hex branch runs and nothing is broadcast. */
 
 #include "test/test_core.h"
 
@@ -60,12 +48,8 @@
 #include <unistd.h>
 
 /* ── RPC containment ────────────────────────────────────────────────
- *
- * `core epoch anchor` prefers a live node. In a test process that must
- * be impossible, not merely unlikely: this stub answers every RPC with a
- * transport error, so the handler always takes the offline branch and
- * `anchor_publish` is never dispatched anywhere. Installed for the whole
- * group and cleared at the end. */
+ * This stub answers every RPC with a transport error, so `core epoch
+ * anchor` always takes the offline branch. Installed for the whole group. */
 static int g_epoch_rpc_calls;
 
 static char *epoch_rpc_stub(const char *method, const char *params_json)
@@ -266,9 +250,8 @@ static int test_epoch_datadir(void)
         ep_cmd_free(&c);
     }
 
-    /* No input datadir and no CLI --datadir (the bridge global is empty in
-     * a test process): the handler must REFUSE, never silently pick a
-     * default datadir and answer about somebody else's node. */
+    /* No input datadir and no CLI --datadir: the handler must REFUSE, never
+     * pick a default datadir. */
     printf("epoch datadir: absent datadir refuses with MISSING_DATADIR "
            "instead of defaulting... ");
     {
@@ -362,11 +345,9 @@ static int test_epoch_blockers(void)
         ep_cmd_free(&c);
     }
 
-    /* A LEGACY v1 record is a REFUSAL, not "nothing folded yet": it is a
-     * genesis-rooted digest with no declared base, and reading it as a
-     * range commitment would publish a range the chain never agreed to.
-     * op_return_index_get_cursor returns false, and status must surface
-     * that as its own named blocker. */
+    /* A LEGACY v1 record is a REFUSAL, not "nothing folded yet": it has no
+     * declared base. op_return_index_get_cursor returns false and status
+     * surfaces a named blocker. */
     printf("epoch blockers: a refused (legacy v1) cursor record BLOCKS with "
            "CATALOG_CURSOR_UNREADABLE... ");
     {
@@ -629,11 +610,8 @@ static int test_epoch_paging(void)
     if (ep_fixture_init(&f, "paging")) printf("OK\n");
     else { printf("FAIL\n"); return 1; }
 
-    /* THE REGRESSION. The epoch anchor is at chain height 10. Above it sit
-     * 150 unrelated anchors (ZSLP/ZNAM/zcode families — routine on a live
-     * chain). The old code read the newest 100 anchors of ANY label, so
-     * this anchor was invisible and both status and verify answered
-     * "anchored: false" for an anchor that is on-chain. */
+    /* THE REGRESSION. The epoch anchor is at chain height 10 with 150
+     * unrelated anchors above it; it must still be found. */
     const int32_t epoch_h = 7000;
     bool planted = ep_put_anchor(&f, 9001, 10, 0xD7, "zepoch@7000");
     for (uint32_t i = 0; i < 150 && planted; i++) {
@@ -703,9 +681,7 @@ static int test_epoch_paging(void)
     }
 
     /* status picks the anchor with the greatest LABEL height in the epoch,
-     * which is the one the paged scan had to walk the whole family to see:
-     * its chain height (2149) is not the newest row, and its label height
-     * (8149) is not in the current epoch unless the cursor is there. */
+     * which the paged scan must walk the whole family to see. */
     printf("epoch paging: the latest-in-epoch anchor is chosen by LABEL "
            "height across every page... ");
     {
@@ -789,12 +765,10 @@ static int test_epoch_agreement(void)
 
     ep_fixture_free(&f);
 
-    /* THE case that must not be collapsed into "disagree": a bounded node
-     * whose declared base is ABOVE the anchored height never folded that
-     * height. base_height/base_digest are folded into every preimage, so
-     * its digest and the anchor's digest are commitments over different
-     * ranges — they are SUPPOSED to differ. Reporting that as disagreement
-     * would cry wolf every time a bounded node met an archival one. */
+    /* A bounded node whose declared base is ABOVE the anchored height never
+     * folded it; base_height/base_digest are in every preimage, so the
+     * digests commit to different ranges and are reported incomparable, not
+     * disagreeing. */
     printf("epoch agree: a local base ABOVE the height is incomparable, not "
            "disagreeing... ");
     {
@@ -956,9 +930,8 @@ static int test_epoch_arithmetic(void)
     if (ep_fixture_init(&f, "arith")) printf("OK\n");
     else { printf("FAIL\n"); return 1; }
 
-    /* Deliberately awkward heights: an exact boundary, one below it, and
-     * one in the middle. epoch = cursor/1000 must hold at all three, and
-     * the command and the dumper must never disagree. */
+    /* Awkward heights (boundary, one below, middle): epoch = cursor/1000
+     * must hold and match the dumper. */
     static const int32_t heights[] = {999, 1000, 3056758};
     for (size_t i = 0; i < sizeof(heights) / sizeof(heights[0]); i++) {
         int32_t h = heights[i];

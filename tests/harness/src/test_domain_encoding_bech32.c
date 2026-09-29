@@ -26,11 +26,9 @@
     else { printf("FAIL\n"); failures++; }                          \
 } while (0)
 
-/* BIP-173 valid examples (lowercase / uppercase / mid-length). The
- * canonical 90-char-with-HRP="1" vector is intentionally omitted —
- * reproducing its exact form precisely (q-count) is brittle in a
- * C string literal, and the other vectors fully exercise the
- * polymod/charset/HRP-lowering paths. */
+/* BIP-173 valid examples (lowercase / uppercase / mid-length). The 90-char
+ * HRP="1" vector is omitted as brittle in a C literal; the others exercise
+ * the polymod/charset/HRP-lowering paths. */
 static const char *k_valid_bech32[] = {
     "A12UEL5L",
     "a12uel5l",
@@ -40,11 +38,9 @@ static const char *k_valid_bech32[] = {
     "?1ezyfcl",
 };
 
-/* BIP-173 invalid examples (each should be rejected by this decoder).
- * Some of the canonical BIP-173 invalid vectors fail on the 90-char
- * length cap, which this codec deliberately raises to 1023 (see
- * platform/domain/encoding/bech32.h). We omit those length-only fails here and
- * keep only fails this codec actually catches. */
+/* BIP-173 invalid examples this decoder rejects. Length-only failures are
+ * omitted: this codec raises the 90-char cap to 1023 (see
+ * platform/domain/encoding/bech32.h). */
 static const char *k_invalid_bech32[] = {
     " 1nwldj5",                /* HRP char < 33 (space) */
     "\x7f""1axkwrx",         /* HRP char > 126 (DEL) */

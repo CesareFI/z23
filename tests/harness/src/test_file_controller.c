@@ -432,10 +432,9 @@ static int64_t file_service_lifetime_wall_unix(void *opaque)
 }
 
 #if !defined(_WIN32)
-/* Wait for the worker's actual EOF, bounded by a hang guard rather than a
- * scheduler-speed assertion. This test deliberately installs a fake platform
- * monotonic source to expire the production connection; its own wait must use
- * the host clock or the injected fixed timestamp can never advance. */
+/* Wait for the worker's EOF, bounded by a hang guard. The fake platform
+ * monotonic source expiring the connection cannot advance, so this wait
+ * uses the host clock. */
 static bool file_service_wait_for_eof(int fd, int timeout_ms)
 {
     const int64_t deadline_us = clock_now_monotonic_raw_us() +
@@ -461,9 +460,9 @@ static bool file_service_wait_for_eof(int fd, int timeout_ms)
             continue;
         if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)
             continue;
-        /* Closing with an unread padding frame is allowed to surface as a
-         * reset rather than an orderly EOF. Both mean the expired peer can no
-         * longer use the connection; neither is a scheduler-speed failure. */
+        /* Closing with an unread padding frame may surface as a reset rather
+         * than an orderly EOF; both mean the expired peer cannot use the
+         * connection. */
         if (errno == ECONNRESET || errno == ECONNABORTED || errno == ENOTCONN)
             return true;
         return false;
@@ -477,10 +476,9 @@ static int test_file_service_start_stop_and_lifetime(void)
 
     printf("file_controller: file service start/stop and connection lifetime... ");
 #if defined(_WIN32)
-    /* Frame/chunk transport and the handshake are native on Windows. The
-     * inbound server still refuses until its manifest/snapshot filesystem
-     * transaction is qualified, so there is no accepted connection whose
-     * server-owned lifetime can be observed here. */
+    /* Frame/chunk transport and handshake are native on Windows, but the
+     * inbound server refuses until its manifest/snapshot filesystem
+     * transaction is qualified, so no accepted connection exists here. */
     printf("SKIP (Windows): inbound file-service server is unavailable on "
            "this lane\n");
     return failures;
@@ -533,19 +531,14 @@ static int test_file_service_start_stop_and_lifetime(void)
         if (ok) {
             platform_clock_set_source(&source);
             clock_installed = true;
-            /* The frame only wakes a worker already blocked in recv.  Once
-             * the injected clock is visible, the worker may instead win the
-             * race and close the expired connection before this send.  Both
-             * schedules are valid; the contract below is the bounded EOF,
-             * not whether a trigger can still be written to an expired
-             * connection. */
+            /* The frame only wakes a worker blocked in recv; the worker may
+             * instead close the expired connection first. Both schedules are
+             * valid; the contract is the bounded EOF. */
             (void)fs_send_frame(&client, FS_PADDING, NULL, 0);
         }
 
-        /* A loaded full-suite worker may not run inside one 250 ms quantum.
-         * Keep the correctness assertion (the peer must observe EOF), but
-         * bound it with the same 30 s hostile-peer hang guard as file-service
-         * frame I/O instead of requiring a particular scheduler latency. */
+        /* Bound the peer's EOF observation with the 30 s hostile-peer hang
+         * guard (as file-service frame I/O does), not a scheduler latency. */
         bool peer_closed = file_service_wait_for_eof(fd, 30000);
         ok = ok && peer_closed;
 

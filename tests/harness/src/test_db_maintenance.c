@@ -2,14 +2,9 @@
  *
  * Tests for the db_maintenance scheduler.
  *
- * Each test opens a real node_db on a fresh scratch file (node_db
- * creates the full schema so the PRAGMA/ANALYZE/VACUUM paths have
- * actual tables to act on) and drives the service through
- * db_maintenance_run_now() synchronously. The scheduler thread
- * itself is tested via a single start/stop path — the tick
- * interval is configurable so tests don't have to sleep for the
- * default 60 s.
- */
+ * Each test opens a real node_db on a fresh scratch file and drives the
+ * service through db_maintenance_run_now(). The scheduler thread is tested
+ * via one start/stop path with a configurable tick interval. */
 
 #include "test/test_core.h"
 #include "services/db_maintenance.h"
@@ -59,12 +54,9 @@ static void dbm_install_observer(void)
     else { printf("FAIL\n"); failures++; } \
 } while (0)
 
-/* Minimal test fixture: a raw sqlite3 connection wrapped in a
- * `struct node_db` shell. We can't use the real `node_db_open`
- * here because it opens ~30 cached prepared statements, which
- * SQLite blocks VACUUM on. The service only touches `ndb.db`
- * and `ndb.open`, so the shell is sufficient for exercising
- * `db_maintenance_run_now`. */
+/* Fixture: a raw sqlite3 connection in a `struct node_db` shell. The real
+ * node_db_open() caches prepared statements, which block VACUUM; the
+ * service only touches `ndb.db` and `ndb.open`. */
 struct dbm_fixture {
     char dbpath[256];
     sqlite3 *raw;
@@ -86,13 +78,11 @@ static bool dbm_fixture_init(struct dbm_fixture *f, const char *tag)
     if (sqlite3_open_v2(f->dbpath, &f->raw,
             SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE, NULL) != SQLITE_OK)
         return false;
-    /* WAL mode so PRAGMA wal_checkpoint(TRUNCATE) has something
-     * meaningful to do. */
+    /* WAL mode so wal_checkpoint(TRUNCATE) has work. */
     if (sqlite3_exec(f->raw, "PRAGMA journal_mode=WAL;", NULL, NULL, NULL)
         != SQLITE_OK)
         return false;
-    /* Give the db something to analyze / vacuum — an empty db
-     * is a degenerate case and we want to hit the real op paths. */
+    /* Give the db rows to analyze / vacuum. */
     if (sqlite3_exec(f->raw,
             "CREATE TABLE kv(k INTEGER PRIMARY KEY, v BLOB);"
             "INSERT INTO kv VALUES(1, randomblob(64));"
@@ -101,10 +91,8 @@ static bool dbm_fixture_init(struct dbm_fixture *f, const char *tag)
             "DELETE FROM kv WHERE k=2;",
             NULL, NULL, NULL) != SQLITE_OK)
         return false;
-    /* The board-reclaim op reads the fleet board table, so the shell
-     * fixture carries exactly the columns that op names. The board's own
-     * behaviour is proven in the fleet_board group against the real
-     * schema; what this fixture proves is the scheduler wiring. */
+    /* The board-reclaim op reads the fleet board table; the shell carries
+     * the columns it names. This fixture proves scheduler wiring only. */
     if (sqlite3_exec(f->raw,
             "CREATE TABLE fleet_board_posts("
             "id BLOB PRIMARY KEY, seq INTEGER NOT NULL,"
@@ -135,8 +123,7 @@ static void dbm_fixture_destroy(struct dbm_fixture *f)
     unlink(shm);
 }
 
-/* A vacuum gate that always returns false — used to verify that
- * scheduler-driven vacuums respect the gate. */
+/* A vacuum gate that always returns false. */
 static bool dbm_gate_always_false(void) { return false; }
 
 int test_db_maintenance(void)
@@ -153,9 +140,8 @@ int test_db_maintenance(void)
                   sched.analyze_hours < 0 && sched.vacuum_days < 0);
         DBM_CHECK("dbm: boot schedule keeps the WAL byte cap armed",
                   sched.wal_max_bytes == 0);
-        /* Armed, and armed at an interval short enough that the dead rows
-         * one key can accumulate between passes stay under the live
-         * ceiling the board admits it against. */
+        /* Armed at an interval short enough to keep dead rows under the
+         * board's live ceiling. */
         DBM_CHECK("dbm: boot schedule arms the fleet board reclaim",
                   sched.board_reclaim_minutes ==
                       DB_MAINT_DEFAULT_BOARD_RECLAIM_MINUTES &&
@@ -172,10 +158,8 @@ int test_db_maintenance(void)
         bool wal_ok     = db_maintenance_run_now(&f.ndb, "wal").ok;
         bool analyze_ok = db_maintenance_run_now(&f.ndb, "analyze").ok;
         bool vacuum_ok  = db_maintenance_run_now(&f.ndb, "vacuum").ok;
-        /* The fourth op is not SQL behind the port: it is the fleet board's
-         * own bounded reclaim. The board's per-key resident quota counts
-         * STORED rows, so this leg is what hands a key its slots back once
-         * the posts holding them are dead. */
+        /* The fourth op is the fleet board's bounded reclaim, which frees
+         * a key's per-key resident-quota slots held by dead posts. */
         bool board_ok   = db_maintenance_run_now(&f.ndb,
                                                  "board-reclaim").ok;
 
@@ -201,13 +185,9 @@ int test_db_maintenance(void)
         DBM_CHECK("dbm: no EV_DB_MAINTENANCE_FAILED events",
                   fails == 0);
 
-        /* An open node_db transaction is the node's own writers at work,
-         * which is most of what a syncing node is doing. The reclaim owns
-         * the whole transaction it needs, so it yields the tick — and a
-         * yield must not touch the failure counter the health rollup reads
-         * (`total_failures == 0`), or the first reclaim that lands during
-         * catchup would report the node unhealthy for the life of the
-         * process. */
+        /* An open node_db transaction means the reclaim yields the tick,
+         * and a yield must not bump `total_failures` (read by the health
+         * rollup). */
         struct db_maintenance_status before;
         db_maintenance_status_snapshot(&before);
         f.ndb.tx_open = true;
@@ -282,8 +262,7 @@ int test_db_maintenance(void)
 
         struct db_maintenance_schedule sched;
         db_maintenance_schedule_defaults(&sched);
-        /* Generous intervals so the thread doesn't attempt any
-         * scheduled runs during the test. */
+        /* Long intervals: no scheduled runs during the test. */
         sched.tick_seconds           = 3600;
 
         bool start1 = db_maintenance_start(&f.ndb, &sched).ok;
@@ -311,11 +290,8 @@ int test_db_maintenance(void)
         struct dbm_fixture f;
         dbm_fixture_init(&f, "gate");
 
-        /* Gate says "no" — but run_now still succeeds because
-         * the gate only applies to scheduler-driven vacuums.
-         * The gate exists so that tests like this can prove the
-         * scheduler won't vacuum while the node is busy, without
-         * blocking operators who want to force a VACUUM. */
+        /* The gate applies only to scheduler-driven vacuums; run_now
+         * still succeeds. */
         db_maintenance_set_vacuum_gate(dbm_gate_always_false);
         bool vacuum_ok = db_maintenance_run_now(&f.ndb, "vacuum").ok;
         DBM_CHECK("dbm: run_now(vacuum) bypasses the gate (manual override)",
@@ -341,9 +317,8 @@ int test_db_maintenance(void)
     }
 
     /* ── 9. Boot schedule start reports started (typed status) ──
-     * Boot starts this service by default (see "Boot policy" in
-     * services/db_maintenance.h); the status snapshot is the typed
-     * surface that proves it is alive. */
+     * Boot starts this service by default (services/db_maintenance.h);
+     * the status snapshot proves it is alive. */
     {
         struct dbm_fixture f;
         dbm_fixture_init(&f, "bootstart");

@@ -3,12 +3,9 @@
  * ACCEPTANCE BAR for fleet.objectives
  * (tools/command/native_fleet_objectives*.c).
  *
- * Every path a producer reads is overridable, so this file drives the whole
- * leaf against fixtures built here — never against this checkout's own
- * outcomes ledger, proof attempts, or lint tree. Nothing here reads a real
- * clock and nothing asserts a value that depends on one; `commits_landed_today`
- * is exercised against a fixture repository but its VALUE is never asserted,
- * because "since midnight" is real-clock-relative by definition.
+ * Every path a producer reads is overridable, so the whole leaf runs against
+ * fixtures built here. Nothing reads a real clock or asserts a clock-dependent
+ * value; `commits_landed_today` is exercised but its VALUE is never asserted.
  */
 
 #include "test/test_core.h"
@@ -168,16 +165,11 @@ int test_fleet_objectives(void)
     (void)snprintf(baseline_missing, sizeof(baseline_missing),
                   "%s/no_such_baseline.txt", root);
 
-    /* One TRAIN is identified by its `note` ("traintrainX"), NEVER by `tip`
-     * or `base` — both of those change on every rebase in the real ledger,
-     * so the fixture deliberately gives every row of "traintrainX" its OWN
-     * distinct tip, to mirror reality. It starts at epoch 36000
-     * (1970-01-01T10:00:00Z, the earliest row's `started`), fails twice,
-     * then lands at 1970-01-01T10:41:00Z (epoch 38460): latency
-     * == 38460 - 36000 == 2460, and 3 attempts (all three rows are
-     * landed/failed, none is a pure rebase "conflict"). A fourth row for a
-     * DIFFERENT train ("traintrainY", its own distinct tip) sits first in
-     * the file and must not be pulled into either number. */
+    /* One TRAIN is identified by its `note` ("traintrainX"), never by `tip`
+     * or `base` (both change on every rebase), so each row gets its own tip.
+     * It starts at epoch 36000, fails twice, then lands at epoch 38460:
+     * latency 2460, 3 attempts. A row for a different train ("traintrainY")
+     * sits first in the file and must not count toward either number. */
     ASSERT(fox_write(
         outcomes_ok,
         "{\"tip\":\"tipY1\",\"note\":\"traintrainY\",\"state\":\"conflict\","

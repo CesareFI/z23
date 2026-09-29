@@ -1,26 +1,19 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Tests for the writer census (engine/controllers/src/fact_writers.c) — the
- * instrument that names durable slots with more than one mutation surface.
+ * Tests for the writer census (engine/controllers/src/fact_writers.c), which
+ * names durable slots with more than one mutation surface.
  *
- * Two halves, deliberately different in kind:
+ *  1. PRECISION, on a planted fixture tree whose every write is known:
+ *     writer_files, writer_sites, the raw-SQL path, the comment exclusion and
+ *     the unresolved-key counter are asserted exactly, independent of the
+ *     real repository.
+ *  2. COVERAGE, against the real headers: every keyed-write declaration in a
+ *     manifest row's api_headers must be claimed by a FACT_WRITE_API row. A
+ *     hollow-scan proof points the scan at a tree with no such headers and
+ *     requires -1, never 0.
  *
- *  1. PRECISION, on a planted fixture tree. The census's answer for a tree
- *     whose every write is planted here is fully known, so writer_files,
- *     writer_sites, the raw-SQL path, the comment exclusion, and the
- *     unresolved-key counter are all asserted exactly. No assertion here says
- *     anything about the real repository, so nothing here can go stale when the
- *     real tree changes.
- *
- *  2. COVERAGE, against the real headers. Every keyed-write declaration in a
- *     manifest row's api_headers must be claimed by a FACT_WRITE_API row —
- *     a canonical registry no row claims must fail. Paired with a hollow-scan
- *     proof: point the coverage scan at a tree with no such headers and it must
- *     return -1, never a comfortable 0.
- *
- * What is NOT asserted, on purpose: any count of multi-writer slots in the real
- * tree. That number is a finding, and pinning a finding in a test is the second
- * ledger the census exists to find. Read it with `z23 code facts`.
+ * Not asserted: any count of multi-writer slots in the real tree; that is a
+ * finding, read with `z23 code facts`.
  */
 
 #include "test/test_core.h"
@@ -113,9 +106,9 @@ static const char *FW_F_C =
     "        \" VALUES('fw_shared_slot',?)\", blob);\n"
     "}\n";
 
-/* Writer 4: a file-local helper that BINDS the key, so neither the declared-API
- * nor the raw-SQL derivation can see the slot. The census must recover the
- * helper from the file itself and attribute its two callers. */
+/* Writer 4: a file-local helper that BINDS the key, invisible to the
+ * declared-API and raw-SQL derivations; the census recovers the helper and
+ * attributes its two callers. */
 static const char *FW_E_C =
     "/* fixture writer E — a local keyed wrapper over a bound-parameter write. */\n"
     "#include \"storage/fw_fix_keys.h\"\n"
@@ -207,10 +200,10 @@ static int fw_case_three_writers(void)
         const struct fact_row *shared =
             fact_writers_find(g_fw_rep, "progress_meta", "fw_shared_slot");
         ASSERT(shared != NULL);
-        /* Five mutation surfaces: API set/delete, a raw-SQL bypass, a recovered
-         * local wrapper, and an INSERT-form raw writer. They are source sites,
-         * not evidence that five durable copies or authorities exist. The
-         * commented mention in fw_fix_a.c is NOT another surface. */
+        /* Five mutation surfaces: API set/delete, a raw-SQL bypass, a
+         * recovered local wrapper, and an INSERT-form raw writer; source
+         * sites, not evidence of five authorities. The commented mention in
+         * fw_fix_a.c is not a surface. */
         ASSERT_EQ(shared->writer_files, 5);
         ASSERT_EQ(shared->writer_sites, 5);
         ASSERT(fw_row_has_file(shared, "fw_fix_a.c"));

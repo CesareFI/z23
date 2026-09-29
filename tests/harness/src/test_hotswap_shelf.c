@@ -1,61 +1,37 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Tests for the hot-swap IMAGE COMMIT — the step that decides which module
- * image is live for a source and which superseded mapping may be released —
- * and for the depth-1 rollback SHELF built on top of it
- * (hotswap/hotswap_shelf.h).
+ * Tests for the hot-swap IMAGE COMMIT (which module image is live for a
+ * source and which superseded mapping may be released) and the depth-1
+ * rollback SHELF built on it (hotswap/hotswap_shelf.h).
  *
- * WHY THIS FILE EXISTS AT ALL, said plainly: an earlier version of the shelf
- * shipped with its concurrency story UNTESTED, and an integration review
- * reverted it for "an unsafe module-retirement race". The race is real. It is
- * reproduced here DETERMINISTICALLY, and every assertion below was checked to
- * FAIL against the code without the fix (see the discrimination notes on each
- * test).
+ * The race: a swap is two steps. hotswap_module_publish() makes the
+ * registry dispatch into the new image and assigns a generation; the
+ * loader then records the image against its source and retires the
+ * previous one. Publish runs resident callbacks, so it holds no loader
+ * lock, and two activations of one source can publish in one order and
+ * commit in the other. The loser hands the WINNER's image to the retire
+ * path; drain-only quiescence cannot see it (the ACTIVE snapshot is
+ * skipped by design), so the live image's code would be unmapped.
  *
- * THE RACE, in one paragraph. A swap is two steps that are not one atomic
- * step: hotswap_module_publish() makes the registry dispatch into the new
- * image and assigns it a generation, and then the loader records that image
- * against its source and retires the previous one. The first step runs
- * resident probe/commit callbacks, so it cannot hold a loader lock — which
- * means two activations of the same source can publish in one order and
- * arrive at the commit in the other. The loser then hands the WINNER's image
- * to the retire path, and the old drain-only quiescence test cannot see the
- * problem: drain proves nothing is still inside a RETIRED snapshot, and the
- * ACTIVE snapshot is skipped by design because it is always live. The result
- * is an unmap of the code the live snapshot dispatches into.
+ * Determinism without instrumenting production: the registry commit
+ * callback is a caller-supplied hook (see test_hotswap_module_v2.c and
+ * zcl_native_hotswap_publish_hooks()). This file's hook parks the slow
+ * publisher right after zcl_command_registry_replace_batch() returns and
+ * its generation is read, and releases it once the fast publisher has
+ * completed both steps.
  *
- * HOW THE RACE IS MADE DETERMINISTIC HERE, without instrumenting production.
- * The registry commit callback is a hook the CALLER supplies (see
- * test_hotswap_module_v2.c, and zcl_native_hotswap_publish_hooks() for the
- * resident's own). So this file's commit hook parks the "slow" publisher
- * inside the hook, immediately after zcl_command_registry_replace_batch() has
- * returned and its generation has been read, and releases it only once the
- * "fast" publisher has completed BOTH of its steps. That is exactly the
- * production window — registry published, loader commit not yet reached — and
- * it is reproduced 100% of the time rather than hoped for.
+ * Driven for real: the hotswap_module_publish() gauntlet (admit -> probe ->
+ * ONE batch commit) into the real kernel command-registry override layer,
+ * lock-free snapshots, refcount drain, zcl_command_registry_execute_json()
+ * dispatch from other threads, and hotswap_commit_image(). Not real: dlopen.
+ * An "image" is a test-owned token and the unmap seam is a test observer
+ * that can ask, at the instant of unmap, whether the live snapshot still
+ * resolves a leaf to that image.
  *
- * WHAT IS DRIVEN, AND WHAT IS NOT. Publishes are REAL: the pure, always-
- * compiled hotswap_module_publish() gauntlet (admit -> probe -> ONE batch
- * commit) publishing into the REAL kernel command-registry override layer,
- * with real lock-free snapshots, real refcount drain, and real
- * zcl_command_registry_execute_json() dispatch running against it from other
- * threads. The image commit is the REAL production function
- * (hotswap_commit_image), reached by the loader through exactly this call.
- * What is NOT real is dlopen: an "image" here is a test-owned token and the
- * unmap seam is a test observer, because building a module .so needs a
- * compiler and a build rule this group does not have. That substitution costs
- * nothing for what is under test — the race is in the sequencing, not in the
- * dynamic loader — and it BUYS a stronger oracle than a crash would be: the
- * observer can ask, at the instant of the unmap, whether the live snapshot
- * still resolves that leaf to this image's handler. A SIGSEGV would only tell
- * us that something went wrong somewhere later.
- *
- * ⛔ STILL UNVERIFIED BY THIS FILE (no test here claims otherwise): a real
- * dlopen'd .so being unmapped; rollback COMPLETING (it re-runs the full
- * gauntlet, which needs the dev datadir plus -hotswap-activate plus
- * ZCL_HOTSWAP_ACTIVATE=1, none of which a test_parallel process has, so every
- * rollback below is driven to a refusal — its CLAIM, its shelf accounting and
- * its descriptor discipline are what is proven); and the rollback toggle.
+ * Unverified here: a real dlopen'd .so being unmapped; rollback COMPLETING
+ * (it needs the dev datadir, -hotswap-activate and ZCL_HOTSWAP_ACTIVATE=1),
+ * so every rollback is driven to a refusal, proving its claim, shelf
+ * accounting and descriptor discipline; and the rollback toggle.
  */
 
 #include "test/test_helpers.h"
@@ -78,9 +54,9 @@
 #include <string.h>
 #include <unistd.h>
 
-/* The status controller row of engine/composition/hotswap_swappable.def; its declared
- * probe leaf in engine/composition/hotswap_eligible.def is core.status. Both leaves used
- * below are on that row, so hotswap_module_admit() accepts them. */
+/* The status controller row of engine/composition/hotswap_swappable.def
+ * (probe leaf core.status in hotswap_eligible.def). Both leaves below are
+ * on that row, so hotswap_module_admit() accepts them. */
 #define SHELF_TU      "engine/controllers/src/status_native_handlers.c"
 #define LEAF_PROBE    "core.status"
 #define LEAF_SECOND   "core.sync.diagnose"
@@ -90,10 +66,9 @@
 #define SHELF_TU_UNKNOWN "lib/consensus/src/pow.c"
 
 /* ── The image pool ───────────────────────────────────────────────────────
- * One handler function per image, never shared, so a dispatch that lands in
- * an image can say WHICH image it landed in — the direct use-after-free
- * observation. `unmapped` is what the test's unmap seam sets; a handler that
- * runs with it set is a dispatch into released code. */
+ * One handler per image, never shared, so a dispatch can say WHICH image
+ * it landed in. `unmapped` is set by the unmap seam; a handler running
+ * with it set is a dispatch into released code. */
 #define IMG_MAX 16
 
 struct img {
@@ -108,12 +83,11 @@ struct img {
 static struct img g_img[IMG_MAX];
 static _Atomic uint64_t g_dispatch_into_unmapped;
 static _Atomic uint64_t g_unmap_calls;
-/* The unmap seam saw the live snapshot still resolving one of this image's
- * leaves to this image's handler. Every one of these is the reviewer's race,
- * caught in the act. */
+/* The unmap seam saw the live snapshot still resolving a leaf to this
+ * image's handler: the race caught in the act. */
 static _Atomic uint64_t g_unmap_of_live_image;
 /* The unmap seam saw a dispatch still inside a handler of an image that is
- * not the live one for any leaf. That is the drain gate failing. */
+ * not live for any leaf: the drain gate failing. */
 static _Atomic uint64_t g_unmap_with_dispatch_inside;
 
 #define IMG_HANDLER(i)                                                       \
@@ -140,8 +114,8 @@ static const zcl_command_handler_fn k_img_fn[IMG_MAX] = {
 };
 
 /* ── A registry the override layer can validate against ──────────────────
- * The override commit re-checks READY + read-only + resolvable, so the bound
- * registry must carry the real leaf paths under test. */
+ * The override commit re-checks READY + read-only + resolvable, so the
+ * bound registry carries the real leaf paths. */
 static void h_resident(const struct zcl_command_request *rq,
                        struct zcl_command_reply *rp)
 {
@@ -174,8 +148,8 @@ static const struct zcl_command_spec *find_spec(const char *path)
     return NULL;
 }
 
-/* Dispatch a leaf through the REAL registry entry point, so the override
- * snapshot is acquired and released exactly as it is in the node. */
+/* Dispatch a leaf through the real registry entry point, so the override
+ * snapshot is acquired and released as in the node. */
 static enum zcl_command_exit exec_path(const char *path, char *out,
                                        size_t out_size)
 {
@@ -192,9 +166,8 @@ static enum zcl_command_exit exec_path(const char *path, char *out,
 }
 
 /* ── The unmap seam: the oracle ──────────────────────────────────────────
- * Called by the production retire path at the exact moment it has decided a
- * mapping may be released. Asking the registry here is what makes a wrong
- * decision observable without needing a real unmap to crash later. */
+ * Called by the retire path when it decides a mapping may be released;
+ * asking the registry here makes a wrong decision observable. */
 static bool handler_is_live_anywhere(zcl_command_handler_fn fn)
 {
     for (size_t i = 0; i < g_reg.count; i++) {
@@ -213,10 +186,8 @@ static void test_unmap(void *handle)
     for (uint32_t k = 0; k < im->leaf_count; k++) {
         const struct zcl_command_spec *spec = find_spec(im->leaf[k]);
         if (spec && zcl_command_registry_effective_handler(spec) == im->fn) {
-            /* The live snapshot still resolves this leaf to this image. In a
-             * real node the unmap that is about to happen makes the next
-             * dispatch of that leaf a jump into unmapped pages. Recorded AND
-             * carried out, so the dispatch threads see it too. */
+            /* The live snapshot still resolves this leaf to this image:
+             * recorded and carried out, so dispatch threads see it too. */
             atomic_fetch_add(&g_unmap_of_live_image, 1);
             break;
         }
@@ -228,9 +199,7 @@ static void test_unmap(void *handle)
 
 /* ── Publish hooks ───────────────────────────────────────────────────────
  * Same shape as the resident's (tools/command/native_dev_hotswap.c): commit
- * publishes into the real registry and reports the generation by reading the
- * active generation back, so this file inherits the resident's own precision
- * — and its imprecision — rather than a friendlier version of it. */
+ * publishes into the real registry and reports the generation. */
 static pthread_mutex_t g_sync_m = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t  g_sync_c = PTHREAD_COND_INITIALIZER;
 static bool g_slow_published;      /* guarded by g_sync_m */
@@ -253,16 +222,14 @@ static bool t_commit(void *ctx, const struct zcl_hotswap_leaf *leaves,
         ovr[i].path = leaves[i].name;
         ovr[i].handler = leaves[i].fn;
     }
-    /* Take the generation from the publish itself. Re-reading the active
-     * generation here would race a concurrent publisher and could hand the
-     * loader a generation that belongs to somebody else's batch. */
+    /* Take the generation from the publish itself; re-reading the active
+     * generation would race a concurrent publisher. */
     if (!zcl_command_registry_replace_batch(0, ovr, leaf_count, why, why_sz,
                                             out_gen))
         return false;
 
-    /* THE WINDOW. Registry published, loader commit not yet reached. Parking
-     * the slow publisher here — and only here — reproduces the production
-     * interleaving exactly, with no production code aware of the test. */
+    /* THE WINDOW: registry published, loader commit not yet reached.
+     * Parking the slow publisher here reproduces the interleaving. */
     if (atomic_load(&g_park_armed) && pthread_equal(pthread_self(), g_slow_tid)) {
         pthread_mutex_lock(&g_sync_m);
         g_slow_published = true;
@@ -307,8 +274,7 @@ static bool selftest_true(char *err, size_t cap)
     return true;
 }
 
-/* ── Driving one image all the way through publish + commit ──────────────
- * Exactly the two steps the loader runs, in the loader's order. */
+/* ── Driving one image through publish + commit, in the loader's order ── */
 static bool drive_image(int idx, const char *source_tu,
                         const char *const *leaves, uint32_t leaf_count,
                         const char *sha, const char *datadir,
@@ -359,8 +325,7 @@ static bool drive_image(int idx, const char *source_tu,
 static size_t open_fd_count(void)
 {
     size_t n = 0;
-    /* Through the platform shim, so this test does not read /proc itself
-     * and the census excludes the counting handle on every platform. */
+    /* Through the platform shim so the census excludes the counting handle. */
     if (!os_proc_open_fd_count(&n))
         return 0;
     return n;
@@ -420,10 +385,9 @@ static int t_shelf_starts_empty(void)
 }
 
 /* ── 2. The pure gauntlet alone shelves NOTHING ──────────────────────────
- * hotswap_module_publish() compiles into every build and any caller may drive
- * it with a fabricated struct. If that could populate the shelf, rollback
- * would become a second way to publish live handlers with no datadir
- * confinement, no activation gate, no seal and no consensus pin. */
+ * hotswap_module_publish() compiles into every build; if it could populate
+ * the shelf, rollback would be a second way to publish live handlers
+ * without datadir confinement, activation gate, seal or consensus pin. */
 static int t_pure_publish_never_shelves(void)
 {
     int failures = 0;
@@ -545,23 +509,20 @@ static int t_commit_shelves_predecessor_at_depth_one(void)
 
 /* ── 5. THE RETIREMENT RACE ──────────────────────────────────────────────
  *
- * Deterministic reproduction of the interleaving the integration review named:
- *
  *   SLOW publishes  -> generation 2, registry dispatches into image SLOW
  *   FAST publishes  -> generation 3, registry dispatches into image FAST
  *   FAST commits    -> records FAST live, retires the image that was live (OLD)
  *   SLOW commits    -> arrives LAST with the OLDER generation
  *
- * Before the fix, SLOW's commit overwrote the slot with itself and handed
- * FAST — the image the live snapshot dispatches into — to the retire path,
- * which unmapped it because every RETIRED snapshot had drained.
+ * Without the ordering check SLOW's commit would overwrite the slot and
+ * hand FAST (the live image) to the retire path.
  *
- * DISCRIMINATION (both measured, see the lane report):
- *   - delete the `req->generation > slot->generation` ordering test in
- *     hotswap_commit_image() and this test fails on stale_commit_count == 1
- *     and reference_hold_count == 0;
- *   - delete the reference proof as well and it fails on
- *     g_unmap_of_live_image == 0 — the live image is handed to unmap.
+ * Discrimination:
+ *   - deleting the `req->generation > slot->generation` test in
+ *     hotswap_commit_image() fails stale_commit_count == 1 and
+ *     reference_hold_count == 0;
+ *   - deleting the reference proof as well fails
+ *     g_unmap_of_live_image == 0.
  */
 struct race_ctx {
     int  fast_idx;
@@ -638,8 +599,8 @@ static int t_retirement_race_never_unmaps_the_live_image(void)
         pthread_t fast;
         ASSERT_EQ(pthread_create(&fast, NULL, race_fast_thread, &ctx), 0);
 
-        /* Parks inside the commit hook after its generation is assigned, and
-         * resumes only once FAST has published AND committed. */
+        /* Parks in the commit hook after its generation is assigned and
+         * resumes once FAST has published AND committed. */
         bool slow_ok = drive_image(SLOW, SHELF_TU, leaves, 1, sha_slow,
                                    "/nonexistent", &r);
         pthread_join(fast, NULL);
@@ -647,16 +608,15 @@ static int t_retirement_race_never_unmaps_the_live_image(void)
         for (int i = 0; i < 3; i++)
             pthread_join(dispatchers[i], NULL);
         atomic_store(&g_park_armed, false);
-        /* With the traffic stopped, finish any retirement whose drain the
-         * traffic had left unconfirmed, so what follows tests the RETIREMENT
-         * DECISION rather than how busy the box happened to be. */
+        /* With traffic stopped, finish any retirement whose drain was left
+         * unconfirmed, so this tests the retirement decision. */
         (void)hotswap_reclaim_retained_now();
 
         ASSERT(slow_ok);
         ASSERT(ctx.fast_ok);
 
-        /* THE PROPERTY, asserted first so a regression names itself: the image
-         * the live snapshot dispatches into was never handed to the unmap. */
+        /* Asserted first: the image the live snapshot dispatches into was
+         * never handed to the unmap. */
         ASSERT(!atomic_load(&g_img[FAST].unmapped));
         ASSERT_EQ(atomic_load(&g_unmap_of_live_image), (uint64_t)0);
         ASSERT_EQ(atomic_load(&g_dispatch_into_unmapped), (uint64_t)0);
@@ -670,20 +630,17 @@ static int t_retirement_race_never_unmaps_the_live_image(void)
                   (int)ZCL_COMMAND_EXIT_OK);
         ASSERT(strstr(out, "\"who\":\"img2\"") != NULL);
 
-        /* The slot tells the truth about which image is live, so the shelf
-         * holds the image the registry actually superseded and not the loser.
-         * A wrong entry here is a rollback that restores the wrong module. */
+        /* The slot names the live image, so the shelf holds the image the
+         * registry actually superseded, not the loser. */
         struct hotswap_shelf_entry e;
         ASSERT(hotswap_shelf_peek(SHELF_TU, &e));
         ASSERT_STR_EQ(e.artifact_sha256, sha_old);
 
-        /* The interleaving actually happened. Without this the assertions
-         * above would be vacuous — a race test that never raced. */
+        /* The interleaving actually happened; else the above is vacuous. */
         ASSERT_EQ(hotswap_stale_commit_count(), (uint64_t)1);
         ASSERT(g_img[SLOW].generation < g_img[FAST].generation);
 
-        /* And the two images the registry really did supersede WERE released:
-         * the fix must not degrade into "never unmap anything". */
+        /* The two images really superseded WERE released. */
         ASSERT(atomic_load(&g_img[OLD].unmapped));
         ASSERT(atomic_load(&g_img[SLOW].unmapped));
         ASSERT_EQ(hotswap_reference_hold_count(), (uint64_t)0);
@@ -695,17 +652,13 @@ static int t_retirement_race_never_unmaps_the_live_image(void)
 
 /* ── 6. A module that drops a leaf must not have its predecessor unmapped ─
  *
- * hotswap_module_admit() requires every leaf a module declares to be on its
- * allowlist row; it does NOT require the module to declare all of them. So a
- * v2 that drops a leaf leaves v1's handler live in the merged snapshot, and
- * releasing v1 would be a use-after-free on the next dispatch of the dropped
- * leaf. Not a race — a plain sequencing defect, and one rollback makes far
- * more likely, since the shelved image can have a different leaf set from the
- * one it replaces.
+ * hotswap_module_admit() requires every declared leaf be on the allowlist
+ * row but not that a module declare all of them. A v2 that drops a leaf
+ * leaves v1's handler live in the merged snapshot; releasing v1 would be a
+ * use-after-free on the dropped leaf.
  *
- * DISCRIMINATION: delete the reference proof and this test fails on
- * !g_img[V1].unmapped, and the LEAF_SECOND dispatch below lands in a released
- * image (g_dispatch_into_unmapped becomes non-zero).
+ * Discrimination: deleting the reference proof fails !g_img[V1].unmapped
+ * and lands the LEAF_SECOND dispatch in a released image.
  */
 static int t_shrinking_leaf_set_keeps_the_old_image_mapped(void)
 {
@@ -738,8 +691,8 @@ static int t_shrinking_leaf_set_keeps_the_old_image_mapped(void)
         ASSERT(strstr(out, "\"who\":\"img0\"") != NULL);
         ASSERT_EQ(atomic_load(&g_dispatch_into_unmapped), (uint64_t)0);
 
-        /* A later image that takes BOTH leaves back releases V2 (whose only
-         * leaf it overwrote) and makes V1 reclaimable. */
+        /* A later image taking BOTH leaves releases V2 and makes V1
+         * reclaimable. */
         ASSERT(drive_image(V3, SHELF_TU, both, 2, sha, "/nonexistent", &r));
         ASSERT(atomic_load(&g_img[V2].unmapped));
         ASSERT(!atomic_load(&g_img[V1].unmapped));   /* not retried yet */
@@ -754,13 +707,11 @@ static int t_shrinking_leaf_set_keeps_the_old_image_mapped(void)
 
 /* ── 7. Rollback claims, racing forward swaps and each other ─────────────
  *
- * Rollback cannot COMPLETE in a test process (it re-runs the dev-datadir and
- * activation gate, which a test_parallel process does not satisfy), so what is
- * driven here is its CLAIM: the dup() of the shelved descriptor, the
- * in-flight flag, the refusal, and the release of both. Run against concurrent
- * forward swaps and concurrent dispatch, thousands of times, the properties
- * that must hold are that no descriptor leaks, the shelf never empties or
- * doubles, and nothing is ever unmapped while live.
+ * Rollback cannot COMPLETE in a test process, so what is driven is its
+ * CLAIM: the dup() of the shelved descriptor, the in-flight flag, the
+ * refusal, and the release of both. Against concurrent forward swaps and
+ * dispatch, no descriptor leaks, the shelf never empties or doubles, and
+ * nothing is unmapped while live.
  */
 static _Atomic bool g_rb_stop;
 static _Atomic uint64_t g_rb_attempts;
@@ -780,9 +731,8 @@ static void *rollback_thread(void *arg)
             atomic_fetch_add(&g_rb_bad_stage, 1);  /* cannot pass the gate here */
             continue;
         }
-        /* Every refusal must be one of the stages this path can reach: the
-         * shelf claim, or the re-checked resident gate. Anything else means a
-         * stage ran on a shelved image that should not have. */
+        /* Every refusal is a stage this path can reach: the shelf claim or
+         * the re-checked resident gate. */
         if (strcmp(r.stage, "shelf") != 0 &&
             strcmp(r.stage, "precheck") != 0 &&
             strcmp(r.stage, "authorize") != 0)
@@ -869,9 +819,8 @@ static int t_rollback_races_forward_swaps(void)
         ASSERT_EQ(hotswap_shelf_list(NULL, 0), (size_t)1);
         ASSERT(hotswap_shelf_peek(SHELF_TU, &e));
 
-        /* No descriptor leaked across thousands of claim/refuse cycles. The
-         * live slot and its shelf entry account for the small fixed delta the
-         * forward swaps left behind. */
+        /* No descriptor leaked; the live slot and its shelf entry account
+         * for the small fixed delta. */
         size_t fds_after = open_fd_count();
         ASSERT(fds_after <= fds_before + 4);
 

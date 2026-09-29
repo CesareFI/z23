@@ -1,54 +1,40 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * test_fastobj_carrier — the WIRE lane slice-2 offline proof
- * (docs/work/WIRE_COMPILE_CACHE.md): a builder's cached objects plus
- * sidecars travel as an ORDINARY content.v2 package to a second cache
- * directory, and the second candidate build reuses eligible objects with
- * byte-identical receipt bytes. This is not independent reproduction.
+ * test_fastobj_carrier: offline proof (docs/work/WIRE_COMPILE_CACHE.md) that
+ * a builder's cached objects plus sidecars travel as an ordinary content.v2
+ * package to a second cache directory, and the second candidate build reuses
+ * eligible objects with byte-identical receipt bytes. Not independent
+ * reproduction.
  *
- * The journey, all offline (no daemon, no network):
- *   1. prepare the tiny-lines fixture package (contexts/commons/modules/vcs only — the
- *      candidate proof action needs no signed release),
- *   2. confined candidate build #1 with --fast-cache=cacheA (cold: the
- *      gcc compile really runs, the cache fills),
+ * Journey (offline, no daemon or network):
+ *   1. prepare the tiny-lines fixture package;
+ *   2. candidate build #1 with --fast-cache=cacheA (cold);
  *   3. export cacheA into store nodeA as one content.v2 carrier
- *      (zcl-fastobj-carrier.v1/objects/<key>.o|.json),
- *   4. classify the exported carrier in nodeA: the public shape is
- *      fastobj-carrier, so a -packagehost=1 node may announce and serve
- *      it (the serve-time proof is the consumer's own admit proof,
- *      re-derived read-only from stored bytes),
- *   5. re-export into a THIRD store: the carrier root must be identical
- *      (deterministic root for identical object bytes),
- *   6. fetch the carrier root store-to-store into nodeB — the offline
- *      stand-in for the swarm wire, same verify-before-store admission,
- *   7. admit from nodeB into a FRESH cacheB (every entry re-verified),
- *   8. re-export cacheB into a FOURTH store: same root again — cacheB
- *      is byte-identical to cacheA through the whole round trip,
- *   9. confined candidate build #2 with --fast-cache=cacheB: every
- *      eligible TU is a HIT (misses == 0; preprocessing, uncached variants,
- *      test compilation, linking and test execution still run),
- *  10. build-report #2 is byte-identical to build-report #1 (memcmp of
- *      the ZCLBLD receipt wires) and both receipts hash to the same id.
- *  10. the tested standard receipt really ran the fixture's tests, and its
- *      flags string still claims asan,ubsan=clean (both outcomes PASS).
- *  11. the testless standard-profile refusal, both sides: a tests/-less
- *      copy of the fixture is REFUSED (exit 6) in the evidence shape and
- *      BUILDS with --allow-testless-standard (the reproduce shape), its
- *      receipt honestly recording test_ran=false / BUILD_PASS and flags
- *      asan,ubsan=not-run.
- *  12. a use-after-free fixture copy under the reproduce shape still EMITS
- *      (installable TEST_PASS — the receipt is evidence, not a gate), but
- *      its flags say asan,ubsan=findings, never clean.
+ *      (zcl-fastobj-carrier.v1/objects/<key>.o|.json);
+ *   4. classify it: public shape fastobj-carrier, so a -packagehost=1 node
+ *      may announce and serve it;
+ *   5. re-export into a third store: identical carrier root;
+ *   6. fetch the root store-to-store into nodeB (verify-before-store);
+ *   7. admit from nodeB into a fresh cacheB (every entry re-verified);
+ *   8. re-export cacheB: same root again;
+ *   9. candidate build #2 with --fast-cache=cacheB: every eligible TU is a
+ *      HIT (misses == 0);
+ *  10. build-report #2 is byte-identical to #1 and both receipts hash to the
+ *      same id; the standard receipt ran the fixture's tests and claims
+ *      asan,ubsan=clean;
+ *  11. a tests/-less fixture is REFUSED (exit 6) in the evidence shape and
+ *      BUILDS with --allow-testless-standard (test_ran=false / BUILD_PASS,
+ *      asan,ubsan=not-run);
+ *  12. a use-after-free fixture under the reproduce shape still EMITS
+ *      (TEST_PASS) but its flags say asan,ubsan=findings.
  *
- * Refusal legs (no builds): a torn pair, a sidecar whose object_sha3
- * lies about its object, an entry filed under the wrong key, and a
- * hand-built carrier whose sidecar does not hash to its own filename
- * all refuse — export at the source, admit at the destination — and the
- * public-shape gate refuses the lying carrier a servable shape.
+ * Refusal legs (no builds): a torn pair, a sidecar whose object_sha3 lies, an
+ * entry under the wrong key, and a carrier whose sidecar does not hash to its
+ * filename all refuse at export and at admit, and the public-shape gate
+ * refuses the lying carrier a servable shape.
  *
- * The candidate lane forks the package verifier beside this binary —
- * it MUST exist (make dev-bin); a missing binary is a loud failure,
- * never a silent skip. */
+ * The candidate lane forks the package verifier beside this binary; it must
+ * exist (make dev-bin), and a missing binary is a loud failure. */
 
 #define _POSIX_C_SOURCE 200809L
 
@@ -321,9 +307,8 @@ static void fcw_candidate_options(const char **argv, bool allow_testless,
 }
 
 /* Spawn the verifier in candidate proof mode with a fast cache, capture
- * merged stdout/stderr, and parse the fast-cache counters line. When
- * allow_testless is true the run passes --allow-testless-standard (the
- * reproduce track's opt-out of the evidence-track testless refusal). */
+ * merged stdout/stderr, and parse the fast-cache counters line.
+ * allow_testless passes --allow-testless-standard. */
 static void fcw_candidate_build(const char *worker, const char *root_hex,
                                 const char *pkg_abs, const char *recipe_abs,
                                 const char *emit_dir, const char *lock_hex,
@@ -1152,9 +1137,8 @@ static int test_fastobj_carrier_platform_arm(void)
     int failures = 0;
     printf("fastobj_carrier: object-set carrier, offline proof\n");
 
-    /* Everything the done: cleanup touches is declared and initialized
-     * BEFORE the first goto done (C permits jumping over declarations;
-     * freeing a skipped initializer would be undefined). */
+    /* Everything done: cleanup touches is declared and initialized before
+     * the first goto done. */
     char err[512] = "";
     struct vcs_package_prepared prep;
     vcs_package_prepared_init(&prep);
@@ -1291,9 +1275,8 @@ static int test_fastobj_carrier_platform_arm(void)
     if (!expA)
         goto done;
 
-    /* 4. the exported carrier has a public shape: a -packagehost=1 node
-     *    may announce and serve it, because the serve-time proof is the
-     *    consumer's own admit proof re-derived read-only from the store. */
+    /* 4. the carrier has a public shape: a -packagehost=1 node may announce
+     *    and serve it; the serve-time proof is the consumer's admit proof. */
     struct vcs_package_public_verdict shape_v;
     enum vcs_package_public_shape pub =
         vcs_package_public_shape_classify(nodeA, rootA, &shape_v);
@@ -1393,9 +1376,8 @@ static int test_fastobj_carrier_platform_arm(void)
     FC_CHECK("both receipts parse and hash to the same id",
              ids_ok && memcmp(id1, id2, 32) == 0);
 
-    /* 10. the tested path stays honest: receipt #1 really ran the
-     * fixture's declared tests under the standard profile, and its flags
-     * string still claims "clean" — both sanitizer outcomes were PASS. */
+    /* 10. receipt #1 really ran the fixture's tests and its flags string
+     * claims "clean" (both sanitizer outcomes PASS). */
     FC_CHECK("tested standard receipt really ran its tests",
              ids_ok && rec1.test_ran &&
                  rec1.result_class == VCS_PACKAGE_BUILD_RESULT_TEST_PASS);
@@ -1409,13 +1391,10 @@ static int test_fastobj_carrier_platform_arm(void)
     failures += fcw_program_cache_probe(base, worker, &pk);
 #endif
 
-    /* 11. the testless standard-profile refusal, both sides. A TESTLESS
-     * copy of the fixture (tests/ dropped, nothing else changed) under
-     * the standard profile is REFUSED with exit 6 in the evidence shape
-     * (no opt-out flag — the build fabric / factory candidate shape), and
-     * BUILDS with --allow-testless-standard (the reproduce track's
-     * opt-out), its receipt recording the testless facts honestly:
-     * test_ran=false, result_class=BUILD_PASS, still installable. */
+    /* 11. testless standard-profile refusal: a copy without tests/ is
+     * REFUSED with exit 6 in the evidence shape, and BUILDS with
+     * --allow-testless-standard, recording test_ran=false,
+     * result_class=BUILD_PASS. */
     char pkgT[4096], recipeT_path[4096], emitT1[4096], emitT2[4096],
          cacheT[4096], testsT[4096];
     bool pathsT_ok =
@@ -1500,15 +1479,10 @@ static int test_fastobj_carrier_platform_arm(void)
                  recT_ok && vcs_package_build_installable(&recT));
     }
 
-    /* 12. a real sanitizer finding on the reproduce track: this fixture
-     * copy's test reads freed heap — the free is hidden in a second TU so
-     * the standard profile's -Werror=use-after-free cannot see it
-     * statically, the plain runs pass (exit 0, the page stays mapped), and
-     * the ASan run reports and dies by the marker exit code. With the
-     * opt-out flag the build still EMITS an installable TEST_PASS receipt
-     * (mirroring quick emit's long-standing behavior: the receipt is
-     * build+test evidence, not a gate), but the flags string must say
-     * "findings" — never "clean". */
+    /* 12. a sanitizer finding on the reproduce track: the test reads freed
+     * heap hidden in a second TU, so ASan reports it. With the opt-out flag
+     * the build still EMITS an installable TEST_PASS receipt (evidence, not
+     * a gate) whose flags say "findings", never "clean". */
     static const char uaf_test[] =
         "/* Deliberate heap-use-after-free: the plain run reads stale but\n"
         " * mapped bytes and exits 0; the ASan run reports and exits by the\n"
@@ -1849,9 +1823,8 @@ done:
 #else /* _WIN32 */
 
 /* Every candidate build here runs the confined package verifier with
- * --require-full-isolation. Windows has no qualified package sandbox yet,
- * and the fork+pipe drain plumbing has no Windows analogue, so no case in
- * this group can run. Linux and macOS use different qualified backends. */
+ * --require-full-isolation; Windows has no qualified package sandbox, so no
+ * case in this group can run there. */
 static int test_fastobj_carrier_platform_arm(void)
 {
     printf("test_fastobj_carrier: SKIP (Windows): confined package builds "

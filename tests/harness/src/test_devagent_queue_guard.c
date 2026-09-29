@@ -283,9 +283,9 @@ _test_next:;
     return failures;
 }
 
-/* A ledger written before the guard can already hold two queued rows for
- * one name: claim runs the first and never the second while it runs. A
- * restarted worker (a new session) claiming again gets nothing new. */
+/* A ledger that already holds two queued rows for one name: claim runs the
+ * first and never the second while it runs; a restarted worker gets
+ * nothing new. */
 static int dqg_case_legacy_duplicate(void)
 {
     int failures = 0;

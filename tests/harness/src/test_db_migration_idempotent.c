@@ -1,12 +1,9 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * Regression tests for database.c migration machinery.
- *
- * These tests guard the class of silent-failure bugs that the v2→v18
- * migration block previously hid: if a CREATE TABLE or ALTER TABLE
- * failed inside `node_db_migrate`, the schema_version counter still
- * advanced (or, worse, failed to persist and quietly re-applied the
- * same migration on every boot).
+ * Guards against silent migration failures: a failed CREATE TABLE or ALTER TABLE
+ * inside `node_db_migrate` must not advance schema_version or be re-applied on
+ * every boot.
  */
 
 #include "test/test_core.h"
@@ -1529,8 +1526,8 @@ static int t_additive_migration_keeps_floor(void)
  *   [db] schema[10] failed: database disk image is malformed
  *        (sql=CREATE INDEX IF NOT EXISTS idx_tx_block ON transactions(...))
  *
- * and that verdict used to abort the open, taking the node to its
- * node_db_unopened boot gate with a store the same file knew how to repair.
+ * and that verdict must not abort the open (node_db_unopened) when the same
+ * file can repair the store.
  *
  * The fixture reproduces it exactly and cheaply: build a normal store, put
  * rows in `transactions`, drop idx_tx_block so the DDL must SCAN that table,

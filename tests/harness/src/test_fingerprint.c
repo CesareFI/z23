@@ -1,34 +1,22 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * test_fingerprint — the contract behavioral fingerprinting has to hold, or
- * its whole index is untrustworthy.
+ * test_fingerprint: the contract behavioral fingerprinting must hold.
  *
- * Four propositions, in the order they matter:
- *
- *   1. REPRODUCIBLE. The same function fingerprints to the same value twice
- *      in a row, and to the same value when the compiler is told to optimise
- *      it differently. A fingerprint that moves for a reason other than
- *      behavior is worse than no fingerprint, because every "your refactor
- *      changed behavior" answer built on it is then noise.
- *   2. DISCRIMINATING. Two deliberately different functions of the same shape
- *      do NOT collide. This is the false-positive direction, the one Google's
- *      Tricorder experience says decides whether anybody keeps reading the
- *      output.
- *   3. FAIL-CLOSED. An impure function is REFUSED as a candidate. Not
- *      fingerprinted-with-a-warning; refused, with a named reason.
- *   4. SENSITIVE. A one-character behavior change moves the fingerprint.
- *   5. REACHES FILE-LOCAL CODE WITHOUT PAYING FOR IT IN PURITY. Most of a
- *      systems tree is `static`, and a probe reaches those by compiling
- *      against the DEFINING UNIT rather than a header. The two halves of
- *      that are pinned together on purpose: a pure `static` must now be a
- *      candidate AND route through its own .c, and a `static` that touches
- *      its unit's file-scope state must still be refused, by the same named
- *      reason an externally linkable one would get. Coverage bought by
- *      relaxing (3) would be worth nothing.
+ *   1. REPRODUCIBLE: the same function fingerprints to the same value twice
+ *      and under different compiler optimisation.
+ *   2. DISCRIMINATING: two different functions of the same shape do not
+ *      collide (the false-positive direction).
+ *   3. FAIL-CLOSED: an impure function is refused as a candidate, with a
+ *      named reason.
+ *   4. SENSITIVE: a one-character behavior change moves the fingerprint.
+ *   5. FILE-LOCAL REACH WITHOUT LOSING PURITY: a probe reaches `static`
+ *      functions by compiling against the defining unit. A pure `static` is
+ *      a candidate routed through its own .c; a `static` touching its unit's
+ *      file-scope state is refused by the same named reason as an externally
+ *      linkable one.
  *
  * The candidate-selection half runs the real scanner over a small fixture
- * tree written to the group's temp directory, so it exercises the same code
- * path the whole-tree run does rather than a mock.
+ * tree in the group's temp directory.
  */
 
 #include "test/test_core.h"
@@ -37,11 +25,9 @@
 #include "fingerprint/fp_runtime.h"
 
 /* ── fixtures for the fingerprint half ───────────────────────────────────
- *
- * Two spellings of ONE behavior, pinned to different optimisation levels,
- * plus a changed version and an unrelated one. The bodies are deliberately
- * written differently so that a fingerprint match is a behavioral claim and
- * not a textual one. */
+ * Two spellings of ONE behavior at different optimisation levels, plus a
+ * changed version and an unrelated one, written differently so a match is a
+ * behavioral claim, not a textual one. */
 
 #if defined(__clang__)
 #define FX_OPT_O0 __attribute__((optnone))
@@ -159,11 +145,9 @@ static const char *const k_fixture_c =
     "int fx_variadic(const char *fmt, ...) { return (int)fmt[0]; }\n"
     "static uint32_t fx_local_only(uint32_t v) { return v ^ 3u; }\n"
     "uint32_t fx_uses_local(uint32_t v) { return fx_local_only(v); }\n"
-    /* File-local and impure, three different ways. Reaching a `static` by
-     * including its defining unit must not buy any of these a pass: the
-     * purity judgement is the same judgement it always was, and a
-     * file-local function that touches its unit's state is refused with the
-     * SAME named reason an externally linkable one gets. */
+    /* File-local and impure, three ways. Reaching a `static` via its
+     * defining unit must not buy a pass: the purity judgement and refusal
+     * reason match an externally linkable function's. */
     "static uint32_t fx_local_reads_global(uint32_t v)"
     " { return v + g_fx_counter; }\n"
     "uint32_t fx_uses_local_global(uint32_t v)"
@@ -177,18 +161,16 @@ static const char *const k_fixture_c =
     "uint32_t fx_uses_local_alloc(uint32_t v)"
     " { return fx_local_allocates(v); }\n";
 
-/* A second unit that owns main(). Including it into a probe translation unit
- * would define main() twice and fail the WHOLE link rather than one probe,
- * so its file-local functions have no route at all and must be refused by
- * name — however pure they are. */
+/* A second unit that owns main(): including it would define main() twice
+ * and fail the whole link, so its file-local functions have no route and
+ * are refused by name, however pure. */
 static const char *const k_fixture_main_c =
     "#include \"fx.h\"\n"
     "static uint32_t fx_unreachable_pure(uint32_t v) { return v * 3u; }\n"
     "int main(void) { return (int)fx_unreachable_pure(1u); }\n";
 
-/* The verdict a named fixture function received, or -1 when the scanner never
- * saw it. Re-derives the verdict the same way fp_index_select does, by asking
- * whether the name is in the candidate list. */
+/* The verdict a named fixture function received, or -1 when the scanner
+ * never saw it (derived as fp_index_select does, via the candidate list). */
 static bool fx_is_candidate(const struct fp_candidate *c, long n,
                             const char *name)
 {
@@ -269,9 +251,8 @@ int test_fingerprint(void)
     {
         uint64_t e1 = 0;
         uint64_t e2 = 0;
-        /* A different shape must reseed the corpus, so the same function
-         * under a different shape must not fingerprint the same. If it did,
-         * the shape would not be reaching the generator at all. */
+        /* A different shape reseeds the corpus, so the same function under
+         * another shape must not fingerprint the same. */
         fx_fingerprint(fx_rot_o0, shape ^ 1ull, &e1, &e2);
         if (e1 != a1 || e2 != a2) {
             printf("OK\n");
@@ -360,11 +341,10 @@ int test_fingerprint(void)
                 failures++;
             }
 
-            /* The reach this lane added. A file-local function has no
-             * external linkage, so the ONLY way to call it is to compile the
-             * probe against its defining unit — and the candidate has to say
-             * so, because emission, link-failure attribution and the
-             * per-route accounting all key off that one flag. */
+            /* A file-local function has no external linkage, so the probe
+             * compiles against its defining unit and the candidate says so
+             * (emission, link-failure attribution and per-route accounting
+             * key off that flag). */
             printf("a pure static function is now a candidate, reached by "
                    "including its unit... ");
             {
@@ -398,10 +378,9 @@ int test_fingerprint(void)
                 }
             }
 
-            /* The refusal that must NOT have been traded away for the reach
-             * above. Impurity is judged identically on both routes: a
-             * file-local function that reads its unit's mutable file-scope
-             * object is refused, and refused for THAT reason by name. */
+            /* Impurity is judged identically on both routes: a file-local
+             * function reading its unit's mutable file-scope object is
+             * refused by that named reason. */
             printf("a static function touching file-scope state is still "
                    "REFUSED, with a named reason... ");
             {
@@ -432,10 +411,8 @@ int test_fingerprint(void)
                 }
             }
 
-            /* A unit that owns main() cannot be included at all — the
-             * generated driver has its own main() and the whole link would
-             * fail, costing every probe rather than one. A pure static in
-             * such a unit is therefore still unreachable, and says so. */
+            /* A unit that owns main() cannot be included (the driver has its
+             * own main()); a pure static in it is unreachable and says so. */
             printf("a static in a unit that owns main() is still refused for "
                    "linkage... ");
             if (!fx_is_candidate(cands, n, "fx_unreachable_pure") &&

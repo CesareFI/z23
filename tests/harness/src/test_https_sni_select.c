@@ -3,29 +3,22 @@
  * Two names, one listener, one certificate each — graded from the outside,
  * over real TLS, against the real front door.
  *
- * WHY FROM THE WIRE. "The server picks the certificate matching the name the
- * client asked for" is a statement about what a client receives, and only a
- * client can make it. Every check here opens a real connection to the real
- * listener, sends (or deliberately omits) a real SNI name, completes a real
- * handshake, and reads the subject CN off the leaf the server presented.
- * Nothing inspects the server's internal tables; a refactor that keeps the
- * tables and breaks the wire fails this test, which is the right way round.
+ * Every check opens a real connection to the real listener, sends (or
+ * omits) a real SNI name, completes a real handshake, and reads the subject
+ * CN off the leaf presented. Nothing inspects the server's internal tables.
  *
- * THE ORDERING THIS FILE EXISTS TO PIN. The SNI callback swaps the
- * connection's SSL_CTX, and swapping an SSL_CTX resets the connection's
- * certificate. The TLS-ALPN-01 responder sets an SSL-scoped certificate for
- * the ACME challenge. If those two ran in the wrong order the SNI swap would
- * silently discard the challenge certificate and NO certificate on this host
- * could ever be renewed — a failure that is invisible for ninety days and
- * then total. The ALPN leg below asks a client for "acme-tls/1" while naming
- * a configured host in SNI and requires the challenge certificate back,
- * identified by the critical acmeIdentifier extension RFC 8737 puts in it.
+ * Ordering pinned: the SNI callback swaps the connection's SSL_CTX, which
+ * resets its certificate, while the TLS-ALPN-01 responder sets an
+ * SSL-scoped challenge certificate. In the wrong order the swap would
+ * discard the challenge certificate and no certificate could be renewed.
+ * The ALPN leg asks for "acme-tls/1" while naming a configured host in SNI
+ * and requires the challenge certificate back, identified by the critical
+ * acmeIdentifier extension of RFC 8737.
  *
- * The certificates are self-signed on purpose and the client verifies
- * nothing: what is under test is WHICH certificate arrives, not whether
- * anybody vouched for it. The TLS-client symbols this file links are why
- * lib/test objects are excluded from test_cold_join_sovereign P2's scan —
- * the node itself is server-side only and carries none of them.
+ * The certificates are self-signed and the client verifies nothing: what is
+ * under test is WHICH certificate arrives. The TLS-client symbols this file
+ * links are why lib/test objects are excluded from test_cold_join_sovereign
+ * P2's scan (the node itself is server-side only).
  */
 
 #include "test/test_core.h"
@@ -103,12 +96,10 @@ struct served {
 };
 
 /* True when this leaf is an ACME TLS-ALPN-01 challenge certificate. The
- * extension, not the name: a challenge certificate carries the SAME subject
- * CN as the ordinary certificate for that domain, so the name cannot tell
- * them apart and this is the only honest discriminator. Also decodes the
- * extension's payload into `digest` (when non-NULL) so a caller can tell
- * WHICH challenge a certificate answers, not merely that it answers one --
- * that is what distinguishes a fresh renewal from a stale reused cert. */
+ * extension, not the name, discriminates: a challenge certificate carries
+ * the SAME subject CN as the ordinary one. Also decodes the extension's
+ * payload into `digest` (when non-NULL) so a caller can tell WHICH
+ * challenge a certificate answers. */
 static bool leaf_has_acme_identifier(X509 *leaf, uint8_t digest[32])
 {
     ASN1_OBJECT *obj = OBJ_txt2obj(ACME_ID_OID_TEXT, 1);
@@ -133,11 +124,9 @@ static bool leaf_has_acme_identifier(X509 *leaf, uint8_t digest[32])
     return true;
 }
 
-/* Connect, handshake, record what came back. `sni` NULL means send no
- * server_name extension at all — the old client / bare IP case. Returns
- * false when the handshake did not complete, which is the failure mode a
- * name mismatch produces and therefore the thing most of these checks are
- * really asserting the absence of. */
+/* Connect, handshake, record what came back. `sni` NULL sends no
+ * server_name extension (old client / bare IP). Returns false when the
+ * handshake did not complete, which a name mismatch produces. */
 static bool handshake(const char *sni, bool offer_acme_alpn,
                       struct served *out)
 {
@@ -290,19 +279,14 @@ static bool served_cn(const char *sni, char *out, size_t out_len)
 
 /* ── writing a test certificate pair ─────────────────────────────────────
  *
- * Deliberately NOT acme_selfsigned_write(): that one exists to write the
- * BOOT PLACEHOLDER and stamps ACME_SELFSIGNED_ORGANIZATION into the subject
- * O to say so in words. Nothing here is a placeholder, and a change to that
- * label — its wording, or the bound X.509 puts on organizationName — is a
- * change to the placeholder's policy, not to certificate selection by name.
- * Binding this test to it would let one break the other for no reason.
- * acme_selfsigned_build() with no organization is the same builder, one
- * layer down, and is what the TLS-ALPN-01 responder itself uses.
+ * Deliberately NOT acme_selfsigned_write(), which writes the BOOT
+ * PLACEHOLDER and stamps ACME_SELFSIGNED_ORGANIZATION into the subject;
+ * acme_selfsigned_build() with no organization is the same builder one
+ * layer down, as the TLS-ALPN-01 responder uses.
  *
- * Published by rename() from a temporary, which is how the certificate
- * worker and the placeholder writer publish, and what the front door's
- * change detection is built around: a renewed pair always lands on a fresh
- * inode, so "this file was replaced" never depends on mtime granularity. */
+ * Published by rename() from a temporary, as the certificate worker does:
+ * a renewed pair always lands on a fresh inode, so change detection never
+ * depends on mtime granularity. */
 static bool pem_publish(const char *path, X509 *cert, EVP_PKEY *key)
 {
     char tmp[900];
@@ -531,14 +515,9 @@ int test_https_sni_select(void)
                  "configured for that name",
                  got && s.acme_identifier);
 
-        /* This is the fix under test: presenting a TLS-ALPN-01 challenge
-         * certificate is what "validate" means from the front door's side
-         * (the CA is a separate connection this process never hears back
-         * from), so serving it must disarm the responder BY ITSELF, with no
-         * explicit disarm() call in between. Before this file's fix,
-         * nothing in production ever called acme_alpn_challenge_disarm(),
-         * so this checked false and the certificate stayed armed for the
-         * life of the process. */
+        /* Presenting a TLS-ALPN-01 challenge certificate is what
+         * "validate" means from the front door's side, so serving it must
+         * disarm the responder BY ITSELF, with no explicit disarm() call. */
         SN_CHECK("serving the challenge disarms it with no explicit "
                  "disarm() call — arm, validate, disarm",
                  !acme_alpn_challenge_armed());
@@ -560,15 +539,11 @@ int test_https_sni_select(void)
                  strcmp(s.cn, ALPHA) == 0 && s.alpn[0] == '\0');
     }
 
-    /* ── a renewal never reuses a stale challenge (the reported bug) ──
+    /* ── a renewal never reuses a stale challenge ─────────────────────
      *
      * Two validations in a row for the SAME domain, each with its own key
-     * authorization — exactly a certificate renewal. Before the disarm fix
-     * above, the second validation would still match on domain alone inside
-     * armed_take() and be served the FIRST challenge's certificate, whose
-     * acmeIdentifier digest no longer matches what the CA expects; the CA
-     * would fail that validation, and it would keep failing every renewal
-     * until the process restarted. */
+     * authorization: the second must not be served the FIRST challenge's
+     * certificate, whose acmeIdentifier digest no longer matches. */
     {
         uint8_t want_a[32], want_b[32];
         SN_CHECK("the first challenge's expected digest computes",

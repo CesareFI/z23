@@ -2,18 +2,10 @@
  *
  * Regression test for the fast-sync minimum-chainwork FLOOR.
  *
- * The FlyClient/snapshot verify path (engine/services/src/snapshot_verify.c)
- * rejects any offered anchor whose accumulated chainwork is below the
- * consensus nMinimumChainWork. This guards against a forged
- * minimum-difficulty chain: such a chain can produce internally-consistent
- * MMB proofs and PoW-valid (trivial-target) leaves, so the relative
- * leaf<=offered checks alone do not catch it — only an absolute work floor
- * does.
- *
- * The floor is far below any genuine ~3M-height snapshot, so it never
- * false-rejects a real anchor. Crucially, this does NOT pin the snapshot
- * against the checkpoint table (whose mainnet hashes are all-zero
- * placeholders); pinning is unsafe until real checkpoint hashes exist. */
+ * snapshot_verify.c rejects any offered anchor whose accumulated chainwork
+ * is below the consensus nMinimumChainWork; the relative leaf<=offered
+ * checks alone do not catch a forged minimum-difficulty chain. The floor is
+ * far below any genuine snapshot and is not pinned to the checkpoint table. */
 
 #include "test/test_core.h"
 
@@ -25,11 +17,8 @@
 
 #include <string.h>
 
-/* Serialize a struct uint256 (consensus field) to the canonical 32-byte
- * little-endian chainwork layout — byte 0 least significant — exactly as
- * snapsync_verify_flyclient does. Round-tripping through arith_uint256 makes
- * the layout guarantee explicit rather than assuming struct uint256.data is
- * already that layout. */
+/* Serialize a struct uint256 to the canonical 32-byte little-endian
+ * chainwork layout (byte 0 least significant), as snapsync_verify_flyclient does. */
 static void floor_le_from_consensus(const struct uint256 *src, uint8_t out[32])
 {
     struct arith_uint256 a;

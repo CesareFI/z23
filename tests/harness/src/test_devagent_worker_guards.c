@@ -1066,8 +1066,7 @@ int test_devagent_worker_guards(void);
 
 /* One proof-gap clause per function: the cyclomatic-complexity gate caps
  * every function at M<=15, so the eleven cases live in helpers above and
- * this entry only sums their failures. A clause that fails still runs the
- * later clauses, unlike the old single-body goto chain. */
+ * this entry only sums their failures; a failing clause does not stop later ones. */
 int test_devagent_worker_guards(void)
 {
     int failures = 0;

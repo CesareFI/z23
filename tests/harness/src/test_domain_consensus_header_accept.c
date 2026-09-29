@@ -3,24 +3,18 @@
  *
  * Unit tests for domain/consensus/header_accept.{c,h}.
  *
- * These tests pin the pure block-HEADER acceptance checks (version-
- * too-low, bad-version, time-too-new, time-too-old, bad-equihash-
- * solution-size, bad-diffbits). Each rejection produces a byte-
- * identical P2P-visible reject_reason token; that string is the
- * regression seal — if any of these drift, the network will see
- * different REJECT messages than the legacy code did.
+ * Pins the pure block-HEADER acceptance checks (version-too-low,
+ * bad-version, time-too-new, time-too-old, bad-equihash-solution-size,
+ * bad-diffbits). Each rejection's reject_reason token is P2P-visible and
+ * must stay byte-identical.
  *
- * The tests exercise:
- *   (a) the pure domain functions directly,
- *   (b) the core/modules/validation/accept_block_header.h thin wrappers, and
- *   (c) for the version-too-low / time-too-new gates, the legacy
- *       check_block_header() entry point — confirming all three layers
- *       produce the same reject_reason + DoS + reject_code.
+ * Exercised: (a) the pure domain functions, (b) the
+ * core/modules/validation/accept_block_header.h wrappers, and (c) for
+ * version-too-low / time-too-new, the legacy check_block_header() entry
+ * point, all producing the same reject_reason + DoS + reject_code.
  *
- * The contextual gates (time-too-old, bad-equihash-solution-size,
- * bad-diffbits, bad-version) live inside contextual_check_block_header
- * which requires a valid block_index pprev to construct — we skip the
- * legacy cross-check for those and rely on (a) + (b).
+ * The contextual gates live in contextual_check_block_header, which needs a
+ * valid block_index pprev, so those rely on (a) + (b).
  */
 
 #include "test/test_core.h"
@@ -41,9 +35,8 @@
     else { printf("FAIL\n"); failures++; }                          \
 } while (0)
 
-/* Build a synthetic header with nVersion=4, nTime=1000, nBits=0, and
- * all hashes zeroed. nSolutionSize starts at 0 so the equihash-size
- * gate is a silent pass unless the test explicitly sets a size. */
+/* Synthetic header: nVersion=4, nTime=1000, nBits=0, hashes zeroed;
+ * nSolutionSize 0 makes the equihash-size gate a pass unless set. */
 static void header_init_synthetic(struct block_header *h)
 {
     block_header_init(h);
@@ -271,9 +264,8 @@ int test_domain_consensus_header_accept(void)
     {
         struct block_header h;
         header_init_synthetic(&h);
-        /* Set a non-zero, non-matching solution size. Real Equihash
-         * 200,9 expects 1344 bytes; we'll lie and say expected=1344
-         * with header reporting 1000. */
+        /* A non-zero, non-matching solution size: expected 1344 (Equihash
+         * 200,9), header reporting 1000. */
         h.nSolutionSize = 1000;
         reason[0] = '\xff'; dos = -1;
         struct zcl_result r =

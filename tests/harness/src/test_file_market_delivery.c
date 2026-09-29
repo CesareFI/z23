@@ -44,11 +44,10 @@ typedef int socklen_t;
 #define MSG_DONTWAIT 1
 #endif
 
-/* The fixtures hold peer sockets as int fds and use POSIX verbs on them.
- * These shims keep every call site stable: SOCKET handles round-trip
- * through int via intptr_t and the verbs map onto the platform socket
- * layer (socketpair becomes the verified loopback-TCP pair). Every close()
- * in this file targets one of those sockets. */
+/* The fixtures hold peer sockets as int fds with POSIX verbs. These shims
+ * round-trip SOCKET handles through int via intptr_t and map the verbs onto
+ * the platform socket layer (socketpair becomes the verified loopback-TCP
+ * pair). */
 static int fmd_socketpair(int sv[2])
 {
     platform_socket_t pair[2];
@@ -141,9 +140,9 @@ struct delivery_fixture {
     int load_calls;
     bool load_ok;
     bool corrupt_hash;
-    /* This node's own hosting decision. The cases below are about payment
-     * and codec behaviour, so they state "this node hosts it" explicitly
-     * rather than inheriting a permissive default — there is none. */
+    /* This node's own hosting decision, stated explicitly (there is no
+     * permissive default); the cases are about payment and codec
+     * behaviour. */
     bool moderation_hidden;
     int moderation_calls;
 };
@@ -550,18 +549,12 @@ static bool delivery_legacy_frame_send_honors_socket_timeout(void)
     struct fs_session sender;
     struct delivery_frame_send_call call = {.session = &sender};
     struct delivery_handshake_clock clock = {0};
-    /* The bound this proves is "the deadline arithmetic in send_all_until /
-     * wait_for_socket rejects rather than blocking forever" -- not "a real
-     * 50ms kernel socket timeout elapses within some real wall-clock
-     * polling window". The transport reads its notion of "now" through the
-     * injectable platform clock (wait_for_socket -> platform_time_monotonic_ms
-     * -> clock_now_monotonic_ns), same as the neighbouring absolute-deadline
-     * cases below. Installing the immediate-deadline fake here means the
-     * bound fires on the very first wait_for_socket check, with no
-     * dependency on the host actually scheduling the sender thread inside
-     * the real 50ms window -- which host load (CPU contention, scheduler
-     * noise) can blow past even though the transport is behaving
-     * correctly. */
+    /* This proves the deadline arithmetic in send_all_until /
+     * wait_for_socket rejects rather than blocking forever, not that a real
+     * 50ms kernel timeout elapses. The transport reads "now" through the
+     * injectable platform clock (as the neighbouring absolute-deadline
+     * cases do), so the immediate-deadline fake fires on the first check,
+     * independent of host load. */
     struct platform_clock_source source = {
         .monotonic_us = delivery_immediate_deadline_monotonic_us,
         .wall_unix = delivery_handshake_wall_unix,
@@ -1213,8 +1206,7 @@ int file_market_delivery_tests(void)
         FILE_MARKET_DELIVERY_ERR_SIGNATURE);
 
     /* Freshness runs before signature work: an aged or future-dated copy of
-     * a real request must die with the dedicated expiry error even though
-     * its signature bytes are still valid. */
+     * a real request dies with the dedicated expiry error. */
     struct file_market_delivery_request stale = decoded;
     stale.issued_unix = (int64_t)platform_time_wall_time_t() -
         FILE_MARKET_DELIVERY_MAX_AGE_SECS - 1;
@@ -1318,10 +1310,9 @@ int file_market_delivery_tests(void)
     fixture.corrupt_hash = false;
 
     /* ── The node's own hosting decision ─────────────────────────────
-     * A declined chunk must cost the requester everything: no payment
-     * lookup, no content read, no bytes. And an unwired profile port is
-     * a refusal, not a bypass — the closed state is the unconfigured
-     * one, so a node that cannot ask its own profile serves nothing. */
+     * A declined chunk costs the requester everything (no payment lookup,
+     * content read or bytes); an unwired profile port is a refusal, not a
+     * bypass. */
     fixture.moderation_hidden = true;
     int auth_calls_before_hidden = fixture.authorize_calls;
     int load_calls_before_hidden = fixture.load_calls;

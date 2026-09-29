@@ -2,24 +2,15 @@
  *
  * Degraded mode + the deep-reorg refusal (T6.2).
  *
- * Two properties this group exists to hold down, both of which are safety
- * claims rather than behaviour details:
+ *  1. BLAST RADIUS. Suspecting a netsplit withholds
+ *     SYNC_CAP_DIRECTORY_INFLUENCE and nothing else, proven exhaustively over
+ *     all 2^12 provenance evidence tuples.
+ *  2. NOTHING FALLS QUIET. The deep-reorg refusal (which with
+ *     ZCL_FINALITY_DEPTH = 10 can never resolve itself) raises a named,
+ *     stably-identified blocker with a declared remedy and operator decision.
  *
- *  1. BLAST RADIUS. Suspecting a netsplit withholds SYNC_CAP_DIRECTORY_
- *     INFLUENCE and provably nothing else. Proven exhaustively over all 2^12
- *     provenance evidence tuples, not by spot-checking a couple of states —
- *     a single formula picking up `network_uncontested` anywhere else would
- *     silently start gating tip-following, relay, the explorer or wallet
- *     viewing, and that is the failure this whole design is arranged to make
- *     impossible.
- *
- *  2. NOTHING FALLS QUIET. The deep-reorg refusal — which with
- *     ZCL_FINALITY_DEPTH = 10 can never resolve itself — raises a named,
- *     stably-identified blocker that resolves to a declared remedy and an
- *     operator decision.
- *
- * Denial and decision TOKENS are asserted verbatim: operators and scripts key
- * on them, so a rename is a break, not a refactor.
+ * Denial and decision TOKENS are asserted verbatim: operators and scripts
+ * key on them.
  */
 
 #include "test/test_core.h"
@@ -78,9 +69,9 @@ static int test_split_withholds_only_directory_influence(void)
     int failures = 0;
     TEST("directory_influence: a suspected split withholds ONLY the "
          "directory bit, across every provenance tuple") {
-        /* Exhaustive over the twelve provenance facts: 4096 tuples. For each,
-         * the ONLY difference between an uncontested and a contested network
-         * must be SYNC_CAP_DIRECTORY_INFLUENCE. */
+        /* Exhaustive over the twelve provenance facts (4096 tuples): the
+         * only difference between uncontested and contested is
+         * SYNC_CAP_DIRECTORY_INFLUENCE. */
         for (int m = 0; m < (1 << 12); m++) {
             struct sync_evidence e = {0};
             e.header_chain_verified        = (m >>  0) & 1;
@@ -112,11 +103,9 @@ static int test_ungated_capabilities_survive(void)
     int failures = 0;
     TEST("directory_influence: tip-serving and wallet-receive survive a "
          "suspected split") {
-        /* A fully assisted-ready node: serving a validated tip and receiving
-         * in the wallet are granted. Contesting the network must not touch
-         * either. Relay, the block explorer and wallet VIEWING are not
-         * capability bits at all — they are ungated by construction, which is
-         * why no formula in sync_trust_policy.c can reach them. */
+        /* A fully assisted-ready node keeps serving and wallet receiving
+         * when the network is contested. Relay, the explorer and wallet
+         * VIEWING are not capability bits and are ungated by construction. */
         struct sync_evidence e =
             sync_evidence_for_state(SYNC_TRUST_RELEASE_ASSISTED_READY);
         struct sync_capability_denials why = {0};
@@ -128,9 +117,8 @@ static int test_ungated_capabilities_survive(void)
         ASSERT(why.reason[0] == NULL);   /* serve granted */
         ASSERT(why.reason[1] == NULL);   /* receive granted */
 
-        /* Mining and spending are governed by PROVENANCE, not by the network
-         * fact: they were already withheld here and stay withheld for the
-         * same, unchanged reason. */
+        /* Mining and spending are governed by PROVENANCE, not the network
+         * fact, and stay withheld. */
         uint32_t whole = directory_influence_caps(&e, true, NULL);
         ASSERT((whole & SYNC_CAP_MINE) == 0u);
         ASSERT((caps & SYNC_CAP_MINE) == 0u);
@@ -198,8 +186,7 @@ static int test_pre_split_entries_keep_working(void)
         ASSERT(strcmp(d.token, DIRECTORY_INFLUENCE_TOKEN_PRE_SPLIT) == 0);
 
         /* Final exactly AT the onset height: not pre-split. The boundary is
-         * strict on purpose — the onset height is the first height whose
-         * contents we are no longer willing to vouch for. */
+         * strict: the onset height is the first not vouched for. */
         in.entry_final_height = 1000;
         directory_influence_decide(&in, &d);
         ASSERT(!d.influence_admitted);
@@ -324,9 +311,9 @@ static int test_netsplit_blocker_declares_its_handoff(void)
         ASSERT(remedy != NULL);
         ASSERT(strcmp(remedy, "netsplit_degraded_mode") == 0);
         ASSERT(!needs_human);   /* the condition self-clears it */
-        /* And therefore NO decision text: blocker_handoff_lookup surfaces one
-         * only for an OWNER hand-off. The operator-facing sentence rides in
-         * the blocker's own reason, which is what `dumpstate blocker` shows. */
+        /* No decision text: blocker_handoff_lookup surfaces one only for an
+         * OWNER hand-off; the operator sentence is in the blocker's reason
+         * (`dumpstate blocker`). */
         ASSERT(decision != NULL && decision[0] == '\0');
 
         directory_influence_test_reset();
@@ -377,8 +364,7 @@ static int test_deep_reorg_refusal_fires(void)
         ASSERT(strstr(s.reason, "depth=1000") != NULL);
 
         /* A fork point that is NOT immutable is a different fault and does
-         * not borrow the finality name. height_is_immutable is what decides
-         * that, and it is READ, never redefined here. */
+         * not borrow the finality name; height_is_immutable decides. */
         blocker_clear(REORG_REFUSAL_ID);
         ASSERT(!height_is_immutable(5000, 4995));
         utxo_apply_reorg_name_refusal_blocker(5000, 4995);
@@ -413,10 +399,8 @@ static int test_deep_reorg_refusal_declares_its_handoff(void)
     return failures;
 }
 
-/* The finality constant this whole refusal hangs on, and the two predicates
- * that read it, live where the docs now say they do. A wrong citation cost
- * this task a wrong-file lookup; assert the semantics so the next reader can
- * trust the numbers even if a doc rots. */
+/* The finality constant the refusal hangs on and the two predicates that
+ * read it: assert the semantics, not the doc citation. */
 static int test_finality_depth_semantics(void)
 {
     int failures = 0;

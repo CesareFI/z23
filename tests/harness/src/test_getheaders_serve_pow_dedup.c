@@ -1,62 +1,34 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * test_getheaders_serve_pow_dedup — the getheaders SERVE path must spend at
- * most ONE full Equihash verification per header, and a stranger must not be
- * able to make it spend more.
+ * test_getheaders_serve_pow_dedup: the getheaders SERVE path spends at most one
+ * full Equihash verification per header, and a stranger cannot make it spend more.
  *
- * `getheaders` needs nothing but a completed handshake, and answering it is
- * the one thing an unauthenticated peer can make this node do real CPU work
- * for: one full check_equihash_solution costs 383-390 us of a core at 200,9.
- * Pre-fix a peer got a multiplier on that for free, from two independent
- * places:
+ * `getheaders` needs only a completed handshake, and a full
+ * check_equihash_solution costs 383-390 us of a core at 200,9. The fix resolves
+ * which bytes are authoritative with the cheap hash bind (nSolution is part of
+ * the serialized header, so bound bytes are unique and a PoW verdict over them
+ * is final), verifies once, and the successor walk hands the proved header back.
  *
- *   a) getheaders_index_header_servable() ran the FULL PoW screen once per
- *      candidate SOURCE — in-memory index, then flat block file, then the
- *      node.db `blocks` row — before anything had established which bytes
- *      were even the right bytes. Three sources, three Equihash
- *      verifications, one served header. Driving the fallback path cost the
- *      peer nothing.
+ * The test counts verifications (getheaders_serve_pow_checks(), incremented at
+ * the check_equihash_solution call site) using real regtest Equihash (48,5)
+ * headers mined via mine_block_pow:
  *
- *   b) the serve loop then proved every entry twice: the successor walk
- *      verified a candidate and threw the header away, and the loop head
- *      verified the same entry again before appending it.
- *
- * The fix resolves WHICH bytes are authoritative using only the cheap hash
- * bind, then verifies once; and the walk hands the proved header back. The
- * bind is what licenses that: nSolution is part of the serialized header,
- * so bound bytes are unique, so a PoW verdict over bound bytes is final and
- * re-running it against another store cannot change it.
- *
- * This test COUNTS verifications (getheaders_serve_pow_checks(), a real
- * counter incremented at the check_equihash_solution call site) rather than
- * asserting the code still works. It fails on the parent commit with 3 and 5
- * where it now demands 1 and 3.
- *
- * Pins, all with REAL regtest Equihash (48,5) headers mined via
- * mine_block_pow:
- *
- *   A. worst case, one lookup: an entry reachable from ALL THREE stores
- *      whose solution is FORGED costs <= 1 Equihash verification (was 3) —
- *      and is still REFUSED. Verifying once must not become verifying zero:
- *      the refusal is the security floor
- *      (test_getheaders_serve_fallback case 7 on a one-store fixture).
- *   B. worst case, one request: a served `getheaders` costs exactly one
- *      verification per header on the wire (was 5 for 3 headers).
- *   C. the two serve-side counters are non-vacuous: headers_served_total and
- *      getheaders_served_requests both move on a real served request, and
- *      they are neither always-zero nor always-equal (a 0-header reply
+ *   A. one lookup: an entry reachable from all three stores (index, flat block
+ *      file, node.db row) with a forged solution costs <= 1 verification and is
+ *      still refused (the security floor; see test_getheaders_serve_fallback case 7).
+ *   B. one request: a served `getheaders` costs exactly one verification per header.
+ *   C. headers_served_total and getheaders_served_requests both move on a served
+ *      request and are neither always-zero nor always-equal (a 0-header reply
  *      advances requests only).
- *   D. the per-peer serve window bounds how OFTEN one peer may ask: an
- *      honest burst is fully served, a flood gets exactly the allowance
- *      worth of replies and the rest DEFERRED (no reply, no disconnect, no
- *      offence), the window is per-peer, and expiry restores service.
- *      Time is injected through the window field itself (see the D note).
+ *   D. the per-peer serve window bounds how often one peer may ask: an honest
+ *      burst is fully served, a flood gets exactly the allowance and the rest
+ *      is deferred (no reply, no disconnect, no offence), the window is
+ *      per-peer, and expiry restores service. Time is injected through the
+ *      window field itself.
  *
- * A and B cover complementary halves, so keep both: A watches the REFUSAL
- * path (a re-verify added after a failed check — literally the old
- * retry-against-the-next-store shape — takes A to 2), B watches the SUCCESS
- * path (a re-verify of an accepted header takes B to 6 for 3 headers). Each
- * mutation is invisible to the other case.
+ * A watches the refusal path (a re-verify after a failed check takes A to 2), B
+ * the success path (a re-verify of an accepted header takes B to 6 for 3
+ * headers); each mutation is invisible to the other case.
  */
 
 #include "test/test_core.h"
@@ -119,8 +91,8 @@ static bool pd_mine_header(struct block_header *out, int height,
     return ok;
 }
 
-/* Store the full hash-bound header as a connected node.db `blocks` row —
- * the row a snapshot-seeded node has below its body floor. */
+/* Store the full hash-bound header as a connected node.db `blocks` row, as a
+ * snapshot-seeded node has below its body floor. */
 static bool pd_db_put_header(struct node_db *ndb, int height,
                              const struct block_header *h,
                              const struct uint256 *hash)
@@ -146,9 +118,8 @@ static bool pd_db_put_header(struct node_db *ndb, int height,
     return db_block_save(ndb, &blk);
 }
 
-/* Append a one-transaction block carrying exactly `h` to a flat blk*.dat,
- * so the serve path's flat-file fallback has a real, hash-binding source.
- * Returns the disk position through `pos`. */
+/* Append a one-transaction block carrying exactly `h` to a flat blk*.dat, giving
+ * the flat-file fallback a hash-binding source. Returns the disk position via `pos`. */
 static bool pd_write_flat_block(const char *datadir,
                                 const struct block_header *h,
                                 const struct chain_params *cp,
@@ -218,10 +189,9 @@ static bool pd_pin_solution(struct block_index *bi,
     return true;
 }
 
-/* Non-localhost peer with an INVALID socket: process_getheaders queues its
- * reply on node->send_head and socket_send_data(-1) fails EBADF without
- * closing anything (p2p_node_close_socket guards on ZCL_INVALID_SOCKET), so
- * the framed bytes stay inspectable. */
+/* Non-localhost peer with an INVALID socket: process_getheaders queues its reply
+ * on node->send_head and socket_send_data(-1) fails EBADF without closing
+ * anything, so the framed bytes stay inspectable. */
 static void pd_setup_node(struct p2p_node *node)
 {
     memset(node, 0, sizeof(*node));
@@ -251,21 +221,17 @@ static void pd_drain_send_queue(struct p2p_node *node)
     node->send_offset = 0;
 }
 
-/* The fixture's peers own ZCL_INVALID_SOCKET, so every SERVED reply runs
- * socket_send_data(), whose send() fails EBADF and latches
- * p2p_node_close_socket's LOCAL_SHUTDOWN disconnect on the node. That latch
- * is fake-socket noise, not the serve path's verdict — neither the serve nor
- * the defer path punishes. Clear it so the defer checks observe only
- * punishment the code under test actually performed. */
+/* Every SERVED reply runs socket_send_data(), whose EBADF latches
+ * p2p_node_close_socket's LOCAL_SHUTDOWN on the node. That is fake-socket
+ * noise; clear it so defer checks observe only real punishment. */
 static void pd_clear_fixture_disconnect(struct p2p_node *node)
 {
     node->disconnect = false;
     node->disconnect_reason = P2P_DISCONNECT_NONE;
 }
 
-/* Header count of the framed `headers` reply sitting in the send queue:
- * skip the 24-byte message header, read the leading compact_size. Returns
- * -1 when there is no reply or it is not a `headers` message. */
+/* Header count of the framed `headers` reply in the send queue (skip the 24-byte
+ * message header, read the leading compact_size); -1 if none or not `headers`. */
 static int64_t pd_queued_headers_count(struct p2p_node *node)
 {
     struct send_segment *seg = node->send_head;
@@ -283,17 +249,14 @@ static int64_t pd_queued_headers_count(struct p2p_node *node)
     return ok ? (int64_t)n : -1;
 }
 
-/* Serialize a getheaders payload into the caller-owned writable stream
- * `buf`: locator (version + hashes) then hash_stop. The caller wraps
- * buf->data in a read view for process_getheaders and stream_free()s `buf`
- * afterwards. */
-/* D2c helper — drives a fresh ZCL23 peer through allowance+5 identical
- * requests inside one window and reports whether its window closed at ITS
- * OWN allowance (GETHEADERS_SERVE_MAX_REQUESTS_PER_WINDOW, the fast-sync
- * arm) while the legacy flooder's window still holds the legacy allowance.
- * This is the one assertion that ties the gate to the requesting peer's
- * services: a gate reading allowance(0) for everyone would hand every ZCL23
- * peer 375 x 2000-header pages and still pass D0-D3. Kept out of the test
+/* Serialize a getheaders payload into the caller-owned writable stream `buf`:
+ * locator (version + hashes) then hash_stop. The caller wraps buf->data in a
+ * read view for process_getheaders and stream_free()s `buf`. */
+/* D2c helper: drives a fresh ZCL23 peer through allowance+5 identical requests
+ * in one window and reports whether its window closed at its own allowance
+ * (GETHEADERS_SERVE_MAX_REQUESTS_PER_WINDOW) while the legacy flooder's window
+ * still holds the legacy allowance. A gate reading allowance(0) for everyone
+ * would pass D0-D3 but hand every ZCL23 peer 375 pages. Kept out of the test
  * body so the pinned test function does not grow. */
 static bool pd_zcl23_window_closes_at_own_allowance(
     struct msg_processor *mp, struct byte_stream *req, node_id_t fast_id,
@@ -327,29 +290,19 @@ static bool pd_zcl23_window_closes_at_own_allowance(
                (uint32_t)legacy_allowance;
 }
 
-/* D4 helpers — a DEFERRED request is parked and answered once, from this
- * node's side, when the peer's serve window rolls.
- *
- * The peer that needs this is the stock legacy client: MAX_HEADERS_RESULTS
- * 160, no `sendheaders`, no headers-sync timeout, and it chains its next
- * getheaders only off a full reply to the last one. A silent defer leaves it
- * with nothing in flight and nothing to wake it. What these pin is the whole
- * contract of the fix: the defer parks the request; the replay stays quiet
- * while the window is still open; once the window rolls the request is served
- * exactly once with a reply on the wire, counted as a REPLAY and not as a
- * fresh defer; a second tick with no new request does nothing (so no
- * request/defer loop can form); the unrelated snapshot-serving defer never
- * arms the slot at all; a request the peer gets SERVED after the roll
- * supersedes the parked one, so the stale locator never replays behind it;
- * and the two asks that can never be answered — an unparkable (empty) one
- * inside the closed window and a malformed one after the roll — leave the
- * owed park in place instead of taking it with them. Time is injected
- * through the window fields exactly as D3 does — no sleeps, no polling. Kept
- * out of the test body so the pinned test function does not grow, and split
- * across seven helpers so each stays under the complexity cap. */
+/* D4 helpers: a deferred request is parked and answered once, from this node's
+ * side, when the peer's serve window rolls (the stock legacy client has no
+ * headers-sync timeout and chains its next getheaders only off a full reply).
+ * Pinned: the defer parks the request; replay stays quiet while the window is
+ * open; after the roll it is served exactly once, counted as a replay not a
+ * defer; a second tick does nothing; the snapshot-serving defer never arms the
+ * slot; a request served after the roll supersedes the parked one; and an
+ * unparkable (empty) or malformed ask leaves the owed park in place. Time is
+ * injected through the window fields as in D3. Split across seven helpers to
+ * stay under the complexity cap. */
 
-/* Fill this peer's window, then ask once more so the last request is deferred
- * — and report whether that defer parked it. */
+/* Fill this peer's window, then ask once more so the last request is deferred;
+ * report whether that defer parked it. */
 static bool pd_park_deferred_request(struct msg_processor *mp,
                                      struct byte_stream *req,
                                      struct p2p_node *node)
@@ -357,8 +310,7 @@ static bool pd_park_deferred_request(struct msg_processor *mp,
     const int allowance =
         (int)getheaders_serve_request_allowance(node->services);
     for (int i = 0; i < allowance + 1; i++) {
-        /* Hold the window open by injection (D3 rolls it the same way), so
-         * the pin cannot depend on how long allowance+1 serves take here. */
+        /* Hold the window open by injection (as D3 rolls it). */
         node->getheaders_rate_window_start = platform_time_wall_time_t();
         req->read_pos = 0;   /* re-send the identical request */
         (void)process_getheaders(mp, node, req);
@@ -369,8 +321,8 @@ static bool pd_park_deferred_request(struct msg_processor *mp,
            node->getheaders_rate_window_count == (uint32_t)allowance;
 }
 
-/* While the window is still open the send tick must do nothing at all: no
- * reply, no replay count, and the request still parked. */
+/* While the window is open the send tick does nothing: no reply, no replay
+ * count, and the request stays parked. */
 static bool pd_replay_quiet_before_roll(struct msg_processor *mp,
                                         struct p2p_node *node)
 {
@@ -384,9 +336,9 @@ static bool pd_replay_quiet_before_roll(struct msg_processor *mp,
     return quiet;
 }
 
-/* Roll the window through the fields (D3's injection), then tick with NO new
- * request from the peer: exactly one reply goes out, it counts as a replay
- * and not as a second defer, the slot disarms, and a further tick is inert. */
+/* Roll the window through the fields, then tick with no new request: exactly
+ * one reply goes out, counted as a replay not a second defer, the slot
+ * disarms, and a further tick is inert. */
 static bool pd_replay_once_after_roll(struct msg_processor *mp,
                                       struct p2p_node *node)
 {
@@ -413,8 +365,7 @@ static bool pd_replay_once_after_roll(struct msg_processor *mp,
     return served_once && once_only;
 }
 
-/* D4b — the OTHER defer (peer snapshot serving) must not arm the slot: that
- * peer is being served a snapshot, not left waiting on a headers reply. */
+/* D4b: the peer-snapshot-serving defer must not arm the slot. */
 static bool pd_snapshot_defer_parks_nothing(struct msg_processor *mp,
                                             struct byte_stream *req,
                                             node_id_t node_id)
@@ -432,11 +383,8 @@ static bool pd_snapshot_defer_parks_nothing(struct msg_processor *mp,
     return unarmed;
 }
 
-/* D4c — a request SERVED after the window rolls supersedes the parked one:
- * the peer is waiting on THIS ask now, so the older locator must not replay
- * behind it and spend an admission on a page nobody is waiting for. The
- * ordering is the real one: the dispatcher can serve the peer's new ask in
- * the cycle before the send tick would have replayed the old one. */
+/* D4c: a request served after the window rolls supersedes the parked one, so
+ * the older locator does not replay behind it. */
 static bool pd_served_ask_supersedes_parked(struct msg_processor *mp,
                                             struct byte_stream *req,
                                             node_id_t node_id)
@@ -465,9 +413,8 @@ static bool pd_served_ask_supersedes_parked(struct msg_processor *mp,
     return served && inert;
 }
 
-/* D4d — an EMPTY ask inside the closed window is deferred but cannot be
- * parked; it must leave the park it found (the peer's answerable ask) alone,
- * and count as a defer, not evict. */
+/* D4d: an empty ask inside the closed window is deferred but cannot be parked;
+ * it leaves the existing park alone and counts as a defer, not an evict. */
 static bool pd_unparkable_ask_keeps_park(struct msg_processor *mp,
                                          struct byte_stream *req,
                                          node_id_t node_id)
@@ -492,9 +439,8 @@ static bool pd_unparkable_ask_keeps_park(struct msg_processor *mp,
     return kept;
 }
 
-/* D4e — a MALFORMED ask after the roll is admitted but never answered; the
- * park must survive it and the next tick still replays the owed request once.
- * (The defect this pins: a disarm on admission instead of on serve.) */
+/* D4e: a malformed ask after the roll is admitted but never answered; the park
+ * must survive it (disarm on serve, not on admission) and the next tick replays once. */
 static bool pd_malformed_ask_after_roll_keeps_park(struct msg_processor *mp,
                                                    struct byte_stream *req,
                                                    node_id_t node_id)
@@ -528,10 +474,9 @@ static bool pd_malformed_ask_after_roll_keeps_park(struct msg_processor *mp,
     return kept && replayed;
 }
 
-/* The one pin the test body carries: the stages above, in order, on one
- * fresh legacy peer (services=0 — the client with no retry timer), then the
- * snapshot defer, the served-ask supersession, and the two unanswerable asks
- * on their own fresh peers. */
+/* The one pin the test body carries: the stages above in order on a fresh
+ * legacy peer (services=0), then the snapshot defer, the served-ask
+ * supersession, and the two unanswerable asks on their own fresh peers. */
 static bool pd_deferred_request_replays_once(struct msg_processor *mp,
                                              struct byte_stream *req,
                                              node_id_t node_id)
@@ -572,24 +517,18 @@ int test_getheaders_serve_pow_dedup(void)
     int failures = 0;
     printf("\n=== getheaders serve-path Equihash dedup tests ===\n");
 
-    /* Regtest: small Equihash (48,5) mines in milliseconds. Restore
-     * CHAIN_MAIN on the way out (sequential runner shares the process). */
+    /* Regtest: small Equihash (48,5) mines in milliseconds. Restore CHAIN_MAIN on exit. */
     chain_params_select(CHAIN_REGTEST);
     const struct chain_params *cp = chain_params_get();
 
     char dir[256];
     test_make_tmpdir(dir, sizeof(dir), "gh_pow_dedup", "ok");
 
-    /* PIN the datadir, and write the flat-file fixture into the directory
-     * the serve path will actually open.
-     *
-     * msg_processor_init IGNORES its `datadir` argument: it sets
-     * mp->datadir = GetDataDir(true), the NET-SPECIFIC directory (see the
-     * note in msgprocessor.c). Without SetDataDir the serve path's flat-file
-     * fallback therefore reads the host's DEFAULT datadir — the live node's —
-     * instead of this fixture, which both silently weakens the test and
-     * reaches outside it. Assert the resolved path really is inside the
-     * tmpdir so that can never regress unnoticed. */
+    /* Pin the datadir and write the flat-file fixture where the serve path
+     * opens it: msg_processor_init ignores its `datadir` argument and uses the
+     * net-specific GetDataDir(true) (see msgprocessor.c), so without SetDataDir
+     * the fallback reads the host's default datadir. Assert the resolved path
+     * is inside the tmpdir. */
     SetDataDir(dir);
     char netdir[512];
     GetDataDir(true, netdir, sizeof(netdir));
@@ -615,15 +554,10 @@ int test_getheaders_serve_pow_dedup(void)
     app_runtime_set_current(&runtime);
 
     /* ── A. one lookup, three stores, one verification ────────────────
-     *
-     * Entry Y hash-binds, is marked BLOCK_VALID_TREE, passes
-     * CheckProofOfWork — and its Equihash solution is garbage. That is the
-     * shape a hostile block_index.bin / node.db bundle can carry (one
-     * PoW-passing grind, not a mine), and it is reachable from all three
-     * stores: pinned in the index, written to a flat block file, and stored
-     * as a node.db row. Pre-fix that cost three full Equihash
-     * verifications, each reaching the identical verdict over byte-identical
-     * bytes. */
+     * Entry Y hash-binds, is BLOCK_VALID_TREE and passes CheckProofOfWork, but
+     * its Equihash solution is garbage (the shape a hostile block_index.bin /
+     * node.db bundle can carry), and it is reachable from the index, a flat
+     * block file and a node.db row. */
     {
         struct main_state ms;
         main_state_init(&ms);
@@ -642,9 +576,8 @@ int test_getheaders_serve_pow_dedup(void)
         struct block_index *bi_a = pd_seed_index(&ms, &ha, &hash_a, 1, bi_g);
         PD_CHECK("A: index chain seeded", bi_g && bi_a);
 
-        /* Forge B: same solution size (so the size check still passes),
-         * grind until the serialized bytes still satisfy CheckProofOfWork.
-         * Regtest powLimit is 0x0f0f..., so this lands in a few tries. */
+        /* Forge B: same solution size, grind until CheckProofOfWork passes
+         * (regtest powLimit is 0x0f0f..., a few tries). */
         struct block_header hy = hb;
         struct uint256 hash_y;
         bool y_ready = false;
@@ -717,7 +650,6 @@ int test_getheaders_serve_pow_dedup(void)
                          loaded && uint256_eq(&probe_hash, &hash_y));
             }
 
-            /* THE measurement. Pre-fix: 3. */
             unsigned int status_before = bi_y->nStatus;
             uint64_t pow_before = getheaders_serve_pow_checks();
             struct block_header out;
@@ -733,9 +665,7 @@ int test_getheaders_serve_pow_dedup(void)
             PD_CHECK("A: it spends at least one — verifying once must not "
                      "become verifying zero", spent >= 1);
 
-            /* The security floor: still refused, still not a validity
-             * verdict. If the dedup ever made a forged solution servable,
-             * that is a broken fix, not a passing test. */
+            /* The security floor: still refused, not a validity verdict. */
             PD_CHECK("A: the forged header is still REFUSED", !ok);
             PD_CHECK("A: the refusal is still not a validity verdict",
                      bi_y->nStatus == status_before);
@@ -745,12 +675,8 @@ int test_getheaders_serve_pow_dedup(void)
     }
 
     /* ── B/C. one request, one verification per header served ─────────
-     *
-     * A clean 3-header chain above an active tip, every header genuinely
-     * mined and pinned in the index, so every entry is servable off the
-     * in-memory path at one verification each. Pre-fix the serve loop spent
-     * 5 for 3 headers: the successor walk proved each entry and discarded
-     * the header, then the loop head proved it again. */
+     * A clean 3-header chain above an active tip, every header mined and pinned
+     * in the index, so each entry is servable in-memory at one verification. */
     {
         struct main_state ms;
         main_state_init(&ms);
@@ -782,11 +708,10 @@ int test_getheaders_serve_pow_dedup(void)
         msg_processor_init(&mp, &ms, NULL, NULL, cp, dir, &g_pd_nm, NULL);
 
         if (seeded) {
-            /* A same-hash twin of genesis-equivalent entry 0 is the validated
-             * active tip, while the block map retains bi[0].  This is the
-             * restart shape where locator lookup and chain[] own different
-             * block_index objects for the same block.  Entries 1..3 are the
-             * header-only zone the serve path must still walk. */
+            /* A same-hash twin of entry 0 is the validated active tip while the
+             * block map retains bi[0] (the restart shape where locator lookup and
+             * chain[] own different block_index objects). Entries 1..3 are the
+             * header-only zone the serve path must walk. */
             bi[0]->nStatus |= BLOCK_HAVE_DATA | BLOCK_VALID_SCRIPTS;
             bi[0]->nTx = 1;
             bi[0]->nChainTx = 1;
@@ -845,12 +770,9 @@ int test_getheaders_serve_pow_dedup(void)
             stream_free(&buf);
             pd_drain_send_queue(&node);
 
-            /* B2/C — a request that legitimately serves nothing:
-             * hash_stop-only form anchored at the best header, whose
-             * successor is NULL. requests must still move; headers must
-             * not. That asymmetry is the amplification signal (a peer
-             * grinding empty replies), and it also proves neither counter
-             * is a copy of the other or stuck at zero. */
+            /* B2/C: hash_stop-only form anchored at the best header (successor NULL)
+             * serves nothing: requests move, headers do not, proving neither
+             * counter copies the other or sticks at zero. */
             msg_headers_get_stats(&st_before);
             pow_before = getheaders_serve_pow_checks();
             struct byte_stream buf2, req2;
@@ -879,38 +801,23 @@ int test_getheaders_serve_pow_dedup(void)
             pd_drain_send_queue(&node);
 
         /* ── D. the per-peer serve window ─────────────────────────────
-         *
          * Each reply costs real Equihash work, so the serve path bounds how
-         * OFTEN one peer may ask (GETHEADERS_SERVE_* in net/msg_internal.h).
-         * The bound is a fixed HEADER budget per window
-         * (GETHEADERS_SERVE_HEADERS_PER_WINDOW), translated into a REQUEST
-         * allowance by that peer's own reply page size
-         * (getheaders_serve_request_allowance() /
-         * getheaders_serve_page()) — a legacy peer taking small pages gets
-         * proportionally more requests out of the same header budget. An
-         * honest IBD peer re-asks at its scheduler-driven (or, for a legacy
-         * peer, page-chained) pace, orders of magnitude under the allowance;
-         * a flood must get exactly the allowance worth of replies and DEFER
-         * the rest — no reply, no disconnect, no offence. Pins:
+         * often one peer may ask (GETHEADERS_SERVE_* in net/msg_internal.h): a
+         * fixed header budget per window (GETHEADERS_SERVE_HEADERS_PER_WINDOW)
+         * translated into a request allowance by the peer's reply page size
+         * (getheaders_serve_request_allowance() / getheaders_serve_page()).
          *
-         *   D0 the allowance helpers: legacy (services=0) gets 375, a ZCL23
-         *      peer gets 30, and both draw down the SAME header budget
-         *      (allowance * page size is invariant across the two);
+         *   D0 allowance helpers: legacy (services=0) gets 375, a ZCL23 peer
+         *      30; allowance * page size is invariant across the two;
          *   D1 an honest burst is fully served;
-         *   D2 the flood: served stops exactly at the allowance, every
-         *      excess request is deferred silently (true return, zero wire
-         *      bytes, no disconnect, its own counter — not the served one),
-         *      and the window is PER-PEER (a fresh peer is served while the
-         *      flooder is deferred);
-         *   D3 expiry restores service: the window rolls and the same peer
-         *      is served again.
+         *   D2 the flood: served stops at the allowance, every excess request
+         *      is deferred silently (true return, zero wire bytes, no
+         *      disconnect, its own counter), and the window is per-peer;
+         *   D3 expiry restores service.
          *
-         * Time is injected through the window field itself — the same seam
-         * test_net_handshake_adversarial.c reads on the addr window: D3
-         * backdates node.getheaders_rate_window_start past the window and
-         * lets the roll condition do the rest. No sleeps: the production
-         * read is now >= window_start + WINDOW_SECS, so a start far enough
-         * in the past is deterministic no matter how slowly this runs. */
+         * Time is injected through the window field (as in
+         * test_net_handshake_adversarial.c): D3 backdates
+         * node.getheaders_rate_window_start past the window. No sleeps. */
             PD_CHECK("D0: legacy services get a 375-request allowance",
                      getheaders_serve_request_allowance(0) == 375u);
             PD_CHECK("D0: a ZCL23 peer gets a 30-request allowance",
@@ -923,19 +830,15 @@ int test_getheaders_serve_pow_dedup(void)
             struct p2p_node flooder;
             pd_setup_node(&flooder);
             node_id_t flood_id = flooder.id;
-            /* pd_setup_node() memset()s the fixture, so flooder.services is
-             * 0 — a legacy (non-ZCL23) peer, taking 160-header pages, whose
-             * derived allowance (375) differs from the ZCL23 allowance (30)
-             * even though both draw on the same fixed header budget; see
+            /* pd_setup_node() memsets the fixture, so flooder.services is 0: a legacy
+             * peer taking 160-header pages, allowance 375 vs 30 for ZCL23; see
              * getheaders_serve_request_allowance() in net/msg_internal.h. */
             const int allowance =
                 (int)getheaders_serve_request_allowance(flooder.services);
 
-            /* hash_stop-only form anchored at h[2]: every admitted request
-             * serves exactly ONE header (h[3], B2's shape with a successor),
-             * so the window is measured against the real per-request cost,
-             * and a mutation that served without gating (or gated without
-             * serving) moves a checked number. */
+            /* hash_stop-only form anchored at h[2]: each admitted request serves
+             * exactly one header (h[3]), so the window is measured against the real
+             * per-request cost. */
             struct byte_stream buf_d, req_d;
             bool built_d = pd_build_getheaders(&buf_d, NULL, 0, &hash[2]);
             PD_CHECK("D: getheaders payload built", built_d);
@@ -943,8 +846,7 @@ int test_getheaders_serve_pow_dedup(void)
 
             uint64_t defer_before = getheaders_deferred_rate_window();
             msg_headers_get_stats(&st_before);
-            /* The window's own baseline: everything this peer is served from
-             * here on is admitted against ONE allowance. */
+            /* Window baseline: everything served from here is admitted against one allowance. */
             uint64_t served_at_window_start =
                 st_before.getheaders_served_requests;
             const int burst = 5;
@@ -969,20 +871,15 @@ int test_getheaders_serve_pow_dedup(void)
             PD_CHECK("D1: the burst deferred nothing",
                      getheaders_deferred_rate_window() == defer_before);
 
-            /* D2 — the flood. Another burst+10 requests arrive in the SAME
-             * window; the allowance is what the peer gets, the rest are
-             * deferred. */
+            /* D2, the flood: another burst+10 requests in the same window get the
+             * allowance; the rest are deferred. */
             msg_headers_get_stats(&st_before);
             uint64_t pow_before_d = getheaders_serve_pow_checks();
-            /* Every ADMITTED request is witnessed exactly once: either the
-             * receipt layer skips a proof it already paid (a hit) or the
-             * serve pays a fresh one (one pow check). The receipt layer on
-             * main means a repeat of the same anchor normally hits — so the
-             * pow counter alone no longer counts admitted serves (it would
-             * read 0 here, since B1 already proved the header D serves).
-             * What must NEVER happen: a witness count below the admitted
-             * count (a serve that skipped verification) or a fresh-proof
-             * bill above one (a receipt miss that re-proves per request). */
+            /* Every admitted request is witnessed once: the receipt layer skips a
+             * proof it already paid (a hit) or the serve pays one fresh pow check, so
+             * the pow counter alone does not count admitted serves. A witness count
+             * below the admitted count (a serve that skipped verification) or more
+             * than one fresh proof (a receipt miss re-proving per request) is a failure. */
             struct getheaders_receipt_stats rs_before;
             getheaders_verify_receipt_stats(&rs_before);
             const int flood_extra = 10;
@@ -1000,9 +897,7 @@ int test_getheaders_serve_pow_dedup(void)
                 if (answered && queued) {
                     served_seen++;
                 } else {
-                    /* DEFER shape: handled, nothing on the wire, and no NEW
-                     * disconnect — a defer queues nothing, so nothing but
-                     * the defer path itself could latch it here. */
+                    /* DEFER shape: handled, nothing on the wire, no new disconnect. */
                     deferred_seen++;
                     defer_clean = defer_clean && answered && !queued &&
                                   !punished;
@@ -1043,8 +938,7 @@ int test_getheaders_serve_pow_dedup(void)
                          fresh <= 1u);
             }
 
-            /* D2b — the window is PER-PEER: a fresh peer is served while
-             * the flooder sits exhausted. */
+            /* D2b: the window is per-peer; a fresh peer is served while the flooder is exhausted. */
             {
                 struct p2p_node other;
                 pd_setup_node(&other);
@@ -1054,9 +948,7 @@ int test_getheaders_serve_pow_dedup(void)
                 bool other_queued = pd_queued_headers_count(&other) >= 0;
                 pd_drain_send_queue(&other);
                 pd_clear_fixture_disconnect(&other);
-                /* The strong per-peer pin: the fresh peer's OWN window
-                 * opened and drew one admission while the flooder's window
-                 * sits exhausted at exactly the allowance. */
+                /* The fresh peer's own window opened and drew one admission. */
                 PD_CHECK("D2: the window is per-peer, not global",
                          other_served && other_queued &&
                          other.getheaders_rate_window_count == 1 &&
@@ -1064,20 +956,16 @@ int test_getheaders_serve_pow_dedup(void)
                              (uint32_t)allowance);
             }
 
-            /* D2c — the allowance is drawn from the REQUESTING peer's own
-             * services: a ZCL23 peer's window closes at 30 while the legacy
-             * flooder's holds 375 (helper above; one pin, no growth here). */
+            /* D2c: the allowance follows the requesting peer's services: a ZCL23
+             * peer closes at 30 while the legacy flooder holds 375. */
             PD_CHECK("D2c: a ZCL23 peer's window closes at ITS allowance "
                      "(30 pages), the legacy flooder's at 375",
                      pd_zcl23_window_closes_at_own_allowance(
                          &mp, &req_d, flood_id + 2, &flooder, allowance));
 
-            /* D3 — expiry restores service. Backdate the window start to the
-             * exact window boundary and leave the count exhausted (time
-             * injection through the window field itself, no sleeps); the
-             * next request rolls the window and is served, and the roll
-             * resets the count, so the same peer can draw another full
-             * allowance. */
+            /* D3: backdate the window start to the boundary with the count
+             * exhausted; the next request rolls the window, resets the count, and
+             * is served. */
             msg_headers_get_stats(&st_before);
             uint64_t defer_stable = getheaders_deferred_rate_window();
             flooder.getheaders_rate_window_start =
@@ -1098,10 +986,8 @@ int test_getheaders_serve_pow_dedup(void)
                          st_before.getheaders_served_requests == 1 &&
                      getheaders_deferred_rate_window() == defer_stable);
 
-            /* D4 — a deferred request is PARKED and answered once the window
-             * rolls, without the peer asking again: a legacy client has no
-             * retry timer, so silence costs it minutes per window. One pin,
-             * whole contract in the helper above; no growth here. */
+            /* D4: a deferred request is parked and answered once the window rolls,
+             * since a legacy client has no retry timer. Contract in the helpers above. */
             PD_CHECK("D4: a deferred getheaders is replayed exactly once "
                      "when the window rolls, unasked, without spending a "
                      "second defer — the snapshot defer parks nothing, a "
@@ -1121,9 +1007,8 @@ int test_getheaders_serve_pow_dedup(void)
     app_runtime_set_current(NULL);
     db_service_stop(&dbsvc);
     node_db_close(&ndb);
-    /* Unpin the datadir rather than pinning it back to the host default:
-     * SetDataDir() mkdir()s what it is given, and the default is a real
-     * node's directory. Clearing the cache restores "resolve on next use". */
+    /* Unpin the datadir rather than pinning the host default: SetDataDir()
+     * mkdir()s its argument. Clearing the cache restores resolve-on-next-use. */
     ClearDataDirCache();
     test_rm_rf(dir);
     chain_params_select(CHAIN_MAIN);

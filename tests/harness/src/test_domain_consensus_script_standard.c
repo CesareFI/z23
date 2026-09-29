@@ -3,23 +3,20 @@
  *
  * Unit tests for domain/consensus/script_standard.{c,h}.
  *
- * Pins the pure standard-script-type detection. Tests exercise the typed
- * zcl_result API directly AND cross-check against the legacy
- * core/modules/script/standard.h wrappers (script_solver / script_extract_destination
- * / script_sig_args_expected) to prove the extraction is behaviour-preserving.
+ * Pins the pure standard-script-type detection through the typed zcl_result
+ * API, cross-checked against the legacy core/modules/script/standard.h
+ * wrappers (script_solver / script_extract_destination /
+ * script_sig_args_expected).
  *
  * Coverage:
  *   - null / edge contracts (null script, null out, null solutions)
- *   - per-shape recognition: P2PKH, P2PK (compressed + uncompressed),
- *     P2SH, multisig 2-of-3, OP_RETURN (null data, multiple shapes),
- *     nonstandard
- *   - extract_destination across all five recognised shapes
+ *   - per-shape recognition: P2PKH, P2PK (compressed + uncompressed), P2SH,
+ *     multisig 2-of-3, OP_RETURN (null data), nonstandard
+ *   - extract_destination across the five recognised shapes
  *   - sig_args_expected per type
- *   - regression seal: domain wrapper == legacy wrapper for every shape
- *   - multisig graceful overflow when solutions_cap < n+2 (no buffer
- *     overrun, falls back to NONSTANDARD)
- *   - script_id_from_script: matches hash160(script) and the legacy
- *     script_id_from_script wrapper
+ *   - domain == legacy wrapper for every shape
+ *   - multisig overflow when solutions_cap < n+2 falls back to NONSTANDARD
+ *   - script_id_from_script matches hash160(script) and the legacy wrapper
  */
 
 #include "test/test_core.h"
@@ -113,9 +110,8 @@ static void build_op_return(struct script *s, const unsigned char *payload,
     }
 }
 
-/* 2-of-3 multisig with three 33-byte pubkeys (distinct tags). The
- * detector only cares about the {33,65}-len prefix bytes; the pubkey
- * contents do not affect script_solver / extract. */
+/* 2-of-3 multisig with three 33-byte pubkeys (distinct tags); the detector
+ * only reads the {33,65}-len prefix bytes. */
 static void build_multisig_2of3(struct script *s)
 {
     size_t pos = 0;
@@ -342,10 +338,8 @@ int test_domain_consensus_script_standard(void)
                    solution_sizes[4] == 1);
     }
 
-    /* Multisig graceful overflow when buffer too small.
-     * 2-of-3 needs 5 rows; pass cap=4 and check we get NONSTANDARD with
-     * matched=false and no overrun (the local stack buffer is exactly
-     * 4 rows wide). */
+    /* Multisig graceful overflow: 2-of-3 needs 5 rows; with cap=4 the result
+     * is NONSTANDARD, matched=false, no overrun. */
     {
         struct script s; script_init(&s);
         build_multisig_2of3(&s);

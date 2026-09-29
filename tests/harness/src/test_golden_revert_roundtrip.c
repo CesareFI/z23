@@ -1,46 +1,27 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * test_golden_revert_roundtrip — Wave 4.3 golden test: the full
- * source+binary revert round-trip, end to end against a sandbox ZVCS repo
- * and the REAL native dev_activation transactional engine (fake in-memory
- * service ops — no systemctl, no /proc, no process exec — but real
- * filesystem/hash/atomic-rename mechanics, same fake-ops harness pattern as
- * tests/harness/src/test_dev_activation.c).
+ * test_golden_revert_roundtrip — source+binary revert round-trip against a
+ * sandbox ZVCS repo and the real native dev_activation engine (fake in-memory
+ * service ops, real filesystem/hash/rename mechanics).
  *
- * Golden flow (t_golden_revert_roundtrip):
- *   1. Stage + activate generation A (dev_activation_run, ACTIVATE mode,
- *      fake ops) and snapshot the sandbox source tree binding
- *      generation_sha256 = sha_A.
- *   2. Edit the source tree, stage + activate generation B, snapshot binding
- *      generation_sha256 = sha_B.
- *   3. vcs_revert(..., target = commit A, relink ops that call the REAL
- *      dev_activation_activate_generation(sha_A, ...) against the same
- *      sandbox) and assert:
+ * t_golden_revert_roundtrip:
+ *   1. Stage + activate generation A; snapshot source binding sha_A.
+ *   2. Edit source, stage + activate generation B; snapshot binding sha_B.
+ *   3. vcs_revert to commit A with relink ops calling the real
+ *      dev_activation_activate_generation(sha_A) and assert:
  *        a. worktree files are byte-identical to state A
- *        b. the sandbox gen_root/current symlink resolves to gen-<sha_A hex>
- *        c. a NEW forward commit exists, binding generation_sha256 = sha_A
- *        d. append-only: commit B is still in the log, HEAD advanced to the
- *           new forward commit
+ *        b. gen_root/current resolves to gen-<sha_A hex>
+ *        c. a new forward commit binds generation_sha256 = sha_A
+ *        d. append-only: commit B stays in the log, HEAD advanced
  *        e. the zcl.agent_dev_deploy.v1 state file reflects generation A
- *   4. H*-unaffected: the file set the revert actually touched contains no
- *      sealed core/ path (vcs_seal_path_matches over the default globs).
+ *   4. The reverted file set contains no sealed core/ path.
  *
- * Sealed-path investigation (t_golden_revert_seal_guard): before this wave,
- * vcs_revert() wrote the target manifest's content into the worktree BEFORE
- * vcs_snapshot()'s internal seal check ran, so a revert that would touch a
- * sealed path without a valid unseal token still corrupted the sealed
- * file's on-disk bytes even though the operation ultimately reported
- * VCS_REFUSED (no commit landed, but the worktree was already mutated).
- * contexts/commons/modules/vcs/src/vcs.c now runs a non-consuming seal pre-check
- * (vcs_seal_peek(), contexts/commons/modules/vcs/src/vcs_seal.c) against the TARGET manifest
- * before touching a single worktree file. This test proves both halves:
- * the unauthorized case refuses with the worktree byte-for-byte untouched,
- * and a token-authorized case still succeeds exactly as vcs_snapshot's own
- * (consuming) guard would allow it. */
+ * t_golden_revert_seal_guard: vcs_revert runs a non-consuming seal pre-check
+ * (vcs_seal_peek) against the TARGET manifest before touching the worktree. An
+ * unauthorized sealed revert refuses with the worktree untouched; a
+ * token-authorized one succeeds as vcs_snapshot's guard would allow. */
 
-/* realpath() needs __USE_MISC; -D_POSIX_C_SOURCE=200809L alone does not
- * declare it. Without this the TU only builds by accident of the glibc
- * fortify inline at -O3. */
+/* realpath() needs __USE_MISC; -D_POSIX_C_SOURCE=200809L alone does not declare it. */
 #define _DEFAULT_SOURCE
 
 #include "test/test_core.h"
@@ -66,9 +47,7 @@
 #define PATH_MAX 4096
 #endif
 
-/* ── fake dev_activation ops (subset of test_dev_activation.c's harness,
- * happy-path only — this golden test drives the transaction, not its
- * failure modes, which test_dev_activation.c already covers) ──────── */
+/* ── fake dev_activation ops (happy-path subset of test_dev_activation.c) ── */
 
 struct fake_ctx {
     char gen_root[PATH_MAX];
@@ -165,15 +144,8 @@ struct sandbox {
     char  home[PATH_MAX];
     char  datadir[PATH_MAX];
     char  gen_root[PATH_MAX];
-    /* The ZVCS SOURCE repo root — deliberately a SEPARATE directory from
-     * `home` (a sibling, never nested under it). dev_activation's gen_root
-     * and datadir live under `home` and are full of binary blobs and a
-     * `current` symlink into a generation directory; if the ZVCS repo were
-     * rooted at `home` too, vcs_manifest_build() would try to track that
-     * whole tree as ordinary source, and a symlink-to-directory entry
-     * breaks the generic file-content walk. Real-world usage has the same
-     * separation: the git checkout (ZVCS source repo) and the dev-lane
-     * state under $HOME (generation store + datadir) are different trees. */
+    /* The ZVCS source repo root is a sibling of `home`, never nested: gen_root/datadir
+     * under `home` hold binary blobs and a `current` symlink that break the file-content walk. */
     char  src[PATH_MAX];
     char *saved_home;
 };
@@ -272,9 +244,7 @@ static bool gw_write(const char *dir, const char *rel, const char *content)
     for (char *p = full + strlen(dir) + 1; *p; p++) {
         if (*p == '/') {
             *p = '\0';
-            /* 0700: the object store verifies its own directories are
-             * owner-only, so a fixture that pre-creates .zvcs at the
-             * ordinary 0755 makes vcs_open refuse the repo outright. */
+            /* 0700: the object store refuses non-owner-only directories. */
             mkdir(full, 0700);
             *p = '/';
         }
@@ -355,9 +325,7 @@ static bool relink_activate(const uint8_t gen_sha256[32], void *ctxp)
     ctx->calls++;
     struct dev_activation_request req;
     char placeholder[PATH_MAX];
-    /* artifact_path is unused by dev_activation_activate_generation (no
-     * build/re-stage happens — see tools/dev/dev_activation.h) but
-     * base_request() wants a value; reuse any path under the sandbox. */
+    /* artifact_path is unused by the activate-by-sha path but base_request() needs a value. */
     snprintf(placeholder, sizeof(placeholder), "%s/cand_A", ctx->sb->home);
     base_request(&req, ctx->sb, placeholder);
     ctx->rc = dev_activation_activate_generation(gen_sha256, &req, ctx->ops,
@@ -494,9 +462,7 @@ static int t_golden_revert_roundtrip(void)
         uint8_t cB[32];
         ASSERT_EQ(vcs_snapshot(r, &metaB, cB), VCS_OK);
 
-        /* Capture the current worktree manifest (state B) and the log
-         * before reverting, so we can prove append-only + no sealed touch
-         * after the revert. */
+        /* Capture worktree manifest (state B) and log for the append-only and no-sealed-touch proofs. */
         struct vcs_manifest before_m;
         ASSERT(vcs_manifest_build(sb.src, vcs_repo_index(r), &before_m));
         struct log_ids before_log = {0};
@@ -504,8 +470,7 @@ static int t_golden_revert_roundtrip(void)
         ASSERT(log_ids_contains(&before_log, cA));
         ASSERT(log_ids_contains(&before_log, cB));
 
-        /* Revert to A with relink ops that activate the real generation by
-         * its SHA-256 against the same sandbox. */
+        /* Revert to A, relinking the real generation by SHA-256. */
         struct relink_ctx rctx = { &sb, &ops, {0}, 0, 0 };
         struct vcs_revert_relink_ops relink_ops = { relink_activate, &rctx };
         uint8_t cr[32];
@@ -589,17 +554,9 @@ static int t_golden_revert_roundtrip(void)
 }
 
 /* ── golden test 2: sealed-path revert guard ─────────────────────────
- * Wave 4.3 investigation finding: before this wave, vcs_revert() had NO
- * seal pre-check — it wrote the target manifest's content into the
- * worktree unconditionally, then relied on vcs_snapshot()'s own seal check
- * (which runs strictly AFTER that write) to refuse the commit. A refusal
- * there stopped the commit but NOT the already-completed worktree
- * mutation: an unauthorized revert could silently overwrite a sealed
- * file's on-disk bytes with content from the target commit, even though
- * the whole operation reported VCS_REFUSED. contexts/commons/modules/vcs/src/vcs.c now runs a
- * non-consuming vcs_seal_peek() against the TARGET manifest before doing
- * any worktree write, mirroring vcs_snapshot's guard but early enough to
- * refuse with the worktree completely untouched. */
+ * vcs_revert() runs a non-consuming vcs_seal_peek() on the TARGET manifest
+ * before any worktree write, so an unauthorized sealed revert refuses with the
+ * worktree untouched. */
 static int t_golden_revert_seal_guard(void)
 {
     int failures = 0;
@@ -614,9 +571,7 @@ static int t_golden_revert_seal_guard(void)
         struct vcs_repo *r = vcs_open(sb.src);
         ASSERT(r != NULL);
 
-        /* First snapshot ever: no pin yet, always accepted. Pins
-         * sealset(X). Capture that sealset now, while the worktree still
-         * has the X content, for the later token-authorized case. */
+        /* First snapshot: no pin yet, accepted; pins sealset(X). Capture it for the authorized case. */
         struct vcs_manifest seed_m;
         ASSERT(vcs_manifest_build(sb.src, vcs_repo_index(r), &seed_m));
         char **globs = NULL;
@@ -648,9 +603,7 @@ static int t_golden_revert_seal_guard(void)
         ASSERT_EQ(vcs_snapshot(r, &meta, c_y), VCS_OK);
         ASSERT(gw_file_matches(sb.src, "sealed/consensus.txt", "RULE=Y\n"));
 
-        /* Negative case: revert back to c_seed (sealset X) with NO token.
-         * Must refuse, and the sealed file must be COMPLETELY untouched
-         * (still Y) — the pre-check fired before any worktree write. */
+        /* Revert to c_seed (sealset X) with no token: refuses, sealed file untouched (still Y). */
         uint8_t cr_bad[32];
         int rc_bad = vcs_revert(r, c_seed, NULL, cr_bad);
         ASSERT_EQ(rc_bad, VCS_REFUSED);
@@ -664,11 +617,8 @@ static int t_golden_revert_seal_guard(void)
         ASSERT(have_head);
         ASSERT(memcmp(head, c_y, 32) == 0);
 
-        /* Positive case: grant the token authorizing exactly sealset_x (the
-         * revert target's sealset), then revert again. Must succeed exactly
-         * as an equivalent vcs_snapshot() would have — the pre-check does
-         * not consume the token twice or otherwise block a legitimately
-         * authorized sealed revert. */
+        /* Token authorizing exactly sealset_x, then revert: succeeds as vcs_snapshot would;
+         * the pre-check does not consume the token. */
         ASSERT(vcs_seal_grant_unseal(vcs_repo_index(r), sealset_x));
         uint8_t cr_ok[32];
         int rc_ok = vcs_revert(r, c_seed, NULL, cr_ok);

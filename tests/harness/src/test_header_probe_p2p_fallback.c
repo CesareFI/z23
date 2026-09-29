@@ -1,15 +1,14 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Detective lane A2 — the stale-header repair must work with the zclassicd
- * oracle DEAD, via a P2P getdata fallback, and must be honest when NO source
- * can serve.
+ * The stale-header repair works with the zclassicd oracle DEAD, via a P2P
+ * getdata fallback, and is honest when NO source can serve.
  *
  * Three hermetic cases:
  *   1. P2P repair path: oracle points at a dead port; the repair Condition
  *      falls back to a P2P getdata re-fetch (observable in the header_probe
- *      state dump), then — once the honest peer's block arrives and its
- *      solution is saved hash-bound (as reducer_cache_ingested_solution does on
- *      ingest) — the repair completes and is ATTRIBUTED to the P2P source.
+ *      state dump); once the honest peer's block arrives and its solution is
+ *      saved hash-bound (as reducer_cache_ingested_solution does), the
+ *      repair completes and is attributed to the P2P source.
  *   2. Missing input: oracle dead AND zero connected peers → a typed blocker
  *      names the missing input, the Condition stays active (cooldown re-arm, no
  *      operator-page latch), and it recovers cleanly when a source returns.
@@ -65,7 +64,7 @@ void reducer_frontier_test_set_compiled_anchor(int32_t height);
 
 #define HPF_NO_SOURCE_BLOCKER_ID "header_repair_no_source"
 
-/* ── progress-store fixture helpers (mirrors
+/* ── progress-store fixture helpers (mirror
  *    test_stale_validate_headers_repair_condition.c) ───────────────────── */
 
 static bool exec_sql(sqlite3 *db, const char *sql)
@@ -240,12 +239,10 @@ static bool set_hash_col(sqlite3 *db, const char *table, const char *col,
     return ok;
 }
 
-/* Build a deterministic solutionless-mode repair header for `height`. Its hash
- * is wired into the on-chain block_index entry so the hash-bound availability
- * check (stage_repair_header_solution_available with canon) accepts it. The
- * 32-byte solution stands in for the real Equihash witness — validate_headers
- * (not this table) re-runs PoW in production; this test exercises the repair
- * plumbing + source attribution, matching the sibling condition tests. */
+/* Build a deterministic solutionless-mode repair header for `height`, wired
+ * into the on-chain block_index entry so the hash-bound availability check
+ * accepts it. The 32-byte solution stands in for the Equihash witness;
+ * validate_headers re-runs PoW in production. */
 static void build_repair_header(int height, struct block_header *out)
 {
     block_header_init(out);
@@ -265,9 +262,8 @@ static void build_repair_header(int height, struct block_header *out)
         out->nSolution[i] = (uint8_t)(height + (int)i);
 }
 
-/* main_state with genesis + one block at `height` whose hash == hash(repair
- * header at `height`), so canon-bound availability works. HAVE_DATA set so the
- * P2P re-fetch has an indexed height to clear. */
+/* main_state with genesis + one block at `height` whose hash matches the
+ * repair header, HAVE_DATA set so the P2P re-fetch has an indexed height. */
 static void setup_main_state_wired(struct main_state *ms,
                                    struct block_index blocks[2],
                                    struct uint256 hashes[2],
@@ -479,16 +475,15 @@ static int run_p2p_repair_case(void)
     HPF_CHECK("P2P-delivered canonical solution re-validates + repair is "
               "attributed to the P2P source", ok);
 
-    /* The reducer folds the re-fetched block all the way through (a fully
-     * consistent success column at the frontier) → detect goes false and the
-     * Condition deactivates. Proves the repair is not a latch. */
+    /* The reducer folds the re-fetched block through (consistent success
+     * column at the frontier), detect goes false and the Condition
+     * deactivates: the repair is not a latch. */
     ok = ok && seed_reducer_success(db, 1);
     ok = ok && exec_sql(db,
         "UPDATE body_fetch_log SET ok=1, source='p2p', fail_reason=NULL "
         "WHERE height=1");
-    /* Match the folded stage hashes to the canonical on-chain header so no
-     * hash-mismatch poison remains, and model H* advancing to the repaired
-     * height (the sole witness success predicate). */
+    /* Match the folded stage hashes to the canonical header and model H*
+     * advancing to the repaired height (the sole success predicate). */
     ok = ok && set_hash_col(db, "validate_headers_log", "hash", 1, &rhash);
     ok = ok && set_hash_col(db, "script_validate_log", "block_hash", 1, &rhash);
     stale_validate_headers_repair_test_set_hstar_override(1);
@@ -605,10 +600,9 @@ static int run_invalid_header_scoring_case(void)
                   score == 0 && !node.disconnect);
     }
 
-    /* Negative: corrupt the Equihash solution so the header fails PoW. The
-     * detective rejects it (validate_headers never adopts it) and scores the
-     * peer PEER_OFFENCE_INVALID_HEADER (weight 50). Child of genesis so the
-     * parent is known and check_block_header's PoW gate runs. */
+    /* Corrupt the Equihash solution so the header fails PoW: it is rejected
+     * and the peer scored PEER_OFFENCE_INVALID_HEADER (weight 50). Child of
+     * genesis so the parent is known and the PoW gate runs. */
     struct block_header forged;
     bool forged_ok = gen && hpf_mine_header(&forged, 1, &gh, cp);
     if (forged_ok && forged.nSolutionSize > 0)
@@ -621,8 +615,8 @@ static int run_invalid_header_scoring_case(void)
         HPF_CHECK("peer serving an invalid-PoW header is scored "
                   "PEER_OFFENCE_INVALID_HEADER (weight 50)",
                   score == peer_offence_weight(PEER_OFFENCE_INVALID_HEADER));
-        /* 50 < 100 ban threshold: scored but not yet banned — the repair keeps
-         * waiting rather than adopting the forged page. */
+        /* 50 < 100 ban threshold: scored, not banned; the repair keeps
+         * waiting. */
         HPF_CHECK("scored below ban threshold — forged page not adopted, "
                   "repair keeps waiting",
                   !node.disconnect);

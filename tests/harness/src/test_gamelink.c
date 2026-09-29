@@ -3,20 +3,13 @@
  * gamelink: two real UDP sessions on loopback, an injected clock, and every
  * way a datagram does not become a delivery.
  *
- * Nothing here is simulated except time. Both endpoints bind real sockets on
- * 127.0.0.1 with ephemeral ports read back from the kernel, and the bytes go
- * through the kernel's UDP path, because a transport proven against a fake
- * socket is a transport nobody has proven.
+ * Only time is simulated: both endpoints bind real sockets on 127.0.0.1 with
+ * kernel-assigned ports. The clock is injected so the round-trip assertion is
+ * an exact microsecond count.
  *
- * Time IS injected, deliberately: the round-trip assertion is an exact
- * microsecond count, not a tolerance. A test that asserts "under 50 ms"
- * passes on a machine where the code is ten times too slow and fails on a
- * loaded machine where it is correct.
- *
- * The reorder, replay, tamper and loss cases run through a plain UDP relay
- * the test owns: it receives what the sender emitted and chooses what to hand
- * on, in what order, and with which byte flipped. That is the only way to
- * prove the receive path against traffic the sender would never produce.
+ * Reorder, replay, tamper and loss cases run through a UDP relay the test
+ * owns, which chooses what to hand on, in what order, and with which byte
+ * flipped.
  */
 
 #include "test/test_core.h"
@@ -338,9 +331,8 @@ static int gl_case_reorder_and_replay(void)
             ASSERT_EQ(gl_send_fill(&a, i, 8u), (int)GAMELINK_OK);
         ASSERT_EQ(gl_relay_capture(5), (size_t)5);
         gl_sink_reset();
-        /* 0, 1, 2 in order, then 4 — which leaves 3 late but inside the
-         * reorder window, and a late datagram the window still has room for
-         * is DELIVERED, not dropped. */
+        /* 0, 1, 2 in order, then 4; 3 is late but inside the reorder window
+         * and is DELIVERED. */
         size_t order[] = {0, 1, 2, 4, 3};
         for (size_t i = 0; i < 5; i++) {
             ASSERT(gl_relay_forward(order[i], b.local_port, SIZE_MAX));
@@ -352,8 +344,7 @@ static int gl_case_reorder_and_replay(void)
         struct gamelink_stats stats;
         gamelink_stats(&b, &stats);
         ASSERT_EQ(stats.dropped_old, (uint64_t)0);
-        /* The same bytes again: every one is a duplicate the window already
-         * holds, and none of them is delivered a second time. */
+        /* Duplicates the window holds are never delivered twice. */
         for (size_t i = 0; i < 5; i++) {
             ASSERT(gl_relay_forward(i, b.local_port, SIZE_MAX));
             ASSERT(gl_receive(&b, 1));
@@ -362,10 +353,7 @@ static int gl_case_reorder_and_replay(void)
         gamelink_stats(&b, &stats);
         ASSERT_EQ(stats.dropped_old, (uint64_t)5);
         ASSERT_EQ(stats.recv, (uint64_t)5);
-        /* Push the window far ahead, then replay a datagram from before it.
-         * That one is not a duplicate the window remembers — it is older
-         * than the window reaches, the same refusal for a different reason,
-         * and it must never become a delivery either. */
+        /* Replay of a datagram older than the window is refused, never delivered. */
         a.send_seq = 5000;
         ASSERT_EQ(gl_send_fill(&a, 0x5A, 8u), (int)GAMELINK_OK);
         ASSERT_EQ(gl_relay_capture(1), (size_t)1);
@@ -412,9 +400,7 @@ static int gl_case_tamper(void)
         ASSERT(gl_receive(&b, 1));
         gamelink_stats(&b, &stats);
         ASSERT_EQ(stats.dropped_malformed, (uint64_t)1);
-        /* The untouched original still arrives: the session took three bad
-         * datagrams and stayed up, because on an open UDP port a bad
-         * datagram is weather, not an incident. */
+        /* The untouched original still arrives; the session stays up. */
         ASSERT(gl_relay_forward(0, b.local_port, SIZE_MAX));
         ASSERT(gl_receive(&b, 1));
         ASSERT_EQ(g_sink.count, (size_t)1);
@@ -437,8 +423,7 @@ static int gl_case_nonce_wrap(void)
         ASSERT_EQ(gl_send_fill(&a, 0, 8u), (int)GAMELINK_OK);
         ASSERT_EQ(a.send_seq, UINT64_MAX);
         ASSERT_EQ(gl_send_fill(&a, 0, 8u), (int)GAMELINK_NONCE_EXHAUSTED);
-        /* It stays refused. A session at the end of its nonce space does not
-         * recover; it is replaced. */
+        /* Stays refused; a session at the end of its nonce space is replaced. */
         ASSERT_EQ(gl_send_fill(&a, 0, 8u), (int)GAMELINK_NONCE_EXHAUSTED);
         ASSERT_EQ(a.send_seq, UINT64_MAX);
         ASSERT_STR_EQ(gamelink_status_label(GAMELINK_NONCE_EXHAUSTED),
@@ -550,8 +535,7 @@ static int gl_case_wrong_key(void)
         ASSERT_EQ(g_sink.count, (size_t)0);
         ASSERT_EQ(stats.recv, (uint64_t)0);
         /* Different material derives a different session id, so these never
-         * reach the cipher — and the peer this endpoint would answer was
-         * never learned from a datagram that did not authenticate. */
+         * reach the cipher. */
         ASSERT_EQ(stats.dropped_malformed, (uint64_t)8);
         ASSERT_EQ((int)b.peer_port, 0);
     } TEST_END;
@@ -570,8 +554,7 @@ static int gl_case_caps(void)
         ASSERT(gl_open_pair(&a, &b, 0));
         ASSERT_EQ(gamelink_send(&a, payload, GAMELINK_MAX_PAYLOAD + 1u, NULL),
                   GAMELINK_TOO_LARGE);
-        /* The sequence number was not spent by the refusal: a refused send
-         * is not a send, and a gap here would read as loss at the far end. */
+        /* A refused send does not spend a sequence number. */
         ASSERT_EQ(a.send_seq, (uint64_t)0);
         ASSERT_EQ(gamelink_send(&a, payload, GAMELINK_MAX_PAYLOAD, NULL),
                   GAMELINK_OK);

@@ -2,16 +2,10 @@
  * Purpose: proves file_copy() produces a private, byte-identical, bounded
  * copy and refuses a directory destination.
  *
- * Rehomed from tools/tests/test_file_ops_copy.c, which only ran when a human
- * invoked tools/scripts/winacceptance.sh. That program also carried an
- * `#ifdef _WIN32` arm (dir_copy() refuses without creating the tree;
- * block_files_clean() spares blk*.dat). Those assertions could not follow the
- * POSIX ones here -- they are unreachable in a native suite build, and they
- * only held because the standalone stubbed zcl_tree_remove() to a no-op, a
- * stub the suite's real file-tree walker replaces. They live on as the
- * `file_ops_copy` entry in platform/modules/platform/tests/windows_acceptance.mk, which
- * cross-links them for Windows with that same stub. The POSIX assertions
- * below are the original verbatim. */
+ * The `_WIN32` arm (dir_copy() refuses without creating the tree;
+ * block_files_clean() spares blk*.dat) lives on as the `file_ops_copy` entry
+ * in platform/modules/platform/tests/windows_acceptance.mk, which
+ * cross-links it for Windows with a no-op zcl_tree_remove() stub. */
 #include "test/test_core.h"
 
 #include "config/file_ops.h"

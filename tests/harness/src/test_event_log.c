@@ -3,22 +3,12 @@
  * Unit tests for the append-only event log primitive
  * (engine/modules/storage/src/event_log.c).
  *
- * Coverage matrix (per the Phase 4a assignment):
- *   Task 2 — append + read round-trip (1000 events)
- *   Task 3 — stream callback visits every event in order
- *   Task 4 — fingerprint determinism + sensitivity to single byte change
- *   Task 5 — targeted recovery plus opt-in kill-9 fuzz harness:
- *               fork a child that loops appending; SIGKILL after K events;
- *               reopen + verify clean tail with K complete events. K = 1..N.
- *   Task 6 — throughput benchmark (opt-in via ZCL_EVENT_LOG_BENCH=1)
- *   Misc   — empty payload, large payload, corrupt tail detection
- *
- * Default CI uses small append counts so this group cannot monopolize the
- * parallel test budget on a slow journal. Set ZCL_EVENT_LOG_EXHAUSTIVE=1 for
- * the larger historical matrices.
- *
- * The test creates tmpdirs under ./test-tmp/event_log_<pid>_<tag>/ to
- * comply with the project's "no /tmp" convention. */
+ * Coverage: append/read round-trip, in-order streaming, fingerprint
+ * determinism and sensitivity, targeted recovery plus an opt-in kill-9 fuzz
+ * harness, opt-in throughput benchmark (ZCL_EVENT_LOG_BENCH=1), empty and
+ * large payloads, corrupt tail detection. Default CI uses small counts;
+ * ZCL_EVENT_LOG_EXHAUSTIVE=1 runs the larger matrices.
+ * Tmpdirs live under ./test-tmp/event_log_<pid>_<tag>/. */
 
 #include "test/test_core.h"
 
@@ -42,9 +32,7 @@
 #include <unistd.h>
 #if !defined(_WIN32)
 
-/* Sleep for `us` microseconds. nanosleep is POSIX.1-2001 and works
- * under -D_POSIX_C_SOURCE=200809L; usleep is BSD-flavoured and would
- * need extra feature-test macros. */
+/* Sleep for `us` microseconds via nanosleep (POSIX.1-2001). */
 static void sleep_us(uint64_t us)
 {
     struct timespec ts;
@@ -316,11 +304,9 @@ done:
 
 /* ── Task 5: kill-9 fuzz harness (LOAD-BEARING) ────────────────────── */
 
-/* The child appends events forever (until killed). The payload at index
- * i is the 4-byte little-endian integer i followed by a fixed pattern.
- * After the kill, the parent reopens (which triggers recovery + tail
- * truncation) and asserts the stream is well-formed: every event has a
- * valid CRC + sentinel, and any partial tail was truncated. */
+/* The child appends until killed; payload i is the 4-byte LE integer i plus
+ * a fixed pattern. After the kill the parent reopens (recovery + tail
+ * truncation) and asserts every event has a valid CRC + sentinel. */
 
 #define FUZZ_PAYLOAD_LEN  64
 
@@ -347,12 +333,10 @@ static void child_appender(const char *path)
     }
 }
 
-/* Deferred-mode variant: appends with per-append fsync SKIPPED (the reducer
- * fold cadence), flushing (one fdatasync) every FLUSH_EVERY events — the
- * stage drain-batch boundary. A SIGKILL mid-batch loses un-fdatasync'd whole
- * events; on reopen the tail scan must still recover a consistent prefix (no
- * torn event ever exposed). Same payload scheme as child_appender so
- * fuzz_count_cb validates it. */
+/* Deferred-mode variant: per-append fsync skipped, one fdatasync every
+ * FLUSH_EVERY events. A SIGKILL mid-batch loses un-synced whole events; the
+ * tail scan must recover a consistent prefix. Same payload scheme as
+ * child_appender. */
 #define DEFERRED_FLUSH_EVERY 8
 static void child_appender_deferred(const char *path)
 {
@@ -414,9 +398,7 @@ static bool fuzz_count_cb(uint64_t offset, enum event_log_type type,
     return true;
 }
 
-/* One trial of the kill-9 harness. Returns true on success.
- * The parent waits `delay_us` microseconds (so K = ~rate * delay_us
- * complete events land before SIGKILL). */
+/* One kill-9 trial. The parent waits `delay_us` before SIGKILL. */
 static bool run_one_kill9_trial(const char *path, uint64_t delay_us,
                                 bool deferred)
 {
@@ -448,9 +430,8 @@ static bool run_one_kill9_trial(const char *path, uint64_t delay_us,
         event_log_close(log);
         return false;
     }
-    /* Reopen a second time and ensure no further truncation is needed
-     * (idempotent recovery): file size must equal the well-formed prefix.
-     * We confirm by computing fingerprint twice over the same handle. */
+    /* Reopen again: recovery is idempotent (size equals the well-formed
+     * prefix), checked via the fingerprint computed twice. */
     uint8_t fp1[32], fp2[32];
     if (event_log_fingerprint(log, fp1) != 0) {
         event_log_close(log);
@@ -499,10 +480,8 @@ static int run_kill9_fuzz(int *failures)
     const int trials_per_delay = 3;
     bool all_ok = true;
     int total = 0, good = 0;
-    /* Both durability modes: per-append fsync (mode 0) and the deferred
-     * batch-flush cadence the reducer fold uses (mode 1). Deferred mode must
-     * recover to a consistent prefix identically — the tail scan is a pure
-     * file walk that does not depend on the fsync cadence. */
+    /* Both durability modes (per-append fsync, deferred batch-flush) recover
+     * to a consistent prefix identically. */
     for (int mode = 0; mode < 2; mode++) {
         bool deferred = (mode == 1);
         for (size_t i = 0; i < sizeof(delays) / sizeof(delays[0]); i++) {
@@ -521,9 +500,8 @@ static int run_kill9_fuzz(int *failures)
     return *failures - start_failures;
 }
 
-/* Additional targeted recovery test: deterministically corrupt the tail
- * (truncate the file mid-sentinel, mid-payload, mid-header) and verify
- * open() recovers correctly. */
+/* Targeted recovery: corrupt the tail (mid-sentinel, mid-payload,
+ * mid-header) and verify open() recovers. */
 static int run_targeted_recovery(int *failures)
 {
     int start_failures = *failures;
@@ -602,15 +580,9 @@ done:
 
 /* ── Task 6: benchmark ─────────────────────────────────────────────── */
 
-/* Measures append throughput on the live disk and prints events/sec.
- *
- * The 50K/sec target from the spec is reported but NOT asserted: the
- * suite runs ~32 groups in parallel, so the fsync contention drives
- * each individual process's effective rate well below what the disk
- * can do solo. To get the real number, run in isolation with
- * ZCL_EVENT_LOG_BENCH=1. The benchmark intentionally stays out of the
- * default suite because event_log_append() can wait on the host filesystem's
- * journal path, and a benchmark must not consume the correctness-test budget. */
+/* Measures append throughput and prints events/sec. The 50K/sec target is
+ * reported, not asserted: parallel groups contend on fsync. Opt-in via
+ * ZCL_EVENT_LOG_BENCH=1, run in isolation for the real number. */
 static int run_benchmark(int *failures)
 {
     int start_failures = *failures;
@@ -641,11 +613,8 @@ static int run_benchmark(int *failures)
     for (int i = 0; i < warmup_count; i++)
         event_log_append(log, EV_BLOCK_HEADER, pay, sizeof(pay));
 
-    /* The full 50K sample measures an idle disk and can legitimately take
-     * longer than the correctness runner's fixed 300-second group budget on
-     * fsync-heavy storage.  Push authority uses a 128-event sample: enough to
-     * assert the same >10 event/s catastrophic-regression floor, bounded
-     * enough to remain a fast proof. */
+    /* A 128-event sample asserts the same >10 event/s catastrophic-regression
+     * floor within the fixed 300 s group budget. */
     int N = push_proof ? 128 : 50000;
 
     double t0 = mono_sec();
@@ -662,22 +631,14 @@ static int run_benchmark(int *failures)
     else
         printf("event_log: benchmark — below 50K/sec target "
                "(run ZCL_EVENT_LOG_BENCH=1 on an idle lane for the real number)\n");
-    /* Sanity: the implementation isn't catastrophically broken
-     * (sub-events/sec would indicate a hang or O(N) regression per
-     * append). Threshold is intentionally permissive so concurrent
-     * fsync load can't fail the suite. */
+    /* Sanity floor, permissive so concurrent fsync load cannot fail it. */
     EL_CHECK("bench: rate > 10 events/sec (sanity)", rate > 10.0);
     event_log_close(log);
 
-    /* S1.1 A/B: measure the per-append-fsync cadence (mode A, the old fold
-     * behavior) vs the deferred batch-flush cadence (mode B, this change) on
-     * fresh logs. flush_every mirrors the reducer drain-batch size. Isolates
-     * exactly the fsync barrier the fold pays per event. */
+    /* A/B on fresh logs: per-append fsync (mode A) vs deferred batch-flush
+     * (mode B); flush_every mirrors the reducer drain-batch size. */
     {
-        /* Small N: the per-append-fsync leg pays a real disk barrier per
-         * event, so on a busy disk even a few thousand take a while. This is
-         * the in-tree smoke of the speedup; the standalone bench uses larger N
-         * for a precise ratio. */
+        /* Small N: the per-append-fsync leg pays a disk barrier per event. */
         const int Nab = push_proof ? 64 : 4000;
         const int flush_every = 64;
         for (int mode = 0; mode < 2; mode++) {
@@ -891,14 +852,8 @@ static int run_crc32c_dispatch(int *failures)
 }
 
 /* ── Append-path attribution: barrier vs deferred ──────────────────────
- * The fold's dominant measured cost is the two fsync() barriers per
- * event_log_append, and the per-call-site timers (reducer_stage_profile's
- * header_event_emission_us) cannot tell a barrier-paying append from a
- * buffer copy. event_log_append_stats() is that split. This proves the three
- * counters attribute each append to the right path and that barrier time is
- * only ever charged to the barrier path — the property that makes
- * `dumpstate reducer_drive` -> event_log_barrier_appends a usable
- * before/after for any change that batches barriers away. */
+ * event_log_append_stats() splits appends by path; barrier time is charged
+ * only to the barrier path. */
 static int run_append_path_attribution(int *failures_out)
 {
     int failures = 0;
@@ -936,10 +891,8 @@ static int run_append_path_attribution(int *failures_out)
     EL_CHECK("attrib: per-append appends are not counted as deferred",
              deferred == 0);
 
-    /* Deferred mode: appends only copy into the pending buffer, so the
-     * barrier counters must not move at all — that non-movement is what makes
-     * a drop in event_log_barrier_appends readable as "barriers were batched
-     * away" rather than "the fold did less work". */
+    /* Deferred mode only copies into the pending buffer, so the barrier
+     * counters must not move. */
     uint64_t barrier_at_switch = barrier;
     uint64_t barrier_us_at_switch = barrier_us;
     event_log_set_deferred_sync(log, true);
@@ -956,9 +909,8 @@ static int run_append_path_attribution(int *failures_out)
     EL_CHECK("attrib: deferred appends add no barrier time",
              barrier_us == barrier_us_at_switch);
 
-    /* event_log_flush() is the batched fdatasync, a different barrier with its
-     * own timer in reducer_body_fsync — it must not be charged here, or the
-     * per-barrier price derived from these counters would be wrong. */
+    /* event_log_flush() is a different barrier with its own timer and must
+     * not be charged here. */
     EL_CHECK("attrib: flush succeeds", event_log_flush(log));
     event_log_append_stats(&barrier, &deferred, &barrier_us);
     EL_CHECK("attrib: batched flush is not charged to the append counters",
@@ -999,18 +951,13 @@ done:
     return failures;
 }
 
-/* ── Deferred durability mode (S1.1): batched fdatasync ────────────────
- * Covers: no per-append fsync in deferred mode (dirty flag set instead);
- * flush syncs once + clears dirty; all events durable after flush + reopen;
- * at-tip (deferred off) unchanged; the ZCL_EVENTLOG_SYNC_PER_APPEND kill
- * switch forces per-append sync even in deferred mode; and flush-failure
- * propagation (a false return that the reducer pre-commit hook turns into a
- * commit veto). */
+/* ── Deferred durability mode: batched fdatasync ───────────────────────
+ * No per-append fsync in deferred mode; flush syncs once and clears dirty;
+ * events are durable after flush + reopen; ZCL_EVENTLOG_SYNC_PER_APPEND
+ * forces per-append sync; a flush failure returns false (commit veto). */
 static int run_deferred_sync(int *failures_out)
 {
-    /* Local counter — EL_CHECK increments `failures`; propagate at the end so
-     * a real regression here fails the suite (the *failures pointer idiom the
-     * sibling helpers use does not count EL_CHECK misses). */
+    /* Local counter: EL_CHECK increments `failures`. */
     int failures = 0;
     char dir[256];
     test_fmt_tmpdir(dir, sizeof(dir), "event_log", "defer");
@@ -1064,15 +1011,13 @@ static int run_deferred_sync(int *failures_out)
     if (!log) goto done;
     EL_CHECK("defer: no tail truncation after flush",
              event_log_size(log) == size_before);
-    /* A reopened handle starts in per-append mode (deferred flag is not
-     * persisted) — verify that, then re-enable deferred mode for the switch /
-     * fault-injection checks below. */
+    /* A reopened handle starts in per-append mode (the flag is not
+     * persisted); re-enable deferred mode for the checks below. */
     EL_CHECK("defer: reopened handle defaults to per-append",
              !event_log_deferred_sync_enabled(log));
 
-    /* Boot-order regression: an outer scope may begin before projections wire
-     * the singleton. A nested reducer kick must arm the late handle instead of
-     * assuming the outermost entry already did so. */
+    /* A nested reducer kick arms a late-wired handle rather than assuming
+     * the outermost entry did. */
     event_log_set_singleton(NULL);
     reducer_enter_batched_body_sync();
     event_log_set_singleton(log);
@@ -1110,9 +1055,8 @@ static int run_deferred_sync(int *failures_out)
              !event_log_test_dirty(log));
     event_log_test_set_force_per_append(0);
 
-    /* Flush-failure propagation: fault-inject a bad fd so fdatasync fails;
-     * flush must return false and KEEP dirty (the pre-commit veto contract).
-     * Deferred mode is on and the switch is off, so this append defers. */
+    /* Flush failure: a bad fd makes fdatasync fail; flush returns false and
+     * KEEPS dirty (the pre-commit veto contract). */
     memset(buf, 0x33, sizeof(buf));
     event_log_append(log, EV_BLOCK_HEADER, buf, sizeof(buf));
     EL_CHECK("defer: append pending before fault", event_log_test_dirty(log));

@@ -3,12 +3,9 @@
  *
  * Unit tests for domain/consensus/pow.{c,h}.
  *
- * These tests pin the pure PoW difficulty arithmetic. They DO NOT go
- * through the chain/ wrapper for the contract checks: they exercise
- * the typed zcl_result API directly. For the regression seal, we
- * deliberately cross-check the wrapper (core/modules/chain/src/pow.c) against
- * the new domain function across a representative set of inputs so
- * any drift in either side is caught immediately.
+ * Pins the pure PoW difficulty arithmetic through the typed zcl_result API.
+ * The regression seal cross-checks the wrapper (core/modules/chain/src/pow.c)
+ * against the domain function across representative inputs.
  */
 
 #include "test/test_core.h"

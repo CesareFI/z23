@@ -1,20 +1,12 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * Fleet ROLE ENFORCEMENT: the two places another machine's signed bytes
- * enter this node, and what each does when the signing key holds no role.
+ * enter this node (zcl_fleet_ledger_replicate, db_fleet_board_post_ingest),
+ * and what each does when the signing key holds no role.
  *
- * The neighbouring fleet_roles group proves the catalog and the signed
- * store in isolation. This group proves the WIRING: that
- * zcl_fleet_ledger_replicate() and db_fleet_board_post_ingest() actually
- * ask, that a grant and a revoke are felt on the very next batch and the
- * very next post, and — the one that matters most — that a process with
- * NOTHING installed to answer refuses rather than permits. A gate that is
- * only closed when somebody remembered to close it is not a gate.
- *
- * No clock here is ever read from the wall. Every post carries a
- * created_at the test chose, every ledger row is written against the
- * store's own sequence, and the one delegation this group files is signed
- * for a fixed window that brackets any hour a box could think it is.
+ * Proves the wiring: grants and revokes take effect on the next batch/post,
+ * and a process with no checker installed refuses rather than permits.
+ * No wall clock: posts carry chosen created_at values.
  */
 
 #include "test/test_core.h"
@@ -35,11 +27,8 @@
 #include <stdio.h>
 #include <string.h>
 
-/* A fixed delegation window, not one derived from a clock. It is the
- * longest a delegation may claim (ZENDP_MAX_WINDOW_SECONDS) starting at
- * second one, and it is deliberately in the past: filing an operator
- * identity is a key question, not a freshness question, and the bootstrap
- * this group grades reads the key and never the hour. */
+/* Fixed delegation window: the longest a delegation may claim
+ * (ZENDP_MAX_WINDOW_SECONDS) from second one; bootstrap reads the key, not the hour. */
 #define RE_NOT_BEFORE UINT64_C(1)
 #define RE_EXPIRY     UINT64_C(2592001)
 #define RE_POST_NOW   INT64_C(100000)

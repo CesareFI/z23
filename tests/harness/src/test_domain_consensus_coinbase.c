@@ -3,12 +3,10 @@
  *
  * Unit tests for domain/consensus/coinbase.{c,h}.
  *
- * These tests pin the pure coinbase-transaction-shaping primitives.
- * They are independent of the mempool/chain orchestration that lives
- * in core/modules/mining/src/miner.c::create_new_block. The regression seal
- * directly compares the shape produced by the domain function with the
- * byte-identical legacy construction copied into this file as a
- * reference implementation — if either side drifts the test shouts.
+ * Pins the pure coinbase-transaction-shaping primitives, independent of the
+ * mempool/chain orchestration in core/modules/mining/src/miner.c. The
+ * regression seal compares the domain function's shape with the legacy
+ * construction copied here as a reference.
  */
 
 #include "test/test_core.h"
@@ -33,15 +31,11 @@
 } while (0)
 
 /* --- zclassicd reference: the exact bytes `CScript() << nHeight << …`
- * produces — CScript::push_int64 for the height (OP_N for 1..16, else a
- * minimal CScriptNum data push) and a CScriptNum data push for the extra
- * nonce. This is the consensus encoding zclassicd's CreateNewBlock writes
- * (src/miner.cpp) and its ContextualCheckBlock BIP34 check verifies
- * (`CScript expect = CScript() << nHeight`, src/main.cpp). The seal pins
- * our builder to byte parity with it. A SECOND, implementation-independent
- * seal below asserts hand-computed golden bytes for the boundary heights,
- * so a shared conceptual error in both this reference and the builder is
- * still caught. ------------------------------------------------------- */
+ * produces (CScript::push_int64 for the height: OP_N for 1..16, else a
+ * minimal CScriptNum data push; a CScriptNum data push for the extra nonce),
+ * as written by CreateNewBlock (src/miner.cpp) and checked by BIP34 in
+ * ContextualCheckBlock (src/main.cpp). A second, golden-bytes seal below
+ * catches a conceptual error shared by this reference and the builder. --- */
 static size_t zcd_scriptnum_vch(uint32_t value, uint8_t buf[5])
 {
     size_t n = 0;
@@ -275,9 +269,8 @@ int test_domain_consensus_coinbase(void)
     }
 
     /* --- implementation-independent golden seal: hand-computed bytes for
-     * `CScript() << nHeight << OP_0`, the exact placeholder scriptSig.
-     * Catches a shared conceptual error in both the builder and the
-     * reference above. Each row is {height, {expected bytes...}, size}. */
+     * `CScript() << nHeight << OP_0`, the placeholder scriptSig. Each row is
+     * {height, {expected bytes...}, size}. */
     {
         struct { int h; uint8_t want[8]; uint8_t len; } golden[] = {
             { 1,          { 0x51, 0x00 },                         2 }, /* OP_1 */
@@ -306,9 +299,8 @@ int test_domain_consensus_coinbase(void)
                   all_ok);
     }
 
-    /* extra-nonce 0 is a CScriptNum(0) data push = a single length-0 byte
-     * (0x00), NOT a 4-byte field: `CScript() << 1 << CScriptNum(0)` =
-     * [OP_1, 0x00]. */
+    /* extra-nonce 0 is a CScriptNum(0) data push, a single 0x00 byte, not a
+     * 4-byte field: `CScript() << 1 << CScriptNum(0)` = [OP_1, 0x00]. */
     {
         struct script s; script_init(&s);
         struct zcl_result r =
@@ -317,10 +309,9 @@ int test_domain_consensus_coinbase(void)
                   r.ok && s.size == 2 && s.data[0] == 0x51 && s.data[1] == 0x00);
     }
 
-    /* --- coinbase_build full-tx regression seal across epochs. We
-     * exercise heights spanning the pre-Overwinter / Overwinter /
-     * Sapling / pre- and post-Buttercup subsidy boundary so the version
-     * selection logic and the value computation are both pinned. ----- */
+    /* --- coinbase_build full-tx regression seal across epochs: heights
+     * spanning pre-Overwinter / Overwinter / Sapling / pre- and
+     * post-Buttercup pin version selection and the value computation. --- */
     {
         struct script miner; script_init(&miner);
         unsigned char p2pkh[20] = {0};
@@ -370,9 +361,8 @@ int test_domain_consensus_coinbase(void)
                    && tx.expiry_height == 0;
 
             /* coinbase scriptSig == zclassicd's `CScript() << nHeight << OP_0`
-             * — the minimal BIP34 height push, height-derived (NOT a fixed
-             * 3-byte shape). Reuses the same reference the placeholder seal
-             * above pins, so this seal tracks parity across all heights. */
+             * (minimal BIP34 height push, height-derived), using the same
+             * reference as the placeholder seal. */
             struct script exp_ss; script_init(&exp_ss);
             zcd_script_sig_placeholder(h, &exp_ss);
             ok = ok

@@ -3,24 +3,21 @@
  *
  * Unit tests for domain/consensus/script_interp.{c,h}.
  *
- * Pins the pure ZClassic script VM. Tests exercise the domain
- * entry points directly AND cross-check that the lib wrapper
- * (eval_script / verify_script) returns BYTE-EXACT identical
- * results — same bool, same ScriptError code, same residual
- * stack shape — across every representative script:
+ * Pins the pure ZClassic script VM. Tests exercise the domain entry points
+ * and cross-check that the lib wrapper (eval_script / verify_script) returns
+ * byte-exact identical results (bool, ScriptError code, residual stack)
+ * across representative scripts:
  *
  *   - structural   : OP_TRUE, OP_ADD, OP_EQUAL
  *   - dispatch     : OP_IF/OP_ELSE/OP_ENDIF
  *   - failure modes: empty stack, OP_RETURN, OP_VERIFY-false, bad opcode
- *   - signatures   : OP_CHECKSIG success via synthetic checker
- *   - signatures   : OP_CHECKSIG failure (NULL checker => false)
- *   - multisig     : 2-of-3 OP_CHECKMULTISIG using synthetic checker
- *   - P2SH         : push redeem + P2SH wrapper, redeem evaluates to true
- *   - encoding     : OP_RETURN at top level rejects
- *   - locktime     : OP_CHECKLOCKTIMEVERIFY consults checker callback
+ *   - signatures   : OP_CHECKSIG success (synthetic checker) and failure
+ *                    (NULL checker => false)
+ *   - multisig     : 2-of-3 OP_CHECKMULTISIG (synthetic checker)
+ *   - P2SH         : push redeem + wrapper, redeem evaluates to true
+ *   - locktime     : OP_CHECKLOCKTIMEVERIFY consults the checker callback
  *
- * The cross-checks are the regression seal: any divergence between
- * domain and lib paths fails the test. */
+ * Any divergence between domain and lib paths fails the test. */
 
 #include "test/test_core.h"
 #include "core/hash.h"
@@ -83,9 +80,8 @@ static void fc_init(struct fake_checker *fc, unsigned char accept_byte,
     fc->lock_ok     = lock_ok;
 }
 
-/* Run the same input through both paths and verify byte-exact result.
- * Prints the actual results when the assertion fails so the regression
- * seal is debuggable. */
+/* Run the same input through both paths, verify byte-exact results, and
+ * print the actual results on failure. */
 static bool seal_eval(const struct script *s, unsigned int flags,
                       const struct sig_checker *checker,
                       uint32_t branch_id,
@@ -239,10 +235,8 @@ int test_domain_consensus_script_interp(void)
     }
 
     /* ---- 7. OP_CHECKSIG: bogus (non-DER) sig -> SCRIPT_ERR_SIG_DER ----
-     * The signature encoding gate (check_raw_signature_encoding) is
-     * mandatory in ZClassic; both paths must reject a non-DER sig with
-     * the exact same error code BEFORE reaching the checker. This is
-     * the canonical "signature-failure script" we want byte-exact. */
+     * The mandatory encoding gate (check_raw_signature_encoding) rejects a
+     * non-DER sig with the same code in both paths, before the checker. */
     {
         unsigned char sig[1] = {0x01};
         unsigned char pk[33];
@@ -257,9 +251,7 @@ int test_domain_consensus_script_interp(void)
     }
 
     /* ---- 8. OP_CHECKSIG with empty sig + NULL checker -> push false ----
-     * Empty sig is the explicit "no signature provided" case; encoding
-     * gate passes through (siglen==0), checker is NULL so push false,
-     * and the script structurally completes. */
+     * The encoding gate passes (siglen==0) and the script completes. */
     {
         struct script s; script_init(&s);
         script_push_op(&s, OP_0);                /* empty sig */
@@ -273,10 +265,8 @@ int test_domain_consensus_script_interp(void)
     }
 
     /* ---- 9. OP_CHECKSIG via fake_checker, empty sig -> false branch ----
-     * Empty sig encoding passes, checker is consulted (since check_sig
-     * is not NULL), checker requires accept_byte == 0xAA which a
-     * zero-length sig cannot match. Both paths must invoke the
-     * checker callback identically. */
+     * The checker is consulted (accept_byte == 0xAA never matches a
+     * zero-length sig); both paths invoke it identically. */
     {
         struct fake_checker fc;
         fc_init(&fc, 0xAA, true);
@@ -295,11 +285,9 @@ int test_domain_consensus_script_interp(void)
                    (fc.sig_calls % 2) == 0);
     }
 
-    /* ---- 10. OP_CHECKMULTISIG: empty sigs path, structural completion --
-     * Standard nulldummy 0 + zero sigs + 1 key + OP_CHECKMULTISIG: the
-     * sigs-needed count is 0, so the checker is never invoked and the
-     * script completes by pushing true. Tests the multisig DISPATCH
-     * without depending on real ECDSA. */
+    /* ---- 10. OP_CHECKMULTISIG: empty sigs path ---
+     * Nulldummy 0 + zero sigs + 1 key: sigs-needed is 0, the checker is
+     * never invoked and true is pushed (dispatch without real ECDSA). */
     {
         struct fake_checker fc;
         fc_init(&fc, 0xCD, true);
@@ -317,8 +305,7 @@ int test_domain_consensus_script_interp(void)
     }
 
     /* ---- 11. OP_CHECKMULTISIG with non-DER sig -> SCRIPT_ERR_SIG_DER ---
-     * The classic byte-exact regression seal on a signature-failure
-     * script. Both paths must reject with the identical error code. */
+     * Both paths reject with the identical error code. */
     {
         struct fake_checker fc;
         fc_init(&fc, 0xCD, true);
@@ -376,9 +363,8 @@ int test_domain_consensus_script_interp(void)
 
     /* ---- 13. verify_script: P2SH redeem path success ---- */
     {
-        /* Build a P2SH wrapper around a trivial OP_1 redeem script.
-         * scriptSig pushes the serialized redeem; scriptPubKey is
-         * HASH160 <hash> EQUAL of the redeem. */
+        /* P2SH wrapper around a trivial OP_1 redeem: scriptSig pushes the
+         * redeem; scriptPubKey is HASH160 <hash> EQUAL. */
         struct script redeem; script_init(&redeem);
         script_push_op(&redeem, OP_1);
         /* HASH160 of the redeem script. */
@@ -418,9 +404,7 @@ int test_domain_consensus_script_interp(void)
     }
 
     /* ---- 16. Script too big -> SCRIPT_ERR_SCRIPT_SIZE
-     * We can't realistically exceed MAX_SCRIPT_SIZE inside the fixed
-     * buffer via script_push_op repeatedly without allocator, so we
-     * synthesize the oversize condition by directly setting .size. */
+     * The oversize condition is synthesized by setting .size directly. */
     {
         struct script s; script_init(&s);
         s.size = MAX_SCRIPT_SIZE + 1;  /* deliberately past the cap */

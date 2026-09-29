@@ -3,23 +3,15 @@
  *
  * Unit tests for domain/consensus/check_block.{c,h}.
  *
- * These tests pin the pure block STRUCTURAL checks (merkle root,
- * size+coinbase, sigops). They exercise the domain functions directly
- * via the typed zcl_result API, and — crucially — cross-check the
- * verdict against the legacy core/modules/validation/check_block::check_block()
- * wrapper on every representative block shape. The legacy wrapper now
- * delegates to the domain functions, so if the wrapper's reject_reason
- * ever drifts from "bad-blk-length" / "bad-cb-missing" /
- * "bad-cb-multiple" / "bad-txnmrklroot" / "bad-txns-duplicate" /
- * "bad-blk-sigops" (the byte-identical P2P-visible strings) this test
- * will shout.
+ * Pins the pure block structural checks (merkle root, size+coinbase,
+ * sigops) through the typed zcl_result API, and cross-checks the verdict
+ * against the legacy check_block() wrapper (which delegates to the domain)
+ * on every block shape: its reject_reason must stay byte-identical to
+ * "bad-blk-length" / "bad-cb-missing" / "bad-cb-multiple" /
+ * "bad-txnmrklroot" / "bad-txns-duplicate" / "bad-blk-sigops".
  *
- * Block-construction strategy: synthetic struct block built in
- * process. No PoW or contextual checks are exercised here (those are
- * separate verdicts, separate tests). We call the domain functions
- * directly with `check_pow=false, check_merkle_root=true,
- * check_size_limits=true` to drive the legacy wrapper into the same
- * branches we test in the domain.
+ * Blocks are synthetic; no PoW or contextual checks. Calls use
+ * `check_pow=false, check_merkle_root=true, check_size_limits=true`.
  */
 
 #include "test/test_core.h"
@@ -38,11 +30,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Mirror of the private DOMAIN_MAX_BLOCK_SIGOPS in
- * domain/consensus/src/check_block.c (== MAX_BLOCK_SIGOPS, 20000). The
- * CHECKDATASIG boundary KAT below builds blocks at exactly this value, so it
- * pins the constant: if the domain limit drifts, the 20000-OK / 20001-reject
- * assertions diverge and the test shouts. */
+/* Mirror of the private DOMAIN_MAX_BLOCK_SIGOPS (== MAX_BLOCK_SIGOPS, 20000)
+ * in domain/consensus/src/check_block.c; the CHECKDATASIG boundary KAT
+ * builds blocks at exactly this value. */
 #define DOMAIN_MAX_BLOCK_SIGOPS_TEST 20000
 
 #define DCB_CHECK(name, expr) do {                                  \
@@ -61,10 +51,8 @@ static void coinbase_tx(struct transaction *tx, uint8_t marker)
     tx->vin[0].sequence = UINT32_MAX;
     tx->vout[0].value = 1250000000;
     tx->vout[0].script_pub_key.size = 0;
-    /* Give each tx a distinct, deterministic hash so the merkle root
-     * is non-trivially computable. We poke a marker byte into the
-     * cached `hash` field. Real callers compute it via
-     * transaction_compute_hash; here we just need uniqueness. */
+    /* Give each tx a distinct hash (marker byte in the cached `hash`) so the
+     * merkle root is non-trivial. */
     memset(tx->hash.data, 0, 32);
     tx->hash.data[0] = marker;
     tx->hash.data[31] = 0xa5;
@@ -85,10 +73,10 @@ static void noncoinbase_tx(struct transaction *tx, uint8_t marker)
     tx->hash.data[31] = 0x5a;
 }
 
-/* Build a non-coinbase tx whose output scripts contain exactly `total_ops`
- * top-level OP_CHECKDATASIG (0xba) opcodes — one single-byte sigop each —
- * spread across as many MAX_SCRIPT_SIZE outputs as needed. Used to drive the
- * block sigop tally to a precise value at the MAX_BLOCK_SIGOPS boundary. */
+/* Build a non-coinbase tx whose outputs hold exactly `total_ops` top-level
+ * OP_CHECKDATASIG (0xba) opcodes (one sigop each), spread across
+ * MAX_SCRIPT_SIZE outputs, to drive the block sigop tally to a precise
+ * value. */
 static void checkdatasig_tx(struct transaction *tx, uint8_t marker,
                             size_t total_ops)
 {
@@ -113,9 +101,8 @@ static void checkdatasig_tx(struct transaction *tx, uint8_t marker,
     tx->hash.data[31] = 0xcd;
 }
 
-/* Build a block with the supplied txns and fix up the header's merkle
- * root so it matches the txid list. Header is otherwise zeroed; that
- * is fine because we never run PoW or contextual checks. */
+/* Build a block with the supplied txns and fix the header merkle root to
+ * match; the header is otherwise zeroed (no PoW or contextual checks). */
 static void build_block(struct block *b,
                         struct transaction *txs, size_t n)
 {
@@ -132,9 +119,8 @@ static void build_block(struct block *b,
     }
 }
 
-/* Compare the domain verdict to the legacy wrapper's reject_reason +
- * DoS score. The wrapper now DELEGATES to the domain, so this is the
- * regression seal that locks the extraction in. */
+/* Compare the domain verdict to the legacy wrapper's reject_reason and DoS
+ * score (the wrapper delegates to the domain: the regression seal). */
 static bool cross_check_against_legacy(const struct block *b,
                                        const char *expect_reason,
                                        int expect_dos,
@@ -143,8 +129,7 @@ static bool cross_check_against_legacy(const struct block *b,
     struct validation_state st;
     validation_state_init(&st);
     /* check_pow=false (Equihash needs a real solution); merkle and
-     * size_limits both ON so we route through the same paths the
-     * domain functions own. */
+     * size_limits ON. */
     bool ok = check_block(b, &st, chain_params_get(), false, true, true);
     if (expect_ok) {
         if (!ok) {
@@ -283,16 +268,9 @@ int test_domain_consensus_check_block(void)
     }
 
     /* ---- bad-txns-duplicate (CVE-2012-2459) ---------
-     *
-     * Trigger by building a tx list with an odd number of entries where
-     * the final pair of leaves at any level are duplicates — but with
-     * a special construction: a 3-leaf block where the last leaf is
-     * identical to the second-to-last is itself NOT mutated (the
-     * merkle code only flags when the duplication is INDUCED by the
-     * uneven-tree-padding step). Simplest reliable trigger: a 2-leaf
-     * block where both leaves carry the same hash. Then the in-tree
-     * padding step duplicates the (already-duplicate) leaf to extend
-     * the level, which the mutation detector catches. */
+     * A 2-leaf block whose leaves carry the same hash: the padding step
+     * duplicates the already-duplicate leaf, which the mutation detector
+     * catches. */
     {
         struct transaction txs[2];
         coinbase_tx(&txs[0], 0x30);
@@ -344,14 +322,9 @@ int test_domain_consensus_check_block(void)
         DCB_CHECK("valid block: sigops -> OK",
                   rso.ok && reason[0] == '\0' && dos == 0);
 
-        /* No legacy-parity cross-check on the "accept" path: the
-         * legacy wrapper additionally runs per-tx check_transaction,
-         * which rejects our synthetic minimal coinbase on script-shape
-         * grounds (bad-cb-length, owned by domain/consensus/tx_structural
-         * — a separate extraction). The point of THIS test is the
-         * structural-block verdicts; that the three domain functions
-         * accept the block individually proves the structural layer
-         * is correct. */
+        /* No legacy-parity cross-check on the accept path: the legacy
+         * wrapper also runs per-tx check_transaction, which rejects the
+         * synthetic coinbase (bad-cb-length, owned by tx_structural). */
 
         for (size_t i = 0; i < 2; i++) transaction_free(&txs[i]);
     }
@@ -370,26 +343,15 @@ int test_domain_consensus_check_block(void)
     }
 
     /* ---- L1 LOCK-IN: no 2 MB serialized block-size cap ----------------
-     *
-     * Parity-audit round 2 (docs/work/parity-audit-round2-findings.md, L1):
-     * domain_consensus_check_block_size_and_coinbase() bounds only the
-     * tx-COUNT (num_vtx <= 2,000,000), never the SERIALIZED byte size.
-     * zclassicd's CheckBlock rejects a block whose serialized size exceeds
-     * GENEROUS_BLOCK_SIZE_LIMIT (2,000,000) with "bad-blk-length"
-     * (main.cpp:4317). zcl23 has no such byte clause.
-     *
-     * THIS PIN ASSERTS THE CURRENT (LOOSENED) BEHAVIOR: a block whose
-     * serialized size is well over 2,000,000 bytes — but whose num_vtx is a
-     * tiny 2, far under the count cap — currently PASSES the size+coinbase
-     * check (no bad-blk-length). When a future byte-size clause lands (after
-     * the replay gate the doc requires), this assertion flips deliberately
-     * and the new reject must be wired in. */
+     * (docs/work/parity-audit-round2-findings.md, L1.)
+     * domain_consensus_check_block_size_and_coinbase() bounds only tx-COUNT
+     * (num_vtx <= 2,000,000), while zclassicd rejects serialized size >
+     * GENEROUS_BLOCK_SIZE_LIMIT with "bad-blk-length" (main.cpp:4317). This
+     * pins the current behavior: a >2,000,000-byte block with num_vtx == 2
+     * PASSES. The assertion flips when a byte-size clause lands. */
     {
-        /* Build one non-coinbase tx with enough full-size (MAX_SCRIPT_SIZE)
-         * output scripts to push the serialized block over 2,000,000 bytes.
-         * Each output contributes ~MAX_SCRIPT_SIZE (10,000) script bytes plus
-         * 8 value bytes plus the compact-size length prefix. 220 outputs ⇒
-         * ~2.2 MB, comfortably over the 2 MB band. */
+        /* One non-coinbase tx with 220 full-size (MAX_SCRIPT_SIZE) output
+         * scripts serializes to ~2.2 MB, over the 2 MB band. */
         const size_t n_out = 220;  /* 220 * ~10009 ≈ 2.20 MB > 2,000,000 */
 
         struct transaction txs[2];
@@ -421,9 +383,8 @@ int test_domain_consensus_check_block(void)
         DCB_CHECK("L1: synthetic block serializes > 2,000,000 bytes",
                   total > 2000000 && b.num_vtx == 2);
 
-        /* num_vtx (2) is far under DOMAIN_GENEROUS_BLOCK_TXN_LIMIT (2,000,000),
-         * so the ONLY cap in the predicate passes — the oversize block is
-         * accepted today. */
+        /* num_vtx (2) is far under DOMAIN_GENEROUS_BLOCK_TXN_LIMIT
+         * (2,000,000), so the oversize block is accepted today. */
         reason[0] = '\xff'; dos = -1;
         struct zcl_result r_sz =
             domain_consensus_check_block_size_and_coinbase(
@@ -436,15 +397,8 @@ int test_domain_consensus_check_block(void)
     }
 
     /* ---- CHECKDATASIG counts toward the block sigop limit (zclassicd parity) ----
-     *
-     * zclassicd counts OP_CHECKDATASIG/OP_CHECKDATASIGVERIFY toward
-     * MAX_BLOCK_SIGOPS (its CheckBlock/ConnectBlock set the
-     * SCRIPT_VERIFY_CHECKDATASIG_SIGOPS bit). c23 previously passed
-     * SCRIPT_VERIFY_NONE so these opcodes counted 0 — an undercount that let a
-     * block zclassicd rejects with bad-blk-sigops slip through. The limit is
-     * strict '>' so exactly 20000 ops is accepted, 20001 rejected. Before the
-     * fix, the 20001 case would (wrongly) return OK because the opcodes
-     * counted 0 — so this case pins the corrected counting. */
+     * OP_CHECKDATASIG/OP_CHECKDATASIGVERIFY count toward MAX_BLOCK_SIGOPS.
+     * The limit is strict '>': exactly 20000 ops is accepted, 20001 rejected. */
     {
         char reason[64]; int dos;
 

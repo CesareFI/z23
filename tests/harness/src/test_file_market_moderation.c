@@ -343,10 +343,9 @@ static int test_mmt_view_filter(void)
                strcmp(json_get_str(profile), "general-audience.v1") == 0);
         json_free(&listing);
 
-        /* The node's own curation marks: A reviewed_ok, B sensitive.
-         * Same exact two-step as the posture setters: plan mints a token
-         * bound to (offer, current mark, target) and never mutates;
-         * commit requires that exact token. */
+        /* Curation marks: A reviewed_ok, B sensitive. Plan mints a token
+         * bound to (offer, current mark, target) and never mutates; commit
+         * requires that token. */
         struct json_value mark;
         char params[300];
         snprintf(params, sizeof(params), "[\"%s\",\"reviewed_ok\",\"plan\"]",
@@ -415,10 +414,8 @@ static int test_mmt_view_filter(void)
         ASSERT(!mmt_rpc(&table, "zmarket_review_set", params, &mark));
         json_free(&mark);
 
-        /* An id no signed offer carries: PLAN succeeds without mutating
-         * (the write stays the one authority on existence — its token
-         * simply commits nothing useful), COMMIT is refused by name of
-         * the write. */
+        /* An id no signed offer carries: PLAN succeeds without mutating,
+         * COMMIT is refused by name of the write. */
         char unknown_id[65];
         memset(unknown_id, 'f', 64);
         unknown_id[64] = '\0';
@@ -434,9 +431,7 @@ static int test_mmt_view_filter(void)
         ASSERT(!mmt_rpc(&table, "zmarket_review_set", params, &mark));
         json_free(&mark);
 
-        /* A mark moved between plan and commit stales the plan's token:
-         * C plans reviewed_ok, an operator marks it sensitive through
-         * the service directly, and the old token no longer commits. */
+        /* A mark moved between plan and commit stales the plan's token. */
         snprintf(params, sizeof(params), "[\"%s\",\"reviewed_ok\",\"plan\"]",
                  id_c);
         ASSERT(mmt_rpc(&table, "zmarket_review_set", params, &mark));
@@ -473,10 +468,9 @@ static int test_mmt_view_filter(void)
         ASSERT(mmt_kv_bool(&mark, "committed"));
         json_free(&mark);
 
-        /* Deterministically place a competing writer AFTER commit has read
-         * the prior mark and validated its token, but BEFORE its write. The
-         * conditional UPDATE must prove zero changed rows and preserve the
-         * winner instead of overwriting it with the stale plan. */
+        /* Place a competing writer after commit validates its token but
+         * before its write: the conditional UPDATE changes zero rows and
+         * preserves the winner. */
         ASSERT(market_moderation_set_review_state(
                    offer_c.offer_id, MARKET_REVIEW_UNREVIEWED).ok);
         snprintf(params, sizeof(params), "[\"%s\",\"reviewed_ok\",\"plan\"]",
@@ -506,9 +500,8 @@ static int test_mmt_view_filter(void)
                MARKET_REVIEW_SENSITIVE);
         json_free(&mark);
 
-        /* Restore C so the listing/count assertions below keep their
-         * fixture meaning: one mark per state — unreviewed (C),
-         * reviewed_ok (A), sensitive (B). */
+        /* Restore C: one mark per state (C unreviewed, A reviewed_ok, B
+         * sensitive). */
         ASSERT(market_moderation_set_review_state(
                    offer_c.offer_id, MARKET_REVIEW_UNREVIEWED).ok);
 
@@ -648,23 +641,14 @@ static int test_mmt_view_filter(void)
 }
 
 /* ── The serving gate fails closed on every failure class ──────────
- *
- * The gate decides whether this node hands content to another party. A
- * moderation system that answers "serve" on an error is worse than none,
- * because it advertises a protection it does not provide. Every class of
- * failure below is therefore asserted to answer "do not serve":
- *
- *   1. no bound node context at all (boot has not run / db closed)
- *   2. a content id the review store has never heard of
- *   3. an offer id no signed offer carries
- *   4. a NULL id
- *   5. an unreviewed mark under the boot-default profile
- *   6. a sensitive mark under the boot-default profile
- *   7. an unreadable / corrupt / foreign-owned policy file
- *   8. a profile name that is not one of the immutable named profiles
- *
- * The only inputs that answer "serve" are an explicit reviewed_ok mark,
- * or the operator's explicit open-view opt-in. */
+ * Each of these answers "do not serve":
+ *   1. no bound node context   2. unknown content id   3. unknown offer id
+ *   4. NULL id   5. unreviewed mark under the boot-default profile
+ *   6. sensitive mark under the boot-default profile
+ *   7. unreadable / corrupt / foreign-owned policy file
+ *   8. a non-named profile
+ * Only an explicit reviewed_ok mark or the operator's explicit open-view
+ * opt-in answers "serve". */
 static int test_mmt_serving_gate_fails_closed(void)
 {
     int failures = 0;
@@ -674,9 +658,7 @@ static int test_mmt_serving_gate_fails_closed(void)
         memset(unknown_root, 0x77, sizeof(unknown_root));
         memset(unknown_offer, 0x88, sizeof(unknown_offer));
 
-        /* (1) No context bound: nothing is served. Detaching the db is
-         * the state a node is in before boot wires the market, and a
-         * node that cannot ask its own store must not hand bytes out. */
+        /* (1) No context bound (db detached): nothing is served. */
         rpc_market_set_state(NULL);
         ASSERT(market_moderation_set_active_profile(
                    MARKET_MODERATION_PROFILE_DEFAULT).ok);
@@ -693,9 +675,8 @@ static int test_mmt_serving_gate_fails_closed(void)
         ASSERT(market_moderation_set_active_profile(
                    MARKET_MODERATION_PROFILE_DEFAULT).ok);
 
-        /* (2)(3) Ids the store has never seen read as unreviewed, which
-         * the boot-default profile hides. An unknown id must never be a
-         * hole in the gate. */
+        /* (2)(3) Unknown ids read as unreviewed, which the boot-default
+         * profile hides. */
         ASSERT(!market_moderation_may_serve_root(unknown_root));
         ASSERT(!market_moderation_may_serve_offer_id(unknown_offer));
         ASSERT_EQ(market_moderation_review_state_for_offer_id(unknown_offer),
@@ -768,10 +749,8 @@ static int test_mmt_serving_gate_fails_closed(void)
     return failures;
 }
 
-/* (7) An unreadable, corrupt, or wrong-moded policy file must not be
- * able to widen the view. Load reports the failure AND answers the
- * boot-default profile, so a tampered file loses the operator's
- * open-view opt-in rather than silently keeping or forging one. */
+/* (7) An unreadable, corrupt, or wrong-moded policy file cannot widen the
+ * view: load reports the failure and answers the boot-default profile. */
 static int test_mmt_policy_file_fails_closed(void)
 {
     int failures = 0;
@@ -808,9 +787,8 @@ static int test_mmt_policy_file_fails_closed(void)
                MARKET_MODERATION_PROFILE_OPEN);
         ASSERT(ok);
 
-        /* Corrupt content naming a profile that does not exist: refused,
-         * and the answer is the closed default rather than the last
-         * good value or the forged one. */
+        /* Corrupt content naming a nonexistent profile is refused and
+         * answers the closed default. */
         int fd = open(policy, O_WRONLY | O_TRUNC | O_CLOEXEC);
         ASSERT(fd >= 0);
         static const char forged[] =
@@ -868,20 +846,11 @@ static int test_mmt_policy_file_fails_closed(void)
 }
 
 /* ── The RELAY leg: a separate setting with the opposite default ────
- *
- * Serving hands over content; relaying forwards a pointer to somebody
- * else's. They are different acts with different failure costs, so they
- * are two settings with two defaults, and this pins both halves:
- *
- *   - relay is permissive by default, so a node that has reviewed
- *     nothing still forwards an honest seller's announcement;
- *   - the serve gate is unaffected by that, so the permissive relay
- *     default can never be mistaken for permission to hand out bytes;
+ *   - relay is permissive by default;
+ *   - the serve gate is unaffected by that default;
  *   - neither setter moves the other leg;
- *   - once an operator has deliberately closed relay, a corrupt policy
- *     file resolves to the STRICT side rather than re-opening it. That
- *     last one is the case a serve-only matrix structurally cannot
- *     reach, because there the strict side and the default coincide. */
+ *   - once relay is deliberately closed, a corrupt policy file resolves to
+ *     the STRICT side (a case a serve-only matrix cannot reach). */
 static int test_mmt_relay_leg_defaults_open_and_stays_closed(void)
 {
     int failures = 0;
@@ -905,9 +874,7 @@ static int test_mmt_relay_leg_defaults_open_and_stays_closed(void)
         ASSERT(market_moderation_set_review_state(
                    signed_off.offer_id, MARKET_REVIEW_REVIEWED_OK).ok);
 
-        /* The default: an unreviewed stranger's offer is FORWARDED. This
-         * is the whole point — gating it would shrink that seller's reach
-         * to whoever has a reviewer awake. */
+        /* Default: an unreviewed stranger's offer is FORWARDED. */
         ASSERT(market_moderation_active_relay_rule() ==
                MARKET_MODERATION_RELAY_ALL);
         ASSERT(market_moderation_may_relay_root(stranger.root_hash));
@@ -959,11 +926,8 @@ static int test_mmt_relay_leg_defaults_open_and_stays_closed(void)
         node_db_close(&ndb);
         rpc_market_set_state(NULL);
 
-        /* ── The control a serve-only matrix cannot express ───────────
-         * An operator deliberately closes relay. The policy file is then
-         * corrupted. Reload must NOT hand relay back to its permissive
-         * default: a broken file is an operator statement we cannot
-         * hear, not the absence of one. */
+        /* An operator closes relay, then the policy file is corrupted:
+         * reload must not fall back to the permissive default. */
         char datadir[] = "test-tmp/market_moderation_relay_XXXXXX";
         ASSERT(mkdtemp(datadir) != NULL);
         char market_dir[640], policy[768];
@@ -975,9 +939,7 @@ static int test_mmt_relay_leg_defaults_open_and_stays_closed(void)
         char error[192];
         enum market_moderation_relay_rule relay = MARKET_MODERATION_RELAY_ALL;
 
-        /* Both legs round-trip independently: an operator who wants a
-         * wide-open view AND a strict relay can have exactly that, and
-         * the file states both rules rather than implying one. */
+        /* Both legs round-trip independently; the file states both rules. */
         ASSERT(market_moderation_profile_save(
                    datadir, MARKET_MODERATION_PROFILE_OPEN,
                    MARKET_MODERATION_RELAY_REVIEWED_ONLY).ok);
@@ -1002,9 +964,8 @@ static int test_mmt_relay_leg_defaults_open_and_stays_closed(void)
         ASSERT(!ok);
         ASSERT(relay == MARKET_MODERATION_RELAY_REVIEWED_ONLY);
 
-        /* And the same through the live boot path, since that is where a
-         * real node reads it: binding a context to the corrupt datadir
-         * must leave BOTH legs strict, not just the serve one. */
+        /* Same through the live boot path: binding a context to the corrupt
+         * datadir leaves BOTH legs strict. */
         memset(&ndb, 0, sizeof(ndb));
         ASSERT(node_db_open(&ndb, ":memory:") && ndb.open);
         market_moderation_set_context(&ndb, datadir);
@@ -1013,9 +974,8 @@ static int test_mmt_relay_leg_defaults_open_and_stays_closed(void)
         ASSERT(market_moderation_active_relay_rule() ==
                MARKET_MODERATION_RELAY_REVIEWED_ONLY);
 
-        /* A pre-relay policy file is legal and means relay-all.v1: it was
-         * written before the relay leg existed, so it never expressed
-         * strictness and must not be read as having done so. */
+        /* A pre-relay policy file is legal and means relay-all.v1; it never
+         * expressed strictness. */
         fd = open(policy, O_WRONLY | O_TRUNC | O_CLOEXEC);
         ASSERT(fd >= 0);
         static const char legacy[] =

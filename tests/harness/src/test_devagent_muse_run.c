@@ -147,11 +147,10 @@ static bool mr_git3(const char *dir, const char *a1, const char *a2,
     return WIFEXITED(status) && WEXITSTATUS(status) == 0;
 }
 
-/* The recipe the lane's committed Makefile runs for the gate build. The
- * executor rebuilds the gate target from the candidate tree before it runs
- * the group; the default recipe builds nothing and succeeds, and the
- * build-refusal case swaps in one that fails once the turn's file exists,
- * exactly as a candidate that does not compile would. No compiler runs. */
+/* The recipe the lane's committed Makefile runs for the gate build. The executor
+ * rebuilds the gate target from the candidate tree before running the group; the
+ * default recipe builds nothing and succeeds, and the build-refusal case swaps in
+ * one that fails once the turn's file exists. No compiler runs. */
 static const char *const mr_make_ok = "\t@:\n";
 static const char *s_mr_make_recipe = NULL;
 
@@ -249,15 +248,9 @@ static const char *mr_verdict_fail =
     "toolkey=abc123";
 static const char *mr_head_fail = "ALL TESTS FAILED";
 
-/* spawn_fake/close_fake live in the shared header for the adapter suite;
- * this file forks raw transports instead, so reference them to keep
- * -Wunused-function quiet without duplicating a line of harness.
- *
- * Held as function pointers, not void *: ISO C does not define converting a
- * function pointer to an object pointer, and this tree builds with
- * -Werror=pedantic. Converting between function pointer TYPES is defined,
- * and nothing here is ever called through the generic type, so the
- * reference stays legal and the intent is unchanged. */
+/* spawn_fake/close_fake live in the shared header; this file forks raw
+ * transports, so reference them (as function pointers: -Werror=pedantic
+ * forbids function-to-object pointer conversion) to keep -Wunused-function quiet. */
 typedef void (*mr_any_fn)(void);
 static const mr_any_fn mr_fake_lifecycle_refs[2] = {
     (mr_any_fn)spawn_fake, (mr_any_fn)close_fake
@@ -423,8 +416,8 @@ static int mr_failures_parse(void)
         MR_CHECK("empty brief refused",
             muse_run_task_file(path, NULL, err) == 1);
     }
-    /* A recorded ref short-circuits through the file path too: the
-     * queue: header is tolerated and no host ever spawns. */
+    /* A recorded ref short-circuits through the file path too: the queue: header
+     * is tolerated and no host spawns. */
     {
         char path[8192], receipt[8192];
         (void)snprintf(path, sizeof(path), "%s/task.txt", d.run);
@@ -584,8 +577,7 @@ static int mr_failures_precheck(void)
     MR_CHECK("recorded ref short-circuits",
         muse_run_task_on_transport(&t, child, to_fd, from_fd, &r, err)
         == 0);
-    /* The short-circuit never touches the transport: close it so the
-     * forked host sees EOF and exits, then reap it. */
+    /* The short-circuit never touches the transport: close it so the host sees EOF and exits, then reap. */
     close(to_fd);
     close(from_fd);
     {
@@ -749,9 +741,8 @@ static int mr_pass_candidate(const struct mr_dirs *d,
     return failures;
 }
 
-/* The two measured facts a pass now also rests on, as the evidence file
- * publishes them: the pinned commit held still, and the gate's own
- * process exited normally with status 0. */
+/* The two facts a pass also rests on: the pinned commit held still, and the
+ * gate's process exited normally with status 0. */
 static int mr_pass_measured_facts(const char *ftext)
 {
     int failures = 0;
@@ -780,9 +771,8 @@ static int mr_pass_facts(const struct mr_dirs *d)
             "\"spawn\":\"exit=0\"") &&
         strstr(ftext, "\"runner_sha3\":\"") &&
         !strstr(ftext, "\"runner_sha3\":\"none\""));
-    /* (a) The changed paths ARE the proof that the scope was respected:
-     * a measured clean pre-state, and the turn's own in-scope path named
-     * in the evidence with nothing outside. */
+    /* The changed paths are the proof the scope was respected: a clean measured
+     * pre-state and the turn's in-scope path alone in the evidence. */
     MR_CHECK("pass scope audit", ftext &&
         strstr(ftext, "\"pre_measured\":true") &&
         strstr(ftext, "\"pre_clean\":true") &&
@@ -797,10 +787,9 @@ static int mr_pass_facts(const struct mr_dirs *d)
     return failures;
 }
 
-/* (b) Baseline dirt: the workspace is already changed before the turn, so
- * pre-existing edits could satisfy the non-empty diff a pass requires.
- * Fail closed BEFORE the model is reached: no session, no turn, no
- * tokens, and the offending path named in the evidence. */
+/* (b) Baseline dirt: pre-existing edits could satisfy the non-empty diff a pass
+ * requires, so fail closed BEFORE the model: no session, no turn, no tokens, and
+ * the offending path named in the evidence. */
 static int mr_exec_baseline_dirt(void)
 {
     int failures = 0;
@@ -838,9 +827,8 @@ static int mr_exec_baseline_dirt(void)
     return failures;
 }
 
-/* (c) The gate still passes, but the turn wrote outside the declared
- * scope. The approval mode alone would never catch this after the fact:
- * only the measured output does. */
+/* (c) The gate passes but the turn wrote outside the declared scope; only the
+ * measured output catches it. */
 static int mr_exec_outside_scope(void)
 {
     int failures = 0;
@@ -908,10 +896,9 @@ static int mr_exec_scope_prefix(void)
     return failures;
 }
 
-/* (d2) A SCOPE of several prefixes: a real fix and its test live under
- * different roots, so the scope names both. Any one prefix admits a path;
- * a path none admits is outside. The grammar refuses an empty element, an
- * absolute or ".." element, and a fifth prefix. */
+/* (d2) A SCOPE of several prefixes: any one admits a path, a path none admits
+ * is outside. The grammar refuses an empty element, an absolute or ".." element,
+ * and a fifth prefix. */
 static int mr_exec_scope_multi(void)
 {
     int failures = 0;
@@ -951,10 +938,9 @@ static int mr_exec_scope_multi(void)
     return failures;
 }
 
-/* The unmeasurable-workspace fixture: a real directory whose `.git` is a
- * FILE holding garbage. A `.git` file must be a gitlink, so git exits
- * non-zero AND stops walking up to any enclosing repository — the
- * enumeration is unmeasurable wherever the fixture happens to land. */
+/* The unmeasurable-workspace fixture: a directory whose `.git` is a FILE holding
+ * garbage. Git exits non-zero and stops walking up to any enclosing repository,
+ * so the enumeration is unmeasurable wherever the fixture lands. */
 static bool mr_unmeasurable_ws(const struct mr_dirs *d, char *out,
     size_t cap)
 {
@@ -999,10 +985,8 @@ static int mr_run_on_fake(struct muse_run_task *t,
     return rc;
 }
 
-/* (e) UNMEASURABLE porcelain. The change set cannot be measured at all,
- * so the run must fail closed with a reason that says the measurement
- * failed — never reporting a clean tree, and never reporting "nothing
- * outside scope". */
+/* (e) UNMEASURABLE porcelain: the run fails closed with a reason saying the
+ * measurement failed, never a clean tree or "nothing outside scope". */
 static int mr_exec_unmeasurable(void)
 {
     int failures = 0;
@@ -1029,8 +1013,7 @@ static int mr_exec_unmeasurable(void)
     MR_CHECK("unmeasurable refused", strcmp(r.verdict, "refused") == 0);
     MR_CHECK("unmeasurable no turn", evidence &&
         !strstr(evidence, "turn-cmd:"));
-    /* The reason must say the measurement failed, not that the tree was
-     * clean, and the counts must stay -1 rather than a measured 0. */
+    /* The reason must say the measurement failed, and the counts stay -1, not 0. */
     MR_CHECK("unmeasurable reason",
         strstr(r.reason, "pre-state unmeasurable") != NULL);
     MR_CHECK("unmeasurable not clean", r.scope_pre_measured == false &&
@@ -1052,10 +1035,9 @@ static int mr_exec_unmeasurable(void)
     return failures;
 }
 
-/* (e, second half) A porcelain capture that FILLS its bound. The capture
- * helper discards the overrun and still reports git's exit status, so a
- * full buffer is indistinguishable from a complete one and must refuse
- * rather than audit a silently short change set. */
+/* (e, second half) A porcelain capture that FILLS its bound: the capture helper
+ * discards the overrun yet reports git's exit status, so a full buffer looks
+ * complete and must refuse rather than audit a short change set. */
 static int mr_exec_unmeasurable_bound(void)
 {
     int failures = 0;
@@ -1069,9 +1051,8 @@ static int mr_exec_unmeasurable_bound(void)
     int rc = -1;
     memset(&r, 0, sizeof(r));
     MR_CHECK("bound lane", mr_lane(&d));
-    /* Enough untracked rows to overrun the 256 KiB porcelain bound:
-     * ~1500 paths of ~200 bytes each. Each is listed individually
-     * because the repository root itself is tracked. */
+    /* Enough untracked rows to overrun the 256 KiB porcelain bound (~1500
+     * paths of ~200 bytes), each listed because the repository root is tracked. */
     memset(name, 'q', sizeof(name));
     name[200] = '\0';
     for (int i = 0; wrote && i < 1500; i++) {
@@ -1103,8 +1084,7 @@ static char *mr_read_facts(const struct mr_dirs *d, char *path, size_t cap)
     return mr_read(path);
 }
 
-/* One more file committed into the lane, so a case can have something to
- * rename or delete that the pre-state still reads as clean. */
+/* One more file committed into the lane, to rename or delete while the pre-state reads clean. */
 static bool mr_seed_committed(const struct mr_dirs *d, const char *rel,
     const char *text)
 {
@@ -1122,17 +1102,12 @@ static bool mr_seed_committed(const struct mr_dirs *d, const char *rel,
         mr_git3(d->wt, "commit", "-m", "seed");
 }
 
-/* Installs a core.fsmonitor hook: the program git runs during the index
- * refresh that every `git status` performs. That is the one deterministic
- * place a fixture can act BETWEEN the executor's own git calls — nothing
- * else in a run lets the workspace change underneath the audit, and a
- * fixture that raced it from another process would prove nothing
- * repeatably. The hook exits non-zero, which makes git fall back to
- * scanning everything, so the porcelain it goes on to print is still the
- * true one. Hook and marker live inside .git, where no porcelain row can
- * ever name them. `trigger`, when given, holds the hook until that
- * workspace-relative path exists, which is how a case acts after the turn
- * rather than before it. */
+/* Installs a core.fsmonitor hook: git runs it during the index refresh of every
+ * `git status`, the one deterministic point where a fixture can act BETWEEN the
+ * executor's git calls. The hook exits non-zero so git rescans everything and
+ * the porcelain stays true. Hook and marker live inside .git, where no porcelain
+ * row can name them. `trigger`, when given, holds the hook until that
+ * workspace-relative path exists (acting after the turn). */
 static bool mr_fsmonitor(const struct mr_dirs *d, const char *trigger,
     const char *body)
 {
@@ -1154,14 +1129,11 @@ static bool mr_fsmonitor(const struct mr_dirs *d, const char *trigger,
         mr_git3(d->wt, "config", "core.fsmonitor", path);
 }
 
-/* A `git` earlier on PATH than the real one, which answers only THIS
- * workspace's `status` with rows the case chose and hands every other
- * invocation straight through. Real git cannot be made to print a
- * malformed row, an absolute path or a "../" path — its porcelain paths
- * are always repo-relative and well formed — so the only way to prove
- * the parser refuses one is to hand it one. Every group runs in its own
- * forked process, so this PATH is private to the case that sets it, and
- * the shim narrows on the workspace besides. */
+/* A `git` earlier on PATH that answers only THIS workspace's `status` with rows
+ * the case chose and passes every other invocation through. Real git never
+ * prints a malformed row, an absolute path or a "../" path, so the parser's
+ * refusals need a shim. Each group runs in its own forked process, so the PATH
+ * is private to the case. */
 static bool mr_git_shim(const struct mr_dirs *d, const char *rows,
     const char *trigger)
 {
@@ -1199,9 +1171,8 @@ static bool mr_git_shim(const struct mr_dirs *d, const char *rows,
     return ok;
 }
 
-/* Runs one case over a workspace the case itself prepared. The shared
- * mr_execute builds its lane and runs in one step, and every case below
- * has to get in between those two. */
+/* Runs one case over a workspace the case itself prepared (the shared
+ * mr_execute builds its lane and runs in one step). */
 static int mr_run_prepared(struct mr_dirs *d, const char *scope,
     const char *writes, const struct muse_run_budgets *b,
     struct muse_run_result *r, char **evidence_out)
@@ -1218,11 +1189,9 @@ static int mr_run_prepared(struct mr_dirs *d, const char *scope,
     return rc;
 }
 
-/* (f) The model COMMITTED its work. HEAD advances, the porcelain goes
- * spotless, and an audit of that tree measures nothing at all while
- * reporting every count in order — the one shape where a clean audit is
- * evidence of nothing. Only the pinned pre-turn HEAD catches it, and the
- * refusal must name HEAD rather than riding the empty diff. */
+/* (f) The model COMMITTED its work: HEAD advances and the porcelain is spotless,
+ * so a tree audit measures nothing. Only the pinned pre-turn HEAD catches it, and
+ * the refusal must name HEAD. */
 static int mr_exec_head_moved(void)
 {
     int failures = 0;
@@ -1235,11 +1204,9 @@ static int mr_exec_head_moved(void)
     MR_CHECK("moved lane", mr_lane(&d));
     MR_CHECK("moved gate", mr_gate_script(&d, mr_verdict_pass,
         mr_head_pass, NULL));
-    /* A real commit carrying the SAME tree: HEAD advances and the
-     * worktree stays spotless, which is exactly what a model that commits
-     * its own work leaves behind. Built with commit-tree and update-ref
-     * because `git commit` would want the index lock the surrounding
-     * `git status` is already holding. */
+    /* A real commit carrying the SAME tree: HEAD advances, the worktree stays
+     * spotless. Built with commit-tree and update-ref because `git commit`
+     * would want the index lock `git status` holds. */
     (void)snprintf(body, sizeof(body),
         "T=$(git --git-dir=\"$G\" rev-parse HEAD^{tree})\n"
         "C=$(git --git-dir=\"$G\" commit-tree \"$T\" -p HEAD -m moved)\n"
@@ -1270,9 +1237,8 @@ static int mr_exec_head_moved(void)
     return failures;
 }
 
-/* (g) The pre-turn HEAD could not be read at all. The pin is the anchor
- * every later measurement is taken against, so a run without one is
- * refused before a token is spent — never judged against nothing. */
+/* (g) The pre-turn HEAD cannot be read: the pin anchors every later
+ * measurement, so the run is refused before a token is spent. */
 static int mr_exec_head_unborn(void)
 {
     int failures = 0;
@@ -1284,8 +1250,7 @@ static int mr_exec_head_unborn(void)
     int rc = -1;
     memset(&r, 0, sizeof(r));
     MR_CHECK("unborn lane", mr_lane(&d));
-    /* A repository with no commit yet: the porcelain is measurably
-     * clean and `rev-parse HEAD` has nothing to name. */
+    /* A repository with no commit yet: porcelain clean, `rev-parse HEAD` names nothing. */
     MR_CHECK("unborn workspace",
         snprintf(ws, sizeof(ws), "%s/unborn", d.root) <
         (int)sizeof(ws) && mr_mkdir_p(ws) && mr_git(ws, "init"));
@@ -1307,10 +1272,8 @@ static int mr_exec_head_unborn(void)
     return failures;
 }
 
-/* (h) A rename that moves an in-scope file OUT of the declared scope.
- * Both halves of the row are judged: a file carried out of scope has been
- * changed exactly as surely as one edited in place, and reading only the
- * destination (or only the source) would miss half of every rename. */
+/* (h) A rename moving an in-scope file OUT of scope: both halves of the row are
+ * judged, since reading only the source or only the destination misses half. */
 static int mr_exec_rename_out(void)
 {
     int failures = 0;
@@ -1345,9 +1308,7 @@ static int mr_exec_rename_out(void)
     return failures;
 }
 
-/* (i) A DELETE outside the declared scope. A deletion is an ordinary row
- * and is judged like any other path: removing a file the scope never
- * covered changes the workspace just as much as writing one. */
+/* (i) A DELETE outside the declared scope is judged like any other path. */
 static int mr_exec_delete_outside(void)
 {
     int failures = 0;
@@ -1379,13 +1340,9 @@ static int mr_exec_delete_outside(void)
     return failures;
 }
 
-/* One shim-fed case: the porcelain the audit reads is exactly `rows`.
- * `unmeasurable` says whether the rows are expected to be unreadable (the
- * whole pass refuses as unmeasurable) or readable but out of scope.
- * `why` is the EXACT reason the refusal must name — not merely that the
- * pass refused. A refusal that cannot say which breakage it hit sends the
- * operator back to guess, and every one of these rows fails for its own
- * repairable reason, so each case pins its own sentence. */
+/* One shim-fed case: the audited porcelain is exactly `rows`. `unmeasurable`
+ * says whether the pass refuses as unmeasurable or the rows are readable but
+ * out of scope. `why` is the EXACT reason the refusal must name. */
 static int mr_rows_case(const char *label, const char *rows,
     bool unmeasurable, const char *why, const char *outside_json)
 {
@@ -1407,12 +1364,10 @@ static int mr_rows_case(const char *label, const char *rows,
     MR_CHECK("rows shim", saved_path && mr_git_shim(&d, rows,
         "src/turn.c"));
     rc = mr_run_prepared(&d, NULL, "src/turn.c", NULL, &r, &evidence);
-    /* The shim leaves this process no business standing in front of the
-     * real git, so it goes away with the case that needed it. */
+    /* The shim is removed with the case that needed it. */
     if (saved_path) (void)setenv("PATH", saved_path, 1);
     free(saved_path);
-    /* The gate script prints a PASSING verdict, so anything that reaches
-     * it passes: proving the refusal proves the audit refused. */
+    /* The gate script prints a PASSING verdict, so proving the refusal proves the audit refused. */
     MR_CHECK("rows not pass", rc == 1 && r.rc == 1 &&
         strcmp(r.verdict, "pass") != 0);
     if (unmeasurable) {
@@ -1435,19 +1390,15 @@ static int mr_rows_case(const char *label, const char *rows,
     return failures;
 }
 
-/* (j) Rows the parser MUST NOT read. Every one of these used to slip
- * through a length test and a blind three-character skip, which turned
- * whatever followed into a path the audit believed it had judged. An
- * unreadable row is a refusal; it is never one lucky path. */
+/* (j) Rows the parser MUST NOT read: each is a refusal, never one lucky path. */
 static int mr_exec_rows_malformed(void)
 {
     int failures = 0;
     /* A status pair porcelain cannot print. */
     failures += mr_rows_case("bad status pair", "XY src/turn.c\n",
         true, "a status column that is not a porcelain v1 character", NULL);
-    /* Two legal status characters, but no space where the separator
-     * always is: a blind three-character skip would have invented the
-     * path "rc/turn.c" and judged that instead. */
+    /* Two legal status characters but no separator space: a blind
+     * three-character skip would have invented the path "rc/turn.c". */
     failures += mr_rows_case("no fixed separator", "MMsrc/turn.c\n",
         true, "no separating space after the two status columns", NULL);
     /* Unmodified in both columns, which this seam never prints. */
@@ -1458,23 +1409,18 @@ static int mr_exec_rows_malformed(void)
     failures += mr_rows_case("arrow without rename",
         "M  src/turn.c -> src/other.c\n", true,
         "a \" -> \" separator on a status that never carries one", NULL);
-    /* Shorter than the fixed prefix plus one path byte. Length is the
-     * first thing the parser checks and the only branch a reader can
-     * reach without a legal status byte, so it is proven on its own. */
+    /* Shorter than the fixed prefix plus one path byte: the parser's first, independent check. */
     failures += mr_rows_case("row too short", "M\n", true,
         "a row too short to carry a status prefix and a path", NULL);
-    /* '?' and '!' are the two status characters porcelain only ever
-     * prints DOUBLED. One of them beside an ordinary status byte passes
-     * mr_status_char() on both columns and the separator test as well,
-     * so nothing but the doubling rule catches it — and each of the two
-     * has its own rule, which is why neither stands in for the other. */
+    /* '?' and '!' are only ever printed DOUBLED; one beside an ordinary status
+     * byte passes the column and separator tests, so only the doubling rule
+     * catches it, and each has its own rule. */
     failures += mr_rows_case("half untracked", "?M src/turn.c\n", true,
         "'?' in one status column only, never doubled", NULL);
     failures += mr_rows_case("half ignored", "!M src/turn.c\n", true,
         "'!' in one status column only, never doubled", NULL);
-    /* C-quoting that does not parse: an unterminated quote, then an
-     * escape git never emits. A best-effort path out of either is a path
-     * the audit cannot claim to have measured. */
+    /* C-quoting that does not parse (unterminated quote, unknown escape): no
+     * best-effort path is claimed as measured. */
     failures += mr_rows_case("unterminated quote", "?? \"src/turn.c\n",
         true, "malformed quoting on a row's path", NULL);
     failures += mr_rows_case("bad escape", "?? \"src/\\qturn.c\"\n",
@@ -1482,19 +1428,16 @@ static int mr_exec_rows_malformed(void)
     return failures;
 }
 
-/* (k) An R row that names only one path. The status promises a source and
- * a destination; a row that carries one of them has a half the parser
- * never saw, and a path it never saw is a path it never judged. */
+/* (k) An R row that names only one path: the half the parser never saw is a
+ * path it never judged, so it refuses. */
 static int mr_exec_rows_rename_bare(void)
 {
     return mr_rows_case("rename without separator", "R  src/turn.c\n",
         true, "a rename or copy row with no \" -> \" separator", NULL);
 }
 
-/* (l) Regression guard on the path judgement itself: an absolute path and
- * a "../" path are outside the declared scope by definition, whatever
- * prefix they appear to share with it. Real git never prints either, so
- * the rows are handed in directly. */
+/* (l) An absolute path and a "../" path are outside the declared scope whatever
+ * prefix they share with it. Real git never prints either, so the rows are handed in. */
 static int mr_exec_rows_escaping_paths(void)
 {
     int failures = 0;
@@ -1505,11 +1448,8 @@ static int mr_exec_rows_escaping_paths(void)
     return failures;
 }
 
-/* (m) The gate runner EXITS NON-ZERO while its captured log carries a
- * passing SUITE VERDICT line. The log is debris, not evidence: a runner
- * that died mid-run has often already printed a line saying nothing
- * failed yet. Discarding the spawn status read every such death as a
- * pass. */
+/* (m) The gate runner EXITS NON-ZERO while its captured log carries a passing
+ * SUITE VERDICT line: the log is debris, not evidence, and the spawn status decides. */
 static int mr_exec_gate_exit_nonzero(void)
 {
     int failures = 0;
@@ -1544,11 +1484,9 @@ static int mr_exec_gate_exit_nonzero(void)
     return failures;
 }
 
-/* (m2) The candidate DOES NOT BUILD while the prebuilt runner would still
- * print a passing verdict. Proven live: a model change that did not
- * compile passed a gate that ran the runner built before the turn. The
- * gate target is now rebuilt from the candidate first; a failed build
- * refuses by name and the stale runner is never consulted. */
+/* (m2) The candidate does not build while the prebuilt runner would still print
+ * a passing verdict: the gate target is rebuilt from the candidate first, a
+ * failed build refuses by name and the stale runner is never consulted. */
 static int mr_exec_gate_build_fails(void)
 {
     int failures = 0;
@@ -1571,10 +1509,7 @@ static int mr_exec_gate_build_fails(void)
     MR_CHECK("build-fail refused", strcmp(r.verdict, "refused") == 0);
     MR_CHECK("build-fail reason names the build",
         strstr(r.reason, "gate build failed: test_parallel exit=2") != NULL);
-    /* The compiler wrote its one useful line to STDERR. A capture that
-     * drops stderr leaves a refusal that can say only "exit=2" after the
-     * whole turn has already been paid for, so the reason must quote the
-     * line the build actually printed. */
+    /* The compiler's line goes to STDERR; the reason must quote it. */
     MR_CHECK("build-fail reason quotes the build's own stderr",
         strstr(r.reason, "error: expected declaration") != NULL);
     MR_CHECK("build-fail spawn named",
@@ -1587,10 +1522,9 @@ static int mr_exec_gate_build_fails(void)
     return failures;
 }
 
-/* One build-outcome case: the lane's gate build runs `recipe`, and the
- * prebuilt runner would still print a passing verdict. Whatever the build
- * did, the run is refused by name, the runner is never consulted and no
- * runner identity is published. */
+/* One build-outcome case: the gate build runs `recipe` while the prebuilt runner
+ * would print a passing verdict. Whatever the build did, the run is refused by
+ * name, the runner is never consulted and no runner identity is published. */
 static int mr_exec_build_refused(const char *label, const char *recipe,
     int gate_ms, const char *named)
 {
@@ -1620,9 +1554,8 @@ static int mr_exec_build_refused(const char *label, const char *recipe,
     return failures;
 }
 
-/* (m3) A build that OVERRUNS the gate deadline, and (m4) a build whose
- * make is killed by a signal (the shape an OOM kill takes), are named
- * non-passes exactly like a compile error. */
+/* (m3) A build that overruns the gate deadline and (m4) a build whose make is
+ * killed by a signal are named non-passes like a compile error. */
 static int mr_exec_gate_build_outcomes(void)
 {
     int failures = 0;
@@ -1633,9 +1566,9 @@ static int mr_exec_gate_build_outcomes(void)
     return failures;
 }
 
-/* (m5) The build REPLACES the runner. The prebuilt runner says pass; the
- * one rebuilt from the candidate says the group failed. The gate judges
- * the rebuilt bytes, never the stale ones, and the evidence names them. */
+/* (m5) The build REPLACES the runner: the prebuilt one says pass, the rebuilt
+ * one says the group failed. The gate judges the rebuilt bytes, and the
+ * evidence names them. */
 static int mr_exec_gate_rebuilt_runner(void)
 {
     int failures = 0;
@@ -1662,10 +1595,9 @@ static int mr_exec_gate_rebuilt_runner(void)
     return failures;
 }
 
-/* (n) The gate runner OVERRUNS ITS DEADLINE with passing-looking output
- * already in the pipe. A killed process proves nothing about the suite it
- * was still running, so the deadline is a refusal in its own right and is
- * named as one rather than folded into an exit number. */
+/* (n) The gate runner overruns its deadline with passing-looking output already
+ * piped. A killed process proves nothing about the suite, so the deadline is a
+ * named refusal of its own. */
 static int mr_exec_gate_timeout(void)
 {
     int failures = 0;
@@ -1732,8 +1664,7 @@ static int mr_exec_pass(void)
     MR_CHECK("pass gate token",
         strcmp(r.gate_evidence, "task_document:1/0") == 0 &&
         r.gate_present && r.gate_ran == 1 && r.gate_failed == 0);
-    /* The two facts a pass now also rests on: the pinned commit held
-     * still, and the gate's own process finished normally. */
+    /* Facts a pass rests on: the pinned commit held still, the gate exited normally. */
     MR_CHECK("pass head pinned", r.head_measured &&
         mr_hex40(r.head_observed) &&
         strcmp(r.base, r.head_observed) == 0);
@@ -1844,17 +1775,15 @@ static int mr_exec_host_exit(void)
         NULL, NULL, NULL, NULL, NULL, false, &r, err, &rc, &evidence) == 0);
     MR_CHECK("host-exit refused", rc == 1 && r.rc == 1 &&
         strcmp(r.verdict, "refused") == 0);
-    /* The fake host _exit(0)s after accepting the turn. The recorded
-     * reason has to name that exit; a bare "stdout closed" hides it. */
+    /* The fake host _exit(0)s after accepting the turn; the reason must name that exit. */
     MR_CHECK("host-exit names the child status",
         strstr(r.reason, "serve stdout closed, child exit 0") != NULL);
     free(evidence);
     return failures;
 }
 
-/* Host abort()s after accept. The parent records the signal. A cgroup
- * that did not move memory.events max does not call it a memory.max
- * charge failure. */
+/* Host abort()s after accept: the parent records the signal; a cgroup whose
+ * memory.events max did not move is not called a memory.max charge failure. */
 static int mr_exec_host_abort(void)
 {
     int failures = 0;
@@ -1933,11 +1862,9 @@ static int mr_delegates_memory(const char *cg)
     return delegated;
 }
 
-/* What the memory.max leg found. ARMED: a child cgroup exists for the
- * session. UNOBSERVED: no ancestor both delegates the memory controller
- * and lets this uid create a child, so the precondition cannot exist in
- * this process (a login session-N.scope sits under a root-owned
- * user-N.slice). BROKEN: an ancestor refused for any other reason. */
+/* What the memory.max leg found. ARMED: a child cgroup exists for the session.
+ * UNOBSERVED: no ancestor both delegates memory and lets this uid create a
+ * child. BROKEN: an ancestor refused for any other reason. */
 enum { MR_MEMCG_BROKEN = -1, MR_MEMCG_ARMED = 0, MR_MEMCG_UNOBSERVED = 1 };
 
 /* Where the walk looks and how it creates a child: the unified mount and
@@ -2005,10 +1932,8 @@ static int mr_memcg_verdict(const struct mr_memcg_walk *w, const char *self,
     return MR_MEMCG_UNOBSERVED;
 }
 
-/* Walk from `self` up to the mount root and arm a child under the
- * nearest ancestor that delegates memory and accepts one. Every level up
- * to the root is examined; no hop cap can stop short of a delegating
- * ancestor. */
+/* Walk from `self` up to the mount root and arm a child under the nearest
+ * ancestor that delegates memory and accepts one; every level is examined. */
 static int mr_memcg_walk_run(const struct mr_memcg_walk *w, const char *self)
 {
     char cg[1024];
@@ -2082,9 +2007,9 @@ static void mr_memory_cgroup_close(const char *dir)
     (void)rmdir(dir);
 }
 
-/* ── The walk against a fixture tree shaped like this host's hierarchy.
- * A scripted mkdir stands in for the kernel's delegation rule: only
- * inside user@1000.service may this uid create a child. */
+/* ── The walk against a fixture tree shaped like a real hierarchy.
+ * A scripted mkdir stands in for the delegation rule: only inside
+ * user@1000.service may this uid create a child. */
 static int g_mr_fake_mkdir_errno;
 
 static int mr_fake_mkdir(const char *path, mode_t mode)
@@ -2154,12 +2079,10 @@ static bool mr_memcg_armed_under_dev(const char *mount, const char *dir)
         rmdir(dir) == 0;
 }
 
-/* The landing proof's watcher ran from a login session scope: every
- * memory-delegating ancestor there is root-owned. That is an
- * unobservable precondition, not a delegated cgroup that failed. Inside
- * the user manager the walk arms at the nearest delegating ancestor,
- * however deep the caller sits, and a non-permission refusal stays a
- * failure. */
+/* From a login session scope every memory-delegating ancestor is root-owned:
+ * UNOBSERVED, not a failed delegated cgroup. Inside the user manager the walk
+ * arms at the nearest delegating ancestor at any depth, and a non-permission
+ * refusal stays a failure. */
 static int mr_exec_memcg_walk(void)
 {
     int failures = 0;
@@ -2266,12 +2189,10 @@ static void mr_read_all(int fd, char *buf, size_t cap)
     buf[n] = '\0';
 }
 
-/* The host shares a cgroup with the session and crosses memory.max.
- * The run must refuse with the charge reason, and the session parent
- * must still be alive to say so. A process with no writable
- * memory-delegating ancestor cannot create that cgroup at all: the leg
- * reports UNOBSERVED (never cached, refused by an exact proof) instead
- * of claiming a delegated cgroup failed. */
+/* The host shares a cgroup with the session and crosses memory.max: the run
+ * refuses with the charge reason and the session parent survives to say so.
+ * With no writable memory-delegating ancestor the leg reports UNOBSERVED
+ * (never cached) instead of claiming a delegated cgroup failed. */
 static int mr_exec_memory_max(void)
 {
     int failures = 0;
@@ -2731,9 +2652,8 @@ static int mr_exec_claim_seed(void)
 }
 
 /* --- the workspace restore -------------------------------------------------
- * A run leaves the workspace at its pinned base once the candidate is
- * verified as a durable copy of the change, so the next claimed task on
- * the same workspace is not refused for this run's own dirt. */
+ * A run leaves the workspace at its pinned base once the candidate is verified
+ * as a durable copy, so the next claimed task is not refused for this run's dirt. */
 
 static bool mr_path_in(const char *dir, const char *rel, char *out,
     size_t cap)
@@ -2861,17 +2781,13 @@ static int mr_exec_restore_pass(void)
     return failures;
 }
 
-/* A restore that rewrites byte-identical content must also settle the
- * index stat cache. The receiver's intake reads stat only (git's own
- * shortcut: size, mode bits, mtime seconds), and `git apply -R` plus
- * `git restore --staged` leave the index holding the pre-turn stat while
- * the files carry fresh mtimes — while even `git status` reports clean
- * without writing the refresh back. The next admitted job on that
- * workspace then refuses DIRTY until something refreshes the index.
+/* A restore that rewrites byte-identical content must also settle the index
+ * stat cache. The receiver's intake reads stat only (size, mode, mtime
+ * seconds); after `git apply -R` plus `git restore --staged` the index holds
+ * the pre-turn stat, so the next admitted job would refuse DIRTY.
  *
- * This drives the restore entry directly: the fake-turn rig installs a
- * core.fsmonitor hook that makes every `git status` rescan and rewrite
- * the index, which heals exactly the staleness this case must show. */
+ * Drives the restore entry directly: the fake-turn rig's core.fsmonitor hook
+ * rewrites the index on every `git status` and would hide the staleness. */
 static int mr_exec_restore_settles_index(void)
 {
     int failures = 0;
@@ -2893,8 +2809,7 @@ static int mr_exec_restore_settles_index(void)
     MR_CHECK("settle lane", mr_lane(&d));
     MR_CHECK("settle seed", mr_seed_committed(&d, "src/sum.c", "orig\n"));
     MR_CHECK("settle base", muse_head_at(d.wt, base, sizeof(base)));
-    /* Force a second boundary between the commit and the restore, so the
-     * stale index stat the undo leaves behind cannot match by luck. */
+    /* Force a second boundary between commit and restore so a stale index stat cannot match by luck. */
     sleep(1);
     (void)snprintf(path, sizeof(path), "%s/src/sum.c", d.wt);
     MR_CHECK("settle turn", mr_write(path, "orig\nTURN\n", 0));
@@ -2919,8 +2834,7 @@ static int mr_exec_restore_settles_index(void)
     MR_CHECK("settle intake-clean",
         zcl_devagent_workspace_observe(d.wt, true, &w) && w.directory &&
         w.resolved && w.checkout && w.dirty == 0);
-    /* Real byte changes still refuse: detection is not weakened. The
-     * size change makes this deterministic whatever the mtime reads. */
+    /* Real byte changes still refuse; the size change makes this deterministic. */
     MR_CHECK("settle re-dirty",
         mr_write(path, "orig\nREAL DIRT\n", 0));
     memset(&w, 0, sizeof(w));
@@ -3087,9 +3001,7 @@ static int mr_exec_restore_unverified(void)
     return failures;
 }
 
-/* The point of it all: two claimed tasks in a row on one workspace. The
- * second reaches the model turn instead of being refused for the first
- * one's dirt. */
+/* Two claimed tasks in a row on one workspace: the second reaches the model turn. */
 static int mr_exec_restore_twice(void)
 {
     int failures = 0;
@@ -3121,22 +3033,10 @@ static int mr_exec_restore_twice(void)
 }
 
 /* --- the change set must be NAMED, or the run refuses by name -----------
- * On 2026-09-19 a real turn on node1 edited one tracked file, the gate
- * passed (test_tor:1/0), and the run published verdict "pass" with
- * candidate "none", files_changed=1. The fold had failed. WHICH step
- * failed, and why, is not knowable from anything that run left behind —
- * that is the defect. The worker's own completion predicate then refused
- * the pass for the missing artifact, 106k tokens were thrown away, and
- * the workspace was left dirty, which refused every later job.
- *
- * This case reproduces the SHAPE that produced it, not a guess at the
- * cause: `diff.external` pointed at a path that does not exist makes
- * `git diff HEAD --` exit 128 with an empty capture and a stderr this
- * code never reads, while `git status --porcelain`, `git rev-parse`,
- * `git hash-object` and `git ls-files` all still exit 0. A tracked diff
- * that alone cannot be captured, and silence about it: the exact
- * condition under which the old code published a pass with no artifact,
- * whatever made git exit 128 on the day. */
+ * A gate-passing turn whose tracked diff cannot be captured must not publish
+ * a pass with no artifact. Reproduced with `diff.external` pointing at a
+ * missing path: `git diff HEAD --` exits 128 with an empty capture while
+ * status, rev-parse, hash-object and ls-files still exit 0. */
 static bool mr_break_tracked_diff(const struct mr_dirs *d)
 {
     return mr_git3(d->wt, "config", "diff.external",
@@ -3153,10 +3053,8 @@ static int mr_unfoldable_evidence(const struct mr_dirs *d,
     int failures = 0;
     char path[8192];
     char *text;
-    /* Nothing was preserved, so nothing may be undone — but the tree is
-     * off its base and this run could not put it back, which is exactly
-     * what blocked means. Not half-undone: the change is all still
-     * there, readable, which is what makes it recoverable by hand. */
+    /* Nothing was preserved so nothing is undone, but the tree is off its base
+     * and could not be put back: blocked, not half-undone (the change is intact). */
     MR_CHECK("unfoldable change untouched",
         !r->workspace_restored && r->workspace_blocked &&
         !r->half_undone);
@@ -3207,8 +3105,7 @@ static int mr_exec_candidate_unfoldable(void)
         "printf 'edited\\n' > \"$W/src/sum.c\""));
     MR_CHECK("unfoldable break diff", mr_break_tracked_diff(&d));
     rc = mr_run_prepared(&d, NULL, "src/turn.c", NULL, &r, &evidence);
-    /* The turn ran and the change is measured: this is not a run that
-     * failed early, it is the exact run that used to publish a pass. */
+    /* The turn ran and the change is measured: not an early failure. */
     MR_CHECK("unfoldable turn ran", evidence &&
         evidence_has(evidence, "turn-cmd:") && r.files_changed == 2 &&
         r.scope_changed_measured && r.head_measured);
@@ -3229,9 +3126,8 @@ static int mr_exec_candidate_unfoldable(void)
     return failures;
 }
 
-/* The same turn with git healthy: one tracked file edited, the gate
- * passes, and the change IS named and published. The production shape,
- * end to end. */
+/* The same turn with git healthy: one tracked file edited, the gate passes,
+ * and the change is named and published. */
 static int mr_exec_candidate_tracked(void)
 {
     int failures = 0;
@@ -3325,9 +3221,8 @@ static int mr_recover_second(const struct mr_dirs *d,
     return failures;
 }
 
-/* THE ACCEPTANCE SEQUENCE: a run whose gate fails, then the very next
- * claimed task on the SAME workspace, which must reach its turn and
- * pass. One workspace, two run dirs, no hand cleaning in between. */
+/* ACCEPTANCE SEQUENCE: a run whose gate fails, then the next claimed task on
+ * the SAME workspace reaches its turn and passes, with no hand cleaning. */
 static int mr_exec_recover_then_pass(void)
 {
     int failures = 0;
@@ -3353,8 +3248,7 @@ static int mr_exec_recover_then_pass(void)
     (void)snprintf(first, sizeof(first), "%s", r.candidate);
     free(evidence);
     evidence = NULL;
-    /* The next claimed task: its own run dir, the same workspace, a gate
-     * that now passes. */
+    /* The next claimed task: own run dir, same workspace, a passing gate. */
     MR_CHECK("recover second rundir",
         snprintf(d.run, sizeof(d.run), "%s/run2", d.root) <
         (int)sizeof(d.run) && mr_mkdir_p(d.run));
@@ -3383,11 +3277,9 @@ static int mr_exec_restore_blocked(void)
     MR_CHECK("blocked lane", mr_lane(&d));
     MR_CHECK("blocked gate", mr_gate_script(&d, mr_verdict_pass,
         mr_head_pass, NULL));
-    /* The turn's own file lands under src/, and src/ goes read-only the
-     * moment it exists: the copy under the run dir still succeeds (the
-     * file is readable), so the change IS preserved — and then the undo
-     * cannot remove it. Preserve first, restore second, exactly the
-     * order that makes a blocked restore safe. */
+    /* The turn's file lands under src/, which goes read-only once it exists: the
+     * copy under the run dir succeeds (change preserved), then the undo cannot
+     * remove it. Preserve first, restore second. */
     MR_CHECK("blocked hook", mr_fsmonitor(&d, "src/turn.c",
         "chmod 500 \"$W/src\""));
     rc = mr_run_prepared(&d, NULL, "src/turn.c", NULL, &r, &evidence);

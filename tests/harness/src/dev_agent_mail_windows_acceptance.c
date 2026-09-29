@@ -82,7 +82,7 @@ static bool private_regular(struct platform_private_file *file)
 
 /* Fixture state threaded through the case functions below. main() stays a
  * flat sequence of case calls so its own complexity does not recreate the
- * one giant function this file used to be. */
+* one giant function. */
 struct dvx_fixture {
     char root[4096];
     char state[4096];

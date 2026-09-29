@@ -339,12 +339,8 @@ static int case_flipped_ok_does_not_raise(void)
     for (int32_t h = A + 1; h <= tip; h++) {
         if (h == bad) {
             /* body_persist FAILS here: baseline H* = bad-1. The row is tagged
-             * over ok=0 (its true, honest verdict). status is passed NULL to
-             * mirror production EXACTLY: body_persist_log has no `status` column
-             * and body_persist_log_insert() computes its itag with status=NULL
-             * (body_persist is not a status-covered log, so the value never
-             * enters the tag). A non-NULL status here made put_tagged_row emit
-             * an INSERT naming a `status` column that does not exist. */
+             * over ok=0. status is NULL like production: body_persist_log has
+             * no status column. */
             uint8_t hh[32];
             synth_hash(hh, h, 0);
             built = built
@@ -566,10 +562,8 @@ static int case_fold_perf(void)
     HI_CHECK("perf: warm fold cheaper than cold (watermark saves work)",
              warm_us <= cold_us);
 
-    /* The warm prefix is trusted only while immutable. A repair/corruption
-     * that changes it on the same connection must revoke the watermark; an
-     * append above H* remains O(delta). This is the lifecycle hole regression
-     * caught by the full parallel push gate. */
+    /* The warm prefix is trusted only while immutable: a change to it on the
+     * same connection revokes the watermark; an append above H* stays O(delta). */
     const int32_t hole = tip - 7;
     char delete_sql[128];
     snprintf(delete_sql, sizeof(delete_sql),

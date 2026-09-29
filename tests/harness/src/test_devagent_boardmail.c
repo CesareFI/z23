@@ -1,31 +1,23 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * ACCEPTANCE BAR for board-carried agent mail
- * (tools/command/native_devagent_boardmail.c, and its seams in
- * native_devagent_receive.c, native_devagent_mail.c and
- * native_fleet_steer.c): a directive sent on one box reaches the receiver
- * on another box over the signed FLEET board, becomes queued work there
- * exactly once, and its answers come back — with no script and no SSH.
+ * Acceptance bar for board-carried agent mail
+ * (tools/command/native_devagent_boardmail.c and its seams in
+ * native_devagent_receive.c, native_devagent_mail.c, native_fleet_steer.c):
+ * a directive sent on one box reaches another over the signed FLEET board,
+ * becomes queued work there exactly once, and its answers come back, with no
+ * script and no SSH.
  *
- * TWO BOXES, ONE PROCESS. Box A and box B are two isolated state roots
- * (XDG_STATE_HOME switched per step), each with its own mail dir, queue,
- * steer grants, receiver cursors and a fleet roster sealed by one test
- * operator key. Each box's node is a small in-process model of the
- * `fleet_board` RPC (post, fleet_page, show) installed through the rpc
- * client's test hook: a post's id is a digest of its signed fields, so a
- * re-post of the same content is the same post, an expired post is never
- * paged, and show answers NOT_FOUND for an unknown id. Carriage between the
- * two nodes (what the paired fleet pull does, proven in the fleet_board
- * group) is an explicit copy by id. No model, no network, no spawn.
+ * Two boxes, one process: isolated state roots (XDG_STATE_HOME switched per
+ * step), each with mail dir, queue, steer grants, receiver cursors and a
+ * roster sealed by one operator key. Each box's node is an in-process model
+ * of the `fleet_board` RPC (post, fleet_page, show) via the rpc client test
+ * hook; carriage between nodes is an explicit copy by id.
  *
- * Cases: the A->B->answer->A round trip; a re-gossiped post and a re-read
- * page deliver once; a crash between export and import delivers once on
- * restart; a forged inbox line is refused MISMATCH; a wrong signer is
- * refused UNENROLLED or UNGRANTED; partial board fields are refused
- * UNSIGNED; an expired post is never delivered late; a node that does not
- * answer defers without a marker and the row is decided later; a directive
- * for another box too large for one board note is refused at send.
- */
+ * Cases: the A->B->answer->A round trip; re-gossip and re-read deliver once;
+ * a crash between export and import delivers once; forged inbox line
+ * MISMATCH; wrong signer UNENROLLED/UNGRANTED; partial board fields
+ * UNSIGNED; expired post never delivered; unanswered node defers; an
+ * oversized directive is refused at send. */
 
 #if !defined(_WIN32) && !defined(_DEFAULT_SOURCE)
 #define _DEFAULT_SOURCE
@@ -123,8 +115,7 @@ static void bmx_hex(const uint8_t *in, size_t n, char *out)
     out[2 * n] = '\0';
 }
 
-/* A post id: a digest of every field the real board signs, so the same
- * content at the same created_at is the same post, as with Ed25519. */
+/* A post id: a digest of every field the real board signs. */
 static void bmx_post_id(const struct bmx_post *p, char out[65])
 {
     struct sha3_256_ctx ctx;
@@ -177,11 +168,7 @@ static struct bmx_post *bmx_inject(int node, int host, const char *text,
     return bmx_store(node, &p);
 }
 
-/* A fixture stamp `seconds` before a caller-supplied wall-clock reading —
- * not itself a clock reader. The caller reads the clock once, and this just
- * hands the subject a different, still-recent number for a synthetic
- * created_at, the way `now + TTL` builds a deadline elsewhere in this
- * file. */
+/* A fixture stamp `seconds` before a caller-supplied wall-clock reading. */
 static long long bmx_stamp_before(long long base, long long seconds)
 {
     return base - seconds;
@@ -810,8 +797,7 @@ static int bmx_t_round_trip(void)
                             "state=accepted", "\"job-1\""), 1);
         ASSERT_EQ(bmx_lines(BMX_A, "mail/inbox.node-b.jsonl", "state=done",
                             "\"job-1\""), 1);
-        /* Nothing local-only left either box: A signed one post (the
-         * directive), B signed two (its accept and the result), and the
+        /* Nothing local-only is left: A signed one post, B two, and
          * carriage left the same three on both nodes. */
         ASSERT_EQ(bmx_signed_by(BMX_A, BMX_A), 1);
         ASSERT_EQ(bmx_signed_by(BMX_A, BMX_B), 2);
@@ -875,8 +861,7 @@ static int bmx_t_crash_between(void)
         struct rcv_beat_stats st;
         ASSERT(bmx_setup("crash"));
         ASSERT(bmx_sent("job-3"));
-        /* A died before it recorded the export: it posts again on restart,
-         * the same bytes, the same post. */
+        /* A died before recording the export: same bytes, same post. */
         bmx_forget(BMX_A, "receive/boardmail.state");
         ASSERT_EQ(bmx_drive(BMX_A, &st), 1);
         ASSERT_EQ(st.board_out, 1);
@@ -884,8 +869,8 @@ static int bmx_t_crash_between(void)
         bmx_carry(BMX_A, BMX_B);
         ASSERT_EQ(bmx_drive(BMX_B, &st), 1);
         ASSERT_EQ(st.admitted, 1);
-        /* B died after the inbox append but before either cursor was
-         * saved: the page is carried again and the intake replayed. */
+        /* B died after the inbox append but before the cursors were saved:
+         * the page is carried again and the intake replayed. */
         bmx_forget(BMX_B, "receive/boardmail.state");
         bmx_forget(BMX_B, "receive/intake.state");
         ASSERT_EQ(bmx_drive(BMX_B, &st), 1);
@@ -915,9 +900,8 @@ static int bmx_t_forged(void)
         ASSERT(bmx_sent("job-4"));
         bmx_carry(BMX_A, BMX_B);
         ASSERT(bmx_outbox_row("job-4", row, sizeof(row)));
-        /* The genuine post id and signer, under a different ref and body,
-         * written BEFORE the genuine row is imported: naming a post id must
-         * neither admit the forgery nor stop the genuine row arriving. */
+        /* Genuine post id and signer under a different ref and body, written
+         * before the genuine row: neither admits the forgery nor blocks it. */
         bmx_row(forged, sizeof(forged), "2026-09-19T00:00:00Z", "job-4x",
                 "Something else entirely.");
         ASSERT(bmx_write(BMX_B, "mail/inbox.node-a.jsonl", "", "ab"));

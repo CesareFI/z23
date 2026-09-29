@@ -1,4 +1,4 @@
-/* Sapling SPEND-circuit fixed-reference oracle (test-only, H2 lane).
+/* Sapling SPEND-circuit fixed-reference oracle (test-only).
  *
  * Portions interoperate with librustzcash / bellman / sapling-crypto
  * (The Zcash developers / Electric Coin Company), pinned commit

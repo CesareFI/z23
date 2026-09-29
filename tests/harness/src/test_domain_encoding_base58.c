@@ -151,14 +151,10 @@ int test_domain_encoding_base58(void)
         }
     }
 
-    /* (4) Base58Check round-trip + checksum mismatch rejection.
-     *
-     * 21-byte P2PKH-shaped payload (version 0x00 + 20-byte hash).
-     * We don't pin the encoded string here — the literal Bitcoin
-     * mainnet address would require the trailing 4 bytes to be the
-     * SHA256d checksum of the 20-byte hash, which they aren't in
-     * synthetic payloads. The round-trip + mismatch tests below seal
-     * the algorithm. */
+    /* (4) Base58Check round-trip + checksum mismatch rejection on a 21-byte
+     * P2PKH-shaped payload (version 0x00 + 20-byte hash). The encoded
+     * string is not pinned: synthetic payloads lack a real SHA256d
+     * checksum. */
     {
         const unsigned char payload[] = {
             0x00, 0xeb, 0x15, 0x23, 0x1d, 0xfc, 0xeb, 0x60,

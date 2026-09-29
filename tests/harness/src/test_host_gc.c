@@ -1,38 +1,26 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * ACCEPTANCE BAR for ops.host.gc (tools/command/native_ops_host_gc.c over
- * the engine in tools/command/host_gc_sweep.c).
+ * Acceptance bar for ops.host.gc (tools/command/native_ops_host_gc.c over
+ * the engine in tools/command/host_gc_sweep.c): the janitor never deletes work.
  *
- * THE PROPERTY THIS GROUP EXISTS FOR: the janitor never deletes work.
- * Three REAL `git worktree add` generations are built in a throwaway
- * repository under the harness's own test-tmp, and each is put into exactly
- * one of the states the engine must respect:
+ * Three real `git worktree add` generations in a throwaway repository under
+ * test-tmp, each in one state the engine must respect:
  *
  *   gen-inuse    a live child process whose cwd is inside it   -> KEPT in_use
  *   gen-locked   `git worktree lock`                           -> KEPT locked
  *   gen-orphan   neither, and back-dated past the age floor    -> REAPED
  *
- * Both keeps are YOUNGER than the floor, so a run that reported them as
- * "too_young" would pass a count check while proving nothing about the two
- * rules that actually matter. The class labels are asserted, not just the
- * totals.
+ * Both keeps are younger than the floor, so the class labels are asserted,
+ * not just totals. A dry run changes nothing; an apply reclaims only the
+ * orphan; every leaf in the engine's protected-tree table (including the two
+ * live datadir names, reached only through the table) is refused by name
+ * under a throwaway fixture home; a directory holding blk*.dat is refused by
+ * contents.
  *
- * Then: a dry run changes nothing on disk, an apply reclaims ONLY the
- * orphan, every leaf in the engine's own protected-tree table is refused
- * BY NAME under a throwaway fixture home (never created and never touched
- * by this test — including the two live datadir names, which this test
- * reaches only through the table, never as a literal), and a directory is
- * separately refused by its contents (holding blk*.dat).
- *
- * AND THE OTHER HALF OF "never deletes work": it never abandons space
- * either. `git worktree remove` unregisters a worktree whether or not it
- * managed to delete the directory, so one read-only scratch directory
- * inside a dead generation leaves a tree git no longer lists — invisible
- * to every later sweep, and on the tmpfs pool a permanent RAM leak. Two
- * more generations cover that: one git leaves behind and the sweep must
- * finish off (reported reclaimed, refusals empty), and one nothing can
- * remove because its PARENT is read-only, which must appear in refusals[]
- * by name rather than vanish from the accounting.
+ * It also never abandons space: `git worktree remove` unregisters a worktree
+ * even if the directory survives, so one generation git leaves behind must
+ * be finished off (reclaimed, refusals empty), and one whose parent is
+ * read-only must appear in refusals[] by name.
  */
 
 #include "test/test_core.h"
@@ -92,13 +80,9 @@ static bool hgt_write(const char *path, const char *text)
 }
 
 /* A repository with exactly one commit. Identity and signing are pinned on
- * the command line so a maintainer's global gitconfig (commit.gpgsign is
- * on for this project) cannot decide whether the fixture builds.
- *
- * The committed .gitignore is what lets a fixture generation below carry
- * the two things a REAL dev-proof generation carries — build output and a
- * vendored dependency — and still be what git calls clean, which is the
- * precondition for the sweep to consider it at all. */
+ * the command line so a global gitconfig cannot decide whether the fixture
+ * builds. The committed .gitignore lets a generation carry build output and
+ * a vendored dependency and still be git-clean. */
 static bool hgt_make_repo(const char *repo)
 {
     static const char *const init[] = { "init", "-q", "-b", "main", NULL };
@@ -253,10 +237,8 @@ int test_host_gc(void)
         struct host_gc_report report;
         const struct host_gc_class *cls;
         hgt_seed_request(&req, pool);
-        /* Give the forked occupant a moment to reach its chdir before the
-         * /proc pass reads its cwd. The engine reads a live link, so this
-         * is a fixture ordering wait, not a timing assumption in the code
-         * under test. */
+        /* Let the forked occupant reach its chdir before the /proc pass
+         * reads its cwd (fixture ordering wait). */
         for (int i = 0; i < 200; i++) {
             ASSERT(host_gc_run(&req, &report));
             cls = hgt_class(&report, "z23p");
@@ -287,10 +269,8 @@ int test_host_gc(void)
         char stale[HGT_PATH];
         char dotgit[HGT_PATH];
         FILE *f;
-        /* A generation whose administrative gitdir is already gone: git
-         * answers nothing from inside it. readdir order decides whether the
-         * engine meets this one first, so a pool-repo probe that gave up
-         * after one child would sweep or not sweep by accident. */
+        /* Administrative gitdir already gone: git answers nothing from inside
+         * it, and the outcome must not depend on readdir order. */
         (void)snprintf(stale, sizeof(stale), "%s/gen-stale", pool);
         (void)snprintf(dotgit, sizeof(dotgit), "%s/.git", stale);
         ASSERT(mkdir(stale, 0700) == 0);
@@ -352,13 +332,9 @@ int test_host_gc(void)
         char frozen[HGT_PATH];
         char vendor[HGT_PATH], vendor_git[HGT_PATH], vendor_head[HGT_PATH];
         /* A generation shaped like a real one. `out/` is read-only build
-         * scratch: git's own removal stops there, reports failure, and
-         * unregisters the worktree anyway — leaving a tree `git worktree
-         * list` will never name again. `vendor/.git` is a DIRECTORY, the
-         * shape a vendored submodule checkout has and the shape a
-         * nested-repo-preserving remover would refuse to cross. Both are
-         * covered by the fixture repo's committed .gitignore, so git still
-         * calls the generation clean and the sweep still classifies it. */
+         * scratch: git's removal stops there and unregisters the worktree
+         * anyway. `vendor/.git` is a directory (vendored submodule shape).
+         * Both are .gitignore'd, so git still calls the generation clean. */
         (void)snprintf(left_pool, sizeof(left_pool), "%s/pool-left", tmp);
         ASSERT(mkdir(left_pool, 0700) == 0);
         ASSERT(hgt_add_gen(repo, left_pool, "gen-left", left_gen,
@@ -395,11 +371,8 @@ int test_host_gc(void)
         struct host_gc_report report;
         const struct host_gc_class *cls;
         const char *reason;
-        /* The pool directory itself is read-only, so the final rmdir of
-         * the generation is impossible for git and for the sweep alike.
-         * The one outcome this must never produce is silence: a generation
-         * git has already unregistered and nobody can delete has to be
-         * named, or it is exactly the leak that started this. */
+        /* The pool directory is read-only, so the generation's final rmdir is
+         * impossible; it must be named in refusals[], never silent. */
         (void)snprintf(stuck_pool, sizeof(stuck_pool), "%s/pool-stuck", tmp);
         ASSERT(mkdir(stuck_pool, 0700) == 0);
         ASSERT(hgt_add_gen(repo, stuck_pool, "gen-stuck", stuck_gen,
@@ -427,11 +400,9 @@ int test_host_gc(void)
         struct host_gc_request req;
         struct host_gc_report report;
         const struct host_gc_class *cls;
-        /* Four finished generations, all past the age floor, all idle and
-         * clean. The next proof seeds its build from the newest one of its
-         * own identity, so that one survives per identity — but at most
-         * two across the pool, newest first. The superseded generation of
-         * identity aa and the oldest identity cc are reaped as before. */
+        /* Four finished, idle, clean generations past the age floor. The
+         * newest of each identity survives, at most two across the pool; the
+         * superseded aa generation and the oldest cc are reaped. */
         (void)snprintf(donor_pool, sizeof(donor_pool), "%s/pool-donor", tmp);
         ASSERT(mkdir(donor_pool, 0700) == 0);
         ASSERT(hgt_add_donor(repo, donor_pool, "d-a-old", "aa", 100, d_a_old,
@@ -465,13 +436,10 @@ int test_host_gc(void)
         char datadir[HGT_PATH];
         char fixture_home[HGT_PATH];
         size_t nleaves = host_gc_protected_leaf_count();
-        /* This walks tools/command/host_gc_paths.c's own protected-leaf
-         * table (host_gc_protected_leaf), so it proves the sweep refuses
-         * EVERY tree it protects — the two live datadir names included —
-         * by name and without stat()ing it, without this test ever
-         * spelling one of those names as a literal of its own. The home
-         * a path is built under is this test's own throwaway fixture
-         * directory, never the real $HOME. */
+        /* Walks host_gc_paths.c's protected-leaf table
+         * (host_gc_protected_leaf): every protected tree, including the live
+         * datadir names, is refused by name without stat(), under this test's
+         * throwaway home and without spelling those names as literals. */
         (void)snprintf(fixture_home, sizeof(fixture_home),
                        "%s/fixture-home", tmp);
         hgt_seed_request(&req, pool);
@@ -512,9 +480,7 @@ int test_host_gc(void)
     }
 
 _test_next:;
-    /* Restore both read-only fixture directories whatever happened above,
-     * or the recursive cleanup below cannot take its own scratch tree
-     * down. Both are this test's own, under its own tmpdir. */
+    /* Restore both read-only fixture directories so the recursive cleanup can run. */
     if (stuck_pool[0])
         (void)chmod(stuck_pool, 0700);
     if (left_out[0])

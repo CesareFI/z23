@@ -3,23 +3,18 @@
  *
  * Unit tests for domain/consensus/sighash.{c,h}.
  *
- * These tests pin the pure signature-hash computation. They DO NOT go
- * through any chain/ wrapper that resolves coins from a view: they
- * exercise the typed domain API directly and cross-check the result
- * against the legacy lib/ wrapper (validation/sighash.h) to prove the
- * extraction was bit-for-bit behaviour-preserving.
+ * Pins the pure signature-hash computation, exercising the typed domain API
+ * directly and cross-checking against the legacy wrapper
+ * (validation/sighash.h).
  *
  * Coverage:
- *   - null/edge cases (nIn out of range; NOT_AN_INPUT accepted;
- *     SIGHASH_SINGLE with nIn >= num_vout in Sprout regime)
+ *   - edge cases (nIn out of range; NOT_AN_INPUT accepted; SIGHASH_SINGLE
+ *     with nIn >= num_vout in the Sprout regime)
  *   - signature_hash_version: Sprout / Overwinter / Sapling routing
  *   - precompute_tx_data: domain vs legacy byte-for-byte
- *   - signature_hash regression seal across representative tx shapes
- *     (P2PKH-style), all three sig versions, base hash types
- *     {ALL, NONE, SINGLE} × {plain, ANYONECANPAY} × multiple inputs.
- *
- * If anyone "improves" one side of the wrapper-vs-domain pair without
- * the other, this test shouts.
+ *   - signature_hash regression seal over P2PKH-style shapes, all three sig
+ *     versions, hash types {ALL, NONE, SINGLE} x {plain, ANYONECANPAY} x
+ *     multiple inputs.
  */
 
 #include "test/test_core.h"
@@ -43,9 +38,8 @@
     else { printf("FAIL\n"); failures++; } \
 } while (0)
 
-/* Build a representative transaction with `n_vin` inputs and `n_vout`
- * outputs, deterministic bytes throughout so two builds produce the
- * same hash. Pure value carrier — no shielded components. */
+/* Build a deterministic transaction with `n_vin` inputs and `n_vout`
+ * outputs (no shielded components). */
 static struct transaction build_tx(unsigned int n_vin, unsigned int n_vout,
                                    bool overwintered, uint32_t version,
                                    uint32_t version_group_id)
@@ -83,9 +77,8 @@ static void free_tx(struct transaction *tx)
     free(tx->vout);
 }
 
-/* Cross-check: compute the sighash via the domain function and via the
- * legacy wrapper, fail if they don't match. Exercises both
- * cache=NULL and cache=precomputed code paths. */
+/* Cross-check the domain sighash against the legacy wrapper, with cache=NULL
+ * and cache=precomputed. */
 static bool xcheck(const struct script *sc, const struct transaction *tx,
                    unsigned int nIn, struct sighash_type ht,
                    int64_t amount, uint32_t branch_id)
@@ -97,9 +90,8 @@ static bool xcheck(const struct script *sc, const struct transaction *tx,
     precompute_tx_data(tx, &ptd_legacy);
     domain_consensus_precompute_tx_data(tx, &ptd_domain);
 
-    /* The cached struct must be byte-identical (same six uint256
-     * fields, same order, same layout — pinned by static asserts in
-     * core/modules/validation/src/sighash.c). */
+    /* The cached struct is byte-identical (same six uint256 fields, order
+     * and layout; static-asserted in core/modules/validation/src/sighash.c). */
     if (memcmp(&ptd_legacy, &ptd_domain, sizeof(ptd_legacy)) != 0)
         return false;
 

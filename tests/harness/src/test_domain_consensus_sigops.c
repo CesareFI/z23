@@ -3,20 +3,17 @@
  *
  * Unit tests for domain/consensus/sigops.{c,h}.
  *
- * Pins the pure sigop-counting arithmetic. Tests exercise the typed
- * zcl_result API directly AND cross-check against the legacy core/modules/validation
- * wrappers to prove the extraction is behaviour-preserving.
+ * Pins the pure sigop-counting arithmetic through the typed zcl_result API,
+ * cross-checked against the legacy core/modules/validation wrappers.
  *
  * Coverage:
  *   - null/edge contracts (null tx, null out, null prevouts when required)
- *   - empty scripts             -> 0
- *   - single OP_CHECKSIG vout   -> 1 (legacy)
- *   - bare OP_CHECKMULTISIG     -> 20 (legacy, accurate=false)
+ *   - empty scripts -> 0; single OP_CHECKSIG vout -> 1 (legacy); bare
+ *     OP_CHECKMULTISIG -> 20 (legacy, accurate=false)
  *   - P2SH gating (flag off, coinbase, non-P2SH prevout)
- *   - P2SH multisig regression seal: 2-of-3 wrapped redeem script,
- *     scriptSig pushes redeem, scriptPubKey is P2SH wrapper
+ *   - P2SH 2-of-3 multisig regression seal
  *   - large mixed shape: many vin/vout
- *   - cross-check legacy wrapper output for every shape
+ *   - legacy wrapper output cross-checked for every shape
  */
 
 #include "test/test_core.h"
@@ -221,10 +218,9 @@ int test_domain_consensus_sigops(void)
         transaction_free(&tx);
     }
 
-    /* P2SH multisig regression seal: 2-of-3 redeem wrapped in a P2SH
-     * scriptPubKey. Redeem script = OP_2 <pk1> <pk2> <pk3> OP_3 OP_CHECKMULTISIG.
-     * scriptSig must push the redeem (script_get_sig_op_count_p2sh extracts
-     * the last push as the redeem and accurately counts its CHECKMULTISIGs). */
+    /* P2SH multisig regression seal: 2-of-3 redeem (OP_2 <pk1> <pk2> <pk3>
+     * OP_3 OP_CHECKMULTISIG) in a P2SH scriptPubKey; the scriptSig pushes the
+     * redeem, which script_get_sig_op_count_p2sh counts accurately. */
     {
         struct transaction tx; transaction_init(&tx); transaction_alloc(&tx, 1, 1);
         memset(tx.vin[0].prevout.hash.data, 0x88, 32);
@@ -242,10 +238,8 @@ int test_domain_consensus_sigops(void)
         redeem[rsz++] = OP_3;
         redeem[rsz++] = OP_CHECKMULTISIG;
 
-        /* scriptSig: push the redeem script. rsz (~105) exceeds the
-         * one-byte direct-push limit (OP_PUSHDATA1 = 0x4c), so use the
-         * OP_PUSHDATA1-prefixed encoding. script_push_data handles the
-         * dispatch for us. */
+        /* scriptSig pushes the redeem script; rsz (~105) exceeds the direct
+         * push limit, so script_push_data emits OP_PUSHDATA1. */
         script_init(&tx.vin[0].script_sig);
         bool pushed = script_push_data(&tx.vin[0].script_sig, redeem, rsz);
         DCS_CHECK("p2sh 2-of-3: redeem-push fits scriptSig", pushed);
@@ -292,17 +286,10 @@ int test_domain_consensus_sigops(void)
         DCS_CHECK("legacy mixed shape: domain == wrapper",
                   r1.ok && domain_legacy == wrapper_legacy);
 
-        /* Sanity: hand-computed legacy count.
-         *   5 inputs × scriptSig "01 ac" → leading 0x01 is a direct-push
-         *     opcode that consumes the following byte (0xac) AS DATA. The
-         *     walker never sees a bare OP_CHECKSIG, so each scriptSig
-         *     contributes 0 sigops.
-         *   vout[0] OP_CHECKSIG          = 1
-         *   vout[1] P2PKH (ends in CHKSG)= 1
-         *   vout[2] OP_CHECKMULTISIG     = 20 (accurate=false, no preceding
-         *                                  OP_1..OP_16 last_opcode)
-         *   vout[3] empty                = 0
-         * Total = 0 + 1 + 1 + 20 + 0 = 22. */
+        /* Hand-computed legacy count: five "01 ac" scriptSigs give 0 (0x01
+         * is a direct push consuming 0xac as data); vout[0] OP_CHECKSIG = 1;
+         * vout[1] P2PKH = 1; vout[2] OP_CHECKMULTISIG = 20 (accurate=false);
+         * vout[3] empty = 0. Total 22. */
         DCS_CHECK("legacy mixed shape: count == 22",
                   r1.ok && domain_legacy == 22);
         transaction_free(&tx);

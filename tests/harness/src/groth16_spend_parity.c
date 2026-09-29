@@ -1,4 +1,4 @@
-/* Sapling SPEND-circuit standing differential parity oracle (test-only, H4 lane).
+/* Sapling SPEND-circuit standing differential parity oracle (test-only).
  *
  * Portions interoperate with librustzcash / bellman / sapling-crypto
  * (The Zcash developers / Electric Coin Company), pinned commit
@@ -6,59 +6,45 @@
  * externally-derived reference bytes are checked in; no Rust code is fetched,
  * built or linked.
  *
- * WHAT THIS IS
- * ------------
- * The C-must-beat-Rust ratchet requires a differential parity oracle before any
- * native-crypto claim. The H2 oracle (groth16_spend_oracle.c) proves the native
- * key-derivation / commitment / nullifier building blocks match librustzcash for
- * ONE fixed KAT witness. The H3 shape gate (test_groth16_selfverify.c) pins the
- * ported prefix's per-section constraint boundaries for that SAME single witness.
+ * Standing differential parity oracle. The C-must-beat-Rust ratchet requires
+ * it before any native-crypto claim. The H2 oracle (groth16_spend_oracle.c)
+ * proves the key-derivation / commitment / nullifier building blocks match
+ * librustzcash for one KAT witness; the H3 shape gate
+ * (test_groth16_selfverify.c) pins per-section constraint boundaries for
+ * that witness. This oracle generalizes both: over a corpus of deterministic
+ * spend witnesses it re-runs the native C23 spend synthesis and asserts:
  *
- * This oracle is the STANDING safety net that generalizes both: over a CORPUS of
- * deterministic spend witnesses, it re-runs the native C23 spend synthesis and
- * asserts, for every witness:
+ *   (A) Section-boundary parity (auto-tightening). Each recorded section's
+ *       cumulative constraint count equals the pinned reference trace
+ *       boundary (the 28-section table from commit 06da3b9...). Only the
+ *       n_sections actually recorded are compared, so new sections are
+ *       validated against REF_SECTIONS[i] with no edit here.
  *
- *   (A) SECTION-BOUNDARY PARITY (auto-tightening). Each recorded section's
- *       cumulative constraint count equals the pinned REFERENCE trace boundary
- *       (the full 28-section table from commit 06da3b9..., cross-checked 3x in
- *       the salvage plan). The oracle drives its assertions off the reference
- *       table and compares only the sections the native circuit ACTUALLY
- *       recorded (n_sections). So when the H3 port advances from 7 sections to
- *       8, 9, ... this oracle automatically validates the new section's boundary
- *       against REF_SECTIONS[i] with NO edit here — it tightens itself.
+ *   (B) Structural invariance. An R1CS circuit's shape must not depend on
+ *       witness values; every corpus witness must match witness 0's section
+ *       shape (constraints/vars/inputs per section).
  *
- *   (B) STRUCTURAL INVARIANCE. An R1CS circuit's shape must not depend on the
- *       witness values — a witness-dependent constraint/var/input count is an
- *       unsound circuit. Every corpus witness must produce a byte-identical
- *       section shape (constraints/vars/inputs per section) to witness 0. This
- *       is a class of divergence the single-witness H2/H3 gates cannot see.
+ *   (C) Per-wire value parity vs the external KAT where available: the
+ *       in-circuit nk wire ([nsk] ProofGenerationKeyGenerator, section 7)
+ *       against ground truth for the pinned witness; ak (section 1) and rk
+ *       (section 4) against native scalar derivations.
  *
- *   (C) PER-WIRE VALUE PARITY vs the fixed external KAT where available. The
- *       in-circuit nk wire ([nsk] ProofGenerationKeyGenerator, section 7) is
- *       checked against ground truth for the pinned witness. The in-circuit ak
- *       (section 1) and rk (section 4) wires are cross-checked against native
- *       scalar derivations for self-consistency.
+ *   (D) Determinism. Re-synthesizing an identical witness yields a
+ *       byte-identical witness vector.
  *
- *   (D) DETERMINISM. Re-synthesizing an identical witness yields a byte-identical
- *       witness vector.
+ *   (E) R1CS satisfaction, the coefficient-level check: every emitted
+ *       constraint is evaluated against the honest witness and must satisfy
+ *       A*B==C (bellman's TestConstraintSystem::which_is_unsatisfied).
+ *       Counts and probed wires cannot see a wrong coefficient.
  *
- *   (E) R1CS SATISFACTION — the coefficient-level check. (A) reads constraint
- *       COUNTS and (C) reads three wire VALUES; neither can see a wrong
- *       coefficient inside an otherwise correctly-shaped constraint. So every
- *       emitted constraint is evaluated against the honest witness and asserted
- *       to satisfy A*B==C (bellman's TestConstraintSystem::which_is_unsatisfied).
- *       Without this, "proven at parity" would mean only that the right NUMBER
- *       of constraints exist — a circuit whose own witness does not satisfy it
- *       yields proofs the network rejects, and counts alone cannot detect that.
+ * On the first divergence the oracle prints (witness index, section name,
+ * expected vs actual).
  *
- * On the FIRST divergence in any category the oracle prints the offending
- * (witness index, section name, expected vs actual) — it flags, never hides.
- *
- * The oracle is params-free and hermetic (pure Jubjub/blake2s/Pedersen crypto +
- * R1CS synthesis); it needs no ~/.zcash-params and no proving key, so it gates
- * unconditionally. It proves parity ONLY over the sections currently ported; the
- * honest scoreboard (ported prefix vs the 98777-constraint target) is printed and
- * documented in docs/work/GROTH16-SPEND-PARITY.md.
+ * The oracle is params-free and hermetic (Jubjub/blake2s/Pedersen crypto +
+ * R1CS synthesis; no ~/.zcash-params), so it gates unconditionally. It
+ * proves parity only over the sections currently ported; the scoreboard
+ * (ported prefix vs the 98777-constraint target) is documented in
+ * docs/work/GROTH16-SPEND-PARITY.md.
  */
 
 #include "test/test_core.h"
@@ -74,11 +60,9 @@
 #include <stdio.h>
 #include <string.h>
 
-/* Reference nk for one corpus witness.
- *
- * The checked-in KAT supplies the reference nk for the one witness whose nsk
- * is pinned. Remaining corpus entries report no external reference rather than
- * comparing native code against itself, which would be circular. */
+/* Reference nk for one corpus witness. The checked-in KAT supplies it for
+ * the one witness whose nsk is pinned; other entries report no external
+ * reference rather than compare native code against itself. */
 static bool parity_reference_nk(const uint8_t *nsk, uint8_t out[32])
 {
 #if SPEND_ORACLE_KAT_BAKED
@@ -95,10 +79,8 @@ static bool parity_reference_nk(const uint8_t *nsk, uint8_t out[32])
  * Cumulative num_constraints after each of bellman's 28 Spend::synthesize
  * sections, from the reference trace at commit 06da3b9ac8f278e5d4ae13088cf0a4c
  * 03d2c13f5 (num_constraints=98777, num_aux=98638, num_inputs=8 = 7 public +
- * ONE). Boundaries verified 3x against reference/groth16-traces/spend_circuit.
- * trace in the salvage plan. This table is the AUTHORITY the oracle diffs
- * against; the native port is correct for a prefix iff its recorded per-section
- * cumulative counts equal this table entry-for-entry over that prefix. */
+ * ONE). The native port is correct for a prefix iff its per-section
+ * cumulative counts equal this table over that prefix. */
 static const struct ref_section {
     const char *name;
     size_t cum_constraints;
@@ -137,10 +119,9 @@ static const struct ref_section {
 #define REF_TOTAL_INPUTS          8 /* 7 public + ONE */
 #define REF_NUM_SECTIONS         28
 
-/* Deterministic corpus. Index 0 is the pinned H2 KAT witness (ties the nk wire
- * to the checked-in librustzcash reference vector); 1..N-1 are distinct
- * canonical witnesses (small Fs scalars, guaranteed < 2^252 so the in-circuit
- * 252-bit decomposition and the reference full reduction agree). */
+/* Deterministic corpus. Index 0 is the pinned H2 KAT witness (ties the nk
+ * wire to the librustzcash vector); 1..N-1 are distinct canonical witnesses
+ * (small Fs scalars < 2^252 so decomposition and full reduction agree). */
 #define CORPUS_N 6
 
 struct parity_witness {
@@ -163,7 +144,7 @@ static void build_corpus_witness(struct parity_witness *pw, unsigned idx)
         w->rcv[0] = 0x71;
         w->rcv[1] = 0x0d;
     } else {
-        /* Distinct, canonical, small scalars — deterministic per index. */
+        /* Distinct, canonical, small scalars, deterministic per index. */
         ask[0] = (uint8_t)(0x11 + idx);
         ask[1] = 0x22;
         ask[2] = (uint8_t)(idx * 5u);
@@ -175,21 +156,17 @@ static void build_corpus_witness(struct parity_witness *pw, unsigned idx)
         w->rcv[0] = (uint8_t)(idx * 11u + 3u);
         w->rcv[1] = (uint8_t)(idx * 2u);
     }
-    /* Note commitment randomness (sections 18/19/20). Kept small so it is a
-     * canonical Fs scalar: the in-circuit decomposition keeps 252 bits and the
-     * out-of-circuit jub_scalar_mul reads all 256, so a scalar with a bit above
-     * 252 set would make the two disagree for a reason that is not a bug. A
-     * zero rcm would synthesize but select the identity slot in every window,
-     * exercising none of section 19's arithmetic. */
+    /* Note commitment randomness (sections 18/19/20), kept a canonical small
+     * Fs scalar (the in-circuit decomposition keeps 252 bits, the
+     * out-of-circuit jub_scalar_mul reads 256). A zero rcm would select the
+     * identity slot in every window. */
     w->rcm[0] = (uint8_t)(idx * 13u + 0x5cu);
     w->rcm[1] = (uint8_t)(idx * 3u + 0x23u);
 
     /* The authentication path section 21 folds cm.x up (32 siblings + 32
-     * position bits). Each sibling is taken from a Pedersen Merkle hash so it is
-     * a canonical Fr encoding by construction — the in-circuit 255-bit
-     * decomposition and the out-of-circuit reference must read the same number.
-     * The position bits deliberately are NOT a function of depth parity alone;
-     * a swapped-every-level bug would be invisible against that pattern. */
+     * position bits). Siblings come from a Pedersen Merkle hash (canonical
+     * Fr); position bits are not a function of depth parity alone, so a
+     * swapped-every-level bug is visible. */
     for (size_t d = 0; d < SAPLING_MERKLE_DEPTH; d++) {
         uint8_t a[32] = {0}, b[32] = {0};
         a[0] = (uint8_t)(0x10u + d);
@@ -200,10 +177,8 @@ static void build_corpus_witness(struct parity_witness *pw, unsigned idx)
         w->auth_path_bits[d] = ((((d * 5u) + (d / 3u)) ^ idx) & 1u) != 0u;
     }
 
-    /* Section 11 witnesses g_d = GH("Zcash_gd", d) and section 12 asserts it is
-     * not small order, so the diversifier has to be one that actually hashes to
-     * a point — group_hash misses on roughly half of them. Deterministic scan
-     * from d = 0, per witness. */
+    /* Section 11 witnesses g_d = GH("Zcash_gd", d) and section 12 requires it
+     * not small order, so scan d from 0 until group_hash hits a point. */
     bool have_d = false;
     for (unsigned i = 0; i < 256 && !have_d; i++) {
         memset(w->diversifier, 0, sizeof(w->diversifier));
@@ -223,13 +198,11 @@ static void build_corpus_witness(struct parity_witness *pw, unsigned idx)
     if (!sapling_compute_rk(ak, w->ar, rk))
         return;                         /* pw->ok stays false */
     memcpy(pw->pub.rk, rk, 32);
-    /* cv is bound to public inputs 3/4 by section 14, so the real value
-     * commitment is the only cv an honest witness can carry. */
+    /* cv is bound to public inputs 3/4 by section 14. */
     if (!sapling_value_commit(w->value, w->rcv, pw->pub.cv))
         return;                         /* pw->ok stays false */
-    /* Sections 22 and 28 bind the anchor and the packed nullifier too, so the
-     * whole public-input vector has to be the honest one or the system is
-     * unsatisfiable by construction. */
+    /* Sections 22 and 28 bind the anchor and packed nullifier, so the whole
+     * public-input vector must be the honest one. */
     if (!sapling_spend_derive_public(w, &pw->pub))
         return;                         /* pw->ok stays false */
     pw->ok = true;
@@ -247,13 +220,11 @@ static bool decode_xy(const uint8_t comp[32], struct fr *x, struct fr *y)
 }
 
 /* Reference section-17 note-content hash: the table-driven Pedersen hash
- * (core/modules/sapling/src/pedersen_hash.c — Edwards coordinates, precomputed chunk
- * multiples) over the 6 NoteCommitment personalization bits plus
- * value(64) || repr(g_d) || repr(pk_d). The circuit synthesizes the same point
- * through 194 Montgomery-coordinate window lookups, four Montgomery->Edwards
- * conversions and three Edwards additions, so agreement is a differential
- * between two genuinely different algorithms, not a restatement.
- * Section 20's reference is the PRODUCTION sapling_note_commitment_point(). */
+ * (core/modules/sapling/src/pedersen_hash.c, Edwards coordinates) over the 6
+ * NoteCommitment personalization bits plus value(64) || repr(g_d) ||
+ * repr(pk_d). The circuit reaches the same point through Montgomery window
+ * lookups, so agreement is a differential between two algorithms.
+ * Section 20's reference is the production sapling_note_commitment_point(). */
 static void reference_note_content_hash(uint64_t value,
                                         const uint8_t gd[32],
                                         const uint8_t pkd[32],
@@ -275,11 +246,9 @@ static void reference_note_content_hash(uint64_t value,
     pedersen_hash_bits(bits, (int)n, hash_out);
 }
 
-/* Reference section-21 anchor: fold the SAME witnessed authentication path over
- * the SAME leaf with the out-of-circuit pedersen_merkle_hash. `leaf` is the note
- * commitment's x-coordinate — sections 17..20's own output, which is the point
- * of doing this in one pass: it checks the value the circuit committed to is the
- * value that entered the tree, not merely that each half is internally right. */
+/* Reference section-21 anchor: fold the witnessed authentication path over
+ * the same leaf (the note commitment's x-coordinate, sections 17..20's
+ * output) with the out-of-circuit pedersen_merkle_hash. */
 static void reference_anchor(const uint8_t leaf[32],
                              const uint8_t path[SAPLING_MERKLE_DEPTH][32],
                              const bool bits[SAPLING_MERKLE_DEPTH],
@@ -304,17 +273,15 @@ static void reference_anchor(const uint8_t leaf[32],
     else { printf("FAIL\n"); failures++; }             \
 } while (0)
 
-/* Public entry point: standing differential parity oracle for the Sapling spend
- * circuit. Returns the number of failures (0 == green). Non-skippable and
- * params-free. */
+/* Public entry point: standing differential parity oracle for the Sapling
+ * spend circuit. Returns the number of failures (0 == green). Non-skippable, params-free. */
 int groth16_spend_parity_oracle(void);
 int groth16_spend_parity_oracle(void)
 {
     printf("\n--- H4: Sapling SPEND standing differential parity oracle ---\n");
     int failures = 0;
 
-    /* Reference table self-consistency (guards a typo in the pinned boundaries;
-     * they must be strictly increasing and terminate at the trace total). */
+    /* Reference table self-consistency: strictly increasing, ending at the trace total. */
     bool ref_monotone = true;
     for (size_t i = 1; i < REF_NUM_SECTIONS; i++)
         if (REF_SECTIONS[i].cum_constraints <= REF_SECTIONS[i - 1].cum_constraints)
@@ -360,9 +327,8 @@ int groth16_spend_parity_oracle(void)
         if (nsec > max_ported)
             max_ported = nsec;
 
-        /* (A) Section-boundary parity vs the reference — auto-tightening: only
-         *     the `nsec` sections actually recorded are diffed, so the coverage
-         *     grows automatically as the port advances. */
+        /* (A) Section-boundary parity vs the reference, auto-tightening: only
+         *     the `nsec` recorded sections are diffed. */
         bool boundaries_ok = (nsec <= REF_NUM_SECTIONS);
         for (size_t i = 0; i < nsec && i < REF_NUM_SECTIONS; i++) {
             if (sections[i].num_constraints != REF_SECTIONS[i].cum_constraints) {
@@ -457,13 +423,11 @@ int groth16_spend_parity_oracle(void)
                  "corpus[%u]: in-circuit rk wire == ak + [ar]G (section 4)", c);
         PARITY_CHECK(label, rk_wire_ok);
 
-        /* Sections 11/13/14/17/20: the note-content points, per witness. pk_d is the
-         * output of the circuit's only VARIABLE-base multiplication, so it is
-         * the one section whose gadget the fixed-base checks above cannot
-         * exercise; cv is additionally the first public input past rk that the
-         * circuit constrains. Reference values come from the independent scalar
-         * implementations (group_hash / ivk_to_pkd / value_commit), not from the
-         * circuit — so this is a differential, not a restatement. */
+        /* Sections 11/13/14/17/20: the note-content points, per witness. pk_d
+         * is the output of the circuit's only variable-base multiplication;
+         * cv is the first public input past rk. References come from the
+         * independent scalar implementations (group_hash / ivk_to_pkd /
+         * value_commit), not the circuit. */
         uint8_t nk_for_ivk[32], ivk_ref[32];
         sapling_nsk_to_nk(pw.wit.nsk, nk_for_ivk);
         sapling_crh_ivk(pw.wit.ak, nk_for_ivk, ivk_ref);
@@ -477,10 +441,9 @@ int groth16_spend_parity_oracle(void)
                    && sapling_value_commit(pw.wit.value, pw.wit.rcv, cv_ref);
         }
 
-        /* Sections 17/20: the note-content Pedersen hash and the randomized
-         * note commitment, from the out-of-circuit table-driven Pedersen hash +
-         * plain Jubjub scalar mul. Compressed here so they join the same
-         * table-driven comparison as the points above. */
+        /* Sections 17/20: the note-content Pedersen hash and randomized note
+         * commitment from the out-of-circuit table-driven Pedersen hash +
+         * Jubjub scalar mul, compressed to join the same comparison. */
         uint8_t note_hash_ref[32] = {0}, cm_ref[32] = {0};
         struct jub_point cm_ref_pt;
         if (refs_ok) {
@@ -525,12 +488,9 @@ int groth16_spend_parity_oracle(void)
             PARITY_CHECK(label, ok);
         }
 
-        /* Section 20, tied to the PRODUCTION note-commitment API rather than to
-         * a reference this file assembled: sapling_compute_cm() is what the
-         * wallet and the output-proof path commit with, and the protocol's `cmu`
-         * is exactly this x-coordinate. If the circuit's cm.x wire and
-         * sapling_compute_cm() ever disagree, a spend proof would be over a note
-         * the tree does not contain. */
+        /* Section 20 tied to the production note-commitment API:
+         * sapling_compute_cm() (the wallet/output-proof commitment; cmu is
+         * its x-coordinate) must agree with the circuit's cm.x wire. */
         uint8_t cm_api[32];
         bool cm_api_ok = refs_ok
                && sapling_compute_cm(pw.wit.diversifier, pkd_ref,
@@ -552,13 +512,10 @@ int groth16_spend_parity_oracle(void)
             PARITY_CHECK(label, ok);
         }
 
-        /* Sections 17..21 END TO END, the assertion neither half can make alone:
-         * fold the witnessed authentication path out of circuit starting from
-         * sapling_compute_cm()'s OWN leaf, and require the circuit's anchor wire
-         * to match. Section 20 proven correct and section 21 proven correct do
-         * not between them prove the commitment section 20 computed is what
-         * section 21 folded — an off-by-one in the handover would leave both
-         * halves green. This is what opening that seam has to buy. */
+        /* Sections 17..21 end to end: fold the witnessed authentication path
+         * out of circuit from sapling_compute_cm()'s own leaf and require the
+         * circuit's anchor wire to match; this checks the section 20 -> 21
+         * handover, which neither half proves alone. */
         {
             uint8_t anchor_ref[32];
             struct fr anchor_ref_fr;
@@ -582,12 +539,10 @@ int groth16_spend_parity_oracle(void)
             PARITY_CHECK(label, ok);
         }
 
-        /* Sections 8/9: the EdwardsPoint::repr bit wires. Jubjub's compressed
-         * encoding is y with x's low bit in the top bit, so repr's 256 bits
-         * (y[0..255] then x[0]) are exactly the bits of the point's 32-byte
-         * compressed encoding, LSB first. For nk that encoding is
-         * librustzcash's own output — so this is a genuine per-witness
-         * differential on the newly-ported sections, not a count. */
+        /* Sections 8/9: the EdwardsPoint::repr bit wires. repr's 256 bits
+         * (y[0..255] then x[0]) are the point's 32-byte compressed encoding,
+         * LSB first; for nk that is librustzcash's own output, so this is a
+         * per-witness differential. */
         bool ak_repr_ok = true, nk_repr_ok = true;
         for (size_t b = 0; b < 256; b++) {
             bool want_ak = (pw.wit.ak[b / 8] >> (b % 8)) & 1;
@@ -611,11 +566,9 @@ int groth16_spend_parity_oracle(void)
                  "corpus[%u]: repr(ak) 256 bits == compressed ak (section 8)", c);
         PARITY_CHECK(label, ak_repr_ok);
         /* repr(nk) is a differential against the reference encoding, so it
-         * can only run where the reference exists: linked librustzcash, or
-         * the baked KAT witness. Asserting it without one compares against
-         * zeroed bytes and fails for a reason that has nothing to do with
-         * the circuit. Section 8's repr(ak) needs no reference — ak comes
-         * from the witness — so it stays unconditional. */
+         * runs only where the reference exists (linked librustzcash or the
+         * baked KAT witness). repr(ak) comes from the witness and stays
+         * unconditional. */
         if (!have_nk_ref) {
             printf("  corpus[%u]: external repr(nk) reference unavailable for "
                    "this non-KAT witness; native representation gates still "
@@ -627,14 +580,10 @@ int groth16_spend_parity_oracle(void)
             PARITY_CHECK(label, nk_repr_ok);
         }
 
-        /* (E) R1CS SATISFACTION — the coefficient-level check. (A) compares
-         *     constraint COUNTS and (C) probes three wire VALUES; neither can
-         *     see a wrong coefficient inside an otherwise correctly-shaped
-         *     constraint. A one-bit error in a constraint's A/B/C linear
-         *     combination leaves counts and probed wires untouched but makes
-         *     the honest witness fail to satisfy the circuit — i.e. a proof
-         *     the network rejects. Assert A*B==C over the real witness for
-         *     every emitted constraint, per corpus witness. */
+        /* (E) R1CS SATISFACTION, the coefficient-level check: (A) compares
+         *     counts and (C) probes three wires, neither sees a wrong
+         *     coefficient in a correctly-shaped constraint. Assert A*B==C
+         *     over the real witness for every emitted constraint. */
         size_t bad_constraint = SIZE_MAX;
         bool sat_ok = cs_is_satisfied(&cs, &bad_constraint);
         if (!sat_ok && !flagged) {
@@ -667,8 +616,7 @@ int groth16_spend_parity_oracle(void)
         cs_free(&cs);
     }
 
-    /* Index-0 tie to the pinned checked-in KAT vector (belt-and-suspenders:
-     * the corpus witness 0 nk MUST equal the baked SPEND_ORACLE_KAT_NK). */
+    /* Index-0 tie: corpus witness 0 nk must equal the baked SPEND_ORACLE_KAT_NK. */
     uint8_t nk_kat[32];
     sapling_nsk_to_nk(SPEND_ORACLE_KAT_NSK, nk_kat);
     PARITY_CHECK("corpus[0] nk == pinned SPEND_ORACLE_KAT_NK",

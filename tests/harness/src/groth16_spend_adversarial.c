@@ -1,4 +1,4 @@
-/* Sapling SPEND-circuit adversarial + negative-control gate (test-only, H5 lane).
+/* Sapling SPEND-circuit adversarial + negative-control gate (test-only).
  *
  * Portions interoperate with librustzcash / bellman / sapling-crypto
  * (The Zcash developers / Electric Coin Company), pinned commit
@@ -6,18 +6,15 @@
  * extern-"C" FFI surface of the pinned static archive is used here, and ONLY
  * from the test binary — no reference code is linked into the production node.
  *
- * WHAT THIS IS
- * ------------
- * H2/H3/H4 (groth16_spend_oracle.c, the shape gate in test_groth16_selfverify.c,
- * groth16_spend_parity.c) prove the native C23 spend circuit's PORTED PREFIX
- * (sections 1..7) matches the reference bit-for-bit. None of them exercise the
- * production PROVING PATH end to end, and none of them try to break it. This
- * lane does both, against the ACTIVE production proving path — the native C23
- * prover generating the spend proof, the independent native C23
- * verifier (sapling_check_spend) accepting or rejecting it — using real
- * ~/.zcash-params proving/verifying keys. It SKIPs (prints and returns 0
- * failures) when params are absent, exactly like the self-test block in
- * test_groth16_selfverify.c.
+ * The parity gates (groth16_spend_oracle.c, test_groth16_selfverify.c,
+ * groth16_spend_parity.c) prove the native C23 spend circuit's ported prefix
+ * (sections 1..7) matches the reference bit-for-bit, but do not exercise the
+ * production proving path end to end or try to break it. This gate does both
+ * against the production path: the native C23 prover generates the spend
+ * proof and the independent native C23 verifier (sapling_check_spend)
+ * accepts or rejects it, using real ~/.zcash-params keys. It SKIPs (prints
+ * and returns 0 failures) when params are absent, like the self-test block
+ * in test_groth16_selfverify.c.
  *
  * ACCEPTANCE BAR PER CHECK CATEGORY (also documented in
  * docs/work/GROTH16-SPEND-PARITY.md):
@@ -28,11 +25,9 @@
  *                                     `msg_send_onchain` proving gate.
  *   (2) Differential (rk).           native sapling_compute_rk(ak,ar) MUST equal
  *                                     the rk the reference-oracle prover
- *                                     returned for the identical (ak,ar) —
- *                                     rk has no FFI export (see
- *                                     groth16_spend_oracle.c), so this is the
- *                                     closest available cross-check of a
- *                                     public-input wire against ground truth.
+ *                                     returned for the identical (ak,ar); rk
+ *                                     has no FFI export (see
+ *                                     groth16_spend_oracle.c).
  *   (3) Corrupted proof bytes.       ANY single-bit flip in the 192-byte
  *                                     zkproof MUST be rejected.
  *   (4) Corrupted witness (proof     a proof generated from a DIFFERENT
@@ -51,24 +46,17 @@
  *       proving key.                 on truncated or bit-flipped real
  *                                     proving-key bytes MUST return false
  *                                     (typed refusal) and MUST NOT crash.
- *   (8) Determinism.                 rk and the nullifier are REQUIRED
- *                                     deterministic (double-spend protection
- *                                     depends on it) — re-proving the exact
- *                                     same witness must reproduce them
- *                                     byte-identically. cv and the zkproof
- *                                     bytes are NOT required deterministic
- *                                     (Groth16 zero-knowledge blinding +
- *                                     value-commitment re-randomization are
- *                                     intentional, OsRng-backed on this
- *                                     reference-oracle path) — this is
- *                                     asserted explicitly so a future
- *                                     accidental "fix" toward determinism on
- *                                     that axis is caught as a behavior
- *                                     change, not silently welcomed. Both
- *                                     independently-blinded proofs must still
- *                                     independently verify. groth16_pk_read is
- *                                     a pure parser and MUST be deterministic
- *                                     across repeated parses of the same bytes.
+ *   (8) Determinism.                 rk and the nullifier MUST be deterministic
+ *                                     (double-spend protection depends on it):
+ *                                     re-proving the same witness reproduces
+ *                                     them byte-identically. cv and the zkproof
+ *                                     bytes are NOT deterministic (Groth16
+ *                                     blinding and value-commitment
+ *                                     re-randomization), asserted explicitly so
+ *                                     a change is caught; both independently
+ *                                     blinded proofs must verify.
+ *                                     groth16_pk_read is a pure parser and MUST
+ *                                     be deterministic.
  *   (9) Zeroization spot-check.      memory_cleanse over a constraint system's
  *                                     witness vector (the exact call
  *                                     sapling_create_spend_proof makes before
@@ -116,13 +104,10 @@ static bool adv_find_diversifier(uint8_t d[11], unsigned int start)
 }
 
 /* One fully-constructed Sapling spend statement (public + private material)
- * proven via the ACTIVE production path: the native C23 prover generating the
- * spend proof, checked by the independent
- * native C23 verifier. Every field is filled deterministically from `seed` —
- * no RNG anywhere in witness construction, so calling this twice with the
- * same seed reproduces the IDENTICAL witness (deliberately, for the
- * determinism/non-determinism checks below). Only the proof itself draws on
- * the native prover's internal CSPRNG blinding. */
+ * proven via the production path. Every field is filled deterministically
+ * from `seed` (no RNG in witness construction), so the same seed reproduces
+ * the identical witness; only the proof draws on the prover's CSPRNG
+ * blinding. */
 struct adv_spend_bundle {
     uint8_t ask[32];
     uint8_t ak[32], nsk[32], nk[32], ar[32];
@@ -273,24 +258,19 @@ static int pk_parser_adversarial(void)
         if (ok) groth16_pk_free(&pk);
     }
 
-    /* Bit-flip a length field deep in the file (h_len, well past the fixed
-     * 6-point VK header) so the array-count read is garbage; the reader
-     * must fail closed (calloc-overflow guard or an immediate out-of-bounds
-     * point read) rather than run away or crash. Uses a COPY — never
-     * mutates the cached params buffer the live prover depends on. */
+    /* Bit-flip a length field deep in the file so the array-count read is
+     * garbage; the reader must fail closed rather than run away or crash.
+     * Uses a COPY of the cached params buffer. */
     {
         uint8_t *corrupt = zcl_malloc(out_len, "adv_pk_corrupt_len");
         ADV_CHECK("pk-parser: corrupt-buffer allocation succeeded",
                  corrupt != NULL);
         if (corrupt) {
             memcpy(corrupt, out_pk, out_len);
-            /* Flip a high bit well inside the file body (75% mark, deep in
-             * the multi-megabyte point-query arrays). Whether that lands on
-             * a length field or a point's coordinate bytes is data-
-             * dependent, so this assertion checks only the safety property
-             * (no crash; a corrupted parse either refuses cleanly or parses
-             * into a struct that is still safely freeable) — not a specific
-             * parse outcome. */
+            /* Flip a high bit at the 75% mark of the file body. Whether that
+             * lands on a length field or point bytes is data-dependent, so
+             * only the safety property is checked (no crash; a clean refusal
+             * or a safely freeable struct). */
             size_t flip_off = out_len * 3 / 4;
             corrupt[flip_off] ^= 0x80;
             struct groth16_pk pk;
@@ -374,11 +354,8 @@ int groth16_spend_adversarial_gate(void)
                  "(inside B) REJECTED", !bundle_accepts(&b));
     }
 
-    /* ── (4) Corrupted witness: a proof from a DIFFERENT statement, ─────
-     *       replayed against THIS statement's public inputs -> REJECTED.
-     *       This is exactly the attack the Groth16 pairing check exists
-     *       to stop: an attacker who has *some* valid proof cannot claim
-     *       it proves a *different* (cv, anchor, nullifier, rk) tuple. ── */
+    /* ── (4) Corrupted witness: a proof from a DIFFERENT statement replayed
+     *       against THIS statement's public inputs -> REJECTED. ── */
     {
         struct adv_spend_bundle other;
         bool built2 = build_adv_spend_bundle(&other, 1);
@@ -447,10 +424,9 @@ int groth16_spend_adversarial_gate(void)
                      "re-proving the same witness (double-spend protection "
                      "depends on this)",
                      memcmp(good.nullifier, again.nullifier, 32) == 0);
-            /* Non-determinism is EXPECTED and load-bearing (Groth16 ZK
-             * blinding + value-commitment re-randomization) — assert it
-             * explicitly so an accidental future change is visible either
-             * way, and prove BOTH proofs still independently verify. */
+            /* Non-determinism is EXPECTED (Groth16 blinding + value-commitment
+             * re-randomization); assert it explicitly and prove BOTH proofs
+             * still verify. */
             bool cv_differs = memcmp(good.cv, again.cv, 32) != 0;
             bool proof_differs =
                 memcmp(good.zkproof, again.zkproof, sizeof(good.zkproof)) != 0;
@@ -479,10 +455,8 @@ int groth16_spend_adversarial_gate(void)
     /* ── (9) Zeroization spot-check ─────────────────────────────────────── */
     {
         /* Exact production cleanse call: sapling_create_spend_proof wipes
-         * cs.witness (cap_vars * sizeof(struct fr)) before cs_free. Prove
-         * that call actually zeros the secret-bearing witness vector — the
-         * ar/nsk bit decompositions and every intermediate wire live in
-         * this buffer, in the clear, until this line runs. */
+         * cs.witness before cs_free; prove it zeros the secret-bearing
+         * witness vector. */
         struct constraint_system cs;
         cs_init(&cs);
         struct sapling_spend_witness wit;

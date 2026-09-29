@@ -52,11 +52,9 @@
  * graded is the lane's decision, never the hour the box thinks it is. */
 #define FL_PAIRED_AT INT64_C(1)
 #define FL_PAIRING_EXPIRES INT64_C(4102444800)
-/* The clock the delegation authority is asked on. The fixture's
- * delegations are signed for a fixed window, and the accept callback is
- * handed no clock, so the authority seam names the hour once. The pairing
- * row's window above brackets both this and any real clock, which is the
- * point: what decides below is the DELEGATION, never the hour. */
+/* The clock the delegation authority is asked on. The accept callback is
+ * handed no clock, so the seam names the hour once; the window above brackets
+ * it, so the DELEGATION decides, never the hour. */
 #define FL_AUTHORITY_NOW INT64_C(2500)
 
 /* ── one box, made from nothing ──────────────────────────────────────── */

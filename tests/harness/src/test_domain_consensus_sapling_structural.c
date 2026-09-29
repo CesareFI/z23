@@ -3,12 +3,10 @@
  *
  * Unit tests for domain/consensus/sapling_structural.{c,h}.
  *
- * These tests pin the PURE height-aware Sapling/Overwinter structural
- * transaction-validation rules extracted from
- * core/modules/validation/src/contextual_check_tx.c, and seal the extraction
- * with a side-by-side comparison against the legacy
- * `contextual_check_transaction()` wrapper for representative tx
- * shapes and heights:
+ * Pins the pure height-aware Sapling/Overwinter structural transaction rules
+ * extracted from core/modules/validation/src/contextual_check_tx.c, and
+ * cross-checks them against the legacy `contextual_check_transaction()`
+ * wrapper:
  *
  *   - pre-Overwinter height with overwintered flag set
  *   - Overwinter active without Sapling: version/version-group rules
@@ -16,13 +14,8 @@
  *   - Pre-Sapling oversize tx
  *   - Boundary heights (activation - 1, activation, activation + 1)
  *
- * For every shape we assert:
- *   1. domain function returns the same {ok, reject_reason, dos}
- *      pair as the legacy wrapper populates on validation_state.
- *   2. reject_reason strings are byte-identical (strcmp == 0).
- *
- * This is the regression seal: if anyone "improves" one side without
- * the other, the test shouts.
+ * For each shape the domain function returns the same {ok, reject_reason,
+ * dos} as the wrapper, with byte-identical reject_reason strings.
  */
 
 #include "test/test_core.h"
@@ -171,12 +164,8 @@ static struct domain_verdict run_domain(const struct transaction *tx,
     return v;
 }
 
-/* Compare domain output with legacy. Both must agree on:
- *   - ok bit
- *   - reject_reason (byte-identical)
- *   - dos score
- * If the domain rejected and legacy passed (or vice versa), or if the
- * reason strings differ, that's a peer-visible protocol divergence. */
+/* Compare domain output with legacy: ok bit, byte-identical reject_reason,
+ * and dos score. A mismatch is a peer-visible protocol divergence. */
 static bool verdicts_match(const struct domain_verdict *d,
                            const struct legacy_verdict *l)
 {

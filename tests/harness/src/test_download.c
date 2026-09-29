@@ -286,9 +286,8 @@ static int test_dl_received_pending_staging(void)
         int32_t h1_height = 700;
         int32_t h2_height = 701;
 
-        /* Normal path: requested, body arrives, slot settles. The hash is
-         * now in NO HAVE_DATA filter's reach until the intake worker
-         * persists it — the duplicate-download hole. */
+        /* Normal path: requested, body arrives, slot settles. The hash is in
+         * no HAVE_DATA filter's reach until the intake worker persists it. */
         ASSERT(dl_mark_requested(&dm, &h1, h1_height, 1));
         ASSERT(dl_mark_received(&dm, &h1) == 1);
         ASSERT(!dl_is_in_flight(&dm, &h1));
@@ -312,9 +311,8 @@ static int test_dl_received_pending_staging(void)
         /* A control hash whose body never arrived queues normally. */
         ASSERT(dl_queue_blocks(&dm, &h2, &h2_height, 1) == 1);
 
-        /* TTL lapse: a never-staged body must become re-requestable
-         * (fail-open). Age the tombstone past the window instead of
-         * sleeping. */
+        /* TTL lapse: a never-staged body becomes re-requestable (fail-open);
+         * age the tombstone instead of sleeping. */
         for (size_t i = 0; i < dm.num_slots; i++) {
             if (!dm.slots[i].active && uint256_eq(&dm.slots[i].hash, &h1)) {
                 dm.slots[i].received_time =
@@ -429,9 +427,8 @@ static int test_dl_assignment_generation_parking(void)
         ASSERT(diag.assign_zero_results == 1);
         ASSERT(diag.last_assign_result == DL_ASSIGN_NO_QUEUE);
 
-        /* Both the cheap preflight and the defensive direct-call check stay
-         * parked. A 100 ms message-pump loop can no longer inflate actual
-         * assignment attempts while the queue/window state is unchanged. */
+        /* Both the cheap preflight and the direct-call check stay parked;
+         * the message pump cannot inflate assignment attempts. */
         ASSERT(!dl_assignment_should_attempt(&dm, 7));
         ASSERT(dl_assign_to_peer(&dm, 7, out, 1) == 0);
         dl_get_diagnostics(&dm, &diag);
@@ -572,12 +569,8 @@ static int test_dl_peer_disconnected(void)
     return failures;
 }
 
-/* `notfound` names ONE block. It must not cost the peer its whole in-flight
- * window, which is what routing notfound through dl_peer_disconnected() did:
- * on the C3 cold-start stopwatch (one serving peer, 600 s) that turned 35
- * notfound messages into 16899 orphaned requests — 50% of every block request
- * the run made, ~483 per notfound. A single-peer client has no "another peer"
- * to re-ask, so the collateral requeue bought nothing at all. */
+/* `notfound` names ONE block: it must not cost the peer its whole in-flight
+ * window (as dl_peer_disconnected() routing would). */
 static int test_dl_mark_notfound_settles_only_named_block(void)
 {
     int failures = 0;
@@ -631,9 +624,8 @@ static int test_dl_mark_notfound_settles_only_named_block(void)
     return failures;
 }
 
-/* Every path that takes a request out of flight must settle it (received,
- * timed_out, or orphaned) — a leaked request once satisfied the old
- * requested>settled arm of download_queue_starved forever at tip. */
+/* Every path that takes a request out of flight settles it (received,
+ * timed_out, or orphaned) so download_queue_starved cannot see a leak. */
 static int test_dl_settle_accounting(void)
 {
     int failures = 0;
@@ -711,13 +703,10 @@ static int test_dl_check_timeouts(void)
     return failures;
 }
 
-/* Lane 3 hardening: dl_last_forced_settle_time() is the disambiguation
- * signal msg_blocks.c's PEER_OFFENCE_UNREQUESTED call-site consults —
- * both dl_drain_for_backpressure() and a dl_check_timeouts() reassignment
- * clear an in-flight slot the exact same way a truly-never-requested hash
- * would look, so the call-site withholds scoring for DL_STALL_TIMEOUT_SECS
- * after either event fires. Pin the underlying signal here so a future
- * refactor of drain/timeout internals can't silently stop stamping it. */
+/* dl_last_forced_settle_time() is the signal msg_blocks.c's
+ * PEER_OFFENCE_UNREQUESTED call-site consults: a drain or timeout
+ * reassignment looks like a never-requested hash, so scoring is withheld for
+ * DL_STALL_TIMEOUT_SECS. Pin that the drain/timeout paths stamp it. */
 static int test_dl_last_forced_settle_time_initial(void)
 {
     int failures = 0;
@@ -749,10 +738,9 @@ static int test_dl_last_forced_settle_time_drain(void)
         ASSERT(stamped >= before);
         ASSERT(stamped <= after);
 
-        /* The drain wipes the slot without settling the peer — a late
-         * "received" for the same hash looks exactly like an unrequested
-         * push (returns 0), which is precisely the ambiguity the grace
-         * window exists to cover. */
+        /* The drain wipes the slot without settling the peer, so a late
+         * "received" looks like an unrequested push (returns 0); the grace
+         * window covers that ambiguity. */
         ASSERT(dl_mark_received(&dm, &h1) == UINT32_MAX);
 
         dl_free(&dm);
@@ -799,9 +787,8 @@ static int test_dl_last_forced_settle_time_untouched(void)
         ASSERT(dl_check_timeouts(&dm, now) == 0); /* nothing stale yet */
         ASSERT(dl_last_forced_settle_time(&dm) == 0);
 
-        /* A hash genuinely never seen by this download manager still
-         * reads as provably unrequested — the grace window only fires
-         * around an ACTUAL drain/timeout event. */
+        /* A never-seen hash reads as provably unrequested; the grace window
+         * fires only around an actual drain/timeout. */
         struct uint256 never_asked = make_hash(99);
         ASSERT(dl_mark_received(&dm, &never_asked) == UINT32_MAX);
         ASSERT(dl_last_forced_settle_time(&dm) == 0);
@@ -957,9 +944,8 @@ static int test_dl_peer_body_progress(void)
         ASSERT(recv == 0);  /* zero bodies delivered */
         ASSERT(to == 2);    /* both requests expired unfilled */
 
-        /* A delivered body is credited to received and clears the deadbeat
-         * signal used by the stall predicate. Requeue h1 to a fresh peer 8
-         * (h1 avoids peer 7 after the timeout), then deliver it. */
+        /* A delivered body credits received and clears the deadbeat signal.
+         * Requeue h1 to fresh peer 8 (it avoids peer 7), then deliver. */
         struct uint256 out[1];
         ASSERT(dl_assign_to_peer(&dm, 8, out, 1) == 1);
         ASSERT(dl_mark_received(&dm, &out[0]) == 8);
@@ -1006,10 +992,9 @@ static int test_dl_peer_body_staleness(void)
         ASSERT(last_body >= before && last_body <= after);
         int64_t pinned = last_body;
 
-        /* Now the peer goes dark: two further getdata expire unfilled. The
-         * body cursor stays pinned at the last delivery — exactly the
-         * delivered-then-dark staleness signal Rule D keys on (received
-         * stays > 0, so Rule C keeps exempting this peer). */
+        /* The peer goes dark: two further getdata expire unfilled. The body
+         * cursor stays at the last delivery (Rule D's staleness signal);
+         * received stays > 0, so Rule C keeps exempting the peer. */
         struct uint256 h2 = make_hash(32);
         struct uint256 h3 = make_hash(33);
         int64_t now = (int64_t)platform_time_wall_time_t();
@@ -1198,9 +1183,9 @@ static int test_gap_fill_kick_latch_skips_wait(void)
 {
     int failures = 0;
     TEST("gap_fill kick latch: a mid-pass kick is never lost to the timer") {
-        /* The regression: a durable body completion lands while the worker
-         * is mid-pass (not inside pthread_cond_timedwait). Without a latch
-         * the broadcast is lost and refill waits out the whole 5 s tick. */
+        /* A durable body completion landing while the worker is mid-pass
+         * (not in pthread_cond_timedwait) must not be lost: refill must not
+         * wait out the whole 5 s tick. */
         gap_fill_test_set_running(true);
         gap_fill_kick();
         ASSERT(gap_fill_test_kick_pending());
@@ -1606,16 +1591,10 @@ static struct uint256 make_hash16(uint16_t v)
     return h;
 }
 
-/* REGRESSION: the live wedge. gap_fill builds its window highest-first
- * and tail-appends, so the connectable bottom (tip+1) lands at the TAIL
- * of a deep FIFO queue while far-ahead live blocks saturate the front.
- * With strict FIFO, dl_assign_to_peer never reaches the bottom → the
- * tip-advancing body is perpetually starved → permanent wedge.
- *
- * The fix keeps the queue height-sorted, so dl_assign_to_peer always
- * hands out the LOWEST-height block first regardless of enqueue order.
- * This test reproduces the starvation layout and asserts the bottom is
- * NOT starved. */
+/* Starvation layout: gap_fill tail-appends the connectable bottom (tip+1)
+ * behind far-ahead blocks. The queue stays height-sorted, so
+ * dl_assign_to_peer hands out the lowest height first and the bottom is not
+ * starved. */
 static int test_dl_lowest_height_first(void)
 {
     int failures = 0;
@@ -1632,9 +1611,7 @@ static int test_dl_lowest_height_first(void)
             dl_queue_blocks(&dm, &h, &height, 1);
         }
 
-        /* Now enqueue the connectable bottom LAST (the tip+1 block at
-         * height 3125315) — the one block that advances the tip. This is
-         * the tail of the FIFO under the old behavior. */
+        /* Enqueue the connectable bottom (tip+1, height 3125315) last. */
         struct uint256 bottom = make_hash16(1);
         int32_t bottom_h = 3125315;
         dl_queue_blocks(&dm, &bottom, &bottom_h, 1);
@@ -1643,10 +1620,8 @@ static int test_dl_lowest_height_first(void)
         dl_get_stats(&dm, &req, &recv, &tout, &inflight, &queued);
         ASSERT(queued == (uint64_t)(FAR_N + 1));
 
-        /* Assign a single block to a peer. It MUST be the connectable
-         * bottom (lowest height), not a far-ahead block. Under the old
-         * FIFO this returned the height-3127000 block and the bottom
-         * stayed starved at the tail. */
+        /* A single assignment must be the connectable bottom (lowest
+         * height), not a far-ahead block. */
         struct uint256 out[1];
         size_t assigned = dl_assign_to_peer(&dm, 1, out, 1);
         ASSERT(assigned == 1);
@@ -1658,9 +1633,8 @@ static int test_dl_lowest_height_first(void)
     return failures;
 }
 
-/* The bottom must win even when it is appended into the MIDDLE of an
- * already-deep queue and via multiple enqueue paths (blocks + priority
- * + timeout requeue). All paths funnel through the sorted insert. */
+/* The bottom wins when appended into the middle of a deep queue via any
+ * enqueue path (blocks, priority, timeout requeue). */
 static int test_dl_sorted_across_paths(void)
 {
     int failures = 0;
@@ -1772,10 +1746,9 @@ static int test_dl_history_lane_is_bounded_and_forward_wins(void)
         ASSERT(diag.in_flight_history == DL_MAX_HISTORY_IN_FLIGHT);
         ASSERT(diag.queued_history == 24);
 
-        /* This peer is parked on the saturated history lane. Enqueuing a
-         * forward item must invalidate that practical result even though no
-         * history capacity was released, and the next assignment must be the
-         * forward item despite its much higher height. */
+        /* A peer parked on the saturated history lane: enqueuing a forward
+         * item invalidates that result and is assigned next despite its
+         * higher height. */
         struct uint256 forward = make_hash16(9000);
         int32_t forward_height = 900000;
         ASSERT(dl_queue_blocks(&dm, &forward, &forward_height, 1) == 1);
@@ -1871,10 +1844,9 @@ static int test_gap_fill_registers_supervisor_contract(void)
     return failures;
 }
 
-/* S2.3: a peer with a well-established, much lower bandwidth_score must not
- * claim the tip-adjacent (lowest-height) entries when a demonstrably faster
- * peer is also known — but it must still receive work (bias, not a hard
- * partition; no starvation). */
+/* S2.3: a peer with a much lower bandwidth_score must not claim the
+ * tip-adjacent entries when a faster peer is known, but must still receive
+ * work (bias, not a hard partition). */
 static int test_dl_tip_bias_prefers_fast_peer(void)
 {
     int failures = 0;
@@ -1890,9 +1862,8 @@ static int test_dl_tip_bias_prefers_fast_peer(void)
             dl_queue_blocks(&dm, &hs[i], &height, 1);
         }
 
-        /* Register both peers (creates dl_peer_stats), then set a
-         * deterministic bandwidth_score directly via dl_peer_block_received
-         * so the bias decision does not depend on wall-clock timing. */
+        /* Register both peers, then set bandwidth_score via
+         * dl_peer_block_received so the bias does not depend on wall time. */
         struct uint256 dummy[1];
         dl_assign_to_peer(&dm, 1 /* fast */, dummy, 0);
         dl_assign_to_peer(&dm, 2 /* slow */, dummy, 0);
@@ -1959,12 +1930,8 @@ static int test_dl_tip_bias_no_starvation_shallow_queue(void)
 }
 
 /* Batched-compaction hot path: a deep queue drained in large front-pop
- * batches must lose no block, duplicate none, and hand them all out in
- * strict height order. The single-pass dl_queue_remove_sorted() compaction
- * that replaced the per-pick O(queue_len) memmove must be exactly
- * equivalent to the loop it superseded — this drives the deep-queue batch
- * path (tip_bias_skip == 0, available == the full per-peer window) that
- * dominates fresh IBD, where the queue is pinned near its cap. */
+ * batches loses no block, duplicates none, and hands out strict height
+ * order (tip_bias_skip == 0, available == the full per-peer window). */
 static int test_dl_batch_compaction_deep_queue(void)
 {
     int failures = 0;
@@ -1982,9 +1949,8 @@ static int test_dl_batch_compaction_deep_queue(void)
         dl_get_stats(&dm, NULL, NULL, NULL, NULL, &q0);
         ASSERT(q0 == (uint64_t)N);
 
-        /* Drain everything to peer 1 in large batches (bounded by the
-         * per-peer window), marking each received so the window reopens.
-         * Verify the exact hand-out order and a per-index seen-count. */
+        /* Drain everything to peer 1 in window-bounded batches; verify exact
+         * hand-out order and per-index seen-counts. */
         static uint8_t seen[5000];
         memset(seen, 0, sizeof(seen));
         struct uint256 out[200];

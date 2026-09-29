@@ -3,26 +3,19 @@
  *
  * Unit tests for domain/consensus/equihash.{c,h}.
  *
- * Pins the pure Equihash solution-verification surface. Tests exercise
- * the typed zcl_result API directly AND cross-check against a hand-
- * rolled "legacy-shape" reconstruction of the BLAKE2b challenge so
- * the extraction is byte-identical to the historic in-core/modules/chain code
- * path that used core/byte_stream.
+ * Pins the pure Equihash solution-verification surface: the typed zcl_result
+ * API, cross-checked against a hand-rolled "legacy-shape" BLAKE2b challenge.
  *
  * Coverage:
  *   - null/edge contracts (null header, null out)
  *   - unrecognised solution size -> ERR_BAD_SOL_SIZE
  *   - invalid solution -> ok=true, valid=false
- *   - regression seal: known-valid (N=96,K=5) Equihash witness from
- *     the Zcash test vectors threaded through the block_header path,
- *     verified true by the domain function
- *   - regression seal: same witness with one index perturbed,
- *     verified false by the domain function
+ *   - known-valid (N=96,K=5) Zcash witness through the block_header path
+ *     verifies true; with one index perturbed, false
  *   - byte-layout seal: domain agrees with a hand-rolled stream-shape
- *     equivalent for several random headers (proves the pre-nonce
- *     serialization is preserved)
- *   - wrapper passthrough: chain/equihash.h::check_equihash_solution
- *     returns the same bool the domain function reports as `valid`.
+ *     equivalent for random headers
+ *   - wrapper passthrough: check_equihash_solution returns the domain
+ *     function's `valid`.
  */
 
 #include "test/test_core.h"
@@ -45,12 +38,9 @@
     else { printf("FAIL\n"); failures++; } \
 } while (0)
 
-/* (N=96, K=5) test vector from the Zcash reference suite — a valid
- * Equihash witness for the BLAKE2b state seeded by the fixed input
- * string + nonce = {1, 0, ...}. We reuse this challenge in a
- * synthetic block_header by choosing the pre-nonce bytes such that
- * feeding them into BLAKE2b yields the same intermediate state as
- * the legacy test feeds. */
+/* (N=96, K=5) test vector from the Zcash reference suite: a valid witness
+ * for the BLAKE2b state seeded by the fixed input string + nonce = {1, 0,
+ * ...}. */
 static const eh_index kValidIndices_96_5[32] = {
     2261, 15185, 36112, 104243, 23779, 118390, 118332, 130041,
     32642, 69878, 76925, 80080, 45858, 116805, 92842, 111026,
@@ -58,10 +48,9 @@ static const eh_index kValidIndices_96_5[32] = {
     23460, 49807, 52426, 80391, 69567, 114474, 104973, 122568
 };
 
-/* Helper: hand-rolled "legacy stream" version of the pre-nonce
- * challenge serialization. This deliberately mirrors what
- * core/modules/chain/src/equihash.c USED to do via core/byte_stream so the
- * regression seal proves the new domain path is byte-identical. */
+/* Helper: hand-rolled "legacy stream" pre-nonce challenge serialization,
+ * mirroring the core/byte_stream path, so the regression seal proves
+ * the domain path is byte-identical. */
 static void legacy_shape_feed(struct blake2b_ctx *state,
                               const struct block_header *h)
 {
@@ -125,9 +114,8 @@ int test_domain_consensus_equihash(void)
         DEH_CHECK("bad solution size -> ERR_BAD_SOL_SIZE",
                   !r.ok && r.code == DOMAIN_CONSENSUS_EQUIHASH_ERR_BAD_SOL_SIZE);
     }
-    /* The four recognised sizes all flow through the verifier — for an
-     * all-zero solution (which is overwhelmingly invalid) we expect a
-     * successful call with valid=false. */
+    /* The four recognised sizes flow through the verifier: an all-zero
+     * solution gives a successful call with valid=false. */
     {
         const size_t sizes[] = { 36, 68, 400, 1344 };
         bool all_ok = true;
@@ -149,22 +137,12 @@ int test_domain_consensus_equihash(void)
                   all_ok);
     }
 
-    /* ---- regression seal: known-valid (96,5) witness through the
-     * domain function. We construct a synthetic block_header whose
-     * pre-nonce serialization equals the fixed reference string used
-     * by the test vector. That's not generally possible (the strings
-     * are 70+ bytes vs. our 108-byte pre-nonce layout). Instead, we
-     * test the equivalence at the layer below: prepare two BLAKE2b
-     * states — one via the domain code path (call the domain function
-     * with carefully chosen header bytes) and one via the legacy
-     * hand-rolled feed — and confirm they produce the same
-     * is_valid_solution answer for the same solution bytes.
-     *
-     * Concretely: we build a random header, ask the domain function
-     * to verify a random (invalid) solution, and compare against
-     * feeding the exact same bytes through the legacy_shape_feed +
-     * direct equihash_is_valid_solution call. They must agree, which
-     * proves the domain layer's serialization is byte-identical. */
+    /* ---- regression seal: domain serialization vs legacy feed ----
+     * The (96,5) reference string cannot be reproduced through the 108-byte
+     * pre-nonce header layout, so equivalence is tested below it: a random
+     * header and random (invalid) solution go through the domain function
+     * and through legacy_shape_feed + equihash_is_valid_solution, and must
+     * agree. */
     {
         struct equihash_params ep;
         equihash_params_init(&ep, 96, 5);
@@ -181,10 +159,9 @@ int test_domain_consensus_equihash(void)
             h.nBits = 0x1d00ffff;
             memset(h.nNonce.data, (uint8_t)(0xA0 + trial), 32);
 
-            /* Use a 68-byte (96,5) solution shape so it lands in the
-             * recognised demux. The content is arbitrary noise — almost
-             * certainly invalid, but the domain and legacy paths must
-             * agree on whether it is. */
+            /* A 68-byte (96,5) solution shape lands in the recognised demux;
+             * the content is noise, and the domain and legacy paths must
+             * agree on its validity. */
             h.nSolutionSize = 68;
             for (size_t b = 0; b < 68; b++)
                 h.nSolution[b] = (uint8_t)((trial * 31 + (int)b) & 0xff);
@@ -217,13 +194,9 @@ int test_domain_consensus_equihash(void)
                   all_match);
     }
 
-    /* ---- known-valid (96,5) witness — verifies that the underlying
-     * crypto primitive still accepts a real Zcash test vector. We feed
-     * the canonical reference state directly (matching the existing
-     * test_chain.c::"equihash(96,5) valid solution" assertion) and
-     * confirm it returns true. This isn't a domain-API test per se
-     * but it ensures we haven't broken the wider verification chain
-     * by extracting the wrapper. */
+    /* ---- known-valid (96,5) witness: the crypto primitive accepts the
+     * canonical reference state (as test_chain.c "equihash(96,5) valid
+     * solution" does), guarding the wider verification chain. */
     {
         struct equihash_params ep;
         equihash_params_init(&ep, 96, 5);
@@ -249,11 +222,9 @@ int test_domain_consensus_equihash(void)
         DEH_CHECK("known-good (96,5) reference vector still verifies", ok);
     }
 
-    /* ---- wrapper passthrough: chain/equihash.h::check_equihash_solution
-     * must return the same bool the domain function reports as `valid`.
-     * Since the wrapper delegates, this is by construction true; we
-     * pin it so a future refactor that re-introduces a parallel code
-     * path is caught immediately. */
+    /* ---- wrapper passthrough: check_equihash_solution returns the same
+     * bool the domain function reports as `valid` (pinned so a parallel code
+     * path cannot reappear). */
     {
         const struct chain_params *cp = chain_params_get();
         struct block_header h;

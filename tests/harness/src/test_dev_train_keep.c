@@ -1,24 +1,21 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * ACCEPTANCE BAR for dev.train.keep (tools/command/native_dev_train_keep.c),
- * plus the two dev.train.* claims the keeper depends on: the cherry-pick
- * skip list and dev train status's landing-queue path.
+ * plus the two dev.train.* claims it depends on: the cherry-pick skip list
+ * and dev train status's landing-queue path.
  *
- * The keeper is driven against a scratch state root, a scratch trains root
- * and a scratch helper directory holding stand-ins for land_pre.sh and
- * land_unit.sh. Nothing here can reach the real ~/.z23, the real landing
- * queue or the real northstar helpers: those three roots are environment
- * variables precisely so a test can own them, and the keeper's clock is
- * injected the same way, so the state file's timestamp is asserted rather
- * than tolerated.
+ * The keeper runs against a scratch state root, trains root and helper
+ * directory holding stand-ins for land_pre.sh and land_unit.sh; those three
+ * roots are environment variables and the clock is injected, so nothing
+ * touches the real ~/.z23, landing queue or northstar helpers and the state
+ * file's timestamp is asserted.
  *
- * The fixture signs with a stub gpg.program rather than turning signing off.
- * land_pre.sh refuses a train carrying an unsigned commit, so the -S in the
- * keeper's cherry-pick is load-bearing; a fixture that dropped it would be
- * proving a different program than the one that runs at 03:00.
+ * The fixture signs with a stub gpg.program rather than disabling signing:
+ * land_pre.sh refuses an unsigned train commit, so the keeper's cherry-pick
+ * -S is load-bearing.
  *
- * Its own group rather than more cases inside test_dev_train: that group's
- * entry point is pinned in the complexity baseline, and a pin may never rise.
+ * Its own group because test_dev_train's entry point is pinned in the
+ * complexity baseline.
  */
 
 #include "test/test_core.h"
@@ -157,9 +154,8 @@ static bool dtkt_commit(const char *dir, const char *message)
     return dtkt_git(dir, add) && dtkt_git(dir, commit);
 }
 
-/* The keeper's whole make surface, every target a no-op: a fixture
- * repository has none of the real tree's vendor or doc machinery, and what
- * is under test is the ORDER and the refusals, not what lint prints. */
+/* The keeper's whole make surface, every target a no-op: what is under test
+ * is the ORDER and the refusals. */
 static const char *const dtkt_makefile =
     "worktree-prime:\n\t@true\n\n"
     "dev-bin:\n\t@true\n\n"
@@ -232,15 +228,9 @@ static bool dtkt_plan_has(const struct json_value *arr, const char *sha)
 }
 
 /* Bare origin + a checkout wired to it, with signing that works offline.
- *
- * The stand-in gpg reads the whole payload before it answers, as real gpg
- * does. git writes the commit to the signer's stdin and treats a failed write
- * as a failed signature. A stand-in that exits without reading loses that
- * race whenever the CPU is contended: it runs to completion before git
- * writes, git gets EPIPE, and the keeper's `cherry-pick -S` fails with
- * "gpg failed to sign the data". The keeper's assembly then refuses as
- * ASSEMBLY_BLOCKED. That is correct keeper behaviour caused by a broken
- * fixture. */
+ * The stand-in gpg reads the whole payload before answering: git writes the
+ * commit to the signer's stdin, and a signer that exits early gives EPIPE and
+ * a failed `cherry-pick -S` under CPU contention. */
 static bool dtkt_fixture_repo(const char *root, const char *bare,
                               const char *parent)
 {
@@ -278,11 +268,9 @@ static bool dtkt_fixture_repo(const char *root, const char *bare,
            dtkt_git(root, push) && dtkt_git(root, fetch);
 }
 
-/* One reviewed lane, made the way a real one exists: a commit in the ROOT
- * repository published as refs/review/<name>. The keeper never fetches lane
- * objects -- it cherry-picks shas that are already in the repository the
- * train worktree belongs to -- so a fixture built from separate clones would
- * be testing a repository shape production never has. */
+/* One reviewed lane: a commit in the ROOT repository published as
+ * refs/review/<name>. The keeper cherry-picks shas already in the train
+ * worktree's repository and never fetches lane objects. */
 static bool dtkt_lane(const char *root, const char *name, const char *file,
                       const char *body, const char *subject, char sha[41])
 {
@@ -297,9 +285,8 @@ static bool dtkt_lane(const char *root, const char *name, const char *file,
            dtkt_git(root, publish) && dtkt_git(root, back);
 }
 
-/* Every path and sha the cases below name. Built once by dtkt_setup(), which
- * is a function rather than a preamble so this group's entry point stays
- * under the complexity cap without a baseline pin of its own. */
+/* Every path and sha the cases name, built once by dtkt_setup() to keep the
+ * entry point under the complexity cap. */
 struct dtkt_fix {
     char parent[512];
     char root[600];
@@ -317,9 +304,8 @@ struct dtkt_fix {
     char sha_c[41];
 };
 
-/* The three roots and the clock the keeper reads. A real run sets none of
- * them; setting all four is what makes this group unable to touch the real
- * ~/.z23, the real landing queue or a real clock. */
+/* The three roots and the clock the keeper reads; setting all four keeps
+ * this group off the real ~/.z23, landing queue and clock. */
 static void dtkt_env(const struct dtkt_fix *f)
 {
     (void)setenv("ZCL_DEVLOOP_TEST_PROCESS", "1", 1);
@@ -483,9 +469,8 @@ static int dtkt_save_failure(const struct dtkt_fix *f)
     zcl_command_reply_init(&reply, "zcl.test.train_keep.v1");
     (void)snprintf(blocker, sizeof(blocker), "%s/KEEP.json.tmp", f->dir7);
     TEST("train keep: failed picking-state persistence refuses before assembly") {
-        /* A directory at the atomic writer's temporary filename makes its
-         * fopen fail even when tests run as root. KEEP.json stays absent,
-         * so loading the state still takes the real idle-to-picking path. */
+        /* A directory at the atomic writer's temp filename makes its fopen
+         * fail even as root; KEEP.json stays absent (idle-to-picking path). */
         ASSERT(platform_directory_ensure(blocker, 0700));
         ASSERT(dtkt_save_failure_effects(f) == 0);
         zcl_command_reply_free(&reply);
@@ -720,8 +705,7 @@ int test_dev_train_keep(void)
         zcl_native_handle_dev_train_status(&request, &reply);
         ASSERT(reply.status == ZCL_COMMAND_STATUS_PASSED);
         (void)snprintf(want, sizeof(want), "%s/queue.jsonl", f.land);
-        /* The bug this pins: the field used to answer from a hardcoded
-         * ~/.local/state/zclassic23/f.land path dev.f.land never wrote to. */
+        /* land_queue_path answers from the real land dir, not a hardcoded path. */
         ASSERT_STR_EQ(dtkt_str(&reply, "land_queue_path"), want);
         ASSERT(dtkt_bool_is(&reply, "land_queue_present", false));
         zcl_command_reply_free(&reply);
@@ -846,9 +830,8 @@ int test_dev_train_keep(void)
         struct zcl_command_reply reply;
         dtkt_call(f.root, &input, &reply);
         ASSERT(reply.status == ZCL_COMMAND_STATUS_PASSED);
-        /* Still landing, same tip, same assembled HEAD: the pass observed
-         * dev.f.land and touched nothing. Only `reason` moves, and it says
-         * why the pass had nothing to do. */
+        /* Still landing, same tip, same assembled HEAD: the pass touched
+         * nothing; only `reason` moves, saying why. */
         ASSERT_STR_EQ(dtkt_str(&reply, "state"), "landing");
         ASSERT(strstr(dtkt_str(&reply, "reason"), "not finished") != NULL);
         ASSERT(dtkt_first_line(f.dir7, "READY", tip_after, sizeof(tip_after)));

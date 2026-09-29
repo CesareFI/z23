@@ -11,8 +11,7 @@
  */
 
 /* realpath() needs __USE_MISC; -D_POSIX_C_SOURCE=200809L alone does not
- * declare it. Without this the TU only builds by accident of the glibc
- * fortify inline at -O3. */
+ * declare it. */
 #define _DEFAULT_SOURCE
 
 #include "test/test_core.h"
@@ -215,9 +214,8 @@ static void sandbox_enter(struct sandbox *sb, const char *tag)
 {
     char rel[PATH_MAX];
     test_make_tmpdir(rel, sizeof(rel), "dev_activation", tag);
-    /* The harness runs from a relative CWD, so test_make_tmpdir hands back a
-     * "./test-tmp/..." path — resolve it to an absolute HOME so the engine's
-     * absolute-path confinement checks operate on real lane paths. */
+    /* test_make_tmpdir returns a relative path; resolve to an absolute HOME so
+     * the engine's confinement checks see real lane paths. */
     if (!realpath(rel, sb->home))
         snprintf(sb->home, sizeof(sb->home), "%s", rel);
     snprintf(sb->datadir, sizeof(sb->datadir), "%s/.zclassic-c23-dev", sb->home);
@@ -675,9 +673,7 @@ static int test_lock_busy(void)
         mkdir(part, 0755);
         snprintf(lockp, sizeof(lockp), "%s/activation.lock", sb.gen_root);
 #if defined(_WIN32)
-        /* Hold the lock through the same platform API the runner contends
-         * on — Windows has no flock(), and a LockFileEx-style hold is only
-         * real contention if both sides take it the same way. */
+        /* Hold the lock through the same platform API the runner contends on. */
         struct platform_process_lock held;
         platform_process_lock_init(&held);
         ASSERT(platform_process_lock_try_acquire(&held, lockp, true));

@@ -7,37 +7,24 @@
  * the file header of diagnostics_health_rollup.c), and aggregates only the
  * unhealthy ones.
  *
- * Coverage, using real subsystems that seed `_health` (not a synthetic
- * stand-in). Adoption is now well past the original five exemplars — most
- * of the newly-seeded ones are reducer stages / storage projections that
- * report ok=false in THIS minimal fixture simply because this file never
- * initialises them (their real "not initialised" / "not open" condition,
- * not a bug), so a blanket "everything is healthy" baseline would be
- * fragile and dishonest. Instead:
- *   (a) the rollup runs cleanly (dump returns true) and `reporting` covers
- *       at least the original five exemplars; the SPECIFIC subsystems this
- *       fixture actually brings up healthy (legacy_mirror,
- *       chain_advance_coordinator, tip_finalize) are absent from the
- *       unhealthy array — see (c).
- *   (b) seeding one dumper (the typed blocker registry) into an unhealthy
- *       state makes it appear in the unhealthy array with its subsystem
- *       name + reason, and all_ok stays false with unhealthy_count >= 1.
- *   (c) subsystems that stayed healthy (legacy_mirror, tip_finalize,
- *       chain_advance_coordinator) are NOT included in the unhealthy array.
- *   (d) a dumper seeded in THIS round (mempool_projection — one of the
- *       storage projection dumpers whose `_health` maps the existing
- *       "open" signal, see engine/modules/storage/src/mempool_projection.c) flips
- *       from healthy to unhealthy when its real "not open" condition is
- *       synthesized via the projection's own close() API — proving a
- *       newly-seeded dumper actually surfaces through the rollup, not just
- *       the five pre-existing exemplars above.
+ * Coverage, using real subsystems that seed `_health`:
+ *   (a) the rollup runs cleanly (dump returns true) and `reporting` covers at
+ *       least the original five exemplars; the subsystems this fixture brings
+ *       up healthy (legacy_mirror, chain_advance_coordinator, tip_finalize)
+ *       are absent from the unhealthy array. Other reducer stages and
+ *       projections report ok=false because this file never initialises
+ *       them, so no blanket "everything is healthy" baseline is asserted.
+ *   (b) seeding one dumper (the typed blocker registry) unhealthy makes it
+ *       appear in the unhealthy array with its subsystem name + reason, and
+ *       all_ok stays false with unhealthy_count >= 1.
+ *   (c) subsystems that stayed healthy are NOT in the unhealthy array.
+ *   (d) mempool_projection (its `_health` maps the "open" signal, see
+ *       engine/modules/storage/src/mempool_projection.c) flips from healthy
+ *       to unhealthy when closed via the projection's own close() API.
  *
- * tip_finalize's `_health` reports ok=false ("stage not initialised") until
- * tip_finalize_stage_init() runs, so this file pays the same minimal setup
- * cost (progress_store_open + main_state_init + tip_finalize_stage_init)
- * that tests/harness/src/test_tip_finalize_stage.c already pays, purely to put
- * that one real dumper into its healthy state for test (a) — no new health
- * logic anywhere, just exercising what each dumper already computes. */
+ * tip_finalize's `_health` reports ok=false until tip_finalize_stage_init()
+ * runs, so this file does the same minimal setup as test_tip_finalize_stage.c
+ * (progress_store_open + main_state_init + tip_finalize_stage_init). */
 
 #include "test/test_core.h"
 #include "controllers/diagnostics_controller.h"
@@ -88,21 +75,11 @@ int test_health_rollup(void)
     bool store_ok = progress_store_open(dir);
 
     /* Point the diagnostics controller at THIS fixture's datadir before any
-     * rollup call. The rollup invokes every registered dumper, and the
-     * datadir-reading ones (omniscience's census freshness probe, block_index,
-     * nodelog, ...) resolve their paths through diag_datadir(). That is a
-     * zero-initialised buffer until something sets it, and census_datadir()
-     * (engine/modules/storage/src/census_read.c) treats an EMPTY datadir as: use the
-     * default live datadir under $HOME. That path is described here and
-     * never spelled out, because tools/lint/check_live_datadir_isolation.sh
-     * counts the literal string even inside a comment. Unset, this test
-     * opened the live node's peers_projection.db + topology.db and ran
-     * census_read_graph()'s correlated ip_to_str() join across them on every
-     * one of its four rollup calls: 37-80s each (measured), scaling with
-     * whatever the live crawler has accumulated, for a result this test never
-     * asserts on. Same pattern as tests/harness/src/test_rpc.c. main_state stays
-     * NULL exactly as before, so no dumper's outcome changes — only the
-     * directory the datadir-reading ones look in. */
+     * rollup call: datadir-reading dumpers resolve paths through
+     * diag_datadir(), and an empty datadir falls back to the default live
+     * datadir under $HOME (not spelled out here:
+     * tools/lint/check_live_datadir_isolation.sh counts the literal string
+     * even inside a comment). main_state stays NULL. */
     diagnostics_controller_set_state(NULL, dir);
 
     struct main_state ms;
@@ -110,10 +87,8 @@ int test_health_rollup(void)
     main_state_init(&ms);
     bool tf_ok = tip_finalize_stage_init(&ms);
 
-    /* ── (a) baseline: dump is well-formed; known-healthy exemplars
-     * stay absent (see the file header for why this no longer asserts a
-     * blanket all_ok==true — adoption has grown well past the five
-     * subsystems this minimal fixture can bring up healthy) ──────────── */
+    /* ── (a) baseline: dump is well-formed; known-healthy exemplars stay
+     * absent (no blanket all_ok==true: uninitialised stages report ok=false) ─ */
     {
         struct json_value v = {0};
         json_set_object(&v);
@@ -179,15 +154,9 @@ int test_health_rollup(void)
 
         const struct json_value *unhealthy_count =
             json_get(&v, "unhealthy_count");
-        /* >= 1, not == 1: this fixture only initialises tip_finalize (and
-         * now seeds `_health` on many more subsystems than the original 5
-         * exemplars — reducer stages, projections, etc. — most of which
-         * report ok=false here simply because THIS test never initialises
-         * them, not because anything is actually broken). The one
-         * assertion this test owns is that the blocker we just seeded is
-         * IN the array (checked above) — see also (d) below for a
-         * dedicated before/after flip on one specific newly-seeded
-         * dumper. */
+        /* >= 1, not == 1: many subsystems report ok=false here because this
+         * fixture never initialises them. The blocker seeded above must be
+         * IN the array; (d) below flips one specific dumper. */
         HR_CHECK("seeded: unhealthy_count >= 1",
                  unhealthy_count && json_get_int(unhealthy_count) >= 1);
         HR_CHECK("seeded: unhealthy array length matches unhealthy_count",

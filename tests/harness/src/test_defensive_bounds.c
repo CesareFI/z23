@@ -1,22 +1,16 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Defensive-bounds regression tests for three latent-hazard hardening
- * fixes from the tree-wide concurrency/defensive sweep:
+ * Defensive-bounds regression tests:
  *
- *   #6 serialize.c stream_read  — integer-overflow bound. The old guard
- *       `s->read_pos + len > s->size` can wrap when len is near SIZE_MAX,
- *       passing the check and over-reading in the following memcpy. The
- *       non-wrapping form `len > s->size - s->read_pos` rejects it.
+ *   #6 serialize.c stream_read: the guard `s->read_pos + len > s->size` wraps
+ *       when len is near SIZE_MAX; the non-wrapping form
+ *       `len > s->size - s->read_pos` rejects it.
  *
- *   #5 fast_sync.c serve_chunk_db — missing clamp of the caller-supplied
- *       chunk_size against the fixed entries[1000] capacity. A caller
- *       passing chunk_size > 1000 (e.g. 5000) over a >1000-row utxos table
- *       would write out of bounds. The clamp caps chunk_size at 1000 so
- *       num_entries can never exceed the array capacity.
+ *   #5 fast_sync.c serve_chunk_db: chunk_size is clamped to the fixed
+ *       entries[1000] capacity so num_entries cannot exceed it.
  *
- *   #4 connman.c connman_get_node_count — torn read of num_nodes. The
- *       count is now read under cs_nodes; this test guards the functional
- *       contract that the count reflects the nodes actually registered.
+ *   #4 connman.c connman_get_node_count: the count is read under cs_nodes
+ *       and reflects the nodes actually registered.
  */
 
 #include "test/test_core.h"
@@ -215,9 +209,8 @@ int test_block_deserialize_txcount_amplification(void)
     return failures;
 }
 
-/* #4 — connman_get_node_count reflects the registered node count and is
- * read under cs_nodes (the lock acquisition is structurally verified by
- * reading; this guards the functional contract). */
+/* #4 — connman_get_node_count reflects the registered node count (read
+ * under cs_nodes). */
 int test_connman_node_count_locked(void)
 {
     int failures = 0;
@@ -230,9 +223,8 @@ int test_connman_node_count_locked(void)
         ASSERT(connman_get_node_count(&cm) == 0);
 
         enum { N = 5 };
-        /* Register N nodes directly into the manager's array, mirroring how
-         * the socket thread populates nodes[]/num_nodes under cs_nodes.
-         * net_manager_free() owns and frees every entry afterwards. */
+        /* Register N nodes directly into the manager's array, as the socket
+         * thread does under cs_nodes; net_manager_free() frees them. */
         struct net_manager *nm = &cm.manager;
         zcl_mutex_lock(&nm->cs_nodes);
         nm->nodes = zcl_calloc(N, sizeof(*nm->nodes), "test_count_nodes");

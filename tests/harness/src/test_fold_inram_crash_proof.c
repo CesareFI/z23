@@ -1,53 +1,31 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * test_fold_inram_crash_proof — the two proof items the fold-IO
- * design (coins_ram in-RAM overlay during -mint-anchor, WAL autocheckpoint
- * held, flush at high-water boundaries — engine/modules/storage/src/coins_ram.c,
- * engine/modules/storage/src/coins_kv.c:coins_kv_overlay_safe,
- * engine/composition/src/boot_mint_anchor.c) requires:
+ * test_fold_inram_crash_proof — proofs for the fold-IO design (coins_ram in-RAM
+ * overlay during -mint-anchor, WAL autocheckpoint held, flush at high-water
+ * boundaries: engine/modules/storage/src/coins_ram.c, coins_kv.c:
+ * coins_kv_overlay_safe, engine/composition/src/boot_mint_anchor.c).
  *
- *   (1) DURABLE-vs-INRAM A/B EQUIVALENCE: fold the SAME small regtest fixture
- *       chain genesis..N twice through the REAL 8-stage reducer pipeline —
- *       once with ZCL_FOLD_INRAM=0 (durable coins_kv path) and once with
- *       ZCL_FOLD_INRAM=1 (coins_ram overlay path) — and assert the terminal
- *       states are byte-identical: same coins-set content, same shielded
- *       anchors/nullifier frontier, same total supply, same applied-height.
- *       The comparison is the SAME single SHA3 commitment boot_mint_anchor.c
- *       itself hard-asserts against the compiled checkpoint (coins_kv_
- *       snapshot_write / coins_ram_snapshot_write over the coins set PLUS the
- *       collected shielded frontier), so any divergence between the two
- *       storage paths fails loudly here exactly as it would at a real mint.
+ *   (1) DURABLE-vs-INRAM A/B EQUIVALENCE: fold the same small regtest chain
+ *       genesis..N twice through the real 8-stage reducer pipeline, once with
+ *       ZCL_FOLD_INRAM=0 and once with =1, and assert byte-identical terminal
+ *       state via the same SHA3 commitment boot_mint_anchor.c asserts against
+ *       the compiled checkpoint (coins set plus shielded frontier).
  *
- *   (2) CRASH-INJECTION RESUME: with ZCL_FOLD_INRAM=1, fork a child that
- *       folds the same fixture and SIGKILL it at three progress points (right
- *       after the first coins_ram flush boundary, and twice more mid-batch
- *       between flush boundaries), then resume the fold in a FRESH process
- *       pointed at the same (crash-truncated) datadir and prove the terminal
- *       digest equals an uninterrupted run's. This is the WAL/flush-boundary
- *       crash-ordering invariant coins_ram.h documents: an INRAM crash loses
- *       at most the un-flushed overlay tail, never corrupts durable state.
+ *   (2) CRASH-INJECTION RESUME: with ZCL_FOLD_INRAM=1, fork a child that folds
+ *       the fixture and SIGKILL it at three progress points (after the first
+ *       coins_ram flush boundary, and twice mid-batch), then resume in a fresh
+ *       process on the crash-truncated datadir and prove the terminal digest
+ *       equals an uninterrupted run's (coins_ram.h: an INRAM crash loses at
+ *       most the un-flushed overlay tail, never corrupts durable state).
  *
- * FIXTURE: N_BLOCKS (6) tiny regtest (Equihash 48,5) blocks, built the same
- * way test_mint_anchor_fresh_datadir.c's scenario (c) does — real
- * mine_block_pow, real header_admit/validate_headers/body_fetch/body_persist/
- * script_validate/proof_validate/utxo_apply/tip_finalize stages, real
- * reducer_kick_unbudgeted drive. ZCL_FOLD_INRAM_FLUSH_EVERY=2 so the tiny
- * fixture still crosses multiple real flush boundaries.
+ * Fixture: N_BLOCKS (6) tiny regtest (Equihash 48,5) blocks built as in
+ * test_mint_anchor_fresh_datadir.c scenario (c), with ZCL_FOLD_INRAM_FLUSH_EVERY=2
+ * so the fixture crosses several flush boundaries.
  *
- * PROCESS MODEL: ZCL_FOLD_INRAM is cached ONCE per process
- * (coins_ram_enabled(), coins_ram.c) — so every leg that needs a SPECIFIC
- * value (the durable leg needs it OFF; every overlay leg needs it ON) runs in
- * its own fork()ed child that has never called coins_ram_enabled() before
- * setting its env. Each child independently rebuilds the (small, fast,
- * deterministic) fixture from scratch — genesis and block content are
- * reproducible bit-for-bit from height + prev-hash + chain params, so a
- * resumer child rebuilding the same headers/bodies on top of a crash-
- * truncated datadir reconstructs the identical in-memory block_index while
- * the durable coins/cursor/flush-watermark state is read back from disk
- * exactly as a real restart would. What this does NOT prove: recovery of the
- * in-memory block_index itself from durable LevelDB storage after a crash —
- * that is a distinct, already-covered concern (test_kill9_recovery.c's
- * MID-IMPORTBLOCKINDEX phase).
+ * Process model: ZCL_FOLD_INRAM is cached once per process (coins_ram_enabled()),
+ * so each leg runs in its own fork()ed child and rebuilds the deterministic
+ * fixture from scratch. Not proven here: recovery of the in-memory block_index
+ * from LevelDB after a crash (see test_kill9_recovery.c).
  *
  * make t ONLY=fold_inram_crash_proof
  */

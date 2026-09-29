@@ -1303,12 +1303,8 @@ static int test_snapshot_offer_mmr_field(void)
 }
 
 /* ── fast_sync_apply_chunk atomicity ─────────────────
- *
- * A chunk that mixes a valid UTXO with an invalid one must leave no
- * trace in the database. The CHECK(height >= 0) constraint on the
- * utxos table triggers an insert failure for a negative height in
- * the middle of the chunk; the surrounding BEGIN/COMMIT must roll
- * back the entire chunk, including the valid first row.
+ * A chunk mixing valid and invalid UTXOs (negative height trips
+ * CHECK(height >= 0)) rolls back entirely, including the valid first row.
  * ─────────────────────────────────────────────────────────── */
 
 static int test_apply_chunk_rollback_on_mid_chunk_failure(void)
@@ -1523,9 +1519,9 @@ static int test_chunk_roundtrip_preserves_canonical_utxo_fields(void)
     return failures;
 }
 
-/* One-entry snapshot-cache buffer with a caller-chosen script length.
- * script_len >= 253 needs the 0xFD two-byte compact form the parser
- * accepts. Ownership passes to fast_sync_publish_snapshot_cache. */
+/* One-entry snapshot-cache buffer with a caller-chosen script length
+ * (>= 253 needs the 0xFD compact form). Ownership passes to
+ * fast_sync_publish_snapshot_cache. */
 static uint8_t *test_snapshot_script_entry(size_t *size_out, const char *tag,
                                            uint32_t script_len,
                                            uint8_t script_byte)
@@ -1555,13 +1551,9 @@ static uint8_t *test_snapshot_script_entry(size_t *size_out, const char *tag,
     return buf;
 }
 
-/* ── Refuse-don't-truncate: consensus-legal scripts past the 520-byte
- * entry cap must fail the CHUNK on both serve paths. The wire receiver
- * rejects oversize entries outright (msgprocessor_snapshot.c) and the
- * end-of-sync UTXO root is computed over full-fidelity rows, so a
- * silently shortened script could only ever produce state that fails
- * verification — or worse, passes it with corrupted entries when the
- * manifest root falls back to the chunk-derived Merkle root. */
+/* ── Refuse-don't-truncate: consensus-legal scripts past the 520-byte entry
+ * cap fail the CHUNK on both serve paths; a shortened script could only
+ * yield state that fails verification or passes it corrupted. ─────── */
 static int test_serve_refuses_oversize_script(void)
 {
     int failures = 0;
@@ -1603,10 +1595,9 @@ static int test_serve_refuses_oversize_script(void)
         memset(script_ok, 0x76, sizeof(script_ok));
         memset(script_big, 0x63, sizeof(script_big));
 
-        /* Chunk 0: two in-cap rows. Chunk 1: one 600-byte-script row —
-         * consensus-legal (MAX_SCRIPT_SIZE is 10000), past the entry
-         * struct's 520-byte cap, and exactly what bare large multisig
-         * outputs produce. */
+        /* Chunk 0: two in-cap rows. Chunk 1: one 600-byte-script row,
+         * consensus-legal (MAX_SCRIPT_SIZE 10000) but past the 520-byte
+         * entry cap. */
         struct { const uint8_t *txid; const uint8_t *script; int slen; }
             rows[3] = {
                 { txid_ok, script_ok, (int)sizeof(script_ok) },
@@ -1631,9 +1622,8 @@ static int test_serve_refuses_oversize_script(void)
             zcl_calloc(1, sizeof(struct utxo_chunk), "oversize_chunk");
         ASSERT(chunk != NULL);
 
-        /* Control: the in-cap chunk still serves, full fidelity. A chunk
-         * size of 2 puts the two in-cap rows in chunk 0 and the oversize
-         * row alone in chunk 1. */
+        /* Control: with chunk size 2 the in-cap chunk serves at full
+         * fidelity and the oversize row sits alone in chunk 1. */
         ASSERT(fast_sync_serve_chunk_db(db, 0, 2, chunk));
         ASSERT(chunk->num_entries == 2);
         ASSERT(chunk->entries[0].script_len == sizeof(script_ok));
@@ -1642,17 +1632,15 @@ static int test_serve_refuses_oversize_script(void)
          * coming back with entries[0].script_len clamped to 520. */
         ASSERT(!fast_sync_serve_chunk_db(db, 1, 2, chunk));
 
-        /* Production serving ignores this populated live mirror when no
-         * immutable cache has been published. The explicit helper above is
-         * the only API allowed to read it. */
+        /* Production serving ignores the live mirror when no immutable cache
+         * is published; only the explicit helper may read it. */
         fast_sync_reset_snapshot_cache();
         ASSERT(!fast_sync_serve_chunk(datadir, 0, chunk));
         sqlite3_close(db);
         db = NULL;
 
-        /* ── Immutable cache path: same contract against a
-         * full-fidelity snapshot buffer. Remove the database too; production
-         * serving must never consult it regardless of whether it exists. ── */
+        /* Immutable cache path: same contract against a full-fidelity
+         * snapshot buffer; production serving never consults the database. */
         unlink(db_path);
         uint8_t sha3[32];
         memset(sha3, 0x3c, sizeof(sha3));
@@ -1685,16 +1673,13 @@ static int test_serve_refuses_oversize_script(void)
     return failures;
 }
 
-/* ── Batched SHA3-256 consumer parity (sha3-x4-batch lane) ─────────────
- *
- * fast_sync_merkle_root/build_proof combine a layer four pairs at a time via
- * sha3_256_x4, and fast_sync_build_manifest_db batches four chunk hashes on top
- * of fast_sync_serialize_chunk_for_hash. Both must be byte-identical to the
- * scalar per-pair / streaming reference. These two tests are that guard. */
+/* ── Batched SHA3-256 consumer parity ─────────────────────────────────
+ * The x4 batched Merkle root/proof and manifest chunk hashing must be
+ * byte-identical to the scalar per-pair / streaming reference. */
 
-/* Independent scalar Merkle root: per-pair SHA3-256(left||right), pow2 padding
- * with copies of the last leaf — mirrors fast_sync_merkle_root's contract but
- * shares no code with merkle_combine_layer. */
+/* Independent scalar Merkle root: per-pair SHA3-256(left||right), pow2
+ * padding with copies of the last leaf; shares no code with
+ * merkle_combine_layer. */
 static void ref_merkle_root(const uint8_t (*hashes)[32], uint32_t count,
                             uint8_t root_out[32])
 {

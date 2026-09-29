@@ -52,8 +52,7 @@
 #define FMX_EVIDENCE_PATH "fleet.steer.evidence"
 #define FMX_GRANT_PATH "fleet.steer.grant"
 
-/* The sender every plain fixture grant is minted under. A grant's label IS
- * its sender identity now, so a fixture that mints one has named one. */
+/* The sender every plain fixture grant is minted under (a grant's label is its sender identity). */
 #define FMX_SENDER "steer-caller"
 
 /* ── isolated state root (this group owns its own rig) ─────────────────── */
@@ -275,10 +274,9 @@ static void fmx_item(struct json_value *item, const char *to,
     (void)json_push_kv_str(item, "idempotency_key", key);
 }
 
-/* Send one batch under an explicit sender name, so a case can address a
- * reply row back at the sender the way a real recipient would — and so a
- * case can claim a name its credential does not carry. A NULL `from`
- * states no sender at all. */
+/* Send one batch under an explicit sender name, so a case can address a reply
+ * row at the sender or claim a name its credential does not carry. A NULL
+ * `from` states no sender. */
 static bool fmx_send_from(struct fmx_call *c, const char *grant,
                           const char *from, struct json_value *items)
 {
@@ -291,9 +289,8 @@ static bool fmx_send_from(struct fmx_call *c, const char *grant,
     return fmx_run(c, zcl_native_handle_fleet_steer_send);
 }
 
-/* Send one batch through the real leaf, speaking as the fixture grant's own
- * label — the honest case, which is what most cases here are about. Caller
- * frees items/out. */
+/* Send one batch speaking as the fixture grant's own label (the honest case).
+ * Caller frees items/out. */
 static bool fmx_send(struct fmx_call *c, const char *grant,
                      struct json_value *items)
 {
@@ -515,11 +512,10 @@ static void fmx_seed_outcome(const char *name, int rc)
         fmx_fixture_fail("cannot finish outcome row");
 }
 
-/* Drop one row into <state>/mail/inbox.<peer>.jsonl — exactly what a
- * transport does when it carries a peer's row onto this host, and the only
- * way a row this host did not write appears in pull. The shape is the mail
- * leaf's own row; `ts` is the caller's so pull order (ts, from, seq) stays
- * deterministic without a sleep. */
+/* Drop one row into <state>/mail/inbox.<peer>.jsonl, as a transport does when
+ * it carries a peer's row onto this host: the only way a row this host did not
+ * write appears in pull. `ts` is the caller's so pull order (ts, from, seq)
+ * stays deterministic without a sleep. */
 static void fmx_seed_inbox(const char *peer, const char *ts, long long seq,
                            const char *from, const char *to,
                            const char *kind, const char *body,
@@ -546,9 +542,8 @@ static void fmx_seed_inbox(const char *peer, const char *ts, long long seq,
         fmx_fixture_fail("cannot finish an inbox row");
 }
 
-/* The state the brief reports for the change row `from` wrote under `ref`,
- * or "" when the brief shows no such row. Matching on both fields keeps a
- * directive and the reply that shares its ref apart. */
+/* The state the brief reports for the change row `from` wrote under `ref`, or
+ * "" when absent; matching both fields keeps a directive apart from a reply on its ref. */
 static const char *fmx_change_state(const struct json_value *changes,
                                     const char *from, const char *ref)
 {
@@ -582,9 +577,8 @@ static const char *fmx_obj_str(const struct fmx_call *e, const char *key)
     return v && v->type == JSON_STR && json_get_str(v) ? json_get_str(v) : "";
 }
 
-/* True when evidence for `ref` reports `want` AND the brief reports the
- * same state for that very row (matched by the evidence object's own from
- * and ref). The two surfaces must never disagree about one row. */
+/* True when evidence for `ref` reports `want` AND the brief reports the same
+ * state for that row: the two surfaces must never disagree. */
 static bool fmx_state_agrees(const char *gid, const char *ref,
                              const char *want)
 {
@@ -608,8 +602,7 @@ static bool fmx_state_agrees(const char *gid, const char *ref,
     return ok;
 }
 
-/* Craft one expired grant row: expiry honors the wall clock, and no test
- * should sleep to prove it. */
+/* Craft one expired grant row: expiry honors the wall clock; no test sleeps. */
 static void fmx_seed_expired(const char *id)
 {
     char dir[1024], path[1200];
@@ -634,10 +627,9 @@ static void fmx_seed_expired(const char *id)
         fmx_fixture_fail("cannot finish expired grant");
 }
 
-/* No node in this group, deterministically: every board sibling call
- * fails closed with NODE_UNAVAILABLE instead of depending on ambient
- * ports or cookies. Groups run forked, and the hook is cleared at the
- * single function exit so the sequential runner is unaffected. */
+/* No node in this group: every board sibling call fails closed with
+ * NODE_UNAVAILABLE, independent of ambient ports or cookies. Groups run forked;
+ * the hook is cleared at the single function exit. */
 static char *fmx_no_node(const char *method, const char *params_json)
 {
     (void)method;
@@ -764,10 +756,9 @@ static struct fmx_accept fmx_probe(void)
     return a;
 }
 
-/* The single change row a fresh probe leaves behind: queued, with a
- * lead (not the body) and its ref. Queued, not delivered: the probe's own
- * outbox is always inside the probe's own pull, so nothing here says the
- * directive reached the recipient. */
+/* The single change row a fresh probe leaves: queued, with a lead (not the body)
+ * and its ref. Queued, not delivered: the probe's own outbox is inside its own
+ * pull, so nothing says the directive reached the recipient. */
 static bool fmx_check_queued(const struct json_value *changes)
 {
     const struct json_value *ch, *v;
@@ -863,9 +854,8 @@ static int fmx_t_brief_newer_low_seq(void)
         struct fmx_accept throwaway;
         char token[4096], token2[4096];
         fmx_isolate("brief_low_seq");
-        /* A real send first so the state tree exists (seeding writes the
-         * leaf dir only); its outbox row numbers from 1, far below the
-         * fixture seqs, and its ref never collides with them. */
+        /* A real send first so the state tree exists; its outbox row numbers from
+         * 1, below the fixture seqs, and its ref never collides with them. */
         throwaway = fmx_probe();
         ASSERT(throwaway.ok);
         /* Stream X reaches a high seq; the brief reports it as cursor. */
@@ -884,10 +874,9 @@ static int fmx_t_brief_newer_low_seq(void)
         /* Stream Y emits a LOWER seq with a NEWER timestamp. */
         fmx_seed_inbox("stream-y", "2026-09-20T00:00:01Z", 980, "y", "bob",
                        "note", "y-fresh", "ref-y");
-        /* The integer cursor is the legacy global floor: it never covered
-         * Y's independent sequence space, so Y stays hidden there. That
-         * adapter behavior is intentional — cross-stream resume needs the
-         * composite watermark, asserted next. */
+        /* The integer cursor is the legacy global floor and never covered Y's
+         * independent sequence space, so Y stays hidden there; cross-stream
+         * resume needs the composite watermark, asserted next. */
         fmx_brief(&b, NULL, 1192);
         ASSERT(fmx_run(&b, zcl_native_handle_fleet_steer_brief));
         ASSERT(fmx_ok(&b));
@@ -1156,9 +1145,9 @@ _test_next:;
     return failures;
 }
 
-/* The sender's own outbox is never delivery. A row this host sent through
- * steer stays queued until the receiver itself has written something;
- * rows this host did not send keep the older reading. */
+/* The sender's own outbox is never delivery: a row sent through steer stays
+ * queued until the receiver writes something; rows this host did not send keep
+ * the older reading. */
 static int fmx_t_sent_needs_receiver(void)
 {
     int failures = 0;
@@ -1187,13 +1176,11 @@ static int fmx_t_sent_needs_receiver(void)
         seq = json_get_int(v);
         fmx_end(&s);
         ASSERT(seq >= 1);
-        /* Nothing has carried those bytes anywhere. The row sits in this
-         * host's own outbox, which is always inside this host's own pull,
-         * so neither surface may call it delivered. */
+        /* Nothing has carried those bytes anywhere: the row sits in this host's
+         * own outbox, so neither surface may call it delivered. */
         ASSERT(fmx_state_agrees(gid, "fence-sweep", "queued"));
-        /* A row a transport dropped here keeps the older reading, even
-         * when the peer's own numbering collides with our seq: the
-         * receipt names a recipient, not a bare sequence number. */
+        /* A row a transport dropped here keeps the older reading even when the
+         * peer's numbering collides with our seq: the receipt names a recipient. */
         fmx_seed_inbox("peer-host", "2026-09-16T00:00:00Z", seq, "peer-host",
                        "other-crew", "note", "peer note", "inbound-ref");
         fmx_brief(&b, gid, 0);
@@ -1206,9 +1193,8 @@ static int fmx_t_sent_needs_receiver(void)
                                        "steer-caller", "fence-sweep"),
                       "queued");
         fmx_end(&b);
-        /* The recipient's own reply under the same ref is receiver
-         * evidence a sender cannot forge: the sent row promotes straight
-         * to acknowledged. */
+        /* The recipient's own reply under the same ref is unforgeable receiver
+         * evidence: the sent row promotes to acknowledged. */
         fmx_seed_inbox("fence-crew", "2026-12-31T00:00:00Z", 9001,
                        "fence-crew", "steer-caller", "result",
                        "north fence swept", "fence-sweep");
@@ -1404,13 +1390,9 @@ static int fmx_t_grant_list_full(void)
     return failures;
 }
 
-/* The grant store is inventoriable, and the inventory is not a credential.
- *
- * Before action=list there was no way to ask what credentials existed: mint
- * handed an id back once and revoke took one away, and everything in
- * between was a JSONL file read by hand. That is how eight forgotten
- * full-scope grants stayed live. The listing has to name every row and
- * admit nobody, so it prints an 8-character prefix and never a whole id. */
+/* The grant store is inventoriable, and the inventory is not a credential: the
+ * listing names every row and admits nobody, printing an 8-character prefix and
+ * never a whole id. */
 static int fmx_t_grant_list(void)
 {
     int failures = 0;
@@ -1823,10 +1805,9 @@ static void fmx_ref_attempt(const char *gid, const char *ref, const char *key,
     fmx_end(&c);
 }
 
-/* The ingress ref grammar is the queue's grammar. A ref accepted here that
- * the queue would refuse is work that can be delivered and never dispatched,
- * which is exactly what this proves cannot happen. The hostile refs are the
- * ones a live adversarial run actually sent at the deployed endpoint. */
+/* The ingress ref grammar is the queue's grammar: a ref accepted here that the
+ * queue would refuse is work that is delivered and never dispatched. The hostile
+ * refs are ones sent at a deployed endpoint in an adversarial run. */
 static int fmx_t_ref_grammar(void)
 {
     int failures = 0;
@@ -1907,9 +1888,8 @@ _test_next:;
     return failures;
 }
 
-/* The sender binding stamped on the mail row under `ref`, or "" when the
- * row carries none. Read through the real mail leaf, never by parsing a
- * path, so the field has to survive post and pull to be seen here. */
+/* The sender binding stamped on the mail row under `ref`, or "" when none. Read
+ * through the real mail leaf so the field must survive post and pull. */
 static void fmx_row_binding(const char *ref, char *out, size_t cap)
 {
     struct fmx_call p;
@@ -1937,10 +1917,9 @@ static void fmx_row_binding(const char *ref, char *out, size_t cap)
     fmx_end(&p);
 }
 
-/* What one claimed send answered. `code` is the batch refusal code, or ""
- * when the batch passed; `items` records whether per-item outcomes came
- * back at all, which is how a case tells a batch refused outright from one
- * that reached the items — a reconcile is an item-level answer. */
+/* What one claimed send answered. `code` is the batch refusal code, or "" when
+ * the batch passed; `items` records whether per-item outcomes came back, which
+ * tells a batch refused outright from one that reached the items. */
 struct fmx_claim_out {
     char code[64];
     bool items;
@@ -1970,10 +1949,8 @@ static void fmx_claim(const char *grant, const char *from, const char *ref,
 
 /* ── the sender is the credential, not the claim ────────────────────────
  *
- * Proven live on the public endpoint 2026-09-17: one grant labelled
- * "impersonation-probe" successfully sent as itself, as "A", as
- * "acceptance-20260917" and as "owner", and the receiver dispatched on the
- * claimed name. Each case below is one of those doors, closed. */
+ * One grant must not send as another name ("A", "owner", ...) and have the
+ * receiver dispatch on the claimed name. Each case below closes one such door. */
 static int fmx_t_sender_binding(void)
 {
     int failures = 0;
@@ -2000,11 +1977,9 @@ static int fmx_t_sender_binding(void)
         PASS();
     }
 
-    /* Proven live on 2026-09-18: a host store holding 82 older grant ids
-     * made the receiver answer STEER_GRANT_UNKNOWN for a grant minted a
-     * minute earlier, because admission kept only the FIRST 64 ids of the
-     * whole file. Other labels must not spend a sender's bound, and within
-     * one label the newest ids are the ones kept. */
+    /* A host store with 82 older grant ids must not make a recent grant read
+     * STEER_GRANT_UNKNOWN: other labels must not spend a sender's bound, and
+     * within one label the newest ids are kept. */
     TEST("steer: a live grant after 70 others still admits its own row") {
         struct fmx_claim_out o;
         char gid[64], bind[80], label[32];
@@ -2031,15 +2006,14 @@ static int fmx_t_sender_binding(void)
         fmx_isolate("sender_impersonation");
         ASSERT(fmx_mint_as("send", "steer-victim", victim, sizeof(victim)));
         ASSERT(fmx_mint_as("send", "steer-actor", actor, sizeof(actor)));
-        /* Both identities exist. The question is never whether the victim
-         * exists — it is whether the actor may speak as it. */
+        /* Both identities exist; the question is whether the actor may speak as it. */
         fmx_claim(actor, "steer-victim", "imp-a", "k-imp-a", &o);
         ASSERT_STR_EQ(o.code, "STEER_SENDER_MISMATCH");
         ASSERT(!o.items);
         ASSERT_EQ(fmx_mail_count(), 0);
-        /* Rewriting the claim to the credential's own name would have
-         * posted a row and told the caller nothing. The same actor sending
-         * as itself is accepted, so what was refused is the claim. */
+        /* Rewriting the claim to the credential's own name would post a row and
+         * tell the caller nothing; the same actor sending as itself is accepted,
+         * so what is refused is the claim. */
         fmx_claim(actor, "steer-actor", "act-a", "k-act-a", &o);
         ASSERT_STR_EQ(o.code, "");
         ASSERT_EQ(fmx_mail_count(), 1);
@@ -2081,10 +2055,9 @@ static int fmx_t_sender_binding(void)
         fmx_claim(victim, "steer-victim", "rep-a", "k-rep", &o);
         ASSERT_STR_EQ(o.code, "");
         ASSERT_EQ(fmx_mail_count(), 1);
-        /* The same idempotency key under a different claimed sender.
-         * Reconcile would answer with the victim's recorded accept and let
-         * the actor inherit the victim's row, so the binding has to refuse
-         * before idempotency is consulted at all. */
+        /* The same idempotency key under a different claimed sender: reconcile
+         * would hand the actor the victim's accept, so the binding must refuse
+         * before idempotency is consulted. */
         fmx_claim(actor, "steer-victim", "rep-a", "k-rep", &o);
         ASSERT_STR_EQ(o.code, "STEER_SENDER_MISMATCH");
         /* No per-item answer means no reconcile was reached: a duplicate
@@ -2179,10 +2152,10 @@ _test_next:;
 
 /* ── workers, capacity, stale directives, budget ─────────────────────────
  *
- * The brief's worker view must be evidence, never a name list: an entry
- * exists only for an identity that answered as a receiver or worker, or
- * for this host's own resident; unknown numbers are null with a reason;
- * and a big history can never make the reply fail wholesale. */
+ * The brief's worker view is evidence, never a name list: an entry exists only
+ * for an identity that answered as a receiver or worker, or this host's own
+ * resident; unknown numbers are null with a reason; a big history cannot make
+ * the reply fail wholesale. */
 
 /* Write (or append) one file under the isolated state root, creating its
  * directory. rel is "<dir>/<file>" relative to <state>/z23/dev. */
@@ -2741,9 +2714,9 @@ _test_next:;
 
 /* ── sessions[]: one row per coding-agent session ───────────────────────
  *
- * A session announces itself with a `note` row under ref presence-<ROLE>
- * whose body is the strict presence.v1 line. Every mail row on a box says
- * from=<unix user>, so the ROLE comes from the ref, never from `from`. */
+ * A session announces itself with a `note` row under ref presence-<ROLE> whose
+ * body is the strict presence.v1 line. Mail rows say from=<unix user>, so the
+ * ROLE comes from the ref, never from `from`. */
 
 #define FMX_SHA256 \
     "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -3139,9 +3112,8 @@ static int fmx_t_brief_watermark(void)
                        fmx_str(&b, "cursor_token"));
         ASSERT(token[0] != '\0');
         fmx_end(&b);
-        /* A backfilled row: older than everything, but new to the feed.
-         * Prefix consumption must never skip it — and it must read as
-         * six years old, never as fresh. */
+        /* A backfilled row is older than everything but new to the feed: prefix
+         * consumption must not skip it, and it reads as six years old. */
         fmx_seed_inbox("stream-y", "2020-01-01T00:00:00Z", 7, "y", "bob",
                        "directive", "stale directive", "ref-stale-1");
         fmx_brief_since(&b, NULL, token);
@@ -3355,11 +3327,9 @@ static int fmx_t_brief_watermark(void)
                        fmx_str(&b, "cursor_token"));
         ASSERT(token[0] != '\0');
         fmx_end(&b);
-        /* The receiver's result lands in its own stream, newer but under
-         * its own numbering. The watermarked poll carries the result row
-         * itself (the directive already showed as queued one poll
-         * earlier); a full poll joins both and flips the directive to
-         * acknowledged with the answer attached. */
+        /* The receiver's result lands in its own stream under its own numbering.
+         * The watermarked poll carries the result row; a full poll joins both and
+         * flips the directive to acknowledged with the answer attached. */
         fmx_now_ts(now, sizeof(now));
         fmx_seed_inbox("box-b", now, 733, "worker-b", "oauth", "result",
                        "ref=vis-e2e\\nterminal=pass\\n", "vis-e2e");
@@ -3521,11 +3491,9 @@ _test_next:;
     return failures;
 }
 
-/* 2026-09-18: fifteen directives to D sat in the gateway outbox and none
- * reached the Windows box, because no transport leg reaches it. The only
- * path D can reach is this surface over 443. These cases walk it with a
- * D-labelled grant and nothing else: read the directive by ref, answer it
- * under the SAME ref, and the origin must see the answer. */
+/* A directive to a box no transport leg reaches must be answerable over this
+ * surface alone: read the directive by ref, answer under the SAME ref, and the
+ * origin sees the answer. These cases use a D-labelled grant and nothing else. */
 #define FMX_D_REF "d-probe-20260918-v1"
 
 struct fmx_d_reply {
@@ -3674,10 +3642,9 @@ _test_next:;
 
 /* ── candidates: identity, state ladder, and unknown-is-not-zero ─────────
  *
- * The registry is a pure API, so these run with no fixture and no clock.
- * They pin the three properties an operator reading the brief depends on:
- * one ref is one candidate however many sources saw it; a state may only
- * be raised by evidence; and anything unmeasured emits null, never 0. */
+ * The registry is a pure API (no fixture, no clock). Pinned: one ref is one
+ * candidate however many sources saw it; a state is only raised by evidence;
+ * anything unmeasured emits null, never 0. */
 
 /* Post one mail row naming a ref, so the brief has a real handover to
  * find. Mirrors fmx_mail_count's shape: drive the leaf, never the file. */
@@ -3969,8 +3936,7 @@ static int fmx_t_candidate_from_mail(void)
         ASSERT(fmx_ok(&b));
         arr = fmx_arr(&b, "candidates");
         row = fmx_cand(arr, "cand-brief-1");
-        /* THE REGRESSION: before the registry this was always absent,
-         * because mail was not a candidate source at all. */
+        /* Mail is a candidate source. */
         ASSERT(row != NULL);
         ASSERT_STR_EQ(fmx_cstr(row, "state"), "delivered");
         ASSERT_EQ(json_size(json_get(row, "sources")), 1u);

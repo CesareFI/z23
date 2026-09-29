@@ -189,11 +189,9 @@ static int test_admit_selftest_fail(void)
 /* ── The sealed-core SECTION declaration (ABI v3) ──────────────────────────
  *
  * A module records WHICH sealed sections it compiled against, and admission
- * verifies them IN ADDITION to the unchanged ROOT pin. Every case below is a
- * REFUSAL that did not exist before; none of them makes anything admissible.
+ * verifies them IN ADDITION to the ROOT pin. Every case below is a REFUSAL.
  *
- * The fixtures start from the resident's own table and mutate ONE thing, so a
- * green result cannot come from the fixture being wrong in some other way. */
+ * Fixtures start from the resident's own table and mutate ONE thing. */
 
 /* A narrowed declaration: the sections a status-controller module actually
  * reaches. Built at runtime from the resident table so it can never go stale
@@ -281,8 +279,7 @@ static int test_sections_wrong_digest_refused(void)
     TEST("sections: a WRONG section digest is refused at stage=sections") {
         struct sect_fixture f;
         sect_fixture_init(&f);
-        /* One byte of one row. Everything else — ROOT, TREE, the other 22
-         * rows, every leaf — is exactly what the resident has. */
+        /* One byte of one row; everything else matches the resident. */
         static char bad[65];
         snprintf(bad, sizeof(bad), "%s", f.rows[0].digest);
         bad[63] = (bad[63] == 'a') ? 'b' : 'a';
@@ -392,9 +389,9 @@ static int test_sections_duplicate_row_refused(void)
     return failures;
 }
 
-/* The v2 struct layout, verbatim: everything ABI v2 had, and nothing v3 added.
- * Used to prove a retired-ABI artifact is refused WITHOUT its trailing bytes
- * ever being read. */
+/* The v2 struct layout, verbatim (everything ABI v2 had, nothing v3 added).
+ * Proves a retired-ABI artifact is refused WITHOUT its trailing bytes ever
+ * being read. */
 struct v2_module_layout {
     uint32_t abi_version;
     const char *source_tu;
@@ -443,13 +440,10 @@ static int test_sections_old_abi_refused_without_overread(void)
     return failures;
 }
 
-/* The compiled section table is a MIRROR of core/MANIFEST.sha3. Nothing in the
- * build forces it to be current, so re-derive it here from the manifest and
- * demand exact agreement. A seal re-cut that lands without
- * `make core-seal-sections` fails this case instead of silently leaving every
- * module declaring the OLD section digests.
- *
- * Read relative to the repo root, the directory the test binaries run from. */
+/* The compiled section table mirrors core/MANIFEST.sha3; re-derive it from
+ * the manifest and demand exact agreement. A seal re-cut without
+ * `make core-seal-sections` fails here. Read relative to the repo root, the
+ * directory the test binaries run from. */
 static int test_sections_mirror_matches_manifest(void)
 {
     int failures = 0;
@@ -643,18 +637,16 @@ static int test_activation_gate(void)
     return failures;
 }
 
-/* The loader TU (engine/modules/hotswap/src/hotswap_activate.c) is compiled into the test
- * binaries with -DZCL_DEV_BUILD — and ONLY that TU — so `make t-hotswap` can
- * run a test group against a hot-swapped module through the SAME loader the
- * dev node runs, instead of relinking the whole harness for a one-file edit.
- * See the module-mode block in the Makefile beside TEST_FAST_OBJECT_CFLAGS.
+/* The loader TU (engine/modules/hotswap/src/hotswap_activate.c) is compiled
+ * into the test binaries with -DZCL_DEV_BUILD, and ONLY that TU, so
+ * `make t-hotswap` runs a test group against a hot-swapped module through
+ * the SAME loader the dev node runs (see the module-mode block in the
+ * Makefile beside TEST_FAST_OBJECT_CFLAGS). Every other TU stays
+ * release-shaped.
  *
- * Every OTHER TU stays release-shaped, so the "this binary is not a dev build"
- * assertions elsewhere in the suite remain true.
- *
- * What must stay proven here is that the REAL loader still refuses before it
- * touches anything: a path outside the confinement set never reaches dlopen,
- * and a non-dev datadir is refused ahead of the authorization gate. */
+ * Proves the REAL loader refuses before touching anything: a path outside
+ * the confinement set never reaches dlopen, and a non-dev datadir is
+ * refused ahead of the authorization gate. */
 static int test_loader_refuses_unconfined_input(void)
 {
     int failures = 0;

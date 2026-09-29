@@ -7,38 +7,20 @@
  * is linked here: every reference value below is produced by this repository's
  * own out-of-circuit implementations.
  *
- * WHAT THIS GATES
- * ---------------
- * Section 21 is 44224 of the spend circuit's 98777 constraints — the largest
- * single section, 45% of the whole circuit. A section that lands on the right
- * constraint count with the wrong arithmetic is the exact failure the spend
- * parity oracle exists to catch, so this gate never accepts a count on its own.
- * Four independent things are asserted:
+ * Section 21 is 44224 of the spend circuit's 98777 constraints. A section
+ * with the right count and wrong arithmetic is what the spend parity oracle
+ * exists to catch, so a count is never accepted alone. Asserted:
  *
- *   (A) EXACT COST, top down and bottom up. The whole fold is 44224 and each of
- *       the 32 levels is 1382, and each of the level's four pieces is measured
- *       on its own (1 position bit + 2 conditional swap + 512 decomposition +
- *       867 Pedersen). A compensating pair of errors cancels in the total but
- *       not in the breakdown.
- *
- *   (B) THE ROOT IS RIGHT. The anchor wire the circuit computes is compared,
- *       byte for byte, against a root folded out of circuit with
- *       pedersen_merkle_hash() — a separate implementation (precomputed
- *       chunk-multiple tables on the Jubjub generators) that shares no code with
- *       the in-circuit Montgomery-window gadget. The in-circuit Pedersen hash is
- *       additionally diffed against pedersen_hash_bits() on the same 516 bits.
- *
- *   (C) THE SWAP IS REAL. Re-synthesizing with every position bit inverted must
- *       produce the DIFFERENT root the out-of-circuit fold produces for those
- *       inverted bits. A conditional reversal that quietly ignored its
- *       condition would pass (A) and pass (B) for one witness; it cannot pass
- *       this.
- *
- *   (D) THE WIRES ARE BOUND. Counts and values both read only the honest
- *       witness, so neither can see an UNDER-constrained gadget. Flipping the
- *       anchor wire, or any one of the 32 position bits, must make the R1CS
- *       unsatisfiable. A free position bit would let a prover choose the note's
- *       position, which is what the nullifier binds.
+ *   (A) exact cost: 44224 total, 1382 per level, and per piece
+ *       (1 position bit + 2 conditional swap + 512 decomposition +
+ *       867 Pedersen).
+ *   (B) the root: the in-circuit anchor equals a root folded out of circuit
+ *       with pedersen_merkle_hash() (an independent implementation); the
+ *       in-circuit Pedersen hash is also diffed against pedersen_hash_bits().
+ *   (C) the swap is real: inverting every position bit yields the different
+ *       out-of-circuit root.
+ *   (D) the wires are bound: flipping the anchor or any position bit makes
+ *       the R1CS unsatisfiable.
  *
  * The gate is params-free and hermetic (pure Jubjub/Pedersen + R1CS synthesis),
  * so it runs unconditionally with no proving key and no ~/.zcash-params.
@@ -65,22 +47,17 @@
     else { printf("FAIL\n"); failures++; }             \
 } while (0)
 
-/* Reference section boundaries for the four sections that surround this one, from
- * the pinned reference trace (the same table tests/harness/src/groth16_spend_parity.c
- * diffs against — restated here as read-only context for the scoreboard, never
- * as something this gate may adjust). */
+/* Reference section boundaries around this one, from the pinned reference
+ * trace (read-only context for the scoreboard). */
 #define REF_CUM_SECTION_16   30679u   /* end of the prefix ported before this */
-#define REF_CUM_SECTION_20   32669u   /* sections 17..20 — a sibling lane */
+#define REF_CUM_SECTION_20   32669u   /* sections 17..20 */
 #define REF_CUM_SECTION_21   76893u
 #define REF_DELTA_SECTION_21 (REF_CUM_SECTION_21 - REF_CUM_SECTION_20)
 
 /* ── Deterministic witness ──────────────────────────────────────────────── */
 
-/* Every 32-byte value fed to the circuit as a field element has to be a
- * CANONICAL Fr encoding, or the in-circuit 255-bit decomposition and the
- * out-of-circuit reference read different numbers. Taking each one from a
- * Pedersen hash guarantees it: the output is a Jubjub point's x-coordinate, so
- * it is an Fr element by construction. */
+/* Field-element inputs must be canonical Fr encodings; taking each from a
+ * Pedersen hash (a Jubjub x-coordinate) guarantees it. */
 static void derive_field_element(uint8_t out[32], uint8_t tag_a, uint8_t tag_b)
 {
     uint8_t a[32] = {0}, b[32] = {0};
@@ -103,9 +80,8 @@ static void build_fixture(struct merkle_fixture *f)
     derive_field_element(f->leaf, 0x01, 0x02);
     for (size_t d = 0; d < SAPLING_MERKLE_DEPTH; d++) {
         derive_field_element(f->path[d], (uint8_t)(0x10 + d), (uint8_t)(d * 7u));
-        /* A mixed pattern: both branches of the conditional swap have to be
-         * exercised, and the bit must not be a function of the depth's parity
-         * alone (that would make a swapped-every-level bug look identical). */
+        /* Mixed pattern: exercises both swap branches and is not a function
+         * of depth parity. */
         f->bits[d] = (((d * 5u) + (d / 3u)) & 1u) != 0u;
     }
 }
@@ -151,9 +127,8 @@ static size_t synthesize_path(struct constraint_system *cs,
     struct fr leaf_fr;
     if (!fr_from_bytes(&leaf_fr, f->leaf))
         return SIZE_MAX;
-    /* The leaf enters as a bare wire, exactly as section 20 hands over the
-     * randomized note commitment's x-coordinate. Allocating it costs no
-     * constraint, so the measured delta below is section 21 alone. */
+    /* The leaf enters as a bare wire (no constraint), so the measured delta
+     * is section 21 alone. */
     const size_t leaf_var = cs_alloc_aux(cs, &leaf_fr);
     const size_t before = cs->num_constraints;
 
@@ -232,9 +207,7 @@ static int level_breakdown_gate(const struct merkle_fixture *f)
     MERKLE_CHECK("piece 3/4: both halves decompose for 512 constraints",
                  cs.num_constraints - mark == 512);
 
-    /* The decomposition's bits must be the value's little-endian bits — a
-     * reversed or big-endian order hashes a different preimage while costing
-     * exactly the same. */
+    /* The decomposition bits must be the value's little-endian bits. */
     {
         struct fr one_fr;
         fr_one(&one_fr);
@@ -266,9 +239,8 @@ static int level_breakdown_gate(const struct merkle_fixture *f)
     MERKLE_CHECK("Pedersen hash produced a point", hash_x != SIZE_MAX
                                                 && hash_y != SIZE_MAX);
 
-    /* Independent oracle: pedersen_hash_bits() over the SAME 516 bits. It is a
-     * different implementation (precomputed chunk-multiple tables, plain Jubjub
-     * arithmetic) — this is a differential, not a restatement. */
+    /* Independent oracle: pedersen_hash_bits() over the same 516 bits
+     * (a different implementation). */
     {
         uint8_t bits[6 + 2 * MERKLE_FIELD_BITS];
         size_t n = 0;
@@ -297,8 +269,7 @@ static int level_breakdown_gate(const struct merkle_fixture *f)
                      "pedersen_hash_bits over the same 516 bits", ok);
     }
 
-    /* Everything emitted so far must be satisfied by its own witness — the
-     * coefficient-level check the counts and values cannot make. */
+    /* Everything emitted so far must be satisfied by its own witness. */
     {
         size_t bad = SIZE_MAX;
         MERKLE_CHECK("every constraint of the isolated level pieces is "
@@ -348,14 +319,9 @@ int groth16_merkle_path_gate(void)
            "authentication path ---\n");
     int failures = 0;
 
-    /* The Montgomery-form constants. Both are literal coefficients inside the
-     * Pedersen gadget's constraints, and the `scale` that shipped before this
-     * section landed was NOT a square root of -40964: only scale^2 reaches the
-     * Montgomery addition, so single-window hashes round-tripped and every real
-     * multi-window Pedersen hash was wrong. Production now DERIVES scale with
-     * fr_sqrt instead of carrying a blob, so a value that is not a square root
-     * can no longer ship at all — but that is only half of what has to hold, and
-     * this gate covers the other half. */
+    /* The Montgomery-form constants; both are literal coefficients inside
+     * the Pedersen gadget's constraints, so scale must be a square root of
+     * -40964. */
     {
         struct fr mont_a, scale, want_a, sq, want_sq;
         gadget_jubjub_montgomery_params(&mont_a, &scale);
@@ -375,22 +341,12 @@ int groth16_merkle_path_gate(void)
         MERKLE_CHECK("Jubjub Montgomery scale^2 == -40964 == 4/(a-d)",
                      b_ok && fr_eq(&sq, &want_sq));
 
-        /* WHICH of the two square roots, pinned against sapling-crypto's
-         * published `JubjubBls12::scale`:
+        /* Which of the two square roots, pinned against sapling-crypto's
+         * JubjubBls12::scale (little-endian below):
          *   17814886934372412843466061268024708274627479829237077604635722030778476050649
-         * little-endian below.
-         *
-         * The defining equation above CANNOT catch a wrong choice here, and
-         * neither can anything else this suite runs. Negating scale negates every
-         * Montgomery y — the window tables, every lambda, every y3 — and the
-         * conversion back to Edwards divides scale*x by y, so the negation
-         * cancels and both roots compute the IDENTICAL hash. Same output, same
-         * constraint count, same satisfied witness. What differs is that scale
-         * appears as a literal COEFFICIENT in those constraints, so the two roots
-         * are two different A/B/C matrices — a different QAP, and a proof that
-         * the Sapling trusted setup's verifying key rejects. fr_sqrt returns this
-         * root today; a Tonelli-Shanks change that returned the other one would
-         * be invisible without this line. */
+         * Negating scale gives the identical hash and constraint count, but
+         * scale is a literal coefficient, so the two roots yield different
+         * A/B/C matrices and only one matches the Sapling verifying key. */
         static const uint8_t REF_SCALE_LE[32] = {
             0xD9,0xB8,0x82,0xCF,0xF7,0x35,0x45,0x8F,
             0xBD,0x8A,0xA8,0x3D,0x70,0x69,0x40,0xCE,
@@ -483,9 +439,8 @@ int groth16_merkle_path_gate(void)
         MERKLE_CHECK(label, sat);
     }
 
-    /* (C) THE SWAP IS REAL. Invert every position bit; the circuit must land on
-     *     the different root the out-of-circuit fold gives for those bits. A
-     *     conditional reversal that ignored its condition passes (A) and (B). */
+    /* (C) THE SWAP IS REAL. Inverting every position bit must land on the
+     *     different root the out-of-circuit fold gives for those bits. */
     {
         uint8_t want_inv[32], got_inv[32];
         reference_root(&f, true, want_inv);
@@ -519,9 +474,8 @@ int groth16_merkle_path_gate(void)
         MERKLE_CHECK("honest witness satisfies the section before any mutation",
                      cs_is_satisfied(&cs, &ignored));
 
-        /* The anchor. Perturbing it must break the Pedersen constraint that
-         * produced it — otherwise a prover could pick the anchor, which is the
-         * public input the whole section exists to justify. */
+        /* The anchor: perturbing it must break the Pedersen constraint that
+         * produced it. */
         {
             struct fr saved = cs.witness[root_var];
             struct fr bumped;
@@ -572,10 +526,8 @@ int groth16_merkle_path_gate(void)
         cs_free(&cs2);
     }
 
-    /* Honest scoreboard. Section 21 sits AFTER sections 17..20, which are a
-     * different lane's work; until they land the spend circuit's cumulative
-     * count cannot reach the reference's 76893 no matter how correct this
-     * section is, and this gate says so rather than implying the gap away. */
+    /* Honest scoreboard: until sections 17..20 land, the cumulative count
+     * cannot reach the reference's 76893. */
     struct spend_prover_native_status st;
     sapling_spend_prover_native_status(&st);
     printf("  section 21 measured delta: %zu constraints "

@@ -94,10 +94,7 @@ static int test_global_rate_limit(void)
     int failures = 0;
     TEST("rpc_http_mw: global burst caps total across all IPs") {
         fresh();
-        /* Drain the global bucket via 100 distinct IPs (each gets one
-         * shot at the global token before its per-IP bucket also
-         * drains). After 100 different IPs the global bucket of 100
-         * should be empty regardless of per-IP burst. */
+        /* Drain the global bucket (100) via 100 distinct IPs. */
         for (int i = 0; i < 100; i++) {
             uint32_t c = ip_be(10, 0, (uint8_t)(i / 256), (uint8_t)(i % 256));
             rpc_http_middleware_check(&mw, c);
@@ -105,9 +102,7 @@ static int test_global_rate_limit(void)
         /* The 101st distinct IP should hit the global bucket. */
         uint32_t fresh_ip = ip_be(11, 0, 0, 1);
         enum rpc_http_decision d = rpc_http_middleware_check(&mw, fresh_ip);
-        /* It might be allowed if the global bucket refilled in the
-         * microseconds between calls — accept either ALLOW (next refill
-         * tick) or RATE_LIMITED_GLOBAL. */
+        /* Allowed if the global bucket refilled between calls; accept either. */
         ASSERT(d == RPC_HTTP_ALLOW || d == RPC_HTTP_RATE_LIMITED_GLOBAL);
         PASS();
     } _test_next:;
@@ -236,10 +231,8 @@ static int test_lru_eviction(void)
 {
     int failures = 0;
     TEST("rpc_http_mw: per-IP table LRU-evicts when full") {
-        /* Disable the global bucket so we can drive MAX_IPS+10 distinct
-         * client check()s without the global cap killing us early.  Keep
-         * the per-IP guard enabled (with a generous burst) so the table
-         * actually gets populated. */
+        /* Disable the global bucket so MAX_IPS+10 distinct clients can be driven;
+         * keep the per-IP guard (generous burst) so the table populates. */
         setenv("ZCL_RPC_RPS",          "0",   1);
         setenv("ZCL_RPC_PER_IP_RPS",   "100", 1);
         setenv("ZCL_RPC_PER_IP_BURST", "100", 1);
@@ -417,8 +410,7 @@ int test_http_middleware(void)
     failures += test_stats_snapshot_mirrors_struct();
 
     if (mw.initialized) rpc_http_middleware_destroy(&mw);
-    /* Leave the global pointer NULL so downstream metrics tests
-     * observe the "inactive" rendering path by default. */
+    /* Leave the global pointer NULL so downstream tests see the inactive path. */
     rpc_http_middleware_set_global(NULL);
     return failures;
 }

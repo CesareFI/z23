@@ -1,32 +1,21 @@
 /* SPDX-License-Identifier: Apache-2.0
  * Copyright 2026 Rhett Creighton
  *
- * Regression-seal unit tests for domain/consensus/verify.c:
- *   domain_consensus_verify_pow_solution()
+ * Regression-seal unit tests for domain_consensus_verify_pow_solution()
+ * (domain/consensus/verify.c):
  *
- * These tests pin three properties of the pure PoW validator:
+ *   1. REGRESSION SEAL: the domain verdict agrees with the legacy
+ *      CheckProofOfWork() across (nBits, hash, powLimit) tuples bracketing
+ *      the boundaries: target at the powLimit floor, hash == target (accepted;
+ *      the rule is hash <= target), and hash one unit below / above.
+ *   2. MALFORMED TARGET: fNegative, fOverflow and bnTarget==0 each yield
+ *      ERR_POW_TARGET_INVALID independently.
+ *   3. DETERMINISM: the same (hash, nBits, params) gives the same verdict.
  *
- *   1. REGRESSION SEAL — the domain verdict must agree with the legacy
- *      bool-returning CheckProofOfWork() across a matrix of
- *      (nBits, hash, powLimit) tuples that bracket the comparison
- *      boundaries: target exactly at the powLimit floor, hash == target
- *      (exact equality boundary, must be ACCEPTED since the rule is
- *      hash <= target), and hash one unit below / above the target.
- *
- *   2. MALFORMED TARGET — the three rejection inputs that all decode to
- *      ERR_POW_TARGET_INVALID (fNegative, fOverflow, bnTarget==0) each
- *      fire independently, with that exact code.
- *
- *   3. DETERMINISM — the same (hash, nBits, params) yields the same
- *      verdict on repeated evaluation; the function is never flaky.
- *
- * Target arithmetic used below (verified against
- * arith_uint256_set_compact in core/math/src/arith_uint256.c):
- *
- *   nBits 0x03123456 -> size=3, word=0x123456, target = 0x123456.
- *   uint256 is little-endian (data[0] = LSB), so a hash whose value is
- *   0x123456 has data[0]=0x56, data[1]=0x34, data[2]=0x12. Changing
- *   data[0] by +/-1 walks the hash one unit across the target.
+ * Target arithmetic (per arith_uint256_set_compact): nBits 0x03123456 ->
+ * target 0x123456. uint256 is little-endian, so that hash has data[0]=0x56,
+ * data[1]=0x34, data[2]=0x12; changing data[0] by +/-1 walks the hash one
+ * unit across the target.
  */
 
 #include "test/test_core.h"
@@ -65,9 +54,8 @@ static struct uint256 seal_hash_value(uint32_t v)
 #define SEAL_TARGET_VALUE          0x00123456u
 
 /* ── 1. Regression seal vs legacy CheckProofOfWork ─────────────────── */
-/* For every boundary tuple, the domain verdict (r.ok) and the legacy
- * bool wrapper must agree, AND each tuple must land on its precise
- * expected verdict (so the assertions are not vacuously self-consistent). */
+/* For every boundary tuple the domain verdict (r.ok) and the legacy bool
+ * wrapper agree, and each tuple lands on its exact expected verdict. */
 int test_domain_consensus_pow_seal_matrix(void)
 {
     int failures = 0;
@@ -107,11 +95,9 @@ int test_domain_consensus_pow_seal_matrix(void)
 }
 
 /* ── 1b. Target exactly at the powLimit floor ──────────────────────── */
-/* When the decoded target == powLimit, the comparison `target > powLimit`
- * is false, so the floor is INCLUSIVE: a target sitting exactly on the
- * floor is accepted (not BELOW_MIN). A target one unit above the floor
- * IS below the minimum work and must be rejected. Both must match the
- * legacy wrapper. */
+/* The powLimit floor is INCLUSIVE (`target > powLimit` is the reject): a
+ * target exactly on the floor is accepted, one unit above is BELOW_MIN.
+ * Both match the legacy wrapper. */
 int test_domain_consensus_pow_seal_powlimit_floor(void)
 {
     int failures = 0;
@@ -147,11 +133,9 @@ int test_domain_consensus_pow_seal_powlimit_floor(void)
 }
 
 /* ── 2. Malformed target: three rejection paths fire independently ─── */
-/* set_compact reports fNegative, fOverflow; and a zero word yields
- * bnTarget==0. The validator collapses all three to a single code,
- * ERR_POW_TARGET_INVALID. Pin that each distinct malformed input both
- * decodes via its own predicate and lands on that code (never a
- * different rejection, never accepted). */
+/* set_compact reports fNegative and fOverflow, and a zero word yields
+ * bnTarget==0; the validator maps all three to ERR_POW_TARGET_INVALID. Each
+ * malformed input decodes via its own predicate and lands on that code. */
 int test_domain_consensus_pow_seal_malformed_paths(void)
 {
     int failures = 0;
@@ -186,11 +170,8 @@ int test_domain_consensus_pow_seal_malformed_paths(void)
         ASSERT(CheckProofOfWork(zero, 0x02800001u, &p) == false);
         ASSERT(CheckProofOfWork(zero, 0xff000001u, &p) == false);
 
-        /* Independence: the three malformed codes are TARGET_INVALID and
-         * NOT confused with the below-min or hash-above codes. A valid
-         * control (well-formed nBits, easy powLimit, hash 0) is accepted,
-         * proving the rejections above are about the target, not a
-         * blanket reject. */
+        /* The malformed codes are TARGET_INVALID, not below-min or
+         * hash-above; a valid control (easy powLimit, hash 0) is accepted. */
         struct zcl_result r_ok = domain_consensus_verify_pow_solution(
                 &zero, SEAL_NBITS_TARGET_0x123456, &p);
         ASSERT(r_ok.ok);
@@ -203,9 +184,7 @@ int test_domain_consensus_pow_seal_malformed_paths(void)
 
 /* ── 3. Determinism: same input -> same verdict, never flaky ───────── */
 /* Re-evaluate a fixed accept tuple and a fixed reject tuple many times;
- * every iteration must reproduce both the ok flag and the exact code.
- * A non-deterministic validator (uninitialised scratch, data race in the
- * pure path) would surface here. */
+ * every iteration reproduces the ok flag and exact code. */
 int test_domain_consensus_pow_seal_deterministic(void)
 {
     int failures = 0;

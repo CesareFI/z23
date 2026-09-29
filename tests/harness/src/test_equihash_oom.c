@@ -1,48 +1,27 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Allocation-failure coverage for the Equihash proof-of-work verifier
- * and the generic Wagner solver beside it (core/modules/crypto/src/equihash.c).
+ * Allocation-failure coverage for the Equihash verifier and the generic
+ * Wagner solver (core/modules/crypto/src/equihash.c).
  *
- * WHY THIS EXISTS. equihash_is_valid_solution() runs on every inbound
- * block header, from any peer, before the header is trusted for
- * anything. It allocates seven distinct times per call — the index
- * array, the expanded-index scratch inside eh_get_indices_from_minimal,
- * the row table, the batched hash scratch, one buffer per row, the
- * per-round collision table, and one buffer per merged row — and every
- * failure branch is a hand-rolled multi-pointer unwind. Nothing proved
- * any of those unwinds ran, and an unwind that frees the wrong count of
- * partially-built rows is a double-free or a wild free on the header
- * path. equihash_basic_solve() has the same shape plus an `oom` flag
- * that has to thread out of a doubly-nested loop without leaking the
- * round table it was half-way through filling.
+ * equihash_is_valid_solution() runs on every inbound block header before it
+ * is trusted, and its seven allocations each have a hand-rolled multi-pointer
+ * unwind; equihash_basic_solve() adds an `oom` flag threading out of a
+ * doubly-nested loop.
  *
- * HOW. zcl_alloc_fault_fail_nth (base/safe_alloc.h) makes the Nth
- * checked allocation carrying an exact label return NULL once. Every
- * case below asserts BOTH halves: the same call returns true with no
- * injection and false with it, and the hook reports that it actually
- * fired. Asserting only "did not crash" would pass just as happily if
- * the injection never landed.
+ * zcl_alloc_fault_fail_nth (base/safe_alloc.h) makes the Nth checked
+ * allocation with an exact label return NULL once. Each case asserts both
+ * halves: true without injection, false with it, and the hook fired.
  *
- * N > 1 is the point of the partial cases. Failing the FIRST allocation
- * of a label runs the sibling-freeing loops zero times; failing the
- * fifth eh_row_data is what makes the batch-of-8 unwind free four
- * already-built rows, and failing the second eh_row_xor is what makes
- * the merge unwind free one already-merged row out of a half-filled
- * collision table.
+ * N > 1 drives the partial-unwind cases: failing the fifth eh_row_data makes
+ * the batch-of-8 unwind free four built rows; failing the second eh_row_xor
+ * makes the merge unwind free one merged row.
  *
- * REACH NOTE (why only the 8-wide row loop is covered). The row build
- * has three arms — 8-wide, 4-wide, then scalar — selected purely by
- * num_indices, which is 2^K. equihash_solution_params accepts exactly
- * four solution lengths, giving K in {5, 7, 9}, so num_indices is
- * always a multiple of 8 and the 4-wide and scalar arms are unreachable
- * for every parameter set the node can be handed. Parameter sets with
- * K < 3 do reach them, but equihash_basic_solve and
- * equihash_is_valid_solution disagree there (the solver emits a
- * solution the verifier rejects, because solution_width truncates when
- * 2^K * (collision_bit_length + 1) is not a whole number of bytes), so
- * there is no "true without injection" baseline to test against. Those
- * two arms are therefore left uncovered on purpose rather than covered
- * by a test that cannot fail. */
+ * Reach: only the 8-wide row loop is covered. num_indices is 2^K with K in
+ * {5, 7, 9}, always a multiple of 8, so the 4-wide and scalar arms are
+ * unreachable for node-supplied parameters. K < 3 reaches them, but the
+ * solver and verifier disagree there (solution_width truncates), so no
+ * "true without injection" baseline exists; those arms are left uncovered.
+ */
 
 #include "test/test_core.h"
 
@@ -50,9 +29,9 @@
 #include "crypto/blake2b.h"
 #include "crypto/equihash.h"
 
-/* (N=96, K=5) witness from the Zcash reference suite — the same vector
- * test_domain_consensus_equihash.c pins, for the BLAKE2b state seeded
- * by the fixed input string + nonce {1, 0, ...}. */
+/* (N=96, K=5) witness from the Zcash reference suite (same vector as
+ * test_domain_consensus_equihash.c), for the BLAKE2b state seeded by the
+ * fixed input string + nonce {1, 0, ...}. */
 static const eh_index kValidIndices_96_5[32] = {
     2261, 15185, 36112, 104243, 23779, 118390, 118332, 130041,
     32642, 69878, 76925, 80080, 45858, 116805, 92842, 111026,
@@ -91,8 +70,7 @@ static bool eho_verify_965(void)
 }
 
 /* Arm the Nth allocation carrying `label`, run the verifier, and require
- * that the hook fired AND the verifier rejected. Disarms unconditionally
- * so one failing case cannot poison the next. */
+ * that the hook fired AND the verifier rejected. Always disarms. */
 static bool eho_verify_rejects(const char *label, unsigned n)
 {
     zcl_alloc_fault_fail_nth(label, n);
@@ -176,10 +154,9 @@ static int eho_verifier_partial_unwinds(void)
     int failures = 0;
     printf("\n--- verifier: partial-row unwinds (Nth allocation fails) ---\n");
 
-    /* num_indices is 32 for K=5, so the 8-wide loop builds all of them.
-     * n=5 fails mid-batch (four rows already built), n=8 fails on the
-     * last slot of the first batch, n=32 on the very last row of the
-     * last batch — three different partial-free counts. */
+    /* num_indices is 32 for K=5, so the 8-wide loop builds all rows: n=5
+     * fails mid-batch, n=8 on the first batch's last slot, n=32 on the last
+     * row of the last batch (three partial-free counts). */
     EHO_CHECK("eh_row_data #5 OOM -> reject (unwinds 4 built rows)",
               eho_verify_rejects("eh_row_data", 5));
     EHO_CHECK("eh_row_data #8 OOM -> reject (unwinds 7 built rows)",
@@ -187,17 +164,15 @@ static int eho_verifier_partial_unwinds(void)
     EHO_CHECK("eh_row_data #32 OOM -> reject (unwinds 31 built rows)",
               eho_verify_rejects("eh_row_data", 32));
 
-    /* The collision table is allocated once per round; K=5 rounds. n=2
-     * and n=5 fail in a later round, where hash_len and len_indices have
-     * already shifted and the row table being freed is a merged one. */
+    /* The collision table is allocated once per round (K=5): n=2 and n=5
+     * fail in a later round, freeing a merged row table. */
     EHO_CHECK("equihash_collision_rows #2 OOM -> reject (round 2)",
               eho_verify_rejects("equihash_collision_rows", 2));
     EHO_CHECK("equihash_collision_rows #5 OOM -> reject (final round)",
               eho_verify_rejects("equihash_collision_rows", 5));
 
-    /* 16 + 8 + 4 + 2 + 1 = 31 merges across the five rounds. n=2 leaves
-     * one merged row to unwind in round 1; n=18 leaves one in round 2;
-     * n=31 is the single merge of the final round. */
+    /* 16 + 8 + 4 + 2 + 1 = 31 merges over five rounds: n=2 leaves one merged
+     * row to unwind in round 1, n=18 in round 2, n=31 is the final merge. */
     EHO_CHECK("eh_row_xor #2 OOM -> reject (unwinds 1 merged row, round 1)",
               eho_verify_rejects("eh_row_xor", 2));
     EHO_CHECK("eh_row_xor #18 OOM -> reject (unwinds 1 merged row, round 2)",
@@ -275,10 +250,9 @@ static int eho_injector_contract(void)
     int failures = 0;
     printf("\n--- fault injector: Nth-allocation contract ---\n");
 
-    /* Exactly one allocation per call carries "equihash_indices", so
-     * arming the SECOND one must let the first call through untouched
-     * and stay armed, then fire on the next call. If the skip credit
-     * were ignored, the first call would already reject. */
+    /* One allocation per call carries "equihash_indices": arming the SECOND
+     * lets the first call through and fires on the next; an ignored skip
+     * credit would reject the first. */
     zcl_alloc_fault_fail_nth("equihash_indices", 2);
     bool first = eho_verify_965();
     bool still_armed = (zcl_alloc_fault_armed_label() != NULL);

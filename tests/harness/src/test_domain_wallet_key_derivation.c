@@ -4,15 +4,13 @@
  * Unit tests for contexts/wallet/domain/key_derivation.{c,h}.
  *
  * Pins the pure BIP32/BIP44 derivation extracted from
- * contexts/wallet/src/{hd_keychain,bip44}.c. Three layers:
+ * contexts/wallet/src/{hd_keychain,bip44}.c:
  *
  *   1. Contract / null-edge tests on the typed zcl_result API.
- *   2. BIP32 test-vector seal: well-known seeds + paths against the
- *      pure domain function (this would have caught any HMAC or
- *      scalar-add regression in the extraction).
- *   3. Wrapper-vs-domain regression seal: the contexts/wallet/modules/wallet wrappers
- *      produce byte-identical ext_key output to the domain function
- *      on synthetic seeds across several paths.
+ *   2. BIP32 test-vector seal: well-known seeds + paths against the domain
+ *      function (catches HMAC or scalar-add regressions).
+ *   3. The wallet wrappers produce byte-identical ext_key output to the
+ *      domain function on synthetic seeds across several paths.
  */
 
 #include "test/test_core.h"
@@ -251,14 +249,10 @@ int test_domain_wallet_key_derivation(void)
 
     /* ── Layer 2: BIP32 test-vector seal ──────────────────────────── */
 
-    /* Build the master from TV1 seed via the pure domain function and
-     * walk the canonical BIP32 TV1 path:  m/0'/1/2'/2/1000000000.
-     * We don't pin the exact byte values (that's the job of the
-     * existing test_hd_keychain xpub vector), but we verify:
-     *   - master derives without error,
-     *   - depth/child counters advance correctly,
-     *   - chaincode propagates (depth-N chaincode != master chaincode),
-     *   - each child key is valid. */
+    /* Build the master from the TV1 seed via the domain function and walk
+     * the BIP32 TV1 path m/0'/1/2'/2/1000000000. Exact bytes are pinned by
+     * test_hd_keychain; here: the master derives, depth/child counters
+     * advance, the chaincode propagates, and each child key is valid. */
     {
         struct ext_key master;
         struct zcl_result m = domain_wallet_master_from_seed(
@@ -311,9 +305,8 @@ int test_domain_wallet_key_derivation(void)
         memory_cleanse(&child, sizeof(child));
     }
 
-    /* Determinism: two independent walks from the same TV1 seed
-     * along the same path yield byte-identical ext_keys.  This is
-     * the regression seal that "extraction didn't perturb the math". */
+    /* Determinism: two walks from the same TV1 seed along the same path
+     * yield byte-identical ext_keys. */
     {
         struct ext_key m1, m2, c1, c2;
         ZCL_TEST_SETUP(domain_wallet_master_from_seed(&m1, k_tv1_seed, sizeof(k_tv1_seed)));
@@ -336,9 +329,8 @@ int test_domain_wallet_key_derivation(void)
 
     /* ── Layer 3: wrapper-vs-domain regression seal ───────────────── */
 
-    /* The contexts/wallet/modules/wallet wrappers MUST produce byte-identical output to
-     * the pure domain function on the same inputs. This is the
-     * cross-check that "the wrapper preserves behaviour exactly". */
+    /* The wallet wrappers produce byte-identical output to the domain
+     * function on the same inputs. */
     {
         const unsigned char *seeds[] = { k_tv1_seed, k_tv2_seed };
         const size_t seed_lens[] = { sizeof(k_tv1_seed), sizeof(k_tv2_seed) };

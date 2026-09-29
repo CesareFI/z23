@@ -4,20 +4,12 @@
  * the root reports CHANGED, and a rename followed by an unlink reports
  * CHANGED again.
  *
- * Rehomed from platform/modules/platform/tests/test_directory_watcher.c, which NOTHING
- * read: it was in no windows_acceptance.mk row, no Makefile rule and not in
- * the files list of platform/modules/platform/zcode-package.json. As a registered group it
- * executes on every suite run. The native resident development watcher also
- * drives this module on macOS through the filtered kqueue recursion path.
- *
- * Every assertion is the original verbatim, in the original order. The single
- * change is where the watched root comes from: the standalone program built
- * its own directory with mkdtemp("/tmp/...") (or GetTempPathA on Windows)
- * because it had no harness; here test_make_tmpdir() supplies the suite's
- * own scratch root under test-tmp/ so parallel groups cannot collide and the
- * tree is cleaned up on failure. The final rmdir/RemoveDirectory assertion is
- * kept: it still proves the watcher released the directory and left nothing
- * behind. */
+ * Rehomed from platform/modules/platform/tests/. The native resident
+ * development watcher also drives this module on macOS through the filtered
+ * kqueue recursion path. The watched root comes from test_make_tmpdir()
+ * under test-tmp/ so parallel groups cannot collide and the tree is cleaned
+ * up on failure. The final rmdir/RemoveDirectory assertion proves the
+ * watcher released the directory. */
 #include "test/test_core.h"
 
 #include "platform/directory_watcher.h"
