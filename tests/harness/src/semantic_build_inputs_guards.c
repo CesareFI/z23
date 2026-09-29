@@ -281,6 +281,42 @@ static int sbit_t_dot_slash(void)
     return failures;
 }
 
+/* A rule whose targets a function computes makes a missing include its
+ * text names, directly or through a variable: widen. One whose text names
+ * none (j_subst: $(subst) spells the name only once make runs it) narrows
+ * under computed-targets-not-includes, recorded with the first such rule. */
+static int sbit_t_computed_targets(void)
+{
+    int failures = 0;
+    static const char *const changed[] = {"tools/x.sh"};
+    static const struct sbi_case cases[] = {
+        {"j15", SBI_DOT_INC("./build/gen.mk", "$(addprefix ./,build/gen.mk)"), NULL, NULL},
+        {"j18", SBI_DOT_INC("build/gen.mk", "N := build/gen.mk\n$(addprefix ./,$(N))"),
+         NULL, NULL},
+        {"j19", SBI_DOT_INC("build/gen.mk", "$(foreach w,build/gen.mk,$(w))"), NULL, NULL},
+        {"j23", SBI_DOT_INC("build/gen.mk", "$(subst x,y,build/gen.mk)"), NULL, NULL},
+        {"j26", SBI_DOT_INC("build/gen.mk", "ID = $(1)\n$(call ID,build/gen.mk)"), NULL, NULL},
+        {"j29", SBI_DOT_INC("build/gen.mk", "N = build/gen.mk\n$(value N)"), NULL, NULL},
+        {"j30", SBI_DOT_INC("build/gen.mk", "$(join build/,gen.mk)"), NULL, NULL},
+        {"j33", SBI_DOT_INC("build/gen.mk", "$(patsubst %,./%,build/gen.mk)"), NULL, NULL},
+    };
+    struct sbi_run r = {0};
+    const struct zcl_devloop_facts_plan_premise *p = &r.rep.make_premise;
+    TEST_CASE("semantic_build_inputs: a computed rule target that names a "
+             "missing include widens; one that names none is recorded") {
+        ASSERT(sbi_cases_widen(cases, SBI_COUNT(cases)));
+        ASSERT(sbi_consume("sbi_ct_subst", SBI_DOT_INC("build/gen.mk",
+                           "$(subst Q,.,build/genQmk)"), changed, 1, &r) &&
+               sbi_narrowed(&r));
+        ASSERT(p->premises == ZCL_DEVLOOP_PREMISE_COMPUTED_TARGETS_NOT_INCLUDES &&
+               strcmp(p->include, "build/gen.mk") == 0 && p->nincludes == 1);
+        ASSERT(strcmp(p->target, "$(subst Q,.,build/genQmk)") == 0 &&
+               strcmp(p->target_at, "Makefile:5") == 0 && p->ntargets == 1);
+    } TEST_END
+    zcl_devloop_facts_report_free(&r.rep);
+    return failures;
+}
+
 /* The premises every skip rests on, and the plan's. */
 #define SBI_EVERY_SKIP (ZCL_DEVLOOP_PREMISE_BUILD_READS_PLANNED_TREE | \
                         ZCL_DEVLOOP_PREMISE_NO_COMMAND_LINE_OVERRIDE)
@@ -409,5 +445,5 @@ int sbi_guard_suite(void)
 {
     return sbit_t_parse_time_writers() | sbit_t_parse_time_quiet() |
            sbit_t_guarded_include() | sbit_t_guard_record() | sbit_t_plan_record() |
-           sbit_t_dot_slash() | sbit_t_premise_forms();
+           sbit_t_dot_slash() | sbit_t_computed_targets() | sbit_t_premise_forms();
 }
