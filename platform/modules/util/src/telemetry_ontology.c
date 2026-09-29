@@ -342,6 +342,77 @@ static bool path_leaf_is(const char *path, const char *name)
     return strcmp(dot ? dot + 1 : path, name) == 0;
 }
 
+static void push_fields_json(struct json_value *out, const char *key)
+{
+    struct json_value fields = {0};
+    json_set_array(&fields);
+    for (size_t i = 0; i < FIELD_COUNT; i++) {
+        const struct telemetry_field *f = &g_fields[i];
+        if (key && key[0]) {
+            bool subsystem_match = strcmp(f->subsystem, key) == 0;
+            bool leaf_match = path_leaf_is(f->path, key);
+            if (!subsystem_match && !leaf_match)
+                continue;
+        }
+        push_field_json(&fields, f);
+    }
+    json_push_kv_int(out, "field_rows_returned", (int64_t)json_size(&fields));
+    json_push_kv(out, "fields", &fields);
+    json_free(&fields);
+}
+
+static void push_aliases_json(struct json_value *out, const char *key)
+{
+    struct json_value aliases = {0};
+    json_set_array(&aliases);
+    for (size_t i = 0; i < ALIAS_COUNT; i++) {
+        if (key && key[0] && strcmp(g_aliases[i].subsystem, key) != 0)
+            continue;
+        struct json_value obj = {0};
+        json_set_object(&obj);
+        json_push_kv_str(&obj, "subsystem", g_aliases[i].subsystem);
+        json_push_kv_str(&obj, "prefix", g_aliases[i].prefix);
+        json_push_kv_str(&obj, "same_fields_as", g_aliases[i].same_fields_as);
+        json_push_kv_str(&obj, "note", g_aliases[i].note);
+        json_push_back(&aliases, &obj);
+        json_free(&obj);
+    }
+    json_push_kv(out, "alias_prefixes", &aliases);
+    json_free(&aliases);
+}
+
+static void push_subsystems_json(struct json_value *out)
+{
+    struct json_value subs = {0};
+    json_set_array(&subs);
+    for (size_t i = 0; i < telemetry_subsystem_count(); i++) {
+        struct json_value v = {0};
+        json_set_str(&v, telemetry_subsystem_at(i));
+        json_push_back(&subs, &v);
+        json_free(&v);
+    }
+    json_push_kv(out, "covered_subsystems", &subs);
+    json_free(&subs);
+}
+
+static void push_questions_json(struct json_value *out, const char *key,
+                                bool questions_only)
+{
+    struct json_value qs = {0};
+    json_set_array(&qs);
+    for (size_t i = 0; i < QUESTION_COUNT; i++) {
+        const struct telemetry_question *q = &g_questions[i];
+        if (key && key[0] && !questions_only) {
+            if (strcmp(q->subsystem, key) != 0 &&
+                !strstr(q->keywords, key) && !strstr(q->fields, key))
+                continue;
+        }
+        push_question_json(&qs, q);
+    }
+    json_push_kv(out, "questions", &qs);
+    json_free(&qs);
+}
+
 bool telemetry_ontology_json(struct json_value *out, const char *key)
 {
     if (!out)
@@ -358,68 +429,12 @@ bool telemetry_ontology_json(struct json_value *out, const char *key)
     json_push_kv_int(out, "field_rows_total", (int64_t)FIELD_COUNT);
 
     if (!questions_only) {
-        struct json_value fields = {0};
-        json_set_array(&fields);
-        for (size_t i = 0; i < FIELD_COUNT; i++) {
-            const struct telemetry_field *f = &g_fields[i];
-            if (key && key[0]) {
-                bool subsystem_match = strcmp(f->subsystem, key) == 0;
-                bool leaf_match = path_leaf_is(f->path, key);
-                if (!subsystem_match && !leaf_match)
-                    continue;
-            }
-            push_field_json(&fields, f);
-        }
-        json_push_kv_int(out, "field_rows_returned",
-                         (int64_t)json_size(&fields));
-        json_push_kv(out, "fields", &fields);
-        json_free(&fields);
-
-        struct json_value aliases = {0};
-        json_set_array(&aliases);
-        for (size_t i = 0; i < ALIAS_COUNT; i++) {
-            if (key && key[0] && strcmp(g_aliases[i].subsystem, key) != 0)
-                continue;
-            struct json_value obj = {0};
-            json_set_object(&obj);
-            json_push_kv_str(&obj, "subsystem", g_aliases[i].subsystem);
-            json_push_kv_str(&obj, "prefix", g_aliases[i].prefix);
-            json_push_kv_str(&obj, "same_fields_as",
-                             g_aliases[i].same_fields_as);
-            json_push_kv_str(&obj, "note", g_aliases[i].note);
-            json_push_back(&aliases, &obj);
-            json_free(&obj);
-        }
-        json_push_kv(out, "alias_prefixes", &aliases);
-        json_free(&aliases);
-
-        struct json_value subs = {0};
-        json_set_array(&subs);
-        for (size_t i = 0; i < telemetry_subsystem_count(); i++) {
-            struct json_value v = {0};
-            json_set_str(&v, telemetry_subsystem_at(i));
-            json_push_back(&subs, &v);
-            json_free(&v);
-        }
-        json_push_kv(out, "covered_subsystems", &subs);
-        json_free(&subs);
+        push_fields_json(out, key);
+        push_aliases_json(out, key);
+        push_subsystems_json(out);
     }
-
-    if (want_questions || (key && key[0])) {
-        struct json_value qs = {0};
-        json_set_array(&qs);
-        for (size_t i = 0; i < QUESTION_COUNT; i++) {
-            const struct telemetry_question *q = &g_questions[i];
-            if (key && key[0] && !questions_only) {
-                if (strcmp(q->subsystem, key) != 0 &&
-                    !strstr(q->keywords, key) && !strstr(q->fields, key))
-                    continue;
-            }
-            push_question_json(&qs, q);
-        }
-        json_push_kv(out, "questions", &qs);
-        json_free(&qs);
-    }
+    if (want_questions || (key && key[0]))
+        push_questions_json(out, key, questions_only);
     return true;
 }
 
@@ -464,6 +479,60 @@ const char *telemetry_verdict_name(enum telemetry_verdict v)
     return "unknown";
 }
 
+static enum telemetry_verdict verdict_of(bool healthy)
+{
+    return healthy ? TV_HEALTHY : TV_UNHEALTHY;
+}
+
+/* A non-bool here is "we could not read it", NOT "it is false". The render
+ * layer represents an unavailable leaf as JSON null, so a type mismatch must
+ * not report a broken flag. */
+static enum telemetry_verdict evaluate_bool_rule(
+    const struct telemetry_field *f, const struct json_value *v)
+{
+    if (v->type != JSON_BOOL)
+        return TV_ABSENT;
+    bool bval = json_get_bool(v);
+    return verdict_of(f->rule == TFR_EXPECT_TRUE ? bval : !bval);
+}
+
+static enum telemetry_verdict evaluate_int_rule(
+    const struct telemetry_field *f, const struct json_value *v)
+{
+    if (v->type != JSON_INT)
+        return TV_ABSENT;
+    int64_t n = json_get_int(v);
+    switch (f->rule) {
+    case TFR_EXPECT_ZERO:
+        return verdict_of(n == 0);
+    case TFR_EXPECT_NONZERO:
+        return verdict_of(n != 0);
+    case TFR_MIN_ABS:
+        return verdict_of(n >= f->threshold);
+    default:
+        return verdict_of(n <= f->threshold);
+    }
+}
+
+static enum telemetry_verdict evaluate_ratio_rule(
+    const struct telemetry_field *f, const struct json_value *dump,
+    const struct json_value *v)
+{
+    if (v->type != JSON_INT || !f->operand)
+        return TV_ABSENT;
+    const struct json_value *ov = resolve_path(dump, f->operand);
+    if (!ov || ov->type != JSON_INT)
+        return TV_ABSENT;
+    int64_t base = json_get_int(ov);
+    /* A zero or negative denominator carries no ratio information; the
+     * operand's own row is where that gets judged, not here. */
+    if (base <= 0)
+        return TV_NOT_EVALUATED;
+    int64_t lhs = json_get_int(v) * 1000;
+    int64_t rhs = base * (int64_t)f->threshold;
+    return verdict_of(f->rule == TFR_MIN_RATIO_OF ? lhs >= rhs : lhs <= rhs);
+}
+
 enum telemetry_verdict telemetry_field_evaluate(
     const struct telemetry_field *f, const struct json_value *dump,
     const struct json_value **out_value)
@@ -480,57 +549,19 @@ enum telemetry_verdict telemetry_field_evaluate(
     if (!v)
         return TV_ABSENT;
     *out_value = v;
-    if (f->rule == TFR_INFO)
-        return TV_NOT_JUDGED;
-
-    bool is_bool = v->type == JSON_BOOL;
-    bool bval = is_bool && json_get_bool(v);
-    int64_t n = (v->type == JSON_INT) ? json_get_int(v) : 0;
-    bool numeric = v->type == JSON_INT;
 
     switch (f->rule) {
-    /* A non-bool here is "we could not read it", NOT "it is false". The
-     * render layer represents an unavailable leaf as JSON null, so treating a
-     * type mismatch as UNHEALTHY reported every unreadable flag as a broken
-     * flag — and a critical row would have driven the whole domain unhealthy
-     * on nothing but a missed read. Same guard the numeric rules below
-     * already had. */
     case TFR_EXPECT_TRUE:
-        if (!is_bool) return TV_ABSENT;
-        return bval ? TV_HEALTHY : TV_UNHEALTHY;
     case TFR_EXPECT_FALSE:
-        if (!is_bool) return TV_ABSENT;
-        return !bval ? TV_HEALTHY : TV_UNHEALTHY;
+        return evaluate_bool_rule(f, v);
     case TFR_EXPECT_ZERO:
-        if (!numeric) return TV_ABSENT;
-        return n == 0 ? TV_HEALTHY : TV_UNHEALTHY;
     case TFR_EXPECT_NONZERO:
-        if (!numeric) return TV_ABSENT;
-        return n != 0 ? TV_HEALTHY : TV_UNHEALTHY;
     case TFR_MIN_ABS:
-        if (!numeric) return TV_ABSENT;
-        return n >= f->threshold ? TV_HEALTHY : TV_UNHEALTHY;
     case TFR_MAX_ABS:
-        if (!numeric) return TV_ABSENT;
-        return n <= f->threshold ? TV_HEALTHY : TV_UNHEALTHY;
+        return evaluate_int_rule(f, v);
     case TFR_MIN_RATIO_OF:
-    case TFR_MAX_RATIO_OF: {
-        if (!numeric || !f->operand)
-            return TV_ABSENT;
-        const struct json_value *ov = resolve_path(dump, f->operand);
-        if (!ov || ov->type != JSON_INT)
-            return TV_ABSENT;
-        int64_t base = json_get_int(ov);
-        /* A zero or negative denominator carries no ratio information; the
-         * operand's own row is where that gets judged, not here. */
-        if (base <= 0)
-            return TV_NOT_EVALUATED;
-        int64_t lhs = n * 1000;
-        int64_t rhs = base * (int64_t)f->threshold;
-        if (f->rule == TFR_MIN_RATIO_OF)
-            return lhs >= rhs ? TV_HEALTHY : TV_UNHEALTHY;
-        return lhs <= rhs ? TV_HEALTHY : TV_UNHEALTHY;
-    }
+    case TFR_MAX_RATIO_OF:
+        return evaluate_ratio_rule(f, dump, v);
     case TFR_INFO:
         break;
     }

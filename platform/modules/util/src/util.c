@@ -118,6 +118,63 @@ void ParseParameters(int argc, const char *const argv[])
  * file's own path is derived from the datadir, so honouring a datadir there
  * would mean the file could relocate the directory it was just read out of.
  */
+/* Strips the comment and surrounding blanks; returns the trimmed text, or
+ * NULL for a blank line. */
+static char *config_line_text(char *line)
+{
+    char *s = line;
+    char *hash = strchr(s, '#');
+    if (hash)
+        *hash = '\0';
+    while (*s == ' ' || *s == '\t')
+        s++;
+    size_t n = strlen(s);
+    while (n > 0 && (s[n - 1] == '\n' || s[n - 1] == '\r' ||
+                     s[n - 1] == ' ' || s[n - 1] == '\t'))
+        s[--n] = '\0';
+    return n == 0 ? NULL : s;
+}
+
+/* Splits "flag=value" into a dash-prefixed key and value; false when the
+ * line names no usable flag. */
+static bool config_split(char *s, char key[MAX_ARG_LEN],
+                         char value[MAX_ARG_LEN])
+{
+    /* A leading dash is optional: both `packagehost=1` and
+     * `-packagehost=1` name the same flag, so a line copy-pasted out of
+     * an ExecStart works unchanged. */
+    if (*s == '-')
+        s++;
+    if (!*s)
+        return false;
+    char *eq = strchr(s, '=');
+    if (!eq) {
+        if (strlen(s) >= MAX_ARG_LEN - 1)
+            return false;
+        key[0] = '-';
+        snprintf(key + 1, MAX_ARG_LEN - 1, "%s", s);
+        /* Bare `-flag` is TRUE, matching ParseParameters' present-but-
+         * empty rule (GetBoolArg reads an empty value as true). */
+        value[0] = '\0';
+        return true;
+    }
+    size_t klen = (size_t)(eq - s);
+    /* Trim space between the key and the '=' so `packagehost = 1`
+     * is not read as a flag literally named "packagehost ". */
+    while (klen > 0 && (s[klen - 1] == ' ' || s[klen - 1] == '\t'))
+        klen--;
+    if (klen == 0 || klen >= MAX_ARG_LEN - 1)
+        return false;
+    memcpy(key + 1, s, klen);
+    key[0] = '-';
+    key[klen + 1] = '\0';
+    const char *v = eq + 1;
+    while (*v == ' ' || *v == '\t')
+        v++;
+    snprintf(value, MAX_ARG_LEN, "%s", v);
+    return true;
+}
+
 int ReadConfigFile(const char *path)
 {
     if (!path || !path[0])
@@ -129,55 +186,11 @@ int ReadConfigFile(const char *path)
     int applied = 0;
     char line[MAX_ARG_LEN * 2];
     while (fgets(line, sizeof(line), f)) {
-        char *s = line;
-        char *hash = strchr(s, '#');
-        if (hash)
-            *hash = '\0';
-        while (*s == ' ' || *s == '\t')
-            s++;
-        size_t n = strlen(s);
-        while (n > 0 && (s[n - 1] == '\n' || s[n - 1] == '\r' ||
-                         s[n - 1] == ' ' || s[n - 1] == '\t'))
-            s[--n] = '\0';
-        if (n == 0)
-            continue;
-
-        /* A leading dash is optional: both `packagehost=1` and
-         * `-packagehost=1` name the same flag, so a line copy-pasted out of
-         * an ExecStart works unchanged. */
-        if (*s == '-')
-            s++;
-        if (!*s)
-            continue;
-
         char key[MAX_ARG_LEN];
         char value[MAX_ARG_LEN];
-        char *eq = strchr(s, '=');
-        if (eq) {
-            size_t klen = (size_t)(eq - s);
-            /* Trim space between the key and the '=' so `packagehost = 1`
-             * is not read as a flag literally named "packagehost ". */
-            while (klen > 0 && (s[klen - 1] == ' ' || s[klen - 1] == '\t'))
-                klen--;
-            if (klen == 0 || klen >= MAX_ARG_LEN - 1)
-                continue;
-            memcpy(key + 1, s, klen);
-            key[0] = '-';
-            key[klen + 1] = '\0';
-            const char *v = eq + 1;
-            while (*v == ' ' || *v == '\t')
-                v++;
-            snprintf(value, sizeof(value), "%s", v);
-        } else {
-            if (strlen(s) >= MAX_ARG_LEN - 1)
-                continue;
-            key[0] = '-';
-            snprintf(key + 1, sizeof(key) - 1, "%s", s);
-            /* Bare `-flag` is TRUE, matching ParseParameters' present-but-
-             * empty rule (GetBoolArg reads an empty value as true). */
-            value[0] = '\0';
-        }
-
+        char *s = config_line_text(line);
+        if (!s || !config_split(s, key, value))
+            continue;
         if (strcmp(key, "-datadir") == 0 || strcmp(key, "-conf") == 0)
             continue;
         if (find_arg(key) >= 0)   /* argv already decided this one */

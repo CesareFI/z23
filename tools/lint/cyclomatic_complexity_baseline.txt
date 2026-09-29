@@ -2375,10 +2375,8 @@ platform/modules/astro/src/astro_chart.c:astro_chart_compute:26
 platform/modules/astro/src/astro_exact.c:astro_exact_format:23
 platform/modules/codec/tests/test_codec.c:main:32
 platform/modules/encoding/src/qr.c:qr_matrix_render_rgb:20
-platform/modules/encoding/src/utilstrencodings.c:ParseFixedPoint:45
 platform/modules/install/src/front_door_dns_txt.c:fd_dns_txt_parse:22
 platform/modules/json/src/json.c:json_escape_str:18
-platform/modules/json/src/json.c:json_write:33
 platform/modules/json/src/json.c:parse_number:23
 platform/modules/json/src/json.c:parse_string:21
 platform/modules/json/src/json.c:parse_value_r:22
@@ -2479,14 +2477,10 @@ platform/modules/util/src/spawn.c:spawn_pty_capture_observed_platform#2:22
 platform/modules/util/src/spawn.c:zcl_argv_split:17
 platform/modules/util/src/spawn.c:zcl_spawn_detached_input#2:33
 platform/modules/util/src/supervisor.c:sweep_once:18
-platform/modules/util/src/telemetry_ontology.c:telemetry_field_evaluate:38
 platform/modules/util/src/telemetry_ontology.c:telemetry_ontology_annotate:16
-platform/modules/util/src/telemetry_ontology.c:telemetry_ontology_json:26
 platform/modules/util/src/telemetry_render.c:telemetry_render:22
 platform/modules/util/src/template.c:render_impl:28
-platform/modules/util/src/thread_profile.c:thread_profile_sample:28
 platform/modules/util/src/thread_registry.c:thread_registry_spawn:17
-platform/modules/util/src/util.c:ReadConfigFile:29
 tests/harness/differential/groth16_parity_oracle.c:build_corpus:32
 tests/harness/differential/groth16_parity_oracle.c:check_decode_corpus:26
 tests/harness/differential/groth16_parity_oracle.c:check_pairing_values:21

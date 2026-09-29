@@ -352,6 +352,70 @@ static int tp_cmp_desc(const void *a, const void *b)
     return 0;
 }
 
+/* Adds one row per reported thread, busiest first; returns the row count and
+ * the busiest thread's name and CPU fraction of the sample window. */
+static int tp_report_threads(const struct tp_entry *e, int n, int top_n,
+                             int64_t clk_tck, double elapsed_ms,
+                             struct json_value *threads, const char **busiest,
+                             double *busiest_fraction)
+{
+    int reported = 0;
+    for (int i = 0; i < n && reported < top_n; i++) {
+        if (!e[i].found2) continue;
+        uint64_t delta = e[i].ticks2 - e[i].ticks1;
+        double cpu_ms = (double)delta * 1000.0 / (double)clk_tck;
+        double frac = elapsed_ms > 0 ? cpu_ms / elapsed_ms : 0.0;
+
+        struct json_value item;
+        json_init(&item);
+        json_set_object(&item);
+        json_push_kv_int(&item, "tid", (int64_t)e[i].tid);
+        json_push_kv_str(&item, "name", e[i].name);
+        json_push_kv_int(&item, "cpu_ms", (int64_t)(cpu_ms + 0.5));
+        json_push_kv_int(&item, "cpu_pct", (int64_t)(frac * 100.0 + 0.5));
+        json_push_kv_str(&item, "wchan", e[i].wchan);
+        json_push_back(threads, &item);
+        json_free(&item);
+
+        if (reported == 0) {
+            *busiest = e[i].name;
+            *busiest_fraction = frac;
+        }
+        reported++;
+    }
+    return reported;
+}
+
+static bool tp_wchan_is_io(const char *w)
+{
+    return strstr(w, "jbd2") || strstr(w, "io_schedule") ||
+           strstr(w, "wait_on_page") || strstr(w, "balance_dirty") ||
+           strstr(w, "blk_") || strstr(w, "wbt_");
+}
+
+/* Classify: a clearly cpu-bound top thread, an io/journal wait, else idle.
+ * jbd2 is the ext4 journal daemon; our threads block on it via a wchan that
+ * contains "jbd2" (e.g. jbd2_log_wait_commit). */
+static const char *tp_verdict(const struct tp_entry *e, int n,
+                              const char *busiest, double busiest_fraction,
+                              char *buf, size_t buf_len)
+{
+    if (busiest_fraction >= 0.50) {
+        snprintf(buf, buf_len, "cpu-bound in %s", busiest);
+        return buf;
+    }
+    for (int i = 0; i < n; i++) {
+        if (!e[i].found2 || !tp_wchan_is_io(e[i].wchan)) continue;
+        snprintf(buf, buf_len, "io-wait in %s", e[i].wchan);
+        return buf;
+    }
+    if (busiest_fraction >= 0.05) {
+        snprintf(buf, buf_len, "light load, busiest %s", busiest);
+        return buf;
+    }
+    return "idle";
+}
+
 bool thread_profile_sample(const struct thread_profile_opts *opts,
                            struct json_value *out)
 {
@@ -391,69 +455,16 @@ bool thread_profile_sample(const struct thread_profile_opts *opts,
 
     /* Verdict from the busiest thread that survived both samples. */
     char verdict_buf[96];
-    const char *verdict = "idle";
     const char *busiest = "-";
     double busiest_fraction = 0.0;
-    int reported = 0;
 
     struct json_value threads;
     json_init(&threads);
     json_set_array(&threads);
-
-    for (int i = 0; i < n && reported < top_n; i++) {
-        if (!e[i].found2) continue;
-        uint64_t delta = e[i].ticks2 - e[i].ticks1;
-        double cpu_ms = (double)delta * 1000.0 / (double)clk_tck;
-        double frac = elapsed_ms > 0 ? cpu_ms / elapsed_ms : 0.0;
-
-        struct json_value item;
-        json_init(&item);
-        json_set_object(&item);
-        json_push_kv_int(&item, "tid", (int64_t)e[i].tid);
-        json_push_kv_str(&item, "name", e[i].name);
-        json_push_kv_int(&item, "cpu_ms", (int64_t)(cpu_ms + 0.5));
-        json_push_kv_int(&item, "cpu_pct", (int64_t)(frac * 100.0 + 0.5));
-        json_push_kv_str(&item, "wchan", e[i].wchan);
-        json_push_back(&threads, &item);
-        json_free(&item);
-
-        if (reported == 0) {
-            busiest = e[i].name;
-            busiest_fraction = frac;
-        }
-        reported++;
-    }
-
-    /* Classify: a clearly cpu-bound top thread, an io/journal wait, else idle.
-     * jbd2 is the ext4 journal daemon; our threads block on it via a wchan that
-     * contains "jbd2" (e.g. jbd2_log_wait_commit). */
-    if (busiest_fraction >= 0.50) {
-        snprintf(verdict_buf, sizeof(verdict_buf), "cpu-bound in %s", busiest);
-        verdict = verdict_buf;
-    } else {
-        const char *io_wchan = NULL;
-        for (int i = 0; i < n; i++) {
-            if (!e[i].found2) continue;
-            const char *w = e[i].wchan;
-            if (strstr(w, "jbd2") || strstr(w, "io_schedule") ||
-                strstr(w, "wait_on_page") || strstr(w, "balance_dirty") ||
-                strstr(w, "blk_") || strstr(w, "wbt_")) {
-                io_wchan = w;
-                break;
-            }
-        }
-        if (io_wchan) {
-            snprintf(verdict_buf, sizeof(verdict_buf), "io-wait in %s",
-                     io_wchan);
-            verdict = verdict_buf;
-        } else if (busiest_fraction >= 0.05) {
-            snprintf(verdict_buf, sizeof(verdict_buf), "light load, busiest %s",
-                     busiest);
-            verdict = verdict_buf;
-        } else {
-            verdict = "idle";
-        }
-    }
+    int reported = tp_report_threads(e, n, top_n, clk_tck, elapsed_ms,
+                                     &threads, &busiest, &busiest_fraction);
+    const char *verdict = tp_verdict(e, n, busiest, busiest_fraction,
+                                     verdict_buf, sizeof(verdict_buf));
 
     json_push_kv_int(out, "sample_ms", (int64_t)sample_ms);
     json_push_kv_int(out, "sampled_threads", (int64_t)n);
