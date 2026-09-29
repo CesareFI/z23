@@ -405,21 +405,25 @@ struct vs_site {
     char policy[PATH_MAX], pins[PATH_MAX];
 };
 
-static bool vs_site_make(struct vs_site *s, const struct vs_fixture *f)
+static bool vs_site_dirs(struct vs_site *s)
 {
     char made[PATH_MAX], dir[PATH_MAX], lib[PATH_MAX];
-    uint8_t bytes[2048];
-    size_t len = 0;
-    const char *why = NULL;
-    memset(s, 0, sizeof(*s));
     return test_mkdtemp(made, sizeof(made), "z23-verify-site") &&
            realpath(made, s->anchor) && chmod(s->anchor, 0755) == 0 &&
            vs_path(dir, s->anchor, "etc") && mkdir(dir, 0755) == 0 &&
            vs_path(s->etc, dir, "z23verify") && mkdir(s->etc, 0755) == 0 &&
            vs_path(dir, s->anchor, "var") && mkdir(dir, 0755) == 0 &&
            vs_path(lib, dir, "lib") && mkdir(lib, 0755) == 0 &&
-           vs_path(s->base, lib, "z23verify") &&
-           vs_path(s->policy, s->etc, "store.policy") &&
+           vs_path(s->base, lib, "z23verify");
+}
+
+static bool vs_site_make(struct vs_site *s, const struct vs_fixture *f)
+{
+    uint8_t bytes[2048];
+    size_t len = 0;
+    const char *why = NULL;
+    memset(s, 0, sizeof(*s));
+    return vs_site_dirs(s) && vs_path(s->policy, s->etc, "store.policy") &&
            vs_path(s->pins, s->etc, "fixed_result.pins") &&
            zcl_fr_pins_encode(&f->vc.pins, bytes, sizeof(bytes), &len, &why) &&
            vs_write(s->pins, bytes, len, 0444);
