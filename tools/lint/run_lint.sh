@@ -19,6 +19,8 @@
 # The serial exceptions are:
 #   check-git-hooks-installed — validates checkout-local Git configuration
 #     before the parallel pool, after its hermetic host-selection fixture.
+#   check-build-epoch-integrity — its cold compile/publish probe has a 600s
+#     wall bound that concurrent compiler sweeps can exhaust.
 #   check-cookbook — RUN recipes query codeindex; a parallel gate can change
 #     depfile metadata during its rebuild, producing a retryable CODEINDEX_OPEN
 #     rather than the required answer. Run it after the parallel pool.
@@ -92,7 +94,7 @@ BUDGET_SEC="${ZCL_LINT_BUDGET_SEC:-75}"
 # Gates that must run serially — see the header contract. Code-index coverage
 # snapshots source and depfile metadata, which parallel compile gates can
 # change during its rebuild.
-SERIAL_PROLOGUE=" check-git-hooks-installed "
+SERIAL_PROLOGUE=" check-git-hooks-installed check-build-epoch-integrity "
 SERIAL_EPILOGUE=" check-codeindex-coverage check-cookbook "
 
 # Parallel gates handed to the worker pool BEFORE every other gate, in this
@@ -106,7 +108,7 @@ SERIAL_EPILOGUE=" check-codeindex-coverage check-cookbook "
 # the other gates measured at 30 s or more cold (docs/BENCHMARKS_LOG.md,
 # 2026-09-25); read the lint timing table (ZCL_LINT_VERBOSE=1) before editing.
 LONG_POLE_FIRST="check-windows-cross-syntax check-standalone-tools-link
-    check-build-epoch-integrity check-clang-portability check-vcs-no-sha1
+    check-clang-portability check-vcs-no-sha1
     check-windows-acceptance check-outparam-init-before-return"
 
 # ── Gate invocation table ────────────────────────────────────────────────
