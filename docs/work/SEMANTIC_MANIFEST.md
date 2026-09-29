@@ -1519,6 +1519,23 @@ in all), on every plan with a missing optional include. What a function
 spells only once make runs it (`$(subst Q,.,build/genQmk)`) is the
 residual this premise names.
 
+A line that is no definition, no directive and no rule its text spells,
+and that holds a reference, is read the same way over its whole text:
+what it expands to may be a rule (`R := build/gen.mk:` then `$(R)`,
+`build/gen.mk$(C)` with `C := :`, a top-level `$(call RULE,...)`,
+`$(foreach ...)`, `$(if ...)` or `$(eval ...)`). A lone `$(error)`,
+`$(warning)` or `$(info)` expands to nothing and is not counted. A
+computed rule also names a missing include when its target text, or a
+static rule's target pattern (`$(OBJS): build/%.mk: tools/%.in`), holds a
+`%` pattern matching the include, directly or through a variable whose
+definition does (`OBJS := $(patsubst tools/%.in,build/%.mk,...)`). A lone
+`%` counts only in the rule's own text: in a definition it is the common
+`$(patsubst %,...)` or `-flag=%` argument. The real Makefile's
+`$(foreach ...,$(eval $(call ...)))` and `$(eval $(call BUILD_NODE_TOOL,...))`
+lines name no missing include and are recorded; its
+`$(foreach d,...,$(d)/%.o ...): DEV_COMPILE_CFLAGS = ...` line is a
+target-specific value and makes nothing.
+
 The real Makefile records both on every plan: the gitignored
 `contexts/commons/apps/local_gui_apps.mk` is missing in every checkout.
 Of the Makefile's identity markers, `epoch-recovery-ready.mk` is skipped
@@ -1695,7 +1712,9 @@ none of them runs as part of building that commit's objects:
   `process-start-token.sh`) as it reads;
 - a rule whose targets a function computes into a missing optional
   include's name without its text naming it (`$(subst Q,.,build/genQmk):`),
-  read under the named premise `computed-targets-not-includes` and
+  or a reference line that expands to such a rule (`$(R)` with
+  `R := $(subst Q,.,build/genQmk):`), read under the named premise
+  `computed-targets-not-includes` and
   recorded in `facts.make_guards.plan`: letting every computed target
   make every missing include instead widens every real plan (the real
   Makefile computes about a hundred rule targets);
