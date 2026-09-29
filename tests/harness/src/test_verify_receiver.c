@@ -221,25 +221,29 @@ static void vrt_roots(struct zcl_fixed_result_v2_roots *pins)
 
 static bool vrt_dirs(struct vrt_fx *f)
 {
-    char temporary[PATH_MAX];
+    char temporary[PATH_MAX], key_temporary[PATH_MAX];
     char *made = test_mkdtemp(temporary, sizeof(temporary), "z23-vrecv");
-    char key_temporary[] = "/tmp/z23-verify-receiver-key.XXXXXX";
-    return getcwd(f->cwd, sizeof(f->cwd)) && made &&
-           realpath(made, f->root) && mkdtemp(key_temporary) &&
-           realpath(key_temporary, f->key_root) &&
-           vrt_path(f->gen, f->root, "gen") && vrt_path(f->donor, f->root, "donor") &&
-           vrt_path(f->probe, f->root, "probe") &&
-           vrt_path(f->vstore, f->root, "vstore") &&
-           vrt_path(f->store, f->vstore, "store") &&
-           vrt_path(f->work, f->root, "work") && vrt_path(f->bin, f->root, "bin") &&
-           vrt_path(f->counter, f->root, "cc.count") &&
-           vrt_path(f->phases, f->root, "phases.txt") &&
-           vrt_path(f->zstore, f->root, "zccstore") &&
-           vrt_path(f->pubfile, f->key_root, "verifier.pub") &&
-           vrt_path(f->zcc, f->cwd, "build/bin/zcc") &&
-           vrt_path(f->profile, f->cwd, "tools/verify/fixed_result_fast.args") &&
-           vrt_mkdirs(f->gen) && vrt_mkdirs(f->donor) && vrt_mkdirs(f->probe) &&
-           vrt_mkdirs(f->store) && vrt_mkdirs(f->bin) && vrt_mkdirs(f->zstore);
+    char *key_made = test_mkdtemp(key_temporary, sizeof(key_temporary),
+                                  "z23-vrecv-key");
+    if (!getcwd(f->cwd, sizeof(f->cwd)) || !made || !key_made ||
+        !realpath(made, f->root) || !realpath(key_made, f->key_root))
+        return false;
+    struct { char *out; const char *base; const char *name; } paths[] = {
+        {f->gen, f->root, "gen"}, {f->donor, f->root, "donor"},
+        {f->probe, f->root, "probe"}, {f->vstore, f->root, "vstore"},
+        {f->store, f->vstore, "store"}, {f->work, f->root, "work"},
+        {f->bin, f->root, "bin"}, {f->counter, f->root, "cc.count"},
+        {f->phases, f->root, "phases.txt"}, {f->zstore, f->root, "zccstore"},
+        {f->pubfile, f->key_root, "verifier.pub"},
+        {f->zcc, f->cwd, "build/bin/zcc"},
+        {f->profile, f->cwd, "tools/verify/fixed_result_fast.args"},
+    };
+    for (size_t i = 0; i < sizeof(paths) / sizeof(paths[0]); i++)
+        if (!vrt_path(paths[i].out, paths[i].base, paths[i].name)) return false;
+    const char *dirs[] = {f->gen, f->donor, f->probe, f->store, f->bin, f->zstore};
+    for (size_t i = 0; i < sizeof(dirs) / sizeof(dirs[0]); i++)
+        if (!vrt_mkdirs(dirs[i])) return false;
+    return true;
 }
 
 /* The files the real -E of result.c reads in this checkout, copied into

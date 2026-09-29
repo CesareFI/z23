@@ -175,6 +175,22 @@ static const char *vr_profile_expand(struct vr_profile *p, const char *cwd)
     return found == 1 ? NULL : "receiver_profile_shape";
 }
 
+/* The 183 LF-terminated tokens, split in place; the first must be "cc". */
+static bool vr_profile_split(struct vr_profile *out)
+{
+    size_t count = 0, start = 0;
+    for (size_t i = 0; i < out->len; i++) {
+        if (out->text[i] != '\n') continue;
+        if (i == start || count == VR_PROFILE_TOKENS) return false;
+        out->text[i] = 0;
+        out->tokens[count++] = (char *)out->text + start;
+        start = i + 1;
+    }
+    out->tokens[count < VR_PROFILE_TOKENS ? count : VR_PROFILE_TOKENS] = NULL;
+    return count == VR_PROFILE_TOKENS && start == out->len &&
+           strcmp(out->tokens[0], "cc") == 0;
+}
+
 const char *vr_profile_load(const struct vr_bytes *bytes, const char *cwd,
                             struct vr_profile *out)
 {
@@ -190,18 +206,7 @@ const char *vr_profile_load(const struct vr_bytes *bytes, const char *cwd,
         return "receiver_cwd_unsupported";
     memcpy(out->text, bytes->p, bytes->n);
     out->len = bytes->n;
-    size_t count = 0, start = 0;
-    for (size_t i = 0; i < out->len; i++) {
-        if (out->text[i] != '\n') continue;
-        if (i == start || count == VR_PROFILE_TOKENS) return "receiver_profile_shape";
-        out->text[i] = 0;
-        out->tokens[count++] = (char *)out->text + start;
-        start = i + 1;
-    }
-    if (count != VR_PROFILE_TOKENS || start != out->len ||
-        strcmp(out->tokens[0], "cc") != 0)
-        return "receiver_profile_shape";
-    out->tokens[count] = NULL;
+    if (!vr_profile_split(out)) return "receiver_profile_shape";
     return vr_profile_expand(out, cwd);
 }
 
@@ -334,6 +339,15 @@ static const char *vr_input_add(char ***paths, size_t *count,
     return vr_relative_ok(copy) ? NULL : "receiver_input_path_unsafe";
 }
 
+enum vr_dep_char { VR_DEP_TOKEN, VR_DEP_SPACE, VR_DEP_CONT, VR_DEP_END };
+
+static enum vr_dep_char vr_dep_class(const char *s, size_t n, size_t i)
+{
+    if (i == n || s[i] == '\n') return VR_DEP_END;
+    if (i + 1 < n && s[i] == '\\' && s[i + 1] == '\n') return VR_DEP_CONT;
+    return s[i] == ' ' || s[i] == '\t' ? VR_DEP_SPACE : VR_DEP_TOKEN;
+}
+
 /* Split the first rule's prerequisites. A backslash is allowed only as the
  * line continuation GCC writes; any other escape refuses. */
 static const char *vr_depfile_split(const char *s, size_t n, char ***paths,
@@ -341,20 +355,22 @@ static const char *vr_depfile_split(const char *s, size_t n, char ***paths,
 {
     size_t i = 0, start = 0;
     bool in_token = false;
-    const char *why = NULL;
-    while (!why && i <= n) {
-        bool end = i == n || s[i] == '\n';
-        bool cont = i + 1 < n && s[i] == '\\' && s[i + 1] == '\n';
-        bool space = !end && !cont && (s[i] == ' ' || s[i] == '\t');
-        if ((end || cont || space) && in_token)
-            why = vr_input_add(paths, count, s + start, i - start);
-        if (end) break;
-        if (cont) { in_token = false; i += 2; continue; }
-        if (!space && !in_token) { in_token = true; start = i; }
-        if (space) in_token = false;
-        i++;
+    for (;;) {
+        enum vr_dep_char c = vr_dep_class(s, n, i);
+        if (c == VR_DEP_TOKEN) {
+            if (!in_token) start = i;
+            in_token = true;
+            i++;
+            continue;
+        }
+        const char *why = in_token
+                              ? vr_input_add(paths, count, s + start, i - start)
+                              : NULL;
+        if (why) return why;
+        in_token = false;
+        if (c == VR_DEP_END) return NULL;
+        i += c == VR_DEP_CONT ? 2u : 1u;
     }
-    return why;
 }
 
 static bool vr_dedupe(char **paths, size_t *count)
