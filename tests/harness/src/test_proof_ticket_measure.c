@@ -19,8 +19,10 @@
 #include "test/proof_ticket_fixture.h"
 
 #include "platform/time_compat.h"
+#include "crypto/ed25519.h"
 #include "vcs/blob_store.h"
 #include "vcs/package_store.h"
+#include "vcs/proof_signature.h"
 #include "vcs/proof_ticket.h"
 #include "sha3/sha3.h"
 
@@ -665,6 +667,72 @@ static int ptm_case_receiver_boundary(void)
     return failures;
 }
 
+/* ── verified-signature memo ────────────────────────────────────────── */
+
+struct ptm_sig_delta {
+    uint64_t verified, refused, reused;
+};
+
+static struct ptm_sig_delta ptm_sig_since(
+    const struct vcs_proof_signature_stats *from)
+{
+    struct vcs_proof_signature_stats now;
+    vcs_proof_signature_stats(&now);
+    return (struct ptm_sig_delta){now.verified - from->verified,
+                                  now.refused - from->refused,
+                                  now.reused - from->reused};
+}
+
+/* A remembered verdict answers only the exact bytes that verified; any
+ * changed byte and every refusal runs the full check again. */
+static int ptm_case_signature_memo(void)
+{
+    int failures = 0;
+    TEST_CASE("proof_ticket: signature memo reuses only verified bytes") {
+        uint8_t seed[32], pk[32], sk[32], other_pk[32], other_sk[32];
+        uint8_t msg[96], sig[64], bad_msg[96], bad_sig[64];
+        memset(seed, 0x5a, sizeof(seed));
+        ed25519_keypair(pk, sk, seed);
+        seed[0] ^= 1u;
+        ed25519_keypair(other_pk, other_sk, seed);
+        memset(msg, 0x33, sizeof(msg));
+        ed25519_sign(sig, msg, sizeof(msg), sk, pk);
+        memcpy(bad_msg, msg, sizeof(msg));
+        bad_msg[sizeof(bad_msg) - 1u] ^= 1u;
+        memcpy(bad_sig, sig, sizeof(sig));
+        bad_sig[5] ^= 1u;
+
+        vcs_proof_signature_forget();
+        struct vcs_proof_signature_stats base;
+        vcs_proof_signature_stats(&base);
+        ASSERT(vcs_proof_signature_verify(sig, msg, sizeof(msg), pk));
+        ASSERT(vcs_proof_signature_verify(sig, msg, sizeof(msg), pk));
+        struct ptm_sig_delta d = ptm_sig_since(&base);
+        ASSERT_EQ(d.verified, (uint64_t)1);
+        ASSERT_EQ(d.reused, (uint64_t)1);
+        ASSERT_EQ(d.refused, (uint64_t)0);
+
+        for (int pass = 0; pass < 2; pass++) {
+            ASSERT(!vcs_proof_signature_verify(sig, bad_msg, sizeof(bad_msg),
+                                               pk));
+            ASSERT(!vcs_proof_signature_verify(bad_sig, msg, sizeof(msg), pk));
+            ASSERT(!vcs_proof_signature_verify(sig, msg, sizeof(msg),
+                                               other_pk));
+        }
+        d = ptm_sig_since(&base);
+        ASSERT_EQ(d.verified, (uint64_t)1);
+        ASSERT_EQ(d.refused, (uint64_t)6);
+        ASSERT_EQ(d.reused, (uint64_t)1);
+
+        vcs_proof_signature_forget();
+        ASSERT(vcs_proof_signature_verify(sig, msg, sizeof(msg), pk));
+        d = ptm_sig_since(&base);
+        ASSERT_EQ(d.verified, (uint64_t)2);
+        ASSERT_EQ(d.reused, (uint64_t)1);
+    } TEST_END
+    return failures;
+}
+
 /* ── work avoided across a restart ──────────────────────────────────── */
 
 /* 160 obligations. The first run proves 150 of them (A and B), C then
@@ -758,10 +826,20 @@ static bool ptw_publish_and_forget(struct ptw *w, uint64_t created,
 struct ptw_phase {
     size_t rows;
     uint64_t rebuild_us, executed, exec_us;
+    uint64_t rebuild_checks, admit_checks; /* full Ed25519 verifications */
     struct vcs_proof_admission_report rep;
 };
 
-/* A new process: reopen the store, rebuild, admit, and execute only FRESH. */
+/* Full Ed25519 verifications so far, accepted or refused. */
+static uint64_t ptw_signature_checks(void)
+{
+    struct vcs_proof_signature_stats s;
+    vcs_proof_signature_stats(&s);
+    return s.verified + s.refused;
+}
+
+/* A new process: reopen the store, rebuild, admit, and execute only FRESH.
+ * It remembers no verified signature, so every check is counted. */
 static bool ptw_restart(struct ptw *w, size_t rows, uint32_t units,
                         struct ptw_phase *p)
 {
@@ -771,16 +849,21 @@ static bool ptw_restart(struct ptw *w, size_t rows, uint32_t units,
         vcs_package_store_open(w->dir, UINT64_C(64) * 1024 * 1024);
     if (!store) return false;
     size_t tickets = 0, cps = 0, skipped = 0;
+    vcs_proof_signature_forget();
+    uint64_t checks = ptw_signature_checks();
     int64_t t0 = platform_time_monotonic_us();
     bool ok = vcs_proof_receiver_rebuild_bounded(w->f.rx, store, rows,
                                                  &tickets, &cps, &skipped);
     p->rebuild_us = (uint64_t)(platform_time_monotonic_us() - t0);
+    p->rebuild_checks = ptw_signature_checks() - checks;
     vcs_package_store_close(store);
     struct vcs_proof_change change = {.component_id = "restart",
                                       .scope_known = true};
     struct vcs_proof_admission_context ctx = ptf_context(&w->f);
+    checks = ptw_signature_checks();
     ok = ok && vcs_proof_admission_run(&ctx, &change, w->obs, units, w->res,
                                        &p->rep);
+    p->admit_checks = ptw_signature_checks() - checks;
     uint64_t executed = w->executed, exec_us = w->exec_us;
     memset(w->runs, 0, sizeof(w->runs));
     for (uint32_t u = 0; ok && u < units; u++)
@@ -796,12 +879,15 @@ static void ptw_print(const char *phase, uint32_t units,
 {
     printf("\nproof_restart_work phase=%s units=%u catalog_rows=%zu "
            "rebuild_us=%llu executed=%llu reused=%u refused=%u fresh=%u "
-           "without_history=%u avoided=%llu exec_us=%llu\n", phase, units,
+           "without_history=%u avoided=%llu exec_us=%llu rebuild_checks=%llu "
+           "admit_checks=%llu\n", phase, units,
            p->rows, (unsigned long long)p->rebuild_us,
            (unsigned long long)p->executed, p->rep.proofs_reused,
            p->rep.proofs_refused, p->rep.proofs_fresh, units,
            (unsigned long long)(units - p->executed),
-           (unsigned long long)p->exec_us);
+           (unsigned long long)p->exec_us,
+           (unsigned long long)p->rebuild_checks,
+           (unsigned long long)p->admit_checks);
 }
 
 static int ptw_case_restart_work(void)
@@ -851,6 +937,11 @@ static int ptw_case_restart_work(void)
         ASSERT_EQ(warm.rep.proofs_fresh, PTW_UNITS - PTW_PROVEN);
         ASSERT_STR_EQ(w->res[PTW_CONFLICT].reason,
                       VCS_PROOF_OBSERVATION_CONFLICT);
+        /* Every catalog row is one signed object: a restart checks each
+         * signature once, and admission reuses what the rebuild checked. */
+        ASSERT(warm.rebuild_checks > 0);
+        ASSERT(warm.rebuild_checks <= rows);
+        ASSERT_EQ(warm.admit_checks, (uint64_t)0);
 
         /* Restart 2: the new results survive too; nothing runs again. */
         ASSERT(ptw_publish_and_forget(w, 1790000200u, &rows));
@@ -861,6 +952,9 @@ static int ptw_case_restart_work(void)
         ASSERT_EQ(settled.rep.proofs_reused, PTW_UNITS - 1u);
         ASSERT_EQ(settled.rep.proofs_refused, 1u);
         ASSERT_EQ(settled.rep.proofs_fresh, 0u);
+        ASSERT(settled.rebuild_checks > 0);
+        ASSERT(settled.rebuild_checks <= rows);
+        ASSERT_EQ(settled.admit_checks, (uint64_t)0);
 
         /* The same obligations on a receiver that forgot its history. */
         vcs_proof_receiver_free(w->f.rx);
@@ -1176,6 +1270,7 @@ int test_proof_ticket_measure(void)
     failures += ptm_case_checkpoint_density();
     failures += ptm_case_rebuild_density();
     failures += ptm_case_late_page_conflict();
+    failures += ptm_case_signature_memo();
     failures += ptm_case_receiver_boundary();
     failures += ptw_case_restart_work();
     failures += pta_cases();

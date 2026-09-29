@@ -3,6 +3,7 @@
  *          ticket observation roots, and the issuer-side append-only log. */
 
 #include "vcs/proof_reuse.h"
+#include "vcs/proof_signature.h"
 
 #include "chain/mmr.h"
 
@@ -102,8 +103,8 @@ bool vcs_proof_checkpoint_signature_valid(
     if (!pck_body_valid(c)) return false;
     uint8_t message[PCK_SIGN_MESSAGE_BYTES];
     pck_message(c, message);
-    return ed25519_verify(c->signature, message, sizeof(message),
-                          c->issuer_pubkey);
+    return vcs_proof_signature_verify(c->signature, message, sizeof(message),
+                                      c->issuer_pubkey);
 }
 
 bool vcs_proof_checkpoint_encode(const struct vcs_proof_checkpoint_v1 *c,

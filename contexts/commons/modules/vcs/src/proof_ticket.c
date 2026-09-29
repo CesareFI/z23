@@ -3,6 +3,7 @@
  *          contract roots and signed zcl.proof_ticket.v1 observations. */
 
 #include "vcs/proof_ticket.h"
+#include "vcs/proof_signature.h"
 
 #include "vcs/blob_store.h"
 
@@ -494,8 +495,8 @@ bool vcs_proof_ticket_signature_valid(const struct vcs_proof_ticket_v1 *t)
     if (!vcs_proof_ticket_body_valid(t)) return false;
     uint8_t message[PTK_SIGN_MESSAGE_BYTES];
     ptk_message(t, message);
-    return ed25519_verify(t->signature, message, sizeof(message),
-                          t->producer_pubkey);
+    return vcs_proof_signature_verify(t->signature, message, sizeof(message),
+                                      t->producer_pubkey);
 }
 
 bool vcs_proof_ticket_encode(const struct vcs_proof_ticket_v1 *t,
