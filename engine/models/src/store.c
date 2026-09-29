@@ -408,8 +408,8 @@ int db_store_order_list_pending_payments(struct node_db *ndb,
      * newer unpaid ones was never scanned. */
     AR_PREPARE_RET(ndb, s,
             "SELECT o.id,o.payment_addr,o.amount_zatoshi,o.customer_addr,"
-            "p.token_id,p.tokens_per_purchase "
-            "FROM orders o JOIN products p ON o.product_id = p.id "
+            "p.token_id,p.tokens_per_purchase,o.created_at "
+            "FROM orders o LEFT JOIN products p ON o.product_id = p.id "
             "WHERE o.status = ? AND o.created_at > ? AND o.id > ? "
             "ORDER BY o.id ASC LIMIT ?",
             0);
@@ -424,7 +424,8 @@ int db_store_order_list_pending_payments(struct node_db *ndb,
         out[count].amount_zatoshi = AR_COL_INT(s, 2);
         AR_READ_STR(s, 3, out[count].customer_addr, sizeof(out[count].customer_addr));
         AR_READ_STR(s, 4, out[count].token_id, sizeof(out[count].token_id));
-        out[count].tokens_per_purchase = AR_COL_INT(s, 5));
+        out[count].tokens_per_purchase = AR_COL_INT(s, 5);
+        out[count].created_at = AR_COL_INT(s, 6));
     AR_FINALIZE(s);
     return count;
 }
@@ -494,6 +495,25 @@ int db_store_order_prune_expired(struct node_db *ndb, int64_t max_age_secs)
         return 0;
     }
     return sqlite3_changes(ndb->db);
+}
+
+bool db_store_order_prune_expired_id(struct node_db *ndb, int64_t id,
+                                     int64_t max_age_secs)
+{
+    sqlite3_stmt *s = NULL;
+
+    if (!ndb || !ndb->open || id <= 0 || max_age_secs < 0)
+        return false;
+    int64_t cutoff = (int64_t)platform_time_wall_time_t() - max_age_secs;
+    AR_PREPARE_RET(ndb, s,
+        "DELETE FROM orders WHERE id=? AND status=? AND created_at < ?",
+        false);
+    AR_BIND_INT(s, 1, id);
+    AR_BIND_INT(s, 2, STORE_ORDER_PENDING);
+    AR_BIND_INT(s, 3, cutoff);
+    bool ok = false;
+    AR_FINALIZE_STEP_DONE(s, ok);
+    return ok && sqlite3_changes(ndb->db) == 1;
 }
 
 int64_t db_store_chain_tip_height(struct node_db *ndb)

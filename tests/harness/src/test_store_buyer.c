@@ -622,6 +622,154 @@ static bool tsb_scan_coverage_gates_prune(const char *datadir,
     return ok && unread_st == STORE_ORDER_SENT && unpaid_st == -1;
 }
 
+/* Set the product's token id, returning the previous one in `old` when given.
+ * An unusable id makes the mint refuse, as projection lag does. */
+static bool tsb_swap_token(const char *datadir, int64_t product_id,
+                           const char *token, char *old, size_t old_size)
+{
+    struct node_db ndb;
+    sqlite3_stmt *s = NULL;
+    bool ok = tsb_open(datadir, &ndb);
+    if (ok && old) {
+        ok = sqlite3_prepare_v2(ndb.db,
+                 "SELECT token_id FROM products WHERE id = ?", -1, &s,
+                 NULL) == SQLITE_OK;
+        if (ok) {
+            sqlite3_bind_int64(s, 1, product_id);
+            ok = sqlite3_step(s) == SQLITE_ROW;
+            if (ok)
+                (void)snprintf(old, old_size, "%s",
+                               (const char *)sqlite3_column_text(s, 0));
+            sqlite3_finalize(s);
+        }
+    }
+    if (ok) {
+        ok = sqlite3_prepare_v2(ndb.db,
+                 "UPDATE products SET token_id = ? WHERE id = ?", -1, &s,
+                 NULL) == SQLITE_OK;
+        if (ok) {
+            sqlite3_bind_text(s, 1, token, -1, SQLITE_TRANSIENT);
+            sqlite3_bind_int64(s, 2, product_id);
+            ok = sqlite3_step(s) == SQLITE_DONE;
+            sqlite3_finalize(s);
+        }
+    }
+    if (ndb.open)
+        node_db_close(&ndb);
+    return ok;
+}
+
+static bool tsb_seed_tip_at(const char *datadir, int height)
+{
+    struct node_db ndb;
+    bool ok = tsb_open(datadir, &ndb) && tsb_seed_tip(&ndb, height);
+    if (ndb.open)
+        node_db_close(&ndb);
+    return ok;
+}
+
+/* A payment the pass cannot credit yet is not an abandoned order: the aged
+ * order that is paid but shallower than the confirmation depth, and the one
+ * whose mint fails, stay pending. The order with no payment at all is still
+ * pruned once the scan covers the range. */
+static bool tsb_prune_keeps_paid_orders(const char *datadir,
+                                        int64_t product_id)
+{
+    struct store_buyer_order shallow = {0}, minting = {0}, unpaid = {0};
+    char good_token[STORE_PRODUCT_TOKEN_MAX + 1] = "";
+    bool ok = tsb_place_aged_order(datadir, product_id, "shallow", &shallow) &&
+              tsb_place_aged_order(datadir, product_id, "minting", &minting) &&
+              tsb_place_aged_order(datadir, product_id, "unpaid2", &unpaid) &&
+              tsb_pay_order(datadir, &shallow, 100, 0x7c) &&
+              tsb_pay_order(datadir, &minting, 90, 0x7d) &&
+              tsb_swap_token(datadir, product_id, "not-a-token", good_token,
+                             sizeof(good_token)) &&
+              tsb_payment_pass(datadir, 100);
+    int shallow_st = tsb_order_status(datadir, shallow.order_id);
+    int minting_st = tsb_order_status(datadir, minting.order_id);
+    int unpaid_st = tsb_order_status(datadir, unpaid.order_id);
+    printf("[shallow=%d minting=%d unpaid=%d] ", shallow_st, minting_st,
+           unpaid_st);
+    if (!ok || shallow_st != STORE_ORDER_PENDING ||
+        minting_st != STORE_ORDER_PENDING || unpaid_st != -1)
+        return false;
+
+    /* The mint recovers and the shallow payment matures: both are credited. */
+    ok = tsb_swap_token(datadir, product_id, good_token, NULL, 0) &&
+         tsb_seed_tip_at(datadir, 103) && tsb_payment_pass(datadir, 103);
+    shallow_st = tsb_order_status(datadir, shallow.order_id);
+    minting_st = tsb_order_status(datadir, minting.order_id);
+    printf("[after: shallow=%d minting=%d] ", shallow_st, minting_st);
+    return ok && shallow_st == STORE_ORDER_SENT &&
+           minting_st == STORE_ORDER_SENT;
+}
+
+/* Point an order at a product row that does not exist. */
+static bool tsb_orphan_order(const char *datadir, int64_t order_id)
+{
+    struct node_db ndb;
+    sqlite3_stmt *s = NULL;
+    bool ok = tsb_open(datadir, &ndb) &&
+              sqlite3_prepare_v2(ndb.db,
+                  "UPDATE orders SET product_id = 999999 WHERE id = ?", -1,
+                  &s, NULL) == SQLITE_OK;
+    if (ok) {
+        sqlite3_bind_int64(s, 1, order_id);
+        ok = sqlite3_step(s) == SQLITE_DONE;
+        sqlite3_finalize(s);
+    }
+    if (ndb.open)
+        node_db_close(&ndb);
+    return ok;
+}
+
+/* An order whose product row is gone cannot be minted. The expired one with
+ * no payment is pruned; the one with a visible payment stays pending and is
+ * logged for a refund. */
+static bool tsb_orphan_orders(const char *datadir, int64_t product_id)
+{
+    struct store_buyer_order unpaid = {0}, paid = {0};
+    bool ok = tsb_place_aged_order(datadir, product_id, "orphan-unpaid",
+                                   &unpaid) &&
+              tsb_place_aged_order(datadir, product_id, "orphan-paid",
+                                   &paid) &&
+              tsb_pay_order(datadir, &paid, 90, 0x7e) &&
+              tsb_orphan_order(datadir, unpaid.order_id) &&
+              tsb_orphan_order(datadir, paid.order_id) &&
+              tsb_payment_pass(datadir, 100);
+    int unpaid_st = tsb_order_status(datadir, unpaid.order_id);
+    int paid_st = tsb_order_status(datadir, paid.order_id);
+    printf("[orphan unpaid=%d paid=%d] ", unpaid_st, paid_st);
+    return ok && unpaid_st == -1 && paid_st == STORE_ORDER_PENDING;
+}
+
+/* With a stored tip below the 3-block ceiling, a scanned height of -1 must
+ * not count as covering, so nothing is pruned. */
+static bool tsb_low_tip_prunes_nothing(void)
+{
+    char dir[512];
+    struct node_db ndb;
+    struct store_buyer_order o = {0};
+    int64_t product_id = 0;
+    struct store_buyer_offer offers[8];
+    size_t n = 0;
+    char out[640];
+
+    tsb_tmpdir(dir, sizeof(dir), "lowtip");
+    (void)snprintf(out, sizeof(out), "%s/lowtip.bin", dir);
+    bool ok = store_buyer_catalog(dir, offers, 8, &n).ok && n > 0;
+    if (ok)
+        product_id = offers[0].product_id;
+    ok = ok && tsb_open(dir, &ndb) && tsb_seed_tip(&ndb, 2);
+    if (ndb.open)
+        node_db_close(&ndb);
+    ok = ok && tsb_place_aged_order(dir, product_id, "lowtip", &o) &&
+         tsb_payment_pass(dir, -1);
+    int st = tsb_order_status(dir, o.order_id);
+    printf("[status=%d] ", st);
+    return ok && st == STORE_ORDER_PENDING;
+}
+
 int test_store_buyer(void)
 {
     int failures = 0;
@@ -1025,6 +1173,14 @@ int test_store_buyer(void)
                            "as unpaid",
                            tsb_scan_coverage_gates_prune(datadir,
                                                          product_id));
+    failures += tsb_report("an expired order with a visible payment survives "
+                           "the prune and is credited once it can be",
+                           tsb_prune_keeps_paid_orders(datadir, product_id));
+    failures += tsb_report("an expired orphan order is pruned unless a payment "
+                           "is visible",
+                           tsb_orphan_orders(datadir, product_id));
+    failures += tsb_report("a stored tip below 3 prunes nothing",
+                           tsb_low_tip_prunes_nothing());
 
     /* ── 8. Unknown ids are refused distinguishably ──────────────────── */
     printf("store_buyer: unknown product and purchase ids are named... ");

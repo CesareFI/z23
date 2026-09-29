@@ -601,28 +601,46 @@ int64_t store_confirmed_payment(struct node_db *ndb, const char *pay_addr,
                                            max_height);
 }
 
-/* Credit one pending order if its bound, confirmed payment covers it. */
-static void store_reconcile_pending_order(
+/* Named decision lines per pass, so a full pending pool cannot flood the log. */
+#define STORE_PASS_LOG_BUDGET 8
+
+/* Credit one pending order if its bound, confirmed payment covers it.
+ * Returns true when any payment for the order is visible at any depth: such
+ * an order stays pending. An order with no product (deleted) or no customer
+ * address cannot be minted, so a visible payment is logged for a refund. */
+static bool store_reconcile_pending_order(
     struct node_db *ndb, const char *datadir,
-    const struct db_store_pending_payment *order, int64_t min_height)
+    const struct db_store_pending_payment *order, int64_t min_height,
+    int *log_budget)
 {
     int64_t order_id = order->id;
     const char *pay_addr = order->payment_addr;
     const char *cust_addr = order->customer_addr;
     const char *token_id = order->token_id;
 
-    if (!pay_addr[0] || !cust_addr[0] || !token_id[0])
-        return;
+    if (!pay_addr[0])
+        return false;
 
     /* Credit only payments BOUND to THIS order — by the recovered Sapling
      * memo ("ZCL23ORDER:<order_id>") for a shielded order, or by the
      * one-time address itself for a transparent one. Either way an
      * unrelated same-amount payment cannot satisfy this order, which the
      * legacy address-only finder over a REUSED address would. */
+    if (store_confirmed_payment(ndb, pay_addr, order_id, INT64_MAX) <= 0)
+        return false;
+    if (!cust_addr[0] || !token_id[0]) {
+        if ((*log_budget)-- > 0)
+            LOG_WARN("store", "order #%lld has a visible payment but no "
+                     "product token or customer address (product deleted?) "
+                     "- cannot mint, kept pending; refund by memo "
+                     "ZCL23ORDER:%lld at %s",
+                     (long long)order_id, (long long)order_id, pay_addr);
+        return true;
+    }
     int64_t received = store_confirmed_payment(ndb, pay_addr, order_id,
                                                min_height);
     if (received < order->amount_zatoshi)
-        return;
+        return true;
 
     /* Payment confirmed — mint tokens FIRST, then update status.
      * This ensures we never show "Tokens Sent" if mint failed.
@@ -632,15 +650,14 @@ static void store_reconcile_pending_order(
      * once the tip settles and the catchup projection advances),
      * and a CONFIRMED payment must never strand an order as FAILED
      * for a transient cause. Leave the order in the pending scan so
-     * the next cycle retries; the 1 h pending-scan window bounds
-     * retries for genuinely unmintable orders. */
+     * the next cycle retries; a paid order is never pruned. */
     if (!zslp_mint(datadir, token_id, cust_addr,
                    (uint64_t)order->tokens_per_purchase)) {
         printf("Store: order #%lld paid but mint not yet possible "
                "(projection lag?) — retrying next scan for %s\n",
                (long long)order_id, cust_addr);
         fflush(stdout);
-        return;
+        return true;
     }
     if (!db_store_order_mark_paid(ndb, order_id, STORE_ORDER_SENT)) {
         printf("Store: order #%lld payment processed but status "
@@ -651,6 +668,23 @@ static void store_reconcile_pending_order(
            (long long)order_id, (long long)order->tokens_per_purchase,
            token_id, cust_addr);
     fflush(stdout);
+    return true;
+}
+
+/* Delete an expired order the pass found no payment for, once the wallet has
+ * fully read the range. */
+static int store_prune_unpaid(struct node_db *ndb, int64_t order_id, bool paid,
+                              bool scan_covers, int *log_budget)
+{
+    if (paid || !scan_covers ||
+        !db_store_order_prune_expired_id(ndb, order_id,
+                                         STORE_ORDER_PENDING_EXPIRE_SECS))
+        return 0;
+    if ((*log_budget)-- > 0)
+        LOG_INFO("store", "order #%lld expired with no payment visible at "
+                 "any depth in the scanned range - pruned",
+                 (long long)order_id);
+    return 1;
 }
 
 /* Background payment processor — called periodically from boot.c.
@@ -672,8 +706,10 @@ void store_process_payments_with_db(struct node_db *ndb,
 
     /* Require minimum 3 confirmations to prevent reorg-based double-spend
      * (payment reversed but tokens already minted). */
-    int64_t min_height = db_store_chain_tip_height(ndb) - 3;
-    bool scan_covers = wallet_scanned_height >= min_height;
+    int64_t tip = db_store_chain_tip_height(ndb);
+    int64_t min_height = tip - 3;
+    /* Below tip 3 there is no confirmation ceiling to cover: never prune. */
+    bool scan_covers = tip >= 3 && wallet_scanned_height >= min_height;
 
     /* Visit EVERY pending order, a page at a time. The pool admits
      * STORE_ORDER_MAX_PENDING_GLOBAL rows; reading one fixed page stranded
@@ -683,12 +719,19 @@ void store_process_payments_with_db(struct node_db *ndb,
     const size_t page_max = sizeof(page) / sizeof(page[0]);
     int64_t after_id = 0;
     int64_t visited = 0;
+    int pruned = 0;
+    int log_budget = STORE_PASS_LOG_BUDGET;
     for (;;) {
         int n = db_store_order_list_pending_payments(ndb, page, page_max,
                                                      0, after_id);
-        for (int i = 0; i < n; ++i)
-            store_reconcile_pending_order(ndb, datadir, &page[i],
-                                          min_height);
+        for (int i = 0; i < n; ++i) {
+            bool paid = store_reconcile_pending_order(ndb, datadir, &page[i],
+                                                      min_height, &log_budget);
+            /* Only an order with no payment visible at any depth, in a
+             * range the wallet has fully read, can be abandoned. */
+            pruned += store_prune_unpaid(ndb, page[i].id, paid, scan_covers,
+                                        &log_budget);
+        }
         if (n > 0)
             visited += n;
         if (n <= 0 || (size_t)n < page_max)
@@ -709,20 +752,10 @@ void store_process_payments_with_db(struct node_db *ndb,
         return;
     }
 
-    /* Bounded background sweep: reclaim unpaid orders older than the
-     * pending lifetime, now that this pass has checked each of them against
-     * a scan that covers the confirmation ceiling. Without this, the
-     * pending-order caps in store_handle_request only refuse NEW rows once
-     * the pool fills — the table itself would still grow forever. */
-    {
-        int pruned = db_store_order_prune_expired(ndb,
-            STORE_ORDER_PENDING_EXPIRE_SECS);
-        if (pruned > 0) {
-            printf("Store: pruned %d expired unpaid order(s)\n", pruned);
-            fflush(stdout);
-        }
+    if (pruned > 0) {
+        printf("Store: pruned %d expired unpaid order(s)\n", pruned);
+        fflush(stdout);
     }
-
 }
 
 void store_process_payments(const char *datadir)

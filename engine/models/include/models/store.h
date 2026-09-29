@@ -96,6 +96,7 @@ struct db_store_pending_payment {
     char customer_addr[STORE_ORDER_ADDR_MAX + 1];
     char token_id[STORE_PRODUCT_TOKEN_MAX + 1];
     int64_t tokens_per_purchase;
+    int64_t created_at;
 };
 
 struct ar_callbacks *db_store_product_callbacks(void);
@@ -158,6 +159,11 @@ int db_store_order_count_pending_for_product(struct node_db *ndb,
  * refuse NEW rows, they don't reclaim old ones. Returns the number of
  * rows deleted (0 on no-op or error). */
 int db_store_order_prune_expired(struct node_db *ndb, int64_t max_age_secs);
+
+/* Delete order `id` if it is still pending and older than `max_age_secs`.
+ * The payment pass calls this for an order it found no payment for. */
+bool db_store_order_prune_expired_id(struct node_db *ndb, int64_t id,
+                                     int64_t max_age_secs);
 
 /* Payment-check reads. The store payment processor needs the current
  * chain tip (to compute confirmation depth) and the confirmed shielded
