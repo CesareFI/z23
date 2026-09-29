@@ -31,6 +31,9 @@
 #define FRP_OBJECT_MAX (8u * 1024u * 1024u)
 #define FRP_OUTPUT_MAX (4u * 1024u * 1024u)
 #define FRP_LOCK_STEP_MS 10u
+/* At most 96 record directories per key. Past that the key refuses every
+ * further publish with publisher_store_unsafe; receivers already BLOCK
+ * past their own 64-observation scan bound (store_scan_incomplete). */
 #define FRP_SCAN_MAX 96u
 
 enum {
@@ -411,11 +414,15 @@ static const char *frp_scan(int key_fd, const struct frp_work *w,
     return why;
 }
 
+/* `exists`, when given, is set only from openat's own errno, before any
+ * later call can overwrite it. */
 static bool frp_write_file(int dir, const char *name, int mode,
-                           const struct frp_bytes *b)
+                           const struct frp_bytes *b, bool *exists)
 {
     int fd = openat(dir, name, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW |
                                    O_CLOEXEC, mode);
+    int open_errno = fd < 0 ? errno : 0;
+    if (exists) *exists = open_errno == EEXIST;
     if (fd < 0) return false;
     size_t at = 0;
     while (at < b->n) {
@@ -439,8 +446,9 @@ static bool frp_record_conflict(const struct zcl_frt_trust *t, int state,
     int n = snprintf(name, sizeof(name), "%s.%s.attest", w->store_key,
                      w->record_hex);
     bool ok = dir >= 0 && n > 0 && (size_t)n < sizeof(name);
-    if (ok && !frp_write_file(dir, name, 0600, &w->file[FRP_ATTEST]))
-        ok = errno == EEXIST;
+    bool exists = false;
+    if (ok && !frp_write_file(dir, name, 0600, &w->file[FRP_ATTEST], &exists))
+        ok = exists;
     if (ok) ok = fsync(dir) == 0;
     if (dir >= 0) (void)close(dir);
     return ok;
@@ -474,8 +482,8 @@ static bool frp_fill(int dir, const struct frp_work *w,
 {
     bool ok = true;
     for (size_t i = 0; ok && i < n; i++)
-        ok = frp_write_file(dir, k_frp_names[set[i]], 0644,
-                            &w->file[set[i]]);
+        ok = frp_write_file(dir, k_frp_names[set[i]], 0644, &w->file[set[i]],
+                            NULL);
     return ok && fchmod(dir, 0755) == 0 && fsync(dir) == 0;
 }
 

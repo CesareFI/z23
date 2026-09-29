@@ -9,6 +9,7 @@
 #if !defined(__linux__)
 int test_verify_signer(void) { return 0; }
 #else
+#include "test/verify_contract_fixture.h"
 #include "test/verify_signer_fixture.h"
 
 #include "base/hex.h"
@@ -650,6 +651,168 @@ static int vsig_test_lock(struct vsg_world *w)
     return failures;
 }
 
+/* ── failure receipt v2 codec ─────────────────────────────────────────── */
+
+static const char *vsig_failure_encode(const struct zcl_fr_failure *f)
+{
+    uint8_t bytes[VSG_RECEIPT_CAP];
+    size_t len = 0;
+    const char *why = NULL;
+    return zcl_fr_failure_encode(f, bytes, sizeof(bytes), &len, &why)
+               ? "encoded" : (why ? why : "no_reason");
+}
+
+static uint8_t *vsig_find(uint8_t *hay, size_t n, const uint8_t *needle,
+                          size_t m)
+{
+    for (size_t i = 0; m <= n && i <= n - m; i++)
+        if (memcmp(hay + i, needle, m) == 0) return hay + i;
+    return NULL;
+}
+
+/* The fixture's failure bytes with compile_exit's u64le value replaced.
+ * The field is F("compile_exit") then F(u64le value), value 1 today. */
+static const char *vsig_failure_reparse(const struct vsg_world *w,
+                                        uint64_t exit_code)
+{
+    static const uint8_t label[] = {12, 0, 0, 0, 0, 0, 0, 0, 'c', 'o', 'm',
+                                    'p', 'i', 'l', 'e', '_', 'e', 'x', 'i',
+                                    't', 8, 0, 0, 0, 0, 0, 0, 0};
+    uint8_t bytes[VSG_RECEIPT_CAP];
+    memcpy(bytes, w->fail.bytes, w->fail.len);
+    uint8_t *at = vsig_find(bytes, w->fail.len, label, sizeof(label));
+    if (!at || (size_t)(at - bytes) + sizeof(label) + 8u > w->fail.len ||
+        at[sizeof(label)] != 1u)
+        return "exit_field_not_found";
+    for (size_t i = 0; i < 8u; i++)
+        at[sizeof(label) + i] = (uint8_t)(exit_code >> (8u * i));
+    struct zcl_fr_failure f;
+    const char *why = NULL;
+    return zcl_fr_failure_parse(bytes, w->fail.len, &f, &why)
+               ? "parsed" : (why ? why : "no_reason");
+}
+
+static int vsig_test_failure_codec(struct vsg_world *w)
+{
+    int failures = 0;
+    TEST("verify signer: a failure receipt needs exit 1..255 and no object "
+         "or depfile digest") {
+        struct zcl_fr_failure base, f;
+        ASSERT(zcl_fr_failure_parse(w->fail.bytes, w->fail.len, &base, NULL));
+        ASSERT_STR_EQ(vsig_failure_encode(&base), "encoded");
+        f = base; f.compile_exit = 0u;
+        ASSERT_STR_EQ(vsig_failure_encode(&f), ZCL_FR_WHY_FAILURE_EXIT);
+        f = base; f.compile_exit = 256u;
+        ASSERT_STR_EQ(vsig_failure_encode(&f), ZCL_FR_WHY_FAILURE_EXIT);
+        f = base; f.compile_exit = 255u;
+        ASSERT_STR_EQ(vsig_failure_encode(&f), "encoded");
+        ASSERT_STR_EQ(vsig_failure_reparse(w, 1u), "parsed");
+        ASSERT_STR_EQ(vsig_failure_reparse(w, 0u), ZCL_FR_WHY_FAILURE_EXIT);
+        ASSERT_STR_EQ(vsig_failure_reparse(w, 256u), ZCL_FR_WHY_FAILURE_EXIT);
+        f = base; f.launch.artifacts[0].size = 1u;
+        ASSERT_STR_EQ(vsig_failure_encode(&f), ZCL_FR_WHY_FIELD_MALFORMED);
+        f = base; f.launch.artifacts[0].sha3[31] = 1u;
+        ASSERT_STR_EQ(vsig_failure_encode(&f), ZCL_FR_WHY_FIELD_MALFORMED);
+        f = base; f.launch.artifacts[1].size = 1u;
+        ASSERT_STR_EQ(vsig_failure_encode(&f), ZCL_FR_WHY_FIELD_MALFORMED);
+        f = base; f.launch.artifacts[1].sha3[0] = 1u;
+        ASSERT_STR_EQ(vsig_failure_encode(&f), ZCL_FR_WHY_FIELD_MALFORMED);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* ── publisher: a signed FAIL that disagrees with its root receipt ────── */
+
+enum vsig_forge { VSIG_FORGE_EXIT, VSIG_FORGE_RECEIPT, VSIG_FORGE_TARGET,
+                  VSIG_FORGE_OBJECT };
+
+static bool vsig_read_file(const char *path, struct vsg_bytes *out)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) return false;
+    out->p = malloc(VSG_RECEIPT_CAP * 8u);
+    out->n = out->p ? fread(out->p, 1, VSG_RECEIPT_CAP * 8u, f) : 0u;
+    bool ok = out->p && ferror(f) == 0 && feof(f) != 0;
+    (void)fclose(f);
+    return ok;
+}
+
+static void vsig_forge(struct zcl_verify_attest_record *r, enum vsig_forge k,
+                       const char *other_target)
+{
+    if (k == VSIG_FORGE_EXIT) r->exit_code = 2;
+    if (k == VSIG_FORGE_RECEIPT) r->binding.receipt_sha3[0] ^= 0x01u;
+    if (k == VSIG_FORGE_TARGET)
+        r->binding.target = (struct zcl_verify_attest_text){
+            other_target, strlen(other_target)};
+    if (k == VSIG_FORGE_OBJECT) r->obj_sha3[0] ^= 0x01u;
+}
+
+/* Re-sign the signer's own staged FAIL with one field changed, with the
+ * pinned verifier key, and stage it under its new record name. */
+static bool vsig_stage_forged(const struct vsg_world *w,
+                              const struct vsg_state *s, const char *record,
+                              enum vsig_forge k, char out[65])
+{
+    char attest[PATH_MAX], dir[PATH_MAX], target[ZCL_FR_TARGET_LEN + 1u];
+    struct vsg_bytes bytes = {0};
+    struct zcl_verify_attest_signed parsed;
+    uint8_t *sealed = NULL;
+    size_t sealed_len = 0;
+    test_vc_target(target, 'b');
+    bool ok = vsig_staged(s, record, "attest.bin", attest) &&
+              vsig_read_file(attest, &bytes) &&
+              zcl_verify_attest_parse(bytes.p, bytes.n, &parsed, NULL);
+    if (ok) {
+        vsig_forge(&parsed.record, k, target);
+        ok = zcl_verify_attest_seal(&parsed.record, w->seed, &sealed,
+                                    &sealed_len, NULL);
+    }
+    if (ok) vsg_hex(sealed, sealed_len, out);
+    ok = ok && vsg_path(dir, s->staging, out) && mkdir(dir, 0700) == 0 &&
+         vsg_file_replace(dir, "attest.bin", sealed, sealed_len, 0400u) &&
+         vsg_file_replace(dir, "launch.bin", w->fail.bytes, w->fail.len,
+                          0400u) &&
+         vsg_file_replace(dir, "stderr.bin", VSG_FAIL_STDERR,
+                          sizeof(VSG_FAIL_STDERR) - 1u, 0400u);
+    free(sealed);
+    vsg_bytes_free(&bytes);
+    return ok;
+}
+
+static int vsig_test_failure_binding(struct vsg_world *w)
+{
+    int failures = 0;
+    struct vsg_state *s = vsig_state(w);
+    static const struct {
+        enum vsig_forge kind;
+        const char *why;
+    } cases[] = {
+        {VSIG_FORGE_EXIT, ZCL_FRP_WHY_FAILURE_EXIT},
+        {VSIG_FORGE_RECEIPT, ZCL_VERIFY_ATTEST_WHY_RECEIPT_MISMATCH},
+        {VSIG_FORGE_TARGET, ZCL_VERIFY_ATTEST_WHY_TARGET_MISMATCH},
+        {VSIG_FORGE_OBJECT, ZCL_VERIFY_ATTEST_WHY_OBJ_MISMATCH},
+    };
+    TEST("verify signer: a signed FAIL that disagrees with its root failure "
+         "receipt refuses") {
+        struct zcl_frs_result fail;
+        struct zcl_frp_result pub;
+        char forged[65];
+        ASSERT(s);
+        ASSERT_STR_EQ(vsig_seal(s, false, &fail), VSIG_SEALED);
+        for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+            ASSERT(vsig_stage_forged(w, s, fail.record_sha3, cases[i].kind,
+                                     forged));
+            ASSERT_STR_EQ(vsig_publish(s, forged, &pub), cases[i].why);
+        }
+        ASSERT_STR_EQ(vsig_publish(s, fail.record_sha3, &pub), VSIG_PUBLISHED);
+        PASS();
+    } _test_next:;
+    free(s);
+    return failures;
+}
+
 typedef int (*vsig_case)(struct vsg_world *w);
 
 int test_verify_signer(void)
@@ -663,7 +826,8 @@ int test_verify_signer(void)
         vsig_test_staging_links,  vsig_test_staging_shape,
         vsig_test_receipt_binding, vsig_test_no_clobber,
         vsig_test_fail_then_pass, vsig_test_pass_then_fail,
-        vsig_test_lock,
+        vsig_test_lock,           vsig_test_failure_codec,
+        vsig_test_failure_binding,
     };
     int failures = 0;
     struct vsg_world *w = calloc(1u, sizeof(*w));
