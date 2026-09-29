@@ -2,13 +2,11 @@
  *
  * Store BUYER service — the buying half of the store, with no browser.
  *
- * The selling half already worked end to end: a merchant lists a product,
- * the store mints a one-time Sapling payment address per order, a background
- * worker credits the order from the note whose memo names it, and the file is
- * served token-gated. What did not exist was a buyer that a program could be:
- * the order form is HTML with a CSRF token and a proof-of-work puzzle solved
- * by embedded JavaScript, and the download is an HTTP GET. A human with a Tor
- * Browser was the only client.
+ * The selling half: a merchant lists a product, the store mints a one-time
+ * Sapling payment address per order, a background worker credits the order
+ * from the note whose memo names it, and the file is served token-gated. The
+ * order form is HTML with a CSRF token and a proof-of-work puzzle solved by
+ * embedded JavaScript, and the download is an HTTP GET.
  *
  * This service is that client, in-process. It drives the SAME surfaces:
  *   store_handle_request()                — the real order-create route, so

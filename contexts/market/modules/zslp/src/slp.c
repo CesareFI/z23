@@ -105,8 +105,8 @@ bool slp_classify_tx_output(const struct transaction *tx, uint32_t vout,
  * The caller has zeroed *out (slp_parse memsets the whole message), so an
  * empty (len==0) or over-long (len >= out_len) field leaves *out as the
  * empty string — preserving the SLP overlay's existing accept-but-drop
- * behavior. We only add an observability log for the over-long case, which
- * used to be silently discarded (Law 2: every dropped field logs context). */
+ * behavior. An over-long field logs context (Law 2: every dropped field logs
+ * context). */
 static void slp_copy_str_field(const uint8_t *data, size_t len,
                                char *out, size_t out_len, const char *field_name)
 {

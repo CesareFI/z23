@@ -443,7 +443,7 @@ done:
     return result;
 }
 
-/* Slice-serving runs one GET per <=60 KiB slice, and each call used to
+/* Slice-serving runs one GET per <=60 KiB slice, and each call would
  * re-hash the whole chunk (up to FILE_MARKET_CHUNK_SIZE = 50 MiB) only to
  * compare against the same immutable record.chunk_sha3. The digest table
  * below caches ONLY that computed digest, keyed on everything the chunk
