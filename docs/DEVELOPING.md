@@ -1006,9 +1006,13 @@ reverse-caller closure or reverse-include set reaches more test groups than the
 plan can enumerate. That is not missing evidence, so it is not a refusal — the
 plan reports `"closure_universal":true`, the bounded dimension is `complete`
 with reason `closure-universal`, and the proof runs the entire test group
-catalog instead of a group list. Only a dimension the index could not answer at
-all — no code index, no include graph, a query error — stays `unavailable` and
-still makes `proof_admissible` false.
+catalog instead of a group list. A changed set whose own paths name more groups
+than the plan holds (a sweep over hundreds of test files) is the same capacity
+fact: the plan reports `"path_universal":true`, the `opaque` dimension is
+`complete` with reason `path-group-cap`, and the proof's
+`test-selection.log` says `reason=path-group-cap`. Only a dimension the index
+could not answer at all — no code index, no include graph, a query error —
+stays `unavailable` and still makes `proof_admissible` false.
 
 A universal selection subtracts exactly one thing: a group whose declared
 **host need** the proof generation cannot meet. The needs are data, declared

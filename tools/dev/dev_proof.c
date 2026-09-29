@@ -6676,20 +6676,23 @@ static bool inventory_output_only(const char *const *files, size_t count)
 
 /* Record the test-selection shape beside the dimension logs. "universal" is
  * the whole catalog, chosen because the plan's closure was capacity-bounded
- * (reason closure-universal) or because an input was added, deleted or
+ * (reason closure-universal), because its path floor outgrew the group cap
+ * (reason path-group-cap), or because an input was added, deleted or
  * type-changed (reason changed-input-structure);
  * "exact" is the enumerated plan. `host_gated` names every catalog group the
  * universal selector left out because this tree cannot meet the group's
  * declared host need, and which need it was -- so a reader of this file never
  * has to infer a smaller run from a count. "-" means nothing was left out. */
 static bool proof_note_test_selection(const struct proof_paths *paths,
-                                      bool universal, bool widened,
-                                      uint32_t selected,
+                                      const struct zcl_devloop_plan *plan,
+                                      bool widened, uint32_t selected,
                                       const char *host_gated)
 {
-    const char *reason = widened     ? "changed-input-structure"
-                         : universal ? "closure-universal"
-                                     : "impact-plan";
+    bool universal = plan->closure_universal;
+    const char *reason = widened               ? "changed-input-structure"
+                         : plan->path_universal ? "path-group-cap"
+                         : universal            ? "closure-universal"
+                                                : "impact-plan";
     char path[PATH_MAX];
     if (snprintf(path, sizeof(path), "%s/%s.test-selection.log", paths->logs,
                  paths->key) >= (int)sizeof(path))
@@ -8292,17 +8295,25 @@ static bool dp_worker_refresh_include_graph(struct dp_worker *w,
 
 /* A structural change widens the closed plan to the full closure before it
  * is rendered, so the plan digest in the receipt says what actually ran, and
- * phases.txt names the row that forced it. */
-static void dp_worker_widen(struct dp_worker *w)
+ * phases.txt names the row that forced it, or the path-group cap the plan
+ * already widened on. */
+static void dp_worker_widen(struct dp_worker *w, size_t file_count)
 {
     w->structure_widened =
         dp_changed_set_widen(w->changed, &w->plan, &w->inventory_only);
-    if (!w->structure_widened || !w->paths->phases[0]) return;
+    if (!w->paths->phases[0]) return;
     char note[PROOF_CHANGED_PATH_MAX + 96];
-    (void)snprintf(note, sizeof(note),
-                   "widened reason=changed_input_structure path=%s rows=%zu",
-                   w->changed->structural_path,
-                   w->changed->structural_count);
+    if (w->structure_widened)
+        (void)snprintf(note, sizeof(note),
+                       "widened reason=changed_input_structure path=%s "
+                       "rows=%zu", w->changed->structural_path,
+                       w->changed->structural_count);
+    else if (w->plan.path_universal)
+        (void)snprintf(note, sizeof(note),
+                       "widened reason=path_group_cap rows=%zu cap=%d",
+                       file_count, ZCL_DEVLOOP_MAX_PLAN_GROUPS);
+    else
+        return;
     (void)zcl_dev_proof_phase_note(w->paths->phases, "changed_set", note);
 }
 
@@ -8343,7 +8354,7 @@ static bool dp_worker_plan(struct dp_worker *w, const char *const *files,
         return false;
     }
     proof_phase_mark(w->phases, "impact_plan_closure");
-    dp_worker_widen(w);
+    dp_worker_widen(w, file_count);
     /* Render the plan we just closed. The _closure spelling would open the
      * code index and re-walk the whole reverse-caller graph to rebuild the
      * plan sitting in this frame -- the most expensive phase of the proof,
@@ -8485,7 +8496,7 @@ static bool dp_worker_select(struct dp_worker *w, char *why, size_t why_len)
     /* Say why the run is this large, in a file a reader finds beside the test
      * log. Without this a universal selection looks like an unexplained
      * whole-catalog run. */
-    if (!proof_note_test_selection(&w->execution, w->plan.closure_universal,
+    if (!proof_note_test_selection(&w->execution, &w->plan,
                                    w->structure_widened, test_count,
                                    host_gated)) {
         proof_why(why, why_len, "test_selection_note_unwritable");

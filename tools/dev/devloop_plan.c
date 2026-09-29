@@ -593,6 +593,36 @@ static bool plan_add_path_group(struct zcl_devloop_plan *plan,
     return true;
 }
 
+/* The path floor outgrew path_groups. Like a closure bound this is capacity,
+ * not missing evidence: the plan widens to the whole catalog, and OPAQUE
+ * stays COMPLETE with the reason naming the widening. */
+static void plan_path_go_universal(struct zcl_devloop_plan *plan)
+{
+    plan->path_universal = true;
+    plan->closure_universal = true;
+    struct zcl_devloop_dim_state *st = &plan->dims[ZCL_DEVLOOP_DIM_OPAQUE];
+    if (plan_dim_severity(st->status) >
+        plan_dim_severity(ZCL_DEVLOOP_DIM_COMPLETE))
+        return;
+    st->status = ZCL_DEVLOOP_DIM_COMPLETE;
+    st->reason = "path-group-cap";
+}
+
+/* Add one path-floor group and its explanation. A universal floor already
+ * selects every group, so nothing further is listed. */
+static void plan_take_path_group(struct zcl_devloop_plan *plan,
+                                 const char *group, enum zcl_devloop_dim dim,
+                                 const char *via)
+{
+    if (plan->path_universal)
+        return;
+    if (!plan_add_path_group(plan, group)) {
+        plan_path_go_universal(plan);
+        return;
+    }
+    plan_note_selection(plan, group, dim, via);
+}
+
 bool zcl_devloop_plan_files(const char *const *files, size_t file_count,
                             struct zcl_devloop_plan *out)
 {
@@ -647,11 +677,8 @@ bool zcl_devloop_plan_files(const char *const *files, size_t file_count,
          * an owner of every broad rule that happens to match its contents. */
         char leaf_group[ZCL_TEST_GROUP_FULL_MAX];
         if (plan_semantic_leaf_group(files[i], leaf_group)) {
-            plan_note_selection(out, leaf_group, ZCL_DEVLOOP_DIM_OPAQUE,
-                                files[i]);
-            if (!plan_add_path_group(out, leaf_group))
-                plan_dim_set(out, ZCL_DEVLOOP_DIM_OPAQUE,
-                             ZCL_DEVLOOP_DIM_INCOMPLETE, "path-group-cap");
+            plan_take_path_group(out, leaf_group, ZCL_DEVLOOP_DIM_OPAQUE,
+                                 files[i]);
             continue;
         }
         /* Each rule is evaluated in its original bounded accumulator, then
@@ -665,12 +692,8 @@ bool zcl_devloop_plan_files(const char *const *files, size_t file_count,
               !path_include_applies(files[i])))
                 ? ZCL_DEVLOOP_DIM_OPAQUE
                 : ZCL_DEVLOOP_DIM_SEMANTIC;
-        for (size_t g = 0; g < per_file.groups_len; g++) {
-            plan_note_selection(out, per_file.groups[g], dim, files[i]);
-            if (!plan_add_path_group(out, per_file.groups[g]))
-                plan_dim_set(out, ZCL_DEVLOOP_DIM_OPAQUE,
-                             ZCL_DEVLOOP_DIM_INCOMPLETE, "path-group-cap");
-        }
+        for (size_t g = 0; g < per_file.groups_len; g++)
+            plan_take_path_group(out, per_file.groups[g], dim, files[i]);
     }
     out->docs_only = all_docs;
 
@@ -678,13 +701,10 @@ bool zcl_devloop_plan_files(const char *const *files, size_t file_count,
      * hand-authored, non-derivable mapping, exactly like the .def rules. It
      * already drives foreground_proof, but it named no group in any array, so
      * a reader saw "0 test groups" for a change to consensus crypto. Name it. */
-    if (out->consensus_risk) {
-        plan_note_selection(out, "consensus_parity", ZCL_DEVLOOP_DIM_OPAQUE,
-                            consensus_via ? consensus_via : files[0]);
-        if (!plan_add_path_group(out, "consensus_parity"))
-            plan_dim_set(out, ZCL_DEVLOOP_DIM_OPAQUE,
-                         ZCL_DEVLOOP_DIM_INCOMPLETE, "path-group-cap");
-    }
+    if (out->consensus_risk)
+        plan_take_path_group(out, "consensus_parity",
+                             ZCL_DEVLOOP_DIM_OPAQUE,
+                             consensus_via ? consensus_via : files[0]);
 
     if (all_docs) {
         out->reason = "documentation_only";
@@ -950,6 +970,51 @@ bool zcl_devloop_plan_proof_owner(const char *path)
     return plan_reached_proof_owner(path, NULL);
 }
 
+/* Fold the reverse-caller closure of `changed` into the SEMANTIC dimension.
+ * Returns false only when the index could not be asked. */
+static bool plan_semantic_walk(struct zcl_devloop_plan *plan,
+                               struct codeindex *ci, const char *root,
+                               char (*changed)[256], size_t semantic_count,
+                               char (*impacted)[256], int closure_file_cap)
+{
+    /* A universal path floor already holds every group this walk could
+     * name, so it is not walked. */
+    if (plan->closure_universal) {
+        plan_go_universal(plan, ZCL_DEVLOOP_DIM_SEMANTIC);
+        return true;
+    }
+    plan_dim_set(plan, ZCL_DEVLOOP_DIM_SEMANTIC, ZCL_DEVLOOP_DIM_COMPLETE, "");
+    bool truncated = false;
+    /* A reached file with an explicit proof-owner rule is the terminal
+     * evidence layer. Record it below, but do not walk back through its
+     * generic caller/dispatcher and select unrelated proof families. An
+     * unowned caller is never a boundary and the graph keeps climbing. */
+    int n = codeindex_impact_closure_bounded(
+        ci, plan->closure_snapshot ? root : NULL,
+        changed, (int)semantic_count, 0,
+        plan_reached_proof_owner, NULL, impacted,
+        closure_file_cap, &truncated, true);
+    if (n < 0) {
+        plan_dim_set(plan, ZCL_DEVLOOP_DIM_SEMANTIC,
+                     ZCL_DEVLOOP_DIM_UNAVAILABLE, "closure-query-error");
+        return false;
+    }
+    /* Everything the (possibly stopped-early) walk reached is still folded
+     * in below — a partial closure is real evidence. What a CAPACITY bound
+     * changes is the answer's shape, not its availability: see
+     * plan_go_universal(). */
+    if (truncated)
+        plan_go_universal(plan, ZCL_DEVLOOP_DIM_SEMANTIC);
+    for (int i = 0; i < n; i++) {
+        if (!plan_fold_reached_file(plan, impacted[i],
+                                    ZCL_DEVLOOP_DIM_SEMANTIC)) {
+            plan_go_universal(plan, ZCL_DEVLOOP_DIM_SEMANTIC);
+            break;
+        }
+    }
+    return true;
+}
+
 static bool plan_add_closure(const char *repo_root,
                              const char *const *files, size_t file_count,
                              struct zcl_devloop_plan *plan, bool snapshot)
@@ -960,7 +1025,8 @@ static bool plan_add_closure(const char *repo_root,
 
     plan->closure_attempted = true;
     plan->closure_snapshot = false;
-    plan->closure_universal = false;
+    /* A path floor over the group cap stays universal. */
+    plan->closure_universal = plan->path_universal;
     plan->closure_groups_len = 0;
     /* This call OWNS the two graph dimensions; reset them and let the walks
      * below escalate. The OPAQUE dimension belongs to the path floor and is
@@ -1039,38 +1105,11 @@ static bool plan_add_closure(const char *repo_root,
             snprintf(changed[semantic_index++], 256, "%s", files[i]);
 
     /* ── dimension SEMANTIC: the reverse-caller blast radius ── */
-    if (semantic_count > 0) {
-        plan_dim_set(plan, ZCL_DEVLOOP_DIM_SEMANTIC,
-                     ZCL_DEVLOOP_DIM_COMPLETE, "");
-        bool truncated = false;
-        /* A reached file with an explicit proof-owner rule is the terminal
-         * evidence layer. Record it below, but do not walk back through its
-         * generic caller/dispatcher and select unrelated proof families. An
-         * unowned caller is never a boundary and the graph keeps climbing. */
-        int n = codeindex_impact_closure_bounded(
-            ci, plan->closure_snapshot ? root : NULL,
-            changed, (int)semantic_count, 0,
-            plan_reached_proof_owner, NULL, impacted,
-            closure_file_cap, &truncated, true);
-        if (n < 0) {
-            plan_dim_set(plan, ZCL_DEVLOOP_DIM_SEMANTIC,
-                         ZCL_DEVLOOP_DIM_UNAVAILABLE, "closure-query-error");
-            ok = false;
-            goto out;
-        }
-        /* Everything the (possibly stopped-early) walk reached is still folded
-         * in below — a partial closure is real evidence. What a CAPACITY bound
-         * changes is the answer's shape, not its availability: see
-         * plan_go_universal(). */
-        if (truncated)
-            plan_go_universal(plan, ZCL_DEVLOOP_DIM_SEMANTIC);
-        for (int i = 0; i < n; i++) {
-            if (!plan_fold_reached_file(plan, impacted[i],
-                                        ZCL_DEVLOOP_DIM_SEMANTIC)) {
-                plan_go_universal(plan, ZCL_DEVLOOP_DIM_SEMANTIC);
-                break;
-            }
-        }
+    if (semantic_count > 0 &&
+        !plan_semantic_walk(plan, ci, root, changed, semantic_count,
+                            impacted, closure_file_cap)) {
+        ok = false;
+        goto out;
     }
 
     /* ── dimension INCLUDE: every TU the compiler read a changed file for ──
@@ -1382,10 +1421,11 @@ static bool plan_json_head(const struct zcl_devloop_plan *plan, char *out,
         append_json_string(out, out_sz, pos, plan->reason) &&
         appendf(out, out_sz, pos,
                 ",\"consensus_risk\":%s,\"sealed_core\":%s,\"docs_only\":%s,"
-                "\"files\":[",
+                "\"path_universal\":%s,\"files\":[",
                 plan->consensus_risk ? "true" : "false",
                 plan->sealed_core ? "true" : "false",
-                plan->docs_only ? "true" : "false");
+                plan->docs_only ? "true" : "false",
+                plan->path_universal ? "true" : "false");
 }
 
 static bool plan_json_files(const struct zcl_devloop_plan *plan,

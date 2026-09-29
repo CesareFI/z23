@@ -29,7 +29,8 @@ extern "C" {
 #define ZCL_DEVLOOP_RESTART_SOURCE_MAX 32
 /* A graph plan can legitimately reach hundreds of registered proof owners
  * through a central header. Retain a measured 512-group envelope while the
- * per-path accumulator remains separate; overflow still refuses.
+ * per-path accumulator remains separate; overflow widens the plan to the
+ * whole catalog (closure_universal).
  * The rendered command document has an independent byte ceiling. */
 #define ZCL_DEVLOOP_MAX_PLAN_GROUPS 512
 #define ZCL_DEVLOOP_GROUP_MAX 64
@@ -223,6 +224,11 @@ struct zcl_devloop_plan {
      * UNAVAILABLE — no index, query error — is a different fact and still
      * refuses proof. */
     bool closure_universal;
+    /* The path floor named more groups than path_groups holds. Capacity like
+     * the closure bound: closure_universal is set, the OPAQUE dimension is
+     * COMPLETE with reason "path-group-cap", and closing the plan keeps it
+     * universal. */
+    bool path_universal;
 
     /* ── C5: why every selected group is here ── */
     struct zcl_devloop_selection selections[ZCL_DEVLOOP_MAX_PLAN_SELECTIONS];

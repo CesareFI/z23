@@ -256,7 +256,7 @@ static bool fx_fold(struct zcl_devloop_plan *plan, struct fx_set *files)
     qsort(files->items, files->len, files->width, fx_path_cmp);
     plan->closure_attempted = true;
     plan->closure_snapshot = false;
-    plan->closure_universal = false;
+    plan->closure_universal = plan->path_universal;
     plan->closure_groups_len = 0;
     for (size_t k = 0; k < files->len; k++)
         if (!zcl_devloop_plan_fold_file(plan, fx_at(files, k),

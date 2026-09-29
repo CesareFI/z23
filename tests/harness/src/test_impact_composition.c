@@ -9632,6 +9632,112 @@ static int test_ic_include_capacity_runs_everything(void)
     return failures;
 }
 
+/* A path floor naming more groups than the plan can hold is capacity, the
+ * same fact as a full closure: the plan widens to the whole catalog, names
+ * path-group-cap as the reason, and stays admissible proof. */
+#define IC_FIX_PATHCAP IC_FIX_ROOT "/path_capacity"
+#define IC_PATHCAP_MAX 1024
+
+static int test_ic_path_group_cap_runs_everything(void)
+{
+    int failures = 0;
+    static char ic_fixture_saved[4096];
+    bool ic_fixture_was_set =
+        ic_host_fixture_save(ic_fixture_saved, sizeof(ic_fixture_saved));
+    TEST("impact composition: a path floor over the group cap runs the whole catalog") {
+        /* A tests/harness sweep: one source per registered test group. */
+        static char paths[IC_PATHCAP_MAX][ZCL_TEST_GROUP_FULL_MAX + 32];
+        static const char *files[IC_PATHCAP_MAX];
+        size_t n = 0;
+        for (size_t i = 0; i < zcl_test_group_catalog_count() &&
+                           n < IC_PATHCAP_MAX; i++) {
+            const char *full = zcl_test_group_catalog_at(i);
+            if (strncmp(full, "test_", 5) != 0)
+                continue;
+            (void)snprintf(paths[n], sizeof(paths[n]),
+                           "tests/harness/src/%s.c", full);
+            files[n] = paths[n];
+            n++;
+        }
+        ASSERT(n > ZCL_DEVLOOP_MAX_PLAN_GROUPS);
+
+        static struct zcl_devloop_plan plan;
+        ASSERT(zcl_devloop_plan_files(files, n, &plan));
+        ASSERT(plan.path_groups_len == ZCL_DEVLOOP_MAX_PLAN_GROUPS);
+        ASSERT(plan.path_universal);
+        ASSERT(plan.closure_universal);
+        ASSERT(plan.dims[ZCL_DEVLOOP_DIM_OPAQUE].status ==
+               ZCL_DEVLOOP_DIM_COMPLETE);
+        ASSERT_STR_EQ(plan.dims[ZCL_DEVLOOP_DIM_OPAQUE].reason,
+                      "path-group-cap");
+        ASSERT(!plan.selections_truncated);
+
+        /* Closing the plan keeps the widening and asks no graph for groups
+         * the catalog already holds. */
+        system("rm -rf " IC_FIX_PATHCAP);
+        ASSERT(ic_write_call_pair(IC_FIX_PATHCAP));
+        ASSERT(ic_write_depfiles(IC_FIX_PATHCAP));
+        ASSERT(zcl_devloop_plan_add_closure(IC_FIX_PATHCAP, files, n, &plan));
+        ASSERT(plan.closure_universal);
+        ASSERT(!plan.closure_truncated);
+        ASSERT_STR_EQ(plan.dims[ZCL_DEVLOOP_DIM_OPAQUE].reason,
+                      "path-group-cap");
+        const char *why = "unset";
+        ASSERT(zcl_devloop_plan_proof_admissible(&plan, &why));
+        ASSERT_STR_EQ(why, "");
+        char refusal[256];
+        ASSERT(zcl_devloop_plan_refusal_text(&plan, refusal,
+                                             sizeof refusal) == 0);
+
+        /* The plan document names the widening beside the universal
+         * selector, so the receipt's plan digest covers the reason. */
+        static char body[ZCL_DEVLOOP_PLAN_WIRE_MAX + 1];
+        ASSERT(zcl_devloop_plan_json_render(&plan, files, n, body,
+                                            sizeof body) > 0);
+        ASSERT(strstr(body, "\"name\":\"opaque\",\"status\":\"complete\","
+                            "\"reason\":\"path-group-cap\"") != NULL);
+        ASSERT(strstr(body, "\"path_universal\":true") != NULL);
+        ASSERT(strstr(body, "\"execution_selector\":\"universal\"") != NULL);
+        ASSERT(strstr(body, "\"proof_admissible\":true") != NULL);
+
+        /* The proof runner turns it into every registered group. */
+        static char selector[ZCL_DEVLOOP_MAX_PLAN_SELECTIONS *
+                             (ZCL_TEST_GROUP_FULL_MAX + 1)];
+        char gated[PROOF_HOST_GATED_MAX];
+        uint32_t selected = 0;
+        memset(selector, 0, sizeof(selector));
+        ASSERT(ic_host_need_full_root(IC_FIX_HOST_FULL));
+        ic_host_fixture_env(true);
+        ASSERT(zcl_dev_proof_test_build_test_selector(
+                   &plan, IC_FIX_HOST_FULL, false, selector, sizeof(selector),
+                   &selected, gated, sizeof(gated)));
+        ic_host_fixture_restore(ic_fixture_saved, ic_fixture_was_set);
+        ASSERT(ic_selector_is_universal(selector, selected,
+                                        ic_fuzz_host_ready() ? 0 : 1));
+
+        /* Control: under the cap the same sweep plans exactly. */
+        static struct zcl_devloop_plan small;
+        ASSERT(zcl_devloop_plan_files(files, 16, &small));
+        ASSERT(small.path_groups_len > 0);
+        ASSERT(small.path_groups_len < ZCL_DEVLOOP_MAX_PLAN_GROUPS);
+        ASSERT(!small.closure_universal);
+        ASSERT(!small.path_universal);
+        ASSERT(small.dims[ZCL_DEVLOOP_DIM_OPAQUE].status ==
+               ZCL_DEVLOOP_DIM_COMPLETE);
+        ASSERT_STR_EQ(small.dims[ZCL_DEVLOOP_DIM_OPAQUE].reason, "");
+        ASSERT(zcl_devloop_plan_add_closure(IC_FIX_PATHCAP, files, 16,
+                                            &small));
+        ASSERT(!small.closure_universal);
+        ASSERT(!small.path_universal);
+
+        system("rm -rf " IC_FIX_PATHCAP);
+        system("rm -rf " IC_FIX_HOST_FULL);
+        PASS();
+    } _test_next:;
+    ic_host_fixture_restore(ic_fixture_saved, ic_fixture_was_set);
+    return failures;
+}
+
 #if !defined(_WIN32)
 /* ── proof warm start, end to end ────────────────────────────────────────
  * The production warm start (survey, pick, seed, retime) driven against a
@@ -10011,6 +10117,7 @@ int test_impact_composition(void)
     failures += test_ic_incomplete_dimension_refuses_proof();
     failures += test_ic_capacity_bound_runs_everything();
     failures += test_ic_include_capacity_runs_everything();
+    failures += test_ic_path_group_cap_runs_everything();
     failures += test_ic_host_need_table_is_closed();
     failures += test_ic_every_selection_has_a_reason();
     failures += test_ic_union_never_loses_a_rule_group();
