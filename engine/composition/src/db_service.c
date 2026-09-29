@@ -68,21 +68,47 @@ static bool db_service_perform_job(struct db_service *svc,
 }
 
 /* Poisoned WAL snapshot recovery. The worker's handle is shared with bounded
- * health reads (db_service_open_query_db), so a read transaction leaked on it
- * — an explicit BEGIN whose COMMIT/ROLLBACK never runs — pins an old WAL
- * snapshot. Once any other connection commits, every write on the handle
- * fails instantly with SQLITE_BUSY_SNAPSHOT (the busy handler never runs:
- * there is no lock to wait on, only a stale snapshot) and every checkpoint
- * with SQLITE_LOCKED, forever, until the snapshot is rolled back. On a
- * busy-class job failure on a handle holding an open read transaction in
- * explicit-txn mode, roll the stale snapshot back so the job can be retried.
+ * health reads (db_service_open_query_db). Two leak shapes pin an old WAL
+ * snapshot on it, and both produce the same wedge: once any other connection
+ * commits, every write on the handle fails instantly with SQLITE_BUSY_SNAPSHOT
+ * (the busy handler never runs: there is no lock to wait on, only a stale
+ * snapshot) and every checkpoint with SQLITE_LOCKED, forever.
+ *
+ * Shape A: an explicit BEGIN whose COMMIT/ROLLBACK never runs. The handle sits
+ * in TXN_READ with autocommit off; ROLLBACK is the cure.
+ *
+ * Shape B: a SELECT statement left standing on its result row (a cached reader
+ * that skipped sqlite3_reset, or a per-call read that leaked its finalize).
+ * The handle stays in autocommit but the paused cursor holds an implicit read
+ * transaction — TXN_READ with autocommit on. ROLLBACK cannot reach it; the
+ * cure is resetting the stale read cursors themselves. The walk logs each
+ * cursor's SQL so the next occurrence names its leaker. Resetting is safe for
+ * cached readers (next use re-steps from scratch) and bounded for a genuinely
+ * in-flight reader (its next step fails SQLITE_ABORT, logged and retried by
+ * its owner) — and the predicate below only fires after a BUSY_SNAPSHOT/
+ * LOCKED failure, which a fresh, progressing read snapshot never causes.
  *
  * Never touch TXN_WRITE: an open write transaction belongs to a caller-owned
- * multi-job sequence whose owner restarts itself (node_db_catchup). Never
- * touch autocommit mode: a busy error there is genuine cross-connection
- * contention and the live readers are making progress. Recovery therefore
- * fires only for the wedged steady state — no writes in flight, no writer
- * able to start, nothing improving on its own. */
+ * multi-job sequence whose owner restarts itself (node_db_catchup). A plain
+ * SQLITE_BUSY in autocommit+TXN_READ is genuine cross-connection contention
+ * with an innocent live reader — never reset on it. */
+static int db_service_reset_stale_read_cursors(struct node_db *ndb)
+{
+    int reset = 0;
+    for (sqlite3_stmt *s = sqlite3_next_stmt(ndb->db, NULL); s;
+         s = sqlite3_next_stmt(ndb->db, s)) {
+        if (!sqlite3_stmt_busy(s) || !sqlite3_stmt_readonly(s))
+            continue;
+        const char *sql = sqlite3_sql(s);
+        LOG_WARN("db_service",
+                 "resetting stale read cursor pinning the WAL snapshot: %s",
+                 sql ? sql : "(null)");
+        sqlite3_reset(s);
+        reset++;
+    }
+    return reset;
+}
+
 static bool db_service_recover_poisoned_snapshot(struct db_service *svc,
                                                  const struct db_service_job *job)
 {
@@ -95,19 +121,33 @@ static bool db_service_recover_poisoned_snapshot(struct db_service *svc,
     if ((err & 0xff) != SQLITE_BUSY && (err & 0xff) != SQLITE_LOCKED)
         return false;
     txn = sqlite3_txn_state(ndb->db, NULL);
-    if (txn != SQLITE_TXN_READ || sqlite3_get_autocommit(ndb->db))
+    if (txn != SQLITE_TXN_READ)
         return false;
-    LOG_WARN("db_service",
-             "recovering poisoned WAL snapshot: job_type=%d err=%d — rolling "
-             "back the leaked read transaction and retrying the job once",
-             (int)job->type, err);
-    if (!node_db_rollback(ndb)) {
+    if (!sqlite3_get_autocommit(ndb->db)) {
         LOG_WARN("db_service",
-                 "poisoned-snapshot rollback failed: %s",
-                 sqlite3_errmsg(ndb->db));
-        return false;
+                 "recovering poisoned WAL snapshot: job_type=%d err=%d — "
+                 "rolling back the leaked read transaction and retrying the "
+                 "job once",
+                 (int)job->type, err);
+        if (!node_db_rollback(ndb)) {
+            LOG_WARN("db_service",
+                     "poisoned-snapshot rollback failed: %s",
+                     sqlite3_errmsg(ndb->db));
+            return false;
+        }
+        return true;
     }
-    return true;
+    /* Shape B only fires on the snapshot-stale extended codes; plain BUSY
+     * here is real contention and its reader is innocent. */
+    if (err != SQLITE_BUSY_SNAPSHOT && (err & 0xff) != SQLITE_LOCKED)
+        return false;
+    int reset = db_service_reset_stale_read_cursors(ndb);
+    if (reset > 0)
+        LOG_WARN("db_service",
+                 "recovering poisoned WAL snapshot: job_type=%d err=%d — "
+                 "reset %d stale read cursor(s) and retrying the job once",
+                 (int)job->type, err, reset);
+    return reset > 0;
 }
 
 struct db_service_batch_size_ctx {

@@ -3395,6 +3395,53 @@ static void check_db_worker_recovers_poisoned_snapshot(int *failures)
         (*failures)++;
 }
 
+/* Poison variant B — the 2026-09-29 live-wedge shape: a cached-style SELECT
+ * left standing on its result row. No explicit transaction anywhere;
+ * autocommit stays on, yet the paused cursor holds an implicit read
+ * transaction that pins the WAL snapshot it read. The next commit from any
+ * other connection makes that snapshot stale; from then on every write on the
+ * shared handle fails instantly with SQLITE_BUSY_SNAPSHOT ("database is
+ * locked", busy handler never consulted) and every checkpoint answers
+ * SQLITE_LOCKED, until the cursor is reset. Reads keep answering throughout,
+ * which is exactly why the state is invisible from outside. */
+static bool sqlite_poison_hold_read_cursor(struct sqlite_poison_fixture *f,
+                                           sqlite3_stmt **held)
+{
+    uint8_t seed = 0x11;
+    *held = NULL;
+    if (!node_db_state_set(&f->ndb, "cursor-seed", &seed, sizeof(seed)))
+        return false;
+    if (sqlite3_prepare_v2(f->ndb.db,
+            "SELECT value FROM node_state WHERE key='cursor-seed'",
+            -1, held, NULL) != SQLITE_OK || !*held)
+        return false;
+    if (sqlite3_step(*held) != SQLITE_ROW)  // raw-sql-ok:test-fixture-setup
+        return false;
+    return sqlite3_txn_state(f->ndb.db, NULL) == SQLITE_TXN_READ &&
+           sqlite3_get_autocommit(f->ndb.db) != 0;
+}
+
+static void check_db_worker_recovers_stale_read_cursor(int *failures)
+{
+    struct sqlite_poison_fixture f;
+    sqlite3_stmt *held = NULL;
+    bool ok = sqlite_poison_open(&f);
+    if (ok)
+        ok = sqlite_poison_hold_read_cursor(&f, &held) &&
+             sqlite_poison_advance_wal(&f);
+    if (ok)
+        ok = sqlite_poison_probe(&f);
+    if (held)
+        sqlite3_finalize(held);
+    db_service_stop(&f.svc);
+    node_db_close(&f.ndb);
+    test_rm_rf_recursive(f.dir);
+    printf("SQLite worker recovers stale cached-read cursor: %s (wrote=%d calls=%d)\n",
+           ok ? "OK" : "FAIL", f.wrote, f.write_calls);
+    if (!ok)
+        (*failures)++;
+}
+
 struct sqlite_projection_interleave {
     struct node_db *competitor;
     int calls;
@@ -3835,6 +3882,7 @@ int test_sqlite(void) {
     check_sqlite_48_sqlite_node_state_detached_fallback_wait(&failures);
     check_state_write_does_not_wait_behind_catchup(&failures);
     check_db_worker_recovers_poisoned_snapshot(&failures);
+    check_db_worker_recovers_stale_read_cursor(&failures);
 
     /* 100k-row UTXO open + random-read smoke test. Guards the
      * class of bug the brief worries about: a cache-size tweak that
