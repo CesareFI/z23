@@ -819,16 +819,31 @@ static int phc_case_evicted_history(void)
         ASSERT_EQ(after_checkpoint, 0);
 
         /* A covered ticket of A is compacted: A's checkpoint no longer has a
-         * complete ticket branch, so the whole rebuild refuses. */
+         * complete ticket branch, so A alone is isolated. Its surviving
+         * ticket is named, never counted, and B stays uncovered. */
         ASSERT(phc_compact(dir, a[1], sizeof(a[1]), 0x22));
         store = vcs_package_store_open(dir, PHC_QUOTA);
         ASSERT(store != NULL);
         rx = phc_rebuilt(store, 64u);
-        ASSERT(rx == NULL);
+        ASSERT(rx != NULL);
+        int after_ticket = phc_hits(rx, keys, 2);
+        ASSERT(vcs_proof_receiver_issuer_history_incomplete(rx,
+                                                            g_h.pub[PTF_A]));
+        ASSERT(!vcs_proof_receiver_issuer_history_incomplete(rx,
+                                                             g_h.pub[PTF_B]));
+        ASSERT(phc_decide(rx, &keys[0], NULL, cls, &d));
+        ASSERT_EQ(d.outcome, VCS_PROOF_REUSE_MISS);
+        ASSERT_STR_EQ(d.reason, VCS_PROOF_REUSE_WHY_HISTORY_INCOMPLETE);
+        ASSERT_STR_EQ(phc_reason_of(cls, d.tickets_seen, PTF_A),
+                      VCS_PROOF_TICKET_HISTORY_INCOMPLETE);
+        ASSERT_STR_EQ(phc_reason_of(cls, d.tickets_seen, PTF_B),
+                      VCS_PROOF_TICKET_NOT_CHECKPOINTED);
+        vcs_proof_receiver_free(rx);
         vcs_package_store_close(store);
+        ASSERT_EQ(after_ticket, 0);
         printf("\n  measured: HIT keys before=%d, after checkpoint evicted=%d, "
-               "after covered ticket evicted=rebuild refused (every key runs "
-               "fresh)\n", before, after_checkpoint);
+               "after covered ticket evicted=%d (A isolated, B uncovered)\n",
+               before, after_checkpoint, after_ticket);
         test_rm_rf(dir);
     } TEST_END
     return failures;
@@ -1002,8 +1017,8 @@ static int phc_case_cp_pair_parent_evicted(void)
         store = vcs_package_store_open(dir, PHC_QUOTA);
         ASSERT(store != NULL);
         rx = phc_rebuilt(store, 64u);
-        ASSERT(rx == NULL ||
-               vcs_proof_receiver_issuer_equivocating(rx, g_h.pub[PTF_A]));
+        ASSERT(rx != NULL);
+        ASSERT(vcs_proof_receiver_issuer_equivocating(rx, g_h.pub[PTF_A]));
         vcs_proof_receiver_free(rx);
         vcs_package_store_close(store);
         test_rm_rf(dir);

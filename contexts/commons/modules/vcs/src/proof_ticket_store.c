@@ -2,7 +2,7 @@
  * purpose: CAS placement of proof tickets, checkpoints and key preimages,
  *          and the receiver rebuilt as a projection over those blobs. */
 
-#include "proof_reuse_priv.h"
+#include "proof_replay_priv.h"
 
 #include "vcs/blob_store.h"
 #include "vcs/package_manifest.h"
@@ -101,26 +101,6 @@ bool vcs_component_proof_key_load(struct vcs_package_store *store,
 
 /* ── Rebuild ────────────────────────────────────────────────────────── */
 
-struct pts_cp {
-    uint8_t wire[VCS_PROOF_CHECKPOINT_WIRE_BYTES];
-    uint8_t root[VCS_PROOF_ROOT_BYTES];
-    struct vcs_proof_checkpoint_v1 decoded;
-    size_t parent;
-    size_t depth;
-};
-
-struct pts_cps {
-    struct pts_cp *items;
-    size_t count;
-    size_t cap;
-};
-
-struct pts_counts {
-    size_t tickets;
-    size_t checkpoints;
-    size_t skipped;
-};
-
 struct pts_chunks {
     uint8_t (*hashes)[32];
     size_t count;
@@ -199,13 +179,6 @@ static bool pts_take(struct vcs_proof_receiver *r, struct pts_cps *cps,
     return true;
 }
 
-static bool pts_valid_ticket(const struct pr_entry *e)
-{
-    struct vcs_proof_ticket_v1 t;
-    return vcs_proof_ticket_decode(e->wire, sizeof(e->wire), &t) &&
-           vcs_proof_ticket_signature_valid(&t);
-}
-
 struct pts_publish {
     struct vcs_proof_issuer_log **live;
     struct vcs_proof_issuer_log *replacement;
@@ -239,16 +212,6 @@ struct pts_restore {
     uint64_t generation;
 };
 
-/* What a rebuild checks beyond the catalog, and whether it may write. With
- * a trust policy it pins the signed fork evidence of that policy's
- * unrevoked verifiers; without one, and always for the issuer-log restore
- * (which publishes against the generation it scanned), it never writes. */
-struct pts_scope {
-    const struct vcs_proof_receiver_anchor *anchors;
-    size_t anchor_count;
-    const struct vcs_proof_reuse_policy *evidence_trust;
-};
-
 static bool pts_rebuild_bounded(struct vcs_proof_receiver *r,
                                 struct vcs_package_store *store,
                                 size_t max_catalog_rows, size_t *tickets,
@@ -280,12 +243,16 @@ static bool pts_restore_begin(struct pts_restore *s, const uint8_t seed[32],
 
 static bool pts_restore_empty(struct pts_restore *s)
 {
+    /* An isolated history still proves this key signed something: a
+     * checkpoint whose tickets or parent the store lost. Never reissue its
+     * sequences from an empty log. */
     const struct pr_issuer *issuer = pr_issuer_find(s->receiver, s->pubkey);
-    if (issuer && issuer->cp_count) return false;
+    if (issuer && (issuer->cp_count || issuer->history_incomplete))
+        return false;
     for (size_t i = 0; i < s->receiver->count; i++) {
         const struct pr_entry *entry = &s->receiver->entries[i];
         if (memcmp(entry->producer, s->pubkey, sizeof(s->pubkey)) == 0 &&
-            pts_valid_ticket(entry))
+            pts_entry_signed(entry))
             return false;
     }
     s->result = s->fresh;
@@ -300,7 +267,7 @@ static bool pts_restore_no_tail(const struct pts_restore *s)
     for (size_t i = 0; i < s->receiver->count; i++) {
         const struct pr_entry *entry = &s->receiver->entries[i];
         if (memcmp(entry->producer, s->pubkey, sizeof(s->pubkey)) == 0 &&
-            entry->issuer_seq >= s->head.leaf_count && pts_valid_ticket(entry))
+            entry->issuer_seq >= s->head.leaf_count && pts_entry_signed(entry))
             return false;
     }
     return true;
@@ -320,7 +287,7 @@ static bool pts_restore_head_valid(struct pts_restore *s,
         return false;
     s->count = (size_t)s->head.leaf_count;
     const struct pr_issuer *issuer = pr_issuer_find(s->receiver, s->pubkey);
-    return issuer && !issuer->equivocating &&
+    return issuer && !issuer->equivocating && !issuer->history_incomplete &&
            issuer->mmr.num_leaves == s->head.leaf_count &&
            issuer->cp_count == issuer->verified_count &&
            memcmp(issuer->last_root, s->head_root,
@@ -333,7 +300,7 @@ static bool pts_restore_select_wires(struct pts_restore *s)
         for (size_t one = pr_entry_seq_first(s->receiver, s->pubkey, seq); one;
              one = s->receiver->entries[one - 1u].next_seq) {
             const struct pr_entry *entry = &s->receiver->entries[one - 1u];
-            if (!pts_valid_ticket(entry)) continue;
+            if (!pts_entry_signed(entry)) continue;
             if (s->wires[seq] || !entry->covered) return false;
             s->wires[seq] = entry->wire;
             s->lens[seq] = sizeof(entry->wire);
@@ -469,308 +436,6 @@ struct vcs_proof_issuer_log *vcs_proof_issuer_log_restore_from_store_at_generati
         seed, store, expected_head_blob_root, max_catalog_rows,
         max_tickets, NULL, NULL, generation_out,
         chunk_hashes_out, chunk_count_out);
-}
-
-/* Select the same signature-valid ticket at each sequence regardless of CAS
- * arrival order. Ticket ingest already records signed sequence forks. */
-static bool pts_delta(const struct vcs_proof_receiver *r,
-                      const uint8_t issuer[32], uint64_t from, uint64_t to,
-                      const uint8_t **wires, size_t *lens)
-{
-    for (uint64_t seq = from; seq < to; seq++) {
-        const struct pr_entry *chosen = NULL;
-        for (size_t one = pr_entry_seq_first(r, issuer, seq); one;
-             one = r->entries[one - 1u].next_seq) {
-            const struct pr_entry *e = &r->entries[one - 1u];
-            if (!pts_valid_ticket(e)) continue;
-            if (!chosen || memcmp(e->observation_root,
-                                  chosen->observation_root, 32) < 0)
-                chosen = e;
-        }
-        if (!chosen) return false;
-        wires[seq - from] = chosen->wire;
-        lens[seq - from] = VCS_PROOF_TICKET_WIRE_BYTES;
-    }
-    return true;
-}
-
-static bool pts_replay_delta(struct vcs_proof_receiver *r,
-                             const struct pts_cp *cp, uint64_t from,
-                             size_t count, const uint8_t **wires,
-                             size_t *lens)
-{
-    const struct vcs_proof_checkpoint_v1 *c = &cp->decoded;
-    if (!pts_delta(r, c->issuer_pubkey, from, from + count, wires, lens))
-        return false;
-    struct vcs_proof_sync_report rep;
-    if (!vcs_proof_receiver_sync(r, cp->wire,
-                                 VCS_PROOF_CHECKPOINT_WIRE_BYTES,
-                                 (const uint8_t *const *)wires, lens,
-                                 count, &rep))
-        return false;
-    bool accepted = rep.outcome == VCS_PROOF_SYNC_ADVANCED ||
-                    rep.outcome == VCS_PROOF_SYNC_CURRENT ||
-                    (rep.outcome == VCS_PROOF_SYNC_EQUIVOCATION &&
-                     rep.reason && strcmp(rep.reason,
-                                          VCS_PROOF_SYNC_WHY_EQUIVOCATION) == 0);
-    if (!accepted) return false;
-    const struct pr_issuer *issuer = pr_issuer_find(r, c->issuer_pubkey);
-    if (!issuer) return false;
-    for (size_t i = 0; i < issuer->cp_count; i++)
-        if (memcmp(issuer->cps[i].root, cp->root, 32) == 0)
-            return true;
-    return false;
-}
-
-static bool pts_replay_one(struct vcs_proof_receiver *r,
-                           const struct pts_cps *cps, size_t k,
-                           struct pts_counts *n)
-{
-    const struct vcs_proof_checkpoint_v1 *c = &cps->items[k].decoded;
-    if (!vcs_proof_checkpoint_signature_valid(c)) {
-        n->skipped++;
-        return true;
-    }
-    uint64_t from = vcs_proof_receiver_issuer_leaves(r, c->issuer_pubkey);
-    if (c->leaf_count > from && c->leaf_count - from > SIZE_MAX)
-        LOG_RETURN(false, PTS_LOG, "rebuild: checkpoint delta exceeds size_t");
-    size_t count = c->leaf_count > from ? (size_t)(c->leaf_count - from) : 0;
-    const uint8_t **wires = count ? zcl_calloc(count, sizeof(*wires),
-                                               "proof_rebuild_delta") : NULL;
-    size_t *lens = count ? zcl_calloc(count, sizeof(*lens),
-                                      "proof_rebuild_lens") : NULL;
-    bool ok = (count == 0 || (wires && lens)) &&
-              pts_replay_delta(r, &cps->items[k], from, count, wires, lens);
-    free(wires);
-    free(lens);
-    if (!ok)
-        LOG_RETURN(false, PTS_LOG,
-                   "rebuild: signed checkpoint cannot be reproduced at %llu leaves",
-                   (unsigned long long)c->leaf_count);
-    n->checkpoints++;
-    return true;
-}
-
-static int pts_root_compare(const void *a, const void *b)
-{
-    const struct pts_cp *x = a, *y = b;
-    return memcmp(x->root, y->root, VCS_PROOF_ROOT_BYTES);
-}
-
-static size_t pts_parent(const struct pts_cps *cps,
-                         const uint8_t root[VCS_PROOF_ROOT_BYTES])
-{
-    size_t lo = 0, hi = cps->count;
-    while (lo < hi) {
-        size_t mid = lo + (hi - lo) / 2u;
-        int cmp = memcmp(cps->items[mid].root, root, VCS_PROOF_ROOT_BYTES);
-        if (cmp < 0) lo = mid + 1u;
-        else hi = mid;
-    }
-    if (lo == cps->count ||
-        memcmp(cps->items[lo].root, root, VCS_PROOF_ROOT_BYTES) != 0)
-        return SIZE_MAX;
-    return lo;
-}
-
-static bool pts_ancestry_depth(struct pts_cps *cps)
-{
-    if (!cps->count) return true;
-    uint8_t *state = zcl_calloc(cps->count, 1u, "proof_cp_state");
-    size_t *stack = zcl_calloc(cps->count, sizeof(*stack), "proof_cp_stack");
-    if (!state || !stack) {
-        free(state);
-        free(stack);
-        LOG_RETURN(false, PTS_LOG, "rebuild: ancestry allocation failed");
-    }
-    bool ok = true;
-    for (size_t k = 0; k < cps->count && ok; k++) {
-        size_t cur = k, used = 0;
-        while (cur != SIZE_MAX && state[cur] == 0) {
-            state[cur] = 1;
-            stack[used++] = cur;
-            cur = cps->items[cur].parent;
-        }
-        if (cur != SIZE_MAX && state[cur] == 1) {
-            LOG_ERROR(PTS_LOG, "rebuild: checkpoint ancestry cycle");
-            ok = false;
-            break;
-        }
-        size_t depth = cur == SIZE_MAX ? 0u : cps->items[cur].depth + 1u;
-        while (used) {
-            size_t one = stack[--used];
-            cps->items[one].depth = depth++;
-            state[one] = 2;
-        }
-    }
-    free(stack);
-    free(state);
-    return ok;
-}
-
-static bool pts_index_ancestry(struct pts_cps *cps)
-{
-    if (cps->count > 1u)
-        qsort(cps->items, cps->count, sizeof(*cps->items), pts_root_compare);
-    for (size_t k = 0; k < cps->count; k++) {
-        struct pts_cp *cp = &cps->items[k];
-        const uint8_t *prev = cp->decoded.prev_checkpoint_root;
-        if (memcmp(prev, (const uint8_t[32]){0}, 32) == 0) {
-            cp->parent = SIZE_MAX;
-            continue;
-        }
-        cp->parent = pts_parent(cps, prev);
-        if (cp->parent == SIZE_MAX)
-            LOG_RETURN(false, PTS_LOG, "rebuild: missing checkpoint ancestor");
-        const struct pts_cp *parent = &cps->items[cp->parent];
-        if (memcmp(parent->decoded.issuer_pubkey, cp->decoded.issuer_pubkey, 32) != 0 ||
-            parent->decoded.leaf_count > cp->decoded.leaf_count)
-            LOG_RETURN(false, PTS_LOG, "rebuild: invalid checkpoint ancestor");
-    }
-    return pts_ancestry_depth(cps);
-}
-
-static int pts_cp_compare(const void *a, const void *b)
-{
-    const struct pts_cp *x = a, *y = b;
-    if (x->decoded.leaf_count < y->decoded.leaf_count) return -1;
-    if (x->decoded.leaf_count > y->decoded.leaf_count) return 1;
-    if (x->depth < y->depth) return -1;
-    if (x->depth > y->depth) return 1;
-    return memcmp(x->wire, y->wire, sizeof(x->wire));
-}
-
-enum {
-    PTS_FORK_STATES_MAX = 256,
-    PTS_FORK_WORK_MAX = 1000000,
-    PTS_FORK_MATCHED_BYTES_MAX = 64 * 1024 * 1024,
-};
-
-/* Rebuild may retain an issuer's signed forks, but an equivocating receiver
- * does not verify a later checkpoint's delta. Prove that every retained
- * checkpoint names at least one complete ticket branch before publication. */
-static bool pts_match_checkpoint(
-    const struct vcs_proof_receiver *r, const struct pts_cp *cp,
-    const struct mmr *seed, struct mmr *matched,
-    struct mmr *states, struct mmr *next, uint64_t *work)
-{
-    const struct vcs_proof_checkpoint_v1 *c = &cp->decoded;
-    if (seed->num_leaves > c->leaf_count ||
-        c->leaf_count - seed->num_leaves > r->count)
-        LOG_RETURN(false, PTS_LOG, "rebuild: checkpoint ticket gap");
-    states[0] = *seed;
-    size_t count = 1;
-    for (uint64_t seq = seed->num_leaves; seq < c->leaf_count; seq++) {
-        size_t next_count = 0;
-        for (size_t s = 0; s < count; s++) {
-            for (size_t one = pr_entry_seq_first(r, c->issuer_pubkey, seq);
-                 one; one = r->entries[one - 1u].next_seq) {
-                if (++*work > PTS_FORK_WORK_MAX)
-                    LOG_RETURN(false, PTS_LOG,
-                               "rebuild: checkpoint branch work exhausted");
-                const struct pr_entry *entry = &r->entries[one - 1u];
-                if (!pts_valid_ticket(entry)) continue;
-                if (next_count == PTS_FORK_STATES_MAX)
-                    LOG_RETURN(false, PTS_LOG,
-                               "rebuild: checkpoint branch states exhausted");
-                next[next_count] = states[s];
-                if (mmr_append(&next[next_count], entry->observation_root) < 0)
-                    LOG_RETURN(false, PTS_LOG,
-                               "rebuild: checkpoint branch append failed");
-                next_count++;
-            }
-        }
-        if (!next_count)
-            LOG_RETURN(false, PTS_LOG, "rebuild: checkpoint ticket absent");
-        memcpy(states, next, next_count * sizeof(*states));
-        count = next_count;
-    }
-    for (size_t i = 0; i < count; i++) {
-        uint8_t root[32], peaks[32];
-        mmr_root(&states[i], root);
-        if (memcmp(root, c->mmr_root, sizeof(root)) == 0 &&
-            vcs_proof_checkpoint_peaks_root(&states[i], peaks) &&
-            memcmp(peaks, c->peaks_root, sizeof(peaks)) == 0) {
-            *matched = states[i];
-            return true;
-        }
-    }
-    LOG_RETURN(false, PTS_LOG,
-               "rebuild: signed checkpoint has no complete ticket branch");
-}
-
-static bool pts_verify_path(const struct vcs_proof_receiver *r,
-                            const struct pts_cps *cps, size_t *stack,
-                            size_t used, struct mmr *matched,
-                            struct mmr *states, struct mmr *next,
-                            uint8_t *done, uint64_t *work)
-{
-    while (used) {
-        size_t one = stack[--used];
-        size_t parent = cps->items[one].parent;
-        struct mmr empty;
-        mmr_init(&empty);
-        const struct mmr *seed = parent == SIZE_MAX ? &empty : &matched[parent];
-        if (!pts_match_checkpoint(r, &cps->items[one], seed,
-                                  &matched[one], states, next, work))
-            return false;
-        done[one] = 1;
-    }
-    return true;
-}
-
-/* Parent indices still refer to the root-sorted checkpoint array here. An
- * explicit path stack proves each parent before its child without recursion;
- * the later replay sort is free to move checkpoint records afterward. */
-static bool pts_verify_checkpoints(const struct vcs_proof_receiver *r,
-                                   const struct pts_cps *cps)
-{
-    if (!cps->count) return true;
-    if (cps->count > PTS_FORK_MATCHED_BYTES_MAX / sizeof(struct mmr))
-        LOG_RETURN(false, PTS_LOG,
-                   "rebuild: checkpoint verification memory bound");
-    struct mmr *matched = zcl_calloc(cps->count, sizeof(*matched),
-                                      "proof_cp_matched");
-    struct mmr *states = zcl_calloc(PTS_FORK_STATES_MAX, sizeof(*states),
-                                     "proof_cp_states");
-    struct mmr *next = zcl_calloc(PTS_FORK_STATES_MAX, sizeof(*next),
-                                   "proof_cp_next");
-    size_t *stack = zcl_calloc(cps->count, sizeof(*stack),
-                                "proof_cp_verify_stack");
-    uint8_t *done = zcl_calloc(cps->count, 1u, "proof_cp_verified");
-    bool ok = matched && states && next && stack && done;
-    if (!ok) LOG_ERROR(PTS_LOG, "rebuild: checkpoint verifier allocation");
-    uint64_t work = 0;
-    for (size_t i = 0; ok && i < cps->count; i++) {
-        size_t cur = i, used = 0;
-        while (cur != SIZE_MAX && !done[cur]) {
-            stack[used++] = cur;
-            cur = cps->items[cur].parent;
-        }
-        if (used)
-            ok = pts_verify_path(r, cps, stack, used, matched,
-                                 states, next, done, &work);
-    }
-    free(done);
-    free(stack);
-    free(next);
-    free(states);
-    free(matched);
-    return ok;
-}
-
-/* Leaf count and signed ancestry together determine replay order. */
-static bool pts_replay(struct vcs_proof_receiver *r, struct pts_cps *cps,
-                       struct pts_counts *n)
-{
-    if (!pts_index_ancestry(cps) || !pts_verify_checkpoints(r, cps))
-        return false;
-    if (cps->count > 1u)
-        qsort(cps->items, cps->count, sizeof(*cps->items), pts_cp_compare);
-    bool ok = true;
-    for (size_t k = 0; k < cps->count && ok; k++)
-        ok = pts_replay_one(r, cps, k, n);
-    return ok;
 }
 
 static bool pts_scan_one(struct vcs_proof_receiver *r,
@@ -1184,7 +849,7 @@ static bool pts_rebuild_bounded(struct vcs_proof_receiver *r,
     bool scanned = pts_scan(staging, store, &cps, &n, &chunks, &generation,
                             max_catalog_rows);
     bool ok = scanned &&
-              pts_replay(staging, &cps, &n) &&
+              pts_replay(r, staging, &cps, &n, scope) &&
               pts_restore_anchored_fork(r, staging) &&
               pts_preserves_prior(r, staging) &&
               pts_verify_anchor_heads(staging, store, scope->anchors,

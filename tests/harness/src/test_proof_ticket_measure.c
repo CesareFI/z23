@@ -854,7 +854,9 @@ static int ptm_case_store_scale(void)
 #define PTW_PROVEN 150u
 #define PTW_CONFLICT 7u
 #define PTW_OUTPUT_BYTES (64u * 1024u)
-#define PTW_WIRES (2u * PTW_UNITS + 1u)
+/* Two signed tickets per run: the first runs, one rerun of every unit,
+ * and C's single failure. */
+#define PTW_WIRES (4u * PTW_UNITS + 1u)
 
 struct ptw {
     struct ptf f;
@@ -1119,8 +1121,9 @@ static int ptw_case_restart_work(void)
                                 1790000310u));
         ASSERT(ptw_publish_and_forget(w, 1790000400u, &rows));
         struct ptw_phase broken;
-        ASSERT(ptw_restart(w, rows, PTW_UNITS, &broken));
+        bool broken_ran = ptw_restart(w, rows, PTW_UNITS, &broken);
         ptw_print("broken_issuer", PTW_UNITS, &broken);
+        ASSERT(broken_ran);
         ASSERT(broken.rebuilt);
         ASSERT(vcs_proof_receiver_issuer_history_incomplete(w->f.rx,
                                                             w->f.pub[PTF_C]));

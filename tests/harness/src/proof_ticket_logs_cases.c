@@ -844,7 +844,7 @@ static int ptl_case_empty_issuer_rebuild(void)
 static int ptl_case_rebuild_missing_ticket(void)
 {
     int failures = 0;
-    TEST_CASE("proof_ticket: signed checkpoint with missing ticket refuses rebuild") {
+    TEST_CASE("proof_ticket: checkpoint missing its ticket keeps live state, isolates on restart") {
         ASSERT(ptl_fresh());
         uint8_t ticket[VCS_PROOF_TICKET_WIRE_BYTES];
         ASSERT(ptf_emit(&g_l, PTF_A, &g_l.base, ptf_pass(), ticket, NULL));
@@ -861,11 +861,28 @@ static int ptl_case_rebuild_missing_ticket(void)
         ASSERT(store != NULL);
         ASSERT(vcs_proof_ticket_store_put(store, cp, sizeof(cp), root));
         size_t tickets = 0, cps = 0, skipped = 0;
-        ASSERT(!ptl_rebuild(g_l.rx, store, 1, &tickets, &cps,
-                                           &skipped));
+        /* The live receiver verified A itself: the store losing A's ticket
+         * neither drops that ticket nor its coverage. */
+        ASSERT(ptl_rebuild(g_l.rx, store, 1, &tickets, &cps, &skipped));
+        ASSERT_EQ(tickets, (size_t)0);
+        ASSERT_EQ(cps, (size_t)0);
         ASSERT_EQ(vcs_proof_receiver_issuer_leaves(g_l.rx, g_l.pub[PTF_A]),
                   (uint64_t)1);
         ASSERT_EQ(vcs_proof_receiver_ticket_count(g_l.rx), (size_t)1);
+        ASSERT(!vcs_proof_receiver_issuer_history_incomplete(g_l.rx,
+                                                             g_l.pub[PTF_A]));
+        /* A restart has nothing verified to keep: A is isolated. */
+        struct vcs_proof_receiver *fresh = vcs_proof_receiver_new();
+        ASSERT(fresh != NULL);
+        bool rebuilt = ptl_rebuild(fresh, store, 1, &tickets, &cps, &skipped);
+        bool isolated = vcs_proof_receiver_issuer_history_incomplete(
+            fresh, g_l.pub[PTF_A]);
+        uint64_t leaves = vcs_proof_receiver_issuer_leaves(fresh,
+                                                           g_l.pub[PTF_A]);
+        vcs_proof_receiver_free(fresh);
+        ASSERT(rebuilt);
+        ASSERT(isolated);
+        ASSERT_EQ(leaves, (uint64_t)0);
         vcs_package_store_close(store);
         test_rm_rf(dir);
     } TEST_END
@@ -1019,7 +1036,7 @@ static int ptl_case_staged_ticket(void)
 static int ptl_case_deleted_history_resume(void)
 {
     int failures = 0;
-    TEST_CASE("proof_ticket: deleted checkpoint refuses; restart and restore") {
+    TEST_CASE("proof_ticket: deleted checkpoint isolates its issuer; restore replays it") {
         ASSERT(ptl_fresh());
         uint8_t first[VCS_PROOF_TICKET_WIRE_BYTES];
         uint8_t second[VCS_PROOF_TICKET_WIRE_BYTES];
@@ -1038,9 +1055,17 @@ static int ptl_case_deleted_history_resume(void)
         ASSERT(vcs_proof_ticket_store_put(store, second, sizeof(second), root));
         ASSERT(vcs_proof_ticket_store_put(store, cp2, sizeof(cp2), root));
         size_t tickets = 0, cps = 0, skipped = 0;
-        ASSERT(!ptl_rebuild(g_l.rx, store, 3, &tickets, &cps,
-                                           &skipped));
-        ASSERT_EQ(vcs_proof_receiver_ticket_count(g_l.rx), (size_t)0);
+        ASSERT(ptl_rebuild(g_l.rx, store, 3, &tickets, &cps, &skipped));
+        ASSERT_EQ(tickets, (size_t)2);
+        ASSERT_EQ(cps, (size_t)0);
+        ASSERT_EQ(vcs_proof_receiver_ticket_count(g_l.rx), (size_t)2);
+        ASSERT(vcs_proof_receiver_issuer_history_incomplete(g_l.rx,
+                                                            g_l.pub[PTF_A]));
+        ASSERT_EQ(vcs_proof_receiver_issuer_leaves(g_l.rx, g_l.pub[PTF_A]),
+                  (uint64_t)0);
+        ASSERT_EQ(vcs_proof_receiver_issuer_checkpoints(g_l.rx,
+                                                        g_l.pub[PTF_A]),
+                  (size_t)0);
         vcs_package_store_close(store);
         store = vcs_package_store_open(dir, UINT64_C(8) * 1024 * 1024);
         ASSERT(store != NULL);
@@ -1085,13 +1110,24 @@ static int ptl_case_late_replay_failure(void)
         ASSERT(vcs_proof_ticket_store_put(store, cp1, sizeof(cp1), root));
         ASSERT(vcs_proof_ticket_store_put(store, cp2, sizeof(cp2), root));
         size_t tickets = 0, cps = 0, skipped = 0;
-        ASSERT(!ptl_rebuild(g_l.rx, store, 3, &tickets, &cps,
-                                           &skipped));
-        ASSERT_EQ(tickets, (size_t)0);
+        /* cp1 replays, cp2 cannot: A is isolated whole, keeping neither. */
+        ASSERT(ptl_rebuild(g_l.rx, store, 3, &tickets, &cps, &skipped));
+        ASSERT_EQ(tickets, (size_t)1);
         ASSERT_EQ(cps, (size_t)0);
-        ASSERT_EQ(vcs_proof_receiver_ticket_count(g_l.rx), (size_t)0);
+        ASSERT_EQ(vcs_proof_receiver_ticket_count(g_l.rx), (size_t)1);
         ASSERT_EQ(vcs_proof_receiver_issuer_leaves(g_l.rx, g_l.pub[PTF_A]),
                   (uint64_t)0);
+        ASSERT_EQ(vcs_proof_receiver_issuer_checkpoints(g_l.rx,
+                                                        g_l.pub[PTF_A]),
+                  (size_t)0);
+        ASSERT(vcs_proof_receiver_issuer_history_incomplete(g_l.rx,
+                                                            g_l.pub[PTF_A]));
+        uint8_t first_root[32];
+        ASSERT(vcs_proof_ticket_observation_root(first, sizeof(first),
+                                                 first_root));
+        const struct pr_entry *partial = pr_entry_find(g_l.rx, first_root);
+        ASSERT(partial != NULL);
+        ASSERT(!partial->covered);
         vcs_package_store_close(store);
         store = vcs_package_store_open(dir, UINT64_C(8) * 1024 * 1024);
         ASSERT(store != NULL);
@@ -2231,7 +2267,7 @@ static int ptl_case_rebuild_boundary(void)
 static int ptl_case_missing_third_fork_checkpoint(void)
 {
     int failures = 0;
-    TEST_CASE("proof_ticket: absent third signed branch refuses rebuild") {
+    TEST_CASE("proof_ticket: absent third signed branch isolates a forked issuer") {
         ASSERT(ptl_fresh());
         uint8_t original[VCS_PROOF_TICKET_WIRE_BYTES];
         uint8_t forked[VCS_PROOF_TICKET_WIRE_BYTES];
@@ -2258,9 +2294,14 @@ static int ptl_case_missing_third_fork_checkpoint(void)
         ASSERT(vcs_proof_ticket_store_put(store, forked, sizeof(forked), root));
         ASSERT(vcs_proof_ticket_store_put(store, cp, sizeof(cp), root));
         size_t tickets = 0, cps = 0, skipped = 0;
-        ASSERT(!ptl_rebuild(g_l.rx, store, 3, &tickets, &cps,
-                                           &skipped));
-        ASSERT_EQ(vcs_proof_receiver_ticket_count(g_l.rx), (size_t)0);
+        ASSERT(ptl_rebuild(g_l.rx, store, 3, &tickets, &cps, &skipped));
+        ASSERT_EQ(cps, (size_t)0);
+        ASSERT_EQ(vcs_proof_receiver_ticket_count(g_l.rx), (size_t)2);
+        ASSERT(vcs_proof_receiver_issuer_equivocating(g_l.rx, g_l.pub[PTF_A]));
+        ASSERT(vcs_proof_receiver_issuer_history_incomplete(g_l.rx,
+                                                            g_l.pub[PTF_A]));
+        ASSERT_EQ(vcs_proof_receiver_issuer_leaves(g_l.rx, g_l.pub[PTF_A]),
+                  (uint64_t)0);
         vcs_package_store_close(store);
         test_rm_rf(dir);
     } TEST_END

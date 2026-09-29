@@ -320,8 +320,18 @@ bool vcs_component_proof_key_load(struct vcs_package_store *store,
                                   const uint8_t preimage_root[32],
                                   struct vcs_component_proof_key_v1 *out);
 /* Rebuild from ticket and checkpoint blobs in `store`, retaining every ticket
- * and replaying signed checkpoints in leaf-count and ancestry order. Missing
- * history refuses. The caller's receiver remains intact on failure and output
+ * and replaying each issuer's signed checkpoints in leaf-count and ancestry
+ * order. Issuers are replayed independently: one whose stored history is
+ * incomplete (a covered ticket, a checkpoint ancestor or a complete ticket
+ * branch missing, or invalid ancestry) is isolated. None of its tickets is
+ * eligible (vcs_proof_receiver_issuer_history_incomplete), two of its listed
+ * checkpoints that contradict each other still mark it equivocating, and
+ * every other issuer is rebuilt and published. When the caller's receiver
+ * already verified that issuer (and it is not an anchor), its verified
+ * state is kept instead of forgotten. *checkpoints counts replayed
+ * checkpoints of kept issuers. An unreadable listed blob, an incomplete
+ * catalog scan or exhausted memory still refuses the whole rebuild. The
+ * caller's receiver remains intact on failure and output
  * counts are zero, with one exception that only adds distrust: when a complete
  * scan proved that an issuer the receiver already holds signed a fork, the
  * receiver marks that issuer equivocating even though the rebuilt view is

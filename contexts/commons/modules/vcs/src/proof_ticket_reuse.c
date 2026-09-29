@@ -87,14 +87,17 @@ static const char *ptr_authority(const struct ptr_local *l,
     return ptr_freshness(p, t->created_unix);
 }
 
-/* Log facts: the issuer is not equivocating and a verified checkpoint
- * covers this exact observation. The caller checks the ticket's own
- * signature separately before this coverage check. */
+/* Log facts: the issuer is not equivocating, its stored history replayed
+ * (a rebuild did not isolate it), and a verified checkpoint covers this
+ * exact observation. The caller checks the ticket's own signature
+ * separately before this coverage check. */
 static const char *ptr_coverage(const struct ptr_local *l,
                                 const struct pr_entry *e)
 {
     const struct pr_issuer *is = pr_issuer_find(l->r, e->producer);
     if (is && is->equivocating) return VCS_PROOF_TICKET_EQUIVOCATION;
+    if (is && is->history_incomplete)
+        return VCS_PROOF_TICKET_HISTORY_INCOMPLETE;
     if (!e->covered) return VCS_PROOF_TICKET_NOT_CHECKPOINTED;
     return NULL;
 }
@@ -233,24 +236,79 @@ static void ptr_pass(const struct ptr_local *l,
     ptr_set(out, VCS_PROOF_REUSE_HIT_PASS, VCS_PROOF_REUSE_WHY_HIT);
 }
 
+/* Verdicts signed by isolated issuers that nothing else disqualified. */
+struct ptr_isolated {
+    bool pass;
+    bool fail;
+};
+
+static bool ptr_only_isolated(const struct vcs_proof_ticket_class *c)
+{
+    return !c->eligible && c->reason &&
+           strcmp(c->reason, VCS_PROOF_TICKET_HISTORY_INCOMPLETE) == 0;
+}
+
+static struct ptr_isolated ptr_isolated_votes(
+    const struct vcs_proof_ticket_class *classes, size_t count)
+{
+    struct ptr_isolated got = {false, false};
+    for (size_t i = 0; i < count; i++) {
+        if (!ptr_only_isolated(&classes[i])) continue;
+        if (classes[i].verdict == VCS_PROOF_VERDICT_PASS) got.pass = true;
+        if (classes[i].verdict == VCS_PROOF_VERDICT_FAIL) got.fail = true;
+    }
+    return got;
+}
+
+/* The eligible verdict `pass` would be reused, but an isolated issuer
+ * signed the opposite one. Its history may be incomplete only because
+ * compaction dropped it, so the dissent refuses instead of vanishing. */
+static void ptr_dissent(const struct vcs_proof_ticket_class *classes,
+                        size_t count, bool pass,
+                        struct vcs_proof_reuse_decision *out)
+{
+    ptr_set(out, VCS_PROOF_REUSE_REFUSE,
+            VCS_PROOF_REUSE_WHY_UNVERIFIED_DISSENT);
+    ptr_use_verdict(classes, count, pass, !pass, out);
+    enum vcs_proof_verdict against =
+        pass ? VCS_PROOF_VERDICT_FAIL : VCS_PROOF_VERDICT_PASS;
+    for (size_t i = 0; i < count; i++)
+        if (ptr_only_isolated(&classes[i]) && classes[i].verdict == against)
+            ptr_use(out, &classes[i]);
+}
+
+/* No reuse. Observations excluded only by isolation are named: absence of
+ * proven history contradicts nothing, so the key runs fresh. */
+static const char *ptr_miss_why(const struct vcs_proof_reuse_decision *out,
+                                size_t count, struct ptr_isolated iso)
+{
+    if (count == 0) return VCS_PROOF_REUSE_WHY_NONE;
+    if (out->eligible_pass) return VCS_PROOF_REUSE_WHY_QUORUM;
+    if (iso.pass || iso.fail) return VCS_PROOF_REUSE_WHY_HISTORY_INCOMPLETE;
+    return VCS_PROOF_REUSE_WHY_INELIGIBLE;
+}
+
 static void ptr_conclude(const struct ptr_local *l,
                          const struct vcs_proof_ticket_class *classes,
                          size_t count, struct vcs_proof_reuse_decision *out)
 {
     ptr_count(classes, count, out);
+    struct ptr_isolated iso = ptr_isolated_votes(classes, count);
     if (out->eligible_pass && out->eligible_fail) {
         ptr_set(out, VCS_PROOF_REUSE_REFUSE, VCS_PROOF_OBSERVATION_CONFLICT);
         ptr_use_verdict(classes, count, true, true, out);
+    } else if (out->eligible_fail && iso.pass) {
+        ptr_dissent(classes, count, false, out);
     } else if (out->eligible_fail) {
         ptr_set(out, VCS_PROOF_REUSE_HIT_FAIL, VCS_PROOF_REUSE_WHY_KNOWN_FAIL);
         ptr_use_verdict(classes, count, false, true, out);
+    } else if (out->distinct_pass_signers >= l->req->policy->quorum &&
+               iso.fail) {
+        ptr_dissent(classes, count, true, out);
     } else if (out->distinct_pass_signers >= l->req->policy->quorum) {
         ptr_pass(l, classes, count, out);
     } else {
-        ptr_set(out, VCS_PROOF_REUSE_MISS,
-                count == 0 ? VCS_PROOF_REUSE_WHY_NONE :
-                out->eligible_pass ? VCS_PROOF_REUSE_WHY_QUORUM :
-                                     VCS_PROOF_REUSE_WHY_INELIGIBLE);
+        ptr_set(out, VCS_PROOF_REUSE_MISS, ptr_miss_why(out, count, iso));
     }
 }
 
