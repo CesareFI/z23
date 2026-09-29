@@ -149,16 +149,46 @@ int main(int argc, char **argv)
 
 #define _POSIX_C_SOURCE 200809L
 #include <errno.h>
+#include <signal.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
 
+#if defined(__linux__)
+#include <sys/prctl.h>
+#endif
+
 int main(int argc, char **argv)
 {
+    int die_with_parent = 0;
+    int first = 1;
     if (argc < 2) {
         fprintf(stderr,
-                "process-group-exec: usage: process-group-exec COMMAND [ARG ...]\n");
+                "process-group-exec: usage: process-group-exec "
+                "[--die-with-parent] COMMAND [ARG ...]\n");
         return 2;
+    }
+    /* Exactly one optional leading flag; anything else that starts with
+     * '-' is a usage error rather than a silently executed filename, so
+     * a misspelled flag fails closed instead of launching the wrong
+     * thing. */
+    if (argv[1][0] == '-') {
+        if (strcmp(argv[1], "--die-with-parent") == 0) {
+            die_with_parent = 1;
+            first = 2;
+        } else {
+            fprintf(stderr,
+                    "process-group-exec: unknown flag %s "
+                    "(usage: process-group-exec [--die-with-parent] "
+                    "COMMAND [ARG ...])\n",
+                    argv[1]);
+            return 2;
+        }
+        if (argc < 3) {
+            fprintf(stderr,
+                    "process-group-exec: --die-with-parent needs COMMAND\n");
+            return 2;
+        }
     }
 
     if (setsid() < 0 && setpgid(0, 0) < 0) {
@@ -167,8 +197,41 @@ int main(int argc, char **argv)
         return 126;
     }
 
-    execvp(argv[1], &argv[1]);
-    fprintf(stderr, "process-group-exec: cannot execute %s: %s\n", argv[1],
+    if (die_with_parent) {
+#if defined(__linux__) && defined(PR_SET_PDEATHSIG)
+        /* The kernel reaps this whole tree when the launching shell dies,
+         * so a crashed driver cannot strand a fixture daemon on a shared
+         * port. Deliberately NOT the default: the remote journey legs
+         * rely on plain setsid survival between the driver's ssh calls.
+         * Applied before exec and after setsid; prctl survives both. */
+        if (prctl(PR_SET_PDEATHSIG, SIGTERM) != 0) {
+            fprintf(stderr,
+                    "process-group-exec: cannot request parent-death "
+                    "signal: %s\n",
+                    strerror(errno));
+            return 126;
+        }
+        /* Race closure: if the parent died between fork and prctl, the
+         * signal was never armed for that death. Check once now. */
+        if (getppid() == 1) {
+            fprintf(stderr,
+                    "process-group-exec: parent already exited before "
+                    "parent-death signal was armed\n");
+            return 125;
+        }
+#else
+        /* Portable honesty: no kernel parent-death supervision here. The
+         * caller's own cleanup and the port diagnostic carry the orphan
+         * case on this platform. */
+        fprintf(stderr,
+                "process-group-exec: --die-with-parent is unavailable on "
+                "this platform; continuing without parent-death "
+                "supervision\n");
+#endif
+    }
+
+    execvp(argv[first], &argv[first]);
+    fprintf(stderr, "process-group-exec: cannot execute %s: %s\n", argv[first],
             strerror(errno));
     return 127;
 }

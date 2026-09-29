@@ -646,6 +646,7 @@ ZCL_TEST_GROUP(time_authority)
 ZCL_TEST_GROUP(rng)
 ZCL_TEST_GROUP(os_proc)
 ZCL_TEST_GROUP(os_sandbox)
+ZCL_TEST_GROUP(process_group_exec)
 ZCL_TEST_GROUP(sandbox_process_budget)
 ZCL_TEST_GROUP(os_sandbox_hotswap_interaction)
 /* terminal worker cage: attacks against os_sandbox_terminal_worker_profile */

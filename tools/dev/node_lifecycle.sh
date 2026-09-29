@@ -123,8 +123,13 @@ dht_start_token() {
 
 dht_process_group_exec() {
     if [ -x "$PROCESS_GROUP_EXEC" ]; then
-        exec "$PROCESS_GROUP_EXEC" "$@"
+        # Local fixtures die with this driver: a crashed or killed
+        # harness must not strand a regtest daemon on the shared
+        # test-safe ports. Remote legs keep plain setsid survival — the
+        # driver supervises those across separate ssh calls by design.
+        exec "$PROCESS_GROUP_EXEC" --die-with-parent "$@"
     elif command -v setsid >/dev/null 2>&1; then
+        printf '%s\n' "node_lifecycle: compiled launcher absent; fixture parent-death supervision unavailable (setsid fallback)" >&2
         exec setsid "$@"
     else
         dht_die "no process-group launcher; run make process-group-exec"
