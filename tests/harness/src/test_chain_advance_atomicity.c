@@ -22,31 +22,25 @@
  * durable block index; reconnecting H+1 then sees its own coinbase
  * and can trip BIP30 forever.
  *
- * ── Scope deviation note ──────────────────────────────────
+ * ── Scope note ──────────────────────────────────────────────────────
  *
- * Wiring a full chain_advance fixture (real ms, coins_view_cache,
- * block_index, validated block payload, sapling tree, csr_instance,
- * node_db, coins.db, block_tree_db) inside a unit test is multi-day
- * setup. Instead, this test exercises the same ordering invariant
- * via a representative SQLite-only fixture:
+ * A full chain_advance fixture (real ms, coins_view_cache, block_index,
+ * sapling tree, csr_instance, node_db, coins.db, block_tree_db) is too heavy
+ * for a unit test, so this uses a representative SQLite-only fixture:
  *
  *   - Build a node.db with `blocks` + `node_state` tables seeded at
  *     genesis (mirrors test_kill9_recovery's scaffolding).
- *   - Build a coins.db (separate file, separate handle — matches the
- * production layout).
+ *   - Build a coins.db (separate file and handle, as in production).
  *   - In the child: BEGIN IMMEDIATE on coins.db, BEGIN on node.db,
  *     INSERT block_index N+1 / utxos / coins_best_block at N+1,
- *     fire the armed crash stage, then write LevelDB row (approximated
+ *     fire the armed crash stage, then write the LevelDB row (approximated
  *     by a row in node.db's `blocks` table) → COMMIT node.db → COMMIT
  *     coins.db.
- *   - Parent kills, reopens, asserts coins.db height ≤ node.db
+ *   - Parent kills, reopens, asserts coins.db height <= node.db
  *     height. coins.db ahead of node.db is the forbidden (d) state.
  *
- * The wire-level guarantee being tested is the *direction* of the
- * COMMIT ordering, which is what step 7→8 of chain_advance encodes.
- * A fully-fixtured test that exercises the real chain_advance entry
- * point with crash stages armed is tracked separately; this gates
- * the regression while that fixture lands.
+ * The guarantee tested is the *direction* of the COMMIT ordering (step 7→8
+ * of chain_advance).
  *
  * Gating: ZCL_STRESS_TESTS=1 — same convention as test_kill9_recovery.
  * Default `build/bin/test_zcl` reports PASS-skipped so CI runs are predictable. */

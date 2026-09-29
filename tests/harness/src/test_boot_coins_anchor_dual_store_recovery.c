@@ -1,18 +1,17 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * The §3 dual-store tear shape (node.db `utxos` has rows but the legacy
+ * The dual-store tear shape (node.db `utxos` has rows but the legacy
  * `coins_best_block` anchor is UNSET while coins_kv committed every block
- * atomically), under the wave-2 derived coins-best gate:
+ * atomically), under the derived coins-best gate:
  *
- * GREEN (canonical datadir, coins_applied_height present): the boot gate
- * derives the coins-best fact from coins_kv's own co-committed state and
- * PASSES the open directly — the legacy-anchor tear is unrepresentable as
- * a boot failure, with ZERO mutations (no guess-repair of the cache). The
- * L1 heal (utxo_recovery_heal_torn_legacy_coins_anchor) is unreachable by
- * construction on this shape: boot gates it on !derived while its own
- * proven-authority predicate requires coins_applied_height (= derived).
+ * Canonical datadir (coins_applied_height present): the boot gate derives the
+ * coins-best fact from coins_kv's co-committed state and passes the open
+ * directly, with zero mutations. The torn-anchor heal
+ * (utxo_recovery_heal_torn_legacy_coins_anchor) is unreachable on this shape:
+ * boot gates it on !derived while its own predicate requires
+ * coins_applied_height.
  *
- * RED controls (legacy datadirs) prove no safety gate weakened:
+ * Legacy-datadir controls prove no safety gate weakened:
  *   (RED-1) empty coins_kv -> open FAILS, heal REFUSES -> FATAL stands.
  *   (RED-2) coins_kv rows but migration_complete UNSET -> REFUSES -> FATAL.
  *
@@ -143,17 +142,13 @@ static bool bdsr_anchor_absent(struct node_db *ndb)
     return !found || len == 0;
 }
 
-/* CASE 1 — GREEN: torn-legacy shape + proven-healthy coins_kv.
+/* CASE 1 — canonical: torn-legacy shape + proven-healthy coins_kv.
  *
- * Wave 2 (derived coins-best): with coins_applied_height present in
- * progress.kv, the boot gate's verdict is "derivation resolvable" — the
- * open PASSES DIRECTLY despite the torn legacy anchor, with ZERO mutations
- * (the cache stays torn; it is a diagnostic now, not a decision input).
- * The L1 torn-anchor heal is no longer needed here — and is in fact
- * unreachable by construction on this shape: boot gates the heal on
- * !derived, while the heal's own proven-authority predicate requires
- * coins_applied_height present (= derived). It survives only as the
- * legacy-datadir rung (RED cases below) until the wave-3 deletion. */
+ * With coins_applied_height present in progress.kv the open passes directly
+ * despite the torn legacy anchor, with zero mutations (the cache is a
+ * diagnostic, not a decision input). The L1 torn-anchor heal is unreachable
+ * here (boot gates it on !derived; its predicate requires
+ * coins_applied_height) and survives only as the legacy-datadir rung. */
 static int bdsr_green(void)
 {
     int failures = 0;

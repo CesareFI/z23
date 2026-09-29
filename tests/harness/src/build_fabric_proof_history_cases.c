@@ -434,8 +434,7 @@ static int bfh_case_recover_moved_catalog(void)
         ASSERT(bfh_stage_ticket_only(&h));
         /* A fixed budget is any budget short of the catalog: replay itself
          * transfers the staged checkpoint, so the catalog as sized before
-         * the call is one row short and the head can never publish. The
-         * runtime once passed 65536 rows whatever the catalog held. */
+         * the call is one row short and the head can never publish. */
         size_t rows = 0;
         uint64_t generation = 0;
         ASSERT_EQ(vcs_package_store_catalog_rows(h.store, &rows, &generation),

@@ -7,20 +7,15 @@
  * actually invokes it — not the underlying helpers directly (they are
  * `static` in engine/entry/main.c).
  *
- * LIVE INCIDENT this closes: `zclassic23 -rpcport=39072 dumpstate ...`
- * returned "Cannot connect" then "Error: Unauthorized" depending on node
- * state; without -datadir the CLI could not find the right auth cookie, and
- * the two failures were indistinguishable, so an orchestrator monitor could
- * not tell "nothing is running" from "wrong instance" from "node busy".
+ * Incident shape: without -datadir the CLI could not find the right auth
+ * cookie, and "Cannot connect" vs "Error: Unauthorized" were
+ * indistinguishable ("nothing running" vs "wrong instance" vs "node busy").
  *
- * Isolation: this test starts a REAL in-process RPC listener
- * (rpc_http_start, an empty rpc_table) so the auto-discovery and auth
- * taxonomy are proven against a real cookie/port pair, never a live
- * production datadir. `ZCL_CLI_TEST_NO_SERVICE_LOOKUP=1` is set on every
- * spawned child so the CLI's systemctl-based default-service lookup
- * (cli_service_exec_arg, engine/entry/main.c) never resolves to and reads this
- * project's own real `zclassic23.service` (confirmed active on the
- * project's dev boxes) — CLAUDE.md "NEVER touch any live datadir".
+ * Isolation: a REAL in-process RPC listener (rpc_http_start, empty
+ * rpc_table) gives a real cookie/port pair, never a live datadir.
+ * `ZCL_CLI_TEST_NO_SERVICE_LOOKUP=1` is set on every child so the CLI's
+ * systemctl default-service lookup (cli_service_exec_arg) never reads this
+ * project's real `zclassic23.service`.
  *
  * Skips (does not fail) if build/bin/zclassic23 is missing or stale vs the
  * source files that define this behavior — matching the guard pattern in
@@ -305,14 +300,9 @@ static int car_test_autodiscover_picks_matching_fixture(const char *home)
     return failures;
 }
 
-/* D4 (wf/cli-harness-honesty): the live incident this closes — TWO or more
- * sibling datadirs recording the SAME rpcport (stale fixtures from
- * separate runs commonly reuse a fixed test port; `.zclassic-c23-
- * fullbuild-test` and three OTHER sibling datadirs on the reporting host
- * all recorded port 39072 from earlier, no-longer-live runs). Picking
- * "first match in sorted order" answered from a datadir that was NOT the
- * instance actually listening on the requested port. Auto-discovery must
- * refuse outright on ambiguity, never guess. */
+/* D4: TWO or more sibling datadirs recording the SAME rpcport (stale fixtures
+ * commonly reuse a fixed test port) must make auto-discovery refuse outright
+ * on ambiguity, never pick "first match in sorted order". */
 static int car_test_autodiscover_ambiguous_port_refuses(const char *home)
 {
     int failures = 0;

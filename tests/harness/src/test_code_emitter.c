@@ -3,11 +3,9 @@
  * code.emitter contract — resolving text the node EMITTED back to the code
  * that formatted it.
  *
- * Every assertion here reads the SERIALIZED reply (json_write into a
- * budget-sized buffer), not the in-memory struct. A field present in
- * reply.data and dropped by the writer is a defect this project has shipped
- * before; asserting on the bytes the caller actually receives is the only way
- * to catch it.
+ * Every assertion reads the SERIALIZED reply (json_write into a budget-sized
+ * buffer), not the in-memory struct: a field dropped by the writer must be
+ * caught.
  *
  * Coverage:
  *   1. glob rule            — the `blocker-id:` marker matcher, direct.
@@ -189,12 +187,10 @@ static int test_code_emitter_honest_miss(void)
     TEST("code_emitter: unresolvable text reports which joins missed, what the "
          "scan covered, and a next step — never a bare empty result") {
         static char out[ZCL_COMMAND_RESULT_BUDGET * 2];
-        /* Assembled at RUNTIME from chunks shorter than the format floors. A
-         * literal spelling of this sentence in this very file would land the
-         * scan on this test — the tree it scans includes tests/harness/include/test/. The real
-         * example is a libsqlite3 message ("attempt to write a readonly
-         * database"), which is unresolvable because vendor/ is outside the
-         * scan; here it is stitched so no in-tree literal can match it. */
+        /* Assembled at RUNTIME from short chunks: a literal spelling in this
+         * file would land the scan on this test (the scanned tree includes
+         * tests/harness/include/test/). The real example is a libsqlite3
+         * message, unresolvable because vendor/ is outside the scan. */
         char absent[96];
         (void)snprintf(absent, sizeof(absent), "%s%s%s%s",
                        "attempt ", "to write ", "a readonly", " database");

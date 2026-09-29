@@ -3,29 +3,19 @@
  * Pins the BIP30 same-height self-write tolerance in
  * core/modules/validation/src/connect_block.c.
  *
- * Background (see BOOT_INVARIANTS.md "at-tip kill-9 ordering" and the
- * MEMORY note "THE WEDGE: BIP30 self-write"): a kill-9 mid-connect can
- * leave the UTXO set one block ahead of the tip cursor, so when
- * connect_block re-applies the SAME block its own outputs are already
- * present and unspent. That is NOT a BIP30 violation — a genuine BIP30
- * collision is a DIFFERENT block overwriting another block's still-unspent
- * coinbase, which post-BIP34 can only carry a coin from a DIFFERENT
- * (earlier) height. The fix tolerates `existing.height == pindex->nHeight`
- * (overwrite, continue) and rejects everything else as bad-txns-BIP30.
+ * A kill-9 mid-connect can leave the UTXO set one block ahead of the tip
+ * cursor, so re-applying the same block finds its own outputs present and
+ * unspent (see BOOT_INVARIANTS.md "at-tip kill-9 ordering"). That is not a
+ * BIP30 violation; a genuine collision carries a coin from a different
+ * (earlier) height. `existing.height == pindex->nHeight` is tolerated
+ * (overwrite, continue) for every vtx, and everything else is rejected as
+ * bad-txns-BIP30:
+ *   1. a non-coinbase output already unspent at the block's own height
+ *      connects (overwrites);
+ *   2. a coin present at a different (earlier) height still fails BIP30.
  *
- * The original tolerance covered only vtx[0] (coinbase). This session
- * extended it to EVERY vtx, because a partial apply leaves the block's
- * NON-coinbase outputs in the set too. These tests pin BOTH:
- *   1. a NON-coinbase output already unspent at the block's own height
- *      connects (overwrites) rather than failing BIP30;
- *   2. a coin present at a DIFFERENT (earlier) height still fails BIP30.
- *
- * To exercise the BIP30 loop in isolation we use a checkpoint-covered
- * height: that sets expensive_checks=false (skips PoW + parallel script
- * verification) WITHOUT setting skip_bip30 (which is gated only on the
- * deferred-proof global). So the self-write branch is genuinely reached
- * — not short-circuited.
- */
+ * A checkpoint-covered height sets expensive_checks=false without setting
+ * skip_bip30, so the self-write branch is reached. */
 
 #include "test/test_core.h"
 

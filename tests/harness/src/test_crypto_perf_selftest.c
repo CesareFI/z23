@@ -1,24 +1,19 @@
 /* SPDX-License-Identifier: Apache-2.0
  * Copyright 2026 Rhett Creighton
  *
- * crypto_perf_selftest — the TEETH for the crypto-vs-Rust benchmark
- * (`build/bin/zclassic23 -bench-crypto-vs-rust`, engine/entry/main.c) and its gate
- * (tools/scripts/check_crypto_perf.sh / `make check-crypto-perf`).
+ * crypto_perf_selftest — the teeth for the crypto-vs-Rust benchmark
+ * (`build/bin/zclassic23 -bench-crypto-vs-rust`, engine/entry/main.c) and its
+ * gate (tools/scripts/check_crypto_perf.sh / `make check-crypto-perf`).
  *
- * The gate lets a primitive's baseline "ratchet down" as we optimise. A
- * benchmark of a HOLLOW primitive — a hash that no-ops, a verify that always
- * returns true, a multiply that returns an operand — would get fast for free
- * and let the gate ratchet a broken primitive. This test forbids that: it
- * exercises the EXACT primitives `-bench-crypto-vs-rust` times, on the same
- * kind of fixtures, and pins correctness in BOTH directions so a hollow-fast
- * regression fails HERE (in the fast test pool) before the gate ever records a
- * number.
+ * The gate lets a primitive's baseline ratchet down as we optimise, so a
+ * hollow primitive (no-op hash, always-true verify) must not pass. This test
+ * exercises the exact primitives the bench times, on the same fixtures, and
+ * pins correctness in both directions.
  *
- * Consensus verify LOGIC is frozen — this is measurement/teeth only, calling
- * the production predicates. Hermetic legs (equihash, BLS fp_mul + pairing,
- * secp256k1 ECDSA, ed25519, SHA256/SHA3-256/BLAKE2b) always run. The
- * params-heavy Groth16 leg self-skips unless ZCL_PARAMS_TESTS=1 (same rationale
- * as verify_bench_selftest).
+ * Consensus verify logic is frozen; this calls the production predicates.
+ * Hermetic legs (equihash, BLS fp_mul + pairing, secp256k1 ECDSA, ed25519,
+ * SHA256/SHA3-256/BLAKE2b) always run. The Groth16 leg self-skips unless
+ * ZCL_PARAMS_TESTS=1.
  */
 
 #include "test/test_core.h"
@@ -205,14 +200,9 @@ int test_crypto_perf_selftest(void)
         CP_CHECK("SHA256 avalanche + not-a-copy",
                  memcmp(a, b, 32) != 0 && memcmp(a, msg, 32) != 0);
 
-        /* The `sha256` baseline row is pinned at the SHA-NI number and gated
-         * `beat`. That row is only meaningful if the bench actually exercises
-         * the hardware transform on a host that has it — measuring the
-         * portable fallback would trip the ratchet with a misleading message,
-         * and (worse) a silently-portable build would look like a perf
-         * regression rather than the build defect it is. Byte-for-byte parity
-         * between the two transforms is proven by the sha256_isa_parity group;
-         * this is only the "are we measuring what we pinned" check. */
+        /* The `sha256` baseline row is pinned at the SHA-NI number, so the
+         * bench must exercise the hardware transform on a host that has it.
+         * Parity between transforms is proven by sha256_isa_parity. */
         CP_CHECK("SHA256 bench runs the transform the node ships",
                  !cp_host_has_sha_ni() || sha256_shani_available());
 

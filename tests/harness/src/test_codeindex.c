@@ -268,9 +268,8 @@ static const char *SATURATION_C =
     "int saturation_15(void) { return 0; }\n"
     "int saturation_16(void) { return 0; }\n";
 
-/* ── call-graph fixture (WF4 lane 4A) ──────────────────────────────────
- * A self-contained module with two callers of one static helper and a call to
- * an external leaf, so callers/callees/enclosing are all exercised. */
+/* Call-graph fixture: two callers of one static helper and a call to an
+ * external leaf. */
 #define CG_FIX "test-tmp/ci_cg"
 
 static const char *CG_C =
@@ -651,17 +650,9 @@ static bool concurrent_open_32(const char *required_symbol)
     return ok;
 }
 
-/* Enumerate the physically owned module directories that actually exist.
- *
- * This used to parse the Makefile's LIB_MODULES. That is no longer a list:
- * engine/composition/lib_module_order.def declares the modules and the Makefile derives
- * LIB_MODULES from it, so scraping the Makefile would read a $(shell ...) line,
- * and scraping the .def would compare the scanner's array against the very file
- * it is pasted from — a check that cannot fail no matter how wrong either is.
- *
- * The architecture-tree gate independently proves there are no undeclared
- * physical modules; this test proves every declared navigator module resolves
- * to a real owner directory. */
+/* Enumerate the physically owned module directories that exist. The
+ * declared list is engine/composition/lib_module_order.def; this proves every
+ * declared navigator module resolves to a real owner directory. */
 static int disk_lib_modules(char out[64][64])
 {
     size_t declared = 0;
@@ -1285,12 +1276,8 @@ static int test_codeindex_platform_arm(void)
     bool full_rebuild_ok = ci && codeindex_rebuild(ci);
     bool full_root_ok = full_rebuild_ok &&
         codeindex_retrieval_projection_root_sha3(ci, full_root);
-    /* Load-immune regression signal: a one-file edit must rehash strictly
-     * less content than the from-scratch rebuild above (relative bound, so
-     * fixture growth scales both sides). A redo-all regression rehashes the
-     * same bytes as from-scratch and fails the strict inequality; counter
-     * liveness is proven by the from-scratch check, so a small count here
-     * means no rescan happened. Holds on any host load by construction. */
+    /* Load-immune signal: a one-file edit rehashes strictly less content than
+     * the from-scratch rebuild (relative bound); a redo-all fails it. */
     bool incremental_bytes_ok = ci &&
         incremental_exact_bytes < scratch_exact_bytes;
     bool incremental_cpu_ok = ci &&
@@ -1312,10 +1299,8 @@ static int test_codeindex_platform_arm(void)
            (unsigned long long)incremental_budget.effective_us,
            incremental_budget.factor,
            (unsigned long long)incremental_budget.calib_med_us);
-    /* Converted wall assertion: fast on wall under the load-scaled budget,
-     * or provably incremental (bounded reread + bounded CPU) when host IO
-     * pressure stalls the wall clock. Either way the redo-all regression
-     * the old fixed budget stood for is caught by the work gates above. */
+    /* Fast under the load-scaled wall budget, or provably incremental
+     * (bounded reread and CPU) when host IO stalls the wall clock. */
     CI_CHECK("one-file incremental reopen is fast or provably bounded (load-scaled 300 ms wall budget)",
              incremental_wall_ok ||
              (incremental_bytes_ok && incremental_cpu_ok));
@@ -1502,10 +1487,8 @@ static int test_codeindex_platform_arm(void)
     CI_CHECK("post-rename generation reopens and verifies", ci && found);
     CI_CHECK("post-rename crash leaves no staging file", no_staging_files());
 
-    /* A removed directory capability between validation and O_CREAT is
-     * reacquired and revalidated rather than turning into a sporadic cold
-     * open failure. This is the exact ENOENT boundary stressed by the 32-way
-     * case below. */
+    /* A directory capability removed between validation and O_CREAT is
+     * reacquired and revalidated (the ENOENT boundary of the 32-way case). */
     if (ci) { codeindex_close(ci); ci = NULL; }
     used = strlen(source_current);
     snprintf(source_current + used, sizeof(source_current) - used,

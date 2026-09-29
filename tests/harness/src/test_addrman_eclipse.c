@@ -43,16 +43,12 @@
  *     ADDRMAN_MAX_FAILURES) are excluded from GETADDR responses and lose
  *     insertion-collision priority to fresher entries. §6.
  *
- * Determinism: every GetRandBytes/GetRandInt call in addrman.c (nKey
- * generation in addrman_init, the bucket rescan in addrman_good, the probe
- * loop in addrman_select) is routed through platform/rng.h. This file
- * installs a seeded xorshift64 `rng_iface_t` (same technique as
- * tests/harness/src/test_rng.c) for its whole run and restores the real default
- * on every exit path, so a failure reproduces exactly from
- * ADDRMAN_ECLIPSE_SEED below — no wall-clock/entropy dependency. Wall time
- * (platform_time_wall_time_t) is still read as an anchor for "N days ago"
- * timestamps, matching test_addrman_rebalance.c's convention — only
- * OFFSETS from "now" are asserted, never absolute values. */
+ * Determinism: every GetRandBytes/GetRandInt call in addrman.c is routed
+ * through platform/rng.h. This file installs a seeded xorshift64 `rng_iface_t`
+ * (as in test_rng.c) for its whole run and restores the default on every
+ * exit path, so a failure reproduces from ADDRMAN_ECLIPSE_SEED. Wall time is
+ * read only as an anchor for "N days ago" timestamps; only offsets from
+ * "now" are asserted. */
 
 #include "test/test_core.h"
 #include "net/addrman.h"
@@ -170,21 +166,15 @@ int test_addrman_eclipse(void)
         int distinct = 0;
 
         /* 4000 distinct destination addresses, ONE fixed source group.
-         * addr_info_get_new_bucket() is called directly — no addrman_add,
-         * so this is exact: it measures the reachable SET, not whatever an
-         * insertion-order-dependent probe ladder happens to hit.
+         * addr_info_get_new_bucket() is called directly, so this measures the
+         * reachable SET exactly.
          *
-         * bucket_seed = h1 % 64 where h1 = hash256(nKey, OWN_group,
-         * source_group) — for a fixed nKey and fixed source_group, h1 (and
-         * hence bucket_seed) varies ONLY with the destination's OWN /16
-         * group (net_addr_get_group folds in the first two octets, see
-         * core/modules/net/src/netaddr.c). The old generator held the first octet
-         * fixed at 90 and swept the second octet over only 0..15 (16
-         * groups) — far too few to ever approach the 64-bucket bound, so
-         * the assertion below passed regardless of whether the bound was
-         * enforced. Base-80 decomposition of i gives a bijection onto
-         * 50*80=4000 distinct (octet1,octet2) own-group pairs, well above
-         * 64, so the bound is the binding constraint, not group scarcity. */
+         * For fixed nKey and source_group, bucket_seed varies only with the
+         * destination's OWN /16 group (net_addr_get_group folds in the first
+         * two octets, see core/modules/net/src/netaddr.c). Base-80
+         * decomposition of i gives a bijection onto 50*80=4000 distinct
+         * own-group pairs, well above 64, so the bound is the binding
+         * constraint. */
         for (int i = 0; i < 4000; i++) {
             struct net_address dst = ae_addr(
                 (uint8_t)(90 + (i / 80) % 150),
@@ -225,24 +215,14 @@ int test_addrman_eclipse(void)
 
         int added = 0;
         /* Stay under the ~64-bucket family's raw slot capacity
-         * (ADDRMAN_NEW_BUCKETS_PER_SOURCE_GROUP * ADDRMAN_BUCKET_SIZE =
-         * 64*64 = 4096) so the vast majority of inserts land at their
-         * primary (attempt=0) bucket instead of spilling via the
-         * +97*attempt collision ladder — that ladder is a
-         * per-ADDRESS retry, not a way to reach more source-group
-         * buckets, but enough collisions can still push a few
-         * insertions outside the nominal family, hence the 3x slack
-         * below rather than an exact 64.
+         * (ADDRMAN_NEW_BUCKETS_PER_SOURCE_GROUP * ADDRMAN_BUCKET_SIZE = 4096)
+         * so most inserts land at their primary bucket; the +97*attempt
+         * collision ladder can push a few outside the family, hence the 3x
+         * slack below.
          *
-         * Same own-group-diversity requirement as §1: the old generator
-         * held the destination's first octet fixed at 100 and swept the
-         * second octet over only 0..11 (12 groups), so this flood could
-         * never occupy more than ~12 new buckets regardless of the
-         * ADDRMAN_NEW_BUCKETS_PER_SOURCE_GROUP=64 restriction — removing
-         * the restriction would not have made this subtest fail. Base-60
-         * decomposition of i gives a bijection onto 50*60=3000 distinct
-         * destination own-group pairs, well above 64, so the flood
-         * actually probes the family bound. */
+         * Base-60 decomposition of i gives a bijection onto 50*60=3000
+         * distinct destination own-group pairs, well above 64, so the flood
+         * probes the family bound. */
         for (int i = 0; i < 3000; i++) {
             struct net_address dst = ae_addr(
                 (uint8_t)(100 + (i / 60) % 150),

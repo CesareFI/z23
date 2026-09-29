@@ -117,8 +117,8 @@ static int test_plan_no_utxos(void) {
     return failures;
 }
 
-/* Round 7 A4: plan result must land in the boot snapshot so
- * `z23 dumpstate boot` shows WHY chain_restore failed. */
+/* plan result must land in the boot snapshot so `z23 dumpstate boot` shows
+ * WHY chain_restore failed. */
 static int test_plan_records_failed_state_in_boot_snapshot(void) {
     int failures = 0;
     TEST("chain_restore_plan: FAILED case records reason in boot snapshot") {
@@ -141,9 +141,8 @@ static int test_plan_records_failed_state_in_boot_snapshot(void) {
     return failures;
 }
 
-/* H3: assisted snapshot recovery must consume a typed dumpstate proof rather
- * than reconstructing boot success from node.log prose.  The proof is absent
- * until the boot path has completed every verified reseed step. */
+/* Assisted snapshot recovery consumes a typed dumpstate proof, not node.log
+ * prose; the proof is absent until every verified reseed step completed. */
 static int test_assisted_snapshot_proof_defaults_fail_closed(void) {
     int failures = 0;
     TEST("dumpstate boot: assisted snapshot proof defaults fail closed") {
@@ -516,17 +515,12 @@ static int test_integrity_passes_on_clean_chain(void) {
     return failures;
 }
 
-/* Round 5 design: a synthetic anchor (BLOCK_VALID_UNKNOWN, no
- * BLOCK_HAVE_DATA) is a benign placeholder created by chain_restore
- * when coins_best_block is unrecoverable. The integrity gate
- * deliberately skips such entries (no header → no validation walk →
- * nBits=0 is harmless) and treats below-tip holes as diagnostic
- * counters that do not gate `ok`. Operational requirement: nBits
- * clean across BLOCK_HAVE_DATA entries + tip slot populated.
- *
- * If this test asserts r.ok == false, the integrity gate has
- * regressed to its pre-Round-5 behavior and will crash-loop nodes
- * whose chain_restore had to fall back to anchor recovery. */
+/* A synthetic anchor (BLOCK_VALID_UNKNOWN, no BLOCK_HAVE_DATA) is a benign
+ * placeholder created when coins_best_block is unrecoverable. The integrity
+ * gate skips such entries (nBits=0 is harmless) and treats below-tip holes
+ * as diagnostic counters that do not gate `ok`; required: nBits clean across
+ * BLOCK_HAVE_DATA entries + tip slot populated. r.ok == false here would
+ * crash-loop nodes that fell back to anchor recovery. */
 static int test_integrity_anchor_restore_is_benign(void) {
     int failures = 0;
     TEST("chain_integrity: synthetic anchor (no DATA, nBits=0) is benign") {
@@ -551,9 +545,8 @@ static int test_integrity_anchor_restore_is_benign(void) {
         /* Anchor lacks BLOCK_HAVE_DATA → skipped by nBits scan. */
         ASSERT(r.zero_nbits_count == 0);
         ASSERT(r.first_nbits_zero_height == -1);
-        /* A synthetic anchor is not a real validation tip. Even though
-         * below-tip holes are diagnostic-only for real tips, placeholders
-         * must remain fail-closed until backed by block data. */
+        /* A synthetic anchor is not a real validation tip; placeholders stay
+         * fail-closed until backed by block data. */
         ASSERT(r.active_chain_holes == H);
         ASSERT(r.first_hole_height == 0);
         ASSERT(r.tip_height == H);
@@ -607,9 +600,8 @@ static int test_integrity_live_tip_only_chain_is_operational(void) {
         ASSERT(chain_integrity_classify(&holes) ==
                CHAIN_INTEGRITY_RECONCILABLE);
 
-        /* A retained sparse prefix has neither a parent slot nor a pprev on
-         * its first child.  That is missing history, not conflicting
-         * ancestry, and must stay on the reconcilable path. */
+        /* A retained sparse prefix (no parent slot, no pprev on the first
+         * child) is missing history, not conflicting ancestry: reconcilable. */
         ms.chain_active.chain[0] = NULL;
         idx[1]->pprev = NULL;
         struct chain_integrity_result prefix;
@@ -680,11 +672,10 @@ static int test_integrity_detects_isolated_nbits_zero(void) {
 
 /* ── Post-restore repair ──────────────────
  *
- * These exercise the GREEN limbs of the fix:
- *   - chain_restore_rebuild_active_chain fills holes below the tip
- *     via block_map when the pprev chain dead-ends at an anchor,
- *   - chain_restore_backfill_nbits_from_disk reads the header from
- *     the block file and assigns nBits when the pindex carries zero. */
+ *   - chain_restore_rebuild_active_chain fills holes below the tip via
+ *     block_map when the pprev chain dead-ends at an anchor,
+ *   - chain_restore_backfill_nbits_from_disk reads the header from the
+ *     block file and assigns nBits when the pindex carries zero. */
 
 static int test_rebuild_active_chain_fills_holes_from_block_map(void) {
     int failures = 0;
@@ -692,12 +683,10 @@ static int test_rebuild_active_chain_fills_holes_from_block_map(void) {
         struct main_state ms;
         main_state_init(&ms);
 
-        /* Scenario: LDB snapshot populated block_map with entries at
-         * h=0..H (pprev NOT linked — matches the live-node post-scan
-         * shape where heights have been patched but pprev is stale).
-         * Then an anchor-restore installed tip=anchor at h=H with
-         * anchor->pprev=NULL — active_chain_move_window_tip wrote NULL into
-         * slots 0..H-1. rebuild must fill them by height lookup. */
+        /* block_map holds h=0..H (pprev NOT linked) and an anchor-restore
+         * installed tip=anchor at h=H with pprev=NULL, so
+         * active_chain_move_window_tip wrote NULL into slots 0..H-1. rebuild
+         * must fill them by height lookup. */
         const int H = 10;
         struct uint256 hashes[11];
         for (int h = 0; h <= H; h++) {
@@ -723,11 +712,8 @@ static int test_rebuild_active_chain_fills_holes_from_block_map(void) {
         for (int h = 0; h < H; h++)
             ms.chain_active.chain[h] = NULL;
 
-        /* Pre-rebuild: integrity check reports H holes below the tip.
-         * Round 4 Part 1.5.1: `ok` no longer requires zero holes —
-         * only nBits clean + tip-slot populated. Tip IS populated
-         * via active_chain_move_window_tip above, so r0.ok may be true even
-         * with holes below. We still verify the hole counts. */
+        /* Pre-rebuild: `ok` requires only clean nBits + populated tip slot,
+         * so r0.ok may be true; the hole counts are still verified. */
         struct chain_integrity_result r0;
         chain_integrity_check_post_restore(&r0, &ms);
         ASSERT(r0.active_chain_holes == H);
@@ -887,16 +873,9 @@ static int test_rebuild_active_chain_relinks_wrong_active_parent(void) {
     return failures;
 }
 
-/* Regression test: rebuild_active_chain must be O(N), not O(N²).
- *
- * Live shape: post-anchor restore installs a tip at ~h=3M with pprev=NULL.
- * active_chain_move_window_tip writes NULL into every slot below the tip. The
- * residual-hole fill then has tip_h NULL slots, and the pre-fix code did
- * a fresh block_map scan per hole — tip_h × block_map_size ops. At live
- * scale that's ~10 trillion ops and pins the node at ~92% CPU for >5min
- * before RPC comes up, which is why the coordinator has to SIGTERM every
- * boot. This test reproduces the shape at N=100k; pre-fix it takes many
- * seconds-to-minutes, post-fix it completes in O(N). */
+/* rebuild_active_chain must be O(N), not O(N^2): an anchor restore installs
+ * a tip at ~h=3M with pprev=NULL, so tip_h slots are NULL and the hole fill
+ * must not scan block_map once per hole. Runs at N=100k. */
 static int test_rebuild_active_chain_scales_at_100k(void) {
     int failures = 0;
     TEST("chain_restore_rebuild: completes in <2s at realistic chain depth") {
@@ -955,8 +934,7 @@ static int test_rebuild_active_chain_scales_at_100k(void) {
             ASSERT(got->nHeight == h);
         }
 
-        /* target. Pre-fix the residual-hole loop is O(N²) and
-         * blows well past this budget even at N=100k. */
+        /* target: the residual-hole loop must not be O(N^2). */
         if (elapsed >= 2.0) {
             printf("[] rebuild took %.3fs (>=2s) at H=%d — O(N^2) shape\n",
                    elapsed, H);
@@ -1048,21 +1026,10 @@ static int test_rebuild_high_tip_prefers_pprev_lineage_over_height_guess(void) {
     return failures;
 }
 
-/* Regression test: rebuild_active_chain must populate block_index.skipList
- * (pskip pointers) so post-restore ancestor walks are O(log N) not O(N).
- *
- * Live shape: after chain_restore_create_anchor the tip's pprev is NULL
- * and its pskip is NULL. Entries loaded from block_map may also have
- * pskip=NULL when the flat-file load path didn't build skips for every
- * height. Without pskip, block_index_get_ancestor falls back to pprev
- * hops only — 3M hops at live tip. The rebuild pass is the natural
- * place to wire pprev (from chain[h-1]) and BuildSkip() on every slot.
- *
- * Pre-fix: 1000 ancestor walks on a 100k-entry chain are either
- *   (a) impossible (pprev NULL → get_ancestor returns NULL), or
- *   (b) O(N) per walk (pprev wired, pskip NULL) which is multi-second.
- * Post-fix: pskip is populated on every slot above h=1; ancestor walks
- * complete in O(log N) ≈ ~20 hops per query. */
+/* rebuild_active_chain must populate block_index.skipList (pskip) so
+ * post-restore ancestor walks are O(log N), not O(N): it wires pprev (from
+ * chain[h-1]) and BuildSkip() on every slot. 1000 ancestor walks on a
+ * 100k-entry chain complete in O(log N) (~20 hops per query). */
 static int test_rebuild_populates_skiplist_for_log_n_ancestor(void) {
     int failures = 0;
     TEST("chain_restore_rebuild: populates skipList for O(log N) ancestor walk") {
@@ -1105,8 +1072,7 @@ static int test_rebuild_populates_skiplist_for_log_n_ancestor(void) {
         int populated = chain_restore_rebuild_active_chain(&ms, tip, NULL);
         ASSERT(populated == H + 1);
 
-        /* acceptance: every slot above h=1 must have pskip set.
-         * Pre-fix this is 100% NULL → test goes RED. */
+        /* every slot above h=1 must have pskip set. */
         int missing_skip = 0;
         int missing_prev = 0;
         for (int h = 2; h <= H; h++) {
@@ -1118,8 +1084,7 @@ static int test_rebuild_populates_skiplist_for_log_n_ancestor(void) {
         ASSERT(missing_skip == 0);
         ASSERT(missing_prev == 0);
 
-        /* Ancestor walk correctness — tip → genesis must return the
-         * entry at h=0. Pre-fix, pprev=NULL → get_ancestor returns NULL. */
+        /* Ancestor walk correctness: tip -> genesis returns the h=0 entry. */
         struct block_index *a0 = block_index_get_ancestor(tip, 0);
         ASSERT(a0 != NULL);
         ASSERT(a0->nHeight == 0);
@@ -1129,11 +1094,8 @@ static int test_rebuild_populates_skiplist_for_log_n_ancestor(void) {
         ASSERT(amid != NULL);
         ASSERT(amid->nHeight == H / 2);
 
-        /* Performance budget: 1000 random-depth ancestor walks must
-         * complete in <1s. At H=100k a pprev-only walk averages ~50k
-         * hops, so 1000 walks ≈ 5×10^7 hops which measures in seconds
-         * on this host. With pskip, each walk is ~20 hops → <50ms
-         * total. The 1s budget leaves plenty of CI headroom. */
+        /* Performance budget: 1000 random-depth ancestor walks in <1s (~20
+         * hops each with pskip vs ~50k with pprev only). */
         struct timespec t0, t1;
         platform_time_monotonic_timespec(&t0);
         int queries = 1000;
@@ -1376,9 +1338,8 @@ static int test_backfill_nbits_reads_from_block_file(void) {
         ASSERT(pos.nFile >= 0);
         ASSERT(pos.nPos > 0);
 
-        /* Build an index entry that matches the on-disk block but carries
-         * nBits=0 — the live-node shape that `add_to_block_index` fails
-         * to restore during anchor-restore rehydration. */
+        /* Index entry matching the on-disk block but with nBits=0, the shape
+         * `add_to_block_index` fails to restore during anchor rehydration. */
         struct main_state ms;
         main_state_init(&ms);
 
@@ -1806,31 +1767,15 @@ static struct block_index *ods_build_disk_chain(struct main_state *ms,
     return tip;
 }
 
-/* REFUTED-CLASSIFICATION FIX (lane/boot-odelta). The lane classified
- * chain_restore.disk_rebuild_rows as "a cold-seed/repair fallback ... never a
- * warm boot; a non-zero count on a warm restart is the regression tell." That
- * is FALSE: the disk-backed active-chain rebuild is O(chain height), and boot
- * REACHES it on every UNCLEAN warm restart (crash / kill -9 / OOM). Trace:
- * engine/composition/src/boot.c:2743-2744 runs utxo_recovery_restore_chain_tip whenever the
- * boot is NOT a -reindex AND fast_restart was NOT taken; fast_restart requires
- * a clean-shutdown marker (engine/composition/src/boot_shutdown_marker.c), so any unclean
- * stop skips it. That restore calls chain_restore_finalize with the real datadir
- * (engine/services/src/utxo_recovery_restore.c:737 -> chain_restore_repair.c:686 ->
- * chain_restore_rebuild_active_chain), which enters the O(chain) disk walk
- * unless chain_restore_trust_index_fastpath() is engaged — and the 2744 restore
- * does NOT engage it (only the clean fast_restart path and the LATER
- * chain_restore_finalize_verified at boot.c:3785 do).
- *
- * This test pins both facts against the boot_scan counter:
- *   (a) DEFECT: with the fastpath OFF (the 2744 unclean-restart shape) the
- *       counter equals tip_h+1 for the WHOLE chain and a 3x-taller chain does
- *       3x the disk header reads — bounded by chain length, never by a delta
- *       above a durable cursor. This is the known slow-boot defect the owner is
- *       repeatedly burned by (docs/AGENT_TRAPS.md). It is asserted as the
- *       CURRENT behavior; the pending boot fix flips (a) to a 0/bounded count.
- *   (b) FIX MECHANISM: with the fastpath ON (what chain_restore_finalize_verified
- *       engages on a verified index; the pending fix routes the 2744 restore
- *       through the same gate), the disk walk is skipped and the counter is 0. */
+/* chain_restore.disk_rebuild_rows counts the disk-backed active-chain
+ * rebuild, which is O(chain height) and runs on every UNCLEAN warm restart
+ * (no clean-shutdown marker, so fast_restart is skipped) unless
+ * chain_restore_trust_index_fastpath() is engaged. Pins both facts against
+ * the boot_scan counter:
+ *   (a) fastpath OFF: the counter equals tip_h+1 and a 3x-taller chain does
+ *       3x the disk header reads (chain-bounded, not delta-bounded);
+ *   (b) fastpath ON (as chain_restore_finalize_verified engages it on a
+ *       verified index): the disk walk is skipped and the counter is 0. */
 static int test_rebuild_active_chain_is_o_chain_not_delta(void) {
     int failures = 0;
     const char *const CTR = "chain_restore.disk_rebuild_rows";
@@ -1856,8 +1801,7 @@ static int test_rebuild_active_chain_is_o_chain_not_delta(void) {
         ASSERT(pop_s == SHORT_N);
         ASSERT(short_rows == (uint64_t)SHORT_N);   /* tip_h+1 == full chain */
 
-        /* (a) DEFECT — taller chain: the count TRACKS the taller height, so it
-         * scales with CHAIN HEIGHT, not any fixed delta. */
+        /* (a) taller chain: the count tracks CHAIN HEIGHT. */
         char tall_dir[256];
         snprintf(tall_dir, sizeof(tall_dir), "./test-tmp/%d_odelta_tall",
                  (int)getpid());
@@ -1874,8 +1818,7 @@ static int test_rebuild_active_chain_is_o_chain_not_delta(void) {
         uint64_t tall_rows = boot_scan_value(CTR);
         ASSERT(pop_t == TALL_N);
         ASSERT(tall_rows == (uint64_t)TALL_N);     /* tip_h+1 == full chain */
-        /* O(chain), NOT O(delta): a 3x-taller chain does 3x the disk reads. A
-         * delta-bounded rebuild would read O(1) regardless of chain height. */
+        /* O(chain), not O(delta): a 3x-taller chain does 3x the disk reads. */
         if (tall_rows != 3 * short_rows)
             printf("  KNOWN DEFECT surfaced: unclean-restart disk rebuild is "
                    "O(chain) (short=%llu tall=%llu) — docs/AGENT_TRAPS.md\n",
@@ -1883,9 +1826,7 @@ static int test_rebuild_active_chain_is_o_chain_not_delta(void) {
                    (unsigned long long)tall_rows);
         ASSERT(tall_rows == 3 * short_rows);
 
-        /* (b) FIX MECHANISM — the trust-index fastpath skips the disk walk; the
-         * pending boot fix engages it on a verified unclean restart, so
-         * disk_rebuild_rows becomes 0 there. */
+        /* (b) the fastpath skips the disk walk, so disk_rebuild_rows is 0. */
         char fp_dir[256];
         snprintf(fp_dir, sizeof(fp_dir), "./test-tmp/%d_odelta_fastpath",
                  (int)getpid());
@@ -1915,38 +1856,24 @@ static int test_rebuild_active_chain_is_o_chain_not_delta(void) {
     return failures;
 }
 
-/* lane/restart-odelta: prove the unclean-restart recovery FIX is O(delta) and
- * differentially converges to the O(chain) tip.
- *
- * The boot fix (engine/composition/src/boot.c restore branch) engages the trust-index
- * fastpath around utxo_recovery_restore_chain_tip WHEN
- * chain_restore_index_verified_consistent(index_repaired, index_size) holds
- * (0 repairs over a >1000-entry index). With the flag engaged,
- * chain_restore_rebuild_active_chain drops the datadir and slots every ancestor
- * via the in-memory pprev walk — the disk-backed active-chain rebuild that
- * reads one header per height tip->genesis is skipped entirely, so the
- * chain_restore.disk_rebuild_rows counter drops from tip_h+1 (O(chain)) to 0
- * (O(delta)). This test pins, on ONE fixture shape:
+/* Unclean-restart recovery is O(delta) and converges to the O(chain) tip.
+ * With the trust-index fastpath engaged (chain_restore_index_verified_consistent:
+ * 0 repairs over a >1000-entry index), chain_restore_rebuild_active_chain
+ * slots ancestors via the in-memory pprev walk and skips the disk walk, so
+ * chain_restore.disk_rebuild_rows drops from tip_h+1 to 0. Pins:
  *   (1) the verified-index GATE selects the fast path only when it should;
- *   (2) DIFFERENTIAL CONVERGENCE — the O(delta) fast path reaches the SAME tip
- *       (same populated count, same tip height, same tip hash) as the O(chain)
- *       reference path on an identical fixture;
- *   (3) HEIGHT-INDEPENDENCE — a taller chain through the fast path STILL reads
- *       0 disk rows (delta-bounded, not chain-bounded), while the reference
- *       path's disk reads scale with height.
- *
- * The size>1000 threshold in the gate is a policy floor validated by the pure
- * predicate assertions in (1); the mechanism (fastpath => zero disk rows) is
- * exercised with a small disk chain here exactly as it is in the boot path. */
+ *   (2) DIFFERENTIAL CONVERGENCE: same populated count, tip height and tip
+ *       hash as the O(chain) reference path on an identical fixture;
+ *   (3) HEIGHT-INDEPENDENCE: a taller chain via the fast path still reads 0
+ *       disk rows while the reference path scales with height. */
 static int test_unclean_restart_recovery_is_o_delta(void) {
     int failures = 0;
     const char *const CTR = "chain_restore.disk_rebuild_rows";
     TEST("unclean-restart recovery: verified index => O(delta) rebuild, converges to O(chain) tip") {
         mkdir("./test-tmp", 0755);
 
-        /* (1) GATE predicate — the exact precondition the boot fix consults.
-         * Fast path ONLY when the index is proven clean (0 repairs) over a
-         * non-trivial index; any repair or a tiny index falls to the full walk. */
+        /* (1) GATE predicate: fast path only for a proven clean (0 repairs)
+         * non-trivial index; any repair or a tiny index takes the full walk. */
         ASSERT(chain_restore_index_verified_consistent(0, 2000) == true);
         ASSERT(chain_restore_index_verified_consistent(1, 2000) == false);
         ASSERT(chain_restore_index_verified_consistent(0, 1000) == false);
@@ -1954,8 +1881,7 @@ static int test_unclean_restart_recovery_is_o_delta(void) {
 
         const int N = 8;
 
-        /* ── O(chain) REFERENCE path: unclean restart, index NOT trusted
-         *    (fastpath OFF) — the current defect shape. ── */
+        /* ── O(chain) REFERENCE path: fastpath OFF, index NOT trusted. ── */
         chain_restore_set_trust_index_fastpath(false);
         char ref_dir[256];
         snprintf(ref_dir, sizeof(ref_dir), "./test-tmp/%d_urd_ref", (int)getpid());
@@ -1974,8 +1900,7 @@ static int test_unclean_restart_recovery_is_o_delta(void) {
         ASSERT(rows_ref == (uint64_t)N);           /* O(chain): tip_h+1 reads */
         ASSERT(at_ref != NULL && at_ref->nHeight == tip_h_ref);
 
-        /* ── O(delta) FIX path: verified index => engage the fastpath exactly
-         *    as the boot restore branch does. Same fixture shape. ── */
+        /* ── O(delta) path: verified index => engage the fastpath. ── */
         char fix_dir[256];
         snprintf(fix_dir, sizeof(fix_dir), "./test-tmp/%d_urd_fix", (int)getpid());
         struct main_state ms_fix;
@@ -1985,9 +1910,8 @@ static int test_unclean_restart_recovery_is_o_delta(void) {
         struct uint256 tip_hash_fix = tip_fix->hashBlock;
         int tip_h_fix = tip_fix->nHeight;
         ASSERT(active_chain_move_window_tip(&ms_fix.chain_active, tip_fix));
-        /* The boot fix's decision, reproduced: engage only when verified clean.
-         * (map size is small here; drive the mechanism the gate would select on
-         * a real >1000-entry verified index — predicate proven above in (1).) */
+        /* Engage only when verified clean (map size is small here; the gate
+         * is proven in (1)). */
         bool engage = !chain_restore_trust_index_fastpath();
         chain_restore_set_trust_index_fastpath(engage);
         boot_scan_reset_for_testing();
@@ -2009,9 +1933,8 @@ static int test_unclean_restart_recovery_is_o_delta(void) {
         ASSERT(at_fix->phashBlock &&
                uint256_cmp(at_fix->phashBlock, &tip_hash_ref) == 0);
 
-        /* ── HEIGHT-INDEPENDENCE: a 4x-taller chain through the FAST path still
-         *    reads 0 disk rows (delta-bounded), while the REFERENCE path's disk
-         *    reads scale with chain height (chain-bounded). ── */
+        /* ── HEIGHT-INDEPENDENCE: the fast path on a taller chain still reads
+         *    0 disk rows; the reference path scales with height. ── */
         const int TALL_N = 4 * N;
         char tall_dir[256];
         snprintf(tall_dir, sizeof(tall_dir), "./test-tmp/%d_urd_tall", (int)getpid());

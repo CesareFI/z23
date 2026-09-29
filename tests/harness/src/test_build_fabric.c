@@ -1655,11 +1655,10 @@ static int test_bf_reproduction_plan(void)
 }
 
 
-/* A requester node runs no build worker on purpose, so nothing else ever
- * enrolls its operator identity — and without an enrolled identity the
- * person on that node could never accept their own work. Enrollment is
- * first-use only: it must never resurrect an identity the operator already
- * ruled on. */
+/* A requester node runs no build worker, so nothing else enrolls its
+ * operator identity, and without one the operator could not accept their own
+ * work. Enrollment is first-use only: it never resurrects an identity the
+ * operator already ruled on. */
 static int bf_deny_worker_select(void *context, int operation,
                                const char *table, const char *column,
                                const char *database, const char *trigger)
@@ -1885,11 +1884,10 @@ static int test_bf_worker_identity_capability_honesty(void)
     int failures = 0;
     TEST("build_fabric: worker identity advertises the real host platform "
          "and declines compile capability it cannot execute") {
-        /* On a host that CAN capture a toolchain capsule (this build/test
-         * host always can — see test_bf_toolchain_capture_cache above),
-         * build_fabric_worker_identity_load() must still succeed and the
-         * advertised platform token must name the actual compiled-for
-         * host, never a blind literal. */
+        /* On a host that CAN capture a toolchain capsule,
+         * build_fabric_worker_identity_load() succeeds and the advertised
+         * platform token names the actual compiled-for host, never a blind
+         * literal. */
         char dir[256];
         test_make_tmpdir(dir, sizeof(dir), "build_fabric", "identity-honest");
         struct db_build_worker worker;
@@ -1913,12 +1911,9 @@ static int test_bf_worker_identity_capability_honesty(void)
         ASSERT(strstr(worker.capabilities,
                       VCS_BUILD_ACTION_KIND_PACKAGE_V1) != NULL);
 
-        /* The same decision, driven directly (test seam) with the outcome
-         * a host that CANNOT capture a toolchain capsule would see (e.g.
-         * arm64 macOS, whose crt1.o/crti.o/crtn.o/libc.so.6 ELF/glibc
-         * probes can never succeed): it must refuse by name, not write a
-         * capability string that claims compile/test/fuzz/package it
-         * cannot execute. */
+        /* The same decision driven directly (test seam) with the outcome of a
+         * host that CANNOT capture a toolchain capsule: it must refuse by
+         * name, not advertise a capability string it cannot execute. */
         char declined[BUILD_FABRIC_CAPS_MAX + 1];
         declined[0] = '\1'; /* poison: must stay untouched on refusal */
         struct zcl_result refusal = build_fabric_worker_capabilities_for_test(
@@ -2697,9 +2692,8 @@ static int test_bf_runtime_dump(void)
         ASSERT_EQ(json_get_int(json_get(&state, "max_actions_per_job")), 256);
         ASSERT_EQ(json_get_int(json_get(&state, "worker_cpu_limit")), 1);
         ASSERT(!json_get_bool(json_get(&state, "worker_network_allowed")));
-        /* A worker that declines every action must say why here: this field
-         * is the only standing surface for a refusal the loop handles
-         * silently. */
+        /* A worker that declines every action must say why here: the only
+         * standing surface for a silently handled refusal. */
         const char *admission = json_get_str(json_get(&state,
                                                       "worker_admission"));
         ASSERT(admission && admission[0]);
@@ -4600,14 +4594,10 @@ static bool bf_report(struct bf_reported_admission *out)
 }
 
 /* The worker's refusal and recovery path, driven through the same admission
- * function the loop runs. Distinct from the pure decide() contract above:
- * this one asserts what a running worker PUBLISHES, not what the predicate
- * returns.
- *
- * Deliberately NOT qualified here: that queued work advances without
- * duplicate execution once every condition becomes admissible. That needs the
- * real claim/lease/execute machinery and a running loop; it is left unproven
- * rather than simulated by a helper. */
+ * function the loop runs: asserts what a running worker PUBLISHES, not what
+ * the decide() predicate returns. Advance of queued work without duplicate
+ * execution needs the real claim/lease/execute machinery and a running loop,
+ * and is not covered here. */
 static int test_bf_worker_admission_step(void)
 {
     int failures = 0;
@@ -4619,9 +4609,8 @@ static int test_bf_worker_admission_step(void)
         enum subordinate_work_refusal got;
 
         /* (A) A worker denied by sync reports sync_not_at_tip and executes
-         * nothing. The process default is SYNC_IDLE, which is not AT_TIP, and
-         * decide() tests sync second — so this is genuinely the sync refusal
-         * and not a disk, memory or persistence one. */
+         * nothing (the default SYNC_IDLE is not AT_TIP and decide() tests
+         * sync second, so it is the sync refusal). */
         ASSERT(sync_get_state() != SYNC_AT_TIP);
         ASSERT(bf_report(&before));
         got = build_fabric_worker_admission_step_for_test(true, true, &ndb);
@@ -4633,9 +4622,7 @@ static int test_bf_worker_admission_step(void)
         ASSERT_EQ(after.dispatches, before.dispatches);
 
         /* (C) A refusal repeated many times keeps counting and never blanks
-         * the standing field. The emission CADENCE belongs to log_throttle and
-         * is proven in test_log_throttle.c; what is proven here is that
-         * throttling the log line does not cost the reported status. */
+         * the standing field (log cadence is proven in test_log_throttle.c). */
         for (int i = 0; i < 8; i++)
             ASSERT(build_fabric_worker_admission_step_for_test(
                        true, true, &ndb) == SUBORDINATE_WORK_SYNC_NOT_AT_TIP);

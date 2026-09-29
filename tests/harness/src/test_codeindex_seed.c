@@ -1,21 +1,18 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Purpose: Prove a code index seeded from a sibling checkout answers exactly what a cold build answers, and refuses every donor it cannot verify.
  *
- * A fresh worktree's first query used to rescan the whole tree. It now looks
- * for a checkout registered in the same git worktree set whose published index
- * already describes almost this tree, copies that generation, and rescans only
- * the files that differ (cognition/modules/codeindex/src/codeindex_seed.c).
+ * A fresh worktree seeds its index from a checkout registered in the same git
+ * worktree set: it copies that generation and rescans only the differing
+ * files (cognition/modules/codeindex/src/codeindex_seed.c).
  *
- * That shortcut is only allowed to exist if it is invisible in the answers, so
- * every case below asserts BOTH halves: what the seeding receipt says the
- * generation cost, and that the generation is fresh and answers the queries a
- * consumer actually asks. The refusal cases matter as much as the adoptions —
- * a donor that cannot be reconciled, or a checkout a resident mind owns, must
- * take the deterministic path instead of a cheap wrong one.
+ * Every case asserts both what the seeding receipt says the generation cost
+ * and that the generation is fresh and answers queries. A donor that cannot
+ * be reconciled, or a checkout a resident mind owns, must take the
+ * deterministic path.
  *
- * The fixtures build git's worktree registry by hand — a `.git` file naming an
- * admin directory, and that directory's `gitdir`/`commondir` records — because
- * that registry, and nothing else, is what donor discovery reads.
+ * Fixtures build git's worktree registry by hand (a `.git` file naming an
+ * admin directory, plus its `gitdir`/`commondir` records), which is all donor
+ * discovery reads.
  */
 
 #include "test/test_core.h"

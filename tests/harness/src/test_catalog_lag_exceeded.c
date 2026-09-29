@@ -94,10 +94,7 @@ int test_catalog_lag_exceeded(void)
     }
 
     /* An index far over threshold whose cursor ADVANCES every pass is healthy
-     * from-genesis catch-up, not a stall: it must NOT fire no matter how many
-     * passes (the live serve-node defect — a backfill folding one bounded batch
-     * per tick sat 2.9M blocks behind H* for hours and tripped a stall-reading
-     * dependency blocker while it was steadily advancing). */
+     * catch-up, not a stall: it must NOT fire however many passes. */
     catalog_lag_exceeded_test_reset();
     {
         struct catalog_index_status adv[1];
@@ -122,9 +119,7 @@ int test_catalog_lag_exceeded(void)
 
     /* A frozen index whose fold guard has already named the STRUCTURAL
      * snapshot-seed floor must NOT also collect the misleading "stalled and
-     * must resume" lag blocker (the 2026-07-27 live op_return_index case:
-     * frozen at -1 on a seeded datadir — it can never resume, and the
-     * below_snapshot_seed blocker is the truthful naming). */
+     * must resume" lag blocker (it can never resume). */
     catalog_lag_exceeded_test_reset();
     blocker_reset_for_testing();
     {
@@ -144,10 +139,9 @@ int test_catalog_lag_exceeded(void)
                  !catalog_lag_exceeded_test_feed(frz, 1));
         CL_CHECK("no lag blocker raised alongside the structural one",
                  !blocker_exists("catalog.op_return_index.lag_exceeded"));
-        /* Same freeze WITHOUT the seed blocker still fires (suppression is
-         * specific, not a blanket freeze amnesty). Reset the arm state too:
-         * the suppression path above deliberately leaves the index armed,
-         * so without a reset the first feed here would fire immediately. */
+        /* The same freeze WITHOUT the seed blocker still fires (suppression
+         * is specific). Reset the arm state too: the suppression path leaves
+         * the index armed. */
         blocker_reset_for_testing();
         catalog_lag_exceeded_test_reset();
         CL_CHECK("frozen w/o seed-floor: pass re-arms",

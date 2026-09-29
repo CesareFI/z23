@@ -1,37 +1,27 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Pins the DEFAULT-OFF Sapling-root parity enforcement in
- * core/modules/validation/src/connect_block.c (project_sapling_root_parity_hole).
+ * Pins the default-off Sapling-root parity enforcement in
+ * core/modules/validation/src/connect_block.c.
  *
- * Background. zclassic23 historically rejected ONLY an all-zeros
- * hashFinalSaplingRoot post-Sapling-activation ("bad-sapling-root-zeroed").
- * zclassicd rejects ANY mismatch between the block's hashFinalSaplingRoot
- * and the recomputed Sapling commitment-tree root — so zclassic23 was too
- * LENIENT (a latent fork hole: it would accept a wrong NON-ZERO root).
+ * By default only an all-zeros hashFinalSaplingRoot post-Sapling is rejected
+ * ("bad-sapling-root-zeroed"); zclassicd rejects any mismatch with the
+ * recomputed Sapling commitment-tree root. sapling_root_matches is a pure
+ * recompute predicate behind the default-off flag g_enforce_sapling_root
+ * (-enforce-sapling-root), rejecting with "bad-sapling-root-mismatch".
  *
- * The fix adds a PURE recompute predicate (sapling_root_matches) and an
- * additional reject ("bad-sapling-root-mismatch"), gated behind the
- * DEFAULT-OFF runtime flag g_enforce_sapling_root (-enforce-sapling-root).
+ * At a Sapling-active, checkpoint-covered height (expensive_checks=false, so
+ * the Sapling-root branch is reached directly):
+ *   1. Flag OFF + a wrong non-zero root: ACCEPTS (default unchanged).
+ *   2. Flag ON + the correct recomputed root: ACCEPTS.
+ *   3. Flag ON + a wrong non-zero root: REJECTS "bad-sapling-root-mismatch".
+ * Plus a unit test of the predicate's NULL-frontier contract (cannot decide,
+ * do not reject), so enabling the flag without a wired frontier never
+ * false-rejects.
  *
- * This test pins all three behaviors at a Sapling-ACTIVE,
- * checkpoint-covered height (expensive_checks=false → PoW + parallel script
- * verification skipped, so the Sapling-root branch is reached directly):
- *
- *   1. Flag OFF (DEFAULT) + a deliberately-WRONG non-zero root → ACCEPTS.
- *      This is the byte-identical-to-today guarantee: default behavior is
- *      unchanged; only the all-zeros reject fires by default.
- *   2. Flag ON  + the CORRECT recomputed root                  → ACCEPTS.
- *   3. Flag ON  + a deliberately-WRONG non-zero root           → REJECTS
- *      with reason "bad-sapling-root-mismatch".
- *
- * Plus a direct unit test of the pure predicate's NULL-frontier contract
- * (cannot-decide → do-not-reject), which is why enabling the flag without a
- * wired frontier can never false-reject.
- *
- * To keep the recompute tractable the test wires a depth-4 Sapling testing
- * tree via connect_block_set_sapling_tree(); the block carries zero shielded
- * outputs, so the post-block root equals the pre-block tree's root, which we
- * compute and use as the "correct" header root.
+ * The test wires a depth-4 Sapling testing tree via
+ * connect_block_set_sapling_tree(); the block has no shielded outputs, so the
+ * post-block root equals the pre-block tree's root, used as the correct
+ * header root.
  */
 
 #include "test/test_core.h"

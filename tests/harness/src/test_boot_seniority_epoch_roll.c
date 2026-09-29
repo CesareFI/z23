@@ -1,43 +1,32 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * test_boot_seniority_epoch_roll — the property nothing tested before this
- * file existed: A DIAL-PREFERENCE BOOST GOES AWAY.
+ * test_boot_seniority_epoch_roll — A DIAL-PREFERENCE BOOST GOES AWAY.
  *
- * tests/harness/src/test_zid_seniority_binding.c proves a boost ARRIVES, and its
- * rotation case proves the pure epoch-comparison function decides to rebuild.
- * Neither ever ran boot_seniority_refresh_once(), and the gap between them
- * was where the bug lived: the weighting pass returned early on "no opinion"
- * without touching addrman, so a relay boosted to 2.5x in one epoch that
- * recomputed to 1.0 in the next kept the dead 2.5x for the life of the
- * process — and the rebuild never enumerated addrman, so an address that
- * fell out of both input feeds was never even revisited.
+ * test_zid_seniority_binding.c proves a boost ARRIVES and that the pure
+ * epoch-comparison decides to rebuild; neither ran
+ * boot_seniority_refresh_once(). The weighting pass must not return early on
+ * "no opinion" without touching addrman, or a stale boost (2.5x) survives an
+ * epoch that recomputes to 1.0, and an address that fell out of both input
+ * feeds is never revisited.
  *
- * So this file runs the REAL rebuild — the one the zcl_seniority worker
- * calls — TWICE, against ONE addrman, with the world changed underneath it,
- * and asserts what the second epoch did to the first epoch's opinions.
+ * This file runs the REAL rebuild (the zcl_seniority worker's) TWICE against
+ * ONE addrman (a fresh addrman would not expose a stale value) and asserts
+ * what the second epoch did to the first epoch's opinions.
  *
  *   (1) A senior relay with a signed endpoint record earns a bounded boost
  *       in epoch one.
  *   (2) The SAME addrman reports that relay at exactly 1.0 in epoch two,
- *       after its anchored identity leaves the ranking. Same instance, no
- *       reconstruction — a fresh addrman would prove nothing, because the
- *       bug was precisely that the stale value was never overwritten.
- *   (3) A relay whose endpoint record was removed loses its boost too, by
- *       the same mechanism: it is simply not in the table any more.
- *   (4) An address whose boost comes from BANKED BANDWIDTH and not from the
- *       chain survives the seniority roll with its multiplier unchanged to
- *       the bit. The two signals are merged into one value on purpose (see
- *       config/boot_seniority.h); merging them must not mean a seniority
- *       roll can knock out a bandwidth boost.
+ *       after its anchored identity leaves the ranking.
+ *   (3) A relay whose endpoint record was removed loses its boost too.
+ *   (4) An address whose boost comes from BANKED BANDWIDTH survives the
+ *       seniority roll with its multiplier unchanged to the bit (the two
+ *       signals are merged in config/boot_seniority.h).
  *   (5) Every multiplier in every published table is inside [1.0, 4.0], and
- *       no address is ever removed from addrman or pushed below its
- *       unweighted dial chance. Asserted on the addrman, not argued from
- *       the arithmetic.
+ *       no address is removed from addrman or pushed below its unweighted
+ *       dial chance.
  *
- * Plus (6): the measured cost of the per-candidate table lookup that
- * addrman_select() now pays, at a full-size table. Reported as a number, not
- * asserted to be fast — a claim about performance with no measurement behind
- * it is the thing this project does not do.
+ * (6): the measured cost of the per-candidate table lookup addrman_select()
+ * pays at full table size; reported, not asserted to be fast.
  *
  * REAL COMPONENTS, NO NODE. A real (in-memory) node.db carrying real
  * zid_identities rows, a real event log + peers projection carrying a real
@@ -319,9 +308,7 @@ static int bsr_case_epoch_roll(void)
     /* ── THE WORLD CHANGES ─────────────────────────────────────────── */
 
     /* Relay A LEAVES THE RANKING: its anchored identity is gone from the
-     * projection, so the rebuild computes nothing for it at all. This is the
-     * exact shape of the original defect — the old code's response to "no
-     * opinion" was to leave the previous epoch's number in place. */
+     * projection, so the rebuild computes nothing for it. */
     BSR_CHECK("relay A leaves the ranking",
               db_zid_identity_truncate(&ndb) &&
               bsr_save_identity(&ndb, pk_c,
@@ -348,9 +335,8 @@ static int bsr_case_epoch_roll(void)
            "bandwidth=%.6fx (%zu rows)\n", BSR_EPOCH_TWO, a2, c2, b2,
            addrman_reputation_weight_count(&am));
 
-    /* (2) THE REGRESSION. Not "close to 1.0" and not "unset" — exactly the
-     * baseline, on the same addrman that was reporting a boost a moment
-     * ago, because the address is simply not in the new table. */
+    /* (2) THE REGRESSION: exactly the baseline on the same addrman, because
+     * the address is not in the new table. */
     BSR_CHECK("(2) relay A is back at exactly 1.0 after leaving the ranking",
               a2 == 1.0);
     /* (3) */
@@ -397,9 +383,8 @@ static int bsr_case_epoch_roll(void)
 
     /* ── EPOCH THREE: everything goes ──────────────────────────────── */
 
-    /* The last thing a "clear a weight" code path would have been needed
-     * for: no inputs at all. An empty table is a legal publication and it
-     * returns the whole addrman to the baseline. */
+    /* No inputs at all: an empty table is a legal publication and returns
+     * the whole addrman to the baseline. */
     BSR_CHECK("relay C leaves the ranking too",
               db_zid_identity_truncate(&ndb));
     zendp_directory_init(zendp_directory_global());
@@ -488,9 +473,8 @@ static int bsr_case_lookup_cost(void)
            iters, table_n, (long long)t_plain, (long long)t_weighted,
            per_lookup_ns, per_lookup_ns * 200000.0 / 1e6, sink);
 
-    /* The only thing asserted is that the lookup answers correctly at full
-     * size — the timing above is reported, not gated, because a shared
-     * build box is not a benchmark rig. */
+    /* Only correctness at full size is asserted; the timing is reported,
+     * not gated. */
     BSR_CHECK("a full-size table still answers hits and misses correctly",
               addr_info_get_chance(&am, &hit, 1000000) ==
                   2.0 * addr_info_get_chance(NULL, &hit, 1000000) &&

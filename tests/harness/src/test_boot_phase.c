@@ -2,15 +2,10 @@
  *
  * Unit tests for the boot-stage state machine (platform/modules/util/src/boot_phase.c).
  *
- * Cannot test misorder paths — boot_stage_advance_to() calls abort() on
- * backward moves or out-of-range targets, which would kill the test
- * runner. Coverage focuses on the legal transitions, idempotent
- * re-advance, name lookup, and the read-only predicates.
- *
- * Uses boot_stage_reset_for_testing() (only available under -DZCL_TESTING)
- * to restore the global stage between sub-tests and at function exit,
- * so the sequential test driver (test.c) can run this alongside other
- * tests without polluting their view of the boot stage. */
+ * boot_stage_advance_to() aborts on backward or out-of-range moves, so those
+ * are tested only in fork-isolated children; the rest covers legal
+ * transitions, idempotent re-advance, name lookup and the predicates.
+ * boot_stage_reset_for_testing() (-DZCL_TESTING) restores the global stage. */
 
 #include "test/test_core.h"
 #include "platform/socket_compat.h"
@@ -83,12 +78,9 @@ static int test_wallet_rebuild_probe(void)
 
 /* ── fixture for the out-of-band evidence probe ───────────────────
  *
- * An abstract-namespace socket (leading NUL) is used deliberately: it
- * needs no filesystem path, so this fixture can never write into a
- * datadir and needs no unlink on any exit path. Windows has no abstract
- * AF_UNIX namespace (and no sd_notify listener to speak to), so the
- * fixture and the cases that drive it are POSIX-only; the Windows arm of
- * the group prints a loud SKIP instead. */
+ * An abstract-namespace socket (leading NUL) needs no filesystem path, so it
+ * never writes into a datadir. Windows has no abstract AF_UNIX namespace, so
+ * the fixture and its cases are POSIX-only (Windows prints a SKIP). */
 #if !defined(_WIN32)
 static int bp_bind_notify_socket(char *name_out, size_t name_cap,
                                  char *dir_out, size_t dir_cap)
@@ -117,10 +109,8 @@ static int bp_bind_notify_socket(char *name_out, size_t name_cap,
     socklen_t sa_len = (socklen_t)(offsetof(struct sockaddr_un, sun_path)
                                     + 1 + name_len);
 #else
-    /* Darwin and the other POSIX targets have pathname AF_UNIX sockets but
-     * no Linux abstract namespace.  Keep the pathname in the suite's private
-     * per-process fixture directory and hand that exact pathname to the same
-     * sd_notify implementation production uses. */
+    /* Non-Linux POSIX targets use a pathname socket in the suite's private
+     * fixture directory, handed to the production sd_notify path. */
     test_make_tmpdir(dir_out, dir_cap, "bootphase", "notify");
     int n = snprintf(name_out, name_cap, "%s/socket-%u", dir_out, counter++);
     if (n <= 0 || (size_t)n >= name_cap ||
@@ -148,10 +138,8 @@ static int bp_bind_notify_socket(char *name_out, size_t name_cap,
     return fd;
 }
 
-/* Discard everything queued. The sends under test are synchronous local
- * IPC on the calling thread, so by the time the call that produced them
- * has returned the datagrams are already queued — there is nothing to
- * wait for and no sleep here. */
+/* Discard everything queued. The sends are synchronous local IPC, so the
+ * datagrams are already queued on return. */
 static void bp_drain(int fd)
 {
     char buf[256];
@@ -159,11 +147,8 @@ static void bp_drain(int fd)
         ;
 }
 
-/* True iff an EXTEND_TIMEOUT_USEC datagram is among what is queued.
- * Returning false is the assertion in the negative controls, so this
- * drains the WHOLE queue rather than looking at only the first
- * datagram: a STATUS= line arrives in both cases and must not be
- * mistaken for the absence of an extension. */
+/* True iff an EXTEND_TIMEOUT_USEC datagram is among what is queued. Drains
+ * the WHOLE queue; a STATUS= line must not mask the absence of an extension. */
 static bool bp_saw_extend(int fd)
 {
     char buf[256];
@@ -180,10 +165,7 @@ static bool bp_saw_extend(int fd)
 }
 #endif /* !_WIN32 */
 
-/* Injectable evidence source: the mechanism under test is "the sweeper
- * asks a probe whether anything changed", and a fake makes the moved /
- * not-moved distinction exact instead of depending on what else this
- * box happens to be doing. */
+/* Injectable evidence source: makes the moved / not-moved distinction exact. */
 static uint64_t g_bp_fake_evidence;
 static uint64_t bp_fake_evidence_probe(void *ctx)
 {
@@ -192,17 +174,8 @@ static uint64_t bp_fake_evidence_probe(void *ctx)
 }
 
 #if defined(__linux__)
-/* True iff `path` sits on Linux tmpfs — fsync() there is a no-op the kernel
- * reports as success, so it never advances ru_oublock and cannot stand in
- * for the "the OS actually pushed bytes to a device" evidence this fixture
- * exists to manufacture. A push proof's generation root can itself be a
- * RAM-backed tmpfs (tools/dev/dev_proof.c generation_prepare() prefers
- * platform_ram_scratch_root(), typically /dev/shm, and runs the test
- * process chdir()'d into it — tools/dev/dev_proof_budget.c
- * zcl_dev_proof_step_start()), which carries test_fmt_tmpdir's cwd-relative
- * "test-tmp/" along with it. A statfs() that fails is undecidable, not a
- * "yes" — treated as not-tmpfs so today's behaviour holds wherever the
- * check itself cannot run. */
+/* True iff `path` sits on Linux tmpfs, where fsync() is a no-op that never
+ * advances ru_oublock. A failing statfs() is treated as not-tmpfs. */
 static bool bp_is_tmpfs(const char *path)
 {
     struct statfs sfs;
@@ -211,9 +184,7 @@ static bool bp_is_tmpfs(const char *path)
     return (unsigned long)sfs.f_type == (unsigned long)TMPFS_MAGIC;
 }
 
-/* mkdir -p, including the leaf, at 0700 — the same mode test_make_tmpdir
- * already holds every other fixture directory to. Tolerates a directory
- * (or path segment) that already exists. */
+/* mkdir -p, including the leaf, at 0700. Tolerates existing segments. */
 static bool bp_mkdir_p(const char *path)
 {
     char buf[PATH_MAX];
@@ -232,14 +203,9 @@ static bool bp_mkdir_p(const char *path)
     return mkdir(buf, 0700) == 0 || errno == EEXIST;
 }
 
-/* Where bp_burn_block_io() falls back to when the suite's own tmpdir turns
- * out to be tmpfs: a disk-backed private scratch dir outside test-tmp/,
- * named the way tools/zcc.c already names its own cache root ($XDG_CACHE_HOME
- * first, $HOME/.cache otherwise). Verifies the result is not itself tmpfs —
- * a container can mount either of those on tmpfs too — and leaves `dir`
- * unset (returns false) when no such root exists. No new env knob: these
- * two variables are the ones the rest of the tree already reads for a
- * per-user cache root. */
+/* Fallback for bp_burn_block_io() when the suite tmpdir is tmpfs: a
+ * disk-backed private dir under $XDG_CACHE_HOME or $HOME/.cache, verified
+ * not to be tmpfs. Returns false (dir unset) when no such root exists. */
 static bool bp_disk_scratch_dir(char *dir, size_t dir_cap)
 {
     const char *xdg = getenv("XDG_CACHE_HOME");
@@ -266,16 +232,9 @@ static bool bp_disk_scratch_dir(char *dir, size_t dir_cap)
 }
 #endif /* __linux__ */
 
-/* Force `bytes` of real, device-visible write I/O so the stock
- * getrusage probe has something to observe. Uses the suite's own
- * per-pid scratch helper — never a datadir, and never a fixed path two
- * concurrent runs could collide on. On Linux, redirects to a disk-backed
- * private cache dir when that scratch helper hands back tmpfs (the push
- * proof's RAM-backed generation root does exactly that — see
- * bp_is_tmpfs() above), so the write below always lands somewhere fsync()
- * is not a no-op. Returns false if the fixture itself could not be built —
- * including "no disk-backed root exists to burn I/O on" — so a fixture
- * failure reads as a fixture failure and not as a probe defect. */
+/* Force `bytes` of real device-visible write I/O for the getrusage probe.
+ * Redirects to a disk-backed cache dir when the scratch helper returns tmpfs
+ * (see bp_is_tmpfs()). Returns false if the fixture itself cannot be built. */
 static bool bp_burn_block_io(size_t bytes)
 {
     char dir[PATH_MAX];
@@ -306,8 +265,7 @@ static bool bp_burn_block_io(size_t bytes)
             size_t want = bytes - written;
             if (want > sizeof(chunk))
                 want = sizeof(chunk);
-            /* Vary the bytes so no filesystem can collapse this to a
-             * hole and give us a write that never reaches the device. */
+            /* Vary the bytes so no filesystem collapses this to a hole. */
             chunk[0] = (char)(written >> 16);
             chunk[1] = (char)(written >> 8);
             ssize_t w = write(fd, chunk, want);
@@ -400,18 +358,12 @@ static void bp_park_fixture_end(const char *dir)
     test_rm_rf(dir);
 }
 
-/* ── node.db unopenable REFUSES; it must never park ───────────
+/* ── node.db unopenable REFUSES; it must never park ───────────────
  *
- * This gate used to park alive-degraded here. A fleet node then sat in
- * systemd `activating (start)` for 15.9 h: the park sends no READY= under
- * Type=notify, the gate fires at crypto_ready so no RPC was ever bound,
- * and the still-open "db.open_migrate" step made the heartbeat sweeper
- * print 1,909 `state=stuck verdict=telemetry` records for a step that had
- * FAILED 29 s in. The contract is now: close the step as failed (the only
- * producer of verdict=failure), refuse, and let the unit exit.
- *
- * Its own function so the case reads as one contract and test_boot_phase
- * stays under the complexity cap. Returns its own failure count. */
+ * Parking sends no READY= under Type=notify and the step stays open, so the
+ * gate closes the step as failed (the only producer of verdict=failure),
+ * refuses, and lets the unit exit. Its own function to stay under the
+ * complexity cap; returns its own failure count. */
 static int bp_node_db_gate_refuses(void)
 {
     int failures = 0;
@@ -452,10 +404,9 @@ static int bp_test_thread_io_evidence(void);  /* end of file */
 int test_boot_phase(void)
 {
 #if defined(_WIN32)
-    /* Re-exec'd child lanes for the illegal-transition abort cases
-     * (Windows has no fork()): perform the illegal advance and let
-     * abort() end the process. UCRT abort() exits with code 3, which the
-     * parent asserts as the signal-death analogue of WTERMSIG==SIGABRT. */
+    /* Re-exec'd child lanes for the illegal-transition abort cases (Windows
+     * has no fork()). UCRT abort() exits with code 3, the analogue of
+     * WTERMSIG==SIGABRT. */
     const char *fork_role = getenv("ZCL_TEST_FORK_ROLE");
     if (fork_role && fork_role[0]) {
         zcl_win_suppress_abort_dialog();
@@ -583,14 +534,10 @@ int test_boot_phase(void)
 
     failures += bp_node_db_gate_refuses();
 
-    /* ── boot_need_legacy_header_pull (fresh-datadir need_zcd fix) ──
-     * MEMORY/bug: on a genuinely fresh/empty datadir both
-     * active_chain_height() and db_block_max_height() are 0, so the
-     * ratio-only test `local < chain_h*9/10` degenerates to `0 < 0` and
-     * never fires — the fresh node silently falls back to a slow P2P
-     * header crawl instead of the ~60s legacy import. The fix adds an
-     * explicit empty-datadir trigger (local_index_size == 0) gated on a
-     * legacy source actually being present. */
+    /* ── boot_need_legacy_header_pull (fresh-datadir need_zcd) ──
+     * On an empty datadir the ratio test `local < chain_h*9/10` is `0 < 0`
+     * and never fires; an explicit local_index_size == 0 trigger, gated on a
+     * legacy source being present, covers it. */
     BP_CHECK("empty datadir + legacy present fires the pull (the fix)",
         boot_need_legacy_header_pull(0, 0, true));
     BP_CHECK("empty datadir + no legacy source does NOT fire",
@@ -609,18 +556,9 @@ int test_boot_phase(void)
         !boot_need_legacy_header_pull(3, 3000000, false));
 
     /* ── boot_need_blocks_table_hydrate (importblockindex determinism) ──
-     * MEMORY/bug: the `blocks`-table bulk-hydrate rung (engine/composition/src/boot.c,
-     * the sink --importblockindex CLI-bulk-loads header rows into) used to
-     * be gated on `!loaded && map_size<=1`. An EARLIER loader rung (flat
-     * file / block_index_cache) can succeed ("loaded=true") with a small
-     * STALE map left over from a partial P2P header sync that predates the
-     * CLI import — the `!loaded` guard then PERMANENTLY skips the bulk
-     * rung even though the blocks table holds millions of complete rows,
-     * and the node falls back to a P2P/getheaders header crawl to re-fetch
-     * headers it already has on disk (~90 min instead of ~74s). The fix
-     * keys the rung on the blocks-table row count vs the CURRENTLY loaded
-     * map size instead of the `loaded` flag — a stale small map never
-     * blocks it. */
+     * The bulk-hydrate rung keys on the blocks-table row count vs the
+     * CURRENTLY loaded map size, not the `loaded` flag, so a stale small
+     * map never blocks it. */
     BP_CHECK("empty map + blocks table populated fires (fresh datadir "
              "chooses bulk)",
         boot_need_blocks_table_hydrate(0, 3100000));
@@ -660,17 +598,10 @@ int test_boot_phase(void)
         boot_stage_current() == BOOT_STAGE_SHUTDOWN_COMPLETE);
 
     /* ── illegal transitions abort() (fork-isolated) ─────────────────
-     * boot_stage_advance_to() calls abort() on a BACKWARD move and on an
-     * OUT-OF-RANGE target (platform/modules/util/src/boot_phase.c:112-118 and
-     * :140-147). abort() raises SIGABRT with no handler installed in the
-     * test process, so it would kill the runner. We fork a child, have it
-     * perform the illegal advance, and assert the child is *terminated by
-     * SIGABRT* (WIFSIGNALED && WTERMSIG==SIGABRT). The child redirects its
-     * own stderr to /dev/null so the abort's diagnostic fprintf does not
-     * pollute the test log, and falls through to a distinct _exit() code
-     * if abort() did NOT fire — a real regression then surfaces as a clean
-     * exit instead of a signal. Mirrors the fork+SIGABRT idiom in
-     * tests/harness/src/test_postmortem.c:104-121. */
+     * boot_stage_advance_to() aborts on a BACKWARD move and on an
+     * OUT-OF-RANGE target. A forked child (stderr to /dev/null) performs the
+     * advance and must die by SIGABRT; a distinct _exit() code means abort()
+     * did not fire. */
 
     /* (a) BACKWARD move: DB_OPEN -> INIT must abort. */
     fflush(stdout);
@@ -737,19 +668,10 @@ int test_boot_phase(void)
 
     /* ── boot step reporter: slow, stuck, and failed are three states ──
      *
-     * The incident: a boot step ran for four hours with no record of its
-     * own, because the only marker for a step is printed after it
-     * returns. The reporter now names a step on the way in and reports
-     * it every budget window until it finishes.
-     *
-     * The property pinned here is the ANTI-CENTRALIZATION one. Two of
-     * this network's four nodes are 7200 rpm HDD boxes whose disks sit
-     * at 57-91% IO pressure while their CPUs idle; steps that take
-     * seconds on NVMe take minutes there. If "over budget" were graded
-     * as failure, those nodes would be graded off the network for being
-     * honest about their hardware. So: no elapsed time, however large,
-     * may ever produce a failure verdict. Failure is reported by the
-     * step, never inferred from the clock. */
+     * Anti-centralization property: no elapsed time, however large, may
+     * produce a failure verdict (slow HDD nodes must not be graded off the
+     * network). Failure is reported by the step, never inferred from the
+     * clock. */
     {
         const int64_t B = BOOT_STEP_BUDGET_MS;
 
@@ -771,8 +693,7 @@ int test_boot_phase(void)
             strcmp(boot_step_state_name(slow),
                    boot_step_state_name(BOOT_STEP_FAILED)) != 0);
 
-        /* Over budget WITHOUT progress: stuck — distinct from slow, and
-         * still only an observation. */
+        /* Over budget WITHOUT progress: stuck, still only an observation. */
         enum boot_step_state stuck = boot_step_classify(B * 20, B, 0);
         BP_CHECK("step: over budget with no progress is stuck",
             stuck == BOOT_STEP_STUCK);
@@ -782,8 +703,7 @@ int test_boot_phase(void)
         BP_CHECK("step: stuck carries verdict=telemetry",
             strcmp(boot_step_state_verdict(stuck), "telemetry") == 0);
 
-        /* The clock can never manufacture a failure — not at an hour,
-         * not at a day, not with any progress value. */
+        /* The clock can never manufacture a failure. */
         {
             bool clock_can_fail = false;
             const int64_t elapsed[] = {
@@ -814,8 +734,7 @@ int test_boot_phase(void)
             boot_step_classify(BOOT_STEP_BUDGET_MS + 1, 0, 1) ==
                 BOOT_STEP_SLOW);
 
-        /* Every state has a distinct, non-empty name; out-of-range is
-         * named rather than read off the end of the table. */
+        /* Every state has a distinct, non-empty name; out-of-range is named. */
         {
             bool all_named = true;
             for (int s = 0; s < (int)BOOT_STEP_STATE__MAX; s++) {
@@ -834,10 +753,8 @@ int test_boot_phase(void)
                        "(invalid)") == 0);
         }
 
-        /* The tracked-step API must be safe to drive with no step open
-         * and must not leave one behind. boot_step_fail always returns
-         * false so a boot exit can name its failure and return on the
-         * statement it was already returning on. */
+        /* The tracked-step API is safe with no step open; boot_step_fail
+         * always returns false. */
         boot_step_done();                 /* nothing open — no-op */
         boot_step_note();
         BP_CHECK("step: fail() returns false even with no step open",
@@ -845,15 +762,10 @@ int test_boot_phase(void)
     }
 
     /* ── An extension must be EARNED ──────────────────────────────
-     * The stall reporter re-arms every budget window, so any state that
-     * extends the systemd start deadline extends it FOREVER. That is
-     * fine for a step that is moving and fatal for one that is not:
-     * TimeoutStartSec stops being reachable, and Restart=always — the
-     * only thing that recovers a wedged boot — never gets its turn.
-     *
-     * These pin the rule at the seam boot_step_emit() actually consults,
-     * so a future edit that makes STUCK "just a bit more patient" has to
-     * delete an assertion rather than silently reintroduce the hang. */
+     * The reporter re-arms every budget window, so a state that extends the
+     * systemd start deadline extends it forever; only a moving step may earn
+     * it, or Restart=always never gets its turn. These pin the rule at the
+     * seam boot_step_emit() consults. */
     {
         BP_CHECK("budget: SLOW earns more start budget (moving, just slow)",
             boot_step_state_earns_budget(BOOT_STEP_SLOW));
@@ -867,10 +779,7 @@ int test_boot_phase(void)
         BP_CHECK("budget: DONE earns nothing",
             !boot_step_state_earns_budget(BOOT_STEP_DONE));
 
-        /* Composed with the classifier: the ONLY way to reach the
-         * non-earning STUCK state is genuine zero progress, so an honest
-         * slow box (any delta > 0) always keeps its budget no matter how
-         * far over budget it runs. */
+        /* The only way to reach non-earning STUCK is genuine zero progress. */
         BP_CHECK("budget: over budget WITH progress stays earning",
             boot_step_state_earns_budget(
                 boot_step_classify(3600000, BOOT_STEP_BUDGET_MS, 1)));
@@ -880,8 +789,8 @@ int test_boot_phase(void)
         BP_CHECK("budget: under budget always earning",
             boot_step_state_earns_budget(
                 boot_step_classify(1, BOOT_STEP_BUDGET_MS, 0)));
-        /* A non-earning state is still REPORTED — telemetry is
-         * unconditional, only the budget is conditional. */
+        /* A non-earning state is still REPORTED; only the budget is
+         * conditional. */
         BP_CHECK("budget: STUCK still reports as telemetry, not failure",
             strcmp(boot_step_state_verdict(BOOT_STEP_STUCK),
                    "telemetry") == 0 &&
@@ -890,24 +799,12 @@ int test_boot_phase(void)
 
     /* ── out-of-band evidence probe for an OPAQUE step ─────────────
      *
-     * The defect: node.db's open ceremony (SQLite WAL recovery, then
-     * PRAGMA quick_check) is a pair of single blocking calls inside
-     * libsqlite3. Measured on this node's own node.log it cost between
-     * 214_354 ms and 985_360 ms whenever the previous shutdown was
-     * unclean, and nothing inside it can call boot_step_note(). It
-     * therefore graded STUCK — over budget, zero progress — and bought
-     * no start budget, even though the disk was working the whole time.
-     *
-     * Proven here end to end: the step is reported over the real
-     * NOTIFY_SOCKET path, and the EXTEND_TIMEOUT_USEC datagram appears
-     * ONLY when the probe's value actually changed during the window.
-     *
-     * Two negative controls, both required, because the claim has two
-     * halves. (1) no probe -> STUCK -> no datagram: without them a test
-     * that only checks the positive case passes just as well if the
-     * extension were unconditional. (2) probe installed but NOT moving
-     * -> still STUCK: without this, installing a probe could be granting
-     * the extension by its mere presence. */
+     * node.db's open ceremony (WAL recovery, quick_check) is blocking calls
+     * that cannot call boot_step_note(). The step is reported over the real
+     * NOTIFY_SOCKET path and the EXTEND_TIMEOUT_USEC datagram appears ONLY
+     * when the probe's value changed during the window. Negative controls:
+     * (1) no probe -> STUCK, no datagram; (2) probe installed but not
+     * moving -> still STUCK. */
     {
         boot_stage_reset_for_testing();
 
@@ -997,10 +894,8 @@ int test_boot_phase(void)
                "systemd notify socket on this lane\n");
 #endif
 
-        /* The stock probe must be real, non-blocking, and must observe
-         * this process's own block I/O. fsync forces the writes out to
-         * the device, so ru_oublock has to move; a page-cache-only write
-         * would not be evidence and must not be counted as any. */
+        /* The stock probe is real, non-blocking, and observes this
+         * process's own block I/O: fsync makes ru_oublock move. */
         {
             uint64_t before = boot_evidence_probe_process_io(NULL);
             BP_CHECK("evidence: stock process-io probe wrote real I/O",
@@ -1024,14 +919,11 @@ int test_boot_phase(void)
     return failures;
 }
 
-/* ── evidence scoped to ONE thread ────────────────────────────────────
+/* ── evidence scoped to ONE thread ───────────────────────────────────
  *
- * The process-wide probe is honest only for a step that is the process's
- * only source of I/O. svc.init_wallet is not: it runs beside the Tor
- * monitor, connman and the reducer, so the process probe would grade it
- * SLOW in every window and buy an hour of start budget every 30 s while a
- * real wedge sat inside it — the module's own warning, made real. These
- * fixtures pin the difference between the two probes on the SAME I/O. */
+ * The process-wide probe is honest only when the step is the process's only
+ * I/O source; svc.init_wallet runs beside other threads, so it needs the
+ * thread-scoped probe. These fixtures pin the difference on the SAME I/O. */
 #if defined(__linux__)
 struct bp_io_burner {
     size_t bytes;
@@ -1053,17 +945,14 @@ static int bp_test_thread_io_evidence(void)
     boot_step_enter("test.thread_io");
     boot_step_set_thread_io_evidence_probe();
 
-    /* (1) The probe is live and it observes THIS thread. On Linux this MUST
-     * work: a silently blind probe would degrade the step back to marker-only
-     * evidence — the exact defect being fixed — with no failing test. */
+    /* (1) The probe is live and observes THIS thread (must work on Linux). */
     uint64_t self_before = boot_evidence_probe_thread_io(NULL);
     BP_CHECK("thread-io: this thread's own fsynced I/O IS evidence",
         bp_burn_block_io(4 * BOOT_EVIDENCE_IO_QUANTUM_BYTES) &&
         boot_evidence_probe_thread_io(NULL) > self_before);
 
-    /* (2) Another thread's I/O is NOT this step's evidence — while the
-     * process-wide probe counts exactly that I/O, which is the whole reason
-     * svc.init_wallet cannot use the process-wide one. */
+    /* (2) Another thread's I/O is NOT this step's evidence, while the
+     * process-wide probe counts it. */
     uint64_t t0 = boot_evidence_probe_thread_io(NULL);
     uint64_t p0 = boot_evidence_probe_process_io(NULL);
     struct bp_io_burner burner = {

@@ -1,11 +1,9 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Purpose: Pin the beta6 bootstrap serve wire, chunk bounds, gating and quota.
  *
- * The two manifest byte vectors below are written out FIELD BY FIELD from the
- * beta6 serializer definitions in src/protocol.h, not captured from this
- * encoder — checking the encoder against its own decoder would pass just as
- * happily if both were wrong in the same direction, and this wire has to
- * satisfy a binary nobody here can change.
+ * The two manifest byte vectors are written out field by field from the beta6
+ * serializer definitions in src/protocol.h, not captured from this encoder:
+ * this wire has to satisfy a binary nobody here can change.
  *
  * Layout being pinned (CBootstrapSnapshotManifest, protocol.h:205-289):
  *   i32 nVersion | CompactSize+bytes strNetwork | i32 nHeight |

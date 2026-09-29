@@ -6,11 +6,10 @@
  *
  * CHECKPOINT_ROM lifts ACTIVATE containment SOVEREIGNLY when an install
  * candidate's manifest reproduces EVERY component of the compiled shielded ROM
- * state checkpoint (g_rom_state_checkpoint) byte-for-byte — header-independent,
- * fail-closed. It closes the sovereignty hole where the historical Sprout
- * anchors and the full ~1.49M nullifier set were unbound under the
- * header-dependent CHECKPOINT_CONTENT authority (which binds only the
- * transparent coins + the Sapling tip frontier root).
+ * state checkpoint (g_rom_state_checkpoint) byte-for-byte, header-independent
+ * and fail-closed. It binds the historical Sprout anchors and the full
+ * nullifier set that the header-dependent CHECKPOINT_CONTENT authority
+ * (transparent coins + Sapling tip frontier root) leaves unbound.
  *
  * Pure synthetic fixture: it drives the content-authority resolver
  * (consensus_state_activate_resolve_content_authority_name_for_test — the
@@ -194,9 +193,8 @@ int test_checkpoint_rom_authority(void)
 
     /* (d) FAIL-CLOSED — an UNBAKED (placeholder) keystone at the checkpoint
      *     height, matched exactly by the manifest, must NOT activate: an
-     *     all-zero shielded fold is not a trust root. Without the placeholder
-     *     guard the all-zero == all-zero components would falsely "match" and
-     *     grant CHECKPOINT_ROM. Falls through to content -> "none". */
+     *     all-zero shielded fold is not a trust root. Falls through to
+     *     content -> "none". */
     {
         struct rom_state_checkpoint ph = rom;
         memset(ph.nullifier_digest, 0, 32); /* unbaked shielded fold */

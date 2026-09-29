@@ -389,15 +389,7 @@ static int run_bulk_iter_tests(void)
     }
 
     /* ── J. EMPTY value under a well-formed 33-byte 'Z' anchor key —
-     *       refused, not a crash / OOB read. Regression: this scenario
-     *       existed in an earlier revision of this file and was dropped by
-     *       merge f4ab099a7's conflict resolution (which took the "ours"
-     *       side of a conflicting rewrite wholesale). The reader itself
-     *       was never affected — chainstate_legacy_reader.c's
-     *       `if (!v || vlen == 0)` check (both in iter_anchor_keyspace and
-     *       the chainstate_legacy_get_sapling_anchor point lookup) already
-     *       refuses an empty value; this only re-adds the missing
-     *       coverage. ── */
+     *       refused, not a crash / OOB read. ── */
     test_make_tmpdir(dir, sizeof(dir), "cslr_emptyval", "db");
     {
         BLK_CHECK("make empty (emptyval)", blk_make_empty(dir));
@@ -409,11 +401,9 @@ static int run_bulk_iter_tests(void)
         void *h = NULL;
         BLK_CHECK("open (emptyval)", chainstate_legacy_open(dir, &h) && h);
         if (h) {
-            /* Point lookup: db_read() returns a non-NULL 0-length buffer
-             * for a present-but-empty LevelDB value (malloc(0) is non-NULL
-             * on glibc), so this exercises the explicit `vlen == 0` check
-             * — not the "key absent" path — and must land on MISSING, the
-             * documented "nothing usable returned" outcome (never FOUND). */
+            /* Point lookup: db_read() returns a non-NULL 0-length buffer for a
+             * present-but-empty value, so this exercises the explicit
+             * `vlen == 0` check and must land on MISSING (never FOUND). */
             struct incremental_merkle_tree got;
             BLK_CHECK("get_sapling_anchor(empty value) == MISSING",
                       chainstate_legacy_get_sapling_anchor(h, &root, &got) ==
@@ -426,12 +416,9 @@ static int run_bulk_iter_tests(void)
     }
     test_rm_rf_recursive(dir);
 
-    /* ── K. TRUNCATED (short) anchor value — fewer bytes than
-     *       incremental_tree_deserialize needs for the tree it is claimed
-     *       to hold. Must fail closed on the short buffer (stream_read's
-     *       bounds check trips inside incremental_tree_deserialize) with
-     *       no read past the value's actual length. Same drop history as
-     *       scenario J above. ── */
+    /* ── K. TRUNCATED (short) anchor value: must fail closed on the short
+     *       buffer (incremental_tree_deserialize bounds check) with no read
+     *       past the value's length. ── */
     test_make_tmpdir(dir, sizeof(dir), "cslr_truncval", "db");
     {
         struct incremental_merkle_tree t; blk_build_sapling(6, &t);
@@ -602,11 +589,10 @@ int test_chainstate_legacy_reader(void)
                n, st.total_vouts,
                (double)st.total_value_sat / 1e8,
                st.min_height, st.max_height, st.bad_records);
-        /* Records here are CCoins rows (one per transaction with any
-         * unspent output), not individual vouts.  Live zclassicd
-         * `gettxoutsetinfo` reports ~500k transactions / ~1.35M
-         * txouts on ZCL mainnet — track the tx count for `records`
-         * and the vout count for `total_vouts`.  Generous bands. */
+        /* Records are CCoins rows (one per transaction with any unspent
+         * output), not vouts: ~500k transactions / ~1.35M txouts on ZCL
+         * mainnet. Track tx count for `records`, vout count for
+         * `total_vouts`. Generous bands. */
         if (n < 400000 || n > 2000000) {
             printf("    FAIL: record count outside [400k..2M] sanity band\n");
             failures++;

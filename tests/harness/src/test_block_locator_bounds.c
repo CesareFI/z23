@@ -1,15 +1,12 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
- * block_locator_deserialize bounds test: legacy ZClassic/MagicBean peers
- * routinely send a getheaders/getblocks locator one hash past
- * MAX_LOCATOR_HASHES (65 observed on mainnet), and zclassicd's
- * CBlockLocator deserialization has no count limit. Rejecting such a
- * locator silently drops the request and stalls the legacy peer's sync,
- * so block_locator_deserialize (core/modules/primitives/src/block.c) must TOLERATE
+ * block_locator_deserialize bounds test: legacy ZClassic/MagicBean peers send
+ * a getheaders/getblocks locator one hash past MAX_LOCATOR_HASHES (65 seen on
+ * mainnet), and rejecting it would stall the legacy peer's sync. So
+ * block_locator_deserialize (core/modules/primitives/src/block.c) must TOLERATE
  * an oversized count: keep the tip-most MAX_LOCATOR_HASHES (64) entries,
- * read-and-discard the rest, and leave the stream cursor exactly on the
- * trailing hash_stop. A count overclaimed past the actual payload must
- * still fail on a short read. Only the 3-hash happy path is covered
- * elsewhere (test_net.c); this asserts the bound branches directly. */
+ * discard the rest, and leave the stream cursor on the trailing hash_stop. A
+ * count overclaimed past the payload must still fail on a short read. The
+ * 3-hash happy path is covered in test_net.c; this asserts the bound branches. */
 
 #include "test/test_core.h"
 

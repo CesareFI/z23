@@ -1,47 +1,26 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * test_connect_block_checkdatasig_sigops - pins the DEFAULT-OFF
+ * test_connect_block_checkdatasig_sigops: pins the default-off
  * CHECKDATASIG_SIGOPS parity flag in core/modules/validation/src/connect_block.c.
  *
- * Background. zclassicd ConnectBlock (zclassic-cpp/src/main.cpp:2567) builds
- * its script verification flags as
- *   SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_CHECKLOCKTIMEVERIFY |
- *   SCRIPT_VERIFY_CHECKDATASIG_SIGOPS.
- * The CHECKDATASIG_SIGOPS bit makes OP_CHECKDATASIG / OP_CHECKDATASIGVERIFY
- * count toward the per-block sigop total (script.c:117), tightening the
- * MAX_BLOCK_SIGOPS (20000) ceiling. zclassic23's connect_block omitted that
- * bit. The fix ORs it in behind the DEFAULT-OFF runtime flag
- * g_enforce_checkdatasig_sigops (-enforce-checkdatasig-sigops).
+ * zclassicd ConnectBlock (zclassic-cpp/src/main.cpp:2567) ORs
+ * SCRIPT_VERIFY_CHECKDATASIG_SIGOPS into its flags, so OP_CHECKDATASIG /
+ * OP_CHECKDATASIGVERIFY count toward the MAX_BLOCK_SIGOPS (20000) ceiling
+ * (script.c:117). zclassic23 gates that behind g_enforce_checkdatasig_sigops
+ * (-enforce-checkdatasig-sigops), default off.
  *
- * Isolating the change. CheckBlock (domain/consensus/src/check_block.c) ALSO
- * tallies block sigops and ALWAYS counts OP_CHECKDATASIG, but only the LEGACY
- * (top-level scriptSig/scriptPubKey) count — it has no coins view, so it
- * cannot do the P2SH redeem-script count. connect_block runs CheckBlock first,
- * then adds the P2SH sigop count (connect_block.c ~:493) using the SAME flags
- * variable this fix changes. So the P2SH path is exactly where the flag has a
- * behavioral effect that CheckBlock does not already enforce.
+ * CheckBlock counts only legacy top-level sigops (no coins view); the P2SH
+ * redeem-script count is added by connect_block (~:493) with the flag, so
+ * that is where the flag matters. The block has a coinbase with
+ * CDS_LEGACY_OPS OP_CHECKSIG bytes (just under 20000) and one P2SH input whose
+ * redeem script is CDS_REDEEM_OPS OP_CHECKDATASIG bytes:
+ *   1. Flag OFF: total == CDS_LEGACY_OPS, so connect_block does not reject.
+ *   2. Flag ON: total == CDS_LEGACY_OPS + CDS_REDEEM_OPS, over the ceiling,
+ *      so connect_block rejects with "bad-blk-sigops".
  *
- * This test therefore builds a block that:
- *   - keeps the LEGACY top-level sigop count just UNDER 20000 (a coinbase
- *     whose outputs hold CDS_LEGACY_OPS OP_CHECKSIG bytes — counted identically
- *     by CheckBlock and connect_block, with or without the flag), so CheckBlock
- *     always passes; and
- *   - spends one P2SH input whose redeem script (pushed in the scriptSig) is
- *     CDS_REDEEM_OPS OP_CHECKDATASIG bytes. Those redeem sigops count toward
- *     the per-block ceiling ONLY when the flag adds CHECKDATASIG_SIGOPS.
- *
- * With CDS_LEGACY_OPS + CDS_REDEEM_OPS chosen to straddle 20000:
- *   1. Flag OFF (DEFAULT): total == CDS_LEGACY_OPS (P2SH CHECKDATASIG counts 0)
- *      -> under the ceiling -> connect_block does NOT reject for sigops
- *      (byte-identical to today).
- *   2. Flag ON: total == CDS_LEGACY_OPS + CDS_REDEEM_OPS -> over the ceiling
- *      -> connect_block REJECTS with "bad-blk-sigops".
- *
- * SW_HEIGHT-style setup: a checkpoint-covered, Sapling-inactive height so
- * expensive_checks=false (PoW + parallel script verification skipped) while the
- * sigop accounting still runs; the funding coin is plain + mature so neither
- * coinbase maturity nor the all-zeros Sapling-root check interferes.
- */
+ * Setup: a checkpoint-covered, Sapling-inactive height so
+ * expensive_checks=false while sigop accounting still runs; the funding coin
+ * is plain and mature. */
 
 #include "test/test_core.h"
 

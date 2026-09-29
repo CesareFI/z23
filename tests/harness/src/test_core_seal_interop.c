@@ -1,25 +1,12 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * test_core_seal_interop — prove that this repository's TWO independent
- * implementations of the codeindex Merkle dialect actually agree.
+ * test_core_seal_interop — prove that the repository's two independent
+ * implementations of the codeindex Merkle dialect agree: core_seal.c
+ * (core/MANIFEST.sha3 SECTION/TREE lines) and
+ * cognition/modules/codeindex/codeindex_merkle.c (source-tree Merkle and
+ * inclusion proofs).
  *
- * THE GAP THIS CLOSES. Two separate bodies of code compute digests in the same
- * dialect over the same kind of input:
- *
- *   tools/core_seal.c              mints the SECTION/TREE lines of
- *                                  core/MANIFEST.sha3.
- *   cognition/modules/codeindex/codeindex_merkle.c  builds the source-tree Merkle and emits
- *                                  and verifies inclusion proofs against it.
- *
- * core_seal.c's own header says its three rules are "transcribed from
- * codeindex_merkle.c" and "any change there must be mirrored here". Until this
- * file existed, NOTHING in the tree checked that. Two hand-mirrored preimage
- * rules with no equality test between them is a silent-drift shape: the day
- * they diverge, a SECTION digest means one thing to the sealer and another to
- * the proof code, and every guarantee layered on top is void — with both sides
- * still self-consistent and both test suites still green.
- *
- * THE DIALECT UNDER TEST, in full:
+ * The dialect:
  *   leaf = SHA3-256(0x10 || "zcl.codeindex.merkle.leaf.v1"0x00
  *                        || relpath 0x00 || u64le(size) || bytes)
  *   node = SHA3-256(0x11 || "zcl.codeindex.merkle.node.v1"0x00
@@ -28,56 +15,30 @@
  *                               kind(0=file,1=dir) || name 0x00 || digest[32])
  *   child order = strcmp over the child KEY: a file's own name, a directory's
  *                 name followed by '/'.
- * Each domain string is hashed INCLUDING its NUL terminator (sizeof, not
- * strlen). A directory node binds ALL of its direct children, and the count is
- * bound as a u32le — the tree is n-ary, so there is no pairing step and no
- * duplicate-tail case.
+ * Each domain string is hashed including its NUL (sizeof, not strlen). A node
+ * binds all direct children and the u32le count; the tree is n-ary, with no
+ * pairing step.
  *
- * ── WHY THIS IS NOT A ONE-LINE COMPARISON: THE TWO FILE SETS DIFFER ──
+ * The two file sets differ: the sealer takes the git-tracked CORE_SEAL_PATHS
+ * (everything under core/), codeindex takes ci_enumerate_sources() (.c, .h,
+ * .def under fixed roots), so whole-tree roots differ by construction. The
+ * test mirrors the sealed file set into a scratch tree and runs both
+ * implementations over it. A section is compared only when every sealed file
+ * below it is a codeindex leaf and codeindex reports no extra file; sections
+ * that fail are named with the responsible files.
  *
- * The sealer's input is the Makefile's CORE_SEAL_PATHS as tracked by git:
- * everything under core/. Four validation pathspecs are repeated explicitly
- * but already fall under that glob. Derive the live count from the input; it
- * is not part of the Merkle contract.
- * codeindex's input is ci_enumerate_sources()' policy: .c, .h and .def under a
- * fixed set of roots. Those sets are NOT the same set, so the two WHOLE-TREE
- * roots differ by construction and comparing them directly would be a bug, not
- * a test.
+ * Non-vacuity defences:
+ *   1. A floor: csi_real_sections asserts a minimum number of compared
+ *      sections.
+ *   2. csi_dialect_discriminates re-folds a real node from codeindex's proof
+ *      children through four wrong preimages (domain without NUL, u16le
+ *      count, bare-name ordering, leaf domain in the node slot) and requires
+ *      each to differ while the canonical fold matches.
+ *   3. An ordering trap in the synthetic fixture: `ab.c`, directory `ab`,
+ *      `ab_z.c` sort ab.c < ab/ < ab_z.c by key but ab < ab.c < ab_z.c by
+ *      bare name ('/' is 0x2f, below digits, letters and '_').
  *
- * This file therefore controls for the input instead of assuming it away. It
- * MIRRORS exactly the sealed file set into a scratch tree and runs BOTH
- * implementations over that one mirror. Any surviving difference is then
- * algorithmic, which is the only thing worth measuring. Comparability is
- * decided per directory and MEASURED, never assumed: a section is compared
- * only when every sealed file below it is also a codeindex leaf AND codeindex
- * reports no extra file below it. The sections that fail that test are named
- * in the transcript together with the exact files responsible, so "we could
- * not compare N of them" is never a silent omission.
- *
- * ── HOW IT AVOIDS BEING VACUOUS ──
- *
- * A test that compares two things that cannot differ is worthless, and this one
- * is easy to write that way. Three defences:
- *
- *   1. A FLOOR. csi_real_sections asserts a minimum number of genuinely
- *      compared sections. If a policy change quietly makes every section
- *      incomparable, the group goes red instead of green-and-empty.
- *   2. A DISCRIMINATION LEG. csi_dialect_discriminates re-folds a REAL node
- *      from codeindex's own proof children through four deliberately WRONG
- *      preimages — domain without its NUL, count as u16le, children ordered by
- *      bare name, the leaf domain in the node slot — and requires each to
- *      differ from codeindex's answer, while the canonical fold matches. That
- *      pins every clause of the dialect individually.
- *   3. AN ORDERING TRAP in the synthetic fixture. The children `ab.c`, the
- *      directory `ab`, and `ab_z.c` sort as ab.c < ab/ < ab_z.c under the real
- *      rule and as ab < ab.c < ab_z.c under the plausible wrong rule (bare
- *      name). '/' is 0x2f, BELOW every digit, letter and '_' — so a second
- *      implementation reasoning from the ASCII rank of '/' rather than from
- *      the prefix property gets exactly this case backwards. The fixture makes
- *      that divergence observable instead of theoretical.
- *
- * Scratch work happens under ./test-tmp/ (project no-/tmp convention).
- */
+ * Scratch work happens under ./test-tmp/. */
 #ifndef _POSIX_C_SOURCE
 #define _POSIX_C_SOURCE 200809L
 #endif
@@ -94,17 +55,13 @@
 
 #include "codeindex/codeindex_merkle.h"
 
-/* The sealer is included whole rather than re-implemented, so the assertions
- * below exercise the SHIPPING preimage functions (node_digest, hash_file,
- * compute_sections, read_and_hash, compute_root) and not a copy of them that
- * could agree with codeindex while the real tool does not. This is the same
- * pattern tests/harness/src/test_core_seal.c already uses. */
+/* The sealer is included whole so the assertions exercise the shipping
+ * preimage functions (node_digest, hash_file, compute_sections, read_and_hash,
+ * compute_root), as test_core_seal.c does. */
 #define CORE_SEAL_NO_MAIN 1
-/* core_seal_main() is the tool's ONE external symbol under that guard, and
- * tests/harness/src/test_core_seal.c already includes this same translation unit
- * into the same binary. Renaming it here — rather than editing the sealer to
- * make it static — keeps tools/core_seal.c untouched and lets both tests hold
- * their own private copy of the sealer's file-local machinery. */
+/* core_seal_main() is the tool's one external symbol under that guard;
+ * test_core_seal.c includes the same translation unit into the same binary, so
+ * it is renamed here. */
 #define core_seal_main csi_unused_core_seal_main
 #include "../../../tools/core_seal.c"
 #undef core_seal_main
@@ -115,10 +72,8 @@
 #define CSI_LIST   CSI_WORK "/paths.nul"
 
 /* At least 90% of the manifest's derived sections must remain comparable with
- * codeindex. The live fraction is derived from the manifest, so adding module
- * subtrees raises the floor instead of leaving an obsolete fixed count behind.
- * A small non-source tail is expected and named below; losing more than 10% of
- * section comparisons is a refusal, not silently weaker evidence. */
+ * codeindex; the fraction is derived from the manifest, so it scales with new
+ * module subtrees. */
 #define CSI_MIN_COMPARABLE_PERCENT 90U
 
 static int csi_failures;
@@ -144,8 +99,7 @@ static void csi_rmrf(const char *dir)
         fprintf(stderr, "core_seal_interop: rm -rf '%s' failed\n", dir);
 }
 
-/* mkdir -p over every directory component of `path` EXCEPT the last one, which
- * is taken to be a file name. */
+/* mkdir -p over every directory component of `path` except the last. */
 static bool csi_mkdir_parents(const char *path)
 {
     char buf[PATH_MAX];
@@ -241,13 +195,11 @@ static void csi_seal_run_free(struct csi_seal_run *r)
     memset(r, 0, sizeof(*r));
 }
 
-/* Run tools/core_seal.c's real sealing path over `mirror_abs`, driving it with
- * the NUL-separated path list at `list_abs` exactly as the Makefile drives it
- * with `git ls-files -z`. read_and_hash() consumes `stdin` and opens each path
- * relative to the working directory, so stdin is redirected and the process
- * chdir()s into the mirror for the duration — both restored before return.
- * (test_parallel gives every group its own fork()ed process, and test.c runs
- * groups sequentially, so neither is visible to another group.) */
+/* Run tools/core_seal.c's sealing path over `mirror_abs`, driven by the
+ * NUL-separated list at `list_abs` as the Makefile does with `git ls-files -z`.
+ * read_and_hash() consumes `stdin` and opens paths relative to the cwd, so
+ * stdin is redirected and the process chdir()s into the mirror; both are
+ * restored before return. */
 static bool csi_run_sealer(const char *mirror_abs, const char *list_abs,
                            struct csi_seal_run *out)
 {
@@ -347,11 +299,9 @@ static int csi_cmp_child_bare(const void *a, const void *b)
     return strcmp(ca->name, cb->name);
 }
 
-/* Fold a directory node from children supplied by CODEINDEX (an inclusion
- * proof carries every direct child of every level, in canonical order) through
- * the SEALER's preimage rule. The canonical variant calls the shipping
- * node_digest() from tools/core_seal.c verbatim; the others re-spell exactly
- * one clause of the dialect wrongly. */
+/* Fold a directory node from codeindex's inclusion-proof children through the
+ * sealer's preimage rule. The canonical variant calls the shipping
+ * node_digest(); the others mis-spell exactly one clause of the dialect. */
 static void csi_fold(enum csi_variant v, const char *dirpath,
                      const struct ci_merkle_proof_child *kids, uint32_t n,
                      unsigned char out[HSZ])
@@ -430,10 +380,9 @@ struct csi_verdict {
     bool     comparable;
 };
 
-/* Decide, from evidence only, whether the two implementations were handed the
- * same input for this directory. Every sealed file below it must also be a
- * codeindex leaf (nothing dropped), and codeindex's own recursive file count
- * must equal that number (nothing added). */
+/* Whether both implementations saw the same input for this directory: every
+ * sealed file below it is a codeindex leaf, and codeindex's recursive file
+ * count equals that number. */
 static struct csi_verdict csi_classify(const struct ci_merkle *m,
                                        const struct csi_seal_run *seal,
                                        const char *dir)
@@ -499,8 +448,7 @@ static void csi_real_sections(void)
 
     csi_rmrf(CSI_WORK);
 
-    /* Mirror the sealed set: same repo-relative paths, same bytes. That is the
-     * whole point — from here on the two implementations see ONE input set. */
+    /* Mirror the sealed set: same repo-relative paths, same bytes. */
     bool mirrored = true;
     char **list = calloc(mv.nfile ? mv.nfile : 1, sizeof(char *));
     if (!list)
@@ -532,8 +480,8 @@ static void csi_real_sections(void)
     if (!ran)
         goto done;
 
-    /* Implementation B: cognition/modules/codeindex, over the SAME mirror. build_cold reads
-     * and writes no snapshot, so this is the from-scratch reference path. */
+    /* Implementation B: codeindex over the same mirror (build_cold, no
+     * snapshot). */
     struct ci_merkle *m = ci_merkle_build_cold(mirror_abs, NULL);
     CSI_CHECK("codeindex built the mirror", m != NULL);
     if (!m) {
@@ -541,13 +489,10 @@ static void csi_real_sections(void)
         goto done;
     }
 
-    /* The mirror is faithful when every mirrored file still hashes to the
-     * digest the manifest recorded. When it does, the sealer's recomputation
-     * must reproduce the manifest's own SECTION/TREE/ROOT lines byte for byte —
-     * which pins that this test is measuring the SHIPPED seal and not some
-     * drifted working-tree state. When core/ has been edited without a re-seal
-     * the two implementations must still agree with EACH OTHER, so that leg
-     * stays unconditional and only the manifest-equality leg is conditioned. */
+    /* A faithful mirror (every file hashes to the manifest digest) must
+     * reproduce the manifest's SECTION/TREE/ROOT lines byte for byte. The
+     * cross-implementation leg stays unconditional; only manifest equality is
+     * conditioned. */
     bool faithful = true;
     for (size_t i = 0; i < seal.nents && faithful; i++) {
         char hex[HEXSZ];
@@ -600,8 +545,7 @@ static void csi_real_sections(void)
         comparable++;
         if (same) {
             agreed++;
-            /* When the mirror is faithful the shared answer must also be the
-             * hex the manifest actually shipped. */
+            /* A faithful mirror must also match the manifest's hex. */
             if (faithful) {
                 char hex[HEXSZ];
                 zcl_hex_encode(sn->digest, HSZ, hex);
@@ -637,10 +581,8 @@ static void csi_real_sections(void)
               comparable * 100U >=
                   mv.nsec * CSI_MIN_COMPARABLE_PERCENT);
 
-    /* The whole-tree roots are expected NOT to be comparable because some
-     * sealed files are not indexable source. Asserting that they differ is a
-     * positive statement about WHY, not a shrug — if they ever became equal
-     * the input sets would have converged and every section should compare. */
+    /* The whole-tree roots must differ because some sealed files are not
+     * indexable source; equality would mean the input sets converged. */
     struct csi_verdict rootv = csi_classify(m, &seal, "");
     struct ci_merkle_node croot;
     bool rootfound = false;
@@ -651,9 +593,8 @@ static void csi_real_sections(void)
     CSI_CHECK("the whole-tree roots are correctly NOT comparable",
               !rootv.comparable && rootv.indexed_files < rootv.sealed_files);
 
-    /* Cross-implementation fold: take codeindex's OWN proof children for a
-     * comparable section and re-fold them through the sealer's node_digest.
-     * The two implementations then meet inside one preimage. */
+    /* Cross-implementation fold: re-fold codeindex's proof children for a
+     * comparable section through the sealer's node_digest. */
     for (size_t s = 0; s < mv.nsec; s++) {
         const char *dir = mv.sec[s].name;
         struct csi_verdict v = csi_classify(m, &seal, dir);
@@ -695,15 +636,10 @@ done:
 
 /* ── 2: a synthetic tree where the SETS ARE IDENTICAL BY CONSTRUCTION ── */
 
-/* Every file below uses an extension ci_enumerate_sources() admits, and sits
- * under a root it walks, so the sealer's set and codeindex's set are the same
- * set — which lets this leg assert something the real sections cannot: that the
- * two implementations agree on the WHOLE-TREE ROOT, not merely on subtrees.
- *
- * The names are chosen to be the ordering trap: `ab.c`, the directory `ab`, and
- * `ab_z.c` under one parent. Keys "ab.c" < "ab/" < "ab_z.c"; bare names
- * "ab" < "ab.c" < "ab_z.c". The two rules give different child orders and
- * therefore different node digests, so agreement here is a real measurement. */
+/* Every file uses an extension ci_enumerate_sources() admits under a root it
+ * walks, so both sets are identical and the WHOLE-TREE ROOT can be compared.
+ * Ordering trap: `ab.c`, directory `ab`, `ab_z.c` sort "ab.c" < "ab/" <
+ * "ab_z.c" by key, but "ab" < "ab.c" < "ab_z.c" by bare name. */
 static const char *const csi_synth_files[] = {
     "core/ab.c",
     "core/ab/z.c",
@@ -734,8 +670,8 @@ static void csi_synthetic_tree(void)
     for (size_t i = 0; i < n && built; i++) {
         char dst[PATH_MAX], body[256];
         snprintf(dst, sizeof(dst), "%s/%s", CSI_SYNTH, csi_synth_files[i]);
-        /* Distinct, deterministic content, and deliberately distinct LENGTHS so
-         * the u64le size field in the leaf preimage is exercised. */
+        /* Distinct content and lengths, so the u64le size field is
+         * exercised. */
         snprintf(body, sizeof(body), "/* %s */\n%*sint x%zu(void){return %zu;}\n",
                  csi_synth_files[i], (int)i, "", i, i);
         built = csi_write_file(dst, body);
@@ -822,9 +758,8 @@ static void csi_synthetic_tree(void)
     CSI_CHECK("the whole-tree roots are byte-identical",
               rf && memcmp(seal.tree, croot.digest.bytes, HSZ) == 0);
 
-    /* The ordering trap actually is a trap: the two candidate rules disagree
-     * for this fixture, so the agreement above is not a coincidence of the
-     * fixture being order-insensitive. */
+    /* The two candidate ordering rules disagree for this fixture, so the
+     * agreement above is not order-insensitivity. */
     struct ci_merkle_proof *p = ci_merkle_proof_alloc();
     if (p) {
         struct zcl_sha3_digest d;

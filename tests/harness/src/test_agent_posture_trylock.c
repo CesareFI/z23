@@ -3,45 +3,25 @@
  * test_agent_posture_trylock — the node.db-connection-level non-blocking
  * guard for agent_security_posture_collect()'s bootstrap read.
  *
- * On a wedged node with a write-retry storm: the brief
- * typed status front door (`z23 status` -> rpc_agent_summary) calls
- * agent_security_posture_collect() -> posture_collect_bootstrap() ->
- * chain_evidence_controller_snapshot(), which issues ~a dozen synchronous
- * reads on the SHARED node.db connection. node_db_long_op_active() only
- * routes around the rarer NAMED long ops (PRAGMA quick_check, the staging-
- * cleanup DELETE) that opt in via db_long_op_start/finish — ordinary write
- * contention (a writer thread retrying SQLITE_BUSY inside one
- * sqlite3_step() call) never names itself, yet it holds SQLite's own
- * per-connection mutex (every public API call on a connection opened with
- * SQLITE_OPEN_FULLMUTEX serializes behind it) for up to the connection's
- * ZCL_NODE_DB_BUSY_TIMEOUT_MS (10s) while it retries. Any other thread
- * calling into that SAME connection — including this collect's reads —
- * then queued behind it for the same duration (measured ~10s via the
- * chain_evidence dumpers before this fix).
+ * agent_security_posture_collect() -> posture_collect_bootstrap() issues ~a
+ * dozen synchronous reads on the shared node.db connection. A writer retrying
+ * SQLITE_BUSY inside one sqlite3_step() holds SQLite's per-connection mutex
+ * for up to ZCL_NODE_DB_BUSY_TIMEOUT_MS (10s), and any other thread on that
+ * connection queues behind it.
  *
- * The fix (agent_security_posture.c): try the connection's own mutex
- * (sqlite3_db_mutex) non-blockingly before the bootstrap read. On a miss,
- * serve the last-known-good snapshot immediately — labeled
- * "posture_unavailable_busy" the first time nothing has ever been cached,
- * upgrading to the last REAL collected snapshot once one exists — instead
- * of queuing. This mirrors progress_store_tx_trylock()'s non-blocking
- * pattern (test_stage_dump_trylock.c) at the node.db-connection level
- * (node.db has no equivalent app-level write-serialization mutex to
- * trylock).
+ * agent_security_posture.c therefore try-locks the connection's mutex
+ * (sqlite3_db_mutex) before the bootstrap read. On a miss it serves the
+ * last-known-good snapshot immediately: "posture_unavailable_busy" while
+ * nothing is cached, the last real collected snapshot afterwards. This
+ * mirrors progress_store_tx_trylock() (test_stage_dump_trylock.c).
  *
- * This test grabs that SAME primitive (sqlite3_mutex_enter/leave on
- * sqlite3_db_mutex) from a helper thread to deterministically simulate a
- * writer's in-flight sqlite3_step() call — the exact mechanism the fix
- * targets — without depending on a genuinely slow query's timing.
+ * The test takes that same mutex from a helper thread to simulate a writer's
+ * in-flight sqlite3_step().
  *
- * Ordering note: agent_security_posture.c's last-known-good cache is a
- * single process-wide static, not scoped to any one struct node_db. This
- * file's single test case is therefore written as ONE ordered scenario
- * (no cache exists yet -> busy shows the labeled partial -> a real collect
- * populates the cache -> a later busy period upgrades to that real
- * snapshot instead) rather than independent cases, so it never depends on
- * — or is broken by — whatever order test_parallel/test_zcl happen to run
- * cases in. */
+ * The last-known-good cache is one process-wide static, so the single test
+ * case is ONE ordered scenario (no cache -> busy shows the labeled partial ->
+ * a real collect populates the cache -> a later busy period serves that
+ * snapshot). */
 
 #include "test/test_core.h"
 
@@ -164,11 +144,9 @@ static int case_collect_nonblocking_scenario(void)
     AP_CHECK("free: status is not the busy marker",
              strcmp(live.status, "posture_unavailable_busy") != 0);
 
-    /* 4. Contend again, now that a REAL collect has succeeded: the front
-     *    upgrades to serving that last-known-GOOD snapshot (matching the
-     *    live collect's own diagnostic status) rather than regressing to
-     *    the "we know nothing" placeholder — never destroy real data with a
-     *    worse-informed busy label once real data exists. */
+    /* 4. Contend again after a REAL collect succeeded: the front serves the
+     *    last-known-good snapshot rather than the "we know nothing"
+     *    placeholder. */
     locked = ap_lock_connection(&lk, ndb.db, &th);
     AP_CHECK("locker holds the connection mutex (warm)", locked);
 
@@ -233,11 +211,11 @@ static int case_background_validation_height_populates(void)
 }
 
 /* Status collection holds sqlite3_db_mutex to stay non-blocking. A stale
- * freeze is intentionally useful here because the mutating CEC loader would
- * auto-clear it and persist three repairs. On the live node those writes are
- * routed through db_service, whose worker waits for the mutex held by this
- * caller: a permanent self-deadlock. Prove the observation path leaves the
- * persisted state byte-for-byte alone; boot init remains the repair owner. */
+/* Status collection holds sqlite3_db_mutex to stay non-blocking. It must not
+ * run the mutating CEC loader (which would auto-clear a stale freeze and
+ * persist repairs through db_service, whose worker waits on that mutex: a
+ * self-deadlock). Prove the observation path leaves persisted state
+ * byte-for-byte alone; boot init remains the repair owner. */
 static int case_collect_never_repairs_cec_state(void)
 {
     int failures = 0;

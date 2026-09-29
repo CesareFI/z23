@@ -1,5 +1,5 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
- * Focused regression tests for supervision-coverage item #13: the REST
+ * Supervision tests: the REST
  * /api cache-refresh thread and the block/tx/address lookup-worker thread
  * are registered with the util/supervisor.h liveness tree (op domain) and
  * name a typed blocker when their on_stall fires. Exercises the
@@ -124,7 +124,7 @@ int api_controller_supervision_focused_tests(void)
     }
 
     /* ── Both children distinct, both in the op domain (dumpstate
-     * supervisor visibility — acceptance bar for #13). ─────────────── */
+     * supervisor visibility). ─────────────── */
     {
         bool ok = true;
         ok = ok && api_cache_test_supervisor_id() !=

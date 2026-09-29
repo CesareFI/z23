@@ -228,9 +228,9 @@ static int test_focus_lint_gates(void)
         }
         codeindex_close(ci);
 
-        /* Reply honesty with no test artifact but a recorded lint run: the
-         * storage lane owns check-raw-sqlite, so its gates block reports the
-         * failure while tests still say no run recorded. */
+        /* No test artifact but a recorded lint run: the storage lane owns
+         * check-raw-sqlite, so its gates block reports the failure while
+         * tests still say no run recorded. */
         struct zcl_command_reply reply;
         focus_call_name("storage", FOCUS_FIX, &reply);
         ASSERT(reply.exit_code == ZCL_COMMAND_EXIT_OK);

@@ -1485,9 +1485,8 @@ static int fx_i64_cmp(const void *a, const void *b)
 #define FX_COST_N 25
 
 /* Extraction cost of the hot-swap key with the host's real driver: the
- * first call re-asks the driver (the previous key used the fixture
- * driver), the rest are the resident watcher's warm path. Printed for the
- * lane measurement; asserted only to derive. */
+ * first call re-asks the driver, the rest are the resident watcher's warm
+ * path. Printed as a measurement; asserted only to derive. */
 static void test_key_cost(struct fx *x)
 {
     int64_t wall[FX_COST_N], cpu[FX_COST_N];

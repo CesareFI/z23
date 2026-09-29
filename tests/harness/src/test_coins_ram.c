@@ -1,26 +1,17 @@
 /* Unit tests for coins_ram — the flag-gated in-RAM UTXO hot store for the bulk
  * fold (storage/coins_ram.h).
  *
- * THE load-bearing assertion: the SHA3 commitment over the EFFECTIVE set
+ * THE load-bearing assertion: the SHA3 commitment over the effective set
  * (coins_ram_commitment, RAM overlay merged over the durable coins_kv) is
- * BYTE-IDENTICAL to coins_kv_commitment over the same logical set folded
- * straight into SQLite. That identity is what keeps the from-genesis fold
- * SELF-VERIFYING against the compiled checkpoint when the in-RAM store is on.
+ * byte-identical to coins_kv_commitment over the same logical set folded
+ * straight into SQLite. The commitment over the full overlay must equal the
+ * commitment after a flush.
  *
- * Also covers: read-through (a cold miss reads the durable set), tombstone
- * shadowing (a spend of a durable coin reads ABSENT before flush), flush
- * durability (after flush the overlay is empty and coins_kv holds the truth),
- * and the crash-replay watermark (coins_ram_reconcile_boot rewinds an ahead
- * cursor to the last durable flush).
+ * Also covers read-through, tombstone shadowing, flush durability, and the
+ * crash-replay watermark (coins_ram_reconcile_boot).
  *
- * The flag is read once from ZCL_FOLD_INRAM and cached, so this whole group
- * runs in the flag-ON process (test_parallel forks per group).
- *
- * THE identity proof is self-contained: the commitment over the FULL overlay
- * (nothing durable yet) must equal the commitment AFTER a flush (everything
- * durable, overlay empty — i.e. the pure SQLite coins_kv_commitment path). If
- * the overlay-merge encoder and the SQLite encoder ever diverged a byte, these
- * two roots would differ. */
+ * The flag is read once from ZCL_FOLD_INRAM and cached, so this group runs in
+ * the flag-ON process (test_parallel forks per group). */
 
 #include "test/test_core.h"
 
@@ -265,12 +256,9 @@ int test_coins_ram(void)
              coins_is_available(&c4, 0) && coins_is_available(&c4, 1));
     coins_free(&c4);
 
-    /* ── coins_ram_get_prevout: O(1) point resolver must return the SAME four
-     *    fields (value/script/height/is_coinbase) as the get_coins
-     *    reconstruction for a LIVE overlay coin, ABSENT for a spent/tombstoned
-     *    coin, and ABSENT for a never-created vout. This is the fast path
-     *    projection_live_lookup now routes through; it must be byte-identical
-     *    to the reconstruction path it replaces. ── */
+     /* coins_ram_get_prevout: the O(1) resolver returns the same four fields
+      * (value/script/height/is_coinbase) as the get_coins reconstruction for a
+      * live overlay coin, and ABSENT for a spent or never-created vout. */
     {
         int64_t  pv = 0; size_t pl = 0; int32_t ph = -1; bool pcb = true;
         uint8_t  pbuf[16] = {0};
@@ -405,10 +393,9 @@ int test_coins_ram(void)
         /* watermark was 20 -> cursor rewound to 21 (watermark+1). */
         CR_CHECK("reconcile: cursor rewound to watermark+1 (21)", cur == 21);
     }
-    /* If the process stopped cleanly enough to flush the first replay height,
-     * cursor can already equal watermark+1 while stale replay-domain rows above
-     * it remain from the pre-flush RAM tail. A mint/refold marker means those
-     * downstream rows must still be purged before resuming. */
+     /* If the first replay height flushed, cursor can equal watermark+1 while
+      * stale replay-domain rows remain; a mint/refold marker means they are
+      * purged before resuming. */
     {
         progress_store_tx_lock();
         sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL);
@@ -541,8 +528,8 @@ int test_coins_ram(void)
                      "SELECT cursor FROM stage_cursor "
                      "WHERE name='tip_finalize'") == 20);
     }
-    /* If a mint/refold run crashes before the first RAM flush, no watermark
-     * exists yet. The boot replay point must be genesis, not the stale cursor. */
+     /* A mint/refold run that crashes before its first RAM flush has no
+      * watermark; the boot replay point is genesis, not the stale cursor. */
     {
         progress_store_tx_lock();
         sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL);
@@ -875,18 +862,11 @@ int test_coins_ram(void)
                  memcmp(rootA, rootB_flushed, 32) == 0);
     }
 
-    /* ──────────────────────────────────────────────────────────────────────
-     * (b) MULTI-FLUSH: the dominant real case the original test never hit —
-     *     the overlay merged over an ALREADY-POPULATED durable set across many
-     *     flush rounds, with cross-flush tombstones (spend of a coin durable
-     *     since a PRIOR flush) and a re-add over a durably-flushed key.
-     *
-     * We fold the SAME op stream two ways and compare the FINAL commitment +
-     * per-coin reads:
-     *   golden  : pure SQLite (overlay off) — flushes are no-ops.
-     *   overlay : flushes are real coins_ram_flush calls interleaved through
-     *             the stream, so later ops mutate over a populated durable set.
-     * ────────────────────────────────────────────────────────────────────── */
+     /* (b) Multi-flush: the overlay merged over an already-populated durable
+      *     set across many flushes, with cross-flush tombstones and a re-add
+      *     over a flushed key. The same op stream is folded pure-SQLite
+      *     (golden) and with real interleaved coins_ram_flush calls (overlay);
+      *     the final commitment and per-coin reads must match. */
     {
         /* Round 1: mint a base set.            (tags 200..205)
          * flush.
@@ -1106,19 +1086,11 @@ int test_coins_ram(void)
         test_rm_rf_recursive(dirP);
     }
 
-    /* ──────────────────────────────────────────────────────────────────────
-     * (e) MINT-DRIVE READ MARKER gate: coins_ram_mint_drive_thread() is the
-     *     read-visibility marker the FULL -mint-anchor serial fold brackets its
-     *     whole drive with, so script_validate's prevout resolver (a DIFFERENT
-     *     stage step than utxo_apply's writer bracket, but the SAME single drive
-     *     thread) sees the un-flushed overlay via coins_kv_overlay_safe(). This
-     *     pins: (1) the per-thread marker contract (false by default, true only
-     *     inside the bracket, counter-balanced, isolated per thread); and (2)
-     *     the OBSERVABLE effect — an overlay tombstone shadowing a durable coin
-     *     is ABSENT to a marked (drive) thread but PRESENT to an unmarked thread
-     *     (which safely takes the durable SQLite path). Item (2) is the exact
-     *     read-visibility the FULL-fold in-RAM cure turns on.
-     * ────────────────────────────────────────────────────────────────────── */
+     /* (e) Mint-drive read marker: coins_ram_mint_drive_thread() is false by
+      *     default, true only inside the bracket, counter-balanced and
+      *     per-thread. An overlay tombstone shadowing a durable coin is ABSENT
+      *     to a marked thread and PRESENT to an unmarked one (which takes the
+      *     durable SQLite path). */
     {
         char dirM[256];
         test_make_tmpdir(dirM, sizeof(dirM), "coins_ram_mintdrive", "md");
@@ -1155,10 +1127,8 @@ int test_coins_ram(void)
         CR_CHECK("md: nested -> still drive (counter)",
                  coins_ram_mint_drive_thread());
 
-        /* (2a) On the MARKED thread coins_kv_get routes to the overlay → the
-         *      tombstone shadows the durable row → ABSENT. This is the coin the
-         *      old FULL-fold refusal existed to avoid; it now resolves via the
-         *      overlay on the drive thread. */
+         /* (2a) On the marked thread coins_kv_get routes to the overlay, so
+          *      the tombstone shadows the durable row: ABSENT. */
         int64_t mv = 0; size_t ml = 0; uint8_t mb[8];
         CR_CHECK("md: marked thread sees overlay tombstone (absent)",
                  !coins_kv_get(dbM, md.data, 0, &mv, mb, sizeof(mb), &ml));

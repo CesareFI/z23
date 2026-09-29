@@ -1,28 +1,19 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * test_command_input_bounds — the per-key length rule in
- * zcl_command_registry_input_validate() and the per-leaf read frame it
- * implies (zcl_command_registry_input_budget_bytes()).
+ * test_command_input_bounds: the per-key length rule in
+ * zcl_command_registry_input_validate() and the per-leaf read frame
+ * (zcl_command_registry_input_budget_bytes()).
  *
- * THE BUG THIS PINS (2026-07-29): the validator's default branch typed every
- * unlisted key as a string of at most 4096 characters. The zcode publish
- * leaves carry their payloads as HEX, so that capped a package manifest wire
- * at 2 KB — about three files — while VCS_PACKAGE_MANIFEST_MAX_WIRE_BYTES is
- * 1 MiB. Publishing worked for toy packages only, and the refusal read
- * "invalid type or range", which points at the type, not at the length.
- *
- * The fix is a per-key bound derived from each wire's own constant, with the
- * bound living where the type lives. These cases hold BOTH edges of three
- * differently-limited keys, so a future "just raise the default" or "just
- * drop the bound" is caught:
+ * Unlisted keys are strings of at most 4096 characters; hex payload keys are
+ * bounded by their wire constants. Both edges are held for:
  *
  *   manifest_hex  2 * VCS_PACKAGE_MANIFEST_MAX_WIRE_BYTES  (2 MiB chars)
  *   recipe_hex    2 * VCS_PACKAGE_RECIPE_MAX_WIRE_BYTES    (512 KiB chars)
  *   release_hex   2 * VCS_PACKAGE_RELEASE_MAX_WIRE_BYTES
- *   everything else                     4096 chars, unchanged
+ *   everything else                     4096 chars
  *
- * and the read frame each leaf gets, because a validator that accepts 2 MiB
- * in front of a reader that stops at 16 KiB is not a fix. */
+ * and the read frame each leaf gets, since a validator accepting 2 MiB in
+ * front of a reader that stops at 16 KiB is not a fix. */
 
 #include "test/test_core.h"
 
@@ -933,20 +924,9 @@ static int t_moved_line_bounds(void)
     return failures;
 }
 
-/* THE BUG THIS PINS (proved on two hosts, 2026-09-19): this table types
- * every input key by NAME, and `line` is two unrelated inputs sharing one
- * name — dev.agent.mutate's source line NUMBER above, and fleet.import's
- * whole base64url ROSTER LINE. The integer rule won for both, so
- *
- *   $ z23 fleet import <roster-line>
- *   -> invalid type or range for input key 'line'
- *
- * for every input the command was ever given, positional or --input=-, and
- * a box that is not the manager could not learn its fleet's roster at all.
- *
- * Both meanings are held here, in both directions, because the fix is a
- * per-leaf exception to a name-keyed table: the day a third leaf declares
- * `line`, one of these four cases is what says which rule it inherited. */
+/* `line` names two unrelated inputs: dev.agent.mutate's integer source line
+ * and fleet.import's whole base64url roster line. The name-keyed type table
+ * needs a per-leaf exception; both meanings are pinned in both directions. */
 static int t_line_key_is_per_leaf(void)
 {
     int failures = 0;
@@ -962,9 +942,7 @@ static int t_line_key_is_per_leaf(void)
               cib_accepts("fleet.import", "line", 2333, why, sizeof(why)));
     CIB_CHECK("fleet import accepts a roster line at the string bound",
               cib_accepts("fleet.import", "line", 4096, why, sizeof(why)));
-    /* An over-long line is perfectly well-typed, so the refusal names the
-     * LENGTH rule — the same contract t_key_edges holds for every other
-     * default-bounded key, which the type rule above must not shadow. */
+    /* An over-long line is well-typed, so the refusal names the length rule. */
     CIB_CHECK("fleet import refuses one character past the string bound",
               !cib_accepts("fleet.import", "line", 4097, why, sizeof(why)) &&
               strstr(why, "line") != NULL &&

@@ -4,28 +4,18 @@
  * happened, or because it is broken?" (engine/modules/storage/src/catalog_completeness.c,
  * storage/catalog_completeness.h).
  *
- * What this is defending
- * -----------------------
  * The catalog reported one number per index: lag = target - cursor. That
- * number cannot distinguish an index that has folded everything it can reach
- * (so an empty table means nothing happened) from one that has folded nothing
- * (so an empty table means nothing at all).
- *
- * Measured on the canonical node 2026-07-28, at the front of the chain with 22
- * peers: op_return_index 0 rows, zslp_ledger 0 rows, znam_names 0 rows. There
- * was no field anywhere that said whether any of those zeros was evidence.
+ * cannot distinguish an index that has folded everything it can reach (an
+ * empty table means nothing happened) from one that has folded nothing.
  *
  * The reachable range is [floor, target], NOT [0, target]: on a
  * snapshot-seeded datadir there are no block bodies below the seed height, so
  * an index that folds bodies forward can never cover them. Coverage is
  * measured against what is reachable; `floor` states what is not.
  *
- * The case that matters most is the third one below — a cursor BELOW the
- * floor. zslp_ledger showed cursor 2,881,792 against a floor of 3,196,425:
- * millions of blocks of apparent progress, and zero coverage of any height
- * where a body actually exists. A naive "cursor is large, so it has done a
- * lot" reading gets that exactly backwards, which is why NONE (not PARTIAL)
- * is the correct verdict there. */
+ * The case that matters most is a cursor BELOW the floor (e.g. cursor
+ * 2,881,792 against a floor of 3,196,425): apparent progress but zero
+ * coverage of any height with a body, so the verdict is NONE, not PARTIAL. */
 
 #include "test/test_core.h"
 #include "storage/catalog_completeness.h"
@@ -150,10 +140,8 @@ int test_catalog_coverage(void)
     }
 
     /* ── lag semantics are UNCHANGED ─────────────────────────────────── */
-    /* catalog_lag_exceeded fires off `lag`. Redefining it against the floor
-     * would have relaxed a live alarm's threshold while calling it a clarity
-     * improvement — an alarm that stops firing looks exactly like a fixed
-     * bug. The new fields add truth; they move no threshold. */
+    /* catalog_lag_exceeded fires off `lag`; the new fields add truth and
+     * move no threshold. */
     {
         struct catalog_index_status r =
             mk(-1, 3196425, 3196525, CATALOG_COVERAGE_NONE, true);
@@ -164,11 +152,9 @@ int test_catalog_coverage(void)
     }
 
     /* ── The reading that gets it backwards ──────────────────────────── */
-    /* A cursor of 2.88 MILLION looks like enormous progress. Against a floor
-     * of 3.19M it is zero coverage of anything readable: the index has not
-     * yet reached the first height whose body exists. Anyone concluding
-     * "millions of blocks folded, so an empty table means nothing happened"
-     * would be wrong, and this is the row shape that proves it. */
+    /* A cursor of 2.88 MILLION against a floor of 3.19M is zero coverage of
+     * anything readable: the index has not reached the first height whose
+     * body exists. */
     {
         struct catalog_index_status zslp_shaped =
             mk(2881792, 3196425, 3196525, CATALOG_COVERAGE_NONE, true);

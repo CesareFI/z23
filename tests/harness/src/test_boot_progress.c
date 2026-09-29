@@ -4,19 +4,14 @@
  * signal any synchronous boot worker can bump cheaply (see
  * util/boot_progress.h for the WatchdogSec= rationale).
  *
- * The module is two atomics with no lock and no reset hook (by design —
- * see the header: "no init required"), so this test does NOT assume a
- * pristine zero baseline. test_zcl runs every group in one process, and
- * several boot/catchup/sapling-tree code paths call boot_progress_tick()
- * for real, so an earlier group in the same binary may have already
- * ticked it. Instead this test pins the two properties the header
- * actually promises:
- *   - boot_progress_last_label() reflects the most recent boot_progress_tick()
- *     call's label.
- *   - boot_progress_last_us() is a CLOCK_MONOTONIC microsecond stamp: it is
- *     always > 0 once any tick has fired (this file fires one first thing),
- *     and it never goes backward across two ticks (the monotonic-clock
- *     contract, not a real-time-value assumption). */
+ * The module is two atomics with no lock and no reset hook, and test_zcl runs
+ * every group in one process (earlier groups may have ticked it), so this
+ * test does not assume a zero baseline. It pins:
+ *   - boot_progress_last_label() reflects the most recent
+ *     boot_progress_tick() call's label.
+ *   - boot_progress_last_us() is a CLOCK_MONOTONIC microsecond stamp: > 0
+ *     once any tick has fired (this file fires one first) and never going
+ *     backward across two ticks. */
 
 #include "test/test_core.h"
 

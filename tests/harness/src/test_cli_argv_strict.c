@@ -1,26 +1,18 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * test_cli_argv_strict — proves the SAFETY FOOTGUN fix: `zclassic23
- * --rpcport=39071 status` (a
- * double-dash typo of `-rpcport=`, no `-datadir=`) must not have
- * is_cli_mode() bail
- * out at the unrecognized `--rpcport=39071` token before ever reaching
- * `status` — that shape falls through main()'s dispatch chain
- * into a full node boot against the DEFAULT datadir — the protected live
- * node's directory — running a read-only integrity check before its
- * shutdown watchdog kills it. Read-only that time; one flag-typo away
- * from a second process contending the live datadir.
+ * test_cli_argv_strict — a double-dash typo of an operator-target flag
+ * (`zclassic23 --rpcport=39071 status`, no `-datadir=`) must not make
+ * is_cli_mode() bail out at the unrecognized token: that shape falls through
+ * main()'s dispatch into a full node boot against the DEFAULT datadir (the
+ * protected live node's directory).
  *
- * This group proves, against the REAL built binary (the way an operator or
- * orchestrator actually invokes it, matching test_cli_auth_robust.c /
- * test_importblockindex_cli_dispatch.c's established pattern — not the
- * static is_cli_mode()/cli_main() helpers directly):
+ * Proves, against the REAL built binary (as in test_cli_auth_robust.c /
+ * test_importblockindex_cli_dispatch.c):
  *
- *   1. CLI-client mode (a typed command word present) now HARD REFUSES any
+ *   1. CLI-client mode (a typed command word present) HARD REFUSES any
  *      malformed operator-target flag (double-dash typo, or a bare flag
- *      missing its "=value") instead of silently mis-routing — including
- *      the exact observed invocation, and regardless of the flag's
- *      position relative to the command word.
+ *      missing its "=value"), regardless of its position relative to the
+ *      command word.
  *   2. Daemon mode (no command word at all) stays TOLERANT for backward
  *      compatibility, but the identical typo now gets a WARN naming the
  *      exact single-dash correction instead of a bare "ignored" notice.
@@ -31,12 +23,10 @@
  *      unexamined — the strict validator is deliberately narrow.
  *
  * Isolation: every case sets HOME to a private /tmp fixture with
- * ZCL_CLI_TEST_NO_SERVICE_LOOKUP=1 (see test_cli_auth_robust.c's file
- * header) so the CLI's default-datadir resolution and the systemctl-based
- * service lookup never touch this project's real datadir/service — every
- * refusal case never even reaches datadir resolution, and the one daemon-
- * mode case that genuinely boots targets a throwaway /tmp datadir + a
- * freshly reserved (never 39070-39073) port, killed within ~2s.
+ * ZCL_CLI_TEST_NO_SERVICE_LOOKUP=1 so default-datadir resolution and the
+ * systemctl service lookup never touch the real datadir/service; the one
+ * daemon-mode case that boots targets a throwaway datadir and a freshly
+ * reserved port (never 39070-39073) and is killed within ~2s.
  *
  * Skips (does not fail) if build/bin/zclassic23 is missing or stale vs the
  * source files that define this behavior — matching the guard pattern in
@@ -234,24 +224,9 @@ static long cas_now_ms(void)
  * it. Returns true iff all needles appeared. Only used for the one
  * genuinely-boots case in this file.
  *
- * Why "every needle", and why a real deadline
- * -------------------------------------------
- * This function used to stop reading the instant ONE needle matched, and the
- * caller then asserted on a SECOND string that lives further along the same
- * log line. That works on an idle box for a reason that has nothing to do with
- * the code under test: the parent is scheduled promptly, so the warning's
- * single write() is returned by a read() all on its own and both strings land
- * in `out` together. Load breaks it. When the parent is descheduled the child
- * queues more than one 4096-byte read's worth of output, the read boundary
- * falls wherever it falls, and a boundary that lands INSIDE the warning line
- * leaves `out` holding "...unrecognized flag '--rpcport=39071' (ign" — enough
- * to satisfy the break condition, not enough to satisfy the assertion. The
- * group then fails having proven the binary behaved correctly.
- *
- * So: keep reading until everything the caller needs is actually present. The
- * old `waited += step_ms` per ITERATION was also not a time budget (a chatty
- * child burned the whole budget in reads, not in waiting); the deadline below
- * is real elapsed time. */
+ * Reads until EVERY needle is present: a read boundary can fall inside the
+ * warning line under load, so stopping at the first match is flaky. The
+ * deadline is real elapsed time, not a per-iteration count. */
 static bool cas_run_daemon_wait_for(char *const argv[], const char *home,
                                     const char *const *needles, int max_ms,
                                     char *out, size_t cap)
@@ -582,20 +557,11 @@ static int cas_test_daemon_mode_tolerant_and_warns(void)
             (char *)CAS_BIN, datadir_flag, rpcport_flag, port_flag,
             (char *)"-nolegacyimport", (char *)"-nobgvalidation", NULL,
         };
-        /* BOTH halves of the warning are named up front, so the capture keeps
-         * reading until the whole line is in hand rather than stopping on the
-         * first half and leaving the second to a read-boundary coin flip. The
-         * two strings come from one fprintf in engine/composition/src/args.c, so on any
-         * correct binary they arrive together; naming both is what makes that
-         * true for the TEST regardless of how the pipe chunks them.
-         *
-         * Generous budget: under a full `make test-parallel` run (32
-         * concurrent groups, each forking/execing its own heavy binaries),
-         * scheduling this child's fork+exec+first-fprintf can take far
-         * longer than it does standalone — the WARN itself is printed
-         * within milliseconds of exec in an idle system, but wall-clock
-         * delay under CPU contention is not this test's concern. Still
-         * comfortably inside the 300s per-group timeout. */
+        /* BOTH halves of the warning are named so the capture keeps reading
+         * until the whole line (one fprintf in engine/composition/src/args.c)
+         * is in hand regardless of pipe chunking. Generous budget: forking
+         * this child under a loaded parallel run can be slow, but stays inside
+         * the 300s per-group timeout. */
         static const char *const warn_needles[] = {
             "unrecognized flag '--rpcport=",
             "did you mean -rpcport=PORT?",

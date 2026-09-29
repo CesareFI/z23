@@ -1,32 +1,20 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Tests for consensus_reject_index — the hash-keyed ring that
- * sits downstream of EV_CONSENSUS_REJECT_{TX,BLOCK} (wave 8 #4).
+ * Tests for consensus_reject_index, the hash-keyed ring downstream of
+ * EV_CONSENSUS_REJECT_{TX,BLOCK}.
  *
- * Strategy
- * --------
- * Two layers:
+ *  1. Direct record() path: a test seam writes a struct cri_entry straight
+ *     into the ring to exercise capacity rounding, eviction, lookup, kind
+ *     filtering, newest-match-wins ordering, count/total counters and clear().
+ *  2. Event path: the service is registered with default capacity and the
+ *     real check_transaction / check_block_header wrappers are driven on
+ *     crafted-invalid inputs, exercising the payload parser against the
+ *     printf'd format of check_block.c / check_transaction.c and the observer
+ *     registration. The index is consistent with lookup() as soon as
+ *     check_transaction() returns.
  *
- *  1. Direct record() path. The index exposes a test seam that
- *     writes a struct cri_entry straight into the ring without
- *     going through the event system. We use this to exercise
- *     the ring mechanics in isolation — capacity rounding,
- *     eviction, lookup correctness, kind filtering, newest-match-
- *     wins ordering, count/total counters, clear() semantics.
- *
- *  2. Event path. We register the service with default capacity,
- *     then drive the real check_transaction / check_block_header
- *     wrappers on crafted-invalid inputs. This exercises (a) the
- *     payload parser against the exact printf'd format emitted
- *     by check_block.c / check_transaction.c and (b) the observer
- *     registration path. The index must be consistent with
- *     lookup() the instant check_transaction() returns.
- *
- * The event-path tests use tx hashes that are deterministic
- * (all-zeroes via uint256_set_null — check_transaction doesn't
- * compute tx->hash and the valid-path test sets the hash
- * manually via a helper).
- */
+ * Event-path tests use deterministic tx hashes (all-zeroes via
+ * uint256_set_null; the valid-path test sets the hash via a helper). */
 
 #include "test/test_core.h"
 #include "json/json.h"

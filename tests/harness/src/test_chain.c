@@ -404,8 +404,8 @@ int test_chain(void)
 
     printf("disk_block_io write/read roundtrip... ");
     {
-        /* Per-process: this block used to `rm -rf` a fixed path, so a
-         * concurrent copy of the suite would delete this fixture mid-test. */
+        /* Per-process path: a fixed one would be deleted by a concurrent
+         * copy of the suite. */
         char tmpbuf[512];
         test_make_tmpdir(tmpbuf, sizeof(tmpbuf), "chain", "disk_block_io");
         const char *tmpdir = tmpbuf;
@@ -681,11 +681,10 @@ int test_chain(void)
 
     printf("block_tree_db guts load pumps boot-liveness marker... ");
     {
-        /* Reproduces the 2026-07-27 crash-loop hazard class: a multi-million
-         * row LevelDB index walk with no boot-progress pump outlives the
-         * 2-min systemd watchdog on a cold boot. The guts loop now pumps
-         * boot_progress_note() every 4096 rows, so >4096 rows MUST advance
-         * the marker. (Sibling of the blocks-table hydrate pump test in
+        /* A multi-million row LevelDB index walk with no boot-progress pump
+         * outlives the 2-min systemd watchdog on a cold boot: the loop pumps
+         * boot_progress_note() every 4096 rows, so >4096 rows MUST advance the
+         * marker. (Sibling of the hydrate pump test in
          * test_block_index_loader.c §15b.) */
         const int N = 4096 + 16;
         char path[512];
@@ -1083,12 +1082,11 @@ int test_chain(void)
         }
     }
 
-    /* removing the skip_diffbits escape hatch must cause a header
-     * whose nBits disagrees with GetNextWorkRequired to be rejected, even
-     * when the 28-ancestor window is incomplete (previously silently
-     * skipped).  Trivial pass-through value 0x1d00ffff (Bitcoin's mainnet
-     * limit) does NOT match Zcash's much tighter powLimit, so the header
-     * must fail with "bad-diffbits". */
+    /* Removing the skip_diffbits escape hatch: a header whose nBits
+     * disagrees with GetNextWorkRequired is rejected even when the
+     * 28-ancestor window is incomplete. 0x1d00ffff (Bitcoin's mainnet limit)
+     * does not match Zcash's tighter powLimit, so it must fail with
+     * "bad-diffbits". */
     printf("contextual_check_block_header rejects trivial-low nBits ... ");
     {
         const struct chain_params *p = chain_params_get();
@@ -1957,12 +1955,9 @@ int test_chain(void)
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
 
-    /* Regression test: skip_contextual gate must fire when the PoW averaging
-     * window cannot be walked back contiguously from pindex_prev. Models
-     * the case where a FlyClient snapshot places
-     * tip=3,081,601 but block_index only reaches 3,081,408, so the
-     * 17-block GetNextWorkRequired window returns weakest-allowed nBits
-     * and every inbound header gets bad-diffbits-rejected. */
+    /* skip_contextual gate must fire when the PoW averaging window cannot be
+     * walked back contiguously from pindex_prev (e.g. a FlyClient snapshot
+     * whose block_index does not reach the 17-block window). */
     printf("skip_contextual: complete retarget+MTP window, no skip... ");
     {
         struct consensus_params cp = { .nPowAveragingWindow = 17 };
@@ -2121,12 +2116,10 @@ int test_chain(void)
         if (ok) printf("OK\n"); else { printf("FAIL (sz=%zu)\n", sz); failures++; }
     }
 
-    /* Round 6 C4 — typed BLOCK_FAILED classification.
-     *
-     * Verifies the three-class model: PERMANENT (VALID), DEPENDENCY
-     * (CHILD), TRANSIENT. block_has_any_failure() must catch all
-     * three; block_index_is_valid() must reject all three. Each
-     * predicate must answer for its own class only. */
+    /* Typed BLOCK_FAILED classification: PERMANENT (VALID), DEPENDENCY
+     * (CHILD), TRANSIENT. block_has_any_failure() catches all three;
+     * block_index_is_valid() rejects all three; each predicate answers for its
+     * own class only. */
     printf("block_failed typed classification... ");
     {
         struct block_index perm, dep, trans, clean, mixed;

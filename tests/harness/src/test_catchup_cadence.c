@@ -3,26 +3,18 @@
  * test_catchup_cadence — the PARITY-SAFETY guard for the live-sync catch-up
  * drain-batch override (engine/jobs/src/catchup_cadence.c).
  *
- * The override changes HOW MANY blocks each reducer stage folds per drain
- * (the batch) when an ordinary node has fallen behind. The load-bearing
- * safety property, mirroring test_refold_cadence.c's contract, is that on a
- * NORMAL boot — no peers connected, or peers connected but no material gap —
- * the override is INERT: catchup_cadence_drain_batch returns its argument
- * UNCHANGED. This test pins that: a future edit that changes the normal-mode
- * batch fails here.
+ * The override changes how many blocks each reducer stage folds per drain
+ * when a node has fallen behind. On a NORMAL boot (no peers, or peers but no
+ * material gap) it is INERT: catchup_cadence_drain_batch returns its argument
+ * UNCHANGED (as in test_refold_cadence.c).
  *
- * It also proves the override FIRES (and honors its env knobs, clamped) once
- * BOTH gates are open — peers connected AND gap (network_tip - log_head) >=
- * ZCL_CATCHUP_GAP_THRESHOLD — and that closing either gate (no peers, or the
- * gap shrinking back under threshold) RESTORES the inert identity, so the
- * accelerated cadence cannot leak into an at-tip live node.
+ * It FIRES (honoring clamped env knobs) once BOTH gates are open (peers
+ * connected AND gap (network_tip - log_head) >= ZCL_CATCHUP_GAP_THRESHOLD),
+ * and closing either gate restores the inert identity.
  *
- * Peers are driven with a real (test-populated) struct connman via
- * sync_monitor_set_context(), the exact fixture shape
- * test_sync_rate_below_floor.c uses for the identical connman/peer-height
- * primitives this module reuses. log_head is driven via
- * catchup_cadence_test_set_log_head_override() instead of standing up a
- * real progress_store-backed tip_finalize_stage_init(). */
+ * Peers come from a test-populated struct connman via
+ * sync_monitor_set_context() (as in test_sync_rate_below_floor.c); log_head
+ * via catchup_cadence_test_set_log_head_override(). */
 
 #include "test/test_core.h"
 
@@ -102,13 +94,9 @@ static int case_no_peers_inert(void)
 }
 
 /* (1b) NORMAL boot, peers connected but at/near tip (gap below threshold):
- * inert. This is the byte-for-byte-unchanged proof for the common live
- * case. Also proves ZCL_CATCHUP_DRAIN_BATCH is ignored while inactive, same
- * as test_refold_cadence's normal-mode env-ignored case (ZCL_CATCHUP_
- * GAP_THRESHOLD is deliberately NOT exercised here: unlike refold_cadence's
- * knobs, which only ever scale an ALREADY-active cadence, the gap threshold
- * is itself part of the activation predicate — case_active_when_gap_
- * exceeds_threshold below covers tuning it). */
+ * inert. ZCL_CATCHUP_DRAIN_BATCH is ignored while inactive. (The gap
+ * threshold is part of the activation predicate; it is tuned in
+ * case_active_when_gap_exceeds_threshold.) */
 static int case_small_gap_inert(void)
 {
     int failures = 0;
@@ -263,18 +251,15 @@ static int case_active_then_restore(void)
 }
 
 /* (A12) The supervisor's per-tick effective batch must be FAN-OUT aware: a
- * stage whose step_once verifies per_step_fanout units of consensus work
+ * stage whose step_once verifies many units of consensus work
  * (validate_headers: VH_BATCH_SIZE Equihash solutions per step) must not have
- * an accelerated catch-up batch multiplied by that fan-out inside one commit
- * held under progress_store_tx_lock beyond what its worker pool can absorb in
- * the same wall time. stage_effective_batch (exposed here for test) scales the
- * fanning stage's catch-up step cap by exactly the pool widening in force
- * (validate_headers_stage_catchup_step_cap: vh_runtime_pool_size() /
- * VH_POOL_SIZE, clamped [1, VH_CATCHUP_STEP_MULT]) while leaving non-fanning
- * stages fully accelerated, and stays byte-identical when the override is
- * inactive. Drives catch-up active via the same connman/log_head fixture the
- * cases above use. ZCL_VH_CATCHUP_POOL_SIZE is set explicitly wherever a
- * specific scale is asserted so the checks are host-nproc-independent. */
+ * its catch-up batch multiplied beyond what its worker pool can absorb.
+ * stage_effective_batch scales the fanning stage's catch-up step cap by the
+ * pool widening in force (validate_headers_stage_catchup_step_cap:
+ * vh_runtime_pool_size() / VH_POOL_SIZE, clamped [1, VH_CATCHUP_STEP_MULT]),
+ * leaves non-fanning stages fully accelerated, and is byte-identical when the
+ * override is inactive. ZCL_VH_CATCHUP_POOL_SIZE is set explicitly wherever a
+ * scale is asserted so checks are host-nproc-independent. */
 static int case_fanout_capped_under_catchup(void)
 {
     int failures = 0;

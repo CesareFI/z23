@@ -2,25 +2,15 @@
  *
  * Tests for body_history — "which block bodies BELOW my tip am I missing?"
  *
- * Two of these tests exist because of a specific failure. A previous attempt
- * at this fix was rejected by its own reviewer with:
- *
- *     "the fix contains the same fail-open defect it was written to cure:
- *      an unreadable block index publishes as 'no hole'."
- *
- * So the census has THREE outcomes, and the tests below hunt specifically
- * for a collapse back to two:
+ * The census has three outcomes (COMPLETE / INCOMPLETE / UNKNOWN); an unreadable
+ * block index must publish as UNKNOWN, never as "no hole". The tests hunt for a
+ * collapse back to two:
  *
  *   test_bh_unreadable_index_is_not_no_hole  — every height indeterminate
- *      must land on UNKNOWN with unmeasured_count == the whole window, and
- *      must NOT report COMPLETE, must NOT report proven, and must not be
- *      distinguishable-only-by-a-zero from a clean node. Fresh-node shape:
- *      the coverage map starts empty.
+ *      must NOT report COMPLETE or proven. Fresh-node shape (empty coverage map).
  *   test_bh_restored_coverage_is_a_claim_not_a_look — the same window on a
  *      RESTARTED node, where progress.kv hands back a coverage map claiming
- *      everything. The claim is a file, not a look, and it must not certify
- *      anything. This is the case the census got wrong: it published
- *      status=complete after zero successful probes.
+ *      everything. The claim is a file, not a look, and certifies nothing.
  *   test_bh_persistence_never_restores_a_verdict — the durable half of the
  *      same rule: a restart resumes the census cursor and nothing else.
  *   test_bh_partial_read_does_not_certify    — half the window readable and
@@ -178,12 +168,8 @@ static int64_t bh_run_full_census(struct body_history_census *census,
 
 /* ── 1. The rejected defect: unreadable index != no hole ────────── */
 
-/* Scope note, because the title used to overclaim: this pins the FRESH-node
- * shape, where `held` starts empty. It passed on the parent commit while the
- * node could still publish "no hole" from an unreadable index — it just
- * needed a restored coverage map to do it, which a fresh node does not have.
- * test_bh_restored_coverage_is_a_claim_not_a_look above is the restarted-node
- * half, and it is the one that was failing. */
+/* Fresh-node shape: `held` starts empty. The restarted-node half is
+ * test_bh_restored_coverage_is_a_claim_not_a_look. */
 static int test_bh_unreadable_index_is_not_no_hole(void)
 {
     int failures = 0;
@@ -253,25 +239,12 @@ static int test_bh_unreadable_index_is_not_no_hole(void)
     return failures;
 }
 
-/* ── 1b. The same defect wearing the restored-coverage costume ───── */
+/* ── 1b. Restored coverage is a claim, not a look ────────────────── */
 
-/* The version of test 1 above only holds while `held` is EMPTY, which is the
- * shape a FRESH node has. The node that matters is the restarted one:
- * body_coverage_load() restores `held` from progress.kv at boot, so `held`
- * arrives already claiming coverage that nothing in this process has
- * verified. body_history_evaluate() used to union `held` into "definitively
- * probed" — "holding a body is itself proof somebody looked" — and that turns
- * a FILE into a look.
- *
- * The setup here is the whole bug in three lines: progress.kv claims 0..999,
- * this boot has probed nothing, and every probe comes back INDETERMINATE
- * because the block index cannot be read. On the parent commit this reported
- *
- *     status=complete held=1000 missing=0 unmeasured=0 probe_successes=0
- *
- * and body_history_verdict_is_proven() said true, so both at-tip gates let
- * the claim through. That is the rejected defect verbatim, one level up: an
- * unreadable block index publishing as "no hole". */
+/* body_coverage_load() restores `held` from progress.kv at boot, so `held`
+ * claims coverage nothing in this process has verified. With progress.kv
+ * claiming 0..999, no successful probe this boot, and an unreadable block
+ * index, the verdict must not be complete or proven. */
 static int test_bh_restored_coverage_is_a_claim_not_a_look(void)
 {
     int failures = 0;
@@ -356,9 +329,8 @@ static int test_bh_restored_coverage_is_a_claim_not_a_look(void)
     return failures;
 }
 
-/* A probe that cannot run at all — the caller could not even reach the
- * index. Must be indistinguishable in OUTCOME from the unreadable case
- * above, and must never leave a slot looking answered. */
+/* A probe that cannot run at all must be indistinguishable in outcome from
+ * the unreadable case and never leave a slot looking answered. */
 static int test_bh_null_probe_leaves_everything_unmeasured(void)
 {
     int failures = 0;
@@ -404,9 +376,7 @@ static int test_bh_null_probe_leaves_everything_unmeasured(void)
     return failures;
 }
 
-/* Half readable and every readable height held: still not COMPLETE. This is
- * the subtler shape of the same defect — a census that stopped early and
- * certified what it happened to see. */
+/* Half readable and every readable height held: still not COMPLETE. */
 static int test_bh_partial_read_does_not_certify(void)
 {
     int failures = 0;
@@ -427,9 +397,7 @@ static int test_bh_partial_read_does_not_certify(void)
         ASSERT(v.lowest_unmeasured == 0);
         ASSERT(v.held_count == 500);
 
-        /* Narrow the question to only what WAS measured and it is complete —
-         * proving the UNKNOWN above is about scope, not about a broken
-         * count. */
+        /* Narrowed to what was measured it is complete: UNKNOWN is about scope. */
         struct body_history_verdict narrow;
         ASSERT(body_history_evaluate(&held, &measured, 500, 999, &narrow));
         ASSERT(narrow.status == BODY_HISTORY_COMPLETE);
@@ -496,9 +464,8 @@ static int test_bh_below_tip_hole_found_and_enqueued(void)
 {
     int failures = 0;
     TEST("a deliberate hole below the tip is found, located and enqueued") {
-        /* 3,000 heights; bodies missing for [40, 60] — below the tip, which
-         * is precisely the region gap_fill_compute_window can never reach
-         * (its window is [tip+1, best_header] by construction). */
+        /* 3,000 heights; bodies missing for [40, 60], below the tip and outside
+         * gap_fill_compute_window ([tip+1, best_header]). */
         struct bh_fake_chain chain;
         ASSERT(bh_fake_chain_init(&chain, 3000));
         for (int64_t h = 40; h <= 60; h++)
@@ -733,13 +700,9 @@ static int test_bh_singleton_defaults_to_unknown(void)
     return failures;
 }
 
-/* The other half of "a restored file is not a look": body_history_load()
- * used to bring the `measured` evidence map back off disk alongside the
- * cursor. That made the boot-time promise true of the verdict FLAG only —
- * the flag started UNKNOWN, but the evidence it gets recomputed from arrived
- * pre-loaded, so the first pass after a restart could republish COMPLETE
- * having probed 4096 heights out of 3.2M. The cursor is a work pointer and
- * survives; the evidence does not. */
+/* body_history_load() restores the census cursor only; the `measured` evidence
+ * map must not come back off disk, or the first pass after a restart could
+ * republish COMPLETE after probing a fraction of the chain. */
 static int test_bh_persistence_never_restores_a_verdict(void)
 {
     int failures = 0;
@@ -799,12 +762,9 @@ static int test_bh_persistence_never_restores_a_verdict(void)
     return failures;
 }
 
-/* The boot catch-up burst runs census slices back-to-back until this returns
- * true, so if it ever returned true early the burst would stop before the
- * window was walked and the node would go back to one slice per 5 s tick
- * with coverage still unestablished. It answers "has this boot LOOKED at
- * every height", which is a strictly weaker question than "are the bodies
- * there" — an INCOMPLETE window is fully measured and must end the burst. */
+/* The boot catch-up burst runs census slices until this returns true. It
+ * answers "has this boot looked at every height", weaker than "are the bodies
+ * there": an INCOMPLETE window is fully measured and ends the burst. */
 static int test_bh_fully_measured_is_looked_not_proven(void)
 {
     int failures = 0;
@@ -942,11 +902,8 @@ static int test_bh_dump_state_json_separates_the_three(void)
 
 /* ── 6. Adversarial: a MOVING tip must not restart the sweep ────── */
 
-/* The census only ever reports a hole it has actually walked to. On a live
- * chain the tip advances while the sweep is running, so re-anchoring the
- * cursor on every tip advance pins the walk to the top band forever and the
- * node never looks at — let alone reports or refetches — the history it is
- * actually missing. */
+/* On a live chain the tip advances during the sweep; re-anchoring the cursor
+ * on every advance would pin the walk to the top band forever. */
 static int test_bh_census_descends_under_a_moving_tip(void)
 {
     int failures = 0;
@@ -971,10 +928,8 @@ static int test_bh_census_descends_under_a_moving_tip(void)
                 lowest = lo;
         }
 
-        /* 4000 passes x 4096 heights is 16.4M height-probes over a
-         * 3.2M-height chain — five sweeps' worth of budget. Anything that
-         * cannot finish one sweep in that has not been slowed down, it has
-         * been stopped. */
+        /* 4000 passes x 4096 heights is about five sweeps of budget; failing to
+         * finish one sweep in that means the walk is stopped. */
 
         ASSERT(lowest == 0);
         ASSERT(c.sweeps_completed >= 1);
@@ -985,11 +940,8 @@ static int test_bh_census_descends_under_a_moving_tip(void)
 
 /* ── 7. Adversarial: the OTHER at-tip edge ──────────────────────── */
 
-/* syncsvc_plan_periodic_tip_state is the timer-driven at-tip edge.
- * syncsvc_note_valid_block is the one that actually fires on a live node:
- * msg_blocks.c calls sync_set_state(SYNC_AT_TIP, "caught up to peer") from
- * it on every accepted block. Gating one and not the other leaves the claim
- * exactly as sayable as it was before. */
+/* syncsvc_plan_periodic_tip_state is the timer-driven at-tip edge;
+ * syncsvc_note_valid_block fires on every accepted block. Both are gated. */
 static int test_bh_block_acceptance_refuses_unproven_history(void)
 {
     int failures = 0;
@@ -1046,13 +998,9 @@ static int test_bh_block_acceptance_refuses_unproven_history(void)
 
 /* ── 8. Adversarial: the restored cursor must SURVIVE the next pass ── */
 
-/* body_history_load() puts the persisted cursor back, and
- * test_bh_persistence_never_restores_a_verdict checks it is there. That is
- * not the claim that matters. window_lo / window_hi are NOT persisted, so a
- * plan() that re-anchors on a window-bounds mismatch throws the restored
- * cursor away on the very first pass after boot and the sweep silently
- * restarts from the tip every time the node is restarted. The resume has to
- * survive being USED. */
+/* window_lo / window_hi are not persisted, so plan() must not discard the
+ * restored cursor on a window-bounds mismatch; the resume must survive being
+ * used. */
 static int test_bh_restored_cursor_survives_the_first_pass(void)
 {
     int failures = 0;
@@ -1109,21 +1057,9 @@ static int test_bh_restored_cursor_survives_the_first_pass(void)
     return failures;
 }
 
-/* A verdict must EXPIRE. Everything above proves the census never certifies
- * what it has not read; this proves it stops certifying what it read once and
- * can no longer read.
- *
- * Without the demotion in body_history_census_fold's INDETERMINATE branch, a
- * height measured on any earlier pass stayed measured for the life of the
- * process. So the dangerous order is not "the index was always bad" — that
- * case fails closed and is covered above — it is "the index was good, one
- * clean sweep ran, and THEN the index went bad". Measured on the version
- * without the demotion: 24,576 consecutive failed reads with the verdict
- * still reading complete-and-proven.
- *
- * "I checked this an hour ago and cannot check it now" is not the same claim
- * as "I have it", and a node that cannot tell them apart is back to the
- * defect this whole module exists to remove. */
+/* A verdict must expire: if the index goes bad after a clean sweep, the
+ * earlier evidence is demoted (body_history_census_fold INDETERMINATE branch)
+ * and the verdict stops reading complete-and-proven. */
 static int test_bh_a_verdict_expires_when_the_index_goes_bad(void)
 {
     int failures = 0;
@@ -1151,11 +1087,8 @@ static int test_bh_a_verdict_expires_when_the_index_goes_bad(void)
         ASSERT(body_history_verdict_is_proven(&v));
         ASSERT(body_coverage_total_covered(&measured) == 500);
 
-        /* Now the block index becomes unreadable underneath a node that is
-         * already running — a truncated block_index.bin, a datadir restored
-         * over the top, pruning that did not update the record. Nothing
-         * about `held` changes: the coverage file still claims everything,
-         * which is exactly why it must not be the thing that certifies. */
+        /* The block index becomes unreadable under a running node; `held` is
+         * unchanged and must not be what certifies. */
         for (int64_t h = 0; h < 500; h++)
             chain.indexed[h] = 0;
 
@@ -1169,9 +1102,8 @@ static int test_bh_a_verdict_expires_when_the_index_goes_bad(void)
         /* THE assertion: the earlier sweep's evidence is gone. */
         ASSERT(body_coverage_total_covered(&measured) == 0);
 
-        /* `held` is deliberately untouched — an unreadable index entry is not
-         * evidence the body was deleted, and inventing a hole here would send
-         * the fetcher chasing 500 blocks that are probably on disk. */
+        /* `held` is untouched: an unreadable entry is not evidence the body was
+         * deleted. */
         ASSERT(body_coverage_total_covered(&held) == 500);
 
         struct body_history_verdict after;
@@ -1189,16 +1121,8 @@ static int test_bh_a_verdict_expires_when_the_index_goes_bad(void)
     return failures;
 }
 
-/* The 64-per-pass drip could not drain a window it had already measured.
- *
- * The census measures BODY_HISTORY_CENSUS_BUDGET heights per pass and then
- * ADVANCES past them: whatever the pass declines to request is not looked at
- * again until the cursor has walked the whole chain and come back around. So
- * a cap below the window size is not "slower", it is "needs one more full
- * sweep per 64 holes" — on the owner's node, 2.5M missing bodies at 64 per
- * 5 s tick meant ~64 sweeps and ~70 hours. This pins the cap that an
- * operator gets when they ask for the hole to actually close.
- */
+/* The per-pass cap must be able to drain a window already measured: the census
+ * advances past whatever a pass declines to request. */
 static int test_bh_normal_backfill_drains_the_window_it_measured(void)
 {
     int failures = 0;
@@ -1239,9 +1163,7 @@ static int test_bh_normal_backfill_drains_the_window_it_measured(void)
         int32_t *out_n = malloc((size_t)budget * sizeof(*out_n));
         ASSERT(out_h && out_n);
 
-        /* The throttled default takes its 64 and leaves the rest of the
-         * measured window unrequested — that is the drip, working as
-         * designed, and also the reason the hole never closed. */
+        /* The throttled default takes its 64 and leaves the rest unrequested. */
         size_t drip = body_history_census_collect_missing(
             lo, classes, hashes, n, out_h, out_n,
             BODY_HISTORY_ENQUEUE_MAX);
@@ -1359,9 +1281,9 @@ static int test_bh_lowest_missing_fill_when_cursor_is_at_tip(void)
     return failures;
 }
 
-/* Exact terminal inputs from independent C3 run 20260913T030922Z-2269407.
- * H* reaching a checkpoint-bootstrapped peer tip does not supply the absent
- * historical bodies. This is a refusal witness, not a full-node C3 PASS. */
+/* Exact terminal inputs from an independent C3 run. H* reaching a
+ * checkpoint-bootstrapped peer tip does not supply the absent historical
+ * bodies. This is a refusal witness, not a full-node C3 PASS. */
 static int test_bh_c3_checkpoint_terminal_witness(void)
 {
     int failures = 0;

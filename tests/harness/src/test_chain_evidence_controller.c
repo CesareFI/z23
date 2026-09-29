@@ -892,13 +892,11 @@ static int test_startup_clears_stale_missing_evidence_freeze_with_sql_lag(void)
 }
 
 /* The coins_best_block cursor is a PROJECTION, not part of the tip's
- * block-index evidence. When it OVERSHOOTS the active tip (points to a
- * HIGHER block than the tip — the BIP30 self-write wedge, where the UTXO
- * set landed at H+1 while the tip cursor sits at H), reconstruct must NOT
- * freeze: it publishes LOCAL_IMPORT evidence and lets connect_block's
- * self-write tolerance reconcile the cursor. This pins the non-gating of
- * the coins cursor specifically for the overshoot direction (the existing
- * lag test covers the behind direction). */
+ * block-index evidence. When it OVERSHOOTS the active tip (the BIP30
+ * self-write wedge: UTXO set at H+1, tip cursor at H), reconstruct must NOT
+ * freeze: it publishes LOCAL_IMPORT evidence and connect_block's self-write
+ * tolerance reconciles the cursor. (The lag test covers the behind
+ * direction.) */
 static int test_startup_coins_cursor_overshoot_does_not_freeze(void)
 {
     int failures = 0;
@@ -920,10 +918,8 @@ static int test_startup_coins_cursor_overshoot_does_not_freeze(void)
     if (csr_commit_tip(&f.csr, &commit) != CSR_OK)
         failures++;
 
-    /* Now make the coins cursor OVERSHOOT: point it at block 2 (height 2),
-     * one ahead of the active tip at height 1. csr_snapshot reads this
-     * cursor; reconstruct must treat the divergence as a recoverable
-     * projection overshoot, not a tip_hash contradiction. */
+    /* Make the coins cursor OVERSHOOT: point it at block 2, one ahead of the
+     * active tip at height 1; csr_snapshot reads this cursor. */
     coins_view_cache_set_best_block(&f.coins_tip, f.blocks[2].phashBlock);
 
     chain_evidence_controller_init(&f.authority, &f.ndb, &f.csr);
@@ -944,11 +940,8 @@ static int test_startup_coins_cursor_overshoot_does_not_freeze(void)
         failures++;
     if (view.active_tip_height != 1)
         failures++;
-    /* The cursor divergence is surfaced as an ADVISORY health reason
-     * (csr_cursor_mismatch) — logged, not gated. It must specifically NOT
-     * be the freeze reason: a non-empty advisory that names the cursor,
-     * never a contradiction. This is the no-silent-halt + non-gating
-     * contract: the overshoot is visible but does not park the tip. */
+    /* The divergence is an ADVISORY health reason (csr_cursor_mismatch): it
+     * names the cursor, is logged, not gated, and is not the freeze reason. */
     if (strcmp(view.health_reason, "csr_cursor_mismatch") != 0)
         failures++;
 
@@ -956,15 +949,11 @@ static int test_startup_coins_cursor_overshoot_does_not_freeze(void)
     return failures;
 }
 
-/* A genuine tip_hash contradiction (the persisted active_tip_hash key
- * names a DIFFERENT block than the in-memory tip AND that persisted hash
- * is what the evidence would prove) is distinct from a coins-cursor
- * divergence: the cursor is non-gating, the tip identity is gating. This
- * companion to the overshoot test confirms a real tip mismatch is still
- * caught with a specific outcome rather than silently published. We drive
- * it via a broken ancestry (unlinkable to genesis), which is the
- * unrecoverable case reconstruct freezes on with a named reason. The
- * coins-cursor overshoot above must NOT take this path. */
+/* A genuine tip_hash contradiction is distinct from a coins-cursor
+ * divergence: the cursor is non-gating, the tip identity is gating. Driven
+ * via broken ancestry (unlinkable to genesis), which reconstruct freezes on
+ * with a named reason; the coins-cursor overshoot above must NOT take this
+ * path. */
 static int test_startup_repairs_active_tip_hash_mismatch(void)
 {
     int failures = 0;
@@ -1057,11 +1046,9 @@ static int test_reconcile_lifts_stale_freeze_with_arbitrary_reason(void)
     return failures;
 }
 
-/* The startup reconcile is once-per-process: the controller is constructed
- * by every health probe / condition poll / diagnostics dump, and each
- * construction must NOT re-run the reconcile (it re-fired identical drift
- * WARNs forever at a held tip). Observable: after the in-memory tip
- * advances, a re-construction does NOT re-reconcile the persisted height;
+/* The startup reconcile is once-per-process: constructing the controller
+ * (health probes, polls, dumps) must NOT re-run it. After the in-memory tip
+ * advances, a re-construction does not re-reconcile the persisted height;
  * only a fresh process (test reset) does. */
 static int test_startup_reconcile_runs_once_per_process(void)
 {
@@ -1119,14 +1106,11 @@ static int test_startup_reconcile_runs_once_per_process(void)
     return failures;
 }
 
-/* Convergence: the reconstructed LOCAL_IMPORT record persisted by a prior
- * boot must SATISFY the next boot's reconcile gate (repaired marker +
- * persisted-tip-hash match + ancestry/chainwork flags). Before the
- * acceptance, the strict has_block_index_required gate could never pass for
- * it (nakamoto/bytes flags honestly false until background validation), so
- * reconstruction re-ran forever. Proof the re-run is actually skipped:
- * break the tip's ancestry before the second boot — a re-run would freeze
- * on active_tip_ancestry_unlinkable; acceptance must keep it unfrozen. */
+/* Convergence: the LOCAL_IMPORT record persisted by a prior boot must
+ * SATISFY the next boot's reconcile gate (repaired marker + persisted-tip-hash
+ * match + ancestry/chainwork flags), so reconstruction is not re-run. Proof:
+ * break the tip's ancestry before the second boot; a re-run would freeze on
+ * active_tip_ancestry_unlinkable. */
 static int test_reconcile_accepts_prior_reconstructed_evidence(void)
 {
     int failures = 0;

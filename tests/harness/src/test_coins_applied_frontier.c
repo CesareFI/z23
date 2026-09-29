@@ -378,24 +378,12 @@ static bool frontier_eq_cursor(sqlite3 *db)
 }
 
 /* ── PART G: the self-derived provenance markers are co-committed by the fold
- * that proves them, and a BORROWED store is never upgraded. ─────────────────
+ * that proves them, and a borrowed store is never upgraded. ───────────────
  *
- * WHY THIS EXISTS. coins_kv_boot_rebuild_if_needed is the only writer of
- * COINS_KV_MIGRATION_COMPLETE_KEY / COINS_KV_SELF_FOLDED_KEY for an ordinary
- * forward fold, and it runs once per boot BEFORE the process folds anything.
- * On the session that first populates coins_kv from genesis it therefore saw an
- * empty set and stamped nothing, so coins_kv_is_proven_authority stayed false
- * for that WHOLE session and every money-gated command refused with
- * "authoritative wallet coins tip is unavailable" on a node that had just
- * derived the coin set itself. The stamp arrived only on the NEXT boot — which
- * is why a witness reached for hand-written database markers, and why
- * tools/dev/mesh_terminal_acceptance.sh restarts a node "so the forward-folded
- * coins set stamps its authority".
- *
- * Both directions are pinned: a node that HOLDS the state boots ready inside
- * the same session, and a node that does not (or holds a borrow) is still
- * refused, naming what is missing. Split into helpers so each stays under the
- * complexity cap. */
+ * coins_kv_boot_rebuild_if_needed stamps COINS_KV_MIGRATION_COMPLETE_KEY /
+ * COINS_KV_SELF_FOLDED_KEY once per boot, before folding. A node that holds
+ * the state boots ready in the same session; one that does not (or holds a
+ * borrow) is refused, naming what is missing. */
 
 /* Everything an empty, unstamped store must NOT yet claim — including the
  * fail-closed refusal naming its unmet rung. */
@@ -416,8 +404,8 @@ static int caf_g_before_fold(sqlite3 *pdb)
     return failures;
 }
 
-/* THE REGRESSION. Before the in-fold stamp every marker assertion here is
- * absent until the next boot. */
+/* Before the in-fold stamp every marker assertion here is absent until the
+ * next boot. */
 static int caf_g_after_fold(sqlite3 *pdb, int tip_plus1)
 {
     int failures = 0;
@@ -640,13 +628,10 @@ int test_coins_applied_frontier(void)
                           fnd && fr == L.n);
             }
 
-            /* OPERATOR DISCONNECT / SHORTER-WINDOW REORG.  invalidateblock
-             * first retracts the raw active window to the target's parent, so
-             * there is deliberately no active slot at the old applied height
-             * C-1.  That absence must drive the same inverse-delta path as a
-             * same-height competing winner; treating it as an unknown/no-op
-             * leaves both coins and the durable cursor above the invalidated
-             * block.  Pin the decrease before reconnecting L's tip. */
+             /* Operator disconnect / shorter-window reorg: invalidateblock
+              * retracts the active window first, so no active slot exists at
+              * the old applied height C-1. That absence must drive the same
+              * inverse-delta path as a same-height competing winner. */
             CAF_CHECK("short disconnect: old tip is hash-addressable",
                       block_map_insert(&ms.map_block_index,
                                        L.blocks[L.n - 1].phashBlock,
@@ -694,29 +679,13 @@ int test_coins_applied_frontier(void)
                           fnd && fr == L.n);
             }
 
-            /* (3) REORG REWIND: install heavier W on active_chain, extend
-             * proof_validate. L and W share only genesis (h0, tag 0x00) and
-             * diverge at h1, so the fork point is 0 and the unwind pulls the
-             * cursor + frontier BACK to fork+1 == 1.
-             *
-             * LOAD-BEARING (SERIOUS FIX 2): fire the unwind ALONE (no forward
-             * re-advance) and snapshot the frontier AT THE MOMENT OF THE
-             * DECREASE, asserting it == fork+1 (1). If we only drained to the
-             * final quiescent state, the forward re-advance over the heavier W
-             * would immediately re-write the frontier up to W.n and every
-             * assertion would still pass even with the reorg co-commit DELETED
-             * (the forward apply heals it). Pinning the decrease HERE — in the
-             * window between the unwind and the first re-apply — catches BOTH
-             * regressions the reorg co-commit guards against:
-             *   1. DELETING coins_kv_set_applied_height_in_tx(db, fork_plus1) in
-             *      utxo_apply_delta_reorg.c → frontier stranded at the old high
-             *      (4) while the cursor drops to 1 → frontier != cursor, frd != 1;
-             *   2. re-introducing a MONOTONIC FLOOR in the setter → the floor
-             *      blocks the plain-set decrease, leaving frontier at 4 while the
-             *      cursor drops to 1 → frontier != cursor, frd != 1.
-             * The strictly-shorter operator-disconnect case is pinned above;
-             * this second snapshot retains coverage for a same-height branch
-             * replacement whose fork is genesis.) */
+             /* (3) Reorg rewind: install heavier W on active_chain; L and W
+              * share only genesis and diverge at h1, so the unwind pulls the
+              * cursor and frontier back to fork+1 == 1. The unwind is fired
+              * alone and the frontier snapshotted at the decrease, asserting
+              * it == 1; otherwise the forward re-advance over W would mask a
+              * deleted coins_kv_set_applied_height_in_tx(db, fork_plus1) in
+              * utxo_apply_delta_reorg.c or a monotonic floor in the setter. */
             int32_t pre_reorg_frontier = -1; bool pre_found = false;
             (void)coins_kv_get_applied_height(pdb, &pre_reorg_frontier,
                                               &pre_found);
@@ -901,14 +870,9 @@ int test_coins_applied_frontier(void)
         test_cleanup_tmpdir(dir);
     }
 
-    /* ── PART D: poison_rewind co-writes the frontier (SERIOUS FIX 1). ────
-     * The poison_rewind is the THIRD production writer of the utxo_apply stage
-     * cursor: it forces the cursor DOWN to the frontier height and deletes the
-     * downstream logs. Before SERIOUS FIX 1 it left coins_applied_height at its
-     * old (higher) value → a DURABLE stale-HIGH frontier the if-absent backfill
-     * could never correct. After the fix it co-writes frontier = height inside
-     * the SAME BEGIN IMMEDIATE, so coins_applied_height == the rewound utxo_apply
-     * cursor. This pins that. */
+     /* PART D: poison_rewind forces the utxo_apply cursor down and co-writes
+      * the frontier in the same BEGIN IMMEDIATE, so coins_applied_height
+      * equals the rewound cursor. */
     {
         char dir[256]; test_make_tmpdir(dir, sizeof(dir), "coins_applied_frontier", "poison");
         CAF_CHECK("poison: progress_store opens", progress_store_open(dir));

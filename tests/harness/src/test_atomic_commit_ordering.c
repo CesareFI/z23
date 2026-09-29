@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * DETERMINISTIC, default-gate guard for the at-tip commit-ordering
- * invariant (MEMORY: "At-tip kill-9 ordering invariant"):
+ * invariant:
  *
  *   The node.db coins/UTXO commit must land BEFORE the LevelDB/flat
  *   block_index fsync, so a crash between the two never leaves UTXO
@@ -12,21 +12,11 @@
  * boots into that shape would reconnect H+1, see its own coinbase
  * already in the UTXO set, and trip BIP30 forever.
  *
- * Relationship to the existing kill-9 tests
- * ------------------------------------------
- * `test_kill9_recovery` and `test_chain_advance_atomicity` exercise
- * the SAME invariant under a real `fork()` + `SIGKILL` (or `_exit(137)`)
- * fault, but they self-skip unless ZCL_STRESS_TESTS=1 because they
- * spawn child processes and do timing-sensitive I/O. That leaves the
- * default `make test` gate with NO coverage of the recovery seam that
- * actually restores the invariant after such a crash.
- *
- * This test fills that hole. It is purely in-process and deterministic:
- * it constructs the EXACT post-crash datadir shape by hand (utxos rows
- * left above the durable tip, the crash-mid-flush footprint) and then
- * drives the PRODUCTION recovery seam — `coins_rewind_above_tip()`,
- * the same boot-time auto-heal the live node invokes after
- * `coins_view_sqlite_open()` detects the overshoot — asserting:
+ * test_kill9_recovery and test_chain_advance_atomicity exercise the same
+ * invariant under fork() + SIGKILL but self-skip unless ZCL_STRESS_TESTS=1.
+ * This test is in-process and deterministic: it builds the post-crash datadir
+ * shape by hand (utxos rows above the durable tip) and drives the production
+ * recovery seam, coins_rewind_above_tip(), asserting:
  *
  *   1. Auto-heal mode (max_rows >= count, max_height == tip+1) DELETES
  *      every above-tip row and reports the deletion count.
@@ -38,20 +28,9 @@
  *      row bound — proving the seam is a *targeted* single-block heal,
  *      not a blind truncation that could mask a deeper tear.
  *
- * Because it calls real storage code with no fork, no signals, and no
- * external binary, it runs in the default gate (no ZCL_STRESS_TESTS)
- * and is byte-for-byte reproducible.
- *
- * Missing seam (recorded for the orchestrator)
- * --------------------------------------------
- * A TRUE mid-commit fault injection — crashing the node between the
- * node.db COMMIT and the block_index fsync inside the live
- * chain_advance 9-step body — still requires a real process death
- * (the stress-gated tests) because there is no in-process
- * "arm a fault at PBCS_AFTER_BLOCK_INDEX_WRITE then call chain_advance
- * against a unit fixture" entry point. This test asserts the RECOVERY
- * direction of the invariant (the half that auto-heal must guarantee),
- * not the production write-ordering itself.
+ * It runs in the default gate and is byte-for-byte reproducible. It asserts
+ * the recovery half of the invariant, not the production write ordering (a
+ * true mid-commit fault injection needs a real process death).
  */
 
 #include "test/test_core.h"
@@ -174,8 +153,7 @@ int test_atomic_commit_ordering(void)
     printf("\n=== atomic commit-ordering invariant "
            "(deterministic, default gate) ===\n");
 
-    /* This test drives real storage code in-process with no fork, no
-     * signals, no params, no external binary. It always runs. */
+    /* In-process: no fork, no signals, no params, no external binary. */
 
     /* ── Case 1: auto-heal restores the invariant ─────────────────
      * Tip committed at 1000; 3 UTXO rows orphaned at 1001 (the crash

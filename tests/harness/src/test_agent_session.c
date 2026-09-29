@@ -458,10 +458,10 @@ static int test_release_bounds(void)
     return failures;
 }
 
-/* An unbounded window_seconds used to overflow `window_start + window_seconds`
- * so every roll check read "already elapsed" and the per-window cap silently
- * stopped existing. Three layers now refuse it; this pins the SQL one (the
- * last line of defence) and the arithmetic one. */
+/* An unbounded window_seconds must not overflow `window_start +
+ * window_seconds` (every roll check would read "already elapsed"). Three
+ * layers refuse it; this pins the SQL one (last line of defence) and the
+ * arithmetic one. */
 static int test_window_seconds_bounded(void)
 {
     int failures = 0;

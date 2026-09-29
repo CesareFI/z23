@@ -705,18 +705,11 @@ static int t_header_zero_work_falls_back_to_height(void)
     return failures;
 }
 
-/* Live regression (datadir ~/.zclassic-c23, pid 3591607): an inbound
- * msg_headers batch whose pindex_last lands BELOW the current best
- * header — but carries non-zero cumulative work that is NOT strictly
- * less than the incumbent's — was committing best_header DOWNWARD. That
- * dragged the active-chain window (which the header pipeline extends only
- * up to pindex_best_header) back below heights already in the index,
- * freezing header_admit/validate_headers at seed_h+1 while peers
- * advertised the real tip ~3,349 blocks higher. The guard must reject a
- * strictly-LOWER-height tip whenever its work does not strictly exceed
- * the incumbent (here: equal work), so best_header stays monotonic
- * non-decreasing on the network path. A legitimate authorized reorg
- * still rewinds via rollback_auth. */
+/* An inbound msg_headers batch whose pindex_last lands BELOW the current best
+ * header, with non-zero cumulative work not strictly less than the
+ * incumbent's, must be rejected: best_header stays monotonic non-decreasing
+ * on the network path (a legitimate authorized reorg rewinds via
+ * rollback_auth). */
 static int t_header_equal_work_lower_height_rejected(void)
 {
     int failures = 0;
@@ -742,10 +735,7 @@ static int t_header_equal_work_lower_height_rejected(void)
     bool ok = csr_commit_header_tip(&csr, &ch) == CSR_OK &&
               f.header_tip == high;
 
-    /* The lower-height, equal-work tip (the inbound low batch) MUST be
-     * rejected — best_header must NOT regress. This is the exact bug:
-     * before the fix it slipped through (work not strictly-less), pulling
-     * best_header down and freezing the header pipeline. */
+    /* The lower-height, equal-work tip MUST be rejected (no regression). */
     struct chain_state_header_commit cl = {
         .new_header_tip = low, .rollback_auth = NULL,
         .reason = "unit.equalwork_low",
@@ -867,12 +857,9 @@ static int t_sql_stale_index(void)
     return failures;
 }
 
-/* Wave 9d regression: a forward step from the active tip into a
- * SQLite block_index range that has been pre-populated by body-pull
- * must NOT be rejected as stale_index. Before the carve-out, every
- * forward step from h=N → h=N+1 was rejected when sql_max was at
- * h=N+1000+ because body-pull writes block-index entries ahead of
- * the active chain advance. */
+/* A forward step from the active tip into a SQLite block_index range
+ * pre-populated by body-pull (entries ahead of the active chain) must NOT be
+ * rejected as stale_index. */
 static int t_sql_stale_index_forward_step_bypass(void)
 {
     int failures = 0;
@@ -900,12 +887,9 @@ static int t_sql_stale_index_forward_step_bypass(void)
            && csr_sql_insert_block(&ndb, &far_hash, 5000)
            && csr_sql_insert_utxos(&ndb, 2000);
 
-    /* Step 1: make g the active tip. With cur_h == -1 entering this
-     * commit, sql_max=5000 - new_tip(0)=5000 > 100 fires the original
-     * guard, but cur_utxos > orphan_rows requires the auth check —
-     * we have no auth, so this should ALSO have failed before the
-     * carve-out. Workaround for the seed: drop UTXOs to 0 first,
-     * insert them after seeding g as active. */
+    /* Step 1: make g the active tip. Without auth the guard would reject
+     * while UTXOs are present, so drop UTXOs to 0 first and insert them
+     * after seeding g as active. */
     sqlite3_exec(ndb.db, "DELETE FROM utxos", NULL, NULL, NULL);
     struct chain_state_commit cg = csr_make_commit(g, "seed-active-tip");
     ok = ok && csr_commit_tip(&csr, &cg) == CSR_OK
@@ -914,10 +898,9 @@ static int t_sql_stale_index_forward_step_bypass(void)
     /* Re-insert the heavy UTXO set now that the active tip is seeded. */
     ok = ok && csr_sql_insert_utxos(&ndb, 2000);
 
-    /* Step 2: forward step from active tip h=0 → h=1. sql_max is
-     * still 5000 (body-pull style), gap=4999 > 100, UTXOs > 1000,
-     * no rollback auth. Without the wave-9d carve-out this would
-     * return CSR_REJECTED_STALE_INDEX; with it the commit succeeds. */
+    /* Step 2: forward step h=0 -> h=1 with sql_max still 5000, gap=4999 > 100,
+     * UTXOs > 1000, no rollback auth: must commit, not return
+     * CSR_REJECTED_STALE_INDEX. */
     struct chain_state_commit c1 = csr_make_commit(b1, "forward-step");
     ok = ok && csr_commit_tip(&csr, &c1) == CSR_OK
             && active_chain_height(&f.chain) == 1;
@@ -1456,21 +1439,14 @@ static int t_singleton_init_wires_fixture(void)
     return failures;
 }
 
-/* Regression guard: an update_tip declared `static
- * void` silently discards the bool return from
- * process_block_commit_tip. When the tip publisher refuses a commit (any of
- * CSR_REJECTED_COINS_MISMATCH / _TIP_NOT_IN_INDEX / _STALE_INDEX /
- * ...), connect_tip must not still return true with active_chain_tip
- * pointing at the old block — that shape re-emits
- * EV_BLOCK_CONNECTED for the same height dozens of times per second
- * until the download queue buffers the node to
- * GB-scale RSS and SIGABRT.
+/* update_tip must not discard the bool return of process_block_commit_tip:
+ * when the tip publisher refuses a commit (CSR_REJECTED_COINS_MISMATCH /
+ * _TIP_NOT_IN_INDEX / _STALE_INDEX / ...), connect_tip must not return true
+ * with active_chain_tip still at the old block.
  *
- * The regression wires the csr singleton behind the test publisher,
- * hands update_tip a block_index NOT in the map (so the publisher will
- * respond CSR_REJECTED_TIP_NOT_IN_INDEX), and asserts the caller
- * observes false. Without the patch the wrapper would silently
- * return true. */
+ * Wires the csr singleton behind the test publisher, hands update_tip a
+ * block_index NOT in the map (CSR_REJECTED_TIP_NOT_IN_INDEX), and asserts the
+ * caller observes false. */
 static int t_p71_update_tip_propagates_csr_rejection(void)
 {
     int failures = 0;

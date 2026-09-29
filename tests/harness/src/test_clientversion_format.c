@@ -4,21 +4,16 @@
  * Extensive, focused coverage for the pure logic in
  * platform/modules/util/src/clientversion.c: FormatVersion().
  *
- * test_encoding.c has exactly one FormatVersion assertion, and it only
- * drives the LIVE CLIENT_VERSION constant (build suffix 50 today, e.g.
- * "0.1.0"), so it never independently exercises the four build-suffix
- * branches:
+ * test_encoding.c drives only the LIVE CLIENT_VERSION constant, so this file
+ * pins the four build-suffix branches and their boundaries:
  *
  *   build < 25   -> "-betaN"   where N = build+1        (1..25)
  *   25<=build<50 -> "-rcN"     where N = build-24        (1..25)
  *   build == 50  -> plain "major.minor.rev", no suffix
  *   build  > 50  -> "-N"       where N = build-50
  *
- * A boundary regression at 24/25/49/50/51 (off-by-one in either the
- * comparison operators or the offset arithmetic) would NOT be caught by
- * the existing single assertion. This file pins every named boundary
- * from the task brief, plus the major/minor/rev digit-extraction
- * arithmetic and out_size truncation safety.
+ * plus the major/minor/rev digit-extraction arithmetic and out_size
+ * truncation safety.
  *
  * Pure, deterministic, no I/O / node / network / time / RNG. FormatVersion
  * is a plain snprintf-based formatter over an int, safe to drive directly
@@ -136,9 +131,7 @@ int test_clientversion_format(void)
                   strcmp(out, "0.1.0-beta24") == 0);
     }
     {
-        /* The task brief's canonical boundary case: build==24 is the LAST
-         * beta build (still < 25), and must map to beta25 via the +1
-         * offset -- not roll over into the rc branch. */
+        /* build==24 is the LAST beta build (still < 25): beta25, not rc. */
         char out[64];
         FormatVersion(cvf_make_version(0, 1, 0, 24), out, sizeof(out));
         CVF_CHECK("build=24 -> 0.1.0-beta25 (last beta, +1 offset)",
@@ -168,10 +161,7 @@ int test_clientversion_format(void)
                   strcmp(out, "0.1.0-rc24") == 0);
     }
     {
-        /* Task brief's canonical case: build==49 is the LAST rc build
-         * (still < 50) -> rc25. A regression that used <= instead of <
-         * for this branch's guard would push 49 into the plain-release
-         * branch instead; this pins it stays "-rc25". */
+        /* build==49 is the LAST rc build (still < 50): rc25, not plain. */
         char out[64];
         FormatVersion(cvf_make_version(0, 1, 0, 49), out, sizeof(out));
         CVF_CHECK("build=49 -> 0.1.0-rc25 (last rc)",
@@ -180,10 +170,7 @@ int test_clientversion_format(void)
 
     /* ===================================================================
      * Part 3 -- exact release (build == 50). Plain "major.minor.rev", NO
-     * suffix at all. This is the ONLY case test_encoding.c exercises
-     * today (via the live CLIENT_VERSION_BUILD==50), so we also assert a
-     * NEGATIVE: the string must not contain a trailing '-' anywhere,
-     * proving no beta/rc/build suffix leaked in.
+     * suffix; the string must not contain a trailing '-'.
      * =================================================================== */
     {
         char out[64];
@@ -195,11 +182,8 @@ int test_clientversion_format(void)
     }
 
     /* ===================================================================
-     * Part 4 -- post-release build suffix (build > 50). Offset is
-     * build-50, so the FIRST post-release build (build==51) is "-1" (the
-     * task brief's canonical case) and build==99 is "-49" (the highest
-     * build value representable in the build field, since build is
-     * `nVersion % 100`).
+     * Part 4 -- post-release build suffix (build > 50). Offset is build-50:
+     * build==51 is "-1" and build==99 is "-49" (build is `nVersion % 100`).
      * =================================================================== */
     {
         char out[64];
@@ -226,9 +210,9 @@ int test_clientversion_format(void)
      *   minor = (n / 10000) % 100
      *   rev   = (n / 100) % 100
      *   build = n % 100
-     * Pin a version number that rolls EACH field simultaneously so a
-     * wrong divisor/modulus in any one field (not just build) is caught,
-     * and cross an explicit minor/rev boundary (minor 1->2, rev 99->0).
+     * Pin a version that rolls EACH field simultaneously so a wrong
+     * divisor/modulus in any one field is caught, and cross a minor/rev
+     * boundary (minor 1->2, rev 99->0).
      * =================================================================== */
     {
         /* major=3, minor=7, rev=21, build=50 (plain release form so the
@@ -251,11 +235,8 @@ int test_clientversion_format(void)
                   strcmp(out_minor2, "1.2.50") == 0);
     }
     {
-        /* Cross a rev-field boundary (99 -> 0 with minor bumping) using
-         * raw nVersion arithmetic directly, matching the task brief's
-         * "1020150 vs 1010150" style rollover: 1010199 (minor=1, rev=99)
-         * vs 1020100 (minor=2, rev=1) -- rev wraps, minor increments,
-         * major/build held fixed at 0/... to isolate the two fields. */
+        /* Cross a rev-field boundary using raw nVersion arithmetic:
+         * 1010199 (minor=1, rev=99) vs 1020100 (minor=2, rev=1). */
         int n_before = cvf_make_version(0, 1, 99, 50); /* 1019950 */
         int n_after  = cvf_make_version(0, 2, 1, 50);  /* 1020150 */
         char out_before[64], out_after[64];
@@ -276,10 +257,8 @@ int test_clientversion_format(void)
     }
 
     /* ===================================================================
-     * Part 6 -- nVersion == 0 (every field zero). build==0 takes the
-     * beta branch (build < 25), so this also cross-checks Part 1's
-     * build==0 case still holds at an all-zero version, not just when
-     * major/minor/rev happen to be 0/1/0.
+     * Part 6 -- nVersion == 0 (every field zero). build==0 takes the beta
+     * branch.
      * =================================================================== */
     {
         char out[64];
@@ -288,14 +267,9 @@ int test_clientversion_format(void)
     }
 
     /* ===================================================================
-     * Part 7 -- negative nVersion. C's `%` and `/` on a negative dividend
-     * truncate toward zero (round-to-zero division per C99/C23), so
-     * negative fields propagate their sign into major/minor/rev/build.
-     * This does not have to be "pretty", but it MUST be deterministic and
-     * must not corrupt memory (snprintf handles arbitrary ints safely).
-     * We pin the exact C integer-arithmetic result rather than merely
-     * "does not crash", so a change in FormatVersion's field arithmetic
-     * that alters negative-input behavior is caught. */
+     * Part 7 -- negative nVersion. C `%` and `/` truncate toward zero, so
+     * negative fields propagate their sign. The exact integer-arithmetic
+     * result is pinned; it must be deterministic and memory-safe. */
     {
         char out[64];
         /* -50 / 1000000 == 0; (-50/10000)%100 == 0; (-50/100)%100 == 0;
@@ -307,13 +281,10 @@ int test_clientversion_format(void)
     }
 
     /* ===================================================================
-     * Part 8 -- out_size truncation safety. snprintf must never write
-     * past out_size, and the byte immediately after the buffer must be
-     * left untouched (a canary), even when the formatted string would
-     * overflow a too-small buffer. Also confirm snprintf's C99/C23
-     * contract: the string is always NUL-terminated within out_size when
-     * out_size > 0, and truncation still round-trips the exact PREFIX of
-     * the full-size result (no corrupted/garbled partial output).
+     * Part 8 -- out_size truncation safety. snprintf never writes past
+     * out_size (a canary byte after the buffer stays untouched), always
+     * NUL-terminates when out_size > 0, and truncation yields an exact PREFIX
+     * of the full-size result.
      * =================================================================== */
     {
         /* Reference full-size output to compare truncation against. */
@@ -347,10 +318,9 @@ int test_clientversion_format(void)
 
     /* ── zcl_build_commit_full ──────────────────────────────────────────
      *
-     * The sovereign executable deliberately carries no baked Git commit:
-     * its exact bytes are the receipt authority, so the display getter
-     * answers "external" — and must keep answering exactly that, since
-     * version reporters compare it verbatim. */
+     * The sovereign executable carries no baked Git commit (its bytes are the
+     * receipt authority), so the display getter answers "external" and must
+     * keep answering exactly that; version reporters compare it verbatim. */
     failures += t_commit_getter_exact();
     failures += t_commit_getter_stable();
 

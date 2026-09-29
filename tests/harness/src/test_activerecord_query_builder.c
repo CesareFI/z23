@@ -57,14 +57,11 @@ static int qb_count_char(const char *s, char c)
 }
 
 /* ── Join chains ────────────────────────────────────────────────────────
- *
- * Before QB_MAX_JOINS the builder held exactly ONE join and a second
- * qb_join() silently OVERWROTE the first. A two-hop traversal then emitted
- * SQL joining only the last pair and returned a plausible WRONG number
- * instead of a refusal. These cases pin the fix: hops append, the one-hop
- * text is unchanged, and the hop past the cap fails closed with a named
- * error. They live in small helpers so each stays under the complexity
- * cap the whole tree is held to. */
+ * The builder holds up to QB_MAX_JOINS joins: hops append (a second qb_join()
+ * must not overwrite the first, which would emit SQL joining only the last
+ * pair), the one-hop text is unchanged, and the hop past the cap fails closed
+ * with a named error. They live in small helpers so each stays under the
+ * complexity cap the whole tree is held to. */
 
 static int qb_join_text_cases(void)
 {

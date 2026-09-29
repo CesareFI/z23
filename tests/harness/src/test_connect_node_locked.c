@@ -1,16 +1,16 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
-/* Regression test for the connect_node TOCTOU use-after-free fix
- * (find_node_by_service_locked): the find-and-ref of an existing peer now
- * happens atomically under cs_nodes, and disconnect-flagged nodes are skipped
- * so connect_node never re-refs a peer the socket sweep is about to free.
+/* Regression test for connect_node (find_node_by_service_locked): the
+ * find-and-ref of an existing peer happens atomically under cs_nodes, and
+ * disconnect-flagged nodes are skipped so connect_node never re-refs a peer
+ * the socket sweep is about to free.
  *
- * Also covers the symmetric-ref contract (UAF + dedupe leak fix): connect_node
- * ALWAYS returns either NULL or a node with a +1 CALLER-owned ref —
- *   - the new-node path publishes the node at ref==2 (MANAGER + CALLER), so the
- *     returned pointer cannot be freed under the caller; and
- *   - releasing that caller ref balances the count, so a deduped/new return
- *     does not leak into deferred_free forever and a release-to-zero frees. */
+ * Symmetric-ref contract: connect_node returns NULL or a node with a +1
+ * caller-owned ref:
+ *   - the new-node path publishes the node at ref==2 (MANAGER + CALLER), so
+ *     the returned pointer cannot be freed under the caller; and
+ *   - releasing the caller ref balances the count, so a deduped/new return
+ *     does not leak into deferred_free and a release-to-zero frees. */
 
 #include "test/test_core.h"
 #include "coins/undo.h"
@@ -85,11 +85,10 @@ int test_connect_node_locked(void)
 
         net_manager_free(&nm);
 
-        /* Case 2: the node for service S is flagged disconnect before the call.
-         * The lookup must skip it, so connect_node never returns it and never
-         * re-refs it — closing the use-after-free window. Loopback port 1 makes
-         * the fall-through socket connect refuse immediately, so connect_node
-         * returns NULL fast and deterministically without touching node. */
+         /* Case 2: the node for service S is flagged disconnect, so the
+          * lookup skips it and connect_node never returns or re-refs it.
+          * Loopback port 1 refuses immediately, so connect_node returns NULL
+          * quickly without touching the node. */
         struct net_manager nm2;
         net_manager_init(&nm2);
         memcpy(nm2.message_start, "\xfa\x1a\xf9\xbf", 4);
@@ -122,13 +121,10 @@ int test_connect_node_locked(void)
      * function — a second pair would redefine the label.) */
     printf("\n  new-node path returns a releasable +1 caller ref... ");
     {
-        /* Stand up a real loopback listener so the new-node path's TCP connect
-         * completes deterministically. After connect_node returns the freshly
-         * created node is published in nodes[] at ref==2: the MANAGER ref
-         * (dropped by the socket-sweep reap) + the CALLER ref (this contract).
-         * Two refs at publish time are exactly what pins the node across the
-         * window between connect_node returning and the dialer's first deref —
-         * the UAF the fix closes. */
+         /* A real loopback listener makes the new-node TCP connect complete
+          * deterministically. The node is published in nodes[] at ref==2
+          * (MANAGER, dropped by the socket-sweep reap, + CALLER), pinning it
+          * between connect_node returning and the dialer's first deref. */
         platform_socket_t lsock = platform_socket_open(AF_INET, SOCK_STREAM,
                                                        0, true, false);
         ASSERT(lsock != PLATFORM_SOCKET_INVALID);
@@ -177,11 +173,10 @@ int test_connect_node_locked(void)
         ASSERT(p2p_node_get_ref(node) == 1);
         zcl_mutex_unlock(&nm3.cs_nodes);
 
-        /* Release-to-zero-frees: simulate the reap dropping the manager ref
-         * after the node has left nodes[]. Once both refs are gone the node is
-         * freeable with no remaining owner — net_manager_free would otherwise
-         * double-account it, so we remove + free it here explicitly and assert
-         * the manager list is empty. */
+         /* Release-to-zero-frees: simulate the reap dropping the manager ref
+          * after the node left nodes[]; remove + free it explicitly (else
+          * net_manager_free would double-account it) and assert the manager
+          * list is empty. */
         zcl_mutex_lock(&nm3.cs_nodes);
         nm3.nodes[nm3.num_nodes - 1] = NULL;
         nm3.num_nodes--;

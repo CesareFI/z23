@@ -2,42 +2,32 @@
  *
  * Tests for the -confine / -confine=serving strict node confinement profiles
  * (os_sandbox_node_confine_profile / os_sandbox_node_confine_serving_profile
- * / os_sandbox_seccomp_allow, backing the engine/entry/main.c -confine[=serving] flags
- * applied at engine/composition/src/boot.c sr_confine_enter).
+ * / os_sandbox_seccomp_allow, applied at engine/composition/src/boot.c
+ * sr_confine_enter).
  *
- * This IS the reproducible empirical derivation harness the allow-lists are
- * grounded in: a confined child runs the representative steady-state ops
- * (malloc, file I/O under the granted datadir, getrandom, a monotonic clock
- * read, and a real SQLite WAL CREATE/INSERT/SELECT against a datadir-local db)
- * under the seccomp ALLOW-list whose default action is KILL_PROCESS. If the
- * allow-list omits a syscall those ops need, the child is SIGSYS-killed and the
- * test FAILS — so the allow-list is driven to correctness for the exact tested
- * ops. Add a syscall to os_sandbox_node_confine_allowed_syscalls() (strict) or
- * os_sandbox_node_confine_serving_allowed_syscalls() (serving), re-run.
+ * This is the derivation harness for the allow-lists: a confined child runs
+ * representative steady-state ops (malloc, datadir file I/O, getrandom, a
+ * monotonic clock read, a SQLite WAL CREATE/INSERT/SELECT) under the seccomp
+ * ALLOW-list whose default action is KILL_PROCESS; a missing syscall
+ * SIGSYS-kills the child and fails the test. To add one, edit
+ * os_sandbox_node_confine_allowed_syscalls() (strict) or
+ * os_sandbox_node_confine_serving_allowed_syscalls() (serving).
  *
- * The confinement builders MUTATE the calling process IRREVERSIBLY, so every
- * destructive assertion runs in a FRESHLY FORKED child judged by its exit
- * status / terminating signal (mirrors test_os_sandbox.c). The parent (the
- * test-group process) is never confined.
+ * The builders mutate the calling process irreversibly, so every destructive
+ * assertion runs in a freshly forked child judged by exit status / signal
+ * (as in test_os_sandbox.c).
  *
- * Coverage — strict (-confine) profile:
- *   (a) normal ops work confined: enter node_confine, then file I/O in the
- *       datadir + malloc + getrandom + clock + SQLite SELECT -> child exits 0.
- *   (b) canary — Landlock: an open() of a path OUTSIDE the datadir grants
- *       (/etc/passwd) is EACCES-denied under confinement.
- *   (c) canary — seccomp: a forbidden syscall (socket) KILLs the process
- *       (SIGSYS), proving the strict allow-list is not overly permissive.
+ * Strict (-confine):
+ *   (a) normal ops work confined: child exits 0.
+ *   (b) Landlock canary: open() of /etc/passwd (outside the datadir) is
+ *       EACCES-denied.
+ *   (c) seccomp canary: socket() KILLs the process (SIGSYS).
  *   (d) the allow-set is non-empty and within the BPF filter bound.
  *
- * Coverage — serving (-confine=serving) profile:
- *   (e) normal SERVING ops work confined: enter node_confine_serving, then a
- *       real loopback socket()/bind()/listen()/accept()/send()/recv() cycle
- *       PLUS a SQLite query -> child exits 0 (proves normal serving ops
- *       survive the widened allow-list).
- *   (f) canary — execve/ptrace/mount stay KILLed even under the widened
- *       serving allow-list (proves the widening is additive, not a blanket
- *       loosening).
- */
+ * Serving (-confine=serving):
+ *   (e) a loopback socket/bind/listen/accept/send/recv cycle plus a SQLite
+ *       query works confined.
+ *   (f) execve/ptrace/mount stay KILLed: the widening is additive. */
 
 #define _GNU_SOURCE  /* getrandom / syscall — must precede every include */
 
@@ -306,11 +296,9 @@ static int c_confine_serving_normal_ops(void)
     return 0;  /* all confined serving ops succeeded */
 }
 
-/* (f) seccomp canary under the WIDENED serving allow-list: execve, ptrace,
- * and mount must still KILL the process — proves the socket-family widening
- * is additive, not a blanket loosening of the whole filter. Each canary is
- * checked in its OWN forked child (a KILLed process cannot report the next
- * assertion), so this helper is parameterised by which syscall to try. */
+/* (f) seccomp canary under the widened serving allow-list: execve, ptrace and
+ * mount must still KILL the process. Each canary runs in its own forked child,
+ * so the helper is parameterised by the syscall to try. */
 enum confine_serving_canary {
     CANARY_EXECVE = 0,
     CANARY_PTRACE = 1,
@@ -365,11 +353,9 @@ int test_confine(void)
     printf("confine: landlock ABI = %d, seccomp supported = %d\n",
            abi, (int)os_sandbox_seccomp_supported());
 
-    /* The enforcement teeth run only where the kernel actually enforces
-     * confinement. On a kernel missing Landlock+seccomp the -confine boot
-     * path degrades (logs + skips), so skipping the assertions here keeps
-     * the suite honest rather than asserting a mechanism the host does not
-     * provide. */
+    /* The enforcement teeth run only where the kernel enforces confinement;
+     * without Landlock+seccomp the -confine boot path degrades and the
+     * assertions are skipped. */
     if (abi >= 1 && os_sandbox_seccomp_supported()) {
         /* (a) normal ops still work confined (strict profile) */
         CF_CHECK("normal ops work confined (file I/O + malloc + getrandom + "

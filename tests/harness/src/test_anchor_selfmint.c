@@ -167,13 +167,12 @@ int test_anchor_selfmint(void)
                  before.st_ino == after.st_ino);
     }
 
-    /* (5) v3 ACCEPTANCE (regression guard): a valid v3 artifact carries the SAME
-     * coins set as the checkpoint PLUS a shielded section, so its FULL-BODY
-     * header SHA3 (coins+shielded) can NEVER equal the coins-only checkpoint
-     * hash. Admission must recompute the COINS-ONLY component and bind THAT to
-     * the checkpoint — not compare the full-body header hash (the old bug false-
-     * rejected every valid v3 snapshot as "sha3_or_format_mismatch"). The
-     * override is still the CORRECT root here (step 4 changes it below). */
+    /* (5) v3 ACCEPTANCE: a valid v3 artifact carries the same coins set as
+     * the checkpoint plus a shielded section, so its full-body header SHA3
+     * (coins+shielded) never equals the coins-only checkpoint hash. Admission
+     * must recompute the COINS-ONLY component and bind THAT to the
+     * checkpoint. The override is still the correct root here (step 4 changes
+     * it below). */
     {
         char v3_path[400];
         snprintf(v3_path, sizeof(v3_path), "%s/utxo-anchor-v3.snapshot", dir);
@@ -201,8 +200,8 @@ int test_anchor_selfmint(void)
         SM_CHECK("(5) v3 body sha3 != coins-only checkpoint",
                  memcmp(got_sha3, cp->sha3_hash, 32) != 0);
 
-        /* The OLD predicate — uss_open(expected_sha3 = coins-only cp) — rejects
-         * the valid v3 artifact (proves this test exercises the real bug). */
+        /* Comparing uss_open(expected_sha3 = coins-only cp) would reject the
+         * valid v3 artifact; admission must not use that predicate. */
         {
             char err[128] = {0};
             struct uss_header vh;

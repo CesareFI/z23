@@ -88,17 +88,14 @@ int api_status_focused_tests(void)
             const struct json_value *download =
                 ok ? json_get(&root, "download") : NULL;
             ok = ok && download != NULL;
-            /* The pre-existing abbreviated fields must still be present
-             * (behavior-preserving)... */
+            /* The abbreviated fields must be present... */
             ok = ok && json_get(download, "requested") != NULL;
             ok = ok && json_get(download, "received") != NULL;
             ok = ok && json_get(download, "timed_out") != NULL;
             ok = ok && json_get(download, "in_flight") != NULL;
             ok = ok && json_get(download, "queued") != NULL;
-            /* ...and the throughput fields that used to be missing on
-             * these three endpoints must now be there too (additive
-             * fix, drift closed by the shared download_stats_push_json
-             * serializer). */
+            /* ...and the throughput fields from the shared
+             * download_stats_push_json serializer. */
             ok = ok && json_get(download, "bytes_downloaded") != NULL;
             ok = ok && json_get(download, "mbps_avg") != NULL;
             ok = ok && json_get(download, "gb_downloaded") != NULL;
@@ -162,7 +159,7 @@ int api_status_focused_tests(void)
             json_get(&root, "peer_downloads");
         ok = ok && peer_downloads &&
              peer_downloads->type == JSON_ARR;
-        /* Throughput fields it was MISSING before the consolidation. */
+        /* Throughput fields. */
         ok = ok && json_get(&root, "bytes_downloaded") != NULL;
         ok = ok && json_get(&root, "mbps_avg") != NULL;
         ok = ok && json_get(&root, "gb_downloaded") != NULL;
@@ -218,10 +215,8 @@ int api_status_focused_tests(void)
     printf("api: node identity exposes source SHA-256 + Git trace; "
            "bootstrapstatus keeps client_name... ");
     {
-        /* Invoke the registered actor directly (bypassing
-         * rpc_table_execute()'s RPC-server warmup gate, same pattern as
-         * the existing name_list RPC tests above) so this test does not
-         * depend on set_rpc_warmup_finished() having been called. */
+        /* Invoke the registered actor directly (bypassing rpc_table_execute()'s
+         * RPC-server warmup gate, as the name_list RPC tests above do). */
         struct rpc_table misc_tbl;
         struct rpc_table net_tbl;
         struct json_value params;
@@ -269,7 +264,7 @@ int api_status_focused_tests(void)
         const struct json_value *binary =
             ok ? json_get(&result, "binary") : NULL;
         ok = ok && binary != NULL;
-        /* Pre-existing field name preserved (behavior-preserving)... */
+        /* Field name preserved... */
         ok = ok && strcmp(json_get_str(json_get(binary, "client_name")),
                           CLIENT_NAME) == 0;
         /* ...alongside the shared helper's "subversion" name and the

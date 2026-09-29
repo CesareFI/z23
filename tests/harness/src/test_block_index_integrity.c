@@ -2,11 +2,10 @@
  *
  * Tests for the block_index_integrity service.
  *
- * Each test spins up a throw-away datadir, writes a mock block_index.bin
- * body, calls bii_write_sidecar to commit the bytes, and then drives
- * bii_verify through the seven verdicts the service can return. The
- * quarantine rename is checked too — important because an accidental
- * delete would lose operator forensic data.
+ * Each test spins up a throw-away datadir, writes a mock block_index.bin body,
+ * commits it with bii_write_sidecar, and drives bii_verify through the seven
+ * verdicts. The quarantine rename is checked too: a delete would lose forensic
+ * data.
  */
 
 #include "test/test_core.h"
@@ -640,13 +639,10 @@ static int t_height_repair_single(void)
 }
 
 /* ── 15b. Detached-root subtree is never re-anchored ─────────────
- * If an early header's pprev link is lost, stamping that detached root to
- * height 0 and forward-propagating relabels every descendant by an
- * offset — internally consistent, so every later pass reports "correct",
- * every new network block fails bad-cb-height, and the tip freezes. The
- * repair must leave
- * the (canonical) descendant labels alone until pprev repair relinks
- * the root, after which a re-run heals the root's own label. */
+ * If an early header's pprev link is lost, stamping the detached root to
+ * height 0 would relabel every descendant by an offset. The repair must leave
+ * the canonical descendant labels alone until pprev repair relinks the root,
+ * after which a re-run heals the root's own label. */
 
 static int t_height_repair_detached_subtree(void)
 {
@@ -700,14 +696,11 @@ static int t_height_repair_detached_subtree(void)
     return failures;
 }
 
-/* ── Post-activation anchor repair — Round 4 Part 5 regression ─
+/* ── Post-activation anchor repair ─
  *
- * NULL-input-only test. Constructing a coins_view_cache fixture that
- * survives bii_repair_post_activation_anchor's full path requires
- * wiring a backing coins_view, a node_db, and an on-disk block file —
- * that's a heavier integration setup than this regression deserves.
- * The NULL paths exercise the input validation; the happy path is
- * exercised live by the boot sequence. */
+ * NULL-input-only test: the input validation is exercised here and the happy
+ * path by the boot sequence (a full fixture needs a backing coins_view, a
+ * node_db and an on-disk block file). */
 
 static int t_anchor_repair_null_inputs(void)
 {
@@ -729,13 +722,10 @@ static int t_anchor_repair_null_inputs(void)
 
 /* ── 19. pprev repair skips work the fast-boot cursor already covers ────
  *
- * The --importblockindex path writes authoritative pprev pointers + per-block
- * shielded deltas straight from the source CDiskBlockIndex and stamps a
- * "repaired-through" cursor, so a normal boot must NOT re-walk the whole index
- * (the O(chain) disk read that used to delay RPC bind by minutes). Passing
- * min_height at the tip selects nothing, so the function returns 0 WITHOUT
- * reading any block file — proven here with a deliberately bogus datadir — while
- * still reporting the true max height so boot can advance the persisted cursor. */
+ * --importblockindex stamps a "repaired-through" cursor, so a normal boot must
+ * not re-walk the whole index. min_height at the tip selects nothing, so the
+ * function returns 0 without reading any block file (proven with a bogus
+ * datadir) while still reporting the true max height. */
 static int t_pprev_repair_cursor_skip(void)
 {
     int failures = 0;

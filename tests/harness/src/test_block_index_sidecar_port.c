@@ -3,12 +3,11 @@
  *
  * Tests for the block_index_sidecar storage seam.
  *
- * bii_verify() cross-checks the loader's declared tip against the
- * SQLite `blocks` table via exactly one read — "SELECT height FROM
- * blocks WHERE hash=?". That read now lives behind
- * block_index_sidecar_port, backed by the sqlite adapter under
- * platform/adapters/outbound/persistence/. This file exercises BOTH layers over
- * ISOLATED in-memory / temp-file fixtures, never the live node DB:
+ * bii_verify() cross-checks the loader's declared tip against the SQLite
+ * `blocks` table via exactly one read ("SELECT height FROM blocks WHERE
+ * hash=?"), behind block_index_sidecar_port and backed by the sqlite adapter
+ * under platform/adapters/outbound/persistence/. This file exercises BOTH
+ * layers over ISOLATED in-memory / temp-file fixtures, never the live node DB:
  *
  *   1. Drive the sqlite adapter directly: against a node_db whose
  *      `blocks` table holds a known (hash,height) row, assert the

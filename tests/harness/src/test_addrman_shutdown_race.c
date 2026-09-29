@@ -4,27 +4,16 @@
  *
  * Regression: addrman shutdown-ordering race.
  *
- * CRASH SHAPE: during a graceful shutdown, AFTER
- * "[shutdown] connman stopped" is logged, a detached message-cycle thread can
- * still be processing a P2P `addr` message:
+ * A detached message-cycle thread may still process a P2P `addr` message after
+ * "[shutdown] connman stopped", reaching addrman_add() after addrman_free()
+ * nulled am->entries and destroyed am->cs.
  *
- *   connman_run_message_cycle -> msg_process_messages -> mp_handle_addr
- *     -> addrman_add -> (find_addr: "bad args") -> SIGSEGV at addrman_add+0x79f
- *
- * Root cause: connman_join()'s bounded timed_join() on the message thread timed
- * out and DETACHED the still-running thread, then connman_free() -> net_manager_free()
- * -> addrman_free() nulled am->entries and destroyed am->cs out from under it.
- * find_addr() returned NULL (its guard fired) but addrman_add() kept going into
- * create_entry() and dereferenced the freed am->entries.
- *
- * The fix is defense in depth:
+ * Two layers protect this:
  *  1. OWNERSHIP — connman_join() never detaches a timed-out worker; it retains
  *     dependencies until the worker exits. Optional discovery cadence waits
- *     are stop-aware, so a healthy 300-second wait returns promptly instead
- *     of forcing a pre-durability watchdog exit.
- *  2. FAIL-CLOSED — addrman_add() guards the SAME condition find_addr() does
- *     (torn-down/invalid addrman) BEFORE locking, returning false rather than
- *     dereferencing freed entries or locking a destroyed mutex.
+ *     are stop-aware and return promptly.
+ *  2. FAIL-CLOSED — addrman_add() guards the same condition find_addr() does
+ *     (torn-down/invalid addrman) BEFORE locking, returning false.
  *
  * These tests assert both layers hold and neither path crashes. */
 
@@ -79,9 +68,9 @@ static int test_addrman_add_failclosed_on_teardown(void)
         /* NULL manager — must not deref, must return false. */
         ASSERT(addrman_add(NULL, &addr, &src, 0) == false);
 
-        /* Freed manager: addrman_free() nulls entries and destroys cs — exactly
-         * the post-teardown state the detached thread observed live. The guard
-         * must return BEFORE touching entries or locking the destroyed mutex. */
+        /* Freed manager: addrman_free() nulls entries and destroys cs. The
+         * guard must return BEFORE touching entries or locking the destroyed
+         * mutex. */
         struct addr_man am;
         addrman_init(&am);
         addrman_free(&am);
@@ -170,8 +159,7 @@ static int test_connman_discovery_wait_is_interruptible(void)
         connman_set_stop_for_test(false);
 
         /* Stop-aware wait must return promptly; the 500 ms ceiling scales
-         * with measured host load so a busy lane does not flake the verdict
-         * while the interruptible-wait behavior is unchanged. */
+         * with measured host load. */
         struct test_budget budget =
             test_budget_scale(UINT64_C(500000));
         printf("  addrman_shutdown_race: discovery-stop elapsed_us=%lld "
@@ -192,10 +180,9 @@ static int test_connman_discovery_wait_is_interruptible(void)
     return failures;
 }
 
-/* Production incident regression: an automatic debug bundle raced orderly
- * shutdown after connman_free(), reached addrman_diag_dump_state_json, and
- * dereferenced entries[0] after addrman_free had nulled entries.  A stale
- * fixture/publication must now degrade to an explicit unavailable snapshot. */
+/* An automatic debug bundle racing orderly shutdown must not dereference
+ * entries after addrman_free; a torn-down addrman yields an explicit
+ * unavailable snapshot. */
 static int test_addrman_diagnostic_fails_closed_after_teardown(void)
 {
     int failures = 0;

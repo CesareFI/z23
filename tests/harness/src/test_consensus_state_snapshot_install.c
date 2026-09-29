@@ -2,8 +2,7 @@
  * Atomic promotion tests for external zcl.consensus_state_bundle.v1 files. */
 
 /* realpath() needs __USE_MISC; -D_POSIX_C_SOURCE=200809L alone does not
- * declare it. Without this the TU only builds by accident of the glibc
- * fortify inline at -O3. */
+ * declare it. */
 #define _DEFAULT_SOURCE
 
 #include "test/test_core.h"
@@ -143,17 +142,10 @@ static int boot_install_gate_alias_tests(const char *root)
     return failures;
 }
 
-/* Post-install node.db `utxos` mirror reset (icb_reset_utxo_mirror in
- * engine/composition/src/consensus_state_install_derived_state.c, exercised here via the
- * ZCL_TESTING seam boot_install_consensus_bundle_reset_utxo_mirror_for_test
- * — which lives in consensus_state_install_runtime.c). A stale
- * mirror left ABOVE (or anywhere around) a freshly installed bundle height
- * is a derived-projection artifact, never a consensus input — see
- * lane E5's utxo_recovery.rewind_overshoot incident (a 3,718-row mirror
- * overshoot from a prior borrowed-state fold wedged boot with a PERMANENT
- * blocker on a table that carries no consensus weight). This proves the
- * reset actually wipes the mirror + its commitment cache and forces the
- * sync cursor to a value that can never match a real coins_kv frontier. */
+/* Post-install node.db `utxos` mirror reset (icb_reset_utxo_mirror): the
+ * mirror and its commitment cache are wiped and the sync cursor is forced to
+ * a value that never matches a real coins_kv frontier. The mirror is a
+ * derived projection, never a consensus input. */
 static int boot_install_utxo_mirror_reset_tests(const char *root)
 {
     int failures = 0;
@@ -571,10 +563,9 @@ static bool fixture_init(struct csi_fixture *f, const char *dir,
         for (size_t j = 0; j < 32; j++)
             f->nfs[pool].nf[j] = (uint8_t)(seed + pool * 48u + j + 9u);
     }
-    /* Two additional valid Sprout trees stay dormant in normal fixtures. The
-     * malformed-height case enables them to build a root-sorted low/high/low
-     * sequence: the old frontier-only duplicate check missed the final lower
-     * duplicate, while the canonical UNIQUE(pool,height) schema must refuse it. */
+     /* Two extra valid Sprout trees stay dormant; the malformed-height case
+      * enables them to build a root-sorted low/high/low sequence that the
+      * UNIQUE(pool,height) schema must refuse. */
     for (size_t extra = 2; extra < 4; extra++) {
         for (size_t j = 0; j < 32; j++)
             leaf.data[j] = (uint8_t)(seed ^
@@ -1324,14 +1315,10 @@ static bool candidate_progress_parity(
  * export test does. */
 void reducer_frontier_test_set_compiled_anchor(int32_t height);
 
-/* ── H*-climb leg fixture helpers ─────────────────────────────────────────
- * After ACTIVATE forces the reducer cursors to the anchor, prove the cure is
- * a LIVE fold-resume point (not just forced cursors): seed the anchor's trust
- * row, then fold real per-height stage evidence forward and watch
- * reducer_frontier_compute_hstar CLIMB. These write the durable stage-log image
- * directly (test scaffolding building the progress.kv, not production reducer
- * code — the same exemption the sibling reducer_frontier tests use), so they
- * carry the raw-sql-ok markers rather than routing through the AR lifecycle. */
+/* H*-climb fixture helpers: seed the anchor's trust row, then fold stage
+ * evidence forward and watch reducer_frontier_compute_hstar climb. They write
+ * the stage-log image directly (test scaffolding), hence the raw-sql-ok
+ * markers. */
 
 /* A per-height 32-byte hash all stage receipts at that height AGREE on, so the
  * C3 hash-binding split scan never caps the climb. */
@@ -2023,12 +2010,9 @@ static void csi_make_tmpdir(char *buf, size_t n)
     test_make_tmpdir(buf, n, "consensus_state_install", "main");
 }
 
-/* zcl.sync_benchmark.v1: a fresh instrument, a genuinely successful install,
- * then a receipt that proves what actually ran — ARTIFACT_VERIFY and
- * INSTALL both stamp real elapsed_ms, and t_ready (the "usable, not yet
- * sovereign" milestone) fires exactly once, at the point the install
- * reaches CONSENSUS_INSTALL_VERIFIED_CONTAINED. Kept out of the platform-arm
- * flow above to hold that function's cyclomatic complexity at its ratchet. */
+/* zcl.sync_benchmark.v1: after a successful install, ARTIFACT_VERIFY and
+ * INSTALL stamp real elapsed_ms and t_ready fires exactly once, at
+ * CONSENSUS_INSTALL_VERIFIED_CONTAINED. */
 static int csi_sync_benchmark_install_case(sqlite3 *db, struct csi_fixture *a,
                                            struct csi_fixture *b)
 {
@@ -2135,22 +2119,13 @@ static int test_consensus_state_snapshot_install_platform_arm(void)
         CSI_CHECK("candidate fixture reinitialized",fixture_init(&b,dir,"b",0x80,60,true));
     }
 
-    /* D1 tip-frontier-only anchor verification — explicit, self-documenting
-     * coverage of exactly what each layer catches:
-     *   - byte-integrity floor (every row): truncation / garbage / trailing
-     *     bytes. Proven by CSI_CORRUPT_NONTIP_ANCHOR_TREE (a well-formed tree +
-     *     stray byte on a genuine NON-tip row is refused even though non-tip
-     *     rows skip the Pedersen recompute).
-     *   - tip Pedersen bind (per-pool MAX(height) row only): stored-key vs
-     *     recomputed-root agreement. Proven by CSI_CORRUPT_TIP_ANCHOR_TREE (a
-     *     valid tree whose root != the stored key is caught only because the
-     *     row is the pool tip). A wrong-key WELL-FORMED tree on a NON-tip row
-     *     is by design NOT recomputed here — it is delegated to the whole-file
-     *     digest + this tip bind (the anchor_digest, checkpoint-bound, still
-     *     commits every row's exact key+tree bytes).
-     * A valid multi-height bundle (genuine non-tip row present) must still be
-     * ADMITTED, proving the restructure did not start rejecting historical
-     * rows — so the refusals above fire on the corruption, not the shape. */
+     /* D1 tip-frontier-only anchor verification:
+      *   - byte-integrity floor (every row): truncation, garbage or trailing
+      *     bytes are refused (CSI_CORRUPT_NONTIP_ANCHOR_TREE).
+      *   - tip Pedersen bind (per-pool MAX(height) row only): stored key must
+      *     equal the recomputed root (CSI_CORRUPT_TIP_ANCHOR_TREE). Non-tip
+      *     rows are covered by the whole-file digest and the anchor_digest.
+      * A valid multi-height bundle with a non-tip row is still admitted. */
     CSI_CHECK("D1: valid multiheight-anchor bundle writes",
               write_bundle(&b, CSI_MULTIHEIGHT_VALID));
     struct consensus_state_artifact_evidence *d1_ev = NULL;
@@ -2552,17 +2527,14 @@ static int test_consensus_state_snapshot_install_platform_arm(void)
     artifact=NULL;
     if(incomplete_dirfd>=0) close(incomplete_dirfd);
 
-    /* ── A3/A2/D3: ACTIVATE-mode install into a live (wedged) progress store ──
-     * Open a REAL process-singleton progress store, seed it into the exact
-     * anchor_backfill_gap WEDGE (a borrowed coin + EMPTY shielded tables with a
-     * positive activation cursor), then prove: (i) a tampered bundle refuses and
-     * leaves the wedge intact; (ii) a non-ADMIT publication-CAS decision gates
-     * the install out; (iii) an ADMIT complete bundle installs atomically and
-     * CURES the wedge, forcing the reducer cursors to the anchor so the fold
-     * resumes there; (iv) a physically restorable prior generation is captured. */
+     /* A3/A2/D3: ACTIVATE-mode install into a live progress store seeded into
+      * the anchor_backfill_gap wedge: (i) a tampered bundle refuses and leaves
+      * the wedge intact; (ii) a non-ADMIT publication-CAS decision gates the
+      * install out; (iii) an ADMIT bundle installs atomically, cures the wedge
+      * and forces the reducer cursors to the anchor; (iv) a restorable prior
+      * generation is captured. */
     {
-        /* An earlier leg left b's anchor heights at b.height-1; restore them so
-         * the complete-frontier invariant (anchor height == block height) holds
+        /* Restore b's anchor heights so anchor height == block height holds
          * for active_is below. */
         b.anchors[0].height = b.height;
         b.anchors[1].height = b.height;
@@ -2788,9 +2760,8 @@ static int test_consensus_state_snapshot_install_platform_arm(void)
         if (ares.prior_generation_path[0])
             (void)unlink(ares.prior_generation_path);
 
-        /* The persistently mutated inode needs a new valid artifact. Retain a
-         * writer before the next admission so a second regression can mutate
-         * and restore the source bytes while leaving a bad streamed result. */
+        /* The mutated inode needs a new valid artifact; retain a writer before
+         * the next admission. */
         CSI_CHECK("activate: valid artifact restored after source mutation",
                   write_bundle(&b, CSI_VALID));
         int transient_writer_fd = -1;
@@ -2954,9 +2925,8 @@ static int test_consensus_state_snapshot_install_platform_arm(void)
         CSI_CHECK("activate: fixture frontier restores after stale-ADMIT test",
                   hs_put_anchor_hash(pdb, b.height, b.block_hash));
 
-        /* Force the seed boundary itself to fail after streaming. Everything,
-         * including schemas/cursors and stale-session deletion, must roll back
-         * to the wedged pre-install generation. */
+        /* A seed-boundary failure after streaming rolls everything back to
+         * the pre-install generation. */
         uint64_t generation_before_failed_cutover = 0;
         CSI_CHECK("activate: failed-cutover generation baseline reads",
                   coins_kv_get_authority_generation(
@@ -3136,11 +3106,10 @@ static int test_consensus_state_snapshot_install_platform_arm(void)
                       &activated_empty_scripts) &&
                   activated_empty_scripts == 1);
 
-        /* (iii-b) INDEPENDENT REPLAY RECEIPT — the store is now folded to the
-         * anchor (coins_applied == anchor+1), so the offline verifier can
-         * re-derive every component digest from THIS datadir's own tables (never
-         * the bundle) and, on a full match, persist the receipt that authorizes
-         * ACTIVATE with the ZCL_TESTING hook OFF. */
+        /* (iii-b) Independent replay receipt: the offline verifier re-derives
+         * every component digest from this datadir's own tables (not the
+         * bundle) and, on a full match, persists the receipt that authorizes
+         * ACTIVATE with the ZCL_TESTING hook off. */
         consensus_state_snapshot_install_activate_test_set_independent_authority(
             false);
         {
@@ -3234,12 +3203,10 @@ static int test_consensus_state_snapshot_install_platform_arm(void)
                   coins_kv_is_proven_authority(pdb, &proven_applied) &&
                   proven_applied == b.height + 1);
 
-        /* (vi) H*-CLIMB — prove the cure is a LIVE fold-resume point, not just
-         * forced cursors: confirm the in-transaction seed left H* AT the
-         * wedge/anchor, then fold three consistent heights forward over stage
-         * evidence and assert reducer_frontier_compute_hstar CLIMBS past the
-         * wedge. Lower the compiled finality floor so the small fixture height
-         * is a valid anchor (restored to the production default after). */
+        /* (vi) H*-climb: after install H* sits at the anchor; folding three
+         * consistent heights over stage evidence makes
+         * reducer_frontier_compute_hstar climb past it. The compiled finality
+         * floor is lowered for the fixture and restored after. */
         /* Production ACTIVATE runs before the reducer stages initialize on a
          * genuinely fresh boot. Prove it, rather than test scaffolding,
          * materialized every H*-authoritative log schema. */

@@ -284,10 +284,8 @@ int test_bip113_bip65(void)
         /* lock_time 500000050 is ABOVE the tip's MTP (~500000006) but BELOW
          * the block header time 500000200. zclassicd's ContextualCheckBlock
          * hardcodes nLockTimeFlags=0, so the block-connect finality cutoff is
-         * the block's OWN header time — this tx is FINAL and the block is
-         * ACCEPTED. (c23 previously used MTP here and wrongly REJECTED it,
-         * a forward consensus fork. BIP113/MTP applies to the mempool, not
-         * to block connection.) */
+         * the block's OWN header time: this tx is FINAL and the block ACCEPTED.
+         * (BIP113/MTP applies to the mempool, not block connection.) */
         struct block blk;
         make_locktime_block(&blk, 500000200, 500000050, 0, 12);
 
@@ -311,8 +309,7 @@ int test_bip113_bip65(void)
         const struct chain_params *params = chain_params_get();
 
         /* lock_time 500000300 > block header time 500000200 with a non-final
-         * input sequence -> not final under the block-time cutoff -> REJECT.
-         * Keeps the finality check's teeth after the MTP->block-time fix. */
+         * input sequence -> not final under the block-time cutoff -> REJECT. */
         struct block blk;
         make_locktime_block(&blk, 500000200, 500000300, 0, 12);
 

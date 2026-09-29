@@ -1,7 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * test_codeindex_scale — the cognition/modules/codeindex/ "cheap at scale"
- * gate (milestone M2).
+ * test_codeindex_scale: the cognition/modules/codeindex/ "cheap at scale" gate.
  *
  * Proves, on generated external-workspace trees (<root>/src/...):
  *   1. cold build of 50k tiny C23 files completes and seals its own

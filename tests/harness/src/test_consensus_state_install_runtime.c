@@ -1,41 +1,24 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * test_consensus_state_install_runtime — focused unit test for the boot-wiring
- * of the sovereign consensus-state install (engine/composition/src/
- * consensus_state_install_runtime.c). It proves the CODE WIRING + logic; the
- * full end-to-end copy-prove (fresh datadir → install a real produced bundle →
- * H* climbs to tip) needs a produced artifact and is a SEPARATE integration
- * step the orchestrator runs.
+ * test_consensus_state_install_runtime: boot wiring of the sovereign
+ * consensus-state install (engine/composition/src/
+ * consensus_state_install_runtime.c).
  *
- * Asserts:
- *   (a) boot_autodetect_consensus_bundle CHOOSES a <datadir>/bundles/<name>.sqlite
- *       bundle when present, skips when absent, when the sovereign-install
- *       marker is set, or when a sibling <name>.failed marker is present, and
- *       picks the lexicographically-greatest candidate deterministically.
- *   (b) consensus_state_install_from_bundle is callable and RETURNS a typed
- *       result (does NOT _exit()) — a bogus bundle path fails closed at
- *       admission with state_installed=false and a non-empty reason.
- *   (c) the durable install-on-next-boot request round-trips: arm → pending →
- *       consume (path matches, budget bumps) → clear → not pending, and the
- *       bounded budget marks TERMINAL after BOOT_INSTALL_BUNDLE_MAX attempts and
- *       is never re-armed.
- *   (d) boot_post_install_fold_span_check — the "catch the tail" wiring reused
- *       from boot_refold_body_span_contiguous after a successful install:
- *       a fresh install with no local chain advance past installed_height is a
- *       no-op (the common case: body_fetch resumes at installed_height+1 and
- *       the tail arrives via normal P2P sync); a local chain that already
- *       extends past installed_height with every body present (the Move 2
- *       self-heal case) is ALSO a no-op (no false-positive blocker); a local
- *       chain that extends past installed_height with a body GAP raises the
- *       NAMED blocker refold.body_gap at the first missing height rather than
- *       letting the fold walk silently into a hole; ms==NULL / negative
+ *   (a) boot_autodetect_consensus_bundle picks the lexicographically greatest
+ *       <datadir>/bundles/<name>.sqlite; skips when absent, when the
+ *       sovereign-install marker is set, or when <name>.failed exists.
+ *   (b) consensus_state_install_from_bundle returns a typed result (no
+ *       _exit()); a bogus path fails closed with state_installed=false.
+ *   (c) the install-on-next-boot request round-trips (arm, pending, consume,
+ *       clear); the budget goes TERMINAL after BOOT_INSTALL_BUNDLE_MAX
+ *       attempts and is never re-armed.
+ *   (d) boot_post_install_fold_span_check: no local advance past
+ *       installed_height, or a gapless one, is a no-op; a body gap raises
+ *       refold.body_gap at the first missing height; ms==NULL / negative
  *       installed_height are safe no-ops.
- *   (d2) boot_post_install_drop_borrowed_have_data — the post-install wiring
- *       that drops HAVE_DATA claims borrowed from the bundle publisher's
- *       blk-file layout (absent on this node) before the staged pipeline
- *       starts: every non-seed claim is floored to header-only, the seed
- *       block is protected, the active tip retracts to the installed height,
- *       and NULL/negative guards are safe no-ops.
+ *   (d2) boot_post_install_drop_borrowed_have_data floors non-seed HAVE_DATA
+ *       claims to header-only, protects the seed block, retracts the active
+ *       tip to the installed height; NULL/negative guards are no-ops.
  */
 
 #include "test/test_core.h"
@@ -170,10 +153,8 @@ static int case_autodetect(void)
 }
 
 /* (a2) A stale .failed marker cleared via the install-success wiring makes
- * the bundle detectable again — the 2026-07-27 live trap: a watchdog-killed
- * boot marked the bundle .failed at 04:28, a later boot installed it
- * successfully at 05:37, and nothing cleared the marker, so autodetect kept
- * skipping the GOOD bundle on every subsequent scan. */
+ * the bundle detectable again, so autodetect does not skip a good bundle on
+ * every later scan. */
 static int case_failed_marker_cleared_on_success(void)
 {
     int failures = 0;
@@ -746,7 +727,7 @@ static int case_solution_repair_detect_window(void)
     checkpoint_header_solution_repair_test_set_datadir(dir);
     CSIR_CHECK("chsr: progress store opens", progress_store_open(dir));
 
-    /* Tip ABOVE the checkpoint — the live-cure position the old guard blocked. */
+    /* Tip above the checkpoint. */
     reducer_frontier_provable_tip_set(CP + 100000);
 
     /* No staged bundle -> nothing to unblock -> detect FALSE. */
@@ -782,11 +763,10 @@ static int case_solution_repair_detect_window(void)
     return failures;
 }
 
-/* (e2) The retry condition (checkpoint_bundle_install_ready): detect gates on
- * headers-reached-checkpoint + a staged bundle + the checkpoint solution, and
- * the remedy arms the bounded install-on-next-boot request without a retry-storm.
- * Widened: tip position no longer gates the arm (the live-cure node is above the
- * checkpoint yet still needs the install). */
+/* (e2) checkpoint_bundle_install_ready: detect gates on headers-reached-
+ * checkpoint + a staged bundle + the checkpoint solution, and the remedy arms
+ * the bounded install-on-next-boot request without a retry storm. Tip
+ * position does not gate the arm. */
 static int case_retry_condition(void)
 {
     int failures = 0;
@@ -829,11 +809,8 @@ static int case_retry_condition(void)
     CSIR_CHECK("cond: stage bundle", csir_touch(bundles, "consensus-state-bundle-5000.sqlite"));
     checkpoint_bundle_install_ready_test_set_datadir(dir);
 
-    /* The install-ready gate now also requires the checkpoint header's Equihash
-     * solution to be durably available (its sibling checkpoint_header_solution_
-     * repair peer-fetches + persists it). Land a pass record for the checkpoint
-     * header so the install can actually bind — otherwise detect would (now
-     * correctly) wait rather than burn the bounded install budget. */
+     /* The install-ready gate requires the checkpoint header's Equihash
+      * solution to be durable; land a pass record so the install can bind. */
     CSIR_CHECK("cond: progress store opens", progress_store_open(dir));
     validate_headers_ensure_set_validator_for_test(csir_header_pass, NULL);
     CSIR_CHECK("cond: checkpoint header solution landed (pass record minted)",
@@ -843,11 +820,10 @@ static int case_retry_condition(void)
     CSIR_CHECK("cond: detect fires when headers reach checkpoint + bundle staged",
                checkpoint_bundle_install_ready_test_detect());
 
-    /* WIDENED (live-cure): H* ABOVE the checkpoint no longer suppresses the arm.
-     * The live-cure node sits above the checkpoint on BORROWED shielded state and
-     * still needs the install to close its anchor/nullifier gap; the staged-bundle
-     * predicate is the real scope (a sovereign node has the marker -> autodetect
-     * NULL -> detect false, proven at the end of this case). */
+     /* H* above the checkpoint does not suppress the arm: a live node on
+      * borrowed shielded state still needs the install; the staged-bundle
+      * predicate is the scope (a sovereign node has the marker, so detect is
+      * false). */
     reducer_frontier_provable_tip_set(CP + 100000);
     CSIR_CHECK("cond: detect STILL fires above checkpoint (live-cure path)",
                checkpoint_bundle_install_ready_test_detect());

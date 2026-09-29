@@ -2,40 +2,30 @@
  *
  * test_boot_odelta_scan — the boot "O(delta), never O(chain)" ratchet.
  *
- * The load-bearing law is: boot re-derives only the DELTA above the sealed
- * trust floor, never the whole chain. This test makes that law self-proving.
- * It drives the L0 progress-store fold (reducer_frontier_compute_hstar, the
- * single most representative boot-time data scanner) over a ~50k-row fixture
- * TWICE and reads the per-step iteration counter that boot_scan wires into the
- * contiguity walk:
+ * The law: boot re-derives only the DELTA above the sealed trust floor, never
+ * the whole chain. This drives the L0 progress-store fold
+ * (reducer_frontier_compute_hstar) over a ~50k-row fixture TWICE and reads
+ * the per-step iteration counter boot_scan wires into the contiguity walk:
  *
- *   COLD boot  — a freshly-restored datadir whose trusted anchor sits at the
- *                compiled SHA3 checkpoint A. The fold walks the full delta
- *                [A+1 .. A+N] of every stage log (N == COLD_N). The counter
- *                lands at ~ k_logs * N.
+ *   COLD boot  — trusted anchor at the compiled SHA3 checkpoint A; the fold
+ *                walks [A+1 .. A+N] of every stage log (counter ~ k_logs * N).
  *
- *   WARM boot  — the SAME datadir after the prior boot finalized+anchored that
- *                prefix (the durable trusted-base declaration rose to A+N) and
- *                the node advanced +DELTA blocks. The fold now walks only
- *                [A+N+1 .. A+N+DELTA]. The counter lands at ~ k_logs * DELTA.
+ *   WARM boot  — the prior boot anchored that prefix (trusted base rose to
+ *                A+N) and the node advanced +DELTA blocks; the fold walks only
+ *                [A+N+1 .. A+N+DELTA] (counter ~ k_logs * DELTA).
  *
- * The ratchet: warm_rows * 10 < cold_rows. A future change that makes the fold
- * re-scan from genesis / the compiled checkpoint on the warm boot (ignoring the
- * risen trusted anchor) balloons warm_rows back to O(chain) and fails this test
- * with the offending step named — exactly the "slow rebuild" regression class
- * the boot-is-O(delta) law exists to forbid.
+ * The ratchet: warm_rows * 10 < cold_rows. A fold that re-scans from
+ * genesis / the compiled checkpoint on the warm boot fails with the
+ * offending step named.
  *
- * Fixtures build the durable image directly with sqlite3_exec/INSERT — this is
- * TEST scaffolding, not production reducer code, so it does not route through
- * the AR lifecycle. compute_hstar (SELECT-only) is the unit under test.
+ * Fixtures build the durable image with sqlite3_exec/INSERT (test
+ * scaffolding); compute_hstar (SELECT-only) is the unit under test.
  *
- * NOTE on the THIRD boot_scan counter, chain_restore.disk_rebuild_rows: it is
- * deliberately NOT an O(delta) scanner and is characterized separately by
- * test_rebuild_active_chain_is_o_chain_not_delta (test_chain_restore_service.c).
- * The disk-backed active-chain rebuild walks tip->genesis (O(chain height)) and
- * boot reaches it on an UNCLEAN warm restart (crash / kill -9 / OOM) — a known
- * slow-boot defect, NOT a delta path. See docs/AGENT_TRAPS.md; do not "fix" it
- * by asserting it here as O(delta). */
+ * The third boot_scan counter, chain_restore.disk_rebuild_rows, is
+ * deliberately NOT an O(delta) scanner (the disk-backed active-chain rebuild
+ * walks tip->genesis on an UNCLEAN warm restart); it is characterized by
+ * test_rebuild_active_chain_is_o_chain_not_delta in
+ * test_chain_restore_service.c. See docs/AGENT_TRAPS.md. */
 
 #include "test/test_core.h"
 

@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Tests for the alert routing subsystem (wave 9 #5). */
+ * Tests for the alert routing subsystem. */
 
 #include "test/test_core.h"
 #include "util/alerts.h"

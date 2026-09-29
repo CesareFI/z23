@@ -397,8 +397,8 @@ int test_bloom(void)
     printf("rolling_bloom_init clamps num_hash_funcs... ");
     {
         /* Pathological tuning: num_elements=1 (doubled to 2 internally)
-         * with fp_rate=1e-30 produces ideal ≈ 97 hash funcs pre-fix.
-         * Post-fix both internal filters must clamp to MAX_BLOOM_HASH_FUNCS. */
+         * with fp_rate=1e-30 the ideal is ≈ 97 hash funcs; both internal
+         * filters must clamp to MAX_BLOOM_HASH_FUNCS. */
         struct rolling_bloom_filter rf = {0};
         bool ok = rolling_bloom_init(&rf, 1, 1e-30);
         if (ok &&
@@ -435,8 +435,7 @@ int test_bloom(void)
     printf("bloom_filter_init regression (public path still clamps)... ");
     {
         /* Same pathological tuning via the public constrained path.
-         * Pre- and post-fix must both clamp; this asserts we didn't
-         * break the existing behavior while lifting the clamp. */
+         * Both filters must clamp to MAX_BLOOM_HASH_FUNCS. */
         struct bloom_filter f = {0};
         bool ok = bloom_filter_init(&f, 1, 1e-30, 0, BLOOM_UPDATE_NONE);
         if (ok && f.num_hash_funcs == MAX_BLOOM_HASH_FUNCS)

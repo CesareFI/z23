@@ -11,28 +11,18 @@
  * have been a recoverable cause.
  *
  * The G-TIP case (fault a, "full block index + empty active-chain window")
- * gets TWO rows instead of one:
+ * gets TWO rows:
  *
- *   - a BOUNDED gap, inside BLOCK_INDEX_LOADER_SEED_MAX_GAP — this repair is
- *     already landed production code (engine/services/src/block_index_loader_
- *     rebuild.c); this row is an unconditional regression gate.
- *   - a LIVE-WEDGE-SCALE gap, beyond BLOCK_INDEX_LOADER_SEED_MAX_GAP — this
- *     is the documented, still-open Pillar-0 limit (docs/HANDOFF.md). Until
- *     recovery lands, the row requires an explicit contained refusal with no
- *     operator page; it flips to the recovery assertion when the injector
- *     reports `ok=true`.
+ *   - a BOUNDED gap, inside BLOCK_INDEX_LOADER_SEED_MAX_GAP — repaired by
+ *     engine/services/src/block_index_loader_rebuild.c; an unconditional gate.
+ *   - a gap beyond BLOCK_INDEX_LOADER_SEED_MAX_GAP — the open Pillar-0 limit
+ *     (docs/HANDOFF.md). Until recovery lands, the row requires an explicit
+ *     contained refusal with no operator page; it flips to the recovery
+ *     assertion when the injector reports `ok=true`.
  *
  * See engine/modules/sim/include/sim/simnet_chaos_faults.h for what each fault
  * reproduces and engine/services/include/services/block_index_loader.h for
- * BLOCK_INDEX_LOADER_SEED_MAX_GAP.
- *
- * Fault (m) (lane G4, wf/disruption-resume) extends the corpus with the
- * ordinary P2P block-body download/resume path: a peer disconnects mid-
- * transfer and reconnects, and the on-disk BLOCK_HAVE_DATA contract must
- * hold — never re-request a block already durably persisted, always reach
- * tip. Distinct from the (g)-(l) matrix's rom_journal/artifact-download
- * subsystem below.
- */
+ * BLOCK_INDEX_LOADER_SEED_MAX_GAP. */
 
 #include "test/test_core.h"
 
@@ -82,12 +72,10 @@ int test_always_sync_chaos(void)
     }
 
     /* ── (a-2) G-TIP: live-wedge-scale gap — REFUSE-or-RECOVER ──────────
-     * A gap comfortably beyond MAX_GAP, at the SAME scale relationship the
-     * documented live limit has to the cap (a multiple of it), kept cheap
-     * for a unit test. Until recovery lands, refusal must remain contained
-     * and must not page the operator. The moment the genesis-root branch
+     * A gap well beyond MAX_GAP. Until recovery lands, refusal must stay
+     * contained and must not page the operator; when the genesis-root branch
      * resolves an over-cap gap, `r.ok` flips true and the recovery assertion
-     * becomes the hard gate with no test edit. */
+     * becomes the hard gate. */
     {
         const int gap = BLOCK_INDEX_LOADER_SEED_MAX_GAP + 10000;
         bool harness_ok = chaos_fault_empty_active_chain_window(gap, &r);
@@ -163,11 +151,10 @@ int test_always_sync_chaos(void)
                   "identically, next pass converges", r.recovered);
     }
 
-    /* ── (g)-(l): the sync/ROM-artifact fault matrix (lane G3) ──────────
-     * Six more named injectors over core/modules/net/rom_fetch.c, rom_journal.c and
-     * the pure core/modules/sync/src/sync_reduce.c kernel — see
-     * sim/simnet_chaos_faults.h for each fault's exact contract. Every
-     * fixed seed below is chosen once so a failure replays deterministically
+    /* ── (g)-(l): the sync/ROM-artifact fault matrix ──
+     * Six injectors over core/modules/net/rom_fetch.c, rom_journal.c and the
+     * pure core/modules/sync/src/sync_reduce.c kernel (contracts in
+     * sim/simnet_chaos_faults.h). Each fixed seed replays deterministically
      * via the printed replay_command. */
     struct sync_fault_capsule sc;
 
@@ -253,16 +240,13 @@ int test_always_sync_chaos(void)
                   "wedged", sc.base.recovered);
     }
 
-    /* ── (m) peer disconnect mid body-download, then resume — lane G4 ──
-     * (wf/disruption-resume). Distinct subsystem from (i): this is the
-     * ordinary P2P block-BODY download path (core/modules/net/src/download.c +
-     * the real syncsvc_collect_needed_blocks() planner msg_headers.c
-     * calls on every accepted header batch), not the rom_journal
-     * snapshot/artifact chunk resume. Proves the on-disk BLOCK_HAVE_DATA
-     * contract: a block already durably persisted before the peer died
-     * is NEVER re-requested after reconnect, and the node still reaches
-     * tip. See sim/simnet_chaos_faults.h for the full fixture narrative
-     * and struct body_download_resume_result for the measured fields. */
+    /* ── (m) peer disconnect mid body-download, then resume ──
+     * The ordinary P2P block-BODY download path (core/modules/net/src/
+     * download.c + syncsvc_collect_needed_blocks()), not the rom_journal
+     * chunk resume. A block durably persisted (BLOCK_HAVE_DATA) before the
+     * peer died is never re-requested after reconnect, and the node reaches
+     * tip. See sim/simnet_chaos_faults.h and struct
+     * body_download_resume_result. */
     {
         struct body_download_resume_result r2;
         bool harness_ok = chaos_fault_peer_disconnect_mid_body_download(

@@ -254,17 +254,14 @@ static int test_state_name_unknown(void) {
 
 /* ── deferred-activation tests ──────────────────────────── */
 
-/* Drive a real controller into CONNECTING, issue a concurrent
- * activation request, and assert that the skipped request was noted
- * on the deferred-activation counter. Pre-fix the counter stays 0 —
- * the skipped work is silently dropped and only retried when the next
- * P2P block arrives. */
+/* Drive a real controller into CONNECTING, issue a concurrent activation
+ * request, and assert the skipped request was noted on the
+ * deferred-activation counter (so it is retried, not silently dropped). */
 static int test_deferred_increments_on_already_running(void) {
     int failures = 0;
     TEST("activation SKIP_ALREADY_RUNNING increments deferred counter") {
-        /* Clear any snapshot anchor set by earlier tests — otherwise
-         * the planner returns SKIP_ANCHOR_BLOCKS before reaching the
-         * CONNECTING check. */
+        /* Clear any snapshot anchor set by earlier tests, or the planner
+         * returns SKIP_ANCHOR_BLOCKS before the CONNECTING check. */
         snapsync_set_anchor(NULL);
 
         struct main_state ms;

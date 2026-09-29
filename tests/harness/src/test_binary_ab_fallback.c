@@ -101,27 +101,14 @@ static bool ab_special_remove(const char *path)
  *
  * Section 9 uses a writer-less FIFO on POSIX and a directory on Windows to
  * prove os_binary_slots_prepare_launch() promptly refuses non-regular paths.
- * The FIFO property used to be graded
- * `elapsed < 250 ms`, which flakes on a loaded box: 250 ms of scheduler delay
- * is ordinary on a 32-worker run, and it says nothing whatever about the
- * code. A 7200rpm-disk box measured under 2 MB/s — the honest worst case this
- * project deliberately keeps on the network — would fail it routinely.
+ * The outcome assertions (refused / fell back / no descriptor) are exact and
+ * load-independent; elapsed time is reported, not graded.
  *
- * The bound was also redundant. A blocking open() on a writer-less FIFO
- * blocks FOREVER, so the call never returns and the comparison is never
- * evaluated; every defect the 250 ms could catch is already caught by the
- * OUTCOME assertions (refused / fell back / no descriptor), which are exact
- * and load-independent. So the outcome is what is asserted now, and the
- * elapsed time is REPORTED beside it.
- *
- * What the stopwatch did give — turning an infinite block into a visible
- * failure rather than a hung suite — is kept, but as a real hang detector:
- * an alarm whose handler does NOT set SA_RESTART, so a parked open() returns
- * EINTR and the outcome assertion then fails legibly with a message that says
- * "blocked" rather than the run wedging. The bound is 30 s: the guarded call
- * is a handful of open()/fstat()s on local files, microseconds even on the
- * slowest disk in this fleet, so 30 s is not a budget anybody can approach by
- * being slow — it exists only to convert "never returns" into a sentence. */
+ * A blocking open() on a writer-less FIFO blocks forever, so an alarm whose
+ * handler does NOT set SA_RESTART makes the parked open() return EINTR and the
+ * outcome assertion fail legibly. The bound is 30 s: the guarded call is a
+ * handful of local open()/fstat()s, so it only converts "never returns" into a
+ * failure message. */
 static volatile sig_atomic_t g_ab_hang_fired;
 static void ab_hang_handler(int sig) { (void)sig; g_ab_hang_fired = 1; }
 

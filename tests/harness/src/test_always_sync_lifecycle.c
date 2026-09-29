@@ -2,31 +2,28 @@
  *
  * test_always_sync_lifecycle — the FULL-LIFECYCLE always-sync proof harness.
  *
- * MISSION (the core guarantee): the node ALWAYS folds an L1-style anchor base
- * forward to the network tip, and every fault it can hit terminates in exactly
- * ONE of two acceptable states:
+ * The node ALWAYS folds an L1-style anchor base forward to the network tip,
+ * and every fault it can hit terminates in exactly ONE of two states:
  *   (a) H* reaches the target tip, or
  *   (b) a typed TERMINAL blocker is NAMED at a known height WITH a remedy.
  *
- * FORBIDDEN outcomes this test actively catches (a red here that names a real
- * production defect is a SUCCESS for the harness, not a failure):
+ * FORBIDDEN outcomes this test catches:
  *   - a SILENT idle: not at tip, no named blocker, ladder not armed;
  *   - an UNBOUNDED rung/rewind loop: the escalator dispatch count is bounded;
  *   - a CRASH/SIGSEGV: every injector runs under a siglongjmp crash guard;
  *   - a coins_kv WIPE: the raw coin-row count is asserted MONOTONIC across
- *     every fault (a legitimate re-derive rewinds the cursor/delta, never the
- *     durable coin rows in this fixture).
+ *     every fault.
  *
  * It drives the REAL machinery — the reducer frontier (reducer_frontier_
- * compute_hstar), the universal re-derive primitive (stage_rederive_range),
- * the body-fetch-gap detector, the sticky_escalator ladder (via
- * sticky_escalator_test_drive, exactly as test_stall_totality_matrix does),
- * and the peer-floor decision — over a repo-local scratch progress.kv (never a
- * live datadir). Section 1 is a forward-fold soak that climbs H* to a target
- * tip while injecting inline faults; section 2 runs the full sim/simnet_chaos
- * injector matrix under the two-state + crash-guard contract; section 3 covers
- * the two faults whose oracles live under app/services (the lib/ layering gate
- * keeps them out of engine/modules/sim): a non-monotonic clock and a peer-floor breach. */
+ * compute_hstar), stage_rederive_range, the body-fetch-gap detector, the
+ * sticky_escalator ladder (via sticky_escalator_test_drive, as
+ * test_stall_totality_matrix does), and the peer-floor decision — over a
+ * repo-local scratch progress.kv. Section 1 is a forward-fold soak that
+ * climbs H* to a target tip while injecting inline faults; section 2 runs the
+ * full sim/simnet_chaos injector matrix under the two-state + crash-guard
+ * contract; section 3 covers the two faults whose oracles live under
+ * app/services (the lib/ layering gate keeps them out of engine/modules/sim):
+ * a non-monotonic clock and a peer-floor breach. */
 
 #include "platform/time_compat.h"
 #include "test/test_core.h"
@@ -539,9 +536,9 @@ static int test_always_sync_lifecycle_platform_arm(void)
         }
 
         /* The G-TIP Pillar-0 injector: a BOUNDED gap is an unconditional
-         * regression floor; the over-cap live-wedge scale is the known-open
-         * wedge (SKIP, never fail — flips to a hard gate when a sibling lane's
-         * fix lands, exactly like test_always_sync_chaos). */
+         * regression floor; the over-cap scale is a known-open limit (SKIP,
+         * never fail; flips to a hard gate when the fix lands, as in
+         * test_always_sync_chaos). */
         {
             struct chaos_fault_result r;
             memset(&r, 0, sizeof(r));

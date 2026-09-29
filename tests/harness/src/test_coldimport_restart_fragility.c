@@ -14,7 +14,7 @@
  * when our derived coins-best height is STRICTLY above zclassicd's index
  * best: `have_ndcb && ndcb.height > zcd_best_h`.
  *
- * What this test proves (the INVERSE of the bug)
+ * What this test proves (the inverse of the failure mode)
  * ----------------------------------------------
  * Given a block_index that mirrors the cold-import topology — a zclassicd
  * ancestry 0..Z plus a forward extent Z+1..Z+N that exists ABOVE the
@@ -238,17 +238,11 @@ int test_coldimport_restart_fragility(void)
     CI_CHECK("forward extent contiguous + data-bearing above mirror tip",
              fwd_preserved && w == zcd_tip);
 
-    /* INVERSE-OF-BUG #3: the suppression predicate FIRES. boot.c suppresses
-     * the backward CSR tip commit when our derived coins frontier is
-     * STRICTLY above zclassicd's index best. Here the derived frontier IS
-     * the forward tip; the mirror best is Z; so the guard MUST fire.
-     *
-     * NOTE: this replicates the inline boot.c predicate
-     *   have_ndcb && ndcb.height > zcd_best_h
-     * pending a pure-helper extraction (see header + open_risks). The
-     * inputs (derived frontier, zcd_best height) come from the real
-     * selection above, so a regression that lets best fall to the mirror
-     * tip flips this assertion. */
+     /* The suppression predicate fires: boot.c suppresses the backward CSR tip
+      * commit when the derived coins frontier is strictly above zclassicd's
+      * index best. This replicates the inline predicate
+      *   have_ndcb && ndcb.height > zcd_best_h
+      * with inputs from the real selection above. */
     int32_t zcd_best_h = zcd_tip->nHeight;            /* mirror index best */
     bool have_ndcb = true;                            /* canonical datadir */
     int32_t derived_frontier_h = fwd_tip->nHeight;    /* our coins frontier */

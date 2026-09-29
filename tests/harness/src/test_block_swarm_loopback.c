@@ -5,13 +5,9 @@
  * message processors over a real wire, plus a measured throughput number and
  * coverage of the event-driven disconnect requeue.
  *
- * Until now the block swarm (core/modules/net/src/fast_sync.c coordinator +
- * core/modules/net/src/msgprocessor_snapshot.c wire dispatch + msgprocessor_snapshot_serve.c
- * serve side) had ONLY algorithm-level unit coverage (test_fast_sync.c drives
- * block_swarm_assign_piece / receive_piece / handle_timeouts on an in-memory
- * struct). No test ever pushed real zblkmanfst/zblkreq/zblkdata bytes through
- * the real dispatcher between a seeder that reads block bodies from disk and a
- * fetcher that submits them. This file does that.
+ * The block swarm (fast_sync.c coordinator + msgprocessor_snapshot.c wire
+ * dispatch + msgprocessor_snapshot_serve.c serve side) is pushed here with real
+ * zblkmanfst/zblkreq/zblkdata bytes through the real dispatcher.
  *
  * Architecture (mirrors test_snapshot_serve_loopback.c): two fully independent
  * logical nodes in one process —
@@ -33,19 +29,16 @@
  *
  * The per-peer swarm scheduler mp_snapshot_send_tick() (private header, not on
  * the test include path) is forward-declared and called DIRECTLY: it is real
- * production code, and it owns the rarest-first assignment, the contiguous
- * window cap, the bounded piece pipeline, and the zblkreq emission. Driving it is what
- * makes this an integration test of the actual piece dance rather than a
- * re-implementation of it.
+ * The per-peer swarm scheduler mp_snapshot_send_tick() (private header) is
+ * forward-declared and called directly: it owns rarest-first assignment, the
+ * contiguous window cap, the bounded piece pipeline, and zblkreq emission.
  *
- * Two tests:
+ * Tests:
  *   1. THROUGHPUT — full manifest → request → serve → receive loop to
  *      completion; asserts every block body transferred and prints blk/s + MB/s.
  *   2. DISCONNECT REQUEUE — a peer holds pieces in flight; a second peer can
- *      claim NOTHING while they sit CHUNK_INFLIGHT (the pre-timeout stall);
- *      mp_block_swarm_peer_disconnected() requeues them event-driven, the second
- *      peer immediately picks them up, and the download finishes over the
- *      failover peer. This is the fix wired into connman's disconnect cleanup. */
+ *      claim nothing while they are CHUNK_INFLIGHT; mp_block_swarm_peer_disconnected()
+ *      requeues them event-driven and the download finishes over the failover peer. */
 
 #define _GNU_SOURCE
 #include "test/test_core.h"
@@ -643,10 +636,8 @@ static int test_block_swarm_disconnect_requeue(void)
         bs_pump(a_node, sent_a, &mp_b, p2, params->pchMessageStart, &ok);
         ASSERT(ok && p2->blk_manifest_received);
 
-        /* p1 grabs its window of pieces (marked CHUNK_INFLIGHT, owned by p1 in
-         * g_block_swarm), then goes dark: the zblkreq segments are dropped and
-         * never served, so those pieces would sit in flight until the 8 s
-         * BLOCK_PIECE_TIMEOUT sweep expired them. */
+        /* p1 grabs its window of pieces (CHUNK_INFLIGHT, owned by p1), then goes
+         * dark: its zblkreq segments are dropped and never served. */
         bs_drop_queue(p1, sent_p1);                    /* isolate this tick     */
         mp_snapshot_send_tick(&mp_b, p1);
         size_t p1_reqs = bs_queue_depth(sent_p1);
@@ -660,11 +651,9 @@ static int test_block_swarm_disconnect_requeue(void)
         ASSERT(p1_reqs == expected_owned);             /* all bounded work owned */
         bs_drop_queue(p1, sent_p1);                    /* p1 vanishes mid-flight */
 
-        /* THE FIX (wired into connman's disconnect cleanup): reclaim exactly the
-         * pieces the dead peer held, EVENT-DRIVEN. This whole test runs in well
-         * under a second, so a timeout-based sweep (block_swarm_handle_timeouts,
-         * 8 s) would reclaim NOTHING here — a non-zero return proves the requeue
-         * is driven by the disconnect, not by elapsed time. */
+        /* Reclaim exactly the pieces the dead peer held, event-driven: a
+         * non-zero return proves the requeue is driven by the disconnect, not
+         * by the 8 s block_swarm_handle_timeouts sweep. */
         size_t requeued = mp_block_swarm_peer_disconnected((uint32_t)p1->id);
         ASSERT(requeued == p1_reqs);                   /* exactly p1's pieces   */
         ASSERT(mp_block_swarm_peer_disconnected((uint32_t)p1->id) == 0); /* idem */
@@ -716,11 +705,9 @@ static int test_block_swarm_disconnect_requeue(void)
 }
 
 /* ══════════════════════ Test 3: stall reap watchdog ══════════════════════
- * The legacy getdata assignment in msg_send_messages is paused while a block
- * swarm is active, and the swarm's only exit used to be full completion — a
- * peer that silently stops answering zblkreq wedged catch-up permanently
- * (queue full, flight zero, frontier body never fetched). The watchdog must
- * abandon a completion-silent swarm (and stay off a healthy or finished one). */
+ * The legacy getdata assignment is paused while a block swarm is active, so
+ * the watchdog must abandon a completion-silent swarm (and stay off a healthy
+ * or finished one). */
 bool mp_block_swarm_reap_if_stalled(struct msg_processor *mp);
 void mp_block_swarm_test_seed_stall(uint32_t complete, uint32_t total,
                                     int64_t last_complete_unix);
@@ -808,11 +795,8 @@ static int test_block_swarm_integrity_abandon(void)
 }
 
 /* ══════════════ Test 4: duplicate piece delivery never double-credits ════
- * A piece re-requested on BLOCK_PIECE_TIMEOUT_SECS can be answered twice
- * (slow original + re-request). Crediting both deliveries inflates
- * pieces_complete past the genuinely-delivered count, so the swarm can
- * "complete" with pieces never fetched — fold holes behind a complete swarm
- * (the live tail wedge: 67 pieces credited-but-never-delivered). */
+ * A piece re-requested on BLOCK_PIECE_TIMEOUT_SECS can be answered twice;
+ * crediting both would inflate pieces_complete past the delivered count. */
 struct bs_kept { unsigned char *data; size_t size; };
 
 /* Steal every segment queued behind `sentinel` on `from`, keeping a heap copy
@@ -956,16 +940,11 @@ static int test_block_swarm_duplicate_delivery(void)
 }
 
 /* ══════════════ Test 5: manifest anchoring ══════════════════════
- * MSG_BLOCK_MANIFEST carries attacker-chosen start/end/tip_hash. Before this
- * pin, receipt alone flagged blk_manifest_received and armed the swarm — a
- * peer could aim body fetchers at a range rooted in nothing. Admission now
- * requires a two-tier anchor against the LOCAL header index: full (the real
- * tip hash resolves at exactly end_height) or fallback (start_height is at or
- * below our admitted header frontier — the catch-up posture every fixture
- * above rides, since their best headers carry fabricated hashes). Anything
- * unrooted is refused and scored. Cases run in contamination order:
- * refuse (nothing resolvable) → fallback (fabricated frontier) → full
- * (real tip indexed, frontier removed so ONLY the full tier can admit). */
+ * MSG_BLOCK_MANIFEST carries attacker-chosen start/end/tip_hash. Admission
+ * requires a two-tier anchor against the LOCAL header index: full (the tip
+ * hash resolves at exactly end_height) or fallback (start_height is at or
+ * below our admitted header frontier). Unrooted manifests are refused and
+ * scored. Cases run in order: refuse → fallback → full. */
 static int test_block_swarm_manifest_anchor(void)
 {
     int failures = 0;
@@ -1210,10 +1189,8 @@ static int test_block_swarm_manifest_republish(void)
 
 /* ══════════════ Past-manifest requests: three boundaries apart ═══════════
  *
- * node2, 2026-09-18: the canonical node logged "zblkreq 50850 out of range
- * (50850)" through 50857 from one fresh node and banned it for 24 h. This
- * fixture reproduces that shape deterministically and keeps the three
- * boundaries apart, so a fix cannot hide in the wrong one:
+ * A fresh node requesting pieces past a shorter manifest must not be banned.
+ * The three boundaries are kept apart so a fix cannot hide in the wrong one:
  *   CLIENT  which piece indices the fetcher's real scheduler puts on the wire
  *           to a peer whose own manifest is shorter than the swarm's;
  *   SERVER  which of those requests the seeder answers with zblkdata;
@@ -1420,15 +1397,10 @@ static int test_block_swarm_past_peer_manifest(void)
 int test_block_swarm_loopback(void)
 {
     int failures = 0;
-    /* Every test here advertises and serves block pieces from a fixture
-     * that never booted the runtime port, so the live sovereignty
-     * predicate reads "port absent" — not sovereign — and the serving
-     * gates would refuse each push before the scenario under test even
-     * starts. Declare the process sovereign for the group (the same
-     * thing test_net.c and the snapshot serve loopback do around their
-     * serving tests); the one test that exercises the gate itself
-     * (sovereignty_gate) flips the override internally and hands the
-     * baseline back. Cleared once, after the last sub-test. */
+    /* The fixtures never booted the runtime port, so the sovereignty
+     * predicate reads "not sovereign"; declare the process sovereign for the
+     * group (sovereignty_gate flips the override internally and restores it).
+     * Cleared once, after the last sub-test. */
     boot_snapshot_offer_test_set_trust_override(1);
     failures += test_block_swarm_throughput();
     failures += test_block_swarm_disconnect_requeue();

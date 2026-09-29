@@ -33,11 +33,10 @@ static bool bdl_read_file(const char *path, char *out, size_t out_cap)
     return true;
 }
 
-/* Every refusal below must reach the operator as the typed pre-registry block
+/* Every refusal must reach the operator as the typed pre-registry block
  * (config/boot_error.h): a stable code, the measured evidence, and a next
- * command that runs. These helpers assert on the exact rendered text, because
- * the text IS the contract for an agent reading stderr — a refusal that
- * returns false without explaining itself is the defect this covers. */
+ * command that runs. These helpers assert on the exact rendered text, since
+ * the text is the contract for an agent reading stderr. */
 static bool bdl_render_has(const char *needle)
 {
     char render[BOOT_ERROR_RENDER_MAX];
@@ -234,12 +233,9 @@ static int test_boot_datadir_lock_platform_arm(void)
     }
 
     /* ── the refusal TEXT, not just the refusal ─────────────────────────
-     * A pre-registry failure has exactly one channel: stderr. Before this,
-     * every branch above printed a bare errno with no code, no measurement
-     * and no remedy — "Cannot open data directory X: No such file or
-     * directory" left an operator guessing between mkdir, chown, and a wrong
-     * -datadir=. Each case below pins the code AND the specific next command,
-     * so a reworded remedy that stops naming a runnable step fails here. */
+     * A pre-registry failure has one channel: stderr. Each case pins the code
+     * AND the specific next command, so a remedy that stops naming a runnable
+     * step fails here. */
     {
         boot_error_reset_for_testing();
         BDL_CHECK("null datadir refusal is a typed block",
@@ -293,9 +289,8 @@ static int test_boot_datadir_lock_platform_arm(void)
                      symlink(real_dir, alias_dir) == 0;
         bool refused = built && !boot_datadir_lock_acquire(alias_dir);
         /* Linux answers open(O_DIRECTORY|O_NOFOLLOW) over a symlink with
-         * ENOTDIR, not ELOOP, so the bare-errno version of this told the
-         * operator "Not a directory" about a path that IS a directory. The
-         * code assertion below is what keeps that classification honest. */
+         * ENOTDIR, not ELOOP; the code assertion below keeps the
+         * classification honest. */
         BDL_CHECK("symlinked datadir explains O_NOFOLLOW and how to resolve it",
                   refused &&
                   bdl_render_is_typed_block("BOOT_DATADIR_SYMLINK_REFUSED",
@@ -307,10 +302,9 @@ static int test_boot_datadir_lock_platform_arm(void)
     }
 
     {
-        /* ENOTDIR has three causes and they need three different answers. The
-         * symlink case is covered above; these are the other two. Sending an
-         * operator to `ls -ld <datadir>` when a PARENT is the file wastes the
-         * move — the datadir does not exist to list. */
+        /* ENOTDIR has three causes needing three answers. The symlink case is
+         * covered above; a PARENT that is a file must not send the operator to
+         * `ls -ld <datadir>`, since the datadir does not exist to list. */
         char parent[256];
         test_make_tmpdir(parent, sizeof(parent), "boot_datadir_lock",
                          "notdir_text");
@@ -319,9 +313,8 @@ static int test_boot_datadir_lock_platform_arm(void)
         char want_ls[600];
         snprintf(plain, sizeof(plain), "%s/plainfile", parent);
         snprintf(under, sizeof(under), "%s/sub", plain);
-        /* Both cases must list `plain`: in the first it IS the datadir, in the
-         * second it is the datadir's parent. Same command, different reason —
-         * which is the whole point of splitting the message. */
+        /* Both cases must list `plain`: in the first it is the datadir, in the
+         * second the datadir's parent. */
         snprintf(want_ls, sizeof(want_ls), "next[1]:  ls -ld %s", plain);
 
         bool built = bdl_write_file(plain, "not-a-directory\n");

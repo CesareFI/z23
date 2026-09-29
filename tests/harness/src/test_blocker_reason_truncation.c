@@ -3,30 +3,12 @@
  * test_blocker_reason_truncation — a blocker reason that does not fit must say
  * so, in the field AND in the log.
  *
- * Why this test exists
- * ---------------------
- * The typed blocker is this project's honesty mechanism: a stall is always a
- * NAMED blocker, never a quiet stop. But `blocker_init` used to store the
- * reason with a bare
- *
- *     snprintf(out->reason, BLOCKER_REASON_MAX, "%s", reason);
- *
- * and discard the return value. snprintf returns the length it WOULD have
- * written, so that one discarded int was the only evidence the stored sentence
- * was partial. The operator then read a reason that stopped mid-word with
- * nothing saying anything was missing — a degraded diagnosis presented as a
- * complete one, delivered at the exact moment someone is trying to recover.
- * Note the asymmetry it replaced: an over-long `id` or `owner` was LOG_FAILed,
- * while the reason — the field a human actually reads — was silently mangled.
- *
- * This is not hypothetical. Four producers in this tree format 280-361 bytes
- * into their 256-byte reason buffers on live paths, and the clause a tail cut
- * eats first is always the "...and here is what clears it" half:
- *   engine/conditions/src/sync_rate_below_floor.c   282 min / 330 live / 361 max
- *   engine/jobs/src/utxo_root_ladder_tripwire.c     324 on the DEFAULT fail-closed
- *   engine/reducer/jobs/src/reducer_frontier_body_read_note.c 271 min / 297 live
- *   engine/services/src/directory_influence_policy.c  280 at a full 60-byte prefix
- *
+ * The typed blocker is the honesty mechanism: a stall is always a named
+ * blocker. blocker_init must not store a reason with a bare snprintf that
+ * discards its return value, or an over-long reason reads as a complete one.
+ * An over-long `id` or `owner` is LOG_FAILed, so the reason must be reported
+ * too. Several production producers format 270-360 bytes into the 256-byte
+ * buffer, and the tail cut eats the "what clears it" clause first.
  * What is asserted (the POSITIVE capability, not "it didn't crash")
  * -----------------------------------------------------------------
  *   1. An over-long reason lands in the record with a VISIBLE in-band marker
@@ -42,8 +24,7 @@
  *   4. A reason that FITS is stored byte-exact with no marker and logs nothing
  *      — the guard must not tax the normal case or cry wolf.
  *
- * Both assertion 1 and assertion 2 fail on the parent commit.
- *
+ * Assertions 1 and 2 fail if truncation is silent.
  * make t ONLY=blocker_reason_truncation
  */
 
@@ -154,10 +135,8 @@ int test_blocker_reason_truncation(void)
 
     /* ── (1) over-long reason: visible marker + a report ───────────────── */
 
-    /* 600 bytes — comfortably past BLOCKER_REASON_MAX (256), and past any
-     * plausible future raise of it, so this test keeps meaning if the cap
-     * grows. The last clause names what clears the stall; a silent cut is
-     * exactly the failure of eating it. */
+    /* 600 bytes: well past BLOCKER_REASON_MAX (256) and any plausible raise
+     * of it. The last clause names what clears the stall. */
     char long_reason[700];
     brt_build_reason(long_reason, sizeof(long_reason), 600,
                      " CLEARS_WHEN=the body re-downloads");
@@ -214,9 +193,8 @@ int test_blocker_reason_truncation(void)
     BRT_CHECK("log states how many bytes of the reason were lost",
               strstr(g_brt_log, want_lost) != NULL);
 
-    /* Nothing is actually lost: the trailing clause the field could not hold is
-     * in the log line. This is the assertion that makes the fix worth having —
-     * a marker alone would only tell the operator that the answer is gone. */
+    /* Nothing is lost: the trailing clause the field could not hold is in the
+     * log line. */
     BRT_CHECK("log carries the FULL reason, including the cut trailing clause",
               strstr(g_brt_log, long_reason) != NULL);
     BRT_CHECK("the cut clause is absent from the field but present in the log",
@@ -256,8 +234,7 @@ int test_blocker_reason_truncation(void)
     BRT_CHECK("an exactly-fitting reason logs nothing (no crying wolf)",
               strstr(g_brt_log, "did not fit") == NULL);
 
-    /* One byte over the exact fit is the boundary the old code got wrong
-     * without saying so. */
+    /* One byte over the exact fit is the boundary. */
     blocker_reset_for_testing();
     char boundary[BLOCKER_REASON_MAX + 8];
     brt_build_reason(boundary, sizeof(boundary), BLOCKER_REASON_MAX,

@@ -6,12 +6,11 @@
 
 /* Private, per-process datadir for api_set_state().
  *
- * The controller stores the pointer rather than copying, and that pointer
- * outlives the block that set it — so this buffer has static lifetime and a
- * stack buffer would dangle. It replaces a bare "/tmp": handlers derive
- * "<datadir>/node.db" and hand the datadir to the explorer and file
- * controllers, which is machine-shared state that a concurrent copy of this
- * suite (or anything else on the box) can write underneath us. */
+ * The controller stores the pointer rather than copying, and it outlives the
+ * block that set it, so this buffer has static lifetime. It replaces a bare
+ * "/tmp": handlers derive "<datadir>/node.db" and hand the datadir to the
+ * explorer and file controllers, which is machine-shared state a concurrent
+ * copy of this suite could write underneath us. */
 const char *api_test_datadir(void)
 {
     static char dir[512];
@@ -488,14 +487,10 @@ bool api_test_build_chain(struct main_state *ms,
 {
     static struct uint256 hashes[16];
 
-    /* Initialize ms BEFORE the count check. Every caller declares
+    /* Initialize ms BEFORE the count check: every caller declares
      * `struct main_state ms;` uninitialized and runs main_state_free(&ms)
-     * unconditionally at the end of the case, so a return above this line
-     * hands main_state_free() whatever the caller's stack was holding.
-     * test_api_health_gates.c passes a COMPUTED count
-     * (ZCL_NODE_HEALTH_LAG_WARN_BLOCKS + 1 and + 3), so this refusal is one
-     * constant bump away from firing. Same shape as the peer-reachable wild
-     * free fixed in compact_block_reconstruct() (bce343876). */
+     * unconditionally, so a return above this line would hand
+     * main_state_free() whatever the stack held. */
     main_state_init(ms);
 
     if (count <= 0 || count > (int)(sizeof(hashes) / sizeof(hashes[0])))

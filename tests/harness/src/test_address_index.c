@@ -561,19 +561,13 @@ int test_address_index(void)
 
         /* ── LOCK-ORDER LAW: the seed-floor read must YIELD, never block ──
          *
-         * Regression for the 2026-07-27 crash loop. This read runs on the
-         * supervisor tick-runner thread, which dispatches every child
-         * synchronously and stamps its heartbeat only between rounds. When it
-         * took a BLOCKING progress-store lock it parked behind the reducer
-         * drive's fold commit (120-330 s at tip), the runner heartbeat froze,
-         * the systemd keepalive was withheld, and the node was SIGABRT'd at the
-         * 120 s limit — seven kills in forty minutes on a node that was folding
-         * blocks correctly the whole time.
+         * This read runs on the supervisor tick-runner thread, which stamps
+         * its heartbeat only between rounds; a BLOCKING progress-store lock
+         * would park it behind the reducer drive's fold commit and starve the
+         * keepalive.
          *
-         * Completing at all proves non-blocking: against the pre-fix code this
-         * case DEADLOCKS (measured: killed at 300 s, signal 9). The yield
-         * counter proves the trylock path is the reason, with no timing
-         * assertion to go flaky under load. */
+         * Completing at all proves non-blocking. The yield counter proves the
+         * trylock path is the reason, with no timing assertion. */
         {
             struct ai_seed_lock_helper h = {
                 PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER, 0

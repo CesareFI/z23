@@ -14,9 +14,7 @@
 #endif
 #include <unistd.h>
 
-/* Forward-declared here rather than in core/random.h: the scope
- * boundary keeps core/modules/core/include/ off-limits, so random.c exposes
- * this test-only hook via weak linkage instead of a header. */
+/* Test-only hook exposed by random.c via weak linkage, not a header. */
 extern void zcl_random_test_force_fail(bool on);
 
 int test_core(void)
@@ -180,14 +178,9 @@ int test_core(void)
         else { printf("FAIL\n"); failures++; }
     }
 
-    /* regression: when every entropy source is unavailable,
-     * GetRandBytes must abort() rather than silently zero-fill the
-     * output. The prior implementation (core/modules/core/src/random.c pre-
-     * ) fell back to memset(buf, 0, num) on open("/dev/urandom")
-     * failure, so any caller seeding a private key in a chroot would
-     * silently derive an all-zero secret. We fork a child, force the
-     * test-only failure injection, and assert the child dies with
-     * SIGABRT. */
+    /* When every entropy source is unavailable, GetRandBytes must abort()
+     * rather than zero-fill the output. A forked child forces the failure
+     * and the parent asserts SIGABRT. */
     printf("GetRandBytes aborts on RNG failure (no silent zero-fill)... ");
     {
 #if defined(_WIN32)

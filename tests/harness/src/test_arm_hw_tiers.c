@@ -4,18 +4,12 @@
  * ACCEL-REACH: arm64 hardware crypto tiers reach the dispatch.
  * ACCEL-ORACLE: platform/modules/util/src/crc32c.c
  *
- * core/modules/crypto/src/sha256.c and platform/modules/util/src/crc32c.c each carry an arm64
- * hardware tier — the ARMv8 SHA extension (FEAT_SHA256) and the Castagnoli
- * instruction (FEAT_CRC32) — compiled into every arm64 binary through
- * per-function `target(...)` attributes and selected at RUNTIME through the
- * OS feature report. The x86 tiers have the same shape, and the x86 oracle
- * test_sha256_isa_parity guards their reachability with an INDEPENDENT
- * cpuid probe; its probe is x86-only, so on arm64 its reachability leg
- * degrades to SKIP and a silent compile-out of either tier here would turn
- * every parity leg into portable-vs-portable — green forever, proving
- * nothing. That is the defect class sha256.c actually shipped once on x86
- * (`#ifdef __SHA__` deleted the accelerated path from the released binary
- * while cpuinfo still advertised it).
+ * core/modules/crypto/src/sha256.c and platform/modules/util/src/crc32c.c each
+ * carry an arm64 hardware tier (FEAT_SHA256, FEAT_CRC32) compiled in through
+ * per-function `target(...)` attributes and selected at RUNTIME through the OS
+ * feature report. test_sha256_isa_parity guards x86 reachability with an
+ * independent cpuid probe that is x86-only; on arm64 a silent compile-out of a
+ * tier would make every parity leg portable-vs-portable and green forever.
  *
  * This group is the arm64 mirror of that guard: the host feature report is
  * probed here, independently of the code under test, and if the OS says the

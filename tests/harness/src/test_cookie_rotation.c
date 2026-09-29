@@ -121,14 +121,10 @@ static int rpc_with_auth(uint16_t port, const char *user, const char *pass)
     return status;
 }
 
-/* Poll until the RPC listener is accepting and dispatching, replacing a
- * fixed sleep that raced against thread-scheduler startup. We probe with a
- * deliberately-wrong password so readiness never depends on cookie state;
- * ANY real HTTP status (200 or 401) proves the server is up and routing,
- * while a not-yet-listening server returns -1 (connect/read error). This
- * only establishes liveness — each test still makes its own auth assertion
- * afterward, so a genuinely broken auth path still fails deterministically.
- * Monotonic 5 s deadline; 10 ms initial retry, doubling up to 100 ms. */
+/* Poll until the RPC listener answers. A deliberately-wrong password is
+ * probed so readiness never depends on cookie state: any HTTP status (200 or
+ * 401) proves the server is routing; -1 means not yet listening. Monotonic
+ * 5 s deadline; 10 ms retry, doubling up to 100 ms. */
 static void wait_rpc_ready(uint16_t port)
 {
     struct timespec start;

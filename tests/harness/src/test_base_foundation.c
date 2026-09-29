@@ -46,12 +46,10 @@ static int test_cleanse_cross_tu(void)
     return failures;
 }
 
-/* The polarity of these two is the whole reason base/bytes.h exists: 119
- * private copies of this loop disagreed, 13 of them answering the OPPOSITE
- * question under a name that looked the same. These checks pin the two
- * predicates as exact negations, and pin NULL to fail closed in BOTH
- * directions, which is what makes a "reject a zero root" caller also reject
- * a NULL one instead of accepting it. */
+/* The polarity of these two is the reason base/bytes.h exists: private copies
+ * of this loop disagreed, some answering the opposite question. These checks
+ * pin the two predicates as exact negations, and pin NULL to fail closed in
+ * BOTH directions. */
 static int test_bytes_polarity(void)
 {
     int failures = 0;

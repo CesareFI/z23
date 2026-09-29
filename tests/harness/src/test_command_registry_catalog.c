@@ -302,9 +302,7 @@ static int test_network_records_leaf_input(void)
         ASSERT(zcl_command_registry_input_validate(s, &input, why,
                                                    sizeof(why)));
         json_free(&input);
-        /* The signed-wire opt-in is a JSON bool on the RPC side; the
-         * default nonempty-string branch used to make it unpassable from
-         * the shell while raw RPC accepted it. */
+        /* The signed-wire opt-in is a JSON bool. */
         json_init(&input);
         json_set_object(&input);
         json_push_kv_str(&input, "kind", "provider");
@@ -530,9 +528,8 @@ static int test_search_multiword(void)
     const struct zcl_command_registry *reg = zcl_command_catalog();
     char out[ZCL_COMMAND_LIST_BUDGET + 1];
     TEST("a space-separated query matches dotted command paths") {
-        /* Regression: "dev loop" (space) previously matched nothing because
-         * the literal string is never a substring of "dev.loop.status". Each
-         * word must appear for a hit; a nonsense word blocks the match. */
+        /* Multi-word queries match when each word appears; a nonsense word
+         * blocks the match. */
         ASSERT(search_total_matches(reg, "dev loop", out, sizeof(out)) > 0);
         ASSERT(search_total_matches(reg, "loop dev", out, sizeof(out)) > 0);
         ASSERT(search_total_matches(reg, "dev zzznope", out, sizeof(out)) == 0);
@@ -733,11 +730,9 @@ static int test_bridge_replacement_rejects_non_bridge_leaf(void)
     return failures;
 }
 
-/* node_rpc_call strips the JSON-RPC envelope on a node error and returns the
- * bare error object. Locally-generated transport failures retain
- * the older {"error": {...}} wrapper. The native bridge must fail closed for
- * both shapes; otherwise -32601 (runtime/source skew) is projected as passing
- * command data. */
+/* node_rpc_call strips the JSON-RPC envelope on node errors and keeps the
+ * {"error": {...}} wrapper on local transport failures. The bridge must fail
+ * closed for both shapes. */
 static const char *g_bridge_rpc_error_fixture;
 static const char *g_bridge_rpc_method_fixture;
 
@@ -1436,14 +1431,8 @@ static char *status_journey_mock_rpc(const char *method,
     return strdup("null");
 }
 
-/* core.status.brief exists so an operator/AI never has to pipe the ~15KB
- * core.status body through grep/tr for the handful of fields that answer
- * "is the node serving and caught up" — see docs/NATIVE_COMMAND_INTERFACE.md
- * "CLI UX contract" and status_brief_native_handler.c. This proves the leaf
- * is READY-bridged, dispatches to a real zcl.result.v1 envelope, and that
- * `data` stays flat (no nested containers besides the universal `_page`
- * pagination sidecar every bridged leaf carries) with exactly the thirteen
- * documented sync/serving keys. */
+/* core.status.brief is READY-bridged, yields a zcl.result.v1 envelope, and
+ * `data` stays flat with exactly the thirteen documented keys. */
 static int test_status_brief_flat_lean_envelope(void)
 {
     int failures = 0;
@@ -1641,15 +1630,8 @@ static int test_status_journey_safe_money_frontdoor(void)
     return failures;
 }
 
-/* core.wallet.utxo.list: the node RPC listunspent is Bitcoin-compatible and
- * answers a BARE ARRAY, which the native command bridge drops (the defect
- * class that made `app swap list` answer BAD_TOOL_BODY for its whole
- * existence — see rpc_swap_list). The body must wrap the array in the
- * leaf's declared output envelope (zcl.wallet_utxos.v1, engine/composition/commands/
- * core.def) so `z23 core wallet utxo list` returns a usable body.
- * Drives the leaf end-to-end through the registry with a mocked
- * node_rpc_call and asserts on the rendered reply bytes — the in-memory
- * reply struct alone would not catch a body the serializer drops. */
+/* core.wallet.utxo.list wraps the bare listunspent array in the declared
+ * zcl.wallet_utxos.v1 envelope; asserted on the rendered reply bytes. */
 static char *listunspent_mock_rpc(const char *method,
                                   const char *params_json)
 {
@@ -1716,13 +1698,8 @@ static int test_wallet_utxo_list_envelope(void)
     return failures;
 }
 
-/* POINT 3.4: a TRANSIENT/DEPENDENCY blocker never drives `primary_blocker`
- * (PERMANENT/RESOURCE-only headline, unchanged) so an overdue one could
- * otherwise sit invisible behind a "healthy" brief. Proves the registry's
- * overdue_transient_count/overdue_transient_dominant_id (event_agent_summary.c)
- * surface into the brief as overdue_transient_count/overdue_transient_note
- * (status_brief_native_handler.c), beside the existing active_blockers/
- * blocker_head fields, without ever becoming primary_blocker. */
+/* A TRANSIENT/DEPENDENCY blocker never drives `primary_blocker`; the overdue
+ * transient count and note surface in the brief beside active_blockers. */
 static int test_status_brief_overdue_transient_surfaces(void)
 {
     int failures = 0;
@@ -1887,13 +1864,9 @@ static int test_status_brief_overdue_transient_absent_when_zero(void)
     return failures;
 }
 
-/* wf/status-tier-frontdoor: the trust-tier surface (agent.trust_tier +
- * security_posture.{snapshot_anchor_height,background_validation_height})
- * flattens into core.status.brief as tier/install_height/verified_height/
- * capabilities_locked — all OPTIONAL, so their presence here must not shrink
- * the field count test_status_brief_flat_lean_envelope's default fixture
- * asserts (that fixture carries neither sub-field, so those four keys stay
- * absent there; this is the PRESENT case). */
+/* Trust-tier surface (agent.trust_tier, security_posture heights) flattens
+ * into core.status.brief as tier/install_height/verified_height/
+ * capabilities_locked, all optional. */
 static int test_status_brief_trust_tier_surfaces(void)
 {
     int failures = 0;
@@ -1973,12 +1946,8 @@ static int test_status_brief_trust_tier_surfaces(void)
     return failures;
 }
 
-/* Absent case: a node predating agent.trust_tier and the two security_
- * posture heights (an older-schema-family document, or a current v2 document
- * that simply hasn't populated them yet) must omit all four keys, never
- * fabricate a placeholder tier or a zero height. Reuses the DEFAULT
- * status_brief_mock_rpc fixture (no g_status_brief_agent_fixture override),
- * which carries neither sub-field. */
+/* Absent agent.trust_tier and security_posture heights: all four keys are
+ * omitted, never fabricated. Uses the default status_brief_mock_rpc fixture. */
 static int test_status_brief_trust_tier_absent_when_missing(void)
 {
     int failures = 0;
@@ -2077,17 +2046,10 @@ static int test_status_brief_composite_fails_closed(void)
     return failures;
 }
 
-/* wf/status-front-door: a PRESENT schema in the known zcl.public_status.*
- * family that is not the exact version the strict validator checks (an
- * older node's v1, a future v4) used to fall into the SAME hard
- * "invalid zcl.public_status.v2: missing/invalid field schema" error as
- * genuine corruption -- indistinguishable from a real bug. It now degrades
- * gracefully: whatever of the flat brief the differently-versioned document
- * still carries is surfaced, with `partial_result`/`schema_skew` naming the
- * mismatch, rather than failing the flagless `z23 status` front
- * door outright. A schema OUTSIDE the family, or one PRESENT-but-malformed
- * exact v2 field, must still fail closed (test_status_brief_composite_fails_
- * closed / test_status_brief_names_first_failing_field cover those). */
+/* A present schema in the zcl.public_status.* family other than the strictly
+ * read version degrades: known fields surface with `partial_result` and
+ * `schema_skew`. An out-of-family schema or a malformed v2 field still fails
+ * closed. */
 static int test_status_brief_schema_skew_degrades_gracefully(void)
 {
     int failures = 0;
@@ -2290,16 +2252,8 @@ static int test_status_brief_valid_unknown_and_partial_contracts(void)
         ASSERT(!json_get_bool(json_get(data, "healthy")));
         json_free(&root);
 
-        /* The node's OWN first call overran its 250ms budget (the busiest,
-         * most-needed-diagnostic moment: e.g. a post-restart fold under
-         * heavy IO). It truthfully reports budget_exceeded=true and admits
-         * partial_result=true rather than lying about completeness. This
-         * degraded-but-honest envelope must still VALIDATE -- the operator
-         * needs it most exactly when it looks like this. Regression for the
-         * live bug: an earlier validator required budget_exceeded==false,
-         * so the node's own truthful "I'm slow" signal was rejected as
-         * "invalid zcl.public_status.v2: missing/invalid field
-         * first_call.budget_exceeded". */
+        /* A first call that overran its 250ms budget reports
+         * budget_exceeded=true and partial_result=true, and must validate. */
         status_brief_fixture_write(
             fixture, sizeof(fixture), 100, true, 101, true, -1, false,
             101, true, 1, true, 3, true, false,
@@ -2344,12 +2298,8 @@ static int test_status_brief_rejects_contract_contradictions(void)
     TEST("core.status.brief rejects known/sentinel, gap, and partial faults") {
         ASSERT(s != NULL);
         node_rpc_client_set_test_hook(status_brief_mock_rpc);
-        /* budget_exceeded=true with partial_result=false is NOT a
-         * contradiction and is no longer rejected: budget overrun is a pure
-         * timing fact, orthogonal to data completeness — a busy node that
-         * overran 250ms while still collecting every field reports exactly
-         * that, truthfully. The valid case is covered in
-         * test_status_brief_valid_unknown_and_partial_contracts. */
+        /* budget_exceeded=true with partial_result=false is valid: budget
+         * overrun is timing, orthogonal to completeness. */
         static const int cases = 3;
         for (int i = 0; i < cases; i++) {
             if (i == 0) {
@@ -2385,13 +2335,8 @@ static int test_status_brief_rejects_contract_contradictions(void)
     return failures;
 }
 
-/* A fully valid zcl.public_status.v2 document. v2 is still validated
- * STRICTLY (the retained v2 reader — see status_schema_is_strictly_read), so
- * every fixture in this file that names v2 doubles as coverage that an older
- * node's document keeps working after the v3 bump. It mirrors
- * status_brief_mock_rpc's default fixture, so each case below can drop or
- * corrupt exactly one field and prove the resulting error names that field
- * instead of one opaque "invalid public status" message. */
+/* A fully valid zcl.public_status.v2 document, still read strictly. Mirrors
+ * status_brief_mock_rpc's default fixture. */
 static const char g_status_brief_valid_doc[] =
     "{\"schema\":\"zcl.public_status.v2\","
     "\"partial_result\":false,"
@@ -2419,13 +2364,8 @@ static const char g_status_brief_valid_doc[] =
         "\"anchor_backfill_gap\":false,"
         "\"nullifier_backfill_gap\":false}}";
 
-/* E1: the composite validation used to collapse ~30 predicates into one
- * opaque "invalid public status" message. Each case here removes (or
- * corrupts) exactly one representative field from an otherwise-valid
- * document and proves the error names that exact field, and correctly
- * classifies an entirely-absent key (an older node binary's `agent` RPC
- * predating a newer field) as schema/version skew rather than a generic
- * malformed-document error. */
+/* Removing or corrupting one field of a valid document yields an error that
+ * names that field; an absent key is classified as schema/version skew. */
 static int test_status_brief_names_first_failing_field(void)
 {
     int failures = 0;
@@ -2560,14 +2500,8 @@ static int test_status_brief_names_first_failing_field(void)
     return failures;
 }
 
-/* Lane S1 regression: the very first command a new user runs
- * (`z23 status`) must come back ok:true, schema-valid, and well
- * under its latency budget -- both on a healthy caught-up node and on a
- * fresh node that has not synced anything yet. The live bug this guards
- * against surfaced as "invalid zcl.public_status.v2: missing/invalid field
- * schema" together with an elapsed_ms far past budget_ms; assert all three
- * properties together, on both fixtures, rather than leaving them scattered
- * across the other status_brief_* tests above. */
+/* `z23 status` returns ok:true, schema-valid, within its latency budget, on
+ * both a caught-up node and a fresh node. */
 int command_registry_status_latency_contract(void)
 {
     int failures = 0;
@@ -3186,14 +3120,8 @@ static int test_response_budget_views(void)
     return failures;
 }
 
-/* dev.vcs.revert IS a golden catalog row now (engine/composition/commands/dev.def via
- * ZCL_COMMAND_DEV_COMMAND, asserted COMPAT above in test_dev_branch_leaves).
- * What test_dev_branch_leaves does NOT reach is the handler body itself: a
- * release/testing build (this test binary is built WITHOUT ZCL_DEV_BUILD,
- * see Makefile TEST_FAST_CFLAGS) must link the `#ifndef ZCL_DEV_BUILD` stub
- * body of zcl_native_handle_dev_vcs_revert — never the real
- * vcs_revert()+shell-fallback path — and that stub must fail closed
- * (BLOCKED, not a silent no-op) instead of mutating anything. */
+/* dev.vcs.revert: the non-ZCL_DEV_BUILD stub fails closed (BLOCKED, never a
+ * silent no-op). */
 static int test_dev_vcs_revert_release_stub(void)
 {
     int failures = 0;
@@ -3236,17 +3164,8 @@ static int test_dev_vcs_revert_release_stub(void)
     return failures;
 }
 
-/* dev.vcs.seal.grant IS a golden catalog row now (engine/composition/commands/dev.def
- * via ZCL_COMMAND_DEV_COMMAND, asserted COMPAT above in
- * test_dev_branch_leaves). Same shape as test_dev_vcs_revert_release_stub:
- * this release/testing build (no ZCL_DEV_BUILD) links the `#ifndef
- * ZCL_DEV_BUILD` stub body of zcl_native_handle_dev_vcs_seal_grant — never
- * the real vcs_seal_grant_unseal() path — so the mandatory-confirm gate
- * inside ZCL_DEV_BUILD is not reachable from this binary. What IS provable
- * here is that the stub fails closed (BLOCKED, never a silent mutation)
- * regardless of whether the caller supplied a well-formed, owner-confirmed
- * request or an unconfirmed one — granting a ZVCS unseal token is simply
- * unavailable outside a dev build. */
+/* dev.vcs.seal.grant: the non-ZCL_DEV_BUILD stub fails closed (BLOCKED),
+ * whether or not the request is well-formed and confirmed. */
 static int test_dev_vcs_seal_grant_release_stub(void)
 {
     int failures = 0;
@@ -3848,14 +3767,8 @@ static int test_presentation_leaves_are_display_only(void)
     return failures;
 }
 
-/* EVERY leaf, not one sample. An over-budget describe document renders as
- * nothing at all, and `discover describe` is the only surface that shows a
- * leaf's semantics text — so a leaf that overflows keeps dispatching while its
- * written contract silently becomes unreadable. That shipped: the money-safety
- * warning inside core.wallet.recovery.restore could not be read by anybody.
- * tools/lint/check_describe_budget.sh is the gate that names the offender and
- * carries the pre-existing baseline; this is the same property inside the test
- * suite, on the compiled catalog. */
+/* Every leaf's describe document fits its budget; an over-budget document
+ * renders as nothing. See tools/lint/check_describe_budget.sh. */
 static int test_every_describe_document_fits(void)
 {
     int failures = 0;
@@ -4395,20 +4308,8 @@ static int test_handler_index_known_symbol_maps_to_path(void)
     return failures;
 }
 
-/* ── ops.statecatalog: the typed leaf and the registry cannot drift ───
- *
- * The leaf exists so an agent can learn the dumpstate subsystem names
- * without reading diagnostics_dumpers.def out of a source tree. That is
- * only true while it reports EVERY name the registry holds, so this
- * drives the leaf through the real registry path — argv-shaped JSON in,
- * bounded envelope out, input_validate included — and checks each name in
- * diagnostics_dumper_at() against the emitted `names` array. Add a row to
- * the .def without the leaf seeing it and this fails.
- *
- * The registry path matters: calling the handler directly would skip
- * zcl_command_registry_input_validate, which is exactly how a leaf ends
- * up declaring input keys its handler does not accept (or the reverse)
- * and nobody notices. */
+/* ops.statecatalog reports every dumpstate subsystem name in the registry.
+ * Driven through the registry path so input_validate is exercised. */
 static int test_ops_statecatalog_matches_registry(void)
 {
     int failures = 0;

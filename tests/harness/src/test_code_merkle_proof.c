@@ -505,12 +505,9 @@ static int test_cmp_wire_hygiene(void)
         }
         ASSERT(accepted == 0);
 
-        /* The delimiter question, both halves. In the HASH preimage a child
-         * name is NUL-terminated, which is unforgeable because a name cannot
-         * contain a NUL; on the WIRE it is length-prefixed, and the decoder
-         * refuses a declared length that hides one. Plant a NUL inside a name
-         * without touching its length prefix and the image must not parse — if
-         * it did, two different sibling lists would share one encoding. */
+        /* Delimiters: a hashed child name is NUL-terminated (a name cannot
+         * contain NUL); on the wire it is length-prefixed and the decoder
+         * refuses a length that hides a NUL. A planted NUL must not parse. */
         {
             /* the folded child of level 0 is the file itself: one FILE kind
              * byte, a u16 length of 7, then "cmp_a.h" */
@@ -737,15 +734,10 @@ static int test_cmp_child_order_prefix_property(void)
 }
 
 /* ── 10: ambiguous inputs — one accepted answer per (path, digest) ──
- * The integration review that pulled this code cited "ambiguous inputs". The
- * one real instance was here: merkle_dirname()/merkle_basename() map BOTH
- * "core" and "/core" to (parent "", basename "core"), so a proof for any
- * TOP-LEVEL entry re-labelled with a leading slash used to verify against the
- * same root with the same claimed digest. Deeper paths were never exposed —
- * a level path is hashed verbatim — which is exactly why it was quiet.
- * These cases are the ones that go red against a verifier without
- * merkle_path_canonical(); the rest were already closed by the digest chain
- * and are kept so a future edit cannot reopen them silently. */
+ * merkle_dirname()/merkle_basename() map both "core" and "/core" to
+ * (parent "", basename "core"), so a top-level proof relabelled with a
+ * leading slash must be refused by merkle_path_canonical(). The other cases
+ * are closed by the digest chain and kept as guards. */
 static int test_cmp_canonical_path_inputs(void)
 {
     int failures = 0;
@@ -985,12 +977,9 @@ static int test_cmp_name_length_bound(void)
         ASSERT(ci_merkle_build_cold(CMP_FIX, NULL) == NULL);
         cmp_reset();
 
-        /* ── and the collision that refusal exists to prevent: two real files
-         * whose basenames are IDENTICAL through byte 158 and differ only past
-         * the field. If the builder clipped instead of refusing, both would
-         * enter their parent's preimage under the same name and the root would
-         * not notice. Both files are created, so a NULL build is the collision
-         * being caught, not a missing file. ── */
+         /* Two real files whose basenames are identical through byte 158 and
+          * differ only past the field: a NULL build proves the collision is
+          * refused, not a missing file. */
         ASSERT(cmp_fixture(CMP_FIX));
         char twin_a[256], twin_b[256], rel_a[512], rel_b[512];
         cmp_long_name(twin_a, sizeof(twin_a), 200);

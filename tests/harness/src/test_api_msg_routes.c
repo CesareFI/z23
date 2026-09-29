@@ -1,8 +1,8 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * API messaging routes: the /api/messages inbox index object. The inbox
- * serves a bounded newest-first window; before the object result the
- * response was a bare array, so an inbox that outgrew the window was
- * reported as if it were the whole inbox. Pinned here:
+ * serves a bounded newest-first window, so the result is an object rather than
+ * a bare array (which would report a truncated inbox as the whole inbox).
+ * Pinned here:
  *   - the result is {messages, shown, total};
  *   - shown counts the window's rows and total counts the same store
  *     under the same filter, so shown < total is a truthful window
@@ -11,8 +11,8 @@
  *   - the unread filter arrives through the RPC surface and the totals
  *     follow it;
  *   - with no node.db wired, the in-memory store answers and counts its
- *     own rows (the established fallback, now with honest counts);
- *   - a store that cannot be counted drops the total instead of guessing.
+ *   - with no node.db wired, the in-memory store answers and counts its
+ *     own rows;
  */
 
 #include "test/api_test_fixtures.h"

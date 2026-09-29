@@ -6,9 +6,8 @@
  * `hotswap.retired_generation_undrained` is auto-remedied by
  * ESCAPE(hotswap_reclaim_retry), and check-blocker-remedy fails the build if
  * that action has no blocker_register_escape() call site. Both of those are
- * BUILD-time facts. Neither proves the remedy ever runs: on the canonical
- * node 2026-07-27 `dumpstate blocker` reported escape_dispatched_total = 0
- * while three blockers had fired 23,868 times between them.
+ * BUILD-time facts. Neither proves the remedy ever runs (a deployed node can
+ * report escape_dispatched_total = 0 while blockers fire thousands of times).
  *
  * This test drives the PRODUCTION raise site and asserts the whole chain end
  * to end:
@@ -25,14 +24,12 @@
  *      partial one leaves it named.
  *   4. RETRY BUDGET CONSUMED — every dispatch charges retry_count, and a
  *      record with a finite budget stops dispatching once it is spent.
- *      Before this landed, blocker_record_retry() had ZERO production
- *      callers, so retry_count was 0 on every live blocker forever.
+ *      blocker_record_retry() must have production callers.
  *   5. RE-ARM — a still-live blocker that re-fires with a fresh deadline
- *      horizon gets its remedy driven AGAIN. The pre-existing coverage in
- *      test_blocker.c calls blocker_clear() between crossings, which hides
- *      the case that matters live: the blocker is not going away, and the
- *      escape used to latch after exactly one dispatch per registry
- *      lifetime.
+ *      horizon gets its remedy driven AGAIN. test_blocker.c
+ *      calls blocker_clear() between crossings, which hides
+ *      the live case: the blocker is not going away and the escape must not
+ *      latch after one dispatch per registry lifetime.
  *
  * The hotswap retire blocker is used because it is a real production
  * binding whose remedy reaches the outside world through an injectable seam

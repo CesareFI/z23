@@ -2,27 +2,20 @@
  *
  * -cold-start staged, resumable driver (config/boot_cold_start.h).
  *
- * Proves the properties that make the one-command cold start RESUMABLE, correctly
- * ORDERED, and REFUSAL-STICKY, without spawning a real node:
- *
+ * Proves resumable, ordered, refusal-sticky behavior without a real node:
  *   (a) plan configuration + stage naming/params.
- *   (b) receipt round-trip: write is durable (temp file gone, receipt present,
- *       fields correct) and read matches only on the SAME bound parameter; a
- *       REFUSAL receipt records its reason verbatim, never counts as a success,
- *       and is read back by cold_start_receipt_refused().
- *   (c) resume decision: cold_start_plan_next() returns the first configured
- *       prep stage whose success receipt is absent; a present receipt is skipped;
- *       a parameter-changed receipt is NOT skipped.
- *   (d) drive loop with an injected recording runner: a fresh datadir runs
- *       [headers, seed] then reaches SERVE (the BUNDLE stage is SKIPPED when no
- *       bundle is configured); after a simulated kill following stage 1 (only the
- *       headers receipt on disk), a re-drive runs ONLY [seed].
- *   (e) drive halts on a TRANSIENT stage failure WITHOUT writing that stage's
- *       receipt, so the failed stage is retried (and completes) on the next run.
- *   (f) a DECISION refusal records a refusal receipt (verbatim reason), returns
- *       COLD_START_BLOCKED, and is STICKY: a re-drive with the SAME bound
- *       parameter stays blocked WITHOUT re-running the stage; changing the bound
- *       parameter re-arms it.
+ *   (b) receipt round-trip: durable write; read matches only the same bound
+ *       parameter; a refusal receipt records its reason verbatim and is read
+ *       by cold_start_receipt_refused().
+ *   (c) cold_start_plan_next() returns the first configured prep stage whose
+ *       success receipt is absent or whose parameter changed.
+ *   (d) a fresh datadir runs [headers, seed] then reaches SERVE (BUNDLE is
+ *       skipped when unconfigured); after a kill following stage 1, a
+ *       re-drive runs only [seed].
+ *   (e) a transient failure halts without writing that stage's receipt, so it
+ *       is retried next run.
+ *   (f) a decision refusal records a receipt, returns COLD_START_BLOCKED and
+ *       is sticky for the same bound parameter; changing it re-arms.
  *
  * Hermetic: temp datadirs only, no child processes, no node boot. */
 

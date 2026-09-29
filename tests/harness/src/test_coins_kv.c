@@ -32,28 +32,16 @@ static struct uint256 ck_txid(uint8_t tag)
     return t;
 }
 
-/* ── anchor-coin byte-flip detected by the SHA3 UTXO commitment ──────────────
+/* ── anchor-coin byte-flip detected by the SHA3 UTXO commitment ──
  *
- * Fault class: flip the value OR the scriptPubKey of one coin AT/BELOW the
- * anchor. This is NOT detected by reducer_frontier_compute_hstar (it reads the
- * *_log height/ok/hash columns, never coin VALUE or SCRIPT bytes, so H* is
- * unchanged). The honest detector is the SHA3 UTXO commitment compared against
- * the compiled checkpoint sha3_hash — exactly the `anchor_proven` predicate the
- * boot anchor-seed gate builds (boot_refold_from_anchor_reset,
- * engine/composition/src/boot_refold_staged.c:332-354).
- *
- * The clean coin set's commitment IS installed as the checkpoint override, so
- * the clean set passes the anchor proof by construction; the flipped set must
- * FAIL it (memcmp != 0). We assert the PREDICATE, never the _exit side effect
- * (which would kill the test process).
- *
- * Negative control (flip RED): in coins_kv_commitment() at
- * engine/modules/storage/src/coins_kv.c, drop `value` from the absorbed record — pass a
- * constant 0 for the value field. The value flip then no longer changes the
- * commitment, so memcmp(root_flipped, cp->sha3_hash, 32) == 0 and the `!= 0`
- * assert FAILS — a corrupt set would be accepted as the proven anchor.
- * (Symmetric: pass NULL/0 for the script argument at the same call site -> the
- * script flip goes undetected and assertion C fails.) */
+ * Flipping the value or scriptPubKey of one coin at/below the anchor is not
+ * seen by reducer_frontier_compute_hstar (it reads *_log columns only); the
+ * detector is the SHA3 UTXO commitment compared against the compiled
+ * checkpoint sha3_hash, the `anchor_proven` predicate of
+ * boot_refold_from_anchor_reset (engine/composition/src/boot_refold_staged.c).
+ * The clean set's commitment is installed as the checkpoint override; the
+ * flipped set must fail it (memcmp != 0). The predicate is asserted, never
+ * the _exit side effect. */
 static int ck_case_anchor_coin_byte_flip(void)
 {
     int failures = 0;
@@ -186,15 +174,13 @@ static bool ck_write_utxos_source(const char *path, int32_t top_h,
     return ok;
 }
 
-/* ── Bootstrap-seed checkpoint-content gate ──────────────────────────────────
+/* ── Bootstrap-seed checkpoint-content gate ──
  *
- * A bootstrap seed that reaches the compiled SHA3 checkpoint height MUST
- * reproduce cp->sha3_hash + cp->utxo_count; a full-tip seed (max height above
- * cp->height) is not gated (invisible). We assert the verdict PREDICATE for all
- * three outcomes and drive the real seed path (coins_kv_seed_from_node_db) for
- * MATCH + NOT_CHECKED. The MISMATCH _exit side effect is asserted only as the
- * predicate (it would kill the test process) — same convention as
- * ck_case_anchor_coin_byte_flip and the forked test_refold_from_anchor_fatal. */
+ * A seed reaching the compiled SHA3 checkpoint height must reproduce
+ * cp->sha3_hash + cp->utxo_count; a full-tip seed (max height above
+ * cp->height) is not gated. The verdict predicate is asserted for all three
+ * outcomes and the real seed path for MATCH + NOT_CHECKED; the MISMATCH _exit
+ * is asserted only as the predicate. */
 static int ck_case_seed_checkpoint_gate(void)
 {
     int failures = 0;

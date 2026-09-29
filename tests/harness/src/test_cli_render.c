@@ -15,10 +15,10 @@
  *
  *   2. End-to-end against the REAL built binary (the pattern
  *      test_cli_auth_robust uses): with stdout a PIPE (never a TTY), output
- *      is byte-identical with and without ZCL_HUMAN, and identical to the
- *      pre-lane canonical document; ZCL_HUMAN=1 forces the human rendering
- *      deterministically without a pty. The e2e half skips (does not fail)
- *      when build/bin/zclassic23 is missing or stale.
+ *      is byte-identical with and without ZCL_HUMAN and equals the canonical
+ *      document; ZCL_HUMAN=1 forces the human rendering without a pty. The
+ *      e2e half skips (does not fail) when build/bin/zclassic23 is missing or
+ *      stale.
  *
  * make t-fast ONLY=cli_render
  */

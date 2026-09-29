@@ -1,22 +1,17 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Regression test for the block_map phashBlock use-after-free (Option A).
+ * Regression test for the block_map phashBlock use-after-free.
  *
- * Before the fix, block_index.phashBlock pointed INTO the block_map bucket
- * array, which block_map_grow() free()s and reallocates on every rehash. A
- * lock-free reader dereferencing *phashBlock during a concurrent grow would
- * read freed memory (the live crash was FATAL SIGNAL 11 in
- * push_getheaders_from). Option A points phashBlock at per-node
- * block_index.hashBlock (the node is never freed at runtime), so a bucket
- * realloc can no longer dangle it.
+ * block_index.phashBlock points at per-node block_index.hashBlock (never freed
+ * at runtime), not into the block_map bucket array that block_map_grow()
+ * reallocates, so a lock-free reader dereferencing *phashBlock during a grow
+ * cannot read freed memory.
  *
- * This test inserts enough DISTINCT hashes to force several block_map_grow
- * reallocations, then asserts that after the grows every node's phashBlock
- * (a) is non-NULL, (b) still resolves to the correct hash VALUE, (c) points
- * at per-node storage (&node->hashBlock), and (d) is NOT inside the bucket
- * array range. Under the old bucket-backed code, (c)/(d) would fail (or the
- * deref would crash) after a grow. It also confirms value-keyed lookups
- * still work.
+ * This test inserts enough DISTINCT hashes to force several grows, then
+ * asserts every node's phashBlock (a) is non-NULL, (b) still resolves to the
+ * correct hash VALUE, (c) points at per-node storage (&node->hashBlock), and
+ * (d) is NOT inside the bucket array range. It also confirms value-keyed
+ * lookups still work.
  */
 
 #include "test/test_core.h"
@@ -67,7 +62,7 @@ int test_block_map_grow_phashblock(void)
             ASSERT(bi->phashBlock != NULL);
             /* (b) hash VALUE survived every grow */
             ASSERT(uint256_eq(bi->phashBlock, &hashes[i]));
-            /* (c) Option A invariant: points at per-node storage */
+            /* (c) per-node storage invariant: points at per-node storage */
             ASSERT(bi->phashBlock == &bi->hashBlock);
             /* (d) defensively, NOT inside the reallocatable bucket array */
             const char *p = (const char *)bi->phashBlock;
@@ -77,8 +72,7 @@ int test_block_map_grow_phashblock(void)
             ASSERT(uint256_eq(&copy, &hashes[i]));
         }
 
-        /* Lookups still work — keyed off the bucket's own .hash, which is
-         * unaffected by Option A. */
+        /* Lookups still work, keyed off the bucket's own .hash. */
         for (int i = 0; i < N; i += 1000) {
             ASSERT(block_map_find(&cs.map_block_index, &hashes[i]) == nodes[i]);
             ASSERT(block_map_find(&cs.map_block_index,

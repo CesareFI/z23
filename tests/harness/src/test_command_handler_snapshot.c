@@ -396,20 +396,12 @@ static void *hammer_reader(void *arg)
 }
 
 
-/* The publish reports ITS OWN generation.
- *
- * Callers used to publish and then call zcl_command_registry_active_generation()
- * to learn "which generation did my batch produce". That read-after-write is a
- * race: a concurrent publisher can bump the active generation in between, and
- * the caller then attributes another publisher's snapshot to its own batch.
- * The out-parameter is written under the same write lock that assigns the
- * generation, so it can only ever be this call's own value.
- *
- * This pins three things: a successful publish reports a generation, that
- * generation is strictly greater than the generation active before the call
- * (monotonicity is load-bearing — it is the ordering authority for the whole
- * hot-swap subsystem), and a REFUSED publish neither advances the generation
- * nor writes the out-parameter. */
+/* The publish reports its own generation. The out-parameter is written under
+ * the same write lock that assigns the generation, so a concurrent publisher
+ * cannot be mistaken for this call. Pins: a successful publish reports a
+ * generation strictly greater than the one active before (the ordering
+ * authority for hot-swap), and a refused publish neither advances the
+ * generation nor writes the out-parameter. */
 static int test_publish_reports_own_generation(void)
 {
     int failures = 0;

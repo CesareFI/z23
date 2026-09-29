@@ -47,15 +47,13 @@ int check_connman_addnode_prehandshake_protocol_backoff(void)
 
         ok = ok && cm.addnode_protocol_failures[0] == 1;
         ok = ok && cm.addnode_tcp_failures[0] == 0;
-        /* First PROTOCOL failure now backs off via the gentle ramp
-         * (step 1 = 60s), NOT an instant 900s lockout — a transient drop
-         * is re-dialed in time to fill the outbound floor. */
+        /* First PROTOCOL failure backs off via the gentle ramp (step 1 =
+         * 60s), so a transient drop is re-dialed in time. */
         ok = ok && cm.addnode_backoff_sec[0] == 60;
         ok = ok && cm.addnode_last_attempt[0] > 0;
 
-        /* A second consecutive prehandshake (PROTOCOL) failure ramps but is
-         * still well below the 1800s ceiling — proves it is no longer an
-         * instant lockout. */
+        /* A second consecutive PROTOCOL failure ramps but stays below the
+         * 1800s ceiling. */
         struct p2p_node *node2 = add_test_peer(
             &cm, 51, 178, 179, 75, PEER_VERSION_SENT, false, false);
         if (node2)
@@ -231,10 +229,8 @@ int check_connman_addnode_failure_aware_distinct_batch(void)
 
         int64_t now = (int64_t)platform_time_wall_time_t();
 
-        /* Four addrman addresses, each in a DISTINCT /16 so the /16 diversity
-         * cap never rejects them: two "dead-on-arrival" (accumulated failures,
-         * last try just now → inside their backoff window) and two "live"
-         * (never failed, immediately dialable). */
+        /* Four addrman addresses in distinct /16s: two dead (failures, last
+         * try just now) and two live (never failed, dialable). */
         ok = ok && addnode_failure_aware_seed_addrs(&cm, &src, now);
 
         /* A: 5 consecutive failures → 3600 s cooldown; B: 2 → 300 s. Both
@@ -256,10 +252,9 @@ int check_connman_addnode_failure_aware_distinct_batch(void)
         if (ok && n == 2)
             ok = ok && !net_service_eq(&batch[0].addr.svc, &batch[1].addr.svc);
 
-        /* REFILL: B's backoff expires (last try older than its 300 s window).
-         * A stays dead (3600 s window intact) and C/D were charged one attempt
-         * each by the gather above (60 s cooldown, tried just now), so the only
-         * candidate that may refill the floor now is B. */
+        /* Refill: B's backoff expires; A stays dead (3600 s window) and C/D
+         * were charged an attempt by the gather (60 s cooldown), so only B may
+         * refill the floor. */
         ok = ok && test_addrman_set_fail(&cm, 51, 2, now - 400);
         if (ok) {
             size_t n2 = connman_gather_dial_candidates(&cm, batch, 4);
@@ -277,31 +272,14 @@ int check_connman_addnode_failure_aware_distinct_batch(void)
 int check_connman_addnode_onion_seed_last_resort(void)
 {
     int failures = 0;
-    /* S6 (design item #S6, `sovereign-service-roadmap.md`, removed from the
-     * tree — recover with `git log --follow -- docs/work/archive/sovereign-service-roadmap.md`): bootstrap
-     * fallback-of-last-resort. With DNS seeds AND the operator addrman
-     * file BOTH unavailable, the hardcoded chainparams onion-seed tier
-     * (connman.c:281-283 run_onion_seed_pass, addrman.c addrman_add) is
-     * the only remaining peer source and must still be reachable/bounded.
-     *
-     * The embedded Tor stub in this test binary never reports
-     * tor_integration_is_ready()==true, so the live onion-directory HTTP
-     * fetch (try_onion_seed_fetch -> tor_integration_fetch_onion_blocking)
-     * cannot be driven end-to-end without a real bootstrapped Tor circuit
-     * (see test_onion_bootstrap.c). This test instead deterministically
-     * proves the two halves that make the tier a genuine last resort:
-     * (1) with a chainparams copy whose DNS (nSeeds) and hardcoded IP
-     *     fixed-seed (nFixedSeeds) tiers are both zeroed, and no
-     *     peers.dat on disk (operator addrman file "unavailable"),
-     *     connman_kick_seed_discovery + connman_load_addrman leave the
-     *     node with zero outbound candidates — proving those tiers are
-     *     truly exhausted, not silently still supplying peers;
-     * (2) the surviving onionSeeds[] tier is non-empty, and once it
-     *     contributes addrman entries (the exact effect
-     *     try_onion_seed_fetch has on a successful /directory.json
-     *     fetch), a single bounded connman_pick_next_outbound_target
-     *     call yields a first peer from CONNMAN_TARGET_ADDRMAN — i.e.
-     *     the fallback-of-last-resort tier alone is sufficient. */
+    /* S6: bootstrap fallback of last resort. With DNS seeds and the operator
+     * addrman file both unavailable, the hardcoded chainparams onion-seed tier
+     * is the only peer source. The embedded Tor stub never reports ready, so
+     * this proves two halves: (1) with nSeeds and nFixedSeeds zeroed and no
+     * peers.dat, connman_kick_seed_discovery + connman_load_addrman leave zero
+     * outbound candidates; (2) onionSeeds[] is non-empty and, once it adds
+     * addrman entries, connman_pick_next_outbound_target yields a first peer
+     * from CONNMAN_TARGET_ADDRMAN. */
     printf("connman_addnode_fallback: onion-seed tier is fallback of last "
            "resort when DNS + addrman file are both unavailable... ");
     {

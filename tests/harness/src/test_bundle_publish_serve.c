@@ -134,14 +134,10 @@ static int test_bps_serves_both(void)
     return failures;
 }
 
-/* (a2) A BIG datadir root still serves the header seed. This is the exact
- * shape that made MVP C3 unreachable: the canonical node's datadir root held
- * 5,686 entries with block_index.bin at readdir position 4,499, past
- * rom_seed's 4,096-entry walk cap. The walk stopped early and silently, the
- * node advertised the consensus bundle alone, and every fresh node's
- * checkpoint-bundle install deferred forever waiting for a header chain it
- * had to crawl from genesis. Exactly-named artifacts are now looked up by
- * name, so where they land in readdir order cannot matter. */
+/* (a2) A BIG datadir root still serves the header seed: block_index.bin at
+ * readdir position 4,499 is past rom_seed's 4,096-entry walk cap, so
+ * exactly-named artifacts are looked up by name and readdir order cannot
+ * matter. */
 static int test_bps_serves_header_seed_in_a_big_datadir(void)
 {
     int failures = 0;
@@ -156,9 +152,8 @@ static int test_bps_serves_header_seed_in_a_big_datadir(void)
         bps_gen(hs, hs_size, false);
         ASSERT(bps_write(dir, "block_index.bin", hs, hs_size));
 
-        /* Grow the root past the walk cap. readdir order is the filesystem's,
-         * so the seed may still appear early; the product path looks it up by
-         * name first and must register it either way. */
+        /* Grow the root past the walk cap; the by-name lookup must register
+         * the seed either way. */
         const unsigned extra = ROM_SEED_SCAN_ENTRY_CAP + 64u;
         for (unsigned i = 0; i < extra; i++) {
             char path[384];
@@ -392,21 +387,14 @@ static int test_bx_rotation_deregister_unlink(void)
     return failures;
 }
 
-/* (e2) A DEGRADED exporter names itself. This is the regression for a silent
- * production outage: the canonical node last minted a bundle on 2026-07-24 and
- * was still serving it on 2026-08-19, 165,288 blocks behind its own tip,
- * because a binary upgrade left the stored producer session foreign to the
- * running build. That refusal is correct and stays. What was wrong is that it
- * was INVISIBLE — one WARN at boot, then a 30-second tick forever with
- * exports_ok=0 AND exports_failed=0, which is indistinguishable from a healthy
- * node that simply has not hit its cadence. Every cold-starting peer paid for
- * that month as crawl time.
+/* (e2) A DEGRADED exporter names itself: a refusal that stays INVISIBLE
+ * (exports_ok=0 AND exports_failed=0 forever) looks like a healthy node that
+ * has not hit its cadence.
  *
- * A fresh progress store has no proven coins authority, so bx_qualified refuses
- * here for its own (equally real) reason and the exporter comes up degraded —
- * the exact state under test. The assertion is that the degradation is NAMED,
- * carries the staleness numbers an operator needs, and is DEPENDENCY-class so
- * it remains visible without hard-gating the node's unrelated public serving. */
+ * A fresh progress store has no proven coins authority, so bx_qualified
+ * refuses and the exporter comes up degraded. The degradation must be NAMED,
+ * carry the staleness numbers an operator needs, and be DEPENDENCY-class so
+ * it stays visible without hard-gating unrelated public serving. */
 static int test_bx_degraded_names_a_blocker(void)
 {
     int failures = 0;
@@ -421,14 +409,12 @@ static int test_bx_degraded_names_a_blocker(void)
 
         const int n_required =
             bundle_exporter_degraded_after_failures_for_test();
-        /* A small, reasoned N: big enough to ride out boot ordering, small
-         * enough that a real outage is named in a minute or two. */
+        /* Big enough to ride out boot ordering, small enough that a real
+         * outage is named in a minute or two. */
         ASSERT(n_required >= 3 && n_required <= 5);
 
-        /* Nothing here is proven/refolded, so the exporter cannot qualify. It
-         * must still ARM (never block boot) and must not export. That first
-         * refusal is attempt #1 of N — a boot mid-way through opening the
-         * coins store is not yet an outage, so nothing is named yet. */
+        /* The exporter cannot qualify; it must still ARM (never block boot)
+         * and not export. The first refusal is attempt #1 of N and unnamed. */
         ASSERT(bundle_exporter_start(pdb, dir));
         ASSERT(!blocker_exists("bundle_exporter.degraded"));
 
@@ -445,32 +431,22 @@ static int test_bx_degraded_names_a_blocker(void)
         for (int i = 0; i < n; i++)
             if (strcmp(snap[i].id, "bundle_exporter.degraded") == 0)
                 found = i;
-        /* RED without the fix: the registry stays empty and found == -1. */
+        /* Registry populated: found != -1. */
         ASSERT(found >= 0);
         ASSERT(strcmp(snap[found].owner_subsystem, "bundle_exporter") == 0);
-        /* DEPENDENCY, not TRANSIENT: dependency records never TTL-retire, so
-         * the outage stays visible for as long as it is real, while optional
-         * export failure stays a warning rather than a false public-serving
-         * refusal. */
+        /* DEPENDENCY, not TRANSIENT: dependency records never TTL-retire,
+         * while optional export failure stays a warning. */
         ASSERT(snap[found].class == BLOCKER_DEPENDENCY);
-        /* The reason has to be actionable on its own, not a bare label: it
-         * says no bundle exists to serve, and that the exporter is retrying
-         * rather than sitting dead. */
+        /* The reason is actionable: no bundle exists to serve, and the
+         * exporter is retrying. */
         ASSERT(strstr(snap[found].reason, "consensus-state bundle") != NULL);
         ASSERT(strstr(snap[found].reason, "retrying with backoff") != NULL);
-        /* The specific refusal (bx_qualified's reason, here "coins not
-         * proven authority") must lead the string, not trail it: a
-         * BLOCKER_REASON_MAX(256) cap trims the TAIL, so if the generic
-         * "no consensus-state bundle minted..." framing came first the
-         * actionable detail could be the part that gets lost — as it was
-         * for the "datadir session does not exactly match" producer
-         * refusal in the field. */
+        /* The specific refusal must LEAD the string: the
+         * BLOCKER_REASON_MAX(256) cap trims the TAIL. */
         ASSERT(strncmp(snap[found].reason, "coins not proven authority",
                        strlen("coins not proven authority")) == 0);
-        /* And the WHOLE reason has to FIT. The field version of this bug read
-         * "did not fit: intended_len=275 capacity=256" in node.log: the record
-         * was stored with the truncation marker and the operator lost the
-         * tail. The fix is a shorter sentence, never a bigger field. */
+        /* The WHOLE reason must FIT; the fix is a shorter sentence, never a
+         * bigger field. */
         ASSERT(strstr(snap[found].reason, "...[cut ") == NULL);
 
         bundle_exporter_stop();
@@ -482,26 +458,19 @@ static int test_bx_degraded_names_a_blocker(void)
     return failures;
 }
 
-/* (e3) THE UPGRADE REGRESSION. Every node's producer session is bound to
- * running_binary_digest = SHA3 of the executable image, so every relink makes
+/* (e3) THE UPGRADE REGRESSION. The producer session is bound to
+ * running_binary_digest (SHA3 of the executable image), so every relink makes
  * the stored session foreign and consensus_state_producer_receipt_begin
- * refuses with "session mismatch field=running_binary_digest ...". Until the
- * retry landed, that refusal was decided ONCE at boot and never re-run, so a
- * node upgraded twice a day never minted again — measured on the canonical
- * node as 165,288 blocks of staleness.
+ * refuses with "session mismatch field=running_binary_digest ...". The
+ * refusal must be RETRIED, not decided once at boot.
  *
- * What is asserted here is the whole contract in one pass:
- *   (a) the mismatch is RETRIED — the recovery step re-runs and attempts the
- *       session again — and NOTHING is named before N consecutive failures;
- *   (b) at N, bundle_exporter.degraded carries the LITERAL cause, leading with
- *       the exact producer_session_mismatch_detail field, not a generic
- *       "degraded" sentence;
- *   (c) a subsequent success clears the record AND resets the streak, so the
- *       next outage has to earn its own N failures.
+ *   (a) the recovery step re-runs and NOTHING is named before N consecutive
+ *       failures;
+ *   (b) at N, bundle_exporter.degraded carries the LITERAL cause, leading
+ *       with the exact producer_session_mismatch_detail field;
+ *   (c) a success clears the record AND resets the streak.
  *
- * The refusal text is injected verbatim: driving a real image-digest mismatch
- * would need a folded, proven-authority datadir AND a second executable, and
- * neither belongs in a unit fixture. The STRING is the production one. */
+ * The refusal text is injected verbatim (the STRING is the production one). */
 static int test_bx_upgrade_mismatch_retries_then_names_then_clears(void)
 {
     int failures = 0;
@@ -525,8 +494,8 @@ static int test_bx_upgrade_mismatch_retries_then_names_then_clears(void)
             "field=running_binary_digest expected=1a2b3c4d actual=9f8e7d6c "
             "(datadir session does not exactly match current running binary "
             "/ source claim / source epoch / profile)";
-        /* This is the reason that overflowed in the field: it is longer than
-         * the qualification reasons, and it is the one that has to survive. */
+        /* Longer than the qualification reasons, so it is the one that has
+         * to survive the cap. */
         ASSERT(strlen(k_upgrade_refusal) > 160);
 
         bundle_exporter_inject_session_failure_for_test(k_upgrade_refusal);
@@ -556,9 +525,8 @@ static int test_bx_upgrade_mismatch_retries_then_names_then_clears(void)
                        strlen("producer receipt begin: session mismatch "
                               "field=running_binary_digest expected=1a2b3c4d "
                               "actual=9f8e7d6c")) == 0);
-        /* Still framed with the staleness an operator acts on, and still
-         * within BLOCKER_REASON_MAX — this exact string is what produced
-         * intended_len=275 before the sentence was shortened. */
+        /* Still framed with the staleness an operator acts on, and within
+         * BLOCKER_REASON_MAX. */
         ASSERT(strstr(snap[found].reason, "consensus-state bundle") != NULL);
         ASSERT(strstr(snap[found].reason, "retrying with backoff") != NULL);
         ASSERT(strstr(snap[found].reason, "...[cut ") == NULL);
@@ -588,15 +556,10 @@ static int test_bx_upgrade_mismatch_retries_then_names_then_clears(void)
 }
 
 /* (e4) The re-derive is NOT a blanket adoption. Retiring a foreign producer
- * session and re-deriving one from the running binary is only a rubber stamp
- * when the source epoch already stamped into this datadir's fold rows is
- * byte-identical to this build's: the export proof requires every genesis..H*
- * row of every source-epoch-bound stage to carry the receipt's
- * source_epoch_digest, and that digest does not include the executable image.
- * When the epoch actually CHANGED — a real source/toolchain/build-input change
- * — those rows carry the OLD epoch, no bundle could be proven from them, and
- * the session must stay refused. This gate is what keeps the recovery from
- * turning a correct refusal into a silent adoption. */
+ * session is safe only when the source epoch stamped into this datadir's fold
+ * rows is byte-identical to this build's (the export proof binds rows to
+ * source_epoch_digest, which excludes the executable image). When the epoch
+ * changed, the rows carry the OLD epoch and the session must stay refused. */
 static int test_bx_re_derive_refuses_across_a_source_change(void)
 {
     int failures = 0;
@@ -623,16 +586,11 @@ static int test_bx_re_derive_refuses_across_a_source_change(void)
     return failures;
 }
 
-/* (e5) The re-derive, end to end and in BOTH directions. This is the beat that
- * makes an upgraded node mint again: with the datadir's stamped source epoch
- * byte-identical to this build's, a foreign session row is retired and a new
- * one is derived from the running binary, so the export's stage-row proof —
- * which binds rows to the EPOCH, not to the executable image — still holds
- * over every genesis..H* row already on disk. With a FOREIGN stamped epoch,
- * nothing is adopted: those rows carry the old epoch, no bundle could be proven
- * from them, and a real source change must stay refused. The hermetic identity
- * override gives the build a deterministic epoch so both directions are
- * exercised without depending on how this binary was stamped. */
+/* (e5) The re-derive, end to end and in BOTH directions. With the stamped
+ * source epoch identical to this build's, a foreign session row is retired
+ * and re-derived from the running binary, so the stage-row proof still holds.
+ * With a FOREIGN stamped epoch nothing is adopted. The hermetic identity
+ * override gives the build a deterministic epoch. */
 static int test_bx_re_derive_restores_only_on_our_epoch(void)
 {
     int failures = 0;
@@ -663,8 +621,7 @@ static int test_bx_re_derive_restores_only_on_our_epoch(void)
 
         bundle_exporter_inject_session_failure_for_test(k_upgrade_refusal);
         ASSERT(bundle_exporter_start(pdb, dir));
-        /* RED without the re-derive: the mismatch is permanent and this is
-         * false forever, exactly as the canonical node behaved for a month. */
+        /* The mismatch must not be permanent. */
         ASSERT(bundle_exporter_recover_once_for_test());
         /* A recovered session is not a degraded exporter. */
         ASSERT(!blocker_exists("bundle_exporter.degraded"));
@@ -691,9 +648,8 @@ static int test_bx_re_derive_restores_only_on_our_epoch(void)
 
         bundle_exporter_inject_session_failure_for_test(k_upgrade_refusal);
         ASSERT(bundle_exporter_start(pdb2, dir2));
-        /* RED if the epoch gate is dropped: an unconditional retire+begin
-         * would succeed here and silently adopt rows this build never
-         * stamped. */
+        /* An unconditional retire+begin would wrongly adopt rows this build
+         * never stamped. */
         ASSERT(!bundle_exporter_recover_once_for_test());
 
         bundle_exporter_inject_session_failure_for_test(NULL);
@@ -707,10 +663,9 @@ static int test_bx_re_derive_restores_only_on_our_epoch(void)
     return failures;
 }
 
-/* (f) The mint gate is INTACT: the exporter still refuses to publish from a
- * borrowed / unstamped build. bx_qualified's exact-source-identity rung (part of
- * the borrowed-state refusal) accepts ONLY a lowercase 64-hex SHA-256 source
- * identity; the coins-proven / refold rungs are unchanged by GAP-1/2/4. */
+/* (f) The mint gate is INTACT: bx_qualified's exact-source-identity rung
+ * accepts ONLY a lowercase 64-hex SHA-256 source identity, so a borrowed /
+ * unstamped build never publishes. */
 static int test_bx_mint_gate_source_rung_intact(void)
 {
     int failures = 0;

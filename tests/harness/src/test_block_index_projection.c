@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Unit tests for the Phase 4c block_index_projection
+ * Unit tests for the block_index_projection
  * (engine/modules/storage/src/block_index_projection.c).
  *
  * Coverage matrix (one run_* function below per numbered case):
@@ -593,15 +593,9 @@ done:
 
 /* ── Test 9: collision_accounting_cached_stmt ──────────────────────── */
 
-/* Regression test for the exists-check statement being hoisted out of the
- * per-event hot path (block_index_projection_catch_up() now prepares the
- * "SELECT 1 FROM block_index WHERE hash = ?" exists-check once, alongside
- * ins_stmt, instead of once per EV_BLOCK_HEADER event). This exercises the
- * cached statement across multiple catch_up() calls (each call re-prepares
- * and finalizes its own cached statement) and confirms the
- * replace_collisions_total / was_present accounting is unchanged: a fresh
- * hash must not be counted as a collision, and a re-inserted (same) hash
- * must be. */
+/* The exists-check statement is prepared once per catch_up() call. Confirms
+ * replace_collisions_total accounting across calls: a fresh hash is not a
+ * collision, a re-inserted (same) hash is. */
 static uint64_t read_meta_u64(const char *db_path, const char *key)
 {
     sqlite3 *raw = NULL;

@@ -187,7 +187,7 @@ static int crc_case_canonical_ledger(const char *dir)
     CRC_CHECK("boot rebuild did NOT stamp migration-complete on an empty store",
               !crc_stamp_present(kv));
 
-    /* The seed the boot path no longer performs is still reachable. */
+    /* The seed is still reachable outside the boot path. */
     CRC_CHECK("seed_from_node_db copies the borrowed set",
               coins_kv_seed_from_node_db(kv, src_path));
     CRC_CHECK("coins_kv holds all three coins", coins_kv_count(kv) == 3);
@@ -360,15 +360,11 @@ static int crc_case_read_models(const char *dir)
 /* ── Part D: the forward fold is self-derived on the boot that stamps it ──
  *
  * A from-genesis node's coins_kv is populated by its own utxo_apply fold with
- * NO migration stamp (every borrowed-state path — node.db import seed,
- * consensus-state bundle install, anchor refold — stamps migration-complete in
- * the same transaction that populates the set). The boot that recognises that
- * set (coins_kv_boot_rebuild_if_needed on a populated, unstamped store) must
- * stamp migration-complete AND the self-folded marker together: stamping only
- * the former flips the sovereignty gate to release_assisted
- * ("borrowed_seed_no_refold_marker") on the very boot that first makes the
- * money gate's proven-authority rung pass — a catch-22 that strands a fresh
- * self-folded node unable to mint or spend. */
+ * no migration stamp (every borrowed-state path stamps migration-complete in
+ * the same transaction). The boot that recognises that set
+ * (coins_kv_boot_rebuild_if_needed on a populated, unstamped store) must stamp
+ * migration-complete and the self-folded marker together; stamping only the
+ * former yields release_assisted ("borrowed_seed_no_refold_marker"). */
 static int crc_case_forward_fold_sovereign_stamp(const char *dir)
 {
     int failures = 0;
@@ -386,7 +382,7 @@ static int crc_case_forward_fold_sovereign_stamp(const char *dir)
               coins_kv_ensure_schema(kv) && progress_meta_table_ensure(kv));
 
     /* The node's own fold output: a coin present and the applied frontier
-     * advanced, with NOT ONE stamp (borrowed paths always co-commit theirs). */
+     * advanced, with no stamp (borrowed paths co-commit theirs). */
     {
         struct uint256 a = crc_txid(0xD4);
         uint8_t script[3] = {0x76, 0xA9, 0x14};

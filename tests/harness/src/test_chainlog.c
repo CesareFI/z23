@@ -2,10 +2,9 @@
  *
  * test_chainlog — the engine/modules/chainlog gate.
  *
- * The module exists to make one claim: nothing in this file's history can be
- * changed without the change showing. A test that only appends and reads back
- * proves none of that, so most of what is here corrupts a log on purpose and
- * requires the right refusal, by name and by sequence number.
+ * The module makes one claim: nothing in a log's history can be changed
+ * without the change showing. Most cases corrupt a log on purpose and require
+ * the right refusal, by name and sequence number.
  *
  *  1. A RESTART IS INVISIBLE TO THE CHAIN. Five records written in one
  *     session and five written across five open/close cycles produce the

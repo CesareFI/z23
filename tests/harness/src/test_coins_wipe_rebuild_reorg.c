@@ -1,74 +1,28 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * test_coins_wipe_rebuild_reorg — Program H1 refutation proof: after the
- * event-log-fed UTXO projection (the third UTXO copy) was deleted, a WIPED
- * coin set still rebuilds byte-identically THROUGH A REORG from block bodies
- * alone.
+ * test_coins_wipe_rebuild_reorg: a wiped coin set rebuilds byte-identically
+ * through a reorg from block bodies alone (no third UTXO copy exists).
  *
- * WHY THIS TEST EXISTS
- * --------------------
- * Program H1 (9b5add018) deleted engine/modules/storage/src/utxo_projection.c +
- * coins_view_projection.c: a third writable UTXO copy fed by
- * EV_UTXO_ADD/EV_UTXO_SPEND. Its ONE surviving production role was a boot
- * migration source — coins_kv_boot_rebuild_if_needed copied from it when
- * coins_kv was empty. That copy is gone; an empty coins_kv now re-derives
- * from block bodies via the normal fold.
+ *   RUN A: seed base coins; drive utxo_apply_stage over losing branch L
+ *     (h0 + L1..L3, L2 spends EXT_L); install heavier W (h0 + W1..W4, W2
+ *     spends EXT_W); step so utxo_apply_reorg_unwind_if_needed fires. Capture
+ *     the coins_kv count and SHA3 commitment (A).
+ *   WIPE: coins_kv_reset_for_reseed() plus stage cursor/delta/apply-log rows;
+ *     coins_kv must be empty with a commitment different from A.
+ *   RUN B (same datadir): re-seed and re-drive L then the reorg onto W;
+ *     reorg_unwound_total == 1, so it is not a linear fold.
+ *   RUN C (fresh datadir): direct linear build of W only.
  *
- * The load-bearing claim behind that deletion is therefore a RECOVERY claim,
- * and recovery paths are exactly where a forgotten reader hides because they
- * run rarely. The existing tests/harness/src/test_stage_reorg_unwind_parity.c
- * proves reorg-vs-linear parity within one live store; it never wipes. The
- * existing linear rebuild proofs wipe but never reorg. Neither covers the
- * crash-recovery shape that actually matters:
- *
- *     wipe the coin set  ->  rebuild it  ->  and the rebuild itself reorgs.
- *
- * A LINEAR-FOLD-ONLY rebuild proof is the weak version: it cannot catch an
- * inverse-delta path that silently depended on projection state to restore a
- * coin spent on the losing branch, because a linear rebuild never runs the
- * inverse path at all. This test forces the rebuild through the inverse path.
- *
- * WHAT IS DRIVEN (one datadir, wiped in the middle)
- * -------------------------------------------------
- *   RUN A (original):  seed pre-fork base coins; drive utxo_apply_stage over
- *     losing branch L (h0 + L1..L3, L2 spends EXT_L); install heavier winning
- *     branch W (h0 + W1..W4, W2 spends EXT_W); step the stage so
- *     utxo_apply_reorg_unwind_if_needed fires and re-advances over W.
- *     Capture coins_kv count + SHA3 commitment (A).
- *
- *   WIPE (the production primitive):  coins_kv_reset_for_reseed() — the exact
- *     call engine/services/src/reindex_epilogue.c makes after a from-genesis
- *     replay — plus the stage cursor / delta / apply-log rows. Asserted to
- *     leave coins_kv EMPTY and its commitment DIFFERENT from A, so a
- *     no-op "wipe" cannot make this test pass vacuously.
- *
- *   RUN B (rebuild, SAME datadir):  re-seed the base coins and re-drive the
- *     SAME history — L first, then the reorg onto W. The rebuild is asserted
- *     to have actually unwound (reorg_unwound_total == 1), so it is not
- *     silently downgraded to a linear fold.
- *
- *   RUN C (cross-check, fresh datadir):  direct linear build of W only.
- *
- * ASSERTS
- * -------
- *   1. A == B byte-exact (SHA3 coins_kv commitment) and count(A) == count(B).
- *   2. RUN B genuinely reorged (unwind counter fired) — not a linear fold.
- *   3. A == C: the reorged rebuild equals a direct build of the winner.
- *   4. Post-rebuild coin-level facts: every L-only outpoint absent, EXT_L
- *      restored live by the inverse path, EXT_W spent.
- *   5. THE H1 INVARIANT: across the whole wipe+reorg+rebuild the event log
- *      carries ZERO EV_UTXO_ADD / EV_UTXO_SPEND events. Tags 5/6 survive as
- *      reserved wire slots (renumbering them would break the on-disk log),
- *      but no production emitter may resurrect. tools/scripts/
- *      check_no_utxo_projection.sh proves that by grep at build time; this
- *      proves it at RUNTIME, through the recovery path, where a re-added
- *      emitter would actually show up. Verified against the GUARD and not
- *      against a bare zero (docs/AGENT_TRAPS.md §4): a positive control
- *      plants one EV_UTXO_ADD afterwards and requires the same scanner to
- *      report exactly 1, so a broken scan cannot pass as an absence proof.
- *
- * No legacy coins.db and no projection are involved anywhere: coins_kv is the
- * one UTXO ledger and block bodies are the only rebuild input. */
+ * Asserts:
+ *   1. A == B (commitment and count).
+ *   2. RUN B genuinely reorged.
+ *   3. A == C.
+ *   4. Every L-only outpoint is absent, EXT_L restored by the inverse path,
+ *      EXT_W spent.
+ *   5. The event log carries zero EV_UTXO_ADD / EV_UTXO_SPEND events (tags
+ *      5/6 are reserved wire slots). A positive control plants one
+ *      EV_UTXO_ADD and requires the same scanner to report exactly 1
+ *      (docs/AGENT_TRAPS.md §4). */
 
 #include "test/test_core.h"
 
@@ -583,12 +537,9 @@ int test_coins_wipe_rebuild_reorg(void)
                       "emitted across wipe+reorg+rebuild",
                       evscan_ran && evscan.utxo_events == 0);
 
-            /* POSITIVE CONTROL — verify against the GUARD, not against a
-             * count of zero (docs/AGENT_TRAPS.md §4). A scanner that silently
-             * failed would also report zero. Append ONE EV_UTXO_ADD by hand
-             * and re-scan: the detector must now report exactly 1. Only then
-             * is the zero above evidence of anything. This runs AFTER every
-             * proof below has already read its inputs. */
+            /* Positive control: append one EV_UTXO_ADD by hand and re-scan;
+             * the detector must report exactly 1, so the zero above is
+             * evidence. Runs after every proof has read its inputs. */
             {
                 uint8_t ctl[EV_UTXO_ADD_HDR_WIRE_LEN];
                 memset(ctl, 0, sizeof(ctl));

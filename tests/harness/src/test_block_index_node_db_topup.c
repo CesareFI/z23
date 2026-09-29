@@ -3,17 +3,13 @@
  * Unit test for block_index_node_db_topup_with() — the cold-import
  * restart-fragility fix (PART A).
  *
- * The bug
- * -------
- * A node that cold-imported a UTXO snapshot (seed anchor at H_seed) and
- * forward-synced PAST it has, after a flat-index reload, the contiguous
- * chain up to ~H_seed in the in-memory map PLUS the seed anchor as a
- * DETACHED non-genesis root (its pprev chain to genesis is absent — a
- * snapshot base is not P2P-downloaded). coins_best (the coins authority)
- * is the forward tip; the window (H_seed, coins_best] is body-backed /
- * connected (status>=3) in node.db `blocks` but is NOT linked into the
- * map. On restart the coins-best restore then refuses (no consensus-backed
- * ancestor — the seed anchor's null pprev) and the tip drops to genesis.
+ * The case
+ * ---------
+ * After a cold import of a UTXO snapshot (seed anchor at H_seed) and a
+ * forward sync past it, a flat-index reload leaves the seed anchor as a
+ * DETACHED non-genesis root, while the window (H_seed, coins_best] is
+ * body-backed in node.db `blocks` but not linked into the map. Restore of
+ * coins-best then refuses and the tip drops to genesis.
  *
  * What this test proves
  * ---------------------
@@ -175,9 +171,8 @@ static struct block_index *ndt_undo_entry(struct main_state *ms, int h,
     return bi;
 }
 
-/* A body-less entry carrying an undo position of its OWN
- * against a different block file — the shape the destructive clear needs:
- * adopting the row's file number invalidates this position, and
+/* A body-less entry carrying an undo position of its own against a different
+ * block file: adopting the row's file number invalidates it, and
  * topup_apply_undo() then zeroes it. */
 static struct block_index *ndt_no_data_undo_entry(struct main_state *ms,
                                                   int h)
@@ -205,16 +200,13 @@ struct ndt_undo_fixture {
     bool built;
 };
 
-/* Same seed-anchor/window shape as the main fixture, but with 103, 104 and
- * 105 ALREADY in the map carrying HAVE_DATA — 103 and 105 without an undo
- * position, 104 with its own. The rows differ in what they CLAIM: 103 and
- * 104 carry BLOCK_HAVE_UNDO, 105 deliberately does not.
+/* Same seed-anchor/window shape, with 103, 104 and 105 already in the map
+ * carrying HAVE_DATA (103 and 105 without an undo position, 104 with its
+ * own). 103 and 104 rows carry BLOCK_HAVE_UNDO, 105 does not.
  *
- * 106 and 107 are the DATA half of the same rule: body-less entries whose
- * rows are the header-only snapshot-import shape written by
- * snapshot_controller_import.c — HAVE_DATA and HAVE_UNDO stripped, file_num
- * pinned to 0, positions 0. That file_num is not an address; the import
- * comment states the node gates every block-file read on the status bits. */
+ * 106 and 107 are the DATA half: body-less entries whose rows are the
+ * header-only snapshot-import shape (HAVE_DATA and HAVE_UNDO stripped,
+ * file_num 0, positions 0); that file_num is not an address. */
 static void ndt_undo_fixture_build(struct ndt_undo_fixture *f,
                                    const char *dir)
 {
@@ -254,22 +246,14 @@ static void ndt_undo_fixture_build(struct ndt_undo_fixture *f,
     f->built = f->u103 && f->u104 && f->u105 && f->u106 && f->u107;
 }
 
-/* The undo top-up the node.db fold used to be unable to perform: an entry
- * that already carries HAVE_DATA but no HAVE_UNDO, whose `blocks` row still
- * names an undo position. Without it the background validator skips every
- * transparent script in the block for want of recoverable spent outputs.
+/* Undo top-up: an entry that already carries HAVE_DATA but no HAVE_UNDO, whose
+ * `blocks` row names an undo position, must gain it.
  *
- * And the fail-closed half, on BOTH position bits: a row whose stored
- * status does not claim BLOCK_HAVE_UNDO (105) or BLOCK_HAVE_DATA (106, 107)
- * grants nothing, however plausible its columns look. A header-only
- * snapshot import leaves exactly that shape — status stripped of both bits,
- * file_num 0 — and nothing in this tree writes block or rev files for it.
- * An entry that gained HAVE_UNDO from such a row would send the validator
- * to a rev offset that does not exist; one that gained HAVE_DATA would
- * publish (file 0, data_pos) as a body address that does not exist. Worse,
- * adopting the row's file number counts as a file change, which sends
- * topup_apply_undo() down its TOPUP_UNDO_CLEARED path and destroys an undo
- * position the entry legitimately held (107). */
+ * Fail-closed half: a row whose status does not claim BLOCK_HAVE_UNDO (105) or
+ * BLOCK_HAVE_DATA (106, 107) grants nothing, however plausible its columns. A
+ * header-only snapshot import leaves exactly that shape, and adopting its
+ * file number would count as a file change and destroy an undo position the
+ * entry legitimately held (107). */
 static int ndt_undo_topup_cases(const char *dir)
 {
     int failures = 0;

@@ -4,9 +4,8 @@
  * serve" used by getheaders/getblocks serving and tip-successor probes.
  *
  * The function replaced two private full-map scans (msg_headers.c /
- * msg_blocks.c) that were a remote CPU-burn: one hostile getheaders
- * locator near genesis forced ~2 scans per served block over a ~3.1M
- * entry map. The contract under test:
+ * msg_blocks.c) that let one hostile getheaders locator near genesis force
+ * ~2 scans per served block. The contract under test:
  *
  *   - active-chain parents resolve via the O(1) window slot;
  *   - the active tip resolves into the header-only zone along the
@@ -14,8 +13,7 @@
  *   - off-path (stale-branch) parents still resolve via the fallback
  *     scan, and FAILED children are never returned;
  *   - serving follows the ACTIVE chain even when a heavier stale
- *     sibling exists (canonical serving order — the old scan's only
- *     behavioral divergence, asserted here on purpose);
+ *     sibling exists (canonical serving order);
  *   - same-hash/different-pointer parents resolve through block identity,
  *     matching snapshot/header hydration where map and window own twins.
  *

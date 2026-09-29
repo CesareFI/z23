@@ -1,81 +1,25 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Adversarial coverage of the block-subsidy / coinbase-value / halving
- * consensus rules, closing gaps NOT exercised by existing suites:
+ * Adversarial coverage of the block-subsidy / coinbase-value / halving rules.
  *
- *   - tests/harness/src/test_amount_subsidy_edge.c pins the Buttercup activation
- *     seam (h=707000), one post-Buttercup halving boundary (h=2387001), the
- *     zero-subsidy tail and genesis/slow-start edges — all pure arithmetic
- *     on domain_consensus_block_subsidy(), all against MAINNET params.
- *   - tests/harness/src/test_utxo_apply_value_balance.c ((i)/(j)/(k)) and
- *     tests/harness/src/test_simnet_byzantine.c (SIMNET_BYZ_BAD_CB_AMOUNT) drive
- *     connect_block's "bad-cb-amount" check for coinbase == subsidy+fees
- *     (accept), subsidy+fees+1 (reject) and bare subsidy+1 (reject) — but
- *     always at a small, fixed simnet height (~100-101) that never crosses
- *     a halving boundary, and always via SIM_COINBASE_VALUE (1,000,000),
- *     never the real schedule value.
- *   - tests/harness/src/test_domain_consensus_check_block.c already covers the
- *     structural "first tx must be coinbase" (bad-cb-missing) and "no other
- *     tx may be a coinbase" (bad-cb-multiple) rules, including cross-check
- *     against the legacy C++ reference. Not duplicated here.
+ *   Part A: exact satoshi rewards just below / at / above the pre-Buttercup
+ *     halving boundary. Regtest (UPGRADE_BUTTERCUP disabled, 150-block
+ *     PRE_BUTTERCUP_REGTEST_HALVING_INTERVAL) is the only live configuration
+ *     where that interval produces a halving.
+ *   Part B: connect_block's "bad-cb-amount" binds the reward to the block's
+ *     own height. The exact post-halving reward is accepted at the boundary,
+ *     one satoshi over either side's reward is rejected, and the pre-halving
+ *     reward resubmitted one block later is rejected.
+ *   Part C: ZClassic enforces no founders reward; a coinbase paying the whole
+ *     mainnet subsidy to one output at h=100 is accepted. If that changes,
+ *     it is a consensus change and must be reviewed.
  *
- * What is genuinely UNCOVERED, and what this file adds:
- *
- *   1. HALVING BOUNDARY, exact satoshi values, via a REAL reachable chain
- *      configuration. Mainnet's own nPreButtercupSubsidyHalvingInterval
- *      (840,000 blocks) never actually produces a halving in practice:
- *      UPGRADE_BUTTERCUP activates at mainnet height 707,000, strictly
- *      before the first pre-Buttercup halving would land (840,001), so
- *      consensus_halving() always takes the Buttercup branch by the time
- *      the interval could fire on mainnet. REGTEST is configured with
- *      UPGRADE_BUTTERCUP permanently DISABLED
- *      (NETWORK_UPGRADE_NO_ACTIVATION, core/modules/chain/src/chainparams.c) and a
- *      150-block interval (PRE_BUTTERCUP_REGTEST_HALVING_INTERVAL), so it
- *      is the one real, live chain_params configuration in which the
- *      pre-Buttercup halving interval actually produces a halving. Part A
- *      pins the exact reward just below / at / above that boundary.
- *
- *   2. connect_block's "bad-cb-amount" check binds the REWARD TO THE
- *      BLOCK'S OWN HEIGHT, not to a stale/previous height's (higher)
- *      pre-halving reward. Part B drives simnet's real connect_block()
- *      across the same regtest halving boundary and proves:
- *        - the exact post-halving reward is ACCEPTED at the boundary
- *          height (not the old, larger pre-halving reward — a stale-value
- *          replay would silently look "smaller than the old reward" but is
- *          still an over-claim against the NEW reward and must reject),
- *        - one satoshi over either side's reward is REJECTED with
- *          "bad-cb-amount",
- *        - the exact pre-halving reward, if resubmitted UNCHANGED one
- *          block later (at the post-halving height), is REJECTED — this
- *          is the concrete "attacker replays the stale reward across a
- *          halving" attack a height-independent constant would let through.
- *
- *   3. FOUNDERS/DEV-FEE SPLIT: mainnet chainparams populate
- *      vFoundersRewardAddress[]/nFoundersRewardAddresses (48 addresses) and
- *      consensus_last_founders_reward_height() exists, but grep over
- *      core/modules/validation, domain/consensus and app/jobs finds NO coinbase-
- *      output check that consults them — ZClassic (unlike Zcash) ships
- *      with ZERO enforced founders reward. Part C asserts this rather than
- *      "fixing" it: a coinbase paying the ENTIRE mainnet subsidy to one
- *      plain output, at a height inside the founders-reward window
- *      (h=100 <= consensus_last_founders_reward_height(mainnet)=840000),
- *      is ACCEPTED. If a partial founders-reward implementation ever lands
- *      and starts rejecting 100%-to-miner blocks in this window, this test
- *      fails loudly and the change must be reviewed as a consensus change.
- *
- * Determinism: Part A is pure arithmetic (no simnet). Parts B/C drive
- * simnet's real connect_block() at heights covered by its synthetic
- * checkpoint (expensive_checks=false) — PoW and scriptSig content are
- * never verified, only coinbase structure and the value/height binding.
- * Every sim is fresh per case (a rejected mint leaves connect_block's
- * mutable `view` cache partially walked — same caveat documented in
- * test_simnet_doublespend.c / test_simnet_value_inflation.c). The global
- * chain-params selection this file makes (CHAIN_REGTEST) is restored to
- * CHAIN_MAIN before returning, so no global state leaks to later groups.
- *
- * Per the harness contract (simnet.h): if a mint is rejected, the fix is
- * always in this file's block construction, never in connect_block. No
- * consensus predicate is touched — this file only pins existing behavior.
+ * Part A is pure arithmetic. Parts B/C drive simnet's connect_block() under
+ * its synthetic checkpoint (expensive_checks=false), so only coinbase
+ * structure and the value/height binding are checked. Every sim is fresh per
+ * case, and CHAIN_REGTEST is restored to CHAIN_MAIN before returning.
+ * See test_amount_subsidy_edge.c and test_utxo_apply_value_balance.c for the
+ * complementary suites.
  */
 
 #include "test/test_core.h"

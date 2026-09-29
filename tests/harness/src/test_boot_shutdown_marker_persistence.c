@@ -3,12 +3,10 @@
  * atomically under a scratch datadir: written owner-only, read back as clean
  * rather than unclean, and removed so the path is absent again.
  *
- * Rehomed from tools/tests/test_boot_shutdown_marker_persistence.c, which
- * only ran when a human invoked tools/scripts/winacceptance.sh. The
- * standalone program stubbed zcl_log_level_get() and event_emitf() purely so
- * it could link on its own; in the suite the production definitions are
- * present, so the stubs are gone and the real emit path runs. Every
- * assertion is the original verbatim. */
+ * Rehomed from tools/tests/test_boot_shutdown_marker_persistence.c. The
+ * production zcl_log_level_get() and event_emitf() definitions are present in
+ * the suite, so the real emit path runs. Every assertion is the original
+ * verbatim. */
 #include "test/test_core.h"
 
 #include "config/boot_shutdown_marker.h"

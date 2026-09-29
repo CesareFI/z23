@@ -1318,7 +1318,7 @@ static int ci_long_include_line_case(size_t padding, bool over_bound)
     char src[8500];
     static const char prefix[] = "#if 0\n";
     memcpy(src, prefix, sizeof(prefix) - 1);
-    /* Put the directive across the old 1023-byte or new 8191-byte bound. */
+    /* Put the directive across the 1023-byte or 8191-byte bound. */
     memset(src + sizeof(prefix) - 1, ' ', padding);
     size_t offset = sizeof(prefix) - 1 + padding;
     int wrote = snprintf(src + offset, sizeof(src) - offset,
@@ -1448,10 +1448,8 @@ static int test_code_impact_dotdot_include_edge(void)
     return failures;
 }
 
-/* An index written before include edges carried an edge root has none. Its
- * rows cannot be shown to hold the current edges, so the next update
- * rebuilds them instead of reusing them: the answer is complete and lists the
- * conditional includer, never a refusal that only a manual rebuild clears. */
+/* An index written before include edges carried an edge root is rebuilt on
+ * the next update: the answer is complete and lists the conditional includer. */
 static bool ci_cond_drop_edge_root(const char *dir)
 {
     char path[512];

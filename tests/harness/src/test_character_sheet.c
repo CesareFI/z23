@@ -1,30 +1,21 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * character_sheet, tested as a set of RULES rather than a set of golden
- * numbers. A golden test here would pass just as happily if every character
- * in the world were wrong in the same way, and it would fail on the day
- * somebody improved platform/modules/astro's lunar theory — which is not a defect in this
- * module. What is asserted instead is every claim
- * metaverse/character_sheet.h makes:
+ * character_sheet, tested as RULES rather than golden numbers (a golden test
+ * would pass if every character were wrong in the same way). Asserts every
+ * claim metaverse/character_sheet.h makes:
  *
- *  1. THE TOTAL IS FIXED. Over many thousands of seeds — ordinary, hostile,
- *     and deliberately absurd — the six attributes sum to exactly
- *     CHARACTER_ATTRIBUTE_TOTAL and each one stays inside its window. This is
- *     the anti-grinding property the whole design rests on: if it can be
- *     broken by any birth moment, an owner can search for the birth moment
- *     that breaks it.
- *  2. THE CHART STILL MATTERS. A fixed total is trivial to achieve by giving
- *     everyone the same six numbers, so the same sweep asserts that the
- *     distribution genuinely VARIES — most seeds produce a distinct spread,
- *     and both even and lopsided characters occur.
+ *  1. THE TOTAL IS FIXED. Over many thousands of seeds the six attributes sum
+ *     to exactly CHARACTER_ATTRIBUTE_TOTAL and each stays inside its window
+ *     (anti-grinding: no birth moment may break it).
+ *  2. THE CHART STILL MATTERS. The distribution genuinely VARIES: most seeds
+ *     give a distinct spread, and both even and lopsided characters occur.
  *  3. THE DERIVATION IS REPRODUCIBLE. The same seed produces a byte-identical
  *     sheet, padding included, on repeat and into a pre-dirtied buffer. That
  *     is the check a second node makes.
- *  4. THE ROOT IS THE HASH OF THE BIRTH DATA PLUS THE RULES REVISION, and it
- *     is checked against an INDEPENDENT re-implementation of the canonical
- *     encoding written in this file — so "the revision is in the preimage" is
- *     a fact, not a comment. Cosmetic differences (buffer tail garbage after
- *     the name's NUL) leave the root alone; every substantive field moves it.
+ *  4. THE ROOT IS THE HASH OF THE BIRTH DATA PLUS THE RULES REVISION, checked
+ *     against an INDEPENDENT re-implementation of the canonical encoding in
+ *     this file. Cosmetic differences (buffer tail after the name's NUL)
+ *     leave the root alone; every substantive field moves it.
  *  5. REFUSALS ARE FAIL-CLOSED. Null arguments, impossible calendars, names
  *     the text form could not spell, and coordinates off the globe are
  *     refused, leaving nothing usable behind.
@@ -238,19 +229,11 @@ static void t_refusals(void)
 
 /* ── 2. the fixed total, over thousands of seeds ─────────────────────────
  *
- * The single most important assertion in this file. It is the anti-grinding
- * property: an owner picks the birth moment, so if ANY birth moment produced
- * a different total, the design's whole claim — "grinding changes what kind
- * of character you get, never how strong" — would be false, and searching for
- * that moment is exactly what an owner would do.
- *
- * The sweep is deliberately wide and deliberately hostile: it spans the whole
- * legal year range including year 0 and both endpoints, every month, the
- * poles' immediate neighbourhood, both sides of the date line, midnight and
- * the last second of the day. It also records the SPREAD, because a fixed
- * total with an identical spread everywhere would satisfy this test while
- * making every character in the world the same, so the same sweep judges the
- * spread as well.
+ * The anti-grinding property: if ANY birth moment produced a different total,
+ * "grinding changes what kind of character you get, never how strong" would
+ * be false. The sweep spans the whole legal year range (including year 0 and
+ * both endpoints), every month, the pole neighbourhoods, both sides of the
+ * date line, midnight and the last second, and also records the SPREAD.
  */
 
 #define CS_SWEEP_SPREAD_BUCKETS                                               \
@@ -272,10 +255,9 @@ struct cs_sweep_stats {
     uint8_t vec[CS_VECTOR_SAMPLE][CHARACTER_ATTRIBUTE_COUNT];
 };
 
-/* A deterministic, well-spread pseudo-seed. Not a hash and it does not need
- * to be: the derivation must behave for ANY legal birth, so a spread that is
- * merely varied exercises it honestly, and a fixed generator keeps the sweep
- * reproducible on every run and every machine. */
+/* A deterministic, well-spread pseudo-seed (not a hash): the derivation must
+ * behave for ANY legal birth, and a fixed generator keeps the sweep
+ * reproducible. */
 static bool cs_sweep_seed(unsigned n, struct character_seed *out)
 {
     static const int32_t k_years[] = { 0,    1,    -1,   -44,  1066, 1492,
@@ -323,9 +305,7 @@ static bool cs_sweep_seed(unsigned n, struct character_seed *out)
     return character_seed_make("Sweep", &when, &where, out);
 }
 
-/* ONE pass over the seed space that answers every per-seed question at once.
- * Computing a chart is milliseconds, so a second sweep for a second question
- * would double the group's runtime to learn nothing new. */
+/* ONE pass over the seed space that answers every per-seed question. */
 static void cs_sweep(unsigned count, struct cs_sweep_stats *st)
 {
     memset(st, 0, sizeof *st);
@@ -340,9 +320,8 @@ static void cs_sweep(unsigned count, struct cs_sweep_stats *st)
             st->refused++;
             continue;
         }
-        /* Derive into a buffer filled with a recognisable non-zero pattern,
-         * so a field derive() forgot to write shows up as garbage rather than
-         * as a plausible zero. */
+        /* Derive into a non-zero-patterned buffer so an unwritten field shows
+         * up as garbage. */
         memset(&sheet, 0xa5, sizeof sheet);
         if (!character_sheet_derive(&seed, &sheet)) {
             st->refused++;
@@ -350,10 +329,8 @@ static void cs_sweep(unsigned count, struct cs_sweep_stats *st)
         }
         st->derived++;
 
-        /* Every eighth seed is derived a second time from a differently
-         * dirtied buffer and compared byte for byte, padding included: the
-         * check a second node makes. Every eighth rather than every one
-         * because it doubles the cost of the seeds it touches. */
+        /* Every eighth seed is derived again from a differently dirtied
+         * buffer and compared byte for byte, padding included. */
         if ((n & 7u) == 0u) {
             struct character_sheet again;
             memset(&again, 0x00, sizeof again);
@@ -391,14 +368,10 @@ static void cs_sweep(unsigned count, struct cs_sweep_stats *st)
     }
 }
 
-/* Three thousand real charts. The bound is a runtime one and it is stated
- * rather than hidden: astro_chart_compute() is milliseconds of 768-bit CORDIC
- * arithmetic, so this sweep alone is most of the group's wall time. It is
- * what proves the END-TO-END path over thousands of seeds; the invariant
- * itself is proven far more completely by t_total_is_structural() below,
- * which drives the same apportionment over MILLIONS of weight vectors for
- * free. Neither replaces the other: the cheap one shows no weights can break
- * the total, the expensive one shows real charts produce weights. */
+/* Three thousand real charts (astro_chart_compute() is milliseconds of
+ * 768-bit CORDIC arithmetic, most of the group's wall time). Proves the
+ * END-TO-END path; t_total_is_structural() proves the invariant over
+ * MILLIONS of weight vectors. */
 #define CS_SWEEP_N 3000u
 
 static void t_fixed_total(void)
@@ -415,8 +388,7 @@ static void t_fixed_total(void)
            (unsigned)CHARACTER_ATTRIBUTE_MIN,
            (unsigned)CHARACTER_ATTRIBUTE_MAX);
 
-    /* A sweep that derived almost nothing would report zero violations while
-     * proving nothing, so the population is floored before it is judged. */
+    /* The population is floored so an almost-empty sweep proves nothing. */
     CS_CHECK("the sweep actually derived thousands of characters",
              st.derived >= 2500u);
     CS_CHECK("EVERY seed's six attributes sum to exactly the fixed total",
@@ -435,9 +407,7 @@ static void t_fixed_total(void)
              "included",
              st.rederived >= 300u && st.unstable == 0u);
 
-    /* A fixed total is trivially achievable by handing every character the
-     * same six numbers, which would satisfy every assertion above and destroy
-     * the design. So the spread is judged too. */
+    /* A fixed total is trivial; the spread is judged too. */
     for (unsigned i = 0; i < CS_SWEEP_SPREAD_BUCKETS; i++) {
         if (st.spread[i])
             distinct++;
@@ -454,9 +424,8 @@ static void t_fixed_total(void)
     CS_CHECK("some charts produce a specialist", lopsided > 0u);
     CS_CHECK("some charts produce a generalist", even > 0u);
 
-    /* The stronger form: distinct attribute VECTORS, because a varied
-     * max-minus-min could still hide six identical layouts. Quadratic in the
-     * sample, so the sample is bounded. */
+    /* Distinct attribute VECTORS (a varied max-minus-min could hide identical
+     * layouts); quadratic, so the sample is bounded. */
     for (unsigned i = 0; i < st.sampled; i++) {
         bool seen = false;
         for (unsigned j = 0; j < i && !seen; j++)
@@ -466,26 +435,18 @@ static void t_fixed_total(void)
     }
     printf("  spread: %u distinct attribute vectors among %u seeds\n", unique,
            st.sampled);
-    /* Half is a deliberately loose floor: collisions are legitimate (the
-     * space of valid distributions is finite) and the assertion is aimed at a
-     * derivation that COLLAPSED, not at a particular hit rate. */
+    /* A loose floor: collisions are legitimate; this targets a COLLAPSED
+     * derivation. */
     CS_CHECK("two different seeds usually give different distributions",
              st.sampled >= CS_VECTOR_SAMPLE && unique * 2u >= st.sampled);
 }
 
 /* ── 3. the total is STRUCTURAL, not a property of the charts sampled ────
  *
- * The chart's only influence on the total is through the six weights it
- * produces, so this drives character_apportion() over the whole weight space
- * instead of over birthdays: millions of vectors including every shape a
- * chart could produce and many it could not — all zero, all equal, one
- * enormous and five tiny, saturated 32-bit values, and a wide pseudo-random
- * spread.
- *
- * That is a stronger claim than any number of seeds could establish. Sampling
- * birthdays can only report that the total held for the birthdays sampled;
- * this reports that no weights whatsoever can break it, which is what makes
- * grinding a birth moment pointless. */
+ * The chart influences the total only through the six weights, so this drives
+ * character_apportion() over the whole weight space (all zero, all equal, one
+ * enormous and five tiny, saturated 32-bit values, a wide pseudo-random
+ * spread): no weights whatsoever can break the total. */
 static void t_total_is_structural(void)
 {
     unsigned bad_total = 0, bad_range = 0;
@@ -537,15 +498,12 @@ static void t_total_is_structural(void)
         CS_JUDGE();
     }
 
-    /* And a wide pseudo-random field, over the range a real chart produces
-     * and far past it. xorshift32 rather than rand(): a fixed, portable
-     * generator keeps the sweep identical on every machine and every run. */
+    /* A wide pseudo-random field; xorshift32 keeps it portable and fixed. */
     for (unsigned n = 0; n < 250000u; n++) {
         for (unsigned i = 0; i < CHARACTER_ATTRIBUTE_COUNT; i++) {
             x ^= x << 13; x ^= x >> 17; x ^= x << 5;
-            /* Four magnitudes, so tiny and enormous weights meet in the same
-             * vector — the case where a naive largest-remainder split
-             * overflows its cap and quietly loses a point. */
+            /* Four magnitudes, so tiny and enormous weights meet (a naive
+             * largest-remainder split overflows its cap). */
             switch (n & 3u) {
             case 0: w[i] = x % 256u; break;
             case 1: w[i] = x % 4096u; break;
@@ -586,12 +544,10 @@ static void t_total_is_structural(void)
 
 /* ── 5. the root: what moves it and what does not ───────────────────────── */
 
-/* An INDEPENDENT re-implementation of the canonical preimage described in
- * metaverse/character_sheet.h. Written from the documented layout rather than
- * shared with the module, so that agreeing with it proves the module hashes
- * the domain tag, the RULES REVISION, the name's length and bytes, the birth
- * moment and the place — and nothing else. A shared encoder would have proved
- * only that the file was not edited. */
+/* An INDEPENDENT re-implementation of the canonical preimage in
+ * metaverse/character_sheet.h, written from the documented layout: agreement
+ * proves the module hashes the domain tag, the RULES REVISION, the name's
+ * length and bytes, the birth moment and the place, and nothing else. */
 static void cs_expected_root(const struct character_seed *s,
                              uint8_t out[METAVERSE_ROOT_BYTES])
 {
@@ -643,9 +599,7 @@ static void t_root(void)
              "revision, name, moment, place)",
              memcmp(root, other, sizeof root) == 0);
 
-    /* COSMETIC: bytes after the name's NUL are not part of the character.
-     * Hashing the struct instead of a canonical encoding would have made a
-     * character's identity depend on uninitialised stack. */
+    /* COSMETIC: bytes after the name's NUL are not part of the character. */
     {
         struct character_seed dirty = base;
         size_t len = strlen(dirty.name);
@@ -663,16 +617,11 @@ static void t_root(void)
         }
     }
 
-    /* COSMETIC, and the reason character_seed_equal() exists: the three
-     * padding bytes struct astro_instant carries after `second` are not part
-     * of the birth moment. A caller's instant can arrive with ANY bytes
-     * there — a compiler is free to delete a memset of a local whose padding
-     * nothing reads, and both gcc and clang do at -O2 — so a seed built from
-     * a padded instant must name the same character as one built from a clean
-     * one. This caught a real defect: character_seed_make() used to copy the
-     * instant with a struct assignment, which carried the caller's padding
-     * into the seed and made two identical characters compare unequal in
-     * three builds out of four. */
+    /* COSMETIC: the three padding bytes struct astro_instant carries after
+     * `second` are not part of the birth moment (a compiler may drop a memset
+     * of padding nothing reads), so a seed from a padded instant names the
+     * same character as one from a clean one; character_seed_equal() ignores
+     * them. */
     {
         union {
             struct astro_instant t;
@@ -697,8 +646,8 @@ static void t_root(void)
         CS_CHECK("and names the same property",
                  character_seed_root(&padded, r2) &&
                      memcmp(root, r2, sizeof root) == 0);
-        /* The fix itself: make() copies named fields into a zeroed buffer, so
-         * the seed it produces has no indeterminate bytes at all. */
+        /* make() copies named fields into a zeroed buffer, so the seed has no
+         * indeterminate bytes. */
         CS_CHECK("and the constructed seeds are byte-identical",
                  memcmp(&base, &padded, sizeof base) == 0);
     }
@@ -889,12 +838,9 @@ static void t_text_form(void)
                  all_refused);
     }
 
-    /* A short buffer must fail closed rather than emit a truncated seed that
-     * would parse as a DIFFERENT character. Every length from 1 to just under
-     * the exact fit is tried, not one convenient size: the first version of
-     * this renderer failed closed only while the NAME did not fit, and left a
-     * partial string for every buffer that held the name but not the date —
-     * which a caller ignoring the return value would have shipped. */
+    /* A short buffer must fail closed, not emit a truncated seed that parses
+     * as a DIFFERENT character. Every length from 1 to just under the exact
+     * fit is tried. */
     {
         char tiny[8];
         char full[CHARACTER_SEED_TEXT_MAX];

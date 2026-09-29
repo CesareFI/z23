@@ -54,8 +54,7 @@ bool bg_validation_verify_shielded_proofs(const struct transaction *tx,
 bool bg_validation_note_undo_skips(int64_t skips, bool verified_with_undo,
                                    uint64_t *blocks_out, uint64_t *txs_out);
 
-/* The production entry point that tally hangs off — the ONE place
- * bg_validation_note_undo_skips is called from. Driving the seam alone
+/* The production entry point the tally hangs off: driving the seam alone
  * cannot see the call being deleted or its have_undo argument flipped. */
 bool bg_validation_validate_block_proofs(const struct block *block,
                                          struct block_index *pindex,
@@ -663,9 +662,9 @@ static void walk_svc_init(struct bg_validation_service *svc,
     atomic_store(&g_saw_reverify_read, false);
 }
 
-/* A v1 cursor's census counted every self-connected block as a skip because
- * only rev files were consulted. Carrying it into the restarted campaign
- * would keep the full-history authority unpublishable forever. */
+/* A v1 cursor's census counted every self-connected block as a skip (only rev
+ * files were consulted); carrying it into the restarted campaign would keep
+ * full-history authority unpublishable. */
 static int test_bg_validation_v1_cursor_drops_skip_census(void)
 {
     int failures = 0;
@@ -942,13 +941,10 @@ static int test_bg_validation_authority_requires_complete_coverage(void)
     return failures;
 }
 
-/* N consecutive undo-missing blocks must produce exactly ONE warn-worthy
- * rising edge — the defect this replaces printed one WARN per block (11,868
- * lines in 30 minutes on a header-only-imported index). The tallies must
- * still count every block and every skipped tx, and an unbroken RUN of
- * blocks that really did re-verify against undo must clear the streak so a
- * later recurrence announces itself again — while an interleaved gap, one
- * present block per missing one, must NOT clear it. */
+/* N consecutive undo-missing blocks produce exactly ONE warn-worthy rising
+ * edge. Tallies still count every block and skipped tx; an unbroken RUN of
+ * blocks that re-verified against undo clears the streak, while an
+ * interleaved gap (one present block per missing one) must not. */
 static int test_bg_validation_undo_skip_warns_once_per_streak(void)
 {
     int failures = 0;
@@ -977,10 +973,8 @@ static int test_bg_validation_undo_skip_warns_once_per_streak(void)
         st = bg_validation_get_undo_skip_stats();
         ASSERT(st.streak_active);
 
-        /* Neither does ONE block that genuinely verified against undo: the
-         * missing and present blocks of a real gap interleave, so clearing
-         * on a single present block would re-arm the rising edge on the very
-         * next missing one. */
+        /* Neither does ONE block that verified against undo: a real gap
+         * interleaves missing and present blocks. */
         ASSERT(!bg_validation_note_undo_skips(0, true, &b, &t));
         st = bg_validation_get_undo_skip_stats();
         ASSERT(st.streak_active);
@@ -1002,11 +996,9 @@ static int test_bg_validation_undo_skip_warns_once_per_streak(void)
         ASSERT(st.blocks == (uint64_t)kBlocks + 2);
         ASSERT(st.txs == (uint64_t)kBlocks * 3 + 4);
 
-        /* The flood shape this suppression exists for: an INTERLEAVED gap,
-         * which is what the always-on sub-floor sampler (random heights) and
-         * scattered TOPUP_UNDO_CLEARED rows produce. One present block per
-         * missing block must still yield exactly ONE rising edge — a
-         * clear-on-first-present rule would announce ~500 times here. */
+        /* Interleaved gap (sub-floor sampler, scattered TOPUP_UNDO_CLEARED
+         * rows): one present block per missing block must still yield exactly
+         * ONE rising edge. */
         bg_validation_reset_undo_skip_stats();
         edges = 0;
         for (int i = 0; i < 1000; i++) {
@@ -1032,14 +1024,12 @@ static int test_bg_validation_undo_skip_warns_once_per_streak(void)
     return failures;
 }
 
-/* Build a MINED regtest block: a coinbase plus one ordinary transparent
- * spend — the tx whose input scripts cannot be re-checked without the
- * block's undo (rev) record. write_repair_block() above cannot serve here:
- * it is coinbase-only and carries no Equihash solution, and the production
- * verifier runs check_block_header(pow=true) before it ever reaches the
- * undo. Regtest is (48,5), which the reference solver clears immediately.
- * check_block() is called with check_size_limits=false, so only the header
- * PoW and the merkle root have to be genuine; both are. */
+/* Build a MINED regtest block: a coinbase plus one ordinary transparent spend,
+ * whose input scripts cannot be re-checked without the block's undo record.
+ * write_repair_block() cannot serve: it is coinbase-only with no Equihash
+ * solution, and the verifier runs check_block_header(pow=true) first. Regtest
+ * is (48,5); check_block() runs with check_size_limits=false, so only the
+ * header PoW and merkle root must be genuine. */
 static bool undoless_block_build(struct block *blk, int height,
                                  const struct chain_params *cp)
 {
@@ -1075,10 +1065,9 @@ static bool undoless_block_build(struct block *blk, int height,
     return mine_block_pow(blk, height, cp, 0);
 }
 
-/* Pin the CALL SITE, not just the seam. The streak suppression is only
- * worth anything if bg_validation_validate_block_proofs actually reports
- * its skips: delete that call, or pass it `true` for have_undo, and every
- * direct-seam assertion above still passes. This one does not. */
+/* Pin the CALL SITE, not just the seam: deleting the
+ * bg_validation_validate_block_proofs skip report, or passing it `true` for
+ * have_undo, would leave every direct-seam assertion passing. */
 static int test_bg_validation_undo_skip_tally_is_wired(void)
 {
     int failures = 0;
@@ -1101,8 +1090,7 @@ static int test_bg_validation_undo_skip_tally_is_wired(void)
             chainstate_insert_block_index((struct chainstate *)&ms, &hash);
         ASSERT(index != NULL);
         index->nHeight = 1;
-        /* HAVE_DATA with NO HAVE_UNDO — the header-only-import shape, and
-         * the datadir holds no rev file either way. */
+        /* HAVE_DATA with no HAVE_UNDO (header-only-import shape); no rev file. */
         index->nStatus = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA;
         index->nFile = 0;
         index->nDataPos = 8;

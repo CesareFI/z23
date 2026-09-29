@@ -258,9 +258,9 @@ static bool addnode_zcl23_charged_eleven(struct connman *cm,
 static bool addnode_zcl23_cooldown_then_recharge(struct connman *cm,
     struct connman_dial_candidate *candidate)
 {
-    /* Whichever other known endpoint was selected now owns an addrman
-     * attempt. Put it into the persisted six-hour tier and prove the
-     * next preferred turn falls through to a healthy general peer. */
+    /* The other known endpoint selected now owns an addrman attempt; put it
+     * into the persisted six-hour tier and the next preferred turn falls
+     * through to a healthy general peer. */
     int64_t now = (int64_t)platform_time_wall_time_t();
     bool ok = test_addrman_set_fail(cm, 205, 10, now);
     atomic_store(&cm->zcl23_preference_round, 0);
@@ -268,9 +268,8 @@ static bool addnode_zcl23_cooldown_then_recharge(struct connman *cm,
     size_t n = ok ? connman_gather_dial_candidates(cm, candidate, 1) : 0;
     ok = ok && addnode_zcl23_fell_through_to_general(cm, n, candidate);
 
-    /* Three days of a peer that accepts TCP and immediately closes must
-     * remain a small bounded number of scheduler assignments, not the
-     * tens-of-thousands/day trajectory observed on node4. */
+    /* Three days of a peer that accepts TCP and immediately closes must stay
+     * a small bounded number of scheduler assignments. */
     ok = ok && addnode_zcl23_three_day_attempts_bounded();
 
     /* After the durable cooldown expires, the same endpoint is eligible

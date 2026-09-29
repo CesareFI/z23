@@ -1,5 +1,5 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
- * Unit tests for Wave S S-5 body_persist stage. */
+ * Unit tests for the body_persist stage. */
 
 #include "test/test_core.h"
 #include "test/block_fixtures.h"
@@ -235,13 +235,10 @@ static int64_t profile_cumulative_field(const char *name)
     return value;
 }
 
-/* Nine subtests each open/close a real progress_store (sqlite WAL) over
- * this fixture directory. On a disk shared with concurrent lanes, the
- * durable writes that come with a WAL checkpoint can queue behind other
- * processes' journal commits; nothing under test cares where the fixture
- * lives, only that it's a real directory with real files. Prefer tmpfs
- * (/dev/shm) where it's writable, falling back to the normal ./test-tmp
- * path (test_fmt_tmpdir) otherwise (e.g. macOS, which has no /dev/shm). */
+/* Nine subtests each open/close a real progress_store (sqlite WAL) over this
+ * fixture directory. Prefer tmpfs (/dev/shm) where writable so WAL checkpoints
+ * do not queue behind other processes' commits; otherwise fall back to
+ * ./test-tmp (test_fmt_tmpdir), e.g. on macOS. */
 static void bp_fmt_tmpdir(char *dir_out, size_t dir_out_size,
                           const char *tag)
 {
@@ -439,13 +436,10 @@ int test_body_persist_stage(void)
                  body_persist_stage_step_once() == JOB_IDLE);
         BP_CHECK("read_failed: counter stays 1",
                  body_persist_stage_read_failed_total() == 1);
-        /* SILENT-HOLD GUARD. The requeue fires ONCE and the HAVE_DATA gate then
-         * idles without re-reading, so a repeat COUNT never grows: before the
-         * named blocker this hold was invisible (JOB_IDLE, blocked_count 0,
-         * nothing in `dumpstate blocker`) — exactly how the from-genesis wedge
-         * at height 0 stayed unnamed for 617 s on the 2026-07-27 bare cold
-         * start. Drive the hold clock to 0 so the naming asserts without a
-         * sleep. */
+        /* SILENT-HOLD GUARD. The requeue fires once and the HAVE_DATA gate then
+         * idles without re-reading, so a repeat COUNT never grows; the hold
+         * must be a named blocker in `dumpstate blocker`. Drive the hold clock
+         * to 0 so the naming asserts without a sleep. */
         BP_CHECK("read_failed: hold not yet named (inside the 60s window)",
                  !blocker_exists("body_persist.body_unfetchable"));
         body_persist_stage_set_unfetchable_hold_secs_for_testing(0);

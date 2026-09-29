@@ -1,23 +1,20 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * Unit test for the sovereign-cure G-SOV groundwork (storage/coins_kv.h):
- *   - coins_kv_mark_self_folded / coins_kv_clear_self_folded / the reader
+ *   - coins_kv_mark_self_folded / coins_kv_clear_self_folded /
  *     coins_kv_contains_refold_marker (the durable "this coin set is
  *     self-derived, not the borrowed node.db copy" provenance bit), and
- *   - coins_kv_tip_is_self_derived(db, hstar) — the composite predicate for
- *     G-SOV parts 2 (coins_applied_height == hstar+1) and 3 (NOT
- *     borrowed-and-stamped, OR the self-folded marker is present).
+ *   - coins_kv_tip_is_self_derived(db, hstar): G-SOV parts 2
+ *     (coins_applied_height == hstar+1) and 3 (not borrowed-and-stamped, or
+ *     the self-folded marker is present).
  *
- * THE point of the predicate: coins_kv_is_proven_authority() is TRUE for BOTH a
- * self-folded set and the BORROWED zclassicd-chainstate copy (both stamp the
- * migration key), so the migration stamp alone cannot prove sovereignty. The
- * load-bearing assertions below pin the borrowed trap (proven authority + NO
- * marker => NOT self-derived) and the marker rescue (marker present => derived),
- * plus the not-yet-stamped branch (an un-stamped applied frontier is sovereign
- * by part 3's first disjunct).
+ * coins_kv_is_proven_authority() is true for both a self-folded set and the
+ * borrowed zclassicd-chainstate copy, so the migration stamp alone cannot
+ * prove sovereignty. The tests pin the borrowed trap (proven authority and
+ * no marker: not self-derived), the marker rescue, and the un-stamped
+ * applied frontier (sovereign by part 3's first disjunct).
  *
- * Part 1 of G-SOV (H* CLIMB) is a two-sample runtime fact the copy-prove
- * harness owns; this unit covers only the two single-snapshot parts. */
+ * Part 1 (H* climb) is a runtime fact owned by the copy-prove harness. */
 
 #include "test/test_core.h"
 

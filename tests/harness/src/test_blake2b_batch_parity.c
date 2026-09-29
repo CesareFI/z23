@@ -16,10 +16,8 @@
  * rejects a header differently from the network is forked off it permanently.
  * The vector tiers are therefore guilty until proven byte-identical.
  *
- * The tier forcing hook this file drives — equihash_blake2b_batch_select_impl —
- * was added expressly so a differential oracle could exist (see the comment on
- * it in crypto/blake2b.h). Until this file, nothing in the test suite used it;
- * only the out-of-suite `zclassic23-simd-bench` did.
+ * The tier forcing hook this file drives — equihash_blake2b_batch_select_impl
+ * (see crypto/blake2b.h) — exists so a differential oracle can exist.
  *
  * Legs:
  *   1. Reference pin. Every batch digest must equal the SEQUENTIAL,
@@ -180,10 +178,9 @@ int test_blake2b_batch_parity(void)
     bool tier_ran[3] = { false, false, false };
 
     /* ── Leg 1+2: every tier, both entry points, vs the portable reference ──
-     * hash_len is always p->hash_output (50) — blake2b_final() rejects an
-     * outlen that differs from the one the state was initialised with, and 50
-     * is the only value the Equihash verifier ever passes. The variation that
-     * matters is the INDEX pattern, which the verifier does not control. */
+     * hash_len is always p->hash_output (50): blake2b_final() rejects any other
+     * outlen and the Equihash verifier only passes 50. The variation that
+     * matters is the INDEX pattern. */
     for (int L = 0; L < 2; L++) {
         size_t hash_len = EH_HASH_LEN;
         const uint32_t *idx = (L == 0) ? idx_contig : idx_mixed;

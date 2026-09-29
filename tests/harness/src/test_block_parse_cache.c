@@ -5,19 +5,16 @@
  * Converted stages pin and borrow the resident block; the compatibility get
  * API returns an independent byte-identical deep clone.
  *
- * A silent defect here (stale entry, key collision, shallow clone, eviction
- * error) would hand a WRONG body to body_persist/script_validate/proof_validate/
- * utxo_apply and corrupt the UTXO set. These tests assert the properties
- * that protect the fold:
+ * A stale entry, key collision, shallow clone, or eviction error would hand a
+ * wrong body to the fold and corrupt the UTXO set. These tests assert:
  *   (a) deep-clone equality + independence (miss then hit; mutate one, others
  *       and the cache entry unaffected),
  *   (b) no (height,hash) key collision (same height/diff hash, same hash/diff
  *       height both return their own bytes),
  *   (c) direct-ring replacement at the capacity boundary.
  *   (d) sealed segment source below the frontier (see test_segment_backed_read).
- *   (e) a MISS whose body does NOT hash to the requested key is never
- *       installed into the cache (verify-before-store) — a bad disk read at
- *       height H must not poison the (H,hash) slot for a later, correct read.
+ *   (e) a MISS whose body does not hash to the requested key is never
+ *       installed into the cache (verify-before-store).
  *   (f) block_parse_cache_evict(height,hash) removes exactly that one entry
  *       and leaves every other resident entry untouched.
  *
@@ -74,7 +71,7 @@ static void build_block(struct block *b, uint32_t nseed, int nout)
     b->header.nVersion = 4;
     b->header.nTime = nseed;
     b->header.nBits = 0x2000ffff;
-    /* salt the header so even nout-only differences yield a distinct hash */
+    /* salt the header so nout-only differences yield a distinct hash */
     b->header.nNonce.data[0] = (uint8_t)(nseed & 0xff);
     b->header.nNonce.data[1] = (uint8_t)((nseed >> 8) & 0xff);
     b->num_vtx = 1;
@@ -265,12 +262,9 @@ static int test_no_key_collision(const char *datadir)
             failures++; free(fa.bytes); free(fb.bytes); goto done;
         }
 
-        /* Same-hash / different-height: ask for A's hash at height 201. A's
-         * disk fixture is at height 200; with a height-honoring key this is a
-         * MISS that reads A's body from A's index (we hand fa.bi, which points
-         * at A's disk bytes). The returned body must be A's bytes, and it must
-         * NOT be served from the height-200 entry's slot in a way that
-         * corrupts it. Then a re-get at 200 must still be A. */
+        /* Same-hash / different-height: A's hash at height 201 is a MISS that
+         * reads A's body via fa.bi; the bytes must be A's, and a re-get at 200
+         * must still be A. */
         struct block rc; block_init(&rc);
         if (!block_parse_cache_get(201, fa.hash.data, &fa.bi, datadir, &rc)) {
             printf("FAIL (same-hash/diff-height get)\n"); failures++;
@@ -301,9 +295,8 @@ done:
 
 /* ── Test (c): direct-ring replacement ───────────────────────── */
 
-/* Derived from the production constant (block_parse_cache.h) rather than a
- * duplicated magic number, so this test always exercises the REAL capacity
- * boundary instead of silently drifting out of sync with it. */
+/* Derived from the production constant (block_parse_cache.h) so the test
+ * tracks the real capacity boundary. */
 #define BPC_CAP BLOCK_PARSE_CACHE_CAPACITY
 
 static int test_ring_replacement(const char *datadir)
@@ -318,13 +311,8 @@ static int test_ring_replacement(const char *datadir)
         struct fixture *fxs = calloc((size_t)N, sizeof(*fxs)); // raw-alloc-ok:test
         if (!fxs) { printf("FAIL (alloc)\n"); failures++; goto done; }
 
-        /* Deferred fdatasync: N inline fdatasync() barriers (one per fixture)
-         * dominate wall time under load, since every write lands in the same
-         * blk file and each barrier serializes behind the last — this test's
-         * disk bytes are gone the moment the tmp datadir is removed below, so
-         * durability mid-loop buys nothing. Batch to a single sync_pending()
-         * after the loop; restore whatever mode was in effect before this
-         * test ran so other tests in the group are unaffected. */
+        /* Deferred fdatasync: one sync_pending() after the loop instead of N
+         * inline barriers; the previous mode is restored afterwards. */
         bool prior_deferred = disk_block_io_deferred_sync_enabled();
         disk_block_io_set_deferred_sync(true);
         bool setup_ok = true;
@@ -335,8 +323,7 @@ static int test_ring_replacement(const char *datadir)
                 setup_ok = false; block_free(&src); break;
             }
             block_free(&src);
-            /* Heartbeat: keep the no-output watchdog quiet on a loaded box
-             * even if per-fixture cost regresses again later. */
+            /* Heartbeat: keep the no-output watchdog quiet on a loaded box. */
             if (i > 0 && i % 512 == 0)
                 printf("... fixtures %d/%d\n", i, N);
         }
@@ -361,11 +348,7 @@ static int test_ring_replacement(const char *datadir)
             block_free(&g);
         }
 
-        /* Every non-colliding key (1..CAP) must remain byte-correct.
-         * We cannot observe hit-vs-miss directly through the API, but a
-         * correct entry returns its own bytes regardless; the eviction
-         * property is exercised by confirming idx 0 was replaced (below) while
-         * every later key is intact. */
+        /* Every non-colliding key (1..CAP) must remain byte-correct. */
         bool recents_ok = true;
         for (int i = 1; i < N; i++) {
             struct block g; block_init(&g);
@@ -382,11 +365,9 @@ static int test_ring_replacement(const char *datadir)
             free(fxs); goto done;
         }
 
-        /* idx 0 should have been replaced. Prove replacement structurally: clear
-         * its block_index disk pointer (HAVE_DATA off). A cache HIT would
-         * ignore the index and still return bytes; an evicted entry forces the
-         * MISS path, which now fails the HAVE_DATA guard -> get returns false.
-         * That false is the observable proof the colliding slot was replaced. */
+        /* idx 0 should have been replaced. Clear its block_index disk pointer
+         * (HAVE_DATA off): a HIT ignores the index, an evicted entry takes the
+         * MISS path and fails the HAVE_DATA guard, so get returns false. */
         struct block_index broken = fxs[0].bi;
         broken.nStatus &= ~(unsigned int)BLOCK_HAVE_DATA;
         struct block g0; block_init(&g0);
@@ -427,18 +408,9 @@ done:
 
 /* ── Test (e): verify-before-store — a MISS on wrong bytes never poisons
  * the requested key ───────────────────────────────────────────────
- * Reproduces the audit-confirmed defect: a MISS whose read body does NOT
- * hash to the requested key (a bad disk read / stale bytes at a recycled
- * position) used to be cached anyway under the requested (height,hash), so
- * every later refetch of that key kept being served the SAME wrong bytes
- * forever — a stuck-refetch liveness wedge. We drive this through the real
- * public API only: `fx_bad` is genuinely on disk, but we ask for it under
- * `h_good` (a different block's real hash) — a "bad read" from the cache's
- * point of view. Then a second, distinct fixture `fx_good` — whose real
- * on-disk bytes DO hash to `h_good` — is asked for under the same key. If
- * the first call had wrongly poisoned (H,h_good), this second call would
- * return `fx_bad`'s bytes (a cache HIT on the poisoned slot) instead of
- * `fx_good`'s bytes (a genuine MISS reading the correct body). */
+ * `fx_bad` is on disk but requested under `h_good`; a second fixture `fx_good`
+ * whose bytes hash to `h_good` is then requested under the same key. A poisoned
+ * (H,h_good) slot would return `fx_bad`'s bytes instead of `fx_good`'s. */
 
 static int test_no_cache_on_hash_mismatch(const char *datadir)
 {
@@ -483,8 +455,8 @@ static int test_no_cache_on_hash_mismatch(const char *datadir)
             block_free(&out1); free(fx_bad.bytes); free(fx_good.bytes);
             goto done;
         }
-        /* Sanity: the contract still hands back whatever was actually read
-         * (fx_bad's bytes) — today's "caller's gate decides" behavior. */
+        /* The contract still hands back whatever was read (fx_bad's bytes); the
+         * caller's gate decides. */
         size_t l1 = 0; unsigned char *s1 = ser(&out1, &l1);
         bool out1_is_bad = s1 && l1 == fx_bad.len &&
                            memcmp(s1, fx_bad.bytes, l1) == 0;
@@ -494,11 +466,9 @@ static int test_no_cache_on_hash_mismatch(const char *datadir)
             failures++; free(fx_bad.bytes); free(fx_good.bytes); goto done;
         }
 
-        /* The (H, fx_good.hash) slot must NOT have been poisoned with
-         * fx_bad's bytes. Ask for the same key again, this time with an
-         * index pointing at fx_good's real (correct) on-disk bytes. A fixed
-         * cache treats this as a genuine MISS and returns fx_good's bytes; a
-         * poisoned cache would HIT and return fx_bad's bytes instead. */
+        /* The (H, fx_good.hash) slot must not be poisoned: with an index
+         * pointing at fx_good's bytes this is a genuine MISS returning
+         * fx_good's bytes. */
         struct block out2; block_init(&out2);
         bool ok2 = block_parse_cache_get(H, fx_good.hash.data, &fx_good.bi,
                                          datadir, &out2);
@@ -745,13 +715,10 @@ done:
 }
 
 /* ── Test (g): a corrupt sealed segment fails CLOSED and falls back ───
- * The read-integrity guarantee the sealer exists to provide: below the sealed
- * frontier a body is served from the hash-verified segment store, and a
- * tampered segment is caught (whole-segment digest on open) so bpc_segment_try
- * logs + returns false. With blk*.dat intact the reader transparently falls
- * back to disk (same bytes); with the disk pointer ALSO broken the read fails
- * closed (returns false) rather than serving unverified bytes. This is exactly
- * the warm-restart fold-read integrity the wired sealer restores. */
+ * A tampered segment is caught (whole-segment digest on open) so
+ * bpc_segment_try logs + returns false. With blk*.dat intact the reader falls
+ * back to disk; with the disk pointer also broken the read fails closed
+ * rather than serve unverified bytes. */
 static int test_segment_corruption_fails_closed(const char *base)
 {
     int failures = 0;

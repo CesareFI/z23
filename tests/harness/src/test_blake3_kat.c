@@ -8,11 +8,9 @@
  * is "BLAKE3 2019-12-27 16:29:52 test vectors context".
  *
  * Why vectors and not parity: BLAKE3 has no second in-tree implementation to
- * differential against. The transport lane (docs/work/WIRE_COMPILE_CACHE.md)
- * will verify package transfers chunk-by-chunk with this code, so the tree
- * logic — chunk boundaries (1023/1024/1025), tree shapes (2048/2049, 3072,
- * 31744), the counter-mode XOF extension, keyed and derive-key domains — is
- * guilty until proven byte-identical to the designers' published answers.
+ * differential against, so the tree logic — chunk boundaries (1023/1024/1025),
+ * tree shapes (2048/2049, 3072, 31744), the counter-mode XOF extension, keyed
+ * and derive-key domains — must match the designers' published answers.
  *
  * Legs:
  *   1. Standard 32-byte digests for ALL published input lengths, in all

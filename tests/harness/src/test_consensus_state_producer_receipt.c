@@ -635,11 +635,9 @@ int test_consensus_state_producer_receipt(void)
              accepted.nullifier_count == 1 &&
              lstat(accepted_output, &st) == 0 && S_ISREG(st.st_mode));
 #else
-    /* The producer receipt is valid, but this platform has no qualified
-     * O_TMPFILE + exact-descriptor no-replace publication mechanism.  That
-     * capability boundary is intentional: prove the exporter names it and
-     * leaves no file behind instead of treating an unavailable guarantee as
-     * an end-to-end export success. */
+    /* The receipt is valid but this platform lacks a qualified O_TMPFILE +
+     * exact-descriptor no-replace publication mechanism: the exporter names
+     * that boundary and leaves no file behind. */
     errno = 0;
     PR_CHECK("producer-earned receipt refuses without anonymous staging",
              !exported &&
@@ -650,9 +648,8 @@ int test_consensus_state_producer_receipt(void)
 #endif
 
     /* Standing export cadence: the same receipt-owning producer may advance
-     * the singleton to a strictly higher, newly linked corpus.  This was
-     * previously impossible: the monotonic guard admitted h=2, then the
-     * generic conflict branch rejected it unconditionally. */
+     * the singleton to a strictly higher, newly linked corpus; the monotonic
+     * guard admits h=2 and the generic conflict branch must not reject it. */
     PR_CHECK("producer fixture extends the linked header corpus",
              pr_insert_header(db, 2, hash[2], hash[1]));
     PR_CHECK("producer receipt advances monotonically under the same session",

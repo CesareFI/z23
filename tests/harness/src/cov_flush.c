@@ -1,17 +1,11 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Coverage flush on crash.  Only compiled into `test_zcl_cov` because
- * the Makefile passes `-DCOVERAGE_BUILD` for that target; in a normal
- * test_zcl build this file becomes an empty translation unit with no
- * runtime cost.
+ * Coverage flush on crash. Compiled into `test_zcl_cov` only (the Makefile
+ * passes `-DCOVERAGE_BUILD`); otherwise an empty translation unit.
  *
- * The existence of this file is what makes `make coverage` actually
- * usable on a codebase with pre-existing -O0/-O1 crashes: gcov
- * normally only writes .gcda files on clean exit, so one SIGSEGV in
- * the test binary wipes coverage data for everything that DID run.
- * We install an __attribute__((constructor)) signal handler that
- * calls __gcov_dump() before the crash propagates, so partial runs
- * still produce useful coverage data.
+ * gcov writes .gcda files only on clean exit; a __attribute__((constructor))
+ * signal handler calls __gcov_dump() before the crash propagates so partial
+ * runs still yield coverage data.
  */
 
 #ifdef COVERAGE_BUILD
@@ -36,15 +30,8 @@ static void cov_flush_handler(int sig)
 
     __gcov_dump();
 
-    /* We exit via _exit() instead of re-raising the signal because
-     * libgcov also registers an atexit-like cleanup that writes the
-     * same .gcda files; if we let the SIGSEGV propagate to the default
-     * handler and then back through libc teardown, libgcov tries to
-     * write the data a SECOND time with slightly different internal
-     * state (we've just run the handler's own counters) and prints
-     * "overwriting an existing profile data with a different checksum"
-     * for every translation unit.  _exit bypasses atexit handlers so
-     * the first write is the only write. */
+    /* _exit, not re-raising: libgcov's atexit cleanup would write the .gcda
+     * files a second time with a different checksum. */
     _exit(128 + sig);
 }
 

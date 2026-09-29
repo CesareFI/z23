@@ -1,20 +1,13 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * test_consensus_parity — golden assertion that zclassic23's consensus
- * constants are EXACTLY zclassicd's (the canonical C++ ZClassic daemon).
+ * test_consensus_parity: golden assertion that zclassic23's consensus
+ * constants are exactly zclassicd's (docs/CONSENSUS_PARITY_DOCTRINE.md),
+ * cross-referenced against src/chainparams.cpp and src/consensus/upgrades.cpp.
+ * To change a value, change zclassicd first and ship it network-wide.
  *
- * zclassic23 must be bit-for-bit consensus-compatible with zclassicd
- * (docs/CONSENSUS_PARITY_DOCTRINE.md). The values below are golden,
- * cross-referenced against the zclassicd source (src/chainparams.cpp,
- * src/consensus/upgrades.cpp). If a future change drifts a consensus
- * constant off these values, this test fails — by design. To change a
- * value you must change zclassicd FIRST and ship it network-wide; this
- * test is the tripwire that makes silent divergence impossible.
- *
- * Companion guard: tools/scripts/check_consensus_parity.sh (lint gate
- * E13) bans the *mechanism* class (miner-signaled versionbits / dynamic
- * Equihash override). This test pins the *values*.
- */
+ * Companion: tools/scripts/check_consensus_parity.sh (lint gate E13) bans the
+ * mechanism class (versionbits / dynamic Equihash override); this test pins
+ * the values. */
 
 #include "test/test_core.h"
 #include "chain/chainparams.h"
@@ -27,10 +20,9 @@
 
 /* The generated empirical oversize-grandfather table (see
  * docs/CONSENSUS_PARITY_DOCTRINE.md "Empirical oversize grandfather"),
- * included directly so the golden pins below bind the artifact, not just
- * the predicate. consensus/consensus.h is NOT included (its unguarded
- * MAX_BLOCK_SIGOPS collides with validation/main_constants.h via
- * test/test_core.h); the 102000 cap is pinned as a literal below. */
+ * included directly so the golden pins bind the artifact. consensus/consensus.h
+ * is not included (MAX_BLOCK_SIGOPS collides with validation/main_constants.h
+ * via test/test_core.h); the 102000 cap is pinned as a literal below. */
 #include "../../../core/consensus/src/oversize_grandfather_table.inc"
 
 #include <stdio.h>
@@ -146,14 +138,12 @@ int test_consensus_parity(void)
               uint256_eq(&c->hashGenesisBlock, &expect_genesis));
     }
 
-    /* ── Empirical oversize grandfather (zclassicd LIVE-behavior parity).
-     * zclassicd's text caps post-Sapling tx size at 102000 unconditionally
-     * (src/consensus/consensus.h:27, main.cpp:1196-1200), but the canonical
-     * chain carries exactly 413 post-Sapling txs above it (heights
-     * 478544..1968856; complete empirical scan, re-verified
-     * per-entry against zclassicd by the generator). Running nodes accept
-     * them only because validated blocks are never re-checked, and enforce
-     * 102000 on every new block. The pins below freeze that ruleset. ── */
+    /* ── Empirical oversize grandfather (zclassicd live-behavior parity).
+     * zclassicd caps post-Sapling tx size at 102000 (src/consensus/
+     * consensus.h:27, main.cpp:1196-1200), but the canonical chain carries 413
+     * post-Sapling txs above it (heights 478544..1968856). Nodes accept them
+     * only because validated blocks are not re-checked, and enforce 102000 on
+     * every new block. The pins below freeze that ruleset. ── */
     {
         struct uint256 first, last;
         uint256_set_hex(&first,
@@ -186,12 +176,10 @@ int test_consensus_parity(void)
     }
 
     /* ── Golden vector: canonical UTXO SHA3 commitment byte-layout ──────────
-     * utxo_sha3_serialize_record() is the "must-never-fork" consensus encoder
-     * behind the UTXO commitment that C8 parity rests on. Pin its exact byte
-     * output AND a streamed multi-record SHA3-256 digest to constants computed
-     * INDEPENDENTLY (Python hashlib.sha3_256), so a silent layout / endianness /
-     * is_coinbase-normalization drift fails LOUD here — a cross-implementation
-     * contract, not a zclassic23-vs-zclassic23 self-comparison. Layout:
+     * utxo_sha3_serialize_record() is the consensus encoder behind the UTXO
+     * commitment. Its exact byte output and a streamed multi-record SHA3-256
+     * digest are pinned to constants computed independently, so layout,
+     * endianness or is_coinbase-normalization drift fails. Layout:
      * txid[32] || vout(LE32) || value(LE64) || slen(LE32) || script ||
      * height(LE32) || is_coinbase(1 byte, normalized to 0/1). */
     {

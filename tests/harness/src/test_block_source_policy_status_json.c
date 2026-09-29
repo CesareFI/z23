@@ -2,11 +2,8 @@
  *
  * Tests for the pure JSON serializers in
  * engine/services/src/block_source_policy_status.c: bsp_source_to_json,
- * bsp_decision_to_json, and the bsp_source_class_name name lookup. The
- * file's own header comment self-labels these "pure JSON serializers" with
- * "no fallible service surface" — plain struct -> struct json_value
- * encoders, fully decoupled from node.db/locks/network. No test in
- * tests/harness/src previously referenced any of them.
+ * bsp_decision_to_json and bsp_source_class_name: pure struct -> struct
+ * json_value encoders, decoupled from node.db, locks and network.
  *
  * bsp_source_lag_known/valid and bsp_push_source_observed_lag are `static`
  * in block_source_policy_status.c, so they cannot be called directly; their
@@ -24,12 +21,9 @@
 
 #include "test/test_core.h"
 
-/* Internal seam: bsp_source_to_json / bsp_decision_to_json /
- * bsp_source_class_name are declared in this sibling-file-only header, not
- * the public services/block_source_policy.h. Reaching into a shape's own
- * _internal.h from a focused test has established precedent — see
- * test_explorer_rpc_call.c (explorer_controller_internal.h) and
- * test_health_rollup.c (controllers/diagnostics_internal.h). */
+/* Internal seam: these are declared in a sibling-file-only header, not the
+ * public services/block_source_policy.h (same precedent as
+ * test_explorer_rpc_call.c and test_health_rollup.c). */
 #include "../../../engine/services/src/block_source_policy_internal.h"
 
 #define BSPJ_RUN(name, expr) do { \

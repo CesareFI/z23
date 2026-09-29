@@ -20,10 +20,8 @@
  *   (d) the production entry (boot_bundle_fetch_maybe): a directory.json hint +
  *       an -fileservice peer drives the same land-in-bundles/ result.
  *
- * Fixtures live under mkdtemp() dirs in /tmp — never a real datadir. The
- * synthetic bundle is a valid SQLite-magic blob that the serve path streams and
- * the fetch content-verifies, but it is NOT a real consensus-state bundle, so
- * the install path fail-closes at admission (exactly the sovereignty guard). */
+ * Fixtures live under mkdtemp() dirs, never a real datadir. The synthetic bundle
+ * is SQLite-magic content, not a real consensus-state bundle, so install fails closed. */
 
 #include "test/test_core.h"
 #include "base/log_macros.h"
@@ -142,14 +140,8 @@ static int case_gate(void)
     return failures;
 }
 
-/* A REGTEST (or testnet) node must never attempt to acquire mainnet bundle
- * state. The gate did not exist until 2026-07-29: `-regtest` isolated the P2P
- * wire and nothing else, so a sealed fixture ran the instant-on weld, reached
- * the operator's LIVE node on its file-service port and pulled ~1 GB of real
- * mainnet chain into an empty regtest datadir — twice. The artifact is bound at
- * install to the compiled CHECKPOINT_ROM, which is a MAINNET checkpoint, so a
- * non-mainnet node has nothing to gain from the fetch and a live node to leak
- * into by attempting it. */
+/* A regtest or testnet node never fetches mainnet bundle state (the artifact
+ * binds to the mainnet CHECKPOINT_ROM). */
 static int case_network_gate(void)
 {
     int failures = 0;
@@ -183,10 +175,7 @@ static int case_network_gate(void)
         memset(&ctx, 0, sizeof(ctx));
         ASSERT(boot_bundle_fetch_should_run(dir, &ctx));
 
-        /* End to end: the whole weld is a no-op on regtest even when a
-         * -connect peer is present. The peer names a port, so fix (b) already
-         * assembles ZERO seeds — a regression in EITHER gate alone still
-         * cannot produce an outbound dial from this assertion. */
+        /* The whole weld is a no-op on regtest even with a -connect peer. */
         memset(&ctx, 0, sizeof(ctx));
         ctx.regtest = true;
         ctx.connect_only = true;
@@ -442,11 +431,8 @@ static int case_e2e(void)
         snprintf(landed, sizeof(landed), "%s/bundles/%s", cdir, m.filename);
         ASSERT(rom_fetch_verify_file(landed, &m));
 
-        /* Reseed (Lane A2): the just-landed bundle is registered with rom_seed
-         * IMMEDIATELY on download success — no restart, no scan needed — so
-         * this node is already a swarm source for it. Assert via the rom_seed
-         * catalog API (rom_seed_list) that a "bundles/<filename>" entry exists
-         * with the SAME chunk_root the source artifact carries. */
+        /* The landed bundle is registered with rom_seed immediately, with the
+         * same chunk_root as the source artifact. */
         {
             char want[ROM_SEED_NAME_MAX];
             snprintf(want, sizeof(want), "%s/%s", ROM_SEED_BUNDLES_SUBDIR,
@@ -496,10 +482,7 @@ static int case_e2e(void)
         char *bad_auto = boot_autodetect_consensus_bundle(cdir2);
         ASSERT(bad_auto == NULL); /* nothing installable landed */
         free(bad_auto);
-        /* Nothing landed on disk for cdir2 at all, so there is nothing rom_seed
-         * could have (re-)registered for it either — the reseed call only runs
-         * on the success path, guarded by boot_bundle_fetch_download's own
-         * `if (!ok) return false;` above the reseed block. */
+        /* Nothing landed, so nothing was registered with rom_seed. */
 
         /* (d) Production entry: a directory.json hint + -fileservice peer drives
          * the whole gate → pick → seed-assembly → download → land path. */
@@ -613,19 +596,14 @@ static int case_baked_facts(void)
 static int case_quorum(void)
 {
     int failures = 0;
-    /* STEP 0: the export is NOT byte-deterministic across independent nodes, so
-     * a per-height triple quorum almost never forms across a mixed fleet. The
-     * pick therefore ranks NEWEST-height-first (bandwidth-DoS guard, not a trust
-     * source — trust binds at install), and a lone non-explicit newest candidate
-     * is ACCEPTED (no longer refused). heights is the new first argument. */
+    /* The pick ranks newest-height-first (bandwidth-DoS guard, not a trust
+     * source); a lone non-explicit newest candidate is accepted. */
     TEST("boot_bundle_fetch: quorum ranks newest-height-first, never refuses a "
          "valid newest candidate") {
         /* No candidates → still -1. */
         ASSERT(boot_bundle_quorum_pick_for_test(NULL, NULL, NULL, 0) == -1);
 
-        /* REGRESSION (the bug this fixes): a lone non-explicit seed used to be
-         * REFUSED (→ silent fall-open to from-genesis IBD). Now it is ACCEPTED —
-         * a fresh consumer must be able to use the one bundle on offer. */
+        /* A lone non-explicit seed is accepted. */
         int64_t h1[] = { 3056758 };
         int c1[] = { 1 };
         bool f_false[] = { false };
@@ -642,10 +620,7 @@ static int case_quorum(void)
         bool lowexpl[] = { true, false };
         ASSERT(boot_bundle_quorum_pick_for_test(hh, lowmore, lowexpl, 2) == 1);
 
-        /* THE mixed-height regression case: two distinct single-seed triples at
-         * two heights (exports are not cross-node deterministic, so no two seeds
-         * share a triple). Must pick the NEWEST (index 1), never -1 / fall open
-         * to IBD. */
+        /* Two single-seed triples at two heights: the newest wins, never -1. */
         int64_t mixed_h[] = { 3000000, 3056758 };
         int mixed_c[] = { 1, 1 };
         bool mixed_f[] = { false, false };
@@ -702,14 +677,9 @@ static int case_parallel_probe(void)
     } _test_next:;
     return failures;
 }
-/* ── (e1b) The per-chunk manifest pre-flight is a SWEEP, not a walk ──────
+/* ── (e1b) The per-chunk manifest pre-flight is a sweep ──────
  *
- * A seed that accepts and then goes silent costs the connect budget plus the
- * probe budget. Walking the seed set multiplied that by the seed count before
- * boot could give up; sweeping it makes the worst case one seed's budget.
- * The two properties that must hold together: the probes OVERLAP, and the
- * winner is still the lowest-indexed seed with a matching chunk count, so
- * seed ordering remains policy and concurrency is only about the clock. */
+ * Probes overlap; the lowest-indexed seed with a matching chunk count wins. */
 
 static _Atomic int rmf_active, rmf_peak;
 /* Seed 0 answers with the WRONG chunk count, seed 1 and seed 2 with the right
@@ -914,15 +884,10 @@ static int case_discovery(void)
     return failures;
 }
 
-/* ── Discovery-outcome observability (bbf_record_discovery_outcome /
- * boot_bundle_fetch_discovery_dump_state_json, engine/composition/src/boot_bundle_
- * fetch.c) ──────────────────────────────────────────────────────────────
+/* ── Discovery-outcome observability ──────────────────────────────────────
  *
- * Proves bbf_discover_from_peers() persists a labeled outcome + seed/
- * response counts that the diagnostics dumper reads back correctly, for
- * both the lone-explicit-seed "degraded_single_seed" case (the exact case_discovery scenario above) and
- * the "no_quorum_fell_open_to_ibd" case (a reachable seed that serves an
- * empty directory — responds, but advertises no usable bundle manifest). */
+ * bbf_discover_from_peers() persists a labeled outcome and seed/response
+ * counts that boot_bundle_fetch_discovery_dump_state_json reads back. */
 static int case_discovery_outcome_persists(void)
 {
     int failures = 0;
@@ -934,11 +899,8 @@ static int case_discovery_outcome_persists(void)
         progress_store_close();
         ASSERT(progress_store_open(pdir));
 
-        /* ── (1) degraded_single_seed: same shape as case_discovery — a lone
-         * EXPLICIT seed serving a real registered artifact proceeds under
-         * ranked discovery, but with fetch redundancy 1 the recorded outcome
-         * is "degraded_single_seed" ("reached" is reserved for a >=2-seed
-         * byte-identical winner; explicitness does not add redundancy). ── */
+        /* (1) degraded_single_seed: a lone explicit seed proceeds with fetch
+         * redundancy 1. */
         rom_seed_reset();
         rom_seed_set_peer_bps_cap(1ull << 30);
         rom_seed_set_global_bps_cap(1ull << 30);
@@ -999,11 +961,8 @@ static int case_discovery_outcome_persists(void)
         rmdir(sdir);
         rom_seed_reset();
 
-        /* ── (2) no_quorum_fell_open_to_ibd: a fresh explicit seed that
-         * answers /directory.json but has registered NO artifact — the
-         * peer responds (responded_count>=1) yet advertises nothing usable,
-         * so this MUST overwrite the prior recorded outcome with the new
-         * label rather than leaving the stale one. ── */
+        /* (2) no_quorum_fell_open_to_ibd: a seed that responds but advertises
+         * no artifact overwrites the prior outcome. */
         char sroot2[PATH_MAX];
         char *sdir2 = test_mkdtemp(sroot2, sizeof(sroot2), "zcl_bbf_disc_outcome_empty_srv");
         ASSERT(sdir2 != NULL);
@@ -1028,10 +987,7 @@ static int case_discovery_outcome_persists(void)
         ctx2.file_service_peer = peer_hp2;
         ctx2.connect_only = true;
 
-        /* An empty seed cannot land a bundle — boot_bundle_fetch_maybe
-         * returns false, but the discovery attempt still ran and its
-         * outcome is still persisted (observability is independent of the
-         * overall boot decision). */
+        /* An empty seed lands nothing, but the outcome is still persisted. */
         ASSERT(!boot_bundle_fetch_maybe(cdir2, &ctx2));
 
         json_init(&out);
@@ -1053,12 +1009,7 @@ static int case_discovery_outcome_persists(void)
     return failures;
 }
 
-/* The seed set the weld is PERMITTED to contact (engine/composition/src/
- * boot_bundle_fetch_seeds.c). The connect-only branch is the one that
- * structurally disabled the whole weld on the 2026-07-27 bare cold start: with
- * `-connect=` and no `-fileservice=` the set assembled to ZERO peers, nothing
- * was ever contacted, and the miss was then reported as `fetch=no_seed` — the
- * same token a genuine discovery miss produces. */
+/* The seed set the weld may contact (boot_bundle_fetch_seeds.c). */
 static int case_seed_set(void)
 {
     int failures = 0;
@@ -1066,13 +1017,7 @@ static int case_seed_set(void)
          "never an empty set") {
         struct app_context ctx;
 
-        /* (1) No flags at all: exactly the compiled clearnet seed set, whose
-         * length this reads rather than assuming. The set is EMPTY by policy —
-         * this project's own file-service endpoints are runtime
-         * -fileservice=/-connect= values and are never compiled in (see
-         * config/bundle_fetch_seeds.h), and no third-party seed is vouched for
-         * in-tree. Asserting equality instead of ">= 1" keeps this case honest
-         * whichever way that list later moves. */
+        /* (1) No flags: exactly the compiled clearnet seed set (empty by policy). */
         memset(&ctx, 0, sizeof(ctx));
         size_t compiled_seeds = 0;
         while (ZCL_BUNDLE_FETCH_CLEARNET_SEEDS[compiled_seeds])
@@ -1080,11 +1025,9 @@ static int case_seed_set(void)
         size_t open_seeds = boot_bundle_fetch_seed_count(&ctx);
         ASSERT(open_seeds == compiled_seeds);
 
-        /* (2) connect-only with `-connect=host:8033` (the published mainnet
-         * P2P port) and no `-fileservice`: seeds file-service at host:FS_PORT.
-         * That is the new-node command. A NON-default port stays refused, which
-         * is how `-connect=127.0.0.1:39099` (a deliberately dead fixture sink)
-         * must not become a dial to 127.0.0.1:18034. */
+        /* (2) connect-only with -connect=host:8033 (default P2P port) and no
+         * -fileservice seeds file-service at host:FS_PORT; a non-default port
+         * stays refused. */
         memset(&ctx, 0, sizeof(ctx));
         ctx.connect_only = true;
         ctx.connect_peers[0] = "203.0.113.7:8033";
@@ -1101,9 +1044,7 @@ static int case_seed_set(void)
         ctx.n_connect_peers = 2;
         ASSERT(boot_bundle_fetch_seed_count(&ctx) == 2);
 
-        /* (2b) A -connect value that names NO port is unchanged: the operator
-         * named a host, so nothing is being overridden, and it seeds the file
-         * service at FS_PORT. This is the case the seam was built for. */
+        /* (2b) A -connect value naming no port seeds the file service at FS_PORT. */
         memset(&ctx, 0, sizeof(ctx));
         ctx.connect_only = true;
         ctx.connect_peers[0] = "203.0.113.7";
@@ -1162,22 +1103,10 @@ static int case_seed_set(void)
 
 /* ── Peer-DISCOVERED seeds ───────────────────────────────────────────────
  *
- * The gap these close: peers ALREADY advertise their file-service port over
- * the zfileaddr P2P message and this node ALREADY caches it (handle_zfileaddr
- * -> boot_save_file_service -> db_file_service_save). Nothing ever read that
- * cache back, so a node run with NO operator flags assembled ZERO file-service
- * seeds — the compiled clearnet list is deliberately empty — the instant-on
- * fetch was never attempted, and the node fell back to a from-genesis IBD. The
- * missing piece was the CONSUMER (engine/composition/src/boot_bundle_fetch_peer_seeds.c).
- *
- * What must stay true, and is asserted below: making a seed easier to FIND
- * must not make its bytes easier to ACCEPT. A peer-discovered seed is an
- * ADDRESS; it travels the identical verification path an operator-named seed
- * travels, and a peer-discovered seed serving bytes that do not match the
- * committed digest is refused exactly as a flag-supplied one is.
- *
- * No wall-clock duration is asserted anywhere here — only relationships and
- * outcomes, because this fleet deliberately includes slow 7200rpm boxes. */
+ * Peers advertise their file-service port via zfileaddr and the node caches it;
+ * boot_bundle_fetch_peer_seeds.c turns that cache into seeds. A discovered seed
+ * is only an address: it travels the same verification path as an
+ * operator-named seed. No wall-clock duration is asserted. */
 
 /* (1) PURE: does a cached peer endpoint become a seed? Only if that peer
  * actually advertised a file-service port. */
@@ -1189,8 +1118,7 @@ static int case_peer_seed_offer_filter(void)
         struct app_context ctx;
         boot_bundle_fetch_disarm_peer_seeds();
 
-        /* Baseline: no flags, no peers → the pre-existing empty set. This is
-         * the stranger's `seeds_empty` boot. */
+        /* Baseline: no flags, no peers -> the empty set. */
         memset(&ctx, 0, sizeof(ctx));
         size_t compiled_seeds = 0;
         while (ZCL_BUNDLE_FETCH_CLEARNET_SEEDS[compiled_seeds])
@@ -1198,10 +1126,7 @@ static int case_peer_seed_offer_filter(void)
         ASSERT(boot_bundle_fetch_seed_count(&ctx) == compiled_seeds);
         ASSERT(boot_bundle_fetch_armed_peer_seed_count() == 0);
 
-        /* A cached peer row that names NO file-service port (the peer never
-         * sent zfileaddr) is NOT offered — the count is unchanged from the
-         * baseline even though the row is armed and visible to the assembler.
-         * This is the "did not advertise ⇒ not a seed" half. */
+        /* A cached peer row naming no file-service port is not offered. */
         boot_bundle_fetch_arm_peer_seed_for_test("203.0.113.20", 0);
         ASSERT(boot_bundle_fetch_armed_peer_seed_count() == 1);
         ASSERT(boot_bundle_fetch_seed_count(&ctx) == compiled_seeds);
@@ -1217,12 +1142,8 @@ static int case_peer_seed_offer_filter(void)
         ASSERT(boot_bundle_fetch_armed_peer_seed_count() == 3);
         ASSERT(boot_bundle_fetch_seed_count(&ctx) == compiled_seeds + 2);
 
-        /* THE PEER'S OWN PORT IS USED, NOT FS_PORT — proven WITHOUT a socket,
-         * by de-duplication. A live node's peer set really does mix 18034 and
-         * 18035, so substituting the default would silently dial the wrong
-         * service. An explicit -fileservice naming the SAME host at the SAME
-         * port the peer advertised collapses onto the peer-discovered entry;
-         * the same host at any other port does not. */
+        /* The peer's own advertised port is used, not FS_PORT: an explicit
+         * -fileservice for the same host and port de-dups onto it. */
         boot_bundle_fetch_disarm_peer_seeds();
         boot_bundle_fetch_arm_peer_seed_for_test("203.0.113.20", 18035);
         memset(&ctx, 0, sizeof(ctx));
@@ -1366,11 +1287,8 @@ static int case_peer_seed_e2e_and_verification(void)
         boot_bundle_fetch_disarm_peer_seeds();
         ASSERT(bbf_seeder_start(&srv));
 
-        /* (a) NO operator flags at all — no -fileservice, no -connect, no
-         * -addnode — and the compiled clearnet list is empty. The ONLY seed is
-         * the peer that advertised its file-service port over zfileaddr and
-         * whose endpoint this node cached. Before this consumer existed that
-         * boot assembled zero seeds and never attempted the fetch. */
+        /* (a) No operator flags: the only seed is the peer that advertised its
+         * file-service port via zfileaddr. */
         char cdir[256];
         test_make_tmpdir(cdir, sizeof(cdir), "bbf_peerseed_ok", "ok");
         struct app_context ctx;
@@ -1385,10 +1303,8 @@ static int case_peer_seed_e2e_and_verification(void)
         ASSERT(landed != NULL);
         free(landed);
 
-        /* (b) The SAME peer-discovered seed, same wire bytes, but the client
-         * committed to a digest those bytes do not match: REFUSED, nothing
-         * lands, no sovereign marker. Discovery made the seed findable; it did
-         * not make its bytes acceptable. */
+        /* (b) Same seed, but the client committed to a non-matching digest:
+         * refused, nothing lands, no marker. */
         char bdir[256];
         test_make_tmpdir(bdir, sizeof(bdir), "bbf_peerseed_bad", "ok");
         struct app_context bctx;
@@ -1401,11 +1317,8 @@ static int case_peer_seed_e2e_and_verification(void)
         free(bad_auto);
         ASSERT(!boot_consensus_bundle_marker_exists(bdir));
 
-        /* (c) The SAME corrupt commitment against a FLAG-supplied seed (same
-         * seeder, named with -fileservice, peer source disarmed) fails in
-         * exactly the same way. Same outcome, same absence of a marker — the
-         * two seed provenances are indistinguishable to the verifier, which is
-         * the whole claim. */
+        /* (c) The same corrupt commitment against a flag-supplied seed fails
+         * identically. */
         boot_bundle_fetch_disarm_peer_seeds();
         char fdir[256];
         test_make_tmpdir(fdir, sizeof(fdir), "bbf_flagseed_bad", "ok");
@@ -1449,17 +1362,9 @@ static int case_peer_seed_e2e_and_verification(void)
     return failures;
 }
 
-/* (3) A peer that ADVERTISES the file service but does not serve costs a
- * BOUNDED amount of time and is then dropped — the remaining seeds are still
- * tried and the bundle still lands.
- *
- * The bound is structural, not timed here: rom_fetch_get_directory gives up
- * after RF_CONNECT_TIMEOUT_MS + its recv window, discovery `continue`s to the
- * next seed, and the non-answering seed is left OUT of the download peer set
- * (struct bbf_discovery.live) so it can never re-enter the per-chunk rotation.
- * The recv window is shortened for this case so the machine is not made to sit
- * out the production wait; the test asserts the DEFAULT is unchanged rather
- * than asserting any elapsed duration. */
+/* (3) A peer that advertises the file service but does not serve costs a
+ * bounded wait and is dropped; the remaining seeds still land the bundle.
+ * The recv window is shortened here; the test asserts the default is unchanged. */
 static int case_peer_seed_stall_is_bounded(void)
 {
     int failures = 0;

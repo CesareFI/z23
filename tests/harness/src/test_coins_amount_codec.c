@@ -90,15 +90,8 @@ static uint64_t ref_decompress_amount(uint64_t x)
 /* MAX_MONEY is 21e6 * COIN == 2.1e15 (fits a uint64 comfortably). */
 #define CODEC_MAX_MONEY ((uint64_t)MAX_MONEY)
 
-/* ─────────────────────────────────────────────────────────────────────
- * Behavior 1 — roundtrip invariant over [0, MAX_MONEY].
- *
- * decompress(compress(x)) == x must hold for every representable amount.
- * We prove it three ways: exhaustively over a dense low band (where most
- * real outputs live), via a deterministic multiplicative/additive walk
- * that scatters across the whole money range, and at the exact endpoints
- * 0, 1, and MAX_MONEY.
- * ───────────────────────────────────────────────────────────────────── */
+/* Behavior 1: decompress(compress(x)) == x over [0, MAX_MONEY]: a dense low
+ * band, a deterministic scatter walk, and the endpoints 0, 1, MAX_MONEY. */
 int test_coins_amount_codec_roundtrip(void)
 {
     int failures = 0;
@@ -298,18 +291,10 @@ int test_coins_amount_codec_digit_preservation(void)
     return failures;
 }
 
-/* ─────────────────────────────────────────────────────────────────────
- * Behavior 4 — regression seal against an independent reference.
- *
- * A 128-value deterministic corpus (powers/near-powers, COIN multiples,
- * primes, max-money neighbors, a deterministic LCG scatter) is checked
- * against:
- *   (a) the INDEPENDENT in-test reference reimplementation of the
- *       canonical CompressAmount/DecompressAmount — the true seal; and
- *   (b) the core/modules/coins compress_amount()/decompress_amount() forwarders,
- *       pinning that those thin wrappers stay pure pass-throughs of the
- *       domain function (a divergence there is also a regression).
- * ───────────────────────────────────────────────────────────────────── */
+/* Behavior 4: a 128-value deterministic corpus (powers, COIN multiples,
+ * primes, max-money neighbors, LCG scatter) is checked against an independent
+ * in-test reference of CompressAmount/DecompressAmount and against the
+ * compress_amount()/decompress_amount() forwarders. */
 int test_coins_amount_codec_regression_seal(void)
 {
     int failures = 0;

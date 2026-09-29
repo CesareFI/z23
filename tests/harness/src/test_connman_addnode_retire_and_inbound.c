@@ -163,8 +163,8 @@ int check_connman_addnode_retire_suppressed_below_floor(void)
         ok = ok && !cm.addnode_retired[0];
         ok = ok && cm.addnode_retirements_total == 0;
 
-        /* Once the floor is met, the SAME state now retires — proves the
-         * suppression above was the floor guard, not some other bug. */
+        /* Once the floor is met the same state retires, so the suppression
+         * above was the floor guard. */
         if (ok)
             connman_retire_dead_addnodes(&cm, (size_t)ZCL_PEER_FLOOR_HEALTHY);
         ok = ok && cm.addnode_retired[0];
@@ -312,10 +312,9 @@ int check_connman_addnode_census_harvest_to_addrman(void)
 
         int64_t now = (int64_t)platform_time_wall_time_t();
         if (ok) {
-            /* Two good candidates: reachable (dial_success_count>0) and a
-             * recent last_success — exactly what census_read.c's
-             * ev_node_census_observed fold produces for a peer we've
-             * actually dialed successfully (peers_projection.c:463+). */
+            /* Two good candidates: reachable (dial_success_count>0) with a
+             * recent last_success, as census_read.c's ev_node_census_observed
+             * fold produces. */
             struct census_node good1;
             memset(&good1, 0, sizeof(good1));
             snprintf(good1.ip, sizeof(good1.ip), "45.33.10.1");
@@ -341,9 +340,8 @@ int check_connman_addnode_census_harvest_to_addrman(void)
             never_dialed.last_success = 0;
             ok = ok && census_read_test_insert_node(tmpdir, &never_dialed);
 
-            /* Stale: was reachable once, but its last success is far older
-             * than ZCL_ADDNODE_HARVEST_RECENT_SUCCESS_SECS — must NOT be
-             * harvested (no longer proven-live). */
+            /* Stale: reachable once, but its last success is older than
+             * ZCL_ADDNODE_HARVEST_RECENT_SUCCESS_SECS, so not harvested. */
             struct census_node stale = good1;
             snprintf(stale.ip, sizeof(stale.ip), "45.33.10.4");
             stale.last_seen = now - 30;   /* passes the coarse list filter */
@@ -393,14 +391,10 @@ int check_connman_addnode_fixed_seeds_onion_noop(void)
 
         ok = ok && addrman_size(&cm.manager.addrman) == 0;
 
-        /* connman_kick_seed_discovery re-adds the compiled hardcoded fixed
-         * seeds (in-memory only, no I/O) and re-resolves DNS seeds (a no-op
-         * on mainnet today: nSeeds == 0 — see chainparams.c's DNS-seeders
-         * comment). This is the fresh-node "hardcoded seed set" path a
-         * genuinely offline/DNS-less node falls back to. (nFixedSeeds
-         * double-books each hardcoded IP under two ports — see chainparams.c
-         * — and addrman's address index keys on IP alone, so the landed
-         * entry count is <= nFixedSeeds, not equal to it.) */
+        /* connman_kick_seed_discovery re-adds the compiled fixed seeds
+         * (in-memory only) and re-resolves DNS seeds (nSeeds == 0 on mainnet).
+         * nFixedSeeds books each IP under two ports and addrman keys on IP
+         * alone, so the landed count is <= nFixedSeeds. */
         connman_kick_seed_discovery(&cm);
         size_t after_fixed = addrman_size(&cm.manager.addrman);
         ok = ok && params->nFixedSeeds > 0;

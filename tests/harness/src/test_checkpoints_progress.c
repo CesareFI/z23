@@ -4,13 +4,11 @@
  * Unit tests for domain/consensus/src/checkpoints.c, function
  * domain_consensus_checkpoints_progress_at_now().
  *
- * progress_at_now is the pure verification-progress estimator: it
- * combines a block's cheap-work counter (nChainTx), the cheap-work
- * counter at the last checkpoint (nTransactionsLastCheckpoint), and
- * an estimate of the expensive (post-checkpoint) work that remains,
- * scaled by fTransactionsPerDay and elapsed wall time. The clock has
- * been lifted to the `now_unix_sec` parameter so the whole thing is
- * a pure function of its inputs.
+ * progress_at_now is the pure verification-progress estimator: it combines a
+ * block's cheap-work counter (nChainTx), the cheap-work counter at the last
+ * checkpoint (nTransactionsLastCheckpoint), and an estimate of the remaining
+ * expensive (post-checkpoint) work scaled by fTransactionsPerDay and elapsed
+ * time. The clock is the `now_unix_sec` parameter.
  *
  * This file pins, with one TEST_CASE per int test_*(void) entrypoint
  * (TEST_END defines the _test_next label, so two per function would
@@ -209,9 +207,8 @@ int test_checkpoints_progress_zero_defenses(void)
                    &empty, (uint64_t)CPP_NTX_LAST, CPP_NTIME_LAST,
                    CPP_NTIME_LAST, true) == 1.0);
 
-        /* Divide-by-zero guard: all-zero scalars, tx=0, now=0. The
-         * historical code produced 0/0 = NaN here; the defended code
-         * clamps to a clean 0.0. */
+        /* Divide-by-zero guard: all-zero scalars, tx=0, now=0 give a clean
+         * 0.0, not NaN. */
         struct checkpoint_data zeros;
         zeros.entries = NULL;
         zeros.nEntries = 0;

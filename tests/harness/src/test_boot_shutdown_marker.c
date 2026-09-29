@@ -130,13 +130,10 @@ int test_boot_shutdown_marker(void)
         test_make_tmpdir(dir, sizeof(dir), "boot_shutdown_marker", "write");
         char marker[512];
         char buf[64];
-        /* test_fmt_tmpdir() (test/test_core.h) already spells the fixture
-         * absolutely, which is exactly what platform_private_path_resolve()
-         * demands of a parent — so do NOT prepend getcwd() again here.
-         * platform_private_directory_ensure() additionally requires the
-         * datadir's mode to be exactly 0700, so pin it and verify the pin
-         * landed: a fixture that cannot say it failed to set itself up turns
-         * a setup bug into a phantom writer defect. */
+        /* test_fmt_tmpdir() already spells the fixture absolutely, as
+         * platform_private_path_resolve() demands of a parent, so do NOT
+         * prepend getcwd(). platform_private_directory_ensure() requires the
+         * datadir mode to be exactly 0700, so pin and verify it. */
         struct stat dir_st;
         bool dir_absolute = dir[0] == '/';
         errno = 0;
@@ -181,7 +178,7 @@ int test_boot_shutdown_marker(void)
               !boot_shutdown_marker_write_clean(""));
 
     /* A deferred multi-minute quick_check is registry-owned. Shutdown must
-     * interrupt its SQLite VM so worker-drain can reach persistence without
+     * interrupt its SQLite VM so worker-drain can reach persistence, without
      * weakening the process watchdog or treating cancellation as corruption. */
     thread_registry_reset_for_test();
     thread_registry_request_shutdown();

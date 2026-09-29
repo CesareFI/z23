@@ -2,15 +2,11 @@
  *
  * P0 resilience test for chain_tip_watchdog's bounded-restart logic.
  *
- * The watchdog used to call thread_registry_request_shutdown() every time
- * the tip stayed stuck past the restart threshold. systemd Restart=always
- * then brought the node back, and against a DETERMINISTIC wedge that loop
- * ran forever (~every 20 min). The fix: persist (stuck_height,
- * consecutive_no_progress_restarts) in progress.kv so the counter SURVIVES
- * the restart it triggers; after CHAIN_TIP_WD_MAX_RESTARTS it stops
- * restarting and pages a human (EV_OPERATOR_NEEDED) instead, staying up
- * degraded.
- *
+ * Bounded-restart logic of chain_tip_watchdog. The watchdog persists
+ * (stuck_height, consecutive_no_progress_restarts) in progress.kv so the
+ * counter SURVIVES the restart it triggers; after CHAIN_TIP_WD_MAX_RESTARTS
+ * it stops restarting and pages (EV_OPERATOR_NEEDED), staying up degraded,
+ * so a DETERMINISTIC wedge cannot restart forever.
  * Coverage:
  *   (a) K no-progress restarts at the SAME height across simulated process
  *       boots → after the cap, NO further shutdown request, operator_needed
@@ -132,10 +128,8 @@ int test_chain_tip_watchdog_bounded_restart(void)
         WD_CHECK("worker stall does NOT arm sticky escalator",
                  !sticky_escalator_test_armed());
 
-        /* A recovered worker retires its own stall blocker when it resumes
-         * ticking — the supervisor is observe-only and never clears it, so
-         * without this the blocker sits overdue for hours (live symptom:
-         * worker.stall.op.projection_backfill, deadline ~ -3.6 h). */
+        /* A recovered worker retires its own stall blocker on resume (the
+         * supervisor is observe-only and never clears it). */
         boot_worker_clear_stall_blocker(&c);
         WD_CHECK("recovered worker clears its stall blocker",
                  !blocker_exists("worker.stall.op.test_worker"));
@@ -206,16 +200,10 @@ int test_chain_tip_watchdog_bounded_restart(void)
         /* We paged on CAP+1 and CAP+2 (two over-cap escalations). */
         WD_CHECK("paged operator on each over-cap escalation",
                  operator_pages == 2);
-        /* sticky-node-plan #1: the watchdog no longer EMITS a terminal
-         * EV_OPERATOR_NEEDED on an over-cap / deterministic stall. It hands
-         * the wedge to the always-terminating remedy escalator
-         * (sticky_escalator_note_stall → EV_RECOVERY_ACTION) instead of
-         * dead-ending at a human. The fires_operator_needed counter is kept
-         * as a diagnostic "ladder engaged" bit (asserted below), but the
-         * terminal page event is NOT emitted here — so the EV_OPERATOR_NEEDED
-         * observer sees ZERO. (The escalator's own non-latching cycling page
-         * is the only remaining EV_OPERATOR_NEEDED source, after the ladder
-         * cycles — out of scope for this watchdog-seam test.) */
+        /* The watchdog hands an over-cap / deterministic stall to the
+         * always-terminating remedy escalator (sticky_escalator_note_stall)
+         * and emits no terminal EV_OPERATOR_NEEDED, so the observer sees
+         * ZERO; fires_operator_needed stays as a "ladder engaged" bit. */
         WD_CHECK("watchdog does NOT emit terminal EV_OPERATOR_NEEDED "
                  "(handed to escalator)",
                  atomic_load(&g_operator_events) == 0);
@@ -255,10 +243,8 @@ int test_chain_tip_watchdog_bounded_restart(void)
             WD_CHECK("transient count == 1", s.no_progress_restarts == 1);
         }
 
-        /* Process comes back AND the tip advances. A 1-block creep is
-         * exactly the creeping-wedge signature and must NOT clear the
-         * budget — clearing on any advance made the restart loop
-         * infinite. Only sustained progress past the anchor clears. */
+        /* A 1-block creep is the creeping-wedge signature and must NOT clear
+         * the budget; only sustained progress past the anchor clears. */
         wd_sim_boot();
         {
             struct chain_tip_watchdog_stats s;
@@ -357,10 +343,8 @@ int test_chain_tip_watchdog_bounded_restart(void)
         test_make_tmpdir(dir, sizeof(dir), "chain_tip_wd", "creep");
         WD_CHECK("open progress.kv (creep)", progress_store_open(dir));
 
-        /* Each restart "helps" by 2 blocks, then the tip re-wedges. The
-         * old exact-height keying saw a NEW stuck height every time and
-         * reset the budget = infinite restart loop. Episode keying must
-         * carry the count and keep the original anchor. */
+        /* Each restart "helps" by 2 blocks, then the tip re-wedges. Episode
+         * keying carries the count and keeps the original anchor. */
         const int64_t ANCHOR = 3132687;
         int64_t h = ANCHOR;
         for (int restart = 1; restart <= CAP; restart++) {
@@ -410,13 +394,9 @@ int test_chain_tip_watchdog_bounded_restart(void)
 
     /* ── (e) deterministic stall: page on the FIRST escalation, 0 restarts ─
      *
-     * A successor pinned on a deterministic precondition (the live tick reads
-     * tip_finalize's TF_BLOCKED_SUCCESSOR_PENDING class — a persisted ok=0
-     * script row) is byte-identical every boot, so a restart cannot clear it.
-     * The cause-probe must page immediately and burn ZERO restarts, instead
-     * of power-cycling the full CAP first — burning restarts on a
-     * deterministic condition before paging wastes the whole restart
-     * budget for nothing. */
+     * A successor pinned on a deterministic precondition (a persisted ok=0
+     * script row, TF_BLOCKED_SUCCESSOR_PENDING) is identical every boot, so
+     * the cause-probe pages immediately and burns ZERO restarts. */
     {
         char dir[256];
         test_make_tmpdir(dir, sizeof(dir), "chain_tip_wd", "deterministic");
@@ -441,11 +421,9 @@ int test_chain_tip_watchdog_bounded_restart(void)
                  s.fires_restart == 0);
         WD_CHECK("deterministic chain-tip stall arms sticky escalator",
                  sticky_escalator_test_armed());
-        /* sticky-node-plan #1: a deterministic stall is now HANDED to the
-         * always-terminating remedy escalator (no terminal EV_OPERATOR_NEEDED
-         * emitted by the watchdog — that was the human dead-end S2 forbids).
-         * The fires_operator_needed counter still bumps (diagnostic, asserted
-         * above), but the EV_OPERATOR_NEEDED observer sees ZERO from this seam. */
+        /* A deterministic stall is HANDED to the remedy escalator; the
+         * fires_operator_needed counter bumps but the EV_OPERATOR_NEEDED
+         * observer sees ZERO from this seam. */
         WD_CHECK("deterministic stall does NOT emit terminal "
                  "EV_OPERATOR_NEEDED (handed to escalator)",
                  atomic_load(&g_operator_events) == 0);
@@ -457,42 +435,32 @@ int test_chain_tip_watchdog_bounded_restart(void)
 
     /* ── (f) escalation LADDER over the supervisor tick: 1 -> 3, reserved inert
      *
-     * Blocks (a)-(e) drive only the restart-DECISION seam
-     * (chain_tip_watchdog_test_escalate_*). They never exercise the wall-clock
-     * escalation LADDER inside the supervisor tick. This block drives that SAME
-     * ladder via chain_tip_watchdog_test_tick() — the production tick body,
-     * extracted to wd_apply_tick(), with an injected height and injected
-     * monotonic clock, so it is hermetic (no live chain, no real clock, no
-     * supervisor thread).
+     * Drives the wall-clock ladder via chain_tip_watchdog_test_tick() (the
+     * production wd_apply_tick body with an injected height and monotonic
+     * clock; hermetic).
      *
      * Invariant under lock:
-     *   - level 1 (mirror) fires once age >= thr_mirror, exactly once;
-     *   - level JUMPS straight to 3 (restart) once age >= thr_restart;
-     *   - the reserved level-2 rung (g_fires_reserved) is declared but NEVER
-     *     wired by the ladder — it must read 0 forever. A mutation that fires
-     *     the reserved rung (escalation==2 / fires_reserved++) is caught here.
+     *   - level 1 (mirror) fires exactly once at age >= thr_mirror;
+     *   - level JUMPS to 3 (restart) at age >= thr_restart;
+     *   - the reserved level-2 rung (g_fires_reserved) is never wired and
+     *     must read 0.
      *
-     * Timeline note: the first tick ADVANCES the tip (0 -> LADDER_H), which
-     * seeds g_last_advance_us. It MUST seed a NON-ZERO timestamp, because
-     * wd_apply_tick treats last_advance_us==0 as "unseeded" and re-seeds on the
-     * next tick. So every now_us is based at T0 > 0 and age is measured as
-     * (T0 + age) - T0. */
+     * The first tick seeds g_last_advance_us, which must be NON-ZERO (0 means
+     * "unseeded"), so every now_us is based at T0 > 0. */
     {
         char dir[256];
         test_make_tmpdir(dir, sizeof(dir), "chain_tip_wd", "ladder");
         WD_CHECK("open progress.kv (ladder)", progress_store_open(dir));
 
-        /* Capture the boot-default thresholds so we can restore them after
-         * this block overrides them (reset_runtime does NOT touch thresholds,
-         * and the test_zcl monolith runs groups sequentially in one process). */
+        /* Capture the boot-default thresholds to restore afterwards
+         * (reset_runtime does not touch them). */
         struct chain_tip_watchdog_stats def;
         chain_tip_watchdog_get_stats(&def);
 
         chain_tip_watchdog_test_reset_runtime();   /* fresh in-memory ladder */
 
-        /* Tight thresholds: mirror@100s, restart@200s. reserved@150s is SET
-         * but the ladder never reads it — proving it stays inert even when
-         * configured. */
+        /* Tight thresholds: mirror@100s, restart@200s; reserved@150s is set
+         * but must stay inert. */
         chain_tip_watchdog_test_set_thresholds(/*mirror=*/100,
                                                /*reserved=*/150,
                                                /*restart=*/200);
@@ -549,11 +517,9 @@ int test_chain_tip_watchdog_bounded_restart(void)
             WD_CHECK("hold tick: reserved inert", s.fires_reserved == 0);
         }
 
-        /* Tick 5 @ T0+205s: age 205s >= restart(200). Level JUMPS to 3 and the
-         * bounded-restart decision fires. We never set a TF_BLOCKED reason in
-         * this process, so tip_finalize_stage_last_blocked_reason()=="" ->
-         * deterministic=false -> the genuine bounded-restart path (fires_restart,
-         * not the operator page). do_shutdown=false keeps the test alive. */
+        /* Tick 5 @ T0+205s: age >= restart(200). Level JUMPS to 3 and the
+         * bounded-restart decision fires; with no TF_BLOCKED reason the
+         * stall is not deterministic (fires_restart, not the operator page). */
         chain_tip_watchdog_test_tick(LADDER_H, T0 + 205 * US, false);
         {
             struct chain_tip_watchdog_stats s;
@@ -587,8 +553,7 @@ int test_chain_tip_watchdog_bounded_restart(void)
         progress_store_close();
         test_cleanup_tmpdir(dir);
 
-        /* Restore the boot-default thresholds captured above (reset_runtime
-         * does not, and the monolith reuses this process for later groups). */
+        /* Restore the boot-default thresholds captured above. */
         chain_tip_watchdog_test_set_thresholds(def.threshold_mirror_secs,
                                                def.threshold_reserved_secs,
                                                def.threshold_restart_secs);
@@ -596,11 +561,9 @@ int test_chain_tip_watchdog_bounded_restart(void)
 
     /* ── (g) a quiet, fully caught-up chain is not a liveness failure ───────
      *
-     * This is the production incident shape: H*, active chain, and best
-     * header all agree, then no block arrives for longer than the restart
-     * threshold.  The watchdog must stay up indefinitely.  When a new header
-     * later appears, it must start a fresh actionable-stall interval rather
-     * than charging the normal at-tip silence against the reducer. */
+     * H*, active chain and best header agree and no block arrives for longer
+     * than the restart threshold: the watchdog stays up. A later new header
+     * starts a fresh actionable-stall interval. */
     {
         blocker_reset_for_testing();
         sticky_escalator_test_reset();
@@ -668,17 +631,14 @@ int test_chain_tip_watchdog_bounded_restart(void)
     }
 
     /* ── (h) tip-extension SELECTION wedge: cause-probe classifies it and the
-     * watchdog drives a TARGETED revalidate of the specific successor height
-     * instead of a blind restart ──────────────────────────────────────────
+     * watchdog drives a TARGETED revalidate instead of a blind restart ─────
      *
-     * Shape: active tip a1(h1); a valid successor a2(h2) that builds DIRECTLY
-     * on a1 (a2->pprev == a1) is present on the best-header chain but carries a
-     * persisted BLOCK_FAILED_VALID mask, so find_most_work_chain skips it and
-     * the pure selector keeps returning the tip. A restart cannot clear an
-     * on-disk failure bit, so the cause-probe must name "tip_selection_wedge"
-     * and the tick must drive process_block_revalidate(h2) (suppressed here to
-     * stay hermetic) — NOT a power-cycle. Negative shapes (caught up, stale
-     * fork, clean/selectable successor) must NOT be classified as the wedge. */
+     * Active tip a1(h1); a successor a2(h2) building DIRECTLY on a1 carries a
+     * persisted BLOCK_FAILED_VALID mask, so the selector keeps returning the
+     * tip. A restart cannot clear that bit: the probe names
+     * "tip_selection_wedge" and the tick drives process_block_revalidate(h2)
+     * (suppressed here). Negative shapes (caught up, stale fork, selectable
+     * successor) must NOT classify as the wedge. */
     {
         blocker_reset_for_testing();
         sticky_escalator_test_reset();

@@ -3,36 +3,24 @@
  * Hermetic coverage for the one fixed-width byte-order codec,
  * platform/modules/base/include/base/serialize_le.h.
  *
- * Two things are proved here, and they are different things.
- *
  * 1. THE BYTES ARE WHAT WE SAY THEY ARE. Every expected byte array in the
- *    first half of this file is hand-written. Nothing is derived from the
- *    function under test, and nothing is checked by round-tripping a value
- *    through write-then-read — a pair that swapped byte order in both
- *    directions would round-trip perfectly and still put the wrong bytes on
- *    the wire. Round-trips are tested too, but only AFTER the absolute byte
- *    layout is pinned.
+ *    first half is hand-written, not derived from the function under test
+ *    (a pair that swapped byte order in both directions would round-trip
+ *    perfectly and still put the wrong bytes on the wire). Round-trips are
+ *    tested only AFTER the absolute byte layout is pinned.
  *
  * 2. NOTHING MOVED. The canonical functions replaced twenty-two file-private
- *    helpers, every one of which was serializing something that is now on
- *    disk, in a database column, or on the P2P wire. The second half of this
- *    file carries a verbatim copy of each replaced helper's ORIGINAL body,
- *    taken from the source files as they stood before the migration, and
- *    asserts that the canonical function agrees with it on a corpus that
- *    includes 0, 1, max, max-1, every single-bit value of the width, and
- *    every single-byte-position value. If a migration changed a byte, one of
- *    these comparisons fails.
- *
- *    The originals are reproduced here rather than being deleted outright so
- *    that the equivalence is CHECKED BY THE BUILD on every run, not asserted
- *    once in a commit message. They are the only copies of the shift ladder
- *    left in the tree, and lib/test is excluded from the
- *    check-byte-order-codec-single scan for exactly this reason.
+ *    helpers whose output is on disk, in database columns, or on the P2P
+ *    wire. The second half carries a verbatim copy of each replaced helper's
+ *    ORIGINAL body and asserts the canonical function agrees with it on a
+ *    corpus that includes 0, 1, max, max-1, every single-bit value and every
+ *    single-byte-position value. These are the only copies of the shift
+ *    ladder left in the tree; lib/test is excluded from the
+ *    check-byte-order-codec-single scan for that reason.
  *
  * Unaligned access is covered explicitly: the canonical functions go through
- * memcpy so that a 64-bit store at an odd address is defined, and several of
- * the real call sites do exactly that (zendp.c writes a u64 at body+5, a u32
- * at body+13 and a u64 at body+17 inside one packed record).
+ * memcpy so a 64-bit store at an odd address is defined (zendp.c writes a u64
+ * at body+5, a u32 at body+13 and a u64 at body+17 inside one packed record).
  *
  * Pure and deterministic: no clock, no RNG, no I/O, no live DB. */
 

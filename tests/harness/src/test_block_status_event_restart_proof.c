@@ -3,91 +3,41 @@
  * test_block_status_event_restart_proof — kill -9 restart-proof for the
  * lightweight EV_BLOCK_STATUS status-bump emitter.
  *
- * Background
- * ----------
- * body_persist_stage and script_validate_stage used to re-emit a FULL
- * EV_BLOCK_HEADER (up to ~1.5KB: 200B fixed prefix + up to 1344B Equihash
- * solution) every time they bumped BLOCK_HAVE_DATA / BLOCK_VALID_SCRIPTS on
- * an already-admitted block_index entry — re-serializing header fields and
- * the solution that never change after header_admit's first admit. They now
- * call block_index_emit_status_event() (jobs/block_header_emit.h), which
- * appends a fixed 52-byte EV_BLOCK_STATUS event instead. block_index_
- * projection's catch_up (storage/block_index_projection.c,
- * catch_up_apply_status) reconstructs the full row by reading back the
- * EXISTING blob the prior EV_BLOCK_HEADER wrote, patching only the mutable
- * fields (nStatus/nFile/nDataPos/nUndoPos/nTx), and re-serializing there —
- * off the reducer fold's hot path, on the projection's own catch_up
- * consumer.
+ * body_persist_stage and script_validate_stage bump BLOCK_HAVE_DATA /
+ * BLOCK_VALID_SCRIPTS by appending a fixed 52-byte EV_BLOCK_STATUS event
+ * (block_index_emit_status_event). The projection's catch_up
+ * (catch_up_apply_status) reconstructs the full row by patching the mutable
+ * fields of the blob the earlier EV_BLOCK_HEADER wrote.
  *
- * This is the ONE THING that change puts at risk: does the projection still
- * reconstruct byte-identical state after a hard kill -9 mid-fold, given the
- * durable record for a bumped height is now TWO events (an EV_BLOCK_HEADER
- * followed later by one or more EV_BLOCK_STATUS) instead of one self-
- * contained EV_BLOCK_HEADER? This test proves it does, using the REAL
- * production emit helpers (block_index_emit_header_event /
- * block_index_emit_status_event) and the REAL projection catch_up path —
- * the exact code body_persist_stage.c / script_validate_stage.c call.
+ * Proves the projection reconstructs byte-identical state after a hard kill -9
+ * mid-fold, using the real emit helpers and the real projection catch_up path.
  *
- * Method — the 4-step decisive test
- * ----------------------------------
- *   (a) FOLD: a forked child processes a fixture chain of RP_N_BLOCKS
- *       blocks, each going through the same three-event sequence a real
- *       fold produces for a height: header_admit's full EV_BLOCK_HEADER,
- *       then body_persist's BLOCK_HAVE_DATA EV_BLOCK_STATUS bump, then
- *       script_validate's BLOCK_VALID_SCRIPTS EV_BLOCK_STATUS bump — plus a
- *       durable "done" marker via the REAL stage_cursor primitive
- *       (util/stage.h: stage_table_ensure / stage_set_named_cursor), the
- *       same mechanism the real reducer stages use, independent of the
- *       event log.
- *   (b) HARD-STOP: the parent SIGKILLs the child at a randomised point
- *       (test_kill9_recovery.c's idiom) — anywhere from before the first
- *       event to mid-sequence to after several blocks are fully done.
- *   (c) REBOOT: the parent reopens the event log (triggering its own
- *       torn-tail recovery), the projection (catch_up from the persisted
- *       offset), and the stage_cursor table, then asserts every height
- *       BELOW the durable cursor — the heights a real fold would already
- *       consider done and never revisit — reconstructs EXACTLY: found (no
- *       missing-header error), both status bits set, the mutable fields
- *       (nFile/nDataPos/nTx) correct, AND the immutable header fields
- *       (merkle root, sapling root, solution bytes) byte-identical to the
- *       fixture — proving catch_up_apply_status's read-patch-reserialize
- *       never corrupts what header_admit originally wrote. It also proves
- *       the boundary height (at the cursor, not yet resumed) — whether or
- *       not the event log already shows it fully bumped, since the log and
- *       the stage cursor are two independently durable stores and a crash
- *       can land between them — never shows CORRUPTED data (negative-
- *       control teeth on data integrity, not on the log/cursor race, which
- *       is expected and safe: the fold always resumes at the cursor and
- *       every field is a deterministic function of height), and that a
- *       FRESH projection replayed from offset 0 matches the live continued
- *       one exactly (the Prime Directive invariant — see
- *       test_projection_replay_invariant.c — now exercised with
- *       EV_BLOCK_STATUS mixed into a REAL kill-9 scenario for the first
- *       time).
- *   (d) RESUME: still in the parent, one more height is folded through the
- *       SAME reopened handles, proving the fold resumes cleanly post-
- *       recovery with no consumer error.
+ * Method:
+ *   (a) FOLD: a forked child processes RP_N_BLOCKS blocks, each through the
+ *       real three-event sequence (EV_BLOCK_HEADER, HAVE_DATA status bump,
+ *       VALID_SCRIPTS status bump) plus a durable "done" marker via the real
+ *       stage_cursor primitive (util/stage.h).
+ *   (b) HARD-STOP: the parent SIGKILLs the child at a randomised point.
+ *   (c) REBOOT: the parent reopens the event log (torn-tail recovery), the
+ *       projection (catch_up from the persisted offset) and the stage_cursor
+ *       table, then asserts every height below the durable cursor
+ *       reconstructs exactly: found, both status bits set, mutable fields
+ *       (nFile/nDataPos/nTx) correct, immutable header fields (merkle root,
+ *       sapling root, solution bytes) byte-identical. The boundary height may
+ *       legitimately be ahead of the cursor (two independently durable
+ *       stores) but must never show corrupted data. A fresh projection
+ *       replayed from offset 0 matches the live one exactly.
+ *   (d) RESUME: one more height is folded through the same reopened handles.
  *
- * Repeated across RP_N_CYCLES fork+SIGKILL rounds against the SAME
- * datadir (each cycle resumes exactly where the last left off, via the
- * durable stage cursor) until the whole fixture completes or the cycle
- * budget is exhausted, then one final uninterrupted drain proves the
- * fully-folded terminal is always reachable.
+ * Repeated across RP_N_CYCLES fork+SIGKILL rounds against the same datadir
+ * until the fixture completes, then one uninterrupted drain proves the
+ * fully-folded terminal is reachable.
  *
- * Scope note: script_validate's real stage also performs ECDSA/script
- * verification (test_script_validate_stage.c already covers that
- * machinery in isolation); this test calls the SAME two lines script_
- * validate_stage.c executes at its status-bump call site
- * (block_index_status_set_valid_level + block_index_emit_status_event)
- * directly, so the exact code under test — the emit helper + the
- * projection consumer — is exercised faithfully without re-deriving
- * unrelated verification plumbing. The stage-cursor/coins_kv resumption
- * invariant for the FULL eight-stage pipeline (unaffected by this change,
- * since stage cursors live in progress_store, never the event log) is
- * separately proven by test_stage_crash_sweep.c.
+ * script_validate's ECDSA/script verification is covered by
+ * test_script_validate_stage.c; stage-cursor/coins_kv resumption for the full
+ * pipeline by test_stage_crash_sweep.c.
  *
- * make t-fast ONLY=block_status_event_restart_proof
- */
+ * make t-fast ONLY=block_status_event_restart_proof */
 
 #include "test/test_core.h"
 
@@ -183,10 +133,7 @@ static int rp_mkdir_p(const char *p)
 }
 
 /* Rebuild the in-memory block_index entry for height h — a pure function of
- * the fixture, independent per process (fork() gives each process its own
- * `blocks` array anyway; this lets the parent rebuild the SAME chained
- * headers it never processed itself, e.g. to relink pprev before a resume
- * step). Does NOT emit anything. */
+ * the fixture, independent per process. Does NOT emit anything. */
 static void rp_make_block_index(struct block_index *bi, struct block_index *prev,
                                 struct rp_chain *c, int h)
 {
@@ -215,16 +162,12 @@ static void rp_rebuild_prefix(struct rp_chain *c, struct block_index *blocks,
         rp_make_block_index(&blocks[h], h > 0 ? &blocks[h - 1] : NULL, c, h);
 }
 
-/* One durable "unit of fold" for height h — the exact sequence
- * header_admit_stage / body_persist_stage / script_validate_stage produce:
+/* One durable "unit of fold" for height h:
  *   1. header_admit: full EV_BLOCK_HEADER (first admit).
- *   2. body_persist: BLOCK_HAVE_DATA + nFile/nDataPos/nTx — lightweight
- *      EV_BLOCK_STATUS (the code path this test targets).
- *   3. script_validate: BLOCK_VALID_SCRIPTS — lightweight EV_BLOCK_STATUS
- *      (also targeted).
- *   4. A durable "done" marker via the REAL stage_cursor primitive,
- *      independent of the event log — mirrors (without duplicating) the
- *      real reducer stages' own cursor bookkeeping. */
+ *   2. body_persist: BLOCK_HAVE_DATA + nFile/nDataPos/nTx status bump.
+ *   3. script_validate: BLOCK_VALID_SCRIPTS status bump.
+ *   4. A durable "done" marker via the real stage_cursor primitive,
+ *      independent of the event log. */
 static bool rp_process_one(sqlite3 *db, struct rp_chain *c,
                            struct block_index *blocks, int h)
 {
@@ -392,32 +335,12 @@ static int rp_one_cycle(const char *log_path, const char *bip_path,
              "(status + mutable fields + immutable header bytes)",
              all_heights_ok);
 
-    /* Boundary height (at the cursor — the fold does not yet durably
-     * consider it done): the event log and the stage cursor are two
-     * INDEPENDENTLY durable stores. rp_process_one (mirroring the real
-     * body_persist_stage/script_validate_stage call sites) writes both
-     * EV_BLOCK_STATUS bumps to the event log, and only THEN calls
-     * stage_set_named_cursor() to mark the height done — two separate
-     * durability barriers, not one atomic unit. A SIGKILL landing in the
-     * real (if narrow) window between the last status bump reaching the
-     * log and the stage-cursor write reaching progress_store leaves the
-     * projection legitimately AHEAD of the cursor for this one height:
-     * fully bumped in the projection, but the fold does not yet count it
-     * done. That is not corruption — every field rp_process_one writes is
-     * a deterministic function of h, the fold always resumes exactly at
-     * the cursor (rp_child_worker's `for (h = cursor; ...)` and the RESUME
-     * step below), and reprocessing an already-bumped height re-derives
-     * the identical bytes, so this can never regress or diverge fold
-     * state. What must never happen is the boundary showing WRONG data —
-     * an actually torn or cross-height-corrupted record, not a benign
-     * race between two durability domains.
-     *
-     * (An earlier revision of this test asserted the boundary could never
-     * be found fully bumped at all. That did not match the two-store
-     * design above: on a host where the stage-cursor commit lags the
-     * last status-bump write by more than this cycle's randomised kill
-     * delay, the assertion fired even though nothing was actually wrong —
-     * a false negative-control, not a real defect.) */
+    /* Boundary height (at the cursor): the event log and the stage cursor are
+     * two independently durable stores written with separate barriers, so a
+     * SIGKILL between them can leave the projection legitimately ahead of the
+     * cursor for this one height. That is not corruption: every field is a
+     * deterministic function of h and the fold resumes at the cursor. What
+     * must never happen is the boundary showing wrong data. */
     bool boundary_ok = true;
     if (cursor < (uint64_t)RP_N_BLOCKS) {
         struct disk_block_index bdbi;
@@ -532,14 +455,8 @@ static int test_block_status_event_restart_proof_platform_arm(void)
             break;
     }
 
-    /* Terminal: drain any remaining heights UNINTERRUPTED (mirrors
-     * test_kill9_recovery.c's terminal phase) — proves the fully-folded
-     * completion terminal is ALWAYS reachable regardless of how many
-     * SIGKILLs preceded it and however many the randomised cycle budget
-     * above happened to land. The per-cycle assertions already proved the
-     * decisive property (every crash-and-reboot reconstructs identical
-     * state); this closes the fixture out so the whole chain is verified
-     * end to end, not just the prefix the randomised kills reached. */
+    /* Terminal: drain any remaining heights uninterrupted, proving the
+     * fully-folded terminal is reachable however many SIGKILLs preceded it. */
     if (!failures) {
         event_log_t *log = event_log_open(log_path);
         block_index_projection_t *bip =

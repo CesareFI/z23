@@ -5,7 +5,7 @@
 
 #include "test/test_core.h"
 
-#include "config/boot.h"  /* boot_mint_anchor_export_bundle (lane A1 wiring) */
+#include "config/boot.h"  /* boot_mint_anchor_export_bundle */
 #include "config/consensus_state_snapshot_export.h"
 #include "config/consensus_state_snapshot_install.h"
 #include "config/consensus_state_bundle_validate.h"
@@ -504,7 +504,7 @@ static bool cse_seed_source(sqlite3 *db, uint8_t hash[2][32], uint8_t nf[32])
     return true;
 }
 
-/* ── checkpoint ladder rung/verifier fixtures (lane F1) ───────────── */
+/* ── checkpoint ladder rung/verifier fixtures ───────────── */
 
 static uint8_t g_rung_hook_hash[32];
 static bool g_rung_hook_hash_return;
@@ -869,11 +869,9 @@ static int test_consensus_state_snapshot_export_platform_arm(void)
     CSE_CHECK("fixture directory", dir != NULL);
     if (!dir)
         return failures;
-    /* The export provenance gate (consensus_export_prove_source) now routes its
-     * proven/refold check through the central trust table via
-     * SYNC_CAP_EXPORT_BUNDLE. Prove the routing is behavior-identical to the old
-     * `proven_authority && refold_marker` predicate across all 8 combos before
-     * exercising the full DB-driven export path below. */
+    /* The export provenance gate routes its proven/refold check through the
+     * trust table via SYNC_CAP_EXPORT_BUNDLE; assert it equals
+     * `proven_authority && refold_marker` across all 8 combos. */
     {
         bool equiv = true;
         for (int c = 0; c < 8; c++) {
@@ -894,10 +892,8 @@ static int test_consensus_state_snapshot_export_platform_arm(void)
     uint8_t hash[2][32] = {{0}};
     uint8_t nf[32] = {0};
     CSE_CHECK("complete source generation", db && cse_seed_source(db, hash, nf));
-    /* The mint-finalize stamping helper (exercised inside cse_seed_source) yields
-     * a source that passes the exact two predicates consensus_export_prove_source
-     * gates on at :471-472 — proving the finalize path stamps what the exporter
-     * demands, so a fresh full-validation producer's export no longer refuses. */
+    /* The mint-finalize stamping helper yields a source that passes the two
+     * predicates consensus_export_prove_source gates on. */
     CSE_CHECK("finalize helper stamped exporter-admissible markers",
               db && coins_kv_is_proven_authority(db, NULL) &&
                   coins_kv_contains_refold_marker(db));
@@ -1035,13 +1031,9 @@ static int test_consensus_state_snapshot_export_platform_arm(void)
               install_result.validation_profile ==
                   CONSENSUS_STATE_VALIDATION_FULL);
 
-    /* ── lane A1: the -mint-anchor finalize wiring. boot_mint_anchor_export_bundle
-     * is exactly what boot_mint_anchor_run calls after the producer receipt is
-     * finalized — prove it emits the datadir bundle, that the bundle passes the
-     * production validator, and that a re-run of the SAME binary is idempotent
-     * (an already-present bundle is treated as done, not re-exported/failed).
-     * The complete source generation + checkpoint/compiled-anchor overrides are
-     * already installed above, so this exercises the real export path. */
+    /* boot_mint_anchor_export_bundle (called after the producer receipt is
+     * finalized) emits the datadir bundle, the bundle passes the production
+     * validator, and a re-run is idempotent. */
     char wired_bundle[600];
     snprintf(wired_bundle, sizeof(wired_bundle),
              "%s/consensus-state-bundle-1.sqlite", dir);
@@ -1428,16 +1420,11 @@ static int test_consensus_state_snapshot_export_platform_arm(void)
                   "UPDATE utxo_apply_delta SET branch_hash=?2 WHERE height=?1",
                   1, hash[1]));
 
-    /* ── FOLD-TO-ANCHOR (H+1) PRODUCER SHAPE. A complete full-validation mint
-     * producer runs tip_finalize in the STEADY-STATE finalized convention: the
-     * cursor sits at anchor+1 and each finalized ok=1 row at h carries the
-     * LOOKAHEAD hash(h+1) — there is no anchor seed row at the tip. The old
-     * durable-tip check resolved via the cursor and floated one above the served
-     * tip (H*), false-rejecting the real producer with
-     * "durable served tip does not own expected height/hash". Rebuild the
-     * canonical fixture into that exact shape (cursor=2==anchor+1; top finalized
-     * row at anchor=1 carrying the successor lookahead; hstar stays 1==anchor)
-     * and prove the served-tip binding now admits it without weakening. */
+    /* Fold-to-anchor (H+1) producer shape: the cursor sits at anchor+1 and
+     * each finalized ok=1 row at h carries the lookahead hash(h+1), with no
+     * anchor seed row at the tip. The fixture is rebuilt into that shape
+     * (cursor=2, top finalized row at anchor=1, hstar=1) and the served-tip
+     * binding must admit it. */
     uint8_t lookahead2[32];
     uint8_t witness_disagree[32];
     for (size_t i = 0; i < 32; i++) {
@@ -1548,15 +1535,11 @@ static int test_consensus_state_snapshot_export_platform_arm(void)
                   "UPDATE stage_cursor SET cursor=1 WHERE name='tip_finalize'"));
     request.output_name = "complete.bundle.db";
 
-    /* ── CHECKPOINT-CONTENT EXPORT. A finished genesis->checkpoint datadir whose
-     * fold binary can no longer be rebuilt: its receipt binds a FOREIGN running
-     * binary, so the default export (fold-binary bind) refuses. The
-     * checkpoint-content path admits it by a stronger cryptographic content
-     * proof instead — coins reproduce the compiled SHA3 UTXO checkpoint AND the
-     * Sapling tip frontier Pedersen-roots to the header's committed final root —
-     * and emits a byte-identical-shape bundle that validates like a fold bundle.
-     * The compiled-checkpoint override + reducer anchor installed above make the
-     * fixture reproduce the checkpoint at h=1 by construction. */
+    /* Checkpoint-content export: a receipt binding a foreign running binary
+     * refuses the default fold-binary bind, but the checkpoint-content path
+     * admits it by content proof (coins reproduce the compiled SHA3 UTXO
+     * checkpoint and the Sapling tip frontier roots to the header's final
+     * root) and emits a bundle that validates like a fold bundle. */
     request.output_dir_fd = output_dir_fd;
     request.expected_height = 1;
     memcpy(request.expected_block_hash, hash[1], 32);

@@ -1,10 +1,9 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Regression for TASK #33: a green at-tip node reported healthy=false because
- * the persisted chain-evidence active-tip froze at the last boot reconcile
- * while the live tip_finalize reducer advanced the served tip every block.
- * The health check's active_tip_hash_mismatch (live tip vs persisted hash)
- * then degraded further per block.
+ * Regression: a green at-tip node must report healthy. The persisted
+ * chain-evidence active-tip must follow the live tip_finalize reducer's
+ * served tip every block, or the health check's active_tip_hash_mismatch
+ * (live tip vs persisted hash) degrades per block.
  *
  * These tests drive chain_evidence_controller_record_finalized_tip — the live
  * forward evidence follow the reducer's post-finalize side-effect path calls —
@@ -418,10 +417,10 @@ static int test_live_advance_rejects_bad_args(void)
 }
 
 /* (d2) A demonstrably-reconciled boot-transient tip divergence self-clears:
- * the freeze reason is the "active_tip_hash != csr_tip_hash" prefix, the reducer
- * finalized the SAME tip the live active chain holds, and csr agrees — so
- * record_finalized_tip lifts the freeze and publishes evidence. This is the
- * dev-lane false-page fix (un-pages without a reboot via the health drain). */
+ * the freeze reason is the "active_tip_hash != csr_tip_hash" prefix, the
+ * reducer finalized the SAME tip the live active chain holds, and csr
+ * agrees, so record_finalized_tip lifts the freeze and publishes evidence
+ * (via the health drain, no reboot). */
 static int test_live_advance_clears_boot_tip_divergence_freeze(void)
 {
     int failures = 0;

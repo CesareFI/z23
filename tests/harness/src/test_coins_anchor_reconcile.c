@@ -1,27 +1,19 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Regression tests for the §3 boot-wedge fix: commitment-validated
- * reconciliation of a STALE coins_best_block anchor
- * (coins_view_sqlite.c: coins_reconcile_stale_anchor, reached from the
- * boot tip-consistency gate before the strict FATAL).
+ * Regression tests for commitment-validated reconciliation of a stale
+ * coins_best_block anchor (coins_view_sqlite.c: coins_reconcile_stale_anchor,
+ * reached from the boot tip-consistency gate before the strict FATAL).
  *
- * The wedge: the coins anchor pointer gets reset far below the real
- * applied UTXO frontier (live incident: anchor → height 200 while the
- * `utxos` table held millions of rows), so the gate sees the UTXO set
- * "ahead of tip" and FATAL-halts, crash-looping the node.
+ * When the anchor pointer sits far below the applied UTXO frontier, the gate
+ * sees the set "ahead of tip". The anchor is healed only under cryptographic
+ * proof (a stored height-stamped SHA3 commitment that recompute-matches the
+ * live `utxos` table); every un-proven shape (no commitment, torn set,
+ * commitment below the live frontier) is refused, so the gate is never
+ * weakened.
  *
- * The fix heals the anchor ONLY under cryptographic proof — a stored
- * height-stamped SHA3 commitment that recompute-matches the live `utxos`
- * table — and otherwise preserves the FATAL. These tests assert BOTH
- * directions: a proven-intact set heals (boot continues), and every
- * un-proven shape (no commitment, torn set, commitment below the live
- * frontier) is refused so the gate is never weakened.
- *
- * Like test_coins_view_atomicity.c, the fixtures build a minimal node.db
- * directly so the logic is exercised deterministically without a live
- * chain. The reconcile function is static, so it is driven through the
- * public coins_view_sqlite_open() entry point.
- */
+ * As in test_coins_view_atomicity.c, fixtures build a minimal node.db
+ * directly; the static reconcile function is driven through
+ * coins_view_sqlite_open(). */
 
 #include "test/test_core.h"
 #include "storage/coins_view_sqlite.h"

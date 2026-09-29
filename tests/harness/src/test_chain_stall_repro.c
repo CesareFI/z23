@@ -2,23 +2,12 @@
  *
  * Deterministic reproduction of a BIP30 chain stall.
  *
- * Context
- * -------
- * A stall can wedge the node at height N-1 with every
- * connect_tip(N) returning `bad-txns-BIP30`. A boot-time sweep that
- * runs once and cleans the orphan coinbase row lets
- * the chain advance to N — but if the tip later regresses back to N-1 on
- * its own (no operator restart, no reorg
- * log line), the BIP30 loop resumes.
+ * A tip that regresses to N-1 while the coins view still holds block N's
+ * unspent coinbase makes connect_block(N) return `bad-txns-BIP30`.
  *
- * The failing shape
- * -----------------
- * The coins view holds an unspent coinbase entry for txid X belonging
- * to block N, but the chain tip has dropped back to N-1 (either from
- * a partial-application rollback or from a disconnect→reconnect path
- * that bypasses the sweep). connect_block(block_N) then reads
- * the stale coinbase, finds it still unspent, and trips BIP30 at
- * core/modules/validation/src/connect_block.c:219-233:
+ * Failing shape: the coins view holds an unspent coinbase for txid X of block
+ * N but the tip is N-1 (partial rollback or disconnect/reconnect). The BIP30
+ * loop in core/modules/validation/src/connect_block.c then trips:
  *
  *     for (size_t i = 0; !skip_bip30 && i < block->num_vtx; i++) {
  *         if (coins_view_cache_have_coins(view, &block->vtx[i].hash)) {
@@ -36,20 +25,14 @@
  *         }
  *     }
  *
- * Scope — what this test is AND is NOT
- * ------------------------------------
- * This file started as a reproduction. It is now the regression gate:
- * connect_block must tolerate a block's own same-height coinbase
- * self-write after a local rewind, while preserving BIP30 rejection for
- * real duplicate transactions.
+ * Scope: regression gate. connect_block must tolerate a block's own
+ * same-height coinbase self-write after a local rewind, while still
+ * rejecting real duplicate transactions.
  *
- * Environment
- * -----------
- * All state is in-process and in-memory — no SQLite file, no node
- * boot, no threads.  We build a chain_params copy with a checkpoint
- * covering the test height so check_block's POW + size checks are
- * skipped; g_deferred_proof_validation_below_height is left at -1 so the BIP30 skip flag
- * stays false.  Runtime: <100ms.
+ * All state is in-process and in-memory. A chain_params copy with a
+ * checkpoint at the test height skips check_block's POW and size checks;
+ * g_deferred_proof_validation_below_height stays -1 so the BIP30 skip flag
+ * stays false.
  */
 
 #include "test/test_core.h"
@@ -137,11 +120,8 @@ static void free_block(struct block *blk)
     free(blk->vtx);
 }
 
-/* Build a chain_params copy with a single checkpoint at `height`
- * so connect_block's checkpoint_covers() returns true and
- * check_block runs with expensive_checks=false (skips Equihash POW
- * + size limit bounds we don't need for this fixture).  Heap-owned
- * so the caller frees when done. */
+/* chain_params copy with one checkpoint at `height` so check_block runs with
+ * expensive_checks=false. Heap-owned; the caller frees. */
 struct chain_params_fixture {
     struct chain_params params;
     struct checkpoint_entry entry;
@@ -169,9 +149,8 @@ static int t_connect_block_tolerates_own_coinbase_self_write(void)
          * it is NOT set so the check runs. */
         atomic_store(&g_deferred_proof_validation_below_height, -1);
 
-        /* Heights chosen to match the live-node shape (tip+1 after
-         * a partial-application rollback).  Any pair works; using
-         * small values keeps the test fast. */
+        /* Tip+1 after a partial-application rollback; small heights keep
+         * the test fast. */
         const int parent_height = 199;
         const int stall_height = parent_height + 1;  /* = 200 */
 
@@ -216,15 +195,11 @@ static int t_connect_block_tolerates_own_coinbase_self_write(void)
         memset(&null_view, 0, sizeof(null_view));
         coins_view_cache_init(&cache, &null_view);
 
-        /* Apply the block's coinbase to the cache — this simulates the
-         * partial application of the original block N: the coinbase
-         * output landed in the coins view but the tip-update never
-         * committed.  After the mystery rollback, the cache still
-         * holds this unspent coinbase. */
+        /* Apply the coinbase to the cache: the output landed in the coins
+         * view but the tip-update never committed. */
         update_coins(&stall_blk.vtx[0], &cache, stall_height);
 
-        /* Pin the cache's best_block to the parent — simulating the
-         * "tip regressed to N-1" state the live node entered. */
+        /* Pin best_block to the parent (tip regressed to N-1). */
         coins_view_cache_set_best_block(&cache, &parent_hash);
 
         /* Sanity: the stale coinbase really is present and unspent. */
@@ -344,40 +319,17 @@ static int t_clean_view_advances(void)
 
 /* ── Test 3 — Regression test: disconnect_block purges coinbase ──
  *
- * The invariant: for every txid T in the coins view, the block that created
- * T's outputs must be on the active chain. Concretely: after
- * `disconnect_block(B)` runs on a scratch view wrapping a parent
- * cache, AND `coins_view_cache_flush_for_testing(scratch)` propagates the
- * disconnect to the parent, the parent MUST NO LONGER report
- * `coins_view_cache_have_coins` for any tx in B.
+ * Invariant: after `disconnect_block(B)` on a scratch view wrapping a parent
+ * cache, and `coins_view_cache_flush_for_testing(scratch)`, the parent no
+ * longer reports `coins_view_cache_have_coins` for any tx in B.
  *
- * This test constructs the three-layer shape that production uses
- * inside `disconnect_tip` (`process_block.c:1669-1693`):
+ * Uses the production three-layer shape of `disconnect_tip`:
  *
- *     null_view  ←  parent   ←  scratch
+ *     null_view  <-  parent   <-  scratch
  *      (stub)    (coins_tip)  (disconnect_tip's scratchpad)
  *
- * `update_coins(blk.vtx[0], parent, h)` seeds the parent with the
- * coinbase (simulating a prior connect_block). Then the scratch is
- * layered on top, `disconnect_block` is called on the scratch, and
- * the scratch is flushed into the parent — exactly the production
- * sequence. The assertion is that the parent no longer has the
- * coinbase.
- *
- * Today this test FAILS. `disconnect_block` at
- * `core/modules/validation/src/connect_block.c:639` calls
- * `coins_map_erase(&scratch.cache_coins, &tx->hash)` on an empty
- * scratch map — a no-op — so nothing propagates to the parent, and
- * the parent retains the coinbase as an unspent entry. The
- * assertion failure names the bug: the coinbase that belongs to a
- * disconnected block is still reachable via `coins_view_cache_have_coins`
- * on the parent.
- *
- * This is the RED regression row. minimal fix
- * (emit a DIRTY+pruned tombstone from disconnect_block instead of
- * a bare erase) flips this assertion from RED to GREEN. After the
- * fix lands, the test stands as the permanent gate against
- * regression. */
+ * disconnect_block must emit a DIRTY+pruned tombstone (not a bare erase on
+ * the empty scratch map) so the flush propagates to the parent. */
 
 static int t_disconnect_block_purges_coinbase_from_backing(void)
 {
@@ -388,9 +340,7 @@ static int t_disconnect_block_purges_coinbase_from_backing(void)
 
         const int coinbase_height = 200;
 
-        /* Build a stand-in for `coins_tip` — the parent cache.  Its
-         * backing is a null view (no SQLite for this test; the
-         * scratch→parent layer is enough to surface the bug). */
+        /* Stand-in for `coins_tip`; null backing view (no SQLite). */
         struct coins_view null_view;
         memset(&null_view, 0, sizeof(null_view));
         struct coins_view_cache parent;
@@ -425,17 +375,14 @@ static int t_disconnect_block_purges_coinbase_from_backing(void)
         blk_idx.nStatus = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA;
         blk_idx.nTx = 1;
 
-        /* Seed the parent with the coinbase — simulates a successful
-         * prior connect_block at h=coinbase_height. */
+        /* Seed the parent with the coinbase (prior connect_block). */
         update_coins(&blk.vtx[0], &parent, coinbase_height);
         coins_view_cache_set_best_block(&parent, &blk_hash);
 
         /* Sanity: parent has the coinbase as unspent. */
         ASSERT(coins_view_cache_have_coins(&parent, &blk.vtx[0].hash));
 
-        /* Now the interesting part: the scratch view wrapping the
-         * parent, exactly as `disconnect_tip` builds it at
-         * process_block.c:1669-1674. */
+        /* Scratch view wrapping the parent, as disconnect_tip builds it. */
         struct coins_view parent_as_view;
         coins_view_cache_as_view(&parent_as_view, &parent);
         struct coins_view_cache scratch;
@@ -452,21 +399,11 @@ static int t_disconnect_block_purges_coinbase_from_backing(void)
                                          &scratch, &empty_undo);
         ASSERT(disc_ok);
 
-        /* Flush the scratch into the parent — the propagation step
-         * that, per the postmortem, must purge the coinbase. */
+        /* Flush the scratch into the parent; this must purge the coinbase. */
         ASSERT(coins_view_cache_flush_for_testing(&scratch));
 
-        /* The invariant — TODAY THIS FAILS.  The parent still
-         * reports the coinbase as unspent because
-         * disconnect_block's coins_map_erase at connect_block.c:639
-         * ran on the (empty) scratch map and never emitted a DELETE
-         * signal into the parent.
-         *
-         * minimal fix: emit a DIRTY+pruned tombstone from
-         * disconnect_block so cvc_batch_write propagates a PRUNED
-         * entry into the parent, and coins_view_cache_have_coins
-         * returns false. When the fix lands this assertion flips
-         * from RED to GREEN. */
+        /* The parent must no longer report the coinbase: disconnect_block
+         * emits a DIRTY+pruned tombstone that cvc_batch_write propagates. */
         if (coins_view_cache_have_coins(&parent, &blk.vtx[0].hash)) {
             printf("FAIL (RED — parent still has coinbase_%d after "
                    "disconnect+flush; invariant violated at "
@@ -489,37 +426,15 @@ static int t_disconnect_block_purges_coinbase_from_backing(void)
 
 /* ── Test 4 — Regression test: disconnect-flush lands in SQLite under shared-handle writer contention ──
  *
- * three-layer test uses a null_view backing, so the SQLite
- * persistence path is never exercised. The live-node stall at
- * h=3,081,408 showed the tombstone's DIRTY+pruned entry is correctly
- * produced in memory ( invariant assertion has never tripped),
- * but the `SAVEPOINT coins_flush failed rc=5: cannot open savepoint -
- * SQL statements in progress` line fires 3,478 times in node.log — the
- * DELETE never reaches disk, every cache eviction/rebuild re-reads the
- * original stale coinbase row, and BIP30 trips again.
+ * The three-layer test above uses a null_view backing, so SQLite persistence
+ * is not exercised. coins_view_sqlite's SAVEPOINT on a SHARED sqlite3 handle
+ * fails with SQLITE_BUSY ("cannot open savepoint - SQL statements in
+ * progress") while any writer statement on that connection is mid-execution
+ * (`db->nVdbeWrite > 0`), so the tombstone DELETE would never reach disk.
  *
- * Root cause: the coins_view_sqlite SAVEPOINT is on the SHARED sqlite3
- * handle, and SQLite's OP_Savepoint bails with SQLITE_BUSY ("cannot
- * open savepoint - SQL statements in progress") whenever
- * `db->nVdbeWrite > 0` — i.e., any prepared writer statement on the
- * same connection is still mid-execution. In production this is
- * paired with an ordinary node_db writer whose VDBE counted up but
- * hasn't yet halted; the end effect is that the coins flush bails and
- * the tombstone DELETE never reaches disk.
- *
- * Reproducing in-process: hold ANY writer statement at SQLITE_ROW on
- * the shared handle. `INSERT ... RETURNING` pauses mid-execution with
- * `nVdbeWrite>0` on the first step — exact same shape as production's
- * contention. Then drive the full three-layer flush path. Pre-fix, the
- * flush fails and the tombstone DELETE never lands. Post-fix (:
- * dedicated connection for coins_view_sqlite), the shared-handle
- * writer no longer blocks the flush, and the DELETE is observable.
- *
- * Scope: this is the "coupled with" test called out in
- * AGENT-2.md — cache + backing three-layer GREEN after the fix. The
- * `disconnect_block + cvc_batch_write + sqlite_batch_write` sequence
- * under contention is the end-to-end path null-backing
- * variant couldn't surface. */
+ * The test holds an `INSERT ... RETURNING` at SQLITE_ROW on the shared handle,
+ * then drives the full three-layer flush. coins_view_sqlite uses a dedicated
+ * connection, so the flush lands and the DELETE is observable. */
 
 static int mkdir_p_p14(const char *p)
 {
@@ -592,34 +507,16 @@ static int t_p14_flush_under_shared_cursor_lands_tombstone(void)
         struct coins_view_sqlite cvs;
         ASSERT(coins_view_sqlite_open(&cvs, db));
 
-        /* ── structural invariant — the RED/GREEN gate ──
-         *
-         * For a file-backed input handle, `coins_view_sqlite_open`
-         * MUST open its own sqlite3 handle so the flush's BEGIN
-         * IMMEDIATE runs on an independent `nVdbeWrite` counter.
-         * Pre-fix, `cvs.db == db` and `cvs.owns_db == false`; any
-         * writer VDBE on `db` trips SAVEPOINT with "SQL statements
-         * in progress" (3,478 occurrences in the live node's log
-         * before the canary rolled back).
-         *
-         * This is the deterministic pre-fix RED marker — no timing
-         * or thread scheduling involved.  Post-fix, both hold. */
+        /* Structural invariant: for a file-backed input handle,
+         * `coins_view_sqlite_open` opens its own sqlite3 handle
+         * (`cvs.db != db`, owns_db) so the flush has an independent
+         * `nVdbeWrite` counter. */
         ASSERT(cvs.owns_db);
         ASSERT(cvs.db != db);
 
-        /* ── Probe: the exact contention shape that tripped the
-         * pre-fix flush still exists on the SHARED handle ──
-         *
-         * We hold an `INSERT ... RETURNING` at SQLITE_ROW on the
-         * caller's `db` handle — this is a writer whose VDBE is
-         * mid-execution (`nVdbeWrite > 0` on that connection).  A
-         * manual SAVEPOINT on the SAME handle must fail with
-         * SQLITE_BUSY and the message "cannot open savepoint - SQL
-         * statements in progress" — documenting that pre-fix, the
-         * coins-view flush running SAVEPOINT on the same handle
-         * would have tripped.  Post-fix, coins_view_sqlite's flush
-         * is on `cvs.db`, not `db`, so this contention cannot
-         * affect it. */
+        /* Probe: a writer held at SQLITE_ROW on the shared `db` makes a
+         * manual SAVEPOINT on that handle fail with SQLITE_BUSY; the flush
+         * runs on `cvs.db`, so it is unaffected. */
         uint8_t decoy_txid[32]; memset(decoy_txid, 0xEE, 32);
         sqlite3_stmt *foreign = NULL;
         ASSERT(sqlite3_prepare_v2(db,
@@ -634,27 +531,18 @@ static int t_p14_flush_under_shared_cursor_lands_tombstone(void)
             char *serr = NULL;
             int svrc = sqlite3_exec(db, "SAVEPOINT probe",
                                      NULL, NULL, &serr);
-            /* Exactly the live-node error signature. */
+            /* Expected SQLite error signature. */
             ASSERT_EQ(svrc, SQLITE_BUSY);
             ASSERT(serr && strstr(serr,
                 "SQL statements in progress") != NULL);
             sqlite3_free(serr);
             /* No RELEASE — the SAVEPOINT never began. */
         }
-        /* Release the foreign writer so the probe test's contention
-         * doesn't survive into the subsequent flush.  Production
-         * timing: node_db's AR writers commit in microseconds; the
-         * "indefinite hold during flush" shape is a test
-         * caricature, not a real-world scenario. */
+        /* Release the foreign writer before the flush. */
         sqlite3_reset(foreign);
         sqlite3_finalize(foreign);
 
-        /* ── Three-layer end-to-end flush → SQLite ──
-         *
-         * This is the path null-backing variant could not
-         * surface: cache + cache + coins_view_sqlite. 
-         * it is GREEN in one commit (per AGENT-2.md 
-         * coupling). */
+        /* Three-layer end-to-end flush: cache + cache + coins_view_sqlite. */
         struct coins_view_cache parent;
         coins_view_cache_init(&parent, &cvs.view);
 
@@ -692,8 +580,7 @@ static int t_p14_flush_under_shared_cursor_lands_tombstone(void)
         const uint8_t *cb_txid = blk.vtx[0].hash.data;
         ASSERT_EQ(p14_count_utxos_by_txid(cvs.db, cb_txid), 1);
 
-        /* Scratch view on top of parent — exactly how disconnect_tip
-         * constructs its scratchpad at process_block.c:1669-1674. */
+        /* Scratch view on top of parent, as disconnect_tip builds it. */
         struct coins_view parent_as_view;
         coins_view_cache_as_view(&parent_as_view, &parent);
         struct coins_view_cache scratch;
@@ -707,18 +594,12 @@ static int t_p14_flush_under_shared_cursor_lands_tombstone(void)
                                  &scratch, &empty_undo));
         ASSERT(coins_view_cache_flush_for_testing(&scratch));
 
-        /* The load-bearing flush: parent → SQLite.  Pre-fix, this
-         * would have been vulnerable to the same SAVEPOINT
-         * contention we probed above when it happens to race with
-         * an external subsystem's writer.  Post-fix, it runs on
-         * the dedicated `cvs.db` and is immune to the shared
-         * handle's state. */
+        /* The load-bearing flush, parent -> SQLite, on the dedicated
+         * `cvs.db`. */
         ASSERT(coins_view_cache_flush_for_testing(&parent));
 
-        /* Tombstone DELETE landed — the coinbase row is gone from
-         * SQLite, not just from the in-memory tombstone map.  The
-         * live-node stall at h=3,081,408 persisted because this
-         * DELETE never reached disk; it does. */
+        /* The coinbase row is gone from SQLite, not just from the
+         * in-memory tombstone map. */
         ASSERT_EQ(p14_count_utxos_by_txid(cvs.db, cb_txid), 0);
 
         block_undo_free(&empty_undo);

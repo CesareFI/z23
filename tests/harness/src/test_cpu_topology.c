@@ -62,16 +62,12 @@ static int cpt_available_cpu_count_checks(void)
         printf("cpu_topology: sched_getaffinity oracle unavailable... FAIL\n");
         return failures + 1;
     }
-    /* Exact equality against the oracle read the same way, not a bound: a
-     * seam that quietly went back to reporting the host count is only caught
-     * under a restricting mask, and this box may or may not carry one. */
+    /* Exact equality against the oracle read the same way, not a bound. */
     CPT_CHECK("available_cpu_count equals the live affinity mask",
               available == (uint32_t)CPU_COUNT(&saved));
 
-    /* Narrow the mask to one processor and confirm the seam moves with it.
-     * This is the property the whole function exists for: under taskset or a
-     * systemd scope's AllowedCPUs the online count is unchanged and only the
-     * mask tells the truth. */
+    /* Narrow the mask to one processor and confirm the seam follows it: under
+     * taskset or a systemd scope's AllowedCPUs only the mask tells the truth. */
     int first = -1;
     for (int c = 0; c < CPU_SETSIZE; c++)
         if (CPU_ISSET(c, &saved)) { first = c; break; }
@@ -104,23 +100,19 @@ static int cpt_available_cpu_count_checks(void)
     return failures;
 }
 
-/* The build-job derivation. Graded through the PURE function rather than the
- * formatted argument, so the assertions do not need a host with a particular
- * CPU count or memory grant -- which is the whole reason
- * platform_build_job_count() takes both as parameters. */
+/* The build-job derivation, graded through the PURE function so no particular
+ * host CPU count or memory grant is needed. */
 static int cpt_build_job_count_checks(void)
 {
     int failures = 0;
     const int64_t mib = INT64_C(1024) * 1024;
 
-    /* No budget named: the CPU count stands alone. This is the case the old
-     * compiled-in 16 and the bare -j8 both got wrong. */
+    /* No budget named: the CPU count stands alone. */
     CPT_CHECK("no budget: 28 processors buy 28 jobs",
               platform_build_job_count(28, 0) == 28);
     CPT_CHECK("an unreadable budget is not a ceiling",
               platform_build_job_count(28, -1) == 28);
-    /* 96 processors is above every literal this tree used to carry; the point
-     * is that nothing clamps it any more. */
+    /* 96 processors: nothing clamps the count below the mask. */
     CPT_CHECK("no ceiling below the mask survives",
               platform_build_job_count(96, 0) == 96);
     CPT_CHECK("one processor buys one job",
@@ -131,9 +123,8 @@ static int cpt_build_job_count_checks(void)
     CPT_CHECK("zero processors still build, one file at a time",
               platform_build_job_count(0, 0) == 1);
 
-    /* This project's own build grant: 24 GiB against 28 processors. Memory is
-     * nowhere near binding, which is why no ceiling below the mask survives
-     * anywhere in this tree. */
+    /* This project's own build grant: 24 GiB against 28 processors; memory
+     * does not bind. */
     CPT_CHECK("24 GiB against 28 processors is bound by the processors",
               platform_build_job_count(28, INT64_C(24) * 1024 * mib) == 28);
 

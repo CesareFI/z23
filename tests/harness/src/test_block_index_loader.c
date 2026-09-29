@@ -144,13 +144,10 @@ static bool bih_insert_header_row(sqlite3 *db, int h,
     for (int i = 0; i < 32; i++)
         hdr.nSolution[i] = (uint8_t)(i + h);
 
-    /* Mine (bump nTime) until the real header hash meets the PoW target at
-     * nBits — the hydrate loader's canonical per-row verify now runs hash-bind
-     * + CheckProofOfWork on every row (POINT 1 admission parity), exactly as a
-     * genuine imported header already satisfies its own network difficulty.
-     * Cheap SHA256d search (no Equihash: these low heights sit below the
-     * stride / ROM-checkpoint gate). Compares against the decoded target the
-     * same way CheckProofOfWork does, but without its per-attempt log storm. */
+    /* Mine (bump nTime) until the header hash meets the PoW target at nBits;
+     * the hydrate loader verifies hash-bind + CheckProofOfWork on every row.
+     * Cheap SHA256d search (no Equihash: these heights sit below the stride /
+     * ROM-checkpoint gate). */
     {
         bool neg = false, of = false;
         struct arith_uint256 target;
@@ -231,9 +228,8 @@ int test_block_index_loader(void)
         struct stat st;
         bool file_ok = (stat(path, &st) == 0 && st.st_size > 8);
 
-        /* Embedded single-file format (task #32): the body itself starts
-         * with the 48-byte "BIIE" integrity header, and NO separate
-         * sidecar file is written. */
+        /* Embedded single-file format: the body starts with the 48-byte "BIIE"
+         * integrity header; no separate sidecar is written. */
         bool embedded_header_ok = false;
         {
             FILE *bf = fopen(path, "rb");
@@ -329,27 +325,19 @@ int test_block_index_loader(void)
     }
 
     /* ── 2b. Scrambled stored height loads WITHOUT a pprev lasso ─────────
-     * Regression fixture for the live-cure wedge root cause: the flat loader's
-     * old by-HEIGHT pprev fallback wired a WRONG parent whenever a stored
-     * height label was scrambled, forming a pprev cycle the scoped ancestry
-     * relink could only fail-closed (cycle=1) refuse. The loader now links
-     * pprev HASH-ONLY: a prev_hash that misses resolves to NULL (honest), never
-     * a height guess.
+     * The flat loader links pprev by hash only: a prev_hash that misses
+     * resolves to NULL, never a height guess.
      *
-     * Shape: node P has a prev_hash that is NOT in the file (its parent is not
-     * loaded); node C is P's REAL child (C.prev_hash == P.hash, so it links by
-     * hash) but C's stored height is scrambled to P.height-1. Under the deleted
-     * fallback, P's missing prev_hash resolved to by_height[P.height-1] == C —
-     * P.pprev = C while C.pprev = P is a 2-node lasso. Hash-only linking leaves
-     * P.pprev == NULL, so the graph is acyclic. */
+     * Shape: P has a prev_hash not in the file; C is P's real child (links by
+     * hash) but C's stored height is scrambled to P.height-1. A by-height
+     * fallback would set P.pprev = C, forming a 2-node lasso. */
     {
         struct main_state ms;
         memset(&ms, 0, sizeof(ms));
         block_map_init(&ms.map_block_index);
         active_chain_init(&ms.chain_active);
 
-        /* Ghost parent: a hash P points at that we DO NOT insert, so it is not
-         * saved and P's prev_hash misses on reload. */
+        /* Ghost parent: a hash P points at that is not inserted. */
         struct uint256 ghost_hash = make_test_hash(900);
         struct block_index ghost;
         block_index_init(&ghost);
@@ -407,9 +395,7 @@ int test_block_index_loader(void)
         BIL_CHECK("bil: scrambled height — child still hash-links to its "
                   "real parent", C2 != NULL && C2->pprev == P2);
 
-        /* The graph is acyclic: a bounded pprev walk from every node
-         * terminates well within the node count (a lasso would spin to the
-         * cap). */
+        /* Acyclic: a bounded pprev walk from every node terminates. */
         bool acyclic = (P2 && C2);
         if (acyclic) {
             int steps = 0;
@@ -605,14 +591,10 @@ int test_block_index_loader(void)
     }
 
     /* ── 6b. SQLite cache integrity envelope: tamper -> demote -> rebuild ──
-     * Wave N hardening (docs/work/FORWARD_PLAN.md item 7.3): the SQLite
-     * cache carries an XOR-combined SHA3 envelope (block_index_cache_
-     * envelope) verified in the SAME O(rows) load pass. A tampered row
-     * must be DETECTED (never silently trusted), DEMOTE the cache (discard
-     * + typed blocker, never refuse boot — it is a pure re-derivable
-     * cache), and a subsequent clean save+load must succeed and clear the
-     * blocker — "boots without FATAL" is not the bar; H*-equivalent proof
-     * here is the fresh rebuild actually loading every entry back. */
+     * The cache carries an XOR-combined SHA3 envelope verified in the load
+     * pass. A tampered row is detected, demotes the cache (discard + typed
+     * blocker, never refuses boot), and a clean save+load succeeds and clears
+     * the blocker. */
 
     {
         struct main_state ms;
@@ -663,9 +645,8 @@ int test_block_index_loader(void)
             sqlite3_finalize(ec);
             ok = ok && env_rows == 1;
 
-            /* Tamper ONE cached row's n_bits — content changes, row_count
-             * does not, so this exercises the digest mismatch path (not
-             * the row-count mismatch path). */
+            /* Tamper one row's n_bits: content changes, row_count does not,
+             * so the digest-mismatch path is exercised. */
             sqlite3_exec(ndb.db,
                 "UPDATE block_index_cache SET n_bits=n_bits+1 "
                 "WHERE height=750", NULL, NULL, NULL);
@@ -694,10 +675,8 @@ int test_block_index_loader(void)
             sqlite3_finalize(cc);
             ok = ok && cache_rows_after_demote == 0;
 
-            /* REBUILD: a fresh, clean save from the original (untampered)
-             * `ms` re-derives the cache; the next load must succeed and the
-             * blocker must self-clear. This is the "never refuses boot,
-             * always re-derivable" proof — not just "no crash". */
+            /* REBUILD: a clean save from the untampered `ms` re-derives the
+             * cache; the next load succeeds and the blocker self-clears. */
             save_block_index_recent(&ndb, &ms);
 
             struct main_state ms3;
@@ -914,15 +893,12 @@ int test_block_index_loader(void)
         mkdir(tmpdir, 0755);
 
         /* Hand-write a LEGACY body: "ZCLI" magic + count + entries at
-         * offset 0, no embedded header. Then stamp a matching sidecar
-         * (the pre-task-#32 on-disk shape) so the first boot after deploy
-         * loads cleanly. */
+         * offset 0, no embedded header, then stamp a matching sidecar. */
         char path[512];
         snprintf(path, sizeof(path), "%s/block_index.bin", tmpdir);
 
-        /* Build the legacy body by saving the embedded format then
-         * stripping the 48-byte header back off — gives a byte-identical
-         * legacy payload + lets us stamp the legacy sidecar over it. */
+        /* Build the legacy body by saving the embedded format and stripping
+         * the 48-byte header. */
         save_block_index_flat(tmpdir, &ms);
         bool legacy_ok = false;
         {
@@ -1024,9 +1000,8 @@ int test_block_index_loader(void)
             }
         }
 
-        /* The body still loads (legacy magic), and bii_verify reports
-         * SIDECAR_MISSING — exactly today's first-run-after-upgrade
-         * behavior, which boot accepts. */
+        /* The body still loads (legacy magic); bii_verify reports
+         * SIDECAR_MISSING, which boot accepts. */
         struct main_state ms2;
         memset(&ms2, 0, sizeof(ms2));
         block_map_init(&ms2.map_block_index);
@@ -1046,15 +1021,11 @@ int test_block_index_loader(void)
 
     /* ── 14. seed_tip_from_finalized: genesis-root install + REFUSE cases ──
      *
-     * Regression guard for the kill-9-at-genesis recovery. A
-     * fresh regtest node mined N blocks, was kill-9'd, and rebooted to a NULL
-     * active tip while the durable tip_finalize cursor + coins were at N. The
-     * genesis-root branch of block_index_loader_seed_tip_from_finalized must
-     * INSTALL the tip at N (rooted at the canonical genesis) yet REFUSE every
-     * unsafe variant: an oversized walk (mainnet floor cap), a link missing
-     * HAVE_DATA/VALID_SCRIPTS, a non-canonical genesis terminus, and
-     * coins_applied_height <= tip_height. It also must still cleanly extend an
-     * existing live tip (cur_tip != NULL, the unchanged branch). */
+     * The genesis-root branch of block_index_loader_seed_tip_from_finalized
+     * installs the tip at N (rooted at the canonical genesis) yet refuses an
+     * oversized walk (mainnet floor cap), a link missing HAVE_DATA/VALID_SCRIPTS,
+     * a non-canonical genesis terminus, and coins_applied_height <= tip_height.
+     * It still extends an existing live tip (cur_tip != NULL). */
     {
         chain_params_select(CHAIN_REGTEST);
         const struct chain_params *cp = chain_params_get();
@@ -1122,9 +1093,7 @@ int test_block_index_loader(void)
         struct block_index *tipN = block_map_find(&ms.map_block_index, &hashes[N]);
 
         /* Register the tip_finalize stage so seed_anchor can stamp the
-         * served-tip cursor (the value resolve_durable_tip reads). Without
-         * tip_finalize_stage_handle() the cursor stamp is skipped and the
-         * durable tip never resolves. */
+         * served-tip cursor that resolve_durable_tip reads. */
         bool tf_init = tip_finalize_stage_init(&ms);
         BIL_CHECK("bil/seedfin: tip_finalize stage init", tf_init);
 
@@ -1226,9 +1195,8 @@ int test_block_index_loader(void)
 
         #undef BIL_SET_APPLIED
 
-        /* Done with the shared cursor/stage; tear it down before the isolated
-         * oversized-walk case opens its OWN progress store + stage so the
-         * big_h anchor cannot clobber the cases above. */
+        /* Tear down the shared cursor/stage before the isolated oversized-walk
+         * case opens its own, so the big_h anchor cannot clobber the cases above. */
         tip_finalize_stage_shutdown();
         progress_store_close();
         block_map_free(&ms.map_block_index);
@@ -1288,11 +1256,9 @@ int test_block_index_loader(void)
 
     /* ── 15. node.db `blocks` hydrate: hash-linked rows load + link ──────
      *
-     * Reproduces the fresh-datadir header-hydration hole: --importblockindex
-     * fills the `blocks` table with header-only rows but writes no flat file /
-     * cache / LevelDB, so the map is genesis-only until this rung reads them
-     * back. Build N hash-linked header rows, hydrate, and assert the map size,
-     * tip linkage to genesis, and honest header-only validity clamping. */
+     * --importblockindex fills `blocks` with header-only rows. Build N
+     * hash-linked rows, hydrate, and assert the map size, tip linkage to
+     * genesis, and header-only validity clamping. */
     {
         const int N = 300;
         struct uint256 *hashes = malloc((size_t)N * sizeof(*hashes)); // raw-alloc-ok:test-fixture
@@ -1351,13 +1317,8 @@ int test_block_index_loader(void)
 
     /* ── 15b. blocks hydrate pumps the boot-liveness marker ──────────────
      *
-     * Reproduces the 2026-07-27 canonical crash loop: a corrupt flat file
-     * (`tip hash maps to wrong height (-1 vs SQLite …)`) forced the
-     * multi-minute blocks-table hydrate on EVERY boot; it bumped no
-     * boot-progress marker, systemd's 2-min WatchdogSec killed each boot
-     * mid-load, and the shutdown-persisted heal never landed (8 SIGABRTs).
-     * The hydrate now pumps boot_progress_note() every 4096 rows in its
-     * validate/insert/link passes, so >4096 rows MUST advance the marker. */
+     * The hydrate pumps boot_progress_note() every 4096 rows in its
+     * validate/insert/link passes, so >4096 rows must advance the marker. */
     {
         const int N = 4096 + 64;
         struct uint256 *hashes = malloc((size_t)N * sizeof(*hashes)); // raw-alloc-ok:test-fixture
@@ -1392,9 +1353,8 @@ int test_block_index_loader(void)
         free(hashes);
     }
 
-    /* ── 16. node.db `blocks` hydrate (J5): a corrupted row is QUARANTINED
-     *       per-row (purged + typed blocker + dumpstate counter) and the load
-     *       CONTINUES with the remaining rows — it no longer refuses whole. ── */
+    /* ── 16. node.db `blocks` hydrate: a corrupted row is quarantined per-row
+     *       (purged + typed blocker + dumpstate counter); the load continues. ── */
     {
         const int N = 120;
         const int POISON_H = N / 2;
@@ -1548,13 +1508,12 @@ int test_block_index_loader(void)
         free(hashes);
     }
 
-    /* ── 16d. RUNTIME poisoned-blocks-row quarantine (Lane B3):
-     *        stage_repair_quarantine_blocks_row purges a row that FAILS the
+    /* ── 16d. RUNTIME poisoned-blocks-row quarantine:
+     *        stage_repair_quarantine_blocks_row purges a row that fails the
      *        frozen block_row_verify, clears its in-memory HAVE_DATA, bumps the
-     *        process counter + typed blocker; REFUSES a clean row; and falls
-     *        back to db_block_delete_by_height for a row whose stored `hash`
-     *        column does not match the canonical hash. CHAIN_MAIN is already
-     *        selected above (case 14), so chain_params_get() != NULL. ──────── */
+     *        process counter + typed blocker; refuses a clean row; and falls
+     *        back to db_block_delete_by_height when the stored `hash` column
+     *        does not match the canonical hash. ──────── */
     {
         const int N = 5;
         const int POISON_H = 2;
@@ -1718,11 +1677,9 @@ int test_block_index_loader(void)
         if (ndb.db) sqlite3_close(ndb.db);
     }
 
-    /* ── 16c. Repair-storm throttle: N rapid SAME-key failures collapse to a
-     *        BOUNDED emission count (first-fire + one keepalive per window) —
-     *        the de-storm contract the quarantine WARN and the
-     *        stale_validate_headers_repair deferral WARN both rely on. Uses the
-     *        caller-supplied clock so the assertion is deterministic. ─────── */
+    /* ── 16c. Repair-storm throttle: N rapid same-key failures collapse to a
+     *        bounded emission count (first-fire + one keepalive per window),
+     *        using a caller-supplied clock. ─────── */
     {
         struct log_throttle t = LOG_THROTTLE_INIT;
         const int64_t keepalive = 60;
@@ -1755,14 +1712,9 @@ int test_block_index_loader(void)
     }
 
     /* ── Fast-restart: forward pass ALWAYS re-derives stored work ────────
-     * The trust-flat fast-restart skip was removed because a stale binding
-     * (flat saved best tip <= the coins/fold tip) that skipped the forward pass
-     * left pindex_best_header pinned at the coins tip and converged the reducer
-     * drive with unfolded bodies — a live wedge. Guard the removal: a flat file
-     * carrying STALE (here: zeroed) stored nChainWork must still load with the
-     * correct work, because load_block_index_flat unconditionally re-derives it
-     * from the pointer graph. If a skip ever reappeared, the loaded tip work
-     * would read back as the zeroed stored value and this fails. */
+     * A flat file carrying stale (here: zeroed) stored nChainWork must load
+     * with the correct work, because load_block_index_flat unconditionally
+     * re-derives it from the pointer graph. */
     {
         struct main_state ms;
         memset(&ms, 0, sizeof(ms));
@@ -1813,17 +1765,13 @@ int test_block_index_loader(void)
         block_map_free(&ms2.map_block_index);
     }
 
-    /* ── Persisted-FAILED-bit trust policy (C2) ─────────────────────────
-     * A stale persisted BLOCK_FAILED_VALID bit on the true best-chain tip must
-     * NEVER wedge the node ("stale BLOCK_FAILED_VALID wedges tip" class). The
-     * flat + SQLite loaders reconcile the bit against the baked ROM checkpoint:
+    /* ── Persisted-FAILED-bit trust policy ─────────────────────────────
+     * A stale persisted BLOCK_FAILED_VALID bit on the best-chain tip must not
+     * wedge the node. The flat + SQLite loaders reconcile it against the baked
+     * ROM checkpoint:
      *   - below the checkpoint: STRIP it (re-derive, never trust);
-     *   - above it:            DEMOTE it to a lazy revalidation candidate
-     *                          (clear the FAILED bit, set BLOCK_REVALIDATE_PENDING).
-     * Either way the demoted/stripped block is failure-free, so
-     * select_most_work_eligible() promotes it again. Genuinely-failed behavior
-     * is unchanged — the marker DEMANDS revalidation; the loader never blesses
-     * the block (no HAVE bit added, validity level not raised). */
+     *   - above it:            DEMOTE it (clear FAILED, set BLOCK_REVALIDATE_PENDING).
+     * The loader never blesses the block (no HAVE bit added, validity not raised). */
 
     /* ── T1: pure unit test of the policy helper (deterministic). ──────── */
     {
@@ -1879,11 +1827,9 @@ int test_block_index_loader(void)
                   "FAILED bit is present", none_ok);
     }
 
-    /* ── T2: end-to-end via the FLAT loader with a low override checkpoint,
-     * proving the demote cures the wedge at the selection layer. A synthetic
-     * chain h=0..49 with a FAILED_VALID stamped on the tip is saved and
-     * reloaded; the override checkpoint at h=10 puts the tip ABOVE it, so the
-     * reloaded tip must be demoted (FAILED cleared + marker set) and
+    /* ── T2: end-to-end via the FLAT loader with a low override checkpoint.
+     * A synthetic chain h=0..49 with FAILED_VALID stamped on the tip is saved
+     * and reloaded; the tip is above the checkpoint, so it must be demoted and
      * select_most_work_eligible() must return it. */
     {
         struct rom_state_checkpoint ov;
@@ -1922,8 +1868,7 @@ int test_block_index_loader(void)
             block_is_revalidation_pending(loaded) &&
             !block_has_any_failure(loaded);
 
-        /* The cured tip must now be the most-work selection (was excluded by
-         * the stale FAILED bit before the reconcile). */
+        /* The demoted tip is now the most-work selection. */
         struct block_index *sel =
             ok ? select_most_work_eligible(&ms2.chain_active,
                                            &ms2.map_block_index, NULL) : NULL;

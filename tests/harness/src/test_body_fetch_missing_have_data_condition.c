@@ -499,12 +499,11 @@ int test_body_fetch_missing_have_data_condition(void)
         teardown_fixture(&fx);
     }
 
-    /* Exact C3 wedge: the finalized window ends at H, while two H+1 children
-     * exist. A stale sibling is data-flagged (and even owns the height-keyed
-     * body_fetch row), but the validate_headers row and best-header ancestry
-     * name the other child, whose body is missing. Height-only selection used
-     * to accept the stale sibling's HAVE_DATA/row and suppress the canonical
-     * fetch forever. */
+    /* The finalized window ends at H while two H+1 children exist. A stale
+     * sibling is data-flagged (and owns the height-keyed body_fetch row), but
+     * the validate_headers row and best-header ancestry name the other child,
+     * whose body is missing. Height-only selection would accept the stale
+     * sibling and suppress the canonical fetch forever. */
     {
         struct bfmhd_fixture fx;
         bool ok = setup_fixture(&fx, "canonical_hash_over_stale_sibling");

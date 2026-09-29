@@ -16,25 +16,12 @@
  *      nTime must not exceed GetAdjustedTime() + 2h. Time source: the
  *      node's own adjusted-now, never MTP/ancestors.
  *
- * test_bip113_bip65.c already pins:
- *   - MTP arithmetic (ascending/out-of-order/short-chain/single-block)
- *   - contextual_check_block_header rejects nTime <= MTP
- *   - a *weak* boundary check that nTime==MTP+1 is not rejected
- *     *specifically* for "time-too-old" (it does NOT assert the header
- *     is actually ACCEPTED — with an unmatched nBits the same call can
- *     still return false via "bad-diffbits", and the existing assertion
- *     doesn't rule that out)
- * test_domain_consensus_header_accept.c already pins the pure domain
- *   functions' boundary math (both rules) with directly-injected
- *   MTP/now_upper_bound values, and cross-checks check_block_header()
- *   for version-too-low, but NOT for time-too-new despite the file's own
- *   header comment claiming it does (see the finding logged in the
- *   accompanying report).
- *
- * GAPS this file closes, all driving the REAL production entry points
- * end-to-end (not just the domain layer) with nBits pinned to the
- * genuine GetNextWorkRequired() output so the diffbits gate can never
- * mask a timestamp-gate result:
+ * test_bip113_bip65.c pins MTP arithmetic, rejection of nTime <= MTP, and a
+ * weak not-"time-too-old" check at nTime==MTP+1. test_domain_consensus_header_accept.c
+ * pins the pure domain boundary math with injected MTP/now values.
+ * This file drives the REAL production entry points end-to-end with nBits
+ * pinned to the genuine GetNextWorkRequired() output so the diffbits gate
+ * never masks a timestamp-gate result:
  *   - MTP monotonicity boundary with a TRUE accept/reject flip through
  *     contextual_check_block_header (not just "not this reject reason").
  *   - FUTURE-TIME boundary through the actual check_block_header() legacy
@@ -63,12 +50,8 @@
 /* ── helpers ─────────────────────────────────────────────── */
 
 /* Build a linear ancestor chain of `count` block_index entries, times[i]
- * assigned to height i (chain[0] is the oldest / genesis-adjacent, the
- * returned pointer is the newest / tip). nBits is pinned on every entry
- * to `nbits_pin` so contextual_check_block_header's diffbits gate can
- * never fire for these synthetic short (<17-ancestor) chains — see the
- * file header comment for why GetNextWorkRequired always degenerates to
- * nProofOfWorkLimit here regardless of nBits/nTime content. */
+ * assigned to height i (the returned pointer is the tip). nBits is pinned on
+ * every entry so the diffbits gate never fires for these short chains. */
 static struct block_index *make_pinned_chain(struct block_index *chain,
                                               int count,
                                               const uint32_t *times,
@@ -84,11 +67,8 @@ static struct block_index *make_pinned_chain(struct block_index *chain,
     return &chain[count - 1];
 }
 
-/* Independent reference median: copy + qsort + take the middle element
- * at index (n/2), matching the PRODUCTION index convention exactly (see
- * block_index_get_median_time_past) but via a totally separate sort
- * (qsort, not the production insertion sort) so this is a genuine
- * second implementation, not a call-through. */
+/* Independent reference median (copy + qsort, index n/2) matching the
+ * production index convention, as a genuine second implementation. */
 static int cmp_u32(const void *a, const void *b)
 {
     uint32_t va = *(const uint32_t *)a, vb = *(const uint32_t *)b;
@@ -105,10 +85,8 @@ static int64_t reference_median(const uint32_t *times, int n)
     return mid;
 }
 
-/* Build a minimal synthetic header that will pass every OTHER
- * contextual_check_block_header gate (version, equihash-size-silent-
- * pass, diffbits) so only the timestamp gate under test can flip the
- * verdict. */
+/* Minimal synthetic header that passes every contextual_check_block_header
+ * gate except the timestamp gate under test. */
 static void make_pinned_header(struct block_header *hdr, uint32_t nTime,
                                 uint32_t nbits_pin)
 {
@@ -125,12 +103,10 @@ int test_block_timestamp_adversarial(void)
     printf("\n=== Block-timestamp adversarial (MTP + future-time) ===\n");
 
     const struct chain_params *params = chain_params_get();
-    /* pindexLast==NULL is GetNextWorkRequired's own documented short-
-     * circuit for "no ancestor at all" -> nProofOfWorkLimit. Every chain
-     * built below is far shorter than nPowAveragingWindow(17), so the
-     * real contextual call degenerates to this exact same value
-     * regardless of the ancestors' nBits/nTime — pinning headers/chains
-     * to it isolates the timestamp gates from the diffbits gate. */
+    /* pindexLast==NULL short-circuits GetNextWorkRequired to
+     * nProofOfWorkLimit; every chain here is shorter than
+     * nPowAveragingWindow(17), so pinning headers to it isolates the
+     * timestamp gates from the diffbits gate. */
     uint32_t nbits_pin = GetNextWorkRequired(NULL, NULL, &params->consensus);
 
     /* ── 1. MTP monotonicity: TRUE accept/reject flip end-to-end ──── */
@@ -246,10 +222,8 @@ int test_block_timestamp_adversarial(void)
     /* ── 3. MTP window correctness: only the last 11 count ────────── */
     printf("MTP window excludes ancestors beyond the last 11 (13-block chain)... ");
     {
-        /* 13 ascending timestamps: the OLDEST two (10, 20) must be
-         * excluded from the median of the newest 11. If the window were
-         * (incorrectly) the whole 13-block history the median would
-         * shift down; assert it does NOT. */
+        /* 13 ascending timestamps: the oldest two (10, 20) must be excluded
+         * from the median of the newest 11. */
         struct block_index chain[13];
         uint32_t times[] = {10, 20, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1100};
         struct block_index *tip = make_pinned_chain(chain, 13, times, nbits_pin);
@@ -273,19 +247,15 @@ int test_block_timestamp_adversarial(void)
 
     printf("MTP window: single stale outlier beyond the window doesn't move the median... ");
     {
-        /* 12-block chain: window = last 11, so exactly ONE ancestor
-         * (the oldest, a huge-backdate outlier) is excluded — proves the
-         * window CUT, not just sort order, is what protects the median.
-         * The newest ancestor is ALSO a huge (high) outlier and stays
-         * INCLUDED, showing a single included outlier doesn't skew the
-         * median either (median resists one extreme value). */
+        /* 12-block chain: exactly one ancestor (the oldest, a huge-backdate
+         * outlier) is excluded, proving the window cut protects the median;
+         * the newest ancestor is a high outlier and stays included without
+         * skewing it. */
         struct block_index chain[12];
         uint32_t times[] = {1, /* huge low outlier, oldest, EXCLUDED */
                             100, 200, 300, 400, 500, 600, 700, 800, 900, 1000,
                             5000000 /* huge high outlier, newest, INCLUDED */};
-        /* times[] has 12 entries: the oldest (times[0]) falls outside
-         * the last-11 window; the last entry replaces what would have
-         * been times[11]=1100 in the sibling test above. */
+        /* times[0] falls outside the last-11 window. */
         struct block_index *tip = make_pinned_chain(chain, 12, times, nbits_pin);
         int64_t mtp = block_index_get_median_time_past(tip);
         int64_t ref = reference_median(times + 1, 11); /* drop times[0] only */

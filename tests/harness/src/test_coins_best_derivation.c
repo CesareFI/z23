@@ -1,24 +1,19 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Wave-2 regression tests for THE coins-best derivation
+ * Regression tests for the coins-best derivation
  * (reducer_frontier_derive_coins_best) and the derived boot gate in
  * coins_view_sqlite_check_tip_consistency.
  *
- * Doctrine under test (docs/TENACITY.md I1/I2): the coins-best fact has ONE
- * authoritative encoding — coins_kv's co-committed coins_applied_height in
- * progress.kv plus the durable stage logs. The node_state 'coins_best_block'
- * key and the node.db `utxos` mirror are CACHES: rebuildable, never believed
- * over the derivation, never guess-reconciled.
+ * Doctrine (docs/TENACITY.md I1/I2): the coins-best fact is encoded once, in
+ * coins_kv's co-committed coins_applied_height in progress.kv plus the
+ * durable stage logs. The node_state 'coins_best_block' key and the node.db
+ * `utxos` mirror are caches, never believed over the derivation.
  *
- * Two suites:
- *   1. Derivation unit tests on a throwaway sqlite handle carrying the REAL
- *      progress.kv schema (same fixture style as test_reducer_frontier.c).
- *   2. The drift test — "the cache lies, the machine does not care": a
- *      scratch datadir whose node_state anchor is GARBAGE and whose mirror
- *      holds orphan rows above the frontier must (a) derive correctly,
- *      (b) PASS the boot gate with ZERO mutations (no guess-repair, no
- *      auto-rewind), and (c) still FATAL on the legacy branch once
- *      coins_applied_height is deleted (legacy datadirs keep their gate). */
+ * Suites: (1) derivation unit tests on a throwaway sqlite handle with the
+ * real progress.kv schema; (2) a drift test where a garbage node_state
+ * anchor and orphan mirror rows above the frontier still derive correctly,
+ * pass the boot gate with zero mutations, and still FATAL on the legacy
+ * branch once coins_applied_height is deleted. */
 
 #include "test/test_core.h"
 
@@ -151,10 +146,9 @@ static int cbd_unit_absent_key(void)
     return failures;
 }
 
-/* The RED rung: coins_applied_height present but coins_kv NOT the proven
- * authority (no migration stamp / empty set — e.g. a legacy datadir whose
- * frontier was cursor-backfilled while the coins still live only in the
- * node.db mirror) must NOT count as canonical: found=false, success. */
+/* coins_applied_height present but coins_kv not the proven authority (no
+ * migration stamp / empty set) does not count as canonical: found=false,
+ * success. */
 static int cbd_unit_unproven_authority(void)
 {
     int failures = 0;
@@ -197,13 +191,10 @@ static int cbd_unit_unproven_authority(void)
     return failures;
 }
 
-/* PRODUCTION write convention (tip_finalize_stage.c step_finalize): the
- * "finalized" ok=1 row at height X stores the LOOKAHEAD hash(X+1) — the
- * step binds new_tip = active_chain_at(X+1) into the row at X. Only
- * status='anchor' seed rows store the block's OWN hash (row X -> hash(X)).
- * The derivation must therefore find hash(h) in the finalized row at h-1,
- * NEVER in the raw row at h (whose blob is hash(h+1) — the off-by-one this
- * suite regression-pins). */
+/* Production write convention (tip_finalize_stage.c step_finalize): the
+ * finalized ok=1 row at height X stores the lookahead hash(X+1); only
+ * status='anchor' seed rows store the block's own hash. The derivation finds
+ * hash(h) in the finalized row at h-1, never in the raw row at h. */
 static int cbd_unit_finalized_rung(void)
 {
     int failures = 0;
@@ -218,9 +209,9 @@ static int cbd_unit_finalized_rung(void)
         uint8_t want[32], succ[32];
         cbd_hash(want, H, 0x11);       /* hash of block H   */
         cbd_hash(succ, H + 1, 0x12);   /* hash of block H+1 */
-        /* Fully-caught-up production shape: finalized row at H-1 carries
-         * hash(H); finalized row at H carries hash(H+1). NO validate_headers
-         * row, so ONLY the tip_finalize witness can resolve. */
+        /* Caught-up production shape: finalized row at H-1 carries hash(H);
+         * row at H carries hash(H+1). No validate_headers row, so only the
+         * tip_finalize witness can resolve. */
         ASSERT(cbd_put_tip_finalize(db, H - 1, 1, want, "finalized"));
         ASSERT(cbd_put_tip_finalize(db, H, 1, succ, "finalized"));
         int32_t height = -2;
@@ -342,9 +333,8 @@ static int cbd_unit_cross_log_guard(void)
         ASSERT(found && height == H && hf);
         ASSERT(memcmp(hash, want, 32) == 0);
 
-        /* (b) validate_headers now claims a DIFFERENT block at H (stale
-         * finalized row across a reorg): don't guess — hash withheld,
-         * success, height stands. */
+        /* (b) validate_headers claims a different block at H (stale finalized
+         * row across a reorg): hash withheld, success, height stands. */
         uint8_t other[32];
         cbd_hash(other, H, 0x42);
         ASSERT(cbd_put_validate_headers(db, H, 1, other));

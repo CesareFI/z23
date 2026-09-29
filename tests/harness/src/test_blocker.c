@@ -14,13 +14,11 @@
  *   - rate-limit: env override + testing override
  *   - capacity: cap exhaustion returns -1
  *   - test clock override + advance
- *   - lifecycle policy (wf/os-blocker-retire): TRANSIENT TTL retirement
- *     (witnessed via the retired-count + last_retired dump), a re-fire
- *     resetting the TTL clock, a per-blocker TTL override, bounded
- *     deadline re-arm → escalation for a deadline with no escape_action
- *     (the worker.stall.op.projection_backfill shape), and
- *     PERMANENT/DEPENDENCY/RESOURCE staying completely unaffected by
- *     both rules */
+ *   - lifecycle policy: TRANSIENT TTL retirement (witnessed via the
+ *     retired-count + last_retired dump), a re-fire resetting the TTL clock,
+ *     a per-blocker TTL override, bounded deadline re-arm then escalation for
+ *     a deadline with no escape_action, and PERMANENT/DEPENDENCY/RESOURCE
+ *     staying unaffected by both rules */
 
 #include "test/test_core.h"
 #include "util/blocker.h"
@@ -55,10 +53,8 @@ static void esc_b(const struct blocker_snapshot *s)
     atomic_fetch_add(&g_esc_b_count, 1);
 }
 
-/* Seam stubs for the upper-layer named faults. These stand in for the
- * reclaim/reconcile implementations the owning subsystems install — the
- * hotswap one exists only under ZCL_DEV_BUILD, and the two drift organs are
- * not in-tree yet (see the handoff note in the section that uses them). */
+/* Seam stubs for the upper-layer named faults: they stand in for the
+ * reclaim/reconcile implementations the owning subsystems install. */
 static _Atomic bool g_reclaim_all_clear;
 static _Atomic int  g_reclaim_calls;
 static _Atomic bool g_reconcile_converged;
@@ -508,11 +504,8 @@ int test_blocker(void)
     }
 
     /* ── lifecycle policy: TTL retirement (rule 1) ────────────────
-     * A TRANSIENT blocker is a live claim, not a log line — one that has
-     * not re-fired within its TTL window auto-retires, witnessed via the
-     * retired counter + last_retired info (never a silent delete). This
-     * is exactly the boot.stage_regression shape: a one-shot observation
-     * raised once at boot with no deadline and nothing to ever clear it. */
+     * A TRANSIENT blocker that has not re-fired within its TTL window
+     * auto-retires, witnessed via the retired counter + last_retired info. */
     {
         blocker_reset_for_testing();
         blocker_set_clock_for_testing(10000000);
@@ -616,11 +609,8 @@ int test_blocker(void)
     }
 
     /* ── lifecycle policy: overdue-deadline re-arm → escalation ─────
-     * Live shape: worker.stall.op.projection_backfill raised an
-     * escape_deadline_secs but no escape_action (nothing to dispatch), so
-     * the deadline sat negative and growing forever. A TRANSIENT blocker
-     * in that shape must re-arm a bounded number of times, then escalate
-     * visibly instead of sitting silently overdue. */
+     * A TRANSIENT blocker with a deadline but no escape_action re-arms a
+     * bounded number of times, then escalates visibly. */
     {
         blocker_reset_for_testing();
         blocker_set_clock_for_testing(40000000);
@@ -676,17 +666,9 @@ int test_blocker(void)
     }
 
     /* ── KEYSTONE: an actively-refiring blocker still escalates ─────
-     * Regression for the blocker-convergence bug. Live shape:
-     * worker.stall.op.projection_backfill re-raised every ~5s with the
-     * SAME enum reason (a still-stalling worker), an escape_deadline_secs
-     * but no escape_action. The old refresh branch reset rearm_count /
-     * escalated on every touch AND re-anchored the deadline to the fixed
-     * (ever-staler) since_us, so it was permanently "overdue" yet never
-     * completed the 3 re-arms — it dodged BOTH TTL retirement (stays
-     * active) and escalation forever (~3.6h live). With the fix, a
-     * same-identity refire no longer resets the escalation clock, so the
-     * sweep drives it to escalated=true. Uses the test clock, no wall
-     * sleep. */
+     * A same-identity refire (same enum reason, a deadline, no escape_action)
+     * must not reset the escalation clock, so the sweep drives it to
+     * escalated=true. Uses the test clock. */
     {
         blocker_reset_for_testing();
         blocker_set_clock_for_testing(100000000);
@@ -702,10 +684,9 @@ int test_blocker(void)
         int rc = blocker_set(&r);
         BCK_CHECK("keystone: initial set → 0", rc == 0);
 
-        /* Re-fire every 5s and sweep every 5s, well past the deadline span
-         * and the re-arm budget, but nowhere near the 30-min TTL — so the
-         * only lifecycle exit available is escalation. Under the old code
-         * escalated NEVER became true here; it must now. */
+        /* Re-fire every 5s and sweep every 5s, past the deadline span and the
+         * re-arm budget but well under the 30-min TTL, so escalation is the
+         * only lifecycle exit. */
         bool became_escalated = false;
         struct blocker_snapshot s;
         for (int i = 0; i < 40 && !became_escalated; i++) {
@@ -738,12 +719,9 @@ int test_blocker(void)
     }
 
     /* ── lifecycle policy: non-TRANSIENT classes are untouched ─────
-     * Rule 4: dependency blockers legitimately persist until their
-     * dependency resolves; PERMANENT/RESOURCE persist until cleared. Both
-     * new rules (TTL retirement, deadline re-arm/escalation) must be a
-     * complete no-op for them, even when raised in the exact same
-     * "deadline set, no escape_action" shape that triggers rule 2 for
-     * TRANSIENT. */
+     * Dependency blockers persist until their dependency resolves;
+     * PERMANENT/RESOURCE until cleared. TTL retirement and deadline
+     * re-arm/escalation are a no-op for them. */
     {
         blocker_reset_for_testing();
         blocker_set_clock_for_testing(50000000);
@@ -835,13 +813,10 @@ int test_blocker(void)
         BCK_CHECK("overflow → -1", rc == -1);
     }
 
-    /* ── upper-layer named faults (wf/supervision) ─────────────────
-     * Three fallbacks that were SAFE but silent are now typed blockers.
-     * The common bar for all three: raised with a FIXED reason (so a
-     * refire is the SAME fault and dedup/escalation converge), a
-     * registered escape action (an unregistered one dead-ends the sweep
-     * lookup), and an escape that only clears the blocker when the fault
-     * is genuinely gone. */
+    /* ── upper-layer named faults ─────────────────────────────────
+     * Typed blockers raised with a fixed reason (so a refire is the same
+     * fault), a registered escape action, and an escape that only clears the
+     * blocker when the fault is gone. */
 
     /* (1) hotswap: a retired generation whose mapping never drained. */
     {
@@ -945,11 +920,8 @@ int test_blocker(void)
         hotswap_retire_blocker_reset_for_testing();
     }
 
-    /* (2)+(3) declared-vs-observed drift. NOTE (handoff): neither
-     * detecting organ exists in-tree yet — no config reload path, no
-     * service-catalog observer — so these exercise the naming surface and
-     * the reconciler SEAM the organs will install into, never a fabricated
-     * caller. */
+    /* (2)+(3) declared-vs-observed drift. Neither detecting organ exists
+     * in-tree, so these exercise the naming surface and the reconciler seam. */
     {
         blocker_reset_for_testing();
         blocker_set_clock_for_testing(90000000);
@@ -974,10 +946,8 @@ int test_blocker(void)
                   strcmp(boot_declaration_drift_last_scope(
                              DECLARATION_DRIFT_SERVICE_DECL), "edge") == 0);
 
-        /* Dedup keystone: a DIFFERENT scope must not look like a brand-new
-         * blocker. This is the whole reason the scope is not in the reason
-         * text — identity keys on class+reason+cause, so a per-occurrence
-         * reason would re-anchor the deadline forever. */
+        /* Dedup keystone: a different scope must not look like a new blocker;
+         * identity keys on class+reason+cause, so scope stays out of the reason. */
         struct blocker_snapshot snaps[8];
         int total = blocker_snapshot_all(snaps, 8);
         BCK_CHECK("drift: exactly two records", total == 2);
@@ -1001,8 +971,8 @@ int test_blocker(void)
                   strcmp(boot_declaration_drift_last_scope(
                              DECLARATION_DRIFT_CONFIG_RELOAD), "datadir") == 0);
 
-        /* No reconciler installed (the organs are pending) — the escapes
-         * fire, escalate, and honestly leave both blockers standing. */
+        /* No reconciler installed — the escapes fire, escalate, and leave both
+         * blockers standing. */
         blocker_advance_clock_for_testing(
             (int64_t)(DECLARATION_DRIFT_ESCAPE_DEADLINE_SECS + 1) * 1000000);
         int fired = blocker_supervisor_sweep();

@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Unit tests for the Wave S S-4 body_fetch stage
+ * Unit tests for the body_fetch stage
  * (engine/services/src/body_fetch_stage.c).
  *
  * Coverage:
@@ -13,8 +13,8 @@
  *   - replay across progress_store reopen: cursor + log row count persist
  *   - pre-init guards
  *   - dump_state_json shape
- *   - crash-replay sub-process (fork + SIGKILL) — DoD addition,
- *     asserts the F-2 atomicity contract under signal pressure
+ *   - crash-replay sub-process (fork + SIGKILL) asserting the atomicity
+ *     contract under signal pressure
  *   - cursor floor invariant: body_fetch cannot pass validate even when
  *     validate cursor is forced backward (truncated log) */
 
@@ -742,19 +742,13 @@ static int test_body_fetch_stage_platform_arm(void)
         bf_teardown(dir, &ms, &sc);
     }
 
-    /* ── crash-replay sub-process (DoD addition) ─────────────────────────
+    /* ── crash-replay sub-process ─────────────────────────────────────────
      *
-     * Forks a child that opens progress.kv, pre-populates a synthetic
-     * `validate_headers_log` and validate's stage_cursor directly via
-     * SQL (so we don't have to spin up the validate worker pool inside
-     * the forked child — pthread state + fork() is a hazard), then
-     * inits + runs body_fetch_stage in a tight loop. The parent waits
-     * a randomised short interval, SIGKILLs the child, reaps it, then
-     * reopens progress.kv and asserts the F-2 atomicity contract: the
-     * persisted cursor equals the number of body_fetch_log rows.
-     *
-     * The child runs N=1000 heights worth of work so it cannot finish
-     * in the random window, guaranteeing the kill lands mid-drain. */
+     * A child opens progress.kv, pre-populates `validate_headers_log` and
+     * validate's stage_cursor via SQL (no validate worker pool in a forked
+     * child), then runs body_fetch_stage. The parent SIGKILLs it mid-drain,
+     * reopens progress.kv and asserts the atomicity contract: the persisted
+     * cursor equals the number of body_fetch_log rows. */
     {
         char dir[256];
         test_fmt_tmpdir(dir, sizeof(dir), "body_fetch", "crash_replay");
@@ -882,9 +876,8 @@ static int test_body_fetch_stage_platform_arm(void)
 
         int rows = log_row_count(db);
 
-        /* Invariant: cursor == row count — the F-2 atomicity contract.
-         * If the child was SIGKILLed before its first body_fetch commit,
-         * both are 0 and have_cursor may be false. */
+        /* Invariant: cursor == row count. If the child was killed before its
+         * first commit, both are 0 and have_cursor may be false. */
         if (!have_cursor) {
             BF_CHECK("crash: zero-progress case is consistent",
                      rows == 0);

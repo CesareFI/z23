@@ -106,23 +106,13 @@ int test_chain_integrity_failed_condition(void)
     printf("\n=== chain_integrity_failed condition tests ===\n");
     int failures = 0;
 
-    /* Isolate GetDataDir() to a hermetic tmp directory for this whole test.
-     * remedy_chain_integrity_failed() (engine/conditions/src/chain_integrity_
-     * failed.c) resolves GetDataDir(true, ...) unconditionally on every
-     * remedy call and, when classification is UNRECOVERABLE, hands that path
-     * to chain_restore_finalize() -> chain_restore_quarantine_synthetic_tip(),
-     * which walks tip->pprev looking for a consensus-backed ancestor and, at
-     * height 0 (genesis has no pprev-presence gate — see chain_restore_
-     * backing.c), attempts a real pread() of "<datadir>/blocks/blk00000.dat"
-     * even though this test's synthetic genesis block_index has no real
-     * on-disk position (nFile=nDataPos=0, only BLOCK_HAVE_DATA is set).
-     * Without SetDataDir here, GetDataDir() resolves to the operator's real
-     * default datadir (~/.zclassic-c23): on a host with a live node running
-     * there, that file exists and gets opened, silently weakening this test
-     * into reading real, unrelated block bytes; on a hosted CI runner with no
-     * node, the open legitimately fails ("cannot open .../blk00000.dat").
-     * Neither behavior is intended — pin datadir to an empty, hermetic tmp
-     * dir so the read consistently and honestly misses on every host. */
+    /* Isolate GetDataDir() to a hermetic tmp directory for this test.
+     * remedy_chain_integrity_failed() resolves GetDataDir(true, ...) on every
+     * call and, when classification is UNRECOVERABLE, hands it to
+     * chain_restore_finalize() -> chain_restore_quarantine_synthetic_tip(),
+     * which at height 0 attempts a real pread() of
+     * "<datadir>/blocks/blk00000.dat". Pin the datadir to an empty tmp dir so
+     * that read consistently misses on every host. */
     char cif_datadir[256];
     test_make_tmpdir(cif_datadir, sizeof(cif_datadir),
                      "chain_integrity_failed_condition", "datadir");
@@ -344,13 +334,11 @@ int test_chain_integrity_failed_condition(void)
         ok = ok && !blocker_exists("chain_integrity_restore_stuck");
 
         /* Running, past the deadline: the watchdog names a blocker and
-         * reports a self-stall on its own supervisor child — the #6 fix
-         * (previously a hung worker was invisible: only g_restore_running
-         * stayed latched, no blocker, no supervisor signal). */
+         * reports a self-stall on its own supervisor child. */
         int64_t deadline_s = chain_integrity_failed_test_deadline_secs();
-        /* Force the synthetic start below zero, exactly as on a fresh CI VM
-         * whose monotonic uptime is shorter than the 30-minute deadline.
-         * Zero alone is the production unset sentinel. */
+        /* Force the synthetic start below zero, as on a fresh VM whose
+         * monotonic uptime is under the 30-minute deadline (zero is the
+         * production unset sentinel). */
         chain_integrity_failed_test_set_started_us_ago(
             platform_time_monotonic_us() +
             (deadline_s + 60) * 1000000LL);

@@ -10,15 +10,12 @@
  * ZCL_LEGACY_DATADIR. The live block is skipped with PASS otherwise, so a
  * fresh checkout doesn't fail.
  *
- * There is deliberately no $HOME/.zclassic fallback. That directory belongs
- * to a running zclassicd, and block_log_legacy_open → bilr_open →
- * db_wrapper_open is an ordinary read-WRITE LevelDB open: it takes the LOCK
- * and can run log recovery, rewriting the MANIFEST of a live daemon's block
- * index. It happened to be harmless only because the daemon held the LOCK
- * and the open failed — which also made every assertion below silently
- * vanish, and made the result depend on whether a service was running.
- * Point ZCL_LEGACY_DATADIR at a datadir you own (a stopped node, or a copy)
- * to exercise it. */
+ * There is deliberately no $HOME/.zclassic fallback: that directory belongs to
+ * a running zclassicd, and block_log_legacy_open -> bilr_open ->
+ * db_wrapper_open is an ordinary read-WRITE LevelDB open that takes the LOCK
+ * and can run log recovery, rewriting the live daemon's MANIFEST. Point
+ * ZCL_LEGACY_DATADIR at a datadir you own (a stopped node, or a copy) to
+ * exercise it. */
 
 #include "test/test_core.h"
 #include "adapters/outbound/persistence/block_log_legacy.h"

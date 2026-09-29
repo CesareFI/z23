@@ -22,16 +22,16 @@
  *     documents it, so any future change to the decode path is caught.
  *  4. SUBGROUP-membership regression anchor: an on-curve-but-NOT-prime-order
  *     G1 point is rejected by g1_in_subgroup AND by groth16_proof_read. The
- *     subgroup check IS present on this branch (bls12_381.c:1778/1782/1786);
+ *     subgroup check is present (bls12_381.c); this pins it, since dropping it
+ *     is a Groth16 soundness hole (small-subgroup proof forgery).
  *     this pins it so a future refactor cannot silently drop it (dropping it
  *     is a Groth16 soundness hole — small-subgroup proof forgery).
  *
- * BOUNDARY: this test NEVER changes what the verifier accepts/rejects. It
- * only observes and pins current behavior. Where current behavior is more
- * permissive than the librustzcash reference (non-canonical infinity
- * encodings — see the findings in the lane report), the test documents the
- * CURRENT behavior with a comment; tightening it is a consensus change that
- * must go through a full-chain replay first (CONSENSUS_PARITY_DOCTRINE).
+ * BOUNDARY: this test never changes what the verifier accepts/rejects; it only
+ * pins current behavior. Where that is more permissive than librustzcash
+ * (non-canonical infinity encodings), the test documents it; tightening it is
+ * a consensus change that must go through a full-chain replay first
+ * (CONSENSUS_PARITY_DOCTRINE).
  */
 
 #include "test/test_core.h"
@@ -271,11 +271,9 @@ int test_bls12_381_adversarial(void)
                   g1_from_compressed(&p, inf_ok) && g1_is_identity(&p));
 
         /* NON-CANONICAL infinity: infinity flag set BUT x-bytes nonzero and
-         * the sort flag set. librustzcash REJECTS this (infinity requires the
-         * remaining bits to be zero); the C23 decoder currently ACCEPTS it
-         * (returns identity, ignoring the trailing bytes). This asserts the
-         * CURRENT behavior — see the "non-canonical infinity" finding. Do NOT
-         * flip this to reject without a full-chain replay (consensus change). */
+         * the sort flag set. librustzcash rejects this; the C23 decoder
+         * currently accepts it (returns identity). This pins current behavior;
+         * do not flip to reject without a full-chain replay (consensus change). */
         uint8_t inf_dirty[48];
         memset(inf_dirty, 0xff, 48);
         inf_dirty[0] = 0xe0; /* compressed + infinity + sort, x = all-1s */
@@ -290,9 +288,8 @@ int test_bls12_381_adversarial(void)
         ADV_CHECK("g1 compressed x >= q -> REJECT (non-canonical field elem)",
                   !g1_from_compressed(&p, x_oob));
 
-        /* All-0xFF: byte0 == 0xff has the infinity bit (bit6) set, so the
-         * decoder short-circuits to identity BEFORE inspecting x. Documents
-         * that the infinity flag dominates (same class as the finding above). */
+        /* All-0xFF: byte0 == 0xff has the infinity bit set, so the decoder
+         * returns identity before inspecting x (same class as above). */
         uint8_t all_ff[48];
         memset(all_ff, 0xff, 48);
         ADV_CHECK("g1 compressed all-0xFF -> ACCEPT as infinity (flag dominates)",
@@ -394,10 +391,8 @@ int test_bls12_381_adversarial(void)
             ADV_CHECK("g1_in_subgroup rejects on-curve non-subgroup point",
                       !g1_in_subgroup(&torsion));
 
-            /* End-to-end: a Groth16 proof whose A point is this on-curve
-             * non-subgroup point MUST be rejected by groth16_proof_read.
-             * (It decodes fine on-curve but fails the subgroup gate at
-             * bls12_381.c:1778.) */
+            /* End-to-end: a Groth16 proof whose A point is this non-subgroup
+             * point MUST be rejected by groth16_proof_read. */
             uint8_t proof[192];
             memset(proof, 0, sizeof(proof));
             g1_affine_to_compressed(proof, &torsion);        /* A = torsion */

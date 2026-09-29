@@ -9,9 +9,8 @@
  * node_rpc_call test hook that dispatches into the REAL rpc table
  * (register_agent_session_rpc_commands -> controller -> service -> model)
  * against a tmp node_db. Nothing about the store is mocked; only the socket
- * is. That matters: the defect this layer had was a hollow boundary — the
- * earlier tests hand-wired app_runtime and so proved a path the shipped binary
- * cannot take, because app_runtime is only ever populated by the node's boot.
+ * is. app_runtime is populated only by the node's boot, so tests must not
+ * hand-wire it.
  *
  * Proves:
  *  1. A NULL/empty session id is the explicit local-operator exemption.
@@ -942,12 +941,10 @@ static int test_kernel_hook_rendered_bytes(void)
     return failures;
 }
 
-/* THE double-debit regression. `vault send` is a registry leaf whose handler
- * dispatches onward to core.wallet.transaction.send IN-PROCESS. Both the
- * kernel gate and the vault's own gate used to charge the window, so a session
- * whose window cap equalled its per-tx cap could never complete one send: the
- * first debit consumed the whole window and the second check refused what the
- * caller was entitled to. */
+/* Double-debit guard. `vault send` dispatches onward to
+ * core.wallet.transaction.send IN-PROCESS; only one gate may charge the
+ * window, so a session whose window cap equals its per-tx cap can complete
+ * one send. */
 static int test_vault_send_debits_once(void)
 {
     int failures = 0;

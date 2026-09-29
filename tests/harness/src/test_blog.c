@@ -29,25 +29,12 @@
 #include "wallet/wallet_lock.h"
 #include <unistd.h>
 
-/* db_service owns two background pthreads (zcl_db_worker, zcl_db_ckpt) that
- * run for as long as the service is started. ASSERT()'s goto _test_next
- * (test/test_core.h) can leave the block that started the service on ANY
- * failing check between db_service_start() and the matching stop — and
- * test_blog_publication_slice keeps the service live across ~20 ASSERTs. A
- * skipped db_service_stop() leaves both threads running against a
- * stack-local struct db_service whose frame is about to be reused by the
- * rest of this test group's own execution (ecc_verify_destroy/ecc_stop and
- * process teardown all run on the SAME thread stack before _exit()). The
- * checkpoint thread wakes once a second and dereferences that freed memory
- * — usually harmless in isolation (the process exits before the 1 Hz timer
- * fires), but a fatal stack-use-after-return under full-suite parallel load,
- * where scheduling delays give the timer time to land mid-teardown. Attach
- * this as __attribute__((cleanup(...))) on the db_service local so EVERY
- * exit path — the normal one and any early ASSERT bailout — is guaranteed
- * to retire both threads before the frame is reused. Idempotent: a no-op
- * on the normal path, which already stops the service explicitly before
- * closing the node_db it wraps. See db_txn_auto_rollback (db_txn.h) for the
- * same pattern already used by this file's sibling, blog_publication.c. */
+/* db_service owns two background pthreads (zcl_db_worker, zcl_db_ckpt). An
+ * ASSERT() bailout (goto _test_next) between db_service_start() and the
+ * matching stop would leave them running against a dead stack frame. Attach
+ * this as __attribute__((cleanup(...))) on the db_service local so every exit
+ * path retires both threads. Idempotent: a no-op on the normal path. See
+ * db_txn_auto_rollback (db_txn.h) for the same pattern. */
 static void test_blog_db_service_cleanup(struct db_service *svc)
 {
     app_runtime_set_current(NULL);
@@ -266,10 +253,9 @@ static int test_blog_publication_slice(void)
         ASSERT(blog_test_save_name(&publisher, owner));
         ASSERT(blog_test_save_name(&reader, owner));
 
-        /* struct wallet is megabytes (MAX_WALLET_TX=65536 wallet_tx entries
-         * plus the key pool and spent set) — on the heap, per convention
-         * used by every other wallet test (see test_wallet.c), not the
-         * stack: a stack instance overflows the default 8 MiB ulimit -s. */
+        /* struct wallet is megabytes (MAX_WALLET_TX wallet_tx entries plus the
+         * key pool and spent set): heap, per test_wallet.c convention, since a
+         * stack instance overflows the default 8 MiB ulimit -s. */
         struct wallet *wallet = zcl_calloc(1, sizeof(struct wallet),
                                            "test_blog_wallet");
         ASSERT(wallet != NULL);
@@ -814,14 +800,9 @@ int test_blog(void)
         found = blog_discover_onion_peers(dir, peers, 0);
         ok = ok && (found == 0);
         /* A missing database is inert: discovery returns no peers and must
-         * not create node.db or run the boot/schema ceremony.
-         * test-tmp/-namespaced + pid-tagged (test_make_tmpdir), not a
-         * bare literal in the repo working tree: a raw mkdtemp() template
-         * rooted at "." drops its directory directly into the checkout
-         * root, where a crash mid-test (or any exit path that skips
-         * test_cleanup_tmpdir) leaves debris that pollutes `git status`
-         * and the source-identity inventory for every other concurrent
-         * consumer of this checkout. */
+         * not create node.db or run the boot/schema ceremony. Uses a
+         * test-tmp/ pid-tagged scratch dir (test_make_tmpdir), never the
+         * checkout root. */
         found = blog_discover_onion_peers(dir, peers, 10);
         ok = ok && (found == 0);
         char db_path[512];

@@ -141,18 +141,11 @@ static bool bir_emit_fork(event_log_t *log, int height)
     return event_log_append(log, EV_BLOCK_HEADER, buf, written) != UINT64_MAX;
 }
 
-/* Seed the tip_finalize cursor + an ANCHOR row at `tip_height` in the
- * progress.kv store. This DELIBERATELY uses the LEGACY +1 lattice (anchor
- * row at T carrying the block's OWN hash, cursor at T+1) — even though
- * tip_finalize_stage_seed_anchor now stamps the cursor to T (the served-tip
- * convention, task #31) — precisely to keep coverage that
- * tip_finalize_stage_resolve_durable_tip tolerates BOTH conventions: its
- * cursor-then-cursor-1 fold resolves T from a cursor of T+1 here. The
- * earlier version wrote a 'finalized' row at T carrying hash(T) — a
- * convention that does not exist in the live store (finalized rows carry the
- * LOOKAHEAD hash(T+1)); it only passed because the loader used the same
- * convention-blind raw read this seeding mirrored. The loader now resolves
- * via tip_finalize_stage_resolve_durable_tip. */
+/* Seed the tip_finalize cursor + an ANCHOR row at `tip_height` in progress.kv
+ * using the legacy +1 lattice (anchor row at T carrying the block's own hash,
+ * cursor at T+1), to keep coverage that tip_finalize_stage_resolve_durable_tip
+ * tolerates both conventions: its cursor-then-cursor-1 fold resolves T from a
+ * cursor of T+1. */
 static bool bir_seed_tip_cursor(sqlite3 *pk, int tip_height,
                                 const struct uint256 *tip_hash)
 {

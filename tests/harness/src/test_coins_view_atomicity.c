@@ -393,13 +393,9 @@ static bool build_full_db(sqlite3 **out, const char *dbpath)
     return true;
 }
 
-/* live-node BIP30 stall repro — block 3081408's coinbase left
- * behind as a stale utxos row at height <= tip AND a transactions row
- * at height = tip+1, so the basic height>tip rewind missed the utxos
- * row and a re-apply of block 3081408 tripped BIP30 on have_coins of
- * the orphan coinbase. The strengthened rewind sweeps utxos by txid
- * whenever a transactions row sits above tip, so the orphan goes away
- * alongside the rows caught by the direct height delete. */
+/* A stale utxos row at height <= tip plus a transactions row at tip+1 (a
+ * coinbase orphan that tripped BIP30 on re-apply): the rewind sweeps utxos by
+ * txid whenever a transactions row sits above tip. */
 static int t_p89_orphan_coinbase_swept_by_txid(void)
 {
     int failures = 0;
@@ -465,8 +461,8 @@ static int t_p89_orphan_coinbase_swept_by_txid(void)
     return failures;
 }
 
-/* pure height>tip rows still rewound correctly when the
- * transactions table is present — no regression on the path. */
+/* Pure height>tip rows are still rewound when the transactions table is
+ * present. */
 static int t_p89_basic_rewind_with_tx_table(void)
 {
     int failures = 0;

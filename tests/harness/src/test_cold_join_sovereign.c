@@ -1,103 +1,38 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * test_cold_join_sovereign — the shopkeeper story, turned into one gate.
+ * test_cold_join_sovereign: joining needs no permission from anyone.
  *
- * THE STORY THIS TESTS
- * --------------------
- * Someone with no account, no domain name and no certificate authority
- * installs Z23 on a second-hand box, and it starts validating the chain.
- * Nothing about joining needed permission from anyone, which is the point:
- * nothing that needed no permission can be revoked.
+ * P1  no DNS name is resolved from the shipped bootstrap set
+ * P2  no certificate authority is consulted
+ * P3  no account, key, or registration is required
+ * P4  no proving parameters are needed to start validating
+ * P5  the validator is armed and non-vacuous on a wiped datadir
+ * P6  joining does not depend on one specific operator's machine (partial)
+ * P7  the join is not gated on fast storage (time never decides pass/fail)
+ * P8  no identity gates acceptance once joined (not asserted here)
  *
- * That story was believed here, scattered across several separate facts, and
- * not provable by one command. This file makes it one command and — more
- * importantly — makes it say so where the story is prettier than the code.
+ * P2 asserts the narrow form: the shipped binary statically links OpenSSL
+ * (for the optional block-explorer HTTPS listener), but no Z23-authored
+ * translation unit has an undefined reference to a TLS-client or trust-store
+ * entry point.
  *
- * THE PROPOSITIONS, AND WHICH ONES ACTUALLY HOLD
- * ----------------------------------------------
- * P1  no DNS NAME is resolved from the shipped bootstrap set     HOLDS
- * P2  no certificate authority is consulted                      HOLDS, NARROWED
- * P3  no account, key, or registration is required               HOLDS
- * P4  no proving parameters are needed to start validating       HOLDS, NARROWED
- * P5  the validator is armed and non-vacuous on a wiped datadir  HOLDS, NARROWED
- * P6  joining does not depend on one specific operator's machine PARTIAL
- * P7  the join is not gated on fast storage                      SEPARATE AXIS
- * P8  no identity gates ACCEPTANCE once joined                   NOT ASSERTED HERE
+ * P4: validating a shielded proof needs only the compiled-in verifying key;
+ * creating one needs the ~777 MB proving keys, which are not shipped. Both
+ * halves are asserted.
  *
- * P8 belongs on the list because "nothing needed permission" is only half the
- * story — the other half is that nothing can later withdraw it. A node states
- * its build identity on the wire and that string must never reach an
- * acceptance decision, because the moment it can, it is a whitelist. This file
- * does not assert it: the claim is about every acceptance path rather than
- * about the join, and proving it needs a reachability argument over the
- * validation call graph, not the bootstrap set. It is enumerated so that its
- * absence here is a known gap rather than an oversight.
+ * P5: the repository ships no real mainnet block bodies, so the test asserts
+ * (a) the real mainnet consensus facts are carried with nothing fetched
+ * (genesis hash, checkpoint lineage, minimum chain work, upgrade heights,
+ * ROM keystone at height 3056758) and (b) check_block() accepts a mined
+ * Equihash block and rejects the same block with one bit flipped.
  *
- * Where a proposition is narrower than the story, this file asserts the
- * NARROW form and says so out loud. Three of them are narrower:
+ * Elapsed time is printed as its own line and cannot fail the test. The only
+ * bound is a hang detector at CJ_HANG_DETECT_SECS, reported as SLOW, never
+ * BROKEN. No node process is spawned; CJ_KILLED exists so a wrapping harness
+ * has a word for a watchdog kill.
  *
- * P2 IS NOT "there is no TLS code."  Measured on the shipped build/bin/z23:
- *    a full OpenSSL is STATICALLY linked (1064 DEFINED SSL/X509/TLS symbols by
- *    `nm --defined-only`, while `ldd` shows only libm, libc and the loader —
- *    including TLS_client_method, SSL_connect, SSL_CTX_set_default_verify_paths
- *    and the literal string "/etc/ssl/certs"), pulled in by the OPTIONAL,
- *    off-by-default block-explorer HTTPS listener. A test asserting those
- *    symbols are absent would be red the day it was written, and would be a
- *    lie besides. What IS true, and what P2 asserts, is that NO Z23-AUTHORED
- *    TRANSLATION UNIT REFERENCES ANY OF IT: zero of the project's own object
- *    files carry an undefined reference to a TLS-client or trust-store entry
- *    point. The CA machinery is present and unreachable, not absent.
- *
- * P4 IS NOT "shielded works with no parameters."  Validating a shielded proof
- *    reads only the verifying key, which is compiled in; CREATING one needs
- *    the ~777 MB proving keys, which are not shipped. So a cold node can
- *    check every shielded transaction on the chain and cannot send one. P4
- *    asserts exactly that pair, including the negative half.
- *
- * P5 IS NOT "it validated a real mainnet block."  It cannot be, hermetically:
- *    this repository ships ZERO real mainnet block bytes (the only block
- *    fixtures in the tree are synthetic, and chainparams carries hashes, not
- *    bodies). Real bodies come from a peer, and requiring a peer would make
- *    this test grade the network instead of the code. What P5 asserts is the
- *    two halves that ARE hermetic: (a) the node carries the REAL mainnet
- *    consensus facts with nothing fetched and nothing registered — genesis
- *    hash, the checkpoint lineage, minimum chain work, upgrade heights, and
- *    the baked ROM keystone at height 3056758; and (b) the MUST-NEVER-FORK
- *    consensus entry point check_block() is live and NON-VACUOUS on a wiped
- *    datadir: a genuinely Equihash-mined block is ACCEPTED and the same block
- *    with one bit flipped is REJECTED. An armed, discriminating validator
- *    bound to real mainnet lineage is what "starts validating" means before
- *    the first peer answers.
- *
- * WHAT THIS FILE DELIBERATELY DOES NOT DUPLICATE
- * ----------------------------------------------
- *   tests/harness/src/test_params_vk_embedded.c   — the VK blobs are byte-exact,
- *       digest-pinned, and a planted bad blob is refused. P4 here asserts only
- *       the COMPOSITION that file does not: armed from an EMPTY datadir.
- *   tests/harness/src/test_seed_bootstrap_doors.c — no dead port, no double
- *       booking, a measured-dead host stays removed. P6 here asserts only the
- *       tier-independence property that file does not, and records the
- *       cardinality it deliberately does not grade.
- *   tests/harness/src/test_boot_matrix.c          — every boot cell reaches a NAMED
- *       terminal under budget. This file borrows its regtest block builder
- *       shape and none of its assertions.
- *
- * TIME IS A SEPARATE RESULT AND NEVER DECIDES PASS/FAIL (P7)
- * ---------------------------------------------------------
- * This project accepts slow machines on purpose: a 7200rpm box under 2 MB/s
- * is the instrument that shows where the code assumed an SSD, so grading it
- * "fail" would destroy the only evidence worth having. Elapsed time is
- * measured, printed as its own line, and CANNOT fail this test. The only
- * bound present is a HANG DETECTOR at CJ_HANG_DETECT_SECS, which is set two
- * orders of magnitude above the observed cost of this work — it exists to
- * catch a wedge, not to grade a disk — and blowing it is reported as the
- * distinct outcome SLOW, never as BROKEN. A reader can tell "this box is
- * slow" from "this is broken" from the verdict line alone.
- *
- * No node process is spawned and no systemd watchdog is in play, so the
- * failure mode where a loaded box's watchdog SIGABRTs a healthy node cannot
- * produce a red here. The outcome vocabulary still names it (CJ_KILLED) so
- * that a harness wrapping this test has a word for it.
+ * Related: test_params_vk_embedded.c (VK blobs), test_seed_bootstrap_doors.c
+ * (bootstrap doors), test_boot_matrix.c (boot cells).
  */
 
 #include "test/test_core.h"
@@ -327,19 +262,11 @@ out:
     return ok;
 }
 
-/* ── P2 helper: scan Z23's OWN object files, not the linked blob ─────────
- * The shipped binary contains a whole static OpenSSL. The question that
- * matters is not whether that code exists but whether any Z23 code reaches
- * it. An undefined reference in one of the project's own translation units is
- * exactly that reachability, recorded by the compiler, and it is the artifact
- * the linker itself consumed — not a source grep that a macro or an alias
- * could walk around.
- *
- * Returns the number of offending references, or -1 if the scan could not be
- * trusted (an honest UNPROVEN, never a silent pass). *scanned receives the
- * number of object files actually examined — an empty or stale build epoch
- * would otherwise report zero offenders and read as a pass, which is the
- * classic way a symbol gate goes green while checking nothing. */
+/* P2 helper: scan Z23's own object files (not the linked blob) for undefined
+ * references to TLS-client or trust-store entry points. Returns the number of
+ * offending references, or -1 if the scan cannot be trusted. *scanned
+ * receives the number of object files examined, so an empty build epoch
+ * cannot read as a pass. */
 static long cj_count_trust_store_refs(char *where, size_t where_n,
                                       long *scanned)
 {
@@ -718,12 +645,10 @@ int test_cold_join_sovereign(void)
         printf("cold_join: MEASURED doors — clearnet fixed seeds=%zu, "
                "compiled onion seeds=%zu\n", p->nFixedSeeds, p->nOnionSeeds);
 
-        /* The flattering form of the story is "no specific operator's machine
-         * matters". For a Tor-only stranger with an empty onion-seeds file and
-         * an empty directory, that is FALSE while the compiled onion array has
-         * one entry: that one box is a single point of failure, and the array's
-         * only previous entry was measured dead 5/5 on 2026-08-26. Recorded as
-         * an unproven proposition, not asserted away. */
+        /* "No specific operator matters" is FALSE for a Tor-only stranger with
+         * an empty onion-seeds file and directory while the compiled onion
+         * array has one entry: that one box is a single point of failure.
+         * Recorded as an unproven proposition, not asserted away. */
         if (p->nOnionSeeds < CJ_ONION_SPOF_FLOOR) {
             char why[256];
             snprintf(why, sizeof(why),

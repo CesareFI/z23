@@ -1,50 +1,23 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Deterministic fault-injection test for the "contaminated coin ABOVE the
- * anchor" wedge class — a coin folded into coins_kv (and coins_applied_height
- * advanced) ABOVE the height the success-checked utxo_apply_log proves clean.
+ * Fault injection for the "contaminated coin ABOVE the anchor" class: a coin
+ * folded into coins_kv (coins_applied_height advanced) above the height the
+ * success-checked utxo_apply_log proves clean. Both halves are asserted off
+ * one in-memory progress.kv:
  *
- * Both halves of the project invariant are asserted off ONE in-memory progress.kv
- * (the same progress_store_db() handle both subjects read):
+ *   HALF A: reducer_frontier_compute_hstar (a pure SELECT fold) must not
+ *     raise H* to the contaminated coin at A+5; H* is the MIN over logs'
+ *     contiguous ok=1 prefix, clamped at the anchor A. hstar < coins_applied.
  *
- *   HALF A — "never serve a value above provable H*":
- *     reducer_frontier_compute_hstar (engine/reducer/jobs/src/reducer_frontier.c) is a PURE
- *     SELECT fold; the contaminated coin at A+5 must NOT raise H*. H* is pinned
- *     by the MIN-over-logs contiguous ok=1 prefix + the >= anchor hard guard,
- *     never by coins_applied. So H* stays at the anchor (A): utxo_apply's ok=1
- *     prefix reaches A+2 but the OTHER success-checked logs have no rows above
- *     A, so MIN == A. The decisive negative fact: hstar < coins_applied (A+5).
+ *   HALF B: invariant_sentinel_sweep_once fires I4.4 (coin tear) and, after
+ *     the two-sweep confirmation gate, raises the PERMANENT `window.consistency`
+ *     blocker + EV_OPERATOR_NEEDED naming the exact heights
+ *     (coins_applied=A+5 > utxo_apply ok=1 prefix=A+2 + 1).
  *
- *   HALF B — "never halts without a named blocker (exact height + reason)":
- *     invariant_sentinel_sweep_once (engine/services/src/invariant_sentinel.c)
- *     reads coins_applied_height + the utxo_apply log frontier off
- *     progress_store_db() and fires I4.4 (coin tear). It must be called TWICE
- *     (two-sweep confirmation gate) before it raises the PERMANENT
- *     `window.consistency` blocker + EV_OPERATOR_NEEDED with a reason naming the
- *     exact heights (coins_applied=A+5 > utxo_apply ok=1 prefix=A+2 + 1).
+ * Fixture: utxo_apply ok=1 prefix == A+2 (hole at A+3); the cursor is set so
+ * ua_log_frontier == cursor-1, isolating I4.4 from I4.3.
  *
- * Fixture: contaminated coin / coins_applied at A+5; utxo_apply contiguous ok=1
- * prefix == A+2 (a hole at A+3). To isolate I4.4 (keep I4.3 quiet) the utxo_apply
- * cursor is set so ua_log_frontier == cursor-1, exactly the proven isolation in
- * test_invariant_sentinel.c.
- *
- * Negative control (flip HALF B RED): in engine/services/src/invariant_sentinel.c,
- * the I4.4 guard at ~line 285-294 — change
- *     in->coins_applied > in->ua_log_frontier + 1
- * to
- *     in->coins_applied > in->ua_log_frontier + 1000000
- * (or delete the I4.4 block). A contaminated coin 3 heights above the verified
- * prefix no longer trips a verdict: sweep_once returns with v.violated==false,
- * NO window.consistency blocker, NO EV_OPERATOR_NEEDED — the node would silently
- * tolerate a non-best-chain coin above H*. Assertions b2/b3 go RED.
- *
- * Negative control (flip HALF A RED): in engine/reducer/jobs/src/reducer_frontier.c, delete
- * the HARD GUARD `if (hs < anchor) hs = anchor;` (line 599) OR make compute_hstar
- * trust coins_applied (e.g. `hs = coins_applied`) — hstar would float to A+5 and
- * assertion a2 (hstar < A+5) goes RED.
- *
- * Scratch files live under ./test-tmp/<name>_<pid>/ per the project's no-/tmp
- * convention.
+ * Scratch files live under ./test-tmp/<name>_<pid>/.
  */
 
 #include "test/test_core.h"
@@ -121,9 +94,8 @@ static bool cca_build_schema(sqlite3 *db)
 static bool cca_set_cursor(sqlite3 *db, const char *name, int64_t cursor)
 {
     sqlite3_stmt *st = NULL;
-    /* Production stage_cursor (platform/modules/util/src/stage.c:156) has updated_at NOT
-     * NULL; omitting it fails the constraint, leaving the cursor 0 and the
-     * I4.4 `cur_utxo_apply > 0` guard un-armed. Write all three columns. */
+    /* Production stage_cursor has updated_at NOT NULL; write all three columns
+     * or the cursor stays 0 and the I4.4 `cur_utxo_apply > 0` guard is unarmed. */
     if (sqlite3_prepare_v2(db,
             "INSERT OR REPLACE INTO stage_cursor(name,cursor,updated_at)"
             " VALUES(?,?,0)",
@@ -168,11 +140,8 @@ static bool cca_set_applied(sqlite3 *db, int32_t height)
         if (err) sqlite3_free(err);
         return false;
     }
-    /* Stamp the migration-complete rung so coins_kv_is_proven_authority returns
-     * true (coins_kv_add already seeded a coin row; this set applied_height).
-     * compute_hstar's phantom-anchor guard drops the floor to 0 when the store
-     * is not proven authority — correct for a fresh datadir, but this fixture
-     * models a real seeded datadir whose H* must clamp at the anchor. */
+    /* Stamp the migration-complete rung so coins_kv_is_proven_authority is
+     * true; otherwise compute_hstar drops its floor to 0 (fresh datadir). */
     if (ok) {
         uint8_t one = 1;
         ok = progress_meta_set(db, COINS_KV_MIGRATION_COMPLETE_KEY, &one, 1);
@@ -208,9 +177,8 @@ int test_contaminated_coin_above_anchor(void)
     bool schema_ok = pk && cca_build_schema(pk) && coins_kv_ensure_schema(pk);
     CCA_CHECK("schema built", schema_ok);
 
-    /* (2) THE CONTAMINATED COIN ABOVE THE ANCHOR: a live output created at
-     * ANCHOR+5 — above the last VERIFIED height — then stamp coins_applied to
-     * ANCHOR+5. */
+    /* (2) THE CONTAMINATED COIN: a live output at ANCHOR+5, above the last
+     * verified height; coins_applied stamped to ANCHOR+5. */
     uint8_t txid[32];
     memset(txid, 0, 32);
     txid[0] = 0xDE; txid[1] = 0xAD; txid[31] = 0x5e;
@@ -220,16 +188,14 @@ int test_contaminated_coin_above_anchor(void)
                                  script, sizeof(script)));
     CCA_CHECK("coins_applied stamped to A+5", pk && cca_set_applied(pk, A + 5));
 
-    /* (3) THE HOLE: utxo_apply_log contiguous ok=1 run only A+1..A+2, leaving a
-     * verified-prefix frontier of A+2 (a hole at A+3). coins_applied (A+5) then
-     * sits 3 heights ABOVE utxo_apply's own contiguous ok=1 prefix. */
+    /* (3) THE HOLE: utxo_apply_log ok=1 run only A+1..A+2 (hole at A+3), so
+     * coins_applied (A+5) is 3 heights above the verified prefix. */
     bool ua_rows = pk && cca_put_ua_row(pk, A + 1) && cca_put_ua_row(pk, A + 2);
     CCA_CHECK("utxo_apply ok=1 prefix A+1..A+2 (hole at A+3)", ua_rows);
 
-    /* Cursors: utxo_apply cursor set so ua_log_frontier (A+2) == cursor-1, i.e.
-     * cursor = A+3 — this keeps I4.3 quiet while coins_applied=A+5 trips I4.4
-     * (mirrors test_invariant_sentinel.c:212-214). script_validate/tip_finalize
-     * cursors >= utxo_apply so I4.1 stays quiet. */
+    /* utxo_apply cursor = A+3 so ua_log_frontier (A+2) == cursor-1: keeps I4.3
+     * quiet while coins_applied=A+5 trips I4.4 (as test_invariant_sentinel.c).
+     * script_validate/tip_finalize cursors >= utxo_apply keep I4.1 quiet. */
     bool cursors = pk
         && cca_set_cursor(pk, "utxo_apply", A + 3)
         && cca_set_cursor(pk, "script_validate", A + 3)

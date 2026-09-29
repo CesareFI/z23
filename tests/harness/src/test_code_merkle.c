@@ -298,8 +298,7 @@ static int test_cm_incremental(void)
         ASSERT(warm.nodes_hashed < nodes_total);
         ASSERT(warm.nodes_reused == nodes_total - warm.nodes_hashed);
 
-        /* and the incremental root is EXACTLY the cold root — a cheaper path
-         * to the same identity, not a different one. */
+        /* the incremental root is exactly the cold root */
         struct ci_merkle_node inc_root;
         ASSERT(ci_merkle_root(inc, &inc_root));
         struct ci_merkle *reference = ci_merkle_build_cold(CM_FIX, NULL);
@@ -331,9 +330,7 @@ static int test_cm_cache_is_derived(void)
         ASSERT(ci_merkle_root(warm, &r1));
         ci_merkle_free(warm);
 
-        /* A syntactically valid image with one changed byte must not be
-         * trusted. The old unsealed format accepted a flip in the final
-         * cached node metadata and reused every source digest. */
+        /* A syntactically valid image with one changed byte is not trusted. */
         ASSERT(cm_flip_last_byte(
             CM_FIX "/.codeindex/source_tree.merkle"));
         struct ci_merkle_cost unsealed;

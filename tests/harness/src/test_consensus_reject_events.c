@@ -1,29 +1,18 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Tests for EV_CONSENSUS_REJECT_TX / EV_CONSENSUS_REJECT_BLOCK
- * emission — wave 7 new item "consensus metrics".
+ * Tests for EV_CONSENSUS_REJECT_TX / EV_CONSENSUS_REJECT_BLOCK emission.
  *
- * Strategy
- * --------
- * Drive `check_transaction` and `check_block_header` through failure
- * paths using transactions/headers crafted specifically to hit a
- * chosen `REJECT_*` macro, then assert that:
- *
+ * `check_transaction` and `check_block_header` are driven through failure
+ * paths crafted to hit a chosen `REJECT_*` macro, asserting:
  *  1. `EV_CONSENSUS_REJECT_TX` fires exactly once per failing
  *     `check_transaction` call.
  *  2. Successful `check_transaction` emits nothing.
- *  3. `EV_CONSENSUS_REJECT_BLOCK` fires on a failing
- *     `check_block_header` call (and not on a successful one).
- *  4. The payload string contains the reject reason and the
- *     accumulated DoS score.
+ *  3. `EV_CONSENSUS_REJECT_BLOCK` fires on a failing `check_block_header`
+ *     call, not on a successful one.
+ *  4. The payload contains the reject reason and the accumulated DoS score.
  *
- * The full `check_block` path (which internally recurses into
- * `check_transaction` and `check_block_header`) is covered by the
- * existing validation-path tests — here we only assert that the
- * event plumbing works, because the consumer
- * (`z23 core consensus report`,
- * AGENT3 wave 7) just needs the event stream to be reliable.
- */
+ * The full `check_block` path is covered by the validation-path tests; only
+ * the event plumbing is asserted here (consumer: `z23 core consensus report`). */
 
 #include "test/test_core.h"
 #include "validation/check_transaction.h"

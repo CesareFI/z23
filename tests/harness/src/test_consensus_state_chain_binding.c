@@ -538,15 +538,11 @@ int test_consensus_state_chain_binding(void)
               consensus_state_chain_binding_decide(
                   &manifest, &bootstrap_replaced).ok);
 
-    /* ── Fresh-genesis instant-on bootstrap (the -3 relaxation, this lane) ─────
-     * A genuinely fresh (never-folded) node has NO durable tip_finalize authority
-     * yet, so before/after_frontier_consistent are FALSE — today it refuses at -3
-     * BEFORE the -4 header-bootstrap bind is even reached. This lane relaxes -3
-     * for exactly one case: a clean, quiescent genesis node (fresh_genesis_
-     * bootstrap set by evidence_build from a coherent RUNTIME frontier at H*=0
-     * with no partial fold state), and ONLY under compiled-checkpoint authority.
-     * The -4 crypto anchor and -11 header-tip validity stay fully enforced. The
-     * six adversarial cases below are the lane's acceptance bar. */
+     /* Fresh-genesis instant-on bootstrap: -3 is relaxed only for a clean,
+      * quiescent genesis node (fresh_genesis_bootstrap set from a coherent
+      * runtime frontier at H*=0, no partial fold state) under compiled-
+      * checkpoint authority. The -4 crypto anchor and -11 header-tip validity
+      * stay enforced. */
 
     /* A fresh-genesis node: durable frontier consistency is FALSE (no durable
      * authority), but the clean-genesis eligibility flag is set and the compiled
@@ -728,9 +724,8 @@ int test_consensus_state_chain_binding(void)
               !consensus_state_chain_binding_uses_assisted_authority(
                   &manifest, &a_no_cp));
 
-    /* Fresh-genesis assisted: a genuinely fresh node (H*=0, no durable frontier
-     * authority) installing the FRESHEST bundle. The -3 clean-genesis relaxation
-     * now also covers assisted, so it ADMITs while determinism + PoW facts hold. */
+     /* Fresh-genesis assisted: a fresh node (H*=0) installing the freshest
+      * bundle ADMITs under the -3 clean-genesis relaxation. */
     struct consensus_state_chain_binding_observation assisted_fresh = assisted;
     assisted_fresh.before_frontier_consistent = false;
     assisted_fresh.after_frontier_consistent = false;
@@ -751,13 +746,9 @@ int test_consensus_state_chain_binding(void)
     CSB_CHECK("assisted: mid-fold node still refuses at -3",
               !a_mid.ok && a_mid.code == -3);
 
-    /* ── REGRESSION: a self-VALIDATED target is NEVER demoted to assisted ──────
-     * The fully-materialized `observation` (durable served H* = 120 >= bundle
-     * height 100) folded THROUGH the seam. Even with the assisted opt-in ON and a
-     * compiled checkpoint below the bundle, it must bind via the NORMAL below-
-     * checkpoint gate (sovereign) and uses_assisted_authority must stay false —
-     * otherwise the install would silently withhold self_folded from a node that
-     * earned sovereignty. */
+     /* A self-validated target is never demoted to assisted: with the
+      * assisted opt-in on and a checkpoint below the bundle, it binds via the
+      * normal below-checkpoint gate and uses_assisted_authority stays false. */
     struct consensus_state_chain_binding_observation self_validated = observation;
     self_validated.assisted_mode_requested = true;
     self_validated.checkpoint_authority.available = true;

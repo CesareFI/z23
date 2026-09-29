@@ -1,7 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Unit tests for the blocker hand-off surface — the half of "a stall is
- * always a named blocker" that was missing: every named blocker must carry
+ * Unit tests for the blocker hand-off surface: every named blocker must carry
  * EITHER something the node attempts OR an explicit statement that a person
  * must decide, with the decision spelled out.
  *
@@ -9,7 +8,7 @@
  *   - the primitive defaults honestly with no resolver installed (UNKNOWN,
  *     empty strings) rather than implying "no remedy"
  *   - installing / removing the app-layer resolver
- *   - the three blockers standing on the canonical node 2026-07-27 resolve:
+ *   - three standing blockers resolve:
  *       address_index.below_snapshot_seed  -> human + decision text
  *       txindex.below_snapshot_seed        -> human + decision text
  *       catalog.op_return_index.lag_exceeded -> automatic (condition healer)
@@ -34,8 +33,8 @@
     else { printf("FAIL\n"); failures++; } \
 } while (0)
 
-/* Raise a DEPENDENCY blocker with no escape and no retry budget — the exact
- * shape of the three standing live blockers. */
+/* Raise a DEPENDENCY blocker with no escape and no retry budget (the shape of
+ * the standing blockers). */
 static void raise_bare(const char *id, const char *owner)
 {
     struct blocker_record r;
@@ -83,7 +82,7 @@ int test_blocker_handoff(void)
 
     blocker_handoff_registry_install();
 
-    /* ── The three blockers standing on the canonical node ──────────── */
+    /* ── The three standing blockers ──────────── */
     {
         struct blocker_handoff h;
         bool found = blocker_resolve_handoff("address_index.below_snapshot_seed",

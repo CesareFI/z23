@@ -1,11 +1,9 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * test_boot_matrix — the "we keep getting stuck" NEGATION (plan lane 2.2):
- * a boot (flag x datadir-state) matrix where EVERY cell terminates in a
- * NAMED terminal (preflight refusal / typed blocker id / anchor reached)
- * under a wall-clock budget. A timeout is scored as a test FAILURE, not a
- * skip — the whole point of this group is that a silent multi-hour grind
- * (a mint-fold livelock class) can never pass here quietly.
+ * test_boot_matrix — a boot (flag x datadir-state) matrix where EVERY cell
+ * terminates in a NAMED terminal (preflight refusal / typed blocker id /
+ * anchor reached) under a wall-clock budget. A timeout is a test FAILURE,
+ * not a skip, so a silent multi-hour grind cannot pass quietly.
  *
  * Drives the REAL -mint-anchor entry functions in-process (no forked
  * binary): engine/composition/src/boot_mint_anchor_preflight.c's
@@ -15,8 +13,8 @@
  * synthetic-datadir fixture idioms from test_mint_anchor_fresh_datadir.c
  * (scenarios a/b/c) and the hermetic-override idiom (point
  * ZCL_MINT_PREFLIGHT_LEGACY_BLOCKS_DIR at a guaranteed-empty directory so a
- * dev box's real $HOME/.zclassic/blocks cannot make the test non-hermetic)
- * plus the skip/no-snapshot fixture-selection pattern from
+ * dev box's real $HOME/.zclassic/blocks cannot break hermeticity) plus the
+ * skip/no-snapshot fixture-selection pattern from
  * test_chainstate_legacy_reader.c.
  *
  * Six highest-value cells:
@@ -30,13 +28,11 @@
  *      source (ZCL_MINT_PREFLIGHT_LEGACY_BLOCKS_DIR)     -> preflight_refusal
  *
  * -mint-anchor and -mint-anchor-fast share the SAME preflight gate
- * (engine/entry/main.c: `if (ctx.mint_anchor && !boot_mint_anchor_preflight_run_all(...))
- * return 1;` runs regardless of ctx.mint_anchor_fast — the fast/skip-crypto
- * toggle only changes what happens INSIDE a fold that reaches app_init, never
- * the preflight gate), so cells 1, 4, 5, 6 all exercise
+ * (engine/entry/main.c; the fast/skip-crypto toggle only changes what happens
+ * INSIDE a fold that reaches app_init), so cells 1, 4, 5, 6 exercise
  * boot_mint_anchor_preflight_run_all with different datadir/env shapes; cell
- * 4 additionally arms mint_skip_crypto to prove doing so does not change the
- * fresh-datadir terminal. Cells 2/3 exercise the post-preflight fold drive.
+ * 4 also arms mint_skip_crypto to prove it does not change the fresh-datadir
+ * terminal. Cells 2/3 exercise the post-preflight fold drive.
  *
  * Each cell records its (flag, datadir-state, terminal, elapsed, budget) into
  * a summary table printed at the end so the whole matrix reads as one glance.

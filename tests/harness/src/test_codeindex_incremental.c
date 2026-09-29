@@ -1,20 +1,12 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Purpose: Prove an incrementally patched code index answers exactly what a cold rebuild answers.
  *
- * The index no longer rescans the whole checkout when one file moves: the
- * source Merkle snapshot names the changed leaves and only those files are
- * re-read, and the staging image is a clone of the previous generation with
- * those rows replaced. Both shortcuts are only worth having if the result is
- * indistinguishable from the from-scratch answer, so every case below runs the
- * same edit against two fixtures — one kept incrementally, one rebuilt cold by
- * deleting its derived directory first — and requires them to agree on the
- * sealed generation roots AND on the queries a consumer actually asks.
- *
- * The cases are the ones that behave differently inside the builder: one file,
- * three files, a whole directory, a file added to the inventory (which is NOT
- * incremental and must fall back), and a corrupted Merkle snapshot (which must
- * be discarded rather than trusted).
- */
+ * The index patches only the changed leaves named by the source Merkle
+ * snapshot, cloning the previous generation. Each case runs the same edit
+ * against two fixtures, one incremental and one rebuilt cold, and requires the
+ * same sealed generation roots and query answers. Cases: one file, three
+ * files, a whole directory, a file added to the inventory (falls back to a
+ * rebuild), and a corrupted Merkle snapshot (discarded). */
 
 #include "test/test_core.h"
 
@@ -313,10 +305,8 @@ static bool cin_count_includes(const char *root, int *present, int *missing)
     return true;
 }
 
-/* A depfile can name a header this checkout no longer contains: the header was
- * deleted or renamed after the compile. The source still depends on that path,
- * so the scan keeps the edge. Dropping it would let the deletion impact nothing
- * and narrow the plan past the unit that read the header. */
+/* A depfile can name a header the checkout no longer contains; the scan keeps
+ * the edge so a deleted header still impacts the unit that read it. */
 static bool cin_depfile_keeps_missing(const char *live, const char *reference)
 {
     static const char depfile[] =
@@ -335,11 +325,9 @@ static bool cin_depfile_keeps_missing(const char *live, const char *reference)
            live_present == 1 && ref_present == 1;
 }
 
-/* The unit that read `dep` is a forward include of the unit AND a reverse
- * include of `dep` — the second is what code.impact asks when `dep` changes.
- * Both must hold whether or not `dep` is still in the checkout. A vanished
- * prerequisite keeps its edge and refuses a complete answer: `want` is
- * COMPLETE only while every named prerequisite exists. */
+/* The unit that read `dep` is a forward include of the unit and a reverse
+ * include of `dep`, whether or not `dep` is still in the checkout. A vanished
+ * prerequisite keeps its edge and refuses a complete answer. */
 static bool cin_impact_edge(const char *root, const char *dep,
                             enum codeindex_include_dim want)
 {
@@ -728,9 +716,8 @@ int test_codeindex_incremental(void)
               cin_edit_both(live, reference, 0, 2) &&
               cin_agrees(live, reference, NULL));
 
-    /* A new file is an INVENTORY change, not a content change: the builder
-     * must decline the incremental branch and rebuild, and the answer must
-     * still be the cold one. */
+    /* A new file is an inventory change: the builder declines the incremental
+     * branch and rebuilds, and the answer is the cold one. */
     bool added = cin_write_file(
         live, "lib/net/src/zeta.c",
         "/* Purpose: incremental fixture inventory growth. */\n"
@@ -745,9 +732,8 @@ int test_codeindex_incremental(void)
     CIN_CHECK("a new file is admitted into the indexed inventory",
               grown_files == baseline_files + 1);
 
-    /* A corrupted snapshot is never trusted. Discarding it costs one cold
-     * pass, which also means the incremental branch is declined and the spare
-     * it would have left is removed. */
+    /* A corrupted snapshot is never trusted: it costs one cold pass and the
+     * incremental branch is declined. */
     bool corrupted = cin_corrupt_snapshot(live);
     CIN_CHECK("a corrupted Merkle snapshot still yields the cold answer",
               corrupted && cin_edit_both(live, reference, 4, 5) &&

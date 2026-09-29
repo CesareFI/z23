@@ -1,33 +1,17 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * test_core_seal — regression tests for the sealed-consensus-core manifest
- * encoding (tools/core_seal.c).
+ * test_core_seal — tests for the sealed-consensus-core manifest encoding
+ * (tools/core_seal.c).
  *
- * WHAT THIS FILE EXISTS TO CATCH. core_seal's section tree was reverted once
- * (44f20ec55) over "ambiguous inputs". The ambiguity was real and it was in the
- * SERIALISATION, not in the Merkle preimages: the manifest wrote
+ * The manifest line `SECTION <dir> <count> <hex>` must not be parseable two
+ * ways: git permits spaces in paths, so a directory named `x  7  <64 hex>`
+ * would have collapsed onto a genuine `core/x` record under a whitespace-
+ * delimited sscanf. The first test transcribes that delimiter-only writer/
+ * reader as a negative control, shows the collision, and shows the two
+ * records stay distinct under the current length-prefixed encoding.
  *
- *     SECTION  <dir>  <count>  <hex>
- *
- * and read it back with sscanf("SECTION %255s %llu %64s"), i.e. whitespace-
- * delimited fields whose FIRST field was the variable-length, path-shaped one.
- * git permits a space in a path, so a directory literally named
- *
- *     x  7  <64 hex>
- *
- * under core/ serialised to a line that sscanf parsed EXACTLY as the record a
- * genuine `core/x` with 7 files and that digest would produce. Two structurally
- * different section sets, one parse.
- *
- * The first test below is not a description of that bug, it is a MEASUREMENT of
- * it: it implements the historical writer/reader pair verbatim, shows the two
- * records collapse under it, and shows they stay distinct under the current
- * length-prefixed encoding. If anyone re-introduces a delimiter-only spelling,
- * the second half goes red.
- *
- * The whole tool is included as a translation unit (the pattern
- * test_postmortem_to_scenario.c uses for tools/postmortem_to_scenario.c) so the
- * tests exercise the SHIPPING functions rather than a copy of them.
+ * The whole tool is included as a translation unit (as
+ * test_postmortem_to_scenario.c does) so the shipping functions are tested.
  */
 #ifndef _POSIX_C_SOURCE
 #define _POSIX_C_SOURCE 200809L
@@ -63,11 +47,9 @@ static int cs_failures;
         }                                                                      \
     } while (0)
 
-/* ── the historical encoding, transcribed from 44f20ec55^ ─────────────────
+/* ── the historical encoding (negative control) ───────────────────────────
  *
- * Kept here and NOWHERE else. Its only job is to be the negative control: a
- * test that cannot fail proves nothing, so the discriminating test needs a
- * demonstrated collision to discriminate against. */
+ * Kept only here: the discriminating test needs a demonstrated collision. */
 
 struct legacy_section {
     char name[MERKLE_PATH_MAX];
@@ -99,9 +81,8 @@ static bool legacy_same(const struct legacy_section *a,
 
 /* ── the historical stdin tokeniser ───────────────────────────────────────
  *
- * 44f20ec55^ (and every revision before it) ended a path token at a NUL *or* a
- * newline, which is exactly the guarantee `git ls-files -z` exists to provide
- * and exactly what it threw away. Returns the token count. */
+ * Ended a path token at a NUL or a newline, discarding the guarantee of
+ * `git ls-files -z`. Returns the token count. */
 static size_t legacy_token_count(const char *data, size_t len)
 {
     size_t i = 0, tokens = 0;
@@ -280,10 +261,8 @@ static void test_path_policy(void)
     CS_CHECK("a \"..\" component is REFUSED",
              path_reject_reason("core/../a.c") != NULL);
 
-    /* The truncation hole: the previous revision bounded only the FILE
-     * basename, so a >= MERKLE_NAME_MAX DIRECTORY component was snprintf'd
-     * down to 159 bytes and the parent node then committed to a name that was
-     * not the child's. Every component is bounded now. */
+    /* Every path component is bounded: a >= MERKLE_NAME_MAX directory
+     * component must not be truncated so the parent commits to a different name. */
     char longdir[MERKLE_PATH_MAX];
     size_t k = 0;
     memcpy(longdir, "core/", 5);
@@ -307,8 +286,8 @@ static void test_path_policy(void)
 
 static void test_input_tokenisation(void)
 {
-    /* ONE NUL-terminated token that happens to contain a newline — precisely
-     * what `git ls-files -z` emits for a path with a newline in it. */
+    /* ONE NUL-terminated token containing a newline, as `git ls-files -z`
+     * emits for such a path. */
     static const char stream[] = "core/a\nb.h\0core/c.h";
     const size_t len = sizeof(stream) - 1;
 
@@ -341,10 +320,8 @@ static void test_file_line(void)
 
 /* ── 6. the Merkle dialect is codeindex's, byte for byte ──────────────── */
 
-/* Recomputed here from the DOCUMENTED preimage with nothing but sha3, so this
- * is a differential check against the spec and not a restatement of the code.
- * The pinned hex values were cross-checked against this same independent
- * computation before being written down. */
+/* Recomputed from the documented preimage with nothing but sha3: a
+ * differential check against the spec, not a restatement of the code. */
 static void spec_node_digest(const char *path, const struct mchild *kids,
                              uint32_t n, unsigned char out[HSZ])
 {
@@ -439,8 +416,8 @@ static void test_root_is_frozen(void)
                     "9d4e33a2ff1de7ece0cf87ef538eaac081ad9588477b3d06aee017b6"
                     "7d9ddd60") == 0);
 
-    /* The seal's own identity, as shipped. If this moves, every hot-swap
-     * module's pin (hotswap/core_seal_root.h) is stale. */
+    /* The seal's shipped identity; if it moves, every hot-swap module pin
+     * (hotswap/core_seal_root.h) is stale. */
     CS_CHECK("the shipped ROOT pin is still 64 lowercase hex",
              is_hex64("a1533630bda2379889f9db262f81cd6e265ad474f642a1ee7d1de95"
                       "23ac3b1aa"));
@@ -503,8 +480,7 @@ static void test_leaf_preimage(void)
     CS_CHECK("leaf digest matches the documented preimage",
              memcmp(leaf, want_leaf, HSZ) == 0);
 
-    /* The frozen per-file digest is raw content only — no tag, no path, no
-     * length. Changing that would move ROOT. */
+        /* The frozen per-file digest is raw content only (no tag/path/length); changing it moves ROOT. */
     struct sha3_256_ctx c;
     sha3_256_init(&c);
     sha3_256_write(&c, payload, plen);
@@ -570,9 +546,8 @@ static void test_leaf_preimage(void)
 
 static void test_sections_localise(void)
 {
-    /* Two sibling directories, one file each. Changing one file's leaf must
-     * move exactly its own section (and the ancestors), never its sibling's —
-     * that independence is the whole point of the section tree. */
+    /* Two sibling directories: changing one file moves exactly its own
+     * section (and ancestors), never its sibling's. */
     struct entry ents[2];
     memset(ents, 0, sizeof(ents));
     ents[0].path = (char *)"core/alpha/a.c";

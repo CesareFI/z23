@@ -1,11 +1,9 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * Regression test for the shared mempool-acceptance gate
- * accept_to_mempool() (core/modules/validation). The bug it closes: the relay
- * paths (P2P `tx` + RPC sendrawtransaction) admitted and fluffed a tx
- * with a structurally-valid shape and existing prevouts but an INVALID
- * transparent signature — only block-connect rejected it, after the
- * invalid-sig flood had already wasted every node's bandwidth.
+ * accept_to_mempool() (core/modules/validation): the relay paths (P2P `tx` +
+ * RPC sendrawtransaction) must reject a tx with an INVALID transparent
+ * signature instead of admitting and relaying it until block-connect.
  *
  * The core assertion: a tx with a BAD signature is REJECTED (and so
  * never relayed); the same tx with a VALID signature is ACCEPTED. */
@@ -133,10 +131,9 @@ int test_accept_to_mempool(void)
 
     /* ================================================================
      * 1. BAD signature → REJECTED before relay.
-     *    A tx structurally valid, prevout exists, fee positive, but the
-     *    transparent signature is forged. Old relay path accepted+fluffed
-     *    this; the gate must now reject it (MEMPOOL_ACCEPT_INVALID) and
-     *    leave the mempool empty.
+     *    Structurally valid tx, prevout exists, fee positive, forged
+     *    transparent signature: the gate returns MEMPOOL_ACCEPT_INVALID and
+     *    leaves the mempool empty.
      * ================================================================ */
     printf("accept_to_mempool: bad-sig tx REJECTED before relay... ");
     {
@@ -359,9 +356,7 @@ int test_accept_to_mempool(void)
     }
 
     /* ================================================================
-     * 6. Wallet commit with a forged signature fails atomically.
-     *    Locally-created transactions used to bypass accept_to_mempool()
-     *    through tx_mempool_add_unchecked(). Pin the invariant that an
+     * 6. Wallet commit with a forged signature fails atomically: an
      *    invalid transaction changes neither wallet nor mempool state.
      * ================================================================ */
     printf("wallet commit: bad-sig tx rejected with no state mutation... ");

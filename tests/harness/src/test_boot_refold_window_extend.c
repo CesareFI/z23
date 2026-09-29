@@ -1,51 +1,27 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * test_boot_refold_window_extend — the deterministic regression proof for the
- * boot-loader fix in engine/composition/src/boot_refold_staged.c
- * (boot_load_snapshot_at_own_height_reset, commit ab512d577).
+ * test_boot_refold_window_extend: regression proof for the boot loader in
+ * engine/composition/src/boot_refold_staged.c
+ * (boot_load_snapshot_at_own_height_reset).
  *
- * THE BUG THIS PINS
- * -----------------
- * The -load-snapshot-at-own-height loader checks snapshot chain location by
- * looking its seed height up in the active-chain WINDOW (active_chain_at). It
- * does not authenticate snapshot state contents. That window
- * is pinned to coins-best on every boot path. When the snapshot height (seed_h)
- * was ABOVE coins-best, active_chain_at returned NULL and the loader FATAL'd
- * "Run --importblockindex" — but --importblockindex only sets
- * pindex_best_header, it never fills chain[]. No recipe could satisfy the check;
- * a node pinned below a newer, complete snapshot stayed wedged.
+ * The -load-snapshot-at-own-height loader looks its seed height up in the
+ * active-chain WINDOW (active_chain_at), which is pinned to coins-best. When
+ * seed_h is ABOVE coins-best the lookup returns NULL. When
+ * pindex_best_header->nHeight >= seed_h the loader widens the window forward
+ * with active_chain_extend_window (walks pprev to fill chain[]; never
+ * publishes finalized authority) and re-reads. A real pprev gap leaves the
+ * slot NULL and the downstream FATAL still fires (fails closed).
  *
- * The fix: when active_chain_at(seed_h) is NULL but
- * pindex_best_header->nHeight >= seed_h, widen the window forward to the
- * PoW-proven header tip with active_chain_extend_window (which walks pprev to
- * fill chain[] and never publishes finalized authority), then re-read. A real
- * pprev gap leaves the slot NULL and the downstream FATAL still fires (fails
- * closed — never bind a coin against a missing/forged anchor).
+ * This isolates the primitive seam (active_chain_extend_window +
+ * active_chain_at) with in-memory block_index fixtures, no datadir or
+ * snapshot, and needs no fork:
  *
- * WHY A UNIT SEAM (and not a fork-child loader integration like
- * test_refold_auto_arm)
- * ----------------------------------------------------------------------------
- * The fix is two lines of glue over one primitive: active_chain_extend_window +
- * active_chain_at. The whole-loader path additionally requires a real
- * SHA3-verified snapshot file on disk, an open node.db, and a checkpoint
- * override — none of which exercise the window-extend logic that is the subject
- * of the fix. This test isolates EXACTLY the primitive seam the fix relies on,
- * with cheap in-memory block_index fixtures and zero datadir/snapshot. It
- * asserts BOTH halves of the fix's contract:
+ *   (A) RECOVERY: seed_h above the coins-best window but reachable by walking
+ *       pprev from pindex_best_header is INVISIBLE before the extend and
+ *       VISIBLE (the correct, hash-matching block_index) after it.
  *
- *   (A) RECOVERY  — seed_h above the coins-best window but reachable by walking
- *       pprev from pindex_best_header is INVISIBLE before the extend
- *       (active_chain_at == NULL, the exact pre-fix FATAL trigger) and VISIBLE
- *       (the correct, hash-matching block_index) after it. This is the case the
- *       fix unwedges.
- *
- *   (B) FAILS CLOSED — when a genuine pprev gap sits between the coins-best
- *       window and the header tip, the extend cannot bridge it: the slot at
- *       seed_h stays NULL after the extend, so the loader's FATAL still fires
- *       (the fix never binds against a missing anchor).
- *
- * No FATAL path runs in-process here (the fix's _exit is downstream of the NULL
- * the (B) case asserts), so this test needs no fork.
+ *   (B) FAILS CLOSED: with a genuine pprev gap between the coins-best window
+ *       and the header tip, the slot at seed_h stays NULL after the extend.
  */
 
 #include "test/test_core.h"
@@ -68,11 +44,10 @@
 #include <stdio.h>
 #include <string.h>
 
-/* Non-static exported helper, forward-declared rather than dragging its
- * src-private header onto this test TU's include path (same pattern
- * block_index_loader_torn_gate.c uses). script_validate_log_ensure_schema:
- * engine/jobs/src/script_validate_log_store.h. The torn detector reads the
- * coin_backfill.refused marker keyed (height, hash) from repair_marker. */
+/* Non-static exported helper, forward-declared rather than pulling its
+ * src-private header (engine/jobs/src/script_validate_log_store.h) onto this
+ * TU's include path. The torn detector reads the coin_backfill.refused
+ * marker keyed (height, hash) from repair_marker. */
 bool script_validate_log_ensure_schema(struct sqlite3 *db);
 
 #define BRWE_CHECK(name, expr) do {                       \
@@ -149,9 +124,8 @@ int test_boot_refold_window_extend(void)
     const int SEED_H      = 130;   /* the snapshot height: above the window */
     const int HEADER_TIP  = 150;   /* pindex_best_header: above seed_h */
 
-    /* The legacy from-genesis staged verb used to reset all three shielded
-     * markers to zero before its ordinary reducer replay. It is now refused by
-     * the app-init preflight before progress.kv opens or any reset can run. */
+    /* The legacy from-genesis staged verb is refused by the app-init
+     * preflight before progress.kv opens or any reset can run. */
     {
         char dir[256];
         test_make_tmpdir(dir, sizeof(dir), "boot_refold_contained", "main");
@@ -181,7 +155,7 @@ int test_boot_refold_window_extend(void)
     /* ── Case (A): RECOVERY — contiguous pprev chain to the header tip. ─────
      * Build a fully linked header chain [0 .. HEADER_TIP], pin the active
      * window to COINS_BEST, point pindex_best_header at the tip. seed_h is then
-     * invisible (the pre-fix FATAL) until the extend widens the window. */
+     * invisible until the extend widens the window. */
     {
         struct main_state ms;
         main_state_init(&ms);
@@ -211,8 +185,7 @@ int test_boot_refold_window_extend(void)
                        active_chain_height(&ms.chain_active) == COINS_BEST);
             ms.pindex_best_header = header_tip;
 
-            /* PRE-FIX TRIGGER: seed_h is above the window → invisible.
-             * This is the exact NULL the old loader FATAL'd on. */
+            /* seed_h is above the window, so it is invisible. */
             BRWE_CHECK("A: seed_h invisible before extend (the pre-fix FATAL)",
                        active_chain_at(&ms.chain_active, SEED_H) == NULL);
 
@@ -220,10 +193,8 @@ int test_boot_refold_window_extend(void)
             BRWE_CHECK("A: extend to header tip succeeds",
                        active_chain_extend_window(&ms.chain_active, header_tip));
 
-            /* POST-FIX: seed_h is now visible AND is the correct block_index
-             * (the consensus anchor cross-check downstream reads bi->hashBlock,
-             * so the IDENTITY of the slot — not just non-NULL — is what makes
-             * the fix sound). */
+            /* seed_h is visible AND is the correct block_index (the anchor
+             * cross-check reads bi->hashBlock, so identity matters). */
             const struct block_index *bi =
                 active_chain_at(&ms.chain_active, SEED_H);
             BRWE_CHECK("A: seed_h VISIBLE after extend", bi != NULL);
@@ -243,12 +214,9 @@ int test_boot_refold_window_extend(void)
     }
 
     /* ── Case (B): FAILS CLOSED — a genuine pprev gap at seed_h. ────────────
-     * Build the chain with a HOLE: the block at SEED_H has NO pprev link to its
-     * parent (a missing-ancestor gap, e.g. a header the import never linked).
-     * fill_window walks pprev down from the header tip; it cannot reach the
-     * SEED_H slot through the gap, so active_chain_at(SEED_H) stays NULL after
-     * the extend — and the loader's FATAL still fires (never binds a coin
-     * against a missing anchor). */
+     * The block at SEED_H has NO pprev link to its parent, so fill_window
+     * cannot reach that slot and active_chain_at(SEED_H) stays NULL after
+     * the extend. */
     {
         struct main_state ms;
         main_state_init(&ms);
@@ -288,9 +256,8 @@ int test_boot_refold_window_extend(void)
             BRWE_CHECK("B: extend call returns true (no alloc failure)",
                        active_chain_extend_window(&ms.chain_active, header_tip));
 
-            /* THE FAIL-CLOSED ASSERTION: seed_h is STILL NULL after the extend.
-             * In the loader, this leaves `bi` NULL and the FATAL fires — the
-             * fix never binds a coin against a missing/forged anchor. */
+            /* Fail-closed: seed_h is STILL NULL after the extend, so the
+             * loader never binds a coin against a missing/forged anchor. */
             BRWE_CHECK("B: seed_h STILL NULL after extend (FATAL still fires)",
                        active_chain_at(&ms.chain_active, SEED_H) == NULL);
         }
@@ -300,25 +267,17 @@ int test_boot_refold_window_extend(void)
 
     /* ── Case (D): POST-IMPORT O(delta) RESUME — the shielded-history import
      * (-import-complete-shielded) clears utxo_apply.{anchor,nullifier}_backfill_gap
-     * and flips the anchor/nullifier activation cursors to 0. On the very next
-     * boot the from-anchor AUTO-ARM (boot_refold_from_anchor_arm_if_torn, run
-     * UNCONDITIONALLY from boot_services.c) is consulted. It MUST NOT fire on the
-     * healed post-import state: firing would call boot_refold_from_anchor_reset,
-     * which forces the 8 stage cursors + coins-applied frontier back to the
-     * compiled anchor (anchor+1) — an O(anchor..tip) re-fold of the ~120k blocks
-     * already folded past the anchor to the wedge. The correct behaviour is a
-     * DELTA resume: the coin cursors stay AT the wedge and the pipeline folds only
-     * wedge..tip.
+     * and flips the activation cursors to 0. On the next boot the from-anchor
+     * AUTO-ARM (boot_refold_from_anchor_arm_if_torn) MUST NOT fire on the
+     * healed state: firing would reset the stage cursors and coins-applied
+     * frontier to the anchor and force an O(anchor..tip) re-fold. The coin
+     * cursors must stay AT the wedge (delta resume).
      *
-     * The auto-arm's tear signal is a TRANSPARENT prevout_unresolved hole above
-     * the anchor with a durable coin_backfill.refused marker
-     * (block_index_loader_torn_import_detect) — a mechanism ORTHOGONAL to the
-     * shielded activation cursors the import flips. This case pins that: on a
-     * datadir whose coins-applied frontier sits at the wedge (above the anchor)
-     * with NO transparent tear, detect() is false and the auto-arm declines, so
-     * the coin cursors are left untouched (the O(delta) measurement). Sub-steps
-     * D3/D2 keep the assertion non-vacuous by proving detect() genuinely scans the
-     * transparent tear state (false without the refusal marker, true with it). */
+     * The tear signal is a TRANSPARENT prevout_unresolved hole above the
+     * anchor with a durable coin_backfill.refused marker
+     * (block_index_loader_torn_import_detect), orthogonal to the shielded
+     * cursors. Sub-steps D3/D2 keep the assertion non-vacuous: detect() is
+     * false without the refusal marker and true with it. */
     {
         const int CP_H   = 100;   /* compiled anchor (checkpoint override) */
         const int WEDGE   = 130;   /* post-import coins-applied frontier > anchor */
@@ -338,9 +297,8 @@ int test_boot_refold_window_extend(void)
         struct node_db ndb;
         BRWE_CHECK("D: node_db opens", node_db_open(&ndb, dbpath));
 
-        /* Compiled anchor at CP_H via the test override. sha3/count are unused:
-         * detect() only reads cp->height, and the healed case never arms (so the
-         * reset's snapshot re-seed is never reached). */
+        /* Compiled anchor at CP_H via the test override; detect() only reads
+         * cp->height. */
         struct sha3_utxo_checkpoint cp_ovr;
         memset(&cp_ovr, 0, sizeof(cp_ovr));
         cp_ovr.height = CP_H;
@@ -368,9 +326,8 @@ int test_boot_refold_window_extend(void)
             ms.pindex_best_header = tip;
         }
 
-        /* Coins-applied frontier at the wedge (the resume point the fold left
-         * off at, ABOVE the anchor). This is what a from-anchor reset would
-         * clobber back to CP_H+1. */
+        /* Coins-applied frontier at the wedge, above the anchor; a from-anchor
+         * reset would clobber it back to CP_H+1. */
         {
             char *terr = NULL;
             sqlite3_exec(pdb, "BEGIN IMMEDIATE", NULL, NULL, &terr);
@@ -384,18 +341,16 @@ int test_boot_refold_window_extend(void)
                        found && got == WEDGE);
         }
 
-        /* Sync the durable from-anchor cache to this fresh store (a prior test
-         * group could have left the process-global atomic true). Absent key →
-         * refold_from_anchor_active()==false, the arm's non-tear path. */
+        /* Sync the durable from-anchor cache to this fresh store (absent key
+         * means refold_from_anchor_active()==false). */
         (void)refold_progress_refresh(pdb);
         BRWE_CHECK("D: no from-anchor refold pre-armed on a fresh store",
                    !refold_from_anchor_active());
 
-        /* D1 — HEALED post-import state: NO transparent tear. detect() must be
-         * false, the ceiling must have cleared the anchor gate (the scan really
-         * ran), the auto-arm must DECLINE, and — the O(delta) proof — the
-         * coins-applied frontier must be UNCHANGED at the wedge (never forced
-         * back to the anchor). */
+        /* D1 — HEALED post-import state, NO transparent tear: detect() is
+         * false, the ceiling cleared the anchor gate (the scan ran), the
+         * auto-arm DECLINES, and the coins-applied frontier stays at the
+         * wedge. */
         {
             int32_t hole = 0, ceiling = 0;
             bool tear = block_index_loader_torn_import_detect(
@@ -416,10 +371,9 @@ int test_boot_refold_window_extend(void)
                        found && got == WEDGE);
         }
 
-        /* D3 — NON-VACUOUS: a real transparent prevout_unresolved hole ABOVE the
-         * anchor, but NO durable coin_backfill.refused marker. detect() scans the
-         * hole yet must STILL be false (condition 3 requires the refusal marker) —
-         * proving the false above is a genuine no-tear verdict, not a broken scan. */
+        /* D3 — NON-VACUOUS: a transparent prevout_unresolved hole above the
+         * anchor but NO coin_backfill.refused marker; detect() scans the hole
+         * and is still false (condition 3 needs the marker). */
         struct uint256 hole_hash;
         brwe_hash_for(HOLE_H, &hole_hash);
         BRWE_CHECK("D3: insert prevout_unresolved hole above the anchor",
@@ -433,10 +387,9 @@ int test_boot_refold_window_extend(void)
                        tear == false);
         }
 
-        /* D2 — the POSITIVE control: add the durable refusal marker at the hole's
-         * own (height, block_hash) key. Now the full three-condition predicate
-         * fires — detect() is true and reports HOLE_H. (We do NOT arm here: this
-         * only proves detect() CAN fire, so the D1 false is a real verdict.) */
+        /* D2 — POSITIVE control: add the refusal marker at the hole's own
+         * (height, block_hash) key; detect() is now true and reports HOLE_H
+         * (no arm here). */
         {
             /* "unprovable" is one of the active refusal markers the decoder
              * treats as out_active=true (stage_repair_coin_backfill_util.h). */

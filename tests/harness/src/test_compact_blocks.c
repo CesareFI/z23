@@ -225,24 +225,13 @@ int test_compact_blocks(void)
         block_free(&blk);
     }
 
-    /* ── Regression: hard-failure returns must still initialize out_block ──
-     *
-     * tests/harness/fuzz_seeds/p2p/crash-478b30c0482cf3e2842fa459987a7a2e5374e708.bin
-     * is a 152-byte cmpctblock from an unauthenticated peer whose payload
-     * decodes to a well-formed header, a nonce, and then a short-txid count
-     * of 0 and a prefilled count of 0. total == 0 takes the very first
-     * failure return in compact_block_reconstruct(). Before the fix that
-     * return ran BEFORE block_init(out_block), so process_cmpctblock()'s
-     * `else { block_free(&out_block); }` walked whatever the stack held at
-     * that frame offset: transaction_free() over a stale pointer for a
-     * stale count. The background fuzzer caught it as an ASan
-     * heap-buffer-overflow in transaction_free <- block_free <-
-     * process_cmpctblock; it only ever fires in a long-lived process,
-     * because a freshly-mapped stack reads back as zero.
-     *
-     * The poison below is what a long-lived process supplies for free.
-     * Without the fix these assertions fail; with the assertions removed
-     * the block_free() at the end walks 2^40 transaction slots. */
+     /* Hard-failure returns must still initialize out_block. A 152-byte
+      * cmpctblock (tests/harness/fuzz_seeds/p2p/crash-478b30c0482cf3e2842fa459987a7a2e5374e708.bin)
+      * with short-txid count 0 and prefilled count 0 takes the first failure
+      * return in compact_block_reconstruct(); if that runs before
+      * block_init(out_block), process_cmpctblock()'s block_free(&out_block)
+      * walks stale stack contents. The poison below stands in for a
+      * long-lived process's stack. */
     printf("compact_block_reconstruct hard failure leaves out_block freeable... ");
     {
         static struct transaction stale_slot;

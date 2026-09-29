@@ -211,9 +211,9 @@ static int test_fetch_adopts(void)
                                             "source_merkle_root_sha3"))) == 64);
         zcl_command_reply_free(&reply);
 
-        /* A plain open of B (WITH the depfile freshness check) must not
-         * cold-rebuild: the receipt still shows A's cold build, the store
-         * inode is the one fetch published, and queries answer. */
+        /* A plain open of B (with the depfile freshness check) must not
+         * cold-rebuild: the receipt shows A's cold build, the store inode is
+         * the one fetch published, and queries answer. */
         dev_t dev_before = 0, dev_after = 0;
         ino_t ino_before = 0, ino_after = 0;
         ASSERT(fetch_store_identity(FETCH_B, &dev_before, &ino_before));
@@ -320,11 +320,8 @@ static int test_incremental_copy_allocation_failure(void)
             "/* src/fetch_alpha.c — allocation-failure edit. */\n"
             "int fetch_alpha(void)\n{\n    return 3;\n}\n"));
 
-        /* A prior incremental publish may have left index.kv.spare. Adopting
-         * it skips the publication-critical clone, so the one-shot
-         * codeindex_store_copy fault would fire in best-effort spare_publish
-         * after a successful open. Remove the spare so the shipped malloc
-         * clone is the path that must fail closed. */
+        /* Remove any index.kv.spare left by an incremental publish so the
+         * shipped malloc clone is the path that must fail closed. */
         {
             char spare[4096];
             int n = snprintf(spare, sizeof(spare),

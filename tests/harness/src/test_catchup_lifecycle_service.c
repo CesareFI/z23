@@ -117,13 +117,9 @@ int test_catchup_lifecycle_service(void)
     }
 
     {
-        /* Lifetime regression. catchup_lifecycle_start() resolves the
-         * network datadir into a FUNCTION-LOCAL buffer and returns the
-         * instant the worker is spawned. If the job kept that pointer the
-         * worker would read a dead stack frame and open block files under
-         * whatever later reused it — the live node logged exactly that,
-         * whole runs of "cannot open <binary junk>/blocks/blkNNNNN.dat".
-         * The job must own the BYTES. */
+        /* Lifetime: catchup_lifecycle_start() resolves the network datadir
+         * into a FUNCTION-LOCAL buffer and returns as soon as the worker is
+         * spawned, so the job must own the BYTES, not the pointer. */
         printf("catchup_lifecycle_service: the job owns the starter's "
                "datadir bytes... ");
         static const char kDatadir[] = "/nonexistent/catchup-datadir-owner";

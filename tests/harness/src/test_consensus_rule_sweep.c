@@ -1,30 +1,19 @@
 /* SPDX-License-Identifier: Apache-2.0
  * Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * test_consensus_rule_sweep — teeth for the FORWARD-facing consensus check
+ * test_consensus_rule_sweep: teeth for the forward-facing consensus check
  * (tools/consensus_rule_sweep.{h,c}).
  *
- * THE HOLE THIS GATE FILLS. Every past-facing check the project owns —
- * deterministic rebuild, full-chain replay to tip, historical UTXO-root
- * agreement, the E13 consensus-parity lint — is satisfiable BY CONSTRUCTION by
- * a malicious build carrying a rule change gated on a height we have not
- * reached. All five mainnet activation heights are <= 707,000, ~2.5M blocks
- * behind the tip, so such a build reproduces every historical byte and still
- * contains `if (n_height >= 3400000) halvings--`. The sweep digest is the
- * check that sees that; this group is the check that the sweep digest works.
+ * Past-facing checks (deterministic rebuild, replay, UTXO-root agreement, the
+ * consensus-parity lint) cannot see a rule change gated on a height above the
+ * tip. The sweep digest does; this group proves it can fail: a planted
+ * future-height bomb, a one-satoshi perturbation at one swept height, and a
+ * per-slot mutation of every network-upgrade row must each move the digest,
+ * while a bomb gated above the swept range must not.
  *
- * A digest gate is worthless unless it can FAIL. So this group proves the
- * fail arms as hard as the pass arms: a planted future-height bomb, a
- * one-satoshi perturbation at a single swept height, and a per-slot mutation
- * of every network-upgrade row must each move the digest — and a bomb gated
- * ABOVE the swept range must NOT move it (the negative control that keeps a
- * "digest changed" verdict from being noise).
- *
- * Everything here is pure: the mutated schedules are driven through the real
- * pure consensus functions with a MUTATED COPY of chain_params. No consensus
- * source is edited to make a test fail, and no datadir, disk, clock, network
- * or node process is touched.
- */
+ * Everything is pure: mutated schedules run through the real consensus
+ * functions with a mutated copy of chain_params. No datadir, disk, clock,
+ * network or node process is touched. */
 
 #include "test/test_core.h"
 
@@ -508,8 +497,8 @@ static int test_consensus_rule_sweep_platform_arm(void)
                 always_seen = always_seen || ok;
                 gated_ok = gated_ok && ok;
             } else if (a == NETWORK_UPGRADE_NO_ACTIVATION) {
-                /* The slot the naive implementation SKIPS. It must be present
-                 * in the mask and observed inactive/DISABLED everywhere. */
+                /* The slot a naive implementation skips: present in the mask
+                 * and inactive/DISABLED everywhere. */
                 bool ok = stats.inactive[i] == stats.rows &&
                           stats.active[i] == 0 &&
                           stats.st_disabled[i] == stats.rows;
@@ -533,13 +522,9 @@ static int test_consensus_rule_sweep_platform_arm(void)
         CRS_CHECK("every height-gated slot is straddled by the sweep",
                   gated >= 4);
 
-        /* Coverage by observation is not enough. `inactive[i] == rows` for the
-         * disabled slot looks identical whether the per-height loop queried
-         * that slot and got false, or never queried it at all — an
-         * implementation bounded by "slots that have a height" would produce
-         * the same counts. So mutate exactly ONE slot at a time and require
-         * the observed PER-ROW mask to move, not just the digest. That
-         * distinguishes a covered slot from a skipped one, disabled included. */
+        /* Mutate exactly one slot at a time and require the observed per-row
+         * mask to move, not just the digest; that distinguishes a covered slot
+         * from a skipped one, disabled included. */
         static struct slot_stats mut_stats;
         bool each_slot_binds = true;
         for (int i = 0; i < MAX_NETWORK_UPGRADES; i++) {

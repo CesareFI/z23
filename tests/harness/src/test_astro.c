@@ -2,27 +2,23 @@
  *
  * platform/modules/astro — the exact fixed-grid arithmetic and the birth chart built on it.
  *
- * ── What this group asserts, and what it deliberately does not ───────────
- * There are almost no golden numbers here. Copying the module's own output
- * into an expectation proves that nobody edited the file, not that the file
- * is right, and it would pass just as happily if every chart were wrong in
- * the same way on every machine. What this group asserts instead are the
- * PROPERTIES the module's contract is written in:
+ * ── What this group asserts ──────────────────────────────────────────────
+ * Few golden numbers: copying the module's output into an expectation would
+ * only prove nobody edited the file. The group asserts the PROPERTIES the
+ * module's contract is written in:
  *
  *  1. DETERMINISM BY CONSTRUCTION, not by assertion. The module's claim is
  *     that a second node recomputing a chart gets identical bits. The two
  *     cases that prove it each build a computation where a `double` control
  *     DEMONSTRABLY DISAGREES WITH ITSELF, and show the exact path does not:
+ *     DEMONSTRABLY DISAGREES WITH ITSELF, and show the exact path does not:
  *       - reassociation: the same VSOP87-shaped sum added forwards and
- *         backwards. In `double` the two orders differ; on the exact grid
- *         they are bit-identical. This is not hypothetical — it is what a
- *         vectorising compiler does to a summation loop, so two honest nodes
- *         built with different flags would disagree.
+ *         backwards. In `double` the two orders differ (as after compiler
+ *         vectorisation); on the exact grid they are bit-identical.
  *       - absorption: a term far below the ULP of a large running total. In
- *         `double` the term vanishes and adding it a thousand times changes
- *         nothing; on the exact grid every one of them counts.
- *     The tests fail if the double control ACCIDENTALLY AGREES, because a
- *     control that cannot fail proves nothing about the thing it controls.
+ *         `double` adding it a thousand times changes nothing; on the exact
+ *         grid every one counts.
+ *     The tests fail if the double control accidentally agrees.
  *  2. The same input produces byte-identical output twice, over the whole
  *     public chart struct, by memcmp — the check a verifier would make.
  *  3. Hostile and out-of-range input is REFUSED, not absorbed into a
@@ -229,9 +225,8 @@ static void t_transcendentals(void)
     struct astro_exact quarter = astro_exact_atan2(one, one);
     CHECK(text_is(&quarter, 15, "0.785398163397448"), "atan2(1,1) is pi/4");
 
-    /* Quadrants come out of the signs, not out of a caller-side fix-up. The
-     * source this was adapted from swapped sine and cosine in two of the
-     * four, so each is asserted separately. */
+    /* Quadrants come out of the signs, not a caller-side fix-up; each is
+     * asserted separately. */
     struct astro_exact half_pi = astro_exact_shr(pi, 1u);
     struct astro_exact s_q2 = astro_exact_sin(astro_exact_add(half_pi, one));
     struct astro_exact c_q2 = astro_exact_cos(astro_exact_add(half_pi, one));
@@ -282,9 +277,8 @@ static const int64_t k_series[] = {175347046, 3341656, 34894, 3497, 3418,
 static void t_determinism_reassociation(void)
 {
     /* THE CONTROL. Summed forwards and backwards in `double`, scaled so the
-     * ratio between the largest and smallest term crosses the mantissa. If a
-     * compiler reassociates this loop — which is exactly what vectorising it
-     * does — two honest nodes get different answers. */
+     * term ratio crosses the mantissa; a reassociating compiler would make
+     * two honest nodes disagree. */
     double dfwd = 0.0;
     for (size_t i = 0; i < K_SERIES_N; i++)
         dfwd += (double)k_series[i] / 3.0;
@@ -327,9 +321,7 @@ static void t_determinism_reassociation(void)
 static void t_determinism_absorption(void)
 {
     /* THE CONTROL. A term below the ULP of the running total disappears in
-     * `double`: adding it a thousand times changes nothing at all. Whether a
-     * given term "counts" then depends on the order and on the width of the
-     * register it happened to live in. */
+     * `double`: adding it a thousand times changes nothing. */
     double base = 175347046.0;
     double tiny = 1e-12;
     double dsum = base;
@@ -585,18 +577,11 @@ static void t_chart_refusals(void)
 
 /* ── 10. the astronomy lands where an ephemeris says it does ──────────── */
 
-/* Geocentric ecliptic longitudes for 2000-01-01 12:00 UT, to WHOLE DEGREES,
- * as published ephemerides give them. Coarse on purpose: the tolerance beside
- * each row is the per-body accuracy astro/astro_chart.h claims, so this case
- * fails if the astronomy drifts AND it fails if the header's accuracy claim
- * stops being true — which a golden copy of today's six-decimal output would
- * do neither of.
- *
- * These also catch the specific defect corrected on the way in: reporting
- * HELIOCENTRIC longitudes as chart positions, which the source did. At this
- * epoch the heliocentric and geocentric longitudes of the inner planets
- * differ by tens of degrees, so an accidental return to that behaviour lands
- * outside every tolerance here rather than looking merely imprecise. */
+/* Geocentric ecliptic longitudes for 2000-01-01 12:00 UT, to whole degrees,
+ * as published ephemerides give them. Coarse on purpose: each row's tolerance
+ * is the per-body accuracy astro/astro_chart.h claims. Heliocentric longitudes
+ * (a wrong return to which lands tens of degrees off for the inner planets)
+ * fall outside every tolerance. */
 struct ephemeris_ref {
     enum astro_body body;
     int longitude_deg;

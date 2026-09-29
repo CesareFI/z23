@@ -1,29 +1,21 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * test_coins_kv_read_cache — differential byte-equivalence proof for the
+ * test_coins_kv_read_cache: differential byte-equivalence proof for the
  * cached point-read variants (coins_kv_get_prevout_sqlite_cached /
  * coins_kv_get_sqlite_cached / coins_kv_exists_sqlite_cached) against the
  * fresh-prepare _sqlite variants they mirror.
  *
- * WHY: the bulk fold's per-block ua cost is dominated by the durable coins
- * point-read that resolves every input prevout AND every output collision
- * check (utxo_apply_compute_block_delta → coins_kv_get_prevout →
- * coins_ram_get_prevout → read-through). ~half of each ~4 us point query is
- * per-call sqlite3_prepare_v2 SQL compilation. The cached variants hoist that
- * compile out by reusing one prepared statement (reset+rebind+step). This is a
- * pure HOW-not-WHAT change: the query text, binds, and column extraction are
- * identical, so the returned (found, value, script bytes, height, is_coinbase)
- * MUST be bit-for-bit the same as the fresh path — which is exactly what makes
- * the terminal coins_kv / snapshot SHA3 unchanged.
+ * The cached variants reuse one prepared statement (reset+rebind+step) to
+ * skip per-call sqlite3_prepare_v2. Query text, binds and column extraction
+ * are identical, so (found, value, script bytes, height, is_coinbase) must be
+ * bit-for-bit the same and the terminal coins_kv / snapshot SHA3 unchanged.
  *
- * THE assertion: over a populated coins_kv, for every present key and a set of
- * absent keys, the cached read returns byte-identical results to the fresh
- * read — repeated many times through ONE cache (reuse), across a finalize +
- * re-prepare cycle, and with interleaved writes (proving the post-read reset
- * releases the row lock so a same-connection write is never wedged).
+ * Over a populated coins_kv, for every present and a set of absent keys, the
+ * cached read equals the fresh read: repeated through one cache, across a
+ * finalize + re-prepare cycle, and with interleaved writes (the post-read
+ * reset releases the row lock).
  *
- * make t ONLY=coins_kv_read_cache
- */
+ * make t ONLY=coins_kv_read_cache */
 
 #include "test/test_core.h"
 
@@ -137,11 +129,9 @@ int test_coins_kv_read_cache(void)
     sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
     CKR_CHECK("populated coins_kv", wrote);
 
-    /* Cached write statements survive the add_many call while the reducer's
-     * delta meter is active. Prove they never retain caller-owned script bytes
-     * through COMMIT/finalize: free and allocator-churn the source first, then
-     * demand a byte-exact durable read. This reproduces the COPY-fold UAF that
-     * replaced the first eight P2PKH bytes with freed-heap metadata. */
+     /* Cached write statements must not retain caller-owned script bytes
+      * through COMMIT/finalize: free and allocator-churn the source, then
+      * demand a byte-exact durable read. */
     uint8_t lifetime_txid[32];
     ckr_txid(lifetime_txid, CKR_N + 99);
     uint8_t lifetime_expect[25];

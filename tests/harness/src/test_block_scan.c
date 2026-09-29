@@ -429,7 +429,7 @@ static int test_wallet_scan_empty_replacement(void)
          node_db_begin(&ndb) && node_db_commit(&ndb);
 
     /* The public scanner must not bypass replacement for a zero-key wallet
-     * or an empty chain range. Those were the two former early returns. */
+     * or an empty chain range. */
     /* struct wallet embeds fixed 4096-entry arrays.  Keeping this fixture on
      * the stack makes the optimized aggregate test exceed macOS's worker
      * stack before its first assertion. */

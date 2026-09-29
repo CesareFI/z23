@@ -408,9 +408,7 @@ int test_condition_engine(void)
     }
 
     /* Age-based page: an episode older than its schedule budget
-     * (max(600, poll + backoff*max_attempts*2)) pages even at attempts=1 —
-     * cooldown_rearm/progressing() resets can otherwise hold attempts below
-     * max_attempts forever without a page. */
+     * (max(600, poll + backoff*max_attempts*2)) pages even at attempts=1. */
     static struct condition c_aged = {
         .name = "ce_aged",
         .severity = COND_CRITICAL,
@@ -432,7 +430,7 @@ int test_condition_engine(void)
         ok = ok && atomic_load(&c_aged.state.attempts) == 1;
         ok = ok && !atomic_load(&c_aged.state.operator_needed_emitted);
         /* Age the episode past the budget (1 + 1000*5*2 = 10001s): rewind
-         * first_detect_unix as if detection happened 20000s ago. */
+         * first_detect_unix by 20000s. */
         atomic_store(&c_aged.state.first_detect_unix,
                      atomic_load(&c_aged.state.first_detect_unix) - 20000);
         condition_engine_tick();            /* backoff holds attempt 2 */
@@ -554,12 +552,11 @@ int test_condition_engine(void)
         CE_CHECK("register_all exposes current self-heal set", ok);
     }
 
-    /* P0 REGRESSION: a COND_CRITICAL condition with cooldown_secs > 0 must
-     * re-arm the remedy after max_attempts is reached instead of latching
-     * permanently — the exact shape sync_violation_lag/tip_wedged_resnapshot
-     * now use. Mirrors max_attempts=1 (the real bug's config): a single
-     * unwitnessed remedy immediately pages, then cooldown_secs must keep
-     * retrying (not dead-end) until the symptom clears. */
+    /* A COND_CRITICAL condition with cooldown_secs > 0 re-arms the remedy
+     * after max_attempts instead of latching (as sync_violation_lag and
+     * tip_wedged_resnapshot use). With max_attempts=1 a single unwitnessed
+     * remedy pages immediately, then cooldown_secs keeps retrying until the
+     * symptom clears. */
     static struct condition c_cooldown = {
         .name = "ce_cooldown",
         .severity = COND_CRITICAL,
@@ -599,13 +596,9 @@ int test_condition_engine(void)
         ok = ok && atomic_load(&g_remedy_calls) == 2;
         ok = ok && atomic_load(&c_cooldown.state.cooldown_rearms) == 1;
 
-        /* Tick 3: immediately after a re-arm, the cooldown gap is NOT yet
-         * elapsed (last_cooldown_unix == now), so the engine correctly rate-
-         * limits — no new remedy call. This is the "temporarily not due"
-         * distinction from "permanently never due again": confirm the count
-         * holds rather than either regressing (spam) or a symptom of the
-         * un-rearmable path (which would also hold it, so this step alone
-         * doesn't distinguish latched-forever; the next step does). */
+        /* Tick 3: right after a re-arm the cooldown gap has not elapsed
+         * (last_cooldown_unix == now), so the engine rate-limits and the count
+         * holds; the next step distinguishes this from latched-forever. */
         condition_engine_tick();
         ok = ok && atomic_load(&g_remedy_calls) == 2;
 

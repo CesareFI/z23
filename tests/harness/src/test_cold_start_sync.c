@@ -2,74 +2,27 @@
  *
  * MVP criterion #3 CI gate: cold-start sync to tip in <10 min.
  *
- * Drives the sync state machine from SYNC_IDLE through every legal
- * cold-start transition path to SYNC_AT_TIP ("ready"), measures the
- * elapsed time under a 1Hz polling loop that mirrors what the operator
- * observes via `z23 core sync status`, and asserts the run fits within the
- * 10-minute MVP budget.
+ * Drives the sync state machine from SYNC_IDLE to SYNC_AT_TIP through both
+ * live cold-start paths, polling sync_get_state() at 1Hz (as
+ * `z23 core sync status` does) under the 10-minute budget:
  *
- * Two paths are exercised because both are live in production — a
- * regression in either one breaks MVP criterion #3:
+ *   Path A: legacy IBD: IDLE, FINDING_PEERS, HEADERS_DOWNLOAD,
+ *           BLOCKS_DOWNLOAD, CONNECTING_BLOCKS, AT_TIP
+ *           (transition table at engine/modules/event/src/event.c:858-916).
+ *   Path B: ZCL23 fast-sync: IDLE, FINDING_PEERS, SNAPSHOT_RECEIVE,
+ *           CONNECTING_BLOCKS, AT_TIP.
  *
- *   Path A — legacy IBD: IDLE → FINDING_PEERS → HEADERS_DOWNLOAD →
- *            BLOCKS_DOWNLOAD → CONNECTING_BLOCKS → AT_TIP.  This is
- *            the path a fresh node takes when no snapshot peer is
- *            reachable; transitions live in the table at
- *            engine/modules/event/src/event.c:858-916.
- *   Path B — ZCL23 fast-sync: IDLE → FINDING_PEERS → SNAPSHOT_RECEIVE
- *            → CONNECTING_BLOCKS → AT_TIP.  This is the <60s path when
- *            at least one peer offers a UTXO snapshot.
+ * A background driver issues the transitions through sync_set_state() with
+ * millisecond delays. Success is SYNC_AT_TIP before the 600 s ceiling with no
+ * illegal transition. It proves only the sync FSM, not real cold sync (MVP
+ * criterion #6) or Tor bootstrap (test_onion_bootstrap).
  *
- * Test shape
- * ----------
- * For each path we spawn a background driver thread that issues the
- * transitions through sync_set_state() with short artificial per-step
- * delays (milliseconds, matching the scale of real network handshakes
- * on a LAN fixture).  The main test thread polls sync_get_state() at
- * 1Hz — identical cadence to `core sync status` — with a
- * 600-second ceiling.  Success = SYNC_AT_TIP observed before the
- * ceiling AND the driver reported no illegal transition.  A regression
- * anywhere in the transition table or in the state-machine API
- * surface fails this test.
- *
- * Gating
- * ------
- * Skipped unless ZCL_STRESS_TESTS=1. Matches the onion bootstrap
- * pattern: the MVP CI gates run in an opt-in "stress" bucket because
- * they sleep and poll (seconds, not microseconds).  Default
- * `make test` stays fast.
- *
- * Invocation
- * ----------
+ * Skipped unless ZCL_STRESS_TESTS=1:
  *   ZCL_STRESS_TESTS=1 build/bin/test_zcl
- *   ZCL_STRESS_TESTS=1 ZCL_TEST_ONLY=cold_start build/bin/test_zcl  (focused)
+ *   ZCL_STRESS_TESTS=1 ZCL_TEST_ONLY=cold_start build/bin/test_zcl
  *
- * MVP linkage
- * -----------
- * Flips MVP.md criterion #3 from ☐ to ✅.  Forward-looking CI gate
- * (no RED-first branch existed when written).
- *
- * What this test does NOT prove
- * -----------------------------
- *   - Real 3M-block cold sync against the live network: that's MVP
- *     criterion #6 (7-day soak), not a unit test.
- * - Real Tor bootstrap: covered separately by 
- *     (`test_onion_bootstrap`).
- * - kill -9 mid-sync recovery: MVP criterion #7 /, gated on
- * landing (it has — `ac782fef5`).
- *
- * This test proves only that the sync FSM itself can reach
- * SYNC_AT_TIP through the legal cold-start sequences.  If a future
- * change removes a transition, renames a state, or introduces a
- * deadlock in sync_set_state(), this test fails loudly.
- *
- * Isolation / hermeticity
- * -----------------------
- * The global sync state is process-wide (atomic in engine/modules/event/src/event.c).
- * We reset to SYNC_IDLE at entry (any state → IDLE is legal) and at
- * exit, matching the convention in test_sync_watchdog.c's
- * reset_test_state.
- */
+ * The global sync state is process-wide; the test resets to SYNC_IDLE at
+ * entry and exit (see test_sync_watchdog.c's reset_test_state). */
 
 #include "platform/time_compat.h"
 #include "test/test_core.h"
@@ -131,9 +84,7 @@ static void *p11_3_driver(void *arg)
 static int p11_3_run_path(const char *label,
                            const struct p11_3_leg *legs, size_t n_legs)
 {
-    /* Reset to cold baseline.  Any state → SYNC_IDLE is a legal
-     * transition (event.c:858+).  If the state is already IDLE this
-     * is a no-op inside sync_set_state. */
+    /* Reset to cold baseline; any state to SYNC_IDLE is legal (event.c:858+). */
     if (!sync_set_state(SYNC_IDLE, "cold baseline")) {
         printf("FAIL (%s: could not reset to SYNC_IDLE; state=%s)\n",
                label, sync_state_name(sync_get_state()));
@@ -198,10 +149,8 @@ int test_cold_start_sync(void)
     }
     printf("\n");
 
-    /* Path A — legacy IBD.  Delays approximate a small-fixture LAN
-     * sync (handshake → headers → blocks → validation → tip).  Total
-     * simulated time ~3.5s; 1Hz polling observes tip within 4s.
-     * (Real 3M-block cold sync lives in MVP criterion #6's soak.) */
+    /* Path A: legacy IBD. Delays approximate a small-fixture LAN sync (about
+     * 3.5s total); 1Hz polling observes tip within 4s. */
     static const struct p11_3_leg ibd_legs[] = {
         { .delay_ms =  500, .target = SYNC_FINDING_PEERS,     .reason = "IBD: peers up"      },
         { .delay_ms = 1000, .target = SYNC_HEADERS_DOWNLOAD,  .reason = "IBD: headers start" },

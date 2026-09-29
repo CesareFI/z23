@@ -1,10 +1,8 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * Unit test for block_index_projection_topup_with() — the normal-boot
- * projection top-up that closes defect #10 (task #29: a restart dropped
- * the active chain to the stale flat-file extent because connect-time
- * index state lived only in memory + the projection, and no normal-boot
- * path read the projection back).
+ * projection top-up that restores connect-time index state (kept only in
+ * memory + the projection) that a stale flat file lacks.
  *
  * What it proves
  * --------------
@@ -22,8 +20,7 @@
  *      linked via the carried hashPrev, and its nChainWork computed on
  *      top of the parent's.
  *   6. nTx DISK RECOVERY: an entry with a verified on-disk body but
- *      nTx=0 (legacy emit before body persist stamped nTx) recovers
- *      its tx count from the block file, hash-bound.
+ *      nTx=0 recovers its tx count from the block file, hash-bound.
  *   7. IDEMPOTENT: a second top-up changes nothing.
  *
  * Scratch files live under ./test-tmp/topup_<pid>/ per the project's
@@ -97,8 +94,7 @@ static bool topup_emit_row(event_log_t *log, const struct uint256 *hash,
            != UINT64_MAX;
 }
 
-/* Same row, but carrying undo metadata — the field the top-up used to be
- * able to apply only while it was also applying HAVE_DATA. */
+/* Same row, but carrying undo metadata. */
 static bool topup_emit_row_undo(event_log_t *log, const struct uint256 *hash,
                                 const struct uint256 *prev, int height,
                                 uint32_t status, int file, uint32_t data_pos,
@@ -221,10 +217,9 @@ static int topup_undo_assert(const struct block_index *e106,
     return failures;
 }
 
-/* The undo top-up the projection fold used to be unable to perform: an
- * entry that already carries HAVE_DATA but no HAVE_UNDO, whose row still
- * names an undo position. Without it the background validator skips every
- * transparent script in the block for want of recoverable spent outputs. */
+/* Undo top-up: an entry that already carries HAVE_DATA but no HAVE_UNDO, whose
+ * row still names an undo position, must gain it so the background validator
+ * can recover spent outputs. */
 static int run_undo_topup_cases(void)
 {
     int failures = 0;
@@ -275,15 +270,13 @@ static int topup_changed_file_assert(const struct block_index *e108,
     return failures;
 }
 
-/* (nFile, nUndoPos) is ONE address — block_index_undo_pos_snapshot() pairs
- * the entry's nFile with the entry's nUndoPos. When the data branch adopts
- * the row's nFile, an undo position the entry recorded against its old file
- * becomes a (row file, entry pos) address pointing into the wrong rev file.
- * Both entries here lack HAVE_DATA (so the row's nFile IS adopted) and
- * already claim HAVE_UNDO against file 3, while the rows live in file 5:
+/* (nFile, nUndoPos) is ONE address. When the data branch adopts the row's
+ * nFile, an undo position recorded against the old file would point into the
+ * wrong rev file. Both entries lack HAVE_DATA and claim HAVE_UNDO against file
+ * 3, while the rows live in file 5:
  *   108 — the row carries a coherent undo pair, so it is adopted whole.
  *   109 — the row claims no undo, so HAVE_UNDO and the stale position are
- *         dropped rather than published against the new file. */
+ *         dropped. */
 static int run_undo_changed_file_cases(void)
 {
     int failures = 0;
@@ -335,12 +328,9 @@ static int topup_insert_seal_assert(const struct block_index *e110,
     return failures;
 }
 
-/* Both projection branches that copy a row's nStatus onto an entry VERBATIM
- * — the fresh insert (the loaders never saw the block) and the contentless-
- * stub hydration — must seal the undo bit the same way the node.db fill
- * does. A row claiming HAVE_UNDO with n_undo_pos 0 otherwise publishes
- * (nFile, 0) as a rev address, and block_index_undo_pos_snapshot() hands
- * that pair to the undo reader as if it were real.
+/* Both branches that copy a row's nStatus verbatim (fresh insert and
+ * contentless-stub hydration) must seal the undo bit: a row claiming
+ * HAVE_UNDO with n_undo_pos 0 must not publish (nFile, 0) as a rev address.
  *   110 — no in-memory entry at all, so the row is inserted whole.
  *   111 — a contentless stub (height 0, nBits 0) the row hydrates whole. */
 static int run_undo_insert_seal_cases(void)
@@ -551,11 +541,9 @@ int test_block_index_topup(void)
         memset(&e103->nChainWork, 0, sizeof(e103->nChainWork));
         e103->nChainWork.pn[0] = 0x1000;
     }
-    /* e105: a CONTENTLESS STUB at the wrong height (the corrupt-flat-load
-     * shape that births a placeholder tip):
-     * height 0, nBits 0, no HAVE_DATA, nTx 0. The projection row below
-     * carries the real record at height 105 — the topup must HYDRATE this
-     * entry instead of refusing the merge as a label conflict. */
+    /* e105: a CONTENTLESS STUB at the wrong height (height 0, nBits 0, no
+     * HAVE_DATA, nTx 0); the top-up must hydrate it, not refuse a label
+     * conflict. */
     struct block_index *e105 = topup_insert_entry(&ms, &h105, 0);
     if (e105) {
         e105->nBits = 0;
@@ -689,11 +677,10 @@ int test_block_index_topup(void)
     TOPUP_CHECK("e100 kept positions",
                 e100 && e100->nFile == 1 && e100->nDataPos == 500);
 
-    /* 5b. contentless stub HYDRATED from the projection row (the
-     * corrupt-flat placeholder-tip class): height re-labelled, header
-     * fields + data availability adopted, pprev re-linked, chainwork
-     * recomputed above its parent. A REAL entry at a conflicting height
-     * (e103, case 4) still refuses — hydration is stub-only. */
+    /* 5b. contentless stub HYDRATED from the projection row: height
+     * re-labelled, header fields + data availability adopted, pprev re-linked,
+     * chainwork recomputed. A real entry at a conflicting height (e103) still
+     * refuses. */
     TOPUP_CHECK("e105 stub re-heighted from the row",
                 e105 && e105->nHeight == 105);
     TOPUP_CHECK("e105 gained real nBits", e105 && e105->nBits != 0);

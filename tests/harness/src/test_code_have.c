@@ -1,30 +1,24 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * test_code_have — the gate on "does this checkout already do X?".
+ * test_code_have: the gate on "does this checkout already do X?".
  *
- * This group exists because of a specific, expensive failure. This tree
- * already had a 970-line ActiveRecord layer with sixteen validation macros
- * used by most of its models. An agent asked to add validation searched for
- * "validation", found nothing (the macros are named `validates_*`), and
- * imported a 12,474-line ORM from another project. Case 1 below is the direct
- * regression test for that: `code have` for "validation" must reach
- * `engine/models/include/models/activerecord.h`.
+ * Case 1: `code have` for "validation" must reach
+ * `engine/models/include/models/activerecord.h` (the ActiveRecord
+ * `validates_*` macros).
  *
  * Coverage:
- *   1. REAL TREE  — "validation" finds the ActiveRecord macros, and the
- *                   reported use count is not fabricated (cross-checked
- *                   against the ref index for one named symbol).
- *   2. fixture    — used_by_files is EXACT and excludes comment-only mentions.
- *   3. fixture    — a genuinely absent capability answers NOT FOUND, not a
- *                   weak match.
- *   4. verdict    — derived only from the rendered evidence; a zero-caller
- *                   record can never read ALREADY EXISTS.
- *   5. stemming   — the morphology that makes "validation" reach `validates_*`.
- *   6. freshness  — the cached index answers identically warm, and after a
- *                   source file changes it does NOT serve the stale answer.
- *   7. purpose    — a purpose past the old field is stored WHOLE, and
- *                   an over-long one is still visibly marked (fail loud).
- *   8. rejection  — a wrong input key names the keys the leaf accepts.
+ *   1. real tree  - "validation" finds the ActiveRecord macros; the use count
+ *                   is cross-checked against the ref index for one symbol.
+ *   2. fixture    - used_by_files is exact and excludes comment-only mentions.
+ *   3. fixture    - an absent capability answers NOT FOUND, not a weak match.
+ *   4. verdict    - derived from the rendered evidence; a zero-caller record
+ *                   never reads ALREADY EXISTS.
+ *   5. stemming   - "validation" reaches `validates_*`.
+ *   6. freshness  - the cached index answers identically warm, and does not
+ *                   serve a stale answer after a source change.
+ *   7. purpose    - a long purpose is stored whole; an over-long one is
+ *                   visibly marked.
+ *   8. rejection  - a wrong input key names the keys the leaf accepts.
  *
  * Scratch work happens under ./test-tmp/ (project no-/tmp convention). */
 
@@ -118,9 +112,8 @@ static const char *NET_FOO_C =
     " */\n"
     "int foo_send(int fd) { return fd; }\n";
 
-/* A purpose above the OLD 160-byte field and below the new one. It must be
- * stored WHOLE — this is the regression on the truncation that both spammed
- * WARN lines and ate the end of every long purpose. */
+/* A purpose above the old 160-byte field and below the current one is stored
+ * whole. */
 #define PURPOSE_LONG_TEXT \
     "aaaaaaaaaa bbbbbbbbbb cccccccccc dddddddddd eeeeeeeeee " \
     "ffffffffff gggggggggg hhhhhhhhhh iiiiiiiiii jjjjjjjjjj kkkkkkkkkk " \
@@ -291,7 +284,7 @@ int test_code_have(void)
         }
     }
 
-    /* ── 1: the real tree — the regression this group exists for ──────── */
+    /* ── 1: the real tree ──────── */
     {
         struct codeindex *ci = codeindex_open_source_view(".");
         CH_CHECK("the checkout's own index opens", ci != NULL);
@@ -322,8 +315,7 @@ int test_code_have(void)
                          all_relevant);
                 CH_CHECK("the matched set is the whole validation surface",
                          caps[at].symbol_count >= 16);
-                /* And the specific macro family the failed lane needed is in
-                 * that anchor — the fact this whole group exists for. */
+                /* the anchor also carries the macro family */
                 struct ci_symbol vs;
                 bool vfound = false;
                 codeindex_symbol(ci, "validates_presence_of", &vs, &vfound);
@@ -441,9 +433,8 @@ int test_code_have(void)
     }
     codeindex_close(fx);
 
-    /* 6b: THE ONE THAT MATTERS. Add a sixth caller and reopen. A cache that
-     * confidently serves the old count is worse than no cache at all — it
-     * would answer "we do not have that" about code somebody just wrote. */
+    /* 6b: after adding a sixth caller and reopening, the stale count must not
+     * be served. */
     {
         if (!ch_write_fixture(true)) {
             printf("  code_have: rewrite_fixture... FAIL\n");

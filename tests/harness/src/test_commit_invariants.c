@@ -1,19 +1,17 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * test_commit_invariants — the batch-commit conservation invariants
+ * test_commit_invariants: the batch-commit conservation invariants
  * (jobs/reducer_commit_invariants.h): (a) coins row-count delta == created −
  * spent; (b) anchor set append-only/monotonic; (c) nullifier inserts unique.
  *
- * Two halves, exactly the task's test bar:
- *   (1) INJECT violations (duplicate nullifier, non-monotonic anchor, forged
- *       apply stats) via the module API on a hermetic store and assert verify()
- *       REFUSES the commit and raises the typed blocker naming the right height.
- *   (2) A GREEN end-to-end fold of a real mined regtest block through the
- *       batched utxo_apply drain, proving ZERO false positives + measuring the
- *       per-commit coins-count overhead.
+ *   (1) Inject violations (duplicate nullifier, non-monotonic anchor, forged
+ *       apply stats) via the module API on a hermetic store; verify() must
+ *       refuse the commit and raise the typed blocker naming the right height.
+ *   (2) A green end-to-end fold of a real mined regtest block through the
+ *       batched utxo_apply drain: zero false positives, per-commit coins-count
+ *       overhead measured.
  *
- *   make t ONLY=commit_invariants
- */
+ *   make t ONLY=commit_invariants */
 
 #include "test/test_core.h"
 

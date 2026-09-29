@@ -1,11 +1,8 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * codeindex_static_callers — the impact closure walks symbol IDENTITIES, not
- * bare names. A static function defined in a .c file is internal to that
- * translation unit, so a same-named static in another TU is not one of its
- * callers. The name-only walk treated every `helper(` in the tree as a call to
- * the changed `helper`, and on the real tree one test-file edit selected 134
- * test groups where two were owed.
+ * codeindex_static_callers: the impact closure walks symbol identities, not
+ * bare names. A static function is internal to its translation unit, so a
+ * same-named static in another TU is not one of its callers.
  *
  * Coverage (all over one fixture tree under ./test-tmp/):
  *   1. two TUs each define `static int helper(void)`: editing one selects only

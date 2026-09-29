@@ -4,9 +4,8 @@
  * string, and the rendered BOOT_DATADIR_CREATE_FAILED report must carry the
  * datadir and that exact identity, so a refusal says WHO was refused.
  *
- * Rehomed from tools/tests/test_boot_refusal_identity.c, which only ran when
- * a human invoked tools/scripts/winacceptance.sh. The probe body is the
- * original program verbatim. */
+ * Rehomed from tools/tests/test_boot_refusal_identity.c; the probe body is
+ * the original program verbatim. */
 #include "test/test_core.h"
 
 #include "config/boot_error.h"

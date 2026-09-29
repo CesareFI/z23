@@ -104,13 +104,10 @@ int test_board_site(void)
         ASSERT(node_db_open(&db, ":memory:"));
         uint8_t seed[32], pk[32];
         bs_identity(1, seed, pk);
-        /* The handler lists against real wall time, so the fixtures are
-         * dated by the same clock: anything older would be expired history
-         * the discoverable view rightly hides. The base is a BARE reading
-         * and every fixture offset is an addition — the five posts sit
-         * between now and now+4 s, inside FLEET_BOARD_FUTURE_SKEW_MAX (300)
-         * and nowhere near the 3600 s TTL — so no assertion below is graded
-         * on a difference between two clock readings. */
+        /* The handler lists against real wall time, so fixtures are dated by
+         * the same clock: the five posts sit between now and now+4 s, inside
+         * FLEET_BOARD_FUTURE_SKEW_MAX (300) and the 3600 s TTL, so no assertion
+         * depends on a difference between two clock readings. */
         const int64_t now = (int64_t)platform_time_wall_time_t();
 
         struct fleet_board_post legacy, ops, general, fleet, hostile;
