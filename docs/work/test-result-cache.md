@@ -250,6 +250,16 @@ A group is **UNCACHEABLE (always runs)** when its inputs cannot be bounded:
   the **exact** group name — the previous `strstr()` form could not list `net`
   without also swallowing `netmask`/`subnet`/`net_bootstrap`, which is exactly
   why `test_net` went uncovered,
+- **the probe-time exec rail fires** — the group's own entry file or a harness
+  helper it links (scope: `trc_rail_scans_file()`) contains a comment-stripped
+  exec signal that reaches out-of-closure artifacts: a `build/bin/…` path, a
+  `tools/…​.sh` script, `make`, or a self re-exec through
+  `argv[0]`/`os_proc_exe_path`. The denylist above is hand-maintained; the rail
+  (`trc_rail_refuses()`) scans at probe time and refuses automatically, so a new
+  group that spawns a built binary is uncacheable from its first probe without
+  anyone adding a row. Other groups' entry files and platform/tools/core
+  machinery are out of scope: the name-resolved closure carries passengers that
+  would false-positive the whole suite,
 - **the include graph is absent** — no depfiles under `build/`. Zero include
   edges is not "a closure with no headers", it is *no closure*: a strictly
   smaller set that is never flagged `truncated` and therefore looks complete. On

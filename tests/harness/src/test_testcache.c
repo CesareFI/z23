@@ -128,6 +128,45 @@ static const char *TC_LEAF_B =
     "    return 4242;\n"
     "}\n";
 
+/* The entry file with an out-of-closure exec planted: the verdict depends on
+ * a tree-built binary the closure key never hashes, so the exec rail must
+ * refuse caching. The signal lives in a comment-free code line; a twin
+ * comment-only variant proves the scanner does not fire on prose. */
+static const char *TC_TOP_EXEC =
+    "/* core/modules/net/src/tc_top.c — the entry, exec-signal variant. */\n"
+    "#include \"net/tc.h\"\n"
+    "#include <stdio.h>\n"
+    "int test_demo_entry(void)\n"
+    "{\n"
+    "    FILE *p = popen(\"build/bin/frobnicate --check\", \"r\");\n"
+    "    return p ? tc_mid() : 1;\n"
+    "}\n";
+
+static const char *TC_TOP_EXEC_COMMENTED =
+    "/* core/modules/net/src/tc_top.c — signals in prose only. */\n"
+    "#include \"net/tc.h\"\n"
+    "/* Mentions popen(\"build/bin/frobnicate\") and execv(argv[0]) in a\n"
+    " * comment, and tools/lint/check_something.sh by name below. */\n"
+    "// tools/lint/check_other.sh mentioned in a line comment too.\n"
+    "int test_demo_entry(void)\n"
+    "{\n"
+    "    return tc_mid() + 1;\n"
+    "}\n";
+
+/* A leaf OUTSIDE the rail's scanned set (not the entry file, not a harness
+ * helper) carrying the same planted signal. The forward closure is
+ * name-resolved, so a closure routinely carries files the group never
+ * executes; the rail must not refuse over a passenger file's bytes. */
+static const char *TC_LEAF_EXEC =
+    "/* core/modules/net/src/tc_leaf.c — the leaf (passenger-signal variant). */\n"
+    "#include \"net/tc.h\"\n"
+    "#include <stdio.h>\n"
+    "int tc_leaf(void)\n"
+    "{\n"
+    "    FILE *p = popen(\"build/bin/frobnicate --check\", \"r\");\n"
+    "    return p ? 0 : 1;\n"
+    "}\n";
+
 static const char *TC_OTHER_A =
     "/* core/modules/net/src/tc_other.c — NOT reachable from the entry (pristine). */\n"
     "#include \"net/tc.h\"\n"
@@ -210,11 +249,12 @@ static bool write_harness_depfiles(const char *root)
  * the include closure resolves. Sources are written BEFORE depfiles so the
  * depfiles are always the newest bytes in the fixture — the include-graph
  * freshness guard requires the graph to be at least as new as its inputs. */
-static bool write_fixture_full(const char *leaf, const char *other,
+static bool write_fixture_full(const char *top, const char *leaf,
+                               const char *other,
                                const char *hdr, const char *def)
 {
     return write_harness_sources(TC_FIX) &&
-           mk_write(TC_FIX, "core/modules/net/src/tc_top.c", TC_TOP) &&
+           mk_write(TC_FIX, "core/modules/net/src/tc_top.c", top) &&
            mk_write(TC_FIX, "core/modules/net/src/tc_mid.c", TC_MID) &&
            mk_write(TC_FIX, "core/modules/net/src/tc_leaf.c", leaf) &&
            mk_write(TC_FIX, "core/modules/net/src/tc_other.c", other) &&
@@ -238,7 +278,7 @@ static bool write_fixture_full(const char *leaf, const char *other,
 
 static bool write_fixture(const char *leaf, const char *other, const char *hdr)
 {
-    return write_fixture_full(leaf, other, hdr, TC_DEF_A);
+    return write_fixture_full(TC_TOP, leaf, other, hdr, TC_DEF_A);
 }
 
 /* Does `path` contain `needle`? Used by the source-contract assertions below,
@@ -1991,6 +2031,115 @@ static bool tc_acme_and_agent_policy(void)
            tc_external_exec_denied();
 }
 
+/* ── The exec rail: probe-time refusal for out-of-closure execs ──────────
+ *
+ * The fixture half proves the scanner itself: a planted popen() of a
+ * build/bin artifact in the group's ENTRY file flips the group from cacheable
+ * to refused with the rail's named reason; the comment-only twin proves prose
+ * never fires it; and the same signal planted in a library leaf — a closure
+ * file the group does not author, the kind that lands in hundreds of closures
+ * through the index's name-resolved static collisions — must NOT refuse. */
+static int tc_exec_rail_fixture(void)
+{
+    int failures = 0;
+    TC_CHECK("entry-signal fixture writes",
+             write_fixture_full(TC_TOP_EXEC, TC_LEAF_A, TC_OTHER_A, TC_H_A,
+                                TC_DEF_A));
+    struct testcache *tc = testcache_open(TC_FIX);
+    TC_CHECK("entry-signal fixture opens", tc != NULL);
+    if (tc) {
+        struct testcache_probe p;
+        testcache_probe_group(tc, "test_demo_entry", &p);
+        TC_CHECK("planted build/bin popen in the entry file refuses caching",
+                 !p.cacheable && !p.hit &&
+                 p.code == TESTCACHE_R_EXTERNAL_INPUT);
+        TC_CHECK("the refusal names the rail and the file",
+                 strncmp(p.reason, "closure exec signal in ", 23) == 0 &&
+                 strstr(p.reason, "tc_top.c") != NULL);
+        testcache_close(tc);
+    }
+    TC_CHECK("passenger-signal fixture writes",
+             write_fixture(TC_LEAF_EXEC, TC_OTHER_A, TC_H_A));
+    tc = testcache_open(TC_FIX);
+    TC_CHECK("passenger-signal fixture opens", tc != NULL);
+    if (tc) {
+        struct testcache_probe p;
+        testcache_probe_group(tc, "test_demo_entry", &p);
+        TC_CHECK("exec signal in a non-scanned closure file stays cacheable",
+                 p.cacheable && p.code == TESTCACHE_R_OK);
+        testcache_close(tc);
+    }
+    TC_CHECK("comment-signal fixture writes",
+             write_fixture_full(TC_TOP_EXEC_COMMENTED, TC_LEAF_A, TC_OTHER_A,
+                                TC_H_A, TC_DEF_A));
+    tc = testcache_open(TC_FIX);
+    TC_CHECK("comment-signal fixture opens", tc != NULL);
+    if (tc) {
+        struct testcache_probe p;
+        testcache_probe_group(tc, "test_demo_entry", &p);
+        TC_CHECK("exec signal in comments stays cacheable",
+                 p.cacheable && p.code == TESTCACHE_R_OK);
+        testcache_close(tc);
+    }
+    return failures;
+}
+
+/* The real-tree half pins the class, not the mechanism: each named group
+ * must probe TESTCACHE_R_EXTERNAL_INPUT whether the refuse came from the
+ * reviewed denylist or from the rail spotting the exec on its own — so a
+ * later denylist entry for the same group strengthens this test instead of
+ * breaking it. impact_composition is a reviewed exception: its execs build
+ * fixture trees with host tools and its build/bin literals are fixture paths
+ * and assertion needles, so it must stay cacheable. */
+static int tc_exec_rail_real_tree(void)
+{
+    int failures = 0;
+    static const char *const refused[] = {
+        "test_agent_test",       /* system() runs tools/agent_test_runner.sh */
+        "test_build_profile",    /* popen() runs make print-build-flags */
+        "test_cli_render",       /* execve()s build/bin/zclassic23 */
+        "test_code_impact",      /* popen() runs tools/agent_fast_ci.sh */
+        "test_codeindex_incremental", /* popen()s two tools/ scripts */
+        "test_engine",           /* system() runs tools/lint/check_no_api_keys.sh */
+        "test_fleet_gateway",    /* its file carries the shard exec helpers */
+        "test_process_group_exec", /* execs build/bin/process-group-exec */
+        "test_sem_replay",       /* execs build/bin/z23-sem-replay */
+        "test_terminal_worker_sandbox", /* execve()s build/bin/fbsh */
+        "test_test_group_selector", /* popen() re-execs the test image */
+        "test_verify_receiver",  /* execve()s argv[0]: the test image */
+    };
+    struct testcache *tc = testcache_open(NULL);
+    TC_CHECK("real-tree handle opens for the exec rail", tc != NULL);
+    if (!tc)
+        return failures + 1;
+    for (size_t i = 0; i < sizeof(refused) / sizeof(refused[0]); i++) {
+        struct testcache_probe p;
+        testcache_probe_group(tc, refused[i], &p);
+        TC_CHECK("out-of-closure exec group never caches", !p.cacheable &&
+                 !p.hit && p.code == TESTCACHE_R_EXTERNAL_INPUT);
+        if (p.cacheable || p.code != TESTCACHE_R_EXTERNAL_INPUT)
+            printf("  testcache: %s probed cacheable=%d code=%d (%s)\n",
+                   refused[i], p.cacheable, (int)p.code, p.reason);
+    }
+    {
+        struct testcache_probe p;
+        testcache_probe_group(tc, "test_impact_composition", &p);
+        TC_CHECK("the reviewed fixture-construction exception stays cacheable",
+                 p.cacheable && p.code == TESTCACHE_R_OK);
+        testcache_probe_group(tc, "test_hkdf_sha256_rfc5869", &p);
+        TC_CHECK("a plain in-tree unit group stays cacheable",
+                 p.cacheable && p.code == TESTCACHE_R_OK);
+    }
+    testcache_close(tc);
+    TC_CHECK("params-presence groups joined the denylist",
+             testcache_group_is_denylisted("test_native_spend_proof") &&
+             testcache_group_is_denylisted("test_params_fetch") &&
+             testcache_group_is_denylisted("test_params_vk_embedded") &&
+             testcache_group_is_denylisted("test_wallet_destruction_drill"));
+    return failures;
+}
+
+
 /* ── Phase AI: testcache_group_action_inputs ─────────────────────────────
  *
  * A tiny call chain test_action_entry -> act_mid -> {act_leaf, act_fixture}
@@ -2705,7 +2854,8 @@ int test_testcache(void)
         }
     }
     TC_CHECK("edit the .def registry (add a row)",
-             write_fixture_full(TC_LEAF_A, TC_OTHER_A, TC_H_A, TC_DEF_B));
+             write_fixture_full(TC_TOP, TC_LEAF_A, TC_OTHER_A, TC_H_A,
+                                TC_DEF_B));
     {
         struct testcache *tc = testcache_open(TC_FIX);
         if (tc) {
@@ -3258,6 +3408,8 @@ int test_testcache(void)
     failures += tc_observation_roundtrip();
     failures += tc_action_inputs_phase();
     failures += tc_load_flaky_excerpt();
+    failures += tc_exec_rail_real_tree();
+    failures += tc_exec_rail_fixture();
 
     (void)tc_shell("rm -rf %s %s %s %s %s", TC_FIX, TC_STORE,
                    TC_FIX2, TC_CAP, TC_CAP2);

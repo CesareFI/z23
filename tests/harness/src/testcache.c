@@ -82,11 +82,26 @@ struct trc_memo {
     size_t len;
 };
 
+/* ── exec-signal memo (path -> verdict), open addressing, per-run ─────────
+ * The exec rail below scans a closure file once per handle; the verdict is
+ * memoized exactly like the content hash above. detail == NULL means scanned
+ * clean; a non-NULL detail is a static string naming the matched signal. */
+struct trc_sig_ent {
+    char       *path;    /* NULL == empty slot */
+    const char *detail;
+};
+struct trc_sigmemo {
+    struct trc_sig_ent *slots;
+    size_t cap;          /* power of two */
+    size_t len;
+};
+
 struct testcache {
     struct codeindex *ci;
     char              root[4096];
     char              store_root[4096];
     struct trc_memo   memo;
+    struct trc_sigmemo sigmemo;
     struct testcache_stats stats;
     char            (*closure)[256];   /* TRC_MAX_CLOSURE scratch rows */
     /* Include-graph liveness, from the graph itself, measured once at open. */
@@ -147,6 +162,60 @@ static bool trc_memo_grow(struct trc_memo *m)
     free(m->slots);
     m->slots = ns;
     m->cap = ncap;
+    return true;
+}
+
+static bool trc_sigmemo_init(struct trc_sigmemo *m, size_t cap)
+{
+    m->slots = zcl_calloc(cap, sizeof(*m->slots), "trc_sigmemo");
+    if (!m->slots)
+        return false;
+    m->cap = cap;
+    m->len = 0;
+    return true;
+}
+
+static void trc_sigmemo_free(struct trc_sigmemo *m)
+{
+    if (!m->slots)
+        return;
+    for (size_t i = 0; i < m->cap; i++)
+        free(m->slots[i].path);
+    free(m->slots);
+    m->slots = NULL;
+    m->cap = m->len = 0;
+}
+
+static bool trc_sigmemo_grow(struct trc_sigmemo *m)
+{
+    size_t ncap = m->cap * 2;
+    struct trc_sig_ent *ns = zcl_calloc(ncap, sizeof(*ns), "trc_sigmemo_grow");
+    if (!ns)
+        return false;
+    for (size_t i = 0; i < m->cap; i++) {
+        if (!m->slots[i].path)
+            continue;
+        size_t j = (size_t)trc_hash_str(m->slots[i].path) & (ncap - 1);
+        while (ns[j].path)
+            j = (j + 1) & (ncap - 1);
+        ns[j] = m->slots[i];
+    }
+    free(m->slots);
+    m->slots = ns;
+    m->cap = ncap;
+    return true;
+}
+
+/* Both per-run memos; the content memo is torn down again when the signal
+ * memo cannot be allocated. */
+static bool trc_memos_init(struct testcache *tc)
+{
+    if (!trc_memo_init(&tc->memo, 4096))
+        return false;
+    if (!trc_sigmemo_init(&tc->sigmemo, 1024)) {
+        trc_memo_free(&tc->memo);
+        return false;
+    }
     return true;
 }
 
@@ -390,7 +459,14 @@ static void trc_env_digest(uint8_t out[32])
  *
  * Derived by grepping tests/harness/src for `build/bin/`, popen/system/exec of a
  * repo artifact, /proc readers, and CPU-feature dispatch. Kept in sorted order.
- * `name` may carry the test_/spec_ prefix. */
+ * `name` may carry the test_/spec_ prefix.
+ *
+ * Completeness no longer rests on that grep: the exec rail below
+ * (trc_closure_exec_signal) re-derives the exec-a-tree-artifact class from the
+ * closure itself at probe time and refuses caching for any group that carries
+ * it, listed or not. The categories the rail cannot see — fixture reads, a
+ * live node DB, params presence, wall-clock assertions — still rest on this
+ * list alone. */
 static bool group_reads_external_inputs(const char *name)
 {
     if (strncmp(name, "test_", 5) == 0 || strncmp(name, "spec_", 5) == 0)
@@ -533,6 +609,14 @@ static bool group_reads_external_inputs(const char *name)
         "chainstate_sapling_anchor",
         "groth16_selfverify",
         "mint_proof_harness",
+        /* Reads sapling-spend.params and verifies under the pinned file's
+         * key; the real proving leg runs only when the params exist. */
+        "native_spend_proof",
+        /* The real-file leg runs only when ~/.zcash-params is present, so a
+         * stored PASS records whichever coverage the storing host had. */
+        "params_fetch",
+        /* Probes ~/.zcash-params for the verifying-key source when present. */
+        "params_vk_embedded",
         "phgr13_fix",
         "proof_validate_stage",
         "pv_lookahead",
@@ -552,6 +636,8 @@ static bool group_reads_external_inputs(const char *name)
         "simnet_zmsg_onchain",
         "snark_kat",
         "sprout_phgr13_kat",
+        /* Act 3 (shielded) gates on ~/.zcash-params presence. */
+        "wallet_destruction_drill",
         /* --- /proc + CPU-feature dispatch (the host, not the tree) --- */
         "boot_self_respawn",
         "canary_sentinel_watch",
@@ -568,6 +654,361 @@ static bool group_reads_external_inputs(const char *name)
         if (strcmp(name, ext[i]) == 0)
             return true;
     return false;
+}
+
+/* ── out-of-closure exec rail ─────────────────────────────────────────────
+ *
+ * The denylist above names the groups a reviewer has already classified.
+ * This rail is the part that does not wait for a reviewer: when a group's
+ * closure files EXEC a tree-built binary, a repo script, make, or the test
+ * image itself, the verdict is decided by bytes the closure key does not
+ * hash (a whole link, a script body, the Makefile). A stored PASS at such a
+ * key is served unchanged after those bytes change — the failure mode the
+ * denylist used to repair one group at a time (acme_worker, the
+ * fleet_gateway shards, freebsd_sh, consensus_rule_sweep, fastobj_carrier,
+ * cli_render and sem_replay were each found and listed by hand).
+ *
+ * So the probe REFUSES caching for any group whose scanned files carry the
+ * signal, whether or not the denylist knows the group yet. Over-refusal is
+ * the safe direction: an unreviewed group simply always runs, and the
+ * refusal names the file and the matched signal so the reviewer can
+ * classify it. A flagged group a reviewer has proven sound — its execs run
+ * host tools against fixture trees it authors, never a tree artifact —
+ * carries an exact-name exception in trc_signal_exception() with the
+ * reasoning, the same evidentiary standard as a denylist entry.
+ *
+ * Precision, deliberately simple: per scanned FILE, after comment stripping,
+ * an exec-family call site AND a tree-artifact literal in the same file flag
+ * it. Artifact macros (CR_BIN, GW_TEST_BIN_DEFAULT, FBSH_BIN) keep the
+ * literal in the same file as the exec, which is why the pairing is
+ * per-file. An exec that only receives the artifact path as a parameter —
+ * the node/library pattern — carries no literal and does not flag, and
+ * exec'ing host tools (rm, git, sh) against fixture paths flags nothing
+ * because no tree-artifact literal is present.
+ *
+ * Which files get scanned is the other half of precision; see
+ * trc_rail_scans_file. The name-resolved closure carries passengers (a
+ * same-named static in an unrelated file puts that file in the closure), so
+ * only the group's own entry file and shared harness helpers are scanned —
+ * never another group's entry file, never library or tool machinery whose
+ * exec argument is written by its caller. */
+
+/* Reviewed exceptions to the exec rail. The reason comment must name what
+ * was reviewed; an entry whose reasoning stops being true is a stored-PASS
+ * hole, exactly like a stale denylist entry. */
+static bool trc_signal_exception(const char *name)
+{
+    if (strncmp(name, "test_", 5) == 0 || strncmp(name, "spec_", 5) == 0)
+        name += 5;
+    static const char *const ex[] = {
+        /* system() runs rm/mkdir against the CI_FIX fixture tree the test
+         * authors itself; the tools/...sh literal is a "generated-by"
+         * provenance needle planted INTO a fixture file's content — never an
+         * exec target. */
+        "code_inventory",
+        /* system()/popen() run git/rm/ls against fixture repositories the
+         * test authors itself; the build/bin literals in this file are
+         * fixture paths it WRITES and build-need needles it asserts on —
+         * never exec targets. */
+        "impact_composition",
+    };
+    for (size_t i = 0; i < sizeof(ex) / sizeof(ex[0]); i++)
+        if (strcmp(name, ex[i]) == 0)
+            return true;
+    return false;
+}
+
+/* Identifier left boundary: the byte before p must not continue a name
+ * (so "system(" never matches "mysystem("). */
+static bool trc_left_boundary(const char *b, const char *p)
+{
+    if (p == b)
+        return true;
+    unsigned char c = (unsigned char)p[-1];
+    return !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+             (c >= '0' && c <= '9') || c == '_');
+}
+
+/* Identifier-boundary token search: `tok` must not be the tail of a longer
+ * identifier. */
+static bool trc_has_token(const char *b, const char *tok, const char **hit)
+{
+    size_t tl = strlen(tok);
+    const char *p = b;
+    while ((p = strstr(p, tok)) != NULL) {
+        if (trc_left_boundary(b, p)) {
+            if (hit)
+                *hit = p;
+            return true;
+        }
+        p += tl;
+    }
+    return false;
+}
+
+/* Skip a string or char literal starting at the quote b[*i]. */
+static void trc_skip_literal(const char *b, size_t n, size_t *i)
+{
+    char q = b[(*i)++];
+    while (*i < n && b[*i] != q) {
+        if (b[*i] == '\\' && *i + 1 < n)
+            (*i)++;
+        (*i)++;
+    }
+    if (*i < n)
+        (*i)++;
+}
+
+/* Blank a // comment starting at b[*i]. */
+static void trc_blank_line_comment(char *b, size_t n, size_t *i)
+{
+    while (*i < n && b[*i] != '\n')
+        b[(*i)++] = ' ';
+}
+
+/* Blank a block comment starting at the slash b[*i]; newlines survive so
+ * line numbers still line up with the unscanned source. */
+static void trc_blank_block_comment(char *b, size_t n, size_t *i)
+{
+    size_t j = *i;
+    b[j] = ' ';
+    b[j + 1] = ' ';
+    j += 2;
+    while (j + 1 < n && !(b[j] == '*' && b[j + 1] == '/')) {
+        if (b[j] != '\n')
+            b[j] = ' ';
+        j++;
+    }
+    if (j + 1 < n) {
+        b[j] = ' ';
+        b[j + 1] = ' ';
+        j += 2;
+    }
+    *i = j;
+}
+
+/* Blank out // and block comments in place (newlines preserved), keeping
+ * string and char literals byte-exact — the literals ARE the signals. */
+static void trc_strip_comments(char *b, size_t n)
+{
+    size_t i = 0;
+    while (i < n) {
+        if (b[i] == '"' || b[i] == '\'')
+            trc_skip_literal(b, n, &i);
+        else if (b[i] == '/' && i + 1 < n && b[i + 1] == '/')
+            trc_blank_line_comment(b, n, &i);
+        else if (b[i] == '/' && i + 1 < n && b[i + 1] == '*')
+            trc_blank_block_comment(b, n, &i);
+        else
+            i++;
+    }
+}
+
+/* The exec-family call sites the rail recognizes. */
+static const char *const TRC_EXEC_TOKENS[] = {
+    "execve(",  "execvp(",      "execv(", "execlp(", "execl(",
+    "fexecve(", "posix_spawnp(", "posix_spawn(", "popen(", "system(",
+};
+
+/* True when some exec-family call site is fed argv[0]: the process re-execs
+ * the image it was started from, so the whole link is the real input. */
+static bool trc_self_reexec(const char *b)
+{
+    for (size_t i = 0; i < sizeof(TRC_EXEC_TOKENS) / sizeof(TRC_EXEC_TOKENS[0]);
+         i++) {
+        const char *h = NULL;
+        if (!trc_has_token(b, TRC_EXEC_TOKENS[i], &h))
+            continue;
+        const char *q = h + strlen(TRC_EXEC_TOKENS[i]);
+        while (*q == ' ' || *q == '\t')
+            q++;
+        if (strncmp(q, "argv[0]", 7) == 0)
+            return true;
+    }
+    return false;
+}
+
+/* True when any exec-family call site is present. */
+static bool trc_has_exec_call(const char *b)
+{
+    for (size_t i = 0; i < sizeof(TRC_EXEC_TOKENS) / sizeof(TRC_EXEC_TOKENS[0]);
+         i++)
+        if (trc_has_token(b, TRC_EXEC_TOKENS[i], NULL))
+            return true;
+    return false;
+}
+
+/* The .sh word ending inside the literal starting at q (just after a
+ * boundary-clean "tools/"). The suffix must terminate the word: closing
+ * quote, space, escape, or NUL. */
+static bool trc_literal_has_sh_suffix(const char *q)
+{
+    size_t span = 0;
+    while (q[span] && q[span] != '"' && span < 256) {
+        if (q[span] == '.' && q[span + 1] == 's' && q[span + 2] == 'h' &&
+            (q[span + 3] == '"' || q[span + 3] == ' ' ||
+             q[span + 3] == '\\' || q[span + 3] == '\0'))
+            return true;
+        span++;
+    }
+    return false;
+}
+
+/* A tools/...sh script literal; the quote may be escaped inside a wrapper
+ * string ("bash -lc \"./tools/x.sh ...\""), so match the path itself and
+ * require the .sh suffix inside the same literal. */
+static bool trc_toolscript_literal(const char *b)
+{
+    for (const char *p = b; (p = strstr(p, "tools/")) != NULL; p += 6)
+        if (trc_left_boundary(b, p) && trc_literal_has_sh_suffix(p + 6))
+            return true;
+    return false;
+}
+
+/* Match the exec-rail signals on a comment-stripped source buffer. Returns a
+ * static detail string, or NULL when no signal is present. */
+static const char *trc_exec_signals(const char *b)
+{
+    if (trc_self_reexec(b))
+        return "self re-exec of the test image (exec argv[0])";
+    if (!trc_has_exec_call(b))
+        return NULL;
+    if (strstr(b, "\"build/bin/") || strstr(b, "\"./build/bin/"))
+        return "exec with a build/bin artifact literal";
+    if (trc_toolscript_literal(b))
+        return "exec with a tools/*.sh script literal";
+    /* make reads the Makefile: an out-of-closure tree input. */
+    if (strstr(b, "\"make ") || strstr(b, "\"make\t") ||
+        strstr(b, "\"make\""))
+        return "exec of make (verdict reads the Makefile)";
+    /* popen/system of a command built from the test image's own path. */
+    if (trc_has_token(b, "os_proc_exe_path(", NULL))
+        return "exec paired with an own-image path lookup";
+    return NULL;
+}
+
+#define TRC_SIG_READ_CAP (4u * 1024u * 1024u)
+
+/* Memoized signal scan of one closure file. Returns the matched detail
+ * (static string) or NULL when clean. A file that cannot be OPENED returns
+ * NULL too: identity computation reads every closure input right behind this
+ * scan and already refuses fail-closed on any read failure, so the rail
+ * leaves that diagnosis to it. A present file too large to scan whole is
+ * different — the key would mint while the rail saw only a prefix — so that
+ * file flags on its own detail. */
+static const char *trc_sig_scan_file(struct testcache *tc, const char *relpath)
+{
+    struct trc_sigmemo *m = &tc->sigmemo;
+    if (m->len * 10 >= m->cap * 7 && !trc_sigmemo_grow(m))
+        return "signal memo exhaustion";
+    size_t j = (size_t)trc_hash_str(relpath) & (m->cap - 1);
+    while (m->slots[j].path) {
+        if (strcmp(m->slots[j].path, relpath) == 0)
+            return m->slots[j].detail;
+        j = (j + 1) & (m->cap - 1);
+    }
+
+    const char *detail = NULL;
+    char full[4096];
+    int n = snprintf(full, sizeof(full), "%s/%s", tc->root, relpath);
+    if (n > 0 && (size_t)n < sizeof(full)) {
+        FILE *f = fopen(full, "rb");
+        if (f) {
+            char *buf = zcl_malloc(TRC_SIG_READ_CAP + 2, "trc_sig_read");
+            if (!buf) {
+                detail = "signal scan allocation failed";
+            } else {
+                size_t got = fread(buf, 1, TRC_SIG_READ_CAP + 1, f);
+                if (ferror(f)) {
+                    detail = NULL; /* unreadable: the key path refuses it */
+                } else if (got > TRC_SIG_READ_CAP) {
+                    detail = "closure input exceeds the exec rail's scan cap";
+                } else {
+                    buf[got] = '\0';
+                    trc_strip_comments(buf, got);
+                    detail = trc_exec_signals(buf);
+                }
+                free(buf);
+            }
+            fclose(f);
+        }
+    }
+
+    char *dup = zcl_strdup(relpath, "trc_sigmemo_key");
+    if (!dup)
+        return "signal memo key allocation failed";
+    m->slots[j].path = dup;
+    m->slots[j].detail = detail;
+    m->len++;
+    return detail;
+}
+
+/* Which closure files the rail scans. The forward closure is NAME-resolved:
+ * same-named statics in different translation units collide in the index, so
+ * a closure routinely carries files the group never executes (a bench tool
+ * defining a static run_cmd lands in hundreds of closures). Scanning every
+ * closure file would refuse those hundreds of groups over bytes they never
+ * run. The signal that matters is authored by the group's own test: the entry
+ * file (the root symbol's def_path — unique per registered group) plus shared
+ * harness helpers the group genuinely links. Another group's entry file in
+ * the closure is a name-collision passenger and is skipped; platform, tools
+ * and engine files provide parameterized exec machinery whose artifact
+ * argument is written by the caller, and the caller is a scanned file. An
+ * exec delegated entirely to a tools/ helper (the sem_replay build pattern)
+ * is invisible here and remains denylist territory. */
+static bool trc_rail_scans_file(const char *path, const char *entry)
+{
+    if (entry[0] && strcmp(path, entry) == 0)
+        return true;
+    if (strncmp(path, "tests/harness/", 14) != 0)
+        return false;
+    const char *base = strrchr(path, '/');
+    base = base ? base + 1 : path;
+    if (strncmp(base, "test_", 5) == 0 || strncmp(base, "spec_", 5) == 0)
+        return false;  /* another group's entry file, here by name collision */
+    return true;
+}
+
+/* Walk the files the rail trusts; true when one carries an exec signal
+ * (out_path and out_detail name the file and the matched signal). */
+static bool trc_closure_exec_signal(struct testcache *tc,
+                                    const char *group_name, int nc,
+                                    const char **out_path,
+                                    const char **out_detail)
+{
+    char entry[256] = "";
+    struct ci_symbol sym;
+    bool found = false;
+    if (codeindex_symbol(tc->ci, group_name, &sym, &found) && found)
+        snprintf(entry, sizeof(entry), "%s", sym.def_path);
+    for (int i = 0; i < nc; i++) {
+        if (!trc_rail_scans_file(tc->closure[i], entry))
+            continue;
+        const char *detail = trc_sig_scan_file(tc, tc->closure[i]);
+        if (detail) {
+            *out_path = tc->closure[i];
+            *out_detail = detail;
+            return true;
+        }
+    }
+    return false;
+}
+
+/* The rail gate at probe time: refuse caching (out populated) when the
+ * group's scanned files carry an exec signal and no reviewed exception
+ * covers the group. */
+static bool trc_rail_refuses(struct testcache *tc, const char *group_name,
+                             int nc, struct testcache_probe *out)
+{
+    const char *sig_path = NULL, *sig_detail = NULL;
+    if (!trc_closure_exec_signal(tc, group_name, nc, &sig_path, &sig_detail))
+        return false;
+    if (trc_signal_exception(group_name))
+        return false;
+    out->code = TESTCACHE_R_EXTERNAL_INPUT;
+    snprintf(out->reason, sizeof(out->reason),
+             "closure exec signal in %s: %s", sig_path, sig_detail);
+    return true;
 }
 
 /* Exposed for the contract test, which re-derives the exec-a-binary set from
@@ -745,7 +1186,7 @@ static struct testcache *testcache_open_mode(
         LOG_NULL("testcache", "closure scratch alloc failed");
     }
 
-    if (!trc_memo_init(&tc->memo, 4096)) {
+    if (!trc_memos_init(tc)) {
         free(tc->closure);
         free(tc);
         LOG_NULL("testcache", "memo init failed");
@@ -772,6 +1213,7 @@ static struct testcache *testcache_open_mode(
     tc->ci = snapshot_mode ? codeindex_open_existing(tc->root)
                            : codeindex_open(tc->root);
     if (!tc->ci) {
+        trc_sigmemo_free(&tc->sigmemo);
         trc_memo_free(&tc->memo);
         free(tc->closure);
         free(tc);
@@ -819,6 +1261,7 @@ void testcache_close(struct testcache *tc)
         return;
     if (tc->ci)
         codeindex_close(tc->ci);
+    trc_sigmemo_free(&tc->sigmemo);
     trc_memo_free(&tc->memo);
     free(tc->closure);
     free(tc);
@@ -862,6 +1305,21 @@ static bool trc_record_verifies(const char *store_root, const uint8_t key[32],
     }
     free(buf);
     return ok;
+}
+
+/* Is there a stored PASS at this exact key? Probe existence first (a quiet
+ * access() — a MISS is the common, non-error case) inside the verifying load,
+ * so a cold cache never spams the log with "object not found". */
+static void trc_lookup_verdict(struct testcache *tc,
+                               struct testcache_probe *out)
+{
+    tc->stats.verdict_lookups++;
+    bool flaky = false;
+    if (trc_record_verifies(tc->store_root, out->key, &flaky)) {
+        out->hit = true;
+        out->hit_flaky = flaky;
+        tc->stats.verdict_hits++;
+    }
 }
 
 /* Resolve the verdict store exactly as testcache_open_mode does, so a
@@ -986,6 +1444,13 @@ static void testcache_probe_group_internal(
         }
     }
 
+    /* The exec rail: a cacheable closure that execs a tree artifact, a repo
+     * script, make, or the test image itself decides its verdict from bytes
+     * the key never hashes. Refuse before any hashing or store lookup, so an
+     * unreviewed exec can neither mint nor serve a verdict. */
+    if (trc_rail_refuses(tc, group_name, nc, out))
+        return;
+
     bool stale = false, harness_graph_incomplete = false;
     tc->input_missing = false;
     if (!trc_compute_key(tc, group_name, nc, out->key, &stale,
@@ -1019,18 +1484,7 @@ static void testcache_probe_group_internal(
     out->n_closure = nc;
     snprintf(out->reason, sizeof(out->reason), "%d input files", nc);
 
-    /* Is there a stored PASS at this exact key? Probe existence first (a quiet
-     * access() — a MISS is the common, non-error case) before the verifying
-     * load, so a cold cache never spams the log with "object not found". */
-    tc->stats.verdict_lookups++;
-    {
-        bool flaky = false;
-        if (trc_record_verifies(tc->store_root, out->key, &flaky)) {
-            out->hit = true;
-            out->hit_flaky = flaky;
-            tc->stats.verdict_hits++;
-        }
-    }
+    trc_lookup_verdict(tc, out);
 }
 
 void testcache_probe_group(struct testcache *tc, const char *group_name,
