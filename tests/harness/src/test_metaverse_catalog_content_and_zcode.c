@@ -812,8 +812,10 @@ static int zcode_case_toctou_race(struct zcode_adapter_ctx *zc)
              mutation.fired && !manifest.verification_complete &&
              strcmp(manifest.verification_gap,
                     "chunk_mutated_during_verification") == 0 &&
-             bytes_used == manifest.total_bytes &&
-             operations_used > manifest.chunk_total);
+             (bytes_used == manifest.total_bytes ||
+              bytes_used == manifest.total_bytes +
+                            zc->p.manifest.files[0].size) &&
+             operations_used == manifest.chunk_total + 1u);
     mv_manifest_free(&manifest);
 
     f = fopen(first_path, "wb");
@@ -823,6 +825,18 @@ static int zcode_case_toctou_race(struct zcode_adapter_ctx *zc)
     if (f)
         fclose(f);
 
+    MV_CHECK("zcode: canonical manifest opens for complete recheck proof",
+             mv_manifest_read(zc->zcode_dir, zc->p.root_hex, &manifest) ==
+                 MV_MANIFEST_READ_OK);
+    mv_manifest_verify_possession_test(
+        zc->zcode_dir, &manifest, MV_PROPERTY_VERIFY_BYTES,
+        MV_PROPERTY_SHOW_VERIFY_OPS, NULL, NULL,
+        &bytes_used, &operations_used);
+    MV_CHECK("zcode: complete possession rehashes every chunk",
+             manifest.verification_complete &&
+             bytes_used == 2u * manifest.total_bytes &&
+             operations_used == 2u * manifest.chunk_total);
+    mv_manifest_free(&manifest);
     MV_CHECK("zcode: canonical manifest opens for strict budget proof",
              mv_manifest_read(zc->zcode_dir, zc->p.root_hex, &manifest) ==
                  MV_MANIFEST_READ_OK);
@@ -1064,4 +1078,3 @@ int t_zcode_adapter(void)
     test_rm_rf_recursive(zc.dd);
     return failures;
 }
-

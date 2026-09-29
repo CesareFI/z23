@@ -24,11 +24,10 @@
  * caller cannot see. Truncation is always reported, never silent. */
 #define MV_MANIFEST_SCAN_MAX 512u
 
-/* A single SHOW may verify one store-admissible package.  LIST shares the
- * same byte budget across its whole page and also caps filesystem operations,
- * so a directory containing thousands of tiny chunks cannot turn a read
- * command into an unbounded scrub. */
-#define MV_PROPERTY_VERIFY_BYTES VCS_PACKAGE_STORE_MAX_PACKAGE_BYTES
+/* A complete verification reads each chunk twice: the final content pass
+ * detects same-size overwrites whose filesystem timestamps do not advance.
+ * LIST shares this physical byte budget across its page. */
+#define MV_PROPERTY_VERIFY_BYTES (2u * VCS_PACKAGE_STORE_MAX_PACKAGE_BYTES)
 #define MV_PROPERTY_SHOW_VERIFY_OPS (2u * VCS_PACKAGE_MAX_TOTAL_CHUNKS)
 #define MV_PROPERTY_LIST_VERIFY_OPS 4096u
 

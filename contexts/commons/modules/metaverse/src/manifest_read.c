@@ -264,6 +264,55 @@ enum mv_manifest_read_status mv_manifest_read(
     return MV_MANIFEST_READ_OK;
 }
 
+static bool mv_final_chunk_matches(
+    const char *zcode_dir, const struct mv_chunk_fingerprint *fingerprint,
+    uint64_t byte_budget, uint64_t *used_bytes,
+    struct mv_manifest_read *manifest)
+{
+    char path[MV_PATH_MAX];
+    struct platform_positioned_file file_handle;
+    struct platform_positioned_file_snapshot before, after;
+    uint8_t digest[32];
+    uint8_t *bytes = NULL;
+    bool matches = false;
+
+    if (*used_bytes > byte_budget ||
+        fingerprint->snapshot.size > byte_budget - *used_bytes) {
+        mv_verification_gap(manifest, "byte_budget_exhausted");
+        return false;
+    }
+    size_t expected = (size_t)fingerprint->snapshot.size;
+    platform_positioned_file_init(&file_handle);
+    if (!mv_cas_path(zcode_dir, fingerprint->hash, path) ||
+        !platform_positioned_file_open_beneath(
+            &file_handle, zcode_dir, path) ||
+        !platform_positioned_file_snapshot(&file_handle, &before) ||
+        !mv_snapshot_equal(&before, &fingerprint->snapshot)) {
+        mv_verification_gap(manifest, "chunk_mutated_during_verification");
+        goto done;
+    }
+    bytes = zcl_malloc(expected, "mv_final_chunk_recheck");
+    if (!bytes) {
+        mv_verification_gap(manifest, "allocation_failed");
+        goto done;
+    }
+    bool read_ok = mv_read_exact(&file_handle, bytes, expected);
+    *used_bytes += expected;
+    if (!read_ok ||
+        !platform_positioned_file_snapshot(&file_handle, &after) ||
+        !mv_snapshot_equal(&before, &after) ||
+        !vcs_package_chunk_hash(bytes, expected, digest) ||
+        memcmp(digest, fingerprint->hash, sizeof(digest)) != 0) {
+        mv_verification_gap(manifest, "chunk_mutated_during_verification");
+        goto done;
+    }
+    matches = true;
+done:
+    free(bytes);
+    platform_positioned_file_close(&file_handle);
+    return matches;
+}
+
 static void mv_manifest_verify_possession_impl(
     const char *zcode_dir, struct mv_manifest_read *manifest,
     uint64_t byte_budget, uint32_t operation_budget,
@@ -401,33 +450,19 @@ static void mv_manifest_verify_possession_impl(
         }
     }
 
-    /* Re-check every coordinate after the final hash. This closes the useful
-     * race window: replacing an early chunk while later chunks are being
-     * hashed cannot yield a completed possession claim. */
+    /* Re-read and hash every coordinate after the first pass. Metadata alone
+     * can remain identical after an in-place overwrite on tmpfs. */
     for (coordinate = 0; coordinate < manifest->chunk_total; coordinate++) {
-        char path[MV_PATH_MAX];
-        struct platform_positioned_file file_handle;
-        struct platform_positioned_file_snapshot status;
         const struct mv_chunk_fingerprint *fingerprint =
             &fingerprints[coordinate];
-
         if (used_operations >= operation_budget) {
             mv_verification_gap(manifest, "operation_budget_exhausted");
             goto done;
         }
         used_operations++;
-        platform_positioned_file_init(&file_handle);
-        bool unchanged = mv_cas_path(zcode_dir, fingerprint->hash, path) &&
-            platform_positioned_file_open_beneath(
-                &file_handle, zcode_dir, path) &&
-            platform_positioned_file_snapshot(&file_handle, &status) &&
-            mv_snapshot_equal(&status, &fingerprint->snapshot);
-        platform_positioned_file_close(&file_handle);
-        if (!unchanged) {
-            mv_verification_gap(manifest,
-                                "chunk_mutated_during_verification");
+        if (!mv_final_chunk_matches(zcode_dir, fingerprint, byte_budget,
+                                    &used_bytes, manifest))
             goto done;
-        }
     }
     manifest->verification_complete = true;
 
