@@ -17,6 +17,7 @@ int test_verify_receiver(void) { return 0; }
 #include "verify_receiver.h"
 #include "verify_receiver_internal.h"
 #include "verify_store.h"
+#include "platform/temp_directory.h"
 #include "verify/fixed_result_contract.h"
 #include "verify/fixed_result_source.h"
 #include "test/verify_contract_fixture.h"
@@ -212,6 +213,23 @@ static bool vrt_gcc(const struct vrt_fx *f, const char *dir,
 
 /* ── the fixture world ─────────────────────────────────────────────────── */
 
+static bool vrt_system_key_temp_create(char *out, size_t cap)
+{
+    const char *prior = getenv("TMPDIR");
+    char saved[PATH_MAX];
+    if (prior) {
+        int n = snprintf(saved, sizeof(saved), "%s", prior);
+        if (n < 0 || (size_t)n >= sizeof(saved)) return false;
+    }
+    /* Key path validation checks every ancestor; the proof checkout may be
+     * group writable. Use the system temp root, as test_verify_attest does. */
+    if (unsetenv("TMPDIR") != 0) return false;
+    bool created = platform_temp_directory_create("z23-vrecv-key-", out, cap);
+    bool restored = prior ? setenv("TMPDIR", saved, 1) == 0
+                          : unsetenv("TMPDIR") == 0;
+    return created && restored;
+}
+
 static void vrt_roots(struct zcl_fixed_result_v2_roots *pins)
 {
     memset(pins, 0, sizeof(*pins));
@@ -225,12 +243,12 @@ static bool vrt_dirs(struct vrt_fx *f)
 {
     char temporary[PATH_MAX], key_temporary[PATH_MAX], site[PATH_MAX];
     char *made = test_mkdtemp(temporary, sizeof(temporary), "z23-vrecv");
-    char *key_made = test_mkdtemp(key_temporary, sizeof(key_temporary),
-                                  "z23-vrecv-key");
+    bool key_made = vrt_system_key_temp_create(key_temporary,
+                                                sizeof(key_temporary));
     char *site_made = test_mkdtemp(site, sizeof(site), "z23-vrecv-site");
     if (!getcwd(f->cwd, sizeof(f->cwd)) || !made || !key_made || !site_made ||
         !realpath(site_made, f->anchor) || chmod(f->anchor, 0755) != 0 ||
-        !realpath(made, f->root) || !realpath(key_made, f->key_root))
+        !realpath(made, f->root) || !realpath(key_temporary, f->key_root))
         return false;
     struct { char *out; const char *base; const char *name; } paths[] = {
         {f->gen, f->root, "gen"}, {f->donor, f->root, "donor"},
