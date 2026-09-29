@@ -18,6 +18,7 @@
 #include "devloop.h"
 #include "test_group_catalog.h"
 #include "test_group_host_need.h"
+#include "verify_receiver.h"
 
 #include "base/hex.h"
 #include "base/safe_alloc.h"
@@ -6220,7 +6221,9 @@ static bool proof_scrub_credentials(void)
  * turn reuse on for any runner started without an explicit mode,
  * ZCL_TEST_CACHE_DUMP makes the runner print one group's key and exit
  * without running anything, and ZCL_TESTCACHE_STORE_ROOT names a verdict
- * store the candidate can write. */
+ * store the candidate can write. ZCC_ADMITTED and ZCC_LOG belong to the
+ * driver alone (dp_receiver_begin): an inherited admitted directory would
+ * hand zcc bytes no receiver admitted. */
 static bool proof_prepare_environment(void)
 {
     static const char *const unset_names[] = {
@@ -6229,6 +6232,7 @@ static bool proof_prepare_environment(void)
         "ZCL_LINT_MODE", "ZCL_LINT_TU_CACHE", "ZCL_LINT_TU_CACHE_DIR",
         "ZCL_LINT_TU_CACHE_GENERATIONS", "ZCL_TEST_CACHE",
         "ZCL_TEST_CACHE_DUMP", "ZCL_TESTCACHE_STORE_ROOT",
+        ZCL_VERIFY_RECEIVER_ENV, "ZCC_LOG",
     };
     for (size_t i = 0; i < sizeof(unset_names) / sizeof(unset_names[0]); i++)
         if (unsetenv(unset_names[i]) != 0) return false;
@@ -8385,12 +8389,57 @@ static bool dp_worker_test_env(struct dp_worker *w, char *why, size_t why_len)
     return true;
 }
 
-/* The submitting checkout could not supply an admissible runner
- * or helper set: build one in the generation and re-admit. */
-static bool dp_worker_bundle(struct dp_worker *w, bool test_selected,
-                             char *why, size_t why_len)
+/* The fixed result.c receiver (tools/dev/verify_receiver.h) around the one
+ * make that compiles the test-fast tree. This driver, not the candidate's
+ * zcc or Makefile, admits a separate-account observation, and after make
+ * rehashes what was published. With no installed verifier it costs one
+ * missing-key check and records object_reuse_admit=cold(no_verifier_key).
+ * A contradiction (a signed FAIL, conflicting observations, served bytes
+ * that are not the admitted ones) fails the step: block(<token>). */
+static bool dp_receiver_end(const struct dp_worker *w,
+                            struct zcl_verify_receiver *rx,
+                            char *why, size_t why_len)
 {
-    if (why && why_len > 0) why[0] = 0;
+    bool env_ok = zcl_verify_receiver_env_clear();
+    zcl_verify_receiver_finish(rx);
+    (void)zcl_verify_receiver_phases_write(rx, w->paths->phases);
+    bool blocked = rx->verdict == ZCL_VERIFY_RECEIVER_BLOCK;
+    if (blocked)
+        proof_whyf(why, why_len, "object_reuse_blocked_%s", rx->reason);
+    else if (!env_ok)
+        proof_why(why, why_len, "object_reuse_environment_unavailable");
+    zcl_verify_receiver_release(rx);
+    return env_ok && !blocked;
+}
+
+static bool dp_receiver_begin(const struct dp_worker *w,
+                              struct zcl_verify_receiver *rx,
+                              char *why, size_t why_len)
+{
+    char work[PATH_MAX];
+    struct zcl_verify_attest_box_key box;
+    zcl_verify_receiver_box_key(&box);
+    if (snprintf(work, sizeof(work), "%s/receiver.%s", w->paths->state,
+                 w->paths->key) >= (int)sizeof(work))
+        work[0] = 0;
+    zcl_verify_receiver_prepare(w->generation, work, &box, rx);
+    if (rx->verdict != ZCL_VERIFY_RECEIVER_BLOCK &&
+        zcl_verify_receiver_env_apply(rx))
+        return true;
+    (void)dp_receiver_end(w, rx, why, why_len);
+    if (why && !why[0])
+        proof_why(why, why_len, "object_reuse_environment_unavailable");
+    return false;
+}
+
+/* The bundle make, retried once after a recovery-admission race. `*rc` is
+ * make's status; `*first_ms` times the first attempt only (a recovery
+ * rerun is rare and stays visible in the retry log). False, with `why`
+ * set, only when the retry log path does not fit. */
+static bool dp_worker_bundle_make(struct dp_worker *w, int *rc,
+                                  uint64_t *first_ms, char *why,
+                                  size_t why_len)
+{
     /* Both sets are needed before either dimension starts. One Make goal
      * schedules the independent lint tools alongside the test bundle with
      * the same dev/test-fast epochs and depfiles as dev-proof-bundle. */
@@ -8400,29 +8449,45 @@ static bool dp_worker_bundle(struct dp_worker *w, bool test_selected,
     struct zcl_dev_proof_budget bundle_budget =
         proof_step_budget(w->paths, "bundle", PROOF_BUNDLE_DEFAULT_MS);
     int64_t bundle_us0 = platform_time_monotonic_us();
-    int bundle_rc = run_step(w->paths, w->generation, w->paths->bundle_log,
-                             bundle_argv, "bundle", &bundle_budget, NULL);
-    /* First attempt only; a recovery rerun is rare and stays
-     * visible in the retry log. */
-    uint64_t bundle_ms = (uint64_t)((platform_time_monotonic_us() -
-                                     bundle_us0) / 1000);
-    if (bundle_rc != 0 && proof_log_contains(
+    *rc = run_step(w->paths, w->generation, w->paths->bundle_log,
+                   bundle_argv, "bundle", &bundle_budget, NULL);
+    *first_ms = (uint64_t)((platform_time_monotonic_us() - bundle_us0) /
+                           1000);
+    if (*rc == 0 || !proof_log_contains(
             w->paths->bundle_log,
             "unverified compile epoch appeared after recovery "
-            "admission; rerun make")) {
-        char retry_log[PATH_MAX];
-        if (snprintf(retry_log, sizeof(retry_log), "%s.retry",
-                     w->paths->bundle_log) >= (int)sizeof(retry_log)) {
-            proof_why(why, why_len, "proof_bundle_retry_log_invalid");
-            return false;
-        }
-        bundle_rc = run_step(w->paths, w->generation, retry_log,
-                             bundle_argv, "bundle", &bundle_budget, NULL);
+            "admission; rerun make"))
+        return true;
+    char retry_log[PATH_MAX];
+    if (snprintf(retry_log, sizeof(retry_log), "%s.retry",
+                 w->paths->bundle_log) >= (int)sizeof(retry_log)) {
+        proof_why(why, why_len, "proof_bundle_retry_log_invalid");
+        return false;
     }
+    *rc = run_step(w->paths, w->generation, retry_log, bundle_argv, "bundle",
+                   &bundle_budget, NULL);
+    return true;
+}
+
+/* The submitting checkout could not supply an admissible runner
+ * or helper set: build one in the generation and re-admit. */
+static bool dp_worker_bundle(struct dp_worker *w, bool test_selected,
+                             char *why, size_t why_len)
+{
+    if (why && why_len > 0) why[0] = 0;
+    struct zcl_verify_receiver rx;
+    if (!dp_receiver_begin(w, &rx, why, why_len)) return false;
+    int bundle_rc = 0;
+    uint64_t bundle_ms = 0;
+    bool made = dp_worker_bundle_make(w, &bundle_rc, &bundle_ms, why, why_len);
+    bool received = dp_receiver_end(w, &rx, made ? why : NULL,
+                                    made ? why_len : 0);
+    if (!made) return false;
     if (bundle_rc != 0) {
         proof_why(why, why_len, "proof_bundle_build_failed");
         return false;
     }
+    if (!received) return false;
     w->bundle_built_prefork = true;
 #if defined(__APPLE__)
     /* Compare the executed bundle's plan to the requested
