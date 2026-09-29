@@ -681,6 +681,30 @@ static int test_vc_bind_depfile_target(void)
                             (const uint8_t *)"result.o: result.c\n", 19u,
                             w.target),
                         ZCL_FR_WHY_DEPFILE_TARGET));
+        /* The expected target as a strict prefix of the rule name is
+         * another target: result.o.tmp and result.object both refuse. */
+        static const char *const suffixes[] = {".tmp", "bject"};
+        for (size_t i = 0; i < 2u; i++) {
+            ASSERT(test_vc_fixture_make(&w, 'a'));
+            n = snprintf(w.dep, sizeof(w.dep), "%s%s: %s\n", w.target,
+                         suffixes[i], ZCL_FR_SOURCE);
+            ASSERT(n > 0 && (size_t)n < sizeof(w.dep));
+            ASSERT(vc_token(zcl_fr_depfile_target_check(
+                                (const uint8_t *)w.dep, (size_t)n, w.target),
+                            ZCL_FR_WHY_DEPFILE_TARGET));
+            w.dep_len = (size_t)n;
+            w.receipt.artifacts[1].size = w.dep_len;
+            zcl_sha3_256((const uint8_t *)w.dep, w.dep_len,
+                         w.receipt.artifacts[1].sha3);
+            ASSERT(test_vc_receipt_reencode(&w, &why));
+            ASSERT(vc_token(vc_bind(&w, &w.pins, &w.expected, &b),
+                            ZCL_FR_WHY_DEPFILE_TARGET));
+        }
+        /* Control: the exact rule name admits. */
+        n = snprintf(w.dep, sizeof(w.dep), "%s: %s\n", w.target,
+                     ZCL_FR_SOURCE);
+        ASSERT(n > 0 && zcl_fr_depfile_target_check(
+                            (const uint8_t *)w.dep, (size_t)n, w.target) == NULL);
         PASS();
     } _test_next:;
     return failures;
