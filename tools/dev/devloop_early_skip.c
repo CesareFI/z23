@@ -654,6 +654,15 @@ static void es_node_load(struct es_graph *g, uint32_t idx)
      * edge. The closure key cannot vouch for that search result. */
     if (strstr(text, "__has_include"))
         es_node_bad(g, idx, "has-include", g->nodes[idx].path);
+    /* Wall-clock expansion and file mtime can change while source bytes do
+     * not. A prior early PASS therefore cannot cover these inputs. */
+    if (strstr(text, "__DATE__") || strstr(text, "__TIME__") ||
+        strstr(text, "__TIMESTAMP__"))
+        es_node_bad(g, idx, "volatile-macro", g->nodes[idx].path);
+    /* Token pasting can synthesize those spellings (and include probes)
+     * without any full token appearing in the bytes scanned above. */
+    if (strstr(text, "##"))
+        es_node_bad(g, idx, "macro-paste", g->nodes[idx].path);
     if (!es_scan(g, idx, text, len))
         es_node_bad(g, idx, "closure-bound", g->nodes[idx].path);
     char seen[64] = "";

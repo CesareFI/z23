@@ -1033,6 +1033,35 @@ static int de_test_skip_has_include(struct de_state *s)
     return failures;
 }
 
+static int de_test_skip_volatile_macros(struct de_state *s)
+{
+    int failures = 0;
+    TEST("devloop_early: build-time macros cannot reuse an earlier PASS") {
+        static const struct {
+            const char *body;
+            const char *reason;
+        } cases[] = {
+            {"int early_hole_a(void) { return __DATE__[0]; }\n",
+             "volatile-macro"},
+            {"int early_hole_a(void) { return __TIME__[0]; }\n",
+             "volatile-macro"},
+            {"int early_hole_a(void) { return __TIMESTAMP__[0]; }\n",
+             "volatile-macro"},
+            {"#define CAT(a, b) a ## b\n"
+             "int early_hole_a(void) { return CAT(__DA, TE__)[0]; }\n",
+             "macro-paste"},
+        };
+        for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+            ASSERT(de_hole_setup(s));
+            ASSERT(de_write(s->fx.root, DE_HOLE_A, cases[i].body));
+            de_hole_decide(s, DE_HOLE_FLAGS);
+            ASSERT(de_hole_is(s, "unvouched", cases[i].reason));
+        }
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int de_test_skip_flags(struct de_state *s)
 {
     int failures = 0;
@@ -1122,6 +1151,7 @@ static int de_test_restart(void)
         failures += de_test_skip_suffix(s);
         failures += de_test_skip_spliced_directive(s);
         failures += de_test_skip_has_include(s);
+        failures += de_test_skip_volatile_macros(s);
         failures += de_test_skip_flags(s);
     }
     if (s)
