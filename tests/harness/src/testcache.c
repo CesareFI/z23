@@ -399,6 +399,8 @@ static bool group_reads_external_inputs(const char *name)
         /* --- execs a built binary or a repo script (whole-link input) --- */
         "acme_worker",                  /* executes zclassic23-acme selftests */
         "agent_copy_prove",
+        /* fork/execs tools/lint/check_peer_floor_single_source.sh. */
+        "anchor_peers",
         "chain_advance_atomicity",
         "chaos_harness",                  /* reads tests/fixtures block files */
         "cli_argv_strict",
@@ -409,6 +411,10 @@ static bool group_reads_external_inputs(const char *name)
         "consensus_rule_sweep",
         "crypto_perf_selftest",
         "dev_platform",                   /* reads tests/harness/fixtures source */
+        /* execv build/bin/z23-git-hook; that hook's link is outside the closure. */
+        "dev_proof_signer",
+        /* execv build/bin/fleet-board-bridge. */
+        "fleet_board_bridge",
         /* Each shard fork/execs build/bin/z23-fleet-gateway. */
         "fleet_gateway_shard_01",
         "fleet_gateway_shard_02",
@@ -482,6 +488,11 @@ static bool group_reads_external_inputs(const char *name)
         "verify_bench_selftest",
         "wallet_persistence_cycle",
         "wallet_view",
+        /* The umbrella and shard_01 re-exec this test image
+         * (--exact=test_zcode_package_dev). That image's link is
+         * outside the group's forward C closure. */
+        "zcode_package_dev",
+        "zcode_package_dev_shard_01",
         /* --- live node DB / external zclassicd / datadir / built artifacts --- */
         "binary_ab_fallback",
         "binary_staleness",

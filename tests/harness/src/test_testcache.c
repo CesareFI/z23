@@ -1952,7 +1952,10 @@ static int tc_unadmissible_group(struct testcache *tc)
 static bool tc_external_exec_denied(void)
 {
     static const char *const names[] = {
+        "test_anchor_peers",
         "test_consensus_rule_sweep",
+        "test_dev_proof_signer",
+        "test_fleet_board_bridge",
         "test_fleet_gateway_shard_01",
         "test_fleet_gateway_shard_02",
         "test_fleet_gateway_shard_03",
@@ -1964,6 +1967,8 @@ static bool tc_external_exec_denied(void)
         "onion_pair_watch_live",
         "test_self_folded_anchor_heavy",
         "self_folded_anchor_heavy",
+        "test_zcode_package_dev",
+        "test_zcode_package_dev_shard_01",
     };
     for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++)
         if (!testcache_group_is_denylisted(names[i]))
