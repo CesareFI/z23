@@ -2,7 +2,11 @@
  * Fixed-TU verifier prerequisite: canonical whole-tree byte identity.
  * This program does not attest, sign, or authorize reuse. In particular,
  * same-UID ownership checks cannot replace a root-owned read-only jail. */
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#endif
+#include "tree_closure.h"
+
 #include "base/hex.h"
 #include "base/safe_alloc.h"
 #include "base/serialize_le.h"
@@ -30,6 +34,7 @@ struct walker {
     struct sha3_256_ctx content;
     const char *root;
     uid_t owner;
+    const uid_t *hash_uid;
     uint64_t bytes;
     unsigned entries;
     const char *error;
@@ -305,7 +310,7 @@ static int visit(struct walker *w, int parent, const char *name,
     both_write(w, &type, 1);
     both_bytes(w, rel, strlen(rel));
     both_u64(w, (uint64_t)(st.st_mode & 07777));
-    put_u64(&w->hash, (uint64_t)st.st_uid);
+    put_u64(&w->hash, (uint64_t)(w->hash_uid ? *w->hash_uid : st.st_uid));
     if (is_link) return visit_link(w, parent, name, rel, &st);
     return visit_opened(w, parent, name, rel, depth, &st, is_dir);
 }
@@ -331,17 +336,11 @@ static int safe_parent_chain(const char *root, uid_t owner)
            st.st_uid == 0 && (st.st_mode & 0022) == 0;
 }
 
-static int parse_root(const char *path, const char *owner_arg, uid_t *owner)
+bool zcl_tree_closure_root_safe(const char *root, uid_t owner)
 {
-    char *end = NULL;
-    errno = 0;
-    unsigned long parsed = strtoul(owner_arg, &end, 10);
     char resolved[PATH_MAX];
-    if (errno || !end || end == owner_arg || *end || parsed > UINT32_MAX ||
-        !realpath(path, resolved) || strcmp(path, resolved) != 0 ||
-        !safe_parent_chain(path, (uid_t)parsed)) return 0;
-    *owner = (uid_t)parsed;
-    return 1;
+    return root && realpath(root, resolved) && strcmp(root, resolved) == 0 &&
+           safe_parent_chain(root, owner);
 }
 
 static int hash_root(struct walker *w, int rootfd)
@@ -354,13 +353,51 @@ static int hash_root(struct walker *w, int rootfd)
         both_write(w, &type, 1);
         both_bytes(w, "", 0);
         both_u64(w, (uint64_t)(before.st_mode & 07777));
-        put_u64(&w->hash, (uint64_t)before.st_uid);
+        put_u64(&w->hash, (uint64_t)(w->hash_uid ? *w->hash_uid :
+                                     before.st_uid));
         w->entries++;
     }
     ok = ok && visit_dir(w, rootfd, "", &before, 0) &&
              fstat(rootfd, &after) == 0 && same_stat(&before, &after);
     if (!ok && !w->error) w->error = "root_changed";
     return ok;
+}
+
+const char *zcl_tree_closure_hash(const char *root, uid_t owner,
+                                  const uid_t *hash_uid,
+                                  struct zcl_tree_closure_roots *out)
+{
+    if (!root || root[0] != '/' || !out) return "unsafe_root";
+    struct walker w = { .root = root, .owner = owner, .hash_uid = hash_uid };
+    sha3_256_init(&w.hash);
+    sha3_256_init(&w.content);
+    static const char domain[] = "z23.verify.tree.v1";
+    static const char content_domain[] = "z23.verify.tree.content.v1";
+    put_bytes(&w.hash, domain, sizeof(domain) - 1);
+    put_bytes(&w.content, content_domain, sizeof(content_domain) - 1);
+    int rootfd = open(root, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    if (rootfd < 0) return "root_open_failed";
+    int ok = hash_root(&w, rootfd);
+    if (close(rootfd) != 0 && ok) { w.error = "root_close_failed"; ok = 0; }
+    if (!ok) return w.error ? w.error : "root_changed";
+    sha3_256_finalize(&w.hash, out->tree_sha3);
+    sha3_256_finalize(&w.content, out->content_sha3);
+    out->entries = w.entries;
+    out->bytes = w.bytes;
+    return NULL;
+}
+
+/* The image builder and the test harness link the walk without this CLI. */
+#ifndef ZCL_TREE_CLOSURE_NO_MAIN
+static int parse_owner(const char *owner_arg, uid_t *owner)
+{
+    char *end = NULL;
+    errno = 0;
+    unsigned long parsed = strtoul(owner_arg, &end, 10);
+    if (errno || !end || end == owner_arg || *end || parsed > UINT32_MAX)
+        return 0;
+    *owner = (uid_t)parsed;
+    return 1;
 }
 
 int main(int argc, char **argv)
@@ -370,36 +407,23 @@ int main(int argc, char **argv)
         return 2;
     }
     uid_t owner;
-    if (!parse_root(argv[2], argv[3], &owner)) {
+    if (!parse_owner(argv[3], &owner) ||
+        !zcl_tree_closure_root_safe(argv[2], owner)) {
         fprintf(stderr, "tree_closure_refuse=unsafe_root\n");
         return 2;
     }
-    struct walker w = { .root = argv[2], .owner = owner };
-    sha3_256_init(&w.hash);
-    sha3_256_init(&w.content);
-    static const char domain[] = "z23.verify.tree.v1";
-    static const char content_domain[] = "z23.verify.tree.content.v1";
-    put_bytes(&w.hash, domain, sizeof(domain) - 1);
-    put_bytes(&w.content, content_domain, sizeof(content_domain) - 1);
-    int rootfd = open(argv[2], O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
-    if (rootfd < 0) {
-        fprintf(stderr, "tree_closure_refuse=root_open_failed\n");
+    struct zcl_tree_closure_roots roots;
+    const char *why = zcl_tree_closure_hash(argv[2], owner, NULL, &roots);
+    if (why) {
+        fprintf(stderr, "tree_closure_refuse=%s\n", why);
         return 2;
     }
-    int ok = hash_root(&w, rootfd);
-    if (close(rootfd) != 0 && ok) { w.error = "root_close_failed"; ok = 0; }
-    if (!ok) {
-        fprintf(stderr, "tree_closure_refuse=%s\n", w.error);
-        return 2;
-    }
-    unsigned char digest[32], content_digest[32];
     char hex[65], content_hex[65];
-    sha3_256_finalize(&w.hash, digest);
-    sha3_256_finalize(&w.content, content_digest);
-    zcl_hex_encode(digest, sizeof(digest), hex);
-    zcl_hex_encode(content_digest, sizeof(content_digest), content_hex);
+    zcl_hex_encode(roots.tree_sha3, sizeof(roots.tree_sha3), hex);
+    zcl_hex_encode(roots.content_sha3, sizeof(roots.content_sha3), content_hex);
     printf("tree_sha3=%s content_sha3=%s entries=%u bytes=%llu "
-           "attest_eligible=0\n", hex, content_hex, w.entries,
-           (unsigned long long)w.bytes);
+           "attest_eligible=0\n", hex, content_hex, roots.entries,
+           (unsigned long long)roots.bytes);
     return 0;
 }
+#endif
