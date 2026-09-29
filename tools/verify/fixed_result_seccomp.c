@@ -11,6 +11,7 @@
 #endif
 #include "fixed_result_seccomp.h"
 
+#include "base/serialize_le.h"
 #include "sha3/sha3.h"
 
 #include <sched.h>
@@ -197,11 +198,10 @@ bool zcl_frs_build(uint8_t out[ZCL_FRS_MAX_BYTES], size_t *len,
     if (p.overflow) { *why = "seccomp_program_limit"; return false; }
     for (size_t i = 0; i < p.n; i++) {
         uint8_t *b = out + i * ZCL_FRS_INSN_BYTES;
-        b[0] = (uint8_t)(p.v[i].code & 0xffu);
-        b[1] = (uint8_t)(p.v[i].code >> 8);
+        zcl_write_u16_le(b, p.v[i].code);
         b[2] = p.v[i].jt;
         b[3] = p.v[i].jf;
-        for (unsigned s = 0; s < 4; s++) b[4 + s] = (uint8_t)(p.v[i].k >> (8u * s));
+        zcl_write_u32_le(b + 4, p.v[i].k);
     }
     *len = p.n * ZCL_FRS_INSN_BYTES;
     return true;
@@ -223,17 +223,12 @@ static bool frs_load(const struct zcl_frs_data *d, uint32_t off, uint32_t *a)
 {
     uint8_t raw[64];
     memset(raw, 0, sizeof(raw));
-    for (unsigned s = 0; s < 4; s++) {
-        raw[s] = (uint8_t)((uint32_t)d->nr >> (8u * s));
-        raw[4 + s] = (uint8_t)(d->arch >> (8u * s));
-    }
-    for (unsigned s = 0; s < 8; s++) raw[8 + s] = (uint8_t)(d->ip >> (8u * s));
-    for (unsigned i = 0; i < 6; i++)
-        for (unsigned s = 0; s < 8; s++)
-            raw[16 + 8 * i + s] = (uint8_t)(d->args[i] >> (8u * s));
+    zcl_write_i32_le(raw, d->nr);
+    zcl_write_u32_le(raw + 4, d->arch);
+    zcl_write_u64_le(raw + 8, d->ip);
+    for (unsigned i = 0; i < 6; i++) zcl_write_u64_le(raw + 16 + 8 * i, d->args[i]);
     if (off % 4u || off > 60u) return false;
-    *a = (uint32_t)raw[off] | (uint32_t)raw[off + 1] << 8 |
-         (uint32_t)raw[off + 2] << 16 | (uint32_t)raw[off + 3] << 24;
+    *a = zcl_read_u32_le(raw + off);
     return true;
 }
 
@@ -246,9 +241,8 @@ uint32_t zcl_frs_eval(const uint8_t *prog, size_t len,
         return ZCL_FRS_KILL_PROCESS;
     while (pc < n) {
         const uint8_t *b = prog + pc * ZCL_FRS_INSN_BYTES;
-        uint16_t code = (uint16_t)(b[0] | b[1] << 8);
-        uint32_t k = (uint32_t)b[4] | (uint32_t)b[5] << 8 |
-                     (uint32_t)b[6] << 16 | (uint32_t)b[7] << 24;
+        uint16_t code = zcl_read_u16_le(b);
+        uint32_t k = zcl_read_u32_le(b + 4);
         pc++;
         bool taken;
         switch (code) {

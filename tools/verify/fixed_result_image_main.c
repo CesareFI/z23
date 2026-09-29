@@ -107,6 +107,19 @@ static int fri_emit(const struct zcl_fri_image *img, const char *kind,
     return fflush(stdout) == 0 ? 0 : 2;
 }
 
+static bool fri_fill(struct zcl_fri_image *img, const char *kind,
+                     const struct fri_cli *c, struct zcl_fri_discovery *d)
+{
+    if (strcmp(kind, "source") == 0)
+        return c->repo && c->profile &&
+               zcl_fri_build_source(img, c->repo, c->profile);
+    if (strcmp(kind, "tool") == 0)
+        return c->repo && c->profile && c->scratch &&
+               zcl_fri_build_tool(img, c->profile, c->repo, c->scratch,
+                                  !c->static_only, d);
+    return zcl_fri_build_check(img, c->specs, c->spec_count);
+}
+
 static int fri_build(const char *kind, const struct fri_cli *c)
 {
     bool checked = false;
@@ -116,16 +129,9 @@ static int fri_build(const char *kind, const struct fri_cli *c)
     struct zcl_fri_roots roots;
     struct zcl_fri_discovery d;
     bool tool = strcmp(kind, "tool") == 0;
-    bool ok = zcl_fri_image_begin(&img, c->out, NULL);
-    if (ok && strcmp(kind, "source") == 0)
-        ok = c->repo && c->profile && zcl_fri_build_source(&img, c->repo, c->profile);
-    else if (ok && tool)
-        ok = c->repo && c->profile && c->scratch &&
-             zcl_fri_build_tool(&img, c->profile, c->repo, c->scratch,
-                                !c->static_only, &d);
-    else if (ok)
-        ok = zcl_fri_build_check(&img, c->specs, c->spec_count);
-    ok = ok && zcl_fri_image_finish(&img, &roots);
+    bool ok = zcl_fri_image_begin(&img, c->out, NULL) &&
+              fri_fill(&img, kind, c, &d) &&
+              zcl_fri_image_finish(&img, &roots);
     int rc = ok ? fri_emit(&img, kind, &roots, checked, tool ? &d : NULL)
                 : fri_refuse(img.why ? img.why : ZCL_FRI_WHY_ARGS, img.why_path);
     zcl_fri_image_free(&img);

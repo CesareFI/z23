@@ -256,6 +256,21 @@ static const char *fri_stream(int src, int dst, const struct stat *before,
     return NULL;
 }
 
+static bool fri_record_copy(struct zcl_fri_image *img, const char *rel,
+                            const char *host_file, unsigned mode,
+                            const struct stat *st, const uint8_t sha3[32])
+{
+    struct zcl_fri_entry *e = fri_push(img, rel, 'F', mode);
+    if (!e) return false;
+    e->source = zcl_strdup(host_file, "fri_entry_source");
+    if (!e->source) return fri_fail(img, ZCL_FRI_WHY_ALLOC, rel);
+    e->size = (uint64_t)st->st_size;
+    memcpy(e->sha3, sha3, 32u);
+    img->bytes += e->size;
+    if (img->after_copy) img->after_copy(img->hook_ctx, host_file);
+    return true;
+}
+
 /* mode 0 derives 0555/0444 from the input's execute bits. */
 static bool fri_copy(struct zcl_fri_image *img, const char *rel,
                      const char *host_file, unsigned mode)
@@ -279,15 +294,7 @@ static bool fri_copy(struct zcl_fri_image *img, const char *rel,
     if (close(dst) != 0 && !why) why = ZCL_FRI_WHY_WRITE;
     close(src);
     if (why) return fri_fail(img, why, host_file);
-    struct zcl_fri_entry *e = fri_push(img, rel, 'F', mode);
-    if (!e) return false;
-    e->source = zcl_strdup(host_file, "fri_entry_source");
-    if (!e->source) return fri_fail(img, ZCL_FRI_WHY_ALLOC, rel);
-    e->size = (uint64_t)st.st_size;
-    memcpy(e->sha3, sha3, 32u);
-    img->bytes += e->size;
-    if (img->after_copy) img->after_copy(img->hook_ctx, host_file);
-    return true;
+    return fri_record_copy(img, rel, host_file, mode, &st, sha3);
 }
 
 bool zcl_fri_add_copy(struct zcl_fri_image *img, const char *rel,
@@ -481,31 +488,36 @@ void zcl_fri_image_free(struct zcl_fri_image *img)
     img->count = img->cap = 0;
 }
 
+static bool fri_bytes_match(const char *path, const struct zcl_fri_entry *e)
+{
+    uint8_t sha3[32];
+    uint64_t size = 0;
+    return zcl_fri_sha3_file(path, sha3, &size) && size == e->size &&
+           memcmp(sha3, e->sha3, 32u) == 0;
+}
+
+static bool fri_link_matches(const char *path, const struct zcl_fri_entry *e)
+{
+    char target[PATH_MAX];
+    ssize_t n = readlink(path, target, sizeof(target) - 1u);
+    if (n < 0) return false;
+    target[n] = '\0';
+    return strcmp(target, e->target) == 0;
+}
+
 static bool fri_verify_entry(struct zcl_fri_image *img,
                              const struct zcl_fri_entry *e)
 {
-    char path[PATH_MAX], target[PATH_MAX];
-    uint8_t sha3[32];
-    uint64_t size = 0;
+    char path[PATH_MAX];
     struct stat st;
     if (!fri_img(img, e->path, path)) return fri_fail(img, ZCL_FRI_WHY_LIMIT, e->path);
-    if (e->kind == 'F' && e->source &&
-        (!zcl_fri_sha3_file(e->source, sha3, &size) || size != e->size ||
-         memcmp(sha3, e->sha3, 32u) != 0))
+    if (e->kind == 'F' && e->source && !fri_bytes_match(e->source, e))
         return fri_fail(img, ZCL_FRI_WHY_CHANGED, e->source);
-    if (e->kind == 'F' &&
-        (!zcl_fri_sha3_file(path, sha3, &size) || size != e->size ||
-         memcmp(sha3, e->sha3, 32u) != 0))
-        return fri_fail(img, ZCL_FRI_WHY_IMAGE_CHANGED, e->path);
-    if (e->kind == 'L') {
-        ssize_t n = readlink(path, target, sizeof(target) - 1u);
-        if (n < 0 || (target[n] = '\0', strcmp(target, e->target) != 0))
-            return fri_fail(img, ZCL_FRI_WHY_IMAGE_CHANGED, e->path);
-    }
-    if (e->kind == 'D' && (lstat(path, &st) != 0 || !S_ISDIR(st.st_mode) ||
-                           (st.st_mode & 07777) != e->mode))
-        return fri_fail(img, ZCL_FRI_WHY_IMAGE_CHANGED, e->path);
-    return true;
+    bool same = e->kind == 'F' ? fri_bytes_match(path, e)
+              : e->kind == 'L' ? fri_link_matches(path, e)
+              : lstat(path, &st) == 0 && S_ISDIR(st.st_mode) &&
+                (st.st_mode & 07777) == e->mode;
+    return same || fri_fail(img, ZCL_FRI_WHY_IMAGE_CHANGED, e->path);
 }
 
 bool zcl_fri_image_finish(struct zcl_fri_image *img,

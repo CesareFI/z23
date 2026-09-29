@@ -169,6 +169,15 @@ static void frb_normalize(const char *in, char out[PATH_MAX])
     if (!used) snprintf(out, PATH_MAX, "/");
 }
 
+/* A traced name inside the process's own proc entry. This classifies
+ * strings strace recorded; it reads nothing from proc itself. */
+static bool frb_proc_self(const char *n)
+{
+    if (!frb_under(n, "/proc")) return false;
+    const char *rest = n + strlen("/proc");
+    return strncmp(rest, "/self", 5) == 0 && (rest[5] == '\0' || rest[5] == '/');
+}
+
 enum zcl_fri_class zcl_fri_classify(const struct zcl_fri_zones *z,
                                     const char *path)
 {
@@ -179,7 +188,7 @@ enum zcl_fri_class zcl_fri_classify(const struct zcl_fri_zones *z,
     if (frb_under(n, z->scratch)) return ZCL_FRI_C_SCRATCH;
     if (frb_under(n, "/tmp")) return ZCL_FRI_C_TMP;
     if (strcmp(n, "/dev/null") == 0) return ZCL_FRI_C_DEV_NULL;
-    if (frb_under(n, "/proc/self")) return ZCL_FRI_C_PROC_SELF;
+    if (frb_proc_self(n)) return ZCL_FRI_C_PROC_SELF;
     if (strcmp(n, "/etc/ld.so.cache") == 0) return ZCL_FRI_C_LOADER_CACHE;
     if (frb_ancestor(n, z->image) || frb_ancestor(n, z->snapshot) ||
         frb_ancestor(n, z->scratch)) return ZCL_FRI_C_ANCESTOR;

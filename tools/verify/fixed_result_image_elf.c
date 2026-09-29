@@ -104,6 +104,19 @@ static const char *fre_needed_name(struct fre_elf *e, uint64_t strtab,
     return NULL;
 }
 
+/* The string table's address and size; RPATH/RUNPATH refuses. */
+static const char *fre_dyn_strtab(const Elf64_Dyn *d, size_t count,
+                                  uint64_t *strtab, uint64_t *strsz)
+{
+    for (size_t i = 0; i < count && d[i].d_tag != DT_NULL; i++) {
+        if (d[i].d_tag == DT_RPATH || d[i].d_tag == DT_RUNPATH)
+            return ZCL_FRI_WHY_ELF_SEARCH;
+        if (d[i].d_tag == DT_STRTAB) *strtab = d[i].d_un.d_ptr;
+        if (d[i].d_tag == DT_STRSZ) *strsz = d[i].d_un.d_val;
+    }
+    return NULL;
+}
+
 static const char *fre_dynamic(struct fre_elf *e, const Elf64_Phdr *dyn)
 {
     Elf64_Dyn d[FRE_MAX_DYN];
@@ -112,17 +125,13 @@ static const char *fre_dynamic(struct fre_elf *e, const Elf64_Phdr *dyn)
         !fre_read(e->fd, d, count * sizeof(Elf64_Dyn), dyn->p_offset))
         return ZCL_FRI_WHY_ELF;
     uint64_t strtab = 0, strsz = 0, off = 0;
-    for (size_t i = 0; i < count && d[i].d_tag != DT_NULL; i++) {
-        if (d[i].d_tag == DT_RPATH || d[i].d_tag == DT_RUNPATH)
-            return ZCL_FRI_WHY_ELF_SEARCH;
-        if (d[i].d_tag == DT_STRTAB) strtab = d[i].d_un.d_ptr;
-        if (d[i].d_tag == DT_STRSZ) strsz = d[i].d_un.d_val;
-    }
+    const char *why = fre_dyn_strtab(d, count, &strtab, &strsz);
+    if (why) return why;
     if (!strtab || !strsz || !fre_offset(e, strtab, &off)) return ZCL_FRI_WHY_ELF;
     for (size_t i = 0; i < count && d[i].d_tag != DT_NULL; i++) {
         if (d[i].d_tag != DT_NEEDED) continue;
         if (e->needed_count == FRE_MAX_NEEDED) return ZCL_FRI_WHY_LIMIT;
-        const char *why = fre_needed_name(e, off, strsz, d[i].d_un.d_val);
+        why = fre_needed_name(e, off, strsz, d[i].d_un.d_val);
         if (why) return why;
     }
     return NULL;

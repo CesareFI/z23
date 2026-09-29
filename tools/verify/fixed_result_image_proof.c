@@ -266,7 +266,8 @@ static bool frp_disjoint(const char *a, const char *b)
     return !frp_within(a, b) && !frp_within(b, a);
 }
 
-static bool frp_run(struct frp *f, const char *repo)
+/* A fresh source image of `repo`, the compile's cwd. */
+static bool frp_snapshot(struct frp *f, const char *repo)
 {
     struct zcl_fri_image src;
     struct zcl_fri_roots roots;
@@ -275,19 +276,31 @@ static bool frp_run(struct frp *f, const char *repo)
               zcl_fri_image_finish(&src, &roots);
     if (!ok) frp_fail(f->p, src.why, src.why_path);
     zcl_fri_image_free(&src);
-    char ti[PATH_MAX], te[PATH_MAX], tc[PATH_MAX];
+    return ok;
+}
+
+/* Leaks from the image run, then the host run's view against the image. */
+static bool frp_traced_checks(struct frp *f, const char *ti)
+{
+    char te[PATH_MAX], tc[PATH_MAX];
+    if (!frp_dir(te, f->scratch, "trace-host-e") ||
+        !frp_dir(tc, f->scratch, "trace-host-c"))
+        return frp_fail(f->p, ZCL_FRI_WHY_WRITE, f->scratch);
+    return frp_leaks(f, ti) && frp_host_compile(f, "host-e", true, te) &&
+           frp_host_compile(f, "host-c", false, tc) &&
+           frp_equivalence(f, te, tc);
+}
+
+static bool frp_run(struct frp *f, const char *repo)
+{
+    char ti[PATH_MAX];
     bool traced = f->p->traced;
-    if (!ok || !frp_layout(f)) return false;
-    if (traced && (!frp_dir(ti, f->scratch, "trace-image") ||
-                   !frp_dir(te, f->scratch, "trace-host-e") ||
-                   !frp_dir(tc, f->scratch, "trace-host-c")))
+    if (!frp_snapshot(f, repo) || !frp_layout(f)) return false;
+    if (traced && !frp_dir(ti, f->scratch, "trace-image"))
         return frp_fail(f->p, ZCL_FRI_WHY_WRITE, f->scratch);
     return frp_host_compile(f, "reference", false, NULL) &&
            frp_image_compile(f, traced ? ti : NULL) && frp_compare(f) &&
-           (!traced || (frp_leaks(f, ti) &&
-                        frp_host_compile(f, "host-e", true, te) &&
-                        frp_host_compile(f, "host-c", false, tc) &&
-                        frp_equivalence(f, te, tc)));
+           (!traced || frp_traced_checks(f, ti));
 }
 
 bool zcl_fri_prove(const char *tool_image, const char *repo,

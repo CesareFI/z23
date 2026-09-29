@@ -370,6 +370,19 @@ struct vi_host {
     char changed[PATH_MAX];
 };
 
+static bool vi_host_link(const char *root, const char *rel, const char *target)
+{
+    char p[PATH_MAX];
+    return vi_path(p, root, rel) && symlink(target, p) == 0;
+}
+
+static bool vi_host_file(const char *root, const char *rel, const char *text,
+                         mode_t mode)
+{
+    char p[PATH_MAX];
+    return vi_path(p, root, rel) && vi_write(p, text, mode);
+}
+
 static bool vi_host_make(struct vi_world *w, struct vi_host *h)
 {
     char p[PATH_MAX];
@@ -377,16 +390,13 @@ static bool vi_host_make(struct vi_world *w, struct vi_host *h)
     if (!vi_dir(h->root, w->base, "host")) return false;
     for (size_t i = 0; i < sizeof(dirs) / sizeof(*dirs); i++)
         if (!vi_path(p, h->root, dirs[i]) || mkdir(p, 0755) != 0) return false;
-    return vi_path(p, h->root, "usr/bin/real") && vi_write(p, "real\n", 0755) &&
-           vi_path(p, h->root, "etc/alternatives/cc") &&
-           symlink("/usr/bin/real", p) == 0 &&
-           vi_path(p, h->root, "usr/bin/cc") &&
-           symlink("/etc/alternatives/cc", p) == 0 &&
-           vi_path(p, h->root, "usr/bin/escape") &&
-           symlink("../../../etc/passwd", p) == 0 &&
+    return vi_host_file(h->root, "usr/bin/real", "real\n", 0755) &&
+           vi_host_link(h->root, "etc/alternatives/cc", "/usr/bin/real") &&
+           vi_host_link(h->root, "usr/bin/cc", "/etc/alternatives/cc") &&
+           vi_host_link(h->root, "usr/bin/escape", "../../../etc/passwd") &&
            vi_path(p, h->root, "usr/bin/fifo") && mkfifo(p, 0644) == 0 &&
-           vi_path(p, h->root, "usr/bin/locked") && vi_write(p, "x\n", 0000) &&
-           vi_path(p, h->root, "usr/lib/libgrow.so") && vi_write(p, "v1\n", 0644);
+           vi_host_file(h->root, "usr/bin/locked", "x\n", 0000) &&
+           vi_host_file(h->root, "usr/lib/libgrow.so", "v1\n", 0644);
 }
 
 static void vi_grow(void *ctx, const char *host_path)
