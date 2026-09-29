@@ -354,12 +354,8 @@ static int32_t authorize_attempt(const struct broker_provider_ctx *c,
      * wrongly. Named unavailable instead.
      *
      * KEYED ON WHICH QUERY WAS ASKED, not on whether the request carried a
-     * property id. Those are different questions, and the second one used to
-     * stand in for the first: both query verbs projected onto the reserved
-     * INSPECT action bit, so this was the only distinguishing fact left, and it
-     * is the WRONG fact — an ENUMERATE naming a real property id sailed past
-     * and was served as though it were an INSPECT of that property. A request
-     * to list is never answered as a request to look. */
+     * property id: an ENUMERATE naming a real property id must not be served
+     * as an INSPECT of it. */
     enum metaverse_query query;
     if (mvap_verb_row_query(row, &query) &&
         query == METAVERSE_QUERY_ENUMERATE_PROPERTIES)

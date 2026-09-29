@@ -120,20 +120,15 @@ bool mvap_verb_mints_receipt(uint32_t wire)
 }
 
 /* Declared in agent_broker_proto.h, where callers look for verb facts; defined
- * HERE because the answer is the class column and nothing else. The switch that
- * used to answer this next to the codec — an independent list of mutating verbs
- * that could and did disagree with the metaverse — is gone. */
+ * HERE because the answer is the class column and nothing else. */
 bool mvap_verb_is_mutation(uint32_t wire)
 {
     return mvap_verb_is_action(wire);
 }
 
 /* ── the canonical operation, in the row's OWN vocabulary ───────────────────
- * The class gate is the whole point. A caller asking an enumeration row for an
- * action bit is asking a question the row has no answer to, and the old shape
- * answered it anyway — with the reserved INSPECT bit, the same value the
- * inspection row gave, which is how a request to enumerate came to be served
- * as an inspection. Both accessors leave `*out` untouched on a refusal. */
+ * The class gate: asking an enumeration row for an action bit is a question
+ * the row cannot answer. Both accessors leave `*out` untouched on a refusal. */
 bool mvap_verb_row_action(const struct mvap_verb_row *r,
                           enum metaverse_action *out)
 {

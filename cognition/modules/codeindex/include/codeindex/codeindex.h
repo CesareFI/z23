@@ -58,23 +58,11 @@ struct ci_symbol {
 
 /* Capacity of a file's one-line self-description.
  *
- * SIZED FROM THE CORPUS, NOT GUESSED. At 160 this field truncated real
- * purposes: one full rebuild of this tree cut 16 files, the longest by 95
- * bytes, and every cut emitted a WARN line into whatever stream the caller was
- * reading. The clause a purpose loses first is its END — the part that says
- * what the file is FOR — which is exactly the text a capability search ranks
- * on, so the truncation was not only noisy, it degraded the answer.
- *
- * The number: with the field temporarily raised to 1024 and the whole tree
- * reindexed (2026-08-29), the longest stored purpose measured 260 bytes and
- * exactly one file exceeded 250. 320 clears that maximum by 60 bytes without
- * paying for a kilobyte in every `struct ci_file` array in the tree.
- *
- * The scanner's capture buffer is deliberately LARGER than this field (see
- * CI_FILE_PURPOSE_CAPTURE_MAX), so a purpose that ever outgrows the corpus is
- * cut by zcl_text_fit — which says so — rather than clipped in silence by the
- * capture. Fail loud, never quiet: a returning WARN is the signal to re-measure
- * and raise this, not to widen the capture. */
+ * Sized above the longest stored purpose (260 bytes) so no purpose is
+ * truncated. The scanner's capture buffer is deliberately LARGER than this
+ * field (see CI_FILE_PURPOSE_CAPTURE_MAX), so a purpose that outgrows it is
+ * cut by zcl_text_fit, which warns, rather than clipped silently. A WARN is
+ * the signal to raise this, not to widen the capture. */
 #define CI_FILE_PURPOSE_MAX 320
 
 /* A source file and the group it maps to. */
@@ -158,24 +146,14 @@ struct codeindex *codeindex_open_existing(const char *root);
 
 /* ── Rebuild ownership: one process rebuilds a checkout's index ──────────
  *
- * MEASURED PROBLEM (train 6, 2026-09-05). Every leaf that opened a stale
- * store rebuilt it INSIDE the query: 6,750 / 6,988 / 7,577 ms, all three
- * ending fail-closed, and a fourth completing in 12,301 ms. That is the
- * worst agent-facing latency in the system, and the refusals are a real
- * race — a query rebuilding while another writer moves the tree.
+ * A resident mind (tools/mind, `z23 mind serve`) claims a checkout by writing
+ * an owner marker beside the store. While that claim is LIVE, a stale open is
+ * REFUSED with a typed `index_stale` refusal instead of rebuilding inside the
+ * query (a query rebuilding races the owner and other writers).
  *
- * THE RULE. A resident mind (tools/mind, `z23 mind serve`) claims a
- * checkout by writing an owner marker beside the store. While that claim is
- * LIVE, a stale open is REFUSED with a typed `index_stale` refusal instead
- * of rebuilding: the answer a query would have served after twelve seconds
- * of writing is not a faster answer, it is a different process doing the
- * owner's job.
- *
- * WHY THE CLAIM EXPIRES. If the owner stops heart-beating, its claim goes
- * stale after CODEINDEX_OWNER_HEARTBEAT_MAX_AGE_S and every reader returns
- * to rebuilding for itself. Refusing forever because a resident died would
- * brick every query on the box; expiry is the honest failure direction and
- * is stated here so nobody has to infer it. */
+ * The claim expires after CODEINDEX_OWNER_HEARTBEAT_MAX_AGE_S without a
+ * heartbeat, and readers then rebuild for themselves: refusing forever
+ * because a resident died would brick every query on the box. */
 #define CODEINDEX_OWNER_HEARTBEAT_MAX_AGE_S 120
 
 /* Everything a caller needs to explain a refusal without opening a file:

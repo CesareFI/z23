@@ -30,9 +30,9 @@
  * and only for a checkout that has actually taken the incremental branch. That
  * is why codeindex_build.c calls ci_spare_publish() there and nowhere else —
  * a checkout that is only ever cold-built would carry a second full image for
- * a rebuild that never comes. It also only pays off when writeback has had
- * time to run: back to back with no gap, the adopted inode is still dirty and
- * the publication fsync pays what the old always-clone path paid.
+ * a rebuild that never comes. It only pays off when writeback has had time to
+ * run: back to back, the adopted inode is still dirty and the publication
+ * fsync pays the full cost.
  */
 
 #include "codeindex_priv.h"
@@ -193,15 +193,10 @@ bool ci_spare_publish(int dirfd)
         return false;
     }
 
-    /* Nothing is flushed, nudged or waited on here. Ordinary kernel writeback
-     * drains these pages during the seconds before the next edit, and that is
-     * the whole trick: the bytes are written either way, just not while a
-     * developer is watching. Asking for writeback explicitly is worse, not
-     * better — sync_file_range(SYNC_FILE_RANGE_WRITE) blocks on a congested
-     * request queue and cost a measured 2.96 s on this host, which is exactly
-     * the wait this file exists to remove. If the next rebuild arrives before
-     * writeback finishes, its publication fsync pays whatever is left, which
-     * is the cost the old always-clone path paid every single time. */
+    /* Nothing is flushed or waited on here: ordinary kernel writeback drains
+     * these pages before the next edit. Explicit writeback
+     * (sync_file_range) would block on a congested request queue. If the next
+     * rebuild arrives first, its publication fsync pays what is left. */
     bool ok = ci_copy_image_fd(published, spare);
     if (ok && renameat(dirfd, reserved, dirfd, CI_SPARE_NAME) != 0) ok = false;
     if (!ok) (void)unlinkat(dirfd, reserved, 0);

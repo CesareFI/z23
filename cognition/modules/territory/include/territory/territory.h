@@ -347,9 +347,9 @@ uint64_t territory_gates_build_us(const struct territory_gates *g);
 
 /* ── trusts: can someone else re-check a result from these groups? ───────
  *
- * A DECLARED HOLE. The determinism ledger that would answer this is being
- * built on another lane and has not landed. Every group therefore reports
- * UNKNOWN, and the brief prints the count and names the missing source.
+ * A DECLARED HOLE. The determinism ledger that would answer this has not
+ * landed. Every group therefore reports UNKNOWN, and the brief prints the
+ * count and names the missing source.
  *
  * The field is not omitted while the answer is missing, because a missing
  * field reads as "nothing to worry about", and that would be a lie: an

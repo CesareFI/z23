@@ -575,9 +575,8 @@ static bool fp_scan_file(struct fp_index *ix, int file)
             if (is_enum && !fp_scan_enum_body(ix, file, j + 1u, be - 1u))
                 return false;
             /* Resume immediately after the aggregate, consuming only a
-             * semicolon that actually follows it. Hunting forward for the
-             * next `;` used to run straight into the NEXT function's body
-             * and desynchronise the rest of the file. */
+             * semicolon that actually follows it; hunting forward for the
+             * next `;` would run into the next function's body. */
             p = fp_skip_ws(t, be, n);
             if (p < n && t[p] == ';')
                 i = p + 1u;

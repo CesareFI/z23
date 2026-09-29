@@ -76,33 +76,15 @@ static bool posture_cache_load(struct agent_security_posture *out)
 
 /* ── Ordinary write-contention guard (not a NAMED long op) ──────────────
  *
- * Live forensics on a wedged node with a write-retry storm: node_db_long_op_
- * active() only routes around the rarer NAMED long ops that opt in via
- * db_long_op_start/finish (PRAGMA quick_check, the staging-cleanup DELETE —
- * see database_long_op.c). Ordinary write contention never names itself: a
- * writer thread retrying SQLITE_BUSY inside one long-running SQLite step
- * holds SQLite's own per-connection mutex (every public API call on a
- * connection opened with SQLITE_OPEN_FULLMUTEX — see db_open_raw in
- * database.c — serializes behind it) for up to that connection's
- * ZCL_NODE_DB_BUSY_TIMEOUT_MS (10s) while it retries. Any other thread
- * calling into that SAME connection, including this collect's ~dozen reads
- * via chain_evidence_controller_snapshot(), then queues behind it for the
- * same duration — measured ~10s via the chain_evidence dumpers, matching
- * ZCL_NODE_DB_BUSY_TIMEOUT_MS exactly.
+ * node_db_long_op_active() only covers NAMED long ops. A writer retrying
+ * SQLITE_BUSY holds SQLite's per-connection mutex (SQLITE_OPEN_FULLMUTEX)
+ * for up to ZCL_NODE_DB_BUSY_TIMEOUT_MS (10s), and every other call on that
+ * connection queues behind it.
  *
- * node.db has no equivalent app-level write-serialization mutex to trylock
- * (unlike progress.kv's progress_store_tx_lock, guarded non-blockingly by
- * progress_store_tx_trylock() — see test_stage_dump_trylock.c), so this
- * uses SQLite's own connection mutex directly via sqlite3_db_mutex(), a
- * documented public primitive for exactly this "another thread already
- * owns this handle" case. Trying it non-blockingly first and holding it for
- * the whole bootstrap read on success gives the identical non-blocking
- * guarantee at the connection level: acquired -> no other thread can hold
- * a long call on this connection while we read, so our reads proceed at
- * native speed; not acquired -> someone else already is, so we bail to the
- * last-known-good snapshot immediately instead of queuing. sqlite3_mutex_
- * try/enter/leave are documented no-ops on a NULL db/mutex, so this is safe
- * to call even when ndb is not backed by a real handle. */
+ * try-locking sqlite3_db_mutex() first gives a non-blocking guarantee at the
+ * connection level: acquired -> our reads run at native speed; not acquired
+ * -> bail to the last-known-good snapshot instead of queuing. The
+ * sqlite3_mutex_try/enter/leave calls are no-ops on a NULL db/mutex. */
 static bool posture_ndb_try_lock(struct node_db *ndb)
 {
     if (!ndb || !ndb->db)
@@ -367,9 +349,9 @@ void agent_security_posture_collect(struct agent_security_posture *out,
 
     resolved_ndb = ndb ? ndb : app_runtime_node_db();
 
-    /* If a long maintenance op holds the shared node.db connection, every read
-     * below would serialize behind it (once observed at ~11 minutes). Route
-     * around it: serve the last live snapshot so status never goes dark. */
+    /* A long maintenance op can hold the shared node.db connection and
+     * serialize every read below. Route around it: serve the last live
+     * snapshot so status never goes dark. */
     if (node_db_long_op_active(NULL, NULL)) {
         if (posture_cache_load(out))
             return;

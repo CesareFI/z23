@@ -4,10 +4,10 @@
  * catalog and the REAL property grant service are joined to the broker's
  * provider seam (session/agent_broker.h).
  *
- * WHY IT LIVES HERE AND NOT IN cognition/modules/session. lib/ sits below app/services, so
- * the broker cannot name property_catalog_show() or the property grant service
- * at all. It declares a seam and refuses to serve when nothing fills it. This
- * file is the one place that knows both sides.
+ * It lives here rather than in cognition/modules/session because lib/ sits
+ * below app/services: the broker cannot name property_catalog_show() or the
+ * property grant service, so it declares a seam and refuses to serve when
+ * nothing fills it. This file is the one place that knows both sides.
  *
  * ── THE ORDERING CONTRACT, WHICH IS A SECURITY PROPERTY ──────────────────
  * agent_broker_provider_compose() is called from engine/entry/main.c IMMEDIATELY BEFORE

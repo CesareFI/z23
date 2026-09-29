@@ -10,10 +10,8 @@
 #include <stdatomic.h>
 
 static _Atomic int g_agent_peer_cache_valid;
-/* Even = stable, odd = writer active.  The peer cache used to publish each
- * field through an unrelated atomic, allowing readers to combine two samples
- * into a peer snapshot that never existed.  One short seqlock makes the
- * fallback cache a coherent record without blocking the first-call path. */
+/* Even = stable, odd = writer active. A short seqlock keeps the fallback
+ * cache a coherent record so readers never combine two samples. */
 static _Atomic uint64_t g_agent_peer_cache_seq;
 static _Atomic int g_agent_peer_cache_total;
 static _Atomic int g_agent_peer_cache_inbound;

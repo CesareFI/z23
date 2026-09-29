@@ -2,15 +2,9 @@
  *
  * The fixture property catalog and the demo grant — TEST BUILDS ONLY.
  *
- * These used to be reachable from `--metaverse-broker` in a shipped binary:
- * agent_broker_fixture_ops() answered PLAN and COMMIT out of a static array,
- * and build_demo_grant() minted an authority over it. A production operator
- * running the broker therefore got a working-looking broker that authorized
- * actions against two properties that do not exist, with a grant nobody
- * issued. The guard below is what makes that impossible rather than merely
- * discouraged: outside a -DZCL_TESTING build the symbols are not compiled and
- * not declared, so the production path cannot name them, and
- * agent_broker_mode_main() refuses to serve without a registered provider.
+ * Outside a -DZCL_TESTING build these symbols are not compiled or declared,
+ * and agent_broker_mode_main() refuses to serve without a registered
+ * provider.
  *
  * The only thing that survives into a production build is
  * agent_broker_fixture_property_id(), which derives a deterministic identifier

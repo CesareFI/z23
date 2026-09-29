@@ -40,10 +40,9 @@
 #include <string.h>
 #include <unistd.h>
 
-/* The widest single-function fan-out in this tree is about 6.4k callees
- * (main). A cap below that would silently drop edges and understate reach, so
- * the buffer is sized above the observed maximum AND a full buffer is still
- * reported as truncation — the bound is not trusted to stay generous. */
+/* A cap below the widest single-function fan-out (about 6.4k callees, main)
+ * would silently drop edges and understate reach, so the buffer is sized above
+ * it AND a full buffer is still reported as truncation. */
 enum {
     TR_FANOUT_CAP  = 8192,
     TR_MAX_SYMBOLS = 400000,

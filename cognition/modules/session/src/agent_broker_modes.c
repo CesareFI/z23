@@ -116,26 +116,19 @@ static void read_child_report(const char *scratch_dir,
 
 /* WHERE THE AUTHORITY COMES FROM.
  *
- * This function used to mint its own grant here and answer out of the test
- * fixture catalog — in a SHIPPED binary. An operator running
- * `--metaverse-broker` got a broker that looked entirely functional while
- * authorizing actions against two properties that do not exist, under a grant
- * nobody issued. Both are gone. The grant and the property surface now come
- * from a registered provider (the composition root wires the real property
- * catalog and property grant service). With none registered the broker binds
- * NO authority and gets NO seam, so it refuses every request it is asked — it
- * does not substitute anything. It still opens its socket, so an operator sees
- * a named refusal per request rather than a process that silently vanished.
+ * The grant and the property surface come from a registered provider (the
+ * composition root wires the real property catalog and property grant
+ * service). With none registered the broker binds NO authority and gets NO
+ * seam, so it refuses every request with a named refusal; it still opens its
+ * socket.
  *
  * REGISTRATION IS NOT PROVISIONING. A registered provider that was handed no
  * explicit grant source refuses to bind, and the broker is then exactly as
  * ungranted as one with no provider at all.
  *
- * The fixture provider still exists for the adversarial demo, but only in a
- * build compiled with -DZCL_TESTING, and only when `--fixture` is passed. In a
- * production binary the flag is not merely rejected: the symbol it would call
- * is not compiled and not declared, so there is no code path from here to a
- * fixture at all. */
+ * The fixture provider exists only in a -DZCL_TESTING build and only when
+ * `--fixture` is passed; in a production binary its symbol is not compiled or
+ * declared. */
 #if !defined(_WIN32)
 static const struct agent_broker_provider *
 resolve_provider(int argc, char **argv, const char **why)

@@ -2,10 +2,9 @@
  * purpose: Seed a cold code index from the nearest sibling checkout's published generation instead of rescanning the whole tree.
  *
  * The first `code` query in a fresh worktree pays a full deterministic index
- * build: measured on this repository, 10.6 s and 427 MB of RSS against 0.22 s
- * once the store exists. Every lane and train worktree on a build host pays it
- * separately, and they are all checkouts of the SAME repository, differing from
- * one another by a handful of files.
+ * build (about 10 s and 427 MB of RSS against 0.22 s once the store exists),
+ * though every worktree on a build host is a checkout of the SAME repository,
+ * differing by a handful of files.
  *
  * The bytes that cost those seconds — the scan of every source file into
  * symbol, reference and per-file shard rows — depend on nothing but the source

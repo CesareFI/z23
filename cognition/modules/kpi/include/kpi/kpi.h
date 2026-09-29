@@ -4,13 +4,10 @@
  * produces, so progress on the tree is measurable over time instead of
  * remembered.
  *
- * WHY THIS EXISTS
- * ---------------
  * Every number here already exists somewhere in the checkout: the generated
  * capability inventory, the registered test catalog, the Makefile's lint gate
  * list, the determinism ratchet baseline, the code index's territory rows.
- * What did not exist was a record of what those numbers WERE last time, so
- * "did that get better?" was answered from memory or not at all.
+ * This ledger records what they were last time so a change is measurable.
  *
  * This module invents no metric. It reads artifacts the build already writes,
  * folds them into one canonical frame, and appends that frame to a

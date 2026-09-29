@@ -1,21 +1,11 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * The broker's grant evaluator — a TRANSLATOR, not an authority.
+ * The broker's grant evaluator — a TRANSLATOR, not an authority. The action
+ * mask is the canonical metaverse_action_set, and every predicate over an
+ * action is asked of metaverse_grant_check().
  *
- * WHAT THIS FILE USED TO DO AND NO LONGER DOES. It kept three local tables:
- * verb_has_counterparty(), verb_carries_value(), and an actions_mask built as
- * `1u << verb` over the wire enum. Those were private answers to questions the
- * metaverse already answers — which actions move value, which name a
- * counterparty, what an action's persisted bit is — and the two answers had
- * drifted: TRANSFER moved value on the metaverse side and was free here, so
- * the same transfer debited the operator's cumulative budget or did not,
- * depending on which side you asked. All three are DELETED. The mask is now
- * the canonical metaverse_action_set, and every predicate over an action is
- * asked of metaverse_grant_check().
- *
- * WHAT REMAINS HERE, AND WHY IT IS NOT A SECOND AUTHORITY. The broker still
- * enforces confinement rules that are about THIS SESSION rather than about the
- * action vocabulary:
+ * The broker still enforces confinement rules about THIS SESSION rather than
+ * the action vocabulary:
  *
  *   - property-id ∩ kind scope. A broker grant is scoped to an explicit set of
  *     32-byte ids AND a kind mask, intersected. A canonical grant is scoped to
@@ -325,11 +315,8 @@ static bool project_grant(const struct agent_grant *g,
      * HOST would refuse it for naming nobody, which is not what an operator
      * writing "sell only to buyer-one" meant. Whether the action has one is
      * the canonical column, asked once here and once in the request
-     * projection, never decided locally.
-     *
      * A QUERY names no counterparty at all, so the accessor refuses and the
-     * question is never asked. It used to be asked with the reserved INSPECT
-     * bit standing in for a query's "action". */
+     * question is never asked. */
     enum metaverse_action action;
     if (mvap_verb_row_action(row, &action) &&
         metaverse_action_uses_counterparty(action) &&

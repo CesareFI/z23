@@ -4,38 +4,25 @@
  * (session/agent_broker_proto.h) and the CANONICAL metaverse vocabulary
  * (metaverse/property_grant.h).
  *
- * WHY THIS FILE EXISTS. The broker used to answer six questions on its own:
- * which verbs mutate, which carry value, which name a counterparty, which
- * kinds exist, what a verb's bit means, and which operations mint a receipt.
- * Answering them locally made the broker a SECOND authority over the same
- * facts the metaverse already owns, and the two answers had already drifted —
- * a TRANSFER debited the operator's cumulative budget on one side and was free
- * on the other. None of those questions is answered here either. This file
- * only TRANSLATES: wire value -> canonical action, wire kind -> canonical
- * kind, wire request -> struct metaverse_action_request. Every predicate over
- * the canonical action is then asked of the metaverse, and the verdict is
- * mapped back onto the wire's named refusals.
+ * This file only TRANSLATES: wire value -> canonical action, wire kind ->
+ * canonical kind, wire request -> struct metaverse_action_request. Every
+ * predicate over the canonical action is asked of the metaverse, and the
+ * verdict is mapped back onto the wire's named refusals; the broker is not a
+ * second authority over those facts.
  *
  * THE TWO DISJOINT VOCABULARIES. A QUERY is read-only: it never mutates,
  * never carries value, never names a counterparty, never runs PLAN -> COMMIT
  * and never mints a receipt. An ACTION is one of the canonical mutating verbs
- * and does all of the above. `LIST` is the one identifier that used to mean
- * both — "enumerate what exists" on the wire and "list for sale" in the
- * metaverse — so it is never again a single identifier: wire value 2 is the
- * ENUMERATE query, and listing something for sale is the appended wire value
- * 14 carrying the canonical LIST action bit.
+ * and does all of the above. `LIST` is never a single identifier: wire value 2
+ * is the ENUMERATE query, and listing something for sale is wire value 14
+ * carrying the canonical LIST action bit.
  *
- * QUERIES AND THE RESERVED INSPECT BIT. Queries left the canonical action
- * space, so bit 0x1 (canonical METAVERSE_ACTION_INSPECT) is RESERVED: it is
- * still decoded for compatibility, so an old persisted grant or receipt still
- * renders, and it is never reissued to a new action. NOTHING IN THIS JOIN
- * DISPATCHES ON IT. It used to: both query rows carried it as their "canonical
- * action", which meant the two reads were the same value by the time any
- * consumer saw them, and a consumer asking "is this the enumeration?" had to
- * guess from something else — the property id — and got it wrong for an
- * enumeration that named one. A query row now carries its canonical QUERY and
- * an action row its canonical ACTION, so INSPECT_PROPERTY and
- * ENUMERATE_PROPERTIES stay two distinct values from decode to dispatch.
+ * QUERIES AND THE RESERVED INSPECT BIT. Queries are outside the canonical
+ * action space, so bit 0x1 (canonical METAVERSE_ACTION_INSPECT) is RESERVED:
+ * still decoded so persisted grants and receipts render, never reissued, and
+ * NOTHING IN THIS JOIN DISPATCHES ON IT. A query row carries its canonical
+ * QUERY and an action row its canonical ACTION, so INSPECT_PROPERTY and
+ * ENUMERATE_PROPERTIES stay distinct from decode to dispatch.
  */
 
 #ifndef ZCL_SESSION_AGENT_BROKER_VOCAB_H
@@ -129,10 +116,9 @@ bool mvap_verb_mints_receipt(uint32_t wire);
  * same table read two ways.
  *
  * mvap_verb_to_action() answers only for an ACTION verb and
- * mvap_verb_to_query() only for a QUERY verb; neither has a value to return
- * for the other class, and returning one anyway is how the two queries used to
- * become indistinguishable. The RESERVED INSPECT bit is on no row at all, so
- * mvap_verb_from_action(METAVERSE_ACTION_INSPECT) is MVAP_VERB_NONE. */
+ * mvap_verb_to_query() only for a QUERY verb. The RESERVED INSPECT bit is on
+ * no row, so mvap_verb_from_action(METAVERSE_ACTION_INSPECT) is
+ * MVAP_VERB_NONE. */
 bool mvap_verb_to_action(uint32_t wire, enum metaverse_action *out);
 bool mvap_verb_to_query(uint32_t wire, enum metaverse_query *out);
 uint32_t mvap_verb_from_action(enum metaverse_action action);

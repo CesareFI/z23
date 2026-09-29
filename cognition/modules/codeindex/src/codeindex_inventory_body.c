@@ -345,24 +345,13 @@ static bool inv_macro_invocation_segment(const char *clean, size_t start,
 }
 
 /* Sorted index over ONE file's symbol occurrences, keyed by (name,
- * def_path), so inv_body_push can recover a function body's preprocessor
- * guard in O(log n + matches) instead of rescanning the whole corpus-so-far
- * `s->occurrences` array for every body found -- that scan was the single
- * dominant cost of the generator (98.6% of runtime by gprof), because it is
- * O(bodies x occurrences).
+ * def_path), so inv_body_push recovers a function body's preprocessor guard
+ * in O(log n + matches) instead of rescanning `s->occurrences`.
  *
- * A per-file index is sufficient, not a global or incrementally-maintained
- * one: the very first test in the original linear scan is
- * `occ->file_index != file_index`, so an occurrence from any other file can
- * never match. `inv_scan_all` (codeindex_inventory_scan.c) runs
- * `ci_scan_text` for a file -- which appends that file's occurrences to the
- * tail of `s->occurrences` -- and then immediately calls
- * `inv_scan_includes_and_bodies` for the same file, before any other file's
- * occurrences are appended. So by the time this file's bodies are scanned,
- * exactly that file's occurrences are present, as one contiguous run at the
- * tail of `s->occurrences`, and nothing is appended to that run afterward.
- * Building the index once per file, right before scanning that file's
- * bodies, is therefore both correct and sufficient. */
+ * A per-file index suffices: occurrences from other files never match
+ * (`occ->file_index != file_index`), and inv_scan_all appends a file's
+ * occurrences as one contiguous tail run immediately before scanning that
+ * file's bodies. Build it once per file, right before those bodies. */
 struct inv_guard_key {
     const char *name;
     const char *def_path;

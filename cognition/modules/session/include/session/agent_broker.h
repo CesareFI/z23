@@ -85,10 +85,7 @@ struct agent_money_binding {
 /* One capability grant.
  *
  * `actions_mask` is the CANONICAL metaverse_action_set — the same persisted
- * bit per action the metaverse grants and receipts carry. It used to be
- * `1u << verb` over the wire enum, a third incompatible bit layout that meant
- * a grant minted here and a grant read from the metaverse described different
- * rights with the same number. Set it only through
+ * bit per action the metaverse grants and receipts carry. Set it only through
  * agent_grant_allow_action(), which translates the wire verb to its canonical
  * action.
  *
@@ -393,21 +390,12 @@ int32_t agent_broker_scope_check(const struct agent_broker_scope *sc,
 
 /* WHAT A BROKER SESSION HOLDS INSTEAD OF A GRANT.
  *
- * It used to hold `struct agent_grant grant` BY VALUE, and every authorize and
- * every debit read and wrote that copy. The consequence was not subtle: an
- * operator revoking the grant, shortening its expiry, or cutting its budget
- * changed the store and changed NOTHING about a broker session already
- * running. The session went on answering out of the snapshot it took when it
- * started, for as long as the agent stayed connected. Revocation was a
- * property of new sessions only.
- *
- * So the session now holds a REFERENCE and no authority at all. There is no
- * grant in `struct agent_broker_session` to go stale, and no fallback path
- * that could read one: when the reference is unbound or the provider cannot
- * answer, the request is REFUSED (MVAP_ERR_DENIED_NO_GRANT). "Could not reach
- * the authority" and "the authority said no" have the same effect, which is
- * the only arrangement in which the first cannot be used to obtain the
- * second.
+ * The session holds a REFERENCE and no authority, so revoking the grant,
+ * shortening its expiry or cutting its budget affects running sessions too.
+ * There is no grant in `struct agent_broker_session` to go stale: when the
+ * reference is unbound or the provider cannot answer, the request is REFUSED
+ * (MVAP_ERR_DENIED_NO_GRANT). "Could not reach the authority" and "the
+ * authority said no" have the same effect.
  *
  * LIFETIME: `provider` and `provider_ctx` are BORROWED. The registry borrows
  * the provider pointer too (agent_broker_provider_install), so both the
@@ -554,12 +542,10 @@ void agent_broker_fixture_get_grant(struct agent_grant *out);
 /* THE CANONICAL REQUEST DIGEST — SHA3-256 over everything that can change what
  * a request ASKS FOR, plus the authority it is asked under.
  *
- * WHY IT EXISTS. The ring used to key a replay on `request_id` alone (with the
- * verb compared at the call site, and nothing else). So request_id=7 INSPECT
- * property A followed by request_id=7 INSPECT property B returned property A's
- * answer to a question about property B — a confused-deputy read, produced by
- * the broker itself, with no refusal anywhere. Comparing the FULL digest is
- * what makes "the same request_id" mean "the same request".
+ * Keying a replay on `request_id` alone would answer a question about
+ * property B with property A's cached answer (a confused-deputy read).
+ * Comparing the FULL digest makes "the same request_id" mean "the same
+ * request".
  *
  * THE PREIMAGE, field by field, in this order — every variable-length field is
  * length-prefixed, so no two distinct requests can share a preimage:
@@ -587,31 +573,21 @@ void agent_broker_fixture_get_grant(struct agent_grant *out);
  *
  * `authority_id` may be NULL, which digests identically to "".
  *
- * THE DIGEST IS A KEY, NOT THE PROOF. Two requests that hash alike must not be
- * treated as one, so the ring stores the preimage FIELDS as well (struct
- * agent_idem_identity below) and a hit is confirmed against them. That leaves
- * the "same id, same request" guarantee resting on a comparison this code
- * performs, rather than on SHA3-256 having no collisions. */
+ * THE DIGEST IS A KEY, NOT THE PROOF. The ring also stores the preimage
+ * FIELDS (struct agent_idem_identity below) and a hit is confirmed against
+ * them, so "same id, same request" does not rest on SHA3-256 collision
+ * resistance. */
 void mvap_request_digest(const struct mvap_request *req,
                          const char *authority_id, uint8_t out[32]);
 
 /* THE PREIMAGE, AS FIELDS. Exactly the values listed above and nothing else —
  * `param` and `authority_id` are stored with explicit lengths and WITHOUT a
- * terminator, the same shape the preimage uses, so comparing two identities is
- * comparing two preimages.
+ * terminator, the same shape the preimage uses.
  *
- * WHY IT IS STORED. The ring used to hold the digest alone, so a hit was
- * "these 32 bytes matched" and the entry was then served as a legitimate
- * replay. Finding a second request with the same SHA3-256 is not a practical
- * attack — but the guarantee was INHERITED from SHA3 rather than established
- * here, and establishing it costs one comparison of fields the broker already
- * had in hand. A slot is served only when the digest AND every field match; a
- * digest that matches over different fields is a CONFLICT, which is the same
- * refusal any other reuse of the id gets.
- *
- * The digest is computed FROM this struct (mvap_identity_digest), so the two
- * cannot describe different things: there is no second place that decides what
- * a request's identity is. */
+ * A ring slot is served only when the digest AND every field match; a digest
+ * that matches over different fields is a CONFLICT, the same refusal any other
+ * reuse of the id gets. The digest is computed FROM this struct
+ * (mvap_identity_digest), so there is one definition of request identity. */
 struct agent_idem_identity {
     uint64_t value_zats;
     uint32_t version;                 /* 0 normalized to MVAP_VERSION      */

@@ -354,11 +354,8 @@ void agent_broker_handle(struct agent_broker_session *s,
     /* 4. A query answers from what it resolved. It mutates nothing, debits
      *    nothing, and mints no receipt — on either side.
      *
-     *    AND IT IS NOT REMEMBERED. A query used to be stored here, which meant
-     *    a repeated request_id returned the old OK without consulting the
-     *    authority at all: an agent could hold an answer across a revocation
-     *    simply by retrying. A query is a read of live authority and live
-     *    property state, so the only correct cache lifetime for one is zero. */
+     *    A query is NOT remembered: it reads live authority and live property
+     *    state, so a replayed request_id must be re-authorized. */
     if (!is_action) {
         resp_init(out, req, MVAP_OK);
         resp_body(out,

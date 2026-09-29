@@ -223,14 +223,9 @@ bool mvap_verb_in_version(uint32_t verb, uint32_t version);
 
 /* True when `verb` is an ACTION rather than a QUERY.
  *
- * This is NOT the broker's own opinion about what mutates, and it is not the
- * hand-written switch that used to live in agent_broker_proto.c beside the
- * codec. It is one read of the canonical join table in
- * session/agent_broker_vocab.h — the same table that maps the verb to its
- * metaverse action and is asserted row-for-row against the canonical action
- * enum at compile time — which is why it is DEFINED in agent_broker_vocab.c
- * and merely declared here, where every caller already looks for verb facts.
- * There is no way to answer it differently from the class column. */
+ * One read of the canonical join table in session/agent_broker_vocab.h (the
+ * class column), which is why it is DEFINED in agent_broker_vocab.c and only
+ * declared here, where callers look for verb facts. */
 bool mvap_verb_is_mutation(uint32_t verb);
 
 /* Encode `req` into `out` (capacity `out_cap`). Writes the 4-byte little-endian

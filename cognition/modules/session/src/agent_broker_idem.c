@@ -3,21 +3,12 @@
  * The broker's idempotency ring: what makes "the same request_id" mean "the
  * same request".
  *
- * THE DEFECT THIS FILE REPLACES. The ring used to be four lines inside
- * agent_broker.c: find a slot whose `request_id` matched, and — at the call
- * site, not here — compare the verb. Nothing else. Not the property, not the
- * kind, not the value, not the param, not the protocol version, not the
- * authority. Two consequences followed, and both were reachable by an ordinary
- * client with no hostile intent:
+ * The ring keys on the full request digest plus the preimage fields, never on
+ * `request_id` alone, so a repeat id with a different property, kind, value,
+ * param, version or authority cannot receive another request's answer.
+ * Queries are never cached, so a retry cannot outlive a revocation.
  *
- *   1. request_id=7 INSPECT property A, then request_id=7 INSPECT property B,
- *      returned A's answer to a question about B. The broker itself produced
- *      the confusion; nothing anywhere refused.
- *   2. Queries were cached, so a repeated request_id after a revocation
- *      returned the old OK without consulting the authority at all. Live
- *      authority, defeated by a retry.
- *
- * THE RULES NOW, in the order they matter:
+ * THE RULES, in the order they matter:
  *
  *   - Identity is the REQUEST, not the number: the digest is the key, and the
  *     preimage FIELDS the slot also stores are what a hit is confirmed
