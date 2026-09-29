@@ -115,16 +115,16 @@ void zcl_verify_receiver_prepare(const char *generation, const char *work_dir,
                                  struct zcl_verify_receiver *out);
 
 #ifdef ZCL_TESTING
-/* Isolated fixture only: the store, pins, profile and compiler come from
- * the test. Production does not compile an override. */
+/* Isolated fixture only: production's exact policy, pins and store walk
+ * under a test-owned anchor (zcl_verify_store_lookup_site_fixture), with
+ * the pins read from anchor/etc/z23verify/fixed_result.pins by the same
+ * custody checks. The profile and compiler come from the test. Production
+ * does not compile an override. */
 struct zcl_verify_receiver_fixture {
-    const char *store_root;
-    unsigned signer_uid;
-    unsigned publisher_uid;
+    const char *site_anchor;
     bool allow_same_uid;
-    const struct zcl_fixed_result_v2_roots *pins; /* NULL: unqualified */
     const char *profile_path;
-    const char *compiler;
+    const char *compiler; /* NULL: /usr/bin/cc */
 };
 
 void zcl_verify_receiver_prepare_fixture(

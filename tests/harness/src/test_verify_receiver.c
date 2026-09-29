@@ -46,6 +46,7 @@ static const uint8_t vrt_seed[32] = {0x51};
 struct vrt_fx {
     char cwd[PATH_MAX], root[PATH_MAX], gen[PATH_MAX], donor[PATH_MAX];
     char probe[PATH_MAX], vstore[PATH_MAX], store[PATH_MAX];
+    char anchor[PATH_MAX], etc[PATH_MAX];
     char key_root[PATH_MAX], pubfile[PATH_MAX], work[PATH_MAX];
     char bin[PATH_MAX], counter[PATH_MAX], zcc[PATH_MAX], profile[PATH_MAX];
     char phases[PATH_MAX], key_dir[PATH_MAX], pass_name[65], zstore[PATH_MAX];
@@ -221,16 +222,19 @@ static void vrt_roots(struct zcl_fixed_result_v2_roots *pins)
 
 static bool vrt_dirs(struct vrt_fx *f)
 {
-    char temporary[PATH_MAX], key_temporary[PATH_MAX];
+    char temporary[PATH_MAX], key_temporary[PATH_MAX], site[PATH_MAX];
     char *made = test_mkdtemp(temporary, sizeof(temporary), "z23-vrecv");
     char *key_made = test_mkdtemp(key_temporary, sizeof(key_temporary),
                                   "z23-vrecv-key");
-    if (!getcwd(f->cwd, sizeof(f->cwd)) || !made || !key_made ||
+    char *site_made = test_mkdtemp(site, sizeof(site), "z23-vrecv-site");
+    if (!getcwd(f->cwd, sizeof(f->cwd)) || !made || !key_made || !site_made ||
+        !realpath(site_made, f->anchor) || chmod(f->anchor, 0755) != 0 ||
         !realpath(made, f->root) || !realpath(key_made, f->key_root))
         return false;
     struct { char *out; const char *base; const char *name; } paths[] = {
         {f->gen, f->root, "gen"}, {f->donor, f->root, "donor"},
-        {f->probe, f->root, "probe"}, {f->vstore, f->root, "vstore"},
+        {f->probe, f->root, "probe"}, {f->vstore, f->anchor, "var/lib/z23verify"},
+        {f->etc, f->anchor, "etc/z23verify"},
         {f->store, f->vstore, "store"}, {f->work, f->root, "work"},
         {f->bin, f->root, "bin"}, {f->counter, f->root, "cc.count"},
         {f->phases, f->root, "phases.txt"}, {f->zstore, f->root, "zccstore"},
@@ -240,7 +244,8 @@ static bool vrt_dirs(struct vrt_fx *f)
     };
     for (size_t i = 0; i < sizeof(paths) / sizeof(paths[0]); i++)
         if (!vrt_path(paths[i].out, paths[i].base, paths[i].name)) return false;
-    const char *dirs[] = {f->gen, f->donor, f->probe, f->store, f->bin, f->zstore};
+    const char *dirs[] = {f->gen, f->donor, f->probe, f->store, f->bin,
+                          f->zstore, f->etc};
     for (size_t i = 0; i < sizeof(dirs) / sizeof(dirs[0]); i++)
         if (!vrt_mkdirs(dirs[i])) return false;
     return true;
@@ -440,6 +445,34 @@ static bool vrt_store(struct vrt_fx *f)
            mkdir(f->key_dir, 0755) == 0;
 }
 
+/* Production's site layout under the test anchor: the pins and the store
+ * policy in anchor/etc/z23verify, both 0444, the test uid standing in for
+ * root as the site owner and, under the waiver, as signer too. */
+static bool vrt_site_file(const struct vrt_fx *f, const char *name,
+                          char out[PATH_MAX])
+{
+    return vrt_path(out, f->etc, name);
+}
+
+static bool vrt_site(const struct vrt_fx *f,
+                     const struct zcl_fixed_result_v2_roots *pins)
+{
+    uint8_t bytes[2048];
+    size_t len = 0;
+    const char *why = NULL;
+    char path[PATH_MAX], text[96];
+    unsigned me = (unsigned)geteuid();
+    int n = snprintf(text, sizeof(text),
+                     "z23verify.store.v1\nsigner_uid=%u\npublisher_uid=%u\n",
+                     me, me);
+    return n > 0 && n < (int)sizeof(text) &&
+           zcl_fr_pins_encode(pins, bytes, sizeof(bytes), &len, &why) &&
+           vrt_site_file(f, "fixed_result.pins", path) &&
+           vrt_write(path, bytes, len, 0444) &&
+           vrt_site_file(f, "store.policy", path) &&
+           vrt_write(path, text, (size_t)n, 0444);
+}
+
 static bool vrt_key(struct vrt_fx *f)
 {
     uint8_t pub[32], secret[32];
@@ -495,13 +528,14 @@ static bool vrt_fixture_make(struct vrt_fx *f)
                   f->pins.source_content) == NULL;
     if (donor_fd >= 0) (void)close(donor_fd);
     f->fixture = (struct zcl_verify_receiver_fixture){
-        .store_root = f->vstore, .signer_uid = (unsigned)geteuid(),
-        .publisher_uid = (unsigned)geteuid(), .allow_same_uid = true,
-        .pins = &f->pins, .profile_path = f->profile, .compiler = NULL};
+        .site_anchor = f->anchor, .allow_same_uid = true,
+        .profile_path = f->profile, .compiler = NULL};
     return vrt_step(ok, "source content") &&
            vrt_step(vrt_signer_key(f), "signer key") &&
            vrt_step(vrt_receipt(f, &f->pins), "receipt") &&
-           vrt_step(vrt_store(f), "store") && vrt_step(vrt_key(f), "key") &&
+           vrt_step(vrt_store(f), "store") &&
+           vrt_step(vrt_site(f, &f->pins), "site pins and policy") &&
+           vrt_step(vrt_key(f), "key") &&
            vrt_step(vrt_counter_cc(f), "counting compiler") &&
            vrt_step(vrt_publish(f, 0, f->pass_name), "publish");
 }
@@ -926,27 +960,37 @@ static int vrt_test_cold_trust(struct vrt_fx *f)
         ASSERT(vrt_cold(f, "no_verifier_key"));
         ASSERT(setenv(VRT_KEY_ENV, f->pubfile, 1) == 0);
 
-        struct zcl_verify_receiver_fixture saved = f->fixture;
-        char absent[PATH_MAX];
-        ASSERT(vrt_path(absent, f->root, "absent-store"));
-        f->fixture.store_root = absent;
+        char path[PATH_MAX], away[PATH_MAX];
+        ASSERT(vrt_path(away, f->root, "store-away"));
+        ASSERT(rename(f->vstore, away) == 0);
         ASSERT(vrt_cold(f, "store_path_unsafe"));
-        f->fixture = saved;
+        ASSERT(rename(away, f->vstore) == 0);
 
         f->fixture.allow_same_uid = false;
         ASSERT(vrt_cold(f, "store_owner_same_uid"));
-        f->fixture = saved;
+        f->fixture.allow_same_uid = true;
 
-        f->fixture.pins = NULL;
+        ASSERT(vrt_site_file(f, "store.policy", path));
+        ASSERT(unlink(path) == 0);
+        ASSERT(vrt_cold(f, "store_policy_missing"));
+        ASSERT(vrt_site(f, &f->pins));
+        ASSERT(vrt_site_file(f, "fixed_result.pins", path));
+        ASSERT(unlink(path) == 0);
         ASSERT(vrt_cold(f, "store_pins_missing"));
+        ASSERT(vrt_site(f, &f->pins));
+        ASSERT(chmod(path, 0644) == 0);
+        ASSERT(vrt_cold(f, "store_pins_unsafe"));
+        ASSERT(vrt_site(f, &f->pins));
+
         struct zcl_fixed_result_v2_roots wrong = f->pins;
         wrong.tool_image[0] ^= 1u;
-        f->fixture.pins = &wrong;
+        ASSERT(vrt_site(f, &wrong));
         ASSERT(vrt_cold(f, "attest_no_observation"));
         wrong = f->pins;
         wrong.source_content[0] ^= 1u;
+        ASSERT(vrt_site(f, &wrong));
         ASSERT(vrt_cold(f, "receiver_source_content_mismatch"));
-        f->fixture = saved;
+        ASSERT(vrt_site(f, &f->pins));
         struct zcl_verify_receiver r;
         vrt_prepare(f, &r);
         bool admitted = vrt_is(&r, ZCL_VERIFY_RECEIVER_ADMITTED, NULL);
@@ -1171,6 +1215,7 @@ static void vrt_fixture_free(struct vrt_fx *f)
     (void)unsetenv(VRT_KEY_ENV);
     if (f->root[0]) (void)nftw(f->root, vrt_rm, 8, FTW_DEPTH | FTW_PHYS);
     if (f->key_root[0]) (void)nftw(f->key_root, vrt_rm, 8, FTW_DEPTH | FTW_PHYS);
+    if (f->anchor[0]) (void)nftw(f->anchor, vrt_rm, 8, FTW_DEPTH | FTW_PHYS);
 }
 
 int test_verify_receiver(void)

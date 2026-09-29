@@ -230,10 +230,8 @@ static void vr_lookup(struct vr_ctx *c)
 #ifdef ZCL_TESTING
     const struct zcl_verify_receiver_fixture *f = c->fixture;
     if (f)
-        zcl_verify_store_lookup_fixture(f->store_root, f->signer_uid,
-                                        f->publisher_uid, f->allow_same_uid,
-                                        &c->expected.expected, f->pins, c->box,
-                                        &s);
+        zcl_verify_store_lookup_site_fixture(f->site_anchor, f->allow_same_uid,
+                                             &c->expected.expected, c->box, &s);
     else
 #endif
         zcl_verify_store_lookup(&c->expected.expected, c->box, &s);
@@ -337,6 +335,20 @@ void zcl_verify_receiver_prepare(const char *generation, const char *work_dir,
 }
 
 #ifdef ZCL_TESTING
+/* The pins from anchor/etc/z23verify under the loader's custody checks,
+ * with the anchor's owner (the test uid) standing in for root. */
+static const char *vr_fixture_pins(const struct zcl_verify_receiver_fixture *f,
+                                   struct zcl_fixed_result_v2_roots *out)
+{
+    char dir[PATH_MAX];
+    if (!f || !f->site_anchor ||
+        snprintf(dir, sizeof(dir), "%s/etc/z23verify", f->site_anchor) >=
+            (int)sizeof(dir))
+        return "store_pins_path_unsafe";
+    return zcl_verify_store_pins_load_fixture(dir, (unsigned)geteuid(),
+                                              (unsigned)geteuid(), out);
+}
+
 void zcl_verify_receiver_prepare_fixture(
     const char *generation, const char *work_dir,
     const struct zcl_verify_attest_box_key *box,
@@ -345,10 +357,9 @@ void zcl_verify_receiver_prepare_fixture(
 {
     struct vr_ctx *c = vr_ctx_new(out, generation, box);
     const char *why = c ? vr_trust_first(box) : NULL;
-    if (c && !why && (!fixture || !fixture->pins)) why = "store_pins_missing";
+    if (c && !why) why = vr_fixture_pins(fixture, &c->pins);
     if (c && !why) {
         c->fixture = fixture;
-        c->pins = *fixture->pins;
         if (fixture->compiler) c->compiler = fixture->compiler;
         why = vr_read_at(AT_FDCWD, fixture->profile_path, VR_PROFILE_MAX,
                          &c->profile_raw);
