@@ -634,6 +634,193 @@ static bool focus_join_reasons(char *dst, size_t cap,
     return true;
 }
 
+/* What the evidence says about one territory file. */
+struct focus_signals {
+    int failed;
+    char fail_name[SPECIALIST_GROUP_MAX];
+    uint32_t recency;
+    const char *note_src;
+    const char *issue_src;
+    bool unrouted;
+};
+
+static const char *focus_binding_source(
+    const struct specialist_focus_binding *arr, size_t count, const char *path)
+{
+    for (size_t i = 0; i < count; i++)
+        if (strcmp(arr[i].path, path) == 0)
+            return arr[i].source;
+    return NULL;
+}
+
+static void focus_gather_signals(
+    const struct specialist_focus_evidence *ev, const char *path,
+    char groups[][SPECIALIST_GROUP_MAX], size_t ng, struct focus_signals *sg)
+{
+    memset(sg, 0, sizeof(*sg));
+    for (size_t g = 0; g < ng; g++) {
+        for (size_t f = 0; f < ev->failed_count; f++) {
+            if (!focus_groups_equal(groups[g], ev->failed[f]))
+                continue;
+            sg->failed++;
+            if (!sg->fail_name[0])
+                (void)snprintf(sg->fail_name, sizeof sg->fail_name, "%s",
+                               ev->failed[f]);
+        }
+    }
+    for (size_t c = 0; c < ev->churn_count; c++) {
+        if (strcmp(ev->churn[c].path, path) == 0) {
+            sg->recency = ev->churn[c].recency;
+            break;
+        }
+    }
+    sg->note_src = focus_binding_source(ev->notes, ev->notes_count, path);
+    sg->issue_src = focus_binding_source(ev->issues, ev->issues_count, path);
+    sg->unrouted = ng == 0;
+}
+
+static bool focus_collect_reasons(
+    char parts[][FOCUS_REASON_PART_MAX], int *nparts,
+    const struct focus_signals *sg, size_t gate_fails,
+    char owned_gates[][SPECIALIST_GROUP_MAX])
+{
+    char line[FOCUS_REASON_PART_MAX];
+    if (sg->failed > 0) {
+        (void)snprintf(line, sizeof line,
+                       "failed-group:%s (.cache/test-timing/last-run.json)",
+                       sg->fail_name);
+        if (!focus_add_reason(parts, nparts, line)) return false;
+    }
+    if (gate_fails > 0) {
+        (void)snprintf(line, sizeof line,
+                       "failed-gate:%s (.cache/lint-timing/last-run.json)",
+                       owned_gates[0]);
+        if (!focus_add_reason(parts, nparts, line)) return false;
+    }
+    if (sg->recency > 0) {
+        (void)snprintf(line, sizeof line, "churn:git-log recency=%u",
+                       sg->recency);
+        if (!focus_add_reason(parts, nparts, line)) return false;
+    }
+    if (sg->note_src) {
+        (void)snprintf(line, sizeof line, "lesson:%s", sg->note_src);
+        if (!focus_add_reason(parts, nparts, line)) return false;
+    }
+    if (sg->unrouted &&
+        !focus_add_reason(parts, nparts, "unrouted:agent_impact_rules"))
+        return false;
+    if (sg->issue_src) {
+        (void)snprintf(line, sizeof line, "issue:%s", sg->issue_src);
+        if (!focus_add_reason(parts, nparts, line)) return false;
+    }
+    return true;
+}
+
+/* Builds the hit for one territory file. Returns -1 on error, 0 when the
+ * evidence has nothing to say about the file, 1 when *cand is filled. */
+static int focus_build_hit(
+    const struct specialist_focus_evidence *ev, const char *path,
+    char groups[][SPECIALIST_GROUP_MAX], size_t ng, size_t gate_fails,
+    char owned_gates[][SPECIALIST_GROUP_MAX], struct specialist_focus_hit *cand)
+{
+    struct focus_signals sg;
+    focus_gather_signals(ev, path, groups, ng, &sg);
+    if (sg.failed == 0 && gate_fails == 0 && sg.recency == 0 &&
+        !sg.note_src && !sg.issue_src && !sg.unrouted)
+        return 0;
+    char parts[FOCUS_REASON_PART][FOCUS_REASON_PART_MAX];
+    int nparts = 0;
+    if (!focus_collect_reasons(parts, &nparts, &sg, gate_fails, owned_gates))
+        return -1;
+    int w = snprintf(cand->path, sizeof cand->path, "%s", path);
+    if (w < 0 || (size_t)w >= sizeof cand->path)
+        LOG_ERR(FOCUS_TAG, "hit path too long: %s", path);
+    if (!focus_join_reasons(cand->reason, sizeof cand->reason, parts, nparts))
+        return -1;
+    cand->score = sg.failed * FOCUS_W_FAILED +
+                  (int)gate_fails * FOCUS_W_GATE +
+                  (sg.issue_src ? FOCUS_W_ISSUE : 0) +
+                  (sg.note_src ? FOCUS_W_LESSON : 0) +
+                  (sg.unrouted ? FOCUS_W_UNROUTED : 0) +
+                  (int)sg.recency * FOCUS_W_CHURN;
+    return 1;
+}
+
+/* Bounded top-K by the emitted order: keep filling until the work set is
+ * full, then keep the exact worst slot and let a strictly better candidate
+ * evict it. Index order (path ASC) cannot hide a later failed-group or issue
+ * file behind a full set of low-score unrouted paths. */
+static void focus_keep_top(struct specialist_focus_hit *work, int *nwork,
+                           bool *overflow,
+                           const struct specialist_focus_hit *cand)
+{
+    if (*nwork < SPECIALIST_FOCUS_WORK_CAP) {
+        work[(*nwork)++] = *cand;
+        return;
+    }
+    *overflow = true;
+    int worst = 0;
+    for (int i = 1; i < *nwork; i++) {
+        if (focus_hit_ranks_below(&work[i], &work[worst]))
+            worst = i;
+    }
+    if (focus_hit_ranks_below(&work[worst], cand))
+        work[worst] = *cand;
+}
+
+/* Everything one rank call carries between files. */
+struct focus_rank {
+    const struct specialist *spec;
+    const struct specialist_focus_evidence *ev;
+    specialist_focus_route_fn route;
+    void *route_user;
+    size_t gate_fails;
+    char owned_gates[FOCUS_OWNED_GATE_CAP][SPECIALIST_GROUP_MAX];
+    struct specialist_focus_hit *work;
+    int nwork;
+    bool overflow;
+};
+
+/* Ranks one indexed page into the work set; false on error. */
+static bool focus_rank_page(struct focus_rank *fr, const struct ci_file *page,
+                            int got)
+{
+    for (int i = 0; i < got; i++) {
+        const char *path = page[i].path;
+        if (!specialist_path_in_territory(fr->spec, path))
+            continue;
+        char groups[FOCUS_ROUTE_CAP][SPECIALIST_GROUP_MAX];
+        size_t ng = fr->route(path, groups, FOCUS_ROUTE_CAP, fr->route_user);
+        struct specialist_focus_hit cand;
+        int built = focus_build_hit(fr->ev, path, groups, ng, fr->gate_fails,
+                                    fr->owned_gates, &cand);
+        if (built < 0)
+            return false;
+        if (built > 0)
+            focus_keep_top(fr->work, &fr->nwork, &fr->overflow, &cand);
+    }
+    return true;
+}
+
+/* Walks every indexed file page by page into the work set; false on error. */
+static bool focus_rank_all(struct codeindex *ci, struct focus_rank *fr)
+{
+    int total = codeindex_file_count(ci);
+    if (total < 0)
+        LOG_FAIL(FOCUS_TAG, "codeindex_file_count failed");
+    struct ci_file page[FOCUS_PAGE];
+    for (int off = 0; off < total; off += FOCUS_PAGE) {
+        int got = codeindex_files_page(ci, off, page, FOCUS_PAGE);
+        if (got < 0)
+            LOG_FAIL(FOCUS_TAG, "codeindex_files_page failed at %d", off);
+        if (!focus_rank_page(fr, page, got))
+            return false;
+        if (got < FOCUS_PAGE)
+            break;
+    }
+    return true;
+}
+
 int specialist_focus_rank(struct codeindex *ci,
                           const struct specialist *spec,
                           const struct specialist_focus_evidence *ev,
@@ -656,176 +843,31 @@ int specialist_focus_rank(struct codeindex *ci,
     if (!work)
         LOG_ERR(FOCUS_TAG, "allocate rank working set");
 
-    int nwork = 0;
-    bool overflow = false;
+    struct focus_rank fr = {
+        .spec = spec, .ev = ev, .route = route, .route_user = route_user,
+        .work = work,
+    };
     /* A failed gate the lane owns is lane-level evidence: the artifact names
      * the lane, not a file, so every territory file gains the same weight
      * and a reason citing the artifact. File-level signals still stack on
      * top and keep their relative order. */
-    char owned_gates[FOCUS_OWNED_GATE_CAP][SPECIALIST_GROUP_MAX];
-    size_t gate_fails = specialist_focus_owned_failed_gates(
-        spec, ev, owned_gates, FOCUS_OWNED_GATE_CAP);
-    int total = codeindex_file_count(ci);
-    if (total < 0) {
+    fr.gate_fails = specialist_focus_owned_failed_gates(
+        spec, ev, fr.owned_gates, FOCUS_OWNED_GATE_CAP);
+    if (!focus_rank_all(ci, &fr)) {
         free(work);
-        LOG_ERR(FOCUS_TAG, "codeindex_file_count failed");
-    }
-    struct ci_file page[FOCUS_PAGE];
-    for (int off = 0; off < total; off += FOCUS_PAGE) {
-        int got = codeindex_files_page(ci, off, page, FOCUS_PAGE);
-        if (got < 0) {
-            free(work);
-            LOG_ERR(FOCUS_TAG, "codeindex_files_page failed at %d", off);
-        }
-        for (int i = 0; i < got; i++) {
-            const char *path = page[i].path;
-            if (!specialist_path_in_territory(spec, path))
-                continue;
-            char groups[FOCUS_ROUTE_CAP][SPECIALIST_GROUP_MAX];
-            size_t ng = route(path, groups, FOCUS_ROUTE_CAP, route_user);
-            int failed = 0;
-            char fail_name[SPECIALIST_GROUP_MAX];
-            fail_name[0] = '\0';
-            for (size_t g = 0; g < ng; g++) {
-                for (size_t f = 0; f < ev->failed_count; f++) {
-                    if (focus_groups_equal(groups[g], ev->failed[f])) {
-                        failed++;
-                        if (!fail_name[0]) {
-                            (void)snprintf(fail_name, sizeof fail_name, "%s",
-                                           ev->failed[f]);
-                        }
-                    }
-                }
-            }
-            uint32_t recency = 0;
-            for (size_t c = 0; c < ev->churn_count; c++) {
-                if (strcmp(ev->churn[c].path, path) == 0) {
-                    recency = ev->churn[c].recency;
-                    break;
-                }
-            }
-            const char *note_src = NULL;
-            for (size_t n = 0; n < ev->notes_count; n++) {
-                if (strcmp(ev->notes[n].path, path) == 0) {
-                    note_src = ev->notes[n].source;
-                    break;
-                }
-            }
-            const char *issue_src = NULL;
-            for (size_t n = 0; n < ev->issues_count; n++) {
-                if (strcmp(ev->issues[n].path, path) == 0) {
-                    issue_src = ev->issues[n].source;
-                    break;
-                }
-            }
-            bool unrouted = ng == 0;
-            if (failed == 0 && gate_fails == 0 && recency == 0 && !note_src &&
-                !issue_src && !unrouted)
-                continue;
-            char parts[FOCUS_REASON_PART][FOCUS_REASON_PART_MAX];
-            int nparts = 0;
-            if (failed > 0) {
-                char line[FOCUS_REASON_PART_MAX];
-                (void)snprintf(line, sizeof line,
-                                "failed-group:%s (.cache/test-timing/last-run.json)",
-                                fail_name);
-                if (!focus_add_reason(parts, &nparts, line)) {
-                    free(work);
-                    return -1;
-                }
-            }
-            if (gate_fails > 0) {
-                char line[FOCUS_REASON_PART_MAX];
-                (void)snprintf(line, sizeof line,
-                                "failed-gate:%s (.cache/lint-timing/last-run.json)",
-                                owned_gates[0]);
-                if (!focus_add_reason(parts, &nparts, line)) {
-                    free(work);
-                    return -1;
-                }
-            }
-            if (recency > 0) {
-                char line[FOCUS_REASON_PART_MAX];
-                (void)snprintf(line, sizeof line, "churn:git-log recency=%u",
-                               recency);
-                if (!focus_add_reason(parts, &nparts, line)) {
-                    free(work);
-                    return -1;
-                }
-            }
-            if (note_src) {
-                char line[FOCUS_REASON_PART_MAX];
-                (void)snprintf(line, sizeof line, "lesson:%s", note_src);
-                if (!focus_add_reason(parts, &nparts, line)) {
-                    free(work);
-                    return -1;
-                }
-            }
-            if (unrouted) {
-                if (!focus_add_reason(parts, &nparts,
-                                      "unrouted:agent_impact_rules")) {
-                    free(work);
-                    return -1;
-                }
-            }
-            if (issue_src) {
-                char line[FOCUS_REASON_PART_MAX];
-                (void)snprintf(line, sizeof line, "issue:%s", issue_src);
-                if (!focus_add_reason(parts, &nparts, line)) {
-                    free(work);
-                    return -1;
-                }
-            }
-            struct specialist_focus_hit cand;
-            struct specialist_focus_hit *h = &cand;
-            int w = snprintf(h->path, sizeof h->path, "%s", path);
-            if (w < 0 || (size_t)w >= sizeof h->path) {
-                free(work);
-                LOG_ERR(FOCUS_TAG, "hit path too long: %s", path);
-            }
-            if (!focus_join_reasons(h->reason, sizeof h->reason, parts,
-                                    nparts)) {
-                free(work);
-                return -1;
-            }
-            h->score = failed * FOCUS_W_FAILED +
-                       (int)gate_fails * FOCUS_W_GATE +
-                       (issue_src ? FOCUS_W_ISSUE : 0) +
-                       (note_src ? FOCUS_W_LESSON : 0) +
-                       (unrouted ? FOCUS_W_UNROUTED : 0) +
-                       (int)recency * FOCUS_W_CHURN;
-            /* Bounded top-K by the emitted order: keep filling until the
-             * work set is full, then keep the exact worst slot and let a
-             * strictly better candidate evict it. Index order (path ASC)
-             * cannot hide a later failed-group or issue file behind a full
-             * set of low-score unrouted paths. */
-            if (nwork < SPECIALIST_FOCUS_WORK_CAP) {
-                work[nwork++] = cand;
-            } else {
-                overflow = true;
-                int worst = 0;
-                for (int i = 1; i < nwork; i++) {
-                    if (focus_hit_ranks_below(&work[i], &work[worst]))
-                        worst = i;
-                }
-                if (focus_hit_ranks_below(&work[worst], &cand))
-                    work[worst] = cand;
-            }
-        }
-        if (got < FOCUS_PAGE)
-            break;
+        return -1;
     }
 
-    qsort(work, (size_t)nwork, sizeof(work[0]), focus_hit_cmp);
-    int emit = nwork;
+    qsort(work, (size_t)fr.nwork, sizeof(work[0]), focus_hit_cmp);
+    int emit = fr.nwork;
     if (emit > cap) {
-        overflow = true;
+        fr.overflow = true;
         emit = cap;
     }
     for (int i = 0; i < emit; i++)
         out[i] = work[i];
     free(work);
     if (truncated)
-        *truncated = overflow;
+        *truncated = fr.overflow;
     return emit;
 }

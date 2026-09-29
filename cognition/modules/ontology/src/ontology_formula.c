@@ -219,6 +219,105 @@ static bool formula_node_terms_zero(
     return true;
 }
 
+static bool formula_atom_shape_valid(
+    const struct zcl_ontology_formula_v1 *formula,
+    const struct zcl_ontology_formula_node_v1 *node, uint32_t none)
+{
+    if (node->arity > ZCL_ONTOLOGY_MAX_ARITY || node->variable != 0 ||
+        node->left != none || node->right != none ||
+        !formula_nonzero(node->predicate_root) ||
+        !formula_zero(node->quantified_type_root))
+        return false;
+    for (size_t i = 0; i < ZCL_ONTOLOGY_MAX_ARITY; i++) {
+        if (i < node->arity) {
+            if (!formula_term_shape_valid(&node->terms[i],
+                                          formula->variable_count))
+                return false;
+        } else if (!formula_term_zero(&node->terms[i])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool formula_equal_shape_valid(
+    const struct zcl_ontology_formula_v1 *formula,
+    const struct zcl_ontology_formula_node_v1 *node, uint32_t none)
+{
+    if (node->arity != 2 || node->variable != 0 || node->left != none ||
+        node->right != none || !formula_zero(node->predicate_root) ||
+        !formula_zero(node->quantified_type_root))
+        return false;
+    if (!formula_term_shape_valid(&node->terms[0],
+                                  formula->variable_count) ||
+        !formula_term_shape_valid(&node->terms[1],
+                                  formula->variable_count) ||
+        memcmp(node->terms[0].type_root,
+               node->terms[1].type_root, 32) != 0)
+        return false;
+    for (size_t i = 2; i < ZCL_ONTOLOGY_MAX_ARITY; i++)
+        if (!formula_term_zero(&node->terms[i])) return false;
+    return true;
+}
+
+static bool formula_not_shape_valid(
+    const struct zcl_ontology_formula_node_v1 *node, uint32_t index,
+    uint32_t none, uint16_t parents[ZCL_ONTOLOGY_MAX_FORMULA_NODES])
+{
+    if (node->variable != 0 || node->left >= index ||
+        node->right != none ||
+        !formula_zero(node->quantified_type_root))
+        return false;
+    parents[node->left]++;
+    return parents[node->left] == 1;
+}
+
+static bool formula_binary_shape_valid(
+    const struct zcl_ontology_formula_node_v1 *node, uint32_t index,
+    uint16_t parents[ZCL_ONTOLOGY_MAX_FORMULA_NODES])
+{
+    if (node->variable != 0 || node->left >= index ||
+        node->right >= index || node->left == node->right ||
+        !formula_zero(node->quantified_type_root))
+        return false;
+    parents[node->left]++;
+    parents[node->right]++;
+    return parents[node->left] == 1 && parents[node->right] == 1;
+}
+
+static bool formula_quantifier_shape_valid(
+    const struct zcl_ontology_formula_v1 *formula,
+    const struct zcl_ontology_formula_node_v1 *node, uint32_t index,
+    uint32_t none, uint16_t parents[ZCL_ONTOLOGY_MAX_FORMULA_NODES])
+{
+    if (node->variable >= formula->variable_count || node->left >= index ||
+        node->right != none ||
+        !formula_nonzero(node->quantified_type_root))
+        return false;
+    parents[node->left]++;
+    return parents[node->left] == 1;
+}
+
+/* NOT, AND, OR, IMPLIES, FORALL and EXISTS: children precede their parent and
+ * each child has exactly one parent. */
+static bool formula_compound_shape_valid(
+    const struct zcl_ontology_formula_v1 *formula,
+    const struct zcl_ontology_formula_node_v1 *node, uint32_t index,
+    uint32_t none, uint16_t parents[ZCL_ONTOLOGY_MAX_FORMULA_NODES])
+{
+    if (node->op == ZCL_ONTOLOGY_FORMULA_NOT)
+        return formula_not_shape_valid(node, index, none, parents);
+    if (node->op == ZCL_ONTOLOGY_FORMULA_AND ||
+        node->op == ZCL_ONTOLOGY_FORMULA_OR ||
+        node->op == ZCL_ONTOLOGY_FORMULA_IMPLIES)
+        return formula_binary_shape_valid(node, index, parents);
+    if (node->op == ZCL_ONTOLOGY_FORMULA_FORALL ||
+        node->op == ZCL_ONTOLOGY_FORMULA_EXISTS)
+        return formula_quantifier_shape_valid(formula, node, index, none,
+                                              parents);
+    return false;
+}
+
 static bool formula_node_shape_valid(
     const struct zcl_ontology_formula_v1 *formula, uint32_t index,
     uint16_t parents[ZCL_ONTOLOGY_MAX_FORMULA_NODES])
@@ -228,71 +327,14 @@ static bool formula_node_shape_valid(
     if (node->op < ZCL_ONTOLOGY_FORMULA_ATOM ||
         node->op > ZCL_ONTOLOGY_FORMULA_EXISTS || node->reserved != 0)
         return false;
-    if (node->op == ZCL_ONTOLOGY_FORMULA_ATOM) {
-        if (node->arity > ZCL_ONTOLOGY_MAX_ARITY || node->variable != 0 ||
-            node->left != none || node->right != none ||
-            !formula_nonzero(node->predicate_root) ||
-            !formula_zero(node->quantified_type_root))
-            return false;
-        for (size_t i = 0; i < ZCL_ONTOLOGY_MAX_ARITY; i++) {
-            if (i < node->arity) {
-                if (!formula_term_shape_valid(&node->terms[i],
-                                              formula->variable_count))
-                    return false;
-            } else if (!formula_term_zero(&node->terms[i])) {
-                return false;
-            }
-        }
-        return true;
-    }
-    if (node->op == ZCL_ONTOLOGY_FORMULA_EQUAL) {
-        if (node->arity != 2 || node->variable != 0 || node->left != none ||
-            node->right != none || !formula_zero(node->predicate_root) ||
-            !formula_zero(node->quantified_type_root))
-            return false;
-        if (!formula_term_shape_valid(&node->terms[0],
-                                      formula->variable_count) ||
-            !formula_term_shape_valid(&node->terms[1],
-                                      formula->variable_count) ||
-            memcmp(node->terms[0].type_root,
-                   node->terms[1].type_root, 32) != 0)
-            return false;
-        for (size_t i = 2; i < ZCL_ONTOLOGY_MAX_ARITY; i++)
-            if (!formula_term_zero(&node->terms[i])) return false;
-        return true;
-    }
+    if (node->op == ZCL_ONTOLOGY_FORMULA_ATOM)
+        return formula_atom_shape_valid(formula, node, none);
+    if (node->op == ZCL_ONTOLOGY_FORMULA_EQUAL)
+        return formula_equal_shape_valid(formula, node, none);
     if (node->arity != 0 || !formula_zero(node->predicate_root) ||
         !formula_node_terms_zero(node))
         return false;
-    if (node->op == ZCL_ONTOLOGY_FORMULA_NOT) {
-        if (node->variable != 0 || node->left >= index ||
-            node->right != none ||
-            !formula_zero(node->quantified_type_root))
-            return false;
-        parents[node->left]++;
-        return parents[node->left] == 1;
-    }
-    if (node->op == ZCL_ONTOLOGY_FORMULA_AND ||
-        node->op == ZCL_ONTOLOGY_FORMULA_OR ||
-        node->op == ZCL_ONTOLOGY_FORMULA_IMPLIES) {
-        if (node->variable != 0 || node->left >= index ||
-            node->right >= index || node->left == node->right ||
-            !formula_zero(node->quantified_type_root))
-            return false;
-        parents[node->left]++;
-        parents[node->right]++;
-        return parents[node->left] == 1 && parents[node->right] == 1;
-    }
-    if (node->op == ZCL_ONTOLOGY_FORMULA_FORALL ||
-        node->op == ZCL_ONTOLOGY_FORMULA_EXISTS) {
-        if (node->variable >= formula->variable_count || node->left >= index ||
-            node->right != none ||
-            !formula_nonzero(node->quantified_type_root))
-            return false;
-        parents[node->left]++;
-        return parents[node->left] == 1;
-    }
-    return false;
+    return formula_compound_shape_valid(formula, node, index, none, parents);
 }
 
 static bool formula_scope_valid(

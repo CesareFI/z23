@@ -82,7 +82,6 @@ cognition/modules/codeindex/src/codeindex_focus.c:focus_looks_like_path:18
 cognition/modules/codeindex/src/codeindex_focus.c:focus_scan_paths:16
 cognition/modules/codeindex/src/codeindex_focus.c:specialist_focus_load_churn:23
 cognition/modules/codeindex/src/codeindex_focus.c:specialist_focus_load_issues:18
-cognition/modules/codeindex/src/codeindex_focus.c:specialist_focus_rank:57
 cognition/modules/codeindex/src/codeindex_freshness.c:store_is_stale_profile:26
 cognition/modules/codeindex/src/codeindex_group.c:ci_group_emit_all:18
 cognition/modules/codeindex/src/codeindex_group.c:ci_group_for_path:21
@@ -121,7 +120,6 @@ cognition/modules/codeindex/src/codeindex_merkle_snapshot_windows.c:ci_merkle_sn
 cognition/modules/codeindex/src/codeindex_merkle_snapshot_windows.c:ci_merkle_snapshot_image_save_windows:23
 cognition/modules/codeindex/src/codeindex_owner.c:codeindex_owner_claim:18
 cognition/modules/codeindex/src/codeindex_query.c:codeindex_symbol_by_id:17
-cognition/modules/codeindex/src/codeindex_scan.c:ci_scan_text:132
 cognition/modules/codeindex/src/codeindex_scan.c:classify_block_open:19
 cognition/modules/codeindex/src/codeindex_scan.c:classify_semicolon:41
 cognition/modules/codeindex/src/codeindex_scan.c:has_toplevel_eq:18
@@ -150,10 +148,7 @@ cognition/modules/fingerprint/src/fp_index.c:fp_clean:25
 cognition/modules/fingerprint/src/fp_index.c:fp_index_build:28
 cognition/modules/fingerprint/src/fp_index.c:fp_scan_file:64
 cognition/modules/fingerprint/src/fp_purity.c:fp_has_indirect_call:22
-cognition/modules/fingerprint/src/fp_purity.c:fp_scan_text:50
 cognition/modules/fingerprint/src/fp_select.c:fp_index_select:20
-cognition/modules/fingerprint/src/fp_sig.c:fp_classify_param:40
-cognition/modules/fingerprint/src/fp_sig.c:fp_signature_of:56
 cognition/modules/fleetfacts/src/fleet_facts.c:zcl_fleet_facts_query:17
 cognition/modules/kpi/src/kpi_metrics.c:kpi_count_lint_gates:25
 cognition/modules/kpi/src/kpi_metrics.c:kpi_scan_counts:23
@@ -163,7 +158,6 @@ cognition/modules/ontology/src/ontology.c:zcl_ontology_predicate_v1_root:18
 cognition/modules/ontology/src/ontology_formula.c:formula_contexts_bound:20
 cognition/modules/ontology/src/ontology_formula.c:formula_eval_atom:24
 cognition/modules/ontology/src/ontology_formula.c:formula_eval_node:40
-cognition/modules/ontology/src/ontology_formula.c:formula_node_shape_valid:50
 cognition/modules/ontology/src/ontology_formula.c:formula_reason_string:29
 cognition/modules/ontology/src/ontology_formula.c:formula_shape_valid:20
 cognition/modules/ontology/src/ontology_formula.c:horn_derivation_reason_valid:29
@@ -177,7 +171,6 @@ cognition/modules/ontology/src/ontology_horn_evaluator.c:horn_reason_string:29
 cognition/modules/ontology/src/ontology_horn_evaluator.c:zcl_ontology_evaluate_horn_v1:24
 cognition/modules/ontology/src/ontology_horn_rule.c:horn_atom_valid:22
 cognition/modules/ontology/src/ontology_horn_rule.c:zcl_ontology_horn_rule_v1_validate:22
-cognition/modules/ontology/src/ontology_manifest.c:manifest_references_valid:49
 cognition/modules/ontology/src/ontology_manifest.c:zcl_ontology_manifest_v1_validate:17
 cognition/modules/ontology/src/ontology_vocabulary.c:vocabulary_equal:26
 cognition/modules/ontology/src/story_graph.c:zcl_story_why_v1_build:21
@@ -212,7 +205,6 @@ cognition/modules/science/src/code_growth.c:growth_git_capture:30
 cognition/modules/science/src/code_growth.c:science_code_growth_collect:25
 cognition/modules/science/src/code_growth.c:science_code_growth_parse:36
 cognition/modules/science/src/ecosystem.c:science_ecosystem_collect:19
-cognition/modules/science/src/ecosystem.c:science_ecosystem_format_text:65
 cognition/modules/science/src/science_claim.c:science_refusal_name:28
 cognition/modules/science/src/science_claim.c:validate_receipt:37
 cognition/modules/science/src/science_corpus.c:walk_dir:20
@@ -251,7 +243,6 @@ cognition/modules/territory/src/territory_general.c:tu_cache_load:25
 cognition/modules/territory/src/territory_general.c:tu_cache_store:30
 cognition/modules/territory/src/territory_reach.c:territory_reach_open:35
 cognition/modules/territory/src/territory_reach.c:tr_cache_load:22
-cognition/modules/territory/src/territory_scorecard.c:territory_scorecard:66
 cognition/services/src/agent_broker_catalog_seam.c:broker_provider_mint_from_spec:26
 cognition/services/src/agent_broker_catalog_seam.c:broker_provider_money_from_spec:37
 cognition/services/src/agent_broker_catalog_seam.c:resolve:24

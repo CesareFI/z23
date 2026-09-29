@@ -318,6 +318,143 @@ void science_ecosystem_bind_growth(
     out->growth = *history;
 }
 
+static bool eco_text_head(const struct science_ecosystem_snapshot *snap,
+                          char *out, size_t cap, size_t *used)
+{
+    if (!(text_append(out, cap, used, "Z23 C23 ecosystem\n") &&
+          text_str(out, cap, used, "authority", "display-only") &&
+          text_str(out, cap, used, "source_root", snap->source_root)))
+        return false;
+    if (snap->source_root_sha3_present) {
+        char hex[65];
+        zcl_hex_encode(snap->source_root_sha3, 32u, hex);
+        return text_str(out, cap, used, "source_root_sha3", hex);
+    }
+    return text_str(out, cap, used, "source_root_sha3", "unavailable");
+}
+
+static bool eco_text_inventory_counts(
+    const struct science_ecosystem_snapshot *snap,
+    char *out, size_t cap, size_t *used)
+{
+    return text_str(out, cap, used, "packages_authority",
+                    "zcode-package.json manifests") &&
+        text_u64(out, cap, used, "packages", snap->package_count) &&
+        text_named_list(out, cap, used, "package", snap->packages,
+                        snap->package_listed, snap->packages_truncated) &&
+        text_u64(out, cap, used, "production_c23_lines",
+                 snap->corpus.non_test_lines) &&
+        text_u64(out, cap, used, "test_c23_lines",
+                 snap->corpus.test_lines) &&
+        text_u64(out, cap, used, "files_walked",
+                 snap->corpus.files_walked) &&
+        text_u64(out, cap, used, "architectural_contexts",
+                 snap->context_count) &&
+        text_named_list(out, cap, used, "context", snap->contexts,
+                        snap->context_listed, snap->contexts_truncated);
+}
+
+static bool eco_text_include_edges(
+    const struct science_ecosystem_snapshot *snap,
+    char *out, size_t cap, size_t *used)
+{
+    if (!snap->include_edges_available)
+        return text_str(out, cap, used, "include_edges", "unavailable");
+    if (snap->include_edge_count == 0)
+        return text_str(out, cap, used, "include_edges",
+                        "unanswered (depfile graph absent)");
+    return text_u64(out, cap, used, "include_edges",
+                    (uint64_t)snap->include_edge_count);
+}
+
+static bool eco_text_index(const struct science_ecosystem_snapshot *snap,
+                           char *out, size_t cap, size_t *used)
+{
+    if (!snap->index_present)
+        return text_str(out, cap, used, "indexed_c23_files", "unavailable") &&
+            text_str(out, cap, used, "indexed_registry_nodes",
+                     "unavailable") &&
+            text_str(out, cap, used, "indexed_source_roots",
+                     "unavailable") &&
+            text_str(out, cap, used, "include_edges", "unavailable");
+    return text_u64(out, cap, used, "indexed_c23_files",
+                    snap->indexed_c23_files) &&
+        text_u64(out, cap, used, "indexed_registry_nodes",
+                 snap->indexed_registry_nodes) &&
+        text_u64(out, cap, used, "indexed_source_roots",
+                 snap->indexed_root_count) &&
+        text_named_list(out, cap, used, "indexed_root",
+                        snap->indexed_roots, snap->indexed_root_listed,
+                        snap->indexed_roots_truncated) &&
+        eco_text_include_edges(snap, out, cap, used);
+}
+
+static bool eco_text_corpus_absent(char *out, size_t cap, size_t *used)
+{
+    return text_str(out, cap, used, "capabilities",
+                    "unavailable (inventory absent)") &&
+        text_str(out, cap, used, "symbols_exposed", "unavailable") &&
+        text_str(out, cap, used, "symbols_test_reached", "unavailable") &&
+        text_str(out, cap, used, "duplicates", "unavailable") &&
+        text_str(out, cap, used, "untested_invariants", "unavailable") &&
+        text_str(out, cap, used, "inventory", "absent") &&
+        text_str(out, cap, used, "scope_agrees", "n/a");
+}
+
+static bool eco_text_corpus(const struct science_ecosystem_snapshot *snap,
+                            char *out, size_t cap, size_t *used)
+{
+    if (!snap->corpus.inventory_present)
+        return eco_text_corpus_absent(out, cap, used);
+    if (!(text_u64(out, cap, used, "capabilities",
+                   snap->corpus.capabilities) &&
+          text_u64(out, cap, used, "symbols_exposed",
+                   snap->corpus.symbols_exposed) &&
+          text_u64(out, cap, used, "symbols_test_reached",
+                   snap->corpus.symbols_test_reached) &&
+          text_u64(out, cap, used, "duplicates", snap->corpus.duplicates) &&
+          text_u64(out, cap, used, "untested_invariants",
+                   snap->corpus.untested_invariants) &&
+          text_str(out, cap, used, "inventory", "present") &&
+          text_str(out, cap, used, "scope_agrees",
+                   snap->corpus.scope_agrees ? "true" : "false")))
+        return false;
+    if (snap->corpus.scope_agrees) return true;
+    return text_str(out, cap, used, "inventory_scope",
+                    "STALE (run make docs-capability-inventory)");
+}
+
+static bool eco_text_growth(const struct science_ecosystem_snapshot *snap,
+                            char *out, size_t cap, size_t *used)
+{
+    if (!snap->growth_present)
+        return text_str(out, cap, used, "growth", "unavailable") &&
+            text_str(out, cap, used, "growth_error",
+                     snap->growth_error[0] ? snap->growth_error
+                                           : "not collected");
+    const struct science_code_growth_history *g = &snap->growth;
+    const struct science_code_growth_day *latest =
+        g->day_count ? &g->days[g->day_count - 1u] : NULL;
+    if (!(text_str(out, cap, used, "growth", "present") &&
+          text_u64(out, cap, used, "growth_days", g->day_count) &&
+          text_u64(out, cap, used, "growth_non_test_lines",
+                   g->non_test_lines) &&
+          text_u64(out, cap, used, "growth_test_lines", g->test_lines)))
+        return false;
+    if (!latest) return true;
+    return text_str(out, cap, used, "growth_latest_date", latest->date) &&
+        text_str(out, cap, used, "growth_latest_commit",
+                 latest->head_commit) &&
+        text_u64(out, cap, used, "growth_latest_non_test_added",
+                 latest->non_test_added) &&
+        text_u64(out, cap, used, "growth_latest_non_test_deleted",
+                 latest->non_test_deleted) &&
+        text_u64(out, cap, used, "growth_latest_test_added",
+                 latest->test_added) &&
+        text_u64(out, cap, used, "growth_latest_test_deleted",
+                 latest->test_deleted);
+}
+
 bool science_ecosystem_format_text(
     const struct science_ecosystem_snapshot *snap,
     char *out, size_t cap, size_t *len)
@@ -326,125 +463,11 @@ bool science_ecosystem_format_text(
         return false;
     size_t used = 0;
     out[0] = '\0';
-    bool ok = text_append(out, cap, &used, "Z23 C23 ecosystem\n") &&
-        text_str(out, cap, &used, "authority", "display-only") &&
-        text_str(out, cap, &used, "source_root", snap->source_root);
-    if (ok) {
-        if (snap->source_root_sha3_present) {
-            char hex[65];
-            zcl_hex_encode(snap->source_root_sha3, 32u, hex);
-            ok = text_str(out, cap, &used, "source_root_sha3", hex);
-        } else {
-            ok = text_str(out, cap, &used, "source_root_sha3", "unavailable");
-        }
-    }
-    ok = ok &&
-        text_str(out, cap, &used, "packages_authority",
-                 "zcode-package.json manifests") &&
-        text_u64(out, cap, &used, "packages", snap->package_count) &&
-        text_named_list(out, cap, &used, "package", snap->packages,
-                        snap->package_listed, snap->packages_truncated) &&
-        text_u64(out, cap, &used, "production_c23_lines",
-                 snap->corpus.non_test_lines) &&
-        text_u64(out, cap, &used, "test_c23_lines",
-                 snap->corpus.test_lines) &&
-        text_u64(out, cap, &used, "files_walked",
-                 snap->corpus.files_walked) &&
-        text_u64(out, cap, &used, "architectural_contexts",
-                 snap->context_count) &&
-        text_named_list(out, cap, &used, "context", snap->contexts,
-                        snap->context_listed, snap->contexts_truncated);
-
-    if (ok && snap->index_present) {
-        ok = text_u64(out, cap, &used, "indexed_c23_files",
-                      snap->indexed_c23_files) &&
-            text_u64(out, cap, &used, "indexed_registry_nodes",
-                     snap->indexed_registry_nodes) &&
-            text_u64(out, cap, &used, "indexed_source_roots",
-                     snap->indexed_root_count) &&
-            text_named_list(out, cap, &used, "indexed_root",
-                            snap->indexed_roots, snap->indexed_root_listed,
-                            snap->indexed_roots_truncated);
-        if (ok && snap->include_edges_available) {
-            if (snap->include_edge_count == 0)
-                ok = text_str(out, cap, &used, "include_edges",
-                              "unanswered (depfile graph absent)");
-            else
-                ok = text_u64(out, cap, &used, "include_edges",
-                              (uint64_t)snap->include_edge_count);
-        } else if (ok) {
-            ok = text_str(out, cap, &used, "include_edges", "unavailable");
-        }
-    } else if (ok) {
-        ok = text_str(out, cap, &used, "indexed_c23_files", "unavailable") &&
-            text_str(out, cap, &used, "indexed_registry_nodes",
-                     "unavailable") &&
-            text_str(out, cap, &used, "indexed_source_roots",
-                     "unavailable") &&
-            text_str(out, cap, &used, "include_edges", "unavailable");
-    }
-
-    if (ok && snap->corpus.inventory_present) {
-        ok = text_u64(out, cap, &used, "capabilities",
-                      snap->corpus.capabilities) &&
-            text_u64(out, cap, &used, "symbols_exposed",
-                     snap->corpus.symbols_exposed) &&
-            text_u64(out, cap, &used, "symbols_test_reached",
-                     snap->corpus.symbols_test_reached) &&
-            text_u64(out, cap, &used, "duplicates",
-                     snap->corpus.duplicates) &&
-            text_u64(out, cap, &used, "untested_invariants",
-                     snap->corpus.untested_invariants) &&
-            text_str(out, cap, &used, "inventory", "present") &&
-            text_str(out, cap, &used, "scope_agrees",
-                     snap->corpus.scope_agrees ? "true" : "false");
-        if (ok && !snap->corpus.scope_agrees)
-            ok = text_str(out, cap, &used, "inventory_scope",
-                          "STALE (run make docs-capability-inventory)");
-    } else if (ok) {
-        ok = text_str(out, cap, &used, "capabilities",
-                      "unavailable (inventory absent)") &&
-            text_str(out, cap, &used, "symbols_exposed", "unavailable") &&
-            text_str(out, cap, &used, "symbols_test_reached",
-                     "unavailable") &&
-            text_str(out, cap, &used, "duplicates", "unavailable") &&
-            text_str(out, cap, &used, "untested_invariants",
-                     "unavailable") &&
-            text_str(out, cap, &used, "inventory", "absent") &&
-            text_str(out, cap, &used, "scope_agrees", "n/a");
-    }
-
-    if (ok && snap->growth_present) {
-        const struct science_code_growth_history *g = &snap->growth;
-        const struct science_code_growth_day *latest =
-            g->day_count ? &g->days[g->day_count - 1u] : NULL;
-        ok = text_str(out, cap, &used, "growth", "present") &&
-            text_u64(out, cap, &used, "growth_days", g->day_count) &&
-            text_u64(out, cap, &used, "growth_non_test_lines",
-                     g->non_test_lines) &&
-            text_u64(out, cap, &used, "growth_test_lines", g->test_lines);
-        if (ok && latest) {
-            ok = text_str(out, cap, &used, "growth_latest_date",
-                          latest->date) &&
-                text_str(out, cap, &used, "growth_latest_commit",
-                         latest->head_commit) &&
-                text_u64(out, cap, &used, "growth_latest_non_test_added",
-                         latest->non_test_added) &&
-                text_u64(out, cap, &used, "growth_latest_non_test_deleted",
-                         latest->non_test_deleted) &&
-                text_u64(out, cap, &used, "growth_latest_test_added",
-                         latest->test_added) &&
-                text_u64(out, cap, &used, "growth_latest_test_deleted",
-                         latest->test_deleted);
-        }
-    } else if (ok) {
-        ok = text_str(out, cap, &used, "growth", "unavailable") &&
-            text_str(out, cap, &used, "growth_error",
-                     snap->growth_error[0] ? snap->growth_error
-                                           : "not collected");
-    }
-
-    if (!ok)
+    if (!(eco_text_head(snap, out, cap, &used) &&
+          eco_text_inventory_counts(snap, out, cap, &used) &&
+          eco_text_index(snap, out, cap, &used) &&
+          eco_text_corpus(snap, out, cap, &used) &&
+          eco_text_growth(snap, out, cap, &used)))
         return false;
     if (len)
         *len = used;

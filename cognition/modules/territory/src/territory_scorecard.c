@@ -321,6 +321,254 @@ int territory_list(struct codeindex *ci, char (*out)[TERRITORY_NAME_MAX],
 
 void territory_report_free(struct territory_report *r) { free(r); }
 
+/* Scratch buffers and inputs shared by the scorecard phases. */
+struct ts_scan {
+    struct codeindex *ci;
+    const char *root;
+    const char *name;
+    const struct territory_reach_set *rs;
+    const struct territory_router *router;
+    struct territory_report *r;
+    struct ci_group *groups;
+    struct ci_file *files;
+    struct ci_symbol *syms;
+    struct ci_ref *refbuf;
+    char (*incs)[256];
+    char (*deps)[256];
+    char *probe;
+    struct ts_pathmemo memo;
+    int nf;
+};
+
+static void ts_scan_free(struct ts_scan *sc)
+{
+    free(sc->r); free(sc->groups); free(sc->files); free(sc->syms);
+    free(sc->refbuf); free(sc->incs); free(sc->deps); free(sc->probe);
+    ts_pathmemo_free(&sc->memo);
+}
+
+static bool ts_scan_alloc(struct ts_scan *sc)
+{
+    sc->r = zcl_calloc(1, sizeof(*sc->r), "territory_report");
+    sc->groups = zcl_malloc(sizeof(*sc->groups) * TS_GROUPS_CAP, "ts_groups");
+    sc->files = zcl_malloc(sizeof(*sc->files) * (TERRITORY_MAX_FILES + 1),
+                           "ts_files");
+    sc->syms = zcl_malloc(sizeof(*sc->syms) * TS_SYMS_PER_FILE, "ts_syms");
+    sc->refbuf = zcl_malloc(sizeof(*sc->refbuf) * TS_REFS_PROBE, "ts_refs");
+    sc->incs = zcl_malloc(sizeof(*sc->incs) * TS_INC_PER_FILE, "ts_incs");
+    sc->deps = zcl_malloc(sizeof(*sc->deps) * TS_REVDEP_CAP, "ts_deps");
+    sc->probe = zcl_malloc(TS_HEADER_PROBE + 1, "ts_header_probe");
+    return sc->r && sc->groups && sc->files && sc->syms && sc->refbuf &&
+           sc->incs && sc->deps && sc->probe && ts_pathmemo_init(&sc->memo);
+}
+
+static void ts_find_group(struct ts_scan *sc)
+{
+    struct territory_report *r = sc->r;
+    int ng = codeindex_groups(sc->ci, sc->groups, TS_GROUPS_CAP);
+    if (ng < 0) ng = 0;
+    for (int i = 0; i < ng; i++) {
+        if (strcmp(sc->groups[i].path, sc->name) != 0) continue;
+        r->found = true;
+        snprintf(r->kind, sizeof(r->kind), "%s", sc->groups[i].kind);
+        snprintf(r->purpose, sizeof(r->purpose), "%s", sc->groups[i].purpose);
+        break;
+    }
+}
+
+/* What proves file i: ROUTED. The routing answer, verbatim from the same
+ * shared-rule resolver `code tests` uses. It says which group to RUN, not
+ * which code that group executes. */
+static void ts_route_file(struct ts_scan *sc, int i)
+{
+    struct territory_report *r = sc->r;
+    struct territory_file *tf = &r->files[i];
+    const struct territory_router *router = sc->router;
+    char routed[TERRITORY_MAX_GROUPS][TERRITORY_GROUP_MAX];
+    size_t nr = 0;
+    uint64_t rt0 = ts_now_us();
+    if (router && router->route)
+        nr = router->route(sc->files[i].path, routed, TERRITORY_MAX_GROUPS,
+                           router->user);
+    r->routed_us += ts_now_us() - rt0;
+    tf->routed = nr > 0;
+    if (nr > 0) snprintf(tf->route, sizeof(tf->route), "%s", routed[0]);
+    else r->files_unrouted++;
+    for (size_t g = 0; g < nr; g++) ts_tally_group(r, routed[g]);
+}
+
+static void ts_own_file(struct ts_scan *sc, int i)
+{
+    struct territory_report *r = sc->r;
+    struct territory_file *tf = &r->files[i];
+    const char *path = sc->files[i].path;
+    char abs[TERRITORY_PATH_MAX + 512];
+    snprintf(tf->path, sizeof(tf->path), "%s", path);
+    tf->bytes = -1;
+    int w = snprintf(abs, sizeof(abs), "%s/%s",
+                     (sc->root && sc->root[0]) ? sc->root : ".", path);
+    if (w > 0 && (size_t)w < sizeof(abs)) {
+        struct stat sb;
+        if (stat(abs, &sb) == 0) {
+            tf->bytes = (int64_t)sb.st_size;
+            r->bytes += tf->bytes;
+        }
+    }
+    if (ts_is_public_header(path)) r->header_count++;
+    else if (ts_is_source(path)) r->source_count++;
+    ts_route_file(sc, i);
+}
+
+/* What it owns. */
+static void ts_phase_owns(struct ts_scan *sc)
+{
+    struct territory_report *r = sc->r;
+    int nf = codeindex_files_in_group(sc->ci, sc->name, sc->files,
+                                      TERRITORY_MAX_FILES + 1);
+    if (nf < 0) nf = 0;
+    if (nf > TERRITORY_MAX_FILES) { nf = TERRITORY_MAX_FILES; r->files_truncated = true; }
+    r->file_count = nf;
+    sc->nf = nf;
+
+    uint64_t phase0 = ts_now_us();
+    for (int i = 0; i < nf; i++) ts_own_file(sc, i);
+    qsort(r->groups, (size_t)r->group_count, sizeof(*r->groups), ts_group_cmp);
+    r->owns_us = ts_now_us() - phase0 - r->routed_us;
+}
+
+/* Tally one public function symbol of header i and classify its reach. */
+static void ts_reach_symbol(struct ts_scan *sc, int i,
+                            const struct ci_symbol *sym)
+{
+    struct territory_report *r = sc->r;
+    struct territory_symbol *ts = &r->symbols[r->public_symbols];
+    snprintf(ts->name, sizeof(ts->name), "%s", sym->name);
+    snprintf(ts->header, sizeof(ts->header), "%s", sc->files[i].path);
+    ts->line = sym->decl_line;
+    ts_classify(sc->ci, sc->rs, ts, sc->refbuf);
+    switch (ts->verdict) {
+    case TERRITORY_REACHED:   r->reached++;   break;
+    case TERRITORY_UNREACHED: r->unreached++; break;
+    case TERRITORY_UNKNOWN:   r->unknown++;   break;
+    }
+    r->public_symbols++;
+}
+
+/* Public functions of header i; returns how many were recorded. */
+static int ts_reach_header(struct ts_scan *sc, int i)
+{
+    struct territory_report *r = sc->r;
+    int ns = codeindex_symbols_in_file(sc->ci, sc->files[i].path, sc->syms,
+                                       TS_SYMS_PER_FILE);
+    if (ns < 0) ns = 0;
+    if (ns == TS_SYMS_PER_FILE) r->symbols_truncated = true;
+    int funcs_here = 0;
+    for (int s = 0; s < ns; s++) {
+        switch (sc->syms[s].kind) {
+        case 'S': case 'Y': case 'E': r->public_types++; continue;
+        case 'M': r->public_macros++; continue;
+        case 'T': break;
+        default: continue;  /* 'D' data, 't' static: not a public call */
+        }
+        if (r->public_symbols >= TERRITORY_MAX_SYMBOLS) {
+            r->symbols_truncated = true;
+            continue;
+        }
+        ts_reach_symbol(sc, i, &sc->syms[s]);
+        funcs_here++;
+    }
+    return funcs_here;
+}
+
+/* What proves it: REACHED. */
+static void ts_phase_reached(struct ts_scan *sc)
+{
+    struct territory_report *r = sc->r;
+    uint64_t phase0 = ts_now_us();
+    for (int i = 0; i < sc->nf; i++) {
+        if (!ts_is_public_header(sc->files[i].path)) continue;
+        /* A header the index attributed no function to is either genuinely
+         * function-free (a constants or type header) or opaque to the
+         * scanner. Count both, and separate them with the one probe that
+         * distinguishes them. */
+        if (ts_reach_header(sc, i) == 0) {
+            r->headers_without_functions++;
+            if (ts_header_is_extern_c(sc->root, sc->files[i].path, sc->probe))
+                r->headers_extern_c++;
+        }
+    }
+    r->symbols_us = ts_now_us() - phase0;
+}
+
+/* Outgoing edges: the groups included by the translation units. */
+static void ts_deps_outgoing(struct ts_scan *sc)
+{
+    struct territory_report *r = sc->r;
+    for (int i = 0; i < sc->nf; i++) {
+        if (!codeindex_path_is_translation_unit(sc->files[i].path)) continue;
+        int ni = codeindex_includes_of_file(sc->ci, sc->files[i].path,
+                                            sc->incs, TS_INC_PER_FILE);
+        if (ni < 0) ni = 0;
+        if (ni == TS_INC_PER_FILE) r->deps_truncated = true;
+        for (int d = 0; d < ni; d++) {
+            char g[TERRITORY_GROUP_MAX];
+            if (!ts_group_of(&sc->memo, sc->ci, sc->incs[d], g)) {
+                r->deps_truncated = true;
+                break;
+            }
+            if (!g[0] || strcmp(g, sc->name) == 0) continue;
+            ts_tally_neighbor(r->deps_out, &r->deps_out_count,
+                              &r->deps_truncated, g);
+        }
+    }
+}
+
+/* Incoming edges: the groups that include this territory's public headers,
+ * within a fixed lookup budget. */
+static void ts_deps_incoming(struct ts_scan *sc)
+{
+    struct territory_report *r = sc->r;
+    int budget = TS_REVDEP_BUDGET;
+    for (int i = 0; i < sc->nf && budget > 0; i++) {
+        if (!ts_is_public_header(sc->files[i].path)) continue;
+        enum codeindex_include_dim dim = CODEINDEX_INCLUDE_DIM_UNAVAILABLE;
+        int nd = codeindex_reverse_includes(sc->ci, sc->files[i].path,
+                                            sc->deps, TS_REVDEP_CAP, &dim);
+        if (nd < 0) nd = 0;
+        if (dim != CODEINDEX_INCLUDE_DIM_COMPLETE) r->deps_truncated = true;
+        for (int d = 0; d < nd && budget > 0; d++, budget--) {
+            char g[TERRITORY_GROUP_MAX];
+            if (!ts_group_of(&sc->memo, sc->ci, sc->deps[d], g)) {
+                r->deps_truncated = true;
+                break;
+            }
+            if (!g[0] || strcmp(g, sc->name) == 0) continue;
+            ts_tally_neighbor(r->deps_in, &r->deps_in_count,
+                              &r->deps_truncated, g);
+        }
+        if (budget <= 0) r->deps_truncated = true;
+    }
+}
+
+/* What it depends on. */
+static void ts_phase_deps(struct ts_scan *sc)
+{
+    struct territory_report *r = sc->r;
+    uint64_t phase0 = ts_now_us();
+    int64_t edges = codeindex_include_edge_count(sc->ci);
+    r->deps_available = edges > 0;
+    if (r->deps_available) {
+        ts_deps_outgoing(sc);
+        ts_deps_incoming(sc);
+        qsort(r->deps_out, (size_t)r->deps_out_count, sizeof(*r->deps_out),
+              ts_neighbor_cmp);
+        qsort(r->deps_in, (size_t)r->deps_in_count, sizeof(*r->deps_in),
+              ts_neighbor_cmp);
+    }
+    r->deps_us = ts_now_us() - phase0;
+    r->index_lookups = sc->memo.queries;
+}
+
 struct territory_report *territory_scorecard(
     struct codeindex *ci, const char *root, const char *name,
     const struct territory_reach_set *rs,
@@ -329,180 +577,21 @@ struct territory_report *territory_scorecard(
     if (!ci || !name || !name[0])
         LOG_NULL("territory", "scorecard needs an index and a territory name");
 
-    struct territory_report *r = zcl_calloc(1, sizeof(*r), "territory_report");
-    struct ci_group *groups =
-        zcl_malloc(sizeof(*groups) * TS_GROUPS_CAP, "ts_groups");
-    struct ci_file *files =
-        zcl_malloc(sizeof(*files) * (TERRITORY_MAX_FILES + 1), "ts_files");
-    struct ci_symbol *syms =
-        zcl_malloc(sizeof(*syms) * TS_SYMS_PER_FILE, "ts_syms");
-    struct ci_ref *refbuf = zcl_malloc(sizeof(*refbuf) * TS_REFS_PROBE,
-                                       "ts_refs");
-    char (*incs)[256] = zcl_malloc(sizeof(*incs) * TS_INC_PER_FILE, "ts_incs");
-    char (*deps)[256] = zcl_malloc(sizeof(*deps) * TS_REVDEP_CAP, "ts_deps");
-    char *probe = zcl_malloc(TS_HEADER_PROBE + 1, "ts_header_probe");
-    struct ts_pathmemo memo = {0};
-    if (!r || !groups || !files || !syms || !refbuf || !incs || !deps ||
-        !probe || !ts_pathmemo_init(&memo)) {
-        free(r); free(groups); free(files); free(syms); free(refbuf);
-        free(incs); free(deps); free(probe); ts_pathmemo_free(&memo);
+    struct ts_scan sc = {
+        .ci = ci, .root = root, .name = name, .rs = rs, .router = router,
+    };
+    if (!ts_scan_alloc(&sc)) {
+        ts_scan_free(&sc);
         LOG_NULL("territory", "scorecard buffers for %s", name);
     }
+    snprintf(sc.r->name, sizeof(sc.r->name), "%s", name);
+    ts_find_group(&sc);
+    ts_phase_owns(&sc);
+    ts_phase_reached(&sc);
+    ts_phase_deps(&sc);
 
-    snprintf(r->name, sizeof(r->name), "%s", name);
-
-    int ng = codeindex_groups(ci, groups, TS_GROUPS_CAP);
-    if (ng < 0) ng = 0;
-    for (int i = 0; i < ng; i++) {
-        if (strcmp(groups[i].path, name) != 0) continue;
-        r->found = true;
-        snprintf(r->kind, sizeof(r->kind), "%s", groups[i].kind);
-        snprintf(r->purpose, sizeof(r->purpose), "%s", groups[i].purpose);
-        break;
-    }
-
-    /* ── what it owns ──────────────────────────────────────────────── */
-    int nf = codeindex_files_in_group(ci, name, files, TERRITORY_MAX_FILES + 1);
-    if (nf < 0) nf = 0;
-    if (nf > TERRITORY_MAX_FILES) { nf = TERRITORY_MAX_FILES; r->files_truncated = true; }
-    r->file_count = nf;
-
-    uint64_t phase0 = ts_now_us();
-    char abs[TERRITORY_PATH_MAX + 512];
-    for (int i = 0; i < nf; i++) {
-        struct territory_file *tf = &r->files[i];
-        snprintf(tf->path, sizeof(tf->path), "%s", files[i].path);
-        tf->bytes = -1;
-        int w = snprintf(abs, sizeof(abs), "%s/%s",
-                         (root && root[0]) ? root : ".", files[i].path);
-        if (w > 0 && (size_t)w < sizeof(abs)) {
-            struct stat sb;
-            if (stat(abs, &sb) == 0) {
-                tf->bytes = (int64_t)sb.st_size;
-                r->bytes += tf->bytes;
-            }
-        }
-        if (ts_is_public_header(files[i].path)) r->header_count++;
-        else if (ts_is_source(files[i].path)) r->source_count++;
-
-        /* ── what proves it: ROUTED ─────────────────────────────────
-         * The routing answer, verbatim from the same shared-rule resolver
-         * `code tests` uses. It says which group to RUN, not which code
-         * that group executes. */
-        char routed[TERRITORY_MAX_GROUPS][TERRITORY_GROUP_MAX];
-        size_t nr = 0;
-        uint64_t rt0 = ts_now_us();
-        if (router && router->route)
-            nr = router->route(files[i].path, routed, TERRITORY_MAX_GROUPS,
-                               router->user);
-        r->routed_us += ts_now_us() - rt0;
-        tf->routed = nr > 0;
-        if (nr > 0) snprintf(tf->route, sizeof(tf->route), "%s", routed[0]);
-        else r->files_unrouted++;
-        for (size_t g = 0; g < nr; g++) ts_tally_group(r, routed[g]);
-    }
-    qsort(r->groups, (size_t)r->group_count, sizeof(*r->groups), ts_group_cmp);
-    r->owns_us = ts_now_us() - phase0 - r->routed_us;
-
-    /* ── what proves it: REACHED ───────────────────────────────────── */
-    phase0 = ts_now_us();
-    for (int i = 0; i < nf; i++) {
-        if (!ts_is_public_header(files[i].path)) continue;
-        int ns = codeindex_symbols_in_file(ci, files[i].path, syms,
-                                           TS_SYMS_PER_FILE);
-        if (ns < 0) ns = 0;
-        if (ns == TS_SYMS_PER_FILE) r->symbols_truncated = true;
-        int funcs_here = 0;
-        for (int s = 0; s < ns; s++) {
-            switch (syms[s].kind) {
-            case 'S': case 'Y': case 'E': r->public_types++; continue;
-            case 'M': r->public_macros++; continue;
-            case 'T': break;
-            default: continue;  /* 'D' data, 't' static: not a public call */
-            }
-            if (r->public_symbols >= TERRITORY_MAX_SYMBOLS) {
-                r->symbols_truncated = true;
-                continue;
-            }
-            struct territory_symbol *ts = &r->symbols[r->public_symbols];
-            snprintf(ts->name, sizeof(ts->name), "%s", syms[s].name);
-            snprintf(ts->header, sizeof(ts->header), "%s", files[i].path);
-            ts->line = syms[s].decl_line;
-            ts_classify(ci, rs, ts, refbuf);
-            switch (ts->verdict) {
-            case TERRITORY_REACHED:   r->reached++;   break;
-            case TERRITORY_UNREACHED: r->unreached++; break;
-            case TERRITORY_UNKNOWN:   r->unknown++;   break;
-            }
-            funcs_here++;
-            r->public_symbols++;
-        }
-        /* A header the index attributed no function to is either genuinely
-         * function-free (a constants or type header) or opaque to the
-         * scanner. Count both, and separate them with the one probe that
-         * distinguishes them. */
-        if (funcs_here == 0) {
-            r->headers_without_functions++;
-            if (ts_header_is_extern_c(root, files[i].path, probe))
-                r->headers_extern_c++;
-        }
-    }
-
-    r->symbols_us = ts_now_us() - phase0;
-
-    /* ── what it depends on ────────────────────────────────────────── */
-    phase0 = ts_now_us();
-    int64_t edges = codeindex_include_edge_count(ci);
-    r->deps_available = edges > 0;
-    if (r->deps_available) {
-        for (int i = 0; i < nf; i++) {
-            if (!codeindex_path_is_translation_unit(files[i].path)) continue;
-            int ni = codeindex_includes_of_file(ci, files[i].path, incs,
-                                                TS_INC_PER_FILE);
-            if (ni < 0) ni = 0;
-            if (ni == TS_INC_PER_FILE) r->deps_truncated = true;
-            for (int d = 0; d < ni; d++) {
-                char g[TERRITORY_GROUP_MAX];
-                if (!ts_group_of(&memo, ci, incs[d], g)) {
-                    r->deps_truncated = true;
-                    break;
-                }
-                if (!g[0] || strcmp(g, name) == 0) continue;
-                ts_tally_neighbor(r->deps_out, &r->deps_out_count,
-                                  &r->deps_truncated, g);
-            }
-        }
-        int budget = TS_REVDEP_BUDGET;
-        for (int i = 0; i < nf && budget > 0; i++) {
-            if (!ts_is_public_header(files[i].path)) continue;
-            enum codeindex_include_dim dim = CODEINDEX_INCLUDE_DIM_UNAVAILABLE;
-            int nd = codeindex_reverse_includes(ci, files[i].path, deps,
-                                                TS_REVDEP_CAP, &dim);
-            if (nd < 0) nd = 0;
-            if (dim != CODEINDEX_INCLUDE_DIM_COMPLETE) r->deps_truncated = true;
-            for (int d = 0; d < nd && budget > 0; d++, budget--) {
-                char g[TERRITORY_GROUP_MAX];
-                if (!ts_group_of(&memo, ci, deps[d], g)) {
-                    r->deps_truncated = true;
-                    break;
-                }
-                if (!g[0] || strcmp(g, name) == 0) continue;
-                ts_tally_neighbor(r->deps_in, &r->deps_in_count,
-                                  &r->deps_truncated, g);
-            }
-            if (budget <= 0) r->deps_truncated = true;
-        }
-        qsort(r->deps_out, (size_t)r->deps_out_count, sizeof(*r->deps_out),
-              ts_neighbor_cmp);
-        qsort(r->deps_in, (size_t)r->deps_in_count, sizeof(*r->deps_in),
-              ts_neighbor_cmp);
-    }
-
-    r->deps_us = ts_now_us() - phase0;
-    r->index_lookups = memo.queries;
-
-    ts_pathmemo_free(&memo);
-    free(groups); free(files); free(syms); free(refbuf); free(incs);
-    free(deps); free(probe);
+    struct territory_report *r = sc.r;
+    sc.r = NULL;
+    ts_scan_free(&sc);
     return r;
 }

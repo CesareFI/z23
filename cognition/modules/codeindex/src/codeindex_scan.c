@@ -554,7 +554,311 @@ static void scan_refs(struct scan_ctx *c)
     }
 }
 
+/* ── pass A: blank comments/strings/chars into clean; capture docs ─── */
+
+enum blank_state { BS_NORMAL, BS_STR, BS_CHR, BS_LC, BS_BC };
+
+static size_t blank_normal(const struct scan_ctx *c, char *clean, size_t i,
+                           enum blank_state *st,
+                           size_t *com_start)
+{
+    char ch = c->src[i];
+    bool has_next = i + 1 < c->len;
+    if (ch == '/' && has_next && c->src[i + 1] == '/') {
+        *st = BS_LC; *com_start = i;
+        clean[i] = ' '; clean[i + 1] = ' ';
+        return i + 2;
+    }
+    if (ch == '/' && has_next && c->src[i + 1] == '*') {
+        *st = BS_BC; *com_start = i;
+        clean[i] = ' '; clean[i + 1] = ' ';
+        return i + 2;
+    }
+    if (ch == '"') { *st = BS_STR; clean[i] = ' '; return i + 1; }
+    if (ch == '\'') { *st = BS_CHR; clean[i] = ' '; return i + 1; }
+    clean[i] = ch;
+    return i + 1;
+}
+
+static size_t blank_quoted(const struct scan_ctx *c, char *clean, size_t i,
+                           char quote,
+                           enum blank_state *st)
+{
+    char ch = c->src[i];
+    if (ch == '\\' && i + 1 < c->len) {
+        clean[i] = ' ';
+        clean[i + 1] = (c->src[i + 1] == '\n') ? '\n' : ' ';
+        return i + 2;
+    }
+    if (ch == quote) { clean[i] = ' '; *st = BS_NORMAL; return i + 1; }
+    clean[i] = (ch == '\n') ? '\n' : ' ';
+    return i + 1;
+}
+
+static size_t blank_line_comment(struct scan_ctx *c, char *clean, size_t i,
+                                 enum blank_state *st, size_t com_start)
+{
+    if (c->src[i] == '\n') {
+        capture_doc(c, com_start + 2, i);
+        clean[i] = '\n'; *st = BS_NORMAL;
+        return i + 1;
+    }
+    clean[i] = ' ';
+    return i + 1;
+}
+
+static size_t blank_block_comment(struct scan_ctx *c, char *clean, size_t i,
+                                  enum blank_state *st, size_t com_start)
+{
+    char ch = c->src[i];
+    if (ch == '*' && i + 1 < c->len && c->src[i + 1] == '/') {
+        clean[i] = ' '; clean[i + 1] = ' ';
+        capture_doc(c, com_start + 2, i);
+        *st = BS_NORMAL;
+        return i + 2;
+    }
+    clean[i] = (ch == '\n') ? '\n' : ' ';
+    return i + 1;
+}
+
+static void blank_comments(struct scan_ctx *c, char *clean)
+{
+    enum blank_state st = BS_NORMAL;
+    size_t com_start = 0;
+    size_t i = 0;
+    while (i < c->len) {
+        switch (st) {
+        case BS_NORMAL: i = blank_normal(c, clean, i, &st, &com_start); break;
+        case BS_STR: i = blank_quoted(c, clean, i, '"', &st); break;
+        case BS_CHR: i = blank_quoted(c, clean, i, '\'', &st); break;
+        case BS_LC: i = blank_line_comment(c, clean, i, &st, com_start); break;
+        case BS_BC: i = blank_block_comment(c, clean, i, &st, com_start); break;
+        }
+    }
+    if (st == BS_LC) capture_doc(c, com_start + 2, c->len);
+}
+
+/* ── pass B: preprocessor guard stack + pp_line marking ─────────────── */
+
+struct guard_stack {
+    char s[CI_GUARD_STACK_MAX][128];
+    int sp;
+};
+
+static size_t skip_hspace(const char *clean, size_t d, size_t b)
+{
+    while (d < b && (clean[d] == ' ' || clean[d] == '\t')) d++;
+    return d;
+}
+
+/* Identifier at d (bounded by cap) into buf; returns the offset past it. */
+static size_t read_ident_bounded(const char *clean, size_t d, size_t b,
+                                 char *buf, size_t cap)
+{
+    size_t n = 0;
+    while (d < b && is_ident_char((unsigned char)clean[d]) && n + 1 < cap)
+        buf[n++] = clean[d++];
+    buf[n] = '\0';
+    return d;
+}
+
+/* Rest of the directive line at d (bounded by cap), trailing space trimmed. */
+static void read_condition(const char *clean, size_t d, size_t b, char *buf,
+                           size_t cap)
+{
+    size_t n = 0;
+    while (d < b && clean[d] != '\n' && n + 1 < cap)
+        buf[n++] = clean[d++];
+    while (n > 0 && isspace((unsigned char)buf[n - 1])) n--;
+    buf[n] = '\0';
+}
+
+static void guard_push(struct guard_stack *gs, const char *text)
+{
+    if (gs->sp < CI_GUARD_STACK_MAX)
+        snprintf(gs->s[gs->sp++], 128, "%s", text);
+}
+
+/* Apply directive `dir` (its arguments start at d) to the guard stack. */
+static void apply_directive(struct guard_stack *gs, const char *dir,
+                            const char *clean, size_t d, size_t b)
+{
+    d = skip_hspace(clean, d, b);
+    if (strcmp(dir, "ifdef") == 0 || strcmp(dir, "ifndef") == 0) {
+        char sym[128];
+        read_ident_bounded(clean, d, b, sym, sizeof(sym));
+        guard_push(gs, sym);
+    } else if (strcmp(dir, "if") == 0) {
+        char cond[128];
+        read_condition(clean, d, b, cond, sizeof(cond));
+        guard_push(gs, cond);
+    } else if (strcmp(dir, "elif") == 0) {
+        char cond[120];
+        read_condition(clean, d, b, cond, sizeof(cond));
+        if (gs->sp > 0)
+            snprintf(gs->s[gs->sp - 1], 128, "elif:%s", cond);
+    } else if (strcmp(dir, "else") == 0) {
+        if (gs->sp > 0) {
+            char prior[128];
+            snprintf(prior, sizeof(prior), "%s", gs->s[gs->sp - 1]);
+            snprintf(gs->s[gs->sp - 1], 128, "else:%.122s", prior);
+        }
+    } else if (strcmp(dir, "endif") == 0) {
+        if (gs->sp > 0) gs->sp--;
+    }
+}
+
+/* #define at line l (segment [a,b), first token t): emit a macro symbol. */
+static void emit_define(struct scan_ctx *c, const struct guard_stack *gs,
+                        size_t l, size_t a, size_t b, size_t t, size_t d)
+{
+    d = skip_hspace(c->clean, d, b);
+    if (d >= b || !is_ident_start((unsigned char)c->clean[d])) return;
+    struct ci_symbol ms;
+    memset(&ms, 0, sizeof(ms));
+    ident_at(c->clean, d, b, ms.name, sizeof(ms.name));
+    ms.kind = 'M';
+    snprintf(ms.def_path, sizeof(ms.def_path), "%s", c->relpath);
+    ms.def_line = (int)(l + 1);
+    clean_signature(c, a, b, ms.signature, sizeof(ms.signature));
+    snprintf(ms.doc, sizeof(ms.doc), "%s", doc_for(c, a, t));
+    if (gs->sp > 0)
+        snprintf(ms.guard, sizeof(ms.guard), "%s", gs->s[gs->sp - 1]);
+    snprintf(ms.group, sizeof(ms.group), "%s", c->group ? c->group : "");
+    if (c->syms_emitted < CI_MAX_SYMS_PER_FILE) {
+        c->on_sym(&ms, c->user);
+        c->syms_emitted++;
+    }
+}
+
+/* Handle the directive whose '#' is at t on line l. */
+static void handle_directive(struct scan_ctx *c, struct guard_stack *gs,
+                             size_t l, size_t a, size_t b, size_t t)
+{
+    size_t d = skip_hspace(c->clean, t + 1, b);
+    char dir[16];
+    d = read_ident_bounded(c->clean, d, b, dir, sizeof(dir));
+    apply_directive(gs, dir, c->clean, d, b);
+    if (strcmp(dir, "define") == 0)
+        emit_define(c, gs, l, a, b, t, d);
+}
+
+static void scan_pp_lines(struct scan_ctx *c)
+{
+    struct guard_stack gs;
+    gs.sp = 0;
+    bool prev_pp = false;
+    bool prev_cont = false;
+    for (size_t l = 0; l < c->nlines; l++) {
+        size_t a = c->line_starts[l];
+        size_t b = (l + 1 < c->nlines) ? c->line_starts[l + 1] : c->len;
+        size_t t = first_tok(c->clean, a, b);
+        bool is_directive = (t < b && c->clean[t] == '#');
+        bool is_cont = prev_pp && prev_cont;
+        c->pp_line[l] = is_directive || is_cont;
+        /* guard entering this line = current stack top */
+        if (gs.sp > 0)
+            snprintf(c->line_guard + l * 128, 128, "%s", gs.s[gs.sp - 1]);
+        else
+            c->line_guard[l * 128] = '\0';
+        if (is_directive) handle_directive(c, &gs, l, a, b, t);
+        size_t e = b;
+        while (e > a && (c->src[e - 1] == '\n' || c->src[e - 1] == '\r')) e--;
+        prev_cont = (e > a && c->src[e - 1] == '\\');
+        prev_pp = c->pp_line[l];
+    }
+}
+
+/* Blank preprocessor-line text in the structural buffer: pass B has already
+ * consumed guards/#defines, and leaving "#include"/"#define" tokens in
+ * `clean` would pollute the top-level segment that follows a directive (its
+ * leading token would be '#', not the real return type). */
+static void blank_pp_lines(const struct scan_ctx *c, char *clean)
+{
+    for (size_t l = 0; l < c->nlines; l++) {
+        if (!c->pp_line[l]) continue;
+        size_t a = c->line_starts[l];
+        size_t b = (l + 1 < c->nlines) ? c->line_starts[l + 1] : c->len;
+        for (size_t i = a; i < b; i++)
+            if (clean[i] != '\n') clean[i] = ' ';
+    }
+}
+
+/* ── pass C: structural scan for definitions/declarations ───────────── */
+
+struct struct_scan {
+    size_t seg_start;
+    int brace, paren;
+    bool pending;
+    char pkind;
+};
+
+/* A '{', '}' or ';' at top level (brace 0, paren 0). */
+static void struct_top_level(struct scan_ctx *c, struct struct_scan *ss,
+                             size_t i, char ch)
+{
+    if (ch == '{') {
+        classify_block_open(c, ss->seg_start, i, &ss->pending, &ss->pkind);
+        ss->brace++;
+        ss->seg_start = i + 1;
+    } else if (ch == '}') {
+        ss->seg_start = i + 1;
+    } else if (ch == ';') {
+        classify_semicolon(c, ss->seg_start, i, &ss->pending, &ss->pkind);
+        ss->seg_start = i + 1;
+    }
+}
+
+static void struct_nested(struct struct_scan *ss, size_t i, char ch)
+{
+    if (ch == '{') { ss->brace++; return; }
+    if (ch == '}') {
+        if (ss->brace > 0) ss->brace--;
+        if (ss->brace == 0) ss->seg_start = i + 1;
+    }
+}
+
+static void scan_structure(struct scan_ctx *c)
+{
+    struct struct_scan ss = { 0, 0, 0, false, 0 };
+    size_t line = 0;
+    for (size_t i = 0; i < c->len; i++) {
+        char ch = c->clean[i];
+        if (ch == '\n') {
+            if (ss.brace == 0 && ss.paren == 0 &&
+                macro_invocation_segment(c->clean, ss.seg_start, i))
+                ss.seg_start = i + 1;
+            line++;
+            continue;
+        }
+        if ((size_t)line < c->nlines && c->pp_line[line]) continue;
+        if (ch == '(') { ss.paren++; continue; }
+        if (ch == ')') { if (ss.paren > 0) ss.paren--; continue; }
+        if (ss.brace == 0 && ss.paren == 0)
+            struct_top_level(c, &ss, i, ch);
+        else
+            struct_nested(&ss, i, ch);
+    }
+}
+
 /* ── the text scanner ───────────────────────────────────────────────── */
+
+/* Line-start offsets; false on allocation failure. */
+static bool build_line_index(struct scan_ctx *c)
+{
+    size_t nl = 1;
+    for (size_t i = 0; i < c->len; i++) if (c->src[i] == '\n') nl++;
+    c->nlines = nl;
+    c->line_starts = zcl_malloc(nl * sizeof(size_t), "ci_line_starts");
+    c->line_guard = zcl_calloc(nl, 128, "ci_line_guard");
+    c->pp_line = zcl_calloc(nl, sizeof(bool), "ci_pp_line");
+    if (!c->line_starts || !c->line_guard || !c->pp_line) return false;
+    size_t l = 0;
+    c->line_starts[l++] = 0;
+    for (size_t i = 0; i < c->len && l < nl; i++)
+        if (c->src[i] == '\n') c->line_starts[l++] = i + 1;
+    return true;
+}
 
 void ci_scan_text(const char *src, size_t len, const char *relpath,
                   bool is_header, const char *group,
@@ -573,240 +877,18 @@ void ci_scan_text(const char *src, size_t len, const char *relpath,
     c.relpath = relpath; c.is_header = is_header; c.group = group;
     c.on_sym = on_sym; c.on_ref = on_ref; c.user = user;
 
-    /* ── pass A: blank comments/strings/chars into clean; capture docs ── */
-    {
-        enum { NORMAL, STR, CHR, LC, BC } st = NORMAL;
-        size_t com_start = 0;
-        size_t i = 0;
-        while (i < len) {
-            char ch = src[i];
-            switch (st) {
-            case NORMAL:
-                if (ch == '/' && i + 1 < len && src[i + 1] == '/') {
-                    st = LC; com_start = i; clean[i] = ' ';
-                    if (i + 1 < len) clean[i + 1] = ' ';
-                    i += 2; break;
-                }
-                if (ch == '/' && i + 1 < len && src[i + 1] == '*') {
-                    st = BC; com_start = i; clean[i] = ' ';
-                    if (i + 1 < len) clean[i + 1] = ' ';
-                    i += 2; break;
-                }
-                if (ch == '"') { st = STR; clean[i] = ' '; i++; break; }
-                if (ch == '\'') { st = CHR; clean[i] = ' '; i++; break; }
-                clean[i] = ch; i++; break;
-            case STR:
-                if (ch == '\\' && i + 1 < len) {
-                    clean[i] = ' ';
-                    clean[i + 1] = (src[i + 1] == '\n') ? '\n' : ' ';
-                    i += 2; break;
-                }
-                if (ch == '"') { clean[i] = ' '; st = NORMAL; i++; break; }
-                clean[i] = (ch == '\n') ? '\n' : ' '; i++; break;
-            case CHR:
-                if (ch == '\\' && i + 1 < len) {
-                    clean[i] = ' ';
-                    clean[i + 1] = (src[i + 1] == '\n') ? '\n' : ' ';
-                    i += 2; break;
-                }
-                if (ch == '\'') { clean[i] = ' '; st = NORMAL; i++; break; }
-                clean[i] = (ch == '\n') ? '\n' : ' '; i++; break;
-            case LC:
-                if (ch == '\n') {
-                    capture_doc(&c, com_start + 2, i);
-                    clean[i] = '\n'; st = NORMAL; i++; break;
-                }
-                clean[i] = ' '; i++; break;
-            case BC:
-                if (ch == '*' && i + 1 < len && src[i + 1] == '/') {
-                    clean[i] = ' '; clean[i + 1] = ' ';
-                    capture_doc(&c, com_start + 2, i);
-                    st = NORMAL; i += 2; break;
-                }
-                clean[i] = (ch == '\n') ? '\n' : ' '; i++; break;
-            }
-        }
-        if (st == LC) capture_doc(&c, com_start + 2, len);
-    }
+    blank_comments(&c, clean);
 
-    /* ── file self-description: derive purpose from the leading comment ── */
+    /* file self-description: derive purpose from the leading comment */
     if (purpose_out) ci_file_purpose(&c, purpose_out);
 
-    /* ── line index ── */
-    size_t nl = 1;
-    for (size_t i = 0; i < len; i++) if (src[i] == '\n') nl++;
-    c.nlines = nl;
-    c.line_starts = zcl_malloc(nl * sizeof(size_t), "ci_line_starts");
-    c.line_guard = zcl_calloc(nl, 128, "ci_line_guard");
-    c.pp_line = zcl_calloc(nl, sizeof(bool), "ci_pp_line");
-    if (!c.line_starts || !c.line_guard || !c.pp_line) goto done;
-    {
-        size_t l = 0;
-        c.line_starts[l++] = 0;
-        for (size_t i = 0; i < len && l < nl; i++)
-            if (src[i] == '\n') c.line_starts[l++] = i + 1;
+    if (build_line_index(&c)) {
+        scan_pp_lines(&c);
+        blank_pp_lines(&c, clean);
+        scan_structure(&c);
+        scan_refs(&c);
     }
 
-    /* ── pass B: preprocessor guard stack + pp_line marking ── */
-    {
-        char stack[CI_GUARD_STACK_MAX][128];
-        int sp = 0;
-        bool prev_pp = false;
-        bool prev_cont = false;
-        for (size_t l = 0; l < nl; l++) {
-            size_t a = c.line_starts[l];
-            size_t b = (l + 1 < nl) ? c.line_starts[l + 1] : len;
-            size_t t = first_tok(clean, a, b);
-            bool is_directive = (t < b && clean[t] == '#');
-            bool is_cont = prev_pp && prev_cont;
-            c.pp_line[l] = is_directive || is_cont;
-            /* guard entering this line = current stack top */
-            if (sp > 0)
-                snprintf(c.line_guard + l * 128, 128, "%s", stack[sp - 1]);
-            else
-                c.line_guard[l * 128] = '\0';
-            /* apply directive to affect subsequent lines */
-            if (is_directive) {
-                size_t d = t + 1;
-                while (d < b && (clean[d] == ' ' || clean[d] == '\t')) d++;
-                char dir[16];
-                size_t dn = 0;
-                while (d < b && is_ident_char((unsigned char)clean[d]) &&
-                       dn + 1 < sizeof(dir))
-                    dir[dn++] = clean[d++];
-                dir[dn] = '\0';
-                if (strcmp(dir, "ifdef") == 0 || strcmp(dir, "ifndef") == 0) {
-                    while (d < b && (clean[d] == ' ' || clean[d] == '\t')) d++;
-                    char sym[128]; size_t sn = 0;
-                    while (d < b && is_ident_char((unsigned char)clean[d]) &&
-                           sn + 1 < sizeof(sym))
-                        sym[sn++] = clean[d++];
-                    sym[sn] = '\0';
-                    if (sp < CI_GUARD_STACK_MAX)
-                        snprintf(stack[sp++], 128, "%s", sym);
-                } else if (strcmp(dir, "if") == 0) {
-                    while (d < b && (clean[d] == ' ' || clean[d] == '\t')) d++;
-                    char cond[128]; size_t cn = 0;
-                    while (d < b && clean[d] != '\n' && cn + 1 < sizeof(cond))
-                        cond[cn++] = clean[d++];
-                    while (cn > 0 && isspace((unsigned char)cond[cn - 1])) cn--;
-                    cond[cn] = '\0';
-                    if (sp < CI_GUARD_STACK_MAX)
-                        snprintf(stack[sp++], 128, "%s", cond);
-                } else if (strcmp(dir, "elif") == 0) {
-                    while (d < b && (clean[d] == ' ' || clean[d] == '\t')) d++;
-                    char cond[120]; size_t cn = 0;
-                    while (d < b && clean[d] != '\n' && cn + 1 < sizeof(cond))
-                        cond[cn++] = clean[d++];
-                    while (cn > 0 && isspace((unsigned char)cond[cn - 1])) cn--;
-                    cond[cn] = '\0';
-                    if (sp > 0)
-                        snprintf(stack[sp - 1], 128, "elif:%s", cond);
-                } else if (strcmp(dir, "else") == 0) {
-                    if (sp > 0) {
-                        char prior[128];
-                        snprintf(prior, sizeof(prior), "%s", stack[sp - 1]);
-                        snprintf(stack[sp - 1], 128, "else:%.122s", prior);
-                    }
-                } else if (strcmp(dir, "endif") == 0) {
-                    if (sp > 0) sp--;
-                }
-                /* #define: emit a macro symbol (name only) */
-                if (strcmp(dir, "define") == 0) {
-                    while (d < b && (clean[d] == ' ' || clean[d] == '\t')) d++;
-                    if (d < b && is_ident_start((unsigned char)clean[d])) {
-                        char nm[128];
-                        ident_at(clean, d, b, nm, sizeof(nm));
-                        struct ci_symbol ms;
-                        memset(&ms, 0, sizeof(ms));
-                        snprintf(ms.name, sizeof(ms.name), "%s", nm);
-                        ms.kind = 'M';
-                        snprintf(ms.def_path, sizeof(ms.def_path), "%s", relpath);
-                        ms.def_line = (int)(l + 1);
-                        clean_signature(&c, a, b, ms.signature,
-                                        sizeof(ms.signature));
-                        snprintf(ms.doc, sizeof(ms.doc), "%s",
-                                 doc_for(&c, a, t));
-                        if (sp > 0)
-                            snprintf(ms.guard, sizeof(ms.guard), "%s",
-                                     stack[sp - 1]);
-                        snprintf(ms.group, sizeof(ms.group), "%s",
-                                 group ? group : "");
-                        if (c.syms_emitted < CI_MAX_SYMS_PER_FILE) {
-                            on_sym(&ms, user);
-                            c.syms_emitted++;
-                        }
-                    }
-                }
-            }
-            /* track continuation for the next line */
-            {
-                size_t e = b;
-                while (e > a && (src[e - 1] == '\n' || src[e - 1] == '\r')) e--;
-                prev_cont = (e > a && src[e - 1] == '\\');
-                prev_pp = c.pp_line[l];
-            }
-        }
-    }
-
-    /* Blank preprocessor-line text in the structural buffer: pass B has
-     * already consumed guards/#defines, and leaving "#include"/"#define"
-     * tokens in `clean` would pollute the top-level segment that follows a
-     * directive (its leading token would be '#', not the real return type). */
-    for (size_t l = 0; l < nl; l++) {
-        if (!c.pp_line[l]) continue;
-        size_t a = c.line_starts[l];
-        size_t b = (l + 1 < nl) ? c.line_starts[l + 1] : len;
-        for (size_t i = a; i < b; i++)
-            if (clean[i] != '\n') clean[i] = ' ';
-    }
-
-    /* ── pass C: structural scan for definitions/declarations ── */
-    {
-        size_t seg_start = 0;
-        int brace = 0, paren = 0;
-        bool pending = false; char pkind = 0;
-        size_t line = 0;
-        for (size_t i = 0; i < len; i++) {
-            char ch = clean[i];
-            if (ch == '\n') {
-                if (brace == 0 && paren == 0 &&
-                    macro_invocation_segment(clean, seg_start, i))
-                    seg_start = i + 1;
-                line++;
-                continue;
-            }
-            if ((size_t)line < nl && c.pp_line[line]) continue;
-            if (ch == '(') { paren++; continue; }
-            if (ch == ')') { if (paren > 0) paren--; continue; }
-            if (brace == 0 && paren == 0) {
-                if (ch == '{') {
-                    classify_block_open(&c, seg_start, i, &pending, &pkind);
-                    brace++;
-                    seg_start = i + 1;
-                    continue;
-                }
-                if (ch == '}') { seg_start = i + 1; continue; }
-                if (ch == ';') {
-                    classify_semicolon(&c, seg_start, i, &pending, &pkind);
-                    seg_start = i + 1;
-                    continue;
-                }
-            } else {
-                if (ch == '{') { brace++; continue; }
-                if (ch == '}') {
-                    if (brace > 0) brace--;
-                    if (brace == 0) seg_start = i + 1;
-                    continue;
-                }
-            }
-        }
-    }
-
-    /* ── pass D: refs ── */
-    scan_refs(&c);
-
-done:
     free(clean);
     free(c.line_starts);
     free(c.line_guard);

@@ -296,39 +296,12 @@ static void fp_shape_add(char *shape, size_t cap, const char *tok)
     snprintf(shape + n, (n < cap) ? cap - n : 0u, "%s", tok);
 }
 
-static enum fp_verdict fp_classify_param(struct fp_index *ix, const char *t,
-                                         size_t b, size_t e, bool next_is_uint,
-                                         struct fp_param *p, char *extent,
-                                         size_t extent_cap)
+/* Strips the parameter name from `norm` and copies any stated array extent to
+ * `extent`. False when the parameter cannot be a candidate. */
+static bool fp_split_param_name(char *norm, char *extent, size_t extent_cap)
 {
-    char norm[FP_MAX_TYPE * 2];
-    struct fp_typeinfo ti;
-    char *br;
-
-    extent[0] = '\0';
-    fp_norm(t, b, e, norm, sizeof norm);
-    if (strcmp(norm, "...") == 0)
-        return FP_V_VARIADIC;
-    if (norm[0] == '\0')
-        return FP_V_UNSUPPORTED_PARAM;
-
-    br = strchr(norm, '[');
-    if (br != NULL) {
-        char *close = strchr(br, ']');
-        if (close == NULL)
-            return FP_V_UNSUPPORTED_PARAM;
-        *close = '\0';
-        snprintf(extent, extent_cap, "%s", br + 1);
-        *br = '\0';
-        {   /* drop the parameter name that preceded the extent */
-            size_t l = strlen(norm);
-            while (l > 0 && isspace((unsigned char)norm[l - 1])) l--;
-            while (l > 0 && fp_ident_char((unsigned char)norm[l - 1])) l--;
-            norm[l] = '\0';
-        }
-        if (extent[0] == '\0')
-            return FP_V_UNSUPPORTED_PARAM;   /* `T x[]` — extent not stated */
-    } else {
+    char *br = strchr(norm, '[');
+    if (br == NULL) {
         /* drop a trailing parameter name, keeping the type */
         size_t l = strlen(norm);
         size_t nb = l;
@@ -336,9 +309,81 @@ static enum fp_verdict fp_classify_param(struct fp_index *ix, const char *t,
         if (nb > 0 && nb < l && (norm[nb - 1] == ' ' || norm[nb - 1] == '*')) {
             char keep[FP_MAX_TYPE * 2];
             snprintf(keep, sizeof keep, "%.*s", (int)nb, norm);
-            snprintf(norm, sizeof norm, "%s", keep);
+            snprintf(norm, FP_MAX_TYPE * 2, "%s", keep);
         }
+        return true;
     }
+    char *close = strchr(br, ']');
+    if (close == NULL)
+        return false;
+    *close = '\0';
+    snprintf(extent, extent_cap, "%s", br + 1);
+    *br = '\0';
+    {   /* drop the parameter name that preceded the extent */
+        size_t l = strlen(norm);
+        while (l > 0 && isspace((unsigned char)norm[l - 1])) l--;
+        while (l > 0 && fp_ident_char((unsigned char)norm[l - 1])) l--;
+        norm[l] = '\0';
+    }
+    return extent[0] != '\0';    /* `T x[]` — extent not stated */
+}
+
+/* A `const T *` parameter. */
+static enum fp_verdict fp_classify_const_ptr(const struct fp_typeinfo *ti,
+                                             bool next_is_uint,
+                                             struct fp_param *p)
+{
+    if (ti->is_char && !next_is_uint) { p->kind = FP_K_CSTR_IN; return FP_V_CANDIDATE; }
+    if (ti->is_void || ti->is_scalar) {
+        if (!next_is_uint)
+            return FP_V_UNSUPPORTED_PARAM;   /* unbounded read */
+        p->kind = FP_K_BUF_IN;
+        snprintf(p->type_text, sizeof p->type_text, "%s",
+                 ti->is_void ? "unsigned char" : ti->base);
+        return FP_V_CANDIDATE;
+    }
+    if (ti->is_struct || ti->base[0] != '\0') { p->kind = FP_K_OBJ_IN; return FP_V_CANDIDATE; }
+    return FP_V_UNSUPPORTED_PARAM;
+}
+
+/* A non-const single-level pointer parameter: an output. */
+static enum fp_verdict fp_classify_out_ptr(const struct fp_typeinfo *ti,
+                                           bool next_is_uint,
+                                           struct fp_param *p)
+{
+    if (ti->is_void)
+        return FP_V_UNSUPPORTED_PARAM;       /* `void *` output, size unknown */
+    if (next_is_uint && (ti->is_char || ti->is_scalar)) {
+        /* `T *out, size_t cap` — the classic formatter shape. The generated
+         * buffer's own size is passed as the capacity, so the callee cannot
+         * be told about more room than exists. */
+        p->kind = FP_K_OUT_ARR;
+        p->elem_text[0] = '\0';              /* generated buffer, fixed size */
+        return FP_V_CANDIDATE;
+    }
+    if (ti->is_char)
+        return FP_V_UNSUPPORTED_PARAM;       /* `char *` with no capacity */
+    if (ti->is_scalar) { p->kind = FP_K_OUT_SCALAR; return FP_V_CANDIDATE; }
+    p->kind = FP_K_OUT_OBJ;
+    return FP_V_CANDIDATE;
+}
+
+static enum fp_verdict fp_classify_param(struct fp_index *ix, const char *t,
+                                         size_t b, size_t e, bool next_is_uint,
+                                         struct fp_param *p, char *extent,
+                                         size_t extent_cap)
+{
+    char norm[FP_MAX_TYPE * 2];
+    struct fp_typeinfo ti;
+
+    extent[0] = '\0';
+    fp_norm(t, b, e, norm, sizeof norm);
+    if (strcmp(norm, "...") == 0)
+        return FP_V_VARIADIC;
+    if (norm[0] == '\0')
+        return FP_V_UNSUPPORTED_PARAM;
+    if (!fp_split_param_name(norm, extent, extent_cap))
+        return FP_V_UNSUPPORTED_PARAM;
 
     fp_classify(ix, norm, &ti);
     if (ti.is_funcptr)
@@ -361,35 +406,160 @@ static enum fp_verdict fp_classify_param(struct fp_index *ix, const char *t,
     }
     if (ti.stars > 1)
         return FP_V_UNSUPPORTED_PARAM;
+    if (ti.is_const)
+        return fp_classify_const_ptr(&ti, next_is_uint, p);
+    return fp_classify_out_ptr(&ti, next_is_uint, p);
+}
 
-    if (ti.is_const) {
-        if (ti.is_char && !next_is_uint) { p->kind = FP_K_CSTR_IN; return FP_V_CANDIDATE; }
-        if (ti.is_void || ti.is_scalar) {
-            if (!next_is_uint)
-                return FP_V_UNSUPPORTED_PARAM;   /* unbounded read */
-            p->kind = FP_K_BUF_IN;
-            snprintf(p->type_text, sizeof p->type_text, "%s",
-                     ti.is_void ? "unsigned char" : ti.base);
-            return FP_V_CANDIDATE;
+/* The offset of the '(' opening the parameter list that ends at e. */
+static bool fp_find_param_list(const char *t, size_t b, size_t e, size_t *lp)
+{
+    if (e <= b || t[e - 1] != ')')
+        return false;
+    int depth = 0;
+    size_t i = e;
+    while (i > b) {
+        i--;
+        if (t[i] == ')') depth++;
+        else if (t[i] == '(') {
+            depth--;
+            if (depth == 0) { *lp = i; return true; }
         }
-        if (ti.is_struct || ti.base[0] != '\0') { p->kind = FP_K_OBJ_IN; return FP_V_CANDIDATE; }
-        return FP_V_UNSUPPORTED_PARAM;
     }
-    if (ti.is_void)
-        return FP_V_UNSUPPORTED_PARAM;       /* `void *` output, size unknown */
-    if (next_is_uint && (ti.is_char || ti.is_scalar)) {
-        /* `T *out, size_t cap` — the classic formatter shape. The generated
-         * buffer's own size is passed as the capacity, so the callee cannot
-         * be told about more room than exists. */
-        p->kind = FP_K_OUT_ARR;
-        p->elem_text[0] = '\0';              /* generated buffer, fixed size */
-        return FP_V_CANDIDATE;
+    return false;
+}
+
+/* The return type decides the leading shape token; false when unsupported. */
+static bool fp_bind_return(const struct fp_typeinfo *rti,
+                           struct fp_candidate *out, char *shape,
+                           bool *observable)
+{
+    if (rti->stars == 0 && rti->is_void) {
+        out->ret.kind = FP_K_VOID;
+        fp_shape_add(shape, FP_MAX_SHAPE, "v(");
+    } else if (rti->stars == 0 && rti->is_scalar) {
+        out->ret.kind = FP_K_SCALAR;
+        snprintf(out->ret.type_text, sizeof out->ret.type_text, "%s",
+                 rti->base);
+        *observable = true;
+        fp_shape_add(shape, FP_MAX_SHAPE, "s(");
+    } else if (rti->stars == 1 && rti->is_char && rti->is_const) {
+        out->ret.kind = FP_K_CSTR_OUT;
+        *observable = true;
+        fp_shape_add(shape, FP_MAX_SHAPE, "t(");
+    } else {
+        return false;
     }
-    if (ti.is_char)
-        return FP_V_UNSUPPORTED_PARAM;       /* `char *` with no capacity */
-    if (ti.is_scalar) { p->kind = FP_K_OUT_SCALAR; return FP_V_CANDIDATE; }
-    p->kind = FP_K_OUT_OBJ;
+    return true;
+}
+
+/* Splits the parameter list; -1 when it is unusable, else the parameter
+ * count (0 for `()` and `(void)`). */
+static int fp_param_list(const char *t, size_t lp, size_t e, size_t *starts,
+                         size_t *ends, int cap)
+{
+    int np = fp_split_params(t, lp + 1u, e - 1u, starts, ends, cap);
+    if (np < 0)
+        return -1;
+    char only[FP_MAX_TYPE];
+    fp_norm(t, starts[0], ends[0], only, sizeof only);
+    if (np == 1 && (only[0] == '\0' || strcmp(only, "void") == 0))
+        np = 0;
+    return np > FP_MAX_PARAMS ? -1 : np;
+}
+
+/* True when the parameter after i is an unsigned integer that can serve as a
+ * buffer length. */
+static bool fp_next_is_length(struct fp_index *ix, const char *t,
+                              const size_t *starts, const size_t *ends,
+                              int i, int np)
+{
+    if (i + 1 >= np)
+        return false;
+    char nx[FP_MAX_TYPE * 2];
+    struct fp_typeinfo nti;
+    fp_norm(t, starts[i + 1], ends[i + 1], nx, sizeof nx);
+    {   /* drop the following parameter's name before classifying */
+        size_t l = strlen(nx);
+        size_t nb = l;
+        while (nb > 0 && fp_ident_char((unsigned char)nx[nb - 1])) nb--;
+        if (nb > 0 && nb < l && nx[nb - 1] == ' ')
+            nx[nb] = '\0';
+    }
+    fp_classify(ix, nx, &nti);
+    return nti.stars == 0 && nti.is_scalar && !nti.is_char &&
+           strncmp(nti.base, "enum ", 5) != 0;
+}
+
+static enum fp_verdict fp_classify_params(struct fp_index *ix, const char *t,
+                                          const size_t *starts,
+                                          const size_t *ends, int np,
+                                          struct fp_candidate *out)
+{
+    for (int i = 0; i < np; i++) {
+        char extent[FP_MAX_TYPE];
+        if (i > 0 && out->param[i].kind == FP_K_LEN)
+            continue;                        /* already bound to a buffer */
+        bool next_uint = fp_next_is_length(ix, t, starts, ends, i, np);
+        enum fp_verdict v = fp_classify_param(
+            ix, t, starts[i], ends[i], next_uint, &out->param[i], extent,
+            sizeof extent);
+        if (v != FP_V_CANDIDATE)
+            return v;
+        if (next_uint &&
+            (out->param[i].kind == FP_K_BUF_IN ||
+             (out->param[i].kind == FP_K_OUT_ARR &&
+              out->param[i].elem_text[0] == '\0'))) {
+            /* bind the following unsigned integer as this buffer's length */
+            memset(&out->param[i + 1], 0, sizeof out->param[i + 1]);
+            out->param[i + 1].kind = FP_K_LEN;
+            out->param[i + 1].pair = i;
+        }
+    }
     return FP_V_CANDIDATE;
+}
+
+/* Appends the array token `prefix` + extent (evaluated when possible). */
+static void fp_shape_add_array(struct fp_index *ix, char *shape, char prefix,
+                               const char *extent_text)
+{
+    unsigned long k = 0;
+    char tok[48];
+    if (fp_eval_extent(ix, extent_text, &k))
+        snprintf(tok, sizeof tok, "%c%lu,", prefix, k);
+    else
+        snprintf(tok, sizeof tok, "%c?%s,", prefix, extent_text);
+    fp_shape_add(shape, FP_MAX_SHAPE, tok);
+}
+
+/* Appends one parameter's shape token; false for an unsupported kind. */
+static bool fp_shape_add_param(struct fp_index *ix,
+                               const struct fp_param *p, char *shape,
+                               bool *observable)
+{
+    switch (p->kind) {
+    case FP_K_SCALAR:     fp_shape_add(shape, FP_MAX_SHAPE, "s,"); break;
+    case FP_K_CSTR_IN:    fp_shape_add(shape, FP_MAX_SHAPE, "t,"); break;
+    case FP_K_BUF_IN:     fp_shape_add(shape, FP_MAX_SHAPE, "b,"); break;
+    case FP_K_LEN:        fp_shape_add(shape, FP_MAX_SHAPE, "n,"); break;
+    case FP_K_OBJ_IN:     fp_shape_add(shape, FP_MAX_SHAPE, "o,"); break;
+    case FP_K_OUT_SCALAR: fp_shape_add(shape, FP_MAX_SHAPE, "S,");
+                          *observable = true; break;
+    case FP_K_OUT_OBJ:    fp_shape_add(shape, FP_MAX_SHAPE, "O,");
+                          *observable = true; break;
+    case FP_K_OUT_ARR:
+        *observable = true;
+        if (p->elem_text[0] == '\0')
+            fp_shape_add(shape, FP_MAX_SHAPE, "A,");
+        else
+            fp_shape_add_array(ix, shape, 'A', p->elem_text);
+        break;
+    case FP_K_ARR_IN:
+        fp_shape_add_array(ix, shape, 'a', p->elem_text);
+        break;
+    default: return false;
+    }
+    return true;
 }
 
 enum fp_verdict fp_signature_of(struct fp_index *ix, int sym,
@@ -404,28 +574,14 @@ enum fp_verdict fp_signature_of(struct fp_index *ix, int sym,
     size_t name_s;
     size_t starts[FP_MAX_PARAMS + 4];
     size_t ends[FP_MAX_PARAMS + 4];
-    int np;
-    int i;
     char rettext[FP_MAX_TYPE * 2];
     struct fp_typeinfo rti;
     bool observable = false;
     char shape[FP_MAX_SHAPE];
 
     /* Locate the parameter list: the declarator text ends at its ')'. */
-    if (e <= b || t[e - 1] != ')')
+    if (!fp_find_param_list(t, b, e, &lp))
         return FP_V_UNSUPPORTED_PARAM;
-    {
-        int depth = 0;
-        size_t i2 = e;
-        lp = (size_t)-1;
-        while (i2 > b) {
-            i2--;
-            if (t[i2] == ')') depth++;
-            else if (t[i2] == '(') { depth--; if (depth == 0) { lp = i2; break; } }
-        }
-        if (lp == (size_t)-1)
-            return FP_V_UNSUPPORTED_PARAM;
-    }
     name_s = lp;
     while (name_s > b && isspace((unsigned char)t[name_s - 1])) name_s--;
     while (name_s > b && fp_ident_char((unsigned char)t[name_s - 1])) name_s--;
@@ -442,110 +598,22 @@ enum fp_verdict fp_signature_of(struct fp_index *ix, int sym,
     out->def_line = s->line;
     shape[0] = '\0';
 
-    if (rti.stars == 0 && rti.is_void) {
-        out->ret.kind = FP_K_VOID;
-        fp_shape_add(shape, sizeof shape, "v(");
-    } else if (rti.stars == 0 && rti.is_scalar) {
-        out->ret.kind = FP_K_SCALAR;
-        snprintf(out->ret.type_text, sizeof out->ret.type_text, "%s", rti.base);
-        observable = true;
-        fp_shape_add(shape, sizeof shape, "s(");
-    } else if (rti.stars == 1 && rti.is_char && rti.is_const) {
-        out->ret.kind = FP_K_CSTR_OUT;
-        observable = true;
-        fp_shape_add(shape, sizeof shape, "t(");
-    } else {
+    if (!fp_bind_return(&rti, out, shape, &observable))
         return FP_V_UNSUPPORTED_RETURN;
-    }
 
-    np = fp_split_params(t, lp + 1u, e - 1u, starts, ends,
-                         (int)(sizeof starts / sizeof starts[0]));
+    int np = fp_param_list(t, lp, e, starts, ends,
+                           (int)(sizeof starts / sizeof starts[0]));
     if (np < 0)
         return FP_V_UNSUPPORTED_PARAM;
-    {
-        char only[FP_MAX_TYPE];
-        fp_norm(t, starts[0], ends[0], only, sizeof only);
-        if (np == 1 && (only[0] == '\0' || strcmp(only, "void") == 0))
-            np = 0;
-    }
-    if (np > FP_MAX_PARAMS)
-        return FP_V_UNSUPPORTED_PARAM;
-
-    for (i = 0; i < np; i++) {
-        char extent[FP_MAX_TYPE];
-        bool next_uint = false;
-        enum fp_verdict v;
-        if (i > 0 && out->param[i].kind == FP_K_LEN)
-            continue;                        /* already bound to a buffer */
-        if (i + 1 < np) {
-            char nx[FP_MAX_TYPE * 2];
-            struct fp_typeinfo nti;
-            fp_norm(t, starts[i + 1], ends[i + 1], nx, sizeof nx);
-            {   /* drop the following parameter's name before classifying */
-                size_t l = strlen(nx);
-                size_t nb = l;
-                while (nb > 0 && fp_ident_char((unsigned char)nx[nb - 1])) nb--;
-                if (nb > 0 && nb < l && nx[nb - 1] == ' ')
-                    nx[nb] = '\0';
-            }
-            fp_classify(ix, nx, &nti);
-            next_uint = (nti.stars == 0 && nti.is_scalar && !nti.is_char &&
-                         strncmp(nti.base, "enum ", 5) != 0);
-        }
-        v = fp_classify_param(ix, t, starts[i], ends[i], next_uint,
-                              &out->param[i], extent, sizeof extent);
-        if (v != FP_V_CANDIDATE)
-            return v;
-        if (next_uint &&
-            (out->param[i].kind == FP_K_BUF_IN ||
-             (out->param[i].kind == FP_K_OUT_ARR &&
-              out->param[i].elem_text[0] == '\0'))) {
-            /* bind the following unsigned integer as this buffer's length */
-            memset(&out->param[i + 1], 0, sizeof out->param[i + 1]);
-            out->param[i + 1].kind = FP_K_LEN;
-            out->param[i + 1].pair = i;
-        }
-    }
+    enum fp_verdict v = fp_classify_params(ix, t, starts, ends, np, out);
+    if (v != FP_V_CANDIDATE)
+        return v;
     out->n_params = np;
 
-    for (i = 0; i < np; i++) {
-        switch (out->param[i].kind) {
-        case FP_K_SCALAR:     fp_shape_add(shape, sizeof shape, "s,"); break;
-        case FP_K_CSTR_IN:    fp_shape_add(shape, sizeof shape, "t,"); break;
-        case FP_K_BUF_IN:     fp_shape_add(shape, sizeof shape, "b,"); break;
-        case FP_K_LEN:        fp_shape_add(shape, sizeof shape, "n,"); break;
-        case FP_K_OBJ_IN:     fp_shape_add(shape, sizeof shape, "o,"); break;
-        case FP_K_OUT_SCALAR: fp_shape_add(shape, sizeof shape, "S,");
-                              observable = true; break;
-        case FP_K_OUT_OBJ:    fp_shape_add(shape, sizeof shape, "O,");
-                              observable = true; break;
-        case FP_K_OUT_ARR:    observable = true;
-            if (out->param[i].elem_text[0] == '\0') {
-                fp_shape_add(shape, sizeof shape, "A,");
-            } else {
-                unsigned long k = 0;
-                char tok[48];
-                if (fp_eval_extent(ix, out->param[i].elem_text, &k))
-                    snprintf(tok, sizeof tok, "A%lu,", k);
-                else
-                    snprintf(tok, sizeof tok, "A?%s,", out->param[i].elem_text);
-                fp_shape_add(shape, sizeof shape, tok);
-            }
-            break;
-        case FP_K_ARR_IN: {
-            unsigned long k = 0;
-            char tok[48];
-            if (fp_eval_extent(ix, out->param[i].elem_text, &k))
-                snprintf(tok, sizeof tok, "a%lu,", k);
-            else
-                snprintf(tok, sizeof tok, "a?%s,", out->param[i].elem_text);
-            fp_shape_add(shape, sizeof shape, tok);
-            break;
-        }
-        default: return FP_V_UNSUPPORTED_PARAM;
-        }
-    }
-    fp_shape_add(shape, sizeof shape, ")");
+    for (int i = 0; i < np; i++)
+        if (!fp_shape_add_param(ix, &out->param[i], shape, &observable))
+            return FP_V_UNSUPPORTED_PARAM;
+    fp_shape_add(shape, FP_MAX_SHAPE, ")");
     if (!observable)
         return FP_V_NO_OBSERVABLE_OUTPUT;
 

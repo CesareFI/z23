@@ -315,6 +315,117 @@ static bool fp_has_indirect_call(const char *t, size_t s, size_t e)
     return false;
 }
 
+/* A member selector (`p->field`, `s.field`, `.field =`) or a tag after
+ * struct/union/enum is not a symbol reference. */
+static bool fp_is_member_ref(const char *t, size_t off, size_t i)
+{
+    size_t k = i;
+    while (k > off && isspace((unsigned char)t[k - 1])) k--;
+    if (k >= off + 1u && t[k - 1] == '.') return true;
+    if (k >= off + 2u && t[k - 2] == '-' && t[k - 1] == '>') return true;
+    if (k >= off + 6u && strncmp(t + k - 6, "struct", 6) == 0) return true;
+    if (k >= off + 5u && strncmp(t + k - 5, "union", 5) == 0) return true;
+    return k >= off + 4u && strncmp(t + k - 4, "enum", 4) == 0;
+}
+
+/* An identifier that is not called and not a macro: a value, an address, or
+ * a local. FP_V_CANDIDATE when it is harmless. */
+static enum fp_verdict fp_scan_bare_name(struct fp_index *ix, const char *name,
+                                         size_t n, int file)
+{
+    if (fp_in_list(k_impure_values, name, n)) {
+        fp_note_cause(ix, name, n);
+        return FP_V_IMPURE_GLOBAL;
+    }
+    if (fp_in_list(k_pure_libc, name, n)) {
+        /* A libc function named without calling it: its address is being
+         * taken, which means somebody is going to call it indirectly. */
+        fp_note_cause(ix, name, n);
+        return FP_V_FUNCTION_POINTER;
+    }
+    {
+        /* A bare mention of a function name is its ADDRESS being taken,
+         * which means an indirect call is coming. But only if this TU can
+         * actually see that function: a local variable that happens to
+         * share a name with some other file's static helper is not a
+         * function pointer, and treating it as one refused a hundred
+         * honest functions. */
+        int fn = fp_lookup_func(ix, name, n, file);
+        bool visible = false;
+        if (fn >= 0 && (ix->syms[fn].file == file || !ix->syms[fn].is_static))
+            visible = true;
+        if (!visible) {
+            int pr = fp_sym_lookup(ix, name, n, FP_SYM_PROTO);
+            if (pr >= 0 && ix->files[ix->syms[pr].file].is_header)
+                visible = true;
+        }
+        if (visible) {
+            fp_note_cause(ix, name, n);
+            return FP_V_FUNCTION_POINTER;
+        }
+    }
+    if (fp_sym_lookup(ix, name, n, FP_SYM_ENUMCONST) >= 0)
+        return FP_V_CANDIDATE;
+    int idx = fp_lookup_visible_object(ix, name, n, file);
+    if (idx >= 0 && !ix->syms[idx].const_object) {
+        fp_note_cause(ix, name, n);
+        return FP_V_IMPURE_GLOBAL;
+    }
+    /* Unknown, not called, not a global: a parameter, a local, a type
+     * name, or a struct member the selector test missed. Accepted. */
+    return FP_V_CANDIDATE;
+}
+
+/* The verdict for the identifier name[0..n) at a call or reference site;
+ * FP_V_CANDIDATE means the scan goes on. */
+static enum fp_verdict fp_scan_reference(struct fp_index *ix, int file,
+                                         const char *name, size_t n,
+                                         bool is_call, int depth,
+                                         int macro_depth, int self)
+{
+    /* The preprocessor runs first, so a macro shadows everything. */
+    int idx = fp_macro_unambiguous(ix, name, n);
+    if (idx == -2) {
+        fp_note_cause(ix, name, n);
+        return FP_V_UNRESOLVED_CALL;
+    }
+    if (idx >= 0) {
+        if (macro_depth >= FP_MACRO_DEPTH_MAX)
+            return FP_V_CLOSURE_TOO_DEEP;
+        return fp_scan_text(ix, ix->syms[idx].file, ix->syms[idx].body_off,
+                            ix->syms[idx].body_len, depth, macro_depth + 1,
+                            self);
+    }
+    if (!is_call)
+        return fp_scan_bare_name(ix, name, n, file);
+    if (fp_in_list(k_pure_libc, name, n))
+        return FP_V_CANDIDATE;
+    int fn = fp_lookup_func(ix, name, n, file);
+    if (fn < 0) {
+        fp_note_cause(ix, name, n);
+        return FP_V_UNRESOLVED_CALL;
+    }
+    return fp_purity_depth(ix, fn, depth + 1, self);
+}
+
+/* The verdict for the identifier t[i..j) inside the body t[off..e). */
+static enum fp_verdict fp_scan_token(struct fp_index *ix, int file,
+                                     const char *t, size_t off, size_t e,
+                                     size_t i, size_t j, int depth,
+                                     int macro_depth, int self)
+{
+    if (fp_in_list(k_forbidden_tokens, t + i, j - i)) {
+        fp_note_cause(ix, t + i, j - i);
+        return FP_V_FUNCTION_STATIC;
+    }
+    if (fp_in_list(k_keywords, t + i, j - i) || fp_is_member_ref(t, off, i))
+        return FP_V_CANDIDATE;
+    size_t k = j;
+    while (k < e && isspace((unsigned char)t[k])) k++;
+    return fp_scan_reference(ix, file, t + i, j - i, k < e && t[k] == '(',
+                             depth, macro_depth, self);
+}
+
 static enum fp_verdict fp_scan_text(struct fp_index *ix, int file, size_t off,
                                     size_t len, int depth, int macro_depth,
                                     int self)
@@ -334,10 +445,7 @@ static enum fp_verdict fp_scan_text(struct fp_index *ix, int file, size_t off,
 
     for (i = off; i < e; i++) {
         size_t j;
-        size_t k;
-        bool is_call;
-        bool is_member;
-        int idx;
+        enum fp_verdict v;
 
         if (!fp_ident_start((unsigned char)t[i]))
             continue;
@@ -345,119 +453,10 @@ static enum fp_verdict fp_scan_text(struct fp_index *ix, int file, size_t off,
             continue;
         j = i;
         while (j < e && fp_ident_char((unsigned char)t[j])) j++;
-
-        if (fp_in_list(k_forbidden_tokens, t + i, j - i)) {
-            fp_note_cause(ix, t + i, j - i);
-            return FP_V_FUNCTION_STATIC;
-        }
-        if (fp_in_list(k_keywords, t + i, j - i)) {
-            i = j - 1u;
-            continue;
-        }
-
-        /* A member selector (`p->field`, `s.field`, `.field =`) or a tag
-         * after struct/union/enum is not a symbol reference. */
-        is_member = false;
-        k = i;
-        while (k > off && isspace((unsigned char)t[k - 1])) k--;
-        if (k >= off + 1u && t[k - 1] == '.') is_member = true;
-        if (k >= off + 2u && t[k - 2] == '-' && t[k - 1] == '>') is_member = true;
-        if (k >= off + 6u && strncmp(t + k - 6, "struct", 6) == 0) is_member = true;
-        if (k >= off + 5u && strncmp(t + k - 5, "union", 5) == 0) is_member = true;
-        if (k >= off + 4u && strncmp(t + k - 4, "enum", 4) == 0) is_member = true;
-        if (is_member) {
-            i = j - 1u;
-            continue;
-        }
-
-        k = j;
-        while (k < e && isspace((unsigned char)t[k])) k++;
-        is_call = (k < e && t[k] == '(');
-
-        /* The preprocessor runs first, so a macro shadows everything. */
-        idx = fp_macro_unambiguous(ix, t + i, j - i);
-        if (idx == -2) {
-            fp_note_cause(ix, t + i, j - i);
-            return FP_V_UNRESOLVED_CALL;
-        }
-        if (idx >= 0) {
-            enum fp_verdict v;
-            if (macro_depth >= FP_MACRO_DEPTH_MAX)
-                return FP_V_CLOSURE_TOO_DEEP;
-            v = fp_scan_text(ix, ix->syms[idx].file, ix->syms[idx].body_off,
-                             ix->syms[idx].body_len, depth, macro_depth + 1,
-                             self);
-            if (v != FP_V_CANDIDATE)
-                return v;
-            i = j - 1u;
-            continue;
-        }
-
-        if (is_call) {
-            enum fp_verdict v;
-            int fn;
-            if (fp_in_list(k_pure_libc, t + i, j - i)) {
-                i = j - 1u;
-                continue;
-            }
-            fn = fp_lookup_func(ix, t + i, j - i, file);
-            if (fn < 0) {
-                fp_note_cause(ix, t + i, j - i);
-                return FP_V_UNRESOLVED_CALL;
-            }
-            v = fp_purity_depth(ix, fn, depth + 1, self);
-            if (v != FP_V_CANDIDATE)
-                return v;
-            i = j - 1u;
-            continue;
-        }
-
-        if (fp_in_list(k_impure_values, t + i, j - i)) {
-            fp_note_cause(ix, t + i, j - i);
-            return FP_V_IMPURE_GLOBAL;
-        }
-        if (fp_in_list(k_pure_libc, t + i, j - i)) {
-            /* A libc function named without calling it: its address is being
-             * taken, which means somebody is going to call it indirectly. */
-            fp_note_cause(ix, t + i, j - i);
-            return FP_V_FUNCTION_POINTER;
-        }
-        {
-            /* A bare mention of a function name is its ADDRESS being taken,
-             * which means an indirect call is coming. But only if this TU can
-             * actually see that function: a local variable that happens to
-             * share a name with some other file's static helper is not a
-             * function pointer, and treating it as one refused a hundred
-             * honest functions. */
-            int fn = fp_lookup_func(ix, t + i, j - i, file);
-            bool visible = false;
-            if (fn >= 0 && (ix->syms[fn].file == file || !ix->syms[fn].is_static))
-                visible = true;
-            if (!visible) {
-                int pr = fp_sym_lookup(ix, t + i, j - i, FP_SYM_PROTO);
-                if (pr >= 0 && ix->files[ix->syms[pr].file].is_header)
-                    visible = true;
-            }
-            if (visible) {
-                fp_note_cause(ix, t + i, j - i);
-                return FP_V_FUNCTION_POINTER;
-            }
-        }
-        if (fp_sym_lookup(ix, t + i, j - i, FP_SYM_ENUMCONST) >= 0) {
-            i = j - 1u;
-            continue;
-        }
-        idx = fp_lookup_visible_object(ix, t + i, j - i, file);
-        if (idx >= 0) {
-            if (!ix->syms[idx].const_object) {
-                fp_note_cause(ix, t + i, j - i);
-                return FP_V_IMPURE_GLOBAL;
-            }
-            i = j - 1u;
-            continue;
-        }
-        /* Unknown, not called, not a global: a parameter, a local, a type
-         * name, or a struct member the selector test missed. Accepted. */
+        v = fp_scan_token(ix, file, t, off, e, i, j, depth, macro_depth,
+                          self);
+        if (v != FP_V_CANDIDATE)
+            return v;
         i = j - 1u;
     }
     return FP_V_CANDIDATE;

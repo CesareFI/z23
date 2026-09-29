@@ -405,9 +405,8 @@ static bool manifest_context_present(
     return manifest_context_find(inputs, wanted) != NULL;
 }
 
-static bool manifest_references_valid(
+static bool manifest_terms_valid(
     const struct zcl_ontology_manifest_v1 *manifest,
-    const struct zcl_source_universe_v1 *universe,
     const struct zcl_ontology_manifest_inputs_v1 *inputs)
 {
     for (size_t i = 0; i < inputs->term_count; i++) {
@@ -420,6 +419,12 @@ static bool manifest_references_valid(
                        inputs->terms[j].identity_root, 32) == 0)
                 return false;
     }
+    return true;
+}
+
+static bool manifest_predicates_valid(
+    const struct zcl_ontology_manifest_inputs_v1 *inputs)
+{
     for (size_t i = 0; i < inputs->predicate_count; i++) {
         if (!manifest_term_present(
                 inputs, inputs->predicates[i].term_root,
@@ -436,37 +441,56 @@ static bool manifest_references_valid(
                     inputs->predicates[i].argument_type_roots[argument]))
                 return false;
     }
+    return true;
+}
+
+static bool manifest_formula_node_valid(
+    const struct zcl_ontology_manifest_inputs_v1 *inputs,
+    const struct zcl_ontology_formula_node_v1 *node)
+{
+    if ((node->op == ZCL_ONTOLOGY_FORMULA_FORALL ||
+         node->op == ZCL_ONTOLOGY_FORMULA_EXISTS) &&
+        !manifest_type_present(inputs, node->quantified_type_root))
+        return false;
+    const struct zcl_ontology_predicate_v1 *predicate = NULL;
+    if (node->op == ZCL_ONTOLOGY_FORMULA_ATOM) {
+        predicate = manifest_predicate_find(inputs, node->predicate_root);
+        if (!predicate || predicate->arity != node->arity)
+            return false;
+    }
+    for (size_t argument = 0; argument < node->arity; argument++) {
+        const struct zcl_ontology_formula_term_v1 *term =
+            &node->terms[argument];
+        if (!manifest_type_present(inputs, term->type_root) ||
+            (predicate && memcmp(
+                predicate->argument_type_roots[argument],
+                term->type_root, 32) != 0) ||
+            (term->kind == ZCL_ONTOLOGY_FORMULA_CONSTANT &&
+             !manifest_value_has_type(
+                 inputs, term->value_root, term->type_root)))
+            return false;
+    }
+    return true;
+}
+
+static bool manifest_formulas_valid(
+    const struct zcl_ontology_manifest_inputs_v1 *inputs)
+{
     for (size_t i = 0; i < inputs->formula_count; i++) {
         const struct zcl_ontology_formula_v1 *formula = &inputs->formulas[i];
         for (uint32_t node_index = 0; node_index < formula->node_count;
-             node_index++) {
-            const struct zcl_ontology_formula_node_v1 *node =
-                &formula->nodes[node_index];
-            if ((node->op == ZCL_ONTOLOGY_FORMULA_FORALL ||
-                 node->op == ZCL_ONTOLOGY_FORMULA_EXISTS) &&
-                !manifest_type_present(inputs, node->quantified_type_root))
+             node_index++)
+            if (!manifest_formula_node_valid(inputs,
+                                             &formula->nodes[node_index]))
                 return false;
-            const struct zcl_ontology_predicate_v1 *predicate = NULL;
-            if (node->op == ZCL_ONTOLOGY_FORMULA_ATOM) {
-                predicate = manifest_predicate_find(
-                    inputs, node->predicate_root);
-                if (!predicate || predicate->arity != node->arity)
-                    return false;
-            }
-            for (size_t argument = 0; argument < node->arity; argument++) {
-                const struct zcl_ontology_formula_term_v1 *term =
-                    &node->terms[argument];
-                if (!manifest_type_present(inputs, term->type_root) ||
-                    (predicate && memcmp(
-                        predicate->argument_type_roots[argument],
-                        term->type_root, 32) != 0) ||
-                    (term->kind == ZCL_ONTOLOGY_FORMULA_CONSTANT &&
-                     !manifest_value_has_type(
-                         inputs, term->value_root, term->type_root)))
-                    return false;
-            }
-        }
     }
+    return true;
+}
+
+static bool manifest_rules_valid(
+    const struct zcl_source_universe_v1 *universe,
+    const struct zcl_ontology_manifest_inputs_v1 *inputs)
+{
     for (size_t i = 0; i < inputs->rule_count; i++) {
         const struct zcl_ontology_formula_v1 *formula =
             manifest_formula_find(inputs, inputs->rules[i].formula_root);
@@ -478,10 +502,12 @@ static bool manifest_references_valid(
                 inputs->predicates, inputs->predicate_count))
             return false;
     }
-    for (size_t i = 0; i < inputs->context_count; i++)
-        if (memcmp(inputs->contexts[i].universe_root,
-                   manifest->universe_root, 32) != 0)
-            return false;
+    return true;
+}
+
+static bool manifest_assertions_valid(
+    const struct zcl_ontology_manifest_inputs_v1 *inputs)
+{
     for (size_t i = 0; i < inputs->assertion_count; i++) {
         const struct zcl_ontology_predicate_v1 *predicate =
             manifest_predicate_find(
@@ -498,12 +524,13 @@ static bool manifest_references_valid(
                     predicate->argument_type_roots[argument]))
                 return false;
     }
-    for (size_t i = 0; i < inputs->coverage_count; i++)
-        if (memcmp(inputs->coverage[i].universe_root,
-                   manifest->universe_root, 32) != 0 ||
-            !manifest_context_present(inputs,
-                                      inputs->coverage[i].context_root))
-            return false;
+    return true;
+}
+
+static bool manifest_domains_valid(
+    const struct zcl_ontology_manifest_v1 *manifest,
+    const struct zcl_ontology_manifest_inputs_v1 *inputs)
+{
     for (size_t i = 0; i < inputs->domain_count; i++) {
         if (memcmp(inputs->domains[i].universe_root,
                    manifest->universe_root, 32) != 0 ||
@@ -519,6 +546,31 @@ static bool manifest_references_valid(
                 return false;
     }
     return true;
+}
+
+static bool manifest_references_valid(
+    const struct zcl_ontology_manifest_v1 *manifest,
+    const struct zcl_source_universe_v1 *universe,
+    const struct zcl_ontology_manifest_inputs_v1 *inputs)
+{
+    if (!manifest_terms_valid(manifest, inputs) ||
+        !manifest_predicates_valid(inputs) ||
+        !manifest_formulas_valid(inputs) ||
+        !manifest_rules_valid(universe, inputs))
+        return false;
+    for (size_t i = 0; i < inputs->context_count; i++)
+        if (memcmp(inputs->contexts[i].universe_root,
+                   manifest->universe_root, 32) != 0)
+            return false;
+    if (!manifest_assertions_valid(inputs))
+        return false;
+    for (size_t i = 0; i < inputs->coverage_count; i++)
+        if (memcmp(inputs->coverage[i].universe_root,
+                   manifest->universe_root, 32) != 0 ||
+            !manifest_context_present(inputs,
+                                      inputs->coverage[i].context_root))
+            return false;
+    return manifest_domains_valid(manifest, inputs);
 }
 
 bool zcl_ontology_manifest_v1_validate(
