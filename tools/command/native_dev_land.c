@@ -6819,6 +6819,23 @@ static void dl_test_die_after_proof(void)
 }
 #endif
 
+#ifdef ZCL_DEV_BUILD
+/* The resident proof watcher is armed only on explicit request; a pending
+ * proof with the arm set but no watcher names its absence instead of
+ * waiting quietly. */
+static void dl_resume_pending_watcher_kick(const struct dl_dirs *d,
+                                           struct dl_row *row)
+{
+    const char *arm = getenv("ZCL_LAND_START_PROOF_WATCHER");
+    if (!dl_stub() && arm && strcmp(arm, "1") == 0 &&
+        !zcl_native_dev_loop_proof_queue_ready(d->wt)) {
+        (void)snprintf(row->detail, sizeof(row->detail), "%s",
+                       "resident_proof_watcher_absent");
+        dl_watcher_kick(d->wt, row->detail, sizeof(row->detail));
+    }
+}
+#endif
+
 /* Read the proof's own state for the in-flight request and act once.
  * Windows refuses step before entering this POSIX-only call graph. */
 [[maybe_unused]] static void dl_step_resume(const struct dl_dirs *d, struct dl_row *row,
@@ -6840,6 +6857,19 @@ static void dl_test_die_after_proof(void)
         return;
     if (strcmp(row->phase, "push") == 0 &&
         row->publication_signature[0]) {
+        /* The reconcile above just fetched and found the head absent.  When
+         * main has ALSO moved off the signed base, that exact pair can never
+         * fast-forward — no in-flight or retried dispatch of it can land
+         * later — so awaiting its remote receipt wedges the row (and the
+         * single-flight queue behind it) forever.  Take the ordinary
+         * successor path: the stale signed intent is logged, the exact pair
+         * is never redispatched, and the requeued row re-proves and re-signs
+         * a fresh pair on the new base.  Base unmoved still waits for the
+         * independent receipt, exactly as before. */
+        if (strcmp(observed_main, row->base) != 0) {
+            dl_step_successor(d, row, observed_main, reply);
+            return;
+        }
         dl_push_outcome_unknown(d, row, observed_main, reply);
         return;
     }
@@ -6854,13 +6884,7 @@ static void dl_test_die_after_proof(void)
         return;
     if (p == DL_PROOF_PENDING) {
 #ifdef ZCL_DEV_BUILD
-        const char *arm = getenv("ZCL_LAND_START_PROOF_WATCHER");
-        if (!dl_stub() && arm && strcmp(arm, "1") == 0 &&
-            !zcl_native_dev_loop_proof_queue_ready(d->wt)) {
-            (void)snprintf(row->detail, sizeof(row->detail), "%s",
-                           "resident_proof_watcher_absent");
-            dl_watcher_kick(d->wt, row->detail, sizeof(row->detail));
-        }
+        dl_resume_pending_watcher_kick(d, row);
 #endif
         if (dl_commit_or_report(d, row, false, reply, "proving"))
             dl_step_reply(reply, row, "proving");

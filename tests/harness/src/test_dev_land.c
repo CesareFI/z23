@@ -6132,7 +6132,7 @@ static int test_dev_land_signed_lost_ack(void)
 {
     int failures = 0;
 #if !defined(_WIN32)
-    TEST("land: lost signed push acknowledgement stays UNKNOWN and does not replay") {
+    TEST("land: lost signed push acknowledgement never replays; moved base requeues a successor") {
         struct dlx_rig rig;
         struct dlx_call c;
         char base[64], remote[64], land[1200], wt[1400];
@@ -6212,23 +6212,38 @@ static int test_dev_land_signed_lost_ack(void)
         const char *fetch_side[] = { "fetch", "--quiet", rig.clone,
                                      update_side, NULL };
         ASSERT(dlx_git(rig.bare, fetch_side) == 0);
+        /* Base moved and the head is provably absent from the fresh
+         * observation: the exact signed pair can never fast-forward onto
+         * the moved main, so the row requeues as a successor instead of
+         * waiting forever on a receipt that can never arrive.  The exact
+         * pair is still never redispatched (marker stays at 1). */
         dlx_begin(&c, "step");
-        ASSERT(dlx_run(&c) && !dlx_ok(&c));
-        ASSERT_STR_EQ(dlx_err_code(&c), "PUSH_OUTCOME_UNKNOWN");
-        ASSERT_STR_EQ(dlx_str(&c, "observed_remote_tip"), sibling);
+        ASSERT(dlx_run(&c) && dlx_ok(&c));
+        ASSERT_STR_EQ(dlx_str(&c, "state"), "queued");
+        ASSERT(dlx_int(&c, "predecessor_seq") == 1);
         dlx_end(&c);
         ASSERT(dlx_slurp(marker, attempts, sizeof(attempts), &attempts_len));
         ASSERT(attempts_len == strlen("attempted\n"));
-        char update[128];
-        (void)snprintf(update, sizeof(update), "+%s:refs/heads/main", rig.tip);
-        const char *remote_effect[] = { "fetch", "--quiet", rig.clone,
-                                        update, NULL };
-        ASSERT(dlx_git(rig.bare, remote_effect) == 0);
+        /* Drive the successor to a real landing: lift the lose-ack
+         * intercept, rebase+prove, attach the fresh pair, push. */
+        const char *restore[] = { "config", "--unset",
+                                  "remote.origin.receivepack", NULL };
+        ASSERT(dlx_git(wt, restore) == 0);
+        dlx_begin(&c, "step");
+        ASSERT(dlx_run(&c));
+        dlx_end(&c);
+        dlx_begin(&c, "attach");
+        (void)json_push_kv_int(&c.input, "seq", 2);
+        ASSERT(dlx_run(&c) && dlx_ok(&c));
+        dlx_end(&c);
         dlx_begin(&c, "step");
         ASSERT(dlx_run(&c) && dlx_ok(&c));
         ASSERT_STR_EQ(dlx_str(&c, "state"), "landed");
         ASSERT(strlen(dlx_str(&c, "remote_signature")) == 128);
         dlx_end(&c);
+        ASSERT(dlx_origin_main(&rig, remote));
+        ASSERT(strcmp(remote, base) != 0);
+        ASSERT(strcmp(remote, sibling) != 0);
         ASSERT(dlx_slurp(marker, attempts, sizeof(attempts), &attempts_len));
         ASSERT(attempts_len == strlen("attempted\n"));
         dlx_restore();
