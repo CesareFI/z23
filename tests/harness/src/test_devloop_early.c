@@ -1022,6 +1022,61 @@ static int de_test_skip_digraph_include(struct de_state *s)
     return failures;
 }
 
+static int de_test_skip_directive_space(struct de_state *s)
+{
+    int failures = 0;
+    TEST("devloop_early: preprocessing whitespace cannot hide a header") {
+        static const char *const directives[] = {
+            "\f#include \"early_skip_space.h\"\n",
+            "#\vinclude \"early_skip_space.h\"\n",
+            "#\finclude \"early_skip_space.h\"\n",
+            "#include\v\"early_skip_space.h\"\n",
+            "#include\f\"early_skip_space.h\"\n",
+        };
+        for (size_t i = 0; i < sizeof(directives) / sizeof(directives[0]); i++) {
+            ASSERT(de_hole_setup(s));
+            ASSERT(de_write(s->fx.root,
+                            "tools/dev/early_skip_space.h",
+                            "#define EARLY_SKIP_SPACE 11\n"));
+            ASSERT(de_write(s->fx.root, DE_HOLE_A, directives[i]));
+            de_hole_decide(s, DE_HOLE_FLAGS);
+            ASSERT(de_hole_is(s, "no-record", ""));
+            ASSERT(zcl_devloop_early_skip_record(s->fx.root, &s->hole,
+                                                  "", 1000));
+            de_hole_decide(s, DE_HOLE_FLAGS);
+            ASSERT(de_hole_is(s, "closure-unchanged", ""));
+            ASSERT(de_write(s->fx.root,
+                            "tools/dev/early_skip_space.h",
+                            "#define EARLY_SKIP_SPACE 22\n"));
+            de_hole_decide(s, DE_HOLE_FLAGS);
+            ASSERT(de_hole_is(s, "key-changed", ""));
+        }
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int de_test_skip_lone_cr(struct de_state *s)
+{
+    int failures = 0;
+    TEST("devloop_early: lone CR directive lines refuse reuse") {
+        ASSERT(de_hole_setup(s));
+        ASSERT(de_write(s->fx.root, "tools/dev/early_skip_first.h",
+                        "#define EARLY_SKIP_FIRST 1\n"));
+        ASSERT(de_write(s->fx.root, "tools/dev/early_skip_second.h",
+                        "#define EARLY_SKIP_SECOND 2\n"));
+        ASSERT(de_write(s->fx.root, DE_HOLE_A,
+                        "#include \"early_skip_first.h\"\r"
+                        "#include \"early_skip_second.h\"\r"
+                        "int early_hole_a(void)\r"
+                        "{ return EARLY_SKIP_FIRST + EARLY_SKIP_SECOND; }\r"));
+        de_hole_decide(s, DE_HOLE_FLAGS);
+        ASSERT(de_hole_is(s, "unvouched", "lone-cr"));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int de_test_skip_trigraph_include(struct de_state *s)
 {
     int failures = 0;
@@ -1426,6 +1481,8 @@ static int de_test_restart(void)
         failures += de_test_skip_suffix(s);
         failures += de_test_skip_import(s);
         failures += de_test_skip_digraph_include(s);
+        failures += de_test_skip_directive_space(s);
+        failures += de_test_skip_lone_cr(s);
         failures += de_test_skip_trigraph_include(s);
         failures += de_test_skip_spliced_directive(s);
         failures += de_test_skip_has_include(s);

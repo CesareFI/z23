@@ -425,7 +425,8 @@ enum es_inc {
 
 static const char *es_skip_blank(const char *p, const char *end)
 {
-    while (p < end && (*p == ' ' || *p == '\t'))
+    while (p < end && (*p == ' ' || *p == '\t' || *p == '\v' ||
+                       *p == '\f' || *p == '\r'))
         p++;
     return p;
 }
@@ -451,7 +452,7 @@ static size_t es_keyword(const char *p, const char *end)
         size_t len = strlen(words[i]);
         if ((size_t)(end - p) > len && strncmp(p, words[i], len) == 0 &&
             p[len] &&
-            strchr(" \t\"<", p[len]))
+            strchr(" \t\v\f\r\"<", p[len]))
             return len;
     }
     return 0;
@@ -720,6 +721,17 @@ static bool es_trigraph_candidate(const char *text, size_t len)
     return false;
 }
 
+/* A bare CR can end a preprocessing directive on supported compilers.
+ * The line scanner splits on LF, so refuse this spelling until it models
+ * that extra line boundary. CRLF remains covered by the ordinary scan. */
+static bool es_lone_cr(const char *text, size_t len)
+{
+    for (size_t i = 0; i < len; i++)
+        if (text[i] == '\r' && (i + 1 == len || text[i + 1] != '\n'))
+            return true;
+    return false;
+}
+
 static void es_node_load(struct es_graph *g, uint32_t idx)
 {
     char full[ES_PATH_MAX * 2];
@@ -734,6 +746,8 @@ static void es_node_load(struct es_graph *g, uint32_t idx)
     es_sha3_hex(text, len, g->nodes[idx].digest);
     if (es_trigraph_candidate(text, len))
         es_node_bad(g, idx, "trigraph", g->nodes[idx].path);
+    if (es_lone_cr(text, len))
+        es_node_bad(g, idx, "lone-cr", g->nodes[idx].path);
     len = es_splice_lines(text, len);
     es_strip_comments(text, len);
     bool uncertain = false;
