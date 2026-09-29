@@ -469,6 +469,13 @@ bool network_crawler_default_probe(const struct net_address *addr,
         snprintf(out->reason, sizeof(out->reason), "tcp connect failed");
         return true; /* MEASURED unreachable */
     }
+    /* connect_socket_directly returns a non-blocking socket, where recv
+     * returns at once and the timeouts below never apply. */
+    if (!zcl_set_socket_nonblocking(sock, false)) {
+        (void)platform_socket_close(sock);
+        snprintf(out->reason, sizeof(out->reason), "socket mode failed");
+        return true; /* MEASURED unreachable */
+    }
 
     (void)platform_socket_set_receive_timeout(sock, handshake_timeout_ms);
     (void)platform_socket_set_send_timeout(sock, handshake_timeout_ms);

@@ -17,8 +17,9 @@
  *      unprobed is its own bucket, never counted as unreachable, never
  *      overwriting a real measurement, never emitted as a failed dial.
  *
- * NO real sockets and NO real circuits: the dialer is replaced by a synthetic
- * probe_fn that encodes each node's measured properties in its address octets.
+ * No real circuits: the dialer is replaced by a synthetic probe_fn that encodes
+ * each node's measured properties in its address octets. One case dials a
+ * loopback listener through the real probe.
  */
 
 #include "test/test_core.h"
@@ -26,12 +27,21 @@
 #include "services/network_crawler.h"
 #include "conditions/net_eclipse_suspected.h"
 #include "json/json.h"
+#include "chain/chainparams.h"
+#include "core/hash.h"
+#include "core/serialize.h"
+#include "core/uint256.h"
 #include "net/netaddr.h"
+#include "net/p2p_message.h"
+#include "net/protocol.h"
+#include "net/version.h"
+#include "platform/socket_compat.h"
 #include "net/onion_peer_merge.h"
 #include "platform/time_compat.h"
 #include "storage/peers_projection.h"
 #include "util/blocker.h"
 
+#include <pthread.h>
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -170,6 +180,77 @@ static struct ncrawl_probe_result mk_res(const char *addr, bool reachable,
     r.latency_us = 100;
     r.last_probe_us = 42;
     return r;
+}
+
+
+/* ── loopback peer that replies to the probe only after a delay ────────── */
+
+#define NC_SLOW_REPLY_MS 250
+
+struct nc_slow_peer {
+    platform_socket_t listener;
+    uint16_t port;
+    pthread_t thread;
+};
+
+static void *nc_slow_peer_main(void *arg)
+{
+    struct nc_slow_peer *p = arg;
+    struct sockaddr_in from;
+    size_t fl = sizeof(from);
+    platform_socket_t c =
+        platform_socket_accept(p->listener, (struct sockaddr *)&from, &fl);
+    if (c == PLATFORM_SOCKET_INVALID)
+        return NULL;
+    uint8_t sink[512];
+    (void)platform_socket_receive(c, sink, sizeof(sink));
+    platform_sleep_ms(NC_SLOW_REPLY_MS);
+
+    struct version_message ver;
+    version_message_init(&ver);
+    ver.protocol_version = PROTOCOL_VERSION;
+    ver.timestamp = platform_time_wall_unix();
+    snprintf(ver.sub_version, sizeof(ver.sub_version), "/slow:1/");
+    ver.start_height = 77;
+    struct byte_stream s;
+    stream_init(&s, 256);
+    if (version_message_serialize(&ver, &s)) {
+        uint8_t frame[MSG_HEADER_SIZE + 512] = {0};
+        memcpy(frame, chain_params_get()->pchMessageStart, MESSAGE_START_SIZE);
+        memcpy(frame + MESSAGE_START_SIZE, "version", 7);
+        for (int i = 0; i < 4; i++)
+            frame[MESSAGE_START_SIZE + COMMAND_SIZE + i] =
+                (uint8_t)(s.size >> (8 * i));
+        struct uint256 h;
+        hash256(s.data, s.size, h.data);
+        memcpy(frame + MESSAGE_START_SIZE + COMMAND_SIZE + 4, h.data, 4);
+        memcpy(frame + MSG_HEADER_SIZE, s.data, s.size);
+        (void)platform_socket_send_all(c, frame, MSG_HEADER_SIZE + s.size);
+    }
+    stream_free(&s);
+    platform_sleep_ms(100);
+    (void)platform_socket_close(c);
+    return NULL;
+}
+
+static bool nc_slow_peer_start(struct nc_slow_peer *p)
+{
+    p->listener = platform_socket_open(AF_INET, SOCK_STREAM, 0, true, false);
+    if (p->listener == PLATFORM_SOCKET_INVALID)
+        return false;
+    struct sockaddr_in sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sin_family = AF_INET;
+    sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    size_t sl = sizeof(sa);
+    if (platform_socket_bind(p->listener, (struct sockaddr *)&sa,
+                             sizeof(sa)) != 0 ||
+        platform_socket_listen(p->listener, 1) != 0 ||
+        platform_socket_local_address(p->listener, (struct sockaddr *)&sa,
+                                      &sl) != 0)
+        return false;
+    p->port = ntohs(sa.sin_port);
+    return pthread_create(&p->thread, NULL, nc_slow_peer_main, p) == 0;
 }
 
 int test_network_crawler(void)
@@ -728,6 +809,26 @@ int test_network_crawler(void)
                  json_get_str(lr)[0] != '\0');
         json_free(&d);
         atomic_store(&g_onion_not_probed, 0);
+        printf("done\n");
+    }
+
+    /* ── 17. the real dial waits out a slow reply on a blocking socket ───── */
+    printf("  default probe reads a delayed version reply over loopback... ");
+    {
+        struct nc_slow_peer peer;
+        NC_CHECK(nc_slow_peer_start(&peer));
+        struct net_address lo;
+        net_address_init(&lo);
+        unsigned char ip4[4] = { 127, 0, 0, 1 };
+        net_addr_set_ipv4(&lo.svc.addr, ip4);
+        lo.svc.port = peer.port;
+        struct ncrawl_probe_result r;
+        memset(&r, 0, sizeof(r));
+        NC_CHECK(network_crawler_default_probe(&lo, 2000, 2000, &r) == true);
+        NC_CHECK(r.reachable == true);
+        NC_CHECK(r.best_height == 77);
+        pthread_join(peer.thread, NULL);
+        (void)platform_socket_close(peer.listener);
         printf("done\n");
     }
 
