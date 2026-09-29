@@ -1079,6 +1079,9 @@ int args_parse_node_options(int argc, char **argv, struct app_context *ctx,
         if (rc == ARGS_ARM_NOMATCH)
             args_warn_unknown_flag(argv[i]);
     }
+    /* Automatic legacy sources under ~/.zclassic belong to mainnet. */
+    if (ctx->regtest || ctx->testnet)
+        ctx->no_legacy_auto_import = true;
     /* The -v2transport spelling is a deprecated alias for
      * -noisetransport (kept so existing Noise operators keep booting;
      * connman_init() honors it and repeats this notice where the flag

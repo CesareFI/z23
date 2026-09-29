@@ -659,14 +659,19 @@ build/bin/z23 -datadir="$HOME/.zclassic-c23-dev" -rpcport=18234 stop
 
 **First run without touching mainnet:** the command above dials real
 mainnet peers immediately — there is no flag that makes it stay offline on
-its own. To sanity-check a fresh build without any network I/O, run a
-`-regtest` node pinned to a dead connect sink instead of real peers, the
-same pattern `tools/scripts/isolated_node_env.sh` uses for CI:
+its own. To sanity-check a fresh build without external peer or Tor traffic,
+run a `-regtest` node pinned to a dead loopback connect sink, the same pattern
+`tools/scripts/isolated_node_env.sh` uses for CI:
 
 ```bash
 build/bin/z23 -datadir="$HOME/.zclassic-c23-regtest" -regtest \
-    -port=39001 -rpcport=39002 -connect=127.0.0.1:39999
+    -nolegacyimport -no-tor -port=39001 -rpcport=39002 \
+    -connect=127.0.0.1:39999
 ```
+
+Regtest and testnet also disable automatic import from the mainnet
+`~/.zclassic` path during argument parsing. The explicit `-nolegacyimport`
+keeps this example safe with older binaries that lack that default.
 
 ### The fast dev loop
 

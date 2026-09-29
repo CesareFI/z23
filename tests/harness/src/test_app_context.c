@@ -3,6 +3,7 @@
 #include "test/test_core.h"
 
 #include "config/boot.h"
+#include "config/args.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -209,6 +210,33 @@ static int test_app_context_tor_policy(void)
 
     return failures;
 }
+static int test_nonmainnet_legacy_import_default(void)
+{
+    int failures = 0;
+    bool show_metrics = false;
+    struct app_context ctx;
+    char *main_argv[] = { "z23" };
+    char *regtest_argv[] = { "z23", "-regtest" };
+    char *testnet_argv[] = { "z23", "-testnet" };
+
+    app_context_defaults(&ctx);
+    bool mainnet = args_parse_node_options(1, main_argv, &ctx,
+                                           &show_metrics) == -1 &&
+                   !ctx.no_legacy_auto_import;
+    app_context_defaults(&ctx);
+    bool regtest = args_parse_node_options(2, regtest_argv, &ctx,
+                                           &show_metrics) == -1 &&
+                   ctx.no_legacy_auto_import;
+    app_context_defaults(&ctx);
+    bool testnet = args_parse_node_options(2, testnet_argv, &ctx,
+                                           &show_metrics) == -1 &&
+                   ctx.no_legacy_auto_import;
+
+    APPCTX_CHECK("non-mainnet modes refuse automatic mainnet legacy import",
+                 mainnet && regtest && testnet);
+    return failures;
+}
+
 int test_app_context(void)
 {
     int failures = 0;
@@ -356,6 +384,7 @@ int test_app_context(void)
                  app_runtime_profile_has_file_service(ZCL_RUNTIME_LEGACY_COMPAT));
 
     failures += test_app_context_tor_policy();
+    failures += test_nonmainnet_legacy_import_default();
 
     return failures;
 }
