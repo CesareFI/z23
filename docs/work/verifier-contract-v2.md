@@ -316,6 +316,12 @@ that it can be named. It never admits. Any other unknown or framed-wrong
 domain refuses `attest_schema_unknown`. An exit code outside the int32 range,
 or trailing bytes, refuses `attest_record_malformed`.
 
+A signed FAIL blocks only after schema v2 and the signer check pass. A v1
+record carrying a signed FAIL therefore no longer blocks, as it did before
+v2. It refuses `attest_record_v1_unbound` and the lookup stays COLD, so the
+receiver compiles locally. This is conservative and intended: a v1 record
+names no launch receipt, so its FAIL cannot be tied to a root launch.
+
 ## 9. Expected key and store key
 
 The expected key (key v2, `tools/verify/fixed_result_key_v2.h`) is
@@ -365,7 +371,27 @@ child refuses `store_observation_child_unknown`. A missing child refuses
 The publisher is root custody. The production reader refuses
 `store_owner_same_uid` when the caller's effective UID is the signer UID or
 the publisher UID. The `ZCL_TESTING` fixture refuses the same way unless the
-test sets `allow_same_uid`. Missing pins refuse `store_pins_unqualified`.
+test sets `allow_same_uid`.
+
+The production reader takes no pins argument. On every call,
+`zcl_verify_store_lookup` loads `/etc/z23verify/fixed_result.pins` itself
+with `zcl_verify_store_pins_load`. It walks from `/` by descriptor, and every
+directory must be root-owned and not group or world writable. It opens the
+file with `O_NOFOLLOW`, and the file must be root-owned, regular, nlink 1 and
+mode exactly `0444`. The walk then applies `zcl_fr_pins_parse`. The refusal
+tokens are:
+
+| Condition | Token |
+|---|---|
+| A directory on the walk is not root-owned, is writable, or is missing | `store_pins_path_unsafe` |
+| The pins file is absent | `store_pins_missing` |
+| The file is a symlink, not root-owned, not exactly `0444`, has nlink > 1, or is empty or oversized | `store_pins_unsafe` |
+| The file changed while it was being read | `store_pins_changed` |
+| The bytes are bad | The contract token (for example `contract_version_v1_retired`) |
+
+Every refusal leaves the lookup COLD. Only the `ZCL_TESTING` fixture lookup
+takes pins as an argument, and there a NULL pins argument refuses
+`store_pins_unqualified`.
 
 ## 11. Retired v1 artifacts
 
