@@ -313,7 +313,7 @@ struct zcl_result build_fabric_proof_issue_executed(
     if (refused) {
         atomic_fetch_add(&ctx->live.issue_refused, 1);
         atomic_store(&ctx->live.last_issue_refusal, refused);
-        bfpc_issuer_resync(ctx, ndb);
+        if (ctx->store) bfpc_issuer_resync(ctx, ndb);
         LOG_WARN(BFPI_LOG,
                  "schema=zcl.proof_issue.v1 action=%s issued=false "
                  "refusal=%s", action->action_id, refused);
