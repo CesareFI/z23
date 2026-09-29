@@ -444,6 +444,12 @@ between them, and it never hides one:
   operator only. The record in the store is what blocks.
 - Only an identical `<record-sha3>` refuses, with `publisher_record_exists`.
   Nothing under `store/` is ever unlinked or rewritten.
+- The publisher scans at most 96 record directories per key (`FRP_SCAN_MAX`).
+  Once a key holds more than 96, the scan overflows and
+  every further publish to that key refuses `publisher_store_unsafe`.
+  Receivers already BLOCK with `store_scan_incomplete` once the key holds
+  more than 64 observations (`VS_MAX_OBSERVATIONS`). A key that full is an
+  operator incident, not a reuse path.
 
 ## 11. Retired v1 artifacts
 

@@ -327,6 +327,9 @@ That was rejected because it widens exposure:
 - the signer's `umask 077` and its signer-private check on `key/` and
   `staging/` would have to diverge.
 
+The publisher unit also sets `InaccessiblePaths=/var/lib/z23verify/key`,
+because the read override would otherwise reach `signer.seed`.
+
 With the capability, the widening is confined to one short-lived root
 process that verifies every byte it reads.
 
@@ -357,6 +360,9 @@ PrivateTmp=yes
 NoNewPrivileges=yes
 CapabilityBoundingSet=
 AmbientCapabilities=
+PrivateDevices=yes
+RestrictAddressFamilies=AF_UNIX
+SystemCallFilter=@system-service
 ```
 
 ```ini
@@ -382,6 +388,11 @@ PrivateTmp=yes
 NoNewPrivileges=yes
 CapabilityBoundingSet=CAP_DAC_READ_SEARCH
 AmbientCapabilities=
+# The capability could read key/signer.seed; hide that directory outright.
+InaccessiblePaths=/var/lib/z23verify/key
+PrivateDevices=yes
+RestrictAddressFamilies=AF_UNIX
+SystemCallFilter=@system-service
 ```
 
 ```sh
@@ -459,6 +470,7 @@ covers it under `ZCL_TESTING`.
 | record directory exists | publish R twice | `publisher_record_exists`; history kept | B1 | no-clobber |
 | FAIL then PASS | publish a signed FAIL, then the PASS | both published in `store/K/`; publisher reports `conflict=publisher_conflict_fail_exists` and writes an audit note; receiver BLOCK `attest_eligible_conflict` | B1 | FAIL then PASS |
 | PASS then FAIL | the reverse | both published; `conflict=publisher_conflict_pass_exists`; the earlier HIT becomes BLOCK `attest_eligible_conflict`, never HIT | B1 | PASS then FAIL |
+| key full | more than 96 records under one key | `publisher_store_unsafe` for every further publish; receivers already BLOCK `store_scan_incomplete` past 64 | B1 | — |
 | lock held past deadline | `flock -x …/fixed_result.lock sleep 10` | `publisher_lock_deadline` (5 s) | B1 | lock |
 | tampered object, dep or stderr in store | edit a stored file | receiver `attest_*_mismatch` | B1 | — |
 | wrong argv or cwd | receiver key from another cwd or profile | receiver COLD, `attest_no_observation` | B1 | — |

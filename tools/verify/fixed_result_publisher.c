@@ -31,7 +31,8 @@
 #define FRP_OBJECT_MAX (8u * 1024u * 1024u)
 #define FRP_OUTPUT_MAX (4u * 1024u * 1024u)
 #define FRP_LOCK_STEP_MS 10u
-/* At most 96 record directories per key. Past that the key refuses every
+/* The publisher scans at most 96 record directories per key; once a key
+ * holds more, the scan overflows and the key refuses every
  * further publish with publisher_store_unsafe; receivers already BLOCK
  * past their own 64-observation scan bound (store_scan_incomplete). */
 #define FRP_SCAN_MAX 96u
