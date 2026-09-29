@@ -61,6 +61,23 @@ static bool phc_store_log(struct vcs_package_store *store, int signer,
            phc_put(store, out, VCS_PROOF_CHECKPOINT_WIRE_BYTES, NULL);
 }
 
+/* Sync a receiver with exactly one stored ticket and checkpoint. */
+static bool phc_sync_one_into(struct vcs_proof_receiver *rx, const uint8_t *cp,
+                              const uint8_t *ticket)
+{
+    const uint8_t *delta[] = {ticket};
+    const size_t lens[] = {VCS_PROOF_TICKET_WIRE_BYTES};
+    struct vcs_proof_sync_report rep;
+    return vcs_proof_receiver_sync(rx, cp, VCS_PROOF_CHECKPOINT_WIRE_BYTES,
+                                   delta, lens, 1, &rep) &&
+           rep.outcome == VCS_PROOF_SYNC_ADVANCED;
+}
+
+static bool phc_sync_one(const uint8_t *cp, const uint8_t *ticket)
+{
+    return phc_sync_one_into(g_h.rx, cp, ticket);
+}
+
 /* Filler packages: `count` of them, all sorting before `late` when `late`
  * is non-NULL, so `late` cannot appear on the first catalog page. */
 static bool phc_fill(struct vcs_package_store *store, const uint8_t *late,
@@ -291,10 +308,135 @@ static int phc_case_revoked_after_reopen(void)
     return failures;
 }
 
+/* ── a fork visible only past the first catalog page ────────────── */
+
+static int phc_case_late_page_fork(void)
+{
+    int failures = 0;
+    TEST_CASE("proof_history: a fork found only on a later page never hits") {
+        ASSERT(phc_fresh());
+        struct vcs_component_proof_key_v1 forked_key;
+        phc_key("unit/forked", &forked_key);
+        uint8_t a[1][VCS_PROOF_TICKET_WIRE_BYTES];
+        uint8_t b[1][VCS_PROOF_TICKET_WIRE_BYTES];
+        ASSERT(ptf_emit(&g_h, PTF_A, &g_h.base, ptf_pass(), a[0], NULL));
+        ASSERT(ptf_emit(&g_h, PTF_B, &g_h.base, ptf_pass(), b[0], NULL));
+
+        /* A's own key signs a second history at the same sequence. */
+        struct vcs_proof_issuer_log *fork =
+            vcs_proof_issuer_log_new(g_h.seed[PTF_A]);
+        ASSERT(fork != NULL);
+        uint8_t forked[VCS_PROOF_TICKET_WIRE_BYTES];
+        uint8_t fork_cp[VCS_PROOF_CHECKPOINT_WIRE_BYTES];
+        uint8_t scratch[VCS_PROOF_TICKET_WIRE_BYTES];
+        struct vcs_proof_ticket_v1 t;
+        bool made = ptf_emit(&g_h, PTF_STRANGER, &forked_key, ptf_pass(),
+                             scratch, NULL) &&
+                    vcs_proof_ticket_decode(scratch, sizeof(scratch), &t) &&
+                    vcs_proof_issuer_log_append(fork, &t, forked) &&
+                    vcs_proof_issuer_log_checkpoint(fork, 51, fork_cp);
+        vcs_proof_issuer_log_free(fork);
+        ASSERT(made);
+        uint8_t forked_root[32], fork_cp_root[32];
+        ASSERT(vcs_blob_root(forked, sizeof(forked), forked_root));
+        ASSERT(vcs_blob_root(fork_cp, sizeof(fork_cp), fork_cp_root));
+        const uint8_t *late = memcmp(forked_root, fork_cp_root, 32) > 0
+                            ? forked_root : fork_cp_root;
+
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "proof_history", "latefork");
+        struct vcs_package_store *store = vcs_package_store_open(dir, PHC_QUOTA);
+        ASSERT(store != NULL);
+        ASSERT(phc_fill(store, late, VCS_PACKAGE_STORE_PAGE_MAX));
+        uint8_t cp_a[VCS_PROOF_CHECKPOINT_WIRE_BYTES];
+        uint8_t cp_b[VCS_PROOF_CHECKPOINT_WIRE_BYTES];
+        ASSERT(phc_store_log(store, PTF_A, a, 1, 52, cp_a));
+        ASSERT(phc_store_log(store, PTF_B, b, 1, 53, cp_b));
+        /* A live receiver already serves a HIT from the honest history. */
+        ASSERT(phc_sync_one(cp_a, a[0]));
+        ASSERT(phc_sync_one(cp_b, b[0]));
+        struct vcs_proof_ticket_class cls[PHC_CAP];
+        struct vcs_proof_reuse_decision d;
+        ASSERT(phc_decide(g_h.rx, &g_h.base, NULL, cls, &d));
+        ASSERT_EQ(d.outcome, VCS_PROOF_REUSE_HIT_PASS);
+        ASSERT(phc_put(store, forked, sizeof(forked), NULL));
+        ASSERT(phc_put(store, fork_cp, sizeof(fork_cp), NULL));
+        const size_t rows = VCS_PACKAGE_STORE_PAGE_MAX + 6u;
+        struct vcs_package_store_summary page_rows[VCS_PACKAGE_STORE_PAGE_MAX];
+        struct vcs_package_store_page page;
+        ASSERT_EQ(vcs_package_store_page_summaries(
+                      store, NULL, VCS_PACKAGE_STORE_PAGE_MAX, 0, page_rows,
+                      &page), VCS_PACKAGE_STORE_PAGE_OK);
+        ASSERT(page.has_more);
+        ASSERT(memcmp(late, page.next_root, 32) > 0);
+
+        /* One page is not the history: refuse, publish nothing. */
+        struct vcs_proof_receiver *partial = vcs_proof_receiver_new();
+        ASSERT(partial != NULL);
+        size_t tickets = 9, cps = 9, skipped = 9;
+        ASSERT(!vcs_proof_receiver_rebuild_bounded(
+            partial, store, VCS_PACKAGE_STORE_PAGE_MAX, &tickets, &cps,
+            &skipped));
+        ASSERT_EQ(tickets, (size_t)0);
+        ASSERT_EQ(vcs_proof_receiver_ticket_count(partial), (size_t)0);
+        vcs_proof_receiver_free(partial);
+
+        /* Restart: the complete catalog shows A equivocating. */
+        vcs_package_store_close(store);
+        store = vcs_package_store_open(dir, PHC_QUOTA);
+        ASSERT(store != NULL);
+        struct vcs_proof_receiver *rx = phc_rebuilt(store, rows);
+        ASSERT(rx != NULL);
+        ASSERT(vcs_proof_receiver_issuer_equivocating(rx, g_h.pub[PTF_A]));
+        ASSERT(phc_decide(rx, &g_h.base, NULL, cls, &d));
+        ASSERT_EQ(d.outcome, VCS_PROOF_REUSE_MISS);
+        ASSERT_STR_EQ(d.reason, VCS_PROOF_REUSE_WHY_QUORUM);
+        ASSERT_STR_EQ(phc_reason_of(cls, d.tickets_seen, PTF_A),
+                      VCS_PROOF_TICKET_EQUIVOCATION);
+        ASSERT(phc_decide(rx, &forked_key, NULL, cls, &d));
+        ASSERT_EQ(d.outcome, VCS_PROOF_REUSE_MISS);
+        ASSERT_STR_EQ(d.reason, VCS_PROOF_REUSE_WHY_INELIGIBLE);
+        ASSERT_STR_EQ(phc_reason_of(cls, d.tickets_seen, PTF_A),
+                      VCS_PROOF_TICKET_EQUIVOCATION);
+        vcs_proof_receiver_free(rx);
+
+        /* The receiver that already served a HIT cannot publish a view that
+         * unverifies its own checkpoint, so its rebuild refuses. The signed
+         * fork from the later page still reaches it: A stops hitting, B's
+         * history and the rest of the old view are untouched. */
+        ASSERT(!vcs_proof_receiver_rebuild_bounded(g_h.rx, store, rows,
+                                                   &tickets, &cps, &skipped));
+        ASSERT_EQ(tickets, (size_t)0);
+        ASSERT_EQ(vcs_proof_receiver_ticket_count(g_h.rx), (size_t)2);
+        ASSERT(vcs_proof_receiver_issuer_equivocating(g_h.rx, g_h.pub[PTF_A]));
+        ASSERT(!vcs_proof_receiver_issuer_equivocating(g_h.rx, g_h.pub[PTF_B]));
+        ASSERT(phc_decide(g_h.rx, &g_h.base, NULL, cls, &d));
+        ASSERT_EQ(d.outcome, VCS_PROOF_REUSE_MISS);
+        ASSERT_STR_EQ(d.reason, VCS_PROOF_REUSE_WHY_QUORUM);
+        ASSERT_STR_EQ(phc_reason_of(cls, d.tickets_seen, PTF_A),
+                      VCS_PROOF_TICKET_EQUIVOCATION);
+        ASSERT_STR_EQ(phc_reason_of(cls, d.tickets_seen, PTF_B),
+                      VCS_PROOF_TICKET_ELIGIBLE);
+        /* A budget that cannot reach the later page records nothing. */
+        struct vcs_proof_receiver *early = vcs_proof_receiver_new();
+        ASSERT(early != NULL);
+        ASSERT(phc_sync_one_into(early, cp_a, a[0]));
+        ASSERT(!vcs_proof_receiver_rebuild_bounded(
+            early, store, VCS_PACKAGE_STORE_PAGE_MAX, &tickets, &cps,
+            &skipped));
+        ASSERT(!vcs_proof_receiver_issuer_equivocating(early, g_h.pub[PTF_A]));
+        vcs_proof_receiver_free(early);
+        vcs_package_store_close(store);
+        test_rm_rf(dir);
+    } TEST_END
+    return failures;
+}
+
 int ptf_history_cases(void)
 {
     int failures = 0;
     failures += phc_case_revoked_after_reopen();
+    failures += phc_case_late_page_fork();
     ptf_free(&g_h);
     return failures;
 }

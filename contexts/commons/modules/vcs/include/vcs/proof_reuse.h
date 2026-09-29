@@ -305,7 +305,10 @@ bool vcs_component_proof_key_load(struct vcs_package_store *store,
 /* Rebuild from ticket and checkpoint blobs in `store`, retaining every ticket
  * and replaying signed checkpoints in leaf-count and ancestry order. Missing
  * history refuses. The caller's receiver remains intact on failure and output
- * counts are zero. Unrelated blobs count as *skipped. The caller supplies a
+ * counts are zero, with one exception that only adds distrust: when a complete
+ * scan proved that an issuer the receiver already holds signed a fork, the
+ * receiver marks that issuer equivocating even though the rebuilt view is
+ * refused. Unrelated blobs count as *skipped. The caller supplies a
  * total catalog-row budget in addition to the per-page limit. Exhaustion
  * refuses; it never publishes a view missing a later contradiction. */
 bool vcs_proof_receiver_rebuild_bounded(

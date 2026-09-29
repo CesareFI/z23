@@ -1040,6 +1040,59 @@ static bool pts_restore_anchored_fork(const struct vcs_proof_receiver *old,
     return true;
 }
 
+/* A signed fork is self-certifying: two signature-valid tickets at one
+ * sequence, or two checkpoints of one size, under one key. When a complete
+ * scan finds one for an issuer the live receiver already holds, but the
+ * rebuilt view as a whole must be refused, the live receiver still records
+ * that distrust. Marking an issuer equivocating only removes eligibility;
+ * it can never create a HIT, and nothing else in the live view changes. */
+struct pts_fork_marks {
+    struct vcs_proof_receiver *live;
+    const struct vcs_proof_receiver *staging;
+    size_t marked;
+};
+
+static bool pts_fork_unmarked(const struct vcs_proof_receiver *live,
+                              const struct vcs_proof_receiver *staging,
+                              size_t i)
+{
+    const struct pr_issuer *was = &live->issuers[i];
+    const struct pr_issuer *now = pr_issuer_find(staging, was->pubkey);
+    return !was->equivocating && now && now->equivocating;
+}
+
+static void pts_mark_forks(void *context)
+{
+    struct pts_fork_marks *m = context;
+    for (size_t i = 0; i < m->live->issuer_count; i++)
+        if (pts_fork_unmarked(m->live, m->staging, i)) {
+            m->live->issuers[i].equivocating = true;
+            m->marked++;
+        }
+}
+
+static void pts_record_forks(struct vcs_proof_receiver *live,
+                             const struct vcs_proof_receiver *staging,
+                             struct vcs_package_store *store,
+                             const struct pts_chunks *chunks,
+                             uint64_t generation)
+{
+    bool any = false;
+    for (size_t i = 0; !any && i < live->issuer_count; i++)
+        any = pts_fork_unmarked(live, staging, i);
+    if (!any) return;
+    struct pts_fork_marks m = {live, staging, 0};
+    if (vcs_package_store_publish_checked(
+            store, generation, (const uint8_t (*)[32])chunks->hashes,
+            chunks->count, pts_mark_forks, &m) != VCS_PACKAGE_STORE_PAGE_OK) {
+        LOG_ERROR(PTS_LOG, "rebuild: signed fork evidence changed before it "
+                           "could be recorded");
+        return;
+    }
+    LOG_WARN(PTS_LOG, "rebuild refused; recorded %zu signed issuer fork(s) "
+                      "in the live receiver", m.marked);
+}
+
 static void pts_report_counts(const struct pts_counts *n, size_t *tickets,
                               size_t *checkpoints, size_t *skipped)
 {
@@ -1105,14 +1158,17 @@ static bool pts_rebuild_bounded(struct vcs_proof_receiver *r,
     struct pts_cps cps = {0};
     struct pts_chunks chunks = {0};
     uint64_t generation = 0;
-    bool ok = pts_scan(staging, store, &cps, &n, &chunks, &generation,
-                       max_catalog_rows) &&
+    bool scanned = pts_scan(staging, store, &cps, &n, &chunks, &generation,
+                            max_catalog_rows);
+    bool ok = scanned &&
               pts_replay(staging, &cps, &n) &&
               pts_restore_anchored_fork(r, staging) &&
               pts_preserves_prior(r, staging) &&
               pts_verify_anchor_heads(staging, store, anchors, anchor_count);
     free(cps.items);
     if (ok) ok = pts_publish_rechecked(r, staging, store, &chunks, generation);
+    else if (scanned)
+        pts_record_forks(r, staging, store, &chunks, generation);
     if (ok && generation_out) *generation_out = generation;
     if (!ok)
         n = (struct pts_counts){0};
