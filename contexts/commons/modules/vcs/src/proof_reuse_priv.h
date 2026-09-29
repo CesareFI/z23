@@ -45,6 +45,7 @@ struct pr_issuer {
     uint8_t last_root[VCS_PROOF_ROOT_BYTES];
     uint32_t verified_count;
     bool equivocating;
+    bool history_incomplete;     /* isolated by a rebuild: never eligible */
     struct pr_checkpoint *cps;
     size_t cp_count;
     size_t cp_cap;
@@ -77,6 +78,11 @@ struct pr_entry *pr_entry_put(struct vcs_proof_receiver *r,
                               const uint8_t root[VCS_PROOF_ROOT_BYTES]);
 const struct pr_issuer *pr_issuer_find(const struct vcs_proof_receiver *r,
                                        const uint8_t pubkey[32]);
+/* Find or append an issuer; NULL on allocation failure (logged). The
+ * issuer array is separate from the entries, so entry growth never moves
+ * a returned issuer; a later pr_issuer_get may. */
+struct pr_issuer *pr_issuer_get(struct vcs_proof_receiver *r,
+                                const uint8_t pubkey[32]);
 
 struct vcs_package_store;
 /* For each equivocating issuer in `view` that is one of `trust`'s verifiers

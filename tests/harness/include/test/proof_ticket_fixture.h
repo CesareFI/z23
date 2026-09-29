@@ -85,5 +85,8 @@ int ptf_log_cases(void);
 /* Restart-anywhere history cases (proof_ticket_history_cases.c), run by the
  * same group. Returns the failure count. */
 int ptf_history_cases(void);
+/* Per-issuer rebuild isolation cases (proof_ticket_isolation_cases.c), run
+ * by the same group. Returns the failure count. */
+int ptf_isolation_cases(void);
 
 #endif /* ZCL_TEST_PROOF_TICKET_FIXTURE_H */

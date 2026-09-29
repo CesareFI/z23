@@ -151,6 +151,13 @@ uint64_t vcs_proof_receiver_issuer_leaves(
 bool vcs_proof_receiver_issuer_equivocating(
     const struct vcs_proof_receiver *r,
     const uint8_t issuer[VCS_PROOF_PUBKEY_BYTES]);
+/* True when a rebuild could not replay this issuer's stored history (a
+ * covered ticket, a checkpoint ancestor or a complete ticket branch is
+ * missing, or its signed ancestry is invalid) and so isolated it: none of
+ * its tickets is eligible, while every other issuer was still rebuilt. */
+bool vcs_proof_receiver_issuer_history_incomplete(
+    const struct vcs_proof_receiver *r,
+    const uint8_t issuer[VCS_PROOF_PUBKEY_BYTES]);
 /* Signed checkpoints retained for an issuer, including every side of an
  * equivocation. */
 size_t vcs_proof_receiver_issuer_checkpoints(
@@ -221,6 +228,9 @@ enum vcs_proof_reuse_outcome {
 #define VCS_PROOF_TICKET_FUTURE "ticket_from_future"
 #define VCS_PROOF_TICKET_EQUIVOCATION "issuer_equivocation"
 #define VCS_PROOF_TICKET_NOT_CHECKPOINTED "not_checkpointed"
+/* Otherwise eligible, but a rebuild isolated its issuer because that
+ * issuer's stored history could not be replayed. Never counts toward a HIT. */
+#define VCS_PROOF_TICKET_HISTORY_INCOMPLETE "issuer_history_incomplete"
 /* Decision reasons. */
 #define VCS_PROOF_REUSE_WHY_HIT "eligible_quorum"
 #define VCS_PROOF_REUSE_WHY_KNOWN_FAIL "eligible_failure"
@@ -235,6 +245,13 @@ enum vcs_proof_reuse_outcome {
 #define VCS_PROOF_REUSE_WHY_POLICY_ROOT "policy_root_inconsistent"
 #define VCS_PROOF_REUSE_WHY_DOMAIN "candidate_domain_invalid"
 #define VCS_PROOF_REUSE_WHY_CAPACITY "classification_capacity"
+/* MISS: the only otherwise-eligible observations come from isolated
+ * issuers. Nothing contradicts a fresh run, so the key simply runs. */
+#define VCS_PROOF_REUSE_WHY_HISTORY_INCOMPLETE "issuer_history_incomplete"
+/* REFUSE: the eligible observations would reuse one verdict, but an
+ * isolated issuer, otherwise eligible, signed the opposite one. Compaction
+ * may be what hid its history, so its dissent is not forgotten. */
+#define VCS_PROOF_REUSE_WHY_UNVERIFIED_DISSENT "unverified_dissent"
 
 struct vcs_proof_ticket_class {
     uint8_t observation_root[VCS_PROOF_ROOT_BYTES];

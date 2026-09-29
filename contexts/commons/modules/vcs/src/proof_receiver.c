@@ -13,9 +13,6 @@
 
 #define PRV_LOG "vcs.proof_receiver"
 
-static struct pr_issuer *pr_issuer_get(struct vcs_proof_receiver *r,
-                                       const uint8_t pubkey[32]);
-
 struct vcs_proof_receiver *vcs_proof_receiver_new(void)
 {
     struct vcs_proof_receiver *r =
@@ -277,8 +274,8 @@ const struct pr_issuer *pr_issuer_find(const struct vcs_proof_receiver *r,
     return NULL;
 }
 
-static struct pr_issuer *pr_issuer_get(struct vcs_proof_receiver *r,
-                                       const uint8_t pubkey[32])
+struct pr_issuer *pr_issuer_get(struct vcs_proof_receiver *r,
+                                const uint8_t pubkey[32])
 {
     struct pr_issuer *found = (struct pr_issuer *)pr_issuer_find(r, pubkey);
     if (found) return found;
@@ -311,6 +308,14 @@ bool vcs_proof_receiver_issuer_equivocating(
 {
     const struct pr_issuer *is = issuer ? pr_issuer_find(r, issuer) : NULL;
     return is && is->equivocating;
+}
+
+bool vcs_proof_receiver_issuer_history_incomplete(
+    const struct vcs_proof_receiver *r,
+    const uint8_t issuer[VCS_PROOF_PUBKEY_BYTES])
+{
+    const struct pr_issuer *is = issuer ? pr_issuer_find(r, issuer) : NULL;
+    return is && is->history_incomplete;
 }
 
 size_t vcs_proof_receiver_issuer_checkpoints(

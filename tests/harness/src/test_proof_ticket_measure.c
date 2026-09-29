@@ -933,6 +933,7 @@ static bool ptw_publish_and_forget(struct ptw *w, uint64_t created,
 
 struct ptw_phase {
     size_t rows;
+    bool rebuilt;       /* false: the rebuild refused, every unit is FRESH */
     uint64_t rebuild_us, executed, exec_us;
     uint64_t rebuild_checks, admit_checks; /* full Ed25519 verifications */
     uint64_t manifest_loads, trim_passes; /* store manifest cache work */
@@ -948,7 +949,9 @@ static uint64_t ptw_signature_checks(void)
 }
 
 /* A new process: reopen the store, rebuild, admit, and execute only FRESH.
- * It remembers no verified signature, so every check is counted. */
+ * It remembers no verified signature, so every check is counted. A refused
+ * rebuild leaves the receiver empty, so admission still runs and the
+ * executor pays for everything the history no longer proves. */
 static bool ptw_restart(struct ptw *w, size_t rows, uint32_t units,
                         struct ptw_phase *p)
 {
@@ -963,8 +966,8 @@ static bool ptw_restart(struct ptw *w, size_t rows, uint32_t units,
     struct vcs_package_store_cache_counts cache0 = {0}, cache1 = {0};
     bool counted = vcs_package_store_cache_counts(store, &cache0);
     int64_t t0 = platform_time_monotonic_us();
-    bool ok = vcs_proof_receiver_rebuild_bounded(w->f.rx, store, rows,
-                                                 &tickets, &cps, &skipped);
+    p->rebuilt = vcs_proof_receiver_rebuild_bounded(w->f.rx, store, rows,
+                                                    &tickets, &cps, &skipped);
     p->rebuild_us = (uint64_t)(platform_time_monotonic_us() - t0);
     p->rebuild_checks = ptw_signature_checks() - checks;
     counted = counted && vcs_package_store_cache_counts(store, &cache1);
@@ -975,8 +978,8 @@ static bool ptw_restart(struct ptw *w, size_t rows, uint32_t units,
                                       .scope_known = true};
     struct vcs_proof_admission_context ctx = ptf_context(&w->f);
     checks = ptw_signature_checks();
-    ok = ok && vcs_proof_admission_run(&ctx, &change, w->obs, units, w->res,
-                                       &p->rep);
+    bool ok = vcs_proof_admission_run(&ctx, &change, w->obs, units, w->res,
+                                      &p->rep);
     p->admit_checks = ptw_signature_checks() - checks;
     uint64_t executed = w->executed, exec_us = w->exec_us;
     memset(w->runs, 0, sizeof(w->runs));
@@ -994,7 +997,8 @@ static void ptw_print(const char *phase, uint32_t units,
     printf("\nproof_restart_work phase=%s units=%u catalog_rows=%zu "
            "rebuild_us=%llu executed=%llu reused=%u refused=%u fresh=%u "
            "without_history=%u avoided=%llu exec_us=%llu rebuild_checks=%llu "
-           "admit_checks=%llu manifest_loads=%llu trim_passes=%llu\n",
+           "admit_checks=%llu manifest_loads=%llu trim_passes=%llu "
+           "rebuilt=%d\n",
            phase, units,
            p->rows, (unsigned long long)p->rebuild_us,
            (unsigned long long)p->executed, p->rep.proofs_reused,
@@ -1004,7 +1008,31 @@ static void ptw_print(const char *phase, uint32_t units,
            (unsigned long long)p->rebuild_checks,
            (unsigned long long)p->admit_checks,
            (unsigned long long)p->manifest_loads,
-           (unsigned long long)p->trim_passes);
+           (unsigned long long)p->trim_passes, p->rebuilt ? 1 : 0);
+}
+
+/* A second log under `seed` signs `ticket` twice (sequences 0 and 1) and
+ * stores only its second checkpoint: an orphan whose parent was never
+ * stored. Under C's own key the first signature is C's stored ticket. */
+static bool ptw_store_orphan(struct ptw *w, const uint8_t seed[32],
+                             const uint8_t *ticket, uint64_t created)
+{
+    struct vcs_proof_issuer_log *log = vcs_proof_issuer_log_new(seed);
+    struct vcs_package_store *store =
+        vcs_package_store_open(w->dir, UINT64_C(64) * 1024 * 1024);
+    uint8_t wire[VCS_PROOF_TICKET_WIRE_BYTES];
+    uint8_t cp[VCS_PROOF_CHECKPOINT_WIRE_BYTES], root[32];
+    bool ok = log && store && ticket;
+    for (int i = 0; ok && i < 2; i++) {
+        struct vcs_proof_ticket_v1 t;
+        ok = vcs_proof_ticket_decode(ticket, VCS_PROOF_TICKET_WIRE_BYTES, &t) &&
+             vcs_proof_issuer_log_append(log, &t, wire) &&
+             vcs_proof_issuer_log_checkpoint(log, created + (uint64_t)i, cp);
+    }
+    ok = ok && vcs_proof_ticket_store_put(store, cp, sizeof(cp), root);
+    if (store) vcs_package_store_close(store);
+    vcs_proof_issuer_log_free(log);
+    return ok;
 }
 
 static int ptw_case_restart_work(void)
@@ -1028,6 +1056,7 @@ static int ptw_case_restart_work(void)
         /* Cold: nothing known, every one of the first 150 runs. */
         struct ptw_phase cold;
         ASSERT(ptw_restart(w, 1, PTW_PROVEN, &cold));
+        ASSERT(cold.rebuilt);
         ASSERT_EQ(cold.executed, (uint64_t)PTW_PROVEN);
         ASSERT(ptf_emit(&w->f, PTF_C, &w->keys[PTW_CONFLICT], ptf_fail(),
                         w->wires[w->wire_count++], NULL));
@@ -1040,6 +1069,7 @@ static int ptw_case_restart_work(void)
         /* Restart 1: 160 obligations over the rebuilt history. */
         struct ptw_phase warm;
         ASSERT(ptw_restart(w, rows, PTW_UNITS, &warm));
+        ASSERT(warm.rebuilt);
         ptw_print("restart", PTW_UNITS, &warm);
         for (uint32_t u = 0; u < PTW_UNITS; u++) {
             enum vcs_proof_admission_status want =
@@ -1068,6 +1098,7 @@ static int ptw_case_restart_work(void)
         ASSERT(ptw_publish_and_forget(w, 1790000200u, &rows));
         struct ptw_phase settled;
         ASSERT(ptw_restart(w, rows, PTW_UNITS, &settled));
+        ASSERT(settled.rebuilt);
         ptw_print("second_restart", PTW_UNITS, &settled);
         ASSERT_EQ(settled.executed, (uint64_t)0);
         ASSERT_EQ(settled.rep.proofs_reused, PTW_UNITS - 1u);
@@ -1076,6 +1107,32 @@ static int ptw_case_restart_work(void)
         ASSERT(settled.rebuild_checks > 0);
         ASSERT(settled.rebuild_checks <= rows);
         ASSERT_EQ(settled.admit_checks, (uint64_t)0);
+
+        /* Restart 3: C's history is broken by one orphan checkpoint under
+         * C's key, and a stranger stores another. Only C is isolated: A and
+         * B still prove every unit, and C's failure on unit 7 still blocks
+         * that reuse instead of being forgotten. */
+        const uint8_t *c_ticket = vcs_proof_issuer_log_ticket(w->f.logs[PTF_C],
+                                                              0);
+        ASSERT(ptw_store_orphan(w, w->f.seed[PTF_C], c_ticket, 1790000300u));
+        ASSERT(ptw_store_orphan(w, w->f.seed[PTF_STRANGER], c_ticket,
+                                1790000310u));
+        ASSERT(ptw_publish_and_forget(w, 1790000400u, &rows));
+        struct ptw_phase broken;
+        ASSERT(ptw_restart(w, rows, PTW_UNITS, &broken));
+        ptw_print("broken_issuer", PTW_UNITS, &broken);
+        ASSERT(broken.rebuilt);
+        ASSERT(vcs_proof_receiver_issuer_history_incomplete(w->f.rx,
+                                                            w->f.pub[PTF_C]));
+        ASSERT(!vcs_proof_receiver_issuer_history_incomplete(w->f.rx,
+                                                             w->f.pub[PTF_A]));
+        ASSERT_EQ(broken.executed, (uint64_t)0);
+        ASSERT_EQ(broken.rep.proofs_reused, PTW_UNITS - 1u);
+        ASSERT_EQ(broken.rep.proofs_refused, 1u);
+        ASSERT_EQ(broken.rep.proofs_fresh, 0u);
+        ASSERT_EQ(w->res[PTW_CONFLICT].status, VCS_PROOF_ADMIT_REFUSED);
+        ASSERT_STR_EQ(w->res[PTW_CONFLICT].reason,
+                      VCS_PROOF_REUSE_WHY_UNVERIFIED_DISSENT);
 
         /* The same obligations on a receiver that forgot its history. */
         vcs_proof_receiver_free(w->f.rx);
