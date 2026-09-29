@@ -19,6 +19,7 @@
 #include "test/proof_ticket_fixture.h"
 
 #include "platform/time_compat.h"
+#include "vcs/blob_store.h"
 #include "vcs/package_store.h"
 
 #include <stdio.h>
@@ -504,6 +505,92 @@ static int ptm_case_rebuild_density(void)
     return failures;
 }
 
+/* Put both sides of a signed contradiction after the first catalog page.
+ * A truncated page must leave the old receiver intact; a complete replay
+ * must retain both eligible observations and refuse reuse. */
+static int ptm_case_late_page_conflict(void)
+{
+    int failures = 0;
+    TEST_CASE("proof_ticket: late catalog page preserves PASS/FAIL conflict") {
+        struct ptf *f = calloc(1, sizeof(*f));
+        ASSERT(f != NULL);
+        ASSERT(ptf_init(f));
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "proof_ticket", "lateconflict");
+        struct vcs_package_store *store =
+            vcs_package_store_open(dir, UINT64_C(128) * 1024 * 1024);
+        ASSERT(store != NULL);
+        uint8_t ticket[2][VCS_PROOF_TICKET_WIRE_BYTES];
+        uint8_t checkpoint[2][VCS_PROOF_CHECKPOINT_WIRE_BYTES];
+        uint8_t roots[4][32], root[32], first[32];
+        struct ptf_spec pass = ptf_pass(), fail = ptf_fail();
+        pass.action_class = VCS_PROOF_ACTION_CHECK;
+        fail.action_class = VCS_PROOF_ACTION_CHECK;
+        ASSERT(ptf_emit(f, PTF_A, &f->base, pass, ticket[0], NULL));
+        ASSERT(ptf_emit(f, PTF_B, &f->base, fail, ticket[1], NULL));
+        for (size_t i = 0; i < 2; i++) {
+            ASSERT(vcs_proof_ticket_store_put(store, ticket[i],
+                                                sizeof(ticket[i]), roots[i]));
+            ASSERT(vcs_proof_issuer_log_checkpoint(
+                f->logs[i == 0 ? PTF_A : PTF_B], 1790000001u,
+                checkpoint[i]));
+            ASSERT(vcs_proof_ticket_store_put(store, checkpoint[i],
+                                                sizeof(checkpoint[i]),
+                                                roots[i + 2]));
+        }
+        memcpy(first, roots[0], sizeof(first));
+        for (size_t i = 1; i < 4; i++)
+            if (memcmp(roots[i], first, sizeof(first)) < 0)
+                memcpy(first, roots[i], sizeof(first));
+        size_t before = 0;
+        for (uint32_t n = 0; before < VCS_PACKAGE_STORE_PAGE_MAX + 1u &&
+                             n < 4096u; n++) {
+            char filler[32];
+            int len = snprintf(filler, sizeof(filler), "filler-%u", n);
+            ASSERT(len > 0 && (size_t)len < sizeof(filler));
+            ASSERT(vcs_blob_root((const uint8_t *)filler, (size_t)len, root));
+            if (memcmp(root, first, sizeof(first)) >= 0) continue;
+            ASSERT(vcs_proof_ticket_store_put(store,
+                    (const uint8_t *)filler, (size_t)len, root));
+            before++;
+        }
+        ASSERT_EQ(before, (size_t)VCS_PACKAGE_STORE_PAGE_MAX + 1u);
+        const uint8_t *delta[] = {ticket[0]};
+        const size_t delta_lens[] = {sizeof(ticket[0])};
+        struct vcs_proof_sync_report synced;
+        ASSERT(vcs_proof_receiver_sync(f->rx, checkpoint[0],
+            sizeof(checkpoint[0]), delta, delta_lens, 1u, &synced));
+        ASSERT_EQ(synced.outcome, VCS_PROOF_SYNC_ADVANCED);
+        ASSERT_EQ(vcs_proof_receiver_ticket_count(f->rx), 1u);
+        ASSERT_EQ(vcs_proof_receiver_issuer_leaves(f->rx, f->pub[PTF_A]), 1u);
+        size_t tickets = 0, checkpoints = 0, skipped = 0;
+        ASSERT(!vcs_proof_receiver_rebuild_bounded(
+            f->rx, store, VCS_PACKAGE_STORE_PAGE_MAX,
+            &tickets, &checkpoints, &skipped));
+        ASSERT_EQ(vcs_proof_receiver_ticket_count(f->rx), 1u);
+        ASSERT_EQ(vcs_proof_receiver_issuer_leaves(f->rx, f->pub[PTF_A]), 1u);
+        ASSERT_EQ(vcs_proof_receiver_issuer_leaves(f->rx, f->pub[PTF_B]), 0u);
+        ASSERT(vcs_proof_receiver_rebuild_bounded(
+            f->rx, store, before + 4u, &tickets, &checkpoints, &skipped));
+        ASSERT_EQ(tickets, 2u);
+        ASSERT_EQ(checkpoints, 2u);
+        ASSERT_EQ(skipped, before);
+        struct vcs_proof_ticket_class classes[PTM_CAP];
+        struct vcs_proof_reuse_decision decision;
+        ASSERT(ptf_decide(f, &f->base, VCS_PROOF_ACTION_CHECK, NULL,
+                          classes, PTM_CAP, &decision));
+        ASSERT_EQ(decision.outcome, VCS_PROOF_REUSE_REFUSE);
+        ASSERT_STR_EQ(decision.reason, VCS_PROOF_OBSERVATION_CONFLICT);
+        ASSERT_EQ(decision.eligible_pass, 1u);
+        ASSERT_EQ(decision.eligible_fail, 1u);
+        vcs_package_store_close(store);
+        test_rm_rf(dir);
+        ptf_free(f);
+        free(f);
+    } TEST_END
+    return failures;
+}
+
 /* Optional receiver-only boundary probe. The issuer log and receiver are
  * in memory; this isolates index and signed-delta handling from the package
  * store's separate tracked-object enumeration bound. */
@@ -840,6 +927,7 @@ int test_proof_ticket_measure(void)
     failures += ptm_case_measure();
     failures += ptm_case_checkpoint_density();
     failures += ptm_case_rebuild_density();
+    failures += ptm_case_late_page_conflict();
     failures += ptm_case_receiver_boundary();
     failures += pta_cases();
     return failures;
