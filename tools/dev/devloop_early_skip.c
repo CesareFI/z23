@@ -314,7 +314,8 @@ static bool es_flag_unmodeled(const char *arg)
 {
     if (strstr(arg, "__has_include") || strstr(arg, "__has_embed") ||
         strstr(arg, "__DATE__") || strstr(arg, "__TIME__") ||
-        strstr(arg, "__TIMESTAMP__") || strstr(arg, "##"))
+        strstr(arg, "__TIMESTAMP__") || strstr(arg, "##") ||
+        strstr(arg, "%:%:"))
         return true;
     if (strncmp(arg, "-iquote", 7) == 0)
         return false;
@@ -428,11 +429,23 @@ static const char *es_skip_blank(const char *p, const char *end)
     return p;
 }
 
+/* C's %: digraph is the same directive marker as #. */
+static const char *es_after_marker(const char *p, const char *end)
+{
+    if (p >= end)
+        return NULL;
+    if (*p == '#')
+        return p + 1;
+    if (end - p >= 2 && p[0] == '%' && p[1] == ':')
+        return p + 2;
+    return NULL;
+}
+
 /* Length of the include-like directive keyword at `p`, or 0. */
 static size_t es_keyword(const char *p, const char *end)
 {
     static const char *const words[] = { "include_next", "include",
-                                         "embed" };
+                                         "import", "embed" };
     for (size_t i = 0; i < sizeof(words) / sizeof(words[0]); i++) {
         size_t len = strlen(words[i]);
         if ((size_t)(end - p) > len && strncmp(p, words[i], len) == 0 &&
@@ -448,10 +461,10 @@ static size_t es_keyword(const char *p, const char *end)
 static enum es_inc es_directive(const char *p, const char *end, char *name,
                                 size_t cap)
 {
-    p = es_skip_blank(p, end);
-    if (p >= end || *p != '#')
+    p = es_after_marker(es_skip_blank(p, end), end);
+    if (!p)
         return ES_INC_NONE;
-    p = es_skip_blank(p + 1, end);
+    p = es_skip_blank(p, end);
     size_t kw = es_keyword(p, end);
     if (!kw)
         return ES_INC_NONE;
@@ -638,6 +651,17 @@ static size_t es_splice_lines(char *text, size_t len)
     return out;
 }
 
+/* Trigraph conversion precedes comment removal and line splicing on
+ * toolchains that enable it. Even a candidate in a comment can change the
+ * directive stream, so inspect the original bytes before either pass. */
+static bool es_trigraph_candidate(const char *text, size_t len)
+{
+    for (size_t i = 0; i + 1 < len; i++)
+        if (text[i] == '?' && text[i + 1] == '?')
+            return true;
+    return false;
+}
+
 static void es_node_load(struct es_graph *g, uint32_t idx)
 {
     char full[ES_PATH_MAX * 2];
@@ -650,6 +674,8 @@ static void es_node_load(struct es_graph *g, uint32_t idx)
         return;
     }
     es_sha3_hex(text, len, g->nodes[idx].digest);
+    if (es_trigraph_candidate(text, len))
+        es_node_bad(g, idx, "trigraph", g->nodes[idx].path);
     len = es_splice_lines(text, len);
     es_strip_comments(text, len);
     /* A file's appearance can flip these predicates without any include or
@@ -665,7 +691,7 @@ static void es_node_load(struct es_graph *g, uint32_t idx)
         es_node_bad(g, idx, "volatile-macro", g->nodes[idx].path);
     /* Token pasting can synthesize those spellings (and include probes)
      * without any full token appearing in the bytes scanned above. */
-    if (strstr(text, "##"))
+    if (strstr(text, "##") || strstr(text, "%:%:"))
         es_node_bad(g, idx, "macro-paste", g->nodes[idx].path);
     if (!es_scan(g, idx, text, len))
         es_node_bad(g, idx, "closure-bound", g->nodes[idx].path);

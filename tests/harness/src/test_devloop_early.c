@@ -964,6 +964,95 @@ static int de_test_skip_suffix(struct de_state *s)
     return failures;
 }
 
+static int de_test_skip_import(struct de_state *s)
+{
+    int failures = 0;
+    TEST("devloop_early: an imported header remains in the early key") {
+        ASSERT(de_hole_setup(s));
+        ASSERT(de_write(s->fx.root,
+                        "tests/harness/src/early_skip_import.h",
+                        "#define EARLY_SKIP_OUTER 1\n"));
+        ASSERT(de_write(s->fx.root, "tests/harness/src/" DE_VOUCHED ".c",
+                        "#include \"early_skip_dep.h\"\n"
+                        "#import \"early_skip_import.h\"\n"
+                        "int early_skip_fixture_group = "
+                        "EARLY_SKIP_DEP + EARLY_SKIP_OUTER;\n"));
+        de_hole_decide(s, DE_HOLE_FLAGS);
+        ASSERT(de_hole_is(s, "no-record", ""));
+        ASSERT(zcl_devloop_early_skip_record(s->fx.root, &s->hole, "", 1000));
+        de_hole_decide(s, DE_HOLE_FLAGS);
+        ASSERT(de_hole_is(s, "closure-unchanged", ""));
+        ASSERT(de_write(s->fx.root,
+                        "tests/harness/src/early_skip_import.h",
+                        "#define EARLY_SKIP_OUTER 2\n"));
+        de_hole_decide(s, DE_HOLE_FLAGS);
+        ASSERT(de_hole_is(s, "key-changed", ""));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int de_test_skip_digraph_include(struct de_state *s)
+{
+    int failures = 0;
+    TEST("devloop_early: a digraph include remains in the early key") {
+        ASSERT(de_hole_setup(s));
+        ASSERT(de_write(s->fx.root,
+                        "tests/harness/src/early_skip_digraph.h",
+                        "#define EARLY_SKIP_OUTER 1\n"));
+        ASSERT(de_write(s->fx.root, "tests/harness/src/" DE_VOUCHED ".c",
+                        "#include \"early_skip_dep.h\"\n"
+                        "%:include \"early_skip_digraph.h\"\n"
+                        "int early_skip_fixture_group = "
+                        "EARLY_SKIP_DEP + EARLY_SKIP_OUTER;\n"));
+        de_hole_decide(s, DE_HOLE_FLAGS);
+        ASSERT(de_hole_is(s, "no-record", ""));
+        ASSERT(zcl_devloop_early_skip_record(s->fx.root, &s->hole, "", 1000));
+        de_hole_decide(s, DE_HOLE_FLAGS);
+        ASSERT(de_hole_is(s, "closure-unchanged", ""));
+        ASSERT(de_write(s->fx.root,
+                        "tests/harness/src/early_skip_digraph.h",
+                        "#define EARLY_SKIP_OUTER 2\n"));
+        de_hole_decide(s, DE_HOLE_FLAGS);
+        ASSERT(de_hole_is(s, "key-changed", ""));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int de_test_skip_trigraph_include(struct de_state *s)
+{
+    int failures = 0;
+    TEST("devloop_early: a trigraph include cannot hide a changed header") {
+        ASSERT(de_hole_setup(s));
+        ASSERT(de_write(s->fx.root,
+                        "tests/harness/src/early_skip_trigraph.h",
+                        "#define EARLY_SKIP_OUTER 1\n"));
+        ASSERT(de_write(s->fx.root, "tests/harness/src/" DE_VOUCHED ".c",
+                        "#include \"early_skip_dep.h\"\n"
+                        "?" "?=include \"early_skip_trigraph.h\"\n"
+                        "int early_skip_fixture_group = "
+                        "EARLY_SKIP_DEP + EARLY_SKIP_OUTER;\n"));
+        de_hole_decide(s, DE_HOLE_FLAGS " -trigraphs");
+        bool vouched = s->hole.rows[0].vouched;
+        if (vouched) {
+            ASSERT(de_hole_is(s, "no-record", ""));
+            ASSERT(zcl_devloop_early_skip_record(s->fx.root, &s->hole,
+                                                  "", 1000));
+        } else {
+            ASSERT(de_hole_is(s, "unvouched", "trigraph"));
+        }
+        ASSERT(de_write(s->fx.root,
+                        "tests/harness/src/early_skip_trigraph.h",
+                        "#define EARLY_SKIP_OUTER 2\n"));
+        de_hole_decide(s, DE_HOLE_FLAGS " -trigraphs");
+        ASSERT(de_hole_is(s, vouched ? "key-changed" : "unvouched",
+                          vouched ? "" : "trigraph"));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int de_test_skip_spliced_directive(struct de_state *s)
 {
     int failures = 0;
@@ -1105,6 +1194,22 @@ static int de_test_skip_probe_flag_alias(struct de_state *s)
     return failures;
 }
 
+static int de_test_skip_digraph_paste_flag(struct de_state *s)
+{
+    int failures = 0;
+    TEST("devloop_early: command-line digraph token paste cannot hide a "
+         "volatile macro") {
+        ASSERT(de_hole_setup(s));
+        ASSERT(de_write(s->fx.root, DE_HOLE_A,
+                        "int early_hole_a(void) { return "
+                        "CAT(__DA, TE__)[0]; }\n"));
+        de_hole_decide(s, DE_HOLE_FLAGS " -DCAT(a,b)=a%:%:b");
+        ASSERT(de_hole_is(s, "unvouched", "cflags-unmodeled"));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int de_test_skip_ambient_include(struct de_state *s)
 {
     int failures = 0;
@@ -1173,6 +1278,9 @@ static int de_test_skip_volatile_macros(struct de_state *s)
             {"int early_hole_a(void) { return __TIMESTAMP__[0]; }\n",
              "volatile-macro"},
             {"#define CAT(a, b) a ## b\n"
+             "int early_hole_a(void) { return CAT(__DA, TE__)[0]; }\n",
+             "macro-paste"},
+            {"#define CAT(a, b) a %:%: b\n"
              "int early_hole_a(void) { return CAT(__DA, TE__)[0]; }\n",
              "macro-paste"},
         };
@@ -1274,10 +1382,14 @@ static int de_test_restart(void)
         failures += de_test_skip_linked(s);
         failures += de_test_skip_helper(s);
         failures += de_test_skip_suffix(s);
+        failures += de_test_skip_import(s);
+        failures += de_test_skip_digraph_include(s);
+        failures += de_test_skip_trigraph_include(s);
         failures += de_test_skip_spliced_directive(s);
         failures += de_test_skip_has_include(s);
         failures += de_test_skip_has_embed(s);
         failures += de_test_skip_probe_flag_alias(s);
+        failures += de_test_skip_digraph_paste_flag(s);
         failures += de_test_skip_ambient_include(s);
         failures += de_test_skip_volatile_macros(s);
         failures += de_test_skip_flags(s);
