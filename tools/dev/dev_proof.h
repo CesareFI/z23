@@ -509,16 +509,22 @@ bool zcl_dev_proof_test_docs_fresh_overlapped(const char *generation,
                                               bool later_ok,
                                               const char *later_why,
                                               char *why, size_t why_len);
+/* How the proof that used a generation settled, for the retire seam. */
+enum zcl_dev_proof_retire_verdict {
+    ZCL_DEV_PROOF_RETIRE_PASSED = 0,
+    ZCL_DEV_PROOF_RETIRE_FAILED,
+    ZCL_DEV_PROOF_RETIRE_INTERRUPTED,
+};
 /* Seam for the retirement proof_worker() runs on `generation` (a worktree
- * of `repo_root`) once its proof settles: `passed` is the proof's verdict,
- * and `donor_eligible` stands in an eligible donor verdict for the real
- * same-uid refusal. Writes the outcome name (removed, kept_failed,
- * kept_donor, kept_not_clean, remove_failed, kept_invalid) and returns
- * true only when the generation was removed. */
-bool zcl_dev_proof_test_generation_retire(const char *repo_root,
-                                          const char *generation,
-                                          bool passed, bool donor_eligible,
-                                          char *outcome, size_t outcome_len);
+ * of `repo_root`) once its proof settles: `verdict` is how it settled, and
+ * `donor_eligible` stands in an eligible donor verdict for the real
+ * same-uid refusal. Writes the outcome name (removed, removed_failed,
+ * kept_interrupted, kept_donor, kept_not_clean, remove_failed,
+ * kept_invalid) and returns true only when the generation was removed. */
+bool zcl_dev_proof_test_generation_retire(
+    const char *repo_root, const char *generation,
+    enum zcl_dev_proof_retire_verdict verdict, bool donor_eligible,
+    char *outcome, size_t outcome_len);
 /* Canonical submitting-checkout preparation, without a proof lease or receipt. */
 bool zcl_dev_proof_test_original_plan_prepare(const char *root,
                                               const char *local,
@@ -616,6 +622,10 @@ void zcl_dev_proof_test_pool_pressure_reap(const char *repo_root,
                                            const char *phases,
                                            size_t *removed_out,
                                            uint64_t *bytes_out);
+/* The pool name a proof of `local` from checkout `root` (canonical, as
+ * the proof resolves it) gives its generation. */
+void zcl_dev_proof_test_generation_tag(const char *root, const char *local,
+                                       char tag[33]);
 bool zcl_dev_proof_warm_tag(const char *name);
 /* The ZCL_DEV_PROOF_WARM=0/"off"/"no" opt-out, exposed so the harness
  * proves the cold-forcing switch it gates on. */

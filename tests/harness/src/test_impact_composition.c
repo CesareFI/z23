@@ -4722,14 +4722,16 @@ static bool ic_retire_generation(const char *root, const char *repo,
 static int test_pw_generation_retire_passed(void)
 {
     int failures = 0;
-    TEST("proof generation pool: only a PASS retires its generation, and "
-         "only a detached, tracked-clean one that cannot donate") {
+    TEST("proof generation pool: a PASS or a final refusal retires its "
+         "generation, an interrupted run keeps it, and only a detached, "
+         "tracked-clean one that cannot donate is removed") {
 #if defined(_WIN32)
         ASSERT(true);
 #else
         char root[4096], repo[4096], cmd[8192], outcome[64];
         char passed[4096], failed[4096], donor[4096], branch[4096];
-        char dirty[4096], locked[4096], probe_path[4608];
+        char dirty[4096], locked[4096], interrupted[4096];
+        char failed_donor[4096], probe_path[4608];
         test_make_tmpdir(root, sizeof(root), "proof_pool_retire", "retire");
         ASSERT(snprintf(repo, sizeof(repo), "%s/checkout", root) > 0);
         ASSERT(snprintf(cmd, sizeof(cmd),
@@ -4756,10 +4758,18 @@ static int test_pw_generation_retire_passed(void)
         ASSERT(ic_retire_generation(root, repo,
                                     "66666666666666666666666666666666",
                                     NULL, locked, sizeof(locked)));
+        ASSERT(ic_retire_generation(root, repo,
+                                    "77777777777777777777777777777777",
+                                    NULL, interrupted, sizeof(interrupted)));
+        ASSERT(ic_retire_generation(root, repo,
+                                    "88888888888888888888888888888888",
+                                    NULL, failed_donor,
+                                    sizeof(failed_donor)));
         /* Untracked build output is what every generation holds and never
          * keeps one; an edit to a tracked file always does. */
         ASSERT(ic_write(passed, "build/obj/probe.o", "object\n"));
         ASSERT(ic_write(failed, "build/obj/probe.o", "object\n"));
+        ASSERT(ic_write(interrupted, "build/obj/probe.o", "object\n"));
         ASSERT(ic_write(dirty, "tracked", "edited\n"));
         /* A read-only directory a proof test fixture left behind must not
          * stop the delete partway and leak a half-deleted generation. */
@@ -4773,54 +4783,84 @@ static int test_pw_generation_retire_passed(void)
         /* A PASS by this uid: the generation can never donate, so it goes
          * now instead of holding the pool for the reaper's idle hour. */
         bool removed = zcl_dev_proof_test_generation_retire(
-            repo, passed, true, false, outcome, sizeof(outcome));
+            repo, passed, ZCL_DEV_PROOF_RETIRE_PASSED, false, outcome,
+            sizeof(outcome));
         ASSERT(removed);
         ASSERT_STR_EQ(outcome, "removed");
         ASSERT(stat(passed, &probe) != 0 && errno == ENOENT);
 
-        /* The same clean, detached shape after a FAILED proof stays for
-         * its exact retry, and git is never asked. */
+        /* A final refusal: its pair is replayed, never re-proven, so the
+         * same clean, detached shape goes too, under its own name. */
         removed = zcl_dev_proof_test_generation_retire(
-            repo, failed, false, false, outcome, sizeof(outcome));
+            repo, failed, ZCL_DEV_PROOF_RETIRE_FAILED, false, outcome,
+            sizeof(outcome));
+        ASSERT(removed);
+        ASSERT_STR_EQ(outcome, "removed_failed");
+        ASSERT(stat(failed, &probe) != 0 && errno == ENOENT);
+
+        /* An interrupted run is re-run on the same pair, which reuses this
+         * exact tree, so it stays and git is never asked. */
+        removed = zcl_dev_proof_test_generation_retire(
+            repo, interrupted, ZCL_DEV_PROOF_RETIRE_INTERRUPTED, false,
+            outcome, sizeof(outcome));
         ASSERT(!removed);
-        ASSERT_STR_EQ(outcome, "kept_failed");
-        ASSERT(stat(failed, &probe) == 0);
+        ASSERT_STR_EQ(outcome, "kept_interrupted");
+        ASSERT(stat(interrupted, &probe) == 0);
 
         /* A generation that could donate is left to the pool exactly as
-         * before, even after a PASS. */
+         * before, after a PASS and after a final refusal alike. */
         removed = zcl_dev_proof_test_generation_retire(
-            repo, donor, true, true, outcome, sizeof(outcome));
+            repo, donor, ZCL_DEV_PROOF_RETIRE_PASSED, true, outcome,
+            sizeof(outcome));
         ASSERT(!removed);
         ASSERT_STR_EQ(outcome, "kept_donor");
         ASSERT(stat(donor, &probe) == 0);
+        removed = zcl_dev_proof_test_generation_retire(
+            repo, failed_donor, ZCL_DEV_PROOF_RETIRE_FAILED, true, outcome,
+            sizeof(outcome));
+        ASSERT(!removed);
+        ASSERT_STR_EQ(outcome, "kept_donor");
+        ASSERT(stat(failed_donor, &probe) == 0);
 
         /* Not detached (someone parked a branch there) or a tracked edit:
-         * git does not call it disposable, so it stays. */
+         * git does not call it disposable, so it stays, whatever the
+         * verdict. */
         removed = zcl_dev_proof_test_generation_retire(
-            repo, branch, true, false, outcome, sizeof(outcome));
+            repo, branch, ZCL_DEV_PROOF_RETIRE_PASSED, false, outcome,
+            sizeof(outcome));
         ASSERT(!removed);
         ASSERT_STR_EQ(outcome, "kept_not_clean");
         ASSERT(stat(branch, &probe) == 0);
         removed = zcl_dev_proof_test_generation_retire(
-            repo, dirty, true, false, outcome, sizeof(outcome));
+            repo, branch, ZCL_DEV_PROOF_RETIRE_FAILED, false, outcome,
+            sizeof(outcome));
+        ASSERT(!removed);
+        ASSERT_STR_EQ(outcome, "kept_not_clean");
+        ASSERT(stat(branch, &probe) == 0);
+        removed = zcl_dev_proof_test_generation_retire(
+            repo, dirty, ZCL_DEV_PROOF_RETIRE_FAILED, false, outcome,
+            sizeof(outcome));
         ASSERT(!removed);
         ASSERT_STR_EQ(outcome, "kept_not_clean");
         ASSERT(stat(dirty, &probe) == 0);
 
         removed = zcl_dev_proof_test_generation_retire(
-            repo, locked, true, false, outcome, sizeof(outcome));
+            repo, locked, ZCL_DEV_PROOF_RETIRE_PASSED, false, outcome,
+            sizeof(outcome));
         ASSERT(removed);
         ASSERT_STR_EQ(outcome, "removed");
         ASSERT(stat(locked, &probe) != 0 && errno == ENOENT);
 
         /* Refusal contract: no root or no generation touches nothing. */
         ASSERT(!zcl_dev_proof_test_generation_retire(
-            NULL, failed, true, false, outcome, sizeof(outcome)));
+            NULL, interrupted, ZCL_DEV_PROOF_RETIRE_FAILED, false, outcome,
+            sizeof(outcome)));
         ASSERT_STR_EQ(outcome, "kept_invalid");
         ASSERT(!zcl_dev_proof_test_generation_retire(
-            repo, "", true, false, outcome, sizeof(outcome)));
+            repo, "", ZCL_DEV_PROOF_RETIRE_FAILED, false, outcome,
+            sizeof(outcome)));
         ASSERT_STR_EQ(outcome, "kept_invalid");
-        ASSERT(stat(failed, &probe) == 0);
+        ASSERT(stat(interrupted, &probe) == 0);
         (void)unsetenv("ZCL_DEVLOOP_TEST_PROCESS");
         ASSERT(test_rm_rf_recursive(root) == 0);
 #endif
@@ -4992,6 +5032,209 @@ static int test_pw_pressure_evicts_oldest_until_satisfied(void)
         ASSERT(ic_file_has(phases, "generation_pool_evicted"));
         ASSERT(ic_file_has(phases, gen_old));
         ASSERT(ic_file_has(phases, "idle_seconds="));
+        ASSERT(test_rm_rf_recursive(root) == 0);
+#endif
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+#if !defined(_WIN32)
+/* Commit `rev` of `repo` checked out at the pool name a real proof of that
+ * commit from `canonical` (the checkout, as a proof resolves it) gives its
+ * generation, marked as a finished build or not, and backdated to
+ * `idle_seconds` ago. `local` receives the commit. */
+static bool ic_owned_generation(const char *repo, const char *canonical,
+                                const char *pool, const char *rev,
+                                bool marked, int64_t idle_seconds,
+                                char local[65], char *out, size_t out_len)
+{
+    static const char base[] = "1111111111111111111111111111111111111111";
+    char cmd[12288], sha_path[4200], tag[33];
+    if (snprintf(sha_path, sizeof(sha_path), "%s.sha", pool) >=
+            (int)sizeof(sha_path) ||
+        snprintf(cmd, sizeof(cmd), "git -C '%s' rev-parse '%s' > '%s'",
+                 repo, rev, sha_path) >= (int)sizeof(cmd) ||
+        system(cmd) != 0)
+        return false;
+    FILE *f = fopen(sha_path, "r");
+    if (!f) return false;
+    bool read = fgets(local, 65, f) != NULL;
+    (void)fclose(f);
+    if (!read) return false;
+    local[strcspn(local, "\r\n")] = 0;
+    if (strlen(local) != 40) return false;
+    zcl_dev_proof_test_generation_tag(canonical, local, tag);
+    if (snprintf(out, out_len, "%s/%s", pool, tag) >= (int)out_len ||
+        snprintf(cmd, sizeof(cmd),
+                 "git -C '%s' worktree add --detach -q '%s' '%s'", repo, out,
+                 local) >= (int)sizeof(cmd) ||
+        system(cmd) != 0)
+        return false;
+    struct zcl_dev_proof_build_identity_v1 identity;
+    memset(&identity, 0x5a, sizeof(identity));
+    if (!ic_write(out, "build/ballast", "built\n") ||
+        (marked && !zcl_dev_proof_warm_marker_write(out, canonical, local,
+                                                    base, 1700000000LL,
+                                                    &identity)))
+        return false;
+    int64_t when = platform_time_wall_unix() - idle_seconds;
+    const struct timespec stamp[2] = {
+        { .tv_sec = (time_t)when, .tv_nsec = 0 },
+        { .tv_sec = (time_t)when, .tv_nsec = 0 },
+    };
+    return utimensat(AT_FDCWD, out, stamp, 0) == 0;
+}
+
+/* One pair file under the checkout's proof state: a lease or running lock
+ * naming worker `pid`, or (pid 0) a queued request, for `local` against a
+ * base no marker names. */
+static bool ic_owner_pair_file(const char *state, const char *sub,
+                               const char *local, const char *suffix,
+                               long pid)
+{
+    static const char base[] = "2222222222222222222222222222222222222222";
+    char dir[4200], path[4400], body[128];
+    if (snprintf(dir, sizeof(dir), "%s%s%s", state, sub[0] ? "/" : "",
+                 sub) >= (int)sizeof(dir) ||
+        snprintf(path, sizeof(path), "%s/%s-%s%s", dir, local, base,
+                 suffix) >= (int)sizeof(path) ||
+        snprintf(body, sizeof(body), "attempt.token %ld %lld\n", pid,
+                 (long long)platform_time_wall_unix()) >= (int)sizeof(body))
+        return false;
+    (void)mkdir(dir, 0700);
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    if (fd < 0) return false;
+    bool ok = write(fd, body, strlen(body)) == (ssize_t)strlen(body);
+    return close(fd) == 0 && ok;
+}
+#endif
+
+static int test_pw_pressure_evicts_unclaimed_young_generation(void)
+{
+    int failures = 0;
+    TEST("proof generation pool: RAM pressure evicts a generation inside "
+         "its idle window only when its own checkout's queue lock proves no "
+         "proof of its commit is live or queued") {
+#if defined(_WIN32)
+        ASSERT(true);
+#else
+        char root[4096], repo[4096], pool[4096], phases[4096];
+        char canonical[4096], state[4200], lock[4300], cmd[8192];
+        char g_stale[4096], g_unmarked[4096], g_leased[4096];
+        char g_queued[4096], g_busy[4096], g_foreign[4096];
+        char l_stale[65], l_unmarked[65], l_leased[65], l_queued[65];
+        char l_busy[65];
+        struct stat probe;
+        test_make_tmpdir(root, sizeof(root), "proof_pool_young", "young");
+        ASSERT(ic_pool_repo(root, repo, sizeof(repo), pool, sizeof(pool)));
+        ASSERT(realpath(repo, canonical) != NULL);
+        ASSERT(snprintf(phases, sizeof(phases), "%s/phases.txt", root) > 0);
+        ASSERT(snprintf(cmd, sizeof(cmd),
+                        "cd '%s' && for n in 1 2 3 4; do git -c user.name=t "
+                        "-c user.email=t@t.invalid commit --allow-empty -q "
+                        "-m c$n || exit 1; done", repo) > 0);
+        ASSERT(system(cmd) == 0);
+        /* A worker SIGKILLed mid-proof: its lease names a pid that is gone. */
+        pid_t dead = fork();
+        ASSERT(dead >= 0);
+        if (dead == 0) _exit(0);
+        int status = 0;
+        ASSERT(waitpid(dead, &status, 0) == dead);
+        /* Every one of these was touched well inside its idle window. */
+        ASSERT(ic_owned_generation(repo, canonical, pool, "HEAD~4", true,
+                                   10 * 60, l_stale, g_stale,
+                                   sizeof(g_stale)));
+        ASSERT(ic_owned_generation(repo, canonical, pool, "HEAD~3", false,
+                                   3 * 60 * 60, l_unmarked, g_unmarked,
+                                   sizeof(g_unmarked)));
+        ASSERT(ic_owned_generation(repo, canonical, pool, "HEAD~2", true,
+                                   10 * 60, l_leased, g_leased,
+                                   sizeof(g_leased)));
+        ASSERT(ic_owned_generation(repo, canonical, pool, "HEAD~1", false,
+                                   10 * 60, l_queued, g_queued,
+                                   sizeof(g_queued)));
+        ASSERT(ic_owned_generation(repo, canonical, pool, "HEAD", true,
+                                   10 * 60, l_busy, g_busy, sizeof(g_busy)));
+        /* A name nothing hashes back to has no provable owner. */
+        ASSERT(ic_pool_generation(repo, pool, 'c', "/fixtures/pool-foreign",
+                                  10 * 60, g_foreign, sizeof(g_foreign)));
+        ASSERT(setenv("ZCL_DEVLOOP_TEST_PROCESS", "1", 1) == 0);
+
+        /* No queue lock at all: nothing can be proven, so nothing goes and
+         * nothing is created in the owner's checkout. */
+        size_t removed = 0;
+        uint64_t bytes = 0;
+        zcl_dev_proof_test_pool_pressure_reap(repo, pool, "", 0, UINT64_MAX,
+                                              phases, &removed, &bytes);
+        ASSERT(removed == 0);
+        ASSERT(snprintf(state, sizeof(state), "%s/.cache/zcl-dev-proof",
+                        canonical) > 0);
+        ASSERT(snprintf(lock, sizeof(lock), "%s/queue.lock", state) > 0);
+        ASSERT(stat(lock, &probe) != 0);
+
+        /* The owner's proof state: a dead worker's lease on the stale
+         * commit, a live one (this process) on another base of the leased
+         * commit, and a queued request for the queued commit. */
+        ASSERT(snprintf(cmd, sizeof(cmd), "mkdir -p '%s' && touch '%s'",
+                        state, lock) > 0);
+        ASSERT(system(cmd) == 0);
+        ASSERT(ic_owner_pair_file(state, "leases", l_stale, ".lease",
+                                  (long)dead));
+        ASSERT(ic_owner_pair_file(state, "leases", l_leased, ".lease",
+                                  (long)getpid()));
+        ASSERT(ic_owner_pair_file(state, "requests", l_queued, ".request",
+                                  0));
+
+        /* A claim in progress holds the queue lock: nothing waits on it
+         * and nothing goes. */
+        int held = open(lock, O_RDWR | O_CLOEXEC);
+        ASSERT(held >= 0);
+        ASSERT(flock(held, LOCK_EX) == 0);
+        removed = 0;
+        zcl_dev_proof_test_pool_pressure_reap(repo, pool, "", 0, UINT64_MAX,
+                                              phases, &removed, &bytes);
+        (void)flock(held, LOCK_UN);
+        (void)close(held);
+        ASSERT(removed == 0);
+        ASSERT(stat(g_stale, &probe) == 0);
+        ASSERT(stat(g_busy, &probe) == 0);
+
+        /* Lock free: the dead worker's generation, the unmarked one, and
+         * the unclaimed one go; the live lease, the queued request, and the
+         * unprovable name keep theirs. */
+        removed = 0;
+        bytes = 0;
+        zcl_dev_proof_test_pool_pressure_reap(repo, pool, "", 0, UINT64_MAX,
+                                              phases, &removed, &bytes);
+        ASSERT(removed == 3);
+        ASSERT(bytes > 0);
+        ASSERT(stat(g_stale, &probe) != 0 && errno == ENOENT);
+        ASSERT(stat(g_unmarked, &probe) != 0 && errno == ENOENT);
+        ASSERT(stat(g_busy, &probe) != 0 && errno == ENOENT);
+        ASSERT(stat(g_leased, &probe) == 0);
+        ASSERT(stat(g_queued, &probe) == 0);
+        ASSERT(stat(g_foreign, &probe) == 0);
+        ASSERT(ic_file_has(phases, "generation_pool_evicted"));
+        ASSERT(ic_file_has(phases, g_stale));
+
+        /* Once the lease's worker is gone and the request is consumed,
+         * those two are unclaimed as well. */
+        ASSERT(ic_owner_pair_file(state, "leases", l_leased, ".lease",
+                                  (long)dead));
+        char request[4400];
+        ASSERT(snprintf(request, sizeof(request),
+                        "%s/requests/%s-2222222222222222222222222222222222"
+                        "222222.request", state, l_queued) > 0);
+        ASSERT(unlink(request) == 0);
+        removed = 0;
+        zcl_dev_proof_test_pool_pressure_reap(repo, pool, "", 0, UINT64_MAX,
+                                              phases, &removed, &bytes);
+        (void)unsetenv("ZCL_DEVLOOP_TEST_PROCESS");
+        ASSERT(removed == 2);
+        ASSERT(stat(g_leased, &probe) != 0 && errno == ENOENT);
+        ASSERT(stat(g_queued, &probe) != 0 && errno == ENOENT);
+        ASSERT(stat(g_foreign, &probe) == 0);
         ASSERT(test_rm_rf_recursive(root) == 0);
 #endif
         PASS();
@@ -9725,6 +9968,7 @@ int test_impact_composition(void)
     failures += test_pw_generation_retire_passed();
     failures += test_pw_abandoned_generation_reaped_by_age();
     failures += test_pw_pressure_evicts_oldest_until_satisfied();
+    failures += test_pw_pressure_evicts_unclaimed_young_generation();
     failures += test_pw_orphan_shapes_reaped();
     failures += test_pw_marker_identity_invalidates_stale_donor();
     failures += test_pw_identity_survives_a_second_checkout_path();

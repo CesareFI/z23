@@ -4029,6 +4029,8 @@ struct warm_reap_entry {
     int64_t completed;
     int64_t touched;
     bool complete;
+    /* Touched within its idle window; see dp_reap_survey(). */
+    bool young;
 };
 
 /* Apparent size of every regular file under `dir`, summed recursively.
@@ -4073,9 +4075,13 @@ static uint64_t directory_bytes_sum(const char *dir)
  * their inodes after the donor names are unlinked. */
 /* Is this pool entry an idle generation the reaper may consider, and what
  * does its marker say? Returns false for a foreign tag, the caller's own
- * generation, an untimestampable tree, or one still in use. */
+ * generation, an untimestampable tree, or one still in use. An entry held
+ * only by its idle window (touched within it, no live lease on its marked
+ * pair) is returned as `young` when `take_young` asks for it, so the
+ * pressure pass can prove it unclaimed some other way; otherwise it is
+ * refused as in use. */
 static bool dp_reap_survey(const char *parent, const char *in_use,
-                           const char *name, int64_t now,
+                           const char *name, int64_t now, bool take_young,
                            struct warm_reap_entry *slot)
 {
     char candidate[PATH_MAX];
@@ -4095,18 +4101,16 @@ static bool dp_reap_survey(const char *parent, const char *in_use,
     bool complete = warm_marker_read(candidate, marker_root,
                                      marker_local, marker_base,
                                      &completed, NULL);
-    bool live;
-    if (complete) {
-        /* The lease lives under the marked root, which may be a
-         * sibling checkout sharing this pool; the marker root is
-         * validated absolute and escape-free on read. */
-        live = warm_donor_live(marker_root, marker_local,
-                               marker_base) ||
-               now - touched <= PROOF_WARM_IDLE_ACTIVE_SECONDS;
-    } else {
-        live = now - touched <= PROOF_WARM_IDLE_UNMARKED_SECONDS;
-    }
-    if (live) return false;
+    /* The lease lives under the marked root, which may be a sibling
+     * checkout sharing this pool; the marker root is validated absolute
+     * and escape-free on read. Marker-less generations have no pair lease
+     * to consult, and age is the only signal. */
+    if (complete && warm_donor_live(marker_root, marker_local, marker_base))
+        return false;
+    int64_t window = complete ? PROOF_WARM_IDLE_ACTIVE_SECONDS
+                              : PROOF_WARM_IDLE_UNMARKED_SECONDS;
+    bool young = now - touched <= window;
+    if (young && !take_young) return false;
     memset(slot, 0, sizeof(*slot));
     (void)snprintf(slot->tag, sizeof(slot->tag), "%s", name);
     (void)snprintf(slot->path, sizeof(slot->path), "%s", candidate);
@@ -4115,20 +4119,22 @@ static bool dp_reap_survey(const char *parent, const char *in_use,
     slot->completed = completed;
     slot->touched = touched;
     slot->complete = complete;
+    slot->young = young;
     return true;
 }
 
 /* Survey the whole pool. An allocation failure abandons the survey whole:
  * a partial list could reap a generation whose siblings were never seen. */
 static bool dp_reap_collect(DIR *dir, const char *parent, const char *in_use,
-                            int64_t now, struct warm_reap_entry **entries,
-                            size_t *count)
+                            int64_t now, bool take_young,
+                            struct warm_reap_entry **entries, size_t *count)
 {
     size_t capacity = 0;
     for (struct dirent *entry = readdir(dir); entry;
          entry = readdir(dir)) {
         struct warm_reap_entry surveyed;
-        if (!dp_reap_survey(parent, in_use, entry->d_name, now, &surveyed))
+        if (!dp_reap_survey(parent, in_use, entry->d_name, now, take_young,
+                            &surveyed))
             continue;
         if (*count == capacity) {
             size_t next = capacity ? capacity * 2 : 16;
@@ -4549,8 +4555,8 @@ static void generation_pool_reap_ex(const struct proof_paths *paths,
     int64_t now = platform_time_wall_unix();
     struct warm_reap_entry *entries = NULL;
     size_t count = 0;
-    bool collect_ok = dp_reap_collect(dir, parent, in_use, now, &entries,
-                                      &count);
+    bool collect_ok = dp_reap_collect(dir, parent, in_use, now, false,
+                                      &entries, &count);
     (void)closedir(dir);
     size_t attempts = 0;
     for (size_t i = 0; collect_ok && entries && i < count &&
@@ -4613,6 +4619,122 @@ static void dp_pressure_note(const struct proof_paths *paths,
                                    note);
 }
 
+static void dp_generation_tag(const char *root, const char *local,
+                              char generation_tag[33]);
+static bool dp_retry_worker_settled(const char *path, bool lease);
+
+/* Which checkout made this generation, and for which commit. The tag is a
+ * digest over exactly that pair (dp_generation_tag()), so the answer is
+ * proven, not guessed: the commit is git's HEAD for the tree, and the
+ * checkout is whichever worktree of the same repository hashes back to the
+ * tag with it. A tree git cannot read, or a tag nothing hashes back to,
+ * has no proven owner. */
+static bool dp_generation_owner(const struct warm_reap_entry *entry,
+                                char root[PATH_MAX], char local[65])
+{
+    const char *head_argv[] = {"git", "rev-parse", "--verify", "HEAD", NULL};
+    const char *list_argv[] = {"git", "worktree", "list", "--porcelain",
+                               NULL};
+    char *list = zcl_malloc(ZCL_DEVLOOP_OUTPUT_MAX, "proof_pool_owner");
+    bool found = false;
+    if (list && git_capture(entry->path, head_argv, local, 65) &&
+        proof_oid_text(local) &&
+        git_capture(entry->path, list_argv, list, ZCL_DEVLOOP_OUTPUT_MAX)) {
+        char *save = NULL;
+        for (char *line = strtok_r(list, "\n", &save); line && !found;
+             line = strtok_r(NULL, "\n", &save)) {
+            char tag[33];
+            if (strncmp(line, "worktree ", 9) != 0 ||
+                !platform_directory_canonical_real(line + 9, root,
+                                                   PATH_MAX))
+                continue;
+            dp_generation_tag(root, local, tag);
+            found = strcmp(tag, entry->tag) == 0;
+        }
+    }
+    free(list);
+    return found;
+}
+
+/* Does `dir` hold an entry named `<local>-<anything><suffix>` that is not
+ * provably finished? A request is claimed by its presence alone; a lease
+ * or running lock only while dp_retry_worker_settled() cannot prove its
+ * worker dead. A directory that is not there holds nothing; one that
+ * cannot be read might hold anything. */
+static bool dp_owner_pair_claimed(const char *dir, const char *local,
+                                  const char *suffix, bool worker, bool lease)
+{
+    DIR *d = opendir(dir);
+    if (!d) return errno != ENOENT;
+    size_t local_len = strlen(local), suffix_len = strlen(suffix);
+    bool claimed = false;
+    for (struct dirent *e = readdir(d); e && !claimed; e = readdir(d)) {
+        size_t len = strlen(e->d_name);
+        char path[PATH_MAX];
+        if (len <= local_len + 1 + suffix_len ||
+            strncmp(e->d_name, local, local_len) != 0 ||
+            e->d_name[local_len] != '-' ||
+            strcmp(e->d_name + len - suffix_len, suffix) != 0)
+            continue;
+        claimed = !worker ||
+                  snprintf(path, sizeof(path), "%s/%s", dir, e->d_name) >=
+                      (int)sizeof(path) ||
+                  !dp_retry_worker_settled(path, lease);
+    }
+    (void)closedir(d);
+    return claimed;
+}
+
+/* Is any proof of `local` from checkout `root` live or queued, whatever its
+ * base? The generation is named by (checkout, commit) alone, so a proof of
+ * the same commit against another base takes the same tree. */
+static bool dp_owner_claimed(const char *state, const char *local)
+{
+    char leases[PATH_MAX], requests[PATH_MAX];
+    if (snprintf(leases, sizeof(leases), "%s/leases", state) >=
+            (int)sizeof(leases) ||
+        snprintf(requests, sizeof(requests), "%s/requests", state) >=
+            (int)sizeof(requests))
+        return true;
+    return dp_owner_pair_claimed(leases, local, ".lease", true, true) ||
+           dp_owner_pair_claimed(state, local, ".running", true, false) ||
+           dp_owner_pair_claimed(requests, local, ".request", false, false);
+}
+
+/* Evict a generation still inside its idle window, which only the pressure
+ * pass ever asks for. The window exists because a proof that is working a
+ * generation looks exactly like one that stopped. The pair lease tells them
+ * apart: every proof worker publishes it under its checkout's queue.lock
+ * before it touches its generation (dp_queue_claim_locked()) and unlinks it
+ * under the same lock only after retiring that generation
+ * (proof_lease_release()). So while this holds the owning checkout's
+ * queue.lock, an owner with no live lease, running lock, or queued request
+ * for the generation's commit has no proof on it, and none can claim one
+ * until the delete is done. Never waits for the lock, never creates it:
+ * a busy or absent lock keeps the generation. The delete itself is still
+ * dp_reap_remove(), run from the owning checkout. */
+static void dp_pressure_remove_young(const struct warm_reap_entry *entry,
+                                     size_t *removed_out, uint64_t *bytes_out)
+{
+    struct proof_paths owner;
+    char local[65], state[PATH_MAX], lock[PATH_MAX];
+    memset(&owner, 0, sizeof(owner));
+    if (!dp_generation_owner(entry, owner.root, local) ||
+        snprintf(state, sizeof(state), "%s/.cache/zcl-dev-proof",
+                 owner.root) >= (int)sizeof(state) ||
+        snprintf(lock, sizeof(lock), "%s/queue.lock", state) >=
+            (int)sizeof(lock))
+        return;
+    int fd = open(lock, O_RDWR | O_CLOEXEC | O_NOFOLLOW);
+    if (fd < 0) return;
+    if (flock(fd, LOCK_EX | LOCK_NB) == 0) {
+        if (!dp_owner_claimed(state, local))
+            dp_reap_remove(&owner, entry, removed_out, bytes_out);
+        (void)flock(fd, LOCK_UN);
+    }
+    (void)close(fd);
+}
+
 /* Reclaim RAM before asking for it. The reaper above is hygiene that runs
  * after this proof has already taken its generation, and by then the
  * reservation has been granted or refused; a pool full of abandoned donors
@@ -4623,12 +4745,16 @@ static void dp_pressure_note(const struct proof_paths *paths,
  *
  * It borrows the reaper's safety whole rather than restating it. Every
  * entry it can see survived dp_reap_survey(), which already excluded the
- * caller's own generation, anything holding a live proof lease, and
- * anything touched within an active build's hour; every delete still goes
- * through dp_reap_remove(), which re-proves detached, clean, and
- * unchanged-since-surveyed before it runs. Advisory throughout: a delete
- * that refuses leaves the pool exactly as full as it found it, and the
- * reservation then refuses as it does today. */
+ * caller's own generation and anything holding a live proof lease on its
+ * marked pair. One touched within its idle window is taken only through
+ * dp_pressure_remove_young(), which proves under the owning checkout's
+ * queue lock that no proof of its commit is live or queued: a proof killed
+ * before it could retire its generation (a superseded run, a crash) would
+ * otherwise hold the RAM the next proof needs for the whole window. Every
+ * delete still goes through dp_reap_remove(), which re-proves detached,
+ * clean, and unchanged-since-surveyed before it runs. Advisory throughout:
+ * a delete that refuses leaves the pool exactly as full as it found it, and
+ * the reservation then refuses as it does today. */
 static void dp_pool_pressure_reap(const struct proof_paths *paths,
                                   const char *parent, const char *in_use,
                                   uint64_t free_bytes, uint64_t need_bytes,
@@ -4651,8 +4777,8 @@ static void dp_pool_pressure_reap(const struct proof_paths *paths,
     int64_t now = platform_time_wall_unix();
     struct warm_reap_entry *entries = NULL;
     size_t count = 0;
-    bool collect_ok = dp_reap_collect(dir, parent, in_use, now, &entries,
-                                      &count);
+    bool collect_ok = dp_reap_collect(dir, parent, in_use, now, true,
+                                      &entries, &count);
     (void)closedir(dir);
     uint64_t reclaimed = 0;
     for (size_t attempts = 0;
@@ -4663,7 +4789,11 @@ static void dp_pool_pressure_reap(const struct proof_paths *paths,
         if (victim == count) break;
         size_t removed = 0;
         uint64_t before = reclaimed;
-        dp_reap_remove(paths, &entries[victim], &removed, &reclaimed);
+        if (entries[victim].young)
+            dp_pressure_remove_young(&entries[victim], &removed,
+                                     &reclaimed);
+        else
+            dp_reap_remove(paths, &entries[victim], &removed, &reclaimed);
         if (removed) dp_pressure_note(paths, &entries[victim], now,
                                       reclaimed - before);
         if (removed && removed_out) (*removed_out)++;
@@ -4799,6 +4929,12 @@ void zcl_dev_proof_test_pool_pressure_reap(const char *repo_root,
         (void)snprintf(paths.phases, sizeof(paths.phases), "%s", phases);
     dp_pool_pressure_reap(&paths, parent, in_use, free_bytes, need_bytes,
                           removed_out, bytes_out);
+}
+
+void zcl_dev_proof_test_generation_tag(const char *root, const char *local,
+                                       char tag[33])
+{
+    dp_generation_tag(root, local, tag);
 }
 
 bool zcl_dev_proof_warm_tag(const char *name)
@@ -5871,31 +6007,58 @@ bool zcl_dev_proof_test_docs_fresh_overlapped(const char *generation,
 }
 #endif
 
-/* After its own proof, a generation that passed has nothing left to give.
- * Its exact pair is never proven again (a passed pair's receipt is reused,
- * not re-proven), and it could seed a later proof only through
- * dp_donor_trust_verdict(), which refuses every generation this uid built
- * for as long as no separate verifier is qualified. Left in the pool it
- * counts as recently touched for the reaper's idle hour, holding the room
- * the next proof's RAM reservation asks for, so that proof prepares on
- * disk instead. So a passed generation is retired here, while this worker
- * still holds the pair's lease, through the reaper's own detached-and-
- * clean check and delete. Everything else stays exactly as the reaper
- * would leave it: a failed generation for its exact retry, a generation
- * that could donate, and one git will not call detached and clean.
- * Hygiene only: the verdict is already published and nothing here reads
- * back into it. `trust` is dp_donor_trust_verdict() in every proof; only
- * the test seam below passes anything else. */
+/* What a settled proof means for its generation. The generation is named by
+ * (checkout, local commit), and after a verdict only one thing ever proves
+ * that exact commit again from that checkout: a re-run of an INTERRUPTED
+ * pair (dev land's dl_resume_interrupted_proof() re-queues it through
+ * zcl_dev_proof_retry()). Every other refusal is final for the pair: ensure
+ * replays the settled `.failed` record instead of re-proving it, and a
+ * host-load or supersede retry in dev land rebases first and so proves a
+ * new local commit in a new generation. */
+enum dp_retire_verdict {
+    DP_RETIRE_PASSED = 0,
+    DP_RETIRE_FAILED,
+    DP_RETIRE_INTERRUPTED,
+};
+
+/* The same predicate dp_failure_settle() applies when it writes the settled
+ * text: a cancel request, or a refusal already spelled as an interruption. */
+static enum dp_retire_verdict dp_retire_verdict_of(bool ok, const char *why)
+{
+    if (ok) return DP_RETIRE_PASSED;
+    return zcl_devloop_process_cancel_requested() ||
+                   zcl_dev_proof_failure_interrupted(why)
+               ? DP_RETIRE_INTERRUPTED
+               : DP_RETIRE_FAILED;
+}
+
+/* After its own proof, a generation whose pair is settled has nothing left
+ * to give. A passed pair's receipt is reused, not re-proven; a failed pair's
+ * record is replayed, not re-proven (see enum dp_retire_verdict). It could
+ * seed a later proof only through dp_donor_trust_verdict(), which refuses
+ * every generation this uid built for as long as no separate verifier is
+ * qualified. Left in the pool it counts as recently touched for the
+ * reaper's idle hour, holding the room the next proof's RAM reservation
+ * asks for, so that proof prepares on disk instead. So a settled generation
+ * is retired here, while this worker still holds the pair's lease, through
+ * the reaper's own detached-and-clean check and delete. Everything else
+ * stays exactly as the reaper would leave it: an interrupted generation for
+ * the re-run that reuses it, a generation that could donate, and one git
+ * will not call detached and clean. Hygiene only: the verdict is already
+ * published and nothing here reads back into it. `trust` is
+ * dp_donor_trust_verdict() in every proof; only the test seam below passes
+ * anything else. */
 static const char *dp_generation_retire_with(
-    const struct proof_paths *paths, const char *generation, bool passed,
+    const struct proof_paths *paths, const char *generation,
+    enum dp_retire_verdict verdict,
     enum dp_donor_verdict (*trust)(const char *))
 {
     if (!paths || !paths->root[0] || !generation || !generation[0] || !trust)
         return "kept_invalid";
     int64_t started_us = platform_time_monotonic_us();
-    const char *outcome = "kept_failed";
-    if (!passed) {
-        /* Kept for the exact retry that reuses it; no git call at all. */
+    const char *outcome = "kept_interrupted";
+    if (verdict == DP_RETIRE_INTERRUPTED) {
+        /* Kept for the exact re-run that reuses it; no git call at all. */
     } else if (trust(generation) == DP_DONOR_ELIGIBLE) {
         outcome = "kept_donor";
     } else {
@@ -5910,11 +6073,12 @@ static const char *dp_generation_retire_with(
             const char *argv[] = {"git", "worktree", "remove", "--force",
                                   generation, NULL};
             char output[1024];
-            outcome = git_capture_within(paths->root, argv,
-                                         PROOF_WARM_REMOVE_TIMEOUT_MS,
-                                         output, sizeof(output))
-                          ? "removed"
-                          : "remove_failed";
+            bool removed = git_capture_within(paths->root, argv,
+                                              PROOF_WARM_REMOVE_TIMEOUT_MS,
+                                              output, sizeof(output));
+            outcome = !removed ? "remove_failed"
+                      : verdict == DP_RETIRE_PASSED ? "removed"
+                                                    : "removed_failed";
         }
     }
     if (paths->phases[0]) {
@@ -5926,9 +6090,11 @@ static const char *dp_generation_retire_with(
 }
 
 static void dp_generation_retire(const struct proof_paths *paths,
-                                 const char *generation, bool passed)
+                                 const char *generation, bool ok,
+                                 const char *why)
 {
-    (void)dp_generation_retire_with(paths, generation, passed,
+    (void)dp_generation_retire_with(paths, generation,
+                                    dp_retire_verdict_of(ok, why),
                                     dp_donor_trust_verdict);
 }
 
@@ -5939,10 +6105,10 @@ static enum dp_donor_verdict dp_test_donor_eligible(const char *path)
     return DP_DONOR_ELIGIBLE;
 }
 
-bool zcl_dev_proof_test_generation_retire(const char *repo_root,
-                                          const char *generation,
-                                          bool passed, bool donor_eligible,
-                                          char *outcome, size_t outcome_len)
+bool zcl_dev_proof_test_generation_retire(
+    const char *repo_root, const char *generation,
+    enum zcl_dev_proof_retire_verdict verdict, bool donor_eligible,
+    char *outcome, size_t outcome_len)
 {
     struct proof_paths paths;
     memset(&paths, 0, sizeof(paths));
@@ -5950,12 +6116,16 @@ bool zcl_dev_proof_test_generation_retire(const char *repo_root,
         snprintf(paths.root, sizeof(paths.root), "%s", repo_root) >=
             (int)sizeof(paths.root))
         return false;
+    enum dp_retire_verdict internal =
+        verdict == ZCL_DEV_PROOF_RETIRE_PASSED   ? DP_RETIRE_PASSED
+        : verdict == ZCL_DEV_PROOF_RETIRE_FAILED ? DP_RETIRE_FAILED
+                                                 : DP_RETIRE_INTERRUPTED;
     const char *result = dp_generation_retire_with(
-        &paths, generation, passed,
+        &paths, generation, internal,
         donor_eligible ? dp_test_donor_eligible : dp_donor_trust_verdict);
     if (outcome && outcome_len)
         (void)snprintf(outcome, outcome_len, "%s", result);
-    return strcmp(result, "removed") == 0;
+    return strncmp(result, "removed", 7) == 0;
 }
 #endif
 
@@ -9587,9 +9757,11 @@ static bool proof_worker(const struct proof_paths *paths,
                                      why_len);
     }
     ok = dp_worker_docs_verdict(&docs, paths, ok, why, why_len);
-    /* Only a published PASS retires the generation; every refusal keeps
-     * it for the exact retry (dp_generation_retire_with()). */
-    if (generation_ready) dp_generation_retire(paths, generation, ok);
+    /* A PASS or a final refusal retires the generation; only an
+     * interrupted run keeps it for its exact re-run
+     * (dp_generation_retire_with()). */
+    if (generation_ready)
+        dp_generation_retire(paths, generation, ok, why);
     return ok;
 }
 
