@@ -220,6 +220,93 @@ static bool mirror_read_node_state_lane(struct node_db *ndb, void *ctx)
 
 /* ── Wholesale rebuild: coins_kv → node.db utxos ───────────── */
 
+/* Copy one coins-row txid into out32; false (loudly) on a malformed row —
+ * a single bad row never aborts the mirror rebuild. */
+static bool mirror_rebuild_row_txid(sqlite3_stmt *sel, uint8_t out32[32])
+{
+    const void *blob = sqlite3_column_blob(sel, 0);
+    int len = sqlite3_column_bytes(sel, 0);
+    if (!blob || len != 32) {
+        LOG_WARN("utxo_mirror", "rebuild: malformed txid (len=%d) — skipping row",
+                 len);
+        return false;
+    }
+    memcpy(out32, blob, 32);
+    return true;
+}
+
+/* Fold one coins row into the mirror: validate, classify, insert, account
+ * into the commitment. SKIPPED rows are loud one-offs (malformed source
+ * data) that never abort the rebuild; FAILED is a real node.db write error
+ * and aborts the pass. */
+enum mirror_row_fold { MIRROR_ROW_FOLDED, MIRROR_ROW_SKIPPED,
+                       MIRROR_ROW_FAILED };
+
+static enum mirror_row_fold
+mirror_rebuild_fold_row(struct node_db *ndb, sqlite3_stmt *sel,
+                        struct utxo_commitment *uc)
+{
+    struct db_utxo u;
+    memset(&u, 0, sizeof(u));
+    if (!mirror_rebuild_row_txid(sel, u.txid))
+        return MIRROR_ROW_SKIPPED;
+    u.vout        = (uint32_t)sqlite3_column_int(sel, 1);
+    u.value       = sqlite3_column_int64(sel, 2);
+    int h         = sqlite3_column_int(sel, 3);
+    u.height      = h < 0 ? 0 : h;     /* utxos schema CHECK(height >= 0) */
+    u.is_coinbase = sqlite3_column_int(sel, 4) != 0;
+
+    const void *sblob = sqlite3_column_blob(sel, 5);
+    int slen = sqlite3_column_bytes(sel, 5);
+    if (slen < 0) slen = 0;
+    if (slen > MAX_SCRIPT_SIZE) {
+        /* A UTXO scriptPubKey is <= MAX_SCRIPT_SIZE by consensus; a longer
+         * blob is a corrupt source row. Skip it loudly rather than write a
+         * malformed mirror entry. */
+        LOG_WARN("utxo_mirror", "rebuild: oversize script (len=%d) — skipping row",
+                 slen);
+        return MIRROR_ROW_SKIPPED;
+    }
+    /* db_utxo_insert_raw binds u.script with u.script_len; alias the
+     * SQLite buffer for the bind (valid until the next step). */
+    u.script     = (uint8_t *)sblob;
+    u.script_len = (size_t)slen;
+
+    /* Derive the explorer's address columns from the scriptPubKey using
+     * the single shared classifier — never hand-roll script parsing. */
+    u.script_type = utxo_classify_script(u.script, u.script_len,
+                                         u.address_hash, &u.has_address);
+
+    if (!db_utxo_insert_raw(ndb, &u)) {
+        LOG_WARN("utxo_mirror",
+                 "rebuild: db_utxo_insert_raw failed at vout=%u (height=%d "
+                 "value=%lld script_len=%zu script_type=%d has_address=%d): %s",
+                 u.vout, (int)u.height, (long long)u.value, u.script_len,
+                 (int)u.script_type, (int)u.has_address,
+                 sqlite3_errmsg(ndb->db));
+        return MIRROR_ROW_FAILED;
+    }
+    /* u.height is already the CHECK(height >= 0)-clamped value actually
+     * persisted — feed the identical bytes utxo_commitment_compute_db
+     * would read back from this same row, so a future O(n) verification
+     * against this stamp matches exactly. */
+    utxo_commitment_add(uc, u.txid, u.vout, u.value, (int32_t)u.height);
+    return MIRROR_ROW_FOLDED;
+}
+
+/* Stop responsiveness for the wholesale rebuild: the walk below runs the
+ * entire coins table (millions of rows) on the service thread, and a walk
+ * that never polls the stop flag keeps the thread alive past the
+ * orderly-shutdown join until the external grace SIGKILLs the process — the
+ * unclean-stop class. Polled every 4096 rows (a bitmask test + one atomic
+ * load — noise against a sqlite step), so a stop unwinds the rebuild in
+ * well under a second; the aborted pass rolls back and retries next pass. */
+static bool mirror_rebuild_stop_polled(const _Atomic bool *stop,
+                                       int64_t written)
+{
+    return stop && (written & 4095) == 0 && atomic_load(stop);
+}
+
 /* Copy every live coins_kv row into the mirror under ONE node.db txn.
  * Returns the number of rows written, or -1 on a (logged) error. The whole
  * write is atomic: on failure node.db rolls back and the cursor stays put.
@@ -228,7 +315,9 @@ static bool mirror_read_node_state_lane(struct node_db *ndb, void *ctx)
  * success) — used to height-stamp the XOR checkpoint this rebuild also
  * recomputes from scratch, so utxo_mirror_delta_apply can incrementally
  * maintain it from here on instead of the boot-time O(n) refresh doing it. */
-static int64_t mirror_rebuild_from_coins_kv(struct node_db *ndb, int32_t frontier)
+static int64_t mirror_rebuild_from_coins_kv(struct node_db *ndb,
+                                            int32_t frontier,
+                                            const _Atomic bool *stop)
 {
     if (!ndb || !ndb->open)
         LOG_RETURN(-1, "utxo_mirror", "rebuild: node.db unavailable");
@@ -277,6 +366,7 @@ static int64_t mirror_rebuild_from_coins_kv(struct node_db *ndb, int32_t frontie
     }
 
     bool ok = node_db_exec(ndb, "DELETE FROM utxos");
+    bool stopped = false;
     int64_t written = 0;
     struct utxo_commitment uc;
     utxo_commitment_init(&uc);
@@ -291,60 +381,23 @@ static int64_t mirror_rebuild_from_coins_kv(struct node_db *ndb, int32_t frontie
             ok = false;
             break;
         }
-
-        struct db_utxo u;
-        memset(&u, 0, sizeof(u));
-        const void *txid_blob = sqlite3_column_blob(sel, 0);
-        int txid_len = sqlite3_column_bytes(sel, 0);
-        if (!txid_blob || txid_len != 32) {
-            LOG_WARN("utxo_mirror", "rebuild: malformed txid (len=%d) — skipping row",
-                     txid_len);
-            continue;   /* a single bad row never aborts the mirror rebuild */
-        }
-        memcpy(u.txid, txid_blob, 32);
-        u.vout        = (uint32_t)sqlite3_column_int(sel, 1);
-        u.value       = sqlite3_column_int64(sel, 2);
-        int h         = sqlite3_column_int(sel, 3);
-        u.height      = h < 0 ? 0 : h;     /* utxos schema CHECK(height >= 0) */
-        u.is_coinbase = sqlite3_column_int(sel, 4) != 0;
-
-        const void *sblob = sqlite3_column_blob(sel, 5);
-        int slen = sqlite3_column_bytes(sel, 5);
-        if (slen < 0) slen = 0;
-        if (slen > MAX_SCRIPT_SIZE) {
-            /* A UTXO scriptPubKey is <= MAX_SCRIPT_SIZE by consensus; a longer
-             * blob is a corrupt source row. Skip it loudly rather than write a
-             * malformed mirror entry. */
-            LOG_WARN("utxo_mirror", "rebuild: oversize script (len=%d) — skipping row",
-                     slen);
-            continue;
-        }
-        /* db_utxo_insert_raw binds u.script with u.script_len; alias the
-         * SQLite buffer for the bind (valid until the next step). */
-        u.script     = (uint8_t *)sblob;
-        u.script_len = (size_t)slen;
-
-        /* Derive the explorer's address columns from the scriptPubKey using
-         * the single shared classifier — never hand-roll script parsing. */
-        u.script_type = utxo_classify_script(u.script, u.script_len,
-                                             u.address_hash, &u.has_address);
-
-        if (!db_utxo_insert_raw(ndb, &u)) {
-            LOG_WARN("utxo_mirror",
-                     "rebuild: db_utxo_insert_raw failed at vout=%u (height=%d "
-                     "value=%lld script_len=%zu script_type=%d has_address=%d): %s",
-                     u.vout, (int)u.height, (long long)u.value, u.script_len,
-                     (int)u.script_type, (int)u.has_address,
-                     sqlite3_errmsg(ndb->db));
+        if (mirror_rebuild_stop_polled(stop, written)) {
+            LOG_INFO("utxo_mirror",
+                     "rebuild: stop requested after %lld rows — rolling "
+                     "back; mirror unchanged, retried on the next pass",
+                     (long long)written);
+            stopped = true;
             ok = false;
             break;
         }
-        /* u.height is already the CHECK(height >= 0)-clamped value actually
-         * persisted — feed the identical bytes utxo_commitment_compute_db
-         * would read back from this same row, so a future O(n) verification
-         * against this stamp matches exactly. */
-        utxo_commitment_add(&uc, u.txid, u.vout, u.value, (int32_t)u.height);
-        written++;
+
+        enum mirror_row_fold rf = mirror_rebuild_fold_row(ndb, sel, &uc);
+        if (rf == MIRROR_ROW_FAILED) {
+            ok = false;
+            break;
+        }
+        if (rf == MIRROR_ROW_FOLDED)
+            written++;
     }
 
     sqlite3_finalize(sel);
@@ -353,6 +406,8 @@ static int64_t mirror_rebuild_from_coins_kv(struct node_db *ndb, int32_t frontie
     if (!ok) {
         if (!node_db_rollback(ndb))
             LOG_WARN("utxo_mirror", "rebuild: node.db ROLLBACK failed after error");
+        if (stopped)
+            return -2; // raw-return-ok:stop-abort logged above; not an error
         LOG_RETURN(-1, "utxo_mirror", "rebuild: aborted after %lld rows",
                    (long long)written);
     }
@@ -451,7 +506,16 @@ static bool mirror_rebuild_and_advance_lane(struct node_db *ndb, void *ctx)
     }
 
     atomic_store(&r->svc->mirror_health, UTXO_MIRROR_AUDITING);
-    r->written = mirror_rebuild_from_coins_kv(ndb, r->frontier);
+    r->written = mirror_rebuild_from_coins_kv(ndb, r->frontier,
+                                              &r->svc->stop_requested);
+    if (r->written == -2) {
+        /* Stopped mid-rebuild (shutdown) and rolled back: the mirror is
+         * unchanged, so restore HEALTHY — a stop is not corruption and must
+         * never quarantine. The service thread exits on the same flag; the
+         * next pass (or next boot) retries the rebuild. */
+        atomic_store(&r->svc->mirror_health, UTXO_MIRROR_HEALTHY);
+        return false;
+    }
     if (r->written < 0) {
         atomic_store(&r->svc->mirror_health, UTXO_MIRROR_QUARANTINED);
         atomic_fetch_add(&r->svc->quarantines_total, 1);

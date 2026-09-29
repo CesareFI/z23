@@ -201,6 +201,70 @@ static int64_t ums_addr_cache_balance(struct node_db *ndb, const uint8_t h[20])
     return bal;
 }
 
+/* Shutdown responsiveness for the WHOLESALE rebuild: the rebuild walks the
+ * entire coins table on the service thread; without a stop poll a SIGTERM
+ * mid-rebuild keeps the thread alive past the orderly-shutdown join until
+ * the external grace SIGKILLs the process (the unclean-stop class). The
+ * rebuild must notice svc->stop_requested, roll its transaction back
+ * (mirror byte-identical), and NOT quarantine — a stop is not corruption. */
+static int ums_test_stop_abort_rebuild(void)
+{
+    int failures = 0;
+    char dir[256];
+    test_make_tmpdir(dir, sizeof(dir), "utxo_mirror_sync", "stop_abort");
+
+    char ndb_path[600];
+    snprintf(ndb_path, sizeof(ndb_path), "%s/node.db", dir);
+
+    struct node_db ndb;
+    bool ok = node_db_open(&ndb, ndb_path);
+    ok = ok && progress_store_open(dir);
+    sqlite3 *pdb = progress_store_db();
+    ok = ok && pdb && coins_kv_ensure_schema(pdb);
+    ok = ok && ums_add_coin(pdb, 0x51, 1000, 100);
+    ok = ok && ums_add_coin(pdb, 0x52, 2000, 101);
+    ok = ok && ums_set_frontier(pdb, 102);
+
+    struct db_service dbsvc;
+    struct app_runtime_context runtime;
+    struct utxo_mirror_sync_service svc;
+    memset(&runtime, 0, sizeof(runtime));
+    db_service_init(&dbsvc);
+    ok = ok && db_service_attach(&dbsvc, &ndb);
+    ok = ok && db_service_start(&dbsvc);
+    runtime.db_service = &dbsvc;
+    app_runtime_set_current(&runtime);
+    utxo_mirror_sync_init(&svc, &ndb);
+
+    /* Fresh mirror (cursor 0, no rows) + stop already requested: the
+     * wholesale rebuild must abort immediately, roll back, and NOT
+     * quarantine. */
+    atomic_store(&svc.stop_requested, true);
+    int64_t w = utxo_mirror_sync_run_once(&svc);
+    UMS_CHECK("stop-requested rebuild aborts (run_once == -1)", w == -1);
+    UMS_CHECK("abort rolled back: mirror still empty",
+              db_utxo_count(&ndb) == 0);
+    UMS_CHECK("abort is not a quarantine",
+              atomic_load(&svc.mirror_health) != UTXO_MIRROR_QUARANTINED);
+    int64_t cur = -1;
+    UMS_CHECK("abort persists no cursor",
+              !node_db_state_get_int(&ndb, UTXO_MIRROR_SYNC_CURSOR_KEY, &cur));
+
+    /* Control: with the flag cleared the SAME fixture rebuilds to
+     * completion, proving the abort came from the stop flag. */
+    atomic_store(&svc.stop_requested, false);
+    int64_t w2 = utxo_mirror_sync_run_once(&svc);
+    UMS_CHECK("control pass rebuilds 2 rows after flag clears", w2 == 2);
+
+    app_runtime_set_current(NULL);
+    db_service_stop(&dbsvc);
+    progress_store_close();
+    node_db_close(&ndb);
+    test_cleanup_tmpdir(dir);
+    if (!ok) failures++;
+    return failures;
+}
+
 int test_utxo_mirror_sync(void);
 int test_utxo_mirror_sync(void)
 {
@@ -702,6 +766,7 @@ int test_utxo_mirror_sync(void)
     app_runtime_set_current(NULL);
     db_service_stop(&dbsvc);
     progress_store_close();
+    failures += ums_test_stop_abort_rebuild();
     node_db_close(&ndb);
     test_cleanup_tmpdir(dir);
     return failures;
