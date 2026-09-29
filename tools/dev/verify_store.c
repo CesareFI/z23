@@ -37,6 +37,8 @@
 #define VS_KEY_HEX 64u
 #define VS_POLICY "z23verify.store.v1\nsigner_uid="
 #define VS_PUBLISHER "publisher_uid="
+#define VS_PINS_FILE "fixed_result.pins"
+#define VS_MAX_PINS 2048u
 
 struct vs_bytes {
     uint8_t *p;
@@ -627,8 +629,72 @@ done:
     return ok;
 }
 
+/* Pins v2 under an already-verified directory: one nlink-1 regular file,
+ * mode exactly 0444, owned by `owner`, opened without following a link and
+ * read by descriptor. Every framing or value fault keeps its contract token. */
+static bool vs_pins_qualified(const struct stat *st, uid_t owner)
+{
+    return vs_mode(st, owner, S_IFREG) && (st->st_mode & 0777) == 0444 &&
+           st->st_nlink == 1 && st->st_size > 0 &&
+           st->st_size <= (off_t)VS_MAX_PINS;
+}
+
+static bool vs_pins_bytes(int fd, uint8_t *bytes, size_t len)
+{
+    size_t at = 0;
+    while (at < len) {
+        ssize_t n = read(fd, bytes + at, len - at);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) return false;
+        at += (size_t)n;
+    }
+    return true;
+}
+
+static const char *vs_pins_read(int dir, uid_t owner,
+                                struct zcl_fixed_result_v2_roots *out)
+{
+    int fd = openat(dir, VS_PINS_FILE, O_RDONLY | O_NONBLOCK | O_NOFOLLOW |
+                                         O_CLOEXEC);
+    if (fd < 0) return errno == ENOENT ? "store_pins_missing"
+                                      : "store_pins_unsafe";
+    struct stat before, after;
+    uint8_t bytes[VS_MAX_PINS];
+    const char *why = NULL;
+    if (fstat(fd, &before) != 0 || !vs_pins_qualified(&before, owner))
+        why = "store_pins_unsafe";
+    else if (!vs_pins_bytes(fd, bytes, (size_t)before.st_size) ||
+             fstat(fd, &after) != 0 || !vs_same_file(&before, &after))
+        why = "store_pins_changed";
+    if (close(fd) != 0 && !why) why = "store_pins_changed";
+    if (!why && !zcl_fr_pins_parse(bytes, (size_t)before.st_size, out, &why) &&
+        !why)
+        why = "store_pins_unqualified";
+    return why;
+}
+
+bool zcl_verify_store_pins_load(struct zcl_fixed_result_v2_roots *out,
+                                const char **why)
+{
+    int root = -1, etc = -1, dir = -1;
+    struct stat st;
+    const char *reason = "store_pins_path_unsafe";
+    if (!out) { if (why) *why = "store_pins_unqualified"; return false; }
+    memset(out, 0, sizeof(*out));
+    root = open("/", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    if (root >= 0 && fstat(root, &st) == 0 && vs_mode(&st, 0, S_IFDIR))
+        etc = vs_child_dir(root, "etc", 0);
+    if (etc >= 0) dir = vs_child_dir(etc, "z23verify", 0);
+    if (dir >= 0) reason = vs_pins_read(dir, 0, out);
+    if (dir >= 0) (void)close(dir);
+    if (etc >= 0) (void)close(etc);
+    if (root >= 0) (void)close(root);
+    if (reason) memset(out, 0, sizeof(*out));
+    if (why) *why = reason;
+    return reason == NULL;
+}
+
 void zcl_verify_store_lookup(const struct zcl_verify_attest_expected *expected,
-                             const struct zcl_fixed_result_v2_roots *pins,
                              const struct zcl_verify_attest_box_key *box,
                              struct zcl_verify_store_result *out)
 {
@@ -645,6 +711,12 @@ void zcl_verify_store_lookup(const struct zcl_verify_attest_expected *expected,
         vs_set(out, ZCL_VERIFY_STORE_COLD, "store_owner_same_uid");
         return;
     }
+    /* The receiver's own root-custodied pins, never the caller's. */
+    struct zcl_fixed_result_v2_roots pins;
+    if (!zcl_verify_store_pins_load(&pins, &why)) {
+        vs_set(out, ZCL_VERIFY_STORE_COLD, why);
+        return;
+    }
     int root = open("/", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
     struct stat st;
     if (root < 0 || fstat(root, &st) != 0 || !vs_mode(&st, 0, S_IFDIR)) {
@@ -655,7 +727,7 @@ void zcl_verify_store_lookup(const struct zcl_verify_attest_expected *expected,
     int var = vs_child_dir(root, "var", 0);
     int lib = var >= 0 ? vs_child_dir(var, "lib", 0) : -1;
     int base = lib >= 0 ? vs_child_dir(lib, "z23verify", 0) : -1;
-    const struct vs_request req = {expected, pins, publisher};
+    const struct vs_request req = {expected, &pins, publisher};
     if (base < 0)
         vs_set(out, ZCL_VERIFY_STORE_COLD, "store_path_unsafe");
     else
@@ -696,5 +768,23 @@ void zcl_verify_store_lookup_fixture(
     vs_lookup_at(root, (uid_t)signer_uid, (uid_t)signer_uid, false, &req,
                  box, out);
     (void)close(root);
+}
+
+const char *zcl_verify_store_pins_load_fixture(
+    const char *dir_path, unsigned dir_owner, unsigned file_owner,
+    struct zcl_fixed_result_v2_roots *out)
+{
+    if (!out) return "store_pins_unqualified";
+    memset(out, 0, sizeof(*out));
+    int dir = dir_path ? open(dir_path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW |
+                                            O_CLOEXEC) : -1;
+    struct stat st;
+    const char *why = "store_pins_path_unsafe";
+    if (dir >= 0 && fstat(dir, &st) == 0 &&
+        vs_mode(&st, (uid_t)dir_owner, S_IFDIR))
+        why = vs_pins_read(dir, (uid_t)file_owner, out);
+    if (dir >= 0) (void)close(dir);
+    if (why) memset(out, 0, sizeof(*out));
+    return why;
 }
 #endif

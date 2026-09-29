@@ -33,19 +33,27 @@ struct zcl_verify_store_result {
     int lock_fd;
 };
 
-/* Production paths, signer UID, and root publisher custody come only from
- * root-owned policy. This function reloads that policy and the root-pinned
- * public key on every call, and refuses store_owner_same_uid when the
- * receiver runs as the signer or the publisher.
+/* Production paths, signer UID, publisher custody and the pins v2 file come
+ * only from root-owned policy. This function reloads the policy, the
+ * root-pinned public key and /etc/z23verify/fixed_result.pins on every call,
+ * and refuses store_owner_same_uid when the receiver runs as the signer or
+ * the publisher. Every observation's launch.bin receipt is bound against
+ * those pins (zcl_fr_receipt_bind) before its record can admit.
  * The caller must independently construct `expected` from an eligible input
- * closure and pass the root-owned pins v2 it loaded itself; every
- * observation's launch.bin receipt is bound against them
- * (zcl_fr_receipt_bind) before its record can admit. This reader cannot
- * make a probe-only closure eligible. */
+ * closure; zcl_verify_store_pins_load() gives it the same pins to build
+ * that closure from. This reader cannot make a probe-only closure eligible. */
 void zcl_verify_store_lookup(const struct zcl_verify_attest_expected *expected,
-                             const struct zcl_fixed_result_v2_roots *pins,
                              const struct zcl_verify_attest_box_key *box,
                              struct zcl_verify_store_result *out);
+
+/* Load /etc/z23verify/fixed_result.pins by descriptor from "/": every
+ * directory root-owned and not group/world writable, the file opened with
+ * O_NOFOLLOW, root-owned, regular, nlink 1, mode exactly 0444, then
+ * zcl_fr_pins_parse. Refusals: store_pins_path_unsafe, store_pins_missing,
+ * store_pins_unsafe, store_pins_changed, or the contract token. On refusal
+ * `out` is zeroed. */
+bool zcl_verify_store_pins_load(struct zcl_fixed_result_v2_roots *out,
+                                const char **why);
 
 void zcl_verify_store_result_release(struct zcl_verify_store_result *result);
 
@@ -60,6 +68,13 @@ void zcl_verify_store_lookup_fixture(
     const struct zcl_fixed_result_v2_roots *pins,
     const struct zcl_verify_attest_box_key *box,
     struct zcl_verify_store_result *out);
+
+/* The pins loader's file checks over a fixture directory: dir_path must
+ * be owned by dir_owner and not group/world writable, the pins file by
+ * file_owner. Production passes 0 for both through the path from "/". */
+const char *zcl_verify_store_pins_load_fixture(
+    const char *dir_path, unsigned dir_owner, unsigned file_owner,
+    struct zcl_fixed_result_v2_roots *out);
 #endif
 
 #endif

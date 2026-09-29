@@ -323,6 +323,81 @@ static int vs_test_receipts(struct vs_fixture *f)
     return failures;
 }
 
+static bool vs_pins_expect(const char *dir, unsigned dir_owner,
+                           unsigned file_owner, const char *want)
+{
+    struct zcl_fixed_result_v2_roots got;
+    const char *why = zcl_verify_store_pins_load_fixture(dir, dir_owner,
+                                                         file_owner, &got);
+    if (!why || strcmp(why, want) != 0) {
+        fprintf(stderr, "pins load: %s, want %s\n", why ? why : "(ok)", want);
+        return false;
+    }
+    return true;
+}
+
+static bool vs_pins_mode(const char *path, mode_t mode, const char *dir,
+                         const char *want)
+{
+    unsigned me = (unsigned)geteuid();
+    bool ok = chmod(path, mode) == 0 && vs_pins_expect(dir, me, me, want);
+    return chmod(path, strcmp(path, dir) == 0 ? 0755 : 0444) == 0 && ok;
+}
+
+static int vs_test_pins_custody(struct vs_fixture *f)
+{
+    int failures = 0;
+    TEST("verify store: the pins file loads only as an owned, nlink-1, "
+         "mode-0444 regular file under an owned, unwritable directory") {
+        char dir[PATH_MAX], pins[PATH_MAX], other[PATH_MAX];
+        uint8_t bytes[2048];
+        size_t len = 0;
+        const char *why = NULL;
+        unsigned me = (unsigned)geteuid();
+        struct zcl_fixed_result_v2_roots got;
+        ASSERT(vs_path(dir, f->root, "pins") && mkdir(dir, 0755) == 0);
+        ASSERT(vs_path(pins, dir, "fixed_result.pins"));
+        ASSERT(vs_path(other, dir, "fixed_result.pins.2"));
+        ASSERT(vs_pins_expect(dir, me, me, "store_pins_missing"));
+        ASSERT(zcl_fr_pins_encode(&f->vc.pins, bytes, sizeof(bytes), &len,
+                                  &why));
+        ASSERT(vs_write(pins, bytes, len, 0444));
+        ASSERT(zcl_verify_store_pins_load_fixture(dir, me, me, &got) == NULL);
+        ASSERT(memcmp(&got, &f->vc.pins, sizeof(got)) == 0);
+        /* Owned by someone else: the file, then the directory. */
+        ASSERT(vs_pins_expect(dir, me, me + 1u, "store_pins_unsafe"));
+        ASSERT(vs_pins_expect(dir, me + 1u, me, "store_pins_path_unsafe"));
+        ASSERT(vs_pins_mode(pins, 0644, dir, "store_pins_unsafe"));
+        ASSERT(vs_pins_mode(pins, 0464, dir, "store_pins_unsafe"));
+        ASSERT(vs_pins_mode(pins, 0446, dir, "store_pins_unsafe"));
+        ASSERT(vs_pins_mode(dir, 0775, dir, "store_pins_path_unsafe"));
+        ASSERT(vs_pins_mode(dir, 0757, dir, "store_pins_path_unsafe"));
+        ASSERT(link(pins, other) == 0);
+        ASSERT(vs_pins_expect(dir, me, me, "store_pins_unsafe"));
+        ASSERT(unlink(pins) == 0 && symlink("fixed_result.pins.2", pins) == 0);
+        ASSERT(vs_pins_expect(dir, me, me, "store_pins_unsafe"));
+        ASSERT(unlink(pins) == 0 && rename(other, pins) == 0);
+        ASSERT(zcl_verify_store_pins_load_fixture(dir, me, me, &got) == NULL);
+        static const char v1[] = "z23verify.fixed_result.pins.v1\n"
+                                 "strict_args_sha3=aa\n";
+        ASSERT(unlink(pins) == 0 && vs_write(pins, v1, sizeof(v1) - 1u, 0444));
+        ASSERT(vs_pins_expect(dir, me, me, ZCL_FR_WHY_V1_RETIRED));
+        ASSERT(unlink(pins) == 0);
+        ASSERT(vs_pins_expect(dir, me, me, "store_pins_missing"));
+        /* Production takes no path: without an installed pins file it
+         * refuses with a store_pins_ token, and never loads into NULL. */
+        struct stat installed;
+        if (lstat("/etc/z23verify/fixed_result.pins", &installed) != 0) {
+            ASSERT(!zcl_verify_store_pins_load(&got, &why));
+            ASSERT(why && strncmp(why, "store_pins_", 11) == 0);
+        }
+        ASSERT(!zcl_verify_store_pins_load(NULL, &why));
+        ASSERT(why && strcmp(why, "store_pins_unqualified") == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int vs_test_bounds(struct vs_fixture *f)
 {
     int failures = 0;
@@ -461,6 +536,7 @@ int test_verify_store(void)
     } _test_next:;
     if (!failures) failures += vs_test_artifacts(&f);
     if (!failures) failures += vs_test_receipts(&f);
+    if (!failures) failures += vs_test_pins_custody(&f);
     if (!failures) failures += vs_test_bounds(&f);
     if (!failures) failures += vs_test_signers(&f);
     if (!failures) failures += vs_test_conflicts(&f);
