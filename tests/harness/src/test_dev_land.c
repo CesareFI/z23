@@ -3332,6 +3332,150 @@ _test_next:;
     return failures;
 }
 
+static int test_dev_land_attach_publish_exact_pair(void)
+{
+    int failures = 0;
+    TEST("land: attach_publish refuses a reviewed pair that changed") {
+        struct dlx_rig rig;
+        struct dlx_call c;
+        char base[64], remote[64];
+        dlx_isolate("attach_publish_exact_pair");
+        ASSERT(dlx_attach_proven_pair(&rig, "attach_publish_exact_pair", base));
+        dlx_begin(&c, "attach_publish");
+        (void)json_push_kv_int(&c.input, "seq", 1);
+        (void)json_push_kv_str(&c.input, "base", base);
+        (void)json_push_kv_str(&c.input, "head", base);
+        ASSERT(dlx_run(&c) && !dlx_ok(&c));
+        ASSERT_STR_EQ(dlx_err_code(&c), "PUBLICATION_PAIR_CHANGED");
+        dlx_end(&c);
+        ASSERT(dlx_origin_main(&rig, remote));
+        ASSERT_STR_EQ(remote, base);
+        dlx_restore();
+        PASS();
+    }
+_test_next:;
+    dlx_restore();
+    return failures;
+}
+
+static int test_dev_land_attach_publish_malformed_pair(void)
+{
+    int failures = 0;
+    TEST("land: malformed present pair pins cannot become an unpinned push") {
+        struct dlx_rig rig;
+        struct dlx_call c;
+        char base[64], remote[64];
+        dlx_isolate("attach_publish_malformed_pair");
+        ASSERT(dlx_attach_proven_pair(&rig, "attach_publish_malformed_pair", base));
+        dlx_begin(&c, "attach_publish");
+        (void)json_push_kv_int(&c.input, "seq", 1);
+        (void)json_push_kv_int(&c.input, "base", 0);
+        (void)json_push_kv_int(&c.input, "head", 0);
+        /* Exercise the handler too: a wire schema may reject earlier. */
+        c.request.spec = NULL;
+        ASSERT(dlx_run(&c) && !dlx_ok(&c));
+        ASSERT_STR_EQ(dlx_err_code(&c), "BAD_INPUT");
+        dlx_end(&c);
+        ASSERT(dlx_origin_main(&rig, remote));
+        ASSERT_STR_EQ(remote, base);
+        dlx_restore();
+        PASS();
+    }
+_test_next:;
+    dlx_restore();
+    return failures;
+}
+
+static int test_dev_land_attach_publish_wait_expires(void)
+{
+    int failures = 0;
+    TEST("land: reviewed attach wait expires while proof is still pending") {
+        struct dlx_rig rig;
+        struct dlx_call c;
+        char base[64], remote[64];
+        dlx_isolate("attach_publish_wait_expires");
+        ASSERT(dlx_attach_proven_pair(&rig, "attach_publish_wait_expires", base));
+        setenv("ZCL_LAND_PROOF_STUB", "running", 1);
+        dlx_begin(&c, "attach_publish");
+        (void)json_push_kv_int(&c.input, "seq", 1);
+        (void)json_push_kv_str(&c.input, "base", base);
+        (void)json_push_kv_str(&c.input, "head", rig.tip);
+        (void)json_push_kv_int(&c.input, "wait_ms", 100);
+        ASSERT(dlx_run(&c) && !dlx_ok(&c));
+        ASSERT_STR_EQ(dlx_err_code(&c), "PUBLICATION_PROOF_WAIT_EXPIRED");
+        dlx_end(&c);
+        ASSERT(dlx_origin_main(&rig, remote));
+        ASSERT_STR_EQ(remote, base);
+        dlx_restore();
+        PASS();
+    }
+_test_next:;
+    dlx_restore();
+    return failures;
+}
+
+static int test_dev_land_attach_publish_wait_failure(void)
+{
+    int failures = 0;
+    TEST("land: reviewed attach wait stops on a failed proof") {
+        struct dlx_rig rig;
+        struct dlx_call c;
+        char base[64], remote[64];
+        dlx_isolate("attach_publish_wait_failure");
+        ASSERT(dlx_attach_proven_pair(&rig, "attach_publish_wait_failure", base));
+        setenv("ZCL_LAND_PROOF_STUB", "fail", 1);
+        dlx_begin(&c, "attach_publish");
+        (void)json_push_kv_int(&c.input, "seq", 1);
+        (void)json_push_kv_str(&c.input, "base", base);
+        (void)json_push_kv_str(&c.input, "head", rig.tip);
+        (void)json_push_kv_int(&c.input, "wait_ms", 100);
+        ASSERT(dlx_run(&c) && !dlx_ok(&c));
+        ASSERT_STR_EQ(dlx_err_code(&c), "PUBLICATION_PROOF_FAILED");
+        dlx_end(&c);
+        ASSERT(dlx_origin_main(&rig, remote));
+        ASSERT_STR_EQ(remote, base);
+        dlx_restore();
+        PASS();
+    }
+_test_next:;
+    dlx_restore();
+    return failures;
+}
+
+static int test_dev_land_attach_publish_wait_busy(void)
+{
+    int failures = 0;
+    int lockfd = -1;
+    TEST("land: reviewed attach wait names an occupied step lock") {
+        struct dlx_rig rig;
+        struct dlx_call c;
+        char base[64], remote[64], land[1200];
+        dlx_isolate("attach_publish_wait_busy");
+        ASSERT(dlx_attach_proven_pair(&rig, "attach_publish_wait_busy", base));
+        dlx_landdir(land, sizeof(land));
+        lockfd = dlx_step_lock_take(land);
+        ASSERT(lockfd >= 0);
+        dlx_begin(&c, "attach_publish");
+        (void)json_push_kv_int(&c.input, "seq", 1);
+        (void)json_push_kv_str(&c.input, "base", base);
+        (void)json_push_kv_str(&c.input, "head", rig.tip);
+        (void)json_push_kv_int(&c.input, "wait_ms", 100);
+        ASSERT(dlx_run(&c) && !dlx_ok(&c));
+        ASSERT_STR_EQ(dlx_err_code(&c), "PUBLICATION_STEP_WAIT_EXPIRED");
+        dlx_end(&c);
+        dlx_step_lock_release(lockfd);
+        lockfd = -1;
+        ASSERT(dlx_origin_main(&rig, remote));
+        ASSERT_STR_EQ(remote, base);
+        dlx_restore();
+        PASS();
+    }
+_test_next:;
+    if (lockfd >= 0) dlx_step_lock_release(lockfd);
+    dlx_restore();
+    return failures;
+}
+
 static int test_dev_land_attach_publish_moved_base(void)
 {
     int failures = 0;
@@ -3393,6 +3537,43 @@ static int test_dev_land_attach_publish_push_checkpoint(void)
         dlx_end(&c);
         ASSERT(dlx_origin_main(&rig, remote));
         ASSERT_STR_EQ(remote, base);
+        dlx_restore();
+        PASS();
+    }
+_test_next:;
+    dlx_restore();
+    return failures;
+}
+
+static int test_dev_land_cancel_push_checkpoint(void)
+{
+    int failures = 0;
+    TEST("land: cancel preserves a push checkpoint for reconciliation") {
+        struct dlx_rig rig;
+        struct dlx_call c;
+        char base[64], remote[64], land[1200], path[1400], row[8192];
+        size_t used = 0;
+        dlx_isolate("cancel_push_checkpoint");
+        ASSERT(dlx_attach_proven_pair(&rig, "cancel_push_checkpoint", base));
+        dlx_landdir(land, sizeof(land));
+        (void)snprintf(path, sizeof(path), "%s/queue.jsonl", land);
+        ASSERT(dlx_slurp(path, row, sizeof(row) - 1, &used));
+        row[used] = '\0';
+        char *phase = strstr(row, "\"phase\":\"prove\"");
+        ASSERT(phase != NULL);
+        memcpy(phase, "\"phase\":\"push\" ", 15);
+        ASSERT(dlx_write(path, row));
+        dlx_begin(&c, "cancel");
+        (void)json_push_kv_int(&c.input, "seq", 1);
+        ASSERT(dlx_run(&c) && !dlx_ok(&c));
+        ASSERT_STR_EQ(dlx_err_code(&c), "PUSH_OUTCOME_UNKNOWN");
+        dlx_end(&c);
+        ASSERT(dlx_origin_main(&rig, remote));
+        ASSERT_STR_EQ(remote, base);
+        dlx_begin(&c, "status");
+        ASSERT(dlx_run(&c) && dlx_ok(&c));
+        ASSERT(json_get(&c.reply.data, "in_flight") != NULL);
+        dlx_end(&c);
         dlx_restore();
         PASS();
     }
@@ -3563,8 +3744,14 @@ static int test_dev_land_attach_target_cases(void)
     failures += test_dev_land_blocked_names_attach_target();
     failures += test_dev_land_attach_resolves_single_row();
     failures += test_dev_land_attach_publish_one_window();
+    failures += test_dev_land_attach_publish_exact_pair();
+    failures += test_dev_land_attach_publish_malformed_pair();
+    failures += test_dev_land_attach_publish_wait_expires();
+    failures += test_dev_land_attach_publish_wait_failure();
+    failures += test_dev_land_attach_publish_wait_busy();
     failures += test_dev_land_attach_publish_moved_base();
     failures += test_dev_land_attach_publish_push_checkpoint();
+    failures += test_dev_land_cancel_push_checkpoint();
     failures += test_dev_land_attach_target_none();
     failures += test_dev_land_attach_explicit_unattachable();
     failures += test_dev_land_attach_target_ambiguous();

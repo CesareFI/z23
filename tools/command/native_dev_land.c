@@ -23,6 +23,10 @@
  *   seq       cancel: required. attach and attach_publish: optional; omitted,
  *             they target the ONE
  *             live PASS row lacking intent, else ATTACH_TARGET_NONE|AMBIGUOUS.
+ *   base/head attach and attach_publish: optional exact 40-hex pair pins;
+ *             supply both to refuse if a reviewed row has changed.
+ *   wait_ms   attach_publish only: bounded wait for that explicitly pinned
+ *             proof, without holding the landing step lock between polls.
  *   json      status only, optional bool: drop the human screen.
  *
  * STATE. <platform_state_root>/land (0700):
@@ -2527,6 +2531,17 @@ static void dl_cancel(const struct zcl_command_request *req,
     memset(&hit, 0, sizeof(hit));
     for (size_t i = 0; i < nrows; i++) {
         if (rows[i].seq == seq && !found) {
+            /* The durable push checkpoint means the remote may already
+             * have moved even if this process has not heard back. Preserve
+             * the row for reconciliation; cancellation cannot erase it. */
+            if (strcmp(rows[i].phase, "push") == 0) {
+                free(rows);
+                dl_unlock(lock);
+                dl_fail(reply, "PUSH_OUTCOME_UNKNOWN", "cancel",
+                        "a push checkpoint must be reconciled before cancellation",
+                        "run dev land step to observe the exact remote");
+                return;
+            }
             found = true;
             hit = rows[i];
             continue;               /* dropped from the live queue */
@@ -8024,9 +8039,35 @@ static bool dl_attach_pick(const struct dl_row *rows, size_t count,
     return false;
 }
 
+static void dl_attach_proof_missing(const struct dl_dirs *d,
+                                    const struct dl_row *row,
+                                    struct zcl_command_reply *reply,
+                                    bool waiting)
+{
+    if (waiting) {
+        char dimension[48], detail[512];
+        enum dl_proof proof = dl_proof_read(d->wt, row->local, row->base,
+                                            dimension, sizeof(dimension),
+                                            detail, sizeof(detail));
+        if (proof == DL_PROOF_PENDING) {
+            dl_fail(reply, "PUBLICATION_PROOF_PENDING", "attach",
+                    "the reviewed pair is still proving", detail);
+            return;
+        }
+        if (proof == DL_PROOF_FAILED) {
+            dl_fail(reply, "PUBLICATION_PROOF_FAILED", "attach",
+                    "the reviewed pair's proof failed", detail);
+            return;
+        }
+    }
+    dl_fail(reply, "PUBLICATION_PROOF_REQUIRED", "attach",
+            "exact signed proof receipt is not PASS", row->proof_intent);
+}
+
 static void dl_attach_seal(const struct dl_dirs *d, struct dl_row *row,
                             const char *qpath,
-                            struct zcl_command_reply *reply, bool publish)
+                            struct zcl_command_reply *reply, bool publish,
+                            bool waiting)
 {
     char observed[80], output[512], message[1024];
     if (row->publication_signature[0]) {
@@ -8040,8 +8081,7 @@ static void dl_attach_seal(const struct dl_dirs *d, struct dl_row *row,
         return;
     }
     if (!dl_publication_proof_digest(d, row, row->publication_proof)) {
-        dl_fail(reply, "PUBLICATION_PROOF_REQUIRED", "attach",
-                "exact signed proof receipt is not PASS", row->proof_intent);
+        dl_attach_proof_missing(d, row, reply, waiting);
         return;
     }
     if (!dl_observe_remote_main(d, row, observed, false, reply))
@@ -8077,24 +8117,78 @@ static void dl_attach_seal(const struct dl_dirs *d, struct dl_row *row,
         dl_step_reply(reply, row, "attached");
 }
 
-static void dl_attach(const struct zcl_command_request *req,
-                      struct zcl_command_reply *reply, bool publish)
+struct dl_attach_target {
+    long long seq;
+    bool explicit_seq;
+    const char *base;
+    const char *head;
+};
+
+static bool dl_attach_target_parse(const struct zcl_command_request *req,
+                                   struct dl_attach_target *target,
+                                   struct zcl_command_reply *reply)
+{
+    target->explicit_seq = req && req->input && json_get(req->input, "seq");
+    bool base_present = req && req->input && json_get(req->input, "base");
+    bool head_present = req && req->input && json_get(req->input, "head");
+    target->base = dl_str(req, "base");
+    target->head = dl_str(req, "head");
+    if ((base_present || head_present) &&
+        (!target->base || !target->head || !dl_sha_ok(target->base) ||
+         !dl_sha_ok(target->head))) {
+        dl_fail(reply, "BAD_INPUT", "attach",
+                "base and head must be supplied together as exact commit IDs",
+                "input.base/input.head");
+        return false;
+    }
+    if (target->explicit_seq && !dl_seq_in(req, &target->seq)) {
+        dl_fail(reply, "BAD_INPUT", "attach",
+                "seq must be a live request sequence (1 or more); omit it to "
+                "attach the one proven row", "input.seq");
+        return false;
+    }
+    return true;
+}
+
+static bool dl_attach_target_pick(const struct dl_dirs *d,
+                                  const struct dl_row *rows, size_t count,
+                                  struct dl_attach_target *target,
+                                  bool publish, struct dl_row *row,
+                                  struct zcl_command_reply *reply)
+{
+    if (!target->explicit_seq &&
+        !dl_attach_resolve(d, rows, count, &target->seq, reply))
+        return false;
+    if (!dl_attach_pick(rows, count, target->seq, publish, row, reply))
+        return false;
+    if (target->base && (strcmp(row->base, target->base) != 0 ||
+                         strcmp(row->local, target->head) != 0)) {
+        char evidence[256];
+        (void)snprintf(evidence, sizeof(evidence),
+                       "seq=%lld expected_base=%s expected_head=%s actual_base=%s actual_head=%s",
+                       target->seq, target->base, target->head,
+                       row->base, row->local);
+        dl_fail(reply, "PUBLICATION_PAIR_CHANGED", "attach",
+                "reviewed exact base/head no longer names this row", evidence);
+        return false;
+    }
+    return true;
+}
+
+static void dl_attach_once(const struct zcl_command_request *req,
+                           struct zcl_command_reply *reply, bool publish,
+                           bool waiting)
 {
     struct dl_dirs d;
     struct dl_row *rows = NULL, row = {0};
+    struct dl_attach_target target = {0};
     size_t count = 0;
-    long long seq = 0;
     char qpath[4096 + 32];
     int slot;
     /* A present seq is the operator's explicit target and wins; an absent
      * one resolves under the step lock to the single proven row. */
-    bool explicit_seq = req && req->input && json_get(req->input, "seq");
-    if (explicit_seq && !dl_seq_in(req, &seq)) {
-        dl_fail(reply, "BAD_INPUT", "attach",
-                "seq must be a live request sequence (1 or more); omit it to "
-                "attach the one proven row", "input.seq");
+    if (!dl_attach_target_parse(req, &target, reply))
         return;
-    }
     if (!dl_dirs_make(&d) ||
         snprintf(qpath, sizeof(qpath), "%s/queue.jsonl", d.land) >=
             (int)sizeof(qpath)) {
@@ -8109,17 +8203,83 @@ static void dl_attach(const struct zcl_command_request *req,
                 "cannot read the existing landing queue", qpath);
         goto done;
     }
-    if (!explicit_seq && !dl_attach_resolve(&d, rows, count, &seq, reply))
+    if (!dl_attach_target_pick(&d, rows, count, &target, publish, &row, reply))
         goto done;
-    if (!dl_attach_pick(rows, count, seq, publish, &row, reply))
-        goto done;
-    dl_attach_seal(&d, &row, qpath, reply, publish);
+    dl_attach_seal(&d, &row, qpath, reply, publish, waiting);
     if (reply->status == ZCL_COMMAND_STATUS_PASSED)
         (void)json_push_kv_str(&reply->data, "target",
-                               explicit_seq ? "explicit" : "resolved");
+                               target.explicit_seq ? "explicit" : "resolved");
 done:
     free(rows);
     dl_unlock(slot);
+}
+
+/* Explicit review may start while an exact proof is still running. Poll its
+ * immutable pair, dropping step.lock after every read; a new row, successor,
+ * failure, or absent signed PASS returns by name. Only the final successful
+ * poll seals and pushes under the lock. */
+static bool dl_attach_wait_input(const struct zcl_command_request *req,
+                                 bool publish, int64_t *wait_ms,
+                                 struct zcl_command_reply *reply)
+{
+    const struct json_value *value = req && req->input
+        ? json_get(req->input, "wait_ms") : NULL;
+    *wait_ms = value ? json_get_int(value) : 0;
+    if (value && (!publish || value->type != JSON_INT ||
+                  *wait_ms < 1 || *wait_ms > 900000 ||
+                  !json_get(req->input, "seq") || !dl_str(req, "base") ||
+                  !dl_str(req, "head"))) {
+        dl_fail(reply, "BAD_INPUT", "attach",
+                "wait_ms needs attach_publish, seq, base and head; maximum 900000 ms",
+                "input.wait_ms");
+        return false;
+    }
+    return true;
+}
+
+static void dl_attach_wait_expired(const struct zcl_command_request *req,
+                                   struct zcl_command_reply *reply,
+                                   int64_t wait_ms, bool step_busy)
+{
+    char evidence[192];
+    (void)snprintf(evidence, sizeof(evidence),
+                   "seq=%lld base=%s head=%s wait_ms=%lld",
+                   (long long)json_get_int(json_get(req->input, "seq")),
+                   dl_str(req, "base"), dl_str(req, "head"),
+                   (long long)wait_ms);
+    zcl_command_reply_free(reply);
+    zcl_command_reply_init(reply, "zcl.land.v1");
+    dl_fail(reply, step_busy ? "PUBLICATION_STEP_WAIT_EXPIRED"
+                             : "PUBLICATION_PROOF_WAIT_EXPIRED",
+            "attach",
+            step_busy ? "landing step lock stayed busy through the wait budget"
+                      : "reviewed exact proof stayed pending through the wait budget",
+            evidence);
+}
+
+static void dl_attach(const struct zcl_command_request *req,
+                      struct zcl_command_reply *reply, bool publish)
+{
+    int64_t wait_ms = 0;
+    if (!dl_attach_wait_input(req, publish, &wait_ms, reply))
+        return;
+    int64_t deadline = platform_time_monotonic_ms() + wait_ms;
+    for (;;) {
+        dl_attach_once(req, reply, publish, wait_ms > 0);
+        bool proof_pending = strcmp(reply->error.code,
+                                    "PUBLICATION_PROOF_PENDING") == 0;
+        bool step_busy = strcmp(reply->error.code, "STEP_BUSY") == 0;
+        if (wait_ms == 0 || (!proof_pending && !step_busy))
+            return;
+        if (platform_time_monotonic_ms() >= deadline) {
+            dl_attach_wait_expired(req, reply, wait_ms, step_busy);
+            return;
+        }
+        zcl_command_reply_free(reply);
+        zcl_command_reply_init(reply, "zcl.land.v1");
+        struct timespec pause = { .tv_sec = 0, .tv_nsec = 100000000L };
+        (void)nanosleep(&pause, NULL);
+    }
 }
 
 void zcl_native_handle_dev_land(const struct zcl_command_request *request,

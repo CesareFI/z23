@@ -318,9 +318,13 @@ static bool cr_match_fleet_steer(const char *path, const char *key,
  * limit is a string the default branch still types. `fleet.machines`
  * `offset` is an integer too; other leaves keep the string default so a
  * caller that already passes offset as text is unchanged. */
-static bool cr_match_page_ints(const char *path, const char *key,
+static bool cr_match_leaf_ints(const char *path, const char *key,
                                const struct json_value *value, bool *type_ok)
 {
+    if (strcmp(path, "dev.land") == 0 && strcmp(key, "wait_ms") == 0) {
+        *type_ok = cr_int_range(value, 1, 900000);
+        return true;
+    }
     if (strcmp(key, "limit") == 0 && strcmp(path, "fleet.ledger.add") != 0) {
         *type_ok = cr_int_range(value, 1, 1000000);
         return true;
@@ -359,7 +363,7 @@ static bool cr_match_path_special(const struct zcl_command_spec *spec,
         *type_ok = cr_int_range(value, 1, INT64_MAX);
         return true;
     }
-    if (cr_match_page_ints(path, key, value, type_ok))
+    if (cr_match_leaf_ints(path, key, value, type_ok))
         return true;
     return false;
 }

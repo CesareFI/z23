@@ -1914,14 +1914,18 @@ ZCL_COMMAND_DEV_COMMAND(
     "host-load failure up to three times; "
     "attach seals the exact proven Git pair and bundle under the local "
     "operator identity before a push; attach_publish seals and runs that "
-    "same gated current-base push under one step lock; cancel drops one request by sequence "
-    "number. Every state change also "
+    "same gated current-base push under one step lock; both attach actions "
+    "accept optional base/head pins and refuse a changed reviewed pair; "
+    "attach_publish with seq/base/head may wait 900000 ms for exact proof, "
+    "releasing the step lock between polls; "
+    "cancel drops one request by sequence number unless a push checkpoint "
+    "requires remote reconciliation. Every state change also "
     "appends to the agent mail outbox when one exists, so an agent learns "
     "the outcome by pulling rather than by waiting. Integration calls Git "
     "without a shell; drive executes the existing bounded proof worker.", 65536,
     "land,submit,attach,attach_publish,step,drive,status,cancel,queue,proof,push,rebase,async",
     "zcl.land_input.v1", "zcl.land.v1",
-    "action,tip,worktree,note,seq,json", "action",
+    "action,tip,worktree,note,seq,base,head,wait_ms,json", "action",
     "z23-dev dev land drive",
     ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_DEV_MUTATION,
     ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_OPERATOR,
