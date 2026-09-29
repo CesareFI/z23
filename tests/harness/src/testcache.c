@@ -467,6 +467,8 @@ static bool group_reads_external_inputs(const char *name)
         /* Re-hashes the snapshot named by ZCL_SELF_FOLD_ANCHOR_FIXTURE.
          * The env value is in the key; the artifact bytes are not. */
         "self_folded_anchor_heavy",
+        /* spawns build/bin/z23-sem-replay; that tool's link is outside the closure. */
+        "sem_replay",
         /* read tests/fixtures/semantic_consumer; the sibling execs the
          * sensor and cc. */
         "semantic_consumer",
