@@ -107,10 +107,23 @@ extern _Atomic bool g_sapling_tree_rebuilding;
 
 /* Rebuild the Sapling commitment tree by replaying all shielded outputs
  * from block files (mmap-based, thread-safe). Returns total commitments
- * appended, or -1 on error. Persists result to node_state["sapling_tree"]. */
+ * appended, SAPLING_TREE_REBUILD_ABORTED when an orderly shutdown was
+ * requested mid-replay, or -1 on error. Persists result to
+ * node_state["sapling_tree"] on success only. */
 int sapling_tree_rebuild(struct node_db *ndb,
                          const struct active_chain *chain,
                          const char *datadir);
+
+/* sapling_tree_rebuild() return code for a shutdown-requested abort: the
+ * replay polls thread_registry_shutdown_requested() alongside its every-100
+ * boot-progress tick so a SIGTERM during a multi-hour deferred rebuild
+ * unwinds promptly instead of hanging the orderly-shutdown join until the
+ * external grace SIGKILLs the process (an unclean stop). An abort is NOT a
+ * derived-state failure: no fail-closed blocker is raised and no final
+ * persist is written — the per-100k checkpoint persists and the anchor_kv
+ * frontier already make the partial fold resumable on the next run, so
+ * callers must treat this as "aborted, resume later", never as corruption. */
+#define SAPLING_TREE_REBUILD_ABORTED (-2)
 
 /* Persist node_state["sapling_tree"] and its co-located
  * "sapling_tree_rebuild_height" as ONE atomic write (single SQLite

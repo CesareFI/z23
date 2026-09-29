@@ -3141,19 +3141,21 @@ static bool boot_step_refold_from_anchor(struct app_context *ctx,
      * future healthy boot does not re-run it. */
     if (consumed_auto_refold)
         boot_auto_refold_clear(ctx->datadir);
-    /* The from-anchor reset cleared node_state["sapling_tree"] to NULL.
-     * Carry the fail-closed guard from the snapshot-loader path: re-derive
-     * + VERIFY the Sapling commitment tree against the chain BEFORE the
-     * forward fold runs, so a corrupt/incoherent seed tree FATALs here
-     * rather than silently rebuilding wrong downstream. sapling_tree_rebuild
-     * resolves its own endpoint from coins-applied state and returns < 0
-     * (fail-closed) on any per-height root mismatch; it is a no-op below
-     * Sapling activation. g_datadir is the active datadir. */
+    /* The from-anchor reset cleared node_state["sapling_tree"]; re-derive +
+     * VERIFY the tree before the fold: sapling_tree_rebuild resolves its own
+     * coins-applied endpoint, fail-closes (< 0) on a root mismatch, returns
+     * SAPLING_TREE_REBUILD_ABORTED on shutdown. g_datadir is the live dir. */
     if (g_datadir) {
         atomic_store(&g_sapling_tree_rebuilding, true);
         int sret = sapling_tree_rebuild(&g_node_db, &g_state.chain_active,
                                         g_datadir);
         atomic_store(&g_sapling_tree_rebuilding, false);
+        if (sret == SAPLING_TREE_REBUILD_ABORTED) {
+            /* Shutdown, not incoherence: skip the crash-only gate. */
+            fprintf(stderr, "[boot] refold-from-anchor: sapling rebuild "
+                    "aborted for shutdown — deferred to next boot.\n");
+            return false;
+        }
         if (sret < 0) {
             fprintf(stderr,
                     "WARNING: refold-from-anchor: sapling_tree_rebuild "

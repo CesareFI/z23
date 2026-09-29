@@ -96,6 +96,41 @@ static supervisor_child_id sapling_tree_rebuild_supervisor_ensure(void)
     return new_id;
 }
 
+/* Never silent: even a tolerated header-tip-tail skip is summarized so an
+ * operator can see exactly how many blocks — and of which class — were not
+ * folded, and over what height span. On the coins-applied endpoint a nonzero
+ * tally never reaches here (any skip already fail-closed at its height). */
+static void sapling_rebuild_log_skip_summary(
+        int skipped_no_index, int skipped_no_data, int skipped_no_mmap,
+        int skipped_datapos_oob, int skipped_deserialize,
+        int first_skip_height, int last_skip_height,
+        bool endpoint_is_coins_applied)
+{
+    int total_skipped = skipped_no_index + skipped_no_data + skipped_no_mmap +
+                        skipped_datapos_oob + skipped_deserialize;
+    if (total_skipped <= 0)
+        return;
+    LOG_WARN("sapling_tree_rebuild",
+            "sapling_tree_rebuild: skip summary total=%d "
+            "no_index=%d no_data=%d no_mmap=%d datapos_oob=%d "
+            "deserialize=%d span=[%d..%d] endpoint=%s",
+            total_skipped, skipped_no_index, skipped_no_data,
+            skipped_no_mmap, skipped_datapos_oob, skipped_deserialize,
+            first_skip_height, last_skip_height,
+            endpoint_is_coins_applied ? "coins_applied" : "header_tip");
+}
+
+/* Shutdown responsiveness: the deferred rebuild can replay for HOURS on a
+ * multi-million-block range; a rebuild that never polls the registry
+ * shutdown flag keeps its thread alive past the orderly-shutdown join until
+ * the external grace SIGKILLs the process — an unclean stop. The replay
+ * loop polls this alongside its every-100 boot-progress tick (one cheap
+ * atomic load, ≤100-block latency). */
+static bool sapling_tree_rebuild_shutdown_requested(void)
+{
+    return thread_registry_shutdown_requested();
+}
+
 int sapling_tree_rebuild(struct node_db *ndb,
                          const struct active_chain *chain,
                          const char *datadir)
@@ -317,9 +352,15 @@ int sapling_tree_rebuild(struct node_db *ndb,
     LOG_INFO("sapling_tree_rebuild", "sapling_tree_rebuild: replaying h=%d..%d", start_height, chain_tip);
     fflush(stderr);
 
+    int abort_height = -1;
     for (int h = start_height; h <= chain_tip; h++) {
-        if ((h % 100) == 0)
+        if ((h % 100) == 0) {
             boot_progress_tick("sapling_tree_rebuild");
+            if (sapling_tree_rebuild_shutdown_requested()) {
+                abort_height = h;
+                goto aborted;
+            }
+        }
         if (sup_id != SUPERVISOR_INVALID_ID && (h % 1000) == 0) {
             int64_t now_ms = GetTimeMillis();
             if (now_ms - last_heartbeat_ms >=
@@ -498,23 +539,11 @@ int sapling_tree_rebuild(struct node_db *ndb,
 
     sync_block_file_mapping_close(&cached_mapping);
 
-    int total_skipped = skipped_no_index + skipped_no_data + skipped_no_mmap +
-                        skipped_datapos_oob + skipped_deserialize;
-    if (total_skipped > 0) {
-        /* Never silent: even a tolerated header-tip-tail skip is summarized so
-         * an operator can see exactly how many blocks — and of which class —
-         * were not folded, and over what height span. On the coins-applied
-         * endpoint total_skipped is always 0 here (any skip already
-         * fail-closed at its height above). */
-        LOG_WARN("sapling_tree_rebuild",
-                "sapling_tree_rebuild: skip summary total=%d "
-                "no_index=%d no_data=%d no_mmap=%d datapos_oob=%d "
-                "deserialize=%d span=[%d..%d] endpoint=%s",
-                total_skipped, skipped_no_index, skipped_no_data,
-                skipped_no_mmap, skipped_datapos_oob, skipped_deserialize,
-                first_skip_height, last_skip_height,
-                endpoint_is_coins_applied ? "coins_applied" : "header_tip");
-    }
+    sapling_rebuild_log_skip_summary(skipped_no_index, skipped_no_data,
+                                     skipped_no_mmap, skipped_datapos_oob,
+                                     skipped_deserialize, first_skip_height,
+                                     last_skip_height,
+                                     endpoint_is_coins_applied);
 
     /* Verify against the RESOLVED endpoint (the coins-applied frontier, or the
      * header tip when no coins frontier exists), not active_chain_tip() which
@@ -618,6 +647,22 @@ int sapling_tree_rebuild(struct node_db *ndb,
     blocker_clear("sapling_tree_rebuild.fail_closed");
     blocker_clear("sapling_tree_rebuild.persist_busy");
     return total_commitments;
+
+aborted:
+    /* Orderly shutdown was requested mid-replay. Deliberately NOT the fail
+     * path: an abort is not a derived-state fault, so no fail-closed blocker
+     * and no final persist — the per-100k checkpoint persists and the
+     * anchor_kv frontier already durably record the partial fold, and the
+     * next run resumes from them. Complete the supervisor child so a clean
+     * give-up is not mistaken for a hung stall. */
+    sync_block_file_mapping_close(&cached_mapping);
+    if (sup_id != SUPERVISOR_INVALID_ID)
+        supervisor_child_complete(sup_id);
+    LOG_INFO("sapling_tree_rebuild",
+             "sapling_tree_rebuild: shutdown requested at h=%d of %d — "
+             "aborting replay; partial fold stays resumable from the "
+             "persisted checkpoints", abort_height, chain_tip);
+    return SAPLING_TREE_REBUILD_ABORTED;
 
 fail:
     sync_block_file_mapping_close(&cached_mapping);
@@ -738,6 +783,15 @@ static void *sapling_tree_rebuild_deferred_thread(void *arg)
                     "deferred rebuild: DONE %d commitments (was %zu)",
                     n, old_size);
         }
+    } else if (n == SAPLING_TREE_REBUILD_ABORTED) {
+        /* Shutdown in progress: quiet clean exit, not a failure — the tree
+         * stays at its pre-rebuild size and the next run resumes from the
+         * persisted checkpoints. The wal-checkpoint/close/block-index save
+         * below still run; they are part of an orderly stop. */
+        LOG_INFO("sapling_tree_rebuild",
+                "deferred rebuild: aborted for shutdown — tree left at "
+                "pre-rebuild size=%zu; resumes from checkpoints next run",
+                old_size);
     } else {
         LOG_WARN("sapling_tree_rebuild",
                 "deferred rebuild: FAILED (rc=%d) — tree left at "

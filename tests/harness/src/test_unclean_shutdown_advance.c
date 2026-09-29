@@ -15,6 +15,7 @@
 #include "util/blocker.h"
 #include "util/safe_alloc.h"
 #include "util/supervisor.h"
+#include "util/thread_registry.h"
 #include "validation/chainstate.h"
 #include "validation/process_block.h"
 
@@ -813,6 +814,86 @@ static int test_sapling_tree_rebuild_supervised_child(void)
     return failures;
 }
 
+/* The deferred rebuild thread runs the SAME sapling_tree_rebuild() replay
+ * for hours on a live node; a replay that never polls
+ * thread_registry_shutdown_requested() survives SIGTERM until the external
+ * grace SIGKILLs the process (the unclean-stop class). The replay must abort
+ * promptly on the registry shutdown flag: return SAPLING_TREE_REBUILD_ABORTED,
+ * raise NO fail-closed blocker, and write NO final persist (the per-100k
+ * checkpoint persists and the anchor_kv frontier already make the partial
+ * fold resumable). Drives the REAL registry flag — reset_for_test restores
+ * it so nothing leaks into later tests. */
+static int test_sapling_rebuild_aborts_on_shutdown(void)
+{
+    int failures = 0;
+    const int sapling_height = 476969;
+    const int tip_height = sapling_height + 100; /* spans an h%100==0 poll */
+    char dir[256];
+    char dbpath[512];
+
+    printf("sapling rebuild aborts promptly on shutdown (no blocker, no "
+           "final persist)... ");
+
+    test_make_tmpdir(dir, sizeof(dir), "sapling_rebuild", "shutdown_abort");
+    snprintf(dbpath, sizeof(dbpath), "%s/node.db", dir);
+
+    struct node_db ndb;
+    memset(&ndb, 0, sizeof(ndb));
+    bool ok = node_db_open(&ndb, dbpath);
+
+    blocker_module_init();
+    blocker_reset_for_testing();
+
+    struct active_chain chain;
+    active_chain_init(&chain);
+    struct block_index sapling;
+    struct block_index tip;
+    init_sapling_rebuild_index(&sapling, sapling_height, 0xd1);
+    init_sapling_rebuild_index(&tip, tip_height, 0xd2);
+    /* No tip hashFinalSaplingRoot and no block bodies: without a shutdown
+     * abort this exact fixture runs to the tip and fail-closes on
+     * tip_missing_sapling_root — the control run below relies on that. */
+    ok = ok && active_chain_install_tip_slot(&chain, &sapling);
+    ok = ok && active_chain_install_tip_slot(&chain, &tip);
+
+    thread_registry_reset_for_test();
+    thread_registry_request_shutdown();
+    int abort_rc = ok ? sapling_tree_rebuild(&ndb, &chain, dir) : 0;
+    thread_registry_reset_for_test();
+
+    bool abort_named = abort_rc == SAPLING_TREE_REBUILD_ABORTED;
+    bool no_fail_blocker =
+        !blocker_exists("sapling_tree_rebuild.fail_closed");
+    int64_t persisted_h = -1;
+    bool no_final_persist =
+        !node_db_state_get_int(&ndb, "sapling_tree_rebuild_height",
+                               &persisted_h);
+
+    /* Control: with the flag cleared the SAME fixture must NOT abort — it
+     * reaches the tip and fail-closes, proving the abort above came from
+     * the shutdown flag and not from the fixture shape. */
+    int control_rc = sapling_tree_rebuild(&ndb, &chain, dir);
+    bool control_not_aborted = control_rc != SAPLING_TREE_REBUILD_ABORTED;
+    blocker_clear("sapling_tree_rebuild.fail_closed");
+
+    ok = ok && abort_named && no_fail_blocker && no_final_persist &&
+         control_not_aborted;
+
+    active_chain_free(&chain);
+    node_db_close(&ndb);
+    test_rm_rf_recursive(dir);
+
+    if (ok) {
+        printf("OK\n");
+    } else {
+        printf("FAIL (abort_rc=%d no_fail_blocker=%d no_final_persist=%d "
+               "control_rc=%d)\n", abort_rc, no_fail_blocker,
+               no_final_persist, control_rc);
+        failures++;
+    }
+    return failures;
+}
+
 int test_unclean_shutdown_advance(void)
 {
     int failures = 0;
@@ -895,6 +976,7 @@ int test_unclean_shutdown_advance(void)
     failures += test_sapling_persist_pair_busy_exhausted_names_blocker();
     failures += test_sapling_persist_pair_defers_while_tx_open();
     failures += test_sapling_tree_rebuild_supervised_child();
+    failures += test_sapling_rebuild_aborts_on_shutdown();
 
     return failures;
 }
