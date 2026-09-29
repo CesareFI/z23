@@ -121,23 +121,40 @@ static bool bfw_capability_has(const char *capabilities, const char *wanted)
     }
     return false;
 }
-struct zcl_result bfw_worker_path(const char *workspace,
-                                  char *out, size_t cap)
+static bool bfw_is_release_node_image(const char *path)
 {
-    char exe[BFW_PATH_MAX];
-    if (!os_proc_exe_path(exe, sizeof(exe)))
+    const char *base = path ? strrchr(path, '/') : NULL;
+    base = base ? base + 1 : path;
+    return base && (strcmp(base, "z23") == 0 ||
+                    strcmp(base, "zclassic23") == 0);
+}
+
+static struct zcl_result bfw_worker_path_from_executable(
+    const char *running_executable, const char *workspace, char *out,
+    size_t cap)
+{
+    if (!running_executable || !running_executable[0])
         return ZCL_ERR(-1, "cannot resolve the running executable");
+    char exe[BFW_PATH_MAX];
+    int copied = snprintf(exe, sizeof(exe), "%s", running_executable);
+    if (copied <= 0 || (size_t)copied >= sizeof(exe))
+        return ZCL_ERR(-1, "running executable path is too long");
     char *deleted = strstr(exe, " (deleted)");
     if (deleted) *deleted = '\0';
     char *slash = strrchr(exe, '/');
     if (!slash) return ZCL_ERR(-1, "running executable has no directory");
+    bool release_image = bfw_is_release_node_image(exe);
     *slash = '\0';
     const char *roots[] = {exe, workspace, "."};
     const char *mids[] = {"/", "/build/bin/", "/build/bin/"};
-    const char *names[] = {"zclassic23-package-verify-dev",
-                           "zclassic23-package-verify"};
+    const char *development_names[] = {"zclassic23-package-verify-dev",
+                                       "zclassic23-package-verify"};
+    const char *release_names[] = {"zclassic23-package-verify",
+                                   "zclassic23-package-verify-dev"};
+    const char *const *names = release_image ? release_names : development_names;
+    const size_t name_count = sizeof(release_names) / sizeof(release_names[0]);
     for (size_t i = 0; i < sizeof(roots) / sizeof(roots[0]); i++) {
-        for (size_t j = 0; j < sizeof(names) / sizeof(names[0]); j++) {
+        for (size_t j = 0; j < name_count; j++) {
             int n = snprintf(out, cap, "%s%s%s", roots[i], mids[i], names[j]);
             if (n > 0 && (size_t)n < cap && access(out, X_OK) == 0)
                 return ZCL_OK;
@@ -145,6 +162,25 @@ struct zcl_result bfw_worker_path(const char *workspace,
     }
     return ZCL_ERR(-1, "fixed development or release package verifier is not built");
 }
+
+struct zcl_result bfw_worker_path(const char *workspace,
+                                  char *out, size_t cap)
+{
+    char exe[BFW_PATH_MAX];
+    if (!os_proc_exe_path(exe, sizeof(exe)))
+        return ZCL_ERR(-1, "cannot resolve the running executable");
+    return bfw_worker_path_from_executable(exe, workspace, out, cap);
+}
+
+#ifdef ZCL_TESTING
+struct zcl_result build_fabric_worker_verifier_path_for_test(
+    const char *running_executable, const char *workspace, char *out,
+    size_t cap)
+{
+    return bfw_worker_path_from_executable(running_executable, workspace,
+                                           out, cap);
+}
+#endif
 static bool bfw_path_join(char *out, size_t cap, const char *dir, const char *leaf)
 {
     int n = snprintf(out, cap, "%s/%s", dir, leaf);

@@ -45,6 +45,7 @@
 #include "sync/sync_state.h"
 
 #include <sqlite3.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -72,6 +73,51 @@ static bool bf_open(struct node_db *ndb, char *dir, size_t dir_cap,
     (void)snprintf(path, path_cap, "%s/node.db", dir);
     memset(ndb, 0, sizeof(*ndb));
     return node_db_open(ndb, path);
+}
+
+static bool bf_fake_executable(const char *path)
+{
+    int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0700);
+    if (fd < 0) return false;
+    static const char bytes[] = "fixture\n";
+    ssize_t written = write(fd, bytes, sizeof(bytes) - 1u);
+    bool closed = close(fd) == 0;
+    bool ok = written == (ssize_t)(sizeof(bytes) - 1u) && closed;
+    if (!ok) (void)unlink(path);
+    return ok;
+}
+
+static int test_bf_production_verifier_selection(void)
+{
+    int failures = 0;
+    TEST("build_fabric: shipped node selects release verifier over dev sibling") {
+        char dir[256], build[320], bin[384], release[448], development[448],
+             selected[448];
+        test_make_tmpdir(dir, sizeof(dir), "build_fabric", "verifier_role");
+        ASSERT(snprintf(build, sizeof(build), "%s/build", dir) > 0 &&
+               strlen(build) < sizeof(build) - 1u);
+        ASSERT(snprintf(bin, sizeof(bin), "%s/bin", build) > 0 &&
+               strlen(bin) < sizeof(bin) - 1u);
+        ASSERT(mkdir(build, 0700) == 0 && mkdir(bin, 0700) == 0);
+        ASSERT(snprintf(release, sizeof(release), "%s/zclassic23-package-verify",
+                        bin) > 0 && strlen(release) < sizeof(release) - 1u);
+        ASSERT(snprintf(development, sizeof(development),
+                        "%s/zclassic23-package-verify-dev", bin) > 0 &&
+               strlen(development) < sizeof(development) - 1u);
+        ASSERT(bf_fake_executable(release) && bf_fake_executable(development));
+        ASSERT(build_fabric_worker_verifier_path_for_test(
+            "/isolated/bin/z23", dir, selected, sizeof(selected)).ok);
+        ASSERT_STR_EQ(selected, release);
+        ASSERT(build_fabric_worker_verifier_path_for_test(
+            "/isolated/bin/zclassic23", dir, selected, sizeof(selected)).ok);
+        ASSERT_STR_EQ(selected, release);
+        ASSERT(build_fabric_worker_verifier_path_for_test(
+            "/isolated/bin/z23-dev", dir, selected, sizeof(selected)).ok);
+        ASSERT_STR_EQ(selected, development);
+        test_rm_rf(dir);
+        PASS();
+    } _test_next:;
+    return failures;
 }
 
 static void bf_job(struct db_build_job *row)
@@ -4875,6 +4921,7 @@ int bf_proof_wiring_cases(void);
 int test_build_fabric(void)
 {
     int failures = 0;
+    failures += test_bf_production_verifier_selection();
     failures += test_bf_input_closure_root();
     failures += test_bf_migration();
     failures += test_bf_candidate_query_errors();

@@ -81,6 +81,13 @@ struct zcl_result build_fabric_worker_identity_load_with_seed(
  * os_proc_mem_set_override() / platform_clock_set_source(). */
 struct zcl_result build_fabric_worker_capabilities_for_test(
     bool have_toolchain, char *out, size_t out_len);
+
+/* Resolve a fixed verifier as if `running_executable` were the node image.
+ * This keeps the production/dev sibling selection observable without a test
+ * needing to rename its own harness process. */
+struct zcl_result build_fabric_worker_verifier_path_for_test(
+    const char *running_executable, const char *workspace, char *out,
+    size_t cap);
 #endif
 
 #endif /* ZCL_SERVICES_BUILD_FABRIC_WORKER_H */
