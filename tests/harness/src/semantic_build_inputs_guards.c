@@ -487,6 +487,48 @@ static int sbit_t_restart(void)
     return failures;
 }
 
+/* Before a restarted parse make runs the recipes that remade a makefile,
+ * not only the first parse's commands: a recipe (its text, a variable a
+ * later line sets, or a script) may create what the directive globs. A
+ * built-in rule remakes a makefile too: cfg from a newer cfg.sh. Each
+ * widens; only an include the first parse alone reads still narrows. */
+#define SBI_CFG_TOUCH "-include cfg.mk\ncfg.mk: FORCE\n\t@mkdir -p d && touch d/flag\n"
+static const char *const k_sbi_cfg_sh[] = {"cfg", "# cfg v1\n", "cfg.sh",
+                                           "# cfg v2\n", NULL};
+static const char *const k_sbi_cfg_script[] = {
+    "cfg.mk", "# cfg v1\n", "tools/mk.sh", "mkdir -p d && touch d/flag\n",
+    NULL};
+static int sbit_t_restart_recipes(void)
+{
+    int failures = 0;
+    static const struct sbi_gcase cases[] = {
+        {"restart_recipe_touch", SBI_GUARD("", SBI_FLAG_COND, SBI_CFG_TOUCH
+                                           SBI_CFG_RECIPE), k_sbi_cfg, false},
+        {"restart_recipe_later_var",
+         SBI_GUARD("", SBI_FLAG_COND, "-include cfg.mk\ncfg.mk: FORCE\n"
+                   "\t@$(MK)\n" SBI_CFG_RECIPE "MK := mkdir -p d && touch "
+                   "d/flag\n"), k_sbi_cfg, false},
+        {"restart_recipe_script",
+         SBI_GUARD("", SBI_FLAG_COND, "-include cfg.mk\ncfg.mk: FORCE\n"
+                   "\t@sh tools/mk.sh\n" SBI_CFG_RECIPE), k_sbi_cfg_script,
+         false},
+        {"restart_builtin", SBI_GUARD("", SBI_FLAG_COND, "X := " SBI_TOUCH
+                                      "\n-include cfg\n"), k_sbi_cfg_sh, false},
+        {"restart_recipe_first_parse",
+         SBI_GUARD("", SBI_FLAG_COND "\n" SBI_FIRST_PARSE,
+                   "endif\n" SBI_CFG_TOUCH SBI_CFG_RECIPE), k_sbi_cfg, true},
+        {"restart_builtin_first_parse",
+         SBI_GUARD("", SBI_FLAG_COND "\n" SBI_FIRST_PARSE, "endif\nX := "
+                   SBI_TOUCH "\n-include cfg\n"), k_sbi_cfg_sh, true},
+    };
+    TEST_CASE("semantic_build_inputs: a restart runs the remaking recipes "
+             "first, and a built-in rule may remake a makefile, so a skip "
+             "stands then only for an include the first parse alone reads") {
+        ASSERT(sbi_guard_cases(cases, SBI_COUNT(cases)));
+    } TEST_END
+    return failures;
+}
+
 /* make drops a leading ./ from a file name (not a doubled slash): an
  * include and the rule that makes it name one file however each spells
  * it. */
@@ -767,5 +809,6 @@ int sbi_guard_suite(void)
            sbit_t_guarded_include() | sbit_t_guard_record() | sbit_t_plan_record() |
            sbit_t_dot_slash() | sbit_t_computed_targets() | sbit_t_computed_lines() |
            sbit_t_premise_forms() | sbit_t_host_target_tor() | sbit_t_pruned_branch() |
-           sbit_t_tor_record() | sbit_t_after_directive() | sbit_t_restart();
+           sbit_t_tor_record() | sbit_t_after_directive() | sbit_t_restart() |
+           sbit_t_restart_recipes();
 }
