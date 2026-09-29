@@ -402,30 +402,54 @@ does all admission before the bundle make:
 7. On a HIT, require the donor depfile after its own 121-byte target to equal
    the driver's own depfile tail, byte for byte. The donor depfile names the
    donor's epoch, so it is never published as it stands.
-8. Write `argv`, `object.o`, `depfile.tail` and `stderr.bin` into
-   `<state>/receiver.<key>`, which must lie outside the generation. The
-   store's shared publication lock stays held until the step ends.
+8. Write `argv`, `object.o`, `depfile.tail`, `stderr.bin` and `root` (the
+   physical generation path) into `<state>/receiver.<key>`, which must lie
+   outside the generation. The store's shared publication lock stays held
+   until the step ends.
 
 `ZCC_ADMITTED` and `ZCC_LOG` are removed from the inherited proof
 environment and set only for an admitted step.
 
-zcc serves only in proof mode (`ZCC_VERIFIED`), only for `dep` mode, and
-only for this source and a well-formed epoch target. It also requires make's
-compiler tokens to equal the admitted `argv` exactly. It writes the object
-and `<exact target>` + the driver's depfile tail, then logs
-`VERIFIED admitted:fixed_result.v2 <target>`. In every other case it
+zcc serves only when all of these hold:
+
+- proof mode (`ZCC_VERIFIED`) and `dep` mode;
+- this source and a well-formed `build/test-obj/epochs/<64 hex>` target;
+- make's compiler tokens equal the admitted `argv` exactly;
+- its cwd equals `root`, so a sub-make with `-C` into another tree and the
+  same argv is not served.
+
+It writes the object and `<exact target>` + the driver's depfile tail, then
+logs `VERIFIED admitted:fixed_result.v2 <target>`. In every other case it
 compiles and logs `MISS admitted:<why>`.
 
-zcc holds no authority; its argv check is a correctness guard, not a trust
-boundary. After make the driver rehashes three things:
+zcc holds no authority. Its checks are correctness guards, not a trust
+boundary. After make, the driver rechecks everything whatever the log
+claims:
 
-- the published object, which must equal the admitted bytes;
-- the exact-target depfile;
+- every target the log names: the object must be the admitted bytes and the
+  depfile must be the exact target plus the driver's tail;
+- every `build/test-obj/epochs/<64 hex>` whose `result.o` holds the admitted
+  bytes, logged or not: the same depfile check;
 - every source input it measured.
 
-The step result is decided from those rehashes. A candidate that bypasses
-zcc can produce any object at all, but it cannot make the driver report a
-HIT for bytes the driver did not admit.
+Any failed recheck blocks. So does a log that is missing, over 16 MiB,
+names a served path the driver cannot record, or names no consumption at
+all. A step that admits an observation but never compiles `result.c`
+therefore blocks, so admission is only worth making for a step that
+compiles it. A HIT needs a readable log naming the served targets. A
+`MISS admitted:<why>` with every recheck passing is `cold(admitted_<why>)`.
+
+A candidate that bypasses zcc can produce any object at all, but it cannot
+make the driver report a HIT for bytes the driver did not admit.
+
+**Known limit: generated-header shadowing.** The driver's `-E` runs before
+make. A make step could generate a header into an earlier `-I` directory,
+so that the real compile of `result.c` would read different text while
+every source the driver measured stays unchanged. Serving the admitted
+object would then skip that difference. This needs a candidate Makefile
+change, which review sees in the diff, and it is out of scope here. The fix,
+if wanted, is to re-run the receiver's `-E` at finish and require the same
+preprocessed hash and depfile before a HIT.
 
 ### Source content root v2
 
@@ -478,8 +502,9 @@ Cold tokens:
   `store_path_unsafe`, `store_owner_same_uid`, `attest_no_observation`,
   `attest_record_v1_unbound`, `attest_receipt_mismatch`,
   `contract_receipt_artifact_mismatch`
-- after make: `admitted_not_consumed` and `admitted_<zcc reason>`, for
-  example `admitted_argv_mismatch`
+- after make: `admitted_<zcc reason>`, for
+  example `admitted_argv_mismatch`, `admitted_target_invalid` or
+  `admitted_cwd_mismatch`
 
 Block tokens:
 
@@ -488,7 +513,9 @@ Block tokens:
   `store_scan_incomplete`
 - after make: `admitted_object_mismatch`, `admitted_object_missing`,
   `receiver_depfile_mismatch`, `admitted_target_invalid`,
-  `admitted_served_overflow`, `receiver_source_changed`
+  `admitted_served_overflow`, `receiver_source_changed`,
+  `admitted_log_unreadable`, `admitted_not_consumed`,
+  `receiver_epochs_unreadable`, `receiver_epochs_limit`
 
 ### Still needed from root
 
