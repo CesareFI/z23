@@ -206,72 +206,56 @@ static void agent_fast_collect_errors(struct agent_fast_snapshot *s)
         agent_fast_add_warning(s, "recent_error");
 }
 
-static void agent_fast_collect_indexer(struct agent_fast_snapshot *s)
+/* False when the cached block-source status contradicts the local frontier. */
+static bool agent_fast_bsp_cache_consistent(
+    const struct agent_fast_snapshot *s, const struct bsp_decision *decision)
 {
-    if (!s)
-        return;
+    int projection_basis = s->target_height;
+    if (s->served_height > projection_basis)
+        projection_basis = s->served_height;
+    if (s->tip_height > projection_basis)
+        projection_basis = s->tip_height;
+    if (decision->local_height > projection_basis)
+        projection_basis = decision->local_height;
+    if (decision->target_height > projection_basis)
+        projection_basis = decision->target_height;
+    if (projection_basis <= ZCL_NODE_HEALTH_LAG_WARN_BLOCKS) return true;
+    if (decision->projection_height >= 0 &&
+        decision->projection_lag <= 0 &&
+        decision->projection_height + ZCL_NODE_HEALTH_LAG_WARN_BLOCKS <
+            projection_basis)
+        return false;
+    return !(decision->projection_height == 0 &&
+             decision->projection_lag == 0 &&
+             !decision->projection_state[0]);
+}
 
-    struct bsp_decision decision;
-    memset(&decision, 0, sizeof(decision));
-    if (block_source_policy_get_cached_status(&decision)) {
-        int projection_basis = s->target_height;
-        if (s->served_height > projection_basis)
-            projection_basis = s->served_height;
-        if (s->tip_height > projection_basis)
-            projection_basis = s->tip_height;
-        if (decision.local_height > projection_basis)
-            projection_basis = decision.local_height;
-        if (decision.target_height > projection_basis)
-            projection_basis = decision.target_height;
-
-        bool cache_consistent = true;
-        if (projection_basis > ZCL_NODE_HEALTH_LAG_WARN_BLOCKS &&
-            decision.projection_height >= 0 &&
-            decision.projection_lag <= 0 &&
-            decision.projection_height + ZCL_NODE_HEALTH_LAG_WARN_BLOCKS <
-                projection_basis) {
-            cache_consistent = false;
-        }
-        if (projection_basis > ZCL_NODE_HEALTH_LAG_WARN_BLOCKS &&
-            decision.projection_height == 0 &&
-            decision.projection_lag == 0 &&
-            !decision.projection_state[0]) {
-            cache_consistent = false;
-        }
-
-        if (!cache_consistent) {
-            snprintf(s->projection_state, sizeof(s->projection_state),
-                     "cached_status_inconsistent");
-            agent_fast_add_warning(s, "block_source_status_stale");
-        } else {
-            s->block_source_status_cached = true;
-            if (decision.projection_height >= 0) {
-                s->projection_height = decision.projection_height;
-                s->indexed_height = decision.projection_height;
-                s->indexed_height_known = true;
-            }
-            s->projection_lag = decision.projection_lag;
-            s->projection_deferred = decision.projection_deferred;
-            s->projection_deferred_total =
-                decision.projection_deferred_total;
-            s->last_projection_deferred_height =
-                decision.last_projection_deferred_height;
-            s->last_projection_deferred_time =
-                decision.last_projection_deferred_time;
-            snprintf(s->projection_state, sizeof(s->projection_state),
-                     "%s", decision.projection_state);
-            snprintf(s->last_projection_deferred_reason,
-                     sizeof(s->last_projection_deferred_reason),
-                     "%s", decision.last_projection_deferred_reason);
-            if (s->projection_lag > 1)
-                agent_fast_add_warning(s, "projection_lag");
-        }
-    } else {
-        snprintf(s->projection_state, sizeof(s->projection_state),
-                 "cached_status_unavailable");
-        agent_fast_add_warning(s, "block_source_status_busy");
+static void agent_fast_apply_bsp_decision(struct agent_fast_snapshot *s,
+                                          const struct bsp_decision *decision)
+{
+    s->block_source_status_cached = true;
+    if (decision->projection_height >= 0) {
+        s->projection_height = decision->projection_height;
+        s->indexed_height = decision->projection_height;
+        s->indexed_height_known = true;
     }
+    s->projection_lag = decision->projection_lag;
+    s->projection_deferred = decision->projection_deferred;
+    s->projection_deferred_total = decision->projection_deferred_total;
+    s->last_projection_deferred_height =
+        decision->last_projection_deferred_height;
+    s->last_projection_deferred_time = decision->last_projection_deferred_time;
+    snprintf(s->projection_state, sizeof(s->projection_state),
+             "%s", decision->projection_state);
+    snprintf(s->last_projection_deferred_reason,
+             sizeof(s->last_projection_deferred_reason),
+             "%s", decision->last_projection_deferred_reason);
+    if (s->projection_lag > 1)
+        agent_fast_add_warning(s, "projection_lag");
+}
 
+static void agent_fast_collect_catchup_jobs(struct agent_fast_snapshot *s)
+{
     struct node_db_sync_job_status jobs = {0};
     node_db_sync_get_job_status(&jobs);
     s->projection_catchup_active = jobs.catchup_active;
@@ -287,12 +271,30 @@ static void agent_fast_collect_indexer(struct agent_fast_snapshot *s)
             now - jobs.catchup_last_progress_at;
 }
 
-static void agent_fast_collect(struct agent_fast_snapshot *s,
-                               struct agent_fast_budget *budget)
+static void agent_fast_collect_indexer(struct agent_fast_snapshot *s)
 {
-    struct agent_fast_snapshot empty = {0};
     if (!s)
         return;
+
+    struct bsp_decision decision;
+    memset(&decision, 0, sizeof(decision));
+    if (!block_source_policy_get_cached_status(&decision)) {
+        snprintf(s->projection_state, sizeof(s->projection_state),
+                 "cached_status_unavailable");
+        agent_fast_add_warning(s, "block_source_status_busy");
+    } else if (!agent_fast_bsp_cache_consistent(s, &decision)) {
+        snprintf(s->projection_state, sizeof(s->projection_state),
+                 "cached_status_inconsistent");
+        agent_fast_add_warning(s, "block_source_status_stale");
+    } else {
+        agent_fast_apply_bsp_decision(s, &decision);
+    }
+    agent_fast_collect_catchup_jobs(s);
+}
+
+static void agent_fast_init(struct agent_fast_snapshot *s)
+{
+    struct agent_fast_snapshot empty = {0};
     *s = empty;
     s->tip_height = -1;
     s->indexed_height = -1;
@@ -314,37 +316,44 @@ static void agent_fast_collect(struct agent_fast_snapshot *s,
     s->validation_pack_ok = true;
     s->operator_needed_since_unix = 0;
     legacy_mirror_sync_stats_cached_snapshot(&s->mirror);
-    {
-        struct blocker_snapshot blockers[BLOCKER_CAP];
-        int blocker_count = blocker_snapshot_all(blockers, BLOCKER_CAP);
-        const struct blocker_snapshot *dominant =
-            blocker_select_dominant(blockers, blocker_count);
-        s->active_blocker_count = blocker_count;
-        if (dominant) {
-            snprintf(s->dominant_blocker_id,
-                     sizeof(s->dominant_blocker_id), "%s", dominant->id);
-            snprintf(s->dominant_blocker_class,
-                     sizeof(s->dominant_blocker_class), "%s",
-                     blocker_class_name((enum blocker_class)dominant->class));
-            s->hard_typed_blocker =
-                api_blocker_hard_gates_public_serving(dominant);
-            if (!s->hard_typed_blocker)
-                agent_fast_add_warning(s, dominant->id);
-        }
-        const struct blocker_snapshot *overdue_dominant = NULL;
-        for (int i = 0; i < blocker_count; i++) {
-            if (!agent_blocker_is_overdue_transient(&blockers[i]))
-                continue;
-            s->overdue_transient_count++;
-            if (!overdue_dominant ||
-                blockers[i].age_us > overdue_dominant->age_us)
-                overdue_dominant = &blockers[i];
-        }
-        if (overdue_dominant)
-            snprintf(s->overdue_transient_dominant_id,
-                     sizeof(s->overdue_transient_dominant_id), "%s",
-                     overdue_dominant->id);
+}
+
+static void agent_fast_collect_blockers(struct agent_fast_snapshot *s)
+{
+    struct blocker_snapshot blockers[BLOCKER_CAP];
+    int blocker_count = blocker_snapshot_all(blockers, BLOCKER_CAP);
+    const struct blocker_snapshot *dominant =
+        blocker_select_dominant(blockers, blocker_count);
+    s->active_blocker_count = blocker_count;
+    if (dominant) {
+        snprintf(s->dominant_blocker_id,
+                 sizeof(s->dominant_blocker_id), "%s", dominant->id);
+        snprintf(s->dominant_blocker_class,
+                 sizeof(s->dominant_blocker_class), "%s",
+                 blocker_class_name((enum blocker_class)dominant->class));
+        s->hard_typed_blocker =
+            api_blocker_hard_gates_public_serving(dominant);
+        if (!s->hard_typed_blocker)
+            agent_fast_add_warning(s, dominant->id);
     }
+    const struct blocker_snapshot *overdue_dominant = NULL;
+    for (int i = 0; i < blocker_count; i++) {
+        if (!agent_blocker_is_overdue_transient(&blockers[i]))
+            continue;
+        s->overdue_transient_count++;
+        if (!overdue_dominant ||
+            blockers[i].age_us > overdue_dominant->age_us)
+            overdue_dominant = &blockers[i];
+    }
+    if (overdue_dominant)
+        snprintf(s->overdue_transient_dominant_id,
+                 sizeof(s->overdue_transient_dominant_id), "%s",
+                 overdue_dominant->id);
+}
+
+static void agent_fast_collect_conditions(struct agent_fast_snapshot *s,
+                                          struct agent_fast_budget *budget)
+{
     struct condition_engine_summary condition_summary;
     condition_engine_get_summary(&condition_summary);
     s->active_condition_count = condition_summary.active_count;
@@ -357,7 +366,10 @@ static void agent_fast_collect(struct agent_fast_snapshot *s,
         if (s->resources.rss_warning)
             agent_fast_add_warning(s, "high_memory_usage");
     }
+}
 
+static void agent_fast_collect_chain_heights(struct agent_fast_snapshot *s)
+{
     s->sync_state = sync_get_state();
     s->served_height = agent_fast_served_height(
         &s->provable_tip_published, &s->served_height_known);
@@ -395,106 +407,109 @@ static void agent_fast_collect(struct agent_fast_snapshot *s,
         s->served_height <= s->tip_height &&
         s->tip_height <= s->header_height;
     snprintf(s->projection_state, sizeof(s->projection_state), "unknown");
+}
 
-    {
-        struct agent_peer_snapshot peers;
-        agent_peer_snapshot_collect(&peers, rpc_net_get_connman());
-        s->peer_count = peers.peer_count;
-        s->peer_inbound_count = peers.inbound_count;
-        s->peer_outbound_count = peers.outbound_count;
-        s->peer_ready_count = peers.ready_count;
-        s->has_peers = peers.available && !peers.stale &&
-            peers.direction_known && peers.ready_known &&
-            peers.ready_count > 0;
-        s->peer_best_height = peers.peer_best_height;
-        s->peer_best_height_known = peers.peer_best_height_known;
-        s->peer_direction_known = peers.direction_known;
-        s->peer_ready_known = peers.ready_known;
-        s->magicbean_peer_count = peers.magicbean_peer_count;
-        s->zclassic_c23_peer_count = peers.zclassic_c23_peer_count;
-        s->peer_snapshot_available = peers.available;
-        s->peer_snapshot_stale = peers.stale;
-        s->peer_snapshot_age_seconds = peers.age_seconds;
-        if (peers.warning_reason)
-            agent_fast_add_warning(s, peers.warning_reason);
-    }
+static void agent_fast_collect_peers(struct agent_fast_snapshot *s)
+{
+    struct agent_peer_snapshot peers;
+    agent_peer_snapshot_collect(&peers, rpc_net_get_connman());
+    s->peer_count = peers.peer_count;
+    s->peer_inbound_count = peers.inbound_count;
+    s->peer_outbound_count = peers.outbound_count;
+    s->peer_ready_count = peers.ready_count;
+    s->has_peers = peers.available && !peers.stale &&
+        peers.direction_known && peers.ready_known &&
+        peers.ready_count > 0;
+    s->peer_best_height = peers.peer_best_height;
+    s->peer_best_height_known = peers.peer_best_height_known;
+    s->peer_direction_known = peers.direction_known;
+    s->peer_ready_known = peers.ready_known;
+    s->magicbean_peer_count = peers.magicbean_peer_count;
+    s->zclassic_c23_peer_count = peers.zclassic_c23_peer_count;
+    s->peer_snapshot_available = peers.available;
+    s->peer_snapshot_stale = peers.stale;
+    s->peer_snapshot_age_seconds = peers.age_seconds;
+    if (peers.warning_reason)
+        agent_fast_add_warning(s, peers.warning_reason);
+}
 
-    s->log_head = agent_fast_tip_finalize_log_head();
-    if (s->peer_best_height >= 0 && s->log_head >= 0)
-        s->log_head_gap = s->peer_best_height - s->log_head;
-
+static void agent_fast_collect_downloads(struct agent_fast_snapshot *s)
+{
     struct download_manager *dm = msg_get_download_mgr();
-    if (dm) {
-        struct dl_diagnostics diag;
-        dl_get_stats(dm, &s->blocks_requested, &s->blocks_received,
-                     &s->blocks_timed_out, &s->in_flight, &s->queued);
-        dl_get_diagnostics(dm, &diag);
-        s->request_timeout_seconds = diag.request_timeout_seconds;
-        s->oldest_in_flight_age_seconds = diag.oldest_in_flight_age_seconds;
-        s->oldest_in_flight_height = diag.oldest_in_flight_height;
-        s->oldest_in_flight_peer_id = diag.oldest_in_flight_peer_id;
-        s->overdue_in_flight = diag.overdue_in_flight;
-        s->in_flight_peer_count = diag.in_flight_peer_count;
-        s->queue_peer_avoid_count = diag.queue_peer_avoid_count;
-        s->queue_peer_avoid_max_seconds = diag.queue_peer_avoid_max_seconds;
-        s->assign_attempts = diag.assign_attempts;
-        s->assign_successes = diag.assign_successes;
-        s->assign_zero_results = diag.assign_zero_results;
-        s->last_assign_peer_id = diag.last_assign_peer_id;
-        s->last_assign_max_requested = diag.last_assign_max_requested;
-        s->last_assign_available = diag.last_assign_available;
-        s->last_assign_assigned = diag.last_assign_assigned;
-        s->last_assign_queue_len = diag.last_assign_queue_len;
-        s->last_assign_active = diag.last_assign_active;
-        s->last_assign_peer_in_flight = diag.last_assign_peer_in_flight;
-        s->last_assign_peer_limit = diag.last_assign_peer_limit;
-        s->last_assign_global_limit = diag.last_assign_global_limit;
-        s->last_assign_result = diag.last_assign_result;
-        dl_get_throughput(dm, &s->download_bytes_received,
-                          &s->download_mbps_avg);
-    }
-    {
-        struct gap_fill_stats gf_stats;
-        gap_fill_get_stats(&gf_stats);
-        s->dispatch_wakes = gf_stats.dispatch_wakes;
-    }
-    {
-        struct connman_message_cycle_stats msg_stats;
-        connman_get_message_cycle_stats(rpc_net_get_connman(), &msg_stats);
-        s->message_cycles = msg_stats.cycles;
-        s->message_nodes_snapshotted = msg_stats.nodes_snapshotted;
-        s->message_send_calls = msg_stats.send_calls;
-        s->message_process_calls = msg_stats.process_calls;
-        s->message_recv_ready = msg_stats.recv_ready;
-        s->message_idle_waits = msg_stats.idle_waits;
-        s->message_wakes = msg_stats.wakes;
-    }
-    {
-        struct msg_block_intake_stats intake;
-        msg_processor_get_block_intake_stats(rpc_net_get_msg_processor(),
-                                             &intake);
-        s->block_intake_running = intake.running;
-        s->block_intake_stopping = intake.stopping;
-        s->block_intake_current_depth = intake.current_depth;
-        s->block_intake_capacity = intake.capacity;
-        s->block_intake_max_depth = intake.max_depth;
-        s->block_intake_enqueued = intake.enqueued;
-        s->block_intake_processed = intake.processed;
-        s->block_intake_accepted = intake.accepted;
-        s->block_intake_retryable = intake.retryable;
-        s->block_intake_rejected = intake.rejected;
-        s->block_intake_dropped = intake.dropped;
-        s->block_intake_clone_failed = intake.clone_failed;
-        s->block_intake_spawn_failed = intake.spawn_failed;
-        if (intake.running && !intake.stopping && intake.capacity > 0 &&
-            intake.current_depth >= intake.capacity)
-            agent_fast_add_warning(s, "block_intake_saturated");
-        if (intake.clone_failed > 0 || intake.spawn_failed > 0)
-            agent_fast_add_warning(s, "block_intake_fault");
-    }
+    if (!dm) return;
+    struct dl_diagnostics diag;
+    dl_get_stats(dm, &s->blocks_requested, &s->blocks_received,
+                 &s->blocks_timed_out, &s->in_flight, &s->queued);
+    dl_get_diagnostics(dm, &diag);
+    s->request_timeout_seconds = diag.request_timeout_seconds;
+    s->oldest_in_flight_age_seconds = diag.oldest_in_flight_age_seconds;
+    s->oldest_in_flight_height = diag.oldest_in_flight_height;
+    s->oldest_in_flight_peer_id = diag.oldest_in_flight_peer_id;
+    s->overdue_in_flight = diag.overdue_in_flight;
+    s->in_flight_peer_count = diag.in_flight_peer_count;
+    s->queue_peer_avoid_count = diag.queue_peer_avoid_count;
+    s->queue_peer_avoid_max_seconds = diag.queue_peer_avoid_max_seconds;
+    s->assign_attempts = diag.assign_attempts;
+    s->assign_successes = diag.assign_successes;
+    s->assign_zero_results = diag.assign_zero_results;
+    s->last_assign_peer_id = diag.last_assign_peer_id;
+    s->last_assign_max_requested = diag.last_assign_max_requested;
+    s->last_assign_available = diag.last_assign_available;
+    s->last_assign_assigned = diag.last_assign_assigned;
+    s->last_assign_queue_len = diag.last_assign_queue_len;
+    s->last_assign_active = diag.last_assign_active;
+    s->last_assign_peer_in_flight = diag.last_assign_peer_in_flight;
+    s->last_assign_peer_limit = diag.last_assign_peer_limit;
+    s->last_assign_global_limit = diag.last_assign_global_limit;
+    s->last_assign_result = diag.last_assign_result;
+    dl_get_throughput(dm, &s->download_bytes_received,
+                      &s->download_mbps_avg);
+}
 
-    s->tip_advance_age_seconds = sync_monitor_tip_advance_age();
-    agent_fast_collect_errors(s);
+static void agent_fast_collect_message_cycles(struct agent_fast_snapshot *s)
+{
+    struct gap_fill_stats gf_stats;
+    gap_fill_get_stats(&gf_stats);
+    s->dispatch_wakes = gf_stats.dispatch_wakes;
+
+    struct connman_message_cycle_stats msg_stats;
+    connman_get_message_cycle_stats(rpc_net_get_connman(), &msg_stats);
+    s->message_cycles = msg_stats.cycles;
+    s->message_nodes_snapshotted = msg_stats.nodes_snapshotted;
+    s->message_send_calls = msg_stats.send_calls;
+    s->message_process_calls = msg_stats.process_calls;
+    s->message_recv_ready = msg_stats.recv_ready;
+    s->message_idle_waits = msg_stats.idle_waits;
+    s->message_wakes = msg_stats.wakes;
+}
+
+static void agent_fast_collect_block_intake(struct agent_fast_snapshot *s)
+{
+    struct msg_block_intake_stats intake;
+    msg_processor_get_block_intake_stats(rpc_net_get_msg_processor(),
+                                         &intake);
+    s->block_intake_running = intake.running;
+    s->block_intake_stopping = intake.stopping;
+    s->block_intake_current_depth = intake.current_depth;
+    s->block_intake_capacity = intake.capacity;
+    s->block_intake_max_depth = intake.max_depth;
+    s->block_intake_enqueued = intake.enqueued;
+    s->block_intake_processed = intake.processed;
+    s->block_intake_accepted = intake.accepted;
+    s->block_intake_retryable = intake.retryable;
+    s->block_intake_rejected = intake.rejected;
+    s->block_intake_dropped = intake.dropped;
+    s->block_intake_clone_failed = intake.clone_failed;
+    s->block_intake_spawn_failed = intake.spawn_failed;
+    if (intake.running && !intake.stopping && intake.capacity > 0 &&
+        intake.current_depth >= intake.capacity)
+        agent_fast_add_warning(s, "block_intake_saturated");
+    if (intake.clone_failed > 0 || intake.spawn_failed > 0)
+        agent_fast_add_warning(s, "block_intake_fault");
+}
+
+static void agent_fast_collect_validation(struct agent_fast_snapshot *s)
+{
     s->validation_pack_ok =
         invariant_sentinel_healthy(s->validation_pack_detail,
                                    (int)sizeof(s->validation_pack_detail));
@@ -502,15 +517,22 @@ static void agent_fast_collect(struct agent_fast_snapshot *s,
         agent_fast_add_warning(s, s->validation_pack_detail[0]
                                   ? s->validation_pack_detail
                                   : "validation_pack");
-    /* Only local frontiers are authoritative. Peer starting heights remain
-     * an explicitly advisory availability hint. */
+}
+
+/* Only local frontiers are authoritative. Peer starting heights remain an
+ * explicitly advisory availability hint. */
+static void agent_fast_derive_target(struct agent_fast_snapshot *s)
+{
     s->target_height = s->tip_height > s->served_height
         ? s->tip_height : s->served_height;
     if (s->header_height > s->target_height)
         s->target_height = s->header_height;
     s->target_height_known = s->served_height_known ||
         s->tip_height_known || s->header_height_known;
-    agent_fast_collect_indexer(s);
+}
+
+static void agent_fast_derive_gaps(struct agent_fast_snapshot *s)
+{
     s->gap = s->chain_evidence_consistent &&
         s->target_height > s->served_height
         ? s->target_height - s->served_height : 0;
@@ -526,9 +548,12 @@ static void agent_fast_collect(struct agent_fast_snapshot *s,
     if (s->tip_advance_age_seconds > 600 &&
         s->sync_state != SYNC_AT_TIP)
         agent_fast_add_warning(s, "tip_advance_stale");
+}
 
-    /* Observation is pure. Latch recovery belongs to supervised health
-     * transition work; an RPC read must never clear operator evidence. */
+/* Observation is pure. Latch recovery belongs to supervised health
+ * transition work; an RPC read must never clear operator evidence. */
+static void agent_fast_collect_operator(struct agent_fast_snapshot *s)
+{
     s->operator_latch_recovered = false;
     s->operator_needed =
         alerts_operator_needed(s->operator_needed_detail,
@@ -543,7 +568,10 @@ static void agent_fast_collect(struct agent_fast_snapshot *s,
         s->hard_typed_blocker ||
         (s->operator_needed && !s->operator_latch_suppressed_by_mirror) ||
         s->unresolved_critical_condition_count > 0;
+}
 
+static void agent_fast_derive_catchup(struct agent_fast_snapshot *s)
+{
     s->catchup_active = s->in_flight > 0 || s->queued > 0;
     s->catchup_stalled =
         s->gap > ZCL_NODE_HEALTH_LAG_WARN_BLOCKS && s->catchup_active &&
@@ -564,7 +592,26 @@ static void agent_fast_collect(struct agent_fast_snapshot *s,
     }
     if (s->overdue_in_flight > 0)
         agent_fast_add_warning(s, "download_timeouts_overdue");
+}
 
+/* The stall reason that follows the operator reasons, or NULL. */
+static const char *agent_fast_stall_reason(
+    const struct agent_fast_snapshot *s, bool mirror_same_height_hash_gap)
+{
+    if (mirror_same_height_hash_gap)
+        return "mirror_same_height_hash_unavailable_or_mismatch";
+    if (!s->has_peers) return "no_peers";
+    if (s->catchup_stalled) return "catchup_stalled";
+    if (s->download_dispatch_stalled) return "download_dispatch_idle";
+    if (s->gap > ZCL_NODE_HEALTH_LAG_WARN_BLOCKS &&
+        s->in_flight == 0 && s->queued == 0)
+        return "download_queue_idle";
+    if (s->log_head < 0) return "log_head_unknown";
+    return NULL;
+}
+
+static void agent_fast_derive_health(struct agent_fast_snapshot *s)
+{
     bool mirror_same_height_hash_gap =
         agent_mirror_same_height_hash_gap(&s->mirror);
     if (mirror_same_height_hash_gap)
@@ -588,26 +635,43 @@ static void agent_fast_collect(struct agent_fast_snapshot *s,
                  "operator_needed:%s",
                  s->operator_needed_detail[0]
                      ? s->operator_needed_detail : "unspecified");
-    } else if (mirror_same_height_hash_gap) {
-        snprintf(s->blocking_reason, sizeof(s->blocking_reason),
-                 "mirror_same_height_hash_unavailable_or_mismatch");
-    } else if (!s->has_peers) {
-        snprintf(s->blocking_reason, sizeof(s->blocking_reason),
-                 "no_peers");
-    } else if (s->catchup_stalled) {
-        snprintf(s->blocking_reason, sizeof(s->blocking_reason),
-                 "catchup_stalled");
-    } else if (s->download_dispatch_stalled) {
-        snprintf(s->blocking_reason, sizeof(s->blocking_reason),
-                 "download_dispatch_idle");
-    } else if (s->gap > ZCL_NODE_HEALTH_LAG_WARN_BLOCKS &&
-               s->in_flight == 0 && s->queued == 0) {
-        snprintf(s->blocking_reason, sizeof(s->blocking_reason),
-                 "download_queue_idle");
-    } else if (s->log_head < 0) {
-        snprintf(s->blocking_reason, sizeof(s->blocking_reason),
-                 "log_head_unknown");
+    } else {
+        const char *reason =
+            agent_fast_stall_reason(s, mirror_same_height_hash_gap);
+        if (reason)
+            snprintf(s->blocking_reason, sizeof(s->blocking_reason), "%s",
+                     reason);
     }
+}
+
+static void agent_fast_collect(struct agent_fast_snapshot *s,
+                               struct agent_fast_budget *budget)
+{
+    if (!s)
+        return;
+    agent_fast_init(s);
+    agent_fast_collect_blockers(s);
+    agent_fast_collect_conditions(s, budget);
+    agent_fast_collect_chain_heights(s);
+    agent_fast_collect_peers(s);
+
+    s->log_head = agent_fast_tip_finalize_log_head();
+    if (s->peer_best_height >= 0 && s->log_head >= 0)
+        s->log_head_gap = s->peer_best_height - s->log_head;
+
+    agent_fast_collect_downloads(s);
+    agent_fast_collect_message_cycles(s);
+    agent_fast_collect_block_intake(s);
+
+    s->tip_advance_age_seconds = sync_monitor_tip_advance_age();
+    agent_fast_collect_errors(s);
+    agent_fast_collect_validation(s);
+    agent_fast_derive_target(s);
+    agent_fast_collect_indexer(s);
+    agent_fast_derive_gaps(s);
+    agent_fast_collect_operator(s);
+    agent_fast_derive_catchup(s);
+    agent_fast_derive_health(s);
 
     s->tor_enabled = tor_integration_is_enabled();
     s->tor_ready = tor_integration_is_ready();

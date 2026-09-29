@@ -35,17 +35,11 @@ static bool rsa_text_length(const char *text, size_t maximum,
     return true;
 }
 
-static bool rsa_result_reachable_overlaps(
+static bool rsa_fixed_inputs_overlap(
     const struct zcode_retrieval_science_result_request *request,
+    const struct zcode_retrieval_profile_pair_measure_request *m,
     const void *output, size_t output_size)
 {
-    if (!request ||
-        rsa_overlaps(output, output_size, request, sizeof(*request)))
-        return true;
-    const struct zcode_retrieval_profile_pair_measure_request *m =
-        request->measurement;
-    if (m && rsa_overlaps(output, output_size, m, sizeof(*m))) return true;
-    if (!m) return false;
     const void *fixed[] = {
         request->task, request->candidate, request->environment_policy,
         request->hardware_profile, m->parent_profile, m->child_profile,
@@ -64,13 +58,70 @@ static bool rsa_result_reachable_overlaps(
         if (fixed[i] &&
             rsa_overlaps(output, output_size, fixed[i], fixed_sizes[i]))
             return true;
-    if (!request->task || !request->candidate ||
-        !request->environment_policy || !request->hardware_profile ||
-        !m->parent_profile || !m->child_profile || !m->feature_snapshot ||
-        !m->feature_rows || !m->parent_heuristic || !m->child_heuristic ||
-        !m->policy || !m->study || !m->task_id || !m->query ||
-        !m->relevant_paths)
+    return false;
+}
+
+static bool rsa_request_incomplete(
+    const struct zcode_retrieval_science_result_request *request,
+    const struct zcode_retrieval_profile_pair_measure_request *m)
+{
+    return !(request->task && request->candidate &&
+             request->environment_policy && request->hardware_profile &&
+             m->parent_profile && m->child_profile && m->feature_snapshot &&
+             m->feature_rows && m->parent_heuristic && m->child_heuristic &&
+             m->policy && m->study && m->task_id && m->query &&
+             m->relevant_paths);
+}
+
+/* One path string: 1 when it overlaps the output, -1 when it is unbounded or
+ * empty (the scan stops), 0 otherwise. */
+static int rsa_path_overlap(const void *output, size_t output_size,
+                            const char *path)
+{
+    if (path && rsa_overlaps(output, output_size, path, 1u)) return 1;
+    size_t path_length = 0;
+    if (!rsa_text_length(path, ZCL_RETRIEVAL_PAIRED_EVALUATION_PATH_MAX,
+                         &path_length))
+        return -1;
+    return rsa_overlaps(output, output_size, path, path_length + 1u) ? 1 : 0;
+}
+
+/* The measurement's NUL-terminated strings against the output. A string that
+ * is unbounded or empty ends the scan without an overlap. */
+static bool rsa_texts_overlap(
+    const struct zcode_retrieval_profile_pair_measure_request *m,
+    size_t row_count, const void *output, size_t output_size)
+{
+    size_t task_id_length = 0, query_length = 0;
+    if (!rsa_text_length(
+            m->task_id, ZCL_RETRIEVAL_PAIRED_EVALUATION_TASK_ID_MAX,
+            &task_id_length) ||
+        !rsa_text_length(
+            m->query, ZCL_RETRIEVAL_PAIRED_EVALUATION_QUERY_MAX,
+            &query_length))
         return false;
+    if (rsa_overlaps(output, output_size, m->task_id, task_id_length + 1u) ||
+        rsa_overlaps(output, output_size, m->query, query_length + 1u))
+        return true;
+    for (size_t i = 0; i < row_count; i++) {
+        int found = rsa_path_overlap(output, output_size,
+                                     m->feature_rows[i].path);
+        if (found) return found > 0;
+    }
+    for (size_t i = 0; i < m->relevant_count; i++) {
+        int found = rsa_path_overlap(output, output_size,
+                                     m->relevant_paths[i]);
+        if (found) return found > 0;
+    }
+    return false;
+}
+
+/* The measurement's pointed-to regions against the output; every pointer of
+ * `m` is non-null. */
+static bool rsa_measurement_overlaps(
+    const struct zcode_retrieval_profile_pair_measure_request *m,
+    const void *output, size_t output_size)
+{
     if (rsa_overlaps(output, output_size, m->feature_rows, 1u) ||
         rsa_overlaps(output, output_size, m->relevant_paths, 1u) ||
         rsa_overlaps(output, output_size, m->task_id, 1u) ||
@@ -86,38 +137,25 @@ static bool rsa_result_reachable_overlaps(
         rsa_overlaps(output, output_size, m->relevant_paths,
                      m->relevant_count * sizeof(*m->relevant_paths)))
         return true;
-    size_t task_id_length = 0, query_length = 0;
-    if (!rsa_text_length(
-            m->task_id, ZCL_RETRIEVAL_PAIRED_EVALUATION_TASK_ID_MAX,
-            &task_id_length) ||
-        !rsa_text_length(
-            m->query, ZCL_RETRIEVAL_PAIRED_EVALUATION_QUERY_MAX,
-            &query_length))
-        return false;
-    if (rsa_overlaps(output, output_size, m->task_id, task_id_length + 1u) ||
-        rsa_overlaps(output, output_size, m->query, query_length + 1u))
+    return rsa_texts_overlap(m, row_count, output, output_size);
+}
+
+static bool rsa_result_reachable_overlaps(
+    const struct zcode_retrieval_science_result_request *request,
+    const void *output, size_t output_size)
+{
+    if (!request ||
+        rsa_overlaps(output, output_size, request, sizeof(*request)))
         return true;
-    for (size_t i = 0; i < row_count; i++) {
-        const char *path = m->feature_rows[i].path;
-        if (path && rsa_overlaps(output, output_size, path, 1u)) return true;
-        size_t path_length = 0;
-        if (!rsa_text_length(path, ZCL_RETRIEVAL_PAIRED_EVALUATION_PATH_MAX,
-                             &path_length))
-            return false;
-        if (rsa_overlaps(output, output_size, path, path_length + 1u))
-            return true;
-    }
-    for (size_t i = 0; i < m->relevant_count; i++) {
-        const char *path = m->relevant_paths[i];
-        if (path && rsa_overlaps(output, output_size, path, 1u)) return true;
-        size_t path_length = 0;
-        if (!rsa_text_length(path, ZCL_RETRIEVAL_PAIRED_EVALUATION_PATH_MAX,
-                             &path_length))
-            return false;
-        if (rsa_overlaps(output, output_size, path, path_length + 1u))
-            return true;
-    }
-    return false;
+    const struct zcode_retrieval_profile_pair_measure_request *m =
+        request->measurement;
+    if (m && rsa_overlaps(output, output_size, m, sizeof(*m))) return true;
+    if (!m) return false;
+    if (rsa_fixed_inputs_overlap(request, m, output, output_size))
+        return true;
+    if (rsa_request_incomplete(request, m))
+        return false;
+    return rsa_measurement_overlaps(m, output, output_size);
 }
 
 static enum zcode_retrieval_science_adapter_error rsa_boundary_roots(
