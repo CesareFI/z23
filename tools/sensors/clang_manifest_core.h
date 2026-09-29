@@ -45,9 +45,10 @@ struct cm_file {
  * character (past any line splice). Only CM_LIVE_EXEMPT, CM_LIVE_HIDDEN and
  * CM_LIVE_SKIPPED let the scan drop an occurrence: the first two are set
  * only outside the file's skipped groups, from clang's own tokens, and the
- * last covers each group clang_getSkippedRanges reports, less the line of
- * the directive that opens it (docs/work/SEMANTIC_MANIFEST.md says why no
- * occurrence there needs a record). */
+ * last covers each group clang_getSkippedRanges reports in a file entered
+ * once, less the directive lines in it the preprocessor evaluates
+ * (docs/work/SEMANTIC_MANIFEST.md says why no occurrence there needs a
+ * record). */
 enum {
     CM_LIVE_NONE = 0,   /* nothing known: an occurrence here is recorded */
     CM_LIVE_WORD = 1,   /* a lookup word token */

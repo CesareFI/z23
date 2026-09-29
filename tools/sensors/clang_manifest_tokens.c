@@ -12,8 +12,8 @@
  * records every occurrence of a lookup word it finds in the text, less the
  * ones marked exempt, hidden or skipped), so the first two are set only
  * where clang's raw tokens are the preprocessor's: outside the skipped groups
- * (clang_getSkippedRanges, less each group's controlling directive line,
- * which the preprocessor evaluates), and only from clang's token kinds (a
+ * (clang_getSkippedRanges, less the directive lines in them
+ * the preprocessor evaluates), and only from clang's token kinds (a
  * comment, a literal, a token that is no lookup word) and the #if, #ifdef
  * and defined operands they spell. Two places there differ from raw
  * lexing and are read as the preprocessor does: after an include-like
@@ -25,13 +25,18 @@
  * Inside a skipped group nothing is marked exempt or hidden: after the
  * walk the whole group is marked skipped, and the scan records nothing
  * there, since any change that could make it live makes the TU affected
- * and sensed again (docs/work/SEMANTIC_MANIFEST.md). clang reports
- * consecutive skipped groups as one range, which can hold an #elif line
- * the preprocessor evaluates; the walk reads each #elif line in a range as
- * live and leaves it out of the mark (cm_tok_keep_line). The TU is refused
- * where raw tokens run past a '<' ... '>' span on a #pragma line outside a
- * skipped group (some pragmas take a header name), and when a file's
- * tokens stop short of its last non-blank byte.
+ * and sensed again (docs/work/SEMANTIC_MANIFEST.md). A skipped range holds
+ * directive lines the preprocessor evaluates: the one whose '#' opens it,
+ * and any #elif inside it (clang reports consecutive skipped groups as one
+ * range). The walk reads each such line as live, up to the first newline
+ * between clang's tokens, and leaves it out of the mark
+ * (cm_tok_keep_line). clang reports a file's ranges for one of its
+ * entries, so a file more than one inclusion directive names (or the main
+ * file, once any does) is read as skipped whole: nothing in it is marked
+ * exempt, hidden or skipped (cm_tok_ranges). The TU is refused where raw
+ * tokens run past a '<' ... '>' span on a #pragma line outside a skipped
+ * group (some pragmas take a header name), and when a file's tokens stop
+ * short of its last non-blank byte.
  *
  * A lookup word the preprocessor pastes with ## has no occurrence of its
  * own. Pasting only joins spellings of tokens that exist: ones a #define
@@ -62,6 +67,12 @@
 /* The lookup words clang expands (k_cm_paste_words) and the longest. */
 #define CM_PASTE_WORDS 3
 #define CM_PASTE_MAX 18
+/* cm_tok_walk.keep, per byte. */
+enum {
+    CM_KEEP_NONE = 0,
+    CM_KEEP_LINE = 1,  /* on a directive line the preprocessor may evaluate */
+    CM_KEEP_OPENS = 2, /* the '#' a skipped range starts at */
+};
 
 /* One tokenization of a file from some offset on. */
 struct cm_toks {
@@ -126,7 +137,7 @@ struct cm_tok_walk {
     size_t restart;      /* nonzero: tokenize again from here */
     bool restart_bol;    /* ... at the start of a line */
     const char *refused; /* why the TU is refused, or NULL */
-    uint8_t *keep;       /* per byte: an #elif line inside a skipped range */
+    uint8_t *keep;       /* per byte, CM_KEEP_*; NULL: no skipped-group drop */
     size_t hash_off;     /* the offset of the line-start '#' last read */
     bool unskip;         /* the rest of this logical line is such a line */
 };
@@ -342,11 +353,14 @@ static int cm_span_cmp(const void *a, const void *b)
     return x->a < y->a ? -1 : x->a > y->a;
 }
 
-/* f's skipped groups, each less its first logical line (the directive the
- * preprocessor evaluated to skip it), sorted and merged. */
-static bool cm_tok_skipped_ranges(CXTranslationUnit tu, CXFile file,
-                                  const char *s, size_t n, bool trigraphs,
-                                  struct cm_span **out, size_t *nout)
+/* f's skipped ranges, sorted and merged. Each range runs from the '#' of
+ * the directive the preprocessor evaluated to skip it to the name of the
+ * one that ends it; keep[a] is set to CM_KEEP_OPENS at each such '#', so
+ * the walk reads that directive's logical line, which clang's tokens end,
+ * as live (cm_tok_keep_line). */
+static bool cm_tok_skipped_ranges(CXTranslationUnit tu, CXFile file, size_t n,
+                                  uint8_t *keep, struct cm_span **out,
+                                  size_t *nout)
 {
     CXSourceRangeList *l = clang_getSkippedRanges(tu, file);
     size_t m = 0;
@@ -360,9 +374,10 @@ static bool cm_tok_skipped_ranges(CXTranslationUnit tu, CXFile file,
     for (unsigned k = 0; *out != NULL && k < l->count; k++) {
         size_t a = cm_tok_offset(clang_getRangeStart(l->ranges[k]));
         size_t b = cm_tok_offset(clang_getRangeEnd(l->ranges[k]));
-        a = cm_tok_line_end(s, n, a, trigraphs);
-        if (a < b && b <= n)
+        if (a < b && b <= n) {
+            keep[a] = CM_KEEP_OPENS;
             (*out)[m++] = (struct cm_span){a, b};
+        }
     }
     clang_disposeSourceRangeList(l);
     if (*out == NULL)
@@ -452,21 +467,20 @@ static void cm_tok_piece(struct cm_tok_walk *w, CXToken t)
 
 /* ---- directive lines --------------------------------------------------------- */
 
-/* A skipped range clang reports can hold an #elif line the preprocessor
- * evaluates: consecutive groups it skipped are one range, from the '#'
- * that opens the first to the name of the directive that ends the last.
- * The skipping lexer reads that range raw, as clang_tokenize does, so the
- * walk finds the same '#' and name: from the name on, the line is read
- * as live, and none of it is left to the skipped-group drop. */
+/* A skipped range holds directive lines the preprocessor evaluates: the
+ * one whose '#' opens it, and, since clang reports consecutive groups it
+ * skipped as one range, any #elif inside it. The skipping lexer reads the
+ * range raw, as clang_tokenize does, so the walk finds the same '#' and
+ * name: from the name on, up to the first newline between clang's tokens
+ * (never one inside a comment or after a splice), the line is read as
+ * live, and none of it is left to the skipped-group drop. */
 static void cm_tok_keep_line(struct cm_tok_walk *w, CXToken t, size_t end)
 {
     static const char *const elif[] = {"elif", "elifdef", "elifndef"};
-    size_t line_end;
-    if (w->keep == NULL || !cm_tok_in(w, t, elif, 3))
+    if (w->keep == NULL ||
+        (w->keep[w->hash_off] != CM_KEEP_OPENS && !cm_tok_in(w, t, elif, 3)))
         return;
-    line_end = cm_tok_line_end(w->s, w->n, end, w->trigraphs);
-    if (line_end > w->hash_off)
-        memset(w->keep + w->hash_off, 1, line_end - w->hash_off);
+    memset(w->keep + w->hash_off, CM_KEEP_LINE, end - w->hash_off);
     w->unskip = true;
 }
 
@@ -721,6 +735,8 @@ static bool cm_tok_place(struct cm_tok_walk *w, size_t off, size_t end)
     w->prev_end = end;
     if (end > w->reach)
         w->reach = end;
+    if (w->unskip)
+        memset(w->keep + off, CM_KEEP_LINE, end - off);
     return cm_tok_skipped(w, off) && !w->unskip;
 }
 
@@ -803,17 +819,39 @@ static bool cm_tok_pass(struct cm_state *st, struct cm_file *f,
     return true;
 }
 
-/* Mark each skipped range, less the #elif lines in it the walk kept. */
+/* Mark each skipped range, less the directive lines the walk kept. */
 static void cm_tok_mark_skipped(struct cm_tok_walk *w)
 {
-    for (size_t k = 0; k < w->nskip; k++)
+    for (size_t k = 0; w->keep != NULL && k < w->nskip; k++)
         for (size_t i = w->skip[k].a; i < w->skip[k].b; i++)
-            if (w->keep[i] == 0)
+            if (w->keep[i] == CM_KEEP_NONE)
                 w->live[i] = CM_LIVE_SKIPPED;
 }
 
+/* The skipped ranges the walk reads f by. clang reports one file's ranges
+ * for one of its entries only, so a file the TU may have entered more than
+ * once (`once` false) is read as one skipped range, whole: nothing in it is
+ * marked exempt, hidden or skipped, and every occurrence is recorded. */
+static bool cm_tok_ranges(struct cm_state *st, const struct cm_file *f,
+                          bool once, struct cm_tok_walk *w,
+                          struct cm_span **skip)
+{
+    if (once) {
+        w->keep = zcl_calloc(f->size, 1, "clang_manifest.keep");
+        return w->keep != NULL &&
+               cm_tok_skipped_ranges(st->tu, (CXFile)f->key, f->size, w->keep,
+                                     skip, &w->nskip);
+    }
+    *skip = zcl_calloc(1, sizeof(**skip), "clang_manifest.skipped");
+    if (*skip == NULL)
+        return false;
+    **skip = (struct cm_span){0, f->size};
+    w->nskip = 1;
+    return true;
+}
+
 static bool cm_tok_file(struct cm_state *st, struct cm_file *f,
-                        bool trigraphs, struct cm_piece *piece)
+                        bool trigraphs, bool once, struct cm_piece *piece)
 {
     struct cm_tok_walk w = {.tu = st->tu, .s = f->contents, .n = f->size,
                             .trigraphs = trigraphs, .bol = true,
@@ -828,11 +866,9 @@ static bool cm_tok_file(struct cm_state *st, struct cm_file *f,
     if (f->contents == NULL || f->size >= UINT32_MAX)
         return cm_fail(&st->core, "cannot tokenize %s", f->path);
     w.live = zcl_calloc(f->size, 1, "clang_manifest.live");
-    w.keep = zcl_calloc(f->size, 1, "clang_manifest.keep");
-    if (w.live == NULL || w.keep == NULL ||
-        !cm_tok_skipped_ranges(st->tu, (CXFile)f->key, f->contents, f->size,
-                               trigraphs, &skip, &w.nskip))
-        return free(w.live), free(w.keep), cm_fail(&st->core, "out of memory");
+    if (w.live == NULL || !cm_tok_ranges(st, f, once, &w, &skip))
+        return free(w.live), free(w.keep), free(skip),
+               cm_fail(&st->core, "out of memory");
     f->live = w.live;
     w.skip = skip;
     do {
@@ -848,12 +884,24 @@ static bool cm_tok_file(struct cm_state *st, struct cm_file *f,
     return ok;
 }
 
-/* ---- built-in and command-line #defines ------------------------------------ */
+/* ---- built-in and command-line #defines, and inclusion counts ------------- */
 
 struct cm_builtin_visit {
     struct cm_state *st;
     struct cm_piece *piece;
+    size_t *entered; /* per file: the inclusion directives that name it */
 };
+
+/* An inclusion directive the front end ran, in any file or on the command
+ * line (-include), counts toward the file it names: a file is entered at
+ * most once per directive (an include guard or #pragma once can only make
+ * it less), in a cold parse and a warm one alike. */
+static void cm_tok_count_inclusion(struct cm_builtin_visit *v, CXCursor c)
+{
+    const struct cm_file *f = cm_file_of(v->st, clang_getIncludedFile(c));
+    if (f != NULL)
+        v->entered[f - v->st->core.files]++;
+}
 
 /* A macro no file holds (the front end's built-ins, -D and -U): its
  * tokens are read as a #define line's, by clang's spelling (the buffer
@@ -868,6 +916,8 @@ static enum CXChildVisitResult cm_tok_builtin_visit(CXCursor c, CXCursor parent,
     CXToken *t = NULL;
     unsigned n = 0;
     (void)parent;
+    if (clang_getCursorKind(c) == CXCursor_InclusionDirective)
+        cm_tok_count_inclusion(v, c);
     if (clang_getCursorKind(c) != CXCursor_MacroDefinition)
         return CXChildVisit_Continue;
     clang_getSpellingLocation(clang_getCursorLocation(c), &file, NULL, NULL,
@@ -901,20 +951,35 @@ static bool cm_piece_report(struct cm_state *st, const struct cm_piece *p)
     return true;
 }
 
+/* Was f, by the inclusion directives counted, entered at most once? The
+ * main file is entered once more, and a file no directive names is taken
+ * as entered more than once. */
+static bool cm_tok_once(const struct cm_state *st, const size_t *entered,
+                        size_t k)
+{
+    bool main = clang_File_isEqual((CXFile)st->core.files[k].key,
+                                   st->main_file) != 0;
+    return entered[k] + (main ? 1 : 0) == 1;
+}
+
 bool cm_tokenize_files(struct cm_state *st, bool trigraphs)
 {
     struct cm_piece *piece = zcl_calloc(1, sizeof(*piece),
                                         "clang_manifest.piece");
-    struct cm_builtin_visit v = {.st = st, .piece = piece};
-    bool ok = piece != NULL;
-    if (!ok)
-        return cm_fail(&st->core, "out of memory");
-    for (size_t k = 0; ok && k < st->core.nfiles; k++)
-        ok = cm_tok_file(st, &st->core.files[k], trigraphs, piece);
+    size_t *entered = zcl_calloc(st->core.nfiles + 1, sizeof(*entered),
+                                 "clang_manifest.entered");
+    struct cm_builtin_visit v = {.st = st, .piece = piece, .entered = entered};
+    bool ok = piece != NULL && entered != NULL;
     if (ok)
         clang_visitChildren(clang_getTranslationUnitCursor(st->tu),
                             cm_tok_builtin_visit, &v);
+    else
+        (void)cm_fail(&st->core, "out of memory");
+    for (size_t k = 0; ok && k < st->core.nfiles; k++)
+        ok = cm_tok_file(st, &st->core.files[k], trigraphs,
+                         cm_tok_once(st, entered, k), piece);
     ok = ok && cm_piece_report(st, piece);
     free(piece);
+    free(entered);
     return ok;
 }

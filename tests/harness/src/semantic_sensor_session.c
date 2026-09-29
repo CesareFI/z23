@@ -1347,6 +1347,89 @@ static bool sss_bytes_lacks(const char *path, const char *needle)
     return !hit;
 }
 
+/* ── a skipped group in a preamble header ─────────────────────────────────── */
+
+/* pflip.h's probe sits in a group PF_ON skips, and PF_ON is defined in
+ * main.c's preamble region. A reparse that flips PF_ON must record the
+ * probe clang_getSkippedRanges no longer skips: the preamble is rebuilt for
+ * the new main bytes, not reused with the old ranges. */
+static const char k_sss_pflip[] = "#ifndef PFLIP_H\n"
+                                  "#define PFLIP_H\n"
+                                  "#if PF_ON\n"
+                                  "#if __has_include(\"pf_new.h\")\n"
+                                  "#endif\n"
+                                  "#endif\n"
+                                  "#endif\n";
+
+static bool sss_pflip_setup(const char *root)
+{
+    return sss_write(root, "inc/b/pflip.h", k_sss_pflip) &&
+           sss_edit(root, "src/main.c", "#define FX_LOCAL 2\n",
+                    "#define FX_LOCAL 2\n#define PF_ON 0\n"
+                    "#include \"pflip.h\"\n");
+}
+
+static bool sss_pflip_on(const char *root)
+{
+    return sss_edit(root, "src/main.c", "PF_ON 0", "PF_ON 1");
+}
+
+static bool sss_pflip_off(const char *root)
+{
+    return sss_edit(root, "src/main.c", "PF_ON 1", "PF_ON 0");
+}
+
+static const struct sss_step k_sss_pflip_steps[] = {
+    {"pflip-base", sss_pflip_setup, false, "created", "first-parse"},
+    {"pflip-again", sss_none, false, "reparsed", ""},
+    {"pflip-on", sss_pflip_on, false, "reparsed", ""},
+    {"pflip-body", sss_body, false, "reparsed", ""},
+    {"pflip-off", sss_pflip_off, false, "reparsed", ""},
+};
+/* Whether each step's manifest records the pf_new.h lookup. */
+static const bool k_sss_pflip_live[] = {false, false, true, true, false};
+#define SSS_PFLIP_STEPS (sizeof(k_sss_pflip_steps) / sizeof(k_sss_pflip_steps[0]))
+
+static bool sss_pflip_records(const struct sss_ctx *c, const char *step,
+                              bool live)
+{
+    char warm[PATH_MAX];
+    bool hit;
+    (void)snprintf(warm, sizeof(warm), "%s/%s.session.bin", c->root, step);
+    hit = sss_bytes_scan(warm, "pf_new.h");
+    if (hit != live)
+        printf("FAIL %s: the pf_new.h lookup is %s\n", step,
+               hit ? "recorded in a skipped group" : "missing");
+    return hit == live;
+}
+
+static int sss_t_preamble_skip(struct sss_ctx *c)
+{
+    int failures = 0;
+    struct sss_proc p = {0};
+    char reply[SSS_REPLY_MAX], log[PATH_MAX];
+    bool started = false;
+    TEST_CASE("semantic_sensor: a warm reparse that flips a skipped group in "
+              "a preamble header records its now-live probe") {
+        ASSERT(sss_fresh(c, "pflip"));
+        (void)snprintf(log, sizeof(log), "%s/pflip.err", c->dir);
+        ASSERT(sss_start(&p, c->sensor, false, false, log));
+        started = true;
+        for (size_t k = 0; k < SSS_PFLIP_STEPS; k++) {
+            ASSERT(sss_run_step(c, &p, &k_sss_pflip_steps[k], NULL, NULL,
+                                reply, sizeof(reply)));
+            ASSERT(k == 0 || sss_is(reply, "written", "warm"));
+            ASSERT(sss_pflip_records(c, k_sss_pflip_steps[k].name,
+                                     k_sss_pflip_live[k]));
+        }
+        started = false;
+        ASSERT_EQ(sss_finish(&p, reply, sizeof(reply)), 0);
+    } TEST_END
+    if (started)
+        (void)sss_finish(&p, reply, sizeof(reply));
+    return failures;
+}
+
 /* One request with --cc/--toolchain-id, its cold twin, and the equality and
  * IDENTITY-text checks every accepted case here needs. */
 static bool sss_cc_step(struct sss_ctx *c, struct sss_proc *p,
@@ -1554,6 +1637,7 @@ int semantic_sensor_session_cases(void)
     failures += sss_t_attrs(&c, true);
     failures += sss_t_attrs(&c, false);
     failures += sss_t_unbound(&c);
+    failures += sss_t_preamble_skip(&c);
     failures += sss_t_post(&c);
     failures += sss_t_untrackable(&c);
     failures += sss_t_object_cc(&c);

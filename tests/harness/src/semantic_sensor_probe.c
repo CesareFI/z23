@@ -299,6 +299,35 @@ static const struct ssp_case k_ssp_cases[] = {
      "#endif\n"
      "int f(void) { return T; }\n",
      {"-std=c23", NULL, NULL}, NULL, NULL, false, "opt.h", SSP_BOUND},
+    {"in a header whose first entry skips it and whose second does not",
+     "#include <probe.h>\n"
+     "#define SECOND 1\n"
+     "#include <probe.h>\n"
+     "int f(void) { return TW; }\n",
+     {"-std=c23", NULL, NULL},
+     "#if defined(SECOND)\n"
+     "#if __has_include(\"opt.h\")\n"
+     "#define TW 1\n"
+     "#else\n"
+     "#define TW 0\n"
+     "#endif\n"
+     "#endif\n",
+     NULL, false, "opt.h", SSP_BOUND},
+    {"on an #if line a block comment carries past its first newline",
+     "#if 0 /*\n"
+     "*/ || __has_include(\"opt.h\")\n" SSP_TAIL,
+     {"-std=c23", NULL, NULL}, NULL, NULL, false, "opt.h", SSP_BOUND},
+    {"on an #elif line a block comment carries past its first newline",
+     "#if 0\n"
+     "#define T 2\n"
+     "#elif 0 /*\n"
+     "*/ || __has_include(\"opt.h\")\n"
+     "#define T 1\n"
+     "#else\n"
+     "#define T 0\n"
+     "#endif\n"
+     "int f(void) { return T; }\n",
+     {"-std=c23", NULL, NULL}, NULL, NULL, false, "opt.h", SSP_BOUND},
     {"after a skipped group nested in a live one",
      "#if 1\n"
      "#if 0\n"

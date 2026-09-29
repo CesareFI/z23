@@ -216,11 +216,29 @@ were established:
   skipped groups as one range, from the `#` that opens the first to the
   name of the directive that ends the last, so a range can hold an
   `#elif` line the preprocessor evaluates (`#if 0` ... `#elif A` ...
-  `#else`, when A is false). The walk reads every `#elif`, `#elifdef` or
-  `#elifndef` line inside a range as live and leaves it out of the drop;
-  the skipping lexer reads a range raw, as `clang_tokenize` does, so the
-  walk finds the same directives. The controlling line of the first group
-  and the operand of the directive that ends a range are outside it. The
+  `#else`, when A is false). The walk reads the line whose `#` opens a
+  range, and every `#elif`, `#elifdef` or `#elifndef` line inside one, as
+  live and leaves it out of the drop, up to the first newline between
+  clang's tokens, so a block comment that carries the condition onto the
+  next line carries the live line with it. The skipping lexer reads a
+  range raw, as `clang_tokenize` does, so the walk finds the same
+  directives; the operand of the directive that ends a range is outside
+  it. `clang_getSkippedRanges` answers for one entry of a file, and the
+  X-macro pattern enters one header several times under different
+  macros, so the drop applies only to a file entered once: one inclusion
+  directive the front end ran names it (the main file: none), counting
+  every directive in every file and `-include`, from the preprocessing
+  record, which a cold parse and a preamble reparse report alike. Any
+  other file is read as skipped whole: nothing in it is marked exempt,
+  hidden or skipped, so every occurrence is recorded. A file an include
+  guard or `#pragma once` keeps to one entry but several directives name
+  is treated the same way, which only widens. Under a warm session's
+  preamble the ranges are the preamble's: a change to its region of the
+  main file rebuilds it, and a change to a file it holds recreates the TU
+  (every FILES digest is checked before a reparse), so they are never
+  stale; the session test flips a skipped group in a preamble header
+  through a main-file macro and requires the reparse to record the probe
+  and equal a cold emit. The
   splice rule is clang's (`getEscapedNewLineSize`) wherever the scan reads
   an operand too, and a lookup token clang lexes whose text the scan
   cannot read as that word refuses the TU. Pasting builds a word with no
@@ -1006,6 +1024,16 @@ one, and a probe after a skipped group nested in a live one. The session
 test's spellings that cannot be replayed moved from `#if 0` into live
 lines or `#define` bodies, and a skipped group holding them now keeps its
 TU warm.
+
+Review round 7 found two ways the skipped-group drop lost a live probe,
+each now a case in the probe test file: a header the TU includes twice
+whose first entry skips the probe's group and whose second does not (the
+ranges came from one entry and were applied to both), and an `#if` or a
+merged-range `#elif` whose condition a block comment carries past the
+line's first newline (the kept line ended at that newline). Entries are
+counted from inclusion directives rather than `clang_getInclusions`,
+which under a preamble misses a file entered again after it. The sample
+stays at 0 of 50 and the spawn TU's LOOKUPS are unchanged.
 
 ### Darwin producer identity
 
