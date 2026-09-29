@@ -42,6 +42,9 @@
 #define ZCL_VERIFY_RECEIVER_DEP_TAIL "depfile.tail"
 #define ZCL_VERIFY_RECEIVER_STDERR "stderr.bin"
 #define ZCL_VERIFY_RECEIVER_LOG "zcc.log"
+/* The physical generation root; zcc serves only when its cwd is exactly
+ * this directory, so a sub-make run in another tree is never served. */
+#define ZCL_VERIFY_RECEIVER_ROOT "root"
 /* The -MT target of the receiver's own -E: the fixed 121-byte shape with an
  * all-zero epoch, so its depfile wraps exactly like the real target's. */
 #define ZCL_VERIFY_RECEIVER_PLACEHOLDER_TARGET \

@@ -548,16 +548,36 @@ struct vrt_zcc_env {
     bool admitted;
     const char *admitted_dir; /* NULL: the fixture work directory */
     const char *zcc_dir;      /* NULL: <root>/zccstore */
+    /* NULL: build/test-obj and platform/modules/base/src/result.o. When
+     * either is set the output buffer must hold PATH_MAX bytes. */
+    const char *obj_root;
+    const char *obj_leaf;
+    const char *cwd; /* NULL: the generation; argv stays the generation's */
 };
 
+static bool vrt_output(const struct vrt_zcc_env *z, const char *epoch,
+                       char epoch_fill, char *output)
+{
+    if (!z->obj_root && !z->obj_leaf) {
+        test_vc_target(output, epoch_fill);
+        return true;
+    }
+    return snprintf(output, PATH_MAX, "%s/epochs/%s/%s",
+                    z->obj_root ? z->obj_root : "build/test-obj", epoch,
+                    z->obj_leaf ? z->obj_leaf
+                                : "platform/modules/base/src/result.o") <
+           PATH_MAX;
+}
+
 static bool vrt_session(const struct vrt_fx *f, char epoch_fill,
-                        char output[ZCL_FR_TARGET_LEN + 1u],
+                        const struct vrt_zcc_env *z, char *output,
                         char session[PATH_MAX])
 {
     char epoch[65], dir[PATH_MAX], path[PATH_MAX], admission[PATH_MAX];
+    const char *root = z->obj_root ? z->obj_root : "build/test-obj";
+    const char *cwd = z->cwd ? z->cwd : f->gen;
     memset(epoch, epoch_fill, 64u);
     epoch[64] = 0;
-    test_vc_target(output, epoch_fill);
     char text[512];
     int n = snprintf(text, sizeof(text),
                      "schema=zcl.build_epoch_session.v1\nsource_id=%s\n"
@@ -565,13 +585,15 @@ static bool vrt_session(const struct vrt_fx *f, char epoch_fill,
                      "profile=test-fast-v2\nflags_sha256=%s\n",
                      VRT_HEX_A, VRT_HEX_A, VRT_HEX_A, epoch, VRT_HEX_A);
     return n > 0 && n < (int)sizeof(text) &&
-           snprintf(session, PATH_MAX, "build/test-obj/epochs/%s/.build-session",
+           vrt_output(z, epoch, epoch_fill, output) &&
+           snprintf(session, PATH_MAX, "%s/epochs/%s/.build-session", root,
                     epoch) < PATH_MAX &&
-           snprintf(dir, sizeof(dir), "%s/build/test-obj/epochs/%s", f->gen,
+           snprintf(dir, sizeof(dir), "%s/%s/epochs/%s", cwd, root,
                     epoch) < (int)sizeof(dir) &&
-           vrt_path(admission, f->gen, "build/test-obj/.epoch-admission") &&
+           snprintf(admission, sizeof(admission), "%s/%s/.epoch-admission",
+                    cwd, root) < (int)sizeof(admission) &&
            vrt_mkdirs(dir) && vrt_mkdirs(admission) &&
-           vrt_path(path, f->gen, session) &&
+           vrt_path(path, cwd, session) &&
            vrt_write(path, text, (size_t)n, 0600);
 }
 
@@ -604,7 +626,7 @@ static bool vrt_zcc_env(const struct vrt_fx *f, const struct vrt_zcc_env *z,
 /* zcc --epoch-object dep <target> result.c ... -- zcc cc <profile...>, as
  * the Makefile's test-fast object rule runs it. */
 static int vrt_zcc(const struct vrt_fx *f, char epoch_fill,
-                   const struct vrt_zcc_env *z, char output[ZCL_FR_TARGET_LEN + 1u])
+                   const struct vrt_zcc_env *z, char *output)
 {
     char session[PATH_MAX], storage[6][PATH_MAX + 32], epoch[65];
     char *envp[10];
@@ -612,7 +634,7 @@ static int vrt_zcc(const struct vrt_fx *f, char epoch_fill,
     struct vr_profile *p = calloc(1, sizeof(*p));
     memset(epoch, epoch_fill, 64u);
     epoch[64] = 0;
-    bool ok = p && vrt_session(f, epoch_fill, output, session) &&
+    bool ok = p && vrt_session(f, epoch_fill, z, output, session) &&
               vrt_zcc_env(f, z, storage, envp) && vrt_read(f->profile, &raw) &&
               vr_profile_load(&raw, f->gen, p) == NULL;
     char *argv[VR_PROFILE_TOKENS + 16u];
@@ -625,7 +647,7 @@ static int vrt_zcc(const struct vrt_fx *f, char epoch_fill,
     argv[n] = NULL;
     char err[PATH_MAX];
     int rc = ok && vrt_path(err, f->root, "zcc.stderr")
-                 ? vrt_run(f->gen, argv, envp, err) : -1;
+                 ? vrt_run(z->cwd ? z->cwd : f->gen, argv, envp, err) : -1;
     free(raw.p);
     free(p);
     return rc;
@@ -1169,6 +1191,276 @@ static int vrt_test_block(struct vrt_fx *f)
     return failures;
 }
 
+/* ── 3b. depfile tails and the target shape, each layer on its own ───── */
+
+#define VRT_DEP_C "platform/modules/base/src/result.c"
+#define VRT_DEP_H "platform/modules/base/include/base/result.h"
+#define VRT_DEP_F "platform/modules/base/include/base/format_attribute.h"
+
+/* The donor depfile for its own target with `list` as the prerequisites
+ * and the same -MP phony rules. */
+static int vrt_dep_text(const struct vrt_fx *f, const char *list, char *out,
+                        size_t cap)
+{
+    return snprintf(out, cap, "%s: %s\n" VRT_DEP_H ":\n" VRT_DEP_F ":\n",
+                    f->donor_target, list);
+}
+
+/* A validly signed observation whose depfile is `dep`; the fixture's own
+ * depfile and receipt are restored afterwards. */
+static bool vrt_publish_dep(struct vrt_fx *f, const char *dep, char name[65])
+{
+    struct vr_bytes saved = f->dep;
+    f->dep = (struct vr_bytes){(uint8_t *)dep, strlen(dep)};
+    bool ok = vrt_receipt(f, &f->pins) && vrt_publish(f, 0, name);
+    f->dep = saved;
+    return vrt_receipt(f, &f->pins) && ok;
+}
+
+static int vrt_test_depfile_admission(struct vrt_fx *f)
+{
+    int failures = 0;
+    TEST("verify receiver: a signed depfile with the right target and "
+         "another dependency list is cold at admission") {
+        static const char *const lists[] = {
+            "\\\n " VRT_DEP_C " \\\n " VRT_DEP_H " \\\n " VRT_DEP_F,
+            "\\\n " VRT_DEP_C " \\\n " VRT_DEP_H,
+            "\\\n " VRT_DEP_C " \\\n " VRT_DEP_H " \\\n " VRT_DEP_F
+            " \\\n platform/modules/base/include/base/extra.h",
+            "\\\n " VRT_DEP_C " \\\n " VRT_DEP_F " \\\n " VRT_DEP_H,
+        };
+        char dep[1024], name[65];
+        /* The template reproduces the real donor depfile exactly, so each
+         * variant differs from it in the dependency list alone. */
+        int n = vrt_dep_text(f, lists[0], dep, sizeof(dep));
+        ASSERT(n > 0 && (size_t)n == f->dep.n && memcmp(dep, f->dep.p, f->dep.n) == 0);
+        ASSERT(vrt_unpublish(f, f->pass_name));
+        for (size_t i = 1; i < sizeof(lists) / sizeof(lists[0]); i++) {
+            n = vrt_dep_text(f, lists[i], dep, sizeof(dep));
+            ASSERT(n > 0 && (size_t)n < sizeof(dep));
+            ASSERT(vrt_publish_dep(f, dep, name));
+            ASSERT(vrt_cold(f, "receiver_depfile_mismatch"));
+            ASSERT(vrt_unpublish(f, name));
+        }
+        ASSERT(vrt_publish(f, 0, f->pass_name));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* The depfile beside a published target, read and replaced with its tail
+ * missing one header; `saved` keeps the original for vrt_dep_put_back. */
+static bool vrt_dep_drop_header(const struct vrt_fx *f, const char *out,
+                                struct vr_bytes *saved)
+{
+    char rel[ZCL_FR_TARGET_LEN + 1u], path[PATH_MAX];
+    static const char drop[] = " \\\n " VRT_DEP_F;
+    memcpy(rel, out, sizeof(rel));
+    rel[ZCL_FR_TARGET_LEN - 1u] = 'd';
+    if (!vrt_path(path, f->gen, rel) || !vrt_read(path, saved) ||
+        saved->n <= ZCL_FR_TARGET_LEN)
+        return false;
+    char *text = malloc(saved->n + 1u);
+    if (!text) return false;
+    memcpy(text, saved->p, saved->n);
+    text[saved->n] = 0;
+    char *cut = strstr(text + ZCL_FR_TARGET_LEN, drop);
+    size_t n = saved->n;
+    if (cut) {
+        memmove(cut, cut + sizeof(drop) - 1u, strlen(cut + sizeof(drop) - 1u) + 1u);
+        n -= sizeof(drop) - 1u;
+    }
+    bool ok = cut && vrt_write(path, text, n, 0600);
+    free(text);
+    return ok;
+}
+
+static bool vrt_dep_put_back(const struct vrt_fx *f, const char *out,
+                             struct vr_bytes *saved)
+{
+    char rel[ZCL_FR_TARGET_LEN + 1u], path[PATH_MAX];
+    memcpy(rel, out, sizeof(rel));
+    rel[ZCL_FR_TARGET_LEN - 1u] = 'd';
+    bool ok = vrt_path(path, f->gen, rel) &&
+              vrt_write(path, saved->p, saved->n, 0600);
+    free(saved->p);
+    *saved = (struct vr_bytes){0};
+    return ok;
+}
+
+static bool vrt_log_write(const struct vrt_fx *f, const char *text)
+{
+    char log[PATH_MAX];
+    return vrt_path(log, f->work, ZCL_VERIFY_RECEIVER_LOG) &&
+           vrt_write(log, text, strlen(text), 0600);
+}
+
+static int vrt_test_depfile_after_make(struct vrt_fx *f)
+{
+    int failures = 0;
+    struct zcl_verify_receiver r;
+    memset(&r, 0, sizeof(r));
+    r.lock_fd = -1;
+    struct vr_bytes saved = {0};
+    char out[ZCL_FR_TARGET_LEN + 1u];
+    TEST("verify receiver: a published depfile whose tail differs from the "
+         "driver's blocks, whatever the log claims") {
+        const struct vrt_zcc_env admitted = {.verified = true, .admitted = true};
+        vrt_prepare(f, &r);
+        ASSERT(vrt_is(&r, ZCL_VERIFY_RECEIVER_ADMITTED, NULL));
+        ASSERT(vrt_zcc(f, '5', &admitted, out) == 0);
+        ASSERT(vrt_dep_drop_header(f, out, &saved));
+        zcl_verify_receiver_finish(&r);
+        ASSERT(vrt_is(&r, ZCL_VERIFY_RECEIVER_BLOCK, "receiver_depfile_mismatch"));
+        ASSERT(r.launches_avoided == 0u);
+        zcl_verify_receiver_release(&r);
+
+        /* Served, then the log rewritten to claim a compile instead: the
+         * epoch holding the admitted bytes is still rechecked. */
+        vrt_prepare(f, &r);
+        ASSERT(vrt_is(&r, ZCL_VERIFY_RECEIVER_ADMITTED, NULL));
+        char line[256];
+        ASSERT(snprintf(line, sizeof(line), "MISS     %-28s %s\n",
+                        "admitted:argv_mismatch", out) < (int)sizeof(line));
+        ASSERT(vrt_log_write(f, line));
+        zcl_verify_receiver_finish(&r);
+        ASSERT(vrt_is(&r, ZCL_VERIFY_RECEIVER_BLOCK, "receiver_depfile_mismatch"));
+        zcl_verify_receiver_release(&r);
+        ASSERT(vrt_dep_put_back(f, out, &saved));
+
+        /* The same claim with the depfile intact and the source changed. */
+        struct vr_bytes source = {0};
+        vrt_prepare(f, &r);
+        ASSERT(vrt_is(&r, ZCL_VERIFY_RECEIVER_ADMITTED, NULL));
+        ASSERT(vrt_log_write(f, line));
+        ASSERT(vrt_edit(f, VRT_SOURCE, "/* late */\n", &source));
+        zcl_verify_receiver_finish(&r);
+        ASSERT(vrt_restore(f, VRT_SOURCE, &source));
+        ASSERT(vrt_is(&r, ZCL_VERIFY_RECEIVER_BLOCK, "receiver_source_changed"));
+        PASS();
+    } _test_next:;
+    if (saved.p) (void)vrt_dep_put_back(f, out, &saved);
+    zcl_verify_receiver_release(&r);
+    return failures;
+}
+
+/* An admitted step whose log is missing, oversized, silent or names a
+ * target the driver cannot recheck blocks; it never falls back to cold. */
+static int vrt_test_admitted_log(struct vrt_fx *f)
+{
+    int failures = 0;
+    struct zcl_verify_receiver r;
+    memset(&r, 0, sizeof(r));
+    r.lock_fd = -1;
+    TEST("verify receiver: an unreadable, silent or malformed log blocks") {
+        char log[PATH_MAX], bad[ZCL_FR_TARGET_LEN + 1u], line[256];
+        vrt_prepare(f, &r);
+        ASSERT(vrt_is(&r, ZCL_VERIFY_RECEIVER_ADMITTED, NULL));
+        zcl_verify_receiver_finish(&r);
+        ASSERT(vrt_is(&r, ZCL_VERIFY_RECEIVER_BLOCK, "admitted_log_unreadable"));
+        zcl_verify_receiver_release(&r);
+
+        vrt_prepare(f, &r);
+        ASSERT(vrt_path(log, f->work, ZCL_VERIFY_RECEIVER_LOG));
+        ASSERT(vrt_write(log, "", 0u, 0600));
+        ASSERT(truncate(log, (off_t)VR_LOG_MAX + 1) == 0);
+        zcl_verify_receiver_finish(&r);
+        ASSERT(vrt_is(&r, ZCL_VERIFY_RECEIVER_BLOCK, "admitted_log_unreadable"));
+        zcl_verify_receiver_release(&r);
+
+        vrt_prepare(f, &r);
+        ASSERT(vrt_log_write(f, "MISS     verified:cold                 x\n"));
+        zcl_verify_receiver_finish(&r);
+        ASSERT(vrt_is(&r, ZCL_VERIFY_RECEIVER_BLOCK, "admitted_not_consumed"));
+        zcl_verify_receiver_release(&r);
+
+        /* Right length, wrong shape: the driver's own target check. */
+        test_vc_target(bad, '8');
+        memcpy(bad, "build/TEST", 10u);
+        vrt_prepare(f, &r);
+        ASSERT(snprintf(line, sizeof(line), "VERIFIED %-28s %s\n",
+                        "admitted:fixed_result.v2", bad) < (int)sizeof(line));
+        ASSERT(vrt_log_write(f, line));
+        zcl_verify_receiver_finish(&r);
+        ASSERT(vrt_is(&r, ZCL_VERIFY_RECEIVER_BLOCK, "admitted_target_invalid"));
+        zcl_verify_receiver_release(&r);
+
+        /* A served path the driver cannot even record. */
+        vrt_prepare(f, &r);
+        ASSERT(vrt_log_write(f, "VERIFIED admitted:fixed_result.v2 short.o\n"));
+        zcl_verify_receiver_finish(&r);
+        ASSERT(vrt_is(&r, ZCL_VERIFY_RECEIVER_BLOCK, "admitted_target_invalid"));
+        PASS();
+    } _test_next:;
+    zcl_verify_receiver_release(&r);
+    return failures;
+}
+
+/* The same argv from a sub-make in another tree is not served. */
+static int vrt_test_zcc_other_tree(struct vrt_fx *f)
+{
+    int failures = 0;
+    struct zcl_verify_receiver r;
+    memset(&r, 0, sizeof(r));
+    r.lock_fd = -1;
+    TEST("verify receiver: zcc serves only in the driver's generation root") {
+        char other[PATH_MAX], out[ZCL_FR_TARGET_LEN + 1u];
+        ASSERT(vrt_path(other, f->root, "other-tree"));
+        for (size_t i = 0; i < f->input_count; i++) {
+            char from[PATH_MAX], to[PATH_MAX];
+            ASSERT(vrt_path(from, f->gen, f->inputs[i]));
+            ASSERT(vrt_path(to, other, f->inputs[i]));
+            ASSERT(vrt_copy(from, to));
+        }
+        vrt_prepare(f, &r);
+        ASSERT(vrt_is(&r, ZCL_VERIFY_RECEIVER_ADMITTED, NULL));
+        const struct vrt_zcc_env sub = {.verified = true, .admitted = true,
+                                        .cwd = other};
+        unsigned before = vrt_launches(f);
+        ASSERT(vrt_zcc(f, '9', &sub, out) == 0);
+        ASSERT(vrt_launches(f) == before + 1u);
+        ASSERT(vrt_log_has(f, "MISS     admitted:cwd_mismatch"));
+        ASSERT(!vrt_log_has(f, "VERIFIED"));
+        zcl_verify_receiver_finish(&r);
+        ASSERT(vrt_is(&r, ZCL_VERIFY_RECEIVER_COLD, "admitted_cwd_mismatch"));
+        PASS();
+    } _test_next:;
+    zcl_verify_receiver_release(&r);
+    return failures;
+}
+
+static int vrt_test_zcc_target_shape(struct vrt_fx *f)
+{
+    int failures = 0;
+    struct zcl_verify_receiver r;
+    memset(&r, 0, sizeof(r));
+    r.lock_fd = -1;
+    TEST("verify receiver: zcc itself refuses to serve a wrong target shape") {
+        char out[PATH_MAX];
+        vrt_prepare(f, &r);
+        ASSERT(vrt_is(&r, ZCL_VERIFY_RECEIVER_ADMITTED, NULL));
+        const struct vrt_zcc_env shapes[] = {
+            {.verified = true, .admitted = true, .obj_root = "build/other-obj"},
+            {.verified = true, .admitted = true,
+             .obj_leaf = "platform/modules/base/src/result2.o"},
+        };
+        for (size_t i = 0; i < sizeof(shapes) / sizeof(shapes[0]); i++) {
+            unsigned before = vrt_launches(f);
+            ASSERT(vrt_zcc(f, (char)('6' + i), &shapes[i],
+                           out) == 0);
+            ASSERT(vrt_launches(f) == before + 1u);
+            ASSERT(vrt_obj_is(f, out, &f->obj));
+        }
+        ASSERT(vrt_log_has(f, "MISS     admitted:target_invalid"));
+        ASSERT(!vrt_log_has(f, "VERIFIED"));
+        zcl_verify_receiver_finish(&r);
+        ASSERT(vrt_is(&r, ZCL_VERIFY_RECEIVER_COLD, "admitted_target_invalid"));
+        PASS();
+    } _test_next:;
+    zcl_verify_receiver_release(&r);
+    return failures;
+}
+
 /* ── 4. nothing without a record is used ──────────────────────────────── */
 
 static bool vrt_junk_file(const char *path)
@@ -1306,6 +1598,11 @@ int test_verify_receiver(void)
     if (!failures) failures += vrt_test_cold_record(f);
     if (!failures) failures += vrt_test_cold_source(f);
     if (!failures) failures += vrt_test_block(f);
+    if (!failures) failures += vrt_test_depfile_admission(f);
+    if (!failures) failures += vrt_test_depfile_after_make(f);
+    if (!failures) failures += vrt_test_zcc_target_shape(f);
+    if (!failures) failures += vrt_test_admitted_log(f);
+    if (!failures) failures += vrt_test_zcc_other_tree(f);
     if (!failures) failures += vrt_test_planted(f);
     if (f) vrt_fixture_free(f);
     free(f);

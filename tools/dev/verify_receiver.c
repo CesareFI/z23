@@ -11,6 +11,7 @@
 #include "verify_receiver_internal.h"
 #include "verify_store.h"
 #include "verify/fixed_result_contract.h"
+#include "verify/fixed_result_source.h"
 
 #include "base/hex.h"
 #include "base/safe_alloc.h"
@@ -18,6 +19,7 @@
 #include "platform/time_compat.h"
 #include "sha3/sha3.h"
 
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -30,11 +32,13 @@
 
 #define VR_TARGET_LEN ZCL_FR_TARGET_LEN
 #define VR_SERVED_MAX 8u
+#define VR_EPOCHS_MAX 64u
 
 static const char *const k_vr_work_names[] = {
     ZCL_VERIFY_RECEIVER_ARGV, ZCL_VERIFY_RECEIVER_OBJECT,
     ZCL_VERIFY_RECEIVER_DEP_TAIL, ZCL_VERIFY_RECEIVER_STDERR,
-    ZCL_VERIFY_RECEIVER_LOG, "pp.i", "pp.d", "pp.stderr",
+    ZCL_VERIFY_RECEIVER_LOG, ZCL_VERIFY_RECEIVER_ROOT, "pp.i", "pp.d",
+    "pp.stderr",
 };
 
 /* Everything one preparation measures; heap-allocated (the profile and the
@@ -212,6 +216,8 @@ static const char *vr_admit(struct vr_ctx *c, struct zcl_verify_store_result *s)
                      s->object_len) ||
         !vr_write_at(c->work_fd, ZCL_VERIFY_RECEIVER_DEP_TAIL, r->dep_tail,
                      r->dep_tail_len) ||
+        !vr_write_at(c->work_fd, ZCL_VERIFY_RECEIVER_ROOT, r->generation,
+                     strlen(r->generation)) ||
         !vr_write_at(c->work_fd, ZCL_VERIFY_RECEIVER_STDERR, s->stderr_bytes,
                      s->stderr_len))
         return "receiver_work_unsafe";
@@ -393,7 +399,8 @@ bool zcl_verify_receiver_env_clear(void)
 struct vr_log {
     char served[VR_SERVED_MAX][VR_TARGET_LEN + 1u];
     size_t served_count;
-    bool served_overflow;
+    const char *invalid; /* a VERIFIED line the driver cannot account for */
+    bool readable;
     char miss[64];
     unsigned launches;
 };
@@ -408,6 +415,28 @@ static bool vr_token_ok(const char *s, size_t n)
     return true;
 }
 
+static void vr_log_miss(struct vr_log *l, const char *detail)
+{
+    static const char admitted[] = "admitted:";
+    const char *token = detail + sizeof(admitted) - 1u;
+    if (strncmp(detail, "verified:", 9) == 0)
+        l->launches++;
+    else if (strncmp(detail, admitted, sizeof(admitted) - 1u) == 0 &&
+             !l->miss[0] && vr_token_ok(token, strlen(token)))
+        (void)snprintf(l->miss, sizeof(l->miss), "%s", token);
+}
+
+/* A served target the driver must recheck; one it cannot record blocks. */
+static void vr_log_served(struct vr_log *l, const char *path)
+{
+    if (strlen(path) != VR_TARGET_LEN)
+        l->invalid = "admitted_target_invalid";
+    else if (l->served_count == VR_SERVED_MAX)
+        l->invalid = "admitted_served_overflow";
+    else
+        memcpy(l->served[l->served_count++], path, VR_TARGET_LEN + 1u);
+}
+
 /* One zcc log line: "<disposition> <detail> <output>", space padded. */
 static void vr_log_line(struct vr_log *l, char *line)
 {
@@ -416,23 +445,10 @@ static void vr_log_line(struct vr_log *l, char *line)
     char *detail = disposition ? strtok_r(NULL, " ", &save) : NULL;
     char *path = detail ? strtok_r(NULL, " ", &save) : NULL;
     if (!path) return;
-    static const char admitted[] = "admitted:";
-    if (strcmp(disposition, "MISS") == 0 &&
-        strncmp(detail, "verified:", 9) == 0)
-        l->launches++;
-    else if (strcmp(disposition, "MISS") == 0 &&
-             strncmp(detail, admitted, sizeof(admitted) - 1u) == 0 &&
-             !l->miss[0] &&
-             vr_token_ok(detail + sizeof(admitted) - 1u,
-                         strlen(detail + sizeof(admitted) - 1u)))
-        (void)snprintf(l->miss, sizeof(l->miss), "%s",
-                       detail + sizeof(admitted) - 1u);
-    else if (strcmp(disposition, "VERIFIED") == 0 &&
-             l->served_count < VR_SERVED_MAX &&
-             strlen(path) == VR_TARGET_LEN)
-        memcpy(l->served[l->served_count++], path, VR_TARGET_LEN + 1u);
+    if (strcmp(disposition, "MISS") == 0)
+        vr_log_miss(l, detail);
     else if (strcmp(disposition, "VERIFIED") == 0)
-        l->served_overflow = true;
+        vr_log_served(l, path);
 }
 
 static void vr_log_read(const struct zcl_verify_receiver *r, struct vr_log *l)
@@ -446,6 +462,7 @@ static void vr_log_read(const struct zcl_verify_receiver *r, struct vr_log *l)
         return;
     }
     (void)close(fd);
+    l->readable = true;
     char *save = NULL;
     for (char *line = strtok_r((char *)b.p, "\n", &save); line;
          line = strtok_r(NULL, "\n", &save))
@@ -453,47 +470,115 @@ static void vr_log_read(const struct zcl_verify_receiver *r, struct vr_log *l)
     free(b.p);
 }
 
-/* The published object must be the admitted bytes and its depfile the
- * receiver's own, naming this exact epoch target. */
-static const char *vr_served_check(struct zcl_verify_receiver *r, int gen_fd,
-                                   const char *output)
+static bool vr_is_admitted_object(const struct zcl_verify_receiver *r,
+                                  const struct vr_bytes *obj)
 {
-    if (zcl_fr_target_check(output, strlen(output)))
-        return "admitted_target_invalid";
-    struct vr_bytes obj = {0}, dep = {0};
     uint8_t hash[32];
+    zcl_sha3_256(obj->p, obj->n, hash);
+    return obj->n == r->obj_len && memcmp(hash, r->obj_sha3, 32u) == 0;
+}
+
+/* The depfile beside `output` must be this exact target followed by the
+ * driver's own tail. */
+static const char *vr_depfile_check(struct zcl_verify_receiver *r, int gen_fd,
+                                    const char *output, uint64_t *bytes)
+{
+    struct vr_bytes dep = {0};
     char dep_path[VR_TARGET_LEN + 1u];
     memcpy(dep_path, output, VR_TARGET_LEN + 1u);
     dep_path[VR_TARGET_LEN - 1u] = 'd';
-    const char *why = vr_read_beneath(gen_fd, output, VR_OBJECT_MAX, &obj);
-    if (!why) {
-        zcl_sha3_256(obj.p, obj.n, hash);
-        if (obj.n != r->obj_len || memcmp(hash, r->obj_sha3, 32u) != 0)
-            why = "admitted_object_mismatch";
-    }
-    if (!why) why = vr_read_beneath(gen_fd, dep_path, VR_DEP_MAX, &dep);
+    const char *why = vr_read_beneath(gen_fd, dep_path, VR_DEP_MAX, &dep);
     if (!why && (dep.n != VR_TARGET_LEN + r->dep_tail_len ||
                  memcmp(dep.p, output, VR_TARGET_LEN) != 0 ||
                  memcmp(dep.p + VR_TARGET_LEN, r->dep_tail,
                         r->dep_tail_len) != 0))
         why = "receiver_depfile_mismatch";
-    if (!why) r->bytes += obj.n + dep.n;
-    free(obj.p);
+    if (!why) *bytes += dep.n;
     free(dep.p);
-    return why ? (strcmp(why, "receiver_file_missing") == 0
-                      ? "admitted_object_missing" : why)
-               : NULL;
+    return why;
 }
 
+/* A target the log says was served: its object must be the admitted bytes
+ * and its depfile the driver's own. */
+static const char *vr_served_check(struct zcl_verify_receiver *r, int gen_fd,
+                                   const char *output)
+{
+    if (zcl_fr_target_check(output, strlen(output)))
+        return "admitted_target_invalid";
+    struct vr_bytes obj = {0};
+    uint64_t bytes = 0;
+    const char *why = vr_read_beneath(gen_fd, output, VR_OBJECT_MAX, &obj);
+    if (why && strcmp(why, "receiver_file_missing") == 0)
+        why = "admitted_object_missing";
+    if (!why && !vr_is_admitted_object(r, &obj))
+        why = "admitted_object_mismatch";
+    if (!why) why = vr_depfile_check(r, gen_fd, output, &bytes);
+    if (!why) r->bytes += obj.n + bytes;
+    free(obj.p);
+    return why;
+}
+
+static bool vr_epoch_name_ok(const char *name)
+{
+    size_t n = strlen(name);
+    for (size_t i = 0; i < n; i++)
+        if (!((name[i] >= '0' && name[i] <= '9') ||
+              (name[i] >= 'a' && name[i] <= 'f')))
+            return false;
+    return n == 64u;
+}
+
+/* Whatever the log claims: any epoch's result.o holding the admitted bytes
+ * must also carry the driver's depfile for that exact target. */
+static const char *vr_epoch_check(struct zcl_verify_receiver *r, int gen_fd,
+                                  const char *epoch)
+{
+    char output[VR_TARGET_LEN + 1u];
+    struct vr_bytes obj = {0};
+    uint64_t ignored = 0;
+    if (snprintf(output, sizeof(output),
+                 "build/test-obj/epochs/%s/platform/modules/base/src/result.o",
+                 epoch) != (int)VR_TARGET_LEN)
+        return "admitted_target_invalid";
+    const char *why = vr_read_beneath(gen_fd, output, VR_OBJECT_MAX, &obj);
+    bool admitted = !why && vr_is_admitted_object(r, &obj);
+    free(obj.p);
+    if (why) return strcmp(why, "receiver_file_missing") == 0 ? NULL : why;
+    return admitted ? vr_depfile_check(r, gen_fd, output, &ignored) : NULL;
+}
+
+static const char *vr_epochs_check(struct zcl_verify_receiver *r, int gen_fd)
+{
+    int fd = zcl_fr_open_beneath(gen_fd, "build/test-obj/epochs");
+    if (fd < 0) return errno == ENOENT ? NULL : "receiver_epochs_unreadable";
+    DIR *dir = fdopendir(fd);
+    if (!dir) {
+        (void)close(fd);
+        return "receiver_epochs_unreadable";
+    }
+    const char *why = NULL;
+    unsigned seen = 0;
+    for (struct dirent *e = readdir(dir); !why && e; e = readdir(dir)) {
+        if (!vr_epoch_name_ok(e->d_name)) continue;
+        why = ++seen > VR_EPOCHS_MAX ? "receiver_epochs_limit"
+                                      : vr_epoch_check(r, gen_fd, e->d_name);
+    }
+    (void)closedir(dir);
+    return why;
+}
+
+/* Every recheck, independent of what the candidate-built zcc logged: the
+ * named targets, every epoch holding the admitted bytes, and the sources. */
 static const char *vr_consumed(struct zcl_verify_receiver *r,
                                const struct vr_log *l)
 {
-    if (l->served_overflow) return "admitted_served_overflow";
+    if (l->invalid) return l->invalid;
     int gen_fd = open(r->generation, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
     if (gen_fd < 0) return "receiver_generation_unreadable";
     const char *why = NULL;
     for (size_t i = 0; !why && i < l->served_count; i++)
         why = vr_served_check(r, gen_fd, l->served[i]);
+    if (!why) why = vr_epochs_check(r, gen_fd);
     uint8_t now[32];
     if (!why && (zcl_verify_receiver_source_content(gen_fd, r->inputs,
                                                     r->input_count, now) ||
@@ -501,6 +586,30 @@ static const char *vr_consumed(struct zcl_verify_receiver *r,
         why = "receiver_source_changed";
     (void)close(gen_fd);
     return why;
+}
+
+/* An admitted step ends HIT, COLD (zcc named why it compiled instead) or
+ * BLOCK: a failed recheck, or a log the driver cannot read or that names
+ * no consumption at all. */
+static void vr_admitted_verdict(struct zcl_verify_receiver *r,
+                                const struct vr_log *l)
+{
+    const char *why = vr_consumed(r, l);
+    if (!why && !l->readable) why = "admitted_log_unreadable";
+    if (!why && l->served_count == 0 && !l->miss[0])
+        why = "admitted_not_consumed";
+    if (why) {
+        vr_set(r, ZCL_VERIFY_RECEIVER_BLOCK, why);
+        r->bytes = 0;
+    } else if (l->served_count == 0) {
+        (void)snprintf(r->reason_buf, sizeof(r->reason_buf), "admitted_%s",
+                       l->miss);
+        vr_set(r, ZCL_VERIFY_RECEIVER_COLD, r->reason_buf);
+        r->bytes = 0;
+    } else {
+        vr_set(r, ZCL_VERIFY_RECEIVER_HIT, NULL);
+        r->launches_avoided = (unsigned)l->served_count;
+    }
 }
 
 void zcl_verify_receiver_finish(struct zcl_verify_receiver *r)
@@ -512,17 +621,7 @@ void zcl_verify_receiver_finish(struct zcl_verify_receiver *r)
     vr_log_read(r, &l);
     r->compile_launches = l.launches;
     if (r->verdict == ZCL_VERIFY_RECEIVER_ADMITTED) {
-        if (l.served_count == 0 && !l.served_overflow) {
-            (void)snprintf(r->reason_buf, sizeof(r->reason_buf), "%s%s",
-                           l.miss[0] ? "admitted_" : "",
-                           l.miss[0] ? l.miss : "admitted_not_consumed");
-            vr_set(r, ZCL_VERIFY_RECEIVER_COLD, r->reason_buf);
-        } else {
-            const char *why = vr_consumed(r, &l);
-            vr_set(r, why ? ZCL_VERIFY_RECEIVER_BLOCK : ZCL_VERIFY_RECEIVER_HIT,
-                   why);
-            if (!why) r->launches_avoided = (unsigned)l.served_count;
-        }
+        vr_admitted_verdict(r, &l);
         vr_unlock(r);
     }
     r->wall_us += platform_time_monotonic_us() - wall0;

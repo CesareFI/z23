@@ -3124,7 +3124,8 @@ static int zcc_dispatch(int argc, char **argv, bool replace_on_bypass);
  * the fixed test-fast unit and name its private directory in ZCC_ADMITTED
  * (tools/dev/verify_receiver.h). zcc has no admission authority. It only
  * copies those bytes into this exact epoch target, and only when make's
- * compiler argv equals the driver's pinned-profile tokens exactly; the
+ * compiler argv equals the driver's pinned-profile tokens exactly and its
+ * cwd is the driver's generation root; the
  * depfile it writes is the driver's own, for this target. After make the
  * driver rehashes what was published. Every other case compiles for real
  * and logs why the admitted object was not used. */
@@ -3215,8 +3216,17 @@ static bool admitted_write(const char *path, const void *head, size_t head_len,
 }
 
 struct admitted_bytes {
-    struct buf want, object, tail, err;
+    struct buf want, object, tail, err, root;
 };
+
+/* The driver's physical generation root must be this process's cwd, so a
+ * sub-make run with -C in another tree is never served. */
+static bool admitted_cwd(const struct buf *root)
+{
+    char cwd[PATH_MAX];
+    return getcwd(cwd, sizeof cwd) && root->len == strlen(cwd) &&
+           memcmp(root->p, cwd, root->len) == 0;
+}
 
 static const char *admitted_load(const char *dir_path, int argc, char **argv,
                                  struct admitted_bytes *a)
@@ -3227,15 +3237,17 @@ static const char *admitted_load(const char *dir_path, int argc, char **argv,
     bool read_ok = admitted_read(dir, "argv", &a->want) &&
                    admitted_read(dir, "object.o", &a->object) &&
                    admitted_read(dir, "depfile.tail", &a->tail) &&
-                   admitted_read(dir, "stderr.bin", &a->err);
+                   admitted_read(dir, "stderr.bin", &a->err) &&
+                   admitted_read(dir, "root", &a->root);
     close(dir);
     if (!read_ok)
         return "artifact_unreadable";
     if (a->object.len == 0 || a->tail.len == 0 || a->tail.p[0] != ':')
         return "artifact_malformed";
-    return admitted_argv_equal(&a->want, argv, epoch_compiler_start(argc, argv),
-                               argc)
-               ? NULL : "argv_mismatch";
+    if (!admitted_argv_equal(&a->want, argv, epoch_compiler_start(argc, argv),
+                             argc))
+        return "argv_mismatch";
+    return admitted_cwd(&a->root) ? NULL : "cwd_mismatch";
 }
 
 /* NULL when the admitted object was served; "" when no admission applies to
@@ -3268,6 +3280,7 @@ static const char *admitted_serve(int argc, char **argv, const char *mode,
     buf_free(&a.object);
     buf_free(&a.tail);
     buf_free(&a.err);
+    buf_free(&a.root);
     return why;
 #else
     (void)argc; (void)argv; (void)mode; (void)output; (void)source;
