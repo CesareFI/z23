@@ -1089,8 +1089,8 @@ static void pts_record_forks(struct vcs_proof_receiver *live,
                            "could be recorded");
         return;
     }
-    LOG_WARN(PTS_LOG, "rebuild refused; recorded %zu signed issuer fork(s) "
-                      "in the live receiver", m.marked);
+    LOG_WARN(PTS_LOG, "rebuild refused; recorded %zu equivocating signed "
+                      "issuers in the live receiver", m.marked);
 }
 
 static void pts_report_counts(const struct pts_counts *n, size_t *tickets,
