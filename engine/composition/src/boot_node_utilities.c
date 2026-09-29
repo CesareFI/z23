@@ -231,9 +231,15 @@ static void app_open_node(const char *host, int port, bool operator_named)
 
     if (platform_socket_resolve_ip(hostbuf, addr.svc.addr.ip)) {
         printf("Connecting to addnode %s:%u\n", hostbuf, use_port);
-        if (operator_named && configured_sync_peer_note(&addr.svc))
-            printf("Configured sync peer %s:%u (an inbound connection from "
-                   "this IP may serve headers)\n", hostbuf, use_port);
+        if (operator_named) {
+            /* The probe authenticates targets with this node's own Noise
+             * identity, so the manager is attached with the first target. */
+            configured_sync_peers_attach_network(&svc->connman->manager);
+            if (configured_sync_peer_note(&addr.svc))
+                printf("Configured sync peer %s:%u (an inbound session that "
+                       "proves this target's Noise identity may serve "
+                       "headers)\n", hostbuf, use_port);
+        }
         connman_open_connection(svc->connman, &addr);
     } else {
         printf("Failed to resolve addnode %s\n", hostbuf);

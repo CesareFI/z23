@@ -7,6 +7,7 @@
 #include "sync/sync_planner.h"
 #include "services/configured_sync_peers.h"
 #include "net/snapshot_sync_contract.h"
+#include "net/download.h"
 #include "net/net.h"
 #include "net/netaddr.h"
 #include "validation/chainstate.h"
@@ -635,6 +636,37 @@ void syncsvc_collect_needed_blocks(struct sync_needed_blocks *result,
 
 /* ── Header sync stall detection ──────────────────────────── */
 
+/* Rules C and D for a configured inbound sync peer, on the same
+ * download-manager evidence the sealed core feeds them for outbound peers
+ * (see syncsvc_configured_inbound_body_stalled). */
+static bool configured_inbound_body_rules_fire(const struct p2p_node *node,
+                                               int our_height,
+                                               int64_t now_seconds)
+{
+    if (!syncsvc_peer_is_configured_inbound(node) || snapsync_is_active())
+        return false;  // raw-return-ok:core-applies-rules-c-d-to-outbound-peers
+    struct download_manager *dm = msg_get_download_mgr();
+    if (!dm)
+        return false;  // raw-return-ok:no-download-manager-no-body-evidence
+    uint64_t body_received = 0, body_timed_out = 0;
+    uint64_t dark_received = 0, dark_timed_out = 0;
+    int64_t last_body_time = 0;
+    dl_peer_body_progress(dm, (uint32_t)node->id, NULL, &body_received,
+                          &body_timed_out);
+    dl_peer_body_staleness(dm, (uint32_t)node->id, &dark_received,
+                           &dark_timed_out, &last_body_time);
+    if (!syncsvc_configured_inbound_body_stalled(
+            node, our_height, body_received, body_timed_out, dark_received,
+            dark_timed_out, last_body_time, now_seconds))
+        return false;  // raw-return-ok:peer-still-serves-bodies
+    LOG_WARN("header_sync",
+             "configured inbound sync peer %s held to body-stall rules C/D: "
+             "received=%llu timed_out=%llu last_body=%lld; disconnecting",
+             node->addr_name, (unsigned long long)dark_received,
+             (unsigned long long)dark_timed_out, (long long)last_body_time);
+    return true;
+}
+
 bool syncsvc_should_disconnect_stale_header_peer(const struct p2p_node *node,
                                                   int our_height,
                                                   int best_header_height,
@@ -646,6 +678,8 @@ bool syncsvc_should_disconnect_stale_header_peer(const struct p2p_node *node,
         return false;  // raw-return-ok:only-relevant-during-ibd-not-an-error
     if (node->state < PEER_SYNCING_HEADERS)
         return false;
+    if (configured_inbound_body_rules_fire(node, our_height, now_seconds))
+        return true;
 
     /* Frontier-parity gate (P2): when our HEADER frontier has already
      * reached the peer's claimed tip, getheaders cannot be "useful" by

@@ -75,8 +75,9 @@ bool network_addnode_rpc(const struct json_value *params, bool help,
         net_addr_to_string(&addr.svc.addr, host, sizeof(host));
         connman_add_seed_node(cm, host, addr.svc.port);
         /* The authenticated RPC names this target as explicitly as
-         * -addnode does, so an inbound connection from its IP may serve
-         * headers (services/configured_sync_peers.h). */
+         * -addnode does, so an inbound session that proves this target's
+         * Noise identity may serve headers (services/configured_sync_peers.h). */
+        configured_sync_peers_attach_network(&cm->manager);
         if (configured_sync_peer_note(&addr.svc))
             LOG_INFO("net", "configured sync peer recorded target=%s cmd=%s",
                      node_str, cmd);

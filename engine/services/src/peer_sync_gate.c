@@ -88,16 +88,17 @@ bool syncsvc_begin_peer_sync(struct p2p_node *node,
                              int our_height,
                              int best_header_height)
 {
+    configured_sync_peer_observe_session(node);
     if (!syncsvc_should_begin_peer_sync(node, our_height, best_header_height,
                                        sync_get_state()))
         return false;
     if (node->inbound)
         LOG_INFO("header_sync",
-                 "configured-inbound header sync: peer=%s id=%d is an "
-                 "operator-named -addnode/-connect target reached over its "
-                 "inbound connection; header sync begins from it, so a "
-                 "\"0 outbound peers ... cannot sync\" warning does not "
-                 "apply while this path serves headers",
+                 "configured-inbound header sync: peer=%s id=%d proved over "
+                 "its own Noise session the identity this node authenticated "
+                 "at an operator-named -addnode/-connect target; header sync "
+                 "begins from it, so a \"0 outbound peers ... cannot sync\" "
+                 "warning does not apply while this path serves headers",
                  node->addr_name, (int)node->id);
     peer_set_state_checked((uint32_t)node->id, &node->state,
                            PEER_SYNCING_HEADERS, "IBD start");
