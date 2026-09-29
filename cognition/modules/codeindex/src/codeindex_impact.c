@@ -34,6 +34,7 @@
 
 #include "codeindex_priv.h"
 
+#include "platform/file_metadata.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 
@@ -777,8 +778,7 @@ static bool include_input_missing(const struct codeindex *ci, const char *path)
     int n = snprintf(full, sizeof full, "%s/%s", ci->root, path);
     if (n < 0 || (size_t)n >= sizeof full)
         return true;
-    struct stat st;
-    return lstat(full, &st) != 0 || !S_ISREG(st.st_mode);
+    return platform_file_shape_read(full) != PLATFORM_FILE_SHAPE_REGULAR;
 }
 
 static bool include_query_narrow_refused(const struct codeindex *ci,

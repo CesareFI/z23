@@ -685,7 +685,7 @@ ZCL_MODULE_CAPABILITY("cognition/modules/codeindex/src/codeindex_deps.c", CAP_FS
 ZCL_MODULE_CAPABILITY("cognition/modules/codeindex/src/codeindex_focus.c", CAP_FS_READ|CAP_FS_WRITE, "reads recorded focus evidence and reports contextual read or parse failures through the diagnostic stream")
 ZCL_MODULE_CAPABILITY("cognition/modules/codeindex/src/codeindex_emitter.c", CAP_FS_WRITE, "")
 ZCL_MODULE_CAPABILITY("cognition/modules/codeindex/src/codeindex_fetch.c", CAP_FS_READ|CAP_FS_WRITE, "copies a verified fetched image into <root>/.codeindex through the rebuild lock, a private staging inode, and the atomic rename; reads this checkout's source bytes for the sealed-root comparison")
-ZCL_MODULE_CAPABILITY("cognition/modules/codeindex/src/codeindex_impact.c", CAP_FS_READ|CAP_FS_WRITE, "")
+ZCL_MODULE_CAPABILITY("cognition/modules/codeindex/src/codeindex_impact.c", CAP_FS_WRITE, "")
 ZCL_MODULE_CAPABILITY("cognition/modules/codeindex/src/codeindex_incremental.c", CAP_FS_READ|CAP_FS_WRITE, "replaces changed-file rows in a private derived-store generation")
 ZCL_MODULE_CAPABILITY("cognition/modules/codeindex/src/codeindex_inventory.c", CAP_FS_WRITE, "")
 ZCL_MODULE_CAPABILITY("cognition/modules/codeindex/src/codeindex_inventory_body.c", CAP_FS_READ|CAP_FS_WRITE, "")

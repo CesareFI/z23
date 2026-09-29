@@ -89,9 +89,11 @@ JOBS="${ZCL_LINT_JOBS:-8}"
 BIN_DIR="build/bin"
 BUDGET_SEC="${ZCL_LINT_BUDGET_SEC:-75}"
 
-# Gates that must run serially — see the header contract.
+# Gates that must run serially — see the header contract. Code-index coverage
+# snapshots source and depfile metadata, which parallel compile gates can
+# change during its rebuild.
 SERIAL_PROLOGUE=" check-git-hooks-installed "
-SERIAL_EPILOGUE=" check-cookbook "
+SERIAL_EPILOGUE=" check-codeindex-coverage check-cookbook "
 
 # Parallel gates handed to the worker pool BEFORE every other gate, in this
 # order. Dispatch order changes no gate's command, input or verdict — every

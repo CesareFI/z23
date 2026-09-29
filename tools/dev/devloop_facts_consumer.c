@@ -3,13 +3,14 @@
 #include "devloop_facts_consumer.h"
 
 #include "codeindex/codeindex.h"
+#include "platform/directory_compat.h"
+#include "platform/file_metadata.h"
 #include "util/safe_alloc.h"
 
 #include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
 
 /* A scan deeper than this, or with more manifests than the report holds,
  * does not know its universe. */
@@ -118,10 +119,12 @@ static bool fxc_exists(const char *root, const char *dir, const char *file,
                        const char *suffix)
 {
     char path[ZCL_DEVLOOP_PATH_MAX * 2 + 64];
-    struct stat st;
-    return snprintf(path, sizeof(path), "%s/%s%s%s%s", root, dir ? dir : "",
-                    dir ? "/" : "", file, suffix) < (int)sizeof(path) &&
-           lstat(path, &st) == 0;
+    if (snprintf(path, sizeof(path), "%s/%s%s%s%s", root, dir ? dir : "",
+                 dir ? "/" : "", file, suffix) >= (int)sizeof(path))
+        return false;
+    enum platform_file_shape shape = platform_file_shape_read(path);
+    return shape != PLATFORM_FILE_SHAPE_MISSING &&
+           shape != PLATFORM_FILE_SHAPE_UNREADABLE;
 }
 
 /* A changed path is created or deleted when the tree has nothing there now
@@ -149,18 +152,24 @@ static bool fxc_scan_entry(struct fxc *c, const char *rel, const char *name,
                            int depth)
 {
     char child[ZCL_DEVLOOP_PATH_MAX], full[ZCL_DEVLOOP_PATH_MAX * 2];
-    struct stat st;
     if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0)
         return true;
     if (snprintf(child, sizeof(child), "%s%s%s", rel, rel[0] ? "/" : "",
                  name) >= (int)sizeof(child) ||
         snprintf(full, sizeof(full), "%s/%s/%s", c->root, c->facts_dir,
-                 child) >= (int)sizeof(full) ||
-        lstat(full, &st) != 0)
+                 child) >= (int)sizeof(full))
         return false;
-    if (S_ISDIR(st.st_mode))
+    enum platform_file_shape shape = platform_file_shape_read(full);
+    if (shape == PLATFORM_FILE_SHAPE_MISSING ||
+        shape == PLATFORM_FILE_SHAPE_UNREADABLE)
+        return false;
+    if (shape == PLATFORM_FILE_SHAPE_OTHER) {
+        if (platform_directory_probe_real(full) != PLATFORM_DIRECTORY_PROBE_OK)
+            return false;
         return depth < FXC_SCAN_DEPTH && fxc_scan(c, child, depth + 1);
-    if (!S_ISREG(st.st_mode) || !fxc_ends_with(child, ".after.zsm"))
+    }
+    if (shape != PLATFORM_FILE_SHAPE_REGULAR ||
+        !fxc_ends_with(child, ".after.zsm"))
         return true;
     child[strlen(child) - strlen(".after.zsm")] = '\0';
     return c->cand.n < ZCL_DEVLOOP_FACTS_TU_MAX && fxc_strs_add(&c->cand, child);

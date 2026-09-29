@@ -396,15 +396,25 @@ static void fxg_walk(const char *root, char *path, size_t len,
                      const char *rest, struct fxg_found *f)
 {
     char full[ZCL_DEVLOOP_PATH_MAX * 2], comp[ZCL_DEVLOOP_PATH_MAX];
+#if !defined(_WIN32)
     struct stat st;
+#endif
     size_t n;
     while (*rest == '/')
         rest++;
     if (*rest == '\0') {
         if (snprintf(full, sizeof(full), "%s/%s", root, path) >= (int)sizeof(full))
             f->full = true;
-        else if (len > 0 && lstat(full, &st) == 0)
-            fxg_found_add(f, path);
+        else if (len > 0) {
+#if defined(_WIN32)
+            /* No no-follow stat is available here; an unobserved link
+             * must leave early reuse unvouched. */
+            f->full = true;
+#else
+            if (lstat(full, &st) == 0)
+                fxg_found_add(f, path);
+#endif
+        }
         return;
     }
     n = strcspn(rest, "/");
@@ -989,4 +999,3 @@ void fxg_text(struct fxg *g, const char *s, size_t n, uint32_t t,
     if (!out->any)
         fxg_cat_text(g, out, s + lit, n - lit);
 }
-
