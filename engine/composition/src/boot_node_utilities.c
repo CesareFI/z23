@@ -29,6 +29,7 @@
 #include "platform/socket_compat.h"
 #include "config/boot_internal.h"
 #include "config/boot_seniority.h"
+#include "services/configured_sync_peers.h"
 #include "services/node_health_service.h"
 #include "services/legacy_mirror_sync_service.h"
 #include "services/sync_monitor.h"
@@ -189,8 +190,11 @@ void app_wire_metrics_sources(void)
 
 /* ── Utility functions ─────────────────────────────────────── */
 
-/* Resolve and open an outbound connection to a -addnode host[:port]. */
-void app_add_node(const char *host, int port)
+/* Resolve and open an outbound connection to host[:port]. `operator_named`
+ * also records the resolved target as a configured sync peer
+ * (services/configured_sync_peers.h), which lets an inbound connection from
+ * that IP serve headers. Only -addnode=, -connect= and -addnode-file= set it. */
+static void app_open_node(const char *host, int port, bool operator_named)
 {
     struct boot_svc_ctx *svc = boot_active_svc();
     char hostbuf[256];
@@ -227,16 +231,29 @@ void app_add_node(const char *host, int port)
 
     if (platform_socket_resolve_ip(hostbuf, addr.svc.addr.ip)) {
         printf("Connecting to addnode %s:%u\n", hostbuf, use_port);
+        if (operator_named && configured_sync_peer_note(&addr.svc))
+            printf("Configured sync peer %s:%u (an inbound connection from "
+                   "this IP may serve headers)\n", hostbuf, use_port);
         connman_open_connection(svc->connman, &addr);
     } else {
         printf("Failed to resolve addnode %s\n", hostbuf);
     }
 }
 
+void app_add_node(const char *host, int port)
+{
+    app_open_node(host, port, false);
+}
+
+void app_add_configured_node(const char *host, int port)
+{
+    app_open_node(host, port, true);
+}
+
 static void app_add_node_from_file_cb(const char *host, uint16_t port, void *ctx)
 {
     (void)ctx;
-    app_add_node(host, (int)port);
+    app_add_configured_node(host, (int)port);
 }
 
 void app_add_nodes_from_file(const char *path)

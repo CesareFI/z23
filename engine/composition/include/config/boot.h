@@ -1233,11 +1233,17 @@ bool boot_dispatch_blocks_table_hydrate(struct node_db *ndb,
                                         struct main_state *ms);
 
 bool app_is_running(void);
+/* Dial host[:port] and keep it on the addnode list. */
 void app_add_node(const char *host, int port);
+/* The same, for a target the operator named (-addnode=, -connect=,
+ * -addnode-file=): also records it as a configured sync peer, see
+ * services/configured_sync_peers.h. */
+void app_add_configured_node(const char *host, int port);
 
 /* -addnode-file=PATH: one host[:port] per line, '#' comments and blank
  * lines skipped, malformed lines skipped with a logged warning. Calls
- * app_add_node() for every valid line. A missing file is a clean no-op. */
+ * app_add_configured_node() for every valid line. A missing file is a clean
+ * no-op. */
 void app_add_nodes_from_file(const char *path);
 
 /* Typed, greppable census of the bootstrap surface available at boot: the

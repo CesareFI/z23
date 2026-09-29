@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Purpose: operator-directed P2P addnode RPC, including fail-closed onion
- * parsing and the observable handoff into the outbound dial scheduler. */
+ * parsing, the observable handoff into the outbound dial scheduler, and the
+ * configured-sync-peer record for the named target. */
 
 #include "controllers/network_controller.h"
 #include "controllers/strong_params.h"
@@ -8,6 +9,7 @@
 #include "net/connman.h"
 #include "net/netbase.h"
 #include "net/onion_stream.h"
+#include "services/configured_sync_peers.h"
 #include "util/log_macros.h"
 
 #include <stdio.h>
@@ -59,6 +61,7 @@ bool network_addnode_rpc(const struct json_value *params, bool help,
     addr.svc = svc;
 
     if (strcmp(cmd, "remove") == 0) {
+        (void)configured_sync_peer_forget(&addr.svc);
         if (!connman_remove_addnode(cm, &addr)) {
             json_set_str(result, "addnode entry not found");
             return false;
@@ -71,6 +74,12 @@ bool network_addnode_rpc(const struct json_value *params, bool help,
         char host[NET_ADDR_STR_MAX + 1];
         net_addr_to_string(&addr.svc.addr, host, sizeof(host));
         connman_add_seed_node(cm, host, addr.svc.port);
+        /* The authenticated RPC names this target as explicitly as
+         * -addnode does, so an inbound connection from its IP may serve
+         * headers (services/configured_sync_peers.h). */
+        if (configured_sync_peer_note(&addr.svc))
+            LOG_INFO("net", "configured sync peer recorded target=%s cmd=%s",
+                     node_str, cmd);
 
         if (net_name_is_onion(node_str)) {
             printf("Connecting to onion addnode %s\n", node_str);

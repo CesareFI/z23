@@ -5,6 +5,7 @@
 // one-result-type-ok:header-sync-planner-predicates — every remaining exported bool is a pure header-sync decision (should_/is_/peer_is_behind/headers_chain_from_tip/begin_peer_sync-declines), an ANSWER not a fallible op; the sole fallible surface (syncsvc_build_getheaders_locator, malloc/null path) is already struct zcl_result. Cf. seed_integrity_gate.c / chain_tip_watchdog.c.
 #include "platform/time_compat.h"
 #include "sync/sync_planner.h"
+#include "services/configured_sync_peers.h"
 #include "net/snapshot_sync_contract.h"
 #include "net/net.h"
 #include "net/netaddr.h"
@@ -314,7 +315,9 @@ bool syncsvc_should_request_headers(const struct p2p_node *node,
                                     int our_height,
                                     int64_t now_seconds)
 {
-    if (!node || node->inbound) return false;
+    /* Outbound peers, plus an inbound peer from an operator-named target
+     * (services/configured_sync_peers.h). */
+    if (!syncsvc_peer_may_serve_headers(node)) return false;
     if (node->state < PEER_SYNCING_HEADERS) return false;
 
     /* Never spend a getheaders round on a peer we KNOW is at/behind us; it

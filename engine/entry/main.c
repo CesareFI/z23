@@ -726,9 +726,9 @@ static void main_wire_explicit_addnodes(int argc, char **argv)
 {
     for (int i = 1; i < argc; i++) {
         if (strncmp(argv[i], "-addnode=", 9) == 0)
-            app_add_node(argv[i] + 9, 0);
+            app_add_configured_node(argv[i] + 9, 0);
         else if (strncmp(argv[i], "-connect=", 9) == 0)
-            app_add_node(argv[i] + 9, 0);
+            app_add_configured_node(argv[i] + 9, 0);
         else if (strncmp(argv[i], "-addnode-file=", 14) == 0)
             app_add_nodes_from_file(argv[i] + 14);
     }

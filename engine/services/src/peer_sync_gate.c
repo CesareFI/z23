@@ -4,6 +4,7 @@
 
 // one-result-type-ok:peer-sync-gate-predicates — exported bools are pure eligibility answers, not fallible operations
 #include "sync/sync_planner.h"
+#include "services/configured_sync_peers.h"
 #include "net/net.h"
 #include "util/log_macros.h"
 #include <stdatomic.h>
@@ -46,7 +47,10 @@ bool syncsvc_should_begin_peer_sync(const struct p2p_node *node,
 {
     if (!node)
         LOG_FAIL("header_sync", "begin_peer_sync: null node");
-    if (node->inbound || node->state != PEER_ACTIVE)
+    /* Inbound peers stay refused (anti-eclipse) unless the peer comes from
+     * an operator-named target: services/configured_sync_peers.h holds the
+     * rule and why it grants no more trust than the outbound dial. */
+    if (node->state != PEER_ACTIVE || !syncsvc_peer_may_serve_headers(node))
         return false;
     if (zero_height_onion_probe_pending(node))
         return true;
@@ -87,6 +91,14 @@ bool syncsvc_begin_peer_sync(struct p2p_node *node,
     if (!syncsvc_should_begin_peer_sync(node, our_height, best_header_height,
                                        sync_get_state()))
         return false;
+    if (node->inbound)
+        LOG_INFO("header_sync",
+                 "configured-inbound header sync: peer=%s id=%d is an "
+                 "operator-named -addnode/-connect target reached over its "
+                 "inbound connection; header sync begins from it, so a "
+                 "\"0 outbound peers ... cannot sync\" warning does not "
+                 "apply while this path serves headers",
+                 node->addr_name, (int)node->id);
     peer_set_state_checked((uint32_t)node->id, &node->state,
                            PEER_SYNCING_HEADERS, "IBD start");
     if (sync_get_state() == SYNC_IDLE ||
