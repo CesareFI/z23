@@ -8,6 +8,18 @@ anything the proving account can write, a candidate can plant. This is a
 design and an uninstalled trust boundary, not a working speed path. The
 current wrapper compiles cold in proof mode with `verified:no_verifier_key`.
 
+## Byte contract v2
+
+Every artifact the verifier produces or consumes now uses one versioned
+contract, `z23verify.fixed_result.v2`, specified byte for byte in
+[`verifier-contract-v2.md`](./verifier-contract-v2.md). The artifacts are
+the pins file, the launch request, the worker result packet, the launch
+receipt, the signed record v2 with its receipt binding, the store key and the
+store layout. That document supersedes the v1 formats that appear below as
+history: closure v1, environment v1, text pins v1, the `launch.v1` receipt,
+the strict profile and the `zcl.verify_attest.v1` record. A v2 consumer
+refuses each of them by a stable token.
+
 ## Fixed result.c installation packet (not installed)
 
 The first translation-unit scope is only
