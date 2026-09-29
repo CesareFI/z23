@@ -95,18 +95,22 @@ static bool vs_layout(struct vs_fixture *f)
            vs_write(f->lock, "", 0, 0644);
 }
 
+/* The verifier-key loader checks every ancestor for writable-path attacks.
+ * This host's checkout ancestors are group writable, so a pinned-key fixture
+ * alone needs a private system-temp directory. */
+bool test_vs_key_root_make(char *out)
+{
+    char key_temporary[] = "/tmp/z23-verify-store-key.XXXXXX";
+    return mkdtemp(key_temporary) && realpath(key_temporary, out);
+}
+
 static bool vs_fixture_make(struct vs_fixture *f)
 {
     memset(f, 0, sizeof(*f));
     char temporary[PATH_MAX];
     char *made = test_mkdtemp(temporary, sizeof(temporary), "z23-verify-store");
     if (!made || !realpath(made, f->root)) return false;
-    /* The verifier-key loader checks every ancestor for writable-path
-     * attacks. This host's checkout ancestors are group writable, so the
-     * pinned-key fixture alone needs a private system-temp directory. */
-    char key_temporary[] = "/tmp/z23-verify-store-key.XXXXXX";
-    if (!mkdtemp(key_temporary) || !realpath(key_temporary, f->key_root))
-        return false;
+    if (!test_vs_key_root_make(f->key_root)) return false;
     if (!vs_layout(f)) return false;
     if (!test_vc_fixture_make(&f->vc, 'a')) return false;
     f->expected = f->vc.expected;

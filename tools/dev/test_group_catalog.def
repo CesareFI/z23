@@ -310,6 +310,9 @@ ZCL_TEST_GROUP(verify_store)
 /* The z23verify.fixed_result.v2 byte contract: pins, request, packet,
  * receipt and record binding, each refusal named, plus key v2. */
 ZCL_TEST_GROUP(verify_contract)
+/* The fixed-result signer (UID 60092) and root publisher: a no-root dress
+ * rehearsal to a receiver HIT, and every custody and conflict refusal. */
+ZCL_TEST_GROUP(verify_signer)
 ZCL_TEST_GROUP(proof_ticket_reuse)
 ZCL_TEST_GROUP(proof_ticket_measure)
 ZCL_TEST_GROUP(dev_shadow_select)

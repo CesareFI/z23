@@ -52,4 +52,11 @@ struct zcl_verify_attest_record test_vc_record(const struct test_vc_fixture *f,
 
 struct zcl_fr_artifact_bytes test_vc_artifacts(const struct test_vc_fixture *f);
 
+/* A private directory for a pinned verifier key fixture. The key loader
+ * checks every ancestor up to "/" for group- or world-writable paths, and
+ * a checkout's ancestors may be group writable, so it lives in the system
+ * temp directory; defined once in test_verify_store.c for every verifier
+ * test that needs one. PATH_MAX bytes. */
+bool test_vs_key_root_make(char *out);
+
 #endif
