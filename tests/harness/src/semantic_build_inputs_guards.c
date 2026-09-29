@@ -20,8 +20,9 @@
 
 /* D: a line make expands as it reads the makefiles runs a command that
  * writes a file (a $(shell) or != redirection or tee, a $(file >), each
- * also through $(call shell,...), or any function a computed $(call $(F))
- * names), which may be an include make reads next, missing or not; or one
+ * also through $(call shell,...), or any function a $(call) names by a
+ * computed name ($(call $(F)), $(call s$(H)ell)) or through $(call call)),
+ * which may be an include make reads next, missing or not; or one
  * that names an optional include (a missing one's path, basename or
  * directory, an existing one's path or basename, or a variable whose value
  * names one), which may create or rewrite it. */
@@ -74,6 +75,11 @@ static int sbit_t_parse_time_writers(void)
          NULL, NULL},
         {"u15", "X := $(shell cp tools/tpl.mk build/gen.mk)\n" SBI_P_TAIL,
          "build/gen.mk", "# old\n"},
+        {"a01", "X := $(call call,shell,tools/mkgen.sh)\n" SBI_P_TAIL, NULL, NULL},
+        {"a02", "X := $(call call,shell,cp tools/tpl.mk build/gen.mk)\n" SBI_P_TAIL, NULL, NULL},
+        {"a03", "H := h\nX := $(call s$(H)ell,cp tools/tpl.mk build/gen.mk)\n" SBI_P_TAIL,
+         NULL, NULL},
+        {"a03b", "H := h\nX := $(call s$(H)ell,tools/mkgen.sh)\n" SBI_P_TAIL, NULL, NULL},
     };
     TEST_CASE("semantic_build_inputs: a $(shell), != or $(file) that writes "
              "a file as make reads the makefiles widens") {
@@ -253,6 +259,28 @@ static int sbit_t_guarded_include(void)
     return failures;
 }
 
+/* make drops a leading ./ from a file name (not a doubled slash): an
+ * include and the rule that makes it name one file however each spells
+ * it. */
+#define SBI_DOT_INC(inc, target)                                               \
+    "all: build/a.o\n" SBI_OBJ_RULE "-include " inc "\n" target                \
+    ":\n\tcp tools/tpl.mk $@\n" SBI_GEN_RULE
+static int sbit_t_dot_slash(void)
+{
+    int failures = 0;
+    static const struct sbi_gcase cases[] = {
+        {"i01", SBI_DOT_INC("./build/gen.mk", "build/gen.mk"), NULL, false},
+        {"i02", SBI_DOT_INC("build/gen.mk", "./build/gen.mk"), NULL, false},
+        {"i01_twice", SBI_DOT_INC(".//./build/gen.mk", "build/gen.mk"), NULL, false},
+        {"i04", SBI_DOT_INC("build//gen.mk", "build/gen.mk"), NULL, true},
+    };
+    TEST_CASE("semantic_build_inputs: an include a rule makes under ./ "
+             "widens") {
+        ASSERT(sbi_guard_cases(cases, SBI_COUNT(cases)));
+    } TEST_END
+    return failures;
+}
+
 /* The premises every skip rests on, and the plan's. */
 #define SBI_EVERY_SKIP (ZCL_DEVLOOP_PREMISE_BUILD_READS_PLANNED_TREE | \
                         ZCL_DEVLOOP_PREMISE_NO_COMMAND_LINE_OVERRIDE)
@@ -326,8 +354,10 @@ static int sbit_t_plan_record(void)
 
 /* A parse-time command narrows but is recorded as unproven when a call
  * form runs it ($(call shell,...)), when SHELL, .SHELLFLAGS or PATH is
- * assigned (any command may then run anything: echo is no longer a
- * reader), or when an $(eval) runs text a reference or $$( computes. */
+ * assigned or a variable is exported (any command may then run anything:
+ * echo is no longer a reader; make passes exported variables such as
+ * LD_PRELOAD to $(shell)), or when an $(eval) runs text a reference or $$(
+ * computes. */
 struct sbi_pcase {
     const char *id, *makefile, *command;
 };
@@ -349,6 +379,7 @@ static int sbit_t_premise_forms(void)
         {"v12", "FR != cat tools/frag\n$(eval $(FR))\n", "$(FR)"},
         {"u06", "S := shell\n$(eval X := $$($(S) tools/mkgen.sh))\n",
          "X := $$($(S) tools/mkgen.sh)"},
+        {"export", "export LD_PRELOAD := tools/x.so\nX := $(shell echo hi)\n", "echo hi"},
     };
     TEST_CASE("semantic_build_inputs: a call form, a reassigned shell or a "
              "computed $(eval) records the plan premise") {
@@ -378,5 +409,5 @@ int sbi_guard_suite(void)
 {
     return sbit_t_parse_time_writers() | sbit_t_parse_time_quiet() |
            sbit_t_guarded_include() | sbit_t_guard_record() | sbit_t_plan_record() |
-           sbit_t_premise_forms();
+           sbit_t_dot_slash() | sbit_t_premise_forms();
 }
