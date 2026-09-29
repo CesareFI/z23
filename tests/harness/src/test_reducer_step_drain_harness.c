@@ -62,10 +62,15 @@
 #include <errno.h>
 #include <inttypes.h>
 #include <sqlite3.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+
+/* Defined by the one Sapling rebuild authority in sync_controller.c (same
+ * extern pattern as engine/jobs/src/utxo_apply_stage_rebuild_pause.c). */
+extern _Atomic bool g_sapling_tree_rebuilding;
 
 #define SD_CHECK(name, expr) do {                              \
     printf("reducer_step_drain_harness: %s... ", (name));      \
@@ -240,6 +245,34 @@ static int sd_quiescent_rekick_check(bool stages_ok, struct main_state *ms,
     SD_CHECK("quiescent re-kick: empty rollbacks bounded by producers",
              q1.empty - q0.empty <= 2);
     activation_controller_destroy(&qctl);
+    return failures;
+}
+
+/* S1.4b: the paused= marker on the mint-progress.log line. The deferred
+ * Sapling commitment-tree rebuild pins utxo_apply for its whole run
+ * (g_sapling_tree_rebuilding); the mint drive loop holds its stall detector
+ * and waits (bounded). A flatlined rate=0.0 line with no marker reads as a
+ * wall — that is exactly how a healthy mint gets killed mid-wait — so the
+ * line must name the pause. Extracted so the harness body stays under its
+ * cyclomatic-complexity pin; returns this check's failure count. */
+static int sd_mint_log_pause_marker_check(const char *mint_log_path)
+{
+    int failures = 0;
+    atomic_store(&g_sapling_tree_rebuilding, true);
+    boot_mint_anchor_progress_log_tick_for_test(mint_log_path, 1, 2, 0,
+                                                /*force=*/true);
+    atomic_store(&g_sapling_tree_rebuilding, false);
+    char line[512] = {0};
+    char last_line[512] = {0};
+    FILE *mf = fopen(mint_log_path, "r");
+    if (mf) {
+        while (fgets(line, sizeof(line), mf))
+            snprintf(last_line, sizeof(last_line), "%s", line);
+        fclose(mf);
+    }
+    SD_CHECK("mint-progress.log line names the Sapling-rebuild pause "
+             "(paused=sapling_tree_rebuild)",
+             strstr(last_line, "paused=sapling_tree_rebuild") != NULL);
     return failures;
 }
 
@@ -663,6 +696,10 @@ int test_reducer_step_drain_harness(void)
         SD_CHECK("mint-progress.log line carries the 8-stage EWMA snapshot "
                  "(stages=[)",
                  strstr(last_line, "stages=[") != NULL);
+        SD_CHECK("mint-progress.log line has no paused token while the "
+                 "Sapling rebuild is not running",
+                 strstr(last_line, "paused=") == NULL);
+        failures += sd_mint_log_pause_marker_check(mint_log_path);
     }
 
     /* ── R2 (quiescent-round batch skip) — see sd_quiescent_rekick_check

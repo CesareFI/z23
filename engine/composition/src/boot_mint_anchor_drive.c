@@ -45,7 +45,9 @@ void mint_drive_nap_ms(long ms)
  * is up, and give up only after ZCL_MINT_REBUILD_WAIT_MAX_S (default 1h) so a
  * rebuild that never completes still fails closed rather than hanging forever.
  * 0 disables the wait entirely and restores the old count-it-as-a-stall
- * behaviour. */
+ * behaviour. The on-disk progress line carries `paused=sapling_tree_rebuild`
+ * for the wait's duration (boot_mint_anchor_log.c) so a flatlined rate=0.0
+ * reads as this pause, not as a wall. */
 #define MINT_REBUILD_WAIT_DEFAULT_S 3600
 int mint_rebuild_wait_max_s(void)
 {

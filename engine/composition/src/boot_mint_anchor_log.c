@@ -12,7 +12,8 @@
 #include "jobs/body_persist_stage.h"            /* body_persist_stage_step_us_ewma */
 #include "jobs/script_validate_stage.h"         /* script_validate_stage_step_us_ewma */
 #include "jobs/proof_validate_stage.h"          /* proof_validate_stage_step_us_ewma */
-#include "jobs/utxo_apply_stage.h"              /* utxo_apply_stage_step_us_ewma */
+#include "jobs/utxo_apply_stage.h"              /* utxo_apply_stage_step_us_ewma,
+                                                 * utxo_apply_sapling_rebuild_paused */
 #include "jobs/tip_finalize_stage.h"            /* tip_finalize_stage_step_us_ewma */
 #include "jobs/pv_lookahead.h"                  /* pv_lookahead_hit_total */
 #include "util/stage.h"                         /* stage_batch_commit_us_ewma */
@@ -72,7 +73,10 @@ static void mint_stage_ewma_collect(const char *abbrev_out[8], int64_t ewma_out[
  * a different process, e.g. `anchorstatus`, cannot read them; this log line is
  * the only durable trace of the snapshot) so one `tail -1 mint-progress.log`
  * names the slowest stage (`slow=<abbrev>:<ewma_us>us`) without attaching a
- * debugger or sampling /proc/<pid>/wchan. */
+ * debugger or sampling /proc/<pid>/wchan. While the deferred Sapling
+ * commitment-tree rebuild pins utxo_apply (the drive loop's documented wait,
+ * not a wall), the line carries `paused=sapling_tree_rebuild` so a flatlined
+ * rate=0.0 is self-explanatory from disk. */
 void boot_mint_anchor_progress_log_tick(const char *path, int32_t through,
                                         int32_t anchor, int64_t start_us,
                                         bool force)
@@ -123,24 +127,36 @@ void boot_mint_anchor_progress_log_tick(const char *path, int32_t through,
     unsigned long long pvla_hits = pv_lookahead_hit_total();
     unsigned long long pvla_misses = pv_lookahead_miss_total();
 
+    /* A flatlined rate=0.0 while the deferred Sapling commitment-tree rebuild
+     * pins utxo_apply is the drive loop's documented wait, NOT a wall — but it
+     * is indistinguishable from one on disk without a marker, and an operator
+     * who reads twelve minutes of unexplained 0.0 blk/s kills a healthy fold.
+     * Name the pause on the line whenever it is up. Table lookup, not a
+     * ternary: this tick's cyclomatic pin is shrink-only at M=20. */
+    static const char *const paused_tok[2] = {
+        "", " paused=sapling_tree_rebuild" };
+    const char *paused = paused_tok[(int)utxo_apply_sapling_rebuild_paused()];
+
     FILE *f = fopen(path, "a");
     if (!f)
         return;                          /* best-effort: never block the fold */
     if (eta_s >= 0)
         fprintf(f,
                 "mint height=%d / %d rate=%.1f blk/s eta=%ld:%02ld:%02ld "
-                "elapsed=%.0fs slow=%s:%lldus cm:%lldus pvla=%llu/%llu %s\n",
+                "elapsed=%.0fs slow=%s:%lldus cm:%lldus pvla=%llu/%llu%s %s\n",
                 through, anchor, rate,
                 eta_s / 3600, (eta_s % 3600) / 60, eta_s % 60, elapsed_s,
                 stage_abbrev[slow], (long long)stage_ewma[slow],
-                (long long)commit_ewma, pvla_hits, pvla_misses, stages_buf);
+                (long long)commit_ewma, pvla_hits, pvla_misses, paused,
+                stages_buf);
     else
         fprintf(f,
                 "mint height=%d / %d rate=%.1f blk/s eta=unknown "
-                "elapsed=%.0fs slow=%s:%lldus cm:%lldus pvla=%llu/%llu %s\n",
+                "elapsed=%.0fs slow=%s:%lldus cm:%lldus pvla=%llu/%llu%s %s\n",
                 through, anchor, rate, elapsed_s,
                 stage_abbrev[slow], (long long)stage_ewma[slow],
-                (long long)commit_ewma, pvla_hits, pvla_misses, stages_buf);
+                (long long)commit_ewma, pvla_hits, pvla_misses, paused,
+                stages_buf);
     fclose(f);
 
     last_write_us = now_us;
