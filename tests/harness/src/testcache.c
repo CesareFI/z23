@@ -455,6 +455,9 @@ static bool group_reads_external_inputs(const char *name)
         "make_lint_gates_shard_06",
         "make_lint_gates_shard_07",
         "make_lint_gates_shard_08",
+        /* mesh_terminal_worker_spawn execve's build/bin/fbsh.
+         * That shell's link is outside this group's forward C closure. */
+        "mesh_terminal_worker",
         "net",
         "no_hardcoded_home",              /* scans tree + env for home usage */
         "onion_bootstrap",

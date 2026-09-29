@@ -1965,6 +1965,7 @@ static bool tc_external_exec_denied(void)
         "test_fleet_gateway_shard_05",
         "test_fleet_gateway_shard_06",
         "test_freebsd_sh",
+        "test_mesh_terminal_worker",
         "test_onion_pair_watch_live",
         "onion_pair_watch_live",
         "test_resident_launch_contract",
