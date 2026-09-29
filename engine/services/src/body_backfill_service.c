@@ -82,15 +82,40 @@ struct bb_probe_ctx {
     struct main_state *ms; /* cs_main is held by the caller for the walk */
 };
 
+/* Resolve one height of the active chain. The published chain[] window is
+ * the first authority; where it has holes the tip's own ancestry answers.
+ * A kill-restore that aborts its disk ancestry rebuild on the first
+ * unreadable header installs the tip slot, publishes the height, and leaves
+ * the slots below NULL, while the block index still holds every row of the
+ * tip's pprev chain. block_index_get_ancestor walks that chain by skip
+ * pointer — the same O(log n) lookup gap_fill_window_walk_start uses — so
+ * the census measures those heights instead of reporting the whole below-tip
+ * range unmeasured and never requesting the bodies. */
+static struct block_index *bb_resolve_height(const struct main_state *ms,
+                                             int height)
+{
+    struct block_index *bi = active_chain_at(&ms->chain_active, height);
+    if (bi && bi->nHeight == height)
+        return bi;
+
+    int tip_h = active_chain_cached_height(&ms->chain_active);
+    struct block_index *tip =
+        tip_h >= 0 ? active_chain_at(&ms->chain_active, tip_h) : NULL;
+    if (!tip)
+        return NULL;
+    struct block_index *anc = block_index_get_ancestor(tip, height);
+    return anc && anc->nHeight == height ? anc : NULL;
+}
+
 /* Probe one height against the in-memory active chain — the same authority
  * `z23 dumpstate block_index <h>` reports, and the only one that
  * distinguishes a body on disk from a header row.
  *
- * Anything that is not a positive read returns INDETERMINATE. A NULL slot,
- * a height/index disagreement, or a missing block hash is "I could not
- * look", and body_history_census_fold leaves those heights unmeasured. It
- * must never fall through to MISSING (which would invent holes) or to HAVE
- * (which would invent coverage). */
+ * Anything that is not a positive read returns INDETERMINATE. A height
+ * neither window nor ancestry resolves, or a missing block hash, is
+ * "I could not look", and body_history_census_fold leaves those heights
+ * unmeasured. It must never fall through to MISSING (which would invent
+ * holes) or to HAVE (which would invent coverage). */
 static enum body_history_probe bb_probe(int64_t height,
                                         struct uint256 *out_hash,
                                         void *ctx)
@@ -99,8 +124,7 @@ static enum body_history_probe bb_probe(int64_t height,
     if (!pc || !pc->ms || height < 0 || height > INT32_MAX)
         return BODY_HISTORY_PROBE_INDETERMINATE;
 
-    struct block_index *bi =
-        active_chain_at(&pc->ms->chain_active, (int)height);
+    struct block_index *bi = bb_resolve_height(pc->ms, (int)height);
     if (!bi || bi->nHeight != (int)height || !bi->phashBlock)
         return BODY_HISTORY_PROBE_INDETERMINATE;
 
