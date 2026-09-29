@@ -217,9 +217,28 @@ static bool fxg_default(struct fxg *g, const char *name, size_t lo, size_t hi,
     return true;
 }
 
-/* The value of the variable name at root line t: the union of the values
- * of its sites before t, but for a site in a branch make provably does not
- * take (fxg_dead). */
+/* The union of the values of sites [lo, hi) before root line t (each := at
+ * its own line, each = at t), but for a site in a branch make provably does
+ * not take (fxg_dead). */
+static void fxg_sites_union(struct fxg *g, size_t lo, size_t hi, uint32_t t,
+                            int depth, struct fxg_val *out)
+{
+    out->n = 0;
+    out->any = false;
+    for (size_t k = lo; k < hi && !out->any && g->sites[k].line < t; k++) {
+        const struct fxg_site *s = &g->sites[k];
+        struct fxg_val v;
+        if (fxg_dead(g, s->line, depth))
+            continue;
+        fxg_text(g, s->value, s->vlen, s->op == FXG_SET ? s->line : t,
+                 depth + 1, &v);
+        fxg_union(g, out, &v);
+    }
+    if (out->n == 0)
+        fxg_any(out); /* every site pruned: a line make never reaches */
+}
+
+/* The value of the variable name at root line t. */
 static void fxg_var(struct fxg *g, const char *name, uint32_t t, int depth,
                     struct fxg_val *out)
 {
@@ -238,20 +257,8 @@ static void fxg_var(struct fxg *g, const char *name, uint32_t t, int depth,
     for (size_t k = lo; k < hi; k++)
         if (g->sites[k].op != FXG_SET && g->sites[k].op != FXG_LAZY)
             return;
-    if (lo == hi || !fxg_assigned(g, lo, hi, t))
-        return;
-    out->any = false;
-    for (size_t k = lo; k < hi && !out->any && g->sites[k].line < t; k++) {
-        const struct fxg_site *s = &g->sites[k];
-        struct fxg_val v;
-        if (fxg_dead(g, s->line, depth))
-            continue;
-        fxg_text(g, s->value, s->vlen, s->op == FXG_SET ? s->line : t,
-                 depth + 1, &v);
-        fxg_union(g, out, &v);
-    }
-    if (out->n == 0)
-        fxg_any(out); /* every site pruned: a line make never reaches */
+    if (lo < hi && fxg_assigned(g, lo, hi, t))
+        fxg_sites_union(g, lo, hi, t, depth, out);
 }
 
 /* A reference whose text is not a call: a variable, maybe computed. */
