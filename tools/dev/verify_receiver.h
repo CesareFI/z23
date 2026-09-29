@@ -64,6 +64,7 @@ enum zcl_verify_receiver_verdict {
 struct zcl_verify_receiver {
     enum zcl_verify_receiver_verdict verdict;
     const char *reason; /* a stable token; NULL only on ADMITTED and HIT */
+    char reason_buf[64]; /* storage for a token read back from the zcc log */
     char generation[PATH_MAX]; /* physical generation root */
     char work[PATH_MAX];       /* driver-private admitted directory */
     char store_key[ZCL_VERIFY_ATTEST_STORE_KEY_HEX];
@@ -151,6 +152,9 @@ bool zcl_verify_receiver_phases_write(const struct zcl_verify_receiver *r,
 /* "hit(...)", "cold(...)" or "block(...)". */
 bool zcl_verify_receiver_admit_text(const struct zcl_verify_receiver *r,
                                     char *out, size_t cap);
+
+/* This box's proof signer key, so the trust root can refuse it by name. */
+void zcl_verify_receiver_box_key(struct zcl_verify_attest_box_key *out);
 
 /* Close the lock, free buffers, remove the work directory. */
 void zcl_verify_receiver_release(struct zcl_verify_receiver *r);

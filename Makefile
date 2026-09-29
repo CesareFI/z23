@@ -990,6 +990,7 @@ DEV_ONLY_SRCS = tools/dev/devloop_cli.c tools/dev/devloop_cycle.c \
 	tools/dev/dev_proof_receipt.c tools/dev/dev_proof_signer.c \
 	tools/dev/dev_proof_observation.c \
 	tools/dev/dev_proof_observation_lookup.c tools/dev/verify_store.c $(SHADOW_SELECT_SRCS) \
+	tools/dev/verify_receiver.c tools/dev/verify_receiver_input.c \
 	$(MUTATION_LIB_SRCS)
 DEVLOOP_SRCS = $(filter-out $(DEV_ONLY_SRCS),$(DEVLOOP_ALL_SRCS))
 
@@ -3088,6 +3089,7 @@ TEST_DEV_EXECUTOR_SRCS = tools/dev/devloop_cycle.c tools/dev/dev_failure_store.c
 	tools/dev/dev_proof_receipt.c tools/dev/dev_proof_signer.c \
 	tools/dev/dev_proof_observation.c \
 	tools/dev/dev_proof_observation_lookup.c tools/dev/verify_store.c $(SHADOW_SELECT_SRCS) \
+	tools/dev/verify_receiver.c tools/dev/verify_receiver_input.c \
 	$(MUTATION_LIB_SRCS) $(VERIFY_SIGNER_SRCS)
 SPEC_SRCS = $(wildcard tests/harness/spec/*.c)
 CHAOS_SIM_SRCS = tools/sim/sim_peer.c

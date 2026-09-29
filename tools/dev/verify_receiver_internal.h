@@ -41,6 +41,12 @@ const char *vr_read_at(int dir_fd, const char *name, size_t limit,
 bool vr_write_at(int dir_fd, const char *name, const void *bytes,
                  size_t len);
 
+/* Open `rel` beneath `root_fd` one component at a time without following
+ * any link; -1 on refusal. vr_read_beneath reads the file it names. */
+int vr_open_beneath(int root_fd, const char *rel);
+const char *vr_read_beneath(int root_fd, const char *rel, size_t limit,
+                            struct vr_bytes *out);
+
 /* A root-owned, non-writable file down a root-owned, non-writable chain,
  * opened one component at a time. Returns NULL or a token. */
 const char *vr_read_root_owned(const char *absolute, size_t limit,
