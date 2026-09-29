@@ -852,6 +852,16 @@ bool fxm_exists(const char *root, const char *rel)
            stat(full, &st) == 0 && S_ISREG(st.st_mode);
 }
 
+const char *fxm_strip_dot(const char *w)
+{
+    while (w[0] == '.' && w[1] == '/' && strlen(w) > 2) {
+        w += 2;
+        while (*w == '/')
+            w++;
+    }
+    return w;
+}
+
 /* A target word of a rule's expanded targets names path: one that spells
  * literal text (a target no text pins, $(1) in a define, is a premise:
  * docs/work/SEMANTIC_MANIFEST.md). */
@@ -868,7 +878,7 @@ static bool fxm_names_target(const char *t, const char *path)
             return true;
         memcpy(w, t, n);
         w[n] = '\0';
-        if (n > 0 && fxm_word_of(w) != NULL && fxm_glob(w, path))
+        if (n > 0 && fxm_word_of(w) != NULL && fxm_glob(fxm_strip_dot(w), path))
             return true;
         t += n;
     }

@@ -67,6 +67,7 @@ static bool fxm_inc_add(struct fxm *m, const char *w)
  * not: what it reads can reach any goal. */
 static void fxm_include_word(struct fxm *m, const char *w, bool optional)
 {
+    w = fxm_strip_dot(w); /* make reads ./build/gen.mk as build/gen.mk */
     if (strpbrk(w, FXM_WILDS) != NULL) {
         m->unknown = true;
         return;

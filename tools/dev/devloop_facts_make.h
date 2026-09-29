@@ -209,6 +209,9 @@ enum fxm_kind fxm_kind_of(const char *s, size_t *colon);
 void fxm_def_name(const char *p, char *out);
 /* p past its override, export and private prefixes. */
 const char *fxm_skip_prefixes(const char *p);
+/* w past its leading ./ (repeated, with the slashes after each), as make
+ * reads a file name: ./build/gen.mk is build/gen.mk; build//gen.mk stays. */
+const char *fxm_strip_dot(const char *w);
 
 /* Read the makefiles, place their lines and reach from the objects: what
  * fxm_classify asks the lines about next. */

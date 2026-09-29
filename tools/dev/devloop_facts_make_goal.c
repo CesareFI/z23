@@ -308,12 +308,30 @@ static int fxm_fn_named(const char *p, bool called, const char **arg)
 
 /* The function a reference at d runs as make expands it: $(shell X),
  * $(file X) or $(eval X), each also through $(call NAME,X), or any function
- * a computed $(call $(F),X) names (FXM_FN_ANY). *arg is where X starts and
- * *end the closing bracket (NULL: none). */
+ * a $(call) whose name is computed in any part ($(call $(F),X),
+ * $(call s$(H)ell,X)) or is call itself ($(call call,shell,X)) names
+ * (FXM_FN_ANY). *arg is where X starts and *end the closing bracket (NULL:
+ * none). */
+/* The name a $(call) at name spells up to its top-level comma (*comma: the
+ * comma, or the end) is computed in any part or is call itself: any
+ * function may run. */
+static bool fxm_call_any(const char *name, const char **comma)
+{
+    const char *p = name;
+    int depth = 0;
+    bool computed = false;
+    for (; *p != '\0' && !(*p == ',' && depth == 0); p++) {
+        computed |= *p == '$';
+        depth += (*p == '(' || *p == '{') - (*p == ')' || *p == '}');
+    }
+    *comma = p;
+    return computed || (p - name >= 4 && strncmp(name, "call", 4) == 0 &&
+                        (name + 4 == p || fxm_space(name[4])));
+}
+
 static int fxm_fn_at(const char *d, const char **arg, const char **end)
 {
-    const char *p = d + 2;
-    int depth = 0;
+    const char *p = d + 2, *comma;
     if (d[1] != '(' && d[1] != '{')
         return FXM_FN_OTHER;
     *end = fxm_ref_end((char *)d);
@@ -321,11 +339,9 @@ static int fxm_fn_at(const char *d, const char **arg, const char **end)
         return fxm_fn_named(p, false, arg);
     for (p += 4; fxm_space(*p); p++)
         ;
-    if (*p != '$')
+    if (!fxm_call_any(p, &comma))
         return fxm_fn_named(p, true, arg);
-    for (; *p != '\0' && !(*p == ',' && depth == 0); p++)
-        depth += (*p == '(' || *p == '{') - (*p == ')' || *p == '}');
-    *arg = *p == ',' ? p + 1 : p;
+    *arg = *comma == ',' ? comma + 1 : comma;
     return FXM_FN_ANY;
 }
 
@@ -518,8 +534,20 @@ static void fxm_unproven_add(const struct fxm *m, const struct fxm_line *l,
                    l->file < m->files.n ? m->files.v[l->file] : "?", l->at);
 }
 
+/* Line text s holds the word export (export X, a bare export, a
+ * target-specific one) or .EXPORT_ALL_VARIABLES. */
+static bool fxm_exports(const char *s)
+{
+    for (const char *e = strstr(s, "export"); e != NULL; e = strstr(e + 1, "export"))
+        if ((e == s || !fxm_ident(e[-1])) && !fxm_ident(e[6]))
+            return true;
+    return strstr(s, ".EXPORT_ALL_VARIABLES") != NULL;
+}
+
 /* A line assigns SHELL, .SHELLFLAGS or PATH (or a name it computes, or an
- * $(eval) may): no command make runs is then provably read-only. */
+ * $(eval) may), or exports a variable (GNU make passes exported variables
+ * to $(shell), LD_PRELOAD among them): no command make runs is then
+ * provably read-only. */
 static bool fxm_shell_set(const struct fxm *m)
 {
     static const char *const names[] = {"SHELL", ".SHELLFLAGS", "PATH"};
@@ -527,7 +555,7 @@ static bool fxm_shell_set(const struct fxm *m)
         const struct fxm_line *l = &m->lines[k];
         if (!fxm_parse_line(l))
             continue;
-        if (l->ctx == FXM_DEF && l->name[0] == '\0')
+        if ((l->ctx == FXM_DEF && l->name[0] == '\0') || fxm_exports(l->raw))
             return true;
         for (size_t j = 0; j < sizeof(names) / sizeof(*names); j++)
             if ((l->ctx == FXM_DEF && strcmp(l->name, names[j]) == 0) ||
