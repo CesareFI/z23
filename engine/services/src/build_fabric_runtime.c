@@ -152,8 +152,8 @@ struct zcl_result build_fabric_runtime_attach_step(
         ndb, workspace, signer_secret, signer_pubkey, receipt, report,
         &decided);
     if (decided && proof)
-        build_fabric_proof_shadow_attach(proof, ndb, workspace,
-                                         signer_pubkey, report);
+        (void)build_fabric_proof_shadow_attach(proof, ndb, workspace,
+                                               signer_pubkey, report);
     return attach;
 }
 

@@ -98,7 +98,7 @@ void build_fabric_proof_context_stats(
     const struct build_fabric_proof_context *ctx,
     struct build_fabric_proof_stats *out);
 /* Distinct independent EXECUTED PASS signers the shadow requires (>= 1). */
-bool build_fabric_proof_context_set_quorum(
+struct zcl_result build_fabric_proof_context_set_quorum(
     struct build_fabric_proof_context *ctx, uint32_t quorum);
 const struct vcs_proof_receiver *build_fabric_proof_context_receiver(
     const struct build_fabric_proof_context *ctx);
@@ -125,8 +125,10 @@ struct zcl_result build_fabric_proof_issue_executed(
 
 /* Shadow one attach decision: compute vcs_proof_reuse_decide for the key
  * attach composed, under the worker table's current trust policy and the
- * requester's own trust domain, and count the pair. Changes nothing. */
-void build_fabric_proof_shadow_attach(
+ * requester's own trust domain, and count the pair. Changes nothing.
+ * Returns an error naming why no ticket decision was computed (also counted
+ * as shadow_unavailable); the caller ignores it, tickets being feedback. */
+struct zcl_result build_fabric_proof_shadow_attach(
     struct build_fabric_proof_context *ctx, struct node_db *ndb,
     const char *workspace, const uint8_t requester_pubkey[32],
     const struct build_fabric_attach_report *report);

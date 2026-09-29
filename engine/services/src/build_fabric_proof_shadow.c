@@ -178,12 +178,13 @@ static bool bfps_count_pair(struct bfpc_live *l,
     return false;
 }
 
-void build_fabric_proof_shadow_attach(
+struct zcl_result build_fabric_proof_shadow_attach(
     struct build_fabric_proof_context *ctx, struct node_db *ndb,
     const char *workspace, const uint8_t requester_pubkey[32],
     const struct build_fabric_attach_report *report)
 {
-    if (!ctx || !report) return;
+    if (!ctx || !report)
+        return ZCL_ERR(-1, "proof shadow requires a context and a report");
     struct bfpc_live *l = &ctx->live;
     bfps_count_attach(l, report->disposition);
     struct vcs_proof_reuse_decision decision;
@@ -203,7 +204,7 @@ void build_fabric_proof_shadow_attach(
                  report->executor_key[0] ? report->executor_key : "none",
                  build_fabric_attach_disposition_string(report->disposition),
                  unavailable);
-        return;
+        return ZCL_ERR(-1, "proof-shadow-unavailable: %s", unavailable);
     }
     bool agree = bfps_count_pair(l, report->disposition, &decision);
     LOG_INFO(BFPS_LOG,
@@ -216,6 +217,7 @@ void build_fabric_proof_shadow_attach(
              decision.reason ? decision.reason : "none",
              decision.tickets_seen, decision.eligible_pass,
              decision.distinct_pass_signers, agree ? 1 : 0);
+    return ZCL_OK;
 }
 
 static void bfps_json_int(struct json_value *o, const char *k, uint64_t v)

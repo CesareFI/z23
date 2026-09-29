@@ -383,13 +383,13 @@ void build_fabric_proof_context_close(struct build_fabric_proof_context *ctx)
     free(ctx);
 }
 
-bool build_fabric_proof_context_set_quorum(
+struct zcl_result build_fabric_proof_context_set_quorum(
     struct build_fabric_proof_context *ctx, uint32_t quorum)
 {
     if (!ctx || quorum == 0)
-        LOG_RETURN(false, BFPC_LOG, "proof shadow quorum must be >= 1");
+        return ZCL_ERR(-1, "proof shadow quorum must be >= 1");
     ctx->quorum = quorum;
-    return true;
+    return ZCL_OK;
 }
 
 const struct vcs_proof_receiver *build_fabric_proof_context_receiver(

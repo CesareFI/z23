@@ -602,7 +602,10 @@ static int pw_case_two_workers(void)
         ASSERT_STR_EQ(s.last_ticket_reason, VCS_PROOF_REUSE_WHY_HIT);
         ASSERT_EQ(s.agree, 1u);
         /* Quorum 2 with one independent signer: MISS by name. */
-        ASSERT(build_fabric_proof_context_set_quorum(b.proof, 2));
+        struct zcl_result quorum = build_fabric_proof_context_set_quorum(b.proof, 2);
+        ASSERT_RESULT_OK(quorum);
+        quorum = build_fabric_proof_context_set_quorum(b.proof, 0);
+        ASSERT(!quorum.ok);
         ASSERT(pw_request(&p, input_root));
         ASSERT_EQ(pw_attach(&p, &b, &report), BUILD_FABRIC_ATTACH_HIT);
         s = pw_stats(&b);
