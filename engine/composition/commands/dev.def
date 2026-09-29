@@ -1913,12 +1913,13 @@ ZCL_COMMAND_DEV_COMMAND(
     "queued work, and retries a "
     "host-load failure up to three times; "
     "attach seals the exact proven Git pair and bundle under the local "
-    "operator identity before a push; cancel drops one request by sequence "
+    "operator identity before a push; attach_publish seals and runs that "
+    "same gated current-base push under one step lock; cancel drops one request by sequence "
     "number. Every state change also "
     "appends to the agent mail outbox when one exists, so an agent learns "
     "the outcome by pulling rather than by waiting. Integration calls Git "
     "without a shell; drive executes the existing bounded proof worker.", 65536,
-    "land,submit,attach,step,drive,status,cancel,queue,proof,push,rebase,async",
+    "land,submit,attach,attach_publish,step,drive,status,cancel,queue,proof,push,rebase,async",
     "zcl.land_input.v1", "zcl.land.v1",
     "action,tip,worktree,note,seq,json", "action",
     "z23-dev dev land drive",

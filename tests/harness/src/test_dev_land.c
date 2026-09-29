@@ -3305,6 +3305,102 @@ _test_next:;
     return failures;
 }
 
+/* A deliberate signer action should consume the already passed proof and
+ * publish under the same queue lock, without a second scheduled step. */
+static int test_dev_land_attach_publish_one_window(void)
+{
+    int failures = 0;
+    TEST("land: attach_publish seals and lands the exact proven pair in one beat") {
+        struct dlx_rig rig;
+        struct dlx_call c;
+        char base[64], remote[64];
+        dlx_isolate("attach_publish_window");
+        ASSERT(dlx_attach_proven_pair(&rig, "attach_publish_window", base));
+        dlx_begin(&c, "attach_publish");
+        (void)json_push_kv_int(&c.input, "seq", 1);
+        ASSERT(dlx_run(&c) && dlx_ok(&c));
+        ASSERT_STR_EQ(dlx_str(&c, "state"), "landed");
+        ASSERT(dlx_int(&c, "seq") == 1);
+        dlx_end(&c);
+        ASSERT(dlx_origin_main(&rig, remote));
+        ASSERT_STR_EQ(remote, rig.tip);
+        dlx_restore();
+        PASS();
+    }
+_test_next:;
+    dlx_restore();
+    return failures;
+}
+
+static int test_dev_land_attach_publish_moved_base(void)
+{
+    int failures = 0;
+    TEST("land: attach_publish refuses a moved base without signing or pushing") {
+        struct dlx_rig rig;
+        struct dlx_call c;
+        char base[64], stranger[64], remote[64];
+        dlx_isolate("attach_publish_moved_base");
+        ASSERT(dlx_attach_proven_pair(&rig, "attach_publish_moved_base", base));
+        const char *branch[] = {"checkout", "--quiet", "-B", "side", base,
+                                NULL};
+        const char *push[] = {"push", "--quiet", "origin", "HEAD:main", NULL};
+        ASSERT(dlx_git(rig.clone, branch) == 0);
+        ASSERT(dlx_commit(rig.clone, "stranger.txt", "other\n", stranger));
+        ASSERT(dlx_git(rig.clone, push) == 0);
+        dlx_begin(&c, "attach_publish");
+        (void)json_push_kv_int(&c.input, "seq", 1);
+        ASSERT(dlx_run(&c) && !dlx_ok(&c));
+        ASSERT_STR_EQ(dlx_err_code(&c), "EXPECTED_BASE_MISMATCH");
+        dlx_end(&c);
+        ASSERT(dlx_origin_main(&rig, remote));
+        ASSERT_STR_EQ(remote, stranger);
+        dlx_begin(&c, "status");
+        ASSERT(dlx_run(&c) && dlx_ok(&c));
+        const struct json_value *flight = json_get(&c.reply.data, "in_flight");
+        ASSERT(flight != NULL);
+        ASSERT_STR_EQ(json_get_str(json_get(flight, "base")), base);
+        dlx_end(&c);
+        dlx_restore();
+        PASS();
+    }
+_test_next:;
+    dlx_restore();
+    return failures;
+}
+
+static int test_dev_land_attach_publish_push_checkpoint(void)
+{
+    int failures = 0;
+    TEST("land: attach_publish never redispatches a prior push checkpoint") {
+        struct dlx_rig rig;
+        struct dlx_call c;
+        char base[64], remote[64], land[1200], path[1400], row[8192];
+        size_t used = 0;
+        dlx_isolate("attach_publish_checkpoint");
+        ASSERT(dlx_attach_proven_pair(&rig, "attach_publish_checkpoint", base));
+        dlx_landdir(land, sizeof(land));
+        (void)snprintf(path, sizeof(path), "%s/queue.jsonl", land);
+        ASSERT(dlx_slurp(path, row, sizeof(row) - 1, &used));
+        row[used] = '\0';
+        char *phase = strstr(row, "\"phase\":\"prove\"");
+        ASSERT(phase != NULL);
+        memcpy(phase, "\"phase\":\"push\" ", 15);
+        ASSERT(dlx_write(path, row));
+        dlx_begin(&c, "attach_publish");
+        (void)json_push_kv_int(&c.input, "seq", 1);
+        ASSERT(dlx_run(&c) && !dlx_ok(&c));
+        ASSERT_STR_EQ(dlx_err_code(&c), "PUSH_OUTCOME_UNKNOWN");
+        dlx_end(&c);
+        ASSERT(dlx_origin_main(&rig, remote));
+        ASSERT_STR_EQ(remote, base);
+        dlx_restore();
+        PASS();
+    }
+_test_next:;
+    dlx_restore();
+    return failures;
+}
+
 static int test_dev_land_attach_target_none(void)
 {
     int failures = 0;
@@ -3466,6 +3562,9 @@ static int test_dev_land_attach_target_cases(void)
     int failures = 0;
     failures += test_dev_land_blocked_names_attach_target();
     failures += test_dev_land_attach_resolves_single_row();
+    failures += test_dev_land_attach_publish_one_window();
+    failures += test_dev_land_attach_publish_moved_base();
+    failures += test_dev_land_attach_publish_push_checkpoint();
     failures += test_dev_land_attach_target_none();
     failures += test_dev_land_attach_explicit_unattachable();
     failures += test_dev_land_attach_target_ambiguous();

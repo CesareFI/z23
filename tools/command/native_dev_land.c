@@ -13,14 +13,15 @@
  * a proof, a build, or another host.
  *
  * INPUT (zcl.land_input.v1)
- *   action    string, required: submit | attach | status | step | drive |
- *             cancel; also the first positional (`z23-dev dev land submit`).
+ *   action    string, required: submit | attach | attach_publish | status |
+ *             step | drive | cancel; also the first positional.
  *   tip       submit only, required: a commit-ish resolved in the submitting
  *             checkout; the row stores the full 40-hex commit id.
  *   worktree  submit only, optional: the checkout that holds the tip.
  *             Default: the checkout root above the current directory.
  *   note      submit only, optional free text carried into the outcome row.
- *   seq       cancel: required. attach: optional; omitted, it targets the ONE
+ *   seq       cancel: required. attach and attach_publish: optional; omitted,
+ *             they target the ONE
  *             live PASS row lacking intent, else ATTACH_TARGET_NONE|AMBIGUOUS.
  *   json      status only, optional bool: drop the human screen.
  *
@@ -81,6 +82,8 @@
  * does not push. status does not create step.lock and does not hold it.
  *
  * attach replies {seq, tip, state:"attached", target:explicit|resolved}.
+ * attach_publish makes the same explicit signed intent, then runs the
+ * existing current-base publication beat before releasing step.lock.
  * A beat blocked on PUBLICATION_INTENT_REQUIRED names seq, tip and base in
  * error.evidence and `z23-dev dev land attach --seq=N` in next_action.
  *
@@ -8015,13 +8018,15 @@ static bool dl_attach_pick(const struct dl_row *rows, size_t count,
 
 static void dl_attach_seal(const struct dl_dirs *d, struct dl_row *row,
                             const char *qpath,
-                            struct zcl_command_reply *reply)
+                            struct zcl_command_reply *reply, bool publish)
 {
     char observed[80], output[512], message[1024];
     if (row->publication_signature[0]) {
         if (!dl_publication_verify(d, row))
             dl_fail(reply, "PUBLICATION_INTENT_INVALID", "attach",
                     "stored signed intent or attachment is invalid", qpath);
+        else if (publish)
+            dl_step_push(d, row, reply);
         else
             dl_step_reply(reply, row, "attached");
         return;
@@ -8058,11 +8063,14 @@ static void dl_attach_seal(const struct dl_dirs *d, struct dl_row *row,
                 qpath);
         return;
     }
-    dl_step_reply(reply, row, "attached");
+    if (publish)
+        dl_step_push(d, row, reply);
+    else
+        dl_step_reply(reply, row, "attached");
 }
 
 static void dl_attach(const struct zcl_command_request *req,
-                      struct zcl_command_reply *reply)
+                      struct zcl_command_reply *reply, bool publish)
 {
     struct dl_dirs d;
     struct dl_row *rows = NULL, row = {0};
@@ -8097,7 +8105,15 @@ static void dl_attach(const struct zcl_command_request *req,
         goto done;
     if (!dl_attach_pick(rows, count, seq, &row, reply))
         goto done;
-    dl_attach_seal(&d, &row, qpath, reply);
+    /* A push checkpoint may have reached the remote despite a lost reply.
+     * The ordinary step reconciles it; never dispatch it through attach. */
+    if (publish && strcmp(row.phase, "push") == 0) {
+        dl_fail(reply, "PUSH_OUTCOME_UNKNOWN", "attach_publish",
+                "a prior push checkpoint needs independent reconciliation",
+                row.proof_intent);
+        goto done;
+    }
+    dl_attach_seal(&d, &row, qpath, reply, publish);
     if (reply->status == ZCL_COMMAND_STATUS_PASSED)
         (void)json_push_kv_str(&reply->data, "target",
                                explicit_seq ? "explicit" : "resolved");
@@ -8114,14 +8130,14 @@ void zcl_native_handle_dev_land(const struct zcl_command_request *request,
         return;
     if (!request || !request->input) {
         dl_fail(reply, "BAD_INPUT", "route",
-                "dev land needs an action: submit|attach|status|step|drive|cancel",
+                "dev land needs an action: submit|attach|attach_publish|status|step|drive|cancel",
                 "request.input was missing");
         return;
     }
     action = dl_str(request, "action");
     if (!action) {
         dl_fail(reply, "BAD_INPUT", "route",
-                "dev land needs an action: submit|attach|status|step|drive|cancel",
+                "dev land needs an action: submit|attach|attach_publish|status|step|drive|cancel",
                 "input.action missing or empty");
         return;
     }
@@ -8130,7 +8146,11 @@ void zcl_native_handle_dev_land(const struct zcl_command_request *request,
         return;
     }
     if (strcmp(action, "attach") == 0) {
-        dl_attach(request, reply);
+        dl_attach(request, reply, false);
+        return;
+    }
+    if (strcmp(action, "attach_publish") == 0) {
+        dl_attach(request, reply, true);
         return;
     }
     if (strcmp(action, "status") == 0) {
@@ -8150,6 +8170,6 @@ void zcl_native_handle_dev_land(const struct zcl_command_request *request,
         return;
     }
     dl_fail(reply, "UNKNOWN_ACTION", "route",
-            "action is one of submit|attach|status|step|drive|cancel",
+            "action is one of submit|attach|attach_publish|status|step|drive|cancel",
             "input.action unknown");
 }
