@@ -1219,6 +1219,15 @@ static const char *es_ctx_open(struct es_ctx *c, const char *root,
     if (tc->source_count > ZCL_DEVLOOP_EARLY_SKIP_SOURCE_MAX ||
         (tc->source_count && !tc->sources))
         return "source-set-exceeds-bound";
+    /* A cached restart.env can retain its compiler ID while a long-lived
+     * watcher's external include root changes. This closure only resolves
+     * explicit -I/-iquote paths, so it cannot vouch for ambient roots. */
+    const char *ambient = getenv("CPATH") ? "CPATH"
+                        : getenv("C_INCLUDE_PATH") ? "C_INCLUDE_PATH" : NULL;
+    if (ambient) {
+        c->blocked_detail = ambient;
+        return "ambient-include-path";
+    }
     if (!es_graph_init(&c->g, root, tc->cflags) ||
         !es_store_load(root, &c->store))
         return "out-of-memory";

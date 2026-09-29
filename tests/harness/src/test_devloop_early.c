@@ -1105,6 +1105,59 @@ static int de_test_skip_probe_flag_alias(struct de_state *s)
     return failures;
 }
 
+static int de_test_skip_ambient_include(struct de_state *s)
+{
+    int failures = 0;
+    const char *old = getenv("CPATH");
+    char *saved = old ? strdup(old) : NULL;
+    char external[PATH_MAX] = "";
+    char header[PATH_MAX] = "";
+    bool changed_env = false;
+    TEST("devloop_early: an external CPATH header cannot reuse PASS after "
+         "its bytes change") {
+        ASSERT(!old || saved);
+        ASSERT(de_hole_setup(s));
+        ASSERT(snprintf(external, sizeof(external), "%s-ambient", s->fx.root)
+               < (int)sizeof(external));
+        ASSERT(snprintf(header, sizeof(header), "%s/early_env_choice.h",
+                        external) < (int)sizeof(header));
+        ASSERT(de_write(external, "early_env_choice.h",
+                        "#define EARLY_ENV_CHOICE 11\n"));
+        ASSERT(de_write(s->fx.root, DE_HOLE_A,
+                        "#include <early_env_choice.h>\n"
+                        "int early_hole_a(void) { return EARLY_ENV_CHOICE; }\n"));
+        ASSERT(setenv("CPATH", external, 1) == 0);
+        changed_env = true;
+        de_hole_decide(s, DE_HOLE_FLAGS);
+        bool vouched = s->hole.rows[0].vouched;
+        if (vouched) {
+            ASSERT(de_hole_is(s, "no-record", ""));
+            ASSERT(zcl_devloop_early_skip_record(s->fx.root, &s->hole,
+                                                  "", 1000));
+        } else {
+            ASSERT(de_hole_is(s, "unvouched", "ambient-include-path"));
+        }
+        ASSERT(de_write(external, "early_env_choice.h",
+                        "#define EARLY_ENV_CHOICE 22\n"));
+        de_hole_decide(s, DE_HOLE_FLAGS);
+        ASSERT(de_hole_is(s, vouched ? "key-changed" : "unvouched",
+                          vouched ? "" : "ambient-include-path"));
+        PASS();
+    } _test_next:;
+    if (changed_env) {
+        if (saved)
+            (void)setenv("CPATH", saved, 1);
+        else
+            (void)unsetenv("CPATH");
+    }
+    free(saved);
+    if (header[0])
+        (void)unlink(header);
+    if (external[0])
+        (void)rmdir(external);
+    return failures;
+}
+
 static int de_test_skip_volatile_macros(struct de_state *s)
 {
     int failures = 0;
@@ -1225,6 +1278,7 @@ static int de_test_restart(void)
         failures += de_test_skip_has_include(s);
         failures += de_test_skip_has_embed(s);
         failures += de_test_skip_probe_flag_alias(s);
+        failures += de_test_skip_ambient_include(s);
         failures += de_test_skip_volatile_macros(s);
         failures += de_test_skip_flags(s);
     }
