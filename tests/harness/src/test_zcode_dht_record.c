@@ -935,7 +935,7 @@ static int test_record_store_ack_contradiction(void)
                                   * sequence */
     ASSERT_EQ(vcs_zcode_dht_record_sign(&lie, f.online_seed),
               VCS_ZCODE_DHT_RECORD_OK);
-    char roundtrip_dir[] = "/tmp/zcl_dht_ack_contra_XXXXXX";
+    char roundtrip_dir[] = "test-tmp/zcode_dht_ack_contra_XXXXXX";
     ASSERT(mkdtemp(roundtrip_dir) != NULL);
     struct vcs_zcode_dht_record_store *saved =
         vcs_zcode_dht_record_store_create(f.verify.network_genesis);
