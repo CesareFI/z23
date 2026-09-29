@@ -292,7 +292,12 @@ bool app_init_services(struct app_context *ctx,
  * transaction's depth is re-derived before the wallet serves spends.
  * `datadir` is the node's base datadir. Returns the rescan's outputs plus
  * notes found, or -1 when no rescan ran; `report` (optional) receives the
- * coverage accounting. */
+ * coverage accounting. When the report is not coverage_ok the blocker is
+ * logged at WARN, found outputs stay recorded at their depth from the stop
+ * height, and w->scan_retry_pending/scan_retry_from hold the unread start so
+ * wallet_scanned_through_height() stays below it and the next boot, which
+ * loads the flushed retry, rescans from there. A pending retry is rescanned
+ * even when the wallet is already level with the tip. */
 int boot_wallet_catch_up(struct wallet *w, const struct active_chain *chain,
                          const char *datadir,
                          struct wallet_rescan_report *report);

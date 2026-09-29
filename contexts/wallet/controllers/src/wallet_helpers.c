@@ -37,7 +37,9 @@ int64_t wallet_transparent_spendable_balance_diagnose(
     size_t wallet_txs = 0;
     size_t wallet_confirmed_txs = 0;
     zcl_mutex_lock(&ctx->wallet->cs);
-    wallet_height = ctx->wallet->best_block_height;
+    /* The height the wallet actually read through: a boot catch-up that
+     * could not read its range leaves this below best_block_height. */
+    wallet_height = wallet_scanned_through_height(ctx->wallet);
     wallet_txs = ctx->wallet->num_wallet_tx;
     for (size_t i = 0; i < MAX_WALLET_TX; i++) {
         if (ctx->wallet->map_wallet[i].used &&
