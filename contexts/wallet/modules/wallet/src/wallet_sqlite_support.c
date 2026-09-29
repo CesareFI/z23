@@ -39,4 +39,7 @@ void wallet_sqlite_reset_all_statements(struct wallet_sqlite *ws)
     if (ws->stmt_best_block_read) sqlite3_reset(ws->stmt_best_block_read);
     if (ws->stmt_scan_height_write) sqlite3_reset(ws->stmt_scan_height_write);
     if (ws->stmt_scan_height_read) sqlite3_reset(ws->stmt_scan_height_read);
+    if (ws->stmt_scan_retry_write) sqlite3_reset(ws->stmt_scan_retry_write);
+    if (ws->stmt_scan_retry_read) sqlite3_reset(ws->stmt_scan_retry_read);
+    if (ws->stmt_scan_retry_clear) sqlite3_reset(ws->stmt_scan_retry_clear);
 }

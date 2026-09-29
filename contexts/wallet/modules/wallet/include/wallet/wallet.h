@@ -155,6 +155,17 @@ struct wallet {
     struct block_index *best_block;
     int best_block_height;
 
+    /* Scan coverage, kept apart from best_block_height. Every stored
+     * `confirms` is measured from best_block_height, so a rescan must move it
+     * to its stop height even when it could not read every body; lowering it
+     * afterwards would inflate the depth of the outputs the rescan did find.
+     * When a boot catch-up could not read its range, scan_retry_pending is
+     * set and scan_retry_from names the lowest height whose wallet effects
+     * are unverified. The flush persists both, and the next boot catch-up
+     * rescans from scan_retry_from. Zero-initialised means "nothing pending". */
+    bool scan_retry_pending;
+    int scan_retry_from;
+
     struct sapling_keystore sapling_keys;
 
     struct sapling_received_note *sapling_notes;
@@ -599,6 +610,11 @@ int wallet_rescan_report(struct wallet *w, const struct active_chain *chain,
                          int start_height, int stop_height,
                          const char *datadir,
                          struct wallet_rescan_report *out);
+/* Highest height through which every block's wallet effects were read: the
+ * last fully scanned height. Equals best_block_height unless a boot catch-up
+ * left a range unread, then scan_retry_from - 1. Caller holds w->cs or owns
+ * the wallet exclusively. */
+int wallet_scanned_through_height(const struct wallet *w);
 /* Thin wrapper over wallet_rescan_report() that discards the report. */
 int wallet_rescan(struct wallet *w, const struct active_chain *chain,
                   int start_height, int stop_height, const char *datadir);

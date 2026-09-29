@@ -226,6 +226,15 @@ int wallet_rescan_report(struct wallet *w, const struct active_chain *chain,
     return total_found;
 }
 
+int wallet_scanned_through_height(const struct wallet *w)
+{
+    if (!w)
+        return -1;
+    if (w->scan_retry_pending && w->scan_retry_from - 1 < w->best_block_height)
+        return w->scan_retry_from - 1;
+    return w->best_block_height;
+}
+
 int wallet_rescan(struct wallet *w, const struct active_chain *chain,
                   int start_height, int stop_height, const char *datadir)
 {

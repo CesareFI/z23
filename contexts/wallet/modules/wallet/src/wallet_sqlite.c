@@ -389,6 +389,16 @@ struct zcl_result wallet_sqlite_open_r(struct wallet_sqlite *ws, sqlite3 *db)
         { &ws->stmt_scan_height_read,
           "SELECT value FROM node_state WHERE key='wallet_scan_height'",
           "node_state", "scan_height_read" },
+        { &ws->stmt_scan_retry_write,
+          "INSERT OR REPLACE INTO node_state(key,value)"
+          " VALUES('wallet_scan_retry_from',?)",
+          "node_state", "scan_retry_write" },
+        { &ws->stmt_scan_retry_read,
+          "SELECT value FROM node_state WHERE key='wallet_scan_retry_from'",
+          "node_state", "scan_retry_read" },
+        { &ws->stmt_scan_retry_clear,
+          "DELETE FROM node_state WHERE key='wallet_scan_retry_from'",
+          "node_state", "scan_retry_clear" },
     };
 
     for (size_t i = 0; i < sizeof(preps) / sizeof(preps[0]); i++) {
@@ -437,6 +447,9 @@ void wallet_sqlite_close(struct wallet_sqlite *ws)
     if (ws->stmt_best_block_read)   { sqlite3_finalize(ws->stmt_best_block_read);   ws->stmt_best_block_read = NULL; }
     if (ws->stmt_scan_height_write) { sqlite3_finalize(ws->stmt_scan_height_write); ws->stmt_scan_height_write = NULL; }
     if (ws->stmt_scan_height_read)  { sqlite3_finalize(ws->stmt_scan_height_read);  ws->stmt_scan_height_read = NULL; }
+    if (ws->stmt_scan_retry_write)  { sqlite3_finalize(ws->stmt_scan_retry_write);  ws->stmt_scan_retry_write = NULL; }
+    if (ws->stmt_scan_retry_read)   { sqlite3_finalize(ws->stmt_scan_retry_read);   ws->stmt_scan_retry_read = NULL; }
+    if (ws->stmt_scan_retry_clear)  { sqlite3_finalize(ws->stmt_scan_retry_clear);  ws->stmt_scan_retry_clear = NULL; }
     ws->db = NULL;
     ws->open = false;
     wallet_sqlite_key_crypto_reset();
@@ -941,6 +954,45 @@ bool wallet_sqlite_read_scan_height(struct wallet_sqlite *ws, int *height)
             int32_t h;
             memcpy(&h, data, 4);
             *height = h;
+            ok = true;
+        }
+    }
+    sqlite3_reset(s);
+    return ok;
+}
+
+bool wallet_sqlite_write_scan_retry(struct wallet_sqlite *ws, bool pending,
+                                    int retry_from)
+{
+    if (!ws || !ws->open)
+        LOG_FAIL("wallet_sqlite", "write_scan_retry: not open");
+    sqlite3_stmt *s = pending ? ws->stmt_scan_retry_write
+                              : ws->stmt_scan_retry_clear;
+    sqlite3_reset(s);
+    if (pending) {
+        int32_t h = (int32_t)retry_from;
+        sqlite3_bind_blob(s, 1, &h, 4, SQLITE_TRANSIENT);
+    }
+    bool ok = AR_STEP_WRITE(s) == SQLITE_DONE;
+    sqlite3_reset(s);
+    if (!ok)
+        LOG_FAIL("wallet_sqlite", "write_scan_retry: step failed: %s",
+                 sqlite3_errmsg(ws->db));
+    return true;
+}
+
+bool wallet_sqlite_read_scan_retry(struct wallet_sqlite *ws, int *retry_from)
+{
+    if (!ws || !ws->open || !retry_from) return false;
+    sqlite3_stmt *s = ws->stmt_scan_retry_read;
+    sqlite3_reset(s);
+    bool ok = false;
+    if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
+        const void *data = sqlite3_column_blob(s, 0);
+        if (data && sqlite3_column_bytes(s, 0) >= 4) {
+            int32_t h;
+            memcpy(&h, data, 4);
+            *retry_from = h;
             ok = true;
         }
     }
@@ -1511,6 +1563,15 @@ static struct zcl_result wallet_sqlite_flush_scope_r(
         n_scanh_fail++;
         if (first_fail.ok) first_fail = ZCL_ERR(WSQL_WRITE_FAIL,
             "flush: write_scan_height failed");
+        goto rollback;
+    }
+    /* Same transaction as the scan height and every tx row: a retry is
+     * cleared only together with the outputs its successful rescan found. */
+    if (!wallet_sqlite_write_scan_retry(ws, w->scan_retry_pending,
+                                        w->scan_retry_from)) {
+        n_scanh_fail++;
+        if (first_fail.ok) first_fail = ZCL_ERR(WSQL_WRITE_FAIL,
+            "flush: write_scan_retry failed");
         goto rollback;
     }
 

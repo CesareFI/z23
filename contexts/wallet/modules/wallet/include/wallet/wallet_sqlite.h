@@ -102,6 +102,11 @@ struct wallet_sqlite {
     sqlite3_stmt *stmt_best_block_read;
     sqlite3_stmt *stmt_scan_height_write;
     sqlite3_stmt *stmt_scan_height_read;
+    /* Lowest height a boot catch-up left unread (wallet.scan_retry_from).
+     * The row exists only while that retry is pending. */
+    sqlite3_stmt *stmt_scan_retry_write;
+    sqlite3_stmt *stmt_scan_retry_read;
+    sqlite3_stmt *stmt_scan_retry_clear;
 
     /* Health bookkeeping. Updated by self-test and by every failed
      * public call.  Read by wallet_sqlite_get_health(). */
@@ -228,6 +233,11 @@ bool wallet_sqlite_read_txs(struct wallet_sqlite *ws, struct wallet *w);
 
 bool wallet_sqlite_write_scan_height(struct wallet_sqlite *ws, int height);
 bool wallet_sqlite_read_scan_height(struct wallet_sqlite *ws, int *height);
+/* Persist the pending boot-catch-up retry: writes the row when `pending`,
+ * deletes it otherwise. The read returns true only when a row exists. */
+bool wallet_sqlite_write_scan_retry(struct wallet_sqlite *ws, bool pending,
+                                    int retry_from);
+bool wallet_sqlite_read_scan_retry(struct wallet_sqlite *ws, int *retry_from);
 
 bool wallet_sqlite_write_sapling_seed(struct wallet_sqlite *ws,
                                         const uint8_t seed[32]);

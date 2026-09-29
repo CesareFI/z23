@@ -1368,14 +1368,22 @@ static void boot_wallet_read_persisted_state(struct app_context *ctx,
     int saved_height = 0;
     if (wallet_sqlite_read_scan_height(&g_wallet_sqlite, &saved_height))
         g_wallet.best_block_height = saved_height;
+    /* A previous boot catch-up left a range unread; the catch-up below in
+     * app_init_services rescans from here. */
+    int retry_from = 0;
+    if (wallet_sqlite_read_scan_retry(&g_wallet_sqlite, &retry_from)) {
+        g_wallet.scan_retry_pending = true;
+        g_wallet.scan_retry_from = retry_from > 0 ? retry_from : 0;
+    }
     printf("Wallet loaded: %zu keys, %zu sapling keys, %zu scripts, "
-           "%zu watch-only, %zu txs, scan height %d.\n",
+           "%zu watch-only, %zu txs, scan height %d, scanned through %d.\n",
            g_wallet.keystore.num_keys,
            g_wallet.sapling_keys.num_keys,
            g_wallet.keystore.num_scripts,
            g_wallet.keystore.num_watching,
            g_wallet.num_wallet_tx,
-           g_wallet.best_block_height);
+           g_wallet.best_block_height,
+           wallet_scanned_through_height(&g_wallet));
     /* Backward compat: an existing wallet opens regardless of the
      * at-rest policy, but without a passphrase its keys are plaintext
      * on disk — warn every boot rather than imply it is encrypted. */
