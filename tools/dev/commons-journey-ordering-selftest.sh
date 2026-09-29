@@ -297,5 +297,128 @@ else
     pass "a deliberate hard kill is immediate and labelled"
 fi
 
+# ── remote orphan fixture supervision (runtime, scaled) ──────────────────
+# The remote journey legs must survive the ssh session that spawned them,
+# yet never outlive a dead driver. A driver killed mid-run strands its
+# remote daemon holding the shared test-safe ports, and every later journey
+# on that host fails at bring-up with no holder to name. A supervision lease
+# bounds exactly that: the driver refreshes a lease file on the daemon's own
+# host, and a launcher whose lease went stale terminates the one group it
+# spawned — no PPID heuristic, no port-squatting reap, no PID-reuse window.
+# This drives the real dht_spawn incantation over a local ssh shim; the
+# stand-in daemon is the shipped listen-report helper holding a real
+# ephemeral port. It proves harness supervision, not node behaviour.
+REPO_ROOT_SELFTEST="$(cd "$SELF_DIR/../.." && pwd)"
+SPAWN_FN="$(awk '/^dht_spawn\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$LIFECYCLE")"
+[ -n "$SPAWN_FN" ] || { fail "dht_spawn() not found in $LIFECYCLE"; exit 2; }
+grep -qF -- '--die-with-lease' <<<"$SPAWN_FN" ||
+    fail "remote dht_spawn no longer arms lease supervision; this check is blind"
+grep -qF 'dht_ensure_remote_lease' <<<"$SPAWN_FN" ||
+    fail "remote dht_spawn lost its lease-refresher setup"
+lease_at="$(grep -nF 'dht_ensure_remote_lease' <<<"$SPAWN_FN" | head -1 | cut -d: -f1 || true)"
+spawn_at="$(grep -nF 'bin/process-group-exec' <<<"$SPAWN_FN" | head -1 | cut -d: -f1 || true)"
+if [ -z "$lease_at" ] || [ -z "$spawn_at" ]; then
+    fail "lease guard cannot locate the spawn incantation in dht_spawn"
+elif [ "$lease_at" -ge "$spawn_at" ]; then
+    fail "the lease refresher must start before the first supervised spawn"
+else
+    pass "remote spawn arms lease supervision before the daemon starts"
+fi
+ASSERT_FN="$(awk '/^dht_assert_port\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$LIFECYCLE")"
+grep -qF 'holder unknown' <<<"$ASSERT_FN" ||
+    fail "a failed remote port probe no longer reports holder uncertainty"
+
+ORPH="$(mktemp -d /tmp/z23-orphan-selftest-XXXXXXXX)"
+mkdir -p "$ORPH/bin" "$ORPH/dd" "$ORPH/work"
+cp "$REPO_ROOT_SELFTEST/build/bin/process-group-exec" "$ORPH/bin/"
+cp "$REPO_ROOT_SELFTEST/build/bin/arena_product_journey_c23" "$ORPH/bin/"
+# Stand-in daemon: the shipped helper's listen-report mode binds a real
+# ephemeral port, publishes pid+port, and holds the listener forever.
+printf '#!/bin/sh\nexec "%s/arena_product_journey_c23" listen-report "%s/dd/listen.out"\n' \
+    "$ORPH/bin" "$ORPH" >"$ORPH/bin/zclassic23"
+chmod +x "$ORPH/bin/zclassic23"
+# Local ssh shim: node_lifecycle sends every remote command as one string
+# after `--`; run it on this kernel, which is exactly the remote leg's
+# process shape minus the network.
+cat >"$ORPH/ssh-shim" <<'SHIM'
+#!/bin/sh
+while [ "$#" -gt 0 ]; do
+    [ "$1" = "--" ] && { shift; break; }
+    shift
+done
+[ "$#" -eq 1 ] || { echo "ssh-shim: expected one command after --" >&2; exit 1; }
+exec bash -c "$1"
+SHIM
+chmod +x "$ORPH/ssh-shim"
+cat >"$ORPH/driver.sh" <<EOF
+#!/bin/bash
+set -euo pipefail
+DHT_SSH='$ORPH/ssh-shim'
+DHT_LEASE_STALE_S=3
+DHT_LEASE_REFRESH_S=1
+DHT_WORK_PARENT='$ORPH/work'
+. '$LIFECYCLE'
+dht_make_work orphan-selftest
+dht_register_remote_node 29999 shimhost '$ORPH'
+dht_spawn ORPH_PGID '$ORPH/dd' 0 29999 0 0
+for ((i = 0; i < 100; i++)); do [ -s '$ORPH/dd/listen.out' ] && break; sleep 0.1; done
+[ -s '$ORPH/dd/listen.out' ] || { echo 'stand-in daemon never reported' >&2; exit 3; }
+echo READY
+while :; do sleep 5; done
+EOF
+
+bash "$ORPH/driver.sh" >"$ORPH/driver.out" 2>"$ORPH/driver.err" &
+ORPH_DRIVER=$!
+ORPH_READY=0
+for ((i = 0; i < 150; i++)); do
+    grep -q READY "$ORPH/driver.out" 2>/dev/null && { ORPH_READY=1; break; }
+    kill -0 "$ORPH_DRIVER" 2>/dev/null || break
+    sleep 0.1
+done
+if [ "$ORPH_READY" != 1 ]; then
+    fail "orphan-scenario driver never became ready: $(tail -3 "$ORPH/driver.err" 2>/dev/null | tr '\n' ' ')"
+else
+    read -r ORPH_FPID ORPH_PORT <"$ORPH/dd/listen.out"
+    kill -0 "$ORPH_FPID" 2>/dev/null ||
+        fail "stand-in daemon exited before the scenario started"
+    # While the driver lives, its fixture legitimately holds the port: the
+    # next run's probe must fail. This is the obstruction later runs see.
+    if DHT_SSH="$ORPH/ssh-shim" bash -c "
+            . '$LIFECYCLE'
+            dht_register_remote_node 29999 shimhost '$ORPH'
+            dht_assert_port '$ORPH_PORT' 29999" 2>/dev/null; then
+        fail "a live remote fixture's held port passed the rebind probe"
+    else
+        pass "a live remote fixture obstructs the port probe"
+    fi
+    # Kill the driver exactly as a crashed harness dies: SIGKILL, no trap.
+    kill -9 "$ORPH_DRIVER" 2>/dev/null
+    # wait reaps the SIGKILLed job and RETURNS 137; under set -e that would
+    # end the whole selftest right here — the opposite of the reap check.
+    wait "$ORPH_DRIVER" 2>/dev/null || true
+    ORPH_T0=$SECONDS
+    while kill -0 "$ORPH_FPID" 2>/dev/null && [ $((SECONDS - ORPH_T0)) -lt 8 ]; do
+        sleep 0.2
+    done
+    if kill -0 "$ORPH_FPID" 2>/dev/null; then
+        fail "the remote fixture outlived its dead driver (no bounded reap)"
+        ORPH_PGID="$(ps -o pgid= -p "$ORPH_FPID" 2>/dev/null | tr -d '[:space:]')"
+        case "$ORPH_PGID" in ''|*[!0-9]*) kill "$ORPH_FPID" 2>/dev/null || true ;;
+            *) kill -TERM -- "-$ORPH_PGID" 2>/dev/null || true ;;
+        esac
+    else
+        pass "a dead driver's remote fixture is reaped within the stale window"
+        if DHT_SSH="$ORPH/ssh-shim" bash -c "
+                . '$LIFECYCLE'
+                dht_register_remote_node 29999 shimhost '$ORPH'
+                dht_assert_port '$ORPH_PORT' 29999" 2>/dev/null; then
+            pass "the reaped fixture's port rebinds for the next run"
+        else
+            fail "the port stayed obstructed after the fixture was reaped"
+        fi
+    fi
+fi
+rm -rf "$ORPH"
+
 [ "$FAIL" -eq 0 ] || exit 1
 printf 'commons-journey-ordering: OK\n'

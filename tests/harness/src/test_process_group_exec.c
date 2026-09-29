@@ -5,15 +5,20 @@
  * orphan this pins was real: a journey driver died mid-run, its regtest
  * daemon kept a shared test-safe port, and every later journey on the
  * host failed at bring-up until a human found the holder by hand. The
- * kernel-side parent-death signal closes that class for local fixtures
- * without disturbing the remote journey legs, which rely on plain
- * setsid survival between the driver's separate ssh calls. Both
- * properties are asserted: armed means reaped, unarmed means survives.
+ * kernel-side parent-death signal closes that class for local fixtures.
+ * Remote journey legs cannot use it — their parent is one short ssh
+ * session of many — so they take --die-with-lease instead: the launcher
+ * stays resident as the group leader and terminates its own group when
+ * the driver stops refreshing the lease file on the fixture's host.
+ * Ownership stays exact in both modes: the only group either mechanism
+ * can end is the one this launcher created, so no pid is ever reused
+ * into a kill and no held port ever authorizes termination.
  *
  * Non-Linux POSIX hosts have no PR_SET_PDEATHSIG; there the launcher
  * must say so on stderr (an explicit limitation, never a silent
- * pretend-fix) and the armed case degrades to survival. Windows runs
- * the stronger Job Object acceptance binary instead of this group.
+ * pretend-fix) and the armed case degrades to survival. The lease mode
+ * is fully POSIX and is exercised everywhere. Windows runs the stronger
+ * Job Object acceptance binary instead of this group.
  */
 
 #include "test/test_core.h"
@@ -196,6 +201,282 @@ static int test_plain_setsid_survives(void)
     return failures;
 }
 
+/* ── --die-with-lease: remote-leg supervision ─────────────────────────── */
+
+#include <fcntl.h>
+
+/* Refresh a lease file the way the driver's refresher does: create it if
+ * the first synchronous touch has not run yet, then bump mtime to now. */
+static int pge_touch(const char *path)
+{
+    int fd = open(path, O_WRONLY | O_CREAT, 0600);
+    if (fd < 0)
+        return 0;
+    int ok = close(fd) == 0;
+    return ok && utimensat(AT_FDCWD, path, NULL, 0) == 0;
+}
+
+/* Spawn a leased launcher under a disposable shell parent. The shell
+ * records the supervisor pid (the leased launcher stays resident as the
+ * group leader); the supervised command publishes its own pid first. The
+ * shell ends with `wait "$p"` — a no-operand wait exits 0 under POSIX and
+ * would silently erase the launcher's status — so the shell's exit status
+ * IS the launcher's. */
+static pid_t pge_spawn_leased(const char *launcher, const char *spec,
+                              const char *sup_file, const char *child_file,
+                              const char *child_cmd)
+{
+    char script[2048];
+    int n = snprintf(script, sizeof(script),
+                     "'%s' --die-with-lease='%s' /bin/sh -c \"echo \\$\\$ > "
+                     "'%s'; %s\" & p=$!; echo \"$p\" > '%s'; wait \"$p\"",
+                     launcher, spec, child_file, child_cmd, sup_file);
+    if (n <= 0 || (size_t)n >= sizeof(script))
+        return 0;
+    pid_t shell = fork();
+    if (shell < 0)
+        return 0;
+    if (shell == 0) {
+        execl("/bin/sh", "sh", "-c", script, (char *)NULL);
+        _exit(127);
+    }
+    return shell;
+}
+
+/* Poll for the shell's exit; report the launcher's pass-through status. */
+static int pge_wait_status(pid_t p, int seconds, int *exit_code, int *sig)
+{
+    *exit_code = -1;
+    *sig = 0;
+    for (int i = 0; i < seconds * 10; i++) {
+        int status = 0;
+        pid_t rc = waitpid(p, &status, WNOHANG);
+        if (rc == p) {
+            if (WIFEXITED(status))
+                *exit_code = WEXITSTATUS(status);
+            if (WIFSIGNALED(status))
+                *sig = WTERMSIG(status);
+            return 1;
+        }
+        if (rc < 0 && errno != EINTR)
+            return 0;
+        struct timespec ts = {.tv_sec = 0, .tv_nsec = 100 * 1000 * 1000};
+        nanosleep(&ts, NULL); /* real-clock: a real supervisor polling a real
+                               * file's mtime; no injected clock spans
+                               * processes or the filesystem */
+    }
+    return 0;
+}
+
+static int test_lease_stale_reaps_group(void)
+{
+    int failures = 0;
+    TEST("process-group-exec: --die-with-lease reaps the group when the "
+         "lease goes stale") {
+        const char *launcher = pge_launcher();
+        ASSERT(launcher != NULL);
+        char dir[] = "test-tmp/pge_lease_stale_XXXXXX";
+        ASSERT(mkdtemp(dir) != NULL);
+        char lease[300], sup[300], child[300];
+        ASSERT(snprintf(lease, sizeof(lease), "%s/lease", dir) > 0);
+        ASSERT(snprintf(sup, sizeof(sup), "%s/sup", dir) > 0);
+        ASSERT(snprintf(child, sizeof(child), "%s/child", dir) > 0);
+        ASSERT(pge_touch(lease));
+        char spec[340];
+        ASSERT(snprintf(spec, sizeof(spec), "%s:1", lease) > 0);
+        pid_t shell = pge_spawn_leased(launcher, spec, sup, child,
+                                       "exec sleep 60");
+        ASSERT(shell > 0);
+        pid_t supervisor = 0, fixture = 0;
+        ASSERT(pge_wait_file(sup, &supervisor));
+        ASSERT(pge_wait_file(child, &fixture));
+        ASSERT(pge_alive(fixture));
+        /* No refresh: the lease crosses its stale window. */
+        int code = -1, sig = 0;
+        ASSERT(pge_wait_status(shell, 6, &code, &sig));
+        ASSERT(pge_wait_gone(fixture, 3));
+        ASSERT(code == 128 + SIGTERM); /* child TERMed, status passed through */
+        unlink(lease); unlink(sup); unlink(child); rmdir(dir);
+        PASS();
+    }
+    _test_next:;
+    return failures;
+}
+
+static int test_lease_fresh_survives_and_cleanup_terminates(void)
+{
+    int failures = 0;
+    TEST("process-group-exec: a refreshed lease keeps the fixture alive; a "
+         "group TERM still cleans up") {
+        const char *launcher = pge_launcher();
+        ASSERT(launcher != NULL);
+        char dir[] = "test-tmp/pge_lease_fresh_XXXXXX";
+        ASSERT(mkdtemp(dir) != NULL);
+        char lease[300], sup[300], child[300];
+        ASSERT(snprintf(lease, sizeof(lease), "%s/lease", dir) > 0);
+        ASSERT(snprintf(sup, sizeof(sup), "%s/sup", dir) > 0);
+        ASSERT(snprintf(child, sizeof(child), "%s/child", dir) > 0);
+        ASSERT(pge_touch(lease));
+        char spec[340];
+        ASSERT(snprintf(spec, sizeof(spec), "%s:2", lease) > 0);
+        pid_t shell = pge_spawn_leased(launcher, spec, sup, child,
+                                       "exec sleep 60");
+        ASSERT(shell > 0);
+        pid_t supervisor = 0, fixture = 0;
+        ASSERT(pge_wait_file(sup, &supervisor));
+        ASSERT(pge_wait_file(child, &fixture));
+        /* Refresh across three stale windows: the fixture must survive. */
+        for (int i = 0; i < 6; i++) {
+            struct timespec ts = {.tv_sec = 0, .tv_nsec = 700L * 1000L * 1000L};
+            nanosleep(&ts, NULL); /* real-clock: the real refresher cadence
+                                   * against the real mtime window */
+            ASSERT(pge_touch(lease));
+        }
+        ASSERT(pge_alive(fixture));
+        /* The caller's own cleanup TERMs the group (the supervisor is the
+         * setsid leader, so -supervisor is the whole group): the child
+         * dies, the supervisor passes its status through and exits. */
+        ASSERT(kill(-supervisor, SIGTERM) == 0);
+        int code = -1, sig = 0;
+        ASSERT(pge_wait_status(shell, 6, &code, &sig));
+        ASSERT(!pge_alive(fixture) || pge_wait_gone(fixture, 3));
+        ASSERT(code == 128 + SIGTERM);
+        unlink(lease); unlink(sup); unlink(child); rmdir(dir);
+        PASS();
+    }
+    _test_next:;
+    return failures;
+}
+
+static int test_lease_missing_reaps(void)
+{
+    int failures = 0;
+    TEST("process-group-exec: a lease that never existed fails reaped, not "
+         "orphaned") {
+        const char *launcher = pge_launcher();
+        ASSERT(launcher != NULL);
+        char dir[] = "test-tmp/pge_lease_missing_XXXXXX";
+        ASSERT(mkdtemp(dir) != NULL);
+        char lease[300], sup[300], child[300];
+        ASSERT(snprintf(lease, sizeof(lease), "%s/lease", dir) > 0);
+        ASSERT(snprintf(sup, sizeof(sup), "%s/sup", dir) > 0);
+        ASSERT(snprintf(child, sizeof(child), "%s/child", dir) > 0);
+        char spec[340];
+        ASSERT(snprintf(spec, sizeof(spec), "%s:1", lease) > 0);
+        /* No touch: the file is absent from the first reading. The
+         * supervisor may TERM the group before the child even publishes
+         * its pid — that instant reap is the desired behaviour, so the
+         * child pidfile is opportunistically checked, never required. */
+        pid_t shell = pge_spawn_leased(launcher, spec, sup, child,
+                                       "exec sleep 60");
+        ASSERT(shell > 0);
+        int code = -1, sig = 0;
+        ASSERT(pge_wait_status(shell, 6, &code, &sig));
+        pid_t fixture = 0;
+        if (pge_read_pid(child, &fixture))
+            ASSERT(pge_wait_gone(fixture, 3));
+        unlink(lease); unlink(sup); unlink(child); rmdir(dir);
+        PASS();
+    }
+    _test_next:;
+    return failures;
+}
+
+static int test_lease_grace_escalates_to_kill(void)
+{
+    int failures = 0;
+    TEST("process-group-exec: a TERM-ignoring leased group is SIGKILLed "
+         "after the grace") {
+        const char *launcher = pge_launcher();
+        ASSERT(launcher != NULL);
+        char dir[] = "test-tmp/pge_lease_grace_XXXXXX";
+        ASSERT(mkdtemp(dir) != NULL);
+        char lease[300], sup[300], child[300];
+        ASSERT(snprintf(lease, sizeof(lease), "%s/lease", dir) > 0);
+        ASSERT(snprintf(sup, sizeof(sup), "%s/sup", dir) > 0);
+        ASSERT(snprintf(child, sizeof(child), "%s/child", dir) > 0);
+        ASSERT(pge_touch(lease));
+        char spec[340];
+        ASSERT(snprintf(spec, sizeof(spec), "%s:1:1", lease) > 0);
+        pid_t shell = pge_spawn_leased(launcher, spec, sup, child,
+                                       "trap '' TERM; while :; do sleep 0.1; done");
+        ASSERT(shell > 0);
+        pid_t supervisor = 0, fixture = 0;
+        ASSERT(pge_wait_file(sup, &supervisor));
+        ASSERT(pge_wait_file(child, &fixture));
+        ASSERT(pge_alive(fixture));
+        int code = -1, sig = 0;
+        ASSERT(pge_wait_status(shell, 8, &code, &sig));
+        /* The escalation SIGKILL takes the whole group, supervisor included:
+         * the shell's wait reports the launcher as SIGKILLed. */
+        ASSERT(sig == SIGKILL || code == 128 + SIGKILL);
+        ASSERT(pge_wait_gone(fixture, 3));
+        unlink(lease); unlink(sup); unlink(child); rmdir(dir);
+        PASS();
+    }
+    _test_next:;
+    return failures;
+}
+
+static int test_lease_passes_through_child_exit(void)
+{
+    int failures = 0;
+    TEST("process-group-exec: a leased child that exits by itself passes "
+         "its status through") {
+        const char *launcher = pge_launcher();
+        ASSERT(launcher != NULL);
+        char dir[] = "test-tmp/pge_lease_exit_XXXXXX";
+        ASSERT(mkdtemp(dir) != NULL);
+        char lease[300], sup[300], child[300];
+        ASSERT(snprintf(lease, sizeof(lease), "%s/lease", dir) > 0);
+        ASSERT(snprintf(sup, sizeof(sup), "%s/sup", dir) > 0);
+        ASSERT(snprintf(child, sizeof(child), "%s/child", dir) > 0);
+        ASSERT(pge_touch(lease));
+        char spec[340];
+        ASSERT(snprintf(spec, sizeof(spec), "%s:30", lease) > 0);
+        pid_t shell = pge_spawn_leased(launcher, spec, sup, child,
+                                       "sleep 0.5; exit 9");
+        ASSERT(shell > 0);
+        int code = -1, sig = 0;
+        ASSERT(pge_wait_status(shell, 6, &code, &sig));
+        ASSERT(code == 9);
+        unlink(lease); unlink(sup); unlink(child); rmdir(dir);
+        PASS();
+    }
+    _test_next:;
+    return failures;
+}
+
+static int test_lease_bad_spec_fails_closed(void)
+{
+    int failures = 0;
+    TEST("process-group-exec: a malformed lease spec is a usage error, and "
+         "nothing launches") {
+        const char *launcher = pge_launcher();
+        ASSERT(launcher != NULL);
+        const char *bad_specs[] = {
+            "no-colon-here", "/tmp/lease:0", "/tmp/lease:abc",
+            "/tmp/lease:5:x", "/tmp/lease:5:6:7", ":5", NULL};
+        for (size_t i = 0; bad_specs[i]; i++) {
+            char line[1024];
+            int n = snprintf(line, sizeof(line),
+                             "'%s' --die-with-lease='%s' sleep 60 2>&1",
+                             launcher, bad_specs[i]);
+            ASSERT(n > 0 && (size_t)n < sizeof(line));
+            FILE *p = popen(line, "r");
+            ASSERT(p != NULL);
+            while (fgets(line, sizeof(line), p)) {
+            }
+            int rc = pclose(p);
+            ASSERT(rc != 0);
+            ASSERT(WIFEXITED(rc) && WEXITSTATUS(rc) == 2);
+        }
+        PASS();
+    }
+    _test_next:;
+    return failures;
+}
+
 static int test_unknown_flag_fails_closed(void)
 {
     int failures = 0;
@@ -226,6 +507,12 @@ int test_process_group_exec(void)
     int failures = 0;
     failures += test_die_with_parent_reaps_fixture();
     failures += test_plain_setsid_survives();
+    failures += test_lease_stale_reaps_group();
+    failures += test_lease_fresh_survives_and_cleanup_terminates();
+    failures += test_lease_missing_reaps();
+    failures += test_lease_grace_escalates_to_kill();
+    failures += test_lease_passes_through_child_exit();
+    failures += test_lease_bad_spec_fails_closed();
     failures += test_unknown_flag_fails_closed();
     return failures;
 }
