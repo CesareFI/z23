@@ -12,6 +12,7 @@
  *
  * Key v2 is exercised in the same group against the checked-in fast
  * profile, with its closure vector pinned. */
+#define _XOPEN_SOURCE 700
 
 #include "test/test_core.h"
 #include "test/verify_contract_fixture.h"
@@ -23,7 +24,12 @@
 #include "verify/fixed_result_key_v2.h"
 #include "verify_attest.h"
 #if !defined(_WIN32)
+#include "platform/directory_compat.h"
+#include "platform/temp_directory.h"
 #include "verify_store.h"
+#include <fcntl.h>
+#include <ftw.h>
+#include <sys/stat.h>
 #include <limits.h>
 #include <unistd.h>
 #endif
@@ -772,33 +778,166 @@ static int test_vc_record_binding(void)
 
 /* ── 7. store custody ────────────────────────────────────────────────── */
 
+#if !defined(_WIN32)
+/* A complete, admissible store for the fixture world: the only thing a
+ * custody refusal can be reacting to is the uids named for it. */
+struct vc_store {
+    char root[PATH_MAX], key_dir[PATH_MAX], obs[PATH_MAX], pub[PATH_MAX];
+};
+
+static bool vc_path(char out[PATH_MAX], const char *a, const char *b)
+{
+    int n = snprintf(out, PATH_MAX, "%s/%s", a, b);
+    return n > 0 && n < PATH_MAX;
+}
+
+static bool vc_file(const char *dir, const char *name, const void *bytes,
+                    size_t len)
+{
+    char path[PATH_MAX];
+    if (!vc_path(path, dir, name)) return false;
+    int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0644);
+    if (fd < 0) return false;
+    size_t at = 0;
+    while (at < len) {
+        ssize_t n = write(fd, (const uint8_t *)bytes + at, len - at);
+        if (n <= 0) break;
+        at += (size_t)n;
+    }
+    bool ok = at == len && fchmod(fd, 0644) == 0;
+    return close(fd) == 0 && ok;
+}
+
+/* The verifier-key loader refuses group-writable ancestors, which a
+ * checkout may have, so the key alone lives in the system temp root. */
+static bool vc_store_pubkey(struct vc_store *s)
+{
+    const char *prior = getenv("TMPDIR");
+    char saved[PATH_MAX], made[PATH_MAX], dir[PATH_MAX], hex[66];
+    uint8_t pub[32], secret[32];
+    if (prior && snprintf(saved, sizeof(saved), "%s", prior) >= PATH_MAX)
+        return false;
+    if (unsetenv("TMPDIR") != 0) return false;
+    bool created = platform_temp_directory_create("z23-verify-contract-",
+                                                  made, sizeof(made));
+    bool restored = prior ? setenv("TMPDIR", saved, 1) == 0
+                          : unsetenv("TMPDIR") == 0;
+    if (!created || !restored ||
+        !platform_directory_canonical_real(made, dir, sizeof(dir)) ||
+        !vc_path(s->pub, dir, "verifier.pub"))
+        return false;
+    ed25519_keypair(pub, secret, k_vc_verifier_seed);
+    zcl_hex_encode(pub, 32, hex);
+    hex[64] = '\n'; hex[65] = '\0';
+    return vc_file(dir, "verifier.pub", hex, 65) &&
+           setenv("ZCL_TEST_VERIFY_ATTEST_PUBKEY", s->pub, 1) == 0;
+}
+
+/* <root>/{store/<key>/, locks/fixed_result.lock} */
+static bool vc_store_layout(struct vc_store *s, const struct test_vc_fixture *w)
+{
+    char made[PATH_MAX], store[PATH_MAX], locks[PATH_MAX];
+    char key[ZCL_VERIFY_ATTEST_STORE_KEY_HEX];
+    if (!test_mkdtemp(made, sizeof(made), "z23-verify-contract-store") ||
+        !realpath(made, s->root))
+        return false;
+    zcl_verify_attest_store_key_hex(&w->expected.toolchain_id,
+                                    &w->expected.argv_norm,
+                                    &w->expected.recorded_cwd,
+                                    w->expected.pp_sha3,
+                                    w->expected.closure_sha3, key);
+    return vc_path(store, s->root, "store") && mkdir(store, 0755) == 0 &&
+           vc_path(locks, s->root, "locks") && mkdir(locks, 0755) == 0 &&
+           vc_file(locks, "fixed_result.lock", "", 0) &&
+           vc_path(s->key_dir, store, key) && mkdir(s->key_dir, 0755) == 0;
+}
+
+static bool vc_store_make(struct vc_store *s, const struct test_vc_fixture *w)
+{
+    struct zcl_verify_attest_record record = test_vc_record(w, 0);
+    uint8_t *bytes = NULL, hash[32];
+    size_t len = 0;
+    const char *why = NULL;
+    char name[65];
+    memset(s, 0, sizeof(*s));
+    if (!vc_store_layout(s, w) || !vc_store_pubkey(s) ||
+        !zcl_verify_attest_seal(&record, k_vc_verifier_seed, &bytes, &len,
+                                &why))
+        return false;
+    zcl_sha3_256(bytes, len, hash);
+    zcl_hex_encode(hash, sizeof(hash), name);
+    bool ok = vc_path(s->obs, s->key_dir, name) && mkdir(s->obs, 0755) == 0 &&
+              vc_file(s->obs, "attest.bin", bytes, len) &&
+              vc_file(s->obs, "object.o", TEST_VC_OBJ,
+                      sizeof(TEST_VC_OBJ) - 1u) &&
+              vc_file(s->obs, "deps.d", w->dep, w->dep_len) &&
+              vc_file(s->obs, "stderr.bin", "", 0) &&
+              vc_file(s->obs, "launch.bin", w->receipt_bytes, w->receipt_len);
+    free(bytes);
+    return ok;
+}
+
+static bool vc_store_is(const struct vc_store *s, const struct test_vc_fixture *w,
+                        unsigned signer, unsigned publisher, bool same_uid,
+                        enum zcl_verify_store_verdict verdict, const char *why)
+{
+    struct zcl_verify_store_result r;
+    struct zcl_verify_attest_box_key box = {.known = true};
+    zcl_verify_store_lookup_fixture(s->root, signer, publisher, same_uid,
+                                    &w->expected, &w->pins, &box, &r);
+    bool ok = r.verdict == verdict &&
+              (why ? vc_token(r.reason, why)
+                   : r.object_len == sizeof(TEST_VC_OBJ) - 1u);
+    zcl_verify_store_result_release(&r);
+    return ok;
+}
+
+static int vc_store_remove(const char *path, const struct stat *st, int type,
+                           struct FTW *walk)
+{
+    (void)st; (void)type; (void)walk;
+    return remove(path);
+}
+#endif
+
 static int test_vc_store_same_uid(void)
 {
     int failures = 0;
-    TEST("verify contract: a store entry published by the developer uid "
-         "refuses store_owner_same_uid before any file is read") {
+    TEST("verify contract: a store entry that HITs under the fixture's "
+         "same-uid waiver refuses store_owner_same_uid on custody alone, "
+         "and other uids pass custody to the ownership walk") {
 #if defined(_WIN32)
         PASS();
 #else
         static struct test_vc_fixture w;
-        struct zcl_verify_store_result r;
-        struct zcl_verify_attest_box_key box = {.known = true};
-        char root[PATH_MAX];
+        static struct vc_store s;
         const unsigned me = (unsigned)geteuid();
         ASSERT(test_vc_fixture_make(&w, 'a'));
-        ASSERT(getcwd(root, sizeof(root) - 40u));
-        strcat(root, "/build/verify-contract-absent");
-        zcl_verify_store_lookup_fixture(root, me + 1u, me, false,
-                                        &w.expected, &w.pins, &box, &r);
-        ASSERT(r.verdict == ZCL_VERIFY_STORE_COLD &&
-               vc_token(r.reason, "store_owner_same_uid"));
-        zcl_verify_store_result_release(&r);
-        /* Control: other uids get past custody to the (absent) root. */
-        zcl_verify_store_lookup_fixture(root, me + 1u, me + 2u, false,
-                                        &w.expected, &w.pins, &box, &r);
-        ASSERT(r.verdict == ZCL_VERIFY_STORE_COLD &&
-               vc_token(r.reason, "store_path_unsafe"));
-        zcl_verify_store_result_release(&r);
+        ASSERT(vc_store_make(&s, &w));
+        /* Positive path: these exact bytes admit and return the object. */
+        ASSERT(vc_store_is(&s, &w, me, me, true, ZCL_VERIFY_STORE_HIT, NULL));
+        /* Same bytes, no waiver: the developer uid as signer, publisher or
+         * both refuses before any file is read. */
+        ASSERT(vc_store_is(&s, &w, me, me, false, ZCL_VERIFY_STORE_COLD,
+                           "store_owner_same_uid"));
+        ASSERT(vc_store_is(&s, &w, me + 1u, me, false, ZCL_VERIFY_STORE_COLD,
+                           "store_owner_same_uid"));
+        ASSERT(vc_store_is(&s, &w, me, me + 1u, false, ZCL_VERIFY_STORE_COLD,
+                           "store_owner_same_uid"));
+        /* Other uids pass custody on the same valid store and stop at the
+         * next check, which finds the root not owned by the named signer;
+         * with the signer matching, store/ is not the named publisher's.
+         * A HIT under two foreign uids needs root to chown the fixture. */
+        ASSERT(vc_store_is(&s, &w, me + 1u, me + 2u, false,
+                           ZCL_VERIFY_STORE_COLD, "store_path_unsafe"));
+        ASSERT(vc_store_is(&s, &w, me, me + 2u, true, ZCL_VERIFY_STORE_COLD,
+                           "store_path_unsafe"));
+        ASSERT(unsetenv("ZCL_TEST_VERIFY_ATTEST_PUBKEY") == 0);
+        ASSERT(nftw(s.root, vc_store_remove, 16, FTW_DEPTH | FTW_PHYS) == 0);
+        char *slash = strrchr(s.pub, '/');
+        ASSERT(slash && unlink(s.pub) == 0);
+        *slash = '\0';
+        ASSERT(rmdir(s.pub) == 0);
         PASS();
 #endif
     } _test_next:;
