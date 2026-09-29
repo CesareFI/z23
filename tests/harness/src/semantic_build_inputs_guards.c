@@ -422,6 +422,71 @@ static int sbit_t_after_directive(void)
     return failures;
 }
 
+/* make remakes a makefile it read that a rule targets (cfg.mk here, by
+ * the cmp/mv idiom on FORCE; a pattern rule; the root makefile itself)
+ * and, when that changed it, reads every makefile again: the restarted
+ * parse sees what the first one's later commands did, so a skip then
+ * counts every command. Not for an include only the first parse reads,
+ * under ifeq ($(strip $(MAKE_RESTARTS)),), while no line sets
+ * MAKE_RESTARTS: make sets it on every restarted parse. */
+#define SBI_CFG_RECIPE                                                         \
+    "\t@printf '# cfg v2\\n' > $@.tmp; cmp -s $@.tmp $@ || mv $@.tmp $@; "      \
+    "rm -f $@.tmp\nFORCE:\n"
+#define SBI_CFG_RULE "-include cfg.mk\ncfg.mk: FORCE\n" SBI_CFG_RECIPE
+#define SBI_FIRST_PARSE "ifeq ($(strip $(MAKE_RESTARTS)),)"
+#define SBI_RM_TOR "X := $(shell rm -f vendor/tor/libtor.a)\n"
+#define SBI_TOR_FIRST(post)                                                    \
+    SBI_GUARD(SBI_TOR_TREE(SBI_HOST, ""),                                      \
+              "ifneq ($(strip $(TOR_MISSING_ARCHIVES)),)\n" SBI_FIRST_PARSE,   \
+              "endif\nendif\n" post)
+static const char *const k_sbi_cfg[] = {"cfg.mk", "# cfg v1\n", NULL};
+static const char *const k_sbi_tor_cfg[] = {
+    "vendor/tor/libtor.a", "!\n",
+    "vendor/tor/src/ext/keccak-tiny/libkeccak-tiny.a", "!\n",
+    "cfg.mk", "# cfg v1\n", NULL};
+static int sbit_t_restart(void)
+{
+    int failures = 0;
+    static const struct sbi_gcase cases[] = {
+        {"restart_touch", SBI_GUARD("", SBI_FLAG_COND, "X := " SBI_TOUCH "\n"
+                                    SBI_CFG_RULE), k_sbi_cfg, false},
+        {"restart_tor", SBI_TOR_AFTER("", SBI_RM_TOR SBI_CFG_RULE),
+         k_sbi_tor_cfg, false},
+        {"restart_pattern", SBI_GUARD("", SBI_FLAG_COND, "X := " SBI_TOUCH "\n"
+                                      "-include cfg.mk\n%.mk: FORCE\n"
+                                      SBI_CFG_RECIPE), k_sbi_cfg, false},
+        {"restart_root", SBI_GUARD("", SBI_FLAG_COND, "X := " SBI_TOUCH "\n"
+                                   "Makefile: FORCE\n\t@test -f d/r || "
+                                   "{ touch d/r && touch $@; }\nFORCE:\n"),
+         NULL, false},
+        {"restart_no_rule", SBI_GUARD("", SBI_FLAG_COND, "X := " SBI_TOUCH "\n"
+                                      "-include cfg.mk\n"), k_sbi_cfg, true},
+        {"restart_first_parse", SBI_GUARD("", SBI_FLAG_COND "\n" SBI_FIRST_PARSE,
+                                          "endif\nX := " SBI_TOUCH "\n"
+                                          SBI_CFG_RULE), k_sbi_cfg, true},
+        {"restart_first_parse_outer", SBI_GUARD(SBI_FIRST_PARSE "\n",
+                                                SBI_FLAG_COND, "endif\nX := "
+                                                SBI_TOUCH "\n" SBI_CFG_RULE),
+         k_sbi_cfg, true},
+        {"restart_first_parse_set", SBI_GUARD("override MAKE_RESTARTS :=\n",
+                                              SBI_FLAG_COND "\n" SBI_FIRST_PARSE,
+                                              "endif\nX := " SBI_TOUCH "\n"
+                                              SBI_CFG_RULE), k_sbi_cfg, false},
+        {"restart_first_parse_else", SBI_GUARD("", SBI_FLAG_COND "\n"
+                                               SBI_FIRST_PARSE "\nY := 1\nelse",
+                                               "endif\nX := " SBI_TOUCH "\n"
+                                               SBI_CFG_RULE), k_sbi_cfg, false},
+        {"restart_tor_first_parse", SBI_TOR_FIRST(SBI_RM_TOR SBI_CFG_RULE),
+         k_sbi_tor_cfg, true},
+    };
+    TEST_CASE("semantic_build_inputs: a makefile a rule may remake restarts "
+             "make, and a skip then counts every command, unless only the "
+             "first parse reads the include") {
+        ASSERT(sbi_guard_cases(cases, SBI_COUNT(cases)));
+    } TEST_END
+    return failures;
+}
+
 /* make drops a leading ./ from a file name (not a doubled slash): an
  * include and the rule that makes it name one file however each spells
  * it. */
@@ -702,5 +767,5 @@ int sbi_guard_suite(void)
            sbit_t_guarded_include() | sbit_t_guard_record() | sbit_t_plan_record() |
            sbit_t_dot_slash() | sbit_t_computed_targets() | sbit_t_computed_lines() |
            sbit_t_premise_forms() | sbit_t_host_target_tor() | sbit_t_pruned_branch() |
-           sbit_t_tor_record() | sbit_t_after_directive();
+           sbit_t_tor_record() | sbit_t_after_directive() | sbit_t_restart();
 }
