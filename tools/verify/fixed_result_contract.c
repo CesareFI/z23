@@ -1129,6 +1129,7 @@ bool zcl_fr_failure_parse(const uint8_t *bytes, size_t len,
     }
     if (reason) memset(out, 0, sizeof(*out));
     return fr_finish(reason, 0u, NULL, why);
+}
 /* ── Source content root v2 ───────────────────────────────────────────── */
 
 /* Relative, non-empty, no trailing slash, no empty, "." or ".." component. */
