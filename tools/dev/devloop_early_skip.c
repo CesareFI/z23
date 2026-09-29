@@ -296,10 +296,15 @@ static const char *es_flag_dir(const char *const *argv, size_t argc,
 static void es_graph_dirs_pass(struct es_graph *g, const char *const *argv,
                                size_t argc, const char *flag)
 {
-    for (size_t i = 0; i < argc && g->ndirs < ES_DIRS_MAX; i++) {
+    for (size_t i = 0; i < argc && !g->unmodeled; i++) {
         const char *dir = es_flag_dir(argv, argc, &i, flag);
-        if (dir && dir[0])
-            g->dirs[g->ndirs++] = dir;
+        if (!dir || !dir[0])
+            continue;
+        if (g->ndirs == ES_DIRS_MAX) {
+            g->unmodeled = "(include dirs past their bound)";
+            return;
+        }
+        g->dirs[g->ndirs++] = dir;
     }
 }
 

@@ -944,7 +944,7 @@ static int de_test_skip_flags(struct de_state *s)
             "-isysroot /opt/root", "-iwithprefix vendor", "-I-",
             "@build/flags.rsp",
         };
-        char flags[256];
+        char flags[8192];
         ASSERT(de_hole_setup(s));
         de_hole_decide(s, DE_HOLE_FLAGS " -iquote tests -Iplatform");
         ASSERT(de_hole_is(s, "no-record", ""));
@@ -961,6 +961,31 @@ static int de_test_skip_flags(struct de_state *s)
             "#define EARLY_SKIP_DEP 1\n"));
         de_hole_decide(s, DE_HOLE_FLAGS);
         ASSERT(de_hole_is(s, "unvouched", "include-next"));
+        /* A later include directory may supply a header no earlier directory
+         * has. The resolver must refuse when its directory bound is reached,
+         * rather than silently ignore the next -I. */
+        ASSERT(de_skip_files(&s->fx, "#define EARLY_SKIP_DEP 1\n"));
+        size_t used = (size_t)snprintf(flags, sizeof(flags), "%s",
+                                       DE_HOLE_FLAGS);
+        ASSERT(used < sizeof(flags));
+        for (size_t i = 0; i < 1023; i++) {
+            int n = snprintf(flags + used, sizeof(flags) - used, " -I.");
+            ASSERT(n > 0 && (size_t)n < sizeof(flags) - used);
+            used += (size_t)n;
+        }
+        de_hole_decide(s, flags);
+        ASSERT(de_hole_is(s, "no-record", ""));
+        ASSERT(de_write(s->fx.root, "late/early_skip_late.h",
+                        "#define EARLY_SKIP_LATE 1\n"));
+        ASSERT(de_write(s->fx.root, "tests/harness/src/" DE_VOUCHED ".c",
+                        "#include \"early_skip_dep.h\"\n"
+                        "#include <early_skip_late.h>\n"
+                        "int early_skip_fixture_group = "
+                        "EARLY_SKIP_DEP + EARLY_SKIP_LATE;\n"));
+        ASSERT((size_t)snprintf(flags + used, sizeof(flags) - used, " -Ilate") <
+               sizeof(flags) - used);
+        de_hole_decide(s, flags);
+        ASSERT(de_hole_is(s, "unvouched", "cflags-unmodeled"));
         PASS();
     } _test_next:;
     (void)unsetenv(DE_SKIP_ENV);
