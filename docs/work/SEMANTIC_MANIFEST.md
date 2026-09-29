@@ -132,7 +132,8 @@ were established:
   word in the body of a `#define` in any file, a system header's too
   (the probe is evaluated where the macro expands, against that file's
   directory), and for one in a `-D` value, on the main file. Its spelled
-  name is the occurrence's text (for example `__has_include(OPT_HDR)` or
+  name is the occurrence's text, prefixed `#embed? ` unless it already starts
+  `#embed` or `__has_embed` (for example `#embed? __has_include(OPT_HDR)` or
   `#embed "blob.bin"`). Which words are live comes from clang's own
   lexing: the sensor tokenizes every file the TU read with
   `clang_tokenize`, which re-lexes it raw under the TU's own language
@@ -144,7 +145,8 @@ were established:
   skipped group is recorded too: that costs warm reuse and narrowing,
   never truth. A directive is a `#` or `%:` token first on its logical
   line (comments count as whitespace), then its name. Raw lexing differs
-  from the preprocessor's in two places, and the sensor lexes both as the
+  from the preprocessor's in two places outside the skipped groups (clang
+  raw-lexes those, so neither rule applies there), and the sensor lexes both as the
   preprocessor does: after an include-like directive (`#include`,
   `#include_next`, `#import`, `#embed`, `#__include_macros`) or a probe
   word and its `(`, a `<` opens one header name up to its `>`, which never
@@ -182,6 +184,36 @@ were established:
   consumer treats a `none` record as reachable by every created or deleted
   path, and one whose name starts `#embed` or `__has_embed` by every changed
   path (see the universe below).
+
+  Hiding a live probe is impossible by construction: the classification
+  above can only add precision, never remove a record. After the token
+  walk, the scan normalizes each file's raw bytes by removing every splice
+  clang could accept (a backslash, any of space, tab, form feed or vertical
+  tab, then `\r\n`, `\n\r`, `\n` or `\r`; and every `??/` splice whatever
+  the trigraph mode, since removing too much only finds more words) and
+  finds every occurrence of `__has_include` and `__has_embed` (as a word
+  or inside one) and every `#`, `%:` or `??=` followed by blanks or block
+  comments and `embed`. Each occurrence ends with a record: the replayed
+  one when clang's tokens gave it a live lookup token, and otherwise a
+  `none` record. The only occurrences that end with none are ones clang's
+  own tokens, outside a skipped group, show to be no lookup: a comment, a
+  literal, part of another token, or the operand of an `#ifdef`-like
+  directive or a plain `defined` test. Inside a skipped group nothing is
+  dropped, and neither is a word in a header name or a `#warning` or
+  `#error` line, which only the sensor's own lexing reads as such. The
+  splice rule is clang's (`getEscapedNewLineSize`) wherever the scan reads
+  an operand too, and a lookup token clang lexes whose text the scan
+  cannot read as that word refuses the TU. Pasting builds a word with no
+  occurrence of its own: it joins the spellings of existing tokens, and
+  during a conditional only tokens of `#define` bodies, `#if`, `#elif` and
+  `#embed` lines (skipped groups' too) and built-in or command-line macros
+  can take part. When two or more such spellings in a row spell
+  `__has_include`, `__has_include_next` or `__has_embed`, the TU gets one
+  `#embed? pasted from <first>` record on its main file. A 50-TU sample of
+  the repository has no such TU; the first rule, any `##` in any macro
+  body, hit all 50 (glibc and clang's own headers paste), and so did
+  requiring the `##` macro be reachable from a conditional (`__GLIBC_USE`,
+  `__stdint_join3`).
 
 The compiler never reports probes directly, so no miss here is compiler-exact.
 Each miss is derived from exact inputs and is stat-confirmed at sensor time.
@@ -930,6 +962,23 @@ measurement is gone. A probe after a raw string holding `" /*` (under
 `-std=gnu23`, with no `-std`, with `-fraw-string-literals`, with each
 prefix, and across lines) and one after a `#warning` line holding `/*`
 recorded nothing before; each is a case in the same test file.
+
+Six review rounds in a row found a way for the scan to hide a live
+probe, so it now records every occurrence the floor above finds unless
+clang's tokens show it is none. Ten cases recorded nothing before, and
+each is in the same test file: a probe after a skipped `#error`, `%:error`
+or `#warning` line holding `/*` and after a skipped `#include <a/*>`
+(the header name and text rules applied inside skipped groups, which clang
+raw-lexes, so `/*` opened a comment that hid live lines); an `#embed` after
+such a skipped line; a word split by a splice with a form feed before its
+newline, by a lone `\r`, or by `\n\r`; `CAT(__has_, include)("opt.h")`;
+and a `__has_embed` after `HI(<nope.h/*>)` where `HI` aliases
+`__has_include`. A lone `__has_embed` is the control case. Every
+conditional record with no claim now reaches every changed path. On a
+50-TU sample of the repository, 4 TUs gain one: glibc's
+`#ifdef __has_include` inside the skipped `#ifdef __USE_GNU` group of
+`bits/unistd_ext.h`. Keeping comment and `#ifdef` words too would make
+that 6.
 
 ### Darwin producer identity
 

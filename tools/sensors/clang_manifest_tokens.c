@@ -1,29 +1,44 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
- * purpose: Marks where each file the TU read holds a live conditional-lookup word or '#', by clang's own lexing (clang_tokenize under the TU's language options), so the lookup scan never models comments, literals or raw strings.
+ * purpose: Marks, from clang's own tokens (clang_tokenize under the TU's language options), which lookup words each file holds live, exempt or hidden, and finds the words a ## could paste into one.
  *
  * clang_tokenize re-lexes a file raw, with the TU's LangOpts: a word in a
  * comment or in a string, character or raw string literal is no
  * identifier token, and a trigraph or line splice inside a word is
- * cleaned. Raw lexing also covers the groups the preprocessor skipped,
- * which the scan needs (a probe there turns live when another probe
- * flips). A punctuator's spelling is its raw text, so the walk cleans it
- * (translation phases 1 and 2) before reading it as '#', '%:', '(' or '<'.
+ * cleaned. Raw lexing also covers the groups the preprocessor skipped. A
+ * punctuator's spelling is its raw text, so the walk cleans it
+ * (translation phases 1 and 2) before reading it.
  *
- * Raw lexing differs from the preprocessor's in two places, and each is
- * lexed here as the preprocessor does:
- *  - a header name: after #include, #include_next, #import, #embed or
- *    #__include_macros, and after __has_include(, __has_include_next( or
- *    __has_embed(, a '<' opens one token up to its '>' (a comment opener
- *    or quote inside it is no comment or literal);
- *  - #warning and #error: the preprocessor reads the rest of the logical
- *    line as plain text, so a comment opener there opens nothing.
- * When the raw tokens run past such a span, the file is tokenized again
- * from its end. Both rules are applied wherever the spelling appears, live
- * or skipped: in a skipped group the preprocessor would open the comment,
- * so the scan then reads text the compiler ignores, which costs precision
- * only. The TU is refused where raw tokens run past a '<' ... '>' span on
- * a #pragma line (GCC dependency and include_alias take header names),
- * and when a file's tokens do not reach its last non-blank byte. */
+ * The marks only ever narrow what the scan records (clang_manifest_lookup.c
+ * records every occurrence of a lookup word it finds in the text, less the
+ * ones marked exempt or hidden), so both are set only where clang's raw
+ * tokens are the preprocessor's: outside the skipped groups
+ * (clang_getSkippedRanges, less each group's controlling directive line,
+ * which the preprocessor evaluates), and only from clang's token kinds (a
+ * comment, a literal, a token that is no lookup word) and the #if, #ifdef
+ * and defined operands they spell. Two places there differ from raw
+ * lexing and are read as the preprocessor does: after an include-like
+ * directive, or after __has_include(, __has_include_next( or __has_embed(,
+ * a '<' opens one header name up to its '>'; and a #warning or #error line
+ * is plain text. The raw tokens inside such a span are not marked (so the
+ * scan records any lookup word text there), and when they run past it, or
+ * across a skipped group's edge, the file is tokenized again from there.
+ * Inside a skipped group nothing is marked exempt or hidden, so every
+ * occurrence there is recorded. The TU is refused where raw tokens run
+ * past a '<' ... '>' span on a #pragma line outside a skipped group (some
+ * pragmas take a header name), and when a file's tokens stop short of its
+ * last non-blank byte.
+ *
+ * A lookup word the preprocessor pastes with ## has no occurrence of its
+ * own. Pasting only joins spellings of tokens that exist: ones a #define
+ * body or an #if, #elif or #embed line holds (the only text a conditional
+ * expands, with a skipped group's lines taken as live), or a built-in or
+ * command-line macro, and the words pasting built from those. So the walk
+ * notes every such word whose spelling lies inside __has_include,
+ * __has_include_next or __has_embed (the words clang expands), and when
+ * two or more of them in a row spell one, cm_core.paste_piece names the
+ * first. A lookup word one token spells whole needs no paste: in a #define
+ * body, or on a conditional line not followed by its '(', the scan already
+ * records it. */
 
 #if !defined(_WIN32) && !defined(_DEFAULT_SOURCE)
 #define _DEFAULT_SOURCE
@@ -33,13 +48,53 @@
 
 #include "util/safe_alloc.h"
 
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* The longest token spelling a paste check reads whole. */
+#define CM_PIECE_MAX 64
+/* The lookup words clang expands (k_cm_paste_words) and the longest. */
+#define CM_PASTE_WORDS 3
+#define CM_PASTE_MAX 18
 
 /* One tokenization of a file from some offset on. */
 struct cm_toks {
     CXToken *t;
     unsigned n;
+};
+
+/* A skipped group's text, by offset: [a, b). */
+struct cm_span {
+    size_t a, b;
+};
+
+/* Which parts of each lookup word some token a ## could join is spelled
+ * as: have[w][a][b] when one spells word w's bytes [a, b). */
+struct cm_piece {
+    bool have[CM_PASTE_WORDS][CM_PASTE_MAX + 1][CM_PASTE_MAX + 1];
+};
+
+/* The directive the current logical line is. */
+enum cm_line_dir {
+    CM_DIR_NONE,
+    CM_DIR_DEFINE,
+    CM_DIR_COND,  /* #if, #elif: expanded */
+    CM_DIR_IFDEF, /* #ifdef, #ifndef, #elifdef, #elifndef */
+    CM_DIR_EMBED,
+    CM_DIR_PRAGMA,
+    CM_DIR_OTHER,
+};
+
+/* Where an #if line stands in "defined W", "defined ( W )", "!", "&&",
+ * "||" and nothing else. */
+enum cm_defd {
+    CM_DEFD_EXPECT,
+    CM_DEFD_KW,    /* after "defined" */
+    CM_DEFD_OPEN,  /* after "defined (" */
+    CM_DEFD_CLOSE, /* after "defined ( W" */
+    CM_DEFD_AFTER, /* after a whole test */
+    CM_DEFD_BAD,
 };
 
 /* Where the walk over a file stands. */
@@ -49,15 +104,22 @@ struct cm_tok_walk {
     size_t n;
     bool trigraphs;
     uint8_t *live;
+    const struct cm_span *skip; /* merged, sorted */
+    size_t nskip, iskip;        /* iskip: the first not wholly before */
+    struct cm_piece *piece;
     size_t prev_end;     /* end of the last token, comments included */
     size_t reach;        /* the furthest token end */
     bool bol;            /* no token but comments since a line began */
-    bool in_define;      /* the logical line is a #define */
+    enum cm_line_dir dir; /* the logical line's directive */
     bool expect_name;    /* the last token was a line-start '#' */
-    bool in_pragma;      /* the logical line is a #pragma */
+    bool first_operand;  /* the next token is an #ifdef's operand */
+    bool def_named;      /* a #define line's name was read */
+    enum cm_defd defd;   /* an #if line's defined tests */
+    int after_defined;   /* 1: after "defined"; 2: after "defined (" */
     int header;          /* 1: the next token may open a header name; 2: a
                           * '(' is due first (after a probe word) */
     size_t restart;      /* nonzero: tokenize again from here */
+    bool restart_bol;    /* ... at the start of a line */
     const char *refused; /* why the TU is refused, or NULL */
 };
 
@@ -67,6 +129,8 @@ static size_t cm_tok_offset(CXSourceLocation l)
     clang_getSpellingLocation(l, NULL, NULL, NULL, &off);
     return off;
 }
+
+/* ---- translation phases 1 and 2 ------------------------------------------ */
 
 /* The character the trigraph at s[i] stands for when the TU has them,
  * else 0. */
@@ -81,20 +145,24 @@ static char cm_tok_trigraph(const char *s, size_t n, size_t i, bool trigraphs)
     return p == NULL ? 0 : to[p - from];
 }
 
-/* Just past the newline of the line splice whose backslash ends at s[j]
- * (blanks, then a newline, maybe after a CR), or 0 when none follows. */
+/* Just past the line splice whose backslash ends before s[j], as clang's
+ * getEscapedNewLineSize reads one (blanks, form feeds and vertical tabs,
+ * then a newline or carriage return, then the other of the two), or 0. */
 static size_t cm_tok_splice_end(const char *s, size_t n, size_t j)
 {
-    while (j < n && (s[j] == ' ' || s[j] == '\t'))
+    while (j < n && (s[j] == ' ' || s[j] == '\t' || s[j] == '\f' ||
+                     s[j] == '\v'))
         j++;
-    if (j < n && s[j] == '\r')
-        j++;
-    return j < n && s[j] == '\n' ? j + 1 : 0;
+    if (j >= n || (s[j] != '\n' && s[j] != '\r'))
+        return 0;
+    if (j + 1 < n && (s[j + 1] == '\n' || s[j + 1] == '\r') &&
+        s[j + 1] != s[j])
+        return j + 2;
+    return j + 1;
 }
 
-/* The character at s[*i] after translation phases 1 and 2 (a trigraph
- * replaced when the TU has them; a backslash, optional blanks and a newline
- * removed), advancing *i past it; 0 at the end. */
+/* The character at s[*i] after phases 1 and 2, advancing *i past it; 0 at
+ * the end. */
 static char cm_tok_char(const char *s, size_t n, size_t *i, bool trigraphs)
 {
     while (*i < n) {
@@ -111,6 +179,24 @@ static char cm_tok_char(const char *s, size_t n, size_t *i, bool trigraphs)
     return 0;
 }
 
+/* The offset of the first character of the token at s[off], past any line
+ * splice it starts with. */
+static size_t cm_tok_first(const struct cm_tok_walk *w, size_t off)
+{
+    size_t i = off, at = off;
+    (void)cm_tok_char(w->s, w->n, &i, w->trigraphs);
+    while (at < i) {
+        char tri = cm_tok_trigraph(w->s, w->n, at, w->trigraphs);
+        size_t wd = tri != 0 ? 3 : 1;
+        char ch = tri != 0 ? tri : w->s[at];
+        size_t end = ch == '\\' ? cm_tok_splice_end(w->s, w->n, at + wd) : 0;
+        if (end == 0)
+            return at;
+        at = end;
+    }
+    return off;
+}
+
 /* Does the whitespace s[a, b) between two tokens hold a newline that ends
  * a logical line (one no splice removes)? */
 static bool cm_tok_newline(const struct cm_tok_walk *w, size_t a, size_t b)
@@ -124,8 +210,8 @@ static bool cm_tok_newline(const struct cm_tok_walk *w, size_t a, size_t b)
     return false;
 }
 
-/* The punctuator s[off, end) as phases 1 and 2 leave it (a splice or a
- * trigraph in it removed); false when it is longer than cap - 1. */
+/* The punctuator s[off, end) as phases 1 and 2 leave it; false when it is
+ * longer than cap - 1. */
 static bool cm_tok_clean(const struct cm_tok_walk *w, size_t off, size_t end,
                          char *out, size_t cap)
 {
@@ -140,13 +226,22 @@ static bool cm_tok_clean(const struct cm_tok_walk *w, size_t off, size_t end,
     return true;
 }
 
-/* A punctuation token at s[off, end) spelled `p` once cleaned. */
+/* A punctuation token at s[off, end) spelled `p` once cleaned; with no
+ * file text (a built-in macro's), by clang's spelling. */
 static bool cm_tok_punct(const struct cm_tok_walk *w, CXToken t, size_t off,
                          size_t end, const char *p)
 {
     char c[8];
-    return clang_getTokenKind(t) == CXToken_Punctuation &&
-           cm_tok_clean(w, off, end, c, sizeof(c)) && strcmp(c, p) == 0;
+    CXString sp;
+    bool is;
+    if (clang_getTokenKind(t) != CXToken_Punctuation)
+        return false;
+    if (w->s != NULL)
+        return cm_tok_clean(w, off, end, c, sizeof(c)) && strcmp(c, p) == 0;
+    sp = clang_getTokenSpelling(w->tu, t);
+    is = clang_getCString(sp) != NULL && strcmp(clang_getCString(sp), p) == 0;
+    clang_disposeString(sp);
+    return is;
 }
 
 static bool cm_tok_hash(const struct cm_tok_walk *w, CXToken t, size_t off,
@@ -175,15 +270,24 @@ static size_t cm_tok_header_end(const struct cm_tok_walk *w, size_t lt)
 }
 
 /* The offset of the newline ending the logical line that holds s[from]. */
-static size_t cm_tok_line_end(const struct cm_tok_walk *w, size_t from)
+static size_t cm_tok_line_end(const char *s, size_t n, size_t from,
+                              bool trigraphs)
 {
     size_t i = from;
     for (;;) {
         size_t at = i;
-        char ch = cm_tok_char(w->s, w->n, &i, w->trigraphs);
+        char ch = cm_tok_char(s, n, &i, trigraphs);
         if (ch == 0 || ch == '\n' || ch == '\r')
-            return ch == 0 ? w->n : at;
+            return ch == 0 ? n : at;
     }
+}
+
+/* ---- spellings ------------------------------------------------------------ */
+
+static bool cm_tok_word(CXToken t)
+{
+    CXTokenKind k = clang_getTokenKind(t);
+    return k == CXToken_Identifier || k == CXToken_Keyword;
 }
 
 /* Is the identifier or keyword token t spelled (cleaned) as one of set? */
@@ -199,6 +303,11 @@ static bool cm_tok_in(const struct cm_tok_walk *w, CXToken t,
     return in;
 }
 
+static bool cm_tok_is(const struct cm_tok_walk *w, CXToken t, const char *s)
+{
+    return cm_tok_word(t) && cm_tok_in(w, t, &s, 1);
+}
+
 /* A conditional-lookup word; *hdr set when the preprocessor lexes a
  * header name in its operand. */
 static bool cm_tok_probe(const struct cm_tok_walk *w, CXToken t, size_t off,
@@ -209,32 +318,282 @@ static bool cm_tok_probe(const struct cm_tok_walk *w, CXToken t, size_t off,
     static const char *const other[] = {"__has_include__",
                                         "__has_include_next__"};
     size_t i = off;
+    *hdr = false;
     if (clang_getTokenKind(t) != CXToken_Identifier ||
-        cm_tok_char(w->s, end, &i, w->trigraphs) != '_')
+        (w->s != NULL && cm_tok_char(w->s, end, &i, w->trigraphs) != '_'))
         return false;
     *hdr = cm_tok_in(w, t, hdr_words, 3);
     return *hdr || cm_tok_in(w, t, other, 2);
 }
 
-/* The directive name after a line-start '#'. */
-static void cm_tok_directive(struct cm_tok_walk *w, CXToken t, size_t end)
+/* ---- skipped groups -------------------------------------------------------- */
+
+static int cm_span_cmp(const void *a, const void *b)
 {
-    static const char *const define[] = {"define"}, *const pragma[] = {"pragma"};
+    const struct cm_span *x = a, *y = b;
+    return x->a < y->a ? -1 : x->a > y->a;
+}
+
+/* f's skipped groups, each less its first logical line (the directive the
+ * preprocessor evaluated to skip it), sorted and merged. */
+static bool cm_tok_skipped_ranges(CXTranslationUnit tu, CXFile file,
+                                  const char *s, size_t n, bool trigraphs,
+                                  struct cm_span **out, size_t *nout)
+{
+    CXSourceRangeList *l = clang_getSkippedRanges(tu, file);
+    size_t m = 0;
+    *out = NULL;
+    *nout = 0;
+    if (l == NULL || l->count == 0) {
+        clang_disposeSourceRangeList(l);
+        return true;
+    }
+    *out = zcl_calloc(l->count, sizeof(**out), "clang_manifest.skipped");
+    for (unsigned k = 0; *out != NULL && k < l->count; k++) {
+        size_t a = cm_tok_offset(clang_getRangeStart(l->ranges[k]));
+        size_t b = cm_tok_offset(clang_getRangeEnd(l->ranges[k]));
+        a = cm_tok_line_end(s, n, a, trigraphs);
+        if (a < b && b <= n)
+            (*out)[m++] = (struct cm_span){a, b};
+    }
+    clang_disposeSourceRangeList(l);
+    if (*out == NULL)
+        return false;
+    qsort(*out, m, sizeof(**out), cm_span_cmp);
+    for (size_t k = 0; k < m; k++) {
+        if (*nout > 0 && (*out)[k].a <= (*out)[*nout - 1].b) {
+            if ((*out)[k].b > (*out)[*nout - 1].b)
+                (*out)[*nout - 1].b = (*out)[k].b;
+        } else {
+            (*out)[(*nout)++] = (*out)[k];
+        }
+    }
+    return true;
+}
+
+/* Is s[off] in a skipped group? Offsets only grow along a walk. */
+static bool cm_tok_skipped(struct cm_tok_walk *w, size_t off)
+{
+    while (w->iskip < w->nskip && w->skip[w->iskip].b <= off)
+        w->iskip++;
+    return w->iskip < w->nskip && w->skip[w->iskip].a <= off;
+}
+
+/* The first skipped-group edge after s[off], or SIZE_MAX. */
+static size_t cm_tok_edge(struct cm_tok_walk *w, size_t off)
+{
+    if (cm_tok_skipped(w, off))
+        return w->skip[w->iskip].b;
+    return w->iskip < w->nskip ? w->skip[w->iskip].a : SIZE_MAX;
+}
+
+/* Token t's spelling into out when it fits in cap; false otherwise. */
+static bool cm_tok_spell(CXTranslationUnit tu, CXToken t, char *out,
+                         size_t cap)
+{
+    CXString sp = clang_getTokenSpelling(tu, t);
+    const char *c = clang_getCString(sp);
+    bool fits = c != NULL && strlen(c) < cap;
+    if (fits)
+        memcpy(out, c, strlen(c) + 1);
+    clang_disposeString(sp);
+    return fits;
+}
+
+/* ---- words ## could paste into a lookup word -------------------------- */
+
+static const char *const k_cm_paste_words[CM_PASTE_WORDS] = {
+    "__has_include", "__has_include_next", "__has_embed"};
+
+/* Note every place spelling s occurs inside a lookup word. */
+static void cm_piece_add(struct cm_piece *p, const char *s)
+{
+    size_t ls = strlen(s);
+    for (size_t w = 0; w < CM_PASTE_WORDS && ls > 0; w++) {
+        const char *word = k_cm_paste_words[w];
+        for (const char *at = strstr(word, s); at != NULL;
+             at = strstr(at + 1, s))
+            p->have[w][at - word][(size_t)(at - word) + ls] = true;
+    }
+}
+
+/* Can lookup word w be spelled by two or more noted spellings in a row?
+ * Returns the length of the first one, or 0. */
+static size_t cm_piece_cover(const struct cm_piece *p, size_t w)
+{
+    size_t len = strlen(k_cm_paste_words[w]);
+    bool to_end[CM_PASTE_MAX + 1] = {0}; /* [a]: a..len is spelled */
+    to_end[len] = true;
+    for (size_t a = len; a-- > 0;)
+        for (size_t b = a + 1; b <= len && !to_end[a]; b++)
+            to_end[a] = p->have[w][a][b] && to_end[b] && !(a == 0 && b == len);
+    for (size_t b = len - 1; to_end[0] && b > 0; b--)
+        if (p->have[w][0][b] && to_end[b])
+            return b;
+    return 0;
+}
+
+/* Token t on a #define body, #if, #elif or #embed line, or in a built-in
+ * macro: a word whose spelling a ## could join into a lookup word. */
+static void cm_tok_piece(struct cm_tok_walk *w, CXToken t)
+{
+    char c[CM_PIECE_MAX];
+    if (cm_tok_word(t) && cm_tok_spell(w->tu, t, c, sizeof(c)))
+        cm_piece_add(w->piece, c);
+}
+
+/* ---- directive lines --------------------------------------------------------- */
+
+/* The directive name after a line-start '#'. */
+static void cm_tok_directive(struct cm_tok_walk *w, CXToken t, size_t end,
+                             bool skipped)
+{
+    static const char *const cond[] = {"if", "elif"};
+    static const char *const ifdef[] = {"ifdef", "ifndef", "elifdef",
+                                        "elifndef"};
     static const char *const hdr[] = {"include", "include_next", "import",
                                       "embed", "__include_macros"};
     static const char *const text[] = {"warning", "error"};
-    CXTokenKind k = clang_getTokenKind(t);
-    if (k != CXToken_Identifier && k != CXToken_Keyword)
+    if (!cm_tok_word(t))
         return;
-    if (cm_tok_in(w, t, define, 1))
-        w->in_define = true;
-    else if (cm_tok_in(w, t, pragma, 1))
-        w->in_pragma = true;
-    else if (cm_tok_in(w, t, hdr, 5))
+    w->dir = CM_DIR_OTHER;
+    if (cm_tok_is(w, t, "define"))
+        w->dir = CM_DIR_DEFINE;
+    else if (cm_tok_in(w, t, cond, 2))
+        w->dir = CM_DIR_COND;
+    else if (cm_tok_in(w, t, ifdef, 4))
+        w->dir = CM_DIR_IFDEF;
+    else if (cm_tok_is(w, t, "pragma"))
+        w->dir = CM_DIR_PRAGMA;
+    if (cm_tok_in(w, t, hdr, 5))
         w->header = 1;
-    else if (cm_tok_in(w, t, text, 2))
-        w->restart = cm_tok_line_end(w, end);
+    if (cm_tok_is(w, t, "embed"))
+        w->dir = CM_DIR_EMBED;
+    if (!skipped && cm_tok_in(w, t, text, 2))
+        w->restart = cm_tok_line_end(w->s, w->n, end, w->trigraphs);
+    w->first_operand = w->dir == CM_DIR_IFDEF;
+    w->defd = CM_DEFD_EXPECT;
+    w->after_defined = 0;
 }
+
+/* The next state of an #if line's defined tests after token t. */
+static enum cm_defd cm_tok_defd(const struct cm_tok_walk *w, CXToken t,
+                                size_t off, size_t end)
+{
+    bool word = cm_tok_word(t);
+    switch (w->defd) {
+    case CM_DEFD_EXPECT:
+        if (cm_tok_punct(w, t, off, end, "!"))
+            return CM_DEFD_EXPECT;
+        return cm_tok_is(w, t, "defined") ? CM_DEFD_KW : CM_DEFD_BAD;
+    case CM_DEFD_KW:
+        if (cm_tok_punct(w, t, off, end, "("))
+            return CM_DEFD_OPEN;
+        return word ? CM_DEFD_AFTER : CM_DEFD_BAD;
+    case CM_DEFD_OPEN:
+        return word ? CM_DEFD_CLOSE : CM_DEFD_BAD;
+    case CM_DEFD_CLOSE:
+        return cm_tok_punct(w, t, off, end, ")") ? CM_DEFD_AFTER
+                                                 : CM_DEFD_BAD;
+    case CM_DEFD_AFTER:
+        return cm_tok_punct(w, t, off, end, "&&") ||
+                       cm_tok_punct(w, t, off, end, "||")
+                   ? CM_DEFD_EXPECT
+                   : CM_DEFD_BAD;
+    default:
+        return CM_DEFD_BAD;
+    }
+}
+
+/* A token on an #if or #elif line: whether it is a lookup word only
+ * tested for being defined. */
+static bool cm_tok_cond(struct cm_tok_walk *w, CXToken t, size_t off,
+                        size_t end)
+{
+    bool operand = w->after_defined != 0 && cm_tok_word(t);
+    bool exempt = operand && w->defd != CM_DEFD_BAD &&
+                  (w->defd == CM_DEFD_KW || w->defd == CM_DEFD_OPEN);
+    if (w->dir == CM_DIR_COND)
+        w->defd = cm_tok_defd(w, t, off, end);
+    if (cm_tok_is(w, t, "defined"))
+        w->after_defined = 1;
+    else if (w->after_defined == 1 && cm_tok_punct(w, t, off, end, "("))
+        w->after_defined = 2;
+    else
+        w->after_defined = 0;
+    return exempt && w->dir == CM_DIR_COND;
+}
+
+/* ---- one token ---------------------------------------------------------------- */
+
+static void cm_tok_line_start(struct cm_tok_walk *w)
+{
+    w->dir = CM_DIR_NONE;
+    w->expect_name = w->first_operand = w->def_named = false;
+    w->header = 0;
+}
+
+/* Mark the lookup word at s[off] by its line's directive. */
+static void cm_tok_mark_word(struct cm_tok_walk *w, size_t off, bool exempt,
+                             bool skipped)
+{
+    uint8_t v = CM_LIVE_WORD;
+    if (w->dir == CM_DIR_DEFINE)
+        v = CM_LIVE_BODY;
+    else if (exempt && !skipped)
+        v = CM_LIVE_EXEMPT;
+    w->live[cm_tok_first(w, off)] = v;
+}
+
+/* The line's directive bookkeeping for one token: whether it is a lookup
+ * word only tested for being defined. */
+static bool cm_tok_line(struct cm_tok_walk *w, CXToken t, size_t off,
+                        size_t end)
+{
+    bool first = w->first_operand;
+    w->first_operand = false;
+    if (w->dir == CM_DIR_DEFINE && !w->def_named) {
+        w->def_named = cm_tok_word(t);
+        return false;
+    }
+    if (w->dir == CM_DIR_DEFINE || w->dir == CM_DIR_COND ||
+        w->dir == CM_DIR_EMBED)
+        cm_tok_piece(w, t);
+    if (w->dir == CM_DIR_COND || w->dir == CM_DIR_EMBED)
+        return cm_tok_cond(w, t, off, end);
+    return first && w->dir == CM_DIR_IFDEF;
+}
+
+/* One token that is no comment, first on its logical line or not. */
+static void cm_tok_one(struct cm_tok_walk *w, CXToken t, size_t off,
+                       size_t end, bool line_start, bool skipped)
+{
+    bool hdr = false, probe, exempt;
+    if (line_start)
+        cm_tok_line_start(w);
+    if (w->expect_name) {
+        w->expect_name = false;
+        cm_tok_directive(w, t, end, skipped);
+        return; /* a directive name: no mark, so an #embed is recorded */
+    }
+    if (line_start && cm_tok_hash(w, t, off, end)) {
+        w->expect_name = true;
+        if (!skipped)
+            memset(w->live + off, CM_LIVE_HIDDEN, end - off);
+        return;
+    }
+    w->header = w->header == 2 && cm_tok_punct(w, t, off, end, "(") ? 1 : 0;
+    probe = cm_tok_probe(w, t, off, end, &hdr);
+    exempt = cm_tok_line(w, t, off, end);
+    if (probe) {
+        cm_tok_mark_word(w, off, exempt, skipped);
+        w->header = hdr ? 2 : 0;
+    } else if (!skipped) {
+        memset(w->live + off, CM_LIVE_HIDDEN, end - off);
+    }
+}
+
+/* ---- spans the preprocessor reads unlike raw lexing ----------------------- */
 
 /* Every token of toks from index i whose start is before `close` ends by
  * it: the raw lexing agrees with the header name or text span there. */
@@ -263,9 +622,11 @@ static unsigned cm_tok_skip(const struct cm_tok_walk *w,
     return i;
 }
 
-/* Handle a span the preprocessor reads as one token or as text, ending at
- * `close`: skip the raw tokens inside it, or tokenize again from `close`
- * when they run past it. Returns the next index. */
+/* A span up to `close` the preprocessor reads as one token or as text
+ * (never in a skipped group): left unmarked, so the scan records any
+ * lookup word text in it; skip the raw tokens inside it, or
+ * tokenize again from `close` when they run past it. Returns the next
+ * index. */
 static unsigned cm_tok_span(struct cm_tok_walk *w, const struct cm_toks *toks,
                             unsigned i, size_t close)
 {
@@ -274,38 +635,10 @@ static unsigned cm_tok_span(struct cm_tok_walk *w, const struct cm_toks *toks,
         w->reach = close;
     if (!cm_tok_agrees(w, toks, i, close)) {
         w->restart = close;
+        w->restart_bol = false;
         return toks->n;
     }
     return cm_tok_skip(w, toks, i, close);
-}
-
-/* One token that is no comment, first on its logical line or not. */
-static void cm_tok_one(struct cm_tok_walk *w, CXToken t, size_t off,
-                       size_t end, bool line_start)
-{
-    bool hdr = false;
-    if (line_start) {
-        w->in_define = w->in_pragma = w->expect_name = false;
-        w->header = 0;
-    }
-    if (w->expect_name) {
-        w->expect_name = false;
-        cm_tok_directive(w, t, end);
-        return;
-    }
-    if (cm_tok_hash(w, t, off, end)) {
-        w->live[off] = w->in_define ? 2 : 1;
-        w->expect_name = line_start;
-        return;
-    }
-    if (w->header == 2)
-        w->header = cm_tok_punct(w, t, off, end, "(") ? 1 : 0;
-    else
-        w->header = 0;
-    if (cm_tok_probe(w, t, off, end, &hdr)) {
-        w->live[off] = w->in_define ? 2 : 1;
-        w->header = hdr ? 2 : 0;
-    }
 }
 
 /* After the token at [off, end): a header name the preprocessor lexes
@@ -320,7 +653,8 @@ static unsigned cm_tok_after(struct cm_tok_walk *w, const struct cm_toks *toks,
         w->header = 0;
         return cm_tok_span(w, toks, i, close);
     }
-    if (w->in_pragma && close != 0 && !cm_tok_agrees(w, toks, i, close)) {
+    if (w->dir == CM_DIR_PRAGMA && close != 0 &&
+        !cm_tok_agrees(w, toks, i, close)) {
         w->refused = "a #pragma header name could hide text";
         return toks->n;
     }
@@ -332,6 +666,21 @@ static unsigned cm_tok_after(struct cm_tok_walk *w, const struct cm_toks *toks,
     return i;
 }
 
+/* ---- the walk ------------------------------------------------------------------- */
+
+/* Tokenize again at a skipped group's edge the token [off, end) runs
+ * across; false when it runs across none. */
+static bool cm_tok_crosses(struct cm_tok_walk *w, size_t off, size_t end)
+{
+    size_t edge = cm_tok_edge(w, off);
+    if (end <= edge)
+        return false;
+    w->restart = edge;
+    w->restart_bol = true;
+    w->prev_end = edge;
+    return true;
+}
+
 /* Walk one tokenization. A comment is whitespace: it neither starts a
  * line nor is a token of one. */
 static void cm_tok_walk_toks(struct cm_tok_walk *w, const struct cm_toks *toks)
@@ -341,19 +690,26 @@ static void cm_tok_walk_toks(struct cm_tok_walk *w, const struct cm_toks *toks)
         CXSourceRange r = clang_getTokenExtent(w->tu, t);
         size_t off = cm_tok_offset(clang_getRangeStart(r));
         size_t end = cm_tok_offset(clang_getRangeEnd(r));
-        bool opens = w->header == 1, line_start;
+        bool opens = w->header == 1, line_start, skipped;
+        if (cm_tok_crosses(w, off, end))
+            return;
+        skipped = cm_tok_skipped(w, off);
         if (cm_tok_newline(w, w->prev_end, off))
             w->bol = true;
         w->prev_end = end;
         if (end > w->reach)
             w->reach = end;
         i++;
-        if (clang_getTokenKind(t) == CXToken_Comment)
+        if (clang_getTokenKind(t) == CXToken_Comment) {
+            if (!skipped)
+                memset(w->live + off, CM_LIVE_HIDDEN, end - off);
             continue;
+        }
         line_start = w->bol;
         w->bol = false;
-        cm_tok_one(w, t, off, end, line_start);
-        i = cm_tok_after(w, toks, i, off, end, opens);
+        cm_tok_one(w, t, off, end, line_start, skipped);
+        if (!skipped)
+            i = cm_tok_after(w, toks, i, off, end, opens && !skipped);
     }
 }
 
@@ -392,6 +748,9 @@ static bool cm_tok_pass(struct cm_state *st, struct cm_file *f,
         return cm_fail(&st->core, "cannot tokenize %s", f->path);
     w->restart = 0;
     w->prev_end = from;
+    if (w->restart_bol)
+        w->bol = true;
+    w->restart_bol = false;
     cm_tok_walk_toks(w, &toks);
     clang_disposeTokens(st->tu, toks.t, toks.n);
     if (w->refused != NULL)
@@ -405,11 +764,14 @@ static bool cm_tok_pass(struct cm_state *st, struct cm_file *f,
 }
 
 static bool cm_tok_file(struct cm_state *st, struct cm_file *f,
-                        bool trigraphs)
+                        bool trigraphs, struct cm_piece *piece)
 {
     struct cm_tok_walk w = {.tu = st->tu, .s = f->contents, .n = f->size,
-                            .trigraphs = trigraphs, .bol = true};
+                            .trigraphs = trigraphs, .bol = true,
+                            .piece = piece};
+    struct cm_span *skip = NULL;
     size_t from = 0;
+    bool ok = true;
     free(f->live);
     f->live = NULL;
     if (f->size == 0)
@@ -417,24 +779,90 @@ static bool cm_tok_file(struct cm_state *st, struct cm_file *f,
     if (f->contents == NULL || f->size >= UINT32_MAX)
         return cm_fail(&st->core, "cannot tokenize %s", f->path);
     w.live = zcl_calloc(f->size, 1, "clang_manifest.live");
-    if (w.live == NULL)
-        return cm_fail(&st->core, "out of memory");
+    if (w.live == NULL ||
+        !cm_tok_skipped_ranges(st->tu, (CXFile)f->key, f->contents, f->size,
+                               trigraphs, &skip, &w.nskip))
+        return free(w.live), cm_fail(&st->core, "out of memory");
     f->live = w.live;
+    w.skip = skip;
     do {
-        if (!cm_tok_pass(st, f, &w, from))
-            return false;
+        ok = cm_tok_pass(st, f, &w, from);
         from = w.restart;
-    } while (from != 0 && from < f->size);
-    if (!cm_tok_covered(&w))
-        return cm_fail(&st->core, "cannot tokenize %s: tokens end at %zu",
-                       f->path, w.reach);
+    } while (ok && from != 0 && from < f->size);
+    free(skip);
+    if (ok && !cm_tok_covered(&w))
+        ok = cm_fail(&st->core, "cannot tokenize %s: tokens end at %zu",
+                     f->path, w.reach);
+    return ok;
+}
+
+/* ---- built-in and command-line #defines ------------------------------------ */
+
+struct cm_builtin_visit {
+    struct cm_state *st;
+    struct cm_piece *piece;
+};
+
+/* A macro no file holds (the front end's built-ins, -D and -U): its
+ * tokens are read as a #define line's, by clang's spelling (the buffer
+ * that holds them is no file, and phases 1 and 2 leave it as it is). */
+static enum CXChildVisitResult cm_tok_builtin_visit(CXCursor c, CXCursor parent,
+                                                    CXClientData data)
+{
+    struct cm_builtin_visit *v = data;
+    struct cm_tok_walk w = {.tu = v->st->tu, .piece = v->piece,
+                            .dir = CM_DIR_DEFINE};
+    CXFile file = NULL;
+    CXToken *t = NULL;
+    unsigned n = 0;
+    (void)parent;
+    if (clang_getCursorKind(c) != CXCursor_MacroDefinition)
+        return CXChildVisit_Continue;
+    clang_getSpellingLocation(clang_getCursorLocation(c), &file, NULL, NULL,
+                              NULL);
+    if (file != NULL)
+        return CXChildVisit_Continue;
+    clang_tokenize(v->st->tu, clang_getCursorExtent(c), &t, &n);
+    for (unsigned k = 0; k < n; k++)
+        (void)cm_tok_line(&w, t[k], 0, 0);
+    clang_disposeTokens(v->st->tu, t, n);
+    return CXChildVisit_Continue;
+}
+
+/* The first spelling of a paste that could build a lookup word, into
+ * st->core.paste_piece, or NULL. */
+static bool cm_piece_report(struct cm_state *st, const struct cm_piece *p)
+{
+    free(st->core.paste_piece);
+    st->core.paste_piece = NULL;
+    for (size_t w = 0; w < CM_PASTE_WORDS; w++) {
+        size_t b = cm_piece_cover(p, w);
+        char first[CM_PASTE_MAX + 1];
+        if (b == 0)
+            continue;
+        memcpy(first, k_cm_paste_words[w], b);
+        first[b] = '\0';
+        if ((st->core.paste_piece = cm_strdup(first)) == NULL)
+            return cm_fail(&st->core, "out of memory");
+        return true;
+    }
     return true;
 }
 
 bool cm_tokenize_files(struct cm_state *st, bool trigraphs)
 {
-    for (size_t k = 0; k < st->core.nfiles; k++)
-        if (!cm_tok_file(st, &st->core.files[k], trigraphs))
-            return false;
-    return true;
+    struct cm_piece *piece = zcl_calloc(1, sizeof(*piece),
+                                        "clang_manifest.piece");
+    struct cm_builtin_visit v = {.st = st, .piece = piece};
+    bool ok = piece != NULL;
+    if (!ok)
+        return cm_fail(&st->core, "out of memory");
+    for (size_t k = 0; ok && k < st->core.nfiles; k++)
+        ok = cm_tok_file(st, &st->core.files[k], trigraphs, piece);
+    if (ok)
+        clang_visitChildren(clang_getTranslationUnitCursor(st->tu),
+                            cm_tok_builtin_visit, &v);
+    ok = ok && cm_piece_report(st, piece);
+    free(piece);
+    return ok;
 }

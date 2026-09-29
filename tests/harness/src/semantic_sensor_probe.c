@@ -1,11 +1,11 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * purpose: semantic_sensor checks that the conditional-lookup scan sees every probe the front end evaluates, a system header's own included, and that the sensor refuses the options it cannot read (every -X pass-through but -Xlinker, -Wp, plugins and MSVC compatibility), whatever option values spell like -std.
  *
- * Each case emits one TU whose __has_include the scan could miss and
- * reads its LOOKUPS back: the probe must be there, replayed against its
- * search slots or recorded with no negative claim, so the facts consumer
- * widens on a created or deleted path. Each refusal case must fail the
- * emit with its reason. Part of the semantic_sensor group
+ * Each case emits one TU whose __has_include, __has_embed or #embed the
+ * scan could miss and reads its LOOKUPS back: the probe must be there,
+ * replayed against its search slots or recorded with no negative claim,
+ * so the facts consumer widens on a created or deleted path. Each refusal
+ * case must fail the emit with its reason. Part of the semantic_sensor group
  * (test_semantic_manifest.c); runs only where build/bin/z23-clang-manifest
  * is built. */
 
@@ -210,6 +210,76 @@ static const struct ssp_case k_ssp_cases[] = {
      "#if __has_include(<opt.h>)\n" SSP_TAIL,
      {"-std=c23", "-Dsizeof(x)=2", NULL}, NULL, NULL, false, "opt.h",
      SSP_ANY},
+    {"after a skipped #error line holding /*",
+     "#if 0\n"
+     "#error /*\n"
+     "\"*/\" /*\n"
+     "#endif\n"
+     "#if __has_include(\"opt.h\")\n" SSP_TAIL "// */\n",
+     {"-std=c23", NULL, NULL}, NULL, NULL, false, "opt.h", SSP_BOUND},
+    {"after a skipped %:error line holding /*",
+     "#if 0\n"
+     "%:error /*\n"
+     "\"*/\" /*\n"
+     "#endif\n"
+     "#if __has_include(\"opt.h\")\n" SSP_TAIL "// */\n",
+     {"-std=c23", NULL, NULL}, NULL, NULL, false, "opt.h", SSP_BOUND},
+    {"after a skipped #warning line holding /*",
+     "#if 0\n"
+     "#warning /*\n"
+     "\"*/\" /*\n"
+     "#endif\n"
+     "#if __has_include(\"opt.h\")\n" SSP_TAIL "// */\n",
+     {"-std=c23", NULL, NULL}, NULL, NULL, false, "opt.h", SSP_BOUND},
+    {"after a skipped #include whose header name holds /*",
+     "#if 0\n"
+     "#include <a/*>\n"
+     "\"*/\" /*\n"
+     "#endif\n"
+     "#if __has_include(\"opt.h\")\n" SSP_TAIL "// */\n",
+     {"-std=c23", NULL, NULL}, NULL, NULL, false, "opt.h", SSP_BOUND},
+    {"as an #embed after a skipped #error line holding /*",
+     "#if 0\n"
+     "#error /*\n"
+     "\"*/\" /*\n"
+     "#endif\n"
+     "static const unsigned char d[] = {\n"
+     "#embed \"d.bin\"\n"
+     "};\n"
+     "int f(void) { return (int)sizeof d; }\n"
+     "// */\n",
+     {"-std=c23", NULL, NULL}, NULL, NULL, false, "#embed \"d.bin\"",
+     SSP_UNBOUND},
+    {"across a splice with a form feed before its newline",
+     "#if __has_in\\\f\n"
+     "clude(\"opt.h\")\n" SSP_TAIL,
+     {"-std=c23", NULL, NULL}, NULL, NULL, false,
+     "#embed? __has_include(\"opt.h\")", SSP_UNBOUND},
+    {"across a splice ended by a lone carriage return",
+     "#if __has_in\\\rclude(\"opt.h\")\n" SSP_TAIL,
+     {"-std=c23", NULL, NULL}, NULL, NULL, false,
+     "#embed? __has_include(\"opt.h\")", SSP_UNBOUND},
+    {"across a splice ended by a newline and a carriage return",
+     "#if __has_in\\\n"
+     "\rclude(\"opt.h\")\n" SSP_TAIL,
+     {"-std=c23", NULL, NULL}, NULL, NULL, false,
+     "#embed? __has_include(\"opt.h\")", SSP_UNBOUND},
+    {"as a word a macro call pastes together",
+     "#define CAT(a, b) a##b\n"
+     "#if CAT(__has_, include)(\"opt.h\")\n" SSP_TAIL,
+     {"-std=c23", NULL, NULL}, NULL, NULL, false,
+     "#embed? pasted from __has_", SSP_UNBOUND},
+    {"as a __has_embed",
+     "#if __has_embed(\"d.bin\") == 1\n" SSP_TAIL "// */\n",
+     {"-std=c23", NULL, NULL}, NULL, NULL, false, "__has_embed(\"d.bin\")",
+     SSP_UNBOUND},
+    {"as a __has_embed after an alias of __has_include called on <x/*>",
+     "#define HI __has_include\n"
+     "#if HI(<nope.h/*>)\n"
+     "#endif\n"
+     "#if __has_embed(\"d.bin\") == 1\n" SSP_TAIL "// */\n",
+     {"-std=c23", NULL, NULL}, NULL, NULL, false, "__has_embed(\"d.bin\")",
+     SSP_UNBOUND},
 };
 
 /* Options the scan cannot read: the emit must refuse with `why`. */
@@ -415,6 +485,7 @@ static bool ssp_emit(const struct ssp_tree *t, const struct ssp_case *k,
 static bool ssp_write_case(const struct ssp_tree *t, const struct ssp_case *k)
 {
     return ssp_write(t->root, "main.c", k->main) &&
+           ssp_write(t->root, "d.bin", "x") &&
            (k->sys_header == NULL ||
             ssp_write(t->sys, "probe.h", k->sys_header)) &&
            (k->sys_header2 == NULL ||

@@ -906,7 +906,7 @@ static bool sss_gate_back(const char *root)
 static const struct sss_step k_sss_gate_steps[] = {
     {"gate-base", sss_gate_setup, false, "created", "first-parse"},
     {"gate-body", sss_body, false, "recreated",
-     "lookup-unbound __has_include(OPT_HDR)"},
+     "lookup-unbound #embed? __has_include(OPT_HDR)"},
     {"gate-gone", sss_gate_gone, false, "recreated", "lookup-unbound"},
     {"gate-back", sss_gate_back, false, "recreated", "lookup-unbound"},
 };
@@ -924,7 +924,7 @@ struct sss_unbound {
 
 static const struct sss_unbound k_sss_unbound[] = {
     {"gnu-next", "#if 0\n#if __has_include_next__(<opt.h>)\n#endif\n#endif\n",
-     "lookup-unbound __has_include_next__(<opt.h>)"},
+     "lookup-unbound #embed? __has_include_next__(<opt.h>)"},
     {"has-embed", "#if 0\n#if __has_embed(\"opt.h\")\n#endif\n#endif\n",
      "lookup-unbound __has_embed("},
     {"embed", "#if 0\nstatic const char b[] = {\n#embed \"opt.h\"\n};\n#endif\n",
@@ -932,11 +932,11 @@ static const struct sss_unbound k_sss_unbound[] = {
     {"embed-spaced", "#if 0\n  %: /* x */ embed <opt.h>\n#endif\n",
      "lookup-unbound #embed"},
     {"continued", "#if 0\n#if __has_include(\\\n\"opt.h\")\n#endif\n#endif\n",
-     "lookup-unbound __has_include("},
+     "lookup-unbound #embed? __has_include("},
     {"split-word", "#if 0\n#if __has_inc\\\nlude(<opt.h>)\n#endif\n#endif\n",
-     "lookup-unbound __has_include(<opt.h>)"},
+     "lookup-unbound #embed? __has_include(<opt.h>)"},
     {"gnu-word", "#if 0\n#if __has_include__(<opt.h>)\n#endif\n#endif\n",
-     "lookup-unbound __has_include__(<opt.h>)"},
+     "lookup-unbound #embed? __has_include__(<opt.h>)"},
 };
 #define SSS_UNBOUND (sizeof(k_sss_unbound) / sizeof(k_sss_unbound[0]))
 

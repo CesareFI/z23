@@ -188,38 +188,37 @@ bool cm_lookup_directive(struct cm_core *c, const struct cm_file *includer,
 /* ---- conditional lookups: text scan + search replay --------------------------- */
 
 /* __has_include and its relatives ask whether a name resolves, and #embed
- * reads a resource, without an include directive the front end reports. The
- * scan finds every one in every file the TU reads, a system header's too
- * (its angled searches start at the repo's -I dirs), and records each as a
- * lookup; a word only an #ifdef-like directive or a plain defined test
- * reads is none (cm_defined_operand). A
- * __has_include whose operand is a literal "x" or <x>, or an object-like
- * repo macro every definition of which is one plain string literal (the
- * front end's recorded expansion at that offset names the definition;
- * facts manifests only, since only they keep expansions), is
- * replayed: the producer runs the search itself and stat-confirms every
- * probe (REPLAYED_STAT). A __has_include_next is replayed the same way from
- * the slot after each one its file was entered through (cm_entry_add), or,
- * in a system header, from the start and after each search dir that could
- * hold it (cm_cond_next_system); the slots before that start are recorded
- * present, with no claim. The sensor refuses every -X pass-through, -Wp,,
- * front-end plugins and MSVC compatibility,
- * whose -D, -std or trigraph rules the scan cannot read. Every other
- * spelling - another macro operand, __has_embed, the GNU __has_include__
- * words, #embed, an include_next start no slot names, an occurrence a
- * line continuation or trigraph runs through, an operand holding a
- * comment opener, a probe word in any file's #define body (a system
- * header's too) or in a -D value - is recorded with no negative claim
- * (MISS_V1_NONE), as include_next is: a warm session then recreates the TU,
- * and the facts consumer treats it as reachable by every created or deleted
- * path (and #embed or __has_embed by every changed path). Which words are
- * live is clang's own lexing of each file under the TU's language options
- * (clang_tokenize, clang_manifest_tokens.c): a word in a comment or in a
- * character, string or raw string literal is no lookup, but one in a
- * skipped group counts too, which costs warm reuse and precision, never
- * truth. The scan then reads each live word's operand in the text as
- * translation phases 1 and 2 leave it (cm_splice, with the trigraph rule
- * cm_measure_lang measured for the TU).
+ * reads a resource, without an include directive the front end reports.
+ * The scan's invariant: every occurrence of a lookup word in the text of
+ * any file the TU reads (a system header's too: its angled searches start
+ * at the repo's -I dirs) ends with a record, unless clang's own tokens,
+ * outside a skipped group, show it is none (cm_floor_file). A word clang
+ * lexes as a lookup token (clang_manifest_tokens.c) is replayed where the
+ * scan can: a __has_include whose operand is a literal "x" or <x>, or an
+ * object-like repo macro every definition of which is one plain string
+ * literal (the front end's recorded expansion at that offset names the
+ * definition; facts manifests only, since only they keep expansions), and
+ * a __has_include_next from the slot after each one its file was entered
+ * through (cm_entry_add), or, in a system header, from the start and after
+ * each search dir that could hold it (cm_cond_next_system); the producer
+ * runs the search itself and stat-confirms every probe (REPLAYED_STAT),
+ * and the slots before the start are recorded present, with no claim.
+ * Every other occurrence - another operand, __has_embed, the GNU
+ * __has_include__ words, #embed, an include_next start no slot names, one
+ * a line continuation or trigraph runs through, a word in any #define body
+ * or -D value, a word not followed by its '(' (an alias's body), one in a
+ * skipped group, a header name or #warning or #error text, and, once for
+ * the TU, words some ## could paste into a lookup word
+ * (cm_core.paste_piece) - is recorded with no negative claim
+ * (MISS_V1_NONE), spelled from "#embed" or "__has_embed" on, so the facts
+ * consumer treats it as reachable by every changed path. Precision
+ * failures only ever widen. The sensor refuses every -X pass-through,
+ * -Wp,, front-end plugins and MSVC compatibility,
+ * whose -D, -std or trigraph rules the scan cannot read, and a TU where a
+ * lookup token clang lexes is not the word the scan reads at its offset.
+ * The scan reads each word's operand in the text as translation phases 1
+ * and 2 leave it (cm_splice, with the trigraph rule cm_measure_lang
+ * measured for the TU).
  * Contract: docs/work/SEMANTIC_MANIFEST.md, "Warm session". */
 
 /* The longest spelled name an unbound record keeps. */
@@ -253,15 +252,21 @@ struct cm_spliced {
     size_t nsplices, cap;
 };
 
-/* The end of a continuation starting at the backslash s[i], or 0. */
+/* The end of a line splice whose backslash is at s[i], as clang's
+ * getEscapedNewLineSize reads one (blanks, form feeds and vertical tabs,
+ * then a newline or carriage return, then the other of the two), or 0. */
 static size_t cm_continuation_end(const char *s, size_t i, size_t n)
 {
-    size_t j = cm_skip_space(s, i + 1, n);
-    if (j < n && s[j] == '\n')
-        return j + 1;
-    if (j + 1 < n && s[j] == '\r' && s[j + 1] == '\n')
+    size_t j = i + 1;
+    while (j < n && (s[j] == ' ' || s[j] == '\t' || s[j] == '\f' ||
+                     s[j] == '\v'))
+        j++;
+    if (j >= n || (s[j] != '\n' && s[j] != '\r'))
+        return 0;
+    if (j + 1 < n && (s[j + 1] == '\n' || s[j + 1] == '\r') &&
+        s[j + 1] != s[j])
         return j + 2;
-    return 0;
+    return j + 1;
 }
 
 /* The character the trigraph at s[i] stands for, else 0. */
@@ -410,40 +415,6 @@ static size_t cm_cond_word(const char *s, size_t i, size_t n,
     return 0;
 }
 
-/* Skip spaces, tabs and block comments: what may sit between a directive's
- * '#' and its name. */
-static size_t cm_skip_directive_space(const char *s, size_t i, size_t n)
-{
-    for (;;) {
-        i = cm_skip_space(s, i, n);
-        if (n - i < 2 || s[i] != '/' || s[i + 1] != '*')
-            return i;
-        for (i += 2; n - i >= 2 && (s[i] != '*' || s[i + 1] != '/'); i++)
-            ;
-        if (n - i < 2)
-            return n;
-        i += 2;
-    }
-}
-
-/* An #embed (or %:embed) directive's name at s[i]: the offset just past
- * "embed", else 0. */
-static size_t cm_embed_at(const char *s, size_t i, size_t n)
-{
-    size_t j;
-    if (s[i] == '#')
-        j = i + 1;
-    else if (s[i] == '%' && n - i >= 2 && s[i + 1] == ':')
-        j = i + 2;
-    else
-        return 0;
-    j = cm_skip_directive_space(s, j, n);
-    if (n - j < 5 || memcmp(s + j, "embed", 5) != 0 ||
-        (j + 5 < n && cm_ident_char(s[j + 5])))
-        return 0;
-    return j + 5;
-}
-
 /* A __has_include(...) with a literal operand, closed on its own spelling:
  * form and name; *end is just past the ')'. An operand holding a comment
  * opener is none: which name the front end reads there is left unbound. */
@@ -495,11 +466,21 @@ static void cm_cond_name(const char *prefix, const char *s, size_t i,
     *form = cm_cond_form(s, i, end);
 }
 
-/* A lookup the scan found and cannot replay: no hit, no negative claim. */
+/* A lookup the scan found and cannot replay: no hit, no negative claim.
+ * Its name is spelled from "#embed" or "__has_embed" on ("#embed? " put in
+ * front of any other), so the facts consumer treats it as reachable by
+ * every changed path, a content edit too: what it reads is not known. */
 static bool cm_cond_unbound(struct cm_core *c, const struct cm_file *f,
                             const char *name, uint8_t form)
 {
-    struct cm_probe p = {.form = form, .name = name};
+    char spelled[PATH_MAX];
+    struct cm_probe p = {.form = form, .name = spelled};
+    bool embed = strncmp(name, "#embed", 6) == 0 ||
+                 strncmp(name, "__has_embed", 11) == 0;
+    int w = snprintf(spelled, sizeof(spelled), "%s%s", embed ? "" : "#embed? ",
+                     name);
+    if (w < 0)
+        return cm_fail(c, "cannot spell an unbound lookup");
     cm_dir_of(f->opened, p.includer_dir);
     p.hit_slot = cm_slot_count(c, form);
     return cm_emit_lookup(c, f, &p, VCS_SEMANTIC_LOOKUP_V1_HAS_INCLUDE, "",
@@ -741,126 +722,7 @@ static bool cm_cond_resolve(struct cm_core *c, const struct cm_file *f,
     return ok;
 }
 
-/* The end of the identifier at s[j], bounded by n; j when none starts. */
-static size_t cm_word_end(const char *s, size_t j, size_t n)
-{
-    while (j < n && cm_ident_char(s[j]))
-        j++;
-    return j;
-}
-
-static bool cm_word_is(const char *s, size_t a, size_t b, const char *w)
-{
-    return b - a == strlen(w) && memcmp(s + a, w, b - a) == 0;
-}
-
-/* The directive on the line holding s[a]: its name [*name, *end), found
- * after only blanks, a '#' or "%:", and blanks. False on any other line. */
-static bool cm_line_directive(const char *s, size_t a, size_t *name,
-                              size_t *end)
-{
-    size_t j = a;
-    while (j > 0 && s[j - 1] != '\n')
-        j--;
-    j = cm_skip_space(s, j, a);
-    if (j < a && s[j] == '#')
-        j++;
-    else if (a - j >= 2 && s[j] == '%' && s[j + 1] == ':')
-        j += 2;
-    else
-        return false;
-    *name = cm_skip_space(s, j, a);
-    *end = cm_word_end(s, *name, a);
-    return true;
-}
-
-/* The end of the defined test "defined W" or "defined ( W )" at s[j],
- * bounded by a; 0 when s[j] starts none. */
-static size_t cm_defined_test_end(const char *s, size_t j, size_t a)
-{
-    size_t e = cm_word_end(s, j, a), w;
-    bool paren;
-    if (!cm_word_is(s, j, e, "defined"))
-        return 0;
-    j = cm_skip_space(s, e, a);
-    paren = j < a && s[j] == '(';
-    w = cm_skip_space(s, paren ? j + 1 : j, a);
-    e = cm_word_end(s, w, a);
-    if (e == w)
-        return 0;
-    j = cm_skip_space(s, e, a);
-    if (!paren)
-        return j;
-    return j < a && s[j] == ')' ? j + 1 : 0;
-}
-
-/* Is [j, a) only defined tests and the operators ! && ||? Any other
- * identifier could be a macro whose expansion reaches the "defined" at
- * s[a] (a paste there makes it another identifier), and no other token
- * is modelled. */
-static bool cm_only_defined_tests(const char *s, size_t j, size_t a)
-{
-    while (j < a) {
-        size_t e;
-        if (s[j] == ' ' || s[j] == '\t' || s[j] == '!' || s[j] == '&' ||
-            s[j] == '|') {
-            j++;
-            continue;
-        }
-        e = cm_defined_test_end(s, j, a);
-        if (e == 0)
-            return false;
-        j = e;
-    }
-    return true;
-}
-
-/* The identifier [*a, *b) before the word at s[i], across blanks and at
- * most one '(' (*paren); *a == *b when none. */
-static void cm_word_before(const char *s, size_t i, size_t *a, size_t *b,
-                           bool *paren)
-{
-    size_t j = i;
-    *paren = false;
-    while (j > 0 && (s[j - 1] == ' ' || s[j - 1] == '\t'))
-        j--;
-    if (j > 0 && s[j - 1] == '(') {
-        *paren = true;
-        for (j--; j > 0 && (s[j - 1] == ' ' || s[j - 1] == '\t'); j--)
-            ;
-    }
-    for (*b = j; j > 0 && cm_ident_char(s[j - 1]); j--)
-        ;
-    *a = j;
-}
-
-static bool cm_ifdef_word(const char *s, size_t a, size_t b)
-{
-    return cm_word_is(s, a, b, "ifdef") || cm_word_is(s, a, b, "ifndef") ||
-           cm_word_is(s, a, b, "elifdef") || cm_word_is(s, a, b, "elifndef");
-}
-
-/* Is the word at s[i] only tested for being defined? Either the operand
- * of an #ifdef-like directive (the word right after the '#': a macro may
- * be named ifdef), or of a "defined W" or "defined ( W" on an #if or
- * #elif line after nothing but other defined tests. Blanks only between;
- * a comment there leaves it a lookup. The glibc headers guard each
- * __has_include with #ifdef __has_include. */
-static bool cm_defined_operand(const char *s, size_t i)
-{
-    size_t a, b, name, end;
-    bool paren;
-    cm_word_before(s, i, &a, &b, &paren);
-    if (a == b || !cm_line_directive(s, a, &name, &end))
-        return false;
-    if (cm_word_is(s, a, b, "defined"))
-        return (cm_word_is(s, name, end, "if") ||
-                cm_word_is(s, name, end, "elif")) &&
-               cm_only_defined_tests(s, end, a);
-    return !paren && name == a && cm_ifdef_word(s, a, b);
-}
-
-/* The conditional lookup at t[i], if any: replayed or recorded unbound. */
+/* The lookup word clang lexed at t[i]: replayed, or recorded unbound. */
 static bool cm_cond_at(struct cm_core *c, const struct cm_file *f,
                        const struct cm_spliced *t, size_t i)
 {
@@ -868,23 +730,13 @@ static bool cm_cond_at(struct cm_core *c, const struct cm_file *f,
     uint8_t form;
     enum cm_cond_kind kind = CM_COND_OTHER;
     bool done = false;
-    size_t len = cm_cond_word(t->s, i, t->n, &kind), end;
-    if (len != 0 && cm_defined_operand(t->s, i))
-        return true;
-    if (len != 0 && kind != CM_COND_OTHER &&
+    size_t len = cm_cond_word(t->s, i, t->n, &kind);
+    if (kind != CM_COND_OTHER &&
         !cm_cond_resolve(c, f, t, i, len, kind, &done))
         return false;
     if (done)
         return true;
-    if (len != 0) {
-        cm_cond_name("", t->s, i, t->n, name, &form);
-        return cm_cond_unbound(c, f, name, form);
-    }
-    end = cm_embed_at(t->s, i, t->n);
-    if (end == 0)
-        return true;
-    cm_cond_name("#embed ", t->s, cm_skip_space(t->s, end, t->n), t->n, name,
-                 &form);
+    cm_cond_name("", t->s, i, t->n, name, &form);
     return cm_cond_unbound(c, f, name, form);
 }
 
@@ -921,38 +773,179 @@ static const char *cm_define_value(const char *const *argv, size_t argc,
     return NULL;
 }
 
+/* The main file, or NULL. */
+static const struct cm_file *cm_main_file(const struct cm_core *c)
+{
+    for (size_t k = 0; k < c->nfiles; k++)
+        if (c->files[k].origin == VCS_SEMANTIC_ORIGIN_V1_MAIN)
+            return &c->files[k];
+    return NULL;
+}
+
 /* Every conditional-lookup word in a -D value, recorded unbound on the
  * main file: the macro it defines is text no file holds. */
-static bool cm_scan_argv(struct cm_core *c, const char *const *argv,
-                         size_t argc)
+static bool cm_scan_argv(struct cm_core *c, const struct cm_file *main,
+                         const char *const *argv, size_t argc)
 {
-    const struct cm_file *main = NULL;
-    for (size_t k = 0; main == NULL && k < c->nfiles; k++)
-        if (c->files[k].origin == VCS_SEMANTIC_ORIGIN_V1_MAIN)
-            main = &c->files[k];
     for (size_t k = 0; k < argc; k++) {
         const char *v = cm_define_value(argv, argc, &k);
         size_t n = v == NULL ? 0 : strlen(v);
         for (size_t i = 0; i < n; i++)
-            if (!(main != NULL ? cm_body_at(c, main, v, i, n)
-                               : cm_fail(c, "no main file for a -D value")))
+            if (!cm_body_at(c, main, v, i, n))
                 return false;
     }
     return true;
 }
 
-/* code[i]: 1 when a live conditional-lookup word or '#' starts at t[i], 2
- * when it sits in a #define body, else 0: f->live (clang's lexing, by raw
- * offset) carried through the splice to t's offsets. */
+/* ---- the floor: every occurrence of a lookup word has a record ------------ */
+
+/* f's text with every line splice clang could accept removed, a ??/ one
+ * too whether or not the TU replaces trigraphs (removing more only finds
+ * more words); map[k] is the raw offset of out[k]. */
+struct cm_floor {
+    char *s;
+    size_t *map;
+    size_t n;
+};
+
+static bool cm_floor_text(const char *s, size_t n, struct cm_floor *t)
+{
+    t->s = zcl_malloc(n + 1, "clang_manifest.floor");
+    t->map = zcl_calloc(n + 1, sizeof(*t->map), "clang_manifest.floor_map");
+    t->n = 0;
+    if (t->s == NULL || t->map == NULL)
+        return false;
+    for (size_t i = 0; i < n;) {
+        bool tri = n - i >= 3 && s[i] == '?' && s[i + 1] == '?' &&
+                   s[i + 2] == '/';
+        size_t end = s[i] == '\\' || tri
+                         ? cm_continuation_end(s, tri ? i + 2 : i, n) : 0;
+        if (end != 0) {
+            i = end;
+            continue;
+        }
+        t->map[t->n] = i;
+        t->s[t->n++] = s[i++];
+    }
+    t->s[t->n] = '\0';
+    t->map[t->n] = n;
+    return true;
+}
+
+/* Skip blanks and block comments: what may sit between a directive's '#'
+ * and its name. */
+static size_t cm_floor_space(const char *s, size_t i, size_t n)
+{
+    for (;;) {
+        while (i < n && (s[i] == ' ' || s[i] == '\t' || s[i] == '\f' ||
+                         s[i] == '\v'))
+            i++;
+        if (n - i < 2 || s[i] != '/' || s[i + 1] != '*')
+            return i;
+        for (i += 2; n - i >= 2 && (s[i] != '*' || s[i + 1] != '/'); i++)
+            ;
+        if (n - i < 2)
+            return n;
+        i += 2;
+    }
+}
+
+/* The offset of "embed" in an #embed directive (#, %: or ??=, whether or
+ * not the TU has trigraphs) that starts at s[i], else SIZE_MAX. */
+static size_t cm_floor_embed(const char *s, size_t i, size_t n)
+{
+    size_t j;
+    if (s[i] == '#')
+        j = i + 1;
+    else if (s[i] == '%' && n - i >= 2 && s[i + 1] == ':')
+        j = i + 2;
+    else if (s[i] == '?' && n - i >= 3 && s[i + 1] == '?' && s[i + 2] == '=')
+        j = i + 3;
+    else
+        return SIZE_MAX;
+    j = cm_floor_space(s, j, n);
+    if (n - j < 5 || memcmp(s + j, "embed", 5) != 0 ||
+        (j + 5 < n && cm_ident_char(s[j + 5])))
+        return SIZE_MAX;
+    return j;
+}
+
+static bool cm_floor_is(const struct cm_floor *t, size_t i, const char *w)
+{
+    size_t len = strlen(w);
+    return t->n - i >= len && memcmp(t->s + i, w, len) == 0;
+}
+
+/* The occurrence at t[i], if any: recorded unbound unless clang's tokens
+ * already gave it a record (a lookup token the scan read) or show it is
+ * none (exempt, or hidden, outside a skipped group). */
+static bool cm_floor_at(struct cm_core *c, const struct cm_file *f,
+                        const struct cm_floor *t, size_t i)
+{
+    char name[PATH_MAX];
+    uint8_t form, v;
+    size_t e = SIZE_MAX;
+    if (!cm_floor_is(t, i, "__has_include") &&
+        !cm_floor_is(t, i, "__has_embed") &&
+        (e = cm_floor_embed(t->s, i, t->n)) == SIZE_MAX)
+        return true;
+    v = f->live[t->map[e != SIZE_MAX ? e : i]];
+    if (v == CM_LIVE_HIDDEN || (e == SIZE_MAX && v != CM_LIVE_NONE))
+        return true;
+    if (e != SIZE_MAX)
+        cm_cond_name("#embed ", t->s, cm_skip_space(t->s, e + 5, t->n), t->n,
+                     name, &form);
+    else
+        cm_cond_name("", t->s, i, t->n, name, &form);
+    return cm_cond_unbound(c, f, name, form);
+}
+
+/* Every occurrence of a lookup word in f's text (any spelling of
+ * __has_include or __has_embed, as a word or inside one, and every #embed
+ * directive, in comments, literals and skipped groups too) ends with a
+ * record, unless clang's tokens show it is none. */
+static bool cm_floor_file(struct cm_core *c, const struct cm_file *f)
+{
+    struct cm_floor t = {0};
+    bool ok = cm_floor_text(f->contents, f->size, &t);
+    if (!ok)
+        (void)cm_fail(c, "out of memory");
+    for (size_t i = 0; ok && i < t.n; i++)
+        if (t.s[i] == '_' || t.s[i] == '#' || t.s[i] == '%' || t.s[i] == '?')
+            ok = cm_floor_at(c, f, &t, i);
+    free(t.s);
+    free(t.map);
+    return ok;
+}
+
+/* ---- the files: clang's lookup tokens, then the floor ---------------------- */
+
+/* code[i]: f->live (clang's tokens, by raw offset) carried through the
+ * splice to t's offsets, for the lookup tokens. */
 static uint8_t *cm_code_of(const struct cm_file *f, const struct cm_spliced *t)
 {
     uint8_t *code = zcl_calloc(t->n + 1, 1, "clang_manifest.code_mask");
     if (code == NULL)
         return NULL;
-    for (size_t r = 0; f->live != NULL && r < f->size; r++)
-        if (f->live[r] != 0)
+    for (size_t r = 0; r < f->size; r++)
+        if (f->live[r] != CM_LIVE_NONE && f->live[r] != CM_LIVE_HIDDEN)
             code[t->map != NULL ? t->map[r] : r] = f->live[r];
     return code;
+}
+
+/* The lookup token clang lexed at t[i]: the scan must read the same word
+ * there, or the TU is refused (a splice or trigraph rule the scan does
+ * not share with clang would otherwise drop it). */
+static bool cm_token_at(struct cm_core *c, const struct cm_file *f,
+                        const struct cm_spliced *t, size_t i, uint8_t v)
+{
+    enum cm_cond_kind kind;
+    if (cm_cond_word(t->s, i, t->n, &kind) == 0)
+        return cm_fail(c, "unsupported translation-unit language: a lookup "
+                          "word the scan cannot read in %s", f->path);
+    if (v == CM_LIVE_BODY)
+        return cm_body_at(c, f, t->s, i, t->n);
+    return v == CM_LIVE_EXEMPT || cm_cond_at(c, f, t, i);
 }
 
 /* One file, repo or system: a system header's own conditionals search the
@@ -964,31 +957,38 @@ static bool cm_scan_file(struct cm_core *c, const struct cm_file *f,
     bool ok;
     struct cm_spliced t;
     uint8_t *code = NULL;
-    if (f->size != 0 && f->live == NULL)
+    if (f->size == 0)
+        return true;
+    if (f->live == NULL)
         return cm_fail(c, "%s was not tokenized", f->path);
     ok = cm_splice(f->contents, f->size, lang.trigraphs, &t);
     if (!ok)
         (void)cm_fail(c, "cannot splice %s", f->path);
     else if ((code = cm_code_of(f, &t)) == NULL)
         ok = cm_fail(c, "out of memory");
-    for (size_t i = 0; ok && i < t.n; i++) {
-        if (code[i] == 2)
-            ok = cm_body_at(c, f, t.s, i, t.n);
-        else if (code[i] == 1)
-            ok = cm_cond_at(c, f, &t, i);
-    }
+    for (size_t i = 0; ok && i < t.n; i++)
+        if (code[i] != CM_LIVE_NONE)
+            ok = cm_token_at(c, f, &t, i, code[i]);
     free(code);
     cm_spliced_free(&t);
-    return ok;
+    return ok && cm_floor_file(c, f);
 }
 
 bool cm_scan_has_include(struct cm_core *c, const char *const *argv,
                          size_t argc, struct cm_lang lang)
 {
-    if (!cm_scan_argv(c, argv, argc))
+    const struct cm_file *main = cm_main_file(c);
+    char name[PATH_MAX];
+    if (main == NULL)
+        return cm_fail(c, "no main file");
+    if (!cm_scan_argv(c, main, argv, argc))
         return false;
     for (size_t k = 0; k < c->nfiles; k++)
         if (!cm_scan_file(c, &c->files[k], lang))
             return false;
-    return true;
+    if (c->paste_piece == NULL)
+        return true;
+    (void)snprintf(name, sizeof(name), "#embed? pasted from %.*s",
+                   CM_COND_NAME_MAX, c->paste_piece);
+    return cm_cond_unbound(c, main, name, VCS_SEMANTIC_FORM_V1_QUOTED);
 }

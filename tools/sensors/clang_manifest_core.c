@@ -168,6 +168,7 @@ void cm_core_free(struct cm_core *c)
         free(c->occ[k].detail);
     }
     free(c->occ);
+    free(c->paste_piece);
     vcs_semantic_namespace_v1_free(c->ns);
     vcs_semantic_builder_v1_free(c->b);
     memset(c, 0, sizeof(*c));

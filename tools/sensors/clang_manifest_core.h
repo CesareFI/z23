@@ -36,9 +36,22 @@ struct cm_file {
     char *opened;     /* the name the front end opened it by */
     uint8_t origin;   /* VCS_SEMANTIC_ORIGIN_V1_* */
     const char *contents;
-    uint8_t *live;    /* per byte: 1 a live lookup word or '#', 2 one in a #define
-                       * body, by clang's lexing (clang_manifest_tokens.c) */
+    uint8_t *live;    /* per byte, CM_LIVE_*: what clang's lexing of the file
+                       * says of it (clang_manifest_tokens.c) */
     size_t size;
+};
+
+/* cm_file.live, per raw byte. A lookup word's mark sits on its first
+ * character (past any line splice). Only CM_LIVE_EXEMPT and CM_LIVE_HIDDEN
+ * let the scan drop an occurrence, and both are set only outside the
+ * file's skipped groups, from clang's own tokens. */
+enum {
+    CM_LIVE_NONE = 0,   /* nothing known: an occurrence here is recorded */
+    CM_LIVE_WORD = 1,   /* a lookup word token */
+    CM_LIVE_BODY = 2,   /* a lookup word token in a #define body */
+    CM_LIVE_EXEMPT = 3, /* a lookup word only tested for being defined */
+    CM_LIVE_HIDDEN = 4, /* inside a comment, a literal, a directive's '#'
+                         * or another token */
 };
 
 /* One search directory: as the front end printed it, and canonical. */
@@ -156,6 +169,9 @@ struct cm_core {
      * driver's subprograms, assemblers, linkers, runtime objects and
      * compile environment), or NULL when the caller named none. */
     const char *toolchain_id;
+    /* A token on a #define body or conditional line that a ## could start
+     * a lookup word with (clang_manifest_tokens.c), or NULL. */
+    char *paste_piece;
     bool failed;
     char why[512];
 };
