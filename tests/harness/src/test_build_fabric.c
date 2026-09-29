@@ -114,6 +114,12 @@ static int test_bf_production_verifier_selection(void)
         ASSERT(build_fabric_worker_verifier_path_for_test(
             "/isolated/bin/z23-dev", dir, selected, sizeof(selected)).ok);
         ASSERT_STR_EQ(selected, development);
+        ASSERT(unlink(release) == 0);
+        ASSERT(!build_fabric_worker_verifier_path_for_test(
+            "/isolated/bin/z23", dir, selected, sizeof(selected)).ok);
+        ASSERT(build_fabric_worker_verifier_path_for_test(
+            "/isolated/bin/z23-dev", dir, selected, sizeof(selected)).ok);
+        ASSERT_STR_EQ(selected, development);
         test_rm_rf(dir);
         PASS();
     } _test_next:;

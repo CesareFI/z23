@@ -149,10 +149,11 @@ static struct zcl_result bfw_worker_path_from_executable(
     const char *mids[] = {"/", "/build/bin/", "/build/bin/"};
     const char *development_names[] = {"zclassic23-package-verify-dev",
                                        "zclassic23-package-verify"};
-    const char *release_names[] = {"zclassic23-package-verify",
-                                   "zclassic23-package-verify-dev"};
+    const char *release_names[] = {"zclassic23-package-verify"};
     const char *const *names = release_image ? release_names : development_names;
-    const size_t name_count = sizeof(release_names) / sizeof(release_names[0]);
+    const size_t name_count = release_image
+        ? sizeof(release_names) / sizeof(release_names[0])
+        : sizeof(development_names) / sizeof(development_names[0]);
     for (size_t i = 0; i < sizeof(roots) / sizeof(roots[0]); i++) {
         for (size_t j = 0; j < name_count; j++) {
             int n = snprintf(out, cap, "%s%s%s", roots[i], mids[i], names[j]);
