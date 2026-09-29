@@ -14304,7 +14304,7 @@ check-host-gc-selftest:
 	@echo "══ LINT: host garbage collector fixture regression ══"
 	@tools/scripts/host_gc_selftest.sh
 
-check-commons-journey-ordering:
+check-commons-journey-ordering: $(PROCESS_GROUP_EXEC_BIN) $(BIN_DIR)/arena_product_journey_c23
 	@echo "══ LINT: commons journey peer-dependent wait ordering ══"
 	@tools/dev/commons-journey-ordering-selftest.sh
 

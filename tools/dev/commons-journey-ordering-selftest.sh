@@ -309,6 +309,10 @@ fi
 # stand-in daemon is the shipped listen-report helper holding a real
 # ephemeral port. It proves harness supervision, not node behaviour.
 REPO_ROOT_SELFTEST="$(cd "$SELF_DIR/../.." && pwd)"
+for ORPH_NEED in process-group-exec arena_product_journey_c23; do
+    [ -x "$REPO_ROOT_SELFTEST/build/bin/$ORPH_NEED" ] ||
+        { fail "missing build/bin/$ORPH_NEED; the runtime orphan scenario cannot run"; exit 2; }
+done
 SPAWN_FN="$(awk '/^dht_spawn\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$LIFECYCLE")"
 [ -n "$SPAWN_FN" ] || { fail "dht_spawn() not found in $LIFECYCLE"; exit 2; }
 grep -qF -- '--die-with-lease' <<<"$SPAWN_FN" ||

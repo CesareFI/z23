@@ -215,7 +215,7 @@ static int lease_stale(const struct lease_spec *lease, char *why, size_t cap)
         snprintf(why, cap, "stat: %s", strerror(errno));
         return 1;
     }
-    double age = difftime(time(NULL), st.st_mtime);
+    double age = difftime(time(NULL), st.st_mtime); // platform-ok: standalone supervision tool, no platform linkage; lease age is fixture-reap timing, not consensus timing
     if (age > (double)lease->stale_s) {
         snprintf(why, cap, "age %.0fs exceeds %lds", age, lease->stale_s);
         return 1;

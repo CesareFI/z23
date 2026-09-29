@@ -328,8 +328,7 @@ static int test_lease_fresh_survives_and_cleanup_terminates(void)
         /* Refresh across three stale windows: the fixture must survive. */
         for (int i = 0; i < 6; i++) {
             struct timespec ts = {.tv_sec = 0, .tv_nsec = 700L * 1000L * 1000L};
-            nanosleep(&ts, NULL); /* real-clock: the real refresher cadence
-                                   * against the real mtime window */
+            nanosleep(&ts, NULL); /* real-clock: real refresher cadence against the real mtime window */
             ASSERT(pge_touch(lease));
         }
         ASSERT(pge_alive(fixture));
@@ -454,14 +453,24 @@ static int test_lease_bad_spec_fails_closed(void)
          "nothing launches") {
         const char *launcher = pge_launcher();
         ASSERT(launcher != NULL);
-        const char *bad_specs[] = {
-            "no-colon-here", "/tmp/lease:0", "/tmp/lease:abc",
-            "/tmp/lease:5:x", "/tmp/lease:5:6:7", ":5", NULL};
-        for (size_t i = 0; bad_specs[i]; i++) {
+        char dir[] = "test-tmp/pge_lease_bad_XXXXXX";
+        ASSERT(mkdtemp(dir) != NULL);
+        char lease[300];
+        ASSERT(snprintf(lease, sizeof(lease), "%s/lease", dir) > 0);
+        /* Specs derived from this run's own scratch dir — every malformed
+         * shape the parser must refuse, with no bare /tmp literal. */
+        char specs[6][340];
+        ASSERT(snprintf(specs[0], sizeof(specs[0]), "%s/no-colon-here", dir) > 0);
+        ASSERT(snprintf(specs[1], sizeof(specs[1]), "%s:0", lease) > 0);
+        ASSERT(snprintf(specs[2], sizeof(specs[2]), "%s:abc", lease) > 0);
+        ASSERT(snprintf(specs[3], sizeof(specs[3]), "%s:5:x", lease) > 0);
+        ASSERT(snprintf(specs[4], sizeof(specs[4]), "%s:5:6:7", lease) > 0);
+        ASSERT(snprintf(specs[5], sizeof(specs[5]), ":5") > 0);
+        for (size_t i = 0; i < 6; i++) {
             char line[1024];
             int n = snprintf(line, sizeof(line),
                              "'%s' --die-with-lease='%s' sleep 60 2>&1",
-                             launcher, bad_specs[i]);
+                             launcher, specs[i]);
             ASSERT(n > 0 && (size_t)n < sizeof(line));
             FILE *p = popen(line, "r");
             ASSERT(p != NULL);
@@ -471,6 +480,7 @@ static int test_lease_bad_spec_fails_closed(void)
             ASSERT(rc != 0);
             ASSERT(WIFEXITED(rc) && WEXITSTATUS(rc) == 2);
         }
+        rmdir(dir);
         PASS();
     }
     _test_next:;
