@@ -2,7 +2,9 @@
  * purpose: The fixed-result signer core: independent receipt and artifact
  *          checks, key v2 rebuilt from pins, one sealed record, private
  *          staging. See fixed_result_signer.h. */
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#endif
 #include "verify/fixed_result_signer.h"
 
 #include "base/cleanse.h"

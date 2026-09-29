@@ -1,7 +1,9 @@
 /* Copyright 2026 Rhett Creighton; SPDX-License-Identifier: Apache-2.0.
  * purpose: Descriptor-walk custody and trust loading for the fixed-result
  *          signer and publisher. See fixed_result_trust.h. */
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#endif
 #include "verify/fixed_result_trust.h"
 
 #include "base/safe_alloc.h"
