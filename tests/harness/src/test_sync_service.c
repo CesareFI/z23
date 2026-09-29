@@ -7,6 +7,7 @@
 #include "controllers/diagnostics_controller.h"
 #include "controllers/diagnostics_internal.h"
 #include "json/json.h"
+#include "services/configured_sync_peers.h"
 #include "services/sync_benchmark_service.h"
 #include "sync/sync_planner.h"
 #include "sync/sync_state.h"
@@ -64,6 +65,222 @@ static int test_sync_service_rejects_inbound_sync(void)
         ASSERT(!syncsvc_begin_peer_sync(&node, 0, 0));
         ASSERT(node.state == PEER_ACTIVE);
         ASSERT(sync_get_state() == SYNC_IDLE);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
+/* A peer at `ip4` with an ephemeral source port, handshake done. */
+static void configured_inbound_peer(struct p2p_node *node, node_id_t id,
+                                    const unsigned char ip4[4], bool inbound)
+{
+    memset(node, 0, sizeof(*node));
+    node->id = id;
+    node->state = PEER_ACTIVE;
+    node->inbound = inbound;
+    node->starting_height = 1000;
+    net_addr_set_ipv4(&node->addr.svc.addr, ip4);
+    node->addr.svc.port = 51234;
+}
+
+static void configured_target(struct net_service *svc,
+                              const unsigned char ip4[4], uint16_t port)
+{
+    memset(svc, 0, sizeof(*svc));
+    net_addr_set_ipv4(&svc->addr, ip4);
+    svc->port = port;
+}
+
+static int test_sync_service_configured_inbound_begins_sync(void)
+{
+    int failures = 0;
+
+    TEST("sync_service begins header sync from an operator-configured "
+         "inbound peer (two-node mutual addnode deadlock)") {
+        static const unsigned char peer_ip[4] = {198, 51, 100, 7};
+        struct net_service target;
+        struct p2p_node node;
+
+        configured_sync_peers_reset_for_testing();
+        configured_target(&target, peer_ip, 18233);
+        ASSERT(configured_sync_peer_note(&target));
+        /* The inbound source port is ephemeral; only the IP is compared. */
+        configured_inbound_peer(&node, 21, peer_ip, true);
+        ASSERT(syncsvc_peer_is_configured_inbound(&node));
+        ASSERT(syncsvc_peer_may_serve_headers(&node));
+
+        sync_set_state(SYNC_IDLE, "configured inbound reset");
+        ASSERT(sync_set_state(SYNC_FINDING_PEERS,
+                              "configured inbound P2P started"));
+        ASSERT(syncsvc_should_begin_peer_sync(&node, 1000, 1000,
+                                              SYNC_FINDING_PEERS));
+        ASSERT(syncsvc_begin_peer_sync(&node, 1000, 1000));
+        ASSERT(node.state == PEER_SYNCING_HEADERS);
+        ASSERT(sync_get_state() == SYNC_HEADERS_DOWNLOAD);
+        /* The begun peer is then asked for headers like an outbound one. */
+        ASSERT(syncsvc_should_request_headers(&node, 1000, 1000));
+
+        /* Once the operator removes the target, the exemption is gone. */
+        node.state = PEER_ACTIVE;
+        ASSERT(configured_sync_peer_forget(&target));
+        ASSERT(!syncsvc_peer_is_configured_inbound(&node));
+        ASSERT(!syncsvc_should_begin_peer_sync(&node, 1000, 1000,
+                                               SYNC_FINDING_PEERS));
+        configured_sync_peers_reset_for_testing();
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
+static int test_sync_service_unconfigured_inbound_still_refused(void)
+{
+    int failures = 0;
+
+    TEST("sync_service still refuses unconfigured, loopback and onion "
+         "inbound peers") {
+        static const unsigned char configured_ip[4] = {198, 51, 100, 7};
+        static const unsigned char stranger_ip[4] = {198, 51, 100, 8};
+        static const unsigned char loopback_ip[4] = {127, 0, 0, 1};
+        struct net_service target;
+        struct p2p_node node;
+
+        configured_sync_peers_reset_for_testing();
+        configured_target(&target, configured_ip, 18233);
+        ASSERT(configured_sync_peer_note(&target));
+
+        configured_inbound_peer(&node, 22, stranger_ip, true);
+        ASSERT(!syncsvc_peer_is_configured_inbound(&node));
+        sync_set_state(SYNC_IDLE, "unconfigured inbound reset");
+        ASSERT(sync_set_state(SYNC_FINDING_PEERS,
+                              "unconfigured inbound P2P started"));
+        ASSERT(!syncsvc_should_begin_peer_sync(&node, 0, 0,
+                                               SYNC_FINDING_PEERS));
+        ASSERT(!syncsvc_begin_peer_sync(&node, 0, 0));
+        ASSERT(node.state == PEER_ACTIVE);
+        ASSERT(sync_get_state() == SYNC_FINDING_PEERS);
+        node.state = PEER_SYNCING_HEADERS;
+        ASSERT(!syncsvc_should_request_headers(&node, 0, 1000));
+
+        /* Every Tor hidden-service stream arrives from loopback, so a
+         * loopback target is never recorded and a loopback inbound never
+         * qualifies. A Tor address has no inbound IP at all. */
+        struct net_service loop_target;
+        configured_target(&loop_target, loopback_ip, 18233);
+        ASSERT(!configured_sync_peer_note(&loop_target));
+        configured_inbound_peer(&node, 23, loopback_ip, true);
+        ASSERT(!syncsvc_peer_is_configured_inbound(&node));
+        ASSERT(!syncsvc_should_begin_peer_sync(&node, 0, 0,
+                                               SYNC_FINDING_PEERS));
+
+        struct net_service onion_target;
+        memset(&onion_target, 0, sizeof(onion_target));
+        onion_target.addr.has_torv3 = true;
+        onion_target.addr.torv3[0] = 0x5a;
+        ASSERT(!configured_sync_peer_note(&onion_target));
+        memset(&node, 0, sizeof(node));
+        node.id = 24;
+        node.state = PEER_ACTIVE;
+        node.inbound = true;
+        node.addr.svc.addr = onion_target.addr;
+        ASSERT(!syncsvc_peer_is_configured_inbound(&node));
+        ASSERT(!syncsvc_should_begin_peer_sync(&node, 0, 0,
+                                               SYNC_FINDING_PEERS));
+        configured_sync_peers_reset_for_testing();
+        sync_set_state(SYNC_IDLE, "unconfigured inbound done");
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
+static int test_sync_service_configured_inbound_requires_active(void)
+{
+    int failures = 0;
+
+    TEST("sync_service refuses a configured inbound peer that is not "
+         "PEER_ACTIVE") {
+        static const unsigned char peer_ip[4] = {198, 51, 100, 7};
+        static const enum peer_state not_active[] = {
+            PEER_CONNECTED, PEER_VERSION_SENT, PEER_VERSION_RECEIVED,
+            PEER_HANDSHAKE_COMPLETE, PEER_STALE, PEER_DISCONNECTING,
+            PEER_BANNED,
+        };
+        struct net_service target;
+        struct p2p_node node;
+
+        configured_sync_peers_reset_for_testing();
+        configured_target(&target, peer_ip, 18233);
+        ASSERT(configured_sync_peer_note(&target));
+        for (size_t i = 0; i < sizeof(not_active) / sizeof(not_active[0]);
+             i++) {
+            struct p2p_node outbound;
+            configured_inbound_peer(&node, 25, peer_ip, true);
+            node.state = not_active[i];
+            ASSERT(!syncsvc_should_begin_peer_sync(&node, 0, 0,
+                                                   SYNC_FINDING_PEERS));
+            /* Header requests apply the outbound peer's state test. */
+            configured_inbound_peer(&outbound, 26, peer_ip, false);
+            outbound.state = not_active[i];
+            ASSERT(syncsvc_should_request_headers(&node, 0, 1000) ==
+                   syncsvc_should_request_headers(&outbound, 0, 1000));
+            if (not_active[i] < PEER_SYNCING_HEADERS)
+                ASSERT(!syncsvc_should_request_headers(&node, 0, 1000));
+        }
+        configured_sync_peers_reset_for_testing();
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
+static int test_sync_service_outbound_unchanged_by_configured_set(void)
+{
+    int failures = 0;
+
+    TEST("sync_service outbound begin-sync answers do not depend on the "
+         "configured set") {
+        static const unsigned char configured_ip[4] = {198, 51, 100, 7};
+        static const unsigned char other_ip[4] = {203, 0, 113, 9};
+        static const enum sync_state states[] = {
+            SYNC_IDLE, SYNC_FINDING_PEERS, SYNC_HEADERS_DOWNLOAD,
+            SYNC_BLOCKS_DOWNLOAD, SYNC_AT_TIP,
+        };
+        static const int heights[] = {0, 999, 1000, 1001};
+        static const enum peer_state peer_states[] = {
+            PEER_HANDSHAKE_COMPLETE, PEER_ACTIVE, PEER_SYNCING_HEADERS,
+        };
+        struct net_service target;
+        struct p2p_node node;
+
+        configured_target(&target, configured_ip, 18233);
+        for (size_t ip = 0; ip < 2; ip++) {
+            for (size_t ps = 0; ps < 3; ps++) {
+                for (size_t st = 0; st < 5; st++) {
+                    for (size_t h = 0; h < 4; h++) {
+                        configured_inbound_peer(
+                            &node, 26, ip ? other_ip : configured_ip, false);
+                        node.state = peer_states[ps];
+                        configured_sync_peers_reset_for_testing();
+                        bool empty_begin = syncsvc_should_begin_peer_sync(
+                            &node, heights[h], heights[h], states[st]);
+                        bool empty_request = syncsvc_should_request_headers(
+                            &node, heights[h], 1000);
+                        ASSERT(configured_sync_peer_note(&target));
+                        ASSERT(syncsvc_should_begin_peer_sync(
+                                   &node, heights[h], heights[h],
+                                   states[st]) == empty_begin);
+                        ASSERT(syncsvc_should_request_headers(
+                                   &node, heights[h], 1000) ==
+                               empty_request);
+                        ASSERT(!syncsvc_peer_is_configured_inbound(&node));
+                        ASSERT(syncsvc_peer_may_serve_headers(&node));
+                    }
+                }
+            }
+        }
+        configured_sync_peers_reset_for_testing();
         PASS();
     } _test_next:;
 
@@ -2369,6 +2586,10 @@ int test_sync_service(void)
     int failures = 0;
     failures += test_sync_service_begin_sync();
     failures += test_sync_service_rejects_inbound_sync();
+    failures += test_sync_service_configured_inbound_begins_sync();
+    failures += test_sync_service_unconfigured_inbound_still_refused();
+    failures += test_sync_service_configured_inbound_requires_active();
+    failures += test_sync_service_outbound_unchanged_by_configured_set();
     failures += test_sync_service_keeps_caught_up_peers_active();
     failures += test_sync_service_begins_when_peer_one_block_ahead();
     failures += test_sync_service_probes_equal_peer_after_restart();
