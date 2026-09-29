@@ -405,6 +405,8 @@ static bool group_reads_external_inputs(const char *name)
         "chaos_harness",                  /* reads tests/fixtures block files */
         "cli_argv_strict",
         "cli_auth_robust",
+        /* execve build/bin/zclassic23; the node link is outside the closure. */
+        "cli_render",
         "cold_start_sync",
         /* fork/execs build/bin/consensus_rule_sweep; that tool's link is
          * outside this group's forward closure. */

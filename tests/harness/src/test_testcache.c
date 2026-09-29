@@ -1953,6 +1953,7 @@ static bool tc_external_exec_denied(void)
 {
     static const char *const names[] = {
         "test_anchor_peers",
+        "test_cli_render",
         "test_consensus_rule_sweep",
         "test_dev_proof_signer",
         "test_fastobj_carrier",
