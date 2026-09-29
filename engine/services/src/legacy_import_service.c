@@ -45,6 +45,7 @@
 #include "services/scan_util.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
+#include "util/thread_registry.h"
 
 /* The scan worker contract (struct layouts + thread entry points) is a
  * private header shared with the scan worker TU
@@ -216,6 +217,94 @@ static bool transparent_visitor(const struct block *blk, int height,
 
 /* --- Service entry point --- */
 
+/* Shutdown abort predicate. The registry flag is set once at process shutdown,
+ * before the join of the zcl_snap_* import threads; the import polls it at
+ * every batch/file boundary — never mid-statement — so a shutdown during the
+ * multi-pass blk*.dat walk stops the import within the current batch (seconds)
+ * instead of after the current pass (minutes to hours on a spinning disk).
+ * An abort is not an import failure: it returns the contract's -1 with the
+ * wallet DB untouched by any later pass (pass 2/3 reset+rewrite is idempotent
+ * and simply re-runs on the next boot). */
+static bool legacy_import_abort_requested(void)
+{
+    return thread_registry_shutdown_requested();
+}
+
+/* Persist the pass-2 transparent results (wallet UTXOs + wallet txs) in one
+ * transaction. The model-owned reset runs first so a re-import is idempotent;
+ * any failure rolls the transaction back — nothing half-written — and returns
+ * false. */
+static bool legacy_import_reset_wallet_rows(struct node_db *ndb)
+{
+    if (db_wallet_utxo_delete_all(ndb) &&
+        db_wallet_tx_delete_all(ndb) &&
+        db_sapling_note_delete_all(ndb))
+        return true;
+    LOG_WARN("legacy_import",
+             "legacy_import: model-owned pass 2 reset failed");
+    return false;
+}
+
+static bool legacy_import_persist_transparent(struct node_db *ndb,
+                                              struct scan_utxo_set *uset,
+                                              struct scan_wtx_list *wl)
+{
+    if (!legacy_import_begin_checked(ndb, "pass 2 begin"))
+        return false; // raw-return-ok:callee-logged
+    bool ok = legacy_import_reset_wallet_rows(ndb);
+    for (int i = 0; ok && i < uset->count; i++) {
+        struct scan_mem_utxo *u = &uset->items[i];
+        struct db_wallet_utxo du;
+        memset(&du, 0, sizeof(du));
+        memcpy(du.txid, u->txid, 32);
+        du.vout = u->vout;
+        du.value = u->value;
+        memcpy(du.address_hash, u->addr_hash, 20);
+        du.script = u->script;
+        du.script_len = u->script_len;
+        du.height = u->height;
+        du.is_coinbase = u->is_coinbase;
+        if (!db_wallet_utxo_save(ndb, &du)) {
+            LOG_WARN("legacy_import", "legacy_import: pass 2 wallet_utxo save failed");
+            ok = false;
+            break;
+        }
+        if (u->spent &&
+            !db_wallet_utxo_mark_spent(ndb, u->txid, u->vout,
+                                       u->spent_txid, u->spent_vin)) {
+            LOG_WARN("legacy_import", "legacy_import: pass 2 wallet_utxo mark_spent failed");
+            ok = false;
+            break;
+        }
+    }
+    for (int i = 0; ok && i < wl->count; i++) {
+        struct scan_mem_wtx *t = &wl->items[i];
+        struct db_wallet_tx dt;
+        memset(&dt, 0, sizeof(dt));
+        memcpy(dt.txid, t->txid, 32);
+        dt.raw_tx = t->raw;
+        dt.raw_tx_len = t->raw_len;
+        dt.has_block = true;
+        dt.block_height = t->height;
+        dt.time_received = (int64_t)t->time;
+        dt.from_me = t->from_me;
+        dt.fee = t->fee;
+        if (!db_wallet_tx_save(ndb, &dt)) {
+            LOG_WARN("legacy_import", "legacy_import: pass 2 wallet_tx save failed");
+            ok = false;
+            break;
+        }
+    }
+    if (ok)
+        ok = legacy_import_commit_checked(ndb, "pass 2 commit");
+    if (ok)
+        return true;
+    if (!legacy_import_rollback_checked(ndb, "pass 2 rollback"))
+        LOG_WARN("legacy_import",
+                 "legacy_import: pass 2 rollback failed after DB error");
+    return false;
+}
+
 int legacy_import_service_run(const char *legacy_datadir,
                               struct node_db *ndb,
                               struct wallet *w,
@@ -284,6 +373,11 @@ int legacy_import_service_run(const char *legacy_datadir,
     int batch = 8;
 
     for (int base = 0; base < num_files; base += batch) {
+        if (legacy_import_abort_requested()) {
+            LOG_INFO("legacy_import",
+                     "legacy import aborted: shutdown requested (pass 1)");
+            goto cleanup;
+        }
         int n = num_files - base;
         if (n > batch) n = batch;
         struct legacy_import_scan_file_arg args[8];
@@ -331,6 +425,11 @@ int legacy_import_service_run(const char *legacy_datadir,
 
     int total_blocks_p2 = 0;
     for (int f = 0; f < num_files; f++) {
+        if (legacy_import_abort_requested()) {
+            LOG_INFO("legacy_import",
+                     "legacy import aborted: shutdown requested (pass 2)");
+            goto cleanup;
+        }
         if (!file_has_match[f]) continue;
         struct platform_positioned_file file;
         struct platform_positioned_file_snapshot before, after;
@@ -379,76 +478,8 @@ int legacy_import_service_run(const char *legacy_datadir,
     fflush(stdout);
 
     /* Write transparent results to SQLite. */
-    {
-        bool import_tx_open = false;
-        if (!legacy_import_begin_checked(ndb, "pass 2 begin")) {
-            goto cleanup;
-        }
-        import_tx_open = true;
-        if (!db_wallet_utxo_delete_all(ndb) ||
-            !db_wallet_tx_delete_all(ndb) ||
-            !db_sapling_note_delete_all(ndb)) {
-            LOG_WARN("legacy_import",
-                     "legacy_import: model-owned pass 2 reset failed");
-            goto pass2_db_fail;
-        }
-
-        for (int i = 0; i < uset.count; i++) {
-            struct scan_mem_utxo *u = &uset.items[i];
-            struct db_wallet_utxo du;
-            memset(&du, 0, sizeof(du));
-            memcpy(du.txid, u->txid, 32);
-            du.vout = u->vout;
-            du.value = u->value;
-            memcpy(du.address_hash, u->addr_hash, 20);
-            du.script = u->script;
-            du.script_len = u->script_len;
-            du.height = u->height;
-            du.is_coinbase = u->is_coinbase;
-            if (!db_wallet_utxo_save(ndb, &du)) {
-                LOG_WARN("legacy_import", "legacy_import: pass 2 wallet_utxo save failed");
-                goto pass2_db_fail;
-            }
-            if (u->spent &&
-                !db_wallet_utxo_mark_spent(ndb, u->txid, u->vout,
-                                           u->spent_txid, u->spent_vin)) {
-                LOG_WARN("legacy_import", "legacy_import: pass 2 wallet_utxo mark_spent failed");
-                goto pass2_db_fail;
-            }
-        }
-
-        for (int i = 0; i < wl.count; i++) {
-            struct scan_mem_wtx *t = &wl.items[i];
-            struct db_wallet_tx dt;
-            memset(&dt, 0, sizeof(dt));
-            memcpy(dt.txid, t->txid, 32);
-            dt.raw_tx = t->raw;
-            dt.raw_tx_len = t->raw_len;
-            dt.has_block = true;
-            dt.block_height = t->height;
-            dt.time_received = (int64_t)t->time;
-            dt.from_me = t->from_me;
-            dt.fee = t->fee;
-            if (!db_wallet_tx_save(ndb, &dt)) {
-                LOG_WARN("legacy_import", "legacy_import: pass 2 wallet_tx save failed");
-                goto pass2_db_fail;
-            }
-        }
-        if (!legacy_import_commit_checked(ndb, "pass 2 commit")) {
-            goto pass2_db_fail;
-        }
-        import_tx_open = false;
-        goto pass2_db_done;
-
-pass2_db_fail:
-        if (import_tx_open &&
-            !legacy_import_rollback_checked(ndb, "pass 2 rollback")) {
-            LOG_WARN("legacy_import", "legacy_import: pass 2 rollback failed after DB error");
-        }
+    if (!legacy_import_persist_transparent(ndb, &uset, &wl))
         goto cleanup;
-pass2_db_done:
-        ;
-    }
 
     /* ========== PASS 3: Sapling trial decryption ========== */
     /* Phase A: parallel filter (8 threads) — lightweight height + size
@@ -468,6 +499,11 @@ pass2_db_done:
             goto cleanup;
         }
         for (int base = 0; base < num_files; base += batch) {
+            if (legacy_import_abort_requested()) {
+                LOG_INFO("legacy_import",
+                         "legacy import aborted: shutdown requested (pass 3a)");
+                goto cleanup;
+            }
             int n = num_files - base;
             if (n > batch) n = batch;
             pthread_t thr[8];
@@ -541,6 +577,11 @@ pass2_db_done:
 
         pthread_t thr3[8];
         for (int base = 0; base < num_files; base += batch) {
+            if (legacy_import_abort_requested()) {
+                LOG_INFO("legacy_import",
+                         "legacy import aborted: shutdown requested (pass 3b)");
+                goto cleanup;
+            }
             int n = num_files - base;
             if (n > batch) n = batch;
             int launched = 0;

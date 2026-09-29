@@ -18,6 +18,8 @@
 #include "models/wallet_tx.h"
 #include "config/boot_cursor_state.h"
 #include "util/storage_pacing.h"
+#include "util/safe_alloc.h"
+#include "util/thread_registry.h"
 #include "wallet/wallet.h"
 #include <fcntl.h>
 #include <stdlib.h>
@@ -510,6 +512,50 @@ static int test_legacy_import_clear_rollback(void)
     return 1;
 }
 
+static int test_legacy_import_shutdown_abort(void)
+{
+    printf("GIVEN shutdown requested WHEN legacy import runs "
+           "THEN pass 1 aborts before any wallet row is touched... ");
+    char dir[256], blocks[320], file_path[384];
+    test_make_tmpdir(dir, sizeof(dir), "block_scan", "legacy_abort");
+    snprintf(blocks, sizeof(blocks), "%s/blocks", dir);
+    mkdir(blocks, 0755);
+    snprintf(file_path, sizeof(file_path), "%s/blk00000.dat", blocks);
+    int fd = open(file_path, O_CREAT | O_WRONLY | O_TRUNC, 0600);
+    uint8_t invalid_byte = 0;
+    bool ok = fd >= 0 && write(fd, &invalid_byte, 1) == 1;
+    if (fd >= 0) close(fd);
+
+    struct node_db ndb;
+    memset(&ndb, 0, sizeof(ndb));
+    struct wallet *wallet = zcl_calloc(1, sizeof(*wallet), "legacy abort wallet");
+    wallet_init(wallet);
+    ok = ok && node_db_open(&ndb, ":memory:") &&
+         seed_wallet_projection(&ndb);
+
+    /* Shutdown requested before the run: the pass-1 poll must abort the
+     * import before the pass-2 reset, leaving the seeded rows untouched. */
+    thread_registry_reset_for_test();
+    thread_registry_request_shutdown();
+    int aborted = ok ? legacy_import_service_run(dir, &ndb, wallet, false) : 0;
+    thread_registry_reset_for_test();
+    ok = ok && aborted == -1 && wallet_projection_seed_is_present(&ndb);
+
+    /* Control: flag clear, the same import completes and the idempotent
+     * pass-2 reset replaces the seeded projection with the empty scan. */
+    int imported = ok ? legacy_import_service_run(dir, &ndb, wallet, false) : -1;
+    ok = ok && imported == 0 && !wallet_projection_seed_is_present(&ndb) &&
+         node_db_has_no_open_transaction(&ndb);
+
+    wallet_free(wallet);
+    free(wallet);
+    if (ndb.open) node_db_close(&ndb);
+    (void)test_rm_rf_recursive(dir);
+    if (ok) { printf("OK\n"); return 0; }
+    printf("FAIL\n");
+    return 1;
+}
+
 /* ── Main ────────────────────────────────────────────────────── */
 
 /* ── boot wallet-scan cursor decision (O(delta) boot) ────────── */
@@ -562,6 +608,7 @@ int test_block_scan(void)
     failures += test_wallet_scan_cursor_start();
     failures += test_wallet_scan_empty_replacement();
     failures += test_legacy_import_clear_rollback();
+    failures += test_legacy_import_shutdown_abort();
 
     printf("block_scan: %d failure(s)\n\n", failures);
     return failures;
