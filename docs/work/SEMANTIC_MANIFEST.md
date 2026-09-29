@@ -975,9 +975,9 @@ newline, by a lone `\r`, or by `\n\r`; `CAT(__has_, include)("opt.h")`;
 and a `__has_embed` after `HI(<nope.h/*>)` where `HI` aliases
 `__has_include`. A lone `__has_embed` is the control case. Every
 conditional record with no claim now reaches every changed path. On a
-50-TU sample of the repository, 4 TUs gain one: glibc's
+50-TU sample of the repository, 4 TUs gain one: the
 `#ifdef __has_include` inside the skipped `#ifdef __USE_GNU` group of
-`bits/unistd_ext.h`. Keeping comment and `#ifdef` words too would make
+glibc's unistd_ext header. Keeping comment and `#ifdef` words too would make
 that 6.
 
 ### Darwin producer identity
