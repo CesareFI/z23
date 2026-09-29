@@ -313,6 +313,9 @@ ZCL_TEST_GROUP(verify_contract)
 /* The fixed-result signer (UID 60092) and root publisher: a no-root dress
  * rehearsal to a receiver HIT, and every custody and conflict refusal. */
 ZCL_TEST_GROUP(verify_signer)
+/* The fixed result.c receiver inside a landing proof: admission before
+ * make, zcc serving only admitted bytes, and HIT, COLD or BLOCK after. */
+ZCL_TEST_GROUP(verify_receiver)
 ZCL_TEST_GROUP(proof_ticket_reuse)
 ZCL_TEST_GROUP(proof_ticket_measure)
 /* The fixed-result verifier images and seccomp filter: pinned roots, the
