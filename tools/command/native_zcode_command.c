@@ -174,17 +174,11 @@ static void zc_candidate_free(struct zc_candidate *c)
  * rule. Returns false only on a hard error already reported via
  * reply_fail (missing/undecodable inputs, I/O failure); a true return can
  * still carry a non-empty failure list — that is the plan report. */
-static bool zc_validate(const struct zcl_command_request *request,
-                        struct zcl_command_reply *reply,
-                        struct zc_candidate *cand,
-                        struct vcs_package_publish_report *report,
-                        const char *datadir, const char *dir,
-                        size_t *replayed_out)
+static bool zc_validate_release(const struct zcl_command_request *request,
+                                struct zcl_command_reply *reply,
+                                struct zc_candidate *cand,
+                                struct vcs_package_publish_report *report)
 {
-    memset(cand, 0, sizeof(*cand));
-    vcs_package_manifest_init(&cand->manifest);
-    vcs_package_recipe_init(&cand->recipe);
-
     const char *release_hex = zc_input_str(request->input, "release_hex");
     if (!release_hex || !release_hex[0]) {
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
@@ -220,7 +214,14 @@ static bool zc_validate(const struct zcl_command_request *request,
     } else {
         cand->release_parsed = true;
     }
+    return true;
+}
 
+static bool zc_validate_manifest(const struct zcl_command_request *request,
+                                 struct zcl_command_reply *reply,
+                                 struct zc_candidate *cand,
+                                 struct vcs_package_publish_report *report)
+{
     const char *manifest_hex = zc_input_str(request->input, "manifest_hex");
     if (!manifest_hex || !manifest_hex[0]) {
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
@@ -253,61 +254,66 @@ static bool zc_validate(const struct zcl_command_request *request,
     } else {
         cand->manifest_parsed = true;
     }
+    return true;
+}
 
-    /* The declarative build recipe (slice 5): REQUIRED. A missing recipe
-     * is a plan failure rule (recipe-missing), never silently skipped. */
+/* The declarative build recipe (slice 5): REQUIRED. A missing recipe
+ * is a plan failure rule (recipe-missing), never silently skipped. */
+static bool zc_validate_recipe(const struct zcl_command_request *request,
+                               struct zcl_command_reply *reply,
+                               struct zc_candidate *cand,
+                               struct vcs_package_publish_report *report)
+{
     const char *recipe_hex = zc_input_str(request->input, "recipe_hex");
     if (!recipe_hex || !recipe_hex[0]) {
         vcs_package_publish_fail(
             report, VCS_PACKAGE_PUBLISH_RULE_RECIPE_MISSING,
             "no recipe_hex given (the declarative build recipe is "
             "required; the node never compiles without one)");
-    } else {
-        cand->recipe_wire =
-            zcl_malloc(VCS_PACKAGE_RECIPE_MAX_WIRE_BYTES, "zc_recipe_wire");
-        if (!cand->recipe_wire) {
-            zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
-                                   ZCL_COMMAND_EXIT_INTERNAL, "ALLOC",
-                                   "normalize", false, false,
-                                   "recipe wire buffer",
-                                   "zcode.package.publish");
-            return false;
-        }
-        enum vcs_package_recipe_error rcerr = VCS_PACKAGE_RECIPE_OK;
-        bool rc_decoded = zcl_hex_decode_n(recipe_hex, cand->recipe_wire,
-                                        VCS_PACKAGE_RECIPE_MAX_WIRE_BYTES,
-                                        &cand->recipe_wire_len);
-        if (rc_decoded)
-            rcerr = vcs_package_recipe_parse(cand->recipe_wire,
-                                             cand->recipe_wire_len,
-                                             &cand->recipe);
-        if (!rc_decoded || rcerr != VCS_PACKAGE_RECIPE_OK) {
-            vcs_package_publish_fail(
-                report, VCS_PACKAGE_PUBLISH_RULE_RECIPE_PARSE,
-                rc_decoded ? vcs_package_recipe_error_string(rcerr)
-                           : "recipe_hex is not bounded strict hex");
-            free(cand->recipe_wire);
-            cand->recipe_wire = NULL;
-            cand->recipe_wire_len = 0;
-        } else {
-            cand->recipe_parsed = true;
-        }
-    }
-
-    if (!cand->release_parsed || !cand->manifest_parsed)
-        return true; /* the report already names the failed rules */
-
-    vcs_package_publish_validate(&cand->release, &cand->manifest, report);
-    if (cand->recipe_parsed)
-        vcs_package_publish_validate_recipe(&cand->release, &cand->manifest,
-                                            &cand->recipe, report);
-    if (!report->release_ok || !report->manifest_ok)
         return true;
+    }
+    cand->recipe_wire =
+        zcl_malloc(VCS_PACKAGE_RECIPE_MAX_WIRE_BYTES, "zc_recipe_wire");
+    if (!cand->recipe_wire) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INTERNAL, "ALLOC",
+                               "normalize", false, false,
+                               "recipe wire buffer",
+                               "zcode.package.publish");
+        return false;
+    }
+    enum vcs_package_recipe_error rcerr = VCS_PACKAGE_RECIPE_OK;
+    bool rc_decoded = zcl_hex_decode_n(recipe_hex, cand->recipe_wire,
+                                    VCS_PACKAGE_RECIPE_MAX_WIRE_BYTES,
+                                    &cand->recipe_wire_len);
+    if (rc_decoded)
+        rcerr = vcs_package_recipe_parse(cand->recipe_wire,
+                                         cand->recipe_wire_len,
+                                         &cand->recipe);
+    if (!rc_decoded || rcerr != VCS_PACKAGE_RECIPE_OK) {
+        vcs_package_publish_fail(
+            report, VCS_PACKAGE_PUBLISH_RULE_RECIPE_PARSE,
+            rc_decoded ? vcs_package_recipe_error_string(rcerr)
+                       : "recipe_hex is not bounded strict hex");
+        free(cand->recipe_wire);
+        cand->recipe_wire = NULL;
+        cand->recipe_wire_len = 0;
+    } else {
+        cand->recipe_parsed = true;
+    }
+    return true;
+}
 
-    /* Acceptance (rule 7): replay the persisted releases, then classify.
-     * A one-shot CLI selects its argv chain here.  A handler running inside
-     * the live node must retain that node's already-selected chain instead
-     * of replacing regtest/testnet with the CLI's default mainnet value. */
+/* Acceptance (rule 7): replay the persisted releases, then classify.
+ * A one-shot CLI selects its argv chain here.  A handler running inside
+ * the live node must retain that node's already-selected chain instead
+ * of replacing regtest/testnet with the CLI's default mainnet value.
+ * Returns false when the reply already carries a hard failure. */
+static bool zc_validate_accept(struct zcl_command_reply *reply,
+                               struct zc_candidate *cand,
+                               struct vcs_package_publish_report *report,
+                               const char *datadir, size_t *replayed_out)
+{
     struct node_db *runtime_db = app_runtime_node_db();
     if (!runtime_db || !app_runtime_node_db_handle_open(runtime_db))
         chain_params_select(zcl_native_command_network());
@@ -343,12 +349,45 @@ static bool zc_validate(const struct zcl_command_request *request,
     if (replayed_out)
         *replayed_out = replayed;
     if (report->accept != VCS_PACKAGE_ACCEPT_OK &&
-        report->accept != VCS_PACKAGE_ACCEPT_DUPLICATE) {
+        report->accept != VCS_PACKAGE_ACCEPT_DUPLICATE)
         vcs_package_publish_fail(
             report, VCS_PACKAGE_PUBLISH_RULE_ACCEPT,
             vcs_package_accept_result_string(report->accept));
-        return true; /* acceptance failure: chunk checks are moot */
-    }
+    return true;
+}
+
+static bool zc_validate(const struct zcl_command_request *request,
+                        struct zcl_command_reply *reply,
+                        struct zc_candidate *cand,
+                        struct vcs_package_publish_report *report,
+                        const char *datadir, const char *dir,
+                        size_t *replayed_out)
+{
+    memset(cand, 0, sizeof(*cand));
+    vcs_package_manifest_init(&cand->manifest);
+    vcs_package_recipe_init(&cand->recipe);
+
+    if (!zc_validate_release(request, reply, cand, report) ||
+        !zc_validate_manifest(request, reply, cand, report) ||
+        !zc_validate_recipe(request, reply, cand, report))
+        return false;
+
+    if (!cand->release_parsed || !cand->manifest_parsed)
+        return true; /* the report already names the failed rules */
+
+    vcs_package_publish_validate(&cand->release, &cand->manifest, report);
+    if (cand->recipe_parsed)
+        vcs_package_publish_validate_recipe(&cand->release, &cand->manifest,
+                                            &cand->recipe, report);
+    if (!report->release_ok || !report->manifest_ok)
+        return true;
+
+    if (!zc_validate_accept(reply, cand, report, datadir, replayed_out))
+        return false;
+    /* acceptance failure: chunk checks are moot */
+    if (report->accept != VCS_PACKAGE_ACCEPT_OK &&
+        report->accept != VCS_PACKAGE_ACCEPT_DUPLICATE)
+        return true;
 
     /* Chunks (rule 8): only when a source directory is given. */
     if (dir && dir[0])
@@ -565,33 +604,24 @@ static void zc_store_release(struct vcs_package_store *store, bool owned)
  * answers nothing at all (a stale cookie left by a killed node) falls
  * through to the one-shot path, which is the only path that can serve an
  * offline datadir. */
-static bool zc_commit_via_resident(const struct zcl_command_request *request,
-                                   struct zcl_command_reply *reply)
+static bool zc_absolute_dir(const char *dir, char *absolute, size_t cap)
 {
-    if (zc_input_str(request->input, "datadir") || vcs_package_store_global())
-        return false;
-    const char *dir = zc_input_str(request->input, "dir");
-    if (!dir || !dir[0])
-        return false;
-    const char *datadir = zcl_native_command_datadir();
-    if (!datadir || !datadir[0])
-        return false;
-    char cookie[4400];
-    int n = snprintf(cookie, sizeof(cookie), "%s/.cookie", datadir);
-    if (n <= 0 || (size_t)n >= sizeof(cookie) || access(cookie, F_OK) != 0)
-        return false;
-    char absolute[4400];
+    int n;
     if (platform_path_is_absolute(dir)) {
-        n = snprintf(absolute, sizeof(absolute), "%s", dir);
+        n = snprintf(absolute, cap, "%s", dir);
     } else {
         char cwd[2048];
         if (!getcwd(cwd, sizeof(cwd)))
             return false;
-        n = snprintf(absolute, sizeof(absolute), "%s/%s", cwd, dir);
+        n = snprintf(absolute, cap, "%s/%s", cwd, dir);
     }
-    if (n <= 0 || (size_t)n >= sizeof(absolute))
-        return false;
+    return n > 0 && (size_t)n < cap;
+}
 
+/* The forwarded publish-commit parameters as an RPC argument string. */
+static char *zc_commit_forward_params(const struct zcl_command_request *request,
+                                      const char *absolute)
+{
     struct json_value forwarded;
     json_init(&forwarded);
     json_set_object(&forwarded);
@@ -612,17 +642,16 @@ static bool zc_commit_via_resident(const struct zcl_command_request *request,
     rpc_arg_builder_push_value(&args, &forwarded);
     char *params = rpc_arg_builder_to_json(&args);
     json_free(&forwarded);
-    zcl_native_bridge_ensure_rpc();
-    char *raw = params
-        ? node_rpc_call("zcode_package_publish_commit", params) : NULL;
-    free(params);
-    if (!raw)
-        return false;
+    return params;
+}
 
+/* Turns the resident's response body into this command's reply. */
+static void zc_apply_resident_body(struct zcl_command_reply *reply,
+                                   const char *raw)
+{
     struct json_value body;
     json_init(&body);
     bool parsed = json_read(&body, raw, strlen(raw)) && body.type == JSON_OBJ;
-    free(raw);
     if (!parsed) {
         json_free(&body);
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
@@ -631,7 +660,7 @@ static bool zc_commit_via_resident(const struct zcl_command_request *request,
                                "resident returned an unreadable publish "
                                "commit response",
                                "zcode.package.publish.commit");
-        return true;
+        return;
     }
     const struct json_value *data = json_get(&body, "data");
     if (json_get_bool_or(&body, "ok", false) && data &&
@@ -641,7 +670,7 @@ static bool zc_commit_via_resident(const struct zcl_command_request *request,
         json_copy(&reply->data, data);
         reply->error.mutated = json_get_bool_or(&body, "mutated", true);
         json_free(&body);
-        return true;
+        return;
     }
     const char *code = json_get_str(json_get(&body, "code"));
     const char *phase = json_get_str(json_get(&body, "phase"));
@@ -658,323 +687,481 @@ static bool zc_commit_via_resident(const struct zcl_command_request *request,
         evidence && evidence[0] ? evidence
                                 : "zcode.package.publish.commit");
     json_free(&body);
+}
+
+static bool zc_commit_via_resident(const struct zcl_command_request *request,
+                                   struct zcl_command_reply *reply)
+{
+    if (zc_input_str(request->input, "datadir") || vcs_package_store_global())
+        return false;
+    const char *dir = zc_input_str(request->input, "dir");
+    if (!dir || !dir[0])
+        return false;
+    const char *datadir = zcl_native_command_datadir();
+    if (!datadir || !datadir[0])
+        return false;
+    char cookie[4400];
+    int n = snprintf(cookie, sizeof(cookie), "%s/.cookie", datadir);
+    if (n <= 0 || (size_t)n >= sizeof(cookie) || access(cookie, F_OK) != 0)
+        return false;
+    char absolute[4400];
+    if (!zc_absolute_dir(dir, absolute, sizeof(absolute)))
+        return false;
+
+    char *params = zc_commit_forward_params(request, absolute);
+    zcl_native_bridge_ensure_rpc();
+    char *raw = params
+        ? node_rpc_call("zcode_package_publish_commit", params) : NULL;
+    free(params);
+    if (!raw)
+        return false;
+    zc_apply_resident_body(reply, raw);
+    free(raw);
     return true;
 }
 
-void zcl_native_handle_zcode_package_publish_commit(
-    const struct zcl_command_request *request,
-    struct zcl_command_reply *reply)
+/* Slice 11 policy checkpoint: publish frequency. A FRESH release is admitted
+ * only within the publisher key's per-ISO-week tier allowance. On success
+ * `*book_out` holds the service book the commit records into (caller frees);
+ * on failure the reply is filled and nothing is left allocated. */
+static bool zc_policy_gate(const struct zcl_command_request *request,
+                           struct zcl_command_reply *reply,
+                           const char *zcode_dir,
+                           const struct zc_candidate *cand,
+                           struct vcs_service_book **book_out,
+                           enum vcs_policy_tier *tier_out, int64_t *day_out)
 {
-    if (!request || !reply)
-        return;
-    const char *datadir = zc_datadir(request);
-    if (!datadir) {
-        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
-                               ZCL_COMMAND_EXIT_INVALID, "MISSING_DATADIR",
-                               "normalize", false, false,
-                               "no datadir given (input datadir or --datadir)",
-                               "zcode.package.publish.commit");
-        return;
-    }
-    const char *dir = zc_input_str(request->input, "dir");
-    if (!dir || !dir[0]) {
-        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
-                               ZCL_COMMAND_EXIT_INVALID, "MISSING_DIR",
-                               "normalize", false, false,
-                               "commit requires the chunk source dir",
-                               "zcode.package.publish.commit");
-        return;
-    }
-    if (zc_commit_via_resident(request, reply))
-        return;
-    struct zc_candidate cand;
-    struct vcs_package_publish_report report;
-    vcs_package_publish_report_init(&report);
-    size_t replayed = 0;
-    if (!zc_validate(request, reply, &cand, &report, datadir, dir,
-                     &replayed)) {
-        zc_candidate_free(&cand);
-        return;
-    }
-    if (report.failure_count > 0) {
-        /* The exact failed rule leads; the rest fit the evidence budget. */
-        const struct vcs_package_publish_failure *first =
-            &report.failures[0];
-        char evidence[256];
-        snprintf(evidence, sizeof(evidence), "%s (%zu rule%s failed)",
-                 first->detail, report.failure_count,
-                 report.failure_count == 1 ? "" : "s");
-        zcl_command_reply_fail(
-            reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
-            vcs_package_publish_rule_string(first->rule), "validate", false,
-            false, "candidate release failed publication validation",
-            evidence);
-        zc_candidate_free(&cand);
-        return;
-    }
-
-    char zcode_dir[4400];
-    int n = snprintf(zcode_dir, sizeof(zcode_dir), "%s/zcode", datadir);
-    if (n < 0 || (size_t)n >= sizeof(zcode_dir)) {
-        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
-                               ZCL_COMMAND_EXIT_INVALID, "DATADIR_TOO_LONG",
-                               "normalize", false, false,
-                               "datadir path too long", datadir);
-        zc_candidate_free(&cand);
-        return;
-    }
-
-    /* ── slice 11 policy checkpoint: publish frequency ─────────────────
-     * A FRESH release (acceptance OK) is admitted only within the
-     * publisher key's per-ISO-week tier allowance; a redelivery
-     * classifying DUPLICATE skips the gate, so re-commit stays
-     * idempotent. The tier resolves from the reward ledger's earned
-     * score plus the local service book's verified-bytes facts. */
-    const bool fresh_publish = report.accept == VCS_PACKAGE_ACCEPT_OK;
-    struct vcs_service_book *book = NULL;
-    enum vcs_policy_tier policy_tier = VCS_POLICY_TIER_NEW_USER;
-    int64_t policy_day = 0;
-    if (fresh_publish) {
-        const struct json_value *dv = json_get(request->input, "day");
-        if (dv)
-            policy_day = json_get_int(dv);
-        else
-            policy_day =
-                vcs_rank_day_from_unix(platform_time_wall_unix());
-        book = vcs_service_book_load(zcode_dir);
-        struct vcs_reward_ledger *ledger =
-            vcs_reward_ledger_load(zcode_dir);
-        if (!book || !ledger) {
-            vcs_service_book_free(book);
-            vcs_reward_ledger_free(ledger);
-            zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
-                                   ZCL_COMMAND_EXIT_INTERNAL,
-                                   "POLICY_LOAD", "validate", false, false,
-                                   "the policy facts (service book / reward "
-                                   "ledger) could not be replayed",
-                                   zcode_dir);
-            zc_candidate_free(&cand);
-            return;
-        }
-        struct vcs_reward_contributor_totals ct;
-        vcs_reward_contributor_totals(
-            ledger, cand.release.publisher_pubkey, &ct);
-        struct vcs_service_key_totals kt;
-        (void)vcs_service_key_totals(book, cand.release.publisher_pubkey,
-                                     policy_day, &kt);
-        policy_tier = vcs_policy_tier_for(ct.earned_score,
-                                          kt.verified_bytes_uploaded,
-                                          kt.verified_bytes_downloaded);
-        struct vcs_policy_decision decision =
-            vcs_policy_check_publish(policy_tier, kt.publishes_this_week);
+    const struct json_value *dv = json_get(request->input, "day");
+    int64_t policy_day = dv ? json_get_int(dv)
+                            : vcs_rank_day_from_unix(platform_time_wall_unix());
+    struct vcs_service_book *book = vcs_service_book_load(zcode_dir);
+    struct vcs_reward_ledger *ledger = vcs_reward_ledger_load(zcode_dir);
+    if (!book || !ledger) {
+        vcs_service_book_free(book);
         vcs_reward_ledger_free(ledger);
-        if (!decision.allow) {
-            char evidence[256];
-            snprintf(evidence, sizeof(evidence),
-                     "rule=%s tier=%s publishes_this_week=%u allowance=%u "
-                     "(per ISO week, day=%lld)",
-                     decision.rule, vcs_policy_tier_string(policy_tier),
-                     kt.publishes_this_week,
-                     vcs_policy_limits_for(policy_tier)->publish_per_week,
-                     (long long)policy_day);
-            vcs_service_book_free(book);
-            zcl_command_reply_fail(
-                reply, ZCL_COMMAND_STATUS_FAILED,
-                ZCL_COMMAND_EXIT_INVALID, "PUBLISH_FREQUENCY_LIMIT",
-                "validate", false, false,
-                "publish-frequency-limit: the publisher key's tier "
-                "allowance for this ISO week is exhausted",
-                evidence);
-            zc_candidate_free(&cand);
-            return;
-        }
-    }
-
-    /* A running node already owns one store over its own datadir, and that
-     * object — not the bytes on disk — is what its package swarm answers
-     * from. Opening a second handle here writes the manifest, chunks and
-     * carrier correctly and still leaves the serving engine with an index
-     * that never heard of this package: the node announces a root it then
-     * refuses to send, until it is restarted. So when this commit names the
-     * datadir the resident handle was opened from, publish through that
-     * handle. Any other datadir keeps the one-shot owned-store path. */
-    struct vcs_package_store *resident = vcs_package_store_global();
-    const char *resident_root = vcs_package_store_root_dir(resident);
-    bool own_store = !(resident_root && strcmp(resident_root, zcode_dir) == 0);
-    struct vcs_package_store *store = own_store
-        ? vcs_package_store_open(datadir, vcs_package_store_quota_bytes())
-        : resident;
-    if (!store) {
-        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
-                               ZCL_COMMAND_EXIT_INTERNAL, "STORE_OPEN",
-                               "persist", false, false,
-                               "the package store failed to open", zcode_dir);
-        vcs_service_book_free(book);
-        zc_candidate_free(&cand);
-        return;
-    }
-
-    uint8_t root[32];
-    enum vcs_package_store_result sres = vcs_package_store_put_manifest(
-        store, cand.manifest_wire, cand.manifest_wire_len, root);
-    if (sres != VCS_PACKAGE_STORE_OK) {
-        zc_store_release(store, own_store);
-        vcs_service_book_free(book);
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                ZCL_COMMAND_EXIT_INTERNAL,
-                               vcs_package_store_result_string(sres),
-                               "persist", false, false,
-                               "manifest admission failed",
-                               cand.release.name);
-        zc_candidate_free(&cand);
-        return;
+                               "POLICY_LOAD", "validate", false, false,
+                               "the policy facts (service book / reward "
+                               "ledger) could not be replayed",
+                               zcode_dir);
+        return false;
     }
-
-    /* The declarative recipe persists beside the manifest (verify-before-
-     * store: the store re-parses the wire before writing it). */
-    sres = vcs_package_store_put_recipe(store, cand.recipe_wire,
-                                        cand.recipe_wire_len, NULL);
-    if (sres != VCS_PACKAGE_STORE_OK) {
-        zc_store_release(store, own_store);
+    struct vcs_reward_contributor_totals ct;
+    vcs_reward_contributor_totals(ledger, cand->release.publisher_pubkey,
+                                  &ct);
+    struct vcs_service_key_totals kt;
+    (void)vcs_service_key_totals(book, cand->release.publisher_pubkey,
+                                 policy_day, &kt);
+    enum vcs_policy_tier policy_tier = vcs_policy_tier_for(
+        ct.earned_score, kt.verified_bytes_uploaded,
+        kt.verified_bytes_downloaded);
+    struct vcs_policy_decision decision =
+        vcs_policy_check_publish(policy_tier, kt.publishes_this_week);
+    vcs_reward_ledger_free(ledger);
+    if (!decision.allow) {
+        char evidence[256];
+        snprintf(evidence, sizeof(evidence),
+                 "rule=%s tier=%s publishes_this_week=%u allowance=%u "
+                 "(per ISO week, day=%lld)",
+                 decision.rule, vcs_policy_tier_string(policy_tier),
+                 kt.publishes_this_week,
+                 vcs_policy_limits_for(policy_tier)->publish_per_week,
+                 (long long)policy_day);
         vcs_service_book_free(book);
-        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
-                               ZCL_COMMAND_EXIT_INTERNAL,
-                               vcs_package_store_result_string(sres),
-                               "persist", false, true,
-                               "recipe admission failed", cand.release.name);
-        zc_candidate_free(&cand);
-        return;
+        zcl_command_reply_fail(
+            reply, ZCL_COMMAND_STATUS_FAILED,
+            ZCL_COMMAND_EXIT_INVALID, "PUBLISH_FREQUENCY_LIMIT",
+            "validate", false, false,
+            "publish-frequency-limit: the publisher key's tier "
+            "allowance for this ISO week is exhausted",
+            evidence);
+        return false;
     }
+    *book_out = book;
+    *tier_out = policy_tier;
+    *day_out = policy_day;
+    return true;
+}
 
-    uint8_t *buf = zcl_malloc(VCS_PACKAGE_CHUNK_BYTES, "zc_chunk_buf");
-    if (!buf) {
-        zc_store_release(store, own_store);
-        vcs_service_book_free(book);
-        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
-                               ZCL_COMMAND_EXIT_INTERNAL, "ALLOC",
-                               "persist", false, false, "chunk buffer",
-                               "zcode.package.publish.commit");
-        zc_candidate_free(&cand);
-        return;
-    }
-    uint64_t chunks_stored = 0;
-    bool io_failed = false;
-    char evidence[256] = "";
-    for (size_t i = 0; i < cand.manifest.count && !io_failed; i++) {
-        const struct vcs_package_file *f = &cand.manifest.files[i];
+/* Reads every chunk of the candidate from `dir` and stores it under `root`.
+ * On failure `evidence` names the chunk and the reason. */
+static bool zc_persist_chunks(struct vcs_package_store *store,
+                              const uint8_t root[32],
+                              const struct zc_candidate *cand, const char *dir,
+                              uint8_t *buf, uint64_t *chunks_stored,
+                              char evidence[256])
+{
+    for (size_t i = 0; i < cand->manifest.count; i++) {
+        const struct vcs_package_file *f = &cand->manifest.files[i];
         for (uint32_t c = 0; c < f->chunk_count; c++) {
             size_t len = 0;
             enum vcs_package_publish_rule rule;
             if (!vcs_package_publish_read_chunk(dir, f, c, buf, &len,
                                                 &rule)) {
-                snprintf(evidence, sizeof(evidence), "%s#%u: %s", f->path,
-                         c, vcs_package_publish_rule_string(rule));
-                io_failed = true;
-                break;
+                snprintf(evidence, 256, "%s#%u: %s", f->path, c,
+                         vcs_package_publish_rule_string(rule));
+                return false;
             }
-            sres = vcs_package_store_put_chunk(store, root, f->path, c, buf,
-                                               len);
+            enum vcs_package_store_result sres =
+                vcs_package_store_put_chunk(store, root, f->path, c, buf, len);
             if (sres != VCS_PACKAGE_STORE_OK) {
-                snprintf(evidence, sizeof(evidence), "%s#%u: %s", f->path,
-                         c, vcs_package_store_result_string(sres));
-                io_failed = true;
-                break;
+                snprintf(evidence, 256, "%s#%u: %s", f->path, c,
+                         vcs_package_store_result_string(sres));
+                return false;
             }
-            chunks_stored++;
+            (*chunks_stored)++;
         }
     }
-    free(buf);
-    if (io_failed) {
-        /* Staging survives: a later commit of the same candidate resumes. */
-        zc_store_release(store, own_store);
-        vcs_service_book_free(book);
-        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
-                               ZCL_COMMAND_EXIT_INTERNAL,
-                               "CHUNK_PERSIST", "persist", true, true,
-                               "chunk admission failed; staged bytes are "
-                               "resumable on retry", evidence);
-        zc_candidate_free(&cand);
-        return;
-    }
+    return true;
+}
 
-    /* The network object is a closed ordinary content.v2 carrier containing
-     * the signed release, recipe, inner manifest, and exact source bytes.
-     * Persist it before naming the release locally so every searchable
-     * package is immediately publishable by one immutable transport root. */
-    struct vcs_package_transport transport;
-    vcs_package_transport_init(&transport);
+/* Local CAS admission is not network publication. Name the one next command
+ * that binds package_root to transport_root on the DHT so another node can
+ * fetch without this publisher. */
+struct zc_fail {
+    const char *code;
+    bool retryable;
+    bool mutated;
+    const char *message;
+    char evidence[256];
+};
+
+static bool zc_fail_set(struct zc_fail *fail, const char *code, bool retryable,
+                        bool mutated, const char *message,
+                        const char *evidence)
+{
+    fail->code = code;
+    fail->retryable = retryable;
+    fail->mutated = mutated;
+    fail->message = message;
+    snprintf(fail->evidence, sizeof(fail->evidence), "%s", evidence);
+    return false;
+}
+
+/* The network object is a closed ordinary content.v2 carrier containing the
+ * signed release, recipe, inner manifest, and exact source bytes. Persist it
+ * before naming the release locally so every searchable package is
+ * immediately publishable by one immutable transport root. */
+static bool zc_store_transport(struct vcs_package_store *store,
+                               const struct zc_candidate *cand,
+                               const char *dir,
+                               struct vcs_package_transport *transport,
+                               struct zc_fail *fail)
+{
+    vcs_package_transport_init(transport);
     uint8_t *release_wire = NULL;
     size_t release_wire_len = 0;
     enum vcs_package_transport_result transport_result =
-        vcs_package_release_serialize(&cand.release, &release_wire,
+        vcs_package_release_serialize(&cand->release, &release_wire,
                                       &release_wire_len) ==
                 VCS_PACKAGE_RELEASE_OK
             ? vcs_package_transport_build(
-                  release_wire, release_wire_len, cand.recipe_wire,
-                  cand.recipe_wire_len, cand.manifest_wire,
-                  cand.manifest_wire_len, &transport)
+                  release_wire, release_wire_len, cand->recipe_wire,
+                  cand->recipe_wire_len, cand->manifest_wire,
+                  cand->manifest_wire_len, transport)
             : VCS_PACKAGE_TRANSPORT_ERR_RELEASE;
     free(release_wire);
     if (transport_result == VCS_PACKAGE_TRANSPORT_OK)
-        transport_result = vcs_package_transport_store(
-            store, &transport, dir);
-    if (transport_result != VCS_PACKAGE_TRANSPORT_OK) {
-        vcs_package_transport_free(&transport);
-        zc_store_release(store, own_store);
-        vcs_service_book_free(book);
-        zcl_command_reply_fail(
-            reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INTERNAL,
-            "TRANSPORT_PERSIST", "persist", true, true,
-            "the signed package transport carrier could not be persisted",
-            vcs_package_transport_result_string(transport_result));
-        zc_candidate_free(&cand);
-        return;
-    }
+        transport_result = vcs_package_transport_store(store, transport, dir);
+    if (transport_result == VCS_PACKAGE_TRANSPORT_OK)
+        return true;
+    vcs_package_transport_free(transport);
+    return zc_fail_set(
+        fail, "TRANSPORT_PERSIST", true, true,
+        "the signed package transport carrier could not be persisted",
+        vcs_package_transport_result_string(transport_result));
+}
 
-    bool committed = report.accept == VCS_PACKAGE_ACCEPT_OK;
-    if (committed) {
+/* Persists the manifest, recipe, chunks and transport carrier. On failure
+ * `fail` names the reply to send and nothing transport-owned is left. */
+static bool zc_store_candidate(struct vcs_package_store *store,
+                               const struct zc_candidate *cand,
+                               const char *dir, uint8_t root[32],
+                               uint64_t *chunks_stored,
+                               struct vcs_package_transport *transport,
+                               struct zc_fail *fail)
+{
+    enum vcs_package_store_result sres = vcs_package_store_put_manifest(
+        store, cand->manifest_wire, cand->manifest_wire_len, root);
+    if (sres != VCS_PACKAGE_STORE_OK)
+        return zc_fail_set(fail, vcs_package_store_result_string(sres), false,
+                           false, "manifest admission failed",
+                           cand->release.name);
+
+    /* The declarative recipe persists beside the manifest (verify-before-
+     * store: the store re-parses the wire before writing it). */
+    sres = vcs_package_store_put_recipe(store, cand->recipe_wire,
+                                        cand->recipe_wire_len, NULL);
+    if (sres != VCS_PACKAGE_STORE_OK)
+        return zc_fail_set(fail, vcs_package_store_result_string(sres), false,
+                           true, "recipe admission failed",
+                           cand->release.name);
+
+    uint8_t *buf = zcl_malloc(VCS_PACKAGE_CHUNK_BYTES, "zc_chunk_buf");
+    if (!buf)
+        return zc_fail_set(fail, "ALLOC", false, false, "chunk buffer",
+                           "zcode.package.publish.commit");
+    char evidence[256] = "";
+    bool chunks_ok = zc_persist_chunks(store, root, cand, dir, buf,
+                                       chunks_stored, evidence);
+    free(buf);
+    /* Staging survives: a later commit of the same candidate resumes. */
+    if (!chunks_ok)
+        return zc_fail_set(fail, "CHUNK_PERSIST", true, true,
+                           "chunk admission failed; staged bytes are "
+                           "resumable on retry", evidence);
+    return zc_store_transport(store, cand, dir, transport, fail);
+}
+
+static void zc_push_commit_next_action(struct zcl_command_reply *reply,
+                                       const char *package_root_hex,
+                                       const char *transport_root_hex)
+{
+    int64_t now = platform_time_wall_unix();
+    int64_t expiry = now + 2592000;
+    char next[900];
+    int nn = snprintf(
+        next, sizeof(next),
+        "z23 zcode network publish --input='{\"mode\":\"plan\","
+        "\"kind\":\"pointer\",\"namespace\":\"zclassic23.package\","
+        "\"semantic_root\":\"%s\",\"transport_root\":\"%s\","
+        "\"sequence\":1,\"not_before\":%lld,\"expiry\":%lld}'",
+        package_root_hex, transport_root_hex, (long long)now,
+        (long long)expiry);
+    if (nn > 0 && (size_t)nn < sizeof(next))
+        (void)json_push_kv_str(&reply->data, "next_command", next);
+    (void)json_push_kv_str(&reply->data, "next_kind", "pointer");
+    (void)json_push_kv_str(
+        &reply->data, "next_action",
+        "install this exact package (zcode use) and file the distinct "
+        "rebuild receipt (zcode package reproduce) so the pointer gate "
+        "admits it, then plan then commit the pointer record so peers "
+        "can discover this exact package_root after this node is gone");
+}
+
+static void zc_push_commit_policy(struct zcl_command_reply *reply,
+                                  enum vcs_policy_tier policy_tier,
+                                  uint32_t policy_week_usage,
+                                  int64_t policy_day, bool policy_recorded)
+{
+    struct json_value pol;
+    json_init(&pol);
+    json_set_object(&pol);
+    (void)json_push_kv_str(&pol, "tier", vcs_policy_tier_string(policy_tier));
+    (void)json_push_kv_int(
+        &pol, "publish_per_week",
+        (int64_t)vcs_policy_limits_for(policy_tier)->publish_per_week);
+    (void)json_push_kv_int(&pol, "publishes_this_week",
+                           (int64_t)policy_week_usage);
+    (void)json_push_kv_int(&pol, "day", policy_day);
+    (void)json_push_kv_bool(&pol, "policy_recorded", policy_recorded);
+    if (!policy_recorded)
+        (void)json_push_kv_str(
+            &pol, "policy_record_warning",
+            "the local admission event could not be recorded in the "
+            "service book; the publish-frequency gate's history is "
+            "degraded (the local commit itself succeeded)");
+    (void)json_push_kv(&reply->data, "policy", &pol);
+    json_free(&pol);
+}
+
+/* State threaded through the stages of a publish commit. */
+struct zc_commit {
+    const struct zcl_command_request *request;
+    struct zcl_command_reply *reply;
+    const char *datadir;
+    const char *dir;
+    char zcode_dir[4400];
+    struct zc_candidate cand;
+    struct vcs_package_publish_report report;
+    size_t replayed;
+    struct vcs_service_book *book;
+    enum vcs_policy_tier tier;
+    int64_t day;
+    struct vcs_package_store *store;
+    bool own_store;
+    uint8_t root[32];
+    uint64_t chunks_stored;
+    struct vcs_package_transport transport;
+    bool transport_built;
+    bool committed;
+    bool policy_recorded;
+    uint32_t week_usage;
+};
+
+static void zc_commit_cleanup(struct zc_commit *c)
+{
+    if (c->transport_built)
+        vcs_package_transport_free(&c->transport);
+    if (c->store)
+        zc_store_release(c->store, c->own_store);
+    vcs_service_book_free(c->book);
+    zc_candidate_free(&c->cand);
+}
+
+static bool zc_commit_inputs(struct zc_commit *c)
+{
+    c->datadir = zc_datadir(c->request);
+    if (!c->datadir) {
+        zcl_command_reply_fail(c->reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INVALID, "MISSING_DATADIR",
+                               "normalize", false, false,
+                               "no datadir given (input datadir or --datadir)",
+                               "zcode.package.publish.commit");
+        return false;
+    }
+    c->dir = zc_input_str(c->request->input, "dir");
+    if (!c->dir || !c->dir[0]) {
+        zcl_command_reply_fail(c->reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INVALID, "MISSING_DIR",
+                               "normalize", false, false,
+                               "commit requires the chunk source dir",
+                               "zcode.package.publish.commit");
+        return false;
+    }
+    return true;
+}
+
+/* Validates the candidate and resolves the store directory. */
+static bool zc_commit_check(struct zc_commit *c)
+{
+    vcs_package_publish_report_init(&c->report);
+    if (!zc_validate(c->request, c->reply, &c->cand, &c->report, c->datadir,
+                     c->dir, &c->replayed))
+        return false;
+    if (c->report.failure_count > 0) {
+        /* The exact failed rule leads; the rest fit the evidence budget. */
+        const struct vcs_package_publish_failure *first =
+            &c->report.failures[0];
+        char evidence[256];
+        snprintf(evidence, sizeof(evidence), "%s (%zu rule%s failed)",
+                 first->detail, c->report.failure_count,
+                 c->report.failure_count == 1 ? "" : "s");
+        zcl_command_reply_fail(
+            c->reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
+            vcs_package_publish_rule_string(first->rule), "validate", false,
+            false, "candidate release failed publication validation",
+            evidence);
+        return false;
+    }
+    int n = snprintf(c->zcode_dir, sizeof(c->zcode_dir), "%s/zcode",
+                     c->datadir);
+    if (n < 0 || (size_t)n >= sizeof(c->zcode_dir)) {
+        zcl_command_reply_fail(c->reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INVALID, "DATADIR_TOO_LONG",
+                               "normalize", false, false,
+                               "datadir path too long", c->datadir);
+        return false;
+    }
+    return true;
+}
+
+/* ── slice 11 policy checkpoint: publish frequency ─────────────────
+ * A FRESH release (acceptance OK) is admitted only within the
+ * publisher key's per-ISO-week tier allowance; a redelivery
+ * classifying DUPLICATE skips the gate, so re-commit stays
+ * idempotent. The tier resolves from the reward ledger's earned
+ * score plus the local service book's verified-bytes facts. */
+static bool zc_commit_policy(struct zc_commit *c)
+{
+    if (c->report.accept != VCS_PACKAGE_ACCEPT_OK)
+        return true;
+    return zc_policy_gate(c->request, c->reply, c->zcode_dir, &c->cand,
+                          &c->book, &c->tier, &c->day);
+}
+
+/* A running node already owns one store over its own datadir, and that
+ * object — not the bytes on disk — is what its package swarm answers
+ * from. Opening a second handle here writes the manifest, chunks and
+ * carrier correctly and still leaves the serving engine with an index
+ * that never heard of this package: the node announces a root it then
+ * refuses to send, until it is restarted. So when this commit names the
+ * datadir the resident handle was opened from, publish through that
+ * handle. Any other datadir keeps the one-shot owned-store path. */
+static bool zc_commit_open_store(struct zc_commit *c)
+{
+    struct vcs_package_store *resident = vcs_package_store_global();
+    const char *resident_root = vcs_package_store_root_dir(resident);
+    c->own_store = !(resident_root && strcmp(resident_root, c->zcode_dir) == 0);
+    struct vcs_package_store *store = c->own_store
+        ? vcs_package_store_open(c->datadir, vcs_package_store_quota_bytes())
+        : resident;
+    if (!store) {
+        zcl_command_reply_fail(c->reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INTERNAL, "STORE_OPEN",
+                               "persist", false, false,
+                               "the package store failed to open",
+                               c->zcode_dir);
+        return false;
+    }
+    c->store = store;
+    return true;
+}
+
+/* Slice 11: a successful FRESH local commit records the admission event
+ * in the local service book (dedup by release id — a redelivered
+ * release id never mints a second event). A record failure degrades
+ * the frequency gate's history, never the local commit itself; the reply
+ * says so honestly. */
+static void zc_commit_record_policy(struct zc_commit *c)
+{
+    if (!c->committed || !c->book)
+        return;
+    enum vcs_service_record_result rr = vcs_service_record_publish(
+        c->book, c->cand.release.publisher_pubkey, c->report.release_id,
+        c->day);
+    c->policy_recorded = rr == VCS_SERVICE_RECORD_OK ||
+                         rr == VCS_SERVICE_RECORD_DUPLICATE;
+    struct vcs_service_key_totals kt2;
+    if (vcs_service_key_totals(c->book, c->cand.release.publisher_pubkey,
+                               c->day, &kt2))
+        c->week_usage = kt2.publishes_this_week;
+}
+
+/* Persists the candidate and, for a fresh release, names it locally. The
+ * store is released before the policy event is recorded. */
+static bool zc_commit_persist(struct zc_commit *c)
+{
+    struct zc_fail fail;
+    if (!zc_store_candidate(c->store, &c->cand, c->dir, c->root,
+                            &c->chunks_stored, &c->transport, &fail)) {
+        zcl_command_reply_fail(c->reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INTERNAL, fail.code,
+                               "persist", fail.retryable, fail.mutated,
+                               fail.message, fail.evidence);
+        return false;
+    }
+    c->transport_built = true;
+
+    c->committed = c->report.accept == VCS_PACKAGE_ACCEPT_OK;
+    if (c->committed) {
         enum vcs_package_accept_result ar;
-        sres = vcs_package_store_put_release(store, &cand.release, &ar);
+        enum vcs_package_store_result sres =
+            vcs_package_store_put_release(c->store, &c->cand.release, &ar);
         if (sres != VCS_PACKAGE_STORE_OK) {
-            zc_store_release(store, own_store);
-            vcs_package_transport_free(&transport);
-            vcs_service_book_free(book);
             zcl_command_reply_fail(
-                reply, ZCL_COMMAND_STATUS_FAILED,
+                c->reply, ZCL_COMMAND_STATUS_FAILED,
                 ZCL_COMMAND_EXIT_INTERNAL,
                 vcs_package_store_result_string(sres), "persist", false,
                 true, "release persistence failed",
                 vcs_package_accept_result_string(ar));
-            zc_candidate_free(&cand);
-            return;
+            return false;
         }
     }
-    zc_store_release(store, own_store);
+    zc_store_release(c->store, c->own_store);
+    c->store = NULL;
+    zc_commit_record_policy(c);
+    return true;
+}
 
-    /* Slice 11: a successful FRESH local commit records the admission event
-     * in the local service book (dedup by release id — a redelivered
-     * release id never mints a second event). A record failure degrades
-     * the frequency gate's history, never the local commit itself; the reply
-     * says so honestly. */
-    bool policy_recorded = false;
-    uint32_t policy_week_usage = 0;
-    if (committed && book) {
-        enum vcs_service_record_result rr = vcs_service_record_publish(
-            book, cand.release.publisher_pubkey, report.release_id,
-            policy_day);
-        policy_recorded = rr == VCS_SERVICE_RECORD_OK ||
-                          rr == VCS_SERVICE_RECORD_DUPLICATE;
-        struct vcs_service_key_totals kt2;
-        if (vcs_service_key_totals(book, cand.release.publisher_pubkey,
-                                   policy_day, &kt2))
-            policy_week_usage = kt2.publishes_this_week;
-    }
-    vcs_service_book_free(book);
-
+static void zc_commit_reply(struct zc_commit *c)
+{
+    struct zcl_command_reply *reply = c->reply;
     char hex[65];
     (void)json_push_kv_str(&reply->data, "stage", "commit");
     (void)json_push_kv_str(&reply->data, "result",
-                           committed ? "committed" : "duplicate");
+                           c->committed ? "committed" : "duplicate");
     (void)json_push_kv_bool(&reply->data, "local_commit_complete", true);
     (void)json_push_kv_bool(&reply->data,
                            "human_confirmation_bound", false);
@@ -986,75 +1173,51 @@ void zcl_native_handle_zcode_package_publish_commit(
     (void)json_push_kv_bool(&reply->data, "exact_fetch_observed", false);
     (void)json_push_kv_bool(&reply->data,
                            "network_publication_performed", false);
-    zcl_hex_encode(report.release_id, 32, hex);
+    zcl_hex_encode(c->report.release_id, 32, hex);
     (void)json_push_kv_str(&reply->data, "release_id", hex);
     (void)json_push_kv_str(&reply->data, "plan_token", hex);
     char package_root_hex[65];
     char transport_root_hex[65];
-    zcl_hex_encode(root, 32, package_root_hex);
+    zcl_hex_encode(c->root, 32, package_root_hex);
     (void)json_push_kv_str(&reply->data, "package_root", package_root_hex);
-    zcl_hex_encode(transport.transport_root, 32, transport_root_hex);
+    zcl_hex_encode(c->transport.transport_root, 32, transport_root_hex);
     (void)json_push_kv_str(&reply->data, "transport_root",
                            transport_root_hex);
-    (void)json_push_kv_str(&reply->data, "name", cand.release.name);
+    (void)json_push_kv_str(&reply->data, "name", c->cand.release.name);
     (void)json_push_kv_int(&reply->data, "files",
-                           (int64_t)report.file_count);
+                           (int64_t)c->report.file_count);
     (void)json_push_kv_int(&reply->data, "bytes",
-                           (int64_t)report.total_bytes);
+                           (int64_t)c->report.total_bytes);
     (void)json_push_kv_int(&reply->data, "chunks_stored",
-                           (int64_t)chunks_stored);
+                           (int64_t)c->chunks_stored);
     (void)json_push_kv_int(&reply->data, "replayed_releases",
-                           (int64_t)replayed);
-    if (committed) {
-        struct json_value pol;
-        json_init(&pol);
-        json_set_object(&pol);
-        (void)json_push_kv_str(&pol, "tier",
-                               vcs_policy_tier_string(policy_tier));
-        (void)json_push_kv_int(
-            &pol, "publish_per_week",
-            (int64_t)vcs_policy_limits_for(policy_tier)->publish_per_week);
-        (void)json_push_kv_int(&pol, "publishes_this_week",
-                               (int64_t)policy_week_usage);
-        (void)json_push_kv_int(&pol, "day", policy_day);
-        (void)json_push_kv_bool(&pol, "policy_recorded", policy_recorded);
-        if (!policy_recorded)
-            (void)json_push_kv_str(
-                &pol, "policy_record_warning",
-                "the local admission event could not be recorded in the "
-                "service book; the publish-frequency gate's history is "
-                "degraded (the local commit itself succeeded)");
-        (void)json_push_kv(&reply->data, "policy", &pol);
-        json_free(&pol);
+                           (int64_t)c->replayed);
+    if (c->committed)
+        zc_push_commit_policy(reply, c->tier, c->week_usage, c->day,
+                              c->policy_recorded);
+    zc_push_commit_next_action(reply, package_root_hex, transport_root_hex);
+    reply->error.mutated = c->committed;
+}
+
+void zcl_native_handle_zcode_package_publish_commit(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply)
+{
+    if (!request || !reply)
+        return;
+    struct zc_commit c = {.request = request, .reply = reply,
+                          .tier = VCS_POLICY_TIER_NEW_USER};
+    if (!zc_commit_inputs(&c))
+        return;
+    if (zc_commit_via_resident(request, reply))
+        return;
+    if (!zc_commit_check(&c) || !zc_commit_policy(&c) ||
+        !zc_commit_open_store(&c) || !zc_commit_persist(&c)) {
+        zc_commit_cleanup(&c);
+        return;
     }
-    {
-        /* Local CAS admission is not network publication. Name the one
-         * next command that binds package_root to transport_root on the
-         * DHT so another node can fetch without this publisher. */
-        int64_t now = platform_time_wall_unix();
-        int64_t expiry = now + 2592000;
-        char next[900];
-        int nn = snprintf(
-            next, sizeof(next),
-            "z23 zcode network publish --input='{\"mode\":\"plan\","
-            "\"kind\":\"pointer\",\"namespace\":\"zclassic23.package\","
-            "\"semantic_root\":\"%s\",\"transport_root\":\"%s\","
-            "\"sequence\":1,\"not_before\":%lld,\"expiry\":%lld}'",
-            package_root_hex, transport_root_hex, (long long)now,
-            (long long)expiry);
-        if (nn > 0 && (size_t)nn < sizeof(next))
-            (void)json_push_kv_str(&reply->data, "next_command", next);
-        (void)json_push_kv_str(&reply->data, "next_kind", "pointer");
-        (void)json_push_kv_str(
-            &reply->data, "next_action",
-            "install this exact package (zcode use) and file the distinct "
-            "rebuild receipt (zcode package reproduce) so the pointer gate "
-            "admits it, then plan then commit the pointer record so peers "
-            "can discover this exact package_root after this node is gone");
-    }
-    reply->error.mutated = committed;
-    vcs_package_transport_free(&transport);
-    zc_candidate_free(&cand);
+    zc_commit_reply(&c);
+    zc_commit_cleanup(&c);
 }
 
 /* ── zcode package recipe ───────────────────────────────────────────── */
@@ -1268,33 +1431,164 @@ void zcl_native_handle_zcode_package_recipe(
 /* Bound on attestation files scanned per call. */
 #define ZC_VERIFY_MAX_SCAN 256u
 
+static bool zc_root_inputs(const struct zcl_command_request *request,
+                          struct zcl_command_reply *reply, const char *command,
+                          const char **datadir, const char **root_hex,
+                          uint8_t root[32])
+{
+    *datadir = zc_datadir(request);
+    if (!*datadir) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INVALID, "MISSING_DATADIR",
+                               "normalize", false, false,
+                               "no datadir given (input datadir or --datadir)",
+                               command);
+        return false;
+    }
+    *root_hex = zc_input_str(request->input, "root");
+    size_t root_len = 0;
+    if (!*root_hex || !zcl_hex_decode_n(*root_hex, root, 32, &root_len) ||
+        root_len != 32) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INVALID, "BAD_ROOT",
+                               "normalize", false, false,
+                               "root must be a 64-hex package root",
+                               *root_hex ? *root_hex : "");
+        return false;
+    }
+    return true;
+}
+
+/* Scans the attestations dir (bounded): every hex64 file is a candidate;
+ * unparseable wires stay in the report as attestation-invalid rows. */
+static void zc_verify_scan_attestations(
+    const char *path, struct vcs_verify_candidate *candidates,
+    size_t *candidate_count, size_t *scanned, bool *scan_truncated)
+{
+    DIR *dir = opendir(path);
+    if (!dir)
+        return;
+    struct dirent *ent;
+    while ((ent = readdir(dir)) != NULL) {
+        uint8_t scratch[32];
+        size_t scratch_len = 0;
+        if (!zcl_hex_decode_n(ent->d_name, scratch, 32, &scratch_len) ||
+            scratch_len != 32)
+            continue;
+        if (*candidate_count == ZC_VERIFY_MAX_SCAN) {
+            *scan_truncated = true;
+            break;
+        }
+        (*scanned)++;
+        char apath[4400];
+        int an = snprintf(apath, sizeof(apath), "%s/%s", path, ent->d_name);
+        if (an < 0 || (size_t)an >= sizeof(apath))
+            continue;
+        uint8_t *wire = NULL;
+        size_t wire_len = 0;
+        struct vcs_verify_candidate *cand = &candidates[*candidate_count];
+        cand->parsed = false;
+        if (zc_read_object(apath, VCS_PACKAGE_ATTEST_MAX_WIRE_BYTES, &wire,
+                           &wire_len)) {
+            cand->parsed =
+                vcs_package_attest_parse(wire, wire_len,
+                                         &cand->attestation) ==
+                VCS_PACKAGE_ATTEST_OK;
+        }
+        free(wire);
+        (*candidate_count)++;
+    }
+    closedir(dir);
+}
+
+static void zc_verify_push_quorum_rows(struct zcl_command_reply *reply,
+                                       const struct vcs_verify_quorum *quorum)
+{
+    struct json_value rows;
+    json_init(&rows);
+    json_set_array(&rows);
+    for (size_t i = 0; i < quorum->row_count; i++) {
+        const struct vcs_verify_row *row = &quorum->rows[i];
+        struct json_value r;
+        json_init(&r);
+        json_set_object(&r);
+        if (row->has_pubkey) {
+            char pk_hex[67];
+            zcl_hex_encode(row->verifier_pubkey, 33, pk_hex);
+            (void)json_push_kv_str(&r, "verifier", pk_hex);
+        } else {
+            (void)json_push_kv_str(&r, "verifier", "");
+        }
+        (void)json_push_kv_str(
+            &r, "result",
+            row->result_class
+                ? vcs_package_attest_result_string(row->result_class)
+                : "");
+        (void)json_push_kv_str(&r, "rule",
+                               vcs_verify_row_rule_string(row->rule));
+        (void)json_push_kv_bool(&r, "counted",
+                                row->rule == VCS_VERIFY_ROW_COUNTED);
+        (void)json_push_back(&rows, &r);
+        json_free(&r);
+    }
+    (void)json_push_kv(&reply->data, "rows", &rows);
+    json_free(&rows);
+    (void)json_push_kv_bool(&reply->data, "rows_truncated",
+                            quorum->rows_truncated);
+}
+
+static void zc_verify_push_reproduction(struct zcl_command_reply *reply,
+                                        bool repro_scanned,
+                                        const struct vcs_reproduce_report *repro)
+{
+    struct json_value rj;
+    json_init(&rj);
+    json_set_object(&rj);
+    (void)json_push_kv_bool(&rj, "scanned_ok", repro_scanned);
+    (void)json_push_kv_int(&rj, "receipts_scanned", (int64_t)repro->scanned);
+    (void)json_push_kv_int(&rj, "matching_receipts", (int64_t)repro->matching);
+    (void)json_push_kv_bool(&rj, "reproduced", repro->reproduced);
+    (void)json_push_kv_int(&rj, "distinct_toolchains",
+                           (int64_t)repro->distinct_toolchains);
+    (void)json_push_kv_bool(&rj, "cross_toolchain", repro->cross_toolchain);
+    struct json_value rrows;
+    json_init(&rrows);
+    json_set_array(&rrows);
+    for (size_t i = 0; i < repro->row_count; i++) {
+        const struct vcs_reproduce_row *row = &repro->rows[i];
+        struct json_value r;
+        json_init(&r);
+        json_set_object(&r);
+        char rid_hex[65];
+        zcl_hex_encode(row->receipt_id, 32, rid_hex);
+        (void)json_push_kv_str(&r, "receipt_id", rid_hex);
+        (void)json_push_kv_bool(&r, "reference", row->reference);
+        (void)json_push_kv_str(
+            &r, "rule",
+            vcs_reproduce_rule_string((enum vcs_reproduce_rule)row->rule));
+        (void)json_push_kv_str(&r, "detail", row->detail);
+        (void)json_push_back(&rrows, &r);
+        json_free(&r);
+    }
+    (void)json_push_kv(&rj, "rows", &rrows);
+    json_free(&rrows);
+    (void)json_push_kv_bool(&rj, "rows_truncated", repro->rows_truncated);
+    (void)json_push_kv(&reply->data, "reproduction", &rj);
+    json_free(&rj);
+}
+
 void zcl_native_handle_zcode_package_verify(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply)
 {
     if (!request || !reply)
         return;
-    const char *datadir = zc_datadir(request);
-    if (!datadir) {
-        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
-                               ZCL_COMMAND_EXIT_INVALID, "MISSING_DATADIR",
-                               "normalize", false, false,
-                               "no datadir given (input datadir or --datadir)",
-                               "zcode.package.verify");
-        return;
-    }
-    const char *root_hex = zc_input_str(request->input, "root");
+    const char *datadir = NULL;
+    const char *root_hex = NULL;
     uint8_t root[32];
-    size_t root_len = 0;
-    if (!root_hex || !zcl_hex_decode_n(root_hex, root, 32, &root_len) ||
-        root_len != 32) {
-        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
-                               ZCL_COMMAND_EXIT_INVALID, "BAD_ROOT",
-                               "normalize", false, false,
-                               "root must be a 64-hex package root",
-                               root_hex ? root_hex : "");
+    if (!zc_root_inputs(request, reply, "zcode.package.verify", &datadir,
+                        &root_hex, root))
         return;
-    }
     char zcode_dir[4400];
     int n = snprintf(zcode_dir, sizeof(zcode_dir), "%s/zcode", datadir);
     if (n < 0 || (size_t)n >= sizeof(zcode_dir)) {
@@ -1392,42 +1686,8 @@ void zcl_native_handle_zcode_package_verify(
     size_t candidate_count = 0;
     size_t scanned = 0;
     bool scan_truncated = false;
-    DIR *dir = opendir(path);
-    if (dir) {
-        struct dirent *ent;
-        while ((ent = readdir(dir)) != NULL) {
-            uint8_t scratch[32];
-            size_t scratch_len = 0;
-            if (!zcl_hex_decode_n(ent->d_name, scratch, 32, &scratch_len) ||
-                scratch_len != 32)
-                continue;
-            if (candidate_count == ZC_VERIFY_MAX_SCAN) {
-                scan_truncated = true;
-                break;
-            }
-            scanned++;
-            char apath[4400];
-            int an = snprintf(apath, sizeof(apath), "%s/%s", path,
-                              ent->d_name);
-            if (an < 0 || (size_t)an >= sizeof(apath))
-                continue;
-            uint8_t *wire = NULL;
-            size_t wire_len = 0;
-            struct vcs_verify_candidate *cand =
-                &candidates[candidate_count];
-            cand->parsed = false;
-            if (zc_read_object(apath, VCS_PACKAGE_ATTEST_MAX_WIRE_BYTES,
-                               &wire, &wire_len)) {
-                cand->parsed =
-                    vcs_package_attest_parse(wire, wire_len,
-                                             &cand->attestation) ==
-                    VCS_PACKAGE_ATTEST_OK;
-            }
-            free(wire);
-            candidate_count++;
-        }
-        closedir(dir);
-    }
+    zc_verify_scan_attestations(path, candidates, &candidate_count, &scanned,
+                                &scan_truncated);
 
     struct vcs_verify_quorum quorum;
     vcs_verify_evaluate(candidates, candidate_count, root,
@@ -1475,74 +1735,9 @@ void zcl_native_handle_zcode_package_verify(
                            (int64_t)quorum.candidates);
     (void)json_push_kv_int(&reply->data, "counted",
                            (int64_t)quorum.counted);
-    struct json_value rows;
-    json_init(&rows);
-    json_set_array(&rows);
-    for (size_t i = 0; i < quorum.row_count; i++) {
-        const struct vcs_verify_row *row = &quorum.rows[i];
-        struct json_value r;
-        json_init(&r);
-        json_set_object(&r);
-        if (row->has_pubkey) {
-            char pk_hex[67];
-            zcl_hex_encode(row->verifier_pubkey, 33, pk_hex);
-            (void)json_push_kv_str(&r, "verifier", pk_hex);
-        } else {
-            (void)json_push_kv_str(&r, "verifier", "");
-        }
-        (void)json_push_kv_str(
-            &r, "result",
-            row->result_class
-                ? vcs_package_attest_result_string(row->result_class)
-                : "");
-        (void)json_push_kv_str(&r, "rule",
-                               vcs_verify_row_rule_string(row->rule));
-        (void)json_push_kv_bool(&r, "counted",
-                                row->rule == VCS_VERIFY_ROW_COUNTED);
-        (void)json_push_back(&rows, &r);
-        json_free(&r);
-    }
-    (void)json_push_kv(&reply->data, "rows", &rows);
-    json_free(&rows);
-    (void)json_push_kv_bool(&reply->data, "rows_truncated",
-                            quorum.rows_truncated);
+    zc_verify_push_quorum_rows(reply, &quorum);
 
-    struct json_value rj;
-    json_init(&rj);
-    json_set_object(&rj);
-    (void)json_push_kv_bool(&rj, "scanned_ok", repro_scanned);
-    (void)json_push_kv_int(&rj, "receipts_scanned",
-                           (int64_t)repro.scanned);
-    (void)json_push_kv_int(&rj, "matching_receipts",
-                           (int64_t)repro.matching);
-    (void)json_push_kv_bool(&rj, "reproduced", repro.reproduced);
-    (void)json_push_kv_int(&rj, "distinct_toolchains",
-                           (int64_t)repro.distinct_toolchains);
-    (void)json_push_kv_bool(&rj, "cross_toolchain", repro.cross_toolchain);
-    struct json_value rrows;
-    json_init(&rrows);
-    json_set_array(&rrows);
-    for (size_t i = 0; i < repro.row_count; i++) {
-        const struct vcs_reproduce_row *row = &repro.rows[i];
-        struct json_value r;
-        json_init(&r);
-        json_set_object(&r);
-        char rid_hex[65];
-        zcl_hex_encode(row->receipt_id, 32, rid_hex);
-        (void)json_push_kv_str(&r, "receipt_id", rid_hex);
-        (void)json_push_kv_bool(&r, "reference", row->reference);
-        (void)json_push_kv_str(
-            &r, "rule",
-            vcs_reproduce_rule_string((enum vcs_reproduce_rule)row->rule));
-        (void)json_push_kv_str(&r, "detail", row->detail);
-        (void)json_push_back(&rrows, &r);
-        json_free(&r);
-    }
-    (void)json_push_kv(&rj, "rows", &rrows);
-    json_free(&rrows);
-    (void)json_push_kv_bool(&rj, "rows_truncated", repro.rows_truncated);
-    (void)json_push_kv(&reply->data, "reproduction", &rj);
-    json_free(&rj);
+    zc_verify_push_reproduction(reply, repro_scanned, &repro);
     (void)json_push_kv_str(
         &reply->data, "verification_note",
         "headline signal: bit-identical reproduction — two or "
@@ -2163,33 +2358,174 @@ void zcl_native_handle_zcode_package_library(
 
 /* ── zcode package show ─────────────────────────────────────────────── */
 
+static void zc_show_push_summary(struct zcl_command_reply *reply,
+                                 const struct zcode_package_view_entry_v1 *view)
+{
+    struct json_value rel;
+    json_init(&rel);
+    json_set_object(&rel);
+    (void)json_push_kv_str(&rel, "release_id", view->release_id);
+    (void)json_push_kv_str(&rel, "name", view->name);
+    (void)json_push_kv_str(&rel, "semver", view->semver);
+    (void)json_push_kv_str(&rel, "license", view->license);
+    (void)json_push_kv_str(&rel, "publisher", view->publisher);
+    (void)json_push_kv_int(&rel, "publisher_sequence",
+                           (int64_t)view->publisher_sequence);
+    (void)json_push_kv_str(&rel, "chain_id", view->chain_id);
+    (void)json_push_kv_str(&rel, "reward_address", view->reward_address);
+    (void)json_push_kv_bool(&rel, "has_parent", view->has_parent);
+    if (view->has_parent)
+        (void)json_push_kv_str(&rel, "parent_root", view->parent_root);
+    (void)json_push_kv_bool(&rel, "has_znam", view->has_znam);
+    if (view->has_znam)
+        (void)json_push_kv_str(&rel, "znam", view->znam);
+    (void)json_push_kv(&reply->data, "release", &rel);
+    json_free(&rel);
+
+    (void)json_push_kv_str(&reply->data, "package_root", view->package_root);
+    (void)json_push_kv_bool(&reply->data, "manifest_present",
+                            view->manifest_present);
+    (void)json_push_kv_int(&reply->data, "files", (int64_t)view->file_count);
+    (void)json_push_kv_int(&reply->data, "bytes", (int64_t)view->total_bytes);
+    (void)json_push_kv_int(&reply->data, "chunks",
+                           (int64_t)view->chunk_total);
+    (void)json_push_kv_bool(&reply->data, "license_present",
+                            view->license_present);
+    (void)json_push_kv_int(&reply->data, "executable_files",
+                           (int64_t)view->executable_count);
+}
+
+/* Reproduction evidence summary: the same local receipts the pointer
+ * publish gate counts (boot_zcode_dht_publish_gate.c refuses unless
+ * vcs_package_reproduce_scan reports reproduced=true). The persisted
+ * release envelope commits the recipe root the receipts must name. An
+ * unreadable envelope or a failed scan degrades this section to an
+ * error string — show is a read-only view, never failed by evidence. */
+static void zc_show_push_reproduction(struct zcl_command_reply *reply,
+                                      const char *zcode_dir,
+                                      const char *release_id,
+                                      const uint8_t root[32])
+{
+    char repro_path[4400];
+    int n = snprintf(repro_path, sizeof(repro_path), "%s/releases/%s",
+                     zcode_dir, release_id);
+    uint8_t *release_wire = NULL;
+    size_t release_wire_len = 0;
+    struct vcs_package_release release;
+    bool envelope_ok =
+        n > 0 && (size_t)n < sizeof(repro_path) &&
+        zc_read_object(repro_path, VCS_PACKAGE_RELEASE_MAX_WIRE_BYTES,
+                       &release_wire, &release_wire_len) &&
+        vcs_package_release_parse(release_wire, release_wire_len,
+                                  &release) == VCS_PACKAGE_RELEASE_OK;
+    free(release_wire);
+    if (!envelope_ok) {
+        (void)json_push_kv_str(&reply->data, "reproduction.error",
+                               "persisted release envelope unreadable");
+        return;
+    }
+    n = snprintf(repro_path, sizeof(repro_path), "%s/receipts", zcode_dir);
+    struct vcs_reproduce_report report;
+    if (n <= 0 || (size_t)n >= sizeof(repro_path) ||
+        !vcs_package_reproduce_scan(repro_path, root, release.recipe_root,
+                                    &report)) {
+        (void)json_push_kv_str(&reply->data, "reproduction.error",
+                               "the receipt scan failed");
+        return;
+    }
+    struct json_value repro;
+    json_init(&repro);
+    json_set_object(&repro);
+    (void)json_push_kv_int(&repro, "receipts_scanned",
+                           (int64_t)report.scanned);
+    (void)json_push_kv_int(&repro, "receipts_matching",
+                           (int64_t)report.matching);
+    (void)json_push_kv_bool(&repro, "reproduced", report.reproduced);
+    /* The exact gate predicate the pointer publish applies. */
+    (void)json_push_kv_bool(&repro, "publishable", report.reproduced);
+    (void)json_push_kv_int(&repro, "distinct_toolchains",
+                           (int64_t)report.distinct_toolchains);
+    (void)json_push_kv_bool(&repro, "cross_toolchain",
+                            report.cross_toolchain);
+    (void)json_push_kv_bool(&repro, "rows_truncated", report.rows_truncated);
+    (void)json_push_kv(&reply->data, "reproduction", &repro);
+    json_free(&repro);
+}
+
+/* Parses the persisted manifest again (the index projects summaries only;
+ * the CAS wire stays the truth). */
+static bool zc_show_read_manifest(const char *zcode_dir,
+                                  const char *package_root,
+                                  struct vcs_package_manifest *manifest)
+{
+    char path[4400];
+    int n = snprintf(path, sizeof(path), "%s/manifests/%s", zcode_dir,
+                     package_root);
+    if (n <= 0 || (size_t)n >= sizeof(path))
+        return false;
+    uint8_t *wire = zcl_malloc(VCS_PACKAGE_MANIFEST_MAX_WIRE_BYTES,
+                               "zc_show_manifest");
+    if (!wire)
+        return false;
+    bool parsed = false;
+    FILE *f = fopen(path, "rb");
+    if (f) {
+        size_t len = fread(wire, 1, VCS_PACKAGE_MANIFEST_MAX_WIRE_BYTES, f);
+        bool trailing = !feof(f);
+        fclose(f);
+        parsed = !trailing && vcs_package_manifest_parse(wire, len, manifest);
+    }
+    free(wire);
+    return parsed;
+}
+
+/* The bounded file page. */
+static void zc_show_push_files(struct zcl_command_reply *reply,
+                               const char *zcode_dir,
+                               const char *package_root)
+{
+    struct vcs_package_manifest manifest;
+    if (!zc_show_read_manifest(zcode_dir, package_root, &manifest)) {
+        (void)json_push_kv_str(&reply->data, "files_page_error",
+                               "persisted manifest unreadable");
+        return;
+    }
+    size_t shown = manifest.count < ZC_SHOW_MAX_FILES
+        ? manifest.count : ZC_SHOW_MAX_FILES;
+    struct json_value arr;
+    json_init(&arr);
+    json_set_array(&arr);
+    for (size_t i = 0; i < shown; i++) {
+        const struct vcs_package_file *mf = &manifest.files[i];
+        struct json_value row;
+        json_init(&row);
+        json_set_object(&row);
+        (void)json_push_kv_str(&row, "path", mf->path);
+        (void)json_push_kv_int(&row, "mode", (int64_t)mf->mode);
+        (void)json_push_kv_int(&row, "size", (int64_t)mf->size);
+        (void)json_push_kv_int(&row, "chunks", (int64_t)mf->chunk_count);
+        (void)json_push_back(&arr, &row);
+        json_free(&row);
+    }
+    (void)json_push_kv(&reply->data, "files_page", &arr);
+    json_free(&arr);
+    (void)json_push_kv_bool(&reply->data, "files_truncated",
+                            manifest.count > shown);
+    vcs_package_manifest_free(&manifest);
+}
+
 void zcl_native_handle_zcode_package_show(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply)
 {
     if (!request || !reply)
         return;
-    const char *datadir = zc_datadir(request);
-    if (!datadir) {
-        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
-                               ZCL_COMMAND_EXIT_INVALID, "MISSING_DATADIR",
-                               "normalize", false, false,
-                               "no datadir given (input datadir or --datadir)",
-                               "zcode.package.show");
-        return;
-    }
-    const char *root_hex = zc_input_str(request->input, "root");
+    const char *datadir = NULL;
+    const char *root_hex = NULL;
     uint8_t root[32];
-    size_t root_len = 0;
-    if (!root_hex || !zcl_hex_decode_n(root_hex, root, 32, &root_len) ||
-        root_len != 32) {
-        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
-                               ZCL_COMMAND_EXIT_INVALID, "BAD_ROOT",
-                               "normalize", false, false,
-                               "root must be a 64-hex package root",
-                               root_hex ? root_hex : "");
+    if (!zc_root_inputs(request, reply, "zcode.package.show", &datadir, &root_hex,
+                        root))
         return;
-    }
     char zcode_dir[4400];
     int n = snprintf(zcode_dir, sizeof(zcode_dir), "%s/zcode", datadir);
     if (n < 0 || (size_t)n >= sizeof(zcode_dir)) {
@@ -2237,150 +2573,11 @@ void zcl_native_handle_zcode_package_show(
                                "zcode.package.show");
         return;
     }
-
-    struct json_value rel;
-    json_init(&rel);
-    json_set_object(&rel);
-    (void)json_push_kv_str(&rel, "release_id", view.release_id);
-    (void)json_push_kv_str(&rel, "name", view.name);
-    (void)json_push_kv_str(&rel, "semver", view.semver);
-    (void)json_push_kv_str(&rel, "license", view.license);
-    (void)json_push_kv_str(&rel, "publisher", view.publisher);
-    (void)json_push_kv_int(&rel, "publisher_sequence",
-                           (int64_t)view.publisher_sequence);
-    (void)json_push_kv_str(&rel, "chain_id", view.chain_id);
-    (void)json_push_kv_str(&rel, "reward_address", view.reward_address);
-    (void)json_push_kv_bool(&rel, "has_parent", view.has_parent);
-    if (view.has_parent)
-        (void)json_push_kv_str(&rel, "parent_root", view.parent_root);
-    (void)json_push_kv_bool(&rel, "has_znam", view.has_znam);
-    if (view.has_znam)
-        (void)json_push_kv_str(&rel, "znam", view.znam);
-    (void)json_push_kv(&reply->data, "release", &rel);
-    json_free(&rel);
-
-    (void)json_push_kv_str(&reply->data, "package_root",
-                           view.package_root);
-    (void)json_push_kv_bool(&reply->data, "manifest_present",
-                            view.manifest_present);
-    (void)json_push_kv_int(&reply->data, "files", (int64_t)view.file_count);
-    (void)json_push_kv_int(&reply->data, "bytes", (int64_t)view.total_bytes);
-    (void)json_push_kv_int(&reply->data, "chunks", (int64_t)view.chunk_total);
-    (void)json_push_kv_bool(&reply->data, "license_present",
-                            view.license_present);
-    (void)json_push_kv_int(&reply->data, "executable_files",
-                           (int64_t)view.executable_count);
+    zc_show_push_summary(reply, &view);
     zcl_hotswap_service_release(&lease);
 
-    /* Reproduction evidence summary: the same local receipts the pointer
-     * publish gate counts (boot_zcode_dht_publish_gate.c refuses unless
-     * vcs_package_reproduce_scan reports reproduced=true). The persisted
-     * release envelope commits the recipe root the receipts must name. An
-     * unreadable envelope or a failed scan degrades this section to an
-     * error string — show is a read-only view, never failed by evidence. */
-    {
-        char repro_path[4400];
-        n = snprintf(repro_path, sizeof(repro_path), "%s/releases/%s",
-                     zcode_dir, view.release_id);
-        uint8_t *release_wire = NULL;
-        size_t release_wire_len = 0;
-        struct vcs_package_release release;
-        bool envelope_ok =
-            n > 0 && (size_t)n < sizeof(repro_path) &&
-            zc_read_object(repro_path, VCS_PACKAGE_RELEASE_MAX_WIRE_BYTES,
-                           &release_wire, &release_wire_len) &&
-            vcs_package_release_parse(release_wire, release_wire_len,
-                                      &release) == VCS_PACKAGE_RELEASE_OK;
-        free(release_wire);
-        if (!envelope_ok) {
-            (void)json_push_kv_str(&reply->data, "reproduction.error",
-                                   "persisted release envelope unreadable");
-        } else {
-            n = snprintf(repro_path, sizeof(repro_path), "%s/receipts",
-                         zcode_dir);
-            struct vcs_reproduce_report report;
-            if (n <= 0 || (size_t)n >= sizeof(repro_path) ||
-                !vcs_package_reproduce_scan(repro_path, root,
-                                            release.recipe_root, &report)) {
-                (void)json_push_kv_str(&reply->data, "reproduction.error",
-                                       "the receipt scan failed");
-            } else {
-                struct json_value repro;
-                json_init(&repro);
-                json_set_object(&repro);
-                (void)json_push_kv_int(&repro, "receipts_scanned",
-                                       (int64_t)report.scanned);
-                (void)json_push_kv_int(&repro, "receipts_matching",
-                                       (int64_t)report.matching);
-                (void)json_push_kv_bool(&repro, "reproduced",
-                                        report.reproduced);
-                /* The exact gate predicate the pointer publish applies. */
-                (void)json_push_kv_bool(&repro, "publishable",
-                                        report.reproduced);
-                (void)json_push_kv_int(&repro, "distinct_toolchains",
-                                       (int64_t)report.distinct_toolchains);
-                (void)json_push_kv_bool(&repro, "cross_toolchain",
-                                        report.cross_toolchain);
-                (void)json_push_kv_bool(&repro, "rows_truncated",
-                                        report.rows_truncated);
-                (void)json_push_kv(&reply->data, "reproduction", &repro);
-                json_free(&repro);
-            }
-        }
-    }
-
-    /* The bounded file page: parse the persisted manifest again (the index
-     * projects summaries only; the CAS wire stays the truth). */
-    if (view.manifest_present) {
-        char path[4400];
-        n = snprintf(path, sizeof(path), "%s/manifests/%s", zcode_dir,
-                     view.package_root);
-        uint8_t *wire = (n > 0 && (size_t)n < sizeof(path))
-            ? zcl_malloc(VCS_PACKAGE_MANIFEST_MAX_WIRE_BYTES,
-                         "zc_show_manifest")
-            : NULL;
-        struct vcs_package_manifest manifest;
-        bool parsed = false;
-        if (wire) {
-            FILE *f = fopen(path, "rb");
-            if (f) {
-                size_t len = fread(wire, 1,
-                                   VCS_PACKAGE_MANIFEST_MAX_WIRE_BYTES, f);
-                bool trailing = !feof(f);
-                fclose(f);
-                parsed = !trailing &&
-                    vcs_package_manifest_parse(wire, len, &manifest);
-            }
-            free(wire);
-        }
-        if (parsed) {
-            size_t shown = manifest.count < ZC_SHOW_MAX_FILES
-                ? manifest.count : ZC_SHOW_MAX_FILES;
-            struct json_value arr;
-            json_init(&arr);
-            json_set_array(&arr);
-            for (size_t i = 0; i < shown; i++) {
-                const struct vcs_package_file *mf = &manifest.files[i];
-                struct json_value row;
-                json_init(&row);
-                json_set_object(&row);
-                (void)json_push_kv_str(&row, "path", mf->path);
-                (void)json_push_kv_int(&row, "mode", (int64_t)mf->mode);
-                (void)json_push_kv_int(&row, "size", (int64_t)mf->size);
-                (void)json_push_kv_int(&row, "chunks",
-                                       (int64_t)mf->chunk_count);
-                (void)json_push_back(&arr, &row);
-                json_free(&row);
-            }
-            (void)json_push_kv(&reply->data, "files_page", &arr);
-            json_free(&arr);
-            (void)json_push_kv_bool(&reply->data, "files_truncated",
-                                    manifest.count > shown);
-            vcs_package_manifest_free(&manifest);
-        } else {
-            (void)json_push_kv_str(&reply->data, "files_page_error",
-                                   "persisted manifest unreadable");
-        }
-    }
+    zc_show_push_reproduction(reply, zcode_dir, view.release_id, root);
+    if (view.manifest_present)
+        zc_show_push_files(reply, zcode_dir, view.package_root);
     vcs_package_index_free(index);
 }
