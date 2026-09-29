@@ -374,9 +374,9 @@ static job_result_t recheck_failed_rows(struct main_state *ms,
         uint64_t reps = 0;
         if (log_throttle_should_emit(&recheck_prepare_throttle, (uint64_t)rc,
                                      platform_time_wall_unix(), 60, &reps))
-            LOG_ERR("validate_headers",
-                    "failed-row recheck query prepare failed rc=%d repeats=%llu",
-                    rc, (unsigned long long)reps);
+            LOG_ERROR("validate_headers",
+                      "failed-row recheck query prepare failed rc=%d repeats=%llu",
+                      rc, (unsigned long long)reps);
         return vh_db_fault(rc, (int)start, "recheck query prepare");
     }
     sqlite3_bind_int64(stmt, 1, (sqlite3_int64)start);
@@ -409,10 +409,10 @@ static job_result_t recheck_failed_rows(struct main_state *ms,
             if (log_throttle_should_emit(&recheck_range_throttle,
                                          (uint64_t)h64,
                                          platform_time_wall_unix(), 60, &reps))
-                LOG_ERR("validate_headers",
-                        "failed-row recheck height out of range h=%lld "
-                        "repeats=%llu", (long long)h64,
-                        (unsigned long long)reps);
+                LOG_ERROR("validate_headers",
+                          "failed-row recheck height out of range h=%lld "
+                          "repeats=%llu", (long long)h64,
+                          (unsigned long long)reps);
             return JOB_FATAL;
         }
         struct block_index *bi = vh_resolve_bi(ms, (int)h64);
@@ -449,9 +449,9 @@ static job_result_t recheck_failed_rows(struct main_state *ms,
         uint64_t reps = 0;
         if (log_throttle_should_emit(&recheck_step_throttle, (uint64_t)rc,
                                      platform_time_wall_unix(), 60, &reps))
-            LOG_ERR("validate_headers",
-                    "failed-row recheck query failed rc=%d repeats=%llu",
-                    rc, (unsigned long long)reps);
+            LOG_ERROR("validate_headers",
+                      "failed-row recheck query failed rc=%d repeats=%llu",
+                      rc, (unsigned long long)reps);
         return vh_db_fault(rc, (int)last_seen, "recheck query step");
     }
     atomic_store(&g_last_recheck_selected, n);

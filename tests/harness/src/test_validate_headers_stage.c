@@ -445,6 +445,53 @@ static void vh_teardown(const char *dir, struct main_state *ms,
     test_cleanup_tmpdir(dir);
 }
 
+/* Deny reads on validate_headers_log so the recheck query's prepare fails
+ * with SQLITE_AUTH on every tick (the test_build_fabric authorizer seam). */
+static int vh_deny_recheck_read(void *ud, int operation, const char *first,
+                                const char *second, const char *db,
+                                const char *trigger)
+{
+    (void)ud; (void)second; (void)db; (void)trigger;
+    return operation == SQLITE_READ && first &&
+           strcmp(first, "validate_headers_log") == 0 ? SQLITE_DENY : SQLITE_OK;
+}
+
+/* The recheck fault path must return the SAME job result on every tick.
+ * Pre-fix, the de-storm LOG_ERR returned -1 on the emitting ticks while
+ * throttled ticks reached vh_db_fault's policy result — the log throttle
+ * decided job semantics, and the fault-policy bookkeeping (auto-reindex
+ * escalation) was skipped on exactly the ticks that log. The fix logs with
+ * emit-only LOG_ERROR so the policy return runs on every tick. Drive the
+ * fault tail twice: first tick emits, second is throttled. */
+static int vh_recheck_fault_throttle_invariant(void)
+{
+    int failures = 0;
+    char dir[256]; struct main_state ms; struct synth_chain_vh sc;
+    const int N = 4;
+    VH_CHECK("fault-throttle: setup",
+             vh_setup("fault_throttle", N + 1, NULL, NULL,
+                      dir, sizeof(dir), &ms, &sc) == 0);
+    sqlite3 *db = progress_store_db();
+    VH_CHECK("fault-throttle: seed failed row",
+             seed_failed_vh_row(db, N, &sc.hashes[N],
+                                "no-header-solution-backfill-required"));
+    VH_CHECK("fault-throttle: validate cursor past the failed row",
+             set_stage_cursor(db, "validate_headers", N + 1));
+    VH_CHECK("fault-throttle: authorizer armed",
+             sqlite3_set_authorizer(db, vh_deny_recheck_read,
+                                    NULL) == SQLITE_OK);
+    job_result_t r1 = validate_headers_stage_step_once();
+    job_result_t r2 = validate_headers_stage_step_once();
+    sqlite3_set_authorizer(db, NULL, NULL);
+    VH_CHECK("fault-throttle: emitting and throttled ticks return alike",
+             r1 == r2);
+    VH_CHECK("fault-throttle: result is a valid job_result_t",
+             r1 == JOB_ADVANCED || r1 == JOB_BLOCKED ||
+             r1 == JOB_IDLE || r1 == JOB_FATAL);
+    vh_teardown(dir, &ms, &sc);
+    return failures;
+}
+
 int test_validate_headers_stage(void);
 int test_validate_headers_stage(void)
 {
@@ -1986,6 +2033,8 @@ int test_validate_headers_stage(void)
                                                      sizeof(reason), NULL) &&
                      strcmp(reason, "version-too-low") == 0);
     }
+
+    failures += vh_recheck_fault_throttle_invariant();
 
     printf("validate_headers_stage: %d failures\n", failures);
     return failures;

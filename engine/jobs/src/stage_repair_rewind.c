@@ -193,14 +193,12 @@ static int delete_from_table(sqlite3 *db, const char *table, int height)
         LOG_ERR("stage_repair",
                 "[stage_repair] delete prepare failed table=%s: %s",
                 table, sqlite3_errmsg(db));
-        return -1;  // raw-return-ok:logged-above
     }
     if (sqlite3_bind_int(st, 1, height) != SQLITE_OK) {
+        sqlite3_finalize(st);
         LOG_ERR("stage_repair",
                 "[stage_repair] delete bind failed table=%s: %s",
                 table, sqlite3_errmsg(db));
-        sqlite3_finalize(st);
-        return -1;  // raw-return-ok:logged-above
     }
     int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
     int changed = sqlite3_changes(db);
