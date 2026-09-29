@@ -25,6 +25,11 @@ same afterwards.
 - Runs 5 and 6: `9d1a5cd587`. The `z23` sha256 was
   `103aeef7027d09b0a391cbe77d60d668c44f59241bafd8ebe309f594c368183d`, and it
   matched on all three hosts.
+- Runs 8 and 9: `ce0a212fa3` (configured-inbound sync). The `z23` sha256 was
+  `900d69a14200ed25041573bd8af1c24ee81a5882e8a24d2164690b1ed738de87` on all
+  three hosts. Toolchain capsule roots:
+  - A and B: `5c82d3bc9d023caaf15a93b0db74f97aa0430f0c6458ae87b5d20aea6b3fcc8a`
+  - C: `b0a1234afb88c1cbfb507b3d41c0f4b4422a428de33637b272818d33ce67d732`
 
 ## Runs
 
@@ -36,6 +41,12 @@ same afterwards.
 | 4 | same | FAIL | bring-up: node A anchor funding reported `Insufficient funds` |
 | 5 | + wallet fix | FAIL | overlay: node B stuck in `finding_peers` (two-node dial deadlock) |
 | 6 | same | FAIL | overlay: same as run 5 |
+| 7 | + configured-inbound sync, probe socket non-blocking | FAIL | overlay: B's identity probe returned at once, so B stayed in `finding_peers` |
+| 8 | `ce0a212fa3` | **PASS 12/12**, 617 s | none |
+| 9 | same | FAIL | step 11: the remote proof session was lost to connection churn |
+
+Wall times are the driver's own run time; queue time for the shared build
+slot is excluded.
 
 ### Run 3 (PASS) step results
 
@@ -113,26 +124,77 @@ Every step verdict was PASS, and the verdict line reported
    - **Fix:** The catch-up now reads the network-specific directory.
    - **Regression test:** scenario E in `test_wallet_rescan_coverage`.
 
-## Open blocker: two nodes on two hosts cannot both reach the tip
+4. **The node left holding only the peer's inbound session never synced.**
+   - **Cause:** The sealed core evicts a same-IP inbound once its own
+     outbound to that IP completes, and header sync began only from outbound
+     peers. Two nodes told to dial each other could end with one connection,
+     and the inbound-only side stayed in `finding_peers`.
+   - **Fix:** An inbound session may serve headers when its own Noise
+     session authenticated the static key that this node learned by
+     completing Noise XX as initiator to an operator-named `-addnode`,
+     `-connect`, `-addnode-file` or `addnode` RPC target at the same IP.
+     The key comes from an outbound session to the exact target, or from a
+     bounded identity probe that completes the handshake and closes before
+     `VERSION`. The source IP, `addr_from` and gossip grant nothing, and
+     plaintext, loopback and onion sources never qualify. Every session is
+     checked against its own handshake. The rule and its argument are in
+     `engine/services/include/services/configured_sync_peers.h`.
+   - **Same limits as an outbound peer:** the peer goes through the same
+     header and block validation, download windows and misbehaviour scoring.
+     The core applies body-stall rules C and D only to outbound peers, so
+     the stale-header predicate applies them to a configured inbound sync
+     peer. The one difference left is rule B, the core's outbound-slot
+     rotation, which has no inbound equivalent.
+   - **Regression test:** `test_sync_service_configured_inbound.c` in
+     `sync_service`. It drives real connection managers, real Noise XX
+     pairs and the core eviction through all 24 A/B handshake interleavings,
+     a reconnect, an impostor key at the configured IP, a plaintext session
+     and publisher loss, with an injected prober and clock. On the old gate,
+     16 of the 24 interleavings leave a node without a header source. One
+     further case runs the real prober against a loopback listener; run 7's
+     non-blocking socket fails it.
+   - **Observed in run 8, node B:**
+     `configured sync peer identity probe completed Noise XX with target=<A>:20028`,
+     then
+     `configured-inbound header sync: peer=<A>:49584 id=2 proved over its own Noise session the identity this node authenticated at an operator-named -addnode/-connect target; ...`.
 
-Runs 5 and 6 stopped at the same point. B was stuck in `finding_peers` with
-one inbound and zero outbound peers, so its build worker declined every
-action (`sync_not_at_tip`). Three policies combine:
+## Open blocker: reconnects between two configured peers destroy both sessions
 
-- Same-IP inbound eviction when an outbound connection to that IP exists.
-  This is in the sealed core and exempts only loopback.
-- Header sync begins only from outbound peers, as an anti-eclipse rule.
-- The periodic transition to the tip is not reachable from `finding_peers`.
+Run 9 reached step 11 and then lost its remote proof. B's log shows the
+cycle every 30 s:
 
-Two nodes on two routable hosts that are configured to dial each other end
-up with one TCP connection, and the side left inbound-only cannot sync. Run 3
-passed because the dial race went the other way. Getting the full journey to
-pass reliably needs an owner decision. Either the sealed-core eviction must
-change (for example, exempting configured peers), or the anti-eclipse sync
-gate must admit an authenticated, configured inbound peer. Neither change was
-made here.
+1. A dials B. B holds only that inbound session, which is bound and serves
+   headers.
+2. B's `-connect` loop dials A again. It waits only while its outbound
+   count covers every connect target
+   (`core/modules/net/src/connman_dialer.c:740`), and an inbound session
+   never satisfies a target (`connman_node_conflicts_with_target`,
+   `core/modules/net/src/connman.c:692`).
+3. A processes B's `VERSION`, answers `VERACK`, and evicts B's inbound,
+   because A holds an outbound to B's IP.
+4. B receives that `VERACK`, completes its outbound, and evicts A's inbound
+   (`core/modules/net/src/connman_zcl23_dial.c:154`).
+5. Both sessions are gone. A redials within a second, and the cycle repeats.
+
+Whether step 4 happens depends on whether B processes the `VERACK` before
+the close. Run 8 passed on that timing, and run 9 did not. The regression
+test shows the same thing without timing: 8 of the 24 handshake
+interleavings leave no surviving session. The configured-inbound rule cannot
+help when no session survives.
+
+The fix belongs in the sealed core. Either rule would do:
+
+- A connect or addnode target counts as connected while an inbound session
+  from its IP carries the target's authenticated Noise identity.
+- Both nodes apply one deterministic tie-break when both directions exist,
+  such as keeping the connection dialed by the lower static key. Each side
+  knows both keys after Noise, so both evict the same connection.
+
+The engine cannot suppress a core dial or eviction, so this change needs an
+owner decision.
 
 Separately, in run 4 node A's own shutdown hit `database is locked` on
 node.db while the wallet flush was retrying. The harness's TERM grace then
 expired, which caused the unclean stop. Fault 3 makes the node recover from
-that stop. The lock contention itself remains open.
+that stop. The driver now gives each stop the node's own shutdown grace
+before escalating to KILL. The lock contention itself remains open.
