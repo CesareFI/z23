@@ -1448,8 +1448,9 @@ epoch, makes the value any text, unless the word is itself the goals or
 the epoch. A reading is not used when a `$(shell)` or `!=` command make
 runs as it reads the makefiles names (as above, for a missing include)
 the last component with no pattern of a path the reading globbed, or the
-directories before its first pattern: that command may create a match. The planner reads one tree, the one the plan is
-for. Four named premises carry what the text does not hold:
+directories before its first pattern: that command may create a match.
+The planner reads one tree, the one the plan is for. Four named premises
+carry what the text does not hold:
 
 - `no-repair-goal`: no goal on the make command line is `vendor-ready`,
   `deploy` or `install` (the names the reading knows as repair goals), so
@@ -1459,10 +1460,18 @@ for. Four named premises carry what the text does not hold:
   or none, so `$(wildcard build/obj/epochs/$(EPOCH)/.unverified)` globs
   `build/obj/epochs/*/.unverified` and `build/obj/epochs/.unverified`;
 - `build-reads-planned-tree` (every skip): the build reads the tree the
-  plan globbed, and an include that exists under `build/` is current;
+  plan globbed, and an include that exists under `build/` is current; a
+  missing include is looked for nowhere but the tree (not in make's
+  default include directories such as `/usr/include`, which do not hold
+  a repo-relative path like `build/gen.mk`);
 - `no-command-line-override` (every skip): no command-line assignment or
   `make -e` environment value overrides a variable the makefile sets with
-  `=` or `:=`.
+  `=` or `:=`, and no command-line `-I dir` (`--include-dir`) gives make
+  another directory in which a missing include may be found.
+
+A `MAKEFLAGS += -I dir` in the makefile text is a residual: make 4.4
+re-reads `MAKEFLAGS` and searches that directory for a later include. The
+real Makefile adds only `-r` to `MAKEFLAGS`.
 
 Each skipped include is recorded in the plan's `facts.make_guards.skipped`
 with the directive read (`guard`, `guard_at`), the premises that reading
@@ -1480,24 +1489,37 @@ whose function name is computed in any part or is `call` itself
 (`$(call $(F),...)`, `$(call s$(H)ell,...)`, `$(call call,shell,...)`,
 never read-only), or the text of an `$(eval)` that holds a reference or
 `$$(` (never read-only: make expands it into lines no check reads). A
-command is
-provably read-only when it is one simple command of `printf`, `echo`,
-`cat`, `uname`, `nproc`, `pwd`, `true`, `false`, `test`, `basename`,
-`dirname` or `pkg-config` with no make reference, substitution, quote,
-redirection, separator, assignment or glob in its text, and no line
-assigns `SHELL`, `.SHELLFLAGS` or `PATH` (plain, `override`, `export`,
-`define` or target-specific; a computed name or an `$(eval)` naming one
-counts), and no variable is exported (`export X`, a bare `export`,
-`.EXPORT_ALL_VARIABLES`; make passes exported variables such as
-`LD_PRELOAD` to `$(shell)`): with one reassigned or exported, the named
-program may not be the one that runs. When an optional include make reads (missing after the skips, or
-existing), or a skip resting on a glob, is read while any other command
-runs, `facts.make_guards.plan` records the premise with the first such
-include (missing, else skipped, else existing; `includes` missing,
-`skips` resting on a glob and `existing` in all), and the first such
-command as written with where it is (`command`, `command_at`, `commands`
-in all). The real
-Makefile records it on every plan: the gitignored
+command is provably read-only when it is one simple command of `printf`,
+`echo`, `cat`, `uname`, `nproc`, `pwd`, `true`, `false`, `test`,
+`basename`, `dirname` or `pkg-config` with no make reference,
+substitution, quote, redirection, separator, assignment or glob in its
+text, and no line assigns `SHELL`, `.SHELLFLAGS` or `PATH` (plain,
+`override`, `export`, `define` or target-specific; a computed name or an
+`$(eval)` naming one counts), and no variable is exported (`export X`, a
+bare `export`, `.EXPORT_ALL_VARIABLES`; make passes exported variables
+such as `LD_PRELOAD` to `$(shell)`): with one reassigned or exported, the
+named program may not be the one that runs. When an optional include
+make reads (missing after the skips, or existing), or a skip resting on
+a glob, is read while any other command runs, `facts.make_guards.plan`
+records the premise with the first such include (missing, else skipped,
+else existing; `includes` missing, `skips` resting on a glob and
+`existing` in all), and the first such command as written with where it
+is (`command`, `command_at`, `commands` in all).
+
+A second plan premise is `computed-targets-not-includes`: a rule whose
+targets a function computes (`$(addprefix ./,...)`, `$(foreach ...)`,
+`$(subst ...)`, `$(call ID,...)`, `$(value N)`, any call) or a variable
+whose value no text spells (one a `$(shell)` sets), and whose target text
+as written names no missing optional include, makes none. A computed
+target whose text names a missing include's path or basename, directly
+or through a variable whose definition does (the name check above), is
+UNKNOWN; the rest are recorded in `facts.make_guards.plan` with the first
+such rule as written and where it is (`target`, `target_at`, `targets`
+in all), on every plan with a missing optional include. What a function
+spells only once make runs it (`$(subst Q,.,build/genQmk)`) is the
+residual this premise names.
+
+The real Makefile records both on every plan: the gitignored
 `contexts/commons/apps/local_gui_apps.mk` is missing in every checkout.
 Of the Makefile's identity markers, `epoch-recovery-ready.mk` is skipped
 when no epoch object directory holds `.unverified` (under
@@ -1513,12 +1535,13 @@ make runs while it reads the makefiles can rewrite an include before make
 reads it, missing or not. `$(call shell,...)` runs its arguments the same
 way, and a `$(call)` whose function name is computed in any part or is
 `call` itself (`$(call $(F),...)`, `$(call s$(H)ell,...)`,
-`$(call call,shell,...)`) may run any function. Any line but a recipe line (a tab-led line a
-`define` holds is one too) whose `$(shell)` (direct or through
-`$(call shell,...)`) or `!=` text, as written, writes a file is UNKNOWN:
-outside quotes, a redirection to anything but a descriptor (`2>&1`,
-`>&2`) or `/dev/null`, or a `tee`. Quote tracking stops at a command
-substitution inside double quotes. So is a `$(file)` that is not a read
+`$(call call,shell,...)`) may run any function. Any line but a recipe
+line (a tab-led line a `define` holds is one too) whose `$(shell)`
+(direct or through `$(call shell,...)`) or `!=` text, as written, writes
+a file is UNKNOWN: outside quotes, a redirection to anything but a
+descriptor (`2>&1`, `>&2`) or `/dev/null`, or a `tee`. Quote tracking
+stops at a command substitution inside double quotes. So is a `$(file)`
+that is not a read
 (`$(file >f,...)`, `$(file >>f,...)`, an operator a reference spells,
 also through `$(call file,...)`), and any computed `$(call $(F),...)`.
 A plain `$(shell git ...)` or `$(shell cat f)` writes nothing and reads
@@ -1670,6 +1693,14 @@ none of them runs as part of building that commit's objects:
   `contexts/commons/apps/local_gui_apps.mk` is missing in every checkout,
   and the real Makefile runs repo scripts (`dev-linker-select.sh`,
   `process-start-token.sh`) as it reads;
+- a rule whose targets a function computes into a missing optional
+  include's name without its text naming it (`$(subst Q,.,build/genQmk):`),
+  read under the named premise `computed-targets-not-includes` and
+  recorded in `facts.make_guards.plan`: letting every computed target
+  make every missing include instead widens every real plan (the real
+  Makefile computes about a hundred rule targets);
+- a `MAKEFLAGS += -I dir` whose directory holds a missing include (make
+  4.4 re-reads `MAKEFLAGS`); the real Makefile adds only `-r`;
 - a define an `$(eval $(call NAME,...))` reads, read as its lines are
   written: a call argument that spells an `=` or a newline into one of
   them is not followed.
