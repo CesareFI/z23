@@ -286,9 +286,15 @@ void fxm_parse_unproven(const struct fxm *m,
 bool fxm_anything_made(const struct fxm *m);
 /* A rule whose targets (raw[0..n) as written, t expanded) hold a function
  * call or a value no text spells: UNKNOWN while its text names a missing
- * include's path or basename (fxm_commands_name's variable reading), else
+ * include's path or basename (fxm_commands_name's variable reading), or
+ * its targets or a static rule's target pattern hold a % pattern matching
+ * one (directly or through a variable's definition), else
  * counted under computed-targets-not-includes in m->report->make_premise. */
 void fxm_target_computed(struct fxm *m, const struct fxm_line *l, size_t n,
                          const char *t);
+/* A line that is no definition, directive or rule its text spells and that
+ * holds a reference (what it expands to may be a rule): the same reading as
+ * fxm_target_computed over its whole text. */
+void fxm_line_computed(struct fxm *m, const struct fxm_line *l);
 
 #endif

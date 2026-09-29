@@ -506,19 +506,95 @@ static bool fxm_marked(const char *t)
     return strpbrk(t, "\x01\x02\x03\x04\x05") != NULL;
 }
 
-void fxm_target_computed(struct fxm *m, const struct fxm_line *l, size_t n,
-                         const char *t)
+/* A word of s[0..n) (split at blanks and , ( ) { } : ; = |) holding a %
+ * matches path as a pattern; too long to test, it does. A lone % (the
+ * common $(patsubst %,...) or -flag=% argument) counts only when bare. */
+static bool fxm_pct_word(const char *s, size_t n, const char *path, bool bare)
 {
-    struct zcl_devloop_facts_plan_premise *p;
-    if (!fxm_calls_in(l->raw, n) && !fxm_marked(t))
-        return;
+    char w[ZCL_DEVLOOP_PATH_MAX];
+    for (size_t k = 0, j; k < n; k = j + 1) {
+        for (j = k; j < n && strchr(" \t,(){}:;=|", s[j]) == NULL; j++)
+            ;
+        if (memchr(s + k, '%', j - k) == NULL)
+            continue;
+        if (j - k >= sizeof(w))
+            return true;
+        memcpy(w, s + k, j - k);
+        w[j - k] = '\0';
+        if ((bare || strcmp(fxm_strip_dot(w), "%") != 0) &&
+            fxm_glob(fxm_strip_dot(w), path))
+            return true;
+    }
+    return false;
+}
+
+/* s[0..n) holds a % pattern matching path, or a variable whose definition
+ * does (transitively, fxm_taint's reading): the common
+ * OBJS := $(patsubst tools/%.in,build/%.mk,...) target list. */
+static bool fxm_pct_names(const struct fxm *m, const char *s, size_t n,
+                          const char *path)
+{
+    struct fxc_strs names = {0};
+    bool named = fxm_pct_word(s, n, path, true);
+    for (size_t k = 0; !named && k < m->nlines; k++) {
+        const struct fxm_line *l = &m->lines[k];
+        if (l->ctx == FXM_DEF &&
+            fxm_pct_word(l->raw, strlen(l->raw), path, false))
+            named = l->name[0] == '\0' || !fxc_strs_add(&names, l->name);
+    }
+    if (!named && names.n > 0)
+        named = !fxm_taint(m, &names) || fxm_holds(s, n, &names);
+    fxc_strs_free(&names);
+    return named;
+}
+
+/* The end of a static rule's target pattern (targets: pattern: prereqs),
+ * past a rule's targets raw[0..n); n when the rule has none. */
+static size_t fxm_static_end(const struct fxm_line *l, size_t n)
+{
+    int depth = 0;
+    size_t k = l->from;
+    if (k == 0 || k > strlen(l->raw))
+        return n;
+    k += l->raw[k] == ':';
+    for (; l->raw[k] != '\0' && l->raw[k] != ';'; k++) {
+        depth += (l->raw[k] == '(' || l->raw[k] == '{') -
+                 (l->raw[k] == ')' || l->raw[k] == '}');
+        if (depth == 0 && l->raw[k] == '=')
+            return n;
+        if (depth == 0 && l->raw[k] == ':' && l->raw[k + 1] != '=')
+            return k;
+    }
+    return n;
+}
+
+/* A computed rule's text names a missing include: its targets raw[0..n)
+ * the path or basename, directly or through a variable, or its targets
+ * with a static rule's target pattern, raw[0..pn), a % pattern matching
+ * the path. */
+static bool fxm_rule_names(const struct fxm *m, const struct fxm_line *l,
+                           size_t n, size_t pn)
+{
     for (size_t k = 0; k < m->missing.n; k++) {
         const char *path = m->missing.v[k], *base = strrchr(path, '/');
         if (fxm_text_names(m, l->raw, n, path) ||
-            fxm_text_names(m, l->raw, n, base != NULL ? base + 1 : path)) {
-            m->unknown = true;
-            return;
-        }
+            fxm_text_names(m, l->raw, n, base != NULL ? base + 1 : path) ||
+            fxm_pct_names(m, l->raw, pn, path))
+            return true;
+    }
+    return false;
+}
+
+/* A rule make reads from text a function or a value no text spells
+ * computes, raw[0..n) as written: UNKNOWN while it names a missing include
+ * (fxm_rule_names); else counted under computed-targets-not-includes. */
+static void fxm_computed_rule(struct fxm *m, const struct fxm_line *l,
+                              size_t n, size_t pn)
+{
+    struct zcl_devloop_facts_plan_premise *p;
+    if (fxm_rule_names(m, l, n, pn)) {
+        m->unknown = true;
+        return;
     }
     if (m->report == NULL)
         return;
@@ -533,6 +609,54 @@ void fxm_target_computed(struct fxm *m, const struct fxm_line *l, size_t n,
     (void)snprintf(p->target, sizeof(p->target), "%.*s", (int)n, l->raw);
     (void)snprintf(p->target_at, sizeof(p->target_at), "%s:%u",
                    l->file < m->files.n ? m->files.v[l->file] : "?", l->at);
+}
+
+void fxm_target_computed(struct fxm *m, const struct fxm_line *l, size_t n,
+                         const char *t)
+{
+    if (fxm_calls_in(l->raw, n) || fxm_marked(t))
+        fxm_computed_rule(m, l, n, fxm_static_end(l, n));
+}
+
+/* A line make reads as neither a definition, a directive nor a rule its
+ * text spells, that holds a reference: what the reference expands to (a
+ * variable holding "x:", a $(call), $(foreach) or $(if) that spells a rule,
+ * an $(eval)) may be a rule. An $(error), $(warning) or $(info) alone
+ * expands to nothing. */
+static bool fxm_ref_line(const char *raw)
+{
+    static const char *const directives[] = {
+        "include", "-include", "sinclude", "export", "unexport", "vpath",
+        "undefine", "define", "endef", "override", "private", "ifeq", "ifneq",
+        "ifdef", "ifndef", "else", "endif"};
+    static const char *const quiet[] = {"$(error ", "$(warning ", "$(info "};
+    const char *p = raw, *end;
+    while (fxm_space(*p))
+        p++;
+    if (strchr(p, '$') == NULL)
+        return false;
+    for (size_t k = 0; k < sizeof(directives) / sizeof(*directives); k++)
+        if (fxm_starts_word(p, directives[k]))
+            return false;
+    for (size_t k = 0; k < sizeof(quiet) / sizeof(*quiet); k++) {
+        if (strncmp(p, quiet[k], strlen(quiet[k])) != 0)
+            continue;
+        for (end = fxm_ref_end((char *)p); end != NULL && fxm_space(end[1]);)
+            end++;
+        if (end != NULL && end[1] == '\0')
+            return false;
+    }
+    return true;
+}
+
+void fxm_line_computed(struct fxm *m, const struct fxm_line *l)
+{
+    size_t n = strlen(l->raw);
+    if (l->ctx != FXM_ACTIVE || l->body || !fxm_ref_line(l->raw))
+        return;
+    while (n > 0 && fxm_space(l->raw[n - 1]))
+        n--;
+    fxm_computed_rule(m, l, n, n);
 }
 
 /* A target word that makes any file: match-anything (%) or .DEFAULT. */

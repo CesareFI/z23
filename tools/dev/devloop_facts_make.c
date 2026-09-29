@@ -898,6 +898,7 @@ static void fxm_missing_made(struct fxm *m)
         const struct fxm_line *l = &m->lines[k];
         size_t n = l->from > 0 ? l->from - 1 : 0;
         const char *t;
+        fxm_line_computed(m, l);
         if (n == 0 || (l->ctx != FXM_RULE && !(l->ctx == FXM_DEF && l->body)))
             continue;
         m->lists = true;
