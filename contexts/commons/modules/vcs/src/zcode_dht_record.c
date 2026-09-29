@@ -525,6 +525,21 @@ bool vcs_zcode_dht_record_same_stream(
   return memcmp(a_root, b_root, 32) == 0;
 }
 
+bool vcs_zcode_dht_record_contradicts(
+    const struct vcs_zcode_dht_record *a,
+    const struct vcs_zcode_dht_record *b)
+{
+  if (!a || !b || a == b)
+    return false;
+  if (a->kind != VCS_ZCODE_DHT_RECORD_SOURCE_REPRODUCTION_ACK)
+    return false;
+  if (!vcs_zcode_dht_record_same_stream(a, b))
+    return false;
+  /* Both shapes are codec-valid, so both semantic_roots are nonzero and
+   * inequality is a real disagreement about what the bytes re-derive to. */
+  return memcmp(a->semantic_root, b->semantic_root, 32) != 0;
+}
+
 bool vcs_zcode_dht_record_conflicted_at(
     const struct vcs_zcode_dht_record *records, size_t count, size_t index)
 {
@@ -534,8 +549,9 @@ bool vcs_zcode_dht_record_conflicted_at(
           VCS_ZCODE_DHT_RECORD_OK)
     return false;
   for (size_t i = 0; i < count; i++)
-    if (i != index && vcs_zcode_dht_record_conflicts(&records[index],
-                                                      &records[i]))
+    if (i != index &&
+        (vcs_zcode_dht_record_conflicts(&records[index], &records[i]) ||
+         vcs_zcode_dht_record_contradicts(&records[index], &records[i])))
       return true;
   return false;
 }

@@ -807,6 +807,91 @@ static int test_record_store_sequence_and_expiry(void){
   return failures;
 }
 
+/* A SOURCE_REPRODUCTION_ACK stream is one provider's answer to "which
+ * source does this transport root re-derive to". The bytes determine one
+ * answer, so a later sequence naming a DIFFERENT semantic_root is an
+ * equivocation, not a renewal: both observations stay retained, both are
+ * refused as usable evidence, and no evidence wire ships for either. A
+ * later sequence naming the SAME semantic_root keeps ordinary
+ * supersession — that is the only legitimate renewal shape. */
+static int test_record_store_ack_contradiction(void)
+{
+  int failures = 0;
+  TEST("zcode dht records: contradictory ack observations are preserved, "
+       "not superseded") {
+    struct record_fixture f;
+    int chain_calls = 0;
+    ASSERT(rf_init(&f, &chain_calls));
+    struct vcs_zcode_dht_record first, equivocation, renewal;
+    rf_record(&f, &first, VCS_ZCODE_DHT_RECORD_SOURCE_REPRODUCTION_ACK);
+    ASSERT_EQ(vcs_zcode_dht_record_sign(&first, f.online_seed),
+              VCS_ZCODE_DHT_RECORD_OK);
+    equivocation = first;
+    equivocation.sequence++;
+    equivocation.expiry = first.expiry + 100;
+    equivocation.semantic_root[0] ^= 1;
+    ASSERT_EQ(vcs_zcode_dht_record_sign(&equivocation, f.online_seed),
+              VCS_ZCODE_DHT_RECORD_OK);
+    renewal = first;
+    renewal.sequence += 2;
+    renewal.expiry = first.expiry + 100;
+    ASSERT_EQ(vcs_zcode_dht_record_sign(&renewal, f.online_seed),
+              VCS_ZCODE_DHT_RECORD_OK);
+    struct vcs_zcode_dht_record_store *store =
+        vcs_zcode_dht_record_store_create(f.verify.network_genesis);
+    ASSERT(store != NULL);
+    ASSERT_EQ(vcs_zcode_dht_record_store_put(store, &first, 1500),
+              VCS_ZCODE_DHT_RECORD_STORE_ADDED);
+    ASSERT_EQ(vcs_zcode_dht_record_store_put(store, &equivocation, 1500),
+              VCS_ZCODE_DHT_RECORD_STORE_CONFLICT);
+    ASSERT_EQ(vcs_zcode_dht_record_store_count(store), 2);
+    /* The consumer-visible projection refuses the whole stream: neither
+     * side of a preserved contradiction is usable evidence. */
+    struct vcs_zcode_dht_record_discovery_result discovery;
+    memset(&discovery, 0, sizeof(discovery));
+    discovery.state = VCS_ZCODE_DHT_RECORD_OPERATION_COMPLETE;
+    discovery.record_count = 2;
+    ASSERT_EQ(vcs_zcode_dht_record_store_query(
+                  store, VCS_ZCODE_DHT_RECORD_SOURCE_REPRODUCTION_ACK,
+                  first.namespace_name, first.transport_root, 1500,
+                  discovery.records, 2), 2);
+    struct json_value rendered;
+    json_init(&rendered);
+    boot_zcode_dht_record_test_render(&rendered, &discovery, true);
+    ASSERT_EQ(json_get_int(json_get(&rendered, "usable_count")), 0);
+    ASSERT_EQ(json_get_int(json_get(&rendered, "conflict_count")), 2);
+    ASSERT_EQ(json_get_int(json_get(&rendered, "evidence_wire_count")), 0);
+    const struct json_value *rows = json_get(&rendered, "records");
+    ASSERT(rows != NULL);
+    ASSERT_EQ(json_size(rows), 2);
+    ASSERT(json_get_bool_or(json_at(rows, 0), "conflicted", false));
+    ASSERT(json_get_bool_or(json_at(rows, 1), "conflicted", false));
+    json_free(&rendered);
+    /* A same-root renewal after the equivocation still supersedes the row
+     * it restates — only the differing assertion is preserved against it,
+     * so the store holds one row per distinct asserted semantic_root. */
+    ASSERT_EQ(vcs_zcode_dht_record_store_put(store, &renewal, 1500),
+              VCS_ZCODE_DHT_RECORD_STORE_CONFLICT);
+    ASSERT_EQ(vcs_zcode_dht_record_store_count(store), 2);
+    ASSERT_EQ(vcs_zcode_dht_record_store_query(
+                  store, VCS_ZCODE_DHT_RECORD_SOURCE_REPRODUCTION_ACK,
+                  first.namespace_name, first.transport_root, 1500,
+                  discovery.records, 2), 2);
+    bool saw_renewal = false, saw_equivocation = false;
+    for (size_t i = 0; i < 2; i++) {
+      if (discovery.records[i].sequence == renewal.sequence)
+        saw_renewal = true;
+      if (discovery.records[i].sequence == equivocation.sequence)
+        saw_equivocation = true;
+    }
+    ASSERT(saw_renewal && saw_equivocation);
+    vcs_zcode_dht_record_store_free(store);
+    PASS();
+  }
+  _test_next:;
+  return failures;
+}
+
 /* Expired rows influence neither capacity nor stream verdicts, exactly as
  * if load() had rebuilt the store at the same wall time. Reclaim produces
  * the same canonical image as a fresh build of the survivors. */
@@ -1614,6 +1699,7 @@ int test_zcode_dht_record(void)
   failures += test_record_conflicts();
   failures += test_record_store_restart();
   failures += test_record_store_sequence_and_expiry();
+  failures += test_record_store_ack_contradiction();
   failures += test_record_store_scan();
   failures += test_record_store_caps();
   failures += test_record_store_expiry_reclaim();

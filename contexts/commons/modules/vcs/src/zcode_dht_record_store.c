@@ -168,6 +168,32 @@ size_t vcs_zcode_dht_record_store_collect(
   return removed;
 }
 
+/* Physical reclaim for one admission: expired rows go, and a newer
+ * same-stream record removes only the older rows it legitimately
+ * restates. Contradicted observations are preserved in place — a newer
+ * sequence cannot resolve which semantic_root the transport bytes
+ * re-derive to, so newest-first deletion would let one provider rewrite
+ * evidence by publishing again. */
+static void put_reclaim_rows(struct vcs_zcode_dht_record_store *store,
+                             const struct vcs_zcode_dht_record *record,
+                             uint64_t now_unix, bool newer)
+{
+  size_t write_index = 0;
+  for (size_t i = 0; i < store->count; i++) {
+    struct record_store_entry *entry = &store->entries[i];
+    bool remove = now_unix >= entry->record.expiry ||
+                  (newer &&
+                   vcs_zcode_dht_record_stream_equal(&entry->record,
+                                                     record) &&
+                   entry->record.sequence < record->sequence &&
+                   !vcs_zcode_dht_record_contradicts(&entry->record,
+                                                     record));
+    if (!remove)
+      store->entries[write_index++] = *entry;
+  }
+  store->count = write_index;
+}
+
 enum vcs_zcode_dht_record_store_result vcs_zcode_dht_record_store_put(
     struct vcs_zcode_dht_record_store *store,
     const struct vcs_zcode_dht_record *record, uint64_t now_unix)
@@ -203,6 +229,8 @@ enum vcs_zcode_dht_record_store_result vcs_zcode_dht_record_store_put(
       continue;
     bool same_stream =
         vcs_zcode_dht_record_stream_equal(existing, record);
+    bool contradicts =
+        vcs_zcode_dht_record_contradicts(existing, record);
     bool superseded = false;
     if (same_stream) {
       if (existing->sequence > max_sequence)
@@ -212,7 +240,12 @@ enum vcs_zcode_dht_record_store_result vcs_zcode_dht_record_store_put(
         if (memcmp(entry->wire, wire, sizeof(wire)) == 0)
           return VCS_ZCODE_DHT_RECORD_STORE_DUPLICATE;
       }
-      superseded = existing->sequence < record->sequence;
+      /* A contradicted observation is preserved, never superseded: a newer
+       * sequence does not resolve which semantic_root the transport bytes
+       * re-derive to, so newest-first substitution would let one provider
+       * rewrite evidence by publishing again. */
+      superseded = existing->sequence < record->sequence && !contradicts;
+      conflicts += contradicts;
     }
     glob_live++;
     if (memcmp(record_root(existing), record_root(record), 32) == 0) {
@@ -231,8 +264,10 @@ enum vcs_zcode_dht_record_store_result vcs_zcode_dht_record_store_put(
   }
   if (max_sequence > record->sequence)
     return VCS_ZCODE_DHT_RECORD_STORE_STALE;
-  if (max_sequence == record->sequence &&
-      conflicts >= VCS_ZCODE_DHT_RECORD_STORE_MAX_CONFLICTS)
+  /* max_sequence <= record->sequence here, so every counted conflict is
+   * either a same-slot collision this admission retains or a preserved
+   * contradiction; both consume the same bounded conflict budget. */
+  if (conflicts >= VCS_ZCODE_DHT_RECORD_STORE_MAX_CONFLICTS)
     return VCS_ZCODE_DHT_RECORD_STORE_CONFLICT_CAP;
   bool newer = max_sequence && record->sequence > max_sequence;
   if (glob_live - (newer ? glob_drop : 0) >=
@@ -248,18 +283,7 @@ enum vcs_zcode_dht_record_store_result vcs_zcode_dht_record_store_put(
   /* Physical reclaim mirrors the live-capacity view: expired rows go when
    * this admission lands, so a stored image after any successful put
    * matches what a reload would have produced. */
-  size_t write_index = 0;
-  for (size_t i = 0; i < store->count; i++) {
-    struct record_store_entry *entry = &store->entries[i];
-    bool remove = now_unix >= entry->record.expiry ||
-                  (newer &&
-                   vcs_zcode_dht_record_stream_equal(&entry->record,
-                                                     record) &&
-                   entry->record.sequence < record->sequence);
-    if (!remove)
-      store->entries[write_index++] = *entry;
-  }
-  store->count = write_index;
+  put_reclaim_rows(store, record, now_unix, newer);
   struct record_store_entry *entry = &store->entries[store->count++];
   entry->record = *record;
   memcpy(entry->wire, wire, sizeof(entry->wire));

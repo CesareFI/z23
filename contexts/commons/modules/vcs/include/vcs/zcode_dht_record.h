@@ -154,4 +154,15 @@ bool vcs_zcode_dht_record_conflicted_at(
 bool vcs_zcode_dht_record_superseded_at(
     const struct vcs_zcode_dht_record *records, size_t count, size_t index);
 
+/* True for two records of one SOURCE_REPRODUCTION_ACK stream asserting
+ * different semantic_roots. The transport bytes determine exactly one
+ * re-derived source closure, so both assertions cannot be observations a
+ * receiver may keep substituting newest-first: they are a preserved
+ * contradiction, refused as usable evidence until expiry removes them.
+ * Same-root renewal across sequences is NOT a contradiction and keeps
+ * ordinary supersession. */
+bool vcs_zcode_dht_record_contradicts(
+    const struct vcs_zcode_dht_record *a,
+    const struct vcs_zcode_dht_record *b);
+
 #endif /* ZCL_VCS_ZCODE_DHT_RECORD_H */

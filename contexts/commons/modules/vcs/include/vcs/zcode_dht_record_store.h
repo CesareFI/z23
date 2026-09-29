@@ -57,8 +57,12 @@ void vcs_zcode_dht_record_store_free(
     struct vcs_zcode_dht_record_store *store);
 
 /* Input must already have passed vcs_zcode_dht_record_parse. Newer sequence
- * replaces older records in the same publisher slot; same-sequence conflicts
- * are retained as signed evidence up to the explicit conflict cap. */
+ * replaces older records in the same publisher slot, EXCEPT observations a
+ * newer sequence cannot resolve: a SOURCE_REPRODUCTION_ACK stream asserting
+ * a different semantic_root is retained beside the earlier claim (a
+ * preserved contradiction, returned as CONFLICT) instead of superseding it.
+ * Same-sequence conflicts and retained contradictions share the explicit
+ * conflict cap. */
 enum vcs_zcode_dht_record_store_result vcs_zcode_dht_record_store_put(
     struct vcs_zcode_dht_record_store *store,
     const struct vcs_zcode_dht_record *record, uint64_t now_unix);
