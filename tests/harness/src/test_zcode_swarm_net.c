@@ -3226,6 +3226,22 @@ static int zwn_t_sovereign_source_build(const struct chain_params *params)
     return failures;
 }
 
+static void zwn_carrier_admit_command(const char *datadir,
+                                      const char *transport_hex,
+                                      struct zcl_command_reply *reply)
+{
+    struct json_value input;
+    json_init(&input);
+    json_set_object(&input);
+    (void)json_push_kv_str(&input, "datadir", datadir);
+    (void)json_push_kv_str(&input, "transport_root", transport_hex);
+    struct zcl_command_request request = {0};
+    request.input = &input;
+    zcl_command_reply_init(reply, "zcl.zcode_package_admit.v1");
+    zcl_native_handle_zcode_package_admit(&request, reply);
+    json_free(&input);
+}
+
 static int zwn_t_incomplete_carrier_import(const struct chain_params *params)
 {
     (void)params;
@@ -3268,6 +3284,22 @@ static int zwn_t_incomplete_carrier_import(const struct chain_params *params)
         ASSERT(vcs_package_store_package_status(store, admitted_root,
                                                 &status));
         ASSERT(!status.complete);
+        char transport_hex[65];
+        zcl_hex_encode(admitted_root, 32, transport_hex);
+        struct zcl_command_reply admit_reply;
+        zwn_carrier_admit_command(datadir, transport_hex, &admit_reply);
+        ASSERT(admit_reply.status == ZCL_COMMAND_STATUS_BLOCKED);
+        ASSERT_STR_EQ(admit_reply.error.code, "INCOMPLETE_CARRIER");
+        zcl_command_reply_free(&admit_reply);
+        zwn_carrier_admit_command(datadir, "invalid", &admit_reply);
+        ASSERT_STR_EQ(admit_reply.error.code, "BAD_TRANSPORT_ROOT");
+        zcl_command_reply_free(&admit_reply);
+        char absent_hex[65];
+        memset(absent_hex, 'f', 64);
+        absent_hex[64] = '\0';
+        zwn_carrier_admit_command(datadir, absent_hex, &admit_reply);
+        ASSERT_STR_EQ(admit_reply.error.code, "CARRIER_NOT_TRACKED");
+        zcl_command_reply_free(&admit_reply);
         struct vcs_package_transport_import receipt;
         ASSERT(vcs_package_transport_import(store, admitted_root, &receipt) ==
                VCS_PACKAGE_TRANSPORT_ERR_STORE);
@@ -3422,18 +3454,34 @@ static int zwn_t_package_lifecycle(const struct chain_params *params)
          * store until the separately explicit import reconstructs it. */
         ASSERT(!vcs_package_store_package_status(
             b.store, transport.package_root, &status));
-        struct vcs_package_transport_import imported_b;
-        ASSERT(vcs_package_transport_import(
-                   b.store, transport.transport_root, &imported_b) ==
-               VCS_PACKAGE_TRANSPORT_OK);
-        ASSERT(memcmp(imported_b.package_root,
-                      transport.package_root, 32) == 0);
-        ASSERT(memcmp(imported_b.recipe_root,
-                      transport.recipe_root, 32) == 0);
-        ASSERT(memcmp(imported_b.release_id,
-                      transport.release_id, 32) == 0);
-        ASSERT(imported_b.source_chunks > 0);
-        ASSERT(imported_b.cas_objects_reused == imported_b.source_chunks);
+        char admit_carrier_hex[65], admit_package_hex[65];
+        char admit_recipe_hex[65], admit_release_hex[65];
+        zcl_hex_encode(transport.transport_root, 32, admit_carrier_hex);
+        zcl_hex_encode(transport.package_root, 32, admit_package_hex);
+        zcl_hex_encode(transport.recipe_root, 32, admit_recipe_hex);
+        zcl_hex_encode(transport.release_id, 32, admit_release_hex);
+        struct zcl_command_reply admit_reply;
+        zwn_carrier_admit_command(b.datadir, admit_carrier_hex, &admit_reply);
+        ASSERT(admit_reply.status == ZCL_COMMAND_STATUS_PASSED);
+        ASSERT_STR_EQ(json_get_str(json_get(&admit_reply.data,
+                                            "transport_root")), admit_carrier_hex);
+        ASSERT_STR_EQ(json_get_str(json_get(&admit_reply.data,
+                                            "package_root")), admit_package_hex);
+        ASSERT_STR_EQ(json_get_str(json_get(&admit_reply.data,
+                                            "recipe_root")), admit_recipe_hex);
+        ASSERT_STR_EQ(json_get_str(json_get(&admit_reply.data,
+                                            "release_id")), admit_release_hex);
+        ASSERT(json_get_int(json_get(&admit_reply.data, "source_chunks")) > 0);
+        ASSERT(json_get_int(json_get(&admit_reply.data,
+                     "cas_objects_reused")) ==
+               json_get_int(json_get(&admit_reply.data, "source_chunks")));
+        zcl_command_reply_free(&admit_reply);
+        zwn_carrier_admit_command(b.datadir, admit_carrier_hex, &admit_reply);
+        ASSERT(admit_reply.status == ZCL_COMMAND_STATUS_PASSED);
+        ASSERT_STR_EQ(json_get_str(json_get(&admit_reply.data,
+                                            "package_root")), admit_package_hex);
+        zcl_command_reply_free(&admit_reply);
+        ASSERT(vcs_package_store_refresh(b.store));
         ASSERT(vcs_package_store_package_status(
             b.store, transport.package_root, &status));
         ASSERT(status.complete);

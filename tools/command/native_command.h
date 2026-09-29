@@ -1533,6 +1533,9 @@ void zcl_native_handle_zcode_storage_status(
 void zcl_native_handle_zcode_package_fetch(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_package_admit(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 void zcl_native_handle_zcode_package_peers(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);

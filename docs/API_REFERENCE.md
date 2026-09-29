@@ -74,15 +74,15 @@ z23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 895 |
+| Registry entries (branches + leaves) | 896 |
 | Top-level roots | 14 |
 | Branches | 199 |
-| Leaves (dispatchable command paths) | 696 |
-| … `ready` (live handler in this build) | 616 |
+| Leaves (dispatchable command paths) | 697 |
+| … `ready` (live handler in this build) | 617 |
 | … `compat` (metadata only, names a fallback) | 50 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 30 |
 | … dev-gated 🔧 (`ready` only in `z23-dev`) | 49 |
-| Leaves with `effect=mutate` | 255 |
+| Leaves with `effect=mutate` | 256 |
 | Leaves with `effect=destructive` | 6 |
 | Leaves requiring **owner** authority | 131 |
 
@@ -100,7 +100,7 @@ Per source file:
 | `engine/composition/commands/code.def` | 33 | 4 | 29 |
 | `engine/composition/commands/accounts.def` | 11 | 2 | 9 |
 | `engine/composition/commands/vault.def` | 24 | 4 | 20 |
-| `engine/composition/commands/zcode.def` | 252 | 59 | 193 |
+| `engine/composition/commands/zcode.def` | 253 | 59 | 194 |
 | `engine/composition/commands/zcode_science.def` | 25 | 7 | 18 |
 | `engine/composition/commands/metaverse.def` | 30 | 7 | 23 |
 | `engine/composition/commands/yardsale.def` | 7 | 2 | 5 |
@@ -1541,6 +1541,7 @@ represented by its children's sections.
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
 | `zcode package fetch` (aliases: `zcode.package.fetch`) | ready | mutate / app-write / operator · foreground/moderate | `root`, `name`, `day`, `datadir`, `namespace`, `maximum_bytes` | `zcl.zcode_package_fetch.v1` | `z23 zcode package fetch --input='{"name":"<local-library-name>"}'` | Fetch a package from the authenticated swarm |
+| `zcode package admit` (aliases: `zcode.package.admit`) | ready | mutate / app-write / operator · foreground/low | **`transport_root`**, `datadir` | `zcl.zcode_package_admit.v1` | `z23 zcode package admit --input='{"transport_root":"<64hex>"}'` | Admit one complete signed package carrier already held locally |
 | `zcode package source reproduce` (aliases: `zcode.package.source.reproduce`) | ready | mutate / app-write / operator, plan-commit · foreground/high | **`mode`**, **`root`**, `namespace`, `sequence`, `not_before`, `expiry`, `plan_token`, `datadir` | `zcl.zcode_source_reproduce.v1` | `z23 zcode package source reproduce --input='{"mode":"plan","root":"<64hex>"}'` | Fetch, reconstruct, and attest one exact source package |
 | `zcode package peers` (aliases: `zcode.package.peers`) | ready | read / read / operator · fast/low | **`root`**, `datadir` | `zcl.zcode_package_peers.v1` | `z23 zcode package peers --input='{"root":"<64hex>"}'` | Swarm peers, possession, pin, and transfer snapshot |
 | `zcode package offered` (aliases: `zcode.package.offered`) | ready | read / read / operator · fast/low | `datadir` | `zcl.zcode_package_offered.v1` | `z23 zcode package offered` | Roots peers ANNOUNCEd this session that this node can fetch |
@@ -1921,6 +1922,7 @@ Every alias resolves through the same grammar as its canonical path
 | `zcode.publish.plan` | `zcode.package.dev.publish.plan` |
 | `zcode.publish` | `zcode.package.dev.publish.commit` |
 | `zcode.package.fetch` | `zcode.package.fetch` |
+| `zcode.package.admit` | `zcode.package.admit` |
 | `zcode.package.source.reproduce` | `zcode.package.source.reproduce` |
 | `zcode.package.peers` | `zcode.package.peers` |
 | `zcode.package.offered` | `zcode.package.offered` |

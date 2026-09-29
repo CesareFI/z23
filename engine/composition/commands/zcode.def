@@ -3602,6 +3602,32 @@ ZCL_COMMAND_READY_COMMAND(
     zcl_native_handle_zcode_package_fetch)
 
 ZCL_COMMAND_READY_COMMAND(
+    "zcode.package.admit", "zcode.package.swarm", "zcode.package.admit",
+    "Admit one complete signed package carrier already held locally",
+    "Reads the exact transport_root from this node's package store, "
+    "requires the signed carrier's entire CAS closure to be complete, "
+    "then invokes the existing verified package transport import. The "
+    "receiver rechecks the carrier, release signature, recipe and inner "
+    "package bindings under local policy. A missing or incomplete carrier "
+    "refuses explicitly; a failed inner import never means no conflict. "
+    "The reply names the actual package, recipe and release roots and CAS "
+    "reuse. This local step contacts no DHT, and grants no build, test, "
+    "install, execution or deployment authority.",
+    0,
+    "zcode,package,admit,transport,carrier,reconstruct,local",
+    "zcl.zcode_package_admit.input.v1", "zcl.zcode_package_admit.v1",
+    "transport_root,datadir", "transport_root",
+    "z23 zcode package admit --input='{\"transport_root\":\"<64hex>\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_zcode_package_admit)
+
+ZCL_COMMAND_READY_COMMAND(
     "zcode.package.source.reproduce", "zcode.package.swarm",
     "zcode.package.source.reproduce",
     "Fetch, reconstruct, and attest one exact source package",

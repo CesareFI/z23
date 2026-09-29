@@ -119,7 +119,7 @@ static void ztl_close_store(struct vcs_package_store *store, bool own)
 
 /* Fill one ready-to-run `zcode network publish` input. kind decides
  * whether semantic_root is carried; the namespace names the lane. */
-static void ztl_publish_input(struct json_value *out, const char *kind,
+static inline void ztl_publish_input(struct json_value *out, const char *kind,
                               const char *namespace,
                               const char *semantic_root_hex,
                               const char *transport_root_hex, uint64_t now,
@@ -141,7 +141,7 @@ static void ztl_publish_input(struct json_value *out, const char *kind,
  * DHT query: {kind:"pointer", namespace, semantic_root} is exactly the
  * selector the records handler parses. Returns false with the error body
  * already set on the caller's reply. */
-static bool ztl_query_pointers(const struct zcl_command_request *request,
+static inline bool ztl_query_pointers(const struct zcl_command_request *request,
                                struct zcl_command_reply *reply,
                                const char *namespace,
                                const char *semantic_root_hex,
@@ -191,7 +191,7 @@ static bool ztl_query_pointers(const struct zcl_command_request *request,
  * names whatever verdict came back, so the row can record it.
  * accepted_out (optional) is true when the fetch path accepted the root —
  * already complete, or a download it started that may still be landing. */
-static void ztl_fetch_one(const struct zcl_command_request *request,
+static inline void ztl_fetch_one(const struct zcl_command_request *request,
                           const char *namespace,
                           const char *transport_root_hex,
                           int64_t maximum_bytes, bool *fetched_out,
