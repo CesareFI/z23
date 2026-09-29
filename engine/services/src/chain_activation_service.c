@@ -34,8 +34,8 @@
 #include "util/blocker.h"
 #include "util/reducer_drive_guard.h"
 
-/* The activation FSM still hints the historical block-intake tail by admitting
- * a header to the inbox before driving the staged Job pipeline. The reducer
+/* The activation FSM admits a header to the inbox before driving the staged
+ * Job pipeline. The reducer
  * ingest path itself lives in reducer_ingest_service.c; reducer_drain_to_
  * convergence() (declared in services/reducer_ingest_service.h) is the only
  * cross-TU seam and must be called while already holding ctl->mutex. */
@@ -417,20 +417,17 @@ void activation_request_connect(struct chain_activation_controller *ctl,
      * here. */
     bool ok = true;
 
-    /* A non-NULL pblock can only reach this chokepoint via the historical
-     * historical block-intake tail (the live Group-1 ingest callers route to
-     * reducer_ingest_block directly and never call the old path). Admit
-     * it to the header inbox so the producer path can build its block_index,
-     * then drive the stages; a NULL pblock is a pure cursor-driven kick (the
-     * Group-2 path). */
+    /* A non-NULL pblock is admitted to the header inbox so the producer path
+     * can build its block_index, then the stages are driven; a NULL pblock is
+     * a pure cursor-driven kick (the Group-2 path). Group-1 ingest callers
+     * route to reducer_ingest_block directly. */
     /* Mark the synchronous drive so the staged_sync_supervisor yields its
      * 2s stage ticks for the duration — the stages share the active-chain
      * window, which is NOT under the per-stage progress.kv lock, and a
      * concurrent supervisor drain races this drive (the same hazard
      * reducer_ingest_block guards at reducer_ingest_service.c). This path
      * IS live: msg_headers' all-data activation funnels here from the net
-     * thread on every at-tip catch-up, so the guard-header's "never on the
-     * live path" note does not hold for this chokepoint. */
+     * thread on every at-tip catch-up. */
     reducer_drive_enter();
     /* This activation chokepoint drives the same multi-block fold as
      * reducer_kick(), but cannot call reducer_kick() while ctl->mutex is held.
@@ -491,9 +488,8 @@ void activation_request_connect(struct chain_activation_controller *ctl,
         int best_h = ctl->ms->pindex_best_header
                    ? ctl->ms->pindex_best_header->nHeight : 0;
         /* Single advance-or-block decision: behind → typed blocker, caught
-         * up → clear. Going to a bare READY without this was the silent-ready
-         * hole — the reducer would report "ready" while behind, naming no
-         * actionable reason and reaching no operator sink. */
+         * up → clear. A bare READY without this would report "ready" while
+         * behind, naming no actionable reason and reaching no operator sink. */
         if (activation_eval_tip_blocker(tip_h, best_h)) {
             /* BEHIND the most-work valid-header chain; blocker now names
              * WHY + height + escape (visible via `z23 dumpstate blocker`).

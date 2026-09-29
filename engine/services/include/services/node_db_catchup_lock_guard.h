@@ -20,14 +20,13 @@
  *   2. BUSY_SNAPSHOT restart — a deferred-BEGIN writer whose read snapshot
  *      was invalidated by a concurrent commit fails its first write with
  *      SQLITE_BUSY_SNAPSHOT, a class the busy handler can never cure (each
- *      attempt burns the full 10 s timeout, then fails identically — the
- *      13–19 s drumbeat of the 2026-07-27 catchup-poison incident). The
+ *      attempt burns the full 10 s timeout, then fails identically). The
  *      only cure is ROLLBACK + a fresh transaction. Catchup is an
  *      idempotent projection re-run, so a bounded whole-walk restart
  *      (re-derived from persisted state) is the safe granularity.
  *
  *   3. Abort-streak park — a pass that keeps failing must not be re-run
- *      forever (the incident re-ran an always-failing pass 13k+ times).
+ *      forever.
  *      After CATCHUP_ABORT_STREAK_CAP consecutive failed passes the worker
  *      parks behind the named blocker "node_db_catchup.abort_storm" and
  *      each later pass is a no-op until an operator clears the blocker

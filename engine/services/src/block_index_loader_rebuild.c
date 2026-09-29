@@ -227,16 +227,13 @@ int block_index_loader_seed_tip_from_finalized(struct main_state *ms,
     if (!tip)
         return 0;
 
-    /* R3: branch selection is STRUCTURAL over the cached active-chain window.
-     * active_chain_tip()/active_chain_height() are authority-aware and can
-     * report the durable finalized target we are trying to adopt. The repair
-     * floor must instead be the locally cached window tip; otherwise a valid
-     * forward seed no-ops as "already at target" while the window remains
-     * stale or sparse. */
+    /* Branch selection uses the cached active-chain window tip, not
+     * active_chain_tip()/height(), which are authority-aware and can already
+     * report the finalized target being adopted. */
     struct block_index *cur_tip = active_chain_cached_tip(&ms->chain_active);
     int cur_h = cur_tip ? cur_tip->nHeight : -1;
 
-    /* R1: ONE effective_floor drives BOTH the bound check and the walk.
+    /* One effective_floor drives both the bound check and the walk.
      *   - extend-live-chain branch (cur_tip != NULL) : floor = cached cur_h
      *   - genesis-root branch       (cur_tip == NULL) : floor = 0 */
     int effective_floor = cur_tip ? cur_h : 0;
@@ -247,17 +244,14 @@ int block_index_loader_seed_tip_from_finalized(struct main_state *ms,
     if (!cur_tip && tip_height <= 0)
         return 0;  /* genesis-only chain: nothing to seed */
 
-    /* R1: bound the ACTUAL walk against effective_floor (NOT cur_h). On a
-     * pathological NULL-tip mainnet boot floor=0 and tip_height≈3.1M, so
-     * 3.1M > 50000 REFUSES here — this is the load-bearing mainnet refusal. */
+    /* Bound the actual walk against effective_floor (not cur_h): a NULL-tip
+     * boot has floor 0, so a far-ahead tip is refused here. */
     if ((int64_t)tip_height - (int64_t)effective_floor >
         BLOCK_INDEX_LOADER_SEED_MAX_GAP)
         return 0;
 
-    /* Hardening A: finalized<=coins as a RUNTIME precondition. Install only
-     * when coins have been applied through the tip we are about to publish —
-     * never publish a height with no coins behind it. True no-op on a synced
-     * mainnet boot (one indexed read). */
+    /* Runtime precondition finalized<=coins: install only when coins have
+     * been applied through the tip about to be published. */
     int32_t applied = -1; bool found = false;
     if (!coins_kv_get_applied_height(progress_db, &applied, &found))
         return 0;
@@ -269,9 +263,8 @@ int block_index_loader_seed_tip_from_finalized(struct main_state *ms,
         return 0;
     }
 
-    /* Contiguity walk down to effective_floor. R4: block_index_is_valid
-     * already rejects any BLOCK_FAILED_ANY_MASK failure (incl. TRANSIENT),
-     * so the explicit BLOCK_FAILED_MASK check is GONE. */
+    /* Contiguity walk down to effective_floor. block_index_is_valid already
+     * rejects any BLOCK_FAILED_ANY_MASK failure (incl. TRANSIENT). */
     struct block_index *node = tip;
     for (int h = tip_height; h > effective_floor; h--) {
         if (!node || node->nHeight != h)
@@ -284,14 +277,14 @@ int block_index_loader_seed_tip_from_finalized(struct main_state *ms,
     }
 
     if (cur_tip) {
-        /* UNCHANGED extend-live-chain branch: walk must land pointer-equal
+        /* Extend-live-chain branch: walk must land pointer-equal
          * on the current tip — a pure forward extension, never a fork. */
         if (node != cur_tip)
             return 0;
     } else {
         /* GENESIS-ROOT branch. The walk consumed [tip_height..1]; `node`
          * is now the height-0 terminus. Require height-0 + HAVE_DATA +
-         * VALID_SCRIPTS AND R2: the canonical genesis hash. */
+         * VALID_SCRIPTS and the canonical genesis hash. */
         if (!node || node->nHeight != 0)
             return 0;
         if (!(node->nStatus & BLOCK_HAVE_DATA))
@@ -304,8 +297,8 @@ int block_index_loader_seed_tip_from_finalized(struct main_state *ms,
             return 0;  /* terminus is not the canonical genesis — refuse */
     }
 
-    /* Install forward-only. C3: chain_set_active_tip publishes the authority
-     * itself (chain_tip.c:147-149) — no explicit set_authoritative_tip. */
+    /* Install forward-only. chain_set_active_tip publishes the authority
+     * itself; no explicit set_authoritative_tip. */
     struct zcl_result r = chain_set_active_tip(ms, tip, TIP_FROM_RESTORE,
                                                "loader_seed_from_finalized");
     if (!r.ok)
@@ -317,7 +310,7 @@ int block_index_loader_seed_tip_from_finalized(struct main_state *ms,
         /* Densify the [0..tip] active_chain window so RPC/walkers see the
          * full chain, not just the tip slot. */
         (void)chain_restore_rebuild_active_chain(ms, tip, NULL);
-        /* C1/B: the genesis-root marker the copy-prove must observe. */
+        /* Genesis-root marker. */
         printf("[boot] active tip seeded from durable finalized cursor "
                "(root=genesis): h=%d coins_applied=%d\n", tip_height, applied);
     } else {
@@ -377,19 +370,12 @@ struct zcl_result load_block_index_from_projection(struct main_state *ms,
         }
     }
 
-    /* (2b) Ensure genesis exists in the map so block 1's pprev links.
-     * The projection persists blocks 1..tip but NOT genesis (genesis is
-     * canonically initialized later, at engine/composition/src/boot.c's
-     * "Ensure genesis block is always properly initialized" block, which
-     * runs AFTER this rebuild on the kill-9 fallback path). Without genesis
-     * in the map, projection_link_pprev_cb leaves block 1's pprev NULL and
-     * the forward-only finalized-tip seed's contiguity walk falls off the
-     * bottom (NOT_CONTIGUOUS). Insert a BARE genesis node here — height 0,
-     * nStatus untouched (no BLOCK_HAVE_DATA) — so it only carries the pprev
-     * link; boot.c's genesis-ensure block still performs the full canonical
-     * init (HAVE_DATA / nTx / nChainTx / validity / chainwork) because it
-     * only does so when BLOCK_HAVE_DATA is NOT already set. No-op when
-     * genesis is already present (e.g. the -rebuildfromlog path). */
+    /* (2b) Ensure genesis exists in the map so block 1's pprev links; the
+     * projection holds blocks 1..tip only. Insert a BARE genesis node
+     * (height 0, no BLOCK_HAVE_DATA) that only carries the pprev link;
+     * boot.c's genesis-ensure block does the full canonical init because it
+     * runs only when BLOCK_HAVE_DATA is not set. No-op when genesis is
+     * already present. */
     if (params && !block_map_find(&ms->map_block_index,
                                   &params->consensus.hashGenesisBlock)) {
         struct block_index *g = chainstate_insert_block_index(
@@ -439,18 +425,17 @@ struct zcl_result load_block_index_from_projection(struct main_state *ms,
  * block_index_projection into the in-memory map and ACCEPTS only when the
  * folded map has > `min_entries` nodes (re-checked on the actual map size,
  * NOT the bool return: load_block_index_from_projection returns true even
- * when it folds zero rows from a cold datadir). On accept it logs + emits
+ * when it folds zero rows). On accept it logs + emits
  * EV_BOOT_BLOCK_INDEX and returns true; otherwise false so boot falls through
  * unchanged.
  *
  * `publish_tip` gates the cursor-driven tip publish inside the rebuild:
  *   - true  → the projection IS the authority (the -rebuildfromlog path);
  *             the tip is published from the tip_finalize cursor.
- *   - false → PURE MAP REBUILD, no tip published (the kill-9 fallback). The
+ *   - false → pure map rebuild, no tip published (the kill-9 fallback). The
  *             coins/UTXO authority then owns the active tip and the guarded
- *             block_index_loader_seed_tip_from_finalized advances it forward.
- *             This is the load-bearing safety distinction: publishing an
- *             unguarded cursor tip here would short-circuit coins-restore and
+ *             block_index_loader_seed_tip_from_finalized advances it forward;
+ *             an unguarded cursor tip would short-circuit coins-restore and
  *             genesis-init. */
 struct zcl_result boot_try_rebuild_block_index_from_projection(struct main_state *ms,
                                                   const struct chain_params *params,
@@ -538,7 +523,7 @@ static bool cold_import_set_applied_if_behind(sqlite3 *db, int32_t want)
     return ok;
 }
 
-/* SYNC-STRENGTH W1-L1 — cold-start auto-seed from an imported block index.
+/* Cold-start auto-seed from an imported block index.
  * Contract + rationale in services/block_index_loader.h. Fail-closed: any
  * missing precondition returns false and the caller runs the UNCHANGED
  * genesis fold. Consensus math is untouched — only WHERE the reducer cursors
@@ -573,7 +558,7 @@ int block_index_loader_arm_cold_start_from_index(struct main_state *ms,
     if (!anchor_bi || anchor_bi->nHeight != cp->height)
         return 0;
 
-    /* (3) VERIFIED ANCHOR SNAPSHOT REACHABLE (W1-L3 gate). Fail-closed: no
+    /* (3) VERIFIED ANCHOR SNAPSHOT REACHABLE. Fail-closed: no
      *     verified artifact → decline; the genesis fold runs unchanged. This is
      *     a legitimate decline (no error), so a bare return is correct here. */
     int32_t anchor_h = -1;
@@ -625,13 +610,10 @@ int block_index_loader_seed_stages_from_cold_import(struct main_state *ms,
         return 0;
     int32_t H = (int32_t)anchor_h;
 
-    /* (2) INTEGRITY: the durable anchor block must EXIST in the loaded block
-     *     index at exactly height H. This binds the trusted height H to
-     *     a real header we hold; a wrong/forged key whose hash we don't carry
-     *     (or carry at a different height) is rejected. We do NOT require the
-     *     active tip to BE the anchor: at this boot point the active tip is the
-     *     body-availability floor and only reaches H later at runtime, so a
-     *     tip==anchor gate would no-op the wedge it exists to heal. */
+    /* (2) INTEGRITY: the durable anchor block must exist in the loaded block
+     *     index at exactly height H, binding H to a real header we hold. The
+     *     active tip is NOT required to be the anchor: at this boot point it
+     *     is the body-availability floor and reaches H later. */
     struct uint256 ah;
     memcpy(ah.data, anchor_hash, 32);
     struct block_index *anchor = block_map_find(&ms->map_block_index, &ah);
@@ -652,10 +634,9 @@ int block_index_loader_seed_stages_from_cold_import(struct main_state *ms,
         return 0;
     }
 
-    /* (2a.5) BOOT-TIME TORN-IMPORT GATE (import-gate-spec.md PART A). Runs on
-     *        EVERY cold-import boot, BEFORE the (2b) forward-only early-return:
-     *        the torn-import case can sit in the forward-only region (active
-     *        tip >= seed H), so this gate must run here, not only at bless time.
+    /* (2a.5) BOOT-TIME TORN-IMPORT GATE. Runs on every cold-import boot,
+     *        before the (2b) forward-only early-return: a torn import can sit
+     *        in the forward-only region (active tip >= seed H).
      *
      *        The verdict (block_index_loader_torn_gate.c) fires ONLY on a
      *        GENUINELY-UNRECOVERABLE tear: a durable in-window ok=0
@@ -701,20 +682,15 @@ int block_index_loader_seed_stages_from_cold_import(struct main_state *ms,
         }
     }
 
-    /* (2d) COIN-PRESENCE CROSS-CHECK: the load-bearing torn-datadir guard.
-     *     H*==H (step 6) CANNOT detect a coin tear:
-     *     reducer_frontier_compute_hstar derives H* from progress-store
-     *     cursors/logs and treats the coins frontier as C4 diagnostic-only, so
-     *     the post-seed self-check verifies the state the seed manufactured,
-     *     not the on-disk coins. If the coin set was torn below H after the key
-     *     was written (kill-9 mid-write, partial reimport keeping >100k rows),
-     *     the live count differs and the seed is refused.
+    /* (2d) COIN-PRESENCE CROSS-CHECK: the torn-datadir guard. H*==H (step 6)
+     *     cannot detect a coin tear: H* derives from progress-store
+     *     cursors/logs and the coins frontier is diagnostic-only. If the coin
+     *     set was torn below H after the key was written, the live count
+     *     differs and the seed is refused.
      *
-     *     The CANONICAL token is checked FIRST —
-     *     'cold_import_seed_coins_kv_count' attests the coins_kv store
-     *     (progress.kv) the reducer actually spends from. The mirror-count
-     *     token remains the fallback for seeds written before the canonical
-     *     token existed. */
+     *     The canonical token 'cold_import_seed_coins_kv_count' (the coins_kv
+     *     store in progress.kv that the reducer spends from) is checked
+     *     first; the mirror-count token is the fallback. */
     {
         int64_t recorded_ck = 0;
         if (node_db_state_get_int(ndb, "cold_import_seed_coins_kv_count",

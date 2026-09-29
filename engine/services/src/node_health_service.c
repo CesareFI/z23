@@ -198,8 +198,8 @@ static void health_add_warning(struct node_health_snapshot *snapshot,
         return;
 
     /* warning_count is every warning OBSERVED, warning_reasons is as many as
-     * fit; the two disagreeing is intended. Disagreeing SILENTLY was not — the
-     * list used to end in half a warning name that read like a whole one. */
+     * fit; the two disagreeing is intended, but never silently: a partial
+     * warning name must not read like a whole one. */
     (void)zcl_text_fit_append(snapshot->warning_reasons,
                               sizeof(snapshot->warning_reasons), ",", reason,
                               "health", "node_health.warning_reasons");

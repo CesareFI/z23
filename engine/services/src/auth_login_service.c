@@ -235,8 +235,7 @@ struct zcl_result auth_login_verify(struct node_db *ndb,
         /* Each iteration writes exactly two hex digits plus its own NUL; the
          * next iteration overwrites that NUL, and the last one terminates the
          * string. stored_pubkey_hex is zero-initialised, so a zero-length key
-         * still yields "". The per-call return is a constant 2 and was
-         * previously accumulated into a variable nothing ever read. */
+         * still yields "". */
         for (unsigned i = 0; i < pk.size && i < PRINCIPAL_PUBKEY_HEX_MAX / 2; i++)
             snprintf(stored_pubkey_hex + i * 2, 3, "%02x", pk.vch[i]);
     } else {

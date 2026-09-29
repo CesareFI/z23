@@ -18,7 +18,7 @@
  * commits nothing. A target with NO coins authority yet (fresh datadir —
  * shielded-first ordering) passes silently.
  *
- * PARTIALLY-FOLDED targets (2026-08-02, the replay-canary anchor track): a
+ * PARTIALLY-FOLDED targets: a
  * node that seeded and then folded PAST the seed has coins_best ABOVE the
  * durable seed floor (reducer_seed_floor_height), and the chainstate cannot
  * hold the live resume anchor's root — the roots above the floor are the

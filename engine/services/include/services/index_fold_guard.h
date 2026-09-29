@@ -56,7 +56,7 @@ void index_fold_note_absent_body(const char *index_id, const char *subsys,
 
 /* Read the body a projection fold needs at height `h`. Genesis is the one
  * height no node stores: the loader marks it BLOCK_HAVE_DATA without writing
- * it, so a from-genesis fold wedged on h=0 forever. Its coinbase is
+ * it, so a from-genesis fold would stall on h=0. Its coinbase is
  * unspendable and indexed by no reference client, so an unreadable genesis
  * returns true with an EMPTY block and folds zero rows (the op_return_index
  * fold already does this). Any other unreadable height returns false.
@@ -118,9 +118,7 @@ void index_fold_clear_partial_coverage(const char *index_id);
  * Unlike an absent body this is NOT self-limiting. Nothing in-process repairs
  * a height far below the fold frontier: the have_data_unreadable Condition
  * only inspects tip+1 and the reducer stages, so a torn body at h=1 is retried
- * by the backfill forever. Measured live 2026-08-23 on node1: 12,435 identical
- * re-reads of h=1 over 14.5 h at one every ~3 s, each emitting an identical
- * WARN, none of which could ever have succeeded.
+ * by the backfill forever.
  *
  * Raises "<index_id>.body_unreadable" (BLOCKER_DEPENDENCY, remedy OWNER, no
  * escape action and no retry budget — the node cannot re-derive bytes that are

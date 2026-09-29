@@ -55,10 +55,7 @@
  * emergency leg — reaches the database through. Without it started, that
  * leg returns "no registered db" and the WAL has no size bound at all.
  *
- * It used to start only when ZCL_ENABLE_BOOT_DB_MAINT=1 was set in the
- * environment: a variable set nowhere in the repository, in no unit file, in
- * no drop-in and in no env file. A safety net nothing can switch on is not a
- * safety net, so boot now starts it by default and an operator opts out with
+ * Boot starts it by default; an operator opts out with
  * ZCL_DISABLE_BOOT_DB_MAINT=1.
  *
  * The three ops share a thread but not a risk profile, so boot arms them

@@ -414,11 +414,9 @@ static void *bf_worker_loop(void *arg)
     (void)arg;
     (void)zcl_thread_qos_background();
     /* The daemon's node.db has one mutable owner.  A second long-lived
-     * sqlite connection in this thread used to look harmless, but its WAL
-     * lifetime was independent of the boot connection: closing/restarting
-     * peer workers could unlink the pathname while the canonical connection
-     * still held the old inode.  The next action then failed with SQLITE_IOERR
-     * even though both action and receipt identities were valid.
+     * sqlite connection in this thread would have a WAL lifetime independent
+     * of the boot connection: restarting peer workers could unlink the
+     * pathname while the canonical connection still held the old inode.
      *
      * The runtime handle is FULLMUTEX and remains alive until registered
      * workers have joined, so consume it directly.  This makes worker states

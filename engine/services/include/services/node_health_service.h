@@ -183,14 +183,12 @@ void node_health_verdict_publish(const struct node_health_snapshot *snapshot);
  * than one block above us. It is NOT the question "am I synced", and it is not
  * permission to publish an at-tip claim.
  *
- * That distinction was the bug. node_health_collect() used to let a true
- * answer here overwrite the sync FSM's verdict with an unconditional
- * SYNC_AT_TIP + synced=true. The FSM refuses at-tip while the node cannot
- * prove it holds the block bodies for its own history, so a node with a hole
- * below its tip had that refusal overturned in the health snapshot, and the
- * manufactured claim then went out on /api/status, /api/node/summary,
- * /api/v1/health, `healthcheck full`, and the starter-bundle mint gate — a
- * second, ungated answer to a question that already had a gated one.
+ * A true answer here must not overwrite the sync FSM's verdict with an
+ * unconditional SYNC_AT_TIP + synced=true: the FSM refuses at-tip while the
+ * node cannot prove it holds the block bodies for its own history, and the
+ * health snapshot (/api/status, /api/node/summary, /api/v1/health,
+ * `healthcheck full`, the starter-bundle mint gate) must not give a second,
+ * ungated answer.
  *
  * So the UPGRADE in node_health_collect() now also requires
  * body_history_is_proven() (storage/body_history.h — "the single question

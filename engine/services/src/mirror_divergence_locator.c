@@ -206,8 +206,8 @@ int mirror_divergence_locate(int disagree_height)
      * here would refuse the resolving reorg itself — the outage class
      * this gate exists to kill. Escalate only when the divergence is at
      * confirmed depth, OR when the SAME first_div persisted across
-     * repeated locates for >= MDL_CONFIRM_PERSIST_SECS (the wedged-at-tip
-     * shape, where our tip never advances so depth never confirms). */
+     * repeated locates for >= MDL_CONFIRM_PERSIST_SECS (a stuck tip never
+     * advances, so depth never confirms). */
     if (first_div > disagree_height - MDL_CONFIRM_DEPTH) {
         bool persisted = false;
         int64_t pending_age = 0;
@@ -278,7 +278,7 @@ int mirror_divergence_locate(int disagree_height)
     pthread_mutex_unlock(&g_pending_lock);
 
     /* Feed the existing oracle disagreement state machine with the
-     * LOCATED height (it previously only ever saw the tip-level one). */
+     * LOCATED height. */
     oracle_policy_record_disagreement(first_div, ours, theirs);
     return first_div;
 }

@@ -77,7 +77,7 @@ static int ai_do_batch(struct main_state *ms, const char *datadir, sqlite3 *db)
     atomic_store(&g_ai_hstar, hstar);
     atomic_store(&g_ai_cursor, cursor);
 
-    /* Deep-regression safety net: H* only advances under normal operation, so
+    /* Deep-rewind safety net: H* only advances under normal operation, so
      * cursor > H* means a reorg/rewind dropped finalized history below us. A
      * projection folded as a forward-only digest chain cannot partially unwind,
      * so drop-and-rederive from height 0 (cheap, rebuildable by construction). */
@@ -187,7 +187,7 @@ int address_index_service_tick_once(void)
     if (!address_index_enabled())
         return 0;
     struct main_state *ms = app_runtime_main_state();
-    /* Wave A2 split: fold on the projection handle + projection tx lock, so
+    /* Fold on the projection handle + projection tx lock, so
      * this batch never serialises on the reducer drive's kernel tx lock. */
     sqlite3 *db = projection_store_db();
     if (!ms || !db)

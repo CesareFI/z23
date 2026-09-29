@@ -94,14 +94,12 @@ bool sovereign_promotion_apply_verdict(
 bool sovereign_promotion_duty_admits(uint64_t tick);
 
 /* Register + start the supervised background child "sync.sovereign_promotion".
- * MERGE-TIME TODO: call this from engine/composition/src/boot_services.c (owned by another
- * lane this window). Idempotent. */
+ * Idempotent. */
 void sovereign_promotion_service_register(void);
 void sovereign_promotion_service_stop(void);
 
-/* CLAUDE.md "Adding state introspection". MERGE-TIME TODO: register in
- * engine/controllers/src/diagnostics_registry.c g_dumpers (owned by another lane
- * this window). `out` is caller-initialized. `key` is unused. */
+/* State introspection dumper (engine/controllers/src/diagnostics_registry.c
+ * g_dumpers). `out` is caller-initialized. `key` is unused. */
 bool sovereign_promotion_dump_state_json(struct json_value *out,
                                          const char *key);
 

@@ -46,8 +46,8 @@
 #define SHI_PROVENANCE_KEY SHIELDED_IMPORT_PROVENANCE_KEY
 
 /* Emit a node.log progress line every this-many rows. Chosen so a real import
- * (millions of records) logs a few times/second, turning the historically
- * silent multi-minute scan into a growing, named cursor. */
+ * (millions of records) logs a few times/second, keeping the
+ * multi-minute scan a growing, named cursor. */
 #define SHI_PROGRESS_LOG_INTERVAL 50000
 
 /* ── never-silent progress (see the header) ──────────────────────────────────

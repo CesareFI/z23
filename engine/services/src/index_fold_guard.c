@@ -52,13 +52,9 @@ static void mk_blocker_id(char *out, size_t cap, const char *index_id,
 
 /* ── Keep-alive, not a horn ───────────────────────────────────────────
  * The seed floor is structural: every backfill tick re-observes it, so the
- * blocker's fire_count climbs without bound (11,666 on the canonical node,
- * 2026-07-27) while nothing about the situation changes. Historically this
- * site logged NOTHING to avoid a per-tick storm, which left an operator
- * tailing node.log with no trace of a condition that had been standing for
- * days.
- *
- * Neither extreme is right. log_throttle gives the established middle: emit
+ * blocker's fire_count climbs without bound while nothing changes. Logging
+ * every tick storms; logging nothing leaves a standing condition invisible.
+ * log_throttle gives the established middle: emit
  * on first observation and on any CHANGE of (index, absent height, seed
  * floor), then one keep-alive per hour carrying the suppressed-repeat count.
  * The line therefore never reads as new, and the alarm is never silent.
@@ -144,17 +140,14 @@ uint64_t index_fold_seed_floor_yields(void)
  * blocking pthread mutex the reducer drive holds across a fold commit —
  * routinely 120-330 s at tip. Blocking here freezes the runner heartbeat for
  * that whole window, boot_sd_watchdog withholds the systemd keepalive, and
- * systemd SIGABRTs the node at the 120 s WatchdogSec limit. That is the
- * 2026-07-27 crash loop: seven kills in forty minutes on a node that was
- * folding blocks correctly the entire time — the folder was fine, the
- * OBSERVER jammed behind it and its silence got the worker killed.
+ * systemd SIGABRTs the node at the 120 s WatchdogSec limit.
  *
  * So: TRY, and yield the tick if the reducer owns the lock. The mutex is
  * recursive, so holding it here composes with the inner acquire. Yielding is
  * free — the caller leaves the blocker exactly as it found it and the next
  * tick is 2 s away. Same discipline as reducer_drive_watchdog.c:442
- * ("NEVER a blocking coins/progress lock"). Regression-tested in
- * test_address_index.c: the pre-fix code DEADLOCKS that case. */
+ * ("NEVER a blocking coins/progress lock"). Tested in
+ * test_address_index.c. */
 static bool read_seed_floor(sqlite3 *db, int64_t *floor_out, bool *found)
 {
     *floor_out = -1;

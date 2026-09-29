@@ -587,7 +587,7 @@ int64_t utxo_mirror_sync_run_once(struct utxo_mirror_sync_service *svc)
      * a tip far BELOW the frontier; the near-tip check above (frontier+N <
      * header_tip) is then false on the bogus-low tip and the wholesale
      * ~1.3M-row rebuild would fire AT THE SEED — far from any real tip and
-     * concurrent with the fold — the observed blocks-less crash window. "Near
+     * concurrent with the fold (the blocks-less crash window). "Near
      * tip" requires the headers to have actually reached the coins frontier,
      * not the reverse. The first pass once headers catch up (header_tip >=
      * frontier) rebuilds it once, near the real tip.

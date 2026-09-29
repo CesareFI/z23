@@ -61,8 +61,8 @@ struct shielded_import_report {
 /* ── Live progress (never-silent invariant) ───────────────────────────────
  *
  * The import streams millions of anchor + nullifier records inside ONE
- * transaction. That work is CPU-bound and, historically, silent — a violation
- * of the node's prime invariant (a stall must always be a NAMED point at a
+ * transaction. That work is CPU-bound and must not be silent — silence would
+ * violate the node's prime invariant (a stall must always be a NAMED point at a
  * known cursor, never a quiet stop). The service therefore maintains lock-free
  * atomic progress counters + a coarse phase, periodically emits a
  * "shielded import progress: ..." node.log line, and exposes a snapshot getter

@@ -531,8 +531,8 @@ static void dbm_note_run_locked(const char *op,
  * g_dbm.lock is held; returns true when the caller must skip the op.
  *
  * Every op below takes the node.db write lock, and holding it past the
- * catchup walk's 10 s busy timeout is what made that walk's post-commit
- * BEGIN IMMEDIATE fail (the node1 abort loop, 2026-09-05). Yielding
+ * catchup walk's 10 s busy timeout makes that walk's post-commit
+ * BEGIN IMMEDIATE fail. Yielding
  * leaves the op's last-run stamp untouched, so the next tick still finds
  * it due — no separate rescheduling to get wrong. The yield is bounded:
  * after DB_MAINT_MAX_CATCHUP_DEFERRALS in a row one run goes ahead and

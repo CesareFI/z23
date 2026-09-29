@@ -270,7 +270,7 @@ static bool permanent_sync_blocker_active(char id_out[BLOCKER_ID_MAX])
  *   7 refold_from_anchor — TERMINAL: arm (if needed) + trigger the self-respawn
  *                          so the fresh boot re-derives from the verified anchor
  *                          over real bodies. NEVER installs a borrowed value.
- * A lane can still plug a custom action via sticky_escalator_register_rung()
+ * A custom action can be plugged via sticky_escalator_register_rung()
  * with no edit here. A rung whose precondition is absent (no reachable anchor,
  * no verified base) NAMES a typed blocker and returns FAILED so the ladder
  * advances — it never fakes a "done". */

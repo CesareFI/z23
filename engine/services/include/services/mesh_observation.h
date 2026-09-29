@@ -4,17 +4,9 @@
  *
  * WHY THIS EXISTS
  * ---------------
- * Mesh verification used to be pronounced by a privileged shell judge run
- * from one box's crontab: it graded the fleet and published a scalar verdict
- * every other reader was expected to trust. That is authority in three
- * separate ways — if that box stops, nobody reaches a verdict; the verdict
- * it emitted (n/4) is one nobody else could derive alone; and readers had to
- * TRUST the conclusion rather than RECOMPUTE it.
- *
- * This surface is the replacement, and it ships in the portable binary every
- * node already runs. Each node publishes ONLY what IT observed. Any reader
- * folds the records it collected into a conclusion IT derives, against ITS
- * OWN validated chain. No box is the judge.
+ * Mesh verification has no privileged judge. Each node publishes ONLY what IT
+ * observed. Any reader folds the records it collected into a conclusion IT
+ * derives, against ITS OWN validated chain; no box's verdict is trusted.
  *
  * WHAT IS AND IS NOT IN A RECORD
  * ------------------------------
@@ -35,12 +27,9 @@
  *  R1 VERDICTS COMPOSE, NEVER COLLAPSE. The primitive emits a tuple; only a
  *     READER collapses it, and it keeps reachability, freshness, timing and
  *     chain agreement as SEPARATE dimensions.
- *  R2 TIMING IS TELEMETRY, NEVER A GATE INPUT. Two boxes on this fleet are
- *     8-core 7200-rpm HDD machines measured at 91% IO pressure. A threshold
- *     that grades them failed for being slow is a hardware franchise. That
- *     is why mesh_observation_compose() below receives no fsync_us, no
- *     pread_us, no min_ping_us and no stage_elapsed_us: a franchise is not
- *     merely discouraged there, it does not COMPILE.
+ *  R2 TIMING IS TELEMETRY, NEVER A GATE INPUT. Slow hardware must not grade
+ *     as failed, so mesh_observation_compose() below receives no fsync_us,
+ *     pread_us, min_ping_us or stage_elapsed_us.
  *  R3 ANNOUNCEMENTS ARE PROMISES. READY only once descriptor, rendezvous,
  *     circuit and listen are ALL confirmed; every partial stage is its own
  *     named state.

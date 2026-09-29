@@ -519,8 +519,8 @@ enum snapsync_offer_result snapsync_handle_offer(
     }
 
     /* If we're already receiving from a different peer (reconnect scenario),
-     * reset and re-accept from the new peer. This handles the case where
-     * the serving connection dropped and node2 reconnected. */
+     * reset and re-accept from the new peer (the serving connection dropped
+     * and the peer reconnected). */
     snapsync_service_lock_internal();
     current_state = svc->state;
     if (current_state == SNAPSYNC_RECEIVING &&

@@ -14,8 +14,7 @@
  * refetch-by-hash) are NOT dispatched here — the reducer_frontier_reconcile_
  * light and segment_corruption conditions own them at equal/higher cadence.
  * When either is the active healer the coordinator stays quiet; that is the
- * "an applicable cheap rung is already firing" case the old inline dispatch
- * used to short-circuit on. */
+ * "an applicable cheap rung is already firing" case. */
 
 #include "services/recovery_coordinator.h"
 

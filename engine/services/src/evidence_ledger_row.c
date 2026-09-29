@@ -446,32 +446,19 @@ bool evidence_ledger_scan_tail(const char *path, size_t tail_bytes,
         }
     }
 
-    /* BYTE-COUNTED, NOT NUL-TERMINATED, and that is the whole point.
+    /* BYTE-COUNTED, NOT NUL-TERMINATED. A torn append leaves NUL bytes in the
+     * middle of otherwise valid JSON, and strlen() would stop at the first
+     * one, misreading a terminated line as unterminated and swallowing the
+     * following valid row as a phantom tail.
      *
-     * This loop used to be fgets() + strlen(). strlen() stops at the first NUL
-     * byte, and a NUL is exactly what a torn append leaves behind — the
-     * filesystem allocated the block and the data never landed, so the row
-     * reads back with a run of zeroes in the middle of otherwise perfect JSON.
-     * fgets() had already consumed that whole physical line INCLUDING its
-     * newline, but strlen() reported only the bytes before the NUL, so the
-     * line looked unterminated: it was counted incomplete (right) and the
-     * reader armed its consume-the-rest-of-the-line state (wrong — there was
-     * no rest). The next fgets() returned the FOLLOWING line, a complete and
-     * perfectly valid row, and it was swallowed as that phantom tail. One NUL
-     * cost two rows, and the second loss was counted nowhere at all
-     * (reproduced: valid / NUL / valid scanned 1 row, incomplete=1, and the
-     * third row vanished silently).
-     *
-     * So row boundaries are decided by counting bytes to the next '\n' and
+     * Row boundaries are decided by counting bytes to the next '\n' and
      * nothing else. A NUL is just a byte inside one row's content; it
-     * disqualifies THAT row and cannot reach past its own newline. No
-     * consume-the-tail state is needed either: the scan already stops at the
-     * physical newline, so an overlong row or a post-seek fragment simply has
-     * its surplus bytes dropped on the floor as they stream by, never folded
-     * in as a second phantom row.
+     * disqualifies THAT row and cannot reach past its own newline. An
+     * overlong row or a post-seek fragment has its surplus bytes dropped as
+     * they stream by, never folded in as a second phantom row.
      *
-     * The row buffer holds DATA bytes only — no newline, no NUL — because
-     * nothing here needs a terminator: `fn` is handed (pointer, length). */
+     * The row buffer holds DATA bytes only — no newline, no NUL: `fn` is
+     * handed (pointer, length). */
     char chunk[8192];
     char row[EVIDENCE_ROW_MAX];
     size_t rlen = 0;            /* data bytes of the current line, buffered */

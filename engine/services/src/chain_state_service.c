@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * Chain state repository — implementation. See header for the design
- * rationale and the incident class that motivated this service. */
+ * rationale. */
 
 // one-result-type-ok:legacy-csr-enum-contract-with-zcl-result-adapter
 
@@ -436,22 +436,21 @@ static enum csr_result csr_validate_header_locked(
              * best header on the same most-work chain — admitting it would
              * drag pindex_best_header (and therefore the active-chain window
              * the header pipeline extends to) BACKWARD below heights already
-             * in the index, freezing header_admit/validate_headers. This is
-             * the regression that lets an inbound msg_headers batch whose
-             * pindex_last lands below the current tip clobber best_header
-             * downward. Bitcoin Core's pindexBestHeader is never moved
+             * in the index, freezing header_admit/validate_headers (an
+             * inbound msg_headers batch whose pindex_last lands below the
+             * current tip must not clobber best_header). Bitcoin Core's pindexBestHeader is never moved
              * backward by an incoming headers batch; mirror that here.
              * A legitimate authorized reorg still rewinds via the
              * rollback_auth escape (checked at the top of this block). */
             if (work_cmp == 0 && new_tip->nHeight < cur->nHeight) {
-                /* LANE D / SELF-HEAL (S3): a strictly-lower-height equal-work
-                 * header is normally a best-header regression (clobbers
-                 * pindex_best_header downward). EXCEPTION: when the incumbent
-                 * best-header at new_tip's own height is FAILED, the canonical
-                 * equal-work sibling MUST be promotable so the body-downloader
-                 * follows it (otherwise sibling-adopt selects a chain whose
-                 * header the downloader never re-requests, re-wedging). Pure
-                 * read over our own FAILED status; parity-restoring. */
+                /* A strictly-lower-height equal-work header is normally a
+                 * best-header regression (clobbers pindex_best_header
+                 * downward). EXCEPTION: when the incumbent best-header at
+                 * new_tip's own height is FAILED, the canonical equal-work
+                 * sibling MUST be promotable so the body-downloader follows
+                 * it (otherwise sibling-adopt selects a chain whose header the
+                 * downloader never re-requests). Pure read over our own FAILED
+                 * status; parity-restoring. */
                 struct block_index *inc = csr->chain_active
                     ? active_chain_at(csr->chain_active, new_tip->nHeight)
                     : NULL;

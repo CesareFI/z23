@@ -424,8 +424,7 @@ static enum property_grant_reason commit_attempt(
 #ifdef ZCL_TESTING
     /* The one point where a test can make the seal fail. See the hook's
      * declaration: the real sealer cannot fail here, so without this the
-     * restore below has no test and the arithmetic that used to live in it went
-     * two defects deep before anyone looked. */
+     * restore below has no test. */
     if (sealed && g_pg_store.seal_hook)
         sealed = g_pg_store.seal_hook(g_pg_store.seal_hook_ctx);
 #endif

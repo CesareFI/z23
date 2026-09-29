@@ -9,8 +9,7 @@
  * (util/telemetry/storage_fields.def) owns every field name, unit, tier and
  * health rule, and platform/modules/util/src/telemetry_render.c owns the document and the
  * verdict. A collector that hand-writes a telemetry key fails
- * check-telemetry-ontology, which is the precise regression that gate exists
- * for.
+ * check-telemetry-ontology.
  *
  * COST CONTRACT, and it is the whole reason this collector looks the way it
  * does. It runs on the RPC/native thread, and the one moment an operator asks
@@ -32,10 +31,9 @@
  * which the render layer turns into a JSON null judged `unknown`.
  *
  * Layering: reads other subsystems' published snapshots. Opens nothing, and
- * in particular opens no database of its own — a read-only open in this tree
- * has previously leaked write-ahead-log sidecars and served an immutable
- * stale snapshot with no error, so every handle used here belongs to the
- * model that owns it.
+ * in particular opens no database of its own — a read-only open can leak
+ * write-ahead-log sidecars and serve an immutable stale snapshot with no
+ * error, so every handle used here belongs to the model that owns it.
  */
 #ifndef ZCL_SERVICES_STORAGE_TELEMETRY_H
 #define ZCL_SERVICES_STORAGE_TELEMETRY_H

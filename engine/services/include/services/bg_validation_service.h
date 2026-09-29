@@ -83,9 +83,8 @@ struct bg_validation_progress {
     /* ── Always-on sampled re-verify (after BG_VALIDATION_COMPLETE) ──
      * Once the genesis→tip walk completes, the thread does NOT exit; it enters
      * a low-rate loop that re-runs the proof/script verification over RANDOM
-     * already-verified heights. A silent bit-rot / miscompile / memory
-     * corruption of previously-passed work then becomes a NAMED event instead
-     * of a quiet regression. */
+     * already-verified heights, so silent bit-rot / miscompile / memory
+     * corruption of previously-verified work becomes a NAMED event. */
     _Atomic bool    reverify_active;   /* in the sampled re-verify loop */
     _Atomic int64_t reverify_passes;   /* sampled heights that re-verified OK */
     _Atomic int64_t reverify_fails;    /* sampled heights that FAILED re-verify */

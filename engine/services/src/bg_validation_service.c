@@ -664,7 +664,7 @@ static void *bg_validation_thread(void *arg)
     /* Genuinely-background bulk walker (full proof/script re-verification
      * of the locally-derived extent) — never the reducer/net/RPC/tip-follow
      * path. Apply OS QoS armor before any work so the kernel schedules it
-     * behind the node's liveness threads (lane/os-armor). */
+     * behind the node's liveness threads. */
     zcl_thread_qos_background();
 
     bg_validation_supervisor_heartbeat(svc);

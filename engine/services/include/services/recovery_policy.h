@@ -5,12 +5,7 @@
  * Background
  * ----------
  * chain_state_repository stops tip *updates* that are inconsistent. It
- * does not stop the UTXO wipes or block rollbacks themselves. The 2026-
- * 04-10 incident (1.3M UTXOs wiped) ran through `node_db_wipe_utxos`,
- * which at the time was an unguarded primitive that any recovery path
- * could call with no cap, no backup check, and no operator in the loop.
- *
- * This module is the opposite philosophy. Every destructive recovery
+ * does not stop the UTXO wipes or block rollbacks themselves. Every destructive recovery
  * operation asks the policy for permission and honours the decision:
  *
  *     struct recovery_policy p;

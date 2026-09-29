@@ -111,7 +111,7 @@ static _Atomic int64_t  g_persisted_stuck_height = -1;
 static _Atomic int      g_no_progress_restarts   = 0;
 static _Atomic bool     g_operator_needed        = false;
 
-/* #8 — set when a genuine-liveness restart was requested while NOT under a
+/* Set when a genuine-liveness restart was requested while NOT under a
  * systemd notify socket, so main() self-re-execs instead of leaving a
  * directly-launched binary down. Latched (only ever set true). */
 static _Atomic bool     g_respawn_requested      = false;

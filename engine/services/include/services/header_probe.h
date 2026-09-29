@@ -76,7 +76,7 @@ void header_probe_tick_once(void);
 struct zcl_result header_probe_pull_range(int start_height, int max_headers,
                                           int *out_added);
 
-/* ── Detective lane A2: repair-source accounting ──────────────────
+/* ── Repair-source accounting ──────────────────
  *
  * A corrupted / solutionless stored header is repaired from one of two
  * sources, in explicit priority order:

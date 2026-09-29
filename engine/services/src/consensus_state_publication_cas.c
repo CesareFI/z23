@@ -3,7 +3,7 @@
  * bind the artifact-admission, selected-chain, and producer-source receipts into
  * one durable ADMIT/typed-refusal decision record. Never publishes/loads/mutates
  * node state; frontier-bound for CAS staleness. The pure decision itself lives
- * in consensus_state_publication_decide.c (E1 file-size split). */
+ * in consensus_state_publication_decide.c. */
 
 // one-result-type-ok:cas-total-decision-plus-durable-record-io — the digest,
 // staleness, and codec surfaces are TOTAL predicates over their inputs;

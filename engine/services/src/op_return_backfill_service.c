@@ -67,18 +67,14 @@ static _Atomic bool     g_backfill_partial_declared = false;
  * A body the index flags BLOCK_HAVE_DATA but that does not read back is not a
  * transient. Nothing in this process repairs a height this far below the fold
  * frontier: the have_data_unreadable Condition only inspects tip+1 and the
- * reducer stages. Live 2026-08-23 (node1) this service re-read h=1 every ~3 s
- * for 14.5 h — 12,435 identical failures, 12,435 identical WARN lines, and not
- * one of them could ever have succeeded. A batch that fails identically
- * forever must back off and latch into a named condition, not hot-loop.
+ * reducer stages.
  *
- * So: count consecutive failures at ONE height; retry on a geometric schedule
- * (the 2 s tick, then 4, 8, ... capped at 15 min) instead of every tick; and
- * once the retry budget is spent name the standing fact through the shared
- * index-fold guard. The blocker is the REPORT, never a silencer — the retry
- * keeps running on the slow schedule, the supervisor still sees BLOCKED (so
- * its NO_PROGRESS quiet clock still runs), and any successful fold at that
- * height clears the latch and the blocker together. */
+ * Count consecutive failures at ONE height; retry on a geometric schedule
+ * (the 2 s tick, then 4, 8, ... capped at 15 min); once the retry budget is
+ * spent name the standing fact through the shared index-fold guard. The
+ * blocker is the REPORT, never a silencer — the retry keeps running, the
+ * supervisor still sees BLOCKED (its NO_PROGRESS quiet clock still runs), and
+ * any successful fold at that height clears the latch and the blocker. */
 #define BACKFILL_UNREADABLE_NAME_AFTER   5      /* attempts before naming it */
 #define BACKFILL_UNREADABLE_MAX_DELAY_US ((int64_t)15 * 60 * 1000 * 1000)
 static _Atomic int64_t  g_unreadable_height   = -1;
@@ -251,17 +247,13 @@ static void backfill_unreadable_note(struct block_index *bi, int32_t h)
 
 /* ── One bounded batch ──────────────────────────────────────────────
  *
- * This function used to return a bare `int folded`, and returned 0 from FIVE
- * structurally different states: not wired yet, cannot read my own cursor,
- * caught up, allocation failed, and wanted to fold but could not. Only one of
- * those (caught up) is healthy. The supervisor saw one number and could not
- * tell them apart, which is how this service reached ticks_run 13083 with
- * blocks_folded 0 while reporting stall_reason "none".
+ * A bare folded count of 0 is ambiguous: not wired yet, cannot read the
+ * cursor, caught up, allocation failed, or wanted to fold but could not. Only
+ * caught up is healthy.
  *
  * `op_return_backfill_last_outcome()` publishes the distinction so the tick
- * can report the RESULT rather than the activity. The bare-int entry point is
- * kept byte-identical for its existing callers (tests + the manual re-run
- * path) — it just forwards. */
+ * reports the RESULT rather than the activity. The bare-int entry point
+ * (tests + the manual re-run path) just forwards. */
 enum op_return_backfill_outcome {
     OP_RETURN_BACKFILL_PROGRESSED = 0, /* folded >= 1 block this run */
     OP_RETURN_BACKFILL_IDLE,           /* caught up: nothing to do, healthy */
@@ -338,11 +330,8 @@ static enum op_return_backfill_outcome backfill_run_once_typed(int *folded_out)
             atomic_fetch_add(&g_backfill_holes, 1);
 
             /* Below the snapshot-seed floor the body was NEVER downloaded and
-             * never will be by this fold — the old behaviour (name a blocker
-             * and break) meant the catalog stayed empty forever and fired
-             * op_return_index.below_snapshot_seed on every tick, 2,877 times
-             * on the canonical node. The owner's decision is not to backfill
-             * pre-seed bodies, so the catalog DECLARES the range it covers
+             * never will be by this fold. Pre-seed bodies are not backfilled, so
+             * the catalog DECLARES the range it covers
              * instead: adopt the floor as the base, prune anything outside the
              * new range, and keep the coverage limit named via
              * *.partial_coverage. Guarded by base_height <= seed_floor so an
@@ -358,7 +347,7 @@ static enum op_return_backfill_outcome backfill_run_once_typed(int *folded_out)
                     (fbi && fbi->phashBlock) ? fbi->phashBlock->data : NULL;
                 if (backfill_adopt_base(ndb, &cur, seed_floor, floor_hash)) {
                     base_adopted = true;
-                    /* The batch window was computed from the OLD cursor; stop
+                    /* The batch window was computed from the old cursor; stop
                      * here and let the next tick fold forward from the base. */
                     break;
                 }
@@ -531,8 +520,7 @@ static void backfill_tick(struct liveness_contract *c)
          * No on_stall/blocker is wired here on purpose. This fact already has
          * an operator-facing owner — catalog.op_return_index.lag_exceeded, and
          * index_fold_note_absent_body's below_snapshot_seed for the structural
-         * case. A second name for one fact is the cloned-ledger anti-pattern;
-         * what was missing was the SUPERVISOR telling the truth about it. */
+         * case. A second name for one fact is the cloned-ledger anti-pattern. */
         break;
     }
     supervisor_tick(id);

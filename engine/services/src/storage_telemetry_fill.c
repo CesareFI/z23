@@ -263,14 +263,9 @@ static void maintenance_all_unavailable(struct storage_snapshot *s,
 /* The WAL checkpoint leaves, sourced from the process-wide checkpoint ledger
  * (util/wal_checkpoint_stats.h) rather than from the maintenance worker.
  *
- * WHY THEY MOVED. wal_checkpoint_age_seconds used to be read out of the
- * maintenance worker's dumper alone. That worker was gated behind an
- * environment variable nothing set, so it never ran, so the age leaf read
- * "not_applicable: no_wal_checkpoint_recorded" on every node forever — while
- * the checkpointer that DOES run (one pass every 5 minutes, from the DB
- * service) had no telemetry at all. An operator reading the storage domain
- * got a permanent nothing-happening about the wrong subsystem. Every
- * checkpointer now records into one ledger and this reads that. */
+ * Every checkpointer records into one ledger and this reads that, so the age
+ * leaf reflects the checkpointer that actually runs (the DB service pass), not
+ * an optional maintenance worker. */
 static void fill_wal_checkpoint(struct storage_snapshot *s, int64_t now_unix)
 {
     struct wal_ckpt_stats w;

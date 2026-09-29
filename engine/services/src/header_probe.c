@@ -78,7 +78,7 @@ static struct {
     _Atomic int     last_remote_height;
     _Atomic int     last_local_height;
 
-    /* Repair-source accounting (Detective lane A2). oracle_repairs and
+    /* Repair-source accounting. oracle_repairs and
      * p2p_repairs count header-solution repairs served by each source;
      * p2p_requests counts getdata re-fetches fired at peers; p2p_no_peer_events
      * counts P2P requests fired with zero connected peers (missing input). */
@@ -417,7 +417,7 @@ void header_probe_reset_for_test(void)
     pthread_mutex_unlock(&g_hp.lock);
 }
 
-/* ── Repair-source accounting (Detective lane A2) ──────────────── */
+/* ── Repair-source accounting ──────────────── */
 
 const char *header_probe_repair_source_name(enum header_probe_repair_source s)
 {
@@ -493,7 +493,7 @@ bool header_probe_dump_state_json(struct json_value *out, const char *key)
     json_push_kv_int (out, "last_local_height",
                       atomic_load(&g_hp.last_local_height));
 
-    /* Repair-source accounting (Detective lane A2). */
+    /* Repair-source accounting. */
     json_push_kv_int (out, "oracle_repairs",
                       atomic_load(&g_hp.oracle_repairs));
     json_push_kv_int (out, "p2p_requests",

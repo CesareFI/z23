@@ -37,11 +37,9 @@
  * The store is IN-PROCESS and bounded (fixed capacities, no heap). It is the
  * authority for the running node and nothing else: it is not written to
  * node.db, so it does not survive a restart. That is a deliberate, named
- * limitation of this lane, not an oversight — the receipt chain is designed to
- * be persisted (canonical fixed-width body, hash-chained, signed; see
- * metaverse/property_receipt.h), and wiring it through the AR lifecycle onto a
- * node.db table is a separate, reviewable change. Nothing here claims
- * durability. */
+ * limitation of this store — the receipt chain is designed to be persisted
+ * (canonical fixed-width body, hash-chained, signed; see
+ * metaverse/property_receipt.h). Nothing here claims durability. */
 
 #ifndef ZCL_SERVICES_PROPERTY_GRANT_SERVICE_H
 #define ZCL_SERVICES_PROPERTY_GRANT_SERVICE_H
@@ -140,10 +138,9 @@ enum property_grant_reason property_grant_reason_from_verdict(
     enum metaverse_grant_verdict v);
 
 /* ── The catalog seam ───────────────────────────────────────────────────────
- * The property catalog is a SEPARATE lane's canonical projection. This service
+ * The property catalog is a SEPARATE canonical projection. This service
  * needs exactly four facts from it and nothing else, so the dependency is one
- * function pointer rather than a header include. The catalog lane wires its
- * real lookup in at merge time; nothing about the state machine changes.
+ * function pointer rather than a header include.
  *
  * FAIL CLOSED: with no lookup installed, every COMMIT is refused with
  * CATALOG_UNAVAILABLE. A commit that cannot confirm current ownership must not
@@ -159,25 +156,21 @@ struct metaverse_catalog_view {
 
 /* Return false when the property is not in the catalog (→ PROPERTY_UNKNOWN).
  *
- * CALLED WITH NO SERVICE LOCK HELD. It used to run inside the store mutex,
- * which made binding the real catalog to it a deadlock-and-latency hazard: the
- * property catalog is a projection that rebuilds every view from authoritative
- * bytes on every call, so it does filesystem and SQLite work, and doing that
- * under the mutex would stall every other grant decision in the process behind
- * a disk read. Both call sites now take a snapshot under the lock, RELEASE it,
- * call this, and re-acquire to confirm the store did not move
+ * CALLED WITH NO SERVICE LOCK HELD. The property catalog rebuilds every view
+ * from authoritative bytes on every call (filesystem and SQLite work), and
+ * doing that under the mutex would stall every other grant decision behind a
+ * disk read. Both call sites take a snapshot under the lock, RELEASE it, call
+ * this, and re-acquire to confirm the store did not move
  * (property_grant_service_recheck below).
  *
  * WHAT AN IMPLEMENTATION MAY DO. It may block and it may touch the datadir —
  * that is the entire reason the lock is released around it. It may also call
  * back into this service, including entry points that MUTATE the store: no
- * lock of this service is held while it runs, so there is nothing to re-enter.
- * That is not a loophole grudgingly permitted; it is how the lane's own
- * lock-discipline test PROVES the mutex is released, by mutating the store from
- * inside this callback and living.
+ * lock of this service is held while it runs, so there is nothing to re-enter
+ * (the lock-discipline test proves the mutex is released by mutating the
+ * store from inside this callback).
  *
- * WHAT THAT COSTS, AND IT IS DEFINED BEHAVIOUR RATHER THAN AN ACCIDENT. A
- * callback that mutates the store moves the store-wide authority generation,
+ * A callback that mutates the store moves the store-wide authority generation,
  * and the decision currently in flight is exactly the decision that generation
  * exists to invalidate: the caller re-acquires the lock, sees the move, and
  * reports AUTHORITY_CHANGED. PLAN and COMMIT each retry from scratch exactly

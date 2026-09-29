@@ -371,8 +371,7 @@ int node_db_catchup_service_run(struct node_db *ndb,
      * failed passes the worker parks behind the named blocker
      * "node_db_catchup.abort_storm" and every pass is a no-op until an
      * operator clears it — a pass that always fails must not be re-run
-     * forever (the 2026-07-27 incident re-ran one 13k+ times, each pass
-     * burning the 10 s busy timeout). Single chokepoint placement: both
+     * forever (each pass burns the 10 s busy timeout). Single chokepoint: both
      * call sites funnel through here. */
     if (node_db_catchup_lock_guard_parked())
         return 0;
@@ -435,8 +434,7 @@ int node_db_catchup_service_run(struct node_db *ndb,
      * transaction opens in this run): the writer reservation is taken at
      * BEGIN, where the 10 s busy handler CAN wait out a contender — a
      * deferred BEGIN would only discover the contention at the first
-     * write, as SQLITE_BUSY_SNAPSHOT, which no busy-handler wait can cure
-     * (the 2026-07-27 catchup-poison drumbeat). */
+     * write, as SQLITE_BUSY_SNAPSHOT, which no busy-handler wait can cure. */
     if (!node_db_begin_immediate(ndb)) {
         LOG_WARN("catchup", "catchup: BEGIN failed — aborting");
         if (!sync_db_turbo_scope_end(&turbo_mode))

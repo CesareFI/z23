@@ -98,8 +98,7 @@ bool shielded_history_promote_run(const struct shielded_promote_request *req,
 /* Test seam — the body-crosscheck invocation is indirected through this pointer
  * so a fixture can inject a deterministic verdict without building a full
  * local-body datadir. Default (unset / NULL) = the REAL symbol linked in
- * production (shielded_history_body_crosscheck_run — placeholder until lane B
- * lands its real local-body verifier). Tests only. */
+ * production (shielded_history_body_crosscheck_run). Tests only. */
 typedef bool (*shielded_promote_crosscheck_fn)(const char *copy_datadir,
                                                const char *producer_datadir,
                                                int64_t checkpoint_height,

@@ -502,9 +502,8 @@ bool network_crawler_get_view(struct network_census_view *out)
         return false;
     /* Defined on every path. A false return means "no fold yet", and a
      * caller that reads `out` anyway must see zeros, not whatever was on
-     * its stack — the census can now legitimately refuse a row (see the
-     * eviction order in ncrawl_census_ingest_locked), so "the answer is
-     * always there" is no longer a safe assumption anywhere. */
+     * its stack — the census can legitimately refuse a row (see the
+     * eviction order in ncrawl_census_ingest_locked). */
     memset(out, 0, sizeof(*out));
     ncrawl_lock();
     bool ready = g_ncrawl.view.ready;

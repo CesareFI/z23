@@ -14,20 +14,17 @@
 // written by anything: a checkpoint- or snapshot-seeded datadir legitimately
 // starts above them, so refetching from peers is the only way they can ever
 // exist locally. What WAS a producer defect is the false claim built on top
-// of that hole — syncsvc_plan_periodic_tip_state used to publish AT_TIP for a
-// node missing 98% of its own chain's bodies. That producer now refuses to
-// emit the claim unless coverage is positively COMPLETE, and the cited test
-// pins it for a known hole AND for unmeasured coverage.
+// of that hole — syncsvc_plan_periodic_tip_state must not publish AT_TIP for a
+// node missing bodies. It refuses to emit the claim unless coverage is
+// positively COMPLETE, and the cited test pins it for a known hole AND for
+// unmeasured coverage.
 
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * body_backfill_service — the below-tip half of block-body acquisition.
  *
  * gap_fill_service walks [tip+1, best_header]: strictly ABOVE the tip, by
- * construction. Nothing in the node ever asked for a height below its own
- * tip, which is how a node holding genesis plus the last few thousand
- * blocks — and missing the bodies for 98% of the chain — could sit idle and
- * report itself at tip. This file is the other direction.
+ * construction. This file is the other direction: heights below the tip.
  *
  * It is a DRIVER, not a second downloader. The census algebra is
  * storage/body_history.h, the have-data record is body_coverage's one

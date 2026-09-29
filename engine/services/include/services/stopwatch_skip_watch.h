@@ -15,15 +15,9 @@
  * module names that condition: how many consecutive skips, of what CLASS, for
  * how long, and whether that crosses the class's alarm threshold.
  *
- * AND THE SECOND RUNG. That first alarm only ever asked "could the proof
- * run". Measured 2026-08-29: the C3 gate ran 34 consecutive scheduled times,
- * skipped none of them, and PASSED none of them (the last 17 recorded
- * `stalled-named` with the node under test at zero blocks synced) — and this
- * module's own report line for that state began with the word "quiet",
- * printing no_pass_streak=34 inside it. `no_pass_streak` was computed,
- * stored, serialised and asserted in tests, and gated nothing. So the watch
- * was loud about the LESS damning failure and silent about the worse one.
- * There is now a second, independent alarm on the no-pass streak, with its
+ * AND THE SECOND RUNG. The first alarm only asks "could the proof run"; a
+ * gate that runs every time yet never PASSES is the worse failure and must
+ * not read as quiet. There is a second, independent alarm on the no-pass streak, with its
  * threshold in the same table as the class thresholds.
  *
  * ══ REPORTER ONLY — the load-bearing contract ══

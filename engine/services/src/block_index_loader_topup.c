@@ -64,12 +64,11 @@
 
 /* ── Undo metadata top-up: one (nFile, nUndoPos) address, ONE source ──
  *
- * Both loader top-ups used to apply a row's undo position only from inside
- * their `!(nStatus & BLOCK_HAVE_DATA)` branch, so an entry that already had
- * HAVE_DATA but no HAVE_UNDO could never be repaired however good its row
- * was — exactly the shape a header-only snapshot import leaves behind (real
- * nFile/nDataPos restored, nUndoPos 0), which then costs the background
- * validator every transparent script in the block for want of recoverable
+ * Both loader top-ups apply a row's undo position outside their
+ * `!(nStatus & BLOCK_HAVE_DATA)` branch too, so an entry that already has
+ * HAVE_DATA but no HAVE_UNDO (the shape a header-only snapshot import leaves:
+ * real nFile/nDataPos, nUndoPos 0) is repaired, instead of costing the
+ * background validator every transparent script for want of recoverable
  * spent outputs.
  *
  * The read path pairs the ENTRY's nFile with the ENTRY's nUndoPos
@@ -573,7 +572,7 @@ bool block_index_projection_topup_with(struct block_index_projection *bip,
      * Collapsed descendant work pins best_header at the hydrated block —
      * is_canonical_header_successor fails on work AND height and the fold
      * stalls until the next boot's flat-load forward pass (a two-boot
-     * heal, the class P6/P7 exist to kill). Re-run the CANONICAL forward
+     * heal). Re-run the CANONICAL forward
      * pass over the whole map — the same helper every loader uses — so
      * descendants get true cumulative work in the same boot. Rare path
      * (stubs_hydrated > 0 only): one sort + walk, seconds at boot. */

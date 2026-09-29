@@ -78,8 +78,7 @@ static_assert(STOPWATCH_NO_PASS_THRESHOLD_VALUE >= 1,
  * services/evidence_ledger_row.h — because the subtle parts (drop the
  * post-seek fragment, consume an overlong row instead of folding its tail as
  * a second sample, treat an absent ledger as data) fabricate evidence when
- * they are copied and one copy drifts. This file used to carry its own copy of
- * all four helpers; it now calls the shared ones.
+ * they are copied and one copy drifts.
  *
  * ── classification ─────────────────────────────────────────────────── */
 
@@ -228,10 +227,8 @@ static void scan_row(const char *row, size_t rlen,
 static bool scan_finish(struct stopwatch_skip_report *out,
                         const struct scan_state *st)
 {
-    /* The no-pass rung is computed FIRST and unconditionally, because the
-     * whole defect being fixed here is that it used to live behind
-     * `skip_streak > 0` and a 34-deep streak of stalled runs has
-     * skip_streak == 0. */
+    /* The no-pass rung is computed FIRST and unconditionally: a long streak
+     * of stalled runs has skip_streak == 0. */
     out->no_pass_threshold = (unsigned)STOPWATCH_NO_PASS_THRESHOLD_VALUE;
     out->no_pass_all_benign = out->no_pass_streak > 0 && st->no_pass_all_benign;
     out->no_pass_alarm = out->no_pass_streak >= out->no_pass_threshold &&
@@ -286,11 +283,10 @@ bool stopwatch_skip_read_ledger(const char *path,
 
     /* Bounded tail read, fragment/overlong handling and "absent ledger is
      * data" all live in evidence_ledger_scan_tail(). An overlong row counts
-     * as malformed here, exactly as it did when this loop was local. A line
-     * with no newline at EOF is counted separately and never scanned: the
-     * collector appends under flock, so a torn tail means a run caught
-     * mid-write, and folding it in would let half a row set the trailing
-     * streaks this report exists to publish. */
+     * as malformed. A line with no newline at EOF is counted separately and
+     * never scanned: the collector appends under flock, so a torn tail is a
+     * run mid-write, and folding it in would let half a row set the trailing
+     * streaks this report publishes. */
     if (!evidence_ledger_scan_tail(path, STOPWATCH_SKIP_TAIL_BYTES, sw_row_cb,
                                    &c, &out->malformed_rows,
                                    &out->incomplete_rows))
@@ -380,10 +376,8 @@ const char *stopwatch_skip_alarm_text(const struct stopwatch_skip_report *r,
 
     if (r->skip_streak == 0) {
         /* No skips at all in the trailing run. Either nothing is wrong, or
-         * the proof RAN every scheduled time and never passed — which is the
-         * more damning of the two conditions this module reports, and is the
-         * one that used to print the word "quiet" with no_pass_streak=34
-         * sitting inside the line. */
+         * the proof RAN every scheduled time and never passed — the more
+         * damning of the two conditions this module reports. */
         if (r->no_pass_alarm) {
             snprintf(buf, cap,
                      "ALARM no_pass_streak=%u no_pass_threshold=%u "

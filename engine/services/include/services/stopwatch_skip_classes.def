@@ -8,9 +8,7 @@
  * completely different reasons — "nothing is configured, there was nothing to
  * prove" and "the fixture I need has been dead for days". Both land in the
  * evidence ledger as the identical string `"verdict":"skip"`. Flattening them
- * is how a proof coasts: the C3 gate recorded skip on every run from
- * 2026-07-28 06:02 onward and nothing said a word, because the only consumer
- * that looked at skips graded them and then moved on.
+ * is how a proof coasts on skips unnoticed.
  *
  * TWO consumers read this file. Neither keeps a private copy:
  *   - C     engine/services/src/stopwatch_skip_watch.c #includes it. That is the
@@ -94,7 +92,7 @@ STOPWATCH_SKIP_CLASS("config_error", 1, "invalid --sample")
 
 /* ── fixture_absent: the infrastructure the proof needs was not there. This
  * CAN self-heal (a peer restarts), so one sample is not evidence; two
- * consecutive are. This is the class the four live C3 skips fall into. */
+ * consecutive are. */
 STOPWATCH_SKIP_CLASS("fixture_absent", 2, "serving peer not reachable")
 STOPWATCH_SKIP_CLASS("fixture_absent", 2, "file-service peer not reachable")
 STOPWATCH_SKIP_CLASS("fixture_absent", 2, "is not a live process")
@@ -102,22 +100,19 @@ STOPWATCH_SKIP_CLASS("fixture_absent", 2, "client RPC not reachable")
 STOPWATCH_SKIP_CLASS("fixture_absent", 2, "client not AT TIP before the cut")
 
 /* ── fixture_incompatible: the fixture ANSWERED but cannot serve this node.
- * Measured 2026-09: the C3 serving fixture's binary predated the
- * authenticated X25519/HKDF file-service handshake (d1db47aee7). It passed
- * the stopwatch's bare TCP-connect file-peer precheck, the wiped node's boot
- * logged "directory: handshake failed ... — skipping seed" and fell back to
- * from-genesis IBD, and every scheduled run burned the full 600s budget for
- * ~3 weeks — the longest silent failure the pre-flight probe
- * (tools/fs_handshake_probe.c) now names in seconds. A stale binary produces
- * the identical failure until someone rebuilds it: never self-heals, so
- * threshold 1, same rule as config_error. */
+ * E.g. a serving fixture binary that predates the authenticated
+ * X25519/HKDF file-service handshake passes the bare TCP-connect file-peer
+ * precheck, then the booting node skips the seed and falls back to
+ * from-genesis IBD; the pre-flight probe (tools/fs_handshake_probe.c) names
+ * it. A stale binary never self-heals, so threshold 1, same rule as
+ * config_error. */
 STOPWATCH_SKIP_CLASS("fixture_incompatible", 1, "file_peer fixture incompatible")
 
 /* ── harness_misuse: exit 2 without any artifact at all. The harnesses' argv
  * loops `exit 2` on an unknown flag WITHOUT calling skip(), so no proof.json
- * and no reason are written — yet the collector still records verdict=skip.
- * An operator typo was therefore byte-indistinguishable in the ledger from a
- * week-dead fixture. Structural, not reason-matched: rc 2 with no artifact
+ * and no reason are written — yet the collector still records verdict=skip,
+ * so an operator typo is otherwise indistinguishable in the ledger from a
+ * dead fixture. Structural, not reason-matched: rc 2 with no artifact
  * dir IS the signature. Never self-heals, so threshold 1. */
 STOPWATCH_SKIP_FALLBACK("harness_misuse", 1)
 
@@ -133,11 +128,7 @@ STOPWATCH_SKIP_FALLBACK("unclassified", 2)
  *
  * The rows above answer "the proof COULD NOT RUN, how loud is that". They are
  * silent about the more damning case: the proof RAN, every scheduled time,
- * and never once succeeded. Measured 2026-08-29 on the C3 ledger — 34
- * consecutive non-passing runs (17 of them `stalled-named` with max_hstar 0,
- * i.e. the node under test synced ZERO blocks), `skip_streak` 0 throughout,
- * and the report line for that state was labelled "quiet". `no_pass_streak`
- * was computed, stored, serialised and asserted in tests, and gated NOTHING.
+ * and never once succeeded (`skip_streak` stays 0).
  *
  * ONE row, exactly one, read by the same two consumers as the class table:
  *

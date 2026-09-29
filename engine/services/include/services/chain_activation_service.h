@@ -2,9 +2,7 @@
  *
  * Chain Activation Controller — single authority for block connection.
  *
- * Problem: the old chain-connection engine was called from five places across
- * three threads with zero coordination. This controller is the SINGLE entry
- * point.
+ * This controller is the SINGLE entry point for chain connection.
  *
  * Architecture:
  *   State machine: IDLE → BOOT_PENDING → ANCHOR_ACTIVE → READY → CONNECTING → AT_TIP
@@ -172,7 +170,7 @@ int activation_drain_deferred(struct chain_activation_controller *ctl);
 /* ── Reducer-as-ingest ─────────────────────────────────────────── */
 
 /* Where an incoming block came from. Mirrors the force/requested
- * semantics of the historical block-intake callers: P2P/compact arrive
+ * semantics of block-intake callers: P2P/compact arrive
  * unrequested (force=false, relay pre-filters apply); SUBMIT/MINED/REPAIR
  * are locally requested (force=true, relay pre-filters skipped). The source
  * is informational for now — the force flag is the live arg. */
@@ -184,15 +182,14 @@ enum reducer_source {
     REDUCER_SRC_REPAIR,        /* rebuild_recent recovery */
 };
 
-/* reducer_is_authoritative — always true after the reducer cleanup. Live
- * block-intake call sites use the reducer pipeline, not the historical intake
- * path. */
+/* reducer_is_authoritative — always true. Block-intake call sites use the
+ * reducer pipeline. */
 bool reducer_is_authoritative(void);
 
 /* reducer_ingest_block — the synchronous block-intake entry that drives the
- * staged reducer Job pipeline instead of the historical activation path.
+ * staged reducer Job pipeline.
  *
- * Contract (mirrors the historical synchronous accept/reject behavior):
+ * Contract (synchronous accept/reject):
  *   1. check_block (stateless PoW/merkle/structure) runs FIRST, inline,
  *      BEFORE any log/stage mutation. A garbage block is rejected with a
  *      verdict in `out` and the function returns false, giving the P2P/submit

@@ -221,10 +221,10 @@ struct block_index *gap_fill_window_walk_start(
         return best;
 
     /* The validated-header lead can be millions of blocks during initial
-     * sync.  A capped pprev walk used to give up after GAPFILL_WALK_CAP and
-     * fall back to `best`, silently turning the connectable bottom window
-     * into the far-ahead top window.  That filled the bounded download queue
-     * with bodies the reducer could not consume while tip+1 went missing.
+     * sync.  A capped pprev walk that fell back to `best` would silently
+     * turn the connectable bottom window into the far-ahead top window,
+     * filling the bounded download queue with bodies the reducer cannot
+     * consume while tip+1 goes missing.
      *
      * The block index already maintains Bitcoin-style skip pointers for this
      * exact lookup.  Refuse a broken ancestry result instead of returning a
@@ -433,8 +433,7 @@ static int gap_fill_pass(void)
      * frontier. A window floored at active_tip_h fills dl_queue with
      * below-floor heights the fold will not consume next, and the
      * height-sorted keep-lowest eviction then actively REFUSES the
-     * fold-needed successors above the seed (FORWARD_PLAN backlog #10,
-     * 2026-08-01). Raise the window's bottom to the fold's next-needed
+     * fold-needed successors above the seed. Raise the window's bottom to the fold's next-needed
      * height. No-op on an unseeded node, where body_fetch prefetches at
      * or ahead of the active tip. The S2.4 floor below still applies
      * unchanged — it only ever LOWERS the window as a defensive
