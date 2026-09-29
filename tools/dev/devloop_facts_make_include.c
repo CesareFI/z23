@@ -858,9 +858,9 @@ static void fxg_skip_all(struct fxm *m)
     fxg_free(g);
 }
 
-/* The plan rests on parse-commands-no-include-writes when an optional
- * include make reads is missing, or a skip rests on what a glob found, and
- * a command make runs as it reads is not provably read-only. */
+/* The plan rests on parse-commands-no-include-writes when make reads an
+ * optional include (missing or not), or a skip rests on what a glob found,
+ * and a command make runs as it reads is not provably read-only. */
 static void fxg_plan_premise(struct fxm *m)
 {
     struct zcl_devloop_facts_report *r = m->report;
@@ -869,7 +869,10 @@ static void fxg_plan_premise(struct fxm *m)
     for (size_t k = 0; k < r->nguards; k++)
         if (r->guards[k].nglobs > 0 && p->nskips++ == 0 && first == NULL)
             first = r->guards[k].include;
+    if (first == NULL && m->files.n > 1)
+        first = m->files.v[1];
     p->nincludes = m->missing.n;
+    p->nexisting = m->files.n > 0 ? m->files.n - 1 : 0;
     if (first != NULL)
         fxm_parse_unproven(m, p);
     if (first == NULL || p->ncommands == 0) {
@@ -880,10 +883,10 @@ static void fxg_plan_premise(struct fxm *m)
     (void)snprintf(p->include, sizeof(p->include), "%s", first);
 }
 
-/* An include make reads that a command it runs as it reads may create:
- * the command names its path, its basename or its directory (a root
- * include's directory is any text). */
-static bool fxg_include_named(const struct fxm *m, const char *path)
+/* An include make reads that a command it runs as it reads may create or
+ * rewrite: the command names its path or its basename, or (missing) its
+ * directory (a root include's directory is any text). */
+static bool fxg_include_named(const struct fxm *m, const char *path, bool dir_too)
 {
     const char *base = strrchr(path, '/');
     char dir[ZCL_DEVLOOP_GUARD_TEXT];
@@ -891,18 +894,21 @@ static bool fxg_include_named(const struct fxm *m, const char *path)
                    base != NULL ? (int)(base - path) : 0, path);
     return fxm_commands_name(m, path) ||
            fxm_commands_name(m, base != NULL ? base + 1 : path) ||
-           fxm_commands_name(m, dir);
+           (dir_too && fxm_commands_name(m, dir));
 }
 
 void fxm_guards(struct fxm *m)
 {
     if (m->report != NULL)
         memset(&m->report->make_premise, 0, sizeof(m->report->make_premise));
-    if (m->unknown || m->missing.n == 0)
+    if (m->unknown)
         return;
-    fxg_skip_all(m);
+    if (m->missing.n > 0)
+        fxg_skip_all(m);
     for (size_t k = 0; !m->unknown && k < m->missing.n; k++)
-        m->unknown = fxg_include_named(m, m->missing.v[k]);
+        m->unknown = fxg_include_named(m, m->missing.v[k], true);
+    for (size_t f = 1; !m->unknown && f < m->files.n; f++)
+        m->unknown = fxg_include_named(m, m->files.v[f], false);
     if (!m->unknown && m->report != NULL)
         fxg_plan_premise(m);
 }

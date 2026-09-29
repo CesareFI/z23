@@ -247,8 +247,10 @@ void fxm_include(struct fxm *m, const char *line);
  * The reading only ever skips what make cannot read: what it cannot
  * decide is taken (docs/work/SEMANTIC_MANIFEST.md, "Guarded includes").
  * A missing include left that a command make runs as it reads may create
- * (fxm_commands_name of its path, basename or directory) is UNKNOWN, and
- * m->report->make_premise names what the rest of the reading rests on. */
+ * (fxm_commands_name of its path, basename or directory), or an existing
+ * optional include one may rewrite (of its path or basename), is UNKNOWN,
+ * and m->report->make_premise names what the rest of the reading rests on
+ * whenever an optional include is read while an unproven command runs. */
 void fxm_guards(struct fxm *m);
 
 /* make_goal.c: the .PHONY goals a line names through a value no text
@@ -256,21 +258,24 @@ void fxm_guards(struct fxm *m);
 bool fxm_goal_ref(struct fxm *m, const char *name, size_t n);
 bool fxm_goal_words(struct fxm *m, const char *raw, bool twice, bool shell);
 /* A line make expands as it reads the makefiles (any but a recipe line,
- * a define's too) runs a $(shell) or != command whose text, as written,
- * writes a file (outside quotes, a redirection to anything but a
- * descriptor or /dev/null, or a tee), or a $(file) that is not a read:
- * what make then includes may be text no line holds. */
+ * a define's too) runs a $(shell) (or $(call shell,...)) or != command
+ * whose text, as written, writes a file (outside quotes, a redirection to
+ * anything but a descriptor or /dev/null, or a tee), a $(file) that is not
+ * a read, or a $(call $(F),...) that may run any function: what make then
+ * includes may be text no line holds. */
 bool fxm_parse_writes(const struct fxm *m);
-/* A command make runs as it reads the makefiles (a $(shell) body or a !=
+/* A command make runs as it reads the makefiles (a $(shell) body, the
+ * same through $(call shell,...), a computed $(call)'s arguments or a !=
  * value, outside recipes) may name `name`: its text holds it, or the
  * definition of a variable the text holds does, transitively; an $(eval)
  * line or a computed name holding it may set any variable, and counts.
  * The empty name is in every command. */
 bool fxm_commands_name(const struct fxm *m, const char *name);
 /* Count, and name the first of, the commands make runs as it reads the
- * makefiles (a $(shell) body or a != value, outside recipes) that are not
- * provably read-only: one simple command of a program that writes no file,
- * with nothing make or the shell could turn into another command. */
+ * makefiles (those above, and an $(eval) of text a reference or $$(
+ * computes) that are not provably read-only: one simple command of a
+ * program that writes no file, with nothing make or the shell could turn
+ * into another command, while no line assigns SHELL, .SHELLFLAGS or PATH. */
 void fxm_parse_unproven(const struct fxm *m,
                         struct zcl_devloop_facts_plan_premise *p);
 /* A match-anything rule (%:) or .DEFAULT exists while an optional include

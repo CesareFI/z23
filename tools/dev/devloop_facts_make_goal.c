@@ -281,24 +281,79 @@ static const char *fxm_bang_value(const struct fxm_line *l)
     return eq != NULL && eq > at && eq[-1] == '!' ? eq + 1 : NULL;
 }
 
+enum { FXM_FN_OTHER, FXM_FN_SHELL, FXM_FN_FILE, FXM_FN_EVAL, FXM_FN_ANY };
+
+/* The function name at p (past "call" and its blanks when called):
+ * shell, file or eval, and where its arguments start. */
+static int fxm_fn_named(const char *p, bool called, const char **arg)
+{
+    static const struct {
+        const char *name;
+        int fn;
+    } fns[] = {{"shell", FXM_FN_SHELL}, {"file", FXM_FN_FILE}, {"eval", FXM_FN_EVAL}};
+    for (size_t k = 0; k < sizeof(fns) / sizeof(*fns); k++) {
+        size_t n = strlen(fns[k].name);
+        bool comma = called && strncmp(p, fns[k].name, n) == 0 && p[n] == ',';
+        if (!comma && !fxm_starts_word(p, fns[k].name))
+            continue;
+        for (p += n; fxm_space(*p); p++)
+            ;
+        if (called && *p != ',')
+            return FXM_FN_OTHER;
+        *arg = p + called;
+        return fns[k].fn;
+    }
+    return FXM_FN_OTHER;
+}
+
+/* The function a reference at d runs as make expands it: $(shell X),
+ * $(file X) or $(eval X), each also through $(call NAME,X), or any function
+ * a computed $(call $(F),X) names (FXM_FN_ANY). *arg is where X starts and
+ * *end the closing bracket (NULL: none). */
+static int fxm_fn_at(const char *d, const char **arg, const char **end)
+{
+    const char *p = d + 2;
+    int depth = 0;
+    if (d[1] != '(' && d[1] != '{')
+        return FXM_FN_OTHER;
+    *end = fxm_ref_end((char *)d);
+    if (!fxm_starts_word(p, "call"))
+        return fxm_fn_named(p, false, arg);
+    for (p += 4; fxm_space(*p); p++)
+        ;
+    if (*p != '$')
+        return fxm_fn_named(p, true, arg);
+    for (; *p != '\0' && !(*p == ',' && depth == 0); p++)
+        depth += (*p == '(' || *p == '{') - (*p == ')' || *p == '}');
+    *arg = *p == ',' ? p + 1 : p;
+    return FXM_FN_ANY;
+}
+
+/* The text of the call's argument: [arg, end), or to the end of the line
+ * when the call has no end. */
+static size_t fxm_arg_len(const char *arg, const char *end)
+{
+    return end != NULL ? (end > arg ? (size_t)(end - arg) : 0) : strlen(arg);
+}
+
 /* A call in s make runs as it expands it: a $(shell) whose command, as
- * written, writes a file, or a $(file) that is not a read. */
+ * written, writes a file, a $(file) that is not a read, or a function a
+ * computed $(call) names. */
 static bool fxm_writing_calls(const char *s)
 {
     for (const char *d = strchr(s, '$'); d != NULL; d = strchr(d + 1, '$')) {
-        const char *o = d + 1, *e, *a;
-        if (*o != '(' && *o != '{')
-            continue;
-        if (fxm_starts_word(o + 1, "file")) {
-            for (a = o + 5; fxm_space(*a); a++)
+        const char *arg = NULL, *e = NULL, *a;
+        int fn = fxm_fn_at(d, &arg, &e);
+        if (fn == FXM_FN_ANY)
+            return true;
+        if (fn == FXM_FN_FILE) {
+            for (a = arg; fxm_space(*a); a++)
                 ;
             if (*a != '<')
                 return true;
-        } else if (fxm_starts_word(o + 1, "shell")) {
-            if ((e = fxm_ref_end((char *)d)) == NULL)
-                return true;
-            if (e > o + 6 && fxm_redirects(o + 6, (size_t)(e - o - 6)))
-                return true;
+        } else if (fn == FXM_FN_SHELL &&
+                   (e == NULL || fxm_redirects(arg, fxm_arg_len(arg, e)))) {
+            return true;
         }
     }
     return false;
@@ -363,20 +418,20 @@ static bool fxm_taint(const struct fxm *m, struct fxc_strs *names)
     return true;
 }
 
-/* The commands of line l make runs as it reads it (each $(shell) body, a
- * != value) hold one of names; true too for a $(shell) with no end. */
+/* The commands of line l make runs as it reads it (each $(shell) body, the
+ * same through $(call), a computed $(call)'s arguments, a != value) hold
+ * one of names; true too for such a call with no end. */
 static bool fxm_line_runs(const struct fxm_line *l, const struct fxc_strs *names)
 {
     const char *v = fxm_bang_value(l);
     if (v != NULL && fxm_holds(v, strlen(v), names))
         return true;
     for (const char *d = strchr(l->raw, '$'); d != NULL; d = strchr(d + 1, '$')) {
-        const char *o = d + 1, *e;
-        if ((*o != '(' && *o != '{') || !fxm_starts_word(o + 1, "shell"))
+        const char *arg = NULL, *e = NULL;
+        int fn = fxm_fn_at(d, &arg, &e);
+        if (fn != FXM_FN_SHELL && fn != FXM_FN_ANY)
             continue;
-        if ((e = fxm_ref_end((char *)d)) == NULL)
-            return true;
-        if (e > o + 6 && fxm_holds(o + 6, (size_t)(e - o - 6), names))
+        if (e == NULL || fxm_holds(arg, fxm_arg_len(arg, e), names))
             return true;
     }
     return false;
@@ -446,12 +501,13 @@ static bool fxm_read_only(const char *s, size_t n)
     return false;
 }
 
-/* Note the command s[0..n) of line l when it is not provably read-only. */
+/* Note the command s[0..n) of line l when it is not provably read-only
+ * (never, with any). */
 static void fxm_unproven_add(const struct fxm *m, const struct fxm_line *l,
-                             const char *s, size_t n,
+                             const char *s, size_t n, bool any,
                              struct zcl_devloop_facts_plan_premise *p)
 {
-    if (fxm_read_only(s, n))
+    if (!any && fxm_read_only(s, n))
         return;
     if (p->ncommands++ > 0)
         return;
@@ -462,24 +518,51 @@ static void fxm_unproven_add(const struct fxm *m, const struct fxm_line *l,
                    l->file < m->files.n ? m->files.v[l->file] : "?", l->at);
 }
 
+/* A line assigns SHELL, .SHELLFLAGS or PATH (or a name it computes, or an
+ * $(eval) may): no command make runs is then provably read-only. */
+static bool fxm_shell_set(const struct fxm *m)
+{
+    static const char *const names[] = {"SHELL", ".SHELLFLAGS", "PATH"};
+    for (size_t k = 0; k < m->nlines; k++) {
+        const struct fxm_line *l = &m->lines[k];
+        if (!fxm_parse_line(l))
+            continue;
+        if (l->ctx == FXM_DEF && l->name[0] == '\0')
+            return true;
+        for (size_t j = 0; j < sizeof(names) / sizeof(*names); j++)
+            if ((l->ctx == FXM_DEF && strcmp(l->name, names[j]) == 0) ||
+                (strstr(l->raw, "eval") != NULL && strstr(l->raw, names[j]) != NULL))
+                return true;
+    }
+    return false;
+}
+
+/* Note each command of line l make runs as it reads it that is not
+ * provably read-only: a $(shell) body (or one through $(call)), a !=
+ * value, a computed $(call)'s arguments, an $(eval) of text a reference
+ * or $$( computes. */
+static void fxm_line_unproven(const struct fxm *m, const struct fxm_line *l,
+                              bool any, struct zcl_devloop_facts_plan_premise *p)
+{
+    const char *v = fxm_bang_value(l);
+    if (v != NULL)
+        fxm_unproven_add(m, l, v, strlen(v), any, p);
+    for (const char *d = strchr(l->raw, '$'); d != NULL; d = strchr(d + 1, '$')) {
+        const char *arg = NULL, *e = NULL;
+        int fn = fxm_fn_at(d, &arg, &e);
+        size_t n = arg != NULL ? fxm_arg_len(arg, e) : 0;
+        if (fn == FXM_FN_EVAL && memchr(arg, '$', n) != NULL)
+            fxm_unproven_add(m, l, arg, n, true, p);
+        else if (fn == FXM_FN_SHELL || fn == FXM_FN_ANY)
+            fxm_unproven_add(m, l, arg, n, any || fn == FXM_FN_ANY, p);
+    }
+}
+
 void fxm_parse_unproven(const struct fxm *m,
                         struct zcl_devloop_facts_plan_premise *p)
 {
-    for (size_t k = 0; k < m->nlines; k++) {
-        const struct fxm_line *l = &m->lines[k];
-        const char *v = fxm_bang_value(l);
-        if (!fxm_parse_line(l))
-            continue;
-        if (v != NULL)
-            fxm_unproven_add(m, l, v, strlen(v), p);
-        for (const char *d = strchr(l->raw, '$'); d != NULL; d = strchr(d + 1, '$')) {
-            const char *o = d + 1, *e;
-            if ((*o != '(' && *o != '{') || !fxm_starts_word(o + 1, "shell"))
-                continue;
-            e = fxm_ref_end((char *)d);
-            if (e == NULL)
-                e = o + strlen(o);
-            fxm_unproven_add(m, l, o + 6, e > o + 6 ? (size_t)(e - o - 6) : 0, p);
-        }
-    }
+    bool any = fxm_shell_set(m);
+    for (size_t k = 0; k < m->nlines; k++)
+        if (fxm_parse_line(&m->lines[k]))
+            fxm_line_unproven(m, &m->lines[k], any, p);
 }
