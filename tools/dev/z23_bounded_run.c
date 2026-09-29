@@ -291,6 +291,27 @@ static void reap_group(pid_t leader)
     signal_group(leader, SIGKILL);
 }
 
+/* The claim under test is that a descendant does not SURVIVE the bounded
+ * run.  A loaded host may not schedule the tree child within the 100 ms
+ * SIGTERM grace; the descendant then dies by group SIGKILL and is reaped by
+ * the system reaper on its own schedule.  Poll for dead-and-reaped (kill
+ * reports ESRCH) with a bounded deadline: a descendant that genuinely
+ * escaped the process group (setsid/daemonize) stays alive and still fails
+ * here. */
+static bool bounded_run_wait_reaped(pid_t pid, uint64_t timeout_ms)
+{
+    uint64_t deadline = 0;
+    if (!monotonic_ms(&deadline)) return false;
+    deadline += timeout_ms;
+    for (;;) {
+        if (kill(pid, 0) != 0 && errno == ESRCH) return true;
+        uint64_t now = 0;
+        if (!monotonic_ms(&now) || now >= deadline) return false;
+        struct timespec tick = {.tv_nsec = 1000000L};
+        (void)nanosleep(&tick, NULL);
+    }
+}
+
 static int child_status(int status)
 {
     if (WIFEXITED(status)) return WEXITSTATUS(status);
@@ -423,7 +444,7 @@ static int selftest(const char *self)
         fprintf(stderr, "z23_bounded_run: selftest tree did not record a child pid\n");
         return 1;
     }
-    if (kill((pid_t)descendant, 0) == 0 || errno != ESRCH) {
+    if (!bounded_run_wait_reaped((pid_t)descendant, 2000u)) {
         fprintf(stderr, "z23_bounded_run: selftest tree left child %ld alive\n",
                 descendant);
         return 1;
