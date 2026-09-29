@@ -28,6 +28,9 @@
  *      <!-- LINT-GATES-BEGIN/END --> block of docs/DEFENSIVE_CODING.md.
  *   G. every check-* token in that doc block belongs to LINT_GATES or
  *      LINT_FAST_GATES (no doc-only phantom gate).
+ *   H. no gate_command() case label appears twice (bash case is
+ *      first-match-wins; a repeat is a dead shadowing row). Read via the
+ *      driver's --list-raw (--list dedups by design).
  *
  * Adding a lint gate is a THREE-file operation: Makefile LINT_GATES,
  * run_lint.sh gate_command(), and the DEFENSIVE_CODING.md doc block. F/G
@@ -535,6 +538,66 @@ static int lgw_check_e(const char *root, char *out, size_t cap, size_t *used, in
                       "  is what keeps each family file reviewable in one sitting.\n");
 }
 
+/* ── check H: no gate_command() case label may appear twice ───────────────
+ * bash case is first-match-wins, so a duplicated label is a DEAD row
+ * shadowing the live one — the 2026-09-29 drift that silently dropped
+ * --selftest from check-no-new-repair-rung in driver runs (the Make recipe
+ * kept it). --list dedups (sort -u) by design, so this check reads the
+ * driver's --list-raw (same anchored self-grep, no dedup) and fails on any
+ * repeated label, naming it. */
+static int lgw_cmp_label(const void *a, const void *b)
+{
+    return strcmp((const char *)a, (const char *)b);
+}
+
+static int lgw_check_dup(const char *driver, char *out, size_t cap,
+                         size_t *used, int *fail)
+{
+    char q[8192], cmd[8192], buf[LGW_BUF];
+    if (sh_single_quote(driver, q, sizeof q)
+        || ovf(snprintf(cmd, sizeof cmd, "%s --list-raw 2>/dev/null", q),
+               sizeof cmd))
+        return 2;
+    int code = 0;
+    int rc = capture_cmd(cmd, buf, sizeof buf, &code);
+    if (rc)
+        return rc;
+    static char labels[SR_ALLOW][SR_NAME];
+    int n = 0;
+    char *save = NULL;
+    for (char *ln = strtok_r(buf, "\n", &save); ln;
+         ln = strtok_r(NULL, "\n", &save)) {
+        if (strncmp(ln, "check-", 6) != 0)
+            continue;
+        if (n >= SR_ALLOW || strlen(ln) >= SR_NAME)
+            return die("z23-lint: gate label overflow\n", "");
+        memcpy(labels[n], ln, strlen(ln) + 1);
+        n++;
+    }
+    if (code != 0 || n == 0) {
+        *fail = 1;
+        return lgw_appendf_pub(out, cap, used,
+                           "FAIL: '%s --list-raw' produced no labels (rc=%d).\n"
+                           "      The duplicate-label check cannot prove the case table is\n"
+                           "      shadow-free; fix the driver's --list-raw probe.\n",
+                           driver, code);
+    }
+    qsort(labels, (size_t)n, SR_NAME, lgw_cmp_label);
+    for (int i = 1; i < n; i++) {
+        if (strcmp(labels[i - 1], labels[i]) != 0)
+            continue;
+        *fail = 1;
+        if (lgw_appendf_pub(out, cap, used,
+                        "FAIL: gate_command() case label '%s' appears twice — bash case\n"
+                        "      is first-match-wins, so one row is dead shadowing. Delete the\n"
+                        "      stale row.\n", labels[i]))
+            return 2;
+        while (i + 1 < n && strcmp(labels[i], labels[i + 1]) == 0)
+            i++;
+    }
+    return 0;
+}
+
 /* ── orchestration ───────────────────────────────────────────────────────── */
 /* Existence of the three source files, plus 1 if any is missing (message
  * already printed to `out`). */
@@ -626,7 +689,8 @@ static int lgw_run_checks(const char *root, const char *makefile, const char *dr
     if (lgw_check_d(root, driver, table, faults, cap, used, fail)) return 2;
     if (lgw_check_e(root, faults, cap, used, fail)) return 2;
     if (lgw_check_f(listed, docset, doc, faults, cap, used, fail)) return 2;
-    return lgw_check_g(listed, docset, doc, faults, cap, used, fail);
+    if (lgw_check_g(listed, docset, doc, faults, cap, used, fail)) return 2;
+    return lgw_check_dup(driver, faults, cap, used, fail);
 }
 
 int lgw_check_root(const char *root, FILE *out)

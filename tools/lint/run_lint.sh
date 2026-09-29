@@ -246,7 +246,6 @@ gate_command() {
         check-live-datadir-isolation)      echo './tools/lint/check_live_datadir_isolation.sh --selftest && ./tools/lint/check_live_datadir_isolation.sh' ;;
         check-no-operator-paths)           echo './tools/lint/check_no_operator_paths.sh --selftest && ./tools/lint/check_no_operator_paths.sh' ;;
         check-no-unattended-publish)       echo './tools/lint/check_no_unattended_publish.sh --selftest && ./tools/lint/check_no_unattended_publish.sh' ;;
-        check-no-wallclock-assertion)      echo './tools/lint/check_no_wallclock_assertion.sh --selftest && ./tools/lint/check_no_wallclock_assertion.sh' ;;
         check-tor-dial-prewarm)            echo './tools/scripts/check_tor_dial_prewarm.sh' ;;
         check-fleet-source-status)         echo './tools/scripts/check_fleet_source_status.sh' ;;
         check-installed-acceptance-tools)  echo './tools/lint/check_installed_acceptance_tools.sh' ;;
@@ -298,8 +297,6 @@ gate_command() {
         check-no-silent-ready)             echo './tools/scripts/check_no_silent_ready.sh' ;;
         check-honest-witness)              echo 'ZCL_LINT_MODE=FAIL ./tools/lint/check_honest_witness.sh' ;;
         check-consensus-parity)            echo './tools/scripts/check_consensus_parity.sh --selftest && ./tools/scripts/check_consensus_parity.sh' ;;
-        check-no-new-repair-rung)          echo './tools/scripts/check_no_new_repair_rung.sh' ;;
-        check-consensus-parity)            echo './tools/scripts/check_consensus_parity.sh' ;;
         check-no-new-repair-rung)          echo './tools/scripts/check_no_new_repair_rung.sh --selftest && ./tools/scripts/check_no_new_repair_rung.sh' ;;
         check-no-bare-tmp-fixture)         echo './tools/lint/check_no_bare_tmp_fixture.sh --selftest && ./tools/lint/check_no_bare_tmp_fixture.sh' ;;
         check-sqlite-cursor-lifetime)      echo './tools/scripts/check_sqlite_cursor_lifetime.sh --selftest && ./tools/scripts/check_sqlite_cursor_lifetime.sh' ;;
@@ -335,7 +332,6 @@ gate_command() {
         check-windows-cross-syntax)        echo './tools/lint/check_windows_cross_syntax.sh' ;;
         check-platform-header-guards)      echo './tools/lint/check_platform_header_guards.sh --self-test && ./tools/lint/check_platform_header_guards.sh' ;;
         check-macos-acceptance)            echo './tools/lint/check_macos_acceptance.sh --self-test && ./tools/lint/check_macos_acceptance.sh' ;;
-        check-app-bundle-reproducible)     echo './tools/lint/check_app_bundle_reproducible.sh --selftest && ./tools/lint/check_app_bundle_reproducible.sh' ;;
         check-result-discard)              echo 'ZCL_LINT_MODE=FAIL ./tools/lint/check_result_discard.sh' ;;
         *) return 1 ;;
     esac
@@ -490,6 +486,17 @@ main() {
                 # paren would have invented one.
                 grep -oE '^[[:space:]]+check-[a-z0-9-]+\)[[:space:]]+echo[[:space:]]' "$0" \
                     | grep -oE 'check-[a-z0-9-]+' | sort -u
+                exit 0 ;;
+            --list-raw)
+                # --list WITHOUT the sort -u dedup, in source order. The one
+                # consumer is check-lint-gate-wiring's duplicate-label check:
+                # bash case is first-match-wins, so a repeated label is a
+                # dead row shadowing the live one (the 2026-09-29 drift that
+                # silently dropped --selftest from check-no-new-repair-rung
+                # in driver runs). --list itself must keep deduping — it
+                # feeds set-parity checks.
+                grep -oE '^[[:space:]]+check-[a-z0-9-]+\)[[:space:]]+echo[[:space:]]' "$0" \
+                    | grep -oE 'check-[a-z0-9-]+'
                 exit 0 ;;
             --print-command)
                 # The one supported reader of gate_command() from outside this
