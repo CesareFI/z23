@@ -136,12 +136,61 @@ F("tree_checker_sha3")   F(32)
 
 These twelve roots are key v2's roots, in the same order, and each file
 carries all twelve. `source_content` was added so that pins equal the key.
-The launcher preflight requires the installed source image to report both
-`tree_sha3` (equal to `source_image`) and `content_sha3` (equal to
-`source_content`).
+
+Preflight checks the installed source image twice:
+
+- The tree checker's `tree_sha3` must equal `source_image`.
+- The source content root v2 (section 3a) of the fixed chain in that image
+  must equal `source_content`. A mismatch refuses
+  `source_content_mismatch`.
+
+The tree checker's `content_sha3` is not a pin. It covers the whole tree
+with its modes, which a proof generation cannot reproduce.
 
 A missing `tree_checker` root refuses `contract_field_missing`. A reordered
 root refuses `contract_field_order`. A zero root refuses `contract_hash_zero`.
+
+## 3a. Source content root v2
+
+`zcl_fr_source_content_v2` (`tools/verify/fixed_result_contract.c`) is the
+only definition of the root:
+
+```text
+SHA3-256( F("z23verify.fixed_result.source_content.v2")
+          then, for each file:  F("path") F(relative path) F("bytes") F(file bytes) )
+```
+
+Rules for the paths:
+
+- Paths are strictly ascending by `strcmp`, so they are sorted and unique.
+  Otherwise the root refuses `contract_field_order`.
+- Paths are relative, with no empty, `.` or `..` component. Otherwise the
+  root refuses `contract_field_malformed`.
+- Owner, mode and file type are not hashed.
+
+`zcl_fr_source_content_at` (`tools/verify/fixed_result_source.c`) is the
+only reader. It opens each path beneath one root, one component at a time
+with `O_NOFOLLOW`, and requires a regular file. Each file must stay unchanged
+while it is read and fit within 4 MiB, and all files together within 64 MiB.
+Its refusals are `source_content_unreadable`, `_unsafe`, `_limit`,
+`_changed` and `_out_of_memory`.
+
+Two callers use it:
+
+- **Launcher.** It measures the fixed chain `zcl_fr_source_chain`:
+  - `platform/modules/base/include/base/format_attribute.h`
+  - `platform/modules/base/include/base/result.h`
+  - `platform/modules/base/src/result.c`
+
+  `z23-fixed-result-launcher source-content <dir>` prints the pin value for
+  `pins-encode`. `preflight` measures `SOURCE_IMAGE` the same way.
+- **Receiver.** It measures the files its own `-E` read in the proof
+  generation.
+
+The two roots are equal exactly when the include chain is still those three
+files. `test_verify_receiver` proves this for the real chain, and shows the
+root does not change with mode but does change with any byte.
+
 
 ## 4. Launch request v2 (launcher → worker, one SEQPACKET)
 

@@ -429,17 +429,26 @@ HIT for bytes the driver did not admit.
 
 ### Source content root v2
 
-The receiver's source content root is SHA3-256 of
-`F("z23verify.fixed_result.source_content.v2")`, then
-`F("path") F(rel) F("bytes") F(content)` for each file the receiver's own
-`-E` read. Files come from the depfile, in sorted order, and are opened
-beneath the generation with no link followed.
+The receiver and the launcher share one definition and one reader:
 
-Owner and mode are excluded. A 0600 proof generation and a root-owned 0444
-image of the same bytes therefore agree. The launcher preflight's
-`content_sha3` covers the whole tree with its modes, which a proof
-generation cannot reproduce. That preflight must be changed to compute the
-same v2 root before production pins can match. This is open.
+- `zcl_fr_source_content_v2` in `tools/verify/fixed_result_contract.c`
+  defines the root.
+- `zcl_fr_source_content_at` in `tools/verify/fixed_result_source.c` reads
+  the files.
+
+The full definition is in `docs/work/verifier-contract-v2.md`, section 3a.
+The receiver hashes the files its own `-E` read. The launcher hashes the
+fixed chain in the installed source image:
+
+- `result.c`
+- `result.h`
+- `format_attribute.h`
+
+`test_verify_receiver` proves the receiver's root equals the launcher's pin
+for the real chain.
+
+Owner and mode are excluded, so a 0600 proof generation and a root-owned
+0444 image of the same bytes agree.
 
 ### phases.txt rows
 
@@ -463,7 +472,7 @@ Cold tokens:
   `receiver_generation_unreadable`,
   `receiver_work_unsafe`, `receiver_work_inside_generation`
 - inputs: `receiver_depfile_unparsed`, `receiver_inputs_missing`,
-  `receiver_input_path_unsafe`, `receiver_input_unreadable`, `receiver_file_*`
+  `receiver_input_path_unsafe`, `receiver_file_*`, `source_content_{unreadable,unsafe,limit,changed,out_of_memory}`
 - `receiver_source_content_mismatch`, `receiver_depfile_mismatch`
 - every store and attest refusal that is not blocking, for example:
   `store_path_unsafe`, `store_owner_same_uid`, `attest_no_observation`,
@@ -487,7 +496,7 @@ The following are all absent today, so production reports
 `cold(no_verifier_key)`:
 
 - `/etc/z23verify/verifier.pub`
-- `fixed_result.pins`, with `source_content` computed as v2 above
+- `fixed_result.pins`, whose first root is what `z23-fixed-result-launcher source-content <source image>` prints
 - `fixed_result_fast.args`
 - the store and its policy
 - the installed images and accounts
