@@ -25,7 +25,14 @@
 #include "validation/main_state.h"
 #include "util/safe_alloc.h"
 #include "util/hw_profile.h"
+#include "util/thread_registry.h"
 #include "util/wal_checkpoint_stats.h"
+#include "chain/chain.h"
+#include "core/serialize.h"
+#include "models/tx_index.h"
+#include "primitives/block.h"
+#include "primitives/transaction.h"
+#include <fcntl.h>
 #include <pthread.h>
 #include <sys/stat.h>
 #if !defined(_WIN32)
@@ -3414,6 +3421,138 @@ static int check_sqlite_projection_writer_reservation(void)
     return ok ? 0 : 1;
 }
 
+/* check_sqlite_54 fixture: one real serialized block in blocks/blk00000.dat
+ * plus one blocks-table row that names it (hash-bound), so the tx-index
+ * job's row loop has exactly one processable row. */
+static bool check_sqlite_54_tx_index_fixture(const char *dir_path,
+                                             char *db_path,
+                                             size_t db_path_size)
+{
+    if (!dir_path)
+        return false;
+    char blocks_dir[1024], blk_path[1088];
+    snprintf(blocks_dir, sizeof(blocks_dir), "%s/blocks", dir_path);
+    mkdir(blocks_dir, 0755);
+    snprintf(blk_path, sizeof(blk_path), "%s/blk00000.dat", blocks_dir);
+    snprintf(db_path, db_path_size, "%s/node.db", dir_path);
+
+    struct block blk;
+    block_init(&blk);
+    blk.header.nVersion = 4;
+    memset(blk.header.hashPrevBlock.data, 0x11, 32);
+    memset(blk.header.hashMerkleRoot.data, 0x22, 32);
+    blk.header.nTime = 1478403829;
+    blk.header.nBits = 0x2007ffff;
+    blk.header.nSolutionSize = 1344;
+    memset(blk.header.nSolution, 0, sizeof(blk.header.nSolution));
+    blk.num_vtx = 1;
+    blk.vtx = zcl_calloc(1, sizeof(struct transaction), "txabort vtx");
+    transaction_init(&blk.vtx[0]);
+
+    struct byte_stream s;
+    stream_init(&s, 4096);
+    bool ok = block_serialize(&blk, &s);
+    struct uint256 blk_hash;
+    block_get_hash(&blk, &blk_hash);
+    block_free(&blk);
+
+    static const uint8_t magic[4] = {0x24, 0xe9, 0x27, 0x64};
+    uint8_t sz[4] = {(uint8_t)s.size, (uint8_t)(s.size >> 8),
+                     (uint8_t)(s.size >> 16), (uint8_t)(s.size >> 24)};
+    int fd = open(blk_path, O_CREAT | O_WRONLY | O_TRUNC, 0600);
+    ok = ok && fd >= 0 && write(fd, magic, 4) == 4 &&
+         write(fd, sz, 4) == 4 &&
+         write(fd, s.data, s.size) == (ssize_t)s.size;
+    if (fd >= 0)
+        close(fd);
+    stream_free(&s);
+
+    struct node_db ndb;
+    memset(&ndb, 0, sizeof(ndb));
+    ok = ok && node_db_open(&ndb, db_path);
+    if (ok) {
+        struct db_block row;
+        memset(&row, 0, sizeof(row));
+        memcpy(row.hash, blk_hash.data, 32);
+        memcpy(row.prev_hash, blk.header.hashPrevBlock.data, 32);
+        memcpy(row.merkle_root, blk.header.hashMerkleRoot.data, 32);
+        row.height = 100;
+        row.time = 1478403829;
+        row.bits = 0x2007ffff;
+        row.status = BLOCK_VALID_TRANSACTIONS | BLOCK_HAVE_DATA;
+        row.solution = blk.header.nSolution;   /* schema: NOT NULL */
+        row.solution_len = sizeof(blk.header.nSolution);
+        row.file_num = 0;
+        row.data_pos = 0;
+        row.num_tx = 1;
+        ok = db_block_save(&ndb, &row);
+        node_db_close(&ndb);
+    }
+    return ok;
+}
+
+static bool check_sqlite_54_tx_index_run(const char *dir_path,
+                                         int *result_out)
+{
+    struct snapshot_tx_index_job job;
+    snapshot_tx_index_job_init(&job);
+    bool ok = snapshot_tx_index_job_start(&job, dir_path);
+    if (ok)
+        ok = snapshot_tx_index_job_join(&job, result_out);
+    return ok;
+}
+
+static int check_sqlite_54_tx_index_shutdown_abort(void)
+{
+    printf("SQLite snapshot tx-index aborts on shutdown, completes clean... ");
+    char dir[256];
+    test_make_tmpdir(dir, sizeof(dir), "sqlite", "tx_index_abort");
+    char db_path[512];
+    bool ok = check_sqlite_54_tx_index_fixture(dir, db_path,
+                                               sizeof(db_path));
+
+    /* Shutdown requested before the build: the row-loop poll must abort
+     * before indexing anything — the bulk transaction rolls back and the
+     * completion marker stays unset. */
+    thread_registry_reset_for_test();
+    thread_registry_request_shutdown();
+    int result = -1;
+    ok = ok && check_sqlite_54_tx_index_run(dir, &result);
+    thread_registry_reset_for_test();
+    ok = ok && result != 0;
+
+    struct node_db ndb;
+    memset(&ndb, 0, sizeof(ndb));
+    ok = ok && node_db_open(&ndb, db_path);
+    if (ok) {
+        int64_t complete = 0;
+        bool have_marker = node_db_state_get_int(&ndb, "tx_index_complete",
+                                                 &complete);
+        ok = !(have_marker && complete >= 3) && db_tx_count(&ndb) == 0;
+        node_db_close(&ndb);
+    }
+
+    /* Control: flag clear, the same fixture indexes its one transaction and
+     * stamps the v3 completion marker — the abort above was the registry
+     * flag, not a broken fixture. */
+    result = -1;
+    ok = ok && check_sqlite_54_tx_index_run(dir, &result);
+    memset(&ndb, 0, sizeof(ndb));
+    ok = ok && node_db_open(&ndb, db_path);
+    if (ok) {
+        int64_t complete = 0;
+        ok = result == 0 &&
+             node_db_state_get_int(&ndb, "tx_index_complete", &complete) &&
+             complete >= 3 && db_tx_count(&ndb) == 1;
+        node_db_close(&ndb);
+    }
+
+    test_rm_rf_recursive(dir);
+    if (ok) { printf("OK\n"); return 0; }
+    printf("FAIL\n");
+    return 1;
+}
+
 int test_sqlite(void) {
     int failures = 0;
 
@@ -3660,6 +3799,7 @@ int test_sqlite(void) {
      * refused with "database is locked" while reads carried on normally. */
     failures += check_sqlite_53_cached_readers_release_the_snap();
     failures += check_sqlite_projection_writer_reservation();
+    failures += check_sqlite_54_tx_index_shutdown_abort();
 
     return failures;
 }

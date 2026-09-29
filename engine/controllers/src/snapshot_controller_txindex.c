@@ -228,6 +228,38 @@ static bool snapshot_tx_index_save_block_txs(struct node_db *ndb,
     return true;
 }
 
+/* Process one magic-located block in the raw fallback walk: deserialize,
+ * take the BIP34 height, save its txs. Undecodable or height-less blocks
+ * are skip-counted and the walk continues; false is only a save failure
+ * (callee logs), which aborts the build. */
+static bool snapshot_tx_index_raw_save_one(struct node_db *ndb,
+                                           const uint8_t *file_data,
+                                           uint32_t block_size,
+                                           int file_num, size_t pos,
+                                           int *indexed, int *skipped,
+                                           int64_t t_start, bool *tx_open)
+{
+    struct block blk;
+    struct uint256 block_hash;
+    if (!snapshot_deserialize_index_block(file_data + pos + 8,
+                                          block_size, -1,
+                                          &blk, &block_hash)) {
+        (*skipped)++;
+        return true;
+    }
+    int height = snapshot_extract_bip34_height_from_block(&blk);
+    if (height < 0) {
+        (*skipped)++;
+        block_free(&blk);
+        return true;
+    }
+    bool saved = snapshot_tx_index_save_block_txs(
+        ndb, &blk, &block_hash, height, file_num, (int)(pos + 8),
+        indexed, t_start, tx_open);
+    block_free(&blk);
+    return saved;
+}
+
 static bool snapshot_tx_index_build_from_block_files(struct node_db *ndb,
                                                      const char *datadir,
                                                      int *indexed,
@@ -240,6 +272,17 @@ static bool snapshot_tx_index_build_from_block_files(struct node_db *ndb,
 
     int files_seen = 0;
     for (int file_num = 0; file_num < 100000; file_num++) {
+        /* Shutdown poll (per blk file): the raw walk below scans whole
+         * block files byte-by-byte; without a stop check a SIGTERM during
+         * the fallback held the zcl_snap_txidx thread past the registry
+         * shutdown join. Returning false marks the build incomplete — the
+         * caller rolls back and leaves the completion marker unset, so the
+         * next boot retries. A stop abort is not an index failure. */
+        if (thread_registry_shutdown_requested()) {
+            LOG_INFO("snapshot",
+                     "tx_index: raw fallback aborted: shutdown requested");
+            return false;
+        }
         char path[512];
         snprintf(path, sizeof(path), "%s/blocks/blk%05d.dat",
                  datadir, file_num);
@@ -279,27 +322,10 @@ static bool snapshot_tx_index_build_from_block_files(struct node_db *ndb,
                 continue;
             }
 
-            struct block blk;
-            struct uint256 block_hash;
-            if (!snapshot_deserialize_index_block(file_data + pos + 8,
-                                                  block_size, -1,
-                                                  &blk, &block_hash)) {
-                (*skipped)++;
-                pos += 8 + block_size;
-                continue;
-            }
-            int height = snapshot_extract_bip34_height_from_block(&blk);
-            if (height < 0) {
-                (*skipped)++;
-                block_free(&blk);
-                pos += 8 + block_size;
-                continue;
-            }
-            bool saved = snapshot_tx_index_save_block_txs(
-                ndb, &blk, &block_hash, height, file_num, (int)(pos + 8),
-                indexed, t_start, tx_open);
-            block_free(&blk);
-            if (!saved) {
+            if (!snapshot_tx_index_raw_save_one(ndb, file_data, block_size,
+                                                file_num, pos, indexed,
+                                                skipped, t_start, tx_open)) {
+                /* raw-return-ok:callee-logged */
                 platform_read_mapping_close(&mapping);
                 close(fd);
                 return false;
@@ -311,6 +337,52 @@ static bool snapshot_tx_index_build_from_block_files(struct node_db *ndb,
     }
 
     return files_seen > 0;
+}
+
+/* (Re)map blkNNNNN.dat into the read cache when the row's file changes.
+ * The descriptor stays open for the mapping's full lifetime. Returns false
+ * (logged) on any open/stat/map failure with the cache reset to empty; the
+ * caller aborts the build. */
+static bool snapshot_tx_index_refresh_mapping(const char *datadir,
+                                              int file_num,
+                                              int *cached_file,
+                                              int *cached_fd,
+                                              const uint8_t **cached_data,
+                                              size_t *cached_size,
+                                              struct platform_read_mapping *cached_mapping)
+{
+    platform_read_mapping_close(cached_mapping);
+    if (*cached_fd >= 0)
+        close(*cached_fd);
+    *cached_fd = -1;
+    *cached_data = NULL;
+    *cached_size = 0;
+    *cached_file = -1;
+    char path[512];
+    snprintf(path, sizeof(path), "%s/blocks/blk%05d.dat", datadir, file_num);
+    *cached_fd = open(path, O_RDONLY);
+    if (*cached_fd < 0) {
+        LOG_WARN("tx_index", "tx_index: failed to open %s", path);
+        return false;
+    }
+    struct stat st;
+    if (fstat(*cached_fd, &st) != 0) {
+        LOG_WARN("tx_index", "tx_index: failed to stat %s", path);
+        close(*cached_fd);
+        *cached_fd = -1;
+        return false;
+    }
+    if (!snapshot_stat_mapping_size(&st, cached_size) ||
+        !platform_read_mapping_open(cached_mapping, *cached_fd,
+                                    *cached_size)) {
+        LOG_WARN("tx_index", "tx_index: failed to map %s", path);
+        close(*cached_fd);
+        *cached_fd = -1;
+        return false;
+    }
+    *cached_data = cached_mapping->data;
+    *cached_file = file_num;
+    return true;
 }
 
 static void *build_tx_index_thread(void *arg)
@@ -401,9 +473,24 @@ static void *build_tx_index_thread(void *arg)
     tx_open = true;
     ok = true;
 
+    /* Shutdown poll: the row loop walks every block-index row and maps each
+     * referenced blk file — minutes on a full datadir with no other stop
+     * check, so a SIGTERM mid-build held the zcl_snap_txidx thread past the
+     * registry shutdown join. Poll every 4096 rows (first row included): on
+     * abort, log and break to the shared !ok path — the open bulk
+     * transaction rolls back and the completion marker stays unset, so the
+     * next boot retries. A stop abort is not an index failure. */
+    int rows_seen = 0;
     for (rc = AR_STEP_ROW_READONLY(query);
          rc == SQLITE_ROW;
          rc = AR_STEP_ROW_READONLY(query)) {
+        if ((rows_seen++ & 4095) == 0 && thread_registry_shutdown_requested()) {
+            LOG_INFO("snapshot",
+                     "tx_index: aborted: shutdown requested (%d indexed)",
+                     indexed);
+            ok = false;
+            break;
+        }
         const uint8_t *block_hash = sqlite3_column_blob(query, 0);
         int height = sqlite3_column_int(query, 1);
         int file_num = sqlite3_column_int(query, 2);
@@ -413,43 +500,14 @@ static void *build_tx_index_thread(void *arg)
         if (!block_hash || file_num < 0 || data_pos < 0) continue;
 
         /* Keep the descriptor alive for the mapping's full lifetime. */
-        if (file_num != cached_file) {
-            platform_read_mapping_close(&cached_mapping);
-            if (cached_fd >= 0)
-                close(cached_fd);
-            cached_fd = -1;
-            cached_data = NULL;
-            cached_size = 0;
-            cached_file = -1;
-            char path[512];
-            snprintf(path, sizeof(path), "%s/blocks/blk%05d.dat",
-                     datadir, file_num);
-            cached_fd = open(path, O_RDONLY);
-            if (cached_fd < 0) {
-                LOG_WARN("tx_index", "tx_index: failed to open %s", path);
-                ok = false;
-                break;
-            }
-            struct stat st;
-            if (fstat(cached_fd, &st) != 0) {
-                LOG_WARN("tx_index", "tx_index: failed to stat %s", path);
-                close(cached_fd);
-                cached_fd = -1;
-                ok = false;
-                break;
-            }
-            if (!snapshot_stat_mapping_size(&st, &cached_size) ||
-                !platform_read_mapping_open(&cached_mapping, cached_fd,
-                                            cached_size)) {
-                LOG_WARN("tx_index", "tx_index: failed to map %s", path);
-                cached_data = NULL;
-                close(cached_fd);
-                cached_fd = -1;
-                ok = false;
-                break;
-            }
-            cached_data = cached_mapping.data;
-            cached_file = file_num;
+        if (file_num != cached_file &&
+            !snapshot_tx_index_refresh_mapping(datadir, file_num,
+                                               &cached_file, &cached_fd,
+                                               &cached_data, &cached_size,
+                                               &cached_mapping)) {
+            /* raw-return-ok:callee-logged */
+            ok = false;
+            break;
         }
 
         if (!cached_data || (size_t)data_pos >= cached_size) {
