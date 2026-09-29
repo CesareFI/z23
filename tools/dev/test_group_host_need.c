@@ -181,6 +181,7 @@ bool zcl_test_group_host_need(const char *group,
     return true;
 }
 
+#if defined(__linux__) && defined(__x86_64__)
 /* A compiler probe is a host fact, not a passed test. Use only the root-owned
  * system compiler route whose libclang runtime the proof already binds.
  * stderr is discarded; the named host-gated row carries the refusal. */
@@ -235,6 +236,8 @@ static bool c23_compiler_accepts(const char *path)
     return false;
 #endif
 }
+
+#endif /* Linux x86_64 compiler probes */
 
 static bool c23_fuzz_toolchain_ready(void)
 {
