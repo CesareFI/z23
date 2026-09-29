@@ -5,6 +5,7 @@
 
 #include "base/result.h"
 #include "platform/toolchain.h"
+#include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
 
@@ -28,5 +29,12 @@ struct zcl_result bfat_cached_tool_hashes(
     const struct platform_toolchain_descriptor *desc,
     uint8_t driver_sha3[32], uint8_t backend_sha3[32],
     uint8_t assembler_sha3[32]);
+
+/* Reassemble a plain compile's chunked artifact, verifying its manifest root,
+ * bound action root, and every chunk. The proof shadow reuses it to fetch
+ * the bytes a ticket names. Caller frees *out. */
+struct zcl_result bfat_artifact_read(
+    const char *workspace, const uint8_t manifest_root[32],
+    const uint8_t action_root[32], uint8_t **out, size_t *out_len);
 
 #endif

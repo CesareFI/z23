@@ -5,7 +5,7 @@
 
 #include "base/hex.h"
 #include "services/build_fabric_attach.h"
-#include "services/build_fabric_proof_recovery.h"
+#include "services/build_fabric_proof_context.h"
 #include "services/build_fabric_service.h"
 #include "services/build_fabric_worker.h"
 #include "services/subordinate_work_admission.h"
@@ -59,6 +59,10 @@ static uint8_t g_local_secret[32];
 static uint8_t g_local_pubkey[32];
 static char g_worker_workspace[4096];
 static char g_worker_datadir[4096];
+/* The worker thread opens this once at start and every step receives it as an
+ * explicit argument; only the diagnostics dump reads it here, for its stats.
+ * It lives for the process, like the worker key it holds a copy of. */
+static _Atomic(struct build_fabric_proof_context *) g_proof;
 static pthread_t g_worker_thread;
 static _Atomic bool g_worker_started;
 /* An admission refusal is a silent 250ms spin: without this the worker can
@@ -109,8 +113,9 @@ static struct zcl_result bf_runtime_try_attach_queued(
     struct node_db *ndb, const char *workspace,
     const uint8_t signer_secret[32], const uint8_t signer_pubkey[32],
     struct db_build_receipt *receipt,
-    struct build_fabric_attach_report *report)
+    struct build_fabric_attach_report *report, bool *decided)
 {
+    *decided = false;
     if (!ndb || !workspace || !signer_secret || !signer_pubkey ||
         !receipt || !report)
         return ZCL_ERR(-1, "queued attachment requires workspace and worker");
@@ -130,8 +135,47 @@ static struct zcl_result bf_runtime_try_attach_queued(
     }
     if (strcmp(job.profile, VCS_BUILD_PROFILE_PHYSICAL_REPRODUCTION_V1) == 0)
         return ZCL_OK;
+    *decided = true;
     return build_fabric_attach(ndb, workspace, NULL, &job, &action,
                                signer_secret, signer_pubkey, receipt, report);
+}
+
+struct zcl_result build_fabric_runtime_attach_step(
+    struct node_db *ndb, const char *workspace,
+    const uint8_t signer_secret[32], const uint8_t signer_pubkey[32],
+    struct build_fabric_proof_context *proof,
+    struct db_build_receipt *receipt,
+    struct build_fabric_attach_report *report)
+{
+    bool decided = false;
+    struct zcl_result attach = bf_runtime_try_attach_queued(
+        ndb, workspace, signer_secret, signer_pubkey, receipt, report,
+        &decided);
+    if (decided && proof)
+        build_fabric_proof_shadow_attach(proof, ndb, workspace,
+                                         signer_pubkey, report);
+    return attach;
+}
+
+struct zcl_result build_fabric_runtime_execute_step(
+    struct node_db *ndb, const char *workspace, const char *datadir,
+    const struct db_build_action *action, const char *lease_id,
+    const uint8_t signer_secret[32], const uint8_t signer_pubkey[32],
+    struct build_fabric_proof_context *proof,
+    struct db_build_receipt *receipt,
+    struct build_fabric_host_accounting *accounting)
+{
+    if (!ndb || !workspace || !action || !receipt || !accounting)
+        return ZCL_ERR(-1, "execute step requires action and outputs");
+    ZCL_CHECK(build_fabric_worker_execute(
+        ndb, workspace, datadir, action->action_id, lease_id, signer_secret,
+        signer_pubkey, receipt, NULL, accounting));
+    ZCL_CHECK(build_fabric_receipt_admit(ndb, workspace, receipt->receipt_id,
+                                         (int64_t)platform_time_wall_unix()));
+    if (proof)
+        (void)build_fabric_proof_issue_executed(proof, ndb, workspace, action,
+                                                receipt, accounting);
+    return ZCL_OK;
 }
 
 #ifdef ZCL_TESTING
@@ -141,8 +185,10 @@ struct zcl_result build_fabric_runtime_try_attach_queued_for_test(
     struct db_build_receipt *receipt,
     struct build_fabric_attach_report *report)
 {
+    bool decided = false;
     return bf_runtime_try_attach_queued(ndb, workspace, signer_secret,
-                                        signer_pubkey, receipt, report);
+                                        signer_pubkey, receipt, report,
+                                        &decided);
 }
 #endif
 
@@ -294,29 +340,21 @@ static void bf_runtime_execute_claimed(struct node_db *ndb,
         return;
     }
     struct db_build_receipt receipt;
-    struct zcl_result run = build_fabric_worker_execute(
-        ndb, execution_workspace, g_worker_datadir, action->action_id,
-        lease_id, g_local_secret, g_local_pubkey, &receipt, NULL, NULL);
-    if (run.ok) {
-        struct zcl_result admitted = build_fabric_receipt_admit(
-            ndb, execution_workspace, receipt.receipt_id,
-            (int64_t)platform_time_wall_unix());
-        if (admitted.ok)
-            supervisor_progress(id, (int64_t)++*completed);
-        else {
-            LOG_ERROR("build_fabric",
-                      "supervisor refused quarantined result %s: %s",
-                      receipt.receipt_id, admitted.message);
-            atomic_fetch_add(&g_worker_failures, 1);
-        }
-    } else
+    struct build_fabric_host_accounting accounting;
+    memset(&receipt, 0, sizeof(receipt));
+    struct zcl_result run = build_fabric_runtime_execute_step(
+        ndb, execution_workspace, g_worker_datadir, action, lease_id,
+        g_local_secret, g_local_pubkey, atomic_load(&g_proof), &receipt,
+        &accounting);
+    if (run.ok)
+        supervisor_progress(id, (int64_t)++*completed);
+    else {
+        LOG_ERROR("build_fabric", "build action %s not accepted: %s",
+                  action->action_id, run.message);
         atomic_fetch_add(&g_worker_failures, 1);
+    }
     supervisor_tick(id);
 }
-
-static struct zcl_result bf_runtime_recover_pending(
-    struct node_db *ndb, const char *datadir, const char *worker_id,
-    const uint8_t seed[32]);
 
 static bool bf_worker_recover_at_start(struct node_db *ndb)
 {
@@ -327,9 +365,13 @@ static bool bf_worker_recover_at_start(struct node_db *ndb)
     if (result.ok && (strcmp(worker.worker_id, g_local_worker.worker_id) != 0 ||
                       memcmp(pubkey, g_local_pubkey, sizeof(pubkey)) != 0))
         result = ZCL_ERR(-1, "build worker recovery identity changed");
+    struct build_fabric_proof_context *proof = NULL;
     if (result.ok)
-        result = bf_runtime_recover_pending(
-            ndb, g_worker_datadir, g_local_worker.worker_id, seed);
+        result = build_fabric_proof_context_open(
+            ndb, g_worker_datadir, g_local_worker.worker_id, seed, &proof);
+    struct build_fabric_proof_context *none = NULL;
+    if (proof && !atomic_compare_exchange_strong(&g_proof, &none, proof))
+        build_fabric_proof_context_close(proof);
     OPENSSL_cleanse(seed, sizeof(seed));
     OPENSSL_cleanse(secret, sizeof(secret));
     if (!result.ok)
@@ -386,9 +428,9 @@ static void *bf_worker_loop(void *arg)
         }
         struct db_build_receipt attached_receipt;
         struct build_fabric_attach_report attach_report;
-        struct zcl_result attach = bf_runtime_try_attach_queued(
+        struct zcl_result attach = build_fabric_runtime_attach_step(
             ndb, g_worker_workspace, g_local_secret, g_local_pubkey,
-            &attached_receipt, &attach_report);
+            atomic_load(&g_proof), &attached_receipt, &attach_report);
         if (attach.ok &&
             attach_report.disposition == BUILD_FABRIC_ATTACH_HIT) {
             supervisor_progress(id, (int64_t)++completed);
@@ -456,26 +498,6 @@ static supervisor_child_id bf_runtime_child(
     atomic_store(&contract->deadline_secs, 10);
     contract->on_tick = tick;
     return supervisor_register_in_domain(g_op_sup, contract);
-}
-
-static struct zcl_result bf_runtime_recover_pending(
-    struct node_db *ndb, const char *datadir, const char *worker_id,
-    const uint8_t seed[32])
-{
-    struct db_build_worker_proof_pending pending;
-    int found = db_build_worker_proof_pending_find_checked(
-        ndb, worker_id, &pending);
-    if (found < 0)
-        return ZCL_ERR(-1, "build worker proof-pending read refused");
-    if (found == 0) return ZCL_OK;
-    struct vcs_package_store *store = vcs_package_store_open(
-        datadir, vcs_package_store_quota_bytes());
-    if (!store)
-        return ZCL_ERR(-1, "build worker proof store unavailable");
-    struct zcl_result recovered = build_fabric_proof_pending_recover(
-        ndb, store, worker_id, seed);
-    vcs_package_store_close(store);
-    return recovered;
 }
 
 static struct zcl_result bf_runtime_enroll_worker(const char *datadir)
@@ -624,6 +646,13 @@ bool build_fabric_dump_state_json(struct json_value *out, const char *key)
     (void)json_push_kv_bool(out, "worker_network_allowed", false);
     (void)json_push_kv_int(out, "supervisor_child_headroom",
                            supervisor_child_headroom());
+    struct build_fabric_proof_stats proof_stats;
+    build_fabric_proof_context_stats(atomic_load(&g_proof), &proof_stats);
+    struct json_value proof;
+    json_init(&proof);
+    build_fabric_proof_stats_json(&proof_stats, &proof);
+    (void)json_push_kv(out, "proof", &proof);
+    json_free(&proof);
     bool supervised = atomic_load(&g_requester_id) != SUPERVISOR_INVALID_ID &&
                       atomic_load(&g_worker_id) != SUPERVISOR_INVALID_ID;
     diag_push_health(out, supervised, supervised ? "supervised" : "not_registered");

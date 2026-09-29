@@ -7,6 +7,7 @@
 
 #include "base/result.h"
 #include "models/build_fabric.h"
+#include "vcs/proof_ticket.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -48,6 +49,10 @@ struct build_fabric_attach_report {
     uint64_t restored_bytes;
     int64_t attach_wall_us;
     uint64_t compiler_processes; /* always 0: attachment never compiles */
+    /* The component proof key attach composed for this request, when it got
+     * that far; the proof shadow decides tickets for exactly this key. */
+    bool proof_key_known;
+    struct vcs_component_proof_key_v1 proof_key;
 };
 
 struct build_fabric_executor_identity {

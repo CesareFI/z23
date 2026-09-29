@@ -725,7 +725,7 @@ static struct zcl_result bfat_chunks_read(
 
 /* Read a non-zcode chunked artifact manifest and reassemble its bytes,
  * verifying the manifest root, the bound action root, and every chunk. */
-static struct zcl_result bfat_artifact_read(
+struct zcl_result bfat_artifact_read(
     const char *workspace, const uint8_t manifest_root[32],
     const uint8_t action_root[32], uint8_t **out, size_t *out_len)
 {
@@ -948,7 +948,7 @@ static const char *bfat_compose_requester_key(struct bfat_attach_ctx *c)
         &c->action, c->toolchain_root, &c->capsule,
         c->driver_bytes_root, c->backend_bytes_root,
         c->assembler_bytes_root, c->runtime_root, c->verifier_root,
-        input_bytes_root, &fields, NULL);
+        input_bytes_root, &fields, &c->report->proof_key);
     free(input);
     if (!keyed.ok) {
         (void)snprintf(c->refusal, sizeof(c->refusal), "%s", keyed.message);
@@ -960,6 +960,7 @@ static const char *bfat_compose_requester_key(struct bfat_attach_ctx *c)
         return "executor-key-record-poisoned";
     bfat_record_key(wire, wire_len, c->key);
     zcl_hex_encode(c->key, 32, c->report->executor_key);
+    c->report->proof_key_known = true;
     return NULL;
 }
 

@@ -7,12 +7,42 @@
 #include "base/result.h"
 
 #include <stdbool.h>
+#include <stdint.h>
+
+struct node_db;
+struct db_build_action;
+struct db_build_receipt;
+struct build_fabric_attach_report;
+struct build_fabric_host_accounting;
+struct build_fabric_proof_context;
 
 struct zcl_result build_fabric_runtime_register(bool worker_enabled,
                                                 const char *datadir);
 
 struct json_value;
 bool build_fabric_dump_state_json(struct json_value *out, const char *key);
+
+/* The worker loop's two work steps, callable with an explicit proof context
+ * (NULL: no proof state). attach_step peeks at the next queued plain compile
+ * and runs build_fabric_attach, the reuse authority; when attach decided and
+ * proof is set it also computes the feedback-only ticket decision for the
+ * same key and counts the pair. It never changes the attach outcome.
+ * execute_step runs the claimed action, admits its receipt, and then issues
+ * and publishes a proof ticket; an issuance refusal is counted and logged
+ * but never fails the executed, admitted result. */
+struct zcl_result build_fabric_runtime_attach_step(
+    struct node_db *ndb, const char *workspace,
+    const uint8_t signer_secret[32], const uint8_t signer_pubkey[32],
+    struct build_fabric_proof_context *proof,
+    struct db_build_receipt *receipt,
+    struct build_fabric_attach_report *report);
+struct zcl_result build_fabric_runtime_execute_step(
+    struct node_db *ndb, const char *workspace, const char *datadir,
+    const struct db_build_action *action, const char *lease_id,
+    const uint8_t signer_secret[32], const uint8_t signer_pubkey[32],
+    struct build_fabric_proof_context *proof,
+    struct db_build_receipt *receipt,
+    struct build_fabric_host_accounting *accounting);
 
 #ifdef ZCL_TESTING
 #include "services/subordinate_work_admission.h"

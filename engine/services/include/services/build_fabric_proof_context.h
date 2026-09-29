@@ -131,6 +131,11 @@ void build_fabric_proof_shadow_attach(
     const char *workspace, const uint8_t requester_pubkey[32],
     const struct build_fabric_attach_report *report);
 
+/* The stats as the dumpstate "proof" object (schema zcl.build_fabric_proof.v1). */
+struct json_value;
+void build_fabric_proof_stats_json(const struct build_fabric_proof_stats *s,
+                                   struct json_value *out);
+
 #ifdef ZCL_TESTING
 enum build_fabric_proof_issue_point {
     BUILD_FABRIC_PROOF_ISSUE_AFTER_STAGE = 1,
