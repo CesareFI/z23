@@ -6831,6 +6831,62 @@ bool zcl_dev_proof_test_preflight_parse(const char *bytes, size_t len,
 {
     return dp_preflight_parse(bytes, len, out);
 }
+
+#endif
+
+/* True only when the verdict store the preflight would probe provably holds
+ * no verdict. Every probe HIT needs a PASS record at
+ * <store>/.zvcs/objects/<hh>/<62hex> (trc_record_verifies in the runner's
+ * testcache), so an objects directory holding nothing but the writer's
+ * tmp/, or no objects directory under a real store directory, can only
+ * answer would_reuse=0. Any other entry, any read error, or a store root
+ * that is not a real directory answers false. Stops at the first entry
+ * that is not ".", ".." or "tmp", so it reads at most four entries. */
+static bool dp_verdict_store_empty(const char *store_root)
+{
+    char objects[PATH_MAX];
+    struct stat st;
+    struct dirent *entry;
+    bool empty = true;
+    DIR *dir;
+    if (!store_root || !store_root[0] || lstat(store_root, &st) != 0 ||
+        !S_ISDIR(st.st_mode) ||
+        snprintf(objects, sizeof(objects), "%s/.zvcs/objects", store_root) >=
+            (int)sizeof(objects))
+        return false;
+    dir = opendir(objects);
+    if (!dir) return errno == ENOENT;
+    errno = 0;
+    while (empty && (entry = readdir(dir)) != NULL)
+        empty = strcmp(entry->d_name, ".") == 0 ||
+                strcmp(entry->d_name, "..") == 0 ||
+                strcmp(entry->d_name, "tmp") == 0;
+    if (errno != 0) empty = false;
+    (void)closedir(dir);
+    return empty;
+}
+
+/* Skip the advisory probe when its store provably holds no verdict: the
+ * runner could only report would_reuse=0, and the cold test dimension
+ * reads nothing from it. Same note key, so phases.txt readers still find
+ * the line. Returns true when the spawn is skipped. */
+static bool dp_preflight_skip_empty(const char *store_root,
+                                    const char *phases)
+{
+    if (!dp_verdict_store_empty(store_root)) return false;
+    if (phases && phases[0])
+        (void)zcl_dev_proof_phase_note(
+            phases, "test_preflight",
+            "advisory skipped reason=empty_verdict_store");
+    return true;
+}
+
+#if defined(ZCL_TESTING)
+bool zcl_dev_proof_test_preflight_skip(const char *store_root,
+                                       const char *phases_path)
+{
+    return dp_preflight_skip_empty(store_root, phases_path);
+}
 #endif
 
 /* Capsule scratch path beside the proof logs: ephemeral cycle state, never
@@ -9074,7 +9130,8 @@ static bool dp_preflight_log_read(const char *path, char **bytes, size_t *len)
  * ("unavailable") and never the proof. Runs after the prefork step so the
  * generation's depfiles and admitted runner are exactly what the dimension
  * below will see. The capsule stays in scratch with its sealed bindings;
- * nothing reads it back. */
+ * nothing reads it back. A store that provably holds no verdict skips the
+ * spawn (dp_preflight_skip_empty): the probe could only count zero. */
 static void dp_worker_test_preflight(struct dp_worker *w)
 {
     const char *argv[13];
@@ -9091,6 +9148,7 @@ static void dp_worker_test_preflight(struct dp_worker *w)
     int cap_argc = 0;
     size_t i;
     if (!w || !w->generation_binary[0] || !w->only[0]) return;
+    if (dp_preflight_skip_empty(w->generation, w->paths->phases)) return;
     if (snprintf(log, sizeof(log), "%s/%s.test-preflight.log",
                  w->execution.logs, w->execution.key) >= (int)sizeof(log))
         return;

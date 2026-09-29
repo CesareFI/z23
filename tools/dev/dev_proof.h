@@ -400,6 +400,13 @@ bool zcl_dev_proof_test_changed_set_selector(
  * proof cycle or spawning a runner. */
 bool zcl_dev_proof_test_preflight_parse(const char *bytes, size_t len,
                                         struct zcl_dev_proof_preflight *out);
+/* Seam for the preflight's empty-store skip: the exact decision the proof
+ * worker makes before spawning the probe. True means the store provably
+ * holds no verdict, the spawn is skipped, and phases_path received
+ * `test_preflight=advisory skipped reason=empty_verdict_store`; false means
+ * the probe runs as before. */
+bool zcl_dev_proof_test_preflight_skip(const char *store_root,
+                                       const char *phases_path);
 /* Seam for the fail-closed test dimension: the exact runner argv the proof
  * worker launches. It carries the runner's explicit cold mode, so a test
  * can prove no cached verdict is admitted without spawning a runner.

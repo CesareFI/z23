@@ -7313,6 +7313,101 @@ static int test_ic_preflight_parse(void)
     return failures;
 }
 
+#if !defined(_WIN32)
+#define IC_PREFLIGHT_SKIP_NOTE \
+    "test_preflight=advisory skipped reason=empty_verdict_store"
+
+/* One store shape through the preflight's skip decision: the verdict and
+ * whether phases.txt carries the skip note must agree with `want`. */
+static bool ic_preflight_skip_case(const char *label, const char *store,
+                                   const char *phases, bool want)
+{
+    bool got;
+    (void)remove(phases);
+    got = zcl_dev_proof_test_preflight_skip(store, phases);
+    if (got != want || ic_file_has(phases, IC_PREFLIGHT_SKIP_NOTE) != want) {
+        printf("preflight skip %s: skipped=%d note=%d, want %d\n", label,
+               (int)got, (int)ic_file_has(phases, IC_PREFLIGHT_SKIP_NOTE),
+               (int)want);
+        return false;
+    }
+    return true;
+}
+
+/* A testcache PASS record (magic, status, key echo) at its own address. */
+static bool ic_preflight_plant_verdict(const char *store)
+{
+    uint8_t key[32], record[56];
+    for (size_t i = 0; i < sizeof(key); ++i)
+        key[i] = (uint8_t)(0x3cu ^ (uint8_t)(i * 11u));
+    memset(record, 0, sizeof(record));
+    memcpy(record, "ZTCACHE1", 8);
+    record[8] = 1u; /* PASS */
+    memcpy(record + 16, key, sizeof(key));
+    return vcs_object_store_init(store) &&
+           vcs_object_put_addressed(store, key, record, sizeof(record));
+}
+#endif
+
+/* The advisory preflight probe is skipped only when the generation's
+ * verdict store provably holds no verdict: no .zvcs at all, or an objects
+ * directory holding only the writer's tmp/. A stored verdict, a stray
+ * entry, an unreadable store, or a store root that is missing or not a
+ * directory all keep the probe. */
+static int test_ic_preflight_skips_only_empty_store(void)
+{
+    int failures = 0;
+    TEST("proof preflight: only a provably empty verdict store skips the probe") {
+#if defined(_WIN32)
+        ASSERT(true);
+#else
+        char dir[4096], store[4096], phases[4096], path[4096];
+        test_make_tmpdir(dir, sizeof(dir), "preflight_skip", "root");
+        ASSERT(snprintf(store, sizeof(store), "%s/gen", dir) <
+               (int)sizeof(store));
+        ASSERT(snprintf(phases, sizeof(phases), "%s/phases.txt", dir) <
+               (int)sizeof(phases));
+        ASSERT(mkdir(store, 0700) == 0);
+        /* (a) empty: a fresh generation has no .zvcs; an initialized
+         * store holds only objects/tmp. */
+        ASSERT(ic_preflight_skip_case("no .zvcs", store, phases, true));
+        ASSERT(vcs_object_store_init(store));
+        ASSERT(ic_preflight_skip_case("tmp only", store, phases, true));
+        /* (b) one verdict entry keeps the probe. */
+        ASSERT(ic_preflight_plant_verdict(store));
+        ASSERT(ic_preflight_skip_case("one verdict", store, phases, false));
+        ASSERT(test_rm_rf_recursive(store) == 0);
+        /* (c) ambiguous or unreadable stores keep the probe. */
+        ASSERT(ic_preflight_skip_case("missing root", store, phases, false));
+        ASSERT(ic_preflight_skip_case("null root", NULL, phases, false));
+        ASSERT(ic_preflight_skip_case("empty root", "", phases, false));
+        ASSERT(ic_write(dir, "gen", "not a directory\n"));
+        ASSERT(ic_preflight_skip_case("file root", store, phases, false));
+        ASSERT(remove(store) == 0);
+        ASSERT(ic_write(dir, "gen/.zvcs/objects", "not a directory\n"));
+        ASSERT(ic_preflight_skip_case("file objects", store, phases, false));
+        ASSERT(test_rm_rf_recursive(store) == 0);
+        ASSERT(mkdir(store, 0700) == 0);
+        ASSERT(vcs_object_store_init(store));
+        ASSERT(ic_write(dir, "gen/.zvcs/objects/stray", "?\n"));
+        ASSERT(ic_preflight_skip_case("stray entry", store, phases, false));
+        ASSERT(snprintf(path, sizeof(path), "%s/.zvcs/objects/stray",
+                        store) < (int)sizeof(path));
+        ASSERT(remove(path) == 0);
+        ASSERT(snprintf(path, sizeof(path), "%s/.zvcs/objects", store) <
+               (int)sizeof(path));
+        ASSERT(chmod(path, 0) == 0);
+        if (geteuid() != 0)
+            ASSERT(ic_preflight_skip_case("unreadable", store, phases,
+                                          false));
+        ASSERT(chmod(path, 0700) == 0);
+        ASSERT(test_rm_rf_recursive(dir) == 0);
+        PASS();
+#endif
+    } _test_next:;
+    return failures;
+}
+
 /* Capsule flag plumbing: the write and use forms carry the same five
  * capsule arguments (write vs use + the four sealed bindings), so a
  * consumer's acceptance check compares the capsule against the exact
@@ -9668,6 +9763,7 @@ int test_impact_composition(void)
     failures += test_ic_proof_test_dimension_runs_cold();
     failures += test_ic_proof_test_accounting_refuses_reuse();
     failures += test_ic_preflight_parse();
+    failures += test_ic_preflight_skips_only_empty_store();
     failures += test_ic_capsule_argv_write();
     failures += test_ic_capsule_argv_use();
     failures += test_pw_original_plan_refreshes_before_sealing();

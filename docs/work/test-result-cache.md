@@ -114,7 +114,11 @@ The proof still runs one probe before the test dimension
 (`--cache --cache-probe-only` against the generation's own store) and records
 it as `test_preflight=advisory groups=N would_reuse=N must_run=N
 uncacheable=N admitted=0 capsule=...`. It is a measurement only: nothing in
-the dimension reads the probe or its capsule.
+the dimension reads the probe or its capsule. When the generation's
+`.zvcs/objects` holds no entry besides `tmp/` (the usual cold case), the probe
+could only count zero, so the spawn is skipped and the line reads
+`test_preflight=advisory skipped reason=empty_verdict_store`; any stored
+object or unreadable store runs the probe as before.
 
 ## Using it (inner dev loop)
 
