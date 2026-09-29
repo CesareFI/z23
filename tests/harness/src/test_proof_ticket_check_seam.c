@@ -1,7 +1,9 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * purpose: The queued CHECK dimension derives its closure and asks admission
  *          before any test child. Launch counts come from the forked step,
- *          not from a flag the decider writes for itself. */
+ *          not from a flag the decider writes for itself. Missing issuer
+ *          history is a package-store rebuild after compaction, and that
+ *          MISS still forks the test child. */
 
 #include "test/test_core.h"
 
@@ -9,6 +11,8 @@
 
 #include "dev_proof.h"
 #include "platform/time_compat.h"
+#include "vcs/blob_store.h"
+#include "vcs/package_store.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -433,6 +437,187 @@ static int seam_case_revoked(void)
     return failures;
 }
 
+/* One issuer signs the derived closure and one earlier ticket. Compaction
+ * drops the earlier covered ticket, so a rebuilt receiver isolates that
+ * issuer. The closure key then has no eligible quorum. */
+#define SEAM_STORE_QUOTA (UINT64_C(64) * 1024u * 1024u)
+
+static bool seam_store_put(struct vcs_package_store *store,
+                           const uint8_t *wire, size_t len)
+{
+    uint8_t root[32];
+    return vcs_proof_ticket_store_put(store, wire, len, root);
+}
+
+static bool seam_emit_pair(struct ptf *f,
+                           const struct vcs_component_proof_key_v1 *closure,
+                           uint8_t cover[VCS_PROOF_TICKET_WIRE_BYTES],
+                           uint8_t pass[VCS_PROOF_TICKET_WIRE_BYTES],
+                           uint8_t cp[VCS_PROOF_CHECKPOINT_WIRE_BYTES])
+{
+    struct vcs_component_proof_key_v1 other = *closure;
+    ptf_root(VCS_CPK_UNIT_ID, "proof-check-cover",
+             other.roots[VCS_CPK_UNIT_ID]);
+    return ptf_emit(f, PTF_A, &other, ptf_pass(), cover, NULL) &&
+           ptf_emit(f, PTF_A, closure, ptf_pass(), pass, NULL) &&
+           vcs_proof_issuer_log_checkpoint(f->logs[PTF_A], 90, cp);
+}
+
+/* Staging is one tenth of the tightened quota. The three history blobs
+ * alone make that tenth smaller than one ticket, and the eviction write
+ * is then refused. This ballast keeps the rare pool large enough. */
+static bool seam_store_ballast(struct vcs_package_store *store)
+{
+    uint8_t blob[8000];
+    memset(blob, 0x5a, sizeof(blob));
+    return seam_store_put(store, blob, sizeof(blob));
+}
+
+static bool seam_store_wires(const char *dir, const uint8_t *cover,
+                             const uint8_t *pass, const uint8_t *cp)
+{
+    struct vcs_package_store *store = vcs_package_store_open(dir,
+                                                             SEAM_STORE_QUOTA);
+    bool ok = store &&
+              seam_store_put(store, cover, VCS_PROOF_TICKET_WIRE_BYTES) &&
+              seam_store_put(store, pass, VCS_PROOF_TICKET_WIRE_BYTES) &&
+              seam_store_put(store, cp, VCS_PROOF_CHECKPOINT_WIRE_BYTES) &&
+              seam_store_ballast(store);
+    if (store) vcs_package_store_close(store);
+    return ok;
+}
+
+/* `victim` is marked rare under a quota that fits the pins and one more
+ * write of the same size, so that write evicts exactly the covered ticket. */
+static bool seam_compact_cover(const char *dir, const uint8_t *victim,
+                               size_t len)
+{
+    struct vcs_package_store *store = vcs_package_store_open(dir,
+                                                             SEAM_STORE_QUOTA);
+    uint64_t rare, pins, tight;
+    uint8_t root[32];
+    uint8_t junk[VCS_PROOF_TICKET_WIRE_BYTES + 1u];
+    size_t got = 0;
+    bool ok;
+    if (!store) return false;
+    rare = vcs_package_store_pool_usage(store, VCS_PACKAGE_STORE_POOL_RARE);
+    pins = vcs_package_store_pool_usage(store, VCS_PACKAGE_STORE_POOL_PINS);
+    vcs_package_store_close(store);
+    tight = (rare / 3u) * 10u + 10u;
+    if (tight < pins * 5u + 10u) tight = pins * 5u + 10u;
+    store = vcs_package_store_open(dir, tight);
+    ok = store && len <= VCS_PROOF_TICKET_WIRE_BYTES &&
+         vcs_blob_root(victim, len, root) &&
+         vcs_package_store_set_class(store, root, VCS_PACKAGE_STORE_CLASS_RARE,
+                                     1000u) == VCS_PACKAGE_STORE_OK;
+    if (ok) {
+        memset(junk, 0x41, len);
+        ok = seam_store_put(store, junk, len) &&
+             vcs_blob_get_from(store, root, junk, sizeof(junk), &got) ==
+                 VCS_BLOB_ERR_ABSENT;
+    }
+    if (store) vcs_package_store_close(store);
+    return ok;
+}
+
+static struct vcs_proof_receiver *seam_rebuild(
+    const char *dir, const struct vcs_proof_reuse_policy *policy)
+{
+    struct vcs_package_store *store = vcs_package_store_open(dir,
+                                                             SEAM_STORE_QUOTA);
+    struct vcs_proof_receiver *rx = store ? vcs_proof_receiver_new() : NULL;
+    size_t tickets = 0, cps = 0, skipped = 0;
+    uint64_t generation = 0;
+    bool ok = rx && vcs_proof_receiver_rebuild_with_policy(
+                        rx, store, policy, NULL, 0, 64u, &tickets, &cps,
+                        &skipped, &generation);
+    if (store) vcs_package_store_close(store);
+    if (!ok) {
+        vcs_proof_receiver_free(rx);
+        return NULL;
+    }
+    return rx;
+}
+
+/* Same admission inputs the CHECK dimension passes: known scope, the
+ * derived key, and this rebuilt receiver. */
+static bool seam_history_reason(const struct vcs_proof_receiver *rx,
+                                const struct vcs_component_proof_key_v1 *key,
+                                const struct vcs_proof_candidate_domain *domain,
+                                const struct vcs_proof_reuse_policy *policy,
+                                const char **why)
+{
+    struct vcs_proof_admission_context ctx = {
+        .receiver = rx, .domain = domain, .policy = policy,
+    };
+    struct vcs_proof_change change = {0};
+    struct vcs_proof_obligation obligation = {0};
+    struct vcs_proof_admission_result result;
+    struct vcs_proof_admission_report report;
+    change.component_id = "proof-check-group";
+    change.scope_known = true;
+    memcpy(change.contract_root_before,
+           key->roots[VCS_CPK_INTEGRATION_EDGES], 32);
+    memcpy(change.contract_root_after,
+           key->roots[VCS_CPK_INTEGRATION_EDGES], 32);
+    obligation.name = "proof-check-group";
+    obligation.component_id = "proof-check-group";
+    obligation.action_class = VCS_PROOF_ACTION_CHECK;
+    obligation.preimage = key;
+    obligation.in_reach = true;
+    if (!vcs_proof_admission_run(&ctx, &change, &obligation, 1, &result,
+                                 &report))
+        return false;
+    *why = result.reason;
+    return result.status == VCS_PROOF_ADMIT_FRESH &&
+           result.decision.outcome == VCS_PROOF_REUSE_MISS;
+}
+
+static int seam_case_history(void)
+{
+    int failures = 0;
+    TEST_CASE("check seam: missing issuer history launches") {
+        struct ptf f;
+        uint8_t raw[SEAM_RAW][32];
+        struct zcl_dev_proof_check_inputs in;
+        struct vcs_component_proof_key_v1 key;
+        struct vcs_proof_reuse_policy policy;
+        struct seam_meter run;
+        uint8_t cover[VCS_PROOF_TICKET_WIRE_BYTES];
+        uint8_t pass[VCS_PROOF_TICKET_WIRE_BYTES];
+        uint8_t cp[VCS_PROOF_CHECKPOINT_WIRE_BYTES];
+        char store_dir[SEAM_PATH], dir[SEAM_PATH], binary[SEAM_PATH];
+        const char *why = NULL;
+        struct vcs_proof_receiver *rx;
+        ASSERT(ptf_init(&f));
+        seam_fill(raw, &in);
+        ASSERT(seam_align(&f, &in, &key, &policy));
+        ASSERT(seam_emit_pair(&f, &key, cover, pass, cp));
+        ASSERT(test_mkdtemp(store_dir, sizeof(store_dir),
+                            "z23-check-seam-store") != NULL);
+        ASSERT(seam_store_wires(store_dir, cover, pass, cp));
+        ASSERT(seam_compact_cover(store_dir, cover,
+                                  VCS_PROOF_TICKET_WIRE_BYTES));
+        rx = seam_rebuild(store_dir, &policy);
+        ASSERT(rx != NULL);
+        ASSERT(vcs_proof_receiver_issuer_history_incomplete(rx, f.pub[PTF_A]));
+        ASSERT(seam_history_reason(rx, &key, &f.domain, &policy, &why));
+        ASSERT(why && strcmp(why, VCS_PROOF_REUSE_WHY_HISTORY_INCOMPLETE) == 0);
+        ASSERT(seam_dir(dir, sizeof(dir), binary, sizeof(binary), 1));
+        ASSERT(seam_run(&in, dir, binary, 1, rx, &f.domain, &policy, &run));
+        ASSERT(run.out.ok);
+        ASSERT_EQ(run.out.test_children, 1u);
+        ASSERT_EQ(run.out.reused, 0u);
+        ASSERT(run.out.log_present);
+        printf("check_seam case=history children=%u reused=%u ok=%d why=%s\n",
+               run.out.test_children, run.out.reused, run.out.ok ? 1 : 0, why);
+        vcs_proof_receiver_free(rx);
+        test_rm_rf(store_dir);
+        ptf_free(&f);
+    } TEST_END
+    return failures;
+}
+
 static int seam_case_cached(void)
 {
     int failures = 0;
@@ -470,6 +655,7 @@ int test_proof_ticket_check_seam(void)
     failures += seam_case_reused_basis();
     failures += seam_case_stale();
     failures += seam_case_revoked();
+    failures += seam_case_history();
     failures += seam_case_cached();
     return failures;
 }

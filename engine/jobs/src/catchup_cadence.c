@@ -40,6 +40,13 @@ static int catchup_gap_threshold(void)
                            1, 100000000);
 }
 
+static int catchup_defer_gap_threshold(void)
+{
+    return catchup_env_int("ZCL_CATCHUP_DEFER_GAP_THRESHOLD",
+                           CATCHUP_CADENCE_DEFER_SYNC_DEFAULT_GAP_THRESHOLD,
+                           1, 100000000);
+}
+
 #ifdef ZCL_TESTING
 static _Atomic int64_t g_test_log_head_override = -1;
 #endif
@@ -62,24 +69,33 @@ static int64_t cc_read_log_head(void)
     return (h <= (uint64_t)INT64_MAX) ? (int64_t)h : -1;
 }
 
+/* Peers-connected + gap measurement shared by both gates below, so the
+ * deferred-sync gate can never disagree with the cadence gate about the
+ * measurement — only about the threshold. Same lock-safe primitives
+ * sync_rate_below_floor.c's detect() uses for this exact gap computation
+ * (see that file's header comment for the LOCK-ORDER LAW compliance note)
+ * — zero new lock surface added here. Never touches progress_store,
+ * coins_kv, or any reducer-drive lock. Writes the gap (or -1 when either
+ * side is unavailable) through when the caller wants it. */
+static bool catchup_gap_eval(int64_t *gap_out)
+{
+    struct connman *cm = sync_monitor_connman();
+    if (!cm || connman_get_node_count(cm) == 0)
+        return false;
+    int network_tip = connman_max_peer_height(cm);
+    int64_t log_head = cc_read_log_head();
+    if (gap_out)
+        *gap_out = (network_tip > 0 && log_head >= 0)
+                       ? (int64_t)network_tip - log_head
+                       : -1;
+    return true;
+}
+
 bool catchup_cadence_active(void)
 {
-    /* Same lock-safe primitives sync_rate_below_floor.c's detect() uses for
-     * this exact gap computation (see that file's header comment for the
-     * LOCK-ORDER LAW compliance note) — zero new lock surface added here.
-     * Never touches progress_store, coins_kv, or any reducer-drive lock. */
-    bool active;
-    struct connman *cm = sync_monitor_connman();
-    if (!cm || connman_get_node_count(cm) == 0) {
-        active = false;
-    } else {
-        int network_tip = connman_max_peer_height(cm);
-        int64_t log_head = cc_read_log_head();
-        int64_t gap = (network_tip > 0 && log_head >= 0)
-                          ? (int64_t)network_tip - log_head
-                          : -1;
-        active = gap >= (int64_t)catchup_gap_threshold();
-    }
+    int64_t gap = -1;
+    bool active = catchup_gap_eval(&gap) &&
+                  gap >= (int64_t)catchup_gap_threshold();
     /* Publish the verdict for the ONE caller that may not evaluate this gate
      * itself: the batched pre-commit durability hook
      * (engine/reducer/services/src/reducer_body_fsync.c) fires under
@@ -93,6 +109,18 @@ bool catchup_cadence_active(void)
      * the fail-safe default (never evaluated -> false) is the strict regime. */
     atomic_store_explicit(&g_active_cache, active, memory_order_release);
     return active;
+}
+
+bool catchup_cadence_deferred_sync_active(void)
+{
+    /* Deliberately does NOT publish g_active_cache: the R1 precommit flush
+     * cadence in reducer_body_fsync.c must stay keyed to the genuine
+     * accelerated-catch-up verdict, so a short-chain sync inside this gate
+     * keeps the strict flush-on-every-commit regime (batched per commit,
+     * never demoted to the 1-per-8-commits interval). */
+    int64_t gap = -1;
+    return catchup_gap_eval(&gap) &&
+           gap >= (int64_t)catchup_defer_gap_threshold();
 }
 
 /* See the store site above: the lock-free cached verdict, refreshed by every

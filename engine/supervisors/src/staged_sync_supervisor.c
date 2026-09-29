@@ -469,9 +469,15 @@ static void staged_stage_tick(struct liveness_contract *c)
      * latency. */
     /* Catch-up stages can emit one event and/or block write per step. Reuse
      * the reducer's crash-ordered outer scope so those writes sync once at a
-     * pre-commit boundary, not once per imported header/body. At tip this is
-     * false, so each write keeps its normal immediate sync. */
-    const bool batch_catchup_sync = catchup_cadence_active();
+     * pre-commit boundary, not once per imported header/body. Opens for a
+     * genuine accelerated catch-up OR for any staged backlog past one block:
+     * a fresh latecomer on a short chain (gap far under the 500-block
+     * cadence threshold) otherwise pays event_log_append's two per-append
+     * fsync barriers per step ON this shared tick runner, which is what
+     * turned a ~55 ms consensus crawl into ~10 s ticks. At tip (gap <= 1)
+     * both gates close, so each write keeps its normal immediate sync. */
+    const bool batch_catchup_sync = catchup_cadence_active() ||
+                                    catchup_cadence_deferred_sync_active();
     if (batch_catchup_sync)
         reducer_enter_batched_body_sync();
     (void)d->drain(stage_effective_batch(d->batch, d->per_step_fanout));
