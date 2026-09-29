@@ -280,6 +280,39 @@ static const struct ssp_case k_ssp_cases[] = {
      "#if __has_embed(\"d.bin\") == 1\n" SSP_TAIL "// */\n",
      {"-std=c23", NULL, NULL}, NULL, NULL, false, "__has_embed(\"d.bin\")",
      SSP_UNBOUND},
+    {"on the #elif line that closes a skipped group",
+     "#if 0\n"
+     "#ifdef __has_include\n"
+     "#endif\n"
+     "#elif __has_include(\"opt.h\")\n" SSP_TAIL,
+     {"-std=c23", NULL, NULL}, NULL, NULL, false, "opt.h", SSP_BOUND},
+    {"on the line after the #else that closes a skipped group",
+     "#if 0\n"
+     "#ifdef __has_include\n"
+     "#endif\n"
+     "#else\n"
+     "#if __has_include(\"opt.h\")\n"
+     "#define T 1\n"
+     "#else\n"
+     "#define T 0\n"
+     "#endif\n"
+     "#endif\n"
+     "int f(void) { return T; }\n",
+     {"-std=c23", NULL, NULL}, NULL, NULL, false, "opt.h", SSP_BOUND},
+    {"after a skipped group nested in a live one",
+     "#if 1\n"
+     "#if 0\n"
+     "#ifdef __has_include\n"
+     "#endif\n"
+     "#endif\n"
+     "#if __has_include(\"opt.h\")\n"
+     "#define T 1\n"
+     "#else\n"
+     "#define T 0\n"
+     "#endif\n"
+     "#endif\n"
+     "int f(void) { return T; }\n",
+     {"-std=c23", NULL, NULL}, NULL, NULL, false, "opt.h", SSP_BOUND},
 };
 
 /* Options the scan cannot read: the emit must refuse with `why`. */

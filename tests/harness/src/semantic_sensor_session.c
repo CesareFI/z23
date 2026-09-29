@@ -24,7 +24,7 @@
  *     one a line continuation runs through) recreates and verifies its TU
  *     on every emit, even while the header it asks about appears and goes;
  *     a literal or string-literal-macro __has_include, a __has_include_next
- *     and a probe word in a comment or a string stay warm;
+ *     and a probe word in a comment, a string or a skipped group stay warm;
  *   - a reparse whose own manifest has a shadow candidate the TU's baseline
  *     lacks (a header only that reparse read), or a lookup with no negative
  *     claim (a computed include below the preamble), is retried as a fresh
@@ -912,10 +912,11 @@ static const struct sss_step k_sss_gate_steps[] = {
 };
 #define SSS_GATE_STEPS (sizeof(k_sss_gate_steps) / sizeof(k_sss_gate_steps[0]))
 
-/* The other spellings the scan cannot replay, each alone in gate.h (inside
- * #if 0: the scan reads text, the compiler need not accept it). The emit
- * after the rewrite recreates for the changed file; the untouched emit after
- * it must recreate again, naming the unbound lookup. */
+/* The other spellings the scan cannot replay, each alone in gate.h, live
+ * (a word in a skipped group needs no record: see SEMANTIC_MANIFEST.md),
+ * the GNU words in a #define body, where the compiler accepts them. The
+ * emit after the rewrite recreates for the changed file; the untouched
+ * emit after it must recreate again, naming the unbound lookup. */
 struct sss_unbound {
     const char *name;
     const char *body;
@@ -923,19 +924,20 @@ struct sss_unbound {
 };
 
 static const struct sss_unbound k_sss_unbound[] = {
-    {"gnu-next", "#if 0\n#if __has_include_next__(<opt.h>)\n#endif\n#endif\n",
+    {"gnu-next", "#define GATE_W __has_include_next__(<opt.h>)\n",
      "lookup-unbound #embed? __has_include_next__(<opt.h>)"},
-    {"has-embed", "#if 0\n#if __has_embed(\"opt.h\")\n#endif\n#endif\n",
+    {"has-embed", "#if __has_embed(\"opt.h\")\n#endif\n",
      "lookup-unbound __has_embed("},
-    {"embed", "#if 0\nstatic const char b[] = {\n#embed \"opt.h\"\n};\n#endif\n",
+    {"embed", "static const char gate_b[] = {\n#embed \"opt.h\"\n};\n",
      "lookup-unbound #embed"},
-    {"embed-spaced", "#if 0\n  %: /* x */ embed <opt.h>\n#endif\n",
+    {"embed-spaced",
+     "static const char gate_c[] = {\n  %: /* x */ embed \"opt.h\"\n};\n",
      "lookup-unbound #embed"},
-    {"continued", "#if 0\n#if __has_include(\\\n\"opt.h\")\n#endif\n#endif\n",
+    {"continued", "#if __has_include(\\\n\"opt.h\")\n#endif\n",
      "lookup-unbound #embed? __has_include("},
-    {"split-word", "#if 0\n#if __has_inc\\\nlude(<opt.h>)\n#endif\n#endif\n",
+    {"split-word", "#if __has_inc\\\nlude(<opt.h>)\n#endif\n",
      "lookup-unbound #embed? __has_include(<opt.h>)"},
-    {"gnu-word", "#if 0\n#if __has_include__(<opt.h>)\n#endif\n#endif\n",
+    {"gnu-word", "#define GATE_G __has_include__(<opt.h>)\n",
      "lookup-unbound #embed? __has_include__(<opt.h>)"},
 };
 #define SSS_UNBOUND (sizeof(k_sss_unbound) / sizeof(k_sss_unbound[0]))
@@ -951,6 +953,10 @@ static const struct sss_unbound k_sss_warm[] = {
      "/* __has_embed(\"opt.h\") __has_include_next(<opt.h>) */\n"
      "// #embed <opt.h>\n"
      "const char *const fx_word = \"__has_include(OPT_HDR)\";\n",
+     ""},
+    {"skipped-words",
+     "#if 0\n#if __has_include__(<opt.h>) || __has_embed(\"opt.h\")\n"
+     "#embed \"opt.h\"\n#endif\n#endif\n",
      ""},
 };
 #define SSS_WARM (sizeof(k_sss_warm) / sizeof(k_sss_warm[0]))

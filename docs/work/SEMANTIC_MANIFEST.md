@@ -141,9 +141,9 @@ were established:
   literal (every prefix, `R`, `u8R`, `uR`, `UR`, `LR`, on one line or
   several; clang enables raw strings in every GNU mode, with no `-std`,
   and with `-fraw-string-literals`) is no identifier token and no lookup.
-  Raw lexing covers the groups the preprocessor skipped, so a word in a
-  skipped group is recorded too: that costs warm reuse and narrowing,
-  never truth. A directive is a `#` or `%:` token first on its logical
+  A word in a group the preprocessor skipped needs no record (see the
+  argument below), though raw lexing covers those groups too
+  (the walk reads them for directives). A directive is a `#` or `%:` token first on its logical
   line (comments count as whitespace), then its name. Raw lexing differs
   from the preprocessor's in two places outside the skipped groups (clang
   raw-lexes those, so neither rule applies there), and the sensor lexes both as the
@@ -195,19 +195,39 @@ were established:
   or inside one) and every `#`, `%:` or `??=` followed by blanks or block
   comments and `embed`. Each occurrence ends with a record: the replayed
   one when clang's tokens gave it a live lookup token, and otherwise a
-  `none` record. The only occurrences that end with none are ones clang's
-  own tokens, outside a skipped group, show to be no lookup: a comment, a
-  literal, part of another token, or the operand of an `#ifdef`-like
-  directive or a plain `defined` test. Inside a skipped group nothing is
-  dropped, and neither is a word in a header name or a `#warning` or
-  `#error` line, which only the sensor's own lexing reads as such. The
+  `none` record. Occurrences end with none only where clang itself shows
+  they need none. Its own tokens, outside a skipped group, show a comment,
+  a literal, part of another token, or the operand of an `#ifdef`-like
+  directive or a plain `defined` test; a word in a header name or a
+  `#warning` or `#error` line, which only the sensor's own lexing reads as
+  such, is recorded. And `clang_getSkippedRanges` shows the groups the
+  preprocessor skipped, where nothing is recorded, by this argument (for
+  review): a skipped group becomes live only when a live condition that
+  controls it changes. That condition reads (a) macro text in files the TU
+  reads, and editing such a file puts it in the TU's FILES, so the TU is
+  affected and sensed again; (b) argv or the toolchain, which trips the
+  identity check; or (c) a probe on a live conditional line, which has
+  its own record, reached by the created or deleted path that flips it.
+  So any change that makes the group live already makes the TU affected,
+  and the new manifest records the probes that are live then. The drop
+  is clang's answer, not the sensor's lexing, and the header-name and
+  `#warning` rules, whose misreading hid live code in review round 6,
+  still apply only outside skipped groups. clang reports consecutive
+  skipped groups as one range, from the `#` that opens the first to the
+  name of the directive that ends the last, so a range can hold an
+  `#elif` line the preprocessor evaluates (`#if 0` ... `#elif A` ...
+  `#else`, when A is false). The walk reads every `#elif`, `#elifdef` or
+  `#elifndef` line inside a range as live and leaves it out of the drop;
+  the skipping lexer reads a range raw, as `clang_tokenize` does, so the
+  walk finds the same directives. The controlling line of the first group
+  and the operand of the directive that ends a range are outside it. The
   splice rule is clang's (`getEscapedNewLineSize`) wherever the scan reads
   an operand too, and a lookup token clang lexes whose text the scan
   cannot read as that word refuses the TU. Pasting builds a word with no
   occurrence of its own: it joins the spellings of existing tokens, and
   during a conditional only tokens of `#define` bodies, `#if`, `#elif` and
-  `#embed` lines (skipped groups' too) and built-in or command-line macros
-  can take part. When two or more such spellings in a row spell
+  `#embed` lines (skipped groups' too, which only widens) and built-in or
+  command-line macros can take part. When two or more such spellings in a row spell
   `__has_include`, `__has_include_next` or `__has_embed`, the TU gets one
   `#embed? pasted from <first>` record on its main file. A 50-TU sample of
   the repository has no such TU; the first rule, any `##` in any macro
@@ -974,11 +994,18 @@ such a skipped line; a word split by a splice with a form feed before its
 newline, by a lone `\r`, or by `\n\r`; `CAT(__has_, include)("opt.h")`;
 and a `__has_embed` after `HI(<nope.h/*>)` where `HI` aliases
 `__has_include`. A lone `__has_embed` is the control case. Every
-conditional record with no claim now reaches every changed path. On a
-50-TU sample of the repository, 4 TUs gain one: the
-`#ifdef __has_include` inside the skipped `#ifdef __USE_GNU` group of
-glibc's unistd_ext header. Keeping comment and `#ifdef` words too would make
-that 6.
+conditional record with no claim now reaches every changed path. With
+every occurrence in a skipped group recorded, 4 TUs of a 50-TU sample of
+the repository gained one (the `#ifdef __has_include` inside the skipped
+`#ifdef __USE_GNU` group of glibc's unistd_ext header); dropping the
+skipped groups, as argued above, brings that to 0 of 50, and the spawn TU's
+LOOKUPS are unchanged. Three more cases pin the range boundary: an
+`#elif __has_include` right after a skipped group (inside clang's merged
+range when it is false), a probe on the line after the `#else` that ends
+one, and a probe after a skipped group nested in a live one. The session
+test's spellings that cannot be replayed moved from `#if 0` into live
+lines or `#define` bodies, and a skipped group holding them now keeps its
+TU warm.
 
 ### Darwin producer identity
 

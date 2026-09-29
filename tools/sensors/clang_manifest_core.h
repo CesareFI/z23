@@ -42,9 +42,12 @@ struct cm_file {
 };
 
 /* cm_file.live, per raw byte. A lookup word's mark sits on its first
- * character (past any line splice). Only CM_LIVE_EXEMPT and CM_LIVE_HIDDEN
- * let the scan drop an occurrence, and both are set only outside the
- * file's skipped groups, from clang's own tokens. */
+ * character (past any line splice). Only CM_LIVE_EXEMPT, CM_LIVE_HIDDEN and
+ * CM_LIVE_SKIPPED let the scan drop an occurrence: the first two are set
+ * only outside the file's skipped groups, from clang's own tokens, and the
+ * last covers each group clang_getSkippedRanges reports, less the line of
+ * the directive that opens it (docs/work/SEMANTIC_MANIFEST.md says why no
+ * occurrence there needs a record). */
 enum {
     CM_LIVE_NONE = 0,   /* nothing known: an occurrence here is recorded */
     CM_LIVE_WORD = 1,   /* a lookup word token */
@@ -52,6 +55,7 @@ enum {
     CM_LIVE_EXEMPT = 3, /* a lookup word only tested for being defined */
     CM_LIVE_HIDDEN = 4, /* inside a comment, a literal, a directive's '#'
                          * or another token */
+    CM_LIVE_SKIPPED = 5, /* inside a group the preprocessor skipped */
 };
 
 /* One search directory: as the front end printed it, and canonical. */

@@ -191,7 +191,8 @@ bool cm_lookup_directive(struct cm_core *c, const struct cm_file *includer,
  * reads a resource, without an include directive the front end reports.
  * The scan's invariant: every occurrence of a lookup word in the text of
  * any file the TU reads (a system header's too: its angled searches start
- * at the repo's -I dirs) ends with a record, unless clang's own tokens,
+ * at the repo's -I dirs) ends with a record, unless it lies in a group
+ * clang skipped (less the #elif lines it may evaluate) or clang's own tokens,
  * outside a skipped group, show it is none (cm_floor_file). A word clang
  * lexes as a lookup token (clang_manifest_tokens.c) is replayed where the
  * scan can: a __has_include whose operand is a literal "x" or <x>, or an
@@ -207,7 +208,7 @@ bool cm_lookup_directive(struct cm_core *c, const struct cm_file *includer,
  * __has_include__ words, #embed, an include_next start no slot names, one
  * a line continuation or trigraph runs through, a word in any #define body
  * or -D value, a word not followed by its '(' (an alias's body), one in a
- * skipped group, a header name or #warning or #error text, and, once for
+ * header name or #warning or #error text, and, once for
  * the TU, words some ## could paste into a lookup word
  * (cm_core.paste_piece) - is recorded with no negative claim
  * (MISS_V1_NONE), spelled from "#embed" or "__has_embed" on, so the facts
@@ -878,7 +879,8 @@ static bool cm_floor_is(const struct cm_floor *t, size_t i, const char *w)
 
 /* The occurrence at t[i], if any: recorded unbound unless clang's tokens
  * already gave it a record (a lookup token the scan read) or show it is
- * none (exempt, or hidden, outside a skipped group). */
+ * none (exempt, or hidden, outside a skipped group) or it lies in a
+ * skipped group. */
 static bool cm_floor_at(struct cm_core *c, const struct cm_file *f,
                         const struct cm_floor *t, size_t i)
 {
@@ -890,7 +892,8 @@ static bool cm_floor_at(struct cm_core *c, const struct cm_file *f,
         (e = cm_floor_embed(t->s, i, t->n)) == SIZE_MAX)
         return true;
     v = f->live[t->map[e != SIZE_MAX ? e : i]];
-    if (v == CM_LIVE_HIDDEN || (e == SIZE_MAX && v != CM_LIVE_NONE))
+    if (v == CM_LIVE_HIDDEN || v == CM_LIVE_SKIPPED ||
+        (e == SIZE_MAX && v != CM_LIVE_NONE))
         return true;
     if (e != SIZE_MAX)
         cm_cond_name("#embed ", t->s, cm_skip_space(t->s, e + 5, t->n), t->n,
@@ -902,8 +905,9 @@ static bool cm_floor_at(struct cm_core *c, const struct cm_file *f,
 
 /* Every occurrence of a lookup word in f's text (any spelling of
  * __has_include or __has_embed, as a word or inside one, and every #embed
- * directive, in comments, literals and skipped groups too) ends with a
- * record, unless clang's tokens show it is none. */
+ * directive, in comments and literals too) ends with a
+ * record, unless clang's tokens show it is none or it lies in a skipped
+ * group. */
 static bool cm_floor_file(struct cm_core *c, const struct cm_file *f)
 {
     struct cm_floor t = {0};
@@ -928,7 +932,8 @@ static uint8_t *cm_code_of(const struct cm_file *f, const struct cm_spliced *t)
     if (code == NULL)
         return NULL;
     for (size_t r = 0; r < f->size; r++)
-        if (f->live[r] != CM_LIVE_NONE && f->live[r] != CM_LIVE_HIDDEN)
+        if (f->live[r] != CM_LIVE_NONE && f->live[r] != CM_LIVE_HIDDEN &&
+            f->live[r] != CM_LIVE_SKIPPED)
             code[t->map != NULL ? t->map[r] : r] = f->live[r];
     return code;
 }

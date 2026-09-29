@@ -10,8 +10,8 @@
  *
  * The marks only ever narrow what the scan records (clang_manifest_lookup.c
  * records every occurrence of a lookup word it finds in the text, less the
- * ones marked exempt or hidden), so both are set only where clang's raw
- * tokens are the preprocessor's: outside the skipped groups
+ * ones marked exempt, hidden or skipped), so the first two are set only
+ * where clang's raw tokens are the preprocessor's: outside the skipped groups
  * (clang_getSkippedRanges, less each group's controlling directive line,
  * which the preprocessor evaluates), and only from clang's token kinds (a
  * comment, a literal, a token that is no lookup word) and the #if, #ifdef
@@ -22,11 +22,16 @@
  * is plain text. The raw tokens inside such a span are not marked (so the
  * scan records any lookup word text there), and when they run past it, or
  * across a skipped group's edge, the file is tokenized again from there.
- * Inside a skipped group nothing is marked exempt or hidden, so every
- * occurrence there is recorded. The TU is refused where raw tokens run
- * past a '<' ... '>' span on a #pragma line outside a skipped group (some
- * pragmas take a header name), and when a file's tokens stop short of its
- * last non-blank byte.
+ * Inside a skipped group nothing is marked exempt or hidden: after the
+ * walk the whole group is marked skipped, and the scan records nothing
+ * there, since any change that could make it live makes the TU affected
+ * and sensed again (docs/work/SEMANTIC_MANIFEST.md). clang reports
+ * consecutive skipped groups as one range, which can hold an #elif line
+ * the preprocessor evaluates; the walk reads each #elif line in a range as
+ * live and leaves it out of the mark (cm_tok_keep_line). The TU is refused
+ * where raw tokens run past a '<' ... '>' span on a #pragma line outside a
+ * skipped group (some pragmas take a header name), and when a file's
+ * tokens stop short of its last non-blank byte.
  *
  * A lookup word the preprocessor pastes with ## has no occurrence of its
  * own. Pasting only joins spellings of tokens that exist: ones a #define
@@ -121,6 +126,9 @@ struct cm_tok_walk {
     size_t restart;      /* nonzero: tokenize again from here */
     bool restart_bol;    /* ... at the start of a line */
     const char *refused; /* why the TU is refused, or NULL */
+    uint8_t *keep;       /* per byte: an #elif line inside a skipped range */
+    size_t hash_off;     /* the offset of the line-start '#' last read */
+    bool unskip;         /* the rest of this logical line is such a line */
 };
 
 static size_t cm_tok_offset(CXSourceLocation l)
@@ -444,6 +452,24 @@ static void cm_tok_piece(struct cm_tok_walk *w, CXToken t)
 
 /* ---- directive lines --------------------------------------------------------- */
 
+/* A skipped range clang reports can hold an #elif line the preprocessor
+ * evaluates: consecutive groups it skipped are one range, from the '#'
+ * that opens the first to the name of the directive that ends the last.
+ * The skipping lexer reads that range raw, as clang_tokenize does, so the
+ * walk finds the same '#' and name: from the name on, the line is read
+ * as live, and none of it is left to the skipped-group drop. */
+static void cm_tok_keep_line(struct cm_tok_walk *w, CXToken t, size_t end)
+{
+    static const char *const elif[] = {"elif", "elifdef", "elifndef"};
+    size_t line_end;
+    if (w->keep == NULL || !cm_tok_in(w, t, elif, 3))
+        return;
+    line_end = cm_tok_line_end(w->s, w->n, end, w->trigraphs);
+    if (line_end > w->hash_off)
+        memset(w->keep + w->hash_off, 1, line_end - w->hash_off);
+    w->unskip = true;
+}
+
 /* The directive name after a line-start '#'. */
 static void cm_tok_directive(struct cm_tok_walk *w, CXToken t, size_t end,
                              bool skipped)
@@ -469,7 +495,9 @@ static void cm_tok_directive(struct cm_tok_walk *w, CXToken t, size_t end,
         w->header = 1;
     if (cm_tok_is(w, t, "embed"))
         w->dir = CM_DIR_EMBED;
-    if (!skipped && cm_tok_in(w, t, text, 2))
+    if (skipped)
+        cm_tok_keep_line(w, t, end);
+    else if (cm_tok_in(w, t, text, 2))
         w->restart = cm_tok_line_end(w->s, w->n, end, w->trigraphs);
     w->first_operand = w->dir == CM_DIR_IFDEF;
     w->defd = CM_DEFD_EXPECT;
@@ -578,6 +606,7 @@ static void cm_tok_one(struct cm_tok_walk *w, CXToken t, size_t off,
     }
     if (line_start && cm_tok_hash(w, t, off, end)) {
         w->expect_name = true;
+        w->hash_off = off;
         if (!skipped)
             memset(w->live + off, CM_LIVE_HIDDEN, end - off);
         return;
@@ -681,6 +710,20 @@ static bool cm_tok_crosses(struct cm_tok_walk *w, size_t off, size_t end)
     return true;
 }
 
+/* Place the token [off, end) on its line; whether it lies in a skipped
+ * group (and on no #elif line the preprocessor may evaluate there). */
+static bool cm_tok_place(struct cm_tok_walk *w, size_t off, size_t end)
+{
+    if (cm_tok_newline(w, w->prev_end, off)) {
+        w->bol = true;
+        w->unskip = false;
+    }
+    w->prev_end = end;
+    if (end > w->reach)
+        w->reach = end;
+    return cm_tok_skipped(w, off) && !w->unskip;
+}
+
 /* Walk one tokenization. A comment is whitespace: it neither starts a
  * line nor is a token of one. */
 static void cm_tok_walk_toks(struct cm_tok_walk *w, const struct cm_toks *toks)
@@ -693,12 +736,7 @@ static void cm_tok_walk_toks(struct cm_tok_walk *w, const struct cm_toks *toks)
         bool opens = w->header == 1, line_start, skipped;
         if (cm_tok_crosses(w, off, end))
             return;
-        skipped = cm_tok_skipped(w, off);
-        if (cm_tok_newline(w, w->prev_end, off))
-            w->bol = true;
-        w->prev_end = end;
-        if (end > w->reach)
-            w->reach = end;
+        skipped = cm_tok_place(w, off, end);
         i++;
         if (clang_getTokenKind(t) == CXToken_Comment) {
             if (!skipped)
@@ -748,8 +786,10 @@ static bool cm_tok_pass(struct cm_state *st, struct cm_file *f,
         return cm_fail(&st->core, "cannot tokenize %s", f->path);
     w->restart = 0;
     w->prev_end = from;
-    if (w->restart_bol)
+    if (w->restart_bol) {
         w->bol = true;
+        w->unskip = false;
+    }
     w->restart_bol = false;
     cm_tok_walk_toks(w, &toks);
     clang_disposeTokens(st->tu, toks.t, toks.n);
@@ -761,6 +801,15 @@ static bool cm_tok_pass(struct cm_state *st, struct cm_file *f,
         return cm_fail(&st->core, "cannot tokenize %s past offset %zu",
                        f->path, w->restart);
     return true;
+}
+
+/* Mark each skipped range, less the #elif lines in it the walk kept. */
+static void cm_tok_mark_skipped(struct cm_tok_walk *w)
+{
+    for (size_t k = 0; k < w->nskip; k++)
+        for (size_t i = w->skip[k].a; i < w->skip[k].b; i++)
+            if (w->keep[i] == 0)
+                w->live[i] = CM_LIVE_SKIPPED;
 }
 
 static bool cm_tok_file(struct cm_state *st, struct cm_file *f,
@@ -779,17 +828,20 @@ static bool cm_tok_file(struct cm_state *st, struct cm_file *f,
     if (f->contents == NULL || f->size >= UINT32_MAX)
         return cm_fail(&st->core, "cannot tokenize %s", f->path);
     w.live = zcl_calloc(f->size, 1, "clang_manifest.live");
-    if (w.live == NULL ||
+    w.keep = zcl_calloc(f->size, 1, "clang_manifest.keep");
+    if (w.live == NULL || w.keep == NULL ||
         !cm_tok_skipped_ranges(st->tu, (CXFile)f->key, f->contents, f->size,
                                trigraphs, &skip, &w.nskip))
-        return free(w.live), cm_fail(&st->core, "out of memory");
+        return free(w.live), free(w.keep), cm_fail(&st->core, "out of memory");
     f->live = w.live;
     w.skip = skip;
     do {
         ok = cm_tok_pass(st, f, &w, from);
         from = w.restart;
     } while (ok && from != 0 && from < f->size);
+    cm_tok_mark_skipped(&w);
     free(skip);
+    free(w.keep);
     if (ok && !cm_tok_covered(&w))
         ok = cm_fail(&st->core, "cannot tokenize %s: tokens end at %zu",
                      f->path, w.reach);
