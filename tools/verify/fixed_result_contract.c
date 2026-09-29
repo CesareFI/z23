@@ -191,25 +191,27 @@ static size_t fr_kind_max(const struct zcl_fr_spec *s)
     return s->max;
 }
 
+static const char *fr_root_check(const uint8_t *p, size_t n)
+{
+    if (n != 32u) return ZCL_FR_WHY_FIELD_MALFORMED;
+    return fr_zero(p, n) ? ZCL_FR_WHY_HASH_ZERO : NULL;
+}
+
 static const char *fr_value_check(const struct zcl_fr_spec *s,
                                   const uint8_t *p, size_t n)
 {
     if (n > fr_kind_max(s)) return ZCL_FR_WHY_OVERSIZE;
     if (n && !p) return ZCL_FR_WHY_ARGUMENTS;
+    bool ok = false;
     switch (s->kind) {
-    case ZCL_FR_KIND_TEXT:
-        return fr_graph(p, n) ? NULL : ZCL_FR_WHY_FIELD_MALFORMED;
-    case ZCL_FR_KIND_ROOT:
-        if (n != 32u) return ZCL_FR_WHY_FIELD_MALFORMED;
-        return fr_zero(p, n) ? ZCL_FR_WHY_HASH_ZERO : NULL;
-    case ZCL_FR_KIND_U64:
-        return n == 8u ? NULL : ZCL_FR_WHY_FIELD_MALFORMED;
-    case ZCL_FR_KIND_BLOB:
-        return n == 0 || !memchr(p, 0, n) ? NULL : ZCL_FR_WHY_FIELD_MALFORMED;
-    case ZCL_FR_KIND_EXACT:
-        return n == s->max ? NULL : ZCL_FR_WHY_FIELD_MALFORMED;
+    case ZCL_FR_KIND_TEXT: ok = fr_graph(p, n); break;
+    case ZCL_FR_KIND_ROOT: return fr_root_check(p, n);
+    case ZCL_FR_KIND_U64: ok = n == 8u; break;
+    case ZCL_FR_KIND_BLOB: ok = n == 0 || !memchr(p, 0, n); break;
+    case ZCL_FR_KIND_EXACT: ok = n == s->max; break;
+    default: return ZCL_FR_WHY_ARGUMENTS;
     }
-    return ZCL_FR_WHY_ARGUMENTS;
+    return ok ? NULL : ZCL_FR_WHY_FIELD_MALFORMED;
 }
 
 static const char *fr_field(struct fr_cursor *c, const struct zcl_fr_spec *s,

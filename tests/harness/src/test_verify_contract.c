@@ -436,7 +436,7 @@ static int test_vc_packet(void)
         ASSERT(vc_token(vc_packet_why(f.out, f.out_len),
                         ZCL_FR_WHY_ARTIFACT_ORDER));
         ASSERT(vc_split(bytes, len, &f));
-        vc_set_text(&f, vc_value_of(&f, "scratch"), "/tmp/result.Zz0123");
+        vc_set_text(&f, vc_value_of(&f, "scratch"), "/work/result.Zz01_3");
         ASSERT(vc_join(&f));
         ASSERT(vc_token(vc_packet_why(f.out, f.out_len), ZCL_FR_WHY_SCRATCH));
         ASSERT(vc_split(bytes, len, &f));

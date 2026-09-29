@@ -73,6 +73,16 @@ static void vs_pub(const uint8_t seed[32], uint8_t pub[32])
     ed25519_keypair(pub, secret, seed);
 }
 
+static bool vs_write_pubkey(const char *path)
+{
+    uint8_t pub[32];
+    char hex[66];
+    vs_pub(vs_seed, pub);
+    zcl_hex_encode(pub, 32, hex);
+    hex[64] = '\n'; hex[65] = '\0';
+    return vs_write(path, hex, 65, 0644);
+}
+
 static bool vs_fixture_make(struct vs_fixture *f)
 {
     memset(f, 0, sizeof(*f));
@@ -102,12 +112,7 @@ static bool vs_fixture_make(struct vs_fixture *f)
                                     f->expected.closure_sha3, key);
     if (!vs_path(f->key_dir, f->store, key) ||
         mkdir(f->key_dir, 0755) != 0) return false;
-    uint8_t pub[32];
-    char hex[66];
-    vs_pub(vs_seed, pub);
-    zcl_hex_encode(pub, 32, hex);
-    hex[64] = '\n'; hex[65] = '\0';
-    if (!vs_write(f->pubfile, hex, 65, 0644)) return false;
+    if (!vs_write_pubkey(f->pubfile)) return false;
     f->box.known = true;
     return setenv(VS_KEY_ENV, f->pubfile, 1) == 0;
 }
