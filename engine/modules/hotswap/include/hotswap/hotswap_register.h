@@ -2,17 +2,10 @@
  *
  * ONE registration form for both hot-swap generation tiers.
  *
- * Registering a controller used to cost about forty lines: two nearly
- * identical leaf tables, two #ifdef blocks choosing different headers, and a
- * hand-written structural self-test repeated verbatim per file. The tables
- * differ only in a struct name — Tier-1 spells its fields {path, handler} and
- * Tier-2 spells them {name, fn} — and both are plain positional
- * {string, function} initialisers, so one form can serve both.
- *
- * That tax was not free. A controller sitting at its file-size baseline could
- * not be registered at all, because forty lines of boilerplate tripped the
- * size ratchet before any of it did useful work. Making the fast dev loop
- * reach more of the tree means making registration nearly free.
+ * The Tier-1 and Tier-2 leaf tables differ only in a struct name — Tier-1
+ * spells its fields {path, handler} and Tier-2 spells them {name, fn} — and
+ * both are plain positional {string, function} initialisers, so one form
+ * serves both and keeps registration nearly free of boilerplate.
  *
  * Use it like this, ONCE at file scope, with no trailing semicolons:
  *

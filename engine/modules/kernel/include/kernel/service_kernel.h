@@ -22,13 +22,8 @@
  * the caller decides what to do — but it does NOT cancel the services
  * registered after it, and nothing already started is unwound.
  *
- * The 2026-09-08 node1 outage is what this flag is for. rpc_http was the
- * one REQUIRED service in the frontend kernel. Its bind failed once (the
- * outgoing process still held port 18232), so start_all() rolled back
- * file_service and rom_seed and returned before ever calling
- * https_explorer's start. Nothing about the public site depended on the
- * RPC front door binding, but the site stayed down for 27 minutes because
- * one sibling's transient port conflict cancelled it.
+ * Use it for a service whose siblings do not depend on it, so a transient
+ * failure of one does not cancel the others.
  *
  * OPTIONAL means "its failure is not a failure"; INDEPENDENT means "its
  * failure is a failure, and it is ITS failure". Neither weakens the other:
@@ -76,10 +71,8 @@ struct zcl_service_entry {
     struct zcl_service_spec spec;
     enum zcl_service_state state;
     const char *failure_reason;
-    /* How long this service's start() hook ran, microseconds. Kept per
-     * entry because "the frontend took 2.4 seconds" was all the boot log
-     * said on 2026-09-08 — it never named which of the eight services
-     * spent it, or which one failed. */
+    /* How long this service's start() hook ran, microseconds. Per entry so
+     * the boot log can name which service spent the time. */
     int64_t start_us;
 };
 

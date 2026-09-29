@@ -130,14 +130,11 @@ static int si_copy_exact(int src_fd, int img_fd, uint64_t expected)
 /* Apply the seals and then PROVE they took, rather than trusting that a
  * successful-looking fcntl did what was asked.
  *
- * The read-back is not defensive padding. F_ADD_SEALS returns 0 only when the
- * kernel applied the exact set requested, but the set that ends up on the file
- * is the property the rest of the system depends on, and it is one cheap
- * syscall away from being observed instead of assumed. If a future kernel, a
- * seccomp filter, an LSM, or a filesystem that does not support sealing ever
- * makes those two things differ, this is where it is caught — at the moment of
- * sealing, with a message that says so — rather than three layers up as a
- * mysterious digest mismatch after someone rewrote the "immutable" image.
+ * The read-back is required. The seal set that ends up on the file is the
+ * property the rest of the system depends on; if a kernel, seccomp filter,
+ * LSM, or filesystem without sealing support makes it differ from the request,
+ * it is caught here, at sealing time, not later as a digest mismatch on a
+ * rewritten "immutable" image.
  *
  * WHY F_SEAL_SEAL IS NOT IN THE SET
  * ---------------------------------

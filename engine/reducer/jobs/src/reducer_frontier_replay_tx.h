@@ -76,7 +76,7 @@ bool reducer_frontier_replay_stale_proof_tx(struct sqlite3 *db,
 bool reducer_frontier_replay_backfill_created_outputs_projection(
     struct main_state *ms, int replay_first, int backfill_top);
 
-/* Lane A1 ordering proof (test observability). Returns the monotonic sequence
+/* Ordering proof (test observability). Returns the monotonic sequence
  * numbers stamped at the last committed kernel-authoritative rewind (TX1) and
  * the last committed projection-side created_outputs backfill (TX2) of the
  * stale-script reorg unwind. A projection commit ALWAYS carries a strictly

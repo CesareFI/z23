@@ -44,7 +44,7 @@
  *   ENV_PAD       ~64 KiB of padding variables. This shifts the initial stack
  *                 pointer, which is how an uninitialised automatic or a
  *                 one-past-the-end read changes its answer without any code
- *                 changing. It has caught real bugs in this tree.
+ *                 changing.
  *   JOBS_LOW      the runner's worker pool reduced. Different pid sequence,
  *                 different parent timing, different concurrent load, and a
  *                 different set of groups running beside any given group.

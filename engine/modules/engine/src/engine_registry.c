@@ -84,19 +84,14 @@ static const struct engine_vendor k_engine_vendors[] = {
         /* Z.ai's GLM. Its chat surface is OpenAI-compatible, which is why it
          * shares a wire dialect with grok rather than getting its own.
          *
-         * The url is the CODING-PLAN endpoint, and that is a measurement,
-         * not a preference. Probed on 2026-09-02 with this host's key:
-         * /api/paas/v4/chat/completions answered HTTP 200 in 506ms with a
-         * body carrying neither `choices` nor `error`, so the decoder
-         * refused it and the operator was told the decoder was wrong. The
-         * same call to /api/coding/paas/v4/chat/completions answers with a
-         * normal completion. A coding-plan key is what a subscription buys
-         * on this machine, so it is the default; a general-plan key points
-         * ZAI_CHAT_URL at https://api.z.ai/api/paas/v4/chat/completions and
-         * changes nothing else.
+         * The url is the CODING-PLAN endpoint: the general
+         * /api/paas/v4/chat/completions answers HTTP 200 with a body carrying
+         * neither `choices` nor `error` for a coding-plan key. A general-plan
+         * key points ZAI_CHAT_URL at
+         * https://api.z.ai/api/paas/v4/chat/completions and changes nothing
+         * else.
          *
-         * glm-5.3 rather than glm-4.6: it is what the plan covers and what
-         * the same subscription's own CLI configuration names. */
+         * glm-5.3 is the model the plan covers. */
         .id            = "glm",
         .display       = "Z.ai GLM (HTTPS API, coding plan)",
         .url           = "https://api.z.ai/api/coding/paas/v4/chat/completions",
@@ -111,11 +106,9 @@ static const struct engine_vendor k_engine_vendors[] = {
         .max_retries   = 3,
     },
     {
-        /* Added on 2026-08-30 to test the claim this table makes, not because
-         * the tree needs a third API vendor: a new OpenAI-compatible engine
-         * must cost ONE ROW and no change anywhere else. It cost one row.
-         * Nothing in the request builder, the decoder, the applier, or the
-         * verdict knows this vendor exists. */
+        /* A new OpenAI-compatible engine costs ONE ROW and no change
+         * anywhere else: nothing in the request builder, the decoder, the
+         * applier, or the verdict knows this vendor. */
         .id            = "openai",
         .display       = "OpenAI (HTTPS API)",
         .url           = "https://api.openai.com/v1/chat/completions",
@@ -161,18 +154,11 @@ static const struct engine_vendor k_engine_vendors[] = {
         .max_retries   = 1,
     },
     {
-        /* The Z.ai agent CLI, subscription-authenticated. Added 2026-08-30
-         * after a probe found the truth about this machine: every HTTPS row
-         * in this table answers 429 for want of credit, while `zai` and
-         * `grok` both answer in under a second on a subscription. The table
-         * held one CLI row and no way to express a second one, so the only
-         * two engines that actually work here were one hard-coded argv apart
-         * from being unreachable.
+        /* The Z.ai agent CLI, subscription-authenticated (no per-call
+         * credit, unlike the HTTPS rows).
          *
          * glm-5.3-flash rather than the HTTPS row's model: it is the fast
-         * model the subscription covers, and a dispatch harness that makes an
-         * operator wait on a frontier model for a two-line answer is one they
-         * stop using. */
+         * model the subscription covers. */
         .id            = "glm-cli",
         .display       = "Z.ai GLM (installed agent CLI, subscription auth)",
         .url           = NULL,

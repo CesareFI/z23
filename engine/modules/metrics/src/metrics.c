@@ -239,9 +239,7 @@ static int estimate_net_height(const struct consensus_params *cp,
 }
 
 /* `ext` is this tick's external-gauge snapshot (see metrics.h): it carries
- * the tip height/time and the peer count, which used to be read here with
- * direct active_chain_tip() / connman_get_node_count() calls into
- * core/modules/validation and core/modules/net. */
+ * the tip height/time and the peer count. */
 static int print_stats(struct metrics_context *ctx,
                        const struct metrics_external_gauges *ext)
 {

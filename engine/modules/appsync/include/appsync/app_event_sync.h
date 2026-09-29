@@ -8,10 +8,8 @@
  * A dapp's `AppEvent` rows are already immutable, chained and
  * signature-verified where they are STORED (engine/models/src/app_event.c),
  * and the App platform already says exactly what a signed event is on the
- * wire (framework/app_platform.h). What did not exist was a way for one
- * node to obtain another node's rows: every event a box held had been
- * written by that box. A SaaS that only ever serves what one machine wrote
- * is not replicated, it is single-homed with extra steps.
+ * wire (framework/app_platform.h). This module lets one node obtain another
+ * node's rows, so the app is replicated rather than single-homed.
  *
  * THE SHAPE IS THE FLEET LEDGER'S, DELIBERATELY
  * ---------------------------------------------

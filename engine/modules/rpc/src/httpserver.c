@@ -47,20 +47,11 @@
  * peer that has hung up with nothing to serve, or an entry that has
  * waited past RPC_HTTP_QUEUE_WAIT_MS.
  *
- * Why this exists: g_client_queue_count used to be a one-way ratchet.
- * Its only decrementer was a worker returning from request dispatch,
- * which may enter the node — a wedged RPC method,
- * or a client that stops reading a large response (there was no send
- * deadline either), parks a worker forever. Four such workers pinned
- * the count at RPC_HTTP_QUEUE_CAP for the life of the process: every
- * later client got an instant 503 "RPC server busy" while the listener
- * thread sat healthily in accept(), and every queued fd stayed open in
- * CLOSE-WAIT with its unread request still in the receive queue,
- * because the only owner that could ever close it never arrived. A
- * long-running node's RPC front door died and never came back.
- *
- * With the rules below the worst case is bounded by the residency
- * deadline, not by the process lifetime. */
+ * Why: a worker parked in request dispatch (a wedged RPC method, or a client
+ * that stops reading a large response) would otherwise pin
+ * g_client_queue_count at RPC_HTTP_QUEUE_CAP, leaving later clients with an
+ * instant 503 and queued fds in CLOSE-WAIT. With the rules below the worst
+ * case is bounded by the residency deadline, not by the process lifetime. */
 
 /* How long a connection may sit in the admission queue before the
  * queue gives it up. Defaults to the per-request watchdog budget
@@ -101,10 +92,9 @@ static struct rpc_http_request_context g_request_context;
  * supports `basic_auth: { username_file: ..., password_file: ... }` —
  * point
  * those at the two halves of `~/.zclassic-c23/.cookie` and the
- * scraper authenticates exactly like `zclassic-cli`. Previously the
- * endpoint was open by design, exposing peer counts / tx volume /
- * mempool size to anyone who could reach the TLS listener — usable
- * for network fingerprinting. The HTTP middleware (rate-limit + ban
+ * scraper authenticates exactly like `zclassic-cli`. An open endpoint
+ * would expose peer counts / tx volume / mempool size to anyone who can
+ * reach the TLS listener (network fingerprinting). The HTTP middleware (rate-limit + ban
  * + loopback bypass) still runs first, unchanged. */
 static pthread_t g_worker_threads[RPC_HTTP_WORKERS];
 static size_t g_workers_started = 0;

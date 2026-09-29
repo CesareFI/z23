@@ -239,10 +239,9 @@ void reducer_drain_spin_reset_for_testing(void)
 }
 #endif
 
-/* ── Drain-exit telemetry (drive+fsync telemetry gap 1) ──────────────────
+/* ── Drain-exit telemetry ─────────────────────────────────────────────────
  * reducer_drain_core's round loop can stop for several reasons, but only
- * TWO of them mean the same thing an operator diagnosing an IO/throughput
- * regression cares about:
+ * TWO of them matter to an operator diagnosing IO/throughput:
  *   - drain_exit_converged_total: a round found genuinely NO more work
  *     (adv == 0) — the fold is caught up, full stop.
  *   - drain_exit_budget_total: the wall-clock budget elapsed, OR the round
@@ -335,9 +334,7 @@ void reducer_drain_exit_stats_reset_for_testing(void)
 /* ── R2: quiescent-round consumer skip ─────────────────────────────────────
  * A drain round that finds no work pays one BEGIN IMMEDIATE + ROLLBACK pair
  * per stage (stage_batch_begin/end) — eight empty write-lock transactions to
- * discover convergence, ~57% of all opened batches on a 2026-09-14 cold-sync
- * stopwatch (7524/13124, and batch_empty_total == one converged round per
- * kick). The skip below removes that overhead for the six CONSUMER stages
+ * discover convergence. The skip below removes that overhead for the six CONSUMER stages
  * with zero semantic change, using the one signal that is complete by
  * construction for them: the eight in-memory stage cursors. A consumer stage
  * (everything except header_admit and body_fetch) creates durable work for

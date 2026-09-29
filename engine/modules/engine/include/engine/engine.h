@@ -19,21 +19,20 @@
  * enforced structurally — it accepts no exit code and no model claim, so
  * there is no way to write the wrong thing without changing the function.
  *
- * This is not theoretical. The predecessor Grok lane measured THREE ways an
- * engine exits 0 having written nothing, all with an empty diff:
+ * Three ways an engine exits 0 having written nothing, all with an empty
+ * diff:
  *
  *   (a) A forced response schema is satisfied on turn ONE by a
- *       {"status":"starting"} object, which ENDS the turn. Measured 3 times
- *       in 17 lanes on this host. A prose warning did not stop it. Nothing
- *       here ever asks a vendor to force a schema; the output contract is
- *       stated IN BAND, at the end of the prompt.
+ *       {"status":"starting"} object, which ENDS the turn. Nothing here ever
+ *       asks a vendor to force a schema; the output contract is stated IN
+ *       BAND, at the end of the prompt.
  *   (b) A permission mode in which the engine narrates a plan and never
- *       edits. Measured 2026-08-29.
+ *       edits.
  *   (c) An unhandled timeout: the unit is killed mid-thought and the caller
  *       sees a partial file set. A timeout here reports itself AS a timeout
  *       (ENGINE_VERDICT_TIMEOUT), never as a pass and never as a plain fail.
  *
- * And the fourth, measured the same night: a unit that produced genuinely
+ * And a fourth: a unit that produced genuinely
  * good work and printed NO closing report at all. A harness that trusts
  * reports throws that work away. This one does not read reports.
  *
@@ -248,9 +247,8 @@ bool engine_needs_key(const struct engine_vendor *v);
  * It is a CLI row on purpose. A default that needs an API key fails on a
  * fresh host with a message about credentials, which reads as "this tool is
  * broken" rather than "you have not chosen an engine"; a subscription CLI
- * that is already installed just works. Measured on 2026-08-30 this is also
- * the fastest engine the tree can reach — 7s against 41s for the same
- * trivial prompt — and a dispatch harness an operator waits on is one they
+ * that is already installed just works. It is also the fastest engine the
+ * tree can reach, and a dispatch harness an operator waits on is one they
  * stop using.
  *
  * Defaulting WHICH engine is not defaulting WHETHER to dispatch. Every path

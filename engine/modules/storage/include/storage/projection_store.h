@@ -2,20 +2,15 @@
  *
  * projection_store — the owner of the `progress.kv` projection file.
  *
- * Why this exists (Wave A2 / D4 → A3 flip)
- * ----------------------------------------
+ * Why this exists
+ * ---------------
  * The reducer kernel folds chain state under progress_store_tx_lock() +
  * BEGIN IMMEDIATE on the progress_store connection. Projection co-writers
- * (the -addressindex / -txindex folds) historically shared that ONE handle
- * and ONE tx lock, so a projection batch's BEGIN IMMEDIATE serialised on the
- * exact mutex the reducer drive needs — projection work could stall H*.
- *
- * A2/D4 gave those co-writers their OWN connection + recursive tx mutex. The
- * A3 flip then moved the kernel tables into their own physical file
- * (consensus.db, owned by progress_store), leaving progress.kv as the
- * dedicated projection file this store owns outright. A projection BEGIN
- * IMMEDIATE now shares neither the reducer's process mutex NOR its WAL journal
- * — full physical isolation of the two write actors.
+ * (the -addressindex / -txindex folds) have their OWN connection + recursive
+ * tx mutex, and progress.kv is the dedicated projection file this store owns
+ * outright (kernel tables live in consensus.db, owned by progress_store). A
+ * projection BEGIN IMMEDIATE shares neither the reducer's process mutex NOR
+ * its WAL journal — full physical isolation of the two write actors.
  *
  * LOCK ORDER LAW (inviolable)
  * ---------------------------
@@ -53,8 +48,7 @@
 #define PROJECTION_STORE_PATH_MAX 1024
 
 /* Open the <datadir>/progress.kv projection file in WAL mode, creating it if
- * absent (this store OWNS it after the A3 flip — the kernel now lives in
- * consensus.db). The Class C projection tables it holds are fully rebuildable,
+ * absent (this store OWNS it; the kernel lives in consensus.db). The Class C projection tables it holds are fully rebuildable,
  * so this does not run the kernel's candidate-refusal gate (there is no
  * consensus-state candidate to refuse here). It DOES run the same PRAGMA
  * quick_check integrity gate as the kernel store on a dirty/unknown open: a
@@ -76,23 +70,17 @@ bool projection_store_open(const char *datadir);
 
 /* ── running that integrity scan OFF the boot thread ──────────────────
  *
- * THE INCIDENT. A 2.36 GB progress.kv with no clean-close receipt put the
- * boot thread inside ONE synchronous, unpaced sqlite3_step("PRAGMA
- * quick_check(1)") for 62 minutes on a 7200 rpm fleet box. RPC, P2P and the
- * sd_notify READY the unit waits for were all downstream of that step, so
- * `systemctl status` said `activating (start)` for an hour while the disk
- * worked perfectly. A restart before projection_store_close re-arms the same
- * scan, so the box could not boot its way out of it either.
- *
- * THE FIX IS NOT TO SKIP THE SCAN. It is to stop running it on the thread
- * that owes the operator a listening node. node.db solved the identical
- * problem first (see config/boot_fast_restart.h): an existing store with no
- * verified-clean binding defers its quick_check to one paced background scan
- * that runs after READY, in slices under the storage-pacing maintenance
- * token, and fail-closes through EV_OPERATOR_NEEDED. This is the same
- * contract for progress.kv, wired the same way — through a probe the boot
- * layer installs, so a plain projection_store_open() (tests, tools, any
- * non-boot caller) keeps the synchronous gate it has always had.
+ * A synchronous, unpaced quick_check on a multi-GB progress.kv with no
+ * clean-close receipt would hold the boot thread (RPC, P2P and sd_notify
+ * READY are downstream of it), and a restart before projection_store_close
+ * re-arms the same scan. The scan is not skipped; it stops running on the
+ * boot thread. As for node.db (see config/boot_fast_restart.h): an existing
+ * store with no verified-clean binding defers its quick_check to one paced
+ * background scan that runs after READY, in slices under the storage-pacing
+ * maintenance token, and fail-closes through EV_OPERATOR_NEEDED. It is wired
+ * through a probe the boot layer installs, so a plain
+ * projection_store_open() (tests, tools, any non-boot caller) keeps the
+ * synchronous gate.
  *
  * The probe is asked ONLY when there is no clean-close receipt, and answers
  * "is deferring this file's scan the right call for this boot". Returning

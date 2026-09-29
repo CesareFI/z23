@@ -37,13 +37,13 @@
 /* Why the request was armed. The class is RECORDED IN THE REQUEST FILE because
  * the boot that later decides whether the request is still warranted is a
  * DIFFERENT boot with a different view of the datadir, and without the reason
- * it can only guess. The live failure this exists to stop: boot arms a request
- * because the block index failed its post-restore integrity check (mismatched
- * pprev/height links far below the tip), and the next boot discards that same
- * request because derived coins-best covers the anchor — a judgement about
+ * it can only guess. The failure this stops: boot arms a request because the
+ * block index failed its post-restore integrity check (mismatched pprev/height
+ * links far below the tip), and the next boot discards that same request
+ * because derived coins-best covers the anchor — a judgement about
  * TRANSPARENT COINS that says nothing about block-index links. The request
- * never survives to be consumed, the attempt count never climbs, and the node
- * crash-loops at "attempt 1/3" forever.
+ * would never be consumed, the attempt count never climbs, and the node
+ * would crash-loop at "attempt 1/3".
  *
  * The class is monotonic: escalating from UNSPECIFIED to INDEX_INTEGRITY
  * sticks for the episode, and a later UNSPECIFIED arming never demotes it. */
@@ -58,7 +58,7 @@ enum boot_auto_reindex_reason {
     /* The block index itself failed its integrity check: active_chain
      * height/pprev MISMATCHES (not merely holes above the extent). Coins-best
      * coverage must NOT retire this — coins-best is derived transparent state
-     * and cannot witness a broken link at h=2004318 under a tip at h=3172671.
+     * and cannot witness a broken link far below the tip.
      * Only an actual reindex (or the bounded budget running out) retires it. */
     BOOT_AUTO_REINDEX_REASON_INDEX_INTEGRITY = 1,
 };
@@ -131,11 +131,8 @@ void boot_auto_reindex_clear(const char *datadir);
  * withdraw_stale_reindex_request. Each deletion resets the attempt count to
  * zero, so the next boot re-detects the identical damage, writes a fresh
  * count=1, and restarts — a bounded budget that can never be spent. That is
- * the "attempt 1/3 forever" restart loop observed on a soak node whose
- * post-restore check reported the SAME numbers on every boot
- * (tip_window_holes=10000 total_holes=31768 mismatches=630 first at
- * h=2004318, zero_nbits=0). Closing one clearing rule at a time does not fix
- * it; the count has to stop being derived from the request's lifetime.
+ * the "attempt 1/3 forever" restart loop. The count must not be derived from
+ * the request's lifetime.
  *
  * This ledger records the attempt count against the FINDING instead: a
  * signature over the measured integrity numbers, in its own top-level file

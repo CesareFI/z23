@@ -471,7 +471,7 @@ void simnet_wire_byzantine_observe_event(struct simnet_wire *wire,
                 true);
             (void)byz_record_unchanged(wire);
             /* NOTE: no manual peer_scoring_record here. Production
-             * process_headers() (core/modules/net/src/msg_headers.c, lane A2) now
+             * process_headers() (core/modules/net/src/msg_headers.c)
              * scores an objectively-forged header page itself
              * (PEER_OFFENCE_INVALID_HEADER, dos>0), mirroring how
              * msg_blocks.c has always scored invalid blocks. This harness

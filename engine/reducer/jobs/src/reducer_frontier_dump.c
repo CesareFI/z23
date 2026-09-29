@@ -528,12 +528,10 @@ bool reducer_frontier_dump_state_json(struct json_value *out, const char *key)
                       coins_ok && coins_found && coins_applied - 1 > hstar);
 
     /* Per-cursor run-ahead marking. A cursor above H* has consumed heights
-     * nothing has proven: on the 2026-07-27 one-block fork at 3195363, five
-     * cursors read 3195370 while H* was 3195362 — work done over the LOSING
-     * branch, every height of it clamped back by the reorg repair. The dump
-     * printed those numbers bare, and a reader took them for a better height
-     * than H*. Derived here at query time from (cursor, hstar), never stored:
-     * a persisted copy of a comparison is a second copy of the fact. */
+     * nothing has proven (work possibly over a losing branch), so it must
+     * not read as a better height than H*. Derived here at query time from
+     * (cursor, hstar), never stored: a persisted copy of a comparison is a
+     * second copy of the fact. */
     struct json_value cursors = {0};
     json_set_array(&cursors);
     int64_t cursors_above = 0;

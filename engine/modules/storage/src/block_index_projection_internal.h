@@ -31,18 +31,12 @@
 
 /* Page cache for the hash-keyed WITHOUT ROWID block_index B-tree.
  *
- * Measured on a quiet HDD box (iostat): the consensus-state bundle
- * exporter sat >20 min at boot in block_index_projection_catch_up()
- * (called from engine/composition/src/boot_projections.c BEFORE the
- * BLOCK_INDEX_LOADED stage is recorded) doing 50-66 random reads/s of
- * 4-16 KB with 24-54 ms await, plus 15 MB/s write bursts at every
- * 1000-event batch commit — because create_schema() clusters
- * block_index on `hash BLOB PRIMARY KEY ... WITHOUT ROWID` (a B-tree
- * keyed on random bytes) and apply_pragmas() previously set only
- * journal_mode=WAL, synchronous=NORMAL, foreign_keys=ON,
- * busy_timeout=5000, temp_store=MEMORY. SQLite's default ~2 MB page
- * cache made every exists_stmt/ins_stmt lookup in catch_up_cb an
- * uncached random seek.
+ * create_schema() clusters block_index on `hash BLOB PRIMARY KEY ... WITHOUT
+ * ROWID` (a B-tree keyed on random bytes), so with SQLite's default ~2 MB
+ * page cache every exists_stmt/ins_stmt lookup in catch_up_cb (called from
+ * engine/composition/src/boot_projections.c before the BLOCK_INDEX_LOADED
+ * stage is recorded) is an uncached random seek. On an HDD that dominates
+ * boot time, so apply_pragmas() sizes the cache explicitly.
  *
  * PRAGMA cache_size is negative KiB. mmap stays 0: a hash-keyed table
  * gains nothing from mmap on a rotational disk and the process may be

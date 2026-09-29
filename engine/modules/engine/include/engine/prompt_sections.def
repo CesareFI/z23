@@ -2,13 +2,8 @@
  *
  * prompt_sections — the declared SHAPE of a dispatch prompt.
  *
- * The prompt a unit receives used to be whatever string concatenation in
- * tools/engine_unit.c happened to produce. That is how the rules block went
- * missing from every CLI dispatch this repository has ever made: no test
- * links that tool, so nothing could state what the prompt is supposed to
- * contain, so nothing could notice a part of it was gone.
- *
- * This file states it. Each row names one section, when it must be present,
+ * This file states what a unit's prompt must contain (tools/engine_unit.c
+ * composes it). Each row names one section, when it must be present,
  * and a literal substring that proves it is. engine_prompt_audit_text()
  * checks a composed prompt against these rows and engine_unit refuses to
  * dispatch a prompt missing a required one. A section that is present but

@@ -5,7 +5,7 @@
  * addr/addrv2 gossip (core/modules/net/src/msgprocessor_inv.c::process_addr) and the
  * whole-network crawler (engine/services/src/network_crawler.c) both learn
  * "node X told us about address Y" — that is one directed edge in the
- * ZClassic P2P topology graph. Nothing previously recorded it; this module
+ * ZClassic P2P topology graph. This module
  * banks it durably in its own dedicated sqlite file (topology.db), owned
  * directly by this TU (no event log, no projection_consumer — a plain
  * bounded upsert table, opened once at boot like progress_store).

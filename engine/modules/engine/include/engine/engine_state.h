@@ -3,13 +3,11 @@
  * engine_state — a model's own account of a unit carried across turns.
  *
  * ── WHY THIS EXISTS ───────────────────────────────────────────────────────
- * The harness runs a unit as up to --turns attempts, and each turn used to
- * start blind: a fresh prompt, no memory of what the model just tried or why.
- * One flash unit burned 127,536 bytes of reasoning on turn one and produced
- * no answer; turn two had none of it. The ARC-AGI-3 "provider adapter"
- * harness scored well doing the opposite — it accumulates the model's own
- * reasoning across turns and lets the model compact its own history rather
- * than have the harness truncate it.
+ * The harness runs a unit as up to --turns attempts. Without carried state
+ * each turn starts blind: a fresh prompt, no memory of what the model just
+ * tried or why. This module accumulates the model's own reasoning across
+ * turns and lets the model compact its own history rather than have the
+ * harness truncate it.
  *
  * This module is the model-neutral half of that: it does not read any
  * vendor's reasoning field (glm, glm-cli and the fixture engine have none in

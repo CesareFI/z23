@@ -2,11 +2,7 @@
  *
  * engine_cli — which arguments an installed agent CLI receives.
  *
- * This used to be a fixed array inside tools/engine_unit.c, shaped around the
- * one CLI the tree happened to dispatch to. That is why the second one never
- * arrived: the owner's machine held a working subscription to it, and the
- * only thing standing in the way was seven hard-coded strings in a program no
- * test links. A row in a table cannot go missing that way.
+ * Each CLI is a row in a table; adding one needs no code change.
  *
  * See engine/engine.h for the placeholder vocabulary and why a flag a vendor
  * lacks is ABSENT from its row rather than mapped onto something close.

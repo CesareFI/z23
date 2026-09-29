@@ -21,9 +21,8 @@
  * storage/projection_consumer.c, the shared event-log consumer implementation
  * they're built on) and every other caller of
  * `projection_consumer_exec_sql()` (storage/projection_consumer.h) share
- * ONE tagged exec-and-log body instead of each keeping a private copy —
- * the module-prefix tagging that used to require a private copy is now a
- * `log_tag` argument.
+ * ONE tagged exec-and-log body instead of each keeping a private copy;
+ * module-prefix tagging is the `log_tag` argument.
  *
  * Divergent siblings that must keep their LOCAL copies and do NOT include
  * this header: block_index_projection.c (mono_now_ms, 5-pragma loop

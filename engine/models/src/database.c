@@ -319,7 +319,7 @@ static bool prepare_statements(struct node_db *ndb)
 }
 
 /* node.db cache_size/mmap_size derive from measured RAM (util/hw_profile.h),
- * clamped to this file's historical ceilings (64 MiB / 256 MiB) — same fixed
+ * clamped to this file's ceilings (64 MiB / 256 MiB) — same fixed
  * values on any >=2 GiB-RAM box, scaling DOWN on constrained ones per
  * test_db_pragma_tuning. Do NOT raise the mmap ceiling without rereading the
  * boot_index.c:306 landmine (stale mmap pages can SIGSEGV above 256 MB). */
@@ -383,10 +383,9 @@ static void db_set_pragmas(sqlite3 *db)
      * after open_raw returns. */
     /* The WAL bound belongs HERE, on the open, not only in the end-of-phase
      * restore node_db_normal_mode() performs: both settings are
-     * per-connection, and a run killed mid-sync never reaches a restore. The
-     * default this batch used to inherit was an autocheckpoint with NO
-     * file-size cap, which folds the WAL back into the database but leaves
-     * the .wal file at its high-water mark for the life of the connection.
+     * per-connection, and a run killed mid-sync never reaches a restore. An
+     * autocheckpoint with NO file-size cap leaves the .wal file at its
+     * high-water mark for the life of the connection.
      * See models/database_internal.h for what each setting bounds. */
     char sql[512];
     snprintf(sql, sizeof(sql),
@@ -564,15 +563,8 @@ static bool node_db_open_abort(struct node_db *ndb)
  * restart path SKIPS (boot_shutdown_marker_quick_check_probe defers it to
  * the background on an unverified shutdown marker). When it is skipped the
  * corruption instead surfaces from the first baseline DDL statement that
- * has to read a damaged page — measured on a fleet node as
- *
- *   [db] schema[10] failed: database disk image is malformed
- *        (sql=CREATE INDEX IF NOT EXISTS idx_tx_block ON transactions(...))
- *
- * — and that path used to `return false` all the way out of the open, so
- * the node reached its node_db_unopened boot gate with a store the code
- * two branches above knows exactly how to repair. Same fault, same repair,
- * one attempt: the retry runs the schema build once more on the fresh
+ * has to read a damaged page ("database disk image is malformed"). Same
+ * fault, same repair, one attempt: the retry runs the schema build once more on the fresh
  * store and any second failure aborts the open for real. */
 static bool db_error_is_corruption(sqlite3 *db)
 {

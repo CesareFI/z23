@@ -21,17 +21,13 @@
 /* Why a dedicated thread (the never-freeze law)
  * ---------------------------------------------
  * The condition engine's detect() probes and remedies can each run for
- * seconds: SQL over a 3.1M-header progress store, a reducer-frontier L1
- * reconcile, a point-in-time chainstate copy. Running the engine as the
- * `self_heal.engine` supervisor CHILD's on_tick — INLINE on the root
- * supervisor sweep thread — is unsafe: because
- * supervisor_sweep_heartbeat() is bumped once per sweep_once() BEFORE any child
- * callback runs, a heavy pass freezes the heartbeat, and the independent backstop
- * declares a FATAL ">=30s sweep frozen" and shuts the node down (e.g. a single
- * condition_engine_tick() pass on a freshly bundle-activated datadir with 3
- * heavy conditions detecting + remedying in one pass can run >30s).
+ * seconds (SQL over the progress store, a reducer-frontier reconcile, a
+ * chainstate copy). Running the engine inline on the root supervisor sweep
+ * thread is unsafe: supervisor_sweep_heartbeat() is bumped once per
+ * sweep_once() before any child callback runs, so a heavy pass freezes the
+ * heartbeat and the backstop declares a FATAL ">=30s sweep frozen".
  *
- * Instead: the engine runs on a dedicated `zcl_self_heal` runner thread. The
+ * Instead the engine runs on a dedicated `zcl_self_heal` runner thread. The
  * supervisor only SUPERVISES the runner's heartbeat — a remedy that hangs past
  * SELF_HEAL_STALL_DEADLINE_SECS becomes a NAMED blocker (self_heal.worker_
  * wedged), never a frozen liveness root. The root sweep keeps beating no matter
@@ -68,8 +64,7 @@ static void self_heal_engine_progress(void)
     supervisor_tick(atomic_load(&g_id));
 }
 
-/* One full self-heal pass — identical work to the former on_tick, now driven by
- * the dedicated runner thread instead of the root sweep thread. */
+/* One full self-heal pass, driven by the dedicated runner thread. */
 static void self_heal_run_once(void)
 {
     if (!g_ms) return;

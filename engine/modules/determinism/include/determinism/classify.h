@@ -53,14 +53,10 @@
  *
  * ONE DIFFERING OBSERVATION IS A HYPOTHESIS, NOT A PROOF. Each slot here holds
  * a single run, so a verdict of NONDETERMINISTIC rests on one pair of samples.
- * On a shared box that is not enough. Another lane in this tree ran three cold
- * suites and got a different failing group each time, every one of them a
- * wall-clock or poll budget and every one green when re-run alone; it also
- * watched a group fail at HEAD, pass at its base commit — which looks exactly
- * like a regression — and then pass three times out of three at HEAD once the
- * box was quieter. "Passes at base, fails at head" is not sufficient evidence
- * of a regression here, and by the same argument one split is not sufficient
- * evidence of nondeterminism.
+ * On a shared box that is not enough: wall-clock and poll-budget failures
+ * under load look like nondeterminism and pass when re-run alone. "Passes at
+ * base, fails at head" is not sufficient evidence of a regression, and by the
+ * same argument one split is not sufficient evidence of nondeterminism.
  *
  * Two things carry that weight instead of a bigger sample. The scan records
  * the load every profile ran at and refuses to write a baseline at all when

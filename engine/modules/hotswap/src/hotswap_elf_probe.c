@@ -68,7 +68,7 @@ static bool fail(struct hotswap_elf_facts *out, char *err, size_t err_cap,
 #if !defined(_WIN32)
 
 /* The on-disk ELF64 constants, `struct img`, and the bounded-access
- * primitives at()/rd16()/rd32()/rd64() now live in
+ * primitives at()/rd16()/rd32()/rd64() live in
  * hotswap_elf_probe_internal.h, shared with the table reads in
  * hotswap_elf_probe_tables.c. */
 

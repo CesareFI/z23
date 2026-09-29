@@ -381,13 +381,9 @@ static bool cr_match_path_special(const struct zcl_command_spec *spec,
  *   dev.agent.mutate `line`  a source line NUMBER, 1..1000000
  *   fleet.import     `line`  one whole base64url roster line, a STRING
  *
- * The integer rule below used to win for both, so `fleet import` refused
- * every roster line it was ever handed — "invalid type or range for input
- * key 'line'" — and a box that is not the manager could not learn the
- * roster at all. Naming the leaf is the narrow fix. The standing flaw is
- * the name-keyed table itself: two leaves may legitimately declare the same
- * key with different meanings, and only the leaf path can tell them apart.
- * Any future `line` stays an integer, so this widens nothing. */
+ * The integer rule must not apply to fleet.import. Two leaves may declare
+ * the same key with different meanings; only the leaf path tells them apart.
+ * Any other `line` stays an integer. */
 static bool cr_match_chunks_and_lines(const struct zcl_command_spec *spec,
                                       const char *key,
                                       const struct json_value *value,

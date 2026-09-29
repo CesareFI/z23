@@ -2,7 +2,7 @@
  *
  * simnet_perf — runs a fixed, deterministic block/UTXO workload through the
  * REAL connect_block fold at several sizes and reports per-stage CPU cost, so
- * an algorithmic-complexity regression on the block-connect path can be caught
+ * an algorithmic-complexity regression on the block-connect path is caught
  * in CI. The contract, the scope limits, and why the gated metric is a growth
  * RATIO rather than a nanosecond budget are all in sim/simnet_perf.h.
  */
@@ -254,7 +254,7 @@ static bool perf_one_sample(const struct simnet_perf_config *cfg, int blocks,
 
 /* ── Estimator ───────────────────────────────────────────────────────── */
 
-/* Minimum of `n` samples (n >= 1) — NOT the mean, and no longer the median.
+/* Minimum of `n` samples (n >= 1) — NOT the mean.
  *
  * Why the minimum. Timing noise on this box is ONE-SIDED: contention, cache
  * eviction by a co-resident worker, SMT sibling pressure and page faults can

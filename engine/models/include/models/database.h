@@ -281,8 +281,7 @@ bool node_db_normal_mode(struct node_db *ndb);
  * exclusive moment TRUNCATE needs). Call after large bulk operations.
  *
  * Returns true when the checkpoint COMPLETED — which is not the same as "the
- * WAL shrank". A checkpoint can complete having moved zero frames, and for a
- * long time that outcome was reported identically to a full drain. Use
+ * WAL shrank". A checkpoint can complete having moved zero frames. Use
  * node_db_wal_checkpoint_result() when you need to tell those apart; the
  * outcome of every call, from either entry point, is also published to
  * util/wal_checkpoint_stats.h for telemetry. */

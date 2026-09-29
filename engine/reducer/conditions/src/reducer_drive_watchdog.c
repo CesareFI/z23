@@ -194,13 +194,12 @@ static enum condition_remedy_result remedy_reducer_drive_watchdog(void)
     atomic_fetch_add(&g_test_remedy_calls, 1);
 #endif
 
-    /* The remedy itself cannot safely touch the synchronous drive on another
-     * thread, so it returns FAILED here — but it is no longer a dead end: the
-     * blocker now carries a deadline-gated escape (armed above) that
-     * blocker_supervisor_sweep() actuates into the recovery ladder if the
-     * drive stays frozen past the grace window. FAILED pages the operator on
-     * the normal ladder as a parallel last resort; the cooldown re-arm keeps
-     * re-notifying without ever latching a recoverable stall forever. */
+    /* The remedy cannot safely touch the synchronous drive on another thread,
+     * so it returns FAILED. The blocker carries a deadline-gated escape (armed
+     * above) that blocker_supervisor_sweep() actuates into the recovery ladder
+     * if the drive stays frozen past the grace window. FAILED pages the
+     * operator on the normal ladder as a parallel last resort; the cooldown
+     * re-arm keeps re-notifying without latching a recoverable stall. */
     return COND_REMEDY_FAILED;
 }
 
@@ -247,13 +246,12 @@ static struct condition c_reducer_drive_watchdog = {
      * re-notifying on cooldown rather than spinning remedy attempts that
      * can never change the outcome. */
     .max_attempts = 1,
-    /* Continue-with-cooldown (sticky-node plan #7): a wedged synchronous
-     * drive is not a local deterministic-unrecoverable fault in the
-     * consensus sense — it may be a long but legitimate fold that briefly
-     * looks frozen, or a genuine hang. Either way latching operator_needed
-     * forever is a human dead-end; re-arm every 10 minutes, unbounded,
-     * while it stays wedged. The episode itself clears instantly (via
-     * witness) the moment the drive advances or exits. */
+    /* Continue-with-cooldown: a wedged synchronous drive is not a local
+     * deterministic-unrecoverable fault in the consensus sense — it may be a
+     * long but legitimate fold that briefly looks frozen, or a genuine hang.
+     * Latching operator_needed forever is a human dead-end; re-arm every 10
+     * minutes, unbounded, while it stays wedged. The episode clears instantly
+     * (via witness) once the drive advances or exits. */
     .cooldown_secs = 600,
     .cooldown_max_rearms = 0,
     .detect = detect_reducer_drive_watchdog,
@@ -414,7 +412,7 @@ bool reducer_drive_dump_state_json(struct json_value *out, const char *key)
     /* Outer-batch transaction accounting (core/modules/sync/src/stage_batch.c).
      * STAGE_DRAIN_IMPL opens one write transaction per stage per drain round,
      * so `empty` — opened, nothing advanced, rolled back — is the measured
-     * size of the converged-round overhead that was previously only asserted. */
+     * size of the converged-round overhead. */
     {
         struct stage_batch_stats sbs;
         stage_batch_stats_snapshot(&sbs);

@@ -1676,17 +1676,14 @@ static bool activate_run(const char *so_path, const char *resolved_datadir,
      * (open, hash the fd, dlopen /proc/self/fd/N) is redirect-proof but not
      * tamper-proof: dlopen re-reads the inode, so a writer overwriting that
      * inode in place between the hash and the map makes the node hash bytes A
-     * and run bytes B. Measured, not theorised. A sealed memfd cannot change
+     * and run bytes B. A sealed memfd cannot change
      * after F_SEAL_WRITE, so "the bytes I checked" and "the bytes I ran" stop
      * being two different questions.
      *
-     * Probing before mapping fixes a second ordering defect. Every identity
-     * fact used to come from dlsym -- which means the module was already
-     * mapped and its ELF constructors had ALREADY RUN before a single
-     * admission stage was consulted. We lint our own sources for
-     * __attribute__((constructor)), but a packaged artifact built elsewhere
-     * never passed our lint. Reading the file's own claims first turns "run
-     * it, then check it" into "check it, then run it".
+     * Identity facts are read from the file before mapping, not via dlsym:
+     * mapping runs ELF constructors, and a packaged artifact built elsewhere
+     * never passed our constructor lint. This makes it "check it, then run
+     * it".
      *
      * This is still not an isolation boundary: admitted leaf handlers execute
      * inside this process after publication. It does ensure an artifact

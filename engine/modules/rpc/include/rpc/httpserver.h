@@ -25,10 +25,8 @@ void rpc_http_cookie_rotate(void);
 int  rpc_http_cookie_rotate_sec(void);
 
 /* test surface: builds the standard JSON-RPC response envelope
- * used by the HTTP server. Safe to call on stack-dirtied / previously
- * uninitialized `response` storage. Production code also routes through
- * this helper to avoid reintroducing stack-init regressions in the HTTP
- * response path. */
+ * used by the HTTP server. Safe to call on stack-dirtied / uninitialized
+ * `response` storage. Production code also routes through this helper. */
 bool rpc_http_test_build_response_envelope(bool rpc_ok,
                                            const char *method,
                                            struct json_value *rpc_result,

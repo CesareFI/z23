@@ -102,7 +102,7 @@ static bool repair_read_block_thunk(void *user, int height, struct block *blk,
  * matched NONE. The refill clamps rowless holes AT OR ABOVE the coins frontier
  * but REFUSES those strictly below it (refill.c:385-391, "replay domain
  * (inverse-delta)") and hands them "to the stale-script replay" — which never
- * actually owned a rowless hole. That was the live 3166989-class gap. The
+ * owns a rowless hole. The
  * `height < cursor` bound makes it SOUND (never a false match on normal pipeline
  * progress): the script cursor advances only when a row is written, so a height
  * below it with no row is genuinely a hole the cursor already passed. Caller

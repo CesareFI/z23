@@ -29,9 +29,9 @@
 #include <stdint.h>
 #include <stdio.h>
 
-/* Lane A1 reorg-unwind ordering proof. The stale-script repair now commits the
+/* Reorg-unwind ordering proof. The stale-script repair commits the
  * KERNEL-authoritative rewind (TX1) BEFORE the projection-side created_outputs
- * backfill (TX2), so the two effects are no longer one atomic transaction. To
+ * backfill (TX2); the two effects are not one atomic transaction. To
  * make that ordering testable — "the projection tx never precedes the kernel
  * tx" — each commit stamps a monotonic sequence number. A paired repair leaves
  * g_rf_projection_commit_seq strictly greater than g_rf_kernel_commit_seq. */
@@ -369,12 +369,12 @@ bool reducer_frontier_replay_stale_script_tx(
 {
     char *err = NULL;
 
-    /* Lane A1 + Wave A2 (D4): kernel-first, then projection. TX1 (here) commits
+    /* Kernel-first, then projection. TX1 (here) commits
      * the KERNEL-authoritative rewind (coins inverse deltas, utxo_apply_delta
      * deletes, the Class-B kernel-coupled stage-log deletes for
      * script/proof/validate_headers, and the cursor forces) under the caller's
      * kernel progress lock. TX2 — the projection-side created_outputs backfill —
-     * now runs in a SEPARATE call
+     * runs in a SEPARATE call
      * (reducer_frontier_replay_backfill_created_outputs_projection) on the
      * projection_store handle + projection tx lock, which the caller invokes
      * only AFTER releasing the kernel progress lock (LOCK ORDER LAW: the two

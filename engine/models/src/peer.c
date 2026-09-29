@@ -321,12 +321,9 @@ bool db_peer_update_score(struct node_db *ndb,
 
 /* ── Fast ZCL23 Peers ─────────────────────────────────────────── */
 
-/* The reachable-port set used to exist twice: as the C switch in
- * core/modules/net/include/net/port_policy.h and, for this one query, as a second
- * hand-maintained comma list in ZCL_NET_REACHABLE_PORTS_SQL. Two copies of
- * a policy that must agree is one copy too many, so this derives the list
- * from the switch — the authority every dialer already consults — and binds
- * each port as a parameter. */
+/* The reachable-port list is derived from the C switch in
+ * core/modules/net/include/net/port_policy.h — the authority every dialer
+ * consults — and each port is bound as a parameter. */
 #define PEER_REACHABLE_PORTS_MAX 256
 
 static size_t peer_reachable_ports(int64_t *out, size_t max)

@@ -168,11 +168,9 @@ void set_rpc_warmup_status(const char *status)
 }
 
 /* Arm/disarm are a matched pair and both are idempotent — see the contract
- * in rpc/server.h. This used to enforce "finished exactly once" with a live
- * assert(), which killed the process on the second start: the frontend
- * kernel's stop_all -> start_all cycle re-runs boot_rpc_http_start, and its
- * paired stop hook left the flag disarmed. Idempotence removes the crash;
- * the stop hook re-arming (engine/composition/src/boot_frontend_services.c) is what
+ * in rpc/server.h. The frontend kernel's stop_all -> start_all cycle
+ * re-runs boot_rpc_http_start, so start must tolerate a repeat; the stop
+ * hook re-arming (engine/composition/src/boot_frontend_services.c) is what
  * keeps a restarted node from reporting ready while it re-initialises. */
 void set_rpc_warmup_started(const char *status)
 {

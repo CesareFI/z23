@@ -109,14 +109,10 @@ int64_t body_coverage_covered_in_window(const struct body_coverage_map *m,
  * failure, in which case `dst` may hold a partial union — callers that need
  * all-or-nothing must union into a scratch map.
  *
- * Currently unused, and there is one union in particular NOT to reach for
- * it to rebuild: storage/body_history.h used to union this map (what the
- * node claims to hold, restored from progress.kv at boot) into its
- * `measured` map (what the census probed this boot) and treat the result as
- * "definitively probed". That turns a FILE into a look, and it let a node
- * whose block index had gone unreadable publish "no hole" after zero
- * successful probes. Coverage is a projection and a claim; it is never
- * evidence that anything was checked. */
+ * Currently unused. Do not union this map (what the node claims to hold,
+ * restored from progress.kv at boot) into storage/body_history.h's `measured`
+ * map (what the census probed this boot): coverage is a projection and a
+ * claim, never evidence that anything was checked. */
 bool body_coverage_union_into(struct body_coverage_map *dst,
                               const struct body_coverage_map *src);
 

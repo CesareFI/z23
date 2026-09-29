@@ -29,7 +29,7 @@
 #include <stdio.h>
 #include <string.h>
 
-/* Body torn-read repair note/quarantine/blocker (lane E3): see
+/* Body torn-read repair note/quarantine/blocker: see
  * reducer_frontier_body_read_note.c; recorded below from the read path. */
 
 /* Lowest failed-row height strictly below `cursor` for `sql` (which takes a
@@ -175,7 +175,7 @@ bool stage_repair_read_active_block_checked(struct main_state *ms, int height,
     bool had_note = reducer_frontier_body_read_note_snapshot(
         &note_before_read);
     if (!read_block_from_disk_pread(blk, &pos, datadir)) {
-        /* Arm the off-lock HAVE_DATA drop + peer refetch (lane E3) — not a
+        /* Arm the off-lock HAVE_DATA drop + peer refetch — not a
          * side-channel write under the caller's progress lock. */
         reducer_frontier_body_read_note_record(
             height, pos.nFile, (int64_t)pos.nPos,
@@ -194,7 +194,7 @@ bool stage_repair_read_active_block_checked(struct main_state *ms, int height,
         char got_hex[65];
         uint256_get_hex(block_hash, want_hex);
         uint256_get_hex(&got, got_hex);
-        /* Wrong block under HAVE_DATA: same route as a torn read (lane E3). */
+        /* Wrong block under HAVE_DATA: same route as a torn read. */
         reducer_frontier_body_read_note_record(
             height, pos.nFile, (int64_t)pos.nPos,
             REDUCER_FRONTIER_BODY_READ_WRONG, block_hash);

@@ -5,16 +5,10 @@
  *
  * WHY THIS IS NOT A STRING IN THE TOOL
  * ------------------------------------
- * It used to be a static in tools/engine_unit.c, and being a static is how
- * it went missing. An OpenAI-dialect vendor takes a system prompt as its own
- * field, so the rules were attached to the request body. A CLI vendor has no
- * such field — it reads one file — and nothing put the rules in that file.
- * So every CLI dispatch went out without them, and the --dry-run preview
- * printed the rules anyway, which is the worst shape a defect can have: the
- * thing you check to reassure yourself is the thing that lies. Nothing could
- * notice, because the decision lived inside a tool no test links.
- *
- * It is here so it can be asserted. engine_prompt_compose() is the single
+ * An OpenAI-dialect vendor takes a system prompt as its own field; a CLI
+ * vendor has no such field and reads one file. The composition lives here,
+ * not in a tool, so it can be asserted (and the --dry-run preview cannot
+ * diverge from what is sent). engine_prompt_compose() is the single
  * answer to "what exact bytes does a vendor of this wire receive", and
  * test_engine holds it to that for every wire in the enum.
  *

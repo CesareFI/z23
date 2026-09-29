@@ -116,7 +116,7 @@ static ssize_t chaos_positioned_io(int fd, void *data, size_t size,
 #endif
 
 /* ══════════════════════════════════════════════════════════════════════
- * (g)-(l): the sync/ROM-artifact fault matrix (lane G3). See
+ * (g)-(l): the sync/ROM-artifact fault matrix. See
  * sim/simnet_chaos_faults.h for the per-fault contract.
  * ══════════════════════════════════════════════════════════════════════ */
 

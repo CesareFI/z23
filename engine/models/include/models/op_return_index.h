@@ -91,13 +91,9 @@ bool op_return_index_apply_block_rows(struct node_db *ndb,
 
 /* ── Range-declared digest chain ────────────────────────────────────
  *
- * The chain used to be implicitly genesis-rooted: "cursor = highest folded
- * height, contiguous from -1". That is a claim a snapshot-seeded node
- * cannot honour — block bodies below reducer_trusted_base_height were
- * never downloaded, so the fold has no source below the seed floor and the
- * catalog stayed empty forever while a blocker fired every tick.
- *
- * The cursor therefore DECLARES the range it covers. `base_height` is the
+ * A snapshot-seeded node has no block bodies below
+ * reducer_trusted_base_height, so the chain cannot be assumed genesis-rooted.
+ * The cursor DECLARES the range it covers. `base_height` is the
  * lowest height the chain folds; `base_digest` is the initialisation
  * vector the chain starts from at that height. Both are folded into every
  * block digest (op_return_index_fold_block_digest), so a range digest can

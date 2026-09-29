@@ -576,8 +576,7 @@ bool op_return_index_truncate(struct node_db *ndb)
         LOG_FAIL("op_return_index", "truncate: %s", qb_error(&q));
     bool truncated = AR_STEP_DONE(s);
     AR_FINALIZE(s);
-    /* This DELETE used to run through node_db_exec(), which records the
-     * operation on the handle. Keep that observability. */
+    /* Record the operation on the handle for observability. */
     node_db_note_activity(ndb, "op_return_index_truncate",
                           truncated ? SQLITE_OK : SQLITE_ERROR);
     if (!truncated)

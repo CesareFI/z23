@@ -82,27 +82,19 @@ bool body_history_evaluate(const struct body_coverage_map *held,
 
     /* "Definitively probed" is `measured`, and ONLY `measured`.
      *
-     * This used to union `held` in as well, on the premise that "holding a
-     * body is itself proof somebody looked". That premise holds for a `held`
-     * map built by probes during THIS boot. It is false for the map the node
-     * actually has: body_coverage_load() restores `held` from progress.kv at
-     * boot, so a datadir whose progress.kv claims coverage the block index
-     * can no longer corroborate — a partial backup, a truncated or lost
-     * block_index.bin, a prune that removed bodies without updating coverage
-     * — published COMPLETE after zero successful probes. That is verbatim
-     * the fail-open defect this module exists to remove, one level up:
-     * "an unreadable block index publishes as 'no hole'".
+     * `held` is not evidence: body_coverage_load() restores it from
+     * progress.kv at boot, so it can claim coverage the block index cannot
+     * corroborate, and unioning it in would publish COMPLETE after zero
+     * successful probes.
      *
-     * So probe evidence has exactly one writer (body_history_census_fold)
-     * and exactly one lifetime (this boot; body_history_load restores the
-     * resume cursor, never the evidence). `held` is now read for one thing
-     * only: whether a height the census DID probe has its body. A height
-     * that nobody probed this boot is unmeasured no matter what `held` says
-     * about it.
+     * Probe evidence has one writer (body_history_census_fold) and one
+     * lifetime (this boot; body_history_load restores the resume cursor,
+     * never the evidence). `held` is read only to tell whether a height the
+     * census DID probe has its body; a height not probed this boot is
+     * unmeasured regardless of `held`.
      *
-     * The walk below is a single linear merge of the two maps' range arrays.
-     * It allocates nothing — the scratch union it replaces was a third copy
-     * of the same ledger, built and thrown away on every census pass. */
+     * The walk below is a single linear merge of the two maps' range arrays
+     * and allocates nothing. */
     int64_t probed_in_w = 0;
     int64_t held_in_w = 0;
     int64_t cursor = lo;      /* first window height not yet accounted for */
@@ -375,14 +367,8 @@ bool body_history_census_fold(struct body_history_census *c,
              * index must leave the height unmeasured, never silently
              * "covered" and never silently "clean".
              *
-             * The removal is what makes the verdict expire. Without it a
-             * height measured once stayed measured for the life of the
-             * process, so a node that completed one good sweep and THEN lost
-             * its block index went on publishing "complete, proven" while
-             * every subsequent read failed — measured at 24,576 consecutive
-             * failed reads with the verdict unmoved. "I checked this once,
-             * an hour ago, and cannot check it now" is not the same claim as
-             * "I have it", and this module exists to keep those apart.
+             * The removal makes the verdict expire: "I checked this once and
+             * cannot check it now" is not the claim "I have it".
              *
              * Only `measured` is demoted, never `held`. `held` is the shared
              * record of which bodies are on disk and drives what gets
@@ -582,15 +568,10 @@ bool body_history_test_publish_proven(int64_t height)
  * a work pointer, not evidence. Neither the verdict nor the `measured` map
  * is persisted.
  *
- * The measured map used to be. That made the boot-time promise below true
- * of the verdict FLAG only: the flag started UNKNOWN, but the evidence it
- * would be recomputed from came straight back off disk, so the very first
- * pass could republish COMPLETE having probed 4096 heights out of 3.2M. A
- * restored cursor cannot do that — wherever it points, the census still has
- * to walk the whole window before unmeasured_count reaches zero.
+ * A restored cursor cannot republish COMPLETE early: wherever it points, the
+ * census still walks the whole window before unmeasured_count reaches zero.
  *
- * (A datadir written by an older build may still hold an orphaned
- * `body_history_measured` blob in progress.kv. Nothing reads it.) */
+ * (An orphaned `body_history_measured` blob in progress.kv is never read.) */
 bool body_history_save(struct sqlite3 *db)
 {
     if (!db)

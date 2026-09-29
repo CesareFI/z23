@@ -56,8 +56,8 @@ bool zcl_validate_zcl_address(const char *addr)
      * validates the checksum and the 11-byte diversifier + 32-byte pk_d
      * split while deliberately ignoring the HRP, so the prefix test here
      * is the only HRP check — the same pattern wallet_addr_is_sapling
-     * uses. The literal "zs1" gate that used to sit here false-rejected
-     * every non-mainnet Sapling address. */
+     * uses. A literal "zs1" gate would false-reject every non-mainnet
+     * Sapling address. */
     {
         const struct chain_params *cp = chain_params_get();
         const char *hrp =

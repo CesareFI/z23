@@ -19,36 +19,17 @@
 extern "C" {
 #endif
 
-/* Raised 1200 -> 1536: the root menu lists every root as the same fixed
- * 5-field child summary the branch menus use, so it grows ~130 bytes per root.
- * The `vault` root (what this node owns, and the custody paths that may act on
- * it) took the eight roots to 1237 bytes — legitimate growth with an already
- * minimal summary, not bloat. 1536 clears that with ~300 bytes (two more roots)
- * of headroom, so adding a root is a deliberate act rather than a surprise
- * budget failure in an unrelated test.
- * Raised 1536 -> 1792: the `zcode` and `metaverse` roots consumed that
- * headroom, and the `yardsale` root (for-sale-by-owner signed ads) pushed
- * the eleven-root menu past 1536 — same fixed 5-field summary, legitimate
- * growth. 1792 left roughly one root of headroom.
- * Raised 1792 -> 2048: the thirteenth root is StoryGraph, the bounded causal
- * view over canonical ZCODE development evidence. The root document still
- * emits the same fixed child rows; 2048 preserves one bounded growth slot. */
+/* Root menu byte budget: every root is listed as the same fixed 5-field
+ * child summary the branch menus use (~130 bytes per root), with about one
+ * root of headroom so adding a root is deliberate. */
 #define ZCL_COMMAND_ROOT_BUDGET 2048U
-/* Raised 1600 -> 2048: each branch menu lists its immediate children as a
- * fixed 5-field summary (path, summary, risk, latency, availability), so a
- * branch's size grows one summary per leaf. The `code` navigator branch reached
- * 9 leaves (group/map/tests/room/file/sym/capsule/refs/find) rendering to 1643
- * bytes — legitimate growth with already-minimal per-child summaries, not
- * bloat. 3072 leaves bounded headroom for the larger typed ZCODE development
- * catalog while keeping accidental branch-document growth fail-closed. */
-/* Raised 3072 -> 3584: the `dev` branch gained a fourth `dev.index` child
- * (ingest/status/search local-source indexing) and measured 3217 bytes,
- * over the old 3072 ceiling — the same fixed 5-field summary as every
- * other branch, not a bloated one. 3584 leaves headroom for a couple more
- * `dev` leaves before this needs raising again. */
+/* Branch menu byte budget: each branch lists its immediate children as a
+ * fixed 5-field summary (path, summary, risk, latency, availability), so
+ * size grows one summary per leaf. The ceiling keeps accidental
+ * branch-document growth fail-closed. */
 #define ZCL_COMMAND_BRANCH_BUDGET 3584U
-/* Raised from 2400 to absorb the per-leaf `semantics` contract and effective
- * `budget_bytes` the describe document now emits. */
+/* Covers the per-leaf `semantics` contract and effective `budget_bytes`
+ * the describe document emits. */
 #define ZCL_COMMAND_SPEC_BUDGET 2816U
 #define ZCL_COMMAND_STATUS_BUDGET 2048U
 #define ZCL_COMMAND_ERROR_BUDGET 3072U
@@ -63,8 +44,8 @@ extern "C" {
 /* FLOOR on the bytes a single `--input` document may occupy, not the ceiling.
  * The real per-leaf ceiling is zcl_command_registry_input_budget_bytes(),
  * which sums the declared keys' own value bounds; this constant only keeps a
- * leaf whose keys are all small from being handed a frame so tight that a
- * previously-accepted document would start being refused. Never compare an
+ * leaf whose keys are all small from being handed a frame too tight for
+ * an otherwise-valid document. Never compare an
  * input length against this directly — ask the budget function. */
 #define ZCL_COMMAND_MAX_INPUT 16384U
 /* Per-key input value bounds, shared by command_registry_input_validate.c,
@@ -139,10 +120,7 @@ enum zcl_command_latency {
     /* An operator-invoked maintenance leaf that walks real files (a local
      * index rebuild, a re-scan) rather than answering from already-loaded
      * state: bounded, but by design slower than any dispatch-latency tier
-     * above. Added for dev.index.ingest (measured ~3.1s over ~48k real
-     * rows; 5000 leaves honest headroom) rather than mis-declaring it FAST
-     * (250ms) or silently loosening BACKGROUND/PERSISTENT for every other
-     * leaf already at that tier. */
+     * above (e.g. dev.index.ingest; 5000 ms ceiling). */
     ZCL_COMMAND_LATENCY_MAINTENANCE,
 };
 
@@ -156,7 +134,7 @@ enum zcl_command_latency {
 #define ZCL_COMMAND_LATENCY_BUDGET_MAINTENANCE_MS 5000
 
 /* >= the compiled catalog's leaf count; sized with headroom for the per-leaf
- * latency-sample ring (OS-B2 §2). engine/composition/src/command_catalog.c asserts against
+ * latency-sample ring. engine/composition/src/command_catalog.c asserts against
  * this at compile time (size guard). */
 /* Sized above the declarative catalog with deliberate growth room. The config
  * catalog has a compile-time assertion against this fixed side table. */
@@ -406,19 +384,13 @@ bool zcl_command_registry_input_validate(const struct zcl_command_spec *spec,
  * leaf accepts: "<why>; accepted input keys: <a,b,c>", or "…; this command
  * accepts no input keys" for an empty-input leaf.
  *
- * This exists because "unknown input key 'name'" plus a pointer to a second
- * command is a round trip the caller usually does not spend. An agent that
- * guessed `name` for `code find` read the rejection, read "inspect the input
- * schema", and went back to grep — the right key (`text`) was already sitting
- * in the spec at the moment of the refusal. Every transport that rejects input
- * should render THIS, so no caller has to learn the answer twice.
+ * Naming the accepted keys saves the caller a second lookup; every transport
+ * that rejects input should render this.
  *
  * Writes a NUL-terminated string into `out` and returns its length.
  *
- * Header-only, for the same reason base/text_fit.h is: it reads one field of a
- * spec the caller already holds and formats a string, so it needs no link edge
- * and cannot grow command_registry.c, a legacy file whose recorded size may
- * only shrink. */
+ * Header-only (like base/text_fit.h): it reads one field of a spec the caller
+ * holds and formats a string, so it needs no link edge. */
 static inline size_t zcl_command_registry_input_reject_detail(
     const struct zcl_command_spec *spec, const char *why,
     char *out, size_t cap)
@@ -454,11 +426,9 @@ size_t zcl_command_registry_menu_json(const struct zcl_command_registry *registr
                                       const char *path, char *out,
                                       size_t out_size);
 /* discover.describe's trait booleans, in one JSON "policy" object. A new
- * trait bit is one conjunct HERE, not one more link in
- * zcl_command_registry_describe_json's own && chain — that function lives in
- * a legacy file whose recorded line count may only shrink, and this reads
- * only the traits bitmask the caller already holds, so it needs no link edge
- * either (same reason as zcl_command_registry_input_reject_detail above). */
+ * trait bit is one conjunct here. Header-only: it reads only the traits
+ * bitmask the caller holds, so it needs no link edge (as with
+ * zcl_command_registry_input_reject_detail above). */
 static inline bool zcl_command_registry_describe_traits(
     struct json_value *policy, uint32_t traits)
 {
@@ -521,9 +491,8 @@ void zcl_command_registry_set_active(const struct zcl_command_registry *registry
  *
  * `out_generation` (nullable) receives the generation THIS call published,
  * written under the same write lock that assigns it. Use it instead of a
- * follow-up zcl_command_registry_active_generation() call: a concurrent
- * publisher can bump the active generation between the two, so a read-after-
- * write attributes another publisher's generation to this batch. On a REFUSED
+ * follow-up zcl_command_registry_active_generation() call, which a
+ * concurrent publisher can race. On a REFUSED
  * publish `out_generation` is left untouched. */
 bool zcl_command_registry_replace_batch(
     uint32_t generation,

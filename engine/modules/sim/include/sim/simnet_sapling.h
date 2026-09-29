@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * simnet Sapling extension (Sapling Lane C) — an in-sim Sapling
+ * simnet Sapling extension — an in-sim Sapling
  * note-commitment tree so the deterministic harness can drive a REAL
  * shielded send (t->z, z->z) through the production Groth16 verifier.
  *
@@ -13,7 +13,7 @@
  *      it; from then on every mint (simnet_mint_txs / simnet_mint_coinbase*)
  *      appends the block's shielded-output note commitments (cm) IN ORDER and
  *      stamps header.hashFinalSaplingRoot with the REAL current tree root
- *      (extends Lane A's empty-root stamp to a live, non-empty tree). The
+ *      (a live, non-empty tree rather than the empty-root stamp). The
  *      append is rollback-safe: it is committed only if connect_block accepts
  *      the block.
  *

@@ -40,14 +40,11 @@
  *     missing    = measured n window, minus (measured n held) n window
  *     unmeasured = window, minus measured n window
  *
- * `measured` alone decides what counts as probed. An earlier version of this
- * file unioned `held` in too — "holding a body is itself proof somebody
- * looked" — which is true of a map built by probes and false of the map the
- * node actually has, because `held` comes back off disk at boot. A datadir
- * whose progress.kv claimed coverage the block index could no longer
- * corroborate (a partial backup, a truncated block_index.bin, a prune that
- * did not update coverage) therefore published COMPLETE after zero
- * successful probes — the same fail-open defect one level up. Three
+ * `measured` alone decides what counts as probed. `held` is not evidence of
+ * a probe: it comes back off disk at boot, and a datadir whose progress.kv
+ * claims coverage the block index cannot corroborate (a partial backup, a
+ * truncated block_index.bin, a prune that did not update coverage) would
+ * otherwise publish COMPLETE after zero successful probes. Three
  * different files can disagree here (the window comes from tip_finalize_log,
  * the probe from block_index.bin, the restored claim from progress.kv), so
  * the evidence ledger has exactly one writer and exactly one lifetime.
@@ -179,8 +176,7 @@ typedef enum body_history_probe (*body_history_probe_fn)(
  *
  * So a full census sweep of the owner's chain costs tens of milliseconds of
  * CPU, and the lock is held for under a tenth of a millisecond at a time.
- * The "~65 minutes per sweep" figure this file used to quote was 781 slices
- * x the 5 s gap-fill tick — a CADENCE artifact, not a cost. */
+ * Wall-clock per sweep is set by the gap-fill tick cadence, not by cost. */
 #define BODY_HISTORY_CENSUS_BUDGET 4096
 
 /* Wall-clock ceiling on the boot catch-up burst: how long the gap-fill
@@ -189,7 +185,7 @@ typedef enum body_history_probe (*body_history_probe_fn)(
  *
  * At the measured cost, one 250 ms burst covers the whole 3.2M-height window
  * several times over, so a node establishes its real coverage within the
- * first gap-fill tick instead of spending 65 minutes reporting UNKNOWN. The
+ * first gap-fill tick instead of reporting UNKNOWN. The
  * ceiling is a hard backstop for the pathological (heavily fragmented map)
  * case, and it is 5% of one GAPFILL_TICK_SECS, so the census can never be
  * the reason block download waits. Burst slices are census-only: they never
@@ -202,14 +198,12 @@ typedef enum body_history_probe (*body_history_probe_fn)(
  * fraction of the in-flight window (DL_MAX_IN_FLIGHT_TOTAL is 1024 at tip).
  * The caller additionally gates on download-queue headroom.
  *
- * This file used to justify the bound as "below-tip work sorts AHEAD of
- * tip-chasing work, so an unbounded backfill would starve live sync". That
- * is no longer how the queue orders: dl_queue_order compares CLASS FIRST, so
- * every DL_WORK_FORWARD entry sorts ahead of every DL_WORK_HISTORY entry
- * regardless of height, and dl_assign_to_peer charges history against its
- * own subordinate lane (DL_MAX_HISTORY_IN_FLIGHT / DL_MAX_HISTORY_PER_PEER)
- * which "never charge[s] forward work". Live sync is protected structurally,
- * by ordering and by the lane budget — not by this producer-side cap. */
+ * Live sync is protected structurally, not by this producer-side cap:
+ * dl_queue_order compares CLASS FIRST, so every DL_WORK_FORWARD entry sorts
+ * ahead of every DL_WORK_HISTORY entry regardless of height, and
+ * dl_assign_to_peer charges history against its own subordinate budget
+ * (DL_MAX_HISTORY_IN_FLIGHT / DL_MAX_HISTORY_PER_PEER) which never charges
+ * forward work. */
 #define BODY_HISTORY_ENQUEUE_MAX 64
 
 /* ...and under the explicit -bodyhistorybackfill=normal policy, where an

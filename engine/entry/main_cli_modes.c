@@ -893,10 +893,9 @@ static bool bench_verify_ed25519(void *arg)
  * They must not share a name because -bench-regress (run in `make ci`) gates
  * the last two rows carrying the SAME name at ±20%. sha256 alone moves ~3x
  * between the two builds, so one interleaved host-flags row would manufacture
- * a phantom >20% "regression" on the very next shipped-flags run and red the
- * build for a change nobody made. The shipped name is left EXACTLY as it was
- * so the existing history and the ratchet stay continuous; only the host-ISA
- * build gets the tag.
+ * a phantom >20% "regression" on the next shipped-flags run. The shipped
+ * name is unchanged so the history and the ratchet stay continuous; only the
+ * host-ISA build gets the tag.
  *
  * The CRYPTOPERF key is deliberately unchanged in both builds:
  * tools/scripts/check_crypto_perf.sh parses it against a baseline pinned to
@@ -1366,12 +1365,8 @@ static bool cli_read_cookie(const char *datadir)
 
 /* ════════════════════════════════════════════════════════════════
  *  AUTH AUTO-DISCOVERY (E4) — `-rpcport=<N>` without `-datadir=<DIR>`
- *  used to always fall back to the DEFAULT datadir's cookie, which
- *  either misses entirely ("Cannot connect", if nothing listens on the
- *  default port too) or sends the WRONG cookie to whatever really owns
- *  <N> (an indistinguishable "Unauthorized") — an orchestrator watching
- *  a non-default lane (a mint/soak/copy-prove fixture) cannot tell
- *  those apart from a real outage. Every datadir a node has actually
+ *  would fall back to the DEFAULT datadir's cookie, which either misses
+ *  entirely or sends the WRONG cookie to whatever owns <N>. Every datadir a node has actually
  *  bound RPC in records `<datadir>/.rpcport` (see rpc_http_start in
  *  engine/modules/rpc/src/httpserver.c) alongside its `.cookie`; scanning sibling
  *  `<HOME>/.zclassic-c23*` datadirs for the one whose recorded port
@@ -1453,12 +1448,9 @@ static size_t cli_list_datadir_candidates(const char *home, char **out)
 /* Outcome of a `-rpcport=<N>` (no `-datadir=`) auto-discovery scan.
  * CLI_AUTODISCOVER_UNIQUE is the only outcome that may resolve a
  * datadir automatically. Stale sibling fixtures commonly reuse the same
- * fixed test port across separate runs (the incident this closes:
- * `.zclassic-c23-fullbuild-test` AND three other sibling datadirs all
- * recorded port 39072 on this host from earlier, no-longer-live runs) —
- * picking "first match in sorted order" in that case can silently
- * authenticate against, and answer from, a datadir that is NOT the
- * instance actually listening on the requested port. Zero or multiple
+ * fixed test port across separate runs, so picking "first match in sorted
+ * order" can authenticate against, and answer from, a datadir that is NOT
+ * the instance actually listening on the requested port. Zero or multiple
  * matches must both refuse and name the ambiguity/absence explicitly so
  * the operator can pass -datadir=DIR themselves. */
 enum cli_autodiscover_outcome {
@@ -1738,14 +1730,11 @@ static void b64_encode(const char *in, size_t len, char *out)
     out[j] = 0;
 }
 
-/* E4 error taxonomy: the raw-RPC CLI path used to conflate "nothing is
- * listening at PORT" and "something is listening but rejected our
- * cookie" into the same generic "RPC failed" / "Error: Unauthorized" —
- * an orchestrator polling a monitor cannot branch on that. Each outcome
- * below gets its own message AND its own process exit code (see the
- * dispatch below cli_rpc_call's caller), reusing the same taxonomy the
- * native command registry already documents in
- * docs/NATIVE_COMMAND_INTERFACE.md (0/1/2/3/4/5/6). */
+/* E4 error taxonomy: "nothing is listening at PORT" and "something is
+ * listening but rejected our cookie" are distinct outcomes. Each gets its own
+ * message AND its own process exit code (see the dispatch below
+ * cli_rpc_call's caller), reusing the taxonomy the native command registry
+ * documents in docs/NATIVE_COMMAND_INTERFACE.md (0/1/2/3/4/5/6). */
 enum cli_rpc_outcome {
     CLI_RPC_OK = 0,
     CLI_RPC_CONNECT_REFUSED,  /* nothing listening at 127.0.0.1:PORT */
@@ -1756,9 +1745,8 @@ enum cli_rpc_outcome {
 
 /* Client-side wall-clock budget for a single RPC round trip once the TCP
  * connection is up. A node that accepted the connection but never
- * answers (a livelocked reducer, a wedged mutex) must not hang a
- * monitor script forever — past this, cli_rpc_call_internal reports
- * CLI_RPC_TIMEOUT ("node busy") instead of blocking indefinitely. */
+ * answers must not hang a monitor script — past this,
+ * cli_rpc_call_internal reports CLI_RPC_TIMEOUT ("node busy"). */
 #define CLI_RPC_TIMEOUT_SEC 10
 
 /* Test-only override so the RESPONSE_TIMEOUT path can be proven in well
@@ -2281,14 +2269,9 @@ static int cli_run_static_agent_method(const char *method,
     json_init(&result);
     bool ok = route->handler(&params, false, &result);
 
-    /* Measure, then allocate. This used to be a fixed 128 KB stack buffer, and
-     * `statecatalog` outgrew it: the catalog is one row per dumpstate
-     * subsystem and each row carries prose, so its size tracks how much of the
-     * node is introspectable — a number that only ever goes up. Failing the
-     * whole command because the node became MORE observable is precisely
-     * backwards, and a bigger constant only moves the wall. json_write with a
-     * NULL destination returns the exact size, so there is no reason to guess
-     * one. */
+    /* Measure, then allocate: the output size (e.g. `statecatalog`) grows
+     * with how much of the node is introspectable. json_write with a NULL
+     * destination returns the exact size. */
     char *out = NULL;
     size_t need = 0;
     int exit_code = 1;
@@ -2411,8 +2394,7 @@ int cli_main(int argc, char **argv)
      * env-named target is an OPERATOR-named target — it sets the same
      * datadir_set/rpcport_set bits the flags set, so the E4 port
      * autodiscovery, the systemctl-default-service fallbacks, and the
-     * bare-status sibling listing below ALL skip (an operator who named a
-     * target never gets the default lane's answer). Flags win over env:
+     * bare-status sibling listing below ALL skip. Flags win over env:
      * the argv loop above already set the bits when a flag was given.
      * Without this the native CLI (status / dumpstate / every registry
      * command) silently answered from the LIVE node even when the caller
@@ -2456,19 +2438,16 @@ int cli_main(int argc, char **argv)
      * runs" — scan sibling datadirs for the one recording port <N> BEFORE
      * the systemctl-default-service fallback below, so an explicit
      * -rpcport always resolves to ITS OWN cookie rather than silently
-     * borrowing the default lane's (which is either absent — "Cannot
-     * connect" even though a node genuinely IS listening on <N> — or
-     * wrong — an indistinguishable 401). Explicit -datadir= always wins:
+     * borrowing the default lane's (absent, or wrong — a 401). Explicit -datadir= always wins:
      * this only runs when the operator did not name one.
      *
      * Only a UNIQUE port match may resolve automatically. Zero matches or
      * 2+ matches (stale sibling fixtures commonly reuse the same fixed
      * test port — see cli_autodiscover_datadir_for_port's doc comment)
-     * both refuse outright — falling through to the systemctl-default-
-     * service datadir here would reintroduce the exact pre-E4 footgun
-     * (silently answering with the default lane's cookie for a port that
-     * names a DIFFERENT instance) for every -rpcport that names no known
-     * sibling. The operator must pass -datadir=DIR explicitly. */
+     * both refuse outright: falling through to the systemctl-default-
+     * service datadir would answer with the default lane's cookie for a port
+     * that names a DIFFERENT instance. The operator must pass -datadir=DIR
+     * explicitly. */
     if (rpcport_set && !datadir_set) {
         char discovered[512];
         enum cli_autodiscover_outcome outcome =
@@ -2543,11 +2522,9 @@ int cli_main(int argc, char **argv)
 
     /* E4: the bare `status` command with no live node in the (still
      * default — no -datadir= given, and it never resolved a cookie above)
-     * datadir used to just fail deep inside the RPC layer with no
-     * indication anything else on this host might be reachable. Answer
-     * "what nodes exist on this host" instead of a bare failure — list
-     * every sibling ~/.zclassic-c23* instance this scan finds, each with
-     * its port + a live/dead probe. Only fires for the literal `status`
+     * datadir answers "what nodes exist on this host" instead of a bare
+     * failure — lists every sibling ~/.zclassic-c23* instance this scan
+     * finds, each with its port + a live/dead probe. Only fires for the literal `status`
      * leaf (not core.status etc.) and only when nothing narrowed the
      * target already (an explicit -datadir= or a resolved cookie there
      * both skip this — the operator asked for something specific). */
@@ -2944,15 +2921,12 @@ static int legacy_utxo_run(const char *legacy, const char *out_path)
     /* Point-in-time snapshot of the source chainstate (never read the live
      * LevelDB directly). MUST be the full WAL-inclusive stable copy — NOT
      * ldb_snapshot_make, which copies only the compacted .ldb SSTs + metadata
-     * and silently drops the .log WAL: on a live daemon the snapshot's 'B'
-     * best-block pointer then reads the last COMPACTED state while every
-     * recent record (the entire tip region the parity gate compares at) sits
-     * only in the WAL — observed live 2026-08-02: SST-only snapshot reported
-     * max_height=3183455/vouts=1345257 while the daemon's own gettxoutsetinfo
-     * said height=3202300/txouts=1345637, so the byte-exact tier could never
-     * bind and always SKIPped. This is the same signature-proven
-     * point-in-time helper the shielded-history importer and the legacy UTXO
-     * import already use (rm -rf + cp -a + dir-signature equality, retried). */
+     * and drops the .log WAL: on a live daemon the snapshot's 'B' best-block
+     * pointer then reads the last COMPACTED state while every recent record
+     * (the entire tip region the parity gate compares at) sits only in the
+     * WAL. Uses the same signature-proven point-in-time helper as the
+     * shielded-history importer and the legacy UTXO import (rm -rf + cp -a +
+     * dir-signature equality, retried). */
     char snap_path[1200];
     snprintf(snap_path, sizeof(snap_path),
              "%s.snap_for_utxo_gen", chainstate_path);
@@ -3248,14 +3222,10 @@ int import_complete_shielded_mode(int argc, char **argv)
     /* Point-in-time snapshot of the source chainstate (never read the live
      * LevelDB directly). MUST be the full WAL-inclusive stable copy — NOT
      * ldb_snapshot_make, which copies only the compacted .ldb SSTs + metadata
-     * and silently drops the .log WAL: on a live daemon the snapshot's 'B'
-     * best-block / 'z' best-anchor pointers then read the last COMPACTED
-     * state while every recent record (including the frontier the target's
-     * own UTXO seed came from) sits only in the WAL — observed live
-     * 2026-08-02: SST 'B' at h=3183455 vs coin records at h=3202110, so every
-     * pointer-derived bind refused. This is the same signature-proven
-     * point-in-time helper the legacy UTXO import and the tier1b frontier
-     * borrow already use. */
+     * and drops the .log WAL, so on a live daemon the 'B' best-block / 'z'
+     * best-anchor pointers lag every recent record. Uses the same
+     * signature-proven point-in-time helper as the legacy UTXO import and the
+     * tier1b frontier borrow. */
     char cs_src[700], snap_path[900];
     int csn = snprintf(cs_src, sizeof(cs_src), "%s/chainstate", src);
     if (csn < 0 || (size_t)csn >= sizeof(cs_src)) {
@@ -3452,13 +3422,13 @@ int import_complete_shielded_mode(int argc, char **argv)
         }
     }
 
-    /* Re-arm proof_validate over any NULL-block_hash suffix so the
-     * post-cure fold is not wedged at utxo_apply's label_splice guard (which
-     * correctly refuses a hashless proof verdict). The rewind FLOOR is
-     * utxo_apply's own cursor (LCC-safe — never rewinds an already-applied
-     * height). Contained: a rewind beyond the recovery block-rollback cap
-     * (default 100) is REFUSED; raise ZCL_MAX_BLOCK_ROLLBACK past the reported
-     * depth after a copy proof. progress_store is still open here. */
+    /* Re-arm proof_validate over any NULL-block_hash suffix so the post-cure
+     * fold is not wedged at utxo_apply's label_splice guard (which refuses a
+     * hashless proof verdict). The rewind FLOOR is utxo_apply's own cursor
+     * (never rewinds an already-applied height). A rewind beyond the recovery
+     * block-rollback cap (default 100) is REFUSED; raise ZCL_MAX_BLOCK_ROLLBACK
+     * past the reported depth after a copy proof. progress_store is still open
+     * here. */
     if (ok) {
         struct proof_validate_rearm_report rr;
         memset(&rr, 0, sizeof(rr));

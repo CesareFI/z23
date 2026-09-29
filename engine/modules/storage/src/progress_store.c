@@ -40,7 +40,7 @@
 #include <time.h>
 #include <unistd.h>
 
-/* THE kernel store filename is now consensus.db (Wave A3 physical flip): the
+/* THE kernel store filename is consensus.db: the
  * reducer's consensus kernel (coins / anchors / nullifiers / stage cursors /
  * progress_meta + the stage *_log journals it commits with) lives in its OWN
  * SQLite file so its fsync-bearing batch commit stops sharing a WAL journal with
@@ -121,7 +121,7 @@ static bool progress_store_candidate_state(sqlite3 *db, bool *contained)
 }
 
 /* consensus.db's page cache + mmap window scale with measured RAM (via
- * hw_profile), capped at this file's historical ceilings (1 GiB cache, 2
+ * hw_profile), capped at this file's ceilings (1 GiB cache, 2
  * GiB mmap — a pure read-path/memory-residency control, unrelated to WAL
  * journaling or on-disk format). Same fixed values on any >=32 GiB-RAM box;
  * scales DOWN on constrained ones instead of unconditionally requesting a 1

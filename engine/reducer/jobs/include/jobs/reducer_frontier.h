@@ -53,7 +53,7 @@ struct json_value;
  * mainnet number so existing mainnet-only assertions/tests are unchanged.
  *
  * SELF-DERIVED SOURCING (Pillar 3, docs/work/self-verified-tip-plan.md):
- * reducer_frontier_compiled_anchor() no longer trusts ONLY this baked literal.
+ * reducer_frontier_compiled_anchor() does not trust ONLY this baked literal.
  * It first asks whether THIS node has its own SHA3-verified anchor artifact —
  * <datadir>/utxo-anchor.snapshot, produced either by the offline -mint-anchor
  * ceremony (engine/composition/src/boot_mint_anchor.c) or the in-fold self-mint hook
@@ -62,9 +62,9 @@ struct json_value;
  * compiled checkpoint exactly. A present-but-MISMATCHED artifact is REFUSED
  * (never adopted) and the read falls back to this macro; an ABSENT artifact
  * also falls back to this macro. The self-derived value can therefore only
- * ever CONFIRM this constant today — it becomes load-bearing (able to
- * legitimately advance past this literal) only once a later lane teaches the
- * fold to mint a NEW anchor beyond genesis's single baked checkpoint. See
+ * ever CONFIRM this constant; it would become load-bearing (able to advance
+ * past this literal) only if the fold could mint a NEW anchor beyond the
+ * single baked checkpoint. See
  * reducer_frontier_compiled_anchor() in reducer_frontier.c. */
 #define REDUCER_FRONTIER_TRUSTED_ANCHOR ((int32_t)3056758)
 
@@ -142,10 +142,10 @@ void reducer_frontier_provable_tip_reset(void);
  * 'finalized' row for the H→H+1 transition (log_insert is INSERT OR
  * REPLACE, and the finalized row at H is the only durable source of
  * hash(H+1) for the boot resolver, so the replacement is correct). A
- * cold-import datadir whose ONLY anchor row was the seed's then starves
- * reducer_trusted_anchor back to the compiled checkpoint, the frontier
- * walk reads the legitimately log-less import region as an 88k hole, and
- * the I4.3 sweep HOLD-wedges an otherwise healthy at-tip node. A trust
+ * cold-import datadir whose ONLY anchor row was the seed's would fall back
+ * to the compiled checkpoint, the frontier walk would read the legitimately
+ * log-less import region as a hole, and the sweep would HOLD a healthy
+ * at-tip node. A trust
  * DECLARATION must not live in a row the pipeline consumes. */
 #define REDUCER_TRUSTED_BASE_HEIGHT_KEY "reducer_trusted_base_height"
 #define REDUCER_TRUSTED_BASE_HASH_KEY   "reducer_trusted_base_hash"
@@ -402,15 +402,12 @@ bool reducer_frontier_derive_coins_best_now(
  * to relax any gate. */
 void reducer_frontier_coins_best_blocker(char *out, size_t cap);
 
-/* ── Body torn-read repair note (lane E3) ────────────────────────────────
+/* ── Body torn-read repair note ────────────────────────────────
  *
  * When stage_repair_read_active_block_checked (reducer_frontier_replay.c)
  * cannot read the canonical body for a HAVE_DATA height — the on-disk bytes
  * are torn/truncated (the pread failed) or read fine but hash to the WRONG
- * block — a read that only DEFERs wedges every downstream stage forever
- * (e.g. "read_active_block_checked: disk read failed h=3143721 (nFile=49
- * pos=129998574) — repair defers", plus a repeating downstream
- * "prevout_unresolved").
+ * block — a read that only DEFERs wedges every downstream stage forever.
  *
  * The repair records the failing height here — an event-driven note, NO
  * new scan pass. It deliberately does NOT clear BLOCK_HAVE_DATA from inside the

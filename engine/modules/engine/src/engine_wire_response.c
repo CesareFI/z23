@@ -386,8 +386,7 @@ static bool read_text(const struct json_value *root, struct engine_reply *out)
         LOG_FAIL("engine", "refusing a message with unreadable content");
     const size_t n = strlen(text);
     if (n == 0) {
-        /* An empty `content` has two very different causes and they were
-         * reported identically until 2026-09-02.
+        /* An empty `content` has two very different causes.
          *
          * A REASONING model writes its chain of thought into a sibling
          * field (`reasoning_content` at Z.ai, `reasoning` elsewhere) and
@@ -465,12 +464,9 @@ size_t engine_response_excerpt(const char *body, size_t len,
 
 /* Say what came back when a body is refused.
  *
- * Before this existed a refusal named the RULE that fired — "no `choices`
- * array" — and nothing about the document, so the next question ("then what
- * did the vendor send?") cost a packet capture. Measured on 2026-09-02: a
- * Z.ai coding-plan key against the general-plan endpoint answers HTTP 200
- * with a body that has neither `choices` nor `error`, and the refusal read
- * as a broken decoder for as long as the body was invisible. */
+ * A refusal names the RULE that fired ("no `choices` array") plus an excerpt
+ * of the document, e.g. a Z.ai coding-plan key against the general-plan
+ * endpoint answers HTTP 200 with neither `choices` nor `error`. */
 static void log_refused_body(const struct engine_vendor *vendor,
                              const char *body, size_t len, const char *why)
 {

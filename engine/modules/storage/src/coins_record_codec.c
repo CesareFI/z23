@@ -98,11 +98,11 @@ static enum coins_record_decode_status append_avail(
         return COINS_RECORD_DECODE_OK;
     }
 
-    /* Replay-gated follow-up: coins_db and utxo_import_pipeline historically
-     * cap the availability vector at 4096 vouts.  When a record advertises a
-     * live output beyond this bound, the old decoders still consume all mask
-     * bytes but do not skip the extra txout payload before reading height.
-     * Tightening that into reject-or-skip requires full-history replay. */
+    /* coins_db and utxo_import_pipeline cap the availability vector at 4096
+     * vouts.  When a record advertises a live output beyond this bound, the
+     * decoders still consume all mask bytes but do not skip the extra txout
+     * payload before reading height.  Tightening that into reject-or-skip
+     * requires full-history replay. */
     if (*len < COINS_RECORD_BOUNDED_AVAIL) {
         bounded[*len] = present;
         (*len)++;
@@ -145,8 +145,7 @@ static enum coins_record_decode_status read_raw_or_special_script(
 
     uint64_t raw_len_u = nsize - COINS_RECORD_SPECIAL_SCRIPTS;
     if (mode == COINS_RECORD_DECODE_UTXO_IMPORT) {
-        /* Replay-gated follow-up: this preserves the old importer truncation
-         * exactly.  It reads at most 10240 script bytes and leaves any
+        /* Preserves the importer truncation exactly.  It reads at most 10240 script bytes and leaves any
          * remainder in the stream, so the later height varint may be read from
          * script bytes.  Do not "fix" without replaying real chainstate. */
         size_t read_len = raw_len_u > COINS_RECORD_UTXO_IMPORT_RAW_SCRIPT_CAP

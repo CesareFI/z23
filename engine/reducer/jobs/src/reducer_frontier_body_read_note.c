@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Body torn-read repair note + quarantine (lane E3). Contract + rationale:
+ * Body torn-read repair note + quarantine. Contract + rationale:
  * jobs/reducer_frontier.h. When stage_repair_read_active_block_checked
  * (reducer_frontier_replay.c) cannot read the canonical body for a HAVE_DATA
  * height — the on-disk bytes are torn (pread failed) or read fine but hash to

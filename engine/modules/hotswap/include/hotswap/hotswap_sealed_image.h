@@ -102,8 +102,7 @@
  * future failure is diagnosed in seconds rather than hours: on Linux >= 6.3,
  * `sysctl vm.memfd_noexec=2` forces MFD_NOEXEC_SEAL onto every memfd created
  * without an explicit MFD_EXEC, which makes the image non-executable and makes
- * dlopen of it fail. If dlopen of a sealed image ever starts failing on a box
- * where it used to work, read that sysctl FIRST. This file does not pass
+ * dlopen of a sealed image fails unexpectedly, read that sysctl FIRST. This file does not pass
  * MFD_EXEC: doing so would opt the image out of a hardening default that the
  * operator chose deliberately, and the honest response to that configuration
  * is a loud load failure, not a quiet bypass.

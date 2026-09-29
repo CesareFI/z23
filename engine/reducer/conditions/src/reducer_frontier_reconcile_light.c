@@ -687,15 +687,13 @@ static bool witness_reducer_frontier_reconcile_light(int64_t target_at_detect)
      * reducer_frontier_compute_hstar = MIN over every stage's contiguous ok=1
      * prefix — the only height the node may serve as its tip.
      *
-     * The old witness ALSO cleared the instant active_chain_height (the
-     * DOWNLOAD/header tip) grew, OR any reducer cursor moved, OR a coin/tipfin
-     * backfill record advanced. But the download tip climbs on EVERY new block
-     * admitted to the index while the fold stays frozen one below it, so the
-     * witness false-greened on essentially every ~5 s tick, reset attempts to
-     * 0, and NEVER reached max_attempts — EV_OPERATOR_NEEDED / sticky_escalator
-     * could not fire on a genuinely stuck node (the live 6244 silent loops).
-     * Those proxy clear-edges are gone: only a real H* advance clears, so a
-     * non-advancing remedy now leaves the witness false, accrues attempts,
+     * The witness does NOT clear on active_chain_height (the DOWNLOAD/header
+     * tip) growing, a reducer cursor moving, or a coin/tipfin backfill record
+     * advancing: the download tip climbs on EVERY new block admitted while the
+     * fold stays frozen one below it, so such a proxy would reset attempts
+     * and max_attempts (EV_OPERATOR_NEEDED / sticky_escalator) could never
+     * fire on a genuinely stuck node. Only a real H* advance clears, so a
+     * non-advancing remedy leaves the witness false, accrues attempts,
      * trips max_attempts, and pages the operator in bounded time. A read
      * failure is "not yet cleared" (false), never a false clear. */
     int hstar_at_detect = rfrl_hstar_at_detect();
@@ -734,14 +732,12 @@ static bool witness_reducer_frontier_reconcile_light(int64_t target_at_detect)
  * H* (the monotonic provable frontier) climbing above its high-water baseline,
  * or a coin/tipfin backfill record reaching a strictly NEW height above its
  * high-water baseline — plus the edge-triggered coins-inserted signal (keyed on
- * the remedy call, so a stale nonzero cannot refresh forever). The old code
- * ALSO refreshed on any present<->absent record transition and re-baselined to
- * the CURRENT (possibly rewound-low) value, so a same-height rewind->re-derive
- * churn refreshed the budget forever: max_attempts was never reached, the
- * operator was never paged, and the sticky escalator never armed. The baselines
- * are HIGH-WATER (raised at detect + on a true return, never lowered) so a
- * rewind to a previously-seen height no longer refreshes; pure churn now
- * exhausts the budget in bounded time. These statics are NEVER a witness
+ * the remedy call, so a stale nonzero cannot refresh forever). A present<->absent record
+ * transition or a re-baseline to a rewound-low value does NOT refresh: a
+ * same-height rewind->re-derive churn would refresh the budget forever and
+ * never page the operator. The baselines are HIGH-WATER (raised at detect + on
+ * a true return, never lowered), so pure churn exhausts the budget in bounded
+ * time. These statics are NEVER a witness
  * clear-edge (only reducer_frontier_compute_hstar clears). */
 static bool progressing_reducer_frontier_reconcile_light(
     int64_t target_at_detect)

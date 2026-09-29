@@ -222,7 +222,7 @@ static inline bool zcl_mf_bytes_any(const uint8_t *bytes, size_t len)
  * All four derive from the SAME field list, so they cannot disagree. */
 
 /* "col_a,col_b,col_c" — drops straight into a SELECT list or an INSERT
- * column clause, exactly where the hand-written _COLUMNS macro used to go. */
+ * column clause. */
 #define ZCL_MODEL_COLUMNS(...) ZCL_MF_JOIN(ZCL_MF_COL, __VA_ARGS__)
 
 /* "?,?,?" — one placeholder per column, so an INSERT's VALUES list can never

@@ -51,8 +51,8 @@ static bool reconcile_block_index_flags(
      *   - Before tip_finalize_stage_init registers the height authority,
      *     active_chain_height() reads the progress store internally
      *     (core/modules/validation/src/chainstate.c), so every cs_main holder is
-     *     cs_main -> progress. That boot window is where the observed
-     *     startup wedge lived.
+     *     cs_main -> progress. That boot window is where a startup
+     *     wedge can occur.
      *   - After it, is_authoritative() returns true unconditionally
      *     (engine/jobs/src/tip_finalize_stage.c) so that edge disappears —
      *     while the reducer drive runs the opposite way for the whole

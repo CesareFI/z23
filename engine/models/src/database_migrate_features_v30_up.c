@@ -274,15 +274,9 @@ int node_db_migrate_features_v30_up(struct node_db *ndb, int *version,
 
     if (current_ver < 38) {
         /* v38: zid ANCHOR DOMAINS (zid_domains + zid_domain_leaves) — the
-         * durable record of WHAT a domain batch committed. Before this,
-         * `zcode release anchor` / `prove` rebuilt the domain tree by
-         * scanning every .zid under <datadir>/zcode/releases on every call,
-         * so adding
-         * or removing one file silently changed the domain root and a
-         * previously-issued inclusion proof quietly stopped matching with
-         * no record of what had been anchored. The leaf set is now stored
-         * in canonical sorted order alongside the root it folds to, and
-         * many domains (zcode, zdesc, zdir, third-party) coexist, each
+         * durable record of WHAT a domain batch committed. The leaf set is
+         * stored in canonical sorted order alongside the root it folds to,
+         * and many domains (zcode, zdesc, zdir, third-party) coexist, each
          * anchoring at its own cadence — see
          * docs/spec/sovereign-identity-layer.md and models/zid_domain.h.
          *

@@ -183,7 +183,7 @@ bool chaos_fault_stall_single_stage(struct chaos_fault_result *out);
 bool chaos_fault_kill_restart_mid_recovery(struct chaos_fault_result *out);
 
 /* ══════════════════════════════════════════════════════════════════════
- * (g)-(l): the sync/ROM-artifact fault matrix (lane G3)
+ * (g)-(l): the sync/ROM-artifact fault matrix
  *
  * Six more named injectors extending the always-sync corpus above, this time
  * over the ROM-artifact delivery path (core/modules/net/rom_fetch.c, rom_journal.c,
@@ -285,8 +285,8 @@ bool chaos_fault_reorg_during_artifact_download(uint64_t seed,
  * distinct "chaos.rom_fetch_wait" liveness contract) rather than blocking
  * this gate on rom_fetch.c's REAL multi-second socket timeouts
  * (RF_CONNECT_TIMEOUT_SEC=10 / RF_IO_TIMEOUT_SEC=120 — no test-only override
- * exists, and adding one would be a rom_fetch.c logic edit this lane may not
- * make): a frozen heartbeat proves the SAME "bounded stall -> named stall,
+ * exists, and adding one would be a rom_fetch.c logic edit that is out of scope
+ * here): a frozen heartbeat proves the SAME "bounded stall -> named stall,
  * never a silent hang" property those real timeouts exist to guarantee, in
  * milliseconds instead of two real minutes. Asserts a named
  * SUPERVISOR_STALL_TIME_DEADLINE fires (never silent) and the child resumes
@@ -308,7 +308,7 @@ bool chaos_fault_invalid_tail_block(uint64_t seed,
 
 /* ══════════════════════════════════════════════════════════════════════
  * (m) P2P body-download disruption/resume — the on-disk BLOCK_HAVE_DATA
- * no-refetch contract (lane G4: wf/disruption-resume)
+ * no-refetch contract
  *
  * Distinct from (i) (rom_journal's chunk-bitmap resume, the SHA3
  * snapshot/artifact path) — this fault exercises the OTHER, older resume

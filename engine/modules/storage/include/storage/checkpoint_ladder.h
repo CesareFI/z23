@@ -18,7 +18,7 @@
  * Each rung gets a verdict: VERIFIED, UNVERIFIABLE, or MISMATCH. Only the
  * compiled keystone is `bound` (a trust root); every other rung is
  * `candidate_unbaked` — self-attestation that this module NEVER elevates to
- * trusted, even when it verifies clean (lane spec rule 4). A MISMATCH is a
+ * trusted, even when it verifies clean. A MISMATCH is a
  * divergence the caller escalates to a typed blocker.
  *
  * The verifier is pure (no globals, no IO); the dumpstate wrapper

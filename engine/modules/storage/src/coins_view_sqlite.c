@@ -697,8 +697,7 @@ bool coins_view_sqlite_open(struct coins_view_sqlite *cvs, sqlite3 *db)
      * `nVdbeWrite` counter.  Cross-connection WAL writer
      * contention is still possible, but that shape IS handled by
      * sqlite3_busy_timeout — unlike the same-connection
-     * SAVEPOINT guard.  Cost: one extra SQLite page cache (~MB);
-     * live node has 95GB, cost is negligible.
+     * SAVEPOINT guard.  Cost: one extra SQLite page cache (~MB).
      *
      * Fallback: if the input handle has no backing file
      * (`:memory:` — used only by a handful of unit tests that

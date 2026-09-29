@@ -402,7 +402,7 @@ static bool build_invocation_item(const struct engine_receipt_invocation *in,
 }
 
 /* The caller has already initialised *t (all fields known, sums zero), the
- * way the totals used to be initialised right before this loop. */
+ * totals initialised right before this loop. */
 static bool build_invocations_and_totals(const struct engine_receipt *r,
                                          struct json_value *invocations,
                                          struct build_line_totals *t)
@@ -567,8 +567,7 @@ static bool build_line(const struct engine_receipt *r, const char *prev_sha3,
         .invocation_elapsed_known = true,
     };
 
-    /* One left-to-right && chain, which is what the single `ok` used to do
-     * as it threaded through these phases: a phase that fails skips every
+    /* One left-to-right && chain: a phase that fails skips every
      * phase after it, including the invocations loop. */
     const bool ok = build_rules_array(r, &rules)
         && build_outcome_object(r, &outcome)
@@ -766,7 +765,7 @@ static bool verify_chain_line(char *line, uint64_t lineno, char *expect,
 }
 
 /* The pinned head must agree with the last line actually read. Runs only
- * after every line verified, exactly where the inline block used to. */
+ * after every line verified. */
 static bool verify_pinned_head(const char *path,
                                struct engine_receipt_chain_report *report)
 {

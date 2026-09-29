@@ -64,34 +64,24 @@ extern "C" {
 /* ── The gated budget ──────────────────────────────────────────────────
  * Per-tx cost may not grow past this over the ladder's full scale span.
  *
- * MEASURED, not guessed. Re-measured 2026-08-28 on a 32-core 7950X3D after the
- * workload gained `funding_multiple` ballast and min-of-reps sampling — 17
- * observations spanning an idle box, a 32-worker synthetic memory load, and
- * four real 32-worker `test_parallel` suite runs:
+ * MEASURED, not guessed (32-core box, idle and under 32-worker load):
  *
  *   clean tree     967 - 1339
  *   O(n^2) armed  3347 - 3647
  *
- * So the worst clean observation is 1339 and the best armed one is 3347, and
  * 1800 sits inside that gap: 34% above the worst clean number, 46% below the
  * best armed one. test_simnet_perf re-proves BOTH directions on every suite
- * run, so a threshold that has drifted into "always passes" territory shows up
- * as a failing self-test, not as silence.
- *
- * The figures this replaces (clean 655-1254 / armed 3276-3399 idle, and the
- * 32-concurrent columns) were taken before the 2026-08-28 workload change.
- * docs/SIMNET_PERF.md still carries that older table and its 96-block
- * self-test rows; they describe funding_multiple=1, reps=1 and need the same
- * refresh. */
+ * run, so a threshold that drifts into "always passes" shows up as a failing
+ * self-test, not as silence. */
 #define SIMNET_PERF_GROWTH_BUDGET_PERMILLE 1800
 
 /* Default workload (the calibrated one above). 192 measured blocks x 8 spends
  * keeps every point's UTXO working set in the same memory-hierarchy regime —
  * see docs/SIMNET_PERF.md "Why the ladder cannot be arbitrarily wide".
  *
- * It does NOT make the smallest point self-averaging. That claim used to be
- * here, and it was wrong: ~1.7k txs is an ~8 ms CPU window, short enough that
- * co-resident work inflates a single sample by 2x. Noise is handled by
+ * It does NOT make the smallest point self-averaging: ~1.7k txs is an ~8 ms
+ * CPU window, short enough that co-resident work inflates a single sample by
+ * 2x. Noise is handled by
  * SIMNET_PERF_DEFAULT_REPS (min-of-samples), and the discrimination margin by
  * SIMNET_PERF_DEFAULT_FUNDING_MULTIPLE — not by this size. */
 #define SIMNET_PERF_DEFAULT_BLOCKS 192
@@ -101,12 +91,11 @@ extern "C" {
  * discarded warm-up). Three, not one, because timing noise here is one-sided —
  * contention only ever ADDS time — so the minimum converges on the
  * uncontaminated cost while a single sample reports whatever that one window
- * happened to cost. Measured need: the smallest ladder point's clean fold is an
- * ~8 ms CPU window, and single samples of it were observed at 9556 and 9987
- * ns/tx against a ~4800 ns/tx floor (2.0x one-sided inflation) on a box running
- * other work — on its own enough to drag the armed/clean discrimination ratio
- * below the 4.0x self-test floor whatever the workload. Three samples cut the
- * armed arm's run-to-run spread to +-0.5% and the clean arm's to +-3%. See
+ * happened to cost. A single sample of the smallest point (an ~8 ms CPU
+ * window) can be inflated ~2x on a busy box, enough on its own to drag the
+ * armed/clean discrimination ratio below the 4.0x self-test floor. Three
+ * samples cut the armed arm's run-to-run spread to +-0.5% and the clean
+ * arm's to +-3%. See
  * engine/modules/sim/src/simnet_perf.c's perf_min() for why the minimum is also the
  * STRICTER estimator for that self-test.
  * Costs ~2x the wall time of reps=1. */
@@ -114,52 +103,40 @@ extern "C" {
 
 /* How many coinbases the UTXO map holds per coinbase the measured phase
  * spends, all of the surplus minted BEFORE the spendable ones. 1 = the map is
- * exactly the measured working set (what this harness did before 2026-08-28);
- * 2 = every spendable coin sits behind one ballast coin that the measured fold
+ * exactly the measured working set; 2 = every spendable coin sits behind one ballast coin that the measured fold
  * never touches.
  *
  * WHY THIS KNOB EXISTS
- * The map's SIZE and the measured fold's WORK used to be welded together —
- * every funded coinbase was spent, so the only way to deepen the map was to
- * time more transactions. That coupling left the detector self-test with no
- * margin at the smallest ladder point: test_simnet_perf requires the armed arm
- * to cost >= 4.0x the clean arm at EVERY point, and the smallest point measured
- * 4.37-4.54x idle and 3.89x under 32-worker load. A 4.0x floor under a 4.4x
- * signal is not a gate, it is a coin flip, and no estimator can fix a margin
- * the workload does not contain.
+ * The map's SIZE and the measured fold's WORK are decoupled: without ballast
+ * the only way to deepen the map is to time more transactions, which leaves
+ * the detector self-test no margin at the smallest ladder point.
+ * test_simnet_perf requires the armed arm to cost >= 4.0x the clean arm at
+ * EVERY point, and no estimator can fix a margin the workload does not
+ * contain.
  *
  * WHY BALLAST BUYS MARGIN, AND WHY ORDER IS LOAD-BEARING
  * coins_map (core/modules/coins/src/coins_view.c) is open addressing with linear
  * probing. Under SIMNET_PERF_INJECT_COINS_HASH_COLLAPSE every key hashes to
  * bucket 0, so live entries form one contiguous run and a coin's find/erase
  * cost is its POSITION IN THAT RUN — not the map's entry count. So ballast
- * minted AFTER the spendable coins sits behind them and is never probed
- * (measured: scale-1 ratio 4.4x -> 4.8x, i.e. nearly nothing), while ballast
- * minted BEFORE them deepens every single spend (measured: 4.4x -> 6.3-8.4x
- * idle, 5.48-6.58x under a 32-worker load). This is the cheap axis: it deepens
- * the probe without timing one extra transaction. The clean arm is unaffected —
- * a real hash scatters the same entries and stays O(1) (measured clean
- * ns/tx is unchanged, and fold_growth_permille stays ~970-1190).
+ * minted AFTER the spendable coins sits behind them and is never probed,
+ * while ballast minted BEFORE them deepens every single spend. This is the
+ * cheap axis: it deepens the probe without timing one extra transaction. The
+ * clean arm is unaffected — a real hash scatters the same entries and stays
+ * O(1).
  *
  * COST: the ballast is untimed setup, but the armed arm's setup is O(n^2) in
- * the run length, and the armed MEASURED fold roughly doubles. In-suite the
- * group goes from 2.3 s (reps=1, multiple=1) to ~9 s (reps=3, multiple=2).
+ * the run length, and the armed MEASURED fold roughly doubles.
  * Raising this further is linear in discrimination and roughly linear in wall
  * time; 2 is the smallest value that clears the 4.0x floor with real margin. */
 #define SIMNET_PERF_DEFAULT_FUNDING_MULTIPLE 2
 
 /* The in-suite self-test (tests/harness/src/test_simnet_perf.c) runs THIS default
- * workload, not a quarter-size ladder. The 96-block quarter-size ladder it
- * used until 2026-08-28 was calibrated the same way (32 concurrent runs:
- * clean max 1429, armed min 2174) but its real-suite contention regime is
- * NOT its calibration regime: a mixed 32-worker suite inflates the growth
- * ratio (observed clean 1905 on a tree whose solo rerun gave 1117), and the
- * same proved true at this default size (in-suite clean 2604 vs solo 1068 —
- * see docs/SIMNET_PERF.md). Which is why the in-suite group asserts no
- * growth budget at any size: the budgets live in `make sim-perf` /
- * `make sim-perf-teeth` on a quiet host, and the suite keeps the per-scale
- * same-window armed-vs-clean discrimination. The armed direction costs ~4 s
- * in-suite at this size. */
+ * workload, not a quarter-size ladder. A mixed 32-worker suite inflates the
+ * growth ratio well past its solo value (see docs/SIMNET_PERF.md), so the
+ * in-suite group asserts no growth budget at any size: the budgets live in
+ * `make sim-perf` / `make sim-perf-teeth` on a quiet host, and the suite
+ * keeps the per-scale same-window armed-vs-clean discrimination. */
 
 /* Test-only regressions this harness knows how to arm. Default NONE. */
 enum simnet_perf_inject {

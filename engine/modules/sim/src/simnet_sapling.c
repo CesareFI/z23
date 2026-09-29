@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * simnet Sapling extension (Sapling Lane C) — implementation.
+ * simnet Sapling extension — implementation.
  * See engine/modules/sim/include/sim/simnet_sapling.h for the contract.
  *
  * These helpers only manage the sim's OWN note-commitment tree and toggle

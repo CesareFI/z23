@@ -12,8 +12,8 @@
 
 /* Bitcoin Core 0.8+ CCoins record codec.
  *
- * This is deliberately policy-parametric.  The three live callers historically
- * decoded the same byte format with different trust boundaries and truncation
+ * This is deliberately policy-parametric.  The three live callers
+ * decode the same byte format with different trust boundaries and truncation
  * behavior.  Those differences are consensus-adjacent import behavior, so the
  * shared parser preserves them through explicit modes instead of normalizing
  * them into one stricter predicate.

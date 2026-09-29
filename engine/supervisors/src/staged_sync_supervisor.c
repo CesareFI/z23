@@ -390,7 +390,7 @@ static int stage_effective_batch(int normal_batch, int per_step_fanout)
     if (refold_batch != normal_batch)
         return refold_batch;
     int catchup_batch = catchup_cadence_drain_batch(normal_batch);
-    /* Fan-out containment (A12): a stage whose step_once verifies
+    /* Fan-out containment: a stage whose step_once verifies
      * per_step_fanout units
      * of consensus work (validate_headers: VH_BATCH_SIZE Equihash solutions per
      * step) would, at an accelerated step count, run per_step_fanout * batch

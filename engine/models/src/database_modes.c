@@ -154,15 +154,13 @@ bool node_db_ibd_turbo_mode(struct node_db *ndb)
     if (!ndb || !ndb->open) return false;
     /* Turbo-mode PRAGMAs are performance optimisations, not integrity
      * invariants — if any of them fail, fall back to the safe
-     * defaults and carry on.  The previous silent path left the DB in
-     * a partial-turbo state (e.g. synchronous=OFF succeeded but the WAL
-     * bound did not, so the WAL grew unbounded). */
-    /* Bulk sync checkpoints RARELY, never NEVER. `wal_autocheckpoint=0` — what
-     * this used to set — removes the bound entirely, and because bulk mode is
-     * entered on every sync of more than 50,000 blocks and only left by
-     * node_db_normal_mode() at the END of that sync, a process that dies
-     * mid-sync spends its whole life with no bound at all. That is how single
-     * runs reached 51-115 GB of WAL against a 10 GB database. The loose bound
+     * defaults and carry on, never leaving a partial-turbo state (e.g.
+     * synchronous=OFF applied but the WAL bound not, so the WAL grows
+     * unbounded). */
+    /* Bulk sync checkpoints RARELY, never NEVER. `wal_autocheckpoint=0`
+     * removes the bound entirely, and bulk mode is only left by
+     * node_db_normal_mode() at the END of a sync, so a process that dies
+     * mid-sync would run with no bound at all. The loose bound
      * below keeps the checkpoint rare enough to be cheap and the file bounded
      * enough to survive a slow disk, and journal_size_limit is what actually
      * returns the .wal file's blocks to the filesystem afterwards. */
@@ -330,14 +328,12 @@ bool node_db_wal_checkpoint_result(struct node_db *ndb,
      * costs nothing but a still-large file — which journal_size_limit caps
      * anyway at the next autocheckpoint. That is why its result is NOT an
      * error here and NOT the verdict: the reclamation already happened or
-     * already failed one call earlier, and reporting the file-reset step's
-     * lock race as the checkpoint's outcome is what used to make a busy
-     * multi-connection node.db look like a checkpoint failure.
+     * already failed one call earlier, and the file-reset step's lock race
+     * must not be reported as the checkpoint's outcome.
      *
-     * Passing NULL for both counts — what this function used to do — collapses
-     * "folded the whole log away" and "moved zero frames because a reader is
-     * parked on the oldest one" into one indistinguishable SQLITE_OK. That is
-     * how a WAL 9.2 times the size of its database stayed invisible. */
+     * Passing NULL for both counts would collapse "folded the whole log
+     * away" and "moved zero frames because a reader is parked on the oldest
+     * one" into one indistinguishable SQLITE_OK. */
     int log_frames = -1, ckpt_frames = -1;
     int passive_rc = sqlite3_wal_checkpoint_v2(ndb->db, NULL,
                                                 SQLITE_CHECKPOINT_PASSIVE,

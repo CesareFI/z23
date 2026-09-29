@@ -17,12 +17,12 @@
  *   ticks. The drive legitimately runs synchronously for a long time (a
  *   mint/refold fold can take hours) and the staged_sync_supervisor's own
  *   8-stage children heartbeat WITHOUT draining while it is active
- *   (staged_sync_supervisor.c), so a genuinely wedged drive was previously
- *   invisible: no supervisor child watches it. This Condition is that watch.
+ *   (staged_sync_supervisor.c), so no supervisor child watches a wedged drive.
+ *   This Condition is that watch.
  * REMEDY: the remedy cannot safely touch a wedged synchronous drive on
  *   another thread (killing it mid-write risks a torn commit), so it returns
- *   COND_REMEDY_FAILED and pages the operator on the normal ladder. It is no
- *   longer a dead end, though: it names the fault with a typed
+ *   COND_REMEDY_FAILED and pages the operator on the normal ladder. It also
+ *   names the fault with a typed
  *   BLOCKER_TRANSIENT blocker ("reducer_drive_stuck") carrying the driver
  *   label, age, and the frozen utxo_apply cursor height, AND arms a
  *   deadline-gated escape ("reducer_drive_ladder_kick",

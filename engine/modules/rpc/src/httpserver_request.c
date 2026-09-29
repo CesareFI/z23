@@ -463,9 +463,8 @@ void rpc_http_request_handle(
     struct trace_span *rpc_span = trace_start("rpc.dispatch");
         platform_socket_t client_fd = conn.fd;
     /* Ownership hand-off flag. Set only where another module takes the
-     * fd; done: is then the SINGLE exit that closes what we still own.
-     * The /events upgrade used to `return` past done: outright, which
-     * also leaked the rpc_span trace_start() allocated above. */
+     * fd; done: is then the SINGLE exit that closes what we still own
+     * (including the rpc_span trace_start() allocated above). */
     bool fd_transferred = false;
     /* Declared before the first `goto done` so the label never reads an
      * indeterminate slot id. -1 means table full or module disabled;

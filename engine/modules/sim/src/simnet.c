@@ -13,7 +13,7 @@
 
 #include "sim/seed_tape.h"
 #include "validation/connect_block.h"
-#include "validation/contextual_check_tx.h" /* contextual_check_transaction (Lane C) */
+#include "validation/contextual_check_tx.h" /* contextual_check_transaction */
 #include "consensus/validation.h"
 #include "consensus/consensus.h"          /* COINBASE_MATURITY */
 #include "consensus/params.h"             /* PRE_BUTTERCUP_POW_TARGET_SPACING */
@@ -198,11 +198,11 @@ static bool sim_mint_block(struct simnet *s, struct transaction *txs,
     /* Post-Sapling activation, connect_block (connect_block.c:704-736)
      * rejects an all-zero hashFinalSaplingRoot.
      *
-     * Lane A (transparent-only sims, s->sapling_tree == NULL): the tree is
-     * never appended to and stays empty, so its root is exactly the empty-tree
+     * Transparent-only sims (s->sapling_tree == NULL): the tree is never
+     * appended to and stays empty, so its root is exactly the empty-tree
      * root — stamp that.
      *
-     * Lane C (s->sapling_tree enabled): append THIS block's shielded-output
+     * s->sapling_tree enabled: append THIS block's shielded-output
      * note commitments (in tx, then output order) to a value-copy of the live
      * tree and stamp the REAL resulting root. The copy `tree_after` is
      * committed to s->sapling_tree only after connect_block accepts the block,
@@ -239,7 +239,7 @@ static bool sim_mint_block(struct simnet *s, struct transaction *txs,
     struct validation_state vs;
     validation_state_init(&vs);
 
-    /* Lane C: drive the REAL shielded consensus verifier on each shielded tx.
+    /* Drive the REAL shielded consensus verifier on each shielded tx.
      * contextual_check_transaction (validation/contextual_check_tx.c) is the
      * exact function contextual_check_block invokes per tx (and that the live
      * node reaches via engine/jobs/src/script_validate_contextual.c). It runs
@@ -249,7 +249,7 @@ static bool sim_mint_block(struct simnet *s, struct transaction *txs,
      * simnet_init) so no proof is skipped. We invoke it per shielded tx (not
      * the whole block) so the harness's plain v1 coinbase does not have to
      * satisfy the block-level BIP34 / Overwinter-version rules, which are
-     * orthogonal to the shielded-proof verification this lane exercises.
+     * orthogonal to the shielded-proof verification.
      * The transparent value balance is still enforced by connect_block below. */
     if (s->run_contextual_check) {
         for (size_t i = 0; i < ntx; i++) {
@@ -283,7 +283,7 @@ static bool sim_mint_block(struct simnet *s, struct transaction *txs,
         LOG_FAIL("simnet", "connect_block rejected height %d: %s",
                  height, vs.reject_reason);
 
-    /* Block accepted — commit the appended Sapling tree (Lane C). */
+    /* Block accepted — commit the appended Sapling tree. */
     if (have_tree_after && s->sapling_tree) {
         *s->sapling_tree = tree_after;
 
@@ -392,9 +392,9 @@ void simnet_free(struct simnet *s)
     s->mempool_txs = NULL;
     s->mempool_count = 0;
     s->mempool_cap = 0;
-    free(s->sapling_tree);            /* Lane C: owned note-commitment tree */
+    free(s->sapling_tree);            /* owned note-commitment tree */
     s->sapling_tree = NULL;
-    free(s->sapling_anchor_history);  /* Lane C: owned anchor registry */
+    free(s->sapling_anchor_history);  /* owned anchor registry */
     s->sapling_anchor_history = NULL;
     s->sapling_anchor_count = 0;
     s->sapling_anchor_cap = 0;

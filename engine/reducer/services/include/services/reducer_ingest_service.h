@@ -24,9 +24,8 @@
 
 /* Runtime tip_finalize anchor re-seed wrapper (2 call sites in
  * reducer_ingest_block). tip_finalize_stage_seed_anchor() is best-effort and
- * idempotent by design (INSERT-OR-IGNORE; see the call-site comments), but its
- * result used to be discarded via (void) — so a runtime re-seed that keeps
- * failing (a silent-stall SEED) left no trace. This wrapper LOG_WARNs + counts
+ * idempotent by design (INSERT-OR-IGNORE; see the call-site comments), so a
+ * runtime re-seed that keeps failing must leave a trace. This wrapper LOG_WARNs + counts
  * the failure with the caller's `why` context WITHOUT changing the deliberately
  * non-fatal control flow: a failed re-seed must not abort the in-flight ingest,
  * so this is LOG_WARN (continue), never LOG_FAIL (return). `why` names which

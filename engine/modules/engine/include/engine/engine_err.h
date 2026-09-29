@@ -62,14 +62,10 @@ bool engine_err_should_retry(enum engine_err e);
 
 /* Refine a class using the vendor's own error text.
  *
- * MEASURED 2026-08-30, against two unrelated vendors on the same afternoon.
- * Z.ai answered `429` with "Insufficient balance or no resource package";
- * OpenAI answered `429` with "You have no credits remaining". A status-only
- * classifier calls both of those RATE_LIMIT, which is retryable, so the
- * harness backed off and tried again three times each — for a condition that
- * no amount of waiting fixes. The prior art this lane inherited its retry rule
- * from (RhettCreighton/VibePoint, src/llm/llm.c:410) has the same hole, and it
- * costs real wall clock on every dispatch against an empty account.
+ * Vendors answer `429` both for rate limits and for an empty account
+ * ("Insufficient balance or no resource package", "You have no credits
+ * remaining"). A status-only classifier calls both RATE_LIMIT, which is
+ * retryable, for a condition no amount of waiting fixes.
  *
  * So a 429 whose body says the account is out of money is reclassified as
  * BAD_REQUEST, which is not retried. This reads the body only to make a

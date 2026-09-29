@@ -9,18 +9,15 @@
  * under this environment class, this group's verdict vector had this digest
  * and this classification. It confers NO standing, NO territory, NO authority
  * over any part of this codebase, and it is not an argument that any code is
- * correct, safe, or worth accepting. Nothing here may be read as a grant. A
- * later lane builds whatever acceptance model consumes these; this file
- * deliberately stops at the record and its verification, and must keep
- * stopping there.
+ * correct, safe, or worth accepting. Nothing here may be read as a grant. This file
+ * deliberately stops at the record and its verification.
  *
  * ── WHY A FIXED LAYOUT AND NOT A STRUCT DUMP ───────────────────────────────
  * The encode/decode path below writes and reads one field at a time through
  * platform/modules/codec's cursors. It never memcpy()s `struct zcl_det_receipt` and never
- * hashes it. A previous lane in this tree found two -O2-only defects, one of
- * them struct padding leaking into a hash: the compiler is free to choose the
- * padding bytes between members, they are not required to be zero, and -O0 and
- * -O2 need not agree on them. Any encoding that touched the struct's storage
+ * hashes it: the compiler is free to choose the padding bytes between
+ * members, they are not required to be zero, and -O0 and -O2 need not agree
+ * on them. Any encoding that touched the struct's storage
  * directly would produce different bytes at different optimisation levels on
  * the same machine, which is precisely the failure this whole module exists to
  * detect. Field-at-a-time little-endian is the only shape that cannot.

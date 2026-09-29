@@ -6,11 +6,8 @@
  * WHY THIS EXISTS
  * ---------------
  * The numbers that decide how this fleet is run — tokens, wall time, load,
- * disk, proofs landed — are today spread across per-host TSVs written by
- * shell (`usage.sh`, `exp.sh`) that only the host that wrote them can read.
- * Asking "what did the fleet spend this week" means logging into every box.
- * So the numbers are collected and never read, which is the same as not
- * collecting them.
+ * disk, proofs landed — are otherwise per-host records that only the host
+ * that wrote them can read. This ledger makes them readable fleet-wide.
  *
  * The fix is not a database. It is that every box holds every box's rows,
  * so the question is always answered locally, and the answer is a table

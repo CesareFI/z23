@@ -55,7 +55,7 @@ extern "C" {
 typedef struct seed_tape seed_tape_t;
 
 /* Forward decl — the optional in-sim Sapling note-commitment tree
- * (Sapling Lane C). Full type in sapling/incremental_merkle_tree.h; kept a
+ * (Sapling). Full type in sapling/incremental_merkle_tree.h; kept a
  * pointer here so transparent-only sims pull in nothing extra. */
 struct incremental_merkle_tree;
 
@@ -76,7 +76,7 @@ struct simnet {
     int  tip_height;
     bool initialized;
 
-    /* ── Sapling Lane C (all default-off; NULL/false = today's behavior) ── */
+    /* ── Sapling (all default-off; NULL/false = transparent-only) ── */
     struct incremental_merkle_tree *sapling_tree; /* optional, owned; the live
                                                    * note-commitment tree. When
                                                    * set, every mint appends this
@@ -84,7 +84,7 @@ struct simnet {
                                                    * commitments and stamps the
                                                    * header root from the REAL
                                                    * current tree root. NULL =
-                                                   * Lane A empty-root stamp. */
+                                                   * empty-root stamp. */
     bool run_contextual_check;          /* when true, each mint also drives the
                                          * REAL contextual_check_block(is_ibd=
                                          * false) so Sapling Groth16 spend/output

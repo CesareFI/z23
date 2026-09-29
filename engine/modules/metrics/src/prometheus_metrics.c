@@ -96,10 +96,8 @@ static pthread_mutex_t      g_lock = PTHREAD_MUTEX_INITIALIZER;
 static bool                 g_observer_installed = false;
 
 /* HTTP RPC middleware counter source (prometheus_metrics.h). Registered by
- * the composition root; read by the renderer under g_lock, which is also
- * where the direct rpc_http_middleware_stats_snapshot() call it replaced
- * used to run — so the lock order (g_lock then the middleware's own mutex)
- * is unchanged. */
+ * the composition root; read by the renderer under g_lock, so the lock order
+ * is g_lock then the middleware's own mutex. */
 static metrics_rpc_http_gauges_fn g_rpc_http_source = NULL;
 static void                      *g_rpc_http_source_ctx = NULL;
 
@@ -107,7 +105,7 @@ static void                      *g_rpc_http_source_ctx = NULL;
 static _Atomic int          g_node_sync_state;
 static const char          *g_node_sync_state_name = "unknown";
 
-/* ── New (Lane 1a) hysteresis gauges ───────────────────────────────
+/* ── Hysteresis gauges ───────────────────────────────
  *
  * These follow the same "breach seconds" shape as g_mirror_lag_breach_
  * seconds above (a duration gauge that a threshold alert compares
@@ -302,7 +300,7 @@ static double alert_rule_fetch_value(const struct metric_alert_rule *r)
 
 /* consensus_reject_spike input: advance the rolling window (aligned to
  * node uptime, not wall-clock — see the file-header comment on the
- * "New (Lane 1a) hysteresis gauges" block) and, once a full window has
+ * "Hysteresis gauges" block) and, once a full window has
  * elapsed, publish the delta since the last window boundary as
  * g_reject_spike_delta. First call just establishes the baseline so a
  * cumulative-since-boot total never reads as a false "spike". Called
@@ -402,7 +400,7 @@ void metrics_prometheus_alerts_reset(void)
     memset(g_alert_state, 0, sizeof(g_alert_state));
     pthread_mutex_unlock(&g_alert_lock);
 
-    /* Isolate the Lane 1a hysteresis gauges between tests too — each
+    /* Isolate the hysteresis gauges between tests too — each
      * mirrors an "active episode" latch the same way g_alert_state does. */
     atomic_store(&g_header_gap_blocks, -1);
     atomic_store(&g_header_gap_breach_seconds, 0);
@@ -822,7 +820,7 @@ size_t metrics_prometheus_render_prometheus(char *buf, size_t cap)
         "zcl_mirror_lag_critical_seconds %lld\n",
         (long long)mlag, (long long)mbreach, (long long)mcrit);
 
-    /* ── Lane 1a hysteresis gauges ────────────────────────────── */
+    /* ── Hysteresis gauges ────────────────────────────── */
     int64_t hgap        = atomic_load(&g_header_gap_blocks);
     int64_t hgap_breach = atomic_load(&g_header_gap_breach_seconds);
     pos = append(buf, cap, pos,

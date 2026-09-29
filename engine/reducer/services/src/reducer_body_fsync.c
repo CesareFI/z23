@@ -88,9 +88,8 @@ static _Atomic uint64_t g_fsync_flush_us_total;
  * pre-commit hook pays the body+event_log fdatasync once per
  * ZCL_CATCHUP_FSYNC_COMMIT_INTERVAL commits (default 8, clamp [1,64] — about
  * one per drain ROUND of eight stages) instead of once per batch COMMIT.
- * Measured against a 2026-09-14 cold-sync stopwatch: 5600 commits paid 5600
- * flushes for ~40-56 s of fsync_flush_us_total, ~3.5 flushes per drain round;
- * the interval demotes that to ~1 flush per round. Only the CADENCE changes:
+ * Un-batched, a cold sync pays ~3.5 flushes per drain round; the interval
+ * demotes that to ~1. Only the CADENCE changes:
  *
  *   - every flush that DOES run keeps the exact veto verdict (a false return
  *     still rolls the batch back), and the EWMA/total/count telemetry keeps
@@ -116,7 +115,7 @@ static _Atomic uint64_t g_fsync_flush_us_total;
  * (requeue_body_for_refetch clears BLOCK_HAVE_DATA, emits the status event,
  * and the normal !HAVE_DATA sync path re-downloads the body), the boot-time
  * scan re-derives HAVE_DATA from physical blk content when the contiguous
- * frontier lags, and the drop-bodiless gate (fb3a6c4142 lineage) clears
+ * frontier lags, and the drop-bodiless gate clears
  * borrowed/byte-less claims. Today the same demotion is already accepted for
  * the whole cursor side: synchronous=OFF means lost commits replay from the
  * last checkpoint — R1 only lets the body side lag by the same bounded

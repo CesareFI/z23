@@ -32,10 +32,8 @@
  * direction check_lib_layering.sh enforces (HARD gate, see that script's
  * own "Fix option 2: forward declaration") stays clean.
  *
- * This lane does NOT register a diagnostics dumper or a condition; a
- * later lane wires catalog_completeness_snapshot() into
- * `z23 ops state` / a typed blocker. This module is the engine,
- * not the surface. */
+ * This module registers no diagnostics dumper or condition; it is the
+ * engine, not the surface (catalog_completeness_snapshot() is the entry). */
 
 #ifndef STORAGE_CATALOG_COMPLETENESS_H
 #define STORAGE_CATALOG_COMPLETENESS_H
@@ -57,18 +55,11 @@
 /* ── Is an empty index empty because nothing happened, or because it is
  *    broken? ──────────────────────────────────────────────────────────
  *
- * `lag` alone cannot answer that, and answering it wrong is expensive.
- * Measured on the canonical node 2026-07-28, at the front of the chain with
- * 22 peers: op_return_index held 0 rows, zslp_ledger 0 rows, znam_names 0
- * rows — and two subsystems gave CONTRADICTORY diagnoses of the same table.
- * catalog_lag_exceeded said "its backfill service is stalled and must
- * resume" (a defect, with an action). index_fold_guard said the bodies
- * below the snapshot-seed floor were never downloaded, so the fold can never
- * cross (structural, and "resume" cannot work). Both were reporting true
- * facts about their own concern; neither could see the fact that reconciles
- * them.
+ * `lag` alone cannot answer that: a stalled backfill (a defect, "resume")
+ * and a fold that can never cross the snapshot-seed floor (structural,
+ * "resume" cannot work) both leave an index empty.
  *
- * That fact is COVERAGE: how much of the range this index can actually
+ * The reconciling fact is COVERAGE: how much of the range this index can actually
  * reach has it folded? The reachable range is [floor, target] — not
  * [0, target] — because on a snapshot-seeded datadir there are no block
  * bodies below the seed height, so no index that folds bodies forward can
@@ -80,9 +71,8 @@
  *   PARTIAL   — covered some of it. An empty table proves nothing.
  *   NONE      — covered none of it. An empty table proves nothing.
  *
- * Deliberately NOT a row count. COUNT(*) on op_return_index measured 3.5 s
- * on the live node — far past any poll budget — and the count is not what
- * makes emptiness meaningful anyway. Coverage is. A caller that wants the
+ * Deliberately NOT a row count: COUNT(*) on op_return_index is far past any
+ * poll budget, and coverage is what makes emptiness meaningful. A caller that wants the
  * number can ask the index's own dumper, which already publishes it. */
 enum catalog_coverage {
     CATALOG_COVERAGE_UNKNOWN = 0, /* not enabled / no cursor to read */

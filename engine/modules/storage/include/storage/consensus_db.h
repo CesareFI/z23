@@ -6,12 +6,11 @@
  * anchor_state / nullifiers) together with the progress-cursor rows they
  * are committed with (stage_cursor / progress_meta).
  *
- * WHY A SEPARATE FILE. Today every one of those tables lives in progress.kv,
- * the SAME SQLite file that the projection co-writers (address_index,
- * txindex, created_outputs, census, topology, …) also write. Because a WAL
- * database serialises all writers on ONE journal, a projection fold and the
- * reducer's fsync-bearing batch commit contend for the same write lock — the
- * writer-contention incident class. consensus.db gives the reducer its own
+ * WHY A SEPARATE FILE. A WAL database serialises all writers on ONE journal,
+ * so sharing a file with the projection co-writers (address_index, txindex,
+ * census, topology, …) would make a projection fold and the reducer's
+ * fsync-bearing batch commit contend for the same write lock. consensus.db
+ * gives the reducer its own
  * WAL so its commit/fsync path stops sharing a journal with the lagging
  * projection writers.
  *
