@@ -421,6 +421,49 @@ static int wrc_f3_readable(struct wrc_f *f, struct wallet *w)
     return failures;
 }
 
+/* F4. One unread body in a 150-block gap: 149 of 150 read clears the 99%
+ * floor and the read blocks hold coins, so the rescan's own coverage_ok is
+ * true. The catch-up must still hold the marker: the unread block can carry
+ * a coin, and the owner requires a full read before the marker clears. */
+#define WRC_F4_UNREAD 120
+static int wrc_f4_one_unread_body(struct wrc_f *f, struct wallet *w)
+{
+    int failures = 0;
+    w->best_block_height = WRC_F_PREV;
+    f->idx[WRC_F4_UNREAD].nStatus &= ~BLOCK_HAVE_DATA;
+    struct wallet_rescan_report rep;
+    memset(&rep, 0, sizeof(rep));
+    int found = boot_wallet_catch_up(w, &f->ms->chain_active, f->datadir,
+                                     &rep);
+    failures += wrc_expect("F4: 149 of 150 read, coins found, floor cleared",
+                           rep.start_height == WRC_F_PREV + 1 &&
+                           rep.blocks_scanned == WRC_F_LAST - WRC_F_PREV - 1 &&
+                           rep.blocks_missing_data == 1 && found > 0);
+    failures += wrc_expect("F4: one unread body still leaves the marker set",
+                           w->scan_retry.pending &&
+                           w->scan_retry.from == WRC_F_PREV + 1 &&
+                           strcmp(w->scan_retry.blocker,
+                                  WALLET_RESCAN_BLOCKER_INCOMPLETE) == 0 &&
+                           wallet_scanned_through_height(w) == WRC_F_PREV);
+    int saved = -1;
+    struct wallet_scan_marker m;
+    struct zcl_result fr = wallet_sqlite_flush_transactions_r(f->ws, w);
+    failures += wrc_expect("F4: the flush keeps the height and the marker",
+                           fr.ok &&
+                           wallet_sqlite_read_scan_height(f->ws, &saved) &&
+                           saved == WRC_F_PREV &&
+                           wallet_sqlite_read_scan_marker(f->ws, &m) &&
+                           m.from == WRC_F_PREV + 1);
+    f->idx[WRC_F4_UNREAD].nStatus |= BLOCK_HAVE_DATA;
+    memset(&rep, 0, sizeof(rep));
+    (void)boot_wallet_catch_up(w, &f->ms->chain_active, f->datadir, &rep);
+    failures += wrc_expect("F4: a full reread clears the marker",
+                           rep.blocks_scanned == WRC_F_LAST - WRC_F_PREV &&
+                           !w->scan_retry.pending &&
+                           wallet_scanned_through_height(w) == WRC_F_LAST);
+    return failures;
+}
+
 /* F. A boot catch-up that cannot read its range must not leave the wallet
  * claiming it scanned through the tip. The journey run that found this read
  * every body from the wrong directory; the rescan failed every read, still
@@ -438,6 +481,7 @@ static int wrc_f_steps(struct wrc_f *f)
     struct wallet *rebooted = wrc_reboot_wallet(f);
     failures += wrc_f2_restart_maturity(f, rebooted);
     failures += wrc_f3_readable(f, rebooted);
+    failures += wrc_f4_one_unread_body(f, rebooted);
     wallet_free(rebooted);
     free(rebooted);
     return failures;
