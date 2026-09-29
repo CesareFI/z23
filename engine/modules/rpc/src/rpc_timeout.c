@@ -163,8 +163,12 @@ int rpc_timeout_register(struct rpc_timeout_mgr *mgr,
  * retrieval, mesh fleet collection, and regtest mining each do real,
  * unavoidable work inside one RPC that legitimately exceeds the generic
  * 10 s ceiling; see the constant comments in rpc_timeout.h for each case.
- * The generic deadline still wins when an operator configured it higher —
- * a method label can extend a slot, never shorten one. */
+ * The storebuy buyer journey rides the same in-RPC onion fetch as legacy
+ * market retrieval: remote_order runs three blocking Tor fetches, and
+ * status/collect re-poll and download over Tor for a remote purchase, so
+ * all three share the market-delivery budget. The generic deadline still
+ * wins when an operator configured it higher — a method label can extend a
+ * slot, never shorten one. */
 struct rpc_timeout_method_budget {
     const char *method;
     int         budget_ms;
@@ -179,6 +183,9 @@ static const struct rpc_timeout_method_budget k_method_budgets[] = {
     { "vault_intent_fanout_plan",  0 },
     { "vault_intent_commit",       0 },
     { "zmarket_purchase_retrieve", RPC_MARKET_DELIVERY_TIMEOUT_MS },
+    { "storebuy_remote_order",     RPC_MARKET_DELIVERY_TIMEOUT_MS },
+    { "storebuy_status",           RPC_MARKET_DELIVERY_TIMEOUT_MS },
+    { "storebuy_collect",          RPC_MARKET_DELIVERY_TIMEOUT_MS },
     { "mesh_machines",             RPC_MESH_COLLECT_TIMEOUT_MS },
     { "generatetoaddress",         RPC_MINING_TIMEOUT_MS },
     { "generate",                  RPC_MINING_TIMEOUT_MS },

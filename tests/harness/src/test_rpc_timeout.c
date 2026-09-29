@@ -273,6 +273,43 @@ static int test_proof_methods_receive_bounded_extension(void)
         close(generic_pair[0]);
         close(generic_pair[1]);
         PASS();
+    }
+    TEST("rpc_timeout: storebuy onion delivery receives the market budget") {
+        fresh_mgr();
+        int order_pair[2] = { -1, -1 };
+        int status_pair[2] = { -1, -1 };
+        int collect_pair[2] = { -1, -1 };
+        int generic_pair[2] = { -1, -1 };
+        ASSERT(socketpair(AF_UNIX, SOCK_STREAM, 0, order_pair) == 0);
+        ASSERT(socketpair(AF_UNIX, SOCK_STREAM, 0, status_pair) == 0);
+        ASSERT(socketpair(AF_UNIX, SOCK_STREAM, 0, collect_pair) == 0);
+        ASSERT(socketpair(AF_UNIX, SOCK_STREAM, 0, generic_pair) == 0);
+        int order = rpc_timeout_register(&mgr, order_pair[0], 0);
+        int status = rpc_timeout_register(&mgr, status_pair[0], 0);
+        int collect = rpc_timeout_register(&mgr, collect_pair[0], 0);
+        int generic = rpc_timeout_register(&mgr, generic_pair[0], 0);
+        ASSERT(order >= 0 && status >= 0 && collect >= 0 && generic >= 0);
+        rpc_timeout_set_method(&mgr, order, "storebuy_remote_order");
+        rpc_timeout_set_method(&mgr, status, "storebuy_status");
+        rpc_timeout_set_method(&mgr, collect, "storebuy_collect");
+        rpc_timeout_set_method(&mgr, generic, "storebuy_catalog");
+        ASSERT(mgr.slots[order].timeout_ms == RPC_MARKET_DELIVERY_TIMEOUT_MS);
+        ASSERT(mgr.slots[status].timeout_ms == RPC_MARKET_DELIVERY_TIMEOUT_MS);
+        ASSERT(mgr.slots[collect].timeout_ms == RPC_MARKET_DELIVERY_TIMEOUT_MS);
+        ASSERT(mgr.slots[generic].timeout_ms == 10000);
+        rpc_timeout_unregister(&mgr, order);
+        rpc_timeout_unregister(&mgr, status);
+        rpc_timeout_unregister(&mgr, collect);
+        rpc_timeout_unregister(&mgr, generic);
+        close(order_pair[0]);
+        close(order_pair[1]);
+        close(status_pair[0]);
+        close(status_pair[1]);
+        close(collect_pair[0]);
+        close(collect_pair[1]);
+        close(generic_pair[0]);
+        close(generic_pair[1]);
+        PASS();
     } _test_next:;
     return failures;
 }

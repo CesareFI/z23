@@ -65,8 +65,12 @@ extern "C" {
  * generic 10 s ceiling by minutes on a cold path; align the server budget
  * with the proof-building one (bounded five minutes) rather than kill the
  * socket mid-reply, which surfaces to the caller as a truncated,
- * unparseable body. Clearnet retrieval is unaffected: it completes well
- * under the generic ceiling. */
+ * unparseable body. Covers both the legacy zmarket_purchase_retrieve and
+ * the current storebuy buyer journey: storebuy_remote_order runs three
+ * blocking onion fetches inside the RPC, and storebuy_status /
+ * storebuy_collect ride the same fetch for a purchase whose seller is an
+ * onion. Clearnet retrieval is unaffected: it completes well under the
+ * generic ceiling. */
 #define RPC_MARKET_DELIVERY_TIMEOUT_MS 300000
 /* The mesh fleet view probes up to 8 paired machines with a bounded 12 s
  * collective wait inside one RPC (MESH_MACHINES_COLLECT_BUDGET_MS). The
