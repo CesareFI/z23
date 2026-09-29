@@ -58,6 +58,8 @@ bool zcl_verify_store_pins_load(struct zcl_fixed_result_v2_roots *out,
 void zcl_verify_store_result_release(struct zcl_verify_store_result *result);
 
 #ifdef ZCL_TESTING
+/* Deterministic pin-rotation witness after the store scan, before HIT refresh. */
+void zcl_verify_store_test_before_refresh(void (*hook)(void *), void *context);
 /* Isolated fixture only. Production does not compile a path/UID override.
  * Both fixtures run production's lookup function, including its one
  * same-uid rule: without allow_same_uid, a signer or publisher UID equal to

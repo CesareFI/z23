@@ -462,6 +462,28 @@ static bool vs_site_is(const struct vs_site *s, const struct vs_fixture *f,
     return ok;
 }
 
+struct vs_rotate_pins {
+    const struct vs_site *site;
+    struct zcl_fixed_result_v2_roots pins;
+    bool wrote;
+};
+
+static void vs_rotate_pins_after_scan(void *context)
+{
+    struct vs_rotate_pins *rotation = context;
+    uint8_t bytes[2048];
+    size_t len = 0;
+    const char *why = NULL;
+    char replacement[PATH_MAX];
+    rotation->wrote = vs_path(replacement, rotation->site->etc,
+                              "fixed_result.pins.next") &&
+                      zcl_fr_pins_encode(&rotation->pins, bytes, sizeof(bytes),
+                                         &len, &why) &&
+                      vs_write(replacement, bytes, len, 0444) &&
+                      rename(replacement, rotation->site->pins) == 0;
+    zcl_verify_store_test_before_refresh(NULL, NULL);
+}
+
 static int vs_test_site(struct vs_fixture *f)
 {
     int failures = 0;
@@ -477,6 +499,21 @@ static int vs_test_site(struct vs_fixture *f)
         /* Positive: the exact production lookup, only the waiver set. */
         ASSERT(vs_site_policy(&s, me, me, 0444));
         ASSERT(vs_site_is(&s, f, true, ZCL_VERIFY_STORE_HIT, NULL));
+        struct vs_rotate_pins rotation = { .site = &s, .pins = f->vc.pins };
+        rotation.pins.source_content[0] ^= 1u;
+        zcl_verify_store_test_before_refresh(vs_rotate_pins_after_scan,
+                                              &rotation);
+        ASSERT(vs_site_is(&s, f, true, ZCL_VERIFY_STORE_COLD,
+                          "store_pins_changed"));
+        ASSERT(rotation.wrote);
+        ASSERT(unlink(s.pins) == 0);
+        uint8_t original_pins[2048];
+        size_t original_len = 0;
+        const char *pins_why = NULL;
+        ASSERT(zcl_fr_pins_encode(&f->vc.pins, original_pins,
+                                   sizeof(original_pins), &original_len,
+                                   &pins_why));
+        ASSERT(vs_write(s.pins, original_pins, original_len, 0444));
         /* The same store without the waiver: signer and publisher are the
          * developer uid, then the publisher alone is. */
         ASSERT(vs_site_is(&s, f, false, ZCL_VERIFY_STORE_COLD,

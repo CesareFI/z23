@@ -411,6 +411,13 @@ file with `O_NOFOLLOW`, and the file must be root-owned, regular, nlink 1 and
 mode exactly `0444`. The walk then applies `zcl_fr_pins_parse`. The refusal
 tokens are:
 
+The receiver also reloads and compares all twelve pins after scanning a HIT,
+before it hands verified artifact bytes to the caller. A root installer that
+rotates pins must take `fixed_result.lock` exclusively through atomic pin
+replacement, so the reader's shared lock protects artifact materialization
+against a later rotation. A changed or unavailable pin set at the final check
+returns COLD `store_pins_changed`.
+
 | Condition | Token |
 |---|---|
 | A directory on the walk is not root-owned, is writable, or is missing | `store_pins_path_unsafe` |

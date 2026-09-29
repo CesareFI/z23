@@ -58,6 +58,17 @@ struct vs_request {
     uid_t publisher;
 };
 
+#ifdef ZCL_TESTING
+static void (*vs_before_refresh_hook)(void *);
+static void *vs_before_refresh_context;
+
+void zcl_verify_store_test_before_refresh(void (*hook)(void *), void *context)
+{
+    vs_before_refresh_hook = hook;
+    vs_before_refresh_context = context;
+}
+#endif
+
 static void vs_result_init(struct zcl_verify_store_result *out)
 {
     memset(out, 0, sizeof(*out));
@@ -567,22 +578,42 @@ static bool vs_site_policy(const struct vs_site *site, uid_t *signer,
     return ok;
 }
 
+static const char *vs_site_pins(const struct vs_site *site,
+                                struct zcl_fixed_result_v2_roots *out);
+
+static bool vs_pins_equal(const struct zcl_fixed_result_v2_roots *a,
+                          const struct zcl_fixed_result_v2_roots *b)
+{
+    for (size_t i = 0; i < ZCL_FR_ROOT_COUNT; ++i) {
+        if (memcmp(zcl_fr_root_at(a, i), zcl_fr_root_at(b, i), 32u) != 0)
+            return false;
+    }
+    return true;
+}
+
 static void vs_refresh_hit(const struct vs_site *site, uid_t signer,
                            uid_t publisher,
+                           const struct zcl_fixed_result_v2_roots *pins,
                            const struct zcl_verify_attest_box_key *box,
                            const struct zcl_verify_attest_trust_root *root,
                            struct zcl_verify_store_result *out)
 {
     struct zcl_verify_attest_trust_root current;
+    struct zcl_fixed_result_v2_roots current_pins;
     uid_t fresh_signer = 0, fresh_publisher = 0;
-    const char *why = NULL, *policy_why = NULL;
+    const char *why = NULL, *policy_why = NULL, *pins_why = NULL;
     bool policy_current = !site ||
         (vs_site_policy(site, &fresh_signer, &fresh_publisher, &policy_why) &&
          fresh_signer == signer && fresh_publisher == publisher);
-    if (policy_current &&
-        zcl_verify_attest_trust_root_load(NULL, box, &current, &why) &&
+    bool pins_current = !site ||
+        (vs_site_pins(site, &current_pins) == NULL &&
+         vs_pins_equal(pins, &current_pins));
+    if (site && !pins_current) pins_why = "store_pins_changed";
+    bool key_current = zcl_verify_attest_trust_root_load(NULL, box, &current,
+                                                          &why) &&
         memcmp(root->verifier_pubkey, current.verifier_pubkey,
-               ZCL_VERIFY_ATTEST_PUBKEY_BYTES) == 0)
+               ZCL_VERIFY_ATTEST_PUBKEY_BYTES) == 0;
+    if (policy_current && pins_current && key_current)
         return;
     free(out->object); free(out->depfile); free(out->stderr_bytes);
     out->object = out->depfile = out->stderr_bytes = NULL;
@@ -592,6 +623,7 @@ static void vs_refresh_hit(const struct vs_site *site, uid_t signer,
     memset(out->verifier_pubkey, 0, sizeof(out->verifier_pubkey));
     vs_set(out, ZCL_VERIFY_STORE_COLD,
            !policy_current ? "store_policy_changed" :
+           !pins_current ? pins_why :
            (why ? why : "verifier_key_changed"));
 }
 
@@ -642,7 +674,12 @@ static void vs_lookup_at(int base_fd, uid_t anchor_owner, uid_t signer,
     }
     vs_scan(key_fd, req, key, &root, out);
     if (out->verdict == ZCL_VERIFY_STORE_HIT) {
-        vs_refresh_hit(site, signer, req->publisher, box, &root, out);
+#ifdef ZCL_TESTING
+        if (vs_before_refresh_hook)
+            vs_before_refresh_hook(vs_before_refresh_context);
+#endif
+        vs_refresh_hit(site, signer, req->publisher, req->pins, box, &root,
+                       out);
         if (out->verdict == ZCL_VERIFY_STORE_HIT) {
             out->lock_fd = lock_fd;
             lock_fd = -1;
