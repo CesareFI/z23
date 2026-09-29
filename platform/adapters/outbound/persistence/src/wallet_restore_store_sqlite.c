@@ -22,6 +22,7 @@
 #include "util/ar_step_readonly.h"
 
 #include <ctype.h>
+#include <stdarg.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -165,6 +166,41 @@ static int wrs_columns(sqlite3 *db, const char *schema, const char *table,
     return n;
 }
 
+static void wrs_reports_init(struct wallet_restore_table_report *reports,
+                             const char *const *tables, size_t n_tables)
+{
+    if (!reports)
+        return;
+    for (size_t i = 0; i < n_tables; i++)
+        wrs_report_init(&reports[i], tables ? tables[i] : NULL);
+}
+
+/* Formats a diagnostic into the caller's buffer when it supplied one. */
+static void wrs_err(char *err, size_t err_cap, const char *fmt, ...)
+{
+    if (!err || !err_cap)
+        return;
+    va_list ap;
+    va_start(ap, fmt);
+    (void)vsnprintf(err, err_cap, fmt, ap);
+    va_end(ap);
+}
+
+/* sqlite3_open_v2 is lazy: a text file opens fine and only fails on the
+ * first read. Probe the catalog so "this is not a database" is reported as
+ * such rather than as "the backup held no wallet tables". */
+static bool wrs_catalog_readable(sqlite3 *db)
+{
+    sqlite3_stmt *probe = NULL;
+    bool readable = false;
+    if (sqlite3_prepare_v2(db, "SELECT count(*) FROM sqlite_master", -1,
+                           &probe, NULL) == SQLITE_OK && probe) {
+        readable = AR_STEP_ROW_READONLY(probe) == SQLITE_ROW;
+        sqlite3_finalize(probe);
+    }
+    return readable;
+}
+
 /* ── inspect ────────────────────────────────────────────────── */
 
 static enum wallet_restore_store_status wrs_inspect_backup(
@@ -177,44 +213,26 @@ static enum wallet_restore_store_status wrs_inspect_backup(
 {
     (void)self;
     if (err && err_cap) err[0] = '\0';
-    if (reports)
-        for (size_t i = 0; i < n_tables; i++)
-            wrs_report_init(&reports[i], tables ? tables[i] : NULL);
+    wrs_reports_init(reports, tables, n_tables);
     if (!backup_path || !reports || (!tables && n_tables > 0)) {
-        if (err && err_cap)
-            snprintf(err, err_cap, "inspect_backup: null argument");
+        wrs_err(err, err_cap, "inspect_backup: null argument");
         return WR_STORE_OPEN_BACKUP_FAILED;
     }
 
     sqlite3 *db = NULL;
     if (sqlite3_open_v2(backup_path, &db, SQLITE_OPEN_READONLY, NULL)
             != SQLITE_OK) {
-        if (err && err_cap)
-            snprintf(err, err_cap, "cannot open backup %s: %s", backup_path,
-                     db ? sqlite3_errmsg(db) : "open failed");
+        wrs_err(err, err_cap, "cannot open backup %s: %s", backup_path,
+                db ? sqlite3_errmsg(db) : "open failed");
         if (db) sqlite3_close(db);
         return WR_STORE_OPEN_BACKUP_FAILED;
     }
 
-    /* sqlite3_open_v2 is lazy: a text file opens fine and only fails on the
-     * first read. Probe the catalog so "this is not a database" is reported
-     * as such rather than as "the backup held no wallet tables". */
-    {
-        sqlite3_stmt *probe = NULL;
-        bool readable = false;
-        if (sqlite3_prepare_v2(db, "SELECT count(*) FROM sqlite_master", -1,
-                               &probe, NULL) == SQLITE_OK && probe) {
-            readable = AR_STEP_ROW_READONLY(probe) == SQLITE_ROW;
-            sqlite3_finalize(probe);
-        }
-        if (!readable) {
-            if (err && err_cap)
-                snprintf(err, err_cap,
-                         "%s is not a readable SQLite database: %s",
-                         backup_path, sqlite3_errmsg(db));
-            sqlite3_close(db);
-            return WR_STORE_OPEN_BACKUP_FAILED;
-        }
+    if (!wrs_catalog_readable(db)) {
+        wrs_err(err, err_cap, "%s is not a readable SQLite database: %s",
+                backup_path, sqlite3_errmsg(db));
+        sqlite3_close(db);
+        return WR_STORE_OPEN_BACKUP_FAILED;
     }
 
     for (size_t i = 0; i < n_tables; i++) {
@@ -374,6 +392,137 @@ static bool wrs_key_encryption_compatible(sqlite3 *db)
     return compatible;
 }
 
+/* Copies the backup rows the target lacks and records the row accounting. */
+static enum wallet_restore_store_status wrs_insert_missing_rows(
+    sqlite3 *db, const char *t, struct wallet_restore_table_report *r,
+    char *err, size_t err_cap)
+{
+    char cols[2048];
+    char pk[8][WRS_IDENT_MAX];
+    int n_pk = 0;
+    int shared = wrs_shared_columns(db, t, cols, sizeof(cols), pk,
+                                    (int)(sizeof(pk) / sizeof(pk[0])),
+                                    &n_pk);
+    if (shared <= 0) {
+        wrs_err(err, err_cap,
+                "backup %s shares no columns with the target schema", t);
+        return WR_STORE_MERGE_FAILED;
+    }
+
+    r->rows_collided = wrs_count_collisions(db, t, pk, n_pk);
+
+    char sql[4096];
+    snprintf(sql, sizeof(sql),
+             "INSERT OR IGNORE INTO main.%s (%s) SELECT %s FROM bak.%s",
+             t, cols, cols, t);
+    char *emsg = NULL;
+    if (sqlite3_exec(db, sql, NULL, NULL, &emsg) != SQLITE_OK) {
+        wrs_err(err, err_cap, "merge %s: %s", t,
+                     emsg ? emsg : "insert failed");
+        sqlite3_free(emsg);
+        return WR_STORE_MERGE_FAILED;
+    }
+    sqlite3_free(emsg);
+
+    r->rows_after = wrs_count(db, "main", t);
+    r->rows_inserted = (r->rows_after >= 0 && r->rows_before >= 0)
+                       ? r->rows_after - r->rows_before : -1;
+    if (r->rows_inserted >= 0 && r->rows_in_backup >= 0) {
+        int64_t collided = r->rows_collided >= 0 ? r->rows_collided : 0;
+        int64_t rejected = r->rows_in_backup - r->rows_inserted - collided;
+        r->rows_rejected = rejected > 0 ? rejected : 0;
+    }
+    return WR_STORE_OK;
+}
+
+/* Merges one table from the attached backup into the target and fills its
+ * report. */
+static enum wallet_restore_store_status wrs_merge_table(
+    sqlite3 *db, const char *t, struct wallet_restore_table_report *r,
+    char *err, size_t err_cap)
+{
+    bool mpresent = false;
+    int64_t mrows = -1;
+    if (wrs_manifest_row(db, "bak", t, &mpresent, &mrows)) {
+        r->manifest_present_in_source = mpresent;
+        r->manifest_row_count = mrows;
+    }
+
+    r->rows_before = wrs_count(db, "main", t);
+    r->in_backup = wrs_table_exists(db, "bak", t);
+    if (!r->in_backup) {
+        /* Nothing to merge. Reported, not skipped in silence. */
+        r->rows_inserted = 0;
+        r->rows_collided = 0;
+        r->rows_rejected = 0;
+        r->rows_after = r->rows_before;
+        return WR_STORE_OK;
+    }
+    r->rows_in_backup = wrs_count(db, "bak", t);
+    if (r->rows_before < 0) {
+        /* The TARGET lacks the table — the caller was supposed to open
+         * it through the schema path. Refuse loudly rather than create
+         * a constraint-free table behind the operator's back. */
+        wrs_err(err, err_cap,
+                "target has no %s table (open the datadir through "
+                "the node schema first)", t);
+        return WR_STORE_MERGE_FAILED;
+    }
+
+    return wrs_insert_missing_rows(db, t, r, err, err_cap);
+}
+
+/* Attaches the backup as "bak" and opens the restore transaction; on failure
+ * nothing stays attached. */
+static enum wallet_restore_store_status wrs_open_merge(
+    sqlite3 *db, const char *backup_path, char *err, size_t err_cap)
+{
+    /* ATTACH the backup under alias "bak". Preferred form is the read-only
+     * URI — a restore must never be able to write the file it is recovering
+     * from — but URI filename handling is a build/connection option, so fall
+     * back to the plain path when the URI form is rejected. Nothing below
+     * ever writes to `bak` either way. */
+    if (!wrs_attach(db, backup_path, /*read_only=*/true) &&
+        !wrs_attach(db, backup_path, /*read_only=*/false)) {
+        wrs_err(err, err_cap, "cannot attach backup %s: %s", backup_path,
+                sqlite3_errmsg(db));
+        return WR_STORE_ATTACH_FAILED;
+    }
+    if (!wrs_key_encryption_compatible(db)) {
+        wrs_err(err, err_cap,
+                "backup wallet-key encryption identity conflicts with "
+                "the target; restore into a fresh datadir");
+        (void)sqlite3_exec(db, "DETACH DATABASE bak", NULL, NULL, NULL);
+        return WR_STORE_MERGE_FAILED;
+    }
+    if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL) != SQLITE_OK) {
+        wrs_err(err, err_cap, "cannot begin restore transaction: %s",
+                sqlite3_errmsg(db));
+        (void)sqlite3_exec(db, "DETACH DATABASE bak", NULL, NULL, NULL);
+        return WR_STORE_MERGE_FAILED;
+    }
+    return WR_STORE_OK;
+}
+
+/* Ends the restore transaction and detaches the backup. A failed merge or a
+ * dry run rolls back. */
+static enum wallet_restore_store_status wrs_close_merge(
+    sqlite3 *db, enum wallet_restore_store_status status, bool dry_run,
+    char *err, size_t err_cap)
+{
+    const char *finish = (status == WR_STORE_OK && !dry_run)
+                         ? "COMMIT" : "ROLLBACK";
+    if (sqlite3_exec(db, finish, NULL, NULL, NULL) != SQLITE_OK &&
+        status == WR_STORE_OK) {
+        wrs_err(err, err_cap, "cannot commit restore: %s",
+                sqlite3_errmsg(db));
+        (void)sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+        status = WR_STORE_MERGE_FAILED;
+    }
+    (void)sqlite3_exec(db, "DETACH DATABASE bak", NULL, NULL, NULL);
+    return status;
+}
+
 static enum wallet_restore_store_status wrs_merge_into_target(
     void *self,
     const char *backup_path,
@@ -385,145 +534,28 @@ static enum wallet_restore_store_status wrs_merge_into_target(
 {
     struct wallet_restore_store_sqlite_ctx *c = ctx_of(self);
     if (err && err_cap) err[0] = '\0';
-    if (reports)
-        for (size_t i = 0; i < n_tables; i++)
-            wrs_report_init(&reports[i], tables ? tables[i] : NULL);
+    wrs_reports_init(reports, tables, n_tables);
     if (!c || !c->target_db) {
-        if (err && err_cap)
-            snprintf(err, err_cap, "merge: no target connection bound");
+        wrs_err(err, err_cap, "merge: no target connection bound");
         return WR_STORE_NO_TARGET;
     }
     if (!backup_path || !reports || (!tables && n_tables > 0)) {
-        if (err && err_cap)
-            snprintf(err, err_cap, "merge: null argument");
+        wrs_err(err, err_cap, "merge: null argument");
         return WR_STORE_OPEN_BACKUP_FAILED;
     }
 
     sqlite3 *db = c->target_db;
-
-    /* ATTACH the backup under alias "bak". Preferred form is the read-only
-     * URI — a restore must never be able to write the file it is recovering
-     * from — but URI filename handling is a build/connection option, so fall
-     * back to the plain path when the URI form is rejected. Nothing below
-     * ever writes to `bak` either way. */
-    if (!wrs_attach(db, backup_path, /*read_only=*/true) &&
-        !wrs_attach(db, backup_path, /*read_only=*/false)) {
-        if (err && err_cap)
-            snprintf(err, err_cap, "cannot attach backup %s: %s",
-                     backup_path, sqlite3_errmsg(db));
-        return WR_STORE_ATTACH_FAILED;
-    }
-
-    enum wallet_restore_store_status status = WR_STORE_OK;
-
-    if (!wrs_key_encryption_compatible(db)) {
-        if (err && err_cap)
-            snprintf(err, err_cap,
-                     "backup wallet-key encryption identity conflicts with "
-                     "the target; restore into a fresh datadir");
-        (void)sqlite3_exec(db, "DETACH DATABASE bak", NULL, NULL, NULL);
-        return WR_STORE_MERGE_FAILED;
-    }
-
-    if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL) != SQLITE_OK) {
-        if (err && err_cap)
-            snprintf(err, err_cap, "cannot begin restore transaction: %s",
-                     sqlite3_errmsg(db));
-        (void)sqlite3_exec(db, "DETACH DATABASE bak", NULL, NULL, NULL);
-        return WR_STORE_MERGE_FAILED;
-    }
+    enum wallet_restore_store_status status =
+        wrs_open_merge(db, backup_path, err, err_cap);
+    if (status != WR_STORE_OK)
+        return status;
 
     for (size_t i = 0; i < n_tables && status == WR_STORE_OK; i++) {
-        const char *t = tables[i];
-        if (!wrs_ident_ok(t))
-            continue;
-        struct wallet_restore_table_report *r = &reports[i];
-
-        bool mpresent = false;
-        int64_t mrows = -1;
-        if (wrs_manifest_row(db, "bak", t, &mpresent, &mrows)) {
-            r->manifest_present_in_source = mpresent;
-            r->manifest_row_count = mrows;
-        }
-
-        r->rows_before = wrs_count(db, "main", t);
-        r->in_backup = wrs_table_exists(db, "bak", t);
-        if (!r->in_backup) {
-            /* Nothing to merge. Reported, not skipped in silence. */
-            r->rows_inserted = 0;
-            r->rows_collided = 0;
-            r->rows_rejected = 0;
-            r->rows_after = r->rows_before;
-            continue;
-        }
-        r->rows_in_backup = wrs_count(db, "bak", t);
-        if (r->rows_before < 0) {
-            /* The TARGET lacks the table — the caller was supposed to open
-             * it through the schema path. Refuse loudly rather than create
-             * a constraint-free table behind the operator's back. */
-            if (err && err_cap)
-                snprintf(err, err_cap,
-                         "target has no %s table (open the datadir through "
-                         "the node schema first)", t);
-            status = WR_STORE_MERGE_FAILED;
-            break;
-        }
-
-        char cols[2048];
-        char pk[8][WRS_IDENT_MAX];
-        int n_pk = 0;
-        int shared = wrs_shared_columns(db, t, cols, sizeof(cols), pk,
-                                        (int)(sizeof(pk) / sizeof(pk[0])),
-                                        &n_pk);
-        if (shared <= 0) {
-            if (err && err_cap)
-                snprintf(err, err_cap,
-                         "backup %s shares no columns with the target schema",
-                         t);
-            status = WR_STORE_MERGE_FAILED;
-            break;
-        }
-
-        r->rows_collided = wrs_count_collisions(db, t, pk, n_pk);
-
-        char sql[4096];
-        snprintf(sql, sizeof(sql),
-                 "INSERT OR IGNORE INTO main.%s (%s) SELECT %s FROM bak.%s",
-                 t, cols, cols, t);
-        char *emsg = NULL;
-        if (sqlite3_exec(db, sql, NULL, NULL, &emsg) != SQLITE_OK) {
-            if (err && err_cap)
-                snprintf(err, err_cap, "merge %s: %s", t,
-                         emsg ? emsg : "insert failed");
-            sqlite3_free(emsg);
-            status = WR_STORE_MERGE_FAILED;
-            break;
-        }
-        sqlite3_free(emsg);
-
-        r->rows_after = wrs_count(db, "main", t);
-        r->rows_inserted = (r->rows_after >= 0 && r->rows_before >= 0)
-                           ? r->rows_after - r->rows_before : -1;
-        if (r->rows_inserted >= 0 && r->rows_in_backup >= 0) {
-            int64_t collided = r->rows_collided >= 0 ? r->rows_collided : 0;
-            int64_t rejected =
-                r->rows_in_backup - r->rows_inserted - collided;
-            r->rows_rejected = rejected > 0 ? rejected : 0;
-        }
+        if (wrs_ident_ok(tables[i]))
+            status = wrs_merge_table(db, tables[i], &reports[i], err,
+                                     err_cap);
     }
-
-    const char *finish = (status == WR_STORE_OK && !dry_run)
-                         ? "COMMIT" : "ROLLBACK";
-    if (sqlite3_exec(db, finish, NULL, NULL, NULL) != SQLITE_OK &&
-        status == WR_STORE_OK) {
-        if (err && err_cap)
-            snprintf(err, err_cap, "cannot commit restore: %s",
-                     sqlite3_errmsg(db));
-        (void)sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
-        status = WR_STORE_MERGE_FAILED;
-    }
-    (void)sqlite3_exec(db, "DETACH DATABASE bak", NULL, NULL, NULL);
-    return status;
+    return wrs_close_merge(db, status, dry_run, err, err_cap);
 }
 
 bool wallet_restore_store_sqlite_bind(struct wallet_restore_store_sqlite_ctx *ctx,

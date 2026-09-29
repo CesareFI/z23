@@ -19,6 +19,7 @@
 #include "platform/private_file.h"
 #include "util/ar_step_readonly.h"
 
+#include <stdarg.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <string.h>
@@ -163,6 +164,119 @@ static bool wbs_store_write_manifest(sqlite3 *dst,
 
 /* Open dst, ATTACH source by path, CREATE TABLE AS SELECT per existing
  * table, write the manifest, DETACH, close. */
+/* Formats a diagnostic into the caller's buffer when it supplied one. */
+static void wbs_err(char *err, size_t err_cap, const char *fmt, ...)
+{
+    if (!err || !err_cap)
+        return;
+    va_list ap;
+    va_start(ap, fmt);
+    (void)vsnprintf(err, err_cap, fmt, ap);
+    va_end(ap);
+}
+
+static void wbs_stats_init(struct wallet_backup_table_stat *out_stats,
+                           const char *const *tables, size_t n_tables)
+{
+    if (!out_stats)
+        return;
+    for (size_t i = 0; i < n_tables; i++) {
+        out_stats[i].table[0] = '\0';
+        if (tables && tables[i])
+            snprintf(out_stats[i].table, sizeof(out_stats[i].table),
+                     "%s", tables[i]);
+        out_stats[i].present_in_source = false;
+        out_stats[i].rows = -1;
+    }
+}
+
+/* ATTACH the source by absolute path under alias "src". */
+static bool wbs_attach_source(sqlite3 *dst, const char *src_path)
+{
+    sqlite3_stmt *att = NULL;
+    int rc = sqlite3_prepare_v2(dst, "ATTACH DATABASE ? AS src", -1, &att,
+                                NULL);
+    if (rc != SQLITE_OK || !att) {
+        if (att) sqlite3_finalize(att);
+        return false;
+    }
+    sqlite3_bind_text(att, 1, src_path, -1, SQLITE_STATIC);
+    bool done = AR_STEP_ROW_READONLY(att) == SQLITE_DONE;
+    sqlite3_finalize(att);
+    return done;
+}
+
+static bool wbs_source_has_table(sqlite3 *dst, const char *table)
+{
+    char exists_sql[256];
+    snprintf(exists_sql, sizeof(exists_sql),
+        "SELECT name FROM src.sqlite_master "
+        "WHERE type='table' AND name='%s'", table);
+    sqlite3_stmt *chk = NULL;
+    bool src_has = false;
+    if (sqlite3_prepare_v2(dst, exists_sql, -1, &chk, NULL) == SQLITE_OK && chk) {
+        src_has = AR_STEP_ROW_READONLY(chk) == SQLITE_ROW;
+        sqlite3_finalize(chk);
+    }
+    return src_has;
+}
+
+/* For each wallet table, run CREATE TABLE t AS SELECT ... The AS SELECT
+ * form copies both schema and rows in one statement. A table the source
+ * does not have is not copied — but it IS recorded in `stat` (and hence
+ * in the manifest), because "the source never had it" and "the copy
+ * dropped it" are the two things a restoring user most needs told apart. */
+static bool wbs_copy_tables(sqlite3 *dst, const char *const *tables,
+                            size_t n_tables,
+                            struct wallet_backup_table_stat *stat,
+                            char *out_copy_err, size_t copy_err_cap)
+{
+    for (size_t i = 0; i < n_tables; i++) {
+        const char *table = tables[i];
+        snprintf(stat[i].table, sizeof(stat[i].table), "%s",
+                 table ? table : "");
+        stat[i].rows = -1;
+        if (!wbs_source_has_table(dst, table)) continue;
+        stat[i].present_in_source = true;
+
+        char sql[256];
+        char *errmsg = NULL;
+        snprintf(sql, sizeof(sql),
+            "CREATE TABLE %s AS SELECT * FROM src.%s", table, table);
+        if (sqlite3_exec(dst, sql, NULL, NULL, &errmsg) != SQLITE_OK) {
+            wbs_err(out_copy_err, copy_err_cap, "copy %s: %s", table,
+                    errmsg ? errmsg : "?");
+            sqlite3_free(errmsg);
+            return false;
+        }
+        stat[i].rows = wbs_store_src_count(dst, table);
+    }
+    return true;
+}
+
+/* Maps the copy, manifest and close outcomes to the snapshot status. */
+static enum wallet_backup_store_status wbs_snapshot_status(
+    bool all_ok, bool manifest_ok, int close_rc, const char *dst_path,
+    char *out_copy_err, size_t copy_err_cap)
+{
+    if (!all_ok)
+        return WB_STORE_COPY_FAILED;
+    if (!manifest_ok) {
+        wbs_err(out_copy_err, copy_err_cap, "manifest write failed for %s",
+                dst_path);
+        return WB_STORE_MANIFEST_FAILED;
+    }
+    if (close_rc != SQLITE_OK ||
+        !wbs_store_authority_publish(dst_path, out_copy_err, copy_err_cap)) {
+        if (out_copy_err && copy_err_cap && out_copy_err[0] == '\0')
+            wbs_err(out_copy_err, copy_err_cap,
+                    "close/authority durability failed for %s (sqlite rc=%d)",
+                    dst_path, close_rc);
+        return WB_STORE_COPY_FAILED;
+    }
+    return WB_STORE_OK;
+}
+
 static enum wallet_backup_store_status wbs_store_write_snapshot(
     void *self,
     const char *dst_path,
@@ -176,23 +290,13 @@ static enum wallet_backup_store_status wbs_store_write_snapshot(
     struct wallet_backup_store_sqlite_ctx *c = ctx_of(self);
     if (out_copy_err && copy_err_cap)
         out_copy_err[0] = '\0';
-    if (out_stats) {
-        for (size_t i = 0; i < n_tables; i++) {
-            out_stats[i].table[0] = '\0';
-            if (tables && tables[i])
-                snprintf(out_stats[i].table, sizeof(out_stats[i].table),
-                         "%s", tables[i]);
-            out_stats[i].present_in_source = false;
-            out_stats[i].rows = -1;
-        }
-    }
+    wbs_stats_init(out_stats, tables, n_tables);
     if (!c || !dst_path || !src_path || (!tables && n_tables > 0))
         return WB_STORE_OPEN_DST_FAILED;
     if (n_tables > WBS_MAX_TABLES) {
-        if (out_copy_err && copy_err_cap)
-            snprintf(out_copy_err, copy_err_cap,
-                     "table list of %zu exceeds the %d-table snapshot cap",
-                     n_tables, WBS_MAX_TABLES);
+        wbs_err(out_copy_err, copy_err_cap,
+                "table list of %zu exceeds the %d-table snapshot cap",
+                n_tables, WBS_MAX_TABLES);
         return WB_STORE_COPY_FAILED;
     }
 
@@ -205,71 +309,16 @@ static enum wallet_backup_store_status wbs_store_write_snapshot(
         unlink(dst_path);
         return WB_STORE_OPEN_DST_FAILED;
     }
-
-    /* ATTACH the source by absolute path under alias "src". */
-    {
-        sqlite3_stmt *att = NULL;
-        rc = sqlite3_prepare_v2(dst,
-            "ATTACH DATABASE ? AS src", -1, &att, NULL);
-        if (rc != SQLITE_OK || !att) {
-            if (att) sqlite3_finalize(att);
-            sqlite3_close(dst);
-            unlink(dst_path);
-            return WB_STORE_ATTACH_FAILED;
-        }
-        sqlite3_bind_text(att, 1, src_path, -1, SQLITE_STATIC);
-        if (AR_STEP_ROW_READONLY(att) != SQLITE_DONE) {
-            sqlite3_finalize(att);
-            sqlite3_close(dst);
-            unlink(dst_path);
-            return WB_STORE_ATTACH_FAILED;
-        }
-        sqlite3_finalize(att);
+    if (!wbs_attach_source(dst, src_path)) {
+        sqlite3_close(dst);
+        unlink(dst_path);
+        return WB_STORE_ATTACH_FAILED;
     }
 
-    /* For each wallet table, run CREATE TABLE t AS SELECT ... The AS SELECT
-     * form copies both schema and rows in one statement. A table the source
-     * does not have is not copied — but it IS recorded in `stat` (and hence
-     * in the manifest), because "the source never had it" and "the copy
-     * dropped it" are the two things a restoring user most needs told apart. */
     struct wallet_backup_table_stat stat[WBS_MAX_TABLES];
     memset(stat, 0, sizeof(stat));
-    char *errmsg = NULL;
-    bool all_ok = true;
-    for (size_t i = 0; i < n_tables; i++) {
-        const char *table = tables[i];
-        snprintf(stat[i].table, sizeof(stat[i].table), "%s",
-                 table ? table : "");
-        stat[i].rows = -1;
-        /* Check the source even has this table. */
-        char exists_sql[256];
-        snprintf(exists_sql, sizeof(exists_sql),
-            "SELECT name FROM src.sqlite_master "
-            "WHERE type='table' AND name='%s'", table);
-        sqlite3_stmt *chk = NULL;
-        bool src_has = false;
-        if (sqlite3_prepare_v2(dst, exists_sql, -1, &chk, NULL) == SQLITE_OK && chk) {
-            src_has = AR_STEP_ROW_READONLY(chk) == SQLITE_ROW;
-            sqlite3_finalize(chk);
-        }
-        if (!src_has) continue;
-        stat[i].present_in_source = true;
-
-        char sql[256];
-        snprintf(sql, sizeof(sql),
-            "CREATE TABLE %s AS SELECT * FROM src.%s", table, table);
-        rc = sqlite3_exec(dst, sql, NULL, NULL, &errmsg);
-        if (rc != SQLITE_OK) {
-            if (out_copy_err && copy_err_cap)
-                snprintf(out_copy_err, copy_err_cap,
-                        "copy %s: %s", table, errmsg ? errmsg : "?");
-            sqlite3_free(errmsg);
-            errmsg = NULL;
-            all_ok = false;
-            break;
-        }
-        stat[i].rows = wbs_store_src_count(dst, table);
-    }
+    bool all_ok = wbs_copy_tables(dst, tables, n_tables, stat, out_copy_err,
+                                  copy_err_cap);
 
     /* Manifest last, so it describes what actually landed. Only written on a
      * complete copy — a half-copied file must not carry a manifest that
@@ -285,23 +334,8 @@ static enum wallet_backup_store_status wbs_store_write_snapshot(
     if (out_stats)
         memcpy(out_stats, stat, n_tables * sizeof(stat[0]));
 
-    if (!all_ok)
-        return WB_STORE_COPY_FAILED;
-    if (!manifest_ok) {
-        if (out_copy_err && copy_err_cap)
-            snprintf(out_copy_err, copy_err_cap,
-                     "manifest write failed for %s", dst_path);
-        return WB_STORE_MANIFEST_FAILED;
-    }
-    if (close_rc != SQLITE_OK ||
-        !wbs_store_authority_publish(dst_path, out_copy_err, copy_err_cap)) {
-        if (out_copy_err && copy_err_cap && out_copy_err[0] == '\0')
-            snprintf(out_copy_err, copy_err_cap,
-                     "close/authority durability failed for %s (sqlite rc=%d)",
-                     dst_path, close_rc);
-        return WB_STORE_COPY_FAILED;
-    }
-    return WB_STORE_OK;
+    return wbs_snapshot_status(all_ok, manifest_ok, close_rc, dst_path,
+                               out_copy_err, copy_err_cap);
 }
 
 /* Reopen a backup file READ-ONLY and count rows in a table; -1 on miss. */

@@ -173,6 +173,102 @@ static struct zcl_result inmem_lookup(void *self_v,
     return ZCL_OK;
 }
 
+static void reinserts_release(struct coin_entry *reinserts, size_t n)
+{
+    for (size_t j = 0; j < n; j++)
+        coin_entry_release(&reinserts[j]);
+}
+
+/* Validates every spend exists, records its index for removal AND deep-copies
+ * the coin into the undo frame's reinserts BEFORE anything is mutated. On
+ * failure nothing is left allocated. */
+static struct zcl_result prepare_spends(struct utxo_snapshot_inmem *h,
+                                        const struct utxo_diff *diff,
+                                        struct coin_entry **reinserts_out,
+                                        ssize_t **spend_idx_out)
+{
+    *reinserts_out = NULL;
+    *spend_idx_out = NULL;
+    if (diff->spends_len == 0)
+        return ZCL_OK;
+    struct coin_entry *reinserts = calloc(diff->spends_len, sizeof(*reinserts));
+    ssize_t *spend_idx = calloc(diff->spends_len, sizeof(*spend_idx));
+    if (!reinserts || !spend_idx) {
+        free(reinserts); free(spend_idx);
+        return ZCL_ERR(UTXO_ERR_IO, "apply_diff: alloc undo arrays");
+    }
+    for (size_t i = 0; i < diff->spends_len; i++) {
+        ssize_t k = coins_find(h, &diff->spends[i]);
+        if (k < 0) {
+            /* Undo any reinserts we already prepared. */
+            reinserts_release(reinserts, i);
+            free(reinserts); free(spend_idx);
+            return ZCL_ERR(UTXO_ERR_UNKNOWN_OUTPOINT,
+                           "apply_diff: spends[%zu] unknown", i);
+        }
+        spend_idx[i] = k;
+        /* Deep copy so revert can restore the script_pubkey. */
+        struct utxo_coin tmp = {
+            .value_zat = h->coins[k].value_zat,
+            .height = h->coins[k].height,
+            .is_coinbase = h->coins[k].is_coinbase,
+            .script_pubkey_len = h->coins[k].script_pubkey_len,
+            .script_pubkey = h->coins[k].script_pubkey,
+        };
+        struct zcl_result rc = coin_entry_dup(&reinserts[i],
+                                               &diff->spends[i], &tmp);
+        if (!rc.ok) {
+            reinserts_release(reinserts, i);
+            free(reinserts); free(spend_idx);
+            return rc;
+        }
+    }
+    *reinserts_out = reinserts;
+    *spend_idx_out = spend_idx;
+    return ZCL_OK;
+}
+
+/* Index of the first create that already exists, or -1. */
+static ssize_t find_create_collision(struct utxo_snapshot_inmem *h,
+                                     const struct utxo_diff *diff)
+{
+    for (size_t i = 0; i < diff->creates_len; i++)
+        if (coins_find(h, &diff->creates[i]) >= 0)
+            return (ssize_t)i;
+    return -1;
+}
+
+/* Removes the spent coins in descending index order so indices stay valid
+ * as the array compacts. */
+static void remove_spends(struct utxo_snapshot_inmem *h, ssize_t *spend_idx,
+                          size_t n)
+{
+    for (size_t i = 0; i + 1 < n; i++) {
+        for (size_t j = i + 1; j < n; j++) {
+            if (spend_idx[j] > spend_idx[i]) {
+                ssize_t t = spend_idx[i]; spend_idx[i] = spend_idx[j];
+                spend_idx[j] = t;
+            }
+        }
+    }
+    for (size_t i = 0; i < n; i++)
+        coins_remove_at(h, (size_t)spend_idx[i]);
+}
+
+static struct zcl_result add_creates(struct utxo_snapshot_inmem *h,
+                                     const struct utxo_diff *diff)
+{
+    for (size_t i = 0; i < diff->creates_len; i++) {
+        struct coin_entry e = {0};
+        struct zcl_result r = coin_entry_dup(&e, &diff->creates[i],
+                                             &diff->creates_coin[i]);
+        if (!r.ok)
+            return r;
+        h->coins[h->coins_len++] = e;
+    }
+    return ZCL_OK;
+}
+
 static struct zcl_result inmem_apply_diff(void *self_v,
                                           const struct utxo_diff *diff)
 {
@@ -192,77 +288,26 @@ static struct zcl_result inmem_apply_diff(void *self_v,
                        diff->target_height, expected);
     }
 
-    /* Validate spends exist; collect indices for removal AND copy the
-     * coins into the undo frame's reinserts BEFORE we mutate. */
     struct coin_entry *reinserts = NULL;
     ssize_t *spend_idx = NULL;
-    if (diff->spends_len > 0) {
-        reinserts = calloc(diff->spends_len, sizeof(*reinserts));
-        spend_idx = calloc(diff->spends_len, sizeof(*spend_idx));
-        if (!reinserts || !spend_idx) {
-            free(reinserts); free(spend_idx);
-            pthread_mutex_unlock(&h->mu);
-            return ZCL_ERR(UTXO_ERR_IO, "apply_diff: alloc undo arrays");
-        }
-        for (size_t i = 0; i < diff->spends_len; i++) {
-            ssize_t k = coins_find(h, &diff->spends[i]);
-            if (k < 0) {
-                /* Undo any reinserts we already prepared. */
-                for (size_t j = 0; j < i; j++)
-                    coin_entry_release(&reinserts[j]);
-                free(reinserts); free(spend_idx);
-                pthread_mutex_unlock(&h->mu);
-                return ZCL_ERR(UTXO_ERR_UNKNOWN_OUTPOINT,
-                               "apply_diff: spends[%zu] unknown", i);
-            }
-            spend_idx[i] = k;
-            /* Deep copy so revert can restore the script_pubkey. */
-            struct utxo_coin tmp = {
-                .value_zat = h->coins[k].value_zat,
-                .height = h->coins[k].height,
-                .is_coinbase = h->coins[k].is_coinbase,
-                .script_pubkey_len = h->coins[k].script_pubkey_len,
-                .script_pubkey = h->coins[k].script_pubkey,
-            };
-            struct zcl_result rc = coin_entry_dup(&reinserts[i],
-                                                   &diff->spends[i], &tmp);
-            if (!rc.ok) {
-                for (size_t j = 0; j < i; j++)
-                    coin_entry_release(&reinserts[j]);
-                free(reinserts); free(spend_idx);
-                pthread_mutex_unlock(&h->mu);
-                return rc;
-            }
-        }
-    }
-
-    /* Validate creates don't collide with existing UTXOs. */
-    for (size_t i = 0; i < diff->creates_len; i++) {
-        if (coins_find(h, &diff->creates[i]) >= 0) {
-            for (size_t j = 0; j < diff->spends_len; j++)
-                coin_entry_release(&reinserts[j]);
-            free(reinserts); free(spend_idx);
-            pthread_mutex_unlock(&h->mu);
-            return ZCL_ERR(UTXO_ERR_DOUBLE_SPEND,
-                           "apply_diff: creates[%zu] collides", i);
-        }
-    }
-
-    /* Reserve undo frame. */
-    struct zcl_result r = undo_reserve(h, h->undo_len + 1);
+    struct zcl_result r = prepare_spends(h, diff, &reinserts, &spend_idx);
     if (!r.ok) {
-        for (size_t j = 0; j < diff->spends_len; j++)
-            coin_entry_release(&reinserts[j]);
-        free(reinserts); free(spend_idx);
         pthread_mutex_unlock(&h->mu);
         return r;
     }
 
-    /* Reserve coins for creates (we'll deep-copy in). */
-    r = coins_reserve(h, h->coins_len + diff->creates_len);
+    /* Validate creates don't collide with existing UTXOs. */
+    ssize_t collision = find_create_collision(h, diff);
+    if (collision >= 0)
+        r = ZCL_ERR(UTXO_ERR_DOUBLE_SPEND,
+                    "apply_diff: creates[%zu] collides", (size_t)collision);
+    /* Reserve undo frame, then coins for creates (we'll deep-copy in). */
+    if (r.ok)
+        r = undo_reserve(h, h->undo_len + 1);
+    if (r.ok)
+        r = coins_reserve(h, h->coins_len + diff->creates_len);
     if (!r.ok) {
-        for (size_t j = 0; j < diff->spends_len; j++)
-            coin_entry_release(&reinserts[j]);
+        reinserts_release(reinserts, diff->spends_len);
         free(reinserts); free(spend_idx);
         pthread_mutex_unlock(&h->mu);
         return r;
@@ -273,8 +318,7 @@ static struct zcl_result inmem_apply_diff(void *self_v,
     if (diff->creates_len > 0) {
         delete_ops = calloc(diff->creates_len, sizeof(*delete_ops));
         if (!delete_ops) {
-            for (size_t j = 0; j < diff->spends_len; j++)
-                coin_entry_release(&reinserts[j]);
+            reinserts_release(reinserts, diff->spends_len);
             free(reinserts); free(spend_idx);
             pthread_mutex_unlock(&h->mu);
             return ZCL_ERR(UTXO_ERR_IO, "apply_diff: alloc delete_ops");
@@ -283,38 +327,18 @@ static struct zcl_result inmem_apply_diff(void *self_v,
                diff->creates_len * sizeof(*delete_ops));
     }
 
-    /* All checks passed. Now perform the mutations. Remove spends in
-     * descending index order so indices stay valid as we compact. */
-    if (diff->spends_len > 1) {
-        /* Sort spend_idx descending so each removal doesn't shift
-         * later indices. */
-        for (size_t i = 0; i + 1 < diff->spends_len; i++) {
-            for (size_t j = i + 1; j < diff->spends_len; j++) {
-                if (spend_idx[j] > spend_idx[i]) {
-                    ssize_t t = spend_idx[i]; spend_idx[i] = spend_idx[j];
-                    spend_idx[j] = t;
-                }
-            }
-        }
-    }
-    for (size_t i = 0; i < diff->spends_len; i++)
-        coins_remove_at(h, (size_t)spend_idx[i]);
+    /* All checks passed. Now perform the mutations. */
+    remove_spends(h, spend_idx, diff->spends_len);
     free(spend_idx);
 
-    /* Add creates (deep copy). */
-    for (size_t i = 0; i < diff->creates_len; i++) {
-        struct coin_entry e = {0};
-        r = coin_entry_dup(&e, &diff->creates[i], &diff->creates_coin[i]);
-        if (!r.ok) {
-            /* Partial state — best we can do is leave it; the caller
-             * has already received an OOM and will likely tear down. */
-            for (size_t j = 0; j < diff->spends_len; j++)
-                coin_entry_release(&reinserts[j]);
-            free(reinserts); free(delete_ops);
-            pthread_mutex_unlock(&h->mu);
-            return r;
-        }
-        h->coins[h->coins_len++] = e;
+    r = add_creates(h, diff);
+    if (!r.ok) {
+        /* Partial state — best we can do is leave it; the caller
+         * has already received an OOM and will likely tear down. */
+        reinserts_release(reinserts, diff->spends_len);
+        free(reinserts); free(delete_ops);
+        pthread_mutex_unlock(&h->mu);
+        return r;
     }
 
     /* Commit undo frame + tip. */

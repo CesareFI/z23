@@ -122,14 +122,9 @@ bool domain_encoding_bech32_encode(char *out, size_t out_size,
     return true;
 }
 
-bool domain_encoding_bech32_decode(char *hrp_out, size_t hrp_size,
-                                   uint8_t *data_out, size_t data_size, size_t *data_len,
-                                   const char *str)
+/* Printable ASCII with a single letter case. */
+static bool bech32_chars_valid(const char *str, size_t str_len)
 {
-    size_t str_len = strlen(str);
-    if (str_len > 1023)
-        return false;
-
     bool has_lower = false, has_upper = false;
     for (size_t i = 0; i < str_len; i++) {
         unsigned char c = str[i];
@@ -137,19 +132,47 @@ bool domain_encoding_bech32_decode(char *hrp_out, size_t hrp_size,
         if (c >= 'a' && c <= 'z') has_lower = true;
         if (c >= 'A' && c <= 'Z') has_upper = true;
     }
-    if (has_lower && has_upper)
+    return !(has_lower && has_upper);
+}
+
+/* Finds the last '1'; the human-readable part before it must be non-empty
+ * and the data part must hold at least the 6-symbol checksum. */
+static bool bech32_find_separator(const char *str, size_t str_len, size_t *sep)
+{
+    for (size_t i = str_len; i > 0; i--) {
+        if (str[i - 1] == '1') {
+            *sep = i - 1;
+            return *sep != 0 && *sep + 7 <= str_len;
+        }
+    }
+    return false;
+}
+
+static bool bech32_values_decode(const char *data, size_t vals_len,
+                                 uint8_t *values)
+{
+    for (size_t i = 0; i < vals_len; i++) {
+        unsigned char c = data[i];
+        if (c < 33 || c > 126) return false;
+        int8_t rev = CHARSET_REV[c];
+        if (rev == -1) return false;
+        values[i] = (uint8_t)rev;
+    }
+    return true;
+}
+
+bool domain_encoding_bech32_decode(char *hrp_out, size_t hrp_size,
+                                   uint8_t *data_out, size_t data_size, size_t *data_len,
+                                   const char *str)
+{
+    size_t str_len = strlen(str);
+    if (str_len > 1023)
+        return false;
+    if (!bech32_chars_valid(str, str_len))
         return false;
 
     size_t sep = 0;
-    bool found = false;
-    for (size_t i = str_len; i > 0; i--) {
-        if (str[i - 1] == '1') {
-            sep = i - 1;
-            found = true;
-            break;
-        }
-    }
-    if (!found || sep == 0 || sep + 7 > str_len)
+    if (!bech32_find_separator(str, str_len, &sep))
         return false;
 
     size_t hrp_len = sep;
@@ -161,13 +184,8 @@ bool domain_encoding_bech32_decode(char *hrp_out, size_t hrp_size,
         return false; /* unreachable given the 1023-char cap; never overflow */
 
     uint8_t values[BECH32_MAX_STRING];
-    for (size_t i = 0; i < vals_len; i++) {
-        unsigned char c = str[sep + 1 + i];
-        if (c < 33 || c > 126) return false;
-        int8_t rev = CHARSET_REV[c];
-        if (rev == -1) return false;
-        values[i] = (uint8_t)rev;
-    }
+    if (!bech32_values_decode(str + sep + 1, vals_len, values))
+        return false;
 
     for (size_t i = 0; i < hrp_len; i++) {
         unsigned char c = str[i];
