@@ -413,6 +413,9 @@ static bool group_reads_external_inputs(const char *name)
         "dev_platform",                   /* reads tests/harness/fixtures source */
         /* execv build/bin/z23-git-hook; that hook's link is outside the closure. */
         "dev_proof_signer",
+        /* execv zclassic23-package-verify next to the test image.
+         * That verifier's link is outside the group's forward C closure. */
+        "fastobj_carrier",
         /* execv build/bin/fleet-board-bridge. */
         "fleet_board_bridge",
         /* Each shard fork/execs build/bin/z23-fleet-gateway. */

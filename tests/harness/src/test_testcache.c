@@ -1955,6 +1955,7 @@ static bool tc_external_exec_denied(void)
         "test_anchor_peers",
         "test_consensus_rule_sweep",
         "test_dev_proof_signer",
+        "test_fastobj_carrier",
         "test_fleet_board_bridge",
         "test_fleet_gateway_shard_01",
         "test_fleet_gateway_shard_02",
