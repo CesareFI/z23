@@ -247,7 +247,8 @@ void fxm_include(struct fxm *m, const char *line);
  * The reading only ever skips what make cannot read: what it cannot
  * decide is taken (docs/work/SEMANTIC_MANIFEST.md, "Guarded includes").
  * A missing include left that a command make runs as it reads may create
- * (fxm_commands_name of its path or basename) is UNKNOWN. */
+ * (fxm_commands_name of its path, basename or directory) is UNKNOWN, and
+ * m->report->make_premise names what the rest of the reading rests on. */
 void fxm_guards(struct fxm *m);
 
 /* make_goal.c: the .PHONY goals a line names through a value no text
@@ -263,7 +264,8 @@ bool fxm_parse_writes(const struct fxm *m);
 /* A command make runs as it reads the makefiles (a $(shell) body or a !=
  * value, outside recipes) may name `name`: its text holds it, or the
  * definition of a variable the text holds does, transitively; an $(eval)
- * line or a computed name holding it may set any variable, and counts. */
+ * line or a computed name holding it may set any variable, and counts.
+ * The empty name is in every command. */
 bool fxm_commands_name(const struct fxm *m, const char *name);
 /* Count, and name the first of, the commands make runs as it reads the
  * makefiles (a $(shell) body or a != value, outside recipes) that are not

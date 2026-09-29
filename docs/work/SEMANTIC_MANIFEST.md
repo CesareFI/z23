@@ -1444,8 +1444,8 @@ it: a pattern with a `\` escape, or one that holds the goals or the
 epoch, makes the value any text, unless the word is itself the goals or
 the epoch. A reading is not used when a `$(shell)` or `!=` command make
 runs as it reads the makefiles names (as above, for a missing include)
-the last component with no pattern of a path the reading globbed: that
-command may create it. The planner reads one tree, the one the plan is
+the last component with no pattern of a path the reading globbed, or the
+directories before its first pattern: that command may create a match. The planner reads one tree, the one the plan is
 for. Four named premises carry what the text does not hold:
 
 - `no-repair-goal`: no goal on the make command line is `vendor-ready`,
@@ -1467,17 +1467,22 @@ used and every path it globbed with what that found, so a reviewer can
 falsify the narrow; `facts.make_guards.premises` names every premise.
 
 One more premise is the whole plan's, not a skip's:
-`parse-scripts-no-include-writes`, a `$(shell)` or `!=` command make runs
-as it reads the makefiles that is not provably read-only does not create
-an optional include that is missing. A command is provably read-only when
+`parse-commands-no-include-writes`, a `$(shell)` or `!=` command make runs
+as it reads the makefiles that is not provably read-only creates no
+optional include that is missing and no path a skip globbed, even
+through text no name check reads (a script it runs, `$(addsuffix)`,
+`$$n`, `cp tpl/* build/`). A command is provably read-only when
 it is one simple command of `printf`, `echo`, `cat`, `uname`, `nproc`,
 `pwd`, `true`, `false`, `test`, `basename`, `dirname` or `pkg-config`
 with no make reference, substitution, quote, redirection, separator,
 assignment or glob in its text. When an optional include make reads is
-still missing (after the skips) and any other command runs,
-`facts.make_guards.plan` records the premise with the first missing
-include (`include`, `includes` in all), and the first such command as
-written with where it is (`command`, `command_at`, `commands` in all).
+still missing (after the skips), or a skip rests on a glob, and any other
+command runs, `facts.make_guards.plan` records the premise with the
+first such include (missing, else skipped; `includes` missing and
+`skips` resting on a glob in all), and the first such command as written
+with where it is (`command`, `command_at`, `commands` in all). The real
+Makefile records it on every plan: the gitignored
+`contexts/commons/apps/local_gui_apps.mk` is missing in every checkout.
 Of the Makefile's identity markers, `epoch-recovery-ready.mk` is skipped
 when no epoch object directory holds `.unverified` (under
 `epoch-one-component`). `vendor-inputs-ready.mk` and `tor-inputs-ready.mk`
@@ -1497,10 +1502,13 @@ command substitution inside double quotes. So is a `$(file)` that is not
 a read (`$(file >f,...)`, `$(file >>f,...)`, an operator a reference
 spells). A plain `$(shell git ...)` or `$(shell cat f)` writes nothing and
 reads as before. While an optional include is missing, a `$(shell)` or `!=`
-command whose text names its path or basename, or references a variable
+command whose text names its path, its basename or its directory (a
+root include's directory is in every command), or references a variable
 whose definition does (transitively; an `$(eval)` line or a computed name
 holding it counts for every variable), may create it (`$(shell cp t
-build/gen.mk)`, `X != ln -sf t build/gen.mk`): UNKNOWN.
+build/gen.mk)`, `X != ln -sf t build/gen.mk`, `$(shell cp tpl/* build/)`):
+UNKNOWN. The names are matched as text, so a short directory such as
+`d` matches more commands than create anything in it, which only widens.
 
 A line names a path by its literal path or basename, a directory it lives
 under (with or without the trailing `/`), or a glob (`*`, `?`, `[...]`,
@@ -1623,12 +1631,13 @@ none of them runs as part of building that commit's objects:
   is for the build of the edited commit's objects, and each such reading
   is recorded with its premises and the paths it globbed (Guarded
   includes, above);
-- a missing optional include a parse-time program creates without any
-  text naming it (`$(shell tools/mkgen.sh)` whose script writes
-  `build/gen.mk`), read under the named premise
-  `parse-scripts-no-include-writes` and recorded in
-  `facts.make_guards.plan` (Guarded includes, above): the script is an
-  opaque program. Refusing every
+- a missing optional include, or a path a skip globbed, that a
+  parse-time command creates without its text naming the path, its
+  basename or its directory (`$(shell tools/mkgen.sh)` whose script
+  writes `build/gen.mk`), read under the named premise
+  `parse-commands-no-include-writes` and recorded in
+  `facts.make_guards.plan` (Guarded includes, above): a script is an
+  opaque program, and composed text is not followed. Refusing every
   parse-time command but a known read-only one while an optional include
   is missing instead makes every real plan UNKNOWN: the gitignored
   `contexts/commons/apps/local_gui_apps.mk` is missing in every checkout,

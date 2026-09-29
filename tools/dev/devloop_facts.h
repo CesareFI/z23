@@ -111,10 +111,11 @@ struct zcl_devloop_facts_tu_verdict {
 #define ZCL_DEVLOOP_PREMISE_EPOCH_ONE_COMPONENT 2u
 #define ZCL_DEVLOOP_PREMISE_BUILD_READS_PLANNED_TREE 4u
 #define ZCL_DEVLOOP_PREMISE_NO_COMMAND_LINE_OVERRIDE 8u
-/* parse-scripts-no-include-writes: a command make runs as it reads the
- * makefiles and that is not provably read-only does not create an optional
- * include that is missing. It is the plan's, not a skip's. */
-#define ZCL_DEVLOOP_PREMISE_PARSE_SCRIPTS_NO_INCLUDE_WRITES 16u
+/* parse-commands-no-include-writes: a command make runs as it reads the
+ * makefiles and that is not provably read-only creates no optional include
+ * that is missing and no path a skip globbed. It is the plan's, not a
+ * skip's. */
+#define ZCL_DEVLOOP_PREMISE_PARSE_COMMANDS_NO_INCLUDE_WRITES 16u
 #define ZCL_DEVLOOP_GUARD_GLOBS 48
 #define ZCL_DEVLOOP_GUARD_TEXT 192
 
@@ -133,14 +134,16 @@ struct zcl_devloop_facts_guard {
 };
 
 /* A premise the make reading rests on for the whole plan
- * (ZCL_DEVLOOP_PREMISE_PARSE_SCRIPTS_NO_INCLUDE_WRITES): an optional
- * include make reads is missing while a command it runs as it reads is not
- * provably read-only. The first of each is named, with how many there are,
- * so a reviewer can falsify it. */
+ * (ZCL_DEVLOOP_PREMISE_PARSE_COMMANDS_NO_INCLUDE_WRITES): an optional
+ * include make reads is missing, or a skip rests on what a glob found,
+ * while a command make runs as it reads is not provably read-only. The
+ * first include (missing, else skipped) and the first such command are
+ * named, with how many there are, so a reviewer can falsify it. */
 struct zcl_devloop_facts_plan_premise {
     unsigned premises; /* 0 when the plan rests on none */
     char include[ZCL_DEVLOOP_GUARD_TEXT];
-    size_t nincludes;
+    size_t nincludes; /* missing includes make reads */
+    size_t nskips;    /* skips that rest on what a glob found */
     char command[ZCL_DEVLOOP_GUARD_TEXT];    /* as written */
     char command_at[ZCL_DEVLOOP_GUARD_TEXT]; /* file:line */
     size_t ncommands;

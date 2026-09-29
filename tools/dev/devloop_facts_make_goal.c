@@ -385,7 +385,10 @@ static bool fxm_line_runs(const struct fxm_line *l, const struct fxc_strs *names
 bool fxm_commands_name(const struct fxm *m, const char *name)
 {
     struct fxc_strs names = {0};
-    bool named = !fxc_strs_add(&names, name) || !fxm_taint(m, &names);
+    /* The empty name (a root directory) is in any command's text: no
+     * variable needs following. */
+    bool named = !fxc_strs_add(&names, name) ||
+                 (name[0] != '\0' && !fxm_taint(m, &names));
     for (size_t k = 0; !named && k < m->nlines; k++)
         named = fxm_parse_line(&m->lines[k]) &&
                 fxm_line_runs(&m->lines[k], &names);

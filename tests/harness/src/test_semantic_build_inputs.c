@@ -1233,8 +1233,8 @@ static int sbit_t_generated_reviewed(void)
 /* D: a line make expands as it reads the makefiles runs a command that
  * writes a file (a $(shell) or != redirection or tee, a $(file >)), which
  * may be an include make reads next, missing or not; or one that names a
- * missing optional include (its path or basename, or a variable whose
- * value names it), which may create it. */
+ * missing optional include (its path, basename or directory, or a variable
+ * whose value names one), which may create it. */
 static int sbit_t_parse_time_writers(void)
 {
     int failures = 0;
@@ -1267,12 +1267,18 @@ static int sbit_t_parse_time_writers(void)
                      "endef\nX := $(W)\n"
                      "all: build/a.o\n" SBI_OBJ_RULE "-include build/gen.mk\n"
                      SBI_GEN_RULE, "build/gen.mk", "# old\n"},
-        {"p01", "X := $(shell cp tools/t.txt build/gen.mk)\n" SBI_P_TAIL, NULL,
-         NULL},
-        {"p03", "X != ln -sf ../tools/t.txt build/gen.mk\n" SBI_P_TAIL, NULL,
-         NULL},
-        {"p01_var", "GEN := build/gen.mk\nCMD = cp tools/t.txt $(GEN)\n"
-                    "X := $(shell $(CMD))\n" SBI_P_TAIL, NULL, NULL},
+        {"p01", "X := $(shell cp tools/t.txt build/gen.mk)\n" SBI_P_TAIL, NULL, NULL},
+        {"p03", "X != ln -sf ../tools/t.txt build/gen.mk\n" SBI_P_TAIL, NULL, NULL},
+        {"p01_var", "GEN := build/gen.mk\nCMD = cp t $(GEN)\nX := $(shell $(CMD))\n" SBI_P_TAIL, NULL, NULL},
+        {"r01", "X := $(shell cp t $(addsuffix .mk,build/gen))\n" SBI_P_TAIL, NULL, NULL},
+        {"r02", "X := $(shell cp t $(patsubst %.in,%.mk,build/gen.in))\n" SBI_P_TAIL, NULL, NULL},
+        {"r03", "X := $(shell cp t $(subst Q,.,build/genQmk))\n" SBI_P_TAIL, NULL, NULL},
+        {"r05", "X := $(shell cp tools/tpl/* build/)\n" SBI_P_TAIL, NULL, NULL},
+        {"r06", "X := $(shell n=gen; cp t build/$$n.mk)\n" SBI_P_TAIL, NULL, NULL},
+        {"r07", "A := gen\nB := .mk\nX := $(shell cp t build/$(A)$(B))\n" SBI_P_TAIL, NULL, NULL},
+        {"r08", "X := $(shell cp t \"build/$$(printf g%sn e).mk\")\n" SBI_P_TAIL, NULL, NULL},
+        {"r09", "X := $(shell cd tools/tpl && cp * ../../build/)\n" SBI_P_TAIL, NULL, NULL},
+        {"r10", "X != cp -r tools/tpl/. build/\n" SBI_P_TAIL, NULL, NULL},
     };
     TEST_CASE("semantic_build_inputs: a $(shell), != or $(file) that writes "
              "a file as make reads the makefiles widens") {
@@ -1437,12 +1443,11 @@ static int sbit_t_guarded_include(void)
         {"q80", SBI_GUARD("", "ifeq ($(wildcard d/s/),d/s/)", ""), k_sbi_ds, false},
         {"q82", SBI_GUARD("", "ifeq ($(wildcard d//x),d//x)", ""), k_sbi_dx, false},
         {"q83", SBI_GUARD("", "ifeq ($(wildcard d/*),d/a d/b)", ""), k_sbi_dab, false},
-        {"filter_out_all", SBI_GUARD("", "ifeq ($(filter-out a,a),)", ""), NULL,
-         false},
-        {"glob_created", SBI_GUARD("X := $(shell mkdir -p d && touch d/flag)\n",
-                                   "ifneq ($(wildcard d/flag),)", ""), NULL, false},
-        {"glob_other", SBI_GUARD("X := $(shell mkdir -p e)\n",
-                                 "ifneq ($(wildcard d/flag),)", ""), NULL, true},
+        {"filter_out_all", SBI_GUARD("", "ifeq ($(filter-out a,a),)", ""), NULL, false},
+        {"glob_created", SBI_GUARD("X := $(shell mkdir -p d && touch d/flag)\n", "ifneq ($(wildcard d/flag),)", ""), NULL, false},
+        {"glob_other", SBI_GUARD("X := $(shell mkdir -p e)\n", "ifneq ($(wildcard zz/flag),)", ""), NULL, true},
+        {"t01", SBI_GUARD("X := $(shell cp -r tools/seed d/new)\n", "ifneq ($(wildcard d/*/.unverified),)", ""), NULL, false},
+        {"t03", SBI_GUARD("X := $(shell mkdir -p d/n && cp tools/seed/* d/n/)\n", "ifneq ($(wildcard d/*/marker),)", ""), NULL, false},
     };
     TEST_CASE("semantic_build_inputs: a missing include a conditional "
              "provably skips narrows, and any input that may take the branch "
@@ -1452,68 +1457,59 @@ static int sbit_t_guarded_include(void)
     return failures;
 }
 
-/* The premises every skip rests on. */
+/* The premises every skip rests on, and the plan's. */
 #define SBI_EVERY_SKIP (ZCL_DEVLOOP_PREMISE_BUILD_READS_PLANNED_TREE | \
                         ZCL_DEVLOOP_PREMISE_NO_COMMAND_LINE_OVERRIDE)
+#define SBI_PLAN_PREMISE ZCL_DEVLOOP_PREMISE_PARSE_COMMANDS_NO_INCLUDE_WRITES
 
 /* A skipped include is recorded with the directive, its premises and the
- * paths it globbed, so a reviewer can falsify the narrow. */
+ * paths it globbed, so a reviewer can falsify the narrow. A plan with a
+ * missing include (p02: a parse-time script), or a skip that rests on a
+ * glob, records the premise parse-commands-no-include-writes when a
+ * parse-time command is not provably read-only. */
 static int sbit_t_guard_record(void)
 {
     int failures = 0;
     static const char *const changed[] = {"tools/x.sh"};
-    struct sbi_run e = {0}, v = {0};
+    struct sbi_run e = {0}, v = {0}, s = {0}, u = {0}, x = {0};
     const struct zcl_devloop_facts_guard *g;
+    const struct zcl_devloop_facts_plan_premise *p = &s.rep.make_premise;
     TEST_CASE("semantic_build_inputs: a skipped include records its reading") {
-        ASSERT(sbi_consume_files("sbi_guard_rec_e", SBI_EPOCH, NULL, changed, 1,
-                                 &e));
+        ASSERT(sbi_consume_files("sbi_guard_rec_e", SBI_EPOCH, NULL, changed, 1, &e));
         ASSERT(e.rep.nguards == 1);
         g = &e.rep.guards[0];
         ASSERT(strcmp(g->include, "build/ready.mk") == 0);
         ASSERT(strcmp(g->guard, "ifneq ($(strip $(LEASES)),)") == 0);
-        ASSERT(g->premises ==
-               (ZCL_DEVLOOP_PREMISE_EPOCH_ONE_COMPONENT | SBI_EVERY_SKIP));
+        ASSERT(g->premises == (ZCL_DEVLOOP_PREMISE_EPOCH_ONE_COMPONENT | SBI_EVERY_SKIP));
         ASSERT(g->nglobs == 2 && g->found[0][0] == '\0' && g->found[1][0] == '\0');
         ASSERT(strcmp(g->glob[0], "build/obj/epochs/{epoch}/.unverified") == 0);
         ASSERT(strcmp(g->glob[1], "build/obj/epochs/0000/.unverified") == 0);
-        ASSERT(sbi_consume_files("sbi_guard_rec_v",
-                                 SBI_GUARD(SBI_VENDOR, "ifneq ($(strip $(MISSING) "
-                                           "$(REPAIR)),)", ""),
-                                 k_sbi_liba, changed, 1, &v));
+        ASSERT(e.rep.make_premise.premises == SBI_PLAN_PREMISE && e.rep.make_premise.nskips == 1 &&
+               strcmp(e.rep.make_premise.include, "build/ready.mk") == 0);
+        ASSERT(sbi_consume_files("sbi_guard_rec_v", SBI_GUARD(SBI_VENDOR, "ifneq ($(strip "
+                                 "$(MISSING) $(REPAIR)),)", ""), k_sbi_liba, changed, 1, &v));
         ASSERT(v.rep.nguards == 1);
         g = &v.rep.guards[0];
         ASSERT(g->premises == (ZCL_DEVLOOP_PREMISE_NO_REPAIR_GOAL | SBI_EVERY_SKIP));
         ASSERT(g->nglobs == 1 && strcmp(g->glob[0], "vendor/lib/liba.a") == 0 &&
                strcmp(g->found[0], "vendor/lib/liba.a") == 0);
+        ASSERT(sbi_consume("sbi_pp_s", "X := $(shell tools/mkgen.sh)\n" SBI_P_TAIL,
+                           changed, 1, &s) && sbi_narrowed(&s));
+        ASSERT(p->premises == SBI_PLAN_PREMISE && p->nincludes == 1 && p->nskips == 0 &&
+               strcmp(p->include, "build/gen.mk") == 0);
+        ASSERT(strcmp(p->command, "tools/mkgen.sh") == 0 && p->ncommands == 1 &&
+               strcmp(p->command_at, "Makefile:1") == 0);
+        ASSERT(sbi_consume("sbi_pp_u", "X := $(shell uname -m)\n" SBI_P_TAIL, changed,
+                           1, &u) && u.rep.make_premise.premises == 0);
+        ASSERT(sbi_consume_with("sbi_pp_x", "X := $(shell tools/mkgen.sh)\n" SBI_P_TAIL,
+                                "build/gen.mk", "# old\n", changed, 1, &x) &&
+               x.rep.make_premise.premises == 0);
     } TEST_END
     zcl_devloop_facts_report_free(&e.rep);
     zcl_devloop_facts_report_free(&v.rep);
-    return failures;
-}
-
-/* p02: a parse-time script narrows under parse-scripts-no-include-writes. */
-static int sbit_t_plan_premise(void)
-{
-    int failures = 0;
-    static const char *const ch[] = {"tools/x.sh"};
-    struct sbi_run s = {0}, u = {0}, e = {0};
-    const struct zcl_devloop_facts_plan_premise *p = &s.rep.make_premise;
-    TEST_CASE("semantic_build_inputs: a parse-time script records its premise") {
-        ASSERT(sbi_consume("sbi_pp_s", "X := $(shell tools/mkgen.sh)\n" SBI_P_TAIL,
-                           ch, 1, &s) && sbi_narrowed(&s));
-        ASSERT(p->premises == ZCL_DEVLOOP_PREMISE_PARSE_SCRIPTS_NO_INCLUDE_WRITES &&
-               strcmp(p->include, "build/gen.mk") == 0 && p->nincludes == 1);
-        ASSERT(strcmp(p->command, "tools/mkgen.sh") == 0 && p->ncommands == 1 &&
-               strcmp(p->command_at, "Makefile:1") == 0);
-        ASSERT(sbi_consume("sbi_pp_u", "X := $(shell uname -m)\n" SBI_P_TAIL, ch,
-                           1, &u) && u.rep.make_premise.premises == 0);
-        ASSERT(sbi_consume_with("sbi_pp_e", "X := $(shell tools/mkgen.sh)\n"
-                                SBI_P_TAIL, "build/gen.mk", "# old\n", ch, 1, &e) &&
-               e.rep.make_premise.premises == 0);
-    } TEST_END
     zcl_devloop_facts_report_free(&s.rep);
     zcl_devloop_facts_report_free(&u.rep);
-    zcl_devloop_facts_report_free(&e.rep);
+    zcl_devloop_facts_report_free(&x.rep);
     return failures;
 }
 
@@ -1539,5 +1535,5 @@ int test_semantic_build_inputs(void)
           sbit_t_generated_joins() | sbit_t_generated_unreadable() |
           sbit_t_generated_reviewed() | sbit_t_parse_time_writers() |
           sbit_t_parse_time_quiet() | sbit_t_guarded_include() |
-          sbit_t_guard_record() | sbit_t_plan_premise();
+          sbit_t_guard_record();
 }
