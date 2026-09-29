@@ -121,6 +121,11 @@ struct zcl_devloop_facts_tu_verdict {
  * include, makes none. It is the plan's, recorded whenever an optional
  * include is missing. */
 #define ZCL_DEVLOOP_PREMISE_COMPUTED_TARGETS_NOT_INCLUDES 32u
+/* host-target-default-tor: ZCL_TARGET and ZCL_TOR hold the value their
+ * one top-level ?= line gives (host, full): no command-line, environment
+ * or make -e value sets them. Recorded on every skip whose reading used
+ * either variable's default. */
+#define ZCL_DEVLOOP_PREMISE_HOST_TARGET_DEFAULT_TOR 64u
 #define ZCL_DEVLOOP_GUARD_GLOBS 48
 #define ZCL_DEVLOOP_GUARD_TEXT 192
 

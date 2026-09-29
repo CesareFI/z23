@@ -202,8 +202,6 @@ static int sbit_t_guarded_include(void)
         {"tor", SBI_GUARD(SBI_TOR, SBI_MISSING_COND, ""), k_sbi_tor, true},
         {"tor_missing", SBI_GUARD(SBI_TOR, SBI_MISSING_COND, ""), k_sbi_tor_one,
          false},
-        {"tor_default", SBI_GUARD("ZCL_TOR ?= full\n", "ifneq ($(ZCL_TOR),full)",
-                                  ""), NULL, false},
         {"vendor", SBI_GUARD(SBI_VENDOR, "ifneq ($(strip $(MISSING) $(REPAIR)),)",
                              ""), k_sbi_liba, true},
         {"vendor_missing", SBI_GUARD(SBI_VENDOR, "ifneq ($(strip $(MISSING) "
@@ -254,6 +252,128 @@ static int sbit_t_guarded_include(void)
     TEST_CASE("semantic_build_inputs: a missing include a conditional "
              "provably skips narrows, and any input that may take the branch "
              "widens") {
+        ASSERT(sbi_guard_cases(cases, SBI_COUNT(cases)));
+    } TEST_END
+    return failures;
+}
+
+/* ---- the real Tor marker: host target, default Tor, archives globbed ------------ */
+
+/* The Makefile's shape: ZCL_TARGET picks the cross triple in a branch,
+ * the triple picks the Tor tree, and the marker is read only while an
+ * archive of that tree is missing. `target` is the ZCL_TARGET line. */
+#define SBI_TARGET(target)                                                     \
+    target "ZCL_CROSS_TRIPLE :=\nifneq ($(ZCL_TARGET),host)\n"                 \
+    "ifeq ($(ZCL_TARGET),windows-x86_64)\n"                                    \
+    "ZCL_CROSS_TRIPLE := x86_64-w64-mingw32\nelse\n"                           \
+    "$(error unknown ZCL_TARGET)\nendif\nendif\n"
+#define SBI_TOR_TREE(target, more)                                             \
+    SBI_TARGET(target) more                                                    \
+    "ZCL_TOR_TREE := $(if $(ZCL_CROSS_TRIPLE),vendor/cross/"                   \
+    "$(ZCL_CROSS_TRIPLE)/tor,vendor/tor)\n"                                    \
+    "TOR_ARCHIVE_PATHS := $(ZCL_TOR_TREE)/libtor.a \\\n"                        \
+    "\t$(ZCL_TOR_TREE)/src/ext/keccak-tiny/libkeccak-tiny.a\n"                 \
+    "ZCL_TOR ?= full\nifeq ($(filter full stub,$(ZCL_TOR)),)\n"                \
+    "$(error ZCL_TOR must be full or stub)\nendif\n"                           \
+    "TOR_MISSING_ARCHIVES := $(filter-out $(wildcard $(TOR_ARCHIVE_PATHS)),"  \
+    "$(TOR_ARCHIVE_PATHS))\nifeq ($(ZCL_TOR),full)\n"
+#define SBI_TOR_REAL(target, more)                                             \
+    SBI_GUARD(SBI_TOR_TREE(target, more),                                      \
+              "ifneq ($(strip $(TOR_MISSING_ARCHIVES)),)", "endif\n")
+#define SBI_HOST "ZCL_TARGET ?= host\n"
+#define SBI_WIN "ZCL_TARGET ?= windows-x86_64\n"
+/* ZCL_TOR read directly: its default (full) skips the branch. */
+#define SBI_TOR_KNOB(lines) SBI_GUARD(lines, "ifneq ($(ZCL_TOR),full)", "")
+
+static const char *const k_sbi_tor_host[] = {
+    "vendor/tor/libtor.a", "!\n",
+    "vendor/tor/src/ext/keccak-tiny/libkeccak-tiny.a", "!\n", NULL};
+static const char *const k_sbi_tor_host_one[] = {"vendor/tor/libtor.a", "!\n",
+                                                 NULL};
+static const char *const k_sbi_tor_cross[] = {
+    "vendor/cross/x86_64-w64-mingw32/tor/libtor.a", "!\n",
+    "vendor/cross/x86_64-w64-mingw32/tor/src/ext/keccak-tiny/libkeccak-tiny.a",
+    "!\n", NULL};
+
+/* host-target-default-tor reads ZCL_TARGET and ZCL_TOR as their one
+ * top-level ?= line gives them; any other line that can set them, and any
+ * other ?= variable, is any text. A branch make provably does not take
+ * (ZCL_TARGET is host) assigns nothing; one it may take still does. */
+static int sbit_t_host_target_tor(void)
+{
+    int failures = 0;
+    static const struct sbi_gcase cases[] = {
+        {"tor_host", SBI_TOR_REAL(SBI_HOST, ""), k_sbi_tor_host, true},
+        {"tor_host_one_missing", SBI_TOR_REAL(SBI_HOST, ""), k_sbi_tor_host_one,
+         false},
+        {"tor_host_none", SBI_TOR_REAL(SBI_HOST, ""), NULL, false},
+        {"tor_host_cross_only", SBI_TOR_REAL(SBI_HOST, ""), k_sbi_tor_cross, false},
+        {"tor_cross_default", SBI_TOR_REAL(SBI_WIN, ""), k_sbi_tor_host, false},
+        {"tor_cross_default_built", SBI_TOR_REAL(SBI_WIN, ""), k_sbi_tor_cross, true},
+        {"tor_cross_set", SBI_TOR_REAL("ZCL_TARGET := windows-x86_64\n", ""),
+         k_sbi_tor_host, false},
+        {"tor_target_env", SBI_TOR_REAL("", ""), k_sbi_tor_host, false},
+        {"tor_target_appended", SBI_TOR_REAL(SBI_HOST "ZCL_TARGET += x\n", ""),
+         k_sbi_tor_host, false},
+        {"tor_target_in_branch", SBI_TOR_REAL(SBI_IF_UNAME SBI_HOST "endif\n", ""),
+         k_sbi_tor_host, false},
+        {"tor_triple_undecided", SBI_TOR_REAL(SBI_HOST, SBI_IF_UNAME
+                                              "ZCL_CROSS_TRIPLE := x86_64-w64-"
+                                              "mingw32\nendif\n"),
+         k_sbi_tor_host, false},
+        {"tor_default", SBI_TOR_KNOB("ZCL_TOR ?= full\n"), NULL, true},
+        {"tor_env", SBI_TOR_KNOB(""), NULL, false},
+        {"tor_reassigned", SBI_TOR_KNOB("ZCL_TOR ?= full\n" SBI_IF_UNAME
+                                        "ZCL_TOR := stub\nendif\n"), NULL, false},
+        {"tor_appended", SBI_TOR_KNOB("ZCL_TOR ?= full\nZCL_TOR += stub\n"), NULL,
+         false},
+        {"tor_target_specific", SBI_TOR_KNOB("ZCL_TOR ?= full\n"
+                                             "build/a.o: ZCL_TOR := stub\n"),
+         NULL, false},
+        {"tor_default_late", SBI_GUARD("", "ifneq ($(ZCL_TOR),full)",
+                                       "ZCL_TOR ?= full\n"), NULL, false},
+        {"other_default", SBI_GUARD("ZCL_FOO ?= full\n", "ifneq ($(ZCL_FOO),full)",
+                                    ""), NULL, false},
+    };
+    TEST_CASE("semantic_build_inputs: the Tor marker is skipped only for the "
+             "host target and default Tor with every archive present") {
+        ASSERT(sbi_guard_cases(cases, SBI_COUNT(cases)));
+    } TEST_END
+    return failures;
+}
+
+/* An assignment in a branch make provably does not take is no value of its
+ * variable; one in a branch the reading cannot decide still is. */
+#define SBI_LIBB "LIBS := vendor/lib/libb.a\n"
+#define SBI_PRUNE(lines)                                                       \
+    SBI_GUARD(SBI_MISSING("X := a\n" SBI_LIBA lines), SBI_MISSING_COND, "")
+static int sbit_t_pruned_branch(void)
+{
+    int failures = 0;
+    static const struct sbi_gcase cases[] = {
+        {"prune_if", SBI_PRUNE("ifeq ($(X),b)\n" SBI_LIBB "endif\n"), k_sbi_liba,
+         true},
+        {"prune_else", SBI_PRUNE("ifeq ($(X),a)\n" SBI_LIBA "else\n" SBI_LIBB
+                                 "endif\n"), k_sbi_liba, true},
+        {"prune_else_if", SBI_PRUNE("ifeq ($(X),a)\n" SBI_LIBA "else ifeq ($(X),c)\n"
+                                    SBI_LIBB "endif\n"), k_sbi_liba, true},
+        {"prune_inner", SBI_PRUNE(SBI_IF_UNAME "ifneq ($(X),a)\n" SBI_LIBB
+                                  "endif\nendif\n"), k_sbi_liba, true},
+        {"prune_outer", SBI_PRUNE("ifeq ($(X),b)\n" SBI_IF_UNAME SBI_LIBB
+                                  "endif\nendif\n"), k_sbi_liba, true},
+        {"keep_taken", SBI_PRUNE("ifeq ($(X),a)\n" SBI_LIBB "endif\n"), k_sbi_liba,
+         false},
+        {"keep_undecided", SBI_PRUNE(SBI_IF_UNAME SBI_LIBB "endif\n"), k_sbi_liba,
+         false},
+        {"keep_undecided_else", SBI_PRUNE(SBI_IF_UNAME SBI_LIBA "else\n" SBI_LIBB
+                                          "endif\n"), k_sbi_liba, false},
+        {"keep_later_x", SBI_PRUNE("ifeq ($(X),b)\n" SBI_LIBB "endif\n"
+                                   SBI_IF_UNAME "X := b\nendif\n"
+                                   "ifeq ($(X),b)\n" SBI_LIBB "endif\n"),
+         k_sbi_liba, false},
+    };
+    TEST_CASE("semantic_build_inputs: an assignment in a branch make provably "
+             "does not take is pruned, any other is unioned") {
         ASSERT(sbi_guard_cases(cases, SBI_COUNT(cases)));
     } TEST_END
     return failures;
@@ -494,10 +614,49 @@ static int sbit_t_premise_forms(void)
     return failures;
 }
 
+/* A skip that read ZCL_TARGET or ZCL_TOR's default records the premise
+ * host-target-default-tor with the directive and the archives it globbed;
+ * one that read neither does not. */
+static int sbit_t_tor_record(void)
+{
+    int failures = 0;
+    static const char *const changed[] = {"tools/x.sh"};
+    struct sbi_run t = {0}, k = {0}, p = {0};
+    const struct zcl_devloop_facts_guard *g;
+    TEST_CASE("semantic_build_inputs: a Tor marker skip records "
+             "host-target-default-tor") {
+        ASSERT(sbi_consume_files("sbi_tor_rec_t", SBI_TOR_REAL(SBI_HOST, ""),
+                                 k_sbi_tor_host, changed, 1, &t) &&
+               sbi_narrowed(&t) && t.rep.nguards == 1);
+        g = &t.rep.guards[0];
+        ASSERT(strcmp(g->include, "build/ready.mk") == 0 &&
+               strcmp(g->guard, "ifneq ($(strip $(TOR_MISSING_ARCHIVES)),)") == 0);
+        ASSERT(g->premises == (ZCL_DEVLOOP_PREMISE_HOST_TARGET_DEFAULT_TOR |
+                               SBI_EVERY_SKIP));
+        ASSERT(g->nglobs == 2 && strcmp(g->glob[0], "vendor/tor/libtor.a") == 0 &&
+               strcmp(g->found[0], "vendor/tor/libtor.a") == 0 &&
+               strcmp(g->glob[1], "vendor/tor/src/ext/keccak-tiny/"
+                                  "libkeccak-tiny.a") == 0);
+        ASSERT(sbi_consume_files("sbi_tor_rec_k", SBI_TOR_KNOB("ZCL_TOR ?= full\n"),
+                                 NULL, changed, 1, &k) && k.rep.nguards == 1 &&
+               k.rep.guards[0].premises ==
+                   (ZCL_DEVLOOP_PREMISE_HOST_TARGET_DEFAULT_TOR | SBI_EVERY_SKIP) &&
+               k.rep.guards[0].nglobs == 0);
+        ASSERT(sbi_consume_files("sbi_tor_rec_p", SBI_PRUNE("ifeq ($(X),b)\n"
+                                 SBI_LIBB "endif\n"), k_sbi_liba, changed, 1, &p) &&
+               p.rep.nguards == 1 && p.rep.guards[0].premises == SBI_EVERY_SKIP);
+    } TEST_END
+    zcl_devloop_facts_report_free(&t.rep);
+    zcl_devloop_facts_report_free(&k.rep);
+    zcl_devloop_facts_report_free(&p.rep);
+    return failures;
+}
+
 int sbi_guard_suite(void)
 {
     return sbit_t_parse_time_writers() | sbit_t_parse_time_quiet() |
            sbit_t_guarded_include() | sbit_t_guard_record() | sbit_t_plan_record() |
            sbit_t_dot_slash() | sbit_t_computed_targets() | sbit_t_computed_lines() |
-           sbit_t_premise_forms();
+           sbit_t_premise_forms() | sbit_t_host_target_tor() | sbit_t_pruned_branch() |
+           sbit_t_tor_record();
 }
