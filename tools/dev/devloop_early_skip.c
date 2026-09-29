@@ -613,6 +613,29 @@ static void es_strip_comments(char *text, size_t len)
     }
 }
 
+/* C joins backslash-newline pairs before recognizing directives and comments.
+ * Work on the copy: the node digest above still identifies the exact bytes. */
+static size_t es_splice_lines(char *text, size_t len)
+{
+    size_t out = 0;
+    for (size_t i = 0; i < len; i++) {
+        if (text[i] == '\\' && i + 1 < len) {
+            if (text[i + 1] == '\n') {
+                i++;
+                continue;
+            }
+            if (text[i + 1] == '\r' && i + 2 < len &&
+                text[i + 2] == '\n') {
+                i += 2;
+                continue;
+            }
+        }
+        text[out++] = text[i];
+    }
+    text[out] = '\0';
+    return out;
+}
+
 static void es_node_load(struct es_graph *g, uint32_t idx)
 {
     char full[ES_PATH_MAX * 2];
@@ -625,6 +648,7 @@ static void es_node_load(struct es_graph *g, uint32_t idx)
         return;
     }
     es_sha3_hex(text, len, g->nodes[idx].digest);
+    len = es_splice_lines(text, len);
     es_strip_comments(text, len);
     if (!es_scan(g, idx, text, len))
         es_node_bad(g, idx, "closure-bound", g->nodes[idx].path);
