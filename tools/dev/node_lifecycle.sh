@@ -186,44 +186,87 @@ dht_assert_port() {
     return 0
 }
 
+# Graceful-stop grace. The node's own shutdown is staged and budgeted in
+# engine/composition/src/boot_services_shutdown.c (worker-drain 60 s, then
+# runtime-persist 45 s containing a 30 s wallet flush, plus the other stages),
+# and systemd allows TimeoutStopSec=300. A driver that escalates sooner than
+# that kills a node that is still shutting down normally and manufactures an
+# unclean stop. 300 s covers the whole budget; a clean exit returns as soon as
+# the group is gone because the poll interval is DHT_STOP_POLL_S.
+# DHT_STOP_GRACE_S / DHT_STOP_POLL_S exist so a selftest can scale both down.
+: "${DHT_STOP_GRACE_S:=300}"
+: "${DHT_STOP_POLL_S:=0.2}"
+# Hard kills wait this long (seconds) for the kernel to reap the group.
+DHT_HARD_KILL_REAP_S=10
+DHT_UNCLEAN_STOPS=0
+
+# dht_group_gone PGID RPC : succeeds when the process group no longer runs.
+dht_group_gone() {
+    local pgid="$1" rpc="$2" state
+    if [ -n "$rpc" ]; then
+        dht_node_exec "$rpc" kill -0 "-$pgid" 2>/dev/null && return 1
+        return 0
+    fi
+    kill -0 "-$pgid" 2>/dev/null || return 0
+    # A leader that is a zombie has exited; only its reaping is pending.
+    state="$(LC_ALL=C ps -p "$pgid" -o stat= 2>/dev/null |
+        awk 'NR == 1 { print $1 }' || true)"
+    case "$state" in Z*) return 0 ;; esac
+    return 1
+}
+
+# dht_kill_group PGID [SIG]
+#   SIG omitted or TERM: GRACEFUL stop. Signal, then wait up to
+#     DHT_STOP_GRACE_S for the group to exit on its own; only then escalate to
+#     KILL, and say so loudly ("unclean stop: killed after Ns").
+#   SIG=KILL: deliberate HARD kill (an intentional disappearance). SIGKILL is
+#     sent immediately, labelled as such, and never counts as unclean.
 dht_kill_group() {
-    local pgid="$1" sig="${2:-TERM}" i state rpc
+    local pgid="$1" sig="${2:-TERM}" rpc="" start polls max hard=0
     [ -n "$pgid" ] || return 0
     [ "${DHT_OWNED_PGIDS[$pgid]:-0}" = 1 ] || return 0
     rpc="${DHT_PGID_RPC[$pgid]:-}"
-    if [ -n "$rpc" ] && [ -n "${DHT_REMOTE_HOST[$rpc]:-}" ]; then
-        # Remote group: same TERM-then-KILL discipline through ssh.
-        dht_node_exec "$rpc" kill "-$sig" "-$pgid" 2>/dev/null || true
-        for i in $(seq 1 50); do
-            dht_node_exec "$rpc" kill -0 "-$pgid" 2>/dev/null || {
-                unset "DHT_OWNED_PGIDS[$pgid]" "DHT_PGID_RPC[$pgid]"
-                return 0
-            }
-            sleep 0.2
-        done
-        dht_node_exec "$rpc" kill -KILL "-$pgid" 2>/dev/null || true
-        unset "DHT_OWNED_PGIDS[$pgid]" "DHT_PGID_RPC[$pgid]"
-        if dht_node_exec "$rpc" kill -0 "-$pgid" 2>/dev/null; then
-            return 1
-        fi
-        return 0
+    if [ -z "$rpc" ] || [ -z "${DHT_REMOTE_HOST[$rpc]:-}" ]; then rpc=""; fi
+    start="$SECONDS"
+    if [ "$sig" = KILL ]; then
+        hard=1
+        echo "zcode-dht-acceptance: hard kill (deliberate): SIGKILL to group $pgid" >&2
+        max="$DHT_HARD_KILL_REAP_S"
+    else
+        max="$DHT_STOP_GRACE_S"
     fi
-    kill -"$sig" "-$pgid" 2>/dev/null || true
-    for i in $(seq 1 50); do
-        if ! kill -0 "-$pgid" 2>/dev/null; then
-            wait "$pgid" 2>/dev/null || true
-            unset "DHT_OWNED_PGIDS[$pgid]"
-            return 0
+    if [ -n "$rpc" ]; then
+        dht_node_exec "$rpc" kill "-$sig" "-$pgid" 2>/dev/null || true
+    else
+        kill -"$sig" "-$pgid" 2>/dev/null || true
+    fi
+    # Poll on wall time, not iteration count, so ssh latency cannot stretch
+    # the grace.
+    polls=0
+    while ! dht_group_gone "$pgid" "$rpc"; do
+        if [ $((SECONDS - start)) -ge "$max" ]; then
+            if [ "$hard" = 0 ]; then
+                DHT_UNCLEAN_STOPS=$((DHT_UNCLEAN_STOPS + 1))
+                echo "zcode-dht-acceptance: unclean stop: killed after $((SECONDS - start))s (group $pgid ignored $sig for the ${max}s grace)" >&2
+            fi
+            if [ -n "$rpc" ]; then
+                dht_node_exec "$rpc" kill -KILL "-$pgid" 2>/dev/null || true
+            else
+                kill -KILL "-$pgid" 2>/dev/null || true
+            fi
+            break
         fi
-        state="$(LC_ALL=C ps -p "$pgid" -o stat= 2>/dev/null |
-            awk 'NR == 1 { print $1 }' || true)"
-        case "$state" in Z*) break ;; esac
-        sleep 0.2
+        sleep "$DHT_STOP_POLL_S"
     done
-    kill -KILL "-$pgid" 2>/dev/null || true
-    wait "$pgid" 2>/dev/null || true
-    unset "DHT_OWNED_PGIDS[$pgid]"
-    ! kill -0 "-$pgid" 2>/dev/null
+    if [ -z "$rpc" ]; then wait "$pgid" 2>/dev/null || true; fi
+    unset "DHT_OWNED_PGIDS[$pgid]" "DHT_PGID_RPC[$pgid]"
+    # After SIGKILL the last members may be zombies for an instant; give the
+    # reaper a short bounded window before calling the group still alive.
+    for polls in 1 2 3 4 5 6 7 8 9 10; do
+        dht_group_gone "$pgid" "$rpc" && return 0
+        sleep "$DHT_STOP_POLL_S"
+    done
+    return 1
 }
 
 dht_register_owned_group() {

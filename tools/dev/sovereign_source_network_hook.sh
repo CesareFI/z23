@@ -427,7 +427,7 @@ ssn_note "replication frontier PASS: publisher + two independently pinned hosts 
 # only byte sources. Fetch, pin, restart, and then close the daemon before
 # checkout so reconstruction is a standalone Git-free operation over its own
 # persisted package store.
-dht_kill_group "${PIDS[$SSN_PUBLISHER]:-}"
+dht_kill_group "${PIDS[$SSN_PUBLISHER]:-}" KILL  # deliberate hard kill: publisher loss
 PIDS[$SSN_PUBLISHER]=""
 ssn_live_fetch "$SSN_CONSUMER" "$PACKAGE_ROOT"
 ssn_wait_complete "$SSN_CONSUMER" "$PACKAGE_ROOT" ||

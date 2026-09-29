@@ -231,5 +231,71 @@ else
         "$cap_1" "$cap_1" 0 0 0 True "$rc_b" "$rc_b"
 fi
 
+
+# ── dht_kill_group stop discipline (runtime, scaled down) ────────────────
+# A graceful stop must wait out the node's shutdown budget instead of
+# SIGKILLing a node that is still exiting normally; a process that ignores
+# TERM is killed only after the grace, and says so loudly. Real process
+# groups, no node: this proves the driver's escalation, nothing else.
+LIFECYCLE="$SELF_DIR/node_lifecycle.sh"
+[ -r "$LIFECYCLE" ] || { fail "cannot read $LIFECYCLE"; exit 2; }
+
+# stop_case NAME CHILD_SCRIPT SIG GRACE -> sets STOP_OUT and STOP_SECS.
+stop_case() {
+    local name="$1" child="$2" sig="$3" grace="$4" t0
+    t0="$SECONDS"
+    STOP_OUT="$(
+        set +e
+        # shellcheck source=/dev/null
+        source "$LIFECYCLE"
+        DHT_STOP_GRACE_S="$grace"; DHT_STOP_POLL_S=0.1
+        setsid bash -c "$child" >/dev/null 2>&1 &
+        pgid=$!
+        DHT_OWNED_PGIDS[$pgid]=1
+        sleep 0.5
+        dht_kill_group "$pgid" $sig 2>&1
+        if kill -0 "-$pgid" 2>/dev/null; then echo "STILL-ALIVE"; fi
+        echo "unclean-count=$DHT_UNCLEAN_STOPS"
+    )" || true
+    STOP_SECS=$((SECONDS - t0))
+    : "$name"
+}
+
+# 1: exits 2 s after TERM (inside a 6 s grace): not killed, not unclean.
+stop_case slow-clean \
+    'trap "sleep 2; exit 0" TERM; while :; do sleep 0.1; done' "" 6
+if grep -q 'unclean stop' <<<"$STOP_OUT" || grep -q STILL-ALIVE <<<"$STOP_OUT" ||
+   ! grep -q 'unclean-count=0' <<<"$STOP_OUT"; then
+    fail "a group that exits within the grace was reported unclean: $STOP_OUT"
+elif [ "$STOP_SECS" -ge 6 ]; then
+    fail "a clean exit did not return promptly (${STOP_SECS}s)"
+else
+    pass "a group exiting 2s after TERM is not killed"
+fi
+
+# 2: ignores TERM: killed only after the grace, with the unclean line.
+stop_case ignores-term \
+    'trap "" TERM; while :; do sleep 0.1; done' "" 3
+if ! grep -q 'unclean stop: killed after [3-9]s' <<<"$STOP_OUT" ||
+   grep -q STILL-ALIVE <<<"$STOP_OUT" ||
+   ! grep -q 'unclean-count=1' <<<"$STOP_OUT"; then
+    fail "a TERM-ignoring group was not killed loudly after the grace: $STOP_OUT"
+elif [ "$STOP_SECS" -lt 3 ]; then
+    fail "the TERM-ignoring group was killed before the grace (${STOP_SECS}s)"
+else
+    pass "a TERM-ignoring group is killed after the grace with an unclean line"
+fi
+
+# 3: deliberate KILL is immediate, labelled, and not counted unclean.
+stop_case hard-kill \
+    'trap "" TERM; while :; do sleep 0.1; done' KILL 60
+if ! grep -q 'hard kill (deliberate)' <<<"$STOP_OUT" ||
+   grep -q 'unclean stop' <<<"$STOP_OUT" ||
+   grep -q STILL-ALIVE <<<"$STOP_OUT" || [ "$STOP_SECS" -ge 10 ]; then
+    fail "a deliberate hard kill was not immediate and labelled: $STOP_OUT"
+else
+    pass "a deliberate hard kill is immediate and labelled"
+fi
+
 [ "$FAIL" -eq 0 ] || exit 1
 printf 'commons-journey-ordering: OK\n'

@@ -2671,9 +2671,10 @@ cj_require_latecomer_empty() {
 }
 
 cj_stop_publisher() {
-    # The publisher process is signalled and never comes back. Its RPC must
-    # stop answering before a two-host latecomer redials the surviving peer.
-    dht_kill_group "$DHT_PGID_A"; DHT_PGID_A=""
+    # The publisher process is hard-killed (deliberate SIGKILL: a disappearance,
+    # not a stop) and never comes back. Its RPC must stop answering before a
+    # two-host latecomer redials the surviving peer.
+    dht_kill_group "$DHT_PGID_A" KILL; DHT_PGID_A=""
     if dht_rpc "$DHT_DD_A" "$A_RPC" getblockcount >/dev/null 2>&1; then
         cj_die "node A still answers RPC after its disappearance"
     fi
