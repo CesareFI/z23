@@ -89,8 +89,7 @@ WAL-inclusive stable copy `utxo_recovery_copy_chainstate_stable`
 chainstate (SSTs + the `.log` WAL) proven point-in-time by a dir signature.
 The SST-only `ldb_snapshot_make` is NOT usable here: it drops the `.log`
 WAL, so the `'B'`/`'z'` pointers read the last compacted state while coin
-records sit tens of thousands of blocks fresher (measured 2026-08-02:
-SST `'B'`=3183455 vs coins at 3202110 vs live tip ~3202160). <!-- stale-ok: dated 2026-08-02 measurement motivating the WAL-inclusive copy, not a live tip claim -->
+records sit tens of thousands of blocks fresher.
 
 Reader entry points (`chainstate_legacy_reader.c/.h`):
 `chainstate_legacy_iter_sapling_anchors` / `_sprout_anchors` (seek `'Z'`/`'A'`,

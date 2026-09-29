@@ -59,17 +59,10 @@ root silently going missing (a directory renamed out from under a gate that
 still names the old token) reads the exact same way: the loop just runs zero
 times and the gate reports "clean".
 
-Found 2026-09-06: a tree rename (`app lib config src domain application
-adapters` → `core engine contexts cognition platform tools`) left four
-gates scanning nothing but `tools/` and reporting false-clean over roughly
-4,000 unscanned production files (`check-malloc`, `check-pthread-create`,
-`check-proc-self-shim`, `check-hotswap-dev-only`), plus three more scanning
-a degraded subset of the real tree (`check-no-gnu-va-args`,
-`check-peer-floor-single-source`, `check-no-stray-untracked-source`). Fixed
-by `require_scan_root(gate, root)` / `walk_src_root(gate, root, hdrs, scan,
+A tree rename left gates scanning nothing but `tools/` and reporting false-clean over roughly 4,000 production files, and others scanning a degraded subset. The guard is `require_scan_root(gate, root)` / `walk_src_root(gate, root, hdrs, scan,
 ctx)` in `lib.c`: FATAL with `FATAL — scan root '<root>' does not exist
 (gate <name>)` the moment a gate's literal root is missing, rather than
-silently walking nothing. Every gate above was re-rooted onto the real
+silently walking nothing. Every gate is rooted on the real
 production C tree (`core engine contexts cognition platform tools`) and now
 calls `walk_src_root()` instead of the unchecked `walk_src()`; debt the
 wider scan uncovered is pinned shrink-only in a per-gate

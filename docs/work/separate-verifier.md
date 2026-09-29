@@ -108,23 +108,11 @@ byte-equivalence witness; the receiver writes its own current-target depfile.
 The local witness says `attest_eligible=0`, launches two compilers and one
 preprocessor, and avoids zero proof compiles.
 
-On 2026-09-28, the measured witness on signed remote head
-`fd9f5217de6e5f80bb45abf05bd503c7f89ef602` from the separate verifier
-development worktree
-passed under `devbuild` job `3455175-45501939-1790601263128346361`
-(19 ms queue wait). It launched two direct `-c` GCC 14 children and one
-fresh `-E`, avoiding **zero** proof compiler launches. Cold and repeat `-c`
-each took 0.02 s wall, 0.01 s user, 0.00 s system; `-E` took 0.01 s wall,
-0.00 s user and system. Both objects were 13,288 bytes with SHA256
-`9c5a64f6007d0307885c5548dbff51bc278368fcf833cea47ce0de793c851368`.
-Both depfiles were 360 bytes with SHA256
-`6f32a40909bef856f304b218d8833a44025068f3d939a7ab41b9f617cc1da093`.
-Both compiler stderr files were empty. The raw `-E` output was 43,453
-bytes with SHA256
-`1fdf83949d6f104f260fa2a32d125c1907ad49afb1cbf899e46ad5a10827d5c8`;
-its depfile matched the cold depfile byte for byte. The witness prints these
-durable values and the current run's wall/CPU and byte counts. They are a
-local baseline only: no service, store lookup, link or test child ran.
+The witness prints its exact object, depfile and raw `-E` hashes, byte counts and
+the run's wall/CPU each time. It launches two direct `-c` GCC 14 children and
+one fresh `-E`, avoiding **zero** proof compiler launches; both compiler stderr
+files are empty and the `-E` depfile matches the cold depfile byte for byte. It
+is a local baseline only: no service, store lookup, link or test child runs.
 
 The first eligible candidate is restricted to the exact current three-file
 translation-unit chain. SHA3-256 of `result.c` is

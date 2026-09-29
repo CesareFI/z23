@@ -435,98 +435,22 @@ the fixture manifests and prints the golden vector.
 | fn_body | `+ SHAPE_MAX` → `- SHAPE_MAX` in `helper` | files, functions (only `helper`) | changes |
 | comment_only | comments before a function, inside a body, inside a macro body | files, spans | equal |
 
-Run against the sensor before the comment-token fix, `comment_only` fails
-with "hint root changed". The group therefore catches the defect it pins.
 
-## Benchmark (2026-09-25, shared development host)
+## Cost and value
 
-Each TU was run 41 times per cell. The three commands ran interleaved in the
-same window and were timed by bash `EPOCHREALTIME` around each process. The
-flags were the repo's dev compile flags (`DEV_COMPILE_CFLAGS`, 147 `-I`
-dirs):
-
-- (a) sensor startup, parse and manifest emit;
-- (b) `clang-20 -fsyntax-only` with the same flags;
-- (c) `gcc -c` with the same flags (`-Og -g1`), the repo's normal dev compile
-  of the TU.
-
-Host load was 12.08 at the start of the run and 10.87 at the end (1-minute
-loadavg). Clang is 20.1.8; gcc is 14.2.0.
-
-| TU (lines) | (a) sensor p50 / p95 ms | (b) clang syntax p50 / p95 ms | (c) gcc -c p50 / p95 ms | a/b p50 | a/c p50 | manifest bytes |
-|---|---|---|---|---|---|---|
-| `platform/modules/platform/src/disk_space.c` (62) | 42.3 / 52.9 | 35.4 / 42.1 | 20.7 / 27.6 | 1.19 | 2.05 | 16,883 |
-| `tools/dev/devloop_watch.c` (2,890) | 113.4 / 171.0 | 79.7 / 99.0 | 191.6 / 234.0 | 1.42 | 0.59 | 215,332 |
-| `tools/command/native_dev_command.c` (4,914) | 176.2 / 224.0 | 111.1 / 153.4 | 339.5 / 449.7 | 1.59 | 0.52 | 670,141 |
-
-An earlier run in a quieter window (loadavg 8.01 → 8.30) used the pre-fix
-binary, which differs only in skipping comment tokens. It gave p50 values
-within 6% of these: sensor 41.0 / 108.6 / 175.2 ms, clang 34.3 / 77.8 /
-108.1 ms, gcc 19.6 / 187.4 / 331.1 ms.
-
-**Reading.**
-
-- The sensor costs 1.2–1.6× a stock clang syntax-only parse.
-- It costs about 0.5–0.6× the real gcc dev compile of a mid or large TU, and
-  2× on a tiny TU, where process and libclang startup dominate.
-- It is an extra pass, not a replacement for the compile. So it adds latency
-  unless its hint nominates reuse that a later exact check then accepts.
-
-## Structure value: 10 real origin/main commits
-
-The study used the 10 most recent non-merge commits reachable from `1ce8f96209` that
-modify at least one existing `.c` file. For each commit, the sensor ran on
-every modified `.c` at the parent and at the child: 16 file pairs and
-32 manifests, all of which parsed. Each pair was classified from the
-record-level diff of the two dumps.
-
-| Category | Meaning | File pairs | Commits (by their widest file) |
-|---|---|---|---|
-| function_localized | only main-file function records moved (plus content/spans) | 3 | 1 |
-| function + file-scope | main-file functions plus main-file file-scope decls (new static functions/vars) | 2 | 2 |
-| header fan-out | records owned by an included repo header moved (layout, decl, macro, include set, header inline function) | 10 | 6 |
-| non-semantic | hint root equal, exact root differs | 1 | 1 |
-
-- **Localization inside the main file.** 48 of 886 main-file function
-  definitions (5.4%) moved across the 16 pairs. Over the 15 pairs that moved
-  any function, the mean touched fraction per file was 13.2%. Examples:
-  - `tools/command/native_dev_land.c`: 2 of 223 functions (`dl_rebase`,
-    `dl_rebase_autoresolve`);
-  - `tests/harness/src/test_dev_land.c`: 2 of 182;
-  - `tests/harness/src/test_zcode_dev_objects.c`: 1–2 of 77–78.
-- **Fan-out is named, not just detected.** In `1ece915b06`, the manifest for
-  `tools/command/native_dev_hotswap.c` shows one main-file function changed.
-  It also shows the layout of `zcl_hotswap_service_report` in
-  `engine/modules/hotswap/include/hotswap/hotswap_service.h` growing from 416
-  to 552 bytes: an ABI change that every includer inherits. In `bd8e9f98d1`,
-  it names the one new static inline function (its decl, function and
-  span records) in
-  `package_swarm_priv.h`.
-- **Hint root equal while the exact root changed:**
-  - 1 of 16 real file pairs (1 of 10 commits). `2a158c1ded` only appended a
-    `// platform-ok` comment.
-  - 10 of 10 synthetic edits on the three benchmark TUs: a leading comment
-    line, a comment inside the first function body, a blank line inside it,
-    and a comment in the included `tools/dev/devloop.h`.
-  - The `comment_only` fixture seed.
-
-  Before the comment-token fix, the in-body comment edits changed a function
-  hash in 2 of 3 TUs; the fixed sensor keeps all of them equal.
-
-## Recommendation
-
-Land the reader, tests and doc, and land the sensor as an optional tool. The
-numbers show measurable structure value, and they do not show a latency win.
-
-- **Structure value.** The manifest localizes a real edit to named functions:
-  5.4% of main-file definitions moved across 16 real file pairs. It names the
-  exact header layout, declaration or macro records that fan out. And it
-  separates a comment-only commit from a semantic one, which a content hash
-  cannot do.
-- **No latency win yet.** The sensor is an additional 42–176 ms p50 pass
-  (1.2–1.6× clang `-fsyntax-only`). A latency gain needs a consumer that uses
-  a hint-root match to nominate reuse and then accepts only on the exact root
-  or a stronger equivalence check. That consumer is not built here.
+- **Cost.** The sensor is an extra pass: 1.2 to 1.6 times a stock clang
+  `-fsyntax-only` parse (about 42 to 176 ms p50 per TU), about 0.5 to 0.6 times
+  the gcc dev compile of a mid or large TU, and 2 times on a tiny TU where
+  process and libclang startup dominate. It adds latency unless its hint
+  nominates reuse that a later exact check accepts.
+- **Structure value.** The manifest localizes a real edit to named functions
+  (about 5% of main-file definitions move per commit), names the header
+  layout, declaration or macro records that fan out to includers, and
+  separates a comment-only change (hint root equal, exact root different)
+  from a semantic one, which a content hash cannot do.
+- **Consumer.** A latency gain comes only from a consumer that uses a
+  hint-root match to nominate reuse and accepts on the exact root or a
+  stronger equivalence check; see "The facts consumer".
 
 ## Facts extension and its producer
 
@@ -665,13 +589,10 @@ does not know is dropped by the front end with no cursor, so the sensor
 cannot see it; gcc's `malloc(f)` form is a clang error, so such a TU gets
 no manifest and its plan falls back.
 
-An in-compile clang plugin that wrote the same bytes (except the producer
-digest) from inside the running compile was measured on a candidate branch
-and is not part of the tree: it is C++ against clang's unstable plugin API,
-and Z23 keeps compiled code to C23 over a compiler's C API. Its measured
-extraction overhead (about 10 percent of compile CPU, objects byte-identical)
-is the bar a future in-compile producer must meet; the sensor's second parse
-is what the tree pays today.
+There is no in-compile clang plugin: it would be C++ against clang's unstable
+plugin API, and Z23 keeps compiled code to C23 over a compiler's C API. The
+sensor's second parse is what the tree pays. A future in-compile producer must
+beat that cost (a plugin measured about 10 percent of compile CPU).
 
 ### Warm session
 
@@ -739,9 +660,8 @@ the reply carries:
 resolved, including includes made inside system headers, which no LOOKUPS
 record covers. libclang revalidates the files it read, not the search slots
 it skipped. So a header copied into an earlier `-I` dir under a name a
-system header includes left a warm reparse stale, while a cold parse read
-the copy (reproduced with glibc bits/wordsize.h under `<stdint.h>`, before the
-check existed). The candidates are: for every non-main file of the manifest,
+system header includes would leave a warm reparse stale while a cold parse read
+the copy (for example glibc bits/wordsize.h under `<stdint.h>`). The candidates are: for every non-main file of the manifest,
 under every search dir (quote, then angled) that holds it, each earlier
 search dir that now holds the same relative name, or that no longer exists.
 The list is taken right after the parse that builds a preamble, before that
@@ -816,80 +736,30 @@ by identity (`clang_getFile` of the source), and closes the file table with
 `clang_findIncludesInFile` over every file read. Every front-end instance
 prints its own `-v` search list block, so the sensor parses the last one.
 
-**Measured** at commit `29d490b7fc`, on the branch this work was ported from
-(before main added the attribute and alias refs), on the
-development host (28 CPUs under the `devbuild` slot; 1-minute loadavg 11.5
-at the start of the three runs and 6.8 at the end). The TUs were the 12 TUs
-of `engine/modules/hotswap` with the dev compile argv
-(`DEV_COMPILE_CFLAGS`, 147 `-I` dirs), `--facts`. Each run
-did the same three rounds over all 12 TUs:
+**Cost** (12 `engine/modules/hotswap` TUs, dev compile argv, `--facts`):
 
-- r1: the tree as committed;
-- r2: after a body edit to each `.c` (`(void)0;` before its last closing
-  brace);
-- r3: after a header edit on top of it (a `#define` in
-  `hotswap/hotswap.h`, which 4 of the 12 include).
-
-Cold is one `emit` process per TU. The session is one process for all 36
-requests. The three runs agreed within 3 percent, except run 2's cold rounds,
-which ran up to 50 percent slower under a load spike; run 3 is shown.
-
-| Round (12 TUs) | cold: 12 processes, wall / CPU | session wall (per request) | session in-process: parse / emit / cold check / pre-checks, sums |
-|---|---|---|---|
-| r1 first parse | 725 ms / 580 ms | 1,215 ms (101 ms) | 502 / 689 / 453 / 0 ms |
-| r2 body edit | 707 ms / 580 ms | 399 ms (33 ms) | 128 / 316 / 0 / 45 ms |
-| r3 header edit | 738 ms / 590 ms | 763 ms (64 ms) | 4 recreated: 224 / 322 / 218 / 5 ms; 8 reparsed: 66 / 149 / 0 / 23 ms |
-
-Cold and session wall times are driver wall times per round (bash, one
-request at a time). The cold CPU column is user plus system time from
-`/usr/bin/time`.
-
-| Whole run | processes | wall | user + sys CPU | max RSS |
-|---|---|---|---|---|
-| cold, 36 emits | 36 | 2.2 s (sum of rounds) | 1.75 s | 90 MB each |
-| session, default | 1 | 2.4 s | 2.3 s | 137 MB |
-| session, `--verify-cold` | 1 | 3.1 s | 3.0 s | 140 MB |
-| session, `--max-tus 8` (12 TUs cycling) | 1 | 3.7 s | 3.5 s | 127 MB |
-
-**Reading.**
-
-- A qualified reparse after a body edit costs 33 ms per request end to end
-  against 60 ms per cold process, 1.8 times faster. About 23 ms of the
-  saving is the process itself: start-up, loading libclang, and writing the
-  file (a cold emit takes about 38 ms inside the process). About 11 ms is
-  the parse: it falls from about 22 ms in a cold emit (derived: the cold
-  emit less the extraction) to about 10.7 ms.
-  Extraction and the post-checks (about 15.6 ms) do not change. The
-  pre-checks cost about 3.7 ms per TU, most of it reading the search dirs
-  for the shadow candidates. These runs predate binding a reparse's own
-  manifest after it (file SHA3s, unbound lookups, shadow candidates), which
-  repeats about that pre-check cost once more per qualified reparse.
-- A new or recreated TU costs about 101 ms per request: a warm emit whose
-  parse builds the preamble (about 57 ms, 42 ms of it parsing) plus the
-  mandatory cold check (about 38 ms). That is about 41 ms more than a cold
-  process, so a TU pays back after its second qualified reparse. A header
-  edit recreates exactly the TUs that read the header; that round roughly
-  matches cold.
-- `--verify-cold` is an oracle mode: every emit pays a warm and a cold
-  parse, slower than cold alone.
+- A qualified reparse after a body edit costs about 33 ms per request end to
+  end against about 60 ms per cold process (1.8 times faster). Roughly 23 ms
+  of the saving is process start-up, libclang loading and file writing; about
+  11 ms is the parse. Extraction and the post-checks (about 15.6 ms) do not
+  change, and the pre-checks cost about 3.7 ms per TU.
+- A new or recreated TU costs about 101 ms per request: a warm emit that
+  builds the preamble plus the mandatory cold check. That is about 41 ms more
+  than a cold process, so a TU pays back after its second qualified reparse. A
+  header edit recreates exactly the TUs that read the header; that round
+  roughly matches cold.
+- `--verify-cold` is an oracle mode: every emit pays a warm and a cold parse.
 - A table smaller than the working set evicts every TU before its next
-  request (`evicted` 28 of 36 here), so every request pays the first-parse
-  price, about 1.65 times cold per round. The default of 64 TUs is sized for
-  a module-sized batch; a hotswap TU costs about 4 MB resident with its
-  preamble in memory.
+  request, so every request pays the first-parse price (about 1.65 times
+  cold). The default of 64 TUs is sized for a module-sized batch; a hotswap TU
+  costs about 4 MB resident with its preamble in memory.
 
 **Cold oracle.**
 
-- Cold bytes are unchanged by this work. Against a sensor built at the base
-  commit (`a0220f0735`), 15 TUs (the 12 hotswap TUs, `disk_space.c`,
-  `devloop_watch.c`, `native_dev_command.c`) gave byte-identical plain
-  manifests. Their facts manifests differed only in the FACTS producer
-  digest, which names the sensor binary.
-- `--verify-cold` over those 15 TUs, twice each, gave 30 of 30 equal.
-- Every warm manifest written in the three measured runs (qualified,
-  verified, and the thrashing table) was compared with a separate cold
-  process's manifest of the same round: 180 of 180 per run were
-  byte-identical, with 0 mismatches reported.
+- Warm manifests are byte-identical to a separate cold process's manifest of the
+  same input, including under `--verify-cold`. Plain manifests match a sensor
+  built without the warm session; facts manifests differ only in the FACTS
+  producer digest, which names the sensor binary.
 - The `semantic_sensor` group proves it live on a fixture tree through these
   edits: a body edit, a main-file macro edit, a header macro edit, a header
   edit that keeps size and mtime, a header layout edit, a header shadowing
@@ -966,15 +836,14 @@ records both as `none`. Readers accept all four extension names; a
 revision-3 manifest stays valid, and the consumer treats its unbound
 records as it treats any `none` record, which can only widen.
 
-Within revision 4 (this lane's first producer missed them) the text scan
-also records a probe it could not see before: one a `-D` value writes,
+Revision 4 also records probes the text scan once could not see: one a `-D` value writes,
 one in any `#define` body, a system header's too (each unbound, as
 the macro is evaluated where it expands); one after a pre-C23 `'`, which
 opens a character literal rather than a digit separator; one a trigraph
 `??/` splices in an ISO mode before C23; and one after a comment between
 a probe word and a header name. `tests/harness/src/semantic_sensor_probe.c`
-checks each record; before the fix each case recorded nothing. It also
-records a system header's own conditionals, which it skipped before (a
+checks each record. It also
+records a system header's own conditionals (a
 plain angled search there starts at the repo's `-I` dirs), and treats a
 probe word only tested by an `#ifdef`-like directive or a plain `defined`
 test as no lookup. The sensor
@@ -1037,12 +906,11 @@ stays at 0 of 50 and the spawn TU's LOOKUPS are unchanged.
 
 ### Darwin producer identity
 
-The Mac lane's commits 12892e0ca1 and cf39ed1765 give the sensor a producer
-digest on Mach-O: each selected dyld image's file and its read-only mapped
+The sensor records a producer digest on Mach-O: each selected dyld image's file and its read-only mapped
 segments, bound to the backing vnode and revalidated before and after the
 parse; the facts emitter reuses that pre-parse digest and refuses rather
 than write a zero one. The link probe that builds the sensor without
-`clang_getTypePrettyPrinted` (26d38abd92) is the Mac lane's too. On Linux
+`clang_getTypePrettyPrinted` is provided too. On Linux
 the records are byte-identical. The `__APPLE__` branches are verified on the
 Mac only.
 
@@ -1713,12 +1581,10 @@ none of them runs as part of building that commit's objects:
   all`) or on two (`$(MAKE) gen`, then `$(MAKE) build/a.o`): that rule is
   itself a hand-run goal. Reaching every goal of every line that runs make
   instead widens the real Makefile's `tools/verify` and fixture paths
-  (a `coverage` recipe runs `gcovr --filter 'tools/'`): on the tail-10
-  replay (7f85a654d1..3d7be82098) compiles go from 3712 to 11087 and
-  facts groups from 1702 to 4108, three of ten commits universal.
+  (a `coverage` recipe runs `gcovr --filter 'tools/'`) and roughly triples the compiles
+  and facts groups a replay selects.
   Following a sub-make's goals when a `.PHONY` goal's prerequisites reach
-  a file rule (`$(MAKE) gen all` with `all: build/a.o`) keeps that replay
-  at 3712, but it widens a `ci` rule's `$(MAKE) coverage lint` when `lint`
+  a file rule (`$(MAKE) gen all` with `all: build/a.o`) keeps the plan narrow, but it widens a `ci` rule's `$(MAKE) coverage lint` when `lint`
   has a file prerequisite, and 15 of the real tree's scripts that only
   such goals run. A recipe after the rule line's `;` is a recipe line,
   so `ci: ; $(MAKE) gen build/a.o` reaches `gen` as the tab-led form does;
@@ -1800,9 +1666,7 @@ fact unchanged.
 | (f) | comment in the public header | FILES only | `facts-changed-outside-seeds`: an included file's digest changed outside the changed functions, so it falls back although no fact changed (conservative) |
 | (i) | `fx_other`'s body gains `0 * __COUNTER__` | FUNCTIONS; the body expands `__COUNTER__` | `position-dependent` (rule 11) |
 
-The mutants below were run against `tools/dev/devloop_facts.c` on the
-candidate branch, before the head, seed and producer-source rules were
-added; each was rejected by the tests:
+The tests reject each of these mutants of `tools/dev/devloop_facts.c`:
 
 | mutant | result |
 |---|---|
@@ -1877,19 +1741,14 @@ obligation.
 | gline0 | the same at `-g0` | the four (`position`, compile only); `cx_e.c` unaffected | narrowed |
 | lineinl | a comment line above the header's `static inline cx_lineinl`, which expands `__LINE__` (`cx_b.c` calls it) | all five: every reader's own copy's span overlaps the moved region (`code-moved`; its token hash reads the same, since it hashes `__LINE__`'s spelling, not its expansion, so span is what catches this) | narrowed; seeds `cx_lineinl` and `cx_lineinl_b` |
 
-The seven from `counter` to `unity` are minimized reproducers of dependencies
-a differential comparison against cold clang objects found missed;
-`unity_move` and `unity2` come from the review of the `unity` fix, and
-`ctr_unity`, `unity_ab` and `unity_addr` from its re-review: without the
-includer seeding the first two miss `cx_e_sum` and `cx_e_top_a`, and
-`unity_addr` narrows with no obligation. `unity_trunc`, `unity_nobefore`
-and `unity_nofacts` come from the final review: each narrowed before the
-incompleteness rule above. `hinl0` is the fuzz family F12
-(`F12_header_static_inline_O0`): before the reader's own copy seeded, the
-consumer left `cx_inl` out of the seeds and every reader but `cx_b.c`
-unaffected, and `hinl_addr` narrowed with no obligation. `gline` is the
-replay of 45fb85e113, where two lines above a header struct moved its
-`DW_AT_decl_line` in a reader the consumer called unaffected. A narrowed
+Each variant is a minimized reproducer of a dependency that a differential
+comparison against cold clang objects found missed. Without the includer
+seeding, `unity_move` and `unity2` miss `cx_e_sum` and `cx_e_top_a`, and
+`unity_addr` narrows with no obligation. `unity_trunc`, `unity_nobefore` and
+`unity_nofacts` pin the incompleteness rule above. `hinl0` (fuzz family F12,
+`F12_header_static_inline_O0`) pins the reader's own copy seeding, and
+`gline` pins a `DW_AT_decl_line` move in a reader the consumer must not call
+unaffected. A narrowed
 plan must reach every changed file and every affected TU but a
 compile-only one, which the fold must not name (the walk may still reach it from a seed another TU adds), checked as sets through test hooks on the files the fold named and
 the files the walk reached. A count check would not do: with a fold that
@@ -1899,8 +1758,7 @@ fails them. Each is planned against its own before tree, a `p_` variant the
 fixture produces but does not judge.
 
 A `.c`-only change whose seed a header declares falls back when the depfile
-graph is absent and a reader's facts are withheld (the review finding
-behind b4f2b17ddd; the test failed before that change).
+graph is absent and a reader's facts are withheld.
 
 Each mutant drops one rule and must leave a table-affected TU unaffected,
 a required seed out or the whole catalog out of scope; the counts are over
@@ -1922,24 +1780,18 @@ hand, the counter variant misses all five TUs and the test fails.
 `__LINE__` through `FX_WHERE`, and the comment and whitespace edits above it
 must seed it.
 
-**A behavior mutant on real code.** An independent run on the canonical
-test runner (tree frozen at a0220f0735) flipped `memcmp(...) == 0` to
-`!= 0` in the static `has_suffix` of
-`engine/modules/hotswap/src/hotswap_loader.c`. It turned
-`test_hotswap_loader`, `test_hotswap_rollback` (`test_hotswap_rollback.c:365`)
-and `test_os_sandbox_hotswap_interaction` red. The narrowed plan the
-consumer gave for an edit of that static before the code-generation closure
-(dc5ad717fa; 22 groups down to 5, path groups only) left out the last two:
-a real false negative. With the closure (rule 10 and the consumer's seeds),
-every function the compile may re-emit with the static joins the seeds,
-among them `hotswap_dump_state_json`, whose address a manifest takes, and
-the plan falls back (`address-taken`, 22 groups of 22), which selects all
-three. The rule this motivates: a seed is every function whose code the
+**A behavior mutant on real code.** Flipping `memcmp(...) == 0` to `!= 0` in
+the static `has_suffix` of `engine/modules/hotswap/src/hotswap_loader.c`
+turns `test_hotswap_loader`, `test_hotswap_rollback` and
+`test_os_sandbox_hotswap_interaction` red. A seed is every function the
+compile may re-emit with the static, among them `hotswap_dump_state_json`,
+whose address a manifest takes, so the plan falls back (`address-taken`,
+22 groups of 22), which selects all three. The rule: a seed is every function whose code the
 compile may change, not the function whose source changed, and any such
 function whose address is taken refuses the narrowing. The fixture's
 `static` and `address` variants and the `NO_CODEGEN_CLOSURE` mutant hold it.
 
-The same run saw gcc `-O1` fold a benign `has_suffix` edit to an identical
+gcc `-O1` can fold a benign `has_suffix` edit to an identical
 object. Which TUs rebuild is decided by object bytes, not by source: a
 source-level seed can leave its object unchanged, and the witness below
 counts a TU as changed only when its object bytes differ.
@@ -2017,39 +1869,31 @@ known-RED names the fix it waits for and the exact false-negative lines it
 reports until then; it holds only when it fails with exactly those lines,
 and any other outcome (an ERROR, a different miss, or a PASS, which means
 the mark is stale) fails the group.
-F7 (a `cleanup()` handler inlined into a function that is not seeded),
-F7_cleanup_same_name (the same miss while another file's same-name static
-also changes, which a seed matched by bare name would have hidden) and
-both F8 shapes (a `.c` that `#include`s another `.c`: an edit to the
-included file does not seed the includer's functions) were known-RED at
-64370952d5; the consumer's cleanup-handler and `.c`-includes-`.c` fixes
-now cover all four, and they run as ordinary fixed reproducers.
-F9 was known-RED until the consumer sensed each TU with its own object's
-compiler and flags (ff12233071): the IDENTITY record now names the object
-compiler's realpath and byte SHA3-256, and it now must pass. F11 forces
-the sensor to a different optimizer level than the compile (OPT
-`COMPILE/SENSOR`) regardless of what the real Makefile rule passes, so
-ff12233071's fix to that rule's own drift (which F9 exercises) leaves F11
-red: measured, it still misses exactly `t0_q` and `t0_eq`. F12 was
-known-RED until e1497f368f seeded a TU's own copy of another file's
-internal-linkage function (such as a header `static inline`) like a
-main-file function and made it a root of its TU; it now must pass. F10
-(all three spellings) was known-RED until 3eb2f44f3a read the digits
-after `-O` and `--optimize` numerically instead of matching a prefix,
-and widened on an unrecognized spelling instead of falling to `-O0` or
-no optimizer; it now must pass.
+These fixed reproducers must pass: F7 (a `cleanup()` handler inlined into a
+function that is not seeded) and F7_cleanup_same_name (the same miss while
+another file's same-name static also changes, which a seed matched by bare name
+would hide); both F8 shapes (a `.c` that `#include`s another `.c`: an edit to
+the included file seeds the includer's functions); F9 (the IDENTITY record
+names the object compiler's realpath and byte SHA3-256, and the consumer
+senses each TU with its own object's compiler and flags); F12 (a TU's own
+copy of another file's internal-linkage function, such as a header
+`static inline`, seeds like a main-file function and roots its TU); and F10
+(all three spellings: the digits after `-O` and `--optimize` are read
+numerically, and an unrecognized spelling widens instead of falling to `-O0`
+or no optimizer). F11 forces the sensor to a different optimizer level than
+the compile (OPT `COMPILE/SENSOR`) regardless of what the Makefile rule
+passes, so it stays known-RED: it misses exactly `t0_q` and `t0_eq`.
 F13 (a file only `__has_embed` probes is deleted), F14 (a header probed
 through a macro operand or `__has_include_next` is deleted) and F15 (the
-same header created, with gcc depfiles, which omit the probe) were
-known-RED until the sensor recorded every probe and the consumer read
-every probe it could not bound as reachable: the text scan records a
-lookup for each probe, replays a string-literal macro operand and a
+same header created, with gcc depfiles, which omit the probe) hold because
+the sensor records every probe and the consumer reads every probe it cannot
+bound as reachable: the text scan records a lookup for each probe, replays a string-literal macro operand and a
 `__has_include_next` into stat-confirmed slots (facts revision 4), and
 leaves the rest `0 none`; the consumer makes a TU with a `none` lookup a
 member, `lookup-unbound`, whenever a path is created or deleted (any
 changed path, for `#embed` and `__has_embed`). A deleted path's plan
 still falls back on the include graph, which refuses it; the facts
-universe the case judges holds t0 by these rules alone. All five now
+universe the case judges holds t0 by these rules alone. All five
 must pass with over-selection 0. The mutant `NO_UNBOUND` makes a `none`
 lookup reach no changed path: `F13_has_embed_deleted_mutant` and
 `pass_probe_dash_d_gcc_deps_mutant` must then report exactly `t0.c`
@@ -2074,8 +1918,7 @@ pin is 1), after a `-std=c17` character literal `'a/*'` that a C23 lexer
 reads as a digit separator and a comment (`pass_probe_c17_apostrophe_gcc_deps`),
 through a word a `-std=c17` trigraph `??/` splices
 (`pass_probe_trigraph_gcc_deps`), and after a probe whose header name,
-past a comment, holds `/*` (`pass_probe_comment_hdr_gcc_deps`). The first
-three missed t0 under the first revision-4 sensor (see Facts revision 4); all
+past a comment, holds `/*` (`pass_probe_comment_hdr_gcc_deps`). All
 four pin over-selection 0 except the `-D` case.
 
 The one known-RED reproducer is a toolchain case (no text edit the
@@ -2083,7 +1926,7 @@ consumer misreads):
 
 | reproducer | toolchain | missed | root cause |
 |---|---|---|---|
-| F11_hot_icf | gcc `-O2` objects, sensor told `-Og` | `t0_q` (an alias of `t0_p` after ipa-icf), `t0_eq` | a sensor deliberately handed other optimizer flags than the compile (`OPT` `COMPILE/SENSOR`) models the wrong codegen no matter what the real Makefile rule passes; `ff12233071` fixed the real rule's own drift (`F9_cc_drift`), not a sensor forced away from it |
+| F11_hot_icf | gcc `-O2` objects, sensor told `-Og` | `t0_q` (an alias of `t0_p` after ipa-icf), `t0_eq` | a sensor deliberately handed other optimizer flags than the compile (`OPT` `COMPILE/SENSOR`) models the wrong codegen no matter what the real Makefile rule passes; the real rule's own drift is covered by `F9_cc_drift` |
 
 The passing shapes beside it hold the model where the spelling is
 canonical: gcc `-O1` seeds the specialized static, and gcc `-O2` and
@@ -2098,22 +1941,7 @@ flipping `-O0` to `-O2` and back between the sides while the
 `-DLVL=-O0` decoy stays last and unchanged (`OPT` `BEFORE>AFTER`). A
 reader that took the last `-O` spelling for the level would model the
 `-O2` compiles as `-O0` and miss `t0_s.constprop.0`, the miss
-F10_opt_spelling_O02 exhibited before 3eb2f44f3a; each must pass.
-
-Measured at a88daa4ffd (2026-09-28), 2,250 generated cases over the new
-dimensions, each run also repeating the fixed set:
-
-| range | cases | generated FAIL | family |
-|---|---|---|---|
-| gcc `-O1` (no-ctr-line) | 500 | 0 | none |
-| gcc `-Og` | 400 | 0 | none |
-| gcc `-O2` objects, sensor `-Og` | 300 | 0 | none drawn (F11 is hand-made) |
-| clang `-O0` | 250 | 18 | F12 |
-| gcc `-O0` | 250 | 25 | F12 |
-| gcc `-O1` (gcc-deps) | 200 | 0 | none |
-| gcc `-O1,-g` (all) | 150 | 0 | none |
-| clang to gcc drift | 100 | 80 | F9 |
-| clang `-O3` | 100 | 0 | none (falls back) |
+F10_opt_spelling_O02 pins; each must pass.
 
 Four generator kinds edit only data: `data_string` (a string literal in
 a body, of the same length or longer, so a later literal moves),
@@ -2174,132 +2002,28 @@ run of 94
 cases (43 fixed, 51 seeds) takes about 11 s and yields 73 narrowed verdicts and 52 seeded
 changed functions.
 
-### Measured: the consumer on engine/modules/hotswap (2026-09-27)
+### Measured results
 
-A scratch witness (not shipped) extracted the 66 TUs of
-`engine/modules/hotswap` and their headers with `git archive`, compiled each
-with the real dev flags (gcc, `-Og`, no `-ffunction-sections`) and sensed
-it, applied one edit per seed, compiled and sensed again, and ran
-`dev.change.plan` with `"facts"` through every `facts_offset` page. It
-compares three things per seed: (1) compile: every TU whose object bytes
-changed must be predicted affected (MISSED); (2) new bytes: every function
-whose machine code changed, after relocation addends and NOP alignment
-padding are set aside, must be a seed, sit in a TU the header path
-broadened, or the plan must have fallen back (NOT_COVERED); (3) external
-behavior is not measured here. The conservative set is every TU whose
-depfile names a changed file, or every TU when a changed file is a build
-input. Branch head c478e77558 for the header seeds and b4f2b17ddd for the
-`.c` seeds; host load average 14 to 27 on 32 cores; each seed recompiled
-cold.
+Two studies bound what the consumer buys. Both compare against the
+conservative set (every TU whose depfile names a changed file, or every TU when
+a build input changed) and require zero missed dependencies and zero uncovered
+new-byte functions; both hold today.
 
-| seed | edit | conservative / facts TUs | objects changed | MISSED | new-byte functions (not covered) | obligations plain / facts | verdict |
-|---|---|---|---|---|---|---|---|
-| a_static_body | a static's body in `hotswap_loader.c` | 1 / 1 | 1 | 0 | 3 (0) | 22 / 22 | `address-taken` |
-| b_extern_body | an external body in `hotswap_service.c` | 1 / 1 | 1 | 0 | 1 (0) | 49 / 49 | `unknown-effect` |
-| c_typedef | a typedef parameter gains `restrict` | 1 / 1 | 0 | 0 | 0 | 14 / 14 | `address-taken` |
-| d_macro_used | `ZCL_HOTSWAP_SERVICE_MAX` 16 to 17 | 50 / 1 | 1 | 0 | 10 (0) | 63 / 49 | narrowed |
-| d_macro_if | a no-op term in a header `#if` | 9 / 9 | 0 | 0 | 0 | 34 / 75 | narrowed |
-| e_shadow | a copy of a header on a search dir ahead of it | 1 / 1 | 0 | 0 | 0 | 14 / 14 | `include-graph-truncated` |
-| f_signature | a return type, header and definer | 50 / 28 | 13 | 0 | 29 (0) | 63 / 63 | `address-taken` |
-| g_address_taken | a static's address taken in a new file-scope constant | 1 / 1 | 1 | 0 | 2 (0) | 22 / 22 | `declaration-changed` |
-| h_layout | a struct gains a field | 50 / 28 | 24 | 0 | 0 | 63 / 63 | `address-taken` |
-| i_same_name | a static's body, another TU has a same-name static | 1 / 1 | 1 | 0 | 5 (0) | 22 / 22 | `address-taken` |
-| j_flag_drift | a header comment and a `-D` every compile gains | 1 / 66 | 0 | 0 | 0 | 14 / whole catalog | `identity-drift` |
-| k_macro_64_65 | `ZCL_HOTSWAP_GEN_MAX_REPLACED` 64 to 65 | 9 / 1 | 1 | 0 | 7 (0) | 34 / 34 | `address-taken` |
-| l_new_header | a new header nothing includes | 0 / 0 | 0 | 0 | 0 | 5 / 5 | narrowed |
-| m_shadow_src | a changed copy of `hotswap.h` beside the sources | 4 / 4 | 3 | 0 | 7 (0) | 14 / 14 | `include-graph-truncated` |
-| n_indirect_callee | a string in a function called through a pointer | 1 / 1 | 1 | 0 | 0 | 22 / 22 | `address-taken` |
-| o_tool_drift | the Makefile, and every compile gains `-fstack-protector-all` | 66 / 66 | 65 | 0 | 1,022 (0) | 1 / whole catalog | `identity-drift` |
-| p_line_shift | a comment line above a logging function (712e05de35) | 1 / 1 | 1 | 0 | 1 (0) | 14 / 14 | `address-taken` (rule 11 seeds the moved logger, whose address is taken) |
-
-Every seed passes: no missed dependency and no uncovered new-byte function.
-The two shadow seeds (`e_shadow`, `m_shadow_src`) were measured before the
-include graph kept a quoted include no depfile lists as an edge
-(be2e35e22b); they were not rerun after it.
-Under the rules before rule 11 (inferred from them, not rerun),
-p_line_shift would have narrowed with no seed, leaving its moved logger
-an uncovered new-byte function.
-
-Compile executions avoided against the conservative set: 49 (d_macro_used),
-22 (f_signature), 22 (h_layout), 8 (k_macro_64_65); 101 over the 16 seeds,
-while j_flag_drift predicts 65 more than the depfile set (the flag reaches
-every TU; the depfile set is unsound there, and so is the plain plan for a
-Makefile edit, which selects one group). Test-group executions avoided
-against the plain plan: 14 (d_macro_used); d_macro_if runs 41 more, and the
-two drift seeds run the whole catalog.
-
-d_macro_if: the plain plan for a header is the header's own path groups and
-its reverse-include closure; it does not include the obligations of the
-functions in the TUs that read it. A macro tested in `#if` can change any
-code in a reader, so the consumer broadens the nine readers and adds each
-one's file-seeded plan. On the repository's own index the plain plan of the
-header selects 40 groups, of its nine readers 123, of both 123: the plain
-header plan is a strict subset of what a code change in those readers
-needs, so it is unsound for a header edit that changes their code, and the
-facts plan (the header's plan plus the readers') is not wider than that
-conservative union. Here the edit was a no-op and no object changed, so the
-41 groups are the cost of not evaluating the `#if`.
-
-Most body edits now fall back (`address-taken`): the hotswap module
-registers its handlers by address, and the code-generation closure reaches
-them. The precise reductions are at the compile level (d, f, h, k) and in
-d_macro_used's obligations.
-
-### Measured narrowing (candidate branch, 2026-09-25 and 2026-09-26)
-
-These numbers were taken with manifests from the in-compile plugin described
-above, which were byte-identical to the sensor's except for the producer
-digest, so the verdicts and plan sizes carry over to the sensor. They were
-taken before the head, seed, producer-source, code-generation and position
-rules existed; those rules can only turn a narrowing into a fallback or add
-seeds. The compile-overhead figures from that run measured the plugin, not
-the sensor, and are not repeated here: the sensor's cost is its second
-parse, given above.
-
-**engine/modules/hotswap.** `z23-dev dev change plan` ran on the same edit
-without and with `"facts"`; `code impact` gives the file-seeded count. The
-copy's code index had no include graph (`no-include-graph`).
-
-| edit | files given | plain: groups selected / execution groups | facts verdict | facts: reached files / groups selected / execution groups | `code impact` files |
-|---|---|---|---|---|---|
-| comment | `hotswap_loader.c` | 25 / 54 | narrowed, no seeds | 1 / 5 / 18 | 119 |
-| body | `hotswap_loader.c` | 25 / 54 | narrowed, seed `hotswap_generation_count` | 3 / 5 / 18 | 119 |
-| layout | `hotswap.h` | 5 / 18 | `not-c-source` | fallback, 5 / 18 | 1 |
-| layout | the 4 including TUs | 82 / 168 | `layout-changed` | fallback, 82 / 168 | n/a |
-| macro | `hotswap.h` | 5 / 18 | `not-c-source` | fallback, 5 / 18 | 1 |
-| macro | the 4 including TUs | 82 / 168 | `macro-changed` | fallback, 82 / 168 | n/a |
-| flag | all 12 TUs | 140 / 265 | `identity-changed` | fallback, 140 / 265 | 5 to 120 per TU |
-
-"Groups selected" counts path groups plus closure groups. Function-body and
-comment edits narrow the feedback plan from 25 to 5 selected groups and from
-54 to 18 execution groups; every other edit falls back to the plain plan.
-The base manifests of the 12 TUs held 894 symbols, 1,794 references, 361
-UNKNOWN records (293 external calls, 60 atomics, 8 indirect calls), 344
-namespace probes and no truncation.
-
-**Real commits.** Each commit's parent was extracted with `git archive`, and
-the commit's changed production `.c` files got a manifest before and after.
-Set A is 12 recent commits picked before any result was seen; set B is 7
-commits picked by a diff filter for hunks with no top-level declaration line,
-which favours body edits.
-
-| set | commits | narrowed | fallbacks |
-|---|---|---|---|
-| A | 12 | 2 | `declaration-changed` 7, `include-resolution-changed` 1, `file-scope-changed` 1, `not-c-source` 1 |
-| B | 7 | 5 | `declaration-changed` 1, `file-scope-changed` 1 |
-
-Most fallbacks are real declaration changes in the edited file, such as a
-new static helper or a changed static signature. These are not position
-artifacts: DECLS carry no positions, and the whitespace fixture edit
-narrows. Across the 7 narrowed commits, 198 selected groups became 59 and 483
-execution groups became 192; across all 19, 1,485 execution groups became
-1,194. Each seed was the function the diff edits, and no narrowing was false
-on the falsification set. Every narrowed commit also changed a test harness
-`.c`, a script, the Makefile or a doc, so planned as a whole commit each falls
-back (`not-c-source`, or `no-manifest` for a harness TU without manifests):
-the saving applies to the edit loop, where one production `.c` is planned at
-a time. A narrowed plan took 0.12 to 0.17 s against 0.09 to 0.11 s plain;
-manifests ran from 59,253 to 841,893 bytes per TU.
+- **Consumer on `engine/modules/hotswap` (66 TUs).** Every seed
+  passes. Compile executions avoided against the conservative set: 101 over
+  all seeds, from macro edits (`d_macro_used`, `k_macro`) and signature and
+  layout edits that reach fewer readers than the depfile set. A flag or
+  toolchain drift seed (`identity-drift`) predicts every TU, wider than the
+  depfile set, which is unsound there. A no-op `#if` term in a header runs more
+  test groups than the plain plan, because the consumer does not evaluate the
+  `#if`. Most function-body edits fall back (`address-taken`) because the
+  module registers its handlers by address.
+- **Real commits.** Of 19 recent commits, 7 narrowed; the rest fell back on
+  real declaration or file-scope changes in the edited file. Across the
+  narrowed ones, execution groups fell from 483 to 192. No narrowing was
+  false. Whole commits also touch harness files, scripts or docs, so the
+  saving applies to the edit loop, where one production `.c` is planned at a
+  time.
 
 **A narrowed plan is not proof.** Proof still runs the full closure, so the
 saving is feedback work only.

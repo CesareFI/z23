@@ -36,7 +36,7 @@ linker-plugin flags before it compiles anything.
 
 The module path loads ONE swappable translation unit per `.so`, carrying EVERY
 command leaf that file owns, and publishes them in ONE all-or-nothing registry
-batch. Editing a 761-line controller and swapping a single leaf used to leave
+batch. Editing a 761-line controller and swapping a single leaf would leave
 every sibling leaf in that file stale in the running process; a module now
 re-points the whole file at once. After command dispatch drains every reference
 to the superseded generation, the loader may unmap its module.
@@ -459,8 +459,8 @@ five-second restart target and is not used by the watcher.
 
 `tools/dev/hotswap-resident-bench.sh` rewrites a retained fixed-width module
 marker with a fresh nonce twenty times, requiring twenty uncached object files
-and distinct artifact hashes, then restores the source. On this host the
-2026-08-01 warm run recorded 227.280 ms p50 and 232.141 ms p95 edit-to-visible
+and distinct artifact hashes, then restores the source. On the reference host a
+warm run recorded 227.280 ms p50 and 232.141 ms p95 edit-to-visible
 against a 250 ms gate. Typical work was 153–166 ms compile, 13–16 ms link,
 1–2 ms resident activation, plus
 the debounce and receipt observation. The machine-readable result is

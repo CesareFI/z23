@@ -37,28 +37,30 @@ design-of-record for the gates and the deletion order).
 ## Ordered steps (each independently buildable + gated build+lint+test_parallel green)
 
 Steps 1–4 (frontier reader, Invariant B, Invariant A, restore tip-selection) are
-**landed**. Step 6 (derive `coins_best_block` from `coins_applied_height`,
-killing the two-name drift) is **landed**
+**done**. Step 6 (derive `coins_best_block` from `coins_applied_height`,
+killing the two-name drift) is **done**
 (`reducer_frontier_derive_coins_best` + `coins_kv_is_proven_authority`).
 
 5. **Re-point SHA3 / fast-sync serve readers to coins_kv** (IN PROGRESS;
-   parity-gated, `utxos` still present). The first authority primitive landed on
-   2026-08-29: an independent read-only connection pins one proven `coins_kv`
-   WAL generation, exposes its applied frontier and authority generation, and
-   strictly validates the canonical `(txid,vout)` traversal. A concurrent
-   writer fixture proves the scan cannot mix generations. Network chunk serving
-   now refuses a live `node.db` fallback after an immutable snapshot cache miss.
-   A sequential adapter now emits deterministic 500-entry wire chunks from that
-   reader while deriving the full-set SHA3 and each chunk hash; boundary tests
-   cover 499/500/501 rows and refuse oversize scripts without truncation. An
-   atomic artifact writer now streams that adapter into the existing bounded
-   snapshot chunk encoding, returns the pinned frontier/generation plus exact
-   root, count, size, chunk hashes, and Merkle root, and publishes only after a
-   complete file flush and descriptor-bound replacement. Export failure leaves
-   an existing artifact unchanged and publishes no partial file. Remaining:
+   parity-gated, `utxos` still present). Built: an independent read-only
+   connection pins one proven `coins_kv` WAL generation, exposes its applied
+   frontier and authority generation, and strictly validates the canonical
+   `(txid,vout)` traversal (a concurrent writer fixture proves the scan cannot
+   mix generations). Network chunk serving refuses a live `node.db` fallback
+   after an immutable snapshot cache miss. A sequential adapter emits
+   deterministic 500-entry wire chunks while deriving the full-set SHA3 and each
+   chunk hash (boundary tests at 499/500/501 rows; oversize scripts refused
+   without truncation), and an atomic artifact writer streams it into the
+   existing bounded snapshot chunk encoding, returns the pinned
+   frontier/generation plus exact root, count, size, chunk hashes and Merkle
+   root, and publishes only after a complete file flush and descriptor-bound
+   replacement (a failed export leaves an existing artifact unchanged). Proven by
+   the `fast_sync_coins_artifact` and `fast_sync_coins_export` groups. Remaining:
    bind the artifact to the exact `coins_applied_height - 1` active hash, publish
    its manifest and disk-backed serving capability from boot, and route receipt
-   through the verified staging installer before enabling activation.
+   through the verified staging installer before enabling activation; boot
+   publication, network serving, chain-hash binding and client activation are
+   unproved.
 7. **Delete the dead heal ladder** (grep-proven zero callers): chain_restore_integrity,
    chain_restore rebuild ladder, stage_repair_reducer_frontier_{tipfin,refill,purge} +
    tear branch, reducer_frontier_reconcile_light, utxo_recovery_torn_anchor (M2),
@@ -87,24 +89,14 @@ forward. (3) `coins_kv_serve_utxo_root` over `coins` == prior commitment over `u
 byte-for-byte, and == zclassicd `gettxoutsetinfo` at the same finalized height. Deploy is a
 separate owner-gated action only after the copy reaches tip with byte-identical parity.
 
-Checkpoint measured 2026-08-29T13:58:35-04:00 /
-2026-08-29T17:58:35Z: `fast_sync_coins_artifact` and
-`fast_sync_coins_export` each passed cold with one group run, zero failures,
-and zero skips. The artifact acceptance decoded the published 500+1 chunks,
-independently recomputed the canonical UTXO commitment and per-chunk hashes,
-and matched the returned count and Merkle root. A 521-byte script refused the
-export while preserving prior destination bytes and leaving no stage file.
-This proves atomic canonical artifact construction only; boot publication,
-network serving, chain-hash binding, and client activation remain unproved.
-
 ## Open questions to close during implementation
 
 - Enumerate all `update_header_tip=true` tip-commit callers; assert each supplies a
   `header_frontier_hint` or a `rollback_auth` (no above-frontier tip slips the gate).
 - Prove `block_index_loader` warm-boot tip == frontier on a clean datadir (no over-reject).
 - `data_integrity_compute` shadow-seed: confirm non-consensus or repoint. The
-  `utxo_projection` half of this question is CLOSED, not open — Program H1
-  (commit 9b5add018) deleted the event-log-fed projection and its view, and
+  `utxo_projection` half of this question is CLOSED, not open — the
+  event-log-fed projection was deleted and its view, and
   `check-no-utxo-projection` now enforces that the copy stays dead.
   <!-- claim: file-absent engine/modules/storage/src/utxo_projection.c # deleted by Program H1, 9b5add018 -->
   <!-- claim: gate-passes check-no-utxo-projection # the copy must stay dead -->

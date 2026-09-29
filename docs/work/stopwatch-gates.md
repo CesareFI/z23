@@ -94,12 +94,9 @@ forever once the collector stops running.
 
 A harness exits `2` (SKIP) for two completely different reasons: *"nothing
 was configured, so there was nothing to prove"* and *"the fixture I need has
-been dead for days"*. Both used to land in the ledger as the identical string
-`"verdict":"skip"`, and nothing looked at them. That is how the C3 gate
-recorded a skip on **every** scheduled run from 2026-07-28 06:02 onward with
-no operator-visible signal: the judge grades a skip as `FAIL`, but nothing
-ran the judge, so repeated skips remained operator-invisible. Current verdicts
-must be read from the judge, not from a removed aggregate score.
+been dead for days"*. The ledger records both as `"verdict":"skip"`, so repeated skips are graded
+`FAIL` by the judge but stay operator-invisible unless the judge runs. Read
+verdicts from the judge.
 
 ### The class table
 
@@ -186,13 +183,11 @@ sees exactly the class rows in the `.def`. The C half is the
 ## What a C3 run records, and what it admits it cannot
 
 Every C3 run leaves the SAME evidence set whatever its verdict — pass, seam,
-stalled-named, readback-failed, skip. Capture used to be gated behind
-`verdict != pass`, so a successful run left three files and threw away the
-per-stage cost split that is the whole point of measuring; the one real PASS
-artifact on disk (`build/c3-stopwatch/20260728T000207Z-2102851/`) is exactly
+stalled-named, readback-failed, skip. Capture is not gated on the verdict: a successful run keeps the
+per-stage cost split that is the whole point of measuring, exactly
 that shape. A baseline that only exists on failure is not a baseline.
 
-Each artifact dir now carries, on every verdict:
+Each artifact dir carries, on every verdict:
 
 - `samples.tsv` — the per-tick climb trace (t, unix, boot ordinal, H*,
   provable sample, network_tip, tip_ok, frontier_busy, blocker count/ids, and
@@ -228,16 +223,10 @@ Each artifact dir now carries, on every verdict:
   how a baseline acquires a number nobody took.
 
   A reason string in this array is held to the same bar as a value. The
-  `phases[].network_bytes` row previously explained itself with "the download
-  manager's `total_bytes_received` reaches no dumper" — which was **false**;
-  `sync_monitor_dump_state_json` had exposed it all along. The error came from
-  checking only the three `net-*` dumpers this harness happened to capture
-  (`connman`, `peer_lifecycle`, `network` — none of which carry bytes) and
-  generalising from those three to every dumper. The row still stands, because
-  total wire bytes really are unsourced, but it is now scoped to that claim and
-  points at the measured block-body subset as its substitute. A wrong reason is
-  the same defect class as a fabricated value, so the harness `--selftest` pins
-  both the corrected scoping and the absence of the old claim.
+  `phases[].network_bytes` row states that total wire bytes are unsourced (no
+  captured dumper carries them) and points at the measured block-body subset as
+  its substitute. A wrong reason is the same defect class as a fabricated
+  value, so the harness `--selftest` pins the scoping.
 - the full diagnostic bundle: `frontier.json`, `reducer_drive.json`,
   `reducer_stage_profile.json`, `boot_timings.json`, `stage-*.json`,
   `blocker.json`, `net-*.json`, `ops.log.tail.txt`, `node.log`.
@@ -260,139 +249,60 @@ must stay green. It also runs as a pre-flight inside
 `mvp-coldstart-to-tip-stopwatch`, so the proof lane cannot quietly regain the
 asymmetry between runs.
 
-## Measured 2026-08-20 — the C3 lane needs two services, and where it stops
-
-Three runs of `c3_stopwatch_run_and_record.sh` against binary `e8eaff43b`,
-each a genuinely wiped datadir. They are recorded here because the three
-differ only in which host served which half, and that alone moved the
-result from H\* = 0 to H\* = 3,193,024. <!-- stale-ok: dated 2026-08-20 stopwatch measurement on a throwaway /tmp datadir, not a live-node tip claim -->
+## Serving requirements for a wiped-node C3 run
 
 A wiped node needs BOTH of these before the instant-on checkpoint install is
-even eligible, and they are separate services:
+eligible, and they are separate services:
 
-- a **file service** that advertises a `ROM_ARTIFACT_HEADER_SEED` artifact,
-  so the node's validated header chain reaches the checkpoint height without
+- a **file service** that advertises a `ROM_ARTIFACT_HEADER_SEED` artifact, so
+  the node's validated header chain reaches the checkpoint height without
   crawling there from genesis;
-- a **P2P peer** that completes a handshake, so `network_tip` exists at all
-  and bodies can be fetched.
+- a **P2P peer** that completes a handshake, so `network_tip` exists and
+  bodies can be fetched.
 
-| run | `ZCL_PEER` | `ZCL_CS_FILE_PEER` | verdict | wall | final H\* | network tip |
-|-----|-----------|--------------------|---------|------|-----------|-------------|
-| 1 | `192.0.2.10:39070` | `192.0.2.10:39072` | STALLED-NAMED | 603 s | 0 | never observed (`-1`) |
-| 2 | `127.0.0.1:8033` | `127.0.0.1:18034` | SEAM | 603 s | 192 | 3,222,327 |
-| 3 | `127.0.0.1:8033` | `192.0.2.10:39072` | SEAM | 619 s | 3,193,024 | 3,222,352 |
+`ZCL_PEER` names the P2P peer and `ZCL_CS_FILE_PEER` the file service; they may
+be different hosts. A file host that never speaks P2P ends `STALLED-NAMED` with
+`network_tip` never observed (`dumpstate peer_lifecycle` shows
+`version_received=0`). A P2P host that advertises no header seed defers the
+install with `validated header chain has not yet reached checkpoint height`.
+When both are served, the fold runs at hundreds of blocks per second and the
+run ends `SEAM` at the tip gap.
 
-Run 1 — the fixture host serves files but not P2P. `dumpstate peer_lifecycle`
-recorded `attempted=1 connected=1 version_sent=1 version_received=0`: the TCP
-connection was accepted and the remote never spoke, so no handshake completed
-and `network_tip` stayed `-1` for the whole run. The header seed WAS advertised
-and imported (3,206,819 entries, frontier h=3,206,674), the 513 MB bundle
-validated byte-for-byte against the compiled ROM keystone, and the install then
-refused at chain-binding predicate -3 because the full-Equihash pass record at
-h=3,056,758 needs a header solution only a peer can backfill. The fold fell back
-to genesis and `body_persist` held at height 0.
+Blockers `dumpstate blocker` names when the fold stops short of the tip:
+`tip_finalize.rewind_churn` (the frontier refuses a repeated rewind ask so the
+ladder escalates instead of looping), `recovery_coordinator.no_applicable_rung`,
+`sticky_escalator.resnapshot_no_base` and
+`sticky_escalator.refold_no_anchor_artifact` (a person decides),
+`sync_rate_below_floor`, and `chain.tip_behind_header_chain`. The condition
+`reducer_frontier_reconcile_light` owns the reconcile that must clear it; that
+is open.
 
-Run 2 — the live node serves P2P but advertises no header seed: it runs a binary
-that predates `28e1aa1cb`, whose readdir cap hid `block_index.bin`. Discovery
-logged `header-seed manifest not advertised (header chain via P2P)`; the install
-deferred with `validated header chain has not yet reached checkpoint height
-3056758 (header frontier h=0)`. In 603 s `header_admit` reached 194,442, so the
-checkpoint was about 2.6 h of header crawl away. H\* reached 192.
+`header_repair_no_source` names the cause that actually held: an unreachable
+oracle, or a target off the active chain (`cure_request_peer_refetch()` returns
+`-1`, which is not an absence of peers). Pinned by
+`tests/harness/src/test_stale_validate_headers_repair_condition.c`.
 
-Run 3 — P2P from the live node, header seed and bundle from the fixture host.
-This is the lane that works, and the one that names the bottleneck:
+### The producer session prerequisite
 
-- t = 125 s: H\* = 3,056,949 — bundle and header seed installed. <!-- stale-ok: dated 2026-08-20 stopwatch measurement on a throwaway /tmp datadir, not a live-node tip claim -->
-- t = 125 s → 374 s: H\* climbs 3,056,949 → 3,193,024. That is 136,075 blocks
-  in 249 s; `utxo_apply` reported 564.6–586.9 blocks/s over the same window.
-- t = 374 s → 619 s: **H\* does not move once, for 245 s.**
-
-At the rate it had just sustained, the remaining 29,328 blocks are about 54
-seconds of work. The run does not end short because the fold is slow. It ends
-short because the fold stops.
-
-### The named bottleneck: a rewind ask the frontier is right to refuse
-
-At the stall `dumpstate blocker` carries, in its own words:
-
-- `tip_finalize.rewind_churn` — "tip_finalize cursor asked to rewind
-  3193025->3193024 again with hstar pinned at 3193024 since the first rewind <!-- stale-ok: verbatim quote of the blocker text that one 2026-08-20 run emitted -->
-  (3 consecutive asks) - projection-hole/reconcile livelock; refusing further
-  rewinds so the ladder escalates instead of looping forever"
-- `recovery_coordinator.no_applicable_rung` — "critical inconsistency unresolved
-  but no cheap self-healing condition owns it"
-- `sticky_escalator.resnapshot_no_base` and
-  `sticky_escalator.refold_no_anchor_artifact` — both "A PERSON decides"
-- `sync_rate_below_floor` — "fold rate 0.000 bps below floor 1.000 bps ...
-  while peers connected and pending work exists"
-- `chain.tip_behind_header_chain` — "body-missing-at-successor: tip=3193024
-  best_valid_header=3222364 gap=29340"
-
-and the condition engine reports `operator_needed
-name=reducer_frontier_reconcile_light attempts=5 active_for=191s`. So the
-sequence is: something reconciles the frontier row at 3,193,025 back to
-3,193,024, `tip_finalize` refuses the fourth such ask (correctly — that guard is
-what stops an infinite loop), the ladder escalates, and no rung owns the hole.
-Nothing here is a rate problem and nothing here is fixed by waiting longer.
-
-`reducer_frontier_reconcile_light` is the next owner. It is a separate change,
-and it is not made here.
-
-### One thing that was wrong, and is fixed
-
-While the fold sat pinned, `header_repair_no_source` said "zclassicd oracle
-unreachable and no connected peer can serve a P2P getdata re-fetch" — with
-`peers=-1` in the log line — while the node was connected to `127.0.0.1:8033`
-and accepting headers from it. `cure_request_peer_refetch()` returns `-1` for
-"the target is not on the active chain, so I never asked the network"; the
-caller tested `peers <= 0` and printed that as an absence of peers. The two are
-now kept apart and the blocker names whichever actually held, carrying the real
-connected-peer count. A refusal that names the wrong cause sends the recovery
-ladder and the operator looking in the wrong place.
-`tests/harness/src/test_stale_validate_headers_repair_condition.c` holds the
-regression: peers present, target off the active chain, and the blocker must not
-claim there is no peer. Red before the change, green after.
-
-### The external prerequisite, in the node's own words
-
-The mission recipe for C3 starts with "mint a fresh near-tip bundle from a
-producer session whose source identity matches the candidate". Asked directly,
-on 2026-08-20, the canonical node says it cannot open that session at all:
+The C3 recipe starts by minting a fresh near-tip bundle from a producer session
+whose source identity matches the candidate. Ask the canonical node directly:
 
 ```bash
 zclassic23 -rpcport=18232 -datadir=~/.zclassic-c23 dumpstate bundle_exporter
 ```
-```json
-{"session_open":false,"qualified":false,
- "degradation_reason":"producer receipt begin: datadir session does not exactly
-   match current running binary / source claim / source epoch / profile",
- "exports_ok":0,"exports_failed":0,
- "last_export_height":3056758,"generations":[3056758]}
-```
 
-That is the standing exporter refusing by name, not a missing feature. The
-running process was started on 2026-08-15 07:48 from a binary built at 07:47,
-so its source claim cannot equal any candidate committed since; the session
-`engine/composition/src/consensus_state_producer_receipt.c` demands is exact, and it is
-right to be. The one generation it has ever produced is the bundle it already
-serves, and `dumpstate rom_seed` confirms that is the only artifact it
-advertises — a 513,867,776-byte `consensus_bundle`, and no
-`ROM_ARTIFACT_HEADER_SEED`, which is why the runs above had to take their
-header seed from a second host.
-
-So a cold client fetching from this node inherits a bundle whose height is
-about 166,000 blocks behind where the node itself is, and must fold the
-difference — which is the path that livelocks above.
-
-That reading is from 2026-08-20, and the "restart onto a matching binary" part
-of it no longer holds. The exporter now retries the session on its own tick
-with bounded backoff, and when the datadir's stamped source epoch is already
-this build's it retires the foreign session row and re-derives one from the
-running binary, so an upgraded node resumes minting without an operator. What
-still needs a re-fold (or an explicit `producer session retire`) is a genuine
-source-epoch change: those fold rows carry the previous epoch and no bundle can
-be proven from them. `dumpstate bundle_exporter` reports the streak directly —
-`consecutive_failures`, `degraded_after_failures`, and `recover_backoff_secs`.
+`session_open:false` with a `degradation_reason` naming a session/binary/source
+mismatch is the exporter refusing by name: the session
+`engine/composition/src/consensus_state_producer_receipt.c` demands is exact.
+The exporter retries the session on its own tick with bounded backoff, and when
+the datadir's stamped source epoch is already this build's it retires the
+foreign session row and re-derives one from the running binary, so an upgraded
+node resumes minting without an operator. A genuine source-epoch change needs a
+re-fold (or an explicit `producer session retire`): those fold rows carry the
+previous epoch and no bundle can be proven from them. `dumpstate bundle_exporter`
+reports `consecutive_failures`, `degraded_after_failures`, and
+`recover_backoff_secs`. `dumpstate rom_seed` lists what the node advertises; a
+node advertising only a `consensus_bundle` cannot supply the header seed.
 
 ## Running the reports
 
@@ -431,12 +341,8 @@ failure, never on a legitimate non-PASS run verdict. See
 ### Provisioning the fixture peer by hand (no systemd)
 
 When the systemd unit is not installed, the same peer runs as a plain
-process, widening its peers with `-addnode` against a serving node. A
-2026-09-09 note here recorded that peer syncing wiped-to-tip in ~8 min and
-then serving two consecutive C3 PASSes of 336 s and 371 s; **withdrawn
-2026-09-11** — the collector ledger holds no row of any verdict for
-2026-09-09 and the artifact directories those runs named do not exist, so
-this recipe carries no recorded timing:
+process, widening its peers with `-addnode` against a serving node. This recipe
+carries no recorded timing:
 
 ```bash
 PEER_DIR=~/.local/state/zclassic23-stopwatch-peer
@@ -447,7 +353,7 @@ mkdir -p "$PEER_DIR" && cp build/bin/zclassic23 "$PEER_DIR/zclassic23.bin"
   -addnode=127.0.0.1:8033
 ```
 
-Two traps, both hit for real: (1) a harness or agent runner that kills
+Two traps: (1) a harness or agent runner that kills
 background jobs at a default timeout will kill the peer mid-run and
 produce a garbage artifact — run the peer with no timeout and treat any
 run whose peer died as invalid evidence; (2) the harness defaults already

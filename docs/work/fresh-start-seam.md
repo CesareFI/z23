@@ -4,7 +4,7 @@ Scope: one bare `z23` process, an empty datadir, an isolated `$HOME`
 (no `~/.zclassic`), no snapshot/bundle/import flags. This file maps, in
 present tense and against code at `HEAD`, every state source such a boot can
 legitimately use, the exact predicate that refuses each one, and the two
-independent defects that keep `H*` at 0.
+independent defects that once kept `H*` at 0; both are closed in code (section 8).
 
 Read with [`CONSENSUS-STATE-BUNDLE.md`](./CONSENSUS-STATE-BUNDLE.md) (artifact
 naming/ownership) and [`../CONSENSUS_PARITY_DOCTRINE.md`](../CONSENSUS_PARITY_DOCTRINE.md)
@@ -13,54 +13,6 @@ naming/ownership) and [`../CONSENSUS_PARITY_DOCTRINE.md`](../CONSENSUS_PARITY_DO
 ---
 
 ## 0. The two defects, stated once
-
-> **WITHDRAWN 2026-09-11 — nothing outside this prose records either
-> 2026-09-09 block below.** The collector ledger
-> (`~/.local/state/zclassic23-c3-stopwatch/history.jsonl`) holds no row of
-> any verdict for 2026-09-09 — its newest row is 2026-09-08 20:08 UTC,
-> `verdict=fail` — and no `build/c3-stopwatch/20260909T*` artifact directory
-> exists on disk. Neither the three SEAM runs nor the 336 s / 371 s PASS pair
-> is evidence for anything, so whether seams A and B still decide C3 is not
-> settled by them either way. The newest recorded C3 pass remains the
-> 2026-08-21 ledger row: `wall_clock_seconds=515`, `final_hstar=3224132`
-> against `final_network_tip=3224124`. The current C3 status and its
-> remaining condition live in [`../MVP.md`](../MVP.md) criterion 3. Both
-> blocks are kept verbatim below, marked, rather than deleted, so the
-> withdrawal itself stays visible.
->
-> **[WITHDRAWN] 2026-09-09 update — seams A and B no longer decide C3.**
-> With a `-fileservice=` peer named, the weld runs: three genuine wipe-to-tip
-> stopwatch runs on the maintainer host (artifact dirs under
-> `build/c3-stopwatch/20260909T*`, ledger
-> `~/.local/state/zclassic23-c3-stopwatch/history.jsonl`) all show `H*`
-> climbing 0 → ~3.09M in ~150 s through the ROM fold. The C3 gap that
-> remains is further along: the ~150k-block tail between the ROM-covered
-> prefix and network tip folds at ~98 received bodies/s with a ~12%
-> body-request timeout rate on loopback, where the 600 s budget needs
-> ~420/s sustained (verdict SEAM every run; one peer and three peers
-> produce the same number, so this is tail body-download throughput, not
-> peer starvation). The `sticky_escalator.resnapshot_no_base` /
-> `refold_no_anchor_artifact` blockers in those runs are the same
-> recovery-artifact absences §5 names — downstream noise, not the cause.
->
-> **[WITHDRAWN] 2026-09-09 resolution — the tail crawl is serving capacity,
-> not a code defect.** The identical harness against the repo's intended dedicated
-> fixture peer (`platform/deploy/examples/zcl-stopwatch-peer.service`,
-> provisioned as a plain process on ports 39070–39073, itself synced
-> wiped-to-tip in ~8 min) **PASSED**: `H*` reached `network_tip=3244952`
-> in **336 s** of the 600 s budget across 2 boots, with the tail folding
-> ~10–16k blocks per 11 s tick and no sticky-escalator blockers (artifact
-> `build/c3-stopwatch/20260909T181952Z-261433/proof.json`, ledger verdict
-> `pass`); independently reproduced 20 minutes later at **371 s**
-> (`build/c3-stopwatch/20260909T182753Z-276426`; `make c3-stopwatch-report`
-> judges `VERDICT=PASS`). The busy live canonical node's synchronous getdata path
-> (256 preads + hash-verify per batch on one message thread) simply cannot
-> serve the tail at ~420/s while also doing live-node work; the dedicated
-> fixture can. Sealed-core serving changes are therefore optional
-> hardening, owner-gated — not a C3 blocker.
->
-> **[WITHDRAWN]** — see the withdrawal notice above (line 17): none of this
-> resolution block is evidence for anything.
 
 There are **two independent seams**, not one. Fixing either alone does not
 produce a working fresh machine.
@@ -171,8 +123,8 @@ observationally indistinguishable today from a genuine discovery miss.
 
 ## 3. The install gate is NOT circular at HEAD
 
-The historically reported circularity — "the install gate reads a
-validated-header frontier only the install can populate" — is **refuted** by
+A suspected circularity — "the install gate reads a
+validated-header frontier only the install can populate" — does not exist in
 current code. Both sides:
 
 **The gate** (`engine/composition/src/consensus_state_install_runtime.c:505-520`):
@@ -301,37 +253,6 @@ short-circuits to `JOB_IDLE`, so the counter never advances again and
 `blocked_count` stays 0. There is no genesis special case in
 `body_persist_stage.c`, `body_fetch_stage.c` or `script_validate_stage.c`.
 
-### 4.3 Observed, `20260727T235031Z-1331679`
-
-```
-23:50:40  WARN [body_persist] body_persist_stage.c:138 requeue_body_for_refetch():
-          [body_persist] read_failed height=0: cleared HAVE_DATA, holding cursor
-          for body re-fetch
-```
-
-Three seconds after boot; never recovers across the remaining 614 s. End-of-run
-stage cursors from the same artifact:
-
-| stage | cursor | advanced | blocked | note |
-|---|---|---|---|---|
-| `header_admit` | 450081 | 450081 | 0 | healthy |
-| `validate_headers` | 450081 | 8438 | 0 | 450081 passed, 0 failed |
-| `body_fetch` | 178110 | 178110 | 0 | healthy |
-| `body_persist` | **0** | **0** | **0** | `read_failed_total=1`, `idle_count=26545` |
-| `script_validate` … `tip_finalize` | 0 | 0 | 0 | starved by `body_persist` |
-
-Bodies were arriving and landing on disk the whole time
-(`reducer_persist_ingested_body_locked(): persisted ingested block bodies
-through h=178176`). The pipeline was never body-starved; it was pinned on
-block 0.
-
-Note the honesty gap: `body_persist` returns `JOB_IDLE`, not `JOB_BLOCKED`, and
-names no blocker of its own. Nothing in the four active blockers points at
-height 0 — `bootstrap.no_state_source` and `chain.tip_behind_header_chain`
-describe adjacent facts, and the two `sticky_escalator.*` rungs describe absent
-recovery artifacts. The wedge itself is unnamed, and is only visible by reading
-`stage-body_persist.json` or grepping `node.log`.
-
 ---
 
 ## 5. The two failed self-heal routes
@@ -444,7 +365,7 @@ Then read, from the run's artifact directory:
 * `proof.json` → `verdict`, `max_hstar`, `final_network_tip`
 * `stage-body_persist.json` → `cursor`, `read_failed_total`, `idle_count` (§4)
 * `blocker.json` → the four typed blockers and their `reason` strings
-* `node.log`, grep `requeue_body_for_refetch` (§4.3) and
+* `node.log`, grep `requeue_body_for_refetch` (§4.2) and
   `no file-service seeds available` (§1.2)
 
 To separate the two seams, re-run with `--file-peer=<host>:18034`: that arms
