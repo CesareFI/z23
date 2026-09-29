@@ -26,7 +26,7 @@ static bool configured_address_usable(const struct net_addr *ip)
 bool configured_sync_peer_note(const struct net_service *target)
 {
     if (!target || !configured_address_usable(&target->addr))
-        return false;
+        return false;  // raw-return-ok:unusable-address-is-refused-by-the-bool
     bool recorded = false;
     pthread_mutex_lock(&g_configured_lock);
     for (size_t i = 0; i < g_configured_count && !recorded; i++)
@@ -62,7 +62,7 @@ bool configured_sync_peer_forget(const struct net_service *target)
 bool configured_sync_peer_ip_matches(const struct net_addr *ip)
 {
     if (!configured_address_usable(ip))
-        return false;
+        return false;  // raw-return-ok:unusable-address-never-matches
     bool match = false;
     pthread_mutex_lock(&g_configured_lock);
     for (size_t i = 0; i < g_configured_count && !match; i++)

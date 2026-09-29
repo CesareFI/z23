@@ -317,7 +317,8 @@ bool syncsvc_should_request_headers(const struct p2p_node *node,
 {
     /* Outbound peers, plus an inbound peer from an operator-named target
      * (services/configured_sync_peers.h). */
-    if (!syncsvc_peer_may_serve_headers(node)) return false;
+    if (!syncsvc_peer_may_serve_headers(node))
+        return false;  // raw-return-ok:ineligible-peer-is-an-answer-not-an-error
     if (node->state < PEER_SYNCING_HEADERS) return false;
 
     /* Never spend a getheaders round on a peer we KNOW is at/behind us; it
