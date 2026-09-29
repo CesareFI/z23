@@ -20,9 +20,11 @@
  *     asm label, including one declared in a preamble header) of a reparse
  *     equal a cold parse's, verified and qualified;
  *   - a conditional lookup the text scan cannot replay (a macro operand
- *     that is no string literal, the GNU spellings, __has_embed, #embed,
- *     one a line continuation runs through) recreates and verifies its TU
- *     on every emit, even while the header it asks about appears and goes;
+ *     that is no string literal, the GNU spellings, and one a line
+ *     continuation runs through) recreates and verifies its TU on every
+ *     emit, even while the header it asks about appears and goes.
+ *     __has_embed and #embed do the same when this front end's emit
+ *     accepts that syntax, and those rows skip when the emit rejects it;
  *     a literal or string-literal-macro __has_include, a __has_include_next
  *     and a probe word in a comment, a string or a skipped group stay warm;
  *   - a reparse whose own manifest has a shadow candidate the TU's baseline
@@ -972,6 +974,20 @@ static bool sss_gate_rewrite(const char *root)
     return sss_write(root, "inc/b/gate.h", body);
 }
 
+/* The three rows whose body is live embed syntax. A word inside a comment
+ * or a skipped group is not one of these names and still has to stay warm. */
+static const char *sss_skip_why(const struct sss_unbound *u, int features)
+{
+    if (strcmp(u->name, "has-embed") == 0 &&
+        (features & SEMANTIC_SENSOR_FEAT_HAS_EMBED) == 0)
+        return "__has_embed";
+    if ((strcmp(u->name, "embed") == 0 ||
+         strcmp(u->name, "embed-spaced") == 0) &&
+        (features & SEMANTIC_SENSOR_FEAT_EMBED) == 0)
+        return "#embed";
+    return NULL;
+}
+
 /* Rewrite gate.h to body, then emit twice: file-changed, then why. */
 static bool sss_unbound_pair(struct sss_ctx *c, struct sss_proc *p,
                              const char *name, const char *body,
@@ -1008,11 +1024,22 @@ static int sss_t_unbound(struct sss_ctx *c)
             ASSERT(sss_is(reply, "verify", "equal"));
             ASSERT(sss_is(reply, "written", "cold"));
         }
-        for (size_t k = 0; k < SSS_UNBOUND; k++) {
-            const struct sss_unbound *u = &k_sss_unbound[k];
-            ASSERT(sss_unbound_pair(c, &p, u->name, u->body, u->why, reply,
-                                    sizeof(reply)));
-            ASSERT(sss_is(reply, "verify", "equal"));
+        {
+            int features = semantic_sensor_front_end_features();
+            ASSERT(features >= 0);
+            for (size_t k = 0; k < SSS_UNBOUND; k++) {
+                const struct sss_unbound *u = &k_sss_unbound[k];
+                const char *why = sss_skip_why(u, features);
+                if (why != NULL) {
+                    printf("\n  semantic_sensor: SKIP unbound %s "
+                           "(this front end rejects %s)\n",
+                           u->name, why);
+                    continue;
+                }
+                ASSERT(sss_unbound_pair(c, &p, u->name, u->body, u->why, reply,
+                                        sizeof(reply)));
+                ASSERT(sss_is(reply, "verify", "equal"));
+            }
         }
         /* A literal or string-literal-macro operand and a __has_include_next
          * are replayed, and a word in a comment or a string is no lookup:

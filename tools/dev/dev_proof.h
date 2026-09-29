@@ -364,7 +364,62 @@ struct zcl_dev_proof_capsule_argv {
     const char *argv[6];
 };
 
+/* Bytes the queued CHECK worker hashes into one component proof key.
+ * Production leaves `active` false and binds these pointers to the
+ * receipt, helper root, and depfile root it already sealed. A null
+ * pointer for one of those fields is an incomplete closure. */
+struct zcl_dev_proof_check_inputs {
+    bool active;
+    const char *unit;
+    const uint8_t *source_cas;
+    const uint8_t *dependency;
+    const uint8_t *harness;
+    const uint8_t *flags;
+    const uint8_t *environment;
+    const uint8_t *build_graph;
+    const uint8_t *toolchain;
+    const uint8_t *policy;
+    const uint8_t *changed;
+};
+
 #if defined(ZCL_TESTING)
+struct vcs_component_proof_key_v1;
+struct vcs_proof_receiver;
+struct vcs_proof_candidate_domain;
+struct vcs_proof_reuse_policy;
+
+/* What one call of the queued CHECK dimension did. `test_children` counts
+ * test steps whose child process was actually forked. */
+struct zcl_dev_proof_check_result {
+    bool ok;
+    uint32_t test_children;
+    uint32_t selected;
+    uint32_t ran;
+    uint32_t reused;
+    uint32_t failed;
+    uint32_t skipped;
+    uint8_t receipt_root[32];
+    char why[160];
+    bool log_present;
+};
+
+/* The same derivation dp_worker_dimensions_run uses. Tests issue tickets
+ * for this key; they do not pass the key back into the dimension. */
+bool zcl_dev_proof_check_closure_derive(
+    const struct zcl_dev_proof_check_inputs *in,
+    struct vcs_component_proof_key_v1 *key);
+
+/* Enter the queued CHECK dimension from the worker state it already has:
+ * sealed bytes, optional receiver, and the test child it would exec.
+ * Does not accept a key, change, or obligation. */
+bool zcl_dev_proof_check_dimensions(
+    const struct zcl_dev_proof_check_inputs *in, const char *logs_dir,
+    const char *root, const char *generation_binary, uint32_t selected,
+    const struct vcs_proof_receiver *receiver,
+    const struct vcs_proof_candidate_domain *domain,
+    const struct vcs_proof_reuse_policy *policy,
+    struct zcl_dev_proof_check_result *out);
+
 /* Watcher admission fixture: a held execution guard must preserve pending
  * edit work without forking a worker or arming a watcher. */
 bool zcl_dev_proof_test_edit_busy(const char *root);

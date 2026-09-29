@@ -35,6 +35,7 @@
 #include "base/safe_alloc.h"
 #include "sha3/sha3.h"
 #include "vcs/build_action.h"
+#include "vcs/proof_admission.h"
 
 #include <dirent.h>
 #include <errno.h>
@@ -8252,6 +8253,14 @@ struct dp_worker {
     struct zcl_dev_proof_budget lint_budget;
     bool lint_reads_artifacts;
     bool bundle_built_prefork;
+    /* Observation authority admission already accepts. Null means this
+     * proof has no verifier account: derive the closure, then launch.
+     * These fields are not the closure. */
+    const struct vcs_proof_receiver *check_receiver;
+    const struct vcs_proof_candidate_domain *check_domain;
+    const struct vcs_proof_reuse_policy *check_policy;
+    struct zcl_dev_proof_check_inputs check_inputs;
+    uint32_t test_children_started;
 };
 
 /* A warm generation may carry depfiles for inputs just retimed to force a
@@ -8993,10 +9002,12 @@ static void dp_worker_lint_wall_note(const struct dp_worker *w,
  * environment can turn verdict reuse back on: every selected group
  * executes in this proof, and the runner opens no verdict store and stores
  * nothing. A reused test verdict may shape acceptance only once a separate
- * account outside the candidate's trust domain reproduces and signs it;
- * until that verifier is qualified the proof records
- * `test-reuse: unqualified(no_verifier_account)` and runs cold. Returns the
- * argc written (argv NULL-terminated), or 0 when argv_cap is too small. */
+ * account outside the candidate's trust domain reproduces and signs it.
+ * With no such account the proof records
+ * `test-reuse: unqualified(no_verifier_account)` and runs cold. When the
+ * attempt holds that account, the worker derives this closure and asks
+ * admission before the child starts. Returns the argc written (argv
+ * NULL-terminated), or 0 when argv_cap is too small. */
 #define DP_TEST_DIMENSION_ARGC 4u
 static size_t dp_test_dimension_argv(const char *binary, const char *only,
                                      const char **argv, size_t argv_cap)
@@ -9214,6 +9225,234 @@ bool zcl_dev_proof_dimensions_run_for_test(const char *logs_dir,
 }
 #endif
 
+/* One admitted CHECK obligation. `skip` holds the test child back only
+ * after admission vouches exactly one selected group. */
+struct dp_check_hold {
+    uint32_t selected;
+    bool skip;
+    uint8_t observation[32];
+};
+
+enum dp_check_choice {
+    DP_CHECK_LAUNCH = 0,
+    DP_CHECK_SKIP,
+    DP_CHECK_BLOCK
+};
+
+static void dp_check_bind(struct dp_worker *w)
+{
+    struct zcl_dev_proof_check_inputs *in = &w->check_inputs;
+    if (in->active) return;
+    in->unit = w->only;
+    in->source_cas = w->receipt.source_cas_root;
+    in->dependency = w->depfile_root;
+    in->harness = w->helper_root;
+    in->flags = w->receipt.flags_root;
+    in->environment = w->receipt.environment_root;
+    in->build_graph = w->receipt.build_graph_root;
+    in->toolchain = w->receipt.compiler_root;
+    in->policy = w->receipt.impact_policy_root;
+    in->changed = w->receipt.changed_set_root;
+    in->active = true;
+}
+
+/* Hash the attempt's sealed bytes into the key admission already accepts.
+ * A required field whose pointer is null is an incomplete closure. */
+static bool dp_check_derive(const struct zcl_dev_proof_check_inputs *in,
+                            struct vcs_component_proof_key_v1 *key)
+{
+    const uint8_t *fixed[VCS_CPK_FIELD_COUNT] = {0};
+    bool required[VCS_CPK_FIELD_COUNT] = {0};
+    const char *unit = in->unit ? in->unit : "";
+    size_t unit_len = strlen(unit);
+    uint8_t digest[32];
+    fixed[VCS_CPK_SOURCE_CLOSURE] = in->source_cas;
+    fixed[VCS_CPK_DEPENDENCY_CLOSURE] = in->dependency;
+    fixed[VCS_CPK_HARNESS] = in->harness;
+    fixed[VCS_CPK_FLAGS] = in->flags;
+    fixed[VCS_CPK_ENVIRONMENT] = in->environment;
+    fixed[VCS_CPK_BUILD_GRAPH] = in->build_graph;
+    fixed[VCS_CPK_TOOLCHAIN] = in->toolchain;
+    fixed[VCS_CPK_POLICY] = in->policy;
+    fixed[VCS_CPK_INTEGRATION_EDGES] = in->changed;
+    required[VCS_CPK_SOURCE_CLOSURE] = true;
+    required[VCS_CPK_DEPENDENCY_CLOSURE] = true;
+    required[VCS_CPK_HARNESS] = true;
+    required[VCS_CPK_FLAGS] = true;
+    required[VCS_CPK_ENVIRONMENT] = true;
+    required[VCS_CPK_BUILD_GRAPH] = true;
+    required[VCS_CPK_TOOLCHAIN] = true;
+    required[VCS_CPK_POLICY] = true;
+    required[VCS_CPK_INTEGRATION_EDGES] = true;
+    memset(key, 0, sizeof(*key));
+    for (int f = 0; f < (int)VCS_CPK_FIELD_COUNT; f++) {
+        const void *bytes = "";
+        size_t len = 0;
+        if (f == (int)VCS_CPK_UNIT_ID) {
+            bytes = unit;
+            len = unit_len;
+        } else if (fixed[f]) {
+            bytes = fixed[f];
+            len = 32;
+        } else if (required[f]) {
+            return false;
+        }
+        if (!vcs_component_proof_field_root((enum vcs_component_proof_field)f,
+                                            bytes, len, key->roots[f]))
+            return false;
+    }
+    return vcs_component_proof_key_valid(key) &&
+           vcs_component_proof_key_derive(key, digest);
+}
+
+static void dp_check_note(const struct dp_worker *w, const char *reason)
+{
+    if (!w->paths || !w->paths->phases[0] || !reason || !reason[0]) return;
+    (void)zcl_dev_proof_phase_note(w->paths->phases, "test_reuse_admit",
+                                   reason);
+}
+
+static enum dp_check_choice dp_check_from_admission(
+    const struct vcs_proof_admission_result *result, uint32_t selected,
+    uint8_t observation[32], const char **reason)
+{
+    if (result->status == VCS_PROOF_ADMIT_REFUSED ||
+        result->decision.outcome == VCS_PROOF_REUSE_HIT_FAIL) {
+        *reason = result->reason ? result->reason
+                                 : VCS_PROOF_REUSE_WHY_ARGUMENTS;
+        return DP_CHECK_BLOCK;
+    }
+    if (result->status != VCS_PROOF_ADMIT_REUSED ||
+        result->decision.outcome != VCS_PROOF_REUSE_HIT_PASS ||
+        selected != 1u) {
+        *reason = result->reason ? result->reason : VCS_PROOF_REUSE_WHY_NONE;
+        return DP_CHECK_LAUNCH;
+    }
+    if (result->decision.used_count == 0 ||
+        !proof_root_nonzero(result->decision.used[0])) {
+        *reason = "test_reuse_receipt_empty";
+        return DP_CHECK_BLOCK;
+    }
+    memcpy(observation, result->decision.used[0], 32);
+    *reason = VCS_PROOF_REUSE_WHY_HIT;
+    return DP_CHECK_SKIP;
+}
+
+static enum dp_check_choice dp_check_admit(
+    const struct dp_worker *w, const struct vcs_component_proof_key_v1 *key,
+    uint32_t selected, uint8_t observation[32], const char **reason)
+{
+    const char *unit = w->check_inputs.unit;
+    struct vcs_proof_admission_context ctx = {
+        .receiver = w->check_receiver,
+        .domain = w->check_domain,
+        .policy = w->check_policy,
+    };
+    struct vcs_proof_change change = {0};
+    struct vcs_proof_obligation obligation = {0};
+    struct vcs_proof_admission_result result;
+    struct vcs_proof_admission_report report;
+    if (!unit || !unit[0]) unit = "proof-check";
+    change.component_id = unit;
+    change.scope_known = true;
+    memcpy(change.contract_root_before,
+           key->roots[VCS_CPK_INTEGRATION_EDGES], 32);
+    memcpy(change.contract_root_after,
+           key->roots[VCS_CPK_INTEGRATION_EDGES], 32);
+    obligation.name = unit;
+    obligation.component_id = unit;
+    obligation.action_class = VCS_PROOF_ACTION_CHECK;
+    obligation.preimage = key;
+    obligation.in_reach = true;
+    if (!vcs_proof_admission_run(&ctx, &change, &obligation, 1, &result,
+                                 &report)) {
+        *reason = VCS_PROOF_REUSE_WHY_ARGUMENTS;
+        return DP_CHECK_BLOCK;
+    }
+    return dp_check_from_admission(&result, selected, observation, reason);
+}
+
+/* Derive and validate the closure, then ask admission when a receiver is
+ * already held. Missing authority launches. An incomplete closure launches.
+ * Refusal and an eligible failure block. One vouched group may skip. */
+static enum dp_check_choice dp_check_decide(struct dp_worker *w,
+                                            uint32_t selected,
+                                            uint8_t observation[32],
+                                            const char **reason)
+{
+    struct vcs_component_proof_key_v1 key;
+    dp_check_bind(w);
+    if (!dp_check_derive(&w->check_inputs, &key)) {
+        *reason = "test_reuse_closure_incomplete";
+        return DP_CHECK_LAUNCH;
+    }
+    if (!w->check_receiver || !w->check_domain || !w->check_policy) {
+        *reason = DP_TEST_REUSE_UNQUALIFIED;
+        return DP_CHECK_LAUNCH;
+    }
+    return dp_check_admit(w, &key, selected, observation, reason);
+}
+
+static bool dp_check_prepare(struct dp_worker *w,
+                             struct zcl_dev_proof_dimension *test,
+                             struct dp_check_hold *hold, char *why,
+                             size_t why_len)
+{
+    const char *reason = NULL;
+    uint8_t observation[32] = {0};
+    enum dp_check_choice choice;
+    hold->selected = test->selected;
+    if (!test->selected) return true;
+    choice = dp_check_decide(w, test->selected, observation, &reason);
+    dp_check_note(w, reason);
+    if (choice == DP_CHECK_BLOCK) {
+        proof_why(why, why_len, reason ? reason : "test_reuse_refused");
+        return false;
+    }
+    if (choice == DP_CHECK_SKIP) {
+        hold->skip = true;
+        memcpy(hold->observation, observation, 32);
+        test->selected = 0;
+    }
+    return true;
+}
+
+static uint32_t dp_test_children_started(const struct proof_dimension_run *runs,
+                                         size_t count)
+{
+    uint32_t n = 0;
+    for (size_t i = 0; i < count; i++) {
+        if (runs[i].id == ZCL_DEV_PROOF_TEST && runs[i].step.started &&
+            runs[i].step.child > 0)
+            n++;
+    }
+    return n;
+}
+
+static bool dp_check_finish(struct dp_worker *w,
+                            struct zcl_dev_proof_dimension *test,
+                            const struct dp_check_hold *hold,
+                            bool dimensions_ok, char *why, size_t why_len)
+{
+    if (hold->skip) test->selected = hold->selected;
+    if (!dimensions_ok) return false;
+    if (!hold->skip) {
+        if (test->selected)
+            test_receipt_bind_helpers(test, w->helper_root);
+        return true;
+    }
+    if (w->test_children_started != 0) {
+        proof_why(why, why_len, "test_reuse_child_started");
+        return false;
+    }
+    memcpy(test->receipt_root, hold->observation, 32);
+    test->ran = 0;
+    test->failed = 0;
+    test->skipped = 0;
+    test->reused = 1;
+    return true;
+}
+
 static bool dp_worker_dimensions_run_clean(struct dp_worker *w,
                                      struct zcl_dev_proof_dimension *lint,
                                      struct zcl_dev_proof_dimension *test,
@@ -9221,14 +9460,19 @@ static bool dp_worker_dimensions_run_clean(struct dp_worker *w,
 {
     struct proof_dimension_run runs[2];
     size_t run_count = 0;
-    /* Cold by construction: the preflight's probe capsule is not handed
-     * over, because consuming it would re-admit its cache HITs. */
+    struct dp_check_hold admitted = {0};
+    /* The preflight probe is not consumed. Admission below is the only
+     * path that can hold this test child back. */
     const char *test_argv[DP_TEST_DIMENSION_ARGC + 1] = {0};
+    bool launched;
+    bool dimensions_ok = true;
+    if (!dp_check_prepare(w, test, &admitted, why, why_len)) return false;
     if (test->selected &&
         dp_test_dimension_argv(w->generation_binary, w->only, test_argv,
                                sizeof(test_argv) / sizeof(test_argv[0])) !=
             DP_TEST_DIMENSION_ARGC) {
         proof_why(why, why_len, "test_runner_argv_invalid");
+        if (admitted.skip) test->selected = admitted.selected;
         return false;
     }
     struct zcl_dev_proof_budget test_budget =
@@ -9242,26 +9486,29 @@ static bool dp_worker_dimensions_run_clean(struct dp_worker *w,
         .finish_tests_first = dp_lint_waits_for_tests(
             platform_available_cpu_count())};
     struct dp_lint_hold hold;
-    if (!dp_dimensions_launch(&plan, runs, &run_count, &hold, why, why_len))
-        return false;
-    dp_lint_hold_note(w->paths->phases, &hold);
-    dimension_runs_wait(runs, run_count);
-    dp_worker_lint_wall_note(w, runs, run_count);
-    /* Fail closed on the first dimension that failed, in the order they
-     * would have run sequentially, and always finish every child so each
-     * one's log, receipt root and phases row survive the failure. */
-    bool dimensions_ok = true;
-    for (size_t i = 0; i < run_count; i++) {
-        char step_why[160] = {0};
-        if (dimension_finish(&w->execution, &runs[i], step_why,
-                             sizeof(step_why)))
-            continue;
-        if (dimensions_ok) proof_why(why, why_len, step_why);
-        dimensions_ok = false;
+    launched = dp_dimensions_launch(&plan, runs, &run_count, &hold, why,
+                                    why_len);
+    if (launched) {
+        dp_lint_hold_note(w->paths->phases, &hold);
+        dimension_runs_wait(runs, run_count);
+        dp_worker_lint_wall_note(w, runs, run_count);
+        w->test_children_started = dp_test_children_started(runs, run_count);
+        /* Fail closed on the first dimension that failed, in the order they
+         * would have run sequentially, and always finish every child so each
+         * one's log, receipt root and phases row survive the failure. */
+        for (size_t i = 0; i < run_count; i++) {
+            char step_why[160] = {0};
+            if (dimension_finish(&w->execution, &runs[i], step_why,
+                                 sizeof(step_why)))
+                continue;
+            if (dimensions_ok) proof_why(why, why_len, step_why);
+            dimensions_ok = false;
+        }
+    } else if (admitted.skip) {
+        test->selected = admitted.selected;
     }
-    if (!dimensions_ok) return false;
-    if (test->selected) test_receipt_bind_helpers(test, w->helper_root);
-    return true;
+    if (!launched) return false;
+    return dp_check_finish(w, test, &admitted, dimensions_ok, why, why_len);
 }
 
 /* These settings select how a BUILD need is linked in dp_worker_test_needs(),
@@ -9307,6 +9554,129 @@ static bool dp_worker_dimensions_run(struct dp_worker *w,
         }
     return ok;
 }
+
+#if defined(ZCL_TESTING)
+bool zcl_dev_proof_check_closure_derive(
+    const struct zcl_dev_proof_check_inputs *in,
+    struct vcs_component_proof_key_v1 *key)
+{
+    struct zcl_dev_proof_check_inputs local;
+    if (!in || !key) return false;
+    local = *in;
+    local.active = true;
+    return dp_check_derive(&local, key);
+}
+
+static bool dp_check_export_ready(const struct zcl_dev_proof_check_inputs *in,
+                                  const char *logs_dir, const char *root,
+                                  const char *binary,
+                                  struct zcl_dev_proof_check_result *out)
+{
+    if (!out || !in) return false;
+    if (!logs_dir || !logs_dir[0] || !root || !root[0]) return false;
+    return binary && binary[0];
+}
+
+static bool dp_check_export_paths(struct proof_paths *paths,
+                                  const char *logs_dir, const char *root)
+{
+    if (snprintf(paths->logs, sizeof(paths->logs), "%s", logs_dir) >=
+        (int)sizeof(paths->logs))
+        return false;
+    if (snprintf(paths->key, sizeof(paths->key), "seam") >=
+        (int)sizeof(paths->key))
+        return false;
+    return snprintf(paths->root, sizeof(paths->root), "%s", root) <
+           (int)sizeof(paths->root);
+}
+
+static bool dp_check_export_names(struct dp_worker *w,
+                                  const struct zcl_dev_proof_check_inputs *in,
+                                  const char *root, const char *binary)
+{
+    const char *unit = in->unit ? in->unit : "";
+    if (snprintf(w->execution.root, sizeof(w->execution.root), "%s", root) >=
+        (int)sizeof(w->execution.root))
+        return false;
+    if (snprintf(w->only, sizeof(w->only), "%s", unit) >= (int)sizeof(w->only))
+        return false;
+    if (snprintf(w->generation_binary, sizeof(w->generation_binary), "%s",
+                 binary) >= (int)sizeof(w->generation_binary))
+        return false;
+    w->check_inputs = *in;
+    w->check_inputs.active = true;
+    if (!w->check_inputs.unit) w->check_inputs.unit = w->only;
+    if (in->harness) memcpy(w->helper_root, in->harness, 32);
+    if (in->dependency) memcpy(w->depfile_root, in->dependency, 32);
+    return true;
+}
+
+static void dp_check_export_result(struct zcl_dev_proof_check_result *out,
+                                   const struct dp_worker *w,
+                                   const struct zcl_dev_proof_dimension *test,
+                                   const char *why, const char *logs_dir)
+{
+    char log[PATH_MAX];
+    out->test_children = w->test_children_started;
+    out->selected = test->selected;
+    out->ran = test->ran;
+    out->reused = test->reused;
+    out->failed = test->failed;
+    out->skipped = test->skipped;
+    memcpy(out->receipt_root, test->receipt_root, 32);
+    (void)snprintf(out->why, sizeof(out->why), "%s", why ? why : "");
+    if (snprintf(log, sizeof(log), "%s/seam.test.log", logs_dir) <
+        (int)sizeof(log))
+        out->log_present = access(log, F_OK) == 0;
+}
+
+bool zcl_dev_proof_check_dimensions(
+    const struct zcl_dev_proof_check_inputs *in, const char *logs_dir,
+    const char *root, const char *generation_binary, uint32_t selected,
+    const struct vcs_proof_receiver *receiver,
+    const struct vcs_proof_candidate_domain *domain,
+    const struct vcs_proof_reuse_policy *policy,
+    struct zcl_dev_proof_check_result *out)
+{
+    struct dp_worker *w;
+    struct proof_paths *paths;
+    struct zcl_dev_proof_dimension *test;
+    char why[160] = {0};
+    if (!dp_check_export_ready(in, logs_dir, root, generation_binary, out))
+        return false;
+    memset(out, 0, sizeof(*out));
+    w = zcl_calloc(1, sizeof(*w), "check_dimensions");
+    paths = zcl_calloc(1, sizeof(*paths), "check_dimensions_paths");
+    if (!w || !paths) {
+        free(w);
+        free(paths);
+        return false;
+    }
+    if (!dp_check_export_paths(paths, logs_dir, root)) {
+        free(w);
+        free(paths);
+        return false;
+    }
+    w->paths = paths;
+    w->execution = *paths;
+    if (!dp_check_export_names(w, in, root, generation_binary)) {
+        free(w);
+        free(paths);
+        return false;
+    }
+    w->check_receiver = receiver;
+    w->check_domain = domain;
+    w->check_policy = policy;
+    test = &w->receipt.dimensions[ZCL_DEV_PROOF_TEST];
+    test->selected = selected;
+    out->ok = dp_worker_dimensions_run(
+        w, &w->receipt.dimensions[ZCL_DEV_PROOF_LINT], test, why, sizeof(why));
+    dp_check_export_result(out, w, test, why, logs_dir);
+    free(w);
+    free(paths);
+    return true;
+}
+#endif
 
 /* Bounded log read for the preflight account: the runner's probe-only
  * output is ~100 bytes per group, so 2 MiB covers the whole catalog with
@@ -9434,9 +9804,6 @@ static bool dp_worker_dimensions(struct dp_worker *w, char *why,
     if (!dp_worker_lint_plan(w, lint, test, why, why_len)) return false;
     w->only[0] = 0;
     if (test->selected && !dp_worker_test_env(w, why, why_len)) return false;
-    if (test->selected && w->paths->phases[0])
-        (void)zcl_dev_proof_phase_note(w->paths->phases, "test_reuse_admit",
-                                       DP_TEST_REUSE_UNQUALIFIED);
     if (!dp_worker_prefork(w, test->selected != 0, why, why_len)) return false;
     if (test->selected) dp_worker_test_preflight(w);
     if (!dp_worker_dimensions_run(w, lint, test, why, why_len)) return false;

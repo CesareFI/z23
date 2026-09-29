@@ -139,8 +139,13 @@ were established:
   `clang_tokenize`, which re-lexes it raw under the TU's own language
   options, so a word in a comment or in a character, string or raw string
   literal (every prefix, `R`, `u8R`, `uR`, `UR`, `LR`, on one line or
-  several; clang enables raw strings in every GNU mode, with no `-std`,
-  and with `-fraw-string-literals`) is no identifier token and no lookup.
+  several, when this front end accepts that spelling) is no identifier
+  token and no lookup. Clang 18.1.3 rejects a raw string in GNU mode, with
+  no `-std`, and with `-fraw-string-literals`, and it does not define
+  `__has_embed` or `#embed`. The sensor tests ask this host's
+  `z23-clang-manifest emit` and skip only those cases when that emit
+  refuses them. A front end that accepts the syntax still has to record
+  the probe.
   A word in a group the preprocessor skipped needs no record (see the
   argument below), though raw lexing covers those groups too
   (the walk reads them for directives). A directive is a `#` or `%:` token first on its logical

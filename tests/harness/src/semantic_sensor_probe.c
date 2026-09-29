@@ -5,15 +5,18 @@
  * scan could miss and reads its LOOKUPS back: the probe must be there,
  * replayed against its search slots or recorded with no negative claim,
  * so the facts consumer widens on a created or deleted path. Each refusal
- * case must fail the emit with its reason. Part of the semantic_sensor group
- * (test_semantic_manifest.c); runs only where build/bin/z23-clang-manifest
- * is built. */
+ * case must fail the emit with its reason. A raw string, #embed, or
+ * __has_embed case skips when this front end's own emit rejects that
+ * syntax; every case the emit accepts still requires its probe. Part of
+ * the semantic_sensor group (test_semantic_manifest.c); runs only where
+ * build/bin/z23-clang-manifest is built. */
 
 #if !defined(_WIN32) && !defined(_DEFAULT_SOURCE)
 #define _DEFAULT_SOURCE
 #endif
 
 #include "test/test_core.h"
+#include "test/semantic_sensor_session.h"
 
 #include "util/spawn.h"
 #include "vcs/semantic_manifest.h"
@@ -601,11 +604,102 @@ static int ssp_t_refusal(const struct ssp_refusal *k)
     return failures;
 }
 
+/* One cold emit. *accepted is the front end's parse, and the return is
+ * whether that emit actually ran. A missing tree is not a syntax refusal. */
+static bool ssp_front_accepts(const char *main, const char *const flags[3],
+                              bool *accepted)
+{
+    struct ssp_tree t = {0};
+    char out[PATH_MAX + 32];
+    char message[4096];
+    bool wrote;
+    *accepted = false;
+    if (!ssp_layout(&t))
+        return false;
+    wrote = ssp_write(t.root, "main.c", main) &&
+            ssp_write(t.root, "d.bin", "x");
+    if (wrote) {
+        int rc;
+        (void)snprintf(out, sizeof(out), "%s/main.zsm", t.base);
+        rc = ssp_run(&t, flags, false, out, message, sizeof(message));
+        *accepted = rc == 0;
+    }
+    (void)test_rm_rf_recursive(t.base);
+    return wrote;
+}
+
+/* Asked through the shipped sensor, not a side compiler. Cached so the
+ * session cases and the probe cases share one answer. */
+int semantic_sensor_front_end_features(void)
+{
+    static int cached = -1;
+    static const char *const raw_flags[3] = {"-std=gnu23", NULL, NULL};
+    static const char *const c23[3] = {"-std=c23", NULL, NULL};
+    bool raw = false;
+    bool embed = false;
+    bool has = false;
+    if (cached >= 0)
+        return cached;
+    if (!ssp_front_accepts("static const char *s = R\"d(x)d\";\n"
+                           "int f(void) { return s != 0; }\n",
+                           raw_flags, &raw) ||
+        !ssp_front_accepts("static const unsigned char d[] = {\n"
+                           "#embed \"d.bin\"\n"
+                           "};\n"
+                           "int f(void) { return (int)sizeof d; }\n",
+                           c23, &embed) ||
+        !ssp_front_accepts("#if __has_embed(\"d.bin\") == 1\n"
+                           "int f(void) { return 1; }\n"
+                           "#else\n"
+                           "int f(void) { return 0; }\n"
+                           "#endif\n",
+                           c23, &has))
+        return -1;
+    cached = (raw ? SEMANTIC_SENSOR_FEAT_RAW : 0) |
+             (embed ? SEMANTIC_SENSOR_FEAT_EMBED : 0) |
+             (has ? SEMANTIC_SENSOR_FEAT_HAS_EMBED : 0);
+    printf("semantic_sensor: front end accepts raw=%d #embed=%d "
+           "__has_embed=%d\n",
+           (int)raw, (int)embed, (int)has);
+    return cached;
+}
+
+/* NULL when this case must run. A name or a live directive this front end
+ * cannot parse is the only skip; a `#embed?` replay label is not one. */
+static const char *ssp_skip_why(const struct ssp_case *k, int features)
+{
+    if (strstr(k->name, "raw string") != NULL &&
+        (features & SEMANTIC_SENSOR_FEAT_RAW) == 0)
+        return "raw string";
+    if (strstr(k->main, "#embed") != NULL &&
+        (features & SEMANTIC_SENSOR_FEAT_EMBED) == 0)
+        return "#embed";
+    if (strstr(k->main, "__has_embed") != NULL &&
+        (features & SEMANTIC_SENSOR_FEAT_HAS_EMBED) == 0)
+        return "__has_embed";
+    return NULL;
+}
+
 int semantic_sensor_probe_tests(void)
 {
     int failures = 0;
-    for (size_t k = 0; k < sizeof(k_ssp_cases) / sizeof(k_ssp_cases[0]); k++)
-        failures += ssp_t_case(&k_ssp_cases[k]);
+    int features = semantic_sensor_front_end_features();
+    if (features < 0) {
+        printf("semantic_sensor: SKIP probe list refused "
+               "(front-end emit did not run)\n");
+        return 1;
+    }
+    for (size_t k = 0; k < sizeof(k_ssp_cases) / sizeof(k_ssp_cases[0]); k++) {
+        const struct ssp_case *c = &k_ssp_cases[k];
+        const char *why = ssp_skip_why(c, features);
+        if (why != NULL) {
+            printf("semantic_sensor: SKIP probe \"%s\" "
+                   "(this front end rejects %s)\n",
+                   c->name, why);
+            continue;
+        }
+        failures += ssp_t_case(c);
+    }
     for (size_t k = 0; k < sizeof(k_ssp_refusals) / sizeof(k_ssp_refusals[0]);
          k++)
         failures += ssp_t_refusal(&k_ssp_refusals[k]);
