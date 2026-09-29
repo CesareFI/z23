@@ -1509,7 +1509,7 @@ engine/composition/src/boot_refold_staged.c:boot_snapshot_apply_to_coins_kv:19
 engine/composition/src/boot_refold_staged.c:boot_snapshot_drop_bodiless_have_data_above_seed:28
 engine/composition/src/boot_seniority.c:boot_seniority_weigh_address:17
 engine/composition/src/boot_seniority.c:bsen_build_table:18
-engine/composition/src/boot_services.c:app_init_services:125
+engine/composition/src/boot_services.c:app_init_services:113
 engine/composition/src/boot_services_shutdown.c:shutdown_persist_runtime_state:18
 engine/composition/src/boot_shielded_seed.c:boot_capture_shielded:23
 engine/composition/src/boot_shielded_seed.c:seed_shielded_from_snapshot:18
@@ -1527,12 +1527,11 @@ engine/composition/src/boot_tip_hooks.c:boot_process_block_commit_tip:21
 engine/composition/src/boot_tip_hooks.c:boot_process_block_restore_mempool:56
 engine/composition/src/boot_utxo_replay.c:background_utxo_replay:29
 engine/composition/src/boot_zcode_async_proof.c:async_context_build:28
-engine/composition/src/boot_zcode_async_proof.c:async_dispatch:32
+engine/composition/src/boot_zcode_async_proof.c:async_dispatch:30
 engine/composition/src/boot_zcode_async_proof.c:async_proof_rpc_run:19
 engine/composition/src/boot_zcode_async_proof.c:boot_zcode_async_proof_observe_progress:16
 engine/composition/src/boot_zcode_async_proof.c:boot_zcode_async_proof_observe_result:25
-engine/composition/src/boot_zcode_async_proof.c:boot_zcode_async_proof_tick:16
-engine/composition/src/boot_zcode_async_select.c:boot_zcode_async_select_peer:21
+engine/composition/src/boot_zcode_async_select.c:boot_zcode_async_select_peer:20
 engine/composition/src/boot_zcode_dht.c:boot_zcode_dht_frame:18
 engine/composition/src/boot_zcode_dht.c:boot_zcode_dht_periodic:24
 engine/composition/src/boot_zcode_dht.c:dht_authorize_frame_chain:16

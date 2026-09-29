@@ -483,7 +483,8 @@ static bool work_has_expired_outbound_binding(
 }
 
 /* The binding now lives on its new session. Its lost-session track can
- * never be answered, so it stops holding requester-owned headroom. */
+ * never be answered, so it stops holding requester-owned headroom. A no-op
+ * unless this submit is the cross-session retry of that exact binding. */
 static void work_supersede_lost_binding(
     struct vcs_zcode_work_node *node,
     const struct vcs_zcode_work_request_v1 *request)
@@ -573,8 +574,7 @@ enum vcs_zcode_work_node_result vcs_zcode_work_node_submit(
         if (!work_queue_frame(node, peer, &message))
             result = VCS_ZCODE_WORK_NODE_FULL;
         else {
-            if (expired_cross_peer_retry)
-                work_supersede_lost_binding(node, request);
+            work_supersede_lost_binding(node, request);
             memset(track, 0, sizeof(*track));
             track->used = true; track->peer = peer; track->request = *request;
             memcpy(track->worker_signer,

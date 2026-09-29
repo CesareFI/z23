@@ -17,6 +17,11 @@ struct vcs_zcode_work_node;
 bool boot_zcode_async_session_lost(
     struct vcs_zcode_work_node *work,
     const struct db_build_proof_event *event);
+/* True when the request can no longer be answered where it was sent: its
+ * lease is over or its session is gone. */
+bool boot_zcode_async_needs_retry(
+    struct vcs_zcode_work_node *work,
+    const struct db_build_proof_event *event, int64_t now);
 bool boot_zcode_async_select_peer(
     struct vcs_zcode_work_node *work,
     const struct db_build_proof_event *event,

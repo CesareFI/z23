@@ -561,35 +561,25 @@ bool boot_wallet_rebuild_probe(sqlite3 *db, bool *has_utxos, bool *has_keys)
     sqlite3_finalize(stmt);
     return false;
 }
-#if defined(_WIN32) && defined(__clang__)
-    __attribute__((optnone)) /* Bound the Windows startup coordinator frame. */
-#elif defined(_WIN32) && defined(__GNUC__)
-    __attribute__((optimize("no-inline", "no-inline-functions",
-                            "no-inline-small-functions")))
-#endif
+
 int boot_wallet_catch_up(struct wallet *w, const struct active_chain *chain,
                          const char *datadir,
                          struct wallet_rescan_report *report)
 {
-    struct block_index *chain_tip = active_chain_tip(chain);
     int tip_height = active_chain_height(chain);
-    if (!chain_tip || w->best_block_height >= tip_height)
+    if (!active_chain_tip(chain) || w->best_block_height >= tip_height)
         return -1;
     int scan_from = w->best_block_height > 0 ? w->best_block_height + 1 : 0;
-    if (w->time_first_key > 0 && scan_from == 0) {
-        int64_t scan_time = w->time_first_key - 7200;
-        for (int h = tip_height; h >= 0; h--) {
-            struct block_index *bi = active_chain_at(chain, h);
-            if (bi && (int64_t)bi->nTime < scan_time) {
-                scan_from = h + 1;
-                break;
-            }
-        }
+    int64_t scan_time = w->time_first_key - 7200;
+    for (int h = tip_height;
+         w->time_first_key > 0 && scan_from == 0 && h >= 0; h--) {
+        struct block_index *bi = active_chain_at(chain, h);
+        if (bi && (int64_t)bi->nTime < scan_time)
+            scan_from = h + 1;
     }
     if (scan_from == 0 && w->best_block_height == 0 && tip_height > 1000) {
-        printf("Wallet scan height is 0 with %d blocks. "
-               "Use rescanblockchain RPC for targeted rescan.\n",
-               tip_height);
+        printf("Wallet scan height is 0 with %d blocks. Use rescanblockchain "
+               "RPC for targeted rescan.\n", tip_height);
         return -1;
     }
     if (tip_height - scan_from >= 50000) {
@@ -598,16 +588,20 @@ int boot_wallet_catch_up(struct wallet *w, const struct active_chain *chain,
                scan_from, tip_height, tip_height - scan_from);
         return -1;
     }
-    /* Block writers put bodies under the network-specific directory
-     * (<base>/regtest on regtest, the base itself on mainnet). Reading the
-     * base on regtest fails every body, and the wallet then keeps each
-     * coinbase at the depth it had at its last flush. */
+    /* Bodies live under the network directory (<base>/regtest on regtest,
+     * the base on mainnet); reading <base> there fails every body. */
     char body_root[4096];
     GetDataDir(true, body_root, sizeof(body_root));
     return wallet_rescan_report(w, chain, scan_from, tip_height,
                                 body_root[0] ? body_root : datadir, report);
 }
 
+#if defined(_WIN32) && defined(__clang__)
+    __attribute__((optnone)) /* Bound the Windows startup coordinator frame. */
+#elif defined(_WIN32) && defined(__GNUC__)
+    __attribute__((optimize("no-inline", "no-inline-functions",
+                            "no-inline-small-functions")))
+#endif
 bool app_init_services(struct app_context *ctx,
                         const struct chain_params *params,
                         struct boot_svc_ctx *svc)
@@ -663,7 +657,6 @@ bool app_init_services(struct app_context *ctx,
         node_db_sync_mempool_load(boot_node_db(svc), svc->mempool,
                                   svc->coins_tip, svc->state, svc->params);
 
-    /* Rescan blockchain for wallet transactions if wallet is behind chain tip */
     (void)boot_wallet_catch_up(svc->wallet, &svc->state->chain_active,
                                ctx->datadir, NULL);
 
