@@ -961,6 +961,11 @@ MUTATION_LIB_SRCS = tools/dev/mutation_ops.c tools/dev/mutation_run.c
 # root launcher and compiler worker in tools/verify compile them directly.
 VERIFY_CONTRACT_SRCS = tools/verify/fixed_result_contract.c \
 	tools/verify/fixed_result_key_v2.c
+# The fixed-result signer and root publisher cores. Their CLIs are standalone
+# binaries built from a signed commit (docs/work/verifier-install-packet.md);
+# only the test harness links the cores, never the node or the dev binary.
+VERIFY_SIGNER_SRCS = tools/verify/fixed_result_trust.c \
+	tools/verify/fixed_result_signer.c tools/verify/fixed_result_publisher.c
 DEVLOOP_ALL_SRCS = $(call zcl_filter_ephemeral_sources,\
 	$(filter-out $(DEV_STANDALONE_SRCS),$(wildcard tools/dev/*.c))) \
 	$(VERIFY_CONTRACT_SRCS)
@@ -3083,7 +3088,7 @@ TEST_DEV_EXECUTOR_SRCS = tools/dev/devloop_cycle.c tools/dev/dev_failure_store.c
 	tools/dev/dev_proof_receipt.c tools/dev/dev_proof_signer.c \
 	tools/dev/dev_proof_observation.c \
 	tools/dev/dev_proof_observation_lookup.c tools/dev/verify_store.c $(SHADOW_SELECT_SRCS) \
-	$(MUTATION_LIB_SRCS)
+	$(MUTATION_LIB_SRCS) $(VERIFY_SIGNER_SRCS)
 SPEC_SRCS = $(wildcard tests/harness/spec/*.c)
 CHAOS_SIM_SRCS = tools/sim/sim_peer.c
 # The landing queue's two library translation units. land_main.c owns a

@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton; SPDX-License-Identifier: Apache-2.0.
  * purpose: Descriptor-walk custody and trust loading for the fixed-result
  *          signer and publisher. See fixed_result_trust.h. */
+#if defined(__linux__)
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
@@ -350,4 +351,9 @@ bool zcl_frt_load_fixture(const struct zcl_frt_fixture *fixture,
     if (dir >= 0) (void)close(dir);
     return frt_finish(out, reason, why);
 }
+#endif
+
+#else
+/* The verifier scope is one Linux x86-64 translation unit. */
+typedef int zcl_fixed_result_trust_linux_only;
 #endif

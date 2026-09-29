@@ -2,6 +2,7 @@
  * purpose: The fixed-result signer core: independent receipt and artifact
  *          checks, key v2 rebuilt from pins, one sealed record, private
  *          staging. See fixed_result_signer.h. */
+#if defined(__linux__)
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
@@ -614,16 +615,25 @@ void zcl_frs_seal_fixture(const struct zcl_frs_fixture *fixture,
         out->reason = why;
         return;
     }
-    int key_dir = frs_fixture_dir(fixture->key_dir, trust.signer_uid);
-    int staging = frs_fixture_dir(fixture->staging_dir, trust.signer_uid);
+    /* Identity before any private directory is opened, as in production. */
+    why = frs_identity(&trust, fixture->allow_same_uid);
+    int key_dir = why ? -1 : frs_fixture_dir(fixture->key_dir,
+                                             trust.signer_uid);
+    int staging = why ? -1 : frs_fixture_dir(fixture->staging_dir,
+                                             trust.signer_uid);
     if (key_dir >= 0 && staging >= 0)
         zcl_frs_seal(&trust, inputs, key_dir, ZCL_FRS_KEY_NAME, staging,
                      fixture->allow_same_uid, out);
     else
-        out->reason = key_dir < 0 ? ZCL_FRS_WHY_KEY_UNSAFE
-                                  : ZCL_FRS_WHY_STAGING_UNSAFE;
+        out->reason = why ? why : key_dir < 0 ? ZCL_FRS_WHY_KEY_UNSAFE
+                                              : ZCL_FRS_WHY_STAGING_UNSAFE;
     if (staging >= 0) (void)close(staging);
     if (key_dir >= 0) (void)close(key_dir);
     zcl_frt_release(&trust);
 }
+#endif
+
+#else
+/* The verifier scope is one Linux x86-64 translation unit. */
+typedef int zcl_fixed_result_signer_linux_only;
 #endif

@@ -3,6 +3,7 @@
  *          then add it no-clobber to the root-owned observation store
  *          under the exclusive publication lock. See
  *          fixed_result_publisher.h. */
+#if defined(__linux__)
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
@@ -645,4 +646,9 @@ void zcl_frp_publish_fixture(const struct zcl_frp_fixture *fixture,
     if (state >= 0) (void)close(state);
     zcl_frt_release(&trust);
 }
+#endif
+
+#else
+/* The verifier scope is one Linux x86-64 translation unit. */
+typedef int zcl_fixed_result_publisher_linux_only;
 #endif
