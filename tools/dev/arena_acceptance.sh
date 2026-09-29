@@ -18,7 +18,7 @@
 #       rebuilt from the pinned historical package sources (or an explicit
 #       ARENA_SOURCE_STORE override). `z23 join` writes its hosting flags;
 #       dead-sink -connect means A dials nobody real and only serves.
-#   Node B (fresh node): empty mktemp datadir. Its four download records
+#   Node B (fresh node): empty mktemp datadir. Its eight download records
 #       are seeded ONE-SHOT while B is down (the fetch leaf persists a
 #       resumable record under <dd>/zcode/downloads and reports
 #       live:false — the exact science-acceptance pattern), then B boots
@@ -26,7 +26,8 @@
 #       resumes the records and pulls every chunk from A.
 #   Node C (late replica): empty mktemp datadir joined through the public
 #       command. After A stops it connects only to B and fetches one exact
-#       package without DHT, identity, wallet transaction, block, or fee.
+#       package and its signed carrier without DHT, identity, wallet
+#       transaction, block, or fee.
 #
 # MINIMAL BOOT, NO ZID IDENTITY — resolved empirically: the zpkgswm
 # package swarm needs no DHT delegation or identity anchor between two
@@ -41,13 +42,17 @@
 # What this script PROVES (each step asserts before proceeding):
 #   [1] `z23 join` writes the hosting/worker flags into clean scratch
 #       datadirs; daemons boot without either flag on their command lines.
-#       A then serves all four arena packages (tracked+complete).
-#   [2] B fetches zprng + zdogfight + zdogdrone + zdogace over the swarm
-#       from A (per-package fetch seconds recorded), then installs each
+#       A then serves all four arena packages and signed carriers
+#       (tracked+complete).
+#   [2] B fetches zprng + zdogfight + zdogdrone + zdogace and their signed
+#       carriers over the swarm from A (per-package fetch seconds recorded),
+#       admits each complete carrier through the receiver's verified import,
+#       then installs each
 #       through `zcode package add plan|commit` (confined build+test
 #       worker, receipt-bound; per-package install seconds recorded).
 #   [2b] A is stopped; a third clean joined node fetches exact inert bytes
-#       from B alone, with no DHT, ZID, wallet transaction, block or fee.
+#       and a signed carrier from B alone, then admits the carrier with no
+#       install, DHT, ZID, wallet transaction, block or fee.
 #   [3] A and B each build BOTH pilot binaries from their own datadir
 #       (verified `zcode package checkout` of the app source + the
 #       installed static archives; -static is REQUIRED — the sandbox's
@@ -92,32 +97,12 @@
 #
 # NAMED GAPS (asserted/documented, not worked around silently — a named
 # gap is a deliverable, same convention as science_acceptance.sh):
-#   G-A1  FIXTURE SCOPE. The historical publisher store also contains four
-#         transport-carrier manifests. A's scratch copy is pruned to the four
-#         named arena roots so the test has an exact announce set. The current
+#   G-A1  FIXTURE SCOPE. A's scratch copy is pruned to four named inner and
+#         four signed-carrier roots so the test has an exact announce set. The current
 #         free announce quota is 64/hour; this test makes no claim about
 #         crossing it. The source store and original Git objects are untouched.
-#   G-A2  RELEASE-ENVELOPE IMPORT IS DHT-GATED. The raw zpkgswm swarm
-#         delivers the exact package CONTENT (manifest + CAS chunks,
-#         re-derived against the root — B needs no identity for that, as
-#         this run proves). But the carrier import that persists the
-#         signed release envelope + recipe wires into releases/ and
-#         recipes/ (vcs_package_transport_import) is only invoked from
-#         the authenticated-DHT provider route
-#         (boot_zcode_package_import_render via the zcode_dht_provider_route
-#         RPC, namespace "zclassic23.package"), and `zcode package add
-#         plan` resolves a root THROUGH that envelope
-#         (pkgl_release_for_root over <dd>/zcode/releases). Without ZID
-#         anchoring + DHT delegation there is no command path that fires
-#         the import. Minimal in-script fix (same-host alpha): A hands the
-#         four signed release envelopes + recipe wires to B over the same
-#         out-of-band channel as the match definition (the exact bytes
-#         from A's store; the envelope is self-verifying signed metadata
-#         and the add commit's VERIFIED gate re-hashes every fetched CAS
-#         chunk, so B trusts nothing about these files beyond their own
-#         signatures and hashes). This mirrors science-acceptance G1: the
-#         receiver learns the root/binding out of band; automatic
-#         provider/root discovery is S7 DHT territory.
+#   Carrier roots are exact inputs to the local verified admit command.
+#   Automatic provider/root discovery remains S7 DHT territory.
 #
 # SAFETY: three live production nodes share this host. This script never
 # touches them: the live-port refuse-set is asserted for every port it
@@ -153,6 +138,7 @@ ZDOGDRONE_ROOT=10568ebc2876a6e3ecded390b012b0b8983613f3717949db1c9144ede2d78cf8
 ZDOGACE_ROOT=ea4bda864dc08eb67afed16445469242d621eaec3da3beb9137b03ceddb68c07
 # Dependency install/build order (target last).
 PKG_ORDER="zprng zdogfight zdogdrone zdogace"
+declare -A CARRIER_ROOT=()
 
 MATCH_SEED=4242
 MATCH_PLANES=3
@@ -277,7 +263,7 @@ aa_result() { "$JSONQ" unwrap; }
 # store one-shot against a live datadir). JSON input rides stdin.
 aa_leaf() { # $1=datadir $2=leaf  (stdin = input JSON)
     local dd="$1" leaf="$2"
-    "$NODE_BIN" -datadir="$dd" "$leaf" --input=- 2>/dev/null | tail -1 || true
+    "$NODE_BIN" -datadir="$dd" -regtest "$leaf" --input=- 2>/dev/null | tail -1 || true
 }
 # Live-daemon query: dumpstate <subsystem> [key] via the cookie RPC.
 aa_dump() { # $1=datadir $2=rpcport $3=subsystem [$4=key]
@@ -395,6 +381,15 @@ command -v cmp     >/dev/null 2>&1 || aa_die "cmp not found"
 if [ -n "$ARENA_SOURCE_STORE" ]; then
     [ -d "$ARENA_SOURCE_STORE/zcode" ] ||
         aa_die "explicit quarantine store $ARENA_SOURCE_STORE is missing"
+    for name in $PKG_ORDER; do
+        env_name="ARENA_${name^^}_CARRIER_ROOT"
+        carrier="${!env_name:-}"
+        [[ "$carrier" =~ ^[0-9a-f]{64}$ ]] ||
+            aa_die "explicit source store requires $env_name as a 64-hex signed carrier root"
+        [ -f "$ARENA_SOURCE_STORE/zcode/manifests/$carrier" ] ||
+            aa_die "explicit source store lacks $name carrier manifest $carrier"
+        CARRIER_ROOT[$name]="$carrier"
+    done
 else
     [ -x "$PACKAGE_SIGN_BIN" ] ||
         aa_die "$PACKAGE_SIGN_BIN not built — run make zclassic23-package-sign"
@@ -493,6 +488,11 @@ aa_bootstrap_source_store() {
             aa_die "$name create commit refused: $commit"
         [ "$(aa_jget "$commit" data.package_root 2>/dev/null || true)" = "$root" ] ||
             aa_die "$name historical content root drifted from $root"
+        carrier="$(aa_jget "$commit" data.transport_root 2>/dev/null || true)"
+        [[ "$carrier" =~ ^[0-9a-f]{64}$ ]] &&
+        [ -f "$store/zcode/manifests/$carrier" ] ||
+            aa_die "$name create commit omitted its signed carrier manifest: $commit"
+        CARRIER_ROOT[$name]="$carrier"
 
         plan="$(printf '%s' "{\"name_or_root\":\"$root\"}" |
             aa_leaf "$store" zcode.package.add.plan)"
@@ -535,12 +535,16 @@ aa_step 1 "copy quarantine store byte-exact; boot A (hosting, dead sink)"
 cp -a "$ARENA_SOURCE_STORE/." "$AA_DD_A/" \
     || aa_die "cp -a of the quarantine store failed"
 aa_join "$AA_DD_A"
-# G-A1: prune A's scratch copy to the exact four named arena manifests.
+# G-A1: prune A's scratch copy to the four inner and four carrier manifests.
 # Store recovery re-derives tracking at open; the source store is untouched.
+ARENA_ROOT_SET=""
+for name in $PKG_ORDER; do
+    ARENA_ROOT_SET="$ARENA_ROOT_SET $(root_of "$name") ${CARRIER_ROOT[$name]}"
+done
 PRUNED=0
 for f in "$AA_DD_A/zcode/manifests/"*; do
     [ -e "$f" ] || continue
-    case " $ZPRNG_ROOT $ZDOGFIGHT_ROOT $ZDOGDRONE_ROOT $ZDOGACE_ROOT " in
+    case " $ARENA_ROOT_SET " in
         *" $(basename "$f") "*) : ;;
         *) rm -f "$f"; PRUNED=$((PRUNED + 1)) ;;
     esac
@@ -561,29 +565,33 @@ aa_wait_rpc "$AA_DD_A" "$A_RPC" "$AA_PGID_A" "$RPC_WARMUP" \
     || aa_die "A RPC never came up"
 for name in $PKG_ORDER; do
     root="$(root_of "$name")"
-    set -- $(aa_store_state "$AA_DD_A" "$A_RPC" "$root")
-    [ "${1:-false}" = "true" ] && [ "${2:-false}" = "true" ] \
-        || aa_die "A does not serve $name (tracked=${1:-?} complete=${2:-?})"
+    for served_root in "$root" "${CARRIER_ROOT[$name]}"; do
+        set -- $(aa_store_state "$AA_DD_A" "$A_RPC" "$served_root")
+        [ "${1:-false}" = "true" ] && [ "${2:-false}" = "true" ] \
+            || aa_die "A does not serve $name root $served_root (tracked=${1:-?} complete=${2:-?})"
+    done
 done
 a_tracked="$(aa_dump "$AA_DD_A" "$A_RPC" zcode_store | "$JSONQ" get state.tracked_packages 2>/dev/null || true)"
 a_tracked="${a_tracked:--1}"
-[ "$a_tracked" = "4" ] \
-    || aa_die "A tracks $a_tracked packages, not exactly the four Arena roots — G-A1 fixture scope failed"
-echo "arena-acceptance:     A live store: exactly 4 named packages tracked+complete"
+[ "$a_tracked" = "8" ] \
+    || aa_die "A tracks $a_tracked packages, not exactly four inner and four carrier roots — G-A1 fixture scope failed"
+echo "arena-acceptance:     A live store: four inner and four carrier roots tracked+complete"
 
 # ── [2] B: seed fetch records one-shot, boot hosting, swarm pull ─────
-aa_step 2 "B: seed 4 download records one-shot, boot hosting, swarm fetch from A"
+aa_step 2 "B: seed 8 download records one-shot, boot hosting, swarm fetch from A"
 for name in $PKG_ORDER; do
     root="$(root_of "$name")"
-    out="$(printf '%s' "{\"root\":\"$root\",\"maximum_bytes\":268435456}" \
-        | aa_leaf "$AA_DD_B" zcode.package.fetch)"
-    [ "$(aa_jget "$out" ok 2>/dev/null || true)" = "true" ] \
-        || aa_die "B fetch-record seed for $name refused: $out"
-    live="$(aa_jget "$out" data.live 2>/dev/null || true)"; live="${live:-true}"
-    [ "$live" = "false" ] \
-        || aa_die "B fetch-record seed for $name claimed a live engine: $out"
+    for fetch_root in "$root" "${CARRIER_ROOT[$name]}"; do
+        out="$(printf '%s' "{\"root\":\"$fetch_root\",\"maximum_bytes\":268435456}" \
+            | aa_leaf "$AA_DD_B" zcode.package.fetch)"
+        [ "$(aa_jget "$out" ok 2>/dev/null || true)" = "true" ] \
+            || aa_die "B fetch-record seed for $name root $fetch_root refused: $out"
+        live="$(aa_jget "$out" data.live 2>/dev/null || true)"; live="${live:-true}"
+        [ "$live" = "false" ] \
+            || aa_die "B fetch-record seed for $name claimed a live engine: $out"
+    done
 done
-echo "arena-acceptance:     4 resumable download records persisted under B's zcode/downloads (live:false, node down)"
+echo "arena-acceptance:     8 resumable download records persisted under B's zcode/downloads (live:false, node down)"
 
 T_FETCH_START=$(now_ms)
 AA_PGID_B="$(aa_spawn "$AA_DD_B" "$B_PORT" "$B_RPC" "$B_FS" "$B_HTTPS" "127.0.0.1:$A_PORT")"
@@ -594,7 +602,7 @@ echo "arena-acceptance:     topology exactly A<->B (regtest, no DNS seeds, -nofi
 
 # Poll B's LIVE store (dumpstate is answered by the daemon; no one-shot
 # store open against a live datadir) until every root is complete. All
-# four are re-checked each pass, so completion order never misattributes
+# eight are re-checked each pass, so completion order never misattributes
 # per-package times.
 FETCH_DEADLINE=$(( $(date +%s) + FETCH_BUDGET ))
 declare -A FETCH_SECS=()
@@ -604,9 +612,13 @@ while [ -n "$remaining" ] && [ "$(date +%s)" -lt "$FETCH_DEADLINE" ]; do
     for name in $remaining; do
         root="$(root_of "$name")"
         set -- $(aa_store_state "$AA_DD_B" "$B_RPC" "$root")
-        if [ "${1:-false}" = "true" ] && [ "${2:-false}" = "true" ]; then
+        inner_complete=false
+        [ "${1:-false}" = "true" ] && [ "${2:-false}" = "true" ] && inner_complete=true
+        set -- $(aa_store_state "$AA_DD_B" "$B_RPC" "${CARRIER_ROOT[$name]}")
+        if [ "$inner_complete" = true ] &&
+           [ "${1:-false}" = "true" ] && [ "${2:-false}" = "true" ]; then
             FETCH_SECS[$name]=$(( $(now_ms) - T_FETCH_START ))
-            echo "arena-acceptance:     B fetched $name over the swarm: complete at +$(( FETCH_SECS[$name] / 1000 )).$(( FETCH_SECS[$name] % 1000 ))s"
+            echo "arena-acceptance:     B fetched $name and its signed carrier over the swarm: complete at +$(( FETCH_SECS[$name] / 1000 )).$(( FETCH_SECS[$name] % 1000 ))s"
         else
             next="$next $name"
         fi
@@ -617,7 +629,8 @@ done
 if [ -n "$remaining" ]; then
     echo "arena-acceptance:     stall detail (tracked complete present/total chunks):" >&2
     for name in $remaining; do
-        echo "arena-acceptance:       $name: $(aa_store_state "$AA_DD_B" "$B_RPC" "$(root_of "$name")")" >&2
+        echo "arena-acceptance:       $name inner: $(aa_store_state "$AA_DD_B" "$B_RPC" "$(root_of "$name")")" >&2
+        echo "arena-acceptance:       $name carrier: $(aa_store_state "$AA_DD_B" "$B_RPC" "${CARRIER_ROOT[$name]}")" >&2
     done
     grep -am8 -i "swarm\|announce\|download" "$AA_DD_B/node.log" 2>/dev/null \
         | sed 's/^/arena-acceptance:       B log: /' >&2 || true
@@ -628,21 +641,71 @@ fi
 T_FETCH_DONE=$(now_ms)
 
 # ── [2b] the no-coin onboarding claim, over real daemons ─────────────
-# B has only verified package bytes from A. Stop A completely, then let a
-# clean `z23 join`-configured C fetch one exact root from B. No DHT discovery
-# is involved: the ordinary NODE_ZCL23 inventory announces the root.
-aa_step 2b "publisher down; clean joined C fetches exact inert bytes from replica B"
+# B has verified package bytes but no release authority yet. Public serving
+# refuses the inner roots until the signed carrier is admitted. Stop A and B,
+# assert that pre-admission refusal, import the existing carrier, then resume
+# B as a hosting replica before C joins. No DHT discovery is involved.
+aa_step 2b "publisher down; B admits fetched carriers before serving clean C"
 [ ! -e "$AA_DD_B/zcode/installed" ] ||
     aa_die "B built or installed fetched source before explicit admission"
 aa_kill_group "$AA_PGID_A"; AA_PGID_A=""
+aa_kill_group "$AA_PGID_B"; AA_PGID_B=""
 sleep 1
 
-out="$(printf '%s' "{\"root\":\"$ZPRNG_ROOT\",\"maximum_bytes\":268435456}" \
-    | aa_leaf "$AA_DD_C" zcode.package.fetch)"
-[ "$(aa_jget "$out" ok 2>/dev/null || true)" = "true" ] ||
-    aa_die "C no-coin fetch-record seed refused: $out"
-[ "$(aa_jget "$out" data.live 2>/dev/null || true)" = "false" ] ||
-    aa_die "C down-node fetch seed claimed a live engine: $out"
+# A one-shot store open replays the complete staging catalog after restart;
+# add.plan only reads release metadata and does not open that store.
+out="$(printf '%s' "{\"root\":\"$ZPRNG_ROOT\",\"maximum_bytes\":268435456}" |
+    aa_leaf "$AA_DD_B" zcode.package.fetch)"
+[ "$(aa_jget "$out" ok 2>/dev/null || true)" = "true" ] &&
+[ "$(aa_jget "$out" data.already_complete 2>/dev/null || true)" = "true" ] ||
+    aa_die "B restart could not recover complete fetched catalog: $out"
+
+for name in $PKG_ORDER; do
+    root="$(root_of "$name")"
+    # A live complete status is CAS presence; the fresh store open above
+    # has now finalized every complete staged manifest before inspection.
+    out="$(printf '%s' "{\"name_or_root\":\"$root\"}" |
+        aa_leaf "$AA_DD_B" zcode.package.add.plan)"
+    [ "$(aa_jget "$out" ok 2>/dev/null || true)" = "false" ] &&
+    [ "$(aa_jget "$out" error.code 2>/dev/null || true)" = "TARGET_UNRESOLVED" ] &&
+    [[ "$(aa_jget "$out" error.message 2>/dev/null || true)" == *"no release names package root $root"* ]] ||
+        aa_die "B did not refuse missing release for $name before carrier admission: $out"
+    [ -f "$AA_DD_B/zcode/manifests/$root" ] ||
+        aa_die "B recovery did not commit complete $name manifest"
+    [ -f "$AA_DD_B/zcode/manifests/${CARRIER_ROOT[$name]}" ] ||
+        aa_die "B recovery did not commit complete $name carrier manifest"
+done
+for name in $PKG_ORDER; do
+    root="$(root_of "$name")"
+    carrier="${CARRIER_ROOT[$name]}"
+    out="$(printf '%s' "{\"transport_root\":\"$carrier\"}" |
+        aa_leaf "$AA_DD_B" zcode.package.admit)"
+    [ "$(aa_jget "$out" ok 2>/dev/null || true)" = "true" ] &&
+    [ "$(aa_jget "$out" data.package_root 2>/dev/null || true)" = "$root" ] &&
+    [ "$(aa_jget "$out" data.transport_root 2>/dev/null || true)" = "$carrier" ] &&
+    [ "$(aa_jget "$out" data.reconstructed 2>/dev/null || true)" = "true" ] ||
+        aa_die "B refused exact signed carrier admission for $name: $out"
+    chunks="$(aa_jget "$out" data.source_chunks 2>/dev/null || true)"
+    reused="$(aa_jget "$out" data.cas_objects_reused 2>/dev/null || true)"
+    [ -n "$chunks" ] && [ "$chunks" = "$reused" ] ||
+        aa_die "B did not reuse every fetched CAS chunk for $name: $out"
+done
+[ ! -e "$AA_DD_B/zcode/installed" ] ||
+    aa_die "B's carrier admission gained build/install authority"
+AA_PGID_B="$(aa_spawn "$AA_DD_B" "$B_PORT" "$B_RPC" "$B_FS" \
+    "$B_HTTPS" "127.0.0.1:$DEAD_SINK")"
+aa_wait_rpc "$AA_DD_B" "$B_RPC" "$AA_PGID_B" "$RPC_WARMUP" ||
+    aa_die "B RPC never came up after signed carrier admission"
+echo "arena-acceptance:     B admitted four signed carriers with full CAS reuse; restart preserved public hosting"
+
+for fetch_root in "$ZPRNG_ROOT" "${CARRIER_ROOT[zprng]}"; do
+    out="$(printf '%s' "{\"root\":\"$fetch_root\",\"maximum_bytes\":268435456}" \
+        | aa_leaf "$AA_DD_C" zcode.package.fetch)"
+    [ "$(aa_jget "$out" ok 2>/dev/null || true)" = "true" ] ||
+        aa_die "C no-coin fetch-record seed for $fetch_root refused: $out"
+    [ "$(aa_jget "$out" data.live 2>/dev/null || true)" = "false" ] ||
+        aa_die "C down-node fetch seed claimed a live engine: $out"
+done
 
 AA_PGID_C="$(aa_spawn "$AA_DD_C" "$C_PORT" "$C_RPC" "$C_FS" \
     "$C_HTTPS" "127.0.0.1:$B_PORT")"
@@ -654,18 +717,21 @@ aa_wait_pair "$AA_DD_B" "$B_RPC" "$AA_DD_C" "$C_RPC" ||
 deadline=$(( $(date +%s) + FETCH_BUDGET ))
 while [ "$(date +%s)" -lt "$deadline" ]; do
     set -- $(aa_store_state "$AA_DD_C" "$C_RPC" "$ZPRNG_ROOT")
+    inner_complete=false
+    [ "${1:-false}" = "true" ] && [ "${2:-false}" = "true" ] && inner_complete=true
+    set -- $(aa_store_state "$AA_DD_C" "$C_RPC" "${CARRIER_ROOT[zprng]}")
+    [ "$inner_complete" = true ] &&
     [ "${1:-false}" = "true" ] && [ "${2:-false}" = "true" ] && break
     sleep 1
 done
-set -- $(aa_store_state "$AA_DD_C" "$C_RPC" "$ZPRNG_ROOT")
-[ "${1:-false}" = "true" ] && [ "${2:-false}" = "true" ] ||
-    aa_die "C did not fetch zprng from replica B after publisher A stopped"
+for fetch_root in "$ZPRNG_ROOT" "${CARRIER_ROOT[zprng]}"; do
+    set -- $(aa_store_state "$AA_DD_C" "$C_RPC" "$fetch_root")
+    [ "${1:-false}" = "true" ] && [ "${2:-false}" = "true" ] ||
+        aa_die "C did not fetch zprng root $fetch_root from replica B after publisher A stopped"
+done
 [ ! -e "$AA_DD_C/zcode/installed" ] ||
     aa_die "C's fetched bytes gained build/install authority"
 
-cmp -s "$AA_DD_B/zcode/manifests/$ZPRNG_ROOT" \
-    "$AA_DD_C/zcode/manifests/$ZPRNG_ROOT" ||
-    aa_die "C's relayed manifest is not byte-identical to B's verified root"
 for node in "B:$AA_DD_B:$B_RPC" "C:$AA_DD_C:$C_RPC"; do
     label="${node%%:*}"; rest="${node#*:}"; dd="${rest%:*}"; rpc="${rest##*:}"
     [ "$(aa_rpc "$dd" "$rpc" getblockcount | aa_result)" = "0" ] ||
@@ -682,6 +748,17 @@ done
 echo "arena-acceptance:     PASS join config -> ordinary inventory -> replica fetch; A down, exact bytes inert, height=0, mempool=0, DHT=false"
 aa_kill_group "$AA_PGID_C"; AA_PGID_C=""
 sleep 1
+out="$(printf '%s' "{\"root\":\"$ZPRNG_ROOT\",\"maximum_bytes\":268435456}" |
+    aa_leaf "$AA_DD_C" zcode.package.fetch)"
+[ "$(aa_jget "$out" ok 2>/dev/null || true)" = "true" ] &&
+[ "$(aa_jget "$out" data.already_complete 2>/dev/null || true)" = "true" ] ||
+    aa_die "C restart could not recover complete relayed catalog: $out"
+cmp -s "$AA_DD_B/zcode/manifests/$ZPRNG_ROOT" \
+    "$AA_DD_C/zcode/manifests/$ZPRNG_ROOT" ||
+    aa_die "C's relayed manifest is not byte-identical to B's verified root"
+cmp -s "$AA_DD_B/zcode/manifests/${CARRIER_ROOT[zprng]}" \
+    "$AA_DD_C/zcode/manifests/${CARRIER_ROOT[zprng]}" ||
+    aa_die "C's relayed signed carrier manifest differs from B's verified root"
 
 # Nodes down: every further store operation is one-shot per datadir, never
 # racing a live daemon.
@@ -690,21 +767,18 @@ aa_kill_group "$AA_PGID_A"; AA_PGID_A=""
 sleep 1
 echo "arena-acceptance:     both nodes SIGTERM'd after the swarm leg; installs are one-shot, node down"
 
-# The swarm delivered exact content: assert B persisted each manifest and
-# the tracked chunk sets are complete on disk.
-for name in $PKG_ORDER; do
-    root="$(root_of "$name")"
-    [ -f "$AA_DD_B/zcode/manifests/$root" ] \
-        || aa_die "B fetched $name but manifests/$root is missing"
-done
-# G-A2: hand B the signed release envelopes + recipe wires out of band
-# (the DHT-gated carrier import is the only in-node path; see the header).
-install -d -m 700 "$AA_DD_B/zcode/releases" "$AA_DD_B/zcode/recipes"
-cp -a "$AA_DD_A/zcode/releases/." "$AA_DD_B/zcode/releases/" \
-    || aa_die "G-A2 release-envelope handoff failed"
-cp -a "$AA_DD_A/zcode/recipes/." "$AA_DD_B/zcode/recipes/" \
-    || aa_die "G-A2 recipe-wire handoff failed"
-echo "arena-acceptance:     G-A2 handoff: signed release envelopes + recipe wires A->B out of band (swarm carried the content; the import path is DHT-gated)"
+# The swarm delivered exact inner and carrier content to C; admission now
+# reconstructs its signed release with the same receiver policy as B.
+out="$(printf '%s' "{\"transport_root\":\"${CARRIER_ROOT[zprng]}\"}" |
+    aa_leaf "$AA_DD_C" zcode.package.admit)"
+[ "$(aa_jget "$out" ok 2>/dev/null || true)" = "true" ] &&
+[ "$(aa_jget "$out" data.package_root 2>/dev/null || true)" = "$ZPRNG_ROOT" ] &&
+[ "$(aa_jget "$out" data.transport_root 2>/dev/null || true)" = "${CARRIER_ROOT[zprng]}" ] &&
+[ "$(aa_jget "$out" data.reconstructed 2>/dev/null || true)" = "true" ] ||
+    aa_die "C refused relayed zprng signed carrier admission: $out"
+[ ! -e "$AA_DD_C/zcode/installed" ] ||
+    aa_die "C's signed carrier admission gained build/install authority"
+echo "arena-acceptance:     B and C reconstructed signed releases and recipes only from complete swarm carriers; every B CAS chunk reused"
 
 # B installs each package through the confined build+test worker.
 declare -A INSTALL_SECS=()
@@ -904,14 +978,14 @@ aa_step 8 "worker-failure leg: SIGKILL the confined worker mid-build on C, retry
 rm -rf "$AA_DD_C/zcode"
 cp -a "$AA_DD_B/zcode" "$AA_DD_C/zcode" || aa_die "C store copy failed"
 rm -rf "$AA_DD_C/zcode/installed" "$AA_DD_C/zcode/buildwork" \
-       "$AA_DD_C/zcode/staging" "$AA_DD_C/zcode/receipts" \
+       "$AA_DD_C/zcode/receipts" \
        "$AA_DD_C/zcode/addplans"
 out="$(printf '%s' "{\"name_or_root\":\"$ZDOGDRONE_ROOT\"}" | aa_leaf "$AA_DD_C" zcode.package.add.plan)"
 [ "$(aa_jget "$out" ok 2>/dev/null || true)" = "true" ] \
     || aa_die "C add plan refused: $out"
 C_PLAN="$(aa_jget "$out" data.plan_id)"
 printf '%s' "{\"plan_id\":\"$C_PLAN\"}" > "$AA_WORK/c-commit-input.json"
-setsid "$NODE_BIN" -datadir="$AA_DD_C" zcode.package.add.commit --input=- \
+setsid "$NODE_BIN" -datadir="$AA_DD_C" -regtest zcode.package.add.commit --input=- \
     <"$AA_WORK/c-commit-input.json" >"$AA_WORK/c-commit-1.out" 2>&1 &
 AA_PGID_C=$!
 # Kill as soon as the confined build shows on disk (bounded window).
@@ -921,8 +995,8 @@ while [ "$(date +%s)" -lt "$deadline" ]; do
     if ! kill -0 "$AA_PGID_C" 2>/dev/null; then
         break
     fi
-    if [ -n "$(find "$AA_DD_C/zcode/buildwork" "$AA_DD_C/zcode/staging" -type f 2>/dev/null | head -1)" ]; then
-        kill_evidence="buildwork/staging"
+    if [ -n "$(find "$AA_DD_C/zcode/buildwork" -type f 2>/dev/null | head -1)" ]; then
+        kill_evidence="fresh buildwork file"
         break
     fi
     sleep 0.05
@@ -1060,4 +1134,4 @@ echo "arena-acceptance:   cross-node reproduction wall time (B fetch start -> B 
 echo "arena-acceptance:   whole-proof wall time: $(( ( $(now_ms) - AA_T0 ) / 1000 ))s"
 
 aa_step done "ALL LEGS GREEN"
-echo "arena-acceptance: PROOF COMPLETE — two-node swarm fetch, independent install, byte-identical match, tamper refusal, kill-safe retry."
+echo "arena-acceptance: PROOF COMPLETE — three-node carrier relay, verified admission, independent install, byte-identical match, tamper refusal, kill-safe retry."
