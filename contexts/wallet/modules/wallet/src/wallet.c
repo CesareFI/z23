@@ -796,8 +796,7 @@ bool wallet_create_transaction(struct wallet *w,
     memset(wtx_out, 0, sizeof(*wtx_out));
     transaction_init(&wtx_out->tx);
 
-    /* Snapshot best_block_height (mutated by wallet_rescan) under a brief
-     * w->cs hold for an atomic read; never held across coin selection. */
+    /* Brief w->cs hold for an atomic height read, never across selection. */
     zcl_mutex_lock(&w->cs);
     int height = w->best_block_height;
     zcl_mutex_unlock(&w->cs);
@@ -913,8 +912,7 @@ bool wallet_create_transaction_multi(struct wallet *w,
     memset(wtx_out, 0, sizeof(*wtx_out));
     transaction_init(&wtx_out->tx);
 
-    /* Snapshot best_block_height (mutated by wallet_rescan) under a brief
-     * w->cs hold for an atomic read; never held across coin selection. */
+    /* Brief w->cs hold for an atomic height read, never across selection. */
     zcl_mutex_lock(&w->cs);
     int height = w->best_block_height;
     zcl_mutex_unlock(&w->cs);

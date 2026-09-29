@@ -1365,16 +1365,8 @@ static void boot_wallet_read_persisted_state(struct app_context *ctx,
     boot_wallet_adopt_seed_if_it_governs(&g_wallet);
     wallet_sqlite_read_scripts(&g_wallet_sqlite, &g_wallet);
     wallet_sqlite_read_watch_only(&g_wallet_sqlite, &g_wallet);
-    int saved_height = 0;
-    if (wallet_sqlite_read_scan_height(&g_wallet_sqlite, &saved_height))
-        g_wallet.best_block_height = saved_height;
-    /* A previous boot catch-up left a range unread; the catch-up below in
-     * app_init_services rescans from here. */
-    int retry_from = 0;
-    if (wallet_sqlite_read_scan_retry(&g_wallet_sqlite, &retry_from)) {
-        g_wallet.scan_retry_pending = true;
-        g_wallet.scan_retry_from = retry_from > 0 ? retry_from : 0;
-    }
+    /* Scan height plus any retry an earlier boot catch-up left pending. */
+    (void)wallet_sqlite_read_scan_state(&g_wallet_sqlite, &g_wallet);
     printf("Wallet loaded: %zu keys, %zu sapling keys, %zu scripts, "
            "%zu watch-only, %zu txs, scan height %d, scanned through %d.\n",
            g_wallet.keystore.num_keys,
