@@ -931,6 +931,39 @@ static int de_test_skip_helper(struct de_state *s)
     return failures;
 }
 
+static int de_test_skip_suffix(struct de_state *s)
+{
+    int failures = 0;
+    TEST("devloop_early: nested includes in a header with an uncommon "
+         "suffix remain in the early key") {
+        ASSERT(de_hole_setup(s));
+        ASSERT(de_write(s->fx.root,
+                        "tests/harness/src/early_skip_outer.data",
+                        "#include \"early_skip_inner.h\"\n"
+                        "#define EARLY_SKIP_OUTER EARLY_SKIP_INNER\n"));
+        ASSERT(de_write(s->fx.root,
+                        "tests/harness/src/early_skip_inner.h",
+                        "#define EARLY_SKIP_INNER 1\n"));
+        ASSERT(de_write(s->fx.root, "tests/harness/src/" DE_VOUCHED ".c",
+                        "#include \"early_skip_dep.h\"\n"
+                        "#include \"early_skip_outer.data\"\n"
+                        "int early_skip_fixture_group = "
+                        "EARLY_SKIP_DEP + EARLY_SKIP_OUTER;\n"));
+        de_hole_decide(s, DE_HOLE_FLAGS);
+        ASSERT(de_hole_is(s, "no-record", ""));
+        ASSERT(zcl_devloop_early_skip_record(s->fx.root, &s->hole, "", 1000));
+        de_hole_decide(s, DE_HOLE_FLAGS);
+        ASSERT(de_hole_is(s, "closure-unchanged", ""));
+        ASSERT(de_write(s->fx.root,
+                        "tests/harness/src/early_skip_inner.h",
+                        "#define EARLY_SKIP_INNER 2\n"));
+        de_hole_decide(s, DE_HOLE_FLAGS);
+        ASSERT(de_hole_is(s, "key-changed", ""));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int de_test_skip_flags(struct de_state *s)
 {
     int failures = 0;
@@ -1017,6 +1050,7 @@ static int de_test_restart(void)
         failures += de_test_skip_verify(s);
         failures += de_test_skip_linked(s);
         failures += de_test_skip_helper(s);
+        failures += de_test_skip_suffix(s);
         failures += de_test_skip_flags(s);
     }
     if (s)

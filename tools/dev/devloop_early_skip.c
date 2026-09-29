@@ -504,13 +504,6 @@ static bool es_resolve(struct es_graph *g, uint32_t idx, enum es_inc kind,
     return es_search(g, kind, name, out);
 }
 
-static bool es_scannable(const char *path)
-{
-    const char *dot = strrchr(path, '.');
-    return dot && (strcmp(dot, ".c") == 0 || strcmp(dot, ".h") == 0 ||
-                   strcmp(dot, ".inc") == 0 || strcmp(dot, ".def") == 0);
-}
-
 /* One directive of node `idx`: join its resolved file, or mark the node
  * unvouched. False only when a bound or memory ran out. */
 static bool es_scan_directive(struct es_graph *g, uint32_t idx,
@@ -633,7 +626,7 @@ static void es_node_load(struct es_graph *g, uint32_t idx)
     }
     es_sha3_hex(text, len, g->nodes[idx].digest);
     es_strip_comments(text, len);
-    if (es_scannable(g->nodes[idx].path) && !es_scan(g, idx, text, len))
+    if (!es_scan(g, idx, text, len))
         es_node_bad(g, idx, "closure-bound", g->nodes[idx].path);
     char seen[64] = "";
     const char *why = g->vet ? g->vet(g->vet_arg, text, seen, sizeof(seen))
