@@ -4336,7 +4336,7 @@ static int test_zd_improve_command(void)
         zcl_command_reply_free(&legacy_reply);
         json_set_str((struct json_value *)json_get(&input, "mode"), "admit");
         json_set_str((struct json_value *)json_get(
-                         &input, "fixed_input_path"), "/usr/bin/true");
+                         &input, "fixed_input_path"), base_true);
         struct zcl_command_reply detached_input_reply;
         zcl_command_reply_init(&detached_input_reply,
                                "zcl.zcode_improve.v1");
@@ -9014,7 +9014,7 @@ static bool zd_publication_store_collision(
 }
 
 #if !defined(_WIN32)
-static bool zd_publication_store_parent(const char *dir,
+static bool zd_publication_store_parent_case(const char *dir,
     const struct vcs_zcode_publication_v1 *intent, const uint8_t signer[32])
 {
     uint8_t root[32];
@@ -9025,6 +9025,44 @@ static bool zd_publication_store_parent(const char *dir,
     bool restored = chmod(dir, 0700) == 0;
     return restricted && restored && !initialized && !stored &&
         !zcl_bytes_any_set(root, sizeof(root));
+}
+
+static bool zd_publication_child_success(pid_t child)
+{
+    int status = 0;
+    pid_t waited;
+    do {
+        waited = waitpid(child, &status, 0);
+    } while (waited < 0 && errno == EINTR);
+    return waited == child && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+}
+
+static bool zd_publication_store_parent(
+    const struct vcs_zcode_publication_v1 *intent, const uint8_t signer[32])
+{
+    char dir[512];
+    test_make_tmpdir(dir, sizeof(dir), "zcode_dev", "publication_parent");
+    bool ok = false;
+    if (geteuid() != 0) {
+        ok = zd_publication_store_parent_case(dir, intent, signer);
+    } else {
+        const uid_t child_uid = (uid_t)1;
+        const gid_t child_gid = (gid_t)1;
+        ok = chown(dir, child_uid, child_gid) == 0 && fflush(NULL) == 0;
+        pid_t child = ok ? fork() : -1;
+        if (child == 0) {
+            if (chdir(dir) != 0 || setgid(child_gid) != 0 ||
+                setuid(child_uid) != 0 || geteuid() != child_uid ||
+                getegid() != child_gid)
+                _exit(125);
+            bool child_ok = zd_publication_store_parent_case(".", intent,
+                                                              signer);
+            _exit(child_ok ? 0 : 1);
+        }
+        ok = child > 0 && zd_publication_child_success(child);
+    }
+    test_rm_rf(dir);
+    return ok;
 }
 #endif
 
@@ -9039,7 +9077,7 @@ static bool zd_publication_store(const struct vcs_zcode_publication_v1 *intent,
         !vcs_object_store_initialized(dir) && vcs_object_store_init(dir) &&
         zd_publication_store_invalid(dir, intent, signer, root);
 #if !defined(_WIN32)
-    if (ok) ok = zd_publication_store_parent(dir, intent, signer);
+    if (ok) ok = zd_publication_store_parent(intent, signer);
 #endif
     if (ok) ok = vcs_zcode_publication_store_verified(dir, intent, signer, stored) &&
         memcmp(stored, root, 32) == 0 &&
@@ -10324,6 +10362,24 @@ static char zd_route_method[64];
 static char zd_route_params[4096];
 static const char *zd_route_answer;
 
+static ssize_t zd_route_read_byte(int fd, char *byte)
+{
+    ssize_t got;
+    do {
+        got = read(fd, byte, 1);
+    } while (got < 0 && errno == EINTR);
+    return got;
+}
+
+static bool zd_route_write_byte(int fd, char byte)
+{
+    ssize_t wrote;
+    do {
+        wrote = write(fd, &byte, 1);
+    } while (wrote < 0 && errno == EINTR);
+    return wrote == 1;
+}
+
 static char *zd_route_rpc_hook(const char *method, const char *params_json)
 {
     zd_route_calls++;
@@ -10355,14 +10411,14 @@ static pid_t zd_route_hold_datadir(const char *datadir, int *release_fd)
         struct node_db ndb = {0};
         if (!node_db_open(&ndb, db_path)) _exit(2);
         char b = 1;
-        if (write(ready[1], &b, 1) != 1) _exit(3);
-        (void)read(done[0], &b, 1);
+        if (!zd_route_write_byte(ready[1], b)) _exit(3);
+        if (zd_route_read_byte(done[0], &b) != 0) _exit(4);
         node_db_close(&ndb);
         _exit(0);
     }
     close(ready[1]); close(done[0]);
     char b = 0;
-    bool held = child > 0 && read(ready[0], &b, 1) == 1;
+    bool held = child > 0 && zd_route_read_byte(ready[0], &b) == 1 && b == 1;
     close(ready[0]);
     if (!held) {
         close(done[1]);
