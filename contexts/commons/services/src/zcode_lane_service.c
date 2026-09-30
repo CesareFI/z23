@@ -22,10 +22,12 @@
 #include <string.h>
 
 static bool lane_load_raw(const char *workspace, const char *hex,
-                          uint8_t **wire, size_t *wire_len, uint8_t root[32])
+                          size_t max_bytes, uint8_t **wire,
+                          size_t *wire_len, uint8_t root[32])
 {
     return zcl_hex_decode_lower(hex, root, 32) &&
-           vcs_object_load_raw(workspace, root, wire, wire_len) == 0;
+           vcs_object_load_raw_bounded(
+               workspace, root, max_bytes, wire, wire_len) == 0;
 }
 
 /* Every lane, PROVEN included, is judged by the task's acceptance tests. A
@@ -51,6 +53,7 @@ static struct zcl_result lane_load_context(
 {
     uint8_t *wire = NULL, root[32], checked[32]; size_t wire_len = 0;
     if (!lane_load_raw(workspace, action->task_root_sha3,
+                       VCS_ZCODE_TASK_WIRE_BYTES,
                        &wire, &wire_len, root) ||
         vcs_zcode_task_parse(wire, wire_len, task) != VCS_ZCODE_DEV_OK ||
         vcs_zcode_task_root(task, checked) != VCS_ZCODE_DEV_OK ||
@@ -59,6 +62,7 @@ static struct zcl_result lane_load_context(
     }
     free(wire); wire = NULL;
     if (!lane_load_raw(workspace, action->candidate_root_sha3,
+                       VCS_ZCODE_CANDIDATE_WIRE_BYTES,
                        &wire, &wire_len, root) ||
         vcs_zcode_candidate_parse(wire, wire_len, candidate) !=
             VCS_ZCODE_DEV_OK ||
@@ -68,6 +72,7 @@ static struct zcl_result lane_load_context(
     }
     free(wire); wire = NULL;
     if (!lane_load_raw(workspace, action->proof_policy_root_sha3,
+                       VCS_ZCODE_PROOF_POLICY_WIRE_BYTES,
                        &wire, &wire_len, root) ||
         vcs_zcode_proof_policy_parse(wire, wire_len, policy) !=
             VCS_ZCODE_DEV_OK ||
@@ -84,7 +89,9 @@ static bool lane_load_receipt(
     struct vcs_zcode_lane_receipt_v1 *receipt)
 {
     uint8_t root[32], checked[32], *wire = NULL; size_t wire_len = 0;
-    bool ok = lane_load_raw(workspace, receipt_hex, &wire, &wire_len, root) &&
+    bool ok = lane_load_raw(
+        workspace, receipt_hex, VCS_ZCODE_LANE_WIRE_BYTES,
+        &wire, &wire_len, root) &&
         vcs_zcode_lane_receipt_parse(wire, wire_len, receipt) ==
             VCS_ZCODE_DEV_OK &&
         vcs_zcode_lane_receipt_id(receipt, checked) == VCS_ZCODE_DEV_OK &&

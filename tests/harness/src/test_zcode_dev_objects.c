@@ -988,6 +988,91 @@ static bool zd_resize_object(const char *store, const uint8_t root[32],
     return n > 0 && (size_t)n < sizeof(path) && truncate(path, size) == 0;
 }
 
+static bool zd_lane_context_oversize_probe(
+    struct node_db *ndb, const char *workspace, const char *action_id,
+    const char *root_hex, size_t wire_bytes, int64_t now,
+    const char *expected_error)
+{
+    uint8_t root[32], *wire = NULL;
+    size_t wire_len = 0;
+    struct db_build_worker worker;
+    uint8_t secret[32], pubkey[32];
+    if (!zcl_hex_decode_lower(root_hex, root, sizeof(root)) ||
+        vcs_object_load_raw_bounded(
+            workspace, root, wire_bytes, &wire, &wire_len) != 0 ||
+        wire_len != wire_bytes ||
+        !build_fabric_worker_identity_load(
+            workspace, &worker, secret, pubkey).ok ||
+        !zd_resize_object(workspace, root, (off_t)wire_bytes + 1)) {
+        memset(secret, 0, sizeof(secret));
+        free(wire);
+        return false;
+    }
+    struct zcode_lane_status ignored;
+    struct zcl_result refused = zcode_lane_advance(
+        ndb, workspace, action_id, VCS_ZCODE_LANE_FRONTIER, now,
+        secret, pubkey, &ignored);
+    bool repaired = vcs_object_put_addressed_repair(
+        workspace, root, wire, wire_len, NULL);
+    memset(secret, 0, sizeof(secret));
+    free(wire);
+    return !refused.ok && strcmp(refused.message, expected_error) == 0 &&
+           repaired;
+}
+
+static bool zd_lane_cas_bounds(
+    struct node_db *ndb, const char *workspace,
+    const struct db_build_action *action, const char *source_root_hex,
+    const char *receipt_root_hex, int64_t now)
+{
+    static const size_t wire_bytes[] = {
+        VCS_ZCODE_TASK_WIRE_BYTES,
+        VCS_ZCODE_CANDIDATE_WIRE_BYTES,
+        VCS_ZCODE_PROOF_POLICY_WIRE_BYTES,
+    };
+    const char *roots[] = {
+        action->task_root_sha3,
+        action->candidate_root_sha3,
+        action->proof_policy_root_sha3,
+    };
+    const char *errors[] = {
+        "lane-task-cas-invalid",
+        "lane-candidate-cas-invalid",
+        "lane-policy-cas-invalid",
+    };
+    for (size_t i = 0; i < sizeof(wire_bytes) / sizeof(wire_bytes[0]); i++)
+        if (!zd_lane_context_oversize_probe(
+                ndb, workspace, action->action_id, roots[i], wire_bytes[i],
+                now, errors[i]))
+            return false;
+
+    uint8_t receipt_root[32], *receipt_wire = NULL;
+    size_t receipt_len = 0;
+    if (!zcl_hex_decode_lower(
+            receipt_root_hex, receipt_root, sizeof(receipt_root)) ||
+        vcs_object_load_raw_bounded(
+            workspace, receipt_root, VCS_ZCODE_LANE_WIRE_BYTES,
+            &receipt_wire, &receipt_len) != 0 ||
+        receipt_len != VCS_ZCODE_LANE_WIRE_BYTES ||
+        !zd_resize_object(
+            workspace, receipt_root,
+            (off_t)VCS_ZCODE_LANE_WIRE_BYTES + 1)) {
+        free(receipt_wire);
+        return false;
+    }
+    struct zcode_lane_status status;
+    struct zcl_result refused = zcode_lane_find(
+        ndb, workspace, source_root_hex, &status);
+    bool repaired = vcs_object_put_addressed_repair(
+        workspace, receipt_root, receipt_wire, receipt_len, NULL);
+    free(receipt_wire);
+    if (refused.ok || strcmp(
+            refused.message, "zcode-lane-projection-or-cas-corrupt") != 0 ||
+        !repaired)
+        return false;
+    return zcode_lane_find(ndb, workspace, source_root_hex, &status).ok;
+}
+
 static bool zd_worker_context_oversize_probe(
     const char *workspace, const struct db_build_job *job,
     const struct db_build_action *action, int64_t now,
@@ -4697,6 +4782,9 @@ static int test_zd_improve_command(void)
         ASSERT_STR_EQ(action.task_root_sha3, task_hex);
         ASSERT_STR_EQ(action.candidate_root_sha3, candidate_hex);
         ASSERT_STR_EQ(action.context_root_sha3, "");
+        ASSERT(zd_lane_cas_bounds(
+            &ndb, workspace, &action, candidate_source_saved,
+            frontier_receipt, (int64_t)platform_time_wall_unix()));
         uint8_t candidate_root[32], *candidate_wire = NULL;
         size_t candidate_wire_len = 0;
         ASSERT(zcl_hex_decode_lower(candidate_hex, candidate_root, 32));
