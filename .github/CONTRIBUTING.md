@@ -205,7 +205,11 @@ preserve the upstream copyright notice in [`NOTICE`](../NOTICE) and
 credit the source in [`docs/ATTRIBUTIONS.md`](../docs/ATTRIBUTIONS.md).
 Copyleft code (GPL/LGPL/AGPL/MPL) cannot be accepted into this tree.
 
-**Attribution:** contributor authorship is preserved in git history —
-PRs are merged with merge commits, never rewritten under someone else's
-name — and contributors are recognized in
-[`docs/CONTRIBUTORS.md`](../docs/CONTRIBUTORS.md) and GitHub's contributor graph.
+**Attribution:** contributor authorship is preserved in git history under
+main's signed, linear-history rule. A single-author contribution keeps that
+contributor as the integration commit's author; multi-author work records each
+additional author with `Co-Authored-By` trailers. Merge commits and unsigned
+commits from a PR branch are not copied to main, but integration must never
+rewrite the contribution as maintainer-only work. Contributors are also
+recognized in [`docs/CONTRIBUTORS.md`](../docs/CONTRIBUTORS.md) and GitHub's
+contributor graph.
