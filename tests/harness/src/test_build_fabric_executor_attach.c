@@ -24,6 +24,7 @@
 #include "vcs/vcs_object.h"
 #include "../../../engine/services/src/build_fabric_observation_internal.h"
 
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -142,6 +143,24 @@ static bool att_open(struct node_db *ndb, char *dir, size_t dir_cap,
     return node_db_open(ndb, path);
 }
 
+static bool att_append_zero(const char *path)
+{
+    FILE *f = fopen(path, "ab");
+    if (!f) return false;
+    bool ok = fputc(0, f) != EOF;
+    return fclose(f) == 0 && ok;
+}
+
+static bool att_write_sparse_size(const char *path, size_t size)
+{
+    if (size == 0 || size - 1u > (size_t)LONG_MAX) return false;
+    FILE *f = fopen(path, "wb");
+    if (!f) return false;
+    bool ok = fseek(f, (long)(size - 1u), SEEK_SET) == 0 &&
+        fputc(0, f) != EOF;
+    return fclose(f) == 0 && ok;
+}
+
 #if !defined(_WIN32)
 extern void build_fabric_attach_test_before_donor_scan(void (*hook)(void *),
                                                        void *context);
@@ -214,6 +233,19 @@ static void att_revoke_donor_after_scan(void *context)
         race->saved = db_build_worker_save(&other, &worker);
     }
     node_db_close(&other);
+}
+
+struct att_append_after_scan {
+    const char *path;
+    bool called;
+    bool appended;
+};
+
+static void att_append_cas_after_scan(void *context)
+{
+    struct att_append_after_scan *mutation = context;
+    mutation->called = true;
+    mutation->appended = att_append_zero(mutation->path);
 }
 #endif
 
@@ -535,16 +567,12 @@ static int test_bf_attach_conflicting_physical_outputs(void)
         ASSERT(att_object_path(
             dir, receipt_b.observation_sha3, bounded_observation_path,
             sizeof(bounded_observation_path)));
-        FILE *oversized_observation = fopen(bounded_observation_path, "ab");
-        ASSERT(oversized_observation != NULL);
-        ASSERT(fputc(0, oversized_observation) == 0);
-        ASSERT(fclose(oversized_observation) == 0);
+        ASSERT(att_append_zero(bounded_observation_path));
         ASSERT(!build_fabric_observation_verify(
             dir, &job_b, &action_b, &receipt_b).ok);
         ASSERT(vcs_object_put_addressed_repair(
             dir, bounded_observation_root, bounded_observation_wire,
             bounded_observation_len, NULL));
-        free(bounded_observation_wire);
         ASSERT(build_fabric_observation_verify(
             dir, &job_b, &action_b, &receipt_b).ok);
         ASSERT(att_plan_request(&ndb, dir, att_id_d, att_id_c, capsule_hex,
@@ -552,6 +580,25 @@ static int test_bf_attach_conflicting_physical_outputs(void)
                                 &action_c));
         struct db_build_receipt receipt_c;
         struct build_fabric_attach_report report;
+#if !defined(_WIN32)
+        struct att_append_after_scan mutation = {
+            .path = bounded_observation_path,
+        };
+        build_fabric_attach_test_after_scan(att_append_cas_after_scan,
+                                            &mutation);
+        struct zcl_result mutated = build_fabric_attach(
+            &ndb, dir, NULL, &job_c, &action_c, secret, pubkey, &receipt_c,
+            &report);
+        build_fabric_attach_test_after_scan(NULL, NULL);
+        ASSERT(mutation.called && mutation.appended);
+        ASSERT(!mutated.ok);
+        ASSERT_STR_EQ(report.refusal,
+                      "attach-output-poisoned: observation malformed");
+        ASSERT(vcs_object_put_addressed_repair(
+            dir, bounded_observation_root, bounded_observation_wire,
+            bounded_observation_len, NULL));
+#endif
+        free(bounded_observation_wire);
         struct zcl_result attached = build_fabric_attach(
             &ndb, dir, NULL, &job_c, &action_c, secret, pubkey, &receipt_c,
             &report);
@@ -826,7 +873,6 @@ static int test_bf_attach_avoids_second_compile(void)
         ASSERT(vcs_component_proof_key_decode(preimage_wire, preimage_len,
                                               &decoded));
         ASSERT_EQ(vcs_component_proof_key_diff(&proof_a, &decoded), 0);
-        free(preimage_wire);
         struct build_fabric_executor_identity checked_identity = {0};
         memcpy(checked_identity.driver, driver, 32);
         memcpy(checked_identity.backend, backend, 32);
@@ -896,6 +942,22 @@ static int test_bf_attach_avoids_second_compile(void)
                                 input_root, "dev-x86-64-v3", &job_b,
                                 &action_b));
         ASSERT(strcmp(action_b.action_id, action_a.action_id) != 0);
+        char preimage_hex[65], preimage_path[600];
+        zcl_hex_encode(preimage_root, 32, preimage_hex);
+        ASSERT(att_object_path(dir, preimage_hex, preimage_path,
+                               sizeof(preimage_path)));
+        ASSERT(att_append_zero(preimage_path));
+        struct db_build_receipt bounded_receipt;
+        struct build_fabric_attach_report bounded_report;
+        struct zcl_result bounded = build_fabric_attach(
+            &ndb, dir, NULL, &job_b, &action_b, secret, pubkey,
+            &bounded_receipt, &bounded_report);
+        ASSERT(!bounded.ok);
+        ASSERT_STR_EQ(bounded_report.refusal,
+                      "executor-key-record-poisoned");
+        ASSERT(vcs_object_put_addressed_repair(
+            dir, preimage_root, preimage_wire, preimage_len, NULL));
+        free(preimage_wire);
 #if !defined(_WIN32)
         /* Interrupted donor reconstruction must refuse, never miss. */
         struct att_remove_before_scan missing = {0};
@@ -1331,10 +1393,18 @@ static int test_bf_attach_miss_and_poisoned_record(void)
         struct db_build_action durable;
         ASSERT(db_build_action_find(&ndb, repro_action.action_id, &durable));
         ASSERT_STR_EQ(durable.state, "QUEUED");
-        /* A record that does not re-derive to its own address is poison. */
+        /* Oversized records refuse before allocation; malformed records
+         * still fail canonical re-derivation. */
+        static const uint8_t oversized_record[4097] = {0};
+        ASSERT(vcs_object_put_addressed(dir, key, oversized_record,
+                                        sizeof(oversized_record)));
+        struct zcl_result oversized = build_fabric_attach(
+            &ndb, dir, NULL, &job, &action, secret, pubkey, &receipt, &report);
+        ASSERT(!oversized.ok);
+        ASSERT_STR_EQ(report.refusal, "executor-key-record-poisoned");
         static const uint8_t garbage[] = "not-an-executor-key-record";
-        ASSERT(vcs_object_put_addressed(dir, key, garbage,
-                                        sizeof(garbage) - 1u));
+        ASSERT(vcs_object_put_addressed_repair(
+            dir, key, garbage, sizeof(garbage) - 1u, NULL));
         struct zcl_result poisoned = build_fabric_attach(
             &ndb, dir, NULL, &job, &action, secret, pubkey, &receipt, &report);
         ASSERT(!poisoned.ok);
@@ -1384,9 +1454,26 @@ static int test_bf_attach_input_cas_refusals(void)
         struct db_build_receipt receipt;
         struct build_fabric_attach_report report;
 
-        ASSERT(remove(object_path) == 0);
+        ASSERT(att_write_sparse_size(
+            object_path, (size_t)VCS_BUILD_ARTIFACT_MAX_BYTES + 1u));
 #if defined(__linux__)
         uint64_t launches_before_cas = zcl_spawn_thread_launch_count();
+#endif
+        struct zcl_result oversized = build_fabric_attach(
+            &ndb, dir, NULL, &job, &action, secret, pubkey, &receipt, &report);
+        ASSERT(!oversized.ok);
+        ASSERT_STR_EQ(report.refusal, "input-cas-miss");
+        ASSERT_EQ(report.compiler_processes, 0);
+        ASSERT_EQ(att_build_work_entries(dir), 0);
+#if defined(__linux__)
+        ASSERT_EQ(zcl_spawn_thread_launch_count() - launches_before_cas, 0u);
+#endif
+        ASSERT(vcs_object_put_addressed_repair(
+            dir, input_root, att_unit, sizeof(att_unit) - 1u, NULL));
+
+        ASSERT(remove(object_path) == 0);
+#if defined(__linux__)
+        launches_before_cas = zcl_spawn_thread_launch_count();
 #endif
         struct zcl_result missing = build_fabric_attach(
             &ndb, dir, NULL, &job, &action, secret, pubkey, &receipt, &report);

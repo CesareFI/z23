@@ -1,12 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
- * purpose: Executor-keyed attachment of a duplicate fixed compile request to
- * one already-qualified physical result, with its own signed receipt.
- *
- * The key binds the fixed action descriptor, recomputed flags/environment,
- * proof policy, exact .i bytes, and current driver/backend/assembler file
- * bytes. The capsule binds the assembler version string; this key also binds
- * its bytes. A physical compile publishes the CAS record at its key. An
- * eligible duplicate attaches to that result. Reproduction refuses by name. */
+ * purpose: Attach duplicate fixed compiles to qualified physical results.
+ * Keys bind fixed inputs/tool bytes; reproduction refuses attachment. */
 
 #if !defined(_WIN32) && !defined(_DEFAULT_SOURCE)
 #define _DEFAULT_SOURCE
@@ -514,7 +508,9 @@ static struct zcl_result bfat_load_input(
             return ZCL_ERR(-1, "%s", refusal);
         }
     } else {
-        if (vcs_object_load_raw(workspace, input_root, out, out_len) != 0 ||
+        if (vcs_object_load_raw_bounded(workspace, input_root,
+                VCS_BUILD_ARTIFACT_MAX_BYTES,
+                out, out_len) != 0 ||
             *out_len == 0 || *out_len > VCS_BUILD_ARTIFACT_MAX_BYTES) {
             free(*out);
             *out = NULL;
@@ -650,17 +646,21 @@ static bool bfat_donor_qualified(
     return true;
 }
 
-/* Re-derive one CAS-resident observation and prove the stored bytes hash to
- * the receipt's declared root. */
+/* Re-derive a CAS observation and prove its declared root. */
 static struct zcl_result bfat_observation_load(
     const char *workspace, const char *root_hex,
     struct vcs_build_execution_observation_v1 *out)
 {
     uint8_t root[32], checked[32], *wire = NULL;
     size_t wire_len = 0;
-    if (!zcl_hex_decode_lower(root_hex, root, 32) ||
-        vcs_object_load_raw(workspace, root, &wire, &wire_len) != 0)
-        return ZCL_ERR(-1, "attach-output-poisoned: observation absent");
+    int loaded = zcl_hex_decode_lower(root_hex, root, 32)
+        ? vcs_object_load_raw_bounded(
+              workspace, root, VCS_BUILD_EXECUTION_OBSERVATION_WIRE_BYTES,
+              &wire, &wire_len)
+        : -1;
+    if (loaded != 0)
+        return ZCL_ERR(-1, "attach-output-poisoned: observation %s",
+                       loaded == -2 ? "malformed" : "absent");
     bool ok = vcs_build_execution_observation_v1_parse(wire, wire_len, out) &&
               vcs_build_execution_observation_v1_root(out, checked) &&
               memcmp(root, checked, 32) == 0;
@@ -964,17 +964,37 @@ static const char *bfat_compose_requester_key(struct bfat_attach_ctx *c)
     return NULL;
 }
 
-/* Returns true when the pipeline must stop: *refusal NULL is a clean MISS
- * (no physical run published this key), non-NULL is the refusal token. */
+static bool bfat_preimage_valid(
+    const char *workspace, const struct bfat_key_fields *fields)
+{
+    uint8_t *preimage = NULL, derived[32], root[32];
+    size_t preimage_len = 0;
+    struct vcs_component_proof_key_v1 decoded;
+    bool ok = vcs_object_load_raw_bounded(
+                  workspace, fields->component_preimage_root,
+                  VCS_CPK_WIRE_BYTES, &preimage, &preimage_len) == 0 &&
+        vcs_component_proof_key_decode(preimage, preimage_len, &decoded) &&
+        vcs_component_proof_key_preimage_root(&decoded, root) &&
+        memcmp(root, fields->component_preimage_root, 32) == 0 &&
+        vcs_component_proof_key_derive(&decoded, derived) &&
+        memcmp(derived, fields->component_key, 32) == 0;
+    free(preimage);
+    return ok;
+}
+
+/* True stops the pipeline; NULL refusal is a clean key-record MISS. */
 static bool bfat_key_record_checked(struct bfat_attach_ctx *c,
                                     const char **refusal)
 {
     uint8_t *record = NULL;
     size_t record_len = 0;
-    if (vcs_object_load_raw(c->workspace, c->key, &record, &record_len) != 0) {
-        c->report->attach_wall_us =
-            platform_time_monotonic_us() - c->started_us;
-        *refusal = NULL;
+    int loaded = vcs_object_load_raw_bounded(
+        c->workspace, c->key, BFAT_RECORD_CAP, &record, &record_len);
+    if (loaded != 0) {
+        if (loaded != -2)
+            c->report->attach_wall_us =
+                platform_time_monotonic_us() - c->started_us;
+        *refusal = loaded == -2 ? "executor-key-record-poisoned" : NULL;
         return true;
     }
     struct bfat_key_fields record_fields;
@@ -990,22 +1010,7 @@ static bool bfat_key_record_checked(struct bfat_attach_ctx *c,
         bfat_record_key(record, record_len, record_key);
         ok = memcmp(record_key, c->key, 32) == 0;
     }
-    if (ok) {
-        uint8_t *preimage = NULL;
-        size_t preimage_len = 0;
-        struct vcs_component_proof_key_v1 decoded;
-        uint8_t derived[32];
-        uint8_t root[32];
-        ok = vcs_object_load_raw(c->workspace,
-                                 record_fields.component_preimage_root,
-                                 &preimage, &preimage_len) == 0 &&
-            vcs_component_proof_key_decode(preimage, preimage_len, &decoded) &&
-            vcs_component_proof_key_preimage_root(&decoded, root) &&
-            memcmp(root, record_fields.component_preimage_root, 32) == 0 &&
-            vcs_component_proof_key_derive(&decoded, derived) &&
-            memcmp(derived, record_fields.component_key, 32) == 0;
-        free(preimage);
-    }
+    if (ok) ok = bfat_preimage_valid(c->workspace, &record_fields);
     free(record);
     if (!ok) {
         *refusal = "executor-key-record-poisoned";
