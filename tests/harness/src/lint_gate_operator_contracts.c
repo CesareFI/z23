@@ -105,6 +105,8 @@ int t_native_operator_docs_contract(void)
         ASSERT(read_entire_file(path, &build_doc) == 0);
         ASSERT(strstr(build_doc, "z23 ops selftest") != NULL);
         ASSERT(strstr(build_doc, "z23 dumpstate hotswap") != NULL);
+        ASSERT(run_gate_script("tools/dev/devagent_claim_lease_selftest.sh",
+                               NULL) == 0);
         PASS();
     } _test_next:;
     free(readme);
