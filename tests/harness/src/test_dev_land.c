@@ -32,6 +32,7 @@
 #include "util/spawn.h"
 #include "dev/dev_git_tree.h"
 #include "dev/dev_proof.h"
+#include "dev/dev_proof_signer.h"
 #include "dev/dev_proof_budget.h"
 #include "dev/devloop.h"
 #include "base/bytes.h"
@@ -6094,6 +6095,282 @@ _test_next:;
     return failures;
 }
 
+#if !defined(_WIN32)
+/* Persist a signed remote observation, then lose only the terminal append.
+ * The original pair remains inflight with its receipt for another driver. */
+static bool dlx_receipt_prepare(struct dlx_rig *rig)
+{
+    struct dlx_call c;
+    bool ok;
+    if (!dlx_rig_make(rig, "receipt_pending_rig"))
+        return false;
+    setenv("ZCL_LAND_PROOF_STUB", "running", 1);
+    setenv("ZCL_LAND_ALLOW_UNSIGNED", "1", 1);
+    dlx_submit(&c, rig, rig->tip);
+    ok = dlx_run(&c) && dlx_ok(&c);
+    dlx_end(&c);
+    return ok;
+}
+
+static bool dlx_receipt_publisher_death(struct dlx_rig *rig)
+{
+    char hook[1400];
+    int child_status = 0;
+    (void)snprintf(hook, sizeof(hook), "%s/hooks/post-receive", rig->bare);
+    pid_t child = fork();
+    if (child < 0) return false;
+    if (child == 0) {
+        char kill_script[256];
+        (void)setsid();
+        (void)alarm(30);
+        (void)snprintf(kill_script, sizeof(kill_script),
+                      "#!/bin/sh\nkill -KILL %ld\n", (long)getpid());
+        if (!dlx_write(hook, kill_script) || chmod(hook, 0700) != 0)
+            _exit(2);
+        struct dlx_call child_call;
+        dlx_begin(&child_call, "step");
+        (void)dlx_run(&child_call);
+        _exit(90);
+    }
+    bool ok = dlx_wait_publisher(child, &child_status) == child &&
+         WIFSIGNALED(child_status) && WTERMSIG(child_status) == SIGKILL;
+    if (unlink(hook) != 0) ok = false;
+    char remote[64];
+    return ok && dlx_origin_main(rig, remote) && strcmp(remote, rig->tip) == 0;
+}
+
+static bool dlx_signed_receipt_pending(struct dlx_rig *rig, char *queue,
+                                      size_t queue_cap, char *marker,
+                                      size_t marker_cap, bool persist_receipt)
+{
+    struct dlx_call c;
+    char land[1200], wt[1400], wrapper[1400], script[3000];
+    bool ok;
+    if (!dlx_receipt_prepare(rig)) return false;
+    dlx_begin(&c, "step");
+    ok = dlx_run(&c) && dlx_ok(&c);
+    dlx_end(&c);
+    if (!ok) return false;
+    unsetenv("ZCL_LAND_ALLOW_UNSIGNED");
+    setenv("ZCL_LAND_PROOF_STUB", "pass", 1);
+    dlx_begin(&c, "attach");
+    (void)json_push_kv_int(&c.input, "seq", 1);
+    ok = dlx_run(&c) && dlx_ok(&c);
+    dlx_end(&c);
+    if (!ok) return false;
+    dlx_landdir(land, sizeof(land));
+    (void)snprintf(wt, sizeof(wt), "%s/wt", land);
+    (void)snprintf(queue, queue_cap, "%s/queue.jsonl", land);
+    (void)snprintf(marker, marker_cap, "%s/receive-count", land);
+    (void)snprintf(wrapper, sizeof(wrapper), "%s/count-receive", land);
+    (void)snprintf(script, sizeof(script),
+        "#!/bin/sh\nprintf 'invoked\\n' >> '%s' || exit 73\n"
+        "exec git-receive-pack \"$@\"\n", marker);
+    if (!dlx_write(wrapper, script) || chmod(wrapper, 0700) != 0)
+        return false;
+    const char *intercept[] = { "config", "remote.origin.receivepack", wrapper, NULL };
+    if (dlx_git(wt, intercept) != 0) return false;
+    if (!persist_receipt) return dlx_receipt_publisher_death(rig);
+    setenv("ZCL_LAND_TEST_REFUSE_OUTCOME_APPEND", "1", 1);
+    setenv("ZCL_DEVLOOP_TEST_PROCESS", "1", 1);
+    dlx_begin(&c, "step");
+    ok = dlx_run(&c) && dlx_ok(&c) &&
+        strcmp(dlx_str(&c, "persist"), "failed") == 0;
+    dlx_end(&c);
+    unsetenv("ZCL_LAND_TEST_REFUSE_OUTCOME_APPEND");
+    unsetenv("ZCL_DEVLOOP_TEST_PROCESS");
+    return ok;
+}
+
+static bool dlx_receipt_step(const char *error, const char *signer)
+{
+    struct dlx_call c;
+    dlx_begin(&c, "step");
+    bool ok = dlx_run(&c);
+    if (error)
+        ok = ok && !dlx_ok(&c) && dlx_err_code(&c) &&
+             strcmp(dlx_err_code(&c), error) == 0;
+    else
+        ok = ok && dlx_ok(&c) && strcmp(dlx_str(&c, "state"), "landed") == 0 &&
+             (!signer || strcmp(dlx_str(&c, "remote_signer"), signer) == 0);
+    dlx_end(&c);
+    return ok;
+}
+
+static bool dlx_receipt_tamper_one(struct dlx_rig *rig, const char *queue,
+                                  const char *original, size_t len,
+                                  const char *field)
+{
+    char key[80], altered[8192], observed[8192], remote[64];
+    size_t got;
+    memcpy(altered, original, len + 1);
+    (void)snprintf(key, sizeof(key), "\"%s\":\"", field);
+    char *value = strstr(altered, key);
+    if (!value) return false;
+    value += strlen(key);
+    if (!((*value >= '0' && *value <= '9') || (*value >= 'a' && *value <= 'f')))
+        return false;
+    *value = *value == '0' ? '1' : '0';
+    return dlx_write(queue, altered) && dlx_receipt_step("REMOTE_RECEIPT_INVALID", NULL) &&
+        dlx_slurp(queue, observed, sizeof(observed), &got) && got == len &&
+        memcmp(altered, observed, len) == 0 &&
+        dlx_origin_main(rig, remote) && strcmp(remote, rig->tip) == 0;
+}
+
+static bool dlx_receipt_tamper_cases(void)
+{
+    struct dlx_rig rig;
+    char queue[1400], marker[1400], original[8192], count[32];
+    size_t len, got;
+    bool ok = false;
+    dlx_isolate("receipt_tamper");
+    if (!dlx_signed_receipt_pending(&rig, queue, sizeof(queue), marker, sizeof(marker), true) ||
+        !dlx_slurp(queue, original, sizeof(original) - 1, &len))
+        goto done;
+    original[len] = 0;
+    const char *fields[] = { "remote_signature", "remote_signer", "remote_source" };
+    for (size_t i = 0; i < sizeof(fields) / sizeof(fields[0]); i++) {
+        if (!dlx_receipt_tamper_one(&rig, queue, original, len, fields[i]))
+            goto done;
+    }
+    if (!dlx_write(queue, original) || !dlx_receipt_step(NULL, NULL))
+        goto done;
+    ok = dlx_slurp(marker, count, sizeof(count), &got) && got == 8 &&
+         memcmp(count, "invoked\n", 8) == 0;
+done:
+    unsetenv("ZCL_DEVLOOP_TEST_PROCESS");
+    dlx_restore();
+    return ok;
+}
+
+static bool dlx_takeover_original_signer(const char *a_hex)
+{
+    char land[1200], path[1400], wire[8192];
+    size_t len;
+    dlx_landdir(land, sizeof(land));
+    (void)snprintf(path, sizeof(path), "%s/outcomes.jsonl", land);
+    struct json_value doc = {0};
+    bool ok = dlx_slurp(path, wire, sizeof(wire), &len) &&
+        json_read(&doc, wire, len) && doc.type == JSON_OBJ;
+    const char *signer = json_get_str(json_get(&doc, "publication_signer"));
+    ok = ok && signer && strcmp(signer, a_hex) == 0;
+    json_free(&doc);
+    return ok;
+}
+
+static bool dlx_takeover_landed(const char *a_hex, const char *b_hex)
+{
+    struct dlx_call c;
+    dlx_begin(&c, "step");
+    bool ok = dlx_run(&c) && dlx_ok(&c) &&
+        strcmp(dlx_str(&c, "state"), "landed") == 0 &&
+        strcmp(dlx_str(&c, "remote_signer"), b_hex) == 0;
+    dlx_end(&c);
+    return ok && dlx_takeover_original_signer(a_hex);
+}
+
+static bool dlx_takeover_trust(struct dlx_rig *rig, const char *queue,
+                               const char *wire, size_t len,
+                               const char *allow, const uint8_t a[32],
+                               const uint8_t b[32])
+{
+    char observed[8192], remote[64], a_hex[65], b_hex[65], allow_text[80];
+    size_t got;
+    if (!dlx_receipt_step("PUBLICATION_INTENT_INVALID", NULL) ||
+        !dlx_slurp(queue, observed, sizeof(observed), &got) || got != len ||
+        memcmp(wire, observed, len) != 0 || !dlx_origin_main(rig, remote) ||
+        strcmp(remote, rig->tip) != 0)
+        return false;
+    zcl_hex_encode(a, 32, a_hex);
+    zcl_hex_encode(b, 32, b_hex);
+    (void)snprintf(allow_text, sizeof(allow_text), "%s\n", a_hex);
+    return dlx_write(allow, allow_text) && chmod(allow, 0600) == 0 &&
+        dlx_takeover_landed(a_hex, b_hex);
+}
+
+static bool dlx_takeover_identity(uint8_t a[32], char *key, size_t key_cap,
+                                  char *allow, size_t allow_cap)
+{
+    bool present = false;
+    const char *why = NULL;
+    return zcl_dev_proof_signer_public(a, &present, &why) && present &&
+        zcl_dev_proof_signer_paths(key, key_cap, allow, allow_cap);
+}
+
+static bool dlx_receipt_receive_once(const char *marker)
+{
+    char count[32];
+    size_t got;
+    return dlx_slurp(marker, count, sizeof(count), &got) && got == 8 &&
+        memcmp(count, "invoked\n", 8) == 0;
+}
+
+static bool dlx_receipt_different_signer(void)
+{
+    struct dlx_rig rig;
+    char queue[1400], marker[1400], key[4096], allow[4096], backup[4160];
+    char wire[8192];
+    uint8_t a[32], b[32], signature[64];
+    bool saved = false, ok = false;
+    const char *why = NULL;
+    size_t got, len;
+    dlx_isolate("receipt_different_signer");
+    if (!dlx_signed_receipt_pending(&rig, queue, sizeof(queue), marker, sizeof(marker), false) ||
+        !dlx_slurp(queue, wire, sizeof(wire) - 1, &got))
+        goto done;
+    wire[got] = 0;
+    len = got;
+    if (!strstr(wire, "\"remote_signature\":\"\"") ||
+        !dlx_takeover_identity(a, key, sizeof(key), allow, sizeof(allow)))
+        goto done;
+    if (snprintf(backup, sizeof(backup), "%s.fixture-saved", key) >= (int)sizeof(backup) ||
+        rename(key, backup) != 0)
+        goto done;
+    saved = true;
+    if (!zcl_dev_proof_signer_sign((const uint8_t *)"takeover", 8, b, signature, &why) ||
+        memcmp(a, b, sizeof(a)) == 0 ||
+        !dlx_takeover_trust(&rig, queue, wire, len, allow, a, b))
+        goto done;
+    /* B independently observes the remote and signs a new receipt while
+     * trusting A's preserved publication intent; the push occurs once. */
+    ok = dlx_receipt_receive_once(marker);
+done:
+    if (saved) {
+        if (unlink(key) != 0 && errno != ENOENT)
+            ok = false;
+        if (rename(backup, key) != 0)
+            ok = false;
+    }
+    unsetenv("ZCL_DEVLOOP_TEST_PROCESS");
+    dlx_restore();
+    return ok;
+}
+#endif
+
+static int test_dev_land_receipt_adversarial(void)
+{
+    int failures = 0;
+#if !defined(_WIN32)
+    TEST("land: tampered persisted remote receipts refuse without redispatch") {
+        ASSERT(dlx_receipt_tamper_cases());
+        PASS();
+    } _test_next:;
+#endif
+    return failures;
+}
+
+static int test_dev_land_signer_takeover(void)
+{
+    int failures = 0;
+#if !defined(_WIN32)
+    TEST("land: another signer resumes only with receiver-local trust") {
+        ASSERT(dlx_receipt_different_signer());
+        PASS();
+    } _test_next:;
+#endif
+    return failures;
+}
+
 static int test_dev_land_signed_tamper(void)
 {
     int failures = 0;
@@ -7167,6 +7444,8 @@ int test_dev_land(void)
     int failures = 0;
     failures += test_dev_land_signed_intent();
     failures += test_dev_land_signed_tamper();
+    failures += test_dev_land_receipt_adversarial();
+    failures += test_dev_land_signer_takeover();
     failures += test_dev_land_signed_stale();
     failures += test_dev_land_signed_recovery();
     failures += test_dev_land_signed_lost_ack();
