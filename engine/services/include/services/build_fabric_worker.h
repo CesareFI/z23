@@ -88,6 +88,18 @@ struct zcl_result build_fabric_worker_capabilities_for_test(
 struct zcl_result build_fabric_worker_verifier_path_for_test(
     const char *running_executable, const char *workspace, char *out,
     size_t cap);
+
+/* Exercise the production ZCODE context loader without claiming or changing
+ * an action, so hostile CAS shapes can be tested independently. */
+struct vcs_zcode_task_v1;
+struct vcs_zcode_candidate_v1;
+struct vcs_zcode_proof_policy_v1;
+struct zcl_result build_fabric_worker_zcode_context_for_test(
+    const char *workspace, const struct db_build_job *job,
+    const struct db_build_action *action, int64_t now,
+    struct vcs_zcode_task_v1 *task,
+    struct vcs_zcode_candidate_v1 *candidate,
+    struct vcs_zcode_proof_policy_v1 *policy, bool *present);
 #endif
 
 #endif /* ZCL_SERVICES_BUILD_FABRIC_WORKER_H */

@@ -988,6 +988,71 @@ static bool zd_resize_object(const char *store, const uint8_t root[32],
     return n > 0 && (size_t)n < sizeof(path) && truncate(path, size) == 0;
 }
 
+static bool zd_worker_context_oversize_probe(
+    const char *workspace, const struct db_build_job *job,
+    const struct db_build_action *action, int64_t now,
+    const uint8_t root[32], const uint8_t *wire, size_t wire_len,
+    const char *expected_error)
+{
+    if (!zd_resize_object(workspace, root, (off_t)wire_len + 1)) return false;
+    struct vcs_zcode_task_v1 task;
+    struct vcs_zcode_candidate_v1 candidate;
+    struct vcs_zcode_proof_policy_v1 policy;
+    bool present = true;
+    struct zcl_result loaded = build_fabric_worker_zcode_context_for_test(
+        workspace, job, action, now, &task, &candidate, &policy, &present);
+    bool repaired = vcs_object_put_addressed_repair(
+        workspace, root, wire, wire_len, NULL);
+    return !loaded.ok && !present &&
+        strcmp(loaded.message, expected_error) == 0 && repaired;
+}
+
+static bool zd_worker_context_bounds(
+    const char *workspace, struct node_db *ndb,
+    const struct db_build_action *action, int64_t now,
+    const struct vcs_zcode_task_v1 *task,
+    const struct vcs_zcode_candidate_v1 *candidate,
+    const struct vcs_zcode_proof_policy_v1 *policy)
+{
+    struct db_build_job job;
+    uint8_t roots[3][32];
+    uint8_t task_wire[VCS_ZCODE_TASK_WIRE_BYTES];
+    uint8_t candidate_wire[VCS_ZCODE_CANDIDATE_WIRE_BYTES];
+    uint8_t policy_wire[VCS_ZCODE_PROOF_POLICY_WIRE_BYTES];
+    if (!db_build_job_find(ndb, action->job_id, &job) ||
+        !zcl_hex_decode_lower(action->task_root_sha3, roots[0], 32) ||
+        !zcl_hex_decode_lower(action->candidate_root_sha3, roots[1], 32) ||
+        !zcl_hex_decode_lower(action->proof_policy_root_sha3, roots[2], 32) ||
+        vcs_zcode_task_serialize(task, task_wire) != VCS_ZCODE_DEV_OK ||
+        vcs_zcode_candidate_serialize(candidate, candidate_wire) !=
+            VCS_ZCODE_DEV_OK ||
+        vcs_zcode_proof_policy_serialize(policy, policy_wire) !=
+            VCS_ZCODE_DEV_OK)
+        return false;
+    const uint8_t *wires[] = {task_wire, candidate_wire, policy_wire};
+    const size_t lens[] = {
+        sizeof(task_wire), sizeof(candidate_wire), sizeof(policy_wire)
+    };
+    const char *errors[] = {
+        "zcode-task-cas-miss-or-corrupt",
+        "zcode-candidate-cas-miss-or-corrupt",
+        "zcode-proof-policy-cas-miss-or-corrupt"
+    };
+    for (size_t i = 0; i < 3; i++)
+        if (!zd_worker_context_oversize_probe(
+                workspace, &job, action, now, roots[i], wires[i], lens[i],
+                errors[i]))
+            return false;
+    struct vcs_zcode_task_v1 loaded_task;
+    struct vcs_zcode_candidate_v1 loaded_candidate;
+    struct vcs_zcode_proof_policy_v1 loaded_policy;
+    bool present = false;
+    struct zcl_result loaded = build_fabric_worker_zcode_context_for_test(
+        workspace, &job, action, now, &loaded_task, &loaded_candidate,
+        &loaded_policy, &present);
+    return loaded.ok && present;
+}
+
 static bool zd_oversize_authority_refuses(const uint8_t base_root[32],
                                           bool oversize_recipe)
 {
@@ -5197,6 +5262,9 @@ static int test_zd_improve_command(void)
                       &candidate, restore_candidate_wire), VCS_ZCODE_DEV_OK);
         ASSERT_EQ(vcs_zcode_proof_policy_serialize(
                       &policy, restore_policy_wire), VCS_ZCODE_DEV_OK);
+        ASSERT(zd_worker_context_bounds(
+            workspace, &ndb, &action, transfer_now,
+            &task, &candidate, &policy));
         const uint8_t *restore_roots[] = {
             task_root, candidate_root, restore_policy_root, restore_input_root
         };

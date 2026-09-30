@@ -92,7 +92,9 @@ struct zcl_result bfw_load_zcode_context(
         return ZCL_ERR(-1, "zcode-context-roots-invalid");
     uint8_t *wire = NULL;
     size_t wire_len = 0;
-    if (vcs_object_load_raw(workspace, task_root, &wire, &wire_len) != 0 ||
+    if (vcs_object_load_raw_bounded(
+            workspace, task_root, VCS_ZCODE_TASK_WIRE_BYTES,
+            &wire, &wire_len) != 0 ||
         vcs_zcode_task_parse(wire, wire_len, task) != VCS_ZCODE_DEV_OK) {
         free(wire);
         return ZCL_ERR(-1, "zcode-task-cas-miss-or-corrupt");
@@ -103,7 +105,9 @@ struct zcl_result bfw_load_zcode_context(
         memcmp(checked, task_root, 32) != 0 ||
         vcs_zcode_task_validate_at(task, now) != VCS_ZCODE_DEV_OK)
         return ZCL_ERR(-1, "zcode-task-stale-or-expired");
-    if (vcs_object_load_raw(workspace, candidate_root, &wire, &wire_len) != 0 ||
+    if (vcs_object_load_raw_bounded(
+            workspace, candidate_root, VCS_ZCODE_CANDIDATE_WIRE_BYTES,
+            &wire, &wire_len) != 0 ||
         vcs_zcode_candidate_parse(wire, wire_len, candidate) !=
             VCS_ZCODE_DEV_OK) {
         free(wire);
@@ -120,7 +124,9 @@ struct zcl_result bfw_load_zcode_context(
     if (patch_verified != VCS_ZCODE_PATCH_OK)
         return ZCL_ERR(-1, "zcode-patch-refused: %s",
                        vcs_zcode_patch_result_string(patch_verified));
-    if (vcs_object_load_raw(workspace, policy_root, &wire, &wire_len) != 0 ||
+    if (vcs_object_load_raw_bounded(
+            workspace, policy_root, VCS_ZCODE_PROOF_POLICY_WIRE_BYTES,
+            &wire, &wire_len) != 0 ||
         vcs_zcode_proof_policy_parse(wire, wire_len, policy) !=
             VCS_ZCODE_DEV_OK) {
         free(wire);
@@ -142,5 +148,18 @@ struct zcl_result bfw_load_zcode_context(
     *present = true;
     return ZCL_OK;
 }
+
+#ifdef ZCL_TESTING
+struct zcl_result build_fabric_worker_zcode_context_for_test(
+    const char *workspace, const struct db_build_job *job,
+    const struct db_build_action *action, int64_t now,
+    struct vcs_zcode_task_v1 *task,
+    struct vcs_zcode_candidate_v1 *candidate,
+    struct vcs_zcode_proof_policy_v1 *policy, bool *present)
+{
+    return bfw_load_zcode_context(workspace, job, action, now, task,
+                                  candidate, policy, present);
+}
+#endif
 
 #endif /* !_WIN32 */
