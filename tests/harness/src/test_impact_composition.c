@@ -2066,6 +2066,44 @@ static int test_ic_proof_wait_reports_settled_failure(void)
     return failures;
 }
 
+static int test_ic_proof_existing_watcher_input(void)
+{
+    int failures = 0;
+    TEST("proof ensure: attach-only ownership input is a typed boolean") {
+        const struct zcl_command_spec *spec = zcl_command_registry_find(
+            zcl_command_catalog(), "dev.proof.ensure", NULL);
+        ASSERT(spec != NULL);
+        ASSERT(strstr(spec->input_keys, "require_existing_watcher") != NULL);
+        const char *valid[] = {"{}", "{\"require_existing_watcher\":false}",
+                              "{\"require_existing_watcher\":true}"};
+        for (size_t i = 0; i < sizeof(valid) / sizeof(valid[0]); i++) {
+            struct json_value input = {0};
+            char why[256];
+            ASSERT(json_read(&input, valid[i], strlen(valid[i])));
+            ASSERT(zcl_command_registry_input_validate(spec, &input, why, sizeof(why)));
+            json_free(&input);
+        }
+        const char *invalid[] = {"null", "1", "\"true\"", "[]", "{}"};
+        for (size_t i = 0; i < sizeof(invalid) / sizeof(invalid[0]); i++) {
+            char raw[128];
+            snprintf(raw, sizeof(raw), "{\"require_existing_watcher\":%s}", invalid[i]);
+            struct json_value input = {0};
+            ASSERT(json_read(&input, raw, strlen(raw)));
+            struct zcl_command_request request = { .spec = spec, .input = &input };
+            struct zcl_command_reply reply;
+            zcl_command_reply_init(&reply, "zcl.dev_proof_status.v1");
+            zcl_native_dev_proof_dispatch(&request, &reply);
+            ASSERT(reply.exit_code == ZCL_COMMAND_EXIT_INVALID);
+            ASSERT(strcmp(reply.error.code, "BAD_INPUT") == 0);
+            ASSERT(!reply.error.mutated);
+            zcl_command_reply_free(&reply);
+            json_free(&input);
+        }
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_ic_proof_retry_command_contract(void)
 {
     int failures = 0;
@@ -10214,6 +10252,7 @@ int test_impact_composition(void)
     failures += test_ic_dev_proof_child_action_identity();
     failures += test_ic_resident_proof_queue();
     failures += test_ic_proof_wait_reports_settled_failure();
+    failures += test_ic_proof_existing_watcher_input();
     failures += test_ic_proof_retry_command_contract();
 #if !defined(_WIN32)
     failures += test_ic_landing_proof_defers_preparation();

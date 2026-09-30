@@ -697,10 +697,13 @@ ZCL_COMMAND_DEV_COMMAND(
     "Returns immediately after reusing or scheduling local verification for "
     "the exact commit/base pair. The worker binds source, mutation, changed "
     "set, impact policy, toolchain, build graph, generated-output, compile, "
-    "lint and test receipts; it grants no deployment or remote authority.", 0,
+    "lint and test receipts; it grants no deployment or remote authority. "
+    "require_existing_watcher=true only notifies a kernel-qualified existing "
+    "proof queue owner and never starts a watcher; missing ownership returns "
+    "the exact foreground step.", 0,
     "dev,proof,ensure,receipt,push,background",
     "zcl.dev_proof_input.v1", "zcl.dev_proof_status.v1",
-    "root,local_commit,remote_base,mode", "",
+    "root,local_commit,remote_base,mode,require_existing_watcher", "",
     "z23-dev dev proof ensure",
     ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_DEV_MUTATION,
     ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_OWNER,

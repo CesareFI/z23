@@ -3877,7 +3877,7 @@ tools/dev/z23_git_hook.c:admit_pair:17
 tools/dev/z23_git_hook.c:child_capture:53
 tools/dev/z23_git_hook.c:child_capture#2:23
 tools/dev/z23_git_hook.c:hook_append_arg:20
-tools/dev/z23_git_hook.c:selftest:60
+tools/dev/z23_git_hook.c:selftest:46
 tools/engine_unit.c:append_unit_receipt:27
 tools/engine_unit.c:compose_prompt:23
 tools/engine_unit.c:dispatch_cli:21

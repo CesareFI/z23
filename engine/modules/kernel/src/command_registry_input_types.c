@@ -69,7 +69,7 @@ static bool cr_match_bool(const char *key, const struct json_value *value,
         "enabled",           "relink_generation", "wait_for_edit",
         "all",               "allow_high_fees",   "exact",
         "restore",           "release",           "once",
-        "dry_run",
+        "dry_run",           "require_existing_watcher",
     };
     if (!cr_key_in(key, keys, sizeof(keys) / sizeof(keys[0])) &&
         !command_registry_devagent_input_extra_bool_key(key))

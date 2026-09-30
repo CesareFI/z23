@@ -171,6 +171,58 @@ for wt in "$RIG" "$RIG_B"; do
         fail "relative hooksPath in $wt resolved to '$got'"
 done
 
+# An ordinary commit with foreground-proof residue must not launch any dev
+# process. The fixture dev executable only records attempted invocation;
+# neither a watcher nor a service is activated by this regression.
+QUIET="$WORK/quiet"
+g init -q -b main "$QUIET" || fail "quiet fixture init failed"
+mkdir -p "$QUIET/build/githooks" "$QUIET/build/bin" "$QUIET/.cache"
+printf '#!/usr/bin/env bash\nexec %q --hook=post-commit\n' "$NATIVE_BIN" \
+    > "$QUIET/build/githooks/post-commit"
+cat > "$QUIET/build/bin/z23-dev" <<'EOF'
+#!/usr/bin/env sh
+printf '%s\n' "$*" >> proof-notify-marker
+EOF
+chmod 700 "$QUIET/build/githooks/post-commit" "$QUIET/build/bin/z23-dev"
+g -C "$QUIET" config --local core.hooksPath build/githooks
+for residue in empty dead malformed unreadable; do
+    case "$residue" in
+        empty) : > "$QUIET/.cache/zcl-dev-watch.lock" ;;
+        dead) printf '999999 verify ready proofq1\n' > "$QUIET/.cache/zcl-dev-watch.lock" ;;
+        malformed) printf 'not a watcher receipt\n' > "$QUIET/.cache/zcl-dev-watch.lock" ;;
+        unreadable) chmod 000 "$QUIET/.cache/zcl-dev-watch.lock" ;;
+    esac
+    printf '%s\n' "$residue" >> "$QUIET/seed"
+    g -C "$QUIET" add seed
+    g -C "$QUIET" commit -q -m "$residue" || fail "$residue quiet fixture commit failed"
+done
+chmod 600 "$QUIET/.cache/zcl-dev-watch.lock"
+# Detached post-hook children, if incorrectly launched, have a bounded window
+# to expose their invocation. All fixture executables terminate immediately.
+sleep 1
+[[ ! -e "$QUIET/proof-notify-marker" ]] || \
+    fail "an ordinary commit launched a dev process from stale watcher residue"
+
+# A kernel-held complete candidate must transport the attach-only key. This
+# is a notification wiring fixture, not a claim of native session authority:
+# the fixture executable records argv and cannot activate a watcher.
+(
+    exec 9> "$QUIET/.cache/zcl-dev-watch.lock"
+    flock -x 9 || exit 1
+    printf '2 verify ready proofq1 1 %s\n' \
+        1111111111111111111111111111111111111111111111111111111111111111 >&9
+    printf 'held-ready\n' >> "$QUIET/seed"
+    g -C "$QUIET" add seed
+    g -C "$QUIET" commit -q -m held-ready || exit 1
+    sleep 1
+) || fail "held candidate fixture failed"
+[[ -f "$QUIET/proof-notify-marker" ]] || fail "held candidate did not notify fixture receiver"
+if [[ -f "$QUIET/proof-notify-marker" ]]; then
+    [[ "$(cat "$QUIET/proof-notify-marker")" == \
+        'dev proof ensure --input={"require_existing_watcher":true}' ]] || \
+        fail "held candidate notification omitted attach-only authority guard"
+fi
+
 if [[ "$bad" -ne 0 ]]; then
     exit 1
 fi
