@@ -17,6 +17,7 @@
 #include "config/boot_zcode_async_proof.h"
 #include "config/boot_zcode_work_perf.h"
 #include "config/boot_zcode_work_progress.h"
+#include "config/boot_zcode_work_receipt.h"
 #include "base/hex.h"
 #include "base/safe_alloc.h"
 #include "vcs/package_reward.h"
@@ -556,25 +557,20 @@ static void boot_zcode_work_publish_results(int64_t now)
             ndb, action.job_id, receipts, 8);
         for (int j = 0; j < receipt_count; j++) {
             if (strcmp(receipts[j].action_id, action_id) != 0) continue;
-            uint8_t receipt_root[32]; uint8_t *wire = NULL;
-            size_t wire_len = 0;
+            uint8_t receipt_root[32];
+            struct vcs_zcode_work_result_v1 result = {
+                .request_id = requests[i].request_id,
+            };
             if (!zcl_hex_decode_lower(receipts[j].work_receipt_sha3,
                                       receipt_root, 32) ||
                 (exact_positive && memcmp(
                     receipt_root, current_receipt_root, 32) != 0) ||
-                vcs_object_load_raw(s_work_workspace, receipt_root, &wire,
-                                    &wire_len) != 0)
+                !boot_zcode_work_receipt_load(
+                    s_work_workspace, receipt_root, &result.receipt))
                 continue;
-            struct vcs_zcode_work_result_v1 result = {
-                .request_id = requests[i].request_id,
-            };
             memcpy(result.task_root, requests[i].task_root, 32);
             memcpy(result.candidate_root, requests[i].candidate_root, 32);
             memcpy(result.action_root, requests[i].action_root, 32);
-            bool parsed = vcs_zcode_work_receipt_parse(
-                wire, wire_len, &result.receipt) == VCS_ZCODE_DEV_OK;
-            free(wire);
-            if (!parsed) continue;
             memcpy(result.output_root, result.receipt.output_root, 32);
             if (!vcs_zcode_work_result_verify(
                     &requests[i], &result, s_work_pubkey))

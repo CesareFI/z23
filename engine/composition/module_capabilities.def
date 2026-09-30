@@ -630,6 +630,7 @@ ZCL_MODULE_CAPABILITY("engine/composition/src/boot_wallet_phrase.c", CAP_FS_READ
 ZCL_MODULE_CAPABILITY("engine/composition/src/boot_zcode_dht.c", CAP_FS_WRITE, "")
 ZCL_MODULE_CAPABILITY("engine/composition/src/boot_zcode_dht_publish_gate.c", CAP_FS_READ|CAP_FS_WRITE, "")
 ZCL_MODULE_CAPABILITY("engine/composition/src/boot_zcode_swarm.c", CAP_FS_WRITE|CAP_FS_READ, "")
+ZCL_MODULE_CAPABILITY("engine/composition/src/boot_zcode_work_receipt.c", CAP_NONE, "CAS access is mediated by vcs_object_load_raw_bounded")
 ZCL_MODULE_CAPABILITY("engine/composition/src/bundle_exporter.c", CAP_FS_WRITE|CAP_CLOCK|CAP_FS_READ, "")
 ZCL_MODULE_CAPABILITY("engine/composition/src/bundle_exporter_generations.c", CAP_FS_READ|CAP_FS_WRITE|CAP_PRIVILEGE, "the exporter's on-disk bundle generations: opens its own SQLite catalog with sqlite3_db_config to harden the connection before use")
 ZCL_MODULE_CAPABILITY("engine/composition/src/consensus_state_bundle_validate.c", CAP_FS_READ|CAP_FS_WRITE, "")

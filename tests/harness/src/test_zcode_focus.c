@@ -2,6 +2,8 @@
  * Purpose: Prove rooted shared focus, disjoint claims, reports, and handoff. */
 #include "test/test_core.h"
 
+#include "base/hex.h"
+#include "config/boot_zcode_work_receipt.h"
 #include "crypto/ed25519.h"
 #include "crypto/sha3.h"
 #include "vcs/vcs_object.h"
@@ -9,6 +11,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 static void zf_root(uint8_t out[32], uint8_t value)
 {
@@ -26,6 +29,72 @@ static bool zf_store(const char *workspace, const uint8_t root[32],
               check_len == wire_len && memcmp(check, wire, wire_len) == 0;
     free(check);
     return ok;
+}
+
+static bool zf_resize_object(const char *workspace,
+                             const uint8_t root[32], off_t size)
+{
+    char root_hex[65], path[1024];
+    zcl_hex_encode(root, 32, root_hex);
+    int n = snprintf(path, sizeof(path), "%s/.zvcs/objects/%.2s/%s",
+                     workspace, root_hex, root_hex + 2);
+    return n > 0 && (size_t)n < sizeof(path) && truncate(path, size) == 0;
+}
+
+static int zf_receipt_load_bounds(void)
+{
+    int failures = 0;
+    TEST("zcode focus: swarm publication bounds its receipt CAS read") {
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "zcode_focus", "receipt_bound");
+        ASSERT(vcs_object_store_init(dir));
+        uint8_t seed[32], secret[32], pubkey[32];
+        zf_root(seed, 23);
+        ed25519_keypair(pubkey, secret, seed);
+        struct vcs_zcode_work_receipt_v1 receipt = {
+            .schema_version = VCS_ZCODE_DEV_VERSION,
+            .work_kind = VCS_ZCODE_WORK_BUILD,
+            .status = VCS_ZCODE_WORK_PASS,
+            .started_unix = 100,
+            .finished_unix = 101,
+        };
+        zf_root(receipt.task_root, 1);
+        zf_root(receipt.candidate_root, 2);
+        zf_root(receipt.action_root, 3);
+        zf_root(receipt.input_root, 4);
+        zf_root(receipt.output_root, 5);
+        zf_root(receipt.proof_policy_root, 6);
+        zf_root(receipt.toolchain_capsule_root, 7);
+        zf_root(receipt.lease_id, 8);
+        zf_root(receipt.evidence_root, 9);
+        zf_root(receipt.confinement_root, 10);
+        ASSERT_EQ(vcs_zcode_work_receipt_seal(
+                      &receipt, secret, pubkey), VCS_ZCODE_DEV_OK);
+        uint8_t root[32], wire[VCS_ZCODE_WORK_RECEIPT_WIRE_BYTES];
+        ASSERT_EQ(vcs_zcode_work_receipt_id(&receipt, root),
+                  VCS_ZCODE_DEV_OK);
+        ASSERT_EQ(vcs_zcode_work_receipt_serialize(&receipt, wire),
+                  VCS_ZCODE_DEV_OK);
+        ASSERT(zf_store(dir, root, wire, sizeof(wire)));
+        ASSERT(zf_resize_object(
+            dir, root, (off_t)VCS_ZCODE_WORK_RECEIPT_WIRE_BYTES + 1));
+        struct vcs_zcode_work_receipt_v1 loaded;
+        ASSERT(!boot_zcode_work_receipt_load(dir, root, &loaded));
+        bool repaired = false;
+        ASSERT(vcs_object_put_addressed_repair(
+            dir, root, wire, sizeof(wire), &repaired));
+        ASSERT(repaired);
+        ASSERT(boot_zcode_work_receipt_load(dir, root, &loaded));
+        ASSERT_EQ(vcs_zcode_work_receipt_verify(&loaded, pubkey),
+                  VCS_ZCODE_DEV_OK);
+        uint8_t loaded_root[32];
+        ASSERT_EQ(vcs_zcode_work_receipt_id(&loaded, loaded_root),
+                  VCS_ZCODE_DEV_OK);
+        ASSERT(memcmp(loaded_root, root, sizeof(root)) == 0);
+        test_rm_rf(dir);
+        PASS();
+    } _test_next:;
+    return failures;
 }
 
 static bool zf_transfer(const char *from, const char *to,
@@ -668,6 +737,7 @@ static int zf_existing_work_evidence(void)
 int test_zcode_focus(void)
 {
     int failures = 0;
+    failures += zf_receipt_load_bounds();
     failures += zf_protocol_roundtrip();
     failures += zf_status_and_refusals();
     failures += zf_existing_work_evidence();
