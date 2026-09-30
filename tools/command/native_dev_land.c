@@ -2594,9 +2594,10 @@ static void dl_submit(const struct zcl_command_request *req,
 
 static bool dl_cancel_push_settled(const struct dl_dirs *d, const char *qpath,
                                    long long seq, struct dl_row *settled,
-                                   bool *observation_refused,
+                                   bool *settlement_refused,
                                    struct zcl_command_reply *reply);
-static bool dl_push_pair_same(const struct dl_row *a, const struct dl_row *b);
+static bool dl_push_intent_same(const struct dl_row *a,
+                                const struct dl_row *b);
 
 /* ── cancel ────────────────────────────────────────────────────────────── */
 
@@ -2642,11 +2643,11 @@ static void dl_cancel(const struct zcl_command_request *req,
     if (!dl_cancel_resolve(req, reply, &d, qpath, sizeof(qpath), &seq))
         return;
     struct dl_row settled;
-    bool observation_refused = false;
+    bool settlement_refused = false;
     memset(&settled, 0, sizeof(settled));
     bool push_settled = dl_cancel_push_settled(&d, qpath, seq, &settled,
-                                               &observation_refused, reply);
-    if (observation_refused)
+                                               &settlement_refused, reply);
+    if (settlement_refused)
         return;
     lock = dl_rows_lock(d.land);
     if (lock < 0) {
@@ -2671,7 +2672,7 @@ static void dl_cancel(const struct zcl_command_request *req,
              * the row for reconciliation unless the same pair was just
              * observed settled as refused. */
             if (strcmp(rows[i].phase, "push") == 0 &&
-                !(push_settled && dl_push_pair_same(&rows[i], &settled))) {
+                !(push_settled && dl_push_intent_same(&rows[i], &settled))) {
                 free(rows);
                 dl_unlock(lock);
                 dl_fail(reply, "PUSH_OUTCOME_UNKNOWN", "cancel",
@@ -6772,7 +6773,7 @@ static void dl_push_checkpoint_settle(const struct dl_dirs *d,
  * lock and requires the identical signed pair. */
 static bool dl_cancel_push_settled(const struct dl_dirs *d, const char *qpath,
                                    long long seq, struct dl_row *settled,
-                                   bool *observation_refused,
+                                   bool *settlement_refused,
                                    struct zcl_command_reply *reply)
 {
     struct dl_row *rows = NULL;
@@ -6780,7 +6781,7 @@ static bool dl_cancel_push_settled(const struct dl_dirs *d, const char *qpath,
     bool found = false;
     char observed[80];
     int lock;
-    *observation_refused = false;
+    *settlement_refused = false;
     lock = dl_rows_lock(d->land);
     if (lock < 0)
         return false;
@@ -6797,13 +6798,21 @@ static bool dl_cancel_push_settled(const struct dl_dirs *d, const char *qpath,
     if (!found || !dl_wt_ready(d->wt))
         return false;
     if (!dl_observe_signed_target(d, settled, false, reply)) {
-        *observation_refused = true;
+        *settlement_refused = true;
+        return false;
+    }
+    if (settled->publication_signature[0] &&
+        !dl_publication_verify(d, settled)) {
+        dl_fail(reply, "PUBLICATION_INTENT_INVALID", "cancel",
+                "stored signed publication intent changed; push checkpoint retained",
+                qpath);
+        *settlement_refused = true;
         return false;
     }
     if (!dl_fetch_remote_main(d->wt, observed))
         return false;
     if (!dl_observe_signed_target(d, settled, false, reply)) {
-        *observation_refused = true;
+        *settlement_refused = true;
         return false;
     }
     if (!dl_push_settled_refused(d, settled, observed))
@@ -6812,10 +6821,17 @@ static bool dl_cancel_push_settled(const struct dl_dirs *d, const char *qpath,
     return true;
 }
 
-static bool dl_push_pair_same(const struct dl_row *a, const struct dl_row *b)
+static bool dl_push_intent_same(const struct dl_row *a,
+                                const struct dl_row *b)
 {
     return strcmp(a->local, b->local) == 0 &&
            strcmp(a->base, b->base) == 0 &&
+           strcmp(a->tree, b->tree) == 0 &&
+           strcmp(a->proof_intent, b->proof_intent) == 0 &&
+           strcmp(a->publication_target, b->publication_target) == 0 &&
+           strcmp(a->publication_proof, b->publication_proof) == 0 &&
+           strcmp(a->publication_bundle, b->publication_bundle) == 0 &&
+           strcmp(a->publication_signer, b->publication_signer) == 0 &&
            strcmp(a->publication_signature, b->publication_signature) == 0;
 }
 

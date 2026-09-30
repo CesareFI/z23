@@ -6992,6 +6992,58 @@ _test_next:;
     return failures;
 }
 
+static int test_dev_land_cancel_invalid_intent(void)
+{
+    int failures = 0;
+#if !defined(_WIN32)
+    TEST("land: cancel retains a push checkpoint whose signed intent changed") {
+        struct dlx_rig rig;
+        struct dlx_call c;
+        char base[64], remote[64], sibling[64], wire[8192], after[8192];
+        char land[1200], path[1400];
+        size_t used = 0, after_used = 0;
+        dlx_isolate("cancel_invalid_intent");
+        ASSERT(dlx_attach_proven_pair(&rig, "cancel_invalid_intent", base));
+        dlx_begin(&c, "attach");
+        (void)json_push_kv_int(&c.input, "seq", 1);
+        ASSERT(dlx_run(&c) && dlx_ok(&c));
+        dlx_end(&c);
+        ASSERT(dlx_queue_bytes(wire, sizeof(wire), &used));
+        char *phase = strstr(wire, "\"phase\":\"prove\"");
+        char *signature = strstr(wire, "\"publication_signature\":\"");
+        ASSERT(phase != NULL && signature != NULL);
+        memcpy(phase, "\"phase\":\"push\" ", 15);
+        signature += strlen("\"publication_signature\":\"");
+        signature[0] = signature[0] == '0' ? '1' : '0';
+        dlx_landdir(land, sizeof(land));
+        (void)snprintf(path, sizeof(path), "%s/queue.jsonl", land);
+        ASSERT(dlx_write(path, wire));
+        ASSERT(dlx_sibling(&rig, base, "refs/heads/main", sibling));
+        dlx_begin(&c, "cancel");
+        (void)json_push_kv_int(&c.input, "seq", 1);
+        ASSERT(dlx_run(&c) && !dlx_ok(&c));
+        ASSERT_STR_EQ(dlx_err_code(&c), "PUBLICATION_INTENT_INVALID");
+        ASSERT(!c.reply.error.mutated);
+        dlx_end(&c);
+        ASSERT(dlx_origin_main(&rig, remote));
+        ASSERT_STR_EQ(remote, sibling);
+        dlx_begin(&c, "status");
+        ASSERT(dlx_run(&c) && dlx_ok(&c));
+        const struct json_value *flight = json_get(&c.reply.data, "in_flight");
+        ASSERT(flight != NULL);
+        ASSERT_STR_EQ(json_get_str(json_get(flight, "phase")), "push");
+        dlx_end(&c);
+        ASSERT(dlx_queue_bytes(after, sizeof(after), &after_used));
+        ASSERT(used == after_used && memcmp(wire, after, used) == 0);
+        dlx_restore();
+        PASS();
+    }
+_test_next:;
+    dlx_restore();
+#endif
+    return failures;
+}
+
 static int test_dev_land_signed_publisher_death(void)
 {
     int failures = 0;
@@ -7573,6 +7625,7 @@ int test_dev_land(void)
     failures += test_dev_land_signed_push_lost_race();
     failures += test_dev_land_cancel_push_refused();
     failures += test_dev_land_cancel_changed_target();
+    failures += test_dev_land_cancel_invalid_intent();
     failures += test_dev_land_signed_publisher_death();
     failures += test_dev_land_watcher_admission();
     failures += test_dev_land_long_proof_root();
