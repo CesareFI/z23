@@ -934,10 +934,12 @@ mutation_token_legacy()
     done < "$WORK/source-paths"
 
     : > "$WORK/mutation-metadata"
+    # Pin the presentation timezone while retaining nanoseconds: native libc
+    # and portable stat implementations do not parse every TZ string alike.
     for ((batch_start = 0; batch_start < ${#existing_paths[@]};
           batch_start += batch_size)); do
         batch=("${existing_paths[@]:batch_start:batch_size}")
-        stat --printf='%d:%i:%s:%f:%y:%z\0' -- "${batch[@]}" \
+        TZ=UTC0 stat --printf='%d:%i:%s:%f:%y:%z\0' -- "${batch[@]}" \
             >> "$WORK/mutation-metadata" 2>/dev/null ||
             fail_racy "source changed while collecting mutation metadata"
     done

@@ -197,8 +197,9 @@ sandbox_legacy="$(ZCL_SOURCE_IDENTITY_BATCH_DISABLE=1 \
 [ "$sandbox_native" = "$sandbox_legacy" ] ||
     fail 'adversarial-path native and portable records differ'
 
-# Mutation records must match too, including nonzero timezone offsets.
-# Fixed POSIX zones keep this independent of the host timezone database.
+# Mutation records must match and remain invariant when callers supply
+# nonzero timezone offsets. Fixed POSIX zones avoid host zoneinfo dependency.
+mutation_reference=""
 for zone in UTC0 PST8PDT IST-5:30; do
     mutation_native="$(TZ="$zone" ZCL_SOURCE_IDENTITY_BATCH_SHADOW=1 \
         "$SOURCE_IDENTITY" capture-record)" ||
@@ -208,6 +209,12 @@ for zone in UTC0 PST8PDT IST-5:30; do
         fail "portable mutation capture failed in $zone"
     [ "$mutation_native" = "$mutation_legacy" ] ||
         fail "mutation records differ in $zone"
+    if [ -z "$mutation_reference" ]; then
+        mutation_reference="$mutation_native"
+    else
+        [ "$mutation_native" = "$mutation_reference" ] ||
+            fail "mutation record inherited caller timezone in $zone"
+    fi
 done
 
 cd "$ROOT"
