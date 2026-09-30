@@ -262,6 +262,16 @@ static bool object_content_equal(const char *path, const uint8_t *content,
     return ok;
 }
 
+static bool object_address_content_equal(
+    const char *repo_root, const uint8_t address[32],
+    const uint8_t *content, size_t len)
+{
+    char path[VCS_OBJECT_PATH_MAX];
+    return object_path(repo_root, address, path, sizeof(path)) &&
+           object_recover_legacy_alias(repo_root, path) &&
+           object_content_equal(path, content, len);
+}
+
 static bool object_stage_publish(
     const char *repo_root, const char *tmp, const char *final,
     const uint8_t *content, size_t len, bool replace,
@@ -389,15 +399,9 @@ bool vcs_object_put_repair(const char *repo_root, const uint8_t *content,
         LOG_FAIL("vcs", "null arg to object_put_repair");
     vcs_sha3_tag(tag, content, len, out_hash);
     bool existed = vcs_object_has(repo_root, out_hash);
-    uint8_t *existing = NULL;
-    size_t existing_len = 0;
-    if (existed && vcs_object_get(repo_root, out_hash, tag, &existing,
-                       &existing_len) == 0) {
-        bool same = existing_len == len &&
-            (len == 0 || memcmp(existing, content, len) == 0);
-        free(existing);
-        return same && object_parents_flush(repo_root, out_hash);
-    }
+    if (existed && object_address_content_equal(
+                       repo_root, out_hash, content, len))
+        return object_parents_flush(repo_root, out_hash);
     bool ok = object_write_mode(repo_root, out_hash, content, len, existed);
     if (ok && repaired) *repaired = existed;
     return ok;
@@ -412,17 +416,9 @@ bool vcs_object_put_addressed_repair(const char *repo_root,
     if (!repo_root || !address || (len > 0 && !content))
         LOG_FAIL("vcs", "null arg to object_put_addressed_repair");
     bool existed = vcs_object_has(repo_root, address);
-    uint8_t *existing = NULL;
-    size_t existing_len = 0;
-    int loaded = existed
-        ? vcs_object_load_raw(repo_root, address, &existing, &existing_len)
-        : -1;
-    if (loaded == 0 && existing_len == len &&
-        (len == 0 || memcmp(existing, content, len) == 0)) {
-        free(existing);
+    if (existed && object_address_content_equal(
+                       repo_root, address, content, len))
         return object_parents_flush(repo_root, address);
-    }
-    free(existing);
     bool ok = object_write_mode(repo_root, address, content, len, existed);
     if (ok && repaired) *repaired = existed;
     return ok;

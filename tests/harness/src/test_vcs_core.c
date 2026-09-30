@@ -46,6 +46,7 @@
 #include "vcs/vcs_seal.h"
 
 #include "base/hex.h"
+#include "base/safe_alloc.h"
 #include "crypto/ed25519.h"
 #include "crypto/sha3.h"
 #include "platform/time_compat.h"
@@ -1990,6 +1991,70 @@ static int t_object_parent_barriers(const char *repo)
 }
 #endif
 
+static int t_object_repair_preserves_exact(
+    const char *repo, const uint8_t *data, size_t data_len,
+    const uint8_t expected_hash[32])
+{
+    int failures = 0;
+    uint8_t repaired_hash[32];
+    bool repaired_object = true;
+    zcl_alloc_fault_fail_next("vcs_object_read");
+    VC_CHECK("verified repair preserves exact object without allocating",
+             vcs_object_put_repair(repo, data, data_len, VCS_TAG_BLOB,
+                                   repaired_hash, &repaired_object) &&
+             !repaired_object &&
+             memcmp(expected_hash, repaired_hash,
+                    sizeof(repaired_hash)) == 0);
+    VC_CHECK("verified repair leaves comparison allocation fault armed",
+             zcl_alloc_fault_armed_label() != NULL);
+    zcl_alloc_fault_clear();
+
+    static const uint8_t addressed_data[] = "structurally addressed bytes";
+    uint8_t addressed[32];
+    memset(addressed, 0x42, sizeof(addressed));
+    VC_CHECK("put addressed repair fixture",
+             vcs_object_put_addressed(repo, addressed, addressed_data,
+                                      sizeof(addressed_data)));
+    repaired_object = true;
+    zcl_alloc_fault_fail_next("vcs_object_read");
+    VC_CHECK("addressed repair preserves exact object without allocating",
+             vcs_object_put_addressed_repair(
+                 repo, addressed, addressed_data, sizeof(addressed_data),
+                 &repaired_object) && !repaired_object);
+    VC_CHECK("addressed repair leaves comparison allocation fault armed",
+             zcl_alloc_fault_armed_label() != NULL);
+    zcl_alloc_fault_clear();
+    return failures;
+}
+
+#if !defined(_WIN32)
+static int t_object_repair_sparse(
+    const char *repo, const char *path, const uint8_t *data, size_t data_len,
+    const uint8_t expected_hash[32])
+{
+    int failures = 0;
+    VC_CHECK("repair fixture becomes sparse oversized object",
+             truncate(path, (off_t)(64u * 1024u * 1024u + 1u)) == 0);
+    bool repaired_object = false;
+    uint8_t repaired_hash[32];
+    VC_CHECK("verified repair replaces sparse oversized object",
+             vcs_object_put_repair(repo, data, data_len, VCS_TAG_BLOB,
+                                   repaired_hash, &repaired_object) &&
+             repaired_object &&
+             memcmp(expected_hash, repaired_hash,
+                    sizeof(repaired_hash)) == 0);
+    uint8_t *restored = NULL;
+    size_t restored_len = 0;
+    VC_CHECK("sparse oversized repair restores exact bytes",
+             vcs_object_get(repo, expected_hash, VCS_TAG_BLOB,
+                            &restored, &restored_len) == 0 &&
+             restored_len == data_len && restored &&
+             memcmp(restored, data, restored_len) == 0);
+    free(restored);
+    return failures;
+}
+#endif
+
 /* ── test 2/3: object store dedup + verify-on-read ──────────────── */
 static int t_object_store(const char *repo)
 {
@@ -2010,6 +2075,8 @@ static int t_object_store(const char *repo)
     VC_CHECK("get", vcs_object_get(repo, h1, VCS_TAG_BLOB, &got, &glen) == 0);
     VC_CHECK("get bytes", glen == sizeof(data) && got && memcmp(got, data, glen) == 0);
     free(got);
+    failures += t_object_repair_preserves_exact(
+        repo, data, sizeof(data), h1);
 
     /* wrong tag => hash mismatch => rejected */
     uint8_t *g2 = NULL; size_t g2len = 0;
@@ -2045,11 +2112,18 @@ static int t_object_store(const char *repo)
              stat(opath, &repaired) == 0 && repaired.st_nlink == 1);
 #endif
     int fd = open(opath, O_WRONLY);
-    if (fd >= 0) { uint8_t bad = 0xff; pwrite(fd, &bad, 1, 0); close(fd); }
+    uint8_t bad = 0xff;
+    ssize_t corrupted = fd >= 0 ? pwrite(fd, &bad, 1, 0) : -1;
+    int corruption_close = fd >= 0 ? close(fd) : -1;
     uint8_t *g3 = NULL; size_t g3len = 0;
     VC_CHECK("verify-on-read catches corruption",
+             corrupted == 1 && corruption_close == 0 &&
              vcs_object_get(repo, h1, VCS_TAG_BLOB, &g3, &g3len) != 0);
     free(g3);
+#if !defined(_WIN32)
+    failures += t_object_repair_sparse(
+        repo, opath, data, sizeof(data), h1);
+#endif
     return failures;
 }
 
