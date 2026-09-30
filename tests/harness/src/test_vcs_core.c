@@ -1,3 +1,7 @@
+#if defined(__linux__)
+#define _GNU_SOURCE /* setgroups */
+#endif
+
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * test_vcs_core — the ZVCS v1 foundation gate (contexts/commons/modules/vcs/).
@@ -57,6 +61,10 @@
 #include <errno.h>
 #include <dirent.h>
 #include <fcntl.h>
+#if !defined(_WIN32)
+#include <grp.h>
+#include <sys/wait.h>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1972,6 +1980,51 @@ static int t_object_shard_parent_barrier(const char *path)
     return failures;
 }
 
+static int t_object_parent_barriers_as_owner(const char *path)
+{
+    int failures = 0;
+    failures += t_store_init_parent_barrier(path);
+    failures += t_object_shard_parent_barrier(path);
+    return failures;
+}
+
+static bool vc_wait_child_success(pid_t child)
+{
+    int status = 0;
+    pid_t waited;
+    do {
+        waited = waitpid(child, &status, 0);
+    } while (waited < 0 && errno == EINTR);
+    return waited == child && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+}
+
+/* The suite is routinely run by root on build hosts. Prove the mode fault in
+ * an isolated child instead of weakening the assertion or changing /root's
+ * traversal permissions. The child enters the empty fixture while privileged,
+ * then irreversibly drops supplementary groups, gid, and uid before touching
+ * the VCS. Relative paths need no access through the fixture's root-owned
+ * ancestors. */
+static bool vc_root_run_parent_barriers_unprivileged(const char *path)
+{
+    const uid_t child_uid = (uid_t)1;
+    const gid_t child_gid = (gid_t)1;
+    if (chown(path, child_uid, child_gid) != 0 || fflush(NULL) != 0)
+        return false;
+    pid_t child = fork();
+    if (child < 0)
+        return false;
+    if (child == 0) {
+        if (chdir(path) != 0 || setgroups(0, NULL) != 0 ||
+            setgid(child_gid) != 0 || setuid(child_uid) != 0 ||
+            geteuid() != child_uid || getegid() != child_gid)
+            _exit(125);
+        int child_failures = t_object_parent_barriers_as_owner(".");
+        bool flushed = fflush(NULL) == 0;
+        _exit(child_failures == 0 && flushed ? 0 : 1);
+    }
+    return vc_wait_child_success(child);
+}
+
 static int t_object_parent_barriers(const char *repo)
 {
     int failures = 0;
@@ -1981,11 +2034,12 @@ static int t_object_parent_barriers(const char *repo)
     if (failures) return failures;
     VC_CHECK("parent barriers fixture mkdir", mkdir(path, 0700) == 0);
     if (failures) return failures;
-    /* Root bypasses the permission fault; it cannot qualify this witness. */
-    VC_CHECK("parent barriers require unprivileged permission enforcement", geteuid() != 0);
-    if (failures) return failures;
-    failures += t_store_init_parent_barrier(path);
-    failures += t_object_shard_parent_barrier(path);
+    if (geteuid() == 0) {
+        VC_CHECK("parent barriers run in an unprivileged child",
+                 vc_root_run_parent_barriers_unprivileged(path));
+    } else {
+        failures += t_object_parent_barriers_as_owner(path);
+    }
     return failures;
 }
 #endif
@@ -2045,7 +2099,14 @@ static int t_object_store(const char *repo)
              stat(opath, &repaired) == 0 && repaired.st_nlink == 1);
 #endif
     int fd = open(opath, O_WRONLY);
-    if (fd >= 0) { uint8_t bad = 0xff; pwrite(fd, &bad, 1, 0); close(fd); }
+    bool corrupted = false;
+    if (fd >= 0) {
+        uint8_t bad = 0xff;
+        ssize_t written = pwrite(fd, &bad, 1, 0);
+        bool closed = close(fd) == 0;
+        corrupted = written == 1 && closed;
+    }
+    VC_CHECK("corruption fixture writes exact byte", corrupted);
     uint8_t *g3 = NULL; size_t g3len = 0;
     VC_CHECK("verify-on-read catches corruption",
              vcs_object_get(repo, h1, VCS_TAG_BLOB, &g3, &g3len) != 0);
