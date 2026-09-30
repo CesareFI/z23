@@ -702,7 +702,7 @@ ZCL_COMMAND_DEV_COMMAND(
     "proof queue owner and never starts a watcher; missing ownership returns "
     "the exact foreground step.", 0,
     "dev,proof,ensure,receipt,push,background",
-    "zcl.dev_proof_input.v1", "zcl.dev_proof_status.v1",
+    "zcl.dev_proof_ensure_input.v1", "zcl.dev_proof_status.v1",
     "root,local_commit,remote_base,mode,require_existing_watcher", "",
     "z23-dev dev proof ensure",
     ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_DEV_MUTATION,
