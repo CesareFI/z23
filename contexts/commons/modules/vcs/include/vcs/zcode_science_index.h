@@ -14,7 +14,8 @@
  * citizens and are skipped unread; a file carrying a science magic that
  * fails parse/validation/root agreement is logged and skipped — a forged or
  * misplaced file cannot enter the projection. Entries are sorted by root
- * hex for deterministic output.
+ * hex for deterministic output. Every non-dot CAS directory entry,
+ * including malformed junk, consumes a fixed scan-work budget.
  *
  * Read-only: the index never writes to the CAS and never verifies vote
  * signatures against a network identity (the vote service owns those); it
@@ -118,7 +119,17 @@ struct vcs_zcode_science_index; /* opaque */
  * (logged). now_unix drives the expired flags only. */
 struct vcs_zcode_science_index *vcs_zcode_science_index_build(
     const char *repo_root, int64_t now_unix);
+/* Test-only denial seam: applies a smaller scan limit than production. It can
+ * only make an index incomplete sooner; it never permits more work or treats
+ * a truncated scan as complete. */
+struct vcs_zcode_science_index *vcs_zcode_science_index_test_build_bounded(
+    const char *repo_root, int64_t now_unix, size_t scan_limit);
 void vcs_zcode_science_index_free(struct vcs_zcode_science_index *index);
+/* Coverage of this scan only; false for NULL, invalid observation time,
+ * corrupt recognized objects, scan failures, exhausted scan work, or
+ * exceeded capacity. It is not evidence-admission authority. */
+bool vcs_zcode_science_index_complete(
+    const struct vcs_zcode_science_index *index);
 
 size_t vcs_zcode_science_index_study_count(
     const struct vcs_zcode_science_index *index);

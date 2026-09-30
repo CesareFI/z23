@@ -15,11 +15,14 @@
 #include "vcs/zcode_science.h"
 
 #include <dirent.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #define INDEX_LOG "vcs.science_index"
+#define INDEX_MAX_SCANNED 262144u
+#define INDEX_MAX_WIRE_BYTES VCS_ZCODE_STUDY_SPEC_WIRE_BYTES
 
 /* Wire magics from zcode_science.c / zcode_dev.c — the first 8 bytes decide
  * whether an object of the right size is even a candidate for projection. */
@@ -45,6 +48,10 @@ struct vcs_zcode_science_index {
     size_t vote_count;
     struct vcs_zcode_science_index_review_entry *reviews;
     size_t review_count;
+    size_t scanned;
+    size_t scan_limit;
+    bool scan_budget_exhausted;
+    bool complete;
 };
 
 static bool index_hex_lower(const char *s, size_t want)
@@ -57,10 +64,45 @@ static bool index_hex_lower(const char *s, size_t want)
     return s[want] == '\0';
 }
 
+static bool index_scan_take(struct vcs_zcode_science_index *index)
+{
+    if (index->scanned >= index->scan_limit) {
+        if (!index->scan_budget_exhausted)
+            LOG_ERROR(INDEX_LOG, "CAS scan entry budget exhausted");
+        index->scan_budget_exhausted = true;
+        index->complete = false;
+        return false;
+    }
+    index->scanned++;
+    return true;
+}
+
+static bool index_dot_entry(const char *name)
+{
+    return strcmp(name, ".") == 0 || strcmp(name, "..") == 0;
+}
+
 static bool index_root_agrees(const uint8_t rederived[32],
                               const uint8_t address[32])
 {
     return memcmp(rederived, address, 32) == 0;
+}
+
+static bool index_load_object(const char *repo_root, const uint8_t address[32],
+                              const char *hex64,
+                              struct vcs_zcode_science_index *index,
+                              uint8_t **wire, size_t *len)
+{
+    int status = vcs_object_load_raw_bounded(
+        repo_root, address, INDEX_MAX_WIRE_BYTES, wire, len);
+    if (status == -2)
+        return false; /* another, larger CAS citizen */
+    if (status != 0) {
+        index->complete = false;
+        LOG_ERROR(INDEX_LOG, "unreadable CAS object %.8s", hex64);
+        return false;
+    }
+    return true;
 }
 
 static void index_add_result(
@@ -110,10 +152,8 @@ static void index_consider_object(const char *repo_root, const char *hex64,
         return;
     uint8_t *wire = NULL;
     size_t len = 0;
-    if (vcs_object_load_raw(repo_root, address, &wire, &len) != 0) {
-        LOG_ERROR(INDEX_LOG, "unreadable CAS object %.8s", hex64);
+    if (!index_load_object(repo_root, address, hex64, index, &wire, &len))
         return;
-    }
     if (len == VCS_ZCODE_STUDY_SPEC_WIRE_BYTES &&
         memcmp(wire, study_magic, sizeof(study_magic)) == 0) {
         struct vcs_zcode_study_spec_v1 study;
@@ -124,6 +164,7 @@ static void index_consider_object(const char *repo_root, const char *hex64,
             vcs_zcode_study_spec_root(&study, root) == VCS_ZCODE_SCIENCE_OK &&
             index_root_agrees(root, address);
         if (!ok) {
+            index->complete = false;
             LOG_ERROR(INDEX_LOG, "skipping study-magic object %.8s: "
                       "parse, validation, or root agreement failed", hex64);
         } else if (index->study_count >=
@@ -160,6 +201,7 @@ static void index_consider_object(const char *repo_root, const char *hex64,
                 VCS_ZCODE_SCIENCE_OK &&
             index_root_agrees(root, address);
         if (!ok) {
+            index->complete = false;
             LOG_ERROR(INDEX_LOG, "skipping result-v1-magic object %.8s: "
                       "parse, validation, or root agreement failed", hex64);
         } else {
@@ -181,6 +223,7 @@ static void index_consider_object(const char *repo_root, const char *hex64,
                 VCS_ZCODE_SCIENCE_OK &&
             index_root_agrees(root, address);
         if (!ok) {
+            index->complete = false;
             LOG_ERROR(INDEX_LOG, "skipping result-v2-magic object %.8s: "
                       "parse, validation, or root agreement failed", hex64);
         } else {
@@ -204,6 +247,7 @@ static void index_consider_object(const char *repo_root, const char *hex64,
                 VCS_ZCODE_SCIENCE_OK &&
             index_root_agrees(root, address);
         if (!ok) {
+            index->complete = false;
             LOG_ERROR(INDEX_LOG, "skipping reproduction-magic object %.8s: "
                       "parse, validation, or root agreement failed", hex64);
         } else if (index->reproduction_count >=
@@ -241,6 +285,7 @@ static void index_consider_object(const char *repo_root, const char *hex64,
                 VCS_ZCODE_SCIENCE_OK &&
             index_root_agrees(root, address);
         if (!ok) {
+            index->complete = false;
             LOG_ERROR(INDEX_LOG, "skipping findings-magic object %.8s: "
                       "parse, validation, or root agreement failed", hex64);
         } else if (index->findings_count >=
@@ -275,6 +320,7 @@ static void index_consider_object(const char *repo_root, const char *hex64,
             vcs_zcode_curation_vote_id(&vote, id) == VCS_ZCODE_SCIENCE_OK &&
             index_root_agrees(id, address);
         if (!ok) {
+            index->complete = false;
             LOG_ERROR(INDEX_LOG, "skipping vote-magic object %.8s: "
                       "parse, validation, or id agreement failed", hex64);
         } else if (index->vote_count >= VCS_ZCODE_SCIENCE_INDEX_MAX_VOTES) {
@@ -305,6 +351,7 @@ static void index_consider_object(const char *repo_root, const char *hex64,
             vcs_zcode_review_root(&review, root) == VCS_ZCODE_DEV_OK &&
             index_root_agrees(root, address);
         if (!ok) {
+            index->complete = false;
             LOG_ERROR(INDEX_LOG, "skipping review-magic object %.8s: "
                       "parse, validation, or root agreement failed", hex64);
         } else if (index->review_count >=
@@ -337,11 +384,23 @@ static void index_scan_shard(const char *repo_root, const char *shard_path,
 {
     DIR *d = opendir(shard_path);
     if (!d) {
+        index->complete = false;
         LOG_ERROR(INDEX_LOG, "cannot open CAS shard %s", shard_path);
         return;
     }
     struct dirent *de;
-    while ((de = readdir(d)) != NULL) {
+    for (;;) {
+        errno = 0;
+        de = readdir(d);
+        if (!de) {
+            if (errno != 0)
+                index->complete = false;
+            break;
+        }
+        if (index_dot_entry(de->d_name))
+            continue;
+        if (!index_scan_take(index))
+            break;
         if (!index_hex_lower(de->d_name, 62))
             continue;
         char hex64[65];
@@ -350,6 +409,48 @@ static void index_scan_shard(const char *repo_root, const char *shard_path,
             continue;
         index_consider_object(repo_root, hex64, index, cap_logged);
     }
+    closedir(d);
+}
+
+static void index_scan_root(const char *repo_root, const char *objects,
+                            struct vcs_zcode_science_index *index)
+{
+    DIR *d = opendir(objects);
+    if (!d) {
+        if (errno != ENOENT)
+            index->complete = false;
+        return; /* no object store yet: an empty projection */
+    }
+    bool cap_logged = false;
+    struct dirent *de;
+    for (;;) {
+        errno = 0;
+        de = readdir(d);
+        if (!de) {
+            if (errno != 0)
+                index->complete = false;
+            break;
+        }
+        if (index_dot_entry(de->d_name))
+            continue;
+        if (!index_scan_take(index))
+            break;
+        if (!index_hex_lower(de->d_name, 2))
+            continue; /* skips "tmp" and any non-shard entry */
+        char shard_path[4400];
+        int n = snprintf(shard_path, sizeof(shard_path), "%s/%s", objects,
+                         de->d_name);
+        if (n <= 0 || (size_t)n >= sizeof(shard_path)) {
+            index->complete = false;
+            continue;
+        }
+        index_scan_shard(repo_root, shard_path, de->d_name, index,
+                         &cap_logged);
+        if (index->scan_budget_exhausted)
+            break;
+    }
+    if (cap_logged)
+        index->complete = false;
     closedir(d);
 }
 
@@ -455,16 +556,8 @@ static void index_derive(struct vcs_zcode_science_index *index,
     }
 }
 
-struct vcs_zcode_science_index *vcs_zcode_science_index_build(
-    const char *repo_root, int64_t now_unix)
+static bool index_allocate_entries(struct vcs_zcode_science_index *index)
 {
-    if (!repo_root)
-        LOG_RETURN(NULL, INDEX_LOG, "null repo_root");
-    struct vcs_zcode_science_index *index =
-        zcl_malloc(sizeof(*index), "vcs_zcode_science_index");
-    if (!index)
-        LOG_RETURN(NULL, INDEX_LOG, "index alloc");
-    memset(index, 0, sizeof(*index));
     index->studies = zcl_malloc(sizeof(*index->studies) *
         VCS_ZCODE_SCIENCE_INDEX_MAX_STUDIES, "science_index_studies");
     index->results = zcl_malloc(sizeof(*index->results) *
@@ -477,8 +570,23 @@ struct vcs_zcode_science_index *vcs_zcode_science_index_build(
         VCS_ZCODE_SCIENCE_INDEX_MAX_VOTES, "science_index_votes");
     index->reviews = zcl_malloc(sizeof(*index->reviews) *
         VCS_ZCODE_SCIENCE_INDEX_MAX_REVIEWS, "science_index_reviews");
-    if (!index->studies || !index->results || !index->reproductions ||
-        !index->findings || !index->votes || !index->reviews) {
+    return index->studies && index->results && index->reproductions &&
+        index->findings && index->votes && index->reviews;
+}
+
+static struct vcs_zcode_science_index *index_build(
+    const char *repo_root, int64_t now_unix, size_t scan_limit)
+{
+    if (!repo_root)
+        LOG_RETURN(NULL, INDEX_LOG, "null repo_root");
+    struct vcs_zcode_science_index *index =
+        zcl_malloc(sizeof(*index), "vcs_zcode_science_index");
+    if (!index)
+        LOG_RETURN(NULL, INDEX_LOG, "index alloc");
+    memset(index, 0, sizeof(*index));
+    index->scan_limit = scan_limit;
+    index->complete = now_unix > 0;
+    if (!index_allocate_entries(index)) {
         vcs_zcode_science_index_free(index);
         LOG_RETURN(NULL, INDEX_LOG, "entry arrays");
     }
@@ -488,23 +596,7 @@ struct vcs_zcode_science_index *vcs_zcode_science_index_build(
         vcs_zcode_science_index_free(index);
         LOG_RETURN(NULL, INDEX_LOG, "objects path too long");
     }
-    DIR *d = opendir(objects);
-    if (!d)
-        return index; /* no object store yet: an empty projection */
-    bool cap_logged = false;
-    struct dirent *de;
-    while ((de = readdir(d)) != NULL) {
-        if (!index_hex_lower(de->d_name, 2))
-            continue; /* skips "tmp" and any non-shard entry */
-        char shard_path[4400];
-        n = snprintf(shard_path, sizeof(shard_path), "%s/%s", objects,
-                     de->d_name);
-        if (n <= 0 || (size_t)n >= sizeof(shard_path))
-            continue;
-        index_scan_shard(repo_root, shard_path, de->d_name, index,
-                         &cap_logged);
-    }
-    closedir(d);
+    index_scan_root(repo_root, objects, index);
     if (index->study_count > 1)
         qsort(index->studies, index->study_count, sizeof(*index->studies),
               index_study_cmp);
@@ -527,6 +619,20 @@ struct vcs_zcode_science_index *vcs_zcode_science_index_build(
     return index;
 }
 
+struct vcs_zcode_science_index *vcs_zcode_science_index_build(
+    const char *repo_root, int64_t now_unix)
+{
+    return index_build(repo_root, now_unix, INDEX_MAX_SCANNED);
+}
+
+struct vcs_zcode_science_index *vcs_zcode_science_index_test_build_bounded(
+    const char *repo_root, int64_t now_unix, size_t scan_limit)
+{
+    if (scan_limit == 0 || scan_limit > INDEX_MAX_SCANNED)
+        LOG_RETURN(NULL, INDEX_LOG, "invalid test scan limit");
+    return index_build(repo_root, now_unix, scan_limit);
+}
+
 void vcs_zcode_science_index_free(struct vcs_zcode_science_index *index)
 {
     if (!index)
@@ -538,6 +644,12 @@ void vcs_zcode_science_index_free(struct vcs_zcode_science_index *index)
     free(index->results);
     free(index->studies);
     free(index);
+}
+
+bool vcs_zcode_science_index_complete(
+    const struct vcs_zcode_science_index *index)
+{
+    return index && index->complete;
 }
 
 size_t vcs_zcode_science_index_study_count(

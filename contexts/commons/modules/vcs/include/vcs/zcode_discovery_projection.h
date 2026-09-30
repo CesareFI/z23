@@ -127,7 +127,8 @@ bool vcs_zcode_discovery_citation_set_encode(
 
 /* The corpus snapshot root: SHA3-256 over every projected section root of
  * the science index, in the index's own sorted order. Binds exactly the
- * scanned corpus — the same CAS content always yields the same root. */
+ * scanned corpus — the same CAS content always yields the same root. Refuses
+ * an incomplete science-index scan rather than committing to a truncation. */
 bool vcs_zcode_discovery_corpus_root(
     const struct vcs_zcode_science_index *index, uint8_t out[32]);
 

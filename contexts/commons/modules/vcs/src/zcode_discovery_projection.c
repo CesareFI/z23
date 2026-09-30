@@ -101,8 +101,8 @@ static void zdp_corpus_absorb_hex(struct sha3_256_ctx *sha, const char *hex)
 bool vcs_zcode_discovery_corpus_root(
     const struct vcs_zcode_science_index *index, uint8_t out[32])
 {
-    if (!index || !out)
-        LOG_FAIL(ZDP_LOG, "corpus root: bad args");
+    if (!index || !out || !vcs_zcode_science_index_complete(index))
+        LOG_FAIL(ZDP_LOG, "corpus root: bad or incomplete index");
     struct sha3_256_ctx sha;
     uint8_t le[4];
     sha3_256_init(&sha);

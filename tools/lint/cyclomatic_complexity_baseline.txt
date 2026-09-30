@@ -281,7 +281,7 @@ cognition/services/src/zcode_retrieval_science_adapter_service.c:zcode_retrieval
 cognition/services/src/zcode_science_carrier.c:science_identify_wire:39
 cognition/services/src/zcode_science_carrier.c:zcode_science_admit:17
 cognition/services/src/zcode_science_carrier.c:zcode_science_admit_candidates:21
-cognition/services/src/zcode_science_service.c:zcode_science_rebuild:25
+cognition/services/src/zcode_science_service.c:zcode_science_rebuild:23
 cognition/services/src/zcode_science_service.c:zcode_science_review_submit:19
 cognition/services/src/zcode_science_service.c:zcode_science_vote_submit:19
 cognition/services/src/zcode_science_service.c:zcode_science_work_plan:18
@@ -652,7 +652,6 @@ contexts/commons/modules/vcs/src/zcode_science.c:vcs_zcode_science_error_string:
 contexts/commons/modules/vcs/src/zcode_science.c:vcs_zcode_science_findings_validate_for_review:18
 contexts/commons/modules/vcs/src/zcode_science_index.c:index_consider_object:55
 contexts/commons/modules/vcs/src/zcode_science_index.c:index_derive:23
-contexts/commons/modules/vcs/src/zcode_science_index.c:vcs_zcode_science_index_build:22
 contexts/commons/modules/vcs/src/zcode_science_statement.c:statement_fields:33
 contexts/commons/modules/vcs/src/zcode_science_statement.c:vcs_zcode_vector_navigation_preregistration_validate:34
 contexts/commons/modules/vcs/src/zcode_score_receipt.c:score_body:23

@@ -38,6 +38,7 @@
 #include "vcs/vcs_object.h"
 #include "vcs/zcode_dev.h"
 #include "vcs/zcode_dht.h"
+#include "vcs/zcode_discovery_projection.h"
 #include "vcs/zcode_science.h"
 #include "vcs/zcode_science_index.h"
 
@@ -80,6 +81,12 @@ static void zstore_teardown(struct node_db *ndb, const char *dir)
     int n = snprintf(cmd, sizeof(cmd), "rm -rf '%s'", dir);
     if (n > 0 && (size_t)n < sizeof(cmd))
         (void)system(cmd);
+}
+
+static bool zstore_write_empty(const char *path)
+{
+    FILE *file = fopen(path, "wb");
+    return file && fclose(file) == 0;
 }
 
 /* Count files under <dir>/.zvcs/objects/<shard>/. */
@@ -601,13 +608,47 @@ static int test_zstore_malformed_objects(void)
         struct vcs_zcode_science_index *index =
             vcs_zcode_science_index_build(dir, 1500);
         ASSERT(index != NULL);
+        ASSERT(!vcs_zcode_science_index_complete(index));
         ASSERT_EQ(vcs_zcode_science_index_study_count(index), 1);
         ASSERT(vcs_zcode_science_index_find_study(index, root) != NULL);
         vcs_zcode_science_index_free(index);
-        /* Rebuild keeps exactly the one valid study. */
+        /* A partial rebuild must refuse before clearing durable projection
+         * rows. The previously committed study therefore remains visible. */
         struct zcode_science_rebuild_out rebuilt;
-        ASSERT(zcode_science_rebuild(&ndb, dir, 1500, &rebuilt).ok);
-        ASSERT_EQ(rebuilt.studies, 1);
+        ASSERT(!zcode_science_rebuild(&ndb, dir, 1500, &rebuilt).ok);
+        struct db_zcode_science_entry row;
+        bool found = false;
+        ASSERT(zcode_science_study_show(&ndb, commit.result_root, &row,
+                                        &found).ok);
+        ASSERT(found);
+        zstore_teardown(&ndb, dir);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_zstore_scan_budget(void)
+{
+    int failures = 0;
+    TEST("zcode_science_store: CAS scan work is globally bounded") {
+        struct node_db ndb = {0};
+        char dir[ZSTORE_DIR_CAP], path[ZSTORE_DIR_CAP + 48];
+        ASSERT(zstore_setup(&ndb, dir, sizeof(dir)));
+        for (size_t i = 0; i < 9; i++) {
+            int n = snprintf(path, sizeof(path),
+                             "%s/.zvcs/objects/junk-%zu", dir, i);
+            ASSERT(n > 0 && (size_t)n < sizeof(path));
+            ASSERT(zstore_write_empty(path));
+        }
+        struct vcs_zcode_science_index *index =
+            vcs_zcode_science_index_test_build_bounded(dir, 1500, 8);
+        ASSERT(index != NULL);
+        ASSERT(!vcs_zcode_science_index_complete(index));
+        ASSERT_EQ(vcs_zcode_science_index_study_count(index), 0);
+        ASSERT_EQ(vcs_zcode_science_index_result_count(index), 0);
+        uint8_t corpus_root[32];
+        ASSERT(!vcs_zcode_discovery_corpus_root(index, corpus_root));
+        vcs_zcode_science_index_free(index);
         zstore_teardown(&ndb, dir);
         PASS();
     } _test_next:;
@@ -1445,6 +1486,7 @@ int test_zcode_science_store(void)
     failures += test_zstore_study_plan_commit();
     failures += test_zstore_expiry();
     failures += test_zstore_malformed_objects();
+    failures += test_zstore_scan_budget();
     failures += test_zstore_evidence();
     failures += test_zstore_review_retraction();
     failures += test_zstore_votes();

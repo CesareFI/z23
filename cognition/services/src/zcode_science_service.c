@@ -914,20 +914,34 @@ static void entry_from_study(struct db_zcode_science_entry *row,
     row->expires_at = e->expires_unix;
 }
 
+static struct zcl_result science_rebuild_prepare(
+    struct node_db *ndb, const char *workspace, int64_t now,
+    struct vcs_zcode_science_index **out)
+{
+    *out = vcs_zcode_science_index_build(workspace, now);
+    if (!*out)
+        return ZCL_ERR(-1, "science-rebuild-index-failed");
+    if (!vcs_zcode_science_index_complete(*out)) {
+        vcs_zcode_science_index_free(*out);
+        *out = NULL;
+        return ZCL_ERR(-1, "science-rebuild-index-incomplete");
+    }
+    if (!db_zcode_science_projection_clear(ndb)) {
+        vcs_zcode_science_index_free(*out);
+        *out = NULL;
+        return ZCL_ERR(-1, "science-rebuild-clear-failed");
+    }
+    return ZCL_OK;
+}
+
 struct zcl_result zcode_science_rebuild(
     struct node_db *ndb, const char *workspace, int64_t now,
     struct zcode_science_rebuild_out *out)
 {
     if (!ndb || !ndb->open || !workspace || !out)
         return ZCL_ERR(-1, "science-rebuild-input-invalid");
-    struct vcs_zcode_science_index *index =
-        vcs_zcode_science_index_build(workspace, now);
-    if (!index)
-        return ZCL_ERR(-1, "science-rebuild-index-failed");
-    if (!db_zcode_science_projection_clear(ndb)) {
-        vcs_zcode_science_index_free(index);
-        return ZCL_ERR(-1, "science-rebuild-clear-failed");
-    }
+    struct vcs_zcode_science_index *index = NULL;
+    ZCL_CHECK(science_rebuild_prepare(ndb, workspace, now, &index));
     memset(out, 0, sizeof(*out));
     bool ok = true;
     for (size_t i = 0; i < vcs_zcode_science_index_study_count(index); i++) {
