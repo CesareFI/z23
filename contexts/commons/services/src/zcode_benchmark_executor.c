@@ -120,6 +120,35 @@ static bool exec_load_policy(const char *workspace, const uint8_t root[32],
     free(wire);
     return ok;
 }
+
+static struct zcl_result exec_load_workload(
+    const char *workspace, const uint8_t root[32],
+    struct vcs_zcode_benchmark_workload_v1_view *out,
+    uint8_t **wire_out, size_t *wire_len_out)
+{
+    *wire_out = NULL;
+    *wire_len_out = 0;
+    int loaded = vcs_object_load_raw_bounded(
+        workspace, root,
+        VCS_ZCODE_BENCHMARK_WORKLOAD_HEADER_BYTES +
+            VCS_ZCODE_BENCHMARK_WORKLOAD_MAX_PAYLOAD_BYTES,
+        wire_out, wire_len_out);
+    if (loaded == -1)
+        return ZCL_ERR(-1, "executor-workload-not-in-cas");
+    uint8_t checked[32];
+    if (loaded != 0 ||
+        vcs_zcode_benchmark_workload_v1_parse(
+            *wire_out, *wire_len_out, out) != VCS_ZCODE_RECEIPT_OK ||
+        vcs_zcode_benchmark_workload_v1_root(
+            *wire_out, *wire_len_out, checked) != VCS_ZCODE_RECEIPT_OK ||
+        memcmp(checked, root, 32) != 0) {
+        free(*wire_out);
+        *wire_out = NULL;
+        *wire_len_out = 0;
+        return ZCL_ERR(-1, "executor-workload-invalid");
+    }
+    return ZCL_OK;
+}
 /* ── fixed resource policy parsing ("cpu=1,memory_mb=4096,timeout_s=600,
  *    network=0" — closed keys, strict grammar, fail closed) ──────────── */
 struct exec_resource_limits {
@@ -433,22 +462,9 @@ static struct zcl_result exec_context_load(
                ctx->task.toolchain_capsule_root, 32) != 0)
         return ZCL_ERR(-1, "executor-build-graph-mismatch");
     /* The workload payload the method pins must be in CAS. */
-    size_t len = 0;
-    uint8_t *wire = NULL;
-    if (!exec_cas_load(req->workspace, ctx->method.workload_root, &wire,
-                       &len))
-        return ZCL_ERR(-1, "executor-workload-not-in-cas");
-    uint8_t checked[32];
-    if (vcs_zcode_benchmark_workload_v1_parse(wire, len, &ctx->workload) !=
-            VCS_ZCODE_RECEIPT_OK ||
-        vcs_zcode_benchmark_workload_v1_root(wire, len, checked) !=
-            VCS_ZCODE_RECEIPT_OK ||
-        memcmp(checked, ctx->method.workload_root, 32) != 0) {
-        free(wire);
-        return ZCL_ERR(-1, "executor-workload-invalid");
-    }
-    ctx->workload_wire = wire;
-    ctx->workload_wire_len = len;
+    ZCL_CHECK(exec_load_workload(
+        req->workspace, ctx->method.workload_root, &ctx->workload,
+        &ctx->workload_wire, &ctx->workload_wire_len));
     /* Capture the environment and enforce the study's policy against it —
      * a violating host is rejected here, never silently kept. */
     if (!vcs_zcode_hardware_profile_capture(&ctx->profile, req->now))

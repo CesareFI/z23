@@ -1241,6 +1241,18 @@ static int test_zbex_closed_inputs(void)
         executed = zcode_benchmark_execute(&ndb, &req, &out);
         ASSERT(!executed.ok);
         ASSERT(strstr(executed.message, "workload-invalid") != NULL);
+        /* The workload codec's 16 MiB payload ceiling is enforced before
+         * allocation. truncate creates a sparse oversized fixture. */
+        char workload_hex[65];
+        zcl_hex_encode(ctx.workload_root, 32, workload_hex);
+        ASSERT(zbex_cas_resize(
+            dir, workload_hex,
+            (off_t)(VCS_ZCODE_BENCHMARK_WORKLOAD_HEADER_BYTES +
+                    VCS_ZCODE_BENCHMARK_WORKLOAD_MAX_PAYLOAD_BYTES) + 1));
+        zbex_request(dir, &ctx, &req);
+        executed = zcode_benchmark_execute(&ndb, &req, &out);
+        ASSERT(!executed.ok);
+        ASSERT(strstr(executed.message, "workload-invalid") != NULL);
         /* Fixed execution-context objects are bounded before allocation;
          * oversized addressed bytes cannot reach parsing or a child run. */
         char study_hex[65];
