@@ -15,9 +15,9 @@
  * digest table; `token capture-identity` emits the identical preimage while
  * hashing each regular file at classification time, removing the table and
  * the shell's per-record validation pass from the authoritative capture.
- * The metadata line matches GNU stat --printf='%d:%i:%s:%f:%y:%z' exactly,
- * including the local-timezone human timestamps with untrimmed nanoseconds
- * and the lstat view (a symlink entry describes the link itself). Gitlink
+ * The metadata line matches GNU stat --printf='%d:%i:%s:%f:%y:%z' under the
+ * canonical UTC0 timezone, including untrimmed nanoseconds and the lstat view
+ * (a symlink entry describes the link itself). Gitlink
  * states arrive as `path\0state\0` pairs in the sidecar file; membership in
  * that file is the same test as the shell's GITLINK_STATE associative array.
  *
@@ -861,22 +861,19 @@ static int canonical_mode(char out[8], const struct stat *metadata, char kind,
     return 0;
 }
 
-/* Mirror GNU stat --printf='%y' or '%z': local time, untrimmed nanoseconds,
- * and the timezone offset belonging to that broken-down local time. */
+/* Mirror GNU stat --printf='%y' or '%z' under canonical UTC0: untrimmed
+ * nanoseconds with a toolchain-independent timezone representation. */
 static int format_time(char out[80], const struct timespec *when)
 {
     struct tm broken;
     time_t seconds = when->tv_sec;
-    if (localtime_r(&seconds, &broken) == nullptr)
-        return -1;
-    char offset[8];
-    if (strftime(offset, sizeof(offset), "%z", &broken) != 5)
+    if (gmtime_r(&seconds, &broken) == nullptr)
         return -1;
     int length = snprintf(out, 80,
-                          "%04d-%02d-%02d %02d:%02d:%02d.%09ld %s",
+                          "%04d-%02d-%02d %02d:%02d:%02d.%09ld +0000",
                           broken.tm_year + 1900, broken.tm_mon + 1,
                           broken.tm_mday, broken.tm_hour, broken.tm_min,
-                          broken.tm_sec, when->tv_nsec, offset);
+                          broken.tm_sec, when->tv_nsec);
     return length > 0 && length < 80 ? 0 : -1;
 }
 
