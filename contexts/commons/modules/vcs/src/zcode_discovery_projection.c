@@ -278,9 +278,11 @@ static void zdp_root_list_sort(struct zdp_root_list *list)
 /* ── CAS loads (parse + rederived-root agreement, index discipline) ── */
 
 static bool zdp_cas_load(const char *workspace, const uint8_t root[32],
-                         uint8_t **wire, size_t *wire_len)
+                         size_t maximum_bytes, uint8_t **wire,
+                         size_t *wire_len)
 {
-    return vcs_object_load_raw(workspace, root, wire, wire_len) == 0;
+    return vcs_object_load_raw_bounded(
+        workspace, root, maximum_bytes, wire, wire_len) == 0;
 }
 
 /* Load the study wire addressed by study_root and copy out its citations
@@ -293,7 +295,9 @@ static bool zdp_study_citations_root(const char *workspace,
     uint8_t *wire = NULL, checked[32];
     size_t len = 0;
     struct vcs_zcode_study_spec_v1 study;
-    bool ok = zdp_cas_load(workspace, study_root, &wire, &len) &&
+    bool ok = zdp_cas_load(
+            workspace, study_root, VCS_ZCODE_STUDY_SPEC_WIRE_BYTES,
+            &wire, &len) &&
         vcs_zcode_study_spec_parse(wire, len, &study) ==
             VCS_ZCODE_SCIENCE_OK &&
         vcs_zcode_study_spec_root(&study, checked) == VCS_ZCODE_SCIENCE_OK &&
@@ -313,7 +317,10 @@ static bool zdp_absorb_citations(const char *workspace,
         return true; /* nothing committed: no edges, not an error */
     uint8_t *payload = NULL;
     size_t len = 0;
-    if (!zdp_cas_load(workspace, citations_root, &payload, &len))
+    if (!zdp_cas_load(
+            workspace, citations_root,
+            VCS_ZCODE_DISCOVERY_PROJECTION_MAX_CITATION_SET * 32u,
+            &payload, &len))
         return true; /* object not in this CAS: no edges */
     bool canonical = zdp_citation_set_valid(payload, len, citations_root);
     if (canonical) {
@@ -338,7 +345,9 @@ static bool zdp_absorb_candidate_lineage(const char *workspace,
     uint8_t *wire = NULL, checked[32];
     size_t len = 0;
     struct vcs_zcode_candidate_v1 candidate;
-    bool ok = zdp_cas_load(workspace, candidate_root, &wire, &len) &&
+    bool ok = zdp_cas_load(
+            workspace, candidate_root, VCS_ZCODE_CANDIDATE_WIRE_BYTES,
+            &wire, &len) &&
         vcs_zcode_candidate_parse(wire, len, &candidate) == VCS_ZCODE_DEV_OK &&
         vcs_zcode_candidate_root(&candidate, checked) == VCS_ZCODE_DEV_OK &&
         memcmp(checked, candidate_root, 32) == 0;
@@ -613,7 +622,9 @@ struct vcs_zcode_discovery_scan_v1 *vcs_zcode_discovery_projection_scan(
             size_t len = 0;
             struct vcs_zcode_curation_vote_v1 vote;
             uint8_t rederived_id[32];
-            bool verified = zdp_cas_load(workspace, vote_id, &wire, &len) &&
+            bool verified = zdp_cas_load(
+                    workspace, vote_id, VCS_ZCODE_CURATION_VOTE_WIRE_BYTES,
+                    &wire, &len) &&
                 vcs_zcode_curation_vote_parse(wire, len, &vote) ==
                     VCS_ZCODE_SCIENCE_OK &&
                 vcs_zcode_curation_vote_id(&vote, rederived_id) ==

@@ -169,6 +169,31 @@ static bool zproj_put(const char *workspace, const uint8_t root[32],
     return vcs_object_put_addressed(workspace, root, wire, wire_len);
 }
 
+static bool zproj_resize_object(const char *workspace, const uint8_t root[32],
+                                off_t size)
+{
+    char hex[65], path[ZPROJ_DIR_CAP + 96];
+    zcl_hex_encode(root, 32, hex);
+    int n = snprintf(path, sizeof(path), "%s/.zvcs/objects/%c%c/%s",
+                     workspace, hex[0], hex[1], hex + 2);
+    return n > 0 && (size_t)n < sizeof(path) && truncate(path, size) == 0;
+}
+
+static bool zproj_study_citations(
+    const char *workspace, const uint8_t study_root[32],
+    uint8_t citations_root[32])
+{
+    uint8_t *wire = NULL; size_t wire_len = 0;
+    struct vcs_zcode_study_spec_v1 study;
+    bool ok = vcs_object_load_raw_bounded(
+            workspace, study_root, VCS_ZCODE_STUDY_SPEC_WIRE_BYTES,
+            &wire, &wire_len) == 0 &&
+        vcs_zcode_study_spec_parse(wire, wire_len, &study) ==
+            VCS_ZCODE_SCIENCE_OK;
+    free(wire);
+    if (ok) memcpy(citations_root, study.citations_root, 32);
+    return ok;
+}
 static bool zproj_put_study(const char *workspace,
                             struct vcs_zcode_study_spec_v1 *study,
                             uint8_t root_out[32])
@@ -447,6 +472,26 @@ done:
     return ok;
 }
 
+static bool zproj_scan_graph(
+    const char *workspace, const struct vcs_zcode_science_index *index,
+    const uint8_t *genesis, struct vcs_zcode_discovery_scan_v1 **scan_out,
+    struct vcs_zcode_discovery_graph_v1 *graph_out)
+{
+    *scan_out = NULL;
+    memset(graph_out, 0, sizeof(*graph_out));
+    struct vcs_zcode_discovery_scan_v1 *scan =
+        vcs_zcode_discovery_projection_scan(
+            workspace, index, NULL, 0, genesis, ZPROJ_NOW);
+    if (!scan) return false;
+    if (vcs_zcode_discovery_projection_assemble(scan, graph_out) !=
+            VCS_ZCODE_DISCOVERY_RANK_OK) {
+        vcs_zcode_discovery_scan_free(scan);
+        return false;
+    }
+    *scan_out = scan;
+    return true;
+}
+
 static uint64_t zproj_mass_sum(
     const struct vcs_zcode_discovery_rank_entry_v1 *entries, size_t count)
 {
@@ -672,6 +717,69 @@ static int test_zproj_determinism(void)
     return failures;
 }
 
+static int test_zproj_cas_bounds(void)
+{
+    int failures = 0;
+    TEST("zcode_discovery_projection: oversized CAS wires contribute no derived facts") {
+        char dir[ZPROJ_DIR_CAP];
+        uint8_t roots[3][32], sources[3][32], genesis[32];
+        ASSERT(zproj_setup(dir, sizeof(dir)));
+        ASSERT(zproj_mint_corpus(dir, false, roots, sources, genesis));
+        struct vcs_zcode_science_index *index =
+            vcs_zcode_science_index_build(dir, ZPROJ_NOW);
+        ASSERT(index != NULL && vcs_zcode_science_index_complete(index));
+        uint8_t citation_roots[2][32];
+        ASSERT(zproj_study_citations(dir, roots[0], citation_roots[0]));
+        ASSERT(zproj_study_citations(dir, roots[1], citation_roots[1]));
+        ASSERT(zproj_resize_object(dir, citation_roots[0],
+            (off_t)VCS_ZCODE_DISCOVERY_PROJECTION_MAX_CITATION_SET * 32 + 1));
+        ASSERT(zproj_resize_object(dir, citation_roots[1],
+            (off_t)VCS_ZCODE_DISCOVERY_PROJECTION_MAX_CITATION_SET * 32 + 1));
+        struct vcs_zcode_discovery_scan_v1 *scan = NULL;
+        struct vcs_zcode_discovery_graph_v1 graph;
+        ASSERT(zproj_scan_graph(dir, index, genesis, &scan, &graph));
+        ASSERT_EQ(graph.edge_count, 0u);
+        ASSERT_EQ(scan->votes_accepted, 3u);
+        vcs_zcode_discovery_graph_free(&graph);
+        vcs_zcode_discovery_scan_free(scan);
+        ASSERT(zproj_resize_object(dir, citation_roots[0], 64));
+        ASSERT(zproj_resize_object(dir, citation_roots[1], 32));
+
+        for (size_t i = 0; i < 3; i++)
+            ASSERT(zproj_resize_object(dir, roots[i],
+                                       VCS_ZCODE_STUDY_SPEC_WIRE_BYTES + 1));
+        ASSERT(zproj_scan_graph(dir, index, genesis, &scan, &graph));
+        ASSERT_EQ(graph.edge_count, 0u);
+        ASSERT_EQ(scan->lineage_count, 3u);
+        vcs_zcode_discovery_graph_free(&graph);
+        vcs_zcode_discovery_scan_free(scan);
+        for (size_t i = 0; i < 3; i++)
+            ASSERT(zproj_resize_object(
+                dir, roots[i], VCS_ZCODE_STUDY_SPEC_WIRE_BYTES));
+        size_t vote_count = vcs_zcode_science_index_vote_count(index);
+        ASSERT_EQ(vote_count, 8u);
+        for (size_t i = 0; i < vote_count; i++) {
+            const struct vcs_zcode_science_index_vote_entry *vote =
+                vcs_zcode_science_index_vote_at(index, i);
+            uint8_t vote_root[32];
+            ASSERT(vote != NULL);
+            ASSERT(zcl_hex_decode_lower(vote->vote_id_hex, vote_root, 32));
+            ASSERT(zproj_resize_object(dir, vote_root,
+                VCS_ZCODE_CURATION_VOTE_WIRE_BYTES + 1));
+        }
+        ASSERT(zproj_scan_graph(dir, index, genesis, &scan, &graph));
+        ASSERT_EQ(graph.edge_count, 3u);
+        ASSERT_EQ(scan->votes_considered, 8u);
+        ASSERT_EQ(scan->votes_accepted, 0u);
+        vcs_zcode_discovery_graph_free(&graph);
+        vcs_zcode_discovery_scan_free(scan);
+        vcs_zcode_science_index_free(index);
+        zproj_teardown(dir);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── 2: version/fork collapse ────────────────────────────────────── */
 
 static int test_zproj_collapse(void)
@@ -738,6 +846,18 @@ static int test_zproj_collapse(void)
         /* Mass still conserves over the collapsed graph. */
         ASSERT_EQ(zproj_mass_sum(run.entries, run.graph.node_count),
                   VCS_ZCODE_DISCOVERY_RANK_MASS);
+        zproj_run_free(&run);
+
+        ASSERT(zproj_resize_object(
+            dir, cxy_root, VCS_ZCODE_CANDIDATE_WIRE_BYTES + 1));
+        ASSERT(zproj_resize_object(
+            dir, cxz_root, VCS_ZCODE_CANDIDATE_WIRE_BYTES + 1));
+        ASSERT(zproj_rank(dir, NULL, &run));
+        ASSERT_EQ(run.graph.node_count, 4u);
+        ASSERT(zproj_lineage_rep(run.scan, src_x) != NULL);
+        ASSERT(zproj_lineage_rep(run.scan, src_y) != NULL);
+        ASSERT(memcmp(zproj_lineage_rep(run.scan, src_x),
+                      zproj_lineage_rep(run.scan, src_y), 32) != 0);
         zproj_run_free(&run);
         zproj_teardown(dir);
         PASS();
@@ -1368,6 +1488,7 @@ int test_zcode_discovery_projection(void)
 {
     int failures = 0;
     failures += test_zproj_determinism();
+    failures += test_zproj_cas_bounds();
     failures += test_zproj_collapse();
     failures += test_zproj_omission();
     failures += test_zproj_citation_spam();
