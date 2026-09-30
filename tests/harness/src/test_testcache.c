@@ -2004,30 +2004,25 @@ static int tc_unadmissible_group(struct testcache *tc)
     TC_CHECK("group too long for signed leaf has no reusable key",
              !p.key_valid && !p.cacheable && !p.hit &&
              p.code == TESTCACHE_R_GROUP_UNADMISSIBLE);
-    testcache_probe_group(tc, "test_acme_worker", &p);
-    TC_CHECK("external ACME worker requires independent execution",
-             !p.key_valid && !p.cacheable && !p.hit &&
-             p.code == TESTCACHE_R_EXTERNAL_INPUT);
+    /* test_acme_worker used to ride along here as a denylist pin; off the
+     * denylist it resolves nothing in this fixture, and the real-tree rail
+     * pin in tc_rail_pin_bindable owns its bound-or-refused contract. */
     return failures;
 }
 
 /* Whole-link and operator-artifact groups. Their verdicts follow a built
  * binary, a repo script, or a snapshot the forward closure does not hash. */
+/* Whole-link and operator-artifact groups the denylist still owns: their
+ * exec target is invisible to the rail (a derived path, a repo script, or a
+ * delegated tools/ helper), or their verdict reads something no artifact
+ * hash can bound. Rail-visible build/bin execs are bound by the key instead
+ * and are pinned in tc_exec_rail_real_tree. */
 static bool tc_external_exec_denied(void)
 {
     static const char *const names[] = {
         "test_anchor_peers",
-        "test_cli_render",
-        "test_consensus_rule_sweep",
-        "test_dev_proof_signer",
         "test_fastobj_carrier",
-        "test_fleet_board_bridge",
-        "test_fleet_gateway_shard_01",
-        "test_fleet_gateway_shard_02",
-        "test_fleet_gateway_shard_03",
-        "test_fleet_gateway_shard_04",
-        "test_fleet_gateway_shard_05",
-        "test_fleet_gateway_shard_06",
+        /* Restored holes: exec through code the rail does not scan. */
         "test_freebsd_sh",
         "test_mesh_terminal_worker",
         "test_onion_pair_watch_live",
@@ -2035,8 +2030,6 @@ static bool tc_external_exec_denied(void)
         "test_resident_launch_contract",
         "test_self_folded_anchor_heavy",
         "self_folded_anchor_heavy",
-        "test_sem_replay",
-        "test_terminal_worker_sandbox",
         "test_zcode_package_dev",
         "test_zcode_package_dev_shard_01",
         "test_zcode_verify",
@@ -2051,7 +2044,6 @@ static bool tc_acme_and_agent_policy(void)
 {
     return file_contains("tests/harness/src/test_acme_worker.c",
                          "build/bin/zclassic23-acme") &&
-           testcache_group_is_denylisted("test_acme_worker") &&
            testcache_group_is_denylisted("test_agent_copy_prove") &&
            tc_external_exec_denied();
 }
@@ -2215,13 +2207,13 @@ static int tc_rail_pin_refused(struct testcache *tc)
     static const char *const refused[] = {
         "test_agent_test",       /* system() runs tools/agent_test_runner.sh */
         "test_build_profile",    /* popen() runs make print-build-flags */
-        "test_cli_render",       /* execve()s build/bin/zclassic23 */
+        "test_cli_render",       /* rail: execs make (whole tree is the input) */
         "test_code_impact",      /* popen() runs tools/agent_fast_ci.sh */
         "test_codeindex",        /* execs make */
         "test_codeindex_incremental", /* popen()s two tools/ scripts */
+        "test_dev_proof_signer", /* rail: self re-exec of the test image */
         "test_engine",           /* system() runs tools/lint/check_no_api_keys.sh */
-        "test_sem_replay",       /* execs build/bin/z23-sem-replay */
-        "test_terminal_worker_sandbox", /* execve()s build/bin/fbsh */
+        "test_sem_replay",       /* rail: execs make (the delegated tool build) */
         "test_test_group_selector", /* popen() re-execs the test image */
         "test_verify_receiver",  /* execve()s argv[0]: the test image */
         "test_zcode_swarm_net",  /* shard workers self re-exec the test image */
@@ -2250,8 +2242,12 @@ static int tc_rail_pin_bindable(struct testcache *tc)
 {
     int failures = 0;
     static const char *const bindable[] = {
-        "test_fleet_gateway",      /* binds z23-fleet-gateway + zclassic23 */
-        "test_process_group_exec", /* binds build/bin/process-group-exec */
+        "test_acme_worker",            /* binds zclassic23-acme */
+        "test_consensus_rule_sweep",   /* binds consensus_rule_sweep */
+        "test_fleet_board_bridge",     /* binds fleet-board-bridge */
+        "test_fleet_gateway",          /* binds z23-fleet-gateway + zclassic23 */
+        "test_process_group_exec",     /* binds build/bin/process-group-exec */
+        "test_terminal_worker_sandbox", /* binds fbsh */
     };
     for (size_t i = 0; i < sizeof(bindable) / sizeof(bindable[0]); i++) {
         struct testcache_probe p;
@@ -2269,6 +2265,32 @@ static int tc_rail_pin_bindable(struct testcache *tc)
     return failures;
 }
 
+/* The macro-generated fleet_gateway shards resolve no entry symbol in the
+ * code index, so they can never mint a key at all — the sound outcome, but
+ * through a different code than the rail's refusals. Pin that they never
+ * serve a verdict. */
+static int tc_rail_pin_unresolved(struct testcache *tc)
+{
+    int failures = 0;
+    static const char *const unresolved[] = {
+        "test_fleet_gateway_shard_01",
+        "test_fleet_gateway_shard_02",
+        "test_fleet_gateway_shard_03",
+        "test_fleet_gateway_shard_04",
+        "test_fleet_gateway_shard_05",
+        "test_fleet_gateway_shard_06",
+    };
+    for (size_t i = 0; i < sizeof(unresolved) / sizeof(unresolved[0]); i++) {
+        struct testcache_probe p;
+        testcache_probe_group(tc, unresolved[i], &p);
+        TC_CHECK("macro-generated shard never caches", !p.cacheable && !p.hit);
+        if (p.cacheable || p.hit)
+            printf("  testcache: %s probed cacheable=%d code=%d (%s)\n",
+                   unresolved[i], p.cacheable, (int)p.code, p.reason);
+    }
+    return failures;
+}
+
 /* The real-tree half pins the class, not the mechanism. impact_composition
  * is a reviewed exception: its execs build fixture trees with host tools and
  * its build/bin literals are fixture paths and assertion needles, so it must
@@ -2282,6 +2304,7 @@ static int tc_exec_rail_real_tree(void)
         return failures + 1;
     failures += tc_rail_pin_refused(tc);
     failures += tc_rail_pin_bindable(tc);
+    failures += tc_rail_pin_unresolved(tc);
     {
         struct testcache_probe p;
         testcache_probe_group(tc, "test_impact_composition", &p);

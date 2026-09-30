@@ -485,7 +485,6 @@ static bool group_reads_external_inputs(const char *name)
         name += 5;
     static const char *const ext[] = {
         /* --- execs a built binary or a repo script (whole-link input) --- */
-        "acme_worker",                  /* executes zclassic23-acme selftests */
         "agent_copy_prove",
         /* fork/execs tools/lint/check_peer_floor_single_source.sh. */
         "anchor_peers",
@@ -493,29 +492,15 @@ static bool group_reads_external_inputs(const char *name)
         "chaos_harness",                  /* reads tests/fixtures block files */
         "cli_argv_strict",
         "cli_auth_robust",
-        /* execve build/bin/zclassic23; the node link is outside the closure. */
-        "cli_render",
         "cold_start_sync",
-        /* fork/execs build/bin/consensus_rule_sweep; that tool's link is
-         * outside this group's forward closure. */
-        "consensus_rule_sweep",
         "crypto_perf_selftest",
         "dev_platform",                   /* reads tests/harness/fixtures source */
-        /* execv build/bin/z23-git-hook; that hook's link is outside the closure. */
-        "dev_proof_signer",
         /* execv zclassic23-package-verify next to the test image.
          * That verifier's link is outside the group's forward C closure. */
         "fastobj_carrier",
-        /* execv build/bin/fleet-board-bridge. */
-        "fleet_board_bridge",
-        /* Each shard fork/execs build/bin/z23-fleet-gateway. */
-        "fleet_gateway_shard_01",
-        "fleet_gateway_shard_02",
-        "fleet_gateway_shard_03",
-        "fleet_gateway_shard_04",
-        "fleet_gateway_shard_05",
-        "fleet_gateway_shard_06",
-        /* Spawns build/bin/fbsh; the shell binary is the verdict. */
+        /* Spawns build/bin/fbsh through a macro-expanded helper the rail
+         * does not scan — no literal in the scanned files. Verified: removed,
+         * probed plain cacheable with no binding, restored. */
         "freebsd_sh",
         "importblockindex_cli_dispatch",
         "kill9_recovery",
@@ -543,8 +528,10 @@ static bool group_reads_external_inputs(const char *name)
         "make_lint_gates_shard_06",
         "make_lint_gates_shard_07",
         "make_lint_gates_shard_08",
-        /* mesh_terminal_worker_spawn execve's build/bin/fbsh.
-         * That shell's link is outside this group's forward C closure. */
+        /* mesh_terminal_worker_spawn execve's build/bin/fbsh from engine
+         * code the rail does not scan — the group's entry file carries no
+         * literal, so binding cannot see it. Verified: removed, probed plain
+         * cacheable with no binding, restored. */
         "mesh_terminal_worker",
         "net",
         "no_hardcoded_home",              /* scans tree + env for home usage */
@@ -553,16 +540,16 @@ static bool group_reads_external_inputs(const char *name)
         /* fork/execs tools/scripts/onion_pair_watch.sh and the node binary. */
         "onion_pair_watch_live",
         "replay_canary_verdict",
-        /* package_lifecycle_commit spawns zclassic23-package-verify-dev.
-         * That verifier's link is outside this group's forward C closure. */
+        /* package_lifecycle_commit spawns zclassic23-package-verify-dev from
+         * engine code the rail does not scan — the entry file's literals are
+         * not the exec target. Verified: removed, probed plain cacheable with
+         * no binding, restored. */
         "resident_launch_contract",
         "secrets_hygiene",
         "self_folded_anchor",
         /* Re-hashes the snapshot named by ZCL_SELF_FOLD_ANCHOR_FIXTURE.
          * The env value is in the key; the artifact bytes are not. */
         "self_folded_anchor_heavy",
-        /* spawns build/bin/z23-sem-replay; that tool's link is outside the closure. */
-        "sem_replay",
         /* read tests/fixtures/semantic_consumer; the sibling execs the
          * sensor and cc. */
         "semantic_consumer",
@@ -585,8 +572,6 @@ static bool group_reads_external_inputs(const char *name)
          * edit to that reader. */
         "source_identity_authority",
         "syncdiag_rpc",
-        /* execve build/bin/fbsh; that shell's link is outside the closure. */
-        "terminal_worker_sandbox",
         "utxo_root_ladder",
         "verify_bench_selftest",
         "wallet_persistence_cycle",
