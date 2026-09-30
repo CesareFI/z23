@@ -2300,7 +2300,7 @@ ZCL_COMMAND_READY_COMMAND(
     "plan_id to re-derive, confined-build, atomically install, and activate "
     "that plan. Hashes remain authoritative; ZNAM is only an optional input "
     "resolver.", 0,
-    "zcode,use,package,dependency,lock,install",
+    "zcode,use,package,dependency,lock,install,using C23 packages",
     "zcl.zcode_use.input.v1", "zcl.zcode_use.v1",
     "name_or_root,plan_id,now_unix,datadir,local_only,dir,release_hex,manifest_hex,recipe_hex", "",
     "z23 zcode use --input='{\"name_or_root\":\"<64hex>\"}'",

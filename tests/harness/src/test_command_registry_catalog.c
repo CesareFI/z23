@@ -567,6 +567,35 @@ static int test_receive_address_search(void)
     return failures;
 }
 
+static int test_common_intent_search(void)
+{
+    int failures = 0;
+    const struct zcl_command_registry *reg = zcl_command_catalog();
+    const char *queries[] = {"receiving funds", "checking sync",
+                             "diagnosing peers", "using C23 packages"};
+    const char *paths[] = {"core.wallet.address.new", "core.sync.status",
+                           "core.network.peers.list", "zcode.package.dev.use"};
+    char out[ZCL_COMMAND_LIST_BUDGET + 1];
+    TEST("common user intents select the appropriate command first") {
+        for (size_t i = 0; i < sizeof(queries) / sizeof(queries[0]); i++) {
+            size_t n = zcl_command_registry_search_json(reg, queries[i], out,
+                                                       sizeof(out));
+            ASSERT(n > 0);
+            struct json_value doc;
+            ASSERT(json_read(&doc, out, n) && doc.type == JSON_OBJ);
+            const struct json_value *matches = json_get(&doc, "matches");
+            ASSERT(matches && matches->type == JSON_ARR);
+            ASSERT(matches->num_children > 0);
+            const char *path = json_get_str(json_get(&matches->children[0], "path"));
+            bool correct = path && strcmp(path, paths[i]) == 0;
+            json_free(&doc);
+            ASSERT(correct);
+        }
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_ready_leaves_bound(void)
 {
     int failures = 0;
@@ -4560,6 +4589,7 @@ int test_command_registry_catalog(void)
     failures += test_search_bounded();
     failures += test_search_multiword();
     failures += test_receive_address_search();
+    failures += test_common_intent_search();
     failures += test_ready_leaves_bound();
     failures += test_bridge_bindings_reverse();
     failures += test_bootstatus_projects_recovery_and_blocker();

@@ -239,7 +239,7 @@ ZCL_COMMAND_READY_READ(
     "Current sync phase and the live header/block gap to the network "
     "tip, read from the running node at call time; gap is measured in "
     "blocks.", 0,
-    "sync,status,phase,gap", "zcl.command.empty_input.v1", "zcl.sync_status.v1",
+    "sync,status,phase,gap,checking sync", "zcl.command.empty_input.v1", "zcl.sync_status.v1",
     "", "", "z23 core sync status",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_PUBLIC,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
@@ -611,7 +611,7 @@ ZCL_COMMAND_READY_READ(
     "then MagicBean, then other. Per-peer lifecycle is dumpstate "
     "peer_lifecycle. Continue with --cursor when _page.truncated is true.",
     ZCL_COMMAND_LIST_BUDGET,
-    "peers,list,addresses,latency",
+    "peers,list,addresses,latency,diagnosing peers",
     "zcl.command.empty_input.v1", "zcl.peers.v1", "", "",
     "z23 core network peers list",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_PUBLIC,
@@ -807,7 +807,7 @@ ZCL_COMMAND_READY_COMMAND(
     "The freshly derived transparent address, persisted in the wallet "
     "by the running node's getnewaddress at call time; created is true "
     "when a new key was written.", 0,
-    "wallet,address,new,receive",
+    "wallet,address,new,receive,receiving funds",
     "zcl.command.empty_input.v1", "zcl.wallet_address.v1", "", "",
     "z23 core wallet address new",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_WALLET,
