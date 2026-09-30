@@ -126,9 +126,17 @@ lint and test child dimensions. Pair naming remains an exact local push
 admission envelope, not the reusable per-unit evidence key. The verdict-leaf
 codec in the same module already separates its exact test-cache key from the
 root of all signed observation bytes. Codec coverage is registered in
-`tests/harness/src/test_dev_proof_signer.c`; runner emission, durable CAS/index
-storage, conflict admission and canonical proof-set publication are separate
-integration work. A codec alone does not establish a complete input closure.
+`tests/harness/src/test_dev_proof_signer.c`. Runner emission is wired: the
+proof worker's test dimension runs the runner `--cold-audit
+--emit-observations`, and `proof_observation_env_open()` points the verdict
+store and the signed-observation CAS at per-pair private directories under the
+proof state (`<state>/testcache.<key>` scratch, removed with the proof;
+`<state>/observations.<key>` durable), so a proof run records one signed
+verdict leaf per executed group without touching any shared or
+candidate-writable store. Durable CAS enumeration/indexing, receiver-side
+proof-set conflict admission and canonical proof-set publication remain
+separate integration work. A codec alone does not establish a complete input
+closure.
 
 The existing Commons evaluator in
 `engine/services/src/build_fabric_evidence.c` now retains verified failures

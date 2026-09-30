@@ -2144,6 +2144,16 @@ static bool emit_one_group_observation(const char *name,
     return true;
 }
 
+/* Where signed observation leaves land. A harness (the proof worker) names a
+ * private CAS root so durable signed observations never share a tree with
+ * the unsigned verdict records of this run's own cache store; a manual run
+ * emits into the testcache store root it already opened. */
+static const char *observation_store_root(struct testcache *tc)
+{
+    const char *env = getenv(ZCL_DEV_OBSERVATION_STORE_ENV);
+    return (env && env[0]) ? env : testcache_store_root(tc);
+}
+
 /* Self-admission proves runner bytes crossed CAS and the receiver codec. A
  * later proof set must still establish complete required roots and coverage. */
 static int emit_group_observations(const struct group_result *results,
@@ -2930,7 +2940,7 @@ int main(int argc, char **argv)
             printf("cache: stored %zu fresh PASS verdict(s)\n", stored);
         if (cli_emit_observations)
             observation_refused = emit_group_observations(results, probes,
-                                        testcache_store_root(tc));
+                                        observation_store_root(tc));
         testcache_close(tc);
         free(probes);
     }

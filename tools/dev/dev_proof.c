@@ -15,6 +15,7 @@
 #include "dev_proof.h"
 #include "dependency_links.h"
 #include "dev_proof_budget.h"
+#include "dev_proof_observation.h"
 #include "devloop.h"
 #include "test_group_catalog.h"
 #include "test_group_host_need.h"
@@ -6458,6 +6459,7 @@ static bool proof_prepare_environment(void)
         "ZCL_LINT_MODE", "ZCL_LINT_TU_CACHE", "ZCL_LINT_TU_CACHE_DIR",
         "ZCL_LINT_TU_CACHE_GENERATIONS", "ZCL_TEST_CACHE",
         "ZCL_TEST_CACHE_DUMP", "ZCL_TESTCACHE_STORE_ROOT",
+        ZCL_DEV_OBSERVATION_STORE_ENV,
         ZCL_VERIFY_RECEIVER_ENV, "ZCC_LOG",
     };
     for (size_t i = 0; i < sizeof(unset_names) / sizeof(unset_names[0]); i++)
@@ -6549,6 +6551,58 @@ static bool proof_zcc_private_close(const char *state, const char *key)
                    proof_zcc_store_remove(state, store);
     return unsetenv("ZCC_VERIFIED") == 0 &&
            unsetenv("ZCC_DIR") == 0 && removed;
+}
+
+/* The cold-audit's verdict store and the observation emitter's CAS. Both
+ * must be private to this proof. A shared or candidate-writable verdict
+ * store is exactly what proof_prepare_environment() scrubs, and a signed
+ * observation leaf is durable evidence that must never share a
+ * content-addressed tree with the unsigned PASS records the runner also
+ * writes into its verdict store. Same shape as the zcc store above: per-pair
+ * directories under <state>, keyed so they cannot collide across proofs.
+ * The verdict store is scratch and is removed with the proof; the
+ * observation CAS is durable and stays. */
+static bool proof_testcache_store_path(const char *state, const char *key,
+                                       char out[PATH_MAX])
+{
+    return state && state[0] && key && key[0] && !strchr(key, '/') &&
+           snprintf(out, PATH_MAX, "%s/testcache.%s", state, key) < PATH_MAX;
+}
+
+static bool proof_observation_store_path(const char *state, const char *key,
+                                         char out[PATH_MAX])
+{
+    return state && state[0] && key && key[0] && !strchr(key, '/') &&
+           snprintf(out, PATH_MAX, "%s/observations.%s", state, key) < PATH_MAX;
+}
+
+static bool proof_observation_env_open(const char *state, const char *key)
+{
+    /* The runner's store open creates only the leaf it needs; the per-pair
+     * directories must already exist. Start the verdict store empty the
+     * same way proof_zcc_private_open does -- a killed worker can leave one
+     * behind -- and never touch a pre-existing observation CAS: it is
+     * durable evidence from earlier runs of this pair. */
+    char store[PATH_MAX];
+    return proof_testcache_store_path(state, key, store) &&
+           proof_zcc_store_remove(state, store) &&
+           platform_private_directory_create(store) &&
+           setenv("ZCL_TESTCACHE_STORE_ROOT", store, 1) == 0 &&
+           proof_observation_store_path(state, key, store) &&
+           platform_private_directory_create(store) &&
+           setenv(ZCL_DEV_OBSERVATION_STORE_ENV, store, 1) == 0;
+}
+
+/* Runs on every worker exit next to proof_zcc_private_close(): the resident
+ * daemon keeps its environment across cycles, so both knobs go too. The
+ * observation CAS stays behind as durable signed evidence. */
+static bool proof_observation_env_close(const char *state, const char *key)
+{
+    char store[PATH_MAX];
+    bool removed = proof_testcache_store_path(state, key, store) &&
+                   proof_zcc_store_remove(state, store);
+    return unsetenv("ZCL_TESTCACHE_STORE_ROOT") == 0 &&
+           unsetenv(ZCL_DEV_OBSERVATION_STORE_ENV) == 0 && removed;
 }
 
 /* Fill the pre-fork make argv: everything EITHER dimension can build, built
@@ -7443,6 +7497,31 @@ static bool proof_stress_tests_env_prepare(char *why, size_t why_len)
 bool zcl_dev_proof_test_stress_env_prepare(char *why, size_t why_len)
 {
     return proof_stress_tests_env_prepare(why, why_len);
+}
+
+/* Test seam onto the exact per-proof observation/testcache store environment
+ * proof_worker() arms before the test dimension launches. The registered
+ * group dev_proof_observation_env proves the same load-bearing facts the
+ * stress-env seam does for ZCL_STRESS_TESTS: the knobs land unconditionally,
+ * point at per-pair paths under <state>, and the paired restore removes
+ * them again so a resident daemon's environment never carries one proof's
+ * stores into the next. */
+bool zcl_dev_proof_test_observation_env_prepare(const char *state,
+                                                const char *key,
+                                                char *why, size_t why_len)
+{
+    if (!proof_observation_env_open(state, key)) {
+        proof_why(why, why_len, "observation_env_unavailable");
+        return false;
+    }
+    if (why && why_len) why[0] = 0;
+    return true;
+}
+
+bool zcl_dev_proof_test_observation_env_restore(const char *state,
+                                                const char *key)
+{
+    return proof_observation_env_close(state, key);
 }
 
 bool zcl_dev_proof_test_warm_status_line(const char *warmstart_path,
@@ -9056,18 +9135,23 @@ static void dp_worker_lint_wall_note(const struct dp_worker *w,
     }
 }
 
-/* The test dimension's runner argv. `--no-cache` is the runner's explicit
+/* The test dimension's runner argv. `--cold-audit` is the runner's explicit
  * cold mode and outranks ZCL_TEST_CACHE, so no inherited or planted
- * environment can turn verdict reuse back on: every selected group
- * executes in this proof, and the runner opens no verdict store and stores
- * nothing. A reused test verdict may shape acceptance only once a separate
- * account outside the candidate's trust domain reproduces and signs it.
- * With no such account the proof records
- * `test-reuse: unqualified(no_verifier_account)` and runs cold. When the
- * attempt holds that account, the worker derives this closure and asks
- * admission before the child starts. Returns the argc written (argv
- * NULL-terminated), or 0 when argv_cap is too small. */
-#define DP_TEST_DIMENSION_ARGC 4u
+ * environment can turn verdict reuse back on: every selected group executes
+ * in this proof. `--emit-observations` signs one verdict leaf per executed
+ * group into the worker-private observation CAS named by
+ * ZCL_DEV_OBSERVATION_STORE_ENV (opened right before the test dimension;
+ * durable evidence, never shared with a candidate-writable verdict store).
+ * The cold audit's own verdict store is per-proof scratch under
+ * <state>/testcache.<key>, opened empty and removed with the proof, so a
+ * proof neither reads nor writes any shared verdict store. A reused test
+ * verdict may shape acceptance only once a separate account outside the
+ * candidate's trust domain reproduces and signs it. With no such account
+ * the proof records `test-reuse: unqualified(no_verifier_account)` and runs
+ * cold. When the attempt holds that account, the worker derives this
+ * closure and asks admission before the child starts. Returns the argc
+ * written (argv NULL-terminated), or 0 when argv_cap is too small. */
+#define DP_TEST_DIMENSION_ARGC 5u
 static size_t dp_test_dimension_argv(const char *binary, const char *only,
                                      const char **argv, size_t argv_cap)
 {
@@ -9076,9 +9160,10 @@ static size_t dp_test_dimension_argv(const char *binary, const char *only,
         return 0;
     argv[0] = binary;
     argv[1] = only;
-    argv[2] = "--no-cache";
-    argv[3] = "--activate-proof-contracts";
-    argv[4] = NULL;
+    argv[2] = "--cold-audit";
+    argv[3] = "--emit-observations";
+    argv[4] = "--activate-proof-contracts";
+    argv[5] = NULL;
     return DP_TEST_DIMENSION_ARGC;
 }
 
@@ -10424,6 +10509,11 @@ static bool proof_worker(const struct proof_paths *paths,
         proof_why(why, why_len, "proof_private_compile_cache_unavailable");
         return false;
     }
+    if (!proof_observation_env_open(paths->state, paths->key)) {
+        (void)proof_zcc_private_close(paths->state, paths->key);
+        proof_why(why, why_len, "proof_observation_env_unavailable");
+        return false;
+    }
     int64_t started_us = platform_time_monotonic_us();
     struct proof_phase_clock phases;
     proof_phase_begin(&phases, paths);
@@ -10943,6 +11033,7 @@ static bool proof_worker_run(const struct proof_paths *paths,
               proof_worker(paths, local, base, &ram_lease,
                            queue_lock_wait_ms, why, why_len);
     (void)proof_zcc_private_close(paths->state, paths->key);
+    (void)proof_observation_env_close(paths->state, paths->key);
     if (cpu_timed) proof_cpu_note(paths, &self_before, &children_before);
     if (!ok && (!why || !why[0]))
         proof_why(why, why_len, "proof_child_reaping_unavailable");

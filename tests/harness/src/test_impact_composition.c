@@ -7574,25 +7574,28 @@ static int test_ic_generation_refuses_forged_verdict(void)
 }
 
 /* The test dimension's runner argv carries the runner's explicit cold mode,
- * which outranks ZCL_TEST_CACHE, and nothing that would admit a cached
- * verdict: no --cache, no probe-only, no capsule to consume. */
+ * which outranks ZCL_TEST_CACHE, emits a signed observation leaf per
+ * executed group into the worker-private CAS, and nothing that would admit
+ * a cached verdict: no --cache, no probe-only, no capsule to consume. */
 static int test_ic_proof_test_dimension_runs_cold(void)
 {
     int failures = 0;
-    TEST("proof test dimension: the runner starts cold and admits no cached verdict") {
+    TEST("proof test dimension: the runner starts cold, emits observations, admits no cached verdict") {
         const char *argv[8];
         const char *small[4];
         size_t argc = zcl_dev_proof_test_dimension_argv(
             "/gen/build/bin/test_parallel", "--exact=test_a,test_b", argv,
             sizeof(argv) / sizeof(argv[0]));
-        ASSERT(argc == 4);
+        ASSERT(argc == 5);
         ASSERT(strcmp(argv[0], "/gen/build/bin/test_parallel") == 0);
         ASSERT(strcmp(argv[1], "--exact=test_a,test_b") == 0);
-        ASSERT(strcmp(argv[2], "--no-cache") == 0);
-        ASSERT(strcmp(argv[3], "--activate-proof-contracts") == 0);
-        ASSERT(argv[4] == NULL);
+        ASSERT(strcmp(argv[2], "--cold-audit") == 0);
+        ASSERT(strcmp(argv[3], "--emit-observations") == 0);
+        ASSERT(strcmp(argv[4], "--activate-proof-contracts") == 0);
+        ASSERT(argv[5] == NULL);
         for (size_t i = 0; i < argc; ++i) {
             ASSERT(strcmp(argv[i], "--cache") != 0);
+            ASSERT(strcmp(argv[i], "--no-cache") != 0);
             ASSERT(strcmp(argv[i], "--cache-probe-only") != 0);
             ASSERT(strncmp(argv[i], "--use-capsule", 13) != 0);
         }

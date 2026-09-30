@@ -5,6 +5,14 @@
 
 #include "dev_proof_receipt.h"
 
+/* Harness-private CAS root a --emit-observations run writes signed leaves
+ * into when set. The proof worker points this at a per-pair directory so
+ * durable signed observations never share a content-addressed tree with the
+ * unsigned, candidate-writable verdict records of the runner's own cache
+ * store. When unset, a manual emission run writes into the testcache store
+ * root. */
+#define ZCL_DEV_OBSERVATION_STORE_ENV "ZCL_DEV_OBSERVATION_STORE"
+
 enum zcl_dev_observation_verdict {
     ZCL_DEV_OBSERVATION_MISSING = 0,
     ZCL_DEV_OBSERVATION_PASS,
