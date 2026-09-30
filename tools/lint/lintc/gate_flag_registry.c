@@ -24,11 +24,13 @@
 #ifndef _POSIX_C_SOURCE
 #define _POSIX_C_SOURCE 200809L
 #endif
+#include <errno.h>
 #include <regex.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #include "gate_flag_registry_priv.h"
 #include "lintc.h"
@@ -793,6 +795,46 @@ static int fr_st_case(const char *def_text, const char *src_name,
     return psp_st_reset(out);
 }
 
+static int fr_st_wait_exit_code(pid_t child)
+{
+    int status = 0;
+    pid_t waited;
+    do {
+        waited = waitpid(child, &status, 0);
+    } while (waited < 0 && errno == EINTR);
+    if (waited != child || !WIFEXITED(status))
+        return -1;
+    return WEXITSTATUS(status);
+}
+
+/* UID 0 can read a mode-000 file, so it cannot qualify the unreadable-file
+ * witness directly. The self-test directory is isolated and empty outside
+ * its fixtures: give it to a disposable child, enter as uid/gid 1, and run
+ * the same production check there. The parent restores ownership before any
+ * later case or cleanup. */
+static int fr_st_root_unreadable_case(FILE *out)
+{
+    const uid_t child_uid = (uid_t)1;
+    const gid_t child_gid = (gid_t)1;
+    uid_t parent_uid = geteuid();
+    gid_t parent_gid = getegid();
+    if (chown(".", child_uid, child_gid) != 0 || fflush(out) != 0)
+        return -1;
+    pid_t child = fork();
+    if (child == 0) {
+        if (setgid(child_gid) != 0 || setuid(child_uid) != 0 ||
+            geteuid() != child_uid || getegid() != child_gid)
+            _exit(125);
+        int rc = fr_run_impl("./f.def", "printf '%s\\0' fu_filler.c",
+                             "2026-01-01", out);
+        _exit(fflush(out) == 0 && rc >= 0 && rc < 125 ? rc : 125);
+    }
+    int rc = child < 0 ? -1 : fr_st_wait_exit_code(child);
+    if (chown(".", parent_uid, parent_gid) != 0)
+        rc = -1;
+    return rc;
+}
+
 /* The eight core parsing/registration/reconciliation cases: unregistered
  * reads (direct and through the env_or/env_int_or wrappers), a clean
  * registration, a comment that must not be mistaken for a live row, a
@@ -975,13 +1017,16 @@ static int fr_st_first_use_cases(FILE *out, char *ob, size_t obcap)
                 "int f(void){ return getenv(\"ZCL_FU_UNREADABLE\") != 0; }\n"))
         return 1;
     bad |= chmod("./fu_secret.c", 0) != 0;
-    bad |= fr_st_case(
+    bad |= csr_write("./f.def",
             "Z23_FLAG(\"ZCL_FU_FILLER\", \"env_runtime\", \"-\", \"-\", \"why\")\n"
             "Z23_FLAG(\"ZCL_FU_UNREADABLE\", \"env_runtime\", \"-\", \"-\",\n"
-            " \"first use ./fu_secret.c:1\")\n",
-            NULL, NULL, "2026-01-01", "printf '%s\\0' fu_filler.c", out, ob,
-            obcap, &rc);
-    bad |= rc != 2;
+            " \"first use ./fu_secret.c:1\")\n");
+    if (!bad) {
+        rc = geteuid() == 0 ? fr_st_root_unreadable_case(out) :
+            fr_run_impl("./f.def", "printf '%s\\0' fu_filler.c",
+                        "2026-01-01", out);
+        bad |= csr_slurp(out, ob, obcap) || psp_st_reset(out) || rc != 2;
+    }
     chmod("./fu_secret.c", 0644);
     return bad;
 }
@@ -1244,6 +1289,8 @@ static void fr_st_cleanup(void)
     unlink("./c.c");
     unlink("./d.c");
     unlink("./e.c");
+    unlink("./w.c");
+    unlink("./x.c");
     unlink("./fu_filler.c");
     unlink("./fu_ok.c");
     unlink("./fu_bad.c");
