@@ -282,8 +282,8 @@ static struct zcl_result zac_capture_store(const char *workspace,
     }
     uint8_t *checked_wire = NULL; size_t checked_len = 0;
     struct vcs_zcode_agent_context_v1 checked;
-    bool verified = vcs_object_load_raw(
-            workspace, root, &checked_wire, &checked_len) == 0 &&
+    bool verified = vcs_object_load_raw_bounded(
+            workspace, root, wire_len, &checked_wire, &checked_len) == 0 &&
         checked_len == wire_len && memcmp(checked_wire, wire, wire_len) == 0 &&
         vcs_zcode_agent_context_parse(
             checked_wire, checked_len, (size_t)task->max_context_bytes,
