@@ -6024,6 +6024,65 @@ _test_next:;
     return failures;
 }
 
+static int test_dev_land_signed_target_race(void)
+{
+    int failures = 0;
+#if !defined(_WIN32)
+    TEST("land: signed target changing during observation refuses before push checkpoint") {
+        struct dlx_rig rig;
+        struct dlx_call c;
+        char base[64], remote[64], land[1200], wt[1400];
+        char upload_pack[1400], missing[1400], script[5000];
+        dlx_isolate("signed_target_race");
+        ASSERT(dlx_attach_proven_pair(&rig, "signed_target_race", base));
+        dlx_begin(&c, "attach");
+        (void)json_push_kv_int(&c.input, "seq", 1);
+        ASSERT(dlx_run(&c) && dlx_ok(&c));
+        dlx_end(&c);
+        dlx_landdir(land, sizeof(land));
+        (void)snprintf(wt, sizeof(wt), "%s/wt", land);
+        (void)snprintf(upload_pack, sizeof(upload_pack), "%s.upload-pack",
+                       rig.bare);
+        (void)snprintf(missing, sizeof(missing), "%s.diverted", rig.bare);
+        (void)snprintf(script, sizeof(script),
+            "#!/bin/sh\n"
+            "calls=${0}.calls\n"
+            "count=0\n"
+            "if test -f \"$calls\"; then read -r count < \"$calls\" || exit 70; fi\n"
+            "count=$((count + 1))\n"
+            "printf '%%s\\n' \"$count\" > \"$calls\" || exit 70\n"
+            "if test \"$count\" -eq 3; then\n"
+            "  git -C '%s' remote set-url origin '%s' || exit 71\n"
+            "fi\n"
+            "exec git-upload-pack \"$@\"\n", wt, missing);
+        ASSERT(dlx_write(upload_pack, script));
+        ASSERT(chmod(upload_pack, 0700) == 0);
+        const char *intercept[] = { "config", "remote.origin.uploadpack",
+                                    upload_pack, NULL };
+        ASSERT(dlx_git(wt, intercept) == 0);
+        dlx_begin(&c, "step");
+        ASSERT(dlx_run(&c) && !dlx_ok(&c));
+        ASSERT_STR_EQ(dlx_err_code(&c), "PUBLICATION_TARGET_CHANGED");
+        ASSERT(c.reply.error.retryable);
+        ASSERT(!c.reply.error.mutated);
+        dlx_end(&c);
+        ASSERT(dlx_origin_main(&rig, remote));
+        ASSERT_STR_EQ(remote, base);
+        dlx_begin(&c, "status");
+        ASSERT(dlx_run(&c) && dlx_ok(&c));
+        const struct json_value *flight = json_get(&c.reply.data, "in_flight");
+        ASSERT(flight != NULL);
+        ASSERT_STR_EQ(json_get_str(json_get(flight, "phase")), "prove");
+        dlx_end(&c);
+        dlx_restore();
+        PASS();
+    }
+_test_next:;
+    dlx_restore();
+#endif
+    return failures;
+}
+
 static int test_dev_land_signed_stale(void)
 {
     int failures = 0;
@@ -7044,6 +7103,7 @@ int test_dev_land(void)
     int failures = 0;
     failures += test_dev_land_signed_intent();
     failures += test_dev_land_signed_tamper();
+    failures += test_dev_land_signed_target_race();
     failures += test_dev_land_signed_stale();
     failures += test_dev_land_signed_recovery();
     failures += test_dev_land_signed_lost_ack();
