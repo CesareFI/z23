@@ -149,6 +149,18 @@ static bool dvx_arr_has(const struct json_value *arr, const char *needle)
     return false;
 }
 
+static bool dvx_arr_mentions(const struct json_value *arr, const char *needle)
+{
+    if (!arr)
+        return false;
+    for (size_t i = 0; i < arr->num_children; i++) {
+        const char *s = json_get_str(&arr->children[i]);
+        if (arr->children[i].type == JSON_STR && s && strstr(s, needle))
+            return true;
+    }
+    return false;
+}
+
 /* One commit on `main`, then ONE dirty tracked file and ONE untracked file —
  * the two counts this leaf exists to report without an agent parsing
  * porcelain by hand. */
@@ -284,7 +296,8 @@ int test_devagent_start(void)
         ASSERT(dvx_run(&c));
         ASSERT(dvx_ok(&c));
         ASSERT(dvx_arr_has(dvx_arr(&c, "next"), "make lint-fast"));
-        /* A standalone clone is not a lane: the lane sentence must not be offered. */
+        ASSERT(dvx_arr_mentions(dvx_arr(&c, "next"), "native receipt-gated land tools"));
+        ASSERT(dvx_arr_mentions(dvx_arr(&c, "next"), "Checkout layout grants no publication authority"));
         ASSERT(!dvx_arr_has(dvx_arr(&c, "next"),
                             "commit on your lane branch; do not push"));
         dvx_end(&c);
@@ -299,7 +312,27 @@ int test_devagent_start(void)
         ASSERT(dvx_ok(&c));
         ASSERT(strcmp(dvx_sub_str(&c, "situation", "situation"),
                       "standalone") == 0);
-        ASSERT(strcmp(dvx_str(&c, "next_action"), "make_pre_push_ci") == 0);
+        ASSERT(strcmp(dvx_str(&c, "next_action"), "lint_fast_plus_impact_and_exact_proof") == 0);
+        dvx_end(&c);
+        PASS();
+    }
+
+    TEST("start: linked worktree reports the same publication boundary") {
+        char lane[1024];
+        int n = snprintf(lane, sizeof(lane), "%s/lane", root);
+        ASSERT(n > 0 && (size_t)n < sizeof(lane));
+        const char *add[] = {"worktree", "add", "--detach", "-q", lane, "HEAD", NULL};
+        ASSERT(dvx_git(root, add));
+        struct dvx_call c;
+        dvx_begin(&c);
+        (void)json_push_kv_str(&c.input, "cwd", lane);
+        ASSERT(dvx_run(&c));
+        ASSERT(dvx_ok(&c));
+        ASSERT_STR_EQ(dvx_sub_str(&c, "situation", "situation"), "shared_checkout_lane");
+        ASSERT_STR_EQ(dvx_str(&c, "next_action"), "lint_fast_plus_impact_and_exact_proof");
+        ASSERT(dvx_arr_mentions(dvx_arr(&c, "next"), "native receipt-gated land tools"));
+        ASSERT(dvx_arr_mentions(dvx_arr(&c, "next"), "no permanent lead is required"));
+        ASSERT(!dvx_arr_has(dvx_arr(&c, "next"), "commit on your lane branch; do not push"));
         dvx_end(&c);
         PASS();
     }
