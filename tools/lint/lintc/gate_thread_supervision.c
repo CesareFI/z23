@@ -269,13 +269,18 @@ static int ts_walk(const char *root)
     struct stat st;
     if (lstat(root, &st) != 0)
         return 0;
+    size_t nl = strlen(root);
+    int source_named = nl >= 2 && root[nl - 2] == '.'
+        && root[nl - 1] == 'c' && !ts_dropped(root);
     if (S_ISREG(st.st_mode)) {
-        size_t nl = strlen(root);
-        if (nl >= 2 && root[nl - 2] == '.' && root[nl - 1] == 'c'
-            && !ts_dropped(root))
+        if (source_named)
             return ts_pool_add(root);
         return 0;
     }
+    /* A source-shaped non-regular entry is evidence, not an omission. Add
+     * it to the realized set so the per-file scanner can refuse UNPROVEN. */
+    if (source_named)
+        return ts_pool_add(root);
     if (!S_ISDIR(st.st_mode))
         return 0;
     struct dirent **names = NULL;

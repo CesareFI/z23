@@ -197,9 +197,11 @@ sandbox_legacy="$(ZCL_SOURCE_IDENTITY_BATCH_DISABLE=1 \
 [ "$sandbox_native" = "$sandbox_legacy" ] ||
     fail 'adversarial-path native and portable records differ'
 
-# Mutation records must match too, including nonzero timezone offsets.
-# Fixed POSIX zones keep this independent of the host timezone database.
-for zone in UTC0 PST8PDT IST-5:30; do
+# Mutation records must match too, including both signs of nonzero timezone
+# offsets. Spell the DST transitions explicitly: bare PST8PDT leaves its
+# rules implementation-defined (glibc supplies US rules while uutils 0.8.0
+# falls back to UTC), so it is not a portable parity oracle.
+for zone in UTC0 'PST8PDT,M3.2.0,M11.1.0' IST-5:30; do
     mutation_native="$(TZ="$zone" ZCL_SOURCE_IDENTITY_BATCH_SHADOW=1 \
         "$SOURCE_IDENTITY" capture-record)" ||
         fail "native mutation parity failed in $zone"

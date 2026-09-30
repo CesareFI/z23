@@ -189,6 +189,16 @@ static void tss_grep_diag(const char *path, int errnum)
     fprintf(stderr, "grep: %s: %s\n", path, strerror(errnum));
 }
 
+static int tss_unproven_file(const char *path, int errnum)
+{
+    fprintf(stderr, "%s: UNPROVEN — %s is not a readable regular file\n"
+            "  (%s). A silently unreadable path in the scan set would\n"
+            "  read as zero spawn sites and hide an unaccounted thread.\n"
+            "  Restore a regular readable source file and re-run.\n",
+            k_tss_name, path, strerror(errnum));
+    return 2;
+}
+
 /* Pass 1: is this file binary to grep? A NUL anywhere flags it (grep's
  * per-buffer rule, exact for files under one 32 KiB buffer). Leaves the
  * stream rewound for the next pass. */
@@ -330,36 +340,21 @@ static int tss_text_file(const char *path, FILE *f)
     return rc;
 }
 
-/* One file as the shell's per-file greps see it, EXCEPT for a present-but-
- * unreadable regular file: the shell's two greps against it fail open
- * (their own diagnostic, no records, no checked exit code), which would
- * hide a genuinely unaccounted thread behind a permission bit. The
- * verifier ruling on p9's index-extension refusal applies here too — a
- * silently empty per-file scan must never read as clean — so EACCES
- * refuses the whole gate (UNPROVEN exit 2) instead of reproducing the
- * shell's fail-open. Any other open failure (e.g. a TOCTOU removal
- * between `find` and this open) keeps the old parity: grep's own
- * diagnostic once per probe, no records. A binary file keeps the
- * coverage verdict but yields no rows, plus grep's stderr note when the
- * spawn ERE matches. */
+/* One regular readable file as the shell's per-file greps see it. A path
+ * that changed type, vanished, or cannot be opened after collection is
+ * UNPROVEN exit 2: silently treating it as an empty grep result could hide
+ * an unaccounted thread. A binary file keeps the coverage verdict but
+ * yields no rows, plus grep's stderr note when the spawn ERE matches. */
 static int tss_scan_file(const char *path)
 {
+    struct stat st;
+    if (stat(path, &st) != 0)
+        return tss_unproven_file(path, errno);
+    if (!S_ISREG(st.st_mode))
+        return tss_unproven_file(path, EINVAL);
     FILE *f = fopen(path, "r");
-    if (!f) {
-        int e = errno;
-        if (e == EACCES) {
-            fprintf(stderr, "%s: UNPROVEN — %s exists but cannot be\n"
-                    "  read (%s). A silently unreadable file in the scan\n"
-                    "  set would read as zero spawn sites, hiding a\n"
-                    "  genuinely unaccounted thread behind a permission\n"
-                    "  bit. Restore its permissions and re-run.\n",
-                    k_tss_name, path, strerror(e));
-            return 2;
-        }
-        tss_grep_diag(path, e);
-        tss_grep_diag(path, e);
-        return 0;
-    }
+    if (!f)
+        return tss_unproven_file(path, errno);
     int binary = 0;
     int rc = tss_has_nul(f, &binary);
     if (rc == 0 && binary) {

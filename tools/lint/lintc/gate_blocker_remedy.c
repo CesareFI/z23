@@ -258,14 +258,28 @@ static void brf_lines_free(struct brf_lines *l)
     l->n = l->cap = 0;
 }
 
-static int brf_load_lines(const char *path, struct brf_lines *l, FILE *err)
+static FILE *brf_open_lines(const char *path, FILE *err)
 {
+    struct stat st;
+    if (stat(path, &st) != 0 || !S_ISREG(st.st_mode)) {
+        fprintf(err, "check_blocker_remedy: FATAL — cannot read scanned file: "
+                     "%s\n", path);
+        return NULL;
+    }
     FILE *f = fopen(path, "r");
     if (!f) {
         fprintf(err, "check_blocker_remedy: FATAL — cannot read scanned file: "
                      "%s\n", path);
-        return 2;
+        return NULL;
     }
+    return f;
+}
+
+static int brf_load_lines(const char *path, struct brf_lines *l, FILE *err)
+{
+    FILE *f = brf_open_lines(path, err);
+    if (!f)
+        return 2;
     l->v = NULL;
     l->n = l->cap = 0;
     char *line = NULL;
@@ -1402,10 +1416,18 @@ static int brf_st_edge_cases(const char *root, int *step, char *cwd)
     if (chdir(root) != 0)
         return 1;
     bad |= brf_st_full_fixture();
-    bad |= chmod("./engine/jobs/src/a.c", 0) != 0;
-    bad |= brf_st_case((*step)++, "unreadable scanned file is UNPROVEN",
+    if (unlink("./engine/jobs/src/a.c") != 0
+        || mkdir("./engine/jobs/src/a.c", 0700) != 0
+        || setenv("ZCL_BLOCKER_REMEDY_SCAN_FILES",
+                  "engine/jobs/src/a.c", 1) != 0) {
+        if (chdir(cwd) != 0)
+            return 1;
+        return 1;
+    }
+    bad |= brf_st_case((*step)++, "non-regular scanned path is UNPROVEN",
                        brf_st_run(2, NULL, "cannot read scanned file"));
-    bad |= chmod("./engine/jobs/src/a.c", 0600) != 0;
+    bad |= unsetenv("ZCL_BLOCKER_REMEDY_SCAN_FILES") != 0;
+    bad |= rmdir("./engine/jobs/src/a.c") != 0;
     if (chdir(cwd) != 0)
         return 1;
     return bad;

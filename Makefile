@@ -6856,6 +6856,8 @@ $(BIN_DIR)/zcode-science-fixture: $(BUILD_IDENTITY_STAMP) \
 		$(filter-out -rdynamic,$(DEV_RESTART_LDFLAGS)) \
 		$(ZCL_GC_SECTIONS_LDFLAG) -o "$$tmp" \
 		$(ZCODE_SCIENCE_FIXTURE_SRCS) -lm; \
+	tools/dev/source-identity.sh verify-record "$(BUILD_SOURCE_ID)" \
+		"$(BUILD_CLEAN)" "$(BUILD_MUTATION)" >/dev/null; \
 	mv -f -- "$$tmp" "$@"; \
 	trap - EXIT HUP INT TERM
 

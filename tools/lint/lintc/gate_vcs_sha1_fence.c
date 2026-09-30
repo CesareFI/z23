@@ -128,6 +128,8 @@ static int vcs_walk(const char *dir, const char *top, const regex_t *re,
                 rc = vcs_fatal_path("path too long: ", dir, err);
             else if (lstat(path, &st) != 0)
                 rc = vcs_grep_fail(path, errno, top, err);
+            else if (vcs_scannable(name) && !S_ISREG(st.st_mode))
+                rc = vcs_grep_fail(path, EINVAL, top, err);
             else if (S_ISDIR(st.st_mode))
                 rc = vcs_walk(path, top, re, out, err, hits, show);
             else if (S_ISREG(st.st_mode) && vcs_scannable(name))
@@ -988,10 +990,10 @@ static int vcs_st_unreadable(const char *root)
     if (ovf(snprintf(path, sizeof path, "%s/%s", root,
                      "contexts/commons/modules/vcs/src/object.c"), sizeof path))
         return 1;
-    if (chmod(path, 0) != 0)
+    if (unlink(path) != 0 || mkdir(path, 0700) != 0)
         return 1;
     int bad = vcs_st_case(root, NULL, NULL, 2);
-    if (chmod(path, 0600) != 0)
+    if (rmdir(path) != 0 || csr_write(path, k_fx_object) != 0)
         return 1;
     return bad;
 }
@@ -1030,7 +1032,7 @@ static int vcs_st_makefile_cases(const char *root, const char **failmsg)
 static int vcs_st_sha1_cases(const char *root, const char **failmsg)
 {
     if (vcs_st_unreadable(root)) {
-        *failmsg = "unreadable scanned file false-greened the hard gate";
+        *failmsg = "non-regular scanned path false-greened the hard gate";
         return 1;
     }
     if (vcs_st_case(root, "contexts/commons/modules/vcs/src/object.c",
