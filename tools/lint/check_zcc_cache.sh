@@ -119,6 +119,517 @@ d="$(build header)" || exit 1
 [ "$a" != "$d" ] || fail "a changed header produced the same object bytes"
 [ "$("$WORK/prog")" = 100 ] || fail "the build after a header edit used stale code"
 
+# Same inode, length, and restored timestamp still changes the real input.
+cp -p "$WORK/dep.h" "$WORK/header-time"
+printf '%s\n' '#define ZCL_GATE_VALUE 101' > "$WORK/dep.h"
+touch -r "$WORK/header-time" "$WORK/dep.h"
+same_meta="$(build same-meta)" || exit 1
+[ "$(last_disposition)" = MISS ] || fail "same-metadata header edit was served"
+[ "$same_meta" != "$d" ] || fail "same-metadata header edit kept old bytes"
+[ "$("$WORK/prog")" = 101 ] || fail "same-metadata edit kept old behavior"
+
+mv "$WORK/dep.h" "$WORK/dep-one.h"
+printf '%s\n' '#define ZCL_GATE_VALUE 102' > "$WORK/dep-two.h"
+ln -s dep-one.h "$WORK/dep.h"
+symlink_one="$(build symlink-one)" || exit 1
+ln -sfn dep-two.h "$WORK/dep.h"
+symlink_two="$(build symlink-two)" || exit 1
+[ "$(last_disposition)" = MISS ] || fail "retargeted header symlink was served"
+[ "$symlink_one" != "$symlink_two" ] || fail "symlink retarget did not change output"
+[ "$("$WORK/prog")" = 102 ] || fail "symlink retarget kept old behavior"
+rm "$WORK/dep.h"
+cp "$WORK/dep-one.h" "$WORK/dep.h"
+
+if [ "$(uname -s)" = Linux ]; then
+    linux_cc="$(command -v gcc-14 || command -v gcc)"
+    linux_as="$("$linux_cc" -print-prog-name=as)"
+    linux_as="$(command -v "$linux_as")"
+    mkdir -p "$WORK/linux-tools"
+    printf 'int zcc_selected_tool(void) { return 7; }\n' > "$WORK/linux-tool.c"
+    linux_log="$WORK/linux-tool.log"
+    linux_wrapper_write()
+    {
+        printf '#!/bin/sh\nexec "%s" --defsym ZCC_BACKEND_TEST=%s "$@"\n' \
+            "$linux_as" "$1" > "$WORK/linux-tools/as"
+        chmod 700 "$WORK/linux-tools/as"
+    }
+    linux_tool_compile()
+    {
+        ZCC_DIR="$WORK/linux-tool-cache" ZCC_LOG="$linux_log" \
+            "$ZCC" "$linux_cc" -std=c23 -O1 -B"$WORK/linux-tools/" \
+            -c "$WORK/linux-tool.c" -o "$WORK/linux-tool.o"
+    }
+    linux_wrapper_write 1
+    "$linux_cc" -B"$WORK/linux-tools/" -E "$WORK/linux-tool.c" > "$WORK/linux-before.i"
+    linux_tool_compile
+    [ "$(tail -1 "$linux_log" | awk '{print $1}')" = MISS ] ||
+        fail 'Linux selected assembler cold compile was not a MISS'
+    cp "$WORK/linux-tool.o" "$WORK/linux-first.o"
+    linux_tool_compile
+    [ "$(tail -1 "$linux_log" | awk '{print $1}')" = HIT ] ||
+        fail 'Linux selected assembler warm compile was not a HIT'
+    cp -p "$WORK/linux-tools/as" "$WORK/linux-as-before"
+    linux_wrapper_write 2
+    touch -r "$WORK/linux-as-before" "$WORK/linux-tools/as"
+    "$linux_cc" -B"$WORK/linux-tools/" -E "$WORK/linux-tool.c" > "$WORK/linux-after.i"
+    cmp "$WORK/linux-before.i" "$WORK/linux-after.i" ||
+        fail 'Linux assembler fixture unexpectedly changed preprocessing'
+    linux_tool_compile
+    [ "$(tail -1 "$linux_log" | awk '{print $1}')" = MISS ] ||
+        fail 'mutated Linux assembler with restored mtime was served from cache'
+    cp "$WORK/linux-tool.o" "$WORK/linux-cached.o"
+    ZCC_DISABLE=1 linux_tool_compile
+    cmp "$WORK/linux-cached.o" "$WORK/linux-tool.o" ||
+        fail 'Linux selected assembler cache differs from cold output'
+    if cmp -s "$WORK/linux-first.o" "$WORK/linux-tool.o"; then
+        fail 'Linux assembler fixture did not change object bytes'
+    fi
+    linux_tool_compile
+    [ "$(tail -1 "$linux_log" | awk '{print $1}')" = HIT ] ||
+        fail 'stable Linux selected assembler did not return to HIT'
+
+    # These code-generation flags change symbol names, while -E stays equal.
+    # The driver itself and its version reply remain untouched.
+    linux_frontend="$("$linux_cc" -print-prog-name=cc1)"
+    [ -x "$linux_frontend" ] || fail 'Linux selected frontend is unavailable'
+    linux_frontend_write()
+    {
+        printf '#!/bin/sh\nexec "%s" "$@" %s\n' "$linux_frontend" "$1" \
+            > "$WORK/linux-tools/cc1"
+        chmod 700 "$WORK/linux-tools/cc1"
+    }
+    linux_frontend_compile()
+    {
+        ZCC_DIR="$WORK/linux-frontend-cache" ZCC_LOG="$linux_log" \
+            "$ZCC" "$linux_cc" -std=c23 -O1 -B"$WORK/linux-tools/" \
+            -c "$WORK/linux-tool.c" -o "$WORK/linux-tool.o"
+    }
+    linux_frontend_write -fno-leading-underscore
+    [ "$("$linux_cc" -B"$WORK/linux-tools/" -print-prog-name=cc1)" = \
+        "$WORK/linux-tools/cc1" ] || fail 'Linux driver did not select fixture frontend'
+    "$linux_cc" -B"$WORK/linux-tools/" -E "$WORK/linux-tool.c" > "$WORK/linux-before.i"
+    linux_frontend_compile
+    [ "$(tail -1 "$linux_log" | awk '{print $1}')" = MISS ] ||
+        fail 'Linux selected frontend cold compile was not a MISS'
+    cp "$WORK/linux-tool.o" "$WORK/linux-first.o"
+    linux_frontend_compile
+    [ "$(tail -1 "$linux_log" | awk '{print $1}')" = HIT ] ||
+        fail 'Linux selected frontend warm compile was not a HIT'
+    linux_frontend_write -fleading-underscore
+    "$linux_cc" -B"$WORK/linux-tools/" -E "$WORK/linux-tool.c" > "$WORK/linux-after.i"
+    cmp "$WORK/linux-before.i" "$WORK/linux-after.i" ||
+        fail 'Linux frontend fixture unexpectedly changed preprocessing'
+    linux_frontend_compile
+    [ "$(tail -1 "$linux_log" | awk '{print $1}')" = MISS ] ||
+        fail 'changed Linux frontend bytes were served from cache'
+    cp "$WORK/linux-tool.o" "$WORK/linux-cached.o"
+    ZCC_DISABLE=1 linux_frontend_compile
+    cmp "$WORK/linux-cached.o" "$WORK/linux-tool.o" ||
+        fail 'Linux selected frontend cache differs from cold output'
+    if cmp -s "$WORK/linux-first.o" "$WORK/linux-tool.o"; then
+        fail 'Linux frontend fixture did not change object bytes'
+    fi
+    linux_frontend_compile
+    [ "$(tail -1 "$linux_log" | awk '{print $1}')" = HIT ] ||
+        fail 'stable Linux selected frontend did not return to HIT'
+fi
+
+if [ "$(uname -s)" = Darwin ]; then
+    # /usr/bin/cc may be only a launcher. Keep the driver and version reply
+    # fixed while changing the bytes of the selected executable it invokes.
+    mkdir -p "$WORK/apple-backend-cache"
+    cat > "$WORK/apple-backend-driver" <<'WRAPPER'
+#!/bin/sh
+for arg in "$@"; do
+    case "$arg" in
+        -print-prog-name=clang) printf '%s\n' "$ZCC_APPLE_BACKEND"; exit 0 ;;
+    esac
+done
+exec "$ZCC_APPLE_BACKEND" "$@"
+WRAPPER
+    cat > "$WORK/apple-backend" <<'WRAPPER'
+#!/bin/sh
+exec /usr/bin/cc "$@"
+WRAPPER
+    chmod +x "$WORK/apple-backend-driver" "$WORK/apple-backend"
+    printf 'int zcc_apple_backend(void) { return 23; }\n' > "$WORK/apple-backend.c"
+    backend_log="$WORK/apple-backend.log"
+    apple_backend_compile()
+    {
+        ZCC_APPLE_BACKEND="$WORK/apple-backend" \
+            ZCC_DIR="$WORK/apple-backend-cache" ZCC_LOG="$backend_log" \
+            "$ZCC" "$WORK/apple-backend-driver" -std=c23 \
+            -c "$WORK/apple-backend.c" -o "$WORK/apple-backend.o" ||
+            fail 'Apple selected backend compile failed'
+    }
+    apple_backend_compile
+    [ "$(tail -1 "$backend_log" | awk '{print $1}')" = MISS ] ||
+        fail 'Apple backend cold compile was not a MISS'
+    apple_backend_compile
+    [ "$(tail -1 "$backend_log" | awk '{print $1}')" = HIT ] ||
+        fail 'Apple backend warm compile was not a HIT'
+    printf '# backend body changed; version reply stays constant\n' >> "$WORK/apple-backend"
+    apple_backend_compile
+    [ "$(tail -1 "$backend_log" | awk '{print $1}')" = MISS ] ||
+        fail 'changed Apple backend bytes were served from cache'
+    apple_backend_compile
+    [ "$(tail -1 "$backend_log" | awk '{print $1}')" = HIT ] ||
+        fail 'unchanged Apple backend did not return to HIT'
+    cp -p "$WORK/apple-backend" "$WORK/apple-backend-time"
+    backend_size="$(wc -c < "$WORK/apple-backend")"
+    sed 's/body changed/body altered/' "$WORK/apple-backend-time" \
+        > "$WORK/apple-backend-new"
+    cat "$WORK/apple-backend-new" > "$WORK/apple-backend"
+    touch -r "$WORK/apple-backend-time" "$WORK/apple-backend"
+    [ "$(wc -c < "$WORK/apple-backend")" = "$backend_size" ] ||
+        fail 'Apple backend same-size fixture changed length'
+    apple_backend_compile
+    [ "$(tail -1 "$backend_log" | awk '{print $1}')" = MISS ] ||
+        fail 'same-size backend edit with restored mtime was served from cache'
+    apple_backend_compile
+    [ "$(tail -1 "$backend_log" | awk '{print $1}')" = HIT ] ||
+        fail 'same-size backend did not return to HIT'
+
+    # The selected backend may change after key derivation but before the
+    # real compiler exits. A successful compile under that race must not
+    # publish an object under the earlier toolchain key.
+    mkdir -p "$WORK/apple-backend-race-cache"
+    cat > "$WORK/apple-backend-race" <<'WRAPPER'
+#!/bin/sh
+case " $* " in
+    *' -E '*) exec /usr/bin/cc "$@" ;;
+esac
+printf 'compile\n' >> "$APPLE_RACE_COMPILES"
+if [ ! -e "$APPLE_RACE_MARK" ]; then
+    : > "$APPLE_RACE_MARK"
+    printf '# changed during physical compile\n' >> "$0"
+fi
+exec /usr/bin/cc "$@"
+WRAPPER
+    chmod +x "$WORK/apple-backend-race"
+    cp -p "$WORK/apple-backend-race" "$WORK/apple-backend-race-original"
+    race_log="$WORK/apple-backend-race.log"
+    race_compiles="$WORK/apple-backend-race.compiles"
+    : > "$race_compiles"
+    apple_backend_race_compile()
+    {
+        ZCC_APPLE_BACKEND="$WORK/apple-backend-race" \
+            APPLE_RACE_MARK="$WORK/apple-backend-race.once" \
+            APPLE_RACE_COMPILES="$race_compiles" \
+            ZCC_DIR="$WORK/apple-backend-race-cache" ZCC_LOG="$race_log" \
+            "$ZCC" "$WORK/apple-backend-driver" -std=c23 \
+            -c "$WORK/apple-backend.c" -o "$WORK/apple-backend-race.o" ||
+            fail 'Apple backend race compile failed'
+    }
+    apple_backend_race_compile
+    grep -Fq 'compiled; inputs changed during compilation' "$race_log" ||
+        fail 'mid-compile backend mutation was not detected'
+    cp -p "$WORK/apple-backend-race" "$WORK/apple-backend-race-changed"
+    cat "$WORK/apple-backend-race-original" > "$WORK/apple-backend-race"
+    apple_backend_race_compile
+    [ "$(tail -1 "$race_log" | awk '{print $1}')" = MISS ] ||
+        fail 'the old backend key was published despite a mid-compile mutation'
+    cat "$WORK/apple-backend-race-changed" > "$WORK/apple-backend-race"
+    apple_backend_race_compile
+    [ "$(tail -1 "$race_log" | awk '{print $1}')" = MISS ] ||
+        fail 'mid-compile backend mutation seeded a stale cache hit'
+    apple_backend_race_compile
+    [ "$(tail -1 "$race_log" | awk '{print $1}')" = HIT ] ||
+        fail 'stable backend after the race did not return to HIT'
+    [ "$(wc -l < "$race_compiles")" = 3 ] ||
+        fail 'Apple backend race did not execute exactly three physical compiles'
+
+    # A default backend selector may resolve clang through PATH. Making an
+    # earlier candidate executable changes that selection without changing
+    # PATH's text or the selected tool's directory stamp.
+    mkdir -p "$WORK/apple-path-first" "$WORK/apple-path-second" \
+        "$WORK/apple-path-cache"
+    printf '#!/bin/sh\nexec /usr/bin/cc "$@"\n' > "$WORK/apple-path-first/clang"
+    cp "$WORK/apple-path-first/clang" "$WORK/apple-path-second/clang"
+    chmod +x "$WORK/apple-path-second/clang"
+    cat > "$WORK/apple-path-driver" <<'WRAPPER'
+#!/bin/sh
+case "$1" in
+    -print-prog-name=clang)
+        printf 'query\n' >> "$APPLE_PATH_QUERIES"
+        command -v clang
+        exit $? ;;
+esac
+selected="$(command -v clang)" || exit 1
+exec "$selected" "$@"
+WRAPPER
+    chmod +x "$WORK/apple-path-driver"
+    apple_path_log="$WORK/apple-path.log"
+    apple_path_queries="$WORK/apple-path-queries"
+    : > "$apple_path_queries"
+    apple_path_compile()
+    {
+        PATH="$WORK/apple-path-first:$WORK/apple-path-second:$PATH" \
+            COMPILER_PATH= APPLE_PATH_QUERIES="$apple_path_queries" \
+            ZCC_DIR="$WORK/apple-path-cache" ZCC_LOG="$apple_path_log" \
+            "$ZCC" "$WORK/apple-path-driver" -std=c23 \
+            -c "$WORK/apple-backend.c" -o "$WORK/apple-backend.o" ||
+            fail 'Apple PATH backend compile failed'
+    }
+    apple_path_compile
+    [ "$(tail -1 "$apple_path_log" | awk '{print $1}')" = MISS ] ||
+        fail 'Apple PATH backend cold compile was not a MISS'
+    apple_path_compile
+    [ "$(tail -1 "$apple_path_log" | awk '{print $1}')" = HIT ] ||
+        fail 'Apple PATH backend warm compile was not a HIT'
+    [ "$(wc -l < "$apple_path_queries")" = 1 ] ||
+        fail 'Apple default backend memo launched a warm driver query'
+    chmod +x "$WORK/apple-path-first/clang"
+    apple_path_compile
+    [ "$(tail -1 "$apple_path_log" | awk '{print $1}')" = MISS ] ||
+        fail 'newly executable Apple PATH backend was served from cache'
+    apple_path_compile
+    [ "$(tail -1 "$apple_path_log" | awk '{print $1}')" = HIT ] ||
+        fail 'unchanged Apple PATH backend did not return to HIT'
+    [ "$(wc -l < "$apple_path_queries")" = 2 ] ||
+        fail 'Apple default backend memo did not requery exactly after chmod'
+
+    cat > "$WORK/apple-unknown-backend" <<'WRAPPER'
+#!/bin/sh
+case " $* " in
+    *' -print-prog-name=clang '*) exit 0 ;;
+esac
+exec /usr/bin/cc "$@"
+WRAPPER
+    chmod +x "$WORK/apple-unknown-backend"
+    ZCC_DIR="$WORK/apple-backend-cache" ZCC_LOG="$backend_log" \
+        "$ZCC" "$WORK/apple-unknown-backend" -std=c23 \
+        -c "$WORK/apple-backend.c" -o "$WORK/apple-backend.o" ||
+        fail 'Apple missing-backend-fact compile failed'
+    [ "$(tail -1 "$backend_log" | awk '{print $1}')" = UNKEY ] ||
+        fail 'missing Apple backend fact did not fail cache admission'
+
+    # -fno-integrated-as dispatches a separate executable on Apple Clang.
+    # Editing its bytes at the same path must invalidate the level-1 key.
+    apple_as="$(cc -print-prog-name=as)"
+    [ -x "$apple_as" ] || fail 'Apple assembler could not be resolved'
+    mkdir -p "$WORK/apple-as" "$WORK/apple-as-cache"
+    printf '#!/bin/sh\n# first body\nexec "%s" "$@"\n' "$apple_as" > "$WORK/apple-as/as"
+    chmod +x "$WORK/apple-as/as"
+    printf 'int zcc_apple_as(void) { return 23; }\n' > "$WORK/apple-as.c"
+    apple_log="$WORK/apple-as.log"
+    apple_compile()
+    {
+        ZCC_DIR="$WORK/apple-as-cache" ZCC_LOG="$apple_log" \
+            "$ZCC" cc -std=c23 -fno-integrated-as -B"$WORK/apple-as" \
+            -c "$WORK/apple-as.c" -o "$WORK/apple-as.o" ||
+            fail 'Apple external assembler compile failed'
+    }
+    cc -### -std=c23 -fno-integrated-as -B"$WORK/apple-as" \
+        -c "$WORK/apple-as.c" -o "$WORK/apple-as.o" \
+        > "$WORK/apple-as-driver" 2>&1 ||
+        fail 'Apple assembler driver query failed'
+    grep -Fq "$WORK/apple-as/as" "$WORK/apple-as-driver" ||
+        fail 'Apple driver did not select the fixture assembler'
+    apple_compile
+    [ "$(tail -1 "$apple_log" | awk '{print $1}')" = MISS ] ||
+        fail 'Apple assembler cold compile was not a MISS'
+    apple_compile
+    [ "$(tail -1 "$apple_log" | awk '{print $1}')" = HIT ] ||
+        fail 'Apple assembler warm compile was not a HIT'
+    printf '# changed body; version output is unchanged\n' >> "$WORK/apple-as/as"
+    apple_compile
+    [ "$(tail -1 "$apple_log" | awk '{print $1}')" = MISS ] ||
+        fail 'changed Apple assembler bytes were served from cache'
+
+    mkdir -p "$WORK/apple-as-race" "$WORK/apple-as-race-cache"
+    cat > "$WORK/apple-as-race/as" <<'WRAPPER'
+#!/bin/sh
+printf 'assemble\n' >> "$APPLE_AS_RACE_CALLS"
+if [ ! -e "$APPLE_AS_RACE_MARK" ]; then
+    : > "$APPLE_AS_RACE_MARK"
+    printf '# changed during physical assembly\n' >> "$0"
+fi
+exec "$APPLE_AS_REAL" "$@"
+WRAPPER
+    chmod +x "$WORK/apple-as-race/as"
+    cp -p "$WORK/apple-as-race/as" "$WORK/apple-as-race-original"
+    as_race_log="$WORK/apple-as-race.log"
+    as_race_calls="$WORK/apple-as-race.calls"
+    : > "$as_race_calls"
+    apple_as_race_compile()
+    {
+        APPLE_AS_REAL="$apple_as" \
+            APPLE_AS_RACE_MARK="$WORK/apple-as-race.once" \
+            APPLE_AS_RACE_CALLS="$as_race_calls" \
+            ZCC_DIR="$WORK/apple-as-race-cache" ZCC_LOG="$as_race_log" \
+            "$ZCC" cc -std=c23 -fno-integrated-as -B"$WORK/apple-as-race" \
+            -c "$WORK/apple-as.c" -o "$WORK/apple-as-race.o" ||
+            fail 'Apple assembler race compile failed'
+    }
+    apple_as_race_compile
+    grep -Fq 'compiled; inputs changed during compilation' "$as_race_log" ||
+        fail 'mid-compile assembler mutation was not detected'
+    cp -p "$WORK/apple-as-race/as" "$WORK/apple-as-race-changed"
+    cat "$WORK/apple-as-race-original" > "$WORK/apple-as-race/as"
+    apple_as_race_compile
+    [ "$(tail -1 "$as_race_log" | awk '{print $1}')" = MISS ] ||
+        fail 'the old assembler key was published despite mutation'
+    cat "$WORK/apple-as-race-changed" > "$WORK/apple-as-race/as"
+    apple_as_race_compile
+    [ "$(tail -1 "$as_race_log" | awk '{print $1}')" = MISS ] ||
+        fail 'mid-compile assembler mutation seeded a stale cache hit'
+    apple_as_race_compile
+    [ "$(tail -1 "$as_race_log" | awk '{print $1}')" = HIT ] ||
+        fail 'stable assembler after the race did not return to HIT'
+    [ "$(wc -l < "$as_race_calls")" = 3 ] ||
+        fail 'Apple assembler race did not execute exactly three assemblies'
+
+    # -B is a compiler prefix selector, so zcc queries the driver every time.
+    # Making an earlier candidate executable must still invalidate the key.
+    mkdir -p "$WORK/apple-first" "$WORK/apple-second" \
+        "$WORK/apple-selection-cache"
+    printf '#!/bin/sh\nexec "%s" "$@"\n' "$apple_as" \
+        > "$WORK/apple-first/as"
+    cp "$WORK/apple-first/as" "$WORK/apple-second/as"
+    chmod +x "$WORK/apple-second/as"
+    [ "$(cc -B"$WORK/apple-first" -B"$WORK/apple-second" \
+            -print-prog-name=as)" = "$WORK/apple-second/as" ] ||
+        fail 'Apple selector fixture did not initially choose the later tool'
+    apple_selection_log="$WORK/apple-selection.log"
+    apple_selection_compile()
+    {
+        ZCC_DIR="$WORK/apple-selection-cache" ZCC_LOG="$apple_selection_log" \
+            "$ZCC" cc -std=c23 -fno-integrated-as \
+            -B"$WORK/apple-first" -B"$WORK/apple-second" \
+            -c "$WORK/apple-as.c" -o "$WORK/apple-as.o" ||
+            fail 'Apple selection-change compile failed'
+    }
+    apple_selection_compile
+    [ "$(tail -1 "$apple_selection_log" | awk '{print $1}')" = MISS ] ||
+        fail 'Apple later-assembler cold compile was not a MISS'
+    apple_selection_compile
+    [ "$(tail -1 "$apple_selection_log" | awk '{print $1}')" = HIT ] ||
+        fail 'Apple later-assembler warm compile was not a HIT'
+    chmod +x "$WORK/apple-first/as"
+    [ "$(cc -B"$WORK/apple-first" -B"$WORK/apple-second" \
+            -print-prog-name=as)" = "$WORK/apple-first/as" ] ||
+        fail 'Apple selector fixture did not switch to the earlier tool'
+    apple_selection_compile
+    [ "$(tail -1 "$apple_selection_log" | awk '{print $1}')" = MISS ] ||
+        fail 'newly executable Apple assembler was served from cache'
+    apple_selection_compile
+    [ "$(tail -1 "$apple_selection_log" | awk '{print $1}')" = HIT ] ||
+        fail 'unchanged Apple assembler selection did not return to HIT'
+
+    cat > "$WORK/apple-unknown-compiler" <<'WRAPPER'
+#!/bin/sh
+case " $* " in
+    *' -print-prog-name=as '*) exit 0 ;;
+esac
+exec cc "$@"
+WRAPPER
+    chmod +x "$WORK/apple-unknown-compiler"
+    ZCC_DIR="$WORK/apple-as-cache" ZCC_LOG="$apple_log" \
+        "$ZCC" "$WORK/apple-unknown-compiler" -std=c23 \
+        -fno-integrated-as -B"$WORK/apple-as" \
+        -c "$WORK/apple-as.c" -o "$WORK/apple-as.o" ||
+        fail 'Apple missing-fact compile failed'
+    [ "$(tail -1 "$apple_log" | awk '{print $1}')" = UNKEY ] ||
+        fail 'missing Apple assembler fact did not fail cache admission'
+fi
+
+# Make control values change with an unrelated edit. The compiler child must
+# never see them if the cache key omits them; a real compiler selector remains
+# visible and changes the key. This fixture refuses if the child sees the
+# source record, so a hash-only exclusion cannot pass.
+saved_cache="$ZCC_DIR"
+export ZCC_DIR="$WORK/environment-cache"
+cat > "$WORK/compiler-environment" <<'WRAPPER'
+#!/bin/sh
+[ -z "${BUILD_SOURCE_RECORD+x}" ] || exit 71
+exec cc "-DZCC_ENV_VALUE=${ZCC_REAL_FLAG:-1}" "$@"
+WRAPPER
+chmod +x "$WORK/compiler-environment"
+printf '%s\n' 'int environment(void) { return ZCC_ENV_VALUE; }' > "$WORK/environment.c"
+BUILD_SOURCE_RECORD=first ZCC_REAL_FLAG=1 \
+    "$ZCC" "$WORK/compiler-environment" -c "$WORK/environment.c" \
+    -o "$WORK/environment.o" || fail "filtered environment cold compile failed"
+[ "$(last_disposition)" = MISS ] || fail "environment fixture did not start cold"
+env_one="$(sha256sum < "$WORK/environment.o")"
+BUILD_SOURCE_RECORD=second ZCC_REAL_FLAG=1 \
+    "$ZCC" "$WORK/compiler-environment" -c "$WORK/environment.c" \
+    -o "$WORK/environment.o" || fail "filtered environment warm compile failed"
+[ "$(last_disposition)" = HIT ] || fail "Make source record changed the cache key"
+BUILD_SOURCE_RECORD=third ZCC_REAL_FLAG=2 \
+    "$ZCC" "$WORK/compiler-environment" -c "$WORK/environment.c" \
+    -o "$WORK/environment.o" || fail "real environment changed compile failed"
+[ "$(last_disposition)" = MISS ] || fail "compiler-visible environment change was served"
+env_two="$(sha256sum < "$WORK/environment.o")"
+[ "$env_one" != "$env_two" ] || fail "compiler-visible environment changed no bytes"
+export ZCC_DIR="$saved_cache"
+
+# A compiler script edited in place is a toolchain change even if its stat
+# triple is restored. Both the preprocessor and code generator use it.
+cat > "$WORK/compiler-version" <<'WRAPPER'
+#!/usr/bin/env bash
+exec cc -DZCC_COMPILER_VERSION=1 "$@"
+WRAPPER
+chmod +x "$WORK/compiler-version"
+printf '%s\n' 'int version(void) { return ZCC_COMPILER_VERSION; }' > "$WORK/version.c"
+"$ZCC" "$WORK/compiler-version" -c "$WORK/version.c" -o "$WORK/version.o" ||
+    fail "compiler-change cold fixture failed"
+[ "$(last_disposition)" = MISS ] || fail "compiler-change fixture did not start cold"
+cp -p "$WORK/compiler-version" "$WORK/compiler-time"
+sed 's/VERSION=1/VERSION=2/' "$WORK/compiler-version" > "$WORK/compiler-new"
+cat "$WORK/compiler-new" > "$WORK/compiler-version"
+touch -r "$WORK/compiler-time" "$WORK/compiler-version"
+"$ZCC" "$WORK/compiler-version" -c "$WORK/version.c" -o "$WORK/version.o" ||
+    fail "compiler-change fresh fixture failed"
+[ "$(last_disposition)" = MISS ] || fail "same-metadata compiler edit was served"
+
+# Source compiles cannot publish a probe manifest: an absent include-search
+# candidate could appear without changing any previously opened file.
+# A changed header still has to compile the new behavior.
+saved_cache="$ZCC_DIR"
+export ZCC_DIR="$WORK/truncated-cache"
+poison_cold="$(build poison-cold)" || exit 1
+[ "$(last_disposition)" = MISS ] || fail "poison fixture did not start cold"
+[ ! -d "$ZCC_DIR/man" ] ||
+    fail "source compile published a probe manifest"
+printf '%s\n' '#define ZCL_GATE_VALUE 777' > "$WORK/dep.h"
+poison_fresh="$(build poison-fresh)" || exit 1
+[ "$(last_disposition)" = MISS ] || fail "changed header served an old binary"
+[ "$poison_cold" != "$poison_fresh" ] || fail "poison fixture missed its header edit"
+[ "$("$WORK/prog")" = 777 ] || fail "header edit did not reach execution"
+
+# The header vanishes after the real compiler exits but before zcc publishes
+# its probe manifest. A partial manifest must be refused. Restoring a changed
+# header then has to compile the new behavior, not reuse the old artifact.
+export ZCC_DIR="$WORK/racing-cache"
+export ZCC_RACE_CC="$(command -v cc)" ZCC_RACE_HEADER="$WORK/dep.h"
+cat > "$WORK/racing-cc" <<'WRAPPER'
+#!/usr/bin/env bash
+set -euo pipefail
+has_output=0
+for arg in "$@"; do
+    [ "$arg" = -E ] && exec "$ZCC_RACE_CC" "$@"
+    [ "$arg" = -o ] && has_output=1
+done
+"$ZCC_RACE_CC" "$@"
+if [ "$has_output" = 1 ] && [ "${ZCC_RACE_REMOVE:-0}" = 1 ]; then
+    mv "$ZCC_RACE_HEADER" "$ZCC_RACE_HEADER.hidden"
+fi
+WRAPPER
+chmod +x "$WORK/racing-cc"
+ZCC_RACE_REMOVE=1 "$ZCC" "$WORK/racing-cc" -std=c23 -O1 -I"$WORK" \
+    "$WORK/main.c" -o "$WORK/raceprog" 2>"$WORK/stderr.race-cold" ||
+    fail "racing fixture did not compile"
+[ "$(last_disposition)" = MISS ] || fail "racing fixture did not start cold"
+[ ! -e "$WORK/dep.h" ] || fail "racing compiler did not remove the header"
+printf '%s\n' '#define ZCL_GATE_VALUE 888' > "$WORK/dep.h"
+"$ZCC" "$WORK/racing-cc" -std=c23 -O1 -I"$WORK" \
+    "$WORK/main.c" -o "$WORK/raceprog" 2>"$WORK/stderr.race-fresh" ||
+    fail "racing fixture did not rebuild"
+[ "$(last_disposition)" = MISS ] || fail "partial manifest served an old binary"
+[ "$("$WORK/raceprog")" = 888 ] || fail "partial manifest hid the edited result"
+export ZCC_DIR="$saved_cache"
+printf '%s\n' '#define ZCL_GATE_VALUE 100' > "$WORK/dep.h"
 # A proof is hostile to this account's cache. Give the cache an unchanged
 # size/inode/mtime header with changed behavior: its fast manifest may still
 # name the old object. Verified mode must launch the compiler and never serve
@@ -247,6 +758,48 @@ s2="$(stage_build two)" || fail "second staged compile failed"
 grep -q 'main.o' "$WORK/stage.two/main.d" ||
     fail "the restored depfile does not name its target"
 
+# A key alone cannot certify stored bytes. Corrupt each cached artifact in an
+# isolated entry; the next invocation must compile rather than serve poison.
+for suffix in bin dep err meta; do
+    export ZCC_DIR="$WORK/poison-$suffix"
+    poison_clean="$(stage_build "poison-$suffix-cold")" ||
+        fail "$suffix poison fixture did not compile"
+    cached_artifact="$(find "$ZCC_DIR/obj" -name "*.$suffix" -type f -print | head -n1)"
+    [ -n "$cached_artifact" ] && [ -f "$cached_artifact" ] ||
+        fail "$suffix poison fixture wrote no artifact"
+    if [ -f "$cached_artifact" ]; then
+        printf 'poison\n' > "$cached_artifact"
+    fi
+    lookup_start=$(wc -l < "$LOG")
+    poison_fresh="$(stage_build "poison-$suffix-fresh")" ||
+        fail "$suffix poison fixture did not rebuild"
+    [ "$(last_disposition)" = MISS ] ||
+        fail "corrupted $suffix was served as a HIT"
+    [ "$poison_clean" = "$poison_fresh" ] ||
+        fail "$suffix poison repair changed the clean object bytes"
+    lookup_reason="$suffix-integrity"
+    [ "$suffix" != meta ] || lookup_reason=meta-invalid
+    lookup_lines=$(tail -n +"$((lookup_start + 1))" "$LOG")
+    grep -Eq "^LOOKUP[[:space:]]+reason=$lookup_reason key=[0-9a-f]{64}[[:space:]]" <<<"$lookup_lines" ||
+        fail "$suffix poison repair did not name its exact-key lookup failure"
+    stage_build "poison-$suffix-warm" >/dev/null ||
+        fail "$suffix poison repair could not be reused"
+    [ "$(last_disposition)" = HIT ] ||
+        fail "$suffix poison repair did not restore cache reuse"
+    rm "$cached_artifact"
+    lookup_start=$(wc -l < "$LOG")
+    stage_build "missing-$suffix-fresh" >/dev/null ||
+        fail "$suffix missing artifact did not rebuild"
+    [ "$(last_disposition)" = MISS ] ||
+        fail "missing $suffix was served as a HIT"
+    lookup_reason="$suffix-unavailable"
+    [ "$suffix" != meta ] || lookup_reason=meta-missing
+    lookup_lines=$(tail -n +"$((lookup_start + 1))" "$LOG")
+    grep -Eq "^LOOKUP[[:space:]]+reason=$lookup_reason key=[0-9a-f]{64}[[:space:]]" <<<"$lookup_lines" ||
+        fail "$suffix missing artifact did not name its exact-key lookup failure"
+done
+export ZCC_DIR="$saved_cache"
+
 # 7. THE THIRD REGRESSION: a link that names its objects through an
 #    @response-file, which is how this tree links 2 667 test objects without
 #    overflowing ARG_MAX. The link command line is byte-identical between
@@ -341,7 +894,7 @@ cat > "$SF_ROOT/compiler" <<'WRAPPER'
 #!/usr/bin/env bash
 set -euo pipefail
 for argument in "$@"; do
-    case "$argument" in -E|--version|-dump*) exec "$SF_CC" "$@" ;; esac
+    case "$argument" in -E|--version|-dump*|-print-prog-name=*) exec "$SF_CC" "$@" ;; esac
 done
 : > "$SF_STATE/compile.$$"
 owner=0
@@ -433,7 +986,7 @@ sf_join()
 sf_case shared
 sf_compile owner 1 0 1 & sf_owner=$!
 sf_ready "$SF_STATE/held" || exit 1
-sf_compile follower & sf_follower=$!
+sf_compile follower 1 0 1 & sf_follower=$!
 sf_waiting follower || exit 1
 # Independent-key completion proves there is no fleet-wide compile lock.
 sf_compile independent 2 & sf_independent=$!
@@ -467,7 +1020,7 @@ cmp -s "$SF_STATE/audit_owner.o" "$SF_STATE/audit_peer.o" || fail 'independent a
 sf_case failed
 sf_compile failed_owner 1 0 1 1 & sf_owner=$!
 sf_ready "$SF_STATE/held" || exit 1
-sf_compile retry & sf_follower=$!
+sf_compile retry 1 0 1 1 & sf_follower=$!
 sf_waiting retry || exit 1
 : > "$SF_STATE/release"
 if wait "$sf_owner"; then fail 'failed compiler owner unexpectedly succeeded'; fi
@@ -478,7 +1031,7 @@ sf_join "$sf_follower" recovery
 sf_case changed
 sf_compile owner 1 0 1 & sf_owner=$!
 sf_ready "$SF_STATE/held" || exit 1
-sf_compile follower & sf_follower=$!
+sf_compile follower 1 0 1 & sf_follower=$!
 sf_waiting follower || exit 1
 printf '#define VALUE 100\n' > "$SF_STATE/value.h"
 : > "$SF_STATE/release"
@@ -512,7 +1065,7 @@ done
 sf_case killed
 sf_compile owner 1 0 1 & sf_owner=$!
 sf_ready "$SF_STATE/held" || exit 1
-sf_compile follower & sf_follower=$!
+sf_compile follower 1 0 1 & sf_follower=$!
 sf_waiting follower || exit 1
 sf_native="$(cat "$SF_STATE/owner.zccpid")"
 case "$sf_native" in ''|*[!0-9]*) fail 'compiler wrapper did not identify its owner process'; exit 1 ;; esac

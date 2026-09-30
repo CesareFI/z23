@@ -24,12 +24,12 @@
  *
  * THE KEY. Two levels, both SHA3-256.
  *
- *   Level 1 (probe key + manifest) — compiler identity, cwd, normalized
- *   argv, and for every input file named on the command line its (path, size,
- *   mtime_ns, inode). Cheap: no preprocessing at all. This is the level that
+ *   Level 1 (probe key + manifest) — compiler bytes, cwd, normalized argv,
+ *   and byte digests of every command-line input. No preprocessing is needed
+ *   on a hit. This is the level that
  *   makes "the Makefile timestamp moved but no source changed" free, which is
  *   the measured case above. It maps to a MANIFEST, not to an artifact: the
- *   manifest records the level-2 key plus the stat triple of every file that
+ *   manifest records the level-2 key plus a byte digest of every file that
  *   compile actually read, harvested for free from the `# 1 "..."` line
  *   markers already present in the level-2 preprocessor output. Serving from
  *   level 1 requires every one of those files to still match.
@@ -46,11 +46,8 @@
  *   first, so the objects one link names through it are keyed exactly like
  *   objects spelled on the command line.
  *
- * A level-1 hit trusts (size, mtime_ns, inode) to stand for content, for the
- * inputs AND for every recorded include. That is the one place this cache
- * trades a theoretical correctness margin for speed, exactly as ccache's
- * direct mode does. ZCC_STRICT=1 removes the trade by skipping level 1
- * entirely, and ZCC_AUDIT=1 proves it empirically: every hit is recompiled
+ * ZCC_STRICT=1 skips level 1, and ZCC_AUDIT=1 checks it empirically: every
+ * hit is recompiled
  * for real and byte-compared, and a divergence is reported loudly and served
  * from the fresh build. Run the audit after touching this file; that is what
  * makes the fast path believable rather than asserted.
@@ -90,11 +87,9 @@
  * for what triggers a trim, why it is not a directory walk per compile, and
  * why an eviction interrupted at any point cannot produce a torn hit.
  *
- * THE HONEST HOLE. A link step naming a system library (-lm, -lpthread) that
- * this cache cannot resolve under a -L directory folds only the literal token
- * into the key, so a libc upgrade underneath a cached link is not detected.
- * Clear the cache after a toolchain change (`make cc-cache-clear`). The
- * hermetic goals (ci-reproducible, repro-verify) already force
+ * A link step naming a system library (-lm, -lpthread) that this cache cannot
+ * resolve under a -L directory bypasses reuse. The hermetic goals
+ * (ci-reproducible, repro-verify) already force
  * ZCL_USE_CCACHE=0, so no reproducibility claim is ever served from here.
  */
 
@@ -111,6 +106,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <spawn.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -123,7 +119,11 @@
 #include <time.h>
 #include <unistd.h>
 
-#define ZCC_MAGIC "zcc.cache.v1"
+extern char **environ;
+
+/* v2 retires entries produced while cache controls were visible to compiler
+ * children but absent from the key. The child environment is now filtered. */
+#define ZCC_MAGIC "zcc.cache.v2"
 #define HEXLEN (SHA3_256_OUTPUT_SIZE * 2u)
 /* Stored in cached depfiles in place of the -MT path so two epochs of the
  * same flags share one entry. Must not appear in a real object path. */
@@ -208,6 +208,27 @@ static void hex_of(const unsigned char d[SHA3_256_OUTPUT_SIZE],
                    char out[HEXLEN + 1u])
 {
     zcl_hex_encode(d, SHA3_256_OUTPUT_SIZE, out);
+}
+
+static bool file_hex(const char *path, char out[HEXLEN + 1u])
+{
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0)
+        return false;
+    struct sha3_256_ctx h;
+    sha3_256_init(&h);
+    unsigned char block[16384];
+    ssize_t n;
+    while ((n = read(fd, block, sizeof block)) > 0)
+        sha3_256_write(&h, block, (size_t)n);
+    int closed = close(fd);
+    bool ok = n == 0 && closed == 0;
+    if (!ok)
+        return false;
+    unsigned char digest[SHA3_256_OUTPUT_SIZE];
+    sha3_256_finalize(&h, digest);
+    hex_of(digest, out);
+    return true;
 }
 
 /* ── file helpers ────────────────────────────────────────────────────── */
@@ -299,42 +320,6 @@ static bool store_atomic(const char *dir, const char *final_path,
     return false;
 }
 
-static bool copy_out(const char *cached, const char *dest)
-{
-    struct buf b = { 0 };
-    struct stat st;
-    if (stat(cached, &st) != 0 || !read_file(cached, &b)) {
-        buf_free(&b);
-        return false;
-    }
-#if defined(__APPLE__)
-    /* Epoch staging on Darwin passes pre-opened output files through
-     * /dev/fd.  Those are already private scratch artifacts, so serving a
-     * cache hit writes the descriptor directly instead of trying to create
-     * an atomic sibling inside the non-traversable /dev/fd namespace. */
-    if (strncmp(dest, "/dev/fd/", 8u) == 0) {
-        int fd = open(dest, O_WRONLY | O_TRUNC);
-        bool ok = fd >= 0 && lseek(fd, 0, SEEK_SET) >= 0 &&
-                  write_all(fd, b.p, b.len) &&
-                  fchmod(fd, st.st_mode & 07777u) == 0;
-        if (fd >= 0 && close(fd) != 0)
-            ok = false;
-        buf_free(&b);
-        return ok;
-    }
-#endif
-    char dir[PATH_MAX];
-    snprintf(dir, sizeof dir, "%s", dest);
-    char *slash = strrchr(dir, '/');
-    if (slash)
-        *slash = '\0';
-    else
-        snprintf(dir, sizeof dir, ".");
-    bool ok = store_atomic(dir, dest, b.p, b.len, st.st_mode & 07777u);
-    buf_free(&b);
-    return ok;
-}
-
 static bool buf_replace_prefix(struct buf *b, const char *from, const char *to)
 {
     size_t flen, tlen;
@@ -386,50 +371,78 @@ static bool write_buf_dest(struct buf *b, const char *dest, mode_t mode)
  * so two compile epochs share one cache entry. An entry stored before this
  * rewrite (no placeholder) is copied through unchanged: those keys still
  * included the -MT path, so they cannot match a different epoch. */
-static bool copy_out_dep(const char *cached, const char *dest,
-                         const char *mt_path)
-{
-    struct buf b = { 0 };
-    struct stat st;
-    bool ok;
+/* ── process launch (no shell, ever) ─────────────────────────────────── */
 
-    if (!mt_path || !mt_path[0])
-        return copy_out(cached, dest);
-    if (stat(cached, &st) != 0 || !read_file(cached, &b)) {
-        buf_free(&b);
-        return false;
-    }
-    (void)buf_replace_prefix(&b, ZCC_MT_PLACEHOLDER, mt_path);
-    ok = write_buf_dest(&b, dest, st.st_mode & 07777u);
-    buf_free(&b);
-    return ok;
+/* Make's epoch and scheduling controls change between otherwise identical
+ * compiles. Keep them out of the compiler CHILD as well as the cache key:
+ * a child cannot read a value that the key intentionally ignores. All other
+ * environment entries, including search paths and toolchain selectors,
+ * remain byte-bound by hash_environment(). */
+static bool orchestration_env(const char *entry)
+{
+    static const char *const names[] = {
+        "BUILD_SOURCE_RECORD=", "BUILD_COMPILER_ID=", "BUILD_SYSTEM_ID=",
+        "BUILD_EPOCH_KEEP=", "MAKEFLAGS=", "MFLAGS=", "MAKELEVEL=",
+        "ZCL_CHECKOUT_LOCK_HELD=", "ZCL_HOST_JOBS="
+    };
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++)
+        if (strncmp(entry, names[i], strlen(names[i])) == 0)
+            return true;
+    return false;
 }
 
-/* ── process launch (no shell, ever) ─────────────────────────────────── */
+static bool child_env_excluded(const char *entry)
+{
+    if (orchestration_env(entry)) return true;
+    static const char *const controls[] = {
+        "ZCC_DIR=", "ZCC_LOG=", "ZCC_MAX_MB=", "ZCC_STRICT=",
+        "ZCC_AUDIT=", "ZCC_DISABLE="
+    };
+    for (size_t i = 0; i < sizeof(controls) / sizeof(controls[0]); i++)
+        if (strncmp(entry, controls[i], strlen(controls[i])) == 0)
+            return true;
+    return false;
+}
+
+static char **compiler_child_env(void)
+{
+    size_t count = 0;
+    for (char **ep = environ; ep && *ep; ep++)
+        if (!child_env_excluded(*ep)) count++;
+    char **child_env = zcl_malloc((count + 1u) * sizeof(*child_env),
+                                  "zcc child environment");
+    if (!child_env) return NULL;
+    size_t used = 0;
+    for (char **ep = environ; ep && *ep; ep++)
+        if (!child_env_excluded(*ep)) child_env[used++] = *ep;
+    child_env[used] = NULL;
+    return child_env;
+}
 
 static int run_argv(char *const argv[], const char *stdout_path,
                     const char *stderr_path)
 {
-    pid_t pid = fork();
-    if (pid < 0)
+    char **child_env = compiler_child_env();
+    if (!child_env) return -1;
+    posix_spawn_file_actions_t actions;
+    if (posix_spawn_file_actions_init(&actions) != 0) {
+        free(child_env);
         return -1;
-    if (pid == 0) {
-        /* async-signal-safe only until exec */
-        if (stdout_path) {
-            int fd = open(stdout_path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
-            if (fd < 0 || dup2(fd, STDOUT_FILENO) < 0)
-                _exit(127);
-            close(fd);
-        }
-        if (stderr_path) {
-            int fd = open(stderr_path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
-            if (fd < 0 || dup2(fd, STDERR_FILENO) < 0)
-                _exit(127);
-            close(fd);
-        }
-        execvp(argv[0], argv);
-        _exit(127);
     }
+    int prep = 0;
+    if (stdout_path)
+        prep = posix_spawn_file_actions_addopen(&actions, STDOUT_FILENO,
+                 stdout_path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    if (prep == 0 && stderr_path)
+        prep = posix_spawn_file_actions_addopen(&actions, STDERR_FILENO,
+                 stderr_path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    pid_t pid = -1;
+    int launched = prep == 0 ? posix_spawnp(&pid, argv[0], &actions, NULL,
+                                            argv, child_env) : prep;
+    (void)posix_spawn_file_actions_destroy(&actions);
+    free(child_env);
+    if (launched != 0)
+        return -1;
     int status = 0;
     while (waitpid(pid, &status, 0) < 0) {
         if (errno != EINTR)
@@ -917,20 +930,602 @@ static bool resolve_cc(const char *cc, char out[PATH_MAX])
     return false;
 }
 
-static void hash_toolchain(struct sha3_256_ctx *h, const struct plan *pl)
+static int env_entry_compare(const void *a, const void *b)
+{
+    const char *const *ea = a, *const *eb = b;
+    return strcmp(*ea, *eb);
+}
+
+static bool env_same_name(const char *a, const char *b)
+{
+    const char *end = strchr(a, '=');
+    return end && strncmp(a, b, (size_t)(end - a) + 1u) == 0;
+}
+
+static bool hash_environment(struct sha3_256_ctx *h)
+{
+    size_t n = 0;
+    for (char **ep = environ; ep && *ep; ep++)
+        n++;
+    const char **items = zcl_malloc((n ? n : 1u) * sizeof *items,
+                                    "zcc environment key");
+    if (!items)
+        return false;
+    for (size_t i = 0; i < n; i++)
+        items[i] = environ[i];
+    qsort(items, n, sizeof *items, env_entry_compare);
+    bool ok = true;
+    for (size_t i = 0; i < n; i++) {
+        const char *e = items[i];
+        if (i > 0 && env_same_name(items[i - 1u], e)) {
+            ok = false;
+            break;
+        }
+        if (child_env_excluded(e))
+            continue;
+        hstr(h, e);
+    }
+    free(items);
+    return ok;
+}
+
+#if defined(__APPLE__)
+/* Apple Clang normally assembles inside the driver. With external assembly,
+ * the executable chosen through -B or COMPILER_PATH is another code producer.
+ * Ask the same driver to resolve it, and refuse cache admission if that fact
+ * is unavailable. Version output does not identify an in-place replacement. */
+static bool apple_assembler_external(const struct plan *pl)
+{
+    bool external = false;
+    bool has_search_override = false;
+    for (int i = 1; i < pl->argc; i++) {
+        const char *arg = pl->argv[i];
+        if (strcmp(arg, "-fno-integrated-as") == 0 ||
+            strcmp(arg, "-no-integrated-as") == 0)
+            external = true;
+        else if (strcmp(arg, "-fintegrated-as") == 0 ||
+                 strcmp(arg, "-integrated-as") == 0)
+            external = false;
+        if (strcmp(arg, "-B") == 0 ||
+            (strncmp(arg, "-B", 2) == 0 && arg[2]))
+            has_search_override = true;
+    }
+    return external || has_search_override;
+}
+#endif
+
+#if defined(__APPLE__) || defined(__linux__)
+static char **apple_tool_query_argv(const struct plan *pl,
+                                    const char *query_flag)
+{
+    char **query = zcl_calloc((size_t)pl->argc + 2u, sizeof(*query),
+                              "zcc Apple tool query argv");
+    if (!query) return NULL;
+    int n = 0;
+    query[n++] = pl->argv[0];
+    for (int i = 1; i < pl->argc; i++) {
+        const char *arg = pl->argv[i];
+        bool value = strcmp(arg, "-B") == 0 ||
+                     strcmp(arg, "-target") == 0 ||
+                     strcmp(arg, "--target") == 0 ||
+                     strcmp(arg, "-arch") == 0;
+        if (value) {
+            if (i + 1 >= pl->argc) { free(query); return NULL; }
+            query[n++] = arg;
+            query[n++] = pl->argv[++i];
+        } else if ((strncmp(arg, "-B", 2) == 0 && arg[2]) ||
+                   strncmp(arg, "-target=", 8) == 0 ||
+                   strncmp(arg, "--target=", 9) == 0) {
+            query[n++] = arg;
+        }
+    }
+    query[n++] = (char *)query_flag;
+    query[n] = NULL;
+    return query;
+}
+
+static bool apple_tool_read_output(const char *scratch,
+                                   char output[PATH_MAX])
+{
+    size_t output_len = 0;
+    int fd = open(scratch, O_RDONLY | O_CLOEXEC);
+    struct stat output_stat;
+    bool ok = fd >= 0 && fstat(fd, &output_stat) == 0 &&
+              S_ISREG(output_stat.st_mode) && output_stat.st_size >= 2 &&
+              output_stat.st_size < PATH_MAX;
+    if (ok) {
+        while (output_len < (size_t)output_stat.st_size) {
+            ssize_t got = read(fd, output + output_len,
+                               (size_t)output_stat.st_size - output_len);
+            if (got < 0 && errno == EINTR) continue;
+            if (got <= 0) { ok = false; break; }
+            output_len += (size_t)got;
+        }
+    }
+    if (fd >= 0 && close(fd) != 0) ok = false;
+    if (!ok || output[output_len - 1u] != '\n') return false;
+    output[--output_len] = '\0';
+    return !strchr(output, '\n') && !strchr(output, '\r');
+}
+
+static bool apple_tool_query_output(char *const query[],
+                                    char output[PATH_MAX])
+{
+    char scratch[PATH_MAX];
+    const char *temp = getenv("TMPDIR");
+    if (!temp || !*temp) temp = "/tmp";
+    int written = snprintf(scratch, sizeof scratch, "%s/zcc-tool.XXXXXX", temp);
+    if (written < 0 || (size_t)written >= sizeof scratch) return false;
+    int fd = mkstemp(scratch);
+    if (fd < 0) return false;
+    bool ok = close(fd) == 0 && run_argv(query, scratch, NULL) == 0;
+    if (ok) ok = apple_tool_read_output(scratch, output);
+    (void)unlink(scratch);
+    return ok;
+}
+
+/* The selected Clang is large (257 MiB in the CLT used for this probe).
+ * Rehashing it for every object would turn a cold build into hours. Keep the
+ * verified byte digest in zcc's existing private cache, keyed by path and by
+ * the file identity/change stamp. ctime catches an in-place same-size edit
+ * even when mtime is restored. A changed or unreadable stamp falls back to
+ * hashing; it never admits an old digest. */
+struct apple_tool_stamp {
+    uint64_t dev, ino, size, mtime_sec, mtime_nsec, ctime_sec, ctime_nsec;
+};
+
+struct apple_tool_digest_record {
+    char magic[8];
+    uint8_t path_root[SHA3_256_OUTPUT_SIZE];
+    struct apple_tool_stamp stamp;
+    char digest[HEXLEN + 1u];
+};
+
+#if defined(__APPLE__)
+struct apple_tool_selection_record {
+    char magic[8];
+    uint8_t selector_root[SHA3_256_OUTPUT_SIZE];
+    struct apple_tool_stamp tool_stamp;
+    struct apple_tool_stamp parent_stamp;
+    char selected[PATH_MAX];
+};
+#endif
+
+static struct apple_tool_stamp apple_tool_stamp_of(const struct stat *st)
+{
+    return (struct apple_tool_stamp) {
+        .dev = (uint64_t)st->st_dev, .ino = (uint64_t)st->st_ino,
+        .size = (uint64_t)st->st_size,
+#if defined(__APPLE__)
+        .mtime_sec = (uint64_t)st->st_mtimespec.tv_sec,
+        .mtime_nsec = (uint64_t)st->st_mtimespec.tv_nsec,
+        .ctime_sec = (uint64_t)st->st_ctimespec.tv_sec,
+        .ctime_nsec = (uint64_t)st->st_ctimespec.tv_nsec,
+#else
+        .mtime_sec = (uint64_t)st->st_mtim.tv_sec,
+        .mtime_nsec = (uint64_t)st->st_mtim.tv_nsec,
+        .ctime_sec = (uint64_t)st->st_ctim.tv_sec,
+        .ctime_nsec = (uint64_t)st->st_ctim.tv_nsec,
+#endif
+    };
+}
+
+static bool apple_tool_stamp_equal(const struct stat *a,
+                                   const struct stat *b)
+{
+    struct apple_tool_stamp x = apple_tool_stamp_of(a);
+    struct apple_tool_stamp y = apple_tool_stamp_of(b);
+    return memcmp(&x, &y, sizeof x) == 0;
+}
+
+#if defined(__APPLE__)
+static bool apple_tool_parent_stat(const char *path, struct stat *out)
+{
+    char parent[PATH_MAX];
+    size_t len = strlen(path);
+    if (len >= sizeof parent) return false;
+    memcpy(parent, path, len + 1u);
+    char *slash = strrchr(parent, '/');
+    if (!slash) return stat(".", out) == 0 && S_ISDIR(out->st_mode);
+    if (slash == parent) slash[1] = '\0';
+    else *slash = '\0';
+    return stat(parent, out) == 0 && S_ISDIR(out->st_mode);
+}
+
+static void apple_hash_stamp(struct sha3_256_ctx *h, const struct stat *st)
+{
+    struct apple_tool_stamp s = apple_tool_stamp_of(st);
+    hu64(h, s.dev); hu64(h, s.ino); hu64(h, s.size);
+    hu64(h, s.mtime_sec); hu64(h, s.mtime_nsec);
+    hu64(h, s.ctime_sec); hu64(h, s.ctime_nsec);
+}
+
+static bool apple_hash_search_dir(struct sha3_256_ctx *h, const char *dir)
+{
+    struct stat st;
+    hstr(h, dir);
+    if (stat(dir, &st) != 0) {
+        if (errno != ENOENT) return false;
+        hstr(h, "absent");
+        char ancestor[PATH_MAX];
+        memcpy(ancestor, dir, strlen(dir) + 1u);
+        for (;;) {
+            char *slash = strrchr(ancestor, '/');
+            if (!slash) memcpy(ancestor, ".", 2u);
+            else if (slash == ancestor) slash[1] = '\0';
+            else *slash = '\0';
+            if (stat(ancestor, &st) == 0) break;
+            if (errno != ENOENT || strcmp(ancestor, ".") == 0 ||
+                strcmp(ancestor, "/") == 0) return false;
+        }
+    }
+    if (!S_ISDIR(st.st_mode)) return false;
+    apple_hash_stamp(h, &st);
+    return true;
+}
+
+static bool apple_hash_search_candidate(struct sha3_256_ctx *h,
+                                        const char *dir, const char *name)
+{
+    char path[PATH_MAX];
+    struct stat st;
+    int n = snprintf(path, sizeof path, "%s/%s", dir, name);
+    if (n <= 0 || (size_t)n >= sizeof path) return false;
+    if (stat(path, &st) != 0) {
+        if (errno != ENOENT) return false;
+        hstr(h, "candidate-absent");
+        return true;
+    }
+    hstr(h, "candidate-present");
+    apple_hash_stamp(h, &st);
+    return true;
+}
+
+/* A selector can change while its argv and environment stay fixed when a
+ * tool appears earlier in PATH or COMPILER_PATH. Bind directory stamps as well
+ * as the selected file; any unreadable directory refuses the memo. */
+static bool apple_hash_search_dirs(struct sha3_256_ctx *h, const char *paths,
+                                   const char *name)
+{
+    if (!paths) return true;
+    const char *p = paths;
+    for (;;) {
+        const char *end = strchr(p, ':');
+        size_t len = end ? (size_t)(end - p) : strlen(p);
+        char dir[PATH_MAX];
+        if (len >= sizeof dir) return false;
+        if (len) memcpy(dir, p, len);
+        dir[len] = '\0';
+        if (!len) memcpy(dir, ".", 2u);
+        if (!apple_hash_search_dir(h, dir) ||
+            !apple_hash_search_candidate(h, dir, name)) return false;
+        if (!end) break;
+        p = end + 1;
+    }
+    return true;
+}
+
+static bool apple_tool_selection_cacheable(char *const query[],
+                                           const char *label)
+{
+    /* The driver can apply target prefixes and -B prefix rules that are not
+     * a plain directory search. Query it on every request for those modes;
+     * they still key the returned executable's path and bytes. The memo is
+     * only for the default integrated Clang backend. */
+    if (strcmp(label, "apple-backend") != 0 ||
+        (getenv("COMPILER_PATH") && *getenv("COMPILER_PATH"))) return false;
+    for (size_t i = 0; query[i]; i++)
+        if (strcmp(query[i], "-B") == 0 ||
+            strncmp(query[i], "-B", 2) == 0 ||
+            strcmp(query[i], "-target") == 0 ||
+            strncmp(query[i], "-target=", 8) == 0 ||
+            strcmp(query[i], "--target") == 0 ||
+            strncmp(query[i], "--target=", 9) == 0 ||
+            strcmp(query[i], "-arch") == 0) return false;
+    return true;
+}
+
+static bool apple_tool_selection_key(char *const query[],
+                                     const char *label,
+                                     uint8_t root[SHA3_256_OUTPUT_SIZE])
+{
+    if (!apple_tool_selection_cacheable(query, label)) return false;
+    char driver[PATH_MAX], digest[HEXLEN + 1u], developer[PATH_MAX];
+    char *const select_argv[] = { "/usr/bin/xcode-select", "-p", NULL };
+    if (!resolve_cc(query[0], driver) || !file_hex(driver, digest) ||
+        !apple_tool_query_output(select_argv, developer)) return false;
+    struct sha3_256_ctx h;
+    sha3_256_init(&h);
+    hstr(&h, "zcc.apple_tool_selection.v1");
+    hstr(&h, label); hstr(&h, driver); hstr(&h, digest);
+    hstr(&h, developer);
+    for (size_t i = 0; query[i]; i++) hstr(&h, query[i]);
+    if (!hash_environment(&h) ||
+        !apple_hash_search_dirs(&h, getenv("PATH"), "clang")) return false;
+    sha3_256_finalize(&h, root);
+    return true;
+}
+
+static bool apple_tool_selection_path(const char *cache_root,
+                                      const char *label,
+                                      const uint8_t root[SHA3_256_OUTPUT_SIZE],
+                                      char path[PATH_MAX])
+{
+    const char *name = strcmp(label, "apple-backend") == 0
+        ? "apple-backend.selection" : "apple-assembler.selection";
+    /* 256 bounded slots prevent a second compiler in the same build from
+     * evicting the first. A collision only costs a fresh driver query. */
+    int n = snprintf(path, PATH_MAX, "%s/%s.%02x", cache_root, name,
+                     (unsigned)root[0]);
+    return n > 0 && n < PATH_MAX;
+}
+
+static bool apple_tool_selection_load(const char *path,
+                                      struct apple_tool_selection_record *record)
+{
+    int fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (fd < 0) return false;
+    struct stat cache_stat;
+    bool ok = fstat(fd, &cache_stat) == 0 &&
+              S_ISREG(cache_stat.st_mode) &&
+              cache_stat.st_size == (off_t)sizeof *record;
+    size_t done = 0;
+    while (ok && done < sizeof *record) {
+        ssize_t got = read(fd, (char *)record + done, sizeof *record - done);
+        if (got < 0 && errno == EINTR) continue;
+        if (got <= 0) { ok = false; break; }
+        done += (size_t)got;
+    }
+    if (close(fd) != 0) ok = false;
+    return ok;
+}
+
+static bool apple_tool_selection_read(const char *path,
+                                      const uint8_t root[SHA3_256_OUTPUT_SIZE],
+                                      char selected[PATH_MAX])
+{
+    struct apple_tool_selection_record record;
+    struct stat tool_stat, parent_stat;
+    if (!apple_tool_selection_load(path, &record) ||
+        memcmp(record.magic, "ZATS001", 8) != 0 ||
+        memcmp(record.selector_root, root, SHA3_256_OUTPUT_SIZE) != 0 ||
+        !memchr(record.selected, '\0', sizeof record.selected) ||
+        stat(record.selected, &tool_stat) != 0 ||
+        !S_ISREG(tool_stat.st_mode) ||
+        !apple_tool_parent_stat(record.selected, &parent_stat)) return false;
+    struct apple_tool_stamp tool = apple_tool_stamp_of(&tool_stat);
+    struct apple_tool_stamp parent = apple_tool_stamp_of(&parent_stat);
+    if (memcmp(&tool, &record.tool_stamp, sizeof tool) != 0 ||
+        memcmp(&parent, &record.parent_stamp, sizeof parent) != 0) return false;
+    memcpy(selected, record.selected, sizeof record.selected);
+    return true;
+}
+
+static void apple_tool_selection_write(const char *cache_root,
+                                       const char *path,
+                                       const uint8_t root[SHA3_256_OUTPUT_SIZE],
+                                       const char *selected)
+{
+    struct stat tool_stat, parent_stat;
+    if (stat(selected, &tool_stat) != 0 ||
+        !S_ISREG(tool_stat.st_mode) ||
+        !apple_tool_parent_stat(selected, &parent_stat)) return;
+    struct apple_tool_selection_record record = { 0 };
+    memcpy(record.magic, "ZATS001", 8);
+    memcpy(record.selector_root, root, SHA3_256_OUTPUT_SIZE);
+    record.tool_stamp = apple_tool_stamp_of(&tool_stat);
+    record.parent_stamp = apple_tool_stamp_of(&parent_stat);
+    memcpy(record.selected, selected, strlen(selected) + 1u);
+    char tmp[PATH_MAX];
+    int n = snprintf(tmp, sizeof tmp, "%s/tmp", cache_root);
+    if (n > 0 && (size_t)n < sizeof tmp)
+        (void)store_atomic(tmp, path, (const uint8_t *)&record,
+                           sizeof record, 0600);
+}
+
+#endif
+
+static bool apple_tool_digest_path(const char *root, const char *tool,
+                                   const char *slot,
+                                   char path[PATH_MAX],
+                                   uint8_t path_root[SHA3_256_OUTPUT_SIZE])
+{
+    struct sha3_256_ctx sha;
+    sha3_256_init(&sha);
+    hstr(&sha, "zcc.apple_tool_digest_path.v1");
+    hstr(&sha, tool);
+    sha3_256_finalize(&sha, path_root);
+    /* One slot bounds this memo even when many different toolchains are
+     * selected. A path change causes a fresh byte hash and replaces it. */
+    int n = snprintf(path, PATH_MAX, "%s/%s.digest", root, slot);
+    return n > 0 && n < PATH_MAX;
+}
+
+static bool apple_tool_digest_record_valid(
+    const struct apple_tool_digest_record *record,
+    const struct stat *tool_stat,
+    const uint8_t path_root[SHA3_256_OUTPUT_SIZE])
+{
+    struct apple_tool_stamp wanted = apple_tool_stamp_of(tool_stat);
+    if (memcmp(record->magic, "ZATD001", 8) != 0 ||
+        memcmp(record->path_root, path_root, SHA3_256_OUTPUT_SIZE) != 0 ||
+        memcmp(&record->stamp, &wanted, sizeof wanted) != 0 ||
+        record->digest[HEXLEN] != '\0') return false;
+    for (size_t i = 0; i < HEXLEN; i++)
+        if (!isxdigit((unsigned char)record->digest[i])) return false;
+    return true;
+}
+
+static bool apple_tool_digest_read(const char *path,
+                                   const struct stat *tool_stat,
+                                   const uint8_t path_root[SHA3_256_OUTPUT_SIZE],
+                                   char out[HEXLEN + 1u])
+{
+    struct apple_tool_digest_record record;
+    int fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (fd < 0) return false;
+    struct stat cache_stat;
+    bool ok = fstat(fd, &cache_stat) == 0 &&
+              S_ISREG(cache_stat.st_mode) &&
+              cache_stat.st_size == (off_t)sizeof record;
+    size_t done = 0;
+    while (ok && done < sizeof record) {
+        ssize_t got = read(fd, (char *)&record + done,
+                           sizeof record - done);
+        if (got < 0 && errno == EINTR) continue;
+        if (got <= 0) { ok = false; break; }
+        done += (size_t)got;
+    }
+    if (close(fd) != 0) ok = false;
+    if (!ok || !apple_tool_digest_record_valid(&record, tool_stat,
+                                               path_root)) return false;
+    memcpy(out, record.digest, HEXLEN + 1u);
+    return true;
+}
+
+static void apple_tool_digest_write(const char *root, const char *path,
+                                    const struct stat *tool_stat,
+                                    const uint8_t path_root[SHA3_256_OUTPUT_SIZE],
+                                    const char digest[HEXLEN + 1u])
+{
+    struct apple_tool_digest_record record = { 0 };
+    memcpy(record.magic, "ZATD001", 8);
+    memcpy(record.path_root, path_root, SHA3_256_OUTPUT_SIZE);
+    record.stamp = apple_tool_stamp_of(tool_stat);
+    memcpy(record.digest, digest, HEXLEN + 1u);
+    char tmp[PATH_MAX];
+    int n = snprintf(tmp, sizeof tmp, "%s/tmp", root);
+    if (n > 0 && (size_t)n < sizeof tmp)
+        (void)store_atomic(tmp, path, (const uint8_t *)&record,
+                           sizeof record, 0600);
+}
+
+static bool apple_tool_digest_cached(const char *tool, const char *root,
+                                     const char *slot,
+                                     char out[HEXLEN + 1u])
+{
+    struct stat before, after;
+    char path[PATH_MAX];
+    uint8_t path_root[SHA3_256_OUTPUT_SIZE];
+    if (stat(tool, &before) != 0 || !S_ISREG(before.st_mode)) return false;
+    bool cache_path = apple_tool_digest_path(root, tool, slot, path, path_root);
+    if (cache_path && apple_tool_digest_read(path, &before, path_root, out) &&
+        stat(tool, &after) == 0 && apple_tool_stamp_equal(&before, &after))
+        return true;
+    if (!file_hex(tool, out) || stat(tool, &after) != 0 ||
+        !apple_tool_stamp_equal(&before, &after)) return false;
+    if (cache_path) apple_tool_digest_write(root, path, &after,
+                                            path_root, out);
+    return true;
+}
+
+#if defined(__APPLE__)
+static bool hash_apple_selected_tool(struct sha3_256_ctx *h,
+                                     const struct plan *pl,
+                                     const char *query_flag,
+                                     const char *label,
+                                     const char *cache_root)
+{
+    char **query = apple_tool_query_argv(pl, query_flag);
+    if (!query) return false;
+    char selected[PATH_MAX], selection_path[PATH_MAX];
+    uint8_t selection_root[SHA3_256_OUTPUT_SIZE];
+    bool memo = apple_tool_selection_key(query, label, selection_root) &&
+                apple_tool_selection_path(cache_root, label, selection_root,
+                                          selection_path);
+    bool ok = memo && apple_tool_selection_read(selection_path,
+                                                 selection_root, selected);
+    if (!ok) {
+        char output[PATH_MAX];
+        ok = apple_tool_query_output(query, output) &&
+             resolve_cc(output, selected);
+        if (ok && memo) apple_tool_selection_write(cache_root, selection_path,
+                                                    selection_root, selected);
+    }
+    free(query);
+    if (!ok) return false;
+    char digest[HEXLEN + 1u];
+    ok = (strcmp(label, "apple-backend") == 0
+              ? apple_tool_digest_cached(selected, cache_root, label, digest)
+              : file_hex(selected, digest));
+    if (ok) {
+        hstr(h, label);
+        hstr(h, selected);
+        hstr(h, digest);
+    }
+    return ok;
+}
+
+static bool hash_apple_backend(struct sha3_256_ctx *h,
+                               const struct plan *pl,
+                               const char *cache_root)
+{
+    /* /usr/bin/cc is a launcher. -cc1 executes inside the Clang selected by
+     * the driver, whose bytes can change while the launcher stays fixed. */
+    return hash_apple_selected_tool(h, pl, "-print-prog-name=clang",
+                                    "apple-backend", cache_root);
+}
+
+static bool hash_apple_assembler(struct sha3_256_ctx *h,
+                                 const struct plan *pl,
+                                 const char *cache_root)
+{
+    if (!apple_assembler_external(pl)) return true;
+    return hash_apple_selected_tool(h, pl, "-print-prog-name=as",
+                                    "apple-assembler", cache_root);
+}
+#endif
+#endif
+
+#if defined(__linux__)
+/* GCC executes these producers outside its driver. Resolve them anew: a
+ * previously absent earlier -B candidate can change selection. The private
+ * development memo avoids rehashing an unchanged large frontend, while a
+ * changed file identity or ctime forces a new byte digest. */
+static bool hash_linux_selected_tool(struct sha3_256_ctx *h,
+                                     const struct plan *pl,
+                                     const char *query_flag,
+                                     const char *label,
+                                     const char *cache_root)
+{
+    char **query = apple_tool_query_argv(pl, query_flag);
+    if (!query) return false;
+    char output[PATH_MAX], selected[PATH_MAX], digest[HEXLEN + 1u];
+    bool ok = apple_tool_query_output(query, output) &&
+              resolve_cc(output, selected) &&
+              apple_tool_digest_cached(selected, cache_root, label, digest);
+    free(query);
+    if (!ok) return false;
+    hstr(h, label);
+    hstr(h, selected);
+    hstr(h, digest);
+    return true;
+}
+#endif
+
+static bool hash_toolchain(struct sha3_256_ctx *h, const struct plan *pl,
+                           const char *cache_root)
 {
     char ccpath[PATH_MAX];
-    struct stat st;
     hstr(h, ZCC_MAGIC);
-    if (resolve_cc(pl->argv[0], ccpath) && stat(ccpath, &st) == 0) {
-        hstr(h, ccpath);
-        hu64(h, (uint64_t)st.st_size);
-        hu64(h, (uint64_t)st.st_mtim.tv_sec);
-        hu64(h, (uint64_t)st.st_mtim.tv_nsec);
-    } else {
-        hstr(h, pl->argv[0]);
-        hstr(h, "<unresolved-compiler>");
-    }
+    char digest[HEXLEN + 1u];
+    if (!resolve_cc(pl->argv[0], ccpath) || !file_hex(ccpath, digest))
+        return false;
+    hstr(h, ccpath);
+    hstr(h, digest);
+#if defined(__APPLE__)
+    if (!hash_apple_backend(h, pl, cache_root) ||
+        !hash_apple_assembler(h, pl, cache_root))
+        return false;
+#elif defined(__linux__)
+    if (!hash_linux_selected_tool(h, pl, "-print-prog-name=cc1",
+                                  "linux-cc1", cache_root) ||
+        !hash_linux_selected_tool(h, pl, "-print-prog-name=as",
+                                  "linux-as", cache_root))
+        return false;
+#else
+    (void)cache_root;
+#endif
     /* The directory the compiler will RECORD, not the one it runs in — see
      * "THE RECORDED WORKING DIRECTORY" above for why the difference is the
      * whole cross-worktree hit rate, and for the fallback rule. */
@@ -943,16 +1538,20 @@ static void hash_toolchain(struct sha3_256_ctx *h, const struct plan *pl)
         hstr(h, real ? real : "<nocwd>");
         hash_argv(h, pl, NULL);
     }
+    /* Compiler drivers can read CPATH, SDKROOT, LANG, and custom selectors.
+     * Environment entry order is irrelevant unless a name is duplicated;
+     * reject duplicates rather than guessing which value the compiler sees. */
+    return hash_environment(h);
 }
 
 /* Archives named by -l are real inputs; fold in the ones we can resolve. */
-static void hash_named_libs(struct sha3_256_ctx *h, const struct plan *pl,
-                            bool content)
+static bool hash_named_libs(struct sha3_256_ctx *h, const struct plan *pl)
 {
     for (int i = 1; i < pl->argc; i++) {
         const char *a = pl->argv[i];
         if (strncmp(a, "-l", 2) != 0 || !a[2])
             continue;
+        bool found = false;
         for (int d = 0; d < pl->libdir_n; d++) {
             char cand[PATH_MAX];
             snprintf(cand, sizeof cand, "%s/lib%s.a", pl->libdir[d], a + 2);
@@ -960,34 +1559,38 @@ static void hash_named_libs(struct sha3_256_ctx *h, const struct plan *pl,
             if (stat(cand, &st) != 0)
                 continue;
             hstr(h, cand);
-            if (content) {
-                struct buf b = { 0 };
-                if (read_file(cand, &b))
-                    hfield(h, b.p, b.len);
-                buf_free(&b);
-            } else {
-                hu64(h, (uint64_t)st.st_size);
-                hu64(h, (uint64_t)st.st_mtim.tv_nsec);
-                hu64(h, (uint64_t)st.st_ino);
-            }
+            char digest[HEXLEN + 1u];
+            if (!file_hex(cand, digest))
+                return false;
+            hstr(h, digest);
+            found = true;
             break;
         }
+        if (!found)
+            return false;
     }
+    return true;
 }
 
-static bool probe_key(const struct plan *pl, char out[HEXLEN + 1u])
+static bool probe_key(const struct plan *pl, const char *cache_root,
+                      char out[HEXLEN + 1u])
 {
     struct sha3_256_ctx h;
     sha3_256_init(&h);
     hstr(&h, "probe");
-    hash_toolchain(&h, pl);
+    if (!hash_toolchain(&h, pl, cache_root))
+        return false;
     for (int i = 0; i < pl->src_n + pl->blob_n; i++) {
         int idx = i < pl->src_n ? pl->src[i] : pl->blob[i - pl->src_n];
         const char *p = pl->argv[idx];
         struct stat st;
+        char digest[HEXLEN + 1u];
         if (stat(p, &st) != 0)
             return false;
+        if (!file_hex(p, digest))
+            return false;
         hstr(&h, p);
+        hstr(&h, digest);
         hu64(&h, (uint64_t)st.st_size);
         hu64(&h, (uint64_t)st.st_mtim.tv_sec);
         hu64(&h, (uint64_t)st.st_mtim.tv_nsec);
@@ -995,27 +1598,33 @@ static bool probe_key(const struct plan *pl, char out[HEXLEN + 1u])
     }
     for (int i = 0; i < pl->rsp_n; i++) {
         struct stat st;
-        if (stat(pl->rsp[i], &st) != 0)
+        char digest[HEXLEN + 1u];
+        if (stat(pl->rsp[i], &st) != 0 ||
+            !file_hex(pl->rsp[i], digest))
             return false;
         hstr(&h, pl->rsp[i]);
+        hstr(&h, digest);
         hu64(&h, (uint64_t)st.st_size);
         hu64(&h, (uint64_t)st.st_mtim.tv_sec);
         hu64(&h, (uint64_t)st.st_mtim.tv_nsec);
         hu64(&h, (uint64_t)st.st_ino);
     }
-    hash_named_libs(&h, pl, false);
+    if (!hash_named_libs(&h, pl))
+        return false;
     unsigned char d[SHA3_256_OUTPUT_SIZE];
     sha3_256_finalize(&h, d);
     hex_of(d, out);
     return true;
 }
 
-static bool probe_for_plan(const struct plan *pl, bool strict,
+static bool probe_for_plan(const struct plan *pl, const char *cache_root,
+                           bool strict,
                            char out[HEXLEN + 1u])
 {
     /* A source compile can change when an earlier include-search candidate
      * appears, without changing the stat of any previously opened file. */
-    return !strict && pl->src_n == 0 && probe_key(pl, out);
+    return !strict && pl->src_n == 0 &&
+           probe_key(pl, cache_root, out);
 }
 
 /* ── dependency set ──────────────────────────────────────────────────── */
@@ -1032,6 +1641,7 @@ struct deps {
     char **path;
     size_t n;
     size_t cap;
+    bool failed;
 };
 
 static void deps_free(struct deps *d)
@@ -1041,6 +1651,7 @@ static void deps_free(struct deps *d)
     free(d->path);
     d->path = NULL;
     d->n = d->cap = 0;
+    d->failed = false;
 }
 
 static void deps_add(struct deps *d, const char *p, size_t len)
@@ -1053,20 +1664,48 @@ static void deps_add(struct deps *d, const char *p, size_t len)
     if (d->n == d->cap) {
         size_t nc = d->cap ? d->cap * 2 : 128;
         char **np = zcl_realloc(d->path, nc * sizeof *np, "zcc dep set");
-        if (!np)
+        if (!np) {
+            d->failed = true;
             return;
+        }
         d->path = np;
         d->cap = nc;
     }
     char *copy = zcl_malloc(len + 1u, "zcc dep path");
-    if (!copy)
+    if (!copy) {
+        d->failed = true;
         return;
+    }
     memcpy(copy, p, len);
     copy[len] = '\0';
     d->path[d->n++] = copy;
 }
 
 /* Harvest `# 1 "some/header.h"` line markers out of preprocessed text. */
+static void deps_marker(struct deps *d, const unsigned char *p,
+                        size_t start, size_t eol)
+{
+    if (eol - start <= 4 || p[start] != '#' || p[start + 1u] != ' ')
+        return;
+    size_t q = start + 2u;
+    while (q < eol && p[q] != '"')
+        q++;
+    if (q == eol)
+        return;
+    q++;
+    char unesc[PATH_MAX];
+    size_t u = 0;
+    while (q < eol && p[q] != '"' && u + 1u < sizeof unesc) {
+        if (p[q] == '\\' && q + 1u < eol)
+            q++;
+        unesc[u++] = (char)p[q++];
+    }
+    if (q < eol && p[q] == '"' && u > 0)
+        deps_add(d, unesc, u);
+    else
+        d->failed = true;
+}
+
 static void deps_scan(struct deps *d, const unsigned char *p, size_t len)
 {
     size_t i = 0;
@@ -1074,23 +1713,7 @@ static void deps_scan(struct deps *d, const unsigned char *p, size_t len)
         size_t eol = i;
         while (eol < len && p[eol] != '\n')
             eol++;
-        if (eol - i > 4 && p[i] == '#' && p[i + 1] == ' ') {
-            size_t q = i + 2;
-            while (q < eol && p[q] != '"')
-                q++;
-            if (q < eol) {
-                size_t start = ++q;
-                char unesc[PATH_MAX];
-                size_t u = 0;
-                while (q < eol && p[q] != '"' && u + 1u < sizeof unesc) {
-                    if (p[q] == '\\' && q + 1u < eol)
-                        q++;
-                    unesc[u++] = (char)p[q++];
-                }
-                if (q < eol && u > 0 && start < eol)
-                    deps_add(d, unesc, u);
-            }
-        }
+        deps_marker(d, p, i, eol);
         i = eol + 1u;
     }
 }
@@ -1199,13 +1822,15 @@ static void hash_pp(struct sha3_256_ctx *h, const unsigned char *p, size_t len,
 }
 
 static bool content_key(const struct plan *pl, const char *tmpdir,
+                        const char *cache_root,
                         struct deps *d,
                         char out[HEXLEN + 1u])
 {
     struct sha3_256_ctx h;
     sha3_256_init(&h);
     hstr(&h, "content");
-    hash_toolchain(&h, pl);
+    if (!hash_toolchain(&h, pl, cache_root))
+        return false;
     char cwd[PATH_MAX], recorded[PATH_MAX];
     const char *real = getcwd(cwd, sizeof cwd) ? cwd : NULL;
     const char *raw = real && recorded_cwd(pl, real, recorded) ? real : NULL;
@@ -1219,6 +1844,8 @@ static bool content_key(const struct plan *pl, const char *tmpdir,
         hstr(&h, pl->argv[pl->src[i]]);
         hash_pp(&h, pp.p, pp.len, raw);
         buf_free(&pp);
+        if (d->failed)
+            return false;
     }
     for (int i = 0; i < pl->blob_n; i++) {
         struct buf b = { 0 };
@@ -1240,7 +1867,8 @@ static bool content_key(const struct plan *pl, const char *tmpdir,
         hfield(&h, b.p, b.len);
         buf_free(&b);
     }
-    hash_named_libs(&h, pl, true);
+    if (!hash_named_libs(&h, pl))
+        return false;
     unsigned char dg[SHA3_256_OUTPUT_SIZE];
     sha3_256_finalize(&h, dg);
     hex_of(dg, out);
@@ -1493,7 +2121,7 @@ static long counter(const struct cache *c, const char *name)
 
 /* The sibling files one obj entry owns, in the order evict() must remove
  * them: .bin first and always, per rule 1 above. Keep in sync with store(). */
-static const char *const OBJ_EXT[] = { ".bin", ".dep", ".err" };
+static const char *const OBJ_EXT[] = { ".bin", ".meta", ".dep", ".err" };
 
 /* A ceiling in MB that cannot overflow when turned into bytes. Without the
  * clamp a large enough ZCC_MAX_MB wraps `mb * 1024 * 1024` NEGATIVE, every
@@ -1932,50 +2560,157 @@ static void maybe_trim(const struct cache *c, const struct plan *pl)
 
 /* ── serve / store ───────────────────────────────────────────────────── */
 
-static void replay_stderr(const struct cache *c, const char *ckey)
+#define ZCC_RESULT_MAGIC "ZCCRES2\0"
+#define ZCC_RESULT_DEP 0x01u
+#define ZCC_RESULT_ERR 0x02u
+struct zcc_result_meta {
+    char magic[8];
+    char key[HEXLEN];
+    uint8_t flags;
+    uint8_t reserved[7];
+    uint64_t lengths[3];
+    uint8_t hashes[3][SHA3_256_OUTPUT_SIZE];
+};
+
+static void result_hash(const struct buf *b, uint8_t out[SHA3_256_OUTPUT_SIZE])
 {
-    char p[PATH_MAX];
+    struct sha3_256_ctx h;
+    sha3_256_init(&h);
+    sha3_256_write(&h, b->p, b->len);
+    sha3_256_finalize(&h, out);
+}
+
+static bool result_matches(const struct buf *b, const struct zcc_result_meta *m,
+                           size_t slot)
+{
+    uint8_t digest[SHA3_256_OUTPUT_SIZE];
+    result_hash(b, digest);
+    return (uint64_t)b->len == m->lengths[slot] &&
+           memcmp(digest, m->hashes[slot], sizeof digest) == 0;
+}
+
+static bool result_read_meta(const struct cache *c, const char *ckey,
+                             const struct plan *pl,
+                             struct zcc_result_meta *meta,
+                             const char **reason)
+{
+    char path[PATH_MAX];
     struct buf b = { 0 };
-    entry_path(c, "obj", ckey, ".err", p);
-    if (read_file(p, &b) && b.len > 0)
-        (void)!write(STDERR_FILENO, b.p, b.len);
+    entry_path(c, "obj", ckey, ".meta", path);
+    bool read_ok = read_file(path, &b);
+    bool ok = read_ok && b.len == sizeof *meta;
+    *reason = "meta-invalid";
+    if (!read_ok) {
+        struct stat st;
+        *reason = stat(path, &st) != 0 && errno == ENOENT
+            ? "meta-missing" : "meta-unavailable";
+    }
+    if (ok) {
+        memcpy(meta, b.p, sizeof *meta);
+        ok = memcmp(meta->magic, ZCC_RESULT_MAGIC, sizeof meta->magic) == 0 &&
+             memcmp(meta->key, ckey, HEXLEN) == 0 &&
+             (meta->flags & ~(ZCC_RESULT_DEP | ZCC_RESULT_ERR)) == 0 &&
+             (!pl->want_dep || (meta->flags & ZCC_RESULT_DEP));
+    }
     buf_free(&b);
+    return ok;
+}
+
+static bool result_read_artifact(const struct cache *c, const char *ckey,
+                                 const char *ext,
+                                 const struct zcc_result_meta *meta,
+                                 size_t slot, struct buf *out,
+                                 struct stat *st, const char **reason)
+{
+    static const char *const unavailable[] = {
+        "bin-unavailable", "dep-unavailable", "err-unavailable"
+    };
+    static const char *const integrity[] = {
+        "bin-integrity", "dep-integrity", "err-integrity"
+    };
+    char path[PATH_MAX];
+    entry_path(c, "obj", ckey, ext, path);
+    *reason = unavailable[slot];
+    if (stat(path, st) != 0 || !S_ISREG(st->st_mode) || !read_file(path, out))
+        return false;
+    *reason = integrity[slot];
+    return result_matches(out, meta, slot);
+}
+
+static void log_lookup_failure(const char *reason, const char *ckey,
+                               const struct plan *pl)
+{
+    if (!reason)
+        return;
+    char detail[128];
+    snprintf(detail, sizeof detail, "reason=%s key=%.64s", reason, ckey);
+    logline("LOOKUP", detail, pl);
 }
 
 static bool serve(const struct cache *c, const char *ckey,
                   const struct plan *pl)
 {
     char art[PATH_MAX];
-    struct stat st;
+    struct buf bin = { 0 }, dep = { 0 }, err = { 0 };
+    struct zcc_result_meta meta;
+    struct stat bin_st, dep_st, err_st;
+    const char *reason = NULL;
+    bool ok = false;
+    if (!result_read_meta(c, ckey, pl, &meta, &reason))
+        goto done;
     entry_path(c, "obj", ckey, ".bin", art);
-    if (stat(art, &st) != 0 || !S_ISREG(st.st_mode))
-        return false;
-    if (pl->dep_path) {
-        char dep[PATH_MAX];
-        entry_path(c, "obj", ckey, ".dep", dep);
-        if (pl->want_dep) {
-            /* AN ENTRY THAT CANNOT PAY ITS DEPFILE IS NOT A HIT. -MD/-MMD
-             * means the compiler would have written this file, so make is
-             * about to include it; handing back the object and shrugging at
-             * the .d is how header tracking silently dies. This used to be
-             * "restore it if it happens to be there", which was already
-             * wrong for a store interrupted between the two artifacts, and
-             * is the ONLY thing standing between a half-deleted entry and a
-             * torn hit now that trimming happens on its own. Restoring the
-             * depfile BEFORE the object matters too: a .dep that disappears
-             * under a concurrent eviction fails here, and the object is
-             * never written. */
-            if (!copy_out_dep(dep, pl->dep_path, pl->mt_path))
-                return false;
-        } else if (is_regular(dep) &&
-                   !copy_out_dep(dep, pl->dep_path, pl->mt_path)) {
-            return false;
-        }
+    if (!result_read_artifact(c, ckey, ".bin", &meta, 0, &bin, &bin_st, &reason))
+        goto done;
+    if ((meta.flags & ZCC_RESULT_DEP) &&
+        !result_read_artifact(c, ckey, ".dep", &meta, 1, &dep, &dep_st, &reason))
+        goto done;
+    if ((meta.flags & ZCC_RESULT_ERR) &&
+        !result_read_artifact(c, ckey, ".err", &meta, 2, &err, &err_st, &reason))
+        goto done;
+    /* Verify all stored bytes before writing either output. The verified
+     * buffers are also the bytes copied out, closing a cache-file swap race. */
+    if (pl->dep_path && (meta.flags & ZCC_RESULT_DEP)) {
+        if (pl->mt_path && pl->mt_path[0])
+            (void)buf_replace_prefix(&dep, ZCC_MT_PLACEHOLDER, pl->mt_path);
+        reason = "dep-restore";
+        if (!write_buf_dest(&dep, pl->dep_path, dep_st.st_mode & 07777u))
+            goto done;
     }
-    if (!copy_out(art, pl->out_path))
+    reason = "bin-restore";
+    if (!write_buf_dest(&bin, pl->out_path, bin_st.st_mode & 07777u))
+        goto done;
+    if (err.len > 0)
+        (void)!write(STDERR_FILENO, err.p, err.len);
+    touch_if_stale(art, bin_st.st_mtime);
+    ok = true;
+done:
+    if (!ok)
+        log_lookup_failure(reason, ckey, pl);
+    buf_free(&bin);
+    buf_free(&dep);
+    buf_free(&err);
+    return ok;
+}
+
+static bool store_sidecar(const struct cache *c, const char *ckey,
+                          const char *dir, const char *ext,
+                          const char *source, const struct plan *pl,
+                          struct zcc_result_meta *meta, size_t slot,
+                          struct buf *data, long long *added)
+{
+    char dst[PATH_MAX];
+    if (!read_file(source, data))
         return false;
-    replay_stderr(c, ckey);
-    touch_if_stale(art, st.st_mtime);
+    if (slot == 1u && pl->mt_path && pl->mt_path[0] &&
+        !buf_replace_prefix(data, pl->mt_path, ZCC_MT_PLACEHOLDER))
+        return false;
+    meta->flags |= slot == 1u ? ZCC_RESULT_DEP : ZCC_RESULT_ERR;
+    meta->lengths[slot] = (uint64_t)data->len;
+    result_hash(data, meta->hashes[slot]);
+    entry_path(c, "obj", ckey, ext, dst);
+    if (!store_atomic(dir, dst, data->p, data->len, 0600))
+        return false;
+    *added += (long long)data->len;
     return true;
 }
 
@@ -1983,7 +2718,8 @@ static void store(const struct cache *c, const char *ckey,
                   const struct plan *pl, const char *errfile)
 {
     char dir[PATH_MAX], dst[PATH_MAX];
-    struct buf b = { 0 };
+    struct buf b = { 0 }, d = { 0 }, e = { 0 };
+    struct zcc_result_meta meta = { 0 };
     struct stat st;
     if (!entry_dir(c, "obj", ckey, dir))
         return;
@@ -1991,6 +2727,10 @@ static void store(const struct cache *c, const char *ckey,
         buf_free(&b);
         return;
     }
+    memcpy(meta.magic, ZCC_RESULT_MAGIC, sizeof meta.magic);
+    memcpy(meta.key, ckey, HEXLEN);
+    meta.lengths[0] = (uint64_t)b.len;
+    result_hash(&b, meta.hashes[0]);
 
     /* THE OBJECT IS PUBLISHED LAST. serve() decides an entry exists by the
      * presence of the .bin, so writing it first made every sibling a window:
@@ -2007,69 +2747,88 @@ static void store(const struct cache *c, const char *ckey,
      * same key. */
     long long added = 0;
     if (pl->dep_path && is_regular(pl->dep_path)) {
-        struct buf d = { 0 };
-        if (read_file(pl->dep_path, &d)) {
-            if (pl->mt_path && pl->mt_path[0] &&
-                !buf_replace_prefix(&d, pl->mt_path, ZCC_MT_PLACEHOLDER)) {
-                /* A depfile that does not start with -MT is not the shape
-                 * this rewrite models. Refuse to store it rather than serve
-                 * a target that belongs to another epoch. */
-                buf_free(&d);
-            } else {
-                entry_path(c, "obj", ckey, ".dep", dst);
-                if (store_atomic(dir, dst, d.p, d.len, 0600))
-                    added += (long long)d.len;
-                buf_free(&d);
-            }
-        } else {
-            buf_free(&d);
-        }
+        if (!store_sidecar(c, ckey, dir, ".dep", pl->dep_path, pl,
+                           &meta, 1u, &d, &added))
+            goto done;
+    } else if (pl->want_dep) {
+        goto done;
     }
-    struct buf e = { 0 };
-    if (errfile && read_file(errfile, &e)) {
-        entry_path(c, "obj", ckey, ".err", dst);
-        if (store_atomic(dir, dst, e.p, e.len, 0600))
-            added += (long long)e.len;
-    }
-    buf_free(&e);
-
+    if (errfile && !store_sidecar(c, ckey, dir, ".err", errfile, pl,
+                                  &meta, 2u, &e, &added))
+        goto done;
+    entry_path(c, "obj", ckey, ".meta", dst);
+    if (!store_atomic(dir, dst, (const unsigned char *)&meta,
+                      sizeof meta, 0600))
+        goto done;
+    added += (long long)sizeof meta;
     entry_path(c, "obj", ckey, ".bin", dst);
     if (store_atomic(dir, dst, b.p, b.len, st.st_mode & 07777u))
         added += (long long)b.len;
+done:
     buf_free(&b);
+    buf_free(&d);
+    buf_free(&e);
     grow(c, added);
 }
 
 /* ── level-1 manifest ────────────────────────────────────────────────── */
 
 /* probe key -> { content key, the exact file set that compile read }.
- * Serving from level 1 requires every recorded file to still carry the same
- * (size, mtime, inode). */
+ * A counted, digested manifest refuses a truncated or partially captured set.
+ * Serving from level 1 requires every recorded file's bytes to match. */
 
+static bool manifest_append_dep(struct buf *b, const char *path)
+{
+    struct stat st;
+    char filehash[HEXLEN + 1u], line[PATH_MAX + 128];
+    if (strchr(path, '\n') || strchr(path, '\r') ||
+        stat(path, &st) != 0 || !S_ISREG(st.st_mode) ||
+        !file_hex(path, filehash))
+        return false;
+    int n = snprintf(line, sizeof line, "%lld %lld %lld %llu %s %s\n",
+                     (long long)st.st_size, (long long)st.st_mtim.tv_sec,
+                     (long long)st.st_mtim.tv_nsec,
+                     (unsigned long long)st.st_ino, filehash, path);
+    return n >= 0 && (size_t)n < sizeof line && buf_add(b, line, (size_t)n);
+}
+
+static bool manifest_append_checksum(struct buf *b)
+{
+    struct sha3_256_ctx h;
+    unsigned char digest[SHA3_256_OUTPUT_SIZE];
+    char hex[HEXLEN + 1u], line[HEXLEN + 7u];
+    sha3_256_init(&h);
+    sha3_256_write(&h, b->p, b->len);
+    sha3_256_finalize(&h, digest);
+    hex_of(digest, hex);
+    int n = snprintf(line, sizeof line, "sha3=%s\n", hex);
+    return n >= 0 && (size_t)n < sizeof line && buf_add(b, line, (size_t)n);
+}
 
 static bool manifest_write(const struct cache *c, const char *pkey,
                            const char *ckey, const struct deps *d)
 {
     char dir[PATH_MAX], dst[PATH_MAX];
-    if (!entry_dir(c, "man", pkey, dir))
+    if (d->failed || d->n > 100000u || !entry_dir(c, "man", pkey, dir))
         return false;
     struct buf b = { 0 };
     char line[PATH_MAX + 128];
-    int n = snprintf(line, sizeof line, "zcc.manifest.v1\n%s\n", ckey);
-    if (n < 0 || !buf_add(&b, line, (size_t)n)) {
+    int n = snprintf(line, sizeof line, "zcc.manifest.v3\n%s\n%zu\n",
+                     ckey, d->n);
+    if (n < 0 || (size_t)n >= sizeof line ||
+        !buf_add(&b, line, (size_t)n)) {
         buf_free(&b);
         return false;
     }
     for (size_t i = 0; i < d->n; i++) {
-        struct stat st;
-        if (stat(d->path[i], &st) != 0)
-            continue;
-        n = snprintf(line, sizeof line, "%lld %lld %lld %llu %s\n",
-                     (long long)st.st_size, (long long)st.st_mtim.tv_sec,
-                     (long long)st.st_mtim.tv_nsec,
-                     (unsigned long long)st.st_ino, d->path[i]);
-        if (n > 0)
-            (void)buf_add(&b, line, (size_t)n);
+        if (!manifest_append_dep(&b, d->path[i])) {
+            buf_free(&b);
+            return false;
+        }
+    }
+    if (!manifest_append_checksum(&b)) {
+        buf_free(&b);
+        return false;
     }
     entry_path(c, "man", pkey, "", dst);
     bool ok = store_atomic(dir, dst, b.p, b.len, 0600);
@@ -2079,9 +2838,81 @@ static bool manifest_write(const struct cache *c, const char *pkey,
     return ok;
 }
 
-/* Returns true only when the manifest exists AND every file it records is
- * unchanged. Any doubt is a miss — a miss costs time, a wrong hit costs a
- * wrong binary. */
+static bool manifest_payload_valid(const struct buf *b)
+{
+    if (b->len < 72u || b->p[b->len - 1u] != '\n')
+        return false;
+    size_t start = b->len - 1u;
+    while (start > 0u && b->p[start - 1u] != '\n')
+        start--;
+    if (b->len - start != 70u || memcmp(b->p + start, "sha3=", 5u) != 0)
+        return false;
+    struct sha3_256_ctx h;
+    unsigned char digest[SHA3_256_OUTPUT_SIZE];
+    char hex[HEXLEN + 1u];
+    sha3_256_init(&h);
+    sha3_256_write(&h, b->p, start);
+    sha3_256_finalize(&h, digest);
+    hex_of(digest, hex);
+    return memcmp(b->p + start + 5u, hex, HEXLEN) == 0;
+}
+
+static bool manifest_dep_matches(char *line)
+{
+    long long size = 0, sec = 0, nsec = 0;
+    unsigned long long ino = 0;
+    int off = 0;
+    if (sscanf(line, "%lld %lld %lld %llu %n", &size, &sec, &nsec, &ino,
+               &off) != 4 || off <= 0 || !line[off] ||
+        strlen(line + off) < HEXLEN + 2u || line[off + HEXLEN] != ' ')
+        return false;
+    const char *path = line + off + HEXLEN + 1u;
+    char filehash[HEXLEN + 1u];
+    struct stat st;
+    return file_hex(path, filehash) &&
+           memcmp(line + off, filehash, HEXLEN) == 0 &&
+           stat(path, &st) == 0 &&
+           (long long)st.st_size == size &&
+           (long long)st.st_mtim.tv_sec == sec &&
+           (long long)st.st_mtim.tv_nsec == nsec &&
+           (unsigned long long)st.st_ino == ino;
+}
+
+static bool manifest_count(const char *line, unsigned long long *out)
+{
+    if (!line || !line[0])
+        return false;
+    char *end = NULL;
+    errno = 0;
+    *out = strtoull(line, &end, 10);
+    return errno == 0 && end && *end == '\0' && *out <= 100000u;
+}
+
+static bool manifest_text_matches(char *text, char ckey[HEXLEN + 1u])
+{
+    char *save = NULL;
+    char *line = strtok_r(text, "\n", &save);
+    if (!line || strcmp(line, "zcc.manifest.v3") != 0)
+        return false;
+    line = strtok_r(NULL, "\n", &save);
+    if (!line || strlen(line) != HEXLEN)
+        return false;
+    memcpy(ckey, line, HEXLEN + 1u);
+    line = strtok_r(NULL, "\n", &save);
+    unsigned long long expected = 0;
+    if (!manifest_count(line, &expected))
+        return false;
+    for (unsigned long long i = 0; i < expected; i++) {
+        line = strtok_r(NULL, "\n", &save);
+        if (!line || !manifest_dep_matches(line))
+            return false;
+    }
+    line = strtok_r(NULL, "\n", &save);
+    return line && strncmp(line, "sha3=", 5u) == 0 &&
+           strlen(line) == 5u + HEXLEN && !strtok_r(NULL, "\n", &save);
+}
+
+/* Any doubt about the manifest or its files is a miss. */
 static bool manifest_verify(const struct cache *c, const char *pkey,
                             char ckey[HEXLEN + 1u])
 {
@@ -2094,48 +2925,16 @@ static bool manifest_verify(const struct cache *c, const char *pkey,
         return false;
     }
     bool ok = false;
-    char *text = zcl_malloc(b.len + 1u, "zcc manifest text");
-    if (!text) {
-        buf_free(&b);
-        return false;
+    if (manifest_payload_valid(&b)) {
+        char *text = zcl_malloc(b.len + 1u, "zcc manifest text");
+        if (text) {
+            memcpy(text, b.p, b.len);
+            text[b.len] = '\0';
+            ok = manifest_text_matches(text, ckey);
+            free(text);
+        }
     }
-    memcpy(text, b.p, b.len);
-    text[b.len] = '\0';
     buf_free(&b);
-
-    char *save = NULL;
-    char *line = strtok_r(text, "\n", &save);
-    if (!line || strcmp(line, "zcc.manifest.v1") != 0)
-        goto done;
-    line = strtok_r(NULL, "\n", &save);
-    if (!line || strlen(line) != HEXLEN)
-        goto done;
-    memcpy(ckey, line, HEXLEN + 1u);
-
-    ok = true;
-    while ((line = strtok_r(NULL, "\n", &save)) != NULL) {
-        long long size = 0, sec = 0, nsec = 0;
-        unsigned long long ino = 0;
-        int off = 0;
-        if (sscanf(line, "%lld %lld %lld %llu %n", &size, &sec, &nsec, &ino,
-                   &off) != 4 || off <= 0 || !line[off]) {
-            ok = false;
-            break;
-        }
-        struct stat st;
-        if (stat(line + off, &st) != 0 ||
-            (long long)st.st_size != size ||
-            (long long)st.st_mtim.tv_sec != sec ||
-            (long long)st.st_mtim.tv_nsec != nsec ||
-            (unsigned long long)st.st_ino != ino) {
-            ok = false;
-            break;
-        }
-    }
-done:
-    free(text);
-    /* A verified manifest is a manifest in use: age it from now, not from the
-     * day it was written, or the bound evicts the hot ones first. */
     if (ok)
         touch_if_stale(p, mst.st_mtime);
     return ok;
@@ -2245,6 +3044,7 @@ static int cmd_stats(struct cache *c)
     printf("  grown        %lld MB since the last trim\n",
            (long long)counter(c, "grown") * ZCC_GROWTH_UNIT / (1024 * 1024));
     printf("  hits         %ld\n", hit);
+    printf("  provenance   NON-AUTHORITATIVE DEV reuse (no isolated signer)\n");
     printf("  misses       %ld\n", miss);
     printf("  bypassed     %ld\n", bypass);
     /* Never hide this behind a zero: an unkeyable compile is a compile this
@@ -2270,8 +3070,10 @@ static void logline(const char *disposition, const char *detail,
     if (fd < 0)
         return;
     char line[1024];
-    int n = snprintf(line, sizeof line, "%-8s %-28s %s\n", disposition,
+    int n = snprintf(line, sizeof line, "%-8s %-28s %s%s\n", disposition,
                      detail ? detail : "-",
+                     strcmp(disposition, "HIT") == 0
+                         ? "NON-AUTHORITATIVE DEV " : "",
                      pl->out_path ? pl->out_path : "<none>");
     if (n > 0)
         (void)!write(fd, line, (size_t)n > sizeof line ? sizeof line : (size_t)n);
@@ -3418,7 +4220,7 @@ static bool flight_revalidate(const struct cache *c, const struct plan *pl,
 {
     char fresh_key[HEXLEN + 1u];
     deps_free(deps);
-    return content_key(pl, c->tmp, deps, fresh_key) &&
+    return content_key(pl, c->tmp, c->root, deps, fresh_key) &&
            strcmp(key, fresh_key) == 0;
 }
 
@@ -3473,6 +4275,31 @@ static bool manifest_store(const struct cache *c, const char *pkey,
                             bool have_pkey, bool have_deps)
 {
     return have_pkey && have_deps && manifest_write(c, pkey, ckey, deps);
+}
+
+static void record_compilation(const struct cache *c, const struct plan *pl,
+                               const char *errfile, bool audit,
+                               bool had_cached, const struct buf *cached,
+                               const char *ckey, struct deps *deps,
+                               const char *pkey, bool have_pkey,
+                               int *flight_fd)
+{
+    audit_compare(audit, had_cached, ckey, pl, cached);
+    /* The preprocessor ran before the compiler. A changed input forbids
+     * publication under the earlier key even when compilation succeeded. */
+    bool stable = flight_revalidate(c, pl, ckey, deps);
+    if (stable)
+        store(c, ckey, pl, errfile);
+    if (*flight_fd >= 0) {
+        close(*flight_fd);
+        *flight_fd = -1;
+    }
+    if (stable)
+        (void)manifest_store(c, pkey, ckey, deps, have_pkey, true);
+    bump(c, "miss");
+    logline("MISS", stable ? "compiled and stored" :
+            "compiled; inputs changed during compilation", pl);
+    maybe_trim(c, pl);
 }
 
 static int zcc_command_dispatch(int argc, char **argv)
@@ -3556,7 +4383,7 @@ static int zcc_dispatch(int argc, char **argv, bool replace_on_bypass)
     bool have_deps = false;
     /* Source compiles recompute the content key. Parsed link-only inputs may
      * still use the probe shortcut. */
-    bool have_pkey = probe_for_plan(&pl, strict, pkey);
+    bool have_pkey = probe_for_plan(&pl, c.root, strict, pkey);
     bool have_ckey = false;
 
     if (have_pkey && manifest_verify(&c, pkey, ckey))
@@ -3570,7 +4397,7 @@ static int zcc_dispatch(int argc, char **argv, bool replace_on_bypass)
     }
 
     if (!have_ckey || audit) {
-        if (!content_key(&pl, c.tmp, &deps, ckey)) {
+        if (!content_key(&pl, c.tmp, c.root, &deps, ckey)) {
             /* The -E probe did not work here. Run the real compiler, but say
              * so: an invocation that silently declines to be cached is a
              * performance bug nobody can see. A -MT value left unconsumed
@@ -3642,18 +4469,9 @@ static int zcc_dispatch(int argc, char **argv, bool replace_on_bypass)
     buf_free(&errbytes);
 
     if (rc == 0) {
-        audit_compare(audit, had_cached, ckey, &pl, &cached_before);
-        store(&c, ckey, &pl, errfile);
-        if (flight_fd >= 0) {
-            close(flight_fd);
-            flight_fd = -1;
-        }
-        (void)manifest_store(&c, pkey, ckey, &deps, have_pkey, have_deps);
-        bump(&c, "miss");
-        logline("MISS", "compiled and stored", &pl);
-        /* The artifact is already written and already handed back; the bound
-         * is the last thing that happens and cannot change the exit code. */
-        maybe_trim(&c, &pl);
+        record_compilation(&c, &pl, errfile, audit, had_cached,
+                           &cached_before, ckey, &deps, pkey, have_pkey,
+                           &flight_fd);
     }
     buf_free(&cached_before);
     flight_release(flight_fd);
