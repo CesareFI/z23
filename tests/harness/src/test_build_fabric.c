@@ -11,6 +11,7 @@
 #include "models/database.h"
 #include "services/build_fabric_service.h"
 #include "services/build_fabric_async.h"
+#include "services/build_fabric_attach.h"
 #include "services/build_fabric_runtime.h"
 #include "services/build_fabric_proof_recovery.h"
 #include "services/subordinate_work_admission.h"
@@ -65,6 +66,26 @@ static_assert(BUILD_FABRIC_PROOF_TICKET_WIRE_BYTES ==
               VCS_PROOF_TICKET_WIRE_BYTES);
 static_assert(BUILD_FABRIC_PROOF_CHECKPOINT_WIRE_BYTES ==
               VCS_PROOF_CHECKPOINT_WIRE_BYTES);
+
+#if defined(__linux__)
+static int test_bf_privileged_tool_capture_refusal(void)
+{
+    int failures = 0;
+    TEST("build_fabric: privileged tool capture remains refused") {
+        if (geteuid() == 0) {
+            uint8_t driver[32], backend[32], assembler[32];
+            struct zcl_result captured =
+                build_fabric_executor_host_tool_hashes(
+                    driver, backend, assembler);
+            ASSERT(!captured.ok);
+            ASSERT_STR_EQ(captured.message,
+                          "executor-toolchain-capture-failed: tool bytes");
+        }
+        PASS();
+    } _test_next:;
+    return failures;
+}
+#endif
 
 static bool bf_open(struct node_db *ndb, char *dir, size_t dir_cap,
                     char *path, size_t path_cap, const char *tag)
@@ -4935,6 +4956,11 @@ int bf_proof_wiring_cases(void);
 int test_build_fabric(void)
 {
     int failures = 0;
+#if defined(__linux__)
+    failures += test_bf_privileged_tool_capture_refusal();
+    if (geteuid() == 0)
+        build_fabric_attach_test_assume_unprivileged(true);
+#endif
     failures += test_bf_production_verifier_selection();
     failures += test_bf_input_closure_root();
     failures += test_bf_migration();
@@ -4974,6 +5000,9 @@ int test_build_fabric(void)
     failures += test_bf_proof_materialization();
     failures += test_bf_subordinate_work_admission();
     failures += test_bf_worker_admission_step();
+#if defined(__linux__)
+    build_fabric_attach_test_assume_unprivileged(false);
+#endif
     printf("=== build_fabric: %d failures ===\n", failures);
     return failures;
 }

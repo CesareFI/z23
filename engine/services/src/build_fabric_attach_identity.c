@@ -18,6 +18,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if defined(ZCL_TESTING) && defined(__linux__)
+#include <stdatomic.h>
+#endif
 #if !defined(_WIN32)
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -29,6 +32,26 @@
 
 #if !defined(_WIN32)
 #if defined(__linux__)
+#if defined(ZCL_TESTING)
+static _Atomic bool g_bfat_test_assume_unprivileged;
+
+void build_fabric_attach_test_assume_unprivileged(bool enabled)
+{
+    atomic_store(&g_bfat_test_assume_unprivileged, enabled);
+}
+
+static bool bfat_process_unprivileged(void)
+{
+    return atomic_load(&g_bfat_test_assume_unprivileged) ||
+           os_proc_unprivileged_no_capabilities();
+}
+#else
+static bool bfat_process_unprivileged(void)
+{
+    return os_proc_unprivileged_no_capabilities();
+}
+#endif
+
 /* A worker cannot replace any component of this path. Root/package-manager
  * mutation remains an explicit host trust boundary for physical compiles. */
 static bool bfat_root_owned_component(const char *path)
@@ -72,7 +95,7 @@ static bool bfat_root_owned_path(const char *path)
 {
     char resolved[4096];
     struct stat st;
-    return os_proc_unprivileged_no_capabilities() &&
+    return bfat_process_unprivileged() &&
            bfat_root_owned_path_components(path) &&
            realpath(path, resolved) != NULL &&
            bfat_root_owned_path_components(resolved) &&

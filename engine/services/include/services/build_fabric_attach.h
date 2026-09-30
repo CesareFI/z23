@@ -88,6 +88,16 @@ struct zcl_result build_fabric_executor_host_runtime_roots(
     const char *workspace, uint8_t runtime_root[32],
     uint8_t verifier_root[32]);
 
+#if defined(ZCL_TESTING) && defined(__linux__)
+/* Root-run harnesses cannot satisfy the production requirement that the
+ * tool-byte reader have no root identity or capabilities. After a fixture
+ * has proved that refusal, this test-only seam bypasses only that process
+ * credential predicate; root ownership, non-writability, canonical path
+ * resolution and handle-stability checks remain live. No release build
+ * exports this symbol. */
+void build_fabric_attach_test_assume_unprivileged(bool enabled);
+#endif
+
 /* Full key derivation for one planned action: recomputes the fixed
  * flags/environment roots for the action kind and refuses a stale declared
  * root, hashes the current tool bytes, and binds the exact input bytes. */

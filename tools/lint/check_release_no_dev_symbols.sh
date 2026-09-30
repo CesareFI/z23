@@ -2,7 +2,8 @@
 # Copyright 2026 Rhett Creighton - Apache License 2.0
 #
 # check_release_no_dev_symbols.sh — prove the RELEASE binary contains none of
-# the dev-only mutation entry points. The dev command dispatcher, the
+# the dev-only mutation or test-only security-bypass entry points. The dev
+# command dispatcher, the
 # hot-swap/reload cycle, the persistent watcher, the subprocess runner, and
 # the native dev-lane activation engine live in DEV_ONLY_SRCS (Makefile) or
 # are self-guarded by `#if defined(ZCL_DEV_BUILD) || defined(ZCL_TESTING)`
@@ -49,7 +50,8 @@ if [ $# -eq 0 ] && [ ! -f "$BIN" ] && [ -f build/bin/z23.exe ]; then
     BIN=build/bin/z23.exe
 fi
 
-# The extern dev-mutation entry points that must never reach the release binary.
+# The extern dev-mutation and test-only security-bypass entry points that must
+# never reach the release binary.
 FORBIDDEN=(
     zcl_devloop_cli_main
     zcl_devloop_is_method
@@ -61,6 +63,7 @@ FORBIDDEN=(
     dev_activation_run
     dev_activation_activate_generation
     dev_activation_default_ops
+    build_fabric_attach_test_assume_unprivileged
 )
 
 echo "══ LINT: release binary contains no dev-only mutation symbols ══"
@@ -129,6 +132,25 @@ for f in $DEV_ACTIVATION_STRICT_GUARD_SRCS; do
 done
 gate_require_scanned "$scanned_activation" 5 "check-release-no-dev-symbols" \
     "the dev_activation engine source-file set changed shape unexpectedly"
+
+# The root-run build-fabric harness has one narrow credential-check bypass so
+# it can exercise tool-byte identity only after proving that production capture
+# rejects a privileged process. It must remain a single definition wholly
+# inside the ZCL_TESTING branch. The artifact check below independently rejects
+# the exported symbol if a release compile ever admits it.
+bfat_identity="engine/services/src/build_fabric_attach_identity.c"
+bfat_seam="build_fabric_attach_test_assume_unprivileged"
+bfat_defs="$(gate_grep -cE "^void[[:space:]]+$bfat_seam\\(" "$bfat_identity" || true)"
+bfat_guarded_defs="$(awk -v seam="$bfat_seam" '
+    /^#if defined\(ZCL_TESTING\)$/ { in_test = 1; next }
+    in_test && /^#else$/ { in_test = 0; next }
+    in_test && index($0, seam "(") { count++ }
+    END { print count + 0 }
+' "$bfat_identity")"
+if [ "$bfat_defs" -ne 1 ] || [ "$bfat_guarded_defs" -ne 1 ]; then
+    echo "FAIL: $bfat_seam must have exactly one definition inside the ZCL_TESTING branch" >&2
+    rc=1
+fi
 
 # ── layer 2: artifact (nm on a FRESH release binary, when present) ────────
 if [ -x "$BIN" ] && [ "$BIN" -nt engine/entry/main.c ] && [ "$BIN" -nt Makefile ]; then

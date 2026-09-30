@@ -54,6 +54,26 @@ static const uint8_t att_unit[] =
     "int zbuild_fixture(void) { return 23; }\n";
 
 #if defined(__linux__)
+static int test_bf_attach_privileged_tool_capture_refusal(void)
+{
+    int failures = 0;
+    TEST("build_fabric_attach: privileged tool capture remains refused") {
+        if (geteuid() == 0) {
+            uint8_t driver[32], backend[32], assembler[32];
+            struct zcl_result captured =
+                build_fabric_executor_host_tool_hashes(
+                    driver, backend, assembler);
+            ASSERT(!captured.ok);
+            ASSERT_STR_EQ(captured.message,
+                          "executor-toolchain-capture-failed: tool bytes");
+        }
+        PASS();
+    } _test_next:;
+    return failures;
+}
+#endif
+
+#if defined(__linux__)
 static int att_open_fd_count(void)
 {
     DIR *dir = opendir("/proc/self/fd");
@@ -1581,6 +1601,9 @@ int test_build_fabric_attach(void)
 {
     int failures = 0;
 #if defined(__linux__)
+    failures += test_bf_attach_privileged_tool_capture_refusal();
+    if (geteuid() == 0)
+        build_fabric_attach_test_assume_unprivileged(true);
     failures += test_bf_attach_sealed_verifier_aba();
 #endif
     failures += test_bf_attach_executor_key_binds_tool_bytes();
@@ -1591,6 +1614,9 @@ int test_build_fabric_attach(void)
     failures += test_bf_attach_conflicting_physical_outputs();
     failures += test_bf_attach_ambiguous_donor_vetoes_other_donor();
     failures += test_bf_attach_reproduction_never_attaches();
+#if defined(__linux__)
+    build_fabric_attach_test_assume_unprivileged(false);
+#endif
     printf("=== build_fabric_attach: %d failures ===\n", failures);
     return failures;
 }
