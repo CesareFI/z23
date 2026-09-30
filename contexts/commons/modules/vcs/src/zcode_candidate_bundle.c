@@ -280,6 +280,7 @@ static enum vcs_zcode_candidate_bundle_result bundle_validate_authority(
     const struct vcs_zcode_candidate_v1 *candidate,
     struct vcs_zcode_patch_v1 *patch_out)
 {
+    vcs_zcode_patch_init(patch_out);
     struct vcs_zcode_write_scope_v1 scope;
     struct vcs_manifest base, candidate_manifest;
     uint8_t checked[32];

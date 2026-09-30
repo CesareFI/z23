@@ -380,21 +380,6 @@ static void dl_fail(struct vcs_swarm_engine *engine,
     vcs_swarm_record_delete_dl(engine, dl);
 }
 
-/* Rebuild the have-bitmap from pure CAS presence probes (resume). */
-static void dl_rebuild_have(struct vcs_swarm_engine *engine,
-                            struct swarm_download *dl)
-{
-    dl->have_count = 0;
-    for (uint32_t g = 0; g < dl->total_chunks; g++) {
-        if (vcs_package_store_chunk_present(engine->store, dl->root,
-                                            dl->file_of[g],
-                                            dl->chunk_of[g])) {
-            bitmap_set(dl->have, g);
-            dl->have_count++;
-        }
-    }
-}
-
 /* Load the tracked (staged or committed) manifest wire from the store
  * into the download. False when untracked or on parse/alloc failure. */
 static bool dl_load_manifest_from_store(struct vcs_swarm_engine *engine,
@@ -421,7 +406,10 @@ static bool dl_load_manifest_from_store(struct vcs_swarm_engine *engine,
         dl_free_maps(dl);
         return false;
     }
-    dl_rebuild_have(engine, dl);
+    if (!vcs_swarm_rebuild_have(engine, dl)) {
+        dl_free_maps(dl);
+        return false;
+    }
     /* A persisted/staged manifest is a resume boundary.  Report the exact
      * verified CAS objects this engine incarnation inherited so callers can
      * distinguish resuming the graph from starting it over. */
@@ -1114,7 +1102,12 @@ static void handle_data_manifest(struct vcs_swarm_engine *engine,
         res->rule = dl->rule;
         return;
     }
-    dl_rebuild_have(engine, dl); /* dedup: chunks already in the CAS */
+    if (!vcs_swarm_rebuild_have(engine, dl)) {
+        req_finish(engine, dl, req, true, false);
+        dl_fail(engine, dl, "local-chunk-verification-failed");
+        res->rule = dl->rule;
+        return;
+    }
     dl->reused_objects = dl->have_count;
     for (uint32_t g = 0; g < dl->total_chunks; g++)
         if (bitmap_get(dl->have, g))

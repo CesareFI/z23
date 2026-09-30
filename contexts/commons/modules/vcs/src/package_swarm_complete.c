@@ -17,6 +17,38 @@
 
 #define SWARM_COMPLETE_LOG "vcs.swarm.complete"
 
+void vcs_swarm_bitmap_set(uint8_t *map, uint32_t bit);
+
+/* Resume only exact verified bytes; a CAS filename is not possession.
+ * Caller holds the engine lock and supplies a fresh have bitmap. */
+bool vcs_swarm_rebuild_have(struct vcs_swarm_engine *engine,
+                            struct swarm_download *dl)
+{
+    dl->have_count = 0;
+    for (uint32_t g = 0; g < dl->total_chunks; g++) {
+        if (!vcs_package_store_chunk_present(engine->store, dl->root,
+                                             dl->file_of[g], dl->chunk_of[g]))
+            continue;
+        uint8_t *bytes = NULL;
+        size_t len = 0;
+        enum vcs_package_store_result result = vcs_package_store_get_chunk_at(
+            engine->store, dl->root, dl->file_of[g], dl->chunk_of[g],
+            &bytes, &len);
+        free(bytes);
+        if (result == VCS_PACKAGE_STORE_ERR_CHUNK_HASH ||
+            result == VCS_PACKAGE_STORE_ERR_CHUNK_MISSING)
+            continue;
+        if (result != VCS_PACKAGE_STORE_OK) {
+            LOG_WARN(SWARM_COMPLETE_LOG, "resume %.16s chunk %u: %s",
+                     dl->root_hex, g, vcs_package_store_result_string(result));
+            return false;
+        }
+        vcs_swarm_bitmap_set(dl->have, g);
+        dl->have_count++;
+    }
+    return true;
+}
+
 /* Queue ANNOUNCE of `root` to every known peer that has not already
  * received it. Caller holds engine->lock. Silent when the root is not
  * public-serveable or is not a complete tracked package. */

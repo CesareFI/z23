@@ -180,6 +180,8 @@ void vcs_swarm_record_delete_dl(struct vcs_swarm_engine *engine,
                                 const struct swarm_download *dl);
 
 /* Lock held. Implemented in package_swarm_complete.c. */
+bool vcs_swarm_rebuild_have(struct vcs_swarm_engine *engine,
+                            struct swarm_download *dl);
 void vcs_swarm_complete_download(struct vcs_swarm_engine *engine,
                                  struct swarm_download *dl);
 

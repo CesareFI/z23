@@ -289,7 +289,7 @@ int t_swarm_disconnect_requeue(void)
 /* ── 9: resume after restart ──────────────────────────────────────── */
 
 static int resume_case_answer_one_chunk(struct sw_node *n, uint64_t peer,
-                                         struct sw_pkg *p)
+                                         struct sw_pkg *p, uint32_t *saved_file)
 {
     int failures = 0;
     /* Answer exactly ONE chunk WANT, leave the rest outstanding. */
@@ -304,6 +304,7 @@ static int resume_case_answer_one_chunk(struct sw_node *n, uint64_t peer,
             msg.type != VCS_PACKAGE_SWARM_WANT || answered)
             continue;
         answered = true;
+        *saved_file = msg.body.want.file_index;
         struct vcs_package_swarm_message data;
         memset(&data, 0, sizeof(data));
         data.type = VCS_PACKAGE_SWARM_DATA;
@@ -324,7 +325,8 @@ static int resume_case_answer_one_chunk(struct sw_node *n, uint64_t peer,
     return failures;
 }
 
-static int resume_case_restart(struct sw_node *n, struct sw_pkg *p)
+static int resume_case_restart(struct sw_node *n, struct sw_pkg *p,
+                                uint32_t saved_file, bool corrupt)
 {
     int failures = 0;
     /* Restart: engine + store + book all reopen on the same datadir. */
@@ -337,6 +339,22 @@ static int resume_case_restart(struct sw_node *n, struct sw_pkg *p)
     snprintf(datadir, sizeof(datadir), "%s", n->datadir);
     snprintf(zcode_dir, sizeof(zcode_dir), "%s", n->zcode_dir);
     sw_node_close(n);
+    if (corrupt) {
+        char hash_hex[65], cas_path[1400];
+        zcl_hex_encode(p->manifest.files[saved_file].chunk_hashes, 32, hash_hex);
+        int len = snprintf(cas_path, sizeof(cas_path), "%s/cas/sha3/%.2s/%s",
+                           zcode_dir, hash_hex, hash_hex);
+        SW_CHECK("saved chunk path fits", len > 0 && (size_t)len < sizeof(cas_path));
+        FILE *file = fopen(cas_path, "r+b");
+        SW_CHECK("saved chunk opens", file != NULL);
+        if (file) {
+            int first = fgetc(file);
+            rewind(file);
+            SW_CHECK("saved chunk corrupted", first != EOF &&
+                     fputc(first ^ 0x80, file) != EOF);
+            SW_CHECK("saved chunk closed", fclose(file) == 0);
+        }
+    }
     n->store = vcs_package_store_open(datadir,
                                       VCS_PACKAGE_STORE_DEFAULT_QUOTA_BYTES);
     n->book = vcs_service_book_load(zcode_dir);
@@ -347,12 +365,14 @@ static int resume_case_restart(struct sw_node *n, struct sw_pkg *p)
     SW_CHECK("restart ok", n->store && n->book && n->engine);
     SW_CHECK("resume rebuilds from CAS",
              vcs_swarm_engine_download_status(n->engine, p->root, &dst) &&
-             dst.state == VCS_SWARM_DL_CHUNKS && dst.present_chunks == 1);
+             dst.state == VCS_SWARM_DL_CHUNKS &&
+             dst.present_chunks == (corrupt ? 0u : 1u));
     return failures;
 }
 
 static int resume_case_finish(struct sw_node *n, struct sw_pkg *p,
-                               uint64_t peer, const uint8_t *key)
+                               uint64_t peer, const uint8_t *key, bool corrupt,
+                               uint32_t saved_file)
 {
     int failures = 0;
     /* Re-add the peer and finish: the download completes from where it
@@ -360,10 +380,30 @@ static int resume_case_finish(struct sw_node *n, struct sw_pkg *p,
      * credit). */
     SW_CHECK("peer re-add", vcs_swarm_engine_peer_add(n->engine, peer, key));
     sw_announce(n->engine, peer, p);
-    uint32_t max_inflight = 0;
-    const uint64_t peers[1] = { peer };
-    SW_CHECK("resume completes",
-             sw_drive_complete(n, peers, 1, p, &max_inflight));
+    vcs_swarm_engine_tick(n->engine, SW_DAY, 2);
+    struct vcs_package_swarm_object wants[8];
+    size_t count = sw_drain_wants(n, peer, wants, 8);
+    SW_CHECK("resume requests only missing chunks", count == (corrupt ? 4u : 3u));
+    bool requested_saved = false;
+    uint32_t requested_files = 0;
+    for (size_t i = 0; i < count; i++) {
+        bool valid = wants[i].object_kind == VCS_PACKAGE_SWARM_OBJECT_CHUNK &&
+            wants[i].file_index < p->count && wants[i].chunk_index == 0;
+        SW_CHECK("resume requests exact chunk coordinates", valid);
+        if (!valid) continue;
+        uint32_t bit = 1u << wants[i].file_index;
+        SW_CHECK("resume never repeats a retained request", !(requested_files & bit));
+        requested_files |= bit;
+        if (wants[i].file_index == saved_file) requested_saved = true;
+        size_t len = 0;
+        const uint8_t *bytes = sw_chunk_bytes(p, wants[i].file_index, &len);
+        struct vcs_swarm_frame_result result = sw_answer(
+            n, peer, &wants[i], bytes, len, wants[i].file_index);
+        SW_CHECK("resumed chunk accepted", result.penalty == VCS_SWARM_PENALTY_NONE);
+        free(result.reply);
+    }
+    SW_CHECK("resume repairs damaged chunk and reuses valid chunk",
+             requested_saved == corrupt);
     struct vcs_swarm_download_status dst;
     SW_CHECK("record deleted on completion",
              vcs_swarm_engine_download_status(n->engine, p->root, &dst) &&
@@ -372,13 +412,23 @@ static int resume_case_finish(struct sw_node *n, struct sw_pkg *p,
     uint64_t served = p->wire_len;
     for (size_t i = 0; i < p->count; i++)
         served += p->lens[i];
+    if (corrupt) served += p->lens[saved_file];
     SW_CHECK("exactly the verified bytes credited",
              vcs_service_key_totals(n->book, key, SW_DAY, &totals) &&
              totals.verified_bytes_downloaded == served);
+    for (size_t i = 0; i < p->count; i++) {
+        uint8_t *bytes = NULL;
+        size_t len = 0;
+        SW_CHECK("resumed bytes match exact package",
+                 vcs_package_store_get_chunk_at(n->store, p->root,
+                     (uint32_t)i, 0, &bytes, &len) == VCS_PACKAGE_STORE_OK &&
+                 len == p->lens[i] && memcmp(bytes, p->contents[i], len) == 0);
+        free(bytes);
+    }
     return failures;
 }
 
-int t_swarm_resume(void)
+static int resume_case_run(bool corrupt)
 {
     int failures = 0;
     struct sw_node n;
@@ -399,14 +449,20 @@ int t_swarm_resume(void)
     sw_pump(&n, peer, &p, SW_SERVE_HONEST, false, 2, &st); /* manifest */
     vcs_swarm_engine_tick(n.engine, SW_DAY, 3);
 
-    failures += resume_case_answer_one_chunk(&n, peer, &p);
-    failures += resume_case_restart(&n, &p);
-    failures += resume_case_finish(&n, &p, peer, key);
+    uint32_t saved_file = 0;
+    failures += resume_case_answer_one_chunk(&n, peer, &p, &saved_file);
+    failures += resume_case_restart(&n, &p, saved_file, corrupt);
+    failures += resume_case_finish(&n, &p, peer, key, corrupt, saved_file);
 
     sw_free_package(&p);
     sw_node_close(&n);
     test_rm_rf_recursive(n.datadir);
     return failures;
+}
+
+int t_swarm_resume(void)
+{
+    return resume_case_run(false) + resume_case_run(true);
 }
 
 /* ── 10: serving, replayed WANTs, burst flood, allowance ──────────── */
@@ -923,4 +979,3 @@ int t_swarm_blob_transfer(void)
     test_rm_rf_recursive(leech.datadir);
     return failures;
 }
-

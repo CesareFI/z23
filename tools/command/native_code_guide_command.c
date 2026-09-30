@@ -13,6 +13,11 @@
 #include <string.h>
 
 #define CG_TAG "native.code.guide"
+#if defined(__APPLE__)
+#define CG_PROOF_COMMAND "make -j2 t-fast ONLY=<group>"
+#else
+#define CG_PROOF_COMMAND "make -j\"$(getconf _NPROCESSORS_ONLN)\" t-fast ONLY=<group>"
+#endif
 
 void zcl_native_handle_code_guide(
     const struct zcl_command_request *request, struct zcl_command_reply *reply)
@@ -32,8 +37,7 @@ void zcl_native_handle_code_guide(
     }
     bool ok = json_push_kv_str(
             &reply->data, "start_command", "z23 code impact <file.c>") &&
-        json_push_kv_str(&reply->data, "proof_command",
-                         "make -j\"$(getconf _NPROCESSORS_ONLN)\" t-fast ONLY=<group>") &&
+        json_push_kv_str(&reply->data, "proof_command", CG_PROOF_COMMAND) &&
         json_push_kv_str(&reply->data, "lint_command", "make lint-fast") &&
         json_push_kv_str(&reply->data, "capability_inventory",
                          "docs/CAPABILITY_INVENTORY.jsonl") &&

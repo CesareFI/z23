@@ -3886,11 +3886,12 @@ static bool zd_bundle_task_binding_refuses(
     test_make_tmpdir(receiver, sizeof(receiver), "zcode_dev",
                      "bundle_task_binding");
     bool ok = true;
-    for (unsigned mismatch = 0; ok && mismatch < 3; mismatch++) {
+    for (unsigned mismatch = 0; ok && mismatch < 4; mismatch++) {
         struct vcs_zcode_candidate_v1 wrong = *candidate;
         if (mismatch == 0) wrong.task_root[0] ^= 1u;
         else if (mismatch == 1) wrong.base_source_root[0] ^= 1u;
-        else wrong.schema_version++;
+        else if (mismatch == 2) wrong.schema_version++;
+        else wrong.candidate_source_root[0] ^= 1u;
         uint8_t *refused = bundle;
         size_t refused_len = bundle_len;
         ok = vcs_zcode_candidate_bundle_export(
