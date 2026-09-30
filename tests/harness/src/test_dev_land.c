@@ -749,6 +749,129 @@ done:
     return ok;
 }
 
+static bool dlx_queue_empty(void)
+{
+    struct dlx_call c;
+    dlx_begin(&c, "status");
+    bool ok = dlx_run(&c) && dlx_ok(&c);
+    const struct json_value *rows = dlx_arr(&c, "queued");
+    ok = ok && rows && rows->num_children == 0;
+    dlx_end(&c);
+    return ok;
+}
+
+/* A submit from a worktree mid-rebase names no finished stack. Measured
+ * 2026-09-30 on the live queue: a submit issued while a rebase still
+ * replayed queued an incomplete stack (the tip resolved, was signed, and
+ * shared history), burned a full proof cycle on it, and failed only on
+ * generated-docs freshness — the one check that happened to notice. A
+ * submit made then must refuse by name instead. */
+static bool dlx_exact_submit_mid_rebase_refused(void)
+{
+    struct dlx_rig rig;
+    struct dlx_call c;
+    bool ok = true;
+    char moved[64];
+    const char *checkout_base[] = { "checkout", "-q", "-B", "base",
+                                    "origin/main", NULL };
+    const char *push_moved[] = { "push", "--quiet", "origin",
+                                 "HEAD:main", NULL };
+    const char *checkout_tip[] = { "checkout", "-q", "-B", "work", NULL,
+                                   NULL };
+    const char *start_rebase[] = { "rebase", "origin/main", NULL };
+    const char *abort_rebase[] = { "rebase", "--abort", NULL };
+    dlx_isolate("submit_mid_rebase");
+    if (!dlx_rig_make(&rig, "submit_mid_rebase_rig")) {
+        ok = false;
+        goto done;
+    }
+    setenv("ZCL_LAND_PROOF_STUB", "running", 1);
+    setenv("ZCL_LAND_ALLOW_UNSIGNED", "1", 1);
+    /* Move origin/main under the tip with a conflicting edit of the same
+     * file, so rebasing the tip onto it stops on the conflict and leaves
+     * the clone holding an unfinished rebase. */
+    if (dlx_git(rig.clone, checkout_base) != 0 ||
+        !dlx_commit(rig.clone, "change.txt", "two\n", moved) ||
+        dlx_git(rig.clone, push_moved) != 0) {
+        ok = false;
+        goto done;
+    }
+    checkout_tip[4] = rig.tip;
+    if (dlx_git(rig.clone, checkout_tip) != 0 ||
+        dlx_git(rig.clone, start_rebase) == 0) {
+        /* A clean rebase means the fixture stopped nowhere: the arm would
+         * prove nothing. */
+        ok = false;
+        goto done;
+    }
+    char marker[700];
+    struct stat marker_stat;
+    (void)snprintf(marker, sizeof(marker), "%s/.git/rebase-merge", rig.clone);
+    if (stat(marker, &marker_stat) != 0 || !S_ISDIR(marker_stat.st_mode)) {
+        ok = false;
+        goto done;
+    }
+    dlx_submit(&c, &rig, rig.tip);
+    ok = dlx_run(&c) && !dlx_ok(&c) && c.reply.error.code &&
+         strcmp(c.reply.error.code, "WORKTREE_BUSY") == 0;
+    dlx_end(&c);
+    ok = ok && dlx_queue_empty();
+    (void)dlx_git(rig.clone, abort_rebase);
+done:
+    dlx_restore();
+    return ok;
+}
+
+static bool dlx_submit_marker_refused(struct dlx_rig *rig, const char *mark)
+{
+    char rel[4096], path[8192];
+    const char *args[] = { "rev-parse", "--git-path", mark, NULL };
+    if (dlx_git_out(rig->clone, args, rel, sizeof(rel)) != 0)
+        return false;
+    int n = rel[0] == '/' ? snprintf(path, sizeof(path), "%s", rel)
+                         : snprintf(path, sizeof(path), "%s/%s", rig->clone, rel);
+    if (n < 0 || (size_t)n >= sizeof(path) || !dlx_write(path, "fixture\n"))
+        return false;
+    struct dlx_call c;
+    dlx_submit(&c, rig, rig->tip);
+    bool ok = dlx_run(&c) && !dlx_ok(&c) && c.reply.error.code &&
+        strcmp(c.reply.error.code, "WORKTREE_BUSY") == 0;
+    dlx_end(&c);
+    if (unlink(path) != 0)
+        return false;
+    ok = ok && dlx_queue_empty();
+    return ok;
+}
+
+static bool dlx_submit_operation_markers_refused(void)
+{
+    struct dlx_rig rig;
+    bool ok = false;
+    dlx_isolate("submit_operation_markers");
+    if (!dlx_rig_make(&rig, "submit_operation_markers_rig"))
+        goto done;
+    setenv("ZCL_LAND_PROOF_STUB", "running", 1);
+    setenv("ZCL_LAND_ALLOW_UNSIGNED", "1", 1);
+    char linked[600];
+    (void)snprintf(linked, sizeof(linked), "%s-linked", rig.clone);
+    const char *add[] = { "worktree", "add", "--detach", linked, rig.tip, NULL };
+    if (dlx_git(rig.clone, add) != 0)
+        goto done;
+    (void)snprintf(rig.clone, sizeof(rig.clone), "%s", linked);
+    static const char *const marks[] = { "rebase-merge", "rebase-apply",
+        "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "sequencer" };
+    ok = true;
+    for (size_t i = 0; i < sizeof(marks) / sizeof(marks[0]); i++) {
+        if (!dlx_submit_marker_refused(&rig, marks[i])) {
+            ok = false;
+            break;
+        }
+    }
+done:
+    dlx_restore();
+    return ok;
+}
+
 static bool dlx_failed_admission_visible(const char *expected_tip)
 {
     struct dlx_call c;
@@ -7182,6 +7305,8 @@ int test_dev_land(void)
 
     TEST("land: retrying the exact tip in one checkout attaches to its live row") {
         ASSERT(dlx_exact_submit_retry());
+        ASSERT(dlx_exact_submit_mid_rebase_refused());
+        ASSERT(dlx_submit_operation_markers_refused());
         PASS();
     }
 

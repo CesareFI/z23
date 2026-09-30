@@ -2415,6 +2415,56 @@ static void dl_submit_loaded(const struct dl_dirs *d, struct dl_row *r,
     reply->exit_code = 0;
 }
 
+/* Admit the candidate only after verifying this worktree has no unfinished
+ * Git operation. Worktrees share objects, but --git-path resolves each marker
+ * in the submitting worktree's own Git directory. Unreadable state refuses. */
+static bool dl_submit_tip_resolve(const char *root, const char *tip,
+                                  char full[80],
+                                  struct zcl_command_reply *reply)
+{
+    static const char *const marks[] = { "rebase-merge", "rebase-apply",
+        "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "sequencer" };
+    if (!dl_rev_parse(root, tip, full)) {
+        dl_fail(reply, "TIP_UNKNOWN", "submit",
+                "that commit does not exist in the checkout",
+                "git rev-parse --verify refused the tip");
+        return false;
+    }
+    for (size_t i = 0; i < sizeof(marks) / sizeof(marks[0]); i++) {
+        char rel[4096], path[8192];
+        const char *args[] = { "rev-parse", "--git-path", marks[i], NULL };
+        if (dl_git(root, args, rel, sizeof(rel), DL_GIT_TIMEOUT_MS) != 0) {
+            dl_fail(reply, "WORKTREE_STATE_UNAVAILABLE", "submit",
+                    "cannot inspect the submitting worktree's Git state",
+                    marks[i]);
+            return false;
+        }
+        dl_trim(rel);
+        int n = rel[0] == '/' ? snprintf(path, sizeof(path), "%s", rel)
+                             : snprintf(path, sizeof(path), "%s/%s", root, rel);
+        if (!rel[0] || n < 0 || (size_t)n >= sizeof(path)) {
+            dl_fail(reply, "WORKTREE_STATE_UNAVAILABLE", "submit",
+                    "Git operation state path is empty or exceeds its bound",
+                    marks[i]);
+            return false;
+        }
+        struct stat st;
+        if (lstat(path, &st) == 0) {
+            dl_fail(reply, "WORKTREE_BUSY", "submit",
+                    "finish or abort the unfinished Git operation, then resubmit",
+                    marks[i]);
+            return false;
+        }
+        if (errno != ENOENT) {
+            dl_fail(reply, "WORKTREE_STATE_UNAVAILABLE", "submit",
+                    "cannot inspect the submitting worktree's Git state",
+                    marks[i]);
+            return false;
+        }
+    }
+    return true;
+}
+
 static void dl_submit(const struct zcl_command_request *req,
                       struct zcl_command_reply *reply)
 {
@@ -2454,10 +2504,7 @@ static void dl_submit(const struct zcl_command_request *req,
     }
     /* The tip has to be a commit THIS checkout can name. A tip nobody can
      * resolve is not a landing request, it is a typo. */
-    if (!dl_rev_parse(root, tip, full)) {
-        dl_fail(reply, "TIP_UNKNOWN", "submit",
-                "that commit does not exist in the checkout",
-                "git rev-parse --verify refused the tip");
+    if (!dl_submit_tip_resolve(root, tip, full, reply)) {
         return;
     }
     /* Signature. main rejects an unsigned commit, so a queue that accepted
