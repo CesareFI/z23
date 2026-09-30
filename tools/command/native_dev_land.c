@@ -5711,7 +5711,7 @@ static bool dl_wt_proof_deps_ensure(const struct dl_dirs *d,
 /* Observe the remote before deciding whether a request landed or needs
  * rebase/proof. An unavailable observation preserves the existing request
  * and proof for retry; it is neither a negative result nor a cached pass. */
-static bool dl_remote_program_capture(const struct dl_dirs *d,
+static bool dl_remote_program_capture(const char *wt,
                                       const char *config_key,
                                       const char *option_name,
                                       char *option, size_t option_cap)
@@ -5719,11 +5719,10 @@ static bool dl_remote_program_capture(const struct dl_dirs *d,
     char configured[4096];
     const char *args[] = { "config", "--get", config_key, NULL };
     int rc, n;
-    if (!config_key || !option_name || !option || option_cap == 0)
+    if (!wt || !config_key || !option_name || !option || option_cap == 0)
         return false;
     option[0] = '\0';
-    rc = dl_git(d->wt, args, configured, sizeof(configured),
-                DL_GIT_TIMEOUT_MS);
+    rc = dl_git(wt, args, configured, sizeof(configured), DL_GIT_TIMEOUT_MS);
     if (rc == 1)
         return true;
     if (rc != 0)
@@ -5834,7 +5833,7 @@ static bool dl_bound_remote_main_fetch(const struct dl_dirs *d,
         return false;
     }
     return captured &&
-        dl_remote_program_capture(d, "remote.origin.uploadpack",
+        dl_remote_program_capture(d->wt, "remote.origin.uploadpack",
                                   "--upload-pack", upload_pack,
                                   sizeof(upload_pack)) &&
         dl_fetch_remote_main(d->wt, locator, upload_pack, observed_main);
@@ -6282,7 +6281,7 @@ static void dl_step_start(const struct dl_dirs *d, struct dl_row *row,
 static bool dl_push_receive_pack_capture(const struct dl_dirs *d,
                                          char *option, size_t option_cap)
 {
-    return dl_remote_program_capture(d, "remote.origin.receivepack",
+    return dl_remote_program_capture(d->wt, "remote.origin.receivepack",
                                      "--receive-pack", option, option_cap);
 }
 
@@ -6373,19 +6372,19 @@ static bool dl_publication_file_sha256(const char *path, uint64_t max_bytes,
     return true;
 }
 
-static bool dl_publication_target_capture(const struct dl_dirs *d,
-                                           char *fetch, size_t fetch_cap,
-                                           char *push, size_t push_cap,
-                                           char out[65])
+static bool dl_remote_url_pair_capture(const char *wt,
+                                       char *fetch, size_t fetch_cap,
+                                       char *push, size_t push_cap,
+                                       char out[65])
 {
     const char *fetch_args[] = { "remote", "get-url", "origin", NULL };
     const char *push_args[] = { "remote", "get-url", "--push", "origin", NULL };
     static const char domain[] = "zcl.dev_land.git_target.v1\nrefs/heads/main\n";
     struct sha256_ctx hash;
     uint8_t digest[32];
-    if (!fetch || fetch_cap == 0 || !push || push_cap == 0 ||
-        dl_git(d->wt, fetch_args, fetch, fetch_cap, DL_GIT_TIMEOUT_MS) != 0 ||
-        dl_git(d->wt, push_args, push, push_cap, DL_GIT_TIMEOUT_MS) != 0)
+    if (!wt || !fetch || fetch_cap == 0 || !push || push_cap == 0 ||
+        dl_git(wt, fetch_args, fetch, fetch_cap, DL_GIT_TIMEOUT_MS) != 0 ||
+        dl_git(wt, push_args, push, push_cap, DL_GIT_TIMEOUT_MS) != 0)
         return false;
     dl_trim(fetch);
     dl_trim(push);
@@ -6398,6 +6397,15 @@ static bool dl_publication_target_capture(const struct dl_dirs *d,
     sha256_finalize(&hash, digest);
     zcl_hex_encode(digest, sizeof(digest), out);
     return true;
+}
+
+static bool dl_publication_target_capture(const struct dl_dirs *d,
+                                           char *fetch, size_t fetch_cap,
+                                           char *push, size_t push_cap,
+                                           char out[65])
+{
+    return dl_remote_url_pair_capture(d->wt, fetch, fetch_cap, push,
+                                      push_cap, out);
 }
 
 static bool dl_publication_target(const struct dl_dirs *d, char out[65])
@@ -8256,10 +8264,27 @@ struct dl_base_probe_ctx {
 static enum zcl_dev_proof_base_observation dl_base_observe(void *opaque)
 {
     const struct dl_base_probe_ctx *ctx = opaque;
-    const char *args[] = { "ls-remote", "--quiet", "origin",
-                           "refs/heads/main", NULL };
-    char out[512], tip[80];
+    const char *args[8];
+    char out[512], tip[80], locator[4096], push_locator[4096];
+    char target[65], upload_pack[4096 + 32];
+    size_t argc = 0;
     if (!ctx || !ctx->wt || !ctx->base ||
+        !dl_remote_url_pair_capture(ctx->wt, locator, sizeof(locator),
+                                    push_locator, sizeof(push_locator),
+                                    target) ||
+        !dl_remote_program_capture(ctx->wt, "remote.origin.uploadpack",
+                                   "--upload-pack", upload_pack,
+                                   sizeof(upload_pack)))
+        return ZCL_DEV_PROOF_BASE_UNKNOWN;
+    args[argc++] = "ls-remote";
+    args[argc++] = "--quiet";
+    if (upload_pack[0])
+        args[argc++] = upload_pack;
+    args[argc++] = "--";
+    args[argc++] = locator;
+    args[argc++] = "refs/heads/main";
+    args[argc] = NULL;
+    if (locator[0] == '-' || strchr(locator, '\n') || strchr(locator, '\r') ||
         dl_git(ctx->wt, args, out, sizeof(out), DL_BASE_PROBE_TIMEOUT_MS) != 0)
         return ZCL_DEV_PROOF_BASE_UNKNOWN;
     size_t n = strcspn(out, " \t\r\n");
