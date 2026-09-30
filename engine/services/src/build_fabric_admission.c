@@ -77,7 +77,9 @@ struct zcl_result build_fabric_observation_verify(
     if (!workspace || !job || !action || !receipt ||
         !zcl_hex_decode_lower(
             receipt->observation_sha3, root, sizeof(root)) ||
-        vcs_object_load_raw(workspace, root, &wire, &wire_len) != 0)
+        vcs_object_load_raw_bounded(
+            workspace, root, VCS_BUILD_EXECUTION_OBSERVATION_WIRE_BYTES,
+            &wire, &wire_len) != 0)
         return ZCL_ERR(-1, "physical observation is absent from CAS");
     bool parsed = vcs_build_execution_observation_v1_parse(
         wire, wire_len, &observation);
@@ -134,7 +136,9 @@ static struct zcl_result bfa_observation_load(
     uint8_t root[32], checked[32], *wire = NULL;
     size_t wire_len = 0;
     if (!workspace || !out || !zcl_hex_decode_lower(root_hex, root, 32) ||
-        vcs_object_load_raw(workspace, root, &wire, &wire_len) != 0)
+        vcs_object_load_raw_bounded(
+            workspace, root, VCS_BUILD_EXECUTION_OBSERVATION_WIRE_BYTES,
+            &wire, &wire_len) != 0)
         return ZCL_ERR(-1, "physical observation is absent from CAS");
     bool ok = vcs_build_execution_observation_v1_parse(
                   wire, wire_len, out) &&
@@ -161,7 +165,9 @@ static bool bfa_preserved_receipt_signature_valid(
         size_t wire_len = 0;
         struct vcs_zcode_work_receipt_v1 work;
         bool valid = zcl_hex_decode_lower(receipt->receipt_id, root, 32) &&
-            vcs_object_load_raw(workspace, root, &wire, &wire_len) == 0 &&
+            vcs_object_load_raw_bounded(
+                workspace, root, VCS_ZCODE_WORK_RECEIPT_WIRE_BYTES,
+                &wire, &wire_len) == 0 &&
             vcs_zcode_work_receipt_parse(wire, wire_len, &work) ==
                 VCS_ZCODE_DEV_OK &&
             vcs_zcode_work_receipt_id(&work, checked) == VCS_ZCODE_DEV_OK &&

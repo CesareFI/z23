@@ -521,6 +521,32 @@ static int test_bf_attach_conflicting_physical_outputs(void)
         ASSERT(memcmp(output_a, output_b, 32) == 0);
         ASSERT(build_fabric_observation_verify(
                    dir, &job_b, &action_b, &receipt_b).ok);
+        uint8_t bounded_observation_root[32];
+        uint8_t *bounded_observation_wire = NULL;
+        size_t bounded_observation_len = 0;
+        char bounded_observation_path[600];
+        ASSERT(zcl_hex_decode_lower(
+            receipt_b.observation_sha3, bounded_observation_root, 32));
+        ASSERT_EQ(vcs_object_load_raw(
+            dir, bounded_observation_root, &bounded_observation_wire,
+            &bounded_observation_len), 0);
+        ASSERT_EQ(bounded_observation_len,
+                  VCS_BUILD_EXECUTION_OBSERVATION_WIRE_BYTES);
+        ASSERT(att_object_path(
+            dir, receipt_b.observation_sha3, bounded_observation_path,
+            sizeof(bounded_observation_path)));
+        FILE *oversized_observation = fopen(bounded_observation_path, "ab");
+        ASSERT(oversized_observation != NULL);
+        ASSERT(fputc(0, oversized_observation) == 0);
+        ASSERT(fclose(oversized_observation) == 0);
+        ASSERT(!build_fabric_observation_verify(
+            dir, &job_b, &action_b, &receipt_b).ok);
+        ASSERT(vcs_object_put_addressed_repair(
+            dir, bounded_observation_root, bounded_observation_wire,
+            bounded_observation_len, NULL));
+        free(bounded_observation_wire);
+        ASSERT(build_fabric_observation_verify(
+            dir, &job_b, &action_b, &receipt_b).ok);
         ASSERT(att_plan_request(&ndb, dir, att_id_d, att_id_c, capsule_hex,
                                 input_root, "dev-x86-64-v3", &job_c,
                                 &action_c));
