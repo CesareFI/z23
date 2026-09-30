@@ -55,6 +55,7 @@
 #include "vcs/zcode_work_pull_receipt.h"
 
 #include <secp256k1.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -2945,6 +2946,112 @@ static bool zpd_future_path(char *path, size_t capacity,
     return n > 0 && (size_t)n < capacity;
 }
 
+static bool zpd_sparse_extend(const char *path, size_t maximum)
+{
+    if (maximum >= (size_t)LONG_MAX) return false;
+    FILE *file = fopen(path, "r+b");
+    if (!file) return false;
+    bool ok = fseek(file, (long)maximum, SEEK_SET) == 0 &&
+        fputc(0, file) != EOF;
+    if (fclose(file) != 0) ok = false;
+    return ok;
+}
+
+static bool zpd_sparse_oversize_object(
+    const char *workspace, const uint8_t root[32], size_t maximum,
+    uint8_t **saved, size_t *saved_len)
+{
+    char root_hex[65], path[4600];
+    zcl_hex_encode(root, 32, root_hex);
+    *saved = NULL;
+    *saved_len = 0;
+    return vcs_object_load_raw_bounded(workspace, root, maximum,
+                                    saved, saved_len) == 0 &&
+        zpd_future_path(path, sizeof(path), workspace, root_hex) &&
+        zpd_sparse_extend(path, maximum);
+}
+
+static bool zpd_restore_object(const char *workspace, const uint8_t root[32],
+                               const uint8_t *saved, size_t saved_len)
+{
+    bool repaired = false;
+    return vcs_object_put_addressed_repair(
+               workspace, root, saved, saved_len, &repaired) && repaired;
+}
+
+static bool zpd_status_receipt_roots_available(
+    const char *workspace, const char *work, bool expected)
+{
+    struct json_value input;
+    json_init(&input); json_set_object(&input);
+    bool ok = json_push_kv_str(&input, "workspace", workspace) &&
+        json_push_kv_str(&input, "work", work) &&
+        json_push_kv_bool(&input, "details", true);
+    struct zcl_command_request request = {.input = &input};
+    struct zcl_command_reply reply;
+    zcl_command_reply_init(&reply, "zcl.zcode_work_status_bound_test.v1");
+    if (ok) zcl_native_handle_zcode_work_status(&request, &reply);
+    const struct json_value *proof = json_get(&reply.data, "proof");
+    const struct json_value *roots = json_get(proof, "receipt_roots");
+    ok = ok && reply.status == ZCL_COMMAND_STATUS_PASSED && proof && roots &&
+        roots->type == JSON_ARR &&
+        json_get_bool(json_get(proof, "receipt_roots_available")) == expected &&
+        (expected ? json_size(roots) > 0 : json_size(roots) == 0);
+    zcl_command_reply_free(&reply);
+    json_free(&input);
+    return ok;
+}
+
+static bool zpd_goal_oversize_refused(
+    const char *workspace, const char *work, const char *task_hex)
+{
+    uint8_t task_root[32], goal_root[32], *task_wire = NULL, *saved = NULL;
+    size_t task_len = 0, saved_len = 0;
+    struct vcs_zcode_task_v1 task;
+    bool ready = zcl_hex_decode_lower(task_hex, task_root, 32) &&
+        vcs_object_load_raw_bounded(workspace, task_root,
+            VCS_ZCODE_TASK_WIRE_BYTES, &task_wire, &task_len) == 0 &&
+        vcs_zcode_task_parse(task_wire, task_len, &task) == VCS_ZCODE_DEV_OK;
+    free(task_wire);
+    if (ready) memcpy(goal_root, task.goal_root, sizeof(goal_root));
+    ready = ready && zpd_sparse_oversize_object(
+        workspace, goal_root, 4096u, &saved, &saved_len);
+
+    struct json_value input;
+    json_init(&input); json_set_object(&input);
+    bool ok = ready && json_push_kv_str(&input, "workspace", workspace) &&
+        json_push_kv_str(&input, "work", work);
+    struct zcl_command_request request = {.input = &input};
+    struct zcl_command_reply reply;
+    zcl_command_reply_init(&reply, "zcl.zcode_work_status_bound_test.v1");
+    if (ok) zcl_native_handle_zcode_work_status(&request, &reply);
+    bool refused = ok && reply.status == ZCL_COMMAND_STATUS_FAILED &&
+        strcmp(reply.error.code, "WORK_NOT_FOUND") == 0;
+    zcl_command_reply_free(&reply);
+    json_free(&input);
+    bool restored = ready && zpd_restore_object(
+        workspace, goal_root, saved, saved_len);
+    free(saved);
+    return refused && restored;
+}
+
+static bool zpd_proof_set_oversize_unavailable(
+    const char *workspace, const char *work, const uint8_t proof_set_root[32])
+{
+    uint8_t *saved = NULL;
+    size_t saved_len = 0;
+    bool ready = zpd_sparse_oversize_object(
+        workspace, proof_set_root, VCS_ZCODE_PROOF_SET_WIRE_MAX,
+        &saved, &saved_len);
+    bool refused = ready && zpd_status_receipt_roots_available(
+        workspace, work, false);
+    bool restored = ready && zpd_restore_object(
+        workspace, proof_set_root, saved, saved_len);
+    free(saved);
+    return refused && restored &&
+        zpd_status_receipt_roots_available(workspace, work, true);
+}
+
 static bool zpd_exact_projection_refuses(struct node_db *ndb, const char *workspace,
     const struct zcode_accepted_work_status *expected, const char *mutation)
 {
@@ -4151,6 +4258,9 @@ static __attribute__((unused)) int zpd_test_work_start(void)
         zcl_command_reply_free(&reply);
         json_free(&input);
 
+        ASSERT(zpd_goal_oversize_refused(
+            root, saved_work_id, saved_task_root));
+
         json_init(&input); json_set_object(&input);
         ASSERT(json_push_kv_str(&input, "workspace", root));
         ASSERT(json_push_kv_str(&input, "work", saved_work_id));
@@ -4679,6 +4789,9 @@ static __attribute__((unused)) int zpd_test_work_start(void)
                        "%s", status_policy);
         zcl_command_reply_free(&reply);
         json_free(&input);
+
+        ASSERT(zpd_proof_set_oversize_unavailable(
+            root, saved_work_id, status_proof_root_bytes));
 
         uint8_t candidate_source_root[32];
         char candidate_source_hex[65];

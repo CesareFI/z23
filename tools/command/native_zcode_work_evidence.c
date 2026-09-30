@@ -36,7 +36,8 @@ char *zwork_load_goal(const char *workspace, const char *root_hex)
     uint8_t root[32], check[32], *bytes = NULL;
     size_t len = 0;
     if (!zcl_hex_decode_lower(root_hex, root, 32) ||
-        vcs_object_load_raw(workspace, root, &bytes, &len) != 0 ||
+        vcs_object_load_raw_bounded(workspace, root, 4096u,
+                                    &bytes, &len) != 0 ||
         len == 0 || len > 4096 || memchr(bytes, '\0', len)) {
         free(bytes); return NULL;
     }
@@ -455,8 +456,9 @@ static bool zwork_proof_set_roots_load(
     uint8_t *wire = NULL, checked[32];
     size_t wire_len = 0;
     *count_out = 0;
-    bool exact = vcs_object_load_raw(
-            workspace, expected, &wire, &wire_len) == 0 &&
+    bool exact = vcs_object_load_raw_bounded(
+            workspace, expected, VCS_ZCODE_PROOF_SET_WIRE_MAX,
+            &wire, &wire_len) == 0 &&
         vcs_zcode_proof_set_parse(
             wire, wire_len, roots, VCS_ZCODE_PROOF_SET_MAX_RECEIPTS,
             count_out) == VCS_ZCODE_DEV_OK &&
