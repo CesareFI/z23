@@ -1104,6 +1104,19 @@ static bool dl_queue_parent_flush(const char *landdir)
     return platform_private_parent_flush(landdir);
 }
 
+static bool dl_rewrite_rows_allowed(const char *landdir, const char *qpath,
+                                    const struct dl_row *rows, size_t n)
+{
+    if (!landdir || !qpath || (!rows && n > 0))
+        return false;
+#if defined(ZCL_DEV_BUILD) || defined(ZCL_TESTING)
+    if (getenv("ZCL_LAND_TEST_QUEUE_WRITE_FAIL") &&
+        getenv("ZCL_DEVLOOP_TEST_PROCESS"))
+        return false;
+#endif
+    return true;
+}
+
 /* Whole-file rewrite under the row lock: flush the file before rename and
  * the parent after rename, so a pre-push checkpoint survives a restart. */
 static bool dl_rewrite_rows(const char *landdir, const char *qpath,
@@ -1113,7 +1126,7 @@ static bool dl_rewrite_rows(const char *landdir, const char *qpath,
     FILE *f;
     char *line;
     size_t len = 0;
-    if (!landdir || !qpath || (!rows && n > 0))
+    if (!dl_rewrite_rows_allowed(landdir, qpath, rows, n))
         return false;
     if (snprintf(tmp, sizeof(tmp), "%s/queue.jsonl.tmp", landdir) >=
         (int)sizeof(tmp))
@@ -5737,6 +5750,15 @@ static bool dl_remote_program_capture(const char *wt,
     return true;
 }
 
+struct dl_publication_target_config {
+    char fetch[4096];
+    char push[4096];
+    char upload_pack[4096 + 32];
+    char receive_pack[4096 + 32];
+    char target[65];
+    char legacy_target[65];
+};
+
 static bool dl_fetch_remote_main(const char *wt, const char *locator,
                                  const char *upload_pack,
                                  char observed_main[80])
@@ -5771,11 +5793,11 @@ static bool dl_fetch_remote_main(const char *wt, const char *locator,
     return false;
 }
 
-static bool dl_publication_target(const struct dl_dirs *d, char out[65]);
-static bool dl_publication_target_capture(const struct dl_dirs *d,
-                                          char *fetch, size_t fetch_cap,
-                                          char *push, size_t push_cap,
-                                          char out[65]);
+static bool dl_publication_target_capture(
+    const struct dl_dirs *d, struct dl_publication_target_config *config);
+static bool dl_publication_target_matches(
+    const struct dl_row *row,
+    const struct dl_publication_target_config *config);
 
 static bool dl_publication_target_changed(const struct dl_row *row,
                                           const char *current, bool mutated,
@@ -5805,12 +5827,12 @@ static bool dl_observe_signed_target(const struct dl_dirs *d,
                                      const struct dl_row *row, bool mutated,
                                      struct zcl_command_reply *reply)
 {
-    char current[65] = {0};
+    struct dl_publication_target_config config = {0};
     if (!row->publication_signature[0] ||
-        (dl_publication_target(d, current) &&
-         strcmp(current, row->publication_target) == 0))
+        (dl_publication_target_capture(d, &config) &&
+         dl_publication_target_matches(row, &config)))
         return true;
-    return dl_publication_target_changed(row, current, mutated, reply);
+    return dl_publication_target_changed(row, config.target, mutated, reply);
 }
 
 static bool dl_bound_remote_main_fetch(const struct dl_dirs *d,
@@ -5819,37 +5841,39 @@ static bool dl_bound_remote_main_fetch(const struct dl_dirs *d,
                                        char current_target[65],
                                        bool *target_mismatch)
 {
-    char locator[4096], push_locator[4096], upload_pack[4096 + 32];
+    struct dl_publication_target_config config = {0};
     bool captured;
     current_target[0] = '\0';
     *target_mismatch = false;
-    captured = dl_publication_target_capture(d, locator, sizeof(locator),
-                                             push_locator,
-                                             sizeof(push_locator),
-                                             current_target);
+    captured = dl_publication_target_capture(d, &config);
+    if (captured)
+        (void)snprintf(current_target, 65, "%s", config.target);
     if (row->publication_signature[0] &&
-        (!captured || strcmp(current_target, row->publication_target) != 0)) {
+        (!captured || !dl_publication_target_matches(row, &config))) {
         *target_mismatch = true;
         return false;
     }
-    return captured &&
-        dl_remote_program_capture(d->wt, "remote.origin.uploadpack",
-                                  "--upload-pack", upload_pack,
-                                  sizeof(upload_pack)) &&
-        dl_fetch_remote_main(d->wt, locator, upload_pack, observed_main);
+    return captured && dl_fetch_remote_main(d->wt, config.fetch,
+                                             config.upload_pack,
+                                             observed_main);
 }
 
 static bool dl_observe_remote_main(const struct dl_dirs *d,
                                    const struct dl_row *row,
-                                   char observed_main[80], bool mutated,
+                                   char observed_main[80],
+                                   char observed_target[65], bool mutated,
                                    struct zcl_command_reply *reply)
 {
     char current_target[65];
     bool target_mismatch;
+    if (observed_target) observed_target[0] = '\0';
     if (dl_bound_remote_main_fetch(d, row, observed_main, current_target,
                                    &target_mismatch)) {
-        if (dl_observe_signed_target(d, row, mutated, reply))
+        if (dl_observe_signed_target(d, row, mutated, reply)) {
+            if (observed_target)
+                (void)snprintf(observed_target, 65, "%s", current_target);
             return true;
+        }
         observed_main[0] = '\0';
         return false;
     }
@@ -6034,7 +6058,7 @@ static bool dl_reconcile_landing(const struct dl_dirs *d, struct dl_row *row,
                                   char observed_main[80], bool mutated,
                                   struct zcl_command_reply *reply)
 {
-    if (!dl_observe_remote_main(d, row, observed_main, mutated, reply))
+    if (!dl_observe_remote_main(d, row, observed_main, NULL, mutated, reply))
         return true;
     if (row->publication_signature[0])
         return dl_reconcile_signed_landing(d, row, observed_main, reply);
@@ -6276,15 +6300,6 @@ static void dl_step_start(const struct dl_dirs *d, struct dl_row *row,
     dl_start_proof(d, row, regen_note, reply);
 }
 
-/* The lease adds an expected-old-value comparison; it never grants history
- * replacement. Verify the exact proven pair's fast-forward ancestry first. */
-static bool dl_push_receive_pack_capture(const struct dl_dirs *d,
-                                         char *option, size_t option_cap)
-{
-    return dl_remote_program_capture(d->wt, "remote.origin.receivepack",
-                                     "--receive-pack", option, option_cap);
-}
-
 static bool dl_push_locator(const struct dl_dirs *d, const char *locator,
                             const char *receive_pack, const char *lease,
                             const char *refspec, char *out, size_t out_cap)
@@ -6372,47 +6387,80 @@ static bool dl_publication_file_sha256(const char *path, uint64_t max_bytes,
     return true;
 }
 
-static bool dl_remote_url_pair_capture(const char *wt,
-                                       char *fetch, size_t fetch_cap,
-                                       char *push, size_t push_cap,
-                                       char out[65])
+static bool dl_remote_url_pair_capture(
+    const char *wt, struct dl_publication_target_config *config)
 {
     const char *fetch_args[] = { "remote", "get-url", "origin", NULL };
     const char *push_args[] = { "remote", "get-url", "--push", "origin", NULL };
-    static const char domain[] = "zcl.dev_land.git_target.v1\nrefs/heads/main\n";
+    static const char legacy_domain[] =
+        "zcl.dev_land.git_target.v1\nrefs/heads/main\n";
+    static const char domain[] =
+        "zcl.dev_land.git_target.v2\nrefs/heads/main\n";
+    static const uint8_t newline = '\n';
     struct sha256_ctx hash;
     uint8_t digest[32];
-    if (!wt || !fetch || fetch_cap == 0 || !push || push_cap == 0 ||
-        dl_git(wt, fetch_args, fetch, fetch_cap, DL_GIT_TIMEOUT_MS) != 0 ||
-        dl_git(wt, push_args, push, push_cap, DL_GIT_TIMEOUT_MS) != 0)
+    if (!wt || !config ||
+        dl_git(wt, fetch_args, config->fetch, sizeof(config->fetch),
+               DL_GIT_TIMEOUT_MS) != 0 ||
+        dl_git(wt, push_args, config->push, sizeof(config->push),
+               DL_GIT_TIMEOUT_MS) != 0 ||
+        !dl_remote_program_capture(wt, "remote.origin.uploadpack",
+                                   "--upload-pack", config->upload_pack,
+                                   sizeof(config->upload_pack)) ||
+        !dl_remote_program_capture(wt, "remote.origin.receivepack",
+                                   "--receive-pack", config->receive_pack,
+                                   sizeof(config->receive_pack)))
         return false;
-    dl_trim(fetch);
-    dl_trim(push);
-    if (!fetch[0] || strcmp(fetch, push) != 0 ||
-        strchr(fetch, '\n') || strchr(fetch, '\r'))
+    dl_trim(config->fetch);
+    dl_trim(config->push);
+    if (!config->fetch[0] || strcmp(config->fetch, config->push) != 0 ||
+        strchr(config->fetch, '\n') || strchr(config->fetch, '\r'))
         return false;
+
+    /* Keep URL-only v1 checkpoints recoverable only when no unbound
+     * transport override exists. Every newly signed target uses v2. */
+    sha256_init(&hash);
+    sha256_write(&hash, (const uint8_t *)legacy_domain,
+                 sizeof(legacy_domain) - 1);
+    sha256_write(&hash, (const uint8_t *)config->fetch,
+                 strlen(config->fetch));
+    sha256_finalize(&hash, digest);
+    zcl_hex_encode(digest, sizeof(digest), config->legacy_target);
+
+    /* Newline cannot occur in any captured field, so this encoding is
+     * unambiguous and binds the exact programs handed back to Git. */
     sha256_init(&hash);
     sha256_write(&hash, (const uint8_t *)domain, sizeof(domain) - 1);
-    sha256_write(&hash, (const uint8_t *)fetch, strlen(fetch));
+    sha256_write(&hash, (const uint8_t *)config->fetch,
+                 strlen(config->fetch));
+    sha256_write(&hash, &newline, 1);
+    sha256_write(&hash, (const uint8_t *)config->upload_pack,
+                 strlen(config->upload_pack));
+    sha256_write(&hash, &newline, 1);
+    sha256_write(&hash, (const uint8_t *)config->receive_pack,
+                 strlen(config->receive_pack));
+    sha256_write(&hash, &newline, 1);
     sha256_finalize(&hash, digest);
-    zcl_hex_encode(digest, sizeof(digest), out);
+    zcl_hex_encode(digest, sizeof(digest), config->target);
     return true;
 }
 
-static bool dl_publication_target_capture(const struct dl_dirs *d,
-                                           char *fetch, size_t fetch_cap,
-                                           char *push, size_t push_cap,
-                                           char out[65])
+static bool dl_publication_target_capture(
+    const struct dl_dirs *d, struct dl_publication_target_config *config)
 {
-    return dl_remote_url_pair_capture(d->wt, fetch, fetch_cap, push,
-                                      push_cap, out);
+    return d && config && dl_remote_url_pair_capture(d->wt, config);
 }
 
-static bool dl_publication_target(const struct dl_dirs *d, char out[65])
+static bool dl_publication_target_matches(
+    const struct dl_row *row,
+    const struct dl_publication_target_config *config)
 {
-    char fetch[4096], push[4096];
-    return dl_publication_target_capture(d, fetch, sizeof(fetch), push,
-                                         sizeof(push), out);
+    if (!row || !config || !dl_hex_ok(row->publication_target, 64))
+        return false;
+    if (strcmp(row->publication_target, config->target) == 0)
+        return true;
+    return !config->upload_pack[0] && !config->receive_pack[0] &&
+        strcmp(row->publication_target, config->legacy_target) == 0;
 }
 
 static bool dl_push_dispatch_capture(const struct dl_dirs *d,
@@ -6423,17 +6471,20 @@ static bool dl_push_dispatch_capture(const struct dl_dirs *d,
                                      size_t receive_pack_cap,
                                      struct zcl_command_reply *reply)
 {
-    char fetch_locator[4096], target[65];
-    target[0] = '\0';
-    if (!dl_publication_target_capture(d, fetch_locator,
-                                       sizeof(fetch_locator), push_locator,
-                                       push_locator_cap, target) ||
+    struct dl_publication_target_config config = {0};
+    int push_n, receive_n;
+    if (!dl_publication_target_capture(d, &config) ||
         (row->publication_signature[0] &&
-         strcmp(target, row->publication_target) != 0))
-        return dl_publication_target_changed(row, target, false, reply);
-    if (!dl_push_receive_pack_capture(d, receive_pack, receive_pack_cap)) {
+         !dl_publication_target_matches(row, &config)))
+        return dl_publication_target_changed(row, config.target, false,
+                                             reply);
+    push_n = snprintf(push_locator, push_locator_cap, "%s", config.push);
+    receive_n = snprintf(receive_pack, receive_pack_cap, "%s",
+                         config.receive_pack);
+    if (push_n <= 0 || (size_t)push_n >= push_locator_cap ||
+        receive_n < 0 || (size_t)receive_n >= receive_pack_cap) {
         dl_fail(reply, "PUSH_CONFIGURATION_UNAVAILABLE", "push_intent",
-                "cannot capture the configured receive-pack before dispatch",
+                "captured push transport exceeds bounded capacity",
                 d->wt);
         return false;
     }
@@ -6494,7 +6545,8 @@ static bool dl_publication_verify(const struct dl_dirs *d,
                                    const struct dl_row *row)
 {
 #if defined(ZCL_DEV_BUILD) || defined(ZCL_TESTING)
-    char message[1024], target[65], bundle_path[4096 + 128];
+    struct dl_publication_target_config config = {0};
+    char message[1024], bundle_path[4096 + 128];
     char bundle[65], proof[65];
     uint8_t signer[32], signature[64];
     const char *why = NULL;
@@ -6507,8 +6559,8 @@ static bool dl_publication_verify(const struct dl_dirs *d,
         !zcl_dev_proof_signer_verify((const uint8_t *)message, strlen(message),
             signer, signature, &why) ||
         !dl_publication_tree_check(d, row) ||
-        !dl_publication_target(d, target) ||
-        strcmp(target, row->publication_target) != 0 ||
+        !dl_publication_target_capture(d, &config) ||
+        !dl_publication_target_matches(row, &config) ||
         !dl_publication_bundle_path(d, row, bundle_path,
                                     sizeof(bundle_path)) ||
         !dl_publication_file_sha256(bundle_path, 512u * 1024u * 1024u,
@@ -6663,25 +6715,34 @@ static bool dl_publication_remote_observe(const struct dl_dirs *d,
     (void)d; (void)row; (void)tip; (void)source;
     return false;
 #else
-    char scratch[4096 + 96], locator[4096], push_locator[4096], output[2048];
-    char target[65];
+    struct dl_publication_target_config config = {0};
+    char scratch[4096 + 96], output[2048];
     bool ok = false;
     tip[0] = '\0';
     source[0] = '\0';
     /* Fetch through the exact locator whose fetch/push pair produced the
      * signed target digest. A later get-url would reopen a config race. */
-    if (!dl_publication_target_capture(d, locator, sizeof(locator),
-                                       push_locator, sizeof(push_locator),
-                                       target) ||
-        strcmp(target, row->publication_target) != 0 ||
-        !locator[0] || locator[0] == '-' || strchr(locator, '\n') ||
+    if (!dl_publication_target_capture(d, &config) ||
+        !dl_publication_target_matches(row, &config) ||
+        !config.fetch[0] || config.fetch[0] == '-' ||
+        strchr(config.fetch, '\n') ||
         snprintf(scratch, sizeof(scratch), "%s/observe.%lld.XXXXXX",
                  d->land, row->seq) >= (int)sizeof(scratch) ||
         !mkdtemp(scratch))
         return false;
     const char *init[] = { "init", "--bare", "--quiet", NULL };
-    const char *fetch[] = { "fetch", "--quiet", "--no-tags", "--refmap=",
-                           "--", locator, "refs/heads/main", NULL };
+    const char *fetch[10];
+    size_t fetch_argc = 0;
+    fetch[fetch_argc++] = "fetch";
+    fetch[fetch_argc++] = "--quiet";
+    fetch[fetch_argc++] = "--no-tags";
+    fetch[fetch_argc++] = "--refmap=";
+    if (config.upload_pack[0])
+        fetch[fetch_argc++] = config.upload_pack;
+    fetch[fetch_argc++] = "--";
+    fetch[fetch_argc++] = config.fetch;
+    fetch[fetch_argc++] = "refs/heads/main";
+    fetch[fetch_argc] = NULL;
     const char *fetched[] = { "rev-parse", "--verify", "FETCH_HEAD", NULL };
     if (dl_git(scratch, init, output, sizeof(output), DL_GIT_TIMEOUT_MS) != 0 ||
         dl_git(scratch, fetch, output, sizeof(output), DL_GIT_TIMEOUT_MS) != 0 ||
@@ -7023,7 +7084,7 @@ static void dl_step_push(const struct dl_dirs *d, struct dl_row *row,
      * production must wait for a verified, durable canonical intent. */
     if (!dl_push_intent_ready(d, row, reply))
         return;
-    if (!dl_observe_remote_main(d, row, observed_main, false, reply))
+    if (!dl_observe_remote_main(d, row, observed_main, NULL, false, reply))
         return;
     if (strcmp(observed_main, row->base) != 0) {
         dl_step_successor(d, row, observed_main, reply);
@@ -7198,7 +7259,7 @@ static void dl_resume_failed_proof(const struct dl_dirs *d,
     dl_log(row, "failed exact proof: ");
     dl_log(row, detail);
     dl_log(row, "\n");
-    if (!dl_observe_remote_main(d, row, base_now, false, reply))
+    if (!dl_observe_remote_main(d, row, base_now, NULL, false, reply))
         return;
     if (strcmp(base_now, row->base) != 0) {
         dl_step_successor(d, row, base_now, reply);
@@ -7319,7 +7380,7 @@ static void dl_resume_pending_watcher_kick(const struct dl_dirs *d,
      * and prove again rather than pushing evidence that no longer applies. */
     {
         char base_now[80];
-        if (!dl_observe_remote_main(d, row, base_now, false, reply))
+        if (!dl_observe_remote_main(d, row, base_now, NULL, false, reply))
             return;
         if (strcmp(base_now, row->base) != 0) {
             dl_step_successor(d, row, base_now, reply);
@@ -8265,26 +8326,22 @@ static enum zcl_dev_proof_base_observation dl_base_observe(void *opaque)
 {
     const struct dl_base_probe_ctx *ctx = opaque;
     const char *args[8];
-    char out[512], tip[80], locator[4096], push_locator[4096];
-    char target[65], upload_pack[4096 + 32];
+    struct dl_publication_target_config config = {0};
+    char out[512], tip[80];
     size_t argc = 0;
     if (!ctx || !ctx->wt || !ctx->base ||
-        !dl_remote_url_pair_capture(ctx->wt, locator, sizeof(locator),
-                                    push_locator, sizeof(push_locator),
-                                    target) ||
-        !dl_remote_program_capture(ctx->wt, "remote.origin.uploadpack",
-                                   "--upload-pack", upload_pack,
-                                   sizeof(upload_pack)))
+        !dl_remote_url_pair_capture(ctx->wt, &config))
         return ZCL_DEV_PROOF_BASE_UNKNOWN;
     args[argc++] = "ls-remote";
     args[argc++] = "--quiet";
-    if (upload_pack[0])
-        args[argc++] = upload_pack;
+    if (config.upload_pack[0])
+        args[argc++] = config.upload_pack;
     args[argc++] = "--";
-    args[argc++] = locator;
+    args[argc++] = config.fetch;
     args[argc++] = "refs/heads/main";
     args[argc] = NULL;
-    if (locator[0] == '-' || strchr(locator, '\n') || strchr(locator, '\r') ||
+    if (config.fetch[0] == '-' || strchr(config.fetch, '\n') ||
+        strchr(config.fetch, '\r') ||
         dl_git(ctx->wt, args, out, sizeof(out), DL_BASE_PROBE_TIMEOUT_MS) != 0)
         return ZCL_DEV_PROOF_BASE_UNKNOWN;
     size_t n = strcspn(out, " \t\r\n");
@@ -8651,7 +8708,8 @@ static void dl_attach_seal(const struct dl_dirs *d, struct dl_row *row,
         dl_attach_proof_missing(d, row, reply, waiting);
         return;
     }
-    if (!dl_observe_remote_main(d, row, observed, false, reply))
+    if (!dl_observe_remote_main(d, row, observed,
+                                row->publication_target, false, reply))
         return;
     if (strcmp(observed, row->base) != 0) {
         dl_fail(reply, "EXPECTED_BASE_MISMATCH", "attach",
@@ -8662,7 +8720,7 @@ static void dl_attach_seal(const struct dl_dirs *d, struct dl_row *row,
     const char *ancestry[] = { "--no-replace-objects", "merge-base",
         "--is-ancestor", row->base, row->local, NULL };
     if (dl_git(d->wt, ancestry, output, sizeof(output), DL_GIT_TIMEOUT_MS) != 0 ||
-        !dl_publication_target(d, row->publication_target) ||
+        !dl_hex_ok(row->publication_target, 64) ||
         !dl_publication_bundle_make(d, row, row->publication_bundle) ||
         !dl_publication_sign(row) ||
         !dl_publication_message(row, message, sizeof(message)) ||

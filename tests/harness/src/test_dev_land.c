@@ -130,6 +130,7 @@ static void dlx_isolate(const char *tag)
     unsetenv("ZCL_LAND_HOOKS_STUB_DIR");
     unsetenv("ZCL_LAND_TEST_PICK_DELAY_MS");
     unsetenv("ZCL_LAND_TEST_DIR_SYNC_FAIL");
+    unsetenv("ZCL_LAND_TEST_QUEUE_WRITE_FAIL");
     unsetenv("ZCL_LAND_TEST_DIE_AFTER_OUTCOME");
     unsetenv("ZCL_LAND_TEST_DIE_AFTER_PROOF");
     unsetenv("ZCL_LAND_TEST_REFUSE_OUTCOME_APPEND");
@@ -138,6 +139,7 @@ static void dlx_isolate(const char *tag)
     unsetenv("ZCL_LAND_REGEN_MAKE_STUB");
     unsetenv("ZCL_LAND_REGEN_GATE_STUB_FAIL");
     unsetenv("ZCL_LAND_DRAIN_IDLE_SEC");
+    unsetenv("ZCL_DEVLOOP_TEST_PROCESS");
     unsetenv("ZCL_DLX_GIT_COUNT");
     unsetenv("ZCL_DLX_GIT_DIVERT_REMOTE");
     unsetenv("ZCL_DLX_GIT_ORIGINAL_REMOTE");
@@ -172,6 +174,7 @@ static void dlx_restore(void)
     unsetenv("ZCL_LAND_HOOKS_STUB_DIR");
     unsetenv("ZCL_LAND_TEST_PICK_DELAY_MS");
     unsetenv("ZCL_LAND_TEST_DIR_SYNC_FAIL");
+    unsetenv("ZCL_LAND_TEST_QUEUE_WRITE_FAIL");
     unsetenv("ZCL_LAND_TEST_DIE_AFTER_OUTCOME");
     unsetenv("ZCL_LAND_TEST_DIE_AFTER_PROOF");
     unsetenv("ZCL_LAND_TEST_REFUSE_OUTCOME_APPEND");
@@ -180,6 +183,7 @@ static void dlx_restore(void)
     unsetenv("ZCL_LAND_REGEN_MAKE_STUB");
     unsetenv("ZCL_LAND_REGEN_GATE_STUB_FAIL");
     unsetenv("ZCL_LAND_DRAIN_IDLE_SEC");
+    unsetenv("ZCL_DEVLOOP_TEST_PROCESS");
     unsetenv("ZCL_DLX_GIT_COUNT");
     unsetenv("ZCL_DLX_GIT_DIVERT_REMOTE");
     unsetenv("ZCL_DLX_GIT_ORIGINAL_REMOTE");
@@ -583,6 +587,9 @@ static bool dlx_rig_make(struct dlx_rig *rig, const char *tag)
                                 "--initial-branch=main", rig->bare, NULL };
     const char *clone[] = { "clone", "--quiet", rig->bare, rig->clone,
                             NULL };
+    const char *name[] = { "config", "user.name", "land", NULL };
+    const char *email[] = { "config", "user.email", "land@z23.invalid",
+                            NULL };
     const char *push[] = { "push", "--quiet", "origin", "HEAD:main", NULL };
     const char *fetch[] = { "fetch", "--quiet", "origin", NULL };
     char seed[64];
@@ -592,6 +599,11 @@ static bool dlx_rig_make(struct dlx_rig *rig, const char *tag)
     if (dlx_git(NULL, init_bare) != 0)
         return false;
     if (dlx_git(NULL, clone) != 0)
+        return false;
+    /* Rebase creates a new commit and therefore needs a committer identity.
+     * Keep the disposable rig independent of the invoking account's global
+     * Git configuration. */
+    if (dlx_git(rig->clone, name) != 0 || dlx_git(rig->clone, email) != 0)
         return false;
     /* A checkout marker set, so the leaf's checkout-root walk and its own
      * worktree bookkeeping behave the way they do in a real tree. */
@@ -1352,6 +1364,9 @@ static bool dlx_rig_make_docregen(struct dlx_rig *rig, const char *tag,
                                 "--initial-branch=main", rig->bare, NULL };
     const char *clone[] = { "clone", "--quiet", rig->bare, rig->clone,
                             NULL };
+    const char *name[] = { "config", "user.name", "land", NULL };
+    const char *email[] = { "config", "user.email", "land@z23.invalid",
+                            NULL };
     const char *push[] = { "push", "--quiet", "origin", "HEAD:main", NULL };
     const char *fetch[] = { "fetch", "--quiet", "origin", NULL };
     char seed[64];
@@ -1363,6 +1378,12 @@ static bool dlx_rig_make_docregen(struct dlx_rig *rig, const char *tag,
     if (dlx_git(NULL, init_bare) != 0)
         return false;
     if (dlx_git(NULL, clone) != 0)
+        return false;
+    /* Rebase creates the replayed candidate commit before the deliberately
+     * failing generator is reached. Keep this specialized disposable rig
+     * independent of the invoking account's global Git identity, just like
+     * dlx_rig_make(). */
+    if (dlx_git(rig->clone, name) != 0 || dlx_git(rig->clone, email) != 0)
         return false;
     /* The plan-refresh target the regen phase's dlrg_plan_refresh() runs
      * when it observed any artifact's stat identity change: a trivial
@@ -2204,7 +2225,7 @@ static int test_dev_land_lost_persistence(void)
         "not silently claimed, and the row self-heals") {
         struct dlx_rig rig;
         struct dlx_call c;
-        char landdir[1200], hook[1400], script[1600], before[64], after[64];
+        char before[64], after[64];
         dlx_isolate("persistfail");
         ASSERT(dlx_rig_make(&rig, "persistfail_rig"));
         ASSERT(dlx_origin_main(&rig, before));
@@ -2220,25 +2241,22 @@ static int test_dev_land_lost_persistence(void)
         ASSERT(strcmp(dlx_str(&c, "state"), "started") == 0);
         dlx_end(&c);
         setenv("ZCL_LAND_PROOF_STUB", "pass", 1);
-        dlx_landdir(landdir, sizeof(landdir));
-        /* Lose the outcome write only after the exact push pair has been
-         * durably prepared. Git's pre-push hook runs after that checkpoint. */
-        ASSERT((size_t)snprintf(hook, sizeof(hook), "%s/pre-push",
-                                g_dlx_hooks_ok) < sizeof(hook));
-        ASSERT((size_t)snprintf(script, sizeof(script),
-            "#!/bin/sh\nchmod 0500 '%s'\n", landdir) < sizeof(script));
-        ASSERT(dlx_write(hook, script) && chmod(hook, 0755) == 0);
+        /* Refuse only the terminal outcome append, after the durable push
+         * checkpoint. Mode-bit fixtures are not refusals when run as UID 0. */
+        setenv("ZCL_LAND_TEST_REFUSE_OUTCOME_APPEND", "1", 1);
+        setenv("ZCL_DEVLOOP_TEST_PROCESS", "1", 1);
         dlx_begin(&c, "step");
         ASSERT(dlx_run(&c));
         ASSERT(dlx_ok(&c));
         ASSERT(strcmp(dlx_str(&c, "state"), "landed") == 0);
         ASSERT(strcmp(dlx_str(&c, "persist"), "failed") == 0);
         dlx_end(&c);
+        unsetenv("ZCL_LAND_TEST_REFUSE_OUTCOME_APPEND");
+        unsetenv("ZCL_DEVLOOP_TEST_PROCESS");
         /* The push already happened for real: origin/main moved even
          * though the queue could not record it. */
         ASSERT(dlx_origin_main(&rig, after));
         ASSERT(strcmp(after, before) != 0);
-        ASSERT(chmod(landdir, 0700) == 0);
         /* A cached origin/main still contains the pushed commit when the
          * remote disappears. It cannot establish a fresh observation:
          * retain the inflight row, then reconcile after access returns. */
@@ -3499,7 +3517,7 @@ static int test_dev_land_prepush_persist_refusal(void)
     TEST("land: failed pre-push persistence refuses remote mutation") {
         struct dlx_rig rig;
         struct dlx_call c;
-        char landdir[1200], base[64], observed[64];
+        char base[64], observed[64];
         dlx_isolate("prepush_persist_refusal");
         ASSERT(dlx_rig_make(&rig, "prepush_persist_refusal_rig"));
         ASSERT(dlx_origin_main(&rig, base));
@@ -3512,8 +3530,8 @@ static int test_dev_land_prepush_persist_refusal(void)
         ASSERT(dlx_run(&c) && dlx_ok(&c));
         ASSERT_STR_EQ(dlx_str(&c, "state"), "started");
         dlx_end(&c);
-        dlx_landdir(landdir, sizeof(landdir));
-        ASSERT(chmod(landdir, 0500) == 0);
+        setenv("ZCL_LAND_TEST_QUEUE_WRITE_FAIL", "1", 1);
+        setenv("ZCL_DEVLOOP_TEST_PROCESS", "1", 1);
         setenv("ZCL_LAND_PROOF_STUB", "pass", 1);
         dlx_begin(&c, "step");
         ASSERT(dlx_run(&c));
@@ -3523,7 +3541,8 @@ static int test_dev_land_prepush_persist_refusal(void)
         dlx_end(&c);
         ASSERT(dlx_origin_main(&rig, observed));
         ASSERT_STR_EQ(observed, base);
-        ASSERT(chmod(landdir, 0700) == 0);
+        unsetenv("ZCL_LAND_TEST_QUEUE_WRITE_FAIL");
+        unsetenv("ZCL_DEVLOOP_TEST_PROCESS");
         dlx_begin(&c, "step");
         ASSERT(dlx_run(&c) && dlx_ok(&c));
         ASSERT_STR_EQ(dlx_str(&c, "state"), "landed");
@@ -6301,13 +6320,6 @@ static bool dlx_signed_receipt_pending(struct dlx_rig *rig, char *queue,
     ok = dlx_run(&c) && dlx_ok(&c);
     dlx_end(&c);
     if (!ok) return false;
-    unsetenv("ZCL_LAND_ALLOW_UNSIGNED");
-    setenv("ZCL_LAND_PROOF_STUB", "pass", 1);
-    dlx_begin(&c, "attach");
-    (void)json_push_kv_int(&c.input, "seq", 1);
-    ok = dlx_run(&c) && dlx_ok(&c);
-    dlx_end(&c);
-    if (!ok) return false;
     dlx_landdir(land, sizeof(land));
     (void)snprintf(wt, sizeof(wt), "%s/wt", land);
     (void)snprintf(queue, queue_cap, "%s/queue.jsonl", land);
@@ -6320,6 +6332,15 @@ static bool dlx_signed_receipt_pending(struct dlx_rig *rig, char *queue,
         return false;
     const char *intercept[] = { "config", "remote.origin.receivepack", wrapper, NULL };
     if (dlx_git(wt, intercept) != 0) return false;
+    /* Transport programs are part of the signed target. Establish this
+     * deterministic lost-ack seam before sealing the publication intent. */
+    unsetenv("ZCL_LAND_ALLOW_UNSIGNED");
+    setenv("ZCL_LAND_PROOF_STUB", "pass", 1);
+    dlx_begin(&c, "attach");
+    (void)json_push_kv_int(&c.input, "seq", 1);
+    ok = dlx_run(&c) && dlx_ok(&c);
+    dlx_end(&c);
+    if (!ok) return false;
     if (!persist_receipt) return dlx_receipt_publisher_death(rig);
     setenv("ZCL_LAND_TEST_REFUSE_OUTCOME_APPEND", "1", 1);
     setenv("ZCL_DEVLOOP_TEST_PROCESS", "1", 1);
@@ -6578,11 +6599,11 @@ static int test_dev_land_signed_target_race(void)
 {
     int failures = 0;
 #if !defined(_WIN32)
-    TEST("land: signed target changing during observation refuses before push checkpoint") {
+    TEST("land: upload-pack changes invalidate the signed target before observation") {
         struct dlx_rig rig;
         struct dlx_call c;
         char base[64], remote[64], land[1200], wt[1400];
-        char upload_pack[1400], missing[1400], script[5000];
+        char upload_pack[1400], marker[1400], script[3000];
         dlx_isolate("signed_target_race");
         ASSERT(dlx_attach_proven_pair(&rig, "signed_target_race", base));
         dlx_begin(&c, "attach");
@@ -6593,18 +6614,10 @@ static int test_dev_land_signed_target_race(void)
         (void)snprintf(wt, sizeof(wt), "%s/wt", land);
         (void)snprintf(upload_pack, sizeof(upload_pack), "%s.upload-pack",
                        rig.bare);
-        (void)snprintf(missing, sizeof(missing), "%s.diverted", rig.bare);
+        (void)snprintf(marker, sizeof(marker), "%s/upload-invoked", land);
         (void)snprintf(script, sizeof(script),
-            "#!/bin/sh\n"
-            "calls=${0}.calls\n"
-            "count=0\n"
-            "if test -f \"$calls\"; then read -r count < \"$calls\" || exit 70; fi\n"
-            "count=$((count + 1))\n"
-            "printf '%%s\\n' \"$count\" > \"$calls\" || exit 70\n"
-            "if test \"$count\" -eq 3; then\n"
-            "  git -C '%s' remote set-url origin '%s' || exit 71\n"
-            "fi\n"
-            "exec git-upload-pack \"$@\"\n", wt, missing);
+            "#!/bin/sh\nprintf 'invoked\\n' > '%s'\n"
+            "exec git-upload-pack \"$@\"\n", marker);
         ASSERT(dlx_write(upload_pack, script));
         ASSERT(chmod(upload_pack, 0700) == 0);
         const char *intercept[] = { "config", "remote.origin.uploadpack",
@@ -6616,6 +6629,7 @@ static int test_dev_land_signed_target_race(void)
         ASSERT(c.reply.error.retryable);
         ASSERT(!c.reply.error.mutated);
         dlx_end(&c);
+        ASSERT(!dlx_file_exists(marker));
         ASSERT(dlx_origin_main(&rig, remote));
         ASSERT_STR_EQ(remote, base);
         dlx_begin(&c, "status");
@@ -6624,6 +6638,55 @@ static int test_dev_land_signed_target_race(void)
         ASSERT(flight != NULL);
         ASSERT_STR_EQ(json_get_str(json_get(flight, "phase")), "prove");
         dlx_end(&c);
+        dlx_restore();
+        PASS();
+    }
+_test_next:;
+    dlx_restore();
+#endif
+    return failures;
+}
+
+static int test_dev_land_transport_program_binding(void)
+{
+    int failures = 0;
+#if !defined(_WIN32)
+    TEST("land: receive-pack changes invalidate the signed target before dispatch") {
+        struct dlx_rig rig;
+        struct dlx_call c;
+        char base[64], remote[64], land[1200], wt[1400];
+        char receive_pack[1400], marker[1400], script[3000];
+        dlx_isolate("signed_receive_pack_change");
+        ASSERT(dlx_attach_proven_pair(&rig, "signed_receive_pack_change",
+                                      base));
+        dlx_begin(&c, "attach");
+        (void)json_push_kv_int(&c.input, "seq", 1);
+        ASSERT(dlx_run(&c) && dlx_ok(&c));
+        dlx_end(&c);
+
+        dlx_landdir(land, sizeof(land));
+        (void)snprintf(wt, sizeof(wt), "%s/wt", land);
+        (void)snprintf(receive_pack, sizeof(receive_pack), "%s.receive-pack",
+                       rig.bare);
+        (void)snprintf(marker, sizeof(marker), "%s/receive-invoked", land);
+        (void)snprintf(script, sizeof(script),
+                       "#!/bin/sh\nprintf 'invoked\\n' > '%s'\nexit 91\n",
+                       marker);
+        ASSERT(dlx_write(receive_pack, script));
+        ASSERT(chmod(receive_pack, 0700) == 0);
+        const char *intercept[] = { "config", "remote.origin.receivepack",
+                                    receive_pack, NULL };
+        ASSERT(dlx_git(wt, intercept) == 0);
+
+        dlx_begin(&c, "step");
+        ASSERT(dlx_run(&c) && !dlx_ok(&c));
+        ASSERT_STR_EQ(dlx_err_code(&c), "PUBLICATION_TARGET_CHANGED");
+        ASSERT(c.reply.error.retryable);
+        ASSERT(!c.reply.error.mutated);
+        dlx_end(&c);
+        ASSERT(!dlx_file_exists(marker));
+        ASSERT(dlx_origin_main(&rig, remote));
+        ASSERT_STR_EQ(remote, base);
         dlx_restore();
         PASS();
     }
@@ -6751,12 +6814,6 @@ static int test_dev_land_signed_recovery(void)
         dlx_begin(&c, "step");
         ASSERT(dlx_run(&c) && dlx_ok(&c));
         dlx_end(&c);
-        unsetenv("ZCL_LAND_ALLOW_UNSIGNED");
-        setenv("ZCL_LAND_PROOF_STUB", "pass", 1);
-        dlx_begin(&c, "attach");
-        (void)json_push_kv_int(&c.input, "seq", 1);
-        ASSERT(dlx_run(&c) && dlx_ok(&c));
-        dlx_end(&c);
         dlx_landdir(land, sizeof(land));
         (void)snprintf(wt, sizeof(wt), "%s/wt", land);
         (void)snprintf(wrapper, sizeof(wrapper), "%s/refuse-replay", land);
@@ -6769,6 +6826,12 @@ static int test_dev_land_signed_recovery(void)
         const char *intercept[] = { "config", "remote.origin.receivepack",
                                     wrapper, NULL };
         ASSERT(dlx_git(wt, intercept) == 0);
+        unsetenv("ZCL_LAND_ALLOW_UNSIGNED");
+        setenv("ZCL_LAND_PROOF_STUB", "pass", 1);
+        dlx_begin(&c, "attach");
+        (void)json_push_kv_int(&c.input, "seq", 1);
+        ASSERT(dlx_run(&c) && dlx_ok(&c));
+        dlx_end(&c);
         char update[128];
         (void)snprintf(update, sizeof(update), "%s:refs/heads/main", rig.tip);
         const char *remote_effect[] = { "fetch", "--quiet", rig.clone,
@@ -6929,12 +6992,6 @@ static int test_dev_land_signed_lost_ack(void)
         dlx_begin(&c, "step");
         ASSERT(dlx_run(&c) && dlx_ok(&c));
         dlx_end(&c);
-        unsetenv("ZCL_LAND_ALLOW_UNSIGNED");
-        setenv("ZCL_LAND_PROOF_STUB", "pass", 1);
-        dlx_begin(&c, "attach");
-        (void)json_push_kv_int(&c.input, "seq", 1);
-        ASSERT(dlx_run(&c) && dlx_ok(&c));
-        dlx_end(&c);
         dlx_landdir(land, sizeof(land));
         (void)snprintf(wt, sizeof(wt), "%s/wt", land);
         (void)snprintf(wrapper, sizeof(wrapper), "%s/lose-ack", land);
@@ -6947,6 +7004,12 @@ static int test_dev_land_signed_lost_ack(void)
         const char *intercept[] = { "config", "remote.origin.receivepack",
                                     wrapper, NULL };
         ASSERT(dlx_git(wt, intercept) == 0);
+        unsetenv("ZCL_LAND_ALLOW_UNSIGNED");
+        setenv("ZCL_LAND_PROOF_STUB", "pass", 1);
+        dlx_begin(&c, "attach");
+        (void)json_push_kv_int(&c.input, "seq", 1);
+        ASSERT(dlx_run(&c) && dlx_ok(&c));
+        dlx_end(&c);
         dlx_begin(&c, "step");
         ASSERT(dlx_run(&c) && !dlx_ok(&c));
         ASSERT_STR_EQ(dlx_err_code(&c), "PUSH_OUTCOME_UNKNOWN");
@@ -7050,10 +7113,7 @@ static bool dlx_signed_push_lossy(struct dlx_rig *rig, const char *tag,
     char land[1200], wrapper[1400], script[4000], extra[1600] = "";
     if (!dlx_attach_proven_pair(rig, tag, base))
         return false;
-    dlx_begin(&c, "attach");
-    (void)json_push_kv_int(&c.input, "seq", 1);
-    bool ok = dlx_run(&c) && dlx_ok(&c);
-    dlx_end(&c);
+    bool ok = true;
     if (racer) {
         ok = ok && dlx_sibling(rig, base, "refs/heads/side", racer);
         (void)snprintf(extra, sizeof(extra),
@@ -7069,8 +7129,14 @@ static bool dlx_signed_push_lossy(struct dlx_rig *rig, const char *tag,
                    marker, extra);
     const char *intercept[] = { "config", "remote.origin.receivepack",
                                 wrapper, NULL };
-    return ok && dlx_write(wrapper, script) && chmod(wrapper, 0700) == 0 &&
-           dlx_git(wt, intercept) == 0;
+    ok = ok && dlx_write(wrapper, script) && chmod(wrapper, 0700) == 0 &&
+         dlx_git(wt, intercept) == 0;
+    if (!ok) return false;
+    dlx_begin(&c, "attach");
+    (void)json_push_kv_int(&c.input, "seq", 1);
+    ok = dlx_run(&c) && dlx_ok(&c);
+    dlx_end(&c);
+    return ok;
 }
 
 /* Commit a sibling of `base` in the clone and publish it on the bare
@@ -7125,7 +7191,7 @@ static int test_dev_land_signed_lost_race(void)
         struct dlx_rig rig;
         struct dlx_call c;
         char base[64], remote[64], wt[1400], marker[1400], sibling[64];
-        char upload_pack[1400];
+        char offline[1400];
         dlx_isolate("signed_lost_race");
         ASSERT(dlx_signed_push_lossy(&rig, "signed_lost_race", base, wt,
                                      marker, NULL));
@@ -7136,16 +7202,12 @@ static int test_dev_land_signed_lost_race(void)
         dlx_end(&c);
         ASSERT(dlx_dispatched_once(marker));
         ASSERT(dlx_sibling(&rig, base, "refs/heads/main", sibling));
-        /* Without a fresh observation the moved remote is not evidence. */
-        (void)snprintf(upload_pack, sizeof(upload_pack), "%s.upload-pack",
-                       rig.bare);
-        ASSERT(dlx_write(upload_pack, "#!/bin/sh\nexit 75\n"));
-        ASSERT(chmod(upload_pack, 0700) == 0);
-        const char *blind[] = { "config", "remote.origin.uploadpack",
-                                upload_pack, NULL };
-        const char *see[] = { "config", "--unset", "remote.origin.uploadpack",
-                              NULL };
-        ASSERT(dlx_git(wt, blind) == 0);
+        /* Without a fresh observation the moved remote is not evidence.
+         * Make the already-bound target temporarily unavailable; changing
+         * upload-pack would correctly be an identity mismatch now. */
+        ASSERT(snprintf(offline, sizeof(offline), "%s.offline", rig.bare) <
+               (int)sizeof(offline));
+        ASSERT(rename(rig.bare, offline) == 0);
         dlx_begin(&c, "step");
         ASSERT(dlx_run(&c) && !dlx_ok(&c));
         ASSERT(c.reply.status == ZCL_COMMAND_STATUS_BLOCKED);
@@ -7163,7 +7225,7 @@ static int test_dev_land_signed_lost_race(void)
         ASSERT(flight != NULL);
         ASSERT_STR_EQ(json_get_str(json_get(flight, "phase")), "push");
         dlx_end(&c);
-        ASSERT(dlx_git(wt, see) == 0);
+        ASSERT(rename(offline, rig.bare) == 0);
         dlx_begin(&c, "step");
         ASSERT(dlx_run(&c) && dlx_ok(&c));
         ASSERT_STR_EQ(dlx_str(&c, "state"), "queued");
@@ -7387,12 +7449,6 @@ static int test_dev_land_signed_publisher_death(void)
         dlx_begin(&c, "step");
         ASSERT(dlx_run(&c) && dlx_ok(&c));
         dlx_end(&c);
-        unsetenv("ZCL_LAND_ALLOW_UNSIGNED");
-        setenv("ZCL_LAND_PROOF_STUB", "pass", 1);
-        dlx_begin(&c, "attach");
-        (void)json_push_kv_int(&c.input, "seq", 1);
-        ASSERT(dlx_run(&c) && dlx_ok(&c));
-        dlx_end(&c);
         (void)snprintf(hook, sizeof(hook), "%s/hooks/post-receive", rig.bare);
         (void)snprintf(wrapper, sizeof(wrapper), "%s.receive-pack", rig.bare);
         (void)snprintf(marker, sizeof(marker),
@@ -7407,6 +7463,12 @@ static int test_dev_land_signed_publisher_death(void)
         const char *intercept[] = { "config", "remote.origin.receivepack",
                                     wrapper, NULL };
         ASSERT(dlx_git(wt, intercept) == 0);
+        unsetenv("ZCL_LAND_ALLOW_UNSIGNED");
+        setenv("ZCL_LAND_PROOF_STUB", "pass", 1);
+        dlx_begin(&c, "attach");
+        (void)json_push_kv_int(&c.input, "seq", 1);
+        ASSERT(dlx_run(&c) && dlx_ok(&c));
+        dlx_end(&c);
         pid_t child = fork();
         ASSERT(child >= 0);
         if (child == 0) {
@@ -7958,6 +8020,7 @@ int test_dev_land(void)
     failures += test_dev_land_receipt_adversarial();
     failures += test_dev_land_signer_takeover();
     failures += test_dev_land_signed_target_race();
+    failures += test_dev_land_transport_program_binding();
     failures += test_dev_land_observation_locator_binding();
     failures += test_dev_land_signed_stale();
     failures += test_dev_land_signed_recovery();
