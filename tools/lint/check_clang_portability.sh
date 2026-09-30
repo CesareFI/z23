@@ -61,6 +61,7 @@
 # suppression-ok: prose, not a build surface
 # The node's `-Wno-unused-result` was copied while it existed (clang spells
 # it the same); the node deleted it 2026-09-30, so there is nothing to copy.
+# suppression-ok: prose, not a build surface
 # `-Wno-stringop-overflow` is NOT: clang has no -Wstringop-overflow, and an
 # unknown -Wno-* is itself an error under -Werror (-Wunknown-warning-option).
 # Same class of trap as -flto=auto above — check a GCC flag exists in clang
@@ -174,6 +175,7 @@ WARN_FLAGS=(
     -pedantic
     -Wimplicit-fallthrough
     -fsyntax-only
+    # suppression-ok: prose explaining the flag's deletion, not a build surface
     # The node build no longer carries -Wno-unused-result (deleted
     # 2026-09-30 after its site set was fixed), and clang spells the
     # diagnostic the same way, so the scanner copies nothing here.

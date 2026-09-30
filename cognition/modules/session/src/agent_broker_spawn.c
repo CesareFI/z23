@@ -135,6 +135,21 @@ static size_t spawn_build_grants(const struct agent_spawn_request *req,
  * its first instruction and with no report to say why. The cap exists to stop a
  * runaway allocation, so it is set well clear of the largest image that uses
  * it — shrink it only against a measurement, never against a guess. */
+/* The child-side privilege drop. Groups first: dropping the uid before the
+ * groups would make setgroups impossible and silently leave supplementary
+ * groups behind. EPERM is the expected unprivileged answer at each step and
+ * continues; anything else leaves the child privileged with the confinement
+ * grant already half-applied, so each failure exits by code. */
+static void spawn_drop_privileges(uid_t uid, gid_t gid)
+{
+    if (setgroups(0, NULL) != 0 && errno != EPERM)
+        _exit(91);
+    if (setgid(gid) != 0 && errno != EPERM)
+        _exit(92);
+    if (setuid(uid) != 0 && errno != EPERM)
+        _exit(95);
+}
+
 static struct os_sandbox_rlimits spawn_rlimits(void)
 {
     return (struct os_sandbox_rlimits){
@@ -191,19 +206,9 @@ bool agent_broker_spawn_confined(const struct agent_spawn_request *req,
         /* The socket must survive execve; everything else must not. */
         (void)fcntl(AGENT_CHILD_SOCKET_FD, F_SETFD, 0);
 
-        /* uid drop, when this process has the authority to do one. Groups go
-         * first: dropping the uid before the groups would make setgroups
-         * impossible and silently leave supplementary groups behind. */
-        if (req->confined_uid != 0 && req->confined_uid != geteuid()) {
-            if (setgroups(0, NULL) != 0 && errno != EPERM)
-                _exit(91);
-            if (setgid(req->confined_gid) != 0 && errno != EPERM)
-                _exit(92);
-            if (setuid(req->confined_uid) != 0 && errno != EPERM)
-                _exit(95); /* EPERM is the expected unprivileged answer;
-                            * anything else leaves the child privileged with
-                            * the confinement grant already half-applied */
-        }
+        /* uid drop, when this process has the authority to do one. */
+        if (req->confined_uid != 0 && req->confined_uid != geteuid())
+            spawn_drop_privileges(req->confined_uid, req->confined_gid);
 
         struct os_sandbox_rlimits lim = spawn_rlimits();
         if (!zcl_result_is_ok(os_sandbox_set_rlimits(&lim)))

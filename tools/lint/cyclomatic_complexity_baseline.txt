@@ -218,7 +218,7 @@ cognition/modules/session/src/agent_broker_modes.c:agent_broker_mode_main:43
 cognition/modules/session/src/agent_broker_peer.c:agent_broker_peer_authorized:27
 cognition/modules/session/src/agent_broker_proto.c:mvap_param_is_safe:16
 cognition/modules/session/src/agent_broker_proto.c:mvap_status_name:25
-cognition/modules/session/src/agent_broker_spawn.c:agent_broker_spawn_confined#2:28
+cognition/modules/session/src/agent_broker_spawn.c:agent_broker_spawn_confined#2:24
 cognition/modules/session/src/agent_broker_status.c:agent_broker_write_status:20
 cognition/modules/session/src/agent_broker_vocab.c:mvap_status_from_grant_verdict:20
 cognition/modules/session/src/fleet_board_proto.c:fleet_board_post_decode:17
@@ -2212,7 +2212,6 @@ engine/services/src/chain_restore_active_repair.c:chain_restore_relabel_wrong_he
 engine/services/src/chain_restore_active_repair.c:chain_restore_relink_active_slot_parents:18
 engine/services/src/chain_restore_backing.c:chain_restore_block_is_consensus_backed_on_disk_seeded:37
 engine/services/src/chain_restore_disk_repair.c:chain_restore_read_header_at_index:19
-engine/services/src/chain_restore_disk_repair.c:chain_restore_rebuild_active_chain_from_block_files:14
 engine/services/src/chain_restore_disk_repair.c:chain_restore_rebuild_active_chain_from_disk:24
 engine/services/src/chain_restore_disk_repair.c:chain_restore_scan_block_files:18
 engine/services/src/chain_restore_executor.c:chain_restore_execute:22
