@@ -6119,6 +6119,14 @@ static enum dp_donor_verdict dp_test_donor_eligible(const char *path)
     return DP_DONOR_ELIGIBLE;
 }
 
+/* The name dp_donor_trust_verdict() returns for one path. Production calls
+ * that verdict before any warm seed; this seam only reports it. */
+const char *zcl_dev_proof_test_donor_trust_name(const char *path)
+{
+    if (!path || !path[0]) return NULL;
+    return dp_donor_verdict_name(dp_donor_trust_verdict(path));
+}
+
 bool zcl_dev_proof_test_generation_retire(
     const char *repo_root, const char *generation,
     enum zcl_dev_proof_retire_verdict verdict, bool donor_eligible,

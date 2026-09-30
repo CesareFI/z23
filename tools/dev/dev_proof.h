@@ -589,6 +589,11 @@ bool zcl_dev_proof_test_generation_retire(
     const char *repo_root, const char *generation,
     enum zcl_dev_proof_retire_verdict verdict, bool donor_eligible,
     char *outcome, size_t outcome_len);
+/* Name dp_donor_trust_verdict() returns for `path`: a path this uid owns,
+ * or one lstat cannot see, is donor_untrusted_same_uid. A path another uid
+ * owns stays donor_verifier_unqualified until a separate verifier is
+ * qualified. Does not accept that donor or install a verifier. */
+const char *zcl_dev_proof_test_donor_trust_name(const char *path);
 /* Canonical submitting-checkout preparation, without a proof lease or receipt. */
 bool zcl_dev_proof_test_original_plan_prepare(const char *root,
                                               const char *local,

@@ -618,6 +618,33 @@ static int seam_case_history(void)
     return failures;
 }
 
+/* A directory this process owns is the same trust domain the proof
+ * refuses. /usr is root-owned on this host, so the uid compare is the
+ * branch that runs, and no verifier is qualified for it. */
+static int seam_case_same_uid(void)
+{
+    int failures = 0;
+    TEST_CASE("check seam: same-uid donor stays refused") {
+        char dir[SEAM_PATH];
+        char *made = test_mkdtemp(dir, sizeof(dir), "z23-check-seam-uid");
+        struct stat st;
+        const char *own;
+        const char *other;
+        ASSERT(made != NULL);
+        ASSERT(lstat("/usr", &st) == 0);
+        ASSERT(st.st_uid != geteuid());
+        own = zcl_dev_proof_test_donor_trust_name(dir);
+        other = zcl_dev_proof_test_donor_trust_name("/usr");
+        ASSERT(own != NULL);
+        ASSERT(strcmp(own, "donor_untrusted_same_uid") == 0);
+        ASSERT(other != NULL);
+        ASSERT(strcmp(other, "donor_verifier_unqualified") == 0);
+        printf("check_seam case=same_uid own=%s other=%s\n", own, other);
+        test_rm_rf(dir);
+    } TEST_END
+    return failures;
+}
+
 static int seam_case_cached(void)
 {
     int failures = 0;
@@ -656,6 +683,7 @@ int test_proof_ticket_check_seam(void)
     failures += seam_case_stale();
     failures += seam_case_revoked();
     failures += seam_case_history();
+    failures += seam_case_same_uid();
     failures += seam_case_cached();
     return failures;
 }
