@@ -349,7 +349,32 @@ tu_cache_include_digest_selftest() {
 
     printf '#define D 1\n' > "$d/d.h"
     chmod 000 "$d/d.h"
-    out="$(tu_cache_include_digest "$base/scratch2" "$d" 2>"$base/stderr.txt")"
+    if [ "$(id -u)" -eq 0 ]; then
+        # UID 0 can read a mode-000 file, so it cannot qualify this witness.
+        # Give only the isolated fixture tree to a disposable uid/gid and
+        # remove every inherited capability before invoking the unchanged
+        # production digest. A root host without that capability boundary is
+        # UNPROVEN, never a silently weakened selftest.
+        if ! command -v setpriv >/dev/null 2>&1 ||
+           ! chown -R 1:1 "$base"; then
+            echo "FAIL: tu_cache_include_digest_selftest — cannot create" \
+                 "an unprivileged unreadable-file witness" >&2
+            chmod 644 "$d/d.h"
+            rm -rf "$base"
+            return 2
+        fi
+        out="$(
+            export -f tu_cache__sha_stdin tu_cache_include_digest
+            setpriv --reuid=1 --regid=1 --clear-groups \
+                --inh-caps=-all --ambient-caps=-all --bounding-set=-all \
+                --no-new-privs bash -c \
+                'tu_cache_include_digest "$1" "$2"' \
+                _ "$base/scratch2" "$d" 2>"$base/stderr.txt"
+        )"
+    else
+        out="$(tu_cache_include_digest "$base/scratch2" "$d" \
+            2>"$base/stderr.txt")"
+    fi
     rc=$?
     chmod 644 "$d/d.h"
     if [ "$rc" -eq 0 ]; then
