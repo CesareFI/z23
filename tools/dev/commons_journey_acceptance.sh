@@ -710,8 +710,8 @@ cj_local_build_native() {
     if [ "$CJ_TWOHOST" = 1 ] && [ "$node" = b ]; then
         [ "$CJ_REMOTE_BUILD_PAUSED" = 1 ] || cj_die "remote local build was not phased"
         dht_node_exec "$B_RPC" bash -c \
-            'set -e; mkdir -p "$1/local-build-workspace"; cd "$1/local-build-workspace"; shift; exec "$HOME/.local/bin/devbuild" --wait --project z23 --exclusive "$@"' \
-            scheduled-package-cli "$CJ_RDIR_B" "${DHT_REMOTE_BUDGET_ARGS[@]}" "${CJ_RDIR_B}/bin/zclassic23" \
+            'set -e; mkdir -p "$1/local-build-workspace"; cd "$1/local-build-workspace"; shift; exec "$HOME/.local/bin/devbuild" --wait --project z23 "$@"' \
+            scheduled-package-cli "$CJ_RDIR_B" "${CJ_RDIR_B}/bin/zclassic23" \
             "-datadir=$DHT_DD_B" "-rpcport=$B_RPC" -regtest "$@" | tail -1
     else
         "cj_$node" "$@"
@@ -723,8 +723,8 @@ cj_scheduled_on() {
     if [ "$CJ_TWOHOST" = 1 ] && [ "$node" = b ]; then
         [ "$CJ_REMOTE_BUILD_PAUSED" = 1 ] || cj_die "remote test was not phased"
         dht_node_exec "$B_RPC" bash -c \
-            'set -e; mkdir -p "$1/local-build-workspace"; cd "$1/local-build-workspace"; shift; exec "$HOME/.local/bin/devbuild" --wait --project z23 --exclusive "$@"' \
-            scheduled-fixture-test "$CJ_RDIR_B" "${DHT_REMOTE_BUDGET_ARGS[@]}" "$@"
+            'set -e; mkdir -p "$1/local-build-workspace"; cd "$1/local-build-workspace"; shift; exec "$HOME/.local/bin/devbuild" --wait --project z23 "$@"' \
+            scheduled-fixture-test "$CJ_RDIR_B" "$@"
     else
         cj_on "$node" "$@"
     fi

@@ -2,11 +2,9 @@
  *
  * ACCEPTANCE BAR for dev.agent.rules (tools/command/native_devagent_rules.c).
  *
- * This file is the contract that one single-file unit must satisfy by editing
- * tools/command/native_devagent_rules.c and nothing else. It is written
- * against a fixture repository built here, never against the checkout it runs
- * in, so it proves behavior rather than the state of this machine. Do not
- * edit this file to make the implementation pass.
+ * This file tests the canonical rules table through its bound handler.
+ * Contract changes require explicit authorization and failing regressions;
+ * no assertion may be weakened merely to make an implementation pass.
  *
  * It calls the bound handler DIRECTLY: dev.agent.rules is a dev-lane leaf and
  * an in-process call is exactly what the CLI does after input validation, so
@@ -98,9 +96,40 @@ static const char *const dvx_topics[] = {
 };
 
 int test_devagent_rules(void);
-int test_devagent_rules(void)
+static int test_rules_exact_revalidation(void)
 {
     int failures = 0;
+    TEST("rules: both layouts require exact revalidation after a changed base") {
+        struct dvx_call c;
+        dvx_begin(&c);
+        ASSERT(dvx_run(&c));
+        ASSERT(dvx_ok(&c));
+        const struct json_value *rules = dvx_arr(&c, "rules");
+        ASSERT(rules != NULL);
+        size_t checked = 0;
+        for (size_t i = 0; i < rules->num_children; i++) {
+            if (strcmp(dvx_row_str(&rules->children[i], "id"), "gate_command") != 0)
+                continue;
+            const char *say = dvx_row_str(&rules->children[i], "say");
+            ASSERT_STR_EQ(dvx_row_str(&rules->children[i], "value"),
+                          "lint_fast_plus_impact_and_exact_proof");
+            ASSERT(strstr(say, "changed base requires exact revalidation") != NULL);
+            ASSERT(strstr(say, "receiver-qualified reuse") != NULL);
+            ASSERT(strstr(say, "complete exact candidate/base proof and receipt") != NULL);
+            ASSERT(strstr(say, "do NOT re-run") == NULL);
+            checked++;
+        }
+        ASSERT_EQ(checked, (size_t)2);
+        dvx_end(&c);
+        PASS();
+    }
+_test_next:;
+    return failures;
+}
+
+int test_devagent_rules(void)
+{
+    int failures = test_rules_exact_revalidation();
 
     TEST("rules: the leaf is registered and accepts cwd and situation") {
         const struct zcl_command_spec *spec =
@@ -193,7 +222,7 @@ int test_devagent_rules(void)
         }
     }
 
-    TEST("rules: standalone pushes to origin/main and says why") {
+    TEST("rules: standalone requires native receipt-gated publication") {
         struct dvx_call c;
         dvx_begin(&c);
         (void)json_push_kv_str(&c.input, "situation", "standalone");
@@ -205,7 +234,7 @@ int test_devagent_rules(void)
         for (size_t i = 0; i < rules->num_children; i++) {
             if (strcmp(dvx_row_str(&rules->children[i], "id"), "push_target") != 0)
                 continue;
-            ASSERT_STR_EQ(dvx_row_str(&rules->children[i], "value"), "origin/main");
+            ASSERT_STR_EQ(dvx_row_str(&rules->children[i], "value"), "native_receipt_gated_land");
             ASSERT(strstr(dvx_row_str(&rules->children[i], "say"),
                           "shared integration blackboard") != NULL);
             checked = true;
@@ -215,7 +244,7 @@ int test_devagent_rules(void)
         PASS();
     }
 
-    TEST("rules: a lane never pushes, and never stashes") {
+    TEST("rules: a lane requires native publication, and never stashes") {
         struct dvx_call c;
         dvx_begin(&c);
         (void)json_push_kv_str(&c.input, "situation", "shared_checkout_lane");
@@ -228,7 +257,7 @@ int test_devagent_rules(void)
             const char *id = dvx_row_str(&rules->children[i], "id");
             if (strcmp(id, "push_target") == 0) {
                 ASSERT_STR_EQ(dvx_row_str(&rules->children[i], "value"),
-                              "lane_branch_no_push");
+                              "native_receipt_gated_land");
                 push_seen = true;
             }
             if (strcmp(id, "commit_scope") == 0 &&

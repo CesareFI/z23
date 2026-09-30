@@ -39,9 +39,8 @@
  *   files      array of {path, exists}, one per requested path, in the order
  *              given. exists is decided against the resolved cwd.
  *   next       array of strings, the ordered next actions. It ALWAYS contains
- *              "make lint-fast", and when the situation is
- *              "shared_checkout_lane" it also contains
- *              "commit on your lane branch; do not push".
+ *              "make lint-fast" and the canonical push_target instruction
+ *              for this situation. Git layout does not grant authority.
  *   facts      one line naming how many verified fact rows this checkout
  *              carries and how to query them, from the compiled table in
  *              engine/composition/facts/ — so a lane orients by asking
@@ -411,10 +410,18 @@ static void dvt_build_next(const char *situation, struct json_value *out)
     json_set_str(&item, "make lint-fast");
     (void)json_push_back(out, &item);
 
-    if (strcmp(situation, "shared_checkout_lane") == 0) {
-        json_set_str(&item, "commit on your lane branch; do not push");
-        (void)json_push_back(out, &item);
-    }
+#define ZCL_AGENT_SITUATION(id_, test_prose_)
+#define ZCL_AGENT_RULE(id_, situation_, value_, say_)                         \
+    do {                                                                     \
+        if (strcmp(#id_, "push_target") == 0 &&                              \
+            strcmp(#situation_, situation) == 0) {                            \
+            json_set_str(&item, say_);                                        \
+            (void)json_push_back(out, &item);                                 \
+        }                                                                    \
+    } while (0);
+#include "../../engine/composition/agent_rules.def"
+#undef ZCL_AGENT_RULE
+#undef ZCL_AGENT_SITUATION
 
     json_free(&item);
 }

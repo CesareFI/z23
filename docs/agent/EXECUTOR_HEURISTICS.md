@@ -73,7 +73,7 @@ z23 dev fleet mind ask trap_of test_boot_phase
 | grok | requires | finisher | a rounds-exhausted verdict is judged, not trusted: rerun the judged group in the unit worktree first; two of two such verdicts were stale judge logs over a fix already committed |
 | haiku | handles_well | mechanical-rows | row edits, doc counts, log triage; state the commit trailer literally or it goes missing |
 | muse | handles_well | long-wall-implementation | the only tier given a two-hour wall; specify interfaces (file, flags, error names, fixtures), never goals |
-| muse | requires | finisher | a unit is not done until a finisher has run, because the wall expires with the work uncommitted |
+| muse | requires | finisher | Historical 2026-09-03 experiment: a separate finisher completed timed-out units; current completion requires exact checkpoints and non-author acceptance, not a permanent central role |
 | opus | handles_well | hard-implementation | deep debugging and design judgement; read its refusal, a brief that duplicates a landed subsystem is correctly declined |
 | sonnet | handles_poorly | fixture-line-reading | a verifier reading a gate's selftest transcript reports the fixture's FAIL lines as a red gate although the exit is zero; the brief says only the exit and the final summary line count, and names the fixture lines in advance |
 | sonnet | handles_well | finishing-rebase | finishes an unfinished unit and resolves a rebase conflict; the brief must forbid git stash explicitly |

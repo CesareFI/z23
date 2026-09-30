@@ -39,6 +39,7 @@
 
 #include "platform/time_compat.h"
 #include "platform/directory_compat.h"
+#include "platform/logical_cpu.h"
 #include "command/native_dev_hotswap.h"
 #include "config/command_catalog.h"
 #include "hotswap/hotswap.h"
@@ -766,19 +767,8 @@ static void print_watchdog_kill(size_t idx, const char *name,
 
 static int get_nproc(void)
 {
-#if defined(_WIN32)
-    SYSTEM_INFO si;
-    GetSystemInfo(&si);
-    DWORD n = si.dwNumberOfProcessors;
-    if (n < 1) return 1;
-    if (n > 1024) return 1024;
-    return (int)n;
-#else
-    long n = sysconf(_SC_NPROCESSORS_ONLN);
-    if (n < 1) return 1;
-    if (n > 1024) return 1024;
-    return (int)n;
-#endif
+    uint32_t n = platform_available_cpu_count();
+    return n > 1024u ? 1024 : (int)n;
 }
 
 static bool activate_proof_contract(size_t idx)

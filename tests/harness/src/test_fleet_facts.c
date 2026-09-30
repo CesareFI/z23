@@ -446,10 +446,53 @@ _test_next:;
     return failures;
 }
 
+static int test_fleet_historical_limits(void)
+{
+    int failures = 0;
+    static const char *const subjects[] = {"train", "box", "muse"};
+    static const char *const objects[] = {"four-lanes", "one-proof", "finisher"};
+
+    TEST("fleet_facts: old fleet limits are observations, not current authority") {
+        for (size_t i = 0; i < sizeof(subjects) / sizeof(subjects[0]); i++) {
+            struct zcl_fleet_facts_answer_v1 answer;
+            bool found = false;
+            ASSERT(zcl_fleet_facts_query(subjects[i], NULL, NULL,
+                                        ZCL_FLEET_FACTS_MAX_ROWS, &answer));
+            ASSERT(!answer.unknown);
+            for (size_t j = 0; j < answer.row_count; j++) {
+                const struct zcl_fleet_fact_v1 *row = &answer.rows[j];
+                if (strcmp(row->object, objects[i]) != 0)
+                    continue;
+                ASSERT(row->confidence == ZCL_FLEET_CONFIDENCE_OBSERVED);
+                ASSERT_STR_EQ(row->context, "observation");
+                ASSERT(strstr(row->why, "Historical 2026-09-03") != NULL);
+                found = true;
+            }
+            ASSERT(found);
+        }
+        PASS();
+    }
+
+    TEST("fleet_facts: watcher diagnosis requires native scoped stop authority") {
+        struct zcl_fleet_facts_answer_v1 answer;
+        ASSERT(zcl_fleet_facts_query("proof-lock", "trap_signature", NULL,
+                                    ZCL_FLEET_FACTS_MAX_ROWS, &answer));
+        ASSERT_EQ(answer.row_count, (size_t)1);
+        ASSERT(strstr(answer.rows[0].why, "lockfile is not ownership evidence") != NULL);
+        ASSERT(strstr(answer.rows[0].why, "dev.loop.stop") != NULL);
+        ASSERT(strstr(answer.rows[0].why, "kill by exact pid") == NULL);
+        PASS();
+    }
+
+_test_next:;
+    return failures;
+}
+
 int test_fleet_facts(void)
 {
     int failures = 0;
     failures += test_fleet_facts_table();
     failures += test_fleet_facts_leaf();
+    failures += test_fleet_historical_limits();
     return failures;
 }
