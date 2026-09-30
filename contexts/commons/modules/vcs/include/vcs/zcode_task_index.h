@@ -16,7 +16,8 @@
  * and skipped — a forged or misplaced file cannot enter the projection.
  * Entries are sorted by root hex for deterministic output. Bounds: at most
  * VCS_ZCODE_TASK_INDEX_MAX_TASKS tasks, MAX_CANDIDATES candidates and
- * MAX_CONTEXTS contexts.
+ * MAX_CONTEXTS contexts. Every non-dot CAS directory entry, including
+ * malformed junk, consumes a fixed scan-work budget.
  *
  * Read-only: the index never writes to the CAS. Signed work receipts are
  * re-rooted and signature-checked before they may affect display state; full
@@ -151,11 +152,17 @@ struct vcs_zcode_task_index; /* opaque */
  * (logged). now_unix drives the expired flag and derived state. */
 struct vcs_zcode_task_index *vcs_zcode_task_index_build(
     const char *repo_root, int64_t now_unix);
+/* Test-only denial seam: applies a smaller scan limit than production. It can
+ * only make an index incomplete sooner; it never permits more work or treats
+ * a truncated scan as complete. */
+struct vcs_zcode_task_index *vcs_zcode_task_index_test_build_bounded(
+    const char *repo_root, int64_t now_unix, size_t scan_limit);
 void vcs_zcode_task_index_free(struct vcs_zcode_task_index *index);
 
 /* Coverage of this scan only; false for NULL, invalid observation time,
- * corrupt recognized objects, scan failures or exceeded capacity. Complete
- * coverage is not proof-policy satisfaction or execution authority. */
+ * corrupt recognized objects, scan failures, exhausted scan work, or
+ * exceeded capacity. Complete coverage is not proof-policy satisfaction or
+ * execution authority. */
 bool vcs_zcode_task_index_complete(const struct vcs_zcode_task_index *index);
 
 size_t vcs_zcode_task_index_task_count(

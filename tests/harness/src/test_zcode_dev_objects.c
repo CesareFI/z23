@@ -7842,6 +7842,26 @@ static bool zd_index_drop_object(const char *workspace, const uint8_t root[32])
     return n > 0 && (size_t)n < sizeof(path) && unlink(path) == 0;
 }
 
+static bool zd_task_index_budget_refuses(void)
+{
+    char dir[512], path[640];
+    test_make_tmpdir(dir, sizeof(dir), "zcode_dev", "task_index_budget");
+    bool ok = vcs_object_store_init(dir);
+    for (size_t i = 0; ok && i < 9; i++) {
+        int n = snprintf(path, sizeof(path),
+                         "%s/.zvcs/objects/junk-%zu", dir, i);
+        ok = n > 0 && (size_t)n < sizeof(path) && zd_write_text(path, "");
+    }
+    struct vcs_zcode_task_index *index = ok
+        ? vcs_zcode_task_index_test_build_bounded(dir, 1500, 8) : NULL;
+    ok = index && !vcs_zcode_task_index_complete(index) &&
+        vcs_zcode_task_index_task_count(index) == 0 &&
+        vcs_zcode_task_index_candidate_count(index) == 0;
+    vcs_zcode_task_index_free(index);
+    test_rm_rf(dir);
+    return ok;
+}
+
 static int test_zd_task_index(void)
 {
     int failures = 0;
@@ -8627,6 +8647,8 @@ static int test_zd_task_index(void)
         json_free(&missing_scope_input);
         json_free(&tasks_input);
         test_rm_rf(dir);
+
+        ASSERT(zd_task_index_budget_refuses());
         PASS();
     } _test_next:;
     return failures;

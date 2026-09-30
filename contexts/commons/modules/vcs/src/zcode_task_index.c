@@ -29,6 +29,7 @@
 #include <string.h>
 
 #define INDEX_LOG "vcs.task_index"
+#define INDEX_MAX_SCANNED 262144u
 
 /* Wire magics from zcode_dev.c — the first 8 bytes decide whether an object
  * of the right size is even a candidate for projection. */
@@ -49,6 +50,9 @@ struct vcs_zcode_task_index {
     size_t receipt_count;
     struct vcs_zcode_task_lane_entry *lanes;
     size_t lane_count;
+    size_t scanned;
+    size_t scan_limit;
+    bool scan_budget_exhausted;
     bool complete;
     int64_t now_unix;
 };
@@ -61,6 +65,24 @@ static bool index_hex_lower(const char *s, size_t want)
             return false;
     }
     return s[want] == '\0';
+}
+
+static bool index_scan_take(struct vcs_zcode_task_index *index)
+{
+    if (index->scanned >= index->scan_limit) {
+        if (!index->scan_budget_exhausted)
+            LOG_ERROR(INDEX_LOG, "CAS scan entry budget exhausted");
+        index->scan_budget_exhausted = true;
+        index->complete = false;
+        return false;
+    }
+    index->scanned++;
+    return true;
+}
+
+static bool index_dot_entry(const char *name)
+{
+    return strcmp(name, ".") == 0 || strcmp(name, "..") == 0;
 }
 
 /* Project one receipt-magic wire. A verified work-pull observation is
@@ -305,7 +327,18 @@ static void index_scan_shard(const char *repo_root, const char *shard_path,
         return;
     }
     struct dirent *de;
-    while ((de = readdir(d)) != NULL) {
+    for (;;) {
+        errno = 0;
+        de = readdir(d);
+        if (!de) {
+            if (errno != 0)
+                index->complete = false;
+            break;
+        }
+        if (index_dot_entry(de->d_name))
+            continue;
+        if (!index_scan_take(index))
+            break;
         if (!index_hex_lower(de->d_name, 62))
             continue;
         char hex64[65];
@@ -314,6 +347,48 @@ static void index_scan_shard(const char *repo_root, const char *shard_path,
             continue;
         index_consider_object(repo_root, hex64, index, cap_logged);
     }
+    closedir(d);
+}
+
+static void index_scan_root(const char *repo_root, const char *objects,
+                            struct vcs_zcode_task_index *index)
+{
+    DIR *d = opendir(objects);
+    if (!d) {
+        if (errno != ENOENT)
+            index->complete = false;
+        return; /* absent store is an empty projection, not an error */
+    }
+    bool cap_logged = false;
+    struct dirent *de;
+    for (;;) {
+        errno = 0;
+        de = readdir(d);
+        if (!de) {
+            if (errno != 0)
+                index->complete = false;
+            break;
+        }
+        if (index_dot_entry(de->d_name))
+            continue;
+        if (!index_scan_take(index))
+            break;
+        if (!index_hex_lower(de->d_name, 2))
+            continue; /* skips "tmp" and any non-shard entry */
+        char shard_path[4400];
+        int n = snprintf(shard_path, sizeof(shard_path), "%s/%s", objects,
+                         de->d_name);
+        if (n <= 0 || (size_t)n >= sizeof(shard_path)) {
+            index->complete = false;
+            continue;
+        }
+        index_scan_shard(repo_root, shard_path, de->d_name, index,
+                         &cap_logged);
+        if (index->scan_budget_exhausted)
+            break;
+    }
+    if (cap_logged)
+        index->complete = false;
     closedir(d);
 }
 
@@ -740,8 +815,8 @@ static void index_derive_states(struct vcs_zcode_task_index *index,
     }
 }
 
-struct vcs_zcode_task_index *vcs_zcode_task_index_build(
-    const char *repo_root, int64_t now_unix)
+static struct vcs_zcode_task_index *index_build(
+    const char *repo_root, int64_t now_unix, size_t scan_limit)
 {
     if (!repo_root)
         LOG_RETURN(NULL, INDEX_LOG, "null repo_root");
@@ -750,6 +825,7 @@ struct vcs_zcode_task_index *vcs_zcode_task_index_build(
     if (!index)
         LOG_RETURN(NULL, INDEX_LOG, "index alloc");
     memset(index, 0, sizeof(*index));
+    index->scan_limit = scan_limit;
     index->complete = now_unix > 0;
     index->now_unix = now_unix;
     index->tasks = zcl_malloc(sizeof(*index->tasks) *
@@ -782,29 +858,7 @@ struct vcs_zcode_task_index *vcs_zcode_task_index_build(
         vcs_zcode_task_index_free(index);
         LOG_RETURN(NULL, INDEX_LOG, "objects path too long");
     }
-    DIR *d = opendir(objects);
-    if (!d) {
-        if (errno != ENOENT)
-            index->complete = false;
-        return index; /* absent store is an empty projection, not an error */
-    }
-    bool cap_logged = false;
-    struct dirent *de;
-    while ((de = readdir(d)) != NULL) {
-        if (!index_hex_lower(de->d_name, 2))
-            continue; /* skips "tmp" and any non-shard entry */
-        char shard_path[4400];
-        n = snprintf(shard_path, sizeof(shard_path), "%s/%s", objects,
-                     de->d_name);
-        if (n <= 0 || (size_t)n >= sizeof(shard_path)) {
-            index->complete = false;
-            continue;
-        }
-        index_scan_shard(repo_root, shard_path, de->d_name, index, &cap_logged);
-    }
-    if (cap_logged)
-        index->complete = false;
-    closedir(d);
+    index_scan_root(repo_root, objects, index);
     if (index->task_count > 1)
         qsort(index->tasks, index->task_count, sizeof(*index->tasks),
               index_task_cmp);
@@ -813,6 +867,20 @@ struct vcs_zcode_task_index *vcs_zcode_task_index_build(
               sizeof(*index->candidates), index_candidate_cmp);
     index_derive_states(index, repo_root, now_unix);
     return index;
+}
+
+struct vcs_zcode_task_index *vcs_zcode_task_index_build(
+    const char *repo_root, int64_t now_unix)
+{
+    return index_build(repo_root, now_unix, INDEX_MAX_SCANNED);
+}
+
+struct vcs_zcode_task_index *vcs_zcode_task_index_test_build_bounded(
+    const char *repo_root, int64_t now_unix, size_t scan_limit)
+{
+    if (scan_limit == 0 || scan_limit > INDEX_MAX_SCANNED)
+        LOG_RETURN(NULL, INDEX_LOG, "invalid test scan limit");
+    return index_build(repo_root, now_unix, scan_limit);
 }
 
 void vcs_zcode_task_index_free(struct vcs_zcode_task_index *index)
