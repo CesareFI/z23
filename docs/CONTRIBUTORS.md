@@ -1,9 +1,10 @@
 # Contributors
 
 Z23 exists because people put real care into it. Authorship is
-preserved in git history (PRs merge with merge commits — see the
-[contributor graph](https://github.com/z23c/z23/graphs/contributors)
-for the live picture); this file recognizes contributors in one place.
+preserved in main's signed linear history through commit author fields or
+`Co-Authored-By` trailers (see the
+[contributor graph](https://github.com/z23c/z23/graphs/contributors) for the
+live picture); this file recognizes contributors in one place.
 
 All contributions are licensed under Apache-2.0 (inbound = outbound) —
 see [CONTRIBUTING.md](../.github/CONTRIBUTING.md#licensing-of-contributions).
