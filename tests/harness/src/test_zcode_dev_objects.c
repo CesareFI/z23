@@ -978,6 +978,46 @@ static bool zd_acceptance_authority(const char *store,
     return ok;
 }
 
+static bool zd_resize_object(const char *store, const uint8_t root[32],
+                             off_t size)
+{
+    char hex[65], path[4608];
+    zcl_hex_encode(root, 32, hex);
+    int n = snprintf(path, sizeof(path), "%s/.zvcs/objects/%c%c/%s",
+                     store, hex[0], hex[1], hex + 2);
+    return n > 0 && (size_t)n < sizeof(path) && truncate(path, size) == 0;
+}
+
+static bool zd_oversize_authority_refuses(const uint8_t base_root[32],
+                                          bool oversize_recipe)
+{
+    char store[256];
+    test_make_tmpdir(store, sizeof(store), "zcode_dev",
+                     oversize_recipe ? "oversize_recipe" : "oversize_lock");
+    uint8_t policy_root[32];
+    zd_root(policy_root, 0x5f);
+    struct vcs_zcode_task_v1 task;
+    zd_task(&task, policy_root);
+    memcpy(task.source_root, base_root, 32);
+    bool ok = zd_acceptance_authority(store, base_root, &task);
+    const uint8_t *root = oversize_recipe
+        ? task.acceptance_tests_root : task.dependency_lock_root;
+    off_t size = (off_t)(oversize_recipe
+        ? VCS_PACKAGE_RECIPE_MAX_WIRE_BYTES
+        : VCS_PACKAGE_LOCK_MAX_WIRE_BYTES) + 1;
+    ok = ok && zd_resize_object(store, root, size) &&
+        vcs_zcode_task_authority_validate(store, &task) ==
+            VCS_ZCODE_TASK_AUTHORITY_CAS;
+    uint8_t *wire = NULL;
+    size_t wire_len = 1;
+    ok = ok && vcs_zcode_task_authority_bundle_export(
+        store, &task, &wire, &wire_len) == VCS_ZCODE_TASK_AUTHORITY_CAS &&
+        wire == NULL && wire_len == 0;
+    free(wire);
+    test_rm_rf(store);
+    return ok;
+}
+
 static int test_zd_acceptance_tests_bound(void)
 {
     int failures = 0;
@@ -1043,6 +1083,8 @@ static int test_zd_acceptance_tests_bound(void)
         ASSERT_EQ(vcs_zcode_task_authority_validate_for_candidate(
                       store, &next_task, &candidate),
                   VCS_ZCODE_TASK_AUTHORITY_OK);
+        ASSERT(zd_oversize_authority_refuses(base_root, false));
+        ASSERT(zd_oversize_authority_refuses(base_root, true));
         PASS();
     } _test_next:;
     return failures;

@@ -26,10 +26,12 @@ enum vcs_zcode_task_authority_result vcs_zcode_task_authority_bundle_export(
         return VCS_ZCODE_TASK_AUTHORITY_NULL;
     *wire = NULL; *wire_len = 0;
     uint8_t *lock = NULL, *recipe = NULL; size_t lock_len = 0, recipe_len = 0;
-    if (vcs_object_load_raw(repo_root, task->dependency_lock_root,
-                            &lock, &lock_len) != 0 ||
-        vcs_object_load_raw(repo_root, task->acceptance_tests_root,
-                            &recipe, &recipe_len) != 0) {
+    if (vcs_object_load_raw_bounded(
+            repo_root, task->dependency_lock_root,
+            VCS_PACKAGE_LOCK_MAX_WIRE_BYTES, &lock, &lock_len) != 0 ||
+        vcs_object_load_raw_bounded(
+            repo_root, task->acceptance_tests_root,
+            VCS_PACKAGE_RECIPE_MAX_WIRE_BYTES, &recipe, &recipe_len) != 0) {
         free(recipe); free(lock); return VCS_ZCODE_TASK_AUTHORITY_CAS;
     }
     if (lock_len > VCS_PACKAGE_LOCK_MAX_WIRE_BYTES ||

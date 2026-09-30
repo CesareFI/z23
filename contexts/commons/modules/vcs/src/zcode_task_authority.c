@@ -74,10 +74,12 @@ enum vcs_zcode_task_authority_result vcs_zcode_task_authority_store(
         return VCS_ZCODE_TASK_AUTHORITY_CAS;
     uint8_t *lock_check = NULL, *recipe_check = NULL;
     size_t lock_check_len = 0, recipe_check_len = 0;
-    bool loaded = vcs_object_load_raw(
-            repo_root, lock_root, &lock_check, &lock_check_len) == 0 &&
-        vcs_object_load_raw(
-            repo_root, recipe_root, &recipe_check, &recipe_check_len) == 0 &&
+    bool loaded = vcs_object_load_raw_bounded(
+            repo_root, lock_root, lock_wire_len,
+            &lock_check, &lock_check_len) == 0 &&
+        vcs_object_load_raw_bounded(
+            repo_root, recipe_root, recipe_wire_len,
+            &recipe_check, &recipe_check_len) == 0 &&
         lock_check_len == lock_wire_len && recipe_check_len == recipe_wire_len &&
         memcmp(lock_check, lock_wire, lock_wire_len) == 0 &&
         memcmp(recipe_check, recipe_wire, recipe_wire_len) == 0;
@@ -164,10 +166,13 @@ static enum vcs_zcode_task_authority_result task_authority_validate_tree(
 {
     uint8_t *lock_wire = NULL, *recipe_wire = NULL;
     size_t lock_len = 0, recipe_len = 0;
-    if (vcs_object_load_raw(repo_root, task->dependency_lock_root,
-                            &lock_wire, &lock_len) != 0 ||
-        vcs_object_load_raw(repo_root, task->acceptance_tests_root,
-                            &recipe_wire, &recipe_len) != 0) {
+    if (vcs_object_load_raw_bounded(
+            repo_root, task->dependency_lock_root,
+            VCS_PACKAGE_LOCK_MAX_WIRE_BYTES, &lock_wire, &lock_len) != 0 ||
+        vcs_object_load_raw_bounded(
+            repo_root, task->acceptance_tests_root,
+            VCS_PACKAGE_RECIPE_MAX_WIRE_BYTES,
+            &recipe_wire, &recipe_len) != 0) {
         free(recipe_wire); free(lock_wire);
         return VCS_ZCODE_TASK_AUTHORITY_CAS;
     }

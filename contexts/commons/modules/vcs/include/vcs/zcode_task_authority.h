@@ -43,14 +43,16 @@ enum vcs_zcode_task_authority_result vcs_zcode_task_authority_roots(
     uint8_t lock_root[32], uint8_t recipe_root[32]);
 
 /* Parse, root, store with atomic CAS writes, and readback-verify the canonical
- * package lock and recipe wires in the workspace CAS. */
+ * package lock and recipe wires in the workspace CAS. Readback allocation is
+ * bounded by the already-validated exact input lengths. */
 enum vcs_zcode_task_authority_result vcs_zcode_task_authority_store(
     const char *repo_root, const uint8_t *lock_wire, size_t lock_wire_len,
     const uint8_t *recipe_wire, size_t recipe_wire_len,
     uint8_t lock_root[32], uint8_t recipe_root[32]);
 
-/* Require both addressed wires and recipe membership in the task's exact
- * base source tree or candidate source tree. The candidate form also
+/* Require both addressed wires, pre-read bounded at their canonical wire
+ * maxima, and recipe membership in the task's exact base source tree or
+ * candidate source tree. The candidate form also
  * requires the candidate tree to carry the task's exact acceptance-test
  * bytes: a candidate cannot edit the tests it is judged by
  * (VCS_ZCODE_TASK_AUTHORITY_ACCEPTANCE_TESTS_MODIFIED). Changing the tests
