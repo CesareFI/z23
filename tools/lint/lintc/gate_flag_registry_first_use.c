@@ -113,6 +113,8 @@ static int fru_scan(const char *path, int line, const char *name, int *hit,
     struct stat st;
     if (stat(path, &st) != 0)
         return 1;
+    if (!S_ISREG(st.st_mode))
+        return -1;
     FILE *f = fopen(path, "r");
     if (!f)
         return -1;
