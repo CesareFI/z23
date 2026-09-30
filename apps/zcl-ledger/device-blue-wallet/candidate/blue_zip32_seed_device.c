@@ -11,7 +11,7 @@ static bool derive_node(void *context, const uint32_t path[3],
     unsigned int device_path[3] = {path[0], path[1], path[2]};
     os_perso_derive_node_bip32(CX_CURVE_256K1, device_path, 3,
         private_key, chain_code);
-    return true;
+    return os_global_pin_is_validated();
 }
 
 bool blue_zip32_device_master(struct zip32_xsk *result,

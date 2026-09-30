@@ -18,7 +18,11 @@ typedef struct {
 
 /* Accepts one INS 29 response only for the expected reviewed input.
  * The verifier callback must check ECDSA over the exact ZIP-243 digest.
- * No reply bytes are released through result unless every check passes. */
+ * Result must be disjoint from the reply, expected hash, and digest. An
+ * overlap fails before writing either buffer; callers must ignore result on
+ * failure. Reply, hash, and digest inputs must stay unchanged through both
+ * callbacks. Callback-facing copies must also stay unchanged. No reply bytes
+ * are copied to a disjoint result unless every check passes. */
 bool blue_payment_host_verify(const uint8_t *reply, size_t reply_length,
     uint8_t expected_index, uint8_t expected_path,
     const uint8_t expected_hash160[20], const uint8_t digest[32],

@@ -2,6 +2,7 @@
 #include "blue_zip32_seed_bridge.h"
 
 #include "blue_mod256.h"
+#include "blue_storage.h"
 #include "blue_zip32_master.h"
 #include "crypto/blake2b.h"
 
@@ -23,7 +24,13 @@ static bool root_from_node(uint8_t root[32], const uint8_t node[64]) {
 bool blue_zip32_master_from_bip32(struct zip32_xsk *result,
     blue_zip32_seed_workspace *workspace,
     blue_zip32_bip32_source source, void *context) {
-    if (!result || (void *)result == (void *)workspace) return false;
+    if (!result) {
+        if (workspace) blue_mod256_wipe(workspace, sizeof *workspace);
+        return false;
+    }
+    if (blue_storage_overlaps(result, sizeof *result,
+            workspace, workspace ? sizeof *workspace : 0))
+        return false;
     if (!workspace || !source) {
         blue_mod256_wipe(result, sizeof *result);
         return false;

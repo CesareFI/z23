@@ -15,7 +15,7 @@ typedef struct {
     char kind[20];
 } blue_payment_screen;
 
-enum { BLUE_PAYMENT_AMOUNT_TEXT_SIZE = 24 };
+enum { BLUE_PAYMENT_AMOUNT_TEXT_SIZE = sizeof "21000000.00000000 ZCL" };
 
 typedef enum {
     BLUE_PAYMENT_ACCOUNT_UNKNOWN,

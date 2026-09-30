@@ -3,9 +3,11 @@
 #include "blue_chain_tip.h"
 #include "blue_utxo.h"
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -66,6 +68,38 @@ static bool utxo_replacement(const char *old, const char *new_text) {
                            400000000, script, sizeof script, 707002);
 }
 
+static void fork_stdout_holder(const char *marker) {
+    if (!marker) return;
+    pid_t holder = fork();
+    assert(holder >= 0);
+    if (holder == 0) {
+        struct timespec delay = {.tv_sec = 9};
+        while (nanosleep(&delay, &delay) < 0 && errno == EINTR) {}
+        FILE *file = fopen(marker, "w");
+        if (file) {
+            (void)fputc('x', file);
+            (void)fclose(file);
+        }
+        _exit(0);
+    }
+}
+
+static void test_forked_holder(const char *rpc_binary) {
+    char holder_marker[] = "/tmp/zcl-blue-holder-test-XXXXXX";
+    int holder_fd = mkstemp(holder_marker);
+    assert(holder_fd >= 0 && close(holder_fd) == 0);
+    assert(setenv("BLUE_CHAIN_TIP_TEST_FORK_HOLDER", holder_marker, 1) == 0);
+    blue_chain_tip tip;
+    assert(!blue_chain_tip_query(rpc_binary, &tip));
+    assert(unsetenv("BLUE_CHAIN_TIP_TEST_FORK_HOLDER") == 0);
+    struct timespec delay = {.tv_sec = 3};
+    while (nanosleep(&delay, &delay) < 0 && errno == EINTR) {}
+    FILE *file = fopen(holder_marker, "r");
+    assert(file);
+    assert(fgetc(file) == EOF && fclose(file) == 0);
+    assert(unlink(holder_marker) == 0);
+}
+
 int main(int argc, char **argv) {
     if (argc == 2 && strcmp(argv[1], "getblockchaininfo") == 0) {
         if (getenv("BLUE_CHAIN_TIP_TEST_STALL")) {
@@ -88,7 +122,14 @@ int main(int argc, char **argv) {
             file = fopen(marker, "w");
             assert(file && fclose(file) == 0);
         }
+        fork_stdout_holder(getenv("BLUE_CHAIN_TIP_TEST_FORK_HOLDER"));
         puts(good);
+        if (getenv("BLUE_CHAIN_TIP_TEST_CLOSE_STDOUT")) {
+            assert(fflush(stdout) == 0);
+            assert(close(STDOUT_FILENO) == 0);
+            struct timespec delay = {.tv_sec = 9};
+            nanosleep(&delay, NULL);
+        }
         return 0;
     }
     if (argc == 3 && strcmp(argv[1], "gettxdetail") == 0) {
@@ -174,5 +215,19 @@ int main(int argc, char **argv) {
     assert(setenv("BLUE_CHAIN_TIP_TEST_STALL", "1", 1) == 0);
     assert(!blue_chain_tip_query(argv[0], &tip));
     assert(unsetenv("BLUE_CHAIN_TIP_TEST_STALL") == 0);
+    assert(setenv("BLUE_CHAIN_TIP_TEST_CLOSE_STDOUT", "1", 1) == 0);
+    char response[512];
+    memset(response, 0xa5, sizeof response);
+    size_t response_length = SIZE_MAX;
+    assert(!blue_rpc_capture(argv[0], "getblockchaininfo", NULL,
+                             response, sizeof response, &response_length));
+    assert(response_length == 0);
+    for (size_t i = 0; i < strlen(good) + 1; ++i)
+        assert(response[i] == 0);
+    assert(unsetenv("BLUE_CHAIN_TIP_TEST_CLOSE_STDOUT") == 0);
+    int status = 0;
+    errno = 0;
+    assert(waitpid(-1, &status, WNOHANG) == -1 && errno == ECHILD);
+    test_forked_holder(argv[0]);
     return 0;
 }

@@ -5,6 +5,7 @@
 #undef NDEBUG
 #include <assert.h>
 #include <stdbool.h>
+#include <signal.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
@@ -13,7 +14,14 @@
 
 enum { REPLY_CAPACITY = 80 };
 
+static void ignore_broken_pipe(void) {
+    struct sigaction ignore_pipe = {.sa_handler = SIG_IGN};
+    if (sigemptyset(&ignore_pipe.sa_mask) != 0 ||
+        sigaction(SIGPIPE, &ignore_pipe, NULL) != 0) _exit(7);
+}
+
 static void fake_device(int fd, int mode) {
+    ignore_broken_pipe();
     uint8_t request[LEDGER_HID_REPORT_SIZE + 1];
     if (read(fd, request, sizeof request) != (ssize_t)sizeof request) _exit(2);
     uint8_t payload[80] = {'Z', 'C', 'L', 8, 1, 0x90, 0};
@@ -26,13 +34,13 @@ static void fake_device(int fd, int mode) {
     if (mode == 1) report[4] = 1;
     const struct timespec delay = {.tv_nsec = 70000000L};
     if (mode == 4) (void)nanosleep(&delay, NULL);
-    if (send(fd, report, sizeof report, MSG_NOSIGNAL) !=
+    if (write(fd, report, sizeof report) !=
         (ssize_t)sizeof report && mode != 4) _exit(4);
     if (mode >= 3) {
         if (mode == 4) (void)nanosleep(&delay, NULL);
         if (ledger_hid_encode(payload + consumed, payload_length - consumed,
                 1, report, &consumed) < 0) _exit(5);
-        if (send(fd, report, sizeof report, MSG_NOSIGNAL) !=
+        if (write(fd, report, sizeof report) !=
             (ssize_t)sizeof report && mode != 4) _exit(6);
     }
     _exit(0);

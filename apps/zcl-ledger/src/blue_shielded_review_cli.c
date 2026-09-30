@@ -109,9 +109,17 @@ static void print_digest(const uint8_t digest[32]) {
     putchar('\n');
 }
 
-static void print_review(const zcl_tx_review *review,
-    const uint8_t digest[32], bool simulated) {
-    printf("%s read-only review matched Z23's parser and ZIP-243 digest.\n",
+static void print_wire_commitment(const uint8_t commitment[32]) {
+    fputs("Full-wire SHA-256: ", stdout);
+    for (unsigned i = 0; i < 32; ++i)
+        printf("%02x", commitment[i]);
+    putchar('\n');
+}
+
+static void print_review(const blue_shielded_review_receipt *receipt,
+    bool simulated) {
+    const zcl_tx_review *review = &receipt->facts;
+    printf("%s read-only review matched Z23's parser, ZIP-243 digest, and full wire.\n",
         simulated ? "Simulated Blue" : "Blue");
     printf("Transparent inputs/outputs: %" PRIu32 "/%" PRIu32 "\n",
         review->transparent_inputs, review->transparent_outputs);
@@ -123,7 +131,10 @@ static void print_review(const zcl_tx_review *review,
         review->transparent_output_zat);
     printf("Sapling value balance (zatoshis): %" PRId64 "\n",
         review->value_balance_zat);
-    print_digest(digest);
+    printf("Reviewed branch: 0x%08" PRIX32 "; wire bytes: %" PRIu32 "\n",
+        receipt->branch_id, receipt->wire_length);
+    print_digest(receipt->zip243_digest);
+    print_wire_commitment(receipt->wire_sha256);
     puts("Fee, shielded recipients, amounts, memos, proofs, and ownership"
         " are not verified. No payment was authorized or signed.");
 }
@@ -181,12 +192,11 @@ int main(int argc, char **argv) {
     review_connection *connection = calloc(1, sizeof *connection);
     if (!connection) { free(wire); return 1; }
     initialize_connection(connection, &args);
-    zcl_tx_review review;
-    uint8_t digest[32];
+    blue_shielded_review_receipt receipt;
     bool ok = (args.simulate || connection->fd >= 0) &&
-        blue_shielded_review_client_run(wire, length, args.branch,
-            exchange, connection, &review, digest);
-    if (ok) print_review(&review, digest, args.simulate);
+        blue_shielded_review_client_run_receipt(wire, length, args.branch,
+            exchange, connection, &receipt);
+    if (ok) print_review(&receipt, args.simulate);
     else fputs("Blue read-only review failed; discard its result.\n",
         stderr);
     if (connection->fd >= 0) close(connection->fd);

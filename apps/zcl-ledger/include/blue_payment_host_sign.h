@@ -11,12 +11,20 @@ typedef bool (*blue_payment_host_approval)(void *context);
 
 /* Requires 1..16 inputs and protocol 12/capability 31, then collects
  * signatures in input order. Every reply is checked against its expected
- * path, public-key hash, and ZIP-243 digest. Once bounded arguments are
- * accepted, an identity, approval, transport, or verification failure
- * attempts to abort the device review and clears every output slot,
- * including signatures already obtained. Invalid arguments also request
- * an abort when an exchange callback is available. The output array must not
- * overlap the expected paths, hashes, or digests. No broadcast occurs. */
+ * path, public-key hash, and ZIP-243 digest. Verified replies remain private
+ * until every input passes; callbacks cannot alter an earlier returned reply.
+ * Expectations are frozen before identity and approval callbacks. If caller
+ * storage differs after a callback, the function rejects all signatures and
+ * attempts a review abort. The caller keeps all arrays alive and prevents
+ * concurrent writes.
+ * Once bounded arguments are accepted, identity, approval, transport, or
+ * verification failure attempts to abort the device review, then clears
+ * every output slot, including signatures already obtained. Invalid arguments
+ * also request an abort when an exchange callback is available. The output
+ * array must not overlap the expected paths, hashes, or digests; rejected
+ * overlap leaves trusted input bytes untouched and makes no signing request.
+ * Callers must
+ * ignore output slots after any failure. No broadcast occurs. */
 bool blue_payment_host_sign(size_t count, const uint8_t *paths,
     const uint8_t (*hashes)[20], const uint8_t (*digests)[32],
     blue_payment_live_exchange exchange,

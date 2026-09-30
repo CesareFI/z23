@@ -11,27 +11,46 @@ static void check_lines(const blue_shielded_review_app *app) {
         if (!memchr(app->lines[i], 0, ZCL_BLUE_REVIEW_LINE_SIZE)) abort();
 }
 
+static void check_reply_memory(const uint8_t *apdu,
+    const uint8_t reply[260], size_t length, size_t capacity,
+    size_t reply_length, bool shared, uint16_t status) {
+    if (reply_length > capacity) abort();
+    if (shared)
+        for (size_t i = capacity; i < length; ++i)
+            if (reply[i] != apdu[i]) abort();
+    size_t untouched = shared && length > capacity ? length : capacity;
+    for (size_t i = untouched; i < 260; ++i)
+        if (reply[i] != 0xa5) abort();
+    size_t cleared_from = status == 0x9000 ? reply_length : 0;
+    for (size_t i = cleared_from; i < capacity; ++i)
+        if (reply[i]) abort();
+}
+
+static void check_rejected(const blue_shielded_review_app *app,
+    size_t reply_length) {
+    if (reply_length || app->transaction.active ||
+        app->transaction.complete ||
+        strcmp(app->lines[0], "CONNECT Z23")) abort();
+    const uint8_t *state = (const uint8_t *)&app->transaction;
+    for (size_t i = 0; i < sizeof app->transaction; ++i)
+        if (state[i]) abort();
+    for (size_t i = 0; i < sizeof app->reply; ++i)
+        if (app->reply[i]) abort();
+}
+
 static uint16_t send(blue_shielded_review_app *app,
     const zcl_zip243_hasher *hasher, const uint8_t *apdu,
-    size_t length, size_t capacity) {
-    uint8_t reply[80];
+    size_t length, size_t capacity, bool shared) {
+    uint8_t reply[260];
     memset(reply, 0xa5, sizeof reply);
+    if (shared) memcpy(reply, apdu, length);
     size_t reply_length = 255;
-    uint16_t status = blue_shielded_review_app_command(app, apdu,
+    uint16_t status = blue_shielded_review_app_command(app,
+        shared ? reply : apdu,
         length, reply, capacity, &reply_length, hasher);
-    if (reply_length > capacity) abort();
-    for (size_t i = capacity; i < sizeof reply; ++i)
-        if (reply[i] != 0xa5) abort();
-    if (status != 0x9000) {
-        if (reply_length || app->transaction.active ||
-            app->transaction.complete ||
-            strcmp(app->lines[0], "CONNECT Z23")) abort();
-        const uint8_t *state = (const uint8_t *)&app->transaction;
-        for (size_t i = 0; i < sizeof app->transaction; ++i)
-            if (state[i]) abort();
-        for (size_t i = 0; i < sizeof app->reply; ++i)
-            if (app->reply[i]) abort();
-    }
+    check_reply_memory(apdu, reply, length, capacity,
+        reply_length, shared, status);
+    if (status != 0x9000) check_rejected(app, reply_length);
     check_lines(app);
     return status;
 }
@@ -39,7 +58,7 @@ static uint16_t send(blue_shielded_review_app *app,
 static void send_seed(blue_shielded_review_app *app,
     const zcl_zip243_hasher *hasher, const uint8_t *apdu,
     size_t length) {
-    if (send(app, hasher, apdu, length, 78) != 0x9000) abort();
+    if (send(app, hasher, apdu, length, 78, true) != 0x9000) abort();
 }
 
 static void seed_review(blue_shielded_review_app *app,
@@ -78,7 +97,8 @@ static void fuzz_commands(blue_shielded_review_app *app,
         if (length > size - offset) length = size - offset;
         size_t capacity = (control & 31u) * 3u;
         if (capacity > 78) capacity = 78;
-        send(app, hasher, data + offset, length, capacity);
+        send(app, hasher, data + offset, length, capacity,
+            (control & 0x80u) != 0);
         offset += length;
         switch ((control >> 5) & 3u) {
         case 1: (void)blue_shielded_review_app_next(app); break;

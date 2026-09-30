@@ -23,7 +23,8 @@ typedef bool (*blue_zip32_bip32_source)(void *context,
 /* Map a device-derived hardened BIP32 node into a Ledger-specific ZIP32
  * master. This root differs from the standard ZIP32 root of a wallet seed.
  * The source must enforce device unlock and keep the node out of APDU replies.
- * Result and workspace must not overlap. Workspace is cleared on every exit. */
+ * Result and workspace must not overlap. A rejected overlap leaves both
+ * buffers unchanged; all other calls clear a non-null workspace on exit. */
 bool blue_zip32_master_from_bip32(struct zip32_xsk *result,
     blue_zip32_seed_workspace *workspace,
     blue_zip32_bip32_source source, void *context);

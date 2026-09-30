@@ -42,7 +42,9 @@ bool zcl_tx_shielded_replay_begin(zcl_tx_shielded_replay *state,
  * provisional until finish succeeds after six identical complete passes.
  * A failed replay clears the caller's 32-byte rk. On success, the caller
  * owns and must erase the verified rk. Output must not overlap the replay
- * state or the hash context. */
+ * state or the hash context. Fixed-size buffer overlap and a hash context
+ * starting inside one are rejected before writes; the caller must ensure the
+ * entire hash context is disjoint and erase rejected buffers. */
 bool zcl_tx_shielded_replay_begin_rk(zcl_tx_shielded_replay *state,
     uint32_t expected_length, uint32_t branch_id,
     const zcl_zip243_hasher *blake, uint32_t spend_index,
@@ -52,14 +54,36 @@ bool zcl_tx_shielded_replay_begin_rk(zcl_tx_shielded_replay *state,
  * match. Failure or abort clears it; after success the caller owns and must
  * erase it. No recipient or amount is established by capture alone;
  * decryption and note-commitment verification are needed.
- * The capture must not overlap replay state or the hash context. */
+ * The capture must not overlap replay state or the hash context. Fixed-size
+ * buffer overlap and a hash context starting inside one are rejected before
+ * writes; the caller must ensure the entire context is disjoint and erase
+ * rejected buffers. */
 bool zcl_tx_shielded_replay_begin_output(zcl_tx_shielded_replay *state,
     uint32_t expected_length, uint32_t branch_id,
     const zcl_zip243_hasher *blake, uint32_t output_index,
     zcl_tx_shielded_output_capture *output);
+/* Bind one spend rk and one output capture to the same six-pass wire replay.
+ * Neither result is authoritative until finish succeeds. Failure or abort
+ * clears both captures; after success the caller owns and must erase them.
+ * Both outputs must be distinct from each other, the replay state, and the
+ * hash context. Fixed-size buffer overlap and a hash context starting inside
+ * one are rejected before writes; the caller must ensure the entire context
+ * is disjoint and erase rejected buffers. This is capture only, not payment
+ * approval. */
+bool zcl_tx_shielded_replay_begin_captures(zcl_tx_shielded_replay *state,
+    uint32_t expected_length, uint32_t branch_id,
+    const zcl_zip243_hasher *blake, uint32_t spend_index,
+    uint8_t spend_rk[32], uint32_t output_index,
+    zcl_tx_shielded_output_capture *output);
+/* Feed bytes must not overlap replay state or provisional captures. An
+ * overlap aborts and erases all three before parsing or hashing. */
 bool zcl_tx_shielded_replay_feed(zcl_tx_shielded_replay *state,
     const uint8_t *bytes, size_t length);
 bool zcl_tx_shielded_replay_next(zcl_tx_shielded_replay *state);
+/* Facts and digest must be disjoint from each other, replay state, hash
+ * context, and provisional captures. Fixed-size overlap and a context base
+ * inside an output abort and erase the replay and captures. The caller must
+ * ensure the entire hash context is disjoint. */
 bool zcl_tx_shielded_replay_finish(zcl_tx_shielded_replay *state,
     zcl_tx_shielded_facts *facts, uint8_t digest[32]);
 /* Erase an active replay and any provisional rk or output capture. Call

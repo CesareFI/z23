@@ -118,6 +118,10 @@ pinned once the reviewer fixes that list.
   The tool pin changes with any package update to GCC, binutils or their
   libraries. Rebuild and re-review it after every such update; never edit a
   pin to match.
+- A driver other than GCC 14.2 on Ubuntu 24.04 emits its own cold result.o.
+  The no-root proof still requires the tool image to reproduce that object
+  byte for byte. These pinned result.o bytes are required when the object
+  is 10,128 bytes.
 
 ## No-root completeness proof
 

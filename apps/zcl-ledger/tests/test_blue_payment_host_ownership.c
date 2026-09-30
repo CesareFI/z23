@@ -42,6 +42,10 @@ int main(void) {
         result.paths[1] == BLUE_PAYMENT_INPUT_INTERNAL &&
         memcmp(result.hashes[0], external, 20) == 0 &&
         memcmp(result.hashes[1], internal, 20) == 0);
+    blue_payment_host_ownership proposed = {0};
+    assert(blue_payment_host_propose_paths(spend, length, previous, 2,
+        hash_sha256, external, &proposed));
+    assert(memcmp(&proposed, &result, sizeof proposed) == 0);
     blue_payment_host_ownership original = result;
     assert(!blue_payment_host_classify_inputs(spend, length, previous, 2,
         hash_sha256, external, other, &result));

@@ -79,6 +79,39 @@ static void check_invalid_encoding(void) {
     assert(!blue_fs_from_bytes_canonical(NULL, order));
 }
 
+static void check_random_encodings(uint64_t *state) {
+    const struct fs zero = {0};
+    for (unsigned sample = 0; sample < 4096; ++sample) {
+        uint8_t bytes[32];
+        for (size_t i = 0; i < sizeof bytes; ++i) {
+            *state = *state * 6364136223846793005ULL +
+                1442695040888963407ULL;
+            bytes[i] = (uint8_t)(*state >> 56);
+        }
+        struct fs reference = {0}, decoded = {0};
+        bool valid = fs_from_bytes(&reference, bytes);
+        assert(blue_fs_from_bytes_canonical(&decoded, bytes) == valid);
+        assert(memcmp(&decoded, valid ? &reference : &zero,
+            sizeof decoded) == 0);
+    }
+}
+
+static void check_decoder_overlap(void) {
+    struct {
+        struct fs result;
+        uint8_t tail[32];
+    } storage;
+    memset(&storage, 0xa5, sizeof storage);
+    uint8_t original[sizeof storage];
+    memcpy(original, &storage, sizeof original);
+    assert(!blue_fs_from_bytes_canonical(&storage.result,
+        (const uint8_t *)&storage.result));
+    assert(memcmp(&storage, original, sizeof storage) == 0);
+    assert(!blue_fs_from_bytes_canonical(&storage.result,
+        (const uint8_t *)&storage.result + 16));
+    assert(memcmp(&storage, original, sizeof storage) == 0);
+}
+
 int main(void) {
     struct fs zero, one;
     fs_zero(&zero);
@@ -89,10 +122,12 @@ int main(void) {
     }};
     const struct fs *edges[] = {&zero, &one, &max};
     check_invalid_encoding();
+    check_decoder_overlap();
     for (size_t i = 0; i < 3; ++i) check_encoding(edges[i]);
     for (size_t i = 0; i < 3; ++i)
         for (size_t j = 0; j < 3; ++j) check_pair(edges[i], edges[j]);
     uint64_t state = 0x23c1a55b7e491dc3ULL;
+    check_random_encodings(&state);
     for (size_t sample = 0; sample < 4096; ++sample) {
         struct fs a = random_scalar(&state), b = random_scalar(&state);
         check_encoding(&a);

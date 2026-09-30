@@ -9,6 +9,7 @@
 
 #undef NDEBUG
 #include <assert.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -566,6 +567,162 @@ static void reject_substituted_spend_rk(void) {
     }
 }
 
+static void reject_substituted_combined_capture(void) {
+    uint8_t wire[BLUE_SYNTHETIC_SAPLING_BYTES];
+    blue_sapling_fixture(wire);
+    struct blake2b_ctx context;
+    zcl_zip243_hasher hasher = zcl_zip243_host_hasher(&context);
+    zcl_tx_shielded_replay state;
+    zcl_tx_shielded_output_capture output;
+    uint8_t rk[32];
+    memset(rk, 0xa5, sizeof rk);
+    memset(&output, 0xa5, sizeof output);
+    assert(!zcl_tx_shielded_replay_begin_captures(&state,
+        sizeof wire, 0x76b809bb, &hasher, 0, rk, 4096, &output));
+    const uint8_t zero_rk[32] = {0};
+    const zcl_tx_shielded_output_capture zero_output = {0};
+    assert(memcmp(rk, zero_rk, sizeof rk) == 0);
+    assert(memcmp(&output, &zero_output, sizeof output) == 0);
+    assert(zcl_tx_shielded_replay_begin_captures(&state,
+        sizeof wire, 0x76b809bb, &hasher, 0, rk, 0, &output));
+    replay_pass(&state, wire, sizeof wire, 220);
+    assert(zcl_tx_shielded_replay_next(&state));
+    assert(memcmp(rk, zero_rk, sizeof rk) != 0);
+    assert(memcmp(&output, &zero_output, sizeof output) != 0);
+    wire[27 + 96 + 7] ^= 1u;
+    replay_pass(&state, wire, sizeof wire, 17);
+    assert(!zcl_tx_shielded_replay_next(&state));
+    assert(state.failed);
+    assert(memcmp(rk, zero_rk, sizeof rk) == 0);
+    assert(memcmp(&output, &zero_output, sizeof output) == 0);
+}
+
+static void reject_overlapping_captures(void) {
+    struct blake2b_ctx context;
+    zcl_zip243_hasher hasher = zcl_zip243_host_hasher(&context);
+    union {
+        zcl_tx_shielded_replay state;
+        zcl_tx_shielded_output_capture output;
+        uint8_t bytes[sizeof(zcl_tx_shielded_output_capture)];
+    } shared;
+    uint8_t original[sizeof shared];
+    memset(&shared, 0xa5, sizeof shared);
+    memcpy(original, shared.bytes, sizeof original);
+    assert(!zcl_tx_shielded_replay_begin_output(&shared.state,
+        BLUE_SYNTHETIC_SAPLING_BYTES, 0x76b809bb, &hasher,
+        0, &shared.output));
+    assert(memcmp(shared.bytes, original, sizeof original) == 0);
+    assert(!zcl_tx_shielded_replay_begin_rk(&shared.state,
+        BLUE_SYNTHETIC_SAPLING_BYTES, 0x76b809bb, &hasher,
+        0, shared.state.commitment));
+    assert(memcmp(shared.bytes, original, sizeof original) == 0);
+    assert(!zcl_tx_shielded_replay_begin(&shared.state,
+        BLUE_SYNTHETIC_SAPLING_BYTES, 0x76b809bb,
+        &shared.state.blake));
+    assert(memcmp(shared.bytes, original, sizeof original) == 0);
+    hasher.context = &shared.state;
+    assert(!zcl_tx_shielded_replay_begin(&shared.state,
+        BLUE_SYNTHETIC_SAPLING_BYTES, 0x76b809bb, &hasher));
+    assert(memcmp(shared.bytes, original, sizeof original) == 0);
+    hasher = zcl_zip243_host_hasher(&context);
+    zcl_tx_shielded_replay state;
+    zcl_tx_shielded_output_capture output;
+    memset(&state, 0xa5, sizeof state);
+    memset(&output, 0xa5, sizeof output);
+    uint8_t *rk = output.cv + 1;
+    assert(!zcl_tx_shielded_replay_begin_captures(&state,
+        BLUE_SYNTHETIC_SAPLING_BYTES, 0x76b809bb, &hasher,
+        0, rk, 0, &output));
+    for (size_t i = 0; i < sizeof state; ++i)
+        assert(((const uint8_t *)&state)[i] == 0xa5);
+    for (size_t i = 0; i < sizeof output; ++i)
+        assert(((const uint8_t *)&output)[i] == 0xa5);
+}
+
+static void reject_overlapping_feed(void) {
+    uint8_t wire[BLUE_SYNTHETIC_SAPLING_BYTES];
+    blue_sapling_fixture(wire);
+    struct blake2b_ctx context;
+    zcl_zip243_hasher hasher = zcl_zip243_host_hasher(&context);
+    zcl_tx_shielded_replay state;
+    zcl_tx_shielded_output_capture output;
+    uint8_t rk[32];
+    const uint8_t zero_rk[32] = {0};
+    const zcl_tx_shielded_output_capture zero_output = {0};
+    for (unsigned trial = 0; trial < 4; ++trial) {
+        assert(zcl_tx_shielded_replay_begin_captures(&state,
+            sizeof wire, 0x76b809bb, &hasher, 0, rk, 0, &output));
+        assert(zcl_tx_shielded_replay_feed(&state, wire, 1));
+        rk[0] = output.cv[0] = 0xa5;
+        uint8_t *alias = trial == 0 ? state.commitment :
+            trial == 1 ? rk :
+            trial == 2 ? output.cv : output.cv + 31;
+        alias[0] = wire[1];
+        if (trial == 3) alias[1] = wire[2];
+        assert(!zcl_tx_shielded_replay_feed(&state, alias,
+            trial == 3 ? 2 : 1));
+        assert(state.failed);
+        assert(memcmp(rk, zero_rk, sizeof rk) == 0);
+        assert(memcmp(&output, &zero_output, sizeof output) == 0);
+    }
+    assert(zcl_tx_shielded_replay_begin(&state, sizeof wire,
+        0x76b809bb, &hasher));
+    assert(zcl_tx_shielded_replay_feed(&state, wire, sizeof wire));
+    zcl_tx_shielded_replay_abort(&state);
+}
+
+static void replay_six_passes(zcl_tx_shielded_replay *state,
+    const uint8_t *wire, size_t length) {
+    for (unsigned pass = 1; pass < 6; ++pass) {
+        replay_pass(state, wire, length, 220);
+        assert(zcl_tx_shielded_replay_next(state));
+    }
+    replay_pass(state, wire, length, 220);
+}
+
+static void reject_overlapping_finish(void) {
+    uint8_t wire[BLUE_SYNTHETIC_SAPLING_BYTES];
+    blue_sapling_fixture(wire);
+    struct blake2b_ctx context;
+    zcl_zip243_hasher hasher = zcl_zip243_host_hasher(&context);
+    zcl_tx_shielded_replay state;
+    zcl_tx_shielded_output_capture output;
+    uint8_t rk[32];
+    assert(zcl_tx_shielded_replay_begin_captures(&state, sizeof wire,
+        0x76b809bb, &hasher, 0, rk, 0, &output));
+    replay_six_passes(&state, wire, sizeof wire);
+    zcl_tx_shielded_facts facts;
+    assert(!zcl_tx_shielded_replay_finish(&state, &facts,
+        state.commitment));
+    assert(state.failed);
+    const uint8_t zero_rk[32] = {0};
+    const zcl_tx_shielded_output_capture zero_output = {0};
+    assert(memcmp(rk, zero_rk, sizeof rk) == 0);
+    assert(memcmp(&output, &zero_output, sizeof output) == 0);
+    assert(zcl_tx_shielded_replay_begin(&state, sizeof wire,
+        0x76b809bb, &hasher));
+    replay_six_passes(&state, wire, sizeof wire);
+    union {
+        zcl_tx_shielded_facts facts;
+        uint8_t digest[32];
+    } shared;
+    memset(&shared, 0xa5, sizeof shared);
+    assert(!zcl_tx_shielded_replay_finish(&state,
+        &shared.facts, shared.digest));
+    assert(state.failed);
+    for (size_t i = 0; i < sizeof shared; ++i)
+        assert(((const uint8_t *)&shared)[i] == 0xa5);
+}
+
+static void assert_finished_replay_erased(
+    const zcl_tx_shielded_replay *state) {
+    assert(state->pass == 7);
+    const uint8_t *bytes = (const uint8_t *)state;
+    for (size_t i = 0; i < sizeof *state; ++i)
+        if (i != offsetof(zcl_tx_shielded_replay, pass))
+            assert(bytes[i] == 0);
+}
+
 static void check_consensus_spend(const char *path) {
     static const uint8_t expected[32] = {
         0xd4, 0x96, 0x7a, 0x82, 0x69, 0x00, 0x77, 0x09,
@@ -574,13 +731,14 @@ static void check_consensus_spend(const char *path) {
         0xc9, 0xf9, 0xb9, 0x60, 0x69, 0xc2, 0x7c, 0x8b
     };
     uint8_t wire[8192], rk[32], digest[32];
+    zcl_tx_shielded_output_capture output;
     size_t length = read_vector(path, wire);
     assert(length == BLUE_SYNTHETIC_SAPLING_BYTES);
     struct blake2b_ctx context;
     zcl_zip243_hasher hasher = zcl_zip243_host_hasher(&context);
     zcl_tx_shielded_replay state;
-    assert(zcl_tx_shielded_replay_begin_rk(&state,
-        (uint32_t)length, 0x76b809bb, &hasher, 0, rk));
+    assert(zcl_tx_shielded_replay_begin_captures(&state,
+        (uint32_t)length, 0x76b809bb, &hasher, 0, rk, 0, &output));
     for (unsigned pass = 1; pass < 6; ++pass) {
         replay_pass(&state, wire, length, 220);
         assert(zcl_tx_shielded_replay_next(&state));
@@ -588,18 +746,10 @@ static void check_consensus_spend(const char *path) {
     replay_pass(&state, wire, length, 220);
     zcl_tx_shielded_facts facts;
     assert(zcl_tx_shielded_replay_finish(&state, &facts, digest));
+    assert_finished_replay_erased(&state);
     assert(facts.sapling_spends == 1 && facts.sapling_outputs == 1);
     assert(memcmp(rk, wire + 27 + 96, sizeof rk) == 0);
     assert(memcmp(digest, expected, sizeof expected) == 0);
-    zcl_tx_shielded_output_capture output;
-    assert(zcl_tx_shielded_replay_begin_output(&state,
-        (uint32_t)length, 0x76b809bb, &hasher, 0, &output));
-    for (unsigned pass = 1; pass < 6; ++pass) {
-        replay_pass(&state, wire, length, 220);
-        assert(zcl_tx_shielded_replay_next(&state));
-    }
-    replay_pass(&state, wire, length, 220);
-    assert(zcl_tx_shielded_replay_finish(&state, &facts, digest));
     assert(memcmp(output.cv, wire + 412, 32) == 0);
     assert(memcmp(output.cm, wire + 444, 32) == 0);
     assert(memcmp(output.epk, wire + 476, 32) == 0);
@@ -633,6 +783,10 @@ int main(int argc, char **argv) {
     check_output_capture_rejections();
     check_second_output_capture();
     reject_substituted_spend_rk();
+    reject_substituted_combined_capture();
+    reject_overlapping_captures();
+    reject_overlapping_feed();
+    reject_overlapping_finish();
     length = read_vector(argv[2], wire);
     assert(length == 245);
     check_valid_wire(wire, length, 17);

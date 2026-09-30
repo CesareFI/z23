@@ -61,7 +61,9 @@ struct vi_world {
     char repo[PATH_MAX], profile[PATH_MAX];
     char tool[PATH_MAX];
     struct zcl_fri_roots tool_roots;
-    bool tool_built;
+    uint8_t cold_object[32];
+    uint64_t cold_bytes;
+    bool tool_built, cold_set;
 };
 
 static bool vi_path(char out[PATH_MAX], const char *base, const char *leaf)
@@ -253,6 +255,14 @@ static int test_vi_tool(struct vi_world *w)
     return failures;
 }
 
+/* The reviewed GCC 14.2 object. A different driver must reproduce its own
+ * cold object and is not rewritten onto that pin. */
+static bool vi_object_pin(const char *hex, uint64_t size)
+{
+    if (size != (uint64_t)VI_OBJECT_BYTES) return true;
+    return strcmp(hex, VI_OBJECT_SHA3) == 0;
+}
+
 static int test_vi_tool_prove(struct vi_world *w)
 {
     int failures = 0;
@@ -264,10 +274,12 @@ static int test_vi_tool_prove(struct vi_world *w)
         if (!ok) printf("[%s %s] ", p.why, p.why_path);
         ASSERT(ok);
         vi_hex(p.image_object, hex);
-        ASSERT_STR_EQ(hex, VI_OBJECT_SHA3);
         ASSERT(memcmp(p.image_object, p.reference_object, 32u) == 0);
-        ASSERT_EQ(p.object_size, (uint64_t)VI_OBJECT_BYTES);
         ASSERT(p.object_equal && p.dep_equal && p.stderr_equal);
+        ASSERT(vi_object_pin(hex, p.object_size));
+        memcpy(w->cold_object, p.reference_object, 32u);
+        w->cold_bytes = p.object_size;
+        w->cold_set = true;
         ASSERT(p.traced && p.image_reads > 0);
         for (unsigned i = 0; i < p.leaks && i < ZCL_FRI_NAMED; i++)
             printf("[leak %s] ", p.leak[i]);
@@ -282,6 +294,42 @@ static int test_vi_tool_prove(struct vi_world *w)
         PASS();
     } _test_next:;
     return failures;
+}
+
+/* The same question the image builder asks the host driver. */
+static bool vi_cc_print(struct vi_world *w, const char *flag, char out[PATH_MAX])
+{
+    char path[PATH_MAX];
+    char *argv[] = {"cc", (char *)flag, NULL};
+    char *env[] = {"LC_ALL=C", "TZ=UTC", "TMPDIR=/tmp", "PATH=/usr/bin:/bin", NULL};
+    if (!vi_path(path, w->base, "cc-print.txt")) return false;
+    struct zcl_fri_run r = {.argv = argv, .envp = env, .path = "/usr/bin/cc",
+                            .cwd = w->repo, .out_path = path};
+    int code = -1;
+    if (!zcl_fri_run_wait(&r, &code) || code != 0) return false;
+    FILE *fp = fopen(path, "re");
+    bool ok = fp && fgets(out, PATH_MAX, fp) != NULL;
+    if (fp) fclose(fp);
+    if (!ok) return false;
+    out[strcspn(out, "\n")] = '\0';
+    return out[0] == '/';
+}
+
+/* A soname the image actually stored, on this host's loader search path. */
+static bool vi_soname(const struct vi_world *w, const char *soname,
+                      char rel[PATH_MAX])
+{
+    static const char *const dirs[] = {
+        "/lib/x86_64-linux-gnu", "/usr/lib/x86_64-linux-gnu",
+        "/lib64", "/usr/lib64", "/lib", "/usr/lib"
+    };
+    for (size_t i = 0; i < sizeof(dirs) / sizeof(dirs[0]); i++) {
+        char host[PATH_MAX];
+        if (snprintf(host, sizeof(host), "%s/%s", dirs[i], soname) >= PATH_MAX)
+            return false;
+        if (zcl_fri_image_lookup(w->tool, host, rel) == 'F') return true;
+    }
+    return false;
 }
 
 /* Swaps `rel` in the tool image for different bytes, returns both roots,
@@ -305,12 +353,13 @@ static int test_vi_tool_red(struct vi_world *w)
     int failures = 0;
     TEST("verifier images: RED cc1 replaced with the driver unchanged changes the tool root") {
         uint8_t changed[32], restored[32], driver[32];
-        const struct { const char *rel; } cc1 = {"usr/libexec/gcc/x86_64-linux-gnu/14/cc1"};
-        char path[PATH_MAX], rel[PATH_MAX];
+        char path[PATH_MAX], rel[PATH_MAX], cc1_host[PATH_MAX];
         ASSERT(w->tool_built);
         ASSERT(zcl_fri_image_lookup(w->tool, "/usr/bin/cc", rel) == 'F');
         ASSERT(vi_path(path, w->tool, rel) && zcl_fri_sha3_file(path, driver, NULL));
-        ASSERT(vi_swap_file(w, cc1.rel, false, changed, restored));
+        ASSERT(vi_cc_print(w, "-print-prog-name=cc1", cc1_host));
+        ASSERT(zcl_fri_image_lookup(w->tool, cc1_host, rel) == 'F');
+        ASSERT(vi_swap_file(w, rel, false, changed, restored));
         uint8_t driver_after[32];
         ASSERT(zcl_fri_sha3_file(path, driver_after, NULL));
         ASSERT(memcmp(driver, driver_after, 32u) == 0);
@@ -326,17 +375,21 @@ static int test_vi_red_dso_spec(struct vi_world *w)
     int failures = 0;
     TEST("verifier images: RED a changed DSO or a new spec file changes the tool root") {
         uint8_t changed[32], restored[32];
-        char rel[PATH_MAX];
+        char rel[PATH_MAX], cc1_host[PATH_MAX], specs[PATH_MAX];
         ASSERT(w->tool_built);
-        ASSERT(zcl_fri_image_lookup(w->tool, "/lib/x86_64-linux-gnu/libz.so.1",
-                                    rel) == 'F');
+        ASSERT(vi_soname(w, "libz.so.1", rel));
         ASSERT(vi_swap_file(w, rel, false, changed, restored));
         ASSERT(memcmp(changed, w->tool_roots.root_tree_sha3, 32u) != 0);
         ASSERT(memcmp(restored, w->tool_roots.root_tree_sha3, 32u) == 0);
-        /* GCC reads its built-in specs; a specs file the driver probes for
-         * would change them. */
-        ASSERT(vi_swap_file(w, "usr/lib/gcc/x86_64-linux-gnu/14/specs", true,
-                            changed, restored));
+        /* Built-in specs: a specs file beside this driver's cc1 changes
+         * the image root. The parent directory is the one the image stored. */
+        ASSERT(vi_cc_print(w, "-print-prog-name=cc1", cc1_host));
+        ASSERT(zcl_fri_image_lookup(w->tool, cc1_host, rel) == 'F');
+        char *slash = strrchr(rel, '/');
+        ASSERT(slash);
+        ASSERT(snprintf(specs, sizeof(specs), "%.*s/specs",
+                        (int)(slash - rel), rel) < (int)sizeof(specs));
+        ASSERT(vi_swap_file(w, specs, true, changed, restored));
         ASSERT(memcmp(changed, w->tool_roots.root_tree_sha3, 32u) != 0);
         ASSERT(memcmp(restored, w->tool_roots.root_tree_sha3, 32u) == 0);
         PASS();
@@ -656,12 +709,6 @@ static void vi_sc_child(const char *src, const char *out, const char *profile)
     struct zcl_fri_run r = {.argv = a.argv, .envp = env, .path = "/usr/bin/cc",
                             .cwd = src, .err_path = err};
     if (!zcl_fri_run_wait(&r, &code) || code != 0) bad |= VI_SC_COMPILE;
-    uint8_t sha3[32];
-    char hex[65];
-    if (!(bad & VI_SC_COMPILE) && zcl_fri_sha3_file(obj, sha3, NULL)) {
-        zcl_hex_encode(sha3, 32u, hex);
-        if (strcmp(hex, VI_OBJECT_SHA3) != 0) bad |= VI_SC_OBJECT;
-    }
     _exit(bad);
 }
 
@@ -688,6 +735,12 @@ static int test_vi_seccomp_kernel(struct vi_world *w)
         ASSERT(done == pid && WIFEXITED(status));
         if (WEXITSTATUS(status) != 0) printf("[failed checks 0x%x] ", WEXITSTATUS(status));
         ASSERT_EQ(WEXITSTATUS(status), 0);
+        char obj[PATH_MAX];
+        uint8_t sha3[32];
+        uint64_t size = 0;
+        ASSERT(w->cold_set && vi_path(obj, out, "result.o"));
+        ASSERT(zcl_fri_sha3_file(obj, sha3, &size));
+        ASSERT(size == w->cold_bytes && memcmp(sha3, w->cold_object, 32u) == 0);
         PASS();
     } _test_next:;
     return failures;

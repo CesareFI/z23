@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #include "blue_fs_ct.h"
 #include "blue_mod256.h"
+#include "blue_storage.h"
 
 static const struct blue_mod256 fs_field = {
     .modulus = {
@@ -40,24 +41,28 @@ void blue_fs_mul_ct(struct fs *result, const struct fs *a,
 
 bool blue_fs_from_bytes_canonical(struct fs *result,
     const uint8_t bytes[32]) {
-    static const uint64_t order[4] = {
-        0xd0970e5ed6f72cb7ULL, 0xa6682093ccc81082ULL,
-        0x06673b0101343b00ULL, 0x0e7db4ea6533afa9ULL
-    };
     if (!result) return false;
     if (!bytes) {
         blue_mod256_wipe(result, sizeof *result);
         return false;
     }
-    for (unsigned limb = 0; limb < 4; ++limb) {
-        result->d[limb] = 0;
-        for (unsigned byte = 0; byte < 8; ++byte)
-            result->d[limb] |= (uint64_t)bytes[limb * 8 + byte] << (byte * 8);
+    if (blue_storage_overlaps(result, sizeof *result, bytes, 32))
+        return false;
+    *result = (struct fs){0};
+    uint32_t borrow = 0;
+    for (unsigned limb = 0; limb < 8; ++limb) {
+        uint32_t word = 0;
+        for (unsigned byte = 0; byte < 4; ++byte)
+            word |= (uint32_t)bytes[limb * 4 + byte] << (byte * 8);
+        result->d[limb / 2] |= (uint64_t)word << (32u * (limb % 2));
+        /* The wrapped subtraction has its high bit set exactly on borrow. */
+        uint64_t difference = (uint64_t)word -
+            fs_field.modulus[limb] - borrow;
+        borrow = (uint32_t)(difference >> 63);
     }
-    uint64_t borrow = 0;
+    volatile uint64_t mask = 0u - (uint64_t)borrow;
     for (unsigned limb = 0; limb < 4; ++limb)
-        borrow = result->d[limb] < order[limb] + borrow;
-    if (!borrow) blue_mod256_wipe(result, sizeof *result);
+        result->d[limb] &= mask;
     return borrow == 1;
 }
 

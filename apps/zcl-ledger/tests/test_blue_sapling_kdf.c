@@ -29,6 +29,15 @@ int main(void) {
     zcl_zip243_hasher hasher = zcl_zip243_host_hasher(&context);
     assert(blue_sapling_kdf(key, dh, epk, &hasher));
     assert(memcmp(key, expected, sizeof key) == 0);
+    uint8_t dh_alias[33];
+    memcpy(dh_alias, dh, sizeof dh);
+    dh_alias[32] = 0xa5;
+    assert(!blue_sapling_kdf(dh_alias + 1, dh_alias, epk, &hasher));
+    assert(memcmp(dh_alias, dh, sizeof dh) == 0 && dh_alias[32] == 0xa5);
+    uint8_t saved_epk[32];
+    memcpy(saved_epk, epk, sizeof saved_epk);
+    assert(!blue_sapling_kdf(epk, dh, epk, &hasher));
+    assert(memcmp(epk, saved_epk, sizeof epk) == 0);
     epk[0] ^= 1u;
     assert(blue_sapling_kdf(key, dh, epk, &hasher));
     assert(memcmp(key, expected, sizeof key) != 0);

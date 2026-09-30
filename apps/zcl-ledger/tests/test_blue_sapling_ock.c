@@ -2,6 +2,9 @@
 #include "blue_sapling_ock.h"
 #include "blue_sapling_aead.h"
 #include "blue_sapling_kdf.h"
+#include "blue_sapling_memo.h"
+#include "blue_sapling_epk.h"
+#include "blue_sapling_cm.h"
 #include "blue_jubjub_decode.h"
 #include "blue_jubjub_lowmem.h"
 #include "blue_jubjub_arithmetic.h"
@@ -131,6 +134,32 @@ static void check_note_ciphertext(void) {
         nonce, key, core_recovered));
     assert(memcmp(recovered, plain, sizeof plain) == 0);
     assert(memcmp(recovered, core_recovered, sizeof recovered) == 0);
+    uint8_t inplace[BLUE_SAPLING_NOTE_CIPHER_BYTES];
+    memcpy(inplace, cipher, sizeof inplace);
+    assert(blue_sapling_note_open_inplace(inplace, key));
+    assert(memcmp(inplace, plain, sizeof plain) == 0);
+    for (size_t i = sizeof plain; i < sizeof inplace; ++i)
+        assert(inplace[i] == 0);
+    memcpy(inplace, cipher, sizeof inplace);
+    assert(!blue_sapling_note_open_inplace(inplace, inplace + 1));
+    assert(memcmp(inplace, cipher, sizeof inplace) == 0);
+    inplace[sizeof inplace - 1] ^= 1u;
+    assert(!blue_sapling_note_open_inplace(inplace, key));
+    for (size_t i = 0; i < sizeof inplace; ++i) assert(inplace[i] == 0);
+    memcpy(inplace, cipher, sizeof inplace);
+    assert(!blue_sapling_note_open_inplace(inplace, NULL));
+    for (size_t i = 0; i < sizeof inplace; ++i) assert(inplace[i] == 0);
+    uint8_t alias[BLUE_SAPLING_NOTE_CIPHER_BYTES + 1];
+    memcpy(alias, cipher, sizeof cipher);
+    assert(!blue_sapling_note_open(alias, key, alias));
+    assert(memcmp(alias, cipher, sizeof cipher) == 0);
+    assert(!blue_sapling_note_open(alias + 1, key, alias));
+    assert(memcmp(alias, cipher, sizeof cipher) == 0);
+    uint8_t key_alias[BLUE_SAPLING_NOTE_PLAIN_BYTES + 32];
+    memset(key_alias, 0xa5, sizeof key_alias);
+    assert(!blue_sapling_note_open(key_alias, key_alias + 563, cipher));
+    for (size_t i = 0; i < sizeof key_alias; ++i)
+        assert(key_alias[i] == 0xa5);
     cipher[0] ^= 1u;
     assert(!blue_sapling_note_open(recovered, key, cipher));
     for (size_t i = 0; i < sizeof recovered; ++i) assert(recovered[i] == 0);
@@ -167,6 +196,12 @@ static void check_fixture_note(const zcl_tx_shielded_output_capture *output,
     assert(chacha20poly1305_decrypt(output->enc_ciphertext,
         BLUE_SAPLING_NOTE_CIPHER_BYTES, NULL, 0, nonce, key, core_plain));
     assert(memcmp(plain, core_plain, sizeof plain) == 0);
+    uint8_t inplace[BLUE_SAPLING_NOTE_CIPHER_BYTES];
+    memcpy(inplace, output->enc_ciphertext, sizeof inplace);
+    assert(blue_sapling_note_open_inplace(inplace, key));
+    assert(memcmp(inplace, plain, sizeof plain) == 0);
+    for (size_t i = sizeof plain; i < sizeof inplace; ++i)
+        assert(inplace[i] == 0);
     assert(plain[0] == 0x01);
     static const uint8_t expected_diversifier[11] = {
         0x9c,0xf4,0x94,0x19,0x06,0xe9,0xf1,0x95,
@@ -177,6 +212,75 @@ static void check_fixture_note(const zcl_tx_shielded_output_capture *output,
     };
     assert(memcmp(plain + 1, expected_diversifier, 11) == 0);
     assert(memcmp(plain + 12, expected_value, 8) == 0);
+    blue_sapling_epk_workspace epk_workspace;
+    assert(blue_sapling_epk_matches(plain + 1, outgoing + 32,
+        output->epk, &epk_workspace));
+    uint8_t changed_diversifier[11];
+    memcpy(changed_diversifier, plain + 1, sizeof changed_diversifier);
+    changed_diversifier[0] ^= 1u;
+    assert(!blue_sapling_epk_matches(changed_diversifier,
+        outgoing + 32, output->epk, &epk_workspace));
+    uint8_t changed_esk[32];
+    memcpy(changed_esk, outgoing + 32, sizeof changed_esk);
+    changed_esk[0] ^= 1u;
+    assert(!blue_sapling_epk_matches(plain + 1,
+        changed_esk, output->epk, &epk_workspace));
+    memset(&epk_workspace, 0xa5, sizeof epk_workspace);
+    assert(!blue_sapling_epk_matches(plain + 1, outgoing + 32,
+        (uint8_t *)&epk_workspace, &epk_workspace));
+    assert(((uint8_t *)&epk_workspace)[0] == 0xa5);
+    assert(!blue_sapling_epk_matches(NULL, outgoing + 32,
+        output->epk, &epk_workspace));
+    for (size_t i = 0; i < sizeof epk_workspace; ++i)
+        assert(((uint8_t *)&epk_workspace)[i] == 0);
+    blue_sapling_cm_workspace cm_workspace;
+    assert(blue_sapling_cm_matches(plain, outgoing,
+        output->cm, &cm_workspace));
+    uint8_t changed_cm[32];
+    memcpy(changed_cm, output->cm, sizeof changed_cm);
+    changed_cm[0] ^= 1u;
+    assert(!blue_sapling_cm_matches(plain, outgoing,
+        changed_cm, &cm_workspace));
+    plain[52] ^= 1u;
+    assert(blue_sapling_cm_matches(plain, outgoing,
+        output->cm, &cm_workspace));
+    plain[52] ^= 1u;
+    plain[12] ^= 1u;
+    assert(!blue_sapling_cm_matches(plain, outgoing,
+        output->cm, &cm_workspace));
+    plain[12] ^= 1u;
+    uint8_t changed_pk_d[32];
+    memcpy(changed_pk_d, outgoing, sizeof changed_pk_d);
+    changed_pk_d[0] ^= 1u;
+    assert(!blue_sapling_cm_matches(plain, changed_pk_d,
+        output->cm, &cm_workspace));
+    plain[1] ^= 1u;
+    assert(!blue_sapling_cm_matches(plain, outgoing,
+        output->cm, &cm_workspace));
+    plain[1] ^= 1u;
+    plain[20] ^= 1u;
+    assert(!blue_sapling_cm_matches(plain, outgoing,
+        output->cm, &cm_workspace));
+    plain[20] ^= 1u;
+    plain[0] = 2;
+    assert(!blue_sapling_cm_matches(plain, outgoing,
+        output->cm, &cm_workspace));
+    plain[0] = 1;
+    memset(plain + 20, 0xff, 32);
+    assert(!blue_sapling_cm_matches(plain, outgoing,
+        output->cm, &cm_workspace));
+    memcpy(plain + 20, core_plain + 20, 32);
+    memset(&cm_workspace, 0xa5, sizeof cm_workspace);
+    assert(!blue_sapling_cm_matches(plain, outgoing,
+        (uint8_t *)&cm_workspace, &cm_workspace));
+    assert(((uint8_t *)&cm_workspace)[0] == 0xa5);
+    assert(!blue_sapling_cm_matches(NULL, outgoing,
+        output->cm, &cm_workspace));
+    for (size_t i = 0; i < sizeof cm_workspace; ++i)
+        assert(((uint8_t *)&cm_workspace)[i] == 0);
+    blue_sapling_memo_info memo;
+    assert(blue_sapling_memo_inspect(plain + 52, &memo));
+    assert(plain[52] == 0xf6 && memo.kind == BLUE_SAPLING_MEMO_FUTURE);
     uint8_t changed_epk[32];
     memcpy(changed_epk, output->epk, sizeof changed_epk);
     changed_epk[0] ^= 1u;
@@ -220,9 +324,28 @@ int main(int argc, char **argv) {
     assert(blue_sapling_ock(key, ovk, output.cv, output.cm,
         output.epk, &hasher));
     assert(memcmp(key, expected, sizeof key) == 0);
+    uint8_t ovk_alias[33];
+    memcpy(ovk_alias, ovk, 32);
+    ovk_alias[32] = 0xa5;
+    assert(!blue_sapling_ock(ovk_alias + 1, ovk_alias,
+        output.cv, output.cm, output.epk, &hasher));
+    assert(memcmp(ovk_alias, ovk, 32) == 0 && ovk_alias[32] == 0xa5);
+    uint8_t saved_cv[32];
+    memcpy(saved_cv, output.cv, sizeof saved_cv);
+    assert(!blue_sapling_ock(output.cv, ovk, output.cv,
+        output.cm, output.epk, &hasher));
+    assert(memcmp(output.cv, saved_cv, sizeof saved_cv) == 0);
     uint8_t outgoing[64];
     const uint8_t *out_ciphertext = output.out_ciphertext;
     assert(blue_sapling_out_open(outgoing, key, out_ciphertext));
+    uint8_t out_alias[BLUE_SAPLING_OUT_CIPHER_BYTES + 1];
+    memcpy(out_alias, out_ciphertext, BLUE_SAPLING_OUT_CIPHER_BYTES);
+    assert(!blue_sapling_out_open(out_alias, key, out_alias));
+    assert(memcmp(out_alias, out_ciphertext,
+        BLUE_SAPLING_OUT_CIPHER_BYTES) == 0);
+    assert(!blue_sapling_out_open(out_alias + 1, key, out_alias));
+    assert(memcmp(out_alias, out_ciphertext,
+        BLUE_SAPLING_OUT_CIPHER_BYTES) == 0);
     const uint8_t nonce[12] = {0};
     uint8_t core_outgoing[64];
     assert(chacha20poly1305_decrypt(out_ciphertext, 80,
@@ -239,6 +362,19 @@ int main(int argc, char **argv) {
         0x5c,0x21,0x08,0xf3,0x12,0x4b,0xba,0x06
     };
     assert(memcmp(outgoing, expected_outgoing, sizeof outgoing) == 0);
+    uint8_t inplace_out[BLUE_SAPLING_OUT_CIPHER_BYTES];
+    memcpy(inplace_out, out_ciphertext, sizeof inplace_out);
+    assert(blue_sapling_out_open_inplace(inplace_out, key));
+    assert(memcmp(inplace_out, outgoing, sizeof outgoing) == 0);
+    for (size_t i = sizeof outgoing; i < sizeof inplace_out; ++i)
+        assert(inplace_out[i] == 0);
+    memcpy(inplace_out, out_ciphertext, sizeof inplace_out);
+    assert(!blue_sapling_out_open_inplace(inplace_out, inplace_out + 1));
+    assert(memcmp(inplace_out, out_ciphertext, sizeof inplace_out) == 0);
+    inplace_out[79] ^= 1u;
+    assert(!blue_sapling_out_open_inplace(inplace_out, key));
+    for (size_t i = 0; i < sizeof inplace_out; ++i)
+        assert(inplace_out[i] == 0);
     check_fixture_note(&output, outgoing, &hasher);
     uint8_t altered_ciphertext[80];
     memcpy(altered_ciphertext, out_ciphertext, sizeof altered_ciphertext);

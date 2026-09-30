@@ -37,6 +37,21 @@ stopped to free the host for the repository landing proof. It did not reach
 its 100,000-input target. The C23 complexity ratchet passed 60,820 functions
 at cap 15 after the seed was added.
 
+On 2026-09-28T02:35:55-04:00 (2026-09-28T06:35:55Z), the current
+pending-output harness completed 100,000 inputs in 30 seconds with no
+finding. Clang 22.1.6, libFuzzer, AddressSanitizer, and
+UndefinedBehaviorSanitizer ran on an AMD Ryzen 7 PRO 8840U. The final report
+showed 9,287 covered instrumentation edges, 9,664 features, 33 corpus entries,
+and 60 MB peak RSS. The runner required `ASAN_OPTIONS=detect_leaks=0` because
+LeakSanitizer could not start under ptrace; this run does not establish leak
+freedom. The exact command was:
+
+```sh
+ASAN_OPTIONS=detect_leaks=0 \
+  /tmp/z23-blue-apdu-fuzz-20260928/fuzz-blue-payment-apdu \
+  -runs=100000 -max_len=512 -seed=20260928 -print_final_stats=1
+```
+
 The campaign exercises malformed frames and partial review state. It does
 not prove that all valid spending and previous transaction streams, physical
 touch events, USB timing, BOLOS cryptography, or Sapling signing are safe.

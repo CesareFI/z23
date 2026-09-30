@@ -10,7 +10,7 @@
 #error "The Blue installer requires ISO C23"
 #endif
 
-enum { ZCL_BLUE_INSTALL_PARAMS_MAX = 65 };
+enum { ZCL_BLUE_INSTALL_PARAMS_MAX = 67 };
 
 size_t blue_install_params(const char *name, const char *version,
                            bool zcl_sign_path,

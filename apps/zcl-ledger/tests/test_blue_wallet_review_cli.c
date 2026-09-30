@@ -149,11 +149,26 @@ static void check_shielded_rejection(const char *program,
 }
 
 typedef struct {
-    const char *reviewer, *rpc, *fixture, *spend, *previous;
+    const char *reviewer, *signer, *rpc, *fixture, *spend, *previous;
     const char *shielded, *marker, *missing, *fifo, *link;
-    const char *oversize, *empty;
+    const char *oversize, *empty, *signed_path;
     char error[512];
 } cli_case;
+
+static void check_signer_without_device(const cli_case *test) {
+    pid_t child = fork();
+    assert(child >= 0);
+    if (child == 0) {
+        execl(test->signer, test->signer, "--sign-test", "/dev/hidraw999",
+            test->rpc, test->spend, test->signed_path, test->previous,
+            (char *)NULL);
+        _exit(127);
+    }
+    int status = 0;
+    assert(waitpid(child, &status, 0) == child);
+    assert(WIFEXITED(status) && WEXITSTATUS(status) == 1);
+    assert(access(test->signed_path, F_OK) != 0);
+}
 
 static void check_v4_file_inputs(cli_case *test) {
     assert(unlink(test->link) == 0);
@@ -269,6 +284,7 @@ static void check_previous_versions(cli_case *test, const uint8_t *base,
         assert(run(test->reviewer, test->rpc, NULL, test->spend,
                    test->previous, test->error, sizeof test->error) == 1);
         assert(strstr(test->error, "not an accessible Ledger Blue") != NULL);
+        check_signer_without_device(test);
     }
 }
 
@@ -285,13 +301,13 @@ static void cleanup_files(const cli_case *test, const char *directory) {
 }
 
 int main(int argc, char **argv) {
-    assert(argc == 4);
+    assert(argc == 5);
     char directory[] = "/tmp/zcl-wallet-review-cli-XXXXXX";
     assert(mkdtemp(directory));
     char fixture[256], spend_path[256], previous_path[256];
     char shielded_path[256];
     char marker_path[256], missing_path[256], fifo_path[256], link_path[256];
-    char oversize_path[256], empty_path[256];
+    char oversize_path[256], empty_path[256], signed_path[256];
     assert(snprintf(fixture, sizeof fixture, "%s/fixture.bin", directory) > 0);
     assert(snprintf(spend_path, sizeof spend_path, "%s/spend.bin", directory) > 0);
     assert(snprintf(previous_path, sizeof previous_path,
@@ -310,11 +326,14 @@ int main(int argc, char **argv) {
                     "%s/oversize.bin", directory) > 0);
     assert(snprintf(empty_path, sizeof empty_path,
                     "%s/empty.bin", directory) > 0);
-    cli_case test = {.reviewer = argv[2], .rpc = argv[3],
+    assert(snprintf(signed_path, sizeof signed_path,
+                    "%s/signed.bin", directory) > 0);
+    cli_case test = {.reviewer = argv[2], .signer = argv[3], .rpc = argv[4],
         .fixture = fixture, .spend = spend_path, .previous = previous_path,
         .shielded = shielded_path, .marker = marker_path,
         .missing = missing_path, .fifo = fifo_path, .link = link_path,
-        .oversize = oversize_path, .empty = empty_path};
+        .oversize = oversize_path, .empty = empty_path,
+        .signed_path = signed_path};
     assert(run(argv[1], test.rpc, test.fixture, NULL, NULL,
                test.error, sizeof test.error) == 0);
     uint8_t base[256];

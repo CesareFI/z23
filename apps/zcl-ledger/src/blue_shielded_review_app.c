@@ -3,6 +3,22 @@
 
 #include <string.h>
 
+static bool overlap(const void *left, size_t left_size,
+    const void *right, size_t right_size) {
+    if (!left || !right || !left_size || !right_size) return false;
+    uintptr_t a = (uintptr_t)left, b = (uintptr_t)right;
+    return a <= b ? b - a < left_size : a - b < right_size;
+}
+
+static void clear_external_reply(uint8_t *reply, size_t capacity,
+    size_t *reply_length) {
+    if (reply) {
+        volatile uint8_t *bytes = reply;
+        for (size_t i = 0; i < capacity; ++i) bytes[i] = 0;
+    }
+    if (reply_length) *reply_length = 0;
+}
+
 void blue_shielded_review_app_reset(blue_shielded_review_app *app) {
     if (!app) return;
     blue_shielded_review_abort(&app->transaction);
@@ -26,15 +42,33 @@ static bool show_summary(blue_shielded_review_app *app) {
     return blue_review_screen_zip243(app->reply, app->lines);
 }
 
+static bool command_buffers_valid(const blue_shielded_review_app *app,
+    const uint8_t *apdu, size_t apdu_length,
+    const uint8_t *reply, size_t capacity, const size_t *reply_length) {
+    return app && apdu && reply && reply_length &&
+        !overlap(app, sizeof *app, apdu, apdu_length) &&
+        !overlap(app, sizeof *app, reply, capacity) &&
+        !overlap(app, sizeof *app, reply_length, sizeof *reply_length);
+}
+
+static uint16_t reject_command(blue_shielded_review_app *app,
+    uint8_t *reply, size_t capacity, size_t *reply_length) {
+    bool external_reply = !overlap(app, sizeof *app, reply, capacity);
+    bool external_length = !overlap(app, sizeof *app,
+        reply_length, sizeof *reply_length);
+    blue_shielded_review_app_reset(app);
+    clear_external_reply(external_reply ? reply : NULL, capacity,
+        external_length ? reply_length : NULL);
+    return 0x6a80;
+}
+
 uint16_t blue_shielded_review_app_command(blue_shielded_review_app *app,
     const uint8_t *apdu, size_t apdu_length, uint8_t *reply,
     size_t reply_capacity, size_t *reply_length,
     const zcl_zip243_hasher *hasher) {
-    if (!app || !apdu || !reply || !reply_length) {
-        blue_shielded_review_app_reset(app);
-        if (reply_length) *reply_length = 0;
-        return 0x6a80;
-    }
+    if (!command_buffers_valid(app, apdu, apdu_length, reply,
+            reply_capacity, reply_length))
+        return reject_command(app, reply, reply_capacity, reply_length);
     uint8_t instruction = apdu_length >= 2 ? apdu[1] : 0;
     uint16_t status = blue_shielded_review_handle(&app->transaction,
         apdu, apdu_length, reply, reply_capacity, reply_length, hasher);
@@ -55,7 +89,7 @@ uint16_t blue_shielded_review_app_command(blue_shielded_review_app *app,
         blue_shielded_review_app_reset(app);
     if (formatted) return status;
     blue_shielded_review_app_reset(app);
-    *reply_length = 0;
+    clear_external_reply(reply, reply_capacity, reply_length);
     return 0x6a80;
 }
 
@@ -73,10 +107,14 @@ bool blue_shielded_review_app_next(blue_shielded_review_app *app) {
         app->detail = 0;
         return false;
     }
-    app->page ^= 1u;
+    app->page = (uint8_t)((app->page + 1u) % 3u);
     app->detail = 0;
-    return app->page ?
-        blue_review_screen_zip243_digest(app->reply + 44, app->lines) :
+    if (app->page == 2)
+        return blue_review_screen_wire_commitment(app->reply + 76,
+            app->lines);
+    return app->page == 1 ?
+        blue_review_screen_zip243_digest(app->reply + 44,
+            app->transaction.branch_id, app->lines) :
         blue_review_screen_zip243(app->reply, app->lines);
 }
 

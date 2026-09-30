@@ -113,17 +113,44 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
         -fsanitize=address,undefined -fno-omit-frame-pointer)
 endif()
 
+add_library(blue_sapling_memo STATIC src/blue_sapling_memo.c)
+target_include_directories(blue_sapling_memo PUBLIC include)
+target_link_libraries(blue_sapling_memo PUBLIC zcl_sha256)
+target_compile_options(blue_sapling_memo PRIVATE
+    -Wall -Wextra -Werror -pedantic)
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    target_compile_options(blue_sapling_memo PRIVATE
+        -fsanitize=address,undefined -fno-omit-frame-pointer)
+endif()
+
+add_executable(test-blue-sapling-memo tests/test_blue_sapling_memo.c)
+target_link_libraries(test-blue-sapling-memo PRIVATE blue_sapling_memo)
+target_compile_options(test-blue-sapling-memo PRIVATE
+    -Wall -Wextra -Werror -pedantic)
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    target_compile_options(test-blue-sapling-memo PRIVATE
+        -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(test-blue-sapling-memo PRIVATE
+        -fsanitize=address,undefined)
+endif()
+add_test(NAME blue-sapling-memo COMMAND test-blue-sapling-memo)
+
 add_executable(test-blue-sapling-ock
     tests/test_blue_sapling_ock.c
+    src/blue_sapling_epk.c
+    src/blue_sapling_cm.c
+    src/blue_sapling_group_hash.c
     src/blue_jubjub_lowmem.c src/blue_jubjub_arithmetic.c
     src/blue_jubjub_encode.c src/blue_jubjub_decode.c
-    src/blue_fr_ct.c src/blue_fr_sqrt.c src/blue_mod256.c
+    src/blue_fr_ct.c src/blue_fr_sqrt.c src/blue_fs_ct.c
+    src/blue_mod256.c
     ../../core/modules/sapling/src/fr.c
     ../../core/modules/sapling/src/fr_avx512.c
     ../../core/modules/crypto/src/simd_dispatch.c
+    ../../core/modules/crypto/src/blake2s.c
     ../../core/modules/crypto/src/chacha20poly1305.c)
 target_link_libraries(test-blue-sapling-ock PRIVATE
-    blue_sapling_ock blue_sapling_aead blue_sapling_kdf
+    blue_sapling_ock blue_sapling_aead blue_sapling_kdf blue_sapling_memo
     zcl_zip243_host_hash)
 target_include_directories(test-blue-sapling-ock PRIVATE
     ../../core/modules/sapling/include
@@ -298,6 +325,25 @@ add_executable(zcl-blue-wallet-preview src/blue_wallet_preview_cli.c)
 target_link_libraries(zcl-blue-wallet-preview PRIVATE blue_wallet_render zcl_address)
 target_compile_options(zcl-blue-wallet-preview PRIVATE -Wall -Wextra -Werror -pedantic)
 
+add_library(blue_host_gui STATIC src/blue_host_gui.c)
+target_include_directories(blue_host_gui PUBLIC include PRIVATE
+    ../../contexts/commons/packages/zripemd/include)
+target_link_libraries(blue_host_gui PUBLIC blue_payment_simulate
+    blue_payment_fixture zcl_tx_prevout zcl_zip243_host_hash zcl_address
+    zcl_sha256 blue_wallet_protocol blue_install_params blue_bagl_canvas
+    zcl_host_crypto)
+target_compile_options(blue_host_gui PRIVATE -Wall -Wextra -Werror -pedantic)
+
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(GTK3 REQUIRED gtk+-3.0)
+add_executable(zcl-blue-host-gui src/blue_host_gui_cli.c src/blue_host_gui_window.c)
+target_include_directories(zcl-blue-host-gui PRIVATE ${GTK3_INCLUDE_DIRS})
+target_link_libraries(zcl-blue-host-gui PRIVATE blue_host_gui ${GTK3_LIBRARIES})
+target_compile_options(zcl-blue-host-gui PRIVATE -Wall -Wextra -Werror -pedantic
+    ${GTK3_CFLAGS_OTHER})
+set_source_files_properties(src/blue_host_gui_window.c PROPERTIES
+    COMPILE_OPTIONS "-Wno-pedantic;-Wno-deprecated-declarations")
+
 add_library(blue_review_render STATIC src/blue_review_render.c)
 target_include_directories(blue_review_render PUBLIC include)
 target_link_libraries(blue_review_render PUBLIC blue_review_app blue_bagl_canvas)
@@ -338,7 +384,7 @@ target_link_libraries(zcl-blue-install PRIVATE ledger_hid blue_secure blue_ca bl
 target_compile_options(zcl-blue-install PRIVATE -Wall -Wextra -Werror -pedantic)
 
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-    foreach(target ledger_hid zcl_base58 zcl_address zcl_sign_test zcl-blue-sign-test zcl_tx_review zcl_tx_previous_stream zcl_tx_script_facts zcl_zip243 zcl_zip243_host_hash zcl_tx_prevout zcl_tx_stream zcl_tx_stream_zip243 zcl_tx_replay_zip243 blue_payment_review blue_payment_screen blue_payment_apdu blue_payment_render blue_payment_simulate blue_payment_live blue_chain_tip blue_utxo zcl-blue-payment-sim zcl-blue-wallet-review blue_review_protocol blue_review_screen blue_review_app blue_review_simulate blue_bagl_canvas blue_wallet_receive blue_wallet_protocol blue_wallet_render zcl-blue-wallet-preview blue_review_render zcl-blue-screen-sim zcl-tx-review zcl-ledger blue_secure blue_app_catalog blue_install_params blue_ca zcl-blue-ca zcl-blue-install)
+    foreach(target ledger_hid zcl_base58 zcl_address zcl_sign_test zcl-blue-sign-test zcl_tx_review zcl_tx_previous_stream zcl_tx_script_facts zcl_zip243 zcl_zip243_host_hash zcl_tx_prevout zcl_tx_stream zcl_tx_stream_zip243 zcl_tx_replay_zip243 blue_payment_review blue_payment_screen blue_payment_apdu blue_payment_render blue_payment_simulate blue_payment_live blue_chain_tip blue_utxo zcl-blue-payment-sim zcl-blue-wallet-review blue_review_protocol blue_review_screen blue_review_app blue_review_simulate blue_bagl_canvas blue_wallet_receive blue_wallet_protocol blue_wallet_render zcl-blue-wallet-preview blue_host_gui zcl-blue-host-gui blue_review_render zcl-blue-screen-sim zcl-tx-review zcl-ledger blue_secure blue_app_catalog blue_install_params blue_ca zcl-blue-ca zcl-blue-install)
         target_compile_options(${target} PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
         target_link_options(${target} PUBLIC -fsanitize=address,undefined)
     endforeach()
@@ -450,6 +496,31 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
 endif()
 add_test(NAME blue-install-image-cli COMMAND test-blue-install-image-cli
     $<TARGET_FILE:zcl-blue-install>)
+
+add_executable(test-blue-install-wallet-0346 tests/test_blue_install_wallet_0346.c)
+target_link_libraries(test-blue-install-wallet-0346 PRIVATE zcl_sha256)
+target_compile_options(test-blue-install-wallet-0346 PRIVATE
+    -Wall -Wextra -Werror -pedantic)
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    target_compile_options(test-blue-install-wallet-0346 PRIVATE
+        -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(test-blue-install-wallet-0346 PRIVATE
+        -fsanitize=address,undefined)
+endif()
+add_test(NAME blue-install-wallet-0346 COMMAND test-blue-install-wallet-0346
+    $<TARGET_FILE:zcl-blue-install>
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/zcl-wallet-0.3.46.text)
+
+add_executable(test-blue-host-gui tests/test_blue_host_gui.c)
+target_link_libraries(test-blue-host-gui PRIVATE blue_host_gui
+    blue_install_params)
+target_compile_options(test-blue-host-gui PRIVATE -Wall -Wextra -Werror -pedantic)
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    target_compile_options(test-blue-host-gui PRIVATE
+        -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(test-blue-host-gui PRIVATE -fsanitize=address,undefined)
+endif()
+add_test(NAME blue-host-gui COMMAND test-blue-host-gui)
 
 add_executable(test-zcl-address tests/test_zcl_address.c)
 target_link_libraries(test-zcl-address PRIVATE zcl_address)
@@ -577,7 +648,7 @@ endif()
 add_library(blue_payment_host_assemble STATIC src/blue_payment_host_assemble.c)
 target_include_directories(blue_payment_host_assemble PUBLIC include)
 target_link_libraries(blue_payment_host_assemble PUBLIC
-    blue_payment_host_verify zcl_tx_script_facts zcl_tx_review)
+    blue_payment_host_verify zcl_tx_script_facts zcl_tx_review zcl_sha256)
 target_compile_options(blue_payment_host_assemble PRIVATE
     -Wall -Wextra -Werror -pedantic)
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
@@ -594,6 +665,32 @@ target_compile_options(blue_payment_host_ownership PRIVATE
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     target_compile_options(blue_payment_host_ownership PRIVATE
         -fsanitize=address,undefined -fno-omit-frame-pointer)
+endif()
+
+add_library(blue_signed_output STATIC src/blue_signed_output.c)
+target_include_directories(blue_signed_output PUBLIC include)
+target_compile_options(blue_signed_output PRIVATE
+    -Wall -Wextra -Werror -pedantic)
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    target_compile_options(blue_signed_output PRIVATE
+        -fsanitize=address,undefined -fno-omit-frame-pointer)
+endif()
+
+add_executable(zcl-blue-wallet-sign src/blue_wallet_review_cli.c
+    src/blue_mainnet_branch.c)
+target_include_directories(zcl-blue-wallet-sign PRIVATE include)
+target_compile_definitions(zcl-blue-wallet-sign PRIVATE BLUE_WALLET_SIGN_CLI=1)
+target_link_libraries(zcl-blue-wallet-sign PRIVATE blue_payment_live blue_utxo
+    blue_payment_host_ownership blue_payment_host_sign
+    blue_payment_host_assemble blue_signed_output zcl_address
+    zcl_host_crypto ledger_hid zcl_sha256)
+target_compile_options(zcl-blue-wallet-sign PRIVATE
+    -Wall -Wextra -Werror -pedantic)
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    target_compile_options(zcl-blue-wallet-sign PRIVATE
+        -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(zcl-blue-wallet-sign PRIVATE
+        -fsanitize=address,undefined)
 endif()
 
 add_executable(test-blue-payment-host-ownership
@@ -720,6 +817,42 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
 endif()
 add_test(NAME blue-zip32-master COMMAND test-blue-zip32-master)
 
+add_executable(test-blue-sapling-entropy-device
+    tests/test_blue_sapling_entropy_device.c
+    device-blue-wallet/candidate/blue_sapling_entropy_device.c
+    src/blue_mod256.c)
+target_include_directories(test-blue-sapling-entropy-device PRIVATE
+    tests/blue_sapling_device_stub device-blue-wallet/candidate include)
+target_compile_options(test-blue-sapling-entropy-device PRIVATE
+    -Wall -Wextra -Werror -pedantic)
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    target_compile_options(test-blue-sapling-entropy-device PRIVATE
+        -O2 -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(test-blue-sapling-entropy-device PRIVATE
+        -fsanitize=address,undefined)
+endif()
+add_test(NAME blue-sapling-entropy-device
+    COMMAND test-blue-sapling-entropy-device)
+
+add_executable(test-blue-sapling-spend-device
+    tests/test_blue_sapling_spend_device.c
+    device-blue-wallet/candidate/blue_sapling_spend_device.c
+    src/blue_mod256.c)
+target_include_directories(test-blue-sapling-spend-device PRIVATE
+    tests/blue_sapling_device_stub device-blue-wallet/candidate
+    include ../../core/modules/sapling/include)
+target_compile_options(test-blue-sapling-spend-device PRIVATE
+    -Wall -Wextra -Werror -pedantic
+    -DZCL_BLUE_SYNTHETIC_SEED_FIXTURE=1)
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    target_compile_options(test-blue-sapling-spend-device PRIVATE
+        -O2 -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(test-blue-sapling-spend-device PRIVATE
+        -fsanitize=address,undefined)
+endif()
+add_test(NAME blue-sapling-spend-device
+    COMMAND test-blue-sapling-spend-device)
+
 add_executable(test-blue-scalar-reducer
     tests/test_blue_scalar_reducer.c
     ../../core/modules/sapling/src/jubjub.c
@@ -791,10 +924,16 @@ if(BLUE_ARM_GCC AND BLUE_QEMU)
             "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_redjubjub_sign_isolated.c"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_sapling_spend_auth.c"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_sapling_aead.c"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_sapling_memo.c"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_sapling_epk.c"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_sapling_group_hash.c"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_zip32_master.c"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_zip32_fvk.c"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_zip32_child.c"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_zip32_seed_bridge.c"
+            "${CMAKE_CURRENT_SOURCE_DIR}/device-blue-wallet/candidate/blue_zip32_seed_device.c"
+            "${CMAKE_CURRENT_SOURCE_DIR}/device-blue-wallet/candidate/blue_sapling_entropy_device.c"
+            "${CMAKE_CURRENT_SOURCE_DIR}/device-blue-wallet/candidate/blue_sapling_spend_device.c"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_sapling_generators.c"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_mod256.c"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_fr_ct.c"
@@ -806,6 +945,10 @@ if(BLUE_ARM_GCC AND BLUE_QEMU)
             "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_jubjub_decode.c"
             "${CMAKE_CURRENT_SOURCE_DIR}/../../core/modules/sapling/src/jubjub.c"
             "${CMAKE_CURRENT_SOURCE_DIR}/../../core/modules/crypto/src/blake2b.c")
+        list(APPEND BLUE_SAPLING_ARM_SOURCES
+            "${CMAKE_CURRENT_SOURCE_DIR}/../../core/modules/crypto/src/blake2s.c")
+        list(APPEND BLUE_SAPLING_ARM_SOURCES
+            "${CMAKE_CURRENT_SOURCE_DIR}/../../contexts/commons/packages/zsha256/src/zsha256.c")
         set(BLUE_SAPLING_ARM_DEPENDS
             ${BLUE_SAPLING_ARM_SOURCES}
             tests/blue_m3_qemu.ld tests/blue_consensus_spend_fixture.h
@@ -820,21 +963,33 @@ if(BLUE_ARM_GCC AND BLUE_QEMU)
             include/blue_redjubjub_sign_isolated.h
             include/blue_sapling_spend_auth.h
             include/blue_sapling_aead.h
+            include/blue_sapling_memo.h
+            include/blue_sapling_epk.h
+            include/blue_sapling_group_hash.h
             include/blue_zip32_master.h
             include/blue_zip32_fvk.h
             include/blue_zip32_child.h
             include/blue_zip32_seed_bridge.h
+            device-blue-wallet/candidate/blue_sapling_entropy_device.h
+            device-blue-wallet/candidate/blue_sapling_spend_device.h
+            device-blue-wallet/candidate/blue_zip32_seed_device.h
+            tests/blue_sapling_device_stub/os.h
             include/blue_sapling_generators.h)
         add_custom_command(OUTPUT "${BLUE_M3_IMAGE}"
             COMMAND ${BLUE_ARM_GCC} -std=c23 -mcpu=cortex-m3 -mthumb
                 -O2 -ffunction-sections -fdata-sections
                 -Wall -Wextra -Werror -pedantic
                 -DZCL_FUZZ_QUIET_LOG_MACROS=1
+                -DZCL_BLUE_SYNTHETIC_SEED_FIXTURE=1
                 -I "${CMAKE_CURRENT_SOURCE_DIR}/include"
+                -I "${CMAKE_CURRENT_SOURCE_DIR}/device-blue-wallet/candidate"
+                -I "${CMAKE_CURRENT_SOURCE_DIR}/tests/blue_sapling_device_stub"
                 -I "${CMAKE_CURRENT_SOURCE_DIR}/../../core/modules/sapling/include"
                 -I "${CMAKE_CURRENT_SOURCE_DIR}/../../core/modules/crypto/include"
+                -I "${CMAKE_CURRENT_SOURCE_DIR}/../../contexts/commons/packages/zsha256/include"
                 -I "${CMAKE_CURRENT_SOURCE_DIR}/../../platform/modules/util/include"
                 -I "${CMAKE_CURRENT_SOURCE_DIR}/../../platform/modules/base/include"
+                -I "${CMAKE_CURRENT_SOURCE_DIR}/../../platform/modules/support/include"
                 -nostartfiles -specs=rdimon.specs
                 -Wl,-T,${CMAKE_CURRENT_SOURCE_DIR}/tests/blue_m3_qemu.ld
                 -Wl,--gc-sections
@@ -864,11 +1019,16 @@ if(BLUE_ARM_GCC AND BLUE_QEMU)
                 -O2 -ffunction-sections -fdata-sections -fstack-usage
                 -Wall -Wextra -Werror -pedantic
                 -DBLUE_QEMU_M0 -DZCL_FUZZ_QUIET_LOG_MACROS=1
+                -DZCL_BLUE_SYNTHETIC_SEED_FIXTURE=1
                 -I "${CMAKE_CURRENT_SOURCE_DIR}/include"
+                -I "${CMAKE_CURRENT_SOURCE_DIR}/device-blue-wallet/candidate"
+                -I "${CMAKE_CURRENT_SOURCE_DIR}/tests/blue_sapling_device_stub"
                 -I "${CMAKE_CURRENT_SOURCE_DIR}/../../core/modules/sapling/include"
                 -I "${CMAKE_CURRENT_SOURCE_DIR}/../../core/modules/crypto/include"
+                -I "${CMAKE_CURRENT_SOURCE_DIR}/../../contexts/commons/packages/zsha256/include"
                 -I "${CMAKE_CURRENT_SOURCE_DIR}/../../platform/modules/util/include"
                 -I "${CMAKE_CURRENT_SOURCE_DIR}/../../platform/modules/base/include"
+                -I "${CMAKE_CURRENT_SOURCE_DIR}/../../platform/modules/support/include"
                 -nostartfiles -specs=rdimon.specs
                 -Wl,-T,${CMAKE_CURRENT_SOURCE_DIR}/tests/blue_m3_qemu.ld
                 -Wl,--gc-sections
@@ -888,6 +1048,83 @@ if(BLUE_ARM_GCC AND BLUE_QEMU)
             PASS_REGULAR_EXPRESSION "M0 PASS"
             FAIL_REGULAR_EXPRESSION "M0 FAIL|M0 STACK SETUP FAIL"
             TIMEOUT 30)
+
+        set(BLUE_CM_ARM_SOURCES
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/blue_cm_qemu.c"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_sapling_cm.c"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_sapling_group_hash.c"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_jubjub_arithmetic.c"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_jubjub_lowmem.c"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_jubjub_encode.c"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_jubjub_decode.c"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_fr_ct.c"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_fr_sqrt.c"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_fs_ct.c"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_mod256.c"
+            "${CMAKE_CURRENT_SOURCE_DIR}/../../core/modules/crypto/src/blake2s.c")
+        set(BLUE_CM_ARM_INCLUDES
+            -I "${CMAKE_CURRENT_SOURCE_DIR}/include"
+            -I "${CMAKE_CURRENT_SOURCE_DIR}/../../core/modules/sapling/include"
+            -I "${CMAKE_CURRENT_SOURCE_DIR}/../../core/modules/crypto/include"
+            -I "${CMAKE_CURRENT_SOURCE_DIR}/../../platform/modules/util/include"
+            -I "${CMAKE_CURRENT_SOURCE_DIR}/../../platform/modules/base/include"
+            -I "${CMAKE_CURRENT_SOURCE_DIR}/../../platform/modules/support/include")
+        set(BLUE_CM_M3_IMAGE
+            "${CMAKE_CURRENT_BINARY_DIR}/blue-cm-m3-qemu.elf")
+        add_custom_command(OUTPUT "${BLUE_CM_M3_IMAGE}"
+            COMMAND ${BLUE_ARM_GCC} -std=c23 -mcpu=cortex-m3 -mthumb
+                -O2 -ffunction-sections -fdata-sections
+                -Wall -Wextra -Werror -pedantic
+                -DZCL_FUZZ_QUIET_LOG_MACROS=1
+                ${BLUE_CM_ARM_INCLUDES}
+                -nostartfiles -specs=rdimon.specs
+                -Wl,-T,${CMAKE_CURRENT_SOURCE_DIR}/tests/blue_m3_qemu.ld
+                -Wl,--gc-sections
+                ${BLUE_CM_ARM_SOURCES} -o "${BLUE_CM_M3_IMAGE}"
+            DEPENDS ${BLUE_CM_ARM_SOURCES}
+                tests/blue_m3_qemu.ld include/blue_sapling_cm.h
+                include/blue_sapling_group_hash.h
+            VERBATIM)
+        add_custom_target(blue-cm-m3-qemu-image ALL
+            DEPENDS "${BLUE_CM_M3_IMAGE}")
+        add_test(NAME blue-cm-m3-qemu COMMAND ${BLUE_QEMU}
+            -M mps2-an385 -cpu cortex-m3 -nographic
+            -semihosting-config enable=on,target=native
+            -kernel "${BLUE_CM_M3_IMAGE}")
+        set_tests_properties(blue-cm-m3-qemu PROPERTIES
+            PASS_REGULAR_EXPRESSION "CM-M3 PASS"
+            FAIL_REGULAR_EXPRESSION "CM-M3 FAIL" TIMEOUT 30)
+
+        set(BLUE_CM_M0_IMAGE
+            "${CMAKE_CURRENT_BINARY_DIR}/blue-cm-m0-qemu.elf")
+        set(BLUE_CM_M0_BINARY
+            "${CMAKE_CURRENT_BINARY_DIR}/blue-cm-m0-qemu.bin")
+        add_custom_command(OUTPUT "${BLUE_CM_M0_IMAGE}"
+                "${BLUE_CM_M0_BINARY}"
+            COMMAND ${BLUE_ARM_GCC} -std=c23 -mcpu=cortex-m0 -mthumb
+                -O2 -ffunction-sections -fdata-sections
+                -Wall -Wextra -Werror -pedantic
+                -DBLUE_QEMU_M0 -DZCL_FUZZ_QUIET_LOG_MACROS=1
+                ${BLUE_CM_ARM_INCLUDES}
+                -nostartfiles -specs=rdimon.specs
+                -Wl,-T,${CMAKE_CURRENT_SOURCE_DIR}/tests/blue_m3_qemu.ld
+                -Wl,--gc-sections
+                ${BLUE_CM_ARM_SOURCES} -o "${BLUE_CM_M0_IMAGE}"
+            COMMAND ${BLUE_ARM_OBJCOPY} -O binary
+                "${BLUE_CM_M0_IMAGE}" "${BLUE_CM_M0_BINARY}"
+            DEPENDS ${BLUE_CM_ARM_SOURCES}
+                tests/blue_m3_qemu.ld include/blue_sapling_cm.h
+                include/blue_sapling_group_hash.h
+            VERBATIM)
+        add_custom_target(blue-cm-m0-qemu-image ALL
+            DEPENDS "${BLUE_CM_M0_BINARY}")
+        add_test(NAME blue-cm-m0-qemu COMMAND ${BLUE_QEMU}
+            -M microbit -cpu cortex-m0 -nographic
+            -semihosting-config enable=on,target=native
+            -kernel "${BLUE_CM_M0_BINARY}")
+        set_tests_properties(blue-cm-m0-qemu PROPERTIES
+            PASS_REGULAR_EXPRESSION "CM-M0 PASS"
+            FAIL_REGULAR_EXPRESSION "CM-M0 FAIL" TIMEOUT 60)
 
         set(BLUE_M0_WALLET_IMAGE
             "${CMAKE_CURRENT_BINARY_DIR}/blue-wallet-m0-qemu.elf")
@@ -951,6 +1188,23 @@ add_test(NAME blue-wallet-fixture-cli COMMAND zcl-blue-wallet-fixture
     --prepare 0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798)
 set_tests_properties(blue-wallet-fixture-cli PROPERTIES
     PASS_REGULAR_EXPRESSION "SYNTHETIC TEST ONLY")
+
+add_executable(test-blue-wallet-fixture-cleanup
+    tests/test_blue_wallet_fixture_cleanup.c)
+target_link_libraries(test-blue-wallet-fixture-cleanup PRIVATE
+    blue_payment_fixture blue_payment_live blue_payment_host_sign
+    blue_payment_host_assemble zcl_tx_prevout zcl_zip243_host_hash
+    zcl_address zcl_host_crypto)
+target_compile_options(test-blue-wallet-fixture-cleanup PRIVATE
+    -Wall -Wextra -Werror -pedantic)
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    target_compile_options(test-blue-wallet-fixture-cleanup PRIVATE
+        -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(test-blue-wallet-fixture-cleanup PRIVATE
+        -fsanitize=address,undefined)
+endif()
+add_test(NAME blue-wallet-fixture-cleanup
+    COMMAND test-blue-wallet-fixture-cleanup)
 
 add_executable(test-blue-ecdsa-der tests/test_blue_ecdsa_der.c)
 target_link_libraries(test-blue-ecdsa-der PRIVATE
@@ -1025,6 +1279,28 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
 endif()
 add_test(NAME blue-wallet-startup COMMAND test-blue-wallet-startup)
 
+add_executable(test-blue-wallet-integrated-loop
+    tests/test_blue_wallet_integrated_loop.c)
+target_include_directories(test-blue-wallet-integrated-loop PRIVATE
+    tests/blue_wallet_startup_stub include device-blue-wallet/src
+    ../../contexts/commons/packages/zripemd/include)
+target_link_libraries(test-blue-wallet-integrated-loop PRIVATE
+    blue_wallet_protocol blue_wallet_receive blue_payment_sign
+    blue_payment_apdu blue_payment_screen blue_payment_review zcl_zip243
+    zcl_tx_prevout zcl_base58 zcl_address zcl_sha256
+    blue_payment_fixture blue_payment_live zcl_zip243_host_hash
+    blue_host_gui blue_install_params)
+target_compile_options(test-blue-wallet-integrated-loop PRIVATE
+    -Wall -Wextra -Werror -pedantic -DHAVE_BOLOS_APP_STACK_CANARY
+    -DBLUE_WALLET_TEST_REAL_HASH)
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    target_compile_options(test-blue-wallet-integrated-loop PRIVATE
+        -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(test-blue-wallet-integrated-loop PRIVATE
+        -fsanitize=address,undefined)
+endif()
+add_test(NAME blue-wallet-integrated-loop COMMAND test-blue-wallet-integrated-loop)
+
 add_executable(test-blue-wallet-review-cli tests/test_blue_wallet_review_cli.c)
 target_link_libraries(test-blue-wallet-review-cli PRIVATE zcl_sha256 blue_utxo)
 target_compile_options(test-blue-wallet-review-cli PRIVATE
@@ -1038,7 +1314,22 @@ endif()
 add_test(NAME blue-wallet-review-cli COMMAND test-blue-wallet-review-cli
     $<TARGET_FILE:test-blue-payment-review>
     $<TARGET_FILE:zcl-blue-wallet-review>
+    $<TARGET_FILE:zcl-blue-wallet-sign>
     $<TARGET_FILE:test-blue-chain-tip>)
+
+add_executable(test-blue-signed-output tests/test_blue_signed_output.c)
+target_link_libraries(test-blue-signed-output PRIVATE blue_signed_output)
+target_compile_options(test-blue-signed-output PRIVATE
+    -Wall -Wextra -Werror -pedantic)
+target_link_options(test-blue-signed-output PRIVATE
+    -Wl,--wrap=fsync -Wl,--wrap=unlinkat)
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    target_compile_options(test-blue-signed-output PRIVATE
+        -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(test-blue-signed-output PRIVATE
+        -fsanitize=address,undefined)
+endif()
+add_test(NAME blue-signed-output COMMAND test-blue-signed-output)
 
 add_executable(test-blue-mainnet-branch tests/test_blue_mainnet_branch.c
     src/blue_mainnet_branch.c)
@@ -1082,6 +1373,7 @@ if(ZCL_LEDGER_FUZZ)
         message(FATAL_ERROR "ZCL_LEDGER_FUZZ requires Clang Debug")
     endif()
     foreach(target blue_app_catalog blue_payment_apdu blue_payment_review
+                   blue_payment_sign blue_ecdsa_der
                    blue_payment_screen zcl_tx_review zcl_tx_previous_stream zcl_tx_script_facts
                    zcl_zip243 zcl_tx_stream
                    zcl_tx_stream_zip243 zcl_tx_replay_zip243
@@ -1101,6 +1393,12 @@ if(ZCL_LEDGER_FUZZ)
     target_compile_options(fuzz-blue-payment-apdu PRIVATE -Wall -Wextra
         -Werror -pedantic -fsanitize=fuzzer,address,undefined)
     target_link_options(fuzz-blue-payment-apdu PRIVATE
+        -fsanitize=fuzzer,address,undefined)
+    add_executable(fuzz-blue-payment-sign tests/fuzz_blue_payment_sign.c)
+    target_link_libraries(fuzz-blue-payment-sign PRIVATE blue_payment_sign)
+    target_compile_options(fuzz-blue-payment-sign PRIVATE -Wall -Wextra
+        -Werror -pedantic -fsanitize=fuzzer,address,undefined)
+    target_link_options(fuzz-blue-payment-sign PRIVATE
         -fsanitize=fuzzer,address,undefined)
     target_link_libraries(fuzz-zcl-tx PRIVATE zcl_tx_script_facts
         zcl_zip243 zcl_zip243_host_hash)
@@ -1217,11 +1515,50 @@ endif()
 add_test(NAME blue-shielded-review-app COMMAND
     test-blue-shielded-review-app)
 
+add_executable(test-blue-shielded-review-device
+    tests/test_blue_review_device.c
+    src/blue_review_accessible.c)
+target_include_directories(test-blue-shielded-review-device PRIVATE
+    tests/blue_wallet_startup_stub include)
+target_compile_definitions(test-blue-shielded-review-device PRIVATE
+    ZCL_BLUE_SHIELDED_REVIEW BLUE_WALLET_TEST_REAL_HASH
+    ZCL_BLUE_REVIEW_HOST_TEST)
+target_link_libraries(test-blue-shielded-review-device PRIVATE
+    blue_shielded_review_app zcl_zip243 zcl_zip243_host_hash)
+target_compile_options(test-blue-shielded-review-device PRIVATE
+    -Wall -Wextra -Werror -pedantic)
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    target_compile_options(test-blue-shielded-review-device PRIVATE
+        -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(test-blue-shielded-review-device PRIVATE
+        -fsanitize=address,undefined)
+endif()
+add_test(NAME blue-shielded-review-device
+    COMMAND test-blue-shielded-review-device)
+
+add_executable(test-blue-review-device
+    tests/test_blue_review_device.c)
+target_include_directories(test-blue-review-device PRIVATE
+    tests/blue_wallet_startup_stub include)
+target_compile_definitions(test-blue-review-device PRIVATE
+    BLUE_REVIEW_TEST_CONTEXT ZCL_BLUE_REVIEW_HOST_TEST)
+target_link_libraries(test-blue-review-device PRIVATE blue_review_app)
+target_compile_options(test-blue-review-device PRIVATE
+    -Wall -Wextra -Werror -pedantic)
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    target_compile_options(test-blue-review-device PRIVATE
+        -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(test-blue-review-device PRIVATE
+        -fsanitize=address,undefined)
+endif()
+add_test(NAME blue-review-device COMMAND test-blue-review-device)
+
 add_library(blue_shielded_review_client STATIC
     src/blue_shielded_review_client.c)
 target_include_directories(blue_shielded_review_client PUBLIC include)
 target_link_libraries(blue_shielded_review_client PUBLIC
-    blue_mainnet_branch zcl_tx_review zcl_zip243 zcl_zip243_host_hash)
+    blue_mainnet_branch zcl_tx_review zcl_zip243 zcl_zip243_host_hash
+    zcl_sha256)
 target_compile_options(blue_shielded_review_client PRIVATE
     -Wall -Wextra -Werror -pedantic)
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
@@ -1275,6 +1612,8 @@ endif()
 
 add_executable(test-blue-shielded-screen-cli
     tests/test_blue_shielded_screen_cli.c)
+target_link_libraries(test-blue-shielded-screen-cli PRIVATE
+    zcl_sha256 PNG::PNG)
 target_compile_options(test-blue-shielded-screen-cli PRIVATE
     -Wall -Wextra -Werror -pedantic)
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
@@ -1286,7 +1625,8 @@ endif()
 add_test(NAME blue-shielded-screen-cli COMMAND
     test-blue-shielded-screen-cli
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/zip243-vector1.hex
-    $<TARGET_FILE:zcl-blue-shielded-screen-sim>)
+    $<TARGET_FILE:zcl-blue-shielded-screen-sim>
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/simnet-sapling-spend.hex)
 
 add_executable(test-blue-shielded-review-apdu
     tests/test_blue_shielded_review_apdu.c)

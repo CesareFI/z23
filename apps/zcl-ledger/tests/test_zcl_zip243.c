@@ -49,6 +49,82 @@ static bool sha_finish(void *context, uint8_t digest[32]) {
     return EVP_DigestFinal_ex(context, digest, &length) == 1 && length == 32;
 }
 
+static void ready_replay(zcl_tx_replay_zip243 *state,
+    const uint8_t *wire, size_t length, const zcl_zip243_hasher *blake,
+    const zcl_tx_replay_sha256 *sha) {
+    assert(zcl_tx_replay_zip243_begin(state, (uint32_t)length, 0,
+        0x76b809bb, blake, sha));
+    for (unsigned pass = 0; pass < 3; ++pass) {
+        assert(zcl_tx_replay_zip243_feed(state, wire, length));
+        if (pass < 2) assert(zcl_tx_replay_zip243_next(state));
+    }
+}
+
+static void replay_rejects_finish_alias(const uint8_t *wire, size_t length) {
+    struct blake2b_ctx blake_context;
+    EVP_MD_CTX *sha_context = EVP_MD_CTX_new();
+    assert(sha_context);
+    zcl_zip243_hasher blake = zcl_zip243_host_hasher(&blake_context);
+    zcl_tx_replay_sha256 sha = {.context = sha_context, .init = sha_start,
+        .update = sha_update, .final = sha_finish};
+    zcl_tx_replay_zip243 state;
+    ready_replay(&state, wire, length, &blake, &sha);
+    union {
+        zcl_tx_stream_facts facts;
+        uint8_t bytes[sizeof(zcl_tx_stream_facts) + 32];
+    } aliased;
+    memset(&aliased, 0xa5, sizeof aliased);
+    assert(!zcl_tx_replay_zip243_finish(&state, NULL, 0, 0,
+        &aliased.facts, aliased.bytes + 1));
+    assert(state.wire.failed);
+    for (size_t i = 0; i < sizeof aliased.bytes; ++i)
+        assert(aliased.bytes[i] == 0xa5);
+    ready_replay(&state, wire, length, &blake, &sha);
+    uint8_t digest[32];
+    memset(digest, 0xa5, sizeof digest);
+    assert(!zcl_tx_replay_zip243_finish(&state, NULL, 0, 0,
+        &state.wire.facts, digest));
+    assert(state.wire.failed);
+    for (size_t i = 0; i < sizeof digest; ++i)
+        assert(digest[i] == 0xa5);
+    ready_replay(&state, wire, length, &blake, &sha);
+    zcl_tx_stream_facts facts;
+    memset(&facts, 0xa5, sizeof facts);
+    assert(!zcl_tx_replay_zip243_finish(&state, state.outputs, 25, 0,
+        &facts, digest));
+    assert(state.wire.failed);
+    for (size_t i = 0; i < sizeof facts; ++i)
+        assert(((const uint8_t *)&facts)[i] == 0xa5);
+    EVP_MD_CTX_free(sha_context);
+}
+
+static void replay_rejects_feed_alias(const uint8_t *wire, size_t length) {
+    struct blake2b_ctx blake_context;
+    EVP_MD_CTX *sha_context = EVP_MD_CTX_new();
+    assert(sha_context);
+    zcl_zip243_hasher blake = zcl_zip243_host_hasher(&blake_context);
+    zcl_tx_replay_sha256 sha = {.context = sha_context, .init = sha_start,
+        .update = sha_update, .final = sha_finish};
+    zcl_tx_replay_zip243 state;
+    assert(zcl_tx_replay_zip243_begin(&state, (uint32_t)length, 0,
+        0x76b809bb, &blake, &sha));
+    assert(zcl_tx_replay_zip243_feed(&state, wire, 1));
+    state.commitment[0] = wire[1];
+    assert(!zcl_tx_replay_zip243_feed(&state, state.commitment, 1));
+    assert(state.wire.failed && state.wire.received == 0);
+    assert(zcl_tx_replay_zip243_begin(&state, (uint32_t)length, 0,
+        0x76b809bb, &blake, &sha));
+    assert(zcl_tx_replay_zip243_feed(&state, wire, 1));
+    state.commitment[31] = wire[1];
+    state.prevouts[0] = wire[2];
+    assert(!zcl_tx_replay_zip243_feed(&state, state.commitment + 31, 2));
+    assert(state.wire.failed && state.wire.received == 0);
+    assert(zcl_tx_replay_zip243_begin(&state, (uint32_t)length, 0,
+        0x76b809bb, &blake, &sha));
+    assert(zcl_tx_replay_zip243_feed(&state, wire, length));
+    EVP_MD_CTX_free(sha_context);
+}
+
 static void replay_chunks(const uint8_t *wire, size_t length, size_t chunk,
     const uint8_t script_code[25], const uint8_t expected[32]) {
     struct blake2b_ctx blake_context;
@@ -199,6 +275,8 @@ static void test_streaming(const uint8_t *wire, size_t length,
         replay_chunks(unsigned_wire, length, chunk, script_code, expected);
     }
     replay_rejects_changes(unsigned_wire, length);
+    replay_rejects_finish_alias(unsigned_wire, length);
+    replay_rejects_feed_alias(unsigned_wire, length);
     replay_rejects_missing_input(unsigned_wire, length, script_code);
     struct blake2b_ctx first_context, second_context;
     zcl_zip243_hasher first = zcl_zip243_host_hasher(&first_context);

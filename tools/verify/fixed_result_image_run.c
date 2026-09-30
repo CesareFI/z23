@@ -58,21 +58,61 @@ bool zcl_fri_run_wait(const struct zcl_fri_run *r, int *exit_code)
     return true;
 }
 
-bool zcl_fri_strace_available(void)
+static bool frr_executable(const char *path)
 {
     struct stat st;
-    return stat(FRR_STRACE, &st) == 0 && S_ISREG(st.st_mode) &&
+    return path && path[0] && stat(path, &st) == 0 && S_ISREG(st.st_mode) &&
            (st.st_mode & 0111) != 0;
+}
+
+/* Distro path first. A PATH entry is used only when that file is absent. */
+static bool frr_strace_from_path(char *out, size_t cap)
+{
+    const char *env = getenv("PATH");
+    if (!env || !out || cap < 2) return false;
+    char scratch[PATH_MAX];
+    size_t i = 0;
+    while (env[i]) {
+        size_t start = i;
+        while (env[i] && env[i] != ':') i++;
+        size_t len = i - start;
+        if (env[i] == ':') i++;
+        if (len == 0 || len + 8 >= sizeof scratch) continue;
+        memcpy(scratch, env + start, len);
+        memcpy(scratch + len, "/strace", 8);
+        if (!frr_executable(scratch)) continue;
+        if (strlen(scratch) >= cap) return false;
+        memcpy(out, scratch, strlen(scratch) + 1);
+        return true;
+    }
+    return false;
+}
+
+static char frr_strace_buf[PATH_MAX];
+
+static const char *frr_strace_path(void)
+{
+    if (frr_executable(FRR_STRACE)) return FRR_STRACE;
+    if (!frr_strace_from_path(frr_strace_buf, sizeof frr_strace_buf))
+        return NULL;
+    return frr_strace_buf;
+}
+
+bool zcl_fri_strace_available(void)
+{
+    return frr_strace_path() != NULL;
 }
 
 bool zcl_fri_trace_run(const struct zcl_fri_run *r, const char *trace_dir,
                        int *exit_code)
 {
+    const char *strace = frr_strace_path();
     char out[PATH_MAX];
     char *argv[FRR_MAX_ARGS + 16u];
     size_t n = 0;
-    if (snprintf(out, sizeof(out), "%s/t", trace_dir) >= PATH_MAX) return false;
-    char *head[] = {FRR_STRACE, "-f", "-ff", "-qq", "-s", "4096", "-e",
+    if (!strace || snprintf(out, sizeof(out), "%s/t", trace_dir) >= PATH_MAX)
+        return false;
+    char *head[] = {(char *)strace, "-f", "-ff", "-qq", "-s", "4096", "-e",
                     "trace=%file,%process", "-o", out, "--"};
     for (size_t i = 0; i < sizeof(head) / sizeof(*head); i++) argv[n++] = head[i];
     for (size_t i = 0; r->argv[i]; i++) {
@@ -82,7 +122,7 @@ bool zcl_fri_trace_run(const struct zcl_fri_run *r, const char *trace_dir,
     argv[n] = NULL;
     struct zcl_fri_run traced = *r;
     traced.argv = argv;
-    traced.path = FRR_STRACE;
+    traced.path = strace;
     return zcl_fri_run_wait(&traced, exit_code);
 }
 

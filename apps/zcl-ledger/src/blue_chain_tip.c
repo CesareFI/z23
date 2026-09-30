@@ -97,11 +97,13 @@ static int64_t monotonic_ms(void) {
     return (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
 }
 
-static bool read_reply(int fd, char *reply, size_t capacity, size_t *used) {
-    int64_t deadline = monotonic_ms() + 7000;
+static bool read_reply(int fd, char *reply, size_t capacity, size_t *used,
+                       int64_t deadline) {
     *used = 0;
     while (*used < capacity) {
-        int64_t remaining = deadline - monotonic_ms();
+        int64_t now = monotonic_ms();
+        if (now < 0) return false;
+        int64_t remaining = deadline - now;
         if (remaining <= 0 || remaining > INT_MAX) return false;
         struct pollfd entry = {.fd = fd, .events = POLLIN};
         int ready = poll(&entry, 1, (int)remaining);
@@ -116,21 +118,42 @@ static bool read_reply(int fd, char *reply, size_t capacity, size_t *used) {
     return false;
 }
 
-static bool finish_child(pid_t child, bool complete) {
-    if (!complete) kill(child, SIGKILL);
+static bool finish_child(pid_t child, bool complete, int64_t deadline) {
     int status = 0;
     pid_t waited;
+    while (complete) {
+        waited = waitpid(child, &status, WNOHANG);
+        if (waited == child)
+            return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+        if (waited < 0 && errno != EINTR) return false;
+        int64_t now = monotonic_ms();
+        if (now < 0 || now >= deadline) break;
+        struct timespec pause = {.tv_nsec = 10000000};
+        (void)nanosleep(&pause, NULL);
+    }
+    (void)kill(-child, SIGKILL);
+    (void)kill(child, SIGKILL);
     do { waited = waitpid(child, &status, 0); }
     while (waited < 0 && errno == EINTR);
-    return complete && waited == child && WIFEXITED(status) &&
-        WEXITSTATUS(status) == 0;
+    return false;
+}
+
+static bool capture_request_valid(const char *rpc_binary,
+                                  const char *method, const char *reply,
+                                  size_t capacity, const size_t *length) {
+    return rpc_binary && rpc_binary[0] == '/' && method && reply &&
+           capacity && length;
 }
 
 bool blue_rpc_capture(const char *rpc_binary, const char *method,
                       const char *argument, char *reply, size_t capacity,
                       size_t *length) {
-    if (!rpc_binary || rpc_binary[0] != '/' || !method || !reply ||
-        !capacity || !length) return false;
+    if (!capture_request_valid(rpc_binary, method, reply, capacity, length))
+        return false;
+    *length = 0;
+    int64_t start = monotonic_ms();
+    if (start < 0 || start > INT64_MAX - 7000) return false;
+    int64_t deadline = start + 7000;
     int pipefd[2];
     if (pipe(pipefd) != 0) return false;
     pid_t child = fork();
@@ -139,6 +162,7 @@ bool blue_rpc_capture(const char *rpc_binary, const char *method,
         return false;
     }
     if (child == 0) {
+        if (setpgid(0, 0) != 0) _exit(127);
         close(pipefd[0]);
         if (dup2(pipefd[1], STDOUT_FILENO) < 0 ||
             setenv("ZCL_RPC_MAX_TIME_SECS", "5", 1) != 0)
@@ -151,9 +175,14 @@ bool blue_rpc_capture(const char *rpc_binary, const char *method,
         _exit(127);
     }
     close(pipefd[1]);
-    bool complete = read_reply(pipefd[0], reply, capacity, length);
+    bool complete = read_reply(pipefd[0], reply, capacity, length, deadline);
     close(pipefd[0]);
-    return finish_child(child, complete);
+    bool finished = finish_child(child, complete, deadline);
+    if (!finished) {
+        memset(reply, 0, *length);
+        *length = 0;
+    }
+    return finished;
 }
 
 bool blue_chain_tip_query(const char *rpc_binary, blue_chain_tip *tip) {

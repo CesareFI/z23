@@ -10,8 +10,10 @@
 #error "The Blue stack check requires ISO C23"
 #endif
 
-enum { FRAME_COUNT = 61, REVIEW_FRAME_COUNT = 10, STACK_MARGIN = 512,
-       PATH_COUNT = 22 };
+enum { FRAME_COUNT = 71, WALLET_FRAME_COUNT = 61,
+       REVIEW_FRAME_COUNT = 10, REVIEW_REQUIRED_FRAME_COUNT = 64,
+       STACK_MARGIN = 512,
+       PATH_COUNT = 25 };
 
 static const char *const frame_names[FRAME_COUNT] = {
     "answer_command", "blue_review_app_command", "blue_review_handle",
@@ -39,7 +41,11 @@ static const char *const frame_names[FRAME_COUNT] = {
     "blue_payment_sign_command", "derive_public_key", "io_exchange",
     "cx_hash", "os_perso_derive_node_bip32",
     "cx_ecfp_generate_pair", "cx_hash_sha256",
-    "cx_ecfp_init_private_key", "cx_ripemd160_init"
+    "cx_ecfp_init_private_key", "cx_ripemd160_init",
+    "blue_review_abort", "blue_review_app_reset", "display_review",
+    "erase_review_state", "reset_after_usb", "approve_sign",
+    "sign_bound_digest", "sign_records_match", "hash_sha256",
+    "overlaps_wallet_display"
 };
 
 typedef struct {
@@ -122,12 +128,23 @@ static void report_signing_candidate(const stack_frames *frames,
     static const unsigned prefix[] = {10, 0, 14, 52, 47};
     const unsigned base = sum_frames(frames, prefix,
         sizeof prefix / sizeof *prefix);
-    paths[18] = base + frames->bytes[48];
+    paths[18] = base + frames->bytes[67] + frames->bytes[48];
     paths[19] = base + frames->bytes[49];
     paths[20] = base + frames->bytes[50];
     paths[21] = base + frames->bytes[51];
-    printf("Signing paths: derive %u; digest %u; DER %u; public hash %u; BOLOS frames excluded\n",
-           paths[18], paths[19], paths[20], paths[21]);
+    paths[23] = base + frames->bytes[67] + frames->bytes[68] +
+        frames->bytes[69] + frames->bytes[58];
+    printf("Signing paths: derive %u; digest %u; DER %u; public hash %u; record check %u; BOLOS frames excluded\n",
+           paths[18], paths[19], paths[20], paths[21], paths[23]);
+}
+
+static bool frame_required(bool wallet, unsigned index) {
+    if (wallet)
+        return index == 0 || index == 5 || index == 66 || index >= 67 ||
+            (index >= REVIEW_FRAME_COUNT && index < WALLET_FRAME_COUNT);
+    return index < REVIEW_FRAME_COUNT ||
+        (index >= WALLET_FRAME_COUNT &&
+         index < REVIEW_REQUIRED_FRAME_COUNT);
 }
 
 static bool collect_frames(int argc, char **argv, int script_arg,
@@ -145,16 +162,14 @@ static bool collect_frames(int argc, char **argv, int script_arg,
         if (!read_stack_usage(argv[i], frames)) {
             fprintf(stderr, "Cannot read stack usage: %s\n", argv[i]);
             return false;
-        }
+    }
     for (unsigned i = 0; i < FRAME_COUNT; ++i) {
-        bool required = wallet ? i == 0 || i == 5 || i >= REVIEW_FRAME_COUNT
-                               : i < REVIEW_FRAME_COUNT;
         if (frames->present[i] && frames->bytes[i] > *reserve) {
             fprintf(stderr, "Frame exceeds Blue stack reserve: %s\n",
                     frame_names[i]);
             return false;
         }
-        if (required && !frames->present[i]) {
+        if (frame_required(wallet, i) && !frames->present[i]) {
             fprintf(stderr, "Missing stack frame: %s\n", frame_names[i]);
             return false;
         }
@@ -166,10 +181,12 @@ static void report_paths(const stack_frames *frames, bool wallet,
                          unsigned reserve, unsigned paths[PATH_COUNT]) {
     static const unsigned apdu[] = {0, 1, 2, 3, 4};
     static const unsigned ui[] = {0, 5, 6, 7, 8, 9, 4};
+    static const unsigned review_usb[] = {0, 5, 65, 64, 61, 62, 63};
     static const unsigned wallet_derive[] = {10, 53};
     static const unsigned derive_wrappers[] = {56, 57, 59};
     static const unsigned layout_helpers[] = {12, 13};
     static const unsigned wallet_apdu[] = {10, 0, 11};
+    static const unsigned wallet_storage[] = {10, 0, 14, 70};
     static const unsigned wallet_event[] = {10, 0, 54, 5};
     static const unsigned wallet_upload[] = {10, 0, 14, 15, 16, 17, 18,
         19, 20, 21, 38};
@@ -189,6 +206,8 @@ static void report_paths(const stack_frames *frames, bool wallet,
     static const unsigned wallet_fee_touch[] = {10, 0, 54, 5, 41, 30, 42};
     static const unsigned wallet_confirm_touch[] = {10, 0, 54, 5, 45, 46,
         30, 42};
+    static const unsigned wallet_approve_touch[] = {10, 0, 54, 5, 66, 46,
+        30, 42};
     static const unsigned wallet_startup_hash[] = {10, 51};
     static const unsigned hash_wrappers[] = {55, 58, 60};
     memset(paths, 0, sizeof(unsigned) * PATH_COUNT);
@@ -203,6 +222,8 @@ static void report_paths(const stack_frames *frames, bool wallet,
             sizeof wallet_apdu / sizeof *wallet_apdu);
         paths[3] = sum_frames(frames, wallet_event,
             sizeof wallet_event / sizeof *wallet_event);
+        paths[24] = sum_frames(frames, wallet_storage,
+            sizeof wallet_storage / sizeof *wallet_storage);
         paths[4] = sum_frames(frames, wallet_upload,
             sizeof wallet_upload / sizeof *wallet_upload);
         paths[5] = sum_frames(frames, wallet_format,
@@ -229,21 +250,26 @@ static void report_paths(const stack_frames *frames, bool wallet,
             sizeof wallet_fee_touch / sizeof *wallet_fee_touch);
         paths[16] = sum_frames(frames, wallet_confirm_touch,
             sizeof wallet_confirm_touch / sizeof *wallet_confirm_touch);
+        paths[22] = sum_frames(frames, wallet_approve_touch,
+            sizeof wallet_approve_touch / sizeof *wallet_approve_touch) +
+            frames->bytes[69] + frames->bytes[58];
         paths[17] = sum_frames(frames, wallet_startup_hash,
             sizeof wallet_startup_hash / sizeof *wallet_startup_hash) +
             largest_frame(frames, hash_wrappers,
                 sizeof hash_wrappers / sizeof *hash_wrappers);
-        printf("Blue stack reserve %u; derive %u; layout %u; receive APDU %u; event %u; payment upload %u; format %u; finish %u; next %u; touch %u; previous begin %u; feed %u; finish %u; post-reply fee %u; output display %u; totals touch %u; fee touch %u; confirm touch %u; startup hash %u; margin %u\n",
-               reserve, paths[0], paths[1], paths[2], paths[3], paths[4],
+        printf("Blue stack reserve %u; derive %u; layout %u; receive APDU %u; storage check %u; event %u; payment upload %u; format %u; finish %u; next %u; touch %u; previous begin %u; feed %u; finish %u; post-reply fee %u; output display %u; totals touch %u; fee touch %u; confirm touch %u; approve touch %u; startup hash %u; margin %u\n",
+               reserve, paths[0], paths[1], paths[2], paths[24], paths[3], paths[4],
                paths[5], paths[6], paths[7], paths[8], paths[9], paths[10],
                paths[11], paths[12], paths[13], paths[14], paths[15],
-               paths[16], paths[17],
+               paths[16], paths[22], paths[17],
                STACK_MARGIN);
     } else {
         paths[0] = sum_frames(frames, apdu, sizeof apdu / sizeof *apdu);
         paths[1] = sum_frames(frames, ui, sizeof ui / sizeof *ui);
-        printf("Blue stack reserve %u; APDU path %u; screen path %u; margin %u\n",
-               reserve, paths[0], paths[1], STACK_MARGIN);
+        paths[2] = sum_frames(frames, review_usb,
+            sizeof review_usb / sizeof *review_usb);
+        printf("Blue stack reserve %u; APDU path %u; screen path %u; USB reset %u; margin %u\n",
+               reserve, paths[0], paths[1], paths[2], STACK_MARGIN);
     }
 }
 
