@@ -755,29 +755,61 @@ static int test_core_refusal_envelope(void)
 static int test_core_refusal_cycle(void)
 {
     int failures = 0;
-    TEST("dev platform: every apply cycle is contained before Core authority") {
+    TEST("dev platform: every engine selector preserves apply containment") {
         char dir[512];
         test_make_tmpdir(dir, sizeof(dir), "core_refusal", "notoken");
         char *saved_home = getenv("HOME");
         saved_home = saved_home ? strdup(saved_home) : NULL;
         platform_environment_set("HOME", dir, 1);
 
+        const char *original_selector = getenv("ZCL_DEV_NATIVE_ACTIVATION");
+        char *saved_selector = original_selector ? strdup(original_selector) : NULL;
+        ASSERT(!original_selector || saved_selector);
+        const char *selectors[] = {NULL, "", "0", "1", "true", "yes", "invalid"};
+        const char *markers[] = {".zclassic-c23-dev/agent-deploy.json",
+                                 ".local/lib/zclassic23-dev/current"};
+        for (size_t i = 0; i < sizeof(markers) / sizeof(markers[0]); i++)
+            ASSERT(dp_mk_write(dir, markers[i], "unchanged fixture\n"));
+
         const char *core[] = { "core/consensus/src/check_block.c" };
         /* Publication containment precedes the Core-unseal boundary. */
         ASSERT(!zcl_devloop_unseal_token_present(dir));
-        int rc = zcl_devloop_run_cycle(dir, core, 1);
-        ASSERT(rc == 3);  /* blocked-by-precondition, before any publish */
+        for (size_t i = 0; i < sizeof(selectors) / sizeof(selectors[0]); i++) {
+            if (selectors[i])
+                ASSERT(platform_environment_set("ZCL_DEV_NATIVE_ACTIVATION", selectors[i], 1) == 0);
+            else
+                ASSERT(dp_environment_unset("ZCL_DEV_NATIVE_ACTIVATION") == 0);
+            int rc = zcl_devloop_run_cycle(dir, core, 1);
+            ASSERT(rc == 3);  /* blocked before any publication */
 
-        /* The refusal was persisted as the zcl.dev_cycle.v1 verdict. */
-        char verdict[4096];
-        size_t vn = read_native_cycle(dir, verdict, sizeof(verdict));
-        ASSERT(vn > 0);
-        struct json_value v = {0};
-        ASSERT(json_read(&v, verdict, vn));
-        ASSERT(strcmp(json_get_str(json_get(&v, "status")), "blocked") == 0);
-        ASSERT(strcmp(json_get_str(json_get(&v, "phase")),
-                      "publication_contained") == 0);
-        json_free(&v);
+            /* The refusal is persisted as the zcl.dev_cycle.v1 verdict. */
+            char verdict[4096];
+            size_t vn = read_native_cycle(dir, verdict, sizeof(verdict));
+            ASSERT(vn > 0);
+            struct json_value v = {0};
+            ASSERT(json_read(&v, verdict, vn));
+            ASSERT(strcmp(json_get_str(json_get(&v, "status")), "blocked") == 0);
+            ASSERT(strcmp(json_get_str(json_get(&v, "phase")),
+                          "publication_contained") == 0);
+            json_free(&v);
+            for (size_t m = 0; m < sizeof(markers) / sizeof(markers[0]); m++) {
+                char path[1024], content[64] = {0};
+                snprintf(path, sizeof(path), "%s/%s", dir, markers[m]);
+                FILE *marker = fopen(path, "r");
+                ASSERT(marker != NULL);
+                size_t n = fread(content, 1, sizeof(content) - 1, marker);
+                ASSERT(fclose(marker) == 0);
+                ASSERT(n == strlen("unchanged fixture\n"));
+                ASSERT(strcmp(content, "unchanged fixture\n") == 0);
+            }
+        }
+
+        if (saved_selector) {
+            platform_environment_set("ZCL_DEV_NATIVE_ACTIVATION", saved_selector, 1);
+            free(saved_selector);
+        } else {
+            dp_environment_unset("ZCL_DEV_NATIVE_ACTIVATION");
+        }
 
         if (saved_home) {
             platform_environment_set("HOME", saved_home, 1);
@@ -1556,11 +1588,11 @@ static int test_social_sim(void)
 }
 
 /* Native activation engine wiring (devloop_cycle.c / native_dev_command.c).
- * The transactional_reload branch and the dev.vcs.revert relink seam are
- * ZCL_DEV_BUILD-only (they exec `make`/`systemctl`), so this build
+ * The retained dev.vcs.revert relink seam is ZCL_DEV_BUILD-only
+ * (it execs `make`/`systemctl`), so this build
  * (-DZCL_TESTING, no ZCL_DEV_BUILD -- see test_core_refusal_token() above)
- * cannot reach them. What is reachable is the pure glue both call sites
- * share (declared in devloop.h, defined in devloop_cycle.c under
+ * cannot reach it. What is reachable is its pure glue
+ * (declared in devloop.h, defined in devloop_cycle.c under
  * `ZCL_DEV_BUILD || ZCL_TESTING`): the ZCL_DEV_NATIVE_ACTIVATION switch, the
  * dev-lane request builder, and the result mapper. The switch selects
  * retained machinery only; public publication entrypoints remain

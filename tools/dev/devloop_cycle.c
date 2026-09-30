@@ -494,72 +494,14 @@ static bool extract_hex64_field(const char *json, const char *field,
     return true;
 }
 
-/* Best-effort generation-id lookup for a RELOAD (transactional_reload)
- * cycle: `make agent-deploy-fast` drives tools/dev/deploy-dev-lane.sh, which
- * writes the zcl.agent_dev_deploy.v1 state file at
- * $HOME/.zclassic-c23-dev/agent-deploy.json on every activation attempt.
- * candidate_sha256 is a bare 64-hex sha256 of the built binary;
- * running_generation is "gen-<64 hex>" or "legacy-<64 hex>" once activation
- * verifies the running process matches. Absence of HOME, the file, or
- * either field is not an error here — the cycle still anchors, just with an
- * all-zero generation binding (finish_cycle passes NULL onward). */
-static bool read_reload_generation(char out[65])
-{
-    out[0] = 0;
-    const char *home = getenv("HOME");
-    if (!home || !home[0])
-        return false;
-    char path[PATH_MAX];
-    int n = snprintf(path, sizeof(path),
-                     "%s/.zclassic-c23-dev/agent-deploy.json", home);
-    if (n <= 0 || (size_t)n >= sizeof(path))
-        return false;
-    FILE *f = fopen(path, "r");
-    if (!f)
-        return false;
-    char buf[8192];
-    size_t rn = fread(buf, 1, sizeof(buf) - 1, f);
-    fclose(f);
-    buf[rn] = 0;
-
-    if (extract_hex64_field(buf, "candidate_sha256", out))
-        return true;
-
-    /* running_generation carries a "gen-"/"legacy-" prefix, so it never
-     * matches extract_hex64_field's bare-64-hex expectation directly; strip
-     * the prefix by hand before comparing lengths. */
-    const char *key = "\"running_generation\"";
-    const char *p = strstr(buf, key);
-    if (!p)
-        return false;
-    p = strchr(p + strlen(key), '"');
-    if (!p)
-        return false;
-    p++;
-    const char *end = strchr(p, '"');
-    if (!end)
-        return false;
-    if ((size_t)(end - p) > 4 && memcmp(p, "gen-", 4) == 0)
-        p += 4;
-    else if ((size_t)(end - p) > 7 && memcmp(p, "legacy-", 7) == 0)
-        p += 7;
-    if ((size_t)(end - p) != 64)
-        return false;
-    memcpy(out, p, 64);
-    out[64] = 0;
-    return true;
-}
-
 #endif
 
 /* ── Wave 3.2 native activation engine — dev-lane wiring (pure glue) ────
  * These three functions are declared in devloop.h; the guard there matches
  * this one (ZCL_DEV_BUILD || ZCL_TESTING) so the hermetic test harness can
  * exercise them directly without a fake ops vtable — none of them execs a
- * process or performs I/O beyond getenv(). The actual engine call
- * (dev_activation_run / dev_activation_default_ops, both real-process-exec)
- * stays confined to the ZCL_DEV_BUILD-only zcl_devloop_run_cycle_mode() body
- * below. */
+ * process or performs I/O beyond getenv(). Independent activation APIs own
+ * service execution; a development cycle never falls back to deployment. */
 #if defined(ZCL_DEV_BUILD) || defined(ZCL_TESTING)
 bool dev_activation_native_enabled(void)
 {
@@ -1396,10 +1338,9 @@ int zcl_devloop_run_cycle_mode(const char *repo_root,
                                 root, NULL);
         }
 
-        /* Watchers stop after the real candidate probe.  The resident commit
-         * below is reachable only through an explicit apply/auto invocation;
-         * file classification (including a consensus-risk classification)
-         * can never grant publication authority. */
+        /* Verification stops after the real candidate probe. Public APPLY
+         * is refused above; retained resident-commit machinery below cannot
+         * acquire publication authority from file classification. */
         if (!zcl_devloop_publish_mode_applies(publish_mode)) {
             plan.action_name = "verify";
             char source_why[256] = {0};
@@ -1435,9 +1376,6 @@ int zcl_devloop_run_cycle_mode(const char *repo_root,
         };
         if (!zcl_devloop_process_run(root, commit_argv, 15000, &result) ||
             !result_ok(&result) || !strstr(result.output, "\"ok\":true")) {
-            if (strstr(result.output, "generation registry full") &&
-                strstr(result.output, "\"rejection_stage\":\"registry\""))
-                goto transactional_reload;
             output_capsule(&result, capsule);
             return finish_cycle(&plan, files, file_count, "rejected",
                                 "resident_commit", started_us, capsule,
@@ -1635,113 +1573,14 @@ int zcl_devloop_run_cycle_mode(const char *repo_root,
                             started_us, "", root, NULL);
     }
 
-transactional_reload:
-    /* Retained Wave 3.2 machinery. Public apply/auto entrypoints are
-     * contained before reaching this label; ZCL_DEV_NATIVE_ACTIVATION is an
-     * engine selector, never authority. Hermetic tests cover the engine while
-     * the immutable epoch/proof/CAS/rollback transaction is unfinished. */
-    if (dev_activation_native_enabled()) {
-        const char *build_argv[] = {
-            "make", "--no-print-directory", "fast-rebuild", NULL
-        };
-        if (!zcl_devloop_process_run(root, build_argv, 600000, &result) ||
-            !result_ok(&result)) {
-            output_capsule(&result, capsule);
-            return finish_cycle(&plan, files, file_count, "rejected",
-                                "transactional_reload", started_us,
-                                capsule[0] ? capsule : "fast-rebuild failed",
-                                root, NULL);
-        }
-
-        struct dev_activation_cycle_request creq;
-        /* The generation's source_id_sha256 is activation authority. The Git
-         * commit field is intentionally empty here; it is optional trace
-         * metadata and inability to derive it must never select a backend or
-         * alter an activation verdict. */
-        if (dev_activation_request_from_cycle(root, "", &creq)) {
-            char source_why[256] = {0};
-            if (!zcl_dev_source_identity_verify(root, &expected_source,
-                                        source_why, sizeof(source_why))) {
-                return finish_cycle(&plan, files, file_count, "superseded",
-                                    "source_epoch_cas", started_us,
-                                    source_why[0] ? source_why
-                                                  : "source epoch changed before activation",
-                                    root, NULL);
-            }
-            creq.req.source_identity = expected_source.source_id;
-            struct dev_activation_ops ops;
-            dev_activation_default_ops(&creq.req, &ops);
-            struct dev_activation_result ar = {0};
-            dev_activation_run(&creq.req, &ops, &ar);
-
-            struct dev_activation_cycle_outcome outcome;
-            dev_activation_map_result(&ar, &outcome);
-            if (outcome.ok)
-                return finish_cycle(&plan, files, file_count, "passed",
-                                    "transactional_reload", started_us, "",
-                                    root, outcome.generation_hex[0]
-                                          ? outcome.generation_hex : NULL);
-            return finish_cycle(&plan, files, file_count, "rejected",
-                                "transactional_reload", started_us,
-                                outcome.capsule[0] ? outcome.capsule
-                                    : "native activation failed",
-                                root, NULL);
-        }
-        /* A non-identity precondition the native engine cannot satisfy (for
-         * example HOME unset) falls through to the compatibility backend. */
-        fprintf(stderr,
-                "[devloop] retained native activation preconditions unmet; "
-                "shell backend remains publication-contained\n");
-    }
-
-    /* Retained compatibility backend for hermetic transaction work. Public
-     * publication is contained before this label for every engine-selector
-     * value; this fixed argv is not activation authority. */
-    char source_arg[96];
-    int source_arg_n = snprintf(source_arg, sizeof(source_arg),
-                                "ZCL_DEV_SOURCE_ID=%s",
-                                expected_source.source_id);
-    if (source_arg_n <= 0 || (size_t)source_arg_n >= sizeof(source_arg))
-        return finish_cycle(&plan, files, file_count, "rejected",
-                            "source_epoch_cas", started_us,
-                            "could not bind source identity to activation",
-                            root, NULL);
-    char source_verify_why[256] = {0};
-    if (!zcl_dev_source_identity_verify(root, &expected_source,
-                                source_verify_why,
-                                sizeof(source_verify_why))) {
-        return finish_cycle(&plan, files, file_count, "superseded",
-                            "source_epoch_cas", started_us,
-                            source_verify_why[0]
-                                ? source_verify_why
-                                : "source epoch changed before activation",
-                            root, NULL);
-    }
-    const char *reload_argv[] = {
-        "make", "--no-print-directory", "agent-deploy-fast", source_arg,
-        NULL
-    };
-    if (!zcl_devloop_process_run(root, reload_argv, 900000, &result) ||
-        !result_ok(&result)) {
-        output_capsule(&result, capsule);
-        return finish_cycle(&plan, files, file_count, "rejected",
-                            "transactional_reload", started_us, capsule,
-                            root, NULL);
-    }
-    /* The generation id for a RELOAD cycle: read it back from the
-     * zcl.agent_dev_deploy.v1 state file the just-run deploy-dev-lane.sh
-     * wrote (see read_reload_generation() above). Best-effort, same
-     * fail-open contract as the hotswap path. */
-    char generation_hex[65];
-    read_reload_generation(generation_hex);
-    return finish_cycle(&plan, files, file_count, "passed",
-                        "transactional_reload", started_us, "",
-                        root, generation_hex[0] ? generation_hex : NULL);
+    return finish_cycle(&plan, files, file_count, "rejected", "verify",
+                        started_us, "unsupported development cycle action",
+                        root, NULL);
 #endif
 }
 
-/* A one-shot cycle is itself the explicit publication command.  Persistent
- * watchers call zcl_devloop_run_cycle_mode(...VERIFY_ONLY) instead. */
+/* A one-shot APPLY request remains publication-contained. Persistent
+ * watchers request VERIFY_ONLY instead. */
 int zcl_devloop_run_cycle(const char *repo_root,
                           const char *const *files,
                           size_t file_count)
