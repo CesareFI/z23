@@ -68,10 +68,20 @@ DHT_SSH="${DHT_SSH:-ssh}"
 # inherit the receiving host's scheduler admission and resource scope.
 DHT_REMOTE_DEVBUILD=0
 DHT_SCP="${DHT_SCP:-scp}"
+# Remote-lease supervision, in whole seconds. A remote fixture must survive
+# the one ssh call that spawned it (its parent is gone by design) yet never
+# outlive a driver that lost the host: the driver refreshes a lease file on
+# the fixture's host, and the shipped launcher terminates its own group when
+# that file goes missing or stale. The stale window must comfortably exceed
+# the refresh period; the default tolerates eight consecutive missed
+# refreshes (network churn, scheduler lag) before reaping.
+DHT_LEASE_STALE_S="${DHT_LEASE_STALE_S:-180}"
+DHT_LEASE_REFRESH_S="${DHT_LEASE_REFRESH_S:-20}"
 declare -A DHT_REMOTE_HOST=()   # rpc port -> ssh destination
 declare -A DHT_REMOTE_DIR=()    # rpc port -> remote base dir (bin/, datadirs)
 declare -A DHT_PGID_RPC=()      # owned pgid -> rpc port (remote routing)
 declare -A DHT_OWNED_PORT_RPC=() # claimed port -> rpc port of its host
+declare -A DHT_LEASE_REFRESH_PGID=() # "host:dir" -> local refresher pgid
 
 dht_register_remote_node() {
     local rpc="$1" host="$2" dir="$3"
@@ -79,6 +89,42 @@ dht_register_remote_node() {
         dht_die "dht_register_remote_node needs rpc port, ssh host, remote dir"
     DHT_REMOTE_HOST[$rpc]="$host"
     DHT_REMOTE_DIR[$rpc]="$dir"
+}
+
+# dht_ensure_remote_lease RPC — make one host:dir's lease live and fresh,
+# and keep it fresh for as long as this driver lives. Called before the
+# first supervised spawn on that host: the lease must already be fresh when
+# the launcher's supervisor takes its first reading. The refresher is a
+# local group under the launcher's own parent-death supervision, so a
+# driver killed without its EXIT trap still stops refreshing, the lease
+# goes stale, and the remote fixture reaps itself. The refresher only ever
+# touches a file over ssh; what dies and when stays owned by the remote
+# launcher, so no PPID, port or pid heuristic ever authorizes a kill.
+dht_ensure_remote_lease() {
+    local rpc="$1" host dir key refresher_pid
+    host="${DHT_REMOTE_HOST[$rpc]}"
+    dir="${DHT_REMOTE_DIR[$rpc]}"
+    key="$host:$dir"
+    [ -z "${DHT_LEASE_REFRESH_PGID[$key]:-}" ] || return 0
+    [[ "$DHT_LEASE_STALE_S" =~ ^[0-9]+$ && "$DHT_LEASE_REFRESH_S" =~ ^[0-9]+$ ]] ||
+        dht_die "lease knobs must be whole seconds: stale='$DHT_LEASE_STALE_S' refresh='$DHT_LEASE_REFRESH_S'"
+    [ "$DHT_LEASE_STALE_S" -gt $((DHT_LEASE_REFRESH_S * 2)) ] ||
+        dht_die "lease stale window ($DHT_LEASE_STALE_S s) must exceed two refresh periods ($DHT_LEASE_REFRESH_S s)"
+    [ -n "$DHT_WORK" ] && [ -d "$DHT_WORK" ] ||
+        dht_die "remote lease supervision needs dht_make_work first"
+    # Synchronous first touch: a lease that never existed must never be
+    # observed fresh-by-absence by a racing supervisor.
+    "$DHT_SSH" -o BatchMode=yes -o ConnectTimeout=5 "$host" -- \
+        "$(printf '%q ' touch "$dir/lease")" ||
+        dht_die "cannot create the supervision lease on $host"
+    dht_spawn_owned_command refresher_pid "$DHT_WORK/lease-refresh-$rpc.log" \
+        bash -c 'r=$1; host=$2; file=$3; shift 3
+                 while sleep "$r"; do
+                     "$@" "$host" -- "touch $(printf "%q" "$file")" || :
+                 done' \
+        lease-refresh "$DHT_LEASE_REFRESH_S" "$host" "$dir/lease" \
+        "$DHT_SSH" -o BatchMode=yes -o ConnectTimeout=5
+    DHT_LEASE_REFRESH_PGID[$key]="$refresher_pid"
 }
 
 # Run one command where this RPC port's node lives. Local when unregistered.
@@ -125,8 +171,9 @@ dht_process_group_exec() {
     if [ -x "$PROCESS_GROUP_EXEC" ]; then
         # Local fixtures die with this driver: a crashed or killed
         # harness must not strand a regtest daemon on the shared
-        # test-safe ports. Remote legs keep plain setsid survival — the
-        # driver supervises those across separate ssh calls by design.
+        # test-safe ports. Remote legs cannot use parent death (their
+        # parent is one short ssh session of many); they take
+        # --die-with-lease on their own host instead.
         exec "$PROCESS_GROUP_EXEC" --die-with-parent "$@"
     elif command -v setsid >/dev/null 2>&1; then
         printf '%s\n' "node_lifecycle: compiled launcher absent; fixture parent-death supervision unavailable (setsid fallback)" >&2
@@ -158,10 +205,30 @@ dht_assert_port() {
     if [ -n "$owner_rpc" ] && [ -n "${DHT_REMOTE_HOST[$owner_rpc]:-}" ]; then
         # Probe on the node's host with the already shipped native helper.
         # A missing helper or unreachable host cannot establish a free port.
-        dht_node_exec "$owner_rpc" \
-            "${DHT_REMOTE_DIR[$owner_rpc]}/bin/arena_product_journey_c23" \
-            ports-rebind "$p" ||
-            dht_die "port $p unavailable or probe failed on ${DHT_REMOTE_HOST[$owner_rpc]}"
+        if ! dht_node_exec "$owner_rpc" \
+                "${DHT_REMOTE_DIR[$owner_rpc]}/bin/arena_product_journey_c23" \
+                ports-rebind "$p"; then
+            # Same honesty as the local branch: name the holder when the
+            # host can, and say "holder unknown" — never "port free" —
+            # when it cannot. lsof is the one listener-identity source
+            # that exists on both supported platforms; the probe runs on
+            # the port's own host through sh so the answer describes that
+            # host, not this one.
+            local remote_holder
+            remote_holder="$(dht_node_exec "$owner_rpc" sh -c '
+                if command -v lsof >/dev/null 2>&1; then
+                    hp=$(lsof -nP -iTCP:"$1" -sTCP:LISTEN -Fp 2>/dev/null |
+                        sed -n "s/^p\([0-9]*\)$/\1/p" | head -1)
+                    if [ -n "$hp" ]; then
+                        hc=$(ps -o command= -p "$hp" 2>/dev/null | cut -c1-160)
+                        printf "pid %s: %s" "$hp" "${hc:-<command unreadable>}"
+                    fi
+                fi' probe-port "$p" 2>/dev/null || true)"
+            if [ -n "$remote_holder" ]; then
+                dht_die "port $p unavailable on ${DHT_REMOTE_HOST[$owner_rpc]}: held by $remote_holder"
+            fi
+            dht_die "port $p unavailable or probe failed on ${DHT_REMOTE_HOST[$owner_rpc]} (no listener identity source on that host; holder unknown)"
+        fi
     else
         if ! "$DHT_ACCEPTANCE_C23" ports-rebind "$p"; then
             # Name the holder so an orphaned fixture from a dead session is
@@ -470,8 +537,12 @@ dht_spawn() {
     [ -z "$DHT_PARAMS_DIR" ] || params_args+=("-paramsdir=$DHT_PARAMS_DIR")
     if [ -n "${DHT_REMOTE_HOST[$rpc]:-}" ]; then
         # Same flags, on the node's own host. The native launcher detaches the
-        # group from the ssh session; the echoed pid IS the remote pgid. The remote
-        # credential directory must already hold wallet-passphrase.
+        # group from the ssh session; the echoed pid IS the remote pgid. The
+        # group stays supervised by lease: the launcher terminates it when
+        # this driver stops refreshing the lease on that host, so a killed
+        # driver cannot strand a fixture daemon holding the shared test-safe
+        # ports. The remote credential directory must already hold
+        # wallet-passphrase.
         local cmd=(env
             "CREDENTIALS_DIRECTORY=${DHT_REMOTE_DIR[$rpc]}/cred"
             "${DHT_REMOTE_DIR[$rpc]}/bin/zclassic23"
@@ -488,8 +559,9 @@ dht_spawn() {
             pid="$(dht_remote_scheduled_pid "$rpc" "$dd" "${cmd[@]}")" ||
                 dht_die "scheduled remote spawn failed"
         else
+            dht_ensure_remote_lease "$rpc"
             pid="$("$DHT_SSH" -o BatchMode=yes "${DHT_REMOTE_HOST[$rpc]}" -- \
-                "$(printf '%q' "${DHT_REMOTE_DIR[$rpc]}/bin/process-group-exec") $(printf '%q ' "${cmd[@]}")>>$(printf '%q' "$dd/node.log") 2>&1 </dev/null & echo \$!" </dev/null)" ||
+                "$(printf '%q' "${DHT_REMOTE_DIR[$rpc]}/bin/process-group-exec") --die-with-lease=$(printf '%q' "${DHT_REMOTE_DIR[$rpc]}/lease:$DHT_LEASE_STALE_S") $(printf '%q ' "${cmd[@]}")>>$(printf '%q' "$dd/node.log") 2>&1 </dev/null & echo \$!" </dev/null)" ||
                 dht_die "remote spawn on ${DHT_REMOTE_HOST[$rpc]} failed"
         fi
         case "$pid" in ''|*[!0-9]*) dht_die "remote spawn returned no pid: $pid" ;; esac

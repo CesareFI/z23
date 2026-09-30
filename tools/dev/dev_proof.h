@@ -401,6 +401,18 @@ struct zcl_dev_proof_check_result {
     uint8_t receipt_root[32];
     char why[160];
     bool log_present;
+    /* Set when any of receiver, domain, or policy was null and the
+     * worker replaced all three. `derived_policy_root` is the closure's
+     * policy field. `derived_author` is the box signer copied into that
+     * domain. `authority_trust` is the root-pinned verifier loader's
+     * token, or verifier_unqualified when a key loaded and was not
+     * adopted. `authority_local_signer` is that domain's
+     * has_local_signer bit, not a second copy of `authority_derived`. */
+    bool authority_derived;
+    bool authority_local_signer;
+    uint8_t derived_policy_root[32];
+    uint8_t derived_author[32];
+    char authority_trust[64];
 };
 
 /* The same derivation dp_worker_dimensions_run uses. Tests issue tickets
@@ -411,7 +423,10 @@ bool zcl_dev_proof_check_closure_derive(
 
 /* Enter the queued CHECK dimension from the worker state it already has:
  * sealed bytes, optional receiver, and the test child it would exec.
- * Does not accept a key, change, or obligation. */
+ * Does not accept a key, change, or obligation. A null receiver, domain,
+ * or policy is derived from the closure and this attempt's signer, then
+ * checked against that closure. It does not skip while no separate-uid
+ * verifier is qualified. */
 bool zcl_dev_proof_check_dimensions(
     const struct zcl_dev_proof_check_inputs *in, const char *logs_dir,
     const char *root, const char *generation_binary, uint32_t selected,
@@ -589,6 +604,11 @@ bool zcl_dev_proof_test_generation_retire(
     const char *repo_root, const char *generation,
     enum zcl_dev_proof_retire_verdict verdict, bool donor_eligible,
     char *outcome, size_t outcome_len);
+/* Name dp_donor_trust_verdict() returns for `path`: a path this uid owns,
+ * or one lstat cannot see, is donor_untrusted_same_uid. A path another uid
+ * owns stays donor_verifier_unqualified until a separate verifier is
+ * qualified. Does not accept that donor or install a verifier. */
+const char *zcl_dev_proof_test_donor_trust_name(const char *path);
 /* Canonical submitting-checkout preparation, without a proof lease or receipt. */
 bool zcl_dev_proof_test_original_plan_prepare(const char *root,
                                               const char *local,

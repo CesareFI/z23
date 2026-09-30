@@ -6119,6 +6119,14 @@ static enum dp_donor_verdict dp_test_donor_eligible(const char *path)
     return DP_DONOR_ELIGIBLE;
 }
 
+/* The name dp_donor_trust_verdict() returns for one path. Production calls
+ * that verdict before any warm seed; this seam only reports it. */
+const char *zcl_dev_proof_test_donor_trust_name(const char *path)
+{
+    if (!path || !path[0]) return NULL;
+    return dp_donor_verdict_name(dp_donor_trust_verdict(path));
+}
+
 bool zcl_dev_proof_test_generation_retire(
     const char *repo_root, const char *generation,
     enum zcl_dev_proof_retire_verdict verdict, bool donor_eligible,
@@ -8256,12 +8264,18 @@ struct dp_worker {
     struct zcl_dev_proof_budget lint_budget;
     bool lint_reads_artifacts;
     bool bundle_built_prefork;
-    /* Observation authority admission already accepts. Null means this
-     * proof has no verifier account: derive the closure, then launch.
-     * These fields are not the closure. */
+    /* Observation authority. Null until dp_check_resolve derives a
+     * receiver, domain, and policy from the closure and this attempt's
+     * signer, or a caller already holds a store (the seam). */
     const struct vcs_proof_receiver *check_receiver;
     const struct vcs_proof_candidate_domain *check_domain;
     const struct vcs_proof_reuse_policy *check_policy;
+    bool check_derived;
+    bool check_local_signer;
+    uint8_t check_derived_policy[32];
+    uint8_t check_derived_author[32];
+    char check_trust[64];
+    char check_admit_reason[160];
     struct zcl_dev_proof_check_inputs check_inputs;
     uint32_t test_children_started;
 };
@@ -9383,9 +9397,152 @@ static enum dp_check_choice dp_check_admit(
     return dp_check_from_admission(&result, selected, observation, reason);
 }
 
-/* Derive and validate the closure, then ask admission when a receiver is
- * already held. Missing authority launches. An incomplete closure launches.
- * Refusal and an eligible failure block. One vouched group may skip. */
+static void dp_check_token(char *dst, size_t cap, const char *token)
+{
+    if (!dst || cap == 0) return;
+    dst[0] = 0;
+    if (!token || !token[0]) return;
+    (void)snprintf(dst, cap, "%s", token);
+}
+
+/* Authority this attempt owns when the caller did not supply a store.
+ * The policy root is copied from the closure this worker just hashed. */
+struct dp_check_owned {
+    struct vcs_proof_receiver *receiver;
+    struct vcs_proof_candidate_domain domain;
+    struct vcs_proof_reuse_policy policy;
+    char trust[64];
+};
+
+static void dp_check_owned_clear(struct dp_check_owned *owned)
+{
+    if (!owned) return;
+    vcs_proof_receiver_free(owned->receiver);
+    owned->receiver = NULL;
+}
+
+/* Ask the root-pinned verifier loader, then build a domain whose local
+ * signer is this box. A loaded compile verifier is not a test-verdict
+ * signer: dp_warm_verifier_qualified stays false until a separate uid is
+ * installed, so the policy's verifier set stays empty. */
+static bool dp_check_owned_derive(const struct vcs_component_proof_key_v1 *key,
+                                  struct dp_check_owned *owned)
+{
+    struct zcl_verify_attest_box_key box;
+    struct zcl_verify_attest_trust_root root;
+    const char *trust_why = NULL;
+    static const uint8_t zero[32];
+    memset(owned, 0, sizeof(*owned));
+    zcl_verify_receiver_box_key(&box);
+    if (!zcl_verify_attest_trust_root_load(NULL, &box, &root, &trust_why))
+        dp_check_token(owned->trust, sizeof(owned->trust),
+                       trust_why ? trust_why
+                                 : ZCL_VERIFY_ATTEST_WHY_NO_VERIFIER_KEY);
+    else
+        dp_check_token(owned->trust, sizeof(owned->trust),
+                       "verifier_unqualified");
+    if (!box.known || !box.present ||
+        memcmp(box.pubkey, zero, sizeof(zero)) == 0)
+        return false;
+    memcpy(owned->domain.author_pubkey, box.pubkey, 32);
+    owned->domain.has_local_signer = true;
+    memcpy(owned->domain.local_signer_pubkey, box.pubkey, 32);
+    memcpy(owned->policy.policy_root, key->roots[VCS_CPK_POLICY], 32);
+    owned->policy.quorum = 1;
+    owned->receiver = vcs_proof_receiver_new();
+    return owned->receiver != NULL;
+}
+
+/* The supplied or derived policy has to name the closure this worker
+ * hashed. A mismatched root is not forwarded into a skip. */
+static const char *dp_check_authority_closure(
+    const struct vcs_proof_candidate_domain *domain,
+    const struct vcs_proof_reuse_policy *policy,
+    const struct vcs_component_proof_key_v1 *key)
+{
+    static const uint8_t zero[32];
+    if (!domain || !policy || !key) return VCS_PROOF_REUSE_WHY_ARGUMENTS;
+    if (memcmp(domain->author_pubkey, zero, sizeof(zero)) == 0)
+        return VCS_PROOF_REUSE_WHY_DOMAIN;
+    if (policy->quorum == 0 || (!policy->verifiers && policy->verifier_count) ||
+        (!policy->revoked && policy->revoked_count))
+        return VCS_PROOF_REUSE_WHY_POLICY;
+    if (memcmp(policy->policy_root, key->roots[VCS_CPK_POLICY], 32) != 0)
+        return VCS_PROOF_REUSE_WHY_POLICY_ROOT;
+    return NULL;
+}
+
+static void dp_check_remember(struct dp_worker *w,
+                              const struct dp_check_owned *owned,
+                              bool derived)
+{
+    w->check_derived = derived;
+    w->check_local_signer = derived && owned->domain.has_local_signer;
+    if (derived) {
+        memcpy(w->check_derived_policy, owned->policy.policy_root, 32);
+        memcpy(w->check_derived_author, owned->domain.author_pubkey, 32);
+    } else {
+        memset(w->check_derived_policy, 0, sizeof(w->check_derived_policy));
+        memset(w->check_derived_author, 0, sizeof(w->check_derived_author));
+    }
+    dp_check_token(w->check_trust, sizeof(w->check_trust), owned->trust);
+}
+
+/* Any null among receiver, domain, and policy replaces all three with
+ * one owned set. A supplied store is never paired with an owned policy.
+ * An unqualified derivation launches. A skip from that empty verifier
+ * set is refused. */
+static enum dp_check_choice dp_check_resolve(
+    struct dp_worker *w, const struct vcs_component_proof_key_v1 *key,
+    uint32_t selected, uint8_t observation[32], const char **reason)
+{
+    struct dp_check_owned owned;
+    const struct vcs_proof_receiver *held_rx = w->check_receiver;
+    const struct vcs_proof_candidate_domain *held_domain = w->check_domain;
+    const struct vcs_proof_reuse_policy *held_policy = w->check_policy;
+    const char *bad;
+    enum dp_check_choice choice;
+    bool derived = false;
+    memset(&owned, 0, sizeof(owned));
+    if (!held_rx || !held_domain || !held_policy) {
+        if (!dp_check_owned_derive(key, &owned)) {
+            dp_check_remember(w, &owned, false);
+            dp_check_owned_clear(&owned);
+            *reason = DP_TEST_REUSE_UNQUALIFIED;
+            return DP_CHECK_LAUNCH;
+        }
+        w->check_receiver = owned.receiver;
+        w->check_domain = &owned.domain;
+        w->check_policy = &owned.policy;
+        derived = true;
+        dp_check_remember(w, &owned, true);
+    }
+    bad = dp_check_authority_closure(w->check_domain, w->check_policy, key);
+    if (bad)
+        choice = DP_CHECK_BLOCK;
+    else
+        choice = dp_check_admit(w, key, selected, observation, reason);
+    if (bad) *reason = bad;
+    if (derived && choice == DP_CHECK_SKIP) {
+        *reason = DP_TEST_REUSE_UNQUALIFIED;
+        choice = DP_CHECK_BLOCK;
+    } else if (derived && choice == DP_CHECK_LAUNCH &&
+               !dp_warm_verifier_qualified(0)) {
+        *reason = DP_TEST_REUSE_UNQUALIFIED;
+    }
+    if (derived) {
+        w->check_receiver = held_rx;
+        w->check_domain = held_domain;
+        w->check_policy = held_policy;
+        dp_check_owned_clear(&owned);
+    }
+    return choice;
+}
+
+/* Derive and validate the closure, then derive or check receiver, domain,
+ * and policy before admission. An incomplete closure launches. Refusal
+ * and an eligible failure block. One vouched group may skip only when
+ * authority was already held and the closure matches it. */
 static enum dp_check_choice dp_check_decide(struct dp_worker *w,
                                             uint32_t selected,
                                             uint8_t observation[32],
@@ -9397,11 +9554,7 @@ static enum dp_check_choice dp_check_decide(struct dp_worker *w,
         *reason = "test_reuse_closure_incomplete";
         return DP_CHECK_LAUNCH;
     }
-    if (!w->check_receiver || !w->check_domain || !w->check_policy) {
-        *reason = DP_TEST_REUSE_UNQUALIFIED;
-        return DP_CHECK_LAUNCH;
-    }
-    return dp_check_admit(w, &key, selected, observation, reason);
+    return dp_check_resolve(w, &key, selected, observation, reason);
 }
 
 static bool dp_check_prepare(struct dp_worker *w,
@@ -9415,6 +9568,8 @@ static bool dp_check_prepare(struct dp_worker *w,
     hold->selected = test->selected;
     if (!test->selected) return true;
     choice = dp_check_decide(w, test->selected, observation, &reason);
+    dp_check_token(w->check_admit_reason, sizeof(w->check_admit_reason),
+                   reason);
     dp_check_note(w, reason);
     if (choice == DP_CHECK_BLOCK) {
         proof_why(why, why_len, reason ? reason : "test_reuse_refused");
@@ -9635,6 +9790,13 @@ static void dp_check_export_result(struct zcl_dev_proof_check_result *out,
     out->failed = test->failed;
     out->skipped = test->skipped;
     memcpy(out->receipt_root, test->receipt_root, 32);
+    out->authority_derived = w->check_derived;
+    out->authority_local_signer = w->check_local_signer;
+    memcpy(out->derived_policy_root, w->check_derived_policy, 32);
+    memcpy(out->derived_author, w->check_derived_author, 32);
+    (void)snprintf(out->authority_trust, sizeof(out->authority_trust), "%s",
+                   w->check_trust);
+    if (!why || !why[0]) why = w->check_admit_reason;
     (void)snprintf(out->why, sizeof(out->why), "%s", why ? why : "");
     if (snprintf(log, sizeof(log), "%s/seam.test.log", logs_dir) <
         (int)sizeof(log))

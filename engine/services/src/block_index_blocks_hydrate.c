@@ -244,6 +244,28 @@ static bool blocks_row_to_header(sqlite3_stmt *s, struct block_header *out)
  * Returns .ok=true on a non-empty hydrate (even if some rows were quarantined);
  * .ok=false on an empty table, a prepare error, all-rows-poisoned (0 usable),
  * or the gross-corruption refusal (map untouched by the refusal paths). */
+
+/* The status a union boot leaves on a row: the clamp this table owns (at
+ * most BLOCK_VALID_TREE, no FAILED bits) UNION the body knowledge an earlier
+ * rung (flat/SQLite cache) already admitted — HAVE_DATA/HAVE_UNDO and a
+ * validity level the verified envelope installed. Rows the hydrate itself
+ * inserts carry none of those bits, so the clamp stays exact for them;
+ * erasing the earlier rung's admission would make the body-history census
+ * count bodies on disk as missing. */
+static unsigned int bih_union_status(unsigned int stored_status,
+                                     unsigned int prior_status)
+{
+    unsigned int level = stored_status & (unsigned int)BLOCK_VALID_MASK;
+    if (level > (unsigned int)BLOCK_VALID_TREE)
+        level = (unsigned int)BLOCK_VALID_TREE;
+    unsigned int prior_level = prior_status & (unsigned int)BLOCK_VALID_MASK;
+    if (prior_level > level)
+        level = prior_level;
+    return level |
+        (prior_status & ((unsigned int)BLOCK_HAVE_DATA |
+                         (unsigned int)BLOCK_HAVE_UNDO));
+}
+
 struct zcl_result load_block_index_from_blocks_table(struct node_db *ndb,
                                                      struct main_state *ms)
 {
@@ -463,17 +485,14 @@ struct zcl_result load_block_index_from_blocks_table(struct node_db *ndb,
         if (nn && sqlite3_column_bytes(sel, BHC_NONCE) >= 32)
             memcpy(bi->nNonce.data, nn, 32);
 
-        /* HONEST validity: we verified the header hash-binds (and the link
-         * pass verifies parent linkage), but we hold NO block body and have
-         * NOT checked tx/script/context validity. Clamp the BLOCK_VALID level
-         * to at most BLOCK_VALID_TREE and assert NO HAVE_DATA/HAVE_UNDO — the
-         * node fetches bodies lazily via P2P. Never fabricate a higher
-         * validity than the stored row, and never above TREE. */
+        /* HONEST validity for what THIS table owns: we verified the header
+         * hash-binds (and the link pass verifies parent linkage), but the
+         * row holds NO block body and we have NOT checked tx/script/context
+         * validity. The clamp stays at most BLOCK_VALID_TREE with no
+         * fabricated HAVE bits; a row an earlier rung already admitted keeps
+         * that rung's body knowledge (see bih_union_status). */
         unsigned int stored = (unsigned int)sqlite3_column_int(sel, BHC_STATUS);
-        unsigned int level = stored & (unsigned int)BLOCK_VALID_MASK;
-        if (level > (unsigned int)BLOCK_VALID_TREE)
-            level = (unsigned int)BLOCK_VALID_TREE;
-        bi->nStatus = level;   /* header-only: no HAVE bits, no FAILED bits */
+        bi->nStatus = bih_union_status(stored, bi->nStatus);
 
         sorted[n++] = bi;
         if ((n & 0xFFF) == 0)

@@ -128,6 +128,69 @@ static const char *TC_LEAF_B =
     "    return 4242;\n"
     "}\n";
 
+/* The entry file with an out-of-closure exec planted: the verdict depends on
+ * a tree-built binary the closure key never hashes, so the exec rail must
+ * refuse caching. The signal lives in a comment-free code line; a twin
+ * comment-only variant proves the scanner does not fire on prose. */
+static const char *TC_TOP_EXEC =
+    "/* core/modules/net/src/tc_top.c — the entry, exec-signal variant. */\n"
+    "#include \"net/tc.h\"\n"
+    "#include <stdio.h>\n"
+    "int test_demo_entry(void)\n"
+    "{\n"
+    "    FILE *p = popen(\"build/bin/frobnicate --check\", \"r\");\n"
+    "    return p ? tc_mid() : 1;\n"
+    "}\n";
+
+static const char *TC_TOP_EXEC_COMMENTED =
+    "/* core/modules/net/src/tc_top.c — signals in prose only. */\n"
+    "#include \"net/tc.h\"\n"
+    "/* Mentions popen(\"build/bin/frobnicate\") and execv(argv[0]) in a\n"
+    " * comment, and tools/lint/check_something.sh by name below. */\n"
+    "// tools/lint/check_other.sh mentioned in a line comment too.\n"
+    "int test_demo_entry(void)\n"
+    "{\n"
+    "    return tc_mid() + 1;\n"
+    "}\n";
+
+/* A PARAMETERIZED artifact literal: the bytes to exec are chosen at runtime,
+ * so no file content can be bound at probe time — refuse even when some
+ * artifact exists. */
+static const char *TC_TOP_EXEC_FMT =
+    "/* core/modules/net/src/tc_top.c — format-string exec variant. */\n"
+    "#include \"net/tc.h\"\n"
+    "#include <stdio.h>\n"
+    "int test_demo_entry(void)\n"
+    "{\n"
+    "    FILE *p = popen(\"build/bin/%s --check\", \"r\");\n"
+    "    return p ? tc_mid() : 1;\n"
+    "}\n";
+
+/* A make exec: the verdict reads the Makefile, which no content binding of a
+ * single artifact can cover — always refuse. */
+static const char *TC_TOP_EXEC_MAKE =
+    "/* core/modules/net/src/tc_top.c — make-exec variant. */\n"
+    "#include \"net/tc.h\"\n"
+    "#include <stdlib.h>\n"
+    "int test_demo_entry(void)\n"
+    "{\n"
+    "    return system(\"make frobnicate\") == 0 ? tc_mid() : 1;\n"
+    "}\n";
+
+/* A leaf OUTSIDE the rail's scanned set (not the entry file, not a harness
+ * helper) carrying the same planted signal. The forward closure is
+ * name-resolved, so a closure routinely carries files the group never
+ * executes; the rail must not refuse over a passenger file's bytes. */
+static const char *TC_LEAF_EXEC =
+    "/* core/modules/net/src/tc_leaf.c — the leaf (passenger-signal variant). */\n"
+    "#include \"net/tc.h\"\n"
+    "#include <stdio.h>\n"
+    "int tc_leaf(void)\n"
+    "{\n"
+    "    FILE *p = popen(\"build/bin/frobnicate --check\", \"r\");\n"
+    "    return p ? 0 : 1;\n"
+    "}\n";
+
 static const char *TC_OTHER_A =
     "/* core/modules/net/src/tc_other.c — NOT reachable from the entry (pristine). */\n"
     "#include \"net/tc.h\"\n"
@@ -210,11 +273,12 @@ static bool write_harness_depfiles(const char *root)
  * the include closure resolves. Sources are written BEFORE depfiles so the
  * depfiles are always the newest bytes in the fixture — the include-graph
  * freshness guard requires the graph to be at least as new as its inputs. */
-static bool write_fixture_full(const char *leaf, const char *other,
+static bool write_fixture_full(const char *top, const char *leaf,
+                               const char *other,
                                const char *hdr, const char *def)
 {
     return write_harness_sources(TC_FIX) &&
-           mk_write(TC_FIX, "core/modules/net/src/tc_top.c", TC_TOP) &&
+           mk_write(TC_FIX, "core/modules/net/src/tc_top.c", top) &&
            mk_write(TC_FIX, "core/modules/net/src/tc_mid.c", TC_MID) &&
            mk_write(TC_FIX, "core/modules/net/src/tc_leaf.c", leaf) &&
            mk_write(TC_FIX, "core/modules/net/src/tc_other.c", other) &&
@@ -238,7 +302,7 @@ static bool write_fixture_full(const char *leaf, const char *other,
 
 static bool write_fixture(const char *leaf, const char *other, const char *hdr)
 {
-    return write_fixture_full(leaf, other, hdr, TC_DEF_A);
+    return write_fixture_full(TC_TOP, leaf, other, hdr, TC_DEF_A);
 }
 
 /* Does `path` contain `needle`? Used by the source-contract assertions below,
@@ -1940,40 +2004,37 @@ static int tc_unadmissible_group(struct testcache *tc)
     TC_CHECK("group too long for signed leaf has no reusable key",
              !p.key_valid && !p.cacheable && !p.hit &&
              p.code == TESTCACHE_R_GROUP_UNADMISSIBLE);
-    testcache_probe_group(tc, "test_acme_worker", &p);
-    TC_CHECK("external ACME worker requires independent execution",
-             !p.key_valid && !p.cacheable && !p.hit &&
-             p.code == TESTCACHE_R_EXTERNAL_INPUT);
+    /* test_acme_worker used to ride along here as a denylist pin; off the
+     * denylist it resolves nothing in this fixture, and the real-tree rail
+     * pin in tc_rail_pin_bindable owns its bound-or-refused contract. */
     return failures;
 }
 
 /* Whole-link and operator-artifact groups. Their verdicts follow a built
  * binary, a repo script, or a snapshot the forward closure does not hash. */
+/* Whole-link and operator-artifact groups the denylist still owns: their
+ * exec target is invisible to the rail (a derived path, a repo script, or a
+ * delegated tools/ helper), or their verdict reads something no artifact
+ * hash can bound. Rail-visible build/bin execs are bound by the key instead
+ * and are pinned in tc_exec_rail_real_tree. */
 static bool tc_external_exec_denied(void)
 {
     static const char *const names[] = {
         "test_anchor_peers",
-        "test_cli_render",
-        "test_consensus_rule_sweep",
-        "test_dev_proof_signer",
+        "test_dev_orient",
         "test_fastobj_carrier",
-        "test_fleet_board_bridge",
-        "test_fleet_gateway_shard_01",
-        "test_fleet_gateway_shard_02",
-        "test_fleet_gateway_shard_03",
-        "test_fleet_gateway_shard_04",
-        "test_fleet_gateway_shard_05",
-        "test_fleet_gateway_shard_06",
+        /* Restored holes: exec through code the rail does not scan. */
         "test_freebsd_sh",
+        "test_mesh_terminal_worker",
+        "test_metaverse_agent_broker",
         "test_onion_pair_watch_live",
         "onion_pair_watch_live",
         "test_resident_launch_contract",
         "test_self_folded_anchor_heavy",
         "self_folded_anchor_heavy",
-        "test_sem_replay",
-        "test_terminal_worker_sandbox",
         "test_zcode_package_dev",
         "test_zcode_package_dev_shard_01",
+        "test_zcode_verify",
     };
     for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++)
         if (!testcache_group_is_denylisted(names[i]))
@@ -1985,10 +2046,285 @@ static bool tc_acme_and_agent_policy(void)
 {
     return file_contains("tests/harness/src/test_acme_worker.c",
                          "build/bin/zclassic23-acme") &&
-           testcache_group_is_denylisted("test_acme_worker") &&
            testcache_group_is_denylisted("test_agent_copy_prove") &&
            tc_external_exec_denied();
 }
+
+/* ── The exec rail: probe-time refusal for out-of-closure execs ──────────
+ *
+ * The fixture half proves the scanner itself: a planted popen() of a
+ * build/bin artifact in the group's ENTRY file flips the group from cacheable
+ * to refused with the rail's named reason; the comment-only twin proves prose
+ * never fires it; and the same signal planted in a library leaf — a closure
+ * file the group does not author, the kind that lands in hundreds of closures
+ * through the index's name-resolved static collisions — must NOT refuse. */
+static int tc_exec_rail_fixture(void)
+{
+    int failures = 0;
+    TC_CHECK("entry-signal fixture writes",
+             write_fixture_full(TC_TOP_EXEC, TC_LEAF_A, TC_OTHER_A, TC_H_A,
+                                TC_DEF_A));
+    struct testcache *tc = testcache_open(TC_FIX);
+    TC_CHECK("entry-signal fixture opens", tc != NULL);
+    if (tc) {
+        struct testcache_probe p;
+        testcache_probe_group(tc, "test_demo_entry", &p);
+        TC_CHECK("planted build/bin popen in the entry file refuses caching",
+                 !p.cacheable && !p.hit &&
+                 p.code == TESTCACHE_R_EXTERNAL_INPUT);
+        TC_CHECK("the refusal names the rail and the file",
+                 strncmp(p.reason, "closure exec signal in ", 23) == 0 &&
+                 strstr(p.reason, "tc_top.c") != NULL);
+        testcache_close(tc);
+    }
+    TC_CHECK("passenger-signal fixture writes",
+             write_fixture(TC_LEAF_EXEC, TC_OTHER_A, TC_H_A));
+    tc = testcache_open(TC_FIX);
+    TC_CHECK("passenger-signal fixture opens", tc != NULL);
+    if (tc) {
+        struct testcache_probe p;
+        testcache_probe_group(tc, "test_demo_entry", &p);
+        TC_CHECK("exec signal in a non-scanned closure file stays cacheable",
+                 p.cacheable && p.code == TESTCACHE_R_OK);
+        testcache_close(tc);
+    }
+    TC_CHECK("comment-signal fixture writes",
+             write_fixture_full(TC_TOP_EXEC_COMMENTED, TC_LEAF_A, TC_OTHER_A,
+                                TC_H_A, TC_DEF_A));
+    tc = testcache_open(TC_FIX);
+    TC_CHECK("comment-signal fixture opens", tc != NULL);
+    if (tc) {
+        struct testcache_probe p;
+        testcache_probe_group(tc, "test_demo_entry", &p);
+        TC_CHECK("exec signal in comments stays cacheable",
+                 p.cacheable && p.code == TESTCACHE_R_OK);
+        testcache_close(tc);
+    }
+    return failures;
+}
+
+/* The unbindable classes refuse even when a bindable artifact exists on
+ * disk: a parameterized literal names no fixed bytes, and make reads the
+ * Makefile. */
+static int tc_exec_binding_refusals(void)
+{
+    int failures = 0;
+    TC_CHECK("format-string fixture writes",
+             write_fixture_full(TC_TOP_EXEC_FMT, TC_LEAF_A, TC_OTHER_A,
+                                TC_H_A, TC_DEF_A));
+    TC_CHECK("artifact replanted for the unbindable pins",
+             mk_write(TC_FIX, "build/bin/frobnicate", "frobnicate v1\n"));
+    struct testcache *tc = testcache_open(TC_FIX);
+    TC_CHECK("format-string fixture opens", tc != NULL);
+    if (tc) {
+        struct testcache_probe p;
+        testcache_probe_group(tc, "test_demo_entry", &p);
+        TC_CHECK("a parameterized artifact literal refuses even when present",
+                 !p.cacheable && !p.hit &&
+                 p.code == TESTCACHE_R_EXTERNAL_INPUT);
+        testcache_close(tc);
+    }
+    TC_CHECK("make-exec fixture writes",
+             write_fixture_full(TC_TOP_EXEC_MAKE, TC_LEAF_A, TC_OTHER_A,
+                                TC_H_A, TC_DEF_A));
+    tc = testcache_open(TC_FIX);
+    TC_CHECK("make-exec fixture opens", tc != NULL);
+    if (tc) {
+        struct testcache_probe p;
+        testcache_probe_group(tc, "test_demo_entry", &p);
+        TC_CHECK("a make exec refuses even with a bindable artifact present",
+                 !p.cacheable && !p.hit &&
+                 p.code == TESTCACHE_R_EXTERNAL_INPUT);
+        testcache_close(tc);
+    }
+    return failures;
+}
+
+/* Binding half of the exec rail: a build/bin literal names a tree artifact
+ * whose bytes fully determine the exec'd child's behavior, so hashing those
+ * bytes into the key is a SOUND substitute for refusal. An absent artifact
+ * still refuses (fail closed) and an edited artifact must move the key. */
+static int tc_exec_binding_fixture(void)
+{
+    int failures = 0;
+    TC_CHECK("binding fixture writes",
+             write_fixture_full(TC_TOP_EXEC, TC_LEAF_A, TC_OTHER_A, TC_H_A,
+                                TC_DEF_A));
+    TC_CHECK("artifact planted",
+             mk_write(TC_FIX, "build/bin/frobnicate", "frobnicate v1\n"));
+    struct testcache *tc = testcache_open(TC_FIX);
+    TC_CHECK("binding fixture opens", tc != NULL);
+    uint8_t key_v1[32];
+    memset(key_v1, 0, sizeof(key_v1));
+    if (tc) {
+        struct testcache_probe p;
+        testcache_probe_group(tc, "test_demo_entry", &p);
+        TC_CHECK("a present exec artifact makes the group cacheable",
+                 p.cacheable && p.key_valid && p.code == TESTCACHE_R_OK);
+        TC_CHECK("the probe reports the binding",
+                 strstr(p.reason, "exec artifacts bound") != NULL);
+        if (p.key_valid)
+            memcpy(key_v1, p.key, 32);
+        testcache_close(tc);
+    }
+    TC_CHECK("artifact rewritten with different bytes",
+             mk_write(TC_FIX, "build/bin/frobnicate", "frobnicate v2\n"));
+    tc = testcache_open(TC_FIX);
+    TC_CHECK("binding fixture reopens", tc != NULL);
+    if (tc) {
+        struct testcache_probe p;
+        testcache_probe_group(tc, "test_demo_entry", &p);
+        TC_CHECK("an edited artifact stays cacheable",
+                 p.cacheable && p.key_valid);
+        TC_CHECK("an edited artifact moves the key",
+                 p.key_valid && memcmp(key_v1, p.key, 32) != 0);
+        testcache_close(tc);
+    }
+    char victim[4096];
+    snprintf(victim, sizeof(victim), "%s/build/bin/frobnicate", TC_FIX);
+    TC_CHECK("artifact removed", remove(victim) == 0);
+    tc = testcache_open(TC_FIX);
+    TC_CHECK("binding fixture reopens after removal", tc != NULL);
+    if (tc) {
+        struct testcache_probe p;
+        testcache_probe_group(tc, "test_demo_entry", &p);
+        TC_CHECK("an absent exec artifact refuses caching",
+                 !p.cacheable && !p.hit &&
+                 p.code == TESTCACHE_R_EXTERNAL_INPUT);
+        testcache_close(tc);
+    }
+    failures += tc_exec_binding_refusals();
+    return failures;
+}
+
+
+/* The real-tree rail pins, refused class: denylisted groups and refuse-class
+ * signals must probe TESTCACHE_R_EXTERNAL_INPUT whether the refuse came from
+ * the reviewed denylist or from the rail spotting the exec on its own — so a
+ * later denylist entry for the same group strengthens this test instead of
+ * breaking it. */
+static int tc_rail_pin_refused(struct testcache *tc)
+{
+    int failures = 0;
+    static const char *const refused[] = {
+        "test_agent_test",       /* system() runs tools/agent_test_runner.sh */
+        "test_build_profile",    /* popen() runs make print-build-flags */
+        "test_cli_render",       /* rail: execs make (whole tree is the input) */
+        "test_code_impact",      /* popen() runs tools/agent_fast_ci.sh */
+        "test_codeindex",        /* execs make */
+        "test_codeindex_incremental", /* popen()s two tools/ scripts */
+        "test_dev_proof_signer", /* rail: self re-exec of the test image */
+        "test_engine",           /* system() runs tools/lint/check_no_api_keys.sh */
+        "test_sem_replay",       /* rail: execs make (the delegated tool build) */
+        "test_test_group_selector", /* popen() re-execs the test image */
+        "test_verify_receiver",  /* execve()s argv[0]: the test image */
+        "test_zcode_swarm_net",  /* shard workers self re-exec the test image */
+        "test_zcode_swarm_net_shard_01",
+        "test_zcode_swarm_net_shard_02",
+        "test_zcode_swarm_net_shard_03",
+        "test_zcode_swarm_net_shard_04",
+        "test_zcode_swarm_net_shard_05",
+    };
+    for (size_t i = 0; i < sizeof(refused) / sizeof(refused[0]); i++) {
+        struct testcache_probe p;
+        testcache_probe_group(tc, refused[i], &p);
+        TC_CHECK("out-of-closure exec group never caches", !p.cacheable &&
+                 !p.hit && p.code == TESTCACHE_R_EXTERNAL_INPUT);
+        if (p.cacheable || p.code != TESTCACHE_R_EXTERNAL_INPUT)
+            printf("  testcache: %s probed cacheable=%d code=%d (%s)\n",
+                   refused[i], p.cacheable, (int)p.code, p.reason);
+    }
+    return failures;
+}
+
+/* build/bin-literal groups: cacheable with the artifact bound when the
+ * binary exists, refused when it does not. Both outcomes prove the rail
+ * fired; a plain cacheable probe with no binding reported is the bug. */
+static int tc_rail_pin_bindable(struct testcache *tc)
+{
+    int failures = 0;
+    static const char *const bindable[] = {
+        "test_acme_worker",            /* binds zclassic23-acme */
+        "test_consensus_rule_sweep",   /* binds consensus_rule_sweep */
+        "test_fleet_board_bridge",     /* binds fleet-board-bridge */
+        "test_fleet_gateway",          /* binds z23-fleet-gateway + zclassic23 */
+        "test_process_group_exec",     /* binds build/bin/process-group-exec */
+        "test_terminal_worker_sandbox", /* binds fbsh */
+    };
+    for (size_t i = 0; i < sizeof(bindable) / sizeof(bindable[0]); i++) {
+        struct testcache_probe p;
+        testcache_probe_group(tc, bindable[i], &p);
+        bool refused_absent = !p.cacheable && !p.hit &&
+                              p.code == TESTCACHE_R_EXTERNAL_INPUT;
+        bool bound = p.cacheable && p.key_valid &&
+                     strstr(p.reason, "exec artifacts bound") != NULL;
+        TC_CHECK("build/bin exec group is bound or refused", refused_absent ||
+                 bound);
+        if (!refused_absent && !bound)
+            printf("  testcache: %s probed cacheable=%d code=%d (%s)\n",
+                   bindable[i], p.cacheable, (int)p.code, p.reason);
+    }
+    return failures;
+}
+
+/* The macro-generated fleet_gateway shards resolve no entry symbol in the
+ * code index, so they can never mint a key at all — the sound outcome, but
+ * through a different code than the rail's refusals. Pin that they never
+ * serve a verdict. */
+static int tc_rail_pin_unresolved(struct testcache *tc)
+{
+    int failures = 0;
+    static const char *const unresolved[] = {
+        "test_fleet_gateway_shard_01",
+        "test_fleet_gateway_shard_02",
+        "test_fleet_gateway_shard_03",
+        "test_fleet_gateway_shard_04",
+        "test_fleet_gateway_shard_05",
+        "test_fleet_gateway_shard_06",
+    };
+    for (size_t i = 0; i < sizeof(unresolved) / sizeof(unresolved[0]); i++) {
+        struct testcache_probe p;
+        testcache_probe_group(tc, unresolved[i], &p);
+        TC_CHECK("macro-generated shard never caches", !p.cacheable && !p.hit);
+        if (p.cacheable || p.hit)
+            printf("  testcache: %s probed cacheable=%d code=%d (%s)\n",
+                   unresolved[i], p.cacheable, (int)p.code, p.reason);
+    }
+    return failures;
+}
+
+/* The real-tree half pins the class, not the mechanism. impact_composition
+ * is a reviewed exception: its execs build fixture trees with host tools and
+ * its build/bin literals are fixture paths and assertion needles, so it must
+ * stay cacheable. */
+static int tc_exec_rail_real_tree(void)
+{
+    int failures = 0;
+    struct testcache *tc = testcache_open(NULL);
+    TC_CHECK("real-tree handle opens for the exec rail", tc != NULL);
+    if (!tc)
+        return failures + 1;
+    failures += tc_rail_pin_refused(tc);
+    failures += tc_rail_pin_bindable(tc);
+    failures += tc_rail_pin_unresolved(tc);
+    {
+        struct testcache_probe p;
+        testcache_probe_group(tc, "test_impact_composition", &p);
+        TC_CHECK("the reviewed fixture-construction exception stays cacheable",
+                 p.cacheable && p.code == TESTCACHE_R_OK);
+        testcache_probe_group(tc, "test_hkdf_sha256_rfc5869", &p);
+        TC_CHECK("a plain in-tree unit group stays cacheable",
+                 p.cacheable && p.code == TESTCACHE_R_OK);
+    }
+    testcache_close(tc);
+    TC_CHECK("params-presence groups joined the denylist",
+             testcache_group_is_denylisted("test_native_spend_proof") &&
+             testcache_group_is_denylisted("test_params_fetch") &&
+             testcache_group_is_denylisted("test_params_vk_embedded") &&
+             testcache_group_is_denylisted("test_wallet_destruction_drill"));
+    return failures;
+}
+
 
 /* ── Phase AI: testcache_group_action_inputs ─────────────────────────────
  *
@@ -2704,7 +3040,8 @@ int test_testcache(void)
         }
     }
     TC_CHECK("edit the .def registry (add a row)",
-             write_fixture_full(TC_LEAF_A, TC_OTHER_A, TC_H_A, TC_DEF_B));
+             write_fixture_full(TC_TOP, TC_LEAF_A, TC_OTHER_A, TC_H_A,
+                                TC_DEF_B));
     {
         struct testcache *tc = testcache_open(TC_FIX);
         if (tc) {
@@ -3050,9 +3387,9 @@ int test_testcache(void)
                            "focused receipt invalid reason=self_skips") &&
              file_contains("tools/agent_fast_ci.sh",
                            "focused receipt invalid reason=accounting"));
-    TC_CHECK("v5 key binds shared harness and retires older PASS records",
+    TC_CHECK("v6 key binds exec artifacts, shared harness and retires older PASS records",
              file_contains("tests/harness/src/testcache.c",
-                           "zcl.testcache.key.v5"));
+                           "zcl.testcache.key.v6"));
     /* The label has to describe the run, not the flag. Keying it on cache_mode
      * made `ZCL_TEST_CACHE=1 ... --only=<group>` report "mode=cached ...
      * groups_cached=0" and the (CACHED) headline for a run in which everything
@@ -3257,6 +3594,9 @@ int test_testcache(void)
     failures += tc_observation_roundtrip();
     failures += tc_action_inputs_phase();
     failures += tc_load_flaky_excerpt();
+    failures += tc_exec_rail_real_tree();
+    failures += tc_exec_rail_fixture();
+    failures += tc_exec_binding_fixture();
 
     (void)tc_shell("rm -rf %s %s %s %s %s", TC_FIX, TC_STORE,
                    TC_FIX2, TC_CAP, TC_CAP2);

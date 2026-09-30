@@ -16,6 +16,9 @@
  *   - the entry symbol does not resolve in the code index      -> UNCACHEABLE
  *   - the group is on the external-input denylist (reads fixtures/live DB/
  *     network/params/built binaries beyond its source closure)  -> UNCACHEABLE
+ *   - a closure file carries the exec rail's signal (execs a tree-built
+ *     binary, a repo script, make, or the test image itself)    -> UNCACHEABLE
+ *     unless a reviewed trc_signal_exception() entry names it
  *   - the depfile-derived include graph is absent entirely      -> UNCACHEABLE
  *   - any closure input is NEWER than the newest depfile the graph was built
  *     from, i.e. the graph cannot describe that input yet       -> UNCACHEABLE

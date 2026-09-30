@@ -20,21 +20,31 @@
  * Part of the sync_service group (test_sync_service.c calls the entry). */
 
 #include "test/test_core.h"
+#include "chain/chain.h"
 #include "chain/chainparams.h"
+#include "core/uint256.h"
+#include "jobs/tip_finalize_stage.h"
 #include "net/connman.h"
+#include "net/download.h"
 #include "net/net.h"
 #include "net/noise_transport.h"
+#include "services/body_backfill_service.h"
 #include "services/configured_sync_peers.h"
+#include "storage/body_history.h"
+#include "storage/progress_store.h"
 #include "sync/sync_planner.h"
 #include "sync/sync_state.h"
 #include "platform/socket_compat.h"
 #include "platform/time_compat.h"
 #include "util/safe_alloc.h"
+#include "validation/chainstate.h"
+#include "validation/main_state.h"
 
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <time.h>
 
 #define MODEL_MAX_NODES 4
@@ -1284,6 +1294,455 @@ static int test_configured_inbound_outbound_unchanged(void)
     return failures;
 }
 
+/* ── below-tip body re-fetch over the configured inbound ─────────────── */
+
+static void model_body_hash(struct uint256 *out, int64_t h)
+{
+    memset(out, 0, sizeof(*out));
+    for (size_t i = 0; i < 8; i++)
+        out->data[i] = (uint8_t)((uint64_t)h >> (8 * i));
+    out->data[31] = 0x9C;
+}
+
+/* The chain a kill-restore leaves when its disk ancestry rebuild stops on
+ * the first unreadable header: the block index holds every row of the tip's
+ * ancestry, active_chain_install_tip_slot publishes the tip slot and the
+ * height, and every slot below stays NULL. Bodies are header-only in
+ * [missing_lo, missing_hi]. */
+static bool model_kill_restore_chain(struct main_state *ms, int tip,
+                                     int missing_lo, int missing_hi)
+{
+    struct block_index *previous = NULL;
+    for (int h = 0; h <= tip; h++) {
+        struct uint256 hash;
+        model_body_hash(&hash, h);
+        struct block_index *bi = chainstate_insert_block_index(
+            (struct chainstate *)ms, &hash);
+        if (!bi)
+            return false;
+        bi->nHeight = h;
+        bi->pprev = previous;
+        bi->nStatus = BLOCK_VALID_SCRIPTS;
+        if (h < missing_lo || h > missing_hi)
+            bi->nStatus |= BLOCK_HAVE_DATA;
+        block_index_build_skip(bi);
+        previous = bi;
+    }
+    return active_chain_install_tip_slot(&ms->chain_active, previous);
+}
+
+/* Queue [lo, hi] into a fresh manager's history lane, as the census-driven
+ * backfill does. Returns false when the manager refuses an entry. */
+static bool model_queue_history_range(struct download_manager *dm, int lo,
+                                      int hi)
+{
+    for (int h = lo; h <= hi; h++) {
+        struct uint256 hash;
+        int32_t height = h;
+        model_body_hash(&hash, h);
+        if (dl_queue_blocks_class(dm, &hash, &height, 1, DL_WORK_HISTORY) != 1)
+            return false;
+    }
+    return true;
+}
+
+/* Deliver `total` history-lane bodies to `peer` the way msg_send_messages
+ * does: one assignment batch per message cycle, each body received and
+ * persisted, heights verified in [lo, hi]. `first`/`first_n` replay a batch
+ * already assigned to the peer. Returns bodies delivered; `ok` is false when
+ * any step violated the contract. */
+static size_t model_deliver_history_over_peer(
+    struct download_manager *dm, const struct p2p_node *peer,
+    struct main_state *ms, int lo, int hi, const struct uint256 *first,
+    size_t first_n, size_t total, bool *ok)
+{
+    struct uint256 got[DL_WINDOW_SIZE];
+    size_t delivered = 0;
+    size_t cycles = 0;
+    *ok = true;
+    while (delivered < total && *ok) {
+        size_t n = 0;
+        if (cycles == 0) {
+            while (n < first_n) {
+                got[n] = first[n];
+                n++;
+            }
+        } else {
+            struct sync_block_batch more = {0};
+            syncsvc_assign_peer_blocks(&more, dm, peer, got, DL_WINDOW_SIZE,
+                                       hi);
+            n = more.assigned;
+        }
+        cycles++;
+        for (size_t i = 0; i < n && delivered < total; i++) {
+            struct block_index *bi =
+                block_map_find(&ms->map_block_index, &got[i]);
+            *ok = dl_mark_received(dm, &got[i]) == (uint32_t)peer->id &&
+                  bi && bi->nHeight >= lo && bi->nHeight <= hi;
+            if (!*ok)
+                break;
+            bi->nStatus |= BLOCK_HAVE_DATA;
+            delivered++;
+        }
+    }
+    return delivered;
+}
+
+/* Re-probe until the census verdict every at-tip gate demands is proven, or
+ * eight passes pass without one. */
+static bool model_history_goes_proven(struct main_state *ms,
+                                      struct download_manager *dm)
+{
+    struct body_history_verdict v;
+    for (int pass = 0; pass < 8; pass++) {
+        if (body_backfill_pass(ms, dm, false, false, NULL, NULL) != 0)
+            return false;
+        if (body_history_get_verdict(&v) && body_history_verdict_is_proven(&v))
+            return true;
+    }
+    return false;
+}
+
+static int test_configured_inbound_refetches_missing_bodies(void)
+{
+    int failures = 0;
+    TEST("configured inbound: a node whose only session is a configured "
+         "inbound measures the below-tip bodies its kill-restore left "
+         "header-only, requests them over that session, and draws the same "
+         "assignment an outbound twin draws") {
+        static struct model_node a, b;
+        model_reset();
+        ASSERT(model_node_init(&a, "A", 7, 18233, 1));
+        ASSERT(model_node_init(&b, "B", 8, 18234, 2));
+        ASSERT(model_configure(&b, &a));
+        struct model_conn c, twin;
+        ASSERT(model_connect(&c, &a, &b, a.priv, true, 40001));
+        ev_inbound_version(&c);
+        model_settle(&c, 1);
+        ASSERT(model_begin(c.in));
+        struct p2p_node *in = c.in;
+        ASSERT(in->inbound && syncsvc_peer_is_configured_inbound(in));
+        ASSERT(b.cm.manager.num_nodes == 1);
+        in->starting_height = 145;
+
+        struct main_state *ms = calloc(1, sizeof(*ms));
+        ASSERT(ms);
+        main_state_init(ms);
+        ASSERT(model_kill_restore_chain(ms, 145, 121, 124));
+        ASSERT(active_chain_at(&ms->chain_active, 145) != NULL);
+        ASSERT(active_chain_at(&ms->chain_active, 121) == NULL);
+        struct download_manager dm;
+        dl_init(&dm);
+        body_history_reset();
+
+        /* The census burst must measure the below-tip range through the
+         * tip's ancestry, not report the holed window unmeasured. */
+        for (int pass = 0;
+             pass < 64 && !body_history_window_fully_measured(); pass++)
+            ASSERT(body_backfill_pass(ms, &dm, false, true, NULL, NULL) == 0);
+        struct body_history_verdict v;
+        ASSERT(body_history_get_verdict(&v));
+        ASSERT(v.status == BODY_HISTORY_INCOMPLETE);
+        ASSERT(v.lowest_missing == 121 && v.missing_count == 4);
+        ASSERT(body_backfill_pass(ms, &dm, false, false, NULL, NULL) == 4);
+        ASSERT(dm.queue_len == 4);
+
+        /* The only session — the configured inbound — draws the same
+         * getdata window an outbound twin draws from the same queue shape.
+         * The history lane hands any peer at most DL_MAX_HISTORY_PER_PEER
+         * hashes per message cycle, inbound or outbound alike. */
+        struct sync_block_batch bin, bout;
+        struct uint256 hin[DL_WINDOW_SIZE], hout[DL_WINDOW_SIZE];
+        syncsvc_assign_peer_blocks(&bin, &dm, in, hin, DL_WINDOW_SIZE, 145);
+        ASSERT(bin.should_assign && bin.assigned > 0);
+        struct download_manager dm2;
+        dl_init(&dm2);
+        ASSERT(model_queue_history_range(&dm2, 121, 124));
+        ASSERT(model_connect(&twin, &b, &a, b.priv, true, 40002));
+        struct p2p_node *out = twin.out;
+        out->state = PEER_ACTIVE;
+        out->starting_height = 145;
+        syncsvc_assign_peer_blocks(&bout, &dm2, out, hout, DL_WINDOW_SIZE,
+                                   145);
+        ASSERT(bout.should_assign == bin.should_assign);
+        ASSERT(bout.assigned == bin.assigned);
+        for (size_t i = 0; i < bin.assigned; i++)
+            ASSERT(uint256_eq(&hin[i], &hout[i]));
+
+        /* Message cycles deliver all four bodies over the inbound session,
+         * then the census re-probes them as held and the verdict every
+         * at-tip gate demands goes proven. */
+        bool delivered_ok = false;
+        size_t delivered = model_deliver_history_over_peer(
+            &dm, in, ms, 121, 124, hin, bin.assigned, 4, &delivered_ok);
+        ASSERT(delivered_ok && delivered == 4);
+        ASSERT(model_history_goes_proven(ms, &dm));
+        printf("[configured-inbound body refetch] missing=4 delivered=%zu "
+               "assigned_inbound=%zu assigned_outbound=%zu proven=yes\n",
+               delivered, bin.assigned, bout.assigned);
+        dl_free(&dm);
+        dl_free(&dm2);
+        main_state_free(ms);
+        free(ms);
+        body_history_reset();
+        PASS();
+    } _test_next:;
+    model_reset();
+    body_history_reset();
+    return failures;
+}
+
+/* ── the hollow container a partial restore leaves behind the authority ── */
+
+/* The tip authority a live node registers through tip_finalize: the census
+ * takes its window bound from active_chain_height, so this stub models the
+ * boot where the authority names tip 145 while the chain[] container is
+ * hollow. The flag withdraws the stub after the scenario — the registry has
+ * no unregister call, and a stale authoritative stub would answer for every
+ * later test in this process. */
+static bool model_authority_on;
+static bool model_authority_hash_ok = true;
+static int64_t model_authority_height = -1;
+static struct uint256 model_authority_hash;
+
+static int64_t model_authority_get_height(void)
+{
+    return model_authority_on ? model_authority_height : -1;
+}
+
+static bool model_authority_get_hash(uint8_t out[32])
+{
+    if (!model_authority_on || !model_authority_hash_ok)
+        return false;
+    memcpy(out, model_authority_hash.data, 32);
+    return true;
+}
+
+static bool model_authority_is_authoritative(void)
+{
+    return model_authority_on;
+}
+
+static int test_configured_inbound_hollow_window_still_measures(void)
+{
+    int failures = 0;
+    TEST("configured inbound: a returned node whose chain[] container is "
+         "hollow behind the tip authority still measures its below-tip "
+         "bodies, requests them over the configured inbound, and proves "
+         "its history") {
+        static struct model_node a, b;
+        model_reset();
+        model_authority_on = false;
+        model_authority_hash_ok = true;
+        ASSERT(model_node_init(&a, "A", 7, 18235, 1));
+        ASSERT(model_node_init(&b, "B", 8, 18236, 2));
+        ASSERT(model_configure(&b, &a));
+        struct model_conn c;
+        ASSERT(model_connect(&c, &a, &b, a.priv, true, 40003));
+        ev_inbound_version(&c);
+        model_settle(&c, 1);
+        ASSERT(model_begin(c.in));
+        struct p2p_node *in = c.in;
+        ASSERT(in->inbound && syncsvc_peer_is_configured_inbound(in));
+        ASSERT(b.cm.manager.num_nodes == 1);
+        in->starting_height = 145;
+
+        struct main_state *ms = calloc(1, sizeof(*ms));
+        ASSERT(ms);
+        main_state_init(ms);
+        ASSERT(model_kill_restore_chain(ms, 145, 121, 124));
+        /* The partial restore: the height the authority publishes stays,
+         * the tip slot itself does not. Every chain[] read now misses. */
+        zcl_mutex_lock(&ms->chain_active.write_lock);
+        ms->chain_active.chain[145] = NULL;
+        zcl_mutex_unlock(&ms->chain_active.write_lock);
+        ASSERT(active_chain_at(&ms->chain_active, 145) == NULL);
+
+        model_body_hash(&model_authority_hash, 145);
+        model_authority_height = 145;
+        struct active_chain_authority auth = {
+            .get_height = model_authority_get_height,
+            .get_hash = model_authority_get_hash,
+            .is_authoritative = model_authority_is_authoritative,
+        };
+        active_chain_register_block_map(&ms->map_block_index);
+        active_chain_register_authority(&auth);
+        model_authority_on = true;
+
+        struct download_manager dm;
+        dl_init(&dm);
+        body_history_reset();
+
+        /* The census must measure through the authority tip's ancestry even
+         * though no chain[] slot answers. */
+        for (int pass = 0;
+             pass < 64 && !body_history_window_fully_measured(); pass++)
+            ASSERT(body_backfill_pass(ms, &dm, false, true, NULL, NULL) == 0);
+        struct body_history_verdict v;
+        ASSERT(body_history_get_verdict(&v));
+        ASSERT(v.status == BODY_HISTORY_INCOMPLETE);
+        ASSERT(v.lowest_missing == 121 && v.missing_count == 4);
+        ASSERT(body_backfill_pass(ms, &dm, false, false, NULL, NULL) == 4);
+        ASSERT(dm.queue_len == 4);
+
+        struct sync_block_batch bin;
+        struct uint256 hin[DL_WINDOW_SIZE];
+        syncsvc_assign_peer_blocks(&bin, &dm, in, hin, DL_WINDOW_SIZE, 145);
+        ASSERT(bin.should_assign && bin.assigned > 0);
+
+        bool delivered_ok = false;
+        size_t delivered = model_deliver_history_over_peer(
+            &dm, in, ms, 121, 124, hin, bin.assigned, 4, &delivered_ok);
+        ASSERT(delivered_ok && delivered == 4);
+        ASSERT(model_history_goes_proven(ms, &dm));
+        printf("[configured-inbound hollow window] missing=4 delivered=%zu "
+               "assigned_inbound=%zu proven=yes\n",
+               delivered, bin.assigned);
+
+        model_authority_on = false;
+        model_authority_height = -1;
+        dl_free(&dm);
+        main_state_free(ms);
+        free(ms);
+        body_history_reset();
+        PASS();
+    } _test_next:;
+    model_reset();
+    model_authority_on = false;
+    body_history_reset();
+    return failures;
+}
+
+/* ── the durable pair a hollow restore leaves as the only tip witness ──
+ *
+ * The other hollow boot: the authority answers the height yet names no
+ * hash, no chain[] slot answers any height, and the only surviving tip
+ * witness is the durable tip_finalize pair — the shape a kill leaves when
+ * the disk ancestry rebuild stops early (populated=0) while the finalized
+ * log still holds the tip. The census must anchor on that same durable
+ * pair the window bound already falls back to, not report the whole window
+ * unmeasured. */
+static int test_configured_inbound_durable_anchor_window_measures(void)
+{
+    int failures = 0;
+    TEST("configured inbound: a returned node whose authority answers the "
+         "tip height but names no hash — chain[] hollow, durable "
+         "tip_finalize pair intact — still measures its below-tip bodies, "
+         "requests them over the configured inbound, and proves its "
+         "history") {
+        static struct model_node a, b;
+        model_reset();
+        model_authority_on = false;
+        model_authority_hash_ok = true;
+        model_authority_height = -1;
+        ASSERT(model_node_init(&a, "A", 7, 18237, 1));
+        ASSERT(model_node_init(&b, "B", 8, 18238, 2));
+        ASSERT(model_configure(&b, &a));
+        struct model_conn c;
+        ASSERT(model_connect(&c, &a, &b, a.priv, true, 40005));
+        ev_inbound_version(&c);
+        model_settle(&c, 1);
+        ASSERT(model_begin(c.in));
+        struct p2p_node *in = c.in;
+        ASSERT(in->inbound && syncsvc_peer_is_configured_inbound(in));
+        in->starting_height = 145;
+
+        struct main_state *ms = calloc(1, sizeof(*ms));
+        ASSERT(ms);
+        main_state_init(ms);
+
+        /* The durable pair a finalized tip leaves behind: the real progress
+         * store, the tip_finalize stage (its cursor owns the durable-tip
+         * resolver's read), and a seeded anchor at 145 carrying the block's
+         * own hash — the same recipe the seed-from-finalized loader test
+         * uses. Empty container at init time, so init takes its fresh-store
+         * path and stamps nothing itself. */
+        char dir[128];
+        test_fmt_tmpdir(dir, sizeof(dir), "cfgib_durable", "main");
+        mkdir("./test-tmp", 0755);
+        mkdir(dir, 0755);
+        progress_store_close();
+        ASSERT(progress_store_open(dir));
+        ASSERT(tip_finalize_stage_init(ms));
+        struct uint256 tip_hash;
+        model_body_hash(&tip_hash, 145);
+        ASSERT(tip_finalize_stage_seed_anchor(145, tip_hash.data, true));
+
+        /* The partial restore: every ancestry row present in the map, the
+         * tip slot installed then emptied, the published height kept at 145
+         * by an authority that names no hash — no tip row answers. */
+        ASSERT(model_kill_restore_chain(ms, 145, 121, 124));
+        zcl_mutex_lock(&ms->chain_active.write_lock);
+        ms->chain_active.chain[145] = NULL;
+        zcl_mutex_unlock(&ms->chain_active.write_lock);
+        ASSERT(active_chain_at(&ms->chain_active, 145) == NULL);
+
+        model_authority_height = 145;
+        model_authority_hash_ok = false;
+        struct active_chain_authority auth = {
+            .get_height = model_authority_get_height,
+            .get_hash = model_authority_get_hash,
+            .is_authoritative = model_authority_is_authoritative,
+        };
+        active_chain_register_authority(&auth);
+        model_authority_on = true;
+        ASSERT(active_chain_tip(&ms->chain_active) == NULL);
+        ASSERT(active_chain_height(&ms->chain_active) == 145);
+
+        struct download_manager dm;
+        dl_init(&dm);
+        body_history_reset();
+
+        /* The census must anchor on the durable pair and measure through
+         * the ancestry it names. */
+        for (int pass = 0;
+             pass < 64 && !body_history_window_fully_measured(); pass++)
+            ASSERT(body_backfill_pass(ms, &dm, false, true, NULL, NULL) == 0);
+        struct body_history_verdict v;
+        ASSERT(body_history_get_verdict(&v));
+        ASSERT(v.status == BODY_HISTORY_INCOMPLETE);
+        ASSERT(v.lowest_missing == 121 && v.missing_count == 4);
+        ASSERT(body_backfill_pass(ms, &dm, false, false, NULL, NULL) == 4);
+        ASSERT(dm.queue_len == 4);
+
+        /* The only session — the configured inbound — draws the assignment
+         * and message cycles deliver all four bodies, then the verdict goes
+         * proven against the durable anchor. */
+        struct sync_block_batch bin;
+        struct uint256 hin[DL_WINDOW_SIZE];
+        syncsvc_assign_peer_blocks(&bin, &dm, in, hin, DL_WINDOW_SIZE, 145);
+        ASSERT(bin.should_assign && bin.assigned > 0);
+
+        bool delivered_ok = false;
+        size_t delivered = model_deliver_history_over_peer(
+            &dm, in, ms, 121, 124, hin, bin.assigned, 4, &delivered_ok);
+        ASSERT(delivered_ok && delivered == 4);
+        ASSERT(model_history_goes_proven(ms, &dm));
+        printf("[configured-inbound durable anchor] missing=4 delivered=%zu "
+               "assigned_inbound=%zu proven=yes\n",
+               delivered, bin.assigned);
+
+        model_authority_on = false;
+        model_authority_hash_ok = true;
+        model_authority_height = -1;
+        dl_free(&dm);
+        tip_finalize_stage_shutdown();
+        progress_store_close();
+        main_state_free(ms);
+        free(ms);
+        body_history_reset();
+        test_cleanup_tmpdir(dir);
+        PASS();
+    } _test_next:;
+    model_reset();
+    model_authority_on = false;
+    model_authority_hash_ok = true;
+    body_history_reset();
+    tip_finalize_stage_shutdown();
+    progress_store_close();
+    return failures;
+}
+
 /* ── the network prober's socket path, over loopback ─────────────────── */
 
 enum listener_mode {
@@ -1750,6 +2209,9 @@ int check_sync_service_configured_inbound(void)
     failures += test_configured_inbound_publisher_loss();
     failures += test_configured_inbound_refusals();
     failures += test_configured_inbound_same_limits_as_outbound();
+    failures += test_configured_inbound_refetches_missing_bodies();
+    failures += test_configured_inbound_hollow_window_still_measures();
+    failures += test_configured_inbound_durable_anchor_window_measures();
     failures += test_configured_inbound_outbound_unchanged();
     failures += test_configured_inbound_probe_socket();
     failures += test_configured_inbound_probe_deadline();

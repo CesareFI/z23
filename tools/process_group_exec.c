@@ -151,21 +151,189 @@ int main(int argc, char **argv)
 #include <errno.h>
 #include <signal.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 #if defined(__linux__)
 #include <sys/prctl.h>
 #endif
 
+#define PGE_USAGE "process-group-exec [--die-with-parent | --die-with-lease FILE:STALE[:GRACE]] COMMAND [ARG ...]"
+
+/* --die-with-lease supervision spec. The lease file's mtime is the driver's
+ * proof of control: whoever launched this group keeps it fresh, and a file
+ * that is missing or older than stale_s means that control is gone, so the
+ * supervisor terminates the one process group it spawned. Ownership stays
+ * exact — no PPID heuristic, no port claim, no pid that could be reused. */
+struct lease_spec {
+    char file[512];
+    long stale_s;
+    long grace_s;
+};
+
+static int lease_parse(const char *spec, struct lease_spec *out)
+{
+    /* FILE:STALE[:GRACE], colon-separated; every field must be present and
+     * whole-positive. The file path may not contain a colon: fail closed
+     * instead of half-parsing a mangled spec. */
+    const char *c1 = strchr(spec, ':');
+    if (!c1)
+        return 0;
+    const char *c2 = strchr(c1 + 1, ':');
+    char *end = NULL;
+    long stale = strtol(c1 + 1, &end, 10);
+    /* With a grace field, stale's digits end at the second colon. */
+    if (!end || (*end != 0 && *end != ':') || end == c1 + 1 || stale < 1)
+        return 0;
+    long grace = 30;
+    if (c2) {
+        if (strchr(c2 + 1, ':'))
+            return 0;
+        grace = strtol(c2 + 1, &end, 10);
+        if (!end || *end != 0 || end == c2 + 1 || grace < 1)
+            return 0;
+    }
+    size_t file_len = (size_t)(c1 - spec);
+    if (file_len == 0 || file_len >= sizeof(out->file))
+        return 0;
+    memcpy(out->file, spec, file_len);
+    out->file[file_len] = 0;
+    out->stale_s = stale;
+    out->grace_s = grace;
+    return 1;
+}
+
+static int lease_stale(const struct lease_spec *lease, char *why, size_t cap)
+{
+    struct stat st;
+    if (stat(lease->file, &st) != 0) {
+        snprintf(why, cap, "stat: %s", strerror(errno));
+        return 1;
+    }
+    double age = difftime(time(NULL), st.st_mtime); // platform-ok: standalone supervision tool, no platform linkage; lease age is fixture-reap timing, not consensus timing
+    if (age > (double)lease->stale_s) {
+        snprintf(why, cap, "age %.0fs exceeds %lds", age, lease->stale_s);
+        return 1;
+    }
+    return 0;
+}
+
+/* Map a reaped child's wait status to the launcher's pass-through exit
+ * code: its own exit code, or 128+signal when a signal ended it. */
+static int child_status_code(int status)
+{
+    if (WIFEXITED(status))
+        return WEXITSTATUS(status);
+    if (WIFSIGNALED(status))
+        return 128 + WTERMSIG(status);
+    return 125;
+}
+
+/* The lease went stale: terminate the group this launcher created. TERM
+ * first, then SIGKILL after grace_s. The SIGKILL takes the whole group
+ * including this supervisor — SIGKILL cannot spare the leader — and a
+ * supervisor that dies with its unreapable child still meets the contract
+ * that the group is gone. */
+static int reap_leased_group(pid_t child, long grace_s)
+{
+    int status = 0;
+    pid_t rc;
+    struct timespec ts;
+    kill(-getpgrp(), SIGTERM);
+    long slices = grace_s * 5; /* 200ms slices per second */
+    long waited = 0;
+    while (waited < slices) {
+        rc = waitpid(child, &status, WNOHANG);
+        if (rc == child)
+            return child_status_code(status);
+        ts.tv_sec = 0;
+        ts.tv_nsec = 200L * 1000L * 1000L;
+        nanosleep(&ts, NULL);
+        waited++;
+    }
+    fprintf(stderr, "process-group-exec: group ignored TERM for %lds: SIGKILL\n",
+            grace_s);
+    kill(-getpgrp(), SIGKILL);
+    /* unreachable in practice: the group kill includes us */
+    for (;;)
+        pause();
+}
+
+/* Stay resident as the group leader and supervise the leased command.
+ * Returns the child's pass-through exit status when the child ends (by
+ * itself, by a group signal from the caller's cleanup, or by the lease
+ * reap below). */
+static int supervise_leased(const struct lease_spec *lease, char **child_argv)
+{
+    char why[256];
+    struct timespec ts;
+    fflush(NULL);
+    pid_t child = fork();
+    if (child < 0) {
+        fprintf(stderr, "process-group-exec: cannot fork supervisor child: %s\n",
+                strerror(errno));
+        return 126;
+    }
+    if (child == 0) {
+        execvp(child_argv[0], child_argv);
+        fprintf(stderr, "process-group-exec: cannot execute %s: %s\n",
+                child_argv[0], strerror(errno));
+        _exit(127);
+    }
+    /* The supervisor must survive the group TERMs it issues and the ones
+     * the caller's cleanup sends, so it can still reap the child and pass
+     * the status through. Set only in the parent: a disposition set before
+     * fork would cross execvp into the supervised command. */
+    struct sigaction ign = {0};
+    ign.sa_handler = SIG_IGN;
+    sigaction(SIGTERM, &ign, NULL);
+    sigaction(SIGHUP, &ign, NULL);
+
+    /* Check cadence: at least four checks per stale window, bounded to
+     * [1s, 5s] so both a 1s test window and a 180s journey window get
+     * bounded detection latency. */
+    long poll_s = lease->stale_s / 4;
+    if (poll_s < 1)
+        poll_s = 1;
+    if (poll_s > 5)
+        poll_s = 5;
+
+    for (;;) {
+        int status = 0;
+        pid_t rc = waitpid(child, &status, WNOHANG);
+        if (rc == child)
+            return child_status_code(status);
+        if (rc < 0 && errno != EINTR) {
+            fprintf(stderr, "process-group-exec: waitpid failed: %s\n",
+                    strerror(errno));
+            return 125;
+        }
+        if (lease_stale(lease, why, sizeof(why))) {
+            fprintf(stderr,
+                    "process-group-exec: supervision lease %s is stale (%s): "
+                    "terminating group\n",
+                    lease->file, why);
+            return reap_leased_group(child, lease->grace_s);
+        }
+        ts.tv_sec = poll_s;
+        ts.tv_nsec = 0;
+        nanosleep(&ts, NULL);
+    }
+}
+
 int main(int argc, char **argv)
 {
     int die_with_parent = 0;
+    struct lease_spec lease = {0};
+    int have_lease = 0;
     int first = 1;
     if (argc < 2) {
-        fprintf(stderr,
-                "process-group-exec: usage: process-group-exec "
-                "[--die-with-parent] COMMAND [ARG ...]\n");
+        fprintf(stderr, "process-group-exec: usage: %s\n", PGE_USAGE);
         return 2;
     }
     /* Exactly one optional leading flag; anything else that starts with
@@ -176,17 +344,25 @@ int main(int argc, char **argv)
         if (strcmp(argv[1], "--die-with-parent") == 0) {
             die_with_parent = 1;
             first = 2;
+        } else if (strncmp(argv[1], "--die-with-lease=", 17) == 0) {
+            if (!lease_parse(argv[1] + 17, &lease)) {
+                fprintf(stderr,
+                        "process-group-exec: bad lease spec %s "
+                        "(want FILE:STALE[:GRACE], whole seconds)\n",
+                        argv[1] + 17);
+                return 2;
+            }
+            have_lease = 1;
+            first = 2;
         } else {
             fprintf(stderr,
-                    "process-group-exec: unknown flag %s "
-                    "(usage: process-group-exec [--die-with-parent] "
-                    "COMMAND [ARG ...])\n",
-                    argv[1]);
+                    "process-group-exec: unknown flag %s (usage: %s)\n",
+                    argv[1], PGE_USAGE);
             return 2;
         }
         if (argc < 3) {
             fprintf(stderr,
-                    "process-group-exec: --die-with-parent needs COMMAND\n");
+                    "process-group-exec: %s needs COMMAND\n", argv[1]);
             return 2;
         }
     }
@@ -201,9 +377,10 @@ int main(int argc, char **argv)
 #if defined(__linux__) && defined(PR_SET_PDEATHSIG)
         /* The kernel reaps this whole tree when the launching shell dies,
          * so a crashed driver cannot strand a fixture daemon on a shared
-         * port. Deliberately NOT the default: the remote journey legs
-         * rely on plain setsid survival between the driver's ssh calls.
-         * Applied before exec and after setsid; prctl survives both. */
+         * port. Deliberately NOT the default, and not for remote journey
+         * legs: their parent is one short ssh session of many, so they
+         * take --die-with-lease instead. Applied before exec and after
+         * setsid; prctl survives both. */
         if (prctl(PR_SET_PDEATHSIG, SIGTERM) != 0) {
             fprintf(stderr,
                     "process-group-exec: cannot request parent-death "
@@ -228,6 +405,14 @@ int main(int argc, char **argv)
                 "this platform; continuing without parent-death "
                 "supervision\n");
 #endif
+    }
+
+    if (have_lease) {
+        /* The remote-leg orphan counterpart of --die-with-parent: the
+         * launching ssh session is gone by design, so the kernel cannot
+         * watch a parent; the lease file is the driver's liveness instead.
+         * Fully POSIX: stat, sleep, kill. */
+        return supervise_leased(&lease, &argv[first]);
     }
 
     execvp(argv[first], &argv[first]);

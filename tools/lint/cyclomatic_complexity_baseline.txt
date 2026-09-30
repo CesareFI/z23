@@ -2133,7 +2133,7 @@ engine/services/src/bg_validation_verify_block.c:bg_validation_validate_block_pr
 engine/services/src/binary_ab_fallback.c:binary_ab_promote:17
 engine/services/src/binary_ab_fallback.c:binary_ab_promote_stream:16
 engine/services/src/binary_staleness_service.c:binary_staleness_check_now:25
-engine/services/src/block_index_blocks_hydrate.c:load_block_index_from_blocks_table:64
+engine/services/src/block_index_blocks_hydrate.c:load_block_index_from_blocks_table:63
 engine/services/src/block_index_flat_anchor.c:block_index_flat_anchor_apply:22
 engine/services/src/block_index_flat_anchor.c:block_index_flat_anchor_encode:19
 engine/services/src/block_index_integrity.c:bii_repair_post_activation_anchor:21
@@ -2501,11 +2501,11 @@ tests/harness/src/groth16_spend_parity.c:groth16_spend_parity_oracle:75
 tests/harness/src/lint_gate_chain_contracts.c:t_no_new_coin_backfill_caller:47
 tests/harness/src/lint_gate_defensive_selftests.c:check_deleted_engine_names_file:17
 tests/harness/src/lint_gate_deploy_contracts.c:t_canonical_deploy_proof_binding_contract:26
-tests/harness/src/lint_gate_helpers.c:run_gate_script_arg:16
-tests/harness/src/lint_gate_helpers.c:run_gate_script_watched:26
-tests/harness/src/lint_gate_helpers.c:run_gate_script_with_env:16
-tests/harness/src/lint_gate_helpers.c:run_gate_script_with_env2:18
-tests/harness/src/lint_gate_helpers.c:run_gate_script_with_worker_files:18
+tests/harness/src/lint_gate_exec.c:run_gate_script_arg:16
+tests/harness/src/lint_gate_exec.c:run_gate_script_watched:26
+tests/harness/src/lint_gate_exec.c:run_gate_script_with_env:16
+tests/harness/src/lint_gate_exec.c:run_gate_script_with_env2:18
+tests/harness/src/lint_gate_exec.c:run_gate_script_with_worker_files:18
 tests/harness/src/lint_gate_hygiene_selftests.c:t_dev_proof_helpers_include_lint_tool:17
 tests/harness/src/lint_gate_hygiene_selftests.c:t_lint_umbrellas_share_built_prereqs:18
 tests/harness/src/lint_gate_quality_selftests.c:t_gate_p1_file_purpose:18

@@ -250,6 +250,22 @@ A group is **UNCACHEABLE (always runs)** when its inputs cannot be bounded:
   the **exact** group name — the previous `strstr()` form could not list `net`
   without also swallowing `netmask`/`subnet`/`net_bootstrap`, which is exactly
   why `test_net` went uncovered,
+- **the probe-time exec rail fires a refuse-class signal** — the group's own
+  entry file or a harness helper it links (scope: `trc_rail_scans_file()`)
+  contains a comment-stripped exec signal that reaches inputs no key can
+  bound: a `tools/…​.sh` script (interpreted: its behavior is its bytes plus
+  everything it invokes), `make` (reads the Makefile), a self re-exec through
+  `argv[0]`/`os_proc_exe_path`, or a parameterized/overflowing artifact
+  literal. The denylist above is hand-maintained; the rail
+  (`trc_rail_refuses()`) scans at probe time and refuses automatically, so a
+  new group with an unbindable exec is uncacheable from its first probe
+  without anyone adding a row. Other groups' entry files and
+  platform/tools/core machinery are out of scope: the name-resolved closure
+  carries passengers that would false-positive the whole suite. A plain
+  `build/bin/…` artifact literal is **bound, not refused**: the artifact's
+  content hash joins the group key (key domain `zcl.testcache.key.v6`), so an
+  edited binary moves the key, an untouched one keeps the hit, and an absent
+  or unreadable artifact refuses fail-closed,
 - **the include graph is absent** — no depfiles under `build/`. Zero include
   edges is not "a closure with no headers", it is *no closure*: a strictly
   smaller set that is never flagged `truncated` and therefore looks complete. On
