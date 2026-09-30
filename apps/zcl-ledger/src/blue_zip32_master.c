@@ -2,6 +2,7 @@
 #include "blue_zip32_master.h"
 
 #include "blue_mod256.h"
+#include "blue_storage.h"
 #include "crypto/blake2b.h"
 #include "sapling/jubjub.h"
 
@@ -54,6 +55,8 @@ static bool expanded_key(struct zip32_expsk *result,
 bool blue_zip32_master_expsk(struct zip32_expsk *result,
     const uint8_t seed[32]) {
     if (!result) return false;
+    if (blue_storage_overlaps(result, sizeof *result, seed, 32))
+        return false;
     uint8_t master[64] = {0};
     bool valid = seed && master_root(master, seed) &&
         expanded_key(result, NULL, master);
@@ -65,6 +68,8 @@ bool blue_zip32_master_expsk(struct zip32_expsk *result,
 bool blue_zip32_master_xsk(struct zip32_xsk *result,
     const uint8_t seed[32]) {
     if (!result) return false;
+    if (blue_storage_overlaps(result, sizeof *result, seed, 32))
+        return false;
     uint8_t master[64] = {0};
     bool valid = seed && master_root(master, seed);
     if (valid) {

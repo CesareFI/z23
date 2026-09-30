@@ -64,6 +64,7 @@ tools/dev/fixtures/shadow_select/*.patch -whitespace
 *.timer      linguist-generated
 *.scenario   linguist-generated
 *.fixture    linguist-generated
+apps/zcl-ledger/tests/fixtures/zcl-wallet-0.3.46.text binary
 
 # Impact rules are an unordered SET of independent mappings that every lane
 # appends to. Concurrent appends are not semantically conflicting, so take the

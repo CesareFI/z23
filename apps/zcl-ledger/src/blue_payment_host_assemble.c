@@ -2,7 +2,9 @@
 #include "blue_payment_host_assemble.h"
 #include "zcl_tx_review.h"
 #include "zcl_tx_script_facts.h"
+#include "zsha256/zsha256.h"
 
+#include <stdlib.h>
 #include <string.h>
 
 typedef struct {
@@ -12,8 +14,18 @@ typedef struct {
     size_t count;
 } input_offsets;
 
+typedef struct {
+    blue_payment_verified_signature signatures[ZCL_TX_STREAM_MAX_INPUTS];
+    uint8_t digests[ZCL_TX_STREAM_MAX_INPUTS][32];
+    uint8_t hashes[ZCL_TX_STREAM_MAX_INPUTS][20];
+    uint8_t paths[ZCL_TX_STREAM_MAX_INPUTS];
+    uint8_t reviewed_hash[32];
+    uint8_t wire[];
+} authenticated_snapshot;
+
 static bool overlaps(const void *left, size_t left_length,
     const void *right, size_t right_length) {
+    if (!left || !right || !left_length || !right_length) return false;
     uintptr_t a = (uintptr_t)left, b = (uintptr_t)right;
     return a <= b ? b - a < left_length : a - b < right_length;
 }
@@ -163,13 +175,31 @@ static bool same_wire_except_scripts(const uint8_t *unsigned_wire,
             unsigned_length - source) == 0;
 }
 
+static bool length_storage_valid(const size_t *output_length,
+    const uint8_t *unsigned_wire, size_t unsigned_length,
+    const blue_payment_verified_signature *signatures,
+    const uint8_t (*expected_digests)[32], size_t count,
+    const uint8_t *output, size_t capacity) {
+    return output_length && count <= ZCL_TX_STREAM_MAX_INPUTS &&
+        !overlaps(output_length, sizeof *output_length,
+            unsigned_wire, unsigned_length) &&
+        !overlaps(output_length, sizeof *output_length,
+            signatures, count * sizeof *signatures) &&
+        !overlaps(output_length, sizeof *output_length,
+            expected_digests, count * sizeof *expected_digests) &&
+        !overlaps(output_length, sizeof *output_length, output, capacity);
+}
+
 bool blue_payment_host_assemble(const uint8_t *unsigned_wire,
     size_t unsigned_length,
     const blue_payment_verified_signature *signatures,
     const uint8_t (*expected_digests)[32], size_t count,
     uint8_t *output, size_t capacity, size_t *output_length) {
-    if (output_length) *output_length = 0;
-    if (!output_length || !signatures || !expected_digests || !output ||
+    if (!length_storage_valid(output_length, unsigned_wire, unsigned_length,
+            signatures, expected_digests, count, output, capacity))
+        return false;
+    *output_length = 0;
+    if (!signatures || !expected_digests || !output ||
         !unsigned_v4(unsigned_wire, unsigned_length, count)) return false;
     zcl_tx_review review;
     input_offsets offsets = {.wire = unsigned_wire};
@@ -192,4 +222,185 @@ bool blue_payment_host_assemble(const uint8_t *unsigned_wire,
     }
     *output_length = written;
     return true;
+}
+
+static void clear_output(uint8_t *output, size_t capacity,
+    size_t *output_length) {
+    volatile uint8_t *bytes = output;
+    for (size_t i = 0; i < capacity; ++i) bytes[i] = 0;
+    *output_length = 0;
+}
+
+bool blue_payment_host_assemble_reviewed(const uint8_t *unsigned_wire,
+    size_t unsigned_length, const uint8_t reviewed_wire_hash[32],
+    const blue_payment_verified_signature *signatures,
+    const uint8_t (*expected_digests)[32], size_t count,
+    uint8_t *output, size_t capacity, size_t *output_length) {
+    if (!unsigned_wire || !reviewed_wire_hash || !output ||
+        capacity > ZCL_TX_REVIEW_MAX_BYTES ||
+        unsigned_length > ZCL_TX_REVIEW_MAX_BYTES ||
+        !length_storage_valid(output_length, unsigned_wire,
+            unsigned_length, signatures, expected_digests,
+            count, output, capacity) ||
+        overlaps(reviewed_wire_hash, 32, output, capacity) ||
+        overlaps(reviewed_wire_hash, 32, output_length,
+            sizeof *output_length) ||
+        overlaps(unsigned_wire, unsigned_length, output, capacity) ||
+        overlaps(signatures, count * sizeof *signatures,
+            output, capacity) ||
+        overlaps(expected_digests, count * sizeof *expected_digests,
+            output, capacity)) return false;
+    clear_output(output, capacity, output_length);
+    uint8_t actual_hash[32];
+    zsha256(unsigned_wire, unsigned_length, actual_hash);
+    return memcmp(actual_hash, reviewed_wire_hash, sizeof actual_hash) == 0 &&
+        blue_payment_host_assemble(unsigned_wire, unsigned_length,
+            signatures, expected_digests, count,
+            output, capacity, output_length);
+}
+
+static bool authenticated_inputs(
+    const blue_payment_verified_signature *signatures,
+    const uint8_t (*expected_digests)[32],
+    const uint8_t *expected_paths, const uint8_t (*expected_hashes)[20],
+    size_t count, blue_payment_pubkey_hash_fn hash,
+    blue_payment_verify_signature_fn verify, void *verify_context) {
+    for (size_t i = 0; i < count; ++i) {
+        const blue_payment_verified_signature *signature = &signatures[i];
+        uint8_t actual_hash[20];
+        if (signature->index != i ||
+            (expected_paths[i] != BLUE_PAYMENT_INPUT_EXTERNAL &&
+             expected_paths[i] != BLUE_PAYMENT_INPUT_INTERNAL) ||
+            signature->path != expected_paths[i] ||
+            memcmp(signature->digest, expected_digests[i], 32) != 0 ||
+            !canonical_signature(signature) ||
+            !hash(signature->public_key, actual_hash) ||
+            memcmp(actual_hash, expected_hashes[i], 20) != 0 ||
+            !verify(verify_context, signature->public_key,
+                expected_digests[i], signature->der,
+                signature->der_length)) return false;
+    }
+    return true;
+}
+
+static bool authenticated_storage(const uint8_t *unsigned_wire,
+    size_t unsigned_length, const uint8_t reviewed_wire_hash[32],
+    const blue_payment_verified_signature *signatures,
+    const uint8_t (*expected_digests)[32],
+    const uint8_t *expected_paths, const uint8_t (*expected_hashes)[20],
+    size_t count, uint8_t *output, size_t capacity,
+    size_t *output_length) {
+    return length_storage_valid(output_length, unsigned_wire,
+            unsigned_length, signatures, expected_digests,
+            count, output, capacity) && count &&
+        !overlaps(reviewed_wire_hash, 32, output, capacity) &&
+        !overlaps(reviewed_wire_hash, 32, output_length,
+            sizeof *output_length) &&
+        !overlaps(expected_paths, count, output, capacity) &&
+        !overlaps(expected_hashes, count * sizeof *expected_hashes,
+            output, capacity) &&
+        !overlaps(unsigned_wire, unsigned_length, output, capacity) &&
+        !overlaps(signatures, count * sizeof *signatures,
+            output, capacity) &&
+        !overlaps(expected_digests, count * sizeof *expected_digests,
+            output, capacity) &&
+        !overlaps(output_length, sizeof *output_length,
+            expected_paths, count) &&
+        !overlaps(output_length, sizeof *output_length,
+            expected_hashes, count * sizeof *expected_hashes);
+}
+
+static authenticated_snapshot *snapshot_authenticated_inputs(
+    const uint8_t *wire, size_t wire_length,
+    const uint8_t reviewed_hash[32],
+    const blue_payment_verified_signature *signatures,
+    const uint8_t (*digests)[32], const uint8_t *paths,
+    const uint8_t (*hashes)[20], size_t count) {
+    if (wire_length > SIZE_MAX - sizeof(authenticated_snapshot))
+        return NULL;
+    authenticated_snapshot *copy = malloc(sizeof *copy + wire_length);
+    if (!copy) return NULL;
+    memcpy(copy->wire, wire, wire_length);
+    memcpy(copy->reviewed_hash, reviewed_hash, 32);
+    memcpy(copy->signatures, signatures, count * sizeof *signatures);
+    memcpy(copy->digests, digests, count * sizeof *digests);
+    memcpy(copy->paths, paths, count);
+    memcpy(copy->hashes, hashes, count * sizeof *hashes);
+    return copy;
+}
+
+static bool authenticated_inputs_unchanged(
+    const authenticated_snapshot *copy, const uint8_t *wire,
+    size_t wire_length, const uint8_t reviewed_hash[32],
+    const blue_payment_verified_signature *signatures,
+    const uint8_t (*digests)[32], const uint8_t *paths,
+    const uint8_t (*hashes)[20], size_t count) {
+    return memcmp(copy->wire, wire, wire_length) == 0 &&
+        memcmp(copy->reviewed_hash, reviewed_hash, 32) == 0 &&
+        memcmp(copy->signatures, signatures,
+            count * sizeof *signatures) == 0 &&
+        memcmp(copy->digests, digests, count * sizeof *digests) == 0 &&
+        memcmp(copy->paths, paths, count) == 0 &&
+        memcmp(copy->hashes, hashes, count * sizeof *hashes) == 0;
+}
+
+static bool authenticated_arguments_valid(const uint8_t *unsigned_wire,
+    size_t unsigned_length, const uint8_t reviewed_wire_hash[32],
+    const blue_payment_verified_signature *signatures,
+    const uint8_t (*expected_digests)[32],
+    const uint8_t *expected_paths, const uint8_t (*expected_hashes)[20],
+    size_t count, blue_payment_pubkey_hash_fn hash,
+    blue_payment_verify_signature_fn verify,
+    uint8_t *output, size_t capacity, size_t *output_length) {
+    return unsigned_wire && reviewed_wire_hash && signatures &&
+        expected_digests && expected_paths && expected_hashes &&
+        hash && verify && output &&
+        unsigned_length <= ZCL_TX_REVIEW_MAX_BYTES &&
+        capacity <= ZCL_TX_REVIEW_MAX_BYTES &&
+        authenticated_storage(unsigned_wire, unsigned_length,
+            reviewed_wire_hash, signatures, expected_digests,
+            expected_paths, expected_hashes, count,
+            output, capacity, output_length);
+}
+
+bool blue_payment_host_assemble_authenticated(const uint8_t *unsigned_wire,
+    size_t unsigned_length, const uint8_t reviewed_wire_hash[32],
+    const blue_payment_verified_signature *signatures,
+    const uint8_t (*expected_digests)[32],
+    const uint8_t *expected_paths, const uint8_t (*expected_hashes)[20],
+    size_t count, blue_payment_pubkey_hash_fn hash,
+    blue_payment_verify_signature_fn verify, void *verify_context,
+    uint8_t *output, size_t capacity, size_t *output_length) {
+    if (!authenticated_arguments_valid(unsigned_wire, unsigned_length,
+            reviewed_wire_hash, signatures, expected_digests,
+            expected_paths, expected_hashes, count, hash, verify,
+            output, capacity, output_length)) return false;
+    authenticated_snapshot *copy = snapshot_authenticated_inputs(
+        unsigned_wire, unsigned_length, reviewed_wire_hash, signatures,
+        expected_digests, expected_paths, expected_hashes, count);
+    if (!copy) {
+        clear_output(output, capacity, output_length);
+        return false;
+    }
+    uint8_t actual_hash[32];
+    zsha256(copy->wire, unsigned_length, actual_hash);
+    bool valid = memcmp(actual_hash, copy->reviewed_hash,
+            sizeof actual_hash) == 0 &&
+        authenticated_inputs(copy->signatures,
+            (const uint8_t (*)[32])copy->digests, copy->paths,
+            (const uint8_t (*)[20])copy->hashes, count,
+            hash, verify, verify_context) &&
+        authenticated_inputs_unchanged(copy, unsigned_wire,
+            unsigned_length, reviewed_wire_hash, signatures,
+            expected_digests, expected_paths, expected_hashes, count);
+    if (valid) {
+        clear_output(output, capacity, output_length);
+        valid = blue_payment_host_assemble(copy->wire,
+            unsigned_length, copy->signatures,
+            (const uint8_t (*)[32])copy->digests, count,
+            output, capacity, output_length);
+    }
+    free(copy);
+    if (!valid) clear_output(output, capacity, output_length);
+    return valid;
 }

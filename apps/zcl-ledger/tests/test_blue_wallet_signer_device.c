@@ -7,8 +7,8 @@
 #include <stdbool.h>
 #include <string.h>
 
-static bool pin_valid = true, fail_pair, fail_sign, fail_hash, bad_public,
-    bad_sign_length;
+static bool pin_valid = true, fail_init_status, fail_pair, fail_sign, fail_hash, bad_public,
+    bad_sign_length, drop_pin_pair, drop_pin_hash, drop_pin_sign;
 static unsigned derive_calls, sign_calls, last_path[5];
 static blue_payment_owned_hashes owned;
 
@@ -29,7 +29,7 @@ int cx_ecfp_init_private_key(unsigned curve, const uint8_t raw[32],
     key->curve = curve;
     key->d_len = length;
     memcpy(key->d, raw, length);
-    return 32;
+    return fail_init_status ? -1 : 32;
 }
 
 int cx_ecfp_generate_pair(unsigned curve, cx_ecfp_public_key_t *public_key,
@@ -43,6 +43,7 @@ int cx_ecfp_generate_pair(unsigned curve, cx_ecfp_public_key_t *public_key,
     if (bad_public) public_key->W[0] = 3;
     memset(public_key->W + 1, last_path[3] ? 0x32 : 0x31, 64);
     public_key->W[64] = 1;
+    if (drop_pin_pair) pin_valid = false;
     return 0;
 }
 
@@ -60,6 +61,7 @@ int cx_ecdsa_sign(const cx_ecfp_private_key_t *private_key, int mode,
     };
     memcpy(signature, der, sizeof der);
     *info = 0;
+    if (drop_pin_sign) pin_valid = false;
     return sizeof der;
 }
 
@@ -68,6 +70,7 @@ bool blue_wallet_public_hash160(const uint8_t compressed[33],
     if (fail_hash || (compressed[1] != 0x31 && compressed[1] != 0x32))
         return false;
     memset(hash160, compressed[1] == 0x31 ? 0x11 : 0x22, 20);
+    if (drop_pin_hash) pin_valid = false;
     return true;
 }
 
@@ -138,9 +141,53 @@ static void test_exception_cleanup(void) {
     expect_wiped();
 }
 
+static void test_pin_lost_during_signing(void) {
+    uint8_t digest[32] = {0xa5}, public_key[33], signature[72];
+    size_t length = 99;
+    pin_valid = true;
+    fail_pair = fail_sign = fail_hash = bad_public = bad_sign_length = false;
+    unsigned before = sign_calls;
+    drop_pin_pair = true;
+    assert(!blue_wallet_sign_digest(&owned, BLUE_PAYMENT_INPUT_EXTERNAL,
+        digest, public_key, signature, &length));
+    assert(length == 0 && sign_calls == before);
+    for (size_t i = 0; i < sizeof public_key; ++i)
+        assert(public_key[i] == 0);
+    for (size_t i = 0; i < sizeof signature; ++i)
+        assert(signature[i] == 0);
+    expect_wiped();
+    drop_pin_pair = false;
+    pin_valid = true;
+    drop_pin_hash = true;
+    assert(!blue_wallet_sign_digest(&owned, BLUE_PAYMENT_INPUT_EXTERNAL,
+        digest, public_key, signature, &length));
+    assert(length == 0 && sign_calls == before);
+    expect_wiped();
+    drop_pin_hash = false;
+    pin_valid = true;
+    drop_pin_sign = true;
+    assert(!blue_wallet_sign_digest(&owned, BLUE_PAYMENT_INPUT_EXTERNAL,
+        digest, public_key, signature, &length));
+    assert(length == 0 && sign_calls == before + 1);
+    for (size_t i = 0; i < sizeof public_key; ++i)
+        assert(public_key[i] == 0);
+    for (size_t i = 0; i < sizeof signature; ++i)
+        assert(signature[i] == 0);
+    expect_wiped();
+    drop_pin_sign = false;
+    pin_valid = true;
+}
+
 static void test_malformed_sdk_results(void) {
     uint8_t digest[32] = {0xa5}, public_key[33], signature[72];
     size_t length = 99;
+    unsigned before = sign_calls;
+    fail_init_status = true;
+    assert(!blue_wallet_sign_digest(&owned, BLUE_PAYMENT_INPUT_EXTERNAL,
+        digest, public_key, signature, &length));
+    assert(length == 0 && sign_calls == before);
+    expect_wiped();
+    fail_init_status = false;
     bad_public = true;
     assert(!blue_wallet_sign_digest(&owned, BLUE_PAYMENT_INPUT_EXTERNAL,
         digest, public_key, signature, &length));
@@ -183,13 +230,62 @@ static void test_account_guard(void) {
     expect_wiped();
 }
 
+static void test_storage_aliases(void) {
+    uint8_t digest_and_signature[BLUE_ECDSA_DER_MAX];
+    uint8_t public_key[33];
+    memset(digest_and_signature, 0xa5, sizeof digest_and_signature);
+    memset(public_key, 0x5a, sizeof public_key);
+    size_t length = 99;
+    unsigned before = sign_calls;
+    assert(!blue_wallet_sign_digest(&owned, BLUE_PAYMENT_INPUT_EXTERNAL,
+        digest_and_signature, public_key, digest_and_signature, &length));
+    assert(sign_calls == before && length == 99);
+    for (size_t i = 0; i < sizeof digest_and_signature; ++i)
+        assert(digest_and_signature[i] == 0xa5);
+    for (size_t i = 0; i < sizeof public_key; ++i)
+        assert(public_key[i] == 0x5a);
+    expect_wiped();
+
+    uint8_t signature[BLUE_ECDSA_DER_MAX];
+    memset(signature, 0x5a, sizeof signature);
+    assert(!blue_wallet_sign_digest(&owned, BLUE_PAYMENT_INPUT_EXTERNAL,
+        digest_and_signature, digest_and_signature, signature, &length));
+    assert(sign_calls == before && length == 99);
+    for (size_t i = 0; i < sizeof digest_and_signature; ++i)
+        assert(digest_and_signature[i] == 0xa5);
+    expect_wiped();
+
+    struct {
+        blue_payment_owned_hashes hashes;
+        uint8_t rest[BLUE_ECDSA_DER_MAX];
+    } account = {.hashes = owned};
+    uint8_t digest[32] = {0xa5};
+    assert(!blue_wallet_sign_digest(&account.hashes,
+        BLUE_PAYMENT_INPUT_EXTERNAL, digest, public_key,
+        (uint8_t *)&account, &length));
+    assert(memcmp(&account.hashes, &owned, sizeof owned) == 0 &&
+        sign_calls == before && length == 99);
+    expect_wiped();
+
+    union { size_t value; uint8_t bytes[32]; } length_alias;
+    memset(length_alias.bytes, 0xa5, sizeof length_alias.bytes);
+    assert(!blue_wallet_sign_digest(&owned, BLUE_PAYMENT_INPUT_EXTERNAL,
+        length_alias.bytes, public_key, signature, &length_alias.value));
+    for (size_t i = 0; i < sizeof length_alias.bytes; ++i)
+        assert(length_alias.bytes[i] == 0xa5);
+    assert(sign_calls == before);
+    expect_wiped();
+}
+
 int main(void) {
     memset(owned.external, 0x11, sizeof owned.external);
     memset(owned.internal, 0x22, sizeof owned.internal);
     test_paths();
     test_fail_closed();
     test_exception_cleanup();
+    test_pin_lost_during_signing();
     test_malformed_sdk_results();
     test_account_guard();
+    test_storage_aliases();
     return 0;
 }

@@ -8,6 +8,29 @@
 static_assert(sizeof(blue_shielded_review_state) <= 672,
     "Shielded review controller exceeds its memory budget");
 
+static bool overlap(const void *left, size_t left_size,
+    const void *right, size_t right_size) {
+    if (!left || !right || !left_size || !right_size) return false;
+    uintptr_t a = (uintptr_t)left, b = (uintptr_t)right;
+    return a <= b ? b - a < left_size : a - b < right_size;
+}
+
+static bool buffers_disjoint(const blue_shielded_review_state *state,
+    const uint8_t *apdu, size_t apdu_length,
+    const uint8_t *reply, size_t capacity, const size_t *reply_length) {
+    return !overlap(state, sizeof *state, apdu, apdu_length) &&
+        !overlap(state, sizeof *state, reply, capacity) &&
+        !overlap(state, sizeof *state, reply_length, sizeof *reply_length) &&
+        !overlap(reply_length, sizeof *reply_length, apdu, apdu_length) &&
+        !overlap(reply_length, sizeof *reply_length, reply, capacity);
+}
+
+static void clear_reply(uint8_t *reply, size_t capacity) {
+    if (!reply) return;
+    volatile uint8_t *bytes = reply;
+    for (size_t i = 0; i < capacity; ++i) bytes[i] = 0;
+}
+
 void blue_shielded_review_abort(blue_shielded_review_state *state) {
     if (!state) return;
     volatile uint8_t *bytes = (volatile uint8_t *)state;
@@ -39,7 +62,7 @@ static uint16_t request_status(const uint8_t *apdu, size_t length) {
 static uint16_t identify(size_t length, uint8_t *reply,
     size_t capacity, size_t *reply_length) {
     if (length || capacity < 5) return 0x6700;
-    memcpy(reply, "ZCL\x07\x40", 5);
+    memcpy(reply, "ZCL\x08\x40", 5);
     *reply_length = 5;
     return 0x9000;
 }
@@ -53,6 +76,7 @@ static uint16_t begin(blue_shielded_review_state *state,
     blue_shielded_review_abort(state);
     if (!zcl_tx_shielded_replay_begin(&state->replay,
         read_u32(body), branch, blake)) return 0x6a80;
+    state->branch_id = branch;
     state->active = true;
     return 0x9000;
 }
@@ -99,17 +123,20 @@ static uint16_t finish(blue_shielded_review_state *state,
     size_t length, uint8_t *reply, size_t capacity,
     size_t *reply_length) {
     if (!state->active) return 0x6985;
-    if (length || capacity < 76) return 0x6700;
+    if (length || capacity < BLUE_SHIELDED_REVIEW_REPLY_MAX) return 0x6700;
     uint8_t digest[32];
+    uint8_t commitment[32];
+    memcpy(commitment, state->replay.commitment, sizeof commitment);
     if (!zcl_tx_shielded_replay_finish(&state->replay,
         &state->facts, digest)) return 0x6a80;
     memcpy(state->digest, digest, sizeof digest);
     encode_facts(reply, &state->facts);
     memcpy(reply + 44, digest, sizeof digest);
+    memcpy(reply + 76, commitment, sizeof commitment);
     memset(&state->replay, 0, sizeof state->replay);
     state->active = false;
     state->complete = true;
-    *reply_length = 76;
+    *reply_length = BLUE_SHIELDED_REVIEW_REPLY_MAX;
     return 0x9000;
 }
 
@@ -139,9 +166,15 @@ uint16_t blue_shielded_review_handle(blue_shielded_review_state *state,
     const uint8_t *apdu, size_t apdu_length,
     uint8_t *reply, size_t capacity, size_t *reply_length,
     const zcl_zip243_hasher *blake) {
-    if (!state || !apdu || !reply || !reply_length) {
+    if (!state || !apdu || !reply || !reply_length ||
+        !buffers_disjoint(state, apdu, apdu_length,
+            reply, capacity, reply_length)) {
+        if (!overlap(state, sizeof *state, reply, capacity))
+            clear_reply(reply, capacity);
+        if (reply_length &&
+            !overlap(state, sizeof *state, reply_length,
+                sizeof *reply_length)) *reply_length = 0;
         blue_shielded_review_abort(state);
-        if (reply_length) *reply_length = 0;
         return 0x6a80;
     }
     *reply_length = 0;
@@ -149,9 +182,13 @@ uint16_t blue_shielded_review_handle(blue_shielded_review_state *state,
     if (status == 0x9000)
         status = dispatch(state, apdu, reply, capacity,
             reply_length, blake);
+    if (status == 0x9000 && *reply_length > capacity) status = 0x6f00;
     if (status != 0x9000) {
         blue_shielded_review_abort(state);
+        clear_reply(reply, capacity);
         *reply_length = 0;
+    } else {
+        clear_reply(reply + *reply_length, capacity - *reply_length);
     }
     return status;
 }

@@ -113,11 +113,11 @@ static bool draw_totals_details(blue_bagl_canvas *canvas,
     uint32_t foreground, uint32_t background) {
     return draw(canvas, "OUTPUT TOTALS", 25, BLUE_BAGL_TEXT_22,
                 foreground, background) &&
-        draw(canvas, "TO OTHER ADDRESSES", 75, BLUE_BAGL_TEXT_22,
+        draw(canvas, "OWNER NOT VERIFIED", 75, BLUE_BAGL_TEXT_22,
              foreground, background) &&
         draw(canvas, others, 110, BLUE_BAGL_TEXT_22,
              foreground, background) &&
-        draw(canvas, "TO YOUR ADDRESSES", 165, BLUE_BAGL_TEXT_22,
+        draw(canvas, "MATCHES YOUR KEY", 165, BLUE_BAGL_TEXT_22,
              foreground, background) &&
         draw(canvas, own, 200, BLUE_BAGL_TEXT_22,
              foreground, background) &&

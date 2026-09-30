@@ -30,7 +30,8 @@ static blue_try_context *active_try;
 static wallet_boot_material boot_material;
 static const bagl_element_t *shown;
 static size_t shown_count;
-static bool account_ready, exited, failed, outside_rejected;
+static bool account_ready, account_initialized, ready_before_exit;
+static bool exited, failed, outside_rejected;
 static bool reset_restored, suspend_restored, payment_visible;
 static unsigned request_step, replies_valid, derivations, wipes;
 static unsigned payment_displays, payment_aborts;
@@ -122,11 +123,27 @@ void wallet_payment_set_account_hashes(const uint8_t external[20],
     const uint8_t internal[20]) {
     if (!external || !internal) failed = true;
     account_ready = true;
+    account_initialized = true;
+}
+
+bool wallet_payment_account_ready(void) { return account_ready; }
+
+void wallet_payment_revoke_account(void) {
+    wallet_payment_abort();
+    account_ready = false;
+}
+
+void wallet_payment_boot_reset(void) {
+    wallet_payment_revoke_account();
 }
 
 void wallet_payment_abort(void) {
     if (payment_visible) ++payment_aborts;
     payment_visible = false;
+}
+bool wallet_payment_interrupt(void) {
+    wallet_payment_abort();
+    return true;
 }
 void wallet_payment_display(void) {
     if (!payment_visible) failed = true;
@@ -135,6 +152,9 @@ void wallet_payment_display(void) {
     ++payment_displays;
 }
 bool wallet_payment_visible(void) { return payment_visible; }
+bool wallet_payment_finger_allowed(const unsigned char *event) {
+    return event != NULL;
+}
 bool wallet_payment_timeout(void) { return false; }
 uint16_t wallet_payment_command(const uint8_t *apdu, size_t length,
     uint8_t *reply, size_t capacity, size_t *reply_length) {
@@ -216,6 +236,8 @@ static bool reply_matches(unsigned short length) {
         G_io_apdu_buffer[0] == 0x90 && G_io_apdu_buffer[1] == 0;
 }
 
+static bool address_lines_match(void);
+
 static unsigned short receive_request(void) {
     if (request_step++ == 0) {
         const uint8_t identity[] = {0xa5, 0x01, 0, 0, 0};
@@ -242,6 +264,9 @@ static unsigned short receive_request(void) {
     G_io_seproxyhal_spi_buffer[3] = SEPROXYHAL_TAG_USB_EVENT_SUSPENDED;
     (void)io_event(CHANNEL_SPI);
     suspend_restored = !payment_visible && shown == receive_ui;
+    ready_before_exit = account_ready && wallet_state.address_ready &&
+        strlen(receive_address) == ZCL_WALLET_ADDRESS_CHARS &&
+        address_lines_match();
     finger_release(0, 0);
     outside_rejected = !exited;
     finger_release(160, ZCL_WALLET_EXIT_Y + 24);
@@ -309,17 +334,22 @@ static bool boot_material_clear(void) {
 }
 
 static bool wallet_flow_valid(void) {
-    return replies_valid == 4 && account_ready && outside_rejected &&
+    return replies_valid == 4 && account_initialized &&
+        ready_before_exit && !account_ready && outside_rejected &&
         reset_restored && suspend_restored && payment_aborts == 2 &&
         payment_displays == 2 && derivations == 2 && wipes >= 2;
 }
 
 static bool wallet_run_valid(int result, unsigned used) {
+    bool account_cleared = !wallet_state.address_ready &&
+        !receive_address[0];
+    for (size_t i = 0; i < sizeof wallet_state.public_key; ++i)
+        if (wallet_state.public_key[i]) account_cleared = false;
+    for (size_t i = 0; i < sizeof address_lines; ++i)
+        if (((const uint8_t *)address_lines)[i]) account_cleared = false;
     return result == 0 && !failed && !active_try && exited &&
-        wallet_flow_valid() && shown == receive_ui &&
-        wallet_state.address_ready &&
-        strlen(receive_address) == ZCL_WALLET_ADDRESS_CHARS &&
-        address_lines_match() && boot_material_clear() && used <= 1536;
+        wallet_flow_valid() && shown == receive_ui && account_cleared &&
+        boot_material_clear() && used <= 1536;
 }
 
 void blue_wallet_reset(void) {

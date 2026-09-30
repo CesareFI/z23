@@ -50,11 +50,15 @@ bool zcl_tx_replay_zip243_observe_inputs(zcl_tx_replay_zip243 *state,
 bool zcl_tx_replay_zip243_feed(zcl_tx_replay_zip243 *state,
     const uint8_t *bytes, size_t length);
 /* The observer sees provisional output facts only during pass three. It must
- * not treat them as authenticated until the final pass succeeds. */
+ * not treat them as authenticated until the final pass succeeds. Feed bytes
+ * must be disjoint from replay state; overlap aborts before parsing. */
 bool zcl_tx_replay_zip243_feed_review(zcl_tx_replay_zip243 *state,
     const uint8_t *bytes, size_t length,
     zcl_tx_replay_output_fn observer, void *observer_context);
 bool zcl_tx_replay_zip243_next(zcl_tx_replay_zip243 *state);
+/* Fact and digest outputs must be disjoint from each other, the replay state,
+ * and a nonempty script input. The script must be disjoint from replay state.
+ * An overlap aborts the replay before a digest can be reported. */
 bool zcl_tx_replay_zip243_finish(zcl_tx_replay_zip243 *state,
     const uint8_t *script_code, size_t script_code_length,
     uint64_t amount_zat, zcl_tx_stream_facts *facts, uint8_t digest[32]);
@@ -62,8 +66,10 @@ bool zcl_tx_replay_zip243_finish(zcl_tx_replay_zip243 *state,
 /* After a complete three-pass replay, computes SIGHASH_ALL for one supplied
  * input. The caller must bind outpoint and sequence to the replayed input,
  * script and amount to its exact previous wire, and branch to consensus.
- * This read-only result grants no signing authority. Failure leaves digest
- * unchanged and invalidates the replay on a hash failure. */
+ * This read-only result grants no signing authority. Digest output must be
+ * disjoint from replay state, outpoint, and script; script must be disjoint
+ * from replay state. Invalid requests leave
+ * digest unchanged; a hash failure invalidates the replay. */
 bool zcl_tx_replay_zip243_bound_digest(zcl_tx_replay_zip243 *state,
     const uint8_t outpoint[36], uint32_t sequence,
     const uint8_t script_code[25], uint64_t amount_zat,

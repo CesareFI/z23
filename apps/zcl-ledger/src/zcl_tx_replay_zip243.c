@@ -14,6 +14,12 @@ static bool fail(zcl_tx_replay_zip243 *state) {
     return false;
 }
 
+static bool overlaps(const void *left, size_t left_length,
+    const void *right, size_t right_length) {
+    uintptr_t a = (uintptr_t)left, b = (uintptr_t)right;
+    return a <= b ? b - a < left_length : a - b < right_length;
+}
+
 static void put_u32(uint8_t bytes[4], uint32_t value) {
     for (unsigned i = 0; i < 4; ++i) bytes[i] = (uint8_t)(value >> (8 * i));
 }
@@ -117,6 +123,8 @@ bool zcl_tx_replay_zip243_feed_review(zcl_tx_replay_zip243 *state,
     const uint8_t *bytes, size_t length,
     zcl_tx_replay_output_fn observer, void *observer_context) {
     if (!state) return false;
+    if (bytes && length && overlaps(state, sizeof *state, bytes, length))
+        return fail(state);
     callback_context callback = {.state = state, .observer = observer,
                                  .observer_context = observer_context};
     if (state->pass < 1 || state->pass > 3 ||
@@ -205,11 +213,25 @@ static bool final_digest(zcl_tx_replay_zip243 *state,
         hash->final(hash->context, digest);
 }
 
+static bool finish_buffers_disjoint(const zcl_tx_replay_zip243 *state,
+    const uint8_t *script_code, size_t script_length,
+    const zcl_tx_stream_facts *facts, const uint8_t digest[32]) {
+    if (overlaps(state, sizeof *state, facts, sizeof *facts) ||
+        overlaps(state, sizeof *state, digest, 32) ||
+        overlaps(facts, sizeof *facts, digest, 32)) return false;
+    return !script_length || !script_code ||
+        (!overlaps(state, sizeof *state, script_code, script_length) &&
+         !overlaps(facts, sizeof *facts, script_code, script_length) &&
+         !overlaps(digest, 32, script_code, script_length));
+}
+
 bool zcl_tx_replay_zip243_finish(zcl_tx_replay_zip243 *state,
     const uint8_t *script_code, size_t script_code_length,
     uint64_t amount_zat, zcl_tx_stream_facts *facts, uint8_t digest[32]) {
     if (!state) return false;
     if (!facts || !digest) return fail(state);
+    if (!finish_buffers_disjoint(state, script_code, script_code_length,
+            facts, digest)) return fail(state);
     memset(facts, 0, sizeof *facts);
     memset(digest, 0, 32);
     zcl_tx_stream_facts checked;
@@ -228,12 +250,23 @@ bool zcl_tx_replay_zip243_finish(zcl_tx_replay_zip243 *state,
     return true;
 }
 
+static bool bound_digest_disjoint(const zcl_tx_replay_zip243 *state,
+    const uint8_t outpoint[36], const uint8_t script_code[25],
+    const uint8_t digest[32]) {
+    return !overlaps(state, sizeof *state, script_code, 25) &&
+        !overlaps(digest, 32, state, sizeof *state) &&
+        !overlaps(digest, 32, outpoint, 36) &&
+        !overlaps(digest, 32, script_code, 25);
+}
+
 bool zcl_tx_replay_zip243_bound_digest(zcl_tx_replay_zip243 *state,
     const uint8_t outpoint[36], uint32_t sequence,
     const uint8_t script_code[25], uint64_t amount_zat,
     uint8_t digest[32]) {
-    if (!state || !outpoint || !script_code || !digest ||
-        state->pass != 4 || !state->wire.finished ||
+    if (!state || !outpoint || !script_code || !digest) return false;
+    if (!bound_digest_disjoint(state, outpoint, script_code, digest))
+        return false;
+    if (state->pass != 4 || !state->wire.finished ||
         amount_zat > ZCL_MAX_MONEY_ZAT ||
         script_code[0] != 0x76 || script_code[1] != 0xa9 ||
         script_code[2] != 0x14 || script_code[23] != 0x88 ||

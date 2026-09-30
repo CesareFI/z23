@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #include "blue_jubjub_lowmem.h"
 #include "blue_jubjub_arithmetic.h"
+#include "blue_storage.h"
 
 #include <stddef.h>
 
@@ -49,6 +50,9 @@ static void multiply_distinct(struct jub_point *result,
 bool blue_jubjub_scalar_mul_lowmem(struct jub_point *result,
     const struct jub_point *point, const uint8_t scalar[32]) {
     if (!result || !point || !scalar) return false;
+    if (blue_storage_overlaps(result, sizeof *result, scalar, 32) ||
+        (result != point && blue_storage_overlaps(result, sizeof *result,
+            point, sizeof *point))) return false;
     if (result == point) multiply_alias(result, scalar);
     else multiply_distinct(result, point, scalar);
     return true;

@@ -42,8 +42,11 @@ static uint32_t read_u32(const uint8_t *bytes) {
 static uint16_t command(blue_shielded_review_state *state,
     const zcl_zip243_hasher *hasher, uint8_t apdu[260],
     size_t length, size_t *reply_length) {
-    return blue_shielded_review_handle(state, apdu, length,
+    uint16_t status = blue_shielded_review_handle(state, apdu, length,
         apdu, 255, reply_length, hasher);
+    assert(*reply_length <= 255);
+    for (size_t i = *reply_length; i < 255; ++i) assert(apdu[i] == 0);
+    return status;
 }
 
 static void start(blue_shielded_review_state *state,
@@ -89,6 +92,37 @@ static void assert_erased(const blue_shielded_review_state *state) {
     for (size_t i = 0; i < sizeof *state; ++i) assert(bytes[i] == 0);
 }
 
+static void reject_state_alias(size_t wire_length) {
+    struct blake2b_ctx context;
+    zcl_zip243_hasher hasher = zcl_zip243_host_hasher(&context);
+    blue_shielded_review_state state = {0};
+    uint8_t reply[255];
+    size_t reply_length = 99;
+    start(&state, &hasher, wire_length);
+    memcpy(state.digest, (uint8_t[]){0xa5, 0x01, 0, 0, 0}, 5);
+    memset(reply, 0xa5, sizeof reply);
+    assert(blue_shielded_review_handle(&state, state.digest, 5,
+        reply, sizeof reply, &reply_length, &hasher) == 0x6a80);
+    assert(reply_length == 0);
+    for (size_t i = 0; i < sizeof reply; ++i) assert(reply[i] == 0);
+    assert_erased(&state);
+    start(&state, &hasher, wire_length);
+    uint8_t identify[5] = {0xa5, 0x01, 0, 0, 0};
+    assert(blue_shielded_review_handle(&state, identify, sizeof identify,
+        state.digest, 5, &reply_length, &hasher) == 0x6a80);
+    assert(reply_length == 0);
+    assert_erased(&state);
+    union {
+        blue_shielded_review_state review;
+        size_t aliased_length;
+    } shared = {0};
+    start(&shared.review, &hasher, wire_length);
+    assert(blue_shielded_review_handle(&shared.review, identify,
+        sizeof identify, reply, sizeof reply,
+        &shared.aliased_length, &hasher) == 0x6a80);
+    assert_erased(&shared.review);
+}
+
 static void successful_review(const uint8_t *wire, size_t wire_length) {
     struct blake2b_ctx context;
     zcl_zip243_hasher hasher = zcl_zip243_host_hasher(&context);
@@ -98,7 +132,7 @@ static void successful_review(const uint8_t *wire, size_t wire_length) {
     assert(command(&state, &hasher, apdu, 5,
         &reply_length) == 0x9000);
     assert(reply_length == 5 &&
-        memcmp(apdu, "ZCL\x07\x40", 5) == 0);
+        memcmp(apdu, "ZCL\x08\x40", 5) == 0);
     start(&state, &hasher, wire_length);
     char lines[ZCL_BLUE_REVIEW_LINES][ZCL_BLUE_REVIEW_LINE_SIZE];
     assert(blue_review_screen_progress(1, 0, (uint32_t)wire_length,
@@ -116,7 +150,7 @@ static void successful_review(const uint8_t *wire, size_t wire_length) {
     memcpy(apdu, (uint8_t[]){0xa5, 0x23, 0, 0, 0}, 5);
     assert(command(&state, &hasher, apdu, 5,
         &reply_length) == 0x9000);
-    assert(reply_length == 76 && !state.active && state.complete);
+    assert(reply_length == 108 && !state.active && state.complete);
     assert(read_u32(apdu) == state.facts.transparent_inputs);
     assert(read_u32(apdu + 4) == state.facts.transparent_outputs);
     assert(read_u32(apdu + 8) == state.facts.sapling_spends);
@@ -126,6 +160,11 @@ static void successful_review(const uint8_t *wire, size_t wire_length) {
     assert(zcl_zip243_shielded_digest(wire, wire_length, BRANCH,
         &hasher, expected) == 0);
     assert(memcmp(apdu + 44, expected, 32) == 0);
+    zsha256_ctx sha;
+    zsha256_init(&sha);
+    zsha256_update(&sha, wire, wire_length);
+    zsha256_final(&sha, expected);
+    assert(memcmp(apdu + 76, expected, 32) == 0);
     assert(blue_review_screen_zip243(apdu, lines));
     assert(strncmp(lines[5], "ZIP243 PREFIX: ", 15) == 0);
     assert(strcmp(lines[4], "SHIELDED HIDDEN; NO SIGNING") == 0);
@@ -147,21 +186,21 @@ static void rejected_review(const uint8_t *wire, size_t wire_length) {
     size_t reply_length;
     assert(command(&state, &hasher, apdu, 5,
         &reply_length) == 0x6985);
+    for (size_t i = 0; i < 76; ++i) assert(apdu[i] == 0);
     assert_erased(&state);
     start(&state, &hasher, wire_length);
+    memcpy(apdu, (uint8_t[]){0xa5, 0x22, 0, 0, 0}, 5);
     assert(command(&state, &hasher, apdu, 5,
         &reply_length) == 0x6a80);
     assert_erased(&state);
     start(&state, &hasher, wire_length);
-    apdu[1] = 0x21;
-    apdu[4] = 221;
+    memcpy(apdu, (uint8_t[]){0xa5, 0x21, 0, 0, 221}, 5);
     memset(apdu + 5, 0, 221);
     assert(command(&state, &hasher, apdu, 226,
         &reply_length) == 0x6700);
     assert_erased(&state);
     start(&state, &hasher, wire_length);
-    apdu[1] = 0x21;
-    apdu[4] = 1;
+    memcpy(apdu, (uint8_t[]){0xa5, 0x21, 0, 0, 1}, 5);
     apdu[5] = wire[0];
     assert(command(&state, &hasher, apdu, 5,
         &reply_length) == 0x6700);
@@ -169,30 +208,55 @@ static void rejected_review(const uint8_t *wire, size_t wire_length) {
     start(&state, &hasher, wire_length);
     upload(&state, &hasher, wire, wire_length, 1);
     advance(&state, &hasher, 2);
-    apdu[1] = 0x24;
-    apdu[4] = 0;
+    memcpy(apdu, (uint8_t[]){0xa5, 0x24, 0, 0, 0}, 5);
     assert(command(&state, &hasher, apdu, 5,
         &reply_length) == 0x9000);
     assert_erased(&state);
 }
 
 static void substituted_pass(const uint8_t *wire,
-    size_t wire_length) {
+    size_t wire_length, size_t changed_offset) {
     struct blake2b_ctx context;
     zcl_zip243_hasher hasher = zcl_zip243_host_hasher(&context);
     blue_shielded_review_state state = {0};
-    uint8_t changed[WIRE_MAX], apdu[260] = {0xa5, 0x22, 0, 0, 0};
+    uint8_t changed[WIRE_MAX], apdu[260];
     size_t reply_length;
+    assert(wire_length <= sizeof changed && changed_offset < wire_length);
     memcpy(changed, wire, wire_length);
-    changed[wire_length / 2] ^= 1u;
-    start(&state, &hasher, wire_length);
-    upload(&state, &hasher, wire, wire_length, 1);
-    advance(&state, &hasher, 2);
-    upload(&state, &hasher, changed, wire_length, 2);
-    assert(command(&state, &hasher, apdu, 5,
-        &reply_length) == 0x6a80);
-    assert(reply_length == 0);
-    assert_erased(&state);
+    changed[changed_offset] ^= 1u;
+    for (unsigned changed_pass = 2; changed_pass <= 6;
+         ++changed_pass) {
+        start(&state, &hasher, wire_length);
+        for (unsigned pass = 1; pass <= changed_pass; ++pass) {
+            upload(&state, &hasher,
+                pass == changed_pass ? changed : wire,
+                wire_length, pass);
+            if (pass < changed_pass)
+                advance(&state, &hasher, pass + 1);
+        }
+        memcpy(apdu, (uint8_t[]){0xa5,
+            changed_pass == 6 ? 0x23 : 0x22, 0, 0, 0}, 5);
+        assert(command(&state, &hasher, apdu, 5,
+            &reply_length) == 0x6a80);
+        assert(reply_length == 0);
+        assert_erased(&state);
+    }
+}
+
+static void substituted_binding_signature(const uint8_t *wire,
+    size_t wire_length) {
+    struct blake2b_ctx context;
+    zcl_zip243_hasher hasher = zcl_zip243_host_hasher(&context);
+    uint8_t changed[WIRE_MAX], original_digest[32], changed_digest[32];
+    assert(wire_length && wire_length <= sizeof changed);
+    memcpy(changed, wire, wire_length);
+    changed[wire_length - 1] ^= 1u;
+    assert(zcl_zip243_shielded_digest(wire, wire_length, BRANCH,
+        &hasher, original_digest) == 0);
+    assert(zcl_zip243_shielded_digest(changed, wire_length, BRANCH,
+        &hasher, changed_digest) == 0);
+    assert(memcmp(original_digest, changed_digest, 32) == 0);
+    substituted_pass(wire, wire_length, wire_length - 1);
 }
 
 static void reject_branch(size_t wire_length) {
@@ -264,7 +328,9 @@ int main(int argc, char **argv) {
     assert(length == 4118);
     successful_review(wire, length);
     rejected_review(wire, length);
-    substituted_pass(wire, length);
+    reject_state_alias(length);
+    substituted_pass(wire, length, length / 2);
+    substituted_binding_signature(wire, length);
     reject_branch(length);
     interrupted_upload(wire, length);
     random_commands(length);

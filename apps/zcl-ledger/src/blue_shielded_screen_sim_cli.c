@@ -129,25 +129,38 @@ static bool capture_large_lines(simulator *sim, const char *page,
     return true;
 }
 
-static bool capture_accessibility(simulator *sim) {
+static bool capture_normal_pages(simulator *sim) {
     if (!blue_shielded_review_app_next(&sim->app) ||
         !capture(sim, "digest") ||
+        !blue_shielded_review_app_next(&sim->app) ||
+        !capture(sim, "wire") ||
         !blue_shielded_review_app_next(&sim->app)) return false;
     blue_shielded_review_app_toggle_dark(&sim->app);
     if (!capture(sim, "summary-dark") ||
         !blue_shielded_review_app_next(&sim->app) ||
         !capture(sim, "digest-dark") ||
+        !blue_shielded_review_app_next(&sim->app) ||
+        !capture(sim, "wire-dark") ||
         !blue_shielded_review_app_next(&sim->app)) return false;
+    return true;
+}
+
+static bool capture_accessibility(simulator *sim) {
+    if (!capture_normal_pages(sim)) return false;
     blue_shielded_review_app_toggle_text(&sim->app);
     if (!capture_large_lines(sim, "summary", "dark") ||
         !blue_shielded_review_app_next(&sim->app) ||
-        !capture_large_lines(sim, "digest", "dark")) return false;
+        !capture_large_lines(sim, "digest", "dark") ||
+        !blue_shielded_review_app_next(&sim->app) ||
+        !capture_large_lines(sim, "wire", "dark")) return false;
     blue_shielded_review_app_toggle_dark(&sim->app);
     blue_shielded_review_app_toggle_text(&sim->app);
     blue_shielded_review_app_toggle_text(&sim->app);
-    if (!capture_large_lines(sim, "digest", "light") ||
+    if (!capture_large_lines(sim, "wire", "light") ||
         !blue_shielded_review_app_next(&sim->app) ||
-        !capture_large_lines(sim, "summary", "light")) return false;
+        !capture_large_lines(sim, "summary", "light") ||
+        !blue_shielded_review_app_next(&sim->app) ||
+        !capture_large_lines(sim, "digest", "light")) return false;
     return true;
 }
 

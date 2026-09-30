@@ -14,8 +14,9 @@ typedef union {
 
 /* Derive one ZIP32 child from a locally held parent. The full viewing key
  * is recomputed from the parent secret, never supplied by the host.
- * Child, parent, and scratch must not overlap. Scratch is always cleared.
- * A rejected request clears a distinct non-null child output. */
+ * Child, parent, and scratch must not overlap. A rejected overlap preserves
+ * every buffer. Calls with a non-null child and disjoint buffers clear
+ * scratch on exit; other rejected requests clear the child output. */
 bool blue_zip32_derive_child(struct zip32_xsk *child,
     const struct zip32_xsk *parent, uint32_t index,
     blue_zip32_workspace *scratch);

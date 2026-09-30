@@ -23,7 +23,8 @@ static bool classify_input(void *context, const zcl_tx_input *input) {
         output.script_length != 25) return false;
     const uint8_t *hash = output.script + 3;
     bool external = memcmp(hash, visit->external, 20) == 0;
-    bool internal = memcmp(hash, visit->internal, 20) == 0;
+    bool internal = visit->internal ?
+        memcmp(hash, visit->internal, 20) == 0 : !external;
     if (external == internal) return false;
     visit->result->paths[input->index] = external ?
         BLUE_PAYMENT_INPUT_EXTERNAL : BLUE_PAYMENT_INPUT_INTERNAL;
@@ -32,13 +33,13 @@ static bool classify_input(void *context, const zcl_tx_input *input) {
     return true;
 }
 
-bool blue_payment_host_classify_inputs(const uint8_t *wire, size_t length,
+static bool classify_inputs(const uint8_t *wire, size_t length,
     const zcl_tx_previous_transaction *previous, size_t previous_count,
     zcl_tx_sha256_fn sha256, const uint8_t external[20],
     const uint8_t internal[20], blue_payment_host_ownership *result) {
-    if (!wire || !previous || !sha256 || !external || !internal || !result ||
+    if (!wire || !previous || !sha256 || !external || !result ||
         !previous_count || previous_count > ZCL_TX_PREFLIGHT_MAX_INPUTS ||
-        memcmp(external, internal, 20) == 0) return false;
+        (internal && memcmp(external, internal, 20) == 0)) return false;
     blue_payment_host_ownership checked = {0};
     if (zcl_tx_transparent_preflight(wire, length, previous, previous_count,
             sha256, &checked.facts) != 0) return false;
@@ -48,4 +49,20 @@ bool blue_payment_host_classify_inputs(const uint8_t *wire, size_t length,
         visit.count != previous_count) return false;
     *result = checked;
     return true;
+}
+
+bool blue_payment_host_classify_inputs(const uint8_t *wire, size_t length,
+    const zcl_tx_previous_transaction *previous, size_t previous_count,
+    zcl_tx_sha256_fn sha256, const uint8_t external[20],
+    const uint8_t internal[20], blue_payment_host_ownership *result) {
+    return classify_inputs(wire, length, previous, previous_count,
+        sha256, external, internal, result);
+}
+
+bool blue_payment_host_propose_paths(const uint8_t *wire, size_t length,
+    const zcl_tx_previous_transaction *previous, size_t previous_count,
+    zcl_tx_sha256_fn sha256, const uint8_t external[20],
+    blue_payment_host_ownership *result) {
+    return classify_inputs(wire, length, previous, previous_count,
+        sha256, external, NULL, result);
 }

@@ -10,8 +10,9 @@
  * secret scalar, and an independently reviewed and approved digest. This
  * isolated candidate is not wired to BOLOS keys or an APDU; target timing
  * has not been validated for secret device material. The caller retains and
- * must erase its secret and entropy buffers. A non-null signature buffer is
- * cleared when the function rejects an input. */
+ * must erase its secret and entropy buffers. The signature buffer must not
+ * overlap any input. On an overlap rejection, inputs and output are
+ * preserved; other rejected calls clear a non-null signature buffer. */
 bool blue_redjubjub_sign_isolated(uint8_t signature[64],
     const uint8_t secret[32], const uint8_t entropy[80],
     const uint8_t transaction_digest[32]);

@@ -114,11 +114,16 @@ bool blue_review_screen_zip243(
 }
 
 bool blue_review_screen_zip243_digest(const uint8_t digest[32],
+    uint32_t branch_id,
     char lines[ZCL_BLUE_REVIEW_LINES][ZCL_BLUE_REVIEW_LINE_SIZE]) {
     if (!digest || !lines) return false;
     static const char hex[] = "0123456789abcdef";
+    static const char branch_hex[] = "0123456789ABCDEF";
     memset(lines, 0, ZCL_BLUE_REVIEW_LINES * ZCL_BLUE_REVIEW_LINE_SIZE);
-    memcpy(lines[0], "ZIP243 DIGEST", sizeof "ZIP243 DIGEST");
+    memcpy(lines[0], "ZIP243 BRANCH 0x", sizeof "ZIP243 BRANCH 0x" - 1);
+    for (unsigned i = 0; i < 8; ++i)
+        lines[0][16 + i] = branch_hex[(branch_id >> (28u - 4u * i)) & 15u];
+    lines[0][24] = 0;
     for (unsigned row = 0; row < 4; ++row) {
         for (unsigned i = 0; i < 8; ++i) {
             uint8_t byte = digest[row * 8 + i];
@@ -126,6 +131,23 @@ bool blue_review_screen_zip243_digest(const uint8_t digest[32],
             lines[row + 1][2 * i + 1] = hex[byte & 15];
         }
     }
+    memcpy(lines[5], "CHAIN UNCHECKED; NO SIGNING",
+        sizeof "CHAIN UNCHECKED; NO SIGNING");
+    return true;
+}
+
+bool blue_review_screen_wire_commitment(const uint8_t commitment[32],
+    char lines[ZCL_BLUE_REVIEW_LINES][ZCL_BLUE_REVIEW_LINE_SIZE]) {
+    if (!commitment || !lines) return false;
+    static const char hex[] = "0123456789abcdef";
+    memset(lines, 0, ZCL_BLUE_REVIEW_LINES * ZCL_BLUE_REVIEW_LINE_SIZE);
+    memcpy(lines[0], "FULL WIRE SHA-256", sizeof "FULL WIRE SHA-256");
+    for (unsigned row = 0; row < 4; ++row)
+        for (unsigned i = 0; i < 8; ++i) {
+            uint8_t byte = commitment[row * 8 + i];
+            lines[row + 1][2 * i] = hex[byte >> 4];
+            lines[row + 1][2 * i + 1] = hex[byte & 15];
+        }
     memcpy(lines[5], "READ ONLY; NO SIGNING",
         sizeof "READ ONLY; NO SIGNING");
     return true;

@@ -63,6 +63,41 @@ static bool frp_files_equal(const char *a, const char *b)
            sx == sy && memcmp(x, y, 32u) == 0;
 }
 
+/* The driver's own cc1, asked the same way the image was built. */
+static bool frp_cc1_host(const struct frp *f, char out[PATH_MAX])
+{
+    char path[PATH_MAX];
+    char *argv[] = {"cc", "-print-prog-name=cc1", NULL};
+    if (snprintf(path, sizeof(path), "%s/cc1-query.out", f->scratch) >= PATH_MAX)
+        return false;
+    struct zcl_fri_run r = {.argv = argv, .envp = k_frp_env,
+                            .path = "/usr/bin/cc", .cwd = f->scratch,
+                            .out_path = path};
+    int code = -1;
+    if (!zcl_fri_run_wait(&r, &code) || code != 0) return false;
+    FILE *fp = fopen(path, "re");
+    bool ok = fp && fgets(out, PATH_MAX, fp) != NULL;
+    if (fp) fclose(fp);
+    if (!ok) return false;
+    out[strcspn(out, "\n")] = '\0';
+    return out[0] == '/';
+}
+
+/* COMPILER_PATH is the image directory that holds that cc1. */
+static bool frp_bind_cc1(struct frp *f)
+{
+    char host[PATH_MAX], rel[PATH_MAX];
+    if (!frp_cc1_host(f, host) ||
+        zcl_fri_image_lookup(f->tool, host, rel) != 'F')
+        return false;
+    char *slash = strrchr(rel, '/');
+    if (!slash) return false;
+    *slash = '\0';
+    int n = snprintf(f->compiler_path, sizeof(f->compiler_path),
+                     "COMPILER_PATH=%s/%s:%s/usr/bin", f->tool, rel, f->tool);
+    return n > 0 && (size_t)n < sizeof(f->compiler_path);
+}
+
 /* The image's loader, driver and search roots, all under the image. */
 static bool frp_layout(struct frp *f)
 {
@@ -74,7 +109,7 @@ static bool frp_layout(struct frp *f)
         !zcl_fri_elf_interp(f->driver, interp, &why) || !interp[0] ||
         zcl_fri_image_lookup(t, interp, rel) != 'F' ||
         snprintf(f->loader, sizeof(f->loader), "%s/%s", t, rel) >= PATH_MAX ||
-        zcl_fri_image_lookup(t, ZCL_FRI_GCC_LIBEXEC "/cc1", rel) != 'F')
+        !frp_bind_cc1(f))
         return frp_fail(f->p, ZCL_FRI_WHY_MISSING, t);
     int n = snprintf(f->libpath, sizeof(f->libpath),
                      "%s/lib/x86_64-linux-gnu:%s/usr/lib/x86_64-linux-gnu:"
@@ -90,9 +125,6 @@ static bool frp_layout(struct frp *f)
     ok = ok && (size_t)snprintf(f->exec_prefix, sizeof(f->exec_prefix),
                                 "GCC_EXEC_PREFIX=%s/usr/lib/gcc/", t)
                    < sizeof(f->exec_prefix);
-    ok = ok && (size_t)snprintf(f->compiler_path, sizeof(f->compiler_path),
-                                "COMPILER_PATH=%s" ZCL_FRI_GCC_LIBEXEC ":%s/usr/bin",
-                                t, t) < sizeof(f->compiler_path);
     return ok || frp_fail(f->p, ZCL_FRI_WHY_LIMIT, t);
 }
 

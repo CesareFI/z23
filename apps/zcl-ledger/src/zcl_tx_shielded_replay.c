@@ -20,12 +20,40 @@ static_assert(sizeof(zcl_tx_shielded_output_capture) == 756,
 static_assert(sizeof(zcl_tx_shielded_replay) <= 576,
     "Shielded replay state exceeds its bounded-memory budget");
 
+static void wipe_bytes(void *memory, size_t length) {
+    volatile uint8_t *bytes = memory;
+    for (size_t i = 0; i < length; ++i) bytes[i] = 0;
+}
+
+static bool overlap(const void *left, size_t left_size,
+    const void *right, size_t right_size) {
+    if (!left || !right || !left_size || !right_size) return false;
+    uintptr_t a = (uintptr_t)left, b = (uintptr_t)right;
+    return a <= b ? b - a < left_size : a - b < right_size;
+}
+
+static bool buffers_disjoint(zcl_tx_shielded_replay *state,
+    const zcl_zip243_hasher *blake, uint8_t *rk,
+    zcl_tx_shielded_output_capture *output) {
+    if (!state || !blake) return true;
+    if (overlap(state, sizeof *state, blake, sizeof *blake) ||
+        overlap(state, sizeof *state, rk, 32) ||
+        overlap(state, sizeof *state, output, sizeof *output) ||
+        overlap(blake, sizeof *blake, rk, 32) ||
+        overlap(blake, sizeof *blake, output, sizeof *output) ||
+        overlap(rk, 32, output, sizeof *output)) return false;
+    return !overlap(blake->context, 1, state, sizeof *state) &&
+        !overlap(blake->context, 1, blake, sizeof *blake) &&
+        !overlap(blake->context, 1, rk, 32) &&
+        !overlap(blake->context, 1, output, sizeof *output);
+}
+
 void zcl_tx_shielded_replay_abort(zcl_tx_shielded_replay *state) {
     if (!state) return;
-    if (state->spend_rk) memset(state->spend_rk, 0, 32);
+    if (state->spend_rk) wipe_bytes(state->spend_rk, 32);
     if (state->output_capture)
-        memset(state->output_capture, 0, sizeof *state->output_capture);
-    memset(state, 0, sizeof *state);
+        wipe_bytes(state->output_capture, sizeof *state->output_capture);
+    wipe_bytes(state, sizeof *state);
 }
 
 static bool fail(zcl_tx_shielded_replay *state) {
@@ -102,11 +130,12 @@ bool zcl_tx_shielded_replay_begin_rk(zcl_tx_shielded_replay *state,
     const zcl_zip243_hasher *blake, uint32_t spend_index,
     uint8_t spend_rk[32]) {
     if (!state) {
-        if (spend_rk) memset(spend_rk, 0, 32);
+        if (spend_rk) wipe_bytes(spend_rk, 32);
         return false;
     }
-    memset(state, 0, sizeof *state);
-    if (spend_rk) memset(spend_rk, 0, 32);
+    if (!buffers_disjoint(state, blake, spend_rk, NULL)) return false;
+    wipe_bytes(state, sizeof *state);
+    if (spend_rk) wipe_bytes(spend_rk, 32);
     state->spend_rk = spend_rk;
     state->spend_index = spend_index;
     if (!blake || !blake->context || !blake->init || !blake->update ||
@@ -130,7 +159,8 @@ bool zcl_tx_shielded_replay_begin_output(zcl_tx_shielded_replay *state,
     uint32_t expected_length, uint32_t branch_id,
     const zcl_zip243_hasher *blake, uint32_t output_index,
     zcl_tx_shielded_output_capture *output) {
-    if (output) memset(output, 0, sizeof *output);
+    if (!buffers_disjoint(state, blake, NULL, output)) return false;
+    if (output) wipe_bytes(output, sizeof *output);
     if (!state) return false;
     if (!zcl_tx_shielded_replay_begin(state, expected_length,
             branch_id, blake)) return false;
@@ -143,10 +173,36 @@ bool zcl_tx_shielded_replay_begin_output(zcl_tx_shielded_replay *state,
     return true;
 }
 
+bool zcl_tx_shielded_replay_begin_captures(zcl_tx_shielded_replay *state,
+    uint32_t expected_length, uint32_t branch_id,
+    const zcl_zip243_hasher *blake, uint32_t spend_index,
+    uint8_t spend_rk[32], uint32_t output_index,
+    zcl_tx_shielded_output_capture *output) {
+    if (!buffers_disjoint(state, blake, spend_rk, output)) return false;
+    if (output) wipe_bytes(output, sizeof *output);
+    if (!state) {
+        if (spend_rk) wipe_bytes(spend_rk, 32);
+        return false;
+    }
+    if (!zcl_tx_shielded_replay_begin_rk(state, expected_length,
+            branch_id, blake, spend_index, spend_rk)) return false;
+    if (!spend_rk || !output || output_index >= 4096) {
+        zcl_tx_shielded_replay_abort(state);
+        return false;
+    }
+    state->output_capture = output;
+    state->output_index = output_index;
+    return true;
+}
+
 bool zcl_tx_shielded_replay_feed(zcl_tx_shielded_replay *state,
     const uint8_t *bytes, size_t length) {
     if (!state) return false;
-    if (state->failed || state->pass < 1 || state->pass > 6 ||
+    if (overlap(bytes, length, state, sizeof *state) ||
+        overlap(bytes, length, state->spend_rk, 32) ||
+        overlap(bytes, length, state->output_capture,
+            sizeof *state->output_capture) ||
+        state->failed || state->pass < 1 || state->pass > 6 ||
         !zcl_tx_shielded_stream_feed(&state->wire, bytes, length,
             observe, state)) return fail(state);
     zsha256_update(&state->sha, bytes, length);
@@ -201,17 +257,34 @@ static bool final_digest(zcl_tx_shielded_replay *state,
         hash->final(hash->context, digest);
 }
 
+static bool finish_buffers_disjoint(const zcl_tx_shielded_replay *state,
+    const zcl_tx_shielded_facts *facts, const uint8_t digest[32]) {
+    if (overlap(facts, sizeof *facts, digest, 32)) return false;
+    const void *outputs[2] = {facts, digest};
+    const size_t lengths[2] = {sizeof *facts, 32};
+    for (unsigned i = 0; i < 2; ++i) {
+        if (overlap(outputs[i], lengths[i], state, sizeof *state) ||
+            overlap(outputs[i], lengths[i], state->spend_rk, 32) ||
+            overlap(outputs[i], lengths[i], state->output_capture,
+                sizeof *state->output_capture) ||
+            overlap(outputs[i], lengths[i], state->blake.context, 1))
+            return false;
+    }
+    return true;
+}
+
 bool zcl_tx_shielded_replay_finish(zcl_tx_shielded_replay *state,
     zcl_tx_shielded_facts *facts, uint8_t digest[32]) {
     if (!state) return false;
     uint8_t result[32];
     if (!facts || !digest || state->failed || state->pass != 6 ||
+        !finish_buffers_disjoint(state, facts, digest) ||
         !complete_pass(state) || !final_digest(state, result))
         return fail(state);
     *facts = state->facts;
     memcpy(digest, result, sizeof result);
-    state->spend_rk = NULL;
-    state->output_capture = NULL;
+    wipe_bytes(result, sizeof result);
+    wipe_bytes(state, sizeof *state);
     state->pass = 7;
     return true;
 }

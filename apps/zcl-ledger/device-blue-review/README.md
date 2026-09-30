@@ -2,6 +2,36 @@
 
 # ZCL Review for Ledger Blue
 
+Version 0.4.7 separates reply transmission from the next APDU receive. If
+either exchange throws, it erases review state and the shared buffer instead
+of reusing a pending reply length. It also rejects a receive count beyond
+the 260-byte APDU buffer before parsing. Host device-loop tests inject send
+and receive failures, an oversized count, and USB reset during a pending
+send. The read-only image remains uninstalled. Its `.text` is 34,048 bytes,
+`.data` is zero, and `.bss` is 6,000 bytes. The modeled APDU, screen, and
+USB reset stack paths use 792, 904, and 192 bytes of the 2,048-byte
+reservation; BOLOS frames are excluded. The `.text` SHA-256 is
+`0d719924ca08128834d2713b6efd92a95f126fa748a458d954902a35e6f38c60`;
+Intel HEX SHA-256 is
+`7e78e32fe85e11887f21feec1569a02847dbcec45642ce09121b08a049f287e4`.
+The [exchange-failure experiment](../../../docs/experiments/2026-09-28-ledger-blue-review-exchange-failure.md)
+records the fault tests and independent build.
+
+Version 0.4.6 erases the transaction, hash workspace, and complete shared
+APDU buffer when the Blue reports USB reset or suspend. It returns to
+`CONNECT Z23` while keeping the chosen text size and color theme. The
+device-loop regression injects both events and checks erasure and display
+state. The read-only image remains uninstalled. Its `.text` is 33,792 bytes,
+`.data` is zero, and `.bss` is 6,000 bytes, leaving 144 bytes of linker
+SRAM headroom. The modeled APDU, screen, and USB reset stack paths use
+776, 888, and 176 bytes of the 2,048-byte reservation; BOLOS frames are
+excluded. The `.text` SHA-256 is
+`a1eff6f4b6186b0d4be4d5fa206ab956f3aa8c3ee520e6da92596a34a6c384fc`;
+Intel HEX SHA-256 is
+`9cdf1782ea257efce28f4fb644feb777f8a301f16a9ce6d03adcf886fa799aa5`.
+The [USB reset experiment](../../../docs/experiments/2026-09-28-ledger-blue-shielded-usb-reset.md)
+records the reproducible test and build results.
+
 This C23 app accepts up to 2,304 bytes of a raw ZCL Sapling-v4 transaction
 over USB and returns a structural summary and SHA-256 digest of the exact
 transaction bytes. It counts transparent inputs and

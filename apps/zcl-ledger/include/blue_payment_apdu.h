@@ -33,6 +33,11 @@ typedef struct {
  * accumulated for a read-only own-versus-other total after replay verifies.
  * A finished previous wire must pay to one of the device-derived hashes and
  * yields that input's device-derived ZIP-243 digest.
+ * Request and reply may share the external APDU buffer. Neither may overlap
+ * review state or device-owned hashes; reply length must be disjoint from
+ * all buffers. An invalid storage layout aborts before parsing.
+ * Successful replies erase unused capacity; rejected commands with valid
+ * storage erase the full reply capacity and reset its declared length.
  * No command accesses a key, approves a payment, or signs. */
 uint16_t blue_payment_apdu_handle(blue_payment_apdu *state,
     const uint8_t *apdu, size_t apdu_length,

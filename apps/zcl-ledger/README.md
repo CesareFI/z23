@@ -13,6 +13,10 @@ The bounded [`blue_sapling_aead` API](include/blue_sapling_aead.h)
 authenticates and decrypts fixed-size outgoing and note ciphertexts in C23.
 The note result is not a verified output: the device still needs independent
 key derivation, ephemeral-key and commitment checks, and recipient policy.
+The in-place open variants authenticate before replacing captured ciphertext,
+clear the trailing tag on success, and erase the whole capture on failed
+authentication. They permit a caller to reuse the 80-byte outgoing or
+580-byte note capture instead of allocating another plaintext buffer.
 The host-only consensus fixture now replays the complete transaction, opens
 the selected outgoing ciphertext, computes cofactored Jubjub agreement with
 the fixture's public test scalar, derives the note key, and authenticates the
@@ -69,12 +73,58 @@ It cannot establish which known branch is currently active. USB has no
 output-acknowledgement command; the Wallet 0.2.1 candidate wires it only to a
 Blue touchscreen callback. Physical payment-review behavior failed on 0.2.1;
 0.2.17 is uninstalled and unverified on hardware.
+The uninstalled Wallet 0.3.27 clears unused shared USB reply bytes after each
+successful payment command and the full reply on rejection, so a later short
+response does not retain earlier transaction upload bytes. The portable
+handler and simulated device loop test this cleanup. It also aborts signing
+and erases signer outputs if PIN validation ends during derivation, public-key
+hashing, or ECDSA. Physical behavior remains unverified.
+Startup also refuses to make the receive account ready if PIN validation ends
+during internal keypair generation or account hashing, and erases boot key
+material if an exception exits the app.
+If PIN validation ends while a review is open, Wallet 0.3.27 cancels the
+review and approval. It erases a pending reply and refuses signing; a redraw
+shows DEVICE LOCKED after the app loop ends the review. Its separate payment
+review controller shows REVIEW ENDED when it detects the lock during a redraw.
+The app loop also rejects an address APDU with `0x6985` if PIN validation
+ends after startup or during that command, erasing the shared request and
+reply buffer. It revokes the derived account, so restoring PIN validation
+while the app remains open cannot resume address replies or payment signing.
+EXIT and exception teardown erase the account data.
 The portable [signing command candidate](include/blue_payment_sign.h)
 accepts exactly one input index after physical review approval, binds the
 signing public key to a device-derived account hash, and returns canonical
 low-S DER. Host tests verify a real secp256k1 signature and reject malformed
 APDUs. Wallet 0.2.17 does not route this command or sign payments. Its
 read-only DONE action cannot set the signing approval flag.
+The host [live review driver](include/blue_payment_live.h) copies at most 2 MiB
+of unsigned wire, independently rebuilds its display plan, and uploads only
+that copy. It checks the caller's wire and plan after the device identity
+reply and at review completion. Bound input review records all previous-wire
+identities before the first device exchange. It checks them after output
+review, then copies and checks each previous transaction around its upload.
+It also checks the caller's wire, plan, and expected digests around each
+previous-transaction upload.
+Mutation fails the review and requests a device abort after BEGIN. This
+protects the host workflow against callback changes; it does not prove that
+the uninstalled Wallet candidate works on physical firmware.
+
+The laptop companion `zcl-blue-host-gui` draws one representative transparent
+payment beside the Blue. It shows whether the Blue is linked, the protocol
+name and version from the device identity reply, the receive address, the
+recipient, the amount, the fee, the branch, the explicit absence of a memo,
+and the final approval label. Those strings are the Blue screen text, and
+the digest is the ZIP-243 value the review would sign. Any mismatch refuses
+the payment and releases no signature. Read-only review, key custody,
+signing, and installation are separate authorities. Wallet 0.3.46 stays
+recognized by its `.text` SHA-256 and blocked from physical installation.
+`--offscreen DIRECTORY` writes `light.png`, `dark.png`, `large.png`, and
+`large-dark.png`, and prints a directory-independent fact log. `--window`
+opens the same facts in a dark window. `--window-shot PNG` saves that
+window. If the window system cannot start, both exit 3. The window does
+not sign and does not install. The
+[laptop payment-fact experiment](../../docs/experiments/2026-09-29-ledger-blue-laptop-payment-facts.md)
+records the representative binding.
 
 ## Build and test
 
@@ -151,6 +201,13 @@ An isolated randomized SpendAuth candidate also derives
 `rsk = ask + ar`, recomputes the transaction's `rk`, and signs only when it
 matches. Its end-to-end public fixture runs in both ARM emulators; it is not
 routed through the Wallet review or approval screens.
+The candidate rejects signature or workspace storage overlapping the
+device-derived key, expected `rk`, entropy, or reviewed digest before any
+write. A test demonstrated that an aliased expected `rk` previously made a
+wrong value pass the comparison. The
+[signing storage experiment](../../docs/experiments/2026-09-28-ledger-blue-spend-auth-storage.md)
+records the corrected host and ARM results. It still has no device approval
+or key route.
 An isolated C23 outgoing-key derivation module checks the consensus-accepted
 Sapling output against an independently computed BLAKE2b test vector. The
 six-pass replay capture now supplies its public `cv`, `cm`, `epk`, and outgoing
@@ -159,14 +216,27 @@ ciphertext to a fixed-size C23 ChaCha20-Poly1305 decryptor. The decrypted
 committed transaction fixture. Cortex-M0 and Cortex-M3 emulators also check
 the exact output and reject an altered authentication tag. These modules
 are not linked into the installed Blue app. Recipient and amount verification,
-note commitment checks, device approval, and shielded signing remain absent.
+device approval, and shielded signing remain absent. An isolated C23 verifier
+now reproduces this fixture's note commitment from decrypted note contents
+on host and Cortex M3/M0 emulators; the Wallet app does not call it.
+An isolated C23 memo inspector now classifies the 512 decrypted bytes as
+text, no memo, opaque data, reserved future format, or invalid UTF-8. It
+preserves embedded zero bytes as an explicit display risk and hashes the full
+field. The simnet fixture has a reserved `0xf6` memo with nonzero following
+bytes, so it must not be labeled “no memo.” This classifier passes on host and
+both ARM emulators, but it is not linked into Wallet and does not authenticate
+the note commitment.
 The isolated 32-bit-limb Fr codec rejects noncanonical public field bytes on
 both ARM emulators. Its public-input field square root and canonical Jubjub
 point decoder pass host and ARM tests. The decoder rejects small-order
-points. Ephemeral-key agreement and note-commitment checks remain absent.
+points. An isolated output-opening fixture now checks its ephemeral key and
+note commitment; on-device viewing-key agreement and approval remain absent.
 An isolated Sapling note-key derivation module also matches Z23's fixed KDF
 vector, independently checked with Python BLAKE2b. It requires a supplied DH
 result and ephemeral public key; it does not establish their authenticity.
+Both the outgoing and note key derivation helpers reject output buffers that
+overlap their fixed-size inputs or hasher descriptor before writing. The
+caller must keep the full opaque hash context separate and erase it after use.
 Neither module decrypts or authorizes a shielded payment on the Blue.
 
 The separate [Blue seed bridge](device-blue-wallet/README.md) tests a
@@ -180,6 +250,19 @@ different RAM layout from the linked device app. A pass does not authorize
 installing or signing with the physical Blue.
 The nonce test uses public fixture bytes. The installed Wallet does not call
 the nonce helper or access a Sapling device key.
+An isolated Blue RNG adapter now obtains 80 bytes from BOLOS after PIN
+validation, rechecks the PIN, and erases failed or all-zero output. Host and
+Cortex-M0/M3 emulators test the adapter with fake BOLOS calls. It is not
+connected to the Wallet's signing path.
+The emulator's mapped-key SpendAuth fixture uses this adapter for nonce
+entropy and still matches its exact signature vector.
+An isolated C23 synthetic-seed SpendAuth fixture composes a fake Blue-derived
+hardened account key, fake device RNG, checked transaction rk, and signature.
+Host and Cortex-M0/M3 fixtures test signature erasure after failure and PIN
+loss. Its implementation rejects ordinary Blue builds because target
+side-channel validation for device secrets is incomplete. It is not linked
+into Wallet; a separately verified digest, on-device transaction review, and
+user approval are also required before a payment signing route can use it.
 The emulator reports each arithmetic case's stack watermark separately and
 requires at least 512 bytes free in its reserved test stack.
 
@@ -212,10 +295,13 @@ input-specific ZIP-243 digest checks. The host derives the branch ID from
 Z23's mainnet activation heights and rejects heights before Sapling. The
 local node responses do not independently prove peer synchronization or
 account ownership. A second tip query must match the first height and block
-hash before USB access. After the Blue review, the host checks the same tip,
-rechecks every input UTXO, and checks the tip once more before reporting
-success. A failed tip query is reported as an unconfirmed stable tip,
-without claiming that a reorganization occurred. It
+hash before USB access. Immediately after the Blue review, the host sends an
+abort command and requires the Blue to acknowledge review erasure. It then
+checks the same tip, rechecks every input UTXO, and checks the tip once more
+before reporting success. If erasure acknowledgement fails, the operator
+must restart the app before another transaction. A failed tip query is
+reported as an
+unconfirmed stable tip, without claiming that a reorganization occurred. It
 stops each third-pass upload exactly at the next
 output. The previous transaction bytes alone do not establish chain
 inclusion or unspent status. It
@@ -224,6 +310,47 @@ spends, outputs, or JoinSplits receives an explicit unsupported-shielded
 message; malformed bytes retain the generic rejection. Version 0.2.17 must
 pass separate device checks before this
 driver is used on the Blue again.
+
+The complete build also provides an opt-in transparent signing command:
+
+```sh
+zcl-blue-wallet-sign --sign-test /dev/hidrawN /absolute/path/zcl-rpc \
+  UNSIGNED_TX.bin SIGNED_TX.bin PREVIOUS_TX.bin...
+```
+
+It accepts only an unsigned all-transparent Sapling-v4 mainnet transaction
+with one hash-bound P2PKH previous transaction per input and standard
+P2PKH/P2SH outputs. The same local-node tip and UTXO checks precede Blue
+review and run again before signing and after signature assembly. The Blue
+must bind every previous output to one of its two fixed keys before it
+displays the fee. Inputs that do not match the external receive key are
+provisional internal-path candidates, not evidence of ownership; the Blue
+rejects an unowned candidate. After the user inspects the device's fee,
+totals, and final page and physically taps SIGN ZCL, the host verifies every
+returned public-key hash and ECDSA signature against the original previous
+output and ZIP-243 digest. It saves an authenticated signed transaction only
+after the Blue acknowledges review erasure. The output path must not exist.
+The host writes an unnamed file with permissions no broader than 0600 in the
+destination directory and syncs its complete contents. It links the file
+under the requested name without replacement, then syncs the directory.
+An interrupted review cannot expose an empty or partial transaction under
+that name. The host also checks that the destination directory still
+resolves to the directory opened before review; a moved or replaced
+directory stops publication. The destination filesystem must support Linux
+`O_TMPFILE` and `linkat(AT_EMPTY_PATH)`; unsupported operations fail
+closed. The command does not broadcast.
+
+If publication fails after the complete file is linked, a directory sync or
+rollback error can leave that complete signed file visible despite a command
+failure. Check the requested output path before retrying. Never infer from a
+failed command that the signed transaction is absent.
+
+This command is a test interface, not a qualified payment wallet. No current
+Wallet image has passed the required physical open, exit, USB, and signed
+catalog checks after the 0.3.4 freeze. Local node status is not independent
+peer synchronization, and protocol identity bytes do not authenticate the
+installed app. It rejects shielded inputs and outputs, memos, Sprout,
+multisig, and token transfers.
 
 Find accessible Ledger HID interfaces without Ledger Live:
 
@@ -266,6 +393,14 @@ Fixture 0.1.0, and Sign Test 0.1.0. Wallet, Review, and Shielded Review images
 remain blocked from installation. Before opening USB,
 it accepts only a bounded regular image file, refuses a symlink or named
 pipe, and compares the image's SHA-256 with reviewed build pins.
+`zcl-blue-install --image-check app.bin` performs that exact image check
+without opening USB or a key file. The pinned Shielded Review 0.5.9 binary
+is recognized for this offline check, with no declared signing path, while
+its physical installation remains blocked pending a device open and EXIT
+test. The check does not grant installation or payment authority.
+The certificate issuer key comes from the selected device; the development
+channel has no pinned manufacturer root and does not attest genuine Blue
+identity. Its target-ID and USB-ID checks identify the reported protocol.
 `--channel-only`
 checks the secure channel without
 installing. The installer targets the connected Blue v2 (`0x31010004`). See the
@@ -277,7 +412,7 @@ with a locally held key. It changes the device's trust configuration and is
 documented separately from the unsigned diagnostic apps.
 Its `zcl-blue-install /dev/hidrawN --ca-list CA_KEY_FILE` command reads the
 Blue's installed app names and 32-byte application hashes through the
-authenticated channel. A listed hash can be compared with a separately
+development channel. A listed hash can be compared with a separately
 computed installation hash; it is not the SHA-256 of the code file alone.
 The read-only `--ca-verify CA_KEY_FILE app.bin` command requires a reviewed
 binary and exactly one same-name catalog entry with the expected application
@@ -305,18 +440,45 @@ reported zero apps. Version 0.2.17 is built and simulated offline but is not
 installed or hardware-verified. Probe, Fixture, Review, and Sign Test remain
 development images, not payment signers.
 
-The Wallet 0.3.7 offline candidate includes a separate final touchscreen
-`SIGN ZCL` approval and ordered transparent P2PKH signing. A synthetic
-fixture command prepares a previous transaction and unsigned v4 spend from
-a compressed public key without needing a chain UTXO:
+The uninstalled Wallet 0.3.30 candidate includes a separate final touchscreen
+`SIGN ZCL` approval and ordered transparent P2PKH signing. Its final SIGN ZCL
+button is spatially separate from the preceding NEXT button, so a repeated
+NEXT touch selects NO SIGN. A synthetic fixture command prepares a previous
+transaction and unsigned v4 spend from
+a compressed public key without needing a chain UTXO.
+NO SIGN immediately erases the reviewed transaction and per-input digests;
+the completion screen remains visible without retaining approval state.
+Short USB replies erase unused shared APDU bytes, including bytes left by
+an earlier signature reply. Rejected commands erase the full shared buffer.
+An oversized reported USB receive count is rejected before instruction
+dispatch, with the payment review aborted.
+The Blue warns HOST MAY BROADCAST before and after signing because it cannot
+control what a host does with a released signature. Its fee and totals pages
+warn that chain state and the active branch are unverified.
+
+The fixture command checks the reviewed unsigned-wire SHA-256 before asking
+for signatures and again before assembling its synthetic result. The
+[authenticated assembler](include/blue_payment_host_assemble.h) rejects a
+changed wire, mismatched input path or public-key hash, or invalid ECDSA
+signature before writing output. Its hash and ECDSA callbacks must implement
+HASH160 and secp256k1 verification. The layout-only assemblers do not
+authenticate signatures. The fixture command never broadcasts or saves the
+result.
+
+The host signer freezes the expected input paths, public-key hashes, and
+ZIP-243 digests before identity or approval callbacks. If caller storage
+differs after a callback, it clears collected signatures and attempts to
+abort the Blue review. The [snapshot experiment](../../docs/experiments/2026-09-28-ledger-blue-sign-expectation-snapshot.md)
+reproduces acceptance of a repaired expectation with the prior signer.
 
 ```sh
 zcl-blue-wallet-fixture --prepare 0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798
 ```
 
 The exact 0.3.4 image froze the Blue on opening and was deleted. The C23
-installer blocks Wallet images. Version 0.3.6 passes the stricter RAM gate and
-host tests but has not passed BOLOS startup on the device. Its image must pass
+installer blocks Wallet images. Wallet 0.3.34 passes the SRAM and stack
+gates and local host tests but has not passed BOLOS startup on the device.
+Its image must pass
 physical open, exit, and USB checks before this fixture is used on the Blue.
 With a qualified image installed and its identity verified,
 `zcl-blue-wallet-fixture --device /dev/hidrawN` can drive the same fixture
@@ -329,12 +491,22 @@ The CLI checks protocol bytes, which do not authenticate the installed app
 image. An authenticated manager catalog check against the pinned image is a
 separate requirement before any payment use. The fixture itself cannot
 establish chain ownership or spendability.
+The synthetic live fixture requests a review abort after a signing result or
+failure and reports verified bytes only after the Blue acknowledges erasure.
+A rejected abort or USB timeout suppresses the success report and requires
+the owner to restart the app. The fixture clears its temporary signature and
+signed-wire buffers before returning. This cleanup path has host transport
+tests; it has not run on a physical Blue.
 The host fixture CLI uses Z23's SHA-256 and RIPEMD-160 code and the
 repository's locked libsecp256k1 archive for public-key and ECDSA
 verification. It does not link OpenSSL. The archive's original source
 provenance remains unresolved in its vendor manifest; its fixed digest
 establishes byte identity, not a source audit. The Blue app has no OpenSSL
-dependency.
+dependency. The host verifier, signature collector, and assembler reject
+result buffers overlapping trusted inputs or the assembled transaction. The
+[host signing storage experiment](../../docs/experiments/2026-09-28-ledger-blue-host-signing-storage.md)
+records a formerly accepted output-length alias and input-preserving
+rejection checks. These host checks do not establish physical signing safety.
 
 ## Sapling transaction structure review
 

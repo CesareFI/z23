@@ -74,6 +74,13 @@ static void check_alias_and_null(const struct jub_point *point,
     assert(!blue_jubjub_scalar_mul_lowmem(NULL, point, scalar));
     assert(!blue_jubjub_scalar_mul_lowmem(&aliased, NULL, scalar));
     assert(!blue_jubjub_scalar_mul_lowmem(&aliased, point, NULL));
+    struct jub_point overwritten = *point;
+    struct jub_point original = overwritten;
+    const uint8_t *overlapping_scalar =
+        (const uint8_t *)&overwritten + sizeof overwritten - 32;
+    assert(!blue_jubjub_scalar_mul_lowmem(&overwritten, point,
+        overlapping_scalar));
+    assert(memcmp(&overwritten, &original, sizeof original) == 0);
 }
 
 static void decode_reversed(uint8_t out[32], const char hex[65]) {

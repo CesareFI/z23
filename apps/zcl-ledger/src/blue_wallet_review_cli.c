@@ -11,6 +11,15 @@
 #include "crypto/blake2b.h"
 #include "zsha256/zsha256.h"
 
+#ifdef BLUE_WALLET_SIGN_CLI
+#include "blue_payment_host_assemble.h"
+#include "blue_payment_host_ownership.h"
+#include "blue_payment_host_sign.h"
+#include "blue_signed_output.h"
+#include "zcl_address.h"
+#include "zcl_host_crypto.h"
+#endif
+
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/hidraw.h>
@@ -240,6 +249,7 @@ static bool prepare_inputs(review_job *job, const char *rpc_binary,
     return true;
 }
 
+#ifndef BLUE_WALLET_SIGN_CLI
 static bool run_device(review_job *job, const char *device_path,
                        const char *rpc_binary) {
     live_device device = {.fd = open_blue(device_path),
@@ -255,39 +265,207 @@ static bool run_device(review_job *job, const char *device_path,
            job->tip.next_height, job->branch_id,
            job->facts.transparent_inputs, job->facts.transparent_outputs,
            (unsigned long long)job->facts.fee_zat);
-    puts("This command never requests a payment signature. Choose NO SIGN on the Blue.");
+    puts("This command never requests a payment signature.");
+    puts("Z23 will clear the Blue review before checking the inputs again.");
     fflush(stdout);
     bool valid = blue_payment_live_run_bound(job->wire, job->length, job->plan,
         job->previous, job->previous_count, job->facts.fee_zat,
         (const uint8_t (*)[32])job->digests,
         live_exchange, wait_for_touch, &device);
-    valid = review_inputs_unchanged(valid, rpc_binary, &job->tip,
+    bool cleared = blue_payment_live_abort(live_exchange, &device);
+    valid = review_inputs_unchanged(valid && cleared, rpc_binary, &job->tip,
         job->wire, job->length, job->previous, job->previous_count);
     close(device.fd);
+    if (!cleared)
+        fputs("The Blue did not confirm review erasure. Restart the app before another transaction.\n",
+              stderr);
     if (!valid) {
         fputs("Blue review stopped; no payment was signed.\n", stderr);
         return false;
     }
-    puts("Blue matched every input digest and displayed the fee. Choose NO SIGN, then tap EXIT on the Blue.");
+    puts("Blue matched every input digest and displayed the fee.");
+    puts("The review was cleared on the Blue; tap EXIT.");
+    return true;
+}
+#else
+static void erase_bytes(void *memory, size_t length) {
+    volatile uint8_t *bytes = memory;
+    for (size_t i = 0; i < length; ++i) bytes[i] = 0;
+}
+
+static bool blue_external_hash(live_device *device, uint8_t hash[20]) {
+    static const uint8_t request[5] = {0xa5, 0x02, 0, 0, 0};
+    uint8_t reply[35];
+    size_t length = 0;
+    if (!live_exchange(device, request, sizeof request, reply,
+            sizeof reply, &length) || length != sizeof reply ||
+        reply[33] != 0x90 || reply[34] != 0 ||
+        !zcl_host_pubkey_valid(reply) ||
+        !zcl_host_hash160(reply, hash)) return false;
+    char address[ZCL_ADDRESS_SIZE];
+    if (zcl_address_from_pubkey(reply, address) < 0) return false;
+    printf("Blue external receive key: %s\n", address);
+    puts("Compare this address with the Blue before trusting this USB session.");
     return true;
 }
 
+static bool signing_approval(void *unused) {
+    (void)unused;
+    char answer[16];
+    puts("On the Blue, inspect CALCULATED FEE, OUTPUT TOTALS, and FINAL PAYMENT CHECK.");
+    puts("Confirm every destination and the fee. Tap SIGN ZCL on the Blue only if correct.");
+    puts("Then type SIGN and Enter here. Any other input cancels.");
+    fflush(stdout);
+    return fgets(answer, sizeof answer, stdin) &&
+        strcmp(answer, "SIGN\n") == 0;
+}
+
+static bool same_facts(const zcl_tx_transparent_facts *left,
+    const zcl_tx_transparent_facts *right) {
+    return left->transparent_inputs == right->transparent_inputs &&
+        left->transparent_outputs == right->transparent_outputs &&
+        left->input_zat == right->input_zat &&
+        left->output_zat == right->output_zat &&
+        left->fee_zat == right->fee_zat;
+}
+
+static bool sign_bound_job(review_job *job, live_device *device,
+    const char *rpc_binary, blue_signed_output *stage,
+    const blue_payment_host_ownership *owned, uint8_t saved_hash[32],
+    size_t *saved_length) {
+    blue_payment_verified_signature *signatures =
+        calloc(job->previous_count, sizeof *signatures);
+    uint8_t *signed_wire = malloc(ZCL_TX_REVIEW_MAX_BYTES);
+    size_t signed_length = 0;
+    bool valid = signatures && signed_wire &&
+        blue_payment_live_run_bound(job->wire, job->length, job->plan,
+            job->previous, job->previous_count, job->facts.fee_zat,
+            (const uint8_t (*)[32])job->digests,
+            live_exchange, wait_for_touch, device) &&
+        review_inputs_unchanged(true, rpc_binary, &job->tip,
+            job->wire, job->length, job->previous, job->previous_count) &&
+        blue_payment_host_sign(job->previous_count, owned->paths,
+            (const uint8_t (*)[20])owned->hashes,
+            (const uint8_t (*)[32])job->digests, live_exchange,
+            signing_approval, device, zcl_host_hash160,
+            zcl_host_verify_signature, NULL, signatures) &&
+        blue_payment_host_assemble_authenticated(job->wire, job->length,
+            job->plan->wire_hash, signatures,
+            (const uint8_t (*)[32])job->digests, owned->paths,
+            (const uint8_t (*)[20])owned->hashes, job->previous_count,
+            zcl_host_hash160, zcl_host_verify_signature, NULL,
+            signed_wire, ZCL_TX_REVIEW_MAX_BYTES, &signed_length) &&
+        review_inputs_unchanged(true, rpc_binary, &job->tip,
+            job->wire, job->length, job->previous, job->previous_count);
+    bool cleared = blue_payment_live_abort(live_exchange, device);
+    if (!cleared)
+        fputs("Blue did not confirm review erasure; restart the app.\n", stderr);
+    if (valid && cleared) {
+        valid = blue_signed_output_commit(stage, signed_wire, signed_length);
+        if (valid) {
+            zsha256(signed_wire, signed_length, saved_hash);
+            *saved_length = signed_length;
+        }
+    }
+    if (signed_wire) {
+        erase_bytes(signed_wire, ZCL_TX_REVIEW_MAX_BYTES);
+        free(signed_wire);
+    }
+    if (signatures) {
+        erase_bytes(signatures,
+            job->previous_count * sizeof *signatures);
+        free(signatures);
+    }
+    return valid && cleared;
+}
+
+static bool execute_staged_sign(review_job *job, live_device *device,
+    const char *rpc_binary, const char *output_path,
+    const blue_payment_host_ownership *owned) {
+    blue_signed_output stage = {.directory_fd = -1, .file_fd = -1};
+    if (!blue_signed_output_begin(output_path, &stage)) return false;
+    uint8_t saved_hash[32] = {0};
+    size_t saved_length = 0;
+    printf("Signing %u input(s), %u output(s), fee %llu zatoshi; node next height %u, branch %08x.\n",
+        job->facts.transparent_inputs, job->facts.transparent_outputs,
+        (unsigned long long)job->facts.fee_zat, job->tip.next_height,
+        job->branch_id);
+    puts("Inputs assigned to the internal path are provisional until the Blue verifies ownership.");
+    fflush(stdout);
+    bool valid = review_inputs_unchanged(true, rpc_binary, &job->tip,
+        job->wire, job->length, job->previous, job->previous_count) &&
+        sign_bound_job(job, device, rpc_binary, &stage, owned,
+            saved_hash, &saved_length);
+    blue_signed_output_discard(&stage);
+    if (valid) {
+        printf("Saved %zu verified signed bytes; SHA-256 ", saved_length);
+        for (size_t i = 0; i < sizeof saved_hash; ++i)
+            printf("%02x", saved_hash[i]);
+        puts(". No transaction was broadcast.");
+    }
+    return valid;
+}
+
+static bool run_device(review_job *job, const char *device_path,
+    const char *rpc_binary, const char *output_path) {
+    live_device device = {.fd = open_blue(device_path),
+                          .outputs = job->plan->count};
+    if (device.fd < 0) {
+        fputs("The selected interface is not an accessible Ledger Blue.\n",
+            stderr);
+        return false;
+    }
+    uint8_t external[20];
+    blue_payment_host_ownership *owned = malloc(sizeof *owned);
+    bool valid = owned && blue_external_hash(&device, external) &&
+        blue_payment_host_propose_paths(job->wire, job->length,
+            job->previous, job->previous_count, sha256_bytes,
+            external, owned) &&
+        same_facts(&owned->facts, &job->facts) &&
+        execute_staged_sign(job, &device, rpc_binary, output_path, owned);
+    if (!valid) (void)blue_payment_live_abort(live_exchange, &device);
+    (void)close(device.fd);
+    free(owned);
+    if (!valid)
+        fputs("Signing stopped. Check the output path before retrying; a complete signed file may remain after a publication error. Z23 did not broadcast.\n",
+              stderr);
+    return valid;
+}
+#endif
+
 int main(int argc, char **argv) {
+#ifdef BLUE_WALLET_SIGN_CLI
+    if (argc < 7 || argc > 6 + ZCL_TX_PREFLIGHT_MAX_INPUTS ||
+        strcmp(argv[1], "--sign-test") != 0) {
+        fprintf(stderr, "Usage: %s --sign-test /dev/hidrawN /absolute/path/zcl-rpc UNSIGNED_TX.bin OUTPUT_TX.bin PREVIOUS_TX.bin...\n",
+            argv[0]);
+        return 2;
+    }
+#else
     if (argc < 6 || argc > 5 + ZCL_TX_PREFLIGHT_MAX_INPUTS ||
         strcmp(argv[1], "--test") != 0) {
         fprintf(stderr, "Usage: %s --test /dev/hidrawN /absolute/path/zcl-rpc UNSIGNED_TX.bin PREVIOUS_TX.bin...\n",
             argv[0]);
         return 2;
     }
+#endif
     review_job *job = calloc(1, sizeof *job);
     if (!job) {
         fputs("Cannot allocate the Blue review job.\n", stderr);
         return 1;
     }
-    job->previous_count = (size_t)argc - 5;
+    job->previous_count = (size_t)argc -
+#ifdef BLUE_WALLET_SIGN_CLI
+        6;
+    bool valid = prepare_wire(job, argv[3], argv[4]) &&
+        prepare_inputs(job, argv[3], argv + 6) &&
+        run_device(job, argv[2], argv[3], argv[5]);
+#else
+        5;
     bool valid = prepare_wire(job, argv[3], argv[4]) &&
         prepare_inputs(job, argv[3], argv + 5) &&
         run_device(job, argv[2], argv[3]);
+#endif
     free_job(job);
     return valid ? 0 : 1;
 }

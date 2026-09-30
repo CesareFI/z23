@@ -16,6 +16,12 @@ static void wipe(void *memory, size_t length) {
     for (size_t i = 0; i < length; ++i) bytes[i] = 0;
 }
 
+static bool overlaps(const void *left, size_t left_length,
+    const void *right, size_t right_length) {
+    uintptr_t a = (uintptr_t)left, b = (uintptr_t)right;
+    return a <= b ? b - a < left_length : a - b < right_length;
+}
+
 static uint32_t load32(const uint8_t bytes[4]) {
     return (uint32_t)bytes[0] | (uint32_t)bytes[1] << 8 |
         (uint32_t)bytes[2] << 16 | (uint32_t)bytes[3] << 24;
@@ -193,10 +199,27 @@ static void decrypt(uint8_t *plaintext, const uint8_t key[32],
 static bool open(uint8_t *plaintext, size_t plain_length,
     const uint8_t key[32], const uint8_t *ciphertext) {
     if (!plaintext) return false;
+    if ((key && overlaps(plaintext, plain_length, key, 32)) ||
+        (ciphertext && overlaps(plaintext, plain_length, ciphertext,
+            plain_length + 16))) return false;
     memset(plaintext, 0, plain_length);
     if (!key || !ciphertext || !authentic(key, ciphertext, plain_length))
         return false;
     decrypt(plaintext, key, ciphertext, plain_length);
+    return true;
+}
+
+static bool open_inplace(uint8_t *ciphertext, size_t plain_length,
+    const uint8_t key[32]) {
+    if (!ciphertext) return false;
+    size_t total = plain_length + 16;
+    if (key && overlaps(ciphertext, total, key, 32)) return false;
+    if (!key || !authentic(key, ciphertext, plain_length)) {
+        wipe(ciphertext, total);
+        return false;
+    }
+    decrypt(ciphertext, key, ciphertext, plain_length);
+    wipe(ciphertext + plain_length, 16);
     return true;
 }
 
@@ -206,8 +229,20 @@ bool blue_sapling_out_open(uint8_t plaintext[BLUE_SAPLING_OUT_PLAIN_BYTES],
     return open(plaintext, BLUE_SAPLING_OUT_PLAIN_BYTES, key, ciphertext);
 }
 
+bool blue_sapling_out_open_inplace(
+    uint8_t ciphertext[BLUE_SAPLING_OUT_CIPHER_BYTES],
+    const uint8_t key[32]) {
+    return open_inplace(ciphertext, BLUE_SAPLING_OUT_PLAIN_BYTES, key);
+}
+
 bool blue_sapling_note_open(uint8_t plaintext[BLUE_SAPLING_NOTE_PLAIN_BYTES],
     const uint8_t key[32],
     const uint8_t ciphertext[BLUE_SAPLING_NOTE_CIPHER_BYTES]) {
     return open(plaintext, BLUE_SAPLING_NOTE_PLAIN_BYTES, key, ciphertext);
+}
+
+bool blue_sapling_note_open_inplace(
+    uint8_t ciphertext[BLUE_SAPLING_NOTE_CIPHER_BYTES],
+    const uint8_t key[32]) {
+    return open_inplace(ciphertext, BLUE_SAPLING_NOTE_PLAIN_BYTES, key);
 }

@@ -5,9 +5,10 @@
 #include "zcl_zip243.h"
 
 /* Derive a Sapling note cipher key from a supplied DH result and epk.
- * The output must not overlap an input. Failure clears the output. The caller
- * verifies the output description and clears the result and hasher context
- * after use. */
+ * A key overlapping an input, hasher descriptor, or context base is
+ * rejected before any write. Other failures erase the key. The caller
+ * must keep the entire hash context disjoint from inputs and output,
+ * verify the output description, and erase the key and context after use. */
 bool blue_sapling_kdf(uint8_t key[32], const uint8_t dh[32],
     const uint8_t epk[32], const zcl_zip243_hasher *hasher);
 

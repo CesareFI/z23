@@ -86,6 +86,34 @@ static const app_profile profiles[] = {
          0x7a, 0xa9, 0x2d, 0x08, 0x46, 0x0f, 0x08, 0x5b}, false
     },
     {
+        "ZCL Shielded Review", "0.5.8",
+        {0x64, 0x66, 0x83, 0x7f, 0x12, 0x1c, 0xfb, 0x3b,
+         0xc8, 0x74, 0xad, 0xc5, 0x99, 0xff, 0x41, 0x51,
+         0x83, 0x67, 0x73, 0x4a, 0xf4, 0x3c, 0x65, 0x8c,
+         0x8c, 0xfe, 0xd4, 0x82, 0xa8, 0xe8, 0xcd, 0x42}, false
+    },
+    {
+        "ZCL Shielded Review", "0.5.9",
+        {0xc2, 0x47, 0x1f, 0x69, 0x6f, 0x92, 0xcb, 0xc5,
+         0x08, 0x53, 0xd0, 0xef, 0xdb, 0xff, 0x41, 0x25,
+         0x3a, 0x11, 0x00, 0x90, 0x22, 0x7b, 0x73, 0x4d,
+         0x1f, 0x33, 0xe0, 0x4c, 0xed, 0x42, 0x24, 0x5a}, false
+    },
+    {
+        "ZCL Shielded Review", "0.5.10",
+        {0x08, 0x28, 0x4d, 0xd4, 0xfd, 0xd7, 0xf2, 0x2f,
+         0xe3, 0x48, 0x3c, 0x76, 0x0a, 0xc8, 0x0d, 0xee,
+         0x9e, 0x3c, 0x69, 0x0a, 0xc3, 0xe1, 0xf1, 0xb4,
+         0x3b, 0x2f, 0x00, 0x08, 0x86, 0x64, 0x56, 0xd3}, false
+    },
+    {
+        "ZCL Shielded Review", "0.5.11",
+        {0x67, 0x1d, 0x32, 0x3a, 0x0d, 0x97, 0x20, 0xbd,
+         0xd7, 0x9a, 0xf3, 0xcb, 0xb5, 0x31, 0x66, 0x48,
+         0x1d, 0xa0, 0x49, 0x52, 0xd7, 0x10, 0x19, 0x17,
+         0xce, 0xd5, 0x19, 0x2d, 0xba, 0x1f, 0xa4, 0xff}, false
+    },
+    {
         "ZCL Sign Test", "0.1.0",
         {0x0f, 0xc3, 0x89, 0x31, 0xf3, 0x34, 0x47, 0x15,
          0x09, 0x09, 0x53, 0x53, 0x84, 0x95, 0xc9, 0x64,
@@ -98,6 +126,27 @@ static const app_profile profiles[] = {
          0x0a, 0xe9, 0x2a, 0x72, 0x23, 0xfe, 0x15, 0x1a,
          0xa9, 0xd5, 0x7f, 0xd1, 0x84, 0x46, 0x6b, 0x0c,
          0x65, 0x37, 0xc0, 0xcf, 0x39, 0xc5, 0xbf, 0x6a}, true
+    },
+    {
+        "ZCL Wallet", "0.3.44",
+        {0xd5, 0x28, 0x8c, 0x8c, 0xbc, 0x2e, 0x1e, 0x5f,
+         0xc2, 0xf4, 0x7d, 0x6d, 0x11, 0xd1, 0x47, 0x96,
+         0x74, 0x4e, 0xdf, 0x33, 0x46, 0xef, 0xfd, 0x5f,
+         0x7e, 0xb9, 0x37, 0xd6, 0x5e, 0x44, 0x61, 0xa8}, true
+    },
+    {
+        "ZCL Wallet", "0.3.45",
+        {0x5b, 0x7b, 0xb5, 0xa2, 0x05, 0xca, 0x4c, 0xc2,
+         0x81, 0xe6, 0xbb, 0xdc, 0x45, 0x82, 0xb1, 0xf5,
+         0x58, 0xba, 0xbd, 0x87, 0x1c, 0x05, 0x8e, 0xd6,
+         0xed, 0xe7, 0xec, 0x0a, 0x2b, 0xa5, 0x9b, 0x93}, true
+    },
+    {
+        "ZCL Wallet", "0.3.46",
+        {0xd0, 0x05, 0xd4, 0xfa, 0x9d, 0x4a, 0x77, 0xcf,
+         0x17, 0x81, 0xc6, 0xcf, 0x56, 0x6d, 0x79, 0x32,
+         0xe2, 0x46, 0x8d, 0x32, 0xd0, 0xb8, 0xf6, 0xf1,
+         0x1a, 0xcb, 0x60, 0x11, 0x0f, 0xfe, 0x28, 0xfb}, true
     }
 };
 
@@ -156,7 +205,7 @@ static int exchange_check_status(uint8_t ins, const uint8_t *data, size_t length
     uint16_t status = (uint16_t)(((uint16_t)response[response_length - 2] << 8) |
                                   response[response_length - 1]);
     if (status != 0x9000) {
-        fprintf(stderr, "Ledger rejected command %02x with status %04x.\n",
+        fprintf(stderr, "Selected device rejected command %02x with status %04x.\n",
                 ins, status);
         if (status == 0x6985 && ins == 0 && length > 0 &&
             (data[0] == 0x12 || data[0] == 0x13))
@@ -320,7 +369,7 @@ static int verify_secure_version(installer *device) {
         if (response[5 + i] < 0x20 || response[5 + i] > 0x7e) return -1;
     device->version_length = response[4];
     memcpy(device->version, response + 5, device->version_length);
-    printf("Verified Ledger Blue target %02x%02x%02x%02x over the secure channel.\n",
+    printf("Development channel reports target %02x%02x%02x%02x; device identity is unverified.\n",
            response[0], response[1], response[2], response[3]);
     return 0;
 }
@@ -476,7 +525,8 @@ static int open_blue(const char *path) {
     struct hidraw_devinfo info;
     if (fd < 0 || ioctl(fd, HIDIOCGRAWINFO, &info) < 0 ||
         info.vendor != 0x2c97 || info.product != 0) {
-        fputs("The selected interface is not a Ledger Blue.\n", stderr);
+        fputs("The selected interface does not report Ledger Blue USB IDs.\n",
+              stderr);
         if (fd >= 0) close(fd);
         return -1;
     }
@@ -520,7 +570,7 @@ static int list_apps(installer *device, const char *name,
                     printf("%02x", entries[i].hash[j]);
                 putchar('\n');
             }
-            printf("%zu application(s) listed by Ledger Blue.\n", count);
+            printf("%zu application(s) listed by the selected device.\n", count);
             return 0;
         }
         count += page_count;
@@ -565,7 +615,8 @@ static int run_installer(installer *device, bool delete_app, bool channel_only,
         return no_reply(device, 0, 0, delete_command, 2 + name_length);
     }
     if (!channel_only) {
-        printf("Secure channel established; loading %s.\n", profile->name);
+        printf("Development channel established; device identity unverified; loading %s.\n",
+               profile->name);
         return install(device, code, code_length, profile, ca_key);
     }
     return 0;
@@ -574,17 +625,23 @@ static int run_installer(installer *device, bool delete_app, bool channel_only,
 static void report_result(int result, bool delete_app, bool channel_only,
                           bool enroll, bool reset, bool list, bool verify,
                           const app_profile *profile) {
-    if (result == 0 && enroll) puts("Blue accepted the Z23 custom CA enrollment command.");
-    else if (result == 0 && reset) puts("Blue accepted the custom CA reset command.");
+    if (result == 0 && enroll)
+        puts("Selected device accepted the Z23 custom CA enrollment command.");
+    else if (result == 0 && reset)
+        puts("Selected device accepted the custom CA reset command.");
     else if (result == 0 && delete_app)
-        printf("%s delete command accepted by Ledger Blue.\n", profile->name);
+        printf("%s delete command accepted by the selected device.\n",
+               profile->name);
     else if (result == 0 && (list || verify)) return;
-    else if (result == 0 && channel_only) puts("Ledger Blue secure channel established.");
+    else if (result == 0 && channel_only)
+        puts("Development channel established; device identity unverified.");
     else if (result == 0)
-        printf("%s install command accepted by Ledger Blue.\n", profile->name);
+        printf("%s install command accepted by the selected device.\n",
+               profile->name);
     else if (verify)
-        fputs("Ledger Blue catalog image check failed.\n", stderr);
-    else fputs("Ledger Blue installation failed. Check its screen.\n", stderr);
+        fputs("Selected device catalog image check failed.\n", stderr);
+    else fputs("Installation failed. Check the selected device's screen.\n",
+               stderr);
 }
 
 typedef struct {
@@ -678,10 +735,31 @@ static int parse_args(int argc, char **argv, install_args *args) {
            parse_plain_args(argc, argv, args) ? 0 : -1;
 }
 
+static int offline_image_check(const char *path) {
+    uint8_t *code = NULL;
+    size_t length = 0;
+    const app_profile *profile = NULL;
+    if (read_binary(path, &code, &length, &profile, false) < 0) {
+        fputs("Expected a regular ZCL app binary, 64-byte-aligned and matched to a reviewed image.\n",
+              stderr);
+        return 1;
+    }
+    printf("Reviewed image: %s %s; signing path %s; installation %s.\n",
+        profile->name, profile->version,
+        profile->zcl_sign_path ? "declared" : "absent",
+        blue_install_image_allowed(profile->name, profile->version) ?
+            "permitted" : "blocked pending physical validation");
+    free(code);
+    return 0;
+}
+
 int main(int argc, char **argv) {
+    if (argc == 3 && strcmp(argv[1], "--image-check") == 0)
+        return offline_image_check(argv[2]);
     install_args args;
     if (parse_args(argc, argv, &args) < 0) {
-        fprintf(stderr, "Usage: %s /dev/hidrawN app.bin|--channel-only|--delete|--delete-fixture|--delete-review|--delete-shielded-review|--delete-sign-test|--delete-wallet|--ca-reset\n"
+        fprintf(stderr, "Usage: %s --image-check app.bin\n"
+                        "       %s /dev/hidrawN app.bin|--channel-only|--delete|--delete-fixture|--delete-review|--delete-shielded-review|--delete-sign-test|--delete-wallet|--ca-reset\n"
                         "       %s /dev/hidrawN --ca-enroll PRIVATE_KEY_FILE\n"
                         "       %s /dev/hidrawN --ca-channel-only PRIVATE_KEY_FILE\n"
                         "       %s /dev/hidrawN --ca-list PRIVATE_KEY_FILE\n"
@@ -693,7 +771,7 @@ int main(int argc, char **argv) {
                         "       %s /dev/hidrawN --ca-install PRIVATE_KEY_FILE app.bin\n"
                         "       %s /dev/hidrawN --ca-verify PRIVATE_KEY_FILE app.bin\n",
                 argv[0], argv[0], argv[0], argv[0], argv[0], argv[0],
-                argv[0], argv[0], argv[0], argv[0], argv[0]);
+                argv[0], argv[0], argv[0], argv[0], argv[0], argv[0]);
         return 2;
     }
     uint8_t *code = NULL;

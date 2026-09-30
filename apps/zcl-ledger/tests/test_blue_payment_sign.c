@@ -11,6 +11,7 @@
 
 #undef NDEBUG
 #include <assert.h>
+#include <stddef.h>
 #include <string.h>
 
 typedef struct {
@@ -77,6 +78,60 @@ static void expect_host_rejection(const uint8_t *reply, size_t reply_length,
     assert(memcmp(&result, &empty, sizeof result) == 0);
 }
 
+static void test_host_result_alias(const uint8_t *reply, size_t length,
+    const uint8_t digest[32], const uint8_t hash160[20],
+    signer_fixture *signer) {
+    union {
+        blue_payment_verified_signature result;
+        uint8_t digest[32];
+    } aliased = {0};
+    memcpy(aliased.digest, digest, 32);
+    assert(!blue_payment_host_verify(reply, length, 0,
+        BLUE_PAYMENT_INPUT_EXTERNAL, hash160, aliased.digest,
+        hash_public_key, verify_host_signature, signer, &aliased.result));
+    assert(memcmp(aliased.digest, digest, 32) == 0);
+}
+
+typedef struct {
+    signer_fixture *signer;
+    uint8_t *changed_byte;
+} mutating_verifier;
+
+static bool verify_then_mutate(void *context, const uint8_t public_key[33],
+    const uint8_t digest[32], const uint8_t *der, size_t der_length) {
+    mutating_verifier *test = context;
+    bool valid = verify_host_signature(test->signer, public_key, digest,
+        der, der_length);
+    if (valid && test->changed_byte) *test->changed_byte ^= 1;
+    else if (valid) ((uint8_t *)der)[0] ^= 1;
+    return valid;
+}
+
+static void test_host_callback_mutation(const uint8_t *reply, size_t length,
+    const uint8_t digest[32], const uint8_t hash160[20],
+    signer_fixture *signer) {
+    for (unsigned target = 0; target < 4; ++target) {
+        uint8_t frame[BLUE_PAYMENT_SIGN_REPLY_MAX + 2];
+        uint8_t expected_digest[32], expected_hash[20];
+        memcpy(frame, reply, length);
+        frame[length] = 0x90;
+        frame[length + 1] = 0;
+        memcpy(expected_digest, digest, sizeof expected_digest);
+        memcpy(expected_hash, hash160, sizeof expected_hash);
+        mutating_verifier test = {.signer = signer,
+            .changed_byte = target == 0 ? frame + 36 :
+                target == 1 ? expected_digest :
+                target == 2 ? expected_hash : NULL};
+        blue_payment_verified_signature result;
+        memset(&result, 0xcc, sizeof result);
+        assert(!blue_payment_host_verify(frame, length + 2, 0,
+            BLUE_PAYMENT_INPUT_EXTERNAL, expected_hash, expected_digest,
+            hash_public_key, verify_then_mutate, &test, &result));
+        blue_payment_verified_signature empty = {0};
+        assert(memcmp(&result, &empty, sizeof result) == 0);
+    }
+}
+
 static void test_high_s_reply(const uint8_t *reply, size_t length,
     const uint8_t digest[32], const uint8_t hash160[20],
     signer_fixture *signer) {
@@ -119,6 +174,10 @@ static void test_host_reply(const uint8_t *reply, size_t length,
     assert(blue_payment_host_verify(frame, length + 2, 0,
         BLUE_PAYMENT_INPUT_EXTERNAL, owned->external, digest,
         hash_public_key, verify_host_signature, signer, &result));
+    test_host_result_alias(frame, length + 2, digest,
+        owned->external, signer);
+    test_host_callback_mutation(reply, length, digest,
+        owned->external, signer);
     uint8_t portable_hash[20];
     assert(zcl_host_pubkey_valid(signer->public_key));
     assert(zcl_host_hash160(signer->public_key, portable_hash));
@@ -240,6 +299,10 @@ static void test_signed_reply(signer_fixture *signer,
 static void expect_failed_reply(const blue_payment_apdu *state,
     const uint8_t reply[BLUE_PAYMENT_SIGN_REPLY_MAX], size_t length) {
     assert(length == 0 && !state->fee_ready);
+    blue_payment_apdu erased;
+    memset(&erased, 0, sizeof erased);
+    erased.review.replay.wire.failed = true;
+    assert(memcmp(state, &erased, sizeof erased) == 0);
     for (size_t i = 0; i < BLUE_PAYMENT_SIGN_REPLY_MAX; ++i)
         assert(reply[i] == 0);
 }
@@ -281,6 +344,57 @@ static void test_fail_closed(signer_fixture *signer,
     assert(blue_payment_apdu_touch_approve(&state));
     assert(!blue_payment_sign_next(&state, 0, &wrong, sign_digest, signer,
         hash_public_key, reply, sizeof reply, &length));
+    expect_failed_reply(&state, reply, length);
+}
+
+static void test_changed_totals_after_approval(signer_fixture *signer,
+    const blue_payment_owned_hashes *owned) {
+    static const uint8_t request[6] = {0xa5, 0x29, 0, 0, 1, 0};
+    for (unsigned field = 0; field < 4; ++field) {
+        blue_payment_apdu state;
+        uint8_t digest[32], reply[BLUE_PAYMENT_SIGN_REPLY_MAX];
+        initialize_review(&state, digest);
+        assert(blue_payment_apdu_touch_approve(&state));
+        switch (field) {
+        case 0: --state.input_zat; break;
+        case 1: ++state.output_zat; break;
+        case 2: ++state.fee_zat; break;
+        default: state.own_output_zat = state.output_zat + 1; break;
+        }
+        memset(reply, 0xa5, sizeof reply);
+        size_t length = 99;
+        unsigned calls = signer->calls;
+        assert(blue_payment_sign_command(&state, request,
+            sizeof request, owned, sign_digest, signer,
+            hash_public_key, reply, sizeof reply, &length) == 0x6985);
+        assert(signer->calls == calls);
+        expect_failed_reply(&state, reply, length);
+    }
+}
+
+static void test_changed_totals_between_inputs(signer_fixture *signer,
+    const blue_payment_owned_hashes *owned) {
+    static const uint8_t first[6] = {0xa5, 0x29, 0, 0, 1, 0};
+    static const uint8_t second[6] = {0xa5, 0x29, 0, 0, 1, 1};
+    blue_payment_apdu state;
+    uint8_t digest[32], reply[BLUE_PAYMENT_SIGN_REPLY_MAX];
+    initialize_review(&state, digest);
+    state.input_count = state.bound_inputs = 2;
+    memcpy(state.input_record[1], digest, sizeof digest);
+    state.input_record[1][0] ^= 1;
+    state.input_record[1][32] = BLUE_PAYMENT_INPUT_EXTERNAL;
+    assert(blue_payment_apdu_touch_approve(&state));
+    size_t length = 0;
+    assert(blue_payment_sign_command(&state, first, sizeof first, owned,
+        sign_digest, signer, hash_public_key, reply, sizeof reply,
+        &length) == 0x9000);
+    assert(state.approved && state.next_sign_index == 1);
+    ++state.fee_zat;
+    unsigned calls = signer->calls;
+    assert(blue_payment_sign_command(&state, second, sizeof second, owned,
+        sign_digest, signer, hash_public_key, reply, sizeof reply,
+        &length) == 0x6985);
+    assert(signer->calls == calls);
     expect_failed_reply(&state, reply, length);
 }
 
@@ -329,6 +443,80 @@ static void test_sign_command(signer_fixture *signer,
         &length) == 0x6985);
     assert(length == 0 && signer->calls == calls + 1);
     for (size_t i = 0; i < sizeof frame; ++i) assert(frame[i] == 0);
+}
+
+typedef struct {
+    uint8_t prefix[8];
+    size_t reply_length;
+    uint8_t suffix[BLUE_PAYMENT_SIGN_REPLY_MAX];
+} aliased_sign_frame;
+static_assert(offsetof(aliased_sign_frame, reply_length) == 8);
+
+static void test_aliased_reply_length(signer_fixture *signer,
+    const blue_payment_owned_hashes *owned) {
+    for (unsigned command = 0; command < 2; ++command) {
+        blue_payment_apdu state;
+        uint8_t digest[32];
+        aliased_sign_frame storage = {0};
+        uint8_t *frame = (uint8_t *)&storage;
+        initialize_review(&state, digest);
+        assert(blue_payment_apdu_touch_approve(&state));
+        memcpy(frame, (uint8_t[]){0xa5, 0x29, 0, 0, 1, 0}, 6);
+        storage.reply_length = 99;
+        unsigned calls = signer->calls;
+        if (command) {
+            assert(blue_payment_sign_command(&state, frame, 6, owned,
+                sign_digest, signer, hash_public_key, frame,
+                BLUE_PAYMENT_SIGN_REPLY_MAX,
+                &storage.reply_length) == 0x6f00);
+        } else {
+            assert(!blue_payment_sign_next(&state, 0, owned,
+                sign_digest, signer, hash_public_key, frame,
+                BLUE_PAYMENT_SIGN_REPLY_MAX, &storage.reply_length));
+        }
+        assert(signer->calls == calls && !state.fee_ready);
+        for (size_t i = 0; i < BLUE_PAYMENT_SIGN_REPLY_MAX; ++i)
+            assert(frame[i] == 0);
+    }
+}
+
+static void test_aliased_sign_storage(signer_fixture *signer,
+    const blue_payment_owned_hashes *owned) {
+    static const uint8_t request[6] = {0xa5, 0x29, 0, 0, 1, 0};
+    blue_payment_apdu state;
+    uint8_t digest[32], reply[BLUE_PAYMENT_SIGN_REPLY_MAX];
+    size_t length = 99;
+    unsigned calls = signer->calls;
+    initialize_review(&state, digest);
+    assert(blue_payment_apdu_touch_approve(&state));
+    memcpy(state.input_record[1], request, sizeof request);
+    assert(blue_payment_sign_command(&state, state.input_record[1],
+        sizeof request, owned, sign_digest, signer, hash_public_key,
+        reply, sizeof reply, &length) == 0x6f00);
+    assert(length == 0 && signer->calls == calls && !state.fee_ready);
+    for (size_t i = 0; i < sizeof reply; ++i) assert(reply[i] == 0);
+
+    initialize_review(&state, digest);
+    assert(blue_payment_apdu_touch_approve(&state));
+    length = 99;
+    assert(blue_payment_sign_command(&state, request, sizeof request,
+        owned, sign_digest, signer, hash_public_key, (uint8_t *)&state,
+        BLUE_PAYMENT_SIGN_REPLY_MAX, &length) == 0x6f00);
+    assert(length == 0 && signer->calls == calls && !state.fee_ready);
+
+    struct {
+        blue_payment_owned_hashes owned;
+        uint8_t spare[BLUE_PAYMENT_SIGN_REPLY_MAX];
+    } storage = {.owned = *owned};
+    initialize_review(&state, digest);
+    assert(blue_payment_apdu_touch_approve(&state));
+    length = 99;
+    assert(blue_payment_sign_command(&state, request, sizeof request,
+        &storage.owned, sign_digest, signer, hash_public_key,
+        (uint8_t *)&storage, BLUE_PAYMENT_SIGN_REPLY_MAX,
+        &length) == 0x6f00);
+    assert(length == 0 && signer->calls == calls && !state.fee_ready);
+    assert(memcmp(&storage.owned, owned, sizeof *owned) == 0);
 }
 
 static void test_interrupted_two_input_signing(signer_fixture *signer,
@@ -497,8 +685,12 @@ int main(void) {
     assert(hash_public_key(signer.public_key, owned.external));
     test_signed_reply(&signer, &owned);
     test_fail_closed(&signer, &owned);
+    test_changed_totals_after_approval(&signer, &owned);
+    test_changed_totals_between_inputs(&signer, &owned);
     test_readonly_confirmation(&signer, &owned);
     test_sign_command(&signer, &owned);
+    test_aliased_reply_length(&signer, &owned);
+    test_aliased_sign_storage(&signer, &owned);
     test_interrupted_two_input_signing(&signer, &owned);
     test_ordered_two_input_signing(&signer, &owned);
     test_sign_command_rejections(&signer, &owned);

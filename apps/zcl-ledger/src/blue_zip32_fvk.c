@@ -4,6 +4,7 @@
 #include "blue_jubjub_encode.h"
 #include "blue_jubjub_lowmem.h"
 #include "blue_mod256.h"
+#include "blue_storage.h"
 #include "blue_sapling_generators.h"
 #include "crypto/blake2b.h"
 
@@ -21,6 +22,8 @@ static bool encode_scalar_point(uint8_t encoded[32],
 bool blue_zip32_fvk_from_expsk(struct zip32_fvk *result,
     const struct zip32_expsk *secret) {
     if (!result) return false;
+    if (blue_storage_overlaps(result, sizeof *result,
+            secret, secret ? sizeof *secret : 0)) return false;
     bool valid = secret &&
         encode_scalar_point(result->ak, &blue_spending_key_generator,
             secret->ask) &&
@@ -33,6 +36,8 @@ bool blue_zip32_fvk_from_expsk(struct zip32_fvk *result,
 
 bool blue_zip32_fvk_tag(uint32_t *tag, const struct zip32_fvk *fvk) {
     if (!tag) return false;
+    if (blue_storage_overlaps(tag, sizeof *tag,
+            fvk, fvk ? sizeof *fvk : 0)) return false;
     *tag = 0;
     if (!fvk) return false;
     static const uint8_t personal[16] = {
