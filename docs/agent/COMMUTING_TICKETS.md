@@ -1,10 +1,19 @@
 # Commuting tickets
 
-This document specifies how a per-group proof result is keyed, so that a push to main that leaves a group's inputs untouched keeps that group's ticket valid and only the groups whose inputs changed are re-proved.
+This is a historical design proposal for per-group proof reuse, not a current
+admission contract or implementation claim. The active route is
+[DEVELOPING.md](../DEVELOPING.md). Only implemented receiving-node policy can
+admit exact reusable evidence; this proposal grants no skip or publication
+authority and does not create another receipt ledger.
 
 ## Purpose
 
-A ticket is a signed PASS verdict for one test group, keyed by that group's input closure rather than by the commit. The push gate admits a train when every registered group holds a valid ticket for the train's tip. This document defines the input closure, the ticket key, the ticket record, the admission rule, the cost of a base move, and revocation.
+The proposal keys a signed PASS verdict to one group's complete input closure
+rather than only to the commit. The proposed fields and rules below require
+independent qualification before use. A reduced or stale compiled catalog must
+never define the complete group universe or silently omit current family
+members. Source, toolchain, harness, isolation, selection, and receiver policy
+all remain part of exact admission.
 
 ## The problem, measured
 
@@ -16,7 +25,10 @@ The push-hook proof (`dev proof ensure` and `dev proof wait`; see engine/composi
 | Worst stack in the window | rebased 8 times | fleet proof logs |
 | Wall clock lost across the fleet | about 20 h | fleet proof logs, 2026-09-03 and 2026-09-04 |
 
-Per-group caching already exists. test_parallel keys per-group PASS verdicts by a toolkey: the SUITE VERDICT line carries `toolkey=<12 hex>`, and a run prints `cache: stored 483 fresh PASS verdict(s)`. What is missing is a key that depends on the group's input closure rather than the commit. This document specifies that key.
+The recorded runner had per-group caching and a `toolkey` in its suite verdict;
+one historical run stored 483 fresh PASS verdicts. That count and toolkey alone
+do not establish present receiver qualification. Derive current exact reuse
+and its limitations from native receipts, not this proposed key.
 
 ## Input closure
 
@@ -79,7 +91,10 @@ After a base move, re-proof cost is proportional to the number of groups whose c
 | 6-doc train | 0 |
 | One-leaf change | 1 |
 
-A documentation-only train costs no re-proofs. A one-leaf change costs one re-proof.
+These are expectations of the proposed closure model, not current guarantees.
+Documentation can affect generated inputs, build rules, or acceptance policy;
+one leaf can affect several groups. No zero-reproof or single-group assertion
+is valid without complete exact-input qualification and receiver admission.
 
 ## Revocation
 
@@ -91,7 +106,10 @@ A ticket is invalid when any of the following holds:
 
 There is no other expiry. Never trust a ticket without a verifiable signature. A node's own report is never evidence.
 
-## Who lands what
+## Historical proposed assignments
+
+These names are archived design context, not live ownership or leases. Current
+writers coordinate through native claims; no permanent lead is required.
 
 | Work | Owner |
 |---|---|

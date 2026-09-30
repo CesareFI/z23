@@ -11,6 +11,17 @@
 | Created | 2026-09-05 |
 | Supersedes | none |
 
+## Current operating boundary
+
+This accepted 2026-09-05 layout records a design convention, not current lane
+ownership or authority to relocate existing work. Follow AGENTS.md, host
+policy, `devworker where z23`, and the native lane receiver's approved paths.
+Resume owned dirty work in place; do not move it into `~/.z23/` merely to match
+this proposal. Create or reclaim lanes only through qualified native tools,
+preserving Git registration, claims, leases, queued work, and exact commits.
+Directory names, age, and counts never authorize deletion. The historical
+owner label below does not require a permanent lead.
+
 ## Problem
 
 Every lane, train, and short-lived unit dispatched on a node has been

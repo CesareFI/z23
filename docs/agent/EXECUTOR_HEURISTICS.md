@@ -23,16 +23,25 @@ n is units dispatched on the recorded day. A row can record incidents and still 
 | GLM 5.3 flash | multi-file | 10 | 0 | jq use; writes outside the worktree auto-rejected; merged a foreign branch into its lane; server errors; read-heavy then connection drop | route flash ONLY to one-file units with a pinned test |
 | GLM 5.3 flash | single-file mechanical with pinned test | 2 | 2 | rewrote a whole file when asked for one row | per-file change ceiling before apply; first edit early |
 
-A Muse unit is not done until a finisher has run (finish-or-remove, commit signed).
+In the recorded 2026-09-03 experiment, a Muse unit required a separate finisher
+before it was counted complete. That historical arrangement does not require
+a permanent central role; current completion uses exact checkpoints,
+non-author review, and qualified native acceptance.
 
-## Structural rules
+## Historical structural observations
 
-Verified on this checkout:
+These observations describe the recorded 2026-09-03 workflow. Current
+ownership, resource limits, exact proof reuse, and landing eligibility come
+from AGENTS.md, DEVELOPING.md, host policy, and qualified native receiver
+state; they do not depend on the model or a permanent lead.
 
 - Stack pick loops fail on regenerated files (inventory, API reference). Regenerate once on the stack.
-- A lane whose base is more than 10 commits behind main needs a rebase before stacking. Pointers: lane launch docs/agent/LANE_LAUNCH.md; worktree init tools/scripts/worktree_init.sh; worktree GC tools/scripts/worktree_gc.sh.
-- One proof per box means finished stacks are batched.
-- Lint gates red on main go into the per-box baseline before relint. Never raise a baseline to turn a gate green.
+- Revalidate a lane against the exact current base through the native landing
+  route; commit distance alone does not determine safety or required work.
+- Native proof/build locks and `devbuild --wait` bound work. Do not infer a
+  fleet-wide proof monopoly or publication authority from a historical box rule.
+- Report gates red on main with their exact inputs and evidence. Never hide
+  them in a per-box baseline or raise a pin to turn a gate green.
 
 ## Routing rule
 
