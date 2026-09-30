@@ -540,6 +540,33 @@ static int test_search_multiword(void)
     return failures;
 }
 
+static int test_receive_address_search(void)
+{
+    int failures = 0;
+    const struct zcl_command_registry *reg = zcl_command_catalog();
+    char out[ZCL_COMMAND_LIST_BUDGET + 1];
+    TEST("receive address intent finds transparent address creation") {
+        size_t n = zcl_command_registry_search_json(
+            reg, "receive address", out, sizeof(out));
+        ASSERT(n > 0);
+        struct json_value doc;
+        ASSERT(json_read(&doc, out, n) && doc.type == JSON_OBJ);
+        const struct json_value *matches = json_get(&doc, "matches");
+        ASSERT(matches && matches->type == JSON_ARR);
+        bool found = false;
+        for (size_t i = 0; i < matches->num_children; i++) {
+            const char *path = json_get_str(
+                json_get(&matches->children[i], "path"));
+            if (path && strcmp(path, "core.wallet.address.new") == 0)
+                found = true;
+        }
+        ASSERT(found);
+        json_free(&doc);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_ready_leaves_bound(void)
 {
     int failures = 0;
@@ -4532,6 +4559,7 @@ int test_command_registry_catalog(void)
     failures += test_branch_menus_shallow();
     failures += test_search_bounded();
     failures += test_search_multiword();
+    failures += test_receive_address_search();
     failures += test_ready_leaves_bound();
     failures += test_bridge_bindings_reverse();
     failures += test_bootstatus_projects_recovery_and_blocker();

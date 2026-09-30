@@ -807,7 +807,7 @@ ZCL_COMMAND_READY_COMMAND(
     "The freshly derived transparent address, persisted in the wallet "
     "by the running node's getnewaddress at call time; created is true "
     "when a new key was written.", 0,
-    "wallet,address,new",
+    "wallet,address,new,receive",
     "zcl.command.empty_input.v1", "zcl.wallet_address.v1", "", "",
     "z23 core wallet address new",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_WALLET,
