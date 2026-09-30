@@ -168,6 +168,19 @@ static void bfp_free_recipe(uint8_t **wire, size_t *wire_len)
     *wire_len = 0;
 }
 
+static struct zcl_result bfp_load_recipe_wire(
+    const char *workspace, const uint8_t root[32], uint8_t **wire,
+    size_t *wire_len)
+{
+    int loaded = vcs_object_load_raw_bounded(
+        workspace, root, VCS_PACKAGE_RECIPE_MAX_WIRE_BYTES, wire, wire_len);
+    if (loaded == -2)
+        return ZCL_ERR(-1, "package-recipe-root-mismatch");
+    if (loaded != 0)
+        return ZCL_ERR(-1, "package-recipe-cas-miss");
+    return ZCL_OK;
+}
+
 static struct zcl_result bfp_load_inputs(
     const char *workspace, const char *datadir,
     const struct vcs_zcode_task_v1 *task,
@@ -176,8 +189,10 @@ static struct zcl_result bfp_load_inputs(
 {
     uint8_t *lock_wire = NULL;
     size_t lock_wire_len = 0;
-    if (vcs_object_load_raw(workspace, task->dependency_lock_root,
-                            &lock_wire, &lock_wire_len) != 0 ||
+    if (vcs_object_load_raw_bounded(
+            workspace, task->dependency_lock_root,
+            VCS_PACKAGE_LOCK_MAX_WIRE_BYTES,
+            &lock_wire, &lock_wire_len) != 0 ||
         vcs_package_lock_parse(lock_wire, lock_wire_len, &out->lock) !=
             VCS_PACKAGE_DEPS_OK) {
         free(lock_wire);
@@ -196,9 +211,10 @@ static struct zcl_result bfp_load_inputs(
                    out->lock.nodes[out->lock.count - 1u].name);
     if (!package_name[0])
         return ZCL_ERR(-1, "package-lock-target-name-missing");
-    if (vcs_object_load_raw(workspace, task->acceptance_tests_root,
-                            recipe_wire, recipe_wire_len) != 0)
-        return ZCL_ERR(-1, "package-recipe-cas-miss");
+    struct zcl_result recipe_loaded = bfp_load_recipe_wire(
+        workspace, task->acceptance_tests_root, recipe_wire, recipe_wire_len);
+    if (!recipe_loaded.ok)
+        return recipe_loaded;
     struct vcs_package_recipe recipe;
     uint8_t checked_recipe[32];
     enum vcs_package_recipe_error parsed = vcs_package_recipe_parse(

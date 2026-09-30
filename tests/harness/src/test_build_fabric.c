@@ -13,6 +13,7 @@
 #include "services/build_fabric_async.h"
 #include "services/build_fabric_runtime.h"
 #include "services/build_fabric_proof_recovery.h"
+#include "services/build_fabric_package_executor.h"
 #include "services/subordinate_work_admission.h"
 #include "services/build_fabric_worker.h"
 #include "services/build_fabric_worker_evidence.h"
@@ -36,7 +37,9 @@
 #include "vcs/package_manifest.h"
 #include "vcs/blob_store.h"
 #include "vcs/package_build.h"
+#include "vcs/package_recipe.h"
 #include "vcs/proof_ticket.h"
+#include "vcs/vcs.h"
 #include "vcs/vcs_object.h"
 #include "vcs/zcode_dev.h"
 #include "crypto/sha3.h"
@@ -2522,6 +2525,121 @@ static int test_bf_worker_oversized_input(void)
         ASSERT_STR_EQ(action.state, "LOCAL_FALLBACK");
         ASSERT_STR_EQ(action.last_error, "input-cas-miss");
         node_db_close(&ndb);
+        test_rm_rf(dir);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static bool bf_capture_package_source(const char *workspace,
+                                      uint8_t source_root[32])
+{
+    char source[320], unit[384];
+    int source_len = snprintf(source, sizeof(source), "%s/source", workspace);
+    int unit_len = snprintf(unit, sizeof(unit), "%s/unit.c", source);
+    if (source_len <= 0 || (size_t)source_len >= sizeof(source) ||
+        unit_len <= 0 || (size_t)unit_len >= sizeof(unit) ||
+        mkdir(source, 0700) != 0)
+        return false;
+    int fd = open(unit, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+    static const char bytes[] = "int package_fixture(void) { return 23; }\n";
+    if (fd < 0)
+        return false;
+    ssize_t written = write(fd, bytes, sizeof(bytes) - 1u);
+    bool closed = close(fd) == 0;
+    return written == (ssize_t)(sizeof(bytes) - 1u) && closed &&
+        vcs_tree_capture_into(source, workspace, source_root) == VCS_OK;
+}
+
+static bool bf_resize_addressed_object(const char *workspace,
+                                       const uint8_t root[32], off_t size)
+{
+    char root_hex[65], path[1024];
+    zcl_hex_encode(root, 32, root_hex);
+    int n = snprintf(path, sizeof(path), "%s/.zvcs/objects/%.2s/%s",
+                     workspace, root_hex, root_hex + 2);
+    return n > 0 && (size_t)n < sizeof(path) && truncate(path, size) == 0;
+}
+
+static int test_bf_package_input_bounds(void)
+{
+    int failures = 0;
+    TEST("build_fabric: package preparation bounds lock and recipe CAS reads") {
+        char dir[256], source_dir[320], emit_dir[320], recipe_path[320];
+        test_make_tmpdir(dir, sizeof(dir), "build_fabric", "package_bounds");
+        ASSERT(vcs_object_store_init(dir));
+        uint8_t source_root[32];
+        ASSERT(bf_capture_package_source(dir, source_root));
+        struct test_accepted_work_fixture fixture;
+        ASSERT(test_accepted_work_fixture_create(
+            dir, source_root, (int64_t)platform_time_wall_unix(), 0x23,
+            &fixture));
+        uint8_t *lock_wire = NULL, *recipe_wire = NULL;
+        size_t lock_len = 0, recipe_len = 0;
+        ASSERT_EQ(vcs_object_load_raw_bounded(
+            dir, fixture.accepted.task.dependency_lock_root,
+            VCS_PACKAGE_LOCK_MAX_WIRE_BYTES, &lock_wire, &lock_len), 0);
+        ASSERT_EQ(vcs_object_load_raw_bounded(
+            dir, fixture.accepted.task.acceptance_tests_root,
+            VCS_PACKAGE_RECIPE_MAX_WIRE_BYTES, &recipe_wire, &recipe_len), 0);
+        int source_len = snprintf(
+            source_dir, sizeof(source_dir), "%s/materialized", dir);
+        int emit_len = snprintf(emit_dir, sizeof(emit_dir), "%s/emit", dir);
+        int recipe_path_len = snprintf(
+            recipe_path, sizeof(recipe_path), "%s/recipe", dir);
+        ASSERT(source_len > 0 && (size_t)source_len < sizeof(source_dir));
+        ASSERT(emit_len > 0 && (size_t)emit_len < sizeof(emit_dir));
+        ASSERT(recipe_path_len > 0 &&
+               (size_t)recipe_path_len < sizeof(recipe_path));
+        struct build_fabric_package_execution *execution = zcl_malloc(
+            sizeof(*execution), "test.build_fabric.package_bounds");
+        ASSERT(execution != NULL);
+
+        ASSERT(bf_resize_addressed_object(
+            dir, fixture.accepted.task.dependency_lock_root,
+            (off_t)VCS_PACKAGE_LOCK_MAX_WIRE_BYTES + 1));
+        struct zcl_result prepared = build_fabric_package_prepare(
+            dir, dir, "/fixture/package-verify", source_dir, emit_dir,
+            recipe_path, VCS_BUILD_PACKAGE_PROFILE_QUICK_V1,
+            &fixture.accepted.task, &fixture.accepted.candidate, execution);
+        ASSERT(!prepared.ok);
+        ASSERT_STR_EQ(prepared.message,
+                      "package-dependency-lock-cas-miss-or-corrupt");
+        bool repaired = false;
+        ASSERT(vcs_object_put_addressed_repair(
+            dir, fixture.accepted.task.dependency_lock_root,
+            lock_wire, lock_len, &repaired));
+        ASSERT(repaired);
+
+        ASSERT(bf_resize_addressed_object(
+            dir, fixture.accepted.task.acceptance_tests_root,
+            (off_t)VCS_PACKAGE_RECIPE_MAX_WIRE_BYTES + 1));
+        prepared = build_fabric_package_prepare(
+            dir, dir, "/fixture/package-verify", source_dir, emit_dir,
+            recipe_path, VCS_BUILD_PACKAGE_PROFILE_QUICK_V1,
+            &fixture.accepted.task, &fixture.accepted.candidate, execution);
+        ASSERT(!prepared.ok);
+        ASSERT_STR_EQ(prepared.message, "package-recipe-root-mismatch");
+        repaired = false;
+        ASSERT(vcs_object_put_addressed_repair(
+            dir, fixture.accepted.task.acceptance_tests_root,
+            recipe_wire, recipe_len, &repaired));
+        ASSERT(repaired);
+        ASSERT(mkdir(source_dir, 0700) == 0);
+
+        prepared = build_fabric_package_prepare(
+            dir, dir, "/fixture/package-verify", source_dir, emit_dir,
+            recipe_path, VCS_BUILD_PACKAGE_PROFILE_QUICK_V1,
+            &fixture.accepted.task, &fixture.accepted.candidate, execution);
+        ASSERT(prepared.ok);
+        ASSERT_EQ(execution->dep_count, 0);
+        struct stat recipe_stat;
+        ASSERT(stat(recipe_path, &recipe_stat) == 0);
+        ASSERT(recipe_stat.st_size >= 0);
+        ASSERT_EQ((size_t)recipe_stat.st_size, recipe_len);
+        free(execution);
+        free(recipe_wire);
+        free(lock_wire);
         test_rm_rf(dir);
         PASS();
     } _test_next:;
@@ -5056,6 +5174,7 @@ int test_build_fabric(void)
     failures += test_bf_execution_observation_codec();
     failures += test_bf_worker_identity_capability_honesty();
     failures += test_bf_worker_oversized_input();
+    failures += test_bf_package_input_bounds();
     failures += test_bf_confined_worker();
     failures += test_bf_confined_test_worker();
     failures += test_bf_native();
