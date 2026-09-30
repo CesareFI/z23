@@ -199,8 +199,10 @@ bool agent_broker_spawn_confined(const struct agent_spawn_request *req,
                 _exit(91);
             if (setgid(req->confined_gid) != 0 && errno != EPERM)
                 _exit(92);
-            (void)setuid(req->confined_uid);   /* EPERM is the expected
-                                                * unprivileged answer */
+            if (setuid(req->confined_uid) != 0 && errno != EPERM)
+                _exit(95); /* EPERM is the expected unprivileged answer;
+                            * anything else leaves the child privileged with
+                            * the confinement grant already half-applied */
         }
 
         struct os_sandbox_rlimits lim = spawn_rlimits();

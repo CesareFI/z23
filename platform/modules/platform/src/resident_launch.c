@@ -400,7 +400,8 @@ static void resident_child_exec(int pinned_fd, int ipc_child,
     if (platform_execve_fd(pinned_fd, argv, envp) < 0) {
         int why = errno ? errno : ENOEXEC;
         unsigned char code = (unsigned char)(why & 0xff);
-        (void)write(status_write, &code, 1);
+        ssize_t reported = write(status_write, &code, 1); /* pre-exit errno report: the parent's EOF read names the spawn failure */
+        (void)reported;
         _exit(127);
     }
     _exit(126); /* unreachable: execve returns only on failure */

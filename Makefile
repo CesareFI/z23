@@ -1174,24 +1174,21 @@ ZCL_TU_RANDOM_SEED = $(if $(filter Darwin,$(ZCL_HOST_OS)),,-frandom-seed=$<)
 # -Wunused-result is ALSO the diagnostic GCC and Clang use to report
 # [[nodiscard]], so this flag silently voids the repository's result-type
 # discipline: a result type could be annotated and every dropped return would
-# still compile clean. Deleting it is not a Makefile change — it is a source
-# change at every site that drops a write/read/link/fgets/system result.
+# still compile clean. DELETED on 2026-09-30: the last measured site set
+# (9 production sites — an ignored setuid in the broker spawn, a
+# rollback ftruncate whose failure left a torn leaf-store tail, an fgets
+# whose failure rode a downstream parse check, an advisory symlink, and
+# five pre-exit report writes) was fixed or given a reasoned discard, and
+# a planted ignored write was proven to fail the build with the flag gone.
+# [[nodiscard]] on struct zcl_result and libc warn_unused_result both fire
+# now. GCC does NOT accept a `(void)` cast as consuming a warn_unused_result
+# return, so a site that must discard needs a named capture plus reason. The
+# check runs during gimplification, so `cc -fsyntax-only` reports NONE of
+# them even at -O3 — only an optimised codegen pass finds them. If the flag
+# ever needs re-deriving, add it back temporarily as
+# -Wno-error=unused-result and rebuild: make build-only alone is NOT enough
+# for the stringop class below.
 #
-# The SHIPPED tree is now clean: every ALL_SRCS TU was rebuilt at -O3 with the
-# suppression defeated and reported zero, with a deliberately-planted ignored
-# write() confirming the scan was armed. What remains is tests/harness/include/test/ alone.
-# Deleting the flag means fixing those, and only then does [[nodiscard]] on
-# struct zcl_result start doing anything — both ride this one diagnostic.
-#
-# Note GCC does NOT accept a `(void)` cast as consuming a warn_unused_result
-# return, so most of those sites need a real check, not a cast. The check runs
-# during gimplification, so `cc -fsyntax-only` reports NONE of them even at
-# -O3 — only an optimised codegen pass finds them.
-# Re-derive the current site list (never trust a count typed here):
-#   sed -i 's/^ZCL_WARN_UNUSED_RESULT = .*/ZCL_WARN_UNUSED_RESULT = -Wno-error=unused-result/' Makefile
-#   make build-only && make -j$(nproc) 2>&1 | grep -- '-Wunused-result]'
-# suppression-ok: removing it breaks the build until the source sites above are fixed; tracked, not defaulted
-ZCL_WARN_UNUSED_RESULT = -Wno-unused-result
 #
 # -Wstringop-overflow hides a memory-safety diagnostic class. Deleting it is
 # likewise a source change, not a flag change: the sites live in
@@ -1302,7 +1299,7 @@ CFLAGS = -std=$(ZCL_C_STD) -g -O3 $(ZCL_ARCH_CFLAGS) $(ZCL_LTO_FLAG) -Wall -Wext
 	$(REPRO_CFLAGS) \
 	$(HARDEN_CFLAGS) \
 	$(ZCL_WARN_EXTRA_GATES) \
-	$(ZCL_WARN_STRINGOP_OVERFLOW) $(ZCL_WARN_UNUSED_RESULT) \
+	$(ZCL_WARN_STRINGOP_OVERFLOW) \
 	$(ZCL_ALL_INCLUDES) \
 	-D_POSIX_C_SOURCE=200809L $(ZCL_PLATFORM_CPPFLAGS) -DZCL_AR_ENFORCE $(BUILD_IDENTITY_CPPFLAGS) $(ZCL_VENDOR_INC_FLAGS) -Ivendor/x11/include $(GTK_DEF) $(GTK_CFLAGS) \
 	$(WEBKIT_DEF) $(WEBKIT_CFLAGS)

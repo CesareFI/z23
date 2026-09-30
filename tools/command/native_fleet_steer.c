@@ -1197,7 +1197,10 @@ static long long fmc_ack_cursor(const char *agent)
     if (!f)
         return -1;
     buf[0] = '\0';
-    (void)fgets(buf, sizeof(buf), f);
+    if (!fgets(buf, sizeof(buf), f)) {
+        fclose(f);
+        return -1;
+    }
     (void)fclose(f);
     v = strtoll(buf, &end, 10);
     if (end == buf || v < 0)

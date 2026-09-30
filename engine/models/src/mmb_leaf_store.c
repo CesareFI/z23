@@ -137,8 +137,14 @@ bool mmb_leaf_store_append(struct mmb_leaf_store *store,
     while (written < 32u) {
         ssize_t w = write(store->fd, hash + written, 32u - written);
         if (w <= 0) {
-            (void)zcl_ftruncate(store->fd, original_size);
-            (void)lseek(store->fd, original_size, SEEK_SET);
+            if (zcl_ftruncate(store->fd, original_size) != 0 ||
+                lseek(store->fd, original_size, SEEK_SET) < 0) {
+                /* The rollback failed: the file may hold a torn tail, so no
+                 * later append or read may trust this handle again. */
+                close(store->fd);
+                store->fd = -1;
+                store->open = false;
+            }
             return false;
         }
         written += (size_t)w;

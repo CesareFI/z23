@@ -397,8 +397,13 @@ static void ms_rm_rf(const char *path)
 static void ms_link_if_present(const char *from, const char *to)
 {
     struct stat st;
-    if (from && to && lstat(from, &st) == 0)
-        (void)symlink(from, to);
+    if (from && to && lstat(from, &st) == 0) {
+        /* Advisory mirror: EEXIST means the link is already there, and any
+         * other failure leaves the session running without this one link —
+         * the contract this helper's callers accept. */
+        int linked = symlink(from, to);
+        (void)linked;
+    }
 }
 
 /* The operator muse home, if one is configured. Sessions are not copied. */

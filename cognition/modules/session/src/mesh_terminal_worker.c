@@ -253,7 +253,8 @@ static void tw_child(const struct mesh_terminal_worker_config *cfg,
 
     if (chdir(cfg->workdir) < 0) {
         uint8_t stage = TW_STAGE_CHDIR;
-        (void)write(stage_fd, &stage, 1);
+        ssize_t reported = write(stage_fd, &stage, 1); /* pre-exit stage report: the parent names this failure from its own EOF read */
+        (void)reported;
         _exit(126);
     }
 
@@ -269,7 +270,8 @@ static void tw_child(const struct mesh_terminal_worker_config *cfg,
         os_sandbox_terminal_worker_profile(rules, 2);
     if (!os_sandbox_enter(&profile).ok) {
         uint8_t stage = TW_STAGE_CONFINEMENT;
-        (void)write(stage_fd, &stage, 1);
+        ssize_t reported = write(stage_fd, &stage, 1); /* pre-exit stage report: the parent names this failure from its own EOF read */
+        (void)reported;
         _exit(126);
     }
 
@@ -284,14 +286,16 @@ static void tw_child(const struct mesh_terminal_worker_config *cfg,
 
     {
         uint8_t stage = TW_STAGE_EXEC;
-        (void)write(stage_fd, &stage, 1);
+        ssize_t reported = write(stage_fd, &stage, 1); /* pre-exit stage report: the parent names this failure from its own EOF read */
+        (void)reported;
     }
     _exit(127);
 
 tty_fail:
     {
         uint8_t stage = TW_STAGE_TTY;
-        (void)write(stage_fd, &stage, 1);
+        ssize_t reported = write(stage_fd, &stage, 1); /* pre-exit stage report: the parent names this failure from its own EOF read */
+        (void)reported;
     }
     _exit(126);
 }
