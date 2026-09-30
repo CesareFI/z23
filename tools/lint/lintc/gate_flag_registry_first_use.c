@@ -113,6 +113,8 @@ static int fru_scan(const char *path, int line, const char *name, int *hit,
     struct stat st;
     if (stat(path, &st) != 0)
         return 1;
+    if (!S_ISREG(st.st_mode))
+        return -1;
     FILE *f = fopen(path, "r");
     if (!f)
         return -1;
@@ -134,8 +136,11 @@ static int fru_scan(const char *path, int line, const char *name, int *hit,
             *found = on;
         }
     }
+    int read_failed = ferror(f);
     free(l);
-    fclose(f);
+    int close_failed = fclose(f) != 0;
+    if (read_failed || close_failed)
+        return -1;
     *lines = lineno;
     return 0;
 }

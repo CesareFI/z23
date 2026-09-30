@@ -204,6 +204,13 @@ static int ntf_count_hits(const char *line)
 
 static int ntf_scan_file(const char *path, struct ntf_set *s)
 {
+    struct stat st;
+    if (stat(path, &st) != 0 || !S_ISREG(st.st_mode)) {
+        fprintf(stderr,
+                "check-no-bare-tmp-fixture: UNPROVEN — cannot read %s\n",
+                path);
+        return 2;
+    }
     FILE *f = fopen(path, "r");
     if (!f) {
         fprintf(stderr,
@@ -547,33 +554,25 @@ int check_no_bare_tmp_fixture_selftest(void)
                        NULL);
     /* a stale row (file no longer has that many, or any, live sites) fails */
     bad |= ntf_st_case(root, "int x;\n", baseline1, 1, "STALE");
-    /* an unreadable file is UNPROVEN, not silently skipped */
+    /* A non-regular path is UNPROVEN independent of uid. chmod(000) remains
+     * readable by root and therefore cannot prove this refusal portably. */
     {
         char case_path[4096];
         if (ovf(snprintf(case_path, sizeof case_path, "%s/case.c", root),
                 sizeof case_path)) {
             bad = 1;
-        } else if (csr_write(case_path, "int x;\n")
-                  || chmod(case_path, 0) != 0) {
+        } else if (unlink(case_path) != 0 || mkdir(case_path, 0700) != 0) {
             bad = 1;
         } else {
-            char base_path[4096];
-            (void)snprintf(base_path, sizeof base_path, "%s/baseline.txt",
-                           root);
-            (void)csr_write(base_path, "");
-            const char *roots[1] = { root };
-            FILE *out = tmpfile(), *err = tmpfile();
-            int rc = (out && err)
-                         ? ntf_run_cfg(roots, 1, base_path, "", 0, 0, out, err)
-                         : 1;
-            if (out) fclose(out);
-            if (err) fclose(err);
+            struct ntf_set found = {0};
+            int rc = ntf_scan_file(case_path, &found);
             if (rc != 2) {
                 fprintf(stderr, "check_no_bare_tmp_fixture selftest: "
-                                "unreadable file want rc 2 got %d\n", rc);
+                                "non-regular file want rc 2 got %d\n", rc);
                 bad = 1;
             }
-            (void)chmod(case_path, 0600);
+            if (rmdir(case_path) != 0)
+                bad = 1;
         }
     }
     (void)rap_rm_rf(root);

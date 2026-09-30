@@ -971,10 +971,11 @@ static int fr_st_first_use_cases(FILE *out, char *ob, size_t obcap)
                       " (line past end; nearest read now at ./fu_split.c:1)")
            == NULL;
 
-    if (csr_write("./fu_secret.c",
-                "int f(void){ return getenv(\"ZCL_FU_UNREADABLE\") != 0; }\n"))
+    /* A non-regular path is unreadable independent of uid: chmod(000) is
+     * still readable by a root-run lint process and made this selftest red
+     * on the production verifier host while exercising no refusal at all. */
+    if (mkdir("./fu_secret.c", 0700) != 0)
         return 1;
-    bad |= chmod("./fu_secret.c", 0) != 0;
     bad |= fr_st_case(
             "Z23_FLAG(\"ZCL_FU_FILLER\", \"env_runtime\", \"-\", \"-\", \"why\")\n"
             "Z23_FLAG(\"ZCL_FU_UNREADABLE\", \"env_runtime\", \"-\", \"-\",\n"
@@ -982,7 +983,7 @@ static int fr_st_first_use_cases(FILE *out, char *ob, size_t obcap)
             NULL, NULL, "2026-01-01", "printf '%s\\0' fu_filler.c", out, ob,
             obcap, &rc);
     bad |= rc != 2;
-    chmod("./fu_secret.c", 0644);
+    bad |= rmdir("./fu_secret.c") != 0;
     return bad;
 }
 
@@ -1252,6 +1253,7 @@ static void fr_st_cleanup(void)
     unlink("./fu_zero.c");
     unlink("./fu_split.c");
     unlink("./fu_secret.c");
+    rmdir("./fu_secret.c");
     unlink("./fu_auto_a.sh");
     unlink("./fu_auto_b.sh");
     unlink("./fu_auto_c.c");

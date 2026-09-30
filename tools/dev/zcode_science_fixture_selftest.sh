@@ -32,7 +32,7 @@ cleanup() {
 
 has_line() {
     local text="$1" expected="$2"
-    printf '%s\n' "$text" | grep -Fqx -- "$expected"
+    grep -Fqx -- "$expected" <<<"$text"
 }
 
 [ -x "$FIXTURE" ] || fail "$FIXTURE is not executable"
