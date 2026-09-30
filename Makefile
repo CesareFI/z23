@@ -508,8 +508,8 @@ else ifneq ($(filter lint lint-cached lint-cold-audit lint-preflight,$(ZCL_EPOCH
 # post-link toolchain-integrity check. lint-preflight shares this because
 # check-capability-closure (one of its gates) reads the same dev-obj epoch.
 ZCL_EPOCH_PROFILES := dev
-else ifneq ($(filter t-fast t-fast-exact t-hotswap hotswap-test-so test_parallel_fast test-parallel-fast-active test-parallel-fast-active-locked t-fast-locked t-fast-exact-locked ff-test-lint,$(ZCL_EPOCH_SINGLE_GOAL)),)
-ZCL_EPOCH_PROFILES := $(strip $(if $(filter test-parallel-fast-active-locked ff-test-lint,$(ZCL_EPOCH_SINGLE_GOAL)),dev) test-fast)
+else ifneq ($(filter t-fast t-fast-exact t-hotswap hotswap-test-so test_parallel_fast test-parallel-fast-active test-parallel-fast-active-locked t-fast-locked t-fast-exact-locked build-fabric-unprivileged-acceptance build-fabric-unprivileged-acceptance-locked ff-test-lint,$(ZCL_EPOCH_SINGLE_GOAL)),)
+ZCL_EPOCH_PROFILES := $(strip $(if $(filter test-parallel-fast-active-locked build-fabric-unprivileged-acceptance build-fabric-unprivileged-acceptance-locked ff-test-lint,$(ZCL_EPOCH_SINGLE_GOAL)),dev) test-fast)
 else ifneq ($(filter t test test_parallel test-parallel test-parallel-active test-parallel-active-locked test-parallel-locked t-locked test-locked secure-release-regressions secure-release-regressions-locked,$(ZCL_EPOCH_SINGLE_GOAL)),)
 ZCL_EPOCH_PROFILES := test-strict
 else ifneq ($(filter t-asan test-asan asan-ci zcode-package-asan,$(ZCL_EPOCH_SINGLE_GOAL)),)
@@ -1606,7 +1606,8 @@ CHECKOUT_LOCK_MODE = $(if $(filter 1,$(ZCL_DEV_WATCH_LANE)),watcher,foreground)
 CHECKOUT_LOCKED_TEST_GOALS := test-parallel-active-locked \
 	test-parallel-fast-active-locked test-parallel-locked t-locked \
 	t-fast-locked t-fast-exact-locked test-locked test-full-locked \
-	secure-release-regressions-locked
+	secure-release-regressions-locked \
+	build-fabric-unprivileged-acceptance-locked
 ifneq ($(filter $(CHECKOUT_LOCKED_TEST_GOALS),$(MAKECMDGOALS)),)
 ifneq ($(ZCL_CHECKOUT_LOCK_HELD),1)
 $(error internal locked test goal requires the checkout lock; invoke its public target)
@@ -1897,8 +1898,8 @@ else ifneq ($(filter dev-bin z23-dev zclassic23-dev,$(ZCL_DEPFILE_SINGLE_GOAL)),
 ZCL_DEPFILE_PROFILES := dev $(if $(ZCL_HOST_WINDOWS),,test-fast)
 else ifneq ($(filter dev-proof-bundle dev-proof-bundle-prefork,$(ZCL_DEPFILE_SINGLE_GOAL)),)
 ZCL_DEPFILE_PROFILES := dev test-fast
-else ifneq ($(filter t-fast t-fast-exact t-hotswap hotswap-test-so test_parallel_fast test-parallel-fast-active test-parallel-fast-active-locked t-fast-locked t-fast-exact-locked ff-test-lint,$(ZCL_DEPFILE_SINGLE_GOAL)),)
-ZCL_DEPFILE_PROFILES := $(strip $(if $(filter test-parallel-fast-active-locked ff-test-lint,$(ZCL_DEPFILE_SINGLE_GOAL)),dev) test-fast)
+else ifneq ($(filter t-fast t-fast-exact t-hotswap hotswap-test-so test_parallel_fast test-parallel-fast-active test-parallel-fast-active-locked t-fast-locked t-fast-exact-locked build-fabric-unprivileged-acceptance build-fabric-unprivileged-acceptance-locked ff-test-lint,$(ZCL_DEPFILE_SINGLE_GOAL)),)
+ZCL_DEPFILE_PROFILES := $(strip $(if $(filter test-parallel-fast-active-locked build-fabric-unprivileged-acceptance build-fabric-unprivileged-acceptance-locked ff-test-lint,$(ZCL_DEPFILE_SINGLE_GOAL)),dev) test-fast)
 else ifneq ($(filter t test test_parallel test-parallel test-parallel-active test-parallel-active-locked test-parallel-locked t-locked test-locked secure-release-regressions secure-release-regressions-locked,$(ZCL_DEPFILE_SINGLE_GOAL)),)
 ZCL_DEPFILE_PROFILES := test-strict
 else ifneq ($(filter t-asan test-asan asan-ci,$(ZCL_DEPFILE_SINGLE_GOAL)),)
@@ -4593,6 +4594,25 @@ t-fast-exact-locked: $(TEST_PARALLEL_FAST_CANDIDATE) dev-package-verifier-ensure
 	+@$(call ZCL_TEST_BUILD_NEEDS,$(TEST_PARALLEL_FAST_ACTIVE),--exact=$(EXACT_ONLY_MATCHED) $(T_FAST_EXACT_ARGS))
 	$(ZCL_TEST_STACK_SETUP) && \
 	  $(LINKED_TEST_ENV) $(TEST_PARALLEL_FAST_ACTIVE) --exact=$(EXACT_ONLY_MATCHED) $(T_FAST_EXACT_ARGS)
+
+# Root is deliberately ineligible to attest to root-owned compiler bytes. This
+# Linux-only acceptance route keeps that production refusal intact: it copies
+# the exact epoch runner and verifier into one bounded disposable tree, then
+# runs the two identity-owning groups as uid/gid 65534 with no capabilities.
+.PHONY: build-fabric-unprivileged-acceptance \
+	build-fabric-unprivileged-acceptance-locked
+build-fabric-unprivileged-acceptance:
+	@mkdir -p "$(BUILD_DIR)"
+	@$(CHECKOUT_LOCK_TOOL) foreground "$(CHECKOUT_LOCK)" -- \
+	  $(MAKE) --no-print-directory build-fabric-unprivileged-acceptance-locked \
+	    BUILD_SOURCE_RECORD='$(BUILD_SOURCE_RECORD)' \
+	    $(ZCL_FROZEN_TOOLCHAIN_ARGS)
+
+build-fabric-unprivileged-acceptance-locked: \
+		$(TEST_PARALLEL_FAST_CANDIDATE) dev-package-verifier-ensure
+	+@$(call ZCL_TEST_BUILD_NEEDS,$(TEST_PARALLEL_FAST_ACTIVE),--exact=test_build_fabric,test_build_fabric_attach)
+	@tools/dev/build_fabric_unprivileged_acceptance.sh \
+	  '$(TEST_PARALLEL_FAST_ACTIVE)' '$(DEV_PACKAGE_VERIFY_BIN)'
 
 ifeq ($(ZCL_HOST_OS),Darwin)
 test_parallel test-parallel t-fast t-fast-exact dev-proof-bundle: process-group-exec

@@ -1271,6 +1271,22 @@ receipt is keyed by is versioned apart from its layout, so a receipt written
 under the previous meaning is refused by name (`receipt_schema_old`) rather
 than compared against roots derived a different way — re-prove it.
 
+On a Linux development host running as root, the build-fabric identity tests
+must not be made green by treating root as an eligible tool observer.
+Production requires all real/effective/saved UIDs to be nonzero and the
+permitted, effective, and ambient capability sets to be empty before it hashes
+root-owned compiler bytes. `make build-fabric-unprivileged-acceptance`
+preserves that boundary: it builds the exact test-fast epoch candidate, copies
+only that runner and the development package verifier into a random 0700
+`/var/tmp` fixture, then runs exactly `test_build_fabric` and
+`test_build_fabric_attach` as numeric UID/GID 65534 with cleared supplementary
+groups, all inheritable/ambient/bounding capabilities removed, `no_new_privs`,
+and a minimal environment. It refuses on non-Linux or non-root hosts, unsafe
+input ownership, a missing `setpriv`, or insufficient disk reserve. The
+transcript remains in `test-tmp/unprivileged_build_fabric_*.log`; the
+disposable fixture is removed on every exit. This is a root-host acceptance
+route, not a production bypass.
+
 A receipt is signed, not merely sealed. Each box keeps one Ed25519 keypair
 under its owner-private development state root, created on first use by
 whichever proof seals the first receipt and never by a verifier; the receipt
