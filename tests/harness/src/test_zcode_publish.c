@@ -964,6 +964,34 @@ static int zp_structure_root_mismatch(const char *dd, const struct zp_pkg *p,
     return failures;
 }
 
+static int zp_structure_in_memory_bound(
+    const char *pkgdir, const struct vcs_package_release *release)
+{
+    int failures = 0;
+    struct vcs_package_manifest malformed = {
+        .files = NULL,
+        .count = 1,
+        .cap = 1,
+    };
+    struct vcs_package_publish_report report;
+    vcs_package_publish_report_init(&report);
+    vcs_package_publish_validate(release, &malformed, &report);
+    ZP_CHECK("structure: malformed in-memory manifest refuses before summary",
+             !report.manifest_ok && report.file_count == 0 &&
+             report.chunk_count == 0 && report.failure_count == 1 &&
+             report.failures[0].rule ==
+                 VCS_PACKAGE_PUBLISH_RULE_MANIFEST_PARSE);
+
+    vcs_package_publish_report_init(&report);
+    vcs_package_publish_verify_chunks(&malformed, pkgdir, &report);
+    ZP_CHECK("chunks: malformed in-memory manifest refuses before iteration",
+             !report.chunks_checked && report.chunks_verified == 0 &&
+             report.failure_count == 1 &&
+             report.failures[0].rule ==
+                 VCS_PACKAGE_PUBLISH_RULE_MANIFEST_PARSE);
+    return failures;
+}
+
 static int t_structure_rules(void)
 {
     int failures = 0;
@@ -987,6 +1015,7 @@ static int t_structure_rules(void)
     failures += zp_structure_hidden_exec(dd, &r, h1);
     failures += zp_structure_over_cap(dd, &r, h1);
     failures += zp_structure_root_mismatch(dd, &p, &r);
+    failures += zp_structure_in_memory_bound(pkgdir, &r);
 
     free(release_hex);
     zp_pkg_free(&p);
@@ -1012,6 +1041,17 @@ static int t_chunk_rules(void)
     char *release_hex = zp_release_hex(&r, NULL, NULL);
     char *manifest_hex = zp_hex(p.wire, p.wire_len);
     struct zp_cmd c;
+
+    uint8_t *probe = malloc(VCS_PACKAGE_CHUNK_BYTES);
+    size_t probe_len = SIZE_MAX;
+    enum vcs_package_publish_rule probe_rule = VCS_PACKAGE_PUBLISH_OK;
+    bool probe_refused = probe && !vcs_package_publish_read_chunk(
+        pkgdir, &p.manifest.files[0], p.manifest.files[0].chunk_count,
+        probe, &probe_len, &probe_rule);
+    ZP_CHECK("chunks: index at chunk_count refuses before file access",
+             probe_refused && probe_len == 0 &&
+             probe_rule == VCS_PACKAGE_PUBLISH_RULE_IO);
+    free(probe);
 
     /* Corrupt one source file (same length -> hash mismatch). */
     char victim[512];

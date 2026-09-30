@@ -126,13 +126,16 @@ void vcs_package_publish_fail(struct vcs_package_publish_report *r,
 /* Rules 1 and 3-6 over a PARSED release + PARSED manifest (no filesystem).
  * Rule 2 (manifest wire parse) and the release wire parse are the caller's
  * step so the wire-level rejection can be reported with the codec's own
- * error string. release_ok/manifest_ok and the summary fields are filled. */
+ * error string. The in-memory manifest shape is revalidated before its count
+ * or file array is read. release_ok/manifest_ok and the summary fields are
+ * filled. */
 void vcs_package_publish_validate(
     const struct vcs_package_release *release,
     const struct vcs_package_manifest *manifest,
     struct vcs_package_publish_report *report);
 
-/* Rule 8: verify every chunk of every manifest file against the bytes under
+/* Rule 8: revalidate the manifest shape, then verify every chunk of every
+ * manifest file against the bytes under
  * <dir>/<path> WITHOUT persisting anything. Appends CHUNK_MISSING /
  * CHUNK_SIZE / CHUNK_HASH / IO failures (bounded). */
 void vcs_package_publish_verify_chunks(
@@ -141,8 +144,8 @@ void vcs_package_publish_verify_chunks(
 
 /* Read one chunk of one manifest file from <dir>/<path> into buf (must hold
  * VCS_PACKAGE_CHUNK_BYTES). The file's on-disk size must equal the manifest
- * size. Used by commit to feed the store. False with *rule_out set on any
- * failure. */
+ * size. Used by commit to feed the store. An index at or beyond chunk_count
+ * is rejected before file access. False with *rule_out set on any failure. */
 bool vcs_package_publish_read_chunk(
     const char *dir, const struct vcs_package_file *file,
     uint32_t chunk_index, uint8_t *buf, size_t *len_out,
