@@ -75,7 +75,7 @@ client push output or a local tracking ref.
 | Crash before push | Kill the step after the durable intent and `push` phase checkpoint, before Git invocation | Restart reloads the same signed objects and exact pair; one push attempt at most; no new signature or implicit rebase. |
 | Push succeeded, result lost | Kill publisher after remote ref transaction but before acknowledgement/queue outcome | Restart first fetches remote; receive-pack marker stays at one invocation; it seals a remote receipt or retains UNKNOWN, never replays push blindly. |
 | Independent remote receipt | Push acknowledges, but fresh fetch is unavailable or fetched source/ancestry differs | Row remains `UNKNOWN`/inflight; no LANDED outcome. A later independent fetch that verifies exact target, intended head ancestry, pinned source and dependency closure may persist the signed receipt, then mark LANDED. |
-| Receipt recovery | Crash after signed receipt CAS store but before outcome append | Restart reloads and verifies the exact receipt and intent; appends one terminal outcome without another push or losing predecessor evidence. |
+| Receipt recovery | Crash after signed receipt CAS store but before outcome append | Restart reloads and verifies the exact receipt and persisted intent locally; appends one terminal outcome without recapturing the live target, running a transport helper, replaying the push or losing predecessor evidence. A row without that durable receipt still requires a fresh target-bound independent fetch. |
 
 ## Smallest owner patch sketch
 

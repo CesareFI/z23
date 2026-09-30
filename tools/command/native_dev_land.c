@@ -6005,6 +6005,8 @@ static bool dl_step_after_rebase(const struct dl_dirs *d, struct dl_row *row,
  * Only a fresh remote that does not contain the candidate permits proof. */
 static bool dl_publication_verify(const struct dl_dirs *d,
                                    const struct dl_row *row);
+static bool dl_publication_verify_persisted(const struct dl_dirs *d,
+                                             const struct dl_row *row);
 static bool dl_publication_remote_observe(const struct dl_dirs *d,
                                            const struct dl_row *row,
                                            char tip[65], char source[65]);
@@ -6016,48 +6018,57 @@ static bool dl_reconcile_signed_landing(const struct dl_dirs *d,
                                         const char *observed_main,
                                         struct zcl_command_reply *reply)
 {
+    bool receipt_present = row->remote_signature[0] != '\0';
+    if (!(receipt_present ? dl_publication_verify_persisted(d, row)
+                          : dl_publication_verify(d, row))) {
+        dl_fail(reply, "PUBLICATION_INTENT_INVALID", "observe_remote",
+                "stored Git landing intent no longer verifies", d->land);
+        return true;
+    }
+    /* A signed receipt was sealed only after a separate object store fetched
+     * and verified the target, source and ancestry. Once it is durable,
+     * terminal-outcome recovery consumes it locally: an outage or later
+     * transport configuration change must not strand the already-observed
+     * publication or tempt a second push. */
+    if (!receipt_present) {
         char output[512];
         const char *ancestor[] = { "--no-replace-objects", "merge-base",
             "--is-ancestor", row->local, observed_main, NULL };
-        if (dl_git(d->wt, ancestor, output, sizeof(output),
+        if (!observed_main ||
+            dl_git(d->wt, ancestor, output, sizeof(output),
                    DL_GIT_TIMEOUT_MS) != 0)
             return false;
-        if (!dl_publication_verify(d, row)) {
-            dl_fail(reply, "PUBLICATION_INTENT_INVALID", "observe_remote",
-                    "stored Git landing intent no longer verifies", d->land);
-            return true;
-        }
-        if (!row->remote_signature[0]) {
-            if (!dl_publication_remote_observe(d, row, row->remote_tip,
-                                                row->remote_source) ||
-                !dl_publication_receipt_seal(row) ||
-                !dl_commit_row(d, row, false)) {
-                dl_fail(reply, "REMOTE_RECEIPT_UNAVAILABLE", "observe_remote",
-                        "independent fetch or signed receipt persistence failed",
-                        d->land);
-                return true;
-            }
-        }
-        if (!dl_publication_receipt_verify(row)) {
-            dl_fail(reply, "REMOTE_RECEIPT_INVALID", "observe_remote",
-                    "persisted independent remote receipt is invalid",
+        if (!dl_publication_remote_observe(d, row, row->remote_tip,
+                                            row->remote_source) ||
+            !dl_publication_receipt_seal(row) ||
+            !dl_commit_row(d, row, false)) {
+            dl_fail(reply, "REMOTE_RECEIPT_UNAVAILABLE", "observe_remote",
+                    "independent fetch or signed receipt persistence failed",
                     d->land);
             return true;
         }
-        (void)snprintf(row->pushed, sizeof(row->pushed), "%s", row->local);
-        (void)snprintf(row->state, sizeof(row->state), "landed");
-        row->phase[0] = '\0';
-        (void)snprintf(row->detail, sizeof(row->detail), "%s",
-                       "independent fetch, source and ancestry receipt verified");
-        if (dl_commit_or_report(d, row, true, reply, "landed"))
-            dl_step_reply(reply, row, "landed");
+    }
+    if (!dl_publication_receipt_verify(row)) {
+        dl_fail(reply, "REMOTE_RECEIPT_INVALID", "observe_remote",
+                "persisted independent remote receipt is invalid", d->land);
         return true;
+    }
+    (void)snprintf(row->pushed, sizeof(row->pushed), "%s", row->local);
+    (void)snprintf(row->state, sizeof(row->state), "landed");
+    row->phase[0] = '\0';
+    (void)snprintf(row->detail, sizeof(row->detail), "%s",
+                   "independent fetch, source and ancestry receipt verified");
+    if (dl_commit_or_report(d, row, true, reply, "landed"))
+        dl_step_reply(reply, row, "landed");
+    return true;
 }
 
 static bool dl_reconcile_landing(const struct dl_dirs *d, struct dl_row *row,
                                   char observed_main[80], bool mutated,
                                   struct zcl_command_reply *reply)
 {
+    if (row->publication_signature[0] && row->remote_signature[0])
+        return dl_reconcile_signed_landing(d, row, NULL, reply);
     if (!dl_observe_remote_main(d, row, observed_main, NULL, mutated, reply))
         return true;
     if (row->publication_signature[0])
@@ -6541,11 +6552,10 @@ static bool dl_publication_proof_digest(const struct dl_dirs *d,
                                          const struct dl_row *row,
                                          char digest[65]);
 
-static bool dl_publication_verify(const struct dl_dirs *d,
-                                   const struct dl_row *row)
+static bool dl_publication_verify_persisted(const struct dl_dirs *d,
+                                             const struct dl_row *row)
 {
 #if defined(ZCL_DEV_BUILD) || defined(ZCL_TESTING)
-    struct dl_publication_target_config config = {0};
     char message[1024], bundle_path[4096 + 128];
     char bundle[65], proof[65];
     uint8_t signer[32], signature[64];
@@ -6559,8 +6569,6 @@ static bool dl_publication_verify(const struct dl_dirs *d,
         !zcl_dev_proof_signer_verify((const uint8_t *)message, strlen(message),
             signer, signature, &why) ||
         !dl_publication_tree_check(d, row) ||
-        !dl_publication_target_capture(d, &config) ||
-        !dl_publication_target_matches(row, &config) ||
         !dl_publication_bundle_path(d, row, bundle_path,
                                     sizeof(bundle_path)) ||
         !dl_publication_file_sha256(bundle_path, 512u * 1024u * 1024u,
@@ -6574,6 +6582,15 @@ static bool dl_publication_verify(const struct dl_dirs *d,
     (void)d; (void)row;
     return false;
 #endif
+}
+
+static bool dl_publication_verify(const struct dl_dirs *d,
+                                   const struct dl_row *row)
+{
+    struct dl_publication_target_config config = {0};
+    return dl_publication_verify_persisted(d, row) &&
+        dl_publication_target_capture(d, &config) &&
+        dl_publication_target_matches(row, &config);
 }
 
 static bool dl_publication_bundle_make(const struct dl_dirs *d,
