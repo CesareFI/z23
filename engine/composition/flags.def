@@ -1350,6 +1350,8 @@ Z23_FLAG("ZCL_LAND_TEST_PRECHECK_BUDGET_MS", "env_test", "-", "-",
           "test-only shorter per-beat queued-row precheck deadline; first use tools/command/native_dev_land.c:auto")
 Z23_FLAG("ZCL_LAND_TEST_PRECHECK_TOOL_FAIL", "env_test", "-", "-",
           "test-only failure of the queued-row precheck merge step; first use tools/command/native_dev_land.c:auto")
+Z23_FLAG("ZCL_LAND_TEST_QUEUE_WRITE_FAIL", "env_test", "-", "-",
+          "test-only landing queue rewrite refusal; first use tools/command/native_dev_land.c:auto")
 Z23_FLAG("ZCL_LAND_TEST_REFUSE_OUTCOME_APPEND", "env_test", "-", "-",
           "test-only terminal append refusal; first use tools/command/native_dev_land.c:auto")
 Z23_FLAG("ZCL_LAND_TIMING", "env_build", "-", "-",
