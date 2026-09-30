@@ -6079,7 +6079,10 @@ static int test_dev_land_signed_recovery(void)
         struct dlx_rig rig;
         struct dlx_call c;
         char land[1200], wt[1400], wrapper[1400], marker[1400];
+        char upload[1400], observed[1400], path[1400];
+        char saved[8192], wire[8192];
         char script[3000];
+        size_t len = 0;
         dlx_isolate("signed_recovery");
         ASSERT(dlx_rig_make(&rig, "signed_recovery_rig"));
         setenv("ZCL_LAND_PROOF_STUB", "running", 1);
@@ -6113,11 +6116,58 @@ static int test_dev_land_signed_recovery(void)
         const char *remote_effect[] = { "fetch", "--quiet", rig.clone,
                                         update, NULL };
         ASSERT(dlx_git(rig.bare, remote_effect) == 0);
+        setenv("ZCL_LAND_TEST_REFUSE_OUTCOME_APPEND", "1", 1);
+        setenv("ZCL_DEVLOOP_TEST_PROCESS", "1", 1);
+        dlx_begin(&c, "step");
+        ASSERT(dlx_run(&c) && dlx_ok(&c));
+        ASSERT_STR_EQ(dlx_str(&c, "state"), "landed");
+        ASSERT_STR_EQ(dlx_str(&c, "persist"), "failed");
+        ASSERT(strlen(dlx_str(&c, "remote_signature")) == 128);
+        ASSERT(!dlx_file_exists(marker));
+        dlx_end(&c);
+        unsetenv("ZCL_LAND_TEST_REFUSE_OUTCOME_APPEND");
+        unsetenv("ZCL_DEVLOOP_TEST_PROCESS");
+
+        /* The signed receipt is already durable in the retained queue row.
+         * Recovery verifies and consumes that receipt; it must not need the
+         * remote to remain available, and it must never replay the push. */
+        (void)snprintf(upload, sizeof(upload), "%s/refuse-observation", land);
+        (void)snprintf(observed, sizeof(observed), "%s/observation-attempted",
+                       land);
+        (void)snprintf(script, sizeof(script),
+                       "#!/bin/sh\nprintf 'attempted\\n' > '%s'\nexit 75\n",
+                       observed);
+        ASSERT(dlx_write(upload, script));
+        ASSERT(chmod(upload, 0700) == 0);
+        const char *blind[] = { "config", "remote.origin.uploadpack", upload,
+                                NULL };
+        ASSERT(dlx_git(wt, blind) == 0);
+
+        (void)snprintf(path, sizeof(path), "%s/queue.jsonl", land);
+        ASSERT(dlx_slurp(path, saved, sizeof(saved) - 1, &len));
+        saved[len] = '\0';
+        memcpy(wire, saved, len + 1);
+        char *field = strstr(wire, "\"remote_signature\":\"");
+        ASSERT(field != NULL);
+        field += strlen("\"remote_signature\":\"");
+        ASSERT(*field == '0' || (*field >= '1' && *field <= '9') ||
+               (*field >= 'a' && *field <= 'f'));
+        *field = *field == '0' ? '1' : '0';
+        ASSERT(dlx_write(path, wire));
+        dlx_begin(&c, "step");
+        ASSERT(dlx_run(&c) && !dlx_ok(&c));
+        ASSERT_STR_EQ(dlx_err_code(&c), "REMOTE_RECEIPT_INVALID");
+        ASSERT(!dlx_file_exists(marker));
+        ASSERT(!dlx_file_exists(observed));
+        dlx_end(&c);
+
+        ASSERT(dlx_write(path, saved));
         dlx_begin(&c, "step");
         ASSERT(dlx_run(&c) && dlx_ok(&c));
         ASSERT_STR_EQ(dlx_str(&c, "state"), "landed");
         ASSERT(strlen(dlx_str(&c, "remote_signature")) == 128);
         ASSERT(!dlx_file_exists(marker));
+        ASSERT(!dlx_file_exists(observed));
         dlx_end(&c);
         dlx_restore();
         PASS();
