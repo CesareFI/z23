@@ -988,6 +988,30 @@ static bool zd_resize_object(const char *store, const uint8_t root[32],
     return n > 0 && (size_t)n < sizeof(path) && truncate(path, size) == 0;
 }
 
+static bool zd_publish_oversize_probe(
+    const char *workspace, const struct zcl_command_request *request,
+    const uint8_t root[32], size_t maximum_bytes)
+{
+    uint8_t *wire = NULL;
+    size_t wire_len = 0;
+    if (vcs_object_load_raw_bounded(
+            workspace, root, maximum_bytes, &wire, &wire_len) != 0 ||
+        !zd_resize_object(workspace, root, (off_t)maximum_bytes + 1)) {
+        free(wire);
+        return false;
+    }
+    struct zcl_command_reply reply;
+    zcl_command_reply_init(&reply, "zcl.zcode_publish_plan.v1");
+    zcl_native_handle_zcode_publish_plan(request, &reply);
+    bool refused = reply.exit_code != ZCL_COMMAND_EXIT_OK &&
+        reply.error.code[0] != '\0';
+    zcl_command_reply_free(&reply);
+    bool repaired = vcs_object_put_addressed_repair(
+        workspace, root, wire, wire_len, NULL);
+    free(wire);
+    return refused && repaired;
+}
+
 static bool zd_lane_context_oversize_probe(
     struct node_db *ndb, const char *workspace, const char *action_id,
     const char *root_hex, size_t wire_bytes, int64_t now,
@@ -6506,6 +6530,42 @@ static int test_zd_improve_command(void)
         json_set_str((struct json_value *)json_get(
                          &publish_plan_input, "lane_receipt_root"),
                      accepted_receipt_saved);
+
+        uint8_t proof_set_root[32], *proof_set_wire = NULL;
+        size_t proof_set_len = 0, proof_count = 0;
+        uint8_t proof_roots[VCS_ZCODE_PROOF_SET_MAX_RECEIPTS][32];
+        ASSERT(zcl_hex_decode_lower(proven_status.proof_set_root_sha3,
+                                    proof_set_root, 32));
+        ASSERT_EQ(vcs_object_load_raw_bounded(
+                      workspace, proof_set_root, VCS_ZCODE_PROOF_SET_WIRE_MAX,
+                      &proof_set_wire, &proof_set_len), 0);
+        ASSERT_EQ(vcs_zcode_proof_set_parse(
+                      proof_set_wire, proof_set_len, proof_roots,
+                      VCS_ZCODE_PROOF_SET_MAX_RECEIPTS, &proof_count),
+                  VCS_ZCODE_DEV_OK);
+        free(proof_set_wire);
+        ASSERT(proof_count > 0);
+        ASSERT(zd_publish_oversize_probe(
+            workspace, &publish_plan_request, task_root,
+            VCS_ZCODE_TASK_WIRE_BYTES));
+        ASSERT(zd_publish_oversize_probe(
+            workspace, &publish_plan_request, candidate_root,
+            VCS_ZCODE_CANDIDATE_WIRE_BYTES));
+        ASSERT(zd_publish_oversize_probe(
+            workspace, &publish_plan_request, task.proof_policy_root,
+            VCS_ZCODE_PROOF_POLICY_WIRE_BYTES));
+        ASSERT(zd_publish_oversize_probe(
+            workspace, &publish_plan_request, accepted_lane_root,
+            VCS_ZCODE_LANE_WIRE_BYTES));
+        ASSERT(zd_publish_oversize_probe(
+            workspace, &publish_plan_request, proof_set_root,
+            VCS_ZCODE_PROOF_SET_WIRE_MAX));
+        ASSERT(zd_publish_oversize_probe(
+            workspace, &publish_plan_request, proof_roots[0],
+            VCS_ZCODE_WORK_RECEIPT_WIRE_BYTES));
+        ASSERT(zd_publish_oversize_probe(
+            workspace, &publish_plan_request, task.acceptance_tests_root,
+            VCS_PACKAGE_RECIPE_MAX_WIRE_BYTES));
 
         struct zcl_command_reply publish_plan_reply;
         zcl_command_reply_init(&publish_plan_reply,

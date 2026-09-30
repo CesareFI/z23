@@ -80,10 +80,12 @@ void zpub_fail(struct zcl_command_reply *reply, const char *code,
 }
 
 static bool zpub_load_wire(const char *workspace, const char *hex,
-                           uint8_t **wire, size_t *wire_len, uint8_t root[32])
+                           size_t maximum_bytes, uint8_t **wire,
+                           size_t *wire_len, uint8_t root[32])
 {
     return zcl_hex_decode_lower(hex, root, 32) &&
-           vcs_object_load_raw(workspace, root, wire, wire_len) == 0;
+           vcs_object_load_raw_bounded(
+               workspace, root, maximum_bytes, wire, wire_len) == 0;
 }
 
 static bool zpub_load_task(const char *workspace, const char *hex,
@@ -91,7 +93,8 @@ static bool zpub_load_task(const char *workspace, const char *hex,
 {
     uint8_t *wire = NULL, root[32], checked[32];
     size_t len = 0;
-    bool ok = zpub_load_wire(workspace, hex, &wire, &len, root) &&
+    bool ok = zpub_load_wire(
+            workspace, hex, VCS_ZCODE_TASK_WIRE_BYTES, &wire, &len, root) &&
         vcs_zcode_task_parse(wire, len, out) == VCS_ZCODE_DEV_OK &&
         vcs_zcode_task_validate(out) == VCS_ZCODE_DEV_OK &&
         vcs_zcode_task_root(out, checked) == VCS_ZCODE_DEV_OK &&
@@ -105,7 +108,9 @@ static bool zpub_load_candidate(const char *workspace, const char *hex,
 {
     uint8_t *wire = NULL, root[32], checked[32];
     size_t len = 0;
-    bool ok = zpub_load_wire(workspace, hex, &wire, &len, root) &&
+    bool ok = zpub_load_wire(
+            workspace, hex, VCS_ZCODE_CANDIDATE_WIRE_BYTES,
+            &wire, &len, root) &&
         vcs_zcode_candidate_parse(wire, len, out) == VCS_ZCODE_DEV_OK &&
         vcs_zcode_candidate_validate(out) == VCS_ZCODE_DEV_OK &&
         vcs_zcode_candidate_root(out, checked) == VCS_ZCODE_DEV_OK &&
@@ -119,7 +124,9 @@ static bool zpub_load_policy(const char *workspace, const char *hex,
 {
     uint8_t *wire = NULL, root[32], checked[32];
     size_t len = 0;
-    bool ok = zpub_load_wire(workspace, hex, &wire, &len, root) &&
+    bool ok = zpub_load_wire(
+            workspace, hex, VCS_ZCODE_PROOF_POLICY_WIRE_BYTES,
+            &wire, &len, root) &&
         vcs_zcode_proof_policy_parse(wire, len, out) == VCS_ZCODE_DEV_OK &&
         vcs_zcode_proof_policy_validate(out) == VCS_ZCODE_DEV_OK &&
         vcs_zcode_proof_policy_root(out, checked) == VCS_ZCODE_DEV_OK &&
@@ -139,7 +146,9 @@ static bool zpub_load_lane_receipt(
 {
     uint8_t *wire = NULL, root[32], checked[32];
     size_t len = 0;
-    bool ok = zpub_load_wire(workspace, hex, &wire, &len, root) &&
+    bool ok = zpub_load_wire(
+            workspace, hex, VCS_ZCODE_LANE_WIRE_BYTES,
+            &wire, &len, root) &&
         len == VCS_ZCODE_LANE_WIRE_BYTES &&
         vcs_zcode_lane_receipt_parse(wire, len, out) == VCS_ZCODE_DEV_OK &&
         vcs_zcode_lane_receipt_id(out, checked) == VCS_ZCODE_DEV_OK &&
@@ -165,7 +174,9 @@ static bool zpub_proof_set_valid(
                    "zcode.publish.proof_set");
     bool ok = roots != NULL;
     if (ok)
-        ok = zpub_load_wire(workspace, hex, &wire, &len, root) &&
+        ok = zpub_load_wire(
+                workspace, hex, VCS_ZCODE_PROOF_SET_WIRE_MAX,
+                &wire, &len, root) &&
             vcs_zcode_proof_set_parse(
                 wire, len, roots, VCS_ZCODE_PROOF_SET_MAX_RECEIPTS,
                 &count) == VCS_ZCODE_DEV_OK &&
@@ -178,8 +189,9 @@ static bool zpub_proof_set_valid(
         size_t receipt_len = 0;
         struct vcs_zcode_work_receipt_v1 receipt;
         uint8_t receipt_id[32];
-        ok = vcs_object_load_raw(workspace, roots[i], &receipt_wire,
-                                 &receipt_len) == 0 &&
+        ok = vcs_object_load_raw_bounded(
+                workspace, roots[i], VCS_ZCODE_WORK_RECEIPT_WIRE_BYTES,
+                &receipt_wire, &receipt_len) == 0 &&
             vcs_zcode_work_receipt_parse(receipt_wire, receipt_len,
                                          &receipt) == VCS_ZCODE_DEV_OK &&
             vcs_zcode_work_receipt_validate(&receipt) == VCS_ZCODE_DEV_OK &&
@@ -715,11 +727,10 @@ static bool zpub_build_transport_and_recipe(
     struct vcs_package_recipe recipe;
     vcs_package_recipe_init(&recipe);
     bool recipe_ok =
-        vcs_object_load_raw(bundle->workspace,
-                            bundle->task.acceptance_tests_root,
-                            &acceptance_recipe_wire,
-                            &acceptance_recipe_wire_len) == 0 &&
-        acceptance_recipe_wire_len <= VCS_PACKAGE_RECIPE_MAX_WIRE_BYTES &&
+        vcs_object_load_raw_bounded(
+            bundle->workspace, bundle->task.acceptance_tests_root,
+            VCS_PACKAGE_RECIPE_MAX_WIRE_BYTES, &acceptance_recipe_wire,
+            &acceptance_recipe_wire_len) == 0 &&
         vcs_package_recipe_parse(acceptance_recipe_wire,
                                  acceptance_recipe_wire_len,
                                  &recipe) == VCS_PACKAGE_RECIPE_OK &&
