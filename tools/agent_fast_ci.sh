@@ -1241,7 +1241,7 @@ run_test_proof() {
 }
 
 compile_scope_selftest() {
-    local dir proof
+    local dir proof feedback
     dir="$(mktemp -d "${TMPDIR:-/tmp}/zcl-compile-scope.XXXXXX")" || return 1
     proof="$dir/proof.tsv"
     ZCL_FAST_CHANGED_FILES_ONLY=1
@@ -1304,6 +1304,10 @@ compile_scope_selftest() {
     fi
     unset ZCL_FAST_CHANGED_FILES ZCL_FAST_CHANGED_FILES_ONLY
     rm -rf "$dir"
+    if ! feedback="$(bash "$ROOT/tools/dev/compile-feedback-selftest.sh" 2>&1)"; then
+        printf '%s\n' "$feedback" >&2
+        return 1
+    fi
     printf '%s\n' 'PASS compile-scope-selftest affected verify_record_recipes=0 make_fast_compile=0 refusals=proof_observation_conflict,closure_incomplete,missing_receipt'
 }
 
@@ -1647,7 +1651,7 @@ ensure_fresh_compdb() {
         return 0
     fi
     log "refresh compile_commands.json from real dev recipes"
-    make_fast agent-index
+    make_fast agent-index || return 1
     FROZEN_SOURCE_RECORD="$(capture_source_identity_record)" ||
         fail "source identity recapture failed after compdb refresh"
     log "source identity recaptured after compilation-database publication"
@@ -1661,28 +1665,44 @@ compdb_command_for_source() {
 }
 
 compile_affected_gate() {
-    local changed source command output fallback=0 count=0
+    local changed source command output suffix scratch="" fallback=0 count=0 has_c=0
     changed="$(mktemp "${TMPDIR:-/tmp}/zcl-verify-changed.XXXXXX")"
     changed_file_hints | sort -u | sed '/^$/d' >"$changed"
     while IFS= read -r source; do
         case "$source" in
-            *.c) ;;
+            *.c) has_c=1 ;;
             *.md|docs/*|*.txt) ;;
             *) fallback=1 ;;
         esac
     done <"$changed"
-    if [ "$fallback" -eq 1 ]; then
+    if [ "$fallback" -eq 1 ] && [ "$has_c" -eq 0 ]; then
         rm -f "$changed"
         log "compile scope=full_source_inventory reason=header_or_build_graph_change"
         make_fast fast-compile
         return
     fi
-    ensure_fresh_compdb
+    # Direct recipes do not execute Make's generated-header prerequisites.
+    if ! make_fast templates; then
+        rm -f "$changed"
+        return 1
+    fi
+    FROZEN_SOURCE_RECORD="$(capture_source_identity_record)" ||
+        fail "source identity recapture failed after diagnostic prerequisites"
+    if ! ensure_fresh_compdb; then
+        rm -f "$changed"
+        return 1
+    fi
+    if [ "$fallback" -eq 1 ]; then
+        scratch="$(mktemp -d "${TMPDIR:-/tmp}/zcl-verify-diagnostic.XXXXXX")" ||
+            fail "cannot create isolated diagnostic compile directory"
+        log "compile feedback_only=true proof_admissible=false"
+    fi
     while IFS= read -r source; do
         case "$source" in *.c) ;; *) continue ;; esac
         command="$(compdb_command_for_source "$source")"
         if [ -z "$command" ]; then
             rm -f "$changed"
+            [ -z "$scratch" ] || rm -rf "$scratch"
             log "compile scope=full_source_inventory reason=source_missing_from_compdb file=$source"
             make_fast fast-compile
             return
@@ -1690,13 +1710,42 @@ compile_affected_gate() {
         output="$(jq -r --arg source "$source" \
             '[.[] | select(.file == $source)][0].output // empty' \
             compile_commands.json)"
-        [ -n "$output" ] && mkdir -p "$(dirname "$output")"
+        if [ -n "$scratch" ]; then
+            # Replace only generate-compdb's known output tail. GCC does not
+            # safely override repeated -MF options; no epoch path may remain.
+            suffix=" -MMD -MP -MF ${output%.o}.d -MT $output -c -o $output $source"
+            if [ -z "$output" ] || [[ "$output" != *.o ]] ||
+               [[ "$command" != *"$suffix" ]]; then
+                rm -f "$changed"
+                rm -rf "$scratch"
+                log "compile scope=full_source_inventory reason=unrecognized_diagnostic_recipe file=$source"
+                make_fast fast-compile
+                return
+            fi
+            command="${command%"$suffix"}"
+            printf -v suffix ' -MMD -MP -MF %q -MT %q -c -o %q %q' \
+                "$scratch/$count.d" "$scratch/$count.o" "$scratch/$count.o" "$source"
+            command="$command$suffix"
+        else
+            [ -n "$output" ] && mkdir -p "$(dirname "$output")"
+        fi
         log "compile affected source=$source recipe=compile_commands.json"
-        bash -c "$command"
+        if ! bash -c "$command"; then
+            rm -f "$changed"
+            [ -z "$scratch" ] || rm -rf "$scratch"
+            return 1
+        fi
         count=$((count + 1))
     done <"$changed"
     rm -f "$changed"
+    [ -z "$scratch" ] || rm -rf "$scratch"
     log "compile scope=affected_translation_units count=$count"
+    # Current direct recipes expose C23 failures before an expensive fallback.
+    # Their success does not discharge the header/build-graph obligation.
+    if [ "$fallback" -eq 1 ]; then
+        log "compile scope=full_source_inventory reason=header_or_build_graph_change"
+        make_fast fast-compile
+    fi
 }
 
 # Resolve WHAT this push is gating, before anything is selected.

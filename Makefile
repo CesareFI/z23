@@ -3719,7 +3719,7 @@ endif
 # making every unrelated test recompile when engine_unit.c changes.
 # ENGINE_UNIT_BIN is declared later; prerequisites expand while parsing.
 $(TEST_PARALLEL_REL_CANDIDATE): | $(BIN_DIR)/zclassic23-engine-unit
-$(TEST_PARALLEL_FAST_CANDIDATE): | $(BIN_DIR)/zclassic23-engine-unit
+# Focused fast groups request this fixture through their BUILD_NEED entry.
 ifneq ($(ZCL_HOST_WINDOWS),1)
 # The bridge fixture uses POSIX process/filesystem contracts. Its registered
 # Windows group refuses explicitly; unrelated focused groups do not need it.

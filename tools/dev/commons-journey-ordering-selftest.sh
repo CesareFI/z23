@@ -429,5 +429,51 @@ else
 fi
 rm -rf "$ORPH"
 
+# Exercise the scheduled-start transport boundary without starting a node.
+# Admission can outlast readiness; the admitted node keeps its original budget.
+if (
+    . "$LIFECYCLE"
+    DHT_WAIT=1
+    DHT_REMOTE_ADMISSION_WAIT=5
+    dht_node_exec() {
+        [ "$7" -ge 2 ] || return 75
+        [ "$7" -eq 5 ] || return 1
+        sleep 2
+        printf '12345\n'
+    }
+    [ "$(dht_remote_scheduled_pid 29999 /unused true)" = 12345 ] &&
+    [ "$DHT_WAIT" -eq 1 ]
+); then
+    pass "scheduler admission can exceed the unchanged readiness budget"
+else
+    fail "scheduler admission consumed the node readiness budget"
+fi
+for admission_budget in 08 09; do
+    if (
+        . "$LIFECYCLE"
+        DHT_REMOTE_ADMISSION_WAIT="$admission_budget"
+        dht_node_exec() {
+            [ "$7" = "${admission_budget#0}" ] || return 1
+            printf '12345\n'
+        }
+        [ "$(dht_remote_scheduled_pid 29999 /unused true)" = 12345 ]
+    ); then
+        pass "scheduler admission normalizes decimal budget $admission_budget"
+    else
+        fail "scheduler admission retained an octal budget $admission_budget"
+    fi
+done
+for invalid_admission in 0 3601 invalid; do
+    admission_rc=0
+    (
+        . "$LIFECYCLE"
+        DHT_REMOTE_ADMISSION_WAIT="$invalid_admission"
+        dht_node_exec() { exit 99; }
+        dht_remote_scheduled_pid 29999 /unused true
+    ) >/dev/null 2>&1 || admission_rc=$?
+    [ "$admission_rc" -eq 2 ] ||
+        fail "invalid admission budget $invalid_admission reached transport or lacked refusal"
+done
+
 [ "$FAIL" -eq 0 ] || exit 1
 printf 'commons-journey-ordering: OK\n'

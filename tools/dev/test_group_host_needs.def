@@ -65,6 +65,10 @@ ZCL_TEST_GROUP_NEED("test_onion_pair_watch_live",
 ZCL_TEST_GROUP_NEED("test_self_folded_anchor_heavy", ZCL_HOST_NEED_ENV,
                     "ZCL_SELF_FOLD_ANCHOR_FIXTURE")
 
+/* Only engine's end-to-end cases need this executable fixture. */
+ZCL_TEST_GROUP_BUILD_NEED("test_engine", "build/bin/zclassic23-engine-unit",
+                         "engine-unit")
+
 /* tests/harness/src/test_semantic_manifest.c (group semantic_sensor),
  * test_semantic_facts_live.c, test_semantic_consumer_live.c and
  * test_semantic_facts_fuzz.c exec the optional libclang sensor

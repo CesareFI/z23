@@ -7189,7 +7189,7 @@ static int test_ic_proof_test_needs_leave_provided_tools(void)
         ASSERT(zcl_dev_proof_test_needs_argv(
             jobs,
             "test_freebsd_sh,test_cli_auth_robust,test_cli_argv_strict,"
-            "test_importblockindex_cli_dispatch,test_fleet_gateway",
+            "test_importblockindex_cli_dispatch,test_fleet_gateway,test_engine",
             argv, PROOF_TEST_NEEDS_ARGV_CAP, &targets));
         ASSERT(targets == 0);
         ASSERT(argv[0] == NULL);
@@ -7226,6 +7226,13 @@ static int test_ic_local_selection_build_needs(void)
          "targets once; an ordinary selection lists none") {
         struct zcl_test_group_host_need needs[16];
         size_t n = 99;
+
+        ASSERT(zcl_test_selection_build_needs("test_engine", true, NULL,
+                                              needs, 16, &n));
+        ASSERT(n == 1);
+        ASSERT(ic_needs_have(needs, n, "engine-unit",
+                             "build/bin/zclassic23-engine-unit"));
+        n = 99;
 
         ASSERT(zcl_test_selection_build_needs("test_fleet_gateway_shard_01",
                                               false, NULL, needs, 16, &n));
@@ -7278,7 +7285,9 @@ static int test_ic_local_selection_build_needs(void)
         n = 99;
         ASSERT(zcl_test_selection_build_needs(NULL, false, NULL, needs, 16,
                                               &n));
-        ASSERT(n == 6);
+        ASSERT(n == 7);
+        ASSERT(ic_needs_have(needs, n, "engine-unit",
+                             "build/bin/zclassic23-engine-unit"));
         ASSERT(ic_needs_have(needs, n, "zclassic23", "build/bin/zclassic23"));
         ASSERT(ic_needs_have(needs, n, "tools/consensus_rule_sweep",
                              "build/bin/consensus_rule_sweep"));

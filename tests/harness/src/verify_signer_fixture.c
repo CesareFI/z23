@@ -15,6 +15,7 @@
 #include "base/hex.h"
 #include "crypto/ed25519.h"
 #include "sha3/sha3.h"
+#include "verify/fixed_result_source.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -99,6 +100,38 @@ static bool vsg_subdir(char out[PATH_MAX], const char *parent,
                        const char *name, unsigned mode)
 {
     return vsg_path(out, parent, name) && vsg_mkdir(out, mode);
+}
+
+/* Fresh private files preserve the worker's pinned bytes without requiring
+ * the caller's checkout to have production source-image permissions. */
+static bool vsg_input_write(const char *root, const char *rel,
+                            const void *bytes, size_t len)
+{
+    char path[PATH_MAX];
+    if (!vsg_path(path, root, rel)) return false;
+    char *part = path + strlen(root) + 1u;
+    while ((part = strchr(part, '/')) != NULL) {
+        *part = '\0';
+        if (mkdir(path, 0700) != 0 && errno != EEXIST) return false;
+        *part++ = '/';
+    }
+    return vsg_write(path, bytes, len, 0444u);
+}
+
+static bool vsg_inputs(struct vsg_world *w)
+{
+    char source[PATH_MAX];
+    if (!vsg_subdir(source, w->root, "source", 0700u) ||
+        !realpath(source, w->cwd)) return false;
+    for (size_t i = 0; i < ZCL_FR_SOURCE_CHAIN_COUNT; i++) {
+        struct vsg_bytes bytes = {0};
+        const char *rel = zcl_fr_source_chain[i];
+        bool ok = vsg_read(rel, &bytes) &&
+                  vsg_input_write(w->cwd, rel, bytes.p, bytes.n);
+        vsg_bytes_free(&bytes);
+        if (!ok) return false;
+    }
+    return vsg_input_write(w->cwd, VSG_PROFILE, w->profile.p, w->profile.n);
 }
 
 void vsg_bytes_free(struct vsg_bytes *b)
@@ -246,6 +279,7 @@ static bool vsg_worker(struct vsg_world *w)
     if (pid < 0) return false;
     if (pid == 0) {
         vsg_redirect(w->build, "worker.out", "worker.err");
+        if (chdir(w->cwd) != 0) _exit(125);
         char *argv[] = {"fixed_result_worker", "qualify", w->cwd, w->target,
                         outdir, NULL};
         int rc = zcl_test_fixed_result_worker_main(5, argv);
@@ -437,12 +471,12 @@ bool vsg_world_make(struct vsg_world *w)
     char made[PATH_MAX];
     memset(w, 0, sizeof(*w));
     memcpy(w->target, VSG_TARGET, sizeof(VSG_TARGET));
-    if (!getcwd(made, sizeof(made)) || !realpath(made, w->cwd)) return false;
     if (!test_mkdtemp(made, sizeof(made), "z23-verify-signer") ||
         !realpath(made, w->root))
         return false;
     return vsg_subdir(w->build, w->root, "build", 0700u) &&
-           vsg_trust_files(w) && vsg_worker(w) && vsg_receipts(w);
+           vsg_trust_files(w) && vsg_inputs(w) &&
+           vsg_worker(w) && vsg_receipts(w);
 }
 
 static int vsg_rm_entry(const char *path, const struct stat *st, int type,
@@ -506,12 +540,14 @@ void vsg_seal(const struct zcl_frs_fixture *fx, const char *launch_dir,
 
 /* Direct-source GCC in a child that keeps `dirfd` open under the same
  * number, as ZCC reaches its private output directory. */
-static bool vsg_cc(const struct vsg_argv *a, int dirfd, const char *err)
+static bool vsg_cc(const struct vsg_argv *a, const char *cwd,
+                    int dirfd, const char *err)
 {
     fflush(NULL);
     pid_t pid = fork();
     if (pid < 0) return false;
     if (pid == 0) {
+        if (chdir(cwd) != 0) _exit(125);
         int e = openat(dirfd, err, O_WRONLY | O_CREAT | O_EXCL, 0600);
         int nul = open("/dev/null", O_RDWR);
         if (e < 0 || nul < 0 || fcntl(dirfd, F_SETFD, 0) != 0 ||
@@ -531,7 +567,8 @@ static bool vsg_cold(const struct vsg_world *w, int dirfd, bool preprocess,
     (void)snprintf(dir, sizeof(dir), "/proc/self/fd/%d", dirfd);
     if (!vsg_profile_argv(w, w->cwd, a)) return false;
     vsg_tail(a, dir, w->target, preprocess, "result.d");
-    return vsg_cc(a, dirfd, preprocess ? "preprocess.err" : "stderr.bin");
+    return vsg_cc(a, w->cwd, dirfd,
+                  preprocess ? "preprocess.err" : "stderr.bin");
 }
 
 bool vsg_receive(struct vsg_world *w, const struct vsg_state *s,

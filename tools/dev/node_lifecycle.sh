@@ -67,6 +67,8 @@ DHT_SSH="${DHT_SSH:-ssh}"
 # Enabled only by the Linux two-host acceptance. Remote native workers must
 # inherit the receiving host's scheduler admission and resource scope.
 DHT_REMOTE_DEVBUILD=0
+# Queue admission is separate from the RPC readiness budget of an admitted node.
+DHT_REMOTE_ADMISSION_WAIT="${DHT_REMOTE_ADMISSION_WAIT:-900}"
 # All remote fixture compiler children retain the host scheduler admission,
 # then inherit this narrower kernel budget. No host configuration is changed.
 DHT_REMOTE_BUDGET_ARGS=(
@@ -468,7 +470,14 @@ dht_native() {
 dht_status() { dht_native "$1" "$2" zcode network status; }
 
 dht_remote_scheduled_pid() {
-    local rpc="$1" dd="$2"; shift 2
+    local rpc="$1" dd="$2" admission_wait; shift 2
+    case "$DHT_REMOTE_ADMISSION_WAIT" in
+        ''|*[!0-9]*) dht_die "invalid remote scheduler admission wait" ;;
+    esac
+    [ "$DHT_REMOTE_ADMISSION_WAIT" -ge 1 ] &&
+        [ "$DHT_REMOTE_ADMISSION_WAIT" -le 3600 ] ||
+        dht_die "remote scheduler admission wait must be 1..3600 seconds"
+    admission_wait=$((10#$DHT_REMOTE_ADMISSION_WAIT))
     # This is fixture startup, not a remote job executor. The only scheduled
     # process is the native node, whose compiler children inherit its scope.
     dht_node_exec "$rpc" bash -c '
@@ -501,7 +510,7 @@ dht_remote_scheduled_pid() {
         fi
         printf "remote scheduler admission timed out\n" >&2
         exit 75
-    ' remote-scheduled-node "$dd" "$DHT_WAIT" "${#DHT_REMOTE_BUDGET_ARGS[@]}" \
+    ' remote-scheduled-node "$dd" "$admission_wait" "${#DHT_REMOTE_BUDGET_ARGS[@]}" \
         "${DHT_REMOTE_BUDGET_ARGS[@]}" "$@"
 }
 
