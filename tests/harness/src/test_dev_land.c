@@ -121,6 +121,7 @@ static void dlx_isolate(const char *tag)
     unsetenv("ZCL_LAND_HOOKS_STUB_DIR");
     unsetenv("ZCL_LAND_TEST_PICK_DELAY_MS");
     unsetenv("ZCL_LAND_TEST_DIR_SYNC_FAIL");
+    unsetenv("ZCL_LAND_TEST_FILE_SYNC_FAIL");
     unsetenv("ZCL_LAND_TEST_DIE_AFTER_OUTCOME");
     unsetenv("ZCL_LAND_TEST_DIE_AFTER_PROOF");
     unsetenv("ZCL_LAND_TEST_REFUSE_OUTCOME_APPEND");
@@ -152,6 +153,7 @@ static void dlx_restore(void)
     unsetenv("ZCL_LAND_HOOKS_STUB_DIR");
     unsetenv("ZCL_LAND_TEST_PICK_DELAY_MS");
     unsetenv("ZCL_LAND_TEST_DIR_SYNC_FAIL");
+    unsetenv("ZCL_LAND_TEST_FILE_SYNC_FAIL");
     unsetenv("ZCL_LAND_TEST_DIE_AFTER_OUTCOME");
     unsetenv("ZCL_LAND_TEST_DIE_AFTER_PROOF");
     unsetenv("ZCL_LAND_TEST_REFUSE_OUTCOME_APPEND");
@@ -1945,7 +1947,7 @@ static int test_dev_land_lost_persistence(void)
         "not silently claimed, and the row self-heals") {
         struct dlx_rig rig;
         struct dlx_call c;
-        char landdir[1200], hook[1400], script[1600], before[64], after[64];
+        char before[64], after[64];
         dlx_isolate("persistfail");
         ASSERT(dlx_rig_make(&rig, "persistfail_rig"));
         ASSERT(dlx_origin_main(&rig, before));
@@ -1961,25 +1963,23 @@ static int test_dev_land_lost_persistence(void)
         ASSERT(strcmp(dlx_str(&c, "state"), "started") == 0);
         dlx_end(&c);
         setenv("ZCL_LAND_PROOF_STUB", "pass", 1);
-        dlx_landdir(landdir, sizeof(landdir));
         /* Lose the outcome write only after the exact push pair has been
-         * durably prepared. Git's pre-push hook runs after that checkpoint. */
-        ASSERT((size_t)snprintf(hook, sizeof(hook), "%s/pre-push",
-                                g_dlx_hooks_ok) < sizeof(hook));
-        ASSERT((size_t)snprintf(script, sizeof(script),
-            "#!/bin/sh\nchmod 0500 '%s'\n", landdir) < sizeof(script));
-        ASSERT(dlx_write(hook, script) && chmod(hook, 0755) == 0);
+         * durably prepared. The guarded seam refuses only the terminal
+         * append, after the real push has already completed. */
+        setenv("ZCL_LAND_TEST_REFUSE_OUTCOME_APPEND", "1", 1);
+        setenv("ZCL_DEVLOOP_TEST_PROCESS", "1", 1);
         dlx_begin(&c, "step");
         ASSERT(dlx_run(&c));
         ASSERT(dlx_ok(&c));
         ASSERT(strcmp(dlx_str(&c, "state"), "landed") == 0);
         ASSERT(strcmp(dlx_str(&c, "persist"), "failed") == 0);
         dlx_end(&c);
+        unsetenv("ZCL_LAND_TEST_REFUSE_OUTCOME_APPEND");
+        unsetenv("ZCL_DEVLOOP_TEST_PROCESS");
         /* The push already happened for real: origin/main moved even
          * though the queue could not record it. */
         ASSERT(dlx_origin_main(&rig, after));
         ASSERT(strcmp(after, before) != 0);
-        ASSERT(chmod(landdir, 0700) == 0);
         /* A cached origin/main still contains the pushed commit when the
          * remote disappears. It cannot establish a fresh observation:
          * retain the inflight row, then reconcile after access returns. */
@@ -3240,7 +3240,7 @@ static int test_dev_land_prepush_persist_refusal(void)
     TEST("land: failed pre-push persistence refuses remote mutation") {
         struct dlx_rig rig;
         struct dlx_call c;
-        char landdir[1200], base[64], observed[64];
+        char base[64], observed[64];
         dlx_isolate("prepush_persist_refusal");
         ASSERT(dlx_rig_make(&rig, "prepush_persist_refusal_rig"));
         ASSERT(dlx_origin_main(&rig, base));
@@ -3253,8 +3253,8 @@ static int test_dev_land_prepush_persist_refusal(void)
         ASSERT(dlx_run(&c) && dlx_ok(&c));
         ASSERT_STR_EQ(dlx_str(&c, "state"), "started");
         dlx_end(&c);
-        dlx_landdir(landdir, sizeof(landdir));
-        ASSERT(chmod(landdir, 0500) == 0);
+        setenv("ZCL_LAND_TEST_FILE_SYNC_FAIL", "1", 1);
+        setenv("ZCL_DEVLOOP_TEST_PROCESS", "1", 1);
         setenv("ZCL_LAND_PROOF_STUB", "pass", 1);
         dlx_begin(&c, "step");
         ASSERT(dlx_run(&c));
@@ -3262,9 +3262,10 @@ static int test_dev_land_prepush_persist_refusal(void)
         ASSERT_STR_EQ(dlx_err_code(&c), "PUSH_INTENT_PERSIST_FAILED");
         ASSERT(!c.reply.error.mutated);
         dlx_end(&c);
+        unsetenv("ZCL_LAND_TEST_FILE_SYNC_FAIL");
+        unsetenv("ZCL_DEVLOOP_TEST_PROCESS");
         ASSERT(dlx_origin_main(&rig, observed));
         ASSERT_STR_EQ(observed, base);
-        ASSERT(chmod(landdir, 0700) == 0);
         dlx_begin(&c, "step");
         ASSERT(dlx_run(&c) && dlx_ok(&c));
         ASSERT_STR_EQ(dlx_str(&c, "state"), "landed");
