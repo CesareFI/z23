@@ -500,8 +500,9 @@ static struct zcl_result exec_action_derive(
         /* source_sha256 slot holds SHA3-256 of the exact candidate wire. */
         uint8_t *cwire = NULL;
         size_t clen = 0;
-        if (!exec_cas_load(req->workspace, ctx->candidate_root, &cwire,
-                           &clen))
+        if (vcs_object_load_raw_bounded(
+                req->workspace, ctx->candidate_root,
+                VCS_ZCODE_CANDIDATE_WIRE_BYTES, &cwire, &clen) != 0)
             return ZCL_ERR(-1, "executor-candidate-not-in-cas");
         vcs_source_manifest_id(cwire, clen, action->source_sha256);
         free(cwire);
@@ -563,7 +564,10 @@ struct zcl_result zcode_benchmark_executor_run(
             return ZCL_ERR(-1, "executor-original-root-invalid");
         uint8_t *wire = NULL, checked[32];
         size_t len = 0;
-        bool ok = exec_cas_load(req->workspace, original_root, &wire, &len);
+        bool ok = vcs_object_load_raw_bounded(
+                      req->workspace, original_root,
+                      VCS_ZCODE_BENCHMARK_RESULT_WIRE_BYTES,
+                      &wire, &len) == 0;
         if (ok) {
             /* The landed S1 comparator binds v1 roots: a reproduction may
              * only target a v1 original wire. */
@@ -808,8 +812,10 @@ struct zcl_result zcode_benchmark_executor_run(
         struct vcs_zcode_benchmark_evidence_v1 original_evidence;
         uint8_t *ewire = NULL, echecked[32];
         size_t elen = 0;
-        bool eok = exec_cas_load(req->workspace, original.evidence_root,
-                                 &ewire, &elen) &&
+        bool eok = vcs_object_load_raw_bounded(
+                       req->workspace, original.evidence_root,
+                       VCS_ZCODE_BENCHMARK_EVIDENCE_WIRE_BYTES,
+                       &ewire, &elen) == 0 &&
             vcs_zcode_benchmark_evidence_v1_parse(ewire, elen,
                                                   &original_evidence) ==
                 VCS_ZCODE_RECEIPT_OK &&
@@ -952,7 +958,10 @@ static struct zcl_result exec_verify_samples(
     struct vcs_zcode_raw_sample_manifest_v1 manifest;
     uint8_t *wire = NULL, checked[32];
     size_t len = 0;
-    bool ok = exec_cas_load(workspace, raw_sample_root, &wire, &len) &&
+    bool ok = vcs_object_load_raw_bounded(
+                  workspace, raw_sample_root,
+                  VCS_ZCODE_RAW_SAMPLE_MANIFEST_WIRE_BYTES,
+                  &wire, &len) == 0 &&
         vcs_zcode_raw_sample_manifest_v1_parse(wire, len, &manifest) ==
             VCS_ZCODE_RECEIPT_OK &&
         vcs_zcode_raw_sample_manifest_v1_root(&manifest, checked) ==
@@ -970,7 +979,10 @@ static struct zcl_result exec_verify_samples(
         return ZCL_ERR(-1, "receipt-manifest-method-mismatch");
     struct vcs_zcode_benchmark_evidence_v1 evidence;
     wire = NULL;
-    ok = exec_cas_load(workspace, evidence_root, &wire, &len) &&
+    ok = vcs_object_load_raw_bounded(
+             workspace, evidence_root,
+             VCS_ZCODE_BENCHMARK_EVIDENCE_WIRE_BYTES,
+             &wire, &len) == 0 &&
         vcs_zcode_benchmark_evidence_v1_parse(wire, len, &evidence) ==
             VCS_ZCODE_RECEIPT_OK &&
         vcs_zcode_benchmark_evidence_v1_root(&evidence, checked) ==
@@ -985,8 +997,11 @@ static struct zcl_result exec_verify_samples(
         return ZCL_ERR(-1, "receipt-evidence-binding-mismatch");
     struct vcs_zcode_sample_payload_v1_view view;
     wire = NULL;
-    ok = exec_cas_load(workspace, evidence.sample_payload_root, &wire,
-                       &len) &&
+    ok = vcs_object_load_raw_bounded(
+             workspace, evidence.sample_payload_root,
+             VCS_ZCODE_SAMPLE_PAYLOAD_HEADER_BYTES +
+                 8u * VCS_ZCODE_SAMPLE_PAYLOAD_MAX_SAMPLES,
+             &wire, &len) == 0 &&
         vcs_zcode_sample_payload_v1_parse(wire, len, &view) ==
             VCS_ZCODE_RECEIPT_OK &&
         vcs_zcode_sample_payload_v1_root(wire, len, checked) ==
@@ -1051,8 +1066,10 @@ struct zcl_result zcode_benchmark_executor_verify_receipt(
             return ZCL_ERR(-1, "receipt-method-root-mismatch");
         struct vcs_zcode_hardware_profile_v1 profile;
         wire = NULL;
-        ok = exec_cas_load(workspace, result.hardware_profile_root, &wire,
-                           &len) &&
+        ok = vcs_object_load_raw_bounded(
+                 workspace, result.hardware_profile_root,
+                 VCS_ZCODE_HARDWARE_PROFILE_WIRE_BYTES,
+                 &wire, &len) == 0 &&
             vcs_zcode_hardware_profile_parse(wire, len, &profile) ==
                 VCS_ZCODE_SCIENCE_OK &&
             vcs_zcode_hardware_profile_root(&profile, checked) ==

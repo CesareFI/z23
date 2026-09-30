@@ -732,8 +732,8 @@ static int test_zbex_execute_happy(void)
 static int test_zbex_tamper_rejected(void)
 {
     int failures = 0;
-    TEST("zcode_benchmark_exec: tampered manifest or sample payload breaks the receipt") {
-        for (int which = 0; which < 2; which++) {
+    TEST("zcode_benchmark_exec: tampered or oversized receipt artifacts are rejected") {
+        for (int which = 0; which < 3; which++) {
             struct node_db ndb = {0};
             char dir[ZBEX_DIR_CAP];
             ASSERT(zbex_setup(&ndb, dir, sizeof(dir)));
@@ -753,8 +753,17 @@ static int test_zbex_tamper_rejected(void)
                 zcl_hex_encode(out.run.manifest_root, 32, target_hex);
             else
                 zcl_hex_encode(out.run.sample_payload_root, 32, target_hex);
-            /* Flip one byte inside the stored object (past the header). */
-            ASSERT(zbex_cas_flip_byte(dir, target_hex, 40));
+            if (which < 2) {
+                /* Flip one byte inside the stored object (past the header). */
+                ASSERT(zbex_cas_flip_byte(dir, target_hex, 40));
+            } else {
+                /* Sparse file: prove the sample codec ceiling is applied
+                 * before allocation without consuming the logical size. */
+                ASSERT(zbex_cas_resize(
+                    dir, target_hex,
+                    (off_t)(VCS_ZCODE_SAMPLE_PAYLOAD_HEADER_BYTES +
+                            8u * VCS_ZCODE_SAMPLE_PAYLOAD_MAX_SAMPLES) + 1));
+            }
             struct zcl_result verified =
                 zcode_benchmark_executor_verify_receipt(dir, root_hex);
             ASSERT(!verified.ok);
