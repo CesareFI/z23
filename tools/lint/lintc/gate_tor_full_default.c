@@ -89,6 +89,11 @@ static int tfd_note_path(struct tfd_state *st, const char *fmt, const char *p)
  * (present but unreadable, or the file is larger than the buffer). */
 static int tfd_read(const char *path, char *buf, size_t cap, size_t *outn)
 {
+    struct stat st;
+    if (stat(path, &st) != 0)
+        return errno == ENOENT ? TFD_MISSING : tfd_cannot_open(path);
+    if (!S_ISREG(st.st_mode))
+        return tfd_cannot_open(path);
     FILE *f = fopen(path, "r");
     if (!f)
         return errno == ENOENT ? TFD_MISSING : tfd_cannot_open(path);
@@ -595,12 +600,11 @@ static int tfd_st_unreadable(const char *tmp)
         return 1;
     if (tfd_seed(root)) return 1;
     if (ovf(snprintf(mk, sizeof mk, "%s/Makefile", root), sizeof mk)) return 1;
-    if (chmod(mk, 0) != 0) return 1;
+    if (unlink(mk) != 0 || mkdir(mk, 0700) != 0) return 1;
     struct tfd_state st = { .fail = 0 };
     tfd_root_ov = root;
     int rc = tfd_check_root(&st);
     tfd_clear_ov();
-    (void)chmod(mk, 0600);
     return rc == 2 ? 0 : 1;
 }
 

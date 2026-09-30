@@ -59,6 +59,13 @@ static const char *atl_installer(void)
  * `[ -r "$path" ]` in the shell rejects both the same way). */
 static int atl_read(const char *path, char *buf, size_t cap, size_t *outn)
 {
+    struct stat st;
+    if (stat(path, &st) != 0 || !S_ISREG(st.st_mode)) {
+        if (fprintf(atl_out ? atl_out : stdout,
+                    "FAIL: %s cannot read %s\n", k_atl_gate, path) < 0)
+            return die("z23-lint: write failed\n", "");
+        return 2;
+    }
     FILE *f = fopen(path, "r");
     if (!f) {
         if (fprintf(atl_out ? atl_out : stdout,
@@ -632,12 +639,11 @@ static int atl_st_unreadable(const char *tmp)
     if (ovf(snprintf(dir, sizeof dir, "%s/unreadable", tmp), sizeof dir)) return 1;
     if (atl_seed(dir, k_atl_installer_good)) return 1;
     if (ovf(snprintf(h, sizeof h, "%s/harness.sh", dir), sizeof h)) return 1;
-    if (chmod(h, 0) != 0) return 1;
+    if (unlink(h) != 0 || mkdir(h, 0700) != 0) return 1;
     char out[ATL_CAP], err[ATL_CAP];
     int rc = 0;
     int bad = atl_cap(atl_eval, out, sizeof out, err, sizeof err, &rc);
     atl_clear_ov();
-    (void)chmod(h, 0600);
     return bad || rc != 2 || !atl_has(out, h);
 }
 
