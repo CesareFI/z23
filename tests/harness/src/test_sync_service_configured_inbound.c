@@ -1911,6 +1911,112 @@ static bool probe_loopback(struct probe_listener *l, const uint8_t probe_priv[32
     return ok;
 }
 
+/* ── the most-corrupted restore: neither anchor answers ────────────────
+ * The two anchor arms above pin that a census CAN measure through the
+ * authority tip and through the durable pair. This arm pins the failure
+ * shape those arms cannot: a hollow restore whose durable tip_finalize
+ * pair is gone too — a kill before the first finalize, or a progress
+ * store that lost its ok rows. bb_durable_anchor is documented
+ * fail-closed on exactly this ("no progress store, no resolvable pair …
+ * leaves the anchor NULL and the window honestly unmeasured"), but no
+ * regression held it: a later "simplification" that reads a NULL anchor
+ * as an empty window would hand back missing_count=0 with a complete
+ * verdict — the original hollow-restore hole reborn through a second
+ * door, and corrupted history would become an earned PASS. */
+static int test_configured_inbound_no_anchor_window_stays_honest(void)
+{
+    int failures = 0;
+    TEST("configured inbound: a hollow restore whose durable pair is also "
+         "gone — neither the chain[] tip nor tip_finalize answers — keeps "
+         "its body-history census honestly unmeasured, never complete") {
+        static struct model_node a, b;
+        model_reset();
+        model_authority_on = false;
+        model_authority_hash_ok = true;
+        model_authority_height = -1;
+        ASSERT(model_node_init(&a, "A", 7, 18237, 1));
+        ASSERT(model_node_init(&b, "B", 8, 18238, 2));
+        ASSERT(model_configure(&b, &a));
+        struct model_conn c;
+        ASSERT(model_connect(&c, &a, &b, a.priv, true, 40007));
+        ev_inbound_version(&c);
+        model_settle(&c, 1);
+        ASSERT(model_begin(c.in));
+        struct p2p_node *in = c.in;
+        ASSERT(in->inbound && syncsvc_peer_is_configured_inbound(in));
+        in->starting_height = 145;
+
+        struct main_state *ms = calloc(1, sizeof(*ms));
+        ASSERT(ms);
+        main_state_init(ms);
+
+        /* A real, EMPTY progress store: the durable-tip resolver has a
+         * database to read and finds no ok=1 finalize pair in it. */
+        char dir[128];
+        test_fmt_tmpdir(dir, sizeof(dir), "cfgib_noanchor", "main");
+        mkdir("./test-tmp", 0755);
+        mkdir(dir, 0755);
+        progress_store_close();
+        ASSERT(progress_store_open(dir));
+        ASSERT(tip_finalize_stage_init(ms));
+
+        /* The partial restore: ancestry rows in the map, tip slot emptied,
+         * published height 145 from an authority that names no hash. */
+        ASSERT(model_kill_restore_chain(ms, 145, 121, 124));
+        zcl_mutex_lock(&ms->chain_active.write_lock);
+        ms->chain_active.chain[145] = NULL;
+        zcl_mutex_unlock(&ms->chain_active.write_lock);
+        ASSERT(active_chain_at(&ms->chain_active, 145) == NULL);
+
+        model_authority_height = 145;
+        model_authority_hash_ok = false;
+        struct active_chain_authority auth = {
+            .get_height = model_authority_get_height,
+            .get_hash = model_authority_get_hash,
+            .is_authoritative = model_authority_is_authoritative,
+        };
+        active_chain_register_authority(&auth);
+        model_authority_on = true;
+        ASSERT(active_chain_tip(&ms->chain_active) == NULL);
+        ASSERT(active_chain_height(&ms->chain_active) == 145);
+
+        struct download_manager dm;
+        dl_init(&dm);
+        body_history_reset();
+
+        /* Neither anchor answers, so no pass may manufacture a measured
+         * window out of nothing. */
+        for (int pass = 0; pass < 64; pass++)
+            ASSERT(body_backfill_pass(ms, &dm, false, true, NULL, NULL) == 0);
+        ASSERT(!body_history_window_fully_measured());
+        struct body_history_verdict v;
+        ASSERT(body_history_get_verdict(&v));
+        ASSERT(v.status != BODY_HISTORY_COMPLETE);
+        printf("[configured-inbound no anchor] verdict=%d missing=%d — "
+               "honestly unmeasured, no earned PASS\n",
+               (int)v.status, v.missing_count);
+
+        model_authority_on = false;
+        model_authority_hash_ok = true;
+        model_authority_height = -1;
+        dl_free(&dm);
+        tip_finalize_stage_shutdown();
+        progress_store_close();
+        main_state_free(ms);
+        free(ms);
+        body_history_reset();
+        test_cleanup_tmpdir(dir);
+        PASS();
+    } _test_next:;
+    model_reset();
+    model_authority_on = false;
+    model_authority_hash_ok = true;
+    body_history_reset();
+    tip_finalize_stage_shutdown();
+    progress_store_close();
+    return failures;
+}
+
 static int test_configured_inbound_probe_socket(void)
 {
     int failures = 0;
@@ -2212,6 +2318,7 @@ int check_sync_service_configured_inbound(void)
     failures += test_configured_inbound_refetches_missing_bodies();
     failures += test_configured_inbound_hollow_window_still_measures();
     failures += test_configured_inbound_durable_anchor_window_measures();
+    failures += test_configured_inbound_no_anchor_window_stays_honest();
     failures += test_configured_inbound_outbound_unchanged();
     failures += test_configured_inbound_probe_socket();
     failures += test_configured_inbound_probe_deadline();
