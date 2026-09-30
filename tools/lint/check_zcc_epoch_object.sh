@@ -201,6 +201,13 @@ launch_count()
     grep -cx -- "$1" "$COMPILER_LAUNCHES" || true
 }
 
+cache_outcome_count()
+{
+    # Lookup diagnostics describe probes; only disposition rows count a
+    # coordinator's compile/cache outcome.
+    grep -Ec '^(HIT|MISS|BYPASS|UNKEY)[[:space:]]' "$ZCC_LOG" || true
+}
+
 # A PE loader failure can terminate cc1 without writing a GCC-style
 # diagnostic. The legacy epoch compiler must still name the source and exit
 # status so Make never reports an unexplained generic Error 2.
@@ -343,10 +350,13 @@ legacy_compile dep "$LEGACY_MARKER_REUSE" cc \
 
 # A fresh staging directory for identical inputs must be served from zcc's
 # in-process cache and still restore both artifacts.
+# Keep the compiler-visible completion marker identical to the cold call;
+# the cache correctly binds this variable even though it only signals a test.
 COLD_PREPROCESS="$(launch_count preprocess)"
 COLD_COMPILE="$(launch_count compile)"
 rm -f -- "$OBJECT" "${OBJECT%.o}.d"
 COMPILER_LAUNCHES="$COMPILER_LAUNCHES" \
+COMPILER_COMPLETED="$LOCK_COMPILE_DONE" \
 compile dep "$OBJECT" "$COUNTING_COMPILER" \
     -std=c23 -O2 -Wall -Wextra -Werror \
     "-frandom-seed=$SOURCE"
@@ -379,13 +389,13 @@ compile dep "$OBJECT" "$COUNTING_COMPILER" \
 # must unwrap that exact admitted self-wrapper in-process: one coordinator on
 # both cold and warm attempts, and no compiler child on the warm hit.
 MAKE_STYLE="$OBJECT_ROOT/make-style.o"
-LOG_BEFORE="$(wc -l < "$ZCC_LOG")"
+LOG_BEFORE="$(cache_outcome_count)"
 LAUNCHES_BEFORE="$(wc -l < "$COMPILER_LAUNCHES")"
 COMPILER_LAUNCHES="$COMPILER_LAUNCHES" \
 compile dep "$MAKE_STYLE" "$ZCC" "$COUNTING_COMPILER" \
     -std=c23 -O2 -Wall -Wextra -Werror -DMAKE_STYLE_EPOCH=1 \
     "-frandom-seed=$SOURCE"
-[ "$(wc -l < "$ZCC_LOG")" = "$((LOG_BEFORE + 1))" ] &&
+[ "$(cache_outcome_count)" = "$((LOG_BEFORE + 1))" ] &&
 [ "$(tail -1 "$ZCC_LOG" | awk '{print $1}')" = MISS ] ||
     fail 'Make-style cold compile used more than one zcc coordinator'
 MAKE_COLD_LAUNCHES="$(wc -l < "$COMPILER_LAUNCHES")"
@@ -398,7 +408,7 @@ COMPILER_LAUNCHES="$COMPILER_LAUNCHES" \
 compile dep "$MAKE_STYLE" "$ZCC" "$COUNTING_COMPILER" \
     -std=c23 -O2 -Wall -Wextra -Werror -DMAKE_STYLE_EPOCH=1 \
     "-frandom-seed=$SOURCE"
-[ "$(wc -l < "$ZCC_LOG")" = "$((LOG_BEFORE + 2))" ] &&
+[ "$(cache_outcome_count)" = "$((LOG_BEFORE + 2))" ] &&
 [ "$(tail -1 "$ZCC_LOG" | awk '{print $1}')" = HIT ] ||
     fail 'Make-style warm compile used more than one zcc coordinator'
 [ "$(launch_count preprocess)" = "$((MAKE_COLD_PREPROCESS + 1))" ] ||
