@@ -38,6 +38,17 @@ struct bundle_parts {
     uint32_t blob_count;
 };
 
+struct bundle_export_parts {
+    uint8_t *scope;
+    size_t scope_len;
+    uint8_t *patch;
+    size_t patch_len;
+    uint8_t *base;
+    size_t base_len;
+    uint8_t *candidate;
+    size_t candidate_len;
+};
+
 const char *vcs_zcode_candidate_bundle_result_string(
     enum vcs_zcode_candidate_bundle_result result)
 {
@@ -67,11 +78,57 @@ static int bundle_blob_compare(const void *a, const void *b)
     return memcmp(left->hash, right->hash, 32);
 }
 
-static bool bundle_load_raw(const char *repo_root, const uint8_t root[32],
-                            uint8_t **wire, size_t *wire_len)
+static void bundle_export_parts_free(struct bundle_export_parts *parts)
 {
-    *wire = NULL; *wire_len = 0;
-    return vcs_object_load_raw(repo_root, root, wire, wire_len) == 0;
+    free(parts->candidate); free(parts->base);
+    free(parts->patch); free(parts->scope);
+    memset(parts, 0, sizeof(*parts));
+}
+
+static enum vcs_zcode_candidate_bundle_result bundle_load_part(
+    const char *repo_root, const uint8_t root[32], size_t maximum,
+    size_t *remaining, uint8_t **wire, size_t *wire_len)
+{
+    if (maximum > *remaining) maximum = *remaining;
+    int status = vcs_object_load_raw_bounded(
+        repo_root, root, maximum, wire, wire_len);
+    if (status != 0)
+        return status == -2 ? VCS_ZCODE_CANDIDATE_BUNDLE_LIMIT
+                            : VCS_ZCODE_CANDIDATE_BUNDLE_CAS;
+    *remaining -= *wire_len;
+    return VCS_ZCODE_CANDIDATE_BUNDLE_OK;
+}
+
+static enum vcs_zcode_candidate_bundle_result bundle_load_export_parts(
+    const char *repo_root, const struct vcs_zcode_task_v1 *task,
+    const struct vcs_zcode_candidate_v1 *candidate,
+    struct bundle_export_parts *parts, size_t *remaining)
+{
+    memset(parts, 0, sizeof(*parts));
+    size_t limit = (size_t)task->max_context_bytes;
+    if (limit > (size_t)VCS_PACKAGE_STORE_MAX_PACKAGE_BYTES)
+        limit = (size_t)VCS_PACKAGE_STORE_MAX_PACKAGE_BYTES;
+    if (limit < VCS_ZCODE_CANDIDATE_BUNDLE_HEADER_BYTES)
+        return VCS_ZCODE_CANDIDATE_BUNDLE_LIMIT;
+    *remaining = limit - VCS_ZCODE_CANDIDATE_BUNDLE_HEADER_BYTES;
+    enum vcs_zcode_candidate_bundle_result result = bundle_load_part(
+        repo_root, task->write_scope_root, VCS_ZCODE_WRITE_SCOPE_WIRE_MAX,
+        remaining, &parts->scope, &parts->scope_len);
+    if (result == VCS_ZCODE_CANDIDATE_BUNDLE_OK)
+        result = bundle_load_part(
+            repo_root, candidate->patch_root, VCS_ZCODE_PATCH_WIRE_MAX,
+            remaining, &parts->patch, &parts->patch_len);
+    if (result == VCS_ZCODE_CANDIDATE_BUNDLE_OK)
+        result = bundle_load_part(
+            repo_root, task->source_root, *remaining, remaining,
+            &parts->base, &parts->base_len);
+    if (result == VCS_ZCODE_CANDIDATE_BUNDLE_OK)
+        result = bundle_load_part(
+            repo_root, candidate->candidate_source_root, *remaining,
+            remaining, &parts->candidate, &parts->candidate_len);
+    if (result != VCS_ZCODE_CANDIDATE_BUNDLE_OK)
+        bundle_export_parts_free(parts);
+    return result;
 }
 
 static enum vcs_zcode_candidate_bundle_result bundle_collect_blobs(
@@ -92,20 +149,30 @@ static enum vcs_zcode_candidate_bundle_result bundle_collect_blobs(
                 duplicate = true; break;
             }
         if (duplicate) continue;
-        if (UINT64_MAX - total < change->new_size ||
-            total + change->new_size > max_bytes) {
+        if (change->new_size > SIZE_MAX ||
+            UINT64_MAX - VCS_ZCODE_CANDIDATE_BUNDLE_BLOB_HEADER_BYTES <
+                change->new_size) {
+            bundle_blobs_free(blobs, count);
+            return VCS_ZCODE_CANDIDATE_BUNDLE_LIMIT;
+        }
+        uint64_t record_size =
+            VCS_ZCODE_CANDIDATE_BUNDLE_BLOB_HEADER_BYTES + change->new_size;
+        if (UINT64_MAX - total < record_size ||
+            total + record_size > max_bytes) {
             bundle_blobs_free(blobs, count);
             return VCS_ZCODE_CANDIDATE_BUNDLE_LIMIT;
         }
         uint8_t *bytes = NULL; size_t len = 0;
-        if (vcs_object_get(repo_root, change->new_blob, VCS_TAG_BLOB,
-                           &bytes, &len) != 0 || len != change->new_size) {
+        if (vcs_object_get_bounded(
+                repo_root, change->new_blob, VCS_TAG_BLOB,
+                (size_t)change->new_size, &bytes, &len) != 0 ||
+            len != change->new_size) {
             free(bytes); bundle_blobs_free(blobs, count);
             return VCS_ZCODE_CANDIDATE_BUNDLE_CAS;
         }
         memcpy(blobs[count].hash, change->new_blob, 32);
         blobs[count].bytes = bytes; blobs[count].len = len;
-        total += len; count++;
+        total += record_size; count++;
     }
     qsort(blobs, count, sizeof(*blobs), bundle_blob_compare);
     *out = blobs; *out_count = count;
@@ -153,35 +220,28 @@ enum vcs_zcode_candidate_bundle_result vcs_zcode_candidate_bundle_export(
     if (vcs_zcode_patch_verify_cas(repo_root, task, candidate) !=
         VCS_ZCODE_PATCH_OK)
         return VCS_ZCODE_CANDIDATE_BUNDLE_AUTHORITY;
-    uint8_t *scope = NULL, *patch_wire = NULL, *base = NULL, *candidate_wire = NULL;
-    size_t scope_len = 0, patch_len = 0, base_len = 0, candidate_len = 0;
-    bool loaded = bundle_load_raw(repo_root, task->write_scope_root,
-                                  &scope, &scope_len) &&
-        bundle_load_raw(repo_root, candidate->patch_root,
-                        &patch_wire, &patch_len) &&
-        bundle_load_raw(repo_root, task->source_root, &base, &base_len) &&
-        bundle_load_raw(repo_root, candidate->candidate_source_root,
-                        &candidate_wire, &candidate_len);
-    if (!loaded) {
-        free(candidate_wire); free(base); free(patch_wire); free(scope);
-        return VCS_ZCODE_CANDIDATE_BUNDLE_CAS;
-    }
+    struct bundle_export_parts parts;
+    size_t remaining = 0;
+    result = bundle_load_export_parts(
+        repo_root, task, candidate, &parts, &remaining);
+    if (result != VCS_ZCODE_CANDIDATE_BUNDLE_OK) return result;
     struct vcs_zcode_patch_v1 parsed_patch;
-    if (vcs_zcode_patch_parse(patch_wire, patch_len, &parsed_patch) !=
+    if (vcs_zcode_patch_parse(parts.patch, parts.patch_len, &parsed_patch) !=
         VCS_ZCODE_PATCH_OK) {
-        free(candidate_wire); free(base); free(patch_wire); free(scope);
+        bundle_export_parts_free(&parts);
         return VCS_ZCODE_CANDIDATE_BUNDLE_CAS;
     }
     struct bundle_blob *blobs = NULL; size_t blob_count = 0;
     result = bundle_collect_blobs(
         repo_root, &parsed_patch, &blobs, &blob_count,
-        task->max_patch_bytes);
+        remaining);
     vcs_zcode_patch_free(&parsed_patch);
     size_t total = VCS_ZCODE_CANDIDATE_BUNDLE_HEADER_BYTES;
     bool sized = result == VCS_ZCODE_CANDIDATE_BUNDLE_OK &&
-        bundle_add_size(&total, scope_len) &&
-        bundle_add_size(&total, patch_len) && bundle_add_size(&total, base_len) &&
-        bundle_add_size(&total, candidate_len);
+        bundle_add_size(&total, parts.scope_len) &&
+        bundle_add_size(&total, parts.patch_len) &&
+        bundle_add_size(&total, parts.base_len) &&
+        bundle_add_size(&total, parts.candidate_len);
     for (size_t i = 0; sized && i < blob_count; i++)
         sized = bundle_add_size(
             &total, VCS_ZCODE_CANDIDATE_BUNDLE_BLOB_HEADER_BYTES) &&
@@ -191,7 +251,7 @@ enum vcs_zcode_candidate_bundle_result vcs_zcode_candidate_bundle_export(
         if (result == VCS_ZCODE_CANDIDATE_BUNDLE_OK)
             result = VCS_ZCODE_CANDIDATE_BUNDLE_LIMIT;
         bundle_blobs_free(blobs, blob_count);
-        free(candidate_wire); free(base); free(patch_wire); free(scope);
+        bundle_export_parts_free(&parts);
         return result;
     }
     uint8_t *wire = zcl_malloc(total, "zcode.candidate_bundle.wire");
@@ -201,15 +261,19 @@ enum vcs_zcode_candidate_bundle_result vcs_zcode_candidate_bundle_export(
         vcs_wr_u16le(wire + 8, VCS_ZCODE_CANDIDATE_BUNDLE_VERSION);
         vcs_wr_u16le(wire + 10, 0);
         vcs_wr_u32le(wire + 12, (uint32_t)blob_count);
-        vcs_wr_u64le(wire + 16, scope_len);
-        vcs_wr_u64le(wire + 24, patch_len);
-        vcs_wr_u64le(wire + 32, base_len);
-        vcs_wr_u64le(wire + 40, candidate_len);
+        vcs_wr_u64le(wire + 16, parts.scope_len);
+        vcs_wr_u64le(wire + 24, parts.patch_len);
+        vcs_wr_u64le(wire + 32, parts.base_len);
+        vcs_wr_u64le(wire + 40, parts.candidate_len);
         size_t off = VCS_ZCODE_CANDIDATE_BUNDLE_HEADER_BYTES;
-        memcpy(wire + off, scope, scope_len); off += scope_len;
-        memcpy(wire + off, patch_wire, patch_len); off += patch_len;
-        memcpy(wire + off, base, base_len); off += base_len;
-        memcpy(wire + off, candidate_wire, candidate_len); off += candidate_len;
+        memcpy(wire + off, parts.scope, parts.scope_len);
+        off += parts.scope_len;
+        memcpy(wire + off, parts.patch, parts.patch_len);
+        off += parts.patch_len;
+        memcpy(wire + off, parts.base, parts.base_len);
+        off += parts.base_len;
+        memcpy(wire + off, parts.candidate, parts.candidate_len);
+        off += parts.candidate_len;
         for (size_t i = 0; i < blob_count; i++) {
             memcpy(wire + off, blobs[i].hash, 32); off += 32;
             vcs_wr_u64le(wire + off, blobs[i].len); off += 8;
@@ -219,7 +283,7 @@ enum vcs_zcode_candidate_bundle_result vcs_zcode_candidate_bundle_export(
         if (off != total) result = VCS_ZCODE_CANDIDATE_BUNDLE_SHAPE;
     }
     bundle_blobs_free(blobs, blob_count);
-    free(candidate_wire); free(base); free(patch_wire); free(scope);
+    bundle_export_parts_free(&parts);
     if (result != VCS_ZCODE_CANDIDATE_BUNDLE_OK) {
         free(wire); return result;
     }

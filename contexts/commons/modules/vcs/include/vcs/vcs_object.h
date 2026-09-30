@@ -62,6 +62,13 @@ bool vcs_object_put(const char *repo_root, const uint8_t *content, size_t len,
 int vcs_object_get(const char *repo_root, const uint8_t hash[32], uint8_t tag,
                    uint8_t **out_content, size_t *out_len);
 
+/* Verified tagged read with a caller-owned pre-allocation byte bound. Returns
+ * -2 when the stored object exceeds maximum_bytes, and -1 for ordinary
+ * read/corruption errors. Outputs are cleared on every refusal. */
+int vcs_object_get_bounded(const char *repo_root, const uint8_t hash[32],
+                           uint8_t tag, size_t maximum_bytes,
+                           uint8_t **out_content, size_t *out_len);
+
 /* True iff an object with this id exists on disk. Cheap existence check
  * (no read, no verify). */
 bool vcs_object_has(const char *repo_root, const uint8_t hash[32]);

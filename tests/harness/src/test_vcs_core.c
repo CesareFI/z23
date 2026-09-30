@@ -2055,6 +2055,29 @@ static int t_object_repair_sparse(
 }
 #endif
 
+static int t_object_get_bounded(const char *repo, const uint8_t hash[32],
+                                const uint8_t *data, size_t data_len)
+{
+    int failures = 0;
+    uint8_t *got = (uint8_t *)data;
+    size_t got_len = data_len;
+    zcl_alloc_fault_fail_next("vcs_object_read");
+    VC_CHECK("bounded get rejects before allocation",
+             vcs_object_get_bounded(
+                 repo, hash, VCS_TAG_BLOB, data_len - 1u,
+                 &got, &got_len) == -2 && got == NULL && got_len == 0);
+    VC_CHECK("bounded get leaves allocation fault armed",
+             zcl_alloc_fault_armed_label() != NULL);
+    zcl_alloc_fault_clear();
+    VC_CHECK("bounded get accepts exact object",
+             vcs_object_get_bounded(
+                 repo, hash, VCS_TAG_BLOB, data_len,
+                 &got, &got_len) == 0 && got_len == data_len && got &&
+             memcmp(got, data, got_len) == 0);
+    free(got);
+    return failures;
+}
+
 /* ── test 2/3: object store dedup + verify-on-read ──────────────── */
 static int t_object_store(const char *repo)
 {
@@ -2075,6 +2098,7 @@ static int t_object_store(const char *repo)
     VC_CHECK("get", vcs_object_get(repo, h1, VCS_TAG_BLOB, &got, &glen) == 0);
     VC_CHECK("get bytes", glen == sizeof(data) && got && memcmp(got, data, glen) == 0);
     free(got);
+    failures += t_object_get_bounded(repo, h1, data, sizeof(data));
     failures += t_object_repair_preserves_exact(
         repo, data, sizeof(data), h1);
 

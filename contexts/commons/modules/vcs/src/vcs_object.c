@@ -475,14 +475,23 @@ static int object_read(const char *repo_root, const uint8_t addr[32],
 int vcs_object_get(const char *repo_root, const uint8_t hash[32], uint8_t tag,
                    uint8_t **out_content, size_t *out_len)
 {
+    return vcs_object_get_bounded(repo_root, hash, tag, VCS_OBJECT_MAX_BYTES,
+                                  out_content, out_len);
+}
+
+int vcs_object_get_bounded(const char *repo_root, const uint8_t hash[32],
+                           uint8_t tag, size_t maximum_bytes,
+                           uint8_t **out_content, size_t *out_len)
+{
     if (out_content) *out_content = NULL;
     if (out_len) *out_len = 0;
     if (!repo_root || !hash || !out_content || !out_len)
-        LOG_ERR("vcs", "null arg to object_get");
+        LOG_ERR("vcs", "null arg to object_get_bounded");
     uint8_t *buf = NULL;
     size_t len = 0;
-    if (object_read(repo_root, hash, VCS_OBJECT_MAX_BYTES, &buf, &len) != 0)
-        return -1;
+    int read_status = object_read(
+        repo_root, hash, maximum_bytes, &buf, &len);
+    if (read_status != 0) return read_status;
     uint8_t recomputed[32];
     vcs_sha3_tag(tag, buf, len, recomputed);
     if (memcmp(recomputed, hash, 32) != 0) {

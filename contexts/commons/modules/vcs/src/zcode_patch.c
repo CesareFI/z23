@@ -333,18 +333,14 @@ static bool patch_changed_blobs_verify(
         if (change->kind == VCS_DIFF_REMOVED) continue;
         if (change->new_size > SIZE_MAX) return false;
         uint8_t *content = NULL; size_t content_len = 0;
-        if (vcs_object_load_raw_bounded(
-                repo_root, change->new_blob, (size_t)change->new_size,
-                &content, &content_len) != 0 ||
+        if (vcs_object_get_bounded(
+                repo_root, change->new_blob, VCS_TAG_BLOB,
+                (size_t)change->new_size, &content, &content_len) != 0 ||
             content_len != change->new_size) {
             free(content);
             return false;
         }
-        uint8_t checked[32];
-        vcs_sha3_tag(VCS_TAG_BLOB, content, content_len, checked);
-        bool valid = memcmp(checked, change->new_blob, 32) == 0;
         free(content);
-        if (!valid) return false;
     }
     return true;
 }

@@ -4842,6 +4842,23 @@ static int test_zd_improve_command(void)
         ASSERT_EQ(authority_bundle_len, authority_bundle_again_len);
         ASSERT(memcmp(authority_bundle, authority_bundle_again,
                       authority_bundle_len) == 0);
+        ASSERT(authority_bundle_len > 1u);
+        struct vcs_zcode_task_v1 tight_bundle_task = task;
+        tight_bundle_task.max_context_bytes =
+            (uint64_t)authority_bundle_len - 1u;
+        struct vcs_zcode_candidate_v1 tight_bundle_candidate = candidate;
+        ASSERT_EQ(vcs_zcode_task_root(
+                      &tight_bundle_task, tight_bundle_candidate.task_root),
+                  VCS_ZCODE_DEV_OK);
+        uint8_t *limited_bundle = authority_bundle;
+        size_t limited_bundle_len = authority_bundle_len;
+        ASSERT_EQ(vcs_zcode_candidate_bundle_export(
+                      workspace, &tight_bundle_task,
+                      &tight_bundle_candidate, &limited_bundle,
+                      &limited_bundle_len),
+                  VCS_ZCODE_CANDIDATE_BUNDLE_LIMIT);
+        ASSERT(limited_bundle == NULL);
+        ASSERT_EQ(limited_bundle_len, 0);
         uint8_t *refused_bundle = authority_bundle;
         size_t refused_bundle_len = authority_bundle_len;
         ASSERT_EQ(vcs_zcode_candidate_bundle_export(
