@@ -161,7 +161,7 @@ static uint64_t publication_lifetime_max(
 }
 
 bool vcs_zcode_dht_publications_load(struct vcs_zcode_dht_service *service,
-                                     uint64_t now_unix)
+                                     struct vcs_zcode_dht_time now)
 {
   if (!service)
     return false;
@@ -213,7 +213,7 @@ bool vcs_zcode_dht_publications_load(struct vcs_zcode_dht_service *service,
     return false;
   }
   struct vcs_zcode_dht_record_verify_context verify = {
-      .now_unix = now_unix,
+      .now_unix = now.wall_unix,
       .chain_verify = service->chain_verify,
       .chain_ctx = service->chain_ctx,
   };
@@ -258,9 +258,14 @@ bool vcs_zcode_dht_publications_load(struct vcs_zcode_dht_service *service,
     entry.phase = SERVICE_PUBLICATION_NEEDS_LOOKUP;
     loaded[restored++] = entry;
   }
-  if (skipped)
+  if (skipped) {
     vcs_zcode_dht_service_set_error(
         service, "publication intents restored with entries skipped");
+    /* The in-memory table has pruned the poisoned rows. Persist that exact
+     * recovery on the next save; otherwise a clean shutdown rewrites
+     * nothing and every later restart re-loads and skips the same rows. */
+    publication_mark_dirty(service, now.monotonic_s);
+  }
   memcpy(service->publications, loaded, sizeof(loaded));
   return true;
 }

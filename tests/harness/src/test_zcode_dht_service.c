@@ -1839,12 +1839,27 @@ static int test_publication_load_skips_poisoned_entry(void) {
     ASSERT_EQ(status.publication_intents, 2);
 
     /* Reboot through the same file a real host reboots through: the good
-     * stream's intent survives its poisoned neighbor. */
+     * stream's intent survives its poisoned neighbor. The pruned image is
+     * dirty so the next clean shutdown repairs the durable file instead of
+     * rediscovering the same poison on every restart. */
     vcs_zcode_dht_service_free(service, now);
     service = fixture_service_at(dir, genesis, noise, 1000);
     ASSERT(service != NULL);
     vcs_zcode_dht_service_status(service, &status);
     ASSERT_EQ(status.publication_intents, 1);
+    ASSERT(status.persistence_dirty);
+    ASSERT_STR_EQ(status.last_error,
+                  "publication intents restored with entries skipped");
+
+    /* The first recovered instance flushes its pruned table on shutdown.
+     * A second restart must therefore be clean and need no further repair. */
+    vcs_zcode_dht_service_free(service, now);
+    service = fixture_service_at(dir, genesis, noise, 1000);
+    ASSERT(service != NULL);
+    vcs_zcode_dht_service_status(service, &status);
+    ASSERT_EQ(status.publication_intents, 1);
+    ASSERT(!status.persistence_dirty);
+    ASSERT(status.last_error[0] == '\0');
 
     vcs_zcode_dht_service_free(service, now);
     cleanup_fixture(dir);
