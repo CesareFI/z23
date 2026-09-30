@@ -456,8 +456,9 @@ struct zcl_result build_fabric_worker_execute(
             return bfw_fail(ndb, action_id, lease_id,
                 vcs_zcode_action_input_result_string(input_result));
     } else {
-        if (vcs_object_load_raw(
-                workspace, input_root, &input, &input_len) != 0 ||
+        if (vcs_object_load_raw_bounded(
+                workspace, input_root, VCS_BUILD_ARTIFACT_MAX_BYTES,
+                &input, &input_len) != 0 ||
             input_len == 0 || input_len > VCS_BUILD_ARTIFACT_MAX_BYTES) {
             free(input); return bfw_fail(
                 ndb, action_id, lease_id, "input-cas-miss");

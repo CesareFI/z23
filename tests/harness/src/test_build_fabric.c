@@ -2464,6 +2464,70 @@ static int test_bf_confined_worker(void)
     return failures;
 }
 
+static int test_bf_worker_oversized_input(void)
+{
+    int failures = 0;
+    TEST("build_fabric: worker bounds oversized input CAS before execution") {
+        struct node_db ndb;
+        char dir[256], path[320];
+        ASSERT(bf_open(&ndb, dir, sizeof(dir), path, sizeof(path),
+                       "worker_input_bound"));
+        ASSERT(vcs_object_store_init(dir));
+        static const uint8_t input[] =
+            "int zbuild_fixture(void) { return 23; }\n";
+        uint8_t input_root[32], capsule_root[32];
+        sha3_256(input, sizeof(input) - 1u, input_root);
+        ASSERT(vcs_object_put_addressed(dir, input_root, input,
+                                        sizeof(input) - 1u));
+        struct vcs_toolchain_capsule_v1 capsule;
+        ASSERT(vcs_toolchain_capsule_v1_capture(&capsule));
+        ASSERT(vcs_toolchain_capsule_v1_root(&capsule, capsule_root));
+        struct db_build_job job;
+        struct db_build_action action;
+        bf_job(&job);
+        bf_action(&action);
+        zcl_hex_encode(capsule_root, 32, job.toolchain_sha3);
+        zcl_hex_encode(input_root, 32, action.input_root_sha3);
+        ASSERT(bf_canonicalize(&job, &action));
+        ASSERT(build_fabric_plan(&ndb, &job, &action).ok);
+        int64_t now = (int64_t)platform_time_wall_unix();
+        ASSERT(build_fabric_submit(&ndb, job.job_id, now).ok);
+        uint8_t seed[32], pubkey[32], secret[32];
+        memset(seed, 23, sizeof(seed));
+        ed25519_keypair(pubkey, secret, seed);
+        struct db_build_worker worker;
+        bf_worker(&worker);
+        zcl_hex_encode(pubkey, 32, worker.signer_pubkey);
+        ASSERT(build_fabric_worker_approve(&ndb, &worker, now).ok);
+        bool claimed = false;
+        ASSERT(build_fabric_claim(&ndb, worker.worker_id, id_d, now, 300,
+                                  &action, &claimed).ok);
+        ASSERT(claimed);
+        char input_hex[65], object_path[1024];
+        zcl_hex_encode(input_root, 32, input_hex);
+        int path_len = snprintf(object_path, sizeof(object_path),
+                                "%s/.zvcs/objects/%.2s/%s", dir, input_hex,
+                                input_hex + 2);
+        ASSERT(path_len > 0 && (size_t)path_len < sizeof(object_path));
+        ASSERT(truncate(object_path,
+                        (off_t)VCS_BUILD_ARTIFACT_MAX_BYTES + 1) == 0);
+        struct db_build_receipt receipt = {0};
+        struct zcl_result executed = build_fabric_worker_execute(
+            &ndb, dir, dir, action.action_id, id_d, secret, pubkey, &receipt,
+            NULL, NULL);
+        ASSERT(!executed.ok);
+        ASSERT(strstr(executed.message, "input-cas-miss") != NULL);
+        ASSERT(receipt.receipt_id[0] == '\0');
+        ASSERT(db_build_action_find(&ndb, action.action_id, &action));
+        ASSERT_STR_EQ(action.state, "LOCAL_FALLBACK");
+        ASSERT_STR_EQ(action.last_error, "input-cas-miss");
+        node_db_close(&ndb);
+        test_rm_rf(dir);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_bf_toolchain_capture_cache(void)
 {
     int failures = 0;
@@ -4991,6 +5055,7 @@ int test_build_fabric(void)
     failures += test_bf_linker_identity_bound();
     failures += test_bf_execution_observation_codec();
     failures += test_bf_worker_identity_capability_honesty();
+    failures += test_bf_worker_oversized_input();
     failures += test_bf_confined_worker();
     failures += test_bf_confined_test_worker();
     failures += test_bf_native();
