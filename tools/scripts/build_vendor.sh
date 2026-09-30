@@ -80,6 +80,7 @@ fi
 
 # shellcheck source=tools/scripts/vendor_provenance_lib.sh
 . "$SCRIPT_DIR/vendor_provenance_lib.sh"
+. "$SCRIPT_DIR/source_identity_lib.sh"
 
 # JOBS: an explicit value from the environment always wins (the caller, or a
 # Makefile that exports JOBS=<n> ahead of this script). Otherwise honour the
@@ -302,7 +303,7 @@ need() { command -v "$1" >/dev/null 2>&1 || die "required tool not found: $1"; }
 vendor_lock_source_hash() {
     local digest
     digest="$(vp_sha256_file "$1")" || die "vendor lock source hash failed: $1"
-    [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || die "vendor lock source hash invalid: $1"
+    zcl_is_sha256 "$digest" || die "vendor lock source hash invalid: $1"
     printf '%s' "$digest"
 }
 
@@ -311,6 +312,11 @@ acquire_vendor_lock() {
     # to exact helper/compiler/bootstrap bytes and flags, never timestamps.
     local host_cc="${HOSTCC:-cc}" compiler_key source_key key helper temporary
     local helper_source script_source key_source provenance_source
+    local dependencies="" dependency
+    local -a clock_flags=(-D_POSIX_C_SOURCE=200809L -D_DARWIN_C_SOURCE=1
+        -I"$REPO_ROOT/platform/modules/platform/include"
+        -I"$REPO_ROOT/platform/modules/util/include"
+        -I"$REPO_ROOT/platform/modules/base/include")
     local -a host_argv
     [[ "$host_cc" =~ ^[A-Za-z0-9_./:+,=%-]+([[:space:]]+[A-Za-z0-9_./:+,=%-]+)*$ ]] ||
         die "vendor lock HOSTCC contains unsupported shell syntax"
@@ -325,22 +331,33 @@ acquire_vendor_lock() {
     compiler_key="$(bash "$REPO_ROOT/tools/dev/build-epoch-key.sh" \
         compiler-id "$host_cc" "$host_cc" "$REPO_ROOT")" ||
         die "vendor lock compiler identity failed"
-    [[ "$compiler_key" =~ ^[0-9a-f]{64}$ ]] || die "vendor lock compiler identity invalid"
+    zcl_is_sha256 "$compiler_key" || die "vendor lock compiler identity invalid"
     helper_source="$(vendor_lock_source_hash "$REPO_ROOT/tools/vendor_lock.c")" || die "vendor lock helper hash failed"
     script_source="$(vendor_lock_source_hash "$SCRIPT_DIR/build_vendor.sh")" || die "vendor lock bootstrap hash failed"
     key_source="$(vendor_lock_source_hash "$REPO_ROOT/tools/dev/build-epoch-key.sh")" || die "vendor lock key driver hash failed"
     provenance_source="$(vendor_lock_source_hash "$SCRIPT_DIR/vendor_provenance_lib.sh")" || die "vendor lock provenance hash failed"
-    source_key="$(vp_sha256_text "$helper_source:$script_source:$key_source:$provenance_source")" ||
+    for dependency in tools/scripts/source_identity_lib.sh \
+        platform/modules/platform/src/clock.c \
+        platform/modules/platform/include/platform/clock.h \
+        platform/modules/util/include/util/log_macros.h \
+        platform/modules/base/include/base/log_macros.h \
+        platform/modules/base/include/base/format_attribute.h \
+        platform/modules/base/include/base/log_level.h; do
+        dependencies+=":$(vendor_lock_source_hash "$REPO_ROOT/$dependency")" ||
+            die "vendor lock dependency hash failed: $dependency"
+    done
+    source_key="$(vp_sha256_text "$helper_source:$script_source:$key_source:$provenance_source$dependencies")" ||
         die "vendor lock source aggregate failed"
-    [[ "$source_key" =~ ^[0-9a-f]{64}$ ]] || die "vendor lock source aggregate invalid"
-    key="$(vp_sha256_text "$compiler_key:$source_key:-std=c23 -O2 -Wall -Wextra -Werror")" ||
+    zcl_is_sha256 "$source_key" || die "vendor lock source aggregate invalid"
+    key="$(vp_sha256_text "$compiler_key:$source_key:-std=c23 -O2 -Wall -Wextra -Werror:${clock_flags[*]}")" ||
         die "vendor lock build key failed"
-    [[ "$key" =~ ^[0-9a-f]{64}$ ]] || die "vendor lock build key invalid"
+    zcl_is_sha256 "$key" || die "vendor lock build key invalid"
     helper="$REPO_ROOT/build/bin/vendor-lock/$key/vendor-lock"
     if [[ ! -x "$helper" ]] || [[ "$("$helper" --build-key)" != "$key" ]]; then
         mkdir -p "$(dirname "$helper")"
         temporary="$(mktemp "$helper.XXXXXX")"
         if ! "${host_argv[@]}" -std=c23 -O2 -Wall -Wextra -Werror \
+            "${clock_flags[@]}" "$REPO_ROOT/platform/modules/platform/src/clock.c" \
             "-DVENDOR_LOCK_BUILD_KEY=\"$key\"" "$REPO_ROOT/tools/vendor_lock.c" \
             -o "$temporary"; then
             rm -f "$temporary"

@@ -1,4 +1,5 @@
-/* Copyright 2026 Rhett Creighton; SPDX-License-Identifier: Apache-2.0 */
+/* Copyright 2026 Rhett Creighton; SPDX-License-Identifier: Apache-2.0
+ * Exercise vendor lock serialization and process-group death recovery. */
 #define _POSIX_C_SOURCE 200809L
 #include <errno.h>
 #include <poll.h>

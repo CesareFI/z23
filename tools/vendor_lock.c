@@ -1,5 +1,5 @@
-/* Copyright 2026 Rhett Creighton; SPDX-License-Identifier: Apache-2.0 */
-/* Vendor bootstrap glue: kernel ownership survives exec, not process death. */
+/* Copyright 2026 Rhett Creighton; SPDX-License-Identifier: Apache-2.0
+ * Vendor bootstrap lock: preserve kernel ownership across build exec. */
 #define _DARWIN_C_SOURCE 1
 #define _POSIX_C_SOURCE 200809L
 #include <errno.h>
@@ -11,6 +11,7 @@
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
+#include "platform/clock.h"
 
 #ifndef VENDOR_LOCK_BUILD_KEY
 #define VENDOR_LOCK_BUILD_KEY "unqualified"
@@ -40,17 +41,18 @@ static int identity(int fd, const char *path)
 
 static int acquire(int fd, const char *path, long timeout)
 {
-    struct timespec start, now;
-    if (clock_gettime(CLOCK_MONOTONIC, &start))
+    int64_t start = clock_now_monotonic_ns();
+    if (start <= 0)
         return refuse("vendor_lock_clock_unavailable", path);
     for (;;) {
         if (!flock(fd, LOCK_EX | LOCK_NB))
             return identity(fd, path);
         if (errno != EWOULDBLOCK && errno != EAGAIN && errno != EINTR)
             return refuse("vendor_lock_acquire_failed", path);
-        if (clock_gettime(CLOCK_MONOTONIC, &now))
+        int64_t now = clock_now_monotonic_ns();
+        if (now <= 0 || now < start)
             return refuse("vendor_lock_clock_unavailable", path);
-        if (now.tv_sec - start.tv_sec >= timeout) {
+        if (now - start >= (int64_t)timeout * 1000000000LL) {
             errno = ETIMEDOUT;
             return refuse("vendor_lock_timeout", path);
         }

@@ -5,7 +5,10 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 fixture="$(mktemp -d "${TMPDIR:-/tmp}/z23-vendor-lock.XXXXXX")"
 trap 'rm -rf "$fixture"' EXIT HUP INT TERM
 fail() { printf 'vendor_lock_selftest: %s\n' "$*" >&2; exit 1; }
-cc -std=c23 -O2 -Wall -Wextra -Werror "$ROOT/tools/vendor_lock.c" -o "$fixture/lock"
+cc -std=c23 -O2 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -D_DARWIN_C_SOURCE=1 \
+    -I"$ROOT/platform/modules/platform/include" -I"$ROOT/platform/modules/util/include" \
+    -I"$ROOT/platform/modules/base/include" "$ROOT/platform/modules/platform/src/clock.c" \
+    "$ROOT/tools/vendor_lock.c" -o "$fixture/lock"
 cc -std=c23 -O2 -Wall -Wextra -Werror "$ROOT/tools/tests/vendor_lock_test.c" -o "$fixture/test"
 "$fixture/test" "$fixture/lock" "$fixture/runtime.lock"
 [[ -f "$fixture/runtime.lock" ]] || fail 'persistent regular lock disappeared'

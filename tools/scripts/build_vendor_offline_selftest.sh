@@ -18,7 +18,17 @@ fail()
 mkdir -p "$SANDBOX/tools/scripts" "$SANDBOX/tools/dev" "$SANDBOX/vendor/.cache" \
     "$SANDBOX/vendor/lib" "$SANDBOX/vendor/include" "$SANDBOX/bin"
 cp "$ROOT/tools/scripts/build_vendor.sh" \
-    "$ROOT/tools/scripts/vendor_provenance_lib.sh" "$SANDBOX/tools/scripts/"
+    "$ROOT/tools/scripts/vendor_provenance_lib.sh" \
+    "$ROOT/tools/scripts/source_identity_lib.sh" "$SANDBOX/tools/scripts/"
+for dependency in platform/modules/platform/src/clock.c \
+    platform/modules/platform/include/platform/clock.h \
+    platform/modules/util/include/util/log_macros.h \
+    platform/modules/base/include/base/log_macros.h \
+    platform/modules/base/include/base/format_attribute.h \
+    platform/modules/base/include/base/log_level.h; do
+    mkdir -p "$SANDBOX/$(dirname "$dependency")"
+    cp "$ROOT/$dependency" "$SANDBOX/$dependency"
+done
 cp "$ROOT/tools/vendor_lock.c" "$SANDBOX/tools/"
 cp "$ROOT/tools/dev/build-epoch-key.sh" "$SANDBOX/tools/dev/"
 
