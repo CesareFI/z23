@@ -529,7 +529,9 @@ static int cmd_v1mirror(const char *workspace, const char *result_hex)
         fix_die("v1mirror: bad result root");
     uint8_t *wire = NULL;
     size_t wire_len = 0;
-    if (vcs_object_load_raw(workspace, root, &wire, &wire_len) != 0)
+    if (vcs_object_load_raw_bounded(
+            workspace, root, VCS_ZCODE_BENCHMARK_RESULT_V2_WIRE_BYTES,
+            &wire, &wire_len) != 0)
         fix_die("v1mirror: result not in CAS");
     struct vcs_zcode_benchmark_result_v2 v2;
     if (vcs_zcode_benchmark_result_v2_parse(wire, wire_len, &v2) !=
@@ -573,11 +575,7 @@ static int cmd_cas_has(const char *workspace, const char *root_hex)
     uint8_t root[32];
     if (!fix_hex32(root_hex, root))
         fix_die("cas-has: bad root hex");
-    uint8_t *wire = NULL;
-    size_t wire_len = 0;
-    int rc = vcs_object_load_raw(workspace, root, &wire, &wire_len);
-    free(wire);
-    printf("PRESENT=%d\n", rc == 0 ? 1 : 0);
+    printf("PRESENT=%d\n", vcs_object_has(workspace, root) ? 1 : 0);
     return 0;
 }
 
