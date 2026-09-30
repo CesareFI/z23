@@ -9926,6 +9926,24 @@ static int test_zd_remote_receipt(void)
         ASSERT_EQ(recovery.remote_receipts, 2);
         vcs_zcode_publication_index_free(projection);
         test_rm_rf(dir);
+
+        char bounded_dir[512], junk_path[640];
+        test_make_tmpdir(bounded_dir, sizeof(bounded_dir), "zcode_dev",
+                         "publication_index_budget");
+        ASSERT(vcs_object_store_init(bounded_dir));
+        for (size_t i = 0; i < 9; i++) {
+            int n = snprintf(junk_path, sizeof(junk_path),
+                             "%s/.zvcs/objects/junk-%zu", bounded_dir, i);
+            ASSERT(n > 0 && (size_t)n < sizeof(junk_path));
+            ASSERT(zd_write_text(junk_path, ""));
+        }
+        projection = vcs_zcode_publication_index_test_build_bounded(
+            bounded_dir, 8);
+        ASSERT(projection != NULL);
+        ASSERT(!vcs_zcode_publication_index_complete(projection));
+        ASSERT_EQ(vcs_zcode_publication_index_count(projection), 0);
+        vcs_zcode_publication_index_free(projection);
+        test_rm_rf(bounded_dir);
         PASS();
     } _test_next:;
     return failures;

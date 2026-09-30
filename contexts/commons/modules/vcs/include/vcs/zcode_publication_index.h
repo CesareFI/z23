@@ -48,11 +48,18 @@ struct vcs_zcode_publication_recovery_view {
 };
 
 /* Rebuild from repo_root's CAS. Complete means this directory walk saw no
- * read/validation/cap error; it is not a concurrent-write snapshot. Before
+ * read/validation/cap error; every non-dot entry, including malformed junk,
+ * consumes the fixed work cap. It is not a concurrent-write snapshot. Before
  * dispatch, the existing land/action lease must fence and recheck for prior
  * results. A missing CAS is incomplete, never a complete empty history. */
 struct vcs_zcode_publication_index *vcs_zcode_publication_index_build(
     const char *repo_root);
+/* Test-only denial seam: applies a smaller scan limit than production. It can
+ * only make an index incomplete sooner; it never permits more work or treats
+ * a truncated scan as complete. */
+struct vcs_zcode_publication_index *
+vcs_zcode_publication_index_test_build_bounded(
+    const char *repo_root, size_t scan_limit);
 void vcs_zcode_publication_index_free(struct vcs_zcode_publication_index *index);
 bool vcs_zcode_publication_index_complete(
     const struct vcs_zcode_publication_index *index);

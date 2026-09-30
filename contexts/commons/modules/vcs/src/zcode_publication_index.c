@@ -29,6 +29,8 @@ struct vcs_zcode_publication_index {
     struct vcs_zcode_publication_observation_entry *entries;
     size_t count;
     size_t scanned;
+    size_t scan_limit;
+    bool scan_budget_exhausted;
     bool complete;
 };
 
@@ -41,6 +43,24 @@ static bool index_hex_lower(const char *s, size_t want)
             return false;
     }
     return true;
+}
+
+static bool index_scan_take(struct vcs_zcode_publication_index *index)
+{
+    if (index->scanned >= index->scan_limit) {
+        if (!index->scan_budget_exhausted)
+            LOG_ERROR(INDEX_LOG, "CAS scan entry budget exhausted");
+        index->scan_budget_exhausted = true;
+        index->complete = false;
+        return false;
+    }
+    index->scanned++;
+    return true;
+}
+
+static bool index_dot_entry(const char *name)
+{
+    return strcmp(name, ".") == 0 || strcmp(name, "..") == 0;
 }
 
 static bool index_intent_signer(const char *repo_root,
@@ -170,11 +190,9 @@ static void index_scan_shard(const char *repo_root, const char *path,
             if (errno != 0) index->complete = false;
             break;
         }
+        if (index_dot_entry(de->d_name)) continue;
+        if (!index_scan_take(index)) break;
         if (!index_hex_lower(de->d_name, 62)) continue;
-        if (++index->scanned > INDEX_MAX_SCANNED) {
-            index->complete = false;
-            break;
-        }
         char hex64[65];
         int n = snprintf(hex64, sizeof(hex64), "%s%s", shard, de->d_name);
         if (n == 64) index_consider(repo_root, hex64, index);
@@ -204,6 +222,8 @@ static void index_scan_root(const char *repo_root, const char *objects,
             if (errno != 0) index->complete = false;
             break;
         }
+        if (index_dot_entry(de->d_name)) continue;
+        if (!index_scan_take(index)) break;
         if (!index_hex_lower(de->d_name, 2)) continue;
         char path[4400];
         int n = snprintf(path, sizeof(path), "%s/%s", objects, de->d_name);
@@ -212,13 +232,13 @@ static void index_scan_root(const char *repo_root, const char *objects,
             continue;
         }
         index_scan_shard(repo_root, path, de->d_name, index);
-        if (index->scanned > INDEX_MAX_SCANNED) break;
+        if (index->scan_budget_exhausted) break;
     }
     closedir(dir);
 }
 
-struct vcs_zcode_publication_index *vcs_zcode_publication_index_build(
-    const char *repo_root)
+static struct vcs_zcode_publication_index *index_build(
+    const char *repo_root, size_t scan_limit)
 {
     if (!repo_root || !repo_root[0])
         LOG_RETURN(NULL, INDEX_LOG, "missing workspace");
@@ -233,6 +253,7 @@ struct vcs_zcode_publication_index *vcs_zcode_publication_index_build(
         LOG_RETURN(NULL, INDEX_LOG, "workspace identity allocation failed");
     }
     memcpy(index->repo_root, repo_root, root_len + 1u);
+    index->scan_limit = scan_limit;
     index->complete = true;
     struct stat root_stat;
     if (stat(repo_root, &root_stat) != 0 || !S_ISDIR(root_stat.st_mode)) {
@@ -259,6 +280,21 @@ struct vcs_zcode_publication_index *vcs_zcode_publication_index_build(
     if (index->count > 1)
         qsort(index->entries, index->count, sizeof(*index->entries), index_entry_cmp);
     return index;
+}
+
+struct vcs_zcode_publication_index *vcs_zcode_publication_index_build(
+    const char *repo_root)
+{
+    return index_build(repo_root, INDEX_MAX_SCANNED);
+}
+
+struct vcs_zcode_publication_index *
+vcs_zcode_publication_index_test_build_bounded(
+    const char *repo_root, size_t scan_limit)
+{
+    if (scan_limit == 0 || scan_limit > INDEX_MAX_SCANNED)
+        LOG_RETURN(NULL, INDEX_LOG, "invalid test scan limit");
+    return index_build(repo_root, scan_limit);
 }
 
 void vcs_zcode_publication_index_free(struct vcs_zcode_publication_index *index)
