@@ -537,6 +537,12 @@ static bool group_reads_external_inputs(const char *name)
          * literal, so binding cannot see it. Verified: removed, probed plain
          * cacheable with no binding, restored. */
         "mesh_terminal_worker",
+        /* agent_broker_spawn_confined execve's this process image from
+         * cognition code the rail does not scan. The entry file carries
+         * no exec-family call. Verified: probed plain cacheable with no
+         * binding, so a stored PASS would skip that re-exec after the
+         * image link changes. */
+        "metaverse_agent_broker",
         "net",
         "no_hardcoded_home",              /* scans tree + env for home usage */
         "onion_bootstrap",
