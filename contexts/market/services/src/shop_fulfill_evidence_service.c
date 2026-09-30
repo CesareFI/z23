@@ -258,7 +258,10 @@ static struct zcl_result sfe_zcode_benchmark_verify(
         return receipt_fail(out, verified.message);
     uint8_t *wire = NULL;
     size_t wire_len = 0;
-    if (vcs_object_load_raw(workspace, receipt_id, &wire, &wire_len) != 0)
+    if (vcs_object_load_raw_bounded(
+            workspace, receipt_id,
+            VCS_ZCODE_BENCHMARK_RESULT_V2_WIRE_BYTES,
+            &wire, &wire_len) != 0)
         return receipt_fail(out, "benchmark-result-not-in-cas");
     uint8_t status = 0xffu;
     struct vcs_zcode_benchmark_result_v2 result;
