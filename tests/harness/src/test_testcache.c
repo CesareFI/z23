@@ -2021,6 +2021,7 @@ static bool tc_external_exec_denied(void)
 {
     static const char *const names[] = {
         "test_anchor_peers",
+        "test_dev_orient",
         "test_fastobj_carrier",
         /* Restored holes: exec through code the rail does not scan. */
         "test_freebsd_sh",

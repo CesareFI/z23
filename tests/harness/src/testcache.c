@@ -494,6 +494,10 @@ static bool group_reads_external_inputs(const char *name)
         "cli_auth_robust",
         "cold_start_sync",
         "crypto_perf_selftest",
+        /* dvo_run_checker spawns ./tools/lint/check_orient_facts.sh.
+         * No exec-family call sits in the entry file, so the rail neither
+         * refuses nor binds that script. */
+        "dev_orient",
         "dev_platform",                   /* reads tests/harness/fixtures source */
         /* execv zclassic23-package-verify next to the test image.
          * That verifier's link is outside the group's forward C closure. */
