@@ -6581,15 +6581,16 @@ static bool proof_observation_env_open(const char *state, const char *key)
     /* The runner's store open creates only the leaf it needs; the per-pair
      * directories must already exist. Start the verdict store empty the
      * same way proof_zcc_private_open does -- a killed worker can leave one
-     * behind -- and never touch a pre-existing observation CAS: it is
-     * durable evidence from earlier runs of this pair. */
+     * behind. The observation CAS is durable across runs of this pair, so
+     * it must tolerate already existing (a retried proof re-arms the same
+     * directory); _ensure is the idempotent variant. */
     char store[PATH_MAX];
     return proof_testcache_store_path(state, key, store) &&
            proof_zcc_store_remove(state, store) &&
            platform_private_directory_create(store) &&
            setenv("ZCL_TESTCACHE_STORE_ROOT", store, 1) == 0 &&
            proof_observation_store_path(state, key, store) &&
-           platform_private_directory_create(store) &&
+           platform_private_directory_ensure(store) &&
            setenv(ZCL_DEV_OBSERVATION_STORE_ENV, store, 1) == 0;
 }
 

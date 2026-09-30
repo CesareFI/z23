@@ -34,6 +34,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #define DPOE_KEY "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef01-cafe01"
 
@@ -170,6 +171,37 @@ static int test_dpoe_refusal_leaves_env_untouched(void)
     return failures;
 }
 
+static int test_dpoe_prepare_is_idempotent_across_runs(void)
+{
+    int failures = 0;
+    char root[4096];
+    test_make_tmpdir(root, sizeof(root), "proof_obs_env", "retry");
+    TEST_CASE("dev_proof_obs_env: re-prepare tolerates the durable CAS") {
+        /* A retried proof re-arms the same pair. The verdict store is
+         * scratch and starts empty again; the observation CAS is durable
+         * and already exists -- the second prepare must not refuse it. */
+        dpoe_clear_env();
+        ASSERT(zcl_dev_proof_test_observation_env_prepare(
+                   root, DPOE_KEY, NULL, 0));
+        char obs[4096];
+        ASSERT(snprintf(obs, sizeof(obs), "%s/observations.%s",
+                        root, DPOE_KEY) > 0);
+        ASSERT(access(obs, F_OK) == 0);
+        ASSERT(zcl_dev_proof_test_observation_env_restore(root, DPOE_KEY));
+        ASSERT(!zcl_dev_proof_test_observation_env_prepare(
+                    root, "bad/key", NULL, 0));
+
+        ASSERT(zcl_dev_proof_test_observation_env_prepare(
+                   root, DPOE_KEY, NULL, 0));
+        ASSERT_STR_EQ(getenv(ZCL_DEV_OBSERVATION_STORE_ENV), obs);
+        ASSERT(access(obs, F_OK) == 0);
+    }
+    TEST_END
+    dpoe_clear_env();
+    (void)test_rm_rf_recursive(root);
+    return failures;
+}
+
 int test_dev_proof_observation_env(void)
 {
     int failures = 0;
@@ -177,5 +209,6 @@ int test_dev_proof_observation_env(void)
     failures += test_dpoe_restore_removes_both();
     failures += test_dpoe_unconditional_overwrite();
     failures += test_dpoe_refusal_leaves_env_untouched();
+    failures += test_dpoe_prepare_is_idempotent_across_runs();
     return failures;
 }
