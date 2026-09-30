@@ -3877,6 +3877,35 @@ static bool zd_compile_host_accounted(
     return counted && observed;
 }
 
+static bool zd_bundle_task_binding_refuses(
+    const char *workspace, const struct vcs_zcode_task_v1 *task,
+    const struct vcs_zcode_candidate_v1 *candidate,
+    uint8_t *bundle, size_t bundle_len)
+{
+    char receiver[256];
+    test_make_tmpdir(receiver, sizeof(receiver), "zcode_dev",
+                     "bundle_task_binding");
+    bool ok = true;
+    for (unsigned mismatch = 0; ok && mismatch < 3; mismatch++) {
+        struct vcs_zcode_candidate_v1 wrong = *candidate;
+        if (mismatch == 0) wrong.task_root[0] ^= 1u;
+        else if (mismatch == 1) wrong.base_source_root[0] ^= 1u;
+        else wrong.schema_version++;
+        uint8_t *refused = bundle;
+        size_t refused_len = bundle_len;
+        ok = vcs_zcode_candidate_bundle_export(
+                workspace, task, &wrong, &refused, &refused_len) ==
+                VCS_ZCODE_CANDIDATE_BUNDLE_AUTHORITY &&
+            refused == NULL && refused_len == 0 &&
+            vcs_zcode_candidate_bundle_import(
+                receiver, task, &wrong, bundle, bundle_len) ==
+                VCS_ZCODE_CANDIDATE_BUNDLE_AUTHORITY &&
+            !vcs_object_store_initialized(receiver);
+    }
+    test_rm_rf(receiver);
+    return ok;
+}
+
 static int test_zd_improve_command(void)
 {
     int failures = 0;
@@ -4728,6 +4757,11 @@ static int test_zd_improve_command(void)
         ASSERT(refused_bundle == NULL);
         ASSERT_EQ(refused_bundle_len, 0);
         free(authority_bundle_again);
+        /* Shared source bytes do not make a candidate belong to another task.
+         * Refuse mismatched envelopes before creating any receiving CAS. */
+        ASSERT(zd_bundle_task_binding_refuses(workspace, &task, &candidate,
+                                              authority_bundle,
+                                              authority_bundle_len));
         char transfer_dir[256], receiver[256], restored_receiver[256];
         char restored_checkout[256];
         char mismatched_receiver[256], unbound_receiver[256];

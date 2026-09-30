@@ -125,14 +125,31 @@ static void bundle_clear_outputs(uint8_t **wire_out, size_t *wire_len)
     if (wire_len) *wire_len = 0;
 }
 
+static enum vcs_zcode_candidate_bundle_result bundle_task_binding(
+    const char *repo_root, const struct vcs_zcode_task_v1 *task,
+    const struct vcs_zcode_candidate_v1 *candidate)
+{
+    if (!repo_root || !task || !candidate)
+        return VCS_ZCODE_CANDIDATE_BUNDLE_NULL;
+    /* Transfer is inert: check the immutable binding at creation, while
+     * current execution admission remains the receiving worker's decision. */
+    return vcs_zcode_candidate_validate_for_task(
+        task, candidate, candidate->created_unix) == VCS_ZCODE_DEV_OK
+        ? VCS_ZCODE_CANDIDATE_BUNDLE_OK
+        : VCS_ZCODE_CANDIDATE_BUNDLE_AUTHORITY;
+}
+
 enum vcs_zcode_candidate_bundle_result vcs_zcode_candidate_bundle_export(
     const char *repo_root, const struct vcs_zcode_task_v1 *task,
     const struct vcs_zcode_candidate_v1 *candidate,
     uint8_t **wire_out, size_t *wire_len)
 {
     bundle_clear_outputs(wire_out, wire_len);
-    if (!repo_root || !task || !candidate || !wire_out || !wire_len)
+    if (!wire_out || !wire_len)
         return VCS_ZCODE_CANDIDATE_BUNDLE_NULL;
+    enum vcs_zcode_candidate_bundle_result result =
+        bundle_task_binding(repo_root, task, candidate);
+    if (result != VCS_ZCODE_CANDIDATE_BUNDLE_OK) return result;
     if (vcs_zcode_patch_verify_cas(repo_root, task, candidate) !=
         VCS_ZCODE_PATCH_OK)
         return VCS_ZCODE_CANDIDATE_BUNDLE_AUTHORITY;
@@ -156,7 +173,7 @@ enum vcs_zcode_candidate_bundle_result vcs_zcode_candidate_bundle_export(
         return VCS_ZCODE_CANDIDATE_BUNDLE_CAS;
     }
     struct bundle_blob *blobs = NULL; size_t blob_count = 0;
-    enum vcs_zcode_candidate_bundle_result result = bundle_collect_blobs(
+    result = bundle_collect_blobs(
         repo_root, &parsed_patch, &blobs, &blob_count,
         task->max_patch_bytes);
     vcs_zcode_patch_free(&parsed_patch);
@@ -374,10 +391,13 @@ enum vcs_zcode_candidate_bundle_result vcs_zcode_candidate_bundle_import(
     const struct vcs_zcode_candidate_v1 *candidate,
     const uint8_t *wire, size_t wire_len)
 {
-    if (!repo_root || !task || !candidate || !wire)
+    if (!wire)
         return VCS_ZCODE_CANDIDATE_BUNDLE_NULL;
+    enum vcs_zcode_candidate_bundle_result result =
+        bundle_task_binding(repo_root, task, candidate);
+    if (result != VCS_ZCODE_CANDIDATE_BUNDLE_OK) return result;
     struct bundle_parts parts;
-    enum vcs_zcode_candidate_bundle_result result = bundle_parse_parts(
+    result = bundle_parse_parts(
         wire, wire_len, task, &parts);
     if (result != VCS_ZCODE_CANDIDATE_BUNDLE_OK) return result;
     struct vcs_zcode_patch_v1 patch;
