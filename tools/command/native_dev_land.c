@@ -5711,14 +5711,54 @@ static bool dl_wt_proof_deps_ensure(const struct dl_dirs *d,
 /* Observe the remote before deciding whether a request landed or needs
  * rebase/proof. An unavailable observation preserves the existing request
  * and proof for retry; it is neither a negative result nor a cached pass. */
-static bool dl_fetch_remote_main(const char *wt, char observed_main[80])
+static bool dl_remote_program_capture(const struct dl_dirs *d,
+                                      const char *config_key,
+                                      const char *option_name,
+                                      char *option, size_t option_cap)
+{
+    char configured[4096];
+    const char *args[] = { "config", "--get", config_key, NULL };
+    int rc, n;
+    if (!config_key || !option_name || !option || option_cap == 0)
+        return false;
+    option[0] = '\0';
+    rc = dl_git(d->wt, args, configured, sizeof(configured),
+                DL_GIT_TIMEOUT_MS);
+    if (rc == 1)
+        return true;
+    if (rc != 0)
+        return false;
+    dl_trim(configured);
+    n = snprintf(option, option_cap, "%s=%s", option_name, configured);
+    if (!configured[0] || strchr(configured, '\n') ||
+        strchr(configured, '\r') || n <= 0 || (size_t)n >= option_cap) {
+        option[0] = '\0';
+        return false;
+    }
+    return true;
+}
+
+static bool dl_fetch_remote_main(const char *wt, const char *locator,
+                                 const char *upload_pack,
+                                 char observed_main[80])
 {
     char buf[DL_GIT_CAP];
-    const char *fetch_args[] = {
-        "fetch", "--quiet", "--no-tags", "--refmap=", "origin",
-        "+refs/heads/main:refs/remotes/origin/main", NULL
-    };
+    const char *fetch_args[12];
+    size_t argc = 0;
     observed_main[0] = '\0';
+    if (!locator || !locator[0] || locator[0] == '-' ||
+        strchr(locator, '\n') || strchr(locator, '\r'))
+        return false;
+    fetch_args[argc++] = "fetch";
+    fetch_args[argc++] = "--quiet";
+    fetch_args[argc++] = "--no-tags";
+    fetch_args[argc++] = "--refmap=";
+    if (upload_pack && upload_pack[0])
+        fetch_args[argc++] = upload_pack;
+    fetch_args[argc++] = "--";
+    fetch_args[argc++] = locator;
+    fetch_args[argc++] = "+refs/heads/main:refs/remotes/origin/main";
+    fetch_args[argc] = NULL;
     /* Request main explicitly: configured fetch mappings may omit it.
      * Refresh only the local tracking cache even after a remote rewind;
      * publication still requires ancestry against this actual observation.
@@ -5733,6 +5773,10 @@ static bool dl_fetch_remote_main(const char *wt, char observed_main[80])
 }
 
 static bool dl_publication_target(const struct dl_dirs *d, char out[65]);
+static bool dl_publication_target_capture(const struct dl_dirs *d,
+                                          char *fetch, size_t fetch_cap,
+                                          char *push, size_t push_cap,
+                                          char out[65]);
 
 static bool dl_publication_target_changed(const struct dl_row *row,
                                           const char *current, bool mutated,
@@ -5770,19 +5814,49 @@ static bool dl_observe_signed_target(const struct dl_dirs *d,
     return dl_publication_target_changed(row, current, mutated, reply);
 }
 
+static bool dl_bound_remote_main_fetch(const struct dl_dirs *d,
+                                       const struct dl_row *row,
+                                       char observed_main[80],
+                                       char current_target[65],
+                                       bool *target_mismatch)
+{
+    char locator[4096], push_locator[4096], upload_pack[4096 + 32];
+    bool captured;
+    current_target[0] = '\0';
+    *target_mismatch = false;
+    captured = dl_publication_target_capture(d, locator, sizeof(locator),
+                                             push_locator,
+                                             sizeof(push_locator),
+                                             current_target);
+    if (row->publication_signature[0] &&
+        (!captured || strcmp(current_target, row->publication_target) != 0)) {
+        *target_mismatch = true;
+        return false;
+    }
+    return captured &&
+        dl_remote_program_capture(d, "remote.origin.uploadpack",
+                                  "--upload-pack", upload_pack,
+                                  sizeof(upload_pack)) &&
+        dl_fetch_remote_main(d->wt, locator, upload_pack, observed_main);
+}
+
 static bool dl_observe_remote_main(const struct dl_dirs *d,
                                    const struct dl_row *row,
                                    char observed_main[80], bool mutated,
                                    struct zcl_command_reply *reply)
 {
-    if (!dl_observe_signed_target(d, row, mutated, reply))
-        return false;
-    if (dl_fetch_remote_main(d->wt, observed_main)) {
+    char current_target[65];
+    bool target_mismatch;
+    if (dl_bound_remote_main_fetch(d, row, observed_main, current_target,
+                                   &target_mismatch)) {
         if (dl_observe_signed_target(d, row, mutated, reply))
             return true;
         observed_main[0] = '\0';
         return false;
     }
+    if (target_mismatch)
+        return dl_publication_target_changed(row, current_target, mutated,
+                                             reply);
     dl_log(row, "remote observation unavailable: cannot fetch and resolve "
                 "origin refs/heads/main; retaining request for retry\n");
     (void)json_push_kv_str(&reply->data, "leaf", DL_LEAF);
@@ -6208,27 +6282,8 @@ static void dl_step_start(const struct dl_dirs *d, struct dl_row *row,
 static bool dl_push_receive_pack_capture(const struct dl_dirs *d,
                                          char *option, size_t option_cap)
 {
-    char configured[4096];
-    const char *args[] = { "config", "--get", "remote.origin.receivepack",
-                           NULL };
-    int rc, n;
-    if (!option || option_cap == 0)
-        return false;
-    option[0] = '\0';
-    rc = dl_git(d->wt, args, configured, sizeof(configured),
-                DL_GIT_TIMEOUT_MS);
-    if (rc == 1)
-        return true;
-    if (rc != 0)
-        return false;
-    dl_trim(configured);
-    n = snprintf(option, option_cap, "--receive-pack=%s", configured);
-    if (!configured[0] || strchr(configured, '\n') ||
-        strchr(configured, '\r') || n <= 0 || (size_t)n >= option_cap) {
-        option[0] = '\0';
-        return false;
-    }
-    return true;
+    return dl_remote_program_capture(d, "remote.origin.receivepack",
+                                     "--receive-pack", option, option_cap);
 }
 
 static bool dl_push_locator(const struct dl_dirs *d, const char *locator,
@@ -6863,6 +6918,24 @@ static void dl_push_checkpoint_settle(const struct dl_dirs *d,
     dl_step_successor(d, row, observed_main, reply);
 }
 
+static bool dl_cancel_bound_remote_fetch(const struct dl_dirs *d,
+                                         const struct dl_row *row,
+                                         char observed[80],
+                                         bool *settlement_refused,
+                                         struct zcl_command_reply *reply)
+{
+    char current_target[65];
+    bool target_mismatch;
+    if (dl_bound_remote_main_fetch(d, row, observed, current_target,
+                                   &target_mismatch))
+        return true;
+    if (target_mismatch) {
+        (void)dl_publication_target_changed(row, current_target, false, reply);
+        *settlement_refused = true;
+    }
+    return false;
+}
+
 /* Cancel may drop a push checkpoint only once it is settled as refused.
  * Observe outside the queue lock; the caller re-reads the row under the
  * lock and requires the identical signed pair. */
@@ -6904,7 +6977,8 @@ static bool dl_cancel_push_settled(const struct dl_dirs *d, const char *qpath,
         *settlement_refused = true;
         return false;
     }
-    if (!dl_fetch_remote_main(d->wt, observed))
+    if (!dl_cancel_bound_remote_fetch(d, settled, observed,
+                                      settlement_refused, reply))
         return false;
     if (!dl_observe_signed_target(d, settled, false, reply)) {
         *settlement_refused = true;

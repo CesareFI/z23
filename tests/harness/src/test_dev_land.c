@@ -140,6 +140,7 @@ static void dlx_isolate(const char *tag)
     unsetenv("ZCL_LAND_DRAIN_IDLE_SEC");
     unsetenv("ZCL_DLX_GIT_COUNT");
     unsetenv("ZCL_DLX_GIT_DIVERT_REMOTE");
+    unsetenv("ZCL_DLX_GIT_ORIGINAL_REMOTE");
     unsetenv("ZCL_DLX_GIT_REAL_PATH");
     unsetenv("ZCL_DLX_GIT_TARGET_WT");
     /* The vendor/tor submodule fixtures below add a real gitlink pointing
@@ -181,6 +182,7 @@ static void dlx_restore(void)
     unsetenv("ZCL_LAND_DRAIN_IDLE_SEC");
     unsetenv("ZCL_DLX_GIT_COUNT");
     unsetenv("ZCL_DLX_GIT_DIVERT_REMOTE");
+    unsetenv("ZCL_DLX_GIT_ORIGINAL_REMOTE");
     unsetenv("ZCL_DLX_GIT_REAL_PATH");
     unsetenv("ZCL_DLX_GIT_TARGET_WT");
     unsetenv("GIT_ALLOW_PROTOCOL");
@@ -501,11 +503,54 @@ static bool dlx_git_push_retarget_shim(const char *wt, const char *diverted)
         setenv("PATH", path, 1) == 0;
 }
 
+/* Redirect only the duration of each landing-worktree fetch, restoring the
+ * signed target before the caller can re-read repository configuration. */
+static bool dlx_git_fetch_restore_shim(const char *wt, const char *original,
+                                       const char *diverted)
+{
+    char shim[1024], git[1200], path[10240];
+    static const char script[] =
+        "#!/bin/sh\n"
+        "if test \"$#\" -ge 4 && test \"$1\" = '-C' && "
+        "test \"$2\" = \"$ZCL_DLX_GIT_TARGET_WT\" && "
+        "test \"$3\" = 'fetch'; then\n"
+        "  PATH=$ZCL_DLX_GIT_REAL_PATH\n"
+        "  export PATH\n"
+        "  git -C \"$ZCL_DLX_GIT_TARGET_WT\" remote set-url origin "
+        "\"$ZCL_DLX_GIT_DIVERT_REMOTE\" || exit 71\n"
+        "  git \"$@\"\n"
+        "  rc=$?\n"
+        "  git -C \"$ZCL_DLX_GIT_TARGET_WT\" remote set-url origin "
+        "\"$ZCL_DLX_GIT_ORIGINAL_REMOTE\" || exit 72\n"
+        "  exit \"$rc\"\n"
+        "fi\n"
+        "PATH=$ZCL_DLX_GIT_REAL_PATH\n"
+        "export PATH\n"
+        "exec git \"$@\"\n";
+    if (!wt || !original || !diverted || !g_dlx_had_path ||
+        !g_dlx_path_saved)
+        return false;
+    test_make_tmpdir(shim, sizeof(shim), "dev_land", "fetch_restore_shim");
+    if (snprintf(git, sizeof(git), "%s/git", shim) >= (int)sizeof(git) ||
+        snprintf(path, sizeof(path), "%s:%s", shim, g_dlx_saved_path) >=
+            (int)sizeof(path) ||
+        !dlx_write(git, script) || chmod(git, 0700) != 0)
+        return false;
+    return setenv("ZCL_DLX_GIT_DIVERT_REMOTE", diverted, 1) == 0 &&
+        setenv("ZCL_DLX_GIT_ORIGINAL_REMOTE", original, 1) == 0 &&
+        setenv("ZCL_DLX_GIT_REAL_PATH", g_dlx_saved_path, 1) == 0 &&
+        setenv("ZCL_DLX_GIT_TARGET_WT", wt, 1) == 0 &&
+        setenv("PATH", path, 1) == 0;
+}
+
 struct dlx_rig {
     char bare[600];
     char clone[600];
     char tip[64];
 };
+
+static bool dlx_sibling(const struct dlx_rig *rig, const char *base,
+                        const char *ref, char out[64]);
 
 /* A commit in the clone whose parent is origin/main, pushed nowhere. */
 static bool dlx_commit(const char *dir, const char *name, const char *body,
@@ -6587,6 +6632,58 @@ _test_next:;
     return failures;
 }
 
+static int test_dev_land_observation_locator_binding(void)
+{
+    int failures = 0;
+#if !defined(_WIN32)
+    TEST("land: remote-main observation uses the locator bound to the signed target") {
+        struct dlx_rig rig;
+        struct dlx_call c;
+        char base[64], sibling[64], published[64], diverted_tip[64];
+        char land[1200], wt[1400], diverted_root[1024], diverted[1200];
+        char update[160];
+        const char *main_ref[] = { "rev-parse", "refs/heads/main", NULL };
+        dlx_isolate("observation_locator");
+        ASSERT(dlx_attach_proven_pair(&rig, "observation_locator", base));
+        dlx_begin(&c, "attach");
+        (void)json_push_kv_int(&c.input, "seq", 1);
+        ASSERT(dlx_run(&c) && dlx_ok(&c));
+        dlx_end(&c);
+
+        ASSERT(dlx_sibling(&rig, base, "refs/heads/side", sibling));
+        test_make_tmpdir(diverted_root, sizeof(diverted_root), "dev_land",
+                         "observation_locator_diverted");
+        ASSERT(snprintf(diverted, sizeof(diverted), "%s/origin.git",
+                        diverted_root) < (int)sizeof(diverted));
+        const char *init[] = { "init", "--quiet", "--bare",
+                               "--initial-branch=main", diverted, NULL };
+        ASSERT(dlx_git(NULL, init) == 0);
+        ASSERT(snprintf(update, sizeof(update), "%s:refs/heads/main", sibling) <
+               (int)sizeof(update));
+        const char *seed[] = { "fetch", "--quiet", rig.clone, update, NULL };
+        ASSERT(dlx_git(diverted, seed) == 0);
+
+        dlx_landdir(land, sizeof(land));
+        ASSERT(snprintf(wt, sizeof(wt), "%s/wt", land) < (int)sizeof(wt));
+        ASSERT(dlx_git_fetch_restore_shim(wt, rig.bare, diverted));
+        dlx_begin(&c, "step");
+        ASSERT(dlx_run(&c) && dlx_ok(&c));
+        ASSERT_STR_EQ(dlx_str(&c, "state"), "landed");
+        dlx_end(&c);
+        ASSERT(dlx_origin_main(&rig, published));
+        ASSERT_STR_EQ(published, rig.tip);
+        ASSERT(dlx_git_out(diverted, main_ref, diverted_tip,
+                           sizeof(diverted_tip)) == 0);
+        ASSERT_STR_EQ(diverted_tip, sibling);
+        dlx_restore();
+        PASS();
+    }
+_test_next:;
+    dlx_restore();
+#endif
+    return failures;
+}
+
 static int test_dev_land_signed_stale(void)
 {
     int failures = 0;
@@ -7841,6 +7938,7 @@ int test_dev_land(void)
     failures += test_dev_land_receipt_adversarial();
     failures += test_dev_land_signer_takeover();
     failures += test_dev_land_signed_target_race();
+    failures += test_dev_land_observation_locator_binding();
     failures += test_dev_land_signed_stale();
     failures += test_dev_land_signed_recovery();
     failures += test_dev_land_receipt_locator_binding();
