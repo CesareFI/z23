@@ -586,6 +586,12 @@ static bool group_reads_external_inputs(const char *name)
         "verify_bench_selftest",
         "wallet_persistence_cycle",
         "wallet_view",
+        /* pkgl_run_worker spawns zclassic23-package-verify-dev from
+         * commons lifecycle code the rail does not scan. The entry file
+         * has no exec-family call, so the build/bin literal is not bound.
+         * Verified: probed plain cacheable, so a stored PASS would skip
+         * that worker after its link changes. */
+        "zcode_add",
         /* The umbrella and shard_01 re-exec this test image
          * (--exact=test_zcode_package_dev). That image's link is
          * outside the group's forward C closure. */

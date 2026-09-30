@@ -2032,6 +2032,7 @@ static bool tc_external_exec_denied(void)
         "test_resident_launch_contract",
         "test_self_folded_anchor_heavy",
         "self_folded_anchor_heavy",
+        "test_zcode_add",
         "test_zcode_package_dev",
         "test_zcode_package_dev_shard_01",
         "test_zcode_verify",
