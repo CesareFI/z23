@@ -668,9 +668,10 @@ static bool context_source_manifest_id(
 {
     uint8_t *wire = NULL;
     size_t wire_len = 0;
-    bool loaded = vcs_object_load_raw(
+    bool loaded = vcs_object_load_raw_bounded(
         receiver_root, context->candidate.candidate_source_root,
-        &wire, &wire_len) == 0 && wire_len > 0;
+        context->candidate_authority_len, &wire, &wire_len) == 0 &&
+        wire_len > 0;
     if (loaded) vcs_source_manifest_id(wire, wire_len, source_manifest_id);
     free(wire);
     return loaded && memcmp(source_manifest_id, context->source_sha256, 32) == 0;

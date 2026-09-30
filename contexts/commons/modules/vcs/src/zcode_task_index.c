@@ -512,8 +512,7 @@ static bool index_app_artifact_built(
         !zcl_hex_decode_lower(build->action_root_hex, action_root, 32))
         return false;
     if (memcmp(output_root, artifact_root, 32) == 0 &&
-        vcs_object_load_raw(repo_root, output_root, &wire, &wire_len) == 0) {
-        free(wire);
+        vcs_object_has(repo_root, output_root)) {
         return true;
     }
     struct vcs_package_store *store = vcs_package_store_global();
