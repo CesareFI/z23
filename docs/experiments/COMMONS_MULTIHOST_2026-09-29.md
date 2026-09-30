@@ -58,6 +58,8 @@ same afterwards.
 | 14 | `5de24cac1f` | **PASS 12/12**, 492 s | none |
 | 15 | `d3aded7383` | **PASS 12/12**, 469 s | none |
 | 16 | `d3aded7383` | **PASS 12/12**, 504 s | none |
+| 17 | `c4e7857b51` | **PASS 13/13**, 455 s | none — first physical publisher-return pass (step 13, fault 6) |
+| 18 | `c4e7857b51` | **PASS 13/13**, 469 s | none |
 
 Wall times are the driver's own run time; queue time for the shared build
 slot is excluded.
@@ -199,6 +201,37 @@ Every step verdict was PASS, and the verdict line reported
      `test_supervisor_production_tree`, red on the old wiring and green
      after.
 
+6. **The returned publisher's wallet under-reported spendable after the
+   hard kill.**
+   - **Symptom:** step 13's balance check. One killed datadir gave three
+     views: boot getbalance 312.49999700; live after `generate 2`
+     337.49999700; after a manual `rescanblockchain` 574.99999700 — the
+     pre-kill number. `listunspent 0` snapshots taken before and after the
+     balance-changing rescan were byte-identical (10424 bytes), so the UTXO
+     set never changed: only the maturity view did.
+   - **Cause:** `wallet_rescan_report` moved the wallet's depth baseline to
+     the scan's stop height without re-basing the stored confirmation
+     counts of rows below the scan start. After the kill the last flush had
+     measured every stored depth from height 124 while the chain stood at
+     145, and the boot catch-up scanned only the 125..145 gap: pre-existing
+     rows kept depths 21 short. `getbalance` gates each coinbase on
+     `COINBASE_MATURITY − confirms`, so exactly the 21 coinbases in the
+     maturity boundary band (heights 26..46 at tip 145) read immature:
+     21 × 12.5 = 262.5 missing. The "+25 after generate 2" was two more
+     real coinbases crossing the boundary under the same stale baseline —
+     `generate`'s empty-script coinbase pays nobody and no view ever
+     credited it. `listunspent` reads confirmations from the chain, which
+     is why it was correct all along.
+   - **Fix:** when a rescan starts above the wallet's current baseline,
+     `wallet_rescan_rebase_depths` raises pre-existing depths by the
+     distance the baseline moves — the same adjustment a later connected
+     tip applies through `wallet_advance_confirmations`.
+   - **Regression:** scenario G in `test_wallet_rescan_coverage` (kill at
+     baseline 60, empty-coinbase gap to 160, coin maturing exactly at the
+     tip): red on the old wiring — the boundary coin stayed immature and
+     getbalance returned 0 — green after, including across flush and
+     reboot.
+
 ## Open blocker: reconnects between two configured peers destroy both sessions (closed below)
 
 Note: the following mechanism record was written against run 9, before the
@@ -258,7 +291,12 @@ the physical hosts:
 
 Runs 15 and 16 are two consecutive physical 12/12 passes on the fix's
 landed SHA `d3aded7383` (469 s and 504 s), the repeatable-green bar
-for this acceptance.
+for that acceptance's twelve steps. Runs 17 and 18 raise the bar to the
+full thirteen: two consecutive physical 13/13 passes on `c4e7857b51`
+(455 s and 469 s), the first physical proof that the publisher returns
+from its own killed datadir with a provable tip, complete body history,
+and an unchanged spendable balance (fault 6). The same-host journey
+passes 13/13 on the same SHA.
 
 Separately, in run 4 node A's own shutdown hit `database is locked` on
 node.db while the wallet flush was retrying. The harness's TERM grace then

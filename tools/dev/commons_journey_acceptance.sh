@@ -11,7 +11,7 @@
 #
 #   zcode guide -> work start -> work run -> work show
 #     -> publish -> discover -> fetch -> source reproduce
-#     -> work accept -> zcode use
+#     -> work accept -> zcode use -> publisher returns
 #
 # After checkout and build it contacts nothing: no GitHub, no registry, no
 # package server. Node B learns the package from node A over the node's own
@@ -2671,9 +2671,17 @@ cj_require_latecomer_empty() {
 }
 
 cj_stop_publisher() {
+    # What the person had when the publisher died: the balance and the tip the
+    # returned process must re-prove from its own datadir plus the bytes the
+    # survivors still hold. Captured here so step 13 asserts what this step
+    # actually destroyed, not a number remembered from an earlier phase.
+    CJ_PREKILL_BALANCE="$(a_rpc getbalance | dht_result || true)"
+    CJ_PREKILL_TIP="$(dht_height "$DHT_DD_A" "$A_RPC")"
     # The publisher process is hard-killed (deliberate SIGKILL: a disappearance,
-    # not a stop) and never comes back. Its RPC must stop answering before a
-    # two-host latecomer redials the surviving peer.
+    # not a stop); the killed process never comes back. Its RPC must stop
+    # answering before a two-host latecomer redials the surviving peer. What
+    # returns later is a NEW process from the same datadir — the recovery the
+    # journey's last step proves.
     dht_kill_group "$DHT_PGID_A" KILL; DHT_PGID_A=""
     if dht_rpc "$DHT_DD_A" "$A_RPC" getblockcount >/dev/null 2>&1; then
         cj_die "node A still answers RPC after its disappearance"
@@ -2974,6 +2982,63 @@ cj_journey_publisher_disappears() {
     cj_note "the original publisher is gone and the software survives: ${CJ_ACCEPTED_SOURCE:0:16}… on C"
 }
 
+cj_journey_publisher_returns() {
+    cj_step "13/13  the publisher returns and re-proves its own history"
+    local dial_a="$CJ_PEER_ADDR_B" started ibd tip hist bal
+    [ "$CJ_MULTIHOST" = 1 ] || dial_a="127.0.0.1"
+    # A new process boots from the datadir the kill left behind — the same
+    # wallet, the same identity, the same holed chain state a real crash
+    # leaves — and dials the surviving peer exactly as it did before it died.
+    # Nobody restores a backup here: recovery is the node's own job.
+    DHT_BUILDWORKERS=0
+    dht_spawn DHT_PGID_A "$DHT_DD_A" "$A_PORT" "$A_RPC" "$A_FS" \
+        "$A_HTTPS" "$dial_a:$B_PORT"
+    cj_wait_rpc_or_die "$DHT_DD_A" "$A_RPC" "$DHT_PGID_A" "node A (returned)"
+
+    # The chain heals to the survivors' tip and the at-tip claim becomes
+    # sayable again: provable tip published, not initial-block-download.
+    started="$EPOCHREALTIME"
+    tip="$(dht_height "$DHT_DD_B" "$B_RPC")"
+    [ -n "$tip" ] || cj_die "node B reported no height for A's return"
+    ibd=""
+    while :; do
+        ibd="$(a_rpc getblockchaininfo 2>/dev/null | dht_result | \
+               dht_jget initialblockdownload || true)"
+        [ "$ibd" = False ] &&
+           [ "$(dht_height "$DHT_DD_A" "$A_RPC" 2>/dev/null || true)" = "$tip" ] && break
+        [ "$(awk -v s="$started" -v n="$EPOCHREALTIME" 'BEGIN{print (n-s)<90}')" = 1 ] ||
+            cj_die "node A did not reach the survivors' tip $tip out of initial block download within 90 s of its return"
+        sleep 1
+    done
+    cj_a core status > "$DHT_WORK/requester-returned-status.json"
+    [ "$(cj_field data.provable_tip_published \
+            "$(cat "$DHT_WORK/requester-returned-status.json")" False)" = True ] ||
+        cj_die "node A returned but does not publish a provable tip"
+
+    # The history below the tip is provable, not assumed: a kill that leaves
+    # the chain window holed must still measure its own bodies and fetch what
+    # it lost from the swarm that survived it.
+    hist=""
+    while :; do
+        hist="$(cj_field state.status "$(cj_a dumpstate body_history || true)" '')"
+        [ "$hist" = complete ] && break
+        [ "$(awk -v s="$started" -v n="$EPOCHREALTIME" 'BEGIN{print (n-s)<90}')" = 1 ] ||
+            cj_die "node A's body history stayed '$hist' after its return (expected complete)"
+        sleep 1
+    done
+
+    # The money is exactly what it was when the publisher died: the returning
+    # node re-derives spendability from its own scanned history, losing
+    # nothing to the crash and gaining nothing from the survivors.
+    bal="$(a_rpc getbalance | dht_result || true)"
+    [ -n "$CJ_PREKILL_BALANCE" ] && [ "$bal" = "$CJ_PREKILL_BALANCE" ] ||
+        cj_die "node A returned with balance '$bal' instead of the '$CJ_PREKILL_BALANCE' it died with"
+    [ -n "$CJ_PREKILL_TIP" ] && [ "$tip" = "$CJ_PREKILL_TIP" ] ||
+        cj_die "the survivors moved the tip to $tip while the publisher died at $CJ_PREKILL_TIP"
+    cj_note "node A returned: provable tip $tip, body history complete, balance $bal unchanged"
+    CJ_PUBLISHER_RETURNED=1
+}
+
 # ── the strip and the topology ───────────────────────────────────────────
 # The mission's eight stages plus the second lap, printed by the run that
 # earned them. The README
@@ -2991,7 +3056,8 @@ ACCEPTED
 USED
 CACHE TRAVELED
 CHANGED WHAT EXISTED
-PUBLISHER GONE'
+PUBLISHER GONE
+PUBLISHER RETURNED'
 
 cj_strip_row() { printf '  \033[1;36m%-26s\033[0m%s\n' "$1" "$2"; }
 cj_strip_cont() { printf '  %-26s\033[2m%s\033[0m\n' "" "$1"; }
@@ -2999,7 +3065,7 @@ cj_strip_cont() { printf '  %-26s\033[2m%s\033[0m\n' "" "$1"; }
 cj_strip() {
     printf '  \033[1mYOU ASKED\033[0m → \033[1mREUSED FROM PEER\033[0m → \033[1mCREATED MISSING BEHAVIOR\033[0m → \033[1mVISIBLE RESULT\033[0m →\n'
     printf '  \033[1mREPRODUCED ON NODE B\033[0m → \033[1mTAMPER REFUSED\033[0m → \033[1mACCEPTED\033[0m → \033[1mUSED\033[0m →\n'
-    printf '  \033[1mCACHE TRAVELED\033[0m → \033[1mPUBLISHER GONE\033[0m\n\n'
+    printf '  \033[1mCACHE TRAVELED\033[0m → \033[1mPUBLISHER GONE\033[0m → \033[1mPUBLISHER RETURNED\033[0m\n\n'
     cj_strip_row "YOU ASKED" "$CJ_GOAL"
     cj_strip_row "REUSED FROM PEER" \
         "z23/textstat ${CJ_TEXTSTAT_ROOT:0:12}… — $CJ_TEXTSTAT_BYTES bytes from node A, no registry"
@@ -3047,7 +3113,9 @@ cj_strip() {
     printf '\n'
     cj_strip_row "PUBLISHER GONE" \
         "node A killed; node C fetched, reproduced and ran the exact bytes from B"
-    printf '\n  \033[2mthree fresh datadirs · %s bytes over the overlay · A gone · central services contacted: 0\033[0m\n' \
+    cj_strip_row "PUBLISHER RETURNED" \
+        "node A back from its own killed datadir: provable tip, complete history, same balance"
+    printf '\n  \033[2mthree fresh datadirs · %s bytes over the overlay · A gone and back · central services contacted: 0\033[0m\n' \
         "$CJ_APP_BYTES"
 }
 
@@ -3195,6 +3263,10 @@ cj_write_facts() {
             printf 'changed_survival      = node C measured %s deg/s from node B, node A process killed\n' \
                 "$CJ_TURN_AFTER"
         fi
+        if [ "${CJ_PUBLISHER_RETURNED:-0}" = 1 ]; then
+            printf 'publisher_returned    = node A restarted from its own killed datadir: provable tip %s, body history complete, balance %s unchanged\n' \
+                "$CJ_PREKILL_TIP" "$CJ_PREKILL_BALANCE"
+        fi
         printf 'whole_journey         = %s s\n' "$CJ_SECS_TOTAL"
         printf 'verdict               = %s — %s of %s steps · %s\n' \
             "$CJ_VERDICT_TOKEN" "$CJ_STEPS_PROVEN" "$CJ_STEPS_TOTAL" "$CJ_VERDICT_SCHEMA"
@@ -3281,13 +3353,18 @@ cj_journey_turn_faster
 # it. Same-host kills A's process; multi-host already placed B and C on
 # other machines.
 CJ_PUBLISHER_SURVIVAL=0
+CJ_PUBLISHER_RETURNED=0
+CJ_PREKILL_BALANCE=""
+CJ_PREKILL_TIP=""
 CJ_CARRIER_TOOLCHAIN=""
 CJ_TURN_SURVIVED=0
 cj_journey_publisher_disappears
+cj_journey_publisher_returns
 
 # The verdict is the whole journey or nothing. Every step above dies on its
 # first broken promise, so reaching this line means the journey held on
-# three fresh datadirs, A is gone, and C learned only from B.
+# three fresh datadirs, A died and C learned only from B, and A returned
+# from its own killed datadir to a provable history.
 
 # The verdict this run earned, built BEFORE the recording is written so the
 # recording can bind it. A recording that names its commit, binary, script and
@@ -3296,8 +3373,8 @@ cj_journey_publisher_disappears
 # both the facts line and the printed document, so the two cannot disagree.
 CJ_VERDICT_SCHEMA=zcl.commons_journey_acceptance.v1
 CJ_VERDICT_TOKEN=PASS
-CJ_STEPS_PROVEN=12
-CJ_STEPS_TOTAL=12
+CJ_STEPS_PROVEN=13
+CJ_STEPS_TOTAL=13
 [ "$CJ_SIGNED_RECEIPTS_CONSUMED" -ge 2 ] ||
     cj_die "fewer than two cross-node signed source receipts were consumed"
 case "$CJ_CARRIER_TOOLCHAIN" in
@@ -3310,6 +3387,9 @@ CJ_VERDICT="{\"schema\":\"$CJ_VERDICT_SCHEMA\",\"verdict\":\"$CJ_VERDICT_TOKEN\"
 # disappeared and node C still reproduced and ran the exact accepted bytes.
 if [ "$CJ_PUBLISHER_SURVIVAL" = 1 ]; then
     CJ_VERDICT="${CJ_VERDICT%\}},\"publisher_disappearance_survived\":true,\"changed_behavior_survived_publisher\":true}"
+fi
+if [ "$CJ_PUBLISHER_RETURNED" = 1 ]; then
+    CJ_VERDICT="${CJ_VERDICT%\}},\"publisher_returned\":true,\"publisher_history_proven\":true,\"publisher_balance_unchanged\":true}"
 fi
 
 # The strip: the mission's eight stages, printed by the run that just earned
