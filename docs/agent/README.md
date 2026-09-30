@@ -1,68 +1,47 @@
+<!-- Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. -->
+
 # Agent document index
 
-This page is the one-page index of agent-facing documents in this repository, written for a coding agent that has 60 seconds before its first command.
+Start with [AGENTS.md](../../AGENTS.md), then the first open item in
+[FORWARD_PLAN.md](../work/FORWARD_PLAN.md). The development procedure is
+[DEVELOPING.md](../DEVELOPING.md). These adapters do not reorder that mission.
 
-## Decide your situation
+Before editing, read `~/.config/dev-workers/OPERATIONS.md`, run
+`devworker where z23`, inspect dirty work and `git worktree list --porcelain`, and
+fetch the exact `origin/main` identity. A standalone checkout is not exclusive
+ownership or permission to publish; directory layout grants no authority.
 
-Which rules apply to you is decided by a test, not by assumption. Run this first:
+## Choose the adapter
 
-```sh
-[ "$(git rev-parse --git-dir)" = "$(git rev-parse --git-common-dir)" ] && echo STANDALONE || echo SHARED_CHECKOUT_LANE
-```
-
-| Output | Meaning | Your rules |
-|---|---|---|
-| `STANDALONE` | You own the checkout. | Gate once, then push `origin/main` yourself. |
-| `SHARED_CHECKOUT_LANE` | You share the checkout with other agents. | Commit on your lane branch. Never push. The orchestrator merges. |
-
-The native leaf `build/bin/z23-dev dev agent start` is landing now. It prints situation, rules, base, dirty counts, and next commands. Until it lands, read docs/work/agent-protocol.md.
-
-## Read in this order
-
-| # | Document | What it gives you |
-|---|---|---|
-| 1 | AGENTS.md | Durable product direction and authority boundaries. Read first. |
-| 2 | docs/DEVELOPING.md | Workflow, tests, push procedure. |
-| 3 | docs/work/agent-protocol.md | Startup and completion ritual for a shared checkout lane. |
-| 4 | docs/agent/LANE_LAUNCH.md | How an orchestrator launches a lane. |
-| 5 | docs/agent/LANE_QUICKSTART.md | The short lane start. |
-| 6 | docs/agent/LANE_REPORT.md | The required report shape. |
-| 7 | docs/agent/LESSONS.md | Measured lessons. |
-
-Five more documents are being written in parallel. Cite them even before they land. docs/work/AGENT_SYNC_PLAN.md is the plan that ties them together.
-
-| Document | What it gives you |
+| Need | Document |
 |---|---|
-| docs/agent/FLASH_UNIT.md | Contract for one-file flash units. |
-| docs/agent/EXECUTOR_HEURISTICS.md | Which model gets which unit, measured. |
-| docs/agent/NATIVE_CHANNEL.md | How agents on different nodes find each other. |
-| docs/agent/TRAIN_PROTOCOL.md | Landing on main as a state machine. |
-| docs/agent/UNIT_DISPATCH.md | Run a unit through the C23 harness. |
-| docs/agent/FLEET_JOIN.md | Join a computer to an owner's fleet from one pasted line. |
-| docs/work/AGENT_SYNC_PLAN.md | The plan that ties them together. |
+| Establish ownership and resume a lane | [Parallel worker protocol](../work/agent-protocol.md) |
+| Assign disjoint work to another worker | [Lane launch](LANE_LAUNCH.md) |
+| Start a bounded source slice | [Lane quickstart](LANE_QUICKSTART.md) |
+| Report an exact checkpoint and evidence | [Lane report](LANE_REPORT.md) |
+| Integrate through native receipt gates | [Train protocol](TRAIN_PROTOCOL.md) |
+| Distinguish evidence from acceptance | [Evidence ladder](EVIDENCE_LADDER.md) |
+| Inspect historical observations | [Lessons](LESSONS.md) |
+| Inspect fleet transport boundaries | [Native channel](NATIVE_CHANNEL.md), [Fleet join](FLEET_JOIN.md) |
+| Inspect experimental unit contracts | [Flash unit](FLASH_UNIT.md), [Executor heuristics](EXECUTOR_HEURISTICS.md) |
 
-## Ask the checkout
+Use the built binary's `discover` catalog and code navigator to establish
+available commands and exact input keys. Source declarations and plans are not
+proof that a command is available in an older binary.
 
-These commands answer questions in milliseconds and need no running node.
+## Working rules
 
-| Question | Command |
-|---|---|
-| What subcommands does `discover` list? | `build/bin/z23-dev discover help` |
-| Which tests are registered for a file? | `build/bin/z23-dev code tests --input='{"path":"<file>"}'` |
-| Which room owns a file? | `build/bin/z23-dev code room --input='{"path":"<file>"}'` |
-| What is the impact of a set of files? | `build/bin/z23-dev agentimpact <files...>` |
-| Is this checkout ready for an agent? | `build/bin/z23-dev dev agent ready` |
-| What is the WHOLE fleet doing, and what do I do first? | `build/bin/z23-dev dev fleet start` |
-
-## Rules that stand
-
-| Rule |
-|---|
-| Never `git stash`. A stash is shared across worktrees. |
-| Never push any ref but `main`. |
-| Never force-push. |
-| Never skip the push gate. |
-| No Python, no jq, no external dependencies. |
-| Write scratch under `build/scratch/` only. |
-| Sign every commit. |
-| Count results, not activity. |
+- Preserve unrelated dirty work, protected refs, and existing leases.
+- Use native lane and file-claim tools; keep one writer per component. Renew
+  each claim before its reported expiry and release it after the checkpoint.
+- Run heavy builds, proofs, benchmarks, and test matrices through
+  `devbuild --wait`, retaining repository job presets and native locks.
+- Keep services, timers, watchers, and development nodes disabled unless the
+  operator explicitly requests activation.
+- Commit an owned coherent slice normally and retain its exact signed identity
+  for non-author review. A handoff or queued request is not publication.
+- Publish only through the authorized native receipt-gated route described in
+  DEVELOPING.md, then independently verify the exact remote commit.
+- Never stash shared work, force-push, bypass hooks, or weaken a refusal.
+- Use existing task, candidate, action, receipt, and signature authorities.
+  A coordination message is not an independent proof or a new authority.

@@ -104,11 +104,20 @@ Non-consensus changes never touch `core/`, and this gate will never bother you.
 
 ## What the git hooks do
 
+Coding workers first follow AGENTS.md, host policy, `devworker where z23`, and
+docs/DEVELOPING.md. Run heavy work through `devbuild --wait`, preserve native
+claims and other lanes, and use the authorized native receipt-gated landing
+route after non-author review. No permanent lead is required. Keep services,
+timers, watchers, and development nodes disabled unless explicitly requested.
+
 `make install-hooks` builds one C23 hook executable and sets a checkout-local
 `core.hooksPath`. The installed hooks are:
 
 - **`post-commit`, `post-merge`, and `post-checkout` — proof notifications.**
-  They enqueue exact local verification and return immediately.
+  They return immediately. Qualify behavior against the installed hook and
+  native receiver; persistent lockfile presence alone is not watcher authority.
+  The attach-only correction is pending integration, so do not assume an older
+  hook leaves stopped watcher residue inert.
 
 - **`pre-push` — receipt admission.** It parses Git's advertised ref tuple,
   proves the remote base is an ancestor, and admits only a complete sealed

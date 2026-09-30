@@ -10,12 +10,10 @@ lives in [`../../AGENTS.md`](../../AGENTS.md); the normal loop lives in
 
 ## Startup ritual
 
-One command establishes your situation:
-
-```sh
-[ "$(git rev-parse --git-dir)" = "$(git rev-parse --git-common-dir)" ] \
-  && echo STANDALONE || echo SHARED_CHECKOUT_LANE
-```
+Read the host policy and run `devworker where z23`. Inspect dirty work and
+`git worktree list --porcelain`, then fetch and record exact `origin/main`.
+Resume owned work in place. Worktree layout alone grants no ownership or
+publication authority. Use native lane preparation when isolation is required.
 
 Then run:
 
@@ -25,12 +23,12 @@ build/bin/z23-dev dev agent start --input='{"files":["<files you will touch>"]}'
 
 This prints your situation, the rules for it, the base head, dirty and untracked
 counts, whether hooks are armed, and the next commands. The rule text comes from
-`engine/composition/agent_rules.def`: one declaration, twelve rows, six topics
-(`push_target`, `commit_scope`, `gate_command`, `gate_skip`, `force_push`,
-`history`).
+`engine/composition/agent_rules.def`; derive its current topics from the binary
+rather than treating copied counts or standalone rule text as ownership.
 
-Preserve every unrelated edit. Never stash, rebase, reset, force, or reuse
-another worker's index or build directory. Source work does not inherit
+Preserve every unrelated edit. Never stash shared work, force-push, or
+rebase/reset another worker's checkout; never reuse their index or build
+directory. Source work does not inherit
 live-node authority; only work operating the maintainer's hosted node reads
 handoff material.
 
@@ -45,7 +43,9 @@ holds one of the files. A successful claim reports `expires_unix` and lasts 15
 minutes. Repeat the same claim before that time to renew it; stop writing if
 the lease expires, then claim again before resuming. A later claimant may take
 expired files, and the ledger removes expired rows on a successful claim. Rows
-written before leases have no expiry and still require their owner's release.
+written before leases have no expiry; do not expire or delete them by age.
+Use only qualified native release or retirement with its exact evidence and
+refusals. A missing directory alone is not retirement authority.
 Release files when done by adding `"release":true` to the same command. A
 file claim coordinates writers; it never grants proof or publication authority.
 
@@ -55,8 +55,14 @@ file claim coordinates writers; it never grants proof or publication authority.
 - Keep one primary writer per component and use the canonical capability,
   command, impact, task, candidate, action, receipt, and publication catalogs.
 - Use a private explicit datadir for tests and diagnostics.
+- Run heavy builds, proofs, benchmarks, and test matrices through
+  `devbuild --wait`, retaining repository presets and native locks. Keep
+  services, timers, watchers, and development nodes disabled unless the
+  operator explicitly requests activation.
 - Build and test only the affected surface while editing. Quote exact verdicts;
-  cached, skipped, incomplete, unavailable, and unrun evidence are not green.
+  unqualified cached summaries, skipped, incomplete, unavailable, and unrun
+  evidence are not green. Report receiver-qualified exact reuse separately
+  from newly executed work.
 - Commit a coherent owned slice so its immutable identity can be reviewed even
   if the worktree moves later.
 - Re-derive every count you touch from the tree itself and say which command
@@ -72,10 +78,11 @@ This reports `ready true` only when the tree is clean, at least one commit is
 ahead of `origin/main`, every commit is signed, and the branch is not `main`.
 Hand off the head SHA it prints.
 
-Return the exact baseline, head, diff, evidence, and unresolved work. The
-manager reviews the complete commit, fetches current `origin/main`, integrates
-normally, reruns affected acceptance, pushes without force, and verifies local,
-tracking, and remote identities agree.
+Return the exact baseline, head, diff, evidence, and unresolved work. A
+non-author reviews the complete commit. Any authorized worker may then use the
+native receipt-gated landing route in DEVELOPING.md, preserving other queue
+items and leases. Fetch current `origin/main`, rerun affected gates, and
+independently verify the exact remote commit. No permanent lead is required.
 
 The installed pre-push hook is receipt-only. Current post-commit notification is
 best-effort and the resident proof queue remains filesystem-backed. A canonical
@@ -85,9 +92,11 @@ automatic publication.
 
 ## Forbidden moves
 
-- Never stash, rebase, reset, force-push, or reuse another worker's index or
-  build directory.
-- Never record anything in version control and never publish to any remote as an
-  agent; a person reads the work before either happens.
+- Never stash shared work, force-push, or rebase/reset another worker's
+  checkout, index, or build directory. Integrate an owned sanctioned lane
+  safely through the canonical procedure, preserving unrelated edits.
+- Commit only an owned coherent slice, signed normally, for non-author review.
+  Publication requires the authorized native receipt-gated route; a queued
+  request or clean checkpoint alone does not permit it.
 - Never weaken an assertion, threshold, baseline, or fail-closed refusal to get
   a green result. An honest red is the correct answer.

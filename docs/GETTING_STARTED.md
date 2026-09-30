@@ -675,17 +675,15 @@ keeps this example safe with older binaries that lack that default.
 
 ### The fast dev loop
 
-For day-to-day C development the platform runs a persistent watcher so you
-edit `.c` files and get a build+test verdict without manually invoking each
-step:
+Use bounded manual builds and focused tests for ordinary development. Read
+[AGENTS.md](../AGENTS.md) and [DEVELOPING.md](DEVELOPING.md) first. Keep
+persistent watchers and services disabled unless explicitly requested.
 
-```bash
-make dev-watch                 # start the watcher once (verify-only mode)
-# ... edit a .c file in your editor ...
-build/bin/z23-dev status   # read the latest cycle verdict
-```
-
-Faster manual loops when you don't want the watcher running:
+The commands below are ordinary local developer forms. On a shared development
+host, also read its policy, run `devworker where z23`, preserve ownership, and
+prefix heavy commands with `devbuild --wait` while retaining repository job
+presets. These host tools are not installed by repository setup; a fresh
+personal machine uses the standard build procedure above.
 
 ```bash
 make -j"$(getconf _NPROCESSORS_ONLN)" build-only           # parallel compile-check, no link

@@ -5,12 +5,13 @@
 z23 owning its own reactions to local events, instead of a human watching
 them by hand.
 
-Today the fleet's reactions to events are hand-run watchers OUTSIDE z23: a
-human-side monitor on GitHub discussion comments, another on fleet board
-rows, a person noticing a train landed and fast-forwarding checkouts. This
-is the first slice of z23 owning that job itself: a declared, closed
-registry of triggers over its own local sources, evaluated by one command
-that can later run under the resident mind service.
+This page describes a declared, closed registry of reactions over local
+sources and its bounded evaluator. Earlier external monitors and board-sync
+loops are historical context, not a required worker setup. Current installation
+and runtime state must be inspected rather than inferred from this document.
+Keep services, timers, watchers, and development nodes disabled unless the
+operator explicitly requests activation. A reaction or board message does not
+grant source ownership, proof admission, or publication authority.
 
 ## What this slice is, and is not
 

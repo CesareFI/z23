@@ -1,70 +1,63 @@
+<!-- Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. -->
+
 # Evidence ladder
 
-This document defines the six rungs of evidence a change passes through, from hot-loaded rough test to receipt frozen on chain, with the measured cost, signal, and receipt of each rung and the promotion and async rules that govern them.
+The development and publication procedure lives in
+[DEVELOPING.md](../DEVELOPING.md). This page explains what observations can
+support, without defining another promotion ledger or requiring activation.
 
-## Purpose
+## Use the cheapest meaningful refutation first
 
-The ladder orders the checks a change must pass before it counts as landed and frozen. It covers streaming C23 development on this checkout. Every rung is an asynchronous event, never a wait. A rung finishes, emits a typed receipt, and the next rung is claimed from that receipt.
+| Stage | Observation | Limit of the claim |
+|---|---|---|
+| Local behavior | Focused acceptance observing the changed invariant. | A unit pass alone does not establish consensus, custody, or public-node acceptance. |
+| Registered tests | Canonical runner verdict with exact selected groups and executed/reused/failed/skipped counts. | Zero matches, stale catalogs, unrun groups, and cached summaries alone are not green. |
+| Lint and generated artifacts | Required gates at the affected scope; owning generators reproduce tracked outputs. | Empty scans and weakened pins are not passes. Lower a shrink-only complexity pin when the function becomes simpler. |
+| Exact proof | Native receiver admits a complete receipt for the exact candidate/base and its declared dimensions. | Evidence establishes only its bound claim; signatures and hashes alone do not establish correctness. |
+| Publication | Native receipt-gated landing outcome, followed by independent remote identity verification. | A clean checkout, board row, handoff, or queued request is not publication. |
 
-## The principle (information per second)
+Run heavy builds, proofs, benchmarks, and test matrices through
+`devbuild --wait`, preserving repository job presets and native locks. Freeze
+inputs during the observation. Use current receiver-qualified exact reuse only
+where implemented; report it separately from freshly executed work. Do not
+assume every proof is full-suite cold, or that a prior pass covers a new base.
 
-Rungs are ordered by expected information per second. The cheapest check that can most often refute the change runs first. A change spends the next rung's cost only after the cheaper rung is green. A skipped or unobserved rung is not a pass. A rung that cannot refute the change does not belong on the ladder.
+Public hot-swap and activation paths remain contained or unavailable; this
+ladder does not authorize them. Separate qualified activation APIs retain their
+own operator and platform boundaries. Resident save loops are optional only
+when explicitly authorized, never mandatory rungs. Keep services, timers,
+watchers, and nodes disabled unless explicitly requested. Refusal or unavailable capability is an observation,
+never permission to substitute pathname execution or a weaker gate.
 
-## The rungs
+A failed or incomplete stage names its exact input, dimension, refusal, and
+log or receipt. Retry only through existing authorities after addressing the
+cause. Do not create a parallel job ledger, wait on a human as a scheduler, or
+require a permanent lead. Non-author review and receiving-node policy remain
+necessary wherever the operating contract requires them.
 
-Costs below were measured on node1 (2026-08/09). They are recorded measurements, not estimates.
+## Historical measurements: node1, 2026-08/09
 
-| Rung | Command | Measured cost | Signal | Receipt |
-|---|---|---|---|---|
-| 1 hot-load | Save the file, hot-swap the changed function into the running dev binary, run the owning test group. Owning group from `build/bin/z23-dev code tests --input='{"path":"<file>"}'`; hot-swap via `dev.hotswap.apply` / `dev.hotswap.probe`. | Owning-group lookup about 10 ms; hot-swap measured 31x faster than a rebuild; target under 2 s save-to-verdict. | The function still satisfies its own group. | Hot-swap verdict row naming the file and the owning group. |
-| 2 tested | `make t-fast ONLY=<group>`, cold | Seconds to a minute. | The registered group ran and passed. Read the SUITE VERDICT line, never the exit code: a selector that matches nothing prints groups_ran=0 and exits 0. | Suite verdict row carrying SUITE VERDICT and groups_ran. |
-| 3 linted | `make lint-fast` on every slice; `make lint` at a train boundary | `make lint-fast`: 32 gates, about 10 s warm. `make lint`: 211 gates, 25 min cold, 2 min warm. | The change class's gates ran on the whole scope; a gate that scanned nothing refuses (partial-scan floors). | Gate receipt naming each gate and the scope it scanned. |
-| 4 proven | `dev proof ensure`, then `dev proof wait` (push-hook proof) | 15 to 45 min per box; includes the release build, about 20 min; one proof per box. Every push to main moves the base and restarts in-flight proofs; hence trains. | The exact main tip plus this change builds and passes the full suite cold. | Proof receipt naming the exact tip and the verdict. |
-| 5 landed | Push to origin/main, fast-forward only, signed commits | Not measured; the rung is the push itself. | The commit is on origin/main; the train posts `result train <tip>` on the board. | Train board post `result train <tip>`. |
-| 6 frozen | Append the landing receipt to the fleet's append-only receipt ledger; anchor the ledger root on chain through the node's identity anchor | Not measured; the on-chain anchor is designed, not landed (see below). | Finality of the on-chain anchor; any node verifies a receipt without trusting the box that produced it. | Signed ticket — commit, proof verdict, groups ran, gates — appended to the ledger; the ledger root is an MMR of tickets. |
+These are recorded observations from earlier implementations. Derive current
+counts and costs from the qualified binary and the actual run.
 
-## Promotion rules
+| Observation | Historical measurement |
+|---|---|
+| Owning-group lookup | About 10 ms. |
+| Hot-swap comparison | 31x faster than a rebuild; under 2 s was a target, not a measured universal bound. |
+| Focused cold test | Seconds to a minute. |
+| Fast lint | 32 gates, about 10 s warm. |
+| Full lint | 211 gates, 25 minutes cold, 2 minutes warm. |
+| Exact proof | 15 to 45 minutes per box; release build about 20 minutes. |
+| Engine territory query | 24 files routed to 6 groups, none unrouted; 74 public functions: 67 reached, 7 unreached, 0 unknown. Complete data returned at 2490 ms against a 900 ms budget. |
 
-1. Rungs run in the order 1 through 6. A change claims rung n+1 only from rung n's receipt.
-2. The cheaper rung must be green before the next rung's cost is spent.
-3. A skipped or unobserved rung is not a pass. No rung is promoted on absence of evidence.
-4. Rung 2: read the SUITE VERDICT line, never the exit code. groups_ran=0 is not a pass.
-5. Rung 3: `make lint-fast` on every slice; full `make lint` at a train boundary. A gate that scanned nothing refuses.
-6. Rung 4: one proof per box. A push to main moves the base and restarts in-flight proofs, so proofs batch into trains. A proof names the exact tip it covers.
-7. Rung 5: fast-forward only, signed commits.
-8. Never weaken an assertion, a threshold, or a gate to force a promotion. An honest red at the rung that produced it is the correct result.
+Routing identifies registered groups. Reach identifies functions called by test
+entry points. Those are different observations and must not be added together.
 
-## Async rules
+## Designs that are not acceptance requirements
 
-- Each rung is a job with a resource class and a cap. Resource classes: build:<host>, proof:<host>, vendor:<name>. Not yet implemented; see below.
-- A rung's completion is a receipt row.
-- Orchestrators subscribe to receipts. They never poll a model or a human.
-- A failed rung produces a typed result — FAIL, TIMEOUT, UNOBSERVED, NOSHA — that names the exact gate or group.
-- A retry is a new job that references the failed receipt.
-- No rung waits inside another rung. The next rung starts from a receipt, not from a block.
-
-## What exists and what is missing
-
-Exists today:
-
-- tools/engine_unit.c — units judged by the gate.
-- engine/modules/engine/src/engine_receipt.c — chained receipt ledger: append-only, refuses a torn last line.
-- engine/composition/commands/dev.def — `dev.hotswap.apply`, `dev.hotswap.probe`, `dev.loop.*`, `dev.proof.ensure`, `dev.proof.status`, `dev.proof.wait`, `dev.publication.*`, `dev.agent.*`.
-- Related protocols: docs/agent/UNIT_DISPATCH.md, docs/agent/TRAIN_PROTOCOL.md, docs/work/AGENT_SYNC_PLAN.md.
-
-Routing and reach facts are re-derived per checkout, not copied. On this run the `code.territory` command on the engine/modules/engine territory reported: 24 files routed to 6 groups, 0 files routed to none; 74 public functions = 67 reached + 7 unreached + 0 unknown. The command overran its 900 ms budget at 2490 ms elapsed and returned complete, untruncated data. Routed (which registered group runs when a file changes) and reached (whether a registered test entry point calls the function) are different facts and are never added together; `unknown` is the call graph refusing to answer.
-
-Missing, plainly:
-
-- Rung 1 is not yet wired as one command from save to verdict. The pieces exist; the single command does not.
-- Rung 6's on-chain anchor of the receipt root is designed, not landed. The chained ledger exists; the anchor does not.
-- The job ledger has no resource classes yet. build:<host>, proof:<host>, and vendor:<name> are design, not implementation.
-
-## How to add a rung
-
-1. Declare the cost. Measure it on a named host and period, and write the number into the table above.
-2. Declare the signal. State exactly what the rung refutes and how often it refutes it.
-3. Declare the receipt kind. State the typed row the rung emits on completion and on each failure type.
-4. Place the rung by expected information per second: after every cheaper rung that refutes more often per second, before every dearer one.
-5. Never insert a rung that cannot refute the change. A rung that cannot fail is not evidence.
-6. A new rung must be observable. If it emits no receipt, nothing can be promoted past it.
+The earlier six-rung design proposed an on-chain anchor for a receipt-ledger
+root and resource classes `build:<host>`, `proof:<host>`, and `vendor:<name>`.
+Those proposals are not evidence of implementation, a reason to require an
+on-chain write, or permission to spend funds. Existing receipt/CAS/task
+objects remain the authorities; consult current code and receiver policy
+before claiming any proposed feature is complete.

@@ -2,75 +2,38 @@
 
 # Lane quickstart
 
+The operating contract is [AGENTS.md](../../AGENTS.md); the exact build,
+review, and native publication procedure is [DEVELOPING.md](../DEVELOPING.md).
 Dispatch: [LANE_LAUNCH.md](LANE_LAUNCH.md). Report:
-[LANE_REPORT.md](LANE_REPORT.md). Do not copy either here.
+[LANE_REPORT.md](LANE_REPORT.md).
 
-1. Setup. One worktree per lane. Record the origin/main commit as baseline.
+1. Read the host policy and run `devworker where z23`. Inspect the checkout, native
+   ownership, dirty files, leases, and exact `origin/main`. Resume owned work
+   in place; never manufacture a replacement queue or overwrite another lane.
+2. If independent work needs another checkout, use the existing native
+   `dev lane new` route from a qualified dev binary, under `devbuild --wait`.
+   Use its receiver-approved path and exact base. Preserve its refusal and
+   any partial lane; do not substitute raw worktree or dependency copying.
+3. Claim the concrete source paths with `dev agent claim`. Record and renew
+   `expires_unix`; stop writing after expiry until the claim is renewed.
+4. Ask the built code navigator for source ownership and registered tests.
+   Run the affected acceptance under `devbuild --wait` using the repository
+   presets. Record executed, reused, failed, skipped, and unrun evidence.
+5. Run the required lint and generated-artifact gates. Freeze source while a
+   build, proof, or script reads it. Services and watchers stay disabled.
+6. Commit normally, verify the signature under local trust policy, and hand
+   the exact commit to a non-author reviewer. Release file claims once the
+   clean checkpoint is stable; reacquire before further edits.
+7. Authorized workers may drive the native receipt-gated landing route.
+   Coordination does not require a permanent lead. Preserve other queued
+   items and leases, and reconcile unknown pushes instead of redispatching.
+   Independently verify the exact `origin/main` after native publication.
 
-```
-cd /path/to/checkout && git fetch -q origin && \
-git worktree add -q ~/.z23/lanes/<name> -b agent/<name>-<date> origin/main && \
-cd ~/.z23/lanes/<name> && git submodule update --init --recursive -q && \
-make worktree-prime && make install-hooks && make -j32 z23
-```
+Report:
 
-Workspace: lanes live in the node's hidden workspace tree, not beside the
-real checkouts; see
-[`../zrc/0005-node-workspace-layout-and-hygiene.md`](../zrc/0005-node-workspace-layout-and-hygiene.md).
-
-2. Orient first: `z23-dev dev agent orient --query=<your files>`. The
-   checkout carries verified rows about how it works — the landing path, the
-   lint gates, test routing, the board — each with the file it was read from
-   and a literal anchor that `make check-orient-facts` re-proves on every
-   commit. Query before you read source, then read only the gap. `... orient`
-   alone lists the topics; `... orient <topic>` returns one. When your own
-   reading produces a map worth keeping, land it as rows in the same lane —
-   see [`../zrc/0006-knowledge-in-the-checkout.md`](../zrc/0006-knowledge-in-the-checkout.md).
-
-3. Find what your change touches. The first command prints the test groups
-   that cover a file. Run those groups with the second. Note:
-   `make test_parallel ONLY=x` only builds.
-
-```
-build/bin/z23 code tests <file>
-ulimit -s unlimited; make -j32 t-fast ONLY=<group>
+```text
+head <full-sha>, base <full-sha>, acceptance <green|red|partial>,
+ready for review | needs <exact condition>
 ```
 
-4. Gate. Iterate with lint-fast. Before you report, background full lint
-   and read its summary (minutes). Then verdict prints one screen: red
-   gates with their fix hint, failed groups, and a final VERDICT line.
-   Quote those lines; never paraphrase.
-
-```
-make lint-fast
-make lint
-make verdict
-```
-
-5. `check-git-hooks-installed` builds `z23-git-hook` itself, so `make lint`
-   passes on a plain checkout without a prior `make install-hooks`; a red
-   result there is yours like any other gate.
-
-6. Land. Main rejects merge commits. Re-run the routed groups after a
-   rebase that touched your files, then hand off; the orchestrator pushes.
-   Commit trailer: `Co-Authored-By: <agent name> <noreply address>` as
-   your harness specifies.
-
-```
-git fetch origin && git rebase origin/main
-```
-
-7. Traps, one line each:
-   - Never edit a shell script while a run of it is in flight.
-   - A foreground command longer than 10 minutes gets killed; background
-     it and poll a log.
-   - Use `grep -a` on logs.
-   - Never python. Never jq.
-   - Never touch core/, wallet custody, consensus seals, or a live node.
-   - One worktree per lane; never two lanes in one checkout.
-
-8. Report. Use the shape in [LANE_REPORT.md](LANE_REPORT.md). End with:
-
-```
-head <hash>, base <hash>, acceptance green, ready for review
-```
+A claim, clean worktree, or successful exit alone is not proof of completion.

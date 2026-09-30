@@ -195,12 +195,18 @@ make zdemo ZDEMO_ARGS=--frames=2
 
 A coding agent joins the fleet through the same typed queue a developer
 uses — no shell scraping, no special build. Post a unit, run the
-resident worker, reap the outcome:
+bounded worker command, reap the outcome:
 
 ```bash
 build/bin/z23-dev dev agent queue --input='{"action":"post","kind":"file","name":"fix-foo","group":"test_foo","path":"src/foo.c","brief":"docs/foo-brief.md"}'
 build/bin/z23-dev dev agent worker --input='{"action":"run","worker":"resident-a","max_jobs":1}'
 build/bin/z23-dev dev agent queue --input='{"action":"reap"}'
+```
+
+On a shared development host, replace the worker line above with:
+
+```bash
+devbuild --wait build/bin/z23-dev dev agent worker --input='{"action":"run","worker":"resident-a","max_jobs":1}'
 ```
 
 The worker claims ONE job (the claim identity persists before any model
@@ -212,6 +218,12 @@ ref. Only `pass`/`PASS` with rc 0 completes; `completed`, `failed`,
 stops queued work; a running row belongs to its worker. Mail carries the
 same lifecycle for remote drivers: `fleet steer send` posts a directive,
 `fleet steer evidence` returns the latest terminal row per ref.
+
+This bounded command is not permission to enable a resident service, timer,
+watcher, or development node. Source workers follow [AGENTS.md](AGENTS.md) and
+[DEVELOPING.md](docs/DEVELOPING.md), including native ownership,
+`devbuild --wait` for heavy work, non-author review, and receipt-gated landing.
+A worker result is not a publication receipt.
 
 ## Go deeper
 

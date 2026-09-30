@@ -5,6 +5,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+bash "$ROOT/tools/scripts/vendor_lock_selftest.sh"
 SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/zcl-vendor-offline-selftest.XXXXXX")"
 trap 'rm -rf "$SANDBOX"' EXIT HUP INT TERM
 
@@ -14,10 +15,22 @@ fail()
     exit 1
 }
 
-mkdir -p "$SANDBOX/tools/scripts" "$SANDBOX/vendor/.cache" \
+mkdir -p "$SANDBOX/tools/scripts" "$SANDBOX/tools/dev" "$SANDBOX/vendor/.cache" \
     "$SANDBOX/vendor/lib" "$SANDBOX/vendor/include" "$SANDBOX/bin"
 cp "$ROOT/tools/scripts/build_vendor.sh" \
-    "$ROOT/tools/scripts/vendor_provenance_lib.sh" "$SANDBOX/tools/scripts/"
+    "$ROOT/tools/scripts/vendor_provenance_lib.sh" \
+    "$ROOT/tools/scripts/source_identity_lib.sh" "$SANDBOX/tools/scripts/"
+for dependency in platform/modules/platform/src/clock.c \
+    platform/modules/platform/include/platform/clock.h \
+    platform/modules/util/include/util/log_macros.h \
+    platform/modules/base/include/base/log_macros.h \
+    platform/modules/base/include/base/format_attribute.h \
+    platform/modules/base/include/base/log_level.h; do
+    mkdir -p "$SANDBOX/$(dirname "$dependency")"
+    cp "$ROOT/$dependency" "$SANDBOX/$dependency"
+done
+cp "$ROOT/tools/vendor_lock.c" "$SANDBOX/tools/"
+cp "$ROOT/tools/dev/build-epoch-key.sh" "$SANDBOX/tools/dev/"
 
 for tool in curl wget; do
     printf '%s\n' '#!/usr/bin/env bash' \
@@ -37,6 +50,48 @@ fi
 [[ "$output" == *'offline cache miss or checksum failure: zlib-1.3.1.tar.gz'* ]] ||
     fail 'cache-miss refusal did not name the missing pinned archive'
 [ ! -s "$contact_log" ] || fail 'offline mode invoked a downloader'
+
+# The compiler driver grounds slash-containing relative tools at the source
+# root. Compilation must use that same executable from a different cwd.
+mkdir -p "$SANDBOX/elsewhere/tools"
+printf '%s\n' '#!/usr/bin/env bash' 'exec /usr/bin/cc "$@"' > "$SANDBOX/tools/native-cc"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 97' > "$SANDBOX/elsewhere/tools/native-cc"
+chmod +x "$SANDBOX/tools/native-cc" "$SANDBOX/elsewhere/tools/native-cc"
+if output="$(cd "$SANDBOX/elsewhere" && HOSTCC=tools/native-cc \
+    ZCL_VENDOR_OFFLINE=1 "$SANDBOX/tools/scripts/build_vendor.sh" libz.a 2>&1)"; then
+    fail 'root-scoped compiler fixture unexpectedly built missing archive'
+fi
+[[ "$output" == *'offline cache miss or checksum failure: zlib-1.3.1.tar.gz'* ]] ||
+    fail 'bootstrap compiled with a different executable than its compiler identity'
+
+# Bad bootstrap identities must refuse before touching an existing helper.
+cp -R "$SANDBOX/build/bin/vendor-lock" "$SANDBOX/helper-cache-before"
+cp "$SANDBOX/tools/dev/build-epoch-key.sh" "$SANDBOX/key-driver-before"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$SANDBOX/tools/dev/build-epoch-key.sh"
+if output="$(ZCL_VENDOR_OFFLINE=1 "$SANDBOX/tools/scripts/build_vendor.sh" libz.a 2>&1)"; then
+    fail 'empty compiler identity admitted'
+fi
+[[ "$output" == *'vendor lock compiler identity invalid'* ]] || fail 'compiler identity refusal unnamed'
+cp "$SANDBOX/key-driver-before" "$SANDBOX/tools/dev/build-epoch-key.sh"
+cp "$SANDBOX/tools/scripts/vendor_provenance_lib.sh" "$SANDBOX/provenance-before"
+for hash_behavior in 'return 1' 'return 0'; do
+    cp "$SANDBOX/provenance-before" "$SANDBOX/tools/scripts/vendor_provenance_lib.sh"
+    printf '\nvp_sha256_file() { %s; }\n' "$hash_behavior" >> "$SANDBOX/tools/scripts/vendor_provenance_lib.sh"
+    if output="$(ZCL_VENDOR_OFFLINE=1 "$SANDBOX/tools/scripts/build_vendor.sh" libz.a 2>&1)"; then
+        fail 'failed or empty source hash admitted'
+    fi
+    [[ "$output" == *'vendor lock source hash'* ]] || fail 'source hash refusal unnamed'
+done
+cp "$SANDBOX/provenance-before" "$SANDBOX/tools/scripts/vendor_provenance_lib.sh"
+diff -r "$SANDBOX/helper-cache-before" "$SANDBOX/build/bin/vendor-lock" >/dev/null ||
+    fail 'identity refusal modified cached helper bytes'
+mkdir "$SANDBOX/unknown-legacy.lock"
+if output="$(VENDOR_LOCK_HELD=1 VENDOR_LOCK_DIR="$SANDBOX/unknown-legacy.lock" \
+    ZCL_VENDOR_OFFLINE=1 "$SANDBOX/tools/scripts/build_vendor.sh" libz.a 2>&1)"; then
+    fail 'forged environment bypassed unknown legacy lock'
+fi
+[[ "$output" == *vendor_lock_legacy_directory_refused* ]] || fail 'legacy refusal unnamed'
+[[ -d "$SANDBOX/unknown-legacy.lock" ]] || fail 'unknown legacy owner removed'
 
 if ZCL_VENDOR_OFFLINE=invalid "$ROOT/tools/scripts/build_vendor.sh" \
         --check-provenance >/dev/null 2>&1; then

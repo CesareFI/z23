@@ -1,321 +1,76 @@
-# Train protocol
+<!-- Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. -->
 
-This document defines how fleet nodes land lanes on main one train at a time without a human, and specifies that process as a state machine.
+# Native landing and historical train observations
 
-## Purpose
+The current procedure lives in [DEVELOPING.md](../DEVELOPING.md). This page
+records the boundaries of that route and preserves historical train
+measurements; it does not define a second queue, timer, or publication policy.
 
-Main moves one train at a time. A node orders finished lanes into a train of at most 4 lanes. It rebases the train onto the exact current origin/main tip. lint-fast is green in the train worktree before the train goes further. The push-hook proof runs once, and because the train worktree is a landing root its lint dimension runs the whole gate set, not the fast subset. A landing proof builds every target that gate set can build in its `step=prefork` step, before the lint and test dimensions start, so neither relinks a binary the other is reading. Then the node pushes.
+## Current route
 
-Every push to main moves the base and invalidates every in-flight proof on every box. Because of this, trains stay small and results are posted the moment a push succeeds.
+Prepare an exact signed checkpoint with scoped acceptance and non-author
+review. Coordinate component ownership through native claims, then use the
+existing native `dev land` route when publication is authorized. Its command
+schema, source-qualified executor, local receiver policy, exact proof receipt,
+and native queue state determine eligibility. A board post or worker identity
+cannot replace any of them.
 
-See also: `AGENTS.md`, `docs/DEVELOPING.md`, `docs/work/agent-protocol.md`.
+Use the qualified binary's catalog and schema for the available actions and
+input keys. The native route includes submission, status, bounded stepping or
+driving, and exact-pair publication attachment. Run heavy proof and landing
+work through `devbuild --wait`; retain native locks and repository presets.
+No permanent lead is required: an authorized worker can perform an eligible
+transition after confirming current ownership. Queue order and leases remain
+native state, not a verbal assignment.
 
-## Definitions
+Landing does not start a resident proof watcher by default. Keep services,
+timers, coding timers, watchers, and development nodes disabled unless the
+operator explicitly authorizes activation. A missing driver is a diagnostic,
+not permission to install or enable a background service.
 
-| Term | Meaning |
-| --- | --- |
-| lane | One unit of finished work queued for main. For lane launch and reporting, see `docs/agent/LANE_LAUNCH.md` and `docs/agent/LANE_REPORT.md`. |
-| train | An ordered batch of at most 4 lanes. |
-| base | The exact current origin/main tip a train is rebased onto. One train per base, fleet-wide. |
-| proof | The push-hook proof. It runs once per train, before the push. |
-| box | One machine in the fleet. One proof per box at a time; this is the box lock. |
-| board | Where claim and result rows are posted. |
+## Exact acceptance and recovery
 
-## The state machine
+- Fetch and record the current `origin/main`. An eligible receipt binds the
+  exact candidate and advertised base; a moving base requires native
+  revalidation. Source or compiled-catalog ambiguity must refuse.
+- Validate signatures under local trust policy, licensing, the clean landing
+  tree, generated artifacts, and the exact complete receipt. A successful
+  process exit, cached summary, or queued request is insufficient.
+- Preserve every unrelated queue item, dirty checkout, active lease, and
+  canonical node. Do not remove locks or change thresholds to force progress.
+- A push with an unknown outcome must be reconciled against the remote before
+  any retry. Never redispatch an unknown push or bypass the pre-push hook.
+- After publication, independently verify the exact remote `origin/main`
+  identity and report the candidate, any native integration commit, receipts,
+  and refusals separately.
 
-```text
-IDLE ─────claim────▶ PROVING ─────push ok────▶ LANDED ─────result────▶ IDLE
+Generated-artifact reconciliation and vendor qualification belong to the
+native implementation and its gates. Regenerate through the owning targets;
+do not hand-merge competing generated catalogs or copy another lane's build
+outputs. Native lane preparation copies qualified prerequisites onto
+independent inodes; hardlinks would alter shared inode metadata and disturb
+other exact proofs. Preserve a partially prepared lane on refusal and report
+its observed state rather than deleting it.
 
-PROVING ─────base moved────▶ REBASE ─▶ PROVING
-                                REBASE rebases the train onto the exact current
-                                origin/main tip; the train then proves again.
+The local filesystem landing queue does not establish a complete decentralized
+signed-commit promoter. Planned commuting tickets or fleet protocols are not
+permission to skip a dimension; only implemented receiver admission can accept
+exact reusable evidence.
 
-PROVING ──gate red or too large──▶ WITHDRAWN ─────result────▶ IDLE
-```
+## Historical observations: 2026-09-04
 
-A node in IDLE posts a claim and enters PROVING. PROVING ends in exactly one of three ways: the push succeeds (LANDED), the base moves (REBASE, then PROVING again), or a gate is red or the train is too large (WITHDRAWN). LANDED and WITHDRAWN each end with a result row and a return to IDLE. The box lock is held from the claim until the result.
+These records explain earlier batching choices. They are not current resource
+limits, proof costs, timer instructions, or authority for a new queue.
 
-## Board rows
-
-| Event | Row posted |
-| --- | --- |
-| The node starts proving | `claim train <name> base=<tip> commits=<n> lanes: <names>` |
-| The push succeeded | `result train <name> <new tip>` |
-| The node gave up | `result train <name> WITHDRAWN <reason>` |
-
-| Field | Meaning |
-| --- | --- |
-| `<name>` | Train name. |
-| `<tip>` | The base: the origin/main tip the train is proven against. |
-| `<n>` | Commit count of the train. |
-| `<names>` | Lane names, in train order. |
-| `<new tip>` | The origin/main tip after the push. |
-| `<reason>` | Why the train was withdrawn. |
-
-No node starts a proof against a base another node has claimed and not resolved. A claim is resolved by either form of result row. A claim names a box and can be transferred: when the claiming box is overloaded, bundle the train (`git bundle create <f> origin/main..HEAD`), copy it to an idle box, and post that the claim moved; the idle box proves and pushes.
-
-## Rules
-
-- A train carries at most 4 lanes, in a fixed order, rebased onto the exact current origin/main tip.
-- lint-fast is green in the train worktree before the proof runs; the proof itself runs every lint gate, because a train worktree is a landing root.
-- One proof per box at a time. One train per base, fleet-wide.
-- Never push while another node's claim is live.
-- Post the result the moment the push succeeds.
-- A withdrawn train posts why.
-- Land generated files (capability inventory, API reference) by regenerating them once on the train. Do not cherry-pick each lane's copy.
-- Every commit is signed.
-- Never `git stash`.
-- Never force-push. Fast-forward only.
-
-The table below is the measured record behind the size cap and the timeout override. The values are fleet observations dated 2026-09-04, not properties of this checkout.
-
-| Observation (2026-09-04) | Value |
-| --- | --- |
+| Observation | Recorded value |
+|---|---|
 | Withdrawn train | 135 commits, 1,036 files |
-| Why withdrawn | Impact planning alone took about an hour, and every push to main invalidated it. |
-| Change since | The same lanes land as trains of at most 4 lanes. |
+| Why withdrawn | Impact planning took about an hour; each main move invalidated its exact base. |
+| Historical batching policy | A train carries at most four lanes in a fixed order. |
 | Proof duration | 15 to 45 minutes per box. |
-| Release build inside a proof | About 20 minutes. |
-| Loaded box | Load 450, disk-bound. Every proof child exited 124 until the timeout became an environment override. |
+| Release build inside that proof | About 20 minutes. |
+| Loaded box | Load 450, disk-bound; proof children exited 124 before a historical timeout override. |
 
-## The landing service: `dev land`
-
-The shell loop makes an agent wait for the whole train: rebase, lint, proof,
-push. `dev land` splits that in two so no agent waits for any of it.
-
-| Verb | What it does | What it waits for |
-| --- | --- | --- |
-| `dev land submit --tip <sha> [--worktree <dir>] [--note <text>]` | Checks the tip exists, is signed, and shares history with origin/main, then appends one request row to `<state>/land/queue.jsonl` and returns `{seq, tip, state: "queued"}`. | Nothing. It is a file append. |
-| `dev land status [--json]` | One screen: what is queued, the one request in flight with its phase, elapsed time and attempt, and the last ten outcomes with the tip that was pushed or the failing dimension and its log path. The same read fills one `steer` record (candidate, seq, phase, owner, lease, proof state, receiver/driver, first missing transition, wake command, cached remote ref) and sets `incident` to `drain_absent` when a queued row has no beat because the land timer is unarmed or the row is older than the drain idle bound. The wake command is `z23-dev dev land step`. | Nothing. It reads the queue, probes `step.lock` without holding it, and reads the cached origin/main ref. It does not fetch. |
-| `dev land step` | One scheduler beat, for a resident loop or timer to call. | Nothing that is another host's work. |
-| `dev land cancel --seq N` | Drops one request and records the cancellation. | Nothing. |
-
-`step` is the only verb that does work, and it never waits for a proof. It
-takes the queue's own step lock (`<state>/land/step.lock`) **non-blocking**
-before touching anything, holds it for the whole step, and releases it on
-every exit path — the lock is never held across separate step calls. A
-second driver that finds it held gets `STEP_BUSY` (retryable) instead of
-queueing behind or racing the first step. With nothing in flight it takes
-the oldest queued request, rebases the tip onto origin/main in the private
-landing worktree at `<state>/land/wt`, runs
-`make lint-fast`, ASKS for the exact commit/base proof through the existing
-`dev proof ensure` machinery, and returns. A landing proof also builds the
-Windows acceptance tests. A later step reads the proof's own
-state: passed fast-forwards `origin/main` and records `landed`; failed
-records the failing dimension, the log path, and the first actionable line
-from that log. A rebase conflict is terminal and names the conflicting paths,
-with one exception described under "Conflicts on generated artifacts" below.
-If origin/main moved while the proof ran, the receipt describes a base nobody
-is on, so the request re-rebases with `attempt+1` instead of landing stale
-evidence. A host-load failure — a source-identity race, a timeout — retries
-up to three times; a red dimension does not.
-
-Every state change also appends a row to `<state>/mail/outbox.jsonl` when
-that mailbox exists, so an agent learns what happened by **pulling its mail**,
-never by waiting on this queue.
-
-The landing worktree is created once from the submitting checkout and reused.
-Run `tools/scripts/worktree_init.sh` in it once so `make lint-fast` there has
-its vendor prerequisites.
-
-### Conflicts on generated artifacts
-
-`docs/CAPABILITY_INVENTORY.jsonl`, `docs/API_REFERENCE.md` and the
-`<!-- DOC-COUNTS -->` block of `docs/CODEBASE_MAP.md` are generated from the
-code, so tips landing in the same window collide on them by construction and
-a textual merge of two generated files settles nothing — the code is what is
-authoritative. When **every** conflicted path is one of those three,
-`dev land` takes the upstream side of each, finishes the rebase, and re-runs
-the generator that owns the file: `make docs-capability-inventory`,
-`make docs-api-reference`, and `make fix-doc-counts` (the repair half of
-`check-doc-counts`, which runs `tools/scripts/check_doc_counts.sh --fix` to
-rewrite the declared counts from the code-measured ones). It then runs
-`make check-generated-artifact-contradictions` and `make check-doc-counts` in
-the landing worktree; a gate that still refuses fails the row with
-`dimension=rebase` and that gate's own line, never a landing. On success the
-regenerated paths are amended into the rebased tip commit
-(`git commit --amend --no-edit --only -- <paths>`), keeping its subject,
-author and parents — signed by ambient `commit.gpgsign` configuration, with
-no signing flag of its own — and the row's `detail` carries
-`rebase: regenerated <paths>`. Only a tip main already holds (the rebase
-skipped every candidate commit) gets a separate commit instead, because
-amending it would rewrite published history.
-
-The table is closed. A conflict touching any other path — even alongside
-these — stays an ordinary conflict, reported exactly as before, because
-nothing mechanical can settle it.
-
-### The regen phase (staleness that never conflicted)
-
-The conflict-only auto-resolve above only fires when a rebase actually
-conflicts on a generated artifact — the rare case. The common case is a tip
-that rebases cleanly onto origin/main and still leaves those artifacts as
-stale as the submitter's own checkout was, which used to cost every train a
-hand-made "Regenerate generated docs after ..." commit. `dev land` closes
-that gap itself: after every successful rebase, conflicted or not, it runs a
-`regen` phase (`tools/command/native_dev_land_regen.c`, called from one site
-in `dl_step_start()`) between `rebase` and `prebuild` — `dev land status`
-shows `phase=regen` while it runs.
-
-The phase runs, in order, `make docs-capability-inventory`,
-`make docs-executor-routing` and `make fix-doc-counts` in the landing
-worktree — the same three generators the conflict auto-resolve above uses,
-run through `make` only, the same process rule as the rest of this leaf —
-then diffs the one tracked path each target owns
-(`docs/CAPABILITY_INVENTORY.jsonl`, `docs/agent/EXECUTOR_HEURISTICS.md`,
-`docs/CODEBASE_MAP.md`). If nothing changed, nothing is committed and the
-row's tip is untouched. If something changed, it amends exactly those paths
-into the rebased tip commit, keeping its subject and author — signed by
-ambient `commit.gpgsign` configuration, the same as the conflict
-auto-resolve — so main never gains a separate "Regenerate ..." commit. (A
-tip main already holds cannot be amended; that case alone keeps the old
-`Regenerate generated docs after <tip subject>` commit.) The amended id
-replaces `local`, the one field the proof intent, publication intent,
-receipts and push all read, so the proof runs on, and the push publishes,
-exactly the amended tip. If a generator or the diff/commit step
-itself fails, the row fails with `dimension=regen` and the first actionable
-line from the failing target's output — never a landing on a tree a
-generator refused to reproduce. A generator can also rewrite one of these
-paths with byte-identical content, moving only its mtime/ctime; the phase
-detects that too and re-seals `build/dev-loop/restart.env` before
-returning, so the proof's stat-based source-mutation token matches the
-tree it is actually proving instead of the tree as it stood before
-regeneration ran.
-
-### vendor/tor in the landing worktree
-
-The proof's generation copies the vendored Tor archives out of the landing
-worktree, so `dev land` primes them there. Where the tip records `vendor/tor`
-as a real submodule gitlink, the landing worktree's own submodule is
-initialised first and its checked-out commit must equal the commit the tip
-pins.
-
-An agent worktree is made with `z23-dev dev lane new --path=<absolute> --base=<ref>`: a detached git worktree at that path, with the proof's vendored dependencies (`vendor/tor/libtor.a`, the `vendor/tor/src/ext` archives, `vendor/lib`, `vendor/include`, `build/githooks`, and the hotswap rollback fixtures) cloned onto independent inodes. Hardlinks are forbidden — `link()`/`linkat()` bump the shared inode's ctime and refuse every in-flight proof whose seal covered that file.
-
-Two things follow. When the landing worktree is already standing on the tip's
-pinned commit and still holds `vendor/tor/libtor.a` from an earlier train,
-that is accepted directly and the submitting checkout is never consulted —
-the archive persists across trains, so re-deriving the pin from a fresh
-checkout every time is what made an unrelated checkout's state able to refuse
-a sound tip. Otherwise the submitting checkout's own `vendor/tor` must be
-checked out; when it is not, the refusal says so and says what fixes it:
-
-```
-proof_generation_dependency_unavailable:vendor/tor (submodule uninitialised in <checkout>; run git submodule update --init vendor/tor)
-```
-
-That refusal replaces a misleading one. Running `git rev-parse HEAD` inside an
-uninitialised gitlink directory walks up to the enclosing superproject and
-answers with the superproject's own HEAD, which is not a submodule commit at
-all — so the check used to report a pin mismatch against a commit that meant
-nothing.
-
-Commuting tickets plug in at one named seam. Per-group tickets (node2's
-`dev.proof.tickets`) name the groups a proof may skip because the change
-cannot affect them; `dl_tickets_admit()` in
-`tools/command/native_dev_land.c` is where that admission belongs, between
-"the base is fixed" and "ask for the proof". With no ticket service on the
-host it admits nothing and the proof runs whole — fail-closed, because a
-missing ticket service must never read as a ticket that admits everything.
-
-## What replaces the shell loop
-
-The shell loop that drives these transitions today is interim. The C23 leaf `zcode land` (node2's lane) replaces it. `zcode land` posts the claim and result rows itself and drives the same state machine. Until it lands, the loop remains the operator, and every rule in this document binds it unchanged.
-
-Related tooling in the tree: `tools/scripts/worktree_init.sh`, `tools/scripts/worktree_gc.sh`.
-
-## Unattended trains
-
-Everything above assumed a session was alive to drive it. `dev train keep`
-(`tools/command/native_dev_train_keep.c`) is the same protocol with nobody
-watching: one bounded pass over one train, run from a timer.
-
-```
-z23-dev dev train keep --train=<N> --once
-```
-
-There is no loop, no sleep and no wait inside the leaf. It reads
-`<scratch>/train<N>/KEEP.json`, does the single step that state allows,
-persists the new state and returns — which is what makes it safe to kill at
-any moment, and why the timer rather than the leaf is the retry policy.
-
-```text
-idle ──▶ picking ──▶ gating ──▶ ready ──▶ landing ──▶ landed
-      \          \           \         \
-       `──────────`───────────`─────────`──────────▶ blocked
-```
-
-| State | What the next pass does |
-| --- | --- |
-| `idle` | Take the LAND verdicts, assemble, gate, regen, write `READY`, run `land_pre.sh`, launch `land_unit.sh` on `PRECHECK: OK`. |
-| `picking` | Nothing. A crash left a half-assembled worktree, which is a judgement call; it resolves to `blocked`. |
-| `gating` | Run the gates again. The worktree is fully assembled and the gates are pure re-runs. |
-| `ready` | Run the precheck and hand off. |
-| `landing` | Read dev.land's outcome ledger for this tip and advance. |
-| `landed` | Nothing. |
-| `blocked` | Print why and stop. |
-
-### The queue
-
-`<scratch>/train<N>/late_picks.txt`, one row per lane:
-
-```
-<name> <sha|PENDING> <verdict-file>
-```
-
-The verdict file is the authority. Its first line must read `LAND <full-sha>`.
-A row still reading `PENDING` is taken at the verdict's sha — the verdict IS
-the confirmation the column is waiting for — but a row naming a *different*
-sha than its verdict is a queue disagreeing with itself and is skipped, never
-guessed at. `<scratch>/train<N>/BASE` pins the origin/main the queue was built
-against; the keeper re-fetches and refuses if origin/main has moved past it.
-
-Every refusal is one typed literal: `keep: refused: <reason>`, with a code
-(`NO_PICKS`, `BASE_MOVED`, `KEEPER_BUSY`, `ASSEMBLY_BLOCKED`, `GATE_BLOCKED`,
-`PRECHECK_REFUSED`, `KEEPER_CRASHED`). Every step's transcript goes to
-`<scratch>/train<N>/keep.log`.
-
-`--dry-run` prints the plan — the picks it would take, the base, the target
-worktree, the helpers it would call — and touches nothing else.
-
-### Clearing a block
-
-`blocked` never retries itself. A keeper that re-ran the same failing assembly
-every five minutes until morning would burn a box down while telling nobody.
-To clear one:
-
-1. Read `<scratch>/train<N>/keep.log` and `KEEP.json`'s `reason`.
-2. Fix the cause — resolve the conflict in a lane and re-publish its
-   `refs/review/<name>`, drop the offending row from `late_picks.txt`, or
-   rebase and update `BASE`.
-3. Remove the train worktree the failed pass left: `git worktree remove
-   --force ~/.z23/trains/train<N>`.
-4. Delete `<scratch>/train<N>/KEEP.json`. The next tick starts from `idle`.
-
-### The timer
-
-```
-make install-train-keeper
-# set Z23_TRAIN=<N> in ~/.z23/train-keeper.env, then:
-systemctl --user enable --now z23-train-keeper.timer
-```
-
-`make install-train-keeper` installs the units and stops. Turning a box into
-one that assembles and lands trains while nobody is watching is an operator
-decision, so the target prints the enable command rather than running it.
-`systemctl --user disable --now z23-train-keeper.timer` stops it again.
-
-The service runs its command through a login shell on purpose: the user
-manager's own environment is stripped, and the keeper's children run `make
-dev-bin` and `make lint` in a real checkout. `SuccessExitStatus=3` covers the
-leaf's BLOCKED exit, because "nothing to do yet" is a correct answer rather
-than a unit failure.
-
-### What is still manual
-
-The keeper runs `check-cyclomatic-complexity` as the plain check, never with
-`--write-baseline`. Re-pinning a baseline is exactly what an unattended
-process must not do at 03:00 with nobody reading, so a train that needs a
-re-pinned baseline is one a human re-pins. The board row for a landed train is
-written to `<scratch>/train<N>/board_post.txt` for the posting helper rather
-than posted by the leaf.
+Old shell loops, `zcode land` replacement plans, and train-keeper activation
+recipes are not the current worker route. Consult the current native catalog
+and DEVELOPING.md instead of reviving those mechanisms.

@@ -203,9 +203,14 @@ int t_remote_node_update_contract(void)
         ASSERT(read_entire_file(path, &script) == 0);
         ASSERT(strstr(script, "VENDOR_LOCK_DIR") != NULL);
         ASSERT(strstr(script, "acquire_vendor_lock") != NULL);
-        ASSERT(strstr(script, "release_vendor_lock") != NULL);
-        ASSERT(strstr(script, "timed out waiting for vendor build lock")
-               != NULL);
+        ASSERT(strstr(script, "release_vendor_lock") == NULL);
+        ASSERT(strstr(script, "--owns") != NULL);
+        ASSERT(strstr(script, "exec \"$helper\" \"$VENDOR_LOCK_DIR\"") != NULL);
+        /* Observe the kernel lifetime, legacy-owner refusal, failed identity
+         * checks and archive cache-miss boundary, rather than requiring an
+         * EXIT trap that cannot survive the native timeout's SIGKILL. */
+        ASSERT(run_gate_script("tools/scripts/build_vendor_offline_selftest.sh",
+                               NULL) == 0);
         ASSERT(strstr(script, "build_leveldb_direct") != NULL);
         ASSERT(strstr(script, "leveldb_cxx_compiler") != NULL);
         /* The platform define is selected by host and passed as

@@ -14,7 +14,11 @@ Worktree layout is not workflow authority. Current state comes from
 `git worktree list --porcelain`. Canonical product identities are defined by
 the existing CAS and build-fabric types; the current local Git proof queue is
 transitional and filesystem-backed. `origin/main` is the shared integration
-blackboard. The resident signed-commit promoter is not implemented yet; do not
-claim that a lane handoff automatically proves or publishes code.
+blackboard. Use native lane and file-claim tools, renew leases, preserve
+other owners, and run heavy work through `devbuild --wait`. No permanent lead
+is required; eligible authorized workers use the existing native receipt-gated
+landing route after non-author review. A lane handoff or queued request is not
+publication. The local Git queue does not establish the complete decentralized
+signed-commit promoter. Services and watchers remain operator opt-in.
 
 @docs/agent/LANE_LAUNCH.md
