@@ -1342,6 +1342,8 @@ Z23_FLAG("ZCL_LAND_TEST_DIE_AFTER_OUTCOME", "env_test", "-", "-",
           "test-only crash after terminal outcome append; first use tools/command/native_dev_land.c:auto")
 Z23_FLAG("ZCL_LAND_TEST_DIE_AFTER_PROOF", "env_test", "-", "-",
           "test-only crash after proof PASS before landing transition; first use tools/command/native_dev_land.c:auto")
+Z23_FLAG("ZCL_LAND_TEST_FILE_SYNC_FAIL", "env_test", "-", "-",
+          "test-only failed queue-file flush before the landing queue rename; first use tools/command/native_dev_land.c:auto")
 Z23_FLAG("ZCL_LAND_TEST_PICK_DELAY_MS", "env_runtime", "-", "-",
           "undocumented; first use tools/command/native_dev_land.c:auto")
 Z23_FLAG("ZCL_LAND_TEST_PRECHECK_BUDGET_MS", "env_test", "-", "-",
