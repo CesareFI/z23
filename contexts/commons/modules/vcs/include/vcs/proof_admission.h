@@ -87,6 +87,11 @@ struct vcs_proof_admission_context {
     const struct vcs_proof_artifact_source *artifacts;
 };
 
+/* One admission call performs a receiver classification for every obligation.
+ * Keep hostile or corrupted plans from turning that synchronous boundary into
+ * an unbounded CPU walk. Larger legitimate plans must be split into batches. */
+#define VCS_PROOF_ADMISSION_MAX_OBLIGATIONS 65536u
+
 /* Decide every obligation. `results` must hold `count`. Returns false only
  * for caller errors (logged). Eligible FAIL, conflict and policy refusal
  * block admission; a fresh diagnostic rerun needs a separate request and

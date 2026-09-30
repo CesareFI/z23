@@ -101,7 +101,8 @@ static bool pad_valid(const struct vcs_proof_admission_context *ctx,
                       size_t count,
                       const struct vcs_proof_admission_result *results)
 {
-    if (!ctx || !ctx->receiver || !change || !change->component_id ||
+    if (count > VCS_PROOF_ADMISSION_MAX_OBLIGATIONS ||
+        !ctx || !ctx->receiver || !change || !change->component_id ||
         (count && (!obligations || !results)))
         return false;
     for (size_t i = 0; i < count; i++)
