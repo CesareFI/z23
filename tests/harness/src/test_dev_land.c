@@ -503,17 +503,18 @@ static bool dlx_git_push_retarget_shim(const char *wt, const char *diverted)
         setenv("PATH", path, 1) == 0;
 }
 
-/* Redirect only the duration of each landing-worktree fetch, restoring the
- * signed target before the caller can re-read repository configuration. */
-static bool dlx_git_fetch_restore_shim(const char *wt, const char *original,
-                                       const char *diverted)
+/* Redirect only the duration of a remote read, restoring the original URL
+ * before the caller can re-read repository configuration. */
+static bool dlx_git_read_restore_shim(const char *wt, const char *original,
+                                      const char *diverted)
 {
     char shim[1024], git[1200], path[10240];
     static const char script[] =
         "#!/bin/sh\n"
         "if test \"$#\" -ge 4 && test \"$1\" = '-C' && "
-        "test \"$2\" = \"$ZCL_DLX_GIT_TARGET_WT\" && "
-        "test \"$3\" = 'fetch'; then\n"
+        "test \"$2\" = \"$ZCL_DLX_GIT_TARGET_WT\" && {\n"
+        "  test \"$3\" = 'fetch' || test \"$3\" = 'ls-remote'\n"
+        "}; then\n"
         "  PATH=$ZCL_DLX_GIT_REAL_PATH\n"
         "  export PATH\n"
         "  git -C \"$ZCL_DLX_GIT_TARGET_WT\" remote set-url origin "
@@ -530,7 +531,7 @@ static bool dlx_git_fetch_restore_shim(const char *wt, const char *original,
     if (!wt || !original || !diverted || !g_dlx_had_path ||
         !g_dlx_path_saved)
         return false;
-    test_make_tmpdir(shim, sizeof(shim), "dev_land", "fetch_restore_shim");
+    test_make_tmpdir(shim, sizeof(shim), "dev_land", "read_restore_shim");
     if (snprintf(git, sizeof(git), "%s/git", shim) >= (int)sizeof(git) ||
         snprintf(path, sizeof(path), "%s:%s", shim, g_dlx_saved_path) >=
             (int)sizeof(path) ||
@@ -6665,7 +6666,7 @@ static int test_dev_land_observation_locator_binding(void)
 
         dlx_landdir(land, sizeof(land));
         ASSERT(snprintf(wt, sizeof(wt), "%s/wt", land) < (int)sizeof(wt));
-        ASSERT(dlx_git_fetch_restore_shim(wt, rig.bare, diverted));
+        ASSERT(dlx_git_read_restore_shim(wt, rig.bare, diverted));
         dlx_begin(&c, "step");
         ASSERT(dlx_run(&c) && dlx_ok(&c));
         ASSERT_STR_EQ(dlx_str(&c, "state"), "landed");
@@ -7699,7 +7700,8 @@ static int test_dev_land_interrupted_proof(void)
     }
     TEST("land: the base probe answers only from a well-formed remote tip") {
         struct dlx_rig rig;
-        char base[64], missing[1200];
+        char base[64], missing[1200], sibling[64];
+        char diverted_root[1024], diverted[1200], update[160];
         dlx_isolate("base_probe");
         ASSERT(dlx_rig_make(&rig, "base_probe_rig"));
         ASSERT(dlx_origin_main(&rig, base));
@@ -7715,6 +7717,24 @@ static int test_dev_land_interrupted_proof(void)
                   ZCL_DEV_PROOF_BASE_UNKNOWN);
         ASSERT_EQ(zcl_native_dev_land_test_base_observe(missing, rig.tip),
                   ZCL_DEV_PROOF_BASE_UNKNOWN);
+        const char *restore[] = { "remote", "set-url", "origin", rig.bare,
+                                  NULL };
+        ASSERT(dlx_git(rig.clone, restore) == 0);
+        ASSERT(dlx_sibling(&rig, base, "refs/heads/side", sibling));
+        test_make_tmpdir(diverted_root, sizeof(diverted_root), "dev_land",
+                         "base_probe_diverted");
+        ASSERT(snprintf(diverted, sizeof(diverted), "%s/origin.git",
+                        diverted_root) < (int)sizeof(diverted));
+        const char *init[] = { "init", "--quiet", "--bare",
+                               "--initial-branch=main", diverted, NULL };
+        ASSERT(dlx_git(NULL, init) == 0);
+        ASSERT(snprintf(update, sizeof(update), "%s:refs/heads/main", sibling) <
+               (int)sizeof(update));
+        const char *seed[] = { "fetch", "--quiet", rig.clone, update, NULL };
+        ASSERT(dlx_git(diverted, seed) == 0);
+        ASSERT(dlx_git_read_restore_shim(rig.clone, rig.bare, diverted));
+        ASSERT_EQ(zcl_native_dev_land_test_base_observe(rig.clone, base),
+                  ZCL_DEV_PROOF_BASE_CURRENT);
         dlx_restore();
         PASS();
     }
