@@ -267,7 +267,7 @@ void vcs_zcode_dht_service_record_query_finish(
 void vcs_zcode_dht_service_publication_schedule(
     struct vcs_zcode_dht_service *service, struct vcs_zcode_dht_time now);
 bool vcs_zcode_dht_publications_load(struct vcs_zcode_dht_service *service,
-                                     uint64_t now_unix);
+                                     struct vcs_zcode_dht_time now);
 bool vcs_zcode_dht_publications_save(
     const char *datadir, const struct service_publication *publications,
     char *error_out, size_t error_capacity);
