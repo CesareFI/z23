@@ -437,8 +437,8 @@ static bool zdev_capture_write_scope_store(
     uint8_t *checked_wire = NULL; size_t checked_len = 0;
     uint8_t checked_root[32];
     struct vcs_zcode_write_scope_v1 checked;
-    bool verified = vcs_object_load_raw(
-            workspace, out, &checked_wire, &checked_len) == 0 &&
+    bool verified = vcs_object_load_raw_bounded(
+            workspace, out, wire_len, &checked_wire, &checked_len) == 0 &&
         checked_len == wire_len && memcmp(checked_wire, wire, wire_len) == 0 &&
         vcs_zcode_write_scope_parse(checked_wire, checked_len, &checked) ==
             VCS_ZCODE_WRITE_SCOPE_OK &&
@@ -526,8 +526,9 @@ static bool zdev_capture_candidate_patch_verify(
     struct vcs_zcode_patch_v1 checked;
     uint8_t checked_root[32];
     bool parsed = false;
-    bool stored = vcs_object_load_raw(workspace, patch_root, &checked_wire,
-                                      &checked_len) == 0 &&
+    bool stored = vcs_object_load_raw_bounded(
+            workspace, patch_root, wire_len, &checked_wire,
+            &checked_len) == 0 &&
         checked_len == wire_len && memcmp(checked_wire, wire, wire_len) == 0;
     if (stored) {
         parsed = vcs_zcode_patch_parse(checked_wire, checked_len,
