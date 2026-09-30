@@ -96,10 +96,14 @@ static int test_bf_attach_sealed_verifier_aba(void)
 {
     int failures = 0;
     TEST("build_fabric_attach: sealed verifier survives A-B-A and closes fd") {
-        char dir[256], path[320];
+        char dir[256], path[320], compiler[4096];
         test_make_tmpdir(dir, sizeof(dir), "build_fabric_attach", "verifier-aba");
         ASSERT(snprintf(path, sizeof(path), "%s/verifier", dir) > 0);
-        ASSERT(att_copy_executable("/bin/echo", path));
+        /* Do not use /bin/echo: on hosts with multi-call coreutils, an
+         * anonymous sealed image has no applet pathname. The compiler is a
+         * real ELF program required by this already-built native test lane. */
+        ASSERT(realpath("/usr/bin/cc", compiler) != NULL);
+        ASSERT(att_copy_executable(compiler, path));
         int before = att_open_fd_count();
         ASSERT(before >= 0);
         struct bfat_verifier_snapshot first = { .fd = -1 };
@@ -111,12 +115,12 @@ static int test_bf_attach_sealed_verifier_aba(void)
         errno = 0;
         ASSERT(pwrite(first.fd, "X", 1, 0) == -1 && errno == EPERM);
         ASSERT(att_copy_executable("/bin/false", path));
-        const char *argv[] = { path, "sealed-A-ran", NULL };
+        const char *argv[] = { "z23-test-verifier", "--version", NULL };
         char output[128];
         ASSERT(zcl_spawn_capture_cancelable_fd(first.fd, argv, output,
                  sizeof(output), 3000, NULL, NULL, NULL) == 0);
-        ASSERT(strstr(output, "sealed-A-ran") != NULL);
-        ASSERT(att_copy_executable("/bin/echo", path));
+        ASSERT(output[0] != '\0');
+        ASSERT(att_copy_executable(compiler, path));
         struct bfat_verifier_snapshot restored = { .fd = -1 };
         ASSERT_RESULT_OK(bfat_verifier_snapshot_open(path, &restored));
         ASSERT(memcmp(first.bytes, restored.bytes, 32) == 0);

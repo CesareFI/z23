@@ -14,6 +14,10 @@ see [CONTRIBUTING.md](../.github/CONTRIBUTING.md#licensing-of-contributions).
 
 ## Contributors
 
+- **[@CesareFI](https://github.com/CesareFI)** — release-only package verifier
+  selection in shipped nodes, selection/refusal regression coverage, and the
+  sealed-verifier A-B-A fixture portability fix (PR #62).
+
 - **[@jmprcx](https://github.com/jmprcx)** — key-material hardening (AES
   state cleanse, base58/bech32 encode-side stack caps, PR #1); typed
   peer-offence DoS table, `getrawtransaction` FILE\*-cache removal +
