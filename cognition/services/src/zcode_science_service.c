@@ -54,10 +54,12 @@ static bool science_hex_decode(const char *hex, uint8_t *out, size_t len)
 
 /* ── CAS helpers ───────────────────────────────────────────────── */
 
-static bool science_cas_load(const char *workspace, const uint8_t root[32],
-                             uint8_t **wire, size_t *wire_len)
+static int science_cas_load(const char *workspace, const uint8_t root[32],
+                            size_t maximum_bytes,
+                            uint8_t **wire, size_t *wire_len)
 {
-    return vcs_object_load_raw(workspace, root, wire, wire_len) == 0;
+    return vcs_object_load_raw_bounded(workspace, root, maximum_bytes,
+                                       wire, wire_len);
 }
 
 /* Load + parse + rederived-root-check one study wire from CAS. */
@@ -67,7 +69,9 @@ static bool science_load_study(const char *workspace,
 {
     uint8_t *wire = NULL, checked[32];
     size_t len = 0;
-    bool ok = science_cas_load(workspace, study_root, &wire, &len) &&
+    bool ok = science_cas_load(workspace, study_root,
+                               VCS_ZCODE_STUDY_SPEC_WIRE_BYTES,
+                               &wire, &len) == 0 &&
         vcs_zcode_study_spec_parse(wire, len, out) == VCS_ZCODE_SCIENCE_OK &&
         vcs_zcode_study_spec_validate(out) == VCS_ZCODE_SCIENCE_OK &&
         vcs_zcode_study_spec_root(out, checked) == VCS_ZCODE_SCIENCE_OK &&
@@ -84,7 +88,9 @@ static bool science_load_result_v1(const char *workspace,
 {
     uint8_t *wire = NULL, checked[32];
     size_t len = 0;
-    if (!science_cas_load(workspace, result_root, &wire, &len))
+    if (science_cas_load(workspace, result_root,
+                         VCS_ZCODE_BENCHMARK_RESULT_V2_WIRE_BYTES,
+                         &wire, &len) != 0)
         return false; /* raw-return-ok: callers name the missing CAS object
                          in their own ZCL_ERR context */
     bool ok = false;
@@ -408,11 +414,15 @@ static struct zcl_result science_load_task_candidate(
 {
     uint8_t *twire = NULL, *cwire = NULL, checked[32];
     size_t tlen = 0, clen = 0;
-    bool ok = science_cas_load(workspace, task_root, &twire, &tlen) &&
+    bool ok = science_cas_load(workspace, task_root,
+                               VCS_ZCODE_TASK_WIRE_BYTES,
+                               &twire, &tlen) == 0 &&
         vcs_zcode_task_parse(twire, tlen, task) == VCS_ZCODE_DEV_OK &&
         vcs_zcode_task_root(task, checked) == VCS_ZCODE_DEV_OK &&
         memcmp(checked, task_root, 32) == 0 &&
-        science_cas_load(workspace, candidate_root, &cwire, &clen) &&
+        science_cas_load(workspace, candidate_root,
+                         VCS_ZCODE_CANDIDATE_WIRE_BYTES,
+                         &cwire, &clen) == 0 &&
         vcs_zcode_candidate_parse(cwire, clen, candidate) ==
             VCS_ZCODE_DEV_OK &&
         vcs_zcode_candidate_root(candidate, checked) == VCS_ZCODE_DEV_OK &&
@@ -510,15 +520,19 @@ static struct zcl_result science_work_commit_result_v2(
     {
         uint8_t *mwire = NULL, *pwire = NULL, checked[32];
         size_t mlen = 0, plen = 0;
-        bool ok = science_cas_load(workspace, result->method_root, &mwire,
-                                   &mlen) &&
+        bool ok = science_cas_load(
+                      workspace, result->method_root,
+                      VCS_ZCODE_BENCHMARK_METHOD_WIRE_BYTES,
+                      &mwire, &mlen) == 0 &&
             vcs_zcode_benchmark_method_parse(mwire, mlen, &method) ==
                 VCS_ZCODE_SCIENCE_OK &&
             vcs_zcode_benchmark_method_root(&method, checked) ==
                 VCS_ZCODE_SCIENCE_OK &&
             memcmp(checked, result->method_root, 32) == 0 &&
-            science_cas_load(workspace, result->hardware_profile_root, &pwire,
-                             &plen) &&
+            science_cas_load(
+                workspace, result->hardware_profile_root,
+                VCS_ZCODE_HARDWARE_PROFILE_WIRE_BYTES,
+                &pwire, &plen) == 0 &&
             vcs_zcode_hardware_profile_parse(pwire, plen, &profile) ==
                 VCS_ZCODE_SCIENCE_OK &&
             vcs_zcode_hardware_profile_root(&profile, checked) ==
@@ -672,6 +686,20 @@ struct zcl_result zcode_science_work_status(
     return ZCL_OK;
 }
 
+static struct zcl_result science_receipt_load(
+    const char *workspace, const uint8_t root[32],
+    uint8_t **wire, size_t *wire_len)
+{
+    int loaded = science_cas_load(
+        workspace, root, VCS_ZCODE_BENCHMARK_RESULT_V2_WIRE_BYTES,
+        wire, wire_len);
+    if (loaded == -1)
+        return ZCL_ERR(-1, "science-receipt-cas-missing");
+    if (loaded != 0)
+        return ZCL_ERR(-1, "science-receipt-cas-invalid");
+    return ZCL_OK;
+}
+
 struct zcl_result zcode_science_work_receipt(
     struct node_db *ndb, const char *workspace, const char *root_hex,
     struct db_zcode_science_entry *out, const char **kind)
@@ -686,8 +714,7 @@ struct zcl_result zcode_science_work_receipt(
     (void)science_hex_decode(root_hex, root, 32);
     uint8_t *wire = NULL;
     size_t wire_len = 0;
-    if (!science_cas_load(workspace, root, &wire, &wire_len))
-        return ZCL_ERR(-1, "science-receipt-cas-missing");
+    ZCL_CHECK(science_receipt_load(workspace, root, &wire, &wire_len));
     /* The receipt re-verifies the canonical wire against its address; the
      * projection row alone is never the proof. */
     bool ok = false;
@@ -769,8 +796,10 @@ struct zcl_result zcode_science_review_submit(
     {
         uint8_t *fwire = NULL, checked[32];
         size_t flen = 0;
-        bool ok = science_cas_load(workspace, review.findings_root, &fwire,
-                                   &flen) &&
+        bool ok = science_cas_load(
+                      workspace, review.findings_root,
+                      VCS_ZCODE_SCIENCE_FINDINGS_WIRE_BYTES,
+                      &fwire, &flen) == 0 &&
             vcs_zcode_science_findings_parse(fwire, flen, &findings) ==
                 VCS_ZCODE_SCIENCE_OK &&
             vcs_zcode_science_findings_validate(&findings) ==

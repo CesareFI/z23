@@ -736,6 +736,22 @@ static int test_zstore_evidence(void)
         ASSERT_EQ(row.code, VCS_ZCODE_BENCHMARK_NEGATIVE_RESULT);
         ASSERT(zcode_science_work_receipt(&ndb, dir, neg_hex, &row,
                                           &kind).ok);
+        /* Receipt verification rejects oversized addressed bytes before
+         * allocation, preserving the historical invalid-vs-missing token. */
+        ASSERT(zstore_resize_object(
+            dir, neg_hex,
+            (off_t)VCS_ZCODE_BENCHMARK_RESULT_V2_WIRE_BYTES + 1));
+        struct zcl_result oversized_receipt = zcode_science_work_receipt(
+            &ndb, dir, neg_hex, &row, &kind);
+        ASSERT(!oversized_receipt.ok);
+        ASSERT_STR_EQ(oversized_receipt.message,
+                      "science-receipt-cas-invalid");
+        bool repaired = false;
+        ASSERT(vcs_object_put_addressed_repair(
+            dir, neg_root, neg_wire, sizeof(neg_wire), &repaired));
+        ASSERT(repaired);
+        ASSERT(zcode_science_work_receipt(&ndb, dir, neg_hex, &row,
+                                          &kind).ok);
         /* Cross-validation failure: tampered action binding is refused. */
         struct vcs_zcode_benchmark_result_v2 tampered = null_result;
         tampered.action_root[0] ^= 1;
