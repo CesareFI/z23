@@ -331,14 +331,20 @@ static bool patch_changed_blobs_verify(
     for (size_t i = 0; i < patch->count; i++) {
         const struct vcs_zcode_patch_change_v1 *change = &patch->changes[i];
         if (change->kind == VCS_DIFF_REMOVED) continue;
+        if (change->new_size > SIZE_MAX) return false;
         uint8_t *content = NULL; size_t content_len = 0;
-        if (vcs_object_get(repo_root, change->new_blob, VCS_TAG_BLOB,
-                           &content, &content_len) != 0 ||
+        if (vcs_object_load_raw_bounded(
+                repo_root, change->new_blob, (size_t)change->new_size,
+                &content, &content_len) != 0 ||
             content_len != change->new_size) {
             free(content);
             return false;
         }
+        uint8_t checked[32];
+        vcs_sha3_tag(VCS_TAG_BLOB, content, content_len, checked);
+        bool valid = memcmp(checked, change->new_blob, 32) == 0;
         free(content);
+        if (!valid) return false;
     }
     return true;
 }
@@ -350,8 +356,9 @@ enum vcs_zcode_patch_result vcs_zcode_patch_verify_cas(
     if (!repo_root || !task || !candidate) return VCS_ZCODE_PATCH_NULL;
     uint8_t *wire = NULL; size_t wire_len = 0; uint8_t checked_root[32];
     struct vcs_zcode_patch_v1 stored;
-    if (vcs_object_load_raw(repo_root, candidate->patch_root,
-                            &wire, &wire_len) != 0 ||
+    if (vcs_object_load_raw_bounded(
+            repo_root, candidate->patch_root, VCS_ZCODE_PATCH_WIRE_MAX,
+            &wire, &wire_len) != 0 ||
         vcs_zcode_patch_parse(wire, wire_len, &stored) !=
             VCS_ZCODE_PATCH_OK) {
         free(wire);
@@ -370,8 +377,9 @@ enum vcs_zcode_patch_result vcs_zcode_patch_verify_cas(
     if (!stored_valid) return VCS_ZCODE_PATCH_MANIFEST_MISMATCH;
 
     struct vcs_zcode_write_scope_v1 scope;
-    if (vcs_object_load_raw(repo_root, task->write_scope_root,
-                            &wire, &wire_len) != 0 ||
+    if (vcs_object_load_raw_bounded(
+            repo_root, task->write_scope_root,
+            VCS_ZCODE_WRITE_SCOPE_WIRE_MAX, &wire, &wire_len) != 0 ||
         vcs_zcode_write_scope_parse(wire, wire_len, &scope) !=
             VCS_ZCODE_WRITE_SCOPE_OK) {
         free(wire);

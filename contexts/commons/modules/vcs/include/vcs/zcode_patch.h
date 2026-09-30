@@ -4,6 +4,7 @@
 #ifndef ZCL_VCS_ZCODE_PATCH_H
 #define ZCL_VCS_ZCODE_PATCH_H
 
+#include "vcs/package_manifest.h"
 #include "vcs/vcs_manifest.h"
 #include "vcs/zcode_dev.h"
 #include "vcs/zcode_write_scope.h"
@@ -16,6 +17,9 @@
 #define VCS_ZCODE_PATCH_HEADER_BYTES 88u
 #define VCS_ZCODE_PATCH_CHANGE_FIXED_BYTES 92u
 #define VCS_ZCODE_PATCH_MAX_CHANGES 4096u
+#define VCS_ZCODE_PATCH_WIRE_MAX \
+    (VCS_ZCODE_PATCH_HEADER_BYTES + VCS_ZCODE_PATCH_MAX_CHANGES * \
+        (VCS_ZCODE_PATCH_CHANGE_FIXED_BYTES + VCS_PACKAGE_PATH_MAX))
 
 enum vcs_zcode_patch_result {
     VCS_ZCODE_PATCH_OK = 0,
@@ -73,7 +77,9 @@ enum vcs_zcode_patch_result vcs_zcode_patch_root(
 
 /* Recompute-never-trust verifier shared by local and P2P worker admission.
  * Loads the task's scope/base tree and the candidate's patch/tree from the
- * existing ZVCS CAS, then derives the expected patch again under task limits. */
+ * existing ZVCS CAS, then derives the expected patch again under task limits.
+ * Patch/scope reads are pre-allocation bounded by their canonical wire maxima;
+ * each changed blob is bounded by its exact derived manifest size. */
 enum vcs_zcode_patch_result vcs_zcode_patch_verify_cas(
     const char *repo_root, const struct vcs_zcode_task_v1 *task,
     const struct vcs_zcode_candidate_v1 *candidate);

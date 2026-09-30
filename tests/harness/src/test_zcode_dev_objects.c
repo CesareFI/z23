@@ -4380,8 +4380,12 @@ static int test_zd_improve_command(void)
         struct vcs_zcode_patch_v1 stored_patch;
         ASSERT_EQ(vcs_zcode_patch_parse(patch_wire, patch_wire_len,
                                         &stored_patch), VCS_ZCODE_PATCH_OK);
-        free(patch_wire);
         ASSERT_EQ(stored_patch.count, 1);
+        uint8_t changed_blob[32];
+        uint64_t changed_blob_size = stored_patch.changes[0].new_size;
+        memcpy(changed_blob, stored_patch.changes[0].new_blob,
+               sizeof(changed_blob));
+        free(patch_wire);
         ASSERT_STR_EQ(stored_patch.changes[0].path, "src/widget.c");
         ASSERT_EQ(stored_patch.changes[0].kind, VCS_DIFF_MODIFIED);
         ASSERT(memcmp(stored_patch.base_source_root, captured_source_root,
@@ -4772,6 +4776,38 @@ static int test_zd_improve_command(void)
                   VCS_ZCODE_ACTION_INPUT_BINDING);
         action_input.payload[0] ^= 1u;
         vcs_zcode_action_input_free(&action_input);
+        ASSERT_EQ(vcs_zcode_patch_verify_cas(workspace, &task, &candidate),
+                  VCS_ZCODE_PATCH_OK);
+        uint8_t *exact_patch_wire = NULL;
+        size_t exact_patch_len = 0;
+        ASSERT_EQ(vcs_object_load_raw(
+                      workspace, candidate.patch_root,
+                      &exact_patch_wire, &exact_patch_len), 0);
+        ASSERT(zd_resize_object(
+            workspace, candidate.patch_root,
+            (off_t)VCS_ZCODE_PATCH_WIRE_MAX + 1));
+        ASSERT_EQ(vcs_zcode_patch_verify_cas(workspace, &task, &candidate),
+                  VCS_ZCODE_PATCH_CAS);
+        ASSERT(vcs_object_put_addressed_repair(
+            workspace, candidate.patch_root,
+            exact_patch_wire, exact_patch_len, NULL));
+        free(exact_patch_wire);
+        uint8_t *changed_bytes = NULL;
+        size_t changed_len = 0;
+        ASSERT_EQ(vcs_object_get(
+                      workspace, changed_blob, VCS_TAG_BLOB,
+                      &changed_bytes, &changed_len), 0);
+        ASSERT_EQ(changed_len, changed_blob_size);
+        ASSERT(zd_resize_object(
+            workspace, changed_blob, (off_t)changed_len + 1));
+        ASSERT_EQ(vcs_zcode_patch_verify_cas(workspace, &task, &candidate),
+                  VCS_ZCODE_PATCH_MANIFEST_MISMATCH);
+        uint8_t repaired_blob_root[32];
+        ASSERT(vcs_object_put_repair(
+            workspace, changed_bytes, changed_len, VCS_TAG_BLOB,
+            repaired_blob_root, NULL));
+        ASSERT(memcmp(repaired_blob_root, changed_blob, 32) == 0);
+        free(changed_bytes);
         ASSERT_EQ(vcs_zcode_patch_verify_cas(workspace, &task, &candidate),
                   VCS_ZCODE_PATCH_OK);
         struct vcs_zcode_candidate_v1 missing_patch = candidate;
