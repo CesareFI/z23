@@ -7862,6 +7862,31 @@ static bool zd_task_index_budget_refuses(void)
     return ok;
 }
 
+static bool zd_task_index_oversize_object_skipped(void)
+{
+    char dir[512], path[640];
+    test_make_tmpdir(dir, sizeof(dir), "zcode_dev", "task_index_oversize");
+    uint8_t address[32];
+    memset(address, 0x42, sizeof(address));
+    const uint8_t seed = 0;
+    bool ok = vcs_object_store_init(dir) &&
+        vcs_object_put_addressed(dir, address, &seed, sizeof(seed));
+    char hex[65];
+    zcl_hex_encode(address, sizeof(address), hex);
+    int n = snprintf(path, sizeof(path), "%s/.zvcs/objects/%c%c/%s",
+                     dir, hex[0], hex[1], hex + 2);
+    ok = ok && n > 0 && (size_t)n < sizeof(path) &&
+        truncate(path, (off_t)VCS_ZCODE_TASK_MAX_CONTEXT_BYTES + 1) == 0;
+    struct vcs_zcode_task_index *index = ok
+        ? vcs_zcode_task_index_build(dir, 1500) : NULL;
+    ok = index && vcs_zcode_task_index_complete(index) &&
+        vcs_zcode_task_index_task_count(index) == 0 &&
+        vcs_zcode_task_index_candidate_count(index) == 0;
+    vcs_zcode_task_index_free(index);
+    test_rm_rf(dir);
+    return ok;
+}
+
 static int test_zd_task_index(void)
 {
     int failures = 0;
@@ -8649,6 +8674,7 @@ static int test_zd_task_index(void)
         test_rm_rf(dir);
 
         ASSERT(zd_task_index_budget_refuses());
+        ASSERT(zd_task_index_oversize_object_skipped());
         PASS();
     } _test_next:;
     return failures;

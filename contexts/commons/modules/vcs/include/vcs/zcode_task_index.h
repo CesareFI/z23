@@ -17,7 +17,8 @@
  * Entries are sorted by root hex for deterministic output. Bounds: at most
  * VCS_ZCODE_TASK_INDEX_MAX_TASKS tasks, MAX_CANDIDATES candidates and
  * MAX_CONTEXTS contexts. Every non-dot CAS directory entry, including
- * malformed junk, consumes a fixed scan-work budget.
+ * malformed junk, consumes a fixed scan-work budget. Per-object reads are
+ * capped at the existing task-context wire limit.
  *
  * Read-only: the index never writes to the CAS. Signed work receipts are
  * re-rooted and signature-checked before they may affect display state; full

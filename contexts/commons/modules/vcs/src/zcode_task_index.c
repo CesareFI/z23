@@ -30,6 +30,7 @@
 
 #define INDEX_LOG "vcs.task_index"
 #define INDEX_MAX_SCANNED 262144u
+#define INDEX_MAX_WIRE_BYTES ((size_t)VCS_ZCODE_TASK_MAX_CONTEXT_BYTES)
 
 /* Wire magics from zcode_dev.c — the first 8 bytes decide whether an object
  * of the right size is even a candidate for projection. */
@@ -83,6 +84,23 @@ static bool index_scan_take(struct vcs_zcode_task_index *index)
 static bool index_dot_entry(const char *name)
 {
     return strcmp(name, ".") == 0 || strcmp(name, "..") == 0;
+}
+
+static bool index_load_object(const char *repo_root, const uint8_t address[32],
+                              const char *hex64,
+                              struct vcs_zcode_task_index *index,
+                              uint8_t **wire, size_t *len)
+{
+    int status = vcs_object_load_raw_bounded(
+        repo_root, address, INDEX_MAX_WIRE_BYTES, wire, len);
+    if (status == -2)
+        return false; /* another, larger CAS citizen */
+    if (status != 0) {
+        index->complete = false;
+        LOG_ERROR(INDEX_LOG, "unreadable CAS object %.8s", hex64);
+        return false;
+    }
+    return true;
 }
 
 /* Project one receipt-magic wire. A verified work-pull observation is
@@ -158,11 +176,8 @@ static void index_consider_object(const char *repo_root, const char *hex64,
         return;
     uint8_t *wire = NULL;
     size_t len = 0;
-    if (vcs_object_load_raw(repo_root, address, &wire, &len) != 0) {
-        index->complete = false;
-        LOG_ERROR(INDEX_LOG, "unreadable CAS object %.8s", hex64);
+    if (!index_load_object(repo_root, address, hex64, index, &wire, &len))
         return;
-    }
     if (len == VCS_ZCODE_TASK_WIRE_BYTES &&
         memcmp(wire, task_magic, sizeof(task_magic)) == 0) {
         struct vcs_zcode_task_v1 task;
