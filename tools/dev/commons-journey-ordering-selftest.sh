@@ -475,5 +475,50 @@ for invalid_admission in 0 3601 invalid; do
         fail "invalid admission budget $invalid_admission reached transport or lacked refusal"
 done
 
+# Capture the actual transport command construction; start no scheduler or node.
+# The source functions remain the authority for argv and lease/PID phases.
+SCHEDULING="$(mktemp -d "${TMPDIR:-/tmp}/z23-journey-scheduling.XXXXXX")"
+for function_name in cj_local_build_native cj_scheduled_on; do
+    awk -v name="$function_name" '$0 == name "() {" {f=1} f {print} f && /^}/ {exit}' \
+        "$JOURNEY" >>"$SCHEDULING/functions.sh"
+done
+if (
+    . "$LIFECYCLE" || exit 1
+    . "$SCHEDULING/functions.sh" || exit 1
+    dht_node_exec() {
+        printf '%s\n' "$4" >"$SCHEDULING/command"
+        shift 5
+        printf '%s\n' "$@" >"$SCHEDULING/arguments"
+        printf '12345\n'
+    }
+    DHT_REMOTE_ADMISSION_WAIT=5
+    dht_remote_scheduled_pid 29999 '/fixture path' fixture-command 'literal argument' >/dev/null || exit 1
+    ! grep -Eq -- '--exclusive|systemd-run|CPUQuota|MemoryMax|taskset' "$SCHEDULING/command" || exit 1
+    grep -qF -- '"$HOME/.local/bin/devbuild" --wait --project z23' "$SCHEDULING/command" || exit 1
+    printf '%s\n' '/fixture path' 5 fixture-command 'literal argument' >"$SCHEDULING/expected"
+    cmp "$SCHEDULING/expected" "$SCHEDULING/arguments" || exit 1
+    CJ_TWOHOST=1 CJ_REMOTE_BUILD_PAUSED=1 B_RPC=29999
+    CJ_RDIR_B='/fixture path' DHT_DD_B='/fixture datadir'
+    for route in cj_local_build_native cj_scheduled_on; do
+        "$route" b fixture-command 'literal argument' >/dev/null || exit 1
+        ! grep -Eq -- '--exclusive|systemd-run|CPUQuota|MemoryMax|taskset' "$SCHEDULING/command" || exit 1
+        grep -qF -- '"$HOME/.local/bin/devbuild" --wait --project z23 "$@"' "$SCHEDULING/command" || exit 1
+        if [ "$route" = cj_local_build_native ]; then
+            printf '%s\n' '/fixture path' '/fixture path/bin/zclassic23' \
+                '-datadir=/fixture datadir' '-rpcport=29999' -regtest \
+                fixture-command 'literal argument' >"$SCHEDULING/expected"
+        else
+            printf '%s\n' '/fixture path' fixture-command 'literal argument' \
+                >"$SCHEDULING/expected"
+        fi
+        cmp "$SCHEDULING/expected" "$SCHEDULING/arguments" || exit 1
+    done
+); then
+    pass "actual node, package and test commands reuse ordinary host admission"
+else
+    fail "journey command construction reserves exclusive or nested resources"
+fi
+rm -rf "$SCHEDULING"
+
 [ "$FAIL" -eq 0 ] || exit 1
 printf 'commons-journey-ordering: OK\n'

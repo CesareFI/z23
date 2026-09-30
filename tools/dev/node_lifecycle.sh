@@ -69,13 +69,8 @@ DHT_SSH="${DHT_SSH:-ssh}"
 DHT_REMOTE_DEVBUILD=0
 # Queue admission is separate from the RPC readiness budget of an admitted node.
 DHT_REMOTE_ADMISSION_WAIT="${DHT_REMOTE_ADMISSION_WAIT:-900}"
-# All remote fixture compiler children retain the host scheduler admission,
-# then inherit this narrower kernel budget. No host configuration is changed.
-DHT_REMOTE_BUDGET_ARGS=(
-    /usr/bin/systemd-run --user --scope --quiet --slice=development.slice
-    --property=CPUQuota=800% --property=MemoryMax=16G
-    --property=MemorySwapMax=0 --
-)
+# Remote fixture compiler children inherit their host scheduler admission.
+# The shared scheduler owns CPU and memory bounds; do not add a nested scope.
 DHT_SCP="${DHT_SCP:-scp}"
 # Remote-lease supervision, in whole seconds. A remote fixture must survive
 # the one ssh call that spawned it (its parent is gone by design) yet never
@@ -482,14 +477,12 @@ dht_remote_scheduled_pid() {
     # process is the native node, whose compiler children inherit its scope.
     dht_node_exec "$rpc" bash -c '
         set -eu
-        dd=$1; limit=$2; budget_count=$3; shift 3
-        budget=("${@:1:budget_count}"); shift "$budget_count"
+        dd=$1; limit=$2; shift 2
         mkdir -p "$dd-worker/.zvcs"
         cd "$dd-worker"
         pidfile="$dd/scheduled-node.pid"
         rm -f "$pidfile"
-        setsid "$HOME/.local/bin/devbuild" --wait --project z23 --exclusive \
-            "${budget[@]}" \
+        setsid "$HOME/.local/bin/devbuild" --wait --project z23 \
             setsid bash -c '\''
                 pidfile=$1; shift
                 printf "%s\n" "$$" > "$pidfile"
@@ -510,8 +503,7 @@ dht_remote_scheduled_pid() {
         fi
         printf "remote scheduler admission timed out\n" >&2
         exit 75
-    ' remote-scheduled-node "$dd" "$admission_wait" "${#DHT_REMOTE_BUDGET_ARGS[@]}" \
-        "${DHT_REMOTE_BUDGET_ARGS[@]}" "$@"
+    ' remote-scheduled-node "$dd" "$admission_wait" "$@"
 }
 
 dht_record_started_arguments() {
