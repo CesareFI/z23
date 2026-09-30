@@ -1414,6 +1414,31 @@ static int pta_case_refused_policy(struct pta *p)
     return failures;
 }
 
+static int pta_case_obligation_bound(struct pta *p)
+{
+    int failures = 0;
+    TEST_CASE("proof_admission: oversized declared count refuses before "
+              "reading caller arrays") {
+        struct vcs_proof_admission_context ctx = ptf_context(&p->f);
+        struct vcs_proof_admission_result result = {
+            .status = VCS_PROOF_ADMIT_FRESH,
+            .reason = "untouched",
+        };
+        struct vcs_proof_admission_report report = {
+            .build_total = UINT32_MAX,
+        };
+        ASSERT(!vcs_proof_admission_run(
+            &ctx, &p->change, &p->obs[PTA_BUNIT],
+            (size_t)VCS_PROOF_ADMISSION_MAX_OBLIGATIONS + 1u,
+            &result, &report));
+        ASSERT_EQ(result.status, VCS_PROOF_ADMIT_FRESH);
+        ASSERT_STR_EQ(result.reason, "untouched");
+        ASSERT_EQ(report.build_total, 0u);
+        ASSERT_STR_EQ(report.fallback_reason, VCS_PROOF_FALLBACK_POLICY);
+    } TEST_END
+    return failures;
+}
+
 static int pta_cases(void)
 {
     int failures = 0;
@@ -1436,6 +1461,7 @@ static int pta_cases(void)
         failures += pta_case_conflict(p);
         failures += pta_case_eligible_failure(p);
         failures += pta_case_refused_policy(p);
+        failures += pta_case_obligation_bound(p);
     }
     ptf_free(&p->f);
     free(p);
