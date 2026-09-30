@@ -33,6 +33,9 @@ static blue_review_app review_app;
 static cx_blake2b_t zip_context;
 static bagl_element_t large_element;
 static char large_text[40];
+#ifdef ZCL_BLUE_SHIELDED_REVIEW
+static volatile uint32_t usb_generation;
+#endif
 
 #ifndef ZCL_BLUE_SHIELDED_REVIEW
 static bool transaction_digest(const uint8_t *wire, size_t length,
@@ -436,6 +439,23 @@ static void display_review(void) {
     }
 }
 
+static void erase_review_state(void) {
+    blue_review_abort(&review_app.transaction);
+    blue_review_app_reset(&review_app);
+    volatile uint8_t *hash = (volatile uint8_t *)&zip_context;
+    for (size_t i = 0; i < sizeof zip_context; ++i) hash[i] = 0;
+    volatile uint8_t *apdu = G_io_apdu_buffer;
+    for (size_t i = 0; i < sizeof G_io_apdu_buffer; ++i) apdu[i] = 0;
+}
+
+static void reset_after_usb(void) {
+#ifdef ZCL_BLUE_SHIELDED_REVIEW
+    ++usb_generation;
+#endif
+    erase_review_state();
+    display_review();
+}
+
 static const bagl_element_t *toggle_text(const bagl_element_t *element) {
     (void)element;
     blue_review_app_toggle_text(&review_app);
@@ -478,6 +498,13 @@ void io_seproxyhal_display(const bagl_element_t *element) {
 unsigned char io_event(unsigned char channel) {
     (void)channel;
     switch (G_io_seproxyhal_spi_buffer[0]) {
+    case SEPROXYHAL_TAG_USB_EVENT:
+        if (G_io_seproxyhal_spi_buffer[3] ==
+                SEPROXYHAL_TAG_USB_EVENT_RESET ||
+            G_io_seproxyhal_spi_buffer[3] ==
+                SEPROXYHAL_TAG_USB_EVENT_SUSPENDED)
+            reset_after_usb();
+        break;
     case SEPROXYHAL_TAG_FINGER_EVENT:
         UX_FINGER_EVENT(G_io_seproxyhal_spi_buffer);
         break;
@@ -497,15 +524,40 @@ unsigned char io_event(unsigned char channel) {
     return 1;
 }
 
+#ifdef ZCL_BLUE_SHIELDED_REVIEW
+static bool review_needs_redraw(uint8_t instruction, unsigned short status) {
+    if (status != 0x9000) return true;
+    if (instruction == 0x20 || instruction == 0x22 ||
+        instruction == 0x23 || instruction == 0x24) return true;
+    return instruction == 0x21 && review_app.transaction.active &&
+           review_app.transaction.replay.wire.received ==
+               review_app.transaction.replay.expected;
+}
+#endif
+
 static void answer_command(void) {
     volatile unsigned int rx = 0;
     volatile unsigned int tx = 0;
     for (;;) {
+#ifdef ZCL_BLUE_SHIELDED_REVIEW
+        volatile uint32_t command_generation = usb_generation;
+#endif
         volatile unsigned short sw = 0x6f00;
+        volatile bool have_command = false;
         BEGIN_TRY {
             TRY {
-                rx = io_exchange(CHANNEL_APDU, tx);
+                rx = 0;
+                if (tx)
+                    (void)io_exchange(CHANNEL_APDU | IO_RETURN_AFTER_TX,
+                                      tx);
                 tx = 0;
+                rx = io_exchange(CHANNEL_APDU, 0);
+                have_command = true;
+                if (rx > sizeof G_io_apdu_buffer)
+                    THROW(INVALID_PARAMETER);
+#ifdef ZCL_BLUE_SHIELDED_REVIEW
+                uint8_t instruction = rx >= 2 ? G_io_apdu_buffer[1] : 0;
+#endif
                 size_t reply_length = 0;
                 zcl_zip243_hasher hasher = {
                     .context = &zip_context, .init = zip243_start,
@@ -520,25 +572,52 @@ static void answer_command(void) {
                     rx, G_io_apdu_buffer, sizeof G_io_apdu_buffer - 2,
                     &reply_length, transaction_digest, &hasher);
 #endif
+                if (reply_length > sizeof G_io_apdu_buffer - 2)
+                    THROW(INVALID_PARAMETER);
                 tx = reply_length;
+#ifdef ZCL_BLUE_SHIELDED_REVIEW
+                if (review_needs_redraw(instruction, sw))
+                    display_review();
+#endif
             }
             CATCH_OTHER(error) {
+                erase_review_state();
+#ifdef ZCL_BLUE_SHIELDED_REVIEW
+                display_review();
+#endif
+                if (!have_command) {
+                    tx = 0;
+                    CLOSE_TRY;
+                    THROW(error);
+                }
                 sw = (error & 0xf000) == 0x6000 ||
                      (error & 0xf000) == 0x9000
                          ? error : (0x6800 | (error & 0x07ff));
-                blue_review_abort(&review_app.transaction);
-                blue_review_app_reset(&review_app);
+                tx = 0;
             }
             FINALLY {}
         }
         END_TRY;
+#ifdef ZCL_BLUE_SHIELDED_REVIEW
+        if (command_generation != usb_generation) {
+            erase_review_state();
+            tx = 0;
+            display_review();
+            continue;
+        }
+#endif
+        volatile uint8_t *tail = G_io_apdu_buffer;
+        for (size_t i = tx; i < sizeof G_io_apdu_buffer; ++i)
+            tail[i] = 0;
         G_io_apdu_buffer[tx++] = (unsigned char)(sw >> 8);
         G_io_apdu_buffer[tx++] = (unsigned char)sw;
     }
 }
 
 __attribute__((section(".boot"))) int main(void) {
+#ifndef ZCL_BLUE_REVIEW_HOST_TEST
     __asm volatile("cpsie i");
+#endif
     os_boot();
     UX_INIT();
     BEGIN_TRY {

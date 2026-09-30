@@ -14,7 +14,7 @@
 #include <assert.h>
 
 static int run_install(const char *program, const char *image,
-    bool verify, char error[512]) {
+    bool verify, bool offline, char error[512]) {
     int pipefd[2];
     assert(pipe(pipefd) == 0);
     pid_t child = fork();
@@ -24,7 +24,10 @@ static int run_install(const char *program, const char *image,
         close(pipefd[0]);
         assert(dup2(pipefd[1], STDERR_FILENO) >= 0);
         close(pipefd[1]);
-        if (verify)
+        if (offline)
+            execl(program, program, "--image-check", image,
+                  (char *)NULL);
+        else if (verify)
             execl(program, program, "/dev/hidraw999", "--ca-verify",
                   "/missing/key.pem", image, (char *)NULL);
         else execl(program, program, "/dev/hidraw999", image,
@@ -64,23 +67,29 @@ int main(int argc, char **argv) {
     assert(snprintf(oversize, sizeof oversize,
                     "%s/oversize.bin", directory) > 0);
     write_unknown_image(image);
-    assert(run_install(argv[1], image, false, error) == 1);
+    assert(run_install(argv[1], image, false, false, error) == 1);
     assert(strstr(error, "SHA-256 does not match a reviewed build") &&
            !strstr(error, "selected interface"));
-    assert(run_install(argv[1], image, true, error) == 1);
+    assert(run_install(argv[1], image, true, false, error) == 1);
     assert(strstr(error, "SHA-256 does not match a reviewed build") &&
            !strstr(error, "Cannot load owner-only"));
+    assert(run_install(argv[1], image, false, true, error) == 1);
+    assert(strstr(error, "SHA-256 does not match a reviewed build") &&
+           !strstr(error, "selected interface"));
     assert(symlink(image, link) == 0);
-    assert(run_install(argv[1], link, false, error) == 1);
+    assert(run_install(argv[1], link, false, false, error) == 1);
+    assert(strstr(error, "Expected a regular ZCL app binary") &&
+           !strstr(error, "SHA-256 does not match"));
+    assert(run_install(argv[1], link, false, true, error) == 1);
     assert(strstr(error, "Expected a regular ZCL app binary") &&
            !strstr(error, "SHA-256 does not match"));
     assert(mkfifo(fifo, 0600) == 0);
-    assert(run_install(argv[1], fifo, false, error) == 1);
+    assert(run_install(argv[1], fifo, false, false, error) == 1);
     assert(strstr(error, "Expected a regular ZCL app binary") &&
            !strstr(error, "selected interface"));
     int fd = open(oversize, O_WRONLY | O_CREAT | O_EXCL, 0600);
     assert(fd >= 0 && ftruncate(fd, 65536 + 64) == 0 && close(fd) == 0);
-    assert(run_install(argv[1], oversize, false, error) == 1);
+    assert(run_install(argv[1], oversize, false, false, error) == 1);
     assert(strstr(error, "Expected a regular ZCL app binary") &&
            !strstr(error, "selected interface"));
     assert(unlink(image) == 0 && unlink(link) == 0 &&

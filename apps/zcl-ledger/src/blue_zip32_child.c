@@ -3,6 +3,7 @@
 
 #include "blue_fs_ct.h"
 #include "blue_mod256.h"
+#include "blue_storage.h"
 #include "blue_zip32_fvk.h"
 #include "crypto/blake2b.h"
 #include "sapling/jubjub.h"
@@ -88,12 +89,21 @@ static bool derive_keys(struct zip32_xsk *child,
     return valid;
 }
 
+static bool storage_overlaps(const struct zip32_xsk *child,
+    const struct zip32_xsk *parent, const blue_zip32_workspace *scratch) {
+    return blue_storage_overlaps(child, sizeof *child,
+            parent, parent ? sizeof *parent : 0) ||
+        blue_storage_overlaps(child, sizeof *child,
+            scratch, scratch ? sizeof *scratch : 0) ||
+        blue_storage_overlaps(parent, parent ? sizeof *parent : 0,
+            scratch, scratch ? sizeof *scratch : 0);
+}
+
 bool blue_zip32_derive_child(struct zip32_xsk *child,
     const struct zip32_xsk *parent, uint32_t index,
     blue_zip32_workspace *scratch) {
     if (!child) return false;
-    if (child == parent || (void *)scratch == (void *)child ||
-        (void *)scratch == (void *)parent) return false;
+    if (storage_overlaps(child, parent, scratch)) return false;
     bool valid = parent && scratch && parent->depth < 255 &&
         blue_zip32_fvk_from_expsk(&scratch->fvk, &parent->expsk);
     uint32_t parent_tag = 0;

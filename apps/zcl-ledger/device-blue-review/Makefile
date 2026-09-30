@@ -12,7 +12,7 @@ $(error The SDK must target Ledger Blue firmware 2.1.x)
 endif
 
 APPNAME = "ZCL Review"
-APPVERSION = 0.4.5
+APPVERSION = 0.4.7
 APP_FLAGS = 0x00
 APP_SOURCE_PATH += src
 SDK_SOURCE_PATH += lib_stusb lib_stusb_impl

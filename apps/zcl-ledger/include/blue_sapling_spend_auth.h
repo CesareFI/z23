@@ -17,8 +17,10 @@ typedef union {
 
 /* Sign a reviewed ZIP243 digest with rsk = ask + ar only when the device
  * recomputes the rk embedded in that transaction. Inputs and outputs must
- * not overlap. The caller must supply fresh device entropy and a device-
- * verified digest and rk. No APDU or approval route calls this candidate. */
+ * not overlap. An overlap fails before writing either output; callers must
+ * ignore both outputs on failure. The caller must supply fresh device
+ * entropy and a device-verified digest and rk. No APDU or approval route
+ * calls this candidate. */
 bool blue_sapling_spend_auth_sign(uint8_t signature[64],
     blue_sapling_spend_workspace *workspace, const uint8_t ask[32],
     const uint8_t ar[32], const uint8_t expected_rk[32],

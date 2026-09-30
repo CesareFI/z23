@@ -27,7 +27,8 @@ typedef struct {
 /* These calls do not use keys or authorize signing. During the third pass,
  * a feed completing an output must end on that output's final byte. Further
  * bytes require a separate physical-touch acknowledgement. The pending
- * output is provisional until finish checks the full wire replay. */
+ * output is provisional until finish checks the full wire replay. Feed bytes
+ * must be disjoint from review state; overlap aborts before parsing. */
 bool blue_payment_review_begin(blue_payment_review *review,
     uint32_t expected_length, uint32_t selected_index, uint32_t branch_id,
     const zcl_zip243_hasher *blake, const zcl_tx_replay_sha256 *sha);
@@ -37,6 +38,9 @@ bool blue_payment_review_next_pass(blue_payment_review *review);
 const blue_payment_output *blue_payment_review_pending(
     const blue_payment_review *review);
 bool blue_payment_review_acknowledge(blue_payment_review *review);
+/* Fact and digest outputs must be disjoint from each other, the review,
+ * and a nonempty script input. The script must be disjoint from the review.
+ * Overlap aborts the review before any result can be accepted. */
 bool blue_payment_review_finish(blue_payment_review *review,
     const uint8_t *script_code, size_t script_code_length,
     uint64_t amount_zat, zcl_tx_stream_facts *facts, uint8_t digest[32]);

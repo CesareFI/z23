@@ -10,14 +10,15 @@
 #error "The Blue shielded stack check requires ISO C23"
 #endif
 
-enum { STACK_MARGIN = 512, FRAME_COUNT = 24 };
+enum { STACK_MARGIN = 512, FRAME_COUNT = 29 };
 
 enum frame {
     ANSWER, EVENT, SHOW, APP_COMMAND, APP_NEXT, HANDLE, REPLAY_FEED,
     STREAM_FEED, OBSERVE, SHA_UPDATE, SHA_COMPRESS, REPLAY_FINISH,
     COMPLETE_PASS, SHA_FINAL, SCREEN_SUMMARY, SCREEN_FORMAT,
     SCREEN_PROGRESS, SCREEN_DIGEST, REPLAY_NEXT, STREAM_FINISH,
-    REPLAY_BEGIN, STREAM_BEGIN, SHA_INIT, COMPACT_DONE
+    REPLAY_BEGIN, STREAM_BEGIN, SHA_INIT, COMPACT_DONE,
+    APP_RESET, ABORT, DISPLAY, ERASE, RESET
 };
 
 static const char *const names[FRAME_COUNT] = {
@@ -31,7 +32,9 @@ static const char *const names[FRAME_COUNT] = {
     "blue_review_screen_zip243_digest", "zcl_tx_shielded_replay_next",
     "zcl_tx_shielded_stream_finish",
     "zcl_tx_shielded_replay_begin", "zcl_tx_shielded_stream_begin",
-    "zsha256_init", "compact_done"
+    "zsha256_init", "compact_done", "blue_shielded_review_app_reset",
+    "blue_shielded_review_abort", "display_review",
+    "erase_review_state", "reset_after_usb"
 };
 
 typedef struct {
@@ -127,6 +130,9 @@ static bool check_paths(const frames *usage, unsigned reserve) {
     static const enum frame digest_page[] = {
         EVENT, SHOW, APP_NEXT, SCREEN_DIGEST
     };
+    static const enum frame usb_reset[] = {
+        EVENT, RESET, ERASE, APP_RESET, ABORT, DISPLAY
+    };
     static const struct {
         const char *name;
         const enum frame *path;
@@ -142,7 +148,9 @@ static bool check_paths(const frames *usage, unsigned reserve) {
         {"progress", progress, sizeof progress / sizeof *progress},
         {"summary", summary, sizeof summary / sizeof *summary},
         {"digest page", digest_page,
-            sizeof digest_page / sizeof *digest_page}
+            sizeof digest_page / sizeof *digest_page},
+        {"USB reset", usb_reset,
+            sizeof usb_reset / sizeof *usb_reset}
     };
     unsigned budget = reserve >= STACK_MARGIN ?
         reserve - STACK_MARGIN : 0;
@@ -166,7 +174,8 @@ int main(int argc, char **argv) {
     for (int i = 2; i < argc; ++i)
         if (!read_usage(argv[i], &usage)) return 1;
     for (unsigned i = 0; i < FRAME_COUNT; ++i)
-        if (!usage.present[i] || usage.bytes[i] > reserve) {
+        if ((i < ERASE && !usage.present[i]) ||
+            (usage.present[i] && usage.bytes[i] > reserve)) {
             fprintf(stderr, "Missing or oversized stack frame: %s\n",
                 names[i]);
             return 1;

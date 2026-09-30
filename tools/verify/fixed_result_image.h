@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton; SPDX-License-Identifier: Apache-2.0.
  * purpose: Builds the three fixed-result verifier images (tool, source,
  *          check) as root layouts with fixed modes and sorted entries,
- *          discovers the exact GCC 14 closure of the pinned test-fast
+ *          discovers the host GCC driver's closure of the pinned test-fast
  *          result.c compile, and proves without root that the tool image
  *          is complete. It signs and authorizes nothing: every root it
  *          prints is an input for review and for root's pins file. */
@@ -50,7 +50,6 @@
 #define ZCL_FRI_MAX_FILE (512ULL * 1024ULL * 1024ULL)
 #define ZCL_FRI_MAX_BYTES (4ULL * 1024ULL * 1024ULL * 1024ULL)
 #define ZCL_FRI_PROFILE_ARGS 183u
-#define ZCL_FRI_GCC_LIBEXEC "/usr/libexec/gcc/x86_64-linux-gnu/14"
 #define ZCL_FRI_TARGET \
     "build/test-obj/epochs/" \
     "0000000000000000000000000000000000000000000000000000000000000000" \

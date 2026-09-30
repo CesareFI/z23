@@ -3,9 +3,16 @@
 
 #include <string.h>
 
+static bool overlaps(const void *left, size_t left_length,
+    const void *right, size_t right_length) {
+    uintptr_t a = (uintptr_t)left, b = (uintptr_t)right;
+    return a <= b ? b - a < left_length : a - b < right_length;
+}
+
 void blue_payment_review_abort(blue_payment_review *review) {
     if (!review) return;
-    memset(review, 0, sizeof *review);
+    volatile uint8_t *bytes = (volatile uint8_t *)review;
+    for (size_t i = 0; i < sizeof *review; ++i) bytes[i] = 0;
     review->replay.wire.failed = true;
 }
 
@@ -40,7 +47,8 @@ static bool capture_output(void *context, uint32_t index,
 bool blue_payment_review_feed(blue_payment_review *review,
     const uint8_t *bytes, size_t length) {
     if (!review) return false;
-    if (review->pending || review->verified ||
+    if ((bytes && length && overlaps(review, sizeof *review, bytes, length)) ||
+        review->pending || review->verified ||
         !zcl_tx_replay_zip243_feed_review(&review->replay, bytes, length,
                                            capture_output, review) ||
         (review->pending && review->replay.wire.received !=
@@ -81,11 +89,25 @@ bool blue_payment_review_acknowledge(blue_payment_review *review) {
     return true;
 }
 
+static bool finish_disjoint(const blue_payment_review *review,
+    const uint8_t *script_code, size_t script_length,
+    const zcl_tx_stream_facts *facts, const uint8_t digest[32]) {
+    if (overlaps(review, sizeof *review, facts, sizeof *facts) ||
+        overlaps(review, sizeof *review, digest, 32) ||
+        overlaps(facts, sizeof *facts, digest, 32)) return false;
+    return !script_length || !script_code ||
+        (!overlaps(review, sizeof *review, script_code, script_length) &&
+         !overlaps(facts, sizeof *facts, script_code, script_length) &&
+         !overlaps(digest, 32, script_code, script_length));
+}
+
 bool blue_payment_review_finish(blue_payment_review *review,
     const uint8_t *script_code, size_t script_code_length,
     uint64_t amount_zat, zcl_tx_stream_facts *facts, uint8_t digest[32]) {
     if (!review) return false;
-    if (!facts || !digest) {
+    if (!facts || !digest ||
+        !finish_disjoint(review, script_code, script_code_length,
+            facts, digest)) {
         blue_payment_review_abort(review);
         return false;
     }

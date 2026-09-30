@@ -9,6 +9,7 @@
 
 static int pin_valid;
 static unsigned derive_count;
+static bool revoke_during_derive;
 
 int os_global_pin_is_validated(void) {
     return pin_valid;
@@ -24,6 +25,7 @@ void os_perso_derive_node_bip32(unsigned curve, const unsigned int *path,
         raw[i] = (uint8_t)i;
         chain[i] = (uint8_t)(i + 32);
     }
+    if (revoke_during_derive) pin_valid = 0;
 }
 
 static void test_device_bridge(void) {
@@ -49,6 +51,19 @@ static void test_device_bridge(void) {
     assert(memcmp(&result, &expected, sizeof result) == 0);
     const uint8_t zero_workspace[sizeof workspace] = {0};
     assert(memcmp(&workspace, zero_workspace, sizeof workspace) == 0);
+    memset(&workspace, 0xa5, sizeof workspace);
+    assert(!blue_zip32_master_from_bip32(NULL, &workspace, NULL, NULL));
+    assert(memcmp(&workspace, zero_workspace, sizeof workspace) == 0);
+    assert(derive_count == 1);
+    pin_valid = 1;
+    revoke_during_derive = true;
+    memset(&result, 0xa5, sizeof result);
+    memset(&workspace, 0xa5, sizeof workspace);
+    assert(!blue_zip32_device_master(&result, &workspace));
+    assert(derive_count == 2 && !pin_valid);
+    assert(memcmp(&result, zero_result, sizeof result) == 0);
+    assert(memcmp(&workspace, zero_workspace, sizeof workspace) == 0);
+    revoke_during_derive = false;
 }
 
 static void test_reference_vector(void) {

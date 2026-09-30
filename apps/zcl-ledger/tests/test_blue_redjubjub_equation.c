@@ -139,7 +139,7 @@ static void check_message_signature(const struct jub_point *generator) {
     blue_fs_mul_ct(&product, &challenge, &secret);
     blue_fs_add_ct(&response, &nonce, &product);
     fs_to_bytes(sbar, &response);
-    uint8_t candidate[32];
+    uint8_t candidate[32] = {0};
     assert(blue_redjubjub_response(candidate, nonce_bytes,
         challenge_bytes, secret_bytes));
     assert(memcmp(candidate, sbar, sizeof candidate) == 0);
@@ -177,6 +177,38 @@ static void check_response_rejection(void) {
     assert(memcmp(output, one, sizeof output) == 0);
 }
 
+static void check_signer_aliases(const uint8_t secret[32],
+    const uint8_t entropy[80], const uint8_t message[32]) {
+    uint8_t storage[128], before[128];
+    memset(storage, 0xa5, sizeof storage);
+    memcpy(storage, secret, 32);
+    memcpy(before, storage, sizeof storage);
+    assert(!blue_redjubjub_sign_isolated(storage, storage,
+        entropy, message));
+    assert(memcmp(storage, before, sizeof storage) == 0);
+
+    memset(storage, 0xa5, sizeof storage);
+    memcpy(storage + 48, secret, 32);
+    memcpy(before, storage, sizeof storage);
+    assert(!blue_redjubjub_sign_isolated(storage, storage + 48,
+        entropy, message));
+    assert(memcmp(storage, before, sizeof storage) == 0);
+
+    memset(storage, 0xa5, sizeof storage);
+    memcpy(storage + 16, entropy, 80);
+    memcpy(before, storage, sizeof storage);
+    assert(!blue_redjubjub_sign_isolated(storage, secret,
+        storage + 16, message));
+    assert(memcmp(storage, before, sizeof storage) == 0);
+
+    memset(storage, 0xa5, sizeof storage);
+    memcpy(storage + 48, message, 32);
+    memcpy(before, storage, sizeof storage);
+    assert(!blue_redjubjub_sign_isolated(storage, secret,
+        entropy, storage + 48));
+    assert(memcmp(storage, before, sizeof storage) == 0);
+}
+
 static void check_entropy_signature_isolated(
     const struct jub_point *generator) {
     struct fs secret = {.d = {23}};
@@ -206,11 +238,7 @@ static void check_entropy_signature_isolated(
     };
     assert(memcmp(signature, expected_r, 32) == 0);
     assert(memcmp(signature + 32, expected_s, 32) == 0);
-    uint8_t overlapping[64] = {0};
-    memcpy(overlapping, secret_bytes, sizeof secret_bytes);
-    assert(blue_redjubjub_sign_isolated(overlapping, overlapping,
-        entropy, message));
-    assert(memcmp(overlapping, signature, sizeof overlapping) == 0);
+    check_signer_aliases(secret_bytes, entropy, message);
     assert(verify_public_signature(generator, signature, vkbar,
         message, signature + 32));
     message[0] ^= 1u;
@@ -237,7 +265,13 @@ static void check_entropy_signature_isolated(
         assert(signature[i] == 0);
     memset(signature, 0xa5, sizeof signature);
     entropy[0] = 1;
-    secret_bytes[0] = 0;
+    memset(secret_bytes, 0xff, sizeof secret_bytes);
+    assert(!blue_redjubjub_sign_isolated(signature, secret_bytes,
+        entropy, message));
+    for (unsigned i = 0; i < sizeof signature; ++i)
+        assert(signature[i] == 0);
+    memset(signature, 0xa5, sizeof signature);
+    memset(secret_bytes, 0, sizeof secret_bytes);
     assert(!blue_redjubjub_sign_isolated(signature, secret_bytes,
         entropy, message));
     for (unsigned i = 0; i < sizeof signature; ++i)
@@ -514,6 +548,12 @@ static void check_rejected_spend_randomizers(const uint8_t ask[32],
         ask, order, rk, entropy, digest));
     const uint8_t zero_signature[sizeof signature] = {0};
     assert(memcmp(signature, zero_signature, sizeof signature) == 0);
+    memset(signature, 0xa5, sizeof signature);
+    assert(!blue_sapling_spend_auth_sign(signature, &workspace,
+        order, ask, rk, entropy, digest));
+    assert(memcmp(signature, zero_signature, sizeof signature) == 0);
+    const uint8_t zero_workspace[sizeof workspace] = {0};
+    assert(memcmp(&workspace, zero_workspace, sizeof workspace) == 0);
     struct fs secret, negative;
     assert(fs_from_bytes(&secret, ask));
     fs_neg(&negative, &secret);
@@ -609,6 +649,54 @@ static void check_consensus_spend_signature(
     blue_mod256_wipe(&auth, sizeof auth);
 }
 
+static void check_spend_auth_storage_alias(void) {
+    uint8_t entropy[80], shared[64], original[64];
+    for (unsigned i = 0; i < sizeof entropy; ++i)
+        entropy[i] = (uint8_t)i;
+    memset(shared, 0xa5, sizeof shared);
+    memcpy(shared, blue_consensus_rk, sizeof blue_consensus_rk);
+    shared[0] ^= 1u;
+    memcpy(original, shared, sizeof original);
+    blue_sapling_spend_workspace workspace;
+    assert(!blue_sapling_spend_auth_sign(shared, &workspace,
+        blue_consensus_ask, blue_consensus_ar, shared,
+        entropy, blue_consensus_digest));
+    assert(memcmp(shared, original, sizeof shared) == 0);
+
+    union {
+        blue_sapling_spend_workspace workspace;
+        uint8_t bytes[sizeof(blue_sapling_spend_workspace)];
+    } aliased = {0};
+    memcpy(aliased.bytes, blue_consensus_ask, sizeof blue_consensus_ask);
+    uint8_t ask_copy[32], signature[64];
+    memcpy(ask_copy, aliased.bytes, sizeof ask_copy);
+    assert(!blue_sapling_spend_auth_sign(signature, &aliased.workspace,
+        aliased.bytes, blue_consensus_ar, blue_consensus_rk,
+        entropy, blue_consensus_digest));
+    assert(memcmp(aliased.bytes, ask_copy, sizeof ask_copy) == 0);
+
+    uint8_t key_reply[64] = {0};
+    memcpy(key_reply, blue_consensus_ask, sizeof ask_copy);
+    assert(!blue_sapling_spend_auth_sign(key_reply, &workspace,
+        key_reply, blue_consensus_ar, blue_consensus_rk,
+        entropy, blue_consensus_digest));
+    assert(memcmp(key_reply, ask_copy, sizeof ask_copy) == 0);
+}
+
+static void check_spend_auth_digest_alias(void) {
+    uint8_t entropy[80], reply[64], original[64];
+    for (unsigned i = 0; i < sizeof entropy; ++i)
+        entropy[i] = (uint8_t)i;
+    memset(reply, 0xa5, sizeof reply);
+    memcpy(reply, blue_consensus_digest, sizeof blue_consensus_digest);
+    memcpy(original, reply, sizeof original);
+    blue_sapling_spend_workspace workspace;
+    assert(!blue_sapling_spend_auth_sign(reply, &workspace,
+        blue_consensus_ask, blue_consensus_ar, blue_consensus_rk,
+        entropy, reply));
+    assert(memcmp(reply, original, sizeof reply) == 0);
+}
+
 static void check_mapped_spend_signature(const struct jub_point *generator) {
     uint8_t wire[BLUE_SYNTHETIC_SAPLING_BYTES], digest[32], entropy[80];
     uint8_t ar[32] = {7}, rk[32], captured_rk[32], signature[64];
@@ -666,11 +754,89 @@ static void check_mapped_spend_signature(const struct jub_point *generator) {
     blue_mod256_wipe(&child_space, sizeof child_space);
 }
 
+typedef union {
+    struct zip32_xsk xsk;
+    uint32_t aligned;
+    uint8_t bytes[512];
+} zip32_alias_area;
+
+static void check_master_storage_overlap(void) {
+    zip32_alias_area area;
+    uint8_t original[sizeof area];
+    memset(&area, 0xa5, sizeof area);
+    memcpy(original, &area, sizeof area);
+    assert(!blue_zip32_master_expsk(
+        (struct zip32_expsk *)(void *)area.bytes, area.bytes + 4));
+    assert(memcmp(&area, original, sizeof area) == 0);
+    assert(!blue_zip32_master_xsk(&area.xsk, area.bytes + 4));
+    assert(memcmp(&area, original, sizeof area) == 0);
+}
+
+static void check_bridge_storage_overlap(void) {
+    zip32_alias_area area;
+    uint8_t original[sizeof area];
+    bool allowed = true;
+    memset(&area, 0xa5, sizeof area);
+    memcpy(original, &area, sizeof area);
+    blue_zip32_seed_workspace *workspace = (void *)
+        (area.bytes + sizeof area.xsk - 16);
+    assert(!blue_zip32_master_from_bip32(&area.xsk, workspace,
+        fixture_bip32_node, &allowed));
+    assert(memcmp(&area, original, sizeof area) == 0);
+}
+
+static void check_viewing_key_storage_overlap(void) {
+    zip32_alias_area area;
+    uint8_t original[sizeof area];
+    memset(&area, 0xa5, sizeof area);
+    memcpy(original, &area, sizeof area);
+    assert(!blue_zip32_fvk_from_expsk(
+        (struct zip32_fvk *)(void *)area.bytes,
+        (const struct zip32_expsk *)(const void *)(area.bytes + 4)));
+    assert(memcmp(&area, original, sizeof area) == 0);
+    assert(!blue_zip32_fvk_tag(
+        (uint32_t *)(void *)(area.bytes + 4),
+        (const struct zip32_fvk *)(const void *)area.bytes));
+    assert(memcmp(&area, original, sizeof area) == 0);
+}
+
+static void check_child_storage_overlap(void) {
+    zip32_alias_area area;
+    struct zip32_xsk separate;
+    blue_zip32_workspace scratch;
+    uint8_t original[sizeof area];
+    uint8_t separate_original[sizeof separate];
+    uint8_t scratch_original[sizeof scratch];
+    memset(&area, 0xa5, sizeof area);
+    memset(&separate, 0x5a, sizeof separate);
+    memset(&scratch, 0x3c, sizeof scratch);
+    memcpy(original, &area, sizeof area);
+    memcpy(separate_original, &separate, sizeof separate);
+    memcpy(scratch_original, &scratch, sizeof scratch);
+    assert(!blue_zip32_derive_child(
+        (struct zip32_xsk *)(void *)(area.bytes + 4),
+        &area.xsk, 1, &scratch));
+    assert(memcmp(&area, original, sizeof area) == 0);
+    assert(memcmp(&scratch, scratch_original, sizeof scratch) == 0);
+    assert(!blue_zip32_derive_child(&separate, &area.xsk, 1,
+        (blue_zip32_workspace *)(void *)(area.bytes + 4)));
+    assert(memcmp(&area, original, sizeof area) == 0);
+    assert(memcmp(&separate, separate_original, sizeof separate) == 0);
+    assert(!blue_zip32_derive_child(&area.xsk, &separate, 1,
+        (blue_zip32_workspace *)(void *)(area.bytes + 4)));
+    assert(memcmp(&area, original, sizeof area) == 0);
+    assert(memcmp(&separate, separate_original, sizeof separate) == 0);
+}
+
 int main(int argc, char **argv) {
     assert(argc == 2);
     check_zip32_fvk();
     check_zip32_child();
     check_zip32_seed_bridge();
+    check_master_storage_overlap();
+    check_bridge_storage_overlap();
+    check_viewing_key_storage_overlap();
+    check_child_storage_overlap();
     struct jub_point generator;
     assert(jub_from_bytes(&generator, blue_spend_generator_fixture));
     uint8_t encoded[32];
@@ -699,5 +865,7 @@ int main(int argc, char **argv) {
     check_child_spend_signature(&generator);
     check_mapped_spend_signature(&generator);
     check_consensus_spend_signature(&generator, argv[1]);
+    check_spend_auth_storage_alias();
+    check_spend_auth_digest_alias();
     return 0;
 }

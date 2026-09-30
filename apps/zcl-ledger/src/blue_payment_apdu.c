@@ -14,6 +14,55 @@ static void put_u64(uint8_t bytes[8], uint64_t value) {
         bytes[i] = (uint8_t)(value >> (i * 8));
 }
 
+static void wipe(void *memory, size_t length) {
+    volatile uint8_t *bytes = memory;
+    for (size_t i = 0; i < length; ++i) bytes[i] = 0;
+}
+
+static bool overlap(const void *left, size_t left_size,
+    const void *right, size_t right_size) {
+    if (!left || !right || !left_size || !right_size) return false;
+    uintptr_t a = (uintptr_t)left, b = (uintptr_t)right;
+    return a <= b ? b - a < left_size : a - b < right_size;
+}
+
+static bool command_storage_valid(const blue_payment_apdu *state,
+    const uint8_t *apdu, size_t apdu_length,
+    const uint8_t *reply, size_t capacity, const size_t *reply_length,
+    const blue_payment_owned_hashes *owned) {
+    return !overlap(state, sizeof *state, owned, sizeof *owned) &&
+        !overlap(state, sizeof *state, apdu, apdu_length) &&
+        !overlap(state, sizeof *state, reply, capacity) &&
+        !overlap(state, sizeof *state, reply_length,
+            sizeof *reply_length) &&
+        !overlap(owned, sizeof *owned, apdu, apdu_length) &&
+        !overlap(owned, sizeof *owned, reply, capacity) &&
+        !overlap(owned, sizeof *owned, reply_length,
+            sizeof *reply_length) &&
+        !overlap(apdu, apdu_length, reply_length,
+            sizeof *reply_length) &&
+        !overlap(reply, capacity, reply_length, sizeof *reply_length);
+}
+
+static void reject_command_storage(blue_payment_apdu *state,
+    const uint8_t *apdu, size_t apdu_length,
+    uint8_t *reply, size_t capacity, size_t *reply_length,
+    const blue_payment_owned_hashes *owned) {
+    if (reply && !overlap(state, sizeof *state, reply, capacity) &&
+        !overlap(owned, sizeof *owned, reply, capacity))
+        wipe(reply, capacity);
+    if (reply_length &&
+        !overlap(state, sizeof *state, reply_length,
+            sizeof *reply_length) &&
+        !overlap(owned, sizeof *owned, reply_length,
+            sizeof *reply_length) &&
+        !overlap(apdu, apdu_length, reply_length,
+            sizeof *reply_length) &&
+        !overlap(reply, capacity, reply_length, sizeof *reply_length))
+        *reply_length = 0;
+    blue_payment_apdu_abort(state);
+}
+
 static bool capture_input(void *context, uint32_t index,
     const uint8_t outpoint[36], uint32_t sequence) {
     blue_payment_apdu *state = context;
@@ -29,8 +78,8 @@ static bool capture_input(void *context, uint32_t index,
 
 void blue_payment_apdu_abort(blue_payment_apdu *state) {
     if (!state) return;
-    memset(state, 0, sizeof *state);
-    blue_payment_review_abort(&state->review);
+    wipe(state, sizeof *state);
+    state->review.replay.wire.failed = true;
 }
 
 static bool bound_paths_valid(const blue_payment_apdu *state) {
@@ -44,15 +93,19 @@ static bool bound_paths_valid(const blue_payment_apdu *state) {
     return paths == state->input_paths;
 }
 
+static bool totals_consistent(const blue_payment_apdu *state) {
+    return state->own_output_zat <= state->output_zat &&
+        state->input_zat >= state->output_zat &&
+        state->fee_zat == state->input_zat - state->output_zat;
+}
+
 static bool ready_for_final_touch(const blue_payment_apdu *state) {
     if (!state || !state->review.verified || !state->fee_ready ||
         state->active || state->previous_active || state->approved ||
         state->review_confirmed ||
         state->next_sign_index || !state->input_count ||
         state->bound_inputs != state->input_count ||
-        state->own_output_zat > state->output_zat ||
-        state->input_zat < state->output_zat ||
-        state->fee_zat != state->input_zat - state->output_zat ||
+        !totals_consistent(state) ||
         !bound_paths_valid(state)) return false;
     return true;
 }
@@ -74,6 +127,7 @@ static bool ready_to_take_digest(const blue_payment_apdu *state,
     return state && state->approved && !state->review_confirmed &&
         state->review.verified && state->fee_ready &&
         !state->active && !state->previous_active &&
+        totals_consistent(state) &&
         state->bound_inputs == state->input_count &&
         index == state->next_sign_index && index < state->input_count;
 }
@@ -87,7 +141,7 @@ bool blue_payment_apdu_take_digest(blue_payment_apdu *state,
         record[32] != BLUE_PAYMENT_INPUT_INTERNAL) return false;
     memcpy(digest, record, 32);
     *path = record[32];
-    memset(record, 0, 36);
+    wipe(record, 36);
     ++state->next_sign_index;
     if (state->next_sign_index == state->input_count)
         state->approved = false;
@@ -158,7 +212,7 @@ static uint16_t next(blue_payment_apdu *state,
 static uint16_t finish(blue_payment_apdu *state, uint8_t length,
     uint8_t *reply, size_t capacity, size_t *reply_length) {
     if (!state->active) return 0x6985;
-    if (length || capacity < 1) return 0x6700;
+    if (length || capacity < 33) return 0x6700;
     zcl_tx_stream_facts facts;
     uint8_t unused_digest[32];
     if (!blue_payment_review_finish(&state->review, NULL, 0, 0,
@@ -168,7 +222,8 @@ static uint16_t finish(blue_payment_apdu *state, uint8_t length,
     state->active = false;
     state->output_zat = facts.output_zat;
     reply[0] = (uint8_t)facts.outputs;
-    *reply_length = 1;
+    memcpy(reply + 1, state->review.replay.commitment, 32);
+    *reply_length = 33;
     return 0x9000;
 }
 
@@ -279,17 +334,31 @@ static uint16_t dispatch(blue_payment_apdu *state, const uint8_t *apdu,
     }
 }
 
+static uint16_t finish_reply(blue_payment_apdu *state, uint8_t *reply,
+    size_t capacity, size_t *reply_length, uint16_t status) {
+    if (status != 0x9000 || *reply_length > capacity) {
+        blue_payment_apdu_abort(state);
+        wipe(reply, capacity);
+        *reply_length = 0;
+        return status == 0x9000 ? 0x6f00 : status;
+    }
+    wipe(reply + *reply_length, capacity - *reply_length);
+    return status;
+}
+
 uint16_t blue_payment_apdu_handle(blue_payment_apdu *state,
     const uint8_t *apdu, size_t apdu_length,
     uint8_t *reply, size_t reply_capacity, size_t *reply_length,
     const zcl_zip243_hasher *blake, const zcl_tx_replay_sha256 *sha,
     blue_payment_hash_fn hash, const blue_payment_owned_hashes *owned) {
-    if (!state || !reply_length) return 0x6f00;
-    *reply_length = 0;
-    if (!apdu || !reply || !hash) {
-        blue_payment_apdu_abort(state);
+    if (!state || !apdu || !reply || !reply_length || !hash ||
+        !command_storage_valid(state, apdu, apdu_length,
+            reply, reply_capacity, reply_length, owned)) {
+        reject_command_storage(state, apdu, apdu_length,
+            reply, reply_capacity, reply_length, owned);
         return 0x6f00;
     }
+    *reply_length = 0;
     uint16_t result = 0x9000;
     if (apdu_length < 5 || apdu_length != (size_t)apdu[4] + 5)
         result = 0x6700;
@@ -297,9 +366,5 @@ uint16_t blue_payment_apdu_handle(blue_payment_apdu *state,
     else if (apdu[2] || apdu[3]) result = 0x6b00;
     else result = dispatch(state, apdu, reply, reply_capacity,
                            reply_length, blake, sha, hash, owned);
-    if (result != 0x9000) {
-        blue_payment_apdu_abort(state);
-        *reply_length = 0;
-    }
-    return result;
+    return finish_reply(state, reply, reply_capacity, reply_length, result);
 }

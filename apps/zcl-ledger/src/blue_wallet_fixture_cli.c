@@ -23,6 +23,16 @@
 
 typedef struct { int fd; uint32_t outputs; } fixture_device;
 
+typedef struct {
+    size_t length;
+    uint8_t hash[32];
+} fixture_result;
+
+static void erase_bytes(void *memory, size_t length) {
+    volatile uint8_t *bytes = memory;
+    for (size_t i = 0; i < length; ++i) bytes[i] = 0;
+}
+
 static bool hash_sha256(const uint8_t *bytes, size_t length,
     uint8_t digest[32]) {
     if ((!bytes && length) || !digest) return false;
@@ -142,36 +152,47 @@ static bool prepare(fixture_job *job, const uint8_t public_key[33]) {
     return true;
 }
 
-static bool review_and_sign(fixture_device *device, fixture_job *job) {
+static bool reviewed_wire_unchanged(const fixture_job *job) {
+    uint8_t hash[32];
+    zsha256(job->fixture.unsigned_wire,
+        job->fixture.unsigned_length, hash);
+    return memcmp(hash, job->plan.wire_hash, sizeof hash) == 0;
+}
+
+static bool review_and_sign(fixture_device *device, fixture_job *job,
+    fixture_result *result) {
     zcl_tx_previous_transaction previous = {
         .wire = job->fixture.previous,
         .length = job->fixture.previous_length};
     device->outputs = job->plan.count;
-    if (!blue_payment_live_run_bound(job->fixture.unsigned_wire,
+    bool valid = blue_payment_live_run_bound(job->fixture.unsigned_wire,
         job->fixture.unsigned_length, &job->plan, &previous, 1,
         job->facts.fee_zat, (const uint8_t (*)[32])&job->digest,
-        exchange, continue_output, device)) return false;
+        exchange, continue_output, device) &&
+        reviewed_wire_unchanged(job);
     const uint8_t paths[1] = {BLUE_PAYMENT_INPUT_EXTERNAL};
-    blue_payment_verified_signature verified[1];
-    if (!blue_payment_host_sign(1, paths,
+    blue_payment_verified_signature verified[1] = {0};
+    if (valid) valid = blue_payment_host_sign(1, paths,
         (const uint8_t (*)[20])&job->hash160,
         (const uint8_t (*)[32])&job->digest, exchange, approve_sign,
         device, zcl_host_hash160, zcl_host_verify_signature,
-        NULL, verified))
-        return false;
-    uint8_t signed_wire[512];
+        NULL, verified);
+    uint8_t signed_wire[512] = {0};
     size_t signed_length = 0;
-    if (!blue_payment_host_assemble(job->fixture.unsigned_wire,
-        job->fixture.unsigned_length, verified,
-        (const uint8_t (*)[32])&job->digest, 1,
-        signed_wire, sizeof signed_wire, &signed_length)) return false;
-    uint8_t digest[32];
-    zsha256(signed_wire, signed_length, digest);
-    printf("Verified one Blue signature; assembled %zu synthetic bytes; SHA-256 ",
-        signed_length);
-    for (size_t i = 0; i < sizeof digest; ++i) printf("%02x", digest[i]);
-    puts(". No transaction was broadcast or saved. Tap EXIT on the Blue.");
-    return true;
+    if (valid) valid = blue_payment_host_assemble_authenticated(
+        job->fixture.unsigned_wire,
+        job->fixture.unsigned_length, job->plan.wire_hash, verified,
+        (const uint8_t (*)[32])&job->digest, paths,
+        (const uint8_t (*)[20])&job->hash160, 1,
+        zcl_host_hash160, zcl_host_verify_signature, NULL,
+        signed_wire, sizeof signed_wire, &signed_length);
+    if (valid) {
+        zsha256(signed_wire, signed_length, result->hash);
+        result->length = signed_length;
+    }
+    erase_bytes(signed_wire, sizeof signed_wire);
+    erase_bytes(verified, sizeof verified);
+    return valid;
 }
 
 static int hex_digit(char ch) {
@@ -209,6 +230,22 @@ static bool report_fixture(const fixture_job *job,
     return true;
 }
 
+static bool finish_live_fixture(fixture_device *device, bool signed_result) {
+    bool cleared = blue_payment_live_abort(exchange, device);
+    if (!cleared)
+        fputs("Blue did not confirm review erasure; restart the app.\n",
+            stderr);
+    return signed_result && cleared;
+}
+
+static void report_signed_fixture(const fixture_result *result) {
+    printf("Verified one Blue signature; assembled %zu synthetic bytes; SHA-256 ",
+        result->length);
+    for (size_t i = 0; i < sizeof result->hash; ++i)
+        printf("%02x", result->hash[i]);
+    puts(". No transaction was broadcast or saved. Tap EXIT on the Blue.");
+}
+
 static int run_fixture(bool offline, const char *argument) {
     fixture_device device = {.fd = -1};
     uint8_t public_key[33];
@@ -218,15 +255,22 @@ static int run_fixture(bool offline, const char *argument) {
         device.fd = open_blue(argument);
         if (device.fd < 0 || !read_signing_identity(&device) ||
             !read_public_key(&device, public_key)) {
-            fputs("Open ZCL Wallet 0.3.4 on an accessible Ledger Blue.\n", stderr);
+            fputs("Cannot identify an open ZCL Wallet on this Ledger Blue.\n",
+                stderr);
             if (device.fd >= 0) close(device.fd);
             return 1;
         }
     }
     fixture_job job = {0};
+    fixture_result result = {0};
     bool valid = prepare(&job, public_key) && report_fixture(&job, public_key);
-    if (valid && !offline) valid = review_and_sign(&device, &job);
+    if (valid && !offline)
+        valid = finish_live_fixture(&device,
+            review_and_sign(&device, &job, &result));
     if (device.fd >= 0 && close(device.fd) != 0) valid = false;
+    if (valid && !offline) report_signed_fixture(&result);
+    erase_bytes(&result, sizeof result);
+    erase_bytes(&job, sizeof job);
     return valid ? 0 : 1;
 }
 

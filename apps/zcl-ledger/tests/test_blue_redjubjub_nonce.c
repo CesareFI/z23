@@ -5,6 +5,26 @@
 #include <assert.h>
 #include <string.h>
 
+static void check_aliases(const uint8_t vkbar[32],
+    const uint8_t message[32]) {
+    uint8_t storage[96], original[96], entropy[80] = {1};
+    for (unsigned i = 0; i < sizeof storage; ++i)
+        storage[i] = (uint8_t)(i + 1);
+    memcpy(original, storage, sizeof original);
+    assert(!blue_redjubjub_nonce_from_entropy(storage, storage,
+        vkbar, message));
+    assert(memcmp(storage, original, sizeof storage) == 0);
+    assert(!blue_redjubjub_nonce_from_entropy(storage + 16, storage,
+        vkbar, message));
+    assert(memcmp(storage, original, sizeof storage) == 0);
+    assert(!blue_redjubjub_nonce_from_entropy(storage + 16, entropy,
+        storage + 8, message));
+    assert(memcmp(storage, original, sizeof storage) == 0);
+    assert(!blue_redjubjub_nonce_from_entropy(storage + 16, entropy,
+        vkbar, storage + 8));
+    assert(memcmp(storage, original, sizeof storage) == 0);
+}
+
 int main(void) {
     static const uint8_t vkbar[32] = {
         0x86,0x52,0xaf,0x3e,0xd8,0xbf,0x43,0xbb,
@@ -38,8 +58,11 @@ int main(void) {
     assert(!blue_redjubjub_nonce_from_entropy(actual, seed,
         vkbar, message));
     for (unsigned i = 0; i < sizeof actual; ++i)
-        assert(actual[i] == 0xa5);
+        assert(actual[i] == 0);
     assert(!blue_redjubjub_nonce_from_entropy(actual, NULL,
         vkbar, message));
+    for (unsigned i = 0; i < sizeof actual; ++i)
+        assert(actual[i] == 0);
+    check_aliases(vkbar, message);
     return 0;
 }
