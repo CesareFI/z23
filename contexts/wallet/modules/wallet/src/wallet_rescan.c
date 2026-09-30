@@ -128,6 +128,18 @@ static void wallet_rescan_classify(struct wallet_rescan_report *r)
     }
 }
 
+/* Rows already in the map carry depths measured from the wallet's last
+ * baseline. A rescan that starts above it moves the baseline to
+ * stop_height without revisiting those rows, so raise them by the same
+ * distance — the same adjustment a later connected tip applies through
+ * wallet_advance_confirmations. Rows the scan re-finds get fresh depths;
+ * a rescan at or under the old baseline changes nothing. */
+static void wallet_rescan_rebase_depths(struct wallet *w, int stop_height)
+{
+    if (stop_height > w->best_block_height)
+        (void)wallet_advance_confirmations(w, stop_height);
+}
+
 int wallet_rescan_report(struct wallet *w, const struct active_chain *chain,
                          int start_height, int stop_height,
                          const char *datadir,
@@ -167,8 +179,9 @@ int wallet_rescan_report(struct wallet *w, const struct active_chain *chain,
     int total_found = 0;
     int last_log = start_height;
 
-    /* Set best_block_height to stop_height before scanning so that
-     * wallet_sync_transaction computes correct confirmation depth. */
+    /* Re-base stored depths, then measure every depth the scan computes
+     * from stop_height so wallet_sync_transaction is correct. */
+    wallet_rescan_rebase_depths(w, stop_height);
     w->best_block_height = stop_height;
 
     for (int h = start_height; h <= stop_height; h++) {

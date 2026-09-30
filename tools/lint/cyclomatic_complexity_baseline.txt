@@ -3304,6 +3304,7 @@ tests/harness/src/test_wallet_phrase_never_logged.c:t_creation_refuses_and_leave
 tests/harness/src/test_wallet_projection.c:t_projection_catch_up_replay:20
 tests/harness/src/test_wallet_recovery_safety.c:t_two_concurrent_restores_leave_one_wallet:33
 tests/harness/src/test_wallet_rescan_coverage.c:test_wallet_rescan_coverage:18
+tests/harness/src/test_wallet_rescan_coverage.c:wrc_g_kill_restart_baseline:29
 tests/harness/src/test_wallet_restore.c:test_wallet_restore:36
 tests/harness/src/test_watcher_lease.c:wl_parent_child_roundtrip:30
 tests/harness/src/test_yardsale_app.c:t_known_sellers:29

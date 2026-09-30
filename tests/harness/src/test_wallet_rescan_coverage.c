@@ -33,6 +33,14 @@
  *      scanned height, persists a retry, and clears it once a later
  *      catch-up reads the range; one unread body in the range keeps the
  *      retry even when the rescan's 99% floor calls the read coverage_ok.
+ *   G. Kill-restart depth re-basing: rows stored before a hard kill keep
+ *      depths measured from the flushed baseline, and the boot catch-up
+ *      that scans only the gap must raise them by the distance the
+ *      baseline moves. The journey run that found this booted the killed
+ *      publisher's wallet with every stored depth 21 short: getbalance
+ *      under-reported spendable by the whole maturity boundary band
+ *      (21 x 12.5) while listunspent was correct, and only a manual
+ *      rescanblockchain from 0 restored the number.
  */
 
 #include "test/test_core.h"
@@ -524,6 +532,217 @@ static int wrc_boot_catch_up_fail_closed(struct wrc_f *f)
     return failures;
 }
 
+/* G fixture: one block at WRC_G_COIN_AT pays the wallet; every other height
+ * shares a body whose one coinbase pays an empty script, so the catch-up
+ * gap is fully readable and holds nothing of the wallet's — the shape of
+ * the journey's empty coinbase gap. The coin matures exactly at the tip. */
+#define WRC_G_BLOCKS 161     /* heights 0..160 */
+#define WRC_G_COIN_AT 60     /* last flushed baseline, and the coin's height */
+#define WRC_G_VALUE 1000000
+#define WRC_G_TIP (WRC_G_BLOCKS - 1)
+
+static struct wallet *wrc_g_reboot(struct wallet *owner,
+                                   const struct key_id *kid,
+                                   struct wallet_sqlite *ws)
+{
+    struct wallet *w = zcl_calloc(1, sizeof(*w), "test-wallet");
+    wallet_init(w);
+    struct privkey key;
+    if (wallet_dump_key(owner, kid, &key))
+        (void)wallet_import_key(w, &key);
+    (void)wallet_sqlite_read_txs(ws, w);
+    (void)wallet_sqlite_read_scan_state(ws, w);
+    return w;
+}
+
+/* Write one coinbase-shaped tx block to disk; `pay` selects whose output. */
+static bool wrc_g_write_body(struct script *pay, struct disk_block_pos *pos,
+                             const char *dir)
+{
+    struct block blk;
+    block_init(&blk);
+    blk.header.nVersion = 4;
+    blk.header.nTime = 1700000000u;
+    blk.header.nBits = 0x2000ffffu;
+    blk.num_vtx = 1;
+    blk.vtx = calloc(1, sizeof(*blk.vtx)); /* raw-alloc-ok:test-fixture */
+    bool wrote = false;
+    if (blk.vtx) {
+        struct transaction *t0 = &blk.vtx[0];
+        transaction_init(t0);
+        t0->version = 1;
+        t0->vin = calloc(1, sizeof(*t0->vin)); /* raw-alloc-ok:test-fixture */
+        t0->vout = calloc(1, sizeof(*t0->vout)); /* raw-alloc-ok:test-fixture */
+        if (t0->vin && t0->vout) {
+            t0->num_vin = 1;
+            t0->num_vout = 1;
+            outpoint_set_null(&t0->vin[0].prevout);
+            script_init(&t0->vin[0].script_sig);
+            t0->vin[0].sequence = 0xffffffffu;
+            t0->vout[0].value = WRC_G_VALUE;
+            t0->vout[0].script_pub_key = *pay;
+            unsigned char msg_start[4] = { 0x24, 0xe9, 0x27, 0x64 };
+            wrote = write_block_to_disk(&blk, pos, dir, msg_start);
+        }
+    }
+    block_free(&blk);
+    return wrote;
+}
+
+static int wrc_g_kill_restart_baseline(struct wallet *owner,
+                                       const struct key_id *kid,
+                                       const char *basedir)
+{
+    int failures = 0;
+    char gdir[300];
+    snprintf(gdir, sizeof(gdir), "%s_g", basedir);
+#if defined(_WIN32)
+    char blocksdir[360];
+    snprintf(blocksdir, sizeof(blocksdir), "%s/blocks", gdir);
+    if (platform_directory_create(gdir, 0700) != 0 ||
+        platform_directory_create(blocksdir, 0700) != 0)
+        return wrc_expect("G: fixture directory", false);
+#else
+    {
+        char cmd[512];
+        snprintf(cmd, sizeof(cmd), "rm -rf %s && mkdir -p %s/blocks",
+                 gdir, gdir);
+        if (system(cmd) != 0)
+            return wrc_expect("G: fixture directory", false);
+    }
+#endif
+
+    struct node_db ndb;
+    char dbpath[380];
+    snprintf(dbpath, sizeof(dbpath), "%s/node.db", gdir);
+    failures += wrc_expect("G: node_db_open", node_db_open(&ndb, dbpath));
+
+    struct script pay_to_us;
+    script_init(&pay_to_us);
+    script_for_p2pkh(&pay_to_us, kid);
+    struct script pay_to_nobody;
+    script_init(&pay_to_nobody);  /* empty script: documented unclaimable */
+
+    struct disk_block_pos pos_us, pos_empty;
+    disk_block_pos_init(&pos_us);
+    disk_block_pos_init(&pos_empty);
+    failures += wrc_expect("G: coin body at the baseline height",
+                           wrc_g_write_body(&pay_to_us, &pos_us, gdir));
+    failures += wrc_expect("G: empty-coinbase bodies across the gap",
+                           wrc_g_write_body(&pay_to_nobody, &pos_empty, gdir));
+
+    struct block_index *idx =
+        calloc(WRC_G_BLOCKS, sizeof(*idx)); /* raw-alloc-ok:test-fixture */
+    struct block_index **chain =
+        calloc(WRC_G_BLOCKS, sizeof(*chain)); /* raw-alloc-ok:test-fixture */
+    for (int i = 0; i < WRC_G_BLOCKS; i++) {
+        block_index_init(&idx[i]);
+        idx[i].nHeight = i;
+        idx[i].nFile = pos_empty.nFile;
+        idx[i].nDataPos = pos_empty.nPos;
+        idx[i].nStatus = BLOCK_HAVE_DATA;
+        idx[i].phashBlock = NULL;
+        chain[i] = &idx[i];
+    }
+    idx[WRC_G_COIN_AT].nFile = pos_us.nFile;
+    idx[WRC_G_COIN_AT].nDataPos = pos_us.nPos;
+
+    struct main_state ms;
+    main_state_init(&ms);
+    free(ms.chain_active.chain);
+    ms.chain_active.chain = chain;
+    ms.chain_active.height = WRC_G_TIP;
+    ms.chain_active.capacity = WRC_G_BLOCKS;
+
+    struct wallet_sqlite ws;
+    failures += wrc_expect("G: wallet_sqlite_open",
+                           wallet_sqlite_open(&ws, ndb.db));
+
+    /* The wallet as it ran before the kill: scanned through the coin's
+     * height, depth measured from that baseline. */
+    struct wallet *w = wrc_g_reboot(owner, kid, &ws);
+    struct wallet_rescan_report rep;
+    memset(&rep, 0, sizeof(rep));
+    int found = wallet_rescan_report(w, &ms.chain_active, WRC_G_COIN_AT,
+                                     WRC_G_COIN_AT, gdir, &rep);
+    const struct wallet_tx *wtx = wrc_only_tx(w);
+    failures += wrc_expect("G: the pre-kill scan finds the coin at depth 1",
+                           found == 1 && wtx && wtx->confirms == 1 &&
+                           w->best_block_height == WRC_G_COIN_AT &&
+                           wallet_get_balance(w) == 0 &&
+                           wallet_get_immature_balance(w) == WRC_G_VALUE);
+    struct zcl_result fr = wallet_sqlite_flush_transactions_r(&ws, w);
+    int saved = -1;
+    failures += wrc_expect("G: the kill-time flush holds height 60, no marker",
+                           fr.ok &&
+                           wallet_sqlite_read_scan_height(&ws, &saved) &&
+                           saved == WRC_G_COIN_AT);
+    wallet_free(w);
+    free(w);
+
+    /* Next boot: the durable state restores the baseline, the chain grew
+     * 100 blocks past it, and every gap body is readable but ours-free. */
+    w = wrc_g_reboot(owner, kid, &ws);
+    wtx = wrc_only_tx(w);
+    failures += wrc_expect("G: reboot restores the stale baseline 60",
+                           w->best_block_height == WRC_G_COIN_AT &&
+                           w->num_wallet_tx == 1 &&
+                           wtx && wtx->confirms == 1 &&
+                           wallet_get_balance(w) == 0);
+    memset(&rep, 0, sizeof(rep));
+    found = wallet_rescan_report(w, &ms.chain_active, WRC_G_COIN_AT + 1,
+                                 WRC_G_TIP, gdir, &rep);
+    wtx = wrc_only_tx(w);
+    failures += wrc_expect("G: the catch-up reads the whole empty gap",
+                           found == 0 && rep.start_height == WRC_G_COIN_AT + 1 &&
+                           rep.stop_height == WRC_G_TIP &&
+                           rep.blocks_scanned == WRC_G_TIP - WRC_G_COIN_AT &&
+                           rep.coverage_ok && rep.blocker[0] == '\0');
+    failures += wrc_expect("G: the baseline moved to the tip",
+                           w->best_block_height == WRC_G_TIP &&
+                           !w->scan_retry.pending);
+    failures += wrc_expect("G: the stored depth is measured from the tip",
+                           wtx && wtx->confirms == WRC_G_TIP - WRC_G_COIN_AT + 1);
+    failures += wrc_expect("G: the coin matures with the real depth",
+                           wtx && wallet_tx_get_blocks_to_maturity(wtx) == 0);
+    failures += wrc_expect("G: getbalance spends it — no phantom immaturity",
+                           w->num_wallet_tx == 1 &&
+                           wallet_get_balance(w) == WRC_G_VALUE);
+
+    /* The corrected depth survives its own flush and reboot. */
+    fr = wallet_sqlite_flush_transactions_r(&ws, w);
+    wallet_free(w);
+    free(w);
+    w = wrc_g_reboot(owner, kid, &ws);
+    wtx = wrc_only_tx(w);
+    failures += wrc_expect("G: after flush+reboot the depth and balance hold",
+                           fr.ok && wtx &&
+                           wtx->confirms == WRC_G_TIP - WRC_G_COIN_AT + 1 &&
+                           w->best_block_height == WRC_G_TIP &&
+                           wallet_get_balance(w) == WRC_G_VALUE);
+    wallet_free(w);
+    free(w);
+
+    wallet_sqlite_close(&ws);
+    ms.chain_active.chain = NULL;
+    ms.chain_active.capacity = 0;
+    ms.chain_active.height = 0;
+    free(chain);
+    free(idx);
+    node_db_close(&ndb);
+#if defined(_WIN32)
+    test_cleanup_tmpdir(blocksdir);
+    test_cleanup_tmpdir(gdir);
+#else
+    {
+        char cmd[512];
+        snprintf(cmd, sizeof(cmd), "rm -rf %s", gdir);
+        (void)system(cmd);
+    }
+#endif
+    return failures;
+}
+
 int test_wallet_rescan_coverage(void);
 int test_wallet_rescan_coverage(void)
 {
@@ -795,6 +1014,9 @@ int test_wallet_rescan_coverage(void)
         };
         failures += wrc_boot_catch_up_fail_closed(&f);
     }
+
+    /* ── G. Kill-restart depth re-basing (self-contained fixture) ─────── */
+    failures += wrc_g_kill_restart_baseline(w1, &kid, datadir);
 
     /* ── teardown ────────────────────────────────────────────────────── */
     rpc_wallet_set_state(NULL, NULL, NULL, NULL, NULL, NULL);
