@@ -4776,6 +4776,20 @@ static int test_zd_improve_command(void)
                   VCS_ZCODE_ACTION_INPUT_BINDING);
         action_input.payload[0] ^= 1u;
         vcs_zcode_action_input_free(&action_input);
+        ASSERT(zd_resize_object(
+            workspace, action_input_root,
+            (off_t)task.max_context_bytes + 1));
+        ASSERT_EQ(vcs_zcode_action_input_verify_cas(
+                      workspace, action_input_root, &task, &candidate,
+                      VCS_ZCODE_WORK_BUILD),
+                  VCS_ZCODE_ACTION_INPUT_CAS);
+        ASSERT(vcs_object_put_addressed_repair(
+            workspace, action_input_root,
+            action_input_wire, action_input_wire_len, NULL));
+        ASSERT_EQ(vcs_zcode_action_input_verify_cas(
+                      workspace, action_input_root, &task, &candidate,
+                      VCS_ZCODE_WORK_BUILD),
+                  VCS_ZCODE_ACTION_INPUT_OK);
         ASSERT_EQ(vcs_zcode_patch_verify_cas(workspace, &task, &candidate),
                   VCS_ZCODE_PATCH_OK);
         uint8_t *exact_patch_wire = NULL;
@@ -5499,6 +5513,21 @@ static int test_zd_improve_command(void)
                       package_input_corrupt, package_input_wire_len,
                       &refused_package_input),
                   VCS_ZCODE_ACTION_INPUT_SHAPE);
+        ASSERT(zd_resize_object(
+            workspace, package_input_root,
+            (off_t)VCS_ZCODE_PACKAGE_ACTION_INPUT_WIRE_BYTES + 1));
+        struct vcs_zcode_package_action_input_v1 bounded_package_input;
+        ASSERT_EQ(vcs_zcode_package_action_input_load_cas(
+                      workspace, package_input_root, &task, &candidate,
+                      &bounded_package_input),
+                  VCS_ZCODE_ACTION_INPUT_CAS);
+        ASSERT(vcs_object_put_addressed_repair(
+            workspace, package_input_root,
+            package_input_wire, package_input_wire_len, NULL));
+        ASSERT_EQ(vcs_zcode_package_action_input_load_cas(
+                      workspace, package_input_root, &task, &candidate,
+                      &bounded_package_input),
+                  VCS_ZCODE_ACTION_INPUT_OK);
         free(package_input_wire);
         ASSERT_EQ(vcs_zcode_package_action_input_validate_for_candidate(
                       workspace, &task, &candidate, &package_input,

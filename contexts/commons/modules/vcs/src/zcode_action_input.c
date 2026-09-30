@@ -437,6 +437,15 @@ vcs_zcode_action_input_validate_for_candidate(
                  : VCS_ZCODE_ACTION_INPUT_BINDING;
 }
 
+static size_t action_input_maximum_wire(
+    const struct vcs_zcode_task_v1 *task)
+{
+    uint64_t maximum = task->max_context_bytes;
+    if (maximum > VCS_ZCODE_TASK_MAX_CONTEXT_BYTES)
+        maximum = VCS_ZCODE_TASK_MAX_CONTEXT_BYTES;
+    return (size_t)maximum;
+}
+
 static enum vcs_zcode_action_input_result action_input_load_cas(
     const char *repo_root, const uint8_t input_root[32],
     const struct vcs_zcode_task_v1 *task,
@@ -448,7 +457,9 @@ static enum vcs_zcode_action_input_result action_input_load_cas(
         return VCS_ZCODE_ACTION_INPUT_NULL;
     if (payload) { *payload = NULL; *payload_len = 0; }
     uint8_t *wire = NULL; size_t wire_len = 0;
-    if (vcs_object_load_raw(repo_root, input_root, &wire, &wire_len) != 0)
+    if (vcs_object_load_raw_bounded(
+            repo_root, input_root, action_input_maximum_wire(task),
+            &wire, &wire_len) != 0)
         return VCS_ZCODE_ACTION_INPUT_CAS;
     struct vcs_zcode_action_input_v1 input;
     enum vcs_zcode_action_input_result result = vcs_zcode_action_input_parse(
@@ -517,8 +528,9 @@ static enum vcs_zcode_action_input_result package_action_lock_target(
     const char *repo_root, const struct vcs_zcode_task_v1 *task)
 {
     uint8_t *wire = NULL; size_t wire_len = 0;
-    if (vcs_object_load_raw(repo_root, task->dependency_lock_root,
-                            &wire, &wire_len) != 0)
+    if (vcs_object_load_raw_bounded(
+            repo_root, task->dependency_lock_root,
+            VCS_PACKAGE_LOCK_MAX_WIRE_BYTES, &wire, &wire_len) != 0)
         return VCS_ZCODE_ACTION_INPUT_CAS;
     struct vcs_package_lock lock;
     enum vcs_package_deps_error parsed =
@@ -663,7 +675,10 @@ enum vcs_zcode_action_input_result vcs_zcode_package_action_input_load_cas(
     if (!repo_root || !input_root || !task || !candidate || !out)
         return VCS_ZCODE_ACTION_INPUT_NULL;
     uint8_t *wire = NULL; size_t wire_len = 0;
-    if (vcs_object_load_raw(repo_root, input_root, &wire, &wire_len) != 0)
+    if (vcs_object_load_raw_bounded(
+            repo_root, input_root,
+            VCS_ZCODE_PACKAGE_ACTION_INPUT_WIRE_BYTES,
+            &wire, &wire_len) != 0)
         return VCS_ZCODE_ACTION_INPUT_CAS;
     enum vcs_zcode_action_input_result result =
         vcs_zcode_package_action_input_parse(wire, wire_len, out);
