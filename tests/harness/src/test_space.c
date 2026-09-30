@@ -27,6 +27,15 @@ static void space_root(uint8_t out[32], uint8_t value)
   memset(out, value, 32);
 }
 
+static bool space_resize_object(const char *workspace, const char *root,
+                                off_t size)
+{
+  char path[PATH_MAX];
+  int n = snprintf(path, sizeof(path), "%s/.zvcs/objects/%.2s/%s",
+                   workspace, root, root + 2);
+  return n > 0 && (size_t)n < sizeof(path) && truncate(path, size) == 0;
+}
+
 static bool space_delegation(struct vcs_zcode_dht_delegation *out,
                              uint8_t online_seed[32],
                              uint8_t genesis[32])
@@ -330,6 +339,17 @@ static int test_space_plan_commit_carrier(void)
                store, admitted_workspace, manifest_plan.object_root,
                blob_root, &published_kind, &is_new).ok);
     ASSERT(!is_new);
+    ASSERT(space_resize_object(
+        workspace, manifest_plan.object_root,
+        (off_t)VCS_SPACE_MANIFEST_WIRE_MAX + 1));
+    ASSERT(!metaverse_space_show(
+        workspace, manifest_plan.object_root, &shown).ok);
+    ASSERT(!metaverse_space_publish(
+        store, workspace, manifest_plan.object_root, blob_root,
+        &published_kind).ok);
+    ASSERT(!metaverse_space_transport_root(
+        workspace, manifest_plan.object_root, blob_root,
+        &published_kind).ok);
     vcs_package_store_close(store);
 
     char cleanup[1800];

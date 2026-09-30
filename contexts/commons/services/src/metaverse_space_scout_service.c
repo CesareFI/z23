@@ -67,7 +67,9 @@ static struct zcl_result verify_mission_bytes(
 {
   uint8_t *wire = NULL, derived[32];
   size_t wire_len = 0;
-  if (vcs_object_load_raw(workspace, root, &wire, &wire_len) != 0)
+  if (vcs_object_load_raw_bounded(
+          workspace, root, VCS_SPACE_SCOUT_MISSION_WIRE_BYTES,
+          &wire, &wire_len) != 0)
     return ZCL_ERR(-1, "space-scout-mission-read-failed");
   struct vcs_space_scout_mission_v1 decoded;
   enum vcs_space_scout_result parsed = vcs_space_scout_mission_decode(
@@ -89,7 +91,9 @@ static struct zcl_result verify_map_bytes(
 {
   uint8_t *wire = NULL, derived[32];
   size_t wire_len = 0;
-  if (vcs_object_load_raw(workspace, root, &wire, &wire_len) != 0)
+  if (vcs_object_load_raw_bounded(
+          workspace, root, VCS_SPACE_SCOUT_MAP_WIRE_BYTES,
+          &wire, &wire_len) != 0)
     return ZCL_ERR(-1, "space-scout-evidence-read-failed");
   struct vcs_space_scout_map_v1 *decoded = zcl_malloc(
       sizeof(*decoded), "space_scout_verify_map");
@@ -117,7 +121,9 @@ static struct zcl_result verify_attestation_bytes(
 {
   uint8_t *wire = NULL, derived[32];
   size_t wire_len = 0;
-  if (vcs_object_load_raw(workspace, root, &wire, &wire_len) != 0)
+  if (vcs_object_load_raw_bounded(
+          workspace, root, VCS_SPACE_SCOUT_ATTESTATION_WIRE_BYTES,
+          &wire, &wire_len) != 0)
     return ZCL_ERR(-1, "space-scout-attestation-read-failed");
   struct vcs_space_scout_attestation_v1 decoded;
   enum vcs_space_scout_result parsed = vcs_space_scout_attestation_decode(
@@ -278,7 +284,9 @@ struct zcl_result metaverse_space_scout_attestation_show(
   size_t wire_len = 0;
   if (!workspace || !parse_root(attestation_root, root) || !out)
     return ZCL_ERR(-1, "space-scout-attestation-show-input-invalid");
-  if (vcs_object_load_raw(workspace, root, &wire, &wire_len) != 0)
+  if (vcs_object_load_raw_bounded(
+          workspace, root, VCS_SPACE_SCOUT_ATTESTATION_WIRE_BYTES,
+          &wire, &wire_len) != 0)
     return ZCL_ERR(-1, "space-scout-attestation-show-not-found");
   enum vcs_space_scout_result parsed = vcs_space_scout_attestation_decode(
       out, wire, wire_len);
@@ -300,7 +308,9 @@ struct zcl_result metaverse_space_scout_show(
   size_t wire_len = 0;
   if (!workspace || !parse_root(evidence_root, root) || !out)
     return ZCL_ERR(-1, "space-scout-show-input-invalid");
-  if (vcs_object_load_raw(workspace, root, &wire, &wire_len) != 0)
+  if (vcs_object_load_raw_bounded(
+          workspace, root, VCS_SPACE_SCOUT_MAP_WIRE_BYTES,
+          &wire, &wire_len) != 0)
     return ZCL_ERR(-1, "space-scout-show-not-found");
   enum vcs_space_scout_result parsed = vcs_space_scout_map_decode(
       out, wire, wire_len);
@@ -322,7 +332,9 @@ struct zcl_result metaverse_space_scout_mission_show(
   size_t wire_len = 0;
   if (!workspace || !parse_root(mission_root, root) || !out)
     return ZCL_ERR(-1, "space-scout-mission-show-input-invalid");
-  if (vcs_object_load_raw(workspace, root, &wire, &wire_len) != 0)
+  if (vcs_object_load_raw_bounded(
+          workspace, root, VCS_SPACE_SCOUT_MISSION_WIRE_BYTES,
+          &wire, &wire_len) != 0)
     return ZCL_ERR(-1, "space-scout-mission-show-not-found");
   enum vcs_space_scout_result parsed = vcs_space_scout_mission_decode(
       out, wire, wire_len);

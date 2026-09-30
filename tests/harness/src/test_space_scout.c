@@ -12,6 +12,8 @@
 #include "services/metaverse_space_scout_service.h"
 #include "vcs/space_scout.h"
 
+#include <limits.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -19,6 +21,15 @@
 static void scout_root(uint8_t out[32], uint8_t value)
 {
   memset(out, value, 32);
+}
+
+static bool scout_resize_object(const char *workspace, const char *root,
+                                off_t size)
+{
+  char path[PATH_MAX];
+  int n = snprintf(path, sizeof(path), "%s/.zvcs/objects/%.2s/%s",
+                   workspace, root, root + 2);
+  return n > 0 && (size_t)n < sizeof(path) && truncate(path, size) == 0;
 }
 
 static bool scout_delegation(struct vcs_zcode_dht_delegation *out,
@@ -431,6 +442,22 @@ static int test_scout_attestation_and_service(void)
     ASSERT(rerun.already_recorded);
     ASSERT(strcmp(ran.evidence_root, rerun.evidence_root) == 0);
     ASSERT(strcmp(ran.attestation_root, rerun.attestation_root) == 0);
+    ASSERT(scout_resize_object(
+        workspace, ran.evidence_root,
+        (off_t)VCS_SPACE_SCOUT_MAP_WIRE_BYTES + 1));
+    ASSERT(!metaverse_space_scout_show(
+        workspace, ran.evidence_root, map).ok);
+    ASSERT(scout_resize_object(
+        workspace, ran.attestation_root,
+        (off_t)VCS_SPACE_SCOUT_ATTESTATION_WIRE_BYTES + 1));
+    ASSERT(!metaverse_space_scout_attestation_show(
+        workspace, ran.attestation_root, &attestation).ok);
+    struct vcs_space_scout_mission_v1 shown_mission;
+    ASSERT(scout_resize_object(
+        workspace, ran.mission_root,
+        (off_t)VCS_SPACE_SCOUT_MISSION_WIRE_BYTES + 1));
+    ASSERT(!metaverse_space_scout_mission_show(
+        workspace, ran.mission_root, &shown_mission).ok);
     free(map);
     PASS();
   }

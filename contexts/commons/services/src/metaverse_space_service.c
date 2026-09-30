@@ -136,7 +136,8 @@ static struct zcl_result cas_verify(const char *workspace,
 {
   uint8_t *stored = NULL;
   size_t stored_len = 0;
-  if (vcs_object_load_raw(workspace, root, &stored, &stored_len) != 0)
+  if (vcs_object_load_raw_bounded(
+          workspace, root, expected_len, &stored, &stored_len) != 0)
     return ZCL_ERR(-1, "space-cas-read-failed");
   struct metaverse_space_object object;
   struct zcl_result identified = identify(stored, stored_len, &object);
@@ -246,7 +247,7 @@ struct zcl_result metaverse_space_show(
 {
   size_t ignored = 0;
   return metaverse_space_show_bounded(
-      workspace, object_root, SIZE_MAX, out, &ignored);
+      workspace, object_root, VCS_SPACE_MANIFEST_WIRE_MAX, out, &ignored);
 }
 
 struct zcl_result metaverse_space_publish(
@@ -259,7 +260,9 @@ struct zcl_result metaverse_space_publish(
   if (!store || !workspace || !hex_root(object_root, root) ||
       !out_blob_root || !kind_out)
     return ZCL_ERR(-1, "space-publish-input-invalid");
-  if (vcs_object_load_raw(workspace, root, &wire, &wire_len) != 0)
+  if (vcs_object_load_raw_bounded(
+          workspace, root, VCS_SPACE_MANIFEST_WIRE_MAX,
+          &wire, &wire_len) != 0)
     return ZCL_ERR(-1, "space-publish-not-in-cas");
   struct metaverse_space_object object;
   struct zcl_result identified = identify(wire, wire_len, &object);
@@ -287,7 +290,9 @@ struct zcl_result metaverse_space_transport_root(
   if (!workspace || !hex_root(object_root, root) ||
       !out_blob_root || !kind_out)
     return ZCL_ERR(-1, "space-transport-root-input-invalid");
-  if (vcs_object_load_raw(workspace, root, &wire, &wire_len) != 0)
+  if (vcs_object_load_raw_bounded(
+          workspace, root, VCS_SPACE_MANIFEST_WIRE_MAX,
+          &wire, &wire_len) != 0)
     return ZCL_ERR(-1, "space-transport-root-not-in-cas");
   struct metaverse_space_object object;
   struct zcl_result identified = identify(wire, wire_len, &object);
