@@ -303,17 +303,14 @@ static bool request_build(const struct zcl_reflex_runner_spec *spec,
 
 /* Copy the artifact into a sealed memfd and prove, from the SEALED bytes,
  * that it is the requested candidate. */
-static int seal_artifact(const struct zcl_reflex_runner_spec *spec,
+static int seal_artifact(int src, const struct zcl_reflex_runner_spec *spec,
                          struct zcl_reflex_runner_outcome *out)
 {
     int64_t started = platform_time_monotonic_us();
-    int src = spec->artifact_path
-        ? open(spec->artifact_path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW) : -1;
     if (src < 0)
         return outcome_reason(out, "candidate artifact unreadable"), -1;
     char err[256] = {0};
     int image = hotswap_sealed_image_from_fd(src, err, sizeof(err));
-    (void)close(src);
     if (image < 0) return outcome_reason(out, err), -1;
     char got[65] = {0};
     if (!zcl_reflex_sha256_fd(image, got) ||
@@ -572,7 +569,8 @@ static void outcome_from_reply(const struct zcl_reflex_runner_spec *spec,
         out->address_space_fresh && outcome_story_green(spec, &out->report);
 }
 
-bool zcl_reflex_runner_run(const struct zcl_reflex_runner_spec *spec,
+bool zcl_reflex_runner_run_fd(int artifact_fd,
+                           const struct zcl_reflex_runner_spec *spec,
                            struct zcl_reflex_runner_outcome *out)
 {
     if (!out) LOG_FAIL("devloop.reflex", "outcome is NULL");
@@ -582,7 +580,7 @@ bool zcl_reflex_runner_run(const struct zcl_reflex_runner_spec *spec,
     struct zcl_reflex_request request;
     if (!spec || !request_build(spec, &request))
         return outcome_reason(out, "invalid reflex runner request"), false;
-    int image_fd = seal_artifact(spec, out);
+    int image_fd = seal_artifact(artifact_fd, spec, out);
     if (image_fd < 0) {
         LOG_WARN("devloop.reflex", "candidate not sealed: %s", out->reason);
         return false;
@@ -600,6 +598,7 @@ bool zcl_reflex_runner_run(const struct zcl_reflex_runner_spec *spec,
         reflex_green_record(spec->source_tu, spec->artifact_sha256);
     return true;
 #else
+    (void)artifact_fd;
     (void)spec;
     (void)outcome_from_reply;
     (void)reflex_green_record;
@@ -607,4 +606,17 @@ bool zcl_reflex_runner_run(const struct zcl_reflex_runner_spec *spec,
                         "(exec + memfd + Landlock + seccomp)");
     return false;
 #endif
+}
+
+bool zcl_reflex_runner_run(const struct zcl_reflex_runner_spec *spec,
+                           struct zcl_reflex_runner_outcome *out)
+{
+    int fd = -1;
+#if defined(__linux__)
+    if (spec && spec->artifact_path)
+        fd = open(spec->artifact_path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+#endif
+    bool ok = zcl_reflex_runner_run_fd(fd, spec, out);
+    if (fd >= 0) (void)close(fd);
+    return ok;
 }

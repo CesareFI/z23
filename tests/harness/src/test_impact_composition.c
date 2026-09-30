@@ -7272,6 +7272,13 @@ static int test_ic_local_selection_build_needs(void)
                              "build/bin/zclassic23-engine-unit"));
         n = 99;
 
+        /* The operator contract exercises the real native claim CLI. */
+        ASSERT(zcl_test_selection_build_needs("test_make_lint_gates_realroot",
+                                              true, NULL, needs, 16, &n));
+        ASSERT(n == 1);
+        ASSERT(ic_needs_have(needs, n, "dev-bin", "build/bin/z23-dev"));
+        n = 99;
+
         ASSERT(zcl_test_selection_build_needs("test_fleet_gateway_shard_01",
                                               false, NULL, needs, 16, &n));
         ASSERT(n == 2);
@@ -7323,7 +7330,8 @@ static int test_ic_local_selection_build_needs(void)
         n = 99;
         ASSERT(zcl_test_selection_build_needs(NULL, false, NULL, needs, 16,
                                               &n));
-        ASSERT(n == 7);
+        ASSERT(n == 8);
+        ASSERT(ic_needs_have(needs, n, "dev-bin", "build/bin/z23-dev"));
         ASSERT(ic_needs_have(needs, n, "engine-unit",
                              "build/bin/zclassic23-engine-unit"));
         ASSERT(ic_needs_have(needs, n, "zclassic23", "build/bin/zclassic23"));

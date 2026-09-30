@@ -1769,11 +1769,13 @@ ZCL_COMMAND_DEV_COMMAND(
     "of them is already live in another worktree's claim, naming the file, "
     "that worktree, and its story. A second claim from the same worktree "
     "replaces its own line rather than stacking, and release removes every "
-    "line this worktree owns. It writes only that ledger; it touches no "
+    "line this worktree owns. Explicit retire_worktree archives exact legacy "
+    "rows only for an absent, unregistered owner; leases remain protected. "
+    "It writes only development coordination state; it touches no "
     "source file, ref, datadir, or wallet.", 16384,
     "agent,claim,ledger,files,lane,conflict",
     "zcl.agent_claim_input.v1", "zcl.agent_claim.v1",
-    "cwd,story,files,release", "story",
+    "cwd,story,files,release,retire_worktree", "story",
     "z23-dev dev agent claim hex-codec",
     ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_DEV_MUTATION,
     ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_OPERATOR,

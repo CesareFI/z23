@@ -106,6 +106,30 @@ struct img {
     uint64_t n;
 };
 
+struct hotswap_elf_facts;
+struct hotswap_elf_hotfork_pure_facts;
+
+/* References into the ONE image already accepted by the generic parser. */
+struct elf_pure_context {
+    const struct img *image;
+    const unsigned char *programs;
+    uint16_t program_count;
+    const unsigned char *dynamic;
+    uint64_t dynamic_bytes;
+    const unsigned char *symbols;
+    uint64_t symbol_count;
+    uint64_t strings_offset;
+    uint64_t strings_bytes;
+};
+
+bool vaddr_to_off(const struct img *im, const unsigned char *phtab,
+                 uint16_t phnum, uint64_t vaddr, uint64_t len, uint64_t *off);
+#if defined(__linux__)
+bool elf_hotfork_pure_inspect(const struct elf_pure_context *context,
+    const struct hotswap_elf_facts *generic,
+    struct hotswap_elf_hotfork_pure_facts *out, char *err, size_t err_cap);
+#endif
+
 /* THE bounds check. Every dereference in this file goes through here.
  * Written to be overflow-proof without relying on wraparound: `len > n` is
  * tested first so `n - len` cannot underflow, and `off > n - len` is the
