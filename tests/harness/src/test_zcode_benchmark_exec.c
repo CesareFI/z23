@@ -173,6 +173,15 @@ static bool zbex_cas_flip_byte(const char *workspace, const char *root_hex,
     return true;
 }
 
+static bool zbex_cas_resize(const char *workspace, const char *root_hex,
+                            off_t size)
+{
+    char path[ZBEX_DIR_CAP + 96];
+    int n = snprintf(path, sizeof(path), "%s/.zvcs/objects/%.2s/%s",
+                     workspace, root_hex, root_hex + 2);
+    return n > 0 && (size_t)n < sizeof(path) && truncate(path, size) == 0;
+}
+
 /* ── fixtures ────────────────────────────────────────────────────────── */
 
 #define ZBEX_WORKLOAD_PAYLOAD_BYTES 2048u
@@ -1232,6 +1241,16 @@ static int test_zbex_closed_inputs(void)
         executed = zcode_benchmark_execute(&ndb, &req, &out);
         ASSERT(!executed.ok);
         ASSERT(strstr(executed.message, "workload-invalid") != NULL);
+        /* Fixed execution-context objects are bounded before allocation;
+         * oversized addressed bytes cannot reach parsing or a child run. */
+        char study_hex[65];
+        zcl_hex_encode(ctx.study_root, 32, study_hex);
+        ASSERT(zbex_cas_resize(
+            dir, study_hex, (off_t)VCS_ZCODE_STUDY_SPEC_WIRE_BYTES + 1));
+        zbex_request(dir, &ctx, &req);
+        executed = zcode_benchmark_execute(&ndb, &req, &out);
+        ASSERT(!executed.ok);
+        ASSERT(strstr(executed.message, "study-not-in-cas") != NULL);
         zbex_teardown(&ndb, dir);
         PASS();
     } _test_next:;

@@ -44,7 +44,9 @@ static bool exec_load_study(const char *workspace, const uint8_t root[32],
 {
     uint8_t *wire = NULL, checked[32];
     size_t len = 0;
-    bool ok = exec_cas_load(workspace, root, &wire, &len) &&
+    bool ok = vcs_object_load_raw_bounded(
+                  workspace, root, VCS_ZCODE_STUDY_SPEC_WIRE_BYTES,
+                  &wire, &len) == 0 &&
         vcs_zcode_study_spec_parse(wire, len, out) == VCS_ZCODE_SCIENCE_OK &&
         vcs_zcode_study_spec_validate(out) == VCS_ZCODE_SCIENCE_OK &&
         vcs_zcode_study_spec_root(out, checked) == VCS_ZCODE_SCIENCE_OK &&
@@ -57,7 +59,9 @@ static bool exec_load_task(const char *workspace, const uint8_t root[32],
 {
     uint8_t *wire = NULL, checked[32];
     size_t len = 0;
-    bool ok = exec_cas_load(workspace, root, &wire, &len) &&
+    bool ok = vcs_object_load_raw_bounded(
+                  workspace, root, VCS_ZCODE_TASK_WIRE_BYTES,
+                  &wire, &len) == 0 &&
         vcs_zcode_task_parse(wire, len, out) == VCS_ZCODE_DEV_OK &&
         vcs_zcode_task_root(out, checked) == VCS_ZCODE_DEV_OK &&
         memcmp(checked, root, 32) == 0;
@@ -70,7 +74,9 @@ static bool exec_load_candidate(const char *workspace, const uint8_t root[32],
 {
     uint8_t *wire = NULL, checked[32];
     size_t len = 0;
-    bool ok = exec_cas_load(workspace, root, &wire, &len) &&
+    bool ok = vcs_object_load_raw_bounded(
+                  workspace, root, VCS_ZCODE_CANDIDATE_WIRE_BYTES,
+                  &wire, &len) == 0 &&
         vcs_zcode_candidate_parse(wire, len, out) == VCS_ZCODE_DEV_OK &&
         vcs_zcode_candidate_root(out, checked) == VCS_ZCODE_DEV_OK &&
         memcmp(checked, root, 32) == 0;
@@ -83,7 +89,9 @@ static bool exec_load_method(const char *workspace, const uint8_t root[32],
 {
     uint8_t *wire = NULL, checked[32];
     size_t len = 0;
-    bool ok = exec_cas_load(workspace, root, &wire, &len) &&
+    bool ok = vcs_object_load_raw_bounded(
+                  workspace, root, VCS_ZCODE_BENCHMARK_METHOD_WIRE_BYTES,
+                  &wire, &len) == 0 &&
         len == VCS_ZCODE_BENCHMARK_METHOD_WIRE_BYTES &&
         vcs_zcode_benchmark_method_parse(wire, len, out) ==
             VCS_ZCODE_SCIENCE_OK &&
@@ -101,7 +109,9 @@ static bool exec_load_policy(const char *workspace, const uint8_t root[32],
 {
     uint8_t *wire = NULL, checked[32];
     size_t len = 0;
-    bool ok = exec_cas_load(workspace, root, &wire, &len) &&
+    bool ok = vcs_object_load_raw_bounded(
+                  workspace, root, VCS_ZCODE_ENVIRONMENT_POLICY_WIRE_BYTES,
+                  &wire, &len) == 0 &&
         vcs_zcode_environment_policy_v1_parse(wire, len, out) ==
             VCS_ZCODE_RECEIPT_OK &&
         vcs_zcode_environment_policy_v1_root(out, checked) ==
