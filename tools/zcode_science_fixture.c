@@ -59,6 +59,12 @@ struct vcs_package_accept *vcs_package_accept_new(void)
 {
     return (struct vcs_package_accept *)zcl_calloc(1, 1, "fixture-accept-shim");
 }
+struct vcs_package_accept *vcs_package_accept_clone(
+    const struct vcs_package_accept *accept)
+{
+    (void)accept;
+    abort();
+}
 void vcs_package_accept_free(struct vcs_package_accept *accept)
 {
     free(accept);
@@ -92,6 +98,14 @@ enum vcs_package_release_error vcs_package_release_serialize(
     (void)release;
     (void)out;
     (void)out_len;
+    abort();
+}
+enum vcs_package_release_error vcs_package_release_parse(
+    const uint8_t *wire, size_t wire_len, struct vcs_package_release *out)
+{
+    (void)wire;
+    (void)wire_len;
+    (void)out;
     abort();
 }
 enum vcs_package_recipe_error vcs_package_recipe_parse(

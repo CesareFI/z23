@@ -6813,6 +6813,55 @@ $(BIN_DIR)/zclassic23-market-acceptance-helper: \
 test-market-acceptance-helper: market-acceptance-helper
 	@$(BIN_DIR)/zclassic23-market-acceptance-helper --selftest
 
+# Science acceptance fixture.  Keep this in the ordinary standalone-tool
+# lane so its source and dependency closure compile under the repository's
+# warning/hardening profile; tools/dev/science_acceptance.sh must never grow
+# a private compiler command (its former `-w` invocation silently drifted
+# behind the libraries it exercises).  Section GC keeps the fixture's use of
+# the real CAS/package-store APIs from linking unrelated node-only paths.
+ZCODE_SCIENCE_FIXTURE_SRCS = tools/zcode_science_fixture.c \
+	contexts/commons/modules/vcs/src/zcode_science.c \
+	contexts/commons/modules/vcs/src/zcode_dev.c \
+	contexts/commons/modules/vcs/src/zcode_benchmark_receipt.c \
+	contexts/commons/modules/vcs/src/signed_evidence.c \
+	contexts/commons/modules/vcs/src/vcs_object.c \
+	contexts/commons/modules/vcs/src/package_store.c \
+	contexts/commons/modules/vcs/src/package_store_catalog.c \
+	contexts/commons/modules/vcs/src/package_store_io.c \
+	contexts/commons/modules/vcs/src/package_manifest.c \
+	platform/modules/codec/src/cursor.c \
+	platform/modules/sha3/src/sha3.c \
+	core/modules/crypto/src/ed25519.c \
+	core/modules/crypto/src/sha512.c \
+	platform/modules/base/src/safe_alloc.c \
+	platform/modules/base/src/log_level.c \
+	platform/modules/base/src/cleanse.c \
+	platform/modules/platform/src/clock.c \
+	platform/modules/platform/src/rng.c \
+	platform/modules/platform/src/directory_compat.c \
+	platform/modules/platform/src/file_metadata.c \
+	platform/modules/platform/src/os_proc.c \
+	platform/modules/platform/src/positioned_file.c \
+	platform/modules/platform/src/private_directory.c \
+	platform/modules/platform/src/private_file.c
+.PHONY: zcode-science-fixture test-zcode-science-fixture
+zcode-science-fixture: $(BIN_DIR)/zcode-science-fixture
+$(BIN_DIR)/zcode-science-fixture: $(BUILD_IDENTITY_STAMP) \
+		$(ZCODE_SCIENCE_FIXTURE_SRCS)
+	@mkdir -p $(dir $@)
+	@set -eu; \
+	tmp="$$(mktemp "$@.link.XXXXXX")"; \
+	trap 'rm -f "$$tmp"' EXIT HUP INT TERM; \
+	$(CC) $(DEV_RESTART_CFLAGS) -ffunction-sections -fdata-sections \
+		$(filter-out -rdynamic,$(DEV_RESTART_LDFLAGS)) \
+		$(ZCL_GC_SECTIONS_LDFLAG) -o "$$tmp" \
+		$(ZCODE_SCIENCE_FIXTURE_SRCS) -lm; \
+	mv -f -- "$$tmp" "$@"; \
+	trap - EXIT HUP INT TERM
+
+test-zcode-science-fixture: zcode-science-fixture
+	@bash tools/dev/zcode_science_fixture_selftest.sh
+
 .PHONY: sim dump check-wallet
 sim: wallet_sim
 	$(BIN_DIR)/wallet_sim
@@ -8924,7 +8973,7 @@ test-noise-transport-interop: zclassic23 zcl-rpc jsonq \
 test-zcode-dht-acceptance: zclassic23 zcl-rpc tools/arena-product-journey-c23
 	@bash tools/dev/zcode_dht_acceptance.sh
 
-test-science-acceptance: test-zcode-dht-acceptance
+test-science-acceptance: test-zcode-dht-acceptance zcode-science-fixture
 	@bash tools/dev/science_acceptance.sh
 
 # Aggregate C23 Commons Beta.  The Alpha proof is an explicit prerequisite,

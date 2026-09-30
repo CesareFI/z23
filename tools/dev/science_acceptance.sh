@@ -443,46 +443,7 @@ sa_sci() {
 jget() { "$JSONQ" get "$1"; }
 sa_jget() { printf '%s' "$1" | "$JSONQ" get "$2"; }
 
-# ── fixture tool compile ───────────────────────────────────────────────
-sa_build_fixture() {
-    cc -std=c23 -O1 -w -D_GNU_SOURCE \
-        -I"$REPO_ROOT/contexts/commons/modules/vcs/include" -I"$REPO_ROOT/platform/modules/base/include" \
-        -I"$REPO_ROOT/platform/modules/sha3/include" -I"$REPO_ROOT/core/modules/crypto/include" \
-        -I"$REPO_ROOT/platform/modules/json/include" -I"$REPO_ROOT/platform/modules/codec/include" \
-        -I"$REPO_ROOT/platform/modules/util/include" -I"$REPO_ROOT/platform/modules/platform/include" \
-        -I"$REPO_ROOT/platform/modules/support/include" \
-        -o "$SA_WORK/zcode_science_fixture" \
-        "$REPO_ROOT/tools/zcode_science_fixture.c" \
-        "$REPO_ROOT/contexts/commons/modules/vcs/src/zcode_science.c" \
-        "$REPO_ROOT/contexts/commons/modules/vcs/src/zcode_dev.c" \
-        "$REPO_ROOT/contexts/commons/modules/vcs/src/zcode_benchmark_receipt.c" \
-        "$REPO_ROOT/contexts/commons/modules/vcs/src/vcs_object.c" \
-        "$REPO_ROOT/contexts/commons/modules/vcs/src/package_store.c" \
-        "$REPO_ROOT/contexts/commons/modules/vcs/src/package_store_catalog.c" \
-        "$REPO_ROOT/contexts/commons/modules/vcs/src/package_store_io.c" \
-        "$REPO_ROOT/contexts/commons/modules/vcs/src/package_manifest.c" \
-        "$REPO_ROOT/contexts/commons/modules/vcs/src/build_action.c" \
-        "$REPO_ROOT/platform/modules/codec/src/cursor.c" \
-        "$REPO_ROOT/platform/modules/sha3/src/sha3.c" \
-        "$REPO_ROOT/core/modules/crypto/src/ed25519.c" \
-        "$REPO_ROOT/core/modules/crypto/src/sha512.c" \
-        "$REPO_ROOT/core/modules/crypto/src/sha256.c" \
-        "$REPO_ROOT/core/modules/crypto/src/chacha20poly1305.c" \
-        "$REPO_ROOT/platform/modules/support/src/log_throttle.c" \
-        "$REPO_ROOT/platform/modules/base/src/safe_alloc.c" \
-        "$REPO_ROOT/platform/modules/base/src/log_level.c" \
-        "$REPO_ROOT/platform/modules/base/src/result.c" \
-        "$REPO_ROOT/platform/modules/base/src/cleanse.c" \
-        "$REPO_ROOT/platform/modules/platform/src/clock.c" \
-        "$REPO_ROOT/platform/modules/platform/src/rng.c" \
-        "$REPO_ROOT/platform/modules/json/src/json.c" \
-        "$REPO_ROOT/platform/modules/util/src/hw_profile.c" \
-        "$REPO_ROOT/platform/modules/util/src/spawn.c" \
-        "$REPO_ROOT/platform/modules/util/src/cpu_topology.c" 2>/dev/null \
-        || sa_die "fixture tool compile failed"
-}
-
-FIX=""   # fixture tool path
+FIX="$REPO_ROOT/build/bin/zcode-science-fixture"
 CH_HASH="abababababababababababababababababababababababababababababababab"
 REPRO_PUB="cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
 
@@ -747,10 +708,10 @@ rebuild_proof() {
 # ── preflight ──────────────────────────────────────────────────────────
 command -v ss      >/dev/null 2>&1 || sa_die "ss(8) not found (need iproute2)"
 command -v mktemp  >/dev/null 2>&1 || sa_die "mktemp not found"
-command -v cc      >/dev/null 2>&1 || sa_die "cc not found (fixture tool compile)"
 [ -x "$JSONQ" ]    || sa_die "build/bin/jsonq is missing — run make jsonq"
 [ -x "$NODE_BIN" ] || sa_die "$NODE_BIN not built — run make first"
 [ -x "$RPC_BIN" ]  || sa_die "$RPC_BIN not built — run make zcl-rpc"
+[ -x "$FIX" ]      || sa_die "$FIX is missing — run make zcode-science-fixture"
 
 for p in "$A_PORT" "$A_RPC" "$A_FS" "$A_HTTPS" \
          "$B_PORT" "$B_RPC" "$B_FS" "$B_HTTPS" "$DEAD_SINK"; do
@@ -774,8 +735,6 @@ for p in "$A_PORT" "$A_RPC" "$A_FS" "$A_HTTPS" \
     sa_assert_port_free "$p"
 done
 
-sa_build_fixture
-FIX="$SA_WORK/zcode_science_fixture"
 SEED_A=1111111111111111111111111111111111111111111111111111111111111111
 SEED_B=2222222222222222222222222222222222222222222222222222222222222222
 install -m 600 /dev/null "$SA_WORK/master-a.hex"
