@@ -40,9 +40,11 @@
 #include "chain/chain.h"
 #include "core/uint256.h"
 #include "event/event.h"
+#include "jobs/tip_finalize_stage.h"
 #include "net/download.h"
 #include "storage/body_coverage.h"
 #include "storage/body_history.h"
+#include "storage/progress_store.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 #include "util/sync.h"
@@ -80,31 +82,66 @@ static enum bb_backfill_mode bb_backfill_mode(void)
 
 struct bb_probe_ctx {
     struct main_state *ms; /* cs_main is held by the caller for the walk */
+    struct block_index *anchor; /* the authority tip row, resolved pre-lock */
 };
 
 /* Resolve one height of the active chain. The published chain[] window is
  * the first authority; where it has holes the tip's own ancestry answers.
- * A kill-restore that aborts its disk ancestry rebuild on the first
- * unreadable header installs the tip slot, publishes the height, and leaves
- * the slots below NULL, while the block index still holds every row of the
- * tip's pprev chain. block_index_get_ancestor walks that chain by skip
- * pointer — the same O(log n) lookup gap_fill_window_walk_start uses — so
- * the census measures those heights instead of reporting the whole below-tip
- * range unmeasured and never requesting the bodies. */
+ * A restore whose disk ancestry rebuild stops early leaves the container
+ * holed two ways at once — the tip slot empty while the height stays
+ * published, or the window retracted to the seed — while the tip authority
+ * still names the tip and the block index still holds every row of its
+ * pprev chain. The anchor is that authority's tip row (active_chain_tip,
+ * the same source the pass's window bound comes from), handed in by the
+ * caller because resolving it can enter progress_store_tx_lock on the
+ * unregistered-authority fallback, which must not nest inside cs_main.
+ * block_index_get_ancestor walks the anchor's chain by skip pointer — the
+ * same O(log n) lookup gap_fill_window_walk_start uses — so the census
+ * measures those heights instead of reporting the whole below-tip range
+ * unmeasured and never requesting the bodies. */
 static struct block_index *bb_resolve_height(const struct main_state *ms,
+                                             struct block_index *anchor,
                                              int height)
 {
     struct block_index *bi = active_chain_at(&ms->chain_active, height);
     if (bi && bi->nHeight == height)
         return bi;
 
-    int tip_h = active_chain_cached_height(&ms->chain_active);
-    struct block_index *tip =
-        tip_h >= 0 ? active_chain_at(&ms->chain_active, tip_h) : NULL;
-    if (!tip)
+    if (!anchor || anchor->nHeight < height)
         return NULL;
-    struct block_index *anc = block_index_get_ancestor(tip, height);
+    struct block_index *anc = block_index_get_ancestor(anchor, height);
     return anc && anc->nHeight == height ? anc : NULL;
+}
+
+/* The anchor a hollow restore leaves unanswered. active_chain_tip answers
+ * NULL when the registered authority names no map row and no chain[] slot
+ * holds the tip, yet active_chain_height still publishes the tip — the same
+ * boot a kill-restore leaves when its disk ancestry rebuild stops early: the
+ * height survives through the authority's get_height or the durable
+ * MAX(tip_finalize_log ok=1) fallback while the container never filled. The
+ * window bound already trusts that durable authority, so resolve the row it
+ * names (tip_finalize_stage_resolve_durable_tip — the same resolver
+ * rebuild_seed_tip uses at boot) and let the census walk that row's
+ * ancestry. Fail-closed throughout: no progress store, no resolvable pair,
+ * a pair above the window bound, or a row whose height disagrees with the
+ * map leaves the anchor NULL and the window honestly unmeasured. Outside
+ * cs_main by contract: the resolver takes progress_store_tx_lock. */
+static struct block_index *bb_durable_anchor(const struct main_state *ms,
+                                             int tip_h)
+{
+    sqlite3 *db = progress_store_db();
+    int h = -1;
+    uint8_t hash[32];
+    if (!db || tip_h < 0)
+        return NULL;
+    if (!tip_finalize_stage_resolve_durable_tip(db, &h, hash))
+        return NULL;
+    if (h < 0 || h > tip_h)
+        return NULL;
+    struct uint256 th;
+    memcpy(th.data, hash, 32);
+    struct block_index *row = block_map_find(&ms->map_block_index, &th);
+    return (row && row->nHeight == h) ? row : NULL;
 }
 
 /* Probe one height against the in-memory active chain — the same authority
@@ -124,7 +161,8 @@ static enum body_history_probe bb_probe(int64_t height,
     if (!pc || !pc->ms || height < 0 || height > INT32_MAX)
         return BODY_HISTORY_PROBE_INDETERMINATE;
 
-    struct block_index *bi = bb_resolve_height(pc->ms, (int)height);
+    struct block_index *bi = bb_resolve_height(pc->ms, pc->anchor,
+                                               (int)height);
     if (!bi || bi->nHeight != (int)height || !bi->phashBlock)
         return BODY_HISTORY_PROBE_INDETERMINATE;
 
@@ -240,6 +278,7 @@ static int bb_try_enqueue(struct download_manager *dm,
  * bodies. Does not move the census cursor — this is a fill of a hole the
  * census already named, not a measurement step. */
 static int bb_enqueue_range(struct main_state *ms, struct download_manager *dm,
+                            struct block_index *anchor,
                             int64_t fill_lo, int64_t fill_hi, int tip_h,
                             enum bb_backfill_mode mode, const char *why,
                             body_backfill_wake_fn wake, void *wake_ctx)
@@ -261,7 +300,7 @@ static int bb_enqueue_range(struct main_state *ms, struct download_manager *dm,
         return 0;
     }
 
-    struct bb_probe_ctx pc = { .ms = ms };
+    struct bb_probe_ctx pc = { .ms = ms, .anchor = anchor };
     zcl_mutex_lock(&ms->cs_main);
     size_t n = body_history_census_probe_window(fill_lo, fill_hi, bb_probe,
                                                 &pc, classes, hashes, cap);
@@ -293,7 +332,8 @@ static int bb_enqueue_range(struct main_state *ms, struct download_manager *dm,
  * when it contains the lowest hole; otherwise probe that hole without
  * moving the census cursor. */
 static int bb_enqueue_after_census(
-    struct main_state *ms, struct download_manager *dm, bool may_enqueue,
+    struct main_state *ms, struct download_manager *dm,
+    struct block_index *anchor, bool may_enqueue,
     const uint8_t *classes, const struct uint256 *hashes, size_t n,
     int64_t lo, int64_t hi, int tip_h, enum bb_backfill_mode mode,
     const struct body_history_pass_result *res,
@@ -317,7 +357,7 @@ static int bb_enqueue_after_census(
     fill_hi = lowest + BODY_HISTORY_CENSUS_BUDGET - 1;
     if (fill_hi > (int64_t)tip_h)
         fill_hi = (int64_t)tip_h;
-    return bb_enqueue_range(ms, dm, lowest, fill_hi, tip_h, mode,
+    return bb_enqueue_range(ms, dm, anchor, lowest, fill_hi, tip_h, mode,
                             "lowest_missing", wake, wake_ctx);
 }
 
@@ -342,13 +382,21 @@ int body_backfill_pass(struct main_state *ms, struct download_manager *dm,
         return 0;
     }
 
-    zcl_mutex_lock(&ms->cs_main);
+    /* The window bound and the ancestry anchor name the SAME tip — the
+     * authority — and both are read OUTSIDE cs_main: the authority path can
+     * enter progress_store_tx_lock on its unregistered fallback, which must
+     * never nest inside cs_main (the reducer reconcile order; see the lock
+     * note in chain_restore_finalize). When no tip row answers (authority
+     * names none, container hollow), the durable tip_finalize pair the bound
+     * itself falls back to names the anchor — same lock rule, same source. */
     int tip_h = active_chain_height(&ms->chain_active);
-    zcl_mutex_unlock(&ms->cs_main);
     if (tip_h < 0) {
         body_history_publish(NULL);
         return 0;
     }
+    struct block_index *anchor = active_chain_tip(&ms->chain_active);
+    if (!anchor)
+        anchor = bb_durable_anchor(ms, tip_h);
 
     int64_t lo = 0, hi = 0;
     body_history_global_lock();
@@ -378,7 +426,7 @@ int body_backfill_pass(struct main_state *ms, struct download_manager *dm,
         return 0;
     }
 
-    struct bb_probe_ctx pc = { .ms = ms };
+    struct bb_probe_ctx pc = { .ms = ms, .anchor = anchor };
     zcl_mutex_lock(&ms->cs_main);
     size_t n = body_history_census_probe_window(lo, hi, bb_probe,
                                                 &pc, classes, hashes, cap);
@@ -420,7 +468,7 @@ int body_backfill_pass(struct main_state *ms, struct download_manager *dm,
     bool may_enqueue = mode != BB_BACKFILL_OFF && folded &&
                        !tip_work_pending && !census_only;
     int enqueued = bb_enqueue_after_census(
-        ms, dm, may_enqueue, classes, hashes, n, lo, hi, tip_h, mode,
+        ms, dm, anchor, may_enqueue, classes, hashes, n, lo, hi, tip_h, mode,
         &res, evaluated ? &verdict : NULL, wake, wake_ctx);
     free(classes);
     free(hashes);

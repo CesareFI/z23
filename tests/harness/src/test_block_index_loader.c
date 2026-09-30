@@ -202,6 +202,113 @@ static bool bih_insert_header_row(sqlite3 *db, int h,
     return ok;
 }
 
+/* 15a helpers: the union-boot fixture. The flat rung's rows carry body
+ * knowledge the blocks table does not store; the hydrate must keep it. */
+
+/* Seed the first `pre` rows as the earlier rung loaded them: admitted with
+ * HAVE_DATA/HAVE_UNDO, SCRIPTS validity, and real file positions. */
+static bool bil_union_seed_prior_rung(struct main_state *ms,
+                                      const struct uint256 *hashes, int pre)
+{
+    for (int h = 0; h < pre; h++) {
+        struct block_index *bi = chainstate_insert_block_index(
+            (struct chainstate *)ms, &hashes[h]);
+        if (!bi)
+            return false;
+        bi->nHeight = h;
+        bi->nStatus = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA |
+                      BLOCK_HAVE_UNDO;
+        bi->nFile = 3;
+        bi->nDataPos = (uint32_t)(h * 4096);
+        bi->nUndoPos = (uint32_t)(h * 512);
+    }
+    return true;
+}
+
+/* Build the union-boot shape — header rows in `blocks`, the earlier rung's
+ * admitted prefix in the map — then run the hydrate over both. `ms` arrives
+ * with its map/chain already initialised; `ndb` arrives zeroed. */
+static bool bil_union_boot_fixture(struct node_db *ndb, struct main_state *ms,
+                                   struct uint256 *hashes, int n, int pre)
+{
+    if (!hashes)
+        return false;
+    if (sqlite3_open(":memory:", &ndb->db) != SQLITE_OK)
+        return false;
+    ndb->open = true;
+    if (!bih_create_blocks_table(ndb->db))
+        return false;
+    struct uint256 zero;
+    memset(&zero, 0, sizeof(zero));
+    for (int h = 0; h < n; h++) {
+        const struct uint256 *prev = (h == 0) ? &zero : &hashes[h - 1];
+        if (!bih_insert_header_row(ndb->db, h, prev, &hashes[h]))
+            return false;
+    }
+    if (!bil_union_seed_prior_rung(ms, hashes, pre))
+        return false;
+    return load_block_index_from_blocks_table(ndb, ms).ok;
+}
+
+/* The earlier rung's admission survives the re-touch bit for bit. */
+static bool bil_union_prior_rung_kept(struct main_state *ms,
+                                      const struct uint256 *hashes, int pre)
+{
+    struct block_index *prior = block_map_find(&ms->map_block_index,
+                                               &hashes[pre - 1]);
+    return prior &&
+        (prior->nStatus & BLOCK_HAVE_DATA) &&
+        (prior->nStatus & BLOCK_HAVE_UNDO) &&
+        ((prior->nStatus & BLOCK_VALID_MASK) == BLOCK_VALID_SCRIPTS) &&
+        prior->nFile == 3 &&
+        prior->nDataPos == (uint32_t)((pre - 1) * 4096) &&
+        prior->nUndoPos == (uint32_t)((pre - 1) * 512);
+}
+
+/* Table-sourced rows stay clamped to header-only. */
+static bool bil_union_fresh_row_clamped(struct main_state *ms,
+                                        const struct uint256 *hashes, int n)
+{
+    struct block_index *fresh = block_map_find(&ms->map_block_index,
+                                               &hashes[n - 1]);
+    return fresh &&
+        !(fresh->nStatus & BLOCK_HAVE_DATA) &&
+        !(fresh->nStatus & BLOCK_HAVE_UNDO) &&
+        ((fresh->nStatus & BLOCK_VALID_MASK) <= BLOCK_VALID_TREE);
+}
+
+/* 15a case driver: build the fixture, run the hydrate, and check both
+ * verdicts (earlier rung kept, fresh rows clamped). */
+static int bil_union_boot_case(void)
+{
+    int failures = 0;
+    const int N = 60;
+    const int PRE = 30;   /* rows the flat rung already loaded */
+    struct uint256 *hashes = malloc((size_t)N * sizeof(*hashes)); // raw-alloc-ok:test-fixture
+
+    struct node_db ndb;
+    memset(&ndb, 0, sizeof(ndb));
+    struct main_state ms;
+    memset(&ms, 0, sizeof(ms));
+    block_map_init(&ms.map_block_index);
+    active_chain_init(&ms.chain_active);
+
+    bool ok = bil_union_boot_fixture(&ndb, &ms, hashes, N, PRE) &&
+              (ms.map_block_index.size == (size_t)N);
+
+    BIL_CHECK("bil: union-boot hydrate keeps the earlier rung's body "
+              "knowledge (HAVE bits, file positions, validity)",
+              ok && bil_union_prior_rung_kept(&ms, hashes, PRE));
+    BIL_CHECK("bil: union-boot hydrate still clamps table-sourced rows "
+              "to header-only",
+              ok && bil_union_fresh_row_clamped(&ms, hashes, N));
+
+    block_map_free(&ms.map_block_index);
+    if (ndb.db) sqlite3_close(ndb.db);
+    free(hashes);
+    return failures;
+}
+
 int test_block_index_loader(void)
 {
     printf("\n=== block index loader tests ===\n");
@@ -1314,6 +1421,16 @@ int test_block_index_loader(void)
         if (ndb.db) sqlite3_close(ndb.db);
         free(hashes);
     }
+
+    /* ── 15a. union boot: the hydrate re-touches rows an earlier rung
+     *        already admitted and must keep their body knowledge.
+     *
+     * A hard-killed node can boot with a flat file that lags the blocks
+     * table: the flat rung loads the first rows WITH HAVE_DATA and file
+     * positions, then the hydrate tops the map up from the table, whose
+     * rows store no body knowledge. Erasing the earlier rung's admission
+     * would make the body-history census count bodies on disk as missing. */
+    failures += bil_union_boot_case();
 
     /* ── 15b. blocks hydrate pumps the boot-liveness marker ──────────────
      *
