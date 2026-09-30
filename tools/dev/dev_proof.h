@@ -17,6 +17,12 @@
 #define PATH_MAX 4096
 #endif
 
+/* Match complete candidate source identity to the compiler-injected identity
+ * of the code computing proof policy. The production caller supplies the
+ * pure clientversion getter, never an environment or request field. */
+bool zcl_dev_proof_producer_source_qualified(const char *candidate_source,
+    const char *producer_source, char *why, size_t why_len);
+
 /* Compiled-in lint-dimension allowances until this checkout has measured
  * its own. Publishable proofs use the full landing allowance everywhere;
  * the default remains available to non-publication feedback callers. */

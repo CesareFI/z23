@@ -78,6 +78,30 @@ static void proof_emit_next(struct zcl_command_reply *reply,
             : "wait for the exact commit/base receipt without running push-time work");
 }
 
+static bool proof_producer_recovery(const struct zcl_dev_proof_status *status)
+{
+    return status->state == ZCL_DEV_PROOF_STATE_FAILED &&
+        (strcmp(status->detail, "proof_producer_source_mismatch") == 0 ||
+         strcmp(status->detail, "proof_producer_source_id_unavailable") == 0);
+}
+
+static void proof_emit_producer_recovery(struct zcl_command_reply *reply,
+    const struct zcl_dev_proof_status *status)
+{
+    if (!proof_producer_recovery(status) || !status->root[0]) return;
+    char executable[PATH_MAX];
+    int n = snprintf(executable, sizeof(executable), "%s/build/bin/z23-dev",
+                     status->root);
+    if (n <= 0 || (size_t)n >= sizeof(executable)) return;
+    /* This is a locator, not admission: the next producer must independently
+     * qualify its own compiled source identity against the exact candidate. */
+    (void)json_push_kv_str(&reply->data, "producer_executable", executable);
+    (void)snprintf(reply->error.next_action, sizeof(reply->error.next_action),
+        "Use producer_executable under devbuild --wait to run dev.proof.retry "
+        "then dev.proof.step with this exact root, local_commit and remote_base; "
+        "make dev-bin in that root first if the candidate producer is missing.");
+}
+
 static void proof_emit_status(struct zcl_command_reply *reply,
                               const struct zcl_dev_proof_status *status,
                               bool add_wait_next)
@@ -149,6 +173,7 @@ static void proof_wait_failed(struct zcl_command_reply *reply,
         "PROOF_FAILED", "prove", false, false,
         "the exact local commit and remote base proof failed",
         status->detail[0] ? status->detail : "child_proof_failed");
+    proof_emit_producer_recovery(reply, status);
 }
 
 /* The exact status/exit-code contract for `dev.proof.wait`, given an

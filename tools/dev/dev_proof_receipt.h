@@ -94,8 +94,11 @@ struct zcl_dev_verdict_leaf_v1 {
  * different inode/timestamp tokens even when every build input agrees.
  * Policy 4 requires full lint for every publishable proof, including an
  * inventory-only change. Policy 3 could admit the fast subset under the
- * same dimension identity, so its receipts cannot establish this claim. */
-#define ZCL_DEV_PROOF_POLICY_VERSION 4u
+ * same dimension identity, so its receipts cannot establish this claim.
+ * Policy 5 additionally qualifies the running producer's complete compiled
+ * source identity before planning, selection, or receipt reuse. Policy 4
+ * admitted candidate executables but could select with stale producer code. */
+#define ZCL_DEV_PROOF_POLICY_VERSION 5u
 
 enum zcl_dev_proof_dimension_id {
     ZCL_DEV_PROOF_GENERATED = 0,

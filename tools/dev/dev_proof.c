@@ -32,6 +32,7 @@
 #include "platform/ram_scratch.h"
 #include "platform/time_compat.h"
 #include "util/spawn.h"
+#include "util/clientversion.h"
 #include "base/safe_alloc.h"
 #include "sha3/sha3.h"
 #include "vcs/build_action.h"
@@ -131,6 +132,39 @@ static void proof_why(char *why, size_t why_len, const char *message)
 {
     if (why && why_len)
         (void)snprintf(why, why_len, "%s", message ? message : "unknown");
+}
+
+static bool proof_source_id_valid(const char *source)
+{
+    if (!source || strlen(source) != 64) return false;
+    bool nonzero = false;
+    for (size_t i = 0; i < 64; i++) {
+        char c = source[i];
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')))
+            return false;
+        nonzero |= c != '0';
+    }
+    return nonzero;
+}
+
+bool zcl_dev_proof_producer_source_qualified(const char *candidate_source,
+    const char *producer_source, char *why, size_t why_len)
+{
+    const char *reason = NULL;
+    if (!proof_source_id_valid(candidate_source))
+        reason = "proof_candidate_source_id_invalid";
+    else if (!proof_source_id_valid(producer_source))
+        reason = "proof_producer_source_id_unavailable";
+    else if (strcmp(candidate_source, producer_source) != 0)
+        reason = "proof_producer_source_mismatch";
+    if (reason) {
+        fprintf(stderr, "[devproof] producer source qualification refused: %s\n",
+                reason);
+        proof_why(why, why_len, reason);
+        return false;
+    }
+    proof_why(why, why_len, "");
+    return true;
 }
 
 static bool proof_root_nonzero(const uint8_t root[32])
@@ -10044,9 +10078,13 @@ static bool proof_worker_body(const struct proof_paths *paths,
     w.docs = docs;
     w.inventory_only = inventory_output_only(changed->files, changed->count);
     w.warm_compile_mode = "skipped";
+    if (!dp_worker_seal_source(&w, why, why_len)) return false;
+    /* The loaded producer owns selection and impact policy. Admitting a
+     * candidate test runner alone cannot qualify that compiled metadata. */
+    if (!zcl_dev_proof_producer_source_qualified(w.source_before.source_id,
+            zcl_build_source_id_sha256(), why, why_len)) return false;
     if (!dp_worker_plan(&w, changed->files, changed->count, why, why_len))
         return false;
-    if (!dp_worker_seal_source(&w, why, why_len)) return false;
     if (!dp_worker_receipt_identity(&w, why, why_len)) return false;
     if (!dp_worker_build_identity(&w, why, why_len)) return false;
     if (!dp_worker_select(&w, why, why_len)) return false;

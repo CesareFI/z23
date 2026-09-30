@@ -73,6 +73,7 @@
 #include "vcs/vcs_object.h"
 #include "test_group_catalog.h"
 #include "test_group_host_need.h"
+#include "util/clientversion.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -6009,6 +6010,75 @@ static int test_pw_identity_names_missing_restart_env(void)
 /* A receipt whose roots were derived under the old meaning is named, not
  * compared. Comparing it would ask whether a hash of a checkout path equals
  * a hash of a toolchain. */
+static int test_ic_proof_producer_source_qualification(void)
+{
+    int failures = 0;
+    static const char candidate[] =
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    static const char stale[] =
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    static const char zero[] =
+        "0000000000000000000000000000000000000000000000000000000000000000";
+    static const char upper[] =
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    TEST("proof producer: complete source identity rejects stale selection policy") {
+        char why[128];
+        ASSERT(zcl_dev_proof_producer_source_qualified(candidate, candidate,
+                                                       why, sizeof(why)));
+        ASSERT_STR_EQ(why, "");
+        const char *compiled_source = zcl_build_source_id_sha256();
+        ASSERT(zcl_dev_proof_producer_source_qualified(compiled_source,
+            compiled_source, why, sizeof(why)));
+        /* A newly registered group and a same-ID family/impact change both
+         * change complete source identity; neither can use old metadata. */
+        ASSERT(!zcl_dev_proof_producer_source_qualified(candidate, stale,
+                                                        why, sizeof(why)));
+        ASSERT_STR_EQ(why, "proof_producer_source_mismatch");
+        const char *invalid[] = {NULL, "", zero, upper, "abc"};
+        for (size_t i = 0; i < sizeof(invalid) / sizeof(invalid[0]); i++) {
+            ASSERT(!zcl_dev_proof_producer_source_qualified(candidate,
+                invalid[i], why, sizeof(why)));
+            ASSERT_STR_EQ(why, "proof_producer_source_id_unavailable");
+        }
+        ASSERT(!zcl_dev_proof_producer_source_qualified(zero, candidate,
+                                                        why, sizeof(why)));
+        ASSERT_STR_EQ(why, "proof_candidate_source_id_invalid");
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static bool ic_proof_reply_serializes(const struct zcl_command_reply *reply);
+
+static int test_ic_proof_producer_recovery(void)
+{
+    int failures = 0;
+    TEST("proof producer: stale driver reports exact candidate producer recovery") {
+        struct zcl_dev_proof_status status = {0};
+        status.state = ZCL_DEV_PROOF_STATE_FAILED;
+        snprintf(status.root, sizeof(status.root), "/fixture/candidate");
+        snprintf(status.local_commit, sizeof(status.local_commit),
+                 "1111111111111111111111111111111111111111");
+        snprintf(status.remote_base, sizeof(status.remote_base),
+                 "2222222222222222222222222222222222222222");
+        snprintf(status.detail, sizeof(status.detail),
+                 "proof_producer_source_mismatch");
+        struct zcl_command_reply reply;
+        zcl_command_reply_init(&reply, "zcl.dev_proof_status.v1");
+        zcl_dev_proof_step_conclude(&reply, 1, &status);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_FAILED);
+        ASSERT_STR_EQ(reply.error.code, "PROOF_FAILED");
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "producer_executable")),
+                      "/fixture/candidate/build/bin/z23-dev");
+        ASSERT(strstr(reply.error.next_action, "devbuild --wait") != NULL);
+        ASSERT_STR_EQ(reply.next[0].command, "dev.proof.retry");
+        ASSERT(ic_proof_reply_serializes(&reply));
+        zcl_command_reply_free(&reply);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_pw_receipt_refuses_an_older_root_policy(void)
 {
     int failures = 0;
@@ -6022,9 +6092,9 @@ static int test_pw_receipt_refuses_an_older_root_policy(void)
         char why[128];
         ASSERT(zcl_dev_proof_receipt_validate(&receipt, local, base,
                                               why, sizeof(why)));
-        ASSERT(ZCL_DEV_PROOF_POLICY_VERSION >= 4u);
+        ASSERT(ZCL_DEV_PROOF_POLICY_VERSION >= 5u);
         struct zcl_dev_acceptance_receipt_v1 old = receipt;
-        old.policy_version = ZCL_DEV_PROOF_POLICY_VERSION - 1u;
+        old.policy_version = 4u; /* did not qualify the compiled selector */
         ASSERT(zcl_dev_proof_receipt_seal(&old));
         ASSERT(!zcl_dev_proof_receipt_validate(&old, local, base,
                                                why, sizeof(why)));
@@ -10160,6 +10230,8 @@ int test_impact_composition(void)
     failures += test_pw_identity_keeps_its_four_roots_apart();
     failures += test_pw_identity_names_missing_restart_env();
     failures += test_pw_receipt_refuses_an_older_root_policy();
+    failures += test_ic_proof_producer_source_qualification();
+    failures += test_ic_proof_producer_recovery();
     failures += test_pw_status_line_reports_warm_or_typed_cold();
     failures += test_ic_landing_step_share_waits_out_a_step();
     failures += test_pw_seed_links_replaces_and_copies();
