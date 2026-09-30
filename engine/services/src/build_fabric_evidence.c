@@ -173,11 +173,13 @@ static int bf_root_compare(const void *left, const void *right)
 }
 
 static bool bf_load_dev_object(const char *workspace, const char *root_hex,
-                               uint8_t **wire, size_t *wire_len,
+                               size_t maximum_bytes, uint8_t **wire,
+                               size_t *wire_len,
                                uint8_t root[32])
 {
     return zcl_hex_decode_lower(root_hex, root, 32) &&
-           vcs_object_load_raw(workspace, root, wire, wire_len) == 0;
+           vcs_object_load_raw_bounded(
+               workspace, root, maximum_bytes, wire, wire_len) == 0;
 }
 
 static struct zcl_result bf_receipt_load(const char *workspace,
@@ -186,7 +188,9 @@ static struct zcl_result bf_receipt_load(const char *workspace,
 {
     uint8_t checked[32], *wire = NULL;
     size_t length = 0;
-    if (!bf_load_dev_object(workspace, root_hex, &wire, &length, root))
+    if (!bf_load_dev_object(
+            workspace, root_hex, VCS_ZCODE_WORK_RECEIPT_WIRE_BYTES,
+            &wire, &length, root))
         return ZCL_ERR(-1, "proof receipt CAS object is unavailable");
     bool intact = vcs_zcode_work_receipt_parse(wire, length, receipt) ==
             VCS_ZCODE_DEV_OK &&
@@ -406,8 +410,9 @@ static bool bf_review_approves_evidence(
     const struct bf_verified_receipt *entry = &valid[review_index];
     uint8_t *wire = NULL;
     size_t wire_len = 0;
-    if (vcs_object_load_raw(workspace, entry->receipt.output_root,
-                            &wire, &wire_len) != 0)
+    if (vcs_object_load_raw_bounded(
+            workspace, entry->receipt.output_root,
+            VCS_ZCODE_REVIEW_WIRE_BYTES, &wire, &wire_len) != 0)
         return false;
     struct vcs_zcode_review_v1 review;
     bool ok = vcs_zcode_review_parse(wire, wire_len, &review) ==
@@ -421,8 +426,9 @@ static bool bf_review_approves_evidence(
     uint8_t proof_roots[VCS_ZCODE_PROOF_SET_MAX_RECEIPTS][32];
     size_t proof_count = 0;
     wire = NULL; wire_len = 0;
-    if (vcs_object_load_raw(workspace, review.proof_set_root,
-                            &wire, &wire_len) != 0 ||
+    if (vcs_object_load_raw_bounded(
+            workspace, review.proof_set_root,
+            VCS_ZCODE_PROOF_SET_WIRE_MAX, &wire, &wire_len) != 0 ||
         vcs_zcode_proof_set_parse(
             wire, wire_len, proof_roots,
             VCS_ZCODE_PROOF_SET_MAX_RECEIPTS, &proof_count) !=
@@ -639,7 +645,9 @@ static struct zcl_result bf_load_task(const char *workspace,
     uint8_t *wire = NULL;
     size_t wire_len = 0;
     uint8_t root[32], checked_root[32];
-    if (!bf_load_dev_object(workspace, root_hex, &wire, &wire_len, root) ||
+    if (!bf_load_dev_object(
+            workspace, root_hex, VCS_ZCODE_TASK_WIRE_BYTES,
+            &wire, &wire_len, root) ||
         vcs_zcode_task_parse(wire, wire_len, task) != VCS_ZCODE_DEV_OK ||
         vcs_zcode_task_root(task, checked_root) != VCS_ZCODE_DEV_OK ||
         memcmp(root, checked_root, 32) != 0) {
@@ -656,7 +664,9 @@ static struct zcl_result bf_load_candidate(const char *workspace,
     uint8_t *wire = NULL;
     size_t wire_len = 0;
     uint8_t root[32], checked_root[32];
-    if (!bf_load_dev_object(workspace, root_hex, &wire, &wire_len, root) ||
+    if (!bf_load_dev_object(
+            workspace, root_hex, VCS_ZCODE_CANDIDATE_WIRE_BYTES,
+            &wire, &wire_len, root) ||
         vcs_zcode_candidate_parse(wire, wire_len, candidate) !=
             VCS_ZCODE_DEV_OK ||
         vcs_zcode_candidate_root(candidate, checked_root) !=
@@ -675,7 +685,9 @@ static struct zcl_result bf_load_policy(const char *workspace,
     uint8_t *wire = NULL;
     size_t wire_len = 0;
     uint8_t root[32], checked_root[32];
-    if (!bf_load_dev_object(workspace, root_hex, &wire, &wire_len, root) ||
+    if (!bf_load_dev_object(
+            workspace, root_hex, VCS_ZCODE_PROOF_POLICY_WIRE_BYTES,
+            &wire, &wire_len, root) ||
         vcs_zcode_proof_policy_parse(wire, wire_len, policy) !=
             VCS_ZCODE_DEV_OK ||
         vcs_zcode_proof_policy_root(policy, checked_root) !=

@@ -4401,6 +4401,31 @@ static int test_bf_proof_materialization(void)
             dir, work.evidence_root, observation_wire,
             sizeof(observation_wire), &repaired));
         ASSERT(repaired);
+        char work_root_hex[65], work_object_path[1024];
+        zcl_hex_encode(work_root, 32, work_root_hex);
+        int work_path_len = snprintf(
+            work_object_path, sizeof(work_object_path),
+            "%s/.zvcs/objects/%.2s/%s", dir, work_root_hex,
+            work_root_hex + 2);
+        ASSERT(work_path_len > 0 &&
+               (size_t)work_path_len < sizeof(work_object_path));
+        FILE *oversized_receipt = fopen(work_object_path, "ab");
+        ASSERT(oversized_receipt != NULL);
+        ASSERT(fputc(0, oversized_receipt) == 0);
+        ASSERT(fclose(oversized_receipt) == 0);
+        memset(&readonly, 0, sizeof(readonly));
+        struct zcl_result oversized_read =
+            build_fabric_proof_evaluate_readonly(
+                &ndb, dir, action.action_id, now, &readonly);
+        ASSERT(!oversized_read.ok);
+        ASSERT_STR_EQ(oversized_read.message,
+                      "proof receipt CAS object is unavailable");
+        ASSERT_EQ(sqlite3_total_changes(ndb.db), db_changes);
+        ASSERT_EQ(readonly.valid_receipts, 0);
+        repaired = false;
+        ASSERT(vcs_object_put_addressed_repair(
+            dir, work_root, work_wire, sizeof(work_wire), &repaired));
+        ASSERT(repaired);
         uint8_t misaddressed_receipt_root[32];
         memset(misaddressed_receipt_root, 0xf4, 32);
         ASSERT(vcs_object_put_addressed(
