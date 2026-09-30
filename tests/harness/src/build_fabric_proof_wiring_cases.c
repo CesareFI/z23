@@ -25,6 +25,7 @@
 #include "services/build_fabric_service.h"
 #include "services/build_fabric_worker.h"
 #include "vcs/build_action.h"
+#include "vcs/build_execution_observation.h"
 #include "vcs/package_store.h"
 #include "vcs/proof_reuse.h"
 #include "vcs/vcs_object.h"
@@ -1010,6 +1011,123 @@ _test_next:
     }
     return failures;
 }
+
+/* A physical observation is one exact wire. Oversized bytes at its address
+ * must neither enter a new ticket nor turn an existing ticket into a shadow
+ * HIT; restoring the exact wire makes both paths usable again. */
+static int pw_case_observation_bound(void)
+{
+    int failures = 0;
+    struct pw p;
+    struct pw_worker a, b;
+    uint8_t *observation_wire = NULL;
+    pw_worker_init(&a, 79);
+    pw_worker_init(&b, 83);
+    memset(&p, 0, sizeof(p));
+    TEST("build_fabric proof wiring: proof observations are exact bounded wires") {
+        ASSERT(pw_open(&p, "observation_bound"));
+        ASSERT(pw_approve(&p, &a));
+        ASSERT(pw_approve(&p, &b));
+        ASSERT(pw_proof_open(&p, &a));
+        uint8_t input_root[32];
+        struct db_build_action claimed;
+        struct db_build_receipt receipt;
+        struct build_fabric_host_accounting accounting;
+        char lease[65];
+        bool got = false;
+        ASSERT(pw_unit(&p, 600, input_root));
+        ASSERT(pw_request(&p, input_root));
+        ASSERT(pw_claim(&p, &a, &claimed, lease, &got));
+        ASSERT(got);
+        ASSERT(build_fabric_runtime_execute_step(
+            &p.ndb, p.dir, p.dir, &claimed, lease, a.secret, a.pubkey, NULL,
+            &receipt, &accounting).ok);
+        uint8_t observation_root[32];
+        size_t observation_len = 0;
+        ASSERT(zcl_hex_decode_lower(receipt.observation_sha3,
+                                    observation_root, 32));
+        ASSERT_EQ(vcs_object_load_raw(
+            p.dir, observation_root, &observation_wire, &observation_len), 0);
+        ASSERT_EQ(observation_len,
+                  VCS_BUILD_EXECUTION_OBSERVATION_WIRE_BYTES);
+        struct vcs_build_execution_observation_v1 observation;
+        ASSERT(vcs_build_execution_observation_v1_parse(
+            observation_wire, observation_len, &observation));
+        char observation_path[600];
+        int path_len = snprintf(
+            observation_path, sizeof(observation_path),
+            "%s/.zvcs/objects/%.2s/%s", p.dir, receipt.observation_sha3,
+            receipt.observation_sha3 + 2);
+        ASSERT(path_len > 0 && (size_t)path_len < sizeof(observation_path));
+        FILE *oversized = fopen(observation_path, "ab");
+        ASSERT(oversized != NULL);
+        ASSERT(fputc(0, oversized) == 0);
+        ASSERT(fclose(oversized) == 0);
+        struct zcl_result issued = build_fabric_proof_issue_executed(
+            a.proof, &p.ndb, p.dir, &claimed, &receipt, &accounting);
+        ASSERT(!issued.ok);
+        ASSERT_STR_EQ(issued.message,
+                      "proof ticket not issued: observation_absent");
+        struct build_fabric_proof_stats stats = pw_stats(&a);
+        ASSERT_EQ(stats.issued, 0u);
+        ASSERT_EQ(stats.issue_refused, 1u);
+        ASSERT_EQ(pw_pending(&p, &a), 0);
+        ASSERT(vcs_object_put_addressed_repair(
+            p.dir, observation_root, observation_wire, observation_len,
+            NULL));
+        ASSERT(build_fabric_proof_issue_executed(
+            a.proof, &p.ndb, p.dir, &claimed, &receipt, &accounting).ok);
+        stats = pw_stats(&a);
+        ASSERT_EQ(stats.issued, 1u);
+        pw_proof_close(&a);
+        ASSERT(pw_proof_open(&p, &b));
+        ASSERT_EQ(pw_stats(&b).receiver_tickets, 1u);
+        struct build_fabric_attach_report report;
+        memset(&report, 0, sizeof(report));
+        report.disposition = BUILD_FABRIC_ATTACH_HIT;
+        report.proof_key_known = true;
+        ASSERT(build_fabric_proof_compile_key(
+            p.dir, &claimed, observation.observed_input_bytes_root,
+            &report.proof_key).ok);
+        ASSERT(build_fabric_proof_shadow_attach(
+            b.proof, &p.ndb, p.dir, b.pubkey, &report).ok);
+        stats = pw_stats(&b);
+        ASSERT_EQ(stats.ticket_hit, 1u);
+        ASSERT_STR_EQ(stats.last_ticket_reason, VCS_PROOF_REUSE_WHY_HIT);
+        oversized = fopen(observation_path, "ab");
+        ASSERT(oversized != NULL);
+        ASSERT(fputc(0, oversized) == 0);
+        ASSERT(fclose(oversized) == 0);
+        ASSERT(build_fabric_proof_shadow_attach(
+            b.proof, &p.ndb, p.dir, b.pubkey, &report).ok);
+        stats = pw_stats(&b);
+        ASSERT_EQ(stats.ticket_hit, 1u);
+        ASSERT_EQ(stats.ticket_miss, 1u);
+        ASSERT_STR_EQ(stats.last_ticket_reason,
+                      VCS_PROOF_REUSE_WHY_ARTIFACT_MISSING);
+        ASSERT(vcs_object_put_addressed_repair(
+            p.dir, observation_root, observation_wire, observation_len,
+            NULL));
+        free(observation_wire);
+        observation_wire = NULL;
+        ASSERT(build_fabric_proof_shadow_attach(
+            b.proof, &p.ndb, p.dir, b.pubkey, &report).ok);
+        stats = pw_stats(&b);
+        ASSERT_EQ(stats.ticket_hit, 2u);
+        ASSERT_STR_EQ(stats.last_ticket_reason, VCS_PROOF_REUSE_WHY_HIT);
+        pw_proof_close(&b);
+        node_db_close(&p.ndb);
+        PASS();
+    }
+    if (0) {
+_test_next:
+        free(observation_wire);
+        pw_proof_close(&a);
+        pw_proof_close(&b);
+        node_db_close(&p.ndb);
+    }
+    return failures;
+}
 #endif
 
 int bf_proof_wiring_cases(void);
@@ -1030,6 +1148,7 @@ int bf_proof_wiring_cases(void)
     failures += pw_case_issue_fault(BUILD_FABRIC_PROOF_FAULT_ISSUE_FINALIZE);
     failures += pw_case_open_fault();
     failures += pw_case_shadow_fault();
+    failures += pw_case_observation_bound();
 #endif
     return failures;
 }

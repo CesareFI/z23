@@ -44,7 +44,9 @@ static bool bfps_evidence_bytes(struct bfps_fetch *f,
     uint8_t *wire = NULL, checked[32];
     size_t len = 0;
     struct vcs_build_execution_observation_v1 obs;
-    if (vcs_object_load_raw(f->workspace, t->evidence_root, &wire, &len) != 0)
+    if (vcs_object_load_raw_bounded(
+            f->workspace, t->evidence_root,
+            VCS_BUILD_EXECUTION_OBSERVATION_WIRE_BYTES, &wire, &len) != 0)
         return false;
     bool ok = vcs_build_execution_observation_v1_parse(wire, len, &obs) &&
               vcs_build_execution_observation_v1_root(&obs, checked) &&

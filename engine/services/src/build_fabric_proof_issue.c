@@ -103,7 +103,9 @@ static const char *bfpi_observation(
     uint8_t *wire = NULL, checked[32], action_root[32];
     size_t len = 0;
     if (!zcl_hex_decode_lower(receipt->observation_sha3, evidence, 32) ||
-        vcs_object_load_raw(workspace, evidence, &wire, &len) != 0)
+        vcs_object_load_raw_bounded(
+            workspace, evidence, VCS_BUILD_EXECUTION_OBSERVATION_WIRE_BYTES,
+            &wire, &len) != 0)
         return "observation_absent";
     bool ok = vcs_build_execution_observation_v1_parse(wire, len, obs) &&
               vcs_build_execution_observation_v1_root(obs, checked) &&
