@@ -33,12 +33,7 @@ static bool exec_hex32(const char *hex, uint8_t out[32])
 {
     return hex && strlen(hex) == 64 && zcl_hex_decode_lower(hex, out, 32);
 }
-/* ── CAS load helpers (load raw + parse + rederived-root agreement) ──── */
-static bool exec_cas_load(const char *workspace, const uint8_t root[32],
-                          uint8_t **wire, size_t *wire_len)
-{
-    return vcs_object_load_raw(workspace, root, wire, wire_len) == 0;
-}
+/* ── CAS load helpers (bounded read + parse + root agreement) ───────── */
 static bool exec_load_study(const char *workspace, const uint8_t root[32],
                             struct vcs_zcode_study_spec_v1 *out)
 {
@@ -147,6 +142,22 @@ static struct zcl_result exec_load_workload(
         *wire_len_out = 0;
         return ZCL_ERR(-1, "executor-workload-invalid");
     }
+    return ZCL_OK;
+}
+
+static struct zcl_result exec_load_receipt_result(
+    const char *workspace, const uint8_t root[32],
+    uint8_t **wire_out, size_t *wire_len_out)
+{
+    *wire_out = NULL;
+    *wire_len_out = 0;
+    int loaded = vcs_object_load_raw_bounded(
+        workspace, root, VCS_ZCODE_BENCHMARK_RESULT_V2_WIRE_BYTES,
+        wire_out, wire_len_out);
+    if (loaded == -1)
+        return ZCL_ERR(-1, "receipt-result-not-in-cas");
+    if (loaded != 0)
+        return ZCL_ERR(-1, "receipt-result-kind-unknown");
     return ZCL_OK;
 }
 /* ── fixed resource policy parsing ("cpu=1,memory_mb=4096,timeout_s=600,
@@ -1046,8 +1057,7 @@ struct zcl_result zcode_benchmark_executor_verify_receipt(
         return ZCL_ERR(-1, "receipt-root-invalid");
     uint8_t *wire = NULL;
     size_t len = 0;
-    if (!exec_cas_load(workspace, root, &wire, &len))
-        return ZCL_ERR(-1, "receipt-result-not-in-cas");
+    ZCL_CHECK(exec_load_receipt_result(workspace, root, &wire, &len));
     if (len == VCS_ZCODE_BENCHMARK_RESULT_V2_WIRE_BYTES &&
         memcmp(wire, result_v2_magic, sizeof(result_v2_magic)) == 0) {
         struct vcs_zcode_benchmark_result_v2 result;

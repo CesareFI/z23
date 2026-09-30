@@ -851,7 +851,7 @@ contexts/commons/services/src/zcode_benchmark_executor.c:exec_policy_parse:24
 contexts/commons/services/src/zcode_benchmark_executor.c:exec_runner_fork:32
 contexts/commons/services/src/zcode_benchmark_executor.c:exec_verify_samples:28
 contexts/commons/services/src/zcode_benchmark_executor.c:zcode_benchmark_executor_run:77
-contexts/commons/services/src/zcode_benchmark_executor.c:zcode_benchmark_executor_verify_receipt:23
+contexts/commons/services/src/zcode_benchmark_executor.c:zcode_benchmark_executor_verify_receipt:22
 contexts/commons/services/src/zcode_lane_service.c:zcode_accepted_work_find:29
 contexts/commons/services/src/zcode_lane_service.c:zcode_lane_advance:53
 contexts/commons/views/src/metaverse_view.c:metaverse_view_property:31

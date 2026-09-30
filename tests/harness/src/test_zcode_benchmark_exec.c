@@ -721,6 +721,17 @@ static int test_zbex_execute_happy(void)
         /* No accepted/correct/true claim anywhere: the observation status
          * is the only signal. */
         ASSERT(out1.run.result.status == out2.run.result.status);
+        /* Oversized result bytes are rejected before allocation while
+         * preserving the historical unknown-kind refusal. */
+        char root2_hex[65];
+        zcl_hex_encode(out2.run.result_root, 32, root2_hex);
+        ASSERT(zbex_cas_resize(
+            dir, root2_hex,
+            (off_t)VCS_ZCODE_BENCHMARK_RESULT_V2_WIRE_BYTES + 1));
+        struct zcl_result oversized =
+            zcode_benchmark_executor_verify_receipt(dir, root2_hex);
+        ASSERT(!oversized.ok);
+        ASSERT_STR_EQ(oversized.message, "receipt-result-kind-unknown");
         zbex_teardown(&ndb, dir);
         PASS();
     } _test_next:;
