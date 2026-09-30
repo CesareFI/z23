@@ -5811,17 +5811,24 @@ static bool dl_reconcile_signed_landing(const struct dl_dirs *d,
                                         struct zcl_command_reply *reply)
 {
         char output[512];
-        const char *ancestor[] = { "--no-replace-objects", "merge-base",
-            "--is-ancestor", row->local, observed_main, NULL };
-        if (dl_git(d->wt, ancestor, output, sizeof(output),
-                   DL_GIT_TIMEOUT_MS) != 0)
-            return false;
         if (!dl_publication_verify(d, row)) {
             dl_fail(reply, "PUBLICATION_INTENT_INVALID", "observe_remote",
                     "stored Git landing intent no longer verifies", d->land);
             return true;
         }
+        /* A signed receipt was sealed only after a separate object store
+         * fetched and verified the target, source and ancestry. Once that
+         * receipt is durable, terminal-outcome recovery consumes it locally:
+         * an outage must not strand the already-observed publication or
+         * tempt a second push. */
         if (!row->remote_signature[0]) {
+            if (!observed_main)
+                return false;
+            const char *ancestor[] = { "--no-replace-objects", "merge-base",
+                "--is-ancestor", row->local, observed_main, NULL };
+            if (dl_git(d->wt, ancestor, output, sizeof(output),
+                       DL_GIT_TIMEOUT_MS) != 0)
+                return false;
             if (!dl_publication_remote_observe(d, row, row->remote_tip,
                                                 row->remote_source) ||
                 !dl_publication_receipt_seal(row) ||
@@ -5852,6 +5859,8 @@ static bool dl_reconcile_landing(const struct dl_dirs *d, struct dl_row *row,
                                   char observed_main[80], bool mutated,
                                   struct zcl_command_reply *reply)
 {
+    if (row->publication_signature[0] && row->remote_signature[0])
+        return dl_reconcile_signed_landing(d, row, NULL, reply);
     if (!dl_observe_remote_main(d, row, observed_main, mutated, reply))
         return true;
     if (row->publication_signature[0])
