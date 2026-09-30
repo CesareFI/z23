@@ -106,6 +106,15 @@ static bool publish_path_hidden(const char *path)
     return strstr(path, "/.") != NULL;
 }
 
+static bool publish_manifest_outer_shape_valid(
+    const struct vcs_package_manifest *manifest)
+{
+    return manifest && manifest->count <= VCS_PACKAGE_MAX_FILES &&
+           manifest->cap <= VCS_PACKAGE_MAX_FILES &&
+           manifest->count <= manifest->cap &&
+           (manifest->count == 0 || manifest->files != NULL);
+}
+
 void vcs_package_publish_validate(
     const struct vcs_package_release *release,
     const struct vcs_package_manifest *manifest,
@@ -134,7 +143,23 @@ void vcs_package_publish_validate(
         return;
     }
 
-    /* Rules 3-6 over the manifest. */
+    /* Validate the in-memory shape before trusting count/files. Wire callers
+     * arrive through parse, but this is a public C boundary too: a malformed
+     * struct must fail closed rather than drive an out-of-bounds summary loop. */
+    if (!publish_manifest_outer_shape_valid(manifest)) {
+        vcs_package_publish_fail(report,
+                                 VCS_PACKAGE_PUBLISH_RULE_MANIFEST_PARSE,
+                                 "invalid in-memory manifest shape");
+        return;
+    }
+    uint8_t root[32];
+    if (!vcs_package_manifest_root(manifest, root)) {
+        vcs_package_publish_fail(report, VCS_PACKAGE_PUBLISH_RULE_ALLOC,
+                                 "manifest unavailable after parse");
+        return;
+    }
+
+    /* Rules 3-6 over the validated manifest. */
     report->manifest_ok = true;
     uint64_t total_bytes = 0;
     uint32_t chunk_count = 0;
@@ -155,12 +180,6 @@ void vcs_package_publish_validate(
     report->file_count = (uint32_t)manifest->count;
     report->chunk_count = chunk_count;
 
-    uint8_t root[32];
-    if (!vcs_package_manifest_root(manifest, root)) {
-        vcs_package_publish_fail(report, VCS_PACKAGE_PUBLISH_RULE_ALLOC,
-                                 "manifest root unavailable after parse");
-        return;
-    }
     if (memcmp(root, release->package_root, 32) != 0)
         vcs_package_publish_fail(report, VCS_PACKAGE_PUBLISH_RULE_ROOT_MATCH,
                                  "release.package_root != manifest root");
@@ -222,16 +241,34 @@ void vcs_package_publish_validate_recipe(
     report->recipe_ok = true;
 }
 
-bool vcs_package_publish_read_chunk(
+static bool publish_read_chunk_inputs_valid(
     const char *dir, const struct vcs_package_file *file,
-    uint32_t chunk_index, uint8_t *buf, size_t *len_out,
+    uint32_t chunk_index, const uint8_t *buf, size_t *len_out,
     enum vcs_package_publish_rule *rule_out)
 {
     if (!dir || !file || !buf || !len_out || !rule_out) {
         LOG_FAIL(PUBLISH_LOG, "null read_chunk argument");
         return false;
     }
+    *len_out = 0;
     *rule_out = VCS_PACKAGE_PUBLISH_OK;
+    if (!file->path || chunk_index >= file->chunk_count) {
+        LOG_ERROR(PUBLISH_LOG, "chunk index %u is outside the manifest file",
+                  chunk_index);
+        *rule_out = VCS_PACKAGE_PUBLISH_RULE_IO;
+        return false;
+    }
+    return true;
+}
+
+bool vcs_package_publish_read_chunk(
+    const char *dir, const struct vcs_package_file *file,
+    uint32_t chunk_index, uint8_t *buf, size_t *len_out,
+    enum vcs_package_publish_rule *rule_out)
+{
+    if (!publish_read_chunk_inputs_valid(dir, file, chunk_index, buf,
+                                         len_out, rule_out))
+        return false;
     char path[4400];
     int n = snprintf(path, sizeof(path), "%s/%s", dir, file->path);
     if (n < 0 || (size_t)n >= sizeof(path)) {
@@ -290,6 +327,18 @@ void vcs_package_publish_verify_chunks(
     if (!manifest || !dir || !report) {
         vcs_package_publish_fail(report, VCS_PACKAGE_PUBLISH_RULE_ALLOC,
                                  "null manifest/dir/report");
+        return;
+    }
+    if (!publish_manifest_outer_shape_valid(manifest)) {
+        vcs_package_publish_fail(report,
+                                 VCS_PACKAGE_PUBLISH_RULE_MANIFEST_PARSE,
+                                 "invalid in-memory manifest shape");
+        return;
+    }
+    uint8_t manifest_root[32];
+    if (!vcs_package_manifest_root(manifest, manifest_root)) {
+        vcs_package_publish_fail(report, VCS_PACKAGE_PUBLISH_RULE_ALLOC,
+                                 "manifest unavailable before chunk check");
         return;
     }
     uint8_t *buf = zcl_malloc(VCS_PACKAGE_CHUNK_BYTES, "publish_chunk_buf");
