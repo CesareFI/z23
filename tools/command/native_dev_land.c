@@ -5714,13 +5714,47 @@ static bool dl_fetch_remote_main(const char *wt, char observed_main[80])
     return false;
 }
 
+static bool dl_publication_target(const struct dl_dirs *d, char out[65]);
+
+static bool dl_observe_signed_target(const struct dl_dirs *d,
+                                     const struct dl_row *row, bool mutated,
+                                     struct zcl_command_reply *reply)
+{
+    char current[65] = {0};
+    if (!row->publication_signature[0] ||
+        (dl_publication_target(d, current) &&
+         strcmp(current, row->publication_target) == 0))
+        return true;
+    dl_log(row, "signed publication target changed; remote mutation refused\n");
+    (void)json_push_kv_str(&reply->data, "leaf", DL_LEAF);
+    (void)json_push_kv_str(&reply->data, "publication_target",
+                           row->publication_target);
+    (void)json_push_kv_str(&reply->data, "configured_target", current);
+    zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_BLOCKED,
+                           ZCL_COMMAND_EXIT_BLOCKED,
+                           "PUBLICATION_TARGET_CHANGED", "observe_remote",
+                           true, mutated,
+                           "configured origin no longer matches the signed publication target",
+                           current[0] ? current : "configured origin identity unavailable");
+    (void)snprintf(reply->error.next_action,
+                   sizeof(reply->error.next_action), "%s",
+                   "z23-dev dev land step");
+    return false;
+}
+
 static bool dl_observe_remote_main(const struct dl_dirs *d,
                                    const struct dl_row *row,
                                    char observed_main[80], bool mutated,
                                    struct zcl_command_reply *reply)
 {
-    if (dl_fetch_remote_main(d->wt, observed_main))
-        return true;
+    if (!dl_observe_signed_target(d, row, mutated, reply))
+        return false;
+    if (dl_fetch_remote_main(d->wt, observed_main)) {
+        if (dl_observe_signed_target(d, row, mutated, reply))
+            return true;
+        observed_main[0] = '\0';
+        return false;
+    }
     dl_log(row, "remote observation unavailable: cannot fetch and resolve "
                 "origin refs/heads/main; retaining request for retry\n");
     (void)json_push_kv_str(&reply->data, "leaf", DL_LEAF);
