@@ -51,8 +51,9 @@
  * DOES NOT PROVE: that a probe-clean file will actually load. This reads the
  * file; it does not simulate the dynamic linker.
  *
- * ── THIS PROBE MAKES NO POLICY DECISION ────────────────────────────────────
- * It reports COUNTS. It never returns "safe" or "unsafe". The caller writes
+ * ── THE GENERIC PROBE REPORTS FACTS ────────────────────────────────────────
+ * The generic entry reports counts; the separate HOT_FORK entry checks a
+ * bounded structural profile. Neither returns "safe" or "unsafe". The caller writes
  * the policy, and the counts below exist so the caller can write a correct
  * one instead of a superstitious one.
  *
@@ -198,6 +199,15 @@ extern "C" {
  * carries no partial facts — a partially-parsed hostile file must not leave
  * half-believable values behind for a caller who forgot to check the return
  * value. */
+/* Structural profile facts only; neither a code-safety nor execution grant. */
+struct hotswap_elf_hotfork_pure_facts {
+    uint32_t abi_version;
+    uint64_t descriptor_size;
+    uint64_t descriptor_vaddr;
+    size_t relative_relocations;
+    size_t exported_symbols;
+};
+
 struct hotswap_elf_facts {
     /* ── identity claims (the values dlsym would have returned) ────────── */
 
@@ -295,6 +305,11 @@ struct hotswap_elf_facts {
 
     /* Bytes actually read from the descriptor. */
     uint64_t file_size;
+
+    /* Generic parsing remains independent of this narrower profile. */
+    bool hotfork_pure_qualified;
+    struct hotswap_elf_hotfork_pure_facts hotfork_pure;
+    char hotfork_pure_reason[ZCL_HOTSWAP_ELF_PROBE_ERR_CAP];
 };
 
 /* Probe the ELF image on descriptor `fd` without mapping or executing it.
@@ -321,6 +336,13 @@ struct hotswap_elf_facts {
  * false as "refuse this artifact", not as "assume the defaults". */
 bool hotswap_elf_probe_fd(int fd, struct hotswap_elf_facts *out,
                           char *err, size_t err_cap);
+
+/* Read the same kernel-sealed ELF descriptor before mapping. Linux x86-64,
+ * sole existing HOT_FORK ABI-1 capsule export, no imports/loader callbacks,
+ * bounded internal RELATIVE relocations only. No mapping or code execution;
+ * unsupported platforms refuse. Caller retains fd. Facts are zero on refusal. */
+bool hotswap_elf_hotfork_pure_fd(int fd,
+    struct hotswap_elf_hotfork_pure_facts *out, char *err, size_t err_cap);
 
 /* The one pre-map policy shared by resident activation and offline verify. */
 bool hotswap_elf_pre_map_admit(const struct hotswap_elf_facts *facts,

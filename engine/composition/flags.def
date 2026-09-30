@@ -560,6 +560,8 @@ Z23_FLAG("ZCL_DETERMINISM_ROOT", "env_build", "-", "-",
           "undocumented; first use tools/lint/check_determinism_ratchet.sh:auto")
 Z23_FLAG("ZCL_DET_FIXTURE_CC", "env_test", "-", "-",
           "undocumented; first use tests/harness/src/test_determinism.c:auto")
+Z23_FLAG("ZCL_HOTFORK_PURE_FIXTURE_CC", "env_test", "cc", "cc|clang",
+          "Structural HOT_FORK fixture compiler only; first use tests/harness/src/test_hotswap_module_v2.c:auto")
 Z23_FLAG("ZCL_DEV_ACTIVATION_PROBE_COMMAND", "env_build", "-", "-",
           "undocumented; first use tools/dev/deploy-dev-lane.sh:auto")
 Z23_FLAG("ZCL_DEV_ACTIVATION_RESULT", "env_build", "-", "-",
