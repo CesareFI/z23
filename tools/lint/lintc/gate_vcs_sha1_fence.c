@@ -19,7 +19,9 @@
  *    the original produced through grep. Never silently skipped.
  *  - The original's self-test injected a failing grep via PATH; this port
  *    has no subprocess, so the equivalent fail-closed proof is an
- *    unreadable scanned file (chmod 000), which must trip exit 2.
+ *    unreadable scanned file (chmod 000), which must trip exit 2. When the
+ *    lint runs as uid 0, that one scan runs in a forked, de-privileged child
+ *    because root would otherwise bypass the fixture's mode bits.
  *  - The shell cd'd to $ROOT before scanning; every path this gate uses is
  *    already $ROOT-prefixed, so the port scans without chdir. A missing
  *    $ROOT trips the same "cannot enter" FATAL the cd would have.
@@ -35,6 +37,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #include "lintc.h"
 
@@ -871,12 +874,32 @@ static const char k_fx_makefile[] =
     "\tmv -f -- \"$$tmp\" \"$@\"\n"
     "lint: ; @tools/dev/source-identity-selftest.sh\n";
 
+static int vcs_fx_make_dirs_traversable(const char *root, const char *rel)
+{
+    char path[VCS_PATH];
+    if (chmod(root, 0755) != 0 ||
+        ovf(snprintf(path, sizeof path, "%s/%s", root, rel), sizeof path))
+        return 1;
+    char *p = path + strlen(root) + 1;
+    while ((p = strchr(p, '/')) != NULL) {
+        *p = '\0';
+        int rc = chmod(path, 0755);
+        *p++ = '/';
+        if (rc != 0)
+            return 1;
+    }
+    return 0;
+}
+
 static int vcs_fx_write(const char *root, const char *rel, const char *text)
 {
     char path[VCS_PATH];
     if (ovf(snprintf(path, sizeof path, "%s/%s", root, rel), sizeof path))
         return 2;
-    return csr_write(path, text);
+    int rc = csr_write(path, text);
+    if (rc == 0 && chmod(path, 0644) != 0)
+        rc = 1;
+    return rc == 0 ? vcs_fx_make_dirs_traversable(root, rel) : rc;
 }
 
 static int vcs_fx_build(const char *root)
@@ -990,7 +1013,25 @@ static int vcs_st_unreadable(const char *root)
         return 1;
     if (chmod(path, 0) != 0)
         return 1;
-    int bad = vcs_st_case(root, NULL, NULL, 2);
+    int bad = 0;
+    if (geteuid() == 0) {
+        fflush(NULL);
+        pid_t pid = fork();
+        if (pid == 0) {
+            if (setuid((uid_t)1) != 0 || geteuid() == 0)
+                _exit(2);
+            _exit(vcs_st_case(root, NULL, NULL, 2) ? 1 : 0);
+        }
+        int status = 0;
+        pid_t waited = -1;
+        while (pid > 0 && (waited = waitpid(pid, &status, 0)) < 0 &&
+               errno == EINTR)
+            ;
+        bad = pid < 0 || waited != pid || !WIFEXITED(status) ||
+              WEXITSTATUS(status) != 0;
+    } else {
+        bad = vcs_st_case(root, NULL, NULL, 2);
+    }
     if (chmod(path, 0600) != 0)
         return 1;
     return bad;
