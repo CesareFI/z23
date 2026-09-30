@@ -5176,6 +5176,12 @@ static bool dp_restart_overlay_stale_ok(
     return false;
 }
 
+static bool dp_has_heavy_groups(const char *groups)
+{
+    return strstr(groups, "test_make_lint_gates_heavy_02") != NULL &&
+           strstr(groups, "test_make_lint_gates_heavy_03") != NULL;
+}
+
 static bool run_resident_restart_fixture(void)
 {
     char root[PATH_MAX], cache_rel[PATH_MAX], compiler_rel[PATH_MAX];
@@ -5444,7 +5450,7 @@ static bool run_resident_restart_fixture(void)
         proof.groups_cached != 1 ||
         proof.self_skips != 0 ||
         !strstr(proof.groups, "test_dev_platform") ||
-        !strstr(proof.groups, "test_make_lint_gates_heavy_02") ||
+        !dp_has_heavy_groups(proof.groups) ||
         proof.artifact_cache_hit || proof.compiler_processes != 2 ||
         proof.linker_processes != 1 ||
         proof.complete_graph_linker_processes != 0 ||
@@ -5531,8 +5537,7 @@ static bool run_resident_restart_fixture(void)
         !proof.artifact_cache_hit || proof.compiler_processes != 2 ||
         proof.linker_processes != 0 ||
         strstr(proof.groups, "test_make_lint_gates") ||
-        !strstr(proof.deferred_groups,
-                "test_make_lint_gates_heavy_02") ||
+        !dp_has_heavy_groups(proof.deferred_groups) ||
         strlen(proof.deferred_groups_sha256) != 64)
         goto out;
 

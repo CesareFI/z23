@@ -536,6 +536,7 @@ static int test_registry_exact_resolution(void)
         ASSERT(strstr(out, "test_make_lint_gates\n") != NULL);
         ASSERT(strstr(out, "test_make_lint_gates_shard_01\n") != NULL);
         ASSERT(strstr(out, "test_make_lint_gates_heavy_02\n") != NULL);
+        ASSERT(strstr(out, "test_make_lint_gates_heavy_03\n") != NULL);
         ASSERT(strstr(out, "test_api\n") != NULL);
         ASSERT(strstr(out, "test_native_api_contract\n") != NULL);
 
@@ -637,6 +638,7 @@ static int test_declared_family_expansion(void)
         ASSERT(family_expansion_has(&lint, "test_make_lint_gates_partition"));
         ASSERT(family_expansion_has(&lint, "test_make_lint_gates_heavy_01"));
         ASSERT(family_expansion_has(&lint, "test_make_lint_gates_heavy_02"));
+        ASSERT(family_expansion_has(&lint, "test_make_lint_gates_heavy_03"));
         /* Every member is a registered group, and the shard list is derived
          * from the catalog rather than written down here: a shard added to
          * the registry joins the family with no edit to this test. */
@@ -959,6 +961,8 @@ static int test_native_catalog_resolution(void)
         ASSERT(zcl_test_group_is_integration_only(
             "test_make_lint_gates_heavy_02"));
         ASSERT(zcl_test_group_is_integration_only(
+            "test_make_lint_gates_heavy_03"));
+        ASSERT(zcl_test_group_is_integration_only(
             "test_make_lint_gates_shard_01"));
         ASSERT(zcl_test_group_is_integration_only(
             "test_shielded_payment_gate"));
@@ -1029,6 +1033,8 @@ static int test_native_catalog_resolution(void)
                           "test_make_lint_gates_heavy_01") != 0);
             ASSERT(strcmp(immediate[i],
                           "test_make_lint_gates_heavy_02") != 0);
+            ASSERT(strcmp(immediate[i],
+                          "test_make_lint_gates_heavy_03") != 0);
         }
         PASS();
     } _test_next:;

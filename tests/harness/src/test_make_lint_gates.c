@@ -205,8 +205,6 @@ static const struct lint_gate_entry g_lint_gate_entries[] = {
     S_(t_canonical_operator_diagnostics_contract),
     S_(t_canonical_deploy_proof_binding_contract),
     S_(t_dev_lane_deploy_contract),
-    /* Captures exact Git source identity through build-epoch-selftest. */
-    N_(t_agent_fast_ci_contract),
     /* Hermetic: each script proves itself inside its own mktemp sandbox and
      * no tracked path is written, so this needs no worktree clone. */
     N_(t_slow_disk_progress_verdicts_contract),
@@ -323,6 +321,9 @@ static const struct lint_gate_entry g_lint_gate_entries[] = {
     S_(t_no_uncited_victory),
     /* Read-only root probe retained in the historical base group. */
     X_(t_no_stray_root_files),
+    /* Slow, hermetic epoch fixtures own a group in the normal worker pool.
+     * Append after existing heavy entries to preserve heavy_01/02 IDs. */
+    H_(t_agent_fast_ci_contract),
 };
 #undef S_
 #undef N_
@@ -342,7 +343,7 @@ static const struct lint_gate_entry g_lint_gate_entries[] = {
 /* Heavy lane owners are LINT_OWNER_HEAVY_BASE + k for the k-th HEAVY entry in
  * table order. */
 #define LINT_OWNER_HEAVY_BASE (100)
-#define LINT_GATE_HEAVY_COUNT (2)
+#define LINT_GATE_HEAVY_COUNT (3)
 
 /* Per-check cost in milliseconds, used to balance the shards. Measured: run
  * the family under ZCL_LINT_GATE_TIMING=1 and read the `[lint-gate-timing]
@@ -439,6 +440,14 @@ static int lint_owner_of(size_t idx)
         if ((size_t)order[k] == idx) owner = lightest;
     }
     return owner;
+}
+
+static int lint_owner_for_check(lint_gate_fn fn)
+{
+    for (size_t i = 0; i < LINT_GATE_ENTRY_COUNT; i++)
+        if (g_lint_gate_entries[i].fn == fn)
+            return lint_owner_of(i);
+    return LINT_OWNER_NONE;
 }
 
 /* ── Runners ──────────────────────────────────────────────────────────── */
@@ -678,8 +687,8 @@ int test_make_lint_gates_realroot(void)
     return lint_run_owned(LINT_OWNER_REALROOT);
 }
 
-/* One group per HEAVY check: heavy_01 is the import-copy-prove driver
- * selftest, heavy_02 the fresh-boot-weld one; both hermetic. */
+/* One group per HEAVY check: heavy_01 is import-copy-prove, heavy_02 is
+ * fresh-boot-weld, and heavy_03 is the exact epoch contract; all hermetic. */
 int test_make_lint_gates_heavy_01(void)
 {
     char real_root[PATH_MAX];
@@ -696,6 +705,15 @@ int test_make_lint_gates_heavy_02(void)
         return 0;
     printf("\n=== make_lint_gates heavy 2 tests ===\n");
     return lint_run_owned(LINT_OWNER_HEAVY_BASE + 1);
+}
+
+int test_make_lint_gates_heavy_03(void)
+{
+    char real_root[PATH_MAX];
+    if (lint_resolve_real_root(real_root, sizeof(real_root)) != 0)
+        return 0;
+    printf("\n=== make_lint_gates heavy 3 tests ===\n");
+    return lint_run_owned(LINT_OWNER_HEAVY_BASE + 2);
 }
 
 /* The exclusive lane: stale sandbox cleanup and the read-only root probe.
@@ -767,6 +785,9 @@ static int t_partition_shards_all_carry_work(void)
     for (int h = 0; h < LINT_GATE_HEAVY_COUNT; h++) heavy_counts[h] = 0;
     int realroot_count = 0, exclusive_count = 0, heavy_lane_entries = 0;
     int trust_order_owner = LINT_OWNER_NONE, stray_root_owner = LINT_OWNER_NONE;
+    int import_owner = lint_owner_for_check(t_import_copy_prove_selftest);
+    int weld_owner = lint_owner_for_check(t_fresh_boot_weld_prove_selftest);
+    int epoch_owner = lint_owner_for_check(t_agent_fast_ci_contract);
 
     for (size_t i = 0; i < LINT_GATE_ENTRY_COUNT; i++) {
         if (g_lint_gate_entries[i].lane == LINT_LANE_HEAVY) heavy_lane_entries++;
@@ -796,6 +817,9 @@ static int t_partition_shards_all_carry_work(void)
          * a group (an ungrouped one makes lint_owner_of() return NONE). */
         ASSERT(empty_heavy == 0);
         ASSERT(heavy_lane_entries == LINT_GATE_HEAVY_COUNT);
+        ASSERT(import_owner == LINT_OWNER_HEAVY_BASE);
+        ASSERT(weld_owner == LINT_OWNER_HEAVY_BASE + 1);
+        ASSERT(epoch_owner == LINT_OWNER_HEAVY_BASE + 2);
         /* Pin both owners so coverage stays stable across fixture isolation. */
         ASSERT(trust_order_owner == LINT_OWNER_REALROOT);
         ASSERT(stray_root_owner == LINT_OWNER_EXCLUSIVE);
@@ -817,6 +841,7 @@ static int t_partition_only_base_group_is_exclusive(void)
         ASSERT(!lint_gates_group_is_exclusive("test_make_lint_gates_realroot"));
         ASSERT(!lint_gates_group_is_exclusive("test_make_lint_gates_heavy_01"));
         ASSERT(!lint_gates_group_is_exclusive("test_make_lint_gates_heavy_02"));
+        ASSERT(!lint_gates_group_is_exclusive("test_make_lint_gates_heavy_03"));
         ASSERT(!lint_gates_group_is_exclusive("test_make_lint_gates_partition"));
         ASSERT(!lint_gates_group_is_exclusive(NULL));
         ASSERT(lint_gates_group_requires_quiet_pool(
@@ -900,6 +925,8 @@ int test_make_lint_gates_heavy_01(void)
 { return lint_gate_skip_windows("make_lint_gates_heavy_01"); }
 int test_make_lint_gates_heavy_02(void)
 { return lint_gate_skip_windows("make_lint_gates_heavy_02"); }
+int test_make_lint_gates_heavy_03(void)
+{ return lint_gate_skip_windows("make_lint_gates_heavy_03"); }
 int test_make_lint_gates_partition(void)
 { return lint_gate_skip_windows("make_lint_gates_partition"); }
 
@@ -919,6 +946,7 @@ int test_make_lint_gates(void) { return 0; }
 int test_make_lint_gates_realroot(void) { return 0; }
 int test_make_lint_gates_heavy_01(void) { return 0; }
 int test_make_lint_gates_heavy_02(void) { return 0; }
+int test_make_lint_gates_heavy_03(void) { return 0; }
 int test_make_lint_gates_partition(void) { return 0; }
 
 #define LINT_SHARD_STUB(tag) \

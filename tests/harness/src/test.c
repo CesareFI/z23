@@ -11,6 +11,7 @@
  * declaration local so adding the oracle does not invalidate every translation
  * unit that includes the shared test catalog. */
 extern int test_sha512_isa_parity(void);
+extern int test_make_lint_gates_heavy_03(void);
 
 /* Required by process_block.c (normally in main.c) */
 volatile sig_atomic_t g_shutdown_requested = 0;
@@ -26,6 +27,7 @@ static int test_make_lint_gates_family(void)
     failures += test_make_lint_gates_realroot();
     failures += test_make_lint_gates_heavy_01();
     failures += test_make_lint_gates_heavy_02();
+    failures += test_make_lint_gates_heavy_03();
     failures += test_make_lint_gates_shard_01();
     failures += test_make_lint_gates_shard_02();
     failures += test_make_lint_gates_shard_03();
