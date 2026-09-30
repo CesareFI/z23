@@ -135,6 +135,14 @@ void zcl_reflex_runner_exit_if_requested(int argc, char **argv);
 bool zcl_reflex_runner_run(const struct zcl_reflex_runner_spec *spec,
                            struct zcl_reflex_runner_outcome *out);
 
+/* Borrow an already-open regular image; artifact_path is ignored. The same
+ * sealed-copy, digest, confinement and report checks apply. The caller retains
+ * descriptor ownership; successful sealing leaves its offset at zero. No
+ * candidate bytes execute in the caller. Unsupported hosts refuse unchanged. */
+bool zcl_reflex_runner_run_fd(int artifact_fd,
+                              const struct zcl_reflex_runner_spec *spec,
+                              struct zcl_reflex_runner_outcome *out);
+
 /* Artifact root of the last green candidate recorded for `source_tu`.
  * Red candidates never replace it. Returns false when none exists. */
 bool zcl_reflex_runner_last_green(const char *source_tu, char out[65]);
