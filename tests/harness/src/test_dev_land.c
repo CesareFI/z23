@@ -86,6 +86,9 @@ void zcl_native_dev_land_test_pick_barrier(int ready_fd, int release_fd);
 static char g_dlx_state[1024];
 static char g_dlx_saved_xdg[4096];
 static bool g_dlx_had_xdg;
+static char g_dlx_saved_path[8192];
+static bool g_dlx_had_path;
+static bool g_dlx_path_saved;
 
 #if !defined(_WIN32)
 /* The landing worktree now pushes through a real installed pre-push hook
@@ -116,6 +119,11 @@ static void dlx_isolate(const char *tag)
     if (g_dlx_had_xdg)
         (void)snprintf(g_dlx_saved_xdg, sizeof(g_dlx_saved_xdg), "%s",
                        getenv("XDG_STATE_HOME"));
+    const char *path = getenv("PATH");
+    g_dlx_had_path = path != NULL;
+    g_dlx_path_saved = !path || strlen(path) < sizeof(g_dlx_saved_path);
+    if (g_dlx_had_path && g_dlx_path_saved)
+        memcpy(g_dlx_saved_path, path, strlen(path) + 1);
     setenv("XDG_STATE_HOME", g_dlx_state, 1);
     unsetenv("ZCL_LAND_PROOF_STUB");
     unsetenv("ZCL_LAND_ALLOW_UNSIGNED");
@@ -130,6 +138,10 @@ static void dlx_isolate(const char *tag)
     unsetenv("ZCL_LAND_REGEN_MAKE_STUB");
     unsetenv("ZCL_LAND_REGEN_GATE_STUB_FAIL");
     unsetenv("ZCL_LAND_DRAIN_IDLE_SEC");
+    unsetenv("ZCL_DLX_GIT_COUNT");
+    unsetenv("ZCL_DLX_GIT_DIVERT_REMOTE");
+    unsetenv("ZCL_DLX_GIT_REAL_PATH");
+    unsetenv("ZCL_DLX_GIT_TARGET_WT");
     /* The vendor/tor submodule fixtures below add a real gitlink pointing
      * at a same-host bare repo; modern git's default transport allowlist
      * otherwise refuses a local `file://`-style remote reached through
@@ -148,6 +160,12 @@ static void dlx_restore(void)
         setenv("XDG_STATE_HOME", g_dlx_saved_xdg, 1);
     else
         unsetenv("XDG_STATE_HOME");
+    if (g_dlx_path_saved) {
+        if (g_dlx_had_path)
+            setenv("PATH", g_dlx_saved_path, 1);
+        else
+            unsetenv("PATH");
+    }
     unsetenv("ZCL_LAND_PROOF_STUB");
     unsetenv("ZCL_LAND_ALLOW_UNSIGNED");
     unsetenv("ZCL_LAND_HOOKS_STUB_DIR");
@@ -161,6 +179,10 @@ static void dlx_restore(void)
     unsetenv("ZCL_LAND_REGEN_MAKE_STUB");
     unsetenv("ZCL_LAND_REGEN_GATE_STUB_FAIL");
     unsetenv("ZCL_LAND_DRAIN_IDLE_SEC");
+    unsetenv("ZCL_DLX_GIT_COUNT");
+    unsetenv("ZCL_DLX_GIT_DIVERT_REMOTE");
+    unsetenv("ZCL_DLX_GIT_REAL_PATH");
+    unsetenv("ZCL_DLX_GIT_TARGET_WT");
     unsetenv("GIT_ALLOW_PROTOCOL");
 }
 
@@ -395,6 +417,53 @@ static bool dlx_hooks_dir(char *out, size_t cap, const char *tag,
     if (!dlx_write(path, body))
         return false;
     return chmod(path, 0755) == 0;
+}
+
+/* Put a git shim first on PATH that changes only the fifth fetch-url lookup
+ * for the landing worktree. The first four lookups are the signed-target
+ * checks made before an independent receipt fetch. A receipt implementation
+ * must use the exact locator captured by one of those checks, never perform a
+ * later mutable lookup whose bytes were not bound to the signed target. */
+static bool dlx_git_locator_shim(const char *wt, const char *diverted,
+                                 char *count_path, size_t count_cap)
+{
+    char shim[1024], git[1200], path[10240];
+    static const char script[] =
+        "#!/bin/sh\n"
+        "if test \"$#\" -eq 5 && test \"$1\" = '-C' && "
+        "test \"$2\" = \"$ZCL_DLX_GIT_TARGET_WT\" && "
+        "test \"$3\" = 'remote' && test \"$4\" = 'get-url' && "
+        "test \"$5\" = 'origin'; then\n"
+        "  count=0\n"
+        "  if test -f \"$ZCL_DLX_GIT_COUNT\"; then\n"
+        "    read -r count < \"$ZCL_DLX_GIT_COUNT\" || exit 70\n"
+        "  fi\n"
+        "  count=$((count + 1))\n"
+        "  printf '%s\\n' \"$count\" > \"$ZCL_DLX_GIT_COUNT\" || exit 70\n"
+        "  if test \"$count\" -eq 5; then\n"
+        "    printf '%s\\n' \"$ZCL_DLX_GIT_DIVERT_REMOTE\"\n"
+        "    exit 0\n"
+        "  fi\n"
+        "fi\n"
+        "PATH=$ZCL_DLX_GIT_REAL_PATH\n"
+        "export PATH\n"
+        "exec git \"$@\"\n";
+    if (!wt || !diverted || !count_path || !g_dlx_had_path ||
+        !g_dlx_path_saved)
+        return false;
+    test_make_tmpdir(shim, sizeof(shim), "dev_land", "locator_shim");
+    if (snprintf(git, sizeof(git), "%s/git", shim) >= (int)sizeof(git) ||
+        snprintf(count_path, count_cap, "%s/get-url.count", shim) >=
+            (int)count_cap ||
+        snprintf(path, sizeof(path), "%s:%s", shim, g_dlx_saved_path) >=
+            (int)sizeof(path) ||
+        !dlx_write(git, script) || chmod(git, 0700) != 0)
+        return false;
+    return setenv("ZCL_DLX_GIT_COUNT", count_path, 1) == 0 &&
+        setenv("ZCL_DLX_GIT_DIVERT_REMOTE", diverted, 1) == 0 &&
+        setenv("ZCL_DLX_GIT_REAL_PATH", g_dlx_saved_path, 1) == 0 &&
+        setenv("ZCL_DLX_GIT_TARGET_WT", wt, 1) == 0 &&
+        setenv("PATH", path, 1) == 0;
 }
 
 struct dlx_rig {
@@ -6587,6 +6656,70 @@ _test_next:;
     return failures;
 }
 
+static int test_dev_land_receipt_locator_binding(void)
+{
+    int failures = 0;
+#if !defined(_WIN32)
+    TEST("land: remote receipt fetch uses the locator bound to the signed target") {
+        struct dlx_rig rig;
+        struct dlx_call c;
+        char base[64], descendant[64], land[1200], wt[1400];
+        char diverted_root[1024], diverted[1200], update[160];
+        char count_path[1400], count[32];
+        size_t count_len = 0;
+        dlx_isolate("receipt_locator");
+        ASSERT(dlx_attach_proven_pair(&rig, "receipt_locator", base));
+        dlx_begin(&c, "attach");
+        (void)json_push_kv_int(&c.input, "seq", 1);
+        ASSERT(dlx_run(&c) && dlx_ok(&c));
+        dlx_end(&c);
+
+        /* The signed candidate is already on the real target, modelling
+         * recovery after a publisher lost its acknowledgement. */
+        ASSERT(snprintf(update, sizeof(update), "%s:refs/heads/main",
+                        rig.tip) < (int)sizeof(update));
+        const char *publish[] = { "fetch", "--quiet", rig.clone, update,
+                                  NULL };
+        ASSERT(dlx_git(rig.bare, publish) == 0);
+
+        /* A second repository contains a valid descendant. Fetching it would
+         * satisfy the ancestry checks, but it is not the signed target. */
+        ASSERT(dlx_commit(rig.clone, "diverted.txt", "diverted\n",
+                          descendant));
+        test_make_tmpdir(diverted_root, sizeof(diverted_root), "dev_land",
+                         "receipt_locator_diverted");
+        ASSERT(snprintf(diverted, sizeof(diverted), "%s/origin.git",
+                        diverted_root) < (int)sizeof(diverted));
+        const char *init[] = { "init", "--quiet", "--bare",
+                               "--initial-branch=main", diverted, NULL };
+        ASSERT(dlx_git(NULL, init) == 0);
+        ASSERT(snprintf(update, sizeof(update), "%s:refs/heads/main",
+                        descendant) < (int)sizeof(update));
+        const char *seed_diverted[] = { "fetch", "--quiet", rig.clone,
+                                        update, NULL };
+        ASSERT(dlx_git(diverted, seed_diverted) == 0);
+
+        dlx_landdir(land, sizeof(land));
+        ASSERT(snprintf(wt, sizeof(wt), "%s/wt", land) < (int)sizeof(wt));
+        ASSERT(dlx_git_locator_shim(wt, diverted, count_path,
+                                    sizeof(count_path)));
+        dlx_begin(&c, "step");
+        ASSERT(dlx_run(&c) && dlx_ok(&c));
+        ASSERT_STR_EQ(dlx_str(&c, "state"), "landed");
+        ASSERT_STR_EQ(dlx_str(&c, "remote_tip"), rig.tip);
+        dlx_end(&c);
+        ASSERT(dlx_slurp(count_path, count, sizeof(count), &count_len));
+        ASSERT(count_len == strlen("4\n"));
+        ASSERT(memcmp(count, "4\n", count_len) == 0);
+        dlx_restore();
+        PASS();
+    }
+_test_next:;
+    dlx_restore();
+#endif
+    return failures;
+}
+
 static int test_dev_land_signed_lost_ack(void)
 {
     int failures = 0;
@@ -7620,6 +7753,7 @@ int test_dev_land(void)
     failures += test_dev_land_signed_target_race();
     failures += test_dev_land_signed_stale();
     failures += test_dev_land_signed_recovery();
+    failures += test_dev_land_receipt_locator_binding();
     failures += test_dev_land_signed_lost_ack();
     failures += test_dev_land_signed_lost_race();
     failures += test_dev_land_signed_push_lost_race();
