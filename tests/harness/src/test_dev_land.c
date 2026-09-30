@@ -423,6 +423,17 @@ static bool dlx_commit(const char *dir, const char *name, const char *body,
     return dlx_git_out(dir, head, out, 64) == 0 && strlen(out) == 40;
 }
 
+/* A linked landing worktree shares this repository-local identity. Keeping
+ * it on the fixture makes rebases and generated-document commits hermetic:
+ * no test result depends on a developer or CI account's global Git config. */
+static bool dlx_config_identity(const char *dir)
+{
+    const char *name[] = { "config", "user.name", "land", NULL };
+    const char *email[] = { "config", "user.email", "land@z23.invalid",
+                            NULL };
+    return dlx_git(dir, name) == 0 && dlx_git(dir, email) == 0;
+}
+
 /* NOTE: tag must differ from every other fixture tag in the same TEST —
  * test_make_tmpdir wipes and recreates its path. */
 static bool dlx_rig_make(struct dlx_rig *rig, const char *tag)
@@ -441,6 +452,8 @@ static bool dlx_rig_make(struct dlx_rig *rig, const char *tag)
     if (dlx_git(NULL, init_bare) != 0)
         return false;
     if (dlx_git(NULL, clone) != 0)
+        return false;
+    if (!dlx_config_identity(rig->clone))
         return false;
     /* A checkout marker set, so the leaf's checkout-root walk and its own
      * worktree bookkeeping behave the way they do in a real tree. */
@@ -1089,6 +1102,8 @@ static bool dlx_rig_make_docregen(struct dlx_rig *rig, const char *tag,
     if (dlx_git(NULL, init_bare) != 0)
         return false;
     if (dlx_git(NULL, clone) != 0)
+        return false;
+    if (!dlx_config_identity(rig->clone))
         return false;
     /* The plan-refresh target the regen phase's dlrg_plan_refresh() runs
      * when it observed any artifact's stat identity change: a trivial
