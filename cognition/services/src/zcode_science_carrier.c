@@ -19,6 +19,26 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define ZCODE_SCIENCE_PUBLISH_MAX_WIRE_BYTES \
+    VCS_ZCODE_STUDY_SPEC_WIRE_BYTES
+
+static_assert(VCS_ZCODE_BENCHMARK_RESULT_V2_WIRE_BYTES <=
+              ZCODE_SCIENCE_PUBLISH_MAX_WIRE_BYTES);
+static_assert(VCS_ZCODE_BENCHMARK_RESULT_WIRE_BYTES <=
+              ZCODE_SCIENCE_PUBLISH_MAX_WIRE_BYTES);
+static_assert(VCS_ZCODE_REPRODUCTION_WIRE_BYTES <=
+              ZCODE_SCIENCE_PUBLISH_MAX_WIRE_BYTES);
+static_assert(VCS_ZCODE_SCIENCE_FINDINGS_WIRE_BYTES <=
+              ZCODE_SCIENCE_PUBLISH_MAX_WIRE_BYTES);
+static_assert(VCS_ZCODE_HARDWARE_PROFILE_WIRE_BYTES <=
+              ZCODE_SCIENCE_PUBLISH_MAX_WIRE_BYTES);
+static_assert(VCS_ZCODE_BENCHMARK_METHOD_WIRE_BYTES <=
+              ZCODE_SCIENCE_PUBLISH_MAX_WIRE_BYTES);
+static_assert(VCS_ZCODE_REVIEW_WIRE_BYTES <=
+              ZCODE_SCIENCE_PUBLISH_MAX_WIRE_BYTES);
+static_assert(VCS_ZCODE_CURATION_VOTE_WIRE_BYTES ==
+              VCS_ZCODE_REVIEW_WIRE_BYTES);
+
 /* Identify a science wire by exact (magic, length): parse + validate +
  * re-derive the canonical root. At most one kind can match — every parse
  * checks its own magic and exact length first. Votes are addressed by
@@ -147,7 +167,11 @@ struct zcl_result zcode_science_publish(
         return ZCL_ERR(-1, "science-publish-root-invalid");
     uint8_t *wire = NULL;
     size_t len = 0;
-    if (vcs_object_load_raw(workspace, root, &wire, &len) != 0)
+    int loaded = vcs_object_load_raw_bounded(
+        workspace, root, ZCODE_SCIENCE_PUBLISH_MAX_WIRE_BYTES, &wire, &len);
+    if (loaded == -2)
+        return ZCL_ERR(-1, "science-publish-cas-corrupt");
+    if (loaded != 0)
         return ZCL_ERR(-1, "science-publish-not-in-cas");
     uint8_t derived[32];
     const char *kind = NULL;

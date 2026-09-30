@@ -89,6 +89,15 @@ static bool zstore_write_empty(const char *path)
     return file && fclose(file) == 0;
 }
 
+static bool zstore_resize_object(const char *workspace,
+                                 const char root_hex[65], off_t size)
+{
+    char path[ZSTORE_DIR_CAP + 96];
+    int n = snprintf(path, sizeof(path), "%s/.zvcs/objects/%.2s/%s",
+                     workspace, root_hex, root_hex + 2);
+    return n > 0 && (size_t)n < sizeof(path) && truncate(path, size) == 0;
+}
+
 /* Count files under <dir>/.zvcs/objects/<shard>/. */
 static int zstore_cas_object_count(const char *workspace)
 {
@@ -1189,6 +1198,26 @@ static int test_zstore_publish(void)
         ASSERT(zcode_science_publish(store, dir, commit.result_root,
                                      blob2, kind2).ok);
         ASSERT_STR_EQ(blob2, blob_hex);
+        /* The publisher rejects an oversized addressed object before
+         * allocating it, and repair restores the canonical bytes. */
+        uint8_t science_root[32];
+        ASSERT(zcl_hex_decode_lower(commit.result_root, science_root,
+                                    sizeof(science_root)));
+        ASSERT(zstore_resize_object(
+            dir, commit.result_root,
+            (off_t)VCS_ZCODE_STUDY_SPEC_WIRE_BYTES + 1));
+        struct zcl_result oversized = zcode_science_publish(
+            store, dir, commit.result_root, blob2, kind2);
+        ASSERT(!oversized.ok);
+        ASSERT_STR_EQ(oversized.message, "science-publish-cas-corrupt");
+        bool repaired = false;
+        ASSERT(vcs_object_put_addressed_repair(
+            dir, science_root, wire, sizeof(wire), &repaired));
+        ASSERT(repaired);
+        ASSERT(zcode_science_publish(store, dir, commit.result_root,
+                                     blob2, kind2).ok);
+        ASSERT_STR_EQ(blob2, blob_hex);
+        ASSERT_STR_EQ(kind2, ZCODE_SCIENCE_KIND_STUDY);
         /* Named negatives. */
         char absent[65];
         memset(absent, 'a', 64);
