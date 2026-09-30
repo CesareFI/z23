@@ -10,7 +10,10 @@
 #include "test/proof_ticket_fixture.h"
 
 #include "dev_proof.h"
+#include "dev_proof_signer.h"
 #include "platform/time_compat.h"
+#include "verify_attest.h"
+#include "verify_receiver.h"
 #include "vcs/blob_store.h"
 #include "vcs/package_store.h"
 
@@ -618,6 +621,117 @@ static int seam_case_history(void)
     return failures;
 }
 
+/* The loader token the worker records. A successful load is still not
+ * a test-verdict signer, so the token is verifier_unqualified rather
+ * than an adopted key. */
+static bool seam_trust_token(char *token, size_t cap)
+{
+    struct zcl_verify_attest_box_key box;
+    struct zcl_verify_attest_trust_root root;
+    const char *why = NULL;
+    const char *got;
+    int n;
+    zcl_verify_receiver_box_key(&box);
+    if (!zcl_verify_attest_trust_root_load(NULL, &box, &root, &why))
+        got = why && why[0] ? why : ZCL_VERIFY_ATTEST_WHY_NO_VERIFIER_KEY;
+    else
+        got = "verifier_unqualified";
+    n = snprintf(token, cap, "%s", got);
+    return n > 0 && (size_t)n < cap;
+}
+
+/* A private state root so derivation does not depend on this box
+ * already having a proof signer. The previous XDG value is restored
+ * by seam_signer_end, including when it was unset. */
+static bool seam_signer_begin(char *dir, size_t dir_cap, char *old,
+                              size_t old_cap, uint8_t pub[32])
+{
+    const char *prev = getenv("XDG_STATE_HOME");
+    const char *why = NULL;
+    uint8_t sig[ZCL_DEV_PROOF_SIGNER_SIGNATURE_BYTES];
+    static const uint8_t zero[32];
+    char *made;
+    size_t n;
+    dir[0] = 0;
+    old[0] = 0;
+    if (prev) {
+        n = strlen(prev);
+        if (n + 1 > old_cap) return false;
+        memcpy(old, prev, n + 1);
+    }
+    made = test_mkdtemp(dir, dir_cap, "z23-check-seam-signer");
+    if (!made) return false;
+    if (setenv("XDG_STATE_HOME", dir, 1) != 0) return false;
+    if (!zcl_dev_proof_signer_sign((const uint8_t *)"check-seam", 10, pub,
+                                   sig, &why))
+        return false;
+    return memcmp(pub, zero, 32) != 0;
+}
+
+static void seam_signer_end(const char *dir, const char *old)
+{
+    if (old && old[0]) {
+        if (setenv("XDG_STATE_HOME", old, 1) != 0)
+            (void)unsetenv("XDG_STATE_HOME");
+    } else {
+        (void)unsetenv("XDG_STATE_HOME");
+    }
+    if (dir && dir[0]) test_rm_rf(dir);
+}
+
+/* Null authority is derived inside the dimension. The signer lives
+ * under the private state root from seam_signer_begin. The trust
+ * token is the loader's own result, and a loaded compile key still
+ * does not skip the test child. */
+static int seam_case_derived(void)
+{
+    int failures = 0;
+    char state[SEAM_PATH], old[SEAM_PATH], trust[64];
+    char dir[SEAM_PATH], binary[SEAM_PATH];
+    uint8_t raw[SEAM_RAW][32];
+    uint8_t pub[32];
+    struct zcl_dev_proof_check_inputs in;
+    struct vcs_component_proof_key_v1 key;
+    struct seam_meter derived;
+    int policy_matches;
+    int author_matches;
+    state[0] = 0;
+    if (!seam_signer_begin(state, sizeof(state), old, sizeof(old), pub)) {
+        printf("FAIL check seam signer isolate\n");
+        failures++;
+        seam_signer_end(state, old);
+        return failures;
+    }
+    TEST_CASE("check seam: unset authority is derived from the closure") {
+        seam_fill(raw, &in);
+        ASSERT(zcl_dev_proof_check_closure_derive(&in, &key));
+        ASSERT(seam_trust_token(trust, sizeof(trust)));
+        ASSERT(seam_dir(dir, sizeof(dir), binary, sizeof(binary), 1));
+        ASSERT(seam_run(&in, dir, binary, 1, NULL, NULL, NULL, &derived));
+        ASSERT(derived.out.ok);
+        ASSERT_EQ(derived.out.test_children, 1u);
+        ASSERT_EQ(derived.out.reused, 0u);
+        ASSERT(derived.out.authority_derived);
+        ASSERT(derived.out.authority_local_signer);
+        policy_matches = memcmp(derived.out.derived_policy_root,
+                                key.roots[VCS_CPK_POLICY], 32) == 0;
+        author_matches = memcmp(derived.out.derived_author, pub, 32) == 0;
+        ASSERT(policy_matches);
+        ASSERT(author_matches);
+        ASSERT(strcmp(derived.out.authority_trust, trust) == 0);
+        ASSERT(strstr(derived.out.why,
+                      "unqualified(no_verifier_account)") != NULL);
+        printf("check_seam case=derived children=%u reused=%u derived=1 "
+               "local_signer=1 policy_matches=%d author_matches=%d "
+               "trust=%s why=%s\n",
+               derived.out.test_children, derived.out.reused, policy_matches,
+               author_matches, derived.out.authority_trust, derived.out.why);
+        test_rm_rf(dir);
+    } TEST_END
+    seam_signer_end(state, old);
+    return failures;
+}
+
 /* A directory this process owns is the same trust domain the proof
  * refuses. /usr is root-owned on this host, so the uid compare is the
  * branch that runs, and no verifier is qualified for it. */
@@ -683,6 +797,7 @@ int test_proof_ticket_check_seam(void)
     failures += seam_case_stale();
     failures += seam_case_revoked();
     failures += seam_case_history();
+    failures += seam_case_derived();
     failures += seam_case_same_uid();
     failures += seam_case_cached();
     return failures;
