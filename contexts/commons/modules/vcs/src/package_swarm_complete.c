@@ -155,10 +155,9 @@ static enum vcs_swarm_fetch_result provider_input_result(
  * read of the bytes on disk, so success here also requires a full
  * possession proof: the manifest re-parsed and bound to this exact root,
  * every chunk re-read and re-hashed. Partial, untracked, corrupt, or
- * foreign-root bytes keep the original no-provider refusal. Runs without
- * the engine lock (the proof reads the whole package); engine->store is
- * fixed at create. */
-static enum vcs_swarm_fetch_result swarm_local_complete_result(
+ * foreign-root bytes keep the original no-provider refusal. Runs with or
+ * without the engine lock held; engine->store is fixed at create. */
+enum vcs_swarm_fetch_result vcs_swarm_local_complete_result(
     struct vcs_swarm_engine *engine, const uint8_t package_root[32],
     uint64_t maximum_package_bytes)
 {
@@ -187,7 +186,7 @@ enum vcs_swarm_fetch_result vcs_swarm_restricted_precheck(
     enum vcs_swarm_fetch_result input =
         provider_input_result(provider_peers, provider_count);
     return input == VCS_SWARM_FETCH_NO_PROVIDER
-        ? swarm_local_complete_result(engine, package_root,
+        ? vcs_swarm_local_complete_result(engine, package_root,
                                       maximum_package_bytes)
         : input;
 }

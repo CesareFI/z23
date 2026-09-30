@@ -258,6 +258,59 @@ static int local_case_route_source(void)
  * by this node's own complete, possession-proven copy of the exact root.
  * It never registers work, never obeys a looser byte ceiling, and a
  * corrupt local chunk restores the original no-provider refusal. */
+static int local_case_repair_cached(struct sw_node *n, struct sw_pkg *p,
+                                     uint64_t peer, const uint8_t *key,
+                                     uint64_t now)
+{
+    int failures = 0;
+    SW_CHECK("cached repair: provider registers",
+             vcs_swarm_engine_peer_add(n->engine, peer, key));
+    sw_announce(n->engine, peer, p);
+    SW_CHECK("cached repair: corrupt complete copy resumes",
+             vcs_swarm_engine_fetch(n->engine, p->root, SW_DAY, now) ==
+                 VCS_SWARM_FETCH_OK);
+    struct vcs_swarm_download_status status;
+    SW_CHECK("cached repair: corruption is missing, not complete",
+             vcs_swarm_engine_download_status(n->engine, p->root, &status) &&
+             status.state == VCS_SWARM_DL_CHUNKS && status.present_chunks == 0);
+    vcs_swarm_engine_tick(n->engine, SW_DAY, now + 1);
+    struct vcs_package_swarm_object wants[8];
+    size_t count = sw_drain_wants(n, peer, wants, 8);
+    SW_CHECK("cached repair: only damaged coordinate requested", count == 1);
+    if (count == 1) {
+        SW_CHECK("cached repair: exact coordinate",
+                 wants[0].object_kind == VCS_PACKAGE_SWARM_OBJECT_CHUNK &&
+                 wants[0].file_index == 0 && wants[0].chunk_index == 0);
+        struct vcs_package_swarm_message data;
+        memset(&data, 0, sizeof(data));
+        data.type = VCS_PACKAGE_SWARM_DATA;
+        data.body.data.object = wants[0];
+        data.body.data.bytes = p->contents[0];
+        data.body.data.bytes_len = (uint32_t)p->lens[0];
+        uint8_t frame[8 + 96 + SW_MAX_FILE];
+        size_t frame_len = 0;
+        SW_CHECK("cached repair: replacement serializes",
+                 vcs_package_swarm_serialize(&data, frame, sizeof(frame),
+                                             &frame_len));
+        struct vcs_swarm_frame_result result = vcs_swarm_engine_handle_frame(
+            n->engine, peer, frame, frame_len, SW_DAY, now + 2);
+        SW_CHECK("cached repair: honest replacement accepted",
+                 result.penalty == VCS_SWARM_PENALTY_NONE);
+        free(result.reply);
+    }
+    SW_CHECK("cached repair: completes after replacement",
+             vcs_swarm_engine_download_status(n->engine, p->root, &status) &&
+             status.state == VCS_SWARM_DL_COMPLETE);
+    uint8_t *bytes = NULL;
+    size_t len = 0;
+    SW_CHECK("cached repair: exact bytes recovered",
+             vcs_package_store_get_chunk_at(n->store, p->root, 0, 0,
+                 &bytes, &len) == VCS_PACKAGE_STORE_OK && len == p->lens[0] &&
+             memcmp(bytes, p->contents[0], len) == 0);
+    free(bytes);
+    return failures;
+}
+
 static int provider_case_local_store(void)
 {
     int failures = 0;
@@ -275,7 +328,26 @@ static int provider_case_local_store(void)
     sw_announce(n.engine, peer, &p);
     SW_CHECK("local store: ordinary fetch completes",
              vcs_swarm_engine_fetch(n.engine, p.root, SW_DAY, 1) ==
-                 VCS_SWARM_FETCH_OK &&
+                 VCS_SWARM_FETCH_OK);
+    /* Retain the actual durable record to reproduce a crash after the
+     * last chunk lands but before the completion record is removed. */
+    char record_path[1400], root_hex[65];
+    uint8_t record_wire[128];
+    size_t record_len = 0;
+    zcl_hex_encode(p.root, 32, root_hex);
+    int path_len = snprintf(record_path, sizeof(record_path), "%s/downloads/%s",
+                            n.zcode_dir, root_hex);
+    SW_CHECK("local store: record path fits",
+             path_len > 0 && (size_t)path_len < sizeof(record_path));
+    FILE *record = fopen(record_path, "rb");
+    SW_CHECK("local store: actual download record opens", record != NULL);
+    if (record) {
+        record_len = fread(record_wire, 1, sizeof(record_wire), record);
+        SW_CHECK("local store: bounded complete record captured",
+                 record_len > 0 && record_len < sizeof(record_wire) && !ferror(record));
+        SW_CHECK("local store: captured record closed", fclose(record) == 0);
+    }
+    SW_CHECK("local store: ordinary transfer completes",
              sw_drive_complete(&n, &peer, 1, &p, &max_inflight));
     vcs_swarm_engine_free(n.engine);
     n.engine = vcs_swarm_engine_create(n.store, n.book, n.zcode_dir,
@@ -299,6 +371,27 @@ static int provider_case_local_store(void)
     SW_CHECK("local store: failed possession proof keeps the refusal",
              vcs_swarm_engine_fetch_from(n.engine, p.root, SW_DAY, 3, NULL,
                                          0) == VCS_SWARM_FETCH_NO_PROVIDER);
+    failures += local_case_repair_cached(&n, &p, peer, key, 100);
+    SW_CHECK("local store: completed slot corrupted again",
+             local_case_corrupt_first_chunk(&n, &p));
+    failures += local_case_repair_cached(&n, &p, peer, key, 200);
+    vcs_swarm_engine_free(n.engine);
+    n.engine = NULL;
+    record = fopen(record_path, "wb");
+    SW_CHECK("local store: completed crash record opens", record != NULL);
+    if (record) {
+        SW_CHECK("local store: actual crash record restored",
+                 record_len > 0 && fwrite(record_wire, 1, record_len, record) == record_len);
+        SW_CHECK("local store: restored record closed", fclose(record) == 0);
+    }
+    SW_CHECK("local store: crash copy corrupted", local_case_corrupt_first_chunk(&n, &p));
+    n.engine = vcs_swarm_engine_create(n.store, n.book, n.zcode_dir,
+                                       sw_score_contributor, NULL);
+    struct vcs_swarm_download_status resumed;
+    SW_CHECK("local store: completed crash record survives for repair",
+             n.engine && vcs_swarm_engine_download_status(n.engine, p.root, &resumed) &&
+             resumed.state == VCS_SWARM_DL_CHUNKS && resumed.present_chunks == 0);
+    failures += local_case_repair_cached(&n, &p, peer, key, 300);
     sw_free_package(&p);
     sw_node_close(&n);
     test_rm_rf_recursive(n.datadir);

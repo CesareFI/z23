@@ -14,7 +14,7 @@
 
 #define CG_TAG "native.code.guide"
 #if defined(__APPLE__)
-#define CG_PROOF_COMMAND "make -j2 t-fast ONLY=<group>"
+#define CG_PROOF_COMMAND "make -j2 t-fast-exact ONLY=<group>"
 #else
 #define CG_PROOF_COMMAND "make -j\"$(getconf _NPROCESSORS_ONLN)\" t-fast ONLY=<group>"
 #endif

@@ -1280,8 +1280,10 @@ static void resume_downloads(struct vcs_swarm_engine *engine)
             memset(&st, 0, sizeof(st));
             bool tracked = vcs_package_store_package_status(
                 engine->store, dl->root, &st) && st.tracked;
-            if (tracked && st.complete) {
-                /* Done while we were down: drop the record. */
+            if (vcs_swarm_local_complete_result(
+                    engine, dl->root, dl->maximum_package_bytes) ==
+                        VCS_SWARM_FETCH_ALREADY_COMPLETE) {
+                /* Verified done while we were down: drop the record. */
                 dl_reset(dl);
                 unlink(path);
                 continue;
@@ -1665,13 +1667,11 @@ static enum vcs_swarm_fetch_result swarm_fetch(
     }
     struct swarm_download *dl = dl_find(engine, package_root);
     if (dl && dl->state == VCS_SWARM_DL_COMPLETE) {
-        struct vcs_package_store_status complete_status;
-        memset(&complete_status, 0, sizeof(complete_status));
-        if (vcs_package_store_package_status(
-                engine->store, package_root, &complete_status) &&
-            complete_status.complete) {
+        enum vcs_swarm_fetch_result cached = vcs_swarm_local_complete_result(
+            engine, package_root, maximum_package_bytes);
+        if (cached != VCS_SWARM_FETCH_NO_PROVIDER) {
             pthread_mutex_unlock(&engine->lock);
-            return vcs_swarm_cached_fetch_result(&complete_status, maximum_package_bytes);
+            return cached;
         }
         /* COMPLETE is a possession cache, never authority. A verified read
          * may have quarantined a corrupt CAS object since this slot last ran;
@@ -1717,8 +1717,12 @@ static enum vcs_swarm_fetch_result swarm_fetch(
         vcs_package_store_package_status(engine->store, package_root,
                                          &st) && st.tracked;
     if (already_tracked && st.complete) {
-        pthread_mutex_unlock(&engine->lock);
-        return vcs_swarm_cached_fetch_result(&st, maximum_package_bytes);
+        enum vcs_swarm_fetch_result cached = vcs_swarm_local_complete_result(
+            engine, package_root, maximum_package_bytes);
+        if (cached != VCS_SWARM_FETCH_NO_PROVIDER) {
+            pthread_mutex_unlock(&engine->lock);
+            return cached;
+        }
     }
     /* Prefer a free, then durable-complete, then failed slot. */
     int slot = -1, complete_slot = -1, failed_slot = -1;

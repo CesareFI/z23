@@ -182,6 +182,11 @@ void vcs_swarm_record_delete_dl(struct vcs_swarm_engine *engine,
 /* Lock held. Implemented in package_swarm_complete.c. */
 bool vcs_swarm_rebuild_have(struct vcs_swarm_engine *engine,
                             struct swarm_download *dl);
+/* May run with or without the engine lock; store is fixed at create. */
+enum vcs_swarm_fetch_result vcs_swarm_local_complete_result(
+    struct vcs_swarm_engine *engine, const uint8_t package_root[32],
+    uint64_t maximum_package_bytes);
+/* Lock held. */
 void vcs_swarm_complete_download(struct vcs_swarm_engine *engine,
                                  struct swarm_download *dl);
 
