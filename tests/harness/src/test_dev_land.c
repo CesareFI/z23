@@ -466,6 +466,41 @@ static bool dlx_git_locator_shim(const char *wt, const char *diverted,
         setenv("PATH", path, 1) == 0;
 }
 
+/* Retarget origin immediately before the landing worktree's push command.
+ * A safe dispatcher must pass Git the exact URL captured while validating
+ * the signed target; resolving the mutable remote name here would publish
+ * the candidate to `diverted` instead. */
+static bool dlx_git_push_retarget_shim(const char *wt, const char *diverted)
+{
+    char shim[1024], git[1200], path[10240];
+    static const char script[] =
+        "#!/bin/sh\n"
+        "if test \"$#\" -ge 4 && test \"$1\" = '-C' && "
+        "test \"$2\" = \"$ZCL_DLX_GIT_TARGET_WT\" && "
+        "test \"$3\" = 'push'; then\n"
+        "  PATH=$ZCL_DLX_GIT_REAL_PATH\n"
+        "  export PATH\n"
+        "  git -C \"$ZCL_DLX_GIT_TARGET_WT\" remote set-url origin "
+        "\"$ZCL_DLX_GIT_DIVERT_REMOTE\" || exit 71\n"
+        "  exec git \"$@\"\n"
+        "fi\n"
+        "PATH=$ZCL_DLX_GIT_REAL_PATH\n"
+        "export PATH\n"
+        "exec git \"$@\"\n";
+    if (!wt || !diverted || !g_dlx_had_path || !g_dlx_path_saved)
+        return false;
+    test_make_tmpdir(shim, sizeof(shim), "dev_land", "push_retarget_shim");
+    if (snprintf(git, sizeof(git), "%s/git", shim) >= (int)sizeof(git) ||
+        snprintf(path, sizeof(path), "%s:%s", shim, g_dlx_saved_path) >=
+            (int)sizeof(path) ||
+        !dlx_write(git, script) || chmod(git, 0700) != 0)
+        return false;
+    return setenv("ZCL_DLX_GIT_DIVERT_REMOTE", diverted, 1) == 0 &&
+        setenv("ZCL_DLX_GIT_REAL_PATH", g_dlx_saved_path, 1) == 0 &&
+        setenv("ZCL_DLX_GIT_TARGET_WT", wt, 1) == 0 &&
+        setenv("PATH", path, 1) == 0;
+}
+
 struct dlx_rig {
     char bare[600];
     char clone[600];
@@ -6720,6 +6755,61 @@ _test_next:;
     return failures;
 }
 
+static int test_dev_land_dispatch_locator_binding(void)
+{
+    int failures = 0;
+#if !defined(_WIN32)
+    TEST("land: push dispatch uses the locator bound to the signed target") {
+        struct dlx_rig rig;
+        struct dlx_call c;
+        char base[64], published[64], diverted_tip[64];
+        char land[1200], wt[1400], diverted_root[1024], diverted[1200];
+        char update[160];
+        const char *main_ref[] = { "rev-parse", "refs/heads/main", NULL };
+        dlx_isolate("dispatch_locator");
+        ASSERT(dlx_attach_proven_pair(&rig, "dispatch_locator", base));
+        dlx_begin(&c, "attach");
+        (void)json_push_kv_int(&c.input, "seq", 1);
+        ASSERT(dlx_run(&c) && dlx_ok(&c));
+        dlx_end(&c);
+
+        /* Seed the diverted repository at the same expected base. Either
+         * destination can therefore accept the candidate fast-forward. */
+        test_make_tmpdir(diverted_root, sizeof(diverted_root), "dev_land",
+                         "dispatch_locator_diverted");
+        ASSERT(snprintf(diverted, sizeof(diverted), "%s/origin.git",
+                        diverted_root) < (int)sizeof(diverted));
+        const char *init[] = { "init", "--quiet", "--bare",
+                               "--initial-branch=main", diverted, NULL };
+        ASSERT(dlx_git(NULL, init) == 0);
+        ASSERT(snprintf(update, sizeof(update), "%s:refs/heads/main", base) <
+               (int)sizeof(update));
+        const char *seed[] = { "fetch", "--quiet", rig.clone, update, NULL };
+        ASSERT(dlx_git(diverted, seed) == 0);
+
+        dlx_landdir(land, sizeof(land));
+        ASSERT(snprintf(wt, sizeof(wt), "%s/wt", land) < (int)sizeof(wt));
+        ASSERT(dlx_git_push_retarget_shim(wt, diverted));
+        dlx_begin(&c, "step");
+        ASSERT(dlx_run(&c) && !dlx_ok(&c));
+        ASSERT_STR_EQ(dlx_err_code(&c), "PUBLICATION_TARGET_CHANGED");
+        ASSERT(c.reply.error.mutated);
+        dlx_end(&c);
+
+        ASSERT(dlx_origin_main(&rig, published));
+        ASSERT_STR_EQ(published, rig.tip);
+        ASSERT(dlx_git_out(diverted, main_ref, diverted_tip,
+                           sizeof(diverted_tip)) == 0);
+        ASSERT_STR_EQ(diverted_tip, base);
+        dlx_restore();
+        PASS();
+    }
+_test_next:;
+    dlx_restore();
+#endif
+    return failures;
+}
+
 static int test_dev_land_signed_lost_ack(void)
 {
     int failures = 0;
@@ -7754,6 +7844,7 @@ int test_dev_land(void)
     failures += test_dev_land_signed_stale();
     failures += test_dev_land_signed_recovery();
     failures += test_dev_land_receipt_locator_binding();
+    failures += test_dev_land_dispatch_locator_binding();
     failures += test_dev_land_signed_lost_ack();
     failures += test_dev_land_signed_lost_race();
     failures += test_dev_land_signed_push_lost_race();

@@ -5734,6 +5734,30 @@ static bool dl_fetch_remote_main(const char *wt, char observed_main[80])
 
 static bool dl_publication_target(const struct dl_dirs *d, char out[65]);
 
+static bool dl_publication_target_changed(const struct dl_row *row,
+                                          const char *current, bool mutated,
+                                          struct zcl_command_reply *reply)
+{
+    dl_log(row, "signed publication target changed; remote mutation refused\n");
+    (void)json_push_kv_str(&reply->data, "leaf", DL_LEAF);
+    (void)json_push_kv_str(&reply->data, "publication_target",
+                           row->publication_target);
+    (void)json_push_kv_str(&reply->data, "configured_target",
+                           current ? current : "");
+    zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_BLOCKED,
+                           ZCL_COMMAND_EXIT_BLOCKED,
+                           "PUBLICATION_TARGET_CHANGED", "observe_remote",
+                           true, mutated,
+                           "configured origin no longer matches the signed publication target",
+                           current && current[0]
+                               ? current
+                               : "configured origin identity unavailable");
+    (void)snprintf(reply->error.next_action,
+                   sizeof(reply->error.next_action), "%s",
+                   "z23-dev dev land step");
+    return false;
+}
+
 static bool dl_observe_signed_target(const struct dl_dirs *d,
                                      const struct dl_row *row, bool mutated,
                                      struct zcl_command_reply *reply)
@@ -5743,21 +5767,7 @@ static bool dl_observe_signed_target(const struct dl_dirs *d,
         (dl_publication_target(d, current) &&
          strcmp(current, row->publication_target) == 0))
         return true;
-    dl_log(row, "signed publication target changed; remote mutation refused\n");
-    (void)json_push_kv_str(&reply->data, "leaf", DL_LEAF);
-    (void)json_push_kv_str(&reply->data, "publication_target",
-                           row->publication_target);
-    (void)json_push_kv_str(&reply->data, "configured_target", current);
-    zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_BLOCKED,
-                           ZCL_COMMAND_EXIT_BLOCKED,
-                           "PUBLICATION_TARGET_CHANGED", "observe_remote",
-                           true, mutated,
-                           "configured origin no longer matches the signed publication target",
-                           current[0] ? current : "configured origin identity unavailable");
-    (void)snprintf(reply->error.next_action,
-                   sizeof(reply->error.next_action), "%s",
-                   "z23-dev dev land step");
-    return false;
+    return dl_publication_target_changed(row, current, mutated, reply);
 }
 
 static bool dl_observe_remote_main(const struct dl_dirs *d,
@@ -6195,8 +6205,59 @@ static void dl_step_start(const struct dl_dirs *d, struct dl_row *row,
 
 /* The lease adds an expected-old-value comparison; it never grants history
  * replacement. Verify the exact proven pair's fast-forward ancestry first. */
+static bool dl_push_receive_pack_capture(const struct dl_dirs *d,
+                                         char *option, size_t option_cap)
+{
+    char configured[4096];
+    const char *args[] = { "config", "--get", "remote.origin.receivepack",
+                           NULL };
+    int rc, n;
+    if (!option || option_cap == 0)
+        return false;
+    option[0] = '\0';
+    rc = dl_git(d->wt, args, configured, sizeof(configured),
+                DL_GIT_TIMEOUT_MS);
+    if (rc == 1)
+        return true;
+    if (rc != 0)
+        return false;
+    dl_trim(configured);
+    n = snprintf(option, option_cap, "--receive-pack=%s", configured);
+    if (!configured[0] || strchr(configured, '\n') ||
+        strchr(configured, '\r') || n <= 0 || (size_t)n >= option_cap) {
+        option[0] = '\0';
+        return false;
+    }
+    return true;
+}
+
+static bool dl_push_locator(const struct dl_dirs *d, const char *locator,
+                            const char *receive_pack, const char *lease,
+                            const char *refspec, char *out, size_t out_cap)
+{
+    const char *push[8];
+    size_t argc = 0;
+    if (!locator || !locator[0] || locator[0] == '-' ||
+        strchr(locator, '\n') || strchr(locator, '\r')) {
+        (void)snprintf(out, out_cap, "%s",
+            "publication refused: validated push locator is malformed");
+        return false;
+    }
+    push[argc++] = "push";
+    push[argc++] = lease;
+    if (receive_pack && receive_pack[0])
+        push[argc++] = receive_pack;
+    push[argc++] = "--";
+    push[argc++] = locator;
+    push[argc++] = refspec;
+    push[argc] = NULL;
+    return dl_git(d->wt, push, out, out_cap, DL_GIT_TIMEOUT_MS) == 0;
+}
+
 static bool dl_push_proven_pair(const struct dl_dirs *d,
                                 const struct dl_row *row,
+                                const char *locator,
+                                const char *receive_pack,
                                 char *out, size_t out_cap)
 {
     const char *ancestry[] = { "--no-replace-objects", "merge-base",
@@ -6219,8 +6280,8 @@ static bool dl_push_proven_pair(const struct dl_dirs *d,
             "publication refused: exact ref arguments exceed bounded capacity");
         return false;
     }
-    const char *push[] = { "push", lease, "origin", refspec, NULL };
-    return dl_git(d->wt, push, out, out_cap, DL_GIT_TIMEOUT_MS) == 0;
+    return dl_push_locator(d, locator, receive_pack, lease, refspec, out,
+                           out_cap);
 }
 
 /* Git landing has its own local publication intent. It binds the existing
@@ -6289,6 +6350,31 @@ static bool dl_publication_target(const struct dl_dirs *d, char out[65])
     char fetch[4096], push[4096];
     return dl_publication_target_capture(d, fetch, sizeof(fetch), push,
                                          sizeof(push), out);
+}
+
+static bool dl_push_dispatch_capture(const struct dl_dirs *d,
+                                     const struct dl_row *row,
+                                     char *push_locator,
+                                     size_t push_locator_cap,
+                                     char *receive_pack,
+                                     size_t receive_pack_cap,
+                                     struct zcl_command_reply *reply)
+{
+    char fetch_locator[4096], target[65];
+    target[0] = '\0';
+    if (!dl_publication_target_capture(d, fetch_locator,
+                                       sizeof(fetch_locator), push_locator,
+                                       push_locator_cap, target) ||
+        (row->publication_signature[0] &&
+         strcmp(target, row->publication_target) != 0))
+        return dl_publication_target_changed(row, target, false, reply);
+    if (!dl_push_receive_pack_capture(d, receive_pack, receive_pack_cap)) {
+        dl_fail(reply, "PUSH_CONFIGURATION_UNAVAILABLE", "push_intent",
+                "cannot capture the configured receive-pack before dispatch",
+                d->wt);
+        return false;
+    }
+    return true;
 }
 
 static bool dl_publication_bundle_path(const struct dl_dirs *d,
@@ -6848,6 +6934,8 @@ static void dl_step_push(const struct dl_dirs *d, struct dl_row *row,
                           struct zcl_command_reply *reply)
 {
     char buf[DL_GIT_CAP], observed_main[80];
+    char push_locator[4096];
+    char receive_pack[4096 + 32];
     /* The legacy pair receipt is proof of a build, not publication authority.
      * Keep unsigned landing confined to the existing isolated test fixture;
      * production must wait for a verified, durable canonical intent. */
@@ -6859,6 +6947,16 @@ static void dl_step_push(const struct dl_dirs *d, struct dl_row *row,
         dl_step_successor(d, row, observed_main, reply);
         return;
     }
+    /* Bind dispatch to the URL bytes validated against the signed target.
+     * `origin` is mutable process-global repository configuration: resolving
+     * it again after the durable checkpoint would let a concurrent change
+     * redirect the already-authorized candidate. Preserve an explicit
+     * receive-pack override, but never ask Git to resolve the remote name at
+     * dispatch time. */
+    if (!dl_push_dispatch_capture(d, row, push_locator,
+                                  sizeof(push_locator), receive_pack,
+                                  sizeof(receive_pack), reply))
+        return;
     /* A restart must be able to distinguish an unattempted proven pair from
      * a push whose result was lost. Commit the exact pair and transition
      * before Git can mutate the remote; failed persistence forbids dispatch. */
@@ -6887,7 +6985,8 @@ static void dl_step_push(const struct dl_dirs *d, struct dl_row *row,
          * obtained for (local, base) at
          * .cache/zcl-dev-proof/receipts/<local>-<base>.receipt, so the hook
          * admits in seconds instead of re-running the proof. */
-        if (!dl_push_proven_pair(d, row, buf, sizeof(buf))) {
+        if (!dl_push_proven_pair(d, row, push_locator, receive_pack, buf,
+                                 sizeof(buf))) {
             /* A failed client acknowledgement does not prove rejection.
              * Reconcile before consuming the final attempt or discarding
              * the durable request. An unavailable remote leaves it intact. */
