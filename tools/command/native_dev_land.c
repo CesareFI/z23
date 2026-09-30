@@ -6257,16 +6257,19 @@ static bool dl_publication_file_sha256(const char *path, uint64_t max_bytes,
     return true;
 }
 
-static bool dl_publication_target(const struct dl_dirs *d, char out[65])
+static bool dl_publication_target_capture(const struct dl_dirs *d,
+                                           char *fetch, size_t fetch_cap,
+                                           char *push, size_t push_cap,
+                                           char out[65])
 {
-    char fetch[4096], push[4096];
     const char *fetch_args[] = { "remote", "get-url", "origin", NULL };
     const char *push_args[] = { "remote", "get-url", "--push", "origin", NULL };
     static const char domain[] = "zcl.dev_land.git_target.v1\nrefs/heads/main\n";
     struct sha256_ctx hash;
     uint8_t digest[32];
-    if (dl_git(d->wt, fetch_args, fetch, sizeof(fetch), DL_GIT_TIMEOUT_MS) != 0 ||
-        dl_git(d->wt, push_args, push, sizeof(push), DL_GIT_TIMEOUT_MS) != 0)
+    if (!fetch || fetch_cap == 0 || !push || push_cap == 0 ||
+        dl_git(d->wt, fetch_args, fetch, fetch_cap, DL_GIT_TIMEOUT_MS) != 0 ||
+        dl_git(d->wt, push_args, push, push_cap, DL_GIT_TIMEOUT_MS) != 0)
         return false;
     dl_trim(fetch);
     dl_trim(push);
@@ -6279,6 +6282,13 @@ static bool dl_publication_target(const struct dl_dirs *d, char out[65])
     sha256_finalize(&hash, digest);
     zcl_hex_encode(digest, sizeof(digest), out);
     return true;
+}
+
+static bool dl_publication_target(const struct dl_dirs *d, char out[65])
+{
+    char fetch[4096], push[4096];
+    return dl_publication_target_capture(d, fetch, sizeof(fetch), push,
+                                         sizeof(push), out);
 }
 
 static bool dl_publication_bundle_path(const struct dl_dirs *d,
@@ -6504,24 +6514,23 @@ static bool dl_publication_remote_observe(const struct dl_dirs *d,
     (void)d; (void)row; (void)tip; (void)source;
     return false;
 #else
-    char scratch[4096 + 96], locator[4096], output[2048];
+    char scratch[4096 + 96], locator[4096], push_locator[4096], output[2048];
     char target[65];
     bool ok = false;
     tip[0] = '\0';
     source[0] = '\0';
-    if (!dl_publication_target(d, target) ||
+    /* Fetch through the exact locator whose fetch/push pair produced the
+     * signed target digest. A later get-url would reopen a config race. */
+    if (!dl_publication_target_capture(d, locator, sizeof(locator),
+                                       push_locator, sizeof(push_locator),
+                                       target) ||
         strcmp(target, row->publication_target) != 0 ||
+        !locator[0] || locator[0] == '-' || strchr(locator, '\n') ||
         snprintf(scratch, sizeof(scratch), "%s/observe.%lld.XXXXXX",
                  d->land, row->seq) >= (int)sizeof(scratch) ||
         !mkdtemp(scratch))
         return false;
-    const char *remote[] = { "remote", "get-url", "origin", NULL };
     const char *init[] = { "init", "--bare", "--quiet", NULL };
-    if (dl_git(d->wt, remote, locator, sizeof(locator), DL_GIT_TIMEOUT_MS) != 0)
-        goto done;
-    dl_trim(locator);
-    if (!locator[0] || locator[0] == '-' || strchr(locator, '\n'))
-        goto done;
     const char *fetch[] = { "fetch", "--quiet", "--no-tags", "--refmap=",
                            "--", locator, "refs/heads/main", NULL };
     const char *fetched[] = { "rev-parse", "--verify", "FETCH_HEAD", NULL };
