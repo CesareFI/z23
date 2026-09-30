@@ -596,6 +596,9 @@ static bool group_reads_external_inputs(const char *name)
          * outside the group's forward C closure. */
         "zcode_package_dev",
         "zcode_package_dev_shard_01",
+        /* zv_run_verifier spawns build/bin/zclassic23-package-verify-dev.
+         * That verifier's link is outside this group's forward C closure. */
+        "zcode_verify",
         /* --- live node DB / external zclassicd / datadir / built artifacts --- */
         "binary_ab_fallback",
         "binary_staleness",

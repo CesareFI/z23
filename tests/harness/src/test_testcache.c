@@ -2039,6 +2039,7 @@ static bool tc_external_exec_denied(void)
         "test_terminal_worker_sandbox",
         "test_zcode_package_dev",
         "test_zcode_package_dev_shard_01",
+        "test_zcode_verify",
     };
     for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++)
         if (!testcache_group_is_denylisted(names[i]))
