@@ -70,12 +70,16 @@ static bool zwork_review_load_objects(
     uint8_t root[32], *wire = NULL;
     size_t wire_len = 0;
     bool ok = zcl_hex_decode_lower(entry->task_root_hex, root, 32) &&
-        vcs_object_load_raw(workspace, root, &wire, &wire_len) == 0 &&
+        vcs_object_load_raw_bounded(
+            workspace, root, VCS_ZCODE_TASK_WIRE_BYTES,
+            &wire, &wire_len) == 0 &&
         vcs_zcode_task_parse(wire, wire_len, task) == VCS_ZCODE_DEV_OK;
     free(wire); wire = NULL; wire_len = 0;
     if (!ok || !zcl_hex_decode_lower(entry->latest_candidate_root_hex,
                                      root, 32) ||
-        vcs_object_load_raw(workspace, root, &wire, &wire_len) != 0 ||
+        vcs_object_load_raw_bounded(
+            workspace, root, VCS_ZCODE_CANDIDATE_WIRE_BYTES,
+            &wire, &wire_len) != 0 ||
         vcs_zcode_candidate_parse(wire, wire_len, candidate) !=
             VCS_ZCODE_DEV_OK) {
         free(wire);

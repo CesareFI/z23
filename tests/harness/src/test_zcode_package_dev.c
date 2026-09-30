@@ -3052,6 +3052,37 @@ static bool zpd_proof_set_oversize_unavailable(
         zpd_status_receipt_roots_available(workspace, work, true);
 }
 
+static bool zpd_review_object_oversize_refused(
+    const char *workspace, const char *work, const uint8_t root[32],
+    size_t maximum)
+{
+    uint8_t *saved = NULL;
+    size_t saved_len = 0;
+    bool ready = zpd_sparse_oversize_object(
+        workspace, root, maximum, &saved, &saved_len);
+    struct json_value input;
+    json_init(&input); json_set_object(&input);
+    bool ok = ready && json_push_kv_str(&input, "workspace", workspace) &&
+        json_push_kv_str(&input, "work", work) &&
+        json_push_kv_str(&input, "adapter", "manual") &&
+        json_push_kv_str(&input, "verdict", "approve") &&
+        json_push_kv_str(&input, "findings", "Bounded review probe.");
+    struct zcl_command_request request = {.input = &input};
+    struct zcl_command_reply reply;
+    zcl_command_reply_init(&reply, "zcl.zcode_work_review_bound_test.v1");
+    if (ok) zcl_native_handle_zcode_work_review(&request, &reply);
+    bool refused = ok && reply.status == ZCL_COMMAND_STATUS_FAILED &&
+        reply.error.code[0] != '\0' &&
+        json_get(&reply.data, "review_root") == NULL &&
+        json_get(&reply.data, "work_receipt_root") == NULL;
+    zcl_command_reply_free(&reply);
+    json_free(&input);
+    bool restored = ready && zpd_restore_object(
+        workspace, root, saved, saved_len);
+    free(saved);
+    return refused && restored;
+}
+
 static bool zpd_exact_projection_refuses(struct node_db *ndb, const char *workspace,
     const struct zcode_accepted_work_status *expected, const char *mutation)
 {
@@ -3881,6 +3912,29 @@ _test_next:
     return failures == 0;
 }
 
+static bool zpd_work_envelopes_and_review_bounds(
+    struct json_value *input, const struct json_value *expected_data,
+    const char *absolute_root, const char *zbuild_datadir,
+    const char *action_id, const char *workspace, const char *work,
+    const char *task_root)
+{
+    const struct json_value *expert = json_get(expected_data, "expert");
+    const char *candidate_root = json_get_str(
+        json_get(expert, "candidate_root"));
+    uint8_t task_root_bytes[32], candidate_root_bytes[32];
+    return zpd_assert_work_envelopes(
+               input, expected_data, absolute_root, zbuild_datadir,
+               action_id) &&
+        zcl_hex_decode_lower(task_root, task_root_bytes, 32) &&
+        candidate_root && zcl_hex_decode_lower(
+            candidate_root, candidate_root_bytes, 32) &&
+        zpd_review_object_oversize_refused(
+            workspace, work, task_root_bytes, VCS_ZCODE_TASK_WIRE_BYTES) &&
+        zpd_review_object_oversize_refused(
+            workspace, work, candidate_root_bytes,
+            VCS_ZCODE_CANDIDATE_WIRE_BYTES);
+}
+
 /* Omission is permitted only for the exact task-derived default when adding
  * its explicit spelling would exceed the existing complete input budget. */
 static bool zpd_compact_default_continuation(
@@ -4662,8 +4716,9 @@ static __attribute__((unused)) int zpd_test_work_start(void)
         (void)snprintf(attempt_dir,
                        (size_t)(zbuild_datadir + sizeof(zbuild_datadir) -
                                 attempt_dir), "/zbuild");
-        ASSERT(zpd_assert_work_envelopes(&input, &reply.data, absolute_root,
-                                         zbuild_datadir, saved_action_id));
+        ASSERT(zpd_work_envelopes_and_review_bounds(
+            &input, &reply.data, absolute_root, zbuild_datadir,
+            saved_action_id, root, saved_work_id, saved_task_root));
         zcl_command_reply_free(&reply);
         json_free(&input);
 
