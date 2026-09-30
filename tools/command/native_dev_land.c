@@ -2593,10 +2593,40 @@ static void dl_submit(const struct zcl_command_request *req,
 }
 
 static bool dl_cancel_push_settled(const struct dl_dirs *d, const char *qpath,
-                                   long long seq, struct dl_row *settled);
+                                   long long seq, struct dl_row *settled,
+                                   bool *observation_refused,
+                                   struct zcl_command_reply *reply);
 static bool dl_push_pair_same(const struct dl_row *a, const struct dl_row *b);
 
 /* ── cancel ────────────────────────────────────────────────────────────── */
+
+static bool dl_cancel_resolve(const struct zcl_command_request *req,
+                              struct zcl_command_reply *reply,
+                              struct dl_dirs *d, char *qpath,
+                              size_t qpath_cap, long long *seq)
+{
+    int n;
+    if (!dl_seq_in(req, seq)) {
+        dl_fail(reply, "BAD_INPUT", "cancel",
+                "cancel needs the request sequence number, 1 or more",
+                "input.seq missing or not a positive integer");
+        return false;
+    }
+    if (!dl_dirs_make(d)) {
+        dl_fail(reply, "STATE_DIR_FAILED", "cancel",
+                "cannot resolve the owner-private state root",
+                "platform_state_root");
+        return false;
+    }
+    n = snprintf(qpath, qpath_cap, "%s/queue.jsonl", d->land);
+    if (n < 0 || (size_t)n >= qpath_cap) {
+        dl_fail(reply, "QUEUE_READ_FAILED", "cancel",
+                "the queue path does not fit its buffer",
+                "platform_state_root too long");
+        return false;
+    }
+    return true;
+}
 
 static void dl_cancel(const struct zcl_command_request *req,
                       struct zcl_command_reply *reply)
@@ -2609,28 +2639,15 @@ static void dl_cancel(const struct zcl_command_request *req,
     bool found = false;
     struct dl_row hit;
     int lock;
-    if (!dl_seq_in(req, &seq)) {
-        dl_fail(reply, "BAD_INPUT", "cancel",
-                "cancel needs the request sequence number, 1 or more",
-                "input.seq missing or not a positive integer");
+    if (!dl_cancel_resolve(req, reply, &d, qpath, sizeof(qpath), &seq))
         return;
-    }
-    if (!dl_dirs_make(&d)) {
-        dl_fail(reply, "STATE_DIR_FAILED", "cancel",
-                "cannot resolve the owner-private state root",
-                "platform_state_root");
-        return;
-    }
-    if (snprintf(qpath, sizeof(qpath), "%s/queue.jsonl", d.land) >=
-        (int)sizeof(qpath)) {
-        dl_fail(reply, "QUEUE_READ_FAILED", "cancel",
-                "the queue path does not fit its buffer",
-                "platform_state_root too long");
-        return;
-    }
     struct dl_row settled;
+    bool observation_refused = false;
     memset(&settled, 0, sizeof(settled));
-    bool push_settled = dl_cancel_push_settled(&d, qpath, seq, &settled);
+    bool push_settled = dl_cancel_push_settled(&d, qpath, seq, &settled,
+                                               &observation_refused, reply);
+    if (observation_refused)
+        return;
     lock = dl_rows_lock(d.land);
     if (lock < 0) {
         dl_fail(reply, "QUEUE_READ_FAILED", "cancel",
@@ -6754,13 +6771,17 @@ static void dl_push_checkpoint_settle(const struct dl_dirs *d,
  * Observe outside the queue lock; the caller re-reads the row under the
  * lock and requires the identical signed pair. */
 static bool dl_cancel_push_settled(const struct dl_dirs *d, const char *qpath,
-                                   long long seq, struct dl_row *settled)
+                                   long long seq, struct dl_row *settled,
+                                   bool *observation_refused,
+                                   struct zcl_command_reply *reply)
 {
     struct dl_row *rows = NULL;
     size_t nrows = 0;
     bool found = false;
     char observed[80];
-    int lock = dl_rows_lock(d->land);
+    int lock;
+    *observation_refused = false;
+    lock = dl_rows_lock(d->land);
     if (lock < 0)
         return false;
     if (dl_load_rows(qpath, &rows, &nrows, NULL, 0)) {
@@ -6773,9 +6794,19 @@ static bool dl_cancel_push_settled(const struct dl_dirs *d, const char *qpath,
     }
     free(rows);
     dl_unlock(lock);
-    if (!found || !dl_wt_ready(d->wt) ||
-        !dl_fetch_remote_main(d->wt, observed) ||
-        !dl_push_settled_refused(d, settled, observed))
+    if (!found || !dl_wt_ready(d->wt))
+        return false;
+    if (!dl_observe_signed_target(d, settled, false, reply)) {
+        *observation_refused = true;
+        return false;
+    }
+    if (!dl_fetch_remote_main(d->wt, observed))
+        return false;
+    if (!dl_observe_signed_target(d, settled, false, reply)) {
+        *observation_refused = true;
+        return false;
+    }
+    if (!dl_push_settled_refused(d, settled, observed))
         return false;
     dl_push_refused_log(settled, "cancel", observed);
     return true;
