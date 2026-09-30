@@ -89,6 +89,10 @@ struct zcl_result build_fabric_worker_verifier_path_for_test(
     const char *running_executable, const char *workspace, char *out,
     size_t cap);
 
+/* Exercise the generic input currency recheck without running an executor. */
+bool build_fabric_worker_input_root_current_for_test(
+    const char *workspace, const char *root_hex);
+
 /* Exercise the production ZCODE context loader without claiming or changing
  * an action, so hostile CAS shapes can be tested independently. */
 struct vcs_zcode_task_v1;

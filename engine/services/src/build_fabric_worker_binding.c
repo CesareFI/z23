@@ -19,6 +19,7 @@
 #include "crypto/sha3.h"
 #include "services/build_fabric_service.h"
 #include "vcs/build_action.h"
+#include "vcs/build_artifact_manifest.h"
 #include "vcs/vcs_object.h"
 #include "vcs/zcode_dev.h"
 #include "vcs/zcode_patch.h"
@@ -32,7 +33,9 @@ bool bfw_input_root_current(const char *workspace,
     uint8_t root[32], checked[32], *bytes = NULL;
     size_t len = 0;
     bool loaded = zcl_hex_decode_lower(root_hex, root, 32) &&
-        vcs_object_load_raw(workspace, root, &bytes, &len) == 0;
+        vcs_object_load_raw_bounded(
+            workspace, root, VCS_BUILD_ARTIFACT_MAX_BYTES,
+            &bytes, &len) == 0;
     if (loaded) sha3_256(bytes, len, checked);
     free(bytes);
     return loaded && memcmp(root, checked, 32) == 0;
@@ -150,6 +153,12 @@ struct zcl_result bfw_load_zcode_context(
 }
 
 #ifdef ZCL_TESTING
+bool build_fabric_worker_input_root_current_for_test(
+    const char *workspace, const char *root_hex)
+{
+    return bfw_input_root_current(workspace, root_hex);
+}
+
 struct zcl_result build_fabric_worker_zcode_context_for_test(
     const char *workspace, const struct db_build_job *job,
     const struct db_build_action *action, int64_t now,

@@ -2508,12 +2508,16 @@ static int test_bf_worker_oversized_input(void)
         ASSERT(claimed);
         char input_hex[65], object_path[1024];
         zcl_hex_encode(input_root, 32, input_hex);
+        ASSERT(build_fabric_worker_input_root_current_for_test(
+            dir, input_hex));
         int path_len = snprintf(object_path, sizeof(object_path),
                                 "%s/.zvcs/objects/%.2s/%s", dir, input_hex,
                                 input_hex + 2);
         ASSERT(path_len > 0 && (size_t)path_len < sizeof(object_path));
         ASSERT(truncate(object_path,
                         (off_t)VCS_BUILD_ARTIFACT_MAX_BYTES + 1) == 0);
+        ASSERT(!build_fabric_worker_input_root_current_for_test(
+            dir, input_hex));
         struct db_build_receipt receipt = {0};
         struct zcl_result executed = build_fabric_worker_execute(
             &ndb, dir, dir, action.action_id, id_d, secret, pubkey, &receipt,

@@ -35,8 +35,9 @@ int bfw_attach_spawn(
     struct build_fabric_executor_identity *identity, bool *stable,
     struct zcl_spawn_measure *measure);
 
-/* The source tree named by `root_hex` is still exactly in the workspace CAS
- * and still hashes to its own name. */
+/* The generic action input named by `root_hex` is still exactly in the
+ * workspace CAS, remains within its admission byte budget, and still hashes
+ * to its own name. */
 bool bfw_input_root_current(const char *workspace, const char *root_hex);
 
 /* This host's gcc capsule still roots to the toolchain the job was bound to. */
