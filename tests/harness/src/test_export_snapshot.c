@@ -111,6 +111,17 @@ static int test_export_snapshot_paths(void)
         ASSERT(strstr(buf, "Exported 7 tables") != NULL);
         ASSERT(snapshot_has_tables(quoted));
 
+        /* URI-reserved characters (? # %) must survive as literal path
+         * bytes, not be read as URI syntax. */
+        n = snprintf(quoted, sizeof(quoted), "%s/uri?#%%chars", dir);
+        ASSERT(n > 0 && (size_t)n < sizeof(quoted));
+        ASSERT(platform_directory_ensure(quoted, 0700));
+        ASSERT(fixture_node_db(quoted));
+        buf[0] = 0;
+        ASSERT(snapshot_run(quoted, buf, sizeof(buf)) == 0);
+        ASSERT(strstr(buf, "Exported 7 tables") != NULL);
+        ASSERT(snapshot_has_tables(quoted));
+
         /* A read-only source still exports: the ATTACH is mode=ro. */
         char db_path[4608];
         (void)snprintf(db_path, sizeof(db_path), "%s/node.db", dir);

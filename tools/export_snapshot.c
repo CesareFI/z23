@@ -12,22 +12,41 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-/* Build "ATTACH DATABASE 'file:<path>?mode=ro' AS src" with every single
- * quote in the path doubled, so an apostrophe in the datadir cannot break
- * the statement. False only when the buffer cannot hold the result. */
-static bool attach_sql_build(const char *src_path, char *out, size_t cap)
+/* Attach the source node.db read-only: percent-encode the characters
+ * SQLite's URI parser reserves (% ? #) into the file: URI, then bind the
+ * filename as a statement parameter — no SQL string is built from the
+ * path at all. False only on allocation/statement failure or when the
+ * URI buffer cannot hold the encoding. */
+static bool attach_src_readonly(sqlite3 *dst, const char *src_path,
+                                char *uri, size_t cap)
 {
-    int n = snprintf(out, cap, "ATTACH DATABASE 'file:");
+    int n = snprintf(uri, cap, "file:");
     if (n < 0 || (size_t)n >= cap) return false;
     size_t an = (size_t)n;
     for (const char *p = src_path; *p; p++) {
-        size_t need = 1u + (*p == '\'' ? 1u : 0u) + sizeof("?mode=ro' AS src");
-        if (an + need > cap) return false;
-        if (*p == '\'') out[an++] = '\'';
-        out[an++] = *p;
+        const char *enc = *p == '%' ? "%25" : *p == '?' ? "%3F" :
+                          *p == '#' ? "%23" : NULL;
+        size_t need = enc ? 3u : 1u;
+        if (an + need + sizeof("?mode=ro") > cap) return false;
+        if (enc) {
+            memcpy(uri + an, enc, 3);
+            an += 3;
+        } else {
+            uri[an++] = *p;
+        }
     }
-    int t = snprintf(out + an, cap - an, "?mode=ro' AS src");
-    return t > 0 && (size_t)t < cap - an;
+    int t = snprintf(uri + an, cap - an, "?mode=ro");
+    if (t < 0 || (size_t)t >= cap - an) return false;
+
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(dst, "ATTACH DATABASE ?1 AS src", -1, &st,
+                           NULL) != SQLITE_OK)
+        return false;
+    bool ok = sqlite3_bind_text(st, 1, uri, -1, SQLITE_TRANSIENT) ==
+                  SQLITE_OK &&
+              sqlite3_step(st) == SQLITE_DONE; // raw-sql-ok:standalone-dev-tool
+    sqlite3_finalize(st);
+    return ok;
 }
 
 /* Copy each public consensus table from the attached src schema; missing
@@ -108,13 +127,8 @@ int main(int argc, char *argv[])
     sqlite3_exec(dst, "PRAGMA synchronous=OFF", NULL, NULL, NULL);
     sqlite3_exec(dst, "PRAGMA cache_size=-262144", NULL, NULL, NULL);
 
-    char attach[sizeof(src_path) * 2 + 96];
-    if (!attach_sql_build(src_path, attach, sizeof(attach))) {
-        fprintf(stderr, "ATTACH path too long\n");
-        sqlite3_close(dst);
-        return 1;
-    }
-    if (sqlite3_exec(dst, attach, NULL, NULL, NULL) != SQLITE_OK) {
+    char uri[sizeof(src_path) * 3 + 16];
+    if (!attach_src_readonly(dst, src_path, uri, sizeof(uri))) {
         fprintf(stderr, "ATTACH failed: %s\n", sqlite3_errmsg(dst));
         sqlite3_close(dst);
         return 1;
