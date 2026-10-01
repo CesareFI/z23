@@ -618,6 +618,15 @@ bool zcl_dev_proof_test_generation_retire(
     const char *repo_root, const char *generation,
     enum zcl_dev_proof_retire_verdict verdict, bool donor_eligible,
     char *outcome, size_t outcome_len);
+/* Seam for the checkout generation_prepare() runs: `generation` is where
+ * the pair's worktree of `repo_root` at commit `local` lives. A directory
+ * already there is reused, except one whose worktree registration git has
+ * deleted (an earlier retire that failed on the tree), which is cleared and
+ * checked out fresh. False names the refusal in `why`. */
+bool zcl_dev_proof_test_generation_checkout(const char *repo_root,
+                                            const char *generation,
+                                            const char *local, char *why,
+                                            size_t why_len);
 /* Name dp_donor_trust_verdict() returns for `path`: a path this uid owns,
  * or one lstat cannot see, is donor_untrusted_same_uid. A path another uid
  * owns stays donor_verifier_unqualified until a separate verifier is

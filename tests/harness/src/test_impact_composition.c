@@ -4984,6 +4984,137 @@ static int test_pw_generation_retire_passed(void)
     return failures;
 }
 
+/* Every proof's test scratch holds more sibling directories than any fixed
+ * queue, with read-only fixture directories below them. */
+static int test_pw_generation_retire_wide_locked(void)
+{
+    int failures = 0;
+    TEST("proof generation pool: read-only fixture directories below a wide "
+         "scratch tree do not stop the retire") {
+#if defined(_WIN32)
+        ASSERT(true);
+#else
+        char root[4096], repo[4096], cmd[8192], outcome[64];
+        char wide[4096], rel[128], ro[4608];
+        test_make_tmpdir(root, sizeof(root), "proof_pool_retire", "wide");
+        ASSERT(snprintf(repo, sizeof(repo), "%s/checkout", root) > 0);
+        ASSERT(snprintf(cmd, sizeof(cmd),
+                        "mkdir -p '%s' && cd '%s' && git init -q && "
+                        "echo tracked > tracked && git add tracked && "
+                        "git -c user.name=t -c user.email=t@t.invalid "
+                        "commit -q -m init", repo, repo) > 0);
+        ASSERT(system(cmd) == 0);
+        ASSERT(ic_retire_generation(root, repo,
+                                    "99999999999999999999999999999999",
+                                    NULL, wide, sizeof(wide)));
+        for (int i = 0; i < 200; i++) {
+            ASSERT(snprintf(rel, sizeof(rel), "test-tmp/case_%03d/lib/ro/leaf",
+                            i) > 0);
+            ASSERT(ic_write(wide, rel, "x\n"));
+            ASSERT(snprintf(ro, sizeof(ro), "%s/test-tmp/case_%03d/lib/ro",
+                            wide, i) > 0);
+            ASSERT(chmod(ro, 0555) == 0);
+        }
+        struct stat probe;
+        ASSERT(setenv("ZCL_DEVLOOP_TEST_PROCESS", "1", 1) == 0);
+        bool removed = zcl_dev_proof_test_generation_retire(
+            repo, wide, ZCL_DEV_PROOF_RETIRE_PASSED, false, outcome,
+            sizeof(outcome));
+        ASSERT(removed);
+        ASSERT_STR_EQ(outcome, "removed");
+        ASSERT(stat(wide, &probe) != 0 && errno == ENOENT);
+        (void)unsetenv("ZCL_DEVLOOP_TEST_PROCESS");
+        ASSERT(test_rm_rf_recursive(root) == 0);
+#endif
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* What an earlier attempt's failed retire leaves: the tree, with a `.git`
+ * naming an admin dir git already deleted. */
+static int test_pw_generation_checkout_clears_pruned(void)
+{
+    int failures = 0;
+    TEST("proof generation pool: a pair's own leftover whose registration "
+         "git deleted is cleared and checked out fresh, and a live "
+         "generation is reused untouched") {
+#if defined(_WIN32)
+        ASSERT(true);
+#else
+        char root[4096], repo[4096], cmd[12288], why[128], head[80];
+        char stale[4096], live[4096], marker[4608], foreign[4096];
+        test_make_tmpdir(root, sizeof(root), "proof_pool_checkout", "stale");
+        ASSERT(snprintf(repo, sizeof(repo), "%s/checkout", root) > 0);
+        ASSERT(snprintf(cmd, sizeof(cmd),
+                        "mkdir -p '%s' && cd '%s' && git init -q && "
+                        "echo tracked > tracked && git add tracked && "
+                        "git -c user.name=t -c user.email=t@t.invalid "
+                        "commit -q -m init", repo, repo) > 0);
+        ASSERT(system(cmd) == 0);
+        ASSERT(snprintf(cmd, sizeof(cmd), "git -C '%s' rev-parse HEAD",
+                        repo) > 0);
+        FILE *pipe = popen(cmd, "r");
+        ASSERT(pipe != NULL);
+        ASSERT(fgets(head, sizeof(head), pipe) != NULL);
+        ASSERT(pclose(pipe) == 0);
+        head[strcspn(head, "\n")] = '\0';
+        ASSERT(ic_retire_generation(root, repo,
+                                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                                    NULL, stale, sizeof(stale)));
+        ASSERT(ic_retire_generation(root, repo,
+                                    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                                    NULL, live, sizeof(live)));
+        ASSERT(ic_write(stale, "build/obj/old.o", "old\n"));
+        ASSERT(ic_write(stale, "test-tmp/case/ro/leaf", "x\n"));
+        ASSERT(snprintf(marker, sizeof(marker), "%s/test-tmp/case/ro",
+                        stale) > 0);
+        ASSERT(chmod(marker, 0555) == 0);
+        ASSERT(ic_write(live, "build/obj/kept.o", "kept\n"));
+        /* git's own half-finished remove: the admin dir is gone, the tree
+         * is not. */
+        ASSERT(snprintf(cmd, sizeof(cmd),
+                        "rm -rf '%s/.git/worktrees/"
+                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'", repo) > 0);
+        ASSERT(system(cmd) == 0);
+        struct stat probe;
+        ASSERT(setenv("ZCL_DEVLOOP_TEST_PROCESS", "1", 1) == 0);
+
+        ASSERT(zcl_dev_proof_test_generation_checkout(repo, stale, head, why,
+                                                      sizeof(why)));
+        ASSERT(snprintf(marker, sizeof(marker), "%s/build/obj/old.o",
+                        stale) > 0);
+        ASSERT(stat(marker, &probe) != 0 && errno == ENOENT);
+        ASSERT(snprintf(marker, sizeof(marker), "%s/tracked", stale) > 0);
+        ASSERT(stat(marker, &probe) == 0);
+        ASSERT(snprintf(cmd, sizeof(cmd),
+                        "test \"$(git -C '%s' rev-parse HEAD)\" = '%s'",
+                        stale, head) > 0);
+        ASSERT(system(cmd) == 0);
+
+        /* A registered generation is the interrupted re-run's tree. */
+        ASSERT(zcl_dev_proof_test_generation_checkout(repo, live, head, why,
+                                                      sizeof(why)));
+        ASSERT(snprintf(marker, sizeof(marker), "%s/build/obj/kept.o",
+                        live) > 0);
+        ASSERT(stat(marker, &probe) == 0);
+
+        /* A directory that is not this code's shape is never deleted. */
+        ASSERT(snprintf(foreign, sizeof(foreign), "%s/.z23p/not-a-tag",
+                        root) > 0);
+        ASSERT(ic_write(foreign, "keep", "x\n"));
+        ASSERT(zcl_dev_proof_test_generation_checkout(repo, foreign, head,
+                                                      why, sizeof(why)));
+        ASSERT(snprintf(marker, sizeof(marker), "%s/keep", foreign) > 0);
+        ASSERT(stat(marker, &probe) == 0);
+        (void)unsetenv("ZCL_DEVLOOP_TEST_PROCESS");
+        ASSERT(test_rm_rf_recursive(root) == 0);
+#endif
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 
 /* ── generation-pool hygiene fixtures ─────────────────────────────────── */
 #if !defined(_WIN32)
@@ -10303,6 +10434,8 @@ int test_impact_composition(void)
     failures += test_pw_marker_round_trip_and_refusals();
     failures += test_pw_generation_pool_sweep();
     failures += test_pw_generation_retire_passed();
+    failures += test_pw_generation_retire_wide_locked();
+    failures += test_pw_generation_checkout_clears_pruned();
     failures += test_pw_abandoned_generation_reaped_by_age();
     failures += test_pw_pressure_evicts_oldest_until_satisfied();
     failures += test_pw_pressure_evicts_unclaimed_young_generation();

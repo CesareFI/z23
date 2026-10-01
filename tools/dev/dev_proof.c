@@ -4243,55 +4243,43 @@ static bool dp_reap_superseded(const struct warm_reap_entry *entries,
     return reap;
 }
 
-/* One entry of dp_generation_unlock's walk: a directory (never a symlink,
- * never followed through one) gets owner rwx added and, unless the stack
- * is already full, is queued so its own children are reached too. */
-static void dp_unlock_entry(const char *dir_path, const char *name,
-                            char **stack, size_t stack_cap, size_t *depth)
+/* Directories the unlock walk below could not read on this pass. A callback
+ * has no context argument, and one proof worker never runs two walks at
+ * once. */
+static _Thread_local size_t dp_unlock_unread;
+
+static int dp_unlock_cb(const char *path, const struct stat *st, int type,
+                        struct FTW *ftwbuf)
 {
-    char child[PATH_MAX];
-    struct stat st;
-    if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0 ||
-        snprintf(child, sizeof(child), "%s/%s", dir_path, name) >=
-            (int)sizeof(child) ||
-        lstat(child, &st) != 0 || !S_ISDIR(st.st_mode))
-        return;
-    (void)chmod(child, (st.st_mode & 07777) | S_IRUSR | S_IWUSR | S_IXUSR);
-    if (*depth >= stack_cap) return;
-    char *held = zcl_strdup(child, "proof_pool_unlock");
-    if (held) stack[(*depth)++] = held;
+    (void)ftwbuf;
+    if (type != FTW_D && type != FTW_DNR) return 0;
+    mode_t mode = st ? (st->st_mode & 07777) : 0;
+    (void)chmod(path, mode | S_IRUSR | S_IWUSR | S_IXUSR);
+    if (type == FTW_DNR) dp_unlock_unread++;
+    return 0;
 }
 
 /* Grant the owner read+write+execute on every directory under `path`
  * (path included) that is reached without following a symlink. Proof test
  * fixtures leave read-only (0555) directories inside a generation, which
  * stops git's own recursive worktree delete partway through; this runs
- * first so the delete that follows can finish. Iterative and bounded like
- * dp_touch_subtree: a directory nested deeper than the stack holds is left
- * unlocked, and the delete that follows then fails on it exactly as it
- * would without this helper -- advisory, never fatal. */
+ * first so the delete that follows can finish. The walk has no width or
+ * depth bound: a bounded one skipped the children of every directory past
+ * its queue, and a generation's test scratch is wider than any fixed queue,
+ * so each proof's retire deleted git's admin dir and then left the tree. A
+ * directory that was unreadable is opened up on one pass and descended on
+ * the next. Advisory, never fatal: what stays locked fails the delete that
+ * follows exactly as it would without this helper. */
 static void dp_generation_unlock(const char *path)
 {
-    char *stack[64];
-    size_t depth = 0;
-    char top[PATH_MAX];
     struct stat top_st;
-    if (!path || lstat(path, &top_st) != 0 || !S_ISDIR(top_st.st_mode) ||
-        snprintf(top, sizeof(top), "%s", path) >= (int)sizeof(top))
+    if (!path || lstat(path, &top_st) != 0 || !S_ISDIR(top_st.st_mode))
         return;
-    (void)chmod(top, (top_st.st_mode & 07777) | S_IRUSR | S_IWUSR | S_IXUSR);
-    stack[depth++] = top;
-    while (depth > 0) {
-        char *dir_path = stack[--depth];
-        DIR *dir = opendir(dir_path);
-        if (dir) {
-            for (struct dirent *entry = readdir(dir); entry;
-                 entry = readdir(dir))
-                dp_unlock_entry(dir_path, entry->d_name, stack,
-                                sizeof(stack) / sizeof(stack[0]), &depth);
-            (void)closedir(dir);
-        }
-        if (dir_path != top) free(dir_path);
+    for (int pass = 0; pass < 8; pass++) {
+        dp_unlock_unread = 0;
+        if (nftw(path, dp_unlock_cb, 32, FTW_PHYS | FTW_MOUNT) != 0 ||
+            dp_unlock_unread == 0)
+            return;
     }
 }
 
@@ -5271,12 +5259,42 @@ static void dp_generation_storage_note(const struct proof_paths *paths,
                                    generation);
 }
 
+/* A generation directory this pair left behind whose worktree registration
+ * git already deleted: the retire after an earlier attempt removed the admin
+ * dir and then failed on the tree. Reusing it refuses every later attempt of
+ * the same pair at the first git call inside it, and dp_reap_orphans() never
+ * takes the caller's own generation. This worker holds the pair's lease, so
+ * the leftover is its own to clear before a fresh checkout. Returns false
+ * only when it is that shape and could not be removed. */
+static bool dp_generation_is_pruned(const char *generation)
+{
+    const char *tag = strrchr(generation, '/');
+    tag = tag ? tag + 1 : generation;
+    return warm_tag_name(tag) && dp_orphan_gitdir_pruned(generation, tag);
+}
+
+static bool dp_generation_clear_pruned(const struct proof_paths *paths,
+                                       const char *generation)
+{
+    if (!dp_generation_is_pruned(generation)) return true;
+    const char *tag = strrchr(generation, '/');
+    tag = tag ? tag + 1 : generation;
+    uint64_t freed = directory_bytes_sum(generation);
+    if (!dp_orphan_remove_tree(generation)) return false;
+    dp_orphan_note(paths, tag, "pruned_gitdir_own_pair", freed);
+    return true;
+}
+
 /* Check the generation out when it is not already there. */
 static bool dp_generation_checkout(const struct proof_paths *paths,
                                    const char *generation, const char *local,
                                    char *why, size_t why_len)
 {
     struct stat st;
+    if (!dp_generation_clear_pruned(paths, generation)) {
+        proof_why(why, why_len, "proof_generation_stale_unremovable");
+        return false;
+    }
     if (lstat(generation, &st) == 0) return true;
     if (errno != ENOENT) {
         proof_why(why, why_len, "proof_generation_inspection_failed");
@@ -6125,6 +6143,12 @@ static const char *dp_generation_retire_with(
             bool removed = git_capture_within(paths->root, argv,
                                               PROOF_WARM_REMOVE_TIMEOUT_MS,
                                               output, sizeof(output));
+            /* git deletes its admin dir even when the tree delete fails,
+             * and what is left then answers no git query: finish the delete
+             * here rather than leave the pair's next attempt a directory it
+             * cannot use. */
+            if (!removed && dp_generation_is_pruned(generation))
+                removed = dp_orphan_remove_tree(generation);
             outcome = !removed ? "remove_failed"
                       : verdict == DP_RETIRE_PASSED ? "removed"
                                                     : "removed_failed";
@@ -6183,6 +6207,26 @@ bool zcl_dev_proof_test_generation_retire(
     if (outcome && outcome_len)
         (void)snprintf(outcome, outcome_len, "%s", result);
     return strncmp(result, "removed", 7) == 0;
+}
+#endif
+
+#if defined(ZCL_TESTING)
+/* The checkout generation_prepare() runs for one pair, for the test that
+ * plants a leftover there first. */
+bool zcl_dev_proof_test_generation_checkout(const char *repo_root,
+                                            const char *generation,
+                                            const char *local, char *why,
+                                            size_t why_len)
+{
+    struct proof_paths paths;
+    memset(&paths, 0, sizeof(paths));
+    if (!why || why_len == 0) return false;
+    why[0] = '\0';
+    if (!repo_root || !generation || !local ||
+        snprintf(paths.root, sizeof(paths.root), "%s", repo_root) >=
+            (int)sizeof(paths.root))
+        return false;
+    return dp_generation_checkout(&paths, generation, local, why, why_len);
 }
 #endif
 
