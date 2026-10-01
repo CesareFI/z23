@@ -1994,7 +1994,7 @@ static int test_configured_inbound_no_anchor_window_stays_honest(void)
         ASSERT(v.status != BODY_HISTORY_COMPLETE);
         printf("[configured-inbound no anchor] verdict=%d missing=%d — "
                "honestly unmeasured, no earned PASS\n",
-               (int)v.status, v.missing_count);
+               (int)v.status, (int)v.missing_count);
 
         model_authority_on = false;
         model_authority_hash_ok = true;
