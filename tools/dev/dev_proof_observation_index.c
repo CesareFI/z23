@@ -527,6 +527,8 @@ static void oi_query_fill_groups(const struct oi_query_slot *slots,
             out->conflicted_groups++;
     }
     out->groups_named = named;
+    out->groups_total = slot_count > UINT32_MAX ? UINT32_MAX
+                                                : (uint32_t)slot_count;
     out->truncated = slots_truncated || slot_count > named;
 }
 

@@ -80,6 +80,7 @@ struct zcl_dev_observation_query_report {
     uint64_t oldest_observed_unix; /* 0 when nothing was observed */
     uint64_t newest_observed_unix;
     uint32_t groups_named;
+    uint32_t groups_total;  /* distinct (group,key) inputs, >= groups_named */
     uint32_t conflicted_groups; /* capped at the aggregation capacity */
     bool truncated;
     struct zcl_dev_observation_group_summary

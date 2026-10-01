@@ -916,6 +916,8 @@ static void proof_observations(
                            (int64_t)report.newest_observed_unix);
     (void)json_push_kv_int(&reply->data, "conflicted_groups",
                            (int64_t)report.conflicted_groups);
+    (void)json_push_kv_int(&reply->data, "groups_total",
+                           (int64_t)report.groups_total);
     (void)json_push_kv_bool(&reply->data, "truncated", report.truncated);
     struct json_value groups;
     json_init(&groups);

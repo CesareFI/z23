@@ -313,6 +313,7 @@ static int test_dpoi_query(void)
         ASSERT(zcl_dev_observation_index_query(index_path, NULL, &report,
                                                why, sizeof(why)));
         ASSERT(report.total == 0 && report.groups_named == 0);
+        ASSERT(report.groups_total == 0);
         ASSERT(!report.truncated && report.conflicted_groups == 0);
 
         ASSERT(dpoi_store3(store, emitted));
@@ -324,7 +325,7 @@ static int test_dpoi_query(void)
         ASSERT(report.ineligible == 0);
         ASSERT(report.oldest_observed_unix != 0);
         ASSERT(report.newest_observed_unix >= report.oldest_observed_unix);
-        ASSERT(report.groups_named == 3);
+        ASSERT(report.groups_named == 3 && report.groups_total == 3);
         ASSERT(!report.truncated);
         /* Deterministic order: sorted by group name. */
         ASSERT(strcmp(report.groups[0].group, "test_obs_index_alpha") == 0);
@@ -358,13 +359,14 @@ static int test_dpoi_query(void)
                                                "test_obs_index_beta",
                                                &report, why, sizeof(why)));
         ASSERT(report.total == 1 && report.eligible == 1);
-        ASSERT(report.groups_named == 1);
+        ASSERT(report.groups_named == 1 && report.groups_total == 1);
         ASSERT(strcmp(report.groups[0].group, "test_obs_index_beta") == 0);
         memset(&report, 0, sizeof(report));
         ASSERT(zcl_dev_observation_index_query(index_path,
                                                "test_obs_index_absent",
                                                &report, why, sizeof(why)));
         ASSERT(report.total == 0 && report.groups_named == 0);
+        ASSERT(report.groups_total == 0);
 
         /* The named-group cap truncates honestly. */
         char wide[4096];
@@ -383,6 +385,8 @@ static int test_dpoi_query(void)
                                                why, sizeof(why)));
         ASSERT(report.total == 44);
         ASSERT(report.groups_named == ZCL_DEV_OBSERVATION_QUERY_MAX_GROUPS);
+        ASSERT(report.groups_total == 43); /* 3 originals + 40 wide; the
+            alpha FAIL reuses the alpha key, one slot, two leaves */
         ASSERT(report.truncated);
     }
     TEST_END
