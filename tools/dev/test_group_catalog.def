@@ -1009,6 +1009,13 @@ ZCL_TEST_GROUP(dev_proof_stress_env)
  * resident daemon's environment carries one proof's stores into the next.
  * See tools/dev/dev_proof.c's proof_observation_env_open(). */
 ZCL_TEST_GROUP(dev_proof_observation_env)
+/* The coverage manifest binds a pair receipt's executed test groups to
+ * eligible signed observations in the durable per-pair CAS: the worker
+ * derives and signs it after receipt publication; the pre-push hook
+ * re-derives and re-verifies it, refusing missing coverage, ineligible
+ * listed roots, tampered wires, wrong bindings, and preserved conflicts
+ * by name. See tools/dev/dev_proof_coverage.c. */
+ZCL_TEST_GROUP(dev_proof_coverage)
 ZCL_TEST_GROUP(test_group_selector)
 ZCL_TEST_GROUP(metaverse_catalog)
 ZCL_TEST_GROUP(node_character)
