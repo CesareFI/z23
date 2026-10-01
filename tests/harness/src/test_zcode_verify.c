@@ -65,7 +65,8 @@
  *      (test-fail/test-signal — the seccomp network denial firing). A
  *      release-envelope symlink is refused even when it resolves to the
  *      original valid signed bytes, and an overfull release directory cannot
- *      authorize execution from a partial scan. The
+ *      authorize execution from a partial scan. On the root-host lane, a
+ *      valid 0600 key owned by another uid is also refused. The
  *      reproduction lane runs --emit twice: a second build
  *      --reproduce-against the first build-report exits 0 with
  *      reproduction=MATCH; a tampered reference exits 6 (MISMATCH).
@@ -4365,6 +4366,38 @@ static int ze_buildfail(const char *base, const char *key_path,
     return failures;
 }
 
+static int ze_foreign_owned_key(const char *base, const char *work)
+{
+    if (geteuid() != 0)
+        return 0;
+    int failures = 0;
+    char store[4400];
+    snprintf(store, sizeof(store), "%s/store_foreign_key", base);
+    uint8_t package_root[32], release_id[32], recipe_root[32];
+    bool prepared = zv_publish_fixture(
+        store,
+        "#include \"add.h\"\nint add(int a, int b) { return a + b; }\n",
+        "#include \"add.h\"\nint main(void) { return add(2, 3) == 5 ? 0 : 1; }\n",
+        package_root, release_id, recipe_root);
+    char foreign_key[4400];
+    snprintf(foreign_key, sizeof(foreign_key), "%s/foreign.key", base);
+    prepared = prepared && zv_write_key_file(foreign_key, 0x22, 0600) &&
+               chown(foreign_key, 65534, 65534) == 0;
+    ZV_CHECK("e2e: foreign-owned verifier key fixture prepared", prepared);
+
+    char root_hex[65], out[2048];
+    zv_hex_enc(package_root, sizeof(package_root), root_hex);
+    int rc = prepared ? zv_run_verifier(root_hex, store, foreign_key, work,
+                                        out, sizeof(out)) : -1;
+    struct vcs_package_attest att;
+    ZV_CHECK("e2e: foreign-owned verifier key refused",
+             prepared && rc == 3 &&
+             !zv_read_only_attestation(store, &att));
+    if (prepared && rc != 3)
+        printf("  zcode_verify: foreign-owned key rc=%d out=%s\n", rc, out);
+    return failures;
+}
+
 static int ze_symlinked_release(const char *base, const char *key_path,
                                 const char *work)
 {
@@ -4613,6 +4646,7 @@ static int t_verifier_e2e(void)
     snprintf(key_path, sizeof(key_path), "%s/verifier.key", base);
     char work[4400];
     snprintf(work, sizeof(work), "%s/work", base);
+    failures += ze_foreign_owned_key(base, work);
     failures += ze_symlinked_release(base, key_path, work);
     failures += ze_overfull_release_directory(base, key_path, work);
     failures += ze_buildfail(base, key_path, work);

@@ -467,24 +467,37 @@ static bool pv_rm_rf(const char *path)
     return ok;
 }
 
-/* Read a whole file bounded by cap (NULL on any failure/oversize). */
-static uint8_t *pv_read_file(const char *path, size_t cap, size_t *out_len)
+static bool pv_open_bounded_file(
+    struct platform_positioned_file *file,
+    struct platform_positioned_file_snapshot *snapshot, const char *path,
+    size_t cap, bool current_user_only)
+{
+    platform_positioned_file_init(file);
+    bool admitted = path && platform_positioned_file_open(file, path) &&
+        (!current_user_only ||
+         platform_positioned_file_is_current_user_only(file)) &&
+        platform_positioned_file_snapshot(file, snapshot) &&
+        snapshot->size > 0 && snapshot->size <= (uint64_t)cap &&
+        snapshot->size <= (uint64_t)SIZE_MAX;
+    if (!admitted)
+        platform_positioned_file_close(file);
+    return admitted;
+}
+
+/* Read one stable handle bounded by cap (NULL on any failure/oversize).
+ * Secret policy files additionally have to be owned only by this process's
+ * effective user; the authority check and bytes therefore name one inode. */
+static uint8_t *pv_read_file_policy(const char *path, size_t cap,
+                                    bool current_user_only, size_t *out_len)
 {
     if (!out_len)
         return NULL;
     *out_len = 0;
-    if (!path)
-        return NULL;
-
     struct platform_positioned_file file;
     struct platform_positioned_file_snapshot before;
     struct platform_positioned_file_snapshot after;
-    platform_positioned_file_init(&file);
-    if (!platform_positioned_file_open(&file, path) ||
-        !platform_positioned_file_snapshot(&file, &before) ||
-        before.size == 0 || before.size > (uint64_t)cap ||
-        before.size > (uint64_t)SIZE_MAX) {
-        platform_positioned_file_close(&file);
+    if (!pv_open_bounded_file(&file, &before, path, cap,
+                              current_user_only)) {
         return NULL;
     }
 
@@ -501,11 +514,24 @@ static uint8_t *pv_read_file(const char *path, size_t cap, size_t *out_len)
                   platform_positioned_file_snapshot_equal(&before, &after);
     platform_positioned_file_close(&file);
     if (!stable) {
+        if (current_user_only)
+            memory_cleanse(buf, len);
         free(buf);
         return NULL;
     }
     *out_len = len;
     return buf;
+}
+
+static uint8_t *pv_read_file(const char *path, size_t cap, size_t *out_len)
+{
+    return pv_read_file_policy(path, cap, false, out_len);
+}
+
+static uint8_t *pv_read_private_file(const char *path, size_t cap,
+                                     size_t *out_len)
+{
+    return pv_read_file_policy(path, cap, true, out_len);
 }
 
 /* Durable write beside the destination: tmp, fsync, atomic rename (the
@@ -4563,21 +4589,16 @@ static int pv_check_store_layout(bool candidate_mode, const char *emit_dir,
 /* Read, validate, and decode the 64-hex verifier key file into secret. */
 static int pv_read_verifier_key_hex(const char *key_path, uint8_t secret[32])
 {
-    struct stat kst;
-    if (stat(key_path, &kst) != 0 || !S_ISREG(kst.st_mode) ||
-        (kst.st_mode & 077) != 0) {
+    size_t key_len = 0;
+    uint8_t *key_text = pv_read_private_file(key_path, 128, &key_len);
+    if (!key_text) {
         fprintf(stderr,
-                "%s: key file %s must be a regular file with no "
-                "group/other permission bits (0600 or 0400)\n",
+                "%s: key file %s must be a current-user-owned regular file "
+                "with no group/other permission bits (0600 or 0400)\n",
                 PV_LOG, key_path);
         return 3;
     }
-    size_t key_len = 0;
-    uint8_t *key_text = pv_read_file(key_path, 128, &key_len);
-    if (!key_text) {
-        fprintf(stderr, "%s: cannot read key file %s\n", PV_LOG, key_path);
-        return 3;
-    }
+    size_t key_text_bytes = key_len;
     while (key_len > 0 &&
            (key_text[key_len - 1] == '\n' || key_text[key_len - 1] == '\r' ||
             key_text[key_len - 1] == ' ' || key_text[key_len - 1] == '\t'))
@@ -4586,13 +4607,18 @@ static int pv_read_verifier_key_hex(const char *key_path, uint8_t secret[32])
     if (key_len != 64) {
         fprintf(stderr, "%s: key file must hold exactly 64 hex chars\n",
                 PV_LOG);
+        memory_cleanse(key_text, key_text_bytes);
         free(key_text);
         return 3;
     }
     memcpy(key_hex, key_text, 64);
     key_hex[64] = '\0';
+    memory_cleanse(key_text, key_text_bytes);
     free(key_text);
-    if (!zcl_hex_decode(key_hex, secret, 32)) {
+    bool decoded = zcl_hex_decode(key_hex, secret, 32);
+    memory_cleanse(key_hex, sizeof(key_hex));
+    if (!decoded) {
+        memory_cleanse(secret, 32);
         fprintf(stderr, "%s: key file is not 64 hex chars\n", PV_LOG);
         return 3;
     }
@@ -4612,6 +4638,9 @@ static int pv_load_verifier_key(const char *emit_dir, const char *key_path,
     secp256k1_context *sign_ctx = secp256k1_context_create(
         SECP256K1_CONTEXT_SIGN);
     if (!sign_ctx || !secp256k1_ec_seckey_verify(sign_ctx, secret)) {
+        memory_cleanse(secret, 32);
+        if (sign_ctx)
+            secp256k1_context_destroy(sign_ctx);
         fprintf(stderr, "%s: key is not a valid secp256k1 secret\n", PV_LOG);
         return 3;
     }
@@ -4621,6 +4650,8 @@ static int pv_load_verifier_key(const char *emit_dir, const char *key_path,
         !secp256k1_ec_pubkey_serialize(sign_ctx, verifier_pubkey, &vpk_len,
                                        &vpk, SECP256K1_EC_COMPRESSED) ||
         vpk_len != 33) {
+        memory_cleanse(secret, 32);
+        secp256k1_context_destroy(sign_ctx);
         fprintf(stderr, "%s: cannot derive the verifier pubkey\n", PV_LOG);
         return 3;
     }
