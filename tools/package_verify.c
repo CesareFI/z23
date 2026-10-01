@@ -141,6 +141,7 @@ static int pv_main_windows(void)
 #include "crypto/sha3.h"
 #include "json/json.h"
 #include "platform/clock.h"
+#include "platform/directory_transaction.h"
 #include "platform/os_proc.h"
 #include "platform/positioned_file.h"
 #include "platform/private_file.h"
@@ -533,6 +534,47 @@ static bool pv_atomic_write(const char *path, const uint8_t *data,
         platform_private_file_close(&staged);
     }
     return ok;
+}
+
+/* Publish one private child while retaining the admitted parent directory.
+ * The directory transaction binds create, write, rename, revalidation and
+ * directory fsync to one owner-private no-link directory object. An unknown
+ * post-rename outcome is deliberately not cleaned up by either name. */
+static bool pv_atomic_write_private_child(const char *directory,
+                                          const char *destination,
+                                          const uint8_t *data,
+                                          size_t data_len)
+{
+    char temporary[PLATFORM_DIRECTORY_CHILD_LEAF_MAX + 1u];
+    int tn = snprintf(temporary, sizeof(temporary), "%s.zvtmp.%ld",
+                      destination, (long)getpid());
+    if (tn <= 0 || (size_t)tn >= sizeof(temporary))
+        return false;
+
+    struct platform_directory_transaction parent;
+    struct platform_directory_child staged;
+    platform_directory_transaction_init(&parent);
+    platform_directory_child_init(&staged);
+    if (!platform_directory_transaction_open(&parent, directory))
+        return false;
+
+    bool created = platform_directory_child_create(&parent, temporary,
+                                                    &staged);
+    bool prepared = created &&
+        platform_directory_child_write_exact(&staged, data, data_len, 0) &&
+        platform_directory_child_truncate(&staged, (uint64_t)data_len);
+    enum platform_directory_result moved = PLATFORM_DIRECTORY_IO;
+    if (prepared) {
+        moved = platform_directory_child_move_between(
+            &parent, &staged, &parent, destination, false);
+    }
+    platform_directory_child_close(&staged);
+    if (created && moved != PLATFORM_DIRECTORY_OK &&
+        moved != PLATFORM_DIRECTORY_OUTCOME_UNKNOWN) {
+        (void)platform_directory_child_unlink(&parent, temporary, true);
+    }
+    platform_directory_transaction_close(&parent);
+    return moved == PLATFORM_DIRECTORY_OK;
 }
 
 /* ── the sandboxed child runner ─────────────────────────────────────── */
@@ -6748,9 +6790,9 @@ static int pv_sign_and_persist_attestation(
     }
     char attest_id_hex[65];
     zcl_hex_encode(attest_id, 32, attest_id_hex);
-    char dest[4200];
-    int dn = snprintf(dest, sizeof(dest), "%s/attestations/%s", store_dir,
-                      attest_id_hex);
+    char attestations[4200];
+    int dn = snprintf(attestations, sizeof(attestations),
+                      "%s/attestations", store_dir);
     if (!pv_rm_rf(work)) {
         fprintf(stderr, "%s: temp tree %s exceeds safe cleanup bounds\n",
                 PV_LOG, work);
@@ -6758,8 +6800,9 @@ static int pv_sign_and_persist_attestation(
         return 5;
     }
     bool written =
-        dn > 0 && (size_t)dn < sizeof(dest) &&
-        pv_atomic_write(dest, wire, wire_len);
+        dn > 0 && (size_t)dn < sizeof(attestations) &&
+        pv_atomic_write_private_child(attestations, attest_id_hex, wire,
+                                      wire_len);
     free(wire);
     if (!written) {
         fprintf(stderr, "%s: cannot write %s/attestations/%s\n", PV_LOG,
