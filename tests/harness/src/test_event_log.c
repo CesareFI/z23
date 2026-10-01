@@ -450,9 +450,9 @@ static bool run_one_kill9_trial(const char *path, uint64_t delay_us,
     return stable;
 }
 
-static int run_kill9_fuzz(int *failures)
+static int run_kill9_fuzz(int *failures_out)
 {
-    int start_failures = *failures;
+    int failures = 0;
     if (getenv("ZCL_EVENT_LOG_KILL9_FUZZ") == NULL) {
         printf("event_log: kill9 fuzz SKIP "
                "(set ZCL_EVENT_LOG_KILL9_FUZZ=1 for the background lane)\n");
@@ -497,14 +497,15 @@ static int run_kill9_fuzz(int *failures)
     EL_CHECK("all kill9 trials recover to a valid log", all_ok);
 
     test_cleanup_tmpdir(dir);
-    return *failures - start_failures;
+    *failures_out += failures;
+    return failures;
 }
 
 /* Targeted recovery: corrupt the tail (mid-sentinel, mid-payload,
  * mid-header) and verify open() recovers. */
-static int run_targeted_recovery(int *failures)
+static int run_targeted_recovery(int *failures_out)
 {
-    int start_failures = *failures;
+    int failures = 0;
     char dir[256];
     test_fmt_tmpdir(dir, sizeof(dir), "event_log", "recov");
     el_mkdir_p(dir);
@@ -539,13 +540,13 @@ static int run_targeted_recovery(int *failures)
         };
         for (int j = 0; j < 3; j++) {
             int fd = open(path, O_WRONLY);
-            if (fd < 0) { (*failures)++; continue; }
+            if (fd < 0) { failures++; continue; }
             (void)ftruncate(fd, (off_t)tries[j]);
             fsync(fd);
             close(fd);
 
             event_log_t *l2 = event_log_open(path);
-            if (!l2) { (*failures)++; continue; }
+            if (!l2) { failures++; continue; }
             EL_CHECK("recov: tail truncated to last-good prefix",
                      event_log_size(l2) == prefix);
             /* Streaming must visit exactly i events. */
@@ -575,7 +576,8 @@ static int run_targeted_recovery(int *failures)
 
     test_cleanup_tmpdir(dir);
 done:
-    return *failures - start_failures;
+    *failures_out += failures;
+    return failures;
 }
 
 /* ── Task 6: benchmark ─────────────────────────────────────────────── */
@@ -583,9 +585,9 @@ done:
 /* Measures append throughput and prints events/sec. The 50K/sec target is
  * reported, not asserted: parallel groups contend on fsync. Opt-in via
  * ZCL_EVENT_LOG_BENCH=1, run in isolation for the real number. */
-static int run_benchmark(int *failures)
+static int run_benchmark(int *failures_out)
 {
-    int start_failures = *failures;
+    int failures = 0;
     bool full_benchmark = getenv("ZCL_EVENT_LOG_BENCH") != NULL;
     bool push_proof = !full_benchmark &&
                       getenv("ZCL_EVENT_LOG_BENCH_PROOF") != NULL;
@@ -670,14 +672,15 @@ static int run_benchmark(int *failures)
 
     test_cleanup_tmpdir(dir);
 done:
-    return *failures - start_failures;
+    *failures_out += failures;
+    return failures;
 }
 
 /* ── empty payload + large payload ─────────────────────────────────── */
 
-static int run_edge_cases(int *failures)
+static int run_edge_cases(int *failures_out)
 {
-    int start_failures = *failures;
+    int failures = 0;
     char dir[256];
     test_fmt_tmpdir(dir, sizeof(dir), "event_log", "edge");
     el_mkdir_p(dir);
@@ -738,14 +741,15 @@ static int run_edge_cases(int *failures)
     event_log_close(log);
     test_cleanup_tmpdir(dir);
 done:
-    return *failures - start_failures;
+    *failures_out += failures;
+    return failures;
 }
 
 /* ── persistence across close + reopen ─────────────────────────────── */
 
-static int run_persistence(int *failures)
+static int run_persistence(int *failures_out)
 {
-    int start_failures = *failures;
+    int failures = 0;
     char dir[256];
     test_fmt_tmpdir(dir, sizeof(dir), "event_log", "persist");
     el_mkdir_p(dir);
@@ -796,19 +800,22 @@ static int run_persistence(int *failures)
     event_log_close(log);
     test_cleanup_tmpdir(dir);
 done:
-    return *failures - start_failures;
+    *failures_out += failures;
+    return failures;
 }
 
 /* ── CRC32C implementation dispatch ───────────────────────────────── */
 
-static int run_crc32c_dispatch(int *failures)
+static int run_crc32c_dispatch(int *failures_out)
 {
-    int start_failures = *failures;
+    int failures = 0;
     enum { LEN = 1u << 20 };
     uint8_t *buf = malloc(LEN);  // raw-alloc-ok:test-scratch
     EL_CHECK("crc32c: alloc bench buffer", buf != NULL);
-    if (!buf)
-        return *failures - start_failures;
+    if (!buf) {
+        *failures_out += failures;
+        return failures;
+    }
     for (size_t i = 0; i < LEN; i++)
         buf[i] = (uint8_t)(i * 19u + i / 7u + 3u);
 
@@ -848,7 +855,8 @@ static int run_crc32c_dispatch(int *failures)
     }
 
     free(buf);
-    return *failures - start_failures;
+    *failures_out += failures;
+    return failures;
 }
 
 /* ── Append-path attribution: barrier vs deferred ──────────────────────
