@@ -11,6 +11,12 @@ struct vcs_service_book *vcs_service_book_load(const char *zcode_dir)
     (void)zcode_dir;
     return NULL;
 }
+struct vcs_service_book *vcs_service_book_test_load_bounded(
+    const char *zcode_dir, size_t scan_limit, size_t event_limit)
+{
+    (void)zcode_dir; (void)scan_limit; (void)event_limit;
+    return NULL;
+}
 void vcs_service_book_free(struct vcs_service_book *book) { (void)book; }
 size_t vcs_service_book_event_count(const struct vcs_service_book *book)
 { (void)book; return 0; }

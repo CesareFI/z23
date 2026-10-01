@@ -21,9 +21,11 @@
  * canonical wire, so redelivery is always a dedup no-op. Every write is
  * temp + fsync + atomic rename; the whole book is replayed (sorted by
  * event id) on every load, so a one-shot CLI and a node agree. Corrupt or
- * oversize wires are skipped, logged, and counted; over-bound directories
- * stop the scan and set the truncated flag (under-reporting is the safe
- * direction — it denies credit, never grants it).
+ * oversize wires are skipped, logged, and counted. Every non-dot directory
+ * entry consumes a fixed scan budget. An over-bound or unreadable directory
+ * refuses the whole load: an arbitrary partial history must never become
+ * policy authority (omitting an offence or prior publication could grant a
+ * peer more privilege, so partial replay is not safely "under-reporting").
  *
  * CREDIT DISCIPLINE (owner directive — peers NEVER earn credit for
  * announcements, unverified bytes, repeated copies of the same request,
@@ -53,6 +55,7 @@
 /* ── bounds (frozen; every wire and account is bounded) ─────────────── */
 
 #define VCS_SERVICE_MAX_EVENTS 65536u        /* durable event wires */
+#define VCS_SERVICE_MAX_SCAN_ENTRIES 262144u /* all non-dot directory entries */
 #define VCS_SERVICE_MAX_KEYS 4096u           /* distinct contributor keys */
 #define VCS_SERVICE_MAX_REQUESTS 32768u      /* distinct request ids, book-wide */
 #define VCS_SERVICE_MAX_PUBLISHES_PER_KEY 256u /* distinct releases / key */
@@ -64,8 +67,15 @@
 struct vcs_service_book;
 
 /* Load and replay <zcode_dir>/service. Missing directories are an empty
- * book, never an error. NULL only on allocation failure (logged). */
+ * book, never an error. NULL on allocation, hard I/O, or incomplete
+ * directory scan (logged); no partial history escapes as policy input. */
 struct vcs_service_book *vcs_service_book_load(const char *zcode_dir);
+
+/* Test seam: the production loader above always uses the frozen limits.
+ * Reduced nonzero limits let regression tests prove fail-closed behavior
+ * without manufacturing a production-sized hostile directory. */
+struct vcs_service_book *vcs_service_book_test_load_bounded(
+    const char *zcode_dir, size_t scan_limit, size_t event_limit);
 void vcs_service_book_free(struct vcs_service_book *book);
 
 size_t vcs_service_book_event_count(const struct vcs_service_book *book);

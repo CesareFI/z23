@@ -19,6 +19,7 @@
 #include <fcntl.h>
 #include <stdatomic.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -571,7 +572,188 @@ static bool svc_read_event_wire(DIR *dir, const char *name,
     return complete;
 }
 
-struct vcs_service_book *vcs_service_book_load(const char *zcode_dir)
+enum svc_scan_result {
+    SVC_SCAN_COMPLETE = 0,
+    SVC_SCAN_INCOMPLETE,
+    SVC_SCAN_ERROR,
+};
+
+static bool svc_name_is_dot(const char *name)
+{
+    return strcmp(name, ".") == 0 || strcmp(name, "..") == 0;
+}
+
+/* Collect only canonical event ids, but charge every non-dot entry against
+ * the scan budget. This keeps malformed-name floods bounded and ensures a
+ * valid-looking prefix cannot authorize policy unless the directory view is
+ * complete. The caller owns *names_out on every result. */
+static enum svc_scan_result svc_collect_event_names(
+    DIR *dir, char (**names_out)[65], size_t *count_out,
+    size_t scan_limit, size_t event_limit)
+{
+    char (*names)[65] = NULL;
+    size_t count = 0, cap = 0, entries_seen = 0;
+    for (;;) {
+        errno = 0;
+        struct dirent *ent = readdir(dir);
+        if (!ent) {
+            *names_out = names;
+            *count_out = count;
+            return errno == 0 ? SVC_SCAN_COMPLETE : SVC_SCAN_ERROR;
+        }
+        if (svc_name_is_dot(ent->d_name))
+            continue;
+        if (entries_seen >= scan_limit)
+            break;
+        entries_seen++;
+        if (!svc_name_is_hex64(ent->d_name))
+            continue;
+        if (count >= event_limit)
+            break;
+        if (count == cap) {
+            size_t next = cap ? cap * 2 : 64;
+            if (next > event_limit)
+                next = event_limit;
+            char (*grown)[65] = zcl_malloc(
+                next * sizeof(*grown), "svc_names");
+            if (!grown) {
+                *names_out = names;
+                *count_out = count;
+                return SVC_SCAN_ERROR;
+            }
+            if (names) {
+                memcpy(grown, names, count * sizeof(*grown));
+                free(names);
+            }
+            names = grown;
+            cap = next;
+        }
+        memcpy(names[count], ent->d_name, 65);
+        count++;
+    }
+    *names_out = names;
+    *count_out = count;
+    return SVC_SCAN_INCOMPLETE;
+}
+
+static int svc_event_name_cmp(const void *a, const void *b)
+{
+    return memcmp(a, b, 65);
+}
+
+static void svc_replay_transfer(struct vcs_service_book *book,
+                                struct svc_account *account,
+                                const struct svc_event *event, bool upload)
+{
+    bool seen = false;
+    if (!svc_request_seen_or_insert(book, event->contributor,
+                                    event->subject, &seen))
+        return; /* bound: counted truncated inside */
+    if (seen)
+        return;
+    if (upload)
+        svc_apply_upload(book, account, event);
+    else
+        svc_apply_download(book, account, event);
+}
+
+static void svc_replay_publish(struct vcs_service_book *book,
+                               struct svc_account *account,
+                               const struct svc_event *event)
+{
+    for (size_t i = 0; i < account->pub_count; i++)
+        if (memcmp(account->pubs[i].release_id, event->subject, 32) == 0)
+            return;
+    if (account->pub_count >= VCS_SERVICE_MAX_PUBLISHES_PER_KEY) {
+        book->truncated = true;
+        return;
+    }
+    struct svc_publish *grown = zcl_malloc(
+        (account->pub_count + 1) * sizeof(*grown), "svc_pubs_grow");
+    if (!grown) {
+        book->truncated = true;
+        return;
+    }
+    if (account->pubs) {
+        memcpy(grown, account->pubs,
+               account->pub_count * sizeof(*grown));
+        free(account->pubs);
+    }
+    account->pubs = grown;
+    memcpy(account->pubs[account->pub_count].release_id,
+           event->subject, 32);
+    account->pubs[account->pub_count].day = event->day;
+    account->pub_count++;
+}
+
+static void svc_apply_replayed_event(struct vcs_service_book *book,
+                                     struct svc_account *account,
+                                     const struct svc_event *event)
+{
+    switch (event->kind) {
+    case SVC_EVENT_UPLOAD:
+        svc_replay_transfer(book, account, event, true);
+        break;
+    case SVC_EVENT_DOWNLOAD:
+        svc_replay_transfer(book, account, event, false);
+        break;
+    case SVC_EVENT_PUBLISH:
+        svc_replay_publish(book, account, event);
+        break;
+    case SVC_EVENT_OFFENCE:
+        svc_apply_offence(book, account, event);
+        break;
+    case SVC_EVENT_NO_CREDIT:
+        svc_apply_no_credit(book, account, event);
+        break;
+    }
+}
+
+static void svc_replay_named_event(struct vcs_service_book *book, DIR *dir,
+                                   const char *name)
+{
+    uint8_t wire[VCS_SERVICE_WIRE_BYTES];
+    if (!svc_read_event_wire(dir, name, wire)) {
+        LOG_WARN(SERVICE_LOG, "skipping unreadable or linked event %.16s",
+                 name);
+        book->corrupt++;
+        return;
+    }
+    struct svc_event event;
+    uint8_t file_id[32], want_id[32];
+    if (!svc_wire_decode(wire, sizeof(wire), &event) ||
+        !zcl_hex_decode_lower(name, file_id, 32)) {
+        LOG_WARN(SERVICE_LOG, "skipping corrupt event wire %.16s", name);
+        book->corrupt++;
+        return;
+    }
+    svc_event_id(wire, want_id);
+    if (memcmp(file_id, want_id, 32) != 0) {
+        LOG_WARN(SERVICE_LOG,
+                 "event wire id mismatch %.16s (content-addressed "
+                 "name != content)", name);
+        book->corrupt++;
+        return;
+    }
+    size_t id_index;
+    bool id_found;
+    (void)svc_event_id_seen(book, want_id, &id_index, &id_found);
+    if (id_found) /* impossible via filenames; belt and braces */
+        return;
+    bool created = false;
+    struct svc_account *account = svc_account_get(
+        book, event.contributor, &created);
+    if (!account) {
+        book->truncated = true;
+        return;
+    }
+    svc_apply_replayed_event(book, account, &event);
+    if (svc_event_id_insert(book, want_id))
+        book->event_count++;
+}
+
+static struct vcs_service_book *svc_book_load_bounded(
+    const char *zcode_dir, size_t scan_limit, size_t event_limit)
 {
     if (!zcode_dir || !zcode_dir[0])
         LOG_NULL(SERVICE_LOG, "missing zcode dir");
@@ -592,152 +774,45 @@ struct vcs_service_book *vcs_service_book_load(const char *zcode_dir)
 
     /* Collect the 64-hex names, sort ascending, replay in order. */
     char (*names)[65] = NULL;
-    size_t name_count = 0, name_cap = 0;
-    struct dirent *ent;
-    bool scan_failed = false;
-    while ((ent = readdir(dir)) != NULL) {
-        if (!svc_name_is_hex64(ent->d_name))
-            continue;
-        if (name_count >= VCS_SERVICE_MAX_EVENTS) {
-            book->truncated = true;
-            break;
-        }
-        if (name_count == name_cap) {
-            size_t cap = name_cap ? name_cap * 2 : 64;
-            char (*nn)[65] = zcl_malloc(cap * sizeof(*nn), "svc_names");
-            if (!nn) {
-                scan_failed = true;
-                break;
-            }
-            if (names) {
-                memcpy(nn, names, name_count * sizeof(*nn));
-                free(names);
-            }
-            names = nn;
-            name_cap = cap;
-        }
-        memcpy(names[name_count], ent->d_name, 65);
-        name_count++;
-    }
-    if (scan_failed) {
-        closedir(dir);
+    size_t name_count = 0;
+    enum svc_scan_result scan = svc_collect_event_names(
+        dir, &names, &name_count, scan_limit, event_limit);
+    bool close_failed = scan != SVC_SCAN_COMPLETE && closedir(dir) != 0;
+    if (scan != SVC_SCAN_COMPLETE) {
         free(names);
         vcs_service_book_free(book);
-        LOG_NULL(SERVICE_LOG, "event scan alloc");
+        if (scan == SVC_SCAN_INCOMPLETE && !close_failed)
+            LOG_NULL(SERVICE_LOG,
+                     "service event scan exceeded its bounded view");
+        LOG_NULL(SERVICE_LOG, "service event scan failed");
     }
-    /* Insertion sort (event counts are bounded; ascending id order). */
-    for (size_t i = 1; i < name_count; i++) {
-        char key[65];
-        memcpy(key, names[i], 65);
-        size_t j = i;
-        while (j > 0 && memcmp(names[j - 1], key, 65) > 0) {
-            memcpy(names[j], names[j - 1], 65);
-            j--;
-        }
-        memcpy(names[j], key, 65);
-    }
+    if (name_count > 1)
+        qsort(names, name_count, sizeof(*names), svc_event_name_cmp);
 
-    for (size_t i = 0; i < name_count; i++) {
-        uint8_t wire[VCS_SERVICE_WIRE_BYTES];
-        if (!svc_read_event_wire(dir, names[i], wire)) {
-            LOG_WARN(SERVICE_LOG, "skipping unreadable or linked event %.16s",
-                     names[i]);
-            book->corrupt++;
-            continue;
-        }
-        struct svc_event e;
-        uint8_t file_id[32], want_id[32];
-        if (!svc_wire_decode(wire, sizeof(wire), &e) ||
-            !zcl_hex_decode_lower(names[i], file_id, 32)) {
-            LOG_WARN(SERVICE_LOG, "skipping corrupt event wire %.16s",
-                     names[i]);
-            book->corrupt++;
-            continue;
-        }
-        svc_event_id(wire, want_id);
-        if (memcmp(file_id, want_id, 32) != 0) {
-            LOG_WARN(SERVICE_LOG,
-                     "event wire id mismatch %.16s (content-addressed "
-                     "name != content)", names[i]);
-            book->corrupt++;
-            continue;
-        }
-        size_t id_idx;
-        bool id_found;
-        (void)svc_event_id_seen(book, want_id, &id_idx, &id_found);
-        if (id_found) /* impossible via filenames; belt and braces */
-            continue;
-        bool created = false;
-        struct svc_account *a = svc_account_get(book, e.contributor,
-                                                &created);
-        if (!a) {
-            book->truncated = true;
-            continue;
-        }
-        switch (e.kind) {
-        case SVC_EVENT_UPLOAD: {
-            bool seen = false;
-            if (!svc_request_seen_or_insert(book, e.contributor,
-                                            e.subject, &seen))
-                break; /* bound: counted truncated inside */
-            if (!seen)
-                svc_apply_upload(book, a, &e);
-            break;
-        }
-        case SVC_EVENT_DOWNLOAD: {
-            bool seen = false;
-            if (!svc_request_seen_or_insert(book, e.contributor,
-                                            e.subject, &seen))
-                break;
-            if (!seen)
-                svc_apply_download(book, a, &e);
-            break;
-        }
-        case SVC_EVENT_PUBLISH: {
-            bool dup = false;
-            for (size_t p = 0; p < a->pub_count; p++)
-                if (memcmp(a->pubs[p].release_id, e.subject, 32) == 0) {
-                    dup = true;
-                    break;
-                }
-            if (dup)
-                break;
-            if (a->pub_count >= VCS_SERVICE_MAX_PUBLISHES_PER_KEY) {
-                book->truncated = true;
-                break;
-            }
-            struct svc_publish *np = zcl_malloc(
-                (a->pub_count + 1) * sizeof(*np), "svc_pubs_grow");
-            if (!np) {
-                book->truncated = true;
-                break;
-            }
-            if (a->pubs) {
-                memcpy(np, a->pubs, a->pub_count * sizeof(*np));
-                free(a->pubs);
-            }
-            a->pubs = np;
-            memcpy(a->pubs[a->pub_count].release_id, e.subject, 32);
-            a->pubs[a->pub_count].day = e.day;
-            a->pub_count++;
-            break;
-        }
-        case SVC_EVENT_OFFENCE:
-            svc_apply_offence(book, a, &e);
-            break;
-        case SVC_EVENT_NO_CREDIT:
-            svc_apply_no_credit(book, a, &e);
-            break;
-        }
-        if (!svc_event_id_insert(book, want_id)) {
-            /* alloc failure already logged */
-            continue;
-        }
-        book->event_count++;
+    for (size_t i = 0; i < name_count; i++)
+        svc_replay_named_event(book, dir, names[i]);
+    if (closedir(dir) != 0) {
+        free(names);
+        vcs_service_book_free(book);
+        LOG_NULL(SERVICE_LOG, "service event directory close failed");
     }
-    closedir(dir);
     free(names);
     return book;
+}
+
+struct vcs_service_book *vcs_service_book_load(const char *zcode_dir)
+{
+    return svc_book_load_bounded(zcode_dir, VCS_SERVICE_MAX_SCAN_ENTRIES,
+                                 VCS_SERVICE_MAX_EVENTS);
+}
+
+struct vcs_service_book *vcs_service_book_test_load_bounded(
+    const char *zcode_dir, size_t scan_limit, size_t event_limit)
+{
+    if (scan_limit == 0 || scan_limit > VCS_SERVICE_MAX_SCAN_ENTRIES ||
+        event_limit == 0 || event_limit > VCS_SERVICE_MAX_EVENTS)
+        LOG_NULL(SERVICE_LOG, "invalid test service scan limits");
+    return svc_book_load_bounded(zcode_dir, scan_limit, event_limit);
 }
 
 void vcs_service_book_free(struct vcs_service_book *book)

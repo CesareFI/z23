@@ -1010,6 +1010,80 @@ static int t_book_linked_event(void)
     return failures;
 }
 
+static bool zpy_write_byte(const char *path)
+{
+    FILE *f = fopen(path, "wb");
+    if (!f)
+        return false;
+    bool ok = fputc(0x5a, f) != EOF;
+    if (fclose(f) != 0)
+        ok = false;
+    return ok;
+}
+
+static int t_book_invalid_scan_limits(const char *zcode)
+{
+    int failures = 0;
+    ZPY_CHECK("book-bounds: invalid test limits refuse",
+              vcs_service_book_test_load_bounded(zcode, 0, 1) == NULL &&
+              vcs_service_book_test_load_bounded(
+                  zcode, VCS_SERVICE_MAX_SCAN_ENTRIES + 1u, 1) == NULL &&
+              vcs_service_book_test_load_bounded(zcode, 1, 0) == NULL &&
+              vcs_service_book_test_load_bounded(
+                  zcode, 1, VCS_SERVICE_MAX_EVENTS + 1u) == NULL);
+    return failures;
+}
+
+/* A service history is policy authority: omitting an offence or a prior
+ * publication can be favorable, so neither malformed-name floods nor an
+ * arbitrary valid-event prefix may escape as a usable partial book. */
+static int t_book_scan_bounds(void)
+{
+    int failures = 0;
+    char zcode[4400], events[4400], junk[4400];
+    snprintf(zcode, sizeof(zcode), "test-tmp/zpy_bounds_%ld/zcode",
+             (long)getpid());
+    zpy_rm_rf(zcode);
+    bool ready = zpy_mkdir_p(zcode);
+    uint8_t key[33], request_a[32], request_b[32];
+    zpy_pub(0x7b, key);
+    zpy_root(0x7c, request_a);
+    zpy_root(0x7d, request_b);
+    struct vcs_service_book *book = ready ? vcs_service_book_load(zcode) : NULL;
+    ready = book && vcs_service_credit_upload(
+                         book, key, request_a, 42, 20000) ==
+                         VCS_SERVICE_CREDIT_OK;
+    vcs_service_book_free(book);
+
+    book = ready ? vcs_service_book_test_load_bounded(zcode, 1, 1) : NULL;
+    ZPY_CHECK("book-bounds: exact complete view replays",
+              book && vcs_service_book_event_count(book) == 1);
+    vcs_service_book_free(book);
+
+    snprintf(events, sizeof(events), "%s/service/events", zcode);
+    snprintf(junk, sizeof(junk), "%s/junk-budget", events);
+    ready = ready && zpy_write_byte(junk);
+    book = ready ? vcs_service_book_test_load_bounded(zcode, 1, 1) : NULL;
+    ZPY_CHECK("book-bounds: malformed names consume the scan budget",
+              ready && book == NULL);
+    vcs_service_book_free(book);
+    ready = ready && unlink(junk) == 0;
+
+    book = ready ? vcs_service_book_load(zcode) : NULL;
+    ready = book && vcs_service_credit_upload(
+                         book, key, request_b, 43, 20000) ==
+                         VCS_SERVICE_CREDIT_OK;
+    vcs_service_book_free(book);
+    book = ready ? vcs_service_book_test_load_bounded(zcode, 2, 1) : NULL;
+    ZPY_CHECK("book-bounds: partial valid-event prefix cannot authorize",
+              ready && book == NULL);
+    vcs_service_book_free(book);
+
+    failures += t_book_invalid_scan_limits(zcode);
+    zpy_rm_rf(zcode);
+    return failures;
+}
+
 
 /* ── 5. the typed commands over fixture datadirs ────────────────────── */
 
@@ -2271,6 +2345,7 @@ int test_zcode_policy(void)
     failures += t_decisions();
     failures += t_book();
     failures += t_book_linked_event();
+    failures += t_book_scan_bounds();
     failures += t_seed_commands();
     failures += t_service_receipt();
     failures += t_receipt_accept();
