@@ -22,8 +22,10 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/zcl-zcc-epoch.XXXXXX")"
 WORK="$(cd "$WORK" && pwd -P)"
 LOCK_HOLDER_PID=""
 LOCKED_COMPILE_PID=""
+CACHE_HIT_PID=""
 cleanup()
 {
+    [ -z "$CACHE_HIT_PID" ] || kill "$CACHE_HIT_PID" 2>/dev/null || true
     [ -z "$LOCKED_COMPILE_PID" ] || kill "$LOCKED_COMPILE_PID" 2>/dev/null || true
     [ -z "$LOCK_HOLDER_PID" ] || kill "$LOCK_HOLDER_PID" 2>/dev/null || true
     rm -rf -- "$WORK"
@@ -350,8 +352,9 @@ legacy_compile dep "$LEGACY_MARKER_REUSE" cc \
 
 # A fresh staging directory for identical inputs must be served from zcc's
 # in-process cache and still restore both artifacts.
-# Keep the compiler-visible completion marker identical to the cold call;
-# the cache correctly binds this variable even though it only signals a test.
+# Keep the compiler-visible completion marker and launch context identical to
+# the cold call. Both probes run in an owned background subshell because the
+# cache correctly binds SHLVL when this fixture's compiler is a shell.
 COLD_PREPROCESS="$(launch_count preprocess)"
 COLD_COMPILE="$(launch_count compile)"
 rm -f -- "$OBJECT" "${OBJECT%.o}.d"
@@ -359,9 +362,21 @@ COMPILER_LAUNCHES="$COMPILER_LAUNCHES" \
 COMPILER_COMPLETED="$LOCK_COMPILE_DONE" \
 compile dep "$OBJECT" "$COUNTING_COMPILER" \
     -std=c23 -O2 -Wall -Wextra -Werror \
-    "-frandom-seed=$SOURCE"
-[ "$(tail -1 "$ZCC_LOG" | awk '{print $1}')" = HIT ] ||
+    "-frandom-seed=$SOURCE" > "$WORK/cache-hit-compile.log" 2>&1 &
+CACHE_HIT_PID=$!
+wait "$CACHE_HIT_PID" || {
+    sed -n '1,80p' "$WORK/cache-hit-compile.log" >&2
+    fail 'identical epoch cache-hit probe failed'
+}
+CACHE_HIT_PID=""
+if [ "$(tail -1 "$ZCC_LOG" | awk '{print $1}')" != HIT ]; then
+    printf '%s\n' 'check_zcc_epoch_object: recent cache dispositions:' >&2
+    tail -n 12 "$ZCC_LOG" >&2
+    printf 'check_zcc_epoch_object: compiler launches: preprocess=%s compile=%s other=%s\n' \
+        "$(launch_count preprocess)" "$(launch_count compile)" \
+        "$(launch_count other)" >&2
     fail 'identical epoch compile did not use the in-process cache'
+fi
 [ "$(launch_count preprocess)" = "$((COLD_PREPROCESS + 1))" ] ||
     fail 'source cache hit did not recheck the include search'
 [ "$(launch_count compile)" = "$COLD_COMPILE" ] ||
