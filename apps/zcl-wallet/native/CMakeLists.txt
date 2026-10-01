@@ -1338,6 +1338,10 @@ if(NOT ANDROID)
     add_test(NAME wallet_hmac COMMAND hmac_tests)
     if(UNIX)
         # Explicit public-vector timing tool, not a ctest runtime threshold.
+        add_executable(bench_camera_frame tests/bench_camera_frame.c tests/camera_reference.c)
+        target_link_libraries(bench_camera_frame PRIVATE zcl_wallet_core)
+        target_compile_options(bench_camera_frame PRIVATE -Wall -Wextra -Wpedantic -Werror
+            -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
         add_executable(bench_mnemonic_seed tests/bench_mnemonic_seed.c)
         target_link_libraries(bench_mnemonic_seed PRIVATE zcl_wallet_core)
         target_compile_options(bench_mnemonic_seed PRIVATE -Wall -Wextra -Wpedantic -Werror
