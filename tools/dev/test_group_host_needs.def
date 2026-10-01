@@ -135,6 +135,11 @@ ZCL_TEST_GROUP_BUILD_NEED("test_importblockindex_cli_dispatch",
  * selection, so only a local run needs this row. */
 ZCL_TEST_GROUP_BUILD_NEED("test_freebsd_sh", "build/bin/fbsh", "fbsh")
 
+/* tests/harness/src/test_jsonq.c execs build/bin/jsonq and self-skips where
+ * it is absent. The proof's prefork step builds jsonq only when this group
+ * is selected; a local run builds it via the same row. */
+ZCL_TEST_GROUP_BUILD_NEED("test_jsonq", "build/bin/jsonq", "jsonq")
+
 /* tests/harness/src/test_process_group_exec.c execs the fixture launcher
  * build/bin/process-group-exec for both its arms. No default target builds
  * it; without this row a focused lane fails at the first ASSERT instead of
