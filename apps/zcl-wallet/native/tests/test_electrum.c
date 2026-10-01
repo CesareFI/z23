@@ -246,10 +246,74 @@ static void framing(void)
     CHECK(line.ready && !line.failed && line.used == sizeof(line.bytes) && used == 1);
 }
 
+static void rpc_comparison_values(void)
+{
+    static const struct { const char *json, *text; bool matches; } cases[] = {
+        {"{\"x\":\"\"}", "", true},
+        {"{\"x\":\"id\"}", "id", true},
+        {"{\"x\":\"id\"}", "i", false},
+        {"{\"x\":\"id\"}", "ids", false},
+        {"{\"x\":\"id\"}", "Id", false},
+        {"{\"x\":\"\\u0069d\"}", "id", true},
+        {"{\"x\":\"a\\u0020b\"}", "a b", true},
+        {"{\"x\":\"a\\/b\"}", "a/b", true},
+        {"{\"x\":\"\\\\\"}", "\\", true},
+        {"{\"x\":\"\\\"\"}", "\"", true},
+        {"{\"x\":\"\\u0000\"}", "", false},
+        {"{\"x\":\"\\n\"}", "\n", false},
+        {"{\"x\":\"\xc3\xa9\"}", "\xc3\xa9", false},
+        {"{\"x\":\"\\u00e9\"}", "\xc3\xa9", false},
+        {"{\"x\":\"\\ud83d\\ude00\"}", "\xf0\x9f\x98\x80", false},
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        zcl_rpc_json doc;
+        CHECK(zcl_rpc_json_parse((const uint8_t *)cases[i].json, strlen(cases[i].json), &doc) == ZCL_OK);
+        const zcl_rpc_token *value = zcl_rpc_member(&doc, &doc.tokens[0], TEXT("x"));
+        CHECK(value != NULL);
+        CHECK(zcl_rpc_string_is(&doc, value, (const uint8_t *)cases[i].text,
+            strlen(cases[i].text)) == cases[i].matches);
+    }
+}
+
+static void rpc_comparison_bounds(void)
+{
+    zcl_rpc_json doc;
+    CHECK(zcl_rpc_json_parse(TEXT("{\"x\":\"id\",\"n\":12}"), &doc) == ZCL_OK);
+    const zcl_rpc_token *value = zcl_rpc_member(&doc, &doc.tokens[0], TEXT("x"));
+    const zcl_rpc_token *number = zcl_rpc_member(&doc, &doc.tokens[0], TEXT("n"));
+    CHECK(value != NULL && number != NULL);
+    CHECK(!zcl_rpc_string_is(NULL, value, TEXT("id")));
+    CHECK(!zcl_rpc_string_is(&doc, NULL, TEXT("id")));
+    CHECK(!zcl_rpc_string_is(&doc, number, TEXT("12")));
+    CHECK(!zcl_rpc_string_is(&doc, value, (const uint8_t *)"id", SIZE_MAX));
+    doc.text = NULL;
+    CHECK(!zcl_rpc_string_is(&doc, value, TEXT("id")));
+}
+
+static void rpc_comparison_lengths(void)
+{
+    const size_t lengths[] = {0, 1, ZCL_RPC_KEY_MAX - 1, ZCL_RPC_KEY_MAX, ZCL_RPC_KEY_MAX + 1};
+    char encoded[300], expected[ZCL_RPC_KEY_MAX + 2];
+    for (size_t i = 0; i < sizeof(lengths) / sizeof(lengths[0]); ++i) {
+        memset(expected, 'a', sizeof(expected));
+        expected[lengths[i]] = 0;
+        const int size = snprintf(encoded, sizeof(encoded), "{\"x\":\"%s\"}", expected);
+        CHECK(size > 0 && (size_t)size < sizeof(encoded));
+        zcl_rpc_json doc;
+        CHECK(zcl_rpc_json_parse((const uint8_t *)encoded, (size_t)size, &doc) == ZCL_OK);
+        const zcl_rpc_token *value = zcl_rpc_member(&doc, &doc.tokens[0], TEXT("x"));
+        CHECK(value != NULL);
+        CHECK(zcl_rpc_string_is(&doc, value, (const uint8_t *)expected, lengths[i]) ==
+            (lengths[i] <= ZCL_RPC_KEY_MAX));
+        CHECK(!zcl_rpc_string_is(&doc, value, (const uint8_t *)expected, lengths[i] + 1));
+    }
+}
+
 int main(void)
 {
     requests(); balance_values(); identity(); headers(); json_bounds(); framing();
     fork_headers(); argument_bounds(); exact_json_limits();
+    rpc_comparison_values(); rpc_comparison_bounds(); rpc_comparison_lengths();
     puts("Read-only Electrum requests, strict replies, genesis identity, money and framing passed");
     return 0;
 }

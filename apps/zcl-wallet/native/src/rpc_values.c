@@ -10,12 +10,17 @@ static bool printable_ascii(const uint8_t *text, size_t length)
     return true;
 }
 
+static bool string_token(const zcl_rpc_token *token)
+{
+    return token->kind == ZJRP_KEY || token->kind == ZJRP_STR;
+}
+
 zcl_status zcl_rpc_ascii(const zcl_rpc_json *doc, const zcl_rpc_token *token,
                           uint8_t *output, size_t capacity, size_t *length)
 {
     if (doc == NULL || token == NULL || output == NULL || length == NULL)
         return ZCL_INVALID_ARGUMENT;
-    if (token->kind != ZJRP_KEY && token->kind != ZJRP_STR)
+    if (!string_token(token))
         return ZCL_INVALID_ENCODING;
     const zjsonp_event event = {(zjsonp_event_kind)token->kind, token->offset, token->length};
     const size_t decoded = zjsonp_str_decode((const char *)doc->text, &event, (char *)output, capacity);
@@ -26,12 +31,25 @@ zcl_status zcl_rpc_ascii(const zcl_rpc_json *doc, const zcl_rpc_token *token,
     return ZCL_OK;
 }
 
+static bool plain_string_is(const uint8_t *raw, size_t raw_len,
+                            const uint8_t *text, size_t length)
+{
+    return raw_len == length && printable_ascii(raw, raw_len) &&
+        memcmp(raw, text, length) == 0;
+}
+
 bool zcl_rpc_string_is(const zcl_rpc_json *doc, const zcl_rpc_token *token,
                         const uint8_t *text, size_t length)
 {
     uint8_t decoded[ZCL_RPC_KEY_MAX];
     size_t count = 0;
-    if (length > sizeof(decoded)) return false;
+    if (length > sizeof(decoded) || doc == NULL || token == NULL) return false;
+    if (!string_token(token)) return false;
+    /* A parsed token without escapes is already its decoded ASCII span.
+     * Escaped text retains the original decoder and comparison below. */
+    if (doc->text != NULL &&
+        memchr(doc->text + token->offset, '\\', token->length) == NULL)
+        return plain_string_is(doc->text + token->offset, token->length, text, length);
     return zcl_rpc_ascii(doc, token, decoded, sizeof(decoded), &count) == ZCL_OK &&
            count == length && memcmp(decoded, text, length) == 0;
 }
