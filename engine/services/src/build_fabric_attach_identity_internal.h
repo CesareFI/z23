@@ -30,6 +30,11 @@ struct zcl_result bfat_cached_tool_hashes(
     uint8_t driver_sha3[32], uint8_t backend_sha3[32],
     uint8_t assembler_sha3[32]);
 
+#ifdef ZCL_TESTING
+bool bfat_toolchain_query_for_test(
+    const char *const argv[], char *out, size_t cap);
+#endif
+
 /* Reassemble a plain compile's chunked artifact, verifying its manifest root,
  * bound action root, and every chunk. The proof shadow reuses it to fetch
  * the bytes a ticket names. Caller frees *out. */

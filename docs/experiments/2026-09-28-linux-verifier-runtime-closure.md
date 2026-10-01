@@ -67,3 +67,14 @@ group also corrupts every eligible donor observation after its bounded scan,
 so the selected donor must be re-read and malformed CAS is refused regardless
 of database tie ordering. The helper's cleanup trap removed the fixture after
 retaining its transcript under `test-tmp/`.
+
+The attach-side descriptor recapture now applies the same text-boundary rule
+as capsule admission: a capture that fills all `cap - 1` payload bytes is
+ambiguous with discarded output and is refused. A registered boundary test
+distinguishes a complete six-byte probe from an eight-byte probe truncated by
+an eight-byte destination; empty or undersized destinations also refuse.
+The exact runner
+`d9aaeafc6e9634c8f13671d72b7b6efdb5d6515ed454301fdff5e143a318ae0f`
+and retained verifier `bbe1428b9ab2cbc654ef7070edace75ef2771cfe5e57675f5aef84f14f8d6c72`
+then passed both unprivileged groups in 79.3 seconds with zero failures and
+zero skips; the helper removed its disposable fixture.

@@ -93,6 +93,32 @@ static bool att_copy_executable(const char *from, const char *to)
     return ok && chmod(to, 0700) == 0;
 }
 
+static int test_bf_attach_toolchain_query_bounds(void)
+{
+    int failures = 0;
+    TEST("build_fabric_attach: toolchain query refuses ambiguous truncation") {
+        const char *const short_argv[] = {
+            "/usr/bin/printf", "123456", NULL,
+        };
+        char short_output[8] = {0};
+        ASSERT(bfat_toolchain_query_for_test(
+            short_argv, short_output, sizeof(short_output)));
+        ASSERT_STR_EQ(short_output, "123456");
+
+        const char *const full_argv[] = {
+            "/usr/bin/printf", "12345678", NULL,
+        };
+        char full_output[8] = {0};
+        ASSERT(!bfat_toolchain_query_for_test(
+            full_argv, full_output, sizeof(full_output)));
+        ASSERT_EQ(strlen(full_output), sizeof(full_output) - 1u);
+        ASSERT(!bfat_toolchain_query_for_test(full_argv, full_output, 1));
+        ASSERT(!bfat_toolchain_query_for_test(full_argv, NULL, 0));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_bf_attach_sealed_verifier_aba(void)
 {
     int failures = 0;
@@ -1709,6 +1735,7 @@ int test_build_fabric_attach(void)
 {
     int failures = 0;
 #if defined(__linux__)
+    failures += test_bf_attach_toolchain_query_bounds();
     failures += test_bf_attach_sealed_verifier_aba();
 #endif
     failures += test_bf_attach_executor_key_binds_tool_bytes();

@@ -397,6 +397,7 @@ static bool bfat_toolchain_query(void *ctx, const char *const argv[],
                                  char *out, size_t cap)
 {
     (void)ctx;
+    if (!out || cap < 2) return false;
 #if defined(__linux__)
     if (!argv || !argv[0] || !argv[1] || argv[2]) return false;
     const char *const fixed_argv[] = {
@@ -407,11 +408,21 @@ static bool bfat_toolchain_query(void *ctx, const char *const argv[],
 #else
     const char *const *query_argv = argv;
 #endif
-    if (zcl_spawn_capture(query_argv, out, cap, 10000) != 0 || !out[0])
+    if (zcl_spawn_capture(query_argv, out, cap, 10000) != 0)
         return false;
-    out[strcspn(out, "\r\n")] = '\0';
-    return out[0] != '\0';
+    size_t length = strnlen(out, cap);
+    /* Text capture reserves one byte for NUL and discards later bytes. A
+     * full payload is ambiguous with truncation and cannot identify a tool. */
+    return length > 0 && length < cap - 1u;
 }
+
+#ifdef ZCL_TESTING
+bool bfat_toolchain_query_for_test(
+    const char *const argv[], char *out, size_t cap)
+{
+    return bfat_toolchain_query(NULL, argv, out, cap);
+}
+#endif
 
 struct zcl_result build_fabric_executor_host_tool_hashes(
     uint8_t driver_sha3[32], uint8_t backend_sha3[32],
