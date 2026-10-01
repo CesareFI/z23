@@ -45,10 +45,14 @@ static zcl_status encode_checked(uint8_t *checked, size_t length,
 {
     uint8_t reversed[TEXT_MAX] = {0};
     size_t zeroes = leading_zeroes(checked, length), count = 0;
-    while (leading_zeroes(checked, length) < length) {
+    size_t start = zeroes;
+    while (start < length) {
         if (count == sizeof(reversed))
             return ZCL_OUT_OF_RANGE;
-        reversed[count++] = alphabet[divide_by_58(checked, length)];
+        /* The zero prefix contributes no carry. Retire it monotonically;
+         * each advance is bounded by the remaining caller-owned scratch. */
+        reversed[count++] = alphabet[divide_by_58(checked + start, length - start)];
+        start += leading_zeroes(checked + start, length - start);
     }
     if (zeroes > sizeof(reversed) - count)
         return ZCL_OUT_OF_RANGE;

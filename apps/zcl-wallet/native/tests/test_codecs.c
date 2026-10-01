@@ -82,6 +82,43 @@ static bool reject_bad_arguments_and_capacity(void)
     return true;
 }
 
+static bool check_zero_prefix(size_t size, size_t zeroes, uint8_t suffix)
+{
+    uint8_t payload[128] = {0}, original[128], text[186], recovered[128];
+    memset(payload + zeroes, suffix, size - zeroes);
+    memcpy(original, payload, sizeof(original));
+    memset(text, 0xa5, sizeof(text));
+    size_t length = 0, decoded = 0;
+    CHECK(zcl_base58check_encode(payload, size, text + 1, 184, &length) == ZCL_OK);
+    CHECK(length > zeroes && length <= 184);
+    CHECK(text[0] == 0xa5 && text[length + 1] == 0xa5);
+    for (size_t i = 0; i < zeroes; ++i) CHECK(text[i + 1] == '1');
+    CHECK(zcl_base58check_decode(text + 1, length, recovered, sizeof(recovered), &decoded) == ZCL_OK);
+    CHECK(decoded == size && memcmp(payload, recovered, size) == 0);
+    uint8_t exact[184] = {0};
+    size_t exact_length = 0;
+    CHECK(zcl_base58check_encode(payload, size, exact, length, &exact_length) == ZCL_OK);
+    CHECK(exact_length == length && memcmp(exact, text + 1, length) == 0);
+    memset(text, 0xa5, sizeof(text));
+    exact_length = SIZE_MAX;
+    CHECK(zcl_base58check_encode(payload, size, text, length - 1, &exact_length) == ZCL_BUFFER_TOO_SMALL);
+    CHECK(exact_length == SIZE_MAX);
+    for (size_t i = 0; i < sizeof(text); ++i) CHECK(text[i] == 0xa5);
+    CHECK(memcmp(payload, original, sizeof(payload)) == 0);
+    return true;
+}
+
+static bool all_zero_prefixes(void)
+{
+    for (size_t size = 1; size <= 128; ++size) {
+        for (size_t zeroes = 0; zeroes <= size; ++zeroes) {
+            CHECK(check_zero_prefix(size, zeroes, 1));
+            CHECK(check_zero_prefix(size, zeroes, UINT8_MAX));
+        }
+    }
+    return true;
+}
+
 static bool address_refusals_and_scripts(void)
 {
     zcl_address address = {0};
@@ -103,7 +140,7 @@ static bool address_refusals_and_scripts(void)
 int main(void)
 {
     if (!provider_vectors() || !public_reference_vectors() || !all_lengths_roundtrip() ||
-        !reject_bad_arguments_and_capacity() || !address_refusals_and_scripts())
+        !reject_bad_arguments_and_capacity() || !address_refusals_and_scripts() || !all_zero_prefixes())
         return 1;
-    return puts("wallet-core: 5 codec test groups passed") == EOF ? 1 : 0;
+    return puts("wallet-core: 6 codec test groups passed") == EOF ? 1 : 0;
 }
