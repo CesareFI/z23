@@ -7500,7 +7500,9 @@ static bool ic_gate_everything(const char *group)
 static int test_ic_build_need_umbrella_fold(void)
 {
     int failures = 0;
-    TEST("proof selection: missing BUILD helper keeps shard and folds its umbrella") {
+    TEST("proof selection: shard folds its umbrella without a built helper") {
+        /* Supported hosts admit the missing BUILD need; Windows declares no
+         * verifier need. Both must retain the shard and fold its umbrella. */
         ASSERT(ic_host_need_bare_root(IC_FIX_HOST_BARE));
         struct zcl_devloop_plan plan = {0};
         plan.closure_universal = true;
@@ -7526,6 +7528,12 @@ static int test_ic_local_selection_build_needs(void)
          "targets once; an ordinary selection lists none") {
         struct zcl_test_group_host_need needs[16];
         size_t n = 99;
+#if defined(_WIN32)
+        /* The ensure target is a no-op where no verifier is qualified. */
+        const size_t verifier_needs = 0;
+#else
+        const size_t verifier_needs = 1;
+#endif
 
         static const char *const verifier_groups[] = {
             "test_zcode_verify", "test_zcode_package_registry", "test_zcode_add",
@@ -7540,14 +7548,15 @@ static int test_ic_local_selection_build_needs(void)
         for (size_t i = 0; i < sizeof(verifier_groups) / sizeof(verifier_groups[0]); i++) {
             ASSERT(zcl_test_selection_build_needs(verifier_groups[i], true,
                                                   NULL, needs, 16, &n));
-            ASSERT(n == 1);
+            ASSERT(n == verifier_needs);
             ASSERT(ic_needs_have(needs, n, "dev-package-verifier-ensure",
-                                 "build/bin/zclassic23-package-verify-dev"));
+                                 "build/bin/zclassic23-package-verify-dev") ==
+                   (verifier_needs != 0));
         }
         ASSERT(zcl_test_selection_build_needs(
             "test_zcode_store,test_zcode_verify,test_zcode_add", true, NULL,
             needs, 16, &n));
-        ASSERT(n == 1);
+        ASSERT(n == verifier_needs);
 
         /* Static partition assigns the lifecycle builder to shard_01. */
         ASSERT(zcl_test_selection_build_needs(
@@ -7621,9 +7630,10 @@ static int test_ic_local_selection_build_needs(void)
         n = 99;
         ASSERT(zcl_test_selection_build_needs(NULL, false, NULL, needs, 16,
                                               &n));
-        ASSERT(n == 9);
+        ASSERT(n == 8 + verifier_needs);
         ASSERT(ic_needs_have(needs, n, "dev-package-verifier-ensure",
-                             "build/bin/zclassic23-package-verify-dev"));
+                             "build/bin/zclassic23-package-verify-dev") ==
+               (verifier_needs != 0));
         ASSERT(ic_needs_have(needs, n, "dev-bin", "build/bin/z23-dev"));
         ASSERT(ic_needs_have(needs, n, "engine-unit",
                              "build/bin/zclassic23-engine-unit"));

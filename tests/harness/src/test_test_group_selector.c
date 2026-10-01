@@ -1457,8 +1457,15 @@ static bool tgs_write_file(const char *path, const char *text)
 static int test_exact_verifier_prerequisites(void)
 {
     int failures = 0;
-    TEST("exact storage selection avoids verifier; consumer ensure refuses stale or missing helper") {
+    TEST("exact storage selection avoids verifier; consumer ensure honors platform support") {
         char command[4096], out[4096], root[256], stamp[320], fresh[160];
+#if defined(_WIN32)
+        /* No qualified package verifier: Make deliberately does no work. */
+        const int rebuild_rc = 0;
+#else
+        /* A supported host must rebuild stale/missing helpers or refuse. */
+        const int rebuild_rc = 2;
+#endif
         /* Inspect the database through the help query goal. Naming an
          * internal locked goal refuses in a native proof without an inherited
          * checkout lock; naming its public goal can execute recursive makes
@@ -1490,7 +1497,7 @@ static int test_exact_verifier_prerequisites(void)
         ASSERT(n > 0 && (size_t)n < sizeof(command));
         ASSERT(capture_command(command, out, sizeof(out)) == 0);
         ASSERT(tgs_write_file(stamp, "stale source identity\n"));
-        ASSERT(capture_command(command, out, sizeof(out)) == 2);
+        ASSERT(capture_command(command, out, sizeof(out)) == rebuild_rc);
         ASSERT(tgs_write_file(stamp, fresh));
         n = snprintf(command, sizeof(command),
             "make --no-print-directory dev-package-verifier-ensure "
@@ -1498,7 +1505,7 @@ static int test_exact_verifier_prerequisites(void)
             "MAKE=/bin/false BUILD_SOURCE_RECORD='%s 1 %s' 2>&1",
             root, stamp, zcl_build_source_id_sha256(), zcl_build_source_mutation_sha256());
         ASSERT(n > 0 && (size_t)n < sizeof(command));
-        ASSERT(capture_command(command, out, sizeof(out)) == 2);
+        ASSERT(capture_command(command, out, sizeof(out)) == rebuild_rc);
         ASSERT(test_rm_rf_recursive(root) == 0);
         PASS();
     } _test_next:;
