@@ -129,11 +129,11 @@ static const struct ssp_case k_ssp_cases[] = {
      "#define FN(a) X ## a\n"
      "#if OPEN defined __has_include(<opt.h>))\n" SSP_TAIL,
      {"-std=c23", NULL, NULL}, NULL, NULL, false, "opt.h", SSP_ANY},
-    {"after a ??/ comment, with -std=c17 only an -I value",
+    {"after a ?\?/ comment, with -std=c17 only an -I value",
      "// note ?\?/\n"
      "#if __has_include(<opt.h>)\n" SSP_TAIL,
      {"-std=c23", "-I", "-std=c17"}, NULL, NULL, false, "opt.h", SSP_ANY},
-    {"after a ??/ comment, with -std=c17 only an -Xlinker value",
+    {"after a ?\?/ comment, with -std=c17 only an -Xlinker value",
      "// note ?\?/\n"
      "#if __has_include(<opt.h>)\n" SSP_TAIL,
      {"-Xlinker", "-std=c17", NULL}, NULL, NULL, false, "opt.h", SSP_ANY},
@@ -208,7 +208,7 @@ static const struct ssp_case k_ssp_cases[] = {
      "#if __has_include(\"opt.h\")\n" SSP_TAIL "/* end */\n",
      {"-std=c23", "-include", "probe.h"}, "#undef __STDC_VERSION__\n", NULL,
      false, "opt.h", SSP_ANY},
-    {"after a ??/ comment, with sizeof redefined by -D",
+    {"after a ?\?/ comment, with sizeof redefined by -D",
      "// note ?\?/\n"
      "#if __has_include(<opt.h>)\n" SSP_TAIL,
      {"-std=c23", "-Dsizeof(x)=2", NULL}, NULL, NULL, false, "opt.h",
