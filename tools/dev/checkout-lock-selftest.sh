@@ -145,11 +145,29 @@ assert_build_and_run_locked test-parallel-active test-parallel-active-locked
 assert_build_and_run_locked test-parallel-fast-active test-parallel-fast-active-locked
 assert_build_and_run_locked t t-locked
 assert_build_and_run_locked t-fast t-fast-locked
-assert_build_and_run_locked t-fast-exact t-fast-exact-locked
+# Exact selection owns its runner build here, then resolves BUILD_NEED targets
+# inside the same critical section. Requiring the verifier unconditionally
+# would rebuild it even for selections that never execute it.
+assert_build_and_run_locked t-fast-exact t-fast-exact-locked \
+    '$(TEST_PARALLEL_FAST_CANDIDATE)'
 assert_build_and_run_locked test test-locked
 assert_build_and_run_locked test-full test-full-locked test_zcl
 assert_build_and_run_locked secure-release-regressions \
     secure-release-regressions-locked
+
+# The selected-build seam is mandatory, and must precede the exact run with
+# identical selector arguments. Moving it to the public target would perform
+# writes outside the lock; deleting it would let a consumer run without its
+# source-fresh verifier. The assertion above still checks the public lock and
+# inner runner prerequisite rather than exempting the exact target.
+EXACT_BLOCK="$(awk '/^t-fast-exact-locked:/ { found=1 } \
+    found && /^$/ { exit } found { print }' "$MAKEFILE")"
+EXACT_BUILD='$(call ZCL_TEST_BUILD_NEEDS,$(TEST_PARALLEL_FAST_ACTIVE),--exact=$(EXACT_ONLY_MATCHED) $(T_FAST_EXACT_ARGS))'
+EXACT_RUN='$(LINKED_TEST_ENV) $(TEST_PARALLEL_FAST_ACTIVE) --exact=$(EXACT_ONLY_MATCHED) $(T_FAST_EXACT_ARGS)'
+case "$EXACT_BLOCK" in
+    *"$EXACT_BUILD"*"$EXACT_RUN"*) ;;
+    *) fail 't-fast-exact-locked must build selected needs under the lock before running the same exact selection' ;;
+esac
 
 # A copied inner target must fail during Make parsing, before it can launch
 # any prerequisite writer outside the critical section.

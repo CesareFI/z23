@@ -1459,8 +1459,12 @@ static int test_exact_verifier_prerequisites(void)
     int failures = 0;
     TEST("exact storage selection avoids verifier; consumer ensure refuses stale or missing helper") {
         char command[4096], out[4096], root[256], stamp[320], fresh[160];
+        /* Inspect the database through the help query goal. Naming an
+         * internal locked goal refuses in a native proof without an inherited
+         * checkout lock; naming its public goal can execute recursive makes
+         * even under -q. Neither is needed to inspect this prerequisite row. */
         int n = snprintf(command, sizeof(command),
-            "make --no-print-directory -qp t-fast-exact-locked "
+            "env -u ZCL_CHECKOUT_LOCK_HELD make --no-print-directory -qp help "
             "EXACT_ONLY_MATCHED=test_zcode_store "
             "TEST_PARALLEL_FAST_CANDIDATE=/bin/true "
             "BUILD_SOURCE_RECORD='%s 1 %s' 2>/dev/null | "
