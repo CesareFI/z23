@@ -142,6 +142,7 @@ static int pv_main_windows(void)
 #include "json/json.h"
 #include "platform/clock.h"
 #include "platform/os_proc.h"
+#include "platform/positioned_file.h"
 #include "platform/process_compat.h"
 #include "platform/os_sandbox.h"
 #include "support/cleanse.h"
@@ -468,26 +469,40 @@ static bool pv_rm_rf(const char *path)
 /* Read a whole file bounded by cap (NULL on any failure/oversize). */
 static uint8_t *pv_read_file(const char *path, size_t cap, size_t *out_len)
 {
+    if (!out_len)
+        return NULL;
     *out_len = 0;
-    struct stat st;
-    if (stat(path, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size <= 0 ||
-        (uint64_t)st.st_size > cap)
+    if (!path)
         return NULL;
-    size_t len = (size_t)st.st_size;
+
+    struct platform_positioned_file file;
+    struct platform_positioned_file_snapshot before;
+    struct platform_positioned_file_snapshot after;
+    platform_positioned_file_init(&file);
+    if (!platform_positioned_file_open(&file, path) ||
+        !platform_positioned_file_snapshot(&file, &before) ||
+        before.size == 0 || before.size > (uint64_t)cap ||
+        before.size > (uint64_t)SIZE_MAX) {
+        platform_positioned_file_close(&file);
+        return NULL;
+    }
+
+    size_t len = (size_t)before.size;
     uint8_t *buf = zcl_malloc(len, "pv_read_file");
-    if (!buf)
+    if (!buf) {
+        platform_positioned_file_close(&file);
         return NULL;
-    FILE *f = fopen(path, "rb");
-    if (!f) {
+    }
+
+    int64_t got = platform_positioned_file_read(&file, buf, len, 0);
+    bool stable = got >= 0 && (uint64_t)got == before.size &&
+                  platform_positioned_file_snapshot(&file, &after) &&
+                  platform_positioned_file_snapshot_equal(&before, &after);
+    platform_positioned_file_close(&file);
+    if (!stable) {
         free(buf);
         return NULL;
     }
-    if (fread(buf, 1, len, f) != len) {
-        fclose(f);
-        free(buf);
-        return NULL;
-    }
-    fclose(f);
     *out_len = len;
     return buf;
 }

@@ -62,7 +62,9 @@
  *      checked (test-pass, verifier key, temp tree cleaned). Hostile
  *      fixtures fail closed with the named rule: a syntax-error source
  *      (build-fail/compile-error) and a test that calls socket()
- *      (test-fail/test-signal — the seccomp network denial firing). The
+ *      (test-fail/test-signal — the seccomp network denial firing). A
+ *      release-envelope symlink is refused even when it resolves to the
+ *      original valid signed bytes. The
  *      reproduction lane runs --emit twice: a second build
  *      --reproduce-against the first build-report exits 0 with
  *      reproduction=MATCH; a tampered reference exits 6 (MISMATCH).
@@ -4361,6 +4363,41 @@ static int ze_buildfail(const char *base, const char *key_path,
     return failures;
 }
 
+static int ze_symlinked_release(const char *base, const char *key_path,
+                                const char *work)
+{
+    int failures = 0;
+    char store[4400];
+    snprintf(store, sizeof(store), "%s/store_linked_release", base);
+    uint8_t package_root[32], release_id[32], recipe_root[32];
+    bool fixture = zv_publish_fixture(
+        store,
+        "#include \"add.h\"\nint add(int a, int b) { return a + b; }\n",
+        "#include \"add.h\"\nint main(void) { return add(2, 3) == 5 ? 0 : 1; }\n",
+        package_root, release_id, recipe_root);
+    char root_hex[65], release_hex[65];
+    zv_hex_enc(package_root, 32, root_hex);
+    zv_hex_enc(release_id, 32, release_hex);
+    char release_path[4400], outside[4400];
+    snprintf(release_path, sizeof(release_path), "%s/releases/%s", store,
+             release_hex);
+    snprintf(outside, sizeof(outside), "%s/outside-release", base);
+    bool redirected = fixture && rename(release_path, outside) == 0 &&
+                      symlink("../../outside-release", release_path) == 0;
+    ZV_CHECK("e2e: symlinked release fixture prepared", redirected);
+
+    char out[2048];
+    int rc = redirected ? zv_run_verifier(root_hex, store, key_path, work,
+                                           out, sizeof(out)) : -1;
+    struct vcs_package_attest att;
+    ZV_CHECK("e2e: symlinked release envelope refused before execution",
+             redirected && rc == 3 &&
+             !zv_read_only_attestation(store, &att));
+    if (redirected && rc != 3)
+        printf("  zcode_verify: symlinked release rc=%d out=%s\n", rc, out);
+    return failures;
+}
+
 static int ze_socket(const char *base, const char *key_path,
                      const char *work)
 {
@@ -4537,6 +4574,7 @@ static int t_verifier_e2e(void)
     snprintf(key_path, sizeof(key_path), "%s/verifier.key", base);
     char work[4400];
     snprintf(work, sizeof(work), "%s/work", base);
+    failures += ze_symlinked_release(base, key_path, work);
     failures += ze_buildfail(base, key_path, work);
     failures += ze_socket(base, key_path, work);
     failures += ze_reproduce(base, root_hex, store, work);
