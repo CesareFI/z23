@@ -8,6 +8,7 @@
 #include "test/test_core.h"
 
 #include "platform/toolchain.h"
+#include "vcs/build_action.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -36,6 +37,33 @@ struct pt_query_log {
     int lto1_queries;
     bool fail_ld;
 };
+
+struct pt_capsule_query {
+    size_t descriptor_count;
+    bool change_second_descriptor;
+};
+
+static bool pt_capsule_query_stub(void *ctx, const char *const argv[],
+                                  char *out, size_t cap)
+{
+    struct pt_capsule_query *query = ctx;
+    if (!query || !argv || !argv[0] || !argv[1] || argv[2])
+        return false;
+    const char *arg = argv[1];
+    if (strcmp(arg, "-print-prog-name=cc1") == 0)
+        query->descriptor_count++;
+    const char *value = "/usr/bin/cc";
+    if (strcmp(arg, "-dumpmachine") == 0) {
+        value = query->change_second_descriptor &&
+                query->descriptor_count > 1
+            ? "fixture-target-changed" : "fixture-target";
+    } else if (strcmp(arg, "-dumpfullversion") == 0 ||
+               strcmp(arg, "-dumpversion") == 0) {
+        value = "fixture-version";
+    }
+    int n = snprintf(out, cap, "%s", value);
+    return n > 0 && (size_t)n < cap;
+}
 
 static bool pt_query_stub(void *ctx, const char *const argv[],
                           char *out, size_t cap)
@@ -91,6 +119,25 @@ static int pt_link_probe_checks(void)
     PT_CHECK("descriptor capture refuses an unanswerable linker probe",
              !platform_toolchain_capture_descriptor(
                  pt_query_stub, &failing, &desc));
+    return failures;
+}
+
+static int pt_capsule_capture_checks(void)
+{
+    int failures = 0;
+    struct vcs_toolchain_capsule_v1 capsule;
+    struct pt_capsule_query stable = {0};
+    PT_CHECK("capsule capture brackets tool bytes with two descriptors",
+             vcs_toolchain_capsule_v1_capture_query_for_test(
+                 pt_capsule_query_stub, &stable, &capsule) &&
+             stable.descriptor_count == 2);
+    struct pt_capsule_query changed = {
+        .change_second_descriptor = true,
+    };
+    PT_CHECK("capsule capture refuses a descriptor change while hashing",
+             !vcs_toolchain_capsule_v1_capture_query_for_test(
+                 pt_capsule_query_stub, &changed, &capsule) &&
+             changed.descriptor_count == 2);
     return failures;
 }
 #endif
@@ -278,6 +325,7 @@ int test_platform_toolchain(void)
 
 #if defined(__linux__)
     failures += pt_link_probe_checks();
+    failures += pt_capsule_capture_checks();
 #endif
 
 #if defined(__APPLE__)

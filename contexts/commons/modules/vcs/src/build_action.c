@@ -337,6 +337,53 @@ static const char *build_toolchain_descriptor_file(
     return NULL;
 }
 
+/* Compare every defined descriptor field explicitly.  Do not compare the
+ * struct as raw bytes: padding is not part of toolchain identity. */
+static bool build_toolchain_descriptor_equal(
+    const struct platform_toolchain_descriptor *a,
+    const struct platform_toolchain_descriptor *b)
+{
+    return a && b && a->link_file_count == b->link_file_count &&
+        memcmp(a->target, b->target, sizeof(a->target)) == 0 &&
+        memcmp(a->platform_contract, b->platform_contract,
+               sizeof(a->platform_contract)) == 0 &&
+        memcmp(a->compiler_driver, b->compiler_driver,
+               sizeof(a->compiler_driver)) == 0 &&
+        memcmp(a->compiler_backend, b->compiler_backend,
+               sizeof(a->compiler_backend)) == 0 &&
+        memcmp(a->assembler, b->assembler, sizeof(a->assembler)) == 0 &&
+        memcmp(a->sysroot_files, b->sysroot_files,
+               sizeof(a->sysroot_files)) == 0 &&
+        memcmp(a->abi_files, b->abi_files, sizeof(a->abi_files)) == 0 &&
+        memcmp(a->link_files, b->link_files, sizeof(a->link_files)) == 0 &&
+        memcmp(a->host_triple, b->host_triple,
+               sizeof(a->host_triple)) == 0 &&
+        memcmp(a->full_version, b->full_version,
+               sizeof(a->full_version)) == 0 &&
+        memcmp(a->short_version, b->short_version,
+               sizeof(a->short_version)) == 0;
+}
+
+static bool build_toolchain_files_current(
+    const struct platform_toolchain_descriptor *desc,
+    const struct build_toolchain_file *files)
+{
+    if (!desc || !files || desc->link_file_count == 0 ||
+        desc->link_file_count > ZCL_TOOLCHAIN_LINK_COUNT)
+        return false;
+    size_t count = BUILD_TOOLCHAIN_FILE_BASE_COUNT + desc->link_file_count;
+    for (size_t i = 0; i < count; i++) {
+        const char *path = build_toolchain_descriptor_file(desc, i);
+        char resolved[PATH_MAX];
+        struct platform_positioned_file_snapshot current;
+        if (!path || !build_resolve_file(path, resolved, &current) ||
+            strcmp(resolved, files[i].path) != 0 ||
+            !build_stat_equal(&files[i].stamp, &current))
+            return false;
+    }
+    return true;
+}
+
 /* The runtime dimensions of the identity: ABI/runtime files, then the link
  * tools whose bytes can alter linked output — a linker, link-wrapper, or
  * LTO-backend swap must move the capsule root before any build or
@@ -382,53 +429,30 @@ static bool build_toolchain_cache_current(
     if (!build_resolve_file(VCS_BUILD_COMPILER_V1, driver_path, NULL) ||
         strcmp(driver_path, cache->files[0].path) != 0)
         return false;
-    for (size_t i = 0; i < BUILD_TOOLCHAIN_FILE_COUNT; i++) {
-        /* Platforms fill different link-tool counts; absent slots do not
-         * participate in the staleness comparison. */
-        const char *path =
-            build_toolchain_descriptor_file(&cache->descriptor, i);
-        if (!path) continue;
-        char resolved[PATH_MAX];
-        struct platform_positioned_file_snapshot current;
-        if (!build_resolve_file(path, resolved, &current) ||
-            strcmp(resolved, cache->files[i].path) != 0 ||
-            !build_stat_equal(&cache->files[i].stamp, &current))
-            return false;
-    }
-    return true;
+    return build_toolchain_files_current(&cache->descriptor, cache->files);
 }
 
-static bool build_toolchain_capture_uncached(
+static bool build_toolchain_hash_descriptor(
+    const struct platform_toolchain_descriptor *desc,
     struct vcs_toolchain_capsule_v1 *out,
-    struct build_toolchain_file files[BUILD_TOOLCHAIN_FILE_COUNT],
-    struct platform_toolchain_descriptor *descriptor)
+    struct build_toolchain_file files[BUILD_TOOLCHAIN_FILE_COUNT])
 {
-    if (!out) return false;
-    memset(out, 0, sizeof(*out));
-    memset(files, 0,
-           sizeof(struct build_toolchain_file) * BUILD_TOOLCHAIN_FILE_COUNT);
-
-    struct platform_toolchain_descriptor desc;
-    if (!platform_toolchain_capture_descriptor(
-            build_toolchain_query, NULL, &desc))
-        return false;
-
     size_t file_count = 0;
-    if (!build_resolve_file(desc.compiler_driver, files[file_count].path,
+    if (!build_resolve_file(desc->compiler_driver, files[file_count].path,
                             &files[file_count].stamp) ||
         !build_sha3_file(files[file_count].path, out->compiler_driver_sha3,
                          &files[file_count].stamp))
         return false;
     file_count++;
 
-    if (!build_resolve_file(desc.compiler_backend, files[file_count].path,
+    if (!build_resolve_file(desc->compiler_backend, files[file_count].path,
                             &files[file_count].stamp) ||
         !build_sha3_file(files[file_count].path, out->compiler_backend_sha3,
                          &files[file_count].stamp))
         return false;
     file_count++;
 
-    if (!build_assembler_identity(desc.assembler, out->assembler_sha3,
+    if (!build_assembler_identity(desc->assembler, out->assembler_sha3,
                                   &files[file_count]))
         return false;
     file_count++;
@@ -438,7 +462,7 @@ static bool build_toolchain_capture_uncached(
     };
     if (!build_hash_aggregate("zcl.toolchain.sysroot.v1", sysroot_labels,
                               ZCL_TOOLCHAIN_SYSROOT_COUNT,
-                              desc.sysroot_files,
+                              desc->sysroot_files,
                               out->sysroot_sha3, files, &file_count))
         return false;
 
@@ -447,18 +471,45 @@ static bool build_toolchain_capture_uncached(
     static const char probe_domain[] = "zcl.toolchain.target_probes.v1";
     sha3_256_write(&probes, (const uint8_t *)probe_domain,
                    sizeof(probe_domain));
-    build_hash_text(&probes, desc.host_triple);
-    build_hash_text(&probes, desc.full_version);
-    build_hash_text(&probes, desc.short_version);
-    build_hash_text(&probes, desc.target);
-    if (desc.platform_contract[0] != '\0') {
+    build_hash_text(&probes, desc->host_triple);
+    build_hash_text(&probes, desc->full_version);
+    build_hash_text(&probes, desc->short_version);
+    build_hash_text(&probes, desc->target);
+    if (desc->platform_contract[0] != '\0') {
         static const char contract_label[] = "platform-contract";
         build_hash_text(&probes, contract_label);
-        build_hash_text(&probes, desc.platform_contract);
+        build_hash_text(&probes, desc->platform_contract);
     }
     sha3_256_finalize(&probes, out->target_probes_sha3);
 
-    if (!build_toolchain_runtime_identity(&desc, out, files, &file_count))
+    return build_toolchain_runtime_identity(
+        desc, out, files, &file_count);
+}
+
+static bool build_toolchain_capture_uncached(
+    platform_toolchain_query_fn query_fn, void *query_ctx,
+    struct vcs_toolchain_capsule_v1 *out,
+    struct build_toolchain_file files[BUILD_TOOLCHAIN_FILE_COUNT],
+    struct platform_toolchain_descriptor *descriptor)
+{
+    if (!query_fn || !out || !files) return false;
+    memset(out, 0, sizeof(*out));
+    memset(files, 0,
+           sizeof(struct build_toolchain_file) * BUILD_TOOLCHAIN_FILE_COUNT);
+
+    struct platform_toolchain_descriptor desc;
+    if (!platform_toolchain_capture_descriptor(query_fn, query_ctx, &desc) ||
+        !build_toolchain_hash_descriptor(&desc, out, files))
+        return false;
+
+    /* A package receipt must never combine query output from one compiler
+     * generation with bytes from another.  Re-observe the descriptor after
+     * hashing, then prove every hashed path still names the same stamped
+     * file.  Any concurrent toolchain update fails this capture closed. */
+    struct platform_toolchain_descriptor after;
+    if (!platform_toolchain_capture_descriptor(query_fn, query_ctx, &after) ||
+        !build_toolchain_descriptor_equal(&desc, &after) ||
+        !build_toolchain_files_current(&desc, files))
         return false;
 
     (void)snprintf(out->target, sizeof(out->target), "%s", desc.target);
@@ -509,12 +560,15 @@ bool vcs_toolchain_capsule_v1_capture(
         return false;
     }
 #endif
-    bool ok = build_toolchain_capture_uncached(&captured, files,
-                                                &descriptor);
+    bool ok = build_toolchain_capture_uncached(
+        build_toolchain_query, NULL, &captured, files, &descriptor);
 #if defined(__APPLE__)
     ok = ok && build_toolchain_developer_selection(selection_after) &&
         strcmp(selection_before, selection_after) == 0;
 #endif
+    uint8_t environment_after[32];
+    build_toolchain_environment_root(environment_after);
+    ok = ok && memcmp(environment_root, environment_after, 32) == 0;
     g_toolchain_cache.valid = false;
     if (ok) {
         g_toolchain_cache.capsule = captured;
@@ -525,7 +579,7 @@ bool vcs_toolchain_capsule_v1_capture(
                        sizeof(g_toolchain_cache.developer_selection), "%s",
                        selection_after);
 #endif
-        memcpy(g_toolchain_cache.environment_root, environment_root, 32);
+        memcpy(g_toolchain_cache.environment_root, environment_after, 32);
         g_toolchain_cache.fresh_captures++;
         g_toolchain_cache.valid = true;
         *out = captured;
@@ -535,6 +589,15 @@ bool vcs_toolchain_capsule_v1_capture(
 }
 
 #ifdef ZCL_TESTING
+bool vcs_toolchain_capsule_v1_capture_query_for_test(
+    platform_toolchain_query_fn query_fn, void *query_ctx,
+    struct vcs_toolchain_capsule_v1 *out)
+{
+    struct build_toolchain_file files[BUILD_TOOLCHAIN_FILE_COUNT];
+    return build_toolchain_capture_uncached(
+        query_fn, query_ctx, out, files, NULL);
+}
+
 void vcs_toolchain_capsule_v1_cache_reset_for_test(void)
 {
     if (!build_toolchain_cache_lock()) return;

@@ -168,7 +168,9 @@ bool vcs_toolchain_capsule_v1_root(
  * Assembler identity is the version string, not the assembler file bytes, so
  * two ordinary hosts with the same assembler version can independently
  * compile.  No mtime participates. A platform that cannot name its link
- * tools fails the capture rather than dropping the class. */
+ * tools fails the capture rather than dropping the class. A fresh capture
+ * observes the descriptor before and after hashing and revalidates every
+ * resolved path stamp; concurrent toolchain drift refuses the capture. */
 bool vcs_toolchain_capsule_v1_capture(
     struct vcs_toolchain_capsule_v1 *out);
 /* Return a previously captured capsule and its resolved tool paths only when
@@ -178,6 +180,11 @@ bool vcs_toolchain_capsule_v1_cached(
     struct vcs_toolchain_capsule_v1 *out,
     struct platform_toolchain_descriptor *descriptor);
 #ifdef ZCL_TESTING
+/* Exercise the complete uncached capture bracket with a deterministic query
+ * source.  Production callers always use the fixed host query above. */
+bool vcs_toolchain_capsule_v1_capture_query_for_test(
+    platform_toolchain_query_fn query_fn, void *query_ctx,
+    struct vcs_toolchain_capsule_v1 *out);
 void vcs_toolchain_capsule_v1_cache_reset_for_test(void);
 void vcs_toolchain_capsule_v1_cache_stats_for_test(
     uint64_t *fresh_captures, uint64_t *cache_hits);
