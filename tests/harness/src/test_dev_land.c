@@ -131,6 +131,7 @@ static void dlx_isolate(const char *tag)
     unsetenv("ZCL_LAND_TEST_PICK_DELAY_MS");
     unsetenv("ZCL_LAND_TEST_DIR_SYNC_FAIL");
     unsetenv("ZCL_LAND_TEST_FILE_SYNC_FAIL");
+    unsetenv("ZCL_LAND_TEST_OUTCOME_SYNC_FAIL");
     unsetenv("ZCL_LAND_TEST_QUEUE_WRITE_FAIL");
     unsetenv("ZCL_LAND_TEST_DIE_AFTER_OUTCOME");
     unsetenv("ZCL_LAND_TEST_DIE_AFTER_PROOF");
@@ -176,6 +177,7 @@ static void dlx_restore(void)
     unsetenv("ZCL_LAND_TEST_PICK_DELAY_MS");
     unsetenv("ZCL_LAND_TEST_DIR_SYNC_FAIL");
     unsetenv("ZCL_LAND_TEST_FILE_SYNC_FAIL");
+    unsetenv("ZCL_LAND_TEST_OUTCOME_SYNC_FAIL");
     unsetenv("ZCL_LAND_TEST_QUEUE_WRITE_FAIL");
     unsetenv("ZCL_LAND_TEST_DIE_AFTER_OUTCOME");
     unsetenv("ZCL_LAND_TEST_DIE_AFTER_PROOF");
@@ -2296,6 +2298,78 @@ static int test_dev_land_lost_persistence(void)
     }
 
 _test_next:;
+    return failures;
+}
+
+static int test_dev_land_outcome_sync_recovery(void)
+{
+    int failures = 0;
+    TEST("land: an ambiguous outcome sync is completed offline without a second push") {
+        struct dlx_rig rig;
+        struct dlx_call c;
+        char landdir[1200], qpath[1400], opath[1400], offline[700];
+        char queue[8192], outcome[8192], again[8192], remote[64];
+        size_t queue_len = 0, outcome_len = 0, again_len = 0;
+        dlx_isolate("outcome_sync_recovery");
+        ASSERT(dlx_rig_make(&rig, "outcome_sync_recovery_rig"));
+        setenv("ZCL_LAND_PROOF_STUB", "running", 1);
+        setenv("ZCL_LAND_ALLOW_UNSIGNED", "1", 1);
+        dlx_submit(&c, &rig, rig.tip);
+        ASSERT(dlx_run(&c) && dlx_ok(&c));
+        dlx_end(&c);
+        dlx_begin(&c, "step");
+        ASSERT(dlx_run(&c) && dlx_ok(&c));
+        ASSERT_STR_EQ(dlx_str(&c, "state"), "started");
+        dlx_end(&c);
+        dlx_landdir(landdir, sizeof(landdir));
+        ASSERT(snprintf(qpath, sizeof(qpath), "%s/queue.jsonl", landdir) <
+               (int)sizeof(qpath));
+        ASSERT(snprintf(opath, sizeof(opath), "%s/outcomes.jsonl", landdir) <
+               (int)sizeof(opath));
+        setenv("ZCL_LAND_PROOF_STUB", "pass", 1);
+        setenv("ZCL_LAND_TEST_OUTCOME_SYNC_FAIL", "1", 1);
+        setenv("ZCL_DEVLOOP_TEST_PROCESS", "1", 1);
+        dlx_begin(&c, "step");
+        ASSERT(dlx_run(&c) && dlx_ok(&c));
+        ASSERT_STR_EQ(dlx_str(&c, "state"), "landed");
+        ASSERT_STR_EQ(dlx_str(&c, "persist"), "failed");
+        dlx_end(&c);
+        ASSERT(dlx_origin_main(&rig, remote));
+        ASSERT_STR_EQ(remote, rig.tip);
+        ASSERT(dlx_slurp(qpath, queue, sizeof(queue), &queue_len));
+        ASSERT(queue_len > 0);
+        ASSERT(dlx_slurp(opath, outcome, sizeof(outcome), &outcome_len));
+        ASSERT(outcome_len > 0);
+
+        /* The append may have reached the page cache even though its sync
+         * failed. A replacement process must sync that exact existing row
+         * before removing the queue entry, with no remote access required. */
+        (void)snprintf(offline, sizeof(offline), "%s.offline", rig.bare);
+        ASSERT(rename(rig.bare, offline) == 0);
+        unsetenv("ZCL_LAND_TEST_OUTCOME_SYNC_FAIL");
+        unsetenv("ZCL_DEVLOOP_TEST_PROCESS");
+        dlx_begin(&c, "step");
+        ASSERT(dlx_run(&c) && dlx_ok(&c));
+        ASSERT_STR_EQ(dlx_str(&c, "state"), "landed");
+        ASSERT(dlx_str(&c, "persist")[0] == '\0');
+        dlx_end(&c);
+        ASSERT(dlx_slurp(qpath, queue, sizeof(queue), &queue_len));
+        ASSERT_EQ(queue_len, 0);
+        ASSERT(dlx_slurp(opath, again, sizeof(again), &again_len));
+        ASSERT_EQ(again_len, outcome_len);
+        ASSERT(memcmp(again, outcome, outcome_len) == 0);
+        ASSERT(rename(offline, rig.bare) == 0);
+        dlx_begin(&c, "step");
+        ASSERT(dlx_run(&c) && dlx_ok(&c));
+        ASSERT_STR_EQ(dlx_str(&c, "state"), "empty");
+        dlx_end(&c);
+        dlx_restore();
+        PASS();
+    }
+_test_next:;
+    unsetenv("ZCL_LAND_TEST_OUTCOME_SYNC_FAIL");
+    unsetenv("ZCL_DEVLOOP_TEST_PROCESS");
+    dlx_restore();
     return failures;
 }
 
@@ -8875,6 +8949,7 @@ int test_dev_land(void)
     failures += test_dev_land_recovery_ignores_replace_refs();
     failures += test_dev_land_nonfastforward_client_guard();
     failures += test_dev_land_lost_persistence();
+    failures += test_dev_land_outcome_sync_recovery();
     failures += test_dev_land_after_proof_restart();
     failures += test_dev_land_terminal_replay();
     failures += test_dev_land_outcome_visible_in_mail();

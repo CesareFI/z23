@@ -515,8 +515,7 @@ static bool dl_append_row(const char *path, const char *line, size_t len)
         }
         off += (size_t)w;
     }
-    (void)close(fd);
-    return true;
+    return close(fd) == 0;
 }
 
 static bool dl_append_text(const char *path, const char *text)
@@ -1109,6 +1108,45 @@ static bool dl_queue_parent_flush(const char *landdir)
     return platform_private_parent_flush(landdir);
 }
 
+/* A terminal outcome is the recovery checkpoint that permits the live queue
+ * row to be removed. Appending all bytes is not enough: a power loss may
+ * discard both dirty file pages and a newly-created directory entry. Flush
+ * the exact regular file and its parent before any caller treats the outcome
+ * as durable. A retry also flushes an already-present matching row, so a
+ * prior ambiguous sync failure can be completed without appending a duplicate
+ * or contacting the publication target again. */
+static bool dl_outcome_file_flush(const char *path, const char *landdir)
+{
+    int flags = O_RDONLY | O_CLOEXEC;
+    struct stat st;
+    bool ok;
+#if !defined(_WIN32)
+    flags |= O_NOFOLLOW;
+#endif
+    if (!path || !landdir)
+        return false;
+    int fd = open(path, flags);
+    if (fd < 0)
+        return false;
+    ok = fstat(fd, &st) == 0 && S_ISREG(st.st_mode);
+#if defined(ZCL_DEV_BUILD) || defined(ZCL_TESTING)
+    if (ok && getenv("ZCL_LAND_TEST_OUTCOME_SYNC_FAIL") &&
+        getenv("ZCL_DEVLOOP_TEST_PROCESS"))
+        ok = false;
+    else
+#endif
+#if defined(_WIN32)
+    if (ok)
+        ok = _commit(fd) == 0;
+#else
+    if (ok)
+        ok = fsync(fd) == 0;
+#endif
+    if (close(fd) != 0)
+        ok = false;
+    return ok && dl_queue_parent_flush(landdir);
+}
+
 static bool dl_rewrite_rows_allowed(const char *landdir, const char *qpath,
                                     const struct dl_row *rows, size_t n)
 {
@@ -1538,6 +1576,8 @@ static bool dl_record_outcome(const struct dl_dirs *d, struct dl_row *r)
          getenv("ZCL_DEVLOOP_TEST_PROCESS")) ||
 #endif
         !dl_write_row(path, r))
+        return false;
+    if (!dl_outcome_file_flush(path, d->land))
         return false;
     return dl_outbox(d, r, "outcome");
 }

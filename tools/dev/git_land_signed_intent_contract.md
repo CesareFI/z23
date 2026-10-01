@@ -96,6 +96,10 @@ client push output or a local tracking ref.
    after fetched ref, source/dependency closure and ancestry agree under
    receiver policy. `dl_already_landed` cannot be the terminal authority for
    this path: require the persisted verified receipt before writing LANDED.
+   Flush the terminal outcome file and its parent directory before removing
+   the live queue row. If an append's sync result is ambiguous, a replacement
+   worker must flush and reuse that exact outcome instead of appending a
+   duplicate or contacting the publication target again.
 4. Extend the existing `test_dev_land` rig (the owner controls that file)
    with the remaining cases above. Keep the separate black-box witness as
    the command-bound check. No unsigned or hook-skipping path qualifies a
