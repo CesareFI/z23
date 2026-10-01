@@ -1106,7 +1106,8 @@ static bool cov_inspect_rows(const struct cov_store *store,
                                          rows[r].group,
                                          row_why, sizeof(row_why)))
                 out->unqualified++;
-            else if (strcmp(row_why, ZCL_DEV_COVERAGE_WHY_CONFLICT) == 0)
+            else if (strncmp(row_why, ZCL_DEV_COVERAGE_WHY_CONFLICT,
+                             strlen(ZCL_DEV_COVERAGE_WHY_CONFLICT)) == 0)
                 out->conflicts++;
             else
                 out->unqualified++;
@@ -1122,7 +1123,8 @@ static bool cov_inspect_rows(const struct cov_store *store,
             out->covered++;
             continue;
         }
-        if (strcmp(row_why, ZCL_DEV_COVERAGE_WHY_CONFLICT) == 0) {
+        if (strncmp(row_why, ZCL_DEV_COVERAGE_WHY_CONFLICT,
+                    strlen(ZCL_DEV_COVERAGE_WHY_CONFLICT)) == 0) {
             out->conflicts++;
             continue;
         }

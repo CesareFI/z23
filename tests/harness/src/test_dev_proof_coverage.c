@@ -761,35 +761,34 @@ static int test_dpc_inspect(void)
         ASSERT(report.missing_named == DPC_GROUPS);
         ASSERT(report.observed_total == 0);
         free(blob);
-    }
-    TEST_END
-    TEST_CASE("dev_proof_coverage: inspect names unqualified rows as their own state") {
+
         /* One keyed PASS row and one denylisted group that executed
          * without a reusable observation: unqualified, never missing. */
         ASSERT(platform_directory_ensure(store, 0700));
-        uint8_t key[32], pass_root[32];
-        dpc_key(key, 1);
-        ASSERT(dpc_record(store, key, "test_coverage_keyed",
-                          ZCL_DEV_VERDICT_LEAF_PASS, 1, pass_root));
-        FILE *f = fopen(log_path, "w");
-        ASSERT(f != NULL);
-        ASSERT(dpc_log_line(f, "test_coverage_keyed", key, pass_root));
-        ASSERT(dpc_unqualified_line(f, "test_coverage_external", "missing"));
-        (void)fclose(f);
+        uint8_t uq_key[32], uq_pass_root[32];
+        dpc_key(uq_key, 1);
+        ASSERT(dpc_record(store, uq_key, "test_coverage_keyed",
+                          ZCL_DEV_VERDICT_LEAF_PASS, 1, uq_pass_root));
+        FILE *uq_f = fopen(log_path, "w");
+        ASSERT(uq_f != NULL);
+        ASSERT(dpc_log_line(uq_f, "test_coverage_keyed", uq_key, uq_pass_root));
+        ASSERT(dpc_unqualified_line(uq_f, "test_coverage_external", "missing"));
+        (void)fclose(uq_f);
 
-        char why[160] = {0};
-        uint8_t envelope[ZCL_DEV_COVERAGE_WIRE_BYTES];
-        uint8_t *blob = NULL;
-        size_t blob_len = 0;
-        ASSERT(dpc_derive(store, log_path, &binding, 2, envelope, &blob,
-                          &blob_len, why, sizeof(why)));
-        struct zcl_dev_coverage_inspect report = {0};
-        ASSERT(zcl_dev_coverage_inspect(store, envelope, sizeof(envelope),
-                                        blob, blob_len, &binding, &report,
-                                        why, sizeof(why)));
-        ASSERT(report.row_count == 2);
-        ASSERT(report.covered == 1 && report.unqualified == 1);
-        ASSERT(report.missing == 0 && report.conflicts == 0);
+        char uq_why[160] = {0};
+        uint8_t uq_envelope[ZCL_DEV_COVERAGE_WIRE_BYTES];
+        uint8_t *uq_blob = NULL;
+        size_t uq_blob_len = 0;
+        ASSERT(dpc_derive(store, log_path, &binding, 2, uq_envelope,
+                          &uq_blob, &uq_blob_len, uq_why, sizeof(uq_why)));
+        struct zcl_dev_coverage_inspect uq_report = {0};
+        ASSERT(zcl_dev_coverage_inspect(store, uq_envelope,
+                                        sizeof(uq_envelope), uq_blob,
+                                        uq_blob_len, &binding, &uq_report,
+                                        uq_why, sizeof(uq_why)));
+        ASSERT(uq_report.row_count == 2);
+        ASSERT(uq_report.covered == 1 && uq_report.unqualified == 1);
+        ASSERT(uq_report.missing == 0 && uq_report.conflicts == 0);
 
         /* A retained eligible FAIL for the unqualified group is the
          * preserved contradiction verify() refuses: a conflict answer. */
@@ -797,14 +796,15 @@ static int test_dpc_inspect(void)
         dpc_key(ext_key, 2);
         ASSERT(dpc_record(store, ext_key, "test_coverage_external",
                           ZCL_DEV_VERDICT_LEAF_FAIL, 2, ext_fail));
-        memset(&report, 0, sizeof(report));
-        ASSERT(zcl_dev_coverage_inspect(store, envelope, sizeof(envelope),
-                                        blob, blob_len, &binding, &report,
-                                        why, sizeof(why)));
-        ASSERT(report.conflicts == 1);
-        ASSERT(report.unqualified == 0);
-        ASSERT(report.covered == 1);
-        free(blob);
+        memset(&uq_report, 0, sizeof(uq_report));
+        ASSERT(zcl_dev_coverage_inspect(store, uq_envelope,
+                                        sizeof(uq_envelope), uq_blob,
+                                        uq_blob_len, &binding, &uq_report,
+                                        uq_why, sizeof(uq_why)));
+        ASSERT(uq_report.conflicts == 1);
+        ASSERT(uq_report.unqualified == 0);
+        ASSERT(uq_report.covered == 1);
+        free(uq_blob);
     }
     TEST_END
     dpc_restore();
