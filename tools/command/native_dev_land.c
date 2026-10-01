@@ -6632,7 +6632,7 @@ static bool dl_push_intent_ready(const struct dl_dirs *d,
 /* A durable push checkpoint says dispatch MAY have happened. If its reply was
  * lost and an independent fetch does not yet contain the head, the receiver
  * cannot distinguish a rejected mutation from an unsettled one. Keep the
- * exact intent for observation; never dispatch it a second time. */
+ * exact intent; this step dispatches nothing further. */
 static void dl_push_outcome_unknown(const struct dl_dirs *d,
                                     struct dl_row *row,
                                     const char *observed_main,
@@ -6700,9 +6700,30 @@ static void dl_push_refused_log(const struct dl_row *row, const char *next,
     dl_log(row, line);
 }
 
-/* A signed push checkpoint either settles as refused (successor, which
- * clears the publication so the new pair needs a new signature) or stays
- * unknown. The same intent is never dispatched twice. */
+/* May a later step send the same signed compare-and-swap again? Only when a
+ * fresh independent observation shows main still at the signed base: the
+ * head is absent, so the earlier dispatch did not apply, and the push is
+ * `--force-with-lease=main:<base> <local>:main`, so sending it again can
+ * reach no state the first dispatch could not — it lands this exact signed
+ * pair or is refused. Each send consumes one of the row's attempts, so a
+ * remote that keeps refusing stops being asked after DL_ATTEMPT_MAX and the
+ * row reads as an unresolved checkpoint, exactly as a single lost dispatch
+ * did before. Without this a dispatch lost on a quiet main waited for a
+ * remote change that nothing was going to make, holding the single-flight
+ * queue behind it (observed: nine hours, 2026-10-01). */
+static bool dl_push_redispatch_allowed(const struct dl_row *row,
+                                       const char *observed_main)
+{
+    return row->publication_signature[0] && observed_main &&
+           dl_sha_ok(observed_main) && dl_sha_ok(row->base) &&
+           strcmp(observed_main, row->base) == 0 &&
+           row->attempt < DL_ATTEMPT_MAX;
+}
+
+/* A signed push checkpoint settles as refused (successor, which clears the
+ * publication so the new pair needs a new signature) once main has moved
+ * without the head. On an unmoved main it stays unknown for this step; see
+ * dl_push_redispatch_allowed() for what the next step may do. */
 static void dl_push_checkpoint_settle(const struct dl_dirs *d,
                                       struct dl_row *row,
                                       const char *observed_main,
@@ -7014,8 +7035,15 @@ static void dl_resume_pending_watcher_kick(const struct dl_dirs *d,
          * single-flight queue behind it) forever.  Take the ordinary
          * successor path: the stale signed intent is logged, the exact pair
          * is never redispatched, and the requeued row re-proves and re-signs
-         * a fresh pair on the new base.  Base unmoved still waits for the
-         * independent receipt, exactly as before. */
+         * a fresh pair on the new base.  Base unmoved sends the same signed
+         * compare-and-swap again while the row has attempts left. */
+        if (dl_push_redispatch_allowed(row, observed_main)) {
+            row->attempt++;
+            dl_log(row, "signed push did not apply and main is unmoved; "
+                        "sending the same compare-and-swap again\n");
+            dl_step_push(d, row, reply);
+            return;
+        }
         dl_push_checkpoint_settle(d, row, observed_main, reply);
         return;
     }

@@ -6532,7 +6532,7 @@ static int test_dev_land_signed_lost_ack(void)
 {
     int failures = 0;
 #if !defined(_WIN32)
-    TEST("land: lost signed push acknowledgement never replays; moved base requeues a successor") {
+    TEST("land: a lost signed push is re-sent only while main is unmoved and attempts remain; a moved base requeues a successor") {
         struct dlx_rig rig;
         struct dlx_call c;
         char base[64], remote[64], land[1200], wt[1400];
@@ -6595,12 +6595,22 @@ static int test_dev_land_signed_lost_ack(void)
                                           "first_missing_transition")),
                       "remote_receipt");
         dlx_end(&c);
-        dlx_begin(&c, "step");
-        ASSERT(dlx_run(&c) && !dlx_ok(&c));
-        ASSERT_STR_EQ(dlx_err_code(&c), "PUSH_OUTCOME_UNKNOWN");
-        dlx_end(&c);
-        ASSERT(dlx_slurp(marker, attempts, sizeof(attempts), &attempts_len));
-        ASSERT(attempts_len == strlen("attempted\n"));
+        /* Main is unmoved and the head is absent, so the dispatch did not
+         * apply: each later step sends the same compare-and-swap again,
+         * one per attempt the row has left, and then stops asking. */
+        for (size_t sent = 2; sent <= 4; sent++) {
+            size_t want = sent > 3 ? 3 : sent;
+            dlx_begin(&c, "step");
+            ASSERT(dlx_run(&c) && !dlx_ok(&c));
+            ASSERT_STR_EQ(dlx_err_code(&c), "PUSH_OUTCOME_UNKNOWN");
+            ASSERT_STR_EQ(dlx_str(&c, "dispatch_state"), "unknown");
+            dlx_end(&c);
+            ASSERT(dlx_origin_main(&rig, remote));
+            ASSERT_STR_EQ(remote, base);
+            ASSERT(dlx_slurp(marker, attempts, sizeof(attempts),
+                             &attempts_len));
+            ASSERT(attempts_len == want * strlen("attempted\n"));
+        }
         char sibling[64];
         const char *branch[] = { "checkout", "--quiet", "-B", "side", base,
                                  NULL };
@@ -6616,14 +6626,14 @@ static int test_dev_land_signed_lost_ack(void)
          * observation: the exact signed pair can never fast-forward onto
          * the moved main, so the row requeues as a successor instead of
          * waiting forever on a receipt that can never arrive.  The exact
-         * pair is still never redispatched (marker stays at 1). */
+         * pair is not sent onto a moved base (the count stays at 3). */
         dlx_begin(&c, "step");
         ASSERT(dlx_run(&c) && dlx_ok(&c));
         ASSERT_STR_EQ(dlx_str(&c, "state"), "queued");
         ASSERT(dlx_int(&c, "predecessor_seq") == 1);
         dlx_end(&c);
         ASSERT(dlx_slurp(marker, attempts, sizeof(attempts), &attempts_len));
-        ASSERT(attempts_len == strlen("attempted\n"));
+        ASSERT(attempts_len == 3 * strlen("attempted\n"));
         /* Drive the successor to a real landing: lift the lose-ack
          * intercept, rebase+prove, attach the fresh pair, push. */
         const char *restore[] = { "config", "--unset",
@@ -6645,7 +6655,7 @@ static int test_dev_land_signed_lost_ack(void)
         ASSERT(strcmp(remote, base) != 0);
         ASSERT(strcmp(remote, sibling) != 0);
         ASSERT(dlx_slurp(marker, attempts, sizeof(attempts), &attempts_len));
-        ASSERT(attempts_len == strlen("attempted\n"));
+        ASSERT(attempts_len == 3 * strlen("attempted\n"));
         dlx_restore();
         PASS();
     }
@@ -6794,6 +6804,48 @@ static int test_dev_land_signed_lost_race(void)
         ASSERT(dlx_origin_main(&rig, remote));
         ASSERT_STR_EQ(remote, sibling);
         ASSERT(dlx_queue_has_one());
+        dlx_restore();
+        PASS();
+    }
+_test_next:;
+    dlx_restore();
+#endif
+    return failures;
+}
+
+static int test_dev_land_signed_lost_ack_resend(void)
+{
+    int failures = 0;
+#if !defined(_WIN32)
+    TEST("land: a lost signed push on a quiet main lands on the next step as the same row and pair") {
+        struct dlx_rig rig;
+        struct dlx_call c;
+        char base[64], remote[64], wt[1400], marker[1400];
+        dlx_isolate("signed_lost_ack_resend");
+        ASSERT(dlx_signed_push_lossy(&rig, "signed_lost_ack_resend", base,
+                                     wt, marker, NULL));
+        dlx_begin(&c, "step");
+        ASSERT(dlx_run(&c) && !dlx_ok(&c));
+        ASSERT_STR_EQ(dlx_err_code(&c), "PUSH_OUTCOME_UNKNOWN");
+        dlx_end(&c);
+        ASSERT(dlx_dispatched_once(marker));
+        ASSERT(dlx_origin_main(&rig, remote));
+        ASSERT_STR_EQ(remote, base);
+        /* The remote answers again. Nothing else moved: no successor, no
+         * second proof, no second signature — the next step is the push. */
+        const char *restore[] = { "config", "--unset",
+                                  "remote.origin.receivepack", NULL };
+        ASSERT(dlx_git(wt, restore) == 0);
+        dlx_begin(&c, "step");
+        ASSERT(dlx_run(&c) && dlx_ok(&c));
+        ASSERT_STR_EQ(dlx_str(&c, "state"), "landed");
+        ASSERT(dlx_int(&c, "seq") == 1);
+        ASSERT_STR_EQ(dlx_str(&c, "tip_pushed"), rig.tip);
+        ASSERT(strlen(dlx_str(&c, "remote_signature")) == 128);
+        dlx_end(&c);
+        ASSERT(dlx_origin_main(&rig, remote));
+        ASSERT_STR_EQ(remote, rig.tip);
+        ASSERT(dlx_dispatched_once(marker));
         dlx_restore();
         PASS();
     }
@@ -7450,6 +7502,7 @@ int test_dev_land(void)
     failures += test_dev_land_signed_recovery();
     failures += test_dev_land_signed_lost_ack();
     failures += test_dev_land_signed_lost_race();
+    failures += test_dev_land_signed_lost_ack_resend();
     failures += test_dev_land_signed_push_lost_race();
     failures += test_dev_land_cancel_push_refused();
     failures += test_dev_land_signed_publisher_death();
