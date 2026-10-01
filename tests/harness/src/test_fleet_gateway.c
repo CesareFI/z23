@@ -1876,10 +1876,25 @@ static bool gw_fake_setup(void)
     return setenv("PATH", path, 1) == 0;
 }
 
-static bool gw_fake_write(const char *verdict, const char *rc, int code)
+static bool gw_fake_write_wait(const char *verdict, const char *rc, int code,
+                               bool held)
 {
-    char text[1024], receipt[256], rcline[64];
+    char text[4096], receipt[256], rcline[64];
     int sn, w;
+    /* Markers, not elapsed time, release each independently named worker.
+     * The post-rc barrier makes terminal text observable before lock release. */
+    const char *wait = held ?
+        "echo held > \"$st/held\"\n"
+        "n=0\nwhile [ ! -f \"$st/release\" ]; do\n"
+        "  n=$((n+1))\n"
+        "  [ \"$n\" -lt 1500 ] || { echo rc=4; exit 4; }\n"
+        "  sleep 0.01\ndone\n" : "";
+    const char *finish = held ?
+        "echo held > \"$st/terminal-held\"\n"
+        "n=0\nwhile [ ! -f \"$st/finish\" ]; do\n"
+        "  n=$((n+1))\n"
+        "  [ \"$n\" -lt 1500 ] || { echo rc=4; exit 4; }\n"
+        "  sleep 0.01\ndone\n" : "";
     if (verdict) {
         w = snprintf(receipt, sizeof(receipt),
                      "printf '{\"verdict\":\"%s\"}\\n' > "
@@ -1911,15 +1926,22 @@ static bool gw_fake_write(const char *verdict, const char *rc, int code)
                   "done\n"
                   "[ -n \"$st\" ] || exit 2\n"
                   "%s"
+                  "%s"
                   "echo \"dispatching $st\"\n"
                   "%s"
+                  "%s"
                   "exit %d\n",
-                  receipt, rcline, code);
+                  wait, receipt, rcline, finish, code);
     if (sn <= 0 || (size_t)sn >= sizeof(text))
         return false;
     if (!gw_write_text(g_gw_fake_prog, text))
         return false;
     return chmod(g_gw_fake_prog, 0755) == 0;
+}
+
+static bool gw_fake_write(const char *verdict, const char *rc, int code)
+{
+    return gw_fake_write_wait(verdict, rc, code, false);
 }
 
 static void gw_path_restore(void)
@@ -1986,6 +2008,82 @@ static bool gw_poll_match(const char *path, const char *needle, int tries)
         (void)nanosleep(&req, NULL); /* real-clock: bounded wait for a detached engine-unit child outside this address space; completion arrives in kernel time and no fake-clock seam reaches it */
     }
     return false;
+}
+
+/* Native status observes the kernel worktree lock, independently of queue
+ * rows and terminal text. Unknown/malformed census never means a free slot. */
+static long long gw_pool_count(const struct json_value *pool, const char *name)
+{
+    const struct json_value *value = json_get(pool, name);
+    return value && value->type == JSON_INT ? json_get_int(value) : -1;
+}
+
+static int gw_qpool_free(void)
+{
+    struct gw_qcall c;
+    int state = -1;
+    gw_qbegin(&c, "status");
+    (void)json_push_kv_bool(&c.input, "json", true);
+    if (gw_qrun(&c)) {
+        const struct json_value *pool = json_get(&c.rep.data, "pool");
+        const struct json_value *known = json_get(pool, "known");
+        if (pool && pool->type == JSON_OBJ && known &&
+            known->type == JSON_BOOL && json_get_bool(known) &&
+            gw_pool_count(pool, "total") == 1 &&
+            gw_pool_count(pool, "warm") == 1) {
+            long long free_count = gw_pool_count(pool, "free");
+            if (free_count >= 0 && free_count <= 1)
+                state = (int)free_count;
+        }
+    }
+    gw_qend(&c);
+    return state;
+}
+
+static bool gw_qwait_pool_free(int tries)
+{
+    for (int i = 0; i < tries * GW_POLL_SLICES_PER_TRY; ++i) {
+        int state = gw_qpool_free();
+        if (state != 0)
+            return state == 1;
+        struct timespec pause = {.tv_sec = 0, .tv_nsec = 10000000L};
+        (void)nanosleep(&pause, NULL); /* real-clock: pace bounded polling of the detached worker's actual kernel-lock census; time passing never establishes release */
+    }
+    return false;
+}
+
+static bool gw_worker_mark(const char *dir, const char *name)
+{
+    char path[1300];
+    int n = snprintf(path, sizeof(path), "%s/%s", dir, name);
+    return n > 0 && (size_t)n < sizeof(path) &&
+        gw_write_text(path, "release\n");
+}
+
+static bool gw_worker_poll(const char *dir, const char *name,
+                            const char *needle)
+{
+    char path[1300];
+    int n = snprintf(path, sizeof(path), "%s/%s", dir, name);
+    return n > 0 && (size_t)n < sizeof(path) &&
+        gw_poll_match(path, needle, 150);
+}
+
+static bool gw_worker_finish(const char *dir, const char *name, bool reaped)
+{
+    /* Attempt both releases even if an earlier assertion or write failed. */
+    bool released = gw_worker_mark(dir, "release");
+    bool finished = gw_worker_mark(dir, "finish");
+    bool terminal = gw_worker_poll(dir, "run.out", "rc=0");
+    bool outcome = reaped || gw_qreap_pass(name);
+    bool free_slot = gw_qwait_pool_free(150);
+    if (!released || !finished || !terminal || !outcome || !free_slot) {
+        fprintf(stderr, "cancel fixture %s cleanup: release=%d finish=%d "
+                "terminal=%d PASS=%d free=%d\n", name, released, finished,
+                terminal, outcome, free_slot);
+        return false;
+    }
+    return true;
 }
 
 #if defined(__linux__)
@@ -3251,13 +3349,21 @@ _test_next:;
 static int gw_t_compat_cancelq(void)
 {
     int failures = 0;
+    char adir[1200] = "", bdir[1200] = "";
+    bool a_started = false, a_reaped = false, b_started = false;
     TEST("compat: cancel stops queued work, refuses live rows") {
         char qd[1100], qstate[32], qcstate[32], ecode[64];
         long long cancelled = 0;
         bool ok;
         ASSERT(gw_fake_setup());
-        ASSERT(gw_fake_write("PASS", "0", 0));
         ASSERT(gw_pool(qd, sizeof(qd)));
+        ASSERT(gw_fake_write_wait("PASS", "0", 0, true));
+        int sn = snprintf(adir, sizeof(adir), "%s/../engine/%s/a1",
+                          qd, GW_COMPAT_CANCELA);
+        ASSERT(sn > 0 && (size_t)sn < sizeof(adir));
+        sn = snprintf(bdir, sizeof(bdir), "%s/../engine/%s/a1",
+                      qd, GW_COMPAT_CANCELB);
+        ASSERT(sn > 0 && (size_t)sn < sizeof(bdir));
         /* Cancel a queued row: later next sees an empty queue. */
         ASSERT(gw_qpost(GW_COMPAT_CANCELA, 1));
         ok = gw_qcancel(GW_COMPAT_CANCELA, qcstate, sizeof(qcstate),
@@ -3269,8 +3375,10 @@ static int gw_t_compat_cancelq(void)
         ASSERT_STR_EQ(qstate, "empty");
         /* A cancelled name re-posts cleanly: no residue. */
         ASSERT(gw_qpost(GW_COMPAT_CANCELA, 1));
+        a_started = true;
         ASSERT(gw_qnext(qstate, sizeof(qstate)));
         ASSERT_STR_EQ(qstate, "running");
+        ASSERT(gw_worker_poll(adir, "held", "held"));
         /* Cancel a running row: refused, worker owns it. */
         ok = gw_qcancel(GW_COMPAT_CANCELB, qcstate, sizeof(qcstate),
                         &cancelled, ecode, sizeof(ecode));
@@ -3278,15 +3386,38 @@ static int gw_t_compat_cancelq(void)
         ASSERT_STR_EQ(ecode, "CANCEL_NOT_FOUND");
         ASSERT(gw_qpost(GW_COMPAT_CANCELB, 1));
         ASSERT(gw_qnext(qstate, sizeof(qstate)));
+        /* The only slot belongs to A until its real worker completes. */
+        ASSERT_STR_EQ(qstate, "no_free_worktree");
+        ASSERT(gw_worker_mark(adir, "release"));
+        ASSERT(gw_worker_poll(adir, "terminal-held", "held"));
+        ASSERT(gw_worker_poll(adir, "run.out", "rc=0"));
+        ASSERT(gw_qreap_pass(GW_COMPAT_CANCELA));
+        a_reaped = true;
+        /* A has a PASS outcome but deliberately still owns its real lock. */
+        ASSERT(gw_qnext(qstate, sizeof(qstate)));
+        ASSERT_STR_EQ(qstate, "no_free_worktree");
+        ASSERT_EQ(gw_qpool_free(), 0);
+        ASSERT(!gw_qwait_pool_free(1));
+        ASSERT(gw_worker_mark(adir, "finish"));
+        ASSERT(gw_qwait_pool_free(150));
+        a_started = false;
+        b_started = true;
+        ASSERT(gw_qnext(qstate, sizeof(qstate)));
         ASSERT_STR_EQ(qstate, "running");
+        ASSERT(gw_worker_poll(bdir, "held", "held"));
+        ASSERT_EQ(gw_qpool_free(), 0);
         ok = gw_qcancel(GW_COMPAT_CANCELB, qcstate, sizeof(qcstate),
                         &cancelled, ecode, sizeof(ecode));
         ASSERT(!ok);
         ASSERT_STR_EQ(ecode, "CANCEL_RUNNING");
-        gw_path_restore();
         PASS();
     }
 _test_next:;
+    if (a_started && !gw_worker_finish(adir, GW_COMPAT_CANCELA, a_reaped))
+        failures++;
+    if (b_started && !gw_worker_finish(bdir, GW_COMPAT_CANCELB, false))
+        failures++;
+    gw_path_restore();
     return failures;
 }
 
