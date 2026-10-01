@@ -24,6 +24,32 @@
 static const uint8_t record_magic[8] = {'Z', 'S', 'W', 'D', 'L', 'R',
                                         0x0d, 0x0a};
 
+static bool record_root_nonzero(const uint8_t root[32])
+{
+    uint8_t aggregate = 0;
+    for (size_t i = 0; i < 32; i++)
+        aggregate |= root[i];
+    return aggregate != 0;
+}
+
+static bool record_wire_canonical(const uint8_t *wire, size_t wire_len,
+                                  uint16_t *version_out)
+{
+    if (!wire || !version_out || wire_len < 10u ||
+        memcmp(wire, record_magic, sizeof(record_magic)) != 0)
+        return false;
+    uint16_t version = vcs_rd_u16le(wire + 8);
+    bool supported =
+        (version == SWARM_RECORD_VERSION &&
+         wire_len == VCS_SWARM_RECORD_WIRE_BYTES) ||
+        (version == SWARM_RECORD_VERSION_LEGACY &&
+         wire_len == SWARM_RECORD_WIRE_BYTES_LEGACY);
+    if (!supported || !record_root_nonzero(wire + 10) || wire[50] > 1u)
+        return false;
+    *version_out = version;
+    return true;
+}
+
 bool vcs_swarm_manifest_within_bound(
     const struct vcs_package_manifest *manifest, uint64_t maximum_bytes)
 {
@@ -83,15 +109,8 @@ bool vcs_swarm_record_load(const char *path, struct vcs_swarm_record *out)
     bool read_ok = sized && platform_positioned_file_read(
                                &file, wire, wire_len, 0) == (int64_t)wire_len;
     platform_positioned_file_close(&file);
-    uint16_t version = read_ok && wire_len >= 10u
-                           ? vcs_rd_u16le(wire + 8) : 0;
-    bool supported =
-        (version == SWARM_RECORD_VERSION &&
-         wire_len == VCS_SWARM_RECORD_WIRE_BYTES) ||
-        (version == SWARM_RECORD_VERSION_LEGACY &&
-         wire_len == SWARM_RECORD_WIRE_BYTES_LEGACY);
-    if (!read_ok || !supported ||
-        memcmp(wire, record_magic, sizeof(record_magic)) != 0)
+    uint16_t version = 0;
+    if (!read_ok || !record_wire_canonical(wire, wire_len, &version))
         LOG_FAIL(SWARM_RECORD_LOG, "download record %s has invalid wire",
                  path);
     memset(out, 0, sizeof(*out));

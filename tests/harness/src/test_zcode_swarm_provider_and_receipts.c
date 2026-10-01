@@ -769,6 +769,76 @@ int t_swarm_linked_record(void)
     return failures;
 }
 
+static bool noncanonical_record_write(const char *path,
+                                      const uint8_t root[32], uint8_t flag)
+{
+    uint8_t wire[VCS_SWARM_RECORD_WIRE_BYTES] =
+        {'Z', 'S', 'W', 'D', 'L', 'R', 0x0d, 0x0a};
+    zcl_write_u16_le(wire + 8, 3);
+    memcpy(wire + 10, root, 32);
+    zcl_write_u64_le(wire + 42, (uint64_t)SW_DAY);
+    wire[50] = flag;
+    zcl_write_u64_le(wire + 51, 0);
+    FILE *file = fopen(path, "wb");
+    if (!file)
+        return false;
+    bool wrote = fwrite(wire, 1, sizeof(wire), file) == sizeof(wire);
+    return fclose(file) == 0 && wrote;
+}
+
+static bool noncanonical_record_rejected(struct sw_node *node,
+                                         const char *path)
+{
+    node->engine = vcs_swarm_engine_create(
+        node->store, node->book, node->zcode_dir,
+        sw_score_contributor, NULL);
+    bool rejected = node->engine &&
+                    vcs_swarm_engine_active_downloads(node->engine) == 0 &&
+                    access(path, F_OK) != 0;
+    vcs_swarm_engine_free(node->engine);
+    node->engine = NULL;
+    return rejected;
+}
+
+int t_swarm_noncanonical_record(void)
+{
+    int failures = 0;
+    struct sw_node node;
+    struct sw_pkg package;
+    if (!sw_node_open(&node, "record_canonical", sw_score_contributor) ||
+        !sw_make_package(&package, 1, 43))
+        return 1;
+    vcs_swarm_engine_free(node.engine);
+    node.engine = NULL;
+    char dir[4096], path[4096], root_hex[65];
+    zcl_hex_encode(package.root, 32, root_hex);
+    int dn = snprintf(dir, sizeof(dir), "%s/downloads", node.zcode_dir);
+    int pn = snprintf(path, sizeof(path), "%s/%s", dir, root_hex);
+    bool ready = dn > 0 && (size_t)dn < sizeof(dir) &&
+                 pn > 0 && (size_t)pn < sizeof(path) &&
+                 mkdir(dir, 0700) == 0;
+    SW_CHECK("resume: non-boolean restriction fixture is written",
+             ready && noncanonical_record_write(path, package.root, 2));
+    SW_CHECK("resume: non-boolean restriction record is discarded",
+             ready && noncanonical_record_rejected(&node, path));
+    unlink(path);
+
+    uint8_t zero_root[32] = {0};
+    memset(root_hex, '0', 64);
+    root_hex[64] = '\0';
+    pn = snprintf(path, sizeof(path), "%s/%s", dir, root_hex);
+    ready = ready && pn > 0 && (size_t)pn < sizeof(path);
+    SW_CHECK("resume: zero-root fixture is written",
+             ready && noncanonical_record_write(path, zero_root, 0));
+    SW_CHECK("resume: zero package root is discarded",
+             ready && noncanonical_record_rejected(&node, path));
+    unlink(path);
+    sw_free_package(&package);
+    sw_node_close(&node);
+    test_rm_rf_recursive(node.datadir);
+    return failures;
+}
+
 static bool resume_junk_files(const char *zcode_dir, size_t count,
                               char *last, size_t last_size)
 {

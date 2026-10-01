@@ -611,6 +611,7 @@ int test_zcode_swarm(void)
     failures += t_swarm_bounded_provider();
     failures += t_swarm_legacy_record();
     failures += t_swarm_linked_record();
+    failures += t_swarm_noncanonical_record();
     failures += t_swarm_resume_scan_bound();
     failures += t_swarm_event_driven_schedule();
     failures += t_swarm_peer_offer();
