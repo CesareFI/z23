@@ -28,15 +28,18 @@
 #include "hotswap/hotswap_elf_probe.h"
 #include "hotswap/hotswap_module.h"
 #include "hotswap/hotswap_sealed_image.h"
+#include "hotswap/hotfork_capsule.h"
 #include "kernel/command_registry.h"
 #include "json/json.h"
 
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/stat.h>
 
 /* The status controller row of engine/composition/hotswap_swappable.def; its declared probe
  * leaf in engine/composition/hotswap_eligible.def is core.status. */
@@ -886,6 +889,336 @@ static int t_sealed_image_is_bounded(void)
     return failures;
 }
 
+#if defined(__linux__)
+struct pure_test_image {
+    unsigned char *bytes;
+    size_t size;
+    char directory[64];
+    char source[96];
+    char artifact[96];
+};
+
+static const char pure_test_source[] =
+    "#include \"hotswap/hotfork_capsule.h\"\n"
+    "static bool story(struct zcl_hotfork_observation_v1 *o) {"
+    "o->magic=ZCL_HOTFORK_OBSERVATION_MAGIC; o->checks_run=1;"
+    "o->checks_passed=1; return true;}\n"
+    "__attribute__((visibility(\"default\"))) "
+    "const struct zcl_hotfork_capsule_v1 zcl_hotfork_capsule_v1={"
+    ".abi_version=ZCL_HOTFORK_CAPSULE_ABI_V1,"
+    ".descriptor_size=sizeof(struct zcl_hotfork_capsule_v1),"
+    ".owner_id=\"owner\",.source_tu=\"source\","
+    ".candidate_object_root=\"object\",.story_id=\"story\","
+    ".story_root=\"root\",.story_fixture_root=\"fixture\",.run_story=story};\n";
+
+static void pure_test_release(struct pure_test_image *image)
+{
+    free(image->bytes);
+    (void)unlink(image->artifact);
+    (void)unlink(image->source);
+    (void)rmdir(image->directory);
+    memset(image, 0, sizeof(*image));
+}
+
+static bool pure_test_write_source(const char *path, const char *extra)
+{
+    FILE *source = fopen(path, "wb");
+    if (!source) return false;
+    bool wrote = fwrite(pure_test_source, 1, sizeof(pure_test_source) - 1u, source) ==
+                 sizeof(pure_test_source) - 1u;
+    bool appended = fputs(extra, source) >= 0;
+    return fclose(source) == 0 && wrote && appended;
+}
+
+static bool pure_test_read_artifact(struct pure_test_image *image)
+{
+    FILE *artifact = fopen(image->artifact, "rb");
+    if (!artifact) return false;
+    struct stat st;
+    bool bounded = fstat(fileno(artifact), &st) == 0 && st.st_size > 0 &&
+                   st.st_size <= 65536;
+    image->size = bounded ? (size_t)st.st_size : 0;
+    image->bytes = bounded ? malloc(image->size) : NULL;
+    bool read = image->bytes && fread(image->bytes, 1, image->size, artifact) == image->size;
+    return fclose(artifact) == 0 && read;
+}
+
+static bool pure_test_compile(struct pure_test_image *image, const char *extra)
+{
+    memset(image, 0, sizeof(*image));
+    (void)snprintf(image->directory, sizeof(image->directory),
+                   "test-tmp/hotfork-pure-XXXXXX");
+    if (!mkdtemp(image->directory)) return false;
+    (void)snprintf(image->source, sizeof(image->source), "%s/capsule.c", image->directory);
+    (void)snprintf(image->artifact, sizeof(image->artifact), "%s/capsule.so", image->directory);
+    if (!pure_test_write_source(image->source, extra)) return false;
+    const char *compiler = getenv("ZCL_HOTFORK_PURE_FIXTURE_CC");
+    if (!compiler) compiler = "cc";
+    if (strcmp(compiler, "cc") != 0 && strcmp(compiler, "clang") != 0) return false;
+    char command[512];
+    int n = snprintf(command, sizeof(command),
+        "%s -std=c23 -shared -nostdlib -fPIC -fvisibility=hidden "
+        "-fcf-protection=none -fno-unwind-tables -fno-asynchronous-unwind-tables "
+        "-Wl,-z,now,-z,relro,--no-undefined -Iengine/modules/hotswap/include "
+        "%s -o %s", compiler, image->source, image->artifact);
+    printf("[pure fixture compiler=%s] ", compiler);
+    if (n < 0 || (size_t)n >= sizeof(command) || system(command) != 0) return false;
+    return pure_test_read_artifact(image);
+}
+
+static int pure_test_seal(const struct pure_test_image *image, char err[256])
+{
+    int fd = open(image->artifact, O_RDWR | O_TRUNC | O_CLOEXEC);
+    if (fd < 0) return -1;
+    size_t off = 0;
+    while (off < image->size) {
+        ssize_t n = write(fd, image->bytes + off, image->size - off);
+        if (n <= 0) { close(fd); return -1; }
+        off += (size_t)n;
+    }
+    int sealed = hotswap_sealed_image_from_fd(fd, err, 256);
+    close(fd);
+    return sealed;
+}
+
+static int t_pure_hotfork_real_capsule(void)
+{
+    int failures = 0;
+    struct pure_test_image image = {0};
+    int fd = -1;
+    TEST("pure HOT_FORK profile accepts existing ABI from actual compiler bytes") {
+        ASSERT(pure_test_compile(&image, ""));
+        char err[256];
+        int unsealed = open(image.artifact, O_RDONLY | O_CLOEXEC);
+        ASSERT(unsealed >= 0);
+        struct hotswap_elf_hotfork_pure_facts facts;
+        bool unsealed_accepted = hotswap_elf_hotfork_pure_fd(unsealed, &facts, err, sizeof(err));
+        close(unsealed);
+        ASSERT(!unsealed_accepted);
+        ASSERT(strstr(err, "kernel-sealed") != NULL);
+        fd = pure_test_seal(&image, err);
+        ASSERT(fd >= 0);
+        bool qualified = hotswap_elf_hotfork_pure_fd(fd, &facts, err, sizeof(err));
+        printf("[qualified=%d reason=%s] ", qualified, err);
+        ASSERT(qualified);
+        ASSERT_EQ(facts.abi_version, ZCL_HOTFORK_CAPSULE_ABI_V1);
+        ASSERT_EQ(facts.descriptor_size, sizeof(struct zcl_hotfork_capsule_v1));
+        ASSERT_EQ(facts.exported_symbols, 1u);
+        ASSERT_EQ(facts.relative_relocations, 7u);
+        ASSERT(fcntl(fd, F_GETFD) >= 0);
+        PASS();
+    } _test_next:;
+    if (fd >= 0) close(fd);
+    pure_test_release(&image);
+    return failures;
+}
+
+/* These helpers locate tables only in the compiler-produced positive fixture.
+ * They are test mutation coordinates, never receiver parsing authority. */
+static uint64_t pure_test_read(const unsigned char *p, size_t bytes)
+{
+    uint64_t value = 0;
+    for (size_t i = 0; i < bytes; i++) value |= (uint64_t)p[i] << (8u * i);
+    return value;
+}
+
+static size_t pure_test_section(const struct pure_test_image *image, uint32_t kind)
+{
+    size_t offset = (size_t)pure_test_read(image->bytes + 40, 8);
+    size_t count = (size_t)pure_test_read(image->bytes + 60, 2);
+    if (offset > image->size || count > (image->size - offset) / 64u) return 0;
+    for (size_t i = 0; i < count; i++) {
+        const unsigned char *s = image->bytes + offset + i * 64u;
+        if (pure_test_read(s + 4, 4) == kind)
+            return (size_t)pure_test_read(s + 24, 8);
+    }
+    return 0;
+}
+
+static bool pure_test_refused(struct pure_test_image *image, const char *label)
+{
+    char err[256];
+    int fd = pure_test_seal(image, err);
+    if (fd < 0) return false;
+    struct hotswap_elf_hotfork_pure_facts facts;
+    memset(&facts, 0xa5, sizeof(facts));
+    bool accepted = hotswap_elf_hotfork_pure_fd(fd, &facts, err, sizeof(err));
+    close(fd);
+    static const struct hotswap_elf_hotfork_pure_facts zero;
+    printf("[%s refused=%d reason=%s] ", label, !accepted, err);
+    return !accepted && err[0] && memcmp(&facts, &zero, sizeof(facts)) == 0;
+}
+
+static size_t pure_test_dynamic_row(const struct pure_test_image *image, uint64_t tag)
+{
+    size_t offset = pure_test_section(image, 6);
+    if (!offset) return 0;
+    for (size_t i = 0; i < 32u && offset + (i + 1u) * 16u <= image->size; i++) {
+        if (pure_test_read(image->bytes + offset + i * 16u, 8) == tag)
+            return offset + i * 16u;
+    }
+    return 0;
+}
+
+static size_t pure_test_address(const struct pure_test_image *image, uint64_t address)
+{
+    size_t offset = (size_t)pure_test_read(image->bytes + 32, 8);
+    size_t count = (size_t)pure_test_read(image->bytes + 56, 2);
+    if (offset > image->size || count > (image->size - offset) / 56u) return 0;
+    for (size_t i = 0; i < count; i++) {
+        const unsigned char *p = image->bytes + offset + i * 56u;
+        uint64_t base = pure_test_read(p + 16, 8), size = pure_test_read(p + 32, 8);
+        if (pure_test_read(p, 4) == 1u && address >= base && address - base < size)
+            return (size_t)(pure_test_read(p + 8, 8) + address - base);
+    }
+    return 0;
+}
+
+static size_t pure_test_program(const struct pure_test_image *image, uint32_t kind)
+{
+    size_t offset = (size_t)pure_test_read(image->bytes + 32, 8);
+    size_t count = (size_t)pure_test_read(image->bytes + 56, 2);
+    if (offset > image->size || count > (image->size - offset) / 56u) return 0;
+    for (size_t i = 0; i < count; i++)
+        if (pure_test_read(image->bytes + offset + i * 56u, 4) == kind)
+            return offset + i * 56u;
+    return 0;
+}
+
+struct pure_test_mutation {
+    const char *label;
+    size_t offset;
+    size_t width;
+    uint64_t value;
+};
+
+static bool pure_test_mutations(struct pure_test_image *image,
+    const struct pure_test_mutation *rows, size_t count)
+{
+    unsigned char *gold = malloc(image->size);
+    if (!gold) return false;
+    memcpy(gold, image->bytes, image->size);
+    bool passed = true;
+    for (size_t i = 0; i < count; i++) {
+        memcpy(image->bytes, gold, image->size);
+        if (rows[i].offset > image->size ||
+            rows[i].width > image->size - rows[i].offset) { passed = false; break; }
+        for (size_t j = 0; j < rows[i].width; j++)
+            image->bytes[rows[i].offset + j] = (unsigned char)(rows[i].value >> (8u * j));
+        if (!pure_test_refused(image, rows[i].label)) { passed = false; break; }
+    }
+    memcpy(image->bytes, gold, image->size);
+    free(gold);
+    return passed;
+}
+
+static int t_pure_hotfork_mutations(void)
+{
+    int failures = 0;
+    struct pure_test_image image = {0};
+    TEST("pure HOT_FORK refuses compiler-image structural mutations") {
+        ASSERT(pure_test_compile(&image, ""));
+        size_t dynamic = pure_test_dynamic_row(&image, 30);
+        size_t symbols = pure_test_section(&image, 11);
+        size_t relocations = pure_test_section(&image, 4);
+        size_t programs = (size_t)pure_test_read(image.bytes + 32, 8);
+        ASSERT(dynamic && symbols && relocations && programs);
+        uint64_t descriptor_address = pure_test_read(image.bytes + symbols + 24 + 8, 8);
+        size_t descriptor = pure_test_address(&image, descriptor_address);
+        ASSERT(descriptor);
+        size_t stack = pure_test_program(&image, UINT32_C(0x6474e551));
+        size_t sections = (size_t)pure_test_read(image.bytes + 40, 8);
+        ASSERT(stack && sections + 128u <= image.size);
+        const struct pure_test_mutation rows[] = {
+            {"bad magic", 0, 1, 0}, {"wrong class", 4, 1, 1},
+            {"wrong CPU", 18, 2, 183}, {"wrong ELF ABI", 7, 1, 9},
+            {"entry point", 24, 8, 1},
+            {"TLS program", stack, 4, 7},
+            {"GNU_PROPERTY", stack, 4, UINT32_C(0x6474e553)},
+            {"unknown program", stack, 4, 999},
+            {"executable stack", stack + 4, 4, 7},
+            {"W+X program", programs + 4, 4, 7},
+            {"TLS section", sections + 64u + 8u, 8, UINT64_C(0x402)},
+            {"W+X section", sections + 64u + 8u, 8, 7},
+            {"init section", sections + 64u + 4u, 4, 14},
+            {"fini section", sections + 64u + 4u, 4, 15},
+            {"preinit section", sections + 64u + 4u, 4, 16},
+            {"DT_NEEDED", dynamic, 8, 1},
+            {"DT_INIT", dynamic, 8, 12}, {"DT_FINI", dynamic, 8, 13},
+            {"RPATH", dynamic, 8, 15}, {"FILTER", dynamic, 8, UINT64_C(0x7fffffff)},
+            {"AUXILIARY", dynamic, 8, UINT64_C(0x7ffffffd)},
+            {"RELR", dynamic, 8, 36},
+            {"undefined import", symbols + 24 + 6, 2, 0},
+            {"IFUNC", symbols + 24 + 4, 1, 0x1a},
+            {"TLS symbol", symbols + 24 + 4, 1, 0x16},
+            {"wrong descriptor size", symbols + 24 + 16, 8, 8},
+            {"wrong capsule ABI", descriptor, 4, 999},
+            {"wrong capsule size", descriptor + 8, 8, 8},
+            {"unbounded descriptor", symbols + 24 + 8, 8, UINT64_MAX},
+            {"IRELATIVE", relocations + 8, 8, 37},
+            {"unknown relocation", relocations + 8, 8, 999},
+            {"symbol relocation", relocations + 8, 8, UINT64_C(0x100000008)},
+            {"unbounded target", relocations, 8, UINT64_MAX - 7u},
+            {"descriptor header target", relocations, 8, descriptor_address},
+            {"writable string", relocations + 16, 8, descriptor_address},
+            {"nonexecuting story", relocations + 6u * 24u + 16u, 8, descriptor_address},
+            {"unbounded addend", relocations + 16, 8, UINT64_MAX},
+            {"duplicate target", relocations + 24, 8, pure_test_read(image.bytes + relocations, 8)}
+        };
+        ASSERT(pure_test_mutations(&image, rows, sizeof(rows) / sizeof(rows[0])));
+        PASS();
+    } _test_next:;
+    pure_test_release(&image);
+    return failures;
+}
+
+static int t_pure_hotfork_duplicate_export(void)
+{
+    int failures = 0;
+    struct pure_test_image image = {0};
+    TEST("pure HOT_FORK refuses a real descriptor alias renamed to duplicate export") {
+        ASSERT(pure_test_compile(&image,
+            "extern const struct zcl_hotfork_capsule_v1 capsule_alias "
+            "__attribute__((alias(\"zcl_hotfork_capsule_v1\"),visibility(\"default\")));\n"));
+        size_t symbols = pure_test_section(&image, 11);
+        ASSERT(symbols && symbols + 72 <= image.size);
+        /* Both actual linker symbols alias the same descriptor. Renaming
+         * their dynstr references must not turn two exports into one fact. */
+        uint64_t name = pure_test_read(image.bytes + symbols + 24, 4);
+        elf_put32(image.bytes + symbols + 48, (uint32_t)name);
+        ASSERT(pure_test_refused(&image, "duplicate capsule alias"));
+        PASS();
+    } _test_next:;
+    pure_test_release(&image);
+    return failures;
+}
+#endif
+
+static int t_pure_hotfork_refuses_generic_module(void)
+{
+    int failures = 0;
+    TEST("pure HOT_FORK profile refuses a well-formed generic ABI module") {
+        struct hotswap_elf_hotfork_pure_facts facts;
+        char err[256];
+#if defined(__linux__)
+        unsigned char image[4096];
+        char path[64];
+        elf_fixture(image, false, false);
+        int fd = fixture_fd(image, path);
+        ASSERT(fd >= 0);
+        int sealed = hotswap_sealed_image_from_fd(fd, err, sizeof(err));
+        ASSERT(sealed >= 0);
+        ASSERT(!hotswap_elf_hotfork_pure_fd(sealed, &facts, err, sizeof(err)));
+        close(sealed); close(fd); unlink(path);
+#else
+        ASSERT(!hotswap_elf_hotfork_pure_fd(-1, &facts, err, sizeof(err)));
+        ASSERT(strstr(err, "requires Linux") != NULL);
+#endif
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_hotswap_module_v2(void);
 
 int test_hotswap_module_v2(void)
@@ -903,6 +1236,12 @@ int test_hotswap_module_v2(void)
     failures += t_pre_map_policy_is_zero_execution();
     failures += t_elf_probe_rejects_deception();
     failures += t_sealed_image_is_bounded();
+    failures += t_pure_hotfork_refuses_generic_module();
+#if defined(__linux__)
+    failures += t_pure_hotfork_real_capsule();
+    failures += t_pure_hotfork_mutations();
+    failures += t_pure_hotfork_duplicate_export();
+#endif
     zcl_command_registry_reset_overrides();
     zcl_command_registry_set_active(NULL);
     printf("=== hotswap_module_v2: %d failures ===\n", failures);

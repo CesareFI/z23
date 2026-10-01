@@ -52,6 +52,13 @@
  * parse the fixture language.
  */
 
+/* The operator-contract acceptance runs the public claim command against
+ * disposable Git ledgers. Build the candidate-owned dev binary rather than
+ * relying on a developer's preexisting tool. It belongs to the real-root
+ * read-only lane; the script creates and removes only its own fixtures. */
+ZCL_TEST_GROUP_BUILD_NEED("test_make_lint_gates_realroot",
+                          "build/bin/z23-dev", "dev-bin")
+
 /* tests/harness/src/test_onion_pair_watch_live.c reports
  * PAIR_PROBE=ENV_MISSING_BINARY (UNOBSERVED) when the tree it runs in has no
  * z23/zclassic23/zcl-rpc runtime binary to pair. A proof generation never

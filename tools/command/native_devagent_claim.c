@@ -22,6 +22,9 @@
  *            climbs above the root is refused: ok=false, status
  *            "CLAIM_PATH_REFUSED", with a message naming the path.
  *   release  optional bool, default false.
+ *   retire_worktree optional exact ASCII absolute path. Archive one legacy
+ *            row only after its owner is missing and unregistered. Files must
+ *            be empty; release cannot be combined. No lease is retired.
  *
  * LEDGER. <git_common_dir>/z23-agent-claims.jsonl — resolve the directory
  * with `git rev-parse --git-common-dir` so every linked worktree on one
@@ -38,13 +41,14 @@
  * SEMANTICS. New claims are 15-minute leases. Repeating the same claim from
  * the same worktree renews it. Expired rows are ignored for overlap and
  * removed by the next successful claim. Rows without a valid expires_unix
- * are legacy claims and remain live until their owner releases them.
+ * are legacy claims and remain live until their owner releases them or an
+ * explicit orphan retirement independently verifies their missing owner.
  *   - A claim whose files intersect a live claim from a DIFFERENT worktree is
  *     refused: ok=false, status "CLAIM_OVERLAP", plus
  *     conflicts:[{file, worktree, story, claimed_at, branch}], one entry per
  *     offending file, plus ledger location. Missing historical metadata is
  *     empty; age alone never reclaims a legacy claim.
- *     Nothing is written on refusal.
+ *     Nothing is written on overlap refusal.
  *   - A claim from the SAME worktree REPLACES that worktree's own line, so
  *     re-claiming is idempotent and never overlaps itself.
  *   - release=true removes every line whose worktree is this one and reports
@@ -81,6 +85,7 @@
 #include "command/native_command.h"
 #include "base/safe_alloc.h"
 #include "base/utc_tm.h"
+#include "crypto/sha256.h"
 
 #include "json/json.h"
 #include "platform/clock.h"
@@ -95,6 +100,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#ifndef _WIN32
+#include <sys/stat.h>
+#endif
 
 #define DVC_LEAF "dev.agent.claim"
 #define DVC_LEDGER_NAME "z23-agent-claims.jsonl"
@@ -597,6 +605,420 @@ static void dvc_release(const struct dvc_facts *facts,
     reply->exit_code = 0;
 }
 
+/* Explicit retirement is separate from expiry. A missing registered checkout,
+ * an inaccessible path, and every lease-bearing row retain their authority. */
+static bool dvc_orphan_path_valid(const char *path)
+{
+    if (!path || path[0] != '/' || !path[1] || strlen(path) >= PATH_MAX)
+        return false;
+    char normalized[PATH_MAX];
+    if (dvc_path_normalize(path + 1, normalized, sizeof(normalized)) ||
+        strcmp(normalized, path + 1) != 0)
+        return false;
+    for (const char *p = path; *p; p++) {
+        if ((unsigned char)*p < 0x20 || (unsigned char)*p >= 0x80 || *p == '\\')
+            return false;
+    }
+    return true;
+}
+
+static int dvc_orphan_registry_relation(const char *path, const char *target)
+{
+    char resolved[PATH_MAX], parent[PATH_MAX];
+    if (!dvc_orphan_path_valid(path) ||
+        !platform_private_path_resolve(path, resolved, sizeof(resolved),
+                                        parent, sizeof(parent)))
+        return -1;
+    const unsigned char *a = (const unsigned char *)resolved;
+    const unsigned char *b = (const unsigned char *)target;
+    for (; *a && *b; a++, b++) {
+        unsigned char left = *a >= 'A' && *a <= 'Z' ? (unsigned char)(*a + 32) : *a;
+        unsigned char right = *b >= 'A' && *b <= 'Z' ? (unsigned char)(*b + 32) : *b;
+        if (left != right)
+            return 0;
+    }
+    return *a == *b ? 1 : 0;
+}
+
+static bool dvc_orphan_absent(const char *target,
+                               struct zcl_command_reply *reply)
+{
+#ifdef _WIN32
+    dvc_fail(reply, "CLAIM_ORPHAN_UNAVAILABLE", "retire",
+             "orphan retirement has not qualified Windows path absence",
+             target);
+    return false;
+#else
+    struct stat st;
+    if (lstat(target, &st) != 0 && errno == ENOENT)
+        return true;
+    dvc_fail(reply, "CLAIM_OWNER_NOT_ABSENT", "retire",
+             "the owner path exists or its absence cannot be verified",
+             target);
+    return false;
+#endif
+}
+
+static bool dvc_orphan_unregistered(const struct dvc_facts *facts,
+                                     const char *target,
+                                     struct zcl_command_reply *reply)
+{
+    const char *argv[] = {"git", "-C", facts->toplevel, "worktree", "list",
+                           "--porcelain", "-z", NULL};
+    char *list = zcl_malloc(65536, "claim_retirement_worktrees");
+    if (!list) {
+        dvc_fail(reply, "CLAIM_REGISTRY_UNAVAILABLE", "retire",
+                 "cannot allocate the exact worktree registry capture", target);
+        return false;
+    }
+    struct zcl_spawn_binary_observation observation;
+    struct zcl_result result = zcl_spawn_capture_binary(
+        argv, list, 65536, 30000, &observation);
+    bool ok = result.ok;
+    size_t count = 0;
+    for (size_t pos = 0; ok && pos < observation.output_len;) {
+        const char *end = memchr(list + pos, '\0', observation.output_len - pos);
+        if (!end) { ok = false; break; }
+        if (strncmp(list + pos, "worktree ", 9) == 0) {
+            count++;
+            int relation = dvc_orphan_registry_relation(list + pos + 9, target);
+            if (relation < 0) { ok = false; break; }
+            if (relation > 0) {
+                dvc_fail(reply, "CLAIM_OWNER_REGISTERED", "retire",
+                         "registered worktrees retain their claims even when missing",
+                         target);
+                free(list);
+                return false;
+            }
+        }
+        pos = (size_t)(end - list) + 1;
+    }
+    free(list);
+    if (ok && count > 0)
+        return true;
+    dvc_fail(reply, "CLAIM_REGISTRY_UNAVAILABLE", "retire",
+             "the complete worktree registry could not be independently observed",
+             target);
+    return false;
+}
+
+static bool dvc_json_digit(unsigned char c)
+{
+    return c >= '0' && c <= '9';
+}
+
+static bool dvc_json_digits(const char *bytes, size_t len, size_t *pos)
+{
+    size_t start = *pos;
+    while (*pos < len && dvc_json_digit((unsigned char)bytes[*pos]))
+        (*pos)++;
+    return *pos != start;
+}
+
+/* Supplement the shared reader's permissive numeric conversion with the
+ * JSON number grammar. No conversion or range guess grants authority. */
+static bool dvc_json_exponent(const char *bytes, size_t len, size_t *pos)
+{
+    if (*pos == len || (bytes[*pos] != 'e' && bytes[*pos] != 'E'))
+        return true;
+    (*pos)++;
+    if (*pos < len && (bytes[*pos] == '+' || bytes[*pos] == '-'))
+        (*pos)++;
+    return dvc_json_digits(bytes, len, pos);
+}
+
+static bool dvc_json_number(const char *bytes, size_t len, size_t *pos)
+{
+    if (bytes[*pos] == '-')
+        (*pos)++;
+    if (*pos >= len)
+        return false;
+    if (bytes[*pos] == '0')
+        (*pos)++;
+    else if (!dvc_json_digits(bytes, len, pos))
+        return false;
+    if (*pos < len && bytes[*pos] == '.') {
+        (*pos)++;
+        if (!dvc_json_digits(bytes, len, pos))
+            return false;
+    }
+    return dvc_json_exponent(bytes, len, pos) &&
+        (*pos == len || strchr(",]} \t\r\n", bytes[*pos]) != NULL);
+}
+
+static bool dvc_json_string(const char *bytes, size_t len, size_t *pos)
+{
+    (*pos)++;
+    while (*pos < len) {
+        unsigned char c = (unsigned char)bytes[(*pos)++];
+        if (c == '"')
+            return true;
+        if (c < 0x20)
+            return false;
+        if (c == '\\') {
+            if (*pos == len || !bytes[*pos] ||
+                !strchr("\"\\/bfnrt", bytes[(*pos)++]))
+                return false;
+        }
+    }
+    return false;
+}
+
+/* Validate raw bytes before C-string key/owner comparisons. Unicode escapes
+ * are conservatively refused because the shared reader substitutes them. */
+static bool dvc_json_lexical(const char *bytes, size_t len)
+{
+    for (size_t pos = 0; pos < len;) {
+        unsigned char c = (unsigned char)bytes[pos];
+        if (c == '"') {
+            if (!dvc_json_string(bytes, len, &pos))
+                return false;
+        } else if (c == '-' || dvc_json_digit(c)) {
+            if (!dvc_json_number(bytes, len, &pos))
+                return false;
+        } else {
+            if (c == 0 || (c < 0x20 && !strchr(" \t\r\n", c)))
+                return false;
+            pos++;
+        }
+    }
+    return true;
+}
+
+/* Read the row as JSON rather than guessing an escaped path. Ambiguous keys,
+ * Unicode substitution and malformed rows never authorize removal. */
+static bool dvc_orphan_row(const char *bytes, size_t len, const char *target,
+                            bool *selected)
+{
+    struct json_value row;
+    json_init(&row);
+    *selected = false;
+    if (!dvc_json_lexical(bytes, len) ||
+        !json_read(&row, bytes, len) || row.type != JSON_OBJ) {
+        json_free(&row);
+        return false;
+    }
+    size_t owner_keys = 0;
+    const char *owner = NULL;
+    for (size_t i = 0; i < row.num_children; i++) {
+        if (strcmp(row.keys[i], "worktree") == 0) {
+            owner_keys++;
+            owner = json_get_str(&row.children[i]);
+        }
+    }
+    bool ok = owner_keys == 1 && owner;
+    if (ok && strcmp(owner, target) == 0) {
+        /* No expiry spelling, including malformed expiry, may be retired. */
+        ok = json_get(&row, "expires_unix") == NULL;
+        *selected = ok;
+    }
+    json_free(&row);
+    return ok;
+}
+
+struct dvc_retirement {
+    struct platform_private_file ledger;
+    struct platform_private_file evidence;
+    char ledger_stage[PATH_MAX + 64];
+    char evidence_path[PATH_MAX + 64];
+    uint64_t kept_bytes;
+    uint64_t retired_bytes;
+    size_t retired;
+    struct sha256_ctx hash;
+};
+
+static bool dvc_orphan_stage(const struct dvc_facts *facts,
+                              struct dvc_retirement *stage)
+{
+    char evidence_base[PATH_MAX + 64];
+    memset(stage, 0, sizeof(*stage));
+    platform_private_file_init(&stage->ledger);
+    platform_private_file_init(&stage->evidence);
+    sha256_init(&stage->hash);
+    int n = snprintf(evidence_base, sizeof(evidence_base), "%s.retired",
+                       facts->ledger);
+    return n > 0 && (size_t)n < sizeof(evidence_base) &&
+        dvc_stage_open(facts->ledger, stage->ledger_stage,
+                        sizeof(stage->ledger_stage), &stage->ledger) &&
+        dvc_stage_open(evidence_base, stage->evidence_path,
+                        sizeof(stage->evidence_path), &stage->evidence);
+}
+
+static void dvc_orphan_close(struct dvc_retirement *stage, bool committed)
+{
+    if (!committed && stage->ledger_stage[0])
+        (void)platform_private_file_retire(&stage->ledger, stage->ledger_stage);
+    if (!committed && stage->evidence_path[0])
+        (void)platform_private_file_retire(&stage->evidence, stage->evidence_path);
+    platform_private_file_close(&stage->ledger);
+    platform_private_file_close(&stage->evidence);
+}
+
+static bool dvc_orphan_copy_row(struct dvc_retirement *stage,
+                                 const char *bytes, size_t len,
+                                 const char *target)
+{
+    bool selected = false;
+    /* Native claim rows never encode Unicode paths. The JSON reader replaces
+     * Unicode escapes, so retain the whole ledger on any ambiguous encoding. */
+    for (size_t i = 0; i + 1 < len; i++)
+        if (bytes[i] == '\\' && bytes[i + 1] == 'u')
+            return false;
+    size_t whitespace = 0;
+    while (whitespace < len && (bytes[whitespace] == ' ' ||
+           bytes[whitespace] == '\t' || bytes[whitespace] == '\r' ||
+           bytes[whitespace] == '\n'))
+        whitespace++;
+    if (whitespace != len && !dvc_orphan_row(bytes, len, target, &selected))
+        return false;
+    struct platform_private_file *file = selected ? &stage->evidence : &stage->ledger;
+    uint64_t *offset = selected ? &stage->retired_bytes : &stage->kept_bytes;
+    if (!platform_private_file_write_at(file, bytes, len, *offset))
+        return false;
+    *offset += len;
+    if (selected) {
+        stage->retired++;
+        sha256_write(&stage->hash, (const unsigned char *)bytes, len);
+    }
+    return true;
+}
+
+static bool dvc_orphan_copy(struct dvc_retirement *stage, const char *raw,
+                             size_t len, const char *target)
+{
+    for (size_t pos = 0; pos < len;) {
+        const char *end = memchr(raw + pos, '\n', len - pos);
+        size_t bytes = end ? (size_t)(end - raw - pos) + 1 : len - pos;
+        if (bytes > DVC_LINE_CAP ||
+            !dvc_orphan_copy_row(stage, raw + pos, bytes, target))
+            return false;
+        pos += bytes;
+    }
+    return stage->retired == 1;
+}
+
+static bool dvc_orphan_unchanged(const char *path, const char *before, size_t len)
+{
+    char *after = NULL;
+    size_t size = 0;
+    bool ok = zcl_read_whole_file_text(path, DVC_LEDGER_MAX_BYTES,
+                                       &after, &size, DVC_LEAF);
+    ok = ok && size == len && memcmp(before, after, len) == 0;
+    free(after);
+    return ok;
+}
+
+static bool dvc_orphan_parent_flush(const struct dvc_facts *facts)
+{
+    char parent[PATH_MAX + 64];
+    (void)snprintf(parent, sizeof(parent), "%s", facts->ledger);
+    char *slash = strrchr(parent, '/');
+    if (!slash)
+        return false;
+    *slash = '\0';
+    return platform_private_parent_flush(parent);
+}
+
+static void dvc_orphan_result(const struct dvc_facts *facts,
+                                const struct dvc_ledger *lg,
+                                const char *target,
+                                struct dvc_retirement *stage,
+                                struct zcl_command_reply *reply)
+{
+    unsigned char digest[32];
+    char hex[65];
+    sha256_finalize(&stage->hash, digest);
+    for (size_t i = 0; i < sizeof(digest); i++)
+        (void)snprintf(hex + i * 2, 3, "%02x", digest[i]);
+    (void)json_push_kv_str(&reply->data, "leaf", DVC_LEAF);
+    (void)json_push_kv_str(&reply->data, "ledger", facts->ledger);
+    (void)json_push_kv_str(&reply->data, "retired_worktree", target);
+    (void)json_push_kv_int(&reply->data, "retired", (long long)stage->retired);
+    (void)json_push_kv_int(&reply->data, "live", (long long)(lg->n - stage->retired));
+    (void)json_push_kv_str(&reply->data, "evidence_path", stage->evidence_path);
+    (void)json_push_kv_str(&reply->data, "evidence_sha256", hex);
+    reply->status = ZCL_COMMAND_STATUS_PASSED;
+    reply->exit_code = 0;
+}
+
+static bool dvc_orphan_target_valid(const char *target,
+                                     struct zcl_command_reply *reply)
+{
+    char resolved[PATH_MAX], parent[PATH_MAX];
+    if (!dvc_orphan_path_valid(target) ||
+        !platform_private_path_resolve(target, resolved, sizeof(resolved),
+                                        parent, sizeof(parent)) ||
+        strcmp(resolved, target) != 0) {
+        dvc_fail(reply, "CLAIM_ORPHAN_PATH_REFUSED", "retire",
+                 "retire_worktree requires an exact ASCII path with a real canonical parent",
+                 target);
+        return false;
+    }
+    return true;
+}
+
+static bool dvc_orphan_commit(const struct dvc_facts *facts,
+                               const struct dvc_ledger *lg, const char *target,
+                               struct dvc_retirement *stage,
+                               const char *raw, size_t len,
+                               struct zcl_command_reply *reply)
+{
+    if (!dvc_orphan_absent(target, reply) ||
+        !dvc_orphan_unregistered(facts, target, reply))
+        return false;
+    if (!platform_private_file_flush(&stage->evidence) ||
+        !dvc_orphan_parent_flush(facts) ||
+        !dvc_orphan_unchanged(facts->ledger, raw, len) ||
+        !platform_private_file_replace(&stage->ledger, stage->ledger_stage,
+                                        facts->ledger)) {
+        dvc_fail(reply, "CLAIM_RETIREMENT_WRITE_FAILED", "retire",
+                 "the archived retirement could not replace the claim ledger",
+                 facts->ledger);
+        return false;
+    }
+    if (dvc_orphan_parent_flush(facts)) {
+        dvc_orphan_result(facts, lg, target, stage, reply);
+    } else {
+        dvc_fail(reply, "CLAIM_RETIREMENT_WRITE_FAILED", "retire",
+                 "retirement applied but its persistence barrier failed",
+                 stage->evidence_path);
+        reply->error.mutated = true;
+    }
+    return true; /* preserve evidence after replacement, including barrier failure */
+}
+
+static void dvc_retire_orphan(const struct dvc_facts *facts,
+                               const struct dvc_ledger *lg, const char *target,
+                               struct zcl_command_reply *reply)
+{
+    if (!dvc_orphan_target_valid(target, reply))
+        return;
+    if (!dvc_orphan_absent(target, reply) ||
+        !dvc_orphan_unregistered(facts, target, reply))
+        return;
+    char *raw = NULL;
+    size_t len = 0;
+    if (!zcl_read_whole_file_text(facts->ledger, DVC_LEDGER_MAX_BYTES,
+                                  &raw, &len, DVC_LEAF)) {
+        dvc_fail(reply, "CLAIM_LEDGER_UNREADABLE", "retire",
+                 "cannot preserve the complete original claim bytes", facts->ledger);
+        return;
+    }
+    struct dvc_retirement stage;
+    bool committed = false;
+    bool ok = dvc_orphan_stage(facts, &stage) &&
+        dvc_orphan_copy(&stage, raw, len, target);
+    if (!ok) {
+        dvc_fail(reply, "CLAIM_ORPHAN_REFUSED", "retire",
+                 "no unambiguous legacy-only owner rows can be durably archived",
+                 target);
+    } else {
+        committed = dvc_orphan_commit(facts, lg, target, &stage, raw, len, reply);
+    }
+    dvc_orphan_close(&stage, committed);
+    free(raw);
+}
+
 /* ── claim ──────────────────────────────────────────────────────────────── */
 
 /* Append one conflict entry per requested file that this foreign line
@@ -774,6 +1196,7 @@ static bool dvc_lock(const char *ledger, struct platform_private_file *lock,
 }
 
 static void dvc_run(const char *cwd, const char *story, bool release,
+                    const char *retire,
                     const struct json_value *norm,
                     struct zcl_command_reply *reply)
 {
@@ -785,7 +1208,9 @@ static void dvc_run(const char *cwd, const char *story, bool release,
     platform_private_file_init(&lock);
     if (dvc_lock(facts.ledger, &lock, reply) &&
         dvc_ledger_load(facts.ledger, &lg, reply)) {
-        if (release)
+        if (retire)
+            dvc_retire_orphan(&facts, &lg, retire, reply);
+        else if (release)
             dvc_release(&facts, &lg, reply);
         else
             dvc_claim(&facts, &lg, story, norm, reply);
@@ -825,6 +1250,21 @@ dvc_validate(const struct json_value *input, bool release, const char **story,
     return filesv;
 }
 
+static bool dvc_retire_input(const struct json_value *input, bool release,
+                              const char **retire,
+                              struct zcl_command_reply *reply)
+{
+    const struct json_value *value = json_get(input, "retire_worktree");
+    *retire = value ? json_get_str(value) : NULL;
+    if (value && (!*retire || !(*retire)[0] || release)) {
+        dvc_fail(reply, "BAD_INPUT", "validate",
+                 "retire_worktree must be a non-empty path and cannot combine with release",
+                 "input.retire_worktree");
+        return false;
+    }
+    return true;
+}
+
 void zcl_native_handle_dev_agent_claim(
     const struct zcl_command_request *request, struct zcl_command_reply *reply)
 {
@@ -839,17 +1279,26 @@ void zcl_native_handle_dev_agent_claim(
     const struct json_value *releasev = json_get(request->input, "release");
     const bool release = releasev && releasev->type == JSON_BOOL &&
                          json_get_bool(releasev);
+    const char *retire = NULL;
+    if (!dvc_retire_input(request->input, release, &retire, reply))
+        return;
     const char *story = NULL;
     const struct json_value *filesv =
-        dvc_validate(request->input, release, &story, reply);
+        dvc_validate(request->input, release || retire, &story, reply);
     if (!filesv)
         return;
+    if (retire && filesv->num_children != 0) {
+        dvc_fail(reply, "BAD_INPUT", "validate",
+                 "retire_worktree cannot combine retirement with a file claim",
+                 "input.files must be empty for retirement");
+        return;
+    }
 
     /* Normalize before any compare or record; a release ignores files. */
     struct json_value norm;
     json_init(&norm);
     json_set_array(&norm);
-    if (release || dvc_normalize_files(filesv, &norm, reply))
-        dvc_run(dvc_cwd(request), story, release, &norm, reply);
+    if (release || retire || dvc_normalize_files(filesv, &norm, reply))
+        dvc_run(dvc_cwd(request), story, release, retire, &norm, reply);
     json_free(&norm);
 }

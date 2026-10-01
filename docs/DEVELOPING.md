@@ -128,7 +128,10 @@ devbuild --plan                        # what a slot would grant; runs nothing
 ```
 
 `devbuild` is **not installed by any repository target.** It is a shared host
-program. Each project gets a slot admitting several concurrent lanes: Z23's
+program. Read `~/.config/dev-workers/OPERATIONS.md` and inspect
+`devbuild --plan` for the installed host limits; reference defaults below do
+not promise identical settings on every retained host. Each project gets a
+slot admitting several concurrent lanes: Z23's
 slot admits up to `DEVBUILD_Z23_LANES` concurrent jobs (default 3, max 4);
 QEDC's slot admits up to `DEVBUILD_QEDC_LANES` concurrent jobs (default 2,
 max 4); each is one per lane lock. `--wait` waiters are served FIFO through
@@ -318,6 +321,38 @@ Do not infer a permanent coordinator or special agent role from a local
 worktree layout. Maintain one primary writer per component, preserve unrelated
 dirty work, and use committed identities on `origin/main` as the shared
 integration blackboard.
+
+For fleet optimization, follow the [fleet speed north star](../AGENTS.md#fleet-speed-north-star).
+Record the exact action inputs and receiving policy before spending CPU.
+Check qualified peer work and in-flight duplicates first; compare the measured
+cost of discovery, missing-byte transfer, verification, and binding with local
+execution. Dispatch independent missing actions to authorized idle peers.
+Keep fine-grained action identities separate from transfer packs and mappings.
+Report duplicate CPU, bytes, hashes, copies, queue waits, and compiler/linker/test
+launches, together with critical-path time. An unavailable reuse qualifier
+requires the existing cold path; it is a measured missing rail, not permission
+to admit unsigned verdicts or bypass a gate. Capsules, distributed ThinLTO,
+and QEDC-native emission are experiments until their exact receiving contracts
+and real behavior qualify.
+
+### Recover a verified orphaned file claim
+
+Use `dev agent claim` to acquire or renew a bounded file scope. A silent
+worker is not an orphan: preserve its live lease and check worktree ownership
+before taking over. A legacy claim without a lease can be retired only when
+its exact checkout path is absent and Git no longer registers that worktree:
+
+```bash
+build/bin/z23-dev dev agent claim --input='{"story":"Retire the verified orphaned checkout","files":[],"retire_worktree":"/absolute/path/to/absent-checkout"}'
+```
+
+The native command refuses an existing path, a symlink, a registered worktree,
+any lease field, ambiguous records, or uncertain filesystem/registry evidence.
+It saves the exact retired row and returns its evidence path and SHA-256
+before replacing the ledger; every other ledger byte is preserved. Keep that
+evidence. Do not delete the ledger, prune live worktrees, or treat retirement
+as a claim: acquire a fresh scope afterward. A persistence failure can report
+`mutated:true`; inspect the returned evidence before deciding what to do next.
 
 ## 2. Inspect exact context
 
@@ -922,13 +957,12 @@ build/bin/z23-dev dev proof status
 build/bin/z23-dev dev proof wait
 ```
 
-No resident watcher is armed in a fresh worktree or a one-off agent session
-(the hook request above only re-arms a watcher that already exists), so the
-explicit path is the foreground step — the same bounded worker and signed
+For a fresh worktree or a one-off agent session, use the foreground step —
+the same bounded worker and signed
 receipt lifecycle, run synchronously for one exact pair:
 
 ```bash
-build/bin/z23-dev dev proof step --local_commit=$(git rev-parse HEAD) \
+devbuild --wait build/bin/z23-dev dev proof step --local_commit=$(git rev-parse HEAD) \
     --remote_base=$(git rev-parse origin/main)
 ```
 
@@ -942,13 +976,15 @@ hook rebuild, refresh the armed copy with `make install-hooks` in the lane
 itself — it writes that worktree's own config scope only — then `dev proof
 retry` and `dev proof step` again.
 
-`dev.proof.ensure` is idempotent and normally runs from `post-commit`,
-`post-merge`, or `post-checkout` -- but only to re-arm a resident proof
-watcher that was already armed on purpose in that worktree (it checks for
-`<root>/.cache/zcl-dev-watch.lock`, written by `dev loop ensure` / `dev proof
-ensure` themselves). A worktree that never ran one of those commands stays
-quiet on every commit; a hook never arms a resident the user did not arm. It
-binds the local commit and advertised
+`dev.proof.ensure` is an explicit operator path that can arm a resident proof
+watcher. A persistent `<root>/.cache/zcl-dev-watch.lock` file alone does not
+establish a live owner or operator intent. The installed notification hook
+requests `require_existing_watcher=true`: the controller verifies the existing
+kernel lock, session and root before enqueueing work. With no qualified owner,
+it refuses with `PROOF_EXISTING_WATCHER_REQUIRED` and leaves watcher state
+unchanged; use the foreground step above. The hook does not activate a watcher.
+Preserve live owners and use native status and stop commands for lifecycle work.
+The proof binds the local commit and advertised
 remote base to exact source/CAS and mutation roots, changed-set and impact
 policy, compiler/flags/environment/build graph, and complete generated,
 compile, lint, and test accounting. A missing, stale, incomplete, skipped, or
@@ -958,8 +994,10 @@ legacy parity oracle; it is not called by the installed push hook.
 Every publishable proof runs the whole lint gate set, `make lint` plus
 `check-windows-acceptance`, including inventory-only changes. A scratch
 directory's location or `queue.lock` cannot narrow publication evidence.
-Policy 4 refuses earlier receipts, which could cover only the fast subset,
-and names missing mandatory lint as `receipt_lint_required`. The worker
+Policy 5 additionally requires the producer's compiler-injected complete source
+identity to match the sealed candidate before planning, selection, or reuse.
+It rejects older receipts as `receipt_schema_old`; missing mandatory lint
+remains `receipt_lint_required`. The worker
 clears inherited Make execution overrides and lint cache diagnostics, and
 forces fresh lint using each gate's declared policy before building a generation.
 The test dimension is cold the same way: the runner starts with `--no-cache`,
@@ -1127,14 +1165,20 @@ Before committing:
    unrelated local work.
 5. Rerun the minimum gates affected by that integration.
 6. Commit one coherent change with an evidence-backed message.
-7. On Linux and macOS, wait for `dev proof status` to report `passed`, then
-   push normally; the native pre-push hook reads only the exact sealed receipt.
+   Build the candidate-owned `z23-dev` producer after the final signed commit
+   under `devbuild --wait`. A tool built before committing can identify a
+   different working state; its build pass is not exact proof qualification.
+7. On Linux and macOS, require `dev proof status` to report `passed` for the
+   exact commit/base under current policy before publication. The native
+   pre-push hook reads only the exact sealed receipt.
    Windows installs the same receipt-only native admission hook. Its native
    proof producer is not implemented yet, so a missing receipt refuses
    immediately; run the explicit `make windows-acceptance` parity gate while
    developing, but do not mistake that gate for an admissible receipt.
-8. Push the proof-green commit to `origin/main`; do not create a GitHub Issue
-   or pull request for coordination.
+8. For shared worker publication, submit the exact candidate through native
+   `dev land` tools under `devbuild --wait`. Their receipt gate and persisted
+   outcome support replacement workers; no permanent lead approval is needed.
+   Do not create a GitHub Issue or pull request for coordination.
 9. Verify local HEAD, `origin/main`, and the remote branch SHA agree.
 
 A resident loop lands the same way through the native async queue
@@ -1180,6 +1224,19 @@ exact pair is logged before a successor is prepared. A bounded drive session
 can stop with the row still queued; rerun `dev land drive` to continue it.
 A competing integrator receives `STEP_BUSY` during the short
 publication slot and must inspect status before another attempt.
+
+Use ordinary scheduler admission unless the job actually needs more than
+24 GiB. Do not wrap a polling driver in an exclusive reservation or add a
+nested CPU/memory scope that strands capacity. Preserve an already-running
+driver and inspect its persisted state before replacement. An unknown push
+outcome requires reconciliation, never redispatch.
+
+The proof producer must be built from the exact sealed candidate source before
+selection, reuse, or dimensions run. `proof_producer_source_mismatch` refuses
+before those stages; use the candidate-owned producer and its structured
+foreground recovery action. Policy 5 rejects old proof receipts. Preserve an
+older receipt as evidence for its original policy instead of silently replacing
+it or claiming that publication alone establishes current qualification.
 
 Queued exact proofs take the same lock shared before claiming a request
 and hold it until verification finishes. Requests created by checkout hooks

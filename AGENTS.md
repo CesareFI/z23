@@ -39,6 +39,34 @@ The user should feel: "I can make my device work exactly the way I want."
 Keep complexity hidden but inspectable. Give the user one obvious next
 action.
 
+### Fleet speed north star
+
+Treat participating machines as one distributed C23 production computer.
+Before each action, ask whether cryptographically bound work from any peer
+can eliminate that computation under the receiver's exact policy. Minimize
+new computation, new bytes, and critical-path latency across the fleet.
+
+Derive exact action roots early. Attach duplicate requests to existing work;
+distribute independent missing actions across qualified idle peers. Race local
+execution against qualified P2P discovery when measurements justify it. Fetch
+only missing chunks, prefetch likely dependencies, and keep popular verified
+native components hot in existing caches. Serialize actual dependencies,
+conflicting writes, and protected resources; unrelated work must not wait
+behind one machine.
+
+Separate fine-grained identity from efficient packed transfer and mapping.
+Measure duplicate CPU, transferred bytes, hashes, copies, queue waits, and
+compiler, linker, and test launches. Delete work that adds no information once
+its exact replacement qualifies. Explore function/island capsules, lightweight
+native binding, distributed ThinLTO, and later QEDC-native emission through
+bounded experiments with explicit evidence limits.
+
+Reuse remains receiver-verified: a hash or signature alone does not establish
+the claimed computation. Preserve conflicts, platform compatibility, local
+authority, and the priority of consensus and custody. Use existing native
+CAS, action, receipt, queue, and transport authorities; verify available
+interfaces before describing a proposed capability as implemented.
+
 ## Product
 
 Z23 is a public ZClassic blockchain full node first. One self-contained
@@ -130,8 +158,13 @@ relay, synchronization, peer health, wallet custody, or deployment.
 
 ## First session
 
-The following sequence was re-run from this checkout on 2026-08-12. Derive
-catalogs from the binary instead of copying counts into prose.
+Read `~/.config/dev-workers/OPERATIONS.md` and run `devworker where z23`
+before work on a shared host. Resume owned dirty work in place. Route every
+heavy build, proof, benchmark, and test matrix through `devbuild --wait`,
+preserving preset job counts and native locks. On the Mac use one focused
+build, normally two make jobs, with the 50 GB admission floor and 60 GB
+cleanup target. Keep services and watchers disabled unless explicitly requested.
+Derive catalogs from the binary instead of copying counts into prose.
 
 1. Inspect the checkout and upstream before changing anything:
 
@@ -145,7 +178,7 @@ catalogs from the binary instead of copying counts into prose.
 2. On a fresh clone, arm dependencies and local hooks:
 
    ```bash
-   make setup
+   devbuild --wait make setup
    ```
 
    It ends with `Next: make doctor`; that is an optional environment check.
@@ -153,7 +186,7 @@ catalogs from the binary instead of copying counts into prose.
 3. Build the public binary:
 
    ```bash
-   make -j"$(getconf _NPROCESSORS_ONLN)" z23
+   devbuild --wait make -j"$(getconf _NPROCESSORS_ONLN)" z23
    ```
 
 4. Ask the built binary for the current command tree and source map:
@@ -173,8 +206,8 @@ catalogs from the binary instead of copying counts into prose.
 
    ```bash
    make t-list
-   make -j"$(getconf _NPROCESSORS_ONLN)" t-fast ONLY=<substring>
-   make -j"$(getconf _NPROCESSORS_ONLN)" test-parallel TEST_PARALLEL_ARGS=--no-cache
+   devbuild --wait make -j"$(getconf _NPROCESSORS_ONLN)" t-fast-exact ONLY=<exact-group>
+   devbuild --wait make -j"$(getconf _NPROCESSORS_ONLN)" test-parallel TEST_PARALLEL_ARGS=--no-cache
    ```
 
    `ONLY=` is mandatory for `t-fast`. Do not invoke `test_zcl` directly.
@@ -315,6 +348,10 @@ mission.
   are not coordination authorities and must not be created. Coordinate through
   Z23 task, candidate, action, and receipt objects; committed `origin/main`
   identity is the shared integration blackboard.
+- Coordination must survive replacement of any worker. Claim disjoint scopes
+  through native tools, obtain independent review where required, and hand
+  off persisted candidate/action/receipt state without requiring a permanent
+  lead. Preserve live leases; silence alone does not establish an orphan.
 - Fetch current `origin/main` before work and before each push. Integrate it
   safely, then rerun affected gates.
 - Use typed native commands to inspect and operate a running node. Git,
@@ -354,10 +391,12 @@ Mandatory defensive rules are enforced by `make lint` and explained in
 
 ## Completion and continuation
 
-A coherent slice is ready to push only when its focused acceptance is green,
+A coherent slice is ready to publish only when its focused acceptance is green,
 required generated files are current, lint passes at the required scope, and
-the commit contains no unrelated work. Push normally and verify the exact
-remote SHA.
+the commit contains no unrelated work. Use native receipt-gated landing tools
+under `devbuild --wait`, following `docs/DEVELOPING.md`. Independently fetch
+and verify the exact remote SHA. Evidence applies only to its exact source,
+commit/base pair, and policy. Reconcile an unknown push before any retry.
 
 A push is a checkpoint, not completion. A status report does not suspend work.
 After each coherent push, fetch current `origin/main`, integrate it, and
@@ -365,7 +404,12 @@ continue through the mission's ordered continuation queue. Stop only when the
 complete acceptance is green or one of the named escalation conditions is
 reached.
 
-For substantial assignments, managers should provide a compact mission
+Remove obsolete code and instructions when encountered, after verifying
+callers, ownership, and replacement acceptance. Update the document that
+owns the behavior in the same slice; regenerate generated references through
+their canonical targets. Preserve historical evidence and active work.
+
+For substantial assignments, workers should provide a compact mission
 capsule instead of repeating the repository doctrine:
 
 ```text

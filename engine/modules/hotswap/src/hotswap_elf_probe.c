@@ -32,6 +32,9 @@
  * be mistaken for a file that legitimately claims nothing.
  */
 
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
 #include "hotswap/hotswap_elf_probe.h"
 
 #include "base/safe_alloc.h"
@@ -42,6 +45,7 @@
 #include "hotswap_elf_probe_internal.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -157,7 +161,7 @@ static unsigned char *read_all(int fd, uint64_t *out_len, char *why, size_t why_
  * A range that straddles two segments is also refused rather than stitched:
  * the linker would map those to non-adjacent addresses, so a stitched read
  * would not be what the process sees. */
-static bool vaddr_to_off(const struct img *im, const unsigned char *phtab,
+bool vaddr_to_off(const struct img *im, const unsigned char *phtab,
                          uint16_t phnum, uint64_t vaddr, uint64_t len,
                          uint64_t *out_off)
 {
@@ -988,6 +992,17 @@ bool hotswap_elf_probe_fd(int fd, struct hotswap_elf_facts *out,
 #undef REFUSE
 
     out->file_size = n;
+#if defined(__linux__)
+    const struct elf_pure_context pure_context = {
+        .image = &im, .programs = phtab, .program_count = e_phnum,
+        .dynamic = dyn, .dynamic_bytes = dyn_size, .symbols = symtab,
+        .symbol_count = symcount, .strings_offset = stroff,
+        .strings_bytes = d_strsz,
+    };
+    out->hotfork_pure_qualified = elf_hotfork_pure_inspect(
+        &pure_context, out, &out->hotfork_pure,
+        out->hotfork_pure_reason, sizeof(out->hotfork_pure_reason));
+#endif
     free(buf);
 
     /* Restore the descriptor to offset 0 so this composes with
@@ -1106,4 +1121,27 @@ bool hotswap_elf_probe_and_admit_fd(int fd,
         return false;
     return hotswap_elf_pre_map_admit(&facts, expected_core_seal_root,
                                      expected_abi, err, err_cap);
+}
+
+bool hotswap_elf_hotfork_pure_fd(int fd,
+    struct hotswap_elf_hotfork_pure_facts *out, char *err, size_t err_cap)
+{
+    if (out) memset(out, 0, sizeof(*out));
+    if (!out) return fail(NULL, err, err_cap, "pure profile needs output facts");
+#if defined(__linux__) && defined(__x86_64__)
+    int seals = fcntl(fd, F_GET_SEALS);
+    int required = F_SEAL_WRITE | F_SEAL_SHRINK | F_SEAL_GROW;
+    if (seals < 0 || (seals & required) != required)
+        return fail(NULL, err, err_cap, "pure profile requires kernel-sealed image");
+    struct hotswap_elf_facts facts;
+    if (!hotswap_elf_probe_fd(fd, &facts, err, err_cap)) return false;
+    if (!facts.hotfork_pure_qualified)
+        return fail(NULL, err, err_cap, "pure HOT_FORK profile: %s",
+                    facts.hotfork_pure_reason);
+    *out = facts.hotfork_pure;
+    return true;
+#else
+    (void)fd;
+    return fail(NULL, err, err_cap, "pure HOT_FORK ELF profile requires Linux x86-64");
+#endif
 }

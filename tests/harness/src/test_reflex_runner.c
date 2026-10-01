@@ -25,11 +25,19 @@
 
 #if !defined(__linux__)
 
+#include "devloop_reflex_runner.h"
 #include <stdio.h>
+#include <string.h>
 
 int test_reflex_runner(void);
 int test_reflex_runner(void)
 {
+    struct zcl_reflex_runner_outcome out;
+    if (zcl_reflex_runner_run_fd(-1, NULL, &out) || out.available ||
+        out.green || strstr(out.reason, "requires Linux") == NULL) {
+        printf("reflex_runner: FAIL unsupported FD entry did not refuse\n");
+        return 1;
+    }
     printf("\n=== clean-zygote reflex runner platform contract ===\n");
     printf("reflex_runner: PASS platform=non-linux runner=unavailable "
            "fixture_required=false\n");
@@ -353,6 +361,55 @@ static int t_unverifiable_artifact_fails_closed(void)
         ASSERT(strstr(c.out.reason, "unreadable") != NULL);
         PASS();
     } _test_next:;
+    return failures;
+}
+
+/* The receiver already owns the image: a locator must not choose its bytes. */
+static int t_retained_artifact_fd(void)
+{
+    int failures = 0;
+    int fd = -1;
+    char locator[] = RR_DIR "retained-XXXXXX";
+    TEST("reflex runner: retained FD survives unlink and locator replacement") {
+        struct rr_case c, red;
+        ASSERT(rr_prepare(&c, "green", 1000));
+        ASSERT(rr_prepare(&red, "regress", 1000));
+        int tmp = mkstemp(locator);
+        ASSERT(tmp >= 0);
+        ASSERT_EQ(close(tmp), 0);
+        ASSERT_EQ(unlink(locator), 0);
+        ASSERT_EQ(link(c.path, locator), 0);
+        fd = open(locator, O_RDONLY | O_CLOEXEC);
+        ASSERT(fd >= 0);
+        ASSERT_EQ(unlink(locator), 0);
+        ASSERT_EQ(link(red.path, locator), 0);
+        c.spec.artifact_path = locator;
+        ASSERT_EQ(lseek(fd, 7, SEEK_SET), 7);
+        ASSERT(zcl_reflex_runner_run_fd(fd, &c.spec, &c.out));
+        ASSERT(c.out.green);
+        ASSERT(rr_confined(&c.out));
+        ASSERT(c.out.seals_verified);
+        ASSERT(c.out.report.candidate_executed);
+        ASSERT_EQ(c.out.report.observation.checks_run, 3u);
+        ASSERT_EQ(c.out.report.observation.checks_passed, 3u);
+        ASSERT_STR_EQ(c.out.runner_sha256, c.sha);
+        ASSERT_STR_EQ(c.out.report.runtime_module_sha256, c.sha);
+        ASSERT_EQ(lseek(fd, 0, SEEK_CUR), 0);
+        ASSERT(fcntl(fd, F_GETFD) >= 0);
+        ASSERT_EQ(unlink(locator), 0);
+        ASSERT(zcl_reflex_runner_run_fd(fd, &c.spec, &c.out));
+        ASSERT(c.out.green);
+        ASSERT_STR_EQ(c.out.runner_sha256, c.sha);
+        c.spec.artifact_sha256 = red.sha;
+        ASSERT(!zcl_reflex_runner_run_fd(fd, &c.spec, &c.out));
+        ASSERT(!c.out.available);
+        ASSERT(strstr(c.out.reason, "digest mismatch") != NULL);
+        ASSERT(!zcl_reflex_runner_run_fd(-1, &c.spec, &c.out));
+        ASSERT(!c.out.available);
+        PASS();
+    } _test_next:;
+    if (fd >= 0) (void)close(fd);
+    (void)unlink(locator);
     return failures;
 }
 
@@ -905,6 +962,7 @@ int test_reflex_runner(void)
     failures += t_socket_and_wx_are_killed();
     failures += t_kernel_escape_surfaces_are_denied();
     failures += t_unverifiable_artifact_fails_closed();
+    failures += t_retained_artifact_fd();
     failures += t_runner_stage_timings();
     failures += t_fd_hygiene_without_close_range();
     failures += t_report_strings_validated_before_use();

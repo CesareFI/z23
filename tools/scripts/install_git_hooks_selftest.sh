@@ -56,7 +56,13 @@ trap 'rm -rf -- "$WORK"' EXIT HUP INT TERM
 
 # A fixture repository never inherits the operator's signing or identity
 # settings: those would make a fixture commit prompt, sign, or refuse.
-g() { git -c commit.gpgsign=false -c user.name=z23 -c user.email=z23@invalid "$@"; }
+fixture_git() {
+    git -c commit.gpgsign=false -c user.name=z23 -c user.email=z23@invalid "$@"
+}
+# Landing deliberately suppresses its own post-hooks. Its foreground proof
+# inherits that setting, but these isolated repositories must exercise their
+# hooks. A subshell preserves the invoking landing process's environment.
+g() ( unset ZCL_LAND_HOOK_QUIET; fixture_git "$@"; )
 
 install_into() {
     ZCL_GIT_HOOK_SOURCE_ROOT="$SOURCE_ROOT" \
@@ -202,6 +208,25 @@ chmod 600 "$QUIET/.cache/zcl-dev-watch.lock"
 sleep 1
 [[ ! -e "$QUIET/proof-notify-marker" ]] || \
     fail "an ordinary commit launched a dev process from stale watcher residue"
+
+# Explicit landing suppression must still prevent notification even when the
+# fixture has a complete, kernel-held ready record. Presence, including an
+# empty value, is the production hook's suppression contract.
+(
+    exec 9> "$QUIET/.cache/zcl-dev-watch.lock"
+    flock -x 9 || exit 1
+    printf '2 verify ready proofq1 1 %s\n' \
+        1111111111111111111111111111111111111111111111111111111111111111 >&9
+    for quiet_value in 1 ''; do
+        printf 'explicit-quiet\n' >> "$QUIET/seed"
+        g -C "$QUIET" add seed
+        ZCL_LAND_HOOK_QUIET="$quiet_value" \
+            fixture_git -C "$QUIET" commit -q -m explicit-quiet || exit 1
+    done
+    sleep 1
+) || fail "explicit quiet fixture failed"
+[[ ! -e "$QUIET/proof-notify-marker" ]] || \
+    fail "explicit landing suppression notified a fixture receiver"
 
 # A kernel-held complete candidate must transport the attach-only key. This
 # is a notification wiring fixture, not a claim of native session authority:

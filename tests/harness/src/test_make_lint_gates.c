@@ -208,7 +208,8 @@ static const struct lint_gate_entry g_lint_gate_entries[] = {
     /* Hermetic: each script proves itself inside its own mktemp sandbox and
      * no tracked path is written, so this needs no worktree clone. */
     N_(t_slow_disk_progress_verdicts_contract),
-    S_(t_native_operator_docs_contract),
+    /* Reads tracked docs and exercises only disposable claim ledgers. */
+    N_(t_native_operator_docs_contract),
     S_(t_remote_node_update_contract),
     S_(t_native_agent_api_contract),
     S_(t_mvp_reporters_resolve_live_service_rpc_contract),
