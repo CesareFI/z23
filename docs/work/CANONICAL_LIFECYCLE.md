@@ -366,7 +366,13 @@ The expected-base lease cannot authorize non-fast-forward history replacement.
 Its crash reconciliation is not the immutable intent/result/remote-receipt
 chain defined here.
 The signed Git-row adapter retains an ambiguous push checkpoint as UNKNOWN
-and observes the remote again without redispatching that intent. Its status
+and observes the remote again before any further mutation. When that fresh
+observation shows the target still at the signed expected base, the head is
+absent and the earlier dispatch did not apply; the adapter then sends the
+identical expected-base update again, bounded by the row's attempts. A moved
+target without the head cuts a successor and is never sent the stale pair.
+The adapter does not yet record each attempt as a separate immutable result.
+Its status
 view reports canonical `acceptance_state=unknown`, including for historical
 `landed` queue outcomes, because those rows do not carry the canonical
 publication and REMOTE_RECEIPT roots.

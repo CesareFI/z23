@@ -1247,12 +1247,21 @@ Use ordinary scheduler admission unless the job actually needs more than
 24 GiB. Do not wrap a polling driver in an exclusive reservation or add a
 nested CPU/memory scope that strands capacity. Preserve an already-running
 driver and inspect its persisted state before replacement. An unknown push
-outcome requires reconciliation, never redispatch.
+outcome requires reconciliation: do not dispatch a different pair or push by
+hand. The landing step reconciles it itself. When a fresh fetch shows main
+still at the signed base, the head is absent and the earlier dispatch did not
+apply, so the step sends the identical compare-and-swap again, once per
+remaining attempt; when main has moved without the head it cuts a successor.
 
 The proof producer must be built from the exact sealed candidate source before
 selection, reuse, or dimensions run. `proof_producer_source_mismatch` refuses
-before those stages; use the candidate-owned producer and its structured
-foreground recovery action. Policy 5 rejects old proof receipts. Preserve an
+before those stages. `dev land drive` recovers from it without help: it queues
+the pair again, builds `dev-bin` in the landing worktree, and proves the pair
+with that binary as a child. Outside a drive, use the candidate-owned producer
+and its structured foreground recovery action. A proof step started outside a
+user-manager scope that delegates the memory controller refuses at once with
+`proof_host_memory_scope_unqualified`; run it through the build scheduler.
+Policy 5 rejects old proof receipts. Preserve an
 older receipt as evidence for its original policy instead of silently replacing
 it or claiming that publication alone establishes current qualification.
 
