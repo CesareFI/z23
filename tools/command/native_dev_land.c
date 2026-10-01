@@ -8078,6 +8078,93 @@ int zcl_native_dev_land_test_watch_worker(const char *wt, const char *base,
 }
 #endif
 
+/* The exact proof refuses a producer whose own source identity is not the
+ * candidate's: the binary that selects tests and applies impact policy must
+ * be built from the bytes it proves. A drive runs the proof in its own
+ * process, and its binary is whatever was last built where it was started —
+ * almost never the candidate the queue just checked out, and never one the
+ * lander rebased. That refusal used to fail the row; every landing then
+ * needed someone to build the producer and run the step by hand. */
+#if defined(ZCL_DEV_BUILD) || defined(ZCL_TESTING)
+#define DL_PRODUCER_BUILD_TIMEOUT_MS (30 * 60 * 1000)
+#define DL_PRODUCER_PROOF_TIMEOUT_MS (2 * 60 * 60 * 1000)
+
+[[maybe_unused]] static bool dl_producer_stale(const char *detail)
+{
+    return detail && strstr(detail, "proof_producer_source_mismatch") != NULL;
+}
+
+/* Build the development binary in the landing worktree — the candidate's
+ * own Makefile target, in the tree whose lint and regeneration recipes the
+ * landing already runs — and prove the pair with that binary as a child.
+ * Returns 1 once the child proof has exited (its verdict is the pair's
+ * settled proof state, read by the step that follows), -1 with `why` when
+ * no candidate-built producer could be run. */
+[[maybe_unused]] static int dl_producer_reproof(const char *root,
+                                                const char *local,
+                                                const char *base,
+                                                const char *make_program,
+                                                char *why, size_t why_cap)
+{
+    char jobs[16], bin[4096], root_arg[4200], local_arg[128], base_arg[128];
+    char *buf;
+    int rc;
+    if (!platform_build_jobs_arg(jobs) ||
+        snprintf(bin, sizeof(bin), "%s/build/bin/z23-dev", root) >=
+            (int)sizeof(bin) ||
+        snprintf(root_arg, sizeof(root_arg), "--root=%s", root) >=
+            (int)sizeof(root_arg) ||
+        snprintf(local_arg, sizeof(local_arg), "--local_commit=%s", local) >=
+            (int)sizeof(local_arg) ||
+        snprintf(base_arg, sizeof(base_arg), "--remote_base=%s", base) >=
+            (int)sizeof(base_arg)) {
+        (void)snprintf(why, why_cap, "%s", "producer_arguments_invalid");
+        return -1;
+    }
+    buf = (char *)zcl_malloc(DL_LOG_CAP, "dev.land.producer");
+    if (!buf) {
+        (void)snprintf(why, why_cap, "%s", "producer_log_unavailable");
+        return -1;
+    }
+    const char *build[] = { make_program, jobs, "-C", root, "dev-bin", NULL };
+    rc = zcl_spawn_capture(build, buf, DL_LOG_CAP,
+                           DL_PRODUCER_BUILD_TIMEOUT_MS);
+    if (rc != 0 || access(bin, X_OK) != 0) {
+        dl_first_actionable(buf, why, why_cap);
+        if (!why[0])
+            (void)snprintf(why, why_cap, "%s", "producer_build_failed");
+        free(buf);
+        return -1;
+    }
+    const char *prove[] = { bin, "dev", "proof", "step", root_arg, local_arg,
+                            base_arg, NULL };
+    rc = zcl_spawn_capture(prove, buf, DL_LOG_CAP,
+                           DL_PRODUCER_PROOF_TIMEOUT_MS);
+    free(buf);
+    if (rc < 0) {
+        (void)snprintf(why, why_cap, "%s", "producer_launch_failed");
+        return -1;
+    }
+    return 1;
+}
+#endif
+
+#if defined(ZCL_TESTING)
+bool zcl_native_dev_land_test_producer_stale(const char *detail)
+{
+    return dl_producer_stale(detail);
+}
+
+int zcl_native_dev_land_test_producer_reproof(const char *root,
+                                              const char *local,
+                                              const char *base,
+                                              const char *make_program,
+                                              char *why, size_t why_cap)
+{
+    return dl_producer_reproof(root, local, base, make_program, why, why_cap);
+}
+#endif
+
 /* Return 1 after this pair settles, 0 when a worker owns it, -1 on refusal. */
 #if defined(ZCL_DEV_BUILD) || defined(ZCL_TESTING)
 static int dl_drive_proof(struct zcl_command_reply *reply)
@@ -8111,6 +8198,25 @@ static int dl_drive_proof(struct zcl_command_reply *reply)
     }
     if (result == 0)
         (void)json_push_kv_str(&reply->data, "proof_worker", proof.detail);
+    if (result == 1 && dl_producer_stale(proof.detail)) {
+        /* Settled as a refusal of this binary, not of the candidate. Queue
+         * the pair again and prove it with a producer built from it. */
+        struct zcl_dev_proof_status again = {0};
+        char why[256] = "";
+        if (!zcl_dev_proof_retry(root, local, base, &again)) {
+            dl_fail(reply, "PROOF_PRODUCER_RETRY_REFUSED", "drive",
+                    "cannot queue the pair again for a candidate-built producer",
+                    again.detail);
+            return -1;
+        }
+        if (dl_producer_reproof(root, local, base, "make", why,
+                                sizeof(why)) < 0) {
+            dl_fail(reply, "PROOF_PRODUCER_UNAVAILABLE", "drive",
+                    "cannot build and run a producer from the candidate",
+                    why);
+            return -1;
+        }
+    }
     return result;
 #else
     if (!dl_stub()) {

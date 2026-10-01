@@ -77,6 +77,12 @@ void zcl_native_dev_land_test_watcher_launch(const char *wt,
 #include <sys/wait.h>
 #include <unistd.h>
 void zcl_native_dev_land_test_pick_barrier(int ready_fd, int release_fd);
+bool zcl_native_dev_land_test_producer_stale(const char *detail);
+int zcl_native_dev_land_test_producer_reproof(const char *root,
+                                              const char *local,
+                                              const char *base,
+                                              const char *make_program,
+                                              char *why, size_t why_cap);
 #endif
 
 #define DLX_PATH "dev.land"
@@ -6528,6 +6534,67 @@ _test_next:;
     return failures;
 }
 
+static int test_dev_land_drive_producer_reproof(void)
+{
+    int failures = 0;
+#if !defined(_WIN32)
+    TEST("land: a drive whose binary is not the candidate's builds the producer in the landing worktree and proves with it") {
+        char root[512], make_ok[1400], make_bad[1400], script[4000];
+        char log[1400], seen[2048], want[1800], why[256] = "";
+        size_t seen_len = 0;
+        test_make_tmpdir(root, sizeof(root), "dev_land", "drive_producer_wt");
+        ASSERT(zcl_native_dev_land_test_producer_stale(
+            "proof_producer_source_mismatch"));
+        ASSERT(zcl_native_dev_land_test_producer_stale(
+            "failed exact proof: proof_producer_source_mismatch"));
+        ASSERT(!zcl_native_dev_land_test_producer_stale("lint"));
+        ASSERT(!zcl_native_dev_land_test_producer_stale(NULL));
+        (void)snprintf(make_ok, sizeof(make_ok), "%s/fake-make", root);
+        (void)snprintf(make_bad, sizeof(make_bad), "%s/fake-make-bad", root);
+        (void)snprintf(log, sizeof(log), "%s/producer-argv", root);
+        /* argv: -jN -C <root> dev-bin. The built "producer" records how it
+         * was called. */
+        (void)snprintf(script, sizeof(script),
+                       "#!/bin/sh\n"
+                       "[ \"$2\" = -C ] && [ \"$4\" = dev-bin ] || exit 64\n"
+                       "mkdir -p \"$3/build/bin\" || exit 65\n"
+                       "printf '%%s\\n' '#!/bin/sh' "
+                       "'printf \"%%s \" \"$@\" > \"%s\"' "
+                       "'exit 7' > \"$3/build/bin/z23-dev\" || exit 66\n"
+                       "chmod 700 \"$3/build/bin/z23-dev\"\n", log);
+        ASSERT(dlx_write(make_ok, script));
+        ASSERT(chmod(make_ok, 0700) == 0);
+        ASSERT(dlx_write(make_bad,
+                         "#!/bin/sh\necho 'boom: no rule' >&2\nexit 2\n"));
+        ASSERT(chmod(make_bad, 0700) == 0);
+        /* A build that fails names itself and runs no proof. */
+        ASSERT(zcl_native_dev_land_test_producer_reproof(
+                   root, "1111111111111111111111111111111111111111",
+                   "2222222222222222222222222222222222222222", make_bad, why,
+                   sizeof(why)) == -1);
+        ASSERT(why[0] != '\0');
+        ASSERT(!dlx_file_exists(log));
+        /* A built producer is run on the exact pair and root; its verdict
+         * (here a failing exit) is the proof's to settle, not the drive's. */
+        ASSERT(zcl_native_dev_land_test_producer_reproof(
+                   root, "1111111111111111111111111111111111111111",
+                   "2222222222222222222222222222222222222222", make_ok, why,
+                   sizeof(why)) == 1);
+        ASSERT(dlx_slurp(log, seen, sizeof(seen) - 1, &seen_len));
+        seen[seen_len] = '\0';
+        (void)snprintf(want, sizeof(want),
+                       "dev proof step --root=%s "
+                       "--local_commit=1111111111111111111111111111111111111111 "
+                       "--remote_base=2222222222222222222222222222222222222222 ",
+                       root);
+        ASSERT_STR_EQ(seen, want);
+        PASS();
+    }
+_test_next:;
+#endif
+    return failures;
+}
+
 static int test_dev_land_signed_lost_ack(void)
 {
     int failures = 0;
@@ -7500,6 +7567,7 @@ int test_dev_land(void)
     failures += test_dev_land_signer_takeover();
     failures += test_dev_land_signed_stale();
     failures += test_dev_land_signed_recovery();
+    failures += test_dev_land_drive_producer_reproof();
     failures += test_dev_land_signed_lost_ack();
     failures += test_dev_land_signed_lost_race();
     failures += test_dev_land_signed_lost_ack_resend();
