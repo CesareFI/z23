@@ -58,16 +58,23 @@ static void dpoi_key(uint8_t key[ZCL_DEV_VERDICT_LEAF_KEY_BYTES], uint8_t seed)
         key[i] = (uint8_t)(seed * 29u + (uint8_t)i);
 }
 
-static bool dpoi_record(const char *store, uint8_t seed, const char *group,
-                        uint8_t root[ZCL_DEV_PROOF_ROOT_BYTES])
+static bool dpoi_record_verdict(const char *store, uint8_t seed,
+    const char *group, enum zcl_dev_verdict_leaf_verdict verdict,
+    uint8_t root[ZCL_DEV_PROOF_ROOT_BYTES])
 {
     uint8_t key[ZCL_DEV_VERDICT_LEAF_KEY_BYTES];
     dpoi_key(key, seed);
     char why[96] = {0};
-    return zcl_dev_observation_record(store, key, group,
-                                      ZCL_DEV_VERDICT_LEAF_PASS, seed, root,
+    return zcl_dev_observation_record(store, key, group, verdict, seed, root,
                                       why, sizeof(why)) &&
            why[0] == '\0';
+}
+
+static bool dpoi_record(const char *store, uint8_t seed, const char *group,
+                        uint8_t root[ZCL_DEV_PROOF_ROOT_BYTES])
+{
+    return dpoi_record_verdict(store, seed, group, ZCL_DEV_VERDICT_LEAF_PASS,
+                               root);
 }
 
 /* Three leaves in one store, returned roots in group order. */
@@ -289,11 +296,107 @@ static int test_dpoi_lookup_parity(void)
     return failures;
 }
 
+static int test_dpoi_query(void)
+{
+    int failures = 0;
+    char root[4096], store[4096], index_path[4096];
+    test_make_tmpdir(root, sizeof(root), "dev_proof_obs_index", "query");
+    dpoi_isolate("query");
+    (void)snprintf(store, sizeof(store), "%s/store", root);
+    (void)snprintf(index_path, sizeof(index_path), "%s/index", root);
+    uint8_t emitted[3][32];
+    TEST_CASE("dev_proof_obs_index: box-level query over empty, full and conflicting indexes") {
+        char why[128] = {0};
+        struct zcl_dev_observation_query_report report = {0};
+
+        /* An absent index is an honest empty answer. */
+        ASSERT(zcl_dev_observation_index_query(index_path, NULL, &report,
+                                               why, sizeof(why)));
+        ASSERT(report.total == 0 && report.groups_named == 0);
+        ASSERT(!report.truncated && report.conflicted_groups == 0);
+
+        ASSERT(dpoi_store3(store, emitted));
+        ASSERT(zcl_dev_observation_index_merge(index_path, store,
+                                               why, sizeof(why)));
+        ASSERT(zcl_dev_observation_index_query(index_path, NULL, &report,
+                                               why, sizeof(why)));
+        ASSERT(report.total == 3 && report.eligible == 3);
+        ASSERT(report.ineligible == 0);
+        ASSERT(report.oldest_observed_unix != 0);
+        ASSERT(report.newest_observed_unix >= report.oldest_observed_unix);
+        ASSERT(report.groups_named == 3);
+        ASSERT(!report.truncated);
+        /* Deterministic order: sorted by group name. */
+        ASSERT(strcmp(report.groups[0].group, "test_obs_index_alpha") == 0);
+        ASSERT(strcmp(report.groups[1].group, "test_obs_index_beta") == 0);
+        ASSERT(strcmp(report.groups[2].group, "test_obs_index_gamma") == 0);
+        for (uint32_t i = 0; i < report.groups_named; i++) {
+            ASSERT(report.groups[i].verdict == ZCL_DEV_VERDICT_LEAF_PASS);
+            ASSERT(report.groups[i].observations == 1);
+            ASSERT(!report.groups[i].conflict);
+        }
+
+        /* A preserved contradiction is named, never collapsed. */
+        uint8_t fail_root[32];
+        ASSERT(dpoi_record_verdict(store, 1, "test_obs_index_alpha",
+                                   ZCL_DEV_VERDICT_LEAF_FAIL, fail_root));
+        ASSERT(zcl_dev_observation_index_merge(index_path, store,
+                                               why, sizeof(why)));
+        memset(&report, 0, sizeof(report));
+        ASSERT(zcl_dev_observation_index_query(index_path, NULL, &report,
+                                               why, sizeof(why)));
+        ASSERT(report.total == 4 && report.eligible == 4);
+        ASSERT(report.conflicted_groups == 1);
+        ASSERT(strcmp(report.groups[0].group, "test_obs_index_alpha") == 0);
+        ASSERT(report.groups[0].conflict);
+        ASSERT(report.groups[0].observations == 2);
+        ASSERT(report.groups[1].observations == 1);
+
+        /* The group filter scopes every count to one exact group. */
+        memset(&report, 0, sizeof(report));
+        ASSERT(zcl_dev_observation_index_query(index_path,
+                                               "test_obs_index_beta",
+                                               &report, why, sizeof(why)));
+        ASSERT(report.total == 1 && report.eligible == 1);
+        ASSERT(report.groups_named == 1);
+        ASSERT(strcmp(report.groups[0].group, "test_obs_index_beta") == 0);
+        memset(&report, 0, sizeof(report));
+        ASSERT(zcl_dev_observation_index_query(index_path,
+                                               "test_obs_index_absent",
+                                               &report, why, sizeof(why)));
+        ASSERT(report.total == 0 && report.groups_named == 0);
+
+        /* The named-group cap truncates honestly. */
+        char wide[4096];
+        (void)snprintf(wide, sizeof(wide), "%s/wide", root);
+        ASSERT(platform_directory_ensure(wide, 0700));
+        for (size_t i = 0; i < 40; i++) {
+            char name[64];
+            (void)snprintf(name, sizeof(name), "test_obs_wide_%02zu", i);
+            uint8_t discard[32];
+            ASSERT(dpoi_record(wide, (uint8_t)(i + 20), name, discard));
+        }
+        ASSERT(zcl_dev_observation_index_merge(index_path, wide,
+                                               why, sizeof(why)));
+        memset(&report, 0, sizeof(report));
+        ASSERT(zcl_dev_observation_index_query(index_path, NULL, &report,
+                                               why, sizeof(why)));
+        ASSERT(report.total == 44);
+        ASSERT(report.groups_named == ZCL_DEV_OBSERVATION_QUERY_MAX_GROUPS);
+        ASSERT(report.truncated);
+    }
+    TEST_END
+    dpoi_restore();
+    (void)test_rm_rf_recursive(root);
+    return failures;
+}
+
 int test_dev_proof_observation_index(void)
 {
     int failures = 0;
     failures += test_dpoi_merge_and_load();
     failures += test_dpoi_refusals();
     failures += test_dpoi_lookup_parity();
+    failures += test_dpoi_query();
     return failures;
 }

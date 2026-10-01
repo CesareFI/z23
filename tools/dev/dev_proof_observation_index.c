@@ -394,3 +394,172 @@ bool zcl_dev_observation_index_load(const char *index_path,
     if (why && why_len) why[0] = 0;
     return true;
 }
+
+
+/* ── Box-level query ──────────────────────────────────────────────────── */
+
+/* Internal per-(group, key) aggregation slot. */
+#define OI_QUERY_MAX_SLOTS 1024u
+struct oi_query_slot {
+    char group[ZCL_DEV_VERDICT_LEAF_GROUP_BYTES];
+    uint8_t group_len;
+    uint8_t key[ZCL_DEV_VERDICT_LEAF_KEY_BYTES];
+    uint8_t verdict;
+    uint8_t root[ZCL_DEV_PROOF_ROOT_BYTES]; /* newest-verdict tiebreak */
+    uint64_t observed_unix;
+    uint32_t observations;
+    bool pass, fail;
+};
+
+static bool oi_slot_same(const struct oi_query_slot *slot, uint8_t group_len,
+    const char *group, const uint8_t key[ZCL_DEV_VERDICT_LEAF_KEY_BYTES])
+{
+    return slot->group_len == group_len &&
+           memcmp(slot->group, group, group_len) == 0 &&
+           memcmp(slot->key, key, ZCL_DEV_VERDICT_LEAF_KEY_BYTES) == 0;
+}
+
+/* Newest eligible observation wins the slot's verdict; ties break on the
+ * larger root so the answer is deterministic regardless of leaf order. */
+static void oi_query_slot_absorb(struct oi_query_slot *slot,
+    const struct zcl_dev_observation_leaf *leaf)
+{
+    slot->observations++;
+    if (leaf->leaf.verdict == ZCL_DEV_VERDICT_LEAF_PASS)
+        slot->pass = true;
+    else
+        slot->fail = true;
+    if (leaf->leaf.observed_unix > slot->observed_unix ||
+        (leaf->leaf.observed_unix == slot->observed_unix &&
+         memcmp(leaf->root, slot->root, ZCL_DEV_PROOF_ROOT_BYTES) > 0)) {
+        slot->observed_unix = leaf->leaf.observed_unix;
+        slot->verdict = (uint8_t)leaf->leaf.verdict;
+        (void)memcpy(slot->root, leaf->root, ZCL_DEV_PROOF_ROOT_BYTES);
+    }
+}
+
+static int oi_slot_cmp(const void *a, const void *b)
+{
+    const struct oi_query_slot *sa = a, *sb = b;
+    size_t common = sa->group_len < sb->group_len ? sa->group_len
+                                                  : sb->group_len;
+    int by_group = memcmp(sa->group, sb->group, common);
+    if (by_group != 0) return by_group;
+    if (sa->group_len != sb->group_len)
+        return sa->group_len < sb->group_len ? -1 : 1;
+    return memcmp(sa->key, sb->key, ZCL_DEV_VERDICT_LEAF_KEY_BYTES);
+}
+
+static bool oi_query_accumulate(const struct zcl_dev_observation_leaf *leaves,
+    size_t leaf_count, const char *group_filter,
+    struct oi_query_slot **slots_out, size_t *slot_count_out,
+    bool *slots_truncated, struct zcl_dev_observation_query_report *out)
+{
+    *slots_out = zcl_malloc(OI_QUERY_MAX_SLOTS * sizeof(**slots_out),
+                            "dev-obs-query-slots");
+    if (!*slots_out)
+        return false;
+    *slot_count_out = 0;
+    *slots_truncated = false;
+    for (size_t i = 0; i < leaf_count; i++) {
+        const struct zcl_dev_observation_leaf *leaf = &leaves[i];
+        uint8_t group_len = leaf->leaf.group_len;
+        const char *group = leaf->leaf.group;
+        if (group_filter &&
+            !(group_len == strlen(group_filter) &&
+              memcmp(group, group_filter, group_len) == 0))
+            continue;
+        out->total++;
+        if (!leaf->eligible) {
+            out->ineligible++;
+            continue;
+        }
+        out->eligible++;
+        uint64_t seen = leaf->leaf.observed_unix;
+        if (out->oldest_observed_unix == 0 ||
+            seen < out->oldest_observed_unix)
+            out->oldest_observed_unix = seen;
+        if (seen > out->newest_observed_unix)
+            out->newest_observed_unix = seen;
+        struct oi_query_slot *slot = NULL;
+        for (size_t s = 0; s < *slot_count_out; s++) {
+            if (oi_slot_same(&(*slots_out)[s], group_len, group,
+                             leaf->leaf.key)) {
+                slot = &(*slots_out)[s];
+                break;
+            }
+        }
+        if (!slot) {
+            if (*slot_count_out >= OI_QUERY_MAX_SLOTS) {
+                *slots_truncated = true;
+                continue;
+            }
+            slot = &(*slots_out)[(*slot_count_out)++];
+            memset(slot, 0, sizeof(*slot));
+            slot->group_len = group_len;
+            (void)memcpy(slot->group, group, group_len);
+            (void)memcpy(slot->key, leaf->leaf.key,
+                         ZCL_DEV_VERDICT_LEAF_KEY_BYTES);
+        }
+        oi_query_slot_absorb(slot, leaf);
+    }
+    return true;
+}
+
+/* Copy the sorted slots into the bounded public report. */
+static void oi_query_fill_groups(const struct oi_query_slot *slots,
+    size_t slot_count, bool slots_truncated,
+    struct zcl_dev_observation_query_report *out)
+{
+    uint32_t named = slot_count < ZCL_DEV_OBSERVATION_QUERY_MAX_GROUPS
+                         ? (uint32_t)slot_count
+                         : ZCL_DEV_OBSERVATION_QUERY_MAX_GROUPS;
+    for (uint32_t i = 0; i < named; i++) {
+        struct zcl_dev_observation_group_summary *g = &out->groups[i];
+        g->group_len = slots[i].group_len;
+        (void)memcpy(g->group, slots[i].group, slots[i].group_len);
+        (void)memcpy(g->key, slots[i].key, ZCL_DEV_VERDICT_LEAF_KEY_BYTES);
+        g->verdict = slots[i].verdict;
+        g->observed_unix = slots[i].observed_unix;
+        g->observations = slots[i].observations;
+        g->conflict = slots[i].pass && slots[i].fail;
+        if (g->conflict && out->conflicted_groups < UINT32_MAX)
+            out->conflicted_groups++;
+    }
+    out->groups_named = named;
+    out->truncated = slots_truncated || slot_count > named;
+}
+
+bool zcl_dev_observation_index_query(const char *index_path,
+    const char *group_filter,
+    struct zcl_dev_observation_query_report *out, char *why, size_t why_len)
+{
+    if (!index_path || !index_path[0] || !out)
+        return oi_fail(why, why_len,
+                       ZCL_DEV_OBSERVATION_INDEX_WHY_ARGUMENTS);
+    memset(out, 0, sizeof(*out));
+    struct zcl_dev_observation_leaf *leaves = NULL;
+    size_t leaf_count = 0;
+    bool present = false;
+    if (!zcl_dev_observation_index_load(index_path, &leaves, &leaf_count,
+                                        &present, why, why_len))
+        return false;
+    if (!present) {
+        if (why && why_len) why[0] = 0;
+        return true;
+    }
+    struct oi_query_slot *slots = NULL;
+    size_t slot_count = 0;
+    bool slots_truncated = false;
+    bool ok = oi_query_accumulate(leaves, leaf_count, group_filter, &slots,
+                                  &slot_count, &slots_truncated, out);
+    zcl_dev_observation_release(leaves);
+    if (!ok)
+        return oi_fail(why, why_len, ZCL_DEV_OBSERVATION_INDEX_WHY_INVALID);
+
+    qsort(slots, slot_count, sizeof(*slots), oi_slot_cmp);
+    oi_query_fill_groups(slots, slot_count, slots_truncated, out);
+    free(slots);
+    if (why && why_len) why[0] = 0;
+    return true;
+}
