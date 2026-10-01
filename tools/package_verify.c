@@ -4659,6 +4659,15 @@ static int pv_load_verifier_key(const char *emit_dir, const char *key_path,
     return PV_CONTINUE;
 }
 
+static void pv_unload_verifier_key(secp256k1_context **sign_ctx,
+                                   uint8_t secret[32])
+{
+    memory_cleanse(secret, 32);
+    if (sign_ctx && *sign_ctx) {
+        secp256k1_context_destroy(*sign_ctx);
+        *sign_ctx = NULL;
+    }
+}
 
 static int pv_load_candidate_recipe(
     const char *candidate_source, const char *candidate_recipe,
@@ -7160,7 +7169,10 @@ static int pv_main_posix(int argc, char **argv)
         candidate_mode, store_dir, package_root, candidate_source,
         candidate_recipe, candidate_name, &release, &manifest, &recipe,
         recipe_root, release_id);
-    if (rc != PV_CONTINUE) return rc;
+    if (rc != PV_CONTINUE) {
+        pv_unload_verifier_key(&sign_ctx, secret);
+        return rc;
+    }
     /* Build, test, and sanitizer pipeline: temp work tree through the
      * standard-profile refusal gate. */
     struct pv_pipeline_out po;
@@ -7170,7 +7182,10 @@ static int pv_main_posix(int argc, char **argv)
         verifier_pubkey, &recipe, &manifest, &release, plan_path,
         &fast_cache_dir, standard_profile, emit_lock_root,
         allow_testless_standard, &po);
-    if (rc != PV_CONTINUE) return rc;
+    if (rc != PV_CONTINUE) {
+        pv_unload_verifier_key(&sign_ctx, secret);
+        return rc;
+    }
 
     if (emit_dir) {
         return pv_emit_receipt_mode(
@@ -7188,8 +7203,7 @@ static int pv_main_posix(int argc, char **argv)
                                         po.work);
     vcs_package_recipe_free(&recipe);
     vcs_package_manifest_free(&manifest);
-    if (rc == 0)
-        secp256k1_context_destroy(sign_ctx);
+    pv_unload_verifier_key(&sign_ctx, secret);
     return rc;
 }
 
