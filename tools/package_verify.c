@@ -562,6 +562,22 @@ static bool pv_read_exact_fd(int fd, uint8_t *buf, size_t len)
     return true;
 }
 
+/* Write exactly len bytes without taking ownership of fd. A zero-byte write
+ * is not progress and must fail rather than spin forever. */
+static bool pv_write_exact_fd(int fd, const uint8_t *buf, size_t len)
+{
+    size_t written = 0;
+    while (written < len) {
+        ssize_t put = write(fd, buf + written, len - written);
+        if (put < 0 && errno == EINTR)
+            continue;
+        if (put <= 0)
+            return false;
+        written += (size_t)put;
+    }
+    return true;
+}
+
 /* Read a stable, bounded regular leaf relative to an already-open directory.
  * The parent path is never resolved again between enumeration and admission. */
 static uint8_t *pv_read_file_at(int directory, const char *leaf, size_t cap,
@@ -754,7 +770,8 @@ static bool pv_preview_release(pid_t pid, int release_fd)
         (unsigned long long)g_pv_preview_pid, (unsigned long long)g_pv_preview_token);
     int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0400);
     if (fd < 0) return false;
-    bool ok = write(fd, record, (size_t)length) == length && fsync(fd) == 0;
+    bool ok = pv_write_exact_fd(fd, (const uint8_t *)record,
+                                (size_t)length) && fsync(fd) == 0;
     if (close(fd) != 0) ok = false;
     return ok && write(release_fd, "R", 1) == 1;
 }
@@ -1908,19 +1925,8 @@ static bool pv_copy_file(const char *src, const char *dst, mode_t mode)
     uint8_t buf[65536];
     size_t got;
     bool ok = true;
-    while (ok && (got = fread(buf, 1, sizeof(buf), in)) > 0) {
-        size_t off = 0;
-        while (off < got) {
-            ssize_t w = write(fd, buf + off, got - off);
-            if (w < 0 && errno == EINTR)
-                continue;
-            if (w <= 0) {
-                ok = false;
-                break;
-            }
-            off += (size_t)w;
-        }
-    }
+    while (ok && (got = fread(buf, 1, sizeof(buf), in)) > 0)
+        ok = pv_write_exact_fd(fd, buf, got);
     if (ferror(in))
         ok = false;
     fclose(in);
@@ -3772,14 +3778,7 @@ static bool pv_write_new_file_synced(const char *path, const uint8_t *wire,
 {
     int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0400);
     if (fd < 0) return false;
-    size_t off = 0;
-    while (off < len) {
-        ssize_t wrote = write(fd, wire + off, len - off);
-        if (wrote < 0 && errno == EINTR) continue;
-        if (wrote <= 0) break;
-        off += (size_t)wrote;
-    }
-    bool synced = off == len && fsync(fd) == 0;
+    bool synced = pv_write_exact_fd(fd, wire, len) && fsync(fd) == 0;
     bool ok = close(fd) == 0 && synced;
     if (!ok) (void)unlink(path);
     return ok;
@@ -5020,18 +5019,7 @@ static bool pv_materialize_write_chunks(int fd,
             free(chunk);
             return false;
         }
-        size_t off = 0;
-        bool ok = true;
-        while (off < chunk_len) {
-            ssize_t w = write(fd, chunk + off, chunk_len - off);
-            if (w < 0) {
-                if (errno == EINTR)
-                    continue;
-                ok = false;
-                break;
-            }
-            off += (size_t)w;
-        }
+        bool ok = pv_write_exact_fd(fd, chunk, chunk_len);
         free(chunk);
         if (!ok)
             return false;
