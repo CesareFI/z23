@@ -6,6 +6,7 @@
 
 #include "vcs/package_public_shape.h"
 
+#include "base/hex.h"
 #include "base/safe_alloc.h"
 #include "platform/positioned_file.h"
 #include "vcs/blob_store.h"
@@ -23,6 +24,7 @@
 #include "vcs/zcode_work_output.h"
 
 #include <dirent.h>
+#include <errno.h>
 #if !defined(_WIN32)
 #include <fcntl.h>
 #endif
@@ -304,19 +306,52 @@ static bool shape_release_wire(DIR *d, const char *dir, const char *name,
 #endif
 }
 
-static DIR *shape_open_releases(const char *dir)
+static DIR *shape_open_releases(const char *dir, bool *missing_out)
 {
+    *missing_out = false;
 #if defined(_WIN32)
-    return opendir(dir);
+    DIR *d = opendir(dir);
+    if (!d && errno == ENOENT)
+        *missing_out = true;
+    return d;
 #else
     int fd = open(dir, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
-    if (fd < 0)
+    if (fd < 0) {
+        if (errno == ENOENT)
+            *missing_out = true;
         return NULL;
+    }
     DIR *d = fdopendir(fd);
     if (!d)
         close(fd);
     return d;
 #endif
+}
+
+static bool shape_release_candidate(
+    DIR *d, const char *dir, const char *name, const uint8_t root[32],
+    uint8_t *wire,
+    char license_out[VCS_PACKAGE_RELEASE_LICENSE_MAX + 1u])
+{
+    uint8_t named_id[VCS_PACKAGE_RELEASE_ID_BYTES];
+    if (!zcl_hex_decode_lower(name, named_id, sizeof(named_id)))
+        return false;
+    size_t len = 0;
+    if (!shape_release_wire(d, dir, name, wire, &len))
+        return false;
+    struct vcs_package_release release;
+    uint8_t actual_id[VCS_PACKAGE_RELEASE_ID_BYTES];
+    if (vcs_package_release_parse(wire, len, &release) !=
+            VCS_PACKAGE_RELEASE_OK ||
+        vcs_package_release_id(&release, actual_id) !=
+            VCS_PACKAGE_RELEASE_OK ||
+        memcmp(named_id, actual_id, sizeof(actual_id)) != 0 ||
+        memcmp(release.package_root, root, 32) != 0 ||
+        vcs_package_release_verify(&release) != VCS_PACKAGE_RELEASE_OK ||
+        !vcs_package_release_license_allowed(release.license))
+        return false;
+    memcpy(license_out, release.license, sizeof(release.license));
+    return true;
 }
 
 /* Does a persisted release envelope name and sign exactly these bytes?
@@ -327,13 +362,18 @@ static DIR *shape_open_releases(const char *dir)
  * publisher signed the bytes a peer would receive — no second binding
  * step is needed here. Verification (signature, low-S, and the frozen
  * SPDX allowlist the envelope grammar owns) runs on the candidate itself.
- * Scans releases/ and stops at the first envelope that matches and
- * verifies, copying out the license it declares. */
-static bool shape_release_signs(struct vcs_package_store *store,
-                                const uint8_t root[32],
-                                char license_out[VCS_PACKAGE_RELEASE_LICENSE_MAX + 1u])
+ * Every non-dot releases/ entry consumes the fixed replay scan budget. A
+ * match authorizes only after the complete directory view was observed. */
+static bool shape_release_signs_bounded(
+    struct vcs_package_store *store, const uint8_t root[32],
+    char license_out[VCS_PACKAGE_RELEASE_LICENSE_MAX + 1u],
+    size_t scan_limit, bool *complete_out)
 {
+    *complete_out = false;
     license_out[0] = '\0';
+    if (scan_limit == 0 ||
+        scan_limit > VCS_PACKAGE_PUBLISH_MAX_SCAN_ENTRIES)
+        return false;
     const char *zcode_dir = vcs_package_store_root_dir(store);
     if (!zcode_dir)
         return false;
@@ -341,31 +381,71 @@ static bool shape_release_signs(struct vcs_package_store *store,
     int n = snprintf(dir, sizeof(dir), "%s/releases", zcode_dir);
     if (n < 0 || (size_t)n >= sizeof(dir))
         return false;
-    DIR *d = shape_open_releases(dir);
-    if (!d)
+    bool missing = false;
+    DIR *d = shape_open_releases(dir, &missing);
+    if (!d) {
+        *complete_out = missing;
         return false; /* no releases yet: nothing is publicly releasable */
+    }
     uint8_t *wire = zcl_malloc(VCS_PACKAGE_RELEASE_MAX_WIRE_BYTES,
                                "vcs_public_shape_release");
     bool signed_here = false;
-    struct dirent *de;
-    while (wire && !signed_here && (de = readdir(d)) != NULL) {
-        size_t len = 0;
-        if (!shape_release_wire(d, dir, de->d_name, wire, &len))
+    bool complete = wire != NULL;
+    size_t entries_seen = 0;
+    while (complete) {
+        errno = 0;
+        struct dirent *de = readdir(d);
+        if (!de) {
+            complete = errno == 0;
+            break;
+        }
+        if (strcmp(de->d_name, ".") == 0 ||
+            strcmp(de->d_name, "..") == 0)
             continue;
-        struct vcs_package_release release;
-        if (vcs_package_release_parse(wire, len, &release) !=
-                VCS_PACKAGE_RELEASE_OK ||
-            memcmp(release.package_root, root, 32) != 0)
-            continue;
-        signed_here =
-            vcs_package_release_verify(&release) == VCS_PACKAGE_RELEASE_OK &&
-            vcs_package_release_license_allowed(release.license);
-        if (signed_here)
-            memcpy(license_out, release.license, sizeof(release.license));
+        if (entries_seen >= scan_limit) {
+            complete = false;
+            break;
+        }
+        entries_seen++;
+        if (!signed_here)
+            signed_here = shape_release_candidate(
+                d, dir, de->d_name, root, wire, license_out);
     }
     free(wire);
-    closedir(d);
-    return signed_here;
+    if (closedir(d) != 0)
+        complete = false;
+    *complete_out = complete;
+    return complete && signed_here;
+}
+
+static bool shape_release_signs(
+    struct vcs_package_store *store, const uint8_t root[32],
+    char license_out[VCS_PACKAGE_RELEASE_LICENSE_MAX + 1u],
+    bool *complete_out)
+{
+    return shape_release_signs_bounded(
+        store, root, license_out, VCS_PACKAGE_PUBLISH_MAX_SCAN_ENTRIES,
+        complete_out);
+}
+
+static const char *shape_release_refusal_rule(bool scan_complete)
+{
+    return scan_complete ? "no-verified-release"
+                         : "release-scan-incomplete";
+}
+
+bool vcs_package_public_shape_test_release_signs_bounded(
+    struct vcs_package_store *store, const uint8_t package_root[32],
+    size_t scan_limit, bool *complete_out)
+{
+    if (!complete_out)
+        return false;
+    *complete_out = false;
+    if (!store || !package_root)
+        return false;
+    char license[VCS_PACKAGE_RELEASE_LICENSE_MAX + 1u];
+    return shape_release_signs_bounded(store, package_root, license,
+                                       scan_limit, complete_out);
 }
 
 /* The ZVCS source carrier: permissive LICENSE text plus a lane receipt signed
@@ -501,6 +581,7 @@ static void shape_eval_local(struct vcs_package_store *store,
     }
 
     char license[VCS_PACKAGE_RELEASE_LICENSE_MAX + 1u];
+    bool release_scan_complete = false;
     long release_index = shape_find(&m, VCS_PACKAGE_TRANSPORT_RELEASE_PATH);
     if (release_index >= 0) {
         out->rule = "release-unverified";
@@ -524,8 +605,9 @@ static void shape_eval_local(struct vcs_package_store *store,
         out->rule = "fastobj-carrier-unverified";
         if (vcs_fastobj_carrier_verify(store, root, detail, sizeof(detail)))
             out->shape = VCS_PACKAGE_PUBLIC_FASTOBJ_CARRIER;
-    } else if (!shape_release_signs(store, root, license)) {
-        out->rule = "no-verified-release";
+    } else if (!shape_release_signs(store, root, license,
+                                    &release_scan_complete)) {
+        out->rule = shape_release_refusal_rule(release_scan_complete);
     } else {
         out->rule = "license-text-missing";
         if (shape_licensed_tail(store, root, &m, license,

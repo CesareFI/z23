@@ -108,6 +108,7 @@
 #define ZCL_VCS_PACKAGE_PUBLIC_SHAPE_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 struct vcs_package_store;
@@ -153,5 +154,12 @@ struct vcs_package_public_verdict {
 enum vcs_package_public_shape vcs_package_public_shape_classify(
     struct vcs_package_store *store, const uint8_t package_root[32],
     struct vcs_package_public_verdict *out);
+
+/* Test-only bounded seam over the production release-directory scanner.
+ * `complete_out` distinguishes a complete no-match from a scan-budget or
+ * I/O refusal without requiring a disk-heavy 262145-entry fixture. */
+bool vcs_package_public_shape_test_release_signs_bounded(
+    struct vcs_package_store *store, const uint8_t package_root[32],
+    size_t scan_limit, bool *complete_out);
 
 #endif /* ZCL_VCS_PACKAGE_PUBLIC_SHAPE_H */

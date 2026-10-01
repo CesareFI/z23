@@ -279,6 +279,29 @@ static bool ps_plant_envelope(const char *zcode_dir,
     return ok;
 }
 
+static bool ps_plant_canonical_envelope(
+    const char *zcode_dir, const struct vcs_package_release *r,
+    char stem[65])
+{
+    uint8_t id[VCS_PACKAGE_RELEASE_ID_BYTES];
+    if (vcs_package_release_id(r, id) != VCS_PACKAGE_RELEASE_OK)
+        return false;
+    zcl_hex_encode(id, sizeof(id), stem);
+    return ps_plant_envelope(zcode_dir, r, stem);
+}
+
+static bool ps_plant_misnamed_envelope(
+    const char *zcode_dir, const struct vcs_package_release *r,
+    char stem[65])
+{
+    uint8_t id[VCS_PACKAGE_RELEASE_ID_BYTES];
+    if (vcs_package_release_id(r, id) != VCS_PACKAGE_RELEASE_OK)
+        return false;
+    id[0] ^= 1u;
+    zcl_hex_encode(id, sizeof(id), stem);
+    return ps_plant_envelope(zcode_dir, r, stem);
+}
+
 static bool ps_unlink_releases(const char *zcode_dir, const char *stem)
 {
     char path[1400];
@@ -419,27 +442,46 @@ static int t_ps_release_binding(void)
      * package_root is inside the signed pre-image, so the id moves and the
      * signature stops verifying. */
     struct vcs_package_release forged;
+    char forged_stem[65] = {0};
     PS_CHECK("envelope for b builds",
              ps_release_make(b.root, 0x22, "psforge/fixture", "MIT", &forged));
     memcpy(forged.package_root, a.root, 32);
     PS_CHECK("re-pointed envelope planted",
-             ps_plant_envelope(n.zcode_dir, &forged, "forged-root"));
+             ps_plant_canonical_envelope(n.zcode_dir, &forged,
+                                         forged_stem));
     PS_CHECK("wrong-root signature does not release package a",
              ps_refused(n.store, a.root, "no-verified-release"));
     PS_CHECK("re-pointed envelope removed",
-             ps_unlink_releases(n.zcode_dir, "forged-root"));
+             ps_unlink_releases(n.zcode_dir, forged_stem));
 
     /* 2b. Correct root, one flipped signature byte. */
     struct vcs_package_release flipped;
+    char flipped_stem[65] = {0};
     PS_CHECK("envelope for a builds",
              ps_release_make(a.root, 0x23, "psflip/fixture", "MIT", &flipped));
     flipped.signature[7] ^= 0x01u;
     PS_CHECK("flipped envelope planted",
-             ps_plant_envelope(n.zcode_dir, &flipped, "flipped-sig"));
+             ps_plant_canonical_envelope(n.zcode_dir, &flipped,
+                                         flipped_stem));
     PS_CHECK("flipped signature does not release package a",
              ps_refused(n.store, a.root, "no-verified-release"));
     PS_CHECK("flipped envelope removed",
-             ps_unlink_releases(n.zcode_dir, "flipped-sig"));
+             ps_unlink_releases(n.zcode_dir, flipped_stem));
+
+    /* A valid envelope copied under another canonical-looking id is not a
+     * second release event and cannot authorize the named package. */
+    struct vcs_package_release misnamed;
+    char misnamed_stem[65] = {0};
+    PS_CHECK("misnamed envelope builds",
+             ps_release_make(a.root, 0x25, "psalias/fixture", "MIT",
+                             &misnamed));
+    PS_CHECK("misnamed envelope planted",
+             ps_plant_misnamed_envelope(n.zcode_dir, &misnamed,
+                                        misnamed_stem));
+    PS_CHECK("false release id does not release package a",
+             ps_refused(n.store, a.root, "no-verified-release"));
+    PS_CHECK("misnamed envelope removed",
+             ps_unlink_releases(n.zcode_dir, misnamed_stem));
 
     /* A signed envelope is not a store release when its directory entry
      * leads outside releases/, even when the entry has the correct ID. */
@@ -467,6 +509,22 @@ static int t_ps_release_binding(void)
              ps_publish(n.store, a.root, 0x23, "psflip/fixture", "MIT"));
     PS_CHECK("package a is a public release",
              ps_is_shape(n.store, a.root, VCS_PACKAGE_PUBLIC_RELEASE));
+
+    /* Two persisted releases exactly fill this reduced test budget. A
+     * malformed third name must consume it, and a partial view cannot use
+     * the valid envelope it happened to encounter first. */
+    bool scan_complete = false;
+    PS_CHECK("release scan succeeds at its exact entry bound",
+             vcs_package_public_shape_test_release_signs_bounded(
+                 n.store, a.root, 2, &scan_complete) && scan_complete);
+    PS_CHECK("malformed release entry planted",
+             ps_plant_envelope(n.zcode_dir, &misnamed, "junk-budget"));
+    scan_complete = true;
+    PS_CHECK("incomplete release scan cannot authorize package a",
+             !vcs_package_public_shape_test_release_signs_bounded(
+                 n.store, a.root, 2, &scan_complete) && !scan_complete);
+    PS_CHECK("malformed release entry removed",
+             ps_unlink_releases(n.zcode_dir, "junk-budget"));
 
     ps_pkg_free(&a);
     ps_pkg_free(&b);
