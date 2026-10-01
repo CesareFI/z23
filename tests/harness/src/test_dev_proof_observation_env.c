@@ -1,31 +1,10 @@
 /* Copyright 2026 Rhett Creighton; SPDX-License-Identifier: Apache-2.0
  *
- * test_dev_proof_observation_env — regressions for the proof worker's
- * per-proof observation/testcache store environment.
- *
- * The push proof's test dimension now runs the runner with
- * --cold-audit --emit-observations (see dp_test_dimension_argv in
- * tools/dev/dev_proof.c). Cold audit opens a verdict store, and observation
- * emission writes signed leaves into a content-addressed CAS. Both must be
- * private to the proof:
- *
- *   - A shared or candidate-writable verdict store is exactly what
- *     proof_prepare_environment() scrubs ZCL_TESTCACHE_STORE_ROOT for.
- *   - A signed observation leaf is durable evidence; it must never share a
- *     tree with the unsigned, candidate-writable PASS records the runner
- *     also writes into its verdict store.
- *
- * proof_observation_env_open() therefore points ZCL_TESTCACHE_STORE_ROOT and
- * ZCL_DEV_OBSERVATION_STORE at per-pair directories under the proof state
- * (<state>/testcache.<key> scratch, removed with the proof;
- * <state>/observations.<key> durable), and proof_observation_env_close()
- * unsets both on every worker exit so a resident daemon's environment never
- * carries one proof's stores into the next — the same failure mode the
- * stress-env group (test_dev_proof_stress_env.c) pins for
- * ZCL_STRESS_TESTS. Driving a full proof cycle here would rebuild a
- * generation and run dimensions just to watch environment variables; this
- * proves the narrower, load-bearing facts directly through the ZCL_TESTING
- * seam onto the exact helpers proof_worker() calls. */
+ * test_dev_proof_observation_env — fixture-only regressions for explicit
+ * observation store lifecycle: isolated verdict scratch, durable signed CAS,
+ * cleanup and interrupted-run retry. Automatic worker collection is deferred
+ * until all required input closures qualify. These ZCL_TESTING helpers do not
+ * add stores or filesystem prerequisites to the default whole-cycle proof. */
 
 #include "test/test_core.h"
 
@@ -35,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/stat.h>
 
 #define DPOE_KEY "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef01-cafe01"
 
@@ -202,6 +182,65 @@ static int test_dpoe_prepare_is_idempotent_across_runs(void)
     return failures;
 }
 
+static bool dpoe_sentinel_matches(const char *path)
+{
+    static const char expected[] = "durable observation fixture";
+    char bytes[sizeof(expected)] = {0};
+    FILE *file = fopen(path, "rb");
+    if (!file) return false;
+    size_t got = fread(bytes, 1, sizeof(bytes), file);
+    bool ok = got == sizeof(expected) - 1 &&
+              memcmp(bytes, expected, sizeof(expected) - 1) == 0 &&
+              !ferror(file);
+    return fclose(file) == 0 && ok;
+}
+
+static int test_dpoe_scratch_cleanup_and_partial_open(void)
+{
+    int failures = 0;
+    char root[4096], scratch[4096], observations[4096], sentinel[4096];
+    test_make_tmpdir(root, sizeof(root), "proof_obs_env", "cleanup");
+    TEST_CASE("dev_proof_obs_env: scratch removed, durable bytes retained, partial open cleaned") {
+        ASSERT(snprintf(scratch, sizeof(scratch), "%s/testcache.%s", root, DPOE_KEY) > 0);
+        ASSERT(snprintf(observations, sizeof(observations), "%s/observations.%s", root, DPOE_KEY) > 0);
+        ASSERT(snprintf(sentinel, sizeof(sentinel), "%s/keep", observations) > 0);
+        ASSERT(zcl_dev_proof_test_observation_env_prepare(root, DPOE_KEY, NULL, 0));
+        FILE *file = fopen(sentinel, "wb");
+        ASSERT(file != NULL);
+        ASSERT(fputs("durable observation fixture", file) >= 0);
+        ASSERT(fclose(file) == 0);
+        char stale[4096];
+        ASSERT(snprintf(stale, sizeof(stale), "%s/stale", scratch) > 0);
+        file = fopen(stale, "wb");
+        ASSERT(file != NULL);
+        ASSERT(fclose(file) == 0);
+        ASSERT(zcl_dev_proof_test_observation_env_prepare(root, DPOE_KEY, NULL, 0));
+        ASSERT(access(stale, F_OK) != 0);
+        ASSERT(dpoe_sentinel_matches(sentinel));
+        ASSERT(zcl_dev_proof_test_observation_env_restore(root, DPOE_KEY));
+        ASSERT(access(scratch, F_OK) != 0);
+        ASSERT(dpoe_sentinel_matches(sentinel));
+        ASSERT(zcl_dev_proof_test_observation_env_prepare(root, DPOE_KEY, NULL, 0));
+        ASSERT(access(sentinel, F_OK) == 0);
+        ASSERT(zcl_dev_proof_test_observation_env_restore(root, DPOE_KEY));
+        ASSERT_EQ(test_rm_rf_recursive(observations), 0);
+        file = fopen(observations, "wb");
+        ASSERT(file != NULL);
+        ASSERT(fclose(file) == 0);
+        ASSERT(!zcl_dev_proof_test_observation_env_prepare(root, DPOE_KEY, NULL, 0));
+        ASSERT(getenv("ZCL_TESTCACHE_STORE_ROOT") == NULL);
+        ASSERT(getenv(ZCL_DEV_OBSERVATION_STORE_ENV) == NULL);
+        ASSERT(access(scratch, F_OK) != 0);
+        ASSERT(access(observations, F_OK) == 0);
+    }
+    TEST_END
+    dpoe_clear_env();
+    (void)test_rm_rf_recursive(root);
+    return failures;
+}
+
+
+
 int test_dev_proof_observation_env(void)
 {
     int failures = 0;
@@ -210,5 +249,6 @@ int test_dev_proof_observation_env(void)
     failures += test_dpoe_unconditional_overwrite();
     failures += test_dpoe_refusal_leaves_env_untouched();
     failures += test_dpoe_prepare_is_idempotent_across_runs();
+    failures += test_dpoe_scratch_cleanup_and_partial_open();
     return failures;
 }

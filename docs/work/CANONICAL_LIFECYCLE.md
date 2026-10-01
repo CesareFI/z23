@@ -126,38 +126,44 @@ lint and test child dimensions. Pair naming remains an exact local push
 admission envelope, not the reusable per-unit evidence key. The verdict-leaf
 codec in the same module already separates its exact test-cache key from the
 root of all signed observation bytes. Codec coverage is registered in
-`tests/harness/src/test_dev_proof_signer.c`. Runner emission is wired: the
-proof worker's test dimension runs the runner `--cold-audit
---emit-observations`, and `proof_observation_env_open()` points the verdict
-store and the signed-observation CAS at per-pair private directories under the
-proof state (`<state>/testcache.<key>` scratch, removed with the proof;
-`<state>/observations.<key>` durable), so a proof run records one signed
-verdict leaf per executed group without touching any shared or
-candidate-writable store. Mandatory coverage is now derived from those
-canonical observations: after receipt publication the worker derives and signs
-a per-pair coverage manifest (`tools/dev/dev_proof_coverage.c`,
-`<state>/coverage/<key>.coverage`) binding the receipt's child-set root,
-impact policy and executed test groups — each with its exact input key and
-eligible observation roots — under policy version 6, refusing publication on
-missing coverage or a preserved eligible conflict. The pre-push hook
-re-derives and re-verifies the manifest against the same per-pair CAS on
-every admission, so an omitted contradiction, a tampered wire or a wrong
-binding refuses by name. Cross-candidate reuse of eligible observations is
-prepared on the receiver side: after publication the worker folds the
-pair's durable observations into a box-level, verified, sorted index under
-the state root (`tools/dev/dev_proof_observation_index.c`), preserving
+`tests/harness/src/test_dev_proof_signer.c`. Explicit runner emission is wired: `--cold-audit --emit-observations`
+requires complete qualified coverage, while `--cold-audit --collect-observations`
+reports reviewed external-input denylisted groups as UNQUALIFIED with missing
+coverage. Other closure, execution, signing or CAS errors remain fatal. The
+output-store control can separate signed durable leaves from unsigned verdict
+scratch (`proof_observation_env_open()` points the two at per-pair private
+directories under the proof state: `<state>/testcache.<key>` scratch, removed
+with the proof, `<state>/observations.<key>` durable). Automatic proof-worker
+emission is deferred until the mandatory input closures qualify: its default
+remains exact `--no-cache
+--activate-proof-contracts`, and the signed whole-cycle pair receipt remains
+admission. Authenticated partial leaves do not establish complete admission.
+The coverage manifest codec exists (`tools/dev/dev_proof_coverage.c`,
+registered group `dev_proof_coverage`): from a runner log and a per-pair
+observation store it derives and signs a manifest binding a receipt's
+child-set root, impact policy and executed groups, each keyed row with its
+exact input key and eligible observation roots and each `UNQUALIFIED` row with
+neither. Verification re-checks the receipt's executed-group count and the
+store, and refuses missing coverage, a preserved eligible PASS/FAIL conflict,
+and an unqualified group for which the store retains an eligible FAIL. It is
+not yet called by the proof worker or the pre-push hook, and it changes no
+admission. The receiver-side half of cross-candidate reuse now exists as a
+box-level observation index (`tools/dev/dev_proof_observation_index.c`,
+registered group `dev_proof_observation_index`): an explicit observation run
+can merge its durable per-pair CAS into one verified, sorted,
+contradiction-preserving basis under the state root, preserving
 contradictions and classifying through the receiver-local lookup — the
 eligibility basis reuse consults once a qualified verifier set exists;
 until then the check machinery's named `test-reuse: unqualified` refusal
-stands unchanged. Operators and agents query a pair's coverage directly:
-`z23-dev dev proof coverage` reports the manifest's binding, per-row
-coverage, missing groups, conflicts and observation age, read-only. The
-same audience can query the box-level observation index itself:
-`z23-dev dev proof observations` reports per-(group, key) verdicts,
-observation counts, preserved conflicts and age bounds from the folded
-index, with an optional exact `group` filter, read-only.
-Canonical proof-set publication remains separate integration work. A
-codec alone does not establish a complete input closure.
+stands unchanged. Operators and agents query this machinery read-only:
+`z23-dev dev proof coverage` reports a pair's manifest binding, per-row
+coverage (covered, missing, conflict, or unqualified as its own state) and
+the observation age range this box has seen; `z23-dev dev proof observations`
+reports the box-level index itself — per-(group, key) verdicts, observation
+counts, preserved conflicts and age bounds, with an optional exact `group`
+filter. Automatic worker-side folding, receiver-side proof-set conflict
+admission and canonical proof-set publication remain separate integration
+work. A codec alone does not establish a complete input closure.
 
 The existing Commons evaluator in
 `engine/services/src/build_fabric_evidence.c` now retains verified failures
@@ -376,7 +382,13 @@ The expected-base lease cannot authorize non-fast-forward history replacement.
 Its crash reconciliation is not the immutable intent/result/remote-receipt
 chain defined here.
 The signed Git-row adapter retains an ambiguous push checkpoint as UNKNOWN
-and observes the remote again without redispatching that intent. Its status
+and observes the remote again before any further mutation. When that fresh
+observation shows the target still at the signed expected base, the head is
+absent and the earlier dispatch did not apply; the adapter then sends the
+identical expected-base update again, bounded by the row's attempts. A moved
+target without the head cuts a successor and is never sent the stale pair.
+The adapter does not yet record each attempt as a separate immutable result.
+Its status
 view reports canonical `acceptance_state=unknown`, including for historical
 `landed` queue outcomes, because those rows do not carry the canonical
 publication and REMOTE_RECEIPT roots.

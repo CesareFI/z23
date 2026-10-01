@@ -7,8 +7,8 @@
  * The push proof's test dimension executes a known set of groups; the
  * runner emits one signed verdict-leaf observation per executed group into
  * the pair's durable CAS. The coverage manifest binds those two together:
- * the worker derives and signs it after receipt publication, and the
- * pre-push hook re-derives and re-verifies it before admitting the push.
+ * a producer derives and signs it, and a receiver re-verifies it against
+ * the receipt's executed-group count and the same store.
  *
  * These cases drive the exact producer and receiver entry points with a
  * fixture CAS and a fixture runner log, and pin the named refusals:
@@ -176,7 +176,7 @@ static int test_dpc_round_trip(void)
         memcpy(file + sizeof(envelope), blob, blob_len);
         ASSERT(zcl_dev_coverage_manifest_verify(
             store, file, sizeof(envelope), file + sizeof(envelope),
-            blob_len, &binding, why, sizeof(why)));
+            blob_len, &binding, DPC_GROUPS, why, sizeof(why)));
         free(file);
         free(blob);
     }
@@ -211,7 +211,7 @@ static int test_dpc_zero_rows(void)
         ASSERT(tail == 0);
         ASSERT(zcl_dev_coverage_manifest_verify(NULL, envelope,
                                                 sizeof(envelope), NULL, 0,
-                                                &binding, why,
+                                                &binding, 0, why,
                                                 sizeof(why)));
     }
     TEST_END
@@ -317,7 +317,8 @@ static int test_dpc_missing_conflict_and_emitted(void)
         why[0] = 0;
         ASSERT(!dpc_derive(store, log_path, &binding, 1, envelope, &blob,
                            &blob_len, why, sizeof(why)));
-        ASSERT(strcmp(why, ZCL_DEV_COVERAGE_WHY_CONFLICT) == 0);
+        ASSERT(strcmp(why, ZCL_DEV_COVERAGE_WHY_CONFLICT
+                           ":test_coverage_alpha") == 0);
 
         /* The runner logged a root the store does not hold eligible: the
          * group and key match the store, the emitted root does not. */
@@ -364,8 +365,8 @@ static int test_dpc_verify_refusals(void)
         blob[0] ^= 0x01;
         ASSERT(!zcl_dev_coverage_manifest_verify(store, envelope,
                                                  sizeof(envelope), blob,
-                                                 blob_len, &binding, why,
-                                                 sizeof(why)));
+                                                 blob_len, &binding, DPC_GROUPS,
+                                                 why, sizeof(why)));
         ASSERT(strcmp(why, ZCL_DEV_COVERAGE_WHY_BLOB_INVALID) == 0);
         blob[0] ^= 0x01;
 
@@ -374,24 +375,24 @@ static int test_dpc_verify_refusals(void)
         why[0] = 0;
         ASSERT(!zcl_dev_coverage_manifest_verify(store, envelope,
                                                  sizeof(envelope), blob,
-                                                 blob_len, &other, why,
-                                                 sizeof(why)));
+                                                 blob_len, &other, DPC_GROUPS,
+                                                 why, sizeof(why)));
         ASSERT(strcmp(why, ZCL_DEV_COVERAGE_WHY_BINDING) == 0);
         other = binding;
         other.policy_version += 1;
         why[0] = 0;
         ASSERT(!zcl_dev_coverage_manifest_verify(store, envelope,
                                                  sizeof(envelope), blob,
-                                                 blob_len, &other, why,
-                                                 sizeof(why)));
+                                                 blob_len, &other, DPC_GROUPS,
+                                                 why, sizeof(why)));
         ASSERT(strcmp(why, ZCL_DEV_COVERAGE_WHY_BINDING) == 0);
 
         envelope[ZCL_DEV_COVERAGE_WIRE_BYTES - 1] ^= 0xff;
         why[0] = 0;
         ASSERT(!zcl_dev_coverage_manifest_verify(store, envelope,
                                                  sizeof(envelope), blob,
-                                                 blob_len, &binding, why,
-                                                 sizeof(why)));
+                                                 blob_len, &binding, DPC_GROUPS,
+                                                 why, sizeof(why)));
         ASSERT(strcmp(why, ZCL_DEV_PROOF_SIGNER_WHY_SIGNATURE_INVALID) == 0);
         free(blob);
     }
@@ -475,9 +476,202 @@ static int test_dpc_rerun_reuse(void)
                           &blob_len, why, sizeof(why)));
         ASSERT(zcl_dev_coverage_manifest_verify(store, envelope,
                                                 sizeof(envelope), blob,
-                                                blob_len, &binding, why,
+                                                blob_len, &binding, 1, why,
                                                 sizeof(why)));
         free(blob);
+    }
+    TEST_END
+    dpc_restore();
+    (void)test_rm_rf_recursive(root);
+    return failures;
+}
+
+/* The test-dimension log is not a clean list of observation lines: it also
+ * carries every group's own output and make's multi-kilobyte echoes. Real
+ * proof logs on a landing host hold lines of 2.5 KiB and more. */
+static int test_dpc_real_log_shape(void)
+{
+    int failures = 0;
+    char root[4096], store[4096], log_path[4096];
+    test_make_tmpdir(root, sizeof(root), "dev_proof_coverage", "logshape");
+    dpc_isolate("logshape");
+    (void)snprintf(store, sizeof(store), "%s/store", root);
+    (void)snprintf(log_path, sizeof(log_path), "%s/test.log", root);
+    uint8_t emitted[DPC_GROUPS][32];
+    struct zcl_dev_coverage_binding binding;
+    (void)dpc_binding(&binding); /* fixed valid fixture OIDs; cannot fail */
+    TEST_CASE("dev_proof_coverage: long and look-alike foreign lines are not rows") {
+        ASSERT(dpc_fixture(store, log_path, emitted));
+        FILE *f = fopen(log_path, "a");
+        ASSERT(f != NULL);
+        /* An over-long foreign line whose tail, read as a continuation
+         * chunk, begins exactly like a canonical refusal. */
+        for (size_t i = 0; i < 1023; i++) ASSERT(fputc('x', f) != EOF);
+        ASSERT(fputs("OBSERVATION REFUSE group=test_coverage_alpha "
+                     "reason=not_a_line_start\n", f) >= 0);
+        for (size_t i = 0; i < 6000; i++) ASSERT(fputc('y', f) != EOF);
+        ASSERT(fputc('\n', f) != EOF);
+        /* Group output that merely mentions the words mid-line. */
+        ASSERT(fputs("  note: OBSERVATION REFUSE group=test_coverage_beta "
+                     "reason=quoted_by_a_test\n", f) >= 0);
+        ASSERT(fputs("  note: OBSERVATION group=test_coverage_ghost "
+                     "verdict=PASS\n", f) >= 0);
+        /* The runner's own summary line is not a group row. */
+        ASSERT(fputs("OBSERVATION COVERAGE mode=partial eligible=3 emitted=3 "
+                     "unqualified=0 refused=0 complete=1\n", f) >= 0);
+        /* A final unterminated foreign line. */
+        ASSERT(fputs("trailing output without a newline", f) >= 0);
+        (void)fclose(f);
+
+        char why[160] = {0};
+        uint8_t envelope[ZCL_DEV_COVERAGE_WIRE_BYTES];
+        uint8_t *blob = NULL;
+        size_t blob_len = 0;
+        ASSERT(dpc_derive(store, log_path, &binding, DPC_GROUPS, envelope,
+                          &blob, &blob_len, why, sizeof(why)));
+        ASSERT(zcl_dev_coverage_manifest_verify(store, envelope,
+                                                sizeof(envelope), blob,
+                                                blob_len, &binding,
+                                                DPC_GROUPS, why,
+                                                sizeof(why)));
+        free(blob);
+        blob = NULL;
+
+        /* A canonical line that is itself cut short is still refused. */
+        f = fopen(log_path, "a");
+        ASSERT(f != NULL);
+        ASSERT(fputs("\nOBSERVATION group=test_coverage_cut verdict=PASS", f)
+               >= 0);
+        (void)fclose(f);
+        why[0] = 0;
+        ASSERT(!dpc_derive(store, log_path, &binding, DPC_GROUPS, envelope,
+                           &blob, &blob_len, why, sizeof(why)));
+        ASSERT(strcmp(why, ZCL_DEV_COVERAGE_WHY_LOG_INVALID) == 0);
+    }
+    TEST_END
+    dpc_restore();
+    (void)test_rm_rf_recursive(root);
+    return failures;
+}
+
+static bool dpc_unqualified_line(FILE *f, const char *group,
+                                 const char *coverage)
+{
+    return fprintf(f, "OBSERVATION UNQUALIFIED group=%s "
+                      "reason=external_input_denylist coverage=%s\n",
+                   group, coverage) > 0;
+}
+
+/* A group with no exact input key (the external-input denylist) executes
+ * and passes without minting a reusable leaf.
+ * It is part of the executed set, by name, and never credited with roots. */
+static int test_dpc_unqualified_rows(void)
+{
+    int failures = 0;
+    char root[4096], store[4096], empty_store[4096], log_path[4096];
+    test_make_tmpdir(root, sizeof(root), "dev_proof_coverage", "unqualified");
+    dpc_isolate("unqualified");
+    (void)snprintf(store, sizeof(store), "%s/store", root);
+    (void)snprintf(empty_store, sizeof(empty_store), "%s/empty", root);
+    (void)snprintf(log_path, sizeof(log_path), "%s/test.log", root);
+    uint8_t emitted[DPC_GROUPS][32];
+    struct zcl_dev_coverage_binding binding;
+    (void)dpc_binding(&binding); /* fixed valid fixture OIDs; cannot fail */
+    TEST_CASE("dev_proof_coverage: unqualified groups count as executed, carry no roots") {
+        ASSERT(dpc_fixture(store, log_path, emitted));
+        FILE *f = fopen(log_path, "a");
+        ASSERT(f != NULL);
+        ASSERT(dpc_unqualified_line(f, "test_coverage_external", "missing"));
+        (void)fclose(f);
+
+        char why[160] = {0};
+        uint8_t envelope[ZCL_DEV_COVERAGE_WIRE_BYTES];
+        uint8_t *blob = NULL;
+        size_t blob_len = 0;
+        /* The unqualified group is one of the executed groups: the keyed rows
+         * alone do not add up to the receipt's ran count. */
+        ASSERT(!dpc_derive(store, log_path, &binding, DPC_GROUPS, envelope,
+                           &blob, &blob_len, why, sizeof(why)));
+        ASSERT(strcmp(why, ZCL_DEV_COVERAGE_WHY_COUNT_MISMATCH) == 0);
+        why[0] = 0;
+        ASSERT(dpc_derive(store, log_path, &binding, DPC_GROUPS + 1, envelope,
+                          &blob, &blob_len, why, sizeof(why)));
+        ASSERT(zcl_dev_coverage_manifest_verify(store, envelope,
+                                                sizeof(envelope), blob,
+                                                blob_len, &binding,
+                                                DPC_GROUPS + 1, why,
+                                                sizeof(why)));
+        /* The receipt's executed count is part of what is verified: this
+         * manifest is not the coverage of a receipt that ran another
+         * number of groups. */
+        ASSERT(!zcl_dev_coverage_manifest_verify(store, envelope,
+                                                 sizeof(envelope), blob,
+                                                 blob_len, &binding,
+                                                 DPC_GROUPS, why,
+                                                 sizeof(why)));
+        ASSERT(strcmp(why, ZCL_DEV_COVERAGE_WHY_COUNT_MISMATCH) == 0);
+
+        /* A FAIL retained for the unqualified group -- an earlier attempt of
+         * this pair -- contradicts the claim, on both sides. */
+        uint8_t stale_key[32], fail_root[32];
+        dpc_key(stale_key, 11);
+        ASSERT(dpc_record(store, stale_key, "test_coverage_external",
+                          ZCL_DEV_VERDICT_LEAF_FAIL, 5, fail_root));
+        why[0] = 0;
+        ASSERT(!zcl_dev_coverage_manifest_verify(store, envelope,
+                                                 sizeof(envelope), blob,
+                                                 blob_len, &binding,
+                                                 DPC_GROUPS + 1, why,
+                                                 sizeof(why)));
+        ASSERT(strcmp(why, ZCL_DEV_COVERAGE_WHY_CONFLICT
+                           ":test_coverage_external") == 0);
+        free(blob);
+        blob = NULL;
+        why[0] = 0;
+        ASSERT(!dpc_derive(store, log_path, &binding, DPC_GROUPS + 1,
+                           envelope, &blob, &blob_len, why, sizeof(why)));
+        ASSERT(strcmp(why, ZCL_DEV_COVERAGE_WHY_CONFLICT
+                           ":test_coverage_external") == 0);
+
+        /* A proof whose every executed group is unqualified never created an
+         * object tree: the store is complete and empty, not incomplete. */
+        ASSERT(platform_directory_ensure(empty_store, 0700));
+        f = fopen(log_path, "w");
+        ASSERT(f != NULL);
+        ASSERT(dpc_unqualified_line(f, "test_coverage_external", "missing"));
+        ASSERT(dpc_unqualified_line(f, "test_coverage_another", "missing"));
+        (void)fclose(f);
+        why[0] = 0;
+        ASSERT(dpc_derive(empty_store, log_path, &binding, 2, envelope, &blob,
+                          &blob_len, why, sizeof(why)));
+        ASSERT(zcl_dev_coverage_manifest_verify(empty_store, envelope,
+                                                sizeof(envelope), blob,
+                                                blob_len, &binding, 2, why,
+                                                sizeof(why)));
+        /* An empty manifest cannot stand in for it. */
+        uint8_t none[ZCL_DEV_COVERAGE_WIRE_BYTES];
+        uint8_t *none_blob = NULL;
+        size_t none_len = 0;
+        ASSERT(dpc_derive(NULL, NULL, &binding, 0, none, &none_blob,
+                          &none_len, why, sizeof(why)));
+        ASSERT(!zcl_dev_coverage_manifest_verify(empty_store, none,
+                                                 sizeof(none), NULL, 0,
+                                                 &binding, 2, why,
+                                                 sizeof(why)));
+        ASSERT(strcmp(why, ZCL_DEV_COVERAGE_WHY_COUNT_MISMATCH) == 0);
+        free(none_blob);
+        free(blob);
+        blob = NULL;
+
+        /* An unqualified line of any other shape is not this runner's. */
+        f = fopen(log_path, "w");
+        ASSERT(f != NULL);
+        ASSERT(dpc_unqualified_line(f, "test_coverage_external", "present"));
+        (void)fclose(f);
+        why[0] = 0;
+        ASSERT(!dpc_derive(empty_store, log_path, &binding, 1, envelope,
+                           &blob, &blob_len, why, sizeof(why)));
+        ASSERT(strcmp(why, ZCL_DEV_COVERAGE_WHY_LOG_INVALID) == 0);
     }
     TEST_END
     dpc_restore();
@@ -512,6 +706,7 @@ static int test_dpc_inspect(void)
                                         why, sizeof(why)));
         ASSERT(report.row_count == DPC_GROUPS);
         ASSERT(report.covered == DPC_GROUPS);
+        ASSERT(report.unqualified == 0);
         ASSERT(report.missing == 0 && report.conflicts == 0);
         ASSERT(!report.binding_mismatch);
         ASSERT(report.signer_why[0] == '\0');
@@ -568,6 +763,50 @@ static int test_dpc_inspect(void)
         free(blob);
     }
     TEST_END
+    TEST_CASE("dev_proof_coverage: inspect names unqualified rows as their own state") {
+        /* One keyed PASS row and one denylisted group that executed
+         * without a reusable observation: unqualified, never missing. */
+        ASSERT(platform_directory_ensure(store, 0700));
+        uint8_t key[32], pass_root[32];
+        dpc_key(key, 1);
+        ASSERT(dpc_record(store, key, "test_coverage_keyed",
+                          ZCL_DEV_VERDICT_LEAF_PASS, 1, pass_root));
+        FILE *f = fopen(log_path, "w");
+        ASSERT(f != NULL);
+        ASSERT(dpc_log_line(f, "test_coverage_keyed", key, pass_root));
+        ASSERT(dpc_unqualified_line(f, "test_coverage_external", "missing"));
+        (void)fclose(f);
+
+        char why[160] = {0};
+        uint8_t envelope[ZCL_DEV_COVERAGE_WIRE_BYTES];
+        uint8_t *blob = NULL;
+        size_t blob_len = 0;
+        ASSERT(dpc_derive(store, log_path, &binding, 2, envelope, &blob,
+                          &blob_len, why, sizeof(why)));
+        struct zcl_dev_coverage_inspect report = {0};
+        ASSERT(zcl_dev_coverage_inspect(store, envelope, sizeof(envelope),
+                                        blob, blob_len, &binding, &report,
+                                        why, sizeof(why)));
+        ASSERT(report.row_count == 2);
+        ASSERT(report.covered == 1 && report.unqualified == 1);
+        ASSERT(report.missing == 0 && report.conflicts == 0);
+
+        /* A retained eligible FAIL for the unqualified group is the
+         * preserved contradiction verify() refuses: a conflict answer. */
+        uint8_t ext_key[32], ext_fail[32];
+        dpc_key(ext_key, 2);
+        ASSERT(dpc_record(store, ext_key, "test_coverage_external",
+                          ZCL_DEV_VERDICT_LEAF_FAIL, 2, ext_fail));
+        memset(&report, 0, sizeof(report));
+        ASSERT(zcl_dev_coverage_inspect(store, envelope, sizeof(envelope),
+                                        blob, blob_len, &binding, &report,
+                                        why, sizeof(why)));
+        ASSERT(report.conflicts == 1);
+        ASSERT(report.unqualified == 0);
+        ASSERT(report.covered == 1);
+        free(blob);
+    }
+    TEST_END
     dpc_restore();
     (void)test_rm_rf_recursive(root);
     return failures;
@@ -576,6 +815,9 @@ static int test_dpc_inspect(void)
 int test_dev_proof_coverage(void)
 {
     int failures = 0;
+    failures += test_dpc_inspect();
+    failures += test_dpc_real_log_shape();
+    failures += test_dpc_unqualified_rows();
     failures += test_dpc_round_trip();
     failures += test_dpc_zero_rows();
     failures += test_dpc_named_refusals();
@@ -583,6 +825,5 @@ int test_dev_proof_coverage(void)
     failures += test_dpc_verify_refusals();
     failures += test_dpc_store_corruption();
     failures += test_dpc_rerun_reuse();
-    failures += test_dpc_inspect();
     return failures;
 }

@@ -77,6 +77,15 @@ void zcl_native_dev_land_test_watcher_launch(const char *wt,
 #include <sys/wait.h>
 #include <unistd.h>
 void zcl_native_dev_land_test_pick_barrier(int ready_fd, int release_fd);
+bool zcl_native_dev_land_test_producer_stale(const char *detail);
+int zcl_native_dev_land_test_range_adds_source(const char *wt,
+                                               const char *base,
+                                               const char *local);
+int zcl_native_dev_land_test_producer_reproof(const char *root,
+                                              const char *local,
+                                              const char *base,
+                                              const char *make_program,
+                                              char *why, size_t why_cap);
 #endif
 
 #define DLX_PATH "dev.land"
@@ -6528,11 +6537,113 @@ _test_next:;
     return failures;
 }
 
+static int test_dev_land_new_source_precheck(void)
+{
+    int failures = 0;
+#if !defined(_WIN32)
+    TEST("land: a range that adds a compiled source is told apart from one that edits a file or adds anything else") {
+        struct dlx_rig rig;
+        char base[64], edit[64], added[64], header[64];
+        dlx_isolate("new_source_precheck");
+        ASSERT(dlx_rig_make(&rig, "new_source_precheck_rig"));
+        ASSERT(dlx_origin_main(&rig, base));
+        const char *onto[] = { "checkout", "--quiet", "-B", "probe", base,
+                               NULL };
+        ASSERT(dlx_git(rig.clone, onto) == 0);
+        ASSERT(dlx_commit(rig.clone, "notes.md", "prose\n", edit));
+        ASSERT(dlx_commit(rig.clone, "module.h", "int f(void);\n", header));
+        ASSERT(dlx_commit(rig.clone, "module.c", "int f(void){return 0;}\n",
+                          added));
+        ASSERT(zcl_native_dev_land_test_range_adds_source(rig.clone, base,
+                                                          edit) == 0);
+        ASSERT(zcl_native_dev_land_test_range_adds_source(rig.clone, base,
+                                                          header) == 0);
+        ASSERT(zcl_native_dev_land_test_range_adds_source(rig.clone, base,
+                                                          added) == 1);
+        /* The file exists on both sides: an edit, not an addition. */
+        ASSERT(zcl_native_dev_land_test_range_adds_source(rig.clone, added,
+                                                          added) == 0);
+        /* A pair git cannot name is never read as "nothing added". */
+        ASSERT(zcl_native_dev_land_test_range_adds_source(
+                   rig.clone, base,
+                   "0123456789abcdef0123456789abcdef01234567") == -1);
+        ASSERT(zcl_native_dev_land_test_range_adds_source(rig.clone, "main",
+                                                          added) == -1);
+        dlx_restore();
+        PASS();
+    }
+_test_next:;
+    dlx_restore();
+#endif
+    return failures;
+}
+
+static int test_dev_land_drive_producer_reproof(void)
+{
+    int failures = 0;
+#if !defined(_WIN32)
+    TEST("land: a drive whose binary is not the candidate's builds the producer in the landing worktree and proves with it") {
+        char root[512], make_ok[1400], make_bad[1400], script[4000];
+        char log[1400], seen[2048], want[1800], why[256] = "";
+        size_t seen_len = 0;
+        test_make_tmpdir(root, sizeof(root), "dev_land", "drive_producer_wt");
+        ASSERT(zcl_native_dev_land_test_producer_stale(
+            "proof_producer_source_mismatch"));
+        ASSERT(zcl_native_dev_land_test_producer_stale(
+            "failed exact proof: proof_producer_source_mismatch"));
+        ASSERT(!zcl_native_dev_land_test_producer_stale("lint"));
+        ASSERT(!zcl_native_dev_land_test_producer_stale(NULL));
+        (void)snprintf(make_ok, sizeof(make_ok), "%s/fake-make", root);
+        (void)snprintf(make_bad, sizeof(make_bad), "%s/fake-make-bad", root);
+        (void)snprintf(log, sizeof(log), "%s/producer-argv", root);
+        /* argv: -jN -C <root> dev-bin. The built "producer" records how it
+         * was called. */
+        (void)snprintf(script, sizeof(script),
+                       "#!/bin/sh\n"
+                       "[ \"$2\" = -C ] && [ \"$4\" = dev-bin ] || exit 64\n"
+                       "mkdir -p \"$3/build/bin\" || exit 65\n"
+                       "printf '%%s\\n' '#!/bin/sh' "
+                       "'printf \"%%s \" \"$@\" > \"%s\"' "
+                       "'exit 7' > \"$3/build/bin/z23-dev\" || exit 66\n"
+                       "chmod 700 \"$3/build/bin/z23-dev\"\n", log);
+        ASSERT(dlx_write(make_ok, script));
+        ASSERT(chmod(make_ok, 0700) == 0);
+        ASSERT(dlx_write(make_bad,
+                         "#!/bin/sh\necho 'boom: no rule' >&2\nexit 2\n"));
+        ASSERT(chmod(make_bad, 0700) == 0);
+        /* A build that fails names itself and runs no proof. */
+        ASSERT(zcl_native_dev_land_test_producer_reproof(
+                   root, "1111111111111111111111111111111111111111",
+                   "2222222222222222222222222222222222222222", make_bad, why,
+                   sizeof(why)) == -1);
+        ASSERT(why[0] != '\0');
+        ASSERT(!dlx_file_exists(log));
+        /* A built producer is run on the exact pair and root; its verdict
+         * (here a failing exit) is the proof's to settle, not the drive's. */
+        ASSERT(zcl_native_dev_land_test_producer_reproof(
+                   root, "1111111111111111111111111111111111111111",
+                   "2222222222222222222222222222222222222222", make_ok, why,
+                   sizeof(why)) == 1);
+        ASSERT(dlx_slurp(log, seen, sizeof(seen) - 1, &seen_len));
+        seen[seen_len] = '\0';
+        (void)snprintf(want, sizeof(want),
+                       "dev proof step --root=%s "
+                       "--local_commit=1111111111111111111111111111111111111111 "
+                       "--remote_base=2222222222222222222222222222222222222222 ",
+                       root);
+        ASSERT_STR_EQ(seen, want);
+        PASS();
+    }
+_test_next:;
+#endif
+    return failures;
+}
+
 static int test_dev_land_signed_lost_ack(void)
 {
     int failures = 0;
 #if !defined(_WIN32)
-    TEST("land: lost signed push acknowledgement never replays; moved base requeues a successor") {
+    TEST("land: a lost signed push is re-sent only while main is unmoved and attempts remain; a moved base requeues a successor") {
         struct dlx_rig rig;
         struct dlx_call c;
         char base[64], remote[64], land[1200], wt[1400];
@@ -6595,12 +6706,22 @@ static int test_dev_land_signed_lost_ack(void)
                                           "first_missing_transition")),
                       "remote_receipt");
         dlx_end(&c);
-        dlx_begin(&c, "step");
-        ASSERT(dlx_run(&c) && !dlx_ok(&c));
-        ASSERT_STR_EQ(dlx_err_code(&c), "PUSH_OUTCOME_UNKNOWN");
-        dlx_end(&c);
-        ASSERT(dlx_slurp(marker, attempts, sizeof(attempts), &attempts_len));
-        ASSERT(attempts_len == strlen("attempted\n"));
+        /* Main is unmoved and the head is absent, so the dispatch did not
+         * apply: each later step sends the same compare-and-swap again,
+         * one per attempt the row has left, and then stops asking. */
+        for (size_t sent = 2; sent <= 4; sent++) {
+            size_t want = sent > 3 ? 3 : sent;
+            dlx_begin(&c, "step");
+            ASSERT(dlx_run(&c) && !dlx_ok(&c));
+            ASSERT_STR_EQ(dlx_err_code(&c), "PUSH_OUTCOME_UNKNOWN");
+            ASSERT_STR_EQ(dlx_str(&c, "dispatch_state"), "unknown");
+            dlx_end(&c);
+            ASSERT(dlx_origin_main(&rig, remote));
+            ASSERT_STR_EQ(remote, base);
+            ASSERT(dlx_slurp(marker, attempts, sizeof(attempts),
+                             &attempts_len));
+            ASSERT(attempts_len == want * strlen("attempted\n"));
+        }
         char sibling[64];
         const char *branch[] = { "checkout", "--quiet", "-B", "side", base,
                                  NULL };
@@ -6616,14 +6737,14 @@ static int test_dev_land_signed_lost_ack(void)
          * observation: the exact signed pair can never fast-forward onto
          * the moved main, so the row requeues as a successor instead of
          * waiting forever on a receipt that can never arrive.  The exact
-         * pair is still never redispatched (marker stays at 1). */
+         * pair is not sent onto a moved base (the count stays at 3). */
         dlx_begin(&c, "step");
         ASSERT(dlx_run(&c) && dlx_ok(&c));
         ASSERT_STR_EQ(dlx_str(&c, "state"), "queued");
         ASSERT(dlx_int(&c, "predecessor_seq") == 1);
         dlx_end(&c);
         ASSERT(dlx_slurp(marker, attempts, sizeof(attempts), &attempts_len));
-        ASSERT(attempts_len == strlen("attempted\n"));
+        ASSERT(attempts_len == 3 * strlen("attempted\n"));
         /* Drive the successor to a real landing: lift the lose-ack
          * intercept, rebase+prove, attach the fresh pair, push. */
         const char *restore[] = { "config", "--unset",
@@ -6645,7 +6766,7 @@ static int test_dev_land_signed_lost_ack(void)
         ASSERT(strcmp(remote, base) != 0);
         ASSERT(strcmp(remote, sibling) != 0);
         ASSERT(dlx_slurp(marker, attempts, sizeof(attempts), &attempts_len));
-        ASSERT(attempts_len == strlen("attempted\n"));
+        ASSERT(attempts_len == 3 * strlen("attempted\n"));
         dlx_restore();
         PASS();
     }
@@ -6794,6 +6915,48 @@ static int test_dev_land_signed_lost_race(void)
         ASSERT(dlx_origin_main(&rig, remote));
         ASSERT_STR_EQ(remote, sibling);
         ASSERT(dlx_queue_has_one());
+        dlx_restore();
+        PASS();
+    }
+_test_next:;
+    dlx_restore();
+#endif
+    return failures;
+}
+
+static int test_dev_land_signed_lost_ack_resend(void)
+{
+    int failures = 0;
+#if !defined(_WIN32)
+    TEST("land: a lost signed push on a quiet main lands on the next step as the same row and pair") {
+        struct dlx_rig rig;
+        struct dlx_call c;
+        char base[64], remote[64], wt[1400], marker[1400];
+        dlx_isolate("signed_lost_ack_resend");
+        ASSERT(dlx_signed_push_lossy(&rig, "signed_lost_ack_resend", base,
+                                     wt, marker, NULL));
+        dlx_begin(&c, "step");
+        ASSERT(dlx_run(&c) && !dlx_ok(&c));
+        ASSERT_STR_EQ(dlx_err_code(&c), "PUSH_OUTCOME_UNKNOWN");
+        dlx_end(&c);
+        ASSERT(dlx_dispatched_once(marker));
+        ASSERT(dlx_origin_main(&rig, remote));
+        ASSERT_STR_EQ(remote, base);
+        /* The remote answers again. Nothing else moved: no successor, no
+         * second proof, no second signature — the next step is the push. */
+        const char *restore[] = { "config", "--unset",
+                                  "remote.origin.receivepack", NULL };
+        ASSERT(dlx_git(wt, restore) == 0);
+        dlx_begin(&c, "step");
+        ASSERT(dlx_run(&c) && dlx_ok(&c));
+        ASSERT_STR_EQ(dlx_str(&c, "state"), "landed");
+        ASSERT(dlx_int(&c, "seq") == 1);
+        ASSERT_STR_EQ(dlx_str(&c, "tip_pushed"), rig.tip);
+        ASSERT(strlen(dlx_str(&c, "remote_signature")) == 128);
+        dlx_end(&c);
+        ASSERT(dlx_origin_main(&rig, remote));
+        ASSERT_STR_EQ(remote, rig.tip);
+        ASSERT(dlx_dispatched_once(marker));
         dlx_restore();
         PASS();
     }
@@ -7448,8 +7611,11 @@ int test_dev_land(void)
     failures += test_dev_land_signer_takeover();
     failures += test_dev_land_signed_stale();
     failures += test_dev_land_signed_recovery();
+    failures += test_dev_land_new_source_precheck();
+    failures += test_dev_land_drive_producer_reproof();
     failures += test_dev_land_signed_lost_ack();
     failures += test_dev_land_signed_lost_race();
+    failures += test_dev_land_signed_lost_ack_resend();
     failures += test_dev_land_signed_push_lost_race();
     failures += test_dev_land_cancel_push_refused();
     failures += test_dev_land_signed_publisher_death();

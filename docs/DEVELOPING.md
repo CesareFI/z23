@@ -1010,6 +1010,24 @@ comes back only when a separate-uid verifier qualifies. `phases.txt` records
 `test_reuse_admit=test-reuse: unqualified(no_verifier_account)` and an
 `advisory` `test_preflight` probe count that admits nothing
 ([`work/test-result-cache.md`](work/test-result-cache.md)).
+Automatic proof-worker per-group collection is deferred until every mandatory
+input closure qualifies. The default exact cold whole-cycle proof and its signed
+pair receipt remain the admission gate. Explicit runner diagnostics use
+`--cold-audit --emit-observations` for strict complete-set emission, or
+`--cold-audit --collect-observations` for narrowly partial collection. Only
+already reviewed external-input denylisted groups report `UNQUALIFIED` with
+missing coverage; other closure, execution, signing, serialization, CAS or
+admission errors remain fatal. `OBSERVATION COVERAGE` reports eligible, emitted,
+unqualified, refused and complete counts. Authenticated partial leaves do not
+replace complete admission. Explicit callers keep unsigned verdict scratch
+separate from durable signed observation CAS; fixture regressions cover cleanup,
+retained bytes and interrupted retries. The output-store path is a control,
+not part of the test input key.
+The vendor builder retains `vendor/.build.lock` as a regular-file kernel lock
+across runs; its inherited lock descriptor coordinates builders until process
+exit. Preserve this inode. The root-anchored tracked ignore treats this generated
+control as output, while unrelated untracked source still refuses proof admission.
+
 `make lint-fast` remains available for feedback while editing. The generation
 is handed the built artifacts the
 full gate set reads (the confined package verifier, `build/bin/z23-dev`,
@@ -1229,12 +1247,21 @@ Use ordinary scheduler admission unless the job actually needs more than
 24 GiB. Do not wrap a polling driver in an exclusive reservation or add a
 nested CPU/memory scope that strands capacity. Preserve an already-running
 driver and inspect its persisted state before replacement. An unknown push
-outcome requires reconciliation, never redispatch.
+outcome requires reconciliation: do not dispatch a different pair or push by
+hand. The landing step reconciles it itself. When a fresh fetch shows main
+still at the signed base, the head is absent and the earlier dispatch did not
+apply, so the step sends the identical compare-and-swap again, once per
+remaining attempt; when main has moved without the head it cuts a successor.
 
 The proof producer must be built from the exact sealed candidate source before
 selection, reuse, or dimensions run. `proof_producer_source_mismatch` refuses
-before those stages; use the candidate-owned producer and its structured
-foreground recovery action. Policy 5 rejects old proof receipts. Preserve an
+before those stages. `dev land drive` recovers from it without help: it queues
+the pair again, builds `dev-bin` in the landing worktree, and proves the pair
+with that binary as a child. Outside a drive, use the candidate-owned producer
+and its structured foreground recovery action. A proof step started outside a
+user-manager scope that delegates the memory controller refuses at once with
+`proof_host_memory_scope_unqualified`; run it through the build scheduler.
+Policy 5 rejects old proof receipts. Preserve an
 older receipt as evidence for its original policy instead of silently replacing
 it or claiming that publication alone establishes current qualification.
 

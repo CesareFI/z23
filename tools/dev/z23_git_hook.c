@@ -6,7 +6,6 @@
 #endif
 #define _POSIX_C_SOURCE 200809L
 
-#include "dev_proof_coverage.h"
 #include "dev_proof_receipt.h"
 #include "dev_proof_signer.h"
 #include "base/hex.h"
@@ -113,35 +112,6 @@ static bool read_exact_at(const char *root, const char *path,
 static bool read_exact(const char *path, uint8_t *out, size_t size)
 {
     return read_exact_at(NULL, path, out, size);
-}
-
-/* Snapshot-stable positioned read of the bytes after `offset`. The coverage
- * manifest file is the fixed envelope wire followed by a blob whose length
- * the envelope names; the hook reads the tail only after that length has
- * been bounds-checked, so a mutated file between the two reads is named
- * instead of partially admitted. */
-static bool read_tail_at(const char *root, const char *path, uint8_t *out,
-                         size_t offset, size_t size)
-{
-    struct platform_positioned_file file;
-    struct platform_positioned_file_snapshot before, after;
-    uint64_t actual = 0;
-    platform_positioned_file_init(&file);
-    bool opened = path && (root
-        ? platform_positioned_file_open_beneath(&file, root, path)
-        : platform_positioned_file_open(&file, path));
-    bool ok = path && out && opened &&
-              platform_positioned_file_is_current_user_only(&file) &&
-              platform_positioned_file_snapshot(&file, &before) &&
-              platform_positioned_file_size(&file, &actual) &&
-              actual >= offset && actual - offset == size &&
-              platform_positioned_file_read(&file, out, size,
-                                            (int64_t)offset) ==
-                  (int64_t)size &&
-              platform_positioned_file_snapshot(&file, &after) &&
-              platform_positioned_file_snapshot_equal(&before, &after);
-    platform_positioned_file_close(&file);
-    return ok;
 }
 
 #if defined(_WIN32)
@@ -601,59 +571,6 @@ static int64_t running_eta(const char *root, const char *local,
     return eta > 0 ? eta : 0;
 }
 
-static int admit_coverage(const char *root, const char *local, const char *base,
-                          const struct zcl_dev_acceptance_receipt_v1 *receipt)
-{
-    char rel[PATH_MAX], store[PATH_MAX];
-    int n = snprintf(rel, sizeof(rel),
-                     ".cache/zcl-dev-proof/coverage/%s-%s.coverage",
-                     local, base);
-    if (n <= 0 || (size_t)n >= sizeof(rel))
-        return refusal("coverage-path-invalid", local, base, 0);
-    uint8_t envelope[ZCL_DEV_COVERAGE_WIRE_BYTES];
-    if (!read_exact_at(root, rel, envelope, sizeof(envelope)))
-        return refusal("coverage-manifest-missing", local, base, 0);
-    uint32_t blob_len = 0;
-    if (!zcl_dev_coverage_envelope_blob_len(envelope, sizeof(envelope),
-                                            &blob_len))
-        return refusal("coverage-manifest-invalid", local, base, 0);
-    uint8_t *blob = zcl_malloc(blob_len ? blob_len : 1u, "git-hook-coverage");
-    if (!blob) return refusal("coverage-out-of-memory", local, base, 0);
-    bool tail_ok = read_tail_at(root, rel, blob, sizeof(envelope), blob_len);
-    if (!tail_ok) {
-        free(blob);
-        return refusal("coverage-manifest-invalid", local, base, 0);
-    }
-    n = snprintf(store, sizeof(store),
-                 "%s/.cache/zcl-dev-proof/observations.%s-%s",
-                 root, local, base);
-    struct zcl_dev_coverage_binding binding = {0};
-    bool paths_ok = n > 0 && (size_t)n < sizeof(store);
-    if (paths_ok) {
-        (void)memcpy(binding.local_commit, receipt->local_commit,
-                     ZCL_DEV_PROOF_OID_MAX);
-        binding.local_commit_len = receipt->local_commit_len;
-        (void)memcpy(binding.remote_base, receipt->remote_base,
-                     ZCL_DEV_PROOF_OID_MAX);
-        binding.remote_base_len = receipt->remote_base_len;
-        (void)memcpy(binding.child_set_root, receipt->child_set_root,
-                     ZCL_DEV_PROOF_ROOT_BYTES);
-        (void)memcpy(binding.impact_policy_root, receipt->impact_policy_root,
-                     ZCL_DEV_PROOF_ROOT_BYTES);
-        binding.policy_version = receipt->policy_version;
-    }
-    char why[128] = {0};
-    bool ok = paths_ok &&
-              zcl_dev_coverage_manifest_verify(store, envelope,
-                                               sizeof(envelope), blob,
-                                               blob_len, &binding,
-                                               why, sizeof(why));
-    free(blob);
-    if (!ok)
-        return refusal(why[0] ? why : "coverage-invalid", local, base, 0);
-    return 0;
-}
-
 static int admit_pair(const char *root, const char *local, const char *base)
 {
     if (!ancestor(base, local)) return refusal("remote-base-not-ancestor",
@@ -700,7 +617,7 @@ static int admit_pair(const char *root, const char *local, const char *base)
                 dimension))
             return refusal("child-receipt-missing-or-invalid", local, base, 0);
     }
-    return admit_coverage(root, local, base, &receipt);
+    return 0;
 }
 
 static int pre_push(void)

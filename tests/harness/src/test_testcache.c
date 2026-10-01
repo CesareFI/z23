@@ -2136,6 +2136,9 @@ static int tc_exec_binding_refusals(void)
         TC_CHECK("a make exec refuses even with a bindable artifact present",
                  !p.cacheable && !p.hit &&
                  p.code == TESTCACHE_R_EXTERNAL_INPUT);
+        TC_CHECK("unreviewed closure exec is not a known denylist omission",
+                 !p.key_valid && !testcache_group_is_denylisted("test_demo_entry") &&
+                 strstr(p.reason, "closure exec signal") != NULL);
         testcache_close(tc);
     }
     return failures;
@@ -2192,6 +2195,9 @@ static int tc_exec_binding_fixture(void)
         TC_CHECK("an absent exec artifact refuses caching",
                  !p.cacheable && !p.hit &&
                  p.code == TESTCACHE_R_EXTERNAL_INPUT);
+        TC_CHECK("missing bound artifact is not a known denylist omission",
+                 !p.key_valid && !testcache_group_is_denylisted("test_demo_entry") &&
+                 strstr(p.reason, "exec artifact") != NULL);
         testcache_close(tc);
     }
     failures += tc_exec_binding_refusals();
@@ -2740,6 +2746,49 @@ static int tc_action_inputs_phase(void)
     return failures;
 }
 
+/* Output location is a control, while actual child inputs remain keyed. */
+static int tc_observation_store_key_invariance(void)
+{
+    int failures = 0;
+    struct tc_envsave saved;
+    tc_env_capture(&saved, "ZCL_DEV_OBSERVATION_STORE");
+    uint8_t key[32] = {0}, active_key[32] = {0};
+    bool valid = false, active_valid = false;
+    const char *const stores[] = {"/pair-a/observations", "/pair-b/observations"};
+    for (size_t i = 0; i < 2; i++) {
+        TC_CHECK("observation output control set",
+                 setenv("ZCL_DEV_OBSERVATION_STORE", stores[i], 1) == 0);
+        struct testcache *tc = testcache_open(TC_FIX);
+        TC_CHECK("relocated observation probe opens", tc != NULL);
+        if (tc) {
+            struct testcache_probe ordinary, active;
+            testcache_probe_group(tc, "test_demo_entry", &ordinary);
+            testcache_probe_group_proof(tc, "test_demo_entry",
+                                       ZCL_TEST_PROOF_STRESS, &active);
+            TC_CHECK("relocated output has complete ordinary key", ordinary.key_valid);
+            if (i == 0) {
+                valid = ordinary.key_valid;
+                memcpy(key, ordinary.key, sizeof(key));
+                active_valid = active.key_valid;
+                memcpy(active_key, active.key, sizeof(active_key));
+            } else {
+                TC_CHECK("different observation stores preserve input key",
+                         valid && ordinary.key_valid &&
+                         memcmp(key, ordinary.key, sizeof(key)) == 0);
+                TC_CHECK("different observation stores preserve activated key",
+                         active_valid && active.key_valid &&
+                         memcmp(active_key, active.key, sizeof(active_key)) == 0);
+            }
+            TC_CHECK("activated contract remains a distinct complete input",
+                     ordinary.key_valid && active.key_valid &&
+                     memcmp(ordinary.key, active.key, sizeof(key)) != 0);
+            testcache_close(tc);
+        }
+    }
+    tc_env_restore(&saved, "ZCL_DEV_OBSERVATION_STORE");
+    return failures;
+}
+
 int test_testcache(void)
 {
     int failures = 0;
@@ -2777,6 +2826,8 @@ int test_testcache(void)
             testcache_close(tc);
         }
     }
+
+    failures += tc_observation_store_key_invariance();
 
     /* Activated execution has its own identity but must run even when a PASS
      * exists at that identity. Exercise the real closure and object store. */

@@ -54,7 +54,26 @@ fi
 # The compiler driver grounds slash-containing relative tools at the source
 # root. Compilation must use that same executable from a different cwd.
 mkdir -p "$SANDBOX/elsewhere/tools"
-printf '%s\n' '#!/usr/bin/env bash' 'exec /usr/bin/cc "$@"' > "$SANDBOX/tools/native-cc"
+# Freeze the qualified driver before the relative fixture overrides HOSTCC.
+# Match the production token grammar; never evaluate a compiler command.
+fixture_host_cc="${HOSTCC:-cc}"
+[[ "$fixture_host_cc" =~ ^[A-Za-z0-9_./:+,=%-]+([[:space:]]+[A-Za-z0-9_./:+,=%-]+)*$ ]] ||
+    fail 'fixture HOSTCC contains unsupported shell syntax'
+read -r -a fixture_host_argv <<<"$fixture_host_cc"
+case "${fixture_host_argv[0]}" in
+    /*) ;;
+    */*) fixture_host_argv[0]="$ROOT/${fixture_host_argv[0]}" ;;
+    *) fixture_host_argv[0]="$(command -v -- "${fixture_host_argv[0]}")" ||
+           fail 'fixture host compiler unavailable' ;;
+esac
+[[ "${fixture_host_argv[0]}" == /* && -f "${fixture_host_argv[0]}" &&
+   -x "${fixture_host_argv[0]}" ]] || fail 'fixture host compiler unavailable'
+{
+    printf '%s\n' '#!/usr/bin/env bash'
+    printf 'exec'
+    printf ' %q' "${fixture_host_argv[@]}"
+    printf ' "$@"\n'
+} > "$SANDBOX/tools/native-cc"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 97' > "$SANDBOX/elsewhere/tools/native-cc"
 chmod +x "$SANDBOX/tools/native-cc" "$SANDBOX/elsewhere/tools/native-cc"
 if output="$(cd "$SANDBOX/elsewhere" && HOSTCC=tools/native-cc \
@@ -63,6 +82,33 @@ if output="$(cd "$SANDBOX/elsewhere" && HOSTCC=tools/native-cc \
 fi
 [[ "$output" == *'offline cache miss or checksum failure: zlib-1.3.1.tar.gz'* ]] ||
     fail 'bootstrap compiled with a different executable than its compiler identity'
+
+# A C driver with no C++ front end installed is an ordinary host shape (cc is
+# one GCC major, g++ another). The lock helper is C only, so its identity
+# must still be observable there instead of refusing every vendor build.
+if command -v c++ >/dev/null 2>&1; then
+    {
+        printf '%s\n' '#!/usr/bin/env bash'
+        printf '%s\n' 'previous=""'
+        printf '%s\n' 'for argument in "$@"; do'
+        printf '%s\n' '    if [[ "$previous" == -x && "$argument" == c++ ]]; then'
+        printf '%s\n' "        printf '%s\\n' \"cc: fatal error: cannot execute 'cc1plus': posix_spawnp: No such file or directory\" >&2"
+        printf '%s\n' '        exit 1'
+        printf '%s\n' '    fi'
+        printf '%s\n' '    previous="$argument"'
+        printf '%s\n' 'done'
+        printf 'exec'
+        printf ' %q' "${fixture_host_argv[@]}"
+        printf ' "$@"\n'
+    } > "$SANDBOX/tools/c-only-cc"
+    chmod +x "$SANDBOX/tools/c-only-cc"
+    if output="$(cd "$SANDBOX" && HOSTCC=tools/c-only-cc \
+        ZCL_VENDOR_OFFLINE=1 tools/scripts/build_vendor.sh libz.a 2>&1)"; then
+        fail 'C-only compiler fixture unexpectedly built missing archive'
+    fi
+    [[ "$output" == *'offline cache miss or checksum failure: zlib-1.3.1.tar.gz'* ]] ||
+        fail 'a C driver without a C++ front end could not identify the lock helper compiler'
+fi
 
 # Bad bootstrap identities must refuse before touching an existing helper.
 cp -R "$SANDBOX/build/bin/vendor-lock" "$SANDBOX/helper-cache-before"

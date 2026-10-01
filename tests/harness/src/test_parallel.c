@@ -2154,25 +2154,67 @@ static const char *observation_store_root(struct testcache *tc)
     return (env && env[0]) ? env : testcache_store_root(tc);
 }
 
+static bool observation_known_denylist_omission(const char *name,
+    const struct group_result *result, const struct testcache_probe *probe)
+{
+    return probe && testcache_group_is_denylisted(name) &&
+           probe->code == TESTCACHE_R_EXTERNAL_INPUT && !probe->key_valid &&
+           result->measured && !result->cached && !result->skip_markers &&
+           !result->env_unobserved && !result->load_flaky &&
+           !result->load_unobserved && !result->wedged;
+}
+
+static bool observation_options_valid(bool collect, bool emit,
+                                      bool cold, bool exact)
+{
+    if (collect && emit) {
+        fprintf(stderr, "test_parallel: choose complete emission or partial collection\n");
+        return false;
+    }
+    if ((collect || emit) && (!cold || !exact)) {
+        fprintf(stderr, "test_parallel: --emit-observations requires "
+                        "--cold-audit and --exact\n");
+        return false;
+    }
+    return true;
+}
+
 /* Self-admission proves runner bytes crossed CAS and the receiver codec. A
  * later proof set must still establish complete required roots and coverage. */
 static int emit_group_observations(const struct group_result *results,
-    const struct testcache_probe *probes, const char *store_root)
+    const struct testcache_probe *probes, const char *store_root,
+    bool collect_partial)
 {
     int refused = 0;
+    size_t eligible = 0, emitted = 0, unqualified = 0;
     for (size_t i = 0; i < g_num_groups; i++) {
         if (results[i].skipped) continue;
         const struct testcache_probe *probe = probes ? &probes[i] : NULL;
         const char *reason = observation_ineligible_reason(&results[i], probe);
-        if (reason) {
+        if (collect_partial && reason &&
+            observation_known_denylist_omission(g_groups[i].name,
+                                                &results[i], probe)) {
+            printf("OBSERVATION UNQUALIFIED group=%s "
+                   "reason=external_input_denylist coverage=missing\n",
+                   g_groups[i].name);
+            unqualified++;
+        } else if (reason) {
             printf("OBSERVATION REFUSE group=%s reason=%s\n",
                    g_groups[i].name, reason);
             refused++;
-        } else if (!emit_one_group_observation(g_groups[i].name, &results[i],
-                                               probe, store_root)) {
-            refused++;
+        } else {
+            eligible++;
+            if (!emit_one_group_observation(g_groups[i].name, &results[i],
+                                            probe, store_root))
+                refused++;
+            else
+                emitted++;
         }
     }
+    printf("OBSERVATION COVERAGE mode=%s eligible=%zu emitted=%zu unqualified=%zu "
+           "refused=%d complete=%d\n",
+           collect_partial ? "partial" : "complete", eligible, emitted, unqualified,
+           refused, unqualified == 0 && refused == 0);
     return refused;
 }
 
@@ -2290,6 +2332,7 @@ int main(int argc, char **argv)
     bool cli_no_cache = false;   /* --no-cache */
     bool cli_cold_audit = false; /* --cold-audit */
     bool cli_probe_only = false; /* --cache-probe-only */
+    bool cli_collect_observations = false;
     bool cli_emit_observations = false;
     struct capsule_state cap_state;
     bool activate_proof_contracts = false;
@@ -2351,6 +2394,8 @@ int main(int argc, char **argv)
             cli_probe_only = true;
         } else if (strcmp(argv[i], "--emit-observations") == 0) {
             cli_emit_observations = true;
+        } else if (strcmp(argv[i], "--collect-observations") == 0) {
+            cli_collect_observations = true;
         } else if (cli_opt_capsule(argv[i], &cap_state.cli)) {
             /* --write-capsule/--use-capsule/--capsule-*: honored only with
              * --cache; otherwise silently ignored like the cache env. */
@@ -2363,7 +2408,7 @@ int main(int argc, char **argv)
                     "[--only=SUBSTR|--exact=FULL_ID[,FULL...]] "
                     "[--cache|--no-cache] "
                     "[--cache-snapshot --changed-source=PATH] "
-                    "[--cold-audit] [--emit-observations] "
+                    "[--cold-audit] [--emit-observations|--collect-observations] "
                     "[--activate-proof-contracts] "
                     "[--cache-probe-only] "
                     "[--write-capsule=PATH|--use-capsule=PATH "
@@ -2387,11 +2432,10 @@ int main(int argc, char **argv)
                 "exact selector and a valid proof-contract catalog\n");
         return 2;
     }
-    if (cli_emit_observations && (!cli_cold_audit || !only_exact)) {
-        fprintf(stderr, "test_parallel: --emit-observations requires "
-                        "--cold-audit and --exact\n");
+    if (!observation_options_valid(cli_collect_observations, cli_emit_observations,
+                                   cli_cold_audit, only_exact))
         return 2;
-    }
+    cli_emit_observations |= cli_collect_observations;
     /* Diagnostic surface: ZCL_TEST_CACHE_DUMP=<group> prints the group's forward
      * input closure, its content key, and its cacheability, then exits — the
      * operator/proof lens onto what the cache would key on. */
@@ -2940,7 +2984,8 @@ int main(int argc, char **argv)
             printf("cache: stored %zu fresh PASS verdict(s)\n", stored);
         if (cli_emit_observations)
             observation_refused = emit_group_observations(results, probes,
-                                        observation_store_root(tc));
+                                        observation_store_root(tc),
+                                        cli_collect_observations);
         testcache_close(tc);
         free(probes);
     }

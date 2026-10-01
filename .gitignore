@@ -22,6 +22,9 @@ vendor/tor/
 # `make vendor` scratch: pinned source downloads + per-lib build trees.
 vendor/.cache/
 vendor/.build/
+# Persistent regular-file kernel lock: retain its coordination inode across runs.
+# Generated control state, never a compiler input.
+/vendor/.build.lock
 vendor/.build-*/
 vendor/.build-*.lock/
 # Per-target archives + headers, built from the SAME pinned sources by

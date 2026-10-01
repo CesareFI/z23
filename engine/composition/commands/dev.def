@@ -819,13 +819,15 @@ ZCL_COMMAND_DEV_READ(
 ZCL_COMMAND_DEV_READ(
     "dev.proof.coverage", "dev.proof", "",
     "Query one pair's canonical coverage manifest",
-    "Reports what the policy-6 coverage manifest binds (child-set root, "
-    "impact policy, executed groups with their exact input keys), which "
-    "rows carry eligible PASS observation coverage, which are missing or "
-    "in conflict, and the observation projection this box has seen "
-    "(totals, eligibility, oldest and newest observation age). Read-only: "
-    "it admits nothing and changes nothing. A pair without an admitted "
-    "receipt or manifest stays an explicit non-passing state.", 0,
+    "Reports what the pair's signed coverage manifest binds (child-set "
+    "root, impact policy, executed groups with their exact input keys), "
+    "which rows carry eligible PASS observation coverage, which are "
+    "missing or in conflict, which executed without a reusable "
+    "observation (unqualified, named as its own state), and the "
+    "observation projection this box has seen (totals, eligibility, "
+    "oldest and newest observation age). Read-only: it admits nothing "
+    "and changes nothing. A pair without an admitted receipt or manifest "
+    "stays an explicit non-passing state.", 0,
     "dev,proof,coverage,manifest,receipt,observation",
     "zcl.dev_proof_input.v1", "zcl.dev_proof_coverage.v1",
     "root,local_commit,remote_base", "",

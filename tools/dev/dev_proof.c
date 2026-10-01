@@ -15,9 +15,7 @@
 #include "dev_proof.h"
 #include "dependency_links.h"
 #include "dev_proof_budget.h"
-#include "dev_proof_coverage.h"
 #include "dev_proof_observation.h"
-#include "dev_proof_observation_index.h"
 #include "devloop.h"
 #include "test_group_catalog.h"
 #include "test_group_host_need.h"
@@ -31,9 +29,9 @@
 #include "platform/disk_space.h"
 #include "platform/file_clone.h"
 #include "platform/logical_cpu.h"
+#include "platform/os_proc.h"
 #include "platform/private_directory.h"
 #include "platform/ram_scratch.h"
-#include "platform/state_root.h"
 #include "platform/time_compat.h"
 #include "util/spawn.h"
 #include "util/clientversion.h"
@@ -4246,55 +4244,43 @@ static bool dp_reap_superseded(const struct warm_reap_entry *entries,
     return reap;
 }
 
-/* One entry of dp_generation_unlock's walk: a directory (never a symlink,
- * never followed through one) gets owner rwx added and, unless the stack
- * is already full, is queued so its own children are reached too. */
-static void dp_unlock_entry(const char *dir_path, const char *name,
-                            char **stack, size_t stack_cap, size_t *depth)
+/* Directories the unlock walk below could not read on this pass. A callback
+ * has no context argument, and one proof worker never runs two walks at
+ * once. */
+static _Thread_local size_t dp_unlock_unread;
+
+static int dp_unlock_cb(const char *path, const struct stat *st, int type,
+                        struct FTW *ftwbuf)
 {
-    char child[PATH_MAX];
-    struct stat st;
-    if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0 ||
-        snprintf(child, sizeof(child), "%s/%s", dir_path, name) >=
-            (int)sizeof(child) ||
-        lstat(child, &st) != 0 || !S_ISDIR(st.st_mode))
-        return;
-    (void)chmod(child, (st.st_mode & 07777) | S_IRUSR | S_IWUSR | S_IXUSR);
-    if (*depth >= stack_cap) return;
-    char *held = zcl_strdup(child, "proof_pool_unlock");
-    if (held) stack[(*depth)++] = held;
+    (void)ftwbuf;
+    if (type != FTW_D && type != FTW_DNR) return 0;
+    mode_t mode = st ? (st->st_mode & 07777) : 0;
+    (void)chmod(path, mode | S_IRUSR | S_IWUSR | S_IXUSR);
+    if (type == FTW_DNR) dp_unlock_unread++;
+    return 0;
 }
 
 /* Grant the owner read+write+execute on every directory under `path`
  * (path included) that is reached without following a symlink. Proof test
  * fixtures leave read-only (0555) directories inside a generation, which
  * stops git's own recursive worktree delete partway through; this runs
- * first so the delete that follows can finish. Iterative and bounded like
- * dp_touch_subtree: a directory nested deeper than the stack holds is left
- * unlocked, and the delete that follows then fails on it exactly as it
- * would without this helper -- advisory, never fatal. */
+ * first so the delete that follows can finish. The walk has no width or
+ * depth bound: a bounded one skipped the children of every directory past
+ * its queue, and a generation's test scratch is wider than any fixed queue,
+ * so each proof's retire deleted git's admin dir and then left the tree. A
+ * directory that was unreadable is opened up on one pass and descended on
+ * the next. Advisory, never fatal: what stays locked fails the delete that
+ * follows exactly as it would without this helper. */
 static void dp_generation_unlock(const char *path)
 {
-    char *stack[64];
-    size_t depth = 0;
-    char top[PATH_MAX];
     struct stat top_st;
-    if (!path || lstat(path, &top_st) != 0 || !S_ISDIR(top_st.st_mode) ||
-        snprintf(top, sizeof(top), "%s", path) >= (int)sizeof(top))
+    if (!path || lstat(path, &top_st) != 0 || !S_ISDIR(top_st.st_mode))
         return;
-    (void)chmod(top, (top_st.st_mode & 07777) | S_IRUSR | S_IWUSR | S_IXUSR);
-    stack[depth++] = top;
-    while (depth > 0) {
-        char *dir_path = stack[--depth];
-        DIR *dir = opendir(dir_path);
-        if (dir) {
-            for (struct dirent *entry = readdir(dir); entry;
-                 entry = readdir(dir))
-                dp_unlock_entry(dir_path, entry->d_name, stack,
-                                sizeof(stack) / sizeof(stack[0]), &depth);
-            (void)closedir(dir);
-        }
-        if (dir_path != top) free(dir_path);
+    for (int pass = 0; pass < 8; pass++) {
+        dp_unlock_unread = 0;
+        if (nftw(path, dp_unlock_cb, 32, FTW_PHYS | FTW_MOUNT) != 0 ||
+            dp_unlock_unread == 0)
+            return;
     }
 }
 
@@ -5274,12 +5260,42 @@ static void dp_generation_storage_note(const struct proof_paths *paths,
                                    generation);
 }
 
+/* A generation directory this pair left behind whose worktree registration
+ * git already deleted: the retire after an earlier attempt removed the admin
+ * dir and then failed on the tree. Reusing it refuses every later attempt of
+ * the same pair at the first git call inside it, and dp_reap_orphans() never
+ * takes the caller's own generation. This worker holds the pair's lease, so
+ * the leftover is its own to clear before a fresh checkout. Returns false
+ * only when it is that shape and could not be removed. */
+static bool dp_generation_is_pruned(const char *generation)
+{
+    const char *tag = strrchr(generation, '/');
+    tag = tag ? tag + 1 : generation;
+    return warm_tag_name(tag) && dp_orphan_gitdir_pruned(generation, tag);
+}
+
+static bool dp_generation_clear_pruned(const struct proof_paths *paths,
+                                       const char *generation)
+{
+    if (!dp_generation_is_pruned(generation)) return true;
+    const char *tag = strrchr(generation, '/');
+    tag = tag ? tag + 1 : generation;
+    uint64_t freed = directory_bytes_sum(generation);
+    if (!dp_orphan_remove_tree(generation)) return false;
+    dp_orphan_note(paths, tag, "pruned_gitdir_own_pair", freed);
+    return true;
+}
+
 /* Check the generation out when it is not already there. */
 static bool dp_generation_checkout(const struct proof_paths *paths,
                                    const char *generation, const char *local,
                                    char *why, size_t why_len)
 {
     struct stat st;
+    if (!dp_generation_clear_pruned(paths, generation)) {
+        proof_why(why, why_len, "proof_generation_stale_unremovable");
+        return false;
+    }
     if (lstat(generation, &st) == 0) return true;
     if (errno != ENOENT) {
         proof_why(why, why_len, "proof_generation_inspection_failed");
@@ -6128,6 +6144,12 @@ static const char *dp_generation_retire_with(
             bool removed = git_capture_within(paths->root, argv,
                                               PROOF_WARM_REMOVE_TIMEOUT_MS,
                                               output, sizeof(output));
+            /* git deletes its admin dir even when the tree delete fails,
+             * and what is left then answers no git query: finish the delete
+             * here rather than leave the pair's next attempt a directory it
+             * cannot use. */
+            if (!removed && dp_generation_is_pruned(generation))
+                removed = dp_orphan_remove_tree(generation);
             outcome = !removed ? "remove_failed"
                       : verdict == DP_RETIRE_PASSED ? "removed"
                                                     : "removed_failed";
@@ -6186,6 +6208,26 @@ bool zcl_dev_proof_test_generation_retire(
     if (outcome && outcome_len)
         (void)snprintf(outcome, outcome_len, "%s", result);
     return strncmp(result, "removed", 7) == 0;
+}
+#endif
+
+#if defined(ZCL_TESTING)
+/* The checkout generation_prepare() runs for one pair, for the test that
+ * plants a leftover there first. */
+bool zcl_dev_proof_test_generation_checkout(const char *repo_root,
+                                            const char *generation,
+                                            const char *local, char *why,
+                                            size_t why_len)
+{
+    struct proof_paths paths;
+    memset(&paths, 0, sizeof(paths));
+    if (!why || why_len == 0) return false;
+    why[0] = '\0';
+    if (!repo_root || !generation || !local ||
+        snprintf(paths.root, sizeof(paths.root), "%s", repo_root) >=
+            (int)sizeof(paths.root))
+        return false;
+    return dp_generation_checkout(&paths, generation, local, why, why_len);
 }
 #endif
 
@@ -6556,15 +6598,11 @@ static bool proof_zcc_private_close(const char *state, const char *key)
            unsetenv("ZCC_DIR") == 0 && removed;
 }
 
-/* The cold-audit's verdict store and the observation emitter's CAS. Both
- * must be private to this proof. A shared or candidate-writable verdict
- * store is exactly what proof_prepare_environment() scrubs, and a signed
- * observation leaf is durable evidence that must never share a
- * content-addressed tree with the unsigned PASS records the runner also
- * writes into its verdict store. Same shape as the zcc store above: per-pair
- * directories under <state>, keyed so they cannot collide across proofs.
- * The verdict store is scratch and is removed with the proof; the
- * observation CAS is durable and stays. */
+#if defined(ZCL_TESTING)
+/* Fixture-only lifecycle for explicit observation runs. Automatic worker
+ * collection is deferred until all required input closures qualify. */
+/* Explicit-run fixtures keep unsigned verdict scratch separate from durable
+ * signed observations, using per-pair paths that cannot collide. */
 static bool proof_testcache_store_path(const char *state, const char *key,
                                        char out[PATH_MAX])
 {
@@ -6587,27 +6625,37 @@ static bool proof_observation_env_open(const char *state, const char *key)
      * behind. The observation CAS is durable across runs of this pair, so
      * it must tolerate already existing (a retried proof re-arms the same
      * directory); _ensure is the idempotent variant. */
-    char store[PATH_MAX];
-    return proof_testcache_store_path(state, key, store) &&
-           proof_zcc_store_remove(state, store) &&
-           platform_private_directory_create(store) &&
-           setenv("ZCL_TESTCACHE_STORE_ROOT", store, 1) == 0 &&
-           proof_observation_store_path(state, key, store) &&
-           platform_private_directory_ensure(store) &&
-           setenv(ZCL_DEV_OBSERVATION_STORE_ENV, store, 1) == 0;
+    char scratch[PATH_MAX], observations[PATH_MAX];
+    if (!proof_testcache_store_path(state, key, scratch) ||
+        !proof_observation_store_path(state, key, observations))
+        return false;
+    if (proof_zcc_store_remove(state, scratch) &&
+        platform_private_directory_create(scratch) &&
+        setenv("ZCL_TESTCACHE_STORE_ROOT", scratch, 1) == 0 &&
+        platform_private_directory_ensure(observations) &&
+        setenv(ZCL_DEV_OBSERVATION_STORE_ENV, observations, 1) == 0)
+        return true;
+    /* A partial open owns no durable observation bytes. Remove only its
+     * scratch store and clear both child controls before returning. */
+    (void)proof_zcc_store_remove(state, scratch);
+    (void)unsetenv("ZCL_TESTCACHE_STORE_ROOT");
+    (void)unsetenv(ZCL_DEV_OBSERVATION_STORE_ENV);
+    return false;
 }
 
-/* Runs on every worker exit next to proof_zcc_private_close(): the resident
- * daemon keeps its environment across cycles, so both knobs go too. The
- * observation CAS stays behind as durable signed evidence. */
+/* Fixture restore clears both controls and verdict scratch. Durable signed
+ * observation bytes remain available to an explicit retry. */
 static bool proof_observation_env_close(const char *state, const char *key)
 {
     char store[PATH_MAX];
     bool removed = proof_testcache_store_path(state, key, store) &&
                    proof_zcc_store_remove(state, store);
-    return unsetenv("ZCL_TESTCACHE_STORE_ROOT") == 0 &&
-           unsetenv(ZCL_DEV_OBSERVATION_STORE_ENV) == 0 && removed;
+    bool verdict_unset = unsetenv("ZCL_TESTCACHE_STORE_ROOT") == 0;
+    bool observation_unset = unsetenv(ZCL_DEV_OBSERVATION_STORE_ENV) == 0;
+    return verdict_unset && observation_unset && removed;
 }
+
+#endif
 
 /* Fill the pre-fork make argv: everything EITHER dimension can build, built
  * once, before either starts.
@@ -7503,13 +7551,8 @@ bool zcl_dev_proof_test_stress_env_prepare(char *why, size_t why_len)
     return proof_stress_tests_env_prepare(why, why_len);
 }
 
-/* Test seam onto the exact per-proof observation/testcache store environment
- * proof_worker() arms before the test dimension launches. The registered
- * group dev_proof_observation_env proves the same load-bearing facts the
- * stress-env seam does for ZCL_STRESS_TESTS: the knobs land unconditionally,
- * point at per-pair paths under <state>, and the paired restore removes
- * them again so a resident daemon's environment never carries one proof's
- * stores into the next. */
+/* Fixture-only seam for explicit observation store lifecycle. These tests
+ * do not imply that the default worker arms observation stores. */
 bool zcl_dev_proof_test_observation_env_prepare(const char *state,
                                                 const char *key,
                                                 char *why, size_t why_len)
@@ -8254,7 +8297,6 @@ static bool receipt_store(const struct proof_paths *paths,
            proof_write_if_current(paths, paths->receipt, wire, sizeof(wire),
                                   0400);
 }
-
 /* Every phase before the first dimension ran with no clock on it, so a proof
  * that spent six minutes somewhere reported only that it took six minutes.
  * These marks cost one gettime and one appended line each, and they name the
@@ -9140,23 +9182,18 @@ static void dp_worker_lint_wall_note(const struct dp_worker *w,
     }
 }
 
-/* The test dimension's runner argv. `--cold-audit` is the runner's explicit
+/* The test dimension's runner argv. `--no-cache` is the runner's explicit
  * cold mode and outranks ZCL_TEST_CACHE, so no inherited or planted
- * environment can turn verdict reuse back on: every selected group executes
- * in this proof. `--emit-observations` signs one verdict leaf per executed
- * group into the worker-private observation CAS named by
- * ZCL_DEV_OBSERVATION_STORE_ENV (opened right before the test dimension;
- * durable evidence, never shared with a candidate-writable verdict store).
- * The cold audit's own verdict store is per-proof scratch under
- * <state>/testcache.<key>, opened empty and removed with the proof, so a
- * proof neither reads nor writes any shared verdict store. A reused test
- * verdict may shape acceptance only once a separate account outside the
- * candidate's trust domain reproduces and signs it. With no such account
- * the proof records `test-reuse: unqualified(no_verifier_account)` and runs
- * cold. When the attempt holds that account, the worker derives this
- * closure and asks admission before the child starts. Returns the argc
- * written (argv NULL-terminated), or 0 when argv_cap is too small. */
-#define DP_TEST_DIMENSION_ARGC 5u
+ * environment can turn verdict reuse back on: every selected group
+ * executes in this proof, and the runner opens no verdict store and stores
+ * nothing. A reused test verdict may shape acceptance only once a separate
+ * account outside the candidate's trust domain reproduces and signs it.
+ * With no such account the proof records
+ * `test-reuse: unqualified(no_verifier_account)` and runs cold. When the
+ * attempt holds that account, the worker derives this closure and asks
+ * admission before the child starts. Returns the argc written (argv
+ * NULL-terminated), or 0 when argv_cap is too small. */
+#define DP_TEST_DIMENSION_ARGC 4u
 static size_t dp_test_dimension_argv(const char *binary, const char *only,
                                      const char **argv, size_t argv_cap)
 {
@@ -9165,10 +9202,9 @@ static size_t dp_test_dimension_argv(const char *binary, const char *only,
         return 0;
     argv[0] = binary;
     argv[1] = only;
-    argv[2] = "--cold-audit";
-    argv[3] = "--emit-observations";
-    argv[4] = "--activate-proof-contracts";
-    argv[5] = NULL;
+    argv[2] = "--no-cache";
+    argv[3] = "--activate-proof-contracts";
+    argv[4] = NULL;
     return DP_TEST_DIMENSION_ARGC;
 }
 
@@ -10110,94 +10146,6 @@ static bool dp_worker_dimensions(struct dp_worker *w, char *why,
 
 /* Prove the source never moved under the run, then publish the receipt.
  * Nothing after this point may fail: the receipt IS the admission. */
-/* Canonical lifecycle item 2 (docs/work/FORWARD_PLAN.md): the receipt admits
- * the pair's dimensions, and the coverage manifest admits the receipt's
- * test-dimension claim by binding every executed group to eligible signed
- * observations in this pair's durable CAS. Derived AFTER receipt_store so
- * the manifest can bind the sealed child_set_root; a retried proof derives
- * byte-identical content, so the lease-checked atomic write is idempotent.
- * Refuses publication on incomplete coverage or an eligible conflict. */
-static void dp_observation_index_fold(const char *store);
-
-static bool dp_coverage_publish(struct dp_worker *w, char *why, size_t why_len)
-{
-    struct zcl_dev_coverage_binding binding = {0};
-    (void)memcpy(binding.local_commit, w->receipt.local_commit,
-                 ZCL_DEV_PROOF_OID_MAX);
-    binding.local_commit_len = w->receipt.local_commit_len;
-    (void)memcpy(binding.remote_base, w->receipt.remote_base,
-                 ZCL_DEV_PROOF_OID_MAX);
-    binding.remote_base_len = w->receipt.remote_base_len;
-    (void)memcpy(binding.child_set_root, w->receipt.child_set_root,
-                 ZCL_DEV_PROOF_ROOT_BYTES);
-    (void)memcpy(binding.impact_policy_root, w->receipt.impact_policy_root,
-                 ZCL_DEV_PROOF_ROOT_BYTES);
-    binding.policy_version = w->receipt.policy_version;
-
-    char store[PATH_MAX], log_path[PATH_MAX], dir[PATH_MAX], path[PATH_MAX];
-    if (!proof_observation_store_path(w->paths->state, w->paths->key, store) ||
-        snprintf(log_path, sizeof(log_path), "%s/%s.test.log",
-                 w->paths->logs, w->paths->key) >= (int)sizeof(log_path) ||
-        snprintf(dir, sizeof(dir), "%s/coverage", w->paths->state) >=
-            (int)sizeof(dir) ||
-        snprintf(path, sizeof(path), "%s/%s.coverage", dir,
-                 w->paths->key) >= (int)sizeof(path)) {
-        proof_why(why, why_len, "coverage_path_invalid");
-        return false;
-    }
-
-    const uint32_t expected =
-        w->receipt.dimensions[ZCL_DEV_PROOF_TEST].ran;
-    uint8_t envelope[ZCL_DEV_COVERAGE_WIRE_BYTES];
-    uint8_t *blob = NULL;
-    size_t blob_len = 0;
-    if (!zcl_dev_coverage_manifest_derive(
-            store, expected ? log_path : NULL, &binding, expected,
-            envelope, &blob, &blob_len, why, why_len))
-        return false;
-    size_t total = sizeof(envelope) + blob_len;
-    uint8_t *file = zcl_malloc(total, "dev-coverage-file");
-    if (!file) {
-        free(blob);
-        proof_why(why, why_len, "coverage_file_alloc_failed");
-        return false;
-    }
-    (void)memcpy(file, envelope, sizeof(envelope));
-    (void)memcpy(file + sizeof(envelope), blob, blob_len);
-    free(blob);
-    bool ok = platform_private_directory_ensure(dir) &&
-              proof_write_if_current(w->paths, path, file, total, 0400);
-    free(file);
-    if (!ok) {
-        proof_why(why, why_len, "coverage_manifest_publish_failed");
-        return false;
-    }
-    dp_observation_index_fold(store);
-    return true;
-}
-
-/* Receiver basis (canonical lifecycle item 3): fold this pair's durable
- * observations into the box-level index. The index is a rebuildable
- * projection, never publication authority: a refused merge is reported
- * by name and the receipt stands. */
-static void dp_observation_index_fold(const char *store)
-{
-    char state_root[PATH_MAX], index_dir[PATH_MAX], index_path[PATH_MAX];
-    char index_why[128] = {0};
-    if (platform_state_root(state_root, sizeof(state_root)) &&
-        snprintf(index_dir, sizeof(index_dir),
-                 "%s/dev-observation-index", state_root) <
-            (int)sizeof(index_dir) &&
-        snprintf(index_path, sizeof(index_path), "%s/index", index_dir) <
-            (int)sizeof(index_path) &&
-        platform_private_directory_ensure(index_dir) &&
-        !zcl_dev_observation_index_merge(index_path, store,
-                                         index_why, sizeof(index_why)))
-        (void)fprintf(stderr,
-                      "[devproof] observation index merge refused: %s\n",
-                      index_why[0] ? index_why : "observation_index_invalid");
-}
-
 static bool dp_worker_publish(struct dp_worker *w, int64_t started_us,
                               char *why, size_t why_len)
 {
@@ -10229,8 +10177,6 @@ static bool dp_worker_publish(struct dp_worker *w, int64_t started_us,
         proof_why(why, why_len, "receipt_publication_failed");
         return false;
     }
-    if (!dp_coverage_publish(w, why, why_len))
-        return false;
     proof_unlink_if_current(w->paths, w->paths->failure);
     return true;
 }
@@ -10423,6 +10369,81 @@ static void proof_cpu_note(const struct proof_paths *paths,
                                        "proof_cpu_children_ms", value);
 }
 
+/* The test dimension holds a group whose memory-limit leg needs a child
+ * cgroup under an ancestor that delegates the memory controller and that
+ * this uid may write. From a login session scope every such ancestor is
+ * root-owned: the leg reports UNOBSERVED, the suite still exits 0, and the
+ * proof refuses test_accounting_incomplete — after the whole compile, lint
+ * and test run. The same question answers in microseconds before any of
+ * that work, from the same two facts the leg reads: which ancestors list
+ * `memory` in cgroup.subtree_control, and whether one of them is writable.
+ * Read-only; nothing is created. UNKNOWN (no unified hierarchy to read)
+ * never refuses: the test accounting stays the authority. */
+static bool dp_cgroup_delegates_memory(const char *cg)
+{
+    char control[PATH_MAX], line[256];
+    if (snprintf(control, sizeof(control), "%s/cgroup.subtree_control", cg) >=
+        (int)sizeof(control))
+        return false;
+    FILE *f = fopen(control, "r");
+    bool delegates = f && fgets(line, sizeof(line), f) &&
+                     strstr(line, "memory") != NULL;
+    if (f) (void)fclose(f);
+    return delegates;
+}
+
+/* Step to the parent cgroup; false once the mount root was examined. */
+static bool dp_cgroup_parent(char *cg, size_t floor)
+{
+    char *slash = strrchr(cg, '/');
+    if (strlen(cg) <= floor || !slash || (size_t)(slash - cg) < floor)
+        return false;
+    *slash = '\0';
+    return true;
+}
+
+enum zcl_dev_proof_memory_scope zcl_dev_proof_memory_scope_verdict(
+    const char *mount, const char *self)
+{
+    char cg[PATH_MAX];
+    struct stat st;
+    if (!mount || !self || self[0] != '/' || lstat(mount, &st) != 0 ||
+        !S_ISDIR(st.st_mode) ||
+        snprintf(cg, sizeof(cg), "%s%s", mount, self) >= (int)sizeof(cg))
+        return ZCL_DEV_PROOF_MEMORY_SCOPE_UNKNOWN;
+    size_t floor = strlen(mount);
+    do {
+        size_t len = strlen(cg);
+        while (len > floor && cg[len - 1] == '/') cg[--len] = '\0';
+        if (dp_cgroup_delegates_memory(cg) && access(cg, W_OK | X_OK) == 0)
+            return ZCL_DEV_PROOF_MEMORY_SCOPE_QUALIFIED;
+    } while (dp_cgroup_parent(cg, floor));
+    return ZCL_DEV_PROOF_MEMORY_SCOPE_UNQUALIFIED;
+}
+
+[[maybe_unused]] static bool proof_memory_scope_check(char *why,
+                                                      size_t why_len)
+{
+#if defined(__linux__) && !defined(ZCL_TESTING)
+    static const char mount[] = "/sys/fs/cgroup";
+    char dir[PATH_MAX];
+    if (!os_proc_cgroup_dir(dir, sizeof(dir)) ||
+        strncmp(dir, mount, sizeof(mount) - 1) != 0)
+        return true;
+    if (zcl_dev_proof_memory_scope_verdict(mount, dir + sizeof(mount) - 1) ==
+        ZCL_DEV_PROOF_MEMORY_SCOPE_UNQUALIFIED) {
+        proof_why(why, why_len,
+                  "proof_host_memory_scope_unqualified:"
+                  "run_the_step_in_a_user_manager_scope");
+        return false;
+    }
+#else
+    (void)why;
+    (void)why_len;
+#endif
+    return true;
+}
+
 static bool proof_loader_environment_check(char *why, size_t why_len)
 {
 #if defined(__linux__)
@@ -10594,7 +10615,8 @@ static bool proof_worker(const struct proof_paths *paths,
                          int64_t queue_lock_wait_ms,
                          char *why, size_t why_len)
 {
-    if (!proof_loader_environment_check(why, why_len) ||
+    if (!proof_memory_scope_check(why, why_len) ||
+        !proof_loader_environment_check(why, why_len) ||
         !proof_clang_runtime_check(why, why_len)) return false;
     if (!proof_prepare_environment()) {
         proof_why(why, why_len, "proof_execution_environment_unavailable");
@@ -10602,11 +10624,6 @@ static bool proof_worker(const struct proof_paths *paths,
     }
     if (!proof_zcc_private_open(paths->state, paths->key)) {
         proof_why(why, why_len, "proof_private_compile_cache_unavailable");
-        return false;
-    }
-    if (!proof_observation_env_open(paths->state, paths->key)) {
-        (void)proof_zcc_private_close(paths->state, paths->key);
-        proof_why(why, why_len, "proof_observation_env_unavailable");
         return false;
     }
     int64_t started_us = platform_time_monotonic_us();
@@ -11128,7 +11145,6 @@ static bool proof_worker_run(const struct proof_paths *paths,
               proof_worker(paths, local, base, &ram_lease,
                            queue_lock_wait_ms, why, why_len);
     (void)proof_zcc_private_close(paths->state, paths->key);
-    (void)proof_observation_env_close(paths->state, paths->key);
     if (cpu_timed) proof_cpu_note(paths, &self_before, &children_before);
     if (!ok && (!why || !why[0]))
         proof_why(why, why_len, "proof_child_reaping_unavailable");

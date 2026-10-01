@@ -4984,6 +4984,224 @@ static int test_pw_generation_retire_passed(void)
     return failures;
 }
 
+/* Every proof's test scratch holds more sibling directories than any fixed
+ * queue, with read-only fixture directories below them. */
+static int test_pw_generation_retire_wide_locked(void)
+{
+    int failures = 0;
+    TEST("proof generation pool: read-only fixture directories below a wide "
+         "scratch tree do not stop the retire") {
+#if defined(_WIN32)
+        ASSERT(true);
+#else
+        char root[4096], repo[4096], cmd[8192], outcome[64];
+        char wide[4096], rel[128], ro[4608];
+        test_make_tmpdir(root, sizeof(root), "proof_pool_retire", "wide");
+        ASSERT(snprintf(repo, sizeof(repo), "%s/checkout", root) > 0);
+        ASSERT(snprintf(cmd, sizeof(cmd),
+                        "mkdir -p '%s' && cd '%s' && git init -q && "
+                        "echo tracked > tracked && git add tracked && "
+                        "git -c user.name=t -c user.email=t@t.invalid "
+                        "commit -q -m init", repo, repo) > 0);
+        ASSERT(system(cmd) == 0);
+        ASSERT(ic_retire_generation(root, repo,
+                                    "99999999999999999999999999999999",
+                                    NULL, wide, sizeof(wide)));
+        for (int i = 0; i < 200; i++) {
+            ASSERT(snprintf(rel, sizeof(rel), "test-tmp/case_%03d/lib/ro/leaf",
+                            i) > 0);
+            ASSERT(ic_write(wide, rel, "x\n"));
+            ASSERT(snprintf(ro, sizeof(ro), "%s/test-tmp/case_%03d/lib/ro",
+                            wide, i) > 0);
+            ASSERT(chmod(ro, 0555) == 0);
+        }
+        struct stat probe;
+        ASSERT(setenv("ZCL_DEVLOOP_TEST_PROCESS", "1", 1) == 0);
+        bool removed = zcl_dev_proof_test_generation_retire(
+            repo, wide, ZCL_DEV_PROOF_RETIRE_PASSED, false, outcome,
+            sizeof(outcome));
+        ASSERT(removed);
+        ASSERT_STR_EQ(outcome, "removed");
+        ASSERT(stat(wide, &probe) != 0 && errno == ENOENT);
+        (void)unsetenv("ZCL_DEVLOOP_TEST_PROCESS");
+        ASSERT(test_rm_rf_recursive(root) == 0);
+#endif
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* What an earlier attempt's failed retire leaves: the tree, with a `.git`
+ * naming an admin dir git already deleted. */
+static int test_pw_generation_checkout_clears_pruned(void)
+{
+    int failures = 0;
+    TEST("proof generation pool: a pair's own leftover whose registration "
+         "git deleted is cleared and checked out fresh, and a live "
+         "generation is reused untouched") {
+#if defined(_WIN32)
+        ASSERT(true);
+#else
+        char root[4096], repo[4096], cmd[12288], why[128], head[80];
+        char stale[4096], live[4096], marker[4608], foreign[4096];
+        test_make_tmpdir(root, sizeof(root), "proof_pool_checkout", "stale");
+        ASSERT(snprintf(repo, sizeof(repo), "%s/checkout", root) > 0);
+        ASSERT(snprintf(cmd, sizeof(cmd),
+                        "mkdir -p '%s' && cd '%s' && git init -q && "
+                        "echo tracked > tracked && git add tracked && "
+                        "git -c user.name=t -c user.email=t@t.invalid "
+                        "commit -q -m init", repo, repo) > 0);
+        ASSERT(system(cmd) == 0);
+        ASSERT(snprintf(cmd, sizeof(cmd), "git -C '%s' rev-parse HEAD",
+                        repo) > 0);
+        FILE *pipe = popen(cmd, "r");
+        ASSERT(pipe != NULL);
+        ASSERT(fgets(head, sizeof(head), pipe) != NULL);
+        ASSERT(pclose(pipe) == 0);
+        head[strcspn(head, "\n")] = '\0';
+        ASSERT(ic_retire_generation(root, repo,
+                                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                                    NULL, stale, sizeof(stale)));
+        ASSERT(ic_retire_generation(root, repo,
+                                    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                                    NULL, live, sizeof(live)));
+        ASSERT(ic_write(stale, "build/obj/old.o", "old\n"));
+        ASSERT(ic_write(stale, "test-tmp/case/ro/leaf", "x\n"));
+        ASSERT(snprintf(marker, sizeof(marker), "%s/test-tmp/case/ro",
+                        stale) > 0);
+        ASSERT(chmod(marker, 0555) == 0);
+        ASSERT(ic_write(live, "build/obj/kept.o", "kept\n"));
+        /* git's own half-finished remove: the admin dir is gone, the tree
+         * is not. */
+        ASSERT(snprintf(cmd, sizeof(cmd),
+                        "rm -rf '%s/.git/worktrees/"
+                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'", repo) > 0);
+        ASSERT(system(cmd) == 0);
+        struct stat probe;
+        ASSERT(setenv("ZCL_DEVLOOP_TEST_PROCESS", "1", 1) == 0);
+
+        ASSERT(zcl_dev_proof_test_generation_checkout(repo, stale, head, why,
+                                                      sizeof(why)));
+        ASSERT(snprintf(marker, sizeof(marker), "%s/build/obj/old.o",
+                        stale) > 0);
+        ASSERT(stat(marker, &probe) != 0 && errno == ENOENT);
+        ASSERT(snprintf(marker, sizeof(marker), "%s/tracked", stale) > 0);
+        ASSERT(stat(marker, &probe) == 0);
+        ASSERT(snprintf(cmd, sizeof(cmd),
+                        "test \"$(git -C '%s' rev-parse HEAD)\" = '%s'",
+                        stale, head) > 0);
+        ASSERT(system(cmd) == 0);
+
+        /* A registered generation is the interrupted re-run's tree. */
+        ASSERT(zcl_dev_proof_test_generation_checkout(repo, live, head, why,
+                                                      sizeof(why)));
+        ASSERT(snprintf(marker, sizeof(marker), "%s/build/obj/kept.o",
+                        live) > 0);
+        ASSERT(stat(marker, &probe) == 0);
+
+        /* A directory that is not this code's shape is never deleted. */
+        ASSERT(snprintf(foreign, sizeof(foreign), "%s/.z23p/not-a-tag",
+                        root) > 0);
+        ASSERT(ic_write(foreign, "keep", "x\n"));
+        ASSERT(zcl_dev_proof_test_generation_checkout(repo, foreign, head,
+                                                      why, sizeof(why)));
+        ASSERT(snprintf(marker, sizeof(marker), "%s/keep", foreign) > 0);
+        ASSERT(stat(marker, &probe) == 0);
+        (void)unsetenv("ZCL_DEVLOOP_TEST_PROCESS");
+        ASSERT(test_rm_rf_recursive(root) == 0);
+#endif
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* A cgroup v2 tree as a login session and a user-manager scope see it. */
+static int test_pw_memory_scope_verdict(void)
+{
+    int failures = 0;
+    TEST("proof worker: a scope with no writable memory-delegating ancestor "
+         "is named before the proof starts, and an unreadable hierarchy "
+         "never refuses") {
+#if defined(_WIN32)
+        ASSERT(true);
+#else
+        char root[4096], mount[4200], path[4608];
+        test_make_tmpdir(root, sizeof(root), "proof_memory_scope", "cg");
+        ASSERT(snprintf(mount, sizeof(mount), "%s/cg", root) > 0);
+        /* Root-owned levels are modelled read-only; the user manager's
+         * slice is the one this uid may write. */
+        ASSERT(ic_write(mount, "cgroup.subtree_control",
+                        "cpuset cpu io memory pids\n"));
+        ASSERT(ic_write(mount, "user.slice/cgroup.subtree_control",
+                        "cpu memory pids\n"));
+        ASSERT(ic_write(mount,
+                        "user.slice/user-1000.slice/cgroup.subtree_control",
+                        "cpu memory pids\n"));
+        ASSERT(ic_write(mount, "user.slice/user-1000.slice/session-52.scope/"
+                               "cgroup.subtree_control", "\n"));
+        ASSERT(ic_write(mount, "user.slice/user-1000.slice/user@1000.service/"
+                               "cgroup.subtree_control", "cpu memory pids\n"));
+        ASSERT(ic_write(mount, "user.slice/user-1000.slice/user@1000.service/"
+                               "development.slice/cgroup.subtree_control",
+                        "cpu memory pids\n"));
+        ASSERT(ic_write(mount, "user.slice/user-1000.slice/user@1000.service/"
+                               "development.slice/job.scope/"
+                               "cgroup.subtree_control", "\n"));
+        ASSERT(ic_write(mount, "user.slice/user-1000.slice/user@1000.service/"
+                               "plain.slice/cgroup.subtree_control",
+                        "cpu pids\n"));
+        static const char *const locked[] = {
+            "", "/user.slice", "/user.slice/user-1000.slice",
+            "/user.slice/user-1000.slice/user@1000.service/plain.slice",
+        };
+        for (size_t i = 0; i < sizeof(locked) / sizeof(locked[0]); i++) {
+            ASSERT(snprintf(path, sizeof(path), "%s%s", mount, locked[i]) >
+                   0);
+            ASSERT(chmod(path, 0555) == 0);
+        }
+        if (geteuid() != 0) {
+            ASSERT(zcl_dev_proof_memory_scope_verdict(
+                       mount, "/user.slice/user-1000.slice/session-52.scope")
+                   == ZCL_DEV_PROOF_MEMORY_SCOPE_UNQUALIFIED);
+            /* Writable, but it does not delegate memory, and nothing above
+             * it that does is writable... except the user manager itself. */
+            ASSERT(snprintf(path, sizeof(path), "%s/user.slice/"
+                            "user-1000.slice/user@1000.service", mount) > 0);
+            ASSERT(chmod(path, 0555) == 0);
+            ASSERT(zcl_dev_proof_memory_scope_verdict(
+                       mount, "/user.slice/user-1000.slice/"
+                              "user@1000.service/plain.slice")
+                   == ZCL_DEV_PROOF_MEMORY_SCOPE_UNQUALIFIED);
+            ASSERT(chmod(path, 0755) == 0);
+        }
+        ASSERT(zcl_dev_proof_memory_scope_verdict(
+                   mount, "/user.slice/user-1000.slice/user@1000.service/"
+                          "development.slice/job.scope")
+               == ZCL_DEV_PROOF_MEMORY_SCOPE_QUALIFIED);
+        ASSERT(zcl_dev_proof_memory_scope_verdict(
+                   mount, "/user.slice/user-1000.slice/user@1000.service/"
+                          "plain.slice")
+               == ZCL_DEV_PROOF_MEMORY_SCOPE_QUALIFIED);
+        /* Nothing to read is not a refusal. */
+        ASSERT(snprintf(path, sizeof(path), "%s/absent", root) > 0);
+        ASSERT(zcl_dev_proof_memory_scope_verdict(path, "/user.slice")
+               == ZCL_DEV_PROOF_MEMORY_SCOPE_UNKNOWN);
+        ASSERT(zcl_dev_proof_memory_scope_verdict(mount, "user.slice")
+               == ZCL_DEV_PROOF_MEMORY_SCOPE_UNKNOWN);
+        ASSERT(zcl_dev_proof_memory_scope_verdict(mount, NULL)
+               == ZCL_DEV_PROOF_MEMORY_SCOPE_UNKNOWN);
+        for (size_t i = 0; i < sizeof(locked) / sizeof(locked[0]); i++) {
+            ASSERT(snprintf(path, sizeof(path), "%s%s", mount, locked[i]) >
+                   0);
+            ASSERT(chmod(path, 0755) == 0);
+        }
+        ASSERT(test_rm_rf_recursive(root) == 0);
+#endif
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 
 /* ── generation-pool hygiene fixtures ─────────────────────────────────── */
 #if !defined(_WIN32)
@@ -5675,13 +5893,14 @@ static bool ic_original_plan_fixture(const char *root, char local[65])
         return false;
     char cmd[16384];
     int n = snprintf(cmd, sizeof(cmd),
+        "cp .gitignore '%s/.gitignore' && "
         "cp tools/dev/source-identity.sh '%s/tools/dev/source-identity.sh' && "
         "cd '%s' && chmod 700 tools/dev/source-identity.sh && git init -q && "
         "git config user.name fixture && git config user.email fixture@invalid && "
         "git config commit.gpgsign false && git add -A && git commit -qm first && "
         "make --no-print-directory dev-bin && "
         "printf 'int value = 2;\\n' > sample.c && git add sample.c && "
-        "git commit -qm second", root, root);
+        "git commit -qm second", root, root, root);
     if (n <= 0 || (size_t)n >= sizeof(cmd) || system(cmd) != 0) return false;
     const char *argv[] = {"git", "rev-parse", "HEAD", NULL};
     struct zcl_devloop_process_result result = {0};
@@ -5764,6 +5983,27 @@ static int test_pw_original_plan_refreshes_before_sealing(void)
         /* Idempotent preparation still obtains a verified current plan. */
         ASSERT(zcl_dev_proof_test_original_plan_prepare(root, local, log,
                                                         why, sizeof(why)));
+        /* Use the repository's actual ignore rules and real native admission:
+         * the persistent generated lock is output, nearby source is not. */
+        ASSERT(ic_write(root, "vendor/.build.lock", ""));
+        ASSERT(zcl_dev_proof_test_original_plan_prepare(root, local, log,
+                                                        why, sizeof(why)));
+        ASSERT(snprintf(marker, sizeof(marker), "%s/vendor/.build.lock", root) <
+               (int)sizeof(marker));
+        ASSERT(access(marker, F_OK) == 0);
+        static const char *const negatives[] = {
+            "vendor/.build.lock.c", "vendor/vendor_lock_input.h",
+            "unrelated/vendor/.build.lock", "unexpected-source.c"
+        };
+        for (size_t i = 0; i < sizeof(negatives) / sizeof(negatives[0]); ++i) {
+            ASSERT(ic_write(root, negatives[i], "fixture input\n"));
+            ASSERT(!zcl_dev_proof_test_original_plan_prepare(root, local, log,
+                                                             why, sizeof(why)));
+            ASSERT_STR_EQ(why, "worktree_not_clean");
+            ASSERT(snprintf(marker, sizeof(marker), "%s/%s", root, negatives[i]) <
+                   (int)sizeof(marker));
+            ASSERT(unlink(marker) == 0);
+        }
         ASSERT(ic_write(root, "build/fail", "1\n"));
         ASSERT(!zcl_dev_proof_test_original_plan_prepare(root, local, log,
                                                          why, sizeof(why)));
@@ -7594,16 +7834,17 @@ static int test_ic_proof_test_dimension_runs_cold(void)
         size_t argc = zcl_dev_proof_test_dimension_argv(
             "/gen/build/bin/test_parallel", "--exact=test_a,test_b", argv,
             sizeof(argv) / sizeof(argv[0]));
-        ASSERT(argc == 5);
+        ASSERT(argc == 4);
         ASSERT(strcmp(argv[0], "/gen/build/bin/test_parallel") == 0);
         ASSERT(strcmp(argv[1], "--exact=test_a,test_b") == 0);
-        ASSERT(strcmp(argv[2], "--cold-audit") == 0);
-        ASSERT(strcmp(argv[3], "--emit-observations") == 0);
-        ASSERT(strcmp(argv[4], "--activate-proof-contracts") == 0);
-        ASSERT(argv[5] == NULL);
+        ASSERT(strcmp(argv[2], "--no-cache") == 0);
+        ASSERT(strcmp(argv[3], "--activate-proof-contracts") == 0);
+        ASSERT(argv[4] == NULL);
         for (size_t i = 0; i < argc; ++i) {
             ASSERT(strcmp(argv[i], "--cache") != 0);
-            ASSERT(strcmp(argv[i], "--no-cache") != 0);
+            ASSERT(strcmp(argv[i], "--cold-audit") != 0);
+            ASSERT(strcmp(argv[i], "--emit-observations") != 0);
+            ASSERT(strcmp(argv[i], "--collect-observations") != 0);
             ASSERT(strcmp(argv[i], "--cache-probe-only") != 0);
             ASSERT(strncmp(argv[i], "--use-capsule", 13) != 0);
         }
@@ -10280,6 +10521,9 @@ int test_impact_composition(void)
     failures += test_pw_marker_round_trip_and_refusals();
     failures += test_pw_generation_pool_sweep();
     failures += test_pw_generation_retire_passed();
+    failures += test_pw_generation_retire_wide_locked();
+    failures += test_pw_memory_scope_verdict();
+    failures += test_pw_generation_checkout_clears_pruned();
     failures += test_pw_abandoned_generation_reaped_by_age();
     failures += test_pw_pressure_evicts_oldest_until_satisfied();
     failures += test_pw_pressure_evicts_unclaimed_young_generation();

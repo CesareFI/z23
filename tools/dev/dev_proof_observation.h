@@ -9,8 +9,9 @@
  * into when set. The proof worker points this at a per-pair directory so
  * durable signed observations never share a content-addressed tree with the
  * unsigned, candidate-writable verdict records of the runner's own cache
- * store. When unset, a manual emission run writes into the testcache store
- * root. */
+ * store. The default proof worker scrubs this control and does not arm
+ * observation emission. When unset, an explicit run uses the testcache
+ * store root. */
 #define ZCL_DEV_OBSERVATION_STORE_ENV "ZCL_DEV_OBSERVATION_STORE"
 
 enum zcl_dev_observation_verdict {

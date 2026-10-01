@@ -4620,9 +4620,66 @@ static int dl_rebase(const struct dl_dirs *d, struct dl_row *row,
 /* make lint-land (lint-fast plus cheap gates that failed in proof lint) in the
  * landing worktree. Returns the child status; the transcript is appended to
  * the attempt log either way. */
+static int dl_lint_run(struct dl_row *row, const char *const argv[]);
+
 static int dl_lint_fast(const struct dl_dirs *d, struct dl_row *row)
 {
     const char *argv[] = { "make", "-C", d->wt, "lint-land", NULL };
+    return dl_lint_run(row, argv);
+}
+
+/* Does the candidate range add a compiled source file? 1 yes, 0 no, -1 when
+ * git could not answer. */
+static int dl_range_adds_source(const char *wt, const char *base,
+                                const char *local)
+{
+    char out[4096];
+    const char *args[] = { "diff", "--no-renames", "--diff-filter=A",
+                           "--name-only", base, local, "--", "*.c", NULL };
+    if (!dl_sha_ok(base) || !dl_sha_ok(local) ||
+        dl_git(wt, args, out, sizeof(out), DL_GIT_TIMEOUT_MS) != 0)
+        return -1;
+    return out[0] != '\0' ? 1 : 0;
+}
+
+#if defined(ZCL_TESTING)
+int zcl_native_dev_land_test_range_adds_source(const char *wt,
+                                               const char *base,
+                                               const char *local)
+{
+    return dl_range_adds_source(wt, base, local);
+}
+#endif
+
+/* A new compiled source is what the full-lint-only gates in `make
+ * lint-preflight` exist for — capability closure above all: a source with
+ * no module_capabilities.def row passes lint-land and then fails the
+ * proof's lint dimension, a whole proof spent on a gate that answers in
+ * under a minute. Those gates read built objects, so they are too dear for
+ * every landing and are run only when the range adds a `.c` file. A range
+ * git cannot classify runs them: the cost of a needless minute is smaller
+ * than the cost of the proof they would have saved. */
+static int dl_lint_new_source(const struct dl_dirs *d, struct dl_row *row)
+{
+    char jobs[16];
+    if (dl_range_adds_source(d->wt, row->base, row->local) == 0)
+        return 0;
+    if (!platform_build_jobs_arg(jobs))
+        return -1;
+    const char *argv[] = { "make", jobs, "-C", d->wt, "lint-preflight",
+                           NULL };
+    return dl_lint_run(row, argv);
+}
+
+/* Everything the landing lints before it asks for a proof. */
+static int dl_lint_candidate(const struct dl_dirs *d, struct dl_row *row)
+{
+    int rc = dl_lint_fast(d, row);
+    return rc != 0 ? rc : dl_lint_new_source(d, row);
+}
+
+static int dl_lint_run(struct dl_row *row, const char *const argv[])
+{
     char *buf;
     int rc;
     buf = (char *)zcl_malloc(DL_LOG_CAP, "dev.land.lint");
@@ -6100,7 +6157,7 @@ static void dl_step_start(const struct dl_dirs *d, struct dl_row *row,
      * discover first. The proof stub skips it: a test of this queue is not
      * a test of the lint suite. */
     (void)snprintf(row->phase, sizeof(row->phase), "prebuild");
-    if (!dl_stub() && dl_lint_fast(d, row) != 0) {
+    if (!dl_stub() && dl_lint_candidate(d, row) != 0) {
         bool retry = strcmp(row->dimension, "host_load") == 0 &&
                      row->attempt < DL_ATTEMPT_MAX;
         if (retry) {
@@ -6632,7 +6689,7 @@ static bool dl_push_intent_ready(const struct dl_dirs *d,
 /* A durable push checkpoint says dispatch MAY have happened. If its reply was
  * lost and an independent fetch does not yet contain the head, the receiver
  * cannot distinguish a rejected mutation from an unsettled one. Keep the
- * exact intent for observation; never dispatch it a second time. */
+ * exact intent; this step dispatches nothing further. */
 static void dl_push_outcome_unknown(const struct dl_dirs *d,
                                     struct dl_row *row,
                                     const char *observed_main,
@@ -6700,9 +6757,30 @@ static void dl_push_refused_log(const struct dl_row *row, const char *next,
     dl_log(row, line);
 }
 
-/* A signed push checkpoint either settles as refused (successor, which
- * clears the publication so the new pair needs a new signature) or stays
- * unknown. The same intent is never dispatched twice. */
+/* May a later step send the same signed compare-and-swap again? Only when a
+ * fresh independent observation shows main still at the signed base: the
+ * head is absent, so the earlier dispatch did not apply, and the push is
+ * `--force-with-lease=main:<base> <local>:main`, so sending it again can
+ * reach no state the first dispatch could not — it lands this exact signed
+ * pair or is refused. Each send consumes one of the row's attempts, so a
+ * remote that keeps refusing stops being asked after DL_ATTEMPT_MAX and the
+ * row reads as an unresolved checkpoint, exactly as a single lost dispatch
+ * did before. Without this a dispatch lost on a quiet main waited for a
+ * remote change that nothing was going to make, holding the single-flight
+ * queue behind it (observed: nine hours, 2026-10-01). */
+static bool dl_push_redispatch_allowed(const struct dl_row *row,
+                                       const char *observed_main)
+{
+    return row->publication_signature[0] && observed_main &&
+           dl_sha_ok(observed_main) && dl_sha_ok(row->base) &&
+           strcmp(observed_main, row->base) == 0 &&
+           row->attempt < DL_ATTEMPT_MAX;
+}
+
+/* A signed push checkpoint settles as refused (successor, which clears the
+ * publication so the new pair needs a new signature) once main has moved
+ * without the head. On an unmoved main it stays unknown for this step; see
+ * dl_push_redispatch_allowed() for what the next step may do. */
 static void dl_push_checkpoint_settle(const struct dl_dirs *d,
                                       struct dl_row *row,
                                       const char *observed_main,
@@ -7014,8 +7092,15 @@ static void dl_resume_pending_watcher_kick(const struct dl_dirs *d,
          * single-flight queue behind it) forever.  Take the ordinary
          * successor path: the stale signed intent is logged, the exact pair
          * is never redispatched, and the requeued row re-proves and re-signs
-         * a fresh pair on the new base.  Base unmoved still waits for the
-         * independent receipt, exactly as before. */
+         * a fresh pair on the new base.  Base unmoved sends the same signed
+         * compare-and-swap again while the row has attempts left. */
+        if (dl_push_redispatch_allowed(row, observed_main)) {
+            row->attempt++;
+            dl_log(row, "signed push did not apply and main is unmoved; "
+                        "sending the same compare-and-swap again\n");
+            dl_step_push(d, row, reply);
+            return;
+        }
         dl_push_checkpoint_settle(d, row, observed_main, reply);
         return;
     }
@@ -8050,6 +8135,93 @@ int zcl_native_dev_land_test_watch_worker(const char *wt, const char *base,
 }
 #endif
 
+/* The exact proof refuses a producer whose own source identity is not the
+ * candidate's: the binary that selects tests and applies impact policy must
+ * be built from the bytes it proves. A drive runs the proof in its own
+ * process, and its binary is whatever was last built where it was started —
+ * almost never the candidate the queue just checked out, and never one the
+ * lander rebased. That refusal used to fail the row; every landing then
+ * needed someone to build the producer and run the step by hand. */
+#if defined(ZCL_DEV_BUILD) || defined(ZCL_TESTING)
+#define DL_PRODUCER_BUILD_TIMEOUT_MS (30 * 60 * 1000)
+#define DL_PRODUCER_PROOF_TIMEOUT_MS (2 * 60 * 60 * 1000)
+
+[[maybe_unused]] static bool dl_producer_stale(const char *detail)
+{
+    return detail && strstr(detail, "proof_producer_source_mismatch") != NULL;
+}
+
+/* Build the development binary in the landing worktree — the candidate's
+ * own Makefile target, in the tree whose lint and regeneration recipes the
+ * landing already runs — and prove the pair with that binary as a child.
+ * Returns 1 once the child proof has exited (its verdict is the pair's
+ * settled proof state, read by the step that follows), -1 with `why` when
+ * no candidate-built producer could be run. */
+[[maybe_unused]] static int dl_producer_reproof(const char *root,
+                                                const char *local,
+                                                const char *base,
+                                                const char *make_program,
+                                                char *why, size_t why_cap)
+{
+    char jobs[16], bin[4096], root_arg[4200], local_arg[128], base_arg[128];
+    char *buf;
+    int rc;
+    if (!platform_build_jobs_arg(jobs) ||
+        snprintf(bin, sizeof(bin), "%s/build/bin/z23-dev", root) >=
+            (int)sizeof(bin) ||
+        snprintf(root_arg, sizeof(root_arg), "--root=%s", root) >=
+            (int)sizeof(root_arg) ||
+        snprintf(local_arg, sizeof(local_arg), "--local_commit=%s", local) >=
+            (int)sizeof(local_arg) ||
+        snprintf(base_arg, sizeof(base_arg), "--remote_base=%s", base) >=
+            (int)sizeof(base_arg)) {
+        (void)snprintf(why, why_cap, "%s", "producer_arguments_invalid");
+        return -1;
+    }
+    buf = (char *)zcl_malloc(DL_LOG_CAP, "dev.land.producer");
+    if (!buf) {
+        (void)snprintf(why, why_cap, "%s", "producer_log_unavailable");
+        return -1;
+    }
+    const char *build[] = { make_program, jobs, "-C", root, "dev-bin", NULL };
+    rc = zcl_spawn_capture(build, buf, DL_LOG_CAP,
+                           DL_PRODUCER_BUILD_TIMEOUT_MS);
+    if (rc != 0 || access(bin, X_OK) != 0) {
+        dl_first_actionable(buf, why, why_cap);
+        if (!why[0])
+            (void)snprintf(why, why_cap, "%s", "producer_build_failed");
+        free(buf);
+        return -1;
+    }
+    const char *prove[] = { bin, "dev", "proof", "step", root_arg, local_arg,
+                            base_arg, NULL };
+    rc = zcl_spawn_capture(prove, buf, DL_LOG_CAP,
+                           DL_PRODUCER_PROOF_TIMEOUT_MS);
+    free(buf);
+    if (rc < 0) {
+        (void)snprintf(why, why_cap, "%s", "producer_launch_failed");
+        return -1;
+    }
+    return 1;
+}
+#endif
+
+#if defined(ZCL_TESTING)
+bool zcl_native_dev_land_test_producer_stale(const char *detail)
+{
+    return dl_producer_stale(detail);
+}
+
+int zcl_native_dev_land_test_producer_reproof(const char *root,
+                                              const char *local,
+                                              const char *base,
+                                              const char *make_program,
+                                              char *why, size_t why_cap)
+{
+    return dl_producer_reproof(root, local, base, make_program, why, why_cap);
+}
+#endif
+
 /* Return 1 after this pair settles, 0 when a worker owns it, -1 on refusal. */
 #if defined(ZCL_DEV_BUILD) || defined(ZCL_TESTING)
 static int dl_drive_proof(struct zcl_command_reply *reply)
@@ -8083,6 +8255,25 @@ static int dl_drive_proof(struct zcl_command_reply *reply)
     }
     if (result == 0)
         (void)json_push_kv_str(&reply->data, "proof_worker", proof.detail);
+    if (result == 1 && dl_producer_stale(proof.detail)) {
+        /* Settled as a refusal of this binary, not of the candidate. Queue
+         * the pair again and prove it with a producer built from it. */
+        struct zcl_dev_proof_status again = {0};
+        char why[256] = "";
+        if (!zcl_dev_proof_retry(root, local, base, &again)) {
+            dl_fail(reply, "PROOF_PRODUCER_RETRY_REFUSED", "drive",
+                    "cannot queue the pair again for a candidate-built producer",
+                    again.detail);
+            return -1;
+        }
+        if (dl_producer_reproof(root, local, base, "make", why,
+                                sizeof(why)) < 0) {
+            dl_fail(reply, "PROOF_PRODUCER_UNAVAILABLE", "drive",
+                    "cannot build and run a producer from the candidate",
+                    why);
+            return -1;
+        }
+    }
     return result;
 #else
     if (!dl_stub()) {

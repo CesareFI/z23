@@ -729,6 +729,8 @@ static void proof_coverage_emit(struct zcl_command_reply *reply,
         state = "conflict";
     else if (report->missing)
         state = "incomplete";
+    else if (report->unqualified)
+        state = "unqualified";
     else if (report->row_count == 0)
         state = "empty";
 
@@ -743,6 +745,8 @@ static void proof_coverage_emit(struct zcl_command_reply *reply,
     (void)json_push_kv_str(&reply->data, "coverage_state", state);
     (void)json_push_kv_int(&reply->data, "rows", (int64_t)report->row_count);
     (void)json_push_kv_int(&reply->data, "covered", (int64_t)report->covered);
+    (void)json_push_kv_int(&reply->data, "unqualified",
+                           (int64_t)report->unqualified);
     (void)json_push_kv_int(&reply->data, "missing", (int64_t)report->missing);
     (void)json_push_kv_int(&reply->data, "conflicts",
                            (int64_t)report->conflicts);

@@ -16,7 +16,10 @@ see [CONTRIBUTING.md](../.github/CONTRIBUTING.md#licensing-of-contributions).
 
 - **[@CesareFI](https://github.com/CesareFI)** — release-only package verifier
   selection in shipped nodes, selection/refusal regression coverage, and the
-  sealed-verifier A-B-A fixture portability fix (PR #62).
+  sealed-verifier A-B-A fixture portability fix (PR #62); the private
+  per-pair observation store lifecycle for signed proof-runner observations
+  (PR #63); the signed coverage manifest codec over those observations and
+  its regression group (PR #64).
 
 - **[@jmprcx](https://github.com/jmprcx)** — key-material hardening (AES
   state cleanse, base58/bech32 encode-side stack caps, PR #1); typed
