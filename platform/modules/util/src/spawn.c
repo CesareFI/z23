@@ -769,10 +769,11 @@ static int spawn_capture_impl(
     zcl_spawn_cancel_fn should_cancel, void *cancel_ctx, bool *cancelled,
     bool *timed_out_out, bool merge_stderr,
     struct zcl_spawn_binary_observation *exact, int executable_fd,
-    struct zcl_spawn_measure *measure)
+    int inherited_fd, struct zcl_spawn_measure *measure)
 {
 #if !defined(__linux__)
     (void)executable_fd;
+    (void)inherited_fd;
 #endif
     if (spawn_capture_impl_prepare(argv, buf, cap, cancelled, timed_out_out,
                                    exact) != 0)
@@ -807,6 +808,12 @@ static int spawn_capture_impl(
         spawn_capture_child_stdio(outpipe[1], merge_stderr);
 
 #if defined(__linux__)
+        if (inherited_fd >= 0) {
+            int flags = fcntl(inherited_fd, F_GETFD);
+            if (flags < 0 ||
+                fcntl(inherited_fd, F_SETFD, flags & ~FD_CLOEXEC) != 0)
+                _exit(126);
+        }
         if (executable_fd >= 0) {
             extern char **environ;
             fexecve(executable_fd, (char *const *)argv, environ);
@@ -843,7 +850,7 @@ int zcl_spawn_capture_cancelable(
 {
     return spawn_capture_impl(argv, buf, cap, timeout_ms, should_cancel,
                               cancel_ctx, cancelled, NULL, false, NULL, -1,
-                              NULL);
+                              -1, NULL);
 }
 
 static int spawn_capture_observed_platform(
@@ -851,7 +858,7 @@ static int spawn_capture_observed_platform(
     bool *timed_out)
 {
     return spawn_capture_impl(argv, buf, cap, timeout_ms, NULL, NULL, NULL,
-                              timed_out, false, NULL, -1, NULL);
+                              timed_out, false, NULL, -1, -1, NULL);
 }
 
 static int spawn_capture_merged_observed_platform(
@@ -859,7 +866,7 @@ static int spawn_capture_merged_observed_platform(
     bool *timed_out)
 {
     return spawn_capture_impl(argv, buf, cap, timeout_ms, NULL, NULL, NULL,
-                              timed_out, true, NULL, -1, NULL);
+                              timed_out, true, NULL, -1, -1, NULL);
 }
 
 /* PTY capture is deliberately a transport sibling of pipe capture, not a
@@ -958,11 +965,29 @@ int zcl_spawn_capture_cancelable_fd(
     if (executable_fd < 0) return -1;
     return spawn_capture_impl(argv, buf, cap, timeout_ms, should_cancel,
                               cancel_ctx, cancelled, NULL, false, NULL,
-                              executable_fd, NULL);
+                              executable_fd, -1, NULL);
 #else
     (void)executable_fd; (void)argv; (void)buf; (void)cap;
     (void)timeout_ms; (void)should_cancel; (void)cancel_ctx;
     if (cancelled) *cancelled = false;
+    return -1;
+#endif
+}
+
+int zcl_spawn_capture_inherited_fd(
+    int inherited_fd, const char *const argv[], char *buf, size_t cap,
+    int timeout_ms)
+{
+#if defined(__linux__)
+    if (inherited_fd <= STDERR_FILENO) {
+        if (buf && cap > 0) buf[0] = '\0';
+        return -1;
+    }
+    return spawn_capture_impl(argv, buf, cap, timeout_ms, NULL, NULL, NULL,
+                              NULL, false, NULL, -1, inherited_fd, NULL);
+#else
+    (void)inherited_fd; (void)argv; (void)timeout_ms;
+    if (buf && cap > 0) buf[0] = '\0';
     return -1;
 #endif
 }
@@ -981,7 +1006,7 @@ int zcl_spawn_capture_cancelable_measured(
 #else
     return spawn_capture_impl(argv, buf, cap, timeout_ms, should_cancel,
                               cancel_ctx, cancelled, NULL, false, NULL,
-                              -1, measure);
+                              -1, -1, measure);
 #endif
 }
 
@@ -998,7 +1023,7 @@ int zcl_spawn_capture_cancelable_fd_measured(
     if (executable_fd < 0) return -1;
     return spawn_capture_impl(argv, buf, cap, timeout_ms, should_cancel,
                               cancel_ctx, cancelled, NULL, false, NULL,
-                              executable_fd, measure);
+                              executable_fd, -1, measure);
 #else
     (void)executable_fd; (void)argv; (void)buf; (void)cap;
     (void)timeout_ms; (void)should_cancel; (void)cancel_ctx;
@@ -1025,7 +1050,7 @@ static struct zcl_result spawn_capture_binary_impl(
     return ZCL_ERR(-1, "spawn: Windows binary capture is unavailable");
 #else
     int rc = spawn_capture_impl(argv, buf, cap, timeout_ms, NULL, NULL,
-                                NULL, NULL, merge_stderr, out, -1, NULL);
+                                NULL, NULL, merge_stderr, out, -1, -1, NULL);
     if (rc != 0 || out->exit_code != 0 || !out->eof || out->overflow || out->timed_out ||
         !out->exit_observed)
         return ZCL_ERR(-1, "spawn: incomplete binary capture (exit=%d eof=%d overflow=%d timeout=%d observed=%d)",

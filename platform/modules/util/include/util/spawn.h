@@ -122,6 +122,17 @@ struct zcl_result zcl_spawn_detached_input(const char *const argv[],
 int zcl_spawn_capture(const char *const argv[], char *buf, size_t cap,
                        int timeout_ms);
 
+/* Linux: the same bounded capture, but keep one already-open descriptor at
+ * its existing number across the child exec. The caller retains ownership,
+ * and the parent's FD_CLOEXEC flag is not changed. This is for trusted local
+ * helpers that must inspect an immutable descriptor through
+ * /proc/self/fd/<inherited_fd> without reaching back through another
+ * process's /proc tree. Standard descriptors are refused. Other platforms
+ * return -1. */
+int zcl_spawn_capture_inherited_fd(
+    int inherited_fd, const char *const argv[], char *buf, size_t cap,
+    int timeout_ms);
+
 /* Exact binary stdout from a trusted local program. cap counts payload bytes;
  * no terminator is appended. Success requires EOF, observed exit zero, and no
  * overflow or transport error within a positive deadline. Partial bytes never

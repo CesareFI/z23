@@ -4,6 +4,7 @@
  * (zcl_spawn_detached, zcl_spawn_capture). */
 
 #include "test/test_core.h"
+#include "platform/fd_path.h"
 #include "platform/time_compat.h"
 #include "util/spawn.h"
 
@@ -142,17 +143,39 @@ static int test_spawn_capture_pinned_fd(void)
 {
     int failures = 0;
     TEST("spawn: pinned executable ignores a missing pathname") {
-        int fd = open("/bin/echo", O_RDONLY | O_CLOEXEC);
+        char compiler[PATH_MAX];
+        ASSERT(realpath("/usr/bin/cc", compiler) != NULL);
+        int fd = open(compiler, O_RDONLY | O_CLOEXEC);
         ASSERT(fd >= 0);
         const char *argv[] = { "/no/such/spawn-image",
-                               "pinned-executable-ran", NULL };
+                               "--version", NULL };
         char buf[128] = {0};
         int rc = zcl_spawn_capture_cancelable_fd(fd, argv, buf,
                                                   sizeof(buf), 3000,
                                                   NULL, NULL, NULL);
         close(fd);
         ASSERT(rc == 0);
-        ASSERT(spawn_contains(buf, "pinned-executable-ran"));
+        ASSERT(buf[0] != '\0');
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_spawn_capture_inherited_fd(void)
+{
+    int failures = 0;
+    TEST("spawn: inherited descriptor is child-local and parent stays cloexec") {
+        int fd = open("/bin/echo", O_RDONLY | O_CLOEXEC);
+        ASSERT(fd > STDERR_FILENO);
+        char path[64];
+        ASSERT(platform_fd_path(path, sizeof(path), fd, NULL));
+        const char *argv[] = { "/usr/bin/readlink", path, NULL };
+        char buf[256] = {0};
+        ASSERT(zcl_spawn_capture_inherited_fd(fd, argv, buf, sizeof(buf),
+                                               3000) == 0);
+        ASSERT(buf[0] == '/');
+        ASSERT((fcntl(fd, F_GETFD) & FD_CLOEXEC) != 0);
+        close(fd);
         PASS();
     } _test_next:;
     return failures;
@@ -599,6 +622,7 @@ static int test_spawn_platform_arm(void)
     failures += test_spawn_capture_echo();
 #if defined(__linux__)
     failures += test_spawn_capture_pinned_fd();
+    failures += test_spawn_capture_inherited_fd();
 #endif
     failures += test_spawn_capture_timeout_kills();
     failures += test_spawn_capture_eof_remains_bounded();

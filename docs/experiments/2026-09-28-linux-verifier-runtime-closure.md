@@ -36,3 +36,34 @@ CAS input refusal, duplicate attachment, and independent reproduction.
 The 64-entry refusal, root-owned path checks, and byte hashing remain
 unchanged. The successful attach is scoped to this Linux host and its exact
 loader closure; other hosts must measure and pass their own closure.
+
+## Hetzner unprivileged `/proc` boundary
+
+At 2026-10-01T05:20:45Z, the root-host acceptance route exposed a second
+Linux policy boundary. The verifier snapshot was already copied into a sealed
+memfd, but the `ldd` child was asked to open that snapshot through
+`/proc/<parent-pid>/fd/<fd>`. On this host every such `newfstatat` failed with
+`EACCES` under UID/GID 65534 and the zero-capability acceptance policy. The
+compiler-driver, compiler-backend, and assembler closures all completed; only
+the child-to-parent `/proc` lookup failed.
+
+The closure probe now inherits the same sealed descriptor into its child and
+addresses it as `/proc/self/fd/<fd>`. Only the post-fork child clears
+`FD_CLOEXEC`; the parent descriptor and every other thread retain their
+original flags. This does not fall back to the mutable verifier pathname and
+does not relax the root-owned loader/library checks, the sealed-byte hash, the
+64-entry loader bound, the unprivileged UID requirement, or the zero-capability
+requirement. A registered spawn regression proves both child visibility and
+unchanged parent `FD_CLOEXEC` state.
+
+The repository acceptance helper copied runner
+`a93f8dcfc6cee3092eb2807480027c7d8720571c8b2f23e48aee9a6693818ef8`
+and retained verifier
+`bbe1428b9ab2cbc654ef7070edace75ef2771cfe5e57675f5aef84f14f8d6c72`
+into its disposable `/var/tmp` fixture, dropped to UID/GID 65534 with all
+capability sets empty, and ran `test_build_fabric,test_build_fabric_attach`.
+Both groups passed in 78.9 seconds with zero failures and zero skips. The attach
+group also corrupts every eligible donor observation after its bounded scan,
+so the selected donor must be re-read and malformed CAS is refused regardless
+of database tie ordering. The helper's cleanup trap removed the fixture after
+retaining its transcript under `test-tmp/`.

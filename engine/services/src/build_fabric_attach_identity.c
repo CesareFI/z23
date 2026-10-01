@@ -10,6 +10,7 @@
 #include "build_fabric_attach_identity_internal.h"
 #include "build_fabric_worker_internal.h"
 #include "crypto/sha3.h"
+#include "platform/fd_path.h"
 #include "platform/positioned_file.h"
 #include "platform/os_proc.h"
 #include "util/spawn.h"
@@ -246,7 +247,8 @@ static bool bfat_hash_loader_line(struct sha3_256_ctx *sha, char *line,
 /* Bind every resolved DT_NEEDED path and bytes. Unknown loader output
  * refuses attachment rather than leaving an unrecorded dependency. */
 static bool bfat_linux_runtime_files(struct sha3_256_ctx *sha,
-                                     const char *executable, bool fixed_env)
+                                     const char *executable, bool fixed_env,
+                                     int inherited_fd)
 {
 #if defined(__linux__)
     if (!bfat_root_owned_path("/usr/bin/env") ||
@@ -261,7 +263,11 @@ static bool bfat_linux_runtime_files(struct sha3_256_ctx *sha,
         "/usr/bin/ldd", executable, NULL
     };
     const char *const *argv = fixed_env ? fixed_argv : ambient_argv;
-    if (zcl_spawn_capture(argv, output, sizeof(output), 10000) != 0 ||
+    int rc = inherited_fd >= 0
+        ? zcl_spawn_capture_inherited_fd(inherited_fd, argv, output,
+                                         sizeof(output), 10000)
+        : zcl_spawn_capture(argv, output, sizeof(output), 10000);
+    if (rc != 0 ||
         !output[0] || strlen(output) >= sizeof(output) - 1)
         return false;
     char *save = NULL;
@@ -275,6 +281,7 @@ static bool bfat_linux_runtime_files(struct sha3_256_ctx *sha,
     (void)sha;
     (void)executable;
     (void)fixed_env;
+    (void)inherited_fd;
     return false;
 #endif
 }
@@ -298,7 +305,7 @@ static bool bfat_hash_compiler_runtime(
     const char *const tools[] = { desc->compiler_driver,
                                   desc->compiler_backend, desc->assembler };
     for (size_t i = 0; i < sizeof(tools) / sizeof(tools[0]); i++)
-        if (!bfat_linux_runtime_files(sha, tools[i], true)) return false;
+        if (!bfat_linux_runtime_files(sha, tools[i], true, -1)) return false;
     return true;
 }
 
@@ -337,10 +344,10 @@ struct zcl_result bfat_runtime_roots_snapshot(
     char verifier[4096];
     ZCL_CHECK(bfw_worker_path(workspace, verifier, sizeof(verifier)));
     char pinned_path[64];
-    if (snprintf(pinned_path, sizeof(pinned_path), "/proc/%ld/fd/%d",
-                 (long)getpid(), snapshot->fd) >= (int)sizeof(pinned_path))
+    if (!platform_fd_path(pinned_path, sizeof(pinned_path), snapshot->fd,
+                          NULL))
         return ZCL_ERR(-1, "executor-runtime-closure-missing: verifier");
-    if (!bfat_linux_runtime_files(&sha, pinned_path, false))
+    if (!bfat_linux_runtime_files(&sha, pinned_path, false, snapshot->fd))
         return ZCL_ERR(-1, "executor-runtime-closure-missing: verifier");
     if (!bfat_hash_verifier_environment(&sha))
         return ZCL_ERR(-1, "executor-runtime-closure-missing: environment");

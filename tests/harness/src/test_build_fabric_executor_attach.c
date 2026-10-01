@@ -236,7 +236,8 @@ static void att_revoke_donor_after_scan(void *context)
 }
 
 struct att_append_after_scan {
-    const char *path;
+    const char *paths[2];
+    size_t path_count;
     bool called;
     bool appended;
 };
@@ -245,7 +246,10 @@ static void att_append_cas_after_scan(void *context)
 {
     struct att_append_after_scan *mutation = context;
     mutation->called = true;
-    mutation->appended = att_append_zero(mutation->path);
+    bool appended = mutation->path_count > 0 && mutation->path_count <= 2;
+    for (size_t i = 0; i < mutation->path_count; i++)
+        if (!att_append_zero(mutation->paths[i])) appended = false;
+    mutation->appended = appended;
 }
 #endif
 
@@ -553,26 +557,32 @@ static int test_bf_attach_conflicting_physical_outputs(void)
         ASSERT(memcmp(output_a, output_b, 32) == 0);
         ASSERT(build_fabric_observation_verify(
                    dir, &job_b, &action_b, &receipt_b).ok);
-        uint8_t bounded_observation_root[32];
-        uint8_t *bounded_observation_wire = NULL;
-        size_t bounded_observation_len = 0;
-        char bounded_observation_path[600];
-        ASSERT(zcl_hex_decode_lower(
-            receipt_b.observation_sha3, bounded_observation_root, 32));
-        ASSERT_EQ(vcs_object_load_raw(
-            dir, bounded_observation_root, &bounded_observation_wire,
-            &bounded_observation_len), 0);
-        ASSERT_EQ(bounded_observation_len,
-                  VCS_BUILD_EXECUTION_OBSERVATION_WIRE_BYTES);
-        ASSERT(att_object_path(
-            dir, receipt_b.observation_sha3, bounded_observation_path,
-            sizeof(bounded_observation_path)));
-        ASSERT(att_append_zero(bounded_observation_path));
+        const struct db_build_receipt *donors[] = {&receipt_a, &receipt_b};
+        uint8_t bounded_observation_roots[2][32];
+        uint8_t *bounded_observation_wires[2] = {NULL, NULL};
+        size_t bounded_observation_lens[2] = {0, 0};
+        char bounded_observation_paths[2][600];
+        for (size_t i = 0; i < 2; i++) {
+            ASSERT(zcl_hex_decode_lower(
+                donors[i]->observation_sha3, bounded_observation_roots[i],
+                32));
+            ASSERT_EQ(vcs_object_load_raw(
+                dir, bounded_observation_roots[i],
+                &bounded_observation_wires[i],
+                &bounded_observation_lens[i]), 0);
+            ASSERT_EQ(bounded_observation_lens[i],
+                      VCS_BUILD_EXECUTION_OBSERVATION_WIRE_BYTES);
+            ASSERT(att_object_path(
+                dir, donors[i]->observation_sha3,
+                bounded_observation_paths[i],
+                sizeof(bounded_observation_paths[i])));
+        }
+        ASSERT(att_append_zero(bounded_observation_paths[1]));
         ASSERT(!build_fabric_observation_verify(
             dir, &job_b, &action_b, &receipt_b).ok);
         ASSERT(vcs_object_put_addressed_repair(
-            dir, bounded_observation_root, bounded_observation_wire,
-            bounded_observation_len, NULL));
+            dir, bounded_observation_roots[1], bounded_observation_wires[1],
+            bounded_observation_lens[1], NULL));
         ASSERT(build_fabric_observation_verify(
             dir, &job_b, &action_b, &receipt_b).ok);
         ASSERT(att_plan_request(&ndb, dir, att_id_d, att_id_c, capsule_hex,
@@ -582,7 +592,9 @@ static int test_bf_attach_conflicting_physical_outputs(void)
         struct build_fabric_attach_report report;
 #if !defined(_WIN32)
         struct att_append_after_scan mutation = {
-            .path = bounded_observation_path,
+            .paths = {bounded_observation_paths[0],
+                      bounded_observation_paths[1]},
+            .path_count = 2,
         };
         build_fabric_attach_test_after_scan(att_append_cas_after_scan,
                                             &mutation);
@@ -594,11 +606,14 @@ static int test_bf_attach_conflicting_physical_outputs(void)
         ASSERT(!mutated.ok);
         ASSERT_STR_EQ(report.refusal,
                       "attach-output-poisoned: observation malformed");
-        ASSERT(vcs_object_put_addressed_repair(
-            dir, bounded_observation_root, bounded_observation_wire,
-            bounded_observation_len, NULL));
+        for (size_t i = 0; i < 2; i++)
+            ASSERT(vcs_object_put_addressed_repair(
+                dir, bounded_observation_roots[i],
+                bounded_observation_wires[i], bounded_observation_lens[i],
+                NULL));
 #endif
-        free(bounded_observation_wire);
+        free(bounded_observation_wires[0]);
+        free(bounded_observation_wires[1]);
         struct zcl_result attached = build_fabric_attach(
             &ndb, dir, NULL, &job_c, &action_c, secret, pubkey, &receipt_c,
             &report);
