@@ -70,7 +70,8 @@
  *      temporary-file symlink can redirect signed bytes, an attestation
  *      directory accessible by other accounts cannot authorize publication,
  *      and an overfull release directory cannot authorize execution from a
- *      partial scan. On the
+ *      partial scan, and content-addressed chunk bytes must still match the
+ *      manifest commitment before compilation. On the
  *      root-host lane, a valid 0600 key owned by another uid is also refused.
  *      The
  *      bounded cleanup refuses to persist an attestation when hostile test
@@ -4966,6 +4967,55 @@ static int ze_overfull_release_directory(const char *base,
     return failures;
 }
 
+static bool ze_replace_fixture_chunk(const char *store,
+                                     const char *committed,
+                                     const char *replacement)
+{
+    uint8_t hash[32];
+    sha3_256((const uint8_t *)committed, strlen(committed), hash);
+    char hex[65], path[4400];
+    zv_hex_enc(hash, sizeof(hash), hex);
+    int n = snprintf(path, sizeof(path), "%s/cas/sha3/%.2s/%s", store,
+                     hex, hex);
+    return n > 0 && (size_t)n < sizeof(path) &&
+           zv_write_file(path, replacement, strlen(replacement), 0600);
+}
+
+static int ze_tampered_chunk(const char *base, const char *key_path,
+                             const char *work)
+{
+    int failures = 0;
+    static const char committed[] =
+        "#include \"add.h\"\nint add(int a, int b) { return a + b; }\n";
+    static const char substituted[] =
+        "#include \"add.h\"\nint add(int a, int b) { return a +b ; }\n";
+    static const char test_source[] =
+        "#include \"add.h\"\nint main(void) { return add(2, 3) == 5 ? 0 : 1; }\n";
+    char store[4400];
+    snprintf(store, sizeof(store), "%s/store_tampered_chunk", base);
+    uint8_t package_root[32], release_id[32], recipe_root[32];
+    bool prepared = strlen(committed) == strlen(substituted) &&
+                    zv_publish_fixture(store, committed, test_source,
+                                       package_root, release_id,
+                                       recipe_root) &&
+                    ze_replace_fixture_chunk(store, committed, substituted);
+    ZV_CHECK("e2e: substituted CAS chunk fixture prepared", prepared);
+
+    char root_hex[65], out[2048];
+    zv_hex_enc(package_root, sizeof(package_root), root_hex);
+    int rc = prepared ? zv_run_verifier(root_hex, store, key_path, work, out,
+                                        sizeof(out)) : -1;
+    struct vcs_package_attest att;
+    bool refused = prepared && rc == 5 &&
+                   !zv_read_only_attestation(store, &att);
+    ZV_CHECK("e2e: substituted CAS chunk is refused before compilation",
+             refused);
+    if (prepared && !refused)
+        printf("  zcode_verify: substituted CAS chunk rc=%d out=%s\n", rc,
+               out);
+    return failures;
+}
+
 static int ze_socket(const char *base, const char *key_path,
                      const char *work)
 {
@@ -5190,6 +5240,7 @@ static int t_verifier_e2e(void)
     failures += ze_nonprivate_attestation_directory(base, key_path, work);
 #endif
     failures += ze_overfull_release_directory(base, key_path, work);
+    failures += ze_tampered_chunk(base, key_path, work);
     failures += ze_buildfail(base, key_path, work);
     failures += ze_socket(base, key_path, work);
     failures += ze_reproduce(base, root_hex, store, work);

@@ -5010,7 +5010,8 @@ static bool pv_materialize_write_chunks(int fd,
         size_t chunk_len = 0;
         uint8_t *chunk = pv_read_file(chunk_path, VCS_PACKAGE_CHUNK_BYTES,
                                       &chunk_len);
-        if (!chunk) {
+        if (!chunk || !vcs_package_verify_chunk(f, c, chunk, chunk_len)) {
+            free(chunk);
             close(fd);
             return false;
         }
