@@ -872,7 +872,7 @@ static bool dps_measure_observation_lookup(
                                    domain, 1, &result);
     clock_t cpu_end = clock();
     if (clock_gettime(CLOCK_MONOTONIC, &wall_end) != 0 ||
-        result.result != ZCL_DEV_OBSERVATION_CONFLICT) return false;
+        result.result != ZCL_DEV_OBSERVATION_CONFLICT_EVIDENCE) return false;
     uint64_t wall_ns = (uint64_t)(
         (int64_t)(wall_end.tv_sec - wall_start.tv_sec) * 1000000000 +
         (int64_t)(wall_end.tv_nsec - wall_start.tv_nsec));
@@ -925,7 +925,7 @@ static int test_dps_local_observation_lookup(void)
                                     &domain, &query));
         zcl_dev_observation_lookup(&query, objects, 2, true,
                                    &domain, 1, &result);
-        ASSERT(result.result == ZCL_DEV_OBSERVATION_CONFLICT);
+        ASSERT(result.result == ZCL_DEV_OBSERVATION_CONFLICT_EVIDENCE);
         ASSERT(result.pass_count == 1 && result.fail_count == 1);
         ASSERT(result.pass_root_indices[0] == 0 &&
                result.fail_root_indices[0] == 1);
@@ -976,7 +976,7 @@ static bool dps_measure_observation_cas(
                                           true, domain, 1, &result);
     clock_t cpu_end = clock();
     if (clock_gettime(CLOCK_MONOTONIC, &wall_end) != 0 ||
-        result.result != ZCL_DEV_OBSERVATION_CONFLICT) return false;
+        result.result != ZCL_DEV_OBSERVATION_CONFLICT_EVIDENCE) return false;
     uint64_t wall_ns = (uint64_t)(
         (int64_t)(wall_end.tv_sec - wall_start.tv_sec) * 1000000000 +
         (int64_t)(wall_end.tv_nsec - wall_start.tv_nsec));
@@ -1011,7 +1011,7 @@ static int test_dps_local_observation_cas(void)
         zcl_dev_observation_lookup_local(g_dps_state, &query,
                                           (const uint8_t (*)[32])roots,
                                           2, true, &domain, 1, &result);
-        ASSERT(result.result == ZCL_DEV_OBSERVATION_CONFLICT);
+        ASSERT(result.result == ZCL_DEV_OBSERVATION_CONFLICT_EVIDENCE);
         ASSERT(dps_measure_observation_cas(&query,
                                             (const uint8_t (*)[32])roots,
                                             &domain));

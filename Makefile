@@ -989,7 +989,8 @@ DEV_ONLY_SRCS = tools/dev/devloop_cli.c tools/dev/devloop_cycle.c \
 	tools/dev/dev_proof_budget.c \
 	tools/dev/dev_proof_receipt.c tools/dev/dev_proof_signer.c \
 	tools/dev/dev_proof_coverage.c \
-	tools/dev/dev_proof_observation.c \
+	tools/dev/dev_proof_observation.c tools/dev/dev_proof_observation_walk.c \
+	tools/dev/dev_proof_observation_index.c \
 	tools/dev/dev_proof_observation_lookup.c tools/dev/verify_store.c $(SHADOW_SELECT_SRCS) \
 	tools/dev/verify_receiver.c tools/dev/verify_receiver_input.c \
 	tools/verify/fixed_result_source.c \
@@ -3092,7 +3093,8 @@ TEST_DEV_EXECUTOR_SRCS = tools/dev/devloop_cycle.c tools/dev/dev_failure_store.c
 	tools/dev/dev_proof.c tools/dev/dev_proof_budget.c \
 	tools/dev/dev_proof_receipt.c tools/dev/dev_proof_signer.c \
 	tools/dev/dev_proof_coverage.c \
-	tools/dev/dev_proof_observation.c \
+	tools/dev/dev_proof_observation.c tools/dev/dev_proof_observation_walk.c \
+	tools/dev/dev_proof_observation_index.c \
 	tools/dev/dev_proof_observation_lookup.c tools/dev/verify_store.c $(SHADOW_SELECT_SRCS) \
 	tools/dev/verify_receiver.c tools/dev/verify_receiver_input.c \
 	tools/verify/fixed_result_source.c \
@@ -11792,6 +11794,7 @@ GIT_HOOK_DIR = $(abspath $(BUILD_DIR)/githooks)
 # that hold this box's signing identity. It still opens no shell, runs no
 # build, and reaches no network: every one of these is a pure library.
 GIT_HOOK_SRCS = tools/dev/z23_git_hook.c tools/dev/dev_proof_coverage.c \
+	tools/dev/dev_proof_observation_walk.c \
 	tools/dev/dev_proof_receipt.c \
 	tools/dev/dev_proof_signer.c \
 	core/modules/crypto/src/ed25519.c core/modules/crypto/src/sha512.c \
@@ -11806,7 +11809,8 @@ GIT_HOOK_SRCS = tools/dev/z23_git_hook.c tools/dev/dev_proof_coverage.c \
 	platform/modules/platform/src/state_root.c
 # Policy version lives in the header. A .c-only prereq list leaves a leftover
 # hook binary that refuses current receipts as newer than itself.
-GIT_HOOK_HDRS = tools/dev/dev_proof_coverage.h tools/dev/dev_proof_receipt.h \
+GIT_HOOK_HDRS = tools/dev/dev_proof_coverage.h \
+	tools/dev/dev_proof_observation_walk.h tools/dev/dev_proof_receipt.h \
 	tools/dev/dev_proof_signer.h
 GIT_HOOK_LIBS =
 ifeq ($(ZCL_HOST_WINDOWS),1)

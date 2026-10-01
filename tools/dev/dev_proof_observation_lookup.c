@@ -167,7 +167,7 @@ static void finish_lookup(const struct zcl_dev_observation_query *query,
                           struct zcl_dev_observation_result_detail *out)
 {
     if (out->pass_count && out->fail_count) {
-        out->result = ZCL_DEV_OBSERVATION_CONFLICT;
+        out->result = ZCL_DEV_OBSERVATION_CONFLICT_EVIDENCE;
         return;
     }
     if (!out->pass_count && !out->fail_count) {

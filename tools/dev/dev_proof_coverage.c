@@ -4,12 +4,12 @@
  *          observations. */
 #include "dev_proof_coverage.h"
 
+#include "dev_proof_observation_walk.h"
 #include "dev_proof_signer.h"
 
 #include "base/hex.h"
 #include "base/safe_alloc.h"
 #include "base/serialize_le.h"
-#include "platform/directory_compat.h"
 #include "sha3/sha3.h"
 
 #include <stdio.h>
@@ -51,14 +51,6 @@
 
 static const uint8_t COVERAGE_DOMAIN[] = "zcl.dev_proof_coverage.v1";
 static const uint8_t COVERAGE_SIGN_DOMAIN[] = "zcl.dev_proof_coverage_sig.v1";
-
-/* The observation CAS layout owned by vcs_object.c. This module only READS
- * it; the layout knowledge stays in one place (vcs_object.c is the write
- * authority) and one reader here. */
-#define COV_OBJECTS_SUBDIR ".zvcs/objects"
-#define COV_LEAF_HEX (ZCL_DEV_PROOF_ROOT_BYTES * 2u)
-#define COV_SHARD_HEX 2u
-#define COV_NAME_HEX (COV_LEAF_HEX - COV_SHARD_HEX)
 
 static bool cov_fail(char *why, size_t cap, const char *token)
 {
@@ -177,173 +169,16 @@ bool zcl_dev_coverage_log_rows(const char *log_path, uint32_t expected,
     return true;
 }
 
-/* ── Observation CAS enumeration ─────────────────────────────────────── */
-
-struct cov_leaf {
-    uint8_t root[ZCL_DEV_PROOF_ROOT_BYTES];
-    struct zcl_dev_verdict_leaf_v1 leaf;
-    bool eligible;
-};
-
-struct cov_store {
-    struct cov_leaf *leaves;
-    size_t count;
-    bool present;
-};
-
-static void cov_store_release(struct cov_store *store)
-{
-    if (!store) return;
-    free(store->leaves);
-    memset(store, 0, sizeof(*store));
-}
-
-static bool cov_leaf_group_matches(const struct zcl_dev_verdict_leaf_v1 *leaf,
-                                   uint8_t group_len, const char *group)
-{
-    return leaf->group_len == group_len &&
-           memcmp(leaf->group, group, group_len) == 0;
-}
-
-static bool cov_store_load_leaf(const char *path,
-    const uint8_t root[ZCL_DEV_PROOF_ROOT_BYTES],
-    struct zcl_dev_verdict_leaf_v1 *leaf, bool *eligible)
-{
-    *eligible = false;
-    FILE *f = fopen(path, "rb");
-    if (!f) return false;
-    uint8_t wire[ZCL_DEV_VERDICT_LEAF_WIRE_BYTES];
-    size_t got = fread(wire, 1, sizeof(wire), f);
-    int extra = fgetc(f);
-    (void)fclose(f);
-    if (got != sizeof(wire) || extra != EOF) return false;
-    char why[80];
-    uint8_t derived[ZCL_DEV_PROOF_ROOT_BYTES];
-    if (!zcl_dev_verdict_leaf_parse(wire, sizeof(wire), leaf,
-                                    why, sizeof(why)) ||
-        !zcl_dev_verdict_leaf_root(leaf, derived, why, sizeof(why)) ||
-        memcmp(derived, root, sizeof(derived)) != 0)
-        return false;
-    char group[ZCL_DEV_VERDICT_LEAF_GROUP_BYTES];
-    (void)memcpy(group, leaf->group, leaf->group_len);
-    group[leaf->group_len] = 0;
-    *eligible = zcl_dev_verdict_leaf_verify(leaf, leaf->key, group,
-                                            why, sizeof(why));
-    return true;
-}
-
-/* One shard of the store: every listed file must be a well-formed addressed
- * leaf; one corrupt object makes the whole projection incomplete. */
-static bool cov_enumerate_shard(struct cov_store *store, size_t *cap,
-    const char *shard_path, const char *shard_name,
-    char *why, size_t why_len)
-{
-    struct platform_directory_list files = {0};
-    if (!platform_directory_list_regular_sorted(shard_path, &files))
-        return cov_fail(why, why_len, ZCL_DEV_COVERAGE_WHY_STORE_INCOMPLETE);
-    bool ok = true;
-    for (size_t i = 0; i < files.count && ok; i++) {
-        if (strlen(shard_name) != COV_SHARD_HEX ||
-            strlen(files.entries[i].name) != COV_NAME_HEX) {
-            ok = cov_fail(why, why_len, ZCL_DEV_COVERAGE_WHY_STORE_INCOMPLETE);
-            break;
-        }
-        if (store->count >= ZCL_DEV_COVERAGE_MAX_ROWS) {
-            ok = cov_fail(why, why_len, ZCL_DEV_COVERAGE_WHY_STORE_TOO_MANY);
-            break;
-        }
-        if (store->count == *cap) {
-            *cap *= 2;
-            struct cov_leaf *grown =
-                zcl_realloc(store->leaves, *cap * sizeof(*store->leaves),
-                            "dev-coverage-leaves-grow");
-            if (!grown) {
-                ok = cov_fail(why, why_len,
-                              ZCL_DEV_COVERAGE_WHY_STORE_INCOMPLETE);
-                break;
-            }
-            store->leaves = grown;
-        }
-        struct cov_leaf *slot = &store->leaves[store->count];
-        char hex[COV_LEAF_HEX + 1];
-        (void)memcpy(hex, shard_name, COV_SHARD_HEX);
-        (void)memcpy(hex + COV_SHARD_HEX, files.entries[i].name,
-                     COV_NAME_HEX);
-        hex[COV_LEAF_HEX] = 0;
-        char leaf_path[4096];
-        int n = snprintf(leaf_path, sizeof(leaf_path), "%s/%s", shard_path,
-                         files.entries[i].name);
-        if (n < 0 || n >= (int)sizeof(leaf_path) ||
-            !zcl_hex_decode(hex, slot->root, ZCL_DEV_PROOF_ROOT_BYTES) ||
-            !cov_store_load_leaf(leaf_path, slot->root, &slot->leaf,
-                                 &slot->eligible))
-            ok = cov_fail(why, why_len, ZCL_DEV_COVERAGE_WHY_STORE_INCOMPLETE);
-        else
-            store->count++;
-    }
-    platform_directory_list_free(&files);
-    return ok;
-}
-
-/* A complete local projection of the per-pair observation CAS. Every
- * listed object must load, re-derive to its address, and parse as a leaf;
- * one corrupt object makes the whole projection incomplete, exactly like a
- * missing chunk in a receiver index. Signature eligibility is decided per
- * leaf but does not affect completeness. */
-static bool cov_store_enumerate(const char *store_root, struct cov_store *store,
-                                char *why, size_t why_len)
-{
-    memset(store, 0, sizeof(*store));
-    if (!store_root || !store_root[0])
-        return cov_fail(why, why_len, ZCL_DEV_COVERAGE_WHY_ARGUMENTS);
-    enum platform_directory_probe_result probe =
-        platform_directory_probe_real(store_root);
-    if (probe == PLATFORM_DIRECTORY_PROBE_REFUSED)
-        return cov_fail(why, why_len, ZCL_DEV_COVERAGE_WHY_STORE_INCOMPLETE);
-    if (probe == PLATFORM_DIRECTORY_PROBE_MISSING) return true; /* absent */
-    store->present = true;
-
-    char objects_path[4096];
-    if (snprintf(objects_path, sizeof(objects_path), "%s/%s", store_root,
-                 COV_OBJECTS_SUBDIR) >= (int)sizeof(objects_path))
-        return cov_fail(why, why_len, ZCL_DEV_COVERAGE_WHY_ARGUMENTS);
-    struct platform_directory_list shards = {0};
-    if (!platform_directory_list_real_sorted(objects_path, &shards))
-        return cov_fail(why, why_len, ZCL_DEV_COVERAGE_WHY_STORE_INCOMPLETE);
-    size_t cap = 256;
-    store->leaves = zcl_malloc(cap * sizeof(*store->leaves),
-                               "dev-coverage-leaves");
-    if (!store->leaves) {
-        platform_directory_list_free(&shards);
-        return cov_fail(why, why_len, ZCL_DEV_COVERAGE_WHY_STORE_INCOMPLETE);
-    }
-    bool ok = true;
-    for (size_t s = 0; s < shards.count && ok; s++) {
-        /* The store's own tmp/ staging pool lives beside the shards; it is
-         * part of the layout, never an observation object. */
-        if (strcmp(shards.entries[s].name, "tmp") == 0) continue;
-        char shard_path[4096];
-        int n = snprintf(shard_path, sizeof(shard_path), "%s/%s",
-                         objects_path, shards.entries[s].name);
-        if (n < 0 || n >= (int)sizeof(shard_path)) {
-            ok = cov_fail(why, why_len, ZCL_DEV_COVERAGE_WHY_STORE_INCOMPLETE);
-            break;
-        }
-        ok = cov_enumerate_shard(store, &cap, shard_path,
-                                 shards.entries[s].name, why, why_len);
-    }
-    platform_directory_list_free(&shards);
-    if (!ok) cov_store_release(store);
-    return ok;
-}
-
-/* ── Classification ──────────────────────────────────────────────────── */
+/* ── Classification ────────────────────────────────────────────────────
+ * The store projection itself lives in dev_proof_observation.c
+ * (zcl_dev_observation_enumerate); this module classifies projections. */
 
 /* Per (key, group): an eligible PASS/FAIL contradiction refuses; zero
  * eligible PASS refuses as missing; otherwise the eligible PASS roots are
  * the coverage basis. `listed` restricts verification to the manifest's
  * roots (receiver side); derive passes the whole store match instead. */
-static bool cov_classify(const struct cov_store *store,
+static bool cov_classify(const struct zcl_dev_observation_leaf *leaves,
+    size_t leaf_count,
     const uint8_t key[ZCL_DEV_VERDICT_LEAF_KEY_BYTES], uint8_t group_len,
     const char *group, const uint8_t (*listed)[ZCL_DEV_PROOF_ROOT_BYTES],
     size_t n_listed,
@@ -352,10 +187,10 @@ static bool cov_classify(const struct cov_store *store,
 {
     bool pass = false, fail = false;
     *n_pass = 0;
-    for (size_t i = 0; i < store->count; i++) {
-        const struct cov_leaf *leaf = &store->leaves[i];
+    for (size_t i = 0; i < leaf_count; i++) {
+        const struct zcl_dev_observation_leaf *leaf = &leaves[i];
         if (!leaf->eligible || memcmp(leaf->leaf.key, key, 32) != 0 ||
-            !cov_leaf_group_matches(&leaf->leaf, group_len, group))
+            !zcl_dev_observation_group_matches(&leaf->leaf, group_len, group))
             continue;
         if (leaf->leaf.verdict == ZCL_DEV_VERDICT_LEAF_FAIL) {
             fail = true;
@@ -621,7 +456,8 @@ struct cov_row_roots {
     size_t n_roots;
 };
 
-static bool cov_rows_resolve(const struct cov_store *store,
+static bool cov_rows_resolve(
+    const struct zcl_dev_observation_leaf *leaves, size_t leaf_count,
     const struct zcl_dev_coverage_log_row *rows, uint32_t n_rows,
     const uint8_t (*const *listed)[ZCL_DEV_PROOF_ROOT_BYTES],
     const size_t *n_listed, struct cov_row_roots *resolved,
@@ -632,7 +468,8 @@ static bool cov_rows_resolve(const struct cov_store *store,
                                        "dev-coverage-row-roots");
         if (!resolved[r].roots)
             return cov_fail(why, why_len, ZCL_DEV_COVERAGE_WHY_STORE_INCOMPLETE);
-        if (!cov_classify(store, rows[r].key, rows[r].group_len, rows[r].group,
+        if (!cov_classify(leaves, leaf_count, rows[r].key, rows[r].group_len,
+                          rows[r].group,
                           listed ? listed[r] : NULL,
                           listed ? n_listed[r] : 0,
                           resolved[r].roots, &resolved[r].n_roots,
@@ -652,25 +489,39 @@ static void cov_rows_roots_release(struct cov_row_roots *resolved,
 
 /* Producer classification phase: enumerate the CAS, resolve every row's
  * eligible PASS roots, and require each row's emitted root to be among
- * them. */
+ * them. Takes over the enumeration release on every path. */
 static bool cov_derive_resolve(const char *store_root,
     struct zcl_dev_coverage_log_row *rows, uint32_t n_rows,
-    struct cov_store *store, struct cov_row_roots **resolved_out,
+    struct zcl_dev_observation_leaf **leaves_out, size_t *leaf_count_out,
+    struct cov_row_roots **resolved_out,
     char *why, size_t why_len)
 {
     *resolved_out = NULL;
-    if (!cov_store_enumerate(store_root, store, why, why_len))
-        return false;
-    if (!store->present)
+    *leaves_out = NULL;
+    *leaf_count_out = 0;
+    bool present = false;
+    if (!zcl_dev_observation_enumerate(store_root, leaves_out,
+                                       leaf_count_out, &present,
+                                       why, why_len))
         return cov_fail(why, why_len, ZCL_DEV_COVERAGE_WHY_STORE_INCOMPLETE);
+    if (!present) {
+        zcl_dev_observation_release(*leaves_out);
+        *leaves_out = NULL;
+        return cov_fail(why, why_len, ZCL_DEV_COVERAGE_WHY_STORE_INCOMPLETE);
+    }
     struct cov_row_roots *resolved =
         zcl_malloc(n_rows * sizeof(*resolved), "dev-coverage-resolved");
-    if (!resolved)
+    if (!resolved) {
+        zcl_dev_observation_release(*leaves_out);
+        *leaves_out = NULL;
         return cov_fail(why, why_len, ZCL_DEV_COVERAGE_WHY_STORE_INCOMPLETE);
+    }
     memset(resolved, 0, n_rows * sizeof(*resolved));
-    if (!cov_rows_resolve(store, rows, n_rows, NULL, NULL, resolved,
-                          why, why_len)) {
-        free(resolved);
+    if (!cov_rows_resolve(*leaves_out, *leaf_count_out, rows, n_rows,
+                          NULL, NULL, resolved, why, why_len)) {
+        cov_rows_roots_release(resolved, n_rows);
+        zcl_dev_observation_release(*leaves_out);
+        *leaves_out = NULL;
         return false;
     }
     /* The emitted root the runner logged must be among the eligible PASS
@@ -685,6 +536,8 @@ static bool cov_derive_resolve(const char *store_root,
         }
         if (!found) {
             cov_rows_roots_release(resolved, n_rows);
+            zcl_dev_observation_release(*leaves_out);
+            *leaves_out = NULL;
             return cov_fail(why, why_len, ZCL_DEV_COVERAGE_WHY_EMITTED_MISSING);
         }
     }
@@ -758,17 +611,18 @@ bool zcl_dev_coverage_manifest_derive(const char *store_root,
         qsort(rows, n_rows, sizeof(*rows), cov_row_cmp);
     }
 
-    struct cov_store store = {0};
+    struct zcl_dev_observation_leaf *leaves = NULL;
+    size_t leaf_count = 0;
     struct cov_row_roots *resolved = NULL;
     bool ok = n_rows == 0 ||
-              cov_derive_resolve(store_root, rows, n_rows, &store, &resolved,
-                                 why, why_len);
+              cov_derive_resolve(store_root, rows, n_rows, &leaves,
+                                 &leaf_count, &resolved, why, why_len);
     if (ok)
         ok = cov_derive_emit(binding, rows, n_rows, resolved, envelope,
                              blob_out, blob_len_out, why, why_len);
     cov_rows_roots_release(resolved, n_rows);
     free(rows);
-    cov_store_release(&store);
+    zcl_dev_observation_release(leaves);
     if (ok && why && why_len) why[0] = 0;
     return ok;
 }
@@ -852,10 +706,13 @@ static bool cov_verify_resolve(const char *store_root, uint32_t row_count,
     const uint8_t (*const *listed)[ZCL_DEV_PROOF_ROOT_BYTES],
     const size_t *n_listed, char *why, size_t why_len)
 {
-    struct cov_store store = {0};
-    if (!cov_store_enumerate(store_root, &store, why, why_len))
-        return false;
-    bool ok = store.present;
+    struct zcl_dev_observation_leaf *leaves = NULL;
+    size_t leaf_count = 0;
+    bool present = false;
+    if (!zcl_dev_observation_enumerate(store_root, &leaves, &leaf_count,
+                                       &present, why, why_len))
+        return cov_fail(why, why_len, ZCL_DEV_COVERAGE_WHY_STORE_INCOMPLETE);
+    bool ok = present;
     if (!ok)
         ok = cov_fail(why, why_len, ZCL_DEV_COVERAGE_WHY_STORE_INCOMPLETE);
     struct cov_row_roots *resolved = NULL;
@@ -867,11 +724,11 @@ static bool cov_verify_resolve(const char *store_root, uint32_t row_count,
     }
     if (ok) {
         memset(resolved, 0, row_count * sizeof(*resolved));
-        ok = cov_rows_resolve(&store, rows, row_count, listed, n_listed,
-                              resolved, why, why_len);
+        ok = cov_rows_resolve(leaves, leaf_count, rows, row_count, listed,
+                              n_listed, resolved, why, why_len);
     }
     cov_rows_roots_release(resolved, row_count);
-    cov_store_release(&store);
+    zcl_dev_observation_release(leaves);
     return ok;
 }
 
