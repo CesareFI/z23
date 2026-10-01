@@ -97,8 +97,15 @@ struct zcl_dev_verdict_leaf_v1 {
  * same dimension identity, so its receipts cannot establish this claim.
  * Policy 5 additionally qualifies the running producer's complete compiled
  * source identity before planning, selection, or receipt reuse. Policy 4
- * admitted candidate executables but could select with stale producer code. */
-#define ZCL_DEV_PROOF_POLICY_VERSION 5u
+ * admitted candidate executables but could select with stale producer code.
+ * Policy 6 additionally binds the receipt's test dimension to a signed
+ * coverage manifest (tools/dev/dev_proof_coverage.c): every executed group
+ * must carry eligible PASS observation coverage in the pair's durable
+ * observation CAS with no preserved eligible contradiction. A policy-5
+ * receipt remains what it was; a policy-6 producer and verifier both derive
+ * and check the manifest, and an old build refuses a policy-6 receipt as
+ * newer than itself by name, exactly like every previous bump. */
+#define ZCL_DEV_PROOF_POLICY_VERSION 6u
 
 enum zcl_dev_proof_dimension_id {
     ZCL_DEV_PROOF_GENERATED = 0,

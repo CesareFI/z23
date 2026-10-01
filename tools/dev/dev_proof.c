@@ -15,6 +15,7 @@
 #include "dev_proof.h"
 #include "dependency_links.h"
 #include "dev_proof_budget.h"
+#include "dev_proof_coverage.h"
 #include "dev_proof_observation.h"
 #include "devloop.h"
 #include "test_group_catalog.h"
@@ -8251,6 +8252,7 @@ static bool receipt_store(const struct proof_paths *paths,
            proof_write_if_current(paths, paths->receipt, wire, sizeof(wire),
                                   0400);
 }
+
 /* Every phase before the first dimension ran with no clock on it, so a proof
  * that spent six minutes somewhere reported only that it took six minutes.
  * These marks cost one gettime and one appended line each, and they name the
@@ -10106,6 +10108,69 @@ static bool dp_worker_dimensions(struct dp_worker *w, char *why,
 
 /* Prove the source never moved under the run, then publish the receipt.
  * Nothing after this point may fail: the receipt IS the admission. */
+/* Canonical lifecycle item 2 (docs/work/FORWARD_PLAN.md): the receipt admits
+ * the pair's dimensions, and the coverage manifest admits the receipt's
+ * test-dimension claim by binding every executed group to eligible signed
+ * observations in this pair's durable CAS. Derived AFTER receipt_store so
+ * the manifest can bind the sealed child_set_root; a retried proof derives
+ * byte-identical content, so the lease-checked atomic write is idempotent.
+ * Refuses publication on incomplete coverage or an eligible conflict. */
+static bool dp_coverage_publish(struct dp_worker *w, char *why, size_t why_len)
+{
+    struct zcl_dev_coverage_binding binding = {0};
+    (void)memcpy(binding.local_commit, w->receipt.local_commit,
+                 ZCL_DEV_PROOF_OID_MAX);
+    binding.local_commit_len = w->receipt.local_commit_len;
+    (void)memcpy(binding.remote_base, w->receipt.remote_base,
+                 ZCL_DEV_PROOF_OID_MAX);
+    binding.remote_base_len = w->receipt.remote_base_len;
+    (void)memcpy(binding.child_set_root, w->receipt.child_set_root,
+                 ZCL_DEV_PROOF_ROOT_BYTES);
+    (void)memcpy(binding.impact_policy_root, w->receipt.impact_policy_root,
+                 ZCL_DEV_PROOF_ROOT_BYTES);
+    binding.policy_version = w->receipt.policy_version;
+
+    char store[PATH_MAX], log_path[PATH_MAX], dir[PATH_MAX], path[PATH_MAX];
+    if (!proof_observation_store_path(w->paths->state, w->paths->key, store) ||
+        snprintf(log_path, sizeof(log_path), "%s/%s.test.log",
+                 w->paths->logs, w->paths->key) >= (int)sizeof(log_path) ||
+        snprintf(dir, sizeof(dir), "%s/coverage", w->paths->state) >=
+            (int)sizeof(dir) ||
+        snprintf(path, sizeof(path), "%s/%s.coverage", dir,
+                 w->paths->key) >= (int)sizeof(path)) {
+        proof_why(why, why_len, "coverage_path_invalid");
+        return false;
+    }
+
+    const uint32_t expected =
+        w->receipt.dimensions[ZCL_DEV_PROOF_TEST].ran;
+    uint8_t envelope[ZCL_DEV_COVERAGE_WIRE_BYTES];
+    uint8_t *blob = NULL;
+    size_t blob_len = 0;
+    if (!zcl_dev_coverage_manifest_derive(
+            store, expected ? log_path : NULL, &binding, expected,
+            envelope, &blob, &blob_len, why, why_len))
+        return false;
+    size_t total = sizeof(envelope) + blob_len;
+    uint8_t *file = zcl_malloc(total, "dev-coverage-file");
+    if (!file) {
+        free(blob);
+        proof_why(why, why_len, "coverage_file_alloc_failed");
+        return false;
+    }
+    (void)memcpy(file, envelope, sizeof(envelope));
+    (void)memcpy(file + sizeof(envelope), blob, blob_len);
+    free(blob);
+    bool ok = platform_private_directory_ensure(dir) &&
+              proof_write_if_current(w->paths, path, file, total, 0400);
+    free(file);
+    if (!ok) {
+        proof_why(why, why_len, "coverage_manifest_publish_failed");
+        return false;
+    }
+    return true;
+}
+
 static bool dp_worker_publish(struct dp_worker *w, int64_t started_us,
                               char *why, size_t why_len)
 {
@@ -10137,6 +10202,8 @@ static bool dp_worker_publish(struct dp_worker *w, int64_t started_us,
         proof_why(why, why_len, "receipt_publication_failed");
         return false;
     }
+    if (!dp_coverage_publish(w, why, why_len))
+        return false;
     proof_unlink_if_current(w->paths, w->paths->failure);
     return true;
 }

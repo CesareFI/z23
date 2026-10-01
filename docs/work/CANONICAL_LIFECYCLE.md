@@ -133,10 +133,18 @@ store and the signed-observation CAS at per-pair private directories under the
 proof state (`<state>/testcache.<key>` scratch, removed with the proof;
 `<state>/observations.<key>` durable), so a proof run records one signed
 verdict leaf per executed group without touching any shared or
-candidate-writable store. Durable CAS enumeration/indexing, receiver-side
-proof-set conflict admission and canonical proof-set publication remain
-separate integration work. A codec alone does not establish a complete input
-closure.
+candidate-writable store. Mandatory coverage is now derived from those
+canonical observations: after receipt publication the worker derives and signs
+a per-pair coverage manifest (`tools/dev/dev_proof_coverage.c`,
+`<state>/coverage/<key>.coverage`) binding the receipt's child-set root,
+impact policy and executed test groups — each with its exact input key and
+eligible observation roots — under policy version 6, refusing publication on
+missing coverage or a preserved eligible conflict. The pre-push hook
+re-derives and re-verifies the manifest against the same per-pair CAS on
+every admission, so an omitted contradiction, a tampered wire or a wrong
+binding refuses by name. Cross-candidate unit reuse of eligible observations
+and canonical proof-set publication remain separate integration work. A codec
+alone does not establish a complete input closure.
 
 The existing Commons evaluator in
 `engine/services/src/build_fabric_evidence.c` now retains verified failures

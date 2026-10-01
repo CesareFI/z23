@@ -14,6 +14,7 @@
 
 #include "base/hex.h"
 #include "crypto/ed25519.h"
+#include "dev_proof_coverage.h"
 #include "dev_proof_observation_lookup.h"
 #include "dev_proof_receipt.h"
 #include "dev_proof_signer.h"
@@ -482,6 +483,53 @@ static bool dps_put_lint_child(const char *dir,
            dps_write(path, child, sizeof(child), 0600);
 }
 
+/* The policy-6 admission sidecar: a signed coverage manifest bound to the
+ * fixture receipt. The fixture's test dimension ran zero groups (lint-only
+ * receipt), so the manifest binds an empty mandatory set — the same shape
+ * a cycle-reused proof publishes. */
+static bool dps_put_coverage(const char *dir,
+                             const struct zcl_dev_acceptance_receipt_v1 *receipt,
+                             const char *local, const char *base)
+{
+    struct zcl_dev_coverage_binding binding = {0};
+    (void)memcpy(binding.local_commit, receipt->local_commit,
+                 ZCL_DEV_PROOF_OID_MAX);
+    binding.local_commit_len = receipt->local_commit_len;
+    (void)memcpy(binding.remote_base, receipt->remote_base,
+                 ZCL_DEV_PROOF_OID_MAX);
+    binding.remote_base_len = receipt->remote_base_len;
+    (void)memcpy(binding.child_set_root, receipt->child_set_root,
+                 ZCL_DEV_PROOF_ROOT_BYTES);
+    (void)memcpy(binding.impact_policy_root, receipt->impact_policy_root,
+                 ZCL_DEV_PROOF_ROOT_BYTES);
+    binding.policy_version = receipt->policy_version;
+
+    char cmd[PATH_MAX], path[PATH_MAX];
+    int n = snprintf(cmd, sizeof(cmd),
+                     "mkdir -p '%s/.cache/zcl-dev-proof/coverage'", dir);
+    if (n <= 0 || (size_t)n >= sizeof(cmd) || system(cmd) != 0)
+        return false;
+    n = snprintf(path, sizeof(path),
+                 "%s/.cache/zcl-dev-proof/coverage/%s-%s.coverage",
+                 dir, local, base);
+    if (n <= 0 || (size_t)n >= sizeof(path)) return false;
+
+    uint8_t envelope[ZCL_DEV_COVERAGE_WIRE_BYTES];
+    uint8_t *blob = NULL;
+    size_t blob_len = 0;
+    char why[128] = {0};
+    if (!zcl_dev_coverage_manifest_derive(NULL, NULL, &binding, 0, envelope,
+                                          &blob, &blob_len, why,
+                                          sizeof(why)) ||
+        blob_len != 0)
+        return false;
+    uint8_t file[ZCL_DEV_COVERAGE_WIRE_BYTES];
+    (void)memcpy(file, envelope, sizeof(envelope));
+    bool ok = dps_write(path, file, sizeof(file), 0600);
+    free(blob);
+    return ok;
+}
+
 static int test_dps_hook_admission(void)
 {
     int failures = 0;
@@ -544,10 +592,19 @@ static int test_dps_hook_admission(void)
         ASSERT(dps_run(dir, argv, tuple, out, sizeof(out)) != 0);
         ASSERT(strstr(out, "status=receipt_lint_required") != NULL);
 
-        /* And the genuine article passes, so the refusals above are the
-         * signature talking and not the fixture being wrong. */
+        /* Policy 6 binds the receipt's test dimension to a signed coverage
+         * manifest: a receipt with none is named, not silently admitted. */
         ASSERT(zcl_dev_proof_receipt_serialize(&receipt, wire));
         ASSERT(dps_put_receipt(dir, local, base, wire, sizeof(wire)));
+        ASSERT(dps_run(dir, argv, tuple, out, sizeof(out)) != 0);
+        ASSERT(strstr(out, "status=coverage-manifest-missing") != NULL);
+
+        /* The genuine article carries its coverage sidecar and passes, so
+         * the refusals above are the admission talking and not the fixture
+         * being wrong. */
+        ASSERT(zcl_dev_proof_receipt_serialize(&receipt, wire));
+        ASSERT(dps_put_receipt(dir, local, base, wire, sizeof(wire)));
+        ASSERT(dps_put_coverage(dir, &receipt, local, base));
         ASSERT(dps_run(dir, argv, tuple, out, sizeof(out)) == 0);
         ASSERT(strstr(out, "PASS exact local receipt admitted") != NULL);
         dps_restore();

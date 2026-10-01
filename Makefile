@@ -988,6 +988,7 @@ DEV_ONLY_SRCS = tools/dev/devloop_cli.c tools/dev/devloop_cycle.c \
 	tools/dev/dev_source_identity.c tools/dev/dev_git_tree.c tools/dev/dev_proof.c \
 	tools/dev/dev_proof_budget.c \
 	tools/dev/dev_proof_receipt.c tools/dev/dev_proof_signer.c \
+	tools/dev/dev_proof_coverage.c \
 	tools/dev/dev_proof_observation.c \
 	tools/dev/dev_proof_observation_lookup.c tools/dev/verify_store.c $(SHADOW_SELECT_SRCS) \
 	tools/dev/verify_receiver.c tools/dev/verify_receiver_input.c \
@@ -3090,6 +3091,7 @@ TEST_DEV_EXECUTOR_SRCS = tools/dev/devloop_cycle.c tools/dev/dev_failure_store.c
 	tools/dev/devloop_action_root.c tools/dev/devloop_action_root_store.c \
 	tools/dev/dev_proof.c tools/dev/dev_proof_budget.c \
 	tools/dev/dev_proof_receipt.c tools/dev/dev_proof_signer.c \
+	tools/dev/dev_proof_coverage.c \
 	tools/dev/dev_proof_observation.c \
 	tools/dev/dev_proof_observation_lookup.c tools/dev/verify_store.c $(SHADOW_SELECT_SRCS) \
 	tools/dev/verify_receiver.c tools/dev/verify_receiver_input.c \
@@ -11789,12 +11791,14 @@ GIT_HOOK_DIR = $(abspath $(BUILD_DIR)/githooks)
 # ed25519/sha512 and the owner-private state-root, key-file and CSPRNG seams
 # that hold this box's signing identity. It still opens no shell, runs no
 # build, and reaches no network: every one of these is a pure library.
-GIT_HOOK_SRCS = tools/dev/z23_git_hook.c tools/dev/dev_proof_receipt.c \
+GIT_HOOK_SRCS = tools/dev/z23_git_hook.c tools/dev/dev_proof_coverage.c \
+	tools/dev/dev_proof_receipt.c \
 	tools/dev/dev_proof_signer.c \
 	core/modules/crypto/src/ed25519.c core/modules/crypto/src/sha512.c \
 	platform/modules/sha3/src/sha3.c \
 	platform/modules/base/src/cleanse.c platform/modules/base/src/log_level.c \
 	platform/modules/base/src/safe_alloc.c \
+	platform/modules/platform/src/directory_compat.c \
 	platform/modules/platform/src/positioned_file.c \
 	platform/modules/platform/src/private_directory.c \
 	platform/modules/platform/src/private_file.c \
@@ -11802,7 +11806,8 @@ GIT_HOOK_SRCS = tools/dev/z23_git_hook.c tools/dev/dev_proof_receipt.c \
 	platform/modules/platform/src/state_root.c
 # Policy version lives in the header. A .c-only prereq list leaves a leftover
 # hook binary that refuses current receipts as newer than itself.
-GIT_HOOK_HDRS = tools/dev/dev_proof_receipt.h tools/dev/dev_proof_signer.h
+GIT_HOOK_HDRS = tools/dev/dev_proof_coverage.h tools/dev/dev_proof_receipt.h \
+	tools/dev/dev_proof_signer.h
 GIT_HOOK_LIBS =
 ifeq ($(ZCL_HOST_WINDOWS),1)
 GIT_HOOK_SRCS += platform/modules/platform/src/private_acl_internal.c \
