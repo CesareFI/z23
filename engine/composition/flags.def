@@ -1358,6 +1358,8 @@ Z23_FLAG("ZCL_LAND_TEST_QUEUE_WRITE_FAIL", "env_test", "-", "-",
           "test-only landing queue rewrite refusal; first use tools/command/native_dev_land.c:auto")
 Z23_FLAG("ZCL_LAND_TEST_REFUSE_OUTCOME_APPEND", "env_test", "-", "-",
           "test-only terminal append refusal; first use tools/command/native_dev_land.c:auto")
+Z23_FLAG("ZCL_LAND_TEST_SUBMIT_SYNC_FAIL", "env_test", "-", "-",
+          "test-only failed landing submission flush after append; first use tools/command/native_dev_land.c:auto")
 Z23_FLAG("ZCL_LAND_TIMING", "env_build", "-", "-",
           "undocumented; first use tools/dev/land_lander.sh:auto")
 Z23_FLAG("ZCL_LAND_WORKTREE", "env_build", "-", "-",

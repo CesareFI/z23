@@ -136,6 +136,7 @@ static void dlx_isolate(const char *tag)
     unsetenv("ZCL_LAND_TEST_DIE_AFTER_OUTCOME");
     unsetenv("ZCL_LAND_TEST_DIE_AFTER_PROOF");
     unsetenv("ZCL_LAND_TEST_REFUSE_OUTCOME_APPEND");
+    unsetenv("ZCL_LAND_TEST_SUBMIT_SYNC_FAIL");
     unsetenv("ZCL_LAND_TEST_PRECHECK_TOOL_FAIL");
     unsetenv("ZCL_LAND_TEST_PRECHECK_BUDGET_MS");
     unsetenv("ZCL_LAND_REGEN_MAKE_STUB");
@@ -182,6 +183,7 @@ static void dlx_restore(void)
     unsetenv("ZCL_LAND_TEST_DIE_AFTER_OUTCOME");
     unsetenv("ZCL_LAND_TEST_DIE_AFTER_PROOF");
     unsetenv("ZCL_LAND_TEST_REFUSE_OUTCOME_APPEND");
+    unsetenv("ZCL_LAND_TEST_SUBMIT_SYNC_FAIL");
     unsetenv("ZCL_LAND_TEST_PRECHECK_TOOL_FAIL");
     unsetenv("ZCL_LAND_TEST_PRECHECK_BUDGET_MS");
     unsetenv("ZCL_LAND_REGEN_MAKE_STUB");
@@ -8183,6 +8185,55 @@ static int test_dev_land_proof_evidence_compile(void)
 _test_next:;
     return failures;
 }
+
+static int test_dev_land_submit_sync_recovery(void)
+{
+    int failures = 0;
+    TEST("land: an ambiguous submit sync recovers by exact deduplication") {
+        struct dlx_rig rig;
+        struct dlx_call c;
+        char landdir[1200], qpath[1400];
+        char before[8192], after[8192];
+        size_t before_len = 0, after_len = 0;
+        dlx_isolate("submit_sync_recovery");
+        ASSERT(dlx_rig_make(&rig, "submit_sync_recovery_rig"));
+        setenv("ZCL_LAND_PROOF_STUB", "running", 1);
+        setenv("ZCL_LAND_ALLOW_UNSIGNED", "1", 1);
+        setenv("ZCL_LAND_TEST_SUBMIT_SYNC_FAIL", "1", 1);
+        setenv("ZCL_DEVLOOP_TEST_PROCESS", "1", 1);
+        dlx_submit(&c, &rig, rig.tip);
+        ASSERT(dlx_run(&c));
+        ASSERT(c.reply.status == ZCL_COMMAND_STATUS_BLOCKED);
+        ASSERT_STR_EQ(dlx_err_code(&c), "QUEUE_SYNC_FAILED");
+        ASSERT(c.reply.error.retryable);
+        ASSERT(c.reply.error.mutated);
+        dlx_end(&c);
+        dlx_landdir(landdir, sizeof(landdir));
+        ASSERT(snprintf(qpath, sizeof(qpath), "%s/queue.jsonl", landdir) <
+               (int)sizeof(qpath));
+        ASSERT(dlx_slurp(qpath, before, sizeof(before), &before_len));
+        ASSERT(before_len > 0);
+
+        unsetenv("ZCL_LAND_TEST_SUBMIT_SYNC_FAIL");
+        unsetenv("ZCL_DEVLOOP_TEST_PROCESS");
+        dlx_submit(&c, &rig, rig.tip);
+        ASSERT(dlx_run(&c) && dlx_ok(&c));
+        ASSERT_EQ(dlx_int(&c, "seq"), 1);
+        ASSERT(json_get_bool(json_get(&c.reply.data, "deduplicated")));
+        dlx_end(&c);
+        ASSERT(dlx_slurp(qpath, after, sizeof(after), &after_len));
+        ASSERT_EQ(after_len, before_len);
+        ASSERT(memcmp(after, before, before_len) == 0);
+        ASSERT(dlx_queue_has_one());
+        dlx_restore();
+        PASS();
+    }
+_test_next:;
+    unsetenv("ZCL_LAND_TEST_SUBMIT_SYNC_FAIL");
+    unsetenv("ZCL_DEVLOOP_TEST_PROCESS");
+    dlx_restore();
+    return failures;
+}
 #endif
 
 int test_dev_land(void)
@@ -8214,6 +8265,7 @@ int test_dev_land(void)
     failures += test_dev_land_exact_tree();
     failures += test_dev_land_source_binding();
 #if !defined(_WIN32)
+    failures += test_dev_land_submit_sync_recovery();
     failures += test_dev_land_tree_types();
     failures += test_dev_land_tree_malformed();
     failures += test_dev_land_tree_replacements();

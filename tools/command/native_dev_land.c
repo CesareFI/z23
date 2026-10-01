@@ -1108,14 +1108,33 @@ static bool dl_queue_parent_flush(const char *landdir)
     return platform_private_parent_flush(landdir);
 }
 
-/* A terminal outcome is the recovery checkpoint that permits the live queue
- * row to be removed. Appending all bytes is not enough: a power loss may
- * discard both dirty file pages and a newly-created directory entry. Flush
- * the exact regular file and its parent before any caller treats the outcome
- * as durable. A retry also flushes an already-present matching row, so a
- * prior ambiguous sync failure can be completed without appending a duplicate
- * or contacting the publication target again. */
-static bool dl_outcome_file_flush(const char *path, const char *landdir)
+/* Appending all bytes is not enough for an authoritative queue or outcome
+ * record: a power loss may discard both dirty file pages and a newly-created
+ * directory entry. Flush the exact regular file and its parent before any
+ * caller acknowledges the record. A retry also flushes an already-present
+ * matching record, completing an ambiguous prior sync without a duplicate. */
+static bool dl_outcome_sync_failure_injected(void)
+{
+#if defined(ZCL_DEV_BUILD) || defined(ZCL_TESTING)
+    return getenv("ZCL_LAND_TEST_OUTCOME_SYNC_FAIL") &&
+           getenv("ZCL_DEVLOOP_TEST_PROCESS");
+#else
+    return false;
+#endif
+}
+
+static bool dl_submit_sync_failure_injected(void)
+{
+#if defined(ZCL_DEV_BUILD) || defined(ZCL_TESTING)
+    return getenv("ZCL_LAND_TEST_SUBMIT_SYNC_FAIL") &&
+           getenv("ZCL_DEVLOOP_TEST_PROCESS");
+#else
+    return false;
+#endif
+}
+
+static bool dl_state_file_flush(const char *path, const char *landdir,
+                                bool inject_failure)
 {
     int flags = O_RDONLY | O_CLOEXEC;
     struct stat st;
@@ -1129,12 +1148,9 @@ static bool dl_outcome_file_flush(const char *path, const char *landdir)
     if (fd < 0)
         return false;
     ok = fstat(fd, &st) == 0 && S_ISREG(st.st_mode);
-#if defined(ZCL_DEV_BUILD) || defined(ZCL_TESTING)
-    if (ok && getenv("ZCL_LAND_TEST_OUTCOME_SYNC_FAIL") &&
-        getenv("ZCL_DEVLOOP_TEST_PROCESS"))
+    if (ok && inject_failure)
         ok = false;
     else
-#endif
 #if defined(_WIN32)
     if (ok)
         ok = _commit(fd) == 0;
@@ -1577,7 +1593,8 @@ static bool dl_record_outcome(const struct dl_dirs *d, struct dl_row *r)
 #endif
         !dl_write_row(path, r))
         return false;
-    if (!dl_outcome_file_flush(path, d->land))
+    if (!dl_state_file_flush(path, d->land,
+                             dl_outcome_sync_failure_injected()))
         return false;
     return dl_outbox(d, r, "outcome");
 }
@@ -2390,9 +2407,25 @@ static bool dl_submit_next_seq(const struct dl_dirs *d,
 
 /* Called with the queue lock held. A duplicate is either answered here or
  * refused until a durable terminal outcome has been replayed. */
+static void dl_submit_sync_failed(struct zcl_command_reply *reply,
+                                  const char *qpath, bool mutated)
+{
+    (void)json_push_kv_str(&reply->data, "leaf", DL_LEAF);
+    zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_BLOCKED,
+                           ZCL_COMMAND_EXIT_BLOCKED, "QUEUE_SYNC_FAILED",
+                           "submit", true, mutated,
+                           "the queue row exists but its durability is "
+                           "unconfirmed; retry the identical submit",
+                           qpath);
+    (void)snprintf(reply->error.next_action,
+                   sizeof(reply->error.next_action), "%s",
+                   "retry the identical dev land submit request");
+}
+
 static bool dl_submit_live_duplicate(const struct dl_dirs *d,
                                      const struct dl_row *rows, size_t nrows,
                                      const char *tip, const char *worktree,
+                                     const char *qpath,
                                      struct zcl_command_reply *reply)
 {
     for (size_t i = 0; i < nrows; ++i) {
@@ -2413,6 +2446,11 @@ static bool dl_submit_live_duplicate(const struct dl_dirs *d,
             dl_fail(reply, "TERMINAL_REPLAY_PENDING", "submit",
                     "the matching row has a durable terminal outcome awaiting queue replay",
                     "run dev land step, then resubmit if current-base work is still needed");
+            return true;
+        }
+        if (!dl_state_file_flush(qpath, d->land,
+                                 dl_submit_sync_failure_injected())) {
+            dl_submit_sync_failed(reply, qpath, false);
             return true;
         }
         (void)json_push_kv_str(&reply->data, "leaf", DL_LEAF);
@@ -2440,7 +2478,8 @@ static void dl_submit_loaded(const struct dl_dirs *d, struct dl_row *r,
     size_t len = 0;
     long long seq = 1;
     const char *seq_why = NULL;
-    if (dl_submit_live_duplicate(d, rows, nrows, tip, worktree, reply)) {
+    if (dl_submit_live_duplicate(d, rows, nrows, tip, worktree, qpath,
+                                 reply)) {
         free(rows);
         dl_unlock(lock);
         return;
@@ -2461,6 +2500,12 @@ static void dl_submit_loaded(const struct dl_dirs *d, struct dl_row *r,
         dl_unlock(lock);
         dl_fail(reply, "QUEUE_WRITE_FAILED", "submit",
                 "cannot append the request row", qpath);
+        return;
+    }
+    if (!dl_state_file_flush(qpath, d->land,
+                             dl_submit_sync_failure_injected())) {
+        dl_unlock(lock);
+        dl_submit_sync_failed(reply, qpath, true);
         return;
     }
     dl_unlock(lock);

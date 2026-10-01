@@ -49,3 +49,26 @@ gates passed in `lint-fast`.
 The retained development verifier was restored after build-driven relinks and
 verified at
 `bbe1428b9ab2cbc654ef7070edace75ef2771cfe5e57675f5aef84f14f8d6c72`.
+
+## Submission queue admission
+
+The same audit found that a newly appended `queue.jsonl` row could be
+acknowledged after `fclose` without an explicit file-and-parent durability
+barrier. Submission now flushes the exact regular queue file and its parent
+directory while still holding the row lock. If that post-append sync is
+ambiguous, the command reports the retryable `QUEUE_SYNC_FAILED` state and
+keeps the complete row. An identical retry finds that row under the same
+lock, flushes it, and returns its original sequence as a deduplicated request;
+it neither appends another row nor schedules duplicate proof work.
+
+The registered regression injects the failure only after the complete row is
+appended. It observes the blocked, retryable, mutated reply, preserves the
+queue bytes, retries the exact immutable tip and checkout, and observes one
+durable row with sequence 1. The exact test-fast runner
+`0b4dfa7486aa7624ea194c3afe823cdf677b52fadbbcfd066bef2167b5d6eb4e`
+ran `test_dev_land` cold: 1 registered group ran, 0 failed, 0 skipped, and
+1,232 were gated by the selector in 132.7 seconds. The initial regression run
+was red before reaching the injected barrier because its unsigned fixture had
+omitted the required proof stub; adding the same test-only proof precondition
+used by the neighboring valid-submit fixture made the intended path
+observable without relaxing production admission.
