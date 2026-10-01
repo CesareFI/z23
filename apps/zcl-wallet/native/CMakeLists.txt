@@ -117,7 +117,7 @@ add_library(zcl_wallet_core STATIC src/amount.c src/base58.c src/address.c src/s
     src/transaction_context.c src/transaction_review_context.c src/transaction_review_wire.c
     src/transaction_review_wire_encode.c src/transaction_review_complete.c src/transaction_review_sign.c
     src/transaction_draft.c src/transaction_draft_check.c src/transaction_source.c
-    src/transaction_merkle.c src/source_commitment.c)
+    src/transaction_merkle.c src/source_commitment.c src/recovery_addresses.c)
 # The TLS candidate remains confined to defensive host fixtures until the
 # certificate-parser finding and provider analysis receive a completed review.
 # No Android socket/transport entry point is compiled during that quarantine.
@@ -1326,6 +1326,12 @@ if(NOT ANDROID)
     target_link_libraries(mnemonic_tests PRIVATE zcl_wallet_core)
     target_compile_options(mnemonic_tests PRIVATE -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion)
     add_test(NAME wallet_mnemonic COMMAND mnemonic_tests)
+    add_executable(recovery_address_tests tests/test_recovery_addresses.c)
+    target_link_libraries(recovery_address_tests PRIVATE zcl_wallet_core)
+    target_compile_options(recovery_address_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+        -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+    add_test(NAME wallet_recovery_addresses COMMAND recovery_address_tests)
+    set_tests_properties(wallet_recovery_addresses PROPERTIES TIMEOUT 120)
     add_executable(hmac_tests tests/test_hmac.c)
     target_link_libraries(hmac_tests PRIVATE zcl_wallet_core)
     target_include_directories(hmac_tests PRIVATE src)
@@ -1349,6 +1355,10 @@ if(NOT ANDROID)
         add_executable(bench_wallet_change tests/bench_wallet_change.c)
         target_link_libraries(bench_wallet_change PRIVATE zcl_wallet_core)
         target_compile_options(bench_wallet_change PRIVATE -Wall -Wextra -Wpedantic -Werror
+            -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+        add_executable(bench_recovery_addresses tests/bench_recovery_addresses.c)
+        target_link_libraries(bench_recovery_addresses PRIVATE zcl_wallet_core)
+        target_compile_options(bench_recovery_addresses PRIVATE -Wall -Wextra -Wpedantic -Werror
             -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
         add_executable(bench_read_only_sync tests/bench_read_only_sync.c tests/sync_fixture.c)
         target_link_libraries(bench_read_only_sync PRIVATE zcl_wallet_core)
@@ -2053,6 +2063,15 @@ if(NOT ANDROID)
             -Wl,--wrap=secp256k1_context_randomize -Wl,--wrap=zcl_hmac_sha512
             -Wl,--wrap=zcl_secure_zero -Wl,--wrap=secp256k1_ec_seckey_tweak_add)
         add_test(NAME wallet_key_failures COMMAND key_failure_tests)
+        add_executable(recovery_failure_tests tests/test_recovery_failures.c)
+        target_link_libraries(recovery_failure_tests PRIVATE zcl_wallet_core secp256k1)
+        target_include_directories(recovery_failure_tests PRIVATE src)
+        target_compile_options(recovery_failure_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+            -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+        target_link_options(recovery_failure_tests PRIVATE -Wl,--wrap=zcl_ec_begin -Wl,--wrap=zcl_ec_end
+            -Wl,--wrap=zcl_entropy_seed -Wl,--wrap=zcl_seed_address -Wl,--wrap=zcl_secure_zero -Wl,--wrap=malloc)
+        add_test(NAME wallet_recovery_failures COMMAND recovery_failure_tests)
+        set_tests_properties(wallet_recovery_failures PROPERTIES TIMEOUT 60)
         add_executable(ec_lifetime_tests tests/test_ec_lifetime.c)
         target_link_libraries(ec_lifetime_tests PRIVATE zcl_wallet_core secp256k1)
         target_include_directories(ec_lifetime_tests PRIVATE src)
