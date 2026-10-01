@@ -23,6 +23,7 @@
 #include "command/native_command.h"
 #include "command/native_dev_land_regen.h"
 #include "platform/logical_cpu.h"
+#include "platform/state_root.h"
 #include "config/command_catalog.h"
 #include "json/json.h"
 #include "kernel/command_registry.h"
@@ -8234,6 +8235,38 @@ _test_next:;
     dlx_restore();
     return failures;
 }
+
+static int test_dev_land_private_state_dirs(void)
+{
+    int failures = 0;
+    TEST("land: a symlinked state directory is refused without writing through it") {
+        struct dlx_call c;
+        char root[4096], land[4096], target[4096], escaped[4096];
+        int n;
+        dlx_isolate("private_state_dirs");
+        ASSERT(platform_state_root(root, sizeof(root)));
+        n = snprintf(land, sizeof(land), "%s/land", root);
+        ASSERT(n > 0 && (size_t)n < sizeof(land));
+        n = snprintf(target, sizeof(target), "%s/foreign", g_dlx_state);
+        ASSERT(n > 0 && (size_t)n < sizeof(target));
+        n = snprintf(escaped, sizeof(escaped), "%s/logs", target);
+        ASSERT(n > 0 && (size_t)n < sizeof(escaped));
+        ASSERT(mkdir(target, 0700) == 0);
+        ASSERT(symlink(target, land) == 0);
+        dlx_begin(&c, "status");
+        (void)json_push_kv_bool(&c.input, "json", true);
+        ASSERT(dlx_run(&c));
+        ASSERT(c.reply.status == ZCL_COMMAND_STATUS_FAILED);
+        ASSERT_STR_EQ(dlx_err_code(&c), "STATE_DIR_FAILED");
+        dlx_end(&c);
+        ASSERT(access(escaped, F_OK) != 0 && errno == ENOENT);
+        dlx_restore();
+        PASS();
+    }
+_test_next:;
+    dlx_restore();
+    return failures;
+}
 #endif
 
 int test_dev_land(void)
@@ -8265,6 +8298,7 @@ int test_dev_land(void)
     failures += test_dev_land_exact_tree();
     failures += test_dev_land_source_binding();
 #if !defined(_WIN32)
+    failures += test_dev_land_private_state_dirs();
     failures += test_dev_land_submit_sync_recovery();
     failures += test_dev_land_tree_types();
     failures += test_dev_land_tree_malformed();

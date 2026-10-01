@@ -65,10 +65,27 @@ The registered regression injects the failure only after the complete row is
 appended. It observes the blocked, retryable, mutated reply, preserves the
 queue bytes, retries the exact immutable tip and checkout, and observes one
 durable row with sequence 1. The exact test-fast runner
-`0b4dfa7486aa7624ea194c3afe823cdf677b52fadbbcfd066bef2167b5d6eb4e`
+`d45598aa317fde603a054e40d8d2547adf6a3a307e07bcbbd21075df59ba3cd4`
 ran `test_dev_land` cold: 1 registered group ran, 0 failed, 0 skipped, and
-1,232 were gated by the selector in 132.7 seconds. The initial regression run
+1,232 were gated by the selector in 131.9 seconds. The initial regression run
 was red before reaching the injected barrier because its unsigned fixture had
 omitted the required proof stub; adding the same test-only proof precondition
 used by the neighboring valid-submit fixture made the intended path
 observable without relaxing production admission.
+
+## Landing state directory authority
+
+The landing leaf previously created `land/` and `land/logs/` with raw
+`mkdir`, then accepted any existing path for which `stat` reported a
+directory. Because `stat` follows links, an existing symlink could redirect
+queue, lock, log, intent and outcome state outside the owner-private state
+root. Both directories now use the platform owner-private directory
+abstraction, which validates ownership and mode and refuses POSIX symlinks or
+Windows reparse points. The generic directory helper used for disposable
+dependency materialization was not changed.
+
+The registered POSIX regression creates an isolated state root, points its
+`land` entry at a separate directory, and invokes the real status action. The
+leaf returns `STATE_DIR_FAILED`, and the test verifies that no `logs` entry was
+created through the link. This is a state-authority hardening only; it does
+not change proof admission, Git ancestry, or publication policy.

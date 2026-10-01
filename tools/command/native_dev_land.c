@@ -143,6 +143,7 @@
 #include "platform/file_metadata.h"
 #include "platform/logical_cpu.h"
 #include "platform/os_proc.h"
+#include "platform/private_directory.h"
 #include "platform/private_file.h"
 #include "platform/positioned_file.h"
 #include "platform/ram_scratch.h"
@@ -326,7 +327,8 @@ static bool dl_dirs_make(struct dl_dirs *d)
     n = snprintf(d->wt, sizeof(d->wt), "%s/land/wt", d->root);
     if (n <= 0 || (size_t)n >= sizeof(d->wt))
         return false;
-    return dl_mkdir_one(d->land) && dl_mkdir_one(d->logs);
+    return platform_private_directory_ensure(d->land) &&
+           platform_private_directory_ensure(d->logs);
 }
 
 /* ── time ──────────────────────────────────────────────────────────────── */
