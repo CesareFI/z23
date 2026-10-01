@@ -738,6 +738,49 @@ static int t_real_table(void)
     return failures;
 }
 
+static int t_executable_memory_symbols(void)
+{
+    int failures = 0;
+    static const struct { const char *symbol; const char *classification; } rows[] = {
+#define ZCL_CAPABILITY_SYMBOL(symbol, classification, reason) {symbol, #classification},
+#include "../../../engine/composition/capability_symbols.def"
+#undef ZCL_CAPABILITY_SYMBOL
+    };
+    const char *protect_class = NULL, *cache_class = NULL;
+    for (size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); ++i) {
+        if (strcmp(rows[i].symbol, "mprotect") == 0) protect_class = rows[i].classification;
+        if (strcmp(rows[i].symbol, "__clear_cache") == 0) cache_class = rows[i].classification;
+    }
+    PCC_CHECK("I: real symbol catalog classifies executable protection as DYNLOAD",
+        protect_class && strcmp(protect_class, "CAP_DYNLOAD") == 0);
+    PCC_CHECK("I: real symbol catalog classifies cache synchronization as HARMLESS",
+        cache_class && strcmp(cache_class, "CAP_HARMLESS") == 0);
+    struct pcc_case c;
+    if (!pcc_case_open(&c, "execmemory")) return 1;
+    struct vcs_pkgcap_report r;
+    bool built = pcc_write(c.dir, "src/image.c",
+        "int protect(void *p){return mprotect(p,4096,5);}\n") &&
+        pcc_write_manifest(c.dir, "", "\"src/image.c\"");
+    PCC_CHECK("I: executable protection fixture built", built);
+    pcc_run(&c, PCC_REAL_TABLE, NULL, &r);
+    PCC_CHECK("I: undeclared executable protection is REFUSED as DYNLOAD",
+        r.verdict == VCS_PKGCAP_REFUSED && pcc_derived_has(&r, "CAP_DYNLOAD"));
+    built = pcc_write_manifest(c.dir, "\"CAP_DYNLOAD\"", "\"src/image.c\"");
+    PCC_CHECK("I: declared executable protection fixture built", built);
+    pcc_run(&c, PCC_REAL_TABLE, NULL, &r);
+    PCC_CHECK("I: declared executable protection is VERIFIED",
+        r.verdict == VCS_PKGCAP_VERIFIED && pcc_derived_has(&r, "CAP_DYNLOAD"));
+    built = pcc_write(c.dir, "src/image.c",
+        "void sync(void *a,void *b){__clear_cache(a,b);}\n") &&
+        pcc_write_manifest(c.dir, "", "\"src/image.c\"");
+    PCC_CHECK("I: held-range cache synchronization fixture built", built);
+    pcc_run(&c, PCC_REAL_TABLE, NULL, &r);
+    PCC_CHECK("I: held-range cache synchronization needs no capability",
+        r.verdict == VCS_PKGCAP_VERIFIED);
+    pcc_case_close(&c);
+    return failures;
+}
+
 int test_package_capability_claim(void)
 {
     printf("\n=== package_capability_claim: receiver-side capability "
@@ -759,6 +802,7 @@ int test_package_capability_claim(void)
     failures += t_scanner_exclusions();
     failures += t_shipped_header_counts();
     failures += t_real_table();
+    failures += t_executable_memory_symbols();
 
     printf("package_capability_claim: %d failure(s)\n", failures);
     return failures;

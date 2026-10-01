@@ -1454,6 +1454,53 @@ static bool tgs_write_file(const char *path, const char *text)
     return fclose(fp) == 0 && ok;
 }
 
+static int test_exact_verifier_prerequisites(void)
+{
+    int failures = 0;
+    TEST("exact storage selection avoids verifier; consumer ensure refuses stale or missing helper") {
+        char command[4096], out[4096], root[256], stamp[320], fresh[160];
+        int n = snprintf(command, sizeof(command),
+            "make --no-print-directory -qp t-fast-exact-locked "
+            "EXACT_ONLY_MATCHED=test_zcode_store "
+            "TEST_PARALLEL_FAST_CANDIDATE=/bin/true "
+            "BUILD_SOURCE_RECORD='%s 1 %s' 2>/dev/null | "
+            "sed -n '/^t-fast-exact-locked: /p'",
+            zcl_build_source_id_sha256(), zcl_build_source_mutation_sha256());
+        ASSERT(n > 0 && (size_t)n < sizeof(command));
+        ASSERT(capture_command(command, out, sizeof(out)) == 0);
+        ASSERT(strstr(out, "t-fast-exact-locked:") != NULL);
+        ASSERT(strstr(out, "dev-package-verifier-ensure") == NULL);
+
+        test_make_tmpdir(root, sizeof(root), "test_group_selector", "verifier_ensure");
+        n = snprintf(stamp, sizeof(stamp), "%s/ready", root);
+        ASSERT(n > 0 && (size_t)n < sizeof(stamp));
+        n = snprintf(fresh, sizeof(fresh), "%s 1 %s\n",
+            zcl_build_source_id_sha256(), zcl_build_source_mutation_sha256());
+        ASSERT(n > 0 && (size_t)n < sizeof(fresh));
+        ASSERT(tgs_write_file(stamp, fresh));
+        n = snprintf(command, sizeof(command),
+            "make --no-print-directory dev-package-verifier-ensure "
+            "DEV_PACKAGE_VERIFY_BIN=/bin/true DEV_PACKAGE_VERIFY_ENSURE_STAMP='%s' "
+            "MAKE=/bin/false BUILD_SOURCE_RECORD='%s 1 %s' 2>&1",
+            stamp, zcl_build_source_id_sha256(), zcl_build_source_mutation_sha256());
+        ASSERT(n > 0 && (size_t)n < sizeof(command));
+        ASSERT(capture_command(command, out, sizeof(out)) == 0);
+        ASSERT(tgs_write_file(stamp, "stale source identity\n"));
+        ASSERT(capture_command(command, out, sizeof(out)) == 2);
+        ASSERT(tgs_write_file(stamp, fresh));
+        n = snprintf(command, sizeof(command),
+            "make --no-print-directory dev-package-verifier-ensure "
+            "DEV_PACKAGE_VERIFY_BIN='%s/missing' DEV_PACKAGE_VERIFY_ENSURE_STAMP='%s' "
+            "MAKE=/bin/false BUILD_SOURCE_RECORD='%s 1 %s' 2>&1",
+            root, stamp, zcl_build_source_id_sha256(), zcl_build_source_mutation_sha256());
+        ASSERT(n > 0 && (size_t)n < sizeof(command));
+        ASSERT(capture_command(command, out, sizeof(out)) == 2);
+        ASSERT(test_rm_rf_recursive(root) == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* Offset of the runner's verbose "[dispatch] ... <name>" line, or SIZE_MAX.
  * Only dispatch lines count: the replayed transcript and the [done] lines
  * name the same groups in other orders. */
@@ -1633,6 +1680,7 @@ static int test_compile_scope_proof(void)
 int test_test_group_selector(void)
 {
     int failures = 0;
+    failures += test_exact_verifier_prerequisites();
     failures += test_compile_scope_proof();
     failures += test_tmpdir_recursive_cleanup();
     failures += test_selector_predicate();

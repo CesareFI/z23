@@ -37,10 +37,37 @@
 #define _GNU_SOURCE /* MAP_ANONYMOUS */
 #endif
 
-#include "devloop_reflex_runner_wire.h"
 #include "hotswap/hotfork_capsule.h"
 #include "reflex_runner_fixture.h"
 
+#if defined(ZCL_REFLEX_PURE_STORY)
+bool zcl_reflex_pure_story(struct zcl_hotfork_observation_v1 *out)
+{
+    out->magic = ZCL_HOTFORK_OBSERVATION_MAGIC;
+    out->checks_run = 3;
+    out->checks_passed = 3;
+    out->exercised_surface[0] = 'p';
+    out->exercised_surface[1] = '\0';
+    out->detail[0] = '0' + ZCL_REFLEX_PURE_REVISION;
+    out->detail[1] = '\0';
+    return true;
+}
+#elif defined(ZCL_REFLEX_PURE_DESCRIPTOR)
+extern bool zcl_reflex_pure_story(struct zcl_hotfork_observation_v1 *out);
+__attribute__((visibility("default")))
+const struct zcl_hotfork_capsule_v1 zcl_hotfork_capsule_v1 = {
+    .abi_version = ZCL_HOTFORK_CAPSULE_ABI_V1,
+    .descriptor_size = sizeof(struct zcl_hotfork_capsule_v1),
+    .owner_id = ZCL_REFLEX_FIXTURE_OWNER,
+    .source_tu = ZCL_REFLEX_FIXTURE_SOURCE,
+    .candidate_object_root = ZCL_REFLEX_PURE_OBJECT_SHA256,
+    .story_id = ZCL_REFLEX_FIXTURE_STORY,
+    .story_root = ZCL_REFLEX_FIXTURE_STORY_ROOT,
+    .story_fixture_root = ZCL_REFLEX_FIXTURE_FIXTURE_ROOT,
+    .run_story = zcl_reflex_pure_story,
+};
+#else
+#include "devloop_reflex_runner_wire.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <stdint.h>
@@ -293,3 +320,4 @@ const struct zcl_hotfork_capsule_v1 zcl_hotfork_capsule_v1 = {
     .story_fixture_root = ZCL_REFLEX_FIXTURE_FIXTURE_ROOT,
     .run_story = fixture_story,
 };
+#endif

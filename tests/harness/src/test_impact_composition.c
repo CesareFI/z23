@@ -7497,6 +7497,28 @@ static bool ic_gate_everything(const char *group)
  * groups declare, each once, from the table the proof reads -- and nothing
  * at all for a selection that declares none, so an ordinary run pays no
  * build. */
+static int test_ic_build_need_umbrella_fold(void)
+{
+    int failures = 0;
+    TEST("proof selection: missing BUILD helper keeps shard and folds its umbrella") {
+        ASSERT(ic_host_need_bare_root(IC_FIX_HOST_BARE));
+        struct zcl_devloop_plan plan = {0};
+        plan.closure_universal = true;
+        static char selector[ZCL_DEVLOOP_MAX_PLAN_SELECTIONS *
+                             (ZCL_TEST_GROUP_FULL_MAX + 1)];
+        char gated[PROOF_HOST_GATED_MAX];
+        uint32_t selected = 0;
+        ASSERT(zcl_dev_proof_test_build_test_selector(
+            &plan, IC_FIX_HOST_BARE, false, selector, sizeof(selector),
+            &selected, gated, sizeof(gated)));
+        ASSERT(ic_selector_has(selector, "test_zcode_swarm_net_shard_01"));
+        ASSERT(strstr(gated, "test_zcode_swarm_net_shard_01") == NULL);
+        ASSERT(!ic_selector_has(selector, "test_zcode_swarm_net"));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_ic_local_selection_build_needs(void)
 {
     int failures = 0;
@@ -7504,6 +7526,35 @@ static int test_ic_local_selection_build_needs(void)
          "targets once; an ordinary selection lists none") {
         struct zcl_test_group_host_need needs[16];
         size_t n = 99;
+
+        static const char *const verifier_groups[] = {
+            "test_zcode_verify", "test_zcode_package_registry", "test_zcode_add",
+            "test_resident_launch_contract", "test_build_fabric",
+            "test_build_fabric_attach", "test_zcode_dev_objects",
+            "test_fastobj_carrier", "test_zcode_swarm_net",
+            "test_zcode_swarm_net_shard_01"
+        };
+        ASSERT(zcl_test_selection_build_needs("test_zcode_store", true, NULL,
+                                              needs, 16, &n));
+        ASSERT(n == 0);
+        for (size_t i = 0; i < sizeof(verifier_groups) / sizeof(verifier_groups[0]); i++) {
+            ASSERT(zcl_test_selection_build_needs(verifier_groups[i], true,
+                                                  NULL, needs, 16, &n));
+            ASSERT(n == 1);
+            ASSERT(ic_needs_have(needs, n, "dev-package-verifier-ensure",
+                                 "build/bin/zclassic23-package-verify-dev"));
+        }
+        ASSERT(zcl_test_selection_build_needs(
+            "test_zcode_store,test_zcode_verify,test_zcode_add", true, NULL,
+            needs, 16, &n));
+        ASSERT(n == 1);
+
+        /* Static partition assigns the lifecycle builder to shard_01. */
+        ASSERT(zcl_test_selection_build_needs(
+            "test_zcode_swarm_net_shard_02,test_zcode_swarm_net_shard_03,"
+            "test_zcode_swarm_net_shard_04,test_zcode_swarm_net_shard_05",
+            true, NULL, needs, 16, &n));
+        ASSERT(n == 0);
 
         ASSERT(zcl_test_selection_build_needs("test_engine", true, NULL,
                                               needs, 16, &n));
@@ -7570,7 +7621,9 @@ static int test_ic_local_selection_build_needs(void)
         n = 99;
         ASSERT(zcl_test_selection_build_needs(NULL, false, NULL, needs, 16,
                                               &n));
-        ASSERT(n == 8);
+        ASSERT(n == 9);
+        ASSERT(ic_needs_have(needs, n, "dev-package-verifier-ensure",
+                             "build/bin/zclassic23-package-verify-dev"));
         ASSERT(ic_needs_have(needs, n, "dev-bin", "build/bin/z23-dev"));
         ASSERT(ic_needs_have(needs, n, "engine-unit",
                              "build/bin/zclassic23-engine-unit"));
@@ -10760,6 +10813,7 @@ int test_impact_composition(void)
     failures += test_ic_proof_lint_and_test_share_admitted_executables();
     failures += test_ic_proof_test_needs_build_the_sensor();
     failures += test_ic_proof_test_needs_leave_provided_tools();
+    failures += test_ic_build_need_umbrella_fold();
     failures += test_ic_local_selection_build_needs();
     failures += test_ic_proof_prefork_builds_the_shared_targets();
     failures += test_ic_generation_docs_tools_builds_the_checker_binaries();

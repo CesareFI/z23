@@ -982,7 +982,7 @@ DEV_ONLY_SRCS = tools/dev/devloop_cli.c tools/dev/devloop_cycle.c \
 	tools/dev/devloop_watch_session.c \
 	tools/dev/devloop_hotswap_build.c tools/dev/devloop_restart_build.c \
 	tools/dev/devloop_early.c tools/dev/devloop_early_skip.c \
-	tools/dev/devloop_reflex_runner.c tools/dev/devloop_reflex_runner_main.c \
+	tools/dev/devloop_reflex_runner.c tools/dev/devloop_reflex_runner_main.c tools/dev/component_receiver.c \
 	tools/dev/devloop_action_root.c tools/dev/devloop_action_root_store.c \
 	tools/dev/devloop_baseline.c tools/dev/dev_failure_store.c \
 	tools/dev/dev_source_identity.c tools/dev/dev_git_tree.c tools/dev/dev_proof.c \
@@ -3080,6 +3080,7 @@ $(BUILD_DIR)/fixtures/rlc_child_broken$(ZCL_HOST_EXEEXT): $(RESIDENT_CONTRACT_FI
 TEST_SRCS = $(call zcl_filter_ephemeral_sources,\
 	$(wildcard tests/harness/src/*.c))
 TEST_DEV_EXECUTOR_SRCS = tools/dev/devloop_cycle.c tools/dev/dev_failure_store.c \
+	tools/dev/component_receiver.c \
 	tools/dev/devloop_app_scaffold.c \
 	tools/dev/devloop_hotfork_shape.c \
 	tools/dev/dev_source_identity.c tools/dev/dev_git_tree.c tools/dev/devloop_process.c \
@@ -3695,6 +3696,39 @@ $(BUILD_DIR)/fixtures/reflex_runner/zcl_reflex_fixture_%.so: \
 	trap - EXIT HUP INT TERM
 
 ifeq ($(ZCL_HOST_OS),Linux)
+ifeq ($(shell uname -m),x86_64)
+# Existing HOT_FORK ABI: changed story TU, separately bound descriptor TU,
+# and component-only Clang link. Never link a host or invoke a receiver compiler.
+ZCL_COMPONENT_CLANG ?= clang
+REFLEX_PURE_CFLAGS = --target=x86_64-linux-gnu -std=c23 -O2 -Wall -Wextra -Werror \
+	-march=x86-64 -mtune=generic \
+	-fPIC -fvisibility=hidden -fno-builtin -fno-stack-protector \
+	-fno-unwind-tables -fno-asynchronous-unwind-tables \
+	-Iengine/modules/hotswap/include
+REFLEX_PURE_SOS = $(BUILD_DIR)/fixtures/reflex_runner/zcl_reflex_pure_1.so \
+	$(BUILD_DIR)/fixtures/reflex_runner/zcl_reflex_pure_2.so
+$(BUILD_DIR)/fixtures/reflex_runner/zcl_reflex_pure_%.so: \
+		$(REFLEX_RUNNER_FIXTURE_SRC) tests/harness/fixtures/reflex_runner_fixture.h \
+		engine/modules/hotswap/include/hotswap/hotfork_capsule.h Makefile
+	@mkdir -p $(dir $@)
+	@set -eu; \
+	story="$@.story.o"; descriptor="$@.descriptor.o"; temporary="$@.tmp"; \
+	trap 'rm -f "$$temporary" "$$descriptor"' EXIT HUP INT TERM; \
+	$(ZCL_COMPONENT_CLANG) $(REFLEX_PURE_CFLAGS) -DZCL_REFLEX_PURE_STORY \
+	  -DZCL_REFLEX_PURE_REVISION=$* -c $(REFLEX_RUNNER_FIXTURE_SRC) -o "$$story"; \
+	object_line="$$(sha256sum "$$story")"; object_sha="$${object_line%% *}"; \
+	test "$${#object_sha}" -eq 64; \
+	case "$$object_sha" in *[!0-9a-f]*) exit 1;; esac; \
+	$(ZCL_COMPONENT_CLANG) $(REFLEX_PURE_CFLAGS) -DZCL_REFLEX_PURE_DESCRIPTOR \
+	  -DZCL_REFLEX_PURE_OBJECT_SHA256=\"$$object_sha\" \
+	  -c $(REFLEX_RUNNER_FIXTURE_SRC) -o "$$descriptor"; \
+	$(ZCL_COMPONENT_CLANG) --target=x86_64-linux-gnu -nostdlib -shared \
+	  -Wl,-z,now -Wl,--build-id=none \
+	  -o "$$temporary" "$$story" "$$descriptor"; \
+	mv -f "$$temporary" "$@"; rm -f "$$descriptor"; trap - EXIT HUP INT TERM
+$(BIN_DIR)/test_zcl $(TEST_PARALLEL_BIN) $(TEST_PARALLEL_FAST_BIN) \
+$(TEST_PARALLEL_REL_CANDIDATE) $(TEST_PARALLEL_FAST_CANDIDATE): | $(REFLEX_PURE_SOS)
+endif
 $(BIN_DIR)/test_zcl: | $(REFLEX_RUNNER_FIXTURE_SOS)
 $(TEST_PARALLEL_BIN): | $(REFLEX_RUNNER_FIXTURE_SOS)
 $(TEST_PARALLEL_FAST_BIN): | $(REFLEX_RUNNER_FIXTURE_SOS)
@@ -4590,7 +4624,7 @@ t-fast-exact:
 	    BUILD_SOURCE_RECORD='$(BUILD_SOURCE_RECORD)' \
 	    $(ZCL_FROZEN_TOOLCHAIN_ARGS)
 
-t-fast-exact-locked: $(TEST_PARALLEL_FAST_CANDIDATE) dev-package-verifier-ensure \
+t-fast-exact-locked: $(TEST_PARALLEL_FAST_CANDIDATE) \
 	$(BIN_DIR)/z23-git-hook$(ZCL_HOST_EXEEXT) $(BIN_DIR)/z23-lint
 	+@$(call ZCL_TEST_BUILD_NEEDS,$(TEST_PARALLEL_FAST_ACTIVE),--exact=$(EXACT_ONLY_MATCHED) $(T_FAST_EXACT_ARGS))
 	$(ZCL_TEST_STACK_SETUP) && \

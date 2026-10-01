@@ -6934,8 +6934,10 @@ static bool dp_selector_host_runs(const char *full, void *ctx)
     const struct dp_host_tree *tree = ctx;
     struct zcl_test_group_host_need need;
     if (!zcl_test_group_host_need(full, &need)) return false;
-    return need.kind == ZCL_HOST_NEED_NONE ||
-           zcl_test_group_host_need_met(tree->root, &need);
+    /* BUILD needs are promises this proof must materialize before execution.
+     * Folding uses the same admission predicate as the universal selector,
+     * so an absent helper does not run both an umbrella and its shards. */
+    return zcl_test_group_host_need_selectable(tree->root, &need);
 }
 
 /* A capacity-bounded plan reaches more groups than it can enumerate. The

@@ -261,6 +261,10 @@ ZCL_CAPABILITY_SYMBOL("webkit_web_view_run_javascript", CAP_PROCESS,
     "Executes page JavaScript in WebKit's supervised web process.")
 
 /* ---- CAP_DYNLOAD ---- */
+ZCL_CAPABILITY_SYMBOL("mprotect", CAP_DYNLOAD,
+    "Can grant executable permission to received instruction bytes. nm "
+    "cannot distinguish protection reduction from a PROT_EXEC grant; "
+    "the restrictive executable-code reach applies to both.")
 ZCL_CAPABILITY_SYMBOL("dlclose", CAP_DYNLOAD,
     "Loads nothing itself, but it has no purpose apart from dlopen, and "
     "keeping the family whole is what makes the sharpest class "
@@ -679,6 +683,9 @@ ZCL_CAPABILITY_SYMBOL("unshare", CAP_PRIVILEGE,
     "can see.")
 
 /* ---- CAP_HARMLESS ---- */
+ZCL_CAPABILITY_SYMBOL("__clear_cache", CAP_HARMLESS,
+    "Synchronizes instruction caches for an address range already held; "
+    "acquires no mapping or executable permission and changes no authority.")
 ZCL_CAPABILITY_SYMBOL("g_free", CAP_HARMLESS,
     "Releases process memory owned by GLib.")
 ZCL_CAPABILITY_SYMBOL("g_idle_add", CAP_HARMLESS,
