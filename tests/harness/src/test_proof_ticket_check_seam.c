@@ -732,30 +732,48 @@ static int seam_case_derived(void)
     return failures;
 }
 
-/* A directory this process owns is the same trust domain the proof
- * refuses. /usr is root-owned on this host, so the uid compare is the
- * branch that runs, and no verifier is qualified for it. */
+/* A directory this process owns is the same trust domain the proof refuses.
+ * A root-run harness creates a second, inaccessible fixture owned by uid 1;
+ * an ordinary harness uses the root directory owned by uid 0. In both cases
+ * the other-uid branch is observed without trusting a host-specific /usr
+ * ownership assumption, and no verifier is qualified for it. */
 static int seam_case_same_uid(void)
 {
     int failures = 0;
+    char own_dir[SEAM_PATH] = {0};
+    char other_dir[SEAM_PATH] = {0};
     TEST_CASE("check seam: same-uid donor stays refused") {
-        char dir[SEAM_PATH];
-        char *made = test_mkdtemp(dir, sizeof(dir), "z23-check-seam-uid");
+        char *made = test_mkdtemp(own_dir, sizeof(own_dir),
+                                  "z23-check-seam-uid");
         struct stat st;
         const char *own;
         const char *other;
+        const char *other_path = "/";
         ASSERT(made != NULL);
-        ASSERT(lstat("/usr", &st) == 0);
+        if (geteuid() == 0) {
+            ASSERT(test_mkdtemp(other_dir, sizeof(other_dir),
+                               "z23-check-seam-other-uid") != NULL);
+            ASSERT(chown(other_dir, (uid_t)1, (gid_t)-1) == 0);
+            other_path = other_dir;
+        }
+        ASSERT(lstat(other_path, &st) == 0);
         ASSERT(st.st_uid != geteuid());
-        own = zcl_dev_proof_test_donor_trust_name(dir);
-        other = zcl_dev_proof_test_donor_trust_name("/usr");
+        own = zcl_dev_proof_test_donor_trust_name(own_dir);
+        other = zcl_dev_proof_test_donor_trust_name(other_path);
         ASSERT(own != NULL);
         ASSERT(strcmp(own, "donor_untrusted_same_uid") == 0);
         ASSERT(other != NULL);
         ASSERT(strcmp(other, "donor_verifier_unqualified") == 0);
         printf("check_seam case=same_uid own=%s other=%s\n", own, other);
-        test_rm_rf(dir);
     } TEST_END
+    if (other_dir[0]) {
+        if (chown(other_dir, geteuid(), getegid()) != 0) {
+            printf("FAIL check seam other-uid fixture ownership restore\n");
+            failures++;
+        }
+        test_rm_rf(other_dir);
+    }
+    if (own_dir[0]) test_rm_rf(own_dir);
     return failures;
 }
 
