@@ -158,11 +158,45 @@ static bool preserves_visible_unicode_neighbors(void)
     return true;
 }
 
+static bool preserves_ascii_visibility(void)
+{
+    for (unsigned code = 0; code < 0x80; ++code) {
+        const uint8_t byte = (uint8_t)code;
+        const zcl_status expected = code < 0x20 || code == 0x7f
+            ? ZCL_INVALID_ENCODING : ZCL_OK;
+        CHECK(zcl_utf8_visible_text(&byte, 1) == expected);
+    }
+    return true;
+}
+
+static bool preserves_range_boundaries(void)
+{
+    static const struct { uint32_t code; zcl_status expected; } cases[] = {
+        {0x80, ZCL_INVALID_ENCODING}, {0x9f, ZCL_INVALID_ENCODING},
+        {0xa0, ZCL_OK}, {0xac, ZCL_OK}, {0xad, ZCL_INVALID_ENCODING}, {0xae, ZCL_OK},
+        {0x5ff, ZCL_OK}, {0x600, ZCL_INVALID_ENCODING}, {0x605, ZCL_INVALID_ENCODING}, {0x606, ZCL_OK},
+        {0x2027, ZCL_OK}, {0x2028, ZCL_INVALID_ENCODING}, {0x2029, ZCL_INVALID_ENCODING},
+        {0x202e, ZCL_INVALID_ENCODING}, {0x202f, ZCL_OK},
+        {0xfeff, ZCL_INVALID_ENCODING}, {0xff00, ZCL_OK},
+        {0xe0000, ZCL_OK}, {0xe0001, ZCL_INVALID_ENCODING}, {0xe0002, ZCL_OK},
+        {0xe001f, ZCL_OK}, {0xe0020, ZCL_INVALID_ENCODING},
+        {0xe007f, ZCL_INVALID_ENCODING}, {0xe0080, ZCL_OK}, {0x10ffff, ZCL_OK},
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        uint8_t encoded[4] = {0};
+        const size_t length = encode_codepoint(cases[i].code, encoded, sizeof(encoded));
+        CHECK(length > 0);
+        CHECK(zcl_utf8_visible_text(encoded, length) == cases[i].expected);
+    }
+    return true;
+}
+
 int main(void)
 {
-    if (!accepts_public_requests() || !rejects_unsafe_requests() || !field_and_argument_bounds() ||
+    if (!preserves_ascii_visibility() || !preserves_range_boundaries() ||
+        !accepts_public_requests() || !rejects_unsafe_requests() || !field_and_argument_bounds() ||
         !rejects_unicode_format_characters() || !rejects_layout_separators() ||
         !preserves_visible_unicode_neighbors())
         return 1;
-    return puts("wallet-core: 6 payment test groups passed") == EOF ? 1 : 0;
+    return puts("wallet-core: 8 payment test groups passed") == EOF ? 1 : 0;
 }

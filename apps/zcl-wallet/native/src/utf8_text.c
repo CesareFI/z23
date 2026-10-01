@@ -14,7 +14,10 @@ static bool control_format_or_separator(uint32_t code)
         {0x1bca0, 0x1bca3}, {0x1d173, 0x1d17a}, {0xe0001, 0xe0001}, {0xe0020, 0xe007f}
     };
     for (size_t index = 0; index < sizeof(ranges) / sizeof(ranges[0]); ++index) {
-        if (code >= ranges[index][0] && code <= ranges[index][1])
+        /* Ascending ranges cannot contain a value below this lower bound. */
+        if (code < ranges[index][0])
+            return false;
+        if (code <= ranges[index][1])
             return true;
     }
     return false;
