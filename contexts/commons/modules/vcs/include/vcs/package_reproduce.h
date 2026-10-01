@@ -43,10 +43,14 @@
 #include <stdint.h>
 
 #define VCS_REPRODUCE_DETAIL_MAX 160u
-/* Rows the report carries; receipts beyond the row cap still count toward
- * `matching` (they cannot silently inflate `reproduced`: a truncated scan
- * never reports reproduced=true). */
+/* A complete report carries every matching receipt. More matching receipts
+ * fail the scan closed rather than allocating from untrusted directory
+ * contents or silently admitting evidence that the report cannot show. */
 #define VCS_REPRODUCE_MAX_ROWS 64u
+#define VCS_REPRODUCE_MAX_MATCHING_RECEIPTS VCS_REPRODUCE_MAX_ROWS
+/* Every non-dot directory entry consumes this budget, including malformed
+ * names. This matches the rebuildable Zcode index scan budget. */
+#define VCS_REPRODUCE_MAX_SCAN_ENTRIES 262144u
 /* Bound on one receipt wire the scan will read. */
 #define VCS_REPRODUCE_MAX_WIRE_BYTES VCS_PACKAGE_BUILD_MAX_WIRE_BYTES
 
@@ -106,13 +110,13 @@ struct vcs_reproduce_report {
     uint32_t scanned;   /* receipt files examined */
     uint32_t matching;  /* installable receipts naming the exact root pair */
     bool reproduced;    /* >= 2 distinct receipt ids, every row MATCH */
-    /* Toolchain diversity among the MATCHING rows (including rows beyond
-     * the display cap): distinct_toolchains counts the distinct nonzero
-     * pinned capsule roots; cross_toolchain is true exactly when at least
-     * two DIFFERENT capsules produced the identical bytes — the strong
-     * toolchain-independence claim. Capsule-less v1 receipts add nothing
-     * to either: same-capsule reproduction is honest evidence of process
-     * determinism, not of toolchain independence. */
+    /* Toolchain diversity among the MATCHING rows: distinct_toolchains
+     * counts the distinct nonzero pinned capsule roots; cross_toolchain is
+     * true exactly when at least two DIFFERENT capsules produced the
+     * identical bytes — the strong toolchain-independence claim.
+     * Capsule-less v1 receipts add nothing to either: same-capsule
+     * reproduction is honest evidence of process determinism, not of
+     * toolchain independence. */
     uint32_t distinct_toolchains;
     bool cross_toolchain;
     struct vcs_reproduce_row rows[VCS_REPRODUCE_MAX_ROWS];
@@ -122,12 +126,21 @@ struct vcs_reproduce_report {
 
 /* Scan receipts_dir for build receipts naming (package_root, recipe_root)
  * and evaluate byte-identical reproduction among them (see the file
- * header). A missing/unreadable directory is NOT an error: it yields an
- * empty report (no reproduction recorded). Returns false only when the
- * directory exists but cannot be read. out is zeroed on entry. */
+ * header). A missing directory is an empty report (no reproduction
+ * recorded). Returns false when an existing directory cannot be read or a
+ * fixed scan/matching-receipt budget is exhausted. A receipt only counts
+ * when its lowercase filename is its canonical receipt id. out is zeroed
+ * on entry. */
 bool vcs_package_reproduce_scan(const char *receipts_dir,
                                 const uint8_t package_root[32],
                                 const uint8_t recipe_root[32],
                                 struct vcs_reproduce_report *out);
+
+/* Test-only denial seam. Smaller limits can only make a scan fail closed
+ * sooner; values above the production limits are rejected. */
+bool vcs_package_reproduce_test_scan_bounded(
+    const char *receipts_dir, const uint8_t package_root[32],
+    const uint8_t recipe_root[32], struct vcs_reproduce_report *out,
+    size_t scan_limit, size_t matching_limit);
 
 #endif /* ZCL_VCS_PACKAGE_REPRODUCE_H */

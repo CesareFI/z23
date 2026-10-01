@@ -224,7 +224,8 @@ static uint8_t *repro_read_file(const char *path, size_t *out_len)
     }
     size_t len = fread(buf, 1, VCS_REPRODUCE_MAX_WIRE_BYTES, f);
     bool bad = ferror(f) || !feof(f) || len == 0;
-    fclose(f);
+    if (fclose(f) != 0)
+        bad = true;
     if (bad) {
         free(buf);
         return NULL;
@@ -233,112 +234,131 @@ static uint8_t *repro_read_file(const char *path, size_t *out_len)
     return buf;
 }
 
-bool vcs_package_reproduce_scan(const char *receipts_dir,
-                                const uint8_t package_root[32],
-                                const uint8_t recipe_root[32],
-                                struct vcs_reproduce_report *out)
+struct repro_scan {
+    const char *receipts_dir;
+    const uint8_t *package_root;
+    const uint8_t *recipe_root;
+    struct vcs_reproduce_report *out;
+    struct repro_entry *entries;
+    size_t count;
+    size_t scanned_entries;
+    size_t scan_limit;
+    size_t matching_limit;
+};
+
+static bool repro_receipt_matches(const char *path,
+                                  const uint8_t package_root[32],
+                                  const uint8_t recipe_root[32],
+                                  struct vcs_package_build_receipt *receipt)
 {
-    if (!out)
+    size_t wire_len = 0;
+    uint8_t *wire = repro_read_file(path, &wire_len);
+    if (!wire)
         return false;
-    memset(out, 0, sizeof(*out));
-    if (!receipts_dir || !package_root || !recipe_root)
-        return false;
-    DIR *dir = opendir(receipts_dir);
-    if (!dir)
-        return errno == ENOENT; /* no receipts recorded: an empty report */
+    enum vcs_package_build_error perr =
+        vcs_package_build_parse(wire, wire_len, receipt);
+    free(wire);
+    return perr == VCS_PACKAGE_BUILD_OK &&
+           memcmp(receipt->package_root, package_root, 32) == 0 &&
+           memcmp(receipt->recipe_root, recipe_root, 32) == 0 &&
+           vcs_package_build_installable(receipt);
+}
 
-    struct repro_entry *entries = NULL;
-    size_t count = 0;
-    struct dirent *ent;
-    bool io_failed = false;
-    while ((ent = readdir(dir)) != NULL) {
-        uint8_t scratch[32];
-        size_t scratch_len = 0;
-        if (!zcl_hex_decode_n(ent->d_name, scratch, 32, &scratch_len) ||
-            scratch_len != 32)
-            continue;
-        out->scanned++;
-        char path[4400];
-        int n = snprintf(path, sizeof(path), "%s/%s", receipts_dir,
-                         ent->d_name);
-        if (n < 0 || (size_t)n >= sizeof(path))
-            continue;
-        size_t wire_len = 0;
-        uint8_t *wire = repro_read_file(path, &wire_len);
-        if (!wire)
-            continue;
-        struct vcs_package_build_receipt receipt;
-        enum vcs_package_build_error perr =
-            vcs_package_build_parse(wire, wire_len, &receipt);
-        free(wire);
-        if (perr != VCS_PACKAGE_BUILD_OK ||
-            memcmp(receipt.package_root, package_root, 32) != 0 ||
-            memcmp(receipt.recipe_root, recipe_root, 32) != 0 ||
-            !vcs_package_build_installable(&receipt))
-            continue;
-        struct repro_entry *grown =
-            zcl_realloc(entries, (count + 1u) * sizeof(*grown),
-                        "reproduce_entries");
-        if (!grown) {
-            LOG_ERROR(REPRO_LOG, "alloc %zu receipt entries", count + 1u);
-            io_failed = true;
-            break;
+static bool repro_scan_entry(struct repro_scan *scan, const char *name)
+{
+    uint8_t named_id[32];
+    if (!zcl_hex_decode_lower(name, named_id, sizeof(named_id)))
+        return true;
+    scan->out->scanned++;
+    char path[4400];
+    int n = snprintf(path, sizeof(path), "%s/%s", scan->receipts_dir, name);
+    if (n < 0 || (size_t)n >= sizeof(path))
+        return true;
+    struct vcs_package_build_receipt receipt;
+    if (!repro_receipt_matches(path, scan->package_root, scan->recipe_root,
+                               &receipt))
+        return true;
+    uint8_t receipt_id[32];
+    if (vcs_package_build_id(&receipt, receipt_id) != VCS_PACKAGE_BUILD_OK ||
+        memcmp(named_id, receipt_id, sizeof(receipt_id)) != 0)
+        return true;
+    if (scan->count >= scan->matching_limit) {
+        scan->out->rows_truncated = true;
+        LOG_ERROR(REPRO_LOG, "matching receipt budget exhausted");
+        return false;
+    }
+    if (!scan->entries) {
+        scan->entries = zcl_malloc(
+            scan->matching_limit * sizeof(*scan->entries),
+            "reproduce_entries");
+        if (!scan->entries) {
+            LOG_ERROR(REPRO_LOG, "alloc %zu receipt entries",
+                      scan->matching_limit);
+            return false;
         }
-        entries = grown;
-        if (vcs_package_build_id(&receipt, entries[count].id) !=
-            VCS_PACKAGE_BUILD_OK)
-            continue;
-        entries[count].receipt = receipt;
-        entries[count].matched = false;
-        count++;
     }
-    closedir(dir);
-    if (io_failed) {
-        free(entries);
-        return false;
-    }
+    memcpy(scan->entries[scan->count].id, receipt_id, sizeof(receipt_id));
+    scan->entries[scan->count].receipt = receipt;
+    scan->entries[scan->count].matched = false;
+    scan->count++;
+    return true;
+}
 
-    /* Deterministic reference: the lowest receipt id. Identical rebuilds
-     * by one toolchain file ONE receipt (same id, same name), so every row
-     * past the reference is a genuinely distinct build event. */
+static bool repro_collect(DIR *dir, struct repro_scan *scan)
+{
+    for (;;) {
+        errno = 0;
+        struct dirent *ent = readdir(dir);
+        if (!ent)
+            return errno == 0;
+        if (strcmp(ent->d_name, ".") == 0 ||
+            strcmp(ent->d_name, "..") == 0)
+            continue;
+        if (scan->scanned_entries >= scan->scan_limit) {
+            LOG_ERROR(REPRO_LOG, "receipt directory scan budget exhausted");
+            return false;
+        }
+        scan->scanned_entries++;
+        if (!repro_scan_entry(scan, ent->d_name))
+            return false;
+    }
+}
+
+static bool repro_fill_rows(struct repro_entry *entries, size_t count,
+                            struct vcs_reproduce_report *out)
+{
     if (count > 0)
         qsort(entries, count, sizeof(*entries), repro_entry_cmp);
-    out->matching = (uint32_t)count;
     bool all_match = count >= 2;
     for (size_t i = 0; i < count; i++) {
-        struct vcs_reproduce_verdict v;
-        if (i == 0) {
-            memset(&v, 0, sizeof(v));
-            v.reproduced = true;
-            v.rule = (uint8_t)VCS_REPRODUCE_MATCH;
-        } else {
+        struct vcs_reproduce_verdict v = {
+            .reproduced = true,
+            .rule = (uint8_t)VCS_REPRODUCE_MATCH,
+        };
+        if (i > 0)
             vcs_package_reproduce_compare(&entries[0].receipt,
                                           &entries[i].receipt, &v);
-        }
         if (!v.reproduced)
             all_match = false;
         entries[i].matched = v.reproduced;
-        if (out->row_count < VCS_REPRODUCE_MAX_ROWS) {
-            struct vcs_reproduce_row *row = &out->rows[out->row_count++];
-            memcpy(row->receipt_id, entries[i].id, 32);
-            row->reference = i == 0;
-            row->rule = v.rule;
-            snprintf(row->detail, sizeof(row->detail), "%s", v.detail);
-            row->has_toolchain_capsule =
-                entries[i].receipt.has_toolchain_capsule;
-            memcpy(row->toolchain_capsule_root,
-                   entries[i].receipt.toolchain_capsule_root, 32);
-        } else {
-            out->rows_truncated = true;
-            all_match = false; /* unexamined receipts: never claim it */
-        }
+        struct vcs_reproduce_row *row = &out->rows[out->row_count++];
+        memcpy(row->receipt_id, entries[i].id, sizeof(row->receipt_id));
+        row->reference = i == 0;
+        row->rule = v.rule;
+        snprintf(row->detail, sizeof(row->detail), "%s", v.detail);
+        row->has_toolchain_capsule =
+            entries[i].receipt.has_toolchain_capsule;
+        memcpy(row->toolchain_capsule_root,
+               entries[i].receipt.toolchain_capsule_root,
+               sizeof(row->toolchain_capsule_root));
     }
-    out->reproduced = all_match;
+    return all_match;
+}
 
-    /* Toolchain diversity among the MATCHING rows: the distinct nonzero
-     * pinned capsule roots. A capsule-less (v1) receipt adds nothing —
-     * it proves byte-identity, not toolchain independence. Rows beyond
-     * the display cap still count here (they were compared above). */
+static void repro_count_toolchains(const struct repro_entry *entries,
+                                   size_t count,
+                                   struct vcs_reproduce_report *out)
+{
     for (size_t i = 0; i < count; i++) {
         if (!entries[i].matched ||
             !entries[i].receipt.has_toolchain_capsule)
@@ -360,6 +380,64 @@ bool vcs_package_reproduce_scan(const char *receipts_dir,
             out->distinct_toolchains++;
     }
     out->cross_toolchain = out->distinct_toolchains >= 2;
-    free(entries);
+}
+
+static bool repro_scan_bounded(const char *receipts_dir,
+                               const uint8_t package_root[32],
+                               const uint8_t recipe_root[32],
+                               struct vcs_reproduce_report *out,
+                               size_t scan_limit, size_t matching_limit)
+{
+    if (!out)
+        return false;
+    memset(out, 0, sizeof(*out));
+    if (!receipts_dir || !package_root || !recipe_root)
+        return false;
+    DIR *dir = opendir(receipts_dir);
+    if (!dir)
+        return errno == ENOENT; /* no receipts recorded: an empty report */
+
+    struct repro_scan scan = {
+        .receipts_dir = receipts_dir,
+        .package_root = package_root,
+        .recipe_root = recipe_root,
+        .out = out,
+        .scan_limit = scan_limit,
+        .matching_limit = matching_limit,
+    };
+    bool complete = repro_collect(dir, &scan);
+    if (closedir(dir) != 0)
+        complete = false;
+    if (!complete) {
+        free(scan.entries);
+        return false;
+    }
+    out->matching = (uint32_t)scan.count;
+    out->reproduced = repro_fill_rows(scan.entries, scan.count, out);
+    repro_count_toolchains(scan.entries, scan.count, out);
+    free(scan.entries);
     return true;
+}
+
+bool vcs_package_reproduce_scan(const char *receipts_dir,
+                                const uint8_t package_root[32],
+                                const uint8_t recipe_root[32],
+                                struct vcs_reproduce_report *out)
+{
+    return repro_scan_bounded(receipts_dir, package_root, recipe_root, out,
+                              VCS_REPRODUCE_MAX_SCAN_ENTRIES,
+                              VCS_REPRODUCE_MAX_MATCHING_RECEIPTS);
+}
+
+bool vcs_package_reproduce_test_scan_bounded(
+    const char *receipts_dir, const uint8_t package_root[32],
+    const uint8_t recipe_root[32], struct vcs_reproduce_report *out,
+    size_t scan_limit, size_t matching_limit)
+{
+    if (scan_limit == 0 || scan_limit > VCS_REPRODUCE_MAX_SCAN_ENTRIES ||
+        matching_limit == 0 ||
+        matching_limit > VCS_REPRODUCE_MAX_MATCHING_RECEIPTS)
+        return false;
+    return repro_scan_bounded(receipts_dir, package_root, recipe_root, out,
+                              scan_limit, matching_limit);
 }

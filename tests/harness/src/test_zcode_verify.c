@@ -1464,6 +1464,67 @@ static int zr_scan_diverging(const char *receipts_dir,
     return failures;
 }
 
+static int zr_scan_filename_binding(
+    const char *base, const struct vcs_package_build_receipt *receipt,
+    const uint8_t package_root[32], const uint8_t recipe_root[32])
+{
+    int failures = 0;
+    char dir[4400];
+    snprintf(dir, sizeof(dir), "%s/name-binding", base);
+    uint8_t *wire = NULL;
+    size_t wire_len = 0;
+    uint8_t alias_id[32] = {0};
+    bool prepared =
+        zv_store_receipt(dir, receipt) &&
+        vcs_package_build_serialize(receipt, &wire, &wire_len) ==
+            VCS_PACKAGE_BUILD_OK &&
+        vcs_package_build_id(receipt, alias_id) == VCS_PACKAGE_BUILD_OK;
+    if (prepared)
+        alias_id[0] ^= 1u;
+    char alias_hex[65], alias_path[4400];
+    zv_hex_enc(alias_id, sizeof(alias_id), alias_hex);
+    int n = snprintf(alias_path, sizeof(alias_path), "%s/%s", dir,
+                     alias_hex);
+    prepared = prepared && n > 0 && (size_t)n < sizeof(alias_path) &&
+               zv_write_file(alias_path, wire, wire_len, 0600);
+    free(wire);
+    struct vcs_reproduce_report rep;
+    bool scanned = prepared && vcs_package_reproduce_scan(
+        dir, package_root, recipe_root, &rep);
+    ZV_CHECK("reproduce: copied receipt under a false id is not a second "
+             "build event",
+             scanned && rep.scanned == 2 && rep.matching == 1 &&
+             !rep.reproduced && rep.row_count == 1);
+    return failures;
+}
+
+static int zr_scan_bounds(const char *base, const char *receipts_dir,
+                          const uint8_t package_root[32],
+                          const uint8_t recipe_root[32])
+{
+    int failures = 0;
+    char dir[4400], path[4400];
+    snprintf(dir, sizeof(dir), "%s/scan-budget", base);
+    bool prepared = zv_mkdir_p(dir);
+    for (size_t i = 0; prepared && i < 3; i++) {
+        int n = snprintf(path, sizeof(path), "%s/junk-%zu", dir, i);
+        prepared = n > 0 && (size_t)n < sizeof(path) &&
+                   zv_write_file(path, "x", 1, 0600);
+    }
+    struct vcs_reproduce_report rep;
+    bool within_scan = prepared && vcs_package_reproduce_test_scan_bounded(
+        dir, package_root, recipe_root, &rep, 2,
+        VCS_REPRODUCE_MAX_MATCHING_RECEIPTS);
+    ZV_CHECK("reproduce: malformed names still consume the scan budget",
+             prepared && !within_scan);
+    bool within_matching = vcs_package_reproduce_test_scan_bounded(
+        receipts_dir, package_root, recipe_root, &rep,
+        VCS_REPRODUCE_MAX_SCAN_ENTRIES, 2);
+    ZV_CHECK("reproduce: matching receipt capacity fails closed",
+             !within_matching && rep.rows_truncated);
+    return failures;
+}
+
 static int zr_cap_same(const char *base, const uint8_t package_root[32],
                        const uint8_t recipe_root[32],
                        const uint8_t cap_a[32])
@@ -1909,6 +1970,10 @@ static int t_reproduce(void)
                                recipe_root);
     failures += zr_scan_foreign(receipts_dir, recipe_root, package_root);
     failures += zr_scan_diverging(receipts_dir, package_root, recipe_root);
+    failures += zr_scan_filename_binding(base, &ref, package_root,
+                                         recipe_root);
+    failures += zr_scan_bounds(base, receipts_dir, package_root,
+                               recipe_root);
 
     failures += zr_capsules(base, package_root, recipe_root);
     zv_rm_rf(base);
