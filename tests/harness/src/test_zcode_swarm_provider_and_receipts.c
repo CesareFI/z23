@@ -701,6 +701,34 @@ static bool linked_record_prepare(const struct sw_node *n,
     return prepared && symlink("../outside-record", leaf) == 0;
 }
 
+static int linked_record_wrong_name(struct sw_node *node,
+                                    const struct sw_pkg *package,
+                                    const char *leaf)
+{
+    int failures = 0;
+    vcs_swarm_engine_free(node->engine);
+    node->engine = NULL;
+    char wrong[4096], wrong_hex[65];
+    zcl_hex_encode(package->root, 32, wrong_hex);
+    wrong_hex[0] = wrong_hex[0] == '0' ? '1' : '0';
+    int wn = snprintf(wrong, sizeof(wrong), "%s/downloads/%s",
+                      node->zcode_dir, wrong_hex);
+    bool prepared = wn > 0 && (size_t)wn < sizeof(wrong) &&
+                    rename(leaf, wrong) == 0;
+    node->engine = prepared ? vcs_swarm_engine_create(
+        node->store, node->book, node->zcode_dir,
+        sw_score_contributor, NULL) : NULL;
+    struct vcs_swarm_download_status status;
+    SW_CHECK("resume: record root must match its canonical filename",
+             node->engine &&
+             vcs_swarm_engine_download_status(node->engine, package->root,
+                                              &status) &&
+             status.state == VCS_SWARM_DL_INACTIVE &&
+             vcs_swarm_engine_active_downloads(node->engine) == 0 &&
+             access(wrong, F_OK) != 0);
+    return failures;
+}
+
 int t_swarm_linked_record(void)
 {
     int failures = 0;
@@ -732,10 +760,95 @@ int t_swarm_linked_record(void)
                  n.engine && vcs_swarm_engine_download_status(
                                  n.engine, p.root, &status) &&
                  status.state == VCS_SWARM_DL_WANT_MANIFEST);
+        if (n.engine)
+            failures += linked_record_wrong_name(&n, &p, leaf);
     }
     sw_free_package(&p);
     sw_node_close(&n);
     test_rm_rf_recursive(n.datadir);
+    return failures;
+}
+
+static bool resume_junk_files(const char *zcode_dir, size_t count,
+                              char *last, size_t last_size)
+{
+    char dir[4096];
+    int dn = snprintf(dir, sizeof(dir), "%s/downloads", zcode_dir);
+    if (dn <= 0 || (size_t)dn >= sizeof(dir))
+        return false;
+    for (size_t i = 0; i < count; i++) {
+        int pn = snprintf(last, last_size, "%s/junk-%03zu", dir, i);
+        if (pn <= 0 || (size_t)pn >= last_size)
+            return false;
+        FILE *file = fopen(last, "wb");
+        if (!file)
+            return false;
+        bool wrote = fputc(0x5a, file) != EOF;
+        if (fclose(file) != 0 || !wrote)
+            return false;
+    }
+    return true;
+}
+
+static int resume_blocked_directory(struct sw_node *node)
+{
+    int failures = 0;
+    vcs_swarm_engine_free(node->engine);
+    node->engine = NULL;
+    char downloads[4096];
+    int dn = snprintf(downloads, sizeof(downloads), "%s/downloads",
+                      node->zcode_dir);
+    bool prepared = dn > 0 && (size_t)dn < sizeof(downloads) &&
+                    test_rm_rf_recursive(downloads) == 0;
+    FILE *blocker = prepared ? fopen(downloads, "wb") : NULL;
+    prepared = blocker != NULL;
+    if (blocker)
+        prepared = fclose(blocker) == 0 && prepared;
+    node->engine = prepared ? vcs_swarm_engine_create(
+        node->store, node->book, node->zcode_dir,
+        sw_score_contributor, NULL) : NULL;
+    SW_CHECK("resume: unreadable recovery directory keeps the engine off",
+             prepared && node->engine == NULL);
+    return failures;
+}
+
+int t_swarm_resume_scan_bound(void)
+{
+    int failures = 0;
+    struct sw_node node;
+    struct sw_pkg package;
+    if (!sw_node_open(&node, "resume_bound", sw_score_contributor) ||
+        !sw_make_package(&package, 1, 42))
+        return 1;
+    bool prepared = vcs_swarm_engine_fetch(
+                        node.engine, package.root, SW_DAY, 1) ==
+                        VCS_SWARM_FETCH_OK;
+    vcs_swarm_engine_free(node.engine);
+    node.engine = NULL;
+    char last_junk[4096];
+    prepared = prepared && resume_junk_files(
+                               node.zcode_dir, VCS_SWARM_RESUME_SCAN_MAX,
+                               last_junk, sizeof(last_junk));
+    node.engine = prepared ? vcs_swarm_engine_create(
+        node.store, node.book, node.zcode_dir, sw_score_contributor, NULL)
+                           : NULL;
+    SW_CHECK("resume: over-bound directory refuses engine creation",
+             prepared && node.engine == NULL);
+
+    bool reduced = prepared && unlink(last_junk) == 0;
+    node.engine = reduced ? vcs_swarm_engine_create(
+        node.store, node.book, node.zcode_dir, sw_score_contributor, NULL)
+                          : NULL;
+    struct vcs_swarm_download_status status;
+    SW_CHECK("resume: exact bounded complete view recovers the intent",
+             node.engine && vcs_swarm_engine_download_status(
+                                node.engine, package.root, &status) &&
+             status.state == VCS_SWARM_DL_WANT_MANIFEST);
+    if (node.engine)
+        failures += resume_blocked_directory(&node);
+    sw_free_package(&package);
+    sw_node_close(&node);
+    test_rm_rf_recursive(node.datadir);
     return failures;
 }
 

@@ -16,6 +16,7 @@
 #include "package_store_priv.h" /* store_atomic_write/mkdir/rm_rf */
 #include "package_swarm_priv.h"
 #include "package_swarm_record.h"
+#include "package_swarm_resume.h"
 #include "vcs_priv.h"
 
 #include "base/hex.h"
@@ -23,7 +24,6 @@
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 
-#include <dirent.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1236,65 +1236,65 @@ static void handle_data(struct vcs_swarm_engine *engine,
 
 /* ── public API ─────────────────────────────────────────────────────── */
 
-static void resume_downloads(struct vcs_swarm_engine *engine)
+static struct swarm_download *resume_free_slot(
+    struct vcs_swarm_engine *engine)
 {
-    char dir[STORE_PATH_MAX];
-    snprintf(dir, sizeof(dir), "%s/downloads", engine->zcode_dir);
-    DIR *d = opendir(dir);
-    if (!d)
+    for (size_t i = 0; i < VCS_SWARM_MAX_DOWNLOADS; i++)
+        if (!engine->dls[i].used)
+            return &engine->dls[i];
+    return NULL;
+}
+
+static void resume_restore_store(struct vcs_swarm_engine *engine,
+                                 struct swarm_download *download,
+                                 const char *record_path)
+{
+    if (!engine->store)
         return;
-    struct dirent *ent;
-    while ((ent = readdir(d)) != NULL) {
-        if (!store_name_is_hex64(ent->d_name))
-            continue;
-        char path[STORE_PATH_MAX];
-        snprintf(path, sizeof(path), "%s/%s", dir, ent->d_name);
-        struct vcs_swarm_record record;
-        if (!vcs_swarm_record_load(path, &record)) {
-            LOG_WARN(SWARM_LOG, "discarding corrupt download record %s",
-                     ent->d_name);
-            unlink(path);
-            continue;
-        }
-        struct swarm_download *dl = NULL;
-        for (size_t i = 0; i < VCS_SWARM_MAX_DOWNLOADS; i++)
-            if (!engine->dls[i].used) {
-                dl = &engine->dls[i];
-                break;
-            }
-        if (!dl) {
-            LOG_WARN(SWARM_LOG, "download table full at resume: %s",
-                     ent->d_name);
-            continue;
-        }
-        dl_reset(dl);
-        dl->used = true;
-        memcpy(dl->root, record.root, 32);
-        zcl_hex_encode(dl->root, 32, dl->root_hex);
-        dl->created_day = record.created_day;
-        dl->provider_restricted = record.provider_restricted;
-        dl->maximum_package_bytes = record.maximum_package_bytes;
-        dl->state = VCS_SWARM_DL_WANT_MANIFEST;
-        if (engine->store) {
-            struct vcs_package_store_status st;
-            memset(&st, 0, sizeof(st));
-            bool tracked = vcs_package_store_package_status(
-                engine->store, dl->root, &st) && st.tracked;
-            if (vcs_swarm_local_complete_result(
-                    engine, dl->root, dl->maximum_package_bytes) ==
-                        VCS_SWARM_FETCH_ALREADY_COMPLETE) {
-                /* Verified done while we were down: drop the record. */
-                dl_reset(dl);
-                unlink(path);
-                continue;
-            }
-            if (tracked && dl_load_manifest_from_store(engine, dl))
-                dl->state = dl->have_count == dl->total_chunks
-                                ? VCS_SWARM_DL_COMPLETE
-                                : VCS_SWARM_DL_CHUNKS;
-        }
+    struct vcs_package_store_status status;
+    memset(&status, 0, sizeof(status));
+    bool tracked = vcs_package_store_package_status(
+        engine->store, download->root, &status) && status.tracked;
+    if (vcs_swarm_local_complete_result(
+            engine, download->root, download->maximum_package_bytes) ==
+        VCS_SWARM_FETCH_ALREADY_COMPLETE) {
+        dl_reset(download);
+        unlink(record_path);
+        return;
     }
-    closedir(d);
+    if (tracked && dl_load_manifest_from_store(engine, download))
+        download->state = download->have_count == download->total_chunks
+                              ? VCS_SWARM_DL_COMPLETE
+                              : VCS_SWARM_DL_CHUNKS;
+}
+
+/* False only when a valid intent cannot fit. The scan module has already
+ * authenticated the canonical root/name binding before this callback. */
+static bool resume_one_download(const struct vcs_swarm_record *record,
+                                const char *name, const char *path, void *ctx)
+{
+    struct vcs_swarm_engine *engine = ctx;
+    struct swarm_download *download = resume_free_slot(engine);
+    if (!download) {
+        LOG_ERROR(SWARM_LOG, "download table full at resume: %s", name);
+        return false;
+    }
+    dl_reset(download);
+    download->used = true;
+    memcpy(download->root, record->root, 32);
+    memcpy(download->root_hex, name, 65);
+    download->created_day = record->created_day;
+    download->provider_restricted = record->provider_restricted;
+    download->maximum_package_bytes = record->maximum_package_bytes;
+    download->state = VCS_SWARM_DL_WANT_MANIFEST;
+    resume_restore_store(engine, download, path);
+    return true;
+}
+
+static bool resume_downloads(struct vcs_swarm_engine *engine)
+{
+    return vcs_swarm_resume_scan(engine->zcode_dir, resume_one_download,
+                                 engine);
 }
 
 /* Boot nonce keeps request IDs distinct across restarts for replay credit.
@@ -1348,9 +1348,12 @@ struct vcs_swarm_engine *vcs_swarm_engine_create(
     uint64_t nonce = nonce_bump(engine);
     engine->next_request_id = nonce << 32;
     pthread_mutex_lock(&engine->lock);
-    if (engine->persist)
-        resume_downloads(engine);
+    bool resumed = !engine->persist || resume_downloads(engine);
     pthread_mutex_unlock(&engine->lock);
+    if (!resumed) {
+        vcs_swarm_engine_free(engine);
+        LOG_NULL(SWARM_LOG, "download recovery failed; swarm engine off");
+    }
     return engine;
 }
 

@@ -69,11 +69,15 @@
  * RESUME: a fetch persists a bounded record under
  * <zcode_dir>/downloads/<root-hex> (temp + fsync + atomic rename,
  * deleted on completion/cancel/failure). Engine creation replays the
- * directory: downloads whose manifest is already staged/committed in
- * the store resume in CHUNKS state with the have-bitmap rebuilt from
- * pure CAS presence probes (staging bytes never earned credit and never
- * will); the rest resume WANT_MANIFEST. A crash mid-download therefore
- * resumes from verified state only. Request-id uniqueness across
+ * complete directory view in canonical root order; every non-dot entry
+ * consumes the fixed resume-scan budget, and every wire root must equal
+ * its filename. An incomplete/unreadable view refuses engine creation
+ * rather than silently dropping recovery state. Downloads whose manifest
+ * is already staged/committed in the store resume in CHUNKS state with
+ * the have-bitmap rebuilt from pure CAS presence probes (staging bytes
+ * never earned credit and never will); the rest resume WANT_MANIFEST. A
+ * crash mid-download therefore resumes from verified state only.
+ * Request-id uniqueness across
  * restarts is anchored by a persisted boot nonce
  * (<zcode_dir>/swarm_nonce, incremented and rewritten at every create):
  * request_id = (nonce << 32) | counter, so the slice-11 replayed-
@@ -113,6 +117,7 @@
 #define VCS_SWARM_OUTBOUND_FRAME_MAX 92u /* largest non-DATA frame */
 #define VCS_SWARM_MAX_LOCAL_ANNOUNCES 64u
 #define VCS_SWARM_PROVIDER_MAX 16u
+#define VCS_SWARM_RESUME_SCAN_MAX 256u /* all non-dot downloads/ entries */
 #define VCS_SWARM_BURST_WINDOW_TICKS 600u   /* request burst: 10 min @1s */
 #define VCS_SWARM_ANNOUNCE_WINDOW_TICKS 3600u /* announce rate: 1 h @1s */
 #define VCS_SWARM_RECORD_WIRE_BYTES 59u
@@ -129,8 +134,8 @@ typedef uint64_t (*vcs_swarm_score_fn)(const uint8_t contributor[33],
 /* Create/free. All three borrowed/owned inputs may be NULL: no store →
  * fetch/serve refuse (named), no book → accounting is skipped (tests),
  * no zcode_dir → no persistence/resume. Creation replays
- * <zcode_dir>/downloads for resume. NULL only on allocation failure
- * (logged). */
+ * <zcode_dir>/downloads for resume. NULL on allocation failure or when a
+ * configured persisted recovery view cannot be read completely (logged). */
 struct vcs_swarm_engine *vcs_swarm_engine_create(
     struct vcs_package_store *store, struct vcs_service_book *book,
     const char *zcode_dir, vcs_swarm_score_fn score_fn, void *score_ctx);
