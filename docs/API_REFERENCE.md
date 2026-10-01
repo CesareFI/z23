@@ -74,14 +74,14 @@ z23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 898 |
+| Registry entries (branches + leaves) | 899 |
 | Top-level roots | 14 |
 | Branches | 199 |
-| Leaves (dispatchable command paths) | 699 |
+| Leaves (dispatchable command paths) | 700 |
 | … `ready` (live handler in this build) | 617 |
-| … `compat` (metadata only, names a fallback) | 52 |
+| … `compat` (metadata only, names a fallback) | 53 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 30 |
-| … dev-gated 🔧 (`ready` only in `z23-dev`) | 51 |
+| … dev-gated 🔧 (`ready` only in `z23-dev`) | 52 |
 | Leaves with `effect=mutate` | 256 |
 | Leaves with `effect=destructive` | 6 |
 | Leaves requiring **owner** authority | 131 |
@@ -96,7 +96,7 @@ Per source file:
 | `engine/composition/commands/app_features.def` | 75 | 20 | 55 |
 | `engine/composition/commands/store.def` | 19 | 0 | 19 |
 | `engine/composition/commands/ops.def` | 59 | 11 | 48 |
-| `engine/composition/commands/dev.def` | 114 | 22 | 92 |
+| `engine/composition/commands/dev.def` | 115 | 22 | 93 |
 | `engine/composition/commands/code.def` | 33 | 4 | 29 |
 | `engine/composition/commands/accounts.def` | 11 | 2 | 9 |
 | `engine/composition/commands/vault.def` | 24 | 4 | 20 |
@@ -741,6 +741,7 @@ represented by its children's sections.
 | `dev proof signer` | compat 🔧 → `z23-dev dev proof signer` | read / read / operator · instant/tiny | none | `zcl.dev_proof_signer.v1` | `z23-dev dev proof signer` | Show this box's receipt signing key and who it trusts — *push-proof signer identity requires the dev binary* |
 | `dev proof coverage` | compat 🔧 → `z23-dev dev proof status` | read / read / operator · instant/tiny | `root`, `local_commit`, `remote_base` | `zcl.dev_proof_coverage.v1` | `z23-dev dev proof coverage` | Query one pair's canonical coverage manifest — *coverage queries require the dev binary* |
 | `dev proof observations` | compat 🔧 → `z23-dev dev proof status` | read / read / operator · instant/tiny | `group` | `zcl.dev_observations.v1` | `z23-dev dev proof observations` | Query this box's receiver observation index — *observation queries require the dev binary* |
+| `dev proof observations fold` | compat 🔧 → `z23-dev dev proof observations` | read / read / operator · instant/low | `local_commit`, `remote_base` | `zcl.dev_observations_fold.v1` | `z23-dev dev proof observations fold` | Fold one pair's durable observations into the box index — *observation folds require the dev binary* |
 
 #### `dev.test` — Focused proof selection
 

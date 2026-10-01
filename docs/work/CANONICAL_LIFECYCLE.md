@@ -155,15 +155,18 @@ contradiction-preserving basis under the state root, preserving
 contradictions and classifying through the receiver-local lookup — the
 eligibility basis reuse consults once a qualified verifier set exists;
 until then the check machinery's named `test-reuse: unqualified` refusal
-stands unchanged. Operators and agents query this machinery read-only:
-`z23-dev dev proof coverage` reports a pair's manifest binding, per-row
-coverage (covered, missing, conflict, or unqualified as its own state) and
-the observation age range this box has seen; `z23-dev dev proof observations`
-reports the box-level index itself — per-(group, key) verdicts, observation
-counts, preserved conflicts and age bounds, with an optional exact `group`
-filter. Automatic worker-side folding, receiver-side proof-set conflict
-admission and canonical proof-set publication remain separate integration
-work. A codec alone does not establish a complete input closure.
+stands unchanged. Operators and agents maintain and query this machinery:
+`z23-dev dev proof observations fold` folds one proved pair's durable
+CAS into the box index (idempotent union, self-verifying rows, no
+admission state); `z23-dev dev proof coverage` reports a pair's manifest
+binding, per-row coverage (covered, missing, conflict, or unqualified as
+its own state) and the observation age range this box has seen;
+`z23-dev dev proof observations` reports the box-level index itself —
+per-(group, key) verdicts, observation counts, preserved conflicts and
+age bounds, with an optional exact `group` filter. Automatic worker-side
+folding, receiver-side proof-set conflict admission and canonical
+proof-set publication remain separate integration work. A codec alone
+does not establish a complete input closure.
 
 The existing Commons evaluator in
 `engine/services/src/build_fabric_evidence.c` now retains verified failures

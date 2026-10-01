@@ -948,6 +948,59 @@ static void proof_observations(
 #endif
 }
 
+/* Receiver-side projection (canonical lifecycle item 3): fold one pair's
+ * durable signed observations into the box-level index. The pair must
+ * carry an admitted receipt, exactly like the coverage query; the merge
+ * verifies every row it writes, preserves contradictions, refuses corrupt
+ * bytes by name, and creates the index when absent. Re-folding the same
+ * pair is a union, so the command is idempotent. The index stays a
+ * rebuildable projection: this command writes no admission state. */
+static void proof_observations_fold(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+#ifndef ZCL_DEV_BUILD
+    (void)request;
+    zcl_command_reply_fail(
+        reply, ZCL_COMMAND_STATUS_BLOCKED, ZCL_COMMAND_EXIT_BLOCKED,
+        "DEV_BUILD_REQUIRED", "dispatch", false, false,
+        "observation folds require the dev binary", "make dev-bin");
+#else
+    struct proof_coverage_resolved resolved = {0};
+    if (!proof_coverage_resolve(request, reply, &resolved))
+        return;
+    char state_root[PATH_MAX], index_path[4096];
+    if (!platform_state_root(state_root, sizeof(state_root)) ||
+        snprintf(index_path, sizeof(index_path),
+                 "%s/dev-observation-index/index", state_root) >=
+            (int)sizeof(index_path)) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+            ZCL_COMMAND_EXIT_FAILED, "PROOF_OBSERVATIONS_STATE_UNAVAILABLE",
+            "normalize", false, false,
+            "this box has no resolvable state root for its observation index",
+            "state_root_unavailable");
+        return;
+    }
+    char why[128] = {0};
+    if (!zcl_dev_observation_index_merge(index_path, resolved.store,
+                                         why, sizeof(why))) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+            ZCL_COMMAND_EXIT_FAILED, "PROOF_OBSERVATIONS_FOLD_INVALID",
+            "index", false, false,
+            "the box-level observation index refuses this pair's durable store",
+            why[0] ? why : "observation_index_invalid");
+        return;
+    }
+    (void)json_push_kv_str(&reply->data, "schema",
+                           "zcl.dev_observations_fold.v1");
+    (void)json_push_kv_str(&reply->data, "local_commit",
+                           resolved.status.local_commit);
+    (void)json_push_kv_str(&reply->data, "remote_base",
+                           resolved.status.remote_base);
+    (void)json_push_kv_str(&reply->data, "store", resolved.store);
+    (void)json_push_kv_str(&reply->data, "index_path", index_path);
+#endif
+}
+
 void zcl_native_dev_proof_dispatch(
     const struct zcl_command_request *request, struct zcl_command_reply *reply)
 {
@@ -964,6 +1017,7 @@ void zcl_native_dev_proof_dispatch(
         {"dev.proof.signer", proof_signer},
         {"dev.proof.coverage", proof_coverage},
         {"dev.proof.observations", proof_observations},
+        {"dev.proof.observations.fold", proof_observations_fold},
     };
     const char *path = request && request->spec ? request->spec->path : NULL;
     for (size_t i = 0; i < sizeof(routes) / sizeof(routes[0]); i++) {

@@ -862,6 +862,29 @@ ZCL_COMMAND_DEV_READ(
     "observation queries require the dev binary",
     "z23-dev dev proof status")
 
+ZCL_COMMAND_DEV_READ(
+    "dev.proof.observations.fold", "dev.proof", "",
+    "Fold one pair's durable observations into the box index",
+    "Merges the pair's durable signed-observation CAS into this box's "
+    "verified, sorted, contradiction-preserving observation index, so the "
+    "receiver basis grows as pairs prove. The pair must carry an admitted "
+    "receipt, exactly like the coverage query. Every merged row is "
+    "self-verifying: corrupt bytes refuse by name and nothing partial is "
+    "written. Re-folding the same pair is a union, so the command is "
+    "idempotent; it writes no admission state. Read the result back with "
+    "dev proof observations.", 0,
+    "dev,proof,observations,fold,index,reuse,receiver",
+    "zcl.dev_proof_input.v1", "zcl.dev_observations_fold.v1",
+    "local_commit,remote_base", "",
+    "z23-dev dev proof observations fold",
+    ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_INSTANT, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL, ZCL_COMMAND_CAP_DEV_STATE_WRITE,
+    ZCL_COMMAND_TRAIT_IDEMPOTENT | ZCL_COMMAND_TRAIT_DEV_ONLY,
+    zcl_native_handle_dev_verify_change,
+    "observation folds require the dev binary",
+    "z23-dev dev proof observations")
+
 ZCL_COMMAND_READY_READ(
     "dev.test.plan", "dev.test", "", "Map changed files to mandatory proof groups",
     "A deterministic mapping of the given file list to mandatory proof "
