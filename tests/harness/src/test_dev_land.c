@@ -8236,6 +8236,51 @@ _test_next:;
     return failures;
 }
 
+static int test_dev_land_submit_atomic_pre_rename(void)
+{
+    int failures = 0;
+    TEST("land: a failed submit staging flush publishes no partial queue row") {
+        struct dlx_rig rig;
+        struct dlx_call c;
+        char landdir[1200], qpath[1400], tmp[1400];
+        int n;
+        dlx_isolate("submit_atomic_pre_rename");
+        ASSERT(dlx_rig_make(&rig, "submit_atomic_pre_rename_rig"));
+        setenv("ZCL_LAND_PROOF_STUB", "running", 1);
+        setenv("ZCL_LAND_ALLOW_UNSIGNED", "1", 1);
+        setenv("ZCL_LAND_TEST_FILE_SYNC_FAIL", "1", 1);
+        setenv("ZCL_DEVLOOP_TEST_PROCESS", "1", 1);
+        dlx_submit(&c, &rig, rig.tip);
+        ASSERT(dlx_run(&c));
+        ASSERT(c.reply.status == ZCL_COMMAND_STATUS_FAILED);
+        ASSERT_STR_EQ(dlx_err_code(&c), "QUEUE_WRITE_FAILED");
+        ASSERT(!c.reply.error.mutated);
+        dlx_end(&c);
+        dlx_landdir(landdir, sizeof(landdir));
+        n = snprintf(qpath, sizeof(qpath), "%s/queue.jsonl", landdir);
+        ASSERT(n > 0 && (size_t)n < sizeof(qpath));
+        n = snprintf(tmp, sizeof(tmp), "%s/queue.jsonl.tmp", landdir);
+        ASSERT(n > 0 && (size_t)n < sizeof(tmp));
+        ASSERT(access(qpath, F_OK) != 0 && errno == ENOENT);
+        ASSERT(access(tmp, F_OK) != 0 && errno == ENOENT);
+
+        unsetenv("ZCL_LAND_TEST_FILE_SYNC_FAIL");
+        unsetenv("ZCL_DEVLOOP_TEST_PROCESS");
+        dlx_submit(&c, &rig, rig.tip);
+        ASSERT(dlx_run(&c) && dlx_ok(&c));
+        ASSERT_EQ(dlx_int(&c, "seq"), 1);
+        dlx_end(&c);
+        ASSERT(dlx_queue_has_one());
+        dlx_restore();
+        PASS();
+    }
+_test_next:;
+    unsetenv("ZCL_LAND_TEST_FILE_SYNC_FAIL");
+    unsetenv("ZCL_DEVLOOP_TEST_PROCESS");
+    dlx_restore();
+    return failures;
+}
+
 static int test_dev_land_private_state_dirs(void)
 {
     int failures = 0;
@@ -8299,6 +8344,7 @@ int test_dev_land(void)
     failures += test_dev_land_source_binding();
 #if !defined(_WIN32)
     failures += test_dev_land_private_state_dirs();
+    failures += test_dev_land_submit_atomic_pre_rename();
     failures += test_dev_land_submit_sync_recovery();
     failures += test_dev_land_tree_types();
     failures += test_dev_land_tree_malformed();

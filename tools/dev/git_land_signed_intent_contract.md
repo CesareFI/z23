@@ -100,10 +100,11 @@ client push output or a local tracking ref.
    the live queue row. If an append's sync result is ambiguous, a replacement
    worker must flush and reuse that exact outcome instead of appending a
    duplicate or contacting the publication target again.
-   Submission acknowledgement follows the same file and parent-directory
-   barrier. An ambiguous post-append sync is retried as the exact same submit;
-   the existing row is flushed and returned as a deduplicated request rather
-   than assigning a second sequence number.
+   Submission rewrites the bounded queue through a flushed staging file,
+   atomic rename and parent-directory barrier. A pre-rename failure leaves
+   the prior complete queue. An ambiguous post-rename sync is retried as the
+   exact same submit; the existing row is flushed and returned as a
+   deduplicated request rather than assigning a second sequence number.
 4. Extend the existing `test_dev_land` rig (the owner controls that file)
    with the remaining cases above. Keep the separate black-box witness as
    the command-bound check. No unsigned or hook-skipping path qualifies a

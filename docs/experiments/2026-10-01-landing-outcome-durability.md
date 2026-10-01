@@ -54,20 +54,25 @@ verified at
 
 The same audit found that a newly appended `queue.jsonl` row could be
 acknowledged after `fclose` without an explicit file-and-parent durability
-barrier. Submission now flushes the exact regular queue file and its parent
-directory while still holding the row lock. If that post-append sync is
+barrier, and a process death during that append could leave a torn final row.
+Submission now encodes the complete bounded queue into a staging file,
+flushes it, atomically renames it, and flushes the parent directory while
+still holding the row lock. A failure before rename leaves the prior complete
+queue and removes the staging file. If the post-rename directory sync is
 ambiguous, the command reports the retryable `QUEUE_SYNC_FAILED` state and
-keeps the complete row. An identical retry finds that row under the same
+keeps the complete new queue. An identical retry finds that row under the same
 lock, flushes it, and returns its original sequence as a deduplicated request;
 it neither appends another row nor schedules duplicate proof work.
 
-The registered regression injects the failure only after the complete row is
-appended. It observes the blocked, retryable, mutated reply, preserves the
-queue bytes, retries the exact immutable tip and checkout, and observes one
-durable row with sequence 1. The exact test-fast runner
-`d45598aa317fde603a054e40d8d2547adf6a3a307e07bcbbd21075df59ba3cd4`
+One registered regression injects a staging-file flush failure and proves
+that neither `queue.jsonl` nor its temporary file is published before an exact
+retry creates sequence 1. A second injects the failure only after the complete
+queue is renamed. It observes the blocked, retryable, mutated reply, preserves
+the queue bytes, retries the exact immutable tip and checkout, and observes
+one durable row with sequence 1. The exact test-fast runner
+`69a09430daa6001af1e9a1702c7bb21dc592ffaa03db986bb80561609f45cebc`
 ran `test_dev_land` cold: 1 registered group ran, 0 failed, 0 skipped, and
-1,232 were gated by the selector in 131.9 seconds. The initial regression run
+1,232 were gated by the selector in 135.3 seconds. The initial regression run
 was red before reaching the injected barrier because its unsigned fixture had
 omitted the required proof stub; adding the same test-only proof precondition
 used by the neighboring valid-submit fixture made the intended path

@@ -1179,14 +1179,19 @@ static bool dl_rewrite_rows_allowed(const char *landdir, const char *qpath,
 }
 
 /* Whole-file rewrite under the row lock: flush the file before rename and
- * the parent after rename, so a pre-push checkpoint survives a restart. */
+ * the parent after rename, so admissions and pre-push checkpoints survive
+ * restart without exposing a partial row. */
 static bool dl_rewrite_rows(const char *landdir, const char *qpath,
-                            const struct dl_row *rows, size_t n)
+                            const struct dl_row *rows, size_t n,
+                            bool inject_post_rename_failure,
+                            bool *renamed_out)
 {
     char tmp[4096 + 32];
     FILE *f;
     char *line;
     size_t len = 0;
+    if (renamed_out)
+        *renamed_out = false;
     if (!dl_rewrite_rows_allowed(landdir, qpath, rows, n))
         return false;
     if (snprintf(tmp, sizeof(tmp), "%s/queue.jsonl.tmp", landdir) >=
@@ -1229,6 +1234,10 @@ static bool dl_rewrite_rows(const char *landdir, const char *qpath,
         (void)unlink(tmp);
         return false;
     }
+    if (renamed_out)
+        *renamed_out = true;
+    if (inject_post_rename_failure)
+        return false;
     return dl_queue_parent_flush(landdir);
 }
 
@@ -2476,10 +2485,10 @@ static void dl_submit_loaded(const struct dl_dirs *d, struct dl_row *r,
                              const char *worktree,
                              struct zcl_command_reply *reply)
 {
-    char line[DL_LINE_CAP];
-    size_t len = 0;
     long long seq = 1;
     const char *seq_why = NULL;
+    bool renamed = false;
+    struct dl_row *grown;
     if (dl_submit_live_duplicate(d, rows, nrows, tip, worktree, qpath,
                                  reply)) {
         free(rows);
@@ -2494,22 +2503,38 @@ static void dl_submit_loaded(const struct dl_dirs *d, struct dl_row *r,
                 seq_why);
         return;
     }
-    free(rows);
     r->seq = seq;
     r->priority_seq = seq;
-    if (!dl_encode_row(r, line, sizeof(line), &len) ||
-        !dl_append_row(qpath, line, len)) {
+    if (nrows >= 65536) {
+        free(rows);
         dl_unlock(lock);
         dl_fail(reply, "QUEUE_WRITE_FAILED", "submit",
-                "cannot append the request row", qpath);
+                "cannot extend the bounded request queue", qpath);
         return;
     }
-    if (!dl_state_file_flush(qpath, d->land,
-                             dl_submit_sync_failure_injected())) {
+    grown = (struct dl_row *)zcl_realloc(
+        rows, (nrows + 1) * sizeof(*rows), "dev.land.rows");
+    if (!grown) {
+        free(rows);
         dl_unlock(lock);
-        dl_submit_sync_failed(reply, qpath, true);
+        dl_fail(reply, "QUEUE_WRITE_FAILED", "submit",
+                "cannot extend the bounded request queue", qpath);
         return;
     }
+    rows = grown;
+    rows[nrows] = *r;
+    if (!dl_rewrite_rows(d->land, qpath, rows, nrows + 1,
+                         dl_submit_sync_failure_injected(), &renamed)) {
+        free(rows);
+        dl_unlock(lock);
+        if (renamed)
+            dl_submit_sync_failed(reply, qpath, true);
+        else
+            dl_fail(reply, "QUEUE_WRITE_FAILED", "submit",
+                    "cannot atomically publish the request row", qpath);
+        return;
+    }
+    free(rows);
     dl_unlock(lock);
     dl_outbox(d, r, "queued");
     (void)json_push_kv_str(&reply->data, "leaf", DL_LEAF);
@@ -2811,7 +2836,7 @@ static void dl_cancel(const struct zcl_command_request *req,
                 "outcomes.jsonl or mail/outbox.jsonl");
         return;
     }
-    if (!dl_rewrite_rows(d.land, qpath, rows, kept)) {
+    if (!dl_rewrite_rows(d.land, qpath, rows, kept, false, NULL)) {
         free(rows);
         dl_unlock(lock);
         dl_fail(reply, "QUEUE_WRITE_FAILED", "cancel",
@@ -3802,7 +3827,7 @@ static bool dl_commit_row(const struct dl_dirs *d, struct dl_row *row,
      * the exact outcome and removes the row without running work again. */
     ok = !terminal || dl_terminal_checkpoint(d, row);
     if (ok)
-        ok = dl_rewrite_rows(d->land, qpath, rows, kept);
+        ok = dl_rewrite_rows(d->land, qpath, rows, kept, false, NULL);
     free(rows);
     dl_unlock(lock);
     if (ok && !terminal)
@@ -3866,7 +3891,7 @@ static bool dl_requeue_successor(const struct dl_dirs *d, struct dl_row *row,
     successor.dimension[0] = '\0';
     for (size_t i = at + 1; i < nrows; i++) rows[i - 1] = rows[i];
     rows[nrows - 1] = successor;
-    ok = dl_rewrite_rows(d->land, qpath, rows, nrows);
+    ok = dl_rewrite_rows(d->land, qpath, rows, nrows, false, NULL);
     if (ok) {
         *predecessor = row->seq;
         *row = successor;
@@ -8011,7 +8036,7 @@ static bool dl_precheck_mark(const struct dl_dirs *d, const char *observed_main,
         }
     }
     if (changed)
-        ok = dl_rewrite_rows(d->land, qpath, rows, nrows);
+        ok = dl_rewrite_rows(d->land, qpath, rows, nrows, false, NULL);
     free(rows);
     dl_unlock(lock);
     return ok;
