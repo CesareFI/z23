@@ -17,6 +17,7 @@
 #include "dev_proof_budget.h"
 #include "dev_proof_coverage.h"
 #include "dev_proof_observation.h"
+#include "dev_proof_observation_index.h"
 #include "devloop.h"
 #include "test_group_catalog.h"
 #include "test_group_host_need.h"
@@ -32,6 +33,7 @@
 #include "platform/logical_cpu.h"
 #include "platform/private_directory.h"
 #include "platform/ram_scratch.h"
+#include "platform/state_root.h"
 #include "platform/time_compat.h"
 #include "util/spawn.h"
 #include "util/clientversion.h"
@@ -10115,6 +10117,8 @@ static bool dp_worker_dimensions(struct dp_worker *w, char *why,
  * the manifest can bind the sealed child_set_root; a retried proof derives
  * byte-identical content, so the lease-checked atomic write is idempotent.
  * Refuses publication on incomplete coverage or an eligible conflict. */
+static void dp_observation_index_fold(const char *store);
+
 static bool dp_coverage_publish(struct dp_worker *w, char *why, size_t why_len)
 {
     struct zcl_dev_coverage_binding binding = {0};
@@ -10168,7 +10172,30 @@ static bool dp_coverage_publish(struct dp_worker *w, char *why, size_t why_len)
         proof_why(why, why_len, "coverage_manifest_publish_failed");
         return false;
     }
+    dp_observation_index_fold(store);
     return true;
+}
+
+/* Receiver basis (canonical lifecycle item 3): fold this pair's durable
+ * observations into the box-level index. The index is a rebuildable
+ * projection, never publication authority: a refused merge is reported
+ * by name and the receipt stands. */
+static void dp_observation_index_fold(const char *store)
+{
+    char state_root[PATH_MAX], index_dir[PATH_MAX], index_path[PATH_MAX];
+    char index_why[128] = {0};
+    if (platform_state_root(state_root, sizeof(state_root)) &&
+        snprintf(index_dir, sizeof(index_dir),
+                 "%s/dev-observation-index", state_root) <
+            (int)sizeof(index_dir) &&
+        snprintf(index_path, sizeof(index_path), "%s/index", index_dir) <
+            (int)sizeof(index_path) &&
+        platform_private_directory_ensure(index_dir) &&
+        !zcl_dev_observation_index_merge(index_path, store,
+                                         index_why, sizeof(index_why)))
+        (void)fprintf(stderr,
+                      "[devproof] observation index merge refused: %s\n",
+                      index_why[0] ? index_why : "observation_index_invalid");
 }
 
 static bool dp_worker_publish(struct dp_worker *w, int64_t started_us,
