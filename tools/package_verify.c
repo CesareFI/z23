@@ -146,6 +146,7 @@ static int pv_main_windows(void)
 #include "platform/process_compat.h"
 #include "platform/os_sandbox.h"
 #include "support/cleanse.h"
+#include "util/file_tree_ops.h"
 #include "util/safe_alloc.h"
 
 #include <dirent.h>
@@ -439,32 +440,8 @@ static bool pv_mkdir_p(const char *path, mode_t mode)
 
 static bool pv_rm_rf(const char *path)
 {
-    struct stat st;
-    if (lstat(path, &st) != 0)
-        return errno == ENOENT;
-    if (!S_ISDIR(st.st_mode))
-        return unlink(path) == 0;
-    DIR *dir = opendir(path);
-    if (!dir)
-        return false;
-    bool ok = true;
-    struct dirent *ent;
-    while ((ent = readdir(dir)) != NULL) {
-        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
-            continue;
-        char child[4096];
-        int n = snprintf(child, sizeof(child), "%s/%s", path, ent->d_name);
-        if (n <= 0 || (size_t)n >= sizeof(child)) {
-            ok = false;
-            continue;
-        }
-        if (!pv_rm_rf(child))
-            ok = false;
-    }
-    closedir(dir);
-    if (rmdir(path) != 0)
-        ok = false;
-    return ok;
+    struct zcl_result removed = zcl_tree_remove(path);
+    return removed.ok;
 }
 
 static bool pv_open_bounded_file(
@@ -6772,6 +6749,12 @@ static int pv_sign_and_persist_attestation(
     char dest[4200];
     int dn = snprintf(dest, sizeof(dest), "%s/attestations/%s", store_dir,
                       attest_id_hex);
+    if (!pv_rm_rf(work)) {
+        fprintf(stderr, "%s: temp tree %s exceeds safe cleanup bounds\n",
+                PV_LOG, work);
+        free(wire);
+        return 5;
+    }
     bool written =
         dn > 0 && (size_t)dn < sizeof(dest) &&
         pv_atomic_write(dest, wire, wire_len);
@@ -6782,11 +6765,6 @@ static int pv_sign_and_persist_attestation(
         pv_rm_rf(work);
         return 5;
     }
-
-    /* Produced binaries and objects die with the temp tree — always. */
-    if (!pv_rm_rf(work))
-        fprintf(stderr, "%s: WARNING: temp tree %s not fully removed\n",
-                PV_LOG, work);
 
     printf("attestation=%s result=%s detail=%s isolation=%s\n",
            attest_id_hex, vcs_package_attest_result_string(att->result_class),
