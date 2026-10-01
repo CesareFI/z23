@@ -78,3 +78,16 @@ The exact runner
 and retained verifier `bbe1428b9ab2cbc654ef7070edace75ef2771cfe5e57675f5aef84f14f8d6c72`
 then passed both unprivileged groups in 79.3 seconds with zero failures and
 zero skips; the helper removed its disposable fixture.
+
+The truncation rule is now one no-shell spawn primitive shared by capsule
+descriptor capture, attach-side descriptor recapture, assembler version
+identity, and Apple developer-directory selection. It requires an accepted
+capture status under the existing documented `ECHILD` semantics,
+a nonempty payload, and fewer than `cap - 1` retained bytes. The registered
+spawn matrix covers complete, empty, undersized, and ambiguous-full output;
+the identity callers no longer carry independent copies of this decision.
+The exact shared-boundary runner
+`a62d3d69081dfcdfed7dc5f61483cee8052c61d4f1ea0a5d61f01fab4acc2008`
+and retained verifier `bbe1428b9ab2cbc654ef7070edace75ef2771cfe5e57675f5aef84f14f8d6c72`
+passed both unprivileged groups in 78.6 seconds with zero failures and zero
+skips; the helper removed its disposable fixture.

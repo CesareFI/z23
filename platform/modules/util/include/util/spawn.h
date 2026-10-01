@@ -122,6 +122,14 @@ struct zcl_result zcl_spawn_detached_input(const char *const argv[],
 int zcl_spawn_capture(const char *const argv[], char *buf, size_t cap,
                        int timeout_ms);
 
+/* Bounded text capture for identity and policy inputs. Success requires an
+ * accepted zcl_spawn_capture() result and a nonempty payload shorter than
+ * cap-1. A payload that fills every available byte is indistinguishable from
+ * discarded trailing output and is refused. The buffer and documented ECHILD
+ * tolerance retain zcl_spawn_capture() semantics. */
+bool zcl_spawn_capture_text_complete(
+    const char *const argv[], char *buf, size_t cap, int timeout_ms);
+
 /* Linux: the same bounded capture, but keep one already-open descriptor at
  * its existing number across the child exec. The caller retains ownership,
  * and the parent's FD_CLOEXEC flag is not changed. This is for trusted local

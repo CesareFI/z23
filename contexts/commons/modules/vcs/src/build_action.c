@@ -219,7 +219,6 @@ static bool build_toolchain_query(void *ctx, const char *const argv[],
                                   char *out, size_t cap)
 {
     (void)ctx;
-    if (!out || cap < 2) return false;
 #if defined(__linux__)
     if (!argv || !argv[0] || !argv[1] || argv[2]) return false;
     const char *const fixed_argv[] = {
@@ -230,12 +229,7 @@ static bool build_toolchain_query(void *ctx, const char *const argv[],
 #else
     const char *const *query_argv = argv;
 #endif
-    if (zcl_spawn_capture(query_argv, out, cap, 10000) != 0)
-        return false;
-    size_t length = strnlen(out, cap);
-    /* Text capture reserves one byte for NUL and discards later bytes.  A
-     * full payload is therefore ambiguous with truncation and must refuse. */
-    return length > 0 && length < cap - 1u;
+    return zcl_spawn_capture_text_complete(query_argv, out, cap, 10000);
 }
 
 static void build_hash_pair(struct sha3_256_ctx *sha, const char *label,
@@ -283,10 +277,11 @@ static bool build_assembler_identity(const char *assembler, uint8_t out[32],
         return false;
     char version[512];
     const char *const argv[] = { file->path, "--version", NULL };
-    if (zcl_spawn_capture(argv, version, sizeof(version), 10000) != 0 ||
-        !version[0])
+    if (!zcl_spawn_capture_text_complete(
+            argv, version, sizeof(version), 10000))
         return false;
     version[strcspn(version, "\r\n")] = '\0';
+    if (!version[0]) return false;
     struct sha3_256_ctx sha;
     sha3_256_init(&sha);
     static const char domain[] = "zcl.toolchain.assembler_identity.v1";
@@ -319,7 +314,7 @@ static void build_toolchain_environment_root(uint8_t out[32])
 static bool build_toolchain_developer_selection(char out[PATH_MAX])
 {
     const char *const argv[] = { "/usr/bin/xcode-select", "-p", NULL };
-    if (zcl_spawn_capture(argv, out, PATH_MAX, 10000) != 0 || !out[0])
+    if (!zcl_spawn_capture_text_complete(argv, out, PATH_MAX, 10000))
         return false;
     out[strcspn(out, "\r\n")] = '\0';
     return out[0] != '\0';

@@ -418,6 +418,34 @@ static int test_spawn_capture_truncates_oversized(void)
     return failures;
 }
 
+static int test_spawn_capture_text_complete(void)
+{
+    int failures = 0;
+    TEST("spawn: complete text capture refuses empty and ambiguous output") {
+        const char *short_argv[] = { "/usr/bin/printf", "123456", NULL };
+        char short_output[8] = {0};
+        ASSERT(zcl_spawn_capture_text_complete(
+            short_argv, short_output, sizeof(short_output), 3000));
+        ASSERT_STR_EQ(short_output, "123456");
+
+        const char *full_argv[] = { "/usr/bin/printf", "12345678", NULL };
+        char full_output[8] = {0};
+        ASSERT(!zcl_spawn_capture_text_complete(
+            full_argv, full_output, sizeof(full_output), 3000));
+        ASSERT_EQ(strlen(full_output), sizeof(full_output) - 1u);
+
+        const char *empty_argv[] = { "/usr/bin/printf", "", NULL };
+        ASSERT(!zcl_spawn_capture_text_complete(
+            empty_argv, full_output, sizeof(full_output), 3000));
+        ASSERT(!zcl_spawn_capture_text_complete(
+            short_argv, full_output, 1, 3000));
+        ASSERT(!zcl_spawn_capture_text_complete(
+            short_argv, NULL, 0, 3000));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* Case 7: with the DEFAULT SIGCHLD disposition (no SA_NOCLDWAIT — exactly the
  * process state after alerts.c stopped installing it as the LAST step of
  * os-substrate Rung 0), zcl_spawn_capture()'s internal waitpid() returns a
@@ -632,6 +660,7 @@ static int test_spawn_platform_arm(void)
     failures += test_spawn_capture_echild_tolerant();
     failures += test_spawn_capture_echild_inherited_writer();
     failures += test_spawn_capture_truncates_oversized();
+    failures += test_spawn_capture_text_complete();
     failures += test_spawn_capture_real_exit_code();
     failures += test_spawn_pty_capture_observes_terminal();
     failures += test_spawn_binary_exact();

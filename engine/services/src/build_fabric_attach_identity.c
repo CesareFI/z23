@@ -397,7 +397,6 @@ static bool bfat_toolchain_query(void *ctx, const char *const argv[],
                                  char *out, size_t cap)
 {
     (void)ctx;
-    if (!out || cap < 2) return false;
 #if defined(__linux__)
     if (!argv || !argv[0] || !argv[1] || argv[2]) return false;
     const char *const fixed_argv[] = {
@@ -408,12 +407,7 @@ static bool bfat_toolchain_query(void *ctx, const char *const argv[],
 #else
     const char *const *query_argv = argv;
 #endif
-    if (zcl_spawn_capture(query_argv, out, cap, 10000) != 0)
-        return false;
-    size_t length = strnlen(out, cap);
-    /* Text capture reserves one byte for NUL and discards later bytes. A
-     * full payload is ambiguous with truncation and cannot identify a tool. */
-    return length > 0 && length < cap - 1u;
+    return zcl_spawn_capture_text_complete(query_argv, out, cap, 10000);
 }
 
 #ifdef ZCL_TESTING

@@ -956,6 +956,19 @@ int zcl_spawn_capture(const char *const argv[], char *buf, size_t cap,
 
 #endif
 
+bool zcl_spawn_capture_text_complete(
+    const char *const argv[], char *buf, size_t cap, int timeout_ms)
+{
+    if (!buf || cap < 2) {
+        if (buf && cap > 0) buf[0] = '\0';
+        return false;
+    }
+    if (zcl_spawn_capture(argv, buf, cap, timeout_ms) != 0)
+        return false;
+    size_t length = strnlen(buf, cap);
+    return length > 0 && length < cap - 1u;
+}
+
 int zcl_spawn_capture_cancelable_fd(
     int executable_fd, const char *const argv[], char *buf, size_t cap,
     int timeout_ms, zcl_spawn_cancel_fn should_cancel, void *cancel_ctx,
