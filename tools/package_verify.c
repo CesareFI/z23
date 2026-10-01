@@ -1310,9 +1310,14 @@ static bool pv_load_release(const char *store_dir,
     int n = snprintf(dir, sizeof(dir), "%s/releases", store_dir);
     if (n < 0 || (size_t)n >= sizeof(dir))
         return false;
-    DIR *d = opendir(dir);
-    if (!d)
+    int dfd = open(dir, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    if (dfd < 0)
         return false;
+    DIR *d = fdopendir(dfd);
+    if (!d) {
+        close(dfd);
+        return false;
+    }
     bool found = false;
     uint8_t best_id[32];
     memset(best_id, 0xff, 32);

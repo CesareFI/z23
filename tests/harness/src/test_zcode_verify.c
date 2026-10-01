@@ -64,7 +64,8 @@
  *      (build-fail/compile-error) and a test that calls socket()
  *      (test-fail/test-signal — the seccomp network denial firing). A
  *      release-envelope symlink is refused even when it resolves to the
- *      original valid signed bytes, and an overfull release directory cannot
+ *      original valid signed bytes, the releases directory itself cannot be
+ *      substituted by a symlink, and an overfull release directory cannot
  *      authorize execution from a partial scan. On the root-host lane, a
  *      valid 0600 key owned by another uid is also refused. The
  *      bounded cleanup refuses to persist an attestation when hostile test
@@ -4435,6 +4436,41 @@ static int ze_symlinked_release(const char *base, const char *key_path,
     return failures;
 }
 
+static int ze_symlinked_release_directory(const char *base,
+                                          const char *key_path,
+                                          const char *work)
+{
+    int failures = 0;
+    char store[4400];
+    snprintf(store, sizeof(store), "%s/store_linked_release_dir", base);
+    uint8_t package_root[32], release_id[32], recipe_root[32];
+    bool fixture = zv_publish_fixture(
+        store,
+        "#include \"add.h\"\nint add(int a, int b) { return a + b; }\n",
+        "#include \"add.h\"\nint main(void) { return add(2, 3) == 5 ? 0 : 1; }\n",
+        package_root, release_id, recipe_root);
+    char releases[4400], outside[4400];
+    snprintf(releases, sizeof(releases), "%s/releases", store);
+    snprintf(outside, sizeof(outside), "%s/outside-releases", base);
+    bool redirected = fixture && rename(releases, outside) == 0 &&
+                      symlink("../outside-releases", releases) == 0;
+    ZV_CHECK("e2e: symlinked releases directory fixture prepared",
+             redirected);
+
+    char root_hex[65], out[2048];
+    zv_hex_enc(package_root, sizeof(package_root), root_hex);
+    int rc = redirected ? zv_run_verifier(root_hex, store, key_path, work,
+                                           out, sizeof(out)) : -1;
+    struct vcs_package_attest att;
+    ZV_CHECK("e2e: symlinked releases directory refused before execution",
+             redirected && rc == 3 &&
+             !zv_read_only_attestation(store, &att));
+    if (redirected && rc != 3)
+        printf("  zcode_verify: symlinked releases dir rc=%d out=%s\n", rc,
+               out);
+    return failures;
+}
+
 static int ze_overfull_release_directory(const char *base,
                                          const char *key_path,
                                          const char *work)
@@ -4683,6 +4719,7 @@ static int t_verifier_e2e(void)
     snprintf(work, sizeof(work), "%s/work", base);
     failures += ze_foreign_owned_key(base, work);
     failures += ze_symlinked_release(base, key_path, work);
+    failures += ze_symlinked_release_directory(base, key_path, work);
     failures += ze_overfull_release_directory(base, key_path, work);
     failures += ze_buildfail(base, key_path, work);
     failures += ze_socket(base, key_path, work);
