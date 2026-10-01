@@ -1912,9 +1912,9 @@ static bool pv_copy_file(const char *src, const char *dst, mode_t mode)
         size_t off = 0;
         while (off < got) {
             ssize_t w = write(fd, buf + off, got - off);
-            if (w < 0) {
-                if (errno == EINTR)
-                    continue;
+            if (w < 0 && errno == EINTR)
+                continue;
+            if (w <= 0) {
                 ok = false;
                 break;
             }
@@ -1924,7 +1924,11 @@ static bool pv_copy_file(const char *src, const char *dst, mode_t mode)
     if (ferror(in))
         ok = false;
     fclose(in);
-    if (fsync(fd) != 0 || close(fd) != 0)
+    /* A failed durability barrier must not skip close: repeated storage
+     * pressure may exercise this path many times in one verifier process. */
+    int sync_result = fsync(fd);
+    int close_result = close(fd);
+    if (sync_result != 0 || close_result != 0)
         ok = false;
     if (!ok)
         unlink(dst);
