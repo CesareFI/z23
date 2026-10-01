@@ -1088,6 +1088,11 @@ static bool dl_queue_file_flush(FILE *f)
 {
     if (fflush(f) != 0)
         return false;
+#if defined(ZCL_DEV_BUILD) || defined(ZCL_TESTING)
+    if (getenv("ZCL_LAND_TEST_FILE_SYNC_FAIL") &&
+        getenv("ZCL_DEVLOOP_TEST_PROCESS"))
+        return false;
+#endif
 #if defined(_WIN32)
     return _commit(_fileno(f)) == 0;
 #else

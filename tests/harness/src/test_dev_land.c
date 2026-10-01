@@ -130,6 +130,7 @@ static void dlx_isolate(const char *tag)
     unsetenv("ZCL_LAND_HOOKS_STUB_DIR");
     unsetenv("ZCL_LAND_TEST_PICK_DELAY_MS");
     unsetenv("ZCL_LAND_TEST_DIR_SYNC_FAIL");
+    unsetenv("ZCL_LAND_TEST_FILE_SYNC_FAIL");
     unsetenv("ZCL_LAND_TEST_QUEUE_WRITE_FAIL");
     unsetenv("ZCL_LAND_TEST_DIE_AFTER_OUTCOME");
     unsetenv("ZCL_LAND_TEST_DIE_AFTER_PROOF");
@@ -174,6 +175,7 @@ static void dlx_restore(void)
     unsetenv("ZCL_LAND_HOOKS_STUB_DIR");
     unsetenv("ZCL_LAND_TEST_PICK_DELAY_MS");
     unsetenv("ZCL_LAND_TEST_DIR_SYNC_FAIL");
+    unsetenv("ZCL_LAND_TEST_FILE_SYNC_FAIL");
     unsetenv("ZCL_LAND_TEST_QUEUE_WRITE_FAIL");
     unsetenv("ZCL_LAND_TEST_DIE_AFTER_OUTCOME");
     unsetenv("ZCL_LAND_TEST_DIE_AFTER_PROOF");
@@ -3594,6 +3596,52 @@ static int test_dev_land_prepush_sync_refusal(void)
     }
 _test_next:;
     unsetenv("ZCL_LAND_TEST_DIR_SYNC_FAIL");
+    dlx_restore();
+    return failures;
+}
+
+static int test_dev_land_prepush_file_sync_refusal(void)
+{
+    int failures = 0;
+    TEST("land: failed file sync before checkpoint rename refuses push and retries") {
+        struct dlx_rig rig;
+        struct dlx_call c;
+        char base[64], observed[64];
+        dlx_isolate("prepush_file_sync_refusal");
+        ASSERT(dlx_rig_make(&rig, "prepush_file_sync_refusal_rig"));
+        ASSERT(dlx_origin_main(&rig, base));
+        setenv("ZCL_LAND_PROOF_STUB", "running", 1);
+        setenv("ZCL_LAND_ALLOW_UNSIGNED", "1", 1);
+        dlx_submit(&c, &rig, rig.tip);
+        ASSERT(dlx_run(&c) && dlx_ok(&c));
+        dlx_end(&c);
+        dlx_begin(&c, "step");
+        ASSERT(dlx_run(&c) && dlx_ok(&c));
+        ASSERT_STR_EQ(dlx_str(&c, "state"), "started");
+        dlx_end(&c);
+        setenv("ZCL_LAND_TEST_FILE_SYNC_FAIL", "1", 1);
+        setenv("ZCL_DEVLOOP_TEST_PROCESS", "1", 1);
+        setenv("ZCL_LAND_PROOF_STUB", "pass", 1);
+        dlx_begin(&c, "step");
+        ASSERT(dlx_run(&c));
+        ASSERT(c.reply.status == ZCL_COMMAND_STATUS_BLOCKED);
+        ASSERT_STR_EQ(dlx_err_code(&c), "PUSH_INTENT_PERSIST_FAILED");
+        ASSERT(!c.reply.error.mutated);
+        dlx_end(&c);
+        ASSERT(dlx_origin_main(&rig, observed));
+        ASSERT_STR_EQ(observed, base);
+        unsetenv("ZCL_LAND_TEST_FILE_SYNC_FAIL");
+        unsetenv("ZCL_DEVLOOP_TEST_PROCESS");
+        dlx_begin(&c, "step");
+        ASSERT(dlx_run(&c) && dlx_ok(&c));
+        ASSERT_STR_EQ(dlx_str(&c, "state"), "landed");
+        dlx_end(&c);
+        dlx_restore();
+        PASS();
+    }
+_test_next:;
+    unsetenv("ZCL_LAND_TEST_FILE_SYNC_FAIL");
+    unsetenv("ZCL_DEVLOOP_TEST_PROCESS");
     dlx_restore();
     return failures;
 }
@@ -8818,6 +8866,7 @@ int test_dev_land(void)
     failures += test_dev_land_postpush_observation_missing(true);
     failures += test_dev_land_prepush_checkpoint();
     failures += test_dev_land_prepush_persist_refusal();
+    failures += test_dev_land_prepush_file_sync_refusal();
     failures += test_dev_land_prepush_sync_refusal();
     failures += test_dev_land_missing_publication_intent();
     failures += test_dev_land_attach_target_cases();
