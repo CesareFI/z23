@@ -1,0 +1,299 @@
+/* Copyright 2026 Rhett Creighton; SPDX-License-Identifier: Apache-2.0
+ *
+ * test_dev_proof_observation_index — regressions for the box-level
+ * receiver index of signed observation leaves (tools/dev/
+ * dev_proof_observation_index.c, canonical lifecycle item 3 in
+ * docs/work/FORWARD_PLAN.md).
+ *
+ * Reuse of unchanged unit evidence across candidates is permitted only
+ * when the exact input closure and the receiver's policy permit it. The
+ * receiver's half of that contract is a durable, verified basis of the
+ * observations this box has seen. After a proof publishes, the worker
+ * folds the pair's durable observation CAS into that index; these cases
+ * pin the merge, the self-verifying row format, the named refusals, and
+ * the classification parity with the receiver-side lookup. */
+
+#include "test/test_core.h"
+
+#include "dev_proof_observation.h"
+#include "dev_proof_observation_index.h"
+#include "dev_proof_observation_lookup.h"
+#include "dev_proof_signer.h"
+
+#include "platform/directory_compat.h"
+#include "platform/time_compat.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+static char g_dpoi_state[4096];
+static char g_dpoi_saved_xdg[4096];
+static bool g_dpoi_had_xdg;
+
+static void dpoi_isolate(const char *tag)
+{
+    char base[4096 - 64];
+    test_make_tmpdir(base, sizeof(base), "dev_proof_obs_index", tag);
+    (void)snprintf(g_dpoi_state, sizeof(g_dpoi_state), "%s/state", base);
+    if (!g_dpoi_had_xdg && getenv("XDG_STATE_HOME")) {
+        g_dpoi_had_xdg = true;
+        (void)snprintf(g_dpoi_saved_xdg, sizeof(g_dpoi_saved_xdg), "%s",
+                       getenv("XDG_STATE_HOME"));
+    }
+    setenv("XDG_STATE_HOME", g_dpoi_state, 1);
+}
+
+static void dpoi_restore(void)
+{
+    if (g_dpoi_had_xdg)
+        setenv("XDG_STATE_HOME", g_dpoi_saved_xdg, 1);
+    else
+        unsetenv("XDG_STATE_HOME");
+}
+
+static void dpoi_key(uint8_t key[ZCL_DEV_VERDICT_LEAF_KEY_BYTES], uint8_t seed)
+{
+    for (size_t i = 0; i < ZCL_DEV_VERDICT_LEAF_KEY_BYTES; i++)
+        key[i] = (uint8_t)(seed * 29u + (uint8_t)i);
+}
+
+static bool dpoi_record(const char *store, uint8_t seed, const char *group,
+                        uint8_t root[ZCL_DEV_PROOF_ROOT_BYTES])
+{
+    uint8_t key[ZCL_DEV_VERDICT_LEAF_KEY_BYTES];
+    dpoi_key(key, seed);
+    char why[96] = {0};
+    return zcl_dev_observation_record(store, key, group,
+                                      ZCL_DEV_VERDICT_LEAF_PASS, seed, root,
+                                      why, sizeof(why)) &&
+           why[0] == '\0';
+}
+
+/* Three leaves in one store, returned roots in group order. */
+static bool dpoi_store3(const char *store, uint8_t roots[3][32])
+{
+    static const char *const groups[3] = {
+        "test_obs_index_alpha", "test_obs_index_beta", "test_obs_index_gamma"};
+    if (!platform_directory_ensure(store, 0700)) return false;
+    for (size_t i = 0; i < 3; i++)
+        if (!dpoi_record(store, (uint8_t)(i + 1), groups[i], roots[i]))
+            return false;
+    return true;
+}
+
+static bool dpoi_sorted_unique(const struct zcl_dev_observation_leaf *leaves,
+                               size_t count)
+{
+    for (size_t i = 1; i < count; i++)
+        if (memcmp(leaves[i - 1].root, leaves[i].root, 32) >= 0)
+            return false;
+    return true;
+}
+
+static int test_dpoi_merge_and_load(void)
+{
+    int failures = 0;
+    char root[4096], store[4096], index_path[4096];
+    test_make_tmpdir(root, sizeof(root), "dev_proof_obs_index", "merge");
+    dpoi_isolate("merge");
+    (void)snprintf(store, sizeof(store), "%s/store", root);
+    (void)snprintf(index_path, sizeof(index_path), "%s/index", root);
+    uint8_t emitted[3][32];
+    TEST_CASE("dev_proof_obs_index: merge folds a pair store into verified rows") {
+        ASSERT(dpoi_store3(store, emitted));
+        char why[128] = {0};
+        ASSERT(zcl_dev_observation_index_merge(index_path, store,
+                                               why, sizeof(why)));
+        ASSERT(why[0] == '\0');
+        struct zcl_dev_observation_leaf *leaves = NULL;
+        size_t count = 0;
+        bool present = false;
+        ASSERT(zcl_dev_observation_index_load(index_path, &leaves, &count,
+                                              &present, why,
+                                              sizeof(why)));
+        ASSERT(present);
+        ASSERT(count == 3);
+        ASSERT(dpoi_sorted_unique(leaves, count));
+        for (size_t i = 0; i < count; i++) {
+            ASSERT(leaves[i].eligible);
+            uint8_t derived[32];
+            ASSERT(zcl_dev_verdict_leaf_root(&leaves[i].leaf, derived,
+                                             why, sizeof(why)));
+            ASSERT(memcmp(derived, leaves[i].root, 32) == 0);
+        }
+        zcl_dev_observation_release(leaves);
+
+        /* Re-merging the same store is an exact no-op (union by root). */
+        ASSERT(zcl_dev_observation_index_merge(index_path, store,
+                                               why, sizeof(why)));
+        ASSERT(zcl_dev_observation_index_load(index_path, &leaves, &count,
+                                              &present, why,
+                                              sizeof(why)));
+        ASSERT(present && count == 3);
+        zcl_dev_observation_release(leaves);
+
+        /* A second pair's store unions in, still sorted and unique. */
+        char store_b[4096];
+        (void)snprintf(store_b, sizeof(store_b), "%s/store_b", root);
+        ASSERT(platform_directory_ensure(store_b, 0700));
+        uint8_t root_b1[32], root_b2[32];
+        ASSERT(dpoi_record(store_b, 7, "test_obs_index_delta", root_b1));
+        ASSERT(dpoi_record(store_b, 8, "test_obs_index_epsilon", root_b2));
+        ASSERT(zcl_dev_observation_index_merge(index_path, store_b,
+                                               why, sizeof(why)));
+        ASSERT(zcl_dev_observation_index_load(index_path, &leaves, &count,
+                                              &present, why,
+                                              sizeof(why)));
+        ASSERT(present && count == 5);
+        ASSERT(dpoi_sorted_unique(leaves, count));
+        zcl_dev_observation_release(leaves);
+
+        /* Merging an absent store changes nothing. */
+        ASSERT(zcl_dev_observation_index_merge(index_path, "/nonexistent",
+                                               why, sizeof(why)));
+        ASSERT(zcl_dev_observation_index_load(index_path, &leaves, &count,
+                                              &present, why,
+                                              sizeof(why)));
+        ASSERT(present && count == 5);
+        zcl_dev_observation_release(leaves);
+    }
+    TEST_END
+    dpoi_restore();
+    (void)test_rm_rf_recursive(root);
+    return failures;
+}
+
+static int test_dpoi_refusals(void)
+{
+    int failures = 0;
+    char root[4096], store[4096], index_path[4096];
+    test_make_tmpdir(root, sizeof(root), "dev_proof_obs_index", "refuse");
+    dpoi_isolate("refuse");
+    (void)snprintf(store, sizeof(store), "%s/store", root);
+    (void)snprintf(index_path, sizeof(index_path), "%s/index", root);
+    uint8_t emitted[3][32];
+    TEST_CASE("dev_proof_obs_index: corrupt bytes refuse by name, never re-derived") {
+        ASSERT(dpoi_store3(store, emitted));
+        char why[128] = {0};
+        ASSERT(zcl_dev_observation_index_merge(index_path, store,
+                                               why, sizeof(why)));
+        /* Corrupt one root byte: the row no longer binds to its wire. */
+        FILE *f = fopen(index_path, "r+b");
+        ASSERT(f != NULL);
+        ASSERT(fseek(f, (long)ZCL_DEV_OBSERVATION_INDEX_WIRE_BYTES, SEEK_SET) == 0);
+        int ch = fgetc(f);
+        ASSERT(ch != EOF);
+        ASSERT(fseek(f, (long)ZCL_DEV_OBSERVATION_INDEX_WIRE_BYTES, SEEK_SET) == 0);
+        ASSERT(fputc(ch ^ 0xff, f) != EOF);
+        (void)fclose(f);
+
+        struct zcl_dev_observation_leaf *leaves = NULL;
+        size_t count = 0;
+        bool present = false;
+        ASSERT(!zcl_dev_observation_index_load(index_path, &leaves, &count,
+                                               &present, why,
+                                               sizeof(why)));
+        ASSERT(strcmp(why, ZCL_DEV_OBSERVATION_INDEX_WHY_INVALID) == 0);
+        ASSERT(leaves == NULL);
+        why[0] = 0;
+        ASSERT(!zcl_dev_observation_index_merge(index_path, store,
+                                                why, sizeof(why)));
+        ASSERT(strcmp(why, ZCL_DEV_OBSERVATION_INDEX_WHY_INVALID) == 0);
+    }
+    TEST_END
+    dpoi_restore();
+    (void)test_rm_rf_recursive(root);
+    return failures;
+}
+
+static int test_dpoi_lookup_parity(void)
+{
+    int failures = 0;
+    char root[4096], store[4096], index_path[4096];
+    test_make_tmpdir(root, sizeof(root), "dev_proof_obs_index", "lookup");
+    dpoi_isolate("lookup");
+    (void)snprintf(store, sizeof(store), "%s/store", root);
+    (void)snprintf(index_path, sizeof(index_path), "%s/index", root);
+    uint8_t emitted[3][32];
+    TEST_CASE("dev_proof_obs_index: the index classifies like the pair store") {
+        ASSERT(dpoi_store3(store, emitted));
+        char why[128] = {0};
+        ASSERT(zcl_dev_observation_index_merge(index_path, store,
+                                               why, sizeof(why)));
+        struct zcl_dev_observation_leaf *leaves = NULL;
+        size_t count = 0;
+        bool present = false;
+        ASSERT(zcl_dev_observation_index_load(index_path, &leaves, &count,
+                                              &present, why,
+                                              sizeof(why)));
+        ASSERT(present && count == 3);
+
+        struct zcl_dev_observation_object objects[4];
+        uint8_t wires[4][ZCL_DEV_VERDICT_LEAF_WIRE_BYTES];
+        for (size_t i = 0; i < count; i++) {
+            ASSERT(zcl_dev_verdict_leaf_serialize(&leaves[i].leaf, wires[i],
+                                                  why, sizeof(why)));
+            (void)memcpy(objects[i].root, leaves[i].root,
+                         ZCL_DEV_PROOF_ROOT_BYTES);
+            objects[i].wire = wires[i];
+            objects[i].wire_len = ZCL_DEV_VERDICT_LEAF_WIRE_BYTES;
+        }
+        uint8_t own[ZCL_DEV_PROOF_PUBKEY_BYTES];
+        bool have_key = false;
+        const char *signer_why = NULL;
+        ASSERT(zcl_dev_proof_signer_public(own, &have_key, &signer_why) &&
+               have_key);
+        struct zcl_dev_observation_domain domain = {0};
+        (void)memcpy(domain.producer_pubkey, own, sizeof(own));
+        memset(domain.domain_root, 0x5c, sizeof(domain.domain_root));
+
+        struct zcl_dev_observation_query query = {0};
+        dpoi_key(query.key, 2);
+        query.group = "test_obs_index_beta";
+        query.now_unix = (uint64_t)platform_time_wall_unix();
+        query.max_age_seconds = 3600;
+        query.max_future_seconds = 600;
+        query.required_independent_domains = 1;
+        struct zcl_dev_observation_result_detail detail = {0};
+        zcl_dev_observation_lookup(&query, objects, count, true, &domain, 1,
+                                   &detail);
+        ASSERT(detail.result == ZCL_DEV_OBSERVATION_PASS_EVIDENCE);
+        ASSERT(detail.pass_count == 1);
+
+        /* A receiver that demands two independent domains does not have
+         * them from one key, even listed twice: the reuse gate stays
+         * named instead of counting one signer twice. */
+        struct zcl_dev_observation_domain two_same[2];
+        two_same[0] = domain;
+        two_same[1] = domain;
+        query.required_independent_domains = 2;
+        memset(&detail, 0, sizeof(detail));
+        zcl_dev_observation_lookup(&query, objects, count, true, two_same, 2,
+                                   &detail);
+        ASSERT(detail.result == ZCL_DEV_OBSERVATION_INSUFFICIENT_DOMAINS);
+
+        /* An input closure the index never saw is a miss, not evidence. */
+        query.required_independent_domains = 1;
+        dpoi_key(query.key, 99);
+        memset(&detail, 0, sizeof(detail));
+        zcl_dev_observation_lookup(&query, objects, count, true, &domain, 1,
+                                   &detail);
+        ASSERT(detail.result == ZCL_DEV_OBSERVATION_MISS);
+
+        zcl_dev_observation_release(leaves);
+    }
+    TEST_END
+    dpoi_restore();
+    (void)test_rm_rf_recursive(root);
+    return failures;
+}
+
+int test_dev_proof_observation_index(void)
+{
+    int failures = 0;
+    failures += test_dpoi_merge_and_load();
+    failures += test_dpoi_refusals();
+    failures += test_dpoi_lookup_parity();
+    return failures;
+}

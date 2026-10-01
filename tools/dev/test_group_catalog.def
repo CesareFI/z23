@@ -1016,6 +1016,11 @@ ZCL_TEST_GROUP(dev_proof_observation_env)
  * listed roots, tampered wires, wrong bindings, and preserved conflicts
  * by name. See tools/dev/dev_proof_coverage.c. */
 ZCL_TEST_GROUP(dev_proof_coverage)
+/* The box-level receiver index folds each pair's durable signed
+ * observations into one verified, sorted, contradiction-preserving basis
+ * under the state root; reuse classification and coverage queries read it.
+ * See tools/dev/dev_proof_observation_index.c. */
+ZCL_TEST_GROUP(dev_proof_observation_index)
 ZCL_TEST_GROUP(test_group_selector)
 ZCL_TEST_GROUP(metaverse_catalog)
 ZCL_TEST_GROUP(node_character)

@@ -142,9 +142,16 @@ eligible observation roots — under policy version 6, refusing publication on
 missing coverage or a preserved eligible conflict. The pre-push hook
 re-derives and re-verifies the manifest against the same per-pair CAS on
 every admission, so an omitted contradiction, a tampered wire or a wrong
-binding refuses by name. Cross-candidate unit reuse of eligible observations
-and canonical proof-set publication remain separate integration work. A codec
-alone does not establish a complete input closure.
+binding refuses by name. Cross-candidate reuse of eligible observations is
+prepared on the receiver side: after publication the worker folds the
+pair's durable observations into a box-level, verified, sorted index under
+the state root (`tools/dev/dev_proof_observation_index.c`), preserving
+contradictions and classifying through the receiver-local lookup — the
+eligibility basis reuse consults once a qualified verifier set exists;
+until then the check machinery's named `test-reuse: unqualified` refusal
+stands unchanged. Canonical proof-set publication remains separate
+integration work. A codec alone does not establish a complete input
+closure.
 
 The existing Commons evaluator in
 `engine/services/src/build_fabric_evidence.c` now retains verified failures
