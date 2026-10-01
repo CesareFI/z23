@@ -23,6 +23,7 @@
 #include "command/native_command.h"
 #include "command/native_dev_land_regen.h"
 #include "platform/logical_cpu.h"
+#include "platform/state_root.h"
 #include "config/command_catalog.h"
 #include "json/json.h"
 #include "kernel/command_registry.h"
@@ -7602,10 +7603,57 @@ _test_next:;
 }
 #endif
 
+#if !defined(_WIN32)
+static int test_dev_land_status_observation(void)
+{
+    int failures = 0;
+    char root[4096], land[8192], logs[8300];
+    struct stat info;
+    struct dlx_call call;
+    bool opened = false;
+    TEST("land: status observes absent and read-only state without setup") {
+        dlx_isolate("observe_only");
+        dlx_begin(&call, "status"); opened = true;
+        ASSERT(dlx_run(&call));
+        ASSERT(!dlx_ok(&call));
+        ASSERT(lstat(g_dlx_state, &info) != 0);
+        dlx_end(&call); opened = false;
+        ASSERT(platform_state_root(root, sizeof(root)));
+        ASSERT(snprintf(land, sizeof(land), "%s/land", root) > 0);
+        ASSERT(snprintf(logs, sizeof(logs), "%s/logs", land) > 0);
+        dlx_begin(&call, "status"); opened = true;
+        ASSERT(dlx_run(&call));
+        ASSERT(dlx_ok(&call));
+        ASSERT(lstat(land, &info) != 0);
+        dlx_end(&call); opened = false;
+        ASSERT(mkdir(land, 0500) == 0);
+        dlx_begin(&call, "status"); opened = true;
+        ASSERT(dlx_run(&call));
+        ASSERT(dlx_ok(&call));
+        ASSERT(stat(land, &info) == 0 && (info.st_mode & 0777) == 0500);
+        ASSERT(lstat(logs, &info) != 0);
+        dlx_end(&call); opened = false;
+        ASSERT(chmod(land, 0700) == 0);
+        ASSERT(chmod(root, 0755) == 0);
+        dlx_begin(&call, "status"); opened = true;
+        ASSERT(dlx_run(&call));
+        ASSERT(!dlx_ok(&call));
+        ASSERT(stat(root, &info) == 0 && (info.st_mode & 0777) == 0755);
+        PASS();
+    } _test_next:;
+    if (opened) dlx_end(&call);
+    dlx_restore();
+    return failures;
+}
+#endif
+
 int test_dev_land(void)
 {
     int failures = 0;
     failures += test_dev_land_signed_intent();
+#if !defined(_WIN32)
+    failures += test_dev_land_status_observation();
+#endif
     failures += test_dev_land_signed_tamper();
     failures += test_dev_land_receipt_adversarial();
     failures += test_dev_land_signer_takeover();

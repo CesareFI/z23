@@ -625,10 +625,49 @@ static int case_surface(void)
     return failures;
 }
 
+static int case_readonly(void)
+{
+    int failures = 0;
+    char dir[256], path[320];
+    test_make_tmpdir(dir, sizeof(dir), "chainlog", "readonly");
+    (void)snprintf(path, sizeof(path), "%s/log", dir);
+    struct zcl_chainlog_report report;
+    struct zcl_chainlog *log = zcl_chainlog_open_readonly(path, k_stream_a, &report);
+    CL_CHECK("readonly open does not create", !log && file_size(path) < 0);
+    zcl_chainlog_close(log);
+    CL_CHECK("writer creates fixture", build_log(path, k_stream_a, 1, NULL));
+    size_t original_len = 0;
+    uint8_t *original = file_slurp(path, &original_len);
+    if (!original) return failures + 1;
+    uint8_t *torn = zcl_malloc(original_len + 4, "chainlog_readonly_test");
+    if (!torn) { free(original); return failures + 1; }
+    memcpy(torn, original, original_len);
+    memcpy(torn + original_len, "torn", 4);
+    CL_CHECK("fixture tail written", file_spill(path, torn, original_len + 4));
+    log = zcl_chainlog_open_readonly(path, k_stream_a, &report);
+    CL_CHECK("readonly reports committed prefix and torn tail",
+        log && report.records == 1 && report.torn_bytes == 4);
+    CL_CHECK("readonly cannot append", zcl_chainlog_append(log, 1, "x", 1,
+        NULL, NULL) == ZCL_CHAINLOG_ARGUMENT);
+    zcl_chainlog_close(log);
+    size_t after_len = 0;
+    uint8_t *after = file_slurp(path, &after_len);
+    CL_CHECK("readonly keeps every tail byte", after && after_len == original_len + 4 &&
+        memcmp(after, torn, original_len + 4) == 0);
+    free(after); free(torn); free(original);
+    log = zcl_chainlog_open(path, k_stream_a, &report);
+    CL_CHECK("writer recovery still removes tail", log && report.torn_bytes == 4 &&
+        file_size(path) == (long)original_len);
+    zcl_chainlog_close(log);
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
 int test_chainlog(void);
 int test_chainlog(void)
 {
     int failures = 0;
+    failures += case_readonly();
     failures += case_roundtrip();
     failures += case_restart_invisible();
     failures += case_stream_binding();

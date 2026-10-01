@@ -71,9 +71,9 @@ ZCL_FACT("landing.queue", "land_signed_commit_required",
          "tools/command/native_dev_land.c",
          "main takes signed commits only; sign the tip and")
 ZCL_FACT("landing.queue", "land_state_root_scope",
-         "dev.land resolves its state directory from platform_state_root, the local per-user state root.",
+         "dev.land uses the local per-user state root; status observes existing directories while mutating commands retain initialization.",
          "tools/command/native_dev_land.c",
-         "if (!d || !platform_state_root(d->root, sizeof(d->root)))")
+         "if (!d || !(create ? platform_state_root(d->root, sizeof(d->root))")
 ZCL_FACT("landing.queue", "land_queue_lock",
          "dev.land's queue.lock is a flock guarding row seq assignment and rewrite.",
          "tools/command/native_dev_land.c",

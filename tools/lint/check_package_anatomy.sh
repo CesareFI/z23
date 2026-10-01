@@ -188,8 +188,10 @@ check_package() {
             exit 2
         fi
 
+        # Supply grep directly: -m 1 closes its input early, so a printf pipe
+        # can turn a match into SIGPIPE under pipefail and hide a violation.
         # R5 — zero function-like macros (#define NAME( with no space).
-        if hit="$(printf '%s\n' "$stripped_header" | grep -nE -m 1 '^[[:space:]]*#[[:space:]]*define[[:space:]]+[A-Za-z_][A-Za-z0-9_]*\(')"; then
+        if hit="$(grep -nE -m 1 '^[[:space:]]*#[[:space:]]*define[[:space:]]+[A-Za-z_][A-Za-z0-9_]*\(' <<< "$stripped_header")"; then
             fail "$pkg: function-like macro in public header: $hit (use enum/constexpr/_Generic)"
         else
             grep_status=$?
@@ -200,7 +202,7 @@ check_package() {
         fi
 
         # R6 — no function bodies in the public header.
-        if hit="$(printf '%s\n' "$stripped_header" | grep -nE -m 1 '(^|[^[:alnum:]_])(__inline|inline)([^[:alnum:]_]|$)')"; then
+        if hit="$(grep -nE -m 1 '(^|[^[:alnum:]_])(__inline|inline)([^[:alnum:]_]|$)' <<< "$stripped_header")"; then
             fail "$pkg: inline function in public header: $hit (the archive owns definitions)"
         else
             grep_status=$?
@@ -348,6 +350,14 @@ write_selftest_package() {
     mkdir -p "$d/include/$pkg" "$d/src" "$d/tests"
     printf '#ifndef %s\n#define %s\n/* inline and #define COMMENT_FN(x) are prose, not code. */\n#define COMMENT_SPLIT/**/(x) (x)\n%s\nint %s(void);\n#endif\n' \
         "$guard" "$guard" "$extra_header" "$pkg" > "$d/include/$pkg/$pkg.h"
+    # Keep a matching header larger than a pipe buffer: grep stops after its
+    # first match, but that must remain a violation, not a producer SIGPIPE.
+    case "$invalid" in
+        macro|inline)
+            awk 'BEGIN { for (i = 0; i < 8192; i++) print "int zfixture_padding(void);" }' \
+                >> "$d/include/$pkg/$pkg.h"
+            ;;
+    esac
     printf 'int %s(void) { return 0; }\n' "$pkg" > "$d/src/$pkg.c"
     printf 'int main(void) { return 0; }\n' > "$d/tests/test_$pkg.c"
     printf 'x\n' > "$d/LICENSE"

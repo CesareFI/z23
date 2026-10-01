@@ -1655,6 +1655,44 @@ static int test_ic_generated_inventory_stays_focused(void)
     return failures;
 }
 
+static int test_ic_fleet_task_projection_keeps_proof_owner(void)
+{
+    int failures = 0;
+    TEST("impact composition: exact fleet task paths retain steer proof owner") {
+        static const char *const paths[] = {
+            "tools/command/native_fleet_steer.c",
+            "tools/command/native_fleet_steer_tasks.c",
+            "tools/command/native_fleet_steer_tasks.h",
+            "tests/harness/src/test_fleet_steer.c",
+            "tests/harness/src/test_fleet_steer_tasks.c",
+        };
+        for (size_t i = 0; i < sizeof(paths) / sizeof(paths[0]); i++) {
+            struct agent_impact_acc impact = {0};
+            ASSERT(agent_impact_apply_shared_rules(paths[i], &impact));
+            ASSERT(agent_impact_apply_shared_rules(paths[i], NULL));
+            ASSERT(ic_acc_has_group(&impact, "fleet_steer"));
+            ASSERT(ic_acc_has_group(&impact, "devagent_queue"));
+            ASSERT(ic_acc_has_group(&impact, "fleet_gateway"));
+            ASSERT(ic_acc_has_group(&impact, "make_lint_gates"));
+        }
+        static const char *const unrelated[] = {
+            "tools/command/native_fleet_steer_tasks_extra.c",
+            "tools/command/native_fleet_steer_tasks.h.extra",
+            "tests/harness/src/test_fleet_steer_tasks_extra.c",
+            "tests/harness/src/test_fleet_steer_tasks.c.extra",
+        };
+        for (size_t i = 0; i < sizeof(unrelated) / sizeof(unrelated[0]); i++) {
+            struct agent_impact_acc impact = {0};
+            (void)agent_impact_apply_shared_rules(unrelated[i], &impact);
+            ASSERT(!ic_acc_has_group(&impact, "fleet_steer"));
+            ASSERT(!ic_acc_has_group(&impact, "devagent_queue"));
+            ASSERT(!ic_acc_has_group(&impact, "fleet_gateway"));
+        }
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_ic_dev_proof_contract_is_direct(void)
 {
     int failures = 0;
@@ -10766,6 +10804,7 @@ int test_impact_composition(void)
     failures += test_ic_snapshot_overlays_current_symbols();
     failures += test_ic_code_capsule_stays_with_code_owner();
     failures += test_ic_generated_inventory_stays_focused();
+    failures += test_ic_fleet_task_projection_keeps_proof_owner();
     failures += test_ic_dev_proof_contract_is_direct();
     failures += test_ic_lint_helpers_exclude_onion_stress();
     failures += test_ic_dev_proof_receipt_admission();

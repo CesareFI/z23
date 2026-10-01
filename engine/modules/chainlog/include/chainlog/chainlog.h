@@ -142,6 +142,14 @@ struct zcl_chainlog *zcl_chainlog_open(const char *path,
                                        const uint8_t stream[32],
                                        struct zcl_chainlog_report *report);
 
+/* Observe an existing log under the same exclusive read/scan lock. Never
+ * creates, initializes, truncates or appends. Torn tail bytes are reported
+ * and preserved; only committed records are readable. The current private
+ * file locking seam still requires write-open permission, so read-only
+ * media/files may refuse rather than weaken locking or validation. */
+struct zcl_chainlog *zcl_chainlog_open_readonly(const char *path,
+    const uint8_t stream[32], struct zcl_chainlog_report *report);
+
 void zcl_chainlog_close(struct zcl_chainlog *log);
 
 /* Append one record durably. On success `*out_seq` is its sequence number

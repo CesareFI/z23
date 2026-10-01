@@ -1865,7 +1865,7 @@ engine/models/src/schema_migration.c:schema_migration_run_pending:17
 engine/models/src/shared_validators.c:zcl_validate_zcl_address:20
 engine/models/src/zid_domain.c:zid_domain_replace_leaves:19
 engine/modules/chainlog/src/chainlog.c:scan:16
-engine/modules/chainlog/src/chainlog.c:zcl_chainlog_open:18
+engine/modules/chainlog/src/chainlog.c:zcl_chainlog_open:1
 engine/modules/chainlog/src/chainlog.c:zcl_chainlog_read:17
 engine/modules/determinism/src/classify.c:zcl_det_classify:21
 engine/modules/determinism/src/receipt.c:zcl_det_receipt_check:16
@@ -1900,7 +1900,7 @@ engine/modules/fleetledger/src/fleet_ledger.c:chain_load:17
 engine/modules/fleetledger/src/fleet_ledger.c:index_row:17
 engine/modules/fleetledger/src/fleet_ledger.c:zcl_fleet_ledger_append:27
 engine/modules/fleetledger/src/fleet_ledger.c:zcl_fleet_ledger_experiment_stats:42
-engine/modules/fleetledger/src/fleet_ledger.c:zcl_fleet_ledger_open:17
+engine/modules/fleetledger/src/fleet_ledger.c:zcl_fleet_ledger_open:1
 engine/modules/fleetledger/src/fleet_ledger.c:zcl_fleet_ledger_query:30
 engine/modules/fleetledger/src/fleet_ledger.c:zcl_fleet_ledger_replicate:29
 engine/modules/fleetledger/src/fleet_ledger_row.c:zcl_fleet_row_decode:20

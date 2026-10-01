@@ -28,6 +28,7 @@
 
 struct zcl_chainlog {
     struct platform_private_file file;
+    bool read_only;
     uint8_t  stream[ZCL_CHAINLOG_STREAM_BYTES];
     uint8_t  seed[HASH]; /* chain value before frame 1 */
     uint8_t  head[HASH];
@@ -239,9 +240,27 @@ static void report_reset(struct zcl_chainlog_report *rep)
     memset(rep, 0, sizeof *rep);
 }
 
-struct zcl_chainlog *zcl_chainlog_open(const char *path,
-                                       const uint8_t stream[32],
-                                       struct zcl_chainlog_report *report)
+static enum zcl_chainlog_status chainlog_header_read(struct zcl_chainlog *log,
+    uint64_t *size, uint8_t hdr[HDR])
+{
+    if (!platform_private_file_size(&log->file, size))
+        return ZCL_CHAINLOG_IO;
+    if (*size == 0 && !log->read_only) {
+        header_build(hdr, log->stream);
+        if (!platform_private_file_write_at(&log->file, hdr, HDR, 0) ||
+            !platform_private_file_flush(&log->file))
+            return ZCL_CHAINLOG_IO;
+        *size = HDR;
+    } else if (*size < HDR) {
+        return ZCL_CHAINLOG_FORMAT;
+    } else if (!platform_private_file_read_at(&log->file, hdr, HDR, 0)) {
+        return ZCL_CHAINLOG_IO;
+    }
+    return header_check(hdr, log->stream);
+}
+
+static struct zcl_chainlog *chainlog_open(const char *path,
+    const uint8_t stream[32], struct zcl_chainlog_report *report, bool read_only)
 {
     if (!report)
         return NULL;
@@ -263,37 +282,18 @@ struct zcl_chainlog *zcl_chainlog_open(const char *path,
         return NULL;
     }
     platform_private_file_init(&log->file);
+    log->read_only = read_only;
     memcpy(log->stream, stream, ZCL_CHAINLOG_STREAM_BYTES);
 
-    if (!platform_private_file_open_locked_create_wait(path, &log->file)) {
+    if (!(read_only ? platform_private_file_open_locked_wait(path, &log->file)
+                    : platform_private_file_open_locked_create_wait(path, &log->file))) {
         report->status = ZCL_CHAINLOG_IO;
         goto fail;
     }
 
     uint64_t size = 0;
-    if (!platform_private_file_size(&log->file, &size)) {
-        report->status = ZCL_CHAINLOG_IO;
-        goto fail;
-    }
-
     uint8_t hdr[HDR];
-    if (size == 0) {
-        header_build(hdr, stream);
-        if (!platform_private_file_write_at(&log->file, hdr, HDR, 0) ||
-            !platform_private_file_flush(&log->file)) {
-            report->status = ZCL_CHAINLOG_IO;
-            goto fail;
-        }
-        size = HDR;
-    } else if (size < HDR) {
-        report->status = ZCL_CHAINLOG_FORMAT;
-        goto fail;
-    } else if (!platform_private_file_read_at(&log->file, hdr, HDR, 0)) {
-        report->status = ZCL_CHAINLOG_IO;
-        goto fail;
-    }
-
-    enum zcl_chainlog_status st = header_check(hdr, stream);
+    enum zcl_chainlog_status st = chainlog_header_read(log, &size, hdr);
     if (st != ZCL_CHAINLOG_OK) {
         report->status = st;
         goto fail;
@@ -309,7 +309,7 @@ struct zcl_chainlog *zcl_chainlog_open(const char *path,
 
     /* The one place a chainlog ever shrinks, and it may only drop bytes no
      * sentinel ever committed. */
-    if (report->torn_bytes) {
+    if (report->torn_bytes && !read_only) {
         uint64_t keep = size - report->torn_bytes;
         if (!platform_private_file_truncate(&log->file, keep) ||
             !platform_private_file_flush(&log->file)) {
@@ -324,7 +324,7 @@ struct zcl_chainlog *zcl_chainlog_open(const char *path,
     }
 
     log->count = report->records;
-    log->size = size;
+    log->size = read_only ? size - report->torn_bytes : size;
     memcpy(log->head, report->head, HASH);
     report->status = ZCL_CHAINLOG_OK;
     return log;
@@ -335,6 +335,18 @@ fail:
     free(log->scratch);
     free(log);
     return NULL;
+}
+
+struct zcl_chainlog *zcl_chainlog_open(const char *path,
+    const uint8_t stream[32], struct zcl_chainlog_report *report)
+{
+    return chainlog_open(path, stream, report, false);
+}
+
+struct zcl_chainlog *zcl_chainlog_open_readonly(const char *path,
+    const uint8_t stream[32], struct zcl_chainlog_report *report)
+{
+    return chainlog_open(path, stream, report, true);
 }
 
 void zcl_chainlog_close(struct zcl_chainlog *log)
@@ -349,13 +361,18 @@ void zcl_chainlog_close(struct zcl_chainlog *log)
 
 /* ── append ────────────────────────────────────────────────────────── */
 
+static bool chainlog_writable(const struct zcl_chainlog *log)
+{
+    return log && !log->read_only;
+}
+
 enum zcl_chainlog_status zcl_chainlog_append(struct zcl_chainlog *log,
                                              uint32_t kind,
                                              const void *payload, size_t len,
                                              uint64_t *out_seq,
                                              uint8_t out_chain[32])
 {
-    if (!log || (len && !payload) || len > ZCL_CHAINLOG_PAYLOAD_MAX)
+    if (!chainlog_writable(log) || (len && !payload) || len > ZCL_CHAINLOG_PAYLOAD_MAX)
         return ZCL_CHAINLOG_ARGUMENT;
 
     uint64_t seq = log->count + 1;

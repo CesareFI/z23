@@ -303,9 +303,70 @@ static void fl_sample(struct json_value *input, struct zcl_command_reply *reply)
     zcl_native_handle_fleet_vitals_sample(&request, reply);
 }
 
+#if !defined(_WIN32)
+static int test_fleet_ledger_observation(void)
+{
+    int failures = 0;
+    char root[256], dir[320], peer[352], self[352];
+    struct stat info;
+    struct zcl_fleet_report report;
+    struct zcl_fleet_ledger *ledger = NULL;
+    uint8_t id[32] = {1}, signer[32] = {2}, seed[32] = {3};
+    test_make_tmpdir(root, sizeof(root), "fleet_ledger", "readonly");
+    (void)snprintf(dir, sizeof(dir), "%s/ledger", root);
+    (void)snprintf(peer, sizeof(peer), "%s/peer", dir);
+    (void)snprintf(self, sizeof(self), "%s/self.chainlog", dir);
+    TEST("fleet ledger: readonly open preserves absence, modes and torn evidence") {
+        ledger = zcl_fleet_ledger_open_readonly(dir, id, signer, &report);
+        ASSERT(!ledger);
+        ASSERT(lstat(dir, &info) != 0);
+        ASSERT(mkdir(dir, 0700) == 0);
+        ledger = zcl_fleet_ledger_open_readonly(dir, id, signer, &report);
+        ASSERT(ledger);
+        ASSERT(report.rows == 0);
+        ASSERT(lstat(peer, &info) != 0 && lstat(self, &info) != 0);
+        ASSERT(zcl_fleet_ledger_append(ledger, ZCL_FLEET_KIND_USAGE, 1,
+            NULL, 0, NULL, NULL, seed, NULL) == ZCL_FLEET_ARGUMENT);
+        size_t accepted = 0;
+        ASSERT(zcl_fleet_ledger_replicate(ledger, id, signer, NULL, 0,
+            &accepted) == ZCL_FLEET_ARGUMENT);
+        zcl_fleet_ledger_close(ledger); ledger = NULL;
+        ASSERT(chmod(dir, 0500) == 0);
+        ledger = zcl_fleet_ledger_open_readonly(dir, id, signer, &report);
+        ASSERT(!ledger && stat(dir, &info) == 0 && (info.st_mode & 0777) == 0500);
+        ASSERT(chmod(dir, 0755) == 0);
+        ledger = zcl_fleet_ledger_open_readonly(dir, id, signer, &report);
+        ASSERT(!ledger && stat(dir, &info) == 0 && (info.st_mode & 0777) == 0755);
+        ledger = zcl_fleet_ledger_open(dir, id, signer, &report);
+        ASSERT(ledger && stat(dir, &info) == 0 && (info.st_mode & 0777) == 0700);
+        zcl_fleet_ledger_close(ledger); ledger = NULL;
+        FILE *file = fopen(self, "ab");
+        ASSERT(file != NULL);
+        size_t written = fwrite("torn", 1, 4, file);
+        int closed = fclose(file);
+        ASSERT(written == 4 && closed == 0);
+        ASSERT(stat(self, &info) == 0);
+        struct stat before = info;
+        ledger = zcl_fleet_ledger_open_readonly(dir, id, signer, &report);
+        ASSERT(!ledger && report.status == ZCL_FLEET_IO);
+        ASSERT(stat(self, &info) == 0 && info.st_size == before.st_size &&
+            info.st_mtime == before.st_mtime && info.st_mode == before.st_mode);
+        ledger = zcl_fleet_ledger_open(dir, id, signer, &report);
+        ASSERT(ledger && stat(self, &info) == 0 && info.st_size + 4 == before.st_size);
+        PASS();
+    } _test_next:;
+    zcl_fleet_ledger_close(ledger);
+    test_rm_rf_recursive(root);
+    return failures;
+}
+#endif
+
 int test_fleet_ledger(void)
 {
     int failures = 0;
+#if !defined(_WIN32)
+    failures += test_fleet_ledger_observation();
+#endif
     char root[256];
     char wire_dir[256];
     /* Replication now asks whether the signing key holds a role here, and

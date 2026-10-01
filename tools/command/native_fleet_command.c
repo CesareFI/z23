@@ -245,7 +245,7 @@ void zcl_native_handle_fleet_ledger_status(
     memset(seed, 0, sizeof seed);
 
     struct zcl_fleet_report report;
-    struct zcl_fleet_ledger *ledger = zcl_fleet_ledger_open(
+    struct zcl_fleet_ledger *ledger = zcl_fleet_ledger_open_readonly(
         dir, have_self ? box_id : NULL, have_self ? signer : NULL, &report);
     if (!ledger) {
         fleet_refuse(reply, "LEDGER_UNAVAILABLE",

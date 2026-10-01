@@ -169,6 +169,17 @@
  * refusal scanners, which still apply). Mail bodies over-long or tripping
  * refusal rules come back per-item as refused, never as a crash.
  *
+ * TASKS. tasks[] is an additive, bounded LOCAL snapshot over agent queue
+ * and landing status; it never joins names to canonical work. Exact seq +
+ * attempt + ref detail selectors cannot select old-attempt queue outcomes.
+ * A fresh observation and a live exact consumer are required for executing;
+ * resident_proof_request_queued stays queued despite proof status running.
+ * Receipt admission, independent review and remote publication stay separate.
+ * tasks_inventory_complete is always false: canonical and remote inventories
+ * are not enumerated; queue parsing and recent landing history are bounded.
+ * Observation age describes this status read, never the age of a receipt or
+ * source row. source_ts/attempt_age_s remain separate, nullable provenance.
+ *
  * PROCESS RULE. No spawn, no shell, no popen()/system(), no sleep, no poll
  * loop. Only in-process sibling calls and local filesystem operations.
  */
@@ -179,6 +190,8 @@
 #include "base/safe_alloc.h"
 #include "command/native_devagent.h"
 #include "command/native_fleet.h"
+#include "command/native_fleet_steer_tasks.h"
+#include "command/native_dev_proof_command.h"
 #include "config/command_catalog.h"
 #include "crypto/random_secret.h"
 #include "fleet_enrol.h"
@@ -3310,7 +3323,8 @@ static void fmc_brief_queue(const struct zcl_command_request *req,
                             struct json_value *blockers,
                             struct json_value *missing,
                             struct fmc_queue_view *view,
-                            struct json_value *outcomes_keep)
+                            struct json_value *outcomes_keep,
+                            struct zcl_fmc_tasks *tasks)
 {
     struct fmc_sub sub;
     int64_t t0, t1;
@@ -3348,6 +3362,9 @@ static void fmc_brief_queue(const struct zcl_command_request *req,
     view->reason[0] = '\0';
     zcl_fmc_cand_source_ok(cand, ZCL_FMC_CAND_SRC_QUEUE);
     fmc_queue_rows(&sub, work, cand, view);
+    long long now = (long long)platform_time_wall_unix();
+    if (!zcl_fmc_tasks_queue(tasks, &sub.reply.data, now, now))
+        fmc_note_missing(missing, "dev.agent.queue", "task_source_malformed", 0);
     fmc_queue_outcomes(&sub, blockers, outcomes_keep, view);
     fmc_cand_from_outcomes(cand, outcomes_keep);
     fmc_queue_pool(&sub, view);
@@ -3615,6 +3632,65 @@ static void fmc_apply_completed(struct json_value *changes,
     }
 }
 
+/* Read the owning status leaves exactly once. Status only: never step,
+ * ensure, wait, retry, reap or take a scheduler lock while rendering. */
+static bool fmc_land_read(const struct zcl_command_request *req,
+    struct fmc_sub *sub, struct json_value *missing)
+{
+    fmc_sub_begin(sub, "zcl.dev_land.v1", req, "dev.land");
+    if (sub->valid && fmc_sub_input(sub, "{\"action\":\"status\",\"json\":true}")) {
+        zcl_native_handle_dev_land(&sub->request, &sub->reply);
+        sub->ran = true;
+    }
+    if (fmc_sub_ok(sub)) return true;
+    fmc_note_missing(missing, "dev.land", "status_unavailable", 0);
+    return false;
+}
+
+static void fmc_land_proof(const struct zcl_command_request *req,
+    const struct json_value *flight, struct json_value *proof,
+    struct json_value *missing)
+{
+    const struct json_value *step = json_get(flight, "proof_step");
+    if (!step || step->type != JSON_OBJ) {
+        if (flight) fmc_note_missing(missing, "dev.proof.status",
+            "exact_proof_route_unavailable", 0);
+        return;
+    }
+    struct fmc_sub sub;
+    fmc_sub_begin(&sub, "zcl.dev_proof_status.v1", req, "dev.proof.status");
+    const char *const fields[] = {"root", "local_commit", "remote_base"};
+    bool ready = sub.valid;
+    for (size_t i = 0; i < 3; i++) {
+        const char *value = fmc_row_field(step, fields[i]);
+        ready = ready && value[0] && json_push_kv_str(&sub.input, fields[i], value);
+    }
+    if (ready) {
+        zcl_native_dev_proof_dispatch(&sub.request, &sub.reply);
+        sub.ran = true;
+    }
+    if (fmc_sub_ok(&sub))
+        json_copy(proof, &sub.reply.data);
+    else
+        fmc_note_missing(missing, "dev.proof.status", "exact_status_unavailable", 0);
+    fmc_sub_end(&sub);
+}
+
+static void fmc_brief_land(const struct zcl_command_request *req,
+    struct zcl_fmc_tasks *tasks, struct json_value *missing)
+{
+    struct fmc_sub sub;
+    struct json_value proof = {0};
+    if (fmc_land_read(req, &sub, missing)) {
+        fmc_land_proof(req, json_get(&sub.reply.data, "in_flight"), &proof, missing);
+        long long now = (long long)platform_time_wall_unix();
+        if (!zcl_fmc_tasks_land(tasks, &sub.reply.data, &proof, now, now))
+            fmc_note_missing(missing, "dev.land", "task_source_malformed", 0);
+    }
+    json_free(&proof);
+    fmc_sub_end(&sub);
+}
+
 /* ── brief entry ───────────────────────────────────────────────────────── */
 
 /* capacity: real numbers only when the queue sibling answered. Otherwise
@@ -3668,7 +3744,7 @@ static void fmc_fit_budget(struct json_value *data)
 {
     static const char *const order[] = {
         "changes", "workers", "candidates", "work", "agents", "sessions",
-        "blockers",
+        "blockers", "tasks",
     };
     struct json_value trunc;
     size_t i;
@@ -3689,6 +3765,7 @@ struct fmc_brief_lists {
     /* candidates[] is emitted FROM this registry; the array above stays
      * only as the buffer zcl_fmc_cand_emit fills. */
     struct zcl_fmc_cand_reg cand;
+    struct zcl_fmc_tasks tasks;
 };
 
 static void fmc_lists_init(struct fmc_brief_lists *l)
@@ -3706,10 +3783,12 @@ static void fmc_lists_init(struct fmc_brief_lists *l)
     json_init(&l->evidence);
     json_set_object(&l->evidence);
     zcl_fmc_cand_init(&l->cand);
+    zcl_fmc_tasks_init(&l->tasks);
 }
 
 static void fmc_lists_free(struct fmc_brief_lists *l)
 {
+    zcl_fmc_tasks_free(&l->tasks);
     struct json_value *all[] = {&l->agents,   &l->work,     &l->blockers,
                                 &l->candidates, &l->changes, &l->missing,
                                 &l->capacity, &l->evidence, &l->post_ids,
@@ -3767,7 +3846,20 @@ static void fmc_brief_reply(struct zcl_command_reply *reply,
                             mv && mv->truncated);
     (void)json_push_kv_int(&reply->data, "changes_dropped",
                            mv ? mv->dropped : 0);
+    zcl_fmc_tasks_emit(&l->tasks, &reply->data);
     fmc_fit_budget(&reply->data);
+    const struct json_value *cuts = json_get(&reply->data, "budget_truncated");
+    if (json_get(cuts, "tasks")) {
+        struct json_value *complete = (struct json_value *)json_get(&reply->data,
+            "tasks_sources_complete");
+        json_set_bool(complete, false);
+        struct json_value *dropped = (struct json_value *)json_get(&reply->data,
+            "tasks_dropped");
+        json_set_int(dropped, json_get_int(dropped) +
+            json_get_int(json_get(cuts, "tasks")));
+    }
+    (void)json_push_kv_int(&reply->data, "tasks_shown",
+        (long long)json_size(json_get(&reply->data, "tasks")));
     reply->status = ZCL_COMMAND_STATUS_PASSED;
     reply->exit_code = 0;
 }
@@ -3823,7 +3915,8 @@ static void fmc_do_brief(const struct zcl_command_request *req,
     fmc_receiver_down_incident(&l.blockers, lo.receive_lock);
     mail_cursor = fmc_brief_mail(req, &mc, &l.missing, &mv);
     fmc_brief_queue(req, &l.work, &l.cand, &l.blockers, &l.missing,
-                    &qv, &l.outcomes);
+                    &qv, &l.outcomes, &l.tasks);
+    fmc_brief_land(req, &l.tasks, &l.missing);
     fmc_brief_board(req, &l.agents, &l.blockers, &l.cand, &l.missing,
                     &l.post_ids);
     fmc_brief_ledger(req, &l.missing, &boxes, &rows);
@@ -3841,6 +3934,11 @@ static void fmc_do_brief(const struct zcl_command_request *req,
     ec.qv = &qv;
     ec.lo = &lo;
     fmc_brief_reply(reply, &l, &ro, &ec, &mv, mail_cursor);
+    if (!json_get_bool(json_get(req->input, "json"))) {
+        char screen[4096];
+        zcl_fmc_tasks_screen(&reply->data, screen, sizeof(screen));
+        (void)json_push_kv_str(&reply->data, "screen", screen);
+    }
     fmc_lists_free(&l);
     fmc_roster_free(&ro);
 }
@@ -4418,6 +4516,21 @@ static void fmc_evidence_mail(const struct zcl_command_request *req,
     json_free(&rows);
 }
 
+/* New task links bind the queue/landing row AND attempt. Legacy ref-only
+ * queue lookups retain their historical preference for terminal outcomes. */
+static bool fmc_evidence_exact(const struct zcl_command_request *req,
+    const struct json_value *row)
+{
+    const char *const keys[] = {"seq", "attempt"};
+    for (size_t i = 0; i < 2; i++) {
+        const struct json_value *want = json_get(req->input, keys[i]);
+        const struct json_value *have = json_get(row, keys[i]);
+        if (want && (!have || have->type != JSON_INT ||
+            json_get_int(want) != json_get_int(have))) return false;
+    }
+    return true;
+}
+
 /* One queue row by name: terminal-section matches overwrite *term so the
  * last retained outcome wins; live rows set *live once. */
 static void fmc_evidence_queue_row(const struct json_value *r,
@@ -4479,6 +4592,7 @@ static void fmc_evidence_queue(const struct zcl_command_request *req,
             continue;
         n = json_size(arr);
         for (i = 0; i < n; i++)
+            if (fmc_evidence_exact(req, json_at(arr, i)))
             fmc_evidence_queue_row(json_at(arr, i), ref,
                                    s == sizeof(sections) /
                                    sizeof(sections[0]) - 1, &live, &term);
@@ -4552,6 +4666,55 @@ static void fmc_evidence_board(const struct zcl_command_request *req,
     fmc_sub_end(&sub);
 }
 
+static void fmc_evidence_land(const struct zcl_command_request *req,
+    struct zcl_command_reply *reply, const char *ref)
+{
+    struct fmc_sub sub;
+    struct json_value missing = {0}, proof = {0};
+    json_set_array(&missing);
+    if (!fmc_land_read(req, &sub, &missing)) {
+        fmc_fail(reply, "EVIDENCE_UNAVAILABLE", "landing status did not answer", "dev.land");
+        goto done;
+    }
+    const struct json_value *hit = NULL;
+    const struct json_value *flight = json_get(&sub.reply.data, "in_flight");
+    if (strcmp(fmc_row_field(flight, "tip"), ref) == 0 &&
+        fmc_evidence_exact(req, flight)) hit = flight;
+    const char *const sections[] = {"queued", "outcomes"};
+    for (size_t s = 0; s < 2; s++) {
+        const struct json_value *arr = json_get(&sub.reply.data, sections[s]);
+        if (!arr || arr->type != JSON_ARR) continue;
+        for (size_t i = 0; i < json_size(arr); i++) {
+            const struct json_value *row = json_at(arr, i);
+            if (strcmp(fmc_row_field(row, "tip"), ref) == 0 &&
+                fmc_evidence_exact(req, row)) hit = row;
+        }
+    }
+    if (!hit) {
+        fmc_fail(reply, "EVIDENCE_NOT_FOUND", "the exact landing attempt was not retained", ref);
+        goto done;
+    }
+    if (hit == flight) fmc_land_proof(req, flight, &proof, &missing);
+    fmc_emit_object(reply, "land", hit);
+    (void)json_push_kv(&reply->data, "proof_observation", &proof);
+    (void)json_push_kv(&reply->data, "missing", &missing);
+done:
+    json_free(&proof);
+    json_free(&missing);
+    fmc_sub_end(&sub);
+}
+
+static bool fmc_evidence_selectors(const struct zcl_command_request *req,
+    const char *type)
+{
+    const struct json_value *seq = json_get(req->input, "seq");
+    const struct json_value *attempt = json_get(req->input, "attempt");
+    if (!seq && !attempt) return strcmp(type, "land") != 0;
+    return (strcmp(type, "queue") == 0 || strcmp(type, "land") == 0) &&
+        seq && seq->type == JSON_INT && json_get_int(seq) > 0 &&
+        attempt && attempt->type == JSON_INT && json_get_int(attempt) > 0;
+}
+
 static void fmc_do_evidence(const struct zcl_command_request *req,
                             struct zcl_command_reply *reply)
 {
@@ -4561,10 +4724,17 @@ static void fmc_do_evidence(const struct zcl_command_request *req,
     ref = fmc_str(req, "ref");
     if (!type || !ref || !ref[0] || strlen(ref) > FMC_REF_MAX) {
         fmc_fail(reply, "BAD_INPUT", "evidence needs type and ref",
-                 "type in {mail,queue,board}, ref exact");
+                 "type in {mail,queue,board,land}, ref exact");
         return;
     }
-    if (strcmp(type, "mail") == 0)
+    if (!fmc_evidence_selectors(req, type)) {
+        fmc_fail(reply, "BAD_INPUT", "task detail needs positive seq and attempt together",
+            "seq/attempt apply only to queue or land; land requires both");
+        return;
+    }
+    if (strcmp(type, "land") == 0)
+        fmc_evidence_land(req, reply, ref);
+    else if (strcmp(type, "mail") == 0)
         fmc_evidence_mail(req, reply, ref);
     else if (strcmp(type, "queue") == 0)
         fmc_evidence_queue(req, reply, ref);
@@ -4572,7 +4742,7 @@ static void fmc_do_evidence(const struct zcl_command_request *req,
         fmc_evidence_board(req, reply, ref);
     else
         fmc_fail(reply, "BAD_INPUT", "unknown evidence type",
-                 "type in {mail,queue,board}");
+                 "type in {mail,queue,board,land}");
 }
 
 /* ── grants ──────────────────────────────────────────────────────────────

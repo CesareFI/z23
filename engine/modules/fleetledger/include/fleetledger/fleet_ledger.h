@@ -485,6 +485,14 @@ struct zcl_fleet_ledger *zcl_fleet_ledger_open(
     const uint8_t self_signer[ZCL_FLEET_ID_BYTES],
     struct zcl_fleet_report *report);
 
+/* Status-only observation of an existing private ledger directory. Never
+ * creates files/directories, repairs permissions or truncates torn tails.
+ * Missing peer/self logs stay absent; an unavailable root, invalid chain or
+ * uncommitted tail refuses. A returned handle cannot append or replicate. */
+struct zcl_fleet_ledger *zcl_fleet_ledger_open_readonly(
+    const char *dir, const uint8_t self_box_id[ZCL_FLEET_ID_BYTES],
+    const uint8_t self_signer[ZCL_FLEET_ID_BYTES], struct zcl_fleet_report *report);
+
 void zcl_fleet_ledger_close(struct zcl_fleet_ledger *ledger);
 
 /* Append one row to this box's own chain, signed with `seed`. Re-reads the

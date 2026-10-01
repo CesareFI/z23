@@ -18,6 +18,7 @@
 #include "dev_proof_receipt.h"
 #include "dev_proof_signer.h"
 #include "sha3/sha3.h"
+#include "platform/state_root.h"
 #include "vcs/vcs_object.h"
 
 #include <stdio.h>
@@ -1079,10 +1080,57 @@ static int test_dps_local_observation_domains(void)
     return failures;
 }
 
+#if !defined(_WIN32)
+static int test_dps_observation(void)
+{
+    int failures = 0;
+    uint8_t pubkey[32], signature[64];
+    bool present = true;
+    const char *why = NULL;
+    char root[4096], dir[8192], key[8300];
+    struct stat info;
+    TEST("dev proof signer: observation never initializes or repairs state") {
+        dps_isolate("observe_only");
+        ASSERT(!zcl_dev_proof_signer_public(pubkey, &present, &why));
+        ASSERT(!present);
+        ASSERT(lstat(g_dps_state, &info) != 0);
+        ASSERT(platform_state_root(root, sizeof(root)));
+        ASSERT(snprintf(dir, sizeof(dir), "%s/proof-signer", root) > 0);
+        ASSERT(snprintf(key, sizeof(key), "%s/signer.ed25519", dir) > 0);
+        ASSERT(zcl_dev_proof_signer_public(pubkey, &present, &why));
+        ASSERT(!present && lstat(dir, &info) != 0);
+        struct zcl_dev_proof_allowlist_state list;
+        ASSERT(zcl_dev_proof_signer_allowlist_state(&list, &why));
+        ASSERT(!list.present && lstat(dir, &info) != 0);
+        ASSERT(mkdir(dir, 0500) == 0);
+        ASSERT(!zcl_dev_proof_signer_public(pubkey, &present, &why));
+        ASSERT(stat(dir, &info) == 0 && (info.st_mode & 0777) == 0500);
+        ASSERT(chmod(dir, 0755) == 0);
+        ASSERT(!zcl_dev_proof_signer_public(pubkey, &present, &why));
+        ASSERT(stat(dir, &info) == 0 && (info.st_mode & 0777) == 0755);
+        ASSERT(lstat(key, &info) != 0);
+        ASSERT(zcl_dev_proof_signer_sign((const uint8_t *)"x", 1u,
+                                         pubkey, signature, &why));
+        ASSERT(stat(dir, &info) == 0 && (info.st_mode & 0777) == 0700);
+        ASSERT(zcl_dev_proof_signer_verify((const uint8_t *)"x", 1u,
+                                           pubkey, signature, &why));
+        ASSERT(chmod(root, 0755) == 0);
+        ASSERT(!zcl_dev_proof_signer_public(pubkey, &present, &why));
+        ASSERT(stat(root, &info) == 0 && (info.st_mode & 0777) == 0755);
+        PASS();
+    } _test_next:;
+    dps_restore();
+    return failures;
+}
+#endif
+
 int test_dev_proof_signer(void)
 {
     int failures = 0;
     failures += test_dps_round_trip();
+#if !defined(_WIN32)
+    failures += test_dps_observation();
+#endif
     failures += test_dps_flipped_byte();
     failures += test_dps_unsigned_record();
     failures += test_dps_allowlist();

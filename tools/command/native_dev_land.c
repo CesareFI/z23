@@ -84,6 +84,8 @@
  * another authorized integrator adopts by calling that same step. A
  * held lock is not an incident; a second step returns STEP_BUSY and
  * does not push. status does not create step.lock and does not hold it.
+ * It never initializes the state/land/log directories or repairs permissions;
+ * an unavailable existing private root is reported instead of created.
  *
  * attach replies {seq, tip, state:"attached", target:explicit|resolved}.
  * attach_publish makes the same explicit signed intent, then runs the
@@ -312,10 +314,11 @@ static bool dl_mkdir_one(const char *path)
     return stat(path, &st) == 0 && (st.st_mode & S_IFMT) == S_IFDIR;
 }
 
-static bool dl_dirs_make(struct dl_dirs *d)
+static bool dl_dirs_resolve(struct dl_dirs *d, bool create)
 {
     int n;
-    if (!d || !platform_state_root(d->root, sizeof(d->root)))
+    if (!d || !(create ? platform_state_root(d->root, sizeof(d->root))
+                       : platform_state_root_existing(d->root, sizeof(d->root))))
         return false;
     n = snprintf(d->land, sizeof(d->land), "%s/land", d->root);
     if (n <= 0 || (size_t)n >= sizeof(d->land))
@@ -326,7 +329,12 @@ static bool dl_dirs_make(struct dl_dirs *d)
     n = snprintf(d->wt, sizeof(d->wt), "%s/land/wt", d->root);
     if (n <= 0 || (size_t)n >= sizeof(d->wt))
         return false;
-    return dl_mkdir_one(d->land) && dl_mkdir_one(d->logs);
+    return !create || (dl_mkdir_one(d->land) && dl_mkdir_one(d->logs));
+}
+
+static bool dl_dirs_make(struct dl_dirs *d)
+{
+    return dl_dirs_resolve(d, true);
 }
 
 /* ── time ──────────────────────────────────────────────────────────────── */
@@ -3494,10 +3502,10 @@ static void dl_status(const struct zcl_command_request *req,
         const struct json_value *jv = json_get(req->input, "json");
         want_json = jv && jv->type == JSON_BOOL && json_get_bool(jv);
     }
-    if (!dl_dirs_make(&d)) {
+    if (!dl_dirs_resolve(&d, false)) {
         dl_fail(reply, "STATE_DIR_FAILED", "status",
-                "cannot resolve the owner-private state root",
-                "platform_state_root");
+                "the existing owner-private state root is unavailable",
+                "platform_state_root_existing");
         return;
     }
     if (snprintf(qpath, sizeof(qpath), "%s/queue.jsonl", d.land) >=

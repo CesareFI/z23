@@ -45,20 +45,27 @@ static void signer_why(const char **why, const char *token)
     if (why) *why = token;
 }
 
-static bool signer_dir(char *out, size_t cap)
+static bool signer_dir(char *out, size_t cap, bool create)
 {
     char root[ZCL_DEV_PROOF_SIGNER_PATH_MAX];
-    if (!out || !platform_state_root(root, sizeof(root)))
+    if (!out || !(create ? platform_state_root(root, sizeof(root))
+                         : platform_state_root_existing(root, sizeof(root))))
         return false;
     int n = snprintf(out, cap, "%s/%s", root, SIGNER_DIR_LEAF);
-    return n > 0 && (size_t)n < cap && platform_private_directory_ensure(out);
+    if (n <= 0 || (size_t)n >= cap) return false;
+    if (create) return platform_private_directory_ensure(out);
+    uintptr_t retained = 0;
+    if (!platform_private_directory_open_validated_traverse(out, &retained))
+        return platform_private_path_absent(out);
+    platform_private_directory_close(retained);
+    return true;
 }
 
-bool zcl_dev_proof_signer_paths(char *key_path, size_t key_cap,
-                                char *allow_path, size_t allow_cap)
+static bool signer_paths(char *key_path, size_t key_cap,
+                          char *allow_path, size_t allow_cap, bool create)
 {
     char dir[ZCL_DEV_PROOF_SIGNER_PATH_MAX];
-    if (!signer_dir(dir, sizeof(dir)))
+    if (!signer_dir(dir, sizeof(dir), create))
         return false;
     if (key_path) {
         int n = snprintf(key_path, key_cap, "%s/%s", dir, SIGNER_KEY_LEAF);
@@ -72,6 +79,12 @@ bool zcl_dev_proof_signer_paths(char *key_path, size_t key_cap,
             return false;
     }
     return true;
+}
+
+bool zcl_dev_proof_signer_paths(char *key_path, size_t key_cap,
+                                char *allow_path, size_t allow_cap)
+{
+    return signer_paths(key_path, key_cap, allow_path, allow_cap, true);
 }
 
 /* Read the 32-byte seed. A path that cannot be opened at all reports ABSENT:
@@ -137,7 +150,7 @@ static bool signer_seed_load(uint8_t seed[SIGNER_SEED_BYTES], bool create,
 {
     char path[ZCL_DEV_PROOF_SIGNER_PATH_MAX];
     if (present) *present = false;
-    if (!zcl_dev_proof_signer_paths(path, sizeof(path), NULL, 0)) {
+    if (!signer_paths(path, sizeof(path), NULL, 0, create)) {
         signer_why(why, WHY_UNREADABLE);
         LOG_FAIL(SIGNER_DOMAIN,
                  "cannot resolve the owner-private state root that holds "
@@ -294,7 +307,7 @@ static bool signer_allow_scan(const uint8_t *target, const uint8_t *own,
     struct platform_positioned_file file;
     uint64_t size = 0;
     memset(scan, 0, sizeof(*scan));
-    if (!zcl_dev_proof_signer_paths(NULL, 0, path, sizeof(path)))
+    if (!signer_paths(NULL, 0, path, sizeof(path), false))
         return false;
     platform_positioned_file_init(&file);
     if (!platform_positioned_file_open(&file, path))

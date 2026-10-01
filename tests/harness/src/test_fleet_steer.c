@@ -27,6 +27,8 @@
 #include "kernel/command_registry.h"
 #include "platform/private_directory.h"
 #include "platform/time_compat.h"
+#include "../../../tools/dev/dev_proof_receipt.h"
+#include "../../../tools/dev/dev_proof.h"
 
 #include <limits.h>
 #include <stdio.h>
@@ -4073,12 +4075,109 @@ _test_next:;
     return failures;
 }
 
+#if !defined(_WIN32)
+/* Fixture setup seals inert simulated receipts under this group's isolated
+ * identity. The observation handlers must only read those exact bytes. */
+static int fmx_t_proof_transitions(void)
+{
+    int failures = 0;
+    const char *head = "1111111111111111111111111111111111111111";
+    const char *base = "2222222222222222222222222222222222222222";
+    struct zcl_dev_acceptance_receipt_v1 receipt = {0};
+    uint8_t wire[ZCL_DEV_PROOF_WIRE_BYTES];
+    char pair[160], leaf[200], text[1600], path[1800];
+    long long worker_started = 0;
+    TEST("steer: native status fixture observes queued, live and passed proof") {
+        fmx_isolate("proof_transitions");
+        (void)snprintf(pair, sizeof(pair), "%s-%s", head, base);
+        (void)snprintf(text, sizeof(text),
+            "{\"seq\":390,\"attempt\":2,\"tip\":\"%s\","
+            "\"state\":\"inflight\",\"phase\":\"prove\",\"local\":\"%s\","
+            "\"base\":\"%s\",\"worktree\":\"%s\",\"started\":1}\n",
+            head, head, base, g_fmx_state);
+        fmx_state_file("land", "queue.jsonl", text, false);
+        (void)snprintf(leaf, sizeof(leaf), "%s.request", pair);
+        (void)snprintf(text, sizeof(text),
+            "zcl.dev_proof_request.v1\n%s\n%s\n1\n1\n", head, base);
+        fmx_state_file("land/wt/.cache/zcl-dev-proof/requests", leaf, text, false);
+        (void)snprintf(path, sizeof(path), "%s/z23/dev/land/wt/.cache/zcl-dev-proof/requests/%s", g_fmx_state, leaf);
+        ASSERT(chmod(path, 0600) == 0);
+        (void)snprintf(path, sizeof(path), "%s/z23/dev/land/wt", g_fmx_state);
+        ASSERT(zcl_dev_proof_oid_decode(head, receipt.local_commit,
+                                         &receipt.local_commit_len));
+        ASSERT(zcl_dev_proof_oid_decode(base, receipt.remote_base,
+                                         &receipt.remote_base_len));
+        uint8_t *roots[] = {receipt.source_root, receipt.source_cas_root,
+            receipt.mutation_root, receipt.changed_set_root,
+            receipt.impact_policy_root, receipt.compiler_root,
+            receipt.flags_root, receipt.environment_root,
+            receipt.build_graph_root, receipt.child_set_root};
+        for (size_t i = 0; i < sizeof(roots) / sizeof(roots[0]); i++)
+            memset(roots[i], (int)i + 1, ZCL_DEV_PROOF_ROOT_BYTES);
+        for (size_t i = 0; i < ZCL_DEV_PROOF_DIMENSIONS; i++) {
+            memset(receipt.dimensions[i].receipt_root, (int)i + 1,
+                   ZCL_DEV_PROOF_ROOT_BYTES);
+            receipt.dimensions[i].selected = 1;
+            receipt.dimensions[i].reused = 1;
+        }
+        receipt.policy_version = ZCL_DEV_PROOF_POLICY_VERSION;
+        receipt.complete = 1;
+        ASSERT(zcl_dev_proof_receipt_child_set_root(&receipt, receipt.child_set_root));
+        ASSERT(zcl_dev_proof_receipt_seal(&receipt));
+        ASSERT(zcl_dev_proof_receipt_serialize(&receipt, wire));
+        for (size_t stage = 0; stage < 3; stage++) {
+            if (stage == 1) {
+                worker_started = (long long)platform_time_wall_time_t();
+                (void)snprintf(leaf, sizeof(leaf), "%s.running", pair);
+                (void)snprintf(text, sizeof(text), "%lld %lld\n",
+                    (long long)getpid(), worker_started);
+                fmx_state_file("land/wt/.cache/zcl-dev-proof", leaf, text, false);
+            } else if (stage == 2) {
+                (void)snprintf(leaf, sizeof(leaf), "%s.receipt", pair);
+                fmx_state_file("land/wt/.cache/zcl-dev-proof/receipts", leaf, "", false);
+                (void)snprintf(path, sizeof(path),
+                    "%s/z23/dev/land/wt/.cache/zcl-dev-proof/receipts/%s",
+                    g_fmx_state, leaf);
+                FILE *file = fopen(path, "wb");
+                ASSERT(file != NULL);
+                ASSERT(fwrite(wire, 1, sizeof(wire), file) == sizeof(wire));
+                ASSERT(fclose(file) == 0);
+                ASSERT(chmod(path, 0600) == 0);
+            }
+            struct zcl_dev_proof_status observed = {0};
+            (void)snprintf(path, sizeof(path), "%s/z23/dev/land/wt", g_fmx_state);
+            ASSERT(zcl_dev_proof_status_read(path, head, base, &observed));
+            ASSERT(observed.state == (stage == 2 ? ZCL_DEV_PROOF_STATE_PASSED : ZCL_DEV_PROOF_STATE_RUNNING));
+            ASSERT_STR_EQ(observed.detail, stage == 0 ? "resident_proof_request_queued"
+                : stage == 1 ? "background_verification_running" : "exact_receipt_admitted");
+            if (stage == 1) {
+                ASSERT(observed.worker_id == (int64_t)getpid());
+                ASSERT(observed.started_unix == worker_started);
+            }
+            ASSERT_STR_EQ(observed.local_commit, head);
+            ASSERT_STR_EQ(observed.remote_base, base);
+        }
+        printf("steer transition fixture=%s\n", g_fmx_state);
+        fmx_restore();
+        PASS();
+    }
+_test_next:;
+    fmx_restore();
+    return failures;
+}
+#endif
+
 int test_fleet_steer(void);
+int fmx_task_projection_checks(void);
 int test_fleet_steer(void)
 {
     int failures = 0;
 
     node_rpc_client_set_test_hook(fmx_no_node);
+    failures += fmx_task_projection_checks();
+#if !defined(_WIN32)
+    failures += fmx_t_proof_transitions();
+#endif
     failures += fmx_t_register();
     failures += fmx_t_brief_empty();
     failures += fmx_t_send_flow();

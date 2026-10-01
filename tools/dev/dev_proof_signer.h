@@ -46,7 +46,8 @@
 
 /* Where this box keeps its signing identity and its trust list. Both are
  * absolute and both live under the state root, never inside a checkout.
- * Either output may be NULL when the caller wants only the other. */
+ * Either output may be NULL when the caller wants only the other. This
+ * setup operation creates/repairs the private directories, never a key. */
 bool zcl_dev_proof_signer_paths(char *key_path, size_t key_cap,
                                 char *allow_path, size_t allow_cap);
 
@@ -72,7 +73,9 @@ bool zcl_dev_proof_signer_verify(
     const uint8_t signature[ZCL_DEV_PROOF_SIGNER_SIGNATURE_BYTES],
     const char **why);
 
-/* This box's public key, without ever creating one. `present` is false when
+/* This box's public key, without creating files/directories or repairing
+ * permissions. An absent or invalid state root refuses rather than setting
+ * up a new one. Under an existing private root, `present` is false when
  * no key file exists yet — the normal state of a box that has only ever
  * verified. Returns false (and names why) when a key file exists but cannot
  * be read as a private 32-byte seed. */
@@ -88,8 +91,8 @@ struct zcl_dev_proof_allowlist_state {
 };
 
 /* Read the allowlist for reporting. A missing file is a state, not a
- * failure: `present` false, zero counts. Returns false only when the state
- * root itself cannot be resolved. */
+ * failure: `present` false, zero counts. Never initializes or repairs state.
+ * Returns false when the existing private state cannot be validated. */
 bool zcl_dev_proof_signer_allowlist_state(
     struct zcl_dev_proof_allowlist_state *out, const char **why);
 

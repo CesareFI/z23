@@ -40,6 +40,7 @@
 #include "chainlog/chainlog.h"
 #include "platform/directory_compat.h"
 #include "platform/private_directory.h"
+#include "platform/private_file.h"
 #include "platform/time_compat.h"
 #include "sha3/sha3.h"
 
@@ -129,6 +130,7 @@ struct fleet_experiment_event {
 
 struct zcl_fleet_ledger {
     char dir[512];
+    bool read_only;
     bool have_self;
     uint8_t self_id[ZCL_FLEET_ID_BYTES];
     uint8_t self_signer[ZCL_FLEET_ID_BYTES];
@@ -463,6 +465,33 @@ uint64_t zcl_fleet_ledger_index_overflow(const struct zcl_fleet_ledger *l)
 
 /* ── loading one chain ───────────────────────────────────────────────── */
 
+static bool chain_absent(const struct zcl_fleet_ledger *l, const char *path)
+{
+    return l->read_only && platform_private_path_absent(path);
+}
+
+static enum zcl_fleet_status chain_open_error(enum zcl_chainlog_status status)
+{
+    return status == ZCL_CHAINLOG_BROKEN_CHAIN ? ZCL_FLEET_CHAIN_BROKEN
+                                               : ZCL_FLEET_IO;
+}
+
+static struct zcl_chainlog *ledger_chain_open(const struct zcl_fleet_ledger *l,
+    const char *path, const uint8_t stream[32], struct zcl_chainlog_report *rep)
+{
+    struct zcl_chainlog *log = l->read_only
+        ? zcl_chainlog_open_readonly(path, stream, rep)
+        : zcl_chainlog_open(path, stream, rep);
+    /* A status result cannot silently hide an interrupted append. Leave the
+     * tail for the writer's normal recovery and refuse this observation. */
+    if (l->read_only && log && rep->torn_bytes) {
+        zcl_chainlog_close(log);
+        rep->status = ZCL_CHAINLOG_IO;
+        return NULL;
+    }
+    return log;
+}
+
 /* Read every frame of one box's chain, verify each row's signature and its
  * link to the row before it, and put it in the index. A refusal names the
  * sequence number and stops: a chain that was altered is evidence, and
@@ -478,12 +507,13 @@ static enum zcl_fleet_status chain_load(struct zcl_fleet_ledger *l,
     chain_stream(box->id, stream);
 
     struct zcl_chainlog_report rep;
-    struct zcl_chainlog *log = zcl_chainlog_open(path, stream, &rep);
+    if (chain_absent(l, path))
+        return ZCL_FLEET_OK;
+    struct zcl_chainlog *log = ledger_chain_open(l, path, stream, &rep);
     if (!log) {
         LOG_ERROR("fleet.ledger", "chain open refused: %s",
                   zcl_chainlog_status_label(rep.status));
-        return rep.status == ZCL_CHAINLOG_BROKEN_CHAIN ? ZCL_FLEET_CHAIN_BROKEN
-                                                       : ZCL_FLEET_IO;
+        return chain_open_error(rep.status);
     }
 
     enum zcl_fleet_status status = ZCL_FLEET_OK;
@@ -537,6 +567,16 @@ static enum zcl_fleet_status chain_load(struct zcl_fleet_ledger *l,
 
 /* ── open / close ────────────────────────────────────────────────────── */
 
+static bool ledger_directory(const char *path, bool read_only)
+{
+    if (!read_only) return platform_private_directory_ensure(path);
+    uintptr_t retained = 0;
+    if (!platform_private_directory_open_validated_traverse(path, &retained))
+        return false;
+    platform_private_directory_close(retained);
+    return true;
+}
+
 /* Every peer replica in `<dir>/peer` whose name is a 64-hex box id. A name
  * that is not one is not adopted: a file this store did not write is not a
  * box, and guessing would let anything dropped in the directory become one. */
@@ -547,7 +587,9 @@ static enum zcl_fleet_status load_peers(struct zcl_fleet_ledger *l,
     if ((size_t)snprintf(peerdir, sizeof peerdir, "%s/%s", l->dir,
                          FLEET_DIR_PEER) >= sizeof peerdir)
         return ZCL_FLEET_ARGUMENT;
-    if (!platform_private_directory_ensure(peerdir))
+    if (l->read_only && platform_private_path_absent(peerdir))
+        return ZCL_FLEET_OK;
+    if (!ledger_directory(peerdir, l->read_only))
         return ZCL_FLEET_IO;
 
     struct platform_directory_list files;
@@ -582,29 +624,8 @@ static enum zcl_fleet_status load_peers(struct zcl_fleet_ledger *l,
     return status;
 }
 
-struct zcl_fleet_ledger *zcl_fleet_ledger_open(
-    const char *dir, const uint8_t self_box_id[ZCL_FLEET_ID_BYTES],
-    const uint8_t self_signer[ZCL_FLEET_ID_BYTES],
-    struct zcl_fleet_report *report)
+static struct zcl_fleet_ledger *ledger_allocate(struct zcl_fleet_report *report)
 {
-    if (!report)
-        return NULL;
-    memset(report, 0, sizeof(*report));
-    if (self_box_id && !self_signer) {
-        /* A box that can write must say which key will sign; a reader with
-         * no identity passes neither. Half an identity is not one. */
-        report->status = ZCL_FLEET_ARGUMENT;
-        return NULL;
-    }
-    if (!dir || dir[0] != '/') {
-        /* A relative datadir has bitten this tree before: the writer and
-         * the reader resolve it against different working directories and
-         * quietly use two different stores. Absolute or nothing. */
-        report->status = ZCL_FLEET_ARGUMENT;
-        return NULL;
-    }
-    int64_t start = platform_time_monotonic_us();
-
     struct zcl_fleet_ledger *l = zcl_calloc(1, sizeof *l, "fleet_ledger");
     if (!l) {
         report->status = ZCL_FLEET_IO;
@@ -621,12 +642,31 @@ struct zcl_fleet_ledger *zcl_fleet_ledger_open(
         zcl_fleet_ledger_close(l);
         return NULL;
     }
+    return l;
+}
+
+static struct zcl_fleet_ledger *ledger_open(
+    const char *dir, const uint8_t self_box_id[ZCL_FLEET_ID_BYTES],
+    const uint8_t self_signer[ZCL_FLEET_ID_BYTES],
+    struct zcl_fleet_report *report, bool read_only)
+{
+    if (!report) return NULL;
+    memset(report, 0, sizeof(*report));
+    /* A relative directory or half an identity cannot name this store. */
+    if ((self_box_id && !self_signer) || !dir || dir[0] != '/') {
+        report->status = ZCL_FLEET_ARGUMENT;
+        return NULL;
+    }
+    int64_t start = platform_time_monotonic_us();
+    struct zcl_fleet_ledger *l = ledger_allocate(report);
+    if (!l) return NULL;
     if ((size_t)snprintf(l->dir, sizeof l->dir, "%s", dir) >= sizeof l->dir) {
         report->status = ZCL_FLEET_ARGUMENT;
         zcl_fleet_ledger_close(l);
         return NULL;
     }
-    if (!platform_private_directory_ensure(l->dir)) {
+    l->read_only = read_only;
+    if (!ledger_directory(l->dir, read_only)) {
         report->status = ZCL_FLEET_IO;
         zcl_fleet_ledger_close(l);
         return NULL;
@@ -660,6 +700,20 @@ struct zcl_fleet_ledger *zcl_fleet_ledger_open(
     return l;
 }
 
+struct zcl_fleet_ledger *zcl_fleet_ledger_open(
+    const char *dir, const uint8_t self_box_id[ZCL_FLEET_ID_BYTES],
+    const uint8_t self_signer[ZCL_FLEET_ID_BYTES], struct zcl_fleet_report *report)
+{
+    return ledger_open(dir, self_box_id, self_signer, report, false);
+}
+
+struct zcl_fleet_ledger *zcl_fleet_ledger_open_readonly(
+    const char *dir, const uint8_t self_box_id[ZCL_FLEET_ID_BYTES],
+    const uint8_t self_signer[ZCL_FLEET_ID_BYTES], struct zcl_fleet_report *report)
+{
+    return ledger_open(dir, self_box_id, self_signer, report, true);
+}
+
 void zcl_fleet_ledger_close(struct zcl_fleet_ledger *ledger)
 {
     if (!ledger)
@@ -671,6 +725,11 @@ void zcl_fleet_ledger_close(struct zcl_fleet_ledger *ledger)
 }
 
 /* ── append ──────────────────────────────────────────────────────────── */
+
+static bool ledger_writable(const struct zcl_fleet_ledger *l)
+{
+    return l && !l->read_only;
+}
 
 /* The tail of a chain, read inside the chainlog's own exclusive lock. This
  * is what makes two appending processes safe: whoever holds the lock sees
@@ -701,7 +760,7 @@ enum zcl_fleet_status zcl_fleet_ledger_append(
     const char *story, const uint8_t seed[ZCL_FLEET_SEED_BYTES],
     uint64_t *out_seq)
 {
-    if (!ledger || !seed || (!pairs && pair_count))
+    if (!ledger_writable(ledger) || !seed || (!pairs && pair_count))
         return ZCL_FLEET_ARGUMENT;
     if (!ledger->have_self)
         return ZCL_FLEET_ARGUMENT;
@@ -811,7 +870,7 @@ enum zcl_fleet_status zcl_fleet_ledger_read_since(
     uint8_t stream[32];
     chain_stream(box_id, stream);
     struct zcl_chainlog_report rep;
-    struct zcl_chainlog *log = zcl_chainlog_open(path, stream, &rep);
+    struct zcl_chainlog *log = ledger_chain_open(ledger, path, stream, &rep);
     if (!log)
         return ZCL_FLEET_IO;
 
@@ -912,7 +971,7 @@ enum zcl_fleet_status zcl_fleet_ledger_replicate(
     const uint8_t peer_signer[ZCL_FLEET_ID_BYTES], const uint8_t *rows,
     size_t len, size_t *accepted)
 {
-    if (!ledger || !peer_box_id || !peer_signer || (!rows && len))
+    if (!ledger_writable(ledger) || !peer_box_id || !peer_signer || (!rows && len))
         return ZCL_FLEET_ARGUMENT;
     if (accepted)
         *accepted = 0;
