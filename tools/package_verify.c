@@ -507,6 +507,92 @@ static uint8_t *pv_read_file(const char *path, size_t cap, size_t *out_len)
     return pv_read_file_policy(path, cap, false, out_len);
 }
 
+static bool pv_stat_equal(const struct stat *left, const struct stat *right)
+{
+    bool same = left->st_dev == right->st_dev &&
+                left->st_ino == right->st_ino &&
+                left->st_mode == right->st_mode &&
+                left->st_nlink == right->st_nlink &&
+                left->st_size == right->st_size;
+#if defined(__APPLE__)
+    return same &&
+           left->st_mtimespec.tv_sec == right->st_mtimespec.tv_sec &&
+           left->st_mtimespec.tv_nsec == right->st_mtimespec.tv_nsec &&
+           left->st_ctimespec.tv_sec == right->st_ctimespec.tv_sec &&
+           left->st_ctimespec.tv_nsec == right->st_ctimespec.tv_nsec;
+#else
+    return same && left->st_mtim.tv_sec == right->st_mtim.tv_sec &&
+           left->st_mtim.tv_nsec == right->st_mtim.tv_nsec &&
+           left->st_ctim.tv_sec == right->st_ctim.tv_sec &&
+           left->st_ctim.tv_nsec == right->st_ctim.tv_nsec;
+#endif
+}
+
+static int pv_open_bounded_leaf(int directory, const char *leaf, size_t cap,
+                                struct stat *snapshot, size_t *length)
+{
+    if (directory < 0 || !leaf || !leaf[0] || strchr(leaf, '/'))
+        return -1;
+    int fd = openat(directory, leaf,
+                    O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC);
+    if (fd < 0)
+        return -1;
+    if (fstat(fd, snapshot) != 0 || !S_ISREG(snapshot->st_mode) ||
+        snapshot->st_size <= 0 ||
+        (uint64_t)snapshot->st_size > (uint64_t)cap ||
+        (uint64_t)snapshot->st_size > (uint64_t)SIZE_MAX) {
+        close(fd);
+        return -1;
+    }
+    *length = (size_t)snapshot->st_size;
+    return fd;
+}
+
+static bool pv_read_exact_fd(int fd, uint8_t *buf, size_t len)
+{
+    size_t read_bytes = 0;
+    while (read_bytes < len) {
+        ssize_t got = read(fd, buf + read_bytes, len - read_bytes);
+        if (got < 0 && errno == EINTR)
+            continue;
+        if (got <= 0)
+            return false;
+        read_bytes += (size_t)got;
+    }
+    return true;
+}
+
+/* Read a stable, bounded regular leaf relative to an already-open directory.
+ * The parent path is never resolved again between enumeration and admission. */
+static uint8_t *pv_read_file_at(int directory, const char *leaf, size_t cap,
+                                size_t *out_len)
+{
+    if (!out_len)
+        return NULL;
+    *out_len = 0;
+    struct stat before;
+    size_t len = 0;
+    int fd = pv_open_bounded_leaf(directory, leaf, cap, &before, &len);
+    if (fd < 0)
+        return NULL;
+    uint8_t *buf = zcl_malloc(len, "pv_read_file_at");
+    if (!buf) {
+        close(fd);
+        return NULL;
+    }
+    struct stat after;
+    bool stable = pv_read_exact_fd(fd, buf, len) &&
+                  fstat(fd, &after) == 0 &&
+                  pv_stat_equal(&before, &after);
+    close(fd);
+    if (!stable) {
+        free(buf);
+        return NULL;
+    }
+    *out_len = len;
+    return buf;
+}
+
 static uint8_t *pv_read_private_file(const char *path, size_t cap,
                                      size_t *out_len)
 {
@@ -1289,14 +1375,14 @@ static struct pv_run pv_run_child(enum pv_process_role role,
  * release id wins when several match (deterministic). False when none. */
 /* One candidate release file: read, parse, and check it names package_root
  * and verifies. On success fills *rel_out and id_out and returns true. */
-static bool pv_load_one_release(const char *path,
+static bool pv_load_one_release(int directory, const char *name,
                                 const uint8_t package_root[32],
                                 struct vcs_package_release *rel_out,
                                 uint8_t id_out[VCS_PACKAGE_RELEASE_ID_BYTES])
 {
     size_t wire_len = 0;
-    uint8_t *wire =
-        pv_read_file(path, VCS_PACKAGE_RELEASE_MAX_WIRE_BYTES, &wire_len);
+    uint8_t *wire = pv_read_file_at(
+        directory, name, VCS_PACKAGE_RELEASE_MAX_WIRE_BYTES, &wire_len);
     if (!wire)
         return false;
     struct vcs_package_release rel;
@@ -1313,19 +1399,16 @@ static bool pv_load_one_release(const char *path,
 }
 
 static void pv_consider_release_entry(
-    const char *dir, const char *name, const uint8_t package_root[32],
+    int directory, const char *name, const uint8_t package_root[32],
     bool *found, uint8_t best_id[32], struct vcs_package_release *out,
     uint8_t release_id_out[32])
 {
     uint8_t scratch[32];
     if (!zcl_hex_decode_lower(name, scratch, sizeof(scratch)))
         return;
-    char path[4096];
-    int pn = snprintf(path, sizeof(path), "%s/%s", dir, name);
     struct vcs_package_release rel;
     uint8_t id[VCS_PACKAGE_RELEASE_ID_BYTES];
-    if (pn < 0 || (size_t)pn >= sizeof(path) ||
-        !pv_load_one_release(path, package_root, &rel, id) ||
+    if (!pv_load_one_release(directory, name, package_root, &rel, id) ||
         (*found && memcmp(id, best_id, sizeof(id)) >= 0))
         return;
     memcpy(best_id, id, sizeof(id));
@@ -1373,7 +1456,7 @@ static bool pv_load_release(const char *store_dir,
             break;
         }
         scanned++;
-        pv_consider_release_entry(dir, ent->d_name, package_root, &found,
+        pv_consider_release_entry(dirfd(d), ent->d_name, package_root, &found,
                                   best_id, out, release_id_out);
     }
     if (closedir(d) != 0)

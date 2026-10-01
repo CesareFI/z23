@@ -65,11 +65,12 @@
  *      (test-fail/test-signal — the seccomp network denial firing). A
  *      release-envelope symlink is refused even when it resolves to the
  *      original valid signed bytes, the releases directory itself cannot be
- *      substituted by a symlink, neither the attestation directory nor a
- *      preplaced attestation temporary-file symlink can redirect signed
- *      bytes, an attestation directory accessible by other accounts cannot
- *      authorize publication, and an overfull release directory cannot
- *      authorize execution from a partial scan. On the
+ *      substituted by a symlink or replaced after its scan handle opens,
+ *      neither the attestation directory nor a preplaced attestation
+ *      temporary-file symlink can redirect signed bytes, an attestation
+ *      directory accessible by other accounts cannot authorize publication,
+ *      and an overfull release directory cannot authorize execution from a
+ *      partial scan. On the
  *      root-host lane, a valid 0600 key owned by another uid is also refused.
  *      The
  *      bounded cleanup refuses to persist an attestation when hostile test
@@ -124,6 +125,10 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+
+#if defined(__linux__)
+#include <sys/wait.h>
+#endif
 
 #if !defined(_WIN32)
 extern char **environ;
@@ -4627,6 +4632,233 @@ static int ze_symlinked_release_directory(const char *base,
     return failures;
 }
 
+#if defined(__linux__)
+static bool ze_pad_release_directory(const char *store,
+                                     const uint8_t release_id[32])
+{
+    char release_hex[65];
+    zv_hex_enc(release_id, 32, release_hex);
+    size_t made = 0;
+    for (uint64_t candidate = 1;
+         made + 1u < ZV_VERIFIER_RELEASE_SCAN_CAP; candidate++) {
+        char name[65], path[4400];
+        int nn = snprintf(name, sizeof(name), "%064llx",
+                          (unsigned long long)candidate);
+        if (nn != 64 || strcmp(name, release_hex) == 0)
+            continue;
+        int pn = snprintf(path, sizeof(path), "%s/releases/%s", store,
+                          name);
+        if (pn <= 0 || (size_t)pn >= sizeof(path) ||
+            !zv_write_file(path, "", 0, 0600))
+            return false;
+        made++;
+    }
+    return true;
+}
+
+static bool ze_fdinfo_advanced(pid_t pid, long number)
+{
+    char info_path[192], line[128];
+    int in = snprintf(info_path, sizeof(info_path), "/proc/%ld/fdinfo/%ld",
+                      (long)pid, number);
+    if (in <= 0 || (size_t)in >= sizeof(info_path))
+        return false;
+    FILE *info = fopen(info_path, "r");
+    if (!info)
+        return false;
+    unsigned long long position = 0;
+    bool advanced = fgets(line, sizeof(line), info) &&
+                    sscanf(line, "pos:\t%llu", &position) == 1 &&
+                    position > 0;
+    fclose(info);
+    return advanced;
+}
+
+static bool ze_release_descriptor_advanced(
+    pid_t pid, const char *directory, const char *entry_name,
+    const char *releases)
+{
+    char *end = NULL;
+    errno = 0;
+    long number = strtol(entry_name, &end, 10);
+    if (errno != 0 || !end || *end != '\0' || number < 0)
+        return false;
+    char link_path[160], target[4400];
+    int ln = snprintf(link_path, sizeof(link_path), "%s/%s", directory,
+                      entry_name);
+    if (ln <= 0 || (size_t)ln >= sizeof(link_path))
+        return false;
+    ssize_t target_len = readlink(link_path, target, sizeof(target) - 1u);
+    if (target_len <= 0 || (size_t)target_len >= sizeof(target))
+        return false;
+    target[target_len] = '\0';
+    return strcmp(target, releases) == 0 &&
+           ze_fdinfo_advanced(pid, number);
+}
+
+static bool ze_release_fd_advanced(pid_t pid, const char *releases)
+{
+    char directory[128];
+    int dn = snprintf(directory, sizeof(directory), "/proc/%ld/fd",
+                      (long)pid);
+    if (dn <= 0 || (size_t)dn >= sizeof(directory))
+        return false;
+    DIR *descriptors = opendir(directory);
+    if (!descriptors)
+        return false;
+    bool advanced = false;
+    struct dirent *entry;
+    while (!advanced && (entry = readdir(descriptors)) != NULL) {
+        advanced = ze_release_descriptor_advanced(
+            pid, directory, entry->d_name, releases);
+    }
+    closedir(descriptors);
+    return advanced;
+}
+
+static bool ze_stop_process(pid_t pid)
+{
+    if (kill(pid, SIGSTOP) != 0)
+        return false;
+    int status = 0;
+    pid_t waited;
+    do {
+        waited = waitpid(pid, &status, WUNTRACED);
+    } while (waited < 0 && errno == EINTR);
+    return waited == pid && WIFSTOPPED(status);
+}
+
+static bool ze_continue_process(pid_t pid)
+{
+    if (kill(pid, SIGCONT) != 0)
+        return false;
+    int status = 0;
+    pid_t waited;
+    do {
+        waited = waitpid(pid, &status, WCONTINUED);
+    } while (waited < 0 && errno == EINTR);
+    return waited == pid && WIFCONTINUED(status);
+}
+
+static bool ze_stop_at_release_scan(pid_t pid, const char *releases)
+{
+    for (size_t attempt = 0; attempt < 1024u; attempt++) {
+        if (!ze_stop_process(pid))
+            return false;
+        if (ze_release_fd_advanced(pid, releases))
+            return true;
+        if (!ze_continue_process(pid))
+            return false;
+        struct timespec pause = {.tv_nsec = 1000000L};
+        (void)nanosleep(&pause, NULL); /* real-clock: bounded polling of an owned child descriptor; no fake clock observes kernel fd progress */
+    }
+    return false;
+}
+
+struct ze_release_swap_paths {
+    char cwd[4096];
+    char verifier[4400];
+    char releases[4400];
+    char retained[4400];
+    char releases_absolute[4400];
+};
+
+static bool ze_release_swap_paths(const char *store,
+                                  struct ze_release_swap_paths *paths)
+{
+    if (!getcwd(paths->cwd, sizeof(paths->cwd)))
+        return false;
+    int vn = snprintf(paths->verifier, sizeof(paths->verifier), "%s/%s",
+                      paths->cwd, ZV_VERIFIER_BIN);
+    int rn = snprintf(paths->releases, sizeof(paths->releases), "%s/releases",
+                      store);
+    int tn = snprintf(paths->retained, sizeof(paths->retained),
+                      "%s/releases-retained", store);
+    int an = snprintf(paths->releases_absolute,
+                      sizeof(paths->releases_absolute), "%s/%s",
+                      paths->cwd, paths->releases);
+    return vn > 0 && (size_t)vn < sizeof(paths->verifier) && rn > 0 &&
+           (size_t)rn < sizeof(paths->releases) && tn > 0 &&
+           (size_t)tn < sizeof(paths->retained) && an > 0 &&
+           (size_t)an < sizeof(paths->releases_absolute);
+}
+
+static bool ze_start_release_verifier(
+    const char *root_hex, const char *store, const char *key_path,
+    const char *work, const struct ze_release_swap_paths *paths,
+    struct platform_process *process)
+{
+    char store_arg[4400], key_arg[4400], work_arg[4400];
+    if (!ze_verifier_arg(store_arg, sizeof(store_arg), "store", store) ||
+        !ze_verifier_arg(key_arg, sizeof(key_arg), "key", key_path) ||
+        !ze_verifier_arg(work_arg, sizeof(work_arg), "work", work))
+        return false;
+    const char *argv[] = {paths->verifier, root_hex, store_arg, key_arg,
+                          work_arg, NULL};
+    struct platform_process_options options = {
+        .image = paths->verifier, .argv = argv, .cwd = paths->cwd,
+        .env = (const char *const *)environ};
+    return platform_process_start_hidden(process, &options);
+}
+
+static bool ze_release_directory_swap_run(
+    const char *root_hex, const char *store, const char *key_path,
+    const char *work, uint32_t *exit_code)
+{
+    struct ze_release_swap_paths paths;
+    if (!ze_release_swap_paths(store, &paths))
+        return false;
+    struct platform_process process;
+    platform_process_init(&process);
+    bool started = ze_start_release_verifier(
+        root_hex, store, key_path, work, &paths, &process);
+    bool stopped = started && ze_stop_at_release_scan(
+        (pid_t)process.pid, paths.releases_absolute);
+    bool swapped = stopped && rename(paths.releases, paths.retained) == 0 &&
+                   mkdir(paths.releases, 0700) == 0;
+    if (stopped)
+        (void)kill((pid_t)process.pid, SIGCONT);
+    if (started && !swapped) {
+        (void)kill((pid_t)process.pid, SIGKILL);
+        (void)kill(-(pid_t)process.pid, SIGKILL);
+    }
+    bool exited = started && ze_wait_bounded(&process, exit_code);
+    return stopped && swapped && exited;
+}
+
+static int ze_replaced_release_directory(const char *base,
+                                         const char *key_path,
+                                         const char *work)
+{
+    int failures = 0;
+    char store[4400];
+    snprintf(store, sizeof(store), "%s/store_replaced_release_dir", base);
+    uint8_t package_root[32], release_id[32], recipe_root[32];
+    bool fixture = zv_publish_fixture(
+        store,
+        "#include \"add.h\"\nint add(int a, int b) { return a + b; }\n",
+        "#include \"add.h\"\nint main(void) { return add(2, 3) == 5 ? 0 : 1; }\n",
+        package_root, release_id, recipe_root);
+    fixture = fixture && ze_pad_release_directory(store, release_id);
+    ZV_CHECK("e2e: release directory replacement fixture prepared", fixture);
+
+    char root_hex[65];
+    zv_hex_enc(package_root, sizeof(package_root), root_hex);
+    uint32_t exit_code = UINT32_MAX;
+    bool ran = fixture && ze_release_directory_swap_run(
+        root_hex, store, key_path, work, &exit_code);
+    struct vcs_package_attest att;
+    bool admitted = zv_read_only_attestation(store, &att) &&
+                    memcmp(att.release_id, release_id, 32) == 0;
+    ZV_CHECK("e2e: release read stays bound to opened scan directory",
+             ran && exit_code == 0u && admitted);
+    if (!ran || exit_code != 0u || !admitted)
+        printf("  zcode_verify: replaced release dir ran=%d rc=%u "
+               "admitted=%d\n", ran, exit_code, admitted);
+    return failures;
+}
+#endif
+
 static int ze_symlinked_attestation_directory(const char *base,
                                               const char *key_path,
                                               const char *work)
@@ -4950,6 +5182,9 @@ static int t_verifier_e2e(void)
     failures += ze_foreign_owned_key(base, work);
     failures += ze_symlinked_release(base, key_path, work);
     failures += ze_symlinked_release_directory(base, key_path, work);
+#if defined(__linux__)
+    failures += ze_replaced_release_directory(base, key_path, work);
+#endif
     failures += ze_symlinked_attestation_directory(base, key_path, work);
 #if !defined(_WIN32)
     failures += ze_nonprivate_attestation_directory(base, key_path, work);
