@@ -1409,6 +1409,7 @@ static void pv_consider_release_entry(
     struct vcs_package_release rel;
     uint8_t id[VCS_PACKAGE_RELEASE_ID_BYTES];
     if (!pv_load_one_release(directory, name, package_root, &rel, id) ||
+        memcmp(id, scratch, sizeof(id)) != 0 ||
         (*found && memcmp(id, best_id, sizeof(id)) >= 0))
         return;
     memcpy(best_id, id, sizeof(id));

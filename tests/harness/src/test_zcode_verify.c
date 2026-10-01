@@ -64,8 +64,10 @@
  *      (build-fail/compile-error) and a test that calls socket()
  *      (test-fail/test-signal — the seccomp network denial firing). A
  *      release-envelope symlink is refused even when it resolves to the
- *      original valid signed bytes, the releases directory itself cannot be
- *      substituted by a symlink or replaced after its scan handle opens,
+ *      original valid signed bytes, a signed envelope is not admitted under
+ *      a filename other than its computed release ID, and the releases
+ *      directory itself cannot be substituted by a symlink or replaced after
+ *      its scan handle opens,
  *      neither the attestation directory nor a preplaced attestation
  *      temporary-file symlink can redirect signed bytes, an attestation
  *      directory accessible by other accounts cannot authorize publication,
@@ -4598,6 +4600,51 @@ static int ze_symlinked_release(const char *base, const char *key_path,
     return failures;
 }
 
+static int ze_misnamed_release(const char *base, const char *key_path,
+                               const char *work)
+{
+    int failures = 0;
+    char store[4400];
+    snprintf(store, sizeof(store), "%s/store_misnamed_release", base);
+    uint8_t package_root[32] = {0};
+    uint8_t release_id[32] = {0};
+    uint8_t recipe_root[32] = {0};
+    bool fixture = zv_publish_fixture(
+        store,
+        "#include \"add.h\"\nint add(int a, int b) { return a + b; }\n",
+        "#include \"add.h\"\nint main(void) { return add(2, 3) == 5 ? 0 : 1; }\n",
+        package_root, release_id, recipe_root);
+    uint8_t wrong_id[32];
+    memcpy(wrong_id, release_id, sizeof(wrong_id));
+    wrong_id[0] ^= 0x01u;
+    char release_hex[65], wrong_hex[65];
+    zv_hex_enc(release_id, sizeof(release_id), release_hex);
+    zv_hex_enc(wrong_id, sizeof(wrong_id), wrong_hex);
+    char release_path[4400], wrong_path[4400];
+    int rn = snprintf(release_path, sizeof(release_path), "%s/releases/%s",
+                      store, release_hex);
+    int wn = snprintf(wrong_path, sizeof(wrong_path), "%s/releases/%s",
+                      store, wrong_hex);
+    bool renamed = fixture && rn > 0 &&
+                   (size_t)rn < sizeof(release_path) && wn > 0 &&
+                   (size_t)wn < sizeof(wrong_path) &&
+                   rename(release_path, wrong_path) == 0;
+    ZV_CHECK("e2e: misnamed release fixture prepared", renamed);
+
+    char root_hex[65], out[2048];
+    zv_hex_enc(package_root, sizeof(package_root), root_hex);
+    int rc = renamed ? zv_run_verifier(root_hex, store, key_path, work, out,
+                                       sizeof(out)) : -1;
+    struct vcs_package_attest att;
+    bool refused = renamed && rc == 3 &&
+                   !zv_read_only_attestation(store, &att);
+    ZV_CHECK("e2e: release filename must equal the computed release ID",
+             refused);
+    if (renamed && !refused)
+        printf("  zcode_verify: misnamed release rc=%d out=%s\n", rc, out);
+    return failures;
+}
+
 static int ze_symlinked_release_directory(const char *base,
                                           const char *key_path,
                                           const char *work)
@@ -5231,6 +5278,7 @@ static int t_verifier_e2e(void)
 #endif
     failures += ze_foreign_owned_key(base, work);
     failures += ze_symlinked_release(base, key_path, work);
+    failures += ze_misnamed_release(base, key_path, work);
     failures += ze_symlinked_release_directory(base, key_path, work);
 #if defined(__linux__)
     failures += ze_replaced_release_directory(base, key_path, work);
