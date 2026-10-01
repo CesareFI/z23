@@ -8501,7 +8501,7 @@ static bool dp_worker_plan(struct dp_worker *w, const char *const *files,
     }
     const char *admission_reason = "";
     bool admitted = zcl_devloop_plan_add_closure(
-        w->paths->root, files, file_count, &w->plan) &&
+        w->generation, files, file_count, &w->plan) &&
         zcl_devloop_plan_proof_admissible(&w->plan, &admission_reason);
     if (!admitted && admission_reason &&
         (strcmp(admission_reason, "closure-truncated") == 0 ||
@@ -8542,6 +8542,41 @@ static bool dp_worker_plan(struct dp_worker *w, const char *const *files,
     proof_phase_mark(w->phases, "impact_plan_render");
     return true;
 }
+
+#if defined(ZCL_TESTING)
+/* Exercise planning after admission, without the submitting-checkout guards
+ * or publishing proof evidence. The real docs checker lifecycle is retained. */
+bool zcl_dev_proof_test_worker_plan(const char *submit, const char *generation,
+    const char *const *files, size_t count, bool check_docs,
+    char *json, size_t json_cap, char *why, size_t why_len)
+{
+    struct dp_worker *w = zcl_calloc(1, sizeof(*w), "proof_plan_seam");
+    if (!w) {
+        proof_why(why, why_len, "proof_plan_seam_allocation_failed");
+        return false;
+    }
+    struct proof_paths paths = {0};
+    struct dp_docs_fresh_run docs = {0};
+    (void)snprintf(paths.root, sizeof(paths.root), "%s", submit);
+    (void)snprintf(paths.bundle_log, sizeof(paths.bundle_log),
+                   "%s/closure-refresh.log", generation);
+    w->paths = &paths;
+    w->generation = generation;
+    w->docs = &docs;
+    bool ok = !check_docs || dp_docs_fresh_start(&docs, generation, generation,
+        DP_DOCS_FRESH_TIMEOUT_MS, why, why_len);
+    if (ok) ok = dp_worker_plan(w, files, count, why, why_len);
+    ok = dp_worker_docs_verdict(&docs, &paths, ok, why, why_len);
+    if (ok && w->plan_len < json_cap)
+        memcpy(json, w->plan_json, w->plan_len + 1);
+    else if (ok) {
+        proof_why(why, why_len, "proof_plan_seam_output_small");
+        ok = false;
+    }
+    free(w);
+    return ok;
+}
+#endif
 
 /* The source identity this proof is about, sealed so every later step can
  * be checked against the same answer. */
@@ -10214,7 +10249,8 @@ static bool proof_worker_body(const struct proof_paths *paths,
     if (!dp_worker_receipt_identity(&w, why, why_len)) return false;
     if (!dp_worker_build_identity(&w, why, why_len)) return false;
     if (!dp_worker_select(&w, why, why_len)) return false;
-    /* Every step above only read the generation; the dimensions write it. */
+    /* Index writes above are derived files the docs checkers do not read;
+     * the dimensions can change their inputs and must wait for the verdict. */
     if (!dp_docs_fresh_settle(docs, paths, why, why_len)) return false;
     proof_phase_mark(phases, "docs_fresh_join");
     bool cycle_reused =

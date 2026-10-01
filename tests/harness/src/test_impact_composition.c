@@ -8450,6 +8450,212 @@ static bool ic_docs_fresh_fixture(char *generation, size_t len,
     return true;
 }
 
+/* Planning seam deliberately omits the earlier submitting-checkout admission
+ * guards: a missing checkout there remains a legitimate refusal. */
+extern bool zcl_dev_proof_test_worker_plan(const char *, const char *,
+    const char *const *, size_t, bool, char *, size_t, char *, size_t);
+
+static int test_ic_worker_plan_generation(void)
+{
+    int failures = 0;
+    TEST("proof closure: sealed generation owns planning after checkout moves") {
+#if defined(_WIN32)
+        ASSERT(true);
+#else
+        char generation[4096], submit[4096], missing[4352], why[512];
+        static char expected[ZCL_DEVLOOP_PLAN_WIRE_MAX];
+        static char actual[ZCL_DEVLOOP_PLAN_WIRE_MAX];
+        const char *files[] = {"core/modules/net/src/tor_integration.c"};
+        ASSERT(ic_docs_fresh_fixture(generation, sizeof(generation),
+                                     "plan-generation"));
+        ASSERT(ic_write_call_pair(generation));
+        ASSERT(ic_write_depfiles(generation));
+        test_make_tmpdir(submit, sizeof(submit), "impact_composition",
+                         "plan-submit");
+        ASSERT(ic_write_call_pair(submit));
+        ASSERT(ic_write_depfiles(submit));
+        struct zcl_devloop_plan plan;
+        ASSERT(zcl_devloop_plan_files(files, 1, &plan));
+        ASSERT(zcl_devloop_plan_add_closure(generation, files, 1, &plan));
+        const char *reason = "";
+        ASSERT(zcl_devloop_plan_proof_admissible(&plan, &reason));
+        ASSERT(ic_planned(&plan, "download"));
+        ASSERT(zcl_devloop_plan_json_render(&plan, files, 1, expected,
+                                            sizeof(expected)) > 0);
+        /* The submit graph is now valid for different bytes, with no caller. */
+        ASSERT(ic_write(submit, "core/modules/net/src/download.c",
+                        "int dl_top(int x) { return x * 2; }\n"));
+        /* Re-emit depfiles AFTER the rewrite: on macOS an older depfile
+         * rightly refuses instead of exposing the competing valid graph. */
+        ASSERT(ic_write_depfiles(submit));
+        /* Negative control for the pre-fix root choice, without weakening
+         * the production seam: bind both its roots to the submit tree. */
+        why[0] = '\0';
+        ASSERT(zcl_dev_proof_test_worker_plan(submit, submit, files, 1,
+            false, actual, sizeof(actual), why, sizeof(why)));
+        ASSERT(strcmp(actual, expected) != 0);
+        why[0] = '\0';
+        ASSERT(zcl_dev_proof_test_worker_plan(submit, generation, files, 1,
+            true, actual, sizeof(actual), why, sizeof(why)));
+        ASSERT_STR_EQ(actual, expected);
+        ASSERT(snprintf(missing, sizeof(missing), "%s/moved-away", submit)
+               < (int)sizeof(missing));
+        why[0] = '\0';
+        ASSERT(zcl_dev_proof_test_worker_plan(missing, generation, files, 1,
+            true, actual, sizeof(actual), why, sizeof(why)));
+        ASSERT_STR_EQ(actual, expected);
+#endif
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_ic_worker_plan_docs_before_refresh(void)
+{
+    int failures = 0;
+    TEST("proof closure: stale docs refuse before bundle refresh") {
+#if defined(_WIN32)
+        ASSERT(true);
+#else
+        char generation[4096], marker[4352], why[512];
+        static char json[ZCL_DEVLOOP_PLAN_WIRE_MAX];
+        const char *files[] = {"core/modules/net/include/net/clp.h"};
+        ASSERT(ic_docs_fresh_fixture(generation, sizeof(generation),
+                                     "plan-docs-order"));
+        ASSERT(ic_write_call_pair(generation));
+        /* Missing includes require bundle refresh. Its write must remain
+         * forbidden when docs are stale; index writes are permitted. */
+        ASSERT(ic_write(generation, "Makefile",
+            ".PHONY: dev-proof-bundle-prefork\n"
+            "dev-proof-bundle-prefork:\n"
+            "\t@touch refresh-attempted\n"));
+        ASSERT(ic_write(generation,
+            "tools/lint/check_capability_inventory_generated.sh",
+            "#!/bin/sh\necho FAIL >&2\nexit 1\n"));
+        ASSERT(snprintf(marker, sizeof(marker), "%s/refresh-attempted",
+                        generation) < (int)sizeof(marker));
+        why[0] = '\0';
+        ASSERT(!zcl_dev_proof_test_worker_plan(generation, generation, files,
+            1, true, json, sizeof(json), why, sizeof(why)));
+        ASSERT(strstr(why, "proof_generated_docs_stale:") == why);
+        ASSERT(access(marker, F_OK) != 0);
+        /* A complete graph still cannot turn stale docs into success. */
+        ASSERT(ic_write_depfiles(generation));
+        why[0] = '\0';
+        ASSERT(!zcl_dev_proof_test_worker_plan(generation, generation, files,
+            1, true, json, sizeof(json), why, sizeof(why)));
+        ASSERT(strstr(why, "proof_generated_docs_stale:") == why);
+        ASSERT(access(marker, F_OK) != 0);
+#endif
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_ic_worker_plan_graph_refresh_refuses(void)
+{
+    int failures = 0;
+    TEST("proof closure: generation include epochs refresh or refuse") {
+#if defined(_WIN32)
+        ASSERT(true);
+#else
+        char generation[4096], submit[4096], marker[4352], why[512];
+        static char json[ZCL_DEVLOOP_PLAN_WIRE_MAX];
+        static const char epoch[] =
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        const char *files[] = {"core/modules/net/include/net/clp.h"};
+        test_make_tmpdir(submit, sizeof(submit), "impact_composition",
+                         "plan-refresh-submit");
+        ASSERT(ic_write_call_pair(submit));
+        ASSERT(ic_write_depfiles(submit));
+        /* A valid submitting graph must not mask either broken generation. */
+        for (int mode = 0; mode < 4; mode++) {
+            static const char *const names[] = {
+                "plan-refresh-missing", "plan-refresh-dangling",
+                "plan-refresh-old-dep", "plan-refresh-no-epoch"
+            };
+            ASSERT(ic_docs_fresh_fixture(generation, sizeof(generation),
+                                         names[mode]));
+            ASSERT(ic_write_call_pair(generation));
+            if (mode != 0) {
+                ASSERT(ic_write_depfiles(generation));
+            }
+            if (mode == 1) {
+                ASSERT(ic_write(generation, "build/obj/download.d",
+                    "build/obj/download.o: core/modules/net/src/download.c "
+                    "core/modules/net/include/net/clp.h missing.h\n"));
+            }
+            if (mode == 2) {
+                /* Explicit whole-second separation avoids depending on
+                 * filesystem timestamp granularity or sleeping on macOS. */
+                struct stat source;
+                ASSERT(snprintf(marker, sizeof(marker),
+                    "%s/core/modules/net/src/download.c", generation)
+                    < (int)sizeof(marker));
+                ASSERT(stat(marker, &source) == 0);
+                struct utimbuf old = {source.st_mtime - 2, source.st_mtime - 2};
+                ASSERT(snprintf(marker, sizeof(marker),
+                    "%s/build/obj/download.d", generation)
+                    < (int)sizeof(marker));
+                ASSERT(utime(marker, &old) == 0);
+            }
+            if (mode == 3) {
+                char rel[160];
+                ASSERT(snprintf(rel, sizeof(rel), "build/obj/epochs/%s/fixture",
+                                epoch) < (int)sizeof(rel));
+                ASSERT(ic_write(generation, rel, ""));
+                /* Valid loose depfiles cannot stand in for the missing
+                 * current-epoch pointer once this root is epoch-managed. */
+            }
+            /* Local fixture Makefile observes refresh and deliberately
+             * refuses. No real bundle or evidence is built/published. */
+            ASSERT(ic_write(generation, "Makefile",
+                ".PHONY: dev-proof-bundle-prefork\n"
+                "dev-proof-bundle-prefork:\n"
+                "\t@touch refresh-attempted\n\t@exit 1\n"));
+            why[0] = '\0';
+            ASSERT(!zcl_dev_proof_test_worker_plan(submit, generation, files,
+                1, true, json, sizeof(json), why, sizeof(why)));
+            ASSERT_STR_EQ(why, "proof_closure_refresh_build_failed");
+            ASSERT(snprintf(marker, sizeof(marker), "%s/refresh-attempted",
+                            generation) < (int)sizeof(marker));
+            ASSERT(access(marker, F_OK) == 0);
+            ASSERT(unlink(marker) == 0);
+            /* A successful refresh command is not graph evidence. A no-op
+             * leaves every invalid input above invalid and must refuse. */
+            ASSERT(ic_write(generation, "Makefile",
+                ".PHONY: dev-proof-bundle-prefork\n"
+                "dev-proof-bundle-prefork:\n\t@touch refresh-attempted\n"));
+            why[0] = '\0';
+            ASSERT(!zcl_dev_proof_test_worker_plan(submit, generation, files,
+                1, true, json, sizeof(json), why, sizeof(why)));
+            ASSERT(strstr(why, "no-include-graph") == why ||
+                   strstr(why, "closure-truncated") == why);
+            ASSERT(access(marker, F_OK) == 0);
+            if (mode == 3) {
+                char makefile[512];
+                ASSERT(unlink(marker) == 0);
+                ASSERT(snprintf(makefile, sizeof(makefile),
+                    ".PHONY: dev-proof-bundle-prefork\n"
+                    "dev-proof-bundle-prefork:\n"
+                    "\t@touch refresh-attempted\n"
+                    "\t@cp build/obj/*.d build/obj/epochs/%s/\n"
+                    "\t@printf '%%s\\n' '%s' > build/obj/.current-epoch\n",
+                    epoch, epoch) < (int)sizeof(makefile));
+                ASSERT(ic_write(generation, "Makefile", makefile));
+                why[0] = '\0';
+                ASSERT(zcl_dev_proof_test_worker_plan(submit, generation,
+                    files, 1, true, json, sizeof(json), why, sizeof(why)));
+                ASSERT(access(marker, F_OK) == 0);
+                ASSERT(strstr(json, "\"proof_admissible\":true") != NULL);
+            }
+        }
+#endif
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_ic_generation_docs_fresh_overlapped(void)
 {
     int failures = 0;
@@ -10561,6 +10767,12 @@ int test_impact_composition(void)
 #if !defined(_WIN32)
     failures += test_ic_generation_docs_fresh_refuses_stale();
     failures += test_ic_generation_docs_fresh_overlapped();
+    int64_t closure_fixture_started_us = platform_time_monotonic_us();
+    failures += test_ic_worker_plan_generation();
+    failures += test_ic_worker_plan_docs_before_refresh();
+    failures += test_ic_worker_plan_graph_refresh_refuses();
+    printf("closure_generation_fixtures wall_us=%lld\n",
+           (long long)(platform_time_monotonic_us() - closure_fixture_started_us));
     failures += test_ic_generation_docs_fresh_refuses_missing_tools();
     failures += test_ic_generation_dependencies_survive_vendor_cleanup();
     failures += test_ic_generation_refuses_forged_verdict();
