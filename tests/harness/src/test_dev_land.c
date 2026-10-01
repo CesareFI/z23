@@ -374,6 +374,11 @@ static bool dlx_write(const char *path, const char *text)
     return fclose(f) == 0 && wrote;
 }
 
+static bool dlx_path_absent(const char *path)
+{
+    return path && access(path, F_OK) != 0 && errno == ENOENT;
+}
+
 #if !defined(_WIN32)
 /* mkdir -p, for planting a fake dependency file several directories deep
  * (vendor/tor/src/ext/ed25519/donna/...) under a throwaway rig clone. */
@@ -2344,7 +2349,7 @@ static int test_dev_land_outcome_sync_recovery(void)
         ASSERT(dlx_slurp(opath, outcome, sizeof(outcome), &outcome_len));
         ASSERT(outcome_len > 0);
 
-        /* The append may have reached the page cache even though its sync
+        /* The complete replacement was renamed before its parent sync
          * failed. A replacement process must sync that exact existing row
          * before removing the queue entry, with no remote access required. */
         (void)snprintf(offline, sizeof(offline), "%s.offline", rig.bare);
@@ -2444,11 +2449,11 @@ static bool dlx_mail_outcome_found(const char *tip);
 static int test_dev_land_terminal_replay(void)
 {
     int failures = 0;
-    TEST("land: failed outcome append keeps the pushed row reclaimable") {
+    TEST("land: failed outcome staging keeps the pushed row reclaimable") {
         struct dlx_rig rig;
         struct dlx_call c;
         char landdir[1200], qpath[1400], maildir[1400];
-        char opath[1400], queue[8192], outcome[8192];
+        char opath[1400], otmp[1400], queue[8192], outcome[8192];
         char remote[64];
         size_t queue_len, outcome_len;
         dlx_isolate("outcome_append_failure");
@@ -2467,6 +2472,8 @@ static int test_dev_land_terminal_replay(void)
                (int)sizeof(qpath));
         ASSERT(snprintf(opath, sizeof(opath), "%s/outcomes.jsonl", landdir) <
                (int)sizeof(opath));
+        ASSERT(snprintf(otmp, sizeof(otmp), "%s/outcomes.jsonl.tmp", landdir) <
+               (int)sizeof(otmp));
         ASSERT(snprintf(maildir, sizeof(maildir), "%s/../mail", landdir) <
                (int)sizeof(maildir));
         setenv("ZCL_LAND_PROOF_STUB", "pass", 1);
@@ -2481,6 +2488,8 @@ static int test_dev_land_terminal_replay(void)
         ASSERT_STR_EQ(remote, rig.tip);
         ASSERT(dlx_slurp(qpath, queue, sizeof(queue), &queue_len));
         ASSERT(queue_len > 0);
+        ASSERT(dlx_path_absent(opath));
+        ASSERT(dlx_path_absent(otmp));
         unsetenv("ZCL_LAND_TEST_REFUSE_OUTCOME_APPEND");
         unsetenv("ZCL_DEVLOOP_TEST_PROCESS");
         ASSERT(dlx_write(maildir, "not a mail directory"));
@@ -2510,7 +2519,7 @@ static int test_dev_land_terminal_replay(void)
         PASS();
     }
 
-    TEST("land: death after outcome append replays once without another push") {
+    TEST("land: death after outcome publication replays once without another push") {
         struct dlx_rig rig;
         struct dlx_call c;
         char landdir[1200], opath[1400], qpath[1400], before[8192];

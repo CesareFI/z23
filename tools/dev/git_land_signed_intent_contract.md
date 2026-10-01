@@ -96,10 +96,12 @@ client push output or a local tracking ref.
    after fetched ref, source/dependency closure and ancestry agree under
    receiver policy. `dl_already_landed` cannot be the terminal authority for
    this path: require the persisted verified receipt before writing LANDED.
-   Flush the terminal outcome file and its parent directory before removing
-   the live queue row. If an append's sync result is ambiguous, a replacement
-   worker must flush and reuse that exact outcome instead of appending a
-   duplicate or contacting the publication target again.
+   Stage the complete bounded terminal history, flush it, atomically replace
+   the outcome file, and flush its parent directory before removing the live
+   queue row. A pre-rename failure keeps the previous complete history and
+   removes the staging file. If the post-rename parent sync is ambiguous, a
+   replacement worker must flush and reuse that exact outcome instead of
+   publishing a duplicate or contacting the publication target again.
    Submission rewrites the bounded queue through a flushed staging file,
    atomic rename and parent-directory barrier. A pre-rename failure leaves
    the prior complete queue. An ambiguous post-rename sync is retried as the

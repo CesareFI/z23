@@ -31,7 +31,8 @@
  *
  * STATE. <platform_state_root>/land (0700):
  *   queue.jsonl     one JSON object per line; the live request rows.
- *   outcomes.jsonl  one appended row per terminal outcome, newest last.
+ *   outcomes.jsonl  one row per terminal outcome, newest last; the complete
+ *                   bounded history is atomically replaced under queue.lock.
  *   queue.lock      the short row-file lock (seq assignment, rewrite).
  *   step.lock       the queue's own step lock: exclusive, NON-BLOCKING,
  *                   taken before step touches anything and held across the
@@ -1493,20 +1494,92 @@ static bool dl_outbox(const struct dl_dirs *d, const struct dl_row *r,
 
 /* ── outcomes ──────────────────────────────────────────────────────────── */
 
-/* Encode and append in one call so the encoded length never has to live
- * past a single, self-contained function: dl_record_outcome is a common
- * inline target (dl_cancel calls it too), and a `size_t len` whose address
- * is taken in the caller and used after dl_encode_row returns is exactly
- * the shape GCC's -Wdangling-pointer flags once two inlined copies of that
- * caller share the analysis (false positive here — len is never read past
- * its owning statement). Keeping both the address-of and the use inside
- * one small function removes the ambiguity instead of arguing with it. */
-static bool dl_write_row(const char *path, const struct dl_row *r)
+static bool dl_outcome_write_failure_injected(void)
 {
-    char line[DL_LINE_CAP];
-    size_t len = 0;
-    return dl_encode_row(r, line, sizeof(line), &len) &&
-           dl_append_row(path, line, len);
+#if defined(ZCL_DEV_BUILD) || defined(ZCL_TESTING)
+    return getenv("ZCL_LAND_TEST_REFUSE_OUTCOME_APPEND") &&
+           getenv("ZCL_DEVLOOP_TEST_PROCESS");
+#else
+    return false;
+#endif
+}
+
+static bool dl_outcome_history_read(const char *path, char **data_out,
+                                    size_t *len_out)
+{
+    int read_errno;
+    if (!path || !data_out || !len_out)
+        return false;
+    *len_out = 0;
+    *data_out = (char *)zcl_malloc(DL_FILE_CAP,
+                                   "dev.land.outcome.write");
+    if (!*data_out)
+        return false;
+    if (dl_read_file(path, *data_out, DL_FILE_CAP, len_out))
+        return true;
+    read_errno = errno;
+    if (read_errno == ENOENT)
+        return true;
+    free(*data_out);
+    *data_out = NULL;
+    return false;
+}
+
+static bool dl_outcome_stage_write(const char *tmp, const char *prior,
+                                   size_t prior_len, const char *line,
+                                   size_t line_len)
+{
+    FILE *f;
+    bool ok;
+    if (!tmp || (!prior && prior_len > 0) || !line || line_len == 0)
+        return false;
+    f = fopen(tmp, "wb");
+    if (!f)
+        return false;
+    ok = (prior_len == 0 || fwrite(prior, 1, prior_len, f) == prior_len) &&
+         fwrite(line, 1, line_len, f) == line_len &&
+         !dl_outcome_write_failure_injected() && dl_queue_file_flush(f);
+    if (fclose(f) != 0)
+        ok = false;
+    if (!ok)
+        (void)unlink(tmp);
+    return ok;
+}
+
+/* Outcome writers hold queue.lock, so publish the complete bounded history
+ * as one flushed replacement. A process death exposes either the old file or
+ * the complete new file, never a torn terminal row. */
+static bool dl_write_outcome_atomic(const struct dl_dirs *d, const char *path,
+                                    const struct dl_row *r)
+{
+    char tmp[4096 + 32], line[DL_LINE_CAP];
+    char *prior = NULL;
+    size_t prior_len = 0, line_len = 0;
+    if (!d || !path || !r)
+        return false;
+    if (snprintf(tmp, sizeof(tmp), "%s/outcomes.jsonl.tmp", d->land) >=
+        (int)sizeof(tmp))
+        return false;
+    if (!dl_encode_row(r, line, sizeof(line), &line_len))
+        return false;
+    if (!dl_outcome_history_read(path, &prior, &prior_len))
+        return false;
+    if (line_len >= DL_FILE_CAP || prior_len > DL_FILE_CAP - line_len - 1) {
+        free(prior);
+        return false;
+    }
+    if (!dl_outcome_stage_write(tmp, prior, prior_len, line, line_len)) {
+        free(prior);
+        return false;
+    }
+    free(prior);
+    if (rename(tmp, path) != 0) {
+        (void)unlink(tmp);
+        return false;
+    }
+    if (dl_outcome_sync_failure_injected())
+        return false;
+    return dl_queue_parent_flush(d->land);
 }
 
 static bool dl_outcome_request_matches(const struct dl_row *row,
@@ -1544,9 +1617,10 @@ static bool dl_scan_outcome_line(const char *line, const struct dl_row *want,
     return true;
 }
 
-/* An outcome may have been appended before a crash left its queue row in
- * place. Match the request identity during replay and find the sequence
- * high-water mark for new submissions. Malformed history refuses repair. */
+/* An outcome replacement may have completed before a crash left its queue
+ * row in place. Match the request identity during replay and find the
+ * sequence high-water mark for new submissions. Malformed history refuses
+ * repair. */
 static bool dl_scan_outcomes(const struct dl_dirs *d, const struct dl_row *want,
                              struct dl_row *found, bool *present,
                              long long *high_water)
@@ -1595,18 +1669,14 @@ static bool dl_record_outcome(const struct dl_dirs *d, struct dl_row *r)
         snprintf(path, sizeof(path), "%s/outcomes.jsonl", d->land) >=
             (int)sizeof(path))
         return false;
-    if (present)
+    if (present) {
         *r = prior;
-    else if (
-#if defined(ZCL_DEV_BUILD) || defined(ZCL_TESTING)
-        (getenv("ZCL_LAND_TEST_REFUSE_OUTCOME_APPEND") &&
-         getenv("ZCL_DEVLOOP_TEST_PROCESS")) ||
-#endif
-        !dl_write_row(path, r))
+        if (!dl_state_file_flush(path, d->land,
+                                 dl_outcome_sync_failure_injected()))
+            return false;
+    } else if (!dl_write_outcome_atomic(d, path, r)) {
         return false;
-    if (!dl_state_file_flush(path, d->land,
-                             dl_outcome_sync_failure_injected()))
-        return false;
+    }
     return dl_outbox(d, r, "outcome");
 }
 
@@ -3821,10 +3891,11 @@ static bool dl_commit_row(const struct dl_dirs *d, struct dl_row *row,
         dl_unlock(lock);
         return false;
     }
-    /* The terminal observation is the checkpoint. If append or mail
+    /* The terminal observation is the checkpoint. If publication or mail
      * delivery fails, keep the live row so another step can retry. If the
-     * process dies after append but before this rewrite, replay recognizes
-     * the exact outcome and removes the row without running work again. */
+     * process dies after the atomic outcome replacement but before this
+     * rewrite, replay recognizes the exact outcome and removes the row
+     * without running work again. */
     ok = !terminal || dl_terminal_checkpoint(d, row);
     if (ok)
         ok = dl_rewrite_rows(d->land, qpath, rows, kept, false, NULL);

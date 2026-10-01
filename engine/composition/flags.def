@@ -1347,7 +1347,7 @@ Z23_FLAG("ZCL_LAND_TEST_DIE_AFTER_PROOF", "env_test", "-", "-",
 Z23_FLAG("ZCL_LAND_TEST_FILE_SYNC_FAIL", "env_test", "-", "-",
           "test-only failed queue-file flush before the landing queue rename; first use tools/command/native_dev_land.c:auto")
 Z23_FLAG("ZCL_LAND_TEST_OUTCOME_SYNC_FAIL", "env_test", "-", "-",
-          "test-only failed terminal-outcome flush after append; first use tools/command/native_dev_land.c:auto")
+          "test-only failed terminal-history parent sync after replacement rename; first use tools/command/native_dev_land.c:auto")
 Z23_FLAG("ZCL_LAND_TEST_PICK_DELAY_MS", "env_runtime", "-", "-",
           "undocumented; first use tools/command/native_dev_land.c:auto")
 Z23_FLAG("ZCL_LAND_TEST_PRECHECK_BUDGET_MS", "env_test", "-", "-",
@@ -1357,7 +1357,7 @@ Z23_FLAG("ZCL_LAND_TEST_PRECHECK_TOOL_FAIL", "env_test", "-", "-",
 Z23_FLAG("ZCL_LAND_TEST_QUEUE_WRITE_FAIL", "env_test", "-", "-",
           "test-only landing queue rewrite refusal; first use tools/command/native_dev_land.c:auto")
 Z23_FLAG("ZCL_LAND_TEST_REFUSE_OUTCOME_APPEND", "env_test", "-", "-",
-          "test-only terminal append refusal; first use tools/command/native_dev_land.c:auto")
+          "test-only terminal-history staging refusal; first use tools/command/native_dev_land.c:auto")
 Z23_FLAG("ZCL_LAND_TEST_SUBMIT_SYNC_FAIL", "env_test", "-", "-",
           "test-only failed landing submission flush after append; first use tools/command/native_dev_land.c:auto")
 Z23_FLAG("ZCL_LAND_TIMING", "env_build", "-", "-",

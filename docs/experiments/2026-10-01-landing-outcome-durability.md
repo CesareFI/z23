@@ -10,26 +10,33 @@ shard, and object-store directories. Terminal `outcomes.jsonl` records did not
 have the equivalent barrier: they were appended and closed before the live
 queue row could be removed.
 
-The landing adapter now flushes the exact regular outcome file and its parent
-directory before treating a terminal record as the recovery checkpoint. An
-ambiguous sync after a complete append keeps the live row. A replacement
-worker recognizes the matching outcome, flushes that existing record, and
-then removes the queue row; it does not append a duplicate or contact the
-publication target again. Ordinary diagnostic and mail appends remain outside
-this checkpoint path.
+The landing adapter now encodes the complete bounded terminal history into a
+staging file while holding the queue lock, flushes it, atomically replaces the
+regular outcome file, and flushes the parent directory before treating a
+terminal record as the recovery checkpoint. A failure before rename leaves
+the previous complete history in place, removes the staging file, and keeps
+the live row. An ambiguous parent sync after the complete replacement was
+renamed also keeps the live row. A replacement worker recognizes the matching
+outcome, flushes that existing record, and then removes the queue row; it does
+not publish a duplicate or contact the publication target again. Ordinary
+diagnostic and mail appends remain outside this checkpoint path.
 
-The registered regression injected the sync failure after the full terminal
-append. It observed the real remote fast-forward, the retained queue row, and
-one outcome record. It then made the disposable bare remote unavailable. The
-next landing step completed from the local terminal record, left its bytes
-unchanged, removed the queue row, and reported an empty queue on the following
-step. All repositories and state used by the test were fixtures under the
-checkout's ignored `test-tmp`; no operator datadir or wallet was opened.
+One registered regression injects a staging refusal after the complete new
+history is written but before its flush and proves that neither
+`outcomes.jsonl` nor its staging file is published, while the remotely moved
+row remains reclaimable. Another injects the failure after the complete
+replacement is renamed but before its parent sync. It observes the real remote
+fast-forward, the retained queue row, and one complete outcome record. It then
+makes the disposable bare remote unavailable. The next landing step completes
+from the local terminal record, leaves its bytes unchanged, removes the queue
+row, and reports an empty queue on the following step. All repositories and
+state used by the tests are fixtures under the checkout's ignored `test-tmp`;
+no operator datadir or wallet is opened.
 
 The exact test-fast runner
-`2d3412068a758670202ee166a46385f1efe2441f5594eac887b7e60f1500bf27`
+`2d8196a94fa0dea37f541e16318eac46e75c519c65bf6a3a56065017ce7577bb`
 ran `test_dev_land` cold: 1 registered group ran, 0 failed, 0 skipped, and
-1,232 were gated by the exact selector in 131.5 seconds. `lint-fast` passed
+1,232 were gated by the exact selector in 130.8 seconds. `lint-fast` passed
 all 33 gates. Test registration reported 1,068 dispatched entry points and no
 canonical-registry drift; the no-shellout, C23-only, unattended-publication,
 and silent-error ratchets passed. The generated capability inventory records
