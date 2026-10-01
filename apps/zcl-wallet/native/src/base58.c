@@ -116,19 +116,24 @@ static zcl_status decode_checked(const uint8_t *text, size_t length,
                                  uint8_t *output, size_t capacity, size_t *written)
 {
     uint8_t magnitude[CHECKED_MAX] = {0};
-    size_t zeroes = 0;
+    size_t zeroes = 0, used = 0;
     while (zeroes < length && text[zeroes] == (uint8_t)'1')
         ++zeroes;
     for (size_t index = 0; index < length; ++index) {
         int digit = base58_digit(text[index]);
         if (digit < 0)
             return ZCL_INVALID_ENCODING;
-        zcl_status status = multiply_by_58(magnitude, sizeof(magnitude), (uint32_t)digit);
+        /* Multiplication by 58 needs at most one additional base-256 byte.
+         * The untouched prefix stays zero; retain the full-size overflow check. */
+        const size_t span = used < sizeof(magnitude) ? used + 1 : used;
+        const size_t start = sizeof(magnitude) - span;
+        zcl_status status = multiply_by_58(magnitude + start, span, (uint32_t)digit);
         if (status != ZCL_OK)
             return status;
+        used = span - leading_zeroes(magnitude + start, span);
     }
-    size_t leading = leading_zeroes(magnitude, sizeof(magnitude));
-    size_t significant = sizeof(magnitude) - leading;
+    size_t leading = sizeof(magnitude) - used;
+    size_t significant = used;
     if (zeroes > CHECKED_MAX - significant)
         return ZCL_OUT_OF_RANGE;
     if (zeroes + significant > capacity)

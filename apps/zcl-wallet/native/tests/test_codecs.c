@@ -82,6 +82,35 @@ static bool reject_bad_arguments_and_capacity(void)
     return true;
 }
 
+static bool decode_refuses_unchanged(const uint8_t *text, size_t length, zcl_status expected)
+{
+    uint8_t guarded[130];
+    memset(guarded, 0xa5, sizeof(guarded));
+    size_t written = SIZE_MAX;
+    CHECK(zcl_base58check_decode(text, length, guarded + 1, 128, &written) == expected);
+    CHECK(written == SIZE_MAX);
+    for (size_t i = 0; i < sizeof(guarded); ++i) CHECK(guarded[i] == 0xa5);
+    return true;
+}
+
+static bool numeric_refusal_order(void)
+{
+    uint8_t text[184];
+    memset(text, 'z', sizeof(text));
+    CHECK(decode_refuses_unchanged(text, sizeof(text), ZCL_OUT_OF_RANGE));
+    /* Numeric overflow precedes a later invalid character. */
+    text[sizeof(text) - 1] = '0';
+    CHECK(decode_refuses_unchanged(text, sizeof(text), ZCL_OUT_OF_RANGE));
+    text[0] = '0';
+    CHECK(decode_refuses_unchanged(text, sizeof(text), ZCL_INVALID_ENCODING));
+    memset(text, '1', sizeof(text));
+    CHECK(decode_refuses_unchanged(text, sizeof(text), ZCL_OUT_OF_RANGE));
+    /* Leading-zero count overflow is checked after digit validation. */
+    text[sizeof(text) - 1] = '0';
+    CHECK(decode_refuses_unchanged(text, sizeof(text), ZCL_INVALID_ENCODING));
+    return true;
+}
+
 static bool check_zero_prefix(size_t size, size_t zeroes, uint8_t suffix)
 {
     uint8_t payload[128] = {0}, original[128], text[186], recovered[128];
@@ -140,7 +169,8 @@ static bool address_refusals_and_scripts(void)
 int main(void)
 {
     if (!provider_vectors() || !public_reference_vectors() || !all_lengths_roundtrip() ||
-        !reject_bad_arguments_and_capacity() || !address_refusals_and_scripts() || !all_zero_prefixes())
+        !reject_bad_arguments_and_capacity() || !address_refusals_and_scripts() ||
+        !numeric_refusal_order() || !all_zero_prefixes())
         return 1;
-    return puts("wallet-core: 6 codec test groups passed") == EOF ? 1 : 0;
+    return puts("wallet-core: 7 codec test groups passed") == EOF ? 1 : 0;
 }
