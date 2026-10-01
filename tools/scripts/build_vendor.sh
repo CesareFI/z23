@@ -328,8 +328,23 @@ acquire_vendor_lock() {
         */*) [[ ! -f "$REPO_ROOT/${host_argv[0]}" ]] ||
             host_argv[0]="$REPO_ROOT/${host_argv[0]}" ;;
     esac
+    # compiler-id fingerprints a C driver and a C++ driver. The helper is C
+    # only, so the C driver stood in for both -- which refuses outright on a
+    # host whose C driver has no C++ front end installed (cc -> gcc-N with
+    # g++-N absent): the C++ probes cannot execute cc1plus and the identity
+    # is reported as unobservable. Keep the C driver in both seats wherever
+    # it can answer, so every existing helper key is unchanged, and fall back
+    # to the host's c++ only where it cannot. HOSTCXX names one explicitly.
+    local host_cxx="${HOSTCXX:-$host_cc}"
+    [[ "$host_cxx" =~ ^[A-Za-z0-9_./:+,=%-]+([[:space:]]+[A-Za-z0-9_./:+,=%-]+)*$ ]] ||
+        die "vendor lock HOSTCXX contains unsupported shell syntax"
+    if [[ -z "${HOSTCXX:-}" ]] &&
+       ! "${host_argv[@]}" -E -x c++ - </dev/null >/dev/null 2>&1 &&
+       command -v c++ >/dev/null 2>&1; then
+        host_cxx=c++
+    fi
     compiler_key="$(bash "$REPO_ROOT/tools/dev/build-epoch-key.sh" \
-        compiler-id "$host_cc" "$host_cc" "$REPO_ROOT")" ||
+        compiler-id "$host_cc" "$host_cxx" "$REPO_ROOT")" ||
         die "vendor lock compiler identity failed"
     zcl_is_sha256 "$compiler_key" || die "vendor lock compiler identity invalid"
     helper_source="$(vendor_lock_source_hash "$REPO_ROOT/tools/vendor_lock.c")" || die "vendor lock helper hash failed"
