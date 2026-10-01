@@ -136,6 +136,7 @@ static void dlx_isolate(const char *tag)
     unsetenv("ZCL_LAND_TEST_QUEUE_WRITE_FAIL");
     unsetenv("ZCL_LAND_TEST_DIE_AFTER_OUTCOME");
     unsetenv("ZCL_LAND_TEST_DIE_AFTER_PROOF");
+    unsetenv("ZCL_LAND_TEST_DIE_AFTER_RECEIPT");
     unsetenv("ZCL_LAND_TEST_REFUSE_OUTCOME_APPEND");
     unsetenv("ZCL_LAND_TEST_SUBMIT_SYNC_FAIL");
     unsetenv("ZCL_LAND_TEST_PRECHECK_TOOL_FAIL");
@@ -183,6 +184,7 @@ static void dlx_restore(void)
     unsetenv("ZCL_LAND_TEST_QUEUE_WRITE_FAIL");
     unsetenv("ZCL_LAND_TEST_DIE_AFTER_OUTCOME");
     unsetenv("ZCL_LAND_TEST_DIE_AFTER_PROOF");
+    unsetenv("ZCL_LAND_TEST_DIE_AFTER_RECEIPT");
     unsetenv("ZCL_LAND_TEST_REFUSE_OUTCOME_APPEND");
     unsetenv("ZCL_LAND_TEST_SUBMIT_SYNC_FAIL");
     unsetenv("ZCL_LAND_TEST_PRECHECK_TOOL_FAIL");
@@ -7037,6 +7039,135 @@ _test_next:;
     return failures;
 }
 
+static bool dlx_receipt_store_crash(void)
+{
+    int child_status = 0;
+    pid_t child = fork();
+    if (child < 0)
+        return false;
+    if (child == 0) {
+        struct dlx_call c;
+        (void)setenv("ZCL_LAND_TEST_DIE_AFTER_RECEIPT", "1", 1);
+        (void)setenv("ZCL_DEVLOOP_TEST_PROCESS", "1", 1);
+        dlx_begin(&c, "step");
+        (void)dlx_run(&c);
+        _exit(90);
+    }
+    return waitpid(child, &child_status, 0) == child &&
+        WIFEXITED(child_status) && WEXITSTATUS(child_status) == 83;
+}
+
+static bool dlx_receipt_store_replay(void)
+{
+    struct dlx_call c;
+    dlx_begin(&c, "step");
+    bool ok = dlx_run(&c) && dlx_ok(&c) &&
+        strcmp(dlx_str(&c, "state"), "landed") == 0 &&
+        strlen(dlx_str(&c, "remote_signature")) == 128;
+    dlx_end(&c);
+    return ok;
+}
+
+static int test_dev_land_receipt_store_recovery(void)
+{
+    int failures = 0;
+#if !defined(_WIN32)
+    TEST("land: death after durable remote receipt recovers without a second observation") {
+        struct dlx_rig rig;
+        struct dlx_call c;
+        char base[64], remote[64], land[1200], receipt[1400];
+        char offline[700], update[128], queue[8192];
+        size_t queue_len = 0;
+        dlx_isolate("receipt_store_recovery");
+        ASSERT(dlx_attach_proven_pair(&rig, "receipt_store_recovery", base));
+        dlx_begin(&c, "attach");
+        (void)json_push_kv_int(&c.input, "seq", 1);
+        ASSERT(dlx_run(&c) && dlx_ok(&c));
+        dlx_end(&c);
+        ASSERT(snprintf(update, sizeof(update), "%s:refs/heads/main",
+                        rig.tip) < (int)sizeof(update));
+        const char *publish[] = { "fetch", "--quiet", rig.clone, update,
+                                  NULL };
+        ASSERT(dlx_git(rig.bare, publish) == 0);
+        ASSERT(dlx_receipt_store_crash());
+        ASSERT(dlx_origin_main(&rig, remote));
+        ASSERT_STR_EQ(remote, rig.tip);
+        dlx_landdir(land, sizeof(land));
+        ASSERT(snprintf(receipt, sizeof(receipt),
+                        "%s/remote-receipt.1.%s.json", land, rig.tip) <
+               (int)sizeof(receipt));
+        ASSERT(dlx_file_exists(receipt));
+        ASSERT(dlx_queue_bytes(queue, sizeof(queue), &queue_len));
+        ASSERT(strstr(queue, "\"remote_signature\":\"\"") != NULL);
+
+        /* Recovery must consume the durable signed object before any fresh
+         * fetch. Removing the disposable target makes another observation
+         * impossible and also proves no second push can occur. */
+        ASSERT(snprintf(offline, sizeof(offline), "%s.offline", rig.bare) <
+               (int)sizeof(offline));
+        ASSERT(rename(rig.bare, offline) == 0);
+        bool recovered = dlx_receipt_store_replay();
+        ASSERT(rename(offline, rig.bare) == 0);
+        ASSERT(recovered);
+        dlx_restore();
+        PASS();
+    }
+    TEST("land: ambiguous remote receipt directory sync recovers offline") {
+        struct dlx_rig rig;
+        struct dlx_call c;
+        char base[64], remote[64], land[1200], receipt[1400];
+        char offline[700], update[128], queue[8192];
+        size_t queue_len = 0;
+        dlx_isolate("receipt_store_sync_recovery");
+        ASSERT(dlx_attach_proven_pair(&rig, "receipt_store_sync_recovery",
+                                      base));
+        dlx_begin(&c, "attach");
+        (void)json_push_kv_int(&c.input, "seq", 1);
+        ASSERT(dlx_run(&c) && dlx_ok(&c));
+        dlx_end(&c);
+        ASSERT(snprintf(update, sizeof(update), "%s:refs/heads/main",
+                        rig.tip) < (int)sizeof(update));
+        const char *publish[] = { "fetch", "--quiet", rig.clone, update,
+                                  NULL };
+        ASSERT(dlx_git(rig.bare, publish) == 0);
+        setenv("ZCL_LAND_TEST_DIR_SYNC_FAIL", "1", 1);
+        dlx_begin(&c, "step");
+        ASSERT(dlx_run(&c));
+        ASSERT(c.reply.status == ZCL_COMMAND_STATUS_BLOCKED);
+        ASSERT(c.reply.error.retryable);
+        ASSERT_STR_EQ(dlx_err_code(&c), "REMOTE_RECEIPT_UNAVAILABLE");
+        dlx_end(&c);
+        ASSERT(dlx_origin_main(&rig, remote));
+        ASSERT_STR_EQ(remote, rig.tip);
+        dlx_landdir(land, sizeof(land));
+        ASSERT(snprintf(receipt, sizeof(receipt),
+                        "%s/remote-receipt.1.%s.json", land, rig.tip) <
+               (int)sizeof(receipt));
+        ASSERT(dlx_file_exists(receipt));
+        ASSERT(dlx_queue_bytes(queue, sizeof(queue), &queue_len));
+        ASSERT(strstr(queue, "\"remote_signature\":\"\"") != NULL);
+
+        /* The rename completed before the failed directory flush. Retry
+         * must flush and consume those exact verified bytes locally. */
+        ASSERT(snprintf(offline, sizeof(offline), "%s.offline", rig.bare) <
+               (int)sizeof(offline));
+        ASSERT(rename(rig.bare, offline) == 0);
+        unsetenv("ZCL_LAND_TEST_DIR_SYNC_FAIL");
+        bool recovered = dlx_receipt_store_replay();
+        ASSERT(rename(offline, rig.bare) == 0);
+        ASSERT(recovered);
+        dlx_restore();
+        PASS();
+    }
+_test_next:;
+    unsetenv("ZCL_LAND_TEST_DIR_SYNC_FAIL");
+    unsetenv("ZCL_LAND_TEST_DIE_AFTER_RECEIPT");
+    unsetenv("ZCL_DEVLOOP_TEST_PROCESS");
+    dlx_restore();
+#endif
+    return failures;
+}
+
 static int test_dev_land_receipt_locator_binding(void)
 {
     int failures = 0;
@@ -8335,6 +8466,7 @@ int test_dev_land(void)
     failures += test_dev_land_observation_locator_binding();
     failures += test_dev_land_signed_stale();
     failures += test_dev_land_signed_recovery();
+    failures += test_dev_land_receipt_store_recovery();
     failures += test_dev_land_receipt_locator_binding();
     failures += test_dev_land_dispatch_locator_binding();
     failures += test_dev_land_signed_lost_ack();

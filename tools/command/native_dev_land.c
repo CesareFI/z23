@@ -33,6 +33,9 @@
  *   queue.jsonl     one JSON object per line; the live request rows.
  *   outcomes.jsonl  one row per terminal outcome, newest last; the complete
  *                   bounded history is atomically replaced under queue.lock.
+ *   remote-receipt.<seq>.<commit>.json
+ *                   one signed independent observation, durable before its
+ *                   queue projection and terminal outcome.
  *   queue.lock      the short row-file lock (seq assignment, rewrite).
  *   step.lock       the queue's own step lock: exclusive, NON-BLOCKING,
  *                   taken before step touches anything and held across the
@@ -6201,6 +6204,161 @@ static bool dl_publication_remote_observe(const struct dl_dirs *d,
 static bool dl_publication_receipt_seal(struct dl_row *row);
 static bool dl_publication_receipt_verify(const struct dl_row *row);
 
+enum dl_receipt_load {
+    DL_RECEIPT_ABSENT = 0,
+    DL_RECEIPT_VALID = 1,
+    DL_RECEIPT_INVALID = 2,
+    DL_RECEIPT_UNAVAILABLE = 3
+};
+
+static bool dl_publication_receipt_path(const struct dl_dirs *d,
+                                        const struct dl_row *row,
+                                        char *out, size_t cap)
+{
+    int n;
+    if (!d || !row || !out || row->seq < 1 || !dl_sha_ok(row->local))
+        return false;
+    n = snprintf(out, cap, "%s/remote-receipt.%lld.%s.json", d->land,
+                 row->seq, row->local);
+    return n > 0 && (size_t)n < cap;
+}
+
+static bool dl_publication_receipt_intent_same(const struct dl_row *stored,
+                                               const struct dl_row *live)
+{
+    return stored->seq == live->seq &&
+        strcmp(stored->tip, live->tip) == 0 &&
+        strcmp(stored->base, live->base) == 0 &&
+        strcmp(stored->local, live->local) == 0 &&
+        strcmp(stored->tree, live->tree) == 0 &&
+        strcmp(stored->publication_target, live->publication_target) == 0 &&
+        strcmp(stored->publication_signature,
+               live->publication_signature) == 0;
+}
+
+static bool dl_publication_receipt_wire(const char *wire, size_t len,
+                                        struct dl_row *stored)
+{
+    const char *newline;
+    if (!wire || !stored || len == 0)
+        return false;
+    newline = strchr(wire, '\n');
+    return newline && newline[1] == '\0' &&
+        len == (size_t)(newline - wire) + 1 && dl_parse_row(wire, stored);
+}
+
+static void dl_publication_receipt_copy(struct dl_row *to,
+                                        const struct dl_row *from)
+{
+    (void)snprintf(to->remote_tip, sizeof(to->remote_tip), "%s",
+                   from->remote_tip);
+    (void)snprintf(to->remote_source, sizeof(to->remote_source), "%s",
+                   from->remote_source);
+    (void)snprintf(to->remote_signer, sizeof(to->remote_signer), "%s",
+                   from->remote_signer);
+    (void)snprintf(to->remote_signature, sizeof(to->remote_signature), "%s",
+                   from->remote_signature);
+}
+
+static enum dl_receipt_load dl_publication_receipt_load(
+    const struct dl_dirs *d, struct dl_row *row)
+{
+    char path[4096 + 192];
+    char *wire;
+    size_t len = 0;
+    int read_errno;
+    struct dl_row stored;
+    bool valid;
+    if (!dl_publication_receipt_path(d, row, path, sizeof(path)))
+        return DL_RECEIPT_INVALID;
+    wire = (char *)zcl_malloc(DL_LINE_CAP, "dev.land.remote_receipt");
+    if (!wire)
+        return DL_RECEIPT_UNAVAILABLE;
+    if (!dl_read_file(path, wire, DL_LINE_CAP, &len)) {
+        read_errno = errno;
+        free(wire);
+        if (read_errno == ENOENT)
+            return DL_RECEIPT_ABSENT;
+        return read_errno == EFBIG ? DL_RECEIPT_INVALID
+                                   : DL_RECEIPT_UNAVAILABLE;
+    }
+    valid = dl_publication_receipt_wire(wire, len, &stored) &&
+        dl_publication_receipt_intent_same(&stored, row) &&
+        dl_publication_receipt_verify(&stored);
+    free(wire);
+    if (!valid)
+        return DL_RECEIPT_INVALID;
+    /* A prior writer may have renamed the complete object and then lost the
+     * parent-directory sync acknowledgement. Complete that exact checkpoint
+     * before projecting it into the queue or terminal history. */
+    if (!dl_state_file_flush(path, d->land, false))
+        return DL_RECEIPT_UNAVAILABLE;
+    dl_publication_receipt_copy(row, &stored);
+    return DL_RECEIPT_VALID;
+}
+
+static bool dl_publication_receipt_write(const struct dl_dirs *d,
+                                         const struct dl_row *row)
+{
+    char path[4096 + 192], tmp[4096 + 196], wire[DL_LINE_CAP];
+    size_t len = 0;
+    FILE *f;
+    bool ok;
+    if (!dl_publication_receipt_path(d, row, path, sizeof(path)) ||
+        snprintf(tmp, sizeof(tmp), "%s.tmp", path) >= (int)sizeof(tmp) ||
+        !dl_encode_row(row, wire, sizeof(wire), &len))
+        return false;
+    f = fopen(tmp, "wb");
+    if (!f)
+        return false;
+    ok = fwrite(wire, 1, len, f) == len && dl_queue_file_flush(f);
+    if (fclose(f) != 0)
+        ok = false;
+    if (!ok || rename(tmp, path) != 0) {
+        (void)unlink(tmp);
+        return false;
+    }
+    return dl_queue_parent_flush(d->land);
+}
+
+static bool dl_publication_receipt_store(const struct dl_dirs *d,
+                                         struct dl_row *row)
+{
+    struct dl_row recovered = *row;
+    enum dl_receipt_load load;
+    if (!dl_publication_receipt_verify(row))
+        return false;
+    load = dl_publication_receipt_load(d, &recovered);
+    if (load == DL_RECEIPT_INVALID || load == DL_RECEIPT_UNAVAILABLE)
+        return false;
+    if (load == DL_RECEIPT_VALID) {
+        dl_publication_receipt_copy(row, &recovered);
+        return true;
+    }
+    return dl_publication_receipt_write(d, row);
+}
+
+static void dl_publication_receipt_test_crash(void)
+{
+#if defined(ZCL_DEV_BUILD) || defined(ZCL_TESTING)
+    if (getenv("ZCL_LAND_TEST_DIE_AFTER_RECEIPT") &&
+        getenv("ZCL_DEVLOOP_TEST_PROCESS"))
+        _exit(83);
+#endif
+}
+
+static void dl_publication_receipt_unavailable(
+    struct zcl_command_reply *reply, const char *message, const char *evidence)
+{
+    (void)json_push_kv_str(&reply->data, "leaf", DL_LEAF);
+    zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_BLOCKED,
+                           ZCL_COMMAND_EXIT_BLOCKED,
+                           "REMOTE_RECEIPT_UNAVAILABLE", "observe_remote",
+                           true, false, message, evidence);
+    (void)snprintf(reply->error.next_action, sizeof(reply->error.next_action),
+                   "%s", "z23-dev dev land step");
+}
+
 static bool dl_reconcile_signed_landing(const struct dl_dirs *d,
                                         struct dl_row *row,
                                         const char *observed_main,
@@ -6229,10 +6387,16 @@ static bool dl_reconcile_signed_landing(const struct dl_dirs *d,
         if (!dl_publication_remote_observe(d, row, row->remote_tip,
                                             row->remote_source) ||
             !dl_publication_receipt_seal(row) ||
-            !dl_commit_row(d, row, false)) {
-            dl_fail(reply, "REMOTE_RECEIPT_UNAVAILABLE", "observe_remote",
-                    "independent fetch or signed receipt persistence failed",
-                    d->land);
+            !dl_publication_receipt_store(d, row)) {
+            dl_publication_receipt_unavailable(
+                reply, "independent fetch or signed receipt persistence failed",
+                d->land);
+            return true;
+        }
+        dl_publication_receipt_test_crash();
+        if (!dl_commit_row(d, row, false)) {
+            dl_publication_receipt_unavailable(
+                reply, "signed receipt queue projection failed", d->land);
             return true;
         }
     }
@@ -6251,10 +6415,44 @@ static bool dl_reconcile_signed_landing(const struct dl_dirs *d,
     return true;
 }
 
+static bool dl_publication_receipt_restore(
+    const struct dl_dirs *d, struct dl_row *row,
+    struct zcl_command_reply *reply, bool *restored)
+{
+    enum dl_receipt_load load;
+    *restored = false;
+    if (!row->publication_signature[0] || row->remote_signature[0])
+        return true;
+    if (!dl_publication_verify_persisted(d, row)) {
+        dl_fail(reply, "PUBLICATION_INTENT_INVALID", "observe_remote",
+                "stored Git landing intent no longer verifies", d->land);
+        return false;
+    }
+    load = dl_publication_receipt_load(d, row);
+    if (load == DL_RECEIPT_UNAVAILABLE) {
+        dl_publication_receipt_unavailable(
+            reply, "durable independent remote receipt is unavailable",
+            d->land);
+        return false;
+    }
+    if (load == DL_RECEIPT_INVALID) {
+        dl_fail(reply, "REMOTE_RECEIPT_INVALID", "observe_remote",
+                "durable independent remote receipt is invalid", d->land);
+        return false;
+    }
+    *restored = load == DL_RECEIPT_VALID;
+    return true;
+}
+
 static bool dl_reconcile_landing(const struct dl_dirs *d, struct dl_row *row,
                                   char observed_main[80], bool mutated,
                                   struct zcl_command_reply *reply)
 {
+    bool restored;
+    if (!dl_publication_receipt_restore(d, row, reply, &restored))
+        return true;
+    if (restored)
+        return dl_reconcile_signed_landing(d, row, NULL, reply);
     if (row->publication_signature[0] && row->remote_signature[0])
         return dl_reconcile_signed_landing(d, row, NULL, reply);
     if (!dl_observe_remote_main(d, row, observed_main, NULL, mutated, reply))

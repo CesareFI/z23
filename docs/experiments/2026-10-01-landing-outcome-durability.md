@@ -101,3 +101,46 @@ The registered POSIX regression creates an isolated state root, points its
 leaf returns `STATE_DIR_FAILED`, and the test verifies that no `logs` entry was
 created through the link. This is a state-authority hardening only; it does
 not change proof admission, Git ancestry, or publication policy.
+
+## Signed remote receipt checkpoint
+
+The signed Git adapter previously projected a freshly sealed independent
+remote observation into `queue.jsonl` before it had a separate durable local
+checkpoint. A process death between observation and that projection therefore
+discarded the receipt and forced another live fetch even though the observer
+had already verified the target, source and ancestry.
+
+The adapter now writes one bounded newline-terminated row to
+`remote-receipt.<seq>.<commit>.json.tmp`, flushes the file, atomically renames
+it, and flushes the landing directory before projecting its four receipt
+fields into the queue. Recovery accepts exactly one row only after its
+sequence, tip, base, local commit, tree, publication target and signed
+publication intent match the live request and its remote signature verifies.
+It then flushes the existing regular file and parent directory again before
+using it, completing a prior rename whose directory-sync acknowledgement was
+ambiguous. Malformed or mismatched bytes fail as `REMOTE_RECEIPT_INVALID`;
+transient read or durability failures remain retryable as
+`REMOTE_RECEIPT_UNAVAILABLE`.
+
+One registered regression advances only a disposable bare remote, kills the
+landing child immediately after the signed receipt checkpoint but before the
+queue projection, confirms the live row still has an empty receipt, removes
+the remote, and completes LANDED from the verified local object without a
+second fetch or push. A second regression injects a failed parent-directory
+sync after the receipt rename. It observes a blocked retryable reply and the
+unprojected live row, takes the disposable remote offline, and proves that a
+replacement step re-flushes and consumes those exact bytes locally. All test
+repositories and state are ignored fixtures under `test-tmp`; no operator
+datadir or wallet is opened.
+
+The exact test-fast runner
+`20ab684d6ac65265712dcd4825a4e84146e681716f4d1cc8793481fd9118a148`
+ran `test_dev_land` cold: 1 registered group ran, 0 failed, 0 skipped, and
+1,232 were gated by the selector in 135.7 seconds. The complexity ratchet
+passed with 68,422 functions and 4,004 exact baseline pins; the flag registry
+passed with 1,260 registered flags, 2,219 read sites and 1,237 verified
+first-use pointers.
+
+This is a crash-durable checkpoint for the current local landing adapter. It
+does not claim the canonical immutable `publication_result_root` or
+`remote_receipt_root` chain defined in `docs/work/CANONICAL_LIFECYCLE.md`.

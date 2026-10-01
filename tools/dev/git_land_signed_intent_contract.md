@@ -77,6 +77,13 @@ client push output or a local tracking ref.
 | Independent remote receipt | Push acknowledges, but fresh fetch is unavailable or fetched source/ancestry differs | Row remains `UNKNOWN`/inflight; no LANDED outcome. A later independent fetch that verifies exact target, intended head ancestry, pinned source and dependency closure may persist the signed receipt, then mark LANDED. |
 | Receipt recovery | Crash after signed receipt CAS store but before outcome append | Restart reloads and verifies the exact receipt and persisted intent locally; appends one terminal outcome without recapturing the live target, running a transport helper, replaying the push or losing predecessor evidence. A row without that durable receipt still requires a fresh target-bound independent fetch. |
 
+The current local adapter qualifies the receipt-recovery crash window with a
+bounded signed row stored before queue projection. Its regressions kill the
+worker after that checkpoint and separately fail the post-rename directory
+sync, then take the fixture remote offline and recover from the exact verified
+bytes. This does not mark the canonical case complete: the adapter row is not
+yet the immutable `remote_receipt_root` object admitted under receiver policy.
+
 ## Smallest owner patch sketch
 
 1. Add `attach` keys to the existing `dev.land` schema and row codec.
@@ -96,6 +103,11 @@ client push output or a local tracking ref.
    after fetched ref, source/dependency closure and ancestry agree under
    receiver policy. `dl_already_landed` cannot be the terminal authority for
    this path: require the persisted verified receipt before writing LANDED.
+   The current adapter first stages and flushes its signed receipt row,
+   atomically renames it, and flushes the parent before queue projection. A
+   restart verifies its exact intent binding and signature and re-flushes the
+   existing file and parent before local use; invalid bytes fail closed and a
+   transient durability failure remains retryable.
    Stage the complete bounded terminal history, flush it, atomically replace
    the outcome file, and flush its parent directory before removing the live
    queue row. A pre-rename failure keeps the previous complete history and

@@ -350,7 +350,13 @@ The signed Git-row adapter retains an ambiguous push checkpoint as UNKNOWN
 and observes the remote again without redispatching that intent. Its status
 view reports canonical `acceptance_state=unknown`, including for historical
 `landed` queue outcomes, because those rows do not carry the canonical
-publication and REMOTE_RECEIPT roots.
+publication and REMOTE_RECEIPT roots. After an independent observation, the
+adapter now flushes a signed local receipt row through atomic rename and a
+parent-directory barrier before projecting it into its queue. A replacement
+process can verify and re-flush that exact intent-bound row, then complete its
+local outcome while the target is offline. This closes a local crash window;
+the row is still an adapter checkpoint, not the immutable canonical object or
+receiver-policy admission defined below.
 `tools/ship.sh` still contains `git push --no-verify origin main`; retire that
 publication path without granting deployment authority. Retain the existing
 publish-callsite gate. Use both verified fast-forward ancestry and a server-side
