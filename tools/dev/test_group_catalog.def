@@ -1010,11 +1010,12 @@ ZCL_TEST_GROUP(dev_proof_stress_env)
  * See tools/dev/dev_proof.c's proof_observation_env_open(). */
 ZCL_TEST_GROUP(dev_proof_observation_env)
 /* The coverage manifest binds a pair receipt's executed test groups to
- * eligible signed observations in the durable per-pair CAS: the worker
- * derives and signs it after receipt publication; the pre-push hook
- * re-derives and re-verifies it, refusing missing coverage, ineligible
- * listed roots, tampered wires, wrong bindings, and preserved conflicts
- * by name. See tools/dev/dev_proof_coverage.c. */
+ * eligible signed observations in a per-pair CAS, or names them
+ * unqualified: a producer derives and signs it; a receiver re-verifies it,
+ * refusing missing coverage, ineligible listed roots, tampered wires,
+ * wrong bindings, another executed-group count, and preserved conflicts
+ * by name. Not yet wired into the proof worker or the pre-push hook.
+ * See tools/dev/dev_proof_coverage.c. */
 ZCL_TEST_GROUP(dev_proof_coverage)
 ZCL_TEST_GROUP(test_group_selector)
 ZCL_TEST_GROUP(metaverse_catalog)

@@ -135,7 +135,16 @@ scratch. Automatic proof-worker emission is deferred until the mandatory input
 closures qualify: its default remains exact `--no-cache
 --activate-proof-contracts`, and the signed whole-cycle pair receipt remains
 admission. Authenticated partial leaves do not establish complete admission.
-Durable CAS enumeration/indexing, receiver-side
+The coverage manifest codec exists (`tools/dev/dev_proof_coverage.c`,
+registered group `dev_proof_coverage`): from a runner log and a per-pair
+observation store it derives and signs a manifest binding a receipt's
+child-set root, impact policy and executed groups, each keyed row with its
+exact input key and eligible observation roots and each `UNQUALIFIED` row with
+neither. Verification re-checks the receipt's executed-group count and the
+store, and refuses missing coverage, a preserved eligible PASS/FAIL conflict,
+and an unqualified group for which the store retains an eligible FAIL. It is
+not yet called by the proof worker or the pre-push hook, and it changes no
+admission. A box-level observation index, receiver-side
 proof-set conflict admission and canonical proof-set publication remain
 separate integration work. A codec alone does not establish a complete input
 closure.
