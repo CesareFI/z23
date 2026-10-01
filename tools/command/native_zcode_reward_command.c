@@ -40,6 +40,7 @@
 #include "vcs/package_verify_policy.h"
 
 #include <dirent.h>
+#include <errno.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -702,44 +703,73 @@ static bool zr_gate_lineage(const struct zr_target *t, char *detail,
                            detail_sz);
 }
 
-/* Reads the filed attestations (bounded) into candidates; returns how many
- * were scanned. */
-static size_t zr_scan_attestations(const struct zr_target *t,
-                                   struct vcs_verify_candidate *candidates)
+static void zr_load_attestation_candidate(
+    const char *path, const uint8_t named_id[32],
+    struct vcs_verify_candidate *candidate)
 {
-    size_t candidate_count = 0;
+    uint8_t *wire = NULL;
+    size_t wire_len = 0;
+    candidate->parsed = false;
+    if (!zr_read_object(path, VCS_PACKAGE_ATTEST_MAX_WIRE_BYTES, &wire,
+                        &wire_len))
+        return;
+    candidate->parsed =
+        vcs_package_attest_parse(wire, wire_len, &candidate->attestation) ==
+            VCS_PACKAGE_ATTEST_OK;
+    free(wire);
+    uint8_t actual_id[VCS_PACKAGE_ATTEST_ID_BYTES];
+    if (candidate->parsed &&
+        (vcs_package_attest_id(&candidate->attestation, actual_id) !=
+             VCS_PACKAGE_ATTEST_OK ||
+         memcmp(named_id, actual_id, sizeof(actual_id)) != 0))
+        candidate->parsed = false;
+}
+
+/* Reads a complete bounded view of the filed attestations into candidates.
+ * Every non-dot entry consumes the budget; false means no partial view may
+ * authorize reward eligibility. */
+static bool zr_scan_attestations(const struct zr_target *t,
+                                 struct vcs_verify_candidate *candidates,
+                                 size_t *candidate_count)
+{
+    *candidate_count = 0;
     char path[4400];
     snprintf(path, sizeof(path), "%s/attestations", t->zcode_dir);
     DIR *dir = opendir(path);
     if (!dir)
-        return 0;
-    struct dirent *ent;
-    while ((ent = readdir(dir)) != NULL) {
-        uint8_t scratch[32];
-        size_t scratch_len = 0;
-        if (!zcl_hex_decode_n(ent->d_name, scratch, 32, &scratch_len) ||
-            scratch_len != 32)
-            continue;
-        if (candidate_count == ZR_VERIFY_MAX_SCAN)
+        return errno == ENOENT;
+    size_t entries_seen = 0;
+    bool complete = true;
+    for (;;) {
+        errno = 0;
+        struct dirent *ent = readdir(dir);
+        if (!ent) {
+            if (errno != 0)
+                complete = false;
             break;
+        }
+        if (strcmp(ent->d_name, ".") == 0 ||
+            strcmp(ent->d_name, "..") == 0)
+            continue;
+        if (entries_seen >= ZR_VERIFY_MAX_SCAN) {
+            complete = false;
+            break;
+        }
+        entries_seen++;
+        uint8_t named_id[32];
+        if (!zcl_hex_decode_lower(ent->d_name, named_id, sizeof(named_id)))
+            continue;
         char apath[4400];
         int an = snprintf(apath, sizeof(apath), "%s/%s", path, ent->d_name);
-        if (an < 0 || (size_t)an >= sizeof(apath))
-            continue;
-        uint8_t *wire = NULL;
-        size_t wire_len = 0;
-        struct vcs_verify_candidate *cand = &candidates[candidate_count];
+        struct vcs_verify_candidate *cand = &candidates[*candidate_count];
         cand->parsed = false;
-        if (zr_read_object(apath, VCS_PACKAGE_ATTEST_MAX_WIRE_BYTES, &wire,
-                           &wire_len))
-            cand->parsed = vcs_package_attest_parse(wire, wire_len,
-                                                    &cand->attestation) ==
-                VCS_PACKAGE_ATTEST_OK;
-        free(wire);
-        candidate_count++;
+        if (an > 0 && (size_t)an < sizeof(apath))
+            zr_load_attestation_candidate(apath, named_id, cand);
+        (*candidate_count)++;
     }
-    closedir(dir);
-    return candidate_count;
+    if (closedir(dir) != 0)
+        complete = false;
+    return complete;
 }
 
 /* The counted attestations of the quorum class carry the build facts: read
@@ -858,11 +888,13 @@ void zcl_native_handle_zcode_reward_eligible(
                                "verify candidate buffer", t.root_hex);
         return;
     }
-    size_t candidate_count =
-        policy_loaded ? zr_scan_attestations(&t, candidates) : 0;
+    size_t candidate_count = 0;
+    bool attestations_complete =
+        policy_loaded &&
+        zr_scan_attestations(&t, candidates, &candidate_count);
     struct vcs_verify_quorum quorum;
     memset(&quorum, 0, sizeof(quorum));
-    if (policy_loaded) {
+    if (policy_loaded && attestations_complete) {
         uint8_t root[32];
         size_t root_len = 0;
         (void)zcl_hex_decode_n(t.root_hex, root, 32, &root_len);
@@ -870,7 +902,8 @@ void zcl_native_handle_zcode_reward_eligible(
                             t.release.recipe_root,
                             t.release.publisher_pubkey, &policy, &quorum);
     }
-    in.quorum_verified = policy_loaded && quorum.verified;
+    in.quorum_verified =
+        policy_loaded && attestations_complete && quorum.verified;
     if (in.quorum_verified)
         zr_read_build_facts(candidates, candidate_count, &quorum, &in);
     free(candidates);
@@ -894,12 +927,17 @@ void zcl_native_handle_zcode_reward_eligible(
     zr_push_gate_rows(&reply->data, &elig);
     (void)json_push_kv_bool(&reply->data, "approved_verifiers_loaded",
                             policy_loaded);
+    (void)json_push_kv_bool(&reply->data, "attestations_complete",
+                            attestations_complete);
     (void)json_push_kv_int(&reply->data, "attestations_evaluated",
-                           (int64_t)candidate_count);
+                           attestations_complete ? (int64_t)candidate_count
+                                                 : 0);
     (void)json_push_kv_bool(&reply->data, "quorum_reached",
-                            policy_loaded && quorum.quorum_reached);
+                            policy_loaded && attestations_complete &&
+                                quorum.quorum_reached);
     (void)json_push_kv_int(&reply->data, "quorum_signers",
-                           (int64_t)quorum.quorum_signers);
+                           attestations_complete
+                               ? (int64_t)quorum.quorum_signers : 0);
     (void)json_push_kv_str(
         &reply->data, "eligibility_note",
         "a release earns nothing until every gate passes; the build/test "

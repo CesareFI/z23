@@ -1595,6 +1595,35 @@ static int t_cmd_elig_full_pass(const char *datadir, const char *store,
     return failures;
 }
 
+static int t_cmd_elig_incomplete_scan(const char *datadir,
+                                      const char *store,
+                                      const char *pr_hex)
+{
+    int failures = 0;
+    char path[4400];
+    bool prepared = true;
+    for (size_t i = 0; prepared && i < 257; i++) {
+        int n = snprintf(path, sizeof(path), "%s/attestations/junk-%zu",
+                         store, i);
+        prepared = n > 0 && (size_t)n < sizeof(path) &&
+                   zs_write_file(path, "x", 1, 0600);
+    }
+    struct zs_cmd c;
+    zs_cmd_init(&c, datadir, pr_hex);
+    zcl_native_handle_zcode_reward_eligible(&c.request, &c.reply);
+    ZS_CHECK("command: incomplete attestation evidence cannot earn reward",
+             prepared &&
+             !json_get_bool(json_get(&c.reply.data, "eligible")) &&
+             !json_get_bool(json_get(&c.reply.data,
+                                     "attestations_complete")) &&
+             json_get_int(json_get(&c.reply.data,
+                                   "attestations_evaluated")) == 0 &&
+             !json_get_bool(json_get(&c.reply.data, "quorum_reached")) &&
+             json_get_int(json_get(&c.reply.data, "quorum_signers")) == 0);
+    zs_cmd_free(&c);
+    return failures;
+}
+
 /* Eligible: corrupted release signature named (the license gate
  * still passes — the envelope parsed, so the SPDX id is allowlist
  * grammar; the LICENSE file is present). The LICENSE text differs by
@@ -1763,6 +1792,7 @@ static int t_command(void)
     failures += t_cmd_elig_no_license(datadir, store);
     failures += t_cmd_elig_ghost_lineage(datadir, store);
     failures += t_cmd_elig_good_child(datadir, store, ri);
+    failures += t_cmd_elig_incomplete_scan(datadir, store, pr_hex);
 
     zs_rm_rf(datadir);
     return failures;

@@ -2102,6 +2102,78 @@ static int zc_unapproved(const char *datadir, const char *store,
     return failures;
 }
 
+static int zc_misnamed_attestation(
+    const char *datadir, const char *store, const char *root_hex,
+    const uint8_t package_root[32], const uint8_t release_id[32],
+    const uint8_t recipe_root[32])
+{
+    int failures = 0;
+    struct vcs_package_attest attestation;
+    uint8_t actual_id[32] = {0};
+    uint8_t *wire = NULL;
+    size_t wire_len = 0;
+    bool prepared =
+        zv_attest(&attestation, VCS_PACKAGE_ATTEST_RESULT_TEST_PASS,
+                  package_root, release_id, recipe_root, 0x22) &&
+        vcs_package_attest_id(&attestation, actual_id) ==
+            VCS_PACKAGE_ATTEST_OK &&
+        vcs_package_attest_serialize(&attestation, &wire, &wire_len) ==
+            VCS_PACKAGE_ATTEST_OK;
+    if (prepared)
+        actual_id[0] ^= 1u;
+    char alias_hex[65], path[4400];
+    zv_hex_enc(actual_id, sizeof(actual_id), alias_hex);
+    int n = snprintf(path, sizeof(path), "%s/attestations/%s", store,
+                     alias_hex);
+    prepared = prepared && n > 0 && (size_t)n < sizeof(path) &&
+               zv_write_file(path, wire, wire_len, 0600);
+    free(wire);
+    struct zv_cmd c;
+    zc_run_verify(&c, datadir, root_hex);
+    const struct json_value *rows = json_get(&c.reply.data, "rows");
+    bool invalid_named = false;
+    for (size_t i = 0; rows && json_at(rows, i); i++) {
+        const char *rule =
+            json_get_str(json_get(json_at(rows, i), "rule"));
+        if (rule && strcmp(rule, "attestation-invalid") == 0)
+            invalid_named = true;
+    }
+    ZV_CHECK("command: copied attestation under a false id is invalid",
+             prepared &&
+             json_get_bool(json_get(&c.reply.data, "verified")) &&
+             json_get_int(json_get(&c.reply.data,
+                                   "attestations_scanned")) == 4 &&
+             invalid_named);
+    zv_cmd_free(&c);
+    return failures;
+}
+
+static int zc_incomplete_attestation_scan(const char *datadir,
+                                          const char *store,
+                                          const char *root_hex)
+{
+    int failures = 0;
+    char path[4400];
+    bool prepared = true;
+    for (size_t i = 0; prepared && i < 257; i++) {
+        int n = snprintf(path, sizeof(path), "%s/attestations/junk-%zu",
+                         store, i);
+        prepared = n > 0 && (size_t)n < sizeof(path) &&
+                   zv_write_file(path, "x", 1, 0600);
+    }
+    struct zv_cmd c;
+    zc_run_verify(&c, datadir, root_hex);
+    ZV_CHECK("command: an incomplete attestation scan cannot authorize",
+             prepared &&
+             json_get_bool(json_get(&c.reply.data,
+                                    "attestations_truncated")) &&
+             !json_get_bool(json_get(&c.reply.data, "verified")) &&
+             !json_get_bool(json_get(&c.reply.data, "quorum_reached")) &&
+             json_get_int(json_get(&c.reply.data, "quorum_signers")) == 0);
+    zv_cmd_free(&c);
+    return failures;
+}
+
 static int zc_rejections(const char *datadir)
 {
     int failures = 0;
@@ -2239,11 +2311,15 @@ static int t_command(void)
                              release_id, recipe_root);
     failures += zc_unapproved(datadir, store, root_hex, package_root,
                               release_id, recipe_root);
+    failures += zc_misnamed_attestation(datadir, store, root_hex,
+                                        package_root, release_id,
+                                        recipe_root);
     failures += zc_rejections(datadir);
     failures += zc_repro_ok(datadir, store, root_hex, package_root,
                             recipe_root);
     failures += zc_repro_diverging(datadir, store, root_hex, package_root,
                                    recipe_root);
+    failures += zc_incomplete_attestation_scan(datadir, store, root_hex);
     zv_rm_rf(datadir);
     return failures;
 }

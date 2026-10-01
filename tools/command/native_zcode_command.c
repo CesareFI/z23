@@ -1459,46 +1459,73 @@ static bool zc_root_inputs(const struct zcl_command_request *request,
     return true;
 }
 
-/* Scans the attestations dir (bounded): every hex64 file is a candidate;
- * unparseable wires stay in the report as attestation-invalid rows. */
+static void zc_verify_load_candidate(
+    const char *path, const uint8_t named_id[32],
+    struct vcs_verify_candidate *candidate)
+{
+    uint8_t *wire = NULL;
+    size_t wire_len = 0;
+    candidate->parsed = false;
+    if (!zc_read_object(path, VCS_PACKAGE_ATTEST_MAX_WIRE_BYTES, &wire,
+                        &wire_len))
+        return;
+    candidate->parsed =
+        vcs_package_attest_parse(wire, wire_len, &candidate->attestation) ==
+            VCS_PACKAGE_ATTEST_OK;
+    free(wire);
+    uint8_t actual_id[VCS_PACKAGE_ATTEST_ID_BYTES];
+    if (candidate->parsed &&
+        (vcs_package_attest_id(&candidate->attestation, actual_id) !=
+             VCS_PACKAGE_ATTEST_OK ||
+         memcmp(named_id, actual_id, sizeof(actual_id)) != 0))
+        candidate->parsed = false;
+}
+
+/* Scans the attestations dir: every non-dot entry consumes the fixed bound;
+ * canonical hex64 names become candidates, and unparseable or misnamed wires
+ * stay in the report as attestation-invalid rows. Any incomplete scan is
+ * reported through scan_truncated and cannot authorize a quorum. */
 static void zc_verify_scan_attestations(
     const char *path, struct vcs_verify_candidate *candidates,
     size_t *candidate_count, size_t *scanned, bool *scan_truncated)
 {
     DIR *dir = opendir(path);
-    if (!dir)
+    if (!dir) {
+        if (errno != ENOENT)
+            *scan_truncated = true;
         return;
-    struct dirent *ent;
-    while ((ent = readdir(dir)) != NULL) {
-        uint8_t scratch[32];
-        size_t scratch_len = 0;
-        if (!zcl_hex_decode_n(ent->d_name, scratch, 32, &scratch_len) ||
-            scratch_len != 32)
+    }
+    size_t entries_seen = 0;
+    for (;;) {
+        errno = 0;
+        struct dirent *ent = readdir(dir);
+        if (!ent) {
+            if (errno != 0)
+                *scan_truncated = true;
+            break;
+        }
+        if (strcmp(ent->d_name, ".") == 0 ||
+            strcmp(ent->d_name, "..") == 0)
             continue;
-        if (*candidate_count == ZC_VERIFY_MAX_SCAN) {
+        if (entries_seen >= ZC_VERIFY_MAX_SCAN) {
             *scan_truncated = true;
             break;
         }
-        (*scanned)++;
+        entries_seen++;
+        uint8_t named_id[32];
+        if (!zcl_hex_decode_lower(ent->d_name, named_id, sizeof(named_id)))
+            continue;
         char apath[4400];
         int an = snprintf(apath, sizeof(apath), "%s/%s", path, ent->d_name);
-        if (an < 0 || (size_t)an >= sizeof(apath))
-            continue;
-        uint8_t *wire = NULL;
-        size_t wire_len = 0;
         struct vcs_verify_candidate *cand = &candidates[*candidate_count];
         cand->parsed = false;
-        if (zc_read_object(apath, VCS_PACKAGE_ATTEST_MAX_WIRE_BYTES, &wire,
-                           &wire_len)) {
-            cand->parsed =
-                vcs_package_attest_parse(wire, wire_len,
-                                         &cand->attestation) ==
-                VCS_PACKAGE_ATTEST_OK;
-        }
-        free(wire);
+        if (an > 0 && (size_t)an < sizeof(apath))
+            zc_verify_load_candidate(apath, named_id, cand);
         (*candidate_count)++;
+        (*scanned)++;
     }
-    closedir(dir);
+    if (closedir(dir) != 0)
+        *scan_truncated = true;
 }
 
 static void zc_verify_push_quorum_rows(struct zcl_command_reply *reply,
@@ -1671,8 +1698,9 @@ void zcl_native_handle_zcode_package_verify(
         return;
     }
 
-    /* Scan the attestations dir (bounded): every hex64 file is a candidate;
-     * unparseable wires stay in the report as attestation-invalid rows. */
+    /* Scan the attestations dir under the fixed non-dot-entry budget;
+     * canonical hex64 names become candidates, while incomplete evidence
+     * can never authorize the release. */
     snprintf(path, sizeof(path), "%s/attestations", zcode_dir);
     struct vcs_verify_candidate *candidates = zcl_malloc(
         ZC_VERIFY_MAX_SCAN * sizeof(*candidates), "zc_verify_candidates");
@@ -1694,6 +1722,13 @@ void zcl_native_handle_zcode_package_verify(
                         release.recipe_root, release.publisher_pubkey,
                         &policy, &quorum);
     free(candidates);
+    bool attestation_evidence_complete = !scan_truncated;
+    if (!attestation_evidence_complete) {
+        quorum.verified = false;
+        quorum.quorum_reached = false;
+        quorum.quorum_signers = 0;
+        quorum.quorum_class = 0;
+    }
 
     /* The headline signal: bit-identical reproduction among the build
      * receipts filed under <zcode>/receipts (the install lifecycle files
