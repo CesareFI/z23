@@ -838,6 +838,28 @@ ZCL_COMMAND_DEV_READ(
     "coverage queries require the dev binary",
     "z23-dev dev proof status")
 
+ZCL_COMMAND_DEV_READ(
+    "dev.proof.observations", "dev.proof", "",
+    "Query this box's receiver observation index",
+    "Reports what this box has observed across every proved pair: totals, "
+    "signature eligibility, the observed age range, and per (group, "
+    "exact input key) the newest eligible verdict with its observation "
+    "time and count. Eligible PASS/FAIL contradictions are preserved and "
+    "named, never collapsed. An empty index is a legitimate empty answer; "
+    "corrupt bytes refuse by name. Optional group input scopes every "
+    "count to one exact group. Read-only.", 0,
+    "dev,proof,observations,index,reuse,receiver",
+    "zcl.dev_proof_observations_input.v1", "zcl.dev_observations.v1",
+    "group", "",
+    "z23-dev dev proof observations",
+    ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_INSTANT, ZCL_COMMAND_COST_TINY,
+    ZCL_COMMAND_LANE_LOCAL, ZCL_COMMAND_CAP_DEV_STATE_READ,
+    ZCL_COMMAND_TRAIT_IDEMPOTENT | ZCL_COMMAND_TRAIT_DEV_ONLY,
+    zcl_native_handle_dev_verify_change,
+    "observation queries require the dev binary",
+    "z23-dev dev proof status")
+
 ZCL_COMMAND_READY_READ(
     "dev.test.plan", "dev.test", "", "Map changed files to mandatory proof groups",
     "A deterministic mapping of the given file list to mandatory proof "

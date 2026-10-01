@@ -12,7 +12,9 @@
 #include "base/hex.h"
 #include "base/safe_alloc.h"
 #include "dev_proof_coverage.h"
+#include "dev_proof_observation_index.h"
 #include "dev_proof_signer.h"
+#include "platform/state_root.h"
 #endif
 #include "json/json.h"
 
@@ -854,6 +856,94 @@ static void proof_coverage(
 #endif
 }
 
+/* The box-level half of the lifecycle query: what this receiver has
+ * observed across every pair, which (group, key) inputs carry evidence,
+ * their newest verdicts, and where eligible contradictions are
+ * preserved. Read-only; an absent index answers empty. */
+static void proof_observations(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+#ifndef ZCL_DEV_BUILD
+    (void)request;
+    zcl_command_reply_fail(
+        reply, ZCL_COMMAND_STATUS_BLOCKED, ZCL_COMMAND_EXIT_BLOCKED,
+        "DEV_BUILD_REQUIRED", "dispatch", false, false,
+        "observation queries require the dev binary", "make dev-bin");
+#else
+    char state_root[PATH_MAX], index_path[4096];
+    if (!platform_state_root(state_root, sizeof(state_root)) ||
+        snprintf(index_path, sizeof(index_path),
+                 "%s/dev-observation-index/index", state_root) >=
+            (int)sizeof(index_path)) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+            ZCL_COMMAND_EXIT_FAILED, "PROOF_OBSERVATIONS_STATE_UNAVAILABLE",
+            "normalize", false, false,
+            "this box has no resolvable state root for its observation index",
+            "state_root_unavailable");
+        return;
+    }
+    struct zcl_dev_observation_query_report report = {0};
+    char why[128] = {0};
+    if (!zcl_dev_observation_index_query(
+            index_path, proof_optional_text(request->input, "group"),
+            &report, why, sizeof(why))) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+            ZCL_COMMAND_EXIT_FAILED, "PROOF_OBSERVATIONS_INVALID", "index",
+            false, false,
+            "the box-level observation index refuses inspection",
+            why[0] ? why : "observation_index_invalid");
+        return;
+    }
+    (void)json_push_kv_str(&reply->data, "schema",
+                           "zcl.dev_observations.v1");
+    const char *group = request ? proof_optional_text(request->input, "group")
+                                : NULL;
+    if (group)
+        (void)json_push_kv_str(&reply->data, "group_filter", group);
+    (void)json_push_kv_int(&reply->data, "observations",
+                           (int64_t)report.total);
+    (void)json_push_kv_int(&reply->data, "eligible",
+                           (int64_t)report.eligible);
+    (void)json_push_kv_int(&reply->data, "ineligible",
+                           (int64_t)report.ineligible);
+    (void)json_push_kv_int(&reply->data, "oldest_observed_unix",
+                           (int64_t)report.oldest_observed_unix);
+    (void)json_push_kv_int(&reply->data, "newest_observed_unix",
+                           (int64_t)report.newest_observed_unix);
+    (void)json_push_kv_int(&reply->data, "conflicted_groups",
+                           (int64_t)report.conflicted_groups);
+    (void)json_push_kv_bool(&reply->data, "truncated", report.truncated);
+    struct json_value groups;
+    json_init(&groups);
+    json_set_array(&groups);
+    for (uint32_t i = 0; i < report.groups_named; i++) {
+        const struct zcl_dev_observation_group_summary *g = &report.groups[i];
+        struct json_value item, key_hex;
+        char hex[ZCL_DEV_VERDICT_LEAF_KEY_BYTES * 2 + 1];
+        json_init(&item);
+        json_set_object(&item);
+        json_init(&key_hex);
+        zcl_hex_encode(g->key, ZCL_DEV_VERDICT_LEAF_KEY_BYTES, hex);
+        json_set_str(&key_hex, hex);
+        (void)json_push_kv_str(&item, "group", g->group);
+        (void)json_push_kv(&item, "key", &key_hex);
+        (void)json_push_kv_str(&item, "verdict",
+                               g->verdict == ZCL_DEV_VERDICT_LEAF_PASS
+                                   ? "pass" : "fail");
+        (void)json_push_kv_int(&item, "observed_unix",
+                               (int64_t)g->observed_unix);
+        (void)json_push_kv_int(&item, "observations",
+                               (int64_t)g->observations);
+        (void)json_push_kv_bool(&item, "conflict", g->conflict);
+        (void)json_push_back(&groups, &item);
+        json_free(&key_hex);
+        json_free(&item);
+    }
+    (void)json_push_kv(&reply->data, "groups", &groups);
+    json_free(&groups);
+#endif
+}
+
 void zcl_native_dev_proof_dispatch(
     const struct zcl_command_request *request, struct zcl_command_reply *reply)
 {
@@ -869,6 +959,7 @@ void zcl_native_dev_proof_dispatch(
         {"dev.proof.retry", proof_retry},
         {"dev.proof.signer", proof_signer},
         {"dev.proof.coverage", proof_coverage},
+        {"dev.proof.observations", proof_observations},
     };
     const char *path = request && request->spec ? request->spec->path : NULL;
     for (size_t i = 0; i < sizeof(routes) / sizeof(routes[0]); i++) {

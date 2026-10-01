@@ -151,7 +151,11 @@ eligibility basis reuse consults once a qualified verifier set exists;
 until then the check machinery's named `test-reuse: unqualified` refusal
 stands unchanged. Operators and agents query a pair's coverage directly:
 `z23-dev dev proof coverage` reports the manifest's binding, per-row
-coverage, missing groups, conflicts and observation age, read-only.
+coverage, missing groups, conflicts and observation age, read-only. The
+same audience can query the box-level observation index itself:
+`z23-dev dev proof observations` reports per-(group, key) verdicts,
+observation counts, preserved conflicts and age bounds from the folded
+index, with an optional exact `group` filter, read-only.
 Canonical proof-set publication remains separate integration work. A
 codec alone does not establish a complete input closure.
 
