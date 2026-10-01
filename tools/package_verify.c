@@ -5144,6 +5144,26 @@ static int pv_setup_link_and_compilers(
     return PV_CONTINUE;
 }
 
+/* An emitted gcc receipt must bracket the whole build with one content
+ * identity. Capturing only after compilation can mislabel output when the
+ * host toolchain changes while the verifier is running. */
+static int pv_capture_prebuild_toolchain(
+    bool emit_receipt, const struct pv_compiler compilers[2],
+    uint8_t capsule_root[32])
+{
+    memset(capsule_root, 0, 32);
+    if (!emit_receipt || !compilers[1].available)
+        return PV_CONTINUE;
+    struct vcs_toolchain_capsule_v1 capsule;
+    if (!vcs_toolchain_capsule_v1_capture(&capsule) ||
+        !vcs_toolchain_capsule_v1_root(&capsule, capsule_root)) {
+        fprintf(stderr, "%s: pre-build toolchain capsule capture failed — "
+                        "refusing an unpinned receipt\n", PV_LOG);
+        return 5;
+    }
+    return PV_CONTINUE;
+}
+
 static int pv_setup_dep_plan_and_fast_cache(
     const char *plan_path, const char **fast_cache_dir_io,
     const struct pv_compiler compilers[2], struct vcs_package_recipe *recipe,
@@ -6358,11 +6378,12 @@ static void pv_emit_receipt_flags(struct vcs_package_build_receipt *rec,
 
 /* The receipt names its toolchain exactly: schema v2 carries the toolchain
  * capsule root. The capsule capture is gcc-only today, so a clang-picked
- * receipt honestly stays v1; on the gcc path a capture failure fails
- * closed — no unpinned receipt. The capture is cached in-process, so this
- * is cheap even when --fast-cache already captured it. */
+ * receipt honestly stays v1. The gcc path must still match the pre-build
+ * capture; a capture failure or detected host-tool change fails closed. */
 static int pv_emit_capture_toolchain(struct vcs_package_build_receipt *rec,
-                                     size_t pick, const char *work,
+                                     size_t pick,
+                                     const uint8_t prebuild_root[32],
+                                     const char *work,
                                      struct vcs_package_recipe *recipe,
                                      struct vcs_package_manifest *manifest)
 {
@@ -6370,13 +6391,19 @@ static int pv_emit_capture_toolchain(struct vcs_package_build_receipt *rec,
         struct vcs_toolchain_capsule_v1 rec_capsule;
         uint8_t rec_capsule_root[32];
         memset(&rec_capsule, 0, sizeof(rec_capsule));
-        if (!vcs_toolchain_capsule_v1_capture(&rec_capsule) ||
-            !vcs_toolchain_capsule_v1_root(&rec_capsule, rec_capsule_root) ||
-            vcs_package_build_set_toolchain_capsule(rec, rec_capsule_root) !=
-                VCS_PACKAGE_BUILD_OK) {
-            fprintf(stderr, "%s: toolchain capsule capture failed — "
-                            "refusing to emit an unpinned receipt\n",
-                    PV_LOG);
+        bool captured = vcs_toolchain_capsule_v1_capture(&rec_capsule) &&
+            vcs_toolchain_capsule_v1_root(&rec_capsule, rec_capsule_root);
+        bool stable = captured &&
+            memcmp(prebuild_root, rec_capsule_root, 32) == 0;
+        bool bound = stable &&
+            vcs_package_build_set_toolchain_capsule(rec, rec_capsule_root) ==
+                VCS_PACKAGE_BUILD_OK;
+        if (!bound) {
+            fprintf(stderr, "%s: %s — refusing to emit a receipt whose "
+                            "toolchain identity is not stable\n", PV_LOG,
+                    !captured ? "toolchain capsule capture failed"
+                    : !stable ? "toolchain changed during the build"
+                              : "receipt rejected the toolchain capsule");
             pv_rm_rf(work);
             vcs_package_recipe_free(recipe);
             vcs_package_manifest_free(manifest);
@@ -6395,7 +6422,7 @@ static int pv_build_receipt_verdict(
     bool test_ran, uint32_t test_exit, bool build_ok, bool test_ok,
     const struct vcs_package_attest *att, const char *work,
     struct vcs_package_recipe *recipe, struct vcs_package_manifest *manifest,
-    size_t *pick_out)
+    const uint8_t prebuild_toolchain_root[32], size_t *pick_out)
 {
     const size_t pick = compilers[1].available ? 1u : 0u;
     *pick_out = pick;
@@ -6404,7 +6431,8 @@ static int pv_build_receipt_verdict(
     snprintf(rec->compiler_version, sizeof(rec->compiler_version), "%s",
              compilers[pick].version);
     pv_emit_receipt_flags(rec, standard_profile, have_tests, att);
-    int rc = pv_emit_capture_toolchain(rec, pick, work, recipe, manifest);
+    int rc = pv_emit_capture_toolchain(rec, pick, prebuild_toolchain_root,
+                                       work, recipe, manifest);
     if (rc != PV_CONTINUE) return rc;
     rec->isolation = full_isolation
                         ? (uint8_t)VCS_PACKAGE_BUILD_ISOLATION_FULL
@@ -6789,7 +6817,8 @@ static int pv_emit_receipt_mode(
     const char *const compile_env[], bool candidate_mode,
     const char *fast_cache_dir, const char *reproduce_path,
     const char *work, const char *build_fail_detail,
-    const char *test_fail_detail)
+    const char *test_fail_detail,
+    const uint8_t prebuild_toolchain_root[32])
 {
     struct vcs_package_build_receipt rec;
     vcs_package_build_receipt_init(&rec);
@@ -6807,7 +6836,8 @@ static int pv_emit_receipt_mode(
     rc = pv_build_receipt_verdict(&rec, compilers, standard_profile,
                                   have_tests, full_isolation, test_ran,
                                   test_exit, build_ok, test_ok, att, work,
-                                  recipe, manifest, &pick);
+                                  recipe, manifest, prebuild_toolchain_root,
+                                  &pick);
     if (rc != PV_CONTINUE) return rc;
 
     rc = pv_emit_install_outputs(&rec, recipe, release, compilers, pick,
@@ -6906,6 +6936,7 @@ struct pv_pipeline_out {
     bool test_ran;
     uint32_t test_exit;
     char test_fail_detail[VCS_PACKAGE_ATTEST_DETAIL_MAX + 1u];
+    uint8_t prebuild_toolchain_root[32];
     struct os_sandbox_rlimits compile_limits;
     struct os_sandbox_path_rule rules[PV_CHILD_GRANT_BASE_CAP + PV_EMIT_MAX_DEPS];
     size_t n_rules;
@@ -6952,7 +6983,8 @@ static int pv_main_run_pipeline(
     const uint8_t verifier_pubkey[33], struct vcs_package_recipe *recipe,
     struct vcs_package_manifest *manifest, struct vcs_package_release *release,
     const char *plan_path, const char **fast_cache_dir_io,
-    bool standard_profile, const uint8_t emit_lock_root[32],
+    bool standard_profile, bool emit_receipt,
+    const uint8_t emit_lock_root[32],
     bool allow_testless_standard, struct pv_pipeline_out *po)
 {
     const char *fast_cache_dir = *fast_cache_dir_io;
@@ -6991,12 +7023,16 @@ static int pv_main_run_pipeline(
         rules[PV_CHILD_GRANT_BASE_CAP + PV_EMIT_MAX_DEPS];
     size_t n_rules = 0;
     struct pv_compiler compilers[2];
+    uint8_t prebuild_toolchain_root[32];
     size_t sanitizer_compiler = 0;
     struct pv_dep_archives dep_archives;
     rc = pv_setup_link_and_compilers(
         emit_deps, emit_dep_count, src_root, build_root, full_isolation,
         link_deps, &link_dep_count, rules, &n_rules, compilers,
         &sanitizer_compiler, &dep_archives);
+    if (rc == PV_CONTINUE)
+        rc = pv_capture_prebuild_toolchain(
+            emit_receipt, compilers, prebuild_toolchain_root);
     if (rc != PV_CONTINUE) {
         pv_rm_rf(work);
         vcs_package_recipe_free(recipe);
@@ -7186,6 +7222,8 @@ static int pv_main_run_pipeline(
     po->test_ran = test_ran;
     po->test_exit = test_exit;
     memcpy(po->test_fail_detail, test_fail_detail, sizeof(test_fail_detail));
+    memcpy(po->prebuild_toolchain_root, prebuild_toolchain_root,
+           sizeof(prebuild_toolchain_root));
     po->compile_limits = compile_limits;
     memcpy(po->rules, rules, n_rules * sizeof(rules[0]));
     po->n_rules = n_rules;
@@ -7278,7 +7316,7 @@ static int pv_main_posix(int argc, char **argv)
         work_parent, candidate_mode, candidate_source, store_dir, emit_deps,
         emit_dep_count, full_isolation, package_root, release_id, recipe_root,
         verifier_pubkey, &recipe, &manifest, &release, plan_path,
-        &fast_cache_dir, standard_profile, emit_lock_root,
+        &fast_cache_dir, standard_profile, emit_dir != NULL, emit_lock_root,
         allow_testless_standard, &po);
     if (rc != PV_CONTINUE) {
         pv_unload_verifier_key(&sign_ctx, secret);
@@ -7293,7 +7331,8 @@ static int pv_main_posix(int argc, char **argv)
             &recipe, &manifest, &release, &po.att, po.src_root, po.build_root,
             &po.compile_limits, po.rules, po.n_rules, po.compile_env,
             candidate_mode, fast_cache_dir, reproduce_path, po.work,
-            po.build_fail_detail, po.test_fail_detail);
+            po.build_fail_detail, po.test_fail_detail,
+            po.prebuild_toolchain_root);
     }
 
     /* Sign + persist. */

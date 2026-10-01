@@ -5366,6 +5366,9 @@ static int zpr_emit_one(const char *root_hex, const char *store,
              read1 && prog_out != NULL &&
                  rec1->result_class == VCS_PACKAGE_BUILD_RESULT_TEST_PASS &&
                  vcs_package_build_installable(rec1));
+    ZV_CHECK("programs: the gcc receipt pins a toolchain capsule",
+             read1 && rec1->schema_version == VCS_PACKAGE_BUILD_VERSION &&
+                 rec1->has_toolchain_capsule);
     ZV_CHECK("programs: the archive and the public header still emit",
              read1 && zv_output_named(rec1, "lib/libaddpkg.a") != NULL &&
                  zv_output_named(rec1, "include/add.h") != NULL);
