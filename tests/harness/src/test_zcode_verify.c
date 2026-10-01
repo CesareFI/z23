@@ -65,9 +65,10 @@
  *      (test-fail/test-signal — the seccomp network denial firing). A
  *      release-envelope symlink is refused even when it resolves to the
  *      original valid signed bytes, the releases directory itself cannot be
- *      substituted by a symlink, a preplaced attestation temporary-file
- *      symlink cannot redirect signed bytes, and an overfull release
- *      directory cannot authorize execution from a partial scan. On the
+ *      substituted by a symlink, neither the attestation directory nor a
+ *      preplaced attestation temporary-file symlink can redirect signed
+ *      bytes, and an overfull release directory cannot authorize execution
+ *      from a partial scan. On the
  *      root-host lane, a valid 0600 key owned by another uid is also refused.
  *      The
  *      bounded cleanup refuses to persist an attestation when hostile test
@@ -4625,6 +4626,41 @@ static int ze_symlinked_release_directory(const char *base,
     return failures;
 }
 
+static int ze_symlinked_attestation_directory(const char *base,
+                                              const char *key_path,
+                                              const char *work)
+{
+    int failures = 0;
+    char store[4400];
+    snprintf(store, sizeof(store), "%s/store_linked_attestation_dir", base);
+    uint8_t package_root[32], release_id[32], recipe_root[32];
+    bool fixture = zv_publish_fixture(
+        store,
+        "#include \"add.h\"\nint add(int a, int b) { return a + b; }\n",
+        "#include \"add.h\"\nint main(void) { return add(2, 3) == 5 ? 0 : 1; }\n",
+        package_root, release_id, recipe_root);
+    char attestations[4400], outside[4400];
+    snprintf(attestations, sizeof(attestations), "%s/attestations", store);
+    snprintf(outside, sizeof(outside), "%s/outside-attestations", base);
+    bool redirected = fixture && rename(attestations, outside) == 0 &&
+                      symlink("../outside-attestations", attestations) == 0;
+    ZV_CHECK("e2e: symlinked attestation directory fixture prepared",
+             redirected);
+
+    char root_hex[65], out[2048];
+    zv_hex_enc(package_root, sizeof(package_root), root_hex);
+    int rc = redirected ? zv_run_verifier(root_hex, store, key_path, work,
+                                           out, sizeof(out)) : -1;
+    struct vcs_package_attest att;
+    ZV_CHECK("e2e: symlinked attestation directory refuses publication",
+             redirected && rc == 3 &&
+             !zv_read_only_attestation(store, &att));
+    if (redirected && rc != 3)
+        printf("  zcode_verify: symlinked attestation dir rc=%d out=%s\n",
+               rc, out);
+    return failures;
+}
+
 static int ze_overfull_release_directory(const char *base,
                                          const char *key_path,
                                          const char *work)
@@ -4878,6 +4914,7 @@ static int t_verifier_e2e(void)
     failures += ze_foreign_owned_key(base, work);
     failures += ze_symlinked_release(base, key_path, work);
     failures += ze_symlinked_release_directory(base, key_path, work);
+    failures += ze_symlinked_attestation_directory(base, key_path, work);
     failures += ze_overfull_release_directory(base, key_path, work);
     failures += ze_buildfail(base, key_path, work);
     failures += ze_socket(base, key_path, work);

@@ -4528,21 +4528,26 @@ static int pv_probe_isolation(bool require_full_isolation,
     return PV_CONTINUE;
 }
 
+static bool pv_is_real_directory(const char *path)
+{
+    int fd = open(path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    return fd >= 0 && close(fd) == 0;
+}
+
 /* Store layout sanity. Candidate mode has no release store: the parent
  * already proved the task/candidate/recipe/lock CAS bindings. */
 static int pv_check_store_layout(bool candidate_mode, const char *emit_dir,
                                  const char *store_dir)
 {
     char probe[4096];
-    struct stat st;
     static const char *const k_need[] = {
-        "/manifests", "/releases", "/recipes", "/cas/sha3",
+        "/manifests", "/releases", "/recipes", "/cas", "/cas/sha3",
     };
     for (size_t i = 0; !candidate_mode &&
                          i < sizeof(k_need) / sizeof(k_need[0]); i++) {
         int n = snprintf(probe, sizeof(probe), "%s%s", store_dir, k_need[i]);
         if (n < 0 || (size_t)n >= sizeof(probe) ||
-            stat(probe, &st) != 0 || !S_ISDIR(st.st_mode)) {
+            !pv_is_real_directory(probe)) {
             fprintf(stderr, "%s: %s%s: not a package store directory\n",
                     PV_LOG, store_dir, k_need[i]);
             return 3;
@@ -4550,7 +4555,8 @@ static int pv_check_store_layout(bool candidate_mode, const char *emit_dir,
     }
     if (!candidate_mode && !emit_dir) {
         int n = snprintf(probe, sizeof(probe), "%s/attestations", store_dir);
-        if (n < 0 || (size_t)n >= sizeof(probe) || !pv_mkdir_p(probe, 0700)) {
+        if (n < 0 || (size_t)n >= sizeof(probe) ||
+            !pv_mkdir_p(probe, 0700) || !pv_is_real_directory(probe)) {
             fprintf(stderr, "%s: cannot create %s/attestations\n", PV_LOG,
                     store_dir);
             return 3;
