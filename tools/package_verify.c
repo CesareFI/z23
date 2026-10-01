@@ -5002,6 +5002,7 @@ static bool pv_materialize_write_chunks(int fd,
                                         const struct vcs_package_file *f,
                                         const char *store_dir)
 {
+    /* The caller owns fd and closes it exactly once on every outcome. */
     for (uint32_t c = 0; c < f->chunk_count; c++) {
         char hex[65];
         zcl_hex_encode(f->chunk_hashes + (size_t)c * 32u, 32, hex);
@@ -5013,7 +5014,6 @@ static bool pv_materialize_write_chunks(int fd,
                                       &chunk_len);
         if (!chunk || !vcs_package_verify_chunk(f, c, chunk, chunk_len)) {
             free(chunk);
-            close(fd);
             return false;
         }
         size_t off = 0;
@@ -5023,8 +5023,6 @@ static bool pv_materialize_write_chunks(int fd,
             if (w < 0) {
                 if (errno == EINTR)
                     continue;
-                free(chunk);
-                close(fd);
                 ok = false;
                 break;
             }
