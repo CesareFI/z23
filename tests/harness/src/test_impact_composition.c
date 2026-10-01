@@ -7570,7 +7570,7 @@ static int test_ic_local_selection_build_needs(void)
         n = 99;
         ASSERT(zcl_test_selection_build_needs(NULL, false, NULL, needs, 16,
                                               &n));
-        ASSERT(n == 8);
+        ASSERT(n == 9);
         ASSERT(ic_needs_have(needs, n, "dev-bin", "build/bin/z23-dev"));
         ASSERT(ic_needs_have(needs, n, "engine-unit",
                              "build/bin/zclassic23-engine-unit"));
@@ -7579,6 +7579,8 @@ static int test_ic_local_selection_build_needs(void)
                              "build/bin/consensus_rule_sweep"));
         ASSERT(ic_needs_have(needs, n, "process-group-exec",
                              "build/bin/process-group-exec"));
+        ASSERT(ic_needs_have(needs, n, "p2_invariant_check",
+                             "build/bin/p2_invariant_check"));
         n = 99;
         ASSERT(zcl_test_selection_build_needs(NULL, false, ic_gate_everything,
                                               needs, 16, &n));

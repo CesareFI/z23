@@ -1446,6 +1446,13 @@ ZCL_TEST_GROUP(astro)
  * standalone `make fbsh` artifact, deliberately not a prerequisite of
  * the test binaries) and skips when it is absent. */
 ZCL_TEST_GROUP(freebsd_sh)
+/* p2_invariant_check P2 self-heal invariant diagnostic regressions
+ * (tools/p2_invariant_check.c -> build/bin/p2_invariant_check): the
+ * HOLDS/drift/malformed/absent/missing-cursor exit contract, the LE
+ * frontier wire, consensus.db preference, --immutable, and refusal
+ * paths. The binary is a standalone `make p2_invariant_check` artifact;
+ * the group skips when absent. */
+ZCL_TEST_GROUP(p2_invariant_check)
 /* beta6 bootstrap serve lane: the zclassicd v2.1.2-beta6 snapshot server this
  * node offers legacy clients. The manifest cases compare against byte vectors
  * written out from the beta6 C++ serializer definitions rather than captured
