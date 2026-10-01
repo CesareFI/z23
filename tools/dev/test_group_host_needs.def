@@ -135,6 +135,12 @@ ZCL_TEST_GROUP_BUILD_NEED("test_importblockindex_cli_dispatch",
  * selection, so only a local run needs this row. */
 ZCL_TEST_GROUP_BUILD_NEED("test_freebsd_sh", "build/bin/fbsh", "fbsh")
 
+/* tests/harness/src/test_export_snapshot.c execs build/bin/export_snapshot
+ * and self-skips where it is absent. The proof's prefork step builds
+ * export_snapshot only when this group is selected. */
+ZCL_TEST_GROUP_BUILD_NEED("test_export_snapshot", "build/bin/export_snapshot",
+                          "export_snapshot")
+
 /* tests/harness/src/test_process_group_exec.c execs the fixture launcher
  * build/bin/process-group-exec for both its arms. No default target builds
  * it; without this row a focused lane fails at the first ASSERT instead of
