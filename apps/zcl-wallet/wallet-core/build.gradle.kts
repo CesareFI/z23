@@ -15,6 +15,12 @@ tasks.test {
     dependsOn("buildHostNative")
     systemProperty("java.library.path", rootProject.file("native/build/jni").absolutePath)
     jvmArgs("-Xcheck:jni")
+    // Compiler/provider changes can rebuild loaded code without changing any
+    // declared source input. Bind cached test results to both actual libraries.
+    inputs.files(
+        rootProject.file("native/build/jni/${System.mapLibraryName("zclwallet_jni")}"),
+        rootProject.file("native/build/jni/${System.mapLibraryName("zclwallet_secret_fixture")}")
+    ).withPropertyName("hostNativeLibraries").withPathSensitivity(PathSensitivity.RELATIVE)
     inputs.files(rootProject.fileTree("native") {
         include("src/**", "include/**", "vendor/**", "tests/jni_secret_output_fixture.c", "CMakeLists.txt")
     }).withPathSensitivity(PathSensitivity.RELATIVE)

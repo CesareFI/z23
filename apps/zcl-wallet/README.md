@@ -31,6 +31,20 @@ publisher-signature verification. An offline build exercised their enforcement.
 Android hardware-backed custody requires device acceptance; host unit tests do
 not prove device security.
 
+Host JVM test reuse is bound to both loaded JNI libraries as well as the
+declared sources. To check this on Linux with the installed offline build
+dependencies and `ANDROID_HOME`, supply a new absolute output directory:
+
+```sh
+bash tools/check-host-native-inputs.sh /absolute/new-output-directory
+```
+
+The check builds a tracked-source snapshot, changes its native compiler profile,
+requires the JVM tests to run for changed library bytes, then verifies normal
+reuse when those bytes are unchanged. It preserves all logs and refuses an
+existing output directory. It does not change the original build configuration
+or qualify Android devices, custody or TLS.
+
 Verify fixture separation in the built debug, test and unsigned release APKs:
 
 ```sh
