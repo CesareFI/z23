@@ -78,6 +78,9 @@ void zcl_native_dev_land_test_watcher_launch(const char *wt,
 #include <unistd.h>
 void zcl_native_dev_land_test_pick_barrier(int ready_fd, int release_fd);
 bool zcl_native_dev_land_test_producer_stale(const char *detail);
+int zcl_native_dev_land_test_range_adds_source(const char *wt,
+                                               const char *base,
+                                               const char *local);
 int zcl_native_dev_land_test_producer_reproof(const char *root,
                                               const char *local,
                                               const char *base,
@@ -6534,6 +6537,47 @@ _test_next:;
     return failures;
 }
 
+static int test_dev_land_new_source_precheck(void)
+{
+    int failures = 0;
+#if !defined(_WIN32)
+    TEST("land: a range that adds a compiled source is told apart from one that edits a file or adds anything else") {
+        struct dlx_rig rig;
+        char base[64], edit[64], added[64], header[64];
+        dlx_isolate("new_source_precheck");
+        ASSERT(dlx_rig_make(&rig, "new_source_precheck_rig"));
+        ASSERT(dlx_origin_main(&rig, base));
+        const char *onto[] = { "checkout", "--quiet", "-B", "probe", base,
+                               NULL };
+        ASSERT(dlx_git(rig.clone, onto) == 0);
+        ASSERT(dlx_commit(rig.clone, "notes.md", "prose\n", edit));
+        ASSERT(dlx_commit(rig.clone, "module.h", "int f(void);\n", header));
+        ASSERT(dlx_commit(rig.clone, "module.c", "int f(void){return 0;}\n",
+                          added));
+        ASSERT(zcl_native_dev_land_test_range_adds_source(rig.clone, base,
+                                                          edit) == 0);
+        ASSERT(zcl_native_dev_land_test_range_adds_source(rig.clone, base,
+                                                          header) == 0);
+        ASSERT(zcl_native_dev_land_test_range_adds_source(rig.clone, base,
+                                                          added) == 1);
+        /* The file exists on both sides: an edit, not an addition. */
+        ASSERT(zcl_native_dev_land_test_range_adds_source(rig.clone, added,
+                                                          added) == 0);
+        /* A pair git cannot name is never read as "nothing added". */
+        ASSERT(zcl_native_dev_land_test_range_adds_source(
+                   rig.clone, base,
+                   "0123456789abcdef0123456789abcdef01234567") == -1);
+        ASSERT(zcl_native_dev_land_test_range_adds_source(rig.clone, "main",
+                                                          added) == -1);
+        dlx_restore();
+        PASS();
+    }
+_test_next:;
+    dlx_restore();
+#endif
+    return failures;
+}
+
 static int test_dev_land_drive_producer_reproof(void)
 {
     int failures = 0;
@@ -7567,6 +7611,7 @@ int test_dev_land(void)
     failures += test_dev_land_signer_takeover();
     failures += test_dev_land_signed_stale();
     failures += test_dev_land_signed_recovery();
+    failures += test_dev_land_new_source_precheck();
     failures += test_dev_land_drive_producer_reproof();
     failures += test_dev_land_signed_lost_ack();
     failures += test_dev_land_signed_lost_race();

@@ -4620,9 +4620,66 @@ static int dl_rebase(const struct dl_dirs *d, struct dl_row *row,
 /* make lint-land (lint-fast plus cheap gates that failed in proof lint) in the
  * landing worktree. Returns the child status; the transcript is appended to
  * the attempt log either way. */
+static int dl_lint_run(struct dl_row *row, const char *const argv[]);
+
 static int dl_lint_fast(const struct dl_dirs *d, struct dl_row *row)
 {
     const char *argv[] = { "make", "-C", d->wt, "lint-land", NULL };
+    return dl_lint_run(row, argv);
+}
+
+/* Does the candidate range add a compiled source file? 1 yes, 0 no, -1 when
+ * git could not answer. */
+static int dl_range_adds_source(const char *wt, const char *base,
+                                const char *local)
+{
+    char out[4096];
+    const char *args[] = { "diff", "--no-renames", "--diff-filter=A",
+                           "--name-only", base, local, "--", "*.c", NULL };
+    if (!dl_sha_ok(base) || !dl_sha_ok(local) ||
+        dl_git(wt, args, out, sizeof(out), DL_GIT_TIMEOUT_MS) != 0)
+        return -1;
+    return out[0] != '\0' ? 1 : 0;
+}
+
+#if defined(ZCL_TESTING)
+int zcl_native_dev_land_test_range_adds_source(const char *wt,
+                                               const char *base,
+                                               const char *local)
+{
+    return dl_range_adds_source(wt, base, local);
+}
+#endif
+
+/* A new compiled source is what the full-lint-only gates in `make
+ * lint-preflight` exist for — capability closure above all: a source with
+ * no module_capabilities.def row passes lint-land and then fails the
+ * proof's lint dimension, a whole proof spent on a gate that answers in
+ * under a minute. Those gates read built objects, so they are too dear for
+ * every landing and are run only when the range adds a `.c` file. A range
+ * git cannot classify runs them: the cost of a needless minute is smaller
+ * than the cost of the proof they would have saved. */
+static int dl_lint_new_source(const struct dl_dirs *d, struct dl_row *row)
+{
+    char jobs[16];
+    if (dl_range_adds_source(d->wt, row->base, row->local) == 0)
+        return 0;
+    if (!platform_build_jobs_arg(jobs))
+        return -1;
+    const char *argv[] = { "make", jobs, "-C", d->wt, "lint-preflight",
+                           NULL };
+    return dl_lint_run(row, argv);
+}
+
+/* Everything the landing lints before it asks for a proof. */
+static int dl_lint_candidate(const struct dl_dirs *d, struct dl_row *row)
+{
+    int rc = dl_lint_fast(d, row);
+    return rc != 0 ? rc : dl_lint_new_source(d, row);
+}
+
+static int dl_lint_run(struct dl_row *row, const char *const argv[])
+{
     char *buf;
     int rc;
     buf = (char *)zcl_malloc(DL_LOG_CAP, "dev.land.lint");
@@ -6100,7 +6157,7 @@ static void dl_step_start(const struct dl_dirs *d, struct dl_row *row,
      * discover first. The proof stub skips it: a test of this queue is not
      * a test of the lint suite. */
     (void)snprintf(row->phase, sizeof(row->phase), "prebuild");
-    if (!dl_stub() && dl_lint_fast(d, row) != 0) {
+    if (!dl_stub() && dl_lint_candidate(d, row) != 0) {
         bool retry = strcmp(row->dimension, "host_load") == 0 &&
                      row->attempt < DL_ATTEMPT_MAX;
         if (retry) {
