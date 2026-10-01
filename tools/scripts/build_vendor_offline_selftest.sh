@@ -54,7 +54,26 @@ fi
 # The compiler driver grounds slash-containing relative tools at the source
 # root. Compilation must use that same executable from a different cwd.
 mkdir -p "$SANDBOX/elsewhere/tools"
-printf '%s\n' '#!/usr/bin/env bash' 'exec /usr/bin/cc "$@"' > "$SANDBOX/tools/native-cc"
+# Freeze the qualified driver before the relative fixture overrides HOSTCC.
+# Match the production token grammar; never evaluate a compiler command.
+fixture_host_cc="${HOSTCC:-cc}"
+[[ "$fixture_host_cc" =~ ^[A-Za-z0-9_./:+,=%-]+([[:space:]]+[A-Za-z0-9_./:+,=%-]+)*$ ]] ||
+    fail 'fixture HOSTCC contains unsupported shell syntax'
+read -r -a fixture_host_argv <<<"$fixture_host_cc"
+case "${fixture_host_argv[0]}" in
+    /*) ;;
+    */*) fixture_host_argv[0]="$ROOT/${fixture_host_argv[0]}" ;;
+    *) fixture_host_argv[0]="$(command -v -- "${fixture_host_argv[0]}")" ||
+           fail 'fixture host compiler unavailable' ;;
+esac
+[[ "${fixture_host_argv[0]}" == /* && -f "${fixture_host_argv[0]}" &&
+   -x "${fixture_host_argv[0]}" ]] || fail 'fixture host compiler unavailable'
+{
+    printf '%s\n' '#!/usr/bin/env bash'
+    printf 'exec'
+    printf ' %q' "${fixture_host_argv[@]}"
+    printf ' "$@"\n'
+} > "$SANDBOX/tools/native-cc"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 97' > "$SANDBOX/elsewhere/tools/native-cc"
 chmod +x "$SANDBOX/tools/native-cc" "$SANDBOX/elsewhere/tools/native-cc"
 if output="$(cd "$SANDBOX/elsewhere" && HOSTCC=tools/native-cc \

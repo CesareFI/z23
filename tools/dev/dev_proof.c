@@ -15,6 +15,7 @@
 #include "dev_proof.h"
 #include "dependency_links.h"
 #include "dev_proof_budget.h"
+#include "dev_proof_observation.h"
 #include "devloop.h"
 #include "test_group_catalog.h"
 #include "test_group_host_need.h"
@@ -6458,6 +6459,7 @@ static bool proof_prepare_environment(void)
         "ZCL_LINT_MODE", "ZCL_LINT_TU_CACHE", "ZCL_LINT_TU_CACHE_DIR",
         "ZCL_LINT_TU_CACHE_GENERATIONS", "ZCL_TEST_CACHE",
         "ZCL_TEST_CACHE_DUMP", "ZCL_TESTCACHE_STORE_ROOT",
+        ZCL_DEV_OBSERVATION_STORE_ENV,
         ZCL_VERIFY_RECEIVER_ENV, "ZCC_LOG",
     };
     for (size_t i = 0; i < sizeof(unset_names) / sizeof(unset_names[0]); i++)
@@ -6550,6 +6552,65 @@ static bool proof_zcc_private_close(const char *state, const char *key)
     return unsetenv("ZCC_VERIFIED") == 0 &&
            unsetenv("ZCC_DIR") == 0 && removed;
 }
+
+#if defined(ZCL_TESTING)
+/* Fixture-only lifecycle for explicit observation runs. Automatic worker
+ * collection is deferred until all required input closures qualify. */
+/* Explicit-run fixtures keep unsigned verdict scratch separate from durable
+ * signed observations, using per-pair paths that cannot collide. */
+static bool proof_testcache_store_path(const char *state, const char *key,
+                                       char out[PATH_MAX])
+{
+    return state && state[0] && key && key[0] && !strchr(key, '/') &&
+           snprintf(out, PATH_MAX, "%s/testcache.%s", state, key) < PATH_MAX;
+}
+
+static bool proof_observation_store_path(const char *state, const char *key,
+                                         char out[PATH_MAX])
+{
+    return state && state[0] && key && key[0] && !strchr(key, '/') &&
+           snprintf(out, PATH_MAX, "%s/observations.%s", state, key) < PATH_MAX;
+}
+
+static bool proof_observation_env_open(const char *state, const char *key)
+{
+    /* The runner's store open creates only the leaf it needs; the per-pair
+     * directories must already exist. Start the verdict store empty the
+     * same way proof_zcc_private_open does -- a killed worker can leave one
+     * behind. The observation CAS is durable across runs of this pair, so
+     * it must tolerate already existing (a retried proof re-arms the same
+     * directory); _ensure is the idempotent variant. */
+    char scratch[PATH_MAX], observations[PATH_MAX];
+    if (!proof_testcache_store_path(state, key, scratch) ||
+        !proof_observation_store_path(state, key, observations))
+        return false;
+    if (proof_zcc_store_remove(state, scratch) &&
+        platform_private_directory_create(scratch) &&
+        setenv("ZCL_TESTCACHE_STORE_ROOT", scratch, 1) == 0 &&
+        platform_private_directory_ensure(observations) &&
+        setenv(ZCL_DEV_OBSERVATION_STORE_ENV, observations, 1) == 0)
+        return true;
+    /* A partial open owns no durable observation bytes. Remove only its
+     * scratch store and clear both child controls before returning. */
+    (void)proof_zcc_store_remove(state, scratch);
+    (void)unsetenv("ZCL_TESTCACHE_STORE_ROOT");
+    (void)unsetenv(ZCL_DEV_OBSERVATION_STORE_ENV);
+    return false;
+}
+
+/* Fixture restore clears both controls and verdict scratch. Durable signed
+ * observation bytes remain available to an explicit retry. */
+static bool proof_observation_env_close(const char *state, const char *key)
+{
+    char store[PATH_MAX];
+    bool removed = proof_testcache_store_path(state, key, store) &&
+                   proof_zcc_store_remove(state, store);
+    bool verdict_unset = unsetenv("ZCL_TESTCACHE_STORE_ROOT") == 0;
+    bool observation_unset = unsetenv(ZCL_DEV_OBSERVATION_STORE_ENV) == 0;
+    return verdict_unset && observation_unset && removed;
+}
+
+#endif
 
 /* Fill the pre-fork make argv: everything EITHER dimension can build, built
  * once, before either starts.
@@ -7443,6 +7504,26 @@ static bool proof_stress_tests_env_prepare(char *why, size_t why_len)
 bool zcl_dev_proof_test_stress_env_prepare(char *why, size_t why_len)
 {
     return proof_stress_tests_env_prepare(why, why_len);
+}
+
+/* Fixture-only seam for explicit observation store lifecycle. These tests
+ * do not imply that the default worker arms observation stores. */
+bool zcl_dev_proof_test_observation_env_prepare(const char *state,
+                                                const char *key,
+                                                char *why, size_t why_len)
+{
+    if (!proof_observation_env_open(state, key)) {
+        proof_why(why, why_len, "observation_env_unavailable");
+        return false;
+    }
+    if (why && why_len) why[0] = 0;
+    return true;
+}
+
+bool zcl_dev_proof_test_observation_env_restore(const char *state,
+                                                const char *key)
+{
+    return proof_observation_env_close(state, key);
 }
 
 bool zcl_dev_proof_test_warm_status_line(const char *warmstart_path,

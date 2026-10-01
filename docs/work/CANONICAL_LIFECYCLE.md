@@ -126,9 +126,19 @@ lint and test child dimensions. Pair naming remains an exact local push
 admission envelope, not the reusable per-unit evidence key. The verdict-leaf
 codec in the same module already separates its exact test-cache key from the
 root of all signed observation bytes. Codec coverage is registered in
-`tests/harness/src/test_dev_proof_signer.c`; runner emission, durable CAS/index
-storage, conflict admission and canonical proof-set publication are separate
-integration work. A codec alone does not establish a complete input closure.
+`tests/harness/src/test_dev_proof_signer.c`. Explicit runner emission is wired: `--cold-audit --emit-observations`
+requires complete qualified coverage, while `--cold-audit --collect-observations`
+reports reviewed external-input denylisted groups as UNQUALIFIED with missing
+coverage. Other closure, execution, signing or CAS errors remain fatal. The
+output-store control can separate signed durable leaves from unsigned verdict
+scratch. Automatic proof-worker emission is deferred until the mandatory input
+closures qualify: its default remains exact `--no-cache
+--activate-proof-contracts`, and the signed whole-cycle pair receipt remains
+admission. Authenticated partial leaves do not establish complete admission.
+Durable CAS enumeration/indexing, receiver-side
+proof-set conflict admission and canonical proof-set publication remain
+separate integration work. A codec alone does not establish a complete input
+closure.
 
 The existing Commons evaluator in
 `engine/services/src/build_fabric_evidence.c` now retains verified failures

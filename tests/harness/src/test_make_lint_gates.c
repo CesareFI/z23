@@ -88,6 +88,104 @@ bool lint_gates_group_requires_quiet_pool(const char *group_name)
 #include "platform/os_proc.h"
 #include "platform/time_compat.h"
 
+#include "devloop.h"
+#include "dev_proof_observation.h"
+#include "test/testcache.h"
+#include <fcntl.h>
+
+#if defined(__linux__)
+static bool observation_child_complete(const struct zcl_devloop_process_result *run)
+{
+    return !run->timed_out && !run->cancelled && !run->output_truncated;
+}
+
+/* Open the mapped image once and use the existing descriptor-bound executor.
+ * These selections cannot recurse into this group; every child is bounded. */
+static int t_dev_proof_runner_observations(void)
+{
+    int failures = 0;
+    char root[4096] = {0}, store[4096];
+    int image_fd = open("/proc/self/exe", O_RDONLY | O_CLOEXEC);
+    const char *prior = getenv("ZCL_DEVLOOP_TEST_PROCESS");
+    char *saved = prior ? strdup(prior) : NULL;
+    TEST_CASE("[lint-gate] actual observation runner ordinary, activated, denylisted and CAS failure") {
+        ASSERT(image_fd >= 0);
+        ASSERT(!prior || saved != NULL);
+        ASSERT(setenv("ZCL_DEVLOOP_TEST_PROCESS", "1", 1) == 0);
+        test_make_tmpdir(root, sizeof(root), "proof_obs_env", "runner");
+        ASSERT(snprintf(store, sizeof(store), "%s/observations", root) > 0);
+        ASSERT(mkdir(store, 0700) == 0);
+        ASSERT(setenv(ZCL_DEV_OBSERVATION_STORE_ENV, store, 1) == 0);
+        ASSERT(setenv("ZCL_TESTCACHE_STORE_ROOT", root, 1) == 0);
+        const char *argv[] = {"/proc/self/exe", "--exact=test_hex_codec", "--jobs=1",
+            "--timeout=30", "--cold-audit", "--emit-observations", NULL, NULL};
+        struct zcl_devloop_process_result run;
+        ASSERT(zcl_devloop_process_run_fd(".", image_fd, argv, 60000, &run));
+        ASSERT(observation_child_complete(&run));
+        ASSERT(strstr(run.output, "groups_ran=1 groups_cached=0") != NULL);
+        ASSERT(strstr(run.output, "groups_failed=0 self_skips=0 env_unobserved=0 load_flaky=0") != NULL);
+        ASSERT_EQ(run.exit_code, 0);
+        ASSERT(strstr(run.output, "mode=complete eligible=1 emitted=1 unqualified=0 refused=0 complete=1") != NULL);
+        argv[5] = "--collect-observations";
+        argv[1] = "--exact=test_make_lint_gates_partition";
+        ASSERT(zcl_devloop_process_run_fd(".", image_fd, argv, 60000, &run));
+        ASSERT(observation_child_complete(&run));
+        ASSERT(strstr(run.output, "groups_ran=1 groups_cached=0") != NULL);
+        ASSERT(strstr(run.output, "groups_failed=0 self_skips=0 env_unobserved=0 load_flaky=0") != NULL);
+        ASSERT_EQ(run.exit_code, 0);
+        ASSERT(strstr(run.output, "OBSERVATION UNQUALIFIED group=test_make_lint_gates") != NULL);
+        ASSERT(strstr(run.output, "eligible=0 emitted=0 unqualified=1 refused=0 complete=0") != NULL);
+        argv[5] = "--emit-observations";
+        ASSERT(zcl_devloop_process_run_fd(".", image_fd, argv, 60000, &run));
+        ASSERT(observation_child_complete(&run));
+        ASSERT(strstr(run.output, "groups_ran=1 groups_cached=0") != NULL);
+        ASSERT(strstr(run.output, "groups_failed=0 self_skips=0 env_unobserved=0 load_flaky=0") != NULL);
+        ASSERT_EQ(run.exit_code, 1);
+        ASSERT(strstr(run.output, "observation_input_closure_incomplete") != NULL);
+        argv[1] = "--exact=test_event_log_benchmark";
+        argv[5] = "--collect-observations";
+        argv[6] = "--activate-proof-contracts";
+        ASSERT(zcl_devloop_process_run_fd(".", image_fd, argv, 60000, &run));
+        ASSERT(observation_child_complete(&run));
+        ASSERT(strstr(run.output, "groups_ran=1 groups_cached=0") != NULL);
+        ASSERT(strstr(run.output, "groups_failed=0 self_skips=0 env_unobserved=0 load_flaky=0") != NULL);
+        ASSERT_EQ(run.exit_code, 0);
+        ASSERT(strstr(run.output, "eligible=1 emitted=1 unqualified=0 refused=0 complete=1") != NULL);
+        argv[1] = "--exact=test_build_profile";
+        argv[6] = NULL;
+        ASSERT(!testcache_group_is_denylisted("test_build_profile"));
+        ASSERT(zcl_devloop_process_run_fd(".", image_fd, argv, 60000, &run));
+        ASSERT(observation_child_complete(&run));
+        ASSERT_EQ(run.exit_code, 1);
+        ASSERT(strstr(run.output, "groups_ran=1 groups_cached=0") != NULL);
+        ASSERT(strstr(run.output, "groups_failed=0 self_skips=0 env_unobserved=0 load_flaky=0") != NULL);
+        ASSERT(strstr(run.output, "OBSERVATION REFUSE group=test_build_profile reason=observation_input_closure_incomplete") != NULL);
+        ASSERT(strstr(run.output, "eligible=0 emitted=0 unqualified=0 refused=1 complete=0") != NULL);
+        argv[1] = "--exact=test_hex_codec";
+        ASSERT_EQ(test_rm_rf_recursive(store), 0);
+        FILE *file = fopen(store, "wb");
+        ASSERT(file != NULL);
+        ASSERT(fclose(file) == 0);
+        ASSERT(zcl_devloop_process_run_fd(".", image_fd, argv, 60000, &run));
+        ASSERT(observation_child_complete(&run));
+        ASSERT(strstr(run.output, "groups_ran=1 groups_cached=0") != NULL);
+        ASSERT(strstr(run.output, "groups_failed=0 self_skips=0 env_unobserved=0 load_flaky=0") != NULL);
+        ASSERT_EQ(run.exit_code, 1);
+        ASSERT(strstr(run.output, "OBSERVATION REFUSE group=test_hex_codec") != NULL);
+        ASSERT(strstr(run.output, "eligible=1 emitted=0 unqualified=0 refused=1 complete=0") != NULL);
+    }
+    TEST_END
+    if (image_fd >= 0) (void)close(image_fd);
+    if (saved) (void)setenv("ZCL_DEVLOOP_TEST_PROCESS", saved, 1);
+    else (void)unsetenv("ZCL_DEVLOOP_TEST_PROCESS");
+    free(saved);
+    (void)unsetenv("ZCL_TESTCACHE_STORE_ROOT");
+    (void)unsetenv(ZCL_DEV_OBSERVATION_STORE_ENV);
+    (void)test_rm_rf_recursive(root);
+    return failures;
+}
+#endif
+
 /* Per-process sandbox-root override. A shard group chdir()s into its private
  * sandbox and calls repo_root_set_override() with that path; every
  * repo_path()/run_gate_script()/fixture-plant then resolves INTO the sandbox
@@ -318,6 +416,9 @@ static const struct lint_gate_entry g_lint_gate_entries[] = {
     N_(t_lint_explicit_gates_run_once),
     N_(t_dev_proof_helpers_include_lint_tool),
     N_(t_dev_proof_prefork_runs_before_the_dimensions),
+#if defined(__linux__)
+    N_(t_dev_proof_runner_observations),
+#endif
     S_(t_no_dev_history_in_contracts),
     S_(t_no_uncited_victory),
     /* Read-only root probe retained in the historical base group. */
@@ -683,7 +784,7 @@ int test_make_lint_gates_realroot(void)
 {
     char real_root[PATH_MAX];
     if (lint_resolve_real_root(real_root, sizeof(real_root)) != 0)
-        return 0;
+        return 1;
     printf("\n=== make_lint_gates real-worktree tests ===\n");
     return lint_run_owned(LINT_OWNER_REALROOT);
 }

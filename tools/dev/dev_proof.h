@@ -528,6 +528,14 @@ int zcl_dev_proof_test_capsule_argv(bool write, const char *capsule_path,
  * ZCL_STRESS_TESTS lands in this process's own environ (and therefore in
  * every execvp()'d test child) without driving a full proof cycle. */
 bool zcl_dev_proof_test_stress_env_prepare(char *why, size_t why_len);
+/* Seam onto the per-proof observation/testcache store environment the worker
+ * arms before the test dimension: prepare lands both knobs pointing at
+ * per-pair directories under <state>; restore removes them again. */
+bool zcl_dev_proof_test_observation_env_prepare(const char *state,
+                                                const char *key,
+                                                char *why, size_t why_len);
+bool zcl_dev_proof_test_observation_env_restore(const char *state,
+                                                const char *key);
 /* Exercise the proof worker's actual runtime admission before it forks. */
 bool zcl_dev_proof_test_clang_runtime_check(char *why, size_t why_len);
 const char *zcl_dev_proof_test_clang_runtime_path(void);

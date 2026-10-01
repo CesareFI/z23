@@ -1010,6 +1010,24 @@ comes back only when a separate-uid verifier qualifies. `phases.txt` records
 `test_reuse_admit=test-reuse: unqualified(no_verifier_account)` and an
 `advisory` `test_preflight` probe count that admits nothing
 ([`work/test-result-cache.md`](work/test-result-cache.md)).
+Automatic proof-worker per-group collection is deferred until every mandatory
+input closure qualifies. The default exact cold whole-cycle proof and its signed
+pair receipt remain the admission gate. Explicit runner diagnostics use
+`--cold-audit --emit-observations` for strict complete-set emission, or
+`--cold-audit --collect-observations` for narrowly partial collection. Only
+already reviewed external-input denylisted groups report `UNQUALIFIED` with
+missing coverage; other closure, execution, signing, serialization, CAS or
+admission errors remain fatal. `OBSERVATION COVERAGE` reports eligible, emitted,
+unqualified, refused and complete counts. Authenticated partial leaves do not
+replace complete admission. Explicit callers keep unsigned verdict scratch
+separate from durable signed observation CAS; fixture regressions cover cleanup,
+retained bytes and interrupted retries. The output-store path is a control,
+not part of the test input key.
+The vendor builder retains `vendor/.build.lock` as a regular-file kernel lock
+across runs; its inherited lock descriptor coordinates builders until process
+exit. Preserve this inode. The root-anchored tracked ignore treats this generated
+control as output, while unrelated untracked source still refuses proof admission.
+
 `make lint-fast` remains available for feedback while editing. The generation
 is handed the built artifacts the
 full gate set reads (the confined package verifier, `build/bin/z23-dev`,

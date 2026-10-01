@@ -1002,6 +1002,13 @@ ZCL_TEST_GROUP(testcache)
  * self-skip and testcache caches the SKIP as a PASS. See
  * tools/dev/dev_proof.c's proof_stress_tests_env_prepare(). */
 ZCL_TEST_GROUP(dev_proof_stress_env)
+/* The push proof's test dimension runs the runner with
+ * --cold-audit --emit-observations; the worker must point the verdict store
+ * and the signed-observation CAS at per-pair private directories (never a
+ * shared or candidate-writable store) and unset both on worker exit, or a
+ * resident daemon's environment carries one proof's stores into the next.
+ * See tools/dev/dev_proof.c's proof_observation_env_open(). */
+ZCL_TEST_GROUP(dev_proof_observation_env)
 ZCL_TEST_GROUP(test_group_selector)
 ZCL_TEST_GROUP(metaverse_catalog)
 ZCL_TEST_GROUP(node_character)

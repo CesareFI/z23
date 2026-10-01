@@ -5675,13 +5675,14 @@ static bool ic_original_plan_fixture(const char *root, char local[65])
         return false;
     char cmd[16384];
     int n = snprintf(cmd, sizeof(cmd),
+        "cp .gitignore '%s/.gitignore' && "
         "cp tools/dev/source-identity.sh '%s/tools/dev/source-identity.sh' && "
         "cd '%s' && chmod 700 tools/dev/source-identity.sh && git init -q && "
         "git config user.name fixture && git config user.email fixture@invalid && "
         "git config commit.gpgsign false && git add -A && git commit -qm first && "
         "make --no-print-directory dev-bin && "
         "printf 'int value = 2;\\n' > sample.c && git add sample.c && "
-        "git commit -qm second", root, root);
+        "git commit -qm second", root, root, root);
     if (n <= 0 || (size_t)n >= sizeof(cmd) || system(cmd) != 0) return false;
     const char *argv[] = {"git", "rev-parse", "HEAD", NULL};
     struct zcl_devloop_process_result result = {0};
@@ -5764,6 +5765,27 @@ static int test_pw_original_plan_refreshes_before_sealing(void)
         /* Idempotent preparation still obtains a verified current plan. */
         ASSERT(zcl_dev_proof_test_original_plan_prepare(root, local, log,
                                                         why, sizeof(why)));
+        /* Use the repository's actual ignore rules and real native admission:
+         * the persistent generated lock is output, nearby source is not. */
+        ASSERT(ic_write(root, "vendor/.build.lock", ""));
+        ASSERT(zcl_dev_proof_test_original_plan_prepare(root, local, log,
+                                                        why, sizeof(why)));
+        ASSERT(snprintf(marker, sizeof(marker), "%s/vendor/.build.lock", root) <
+               (int)sizeof(marker));
+        ASSERT(access(marker, F_OK) == 0);
+        static const char *const negatives[] = {
+            "vendor/.build.lock.c", "vendor/vendor_lock_input.h",
+            "unrelated/vendor/.build.lock", "unexpected-source.c"
+        };
+        for (size_t i = 0; i < sizeof(negatives) / sizeof(negatives[0]); ++i) {
+            ASSERT(ic_write(root, negatives[i], "fixture input\n"));
+            ASSERT(!zcl_dev_proof_test_original_plan_prepare(root, local, log,
+                                                             why, sizeof(why)));
+            ASSERT_STR_EQ(why, "worktree_not_clean");
+            ASSERT(snprintf(marker, sizeof(marker), "%s/%s", root, negatives[i]) <
+                   (int)sizeof(marker));
+            ASSERT(unlink(marker) == 0);
+        }
         ASSERT(ic_write(root, "build/fail", "1\n"));
         ASSERT(!zcl_dev_proof_test_original_plan_prepare(root, local, log,
                                                          why, sizeof(why)));
@@ -7582,12 +7604,13 @@ static int test_ic_generation_refuses_forged_verdict(void)
 }
 
 /* The test dimension's runner argv carries the runner's explicit cold mode,
- * which outranks ZCL_TEST_CACHE, and nothing that would admit a cached
- * verdict: no --cache, no probe-only, no capsule to consume. */
+ * which outranks ZCL_TEST_CACHE, emits a signed observation leaf per
+ * executed group into the worker-private CAS, and nothing that would admit
+ * a cached verdict: no --cache, no probe-only, no capsule to consume. */
 static int test_ic_proof_test_dimension_runs_cold(void)
 {
     int failures = 0;
-    TEST("proof test dimension: the runner starts cold and admits no cached verdict") {
+    TEST("proof test dimension: the runner starts cold, emits observations, admits no cached verdict") {
         const char *argv[8];
         const char *small[4];
         size_t argc = zcl_dev_proof_test_dimension_argv(
@@ -7601,6 +7624,9 @@ static int test_ic_proof_test_dimension_runs_cold(void)
         ASSERT(argv[4] == NULL);
         for (size_t i = 0; i < argc; ++i) {
             ASSERT(strcmp(argv[i], "--cache") != 0);
+            ASSERT(strcmp(argv[i], "--cold-audit") != 0);
+            ASSERT(strcmp(argv[i], "--emit-observations") != 0);
+            ASSERT(strcmp(argv[i], "--collect-observations") != 0);
             ASSERT(strcmp(argv[i], "--cache-probe-only") != 0);
             ASSERT(strncmp(argv[i], "--use-capsule", 13) != 0);
         }

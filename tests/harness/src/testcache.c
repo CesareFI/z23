@@ -379,6 +379,7 @@ static bool trc_env_is_cache_control(const char *name, size_t namelen)
     static const char *const ctl[] = {
         "ZCL_TEST_CACHE", "ZCL_TEST_CACHE_DUMP",
         "ZCL_TESTCACHE_STORE_ROOT", "ZCL_LINT_TU_CACHE",
+        "ZCL_DEV_OBSERVATION_STORE",
     };
     for (size_t i = 0; i < sizeof(ctl) / sizeof(ctl[0]); i++)
         if (strlen(ctl[i]) == namelen && strncmp(name, ctl[i], namelen) == 0)

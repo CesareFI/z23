@@ -5,6 +5,12 @@
 
 #include "dev_proof_receipt.h"
 
+/* Explicit observation runs may use a private durable CAS separate from
+ * unsigned verdict scratch. The default proof worker scrubs this control
+ * and does not arm observation emission. When unset, an explicit run uses
+ * the testcache store root. */
+#define ZCL_DEV_OBSERVATION_STORE_ENV "ZCL_DEV_OBSERVATION_STORE"
+
 enum zcl_dev_observation_verdict {
     ZCL_DEV_OBSERVATION_MISSING = 0,
     ZCL_DEV_OBSERVATION_PASS,
