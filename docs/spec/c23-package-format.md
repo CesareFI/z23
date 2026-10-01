@@ -160,10 +160,13 @@ A Commons build is a confined observation, not an act of faith:
   evidence kinds are not gated.
 - **Toolchain fingerprint.** The toolchain capsule
   (`vcs_toolchain_capsule_v1`) pins compiler driver bytes, backend bytes,
-  assembler identity, sysroot, and ABI files into one root. Work-fabric
-  receipts and schema-v2 build receipts both commit it; byte-identical
-  reproduction across DIFFERENT toolchains still counts — the comparator
-  deliberately judges output bytes, with the capsule as named evidence.
+  assembler identity, sysroot, ABI and link-tool files, target probes, and
+  on Linux the effective GCC specs output into one root. Fresh capture
+  brackets the descriptor and effective configuration so either changing
+  during hashing refuses the identity. Work-fabric receipts and schema-v2
+  build receipts both commit it; byte-identical reproduction across
+  DIFFERENT toolchains still counts — the comparator deliberately judges
+  output bytes, with the capsule as named evidence.
 
 <!-- claim: symbol-present vcs_package_build_set_toolchain_capsule contexts/commons/modules/vcs/include/vcs/package_build.h # receipt v2 capsule binding -->
 

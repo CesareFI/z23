@@ -40,8 +40,31 @@ struct pt_query_log {
 
 struct pt_capsule_query {
     size_t descriptor_count;
+    size_t configuration_count;
     bool change_second_descriptor;
+    bool change_second_configuration;
+    bool alternate_configuration;
+    bool fill_configuration_buffer;
 };
+
+static bool pt_capsule_configuration_stub(
+    struct pt_capsule_query *query, char *out, size_t cap)
+{
+    query->configuration_count++;
+    if (query->fill_configuration_buffer) {
+        if (cap < 2) return false;
+        memset(out, 'x', cap - 1u);
+        out[cap - 1u] = '\0';
+        return true;
+    }
+    const char *value = query->alternate_configuration
+        ? "fixture-specs-alternate" : "fixture-specs";
+    if (query->change_second_configuration &&
+        query->configuration_count > 1)
+        value = "fixture-specs-changed";
+    int n = snprintf(out, cap, "%s", value);
+    return n > 0 && (size_t)n < cap;
+}
 
 static bool pt_capsule_query_stub(void *ctx, const char *const argv[],
                                   char *out, size_t cap)
@@ -53,6 +76,8 @@ static bool pt_capsule_query_stub(void *ctx, const char *const argv[],
     if (strcmp(arg, "-print-prog-name=cc1") == 0)
         query->descriptor_count++;
     const char *value = "/usr/bin/cc";
+    if (strcmp(arg, "-dumpspecs") == 0)
+        return pt_capsule_configuration_stub(query, out, cap);
     if (strcmp(arg, "-dumpmachine") == 0) {
         value = query->change_second_descriptor &&
                 query->descriptor_count > 1
@@ -130,14 +155,44 @@ static int pt_capsule_capture_checks(void)
     PT_CHECK("capsule capture brackets tool bytes with two descriptors",
              vcs_toolchain_capsule_v1_capture_query_for_test(
                  pt_capsule_query_stub, &stable, &capsule) &&
-             stable.descriptor_count == 2);
+             stable.descriptor_count == 2 &&
+             stable.configuration_count == 2);
+    uint8_t stable_root[32], alternate_root[32];
+    struct vcs_toolchain_capsule_v1 alternate_capsule;
+    struct pt_capsule_query alternate = {
+        .alternate_configuration = true,
+    };
+    PT_CHECK("capsule root binds the effective GCC configuration",
+             vcs_toolchain_capsule_v1_capture_query_for_test(
+                 pt_capsule_query_stub, &alternate, &alternate_capsule) &&
+             vcs_toolchain_capsule_v1_root(&capsule, stable_root) &&
+             vcs_toolchain_capsule_v1_root(
+                 &alternate_capsule, alternate_root) &&
+             memcmp(stable_root, alternate_root, sizeof(stable_root)) != 0);
     struct pt_capsule_query changed = {
         .change_second_descriptor = true,
     };
     PT_CHECK("capsule capture refuses a descriptor change while hashing",
              !vcs_toolchain_capsule_v1_capture_query_for_test(
                  pt_capsule_query_stub, &changed, &capsule) &&
-             changed.descriptor_count == 2);
+             changed.descriptor_count == 2 &&
+             changed.configuration_count == 2);
+    struct pt_capsule_query config_changed = {
+        .change_second_configuration = true,
+    };
+    PT_CHECK("capsule capture refuses a GCC configuration change while hashing",
+             !vcs_toolchain_capsule_v1_capture_query_for_test(
+                 pt_capsule_query_stub, &config_changed, &capsule) &&
+             config_changed.descriptor_count == 2 &&
+             config_changed.configuration_count == 2);
+    struct pt_capsule_query config_full = {
+        .fill_configuration_buffer = true,
+    };
+    PT_CHECK("capsule capture refuses a full GCC configuration buffer",
+             !vcs_toolchain_capsule_v1_capture_query_for_test(
+                 pt_capsule_query_stub, &config_full, &capsule) &&
+             config_full.descriptor_count == 1 &&
+             config_full.configuration_count == 1);
     return failures;
 }
 #endif

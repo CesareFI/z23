@@ -167,10 +167,12 @@ bool vcs_toolchain_capsule_v1_root(
  * by lib/platform; this function consumes it without OS-specific branches.
  * Assembler identity is the version string, not the assembler file bytes, so
  * two ordinary hosts with the same assembler version can independently
- * compile.  No mtime participates. A platform that cannot name its link
- * tools fails the capture rather than dropping the class. A fresh capture
- * observes the descriptor before and after hashing and revalidates every
- * resolved path stamp; concurrent toolchain drift refuses the capture. */
+ * compile. Linux also binds the effective GCC specs output.
+ * No mtime participates. A platform that cannot name its link tools fails
+ * the capture rather than dropping the class. A fresh capture observes the
+ * descriptor and effective configuration before and after hashing and
+ * revalidates every resolved path stamp; concurrent toolchain drift refuses
+ * the capture. */
 bool vcs_toolchain_capsule_v1_capture(
     struct vcs_toolchain_capsule_v1 *out);
 /* Return a previously captured capsule and its resolved tool paths only when

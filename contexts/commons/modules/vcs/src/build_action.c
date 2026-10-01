@@ -7,6 +7,7 @@
 
 #include "vcs/build_action.h"
 
+#include "base/safe_alloc.h"
 #include "crypto/sha3.h"
 #include "platform/positioned_file.h"
 #include "util/spawn.h"
@@ -24,6 +25,7 @@
 #define BUILD_TOOLCHAIN_FILE_BASE_COUNT 9
 #define BUILD_TOOLCHAIN_FILE_COUNT \
     (BUILD_TOOLCHAIN_FILE_BASE_COUNT + ZCL_TOOLCHAIN_LINK_COUNT)
+#define BUILD_TOOLCHAIN_CONFIGURATION_CAP 65536u
 
 struct build_toolchain_file {
     char path[PATH_MAX];
@@ -217,6 +219,7 @@ static bool build_toolchain_query(void *ctx, const char *const argv[],
                                   char *out, size_t cap)
 {
     (void)ctx;
+    if (!out || cap < 2) return false;
 #if defined(__linux__)
     if (!argv || !argv[0] || !argv[1] || argv[2]) return false;
     const char *const fixed_argv[] = {
@@ -227,10 +230,12 @@ static bool build_toolchain_query(void *ctx, const char *const argv[],
 #else
     const char *const *query_argv = argv;
 #endif
-    if (zcl_spawn_capture(query_argv, out, cap, 10000) != 0 || !out[0])
+    if (zcl_spawn_capture(query_argv, out, cap, 10000) != 0)
         return false;
-    out[strcspn(out, "\r\n")] = '\0';
-    return out[0] != '\0';
+    size_t length = strnlen(out, cap);
+    /* Text capture reserves one byte for NUL and discards later bytes.  A
+     * full payload is therefore ambiguous with truncation and must refuse. */
+    return length > 0 && length < cap - 1u;
 }
 
 static void build_hash_pair(struct sha3_256_ctx *sha, const char *label,
@@ -384,6 +389,42 @@ static bool build_toolchain_files_current(
     return true;
 }
 
+static bool build_toolchain_configuration_root(
+    platform_toolchain_query_fn query_fn, void *query_ctx, uint8_t out[32])
+{
+    if (!query_fn || !out) return false;
+#if defined(__linux__)
+    char *configuration = zcl_malloc(
+        BUILD_TOOLCHAIN_CONFIGURATION_CAP, "toolchain effective configuration");
+    if (!configuration) return false;
+    configuration[0] = '\0';
+    const char *const argv[] = {
+        VCS_BUILD_COMPILER_V1, "-dumpspecs", NULL,
+    };
+    bool ok = query_fn(query_ctx, argv, configuration,
+                       BUILD_TOOLCHAIN_CONFIGURATION_CAP);
+    size_t length = ok
+        ? strnlen(configuration, BUILD_TOOLCHAIN_CONFIGURATION_CAP) : 0;
+    ok = ok && length > 0 &&
+         length < BUILD_TOOLCHAIN_CONFIGURATION_CAP - 1u;
+    if (ok) {
+        static const char domain[] =
+            "zcl.toolchain.compiler_configuration.v1";
+        struct sha3_256_ctx sha;
+        sha3_256_init(&sha);
+        sha3_256_write(&sha, (const uint8_t *)domain, sizeof(domain));
+        build_hash_text(&sha, configuration);
+        sha3_256_finalize(&sha, out);
+    }
+    free(configuration);
+    return ok;
+#else
+    (void)query_ctx;
+    memset(out, 0, 32);
+    return true;
+#endif
+}
+
 /* The runtime dimensions of the identity: ABI/runtime files, then the link
  * tools whose bytes can alter linked output — a linker, link-wrapper, or
  * LTO-backend swap must move the capsule root before any build or
@@ -434,6 +475,7 @@ static bool build_toolchain_cache_current(
 
 static bool build_toolchain_hash_descriptor(
     const struct platform_toolchain_descriptor *desc,
+    const uint8_t configuration_root[32],
     struct vcs_toolchain_capsule_v1 *out,
     struct build_toolchain_file files[BUILD_TOOLCHAIN_FILE_COUNT])
 {
@@ -475,6 +517,11 @@ static bool build_toolchain_hash_descriptor(
     build_hash_text(&probes, desc->full_version);
     build_hash_text(&probes, desc->short_version);
     build_hash_text(&probes, desc->target);
+#if defined(__linux__)
+    build_hash_pair(&probes, "compiler-configuration", configuration_root);
+#else
+    (void)configuration_root;
+#endif
     if (desc->platform_contract[0] != '\0') {
         static const char contract_label[] = "platform-contract";
         build_hash_text(&probes, contract_label);
@@ -498,8 +545,12 @@ static bool build_toolchain_capture_uncached(
            sizeof(struct build_toolchain_file) * BUILD_TOOLCHAIN_FILE_COUNT);
 
     struct platform_toolchain_descriptor desc;
+    uint8_t configuration_before[32];
     if (!platform_toolchain_capture_descriptor(query_fn, query_ctx, &desc) ||
-        !build_toolchain_hash_descriptor(&desc, out, files))
+        !build_toolchain_configuration_root(
+            query_fn, query_ctx, configuration_before) ||
+        !build_toolchain_hash_descriptor(
+            &desc, configuration_before, out, files))
         return false;
 
     /* A package receipt must never combine query output from one compiler
@@ -507,7 +558,11 @@ static bool build_toolchain_capture_uncached(
      * hashing, then prove every hashed path still names the same stamped
      * file.  Any concurrent toolchain update fails this capture closed. */
     struct platform_toolchain_descriptor after;
+    uint8_t configuration_after[32];
     if (!platform_toolchain_capture_descriptor(query_fn, query_ctx, &after) ||
+        !build_toolchain_configuration_root(
+            query_fn, query_ctx, configuration_after) ||
+        memcmp(configuration_before, configuration_after, 32) != 0 ||
         !build_toolchain_descriptor_equal(&desc, &after) ||
         !build_toolchain_files_current(&desc, files))
         return false;

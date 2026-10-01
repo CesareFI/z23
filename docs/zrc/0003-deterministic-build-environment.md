@@ -37,10 +37,12 @@ source of truth for every place a build's identity is checked.
 - **Toolchain capsule.** Content-hash the compiler driver and backend bytes,
   the assembler by its version string, the sysroot and ABI, the link tools
   whose bytes can alter linked output (link wrapper, LTO backend, and the
-  linker itself, the set is platform-specific), and a target
-  probe. No absolute paths, no timestamps, go into the capsule. A platform
-  that cannot name its link tools fails the capture rather than dropping
-  the class from the identity.
+  linker itself, the set is platform-specific), target probes, and on Linux
+  the effective GCC specs output. No absolute paths, no timestamps, go into
+  the capsule. A fresh capture observes its descriptor and effective
+  configuration before and after hashing; either changing refuses the
+  capture. A platform that cannot name its link tools fails the capture
+  rather than dropping the class from the identity.
 - **Path-neutral flags and build graph.** Derive the flags identity and the
   build-graph identity from text that has already had the checkout's
   absolute path rewritten away, the same rewrite the build already applies

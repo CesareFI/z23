@@ -1313,8 +1313,11 @@ non-fast-forward race also refuses without deleting reusable child evidence.
 A receipt is keyed by the toolchain that produced it, not by where the
 checkout happened to sit. Its compiler root is the toolchain capsule — the
 content of the compiler driver and backend, the assembler version, the
-sysroot and ABI aggregates, and the target probe — the same value
-`z23-dev zcode work toolchain` prints. Its flag and build-graph roots come
+sysroot, ABI and link-tool aggregates, the target probes, and on Linux the
+effective GCC specs output — the same value `z23-dev zcode work toolchain`
+prints. A fresh capture observes the descriptor and effective configuration
+before and after hashing, and refuses either changing under it. Its flag and
+build-graph roots come
 from the build plan with the checkout's absolute location written out of it,
 using the constant the build already tells the compiler to record in its
 place, and with the epoch name of the object directories reduced to a token,
