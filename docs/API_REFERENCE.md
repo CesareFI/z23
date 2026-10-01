@@ -74,14 +74,14 @@ z23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 896 |
+| Registry entries (branches + leaves) | 897 |
 | Top-level roots | 14 |
 | Branches | 199 |
-| Leaves (dispatchable command paths) | 697 |
+| Leaves (dispatchable command paths) | 698 |
 | … `ready` (live handler in this build) | 617 |
-| … `compat` (metadata only, names a fallback) | 50 |
+| … `compat` (metadata only, names a fallback) | 51 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 30 |
-| … dev-gated 🔧 (`ready` only in `z23-dev`) | 49 |
+| … dev-gated 🔧 (`ready` only in `z23-dev`) | 50 |
 | Leaves with `effect=mutate` | 256 |
 | Leaves with `effect=destructive` | 6 |
 | Leaves requiring **owner** authority | 131 |
@@ -96,7 +96,7 @@ Per source file:
 | `engine/composition/commands/app_features.def` | 75 | 20 | 55 |
 | `engine/composition/commands/store.def` | 19 | 0 | 19 |
 | `engine/composition/commands/ops.def` | 59 | 11 | 48 |
-| `engine/composition/commands/dev.def` | 112 | 22 | 90 |
+| `engine/composition/commands/dev.def` | 113 | 22 | 91 |
 | `engine/composition/commands/code.def` | 33 | 4 | 29 |
 | `engine/composition/commands/accounts.def` | 11 | 2 | 9 |
 | `engine/composition/commands/vault.def` | 24 | 4 | 20 |
@@ -739,6 +739,7 @@ represented by its children's sections.
 | `dev proof status` | compat 🔧 → `z23-dev dev proof status` | read / read / operator · instant/tiny | `root`, `local_commit`, `remote_base`, `mode` | `zcl.dev_proof_status.v1` | `z23-dev dev proof status` | Read exact commit/base proof status — *proof receipt status requires the dev binary* |
 | `dev proof wait` | compat 🔧 → `z23-dev dev proof status` | mutate / dev-mutation / **owner** · persistent/low | `root`, `local_commit`, `remote_base`, `timeout_ms` | `zcl.dev_proof_status.v1` | `z23-dev dev proof wait` | Wait for one exact commit/base receipt — *proof receipt waiting requires the dev binary* |
 | `dev proof signer` | compat 🔧 → `z23-dev dev proof signer` | read / read / operator · instant/tiny | none | `zcl.dev_proof_signer.v1` | `z23-dev dev proof signer` | Show this box's receipt signing key and who it trusts — *push-proof signer identity requires the dev binary* |
+| `dev proof coverage` | compat 🔧 → `z23-dev dev proof status` | read / read / operator · instant/tiny | `root`, `local_commit`, `remote_base` | `zcl.dev_proof_coverage.v1` | `z23-dev dev proof coverage` | Query one pair's canonical coverage manifest — *coverage queries require the dev binary* |
 
 #### `dev.test` — Focused proof selection
 

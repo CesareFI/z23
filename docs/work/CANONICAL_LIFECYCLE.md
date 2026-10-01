@@ -149,9 +149,11 @@ the state root (`tools/dev/dev_proof_observation_index.c`), preserving
 contradictions and classifying through the receiver-local lookup — the
 eligibility basis reuse consults once a qualified verifier set exists;
 until then the check machinery's named `test-reuse: unqualified` refusal
-stands unchanged. Canonical proof-set publication remains separate
-integration work. A codec alone does not establish a complete input
-closure.
+stands unchanged. Operators and agents query a pair's coverage directly:
+`z23-dev dev proof coverage` reports the manifest's binding, per-row
+coverage, missing groups, conflicts and observation age, read-only.
+Canonical proof-set publication remains separate integration work. A
+codec alone does not establish a complete input closure.
 
 The existing Commons evaluator in
 `engine/services/src/build_fabric_evidence.c` now retains verified failures

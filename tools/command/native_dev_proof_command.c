@@ -7,7 +7,11 @@
 
 #include "dev_proof.h"
 #ifdef ZCL_DEV_BUILD
+#include <errno.h>
+
 #include "base/hex.h"
+#include "base/safe_alloc.h"
+#include "dev_proof_coverage.h"
 #include "dev_proof_signer.h"
 #endif
 #include "json/json.h"
@@ -581,25 +585,300 @@ static void proof_signer(
 #endif
 }
 
+/* Read one coverage manifest file: the fixed envelope wire plus the blob
+ * its header names, bounded. Returns 1 when read, 0 when absent, -1 on
+ * any malformedness. */
+#ifdef ZCL_DEV_BUILD
+static int proof_coverage_read_manifest(const char *path,
+    uint8_t envelope[ZCL_DEV_COVERAGE_WIRE_BYTES],
+    uint8_t **blob, size_t *blob_len, char *why, size_t why_len)
+{
+    *blob = NULL;
+    *blob_len = 0;
+    FILE *f = fopen(path, "rb");
+    if (!f) return errno == ENOENT ? 0 : -1;
+    size_t got = fread(envelope, 1, ZCL_DEV_COVERAGE_WIRE_BYTES, f);
+    if (got != ZCL_DEV_COVERAGE_WIRE_BYTES) {
+        (void)fclose(f);
+        (void)snprintf(why, why_len, "%s",
+                       ZCL_DEV_COVERAGE_WHY_MANIFEST_INVALID);
+        return -1;
+    }
+    uint32_t blen = 0;
+    if (!zcl_dev_coverage_envelope_blob_len(envelope,
+                                            ZCL_DEV_COVERAGE_WIRE_BYTES,
+                                            &blen)) {
+        (void)fclose(f);
+        (void)snprintf(why, why_len, "%s", ZCL_DEV_COVERAGE_WHY_MANIFEST_INVALID);
+        return -1;
+    }
+    uint8_t *buf = zcl_malloc(blen ? blen : 1u, "dev-proof-coverage-blob");
+    if (!buf) {
+        (void)fclose(f);
+        (void)snprintf(why, why_len, "%s", "coverage_query_alloc_failed");
+        return -1;
+    }
+    if (blen && fread(buf, 1, blen, f) != blen) {
+        free(buf);
+        (void)fclose(f);
+        (void)snprintf(why, why_len, "%s", ZCL_DEV_COVERAGE_WHY_MANIFEST_INVALID);
+        return -1;
+    }
+    int extra = fgetc(f);
+    (void)fclose(f);
+    if (extra != EOF) {
+        free(buf);
+        (void)snprintf(why, why_len, "%s", ZCL_DEV_COVERAGE_WHY_MANIFEST_INVALID);
+        return -1;
+    }
+    *blob = buf;
+    *blob_len = blen;
+    return 1;
+}
+
+/* Everything the coverage query resolves before inspecting: the pair
+ * identity, the admitted receipt, and the coverage/store paths. */
+struct proof_coverage_resolved {
+    struct zcl_dev_proof_status status;
+    struct zcl_dev_acceptance_receipt_v1 receipt;
+    char manifest_path[4096];
+    char store[4096];
+};
+
+/* Status, receipt and paths, or a written refusal. */
+static bool proof_coverage_resolve(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply,
+    struct proof_coverage_resolved *out)
+{
+    memset(out, 0, sizeof(*out));
+    (void)zcl_dev_proof_status_read(
+        proof_source_root(request),
+        proof_optional_text(request->input, "local_commit"),
+        proof_optional_text(request->input, "remote_base"), &out->status);
+    if (out->status.local_commit[0] == 0 || out->status.remote_base[0] == 0) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+            ZCL_COMMAND_EXIT_INVALID, "PROOF_COVERAGE_INVALID", "normalize",
+            false, false,
+            "coverage query needs a resolvable local commit and remote base",
+            out->status.detail[0] ? out->status.detail : "pair_unresolvable");
+        return false;
+    }
+    if (out->status.state != ZCL_DEV_PROOF_STATE_PASSED ||
+        out->status.receipt_path[0] == 0) {
+        proof_emit_status(reply, &out->status, false);
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_BLOCKED,
+            ZCL_COMMAND_EXIT_BLOCKED, "PROOF_COVERAGE_NO_RECEIPT", "receipt",
+            out->status.state == ZCL_DEV_PROOF_STATE_RUNNING, false,
+            "coverage binds an admitted receipt; this pair has none",
+            out->status.detail[0] ? out->status.detail
+                                  : "exact_receipt_missing");
+        return false;
+    }
+    uint8_t wire[ZCL_DEV_PROOF_WIRE_BYTES];
+    FILE *rf = fopen(out->status.receipt_path, "rb");
+    bool receipt_ok = rf &&
+        fread(wire, 1, sizeof(wire), rf) == sizeof(wire) &&
+        fgetc(rf) == EOF &&
+        zcl_dev_proof_receipt_parse(wire, sizeof(wire), &out->receipt);
+    if (rf) (void)fclose(rf);
+    if (!receipt_ok) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+            ZCL_COMMAND_EXIT_FAILED, "PROOF_COVERAGE_RECEIPT_UNREADABLE",
+            "receipt", false, false,
+            "the admitted receipt for this pair cannot be re-read",
+            "exact_receipt_missing");
+        return false;
+    }
+    /* <root>/.cache/zcl-dev-proof: strip "/receipts/<key>.receipt". */
+    char state_dir[4096];
+    const char *receipts_at = strstr(out->status.receipt_path, "/receipts/");
+    if (!receipts_at || (size_t)(receipts_at - out->status.receipt_path) >=
+            sizeof(state_dir)) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+            ZCL_COMMAND_EXIT_FAILED, "PROOF_COVERAGE_PATH_INVALID",
+            "normalize", false, false,
+            "the receipt path does not name a proof state directory", "");
+        return false;
+    }
+    (void)memcpy(state_dir, out->status.receipt_path,
+                 (size_t)(receipts_at - out->status.receipt_path));
+    state_dir[receipts_at - out->status.receipt_path] = 0;
+    char key[160];
+    (void)snprintf(key, sizeof(key), "%s-%s", out->status.local_commit,
+                   out->status.remote_base);
+    (void)snprintf(out->manifest_path, sizeof(out->manifest_path),
+                   "%s/coverage/%s.coverage", state_dir, key);
+    (void)snprintf(out->store, sizeof(out->store), "%s/observations.%s",
+                   state_dir, key);
+    return true;
+}
+
+static void proof_coverage_emit(struct zcl_command_reply *reply,
+    const struct proof_coverage_resolved *resolved,
+    const struct zcl_dev_coverage_inspect *report)
+{
+    const char *state = "covered";
+    if (report->binding_mismatch)
+        state = "binding_mismatch";
+    else if (report->signer_why[0])
+        state = report->signer_why;
+    else if (report->conflicts)
+        state = "conflict";
+    else if (report->missing)
+        state = "incomplete";
+    else if (report->row_count == 0)
+        state = "empty";
+
+    (void)json_push_kv_str(&reply->data, "schema",
+                           "zcl.dev_proof_coverage.v1");
+    (void)json_push_kv_str(&reply->data, "local_commit",
+                           resolved->status.local_commit);
+    (void)json_push_kv_str(&reply->data, "remote_base",
+                           resolved->status.remote_base);
+    (void)json_push_kv_int(&reply->data, "policy_version",
+                           (int64_t)resolved->receipt.policy_version);
+    (void)json_push_kv_str(&reply->data, "coverage_state", state);
+    (void)json_push_kv_int(&reply->data, "rows", (int64_t)report->row_count);
+    (void)json_push_kv_int(&reply->data, "covered", (int64_t)report->covered);
+    (void)json_push_kv_int(&reply->data, "missing", (int64_t)report->missing);
+    (void)json_push_kv_int(&reply->data, "conflicts",
+                           (int64_t)report->conflicts);
+    struct json_value missing_groups;
+    json_init(&missing_groups);
+    json_set_array(&missing_groups);
+    for (uint32_t i = 0; i < report->missing_named; i++) {
+        struct json_value item;
+        json_init(&item);
+        json_set_str(&item, report->missing_groups[i]);
+        (void)json_push_back(&missing_groups, &item);
+        json_free(&item);
+    }
+    (void)json_push_kv(&reply->data, "missing_groups", &missing_groups);
+    json_free(&missing_groups);
+    struct json_value observed;
+    json_init(&observed);
+    json_set_object(&observed);
+    (void)json_push_kv_int(&observed, "total",
+                           (int64_t)report->observed_total);
+    (void)json_push_kv_int(&observed, "eligible",
+                           (int64_t)report->observed_eligible);
+    (void)json_push_kv_int(&observed, "oldest_observed_unix",
+                           (int64_t)report->oldest_observed_unix);
+    (void)json_push_kv_int(&observed, "newest_observed_unix",
+                           (int64_t)report->newest_observed_unix);
+    (void)json_push_kv(&reply->data, "observations", &observed);
+    json_free(&observed);
+    (void)json_push_kv_str(&reply->data, "signer_trust",
+                           report->signer_why[0] ? report->signer_why
+                                                 : "trusted");
+    if (strcmp(state, "covered") != 0 && strcmp(state, "empty") != 0)
+        (void)snprintf(reply->error.next_action,
+                       sizeof(reply->error.next_action), "%s",
+                       "rerun dev proof step for this exact pair; the receipt alone cannot repair coverage");
+}
+#endif
+
+/* The lifecycle query over the canonical coverage object: what a pair's
+ * manifest binds, what it covers, and what this box has observed.
+ * Read-only; a missing manifest BLOCKED like a missing receipt. */
+static void proof_coverage(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+#ifndef ZCL_DEV_BUILD
+    (void)request;
+    zcl_command_reply_fail(
+        reply, ZCL_COMMAND_STATUS_BLOCKED, ZCL_COMMAND_EXIT_BLOCKED,
+        "DEV_BUILD_REQUIRED", "dispatch", false, false,
+        "coverage queries require the dev binary", "make dev-bin");
+#else
+    struct proof_coverage_resolved resolved = {0};
+    if (!proof_coverage_resolve(request, reply, &resolved))
+        return;
+
+    uint8_t envelope[ZCL_DEV_COVERAGE_WIRE_BYTES];
+    uint8_t *blob = NULL;
+    size_t blob_len = 0;
+    char why[128] = {0};
+    int manifest = proof_coverage_read_manifest(resolved.manifest_path,
+                                                envelope, &blob, &blob_len,
+                                                why, sizeof(why));
+    if (manifest <= 0) {
+        zcl_command_reply_fail(reply,
+            manifest == 0 ? ZCL_COMMAND_STATUS_BLOCKED
+                          : ZCL_COMMAND_STATUS_FAILED,
+            manifest == 0 ? ZCL_COMMAND_EXIT_BLOCKED
+                          : ZCL_COMMAND_EXIT_FAILED,
+            manifest == 0 ? "PROOF_COVERAGE_MANIFEST_MISSING"
+                          : "PROOF_COVERAGE_MANIFEST_INVALID",
+            "coverage", false, false,
+            manifest == 0
+                ? "policy-6 receipts carry a coverage manifest; this pair has none"
+                : "the coverage manifest for this pair is malformed",
+            why[0] ? why : "coverage_manifest_missing");
+        if (manifest == 0)
+            (void)snprintf(reply->error.next_action,
+                           sizeof(reply->error.next_action), "%s",
+                           "run dev proof step for this exact pair to derive and sign its coverage manifest");
+        return;
+    }
+
+    struct zcl_dev_coverage_binding binding = {0};
+    (void)memcpy(binding.local_commit, resolved.receipt.local_commit,
+                 ZCL_DEV_PROOF_OID_MAX);
+    binding.local_commit_len = resolved.receipt.local_commit_len;
+    (void)memcpy(binding.remote_base, resolved.receipt.remote_base,
+                 ZCL_DEV_PROOF_OID_MAX);
+    binding.remote_base_len = resolved.receipt.remote_base_len;
+    (void)memcpy(binding.child_set_root, resolved.receipt.child_set_root,
+                 ZCL_DEV_PROOF_ROOT_BYTES);
+    (void)memcpy(binding.impact_policy_root,
+                 resolved.receipt.impact_policy_root,
+                 ZCL_DEV_PROOF_ROOT_BYTES);
+    binding.policy_version = resolved.receipt.policy_version;
+
+    struct zcl_dev_coverage_inspect report = {0};
+    if (!zcl_dev_coverage_inspect(resolved.store, envelope, sizeof(envelope),
+                                  blob, blob_len, &binding, &report,
+                                  why, sizeof(why))) {
+        free(blob);
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+            ZCL_COMMAND_EXIT_FAILED, "PROOF_COVERAGE_INSPECT_REFUSED",
+            "coverage", false, false,
+            "the coverage objects for this pair refuse inspection",
+            why[0] ? why : "coverage_invalid");
+        return;
+    }
+    free(blob);
+    proof_coverage_emit(reply, &resolved, &report);
+#endif
+}
+
 void zcl_native_dev_proof_dispatch(
     const struct zcl_command_request *request, struct zcl_command_reply *reply)
 {
+    static const struct {
+        const char *path;
+        void (*handler)(const struct zcl_command_request *,
+                        struct zcl_command_reply *);
+    } routes[] = {
+        {"dev.proof.step", proof_step},
+        {"dev.proof.ensure", proof_ensure},
+        {"dev.proof.status", proof_status},
+        {"dev.proof.wait", proof_wait},
+        {"dev.proof.retry", proof_retry},
+        {"dev.proof.signer", proof_signer},
+        {"dev.proof.coverage", proof_coverage},
+    };
     const char *path = request && request->spec ? request->spec->path : NULL;
-    if (path && strcmp(path, "dev.proof.step") == 0)
-        proof_step(request, reply);
-    else if (path && strcmp(path, "dev.proof.ensure") == 0)
-        proof_ensure(request, reply);
-    else if (path && strcmp(path, "dev.proof.status") == 0)
-        proof_status(request, reply);
-    else if (path && strcmp(path, "dev.proof.wait") == 0)
-        proof_wait(request, reply);
-    else if (path && strcmp(path, "dev.proof.retry") == 0)
-        proof_retry(request, reply);
-    else if (path && strcmp(path, "dev.proof.signer") == 0)
-        proof_signer(request, reply);
-    else
-        zcl_command_reply_fail(
-            reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
-            "PROOF_COMMAND_INVALID", "dispatch", false, false,
-            "proof dispatch requires an exact proof command path", "");
+    for (size_t i = 0; i < sizeof(routes) / sizeof(routes[0]); i++) {
+        if (path && strcmp(path, routes[i].path) == 0) {
+            routes[i].handler(request, reply);
+            return;
+        }
+    }
+    zcl_command_reply_fail(
+        reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
+        "PROOF_COMMAND_INVALID", "dispatch", false, false,
+        "proof dispatch requires an exact proof command path", "");
 }
