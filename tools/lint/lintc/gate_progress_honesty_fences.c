@@ -118,6 +118,9 @@ static int ph_ready_comp(struct ph_ready *a)
 static int ph_ready_read(const char *path, const struct ph_ready *a,
                          int *any, int *unguarded, int *blocker)
 {
+    struct stat st;
+    if (stat(path, &st) != 0 || !S_ISREG(st.st_mode))
+        return ph_cannot_open(path);
     FILE *f = fopen(path, "r");
     if (!f) return ph_cannot_open(path);
     char *line = NULL; size_t cap = 0;
@@ -311,32 +314,33 @@ static int ph_ready_st_override(const char *tmp)
 }
 static int ph_ready_st_unreadable(const char *tmp)
 {
-    char auth[PH_CAP], badf[PH_CAP], root[PH_CAP], out[PH_CAP], err[PH_CAP];
-    int rc = 0, locked = 0;
-    badf[0] = '\0';
-    if (ovf(snprintf(auth, sizeof auth,
-                     "%s/ur/engine/services/src/chain_activation_service.c", tmp),
-            sizeof auth))
-        return 1;
-    if (csr_write(auth,
-            "void f(void){ activation_set_state(s, ACTIVATION_READY, r); blocker_set(b); }\n"))
-        return 1;
+    char badf[PH_CAP], errbuf[PH_CAP];
     if (ovf(snprintf(badf, sizeof badf,
                      "%s/ur/engine/services/src/unreadable.c", tmp),
             sizeof badf) || csr_write(badf, "int x;\n"))
         return 1;
-    if (chmod(badf, 0) != 0) return 1;
-    locked = 1;
-    if (ovf(snprintf(root, sizeof root, "%s/ur/engine/services/src", tmp),
-            sizeof root)) {
-        (void)chmod(badf, 0600);
+    if (unlink(badf) != 0 || mkdir(badf, 0700) != 0)
         return 1;
-    }
-    ph_ready_root_ov = root; ph_ready_auth_ov = auth;
-    int bad = ph_cap(ph_ready_eval, out, sizeof out, err, sizeof err, &rc);
-    ph_clear_ov();
-    if (locked) (void)chmod(badf, 0600);
-    return bad || rc != 2 || !ph_has(err, badf);
+
+    struct ph_ready a;
+    memset(&a, 0, sizeof a);
+    int rc = ph_ready_comp(&a);
+    int compiled = rc == 0;
+    FILE *err = tmpfile();
+    int any = 0, unguarded = 0, blocker = 0;
+    errbuf[0] = '\0';
+    if (!err)
+        rc = 2;
+    ph_err = err;
+    if (rc == 0)
+        rc = ph_ready_read(badf, &a, &any, &unguarded, &blocker);
+    int bad = err ? csr_slurp(err, errbuf, sizeof errbuf) : 1;
+    if (err) fclose(err);
+    ph_io_prod();
+    if (compiled)
+        drop3(&a.ready, &a.ov, &a.block);
+    bad |= rmdir(badf) != 0;
+    return bad || rc != 2 || !ph_has(errbuf, badf);
 }
 
 int check_no_silent_ready_selftest(void)
