@@ -38,5 +38,8 @@ val configureHostNative by tasks.registering(Exec::class) {
 }
 tasks.register<Exec>("buildHostNative") {
     dependsOn(configureHostNative)
-    commandLine("cmake", "--build", rootProject.file("native/build/jni"), "-j4")
+    // The host fixture depends on the JNI library and all of its C providers.
+    // Standalone native suites keep their separate canonical safety build.
+    commandLine("cmake", "--build", rootProject.file("native/build/jni"),
+        "--target", "zclwallet_secret_fixture", "-j4")
 }
