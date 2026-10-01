@@ -17,6 +17,19 @@
 #define PATH_MAX 4096
 #endif
 
+/* Can a proof started in cgroup `self` (the unified path, "/a/b") under the
+ * cgroup v2 mount `mount` run the test dimension's memory-limit leg?
+ * QUALIFIED when an ancestor delegates the memory controller and is
+ * writable by this uid; UNQUALIFIED when none is; UNKNOWN when there is no
+ * hierarchy to read. Read-only. The proof worker refuses UNQUALIFIED before
+ * it starts instead of after its test accounting. */
+enum zcl_dev_proof_memory_scope {
+    ZCL_DEV_PROOF_MEMORY_SCOPE_UNKNOWN = 0,
+    ZCL_DEV_PROOF_MEMORY_SCOPE_QUALIFIED,
+    ZCL_DEV_PROOF_MEMORY_SCOPE_UNQUALIFIED,
+};
+enum zcl_dev_proof_memory_scope zcl_dev_proof_memory_scope_verdict(
+    const char *mount, const char *self);
 /* Match complete candidate source identity to the compiler-injected identity
  * of the code computing proof policy. The production caller supplies the
  * pure clientversion getter, never an environment or request field. */
@@ -618,7 +631,8 @@ bool zcl_dev_proof_test_generation_retire(
     const char *repo_root, const char *generation,
     enum zcl_dev_proof_retire_verdict verdict, bool donor_eligible,
     char *outcome, size_t outcome_len);
-/* Seam for the checkout generation_prepare() runs: `generation` is where
+/* Seam for the checkout generation_prepare() runs:
+ `generation` is where
  * the pair's worktree of `repo_root` at commit `local` lives. A directory
  * already there is reused, except one whose worktree registration git has
  * deleted (an earlier retire that failed on the tree), which is cleared and

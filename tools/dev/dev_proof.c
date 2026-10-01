@@ -29,6 +29,7 @@
 #include "platform/disk_space.h"
 #include "platform/file_clone.h"
 #include "platform/logical_cpu.h"
+#include "platform/os_proc.h"
 #include "platform/private_directory.h"
 #include "platform/ram_scratch.h"
 #include "platform/time_compat.h"
@@ -10368,6 +10369,81 @@ static void proof_cpu_note(const struct proof_paths *paths,
                                        "proof_cpu_children_ms", value);
 }
 
+/* The test dimension holds a group whose memory-limit leg needs a child
+ * cgroup under an ancestor that delegates the memory controller and that
+ * this uid may write. From a login session scope every such ancestor is
+ * root-owned: the leg reports UNOBSERVED, the suite still exits 0, and the
+ * proof refuses test_accounting_incomplete — after the whole compile, lint
+ * and test run. The same question answers in microseconds before any of
+ * that work, from the same two facts the leg reads: which ancestors list
+ * `memory` in cgroup.subtree_control, and whether one of them is writable.
+ * Read-only; nothing is created. UNKNOWN (no unified hierarchy to read)
+ * never refuses: the test accounting stays the authority. */
+static bool dp_cgroup_delegates_memory(const char *cg)
+{
+    char control[PATH_MAX], line[256];
+    if (snprintf(control, sizeof(control), "%s/cgroup.subtree_control", cg) >=
+        (int)sizeof(control))
+        return false;
+    FILE *f = fopen(control, "r");
+    bool delegates = f && fgets(line, sizeof(line), f) &&
+                     strstr(line, "memory") != NULL;
+    if (f) (void)fclose(f);
+    return delegates;
+}
+
+/* Step to the parent cgroup; false once the mount root was examined. */
+static bool dp_cgroup_parent(char *cg, size_t floor)
+{
+    char *slash = strrchr(cg, '/');
+    if (strlen(cg) <= floor || !slash || (size_t)(slash - cg) < floor)
+        return false;
+    *slash = '\0';
+    return true;
+}
+
+enum zcl_dev_proof_memory_scope zcl_dev_proof_memory_scope_verdict(
+    const char *mount, const char *self)
+{
+    char cg[PATH_MAX];
+    struct stat st;
+    if (!mount || !self || self[0] != '/' || lstat(mount, &st) != 0 ||
+        !S_ISDIR(st.st_mode) ||
+        snprintf(cg, sizeof(cg), "%s%s", mount, self) >= (int)sizeof(cg))
+        return ZCL_DEV_PROOF_MEMORY_SCOPE_UNKNOWN;
+    size_t floor = strlen(mount);
+    do {
+        size_t len = strlen(cg);
+        while (len > floor && cg[len - 1] == '/') cg[--len] = '\0';
+        if (dp_cgroup_delegates_memory(cg) && access(cg, W_OK | X_OK) == 0)
+            return ZCL_DEV_PROOF_MEMORY_SCOPE_QUALIFIED;
+    } while (dp_cgroup_parent(cg, floor));
+    return ZCL_DEV_PROOF_MEMORY_SCOPE_UNQUALIFIED;
+}
+
+[[maybe_unused]] static bool proof_memory_scope_check(char *why,
+                                                      size_t why_len)
+{
+#if defined(__linux__) && !defined(ZCL_TESTING)
+    static const char mount[] = "/sys/fs/cgroup";
+    char dir[PATH_MAX];
+    if (!os_proc_cgroup_dir(dir, sizeof(dir)) ||
+        strncmp(dir, mount, sizeof(mount) - 1) != 0)
+        return true;
+    if (zcl_dev_proof_memory_scope_verdict(mount, dir + sizeof(mount) - 1) ==
+        ZCL_DEV_PROOF_MEMORY_SCOPE_UNQUALIFIED) {
+        proof_why(why, why_len,
+                  "proof_host_memory_scope_unqualified:"
+                  "run_the_step_in_a_user_manager_scope");
+        return false;
+    }
+#else
+    (void)why;
+    (void)why_len;
+#endif
+    return true;
+}
+
 static bool proof_loader_environment_check(char *why, size_t why_len)
 {
 #if defined(__linux__)
@@ -10539,7 +10615,8 @@ static bool proof_worker(const struct proof_paths *paths,
                          int64_t queue_lock_wait_ms,
                          char *why, size_t why_len)
 {
-    if (!proof_loader_environment_check(why, why_len) ||
+    if (!proof_memory_scope_check(why, why_len) ||
+        !proof_loader_environment_check(why, why_len) ||
         !proof_clang_runtime_check(why, why_len)) return false;
     if (!proof_prepare_environment()) {
         proof_why(why, why_len, "proof_execution_environment_unavailable");

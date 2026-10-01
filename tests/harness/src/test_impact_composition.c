@@ -5115,6 +5115,93 @@ static int test_pw_generation_checkout_clears_pruned(void)
     return failures;
 }
 
+/* A cgroup v2 tree as a login session and a user-manager scope see it. */
+static int test_pw_memory_scope_verdict(void)
+{
+    int failures = 0;
+    TEST("proof worker: a scope with no writable memory-delegating ancestor "
+         "is named before the proof starts, and an unreadable hierarchy "
+         "never refuses") {
+#if defined(_WIN32)
+        ASSERT(true);
+#else
+        char root[4096], mount[4200], path[4608];
+        test_make_tmpdir(root, sizeof(root), "proof_memory_scope", "cg");
+        ASSERT(snprintf(mount, sizeof(mount), "%s/cg", root) > 0);
+        /* Root-owned levels are modelled read-only; the user manager's
+         * slice is the one this uid may write. */
+        ASSERT(ic_write(mount, "cgroup.subtree_control",
+                        "cpuset cpu io memory pids\n"));
+        ASSERT(ic_write(mount, "user.slice/cgroup.subtree_control",
+                        "cpu memory pids\n"));
+        ASSERT(ic_write(mount,
+                        "user.slice/user-1000.slice/cgroup.subtree_control",
+                        "cpu memory pids\n"));
+        ASSERT(ic_write(mount, "user.slice/user-1000.slice/session-52.scope/"
+                               "cgroup.subtree_control", "\n"));
+        ASSERT(ic_write(mount, "user.slice/user-1000.slice/user@1000.service/"
+                               "cgroup.subtree_control", "cpu memory pids\n"));
+        ASSERT(ic_write(mount, "user.slice/user-1000.slice/user@1000.service/"
+                               "development.slice/cgroup.subtree_control",
+                        "cpu memory pids\n"));
+        ASSERT(ic_write(mount, "user.slice/user-1000.slice/user@1000.service/"
+                               "development.slice/job.scope/"
+                               "cgroup.subtree_control", "\n"));
+        ASSERT(ic_write(mount, "user.slice/user-1000.slice/user@1000.service/"
+                               "plain.slice/cgroup.subtree_control",
+                        "cpu pids\n"));
+        static const char *const locked[] = {
+            "", "/user.slice", "/user.slice/user-1000.slice",
+            "/user.slice/user-1000.slice/user@1000.service/plain.slice",
+        };
+        for (size_t i = 0; i < sizeof(locked) / sizeof(locked[0]); i++) {
+            ASSERT(snprintf(path, sizeof(path), "%s%s", mount, locked[i]) >
+                   0);
+            ASSERT(chmod(path, 0555) == 0);
+        }
+        if (geteuid() != 0) {
+            ASSERT(zcl_dev_proof_memory_scope_verdict(
+                       mount, "/user.slice/user-1000.slice/session-52.scope")
+                   == ZCL_DEV_PROOF_MEMORY_SCOPE_UNQUALIFIED);
+            /* Writable, but it does not delegate memory, and nothing above
+             * it that does is writable... except the user manager itself. */
+            ASSERT(snprintf(path, sizeof(path), "%s/user.slice/"
+                            "user-1000.slice/user@1000.service", mount) > 0);
+            ASSERT(chmod(path, 0555) == 0);
+            ASSERT(zcl_dev_proof_memory_scope_verdict(
+                       mount, "/user.slice/user-1000.slice/"
+                              "user@1000.service/plain.slice")
+                   == ZCL_DEV_PROOF_MEMORY_SCOPE_UNQUALIFIED);
+            ASSERT(chmod(path, 0755) == 0);
+        }
+        ASSERT(zcl_dev_proof_memory_scope_verdict(
+                   mount, "/user.slice/user-1000.slice/user@1000.service/"
+                          "development.slice/job.scope")
+               == ZCL_DEV_PROOF_MEMORY_SCOPE_QUALIFIED);
+        ASSERT(zcl_dev_proof_memory_scope_verdict(
+                   mount, "/user.slice/user-1000.slice/user@1000.service/"
+                          "plain.slice")
+               == ZCL_DEV_PROOF_MEMORY_SCOPE_QUALIFIED);
+        /* Nothing to read is not a refusal. */
+        ASSERT(snprintf(path, sizeof(path), "%s/absent", root) > 0);
+        ASSERT(zcl_dev_proof_memory_scope_verdict(path, "/user.slice")
+               == ZCL_DEV_PROOF_MEMORY_SCOPE_UNKNOWN);
+        ASSERT(zcl_dev_proof_memory_scope_verdict(mount, "user.slice")
+               == ZCL_DEV_PROOF_MEMORY_SCOPE_UNKNOWN);
+        ASSERT(zcl_dev_proof_memory_scope_verdict(mount, NULL)
+               == ZCL_DEV_PROOF_MEMORY_SCOPE_UNKNOWN);
+        for (size_t i = 0; i < sizeof(locked) / sizeof(locked[0]); i++) {
+            ASSERT(snprintf(path, sizeof(path), "%s%s", mount, locked[i]) >
+                   0);
+            ASSERT(chmod(path, 0755) == 0);
+        }
+        ASSERT(test_rm_rf_recursive(root) == 0);
+#endif
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 
 /* ── generation-pool hygiene fixtures ─────────────────────────────────── */
 #if !defined(_WIN32)
@@ -10435,6 +10522,7 @@ int test_impact_composition(void)
     failures += test_pw_generation_pool_sweep();
     failures += test_pw_generation_retire_passed();
     failures += test_pw_generation_retire_wide_locked();
+    failures += test_pw_memory_scope_verdict();
     failures += test_pw_generation_checkout_clears_pruned();
     failures += test_pw_abandoned_generation_reaped_by_age();
     failures += test_pw_pressure_evicts_oldest_until_satisfied();
