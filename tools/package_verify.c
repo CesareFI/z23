@@ -176,6 +176,7 @@ static int pv_main_windows(void)
 #include <unistd.h>
 
 #define PV_LOG "package-verify"
+#define PV_RELEASE_SCAN_MAX_ENTRIES 4096u
 
 /* Sentinel return values threaded through pv_main_posix's phase helpers.
  * Every REAL return code the fixed-ABI modes and pv_main_posix itself use
@@ -1275,6 +1276,28 @@ static bool pv_load_one_release(const char *path,
     return true;
 }
 
+static void pv_consider_release_entry(
+    const char *dir, const char *name, const uint8_t package_root[32],
+    bool *found, uint8_t best_id[32], struct vcs_package_release *out,
+    uint8_t release_id_out[32])
+{
+    uint8_t scratch[32];
+    if (!zcl_hex_decode_lower(name, scratch, sizeof(scratch)))
+        return;
+    char path[4096];
+    int pn = snprintf(path, sizeof(path), "%s/%s", dir, name);
+    struct vcs_package_release rel;
+    uint8_t id[VCS_PACKAGE_RELEASE_ID_BYTES];
+    if (pn < 0 || (size_t)pn >= sizeof(path) ||
+        !pv_load_one_release(path, package_root, &rel, id) ||
+        (*found && memcmp(id, best_id, sizeof(id)) >= 0))
+        return;
+    memcpy(best_id, id, sizeof(id));
+    *out = rel;
+    memcpy(release_id_out, id, sizeof(id));
+    *found = true;
+}
+
 static bool pv_load_release(const char *store_dir,
                             const uint8_t package_root[32],
                             struct vcs_package_release *out,
@@ -1292,27 +1315,29 @@ static bool pv_load_release(const char *store_dir,
     memset(best_id, 0xff, 32);
     struct dirent *ent;
     size_t scanned = 0;
-    while ((ent = readdir(d)) != NULL && scanned < 4096) {
-        uint8_t scratch[32];
-        if (!zcl_hex_decode_lower(ent->d_name, scratch, 32))
-            continue;
-        scanned++;
-        char path[4096];
-        int pn = snprintf(path, sizeof(path), "%s/%s", dir, ent->d_name);
-        struct vcs_package_release rel;
-        uint8_t id[VCS_PACKAGE_RELEASE_ID_BYTES];
-        if (pn < 0 || (size_t)pn >= sizeof(path) ||
-            !pv_load_one_release(path, package_root, &rel, id))
-            continue;
-        if (!found || memcmp(id, best_id, 32) < 0) {
-            memcpy(best_id, id, 32);
-            *out = rel;
-            memcpy(release_id_out, id, 32);
-            found = true;
+    bool complete = true;
+    for (;;) {
+        errno = 0;
+        ent = readdir(d);
+        if (!ent) {
+            if (errno != 0)
+                complete = false;
+            break;
         }
+        if (strcmp(ent->d_name, ".") == 0 ||
+            strcmp(ent->d_name, "..") == 0)
+            continue;
+        if (scanned == PV_RELEASE_SCAN_MAX_ENTRIES) {
+            complete = false;
+            break;
+        }
+        scanned++;
+        pv_consider_release_entry(dir, ent->d_name, package_root, &found,
+                                  best_id, out, release_id_out);
     }
-    closedir(d);
-    return found;
+    if (closedir(d) != 0)
+        complete = false;
+    return complete && found;
 }
 
 /* ── compiler/test invocation plumbing ──────────────────────────────── */

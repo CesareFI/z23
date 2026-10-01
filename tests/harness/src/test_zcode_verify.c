@@ -64,7 +64,8 @@
  *      (build-fail/compile-error) and a test that calls socket()
  *      (test-fail/test-signal — the seccomp network denial firing). A
  *      release-envelope symlink is refused even when it resolves to the
- *      original valid signed bytes. The
+ *      original valid signed bytes, and an overfull release directory cannot
+ *      authorize execution from a partial scan. The
  *      reproduction lane runs --emit twice: a second build
  *      --reproduce-against the first build-report exits 0 with
  *      reproduction=MATCH; a tampered reference exits 6 (MISMATCH).
@@ -120,6 +121,7 @@
 } while (0)
 
 #define ZV_VERIFIER_BIN "build/bin/zclassic23-package-verify-dev"
+#define ZV_VERIFIER_RELEASE_SCAN_CAP 4096u
 
 /* ── small fixtures ─────────────────────────────────────────────────── */
 
@@ -4398,6 +4400,43 @@ static int ze_symlinked_release(const char *base, const char *key_path,
     return failures;
 }
 
+static int ze_overfull_release_directory(const char *base,
+                                         const char *key_path,
+                                         const char *work)
+{
+    int failures = 0;
+    char store[4400];
+    snprintf(store, sizeof(store), "%s/store_overfull_releases", base);
+    uint8_t package_root[32], release_id[32], recipe_root[32];
+    bool prepared = zv_publish_fixture(
+        store,
+        "#include \"add.h\"\nint add(int a, int b) { return a + b; }\n",
+        "#include \"add.h\"\nint main(void) { return add(2, 3) == 5 ? 0 : 1; }\n",
+        package_root, release_id, recipe_root);
+    char path[4400];
+    for (size_t i = 0; prepared &&
+                       i < ZV_VERIFIER_RELEASE_SCAN_CAP; i++) {
+        int n = snprintf(path, sizeof(path), "%s/releases/junk-%zu", store,
+                         i);
+        prepared = n > 0 && (size_t)n < sizeof(path) &&
+                   zv_write_file(path, "x", 1, 0600);
+    }
+    ZV_CHECK("e2e: overfull release directory fixture prepared", prepared);
+
+    char root_hex[65], out[2048];
+    zv_hex_enc(package_root, sizeof(package_root), root_hex);
+    int rc = prepared ? zv_run_verifier(root_hex, store, key_path, work, out,
+                                        sizeof(out)) : -1;
+    struct vcs_package_attest att;
+    ZV_CHECK("e2e: incomplete release scan cannot authorize execution",
+             prepared && rc == 3 &&
+             !zv_read_only_attestation(store, &att));
+    if (prepared && rc != 3)
+        printf("  zcode_verify: overfull release scan rc=%d out=%s\n", rc,
+               out);
+    return failures;
+}
+
 static int ze_socket(const char *base, const char *key_path,
                      const char *work)
 {
@@ -4575,6 +4614,7 @@ static int t_verifier_e2e(void)
     char work[4400];
     snprintf(work, sizeof(work), "%s/work", base);
     failures += ze_symlinked_release(base, key_path, work);
+    failures += ze_overfull_release_directory(base, key_path, work);
     failures += ze_buildfail(base, key_path, work);
     failures += ze_socket(base, key_path, work);
     failures += ze_reproduce(base, root_hex, store, work);
