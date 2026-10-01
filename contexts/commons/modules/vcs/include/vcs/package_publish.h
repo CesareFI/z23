@@ -62,6 +62,9 @@
 /* Persisted releases replayed/loaded from disk (matches the store's
  * VCS_PACKAGE_STORE_MAX_TRACKED bound). */
 #define VCS_PACKAGE_PUBLISH_MAX_RELEASES 4096u
+/* Every non-dot releases/ directory entry consumes this scan budget,
+ * including malformed names. Matches the rebuildable Zcode CAS indexes. */
+#define VCS_PACKAGE_PUBLISH_MAX_SCAN_ENTRIES 262144u
 
 enum vcs_package_publish_rule {
     VCS_PACKAGE_PUBLISH_OK = 0,
@@ -156,11 +159,18 @@ bool vcs_package_publish_read_chunk(
  * sorted by (publisher pubkey, publisher sequence, release id) so a
  * stateless caller (a one-shot CLI) sees deterministic classification.
  * `out` must hold out_cap entries. A missing releases/ directory is an
- * empty load, not an error. False on hard I/O or allocation failure. */
+ * empty load, not an error. False on hard I/O, allocation failure, or scan
+ * budget exhaustion. */
 bool vcs_package_publish_load_releases(const char *zcode_dir,
                                        struct vcs_package_release *out,
                                        size_t out_cap, size_t *count_out,
                                        size_t *skipped_out);
+
+/* Test-only denial seam: applies a smaller directory-entry budget than
+ * production. It can only fail closed sooner. */
+bool vcs_package_publish_test_load_releases_bounded(
+    const char *zcode_dir, struct vcs_package_release *out, size_t out_cap,
+    size_t *count_out, size_t *skipped_out, size_t scan_limit);
 
 /* Rule 7 support: replay every persisted release through a fresh acceptance
  * context (deterministic order via load_releases) so a candidate classifies

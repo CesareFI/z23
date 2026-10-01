@@ -494,12 +494,61 @@ static bool publish_read_release_wire(DIR *d, const char *dir,
 #endif
 }
 
-bool vcs_package_publish_load_releases(const char *zcode_dir,
-                                       struct vcs_package_release *out,
-                                       size_t out_cap, size_t *count_out,
-                                       size_t *skipped_out)
+static void publish_load_release_entry(
+    DIR *d, const char *dir, const char *name, uint8_t *wire,
+    struct vcs_package_release *out, size_t out_cap, size_t *count_out,
+    size_t *skipped_out)
 {
-    if (!zcode_dir || !out || !count_out || !skipped_out)
+    if (!publish_name_is_hex64(name))
+        return;
+    if (*count_out >= out_cap) {
+        (*skipped_out)++;
+        return;
+    }
+    size_t len = 0;
+    if (!publish_read_release_wire(d, dir, name, wire, &len)) {
+        LOG_ERROR(PUBLISH_LOG, "skipping unreadable or linked release %s",
+                  name);
+        (*skipped_out)++;
+        return;
+    }
+    if (vcs_package_release_parse(wire, len, &out[*count_out]) !=
+        VCS_PACKAGE_RELEASE_OK) {
+        LOG_ERROR(PUBLISH_LOG, "skipping unparseable release %s", name);
+        (*skipped_out)++;
+        return;
+    }
+    (*count_out)++;
+}
+
+static bool publish_scan_releases(
+    DIR *d, const char *dir, uint8_t *wire,
+    struct vcs_package_release *out, size_t out_cap, size_t *count_out,
+    size_t *skipped_out, size_t scan_limit)
+{
+    size_t scanned = 0;
+    for (;;) {
+        errno = 0;
+        struct dirent *de = readdir(d);
+        if (!de)
+            return errno == 0;
+        if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0)
+            continue;
+        if (scanned >= scan_limit) {
+            LOG_ERROR(PUBLISH_LOG, "release directory scan budget exhausted");
+            return false;
+        }
+        scanned++;
+        publish_load_release_entry(d, dir, de->d_name, wire, out, out_cap,
+                                   count_out, skipped_out);
+    }
+}
+
+static bool publish_load_releases_bounded(
+    const char *zcode_dir, struct vcs_package_release *out, size_t out_cap,
+    size_t *count_out, size_t *skipped_out, size_t scan_limit)
+{
+    if (!zcode_dir || !out || !count_out || !skipped_out || scan_limit == 0)
         LOG_RETURN(false, PUBLISH_LOG, "null load_releases argument");
     *count_out = 0;
     *skipped_out = 0;
@@ -517,35 +566,35 @@ bool vcs_package_publish_load_releases(const char *zcode_dir,
         closedir(d);
         LOG_RETURN(false, PUBLISH_LOG, "release wire buffer");
     }
-    struct dirent *de;
-    while ((de = readdir(d)) != NULL) {
-        if (!publish_name_is_hex64(de->d_name))
-            continue;
-        if (*count_out >= out_cap) {
-            (*skipped_out)++;
-            continue;
-        }
-        size_t len = 0;
-        if (!publish_read_release_wire(d, dir, de->d_name, wire, &len)) {
-            LOG_ERROR(PUBLISH_LOG, "skipping unreadable or linked release %s",
-                      de->d_name);
-            (*skipped_out)++;
-            continue;
-        }
-        if (vcs_package_release_parse(wire, len,
-                                      &out[*count_out]) !=
-                VCS_PACKAGE_RELEASE_OK) {
-            LOG_ERROR(PUBLISH_LOG, "skipping unparseable release %s",
-                      de->d_name);
-            (*skipped_out)++;
-            continue;
-        }
-        (*count_out)++;
-    }
+    bool complete = publish_scan_releases(
+        d, dir, wire, out, out_cap, count_out, skipped_out, scan_limit);
     free(wire);
-    closedir(d);
+    if (closedir(d) != 0)
+        complete = false;
+    if (!complete)
+        return false;
     qsort(out, *count_out, sizeof(*out), publish_release_cmp);
     return true;
+}
+
+bool vcs_package_publish_load_releases(const char *zcode_dir,
+                                       struct vcs_package_release *out,
+                                       size_t out_cap, size_t *count_out,
+                                       size_t *skipped_out)
+{
+    return publish_load_releases_bounded(
+        zcode_dir, out, out_cap, count_out, skipped_out,
+        VCS_PACKAGE_PUBLISH_MAX_SCAN_ENTRIES);
+}
+
+bool vcs_package_publish_test_load_releases_bounded(
+    const char *zcode_dir, struct vcs_package_release *out, size_t out_cap,
+    size_t *count_out, size_t *skipped_out, size_t scan_limit)
+{
+    if (scan_limit == 0 || scan_limit > VCS_PACKAGE_PUBLISH_MAX_SCAN_ENTRIES)
+        LOG_RETURN(false, PUBLISH_LOG, "invalid test release scan limit");
+    return publish_load_releases_bounded(
+        zcode_dir, out, out_cap, count_out, skipped_out, scan_limit);
 }
 
 bool vcs_package_publish_replay(const char *zcode_dir,

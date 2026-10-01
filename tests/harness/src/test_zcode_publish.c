@@ -3218,6 +3218,35 @@ static int t_release_load_blocked_directory(void)
     return failures;
 }
 
+static int t_release_load_scan_budget(void)
+{
+    int failures = 0;
+    char dd[256], zcode[320], releases[352], path[384];
+    test_make_tmpdir(dd, sizeof(dd), "zcode_publish", "release-scan-budget");
+    snprintf(zcode, sizeof(zcode), "%s/zcode", dd);
+    snprintf(releases, sizeof(releases), "%s/releases", zcode);
+    bool prepared = mkdir(zcode, 0700) == 0 &&
+                    mkdir(releases, 0700) == 0;
+    for (size_t i = 0; prepared && i < 3; i++) {
+        int n = snprintf(path, sizeof(path), "%s/junk-%zu", releases, i);
+        FILE *f = n > 0 && (size_t)n < sizeof(path) ? fopen(path, "wb") : NULL;
+        prepared = f != NULL && fclose(f) == 0;
+    }
+    struct vcs_package_release release = {0};
+    size_t count = 0, skipped = 0;
+    bool bounded = prepared && vcs_package_publish_test_load_releases_bounded(
+        zcode, &release, 1, &count, &skipped, 2);
+    ZP_CHECK("load: every non-dot entry consumes the fixed scan budget",
+             prepared && !bounded);
+    count = skipped = 0;
+    bool production = prepared && vcs_package_publish_load_releases(
+        zcode, &release, 1, &count, &skipped);
+    ZP_CHECK("load: the production budget accepts the same bounded fixture",
+             production && count == 0 && skipped == 0);
+    test_rm_rf_recursive(dd);
+    return failures;
+}
+
 static int zp_check_linked_release_load(const char *zcode, const char *outside,
                                         const char *leaf,
                                         const uint8_t package_root[32])
@@ -3297,6 +3326,7 @@ int test_zcode_publish(void)
     failures += t_index_rebuild();
     failures += t_index_linked_manifest();
     failures += t_release_load_blocked_directory();
+    failures += t_release_load_scan_budget();
     failures += t_release_load_linked_leaf();
     failures += t_registry_path();
     failures += t_commit_routes_to_resident();
