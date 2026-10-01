@@ -143,6 +143,7 @@ static int pv_main_windows(void)
 #include "platform/clock.h"
 #include "platform/os_proc.h"
 #include "platform/positioned_file.h"
+#include "platform/private_file.h"
 #include "platform/process_compat.h"
 #include "platform/os_sandbox.h"
 #include "support/cleanse.h"
@@ -521,27 +522,17 @@ static bool pv_atomic_write(const char *path, const uint8_t *data,
                       (long)getpid());
     if (tn <= 0 || (size_t)tn >= sizeof(tmp))
         return false;
-    int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
-    if (fd < 0)
+    struct platform_private_file staged;
+    platform_private_file_init(&staged);
+    if (!platform_private_file_create(tmp, &staged))
         return false;
-    size_t off = 0;
-    while (off < data_len) {
-        ssize_t w = write(fd, data + off, data_len - off);
-        if (w < 0) {
-            if (errno == EINTR)
-                continue;
-            close(fd);
-            unlink(tmp);
-            return false;
-        }
-        off += (size_t)w;
+    bool ok = platform_private_file_write_at(&staged, data, data_len, 0) &&
+              platform_private_file_replace(&staged, tmp, path);
+    if (!ok) {
+        (void)platform_private_file_retire(&staged, tmp);
+        platform_private_file_close(&staged);
     }
-    if (fsync(fd) != 0 || close(fd) != 0 || rename(tmp, path) != 0) {
-        close(fd);
-        unlink(tmp);
-        return false;
-    }
-    return true;
+    return ok;
 }
 
 /* ── the sandboxed child runner ─────────────────────────────────────── */

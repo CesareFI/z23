@@ -65,9 +65,11 @@
  *      (test-fail/test-signal — the seccomp network denial firing). A
  *      release-envelope symlink is refused even when it resolves to the
  *      original valid signed bytes, the releases directory itself cannot be
- *      substituted by a symlink, and an overfull release directory cannot
- *      authorize execution from a partial scan. On the root-host lane, a
- *      valid 0600 key owned by another uid is also refused. The
+ *      substituted by a symlink, a preplaced attestation temporary-file
+ *      symlink cannot redirect signed bytes, and an overfull release
+ *      directory cannot authorize execution from a partial scan. On the
+ *      root-host lane, a valid 0600 key owned by another uid is also refused.
+ *      The
  *      bounded cleanup refuses to persist an attestation when hostile test
  *      code creates a work tree deeper than the safe traversal limit. The
  *      reproduction lane runs --emit twice: a second build
@@ -92,6 +94,7 @@
 #include "json/json.h"
 #include "keys/key.h"
 #include "keys/pubkey.h"
+#include "platform/process_lifecycle.h"
 #include "platform/time_compat.h"
 #include "sha3/sha3.h"
 #include "util/spawn.h"
@@ -113,11 +116,16 @@
 
 #include <dirent.h>
 #include <errno.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+
+#if !defined(_WIN32)
+extern char **environ;
+#endif
 
 #define ZV_CHECK(name, expr) do {                                     \
     if (expr) { printf("  zcode_verify: %s... OK\n", (name)); }       \
@@ -4339,6 +4347,152 @@ static int ze_pass(const char *base, const uint8_t package_root[32],
     return failures;
 }
 
+#if !defined(_WIN32)
+static bool ze_wait_bounded(struct platform_process *process,
+                            uint32_t *exit_code)
+{
+    enum platform_process_wait_result waited =
+        platform_process_wait(process, 60000u, exit_code);
+    if (waited != PLATFORM_PROCESS_WAIT_EXITED) {
+        (void)kill(-(pid_t)process->pid, SIGKILL);
+        waited = platform_process_wait(process, 5000u, exit_code);
+    }
+    platform_process_close(process);
+    return waited == PLATFORM_PROCESS_WAIT_EXITED;
+}
+
+static const uint8_t g_ze_atomic_marker[] =
+    "attestation-target-must-not-change";
+
+struct ze_temp_symlink_fixture {
+    char attest_path[4400];
+    char victim[4400];
+    char victim_absolute[4400];
+    char verifier[4400];
+    char cwd[4096];
+    char temporary[4400];
+};
+
+static bool ze_attestation_path(const char *store, char *path,
+                                size_t path_cap)
+{
+    struct vcs_package_attest att;
+    uint8_t attest_id[32];
+    if (!zv_read_only_attestation(store, &att) ||
+        vcs_package_attest_id(&att, attest_id) != VCS_PACKAGE_ATTEST_OK)
+        return false;
+    char attest_hex[65];
+    zv_hex_enc(attest_id, sizeof(attest_id), attest_hex);
+    int n = snprintf(path, path_cap, "%s/attestations/%s", store,
+                     attest_hex);
+    return n > 0 && (size_t)n < path_cap;
+}
+
+static bool ze_temp_symlink_prepare(const char *base, const char *store,
+                                    struct ze_temp_symlink_fixture *fixture)
+{
+    if (!ze_attestation_path(store, fixture->attest_path,
+                             sizeof(fixture->attest_path)))
+        return false;
+    int n = snprintf(fixture->victim, sizeof(fixture->victim),
+                     "%s/atomic-write-victim", base);
+    if (n <= 0 || (size_t)n >= sizeof(fixture->victim) ||
+        !getcwd(fixture->cwd, sizeof(fixture->cwd)))
+        return false;
+    n = snprintf(fixture->victim_absolute,
+                 sizeof(fixture->victim_absolute), "%s/%s", fixture->cwd,
+                 fixture->victim);
+    if (n <= 0 || (size_t)n >= sizeof(fixture->victim_absolute))
+        return false;
+    n = snprintf(fixture->verifier, sizeof(fixture->verifier), "%s/%s",
+                 fixture->cwd, ZV_VERIFIER_BIN);
+    if (n <= 0 || (size_t)n >= sizeof(fixture->verifier) ||
+        unlink(fixture->attest_path) != 0)
+        return false;
+    return zv_write_file(fixture->victim, g_ze_atomic_marker,
+                         sizeof(g_ze_atomic_marker), 0600);
+}
+
+static bool ze_verifier_arg(char *out, size_t cap, const char *name,
+                            const char *value)
+{
+    int n = snprintf(out, cap, "--%s=%s", name, value);
+    return n > 0 && (size_t)n < cap;
+}
+
+static bool ze_temp_symlink_run(struct ze_temp_symlink_fixture *fixture,
+                                const char *root_hex, const char *store,
+                                const char *key_path, const char *work,
+                                uint32_t *exit_code)
+{
+    char store_arg[4400], key_arg[4400], work_arg[4400];
+    if (!ze_verifier_arg(store_arg, sizeof(store_arg), "store", store) ||
+        !ze_verifier_arg(key_arg, sizeof(key_arg), "key", key_path) ||
+        !ze_verifier_arg(work_arg, sizeof(work_arg), "work", work))
+        return false;
+    const char *argv[] = {fixture->verifier, root_hex, store_arg, key_arg,
+                          work_arg, NULL};
+    struct platform_process process;
+    platform_process_init(&process);
+    struct platform_process_options options = {
+        .image = fixture->verifier, .argv = argv, .cwd = fixture->cwd,
+        .env = (const char *const *)environ};
+    if (!platform_process_start_hidden(&process, &options))
+        return false;
+    int n = snprintf(fixture->temporary, sizeof(fixture->temporary),
+                     "%s.zvtmp.%llu", fixture->attest_path,
+                     (unsigned long long)process.pid);
+    bool collided = n > 0 && (size_t)n < sizeof(fixture->temporary) &&
+                    symlink(fixture->victim_absolute,
+                            fixture->temporary) == 0;
+    if (!collided)
+        (void)kill(-(pid_t)process.pid, SIGKILL);
+    bool exited = ze_wait_bounded(&process, exit_code);
+    return collided && exited;
+}
+
+static bool ze_atomic_victim_unchanged(const char *path)
+{
+    uint8_t observed[sizeof(g_ze_atomic_marker) + 1u];
+    size_t observed_len = 0;
+    return zv_read_file(path, observed, sizeof(observed), &observed_len) &&
+           observed_len == sizeof(g_ze_atomic_marker) &&
+           memcmp(observed, g_ze_atomic_marker,
+                  sizeof(g_ze_atomic_marker)) == 0;
+}
+
+static int ze_attestation_temp_symlink(const char *base,
+                                       const char *root_hex,
+                                       const char *store,
+                                       const char *key_path,
+                                       const char *work)
+{
+    int failures = 0;
+    struct ze_temp_symlink_fixture fixture = {0};
+    bool prepared = ze_temp_symlink_prepare(base, store, &fixture);
+    ZV_CHECK("e2e: attestation temp-symlink fixture prepared", prepared);
+
+    uint32_t exit_code = UINT32_MAX;
+    bool ran = prepared && ze_temp_symlink_run(
+        &fixture, root_hex, store, key_path, work, &exit_code);
+    struct vcs_package_attest unexpected;
+    bool victim_unchanged = ze_atomic_victim_unchanged(fixture.victim);
+    bool attestation_absent =
+        !zv_read_only_attestation(store, &unexpected);
+    bool refused = ran && exit_code == 5u && victim_unchanged &&
+                   attestation_absent;
+    ZV_CHECK("e2e: attestation temp symlink is refused without overwrite",
+             refused);
+    if (fixture.temporary[0])
+        (void)unlink(fixture.temporary);
+    if (!refused)
+        printf("  zcode_verify: temp-symlink prepared=%d ran=%d rc=%u "
+               "victim_unchanged=%d attestation_absent=%d\n", prepared,
+               ran, exit_code, victim_unchanged, attestation_absent);
+    return failures;
+}
+#endif
+
 static int ze_buildfail(const char *base, const char *key_path,
                         const char *work)
 {
@@ -4717,6 +4871,10 @@ static int t_verifier_e2e(void)
     snprintf(key_path, sizeof(key_path), "%s/verifier.key", base);
     char work[4400];
     snprintf(work, sizeof(work), "%s/work", base);
+#if !defined(_WIN32)
+    failures += ze_attestation_temp_symlink(base, root_hex, store, key_path,
+                                            work);
+#endif
     failures += ze_foreign_owned_key(base, work);
     failures += ze_symlinked_release(base, key_path, work);
     failures += ze_symlinked_release_directory(base, key_path, work);
