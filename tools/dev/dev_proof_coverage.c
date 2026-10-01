@@ -775,3 +775,124 @@ bool zcl_dev_coverage_manifest_verify(const char *store_root,
     if (ok && why && why_len) why[0] = 0;
     return ok;
 }
+
+
+/* ── Query mode ───────────────────────────────────────────────────────── */
+
+/* Observation projection stats: totals, eligibility and the observed age
+ * range. An empty projection reports zeros, not a refusal. */
+static void cov_inspect_stats(const struct zcl_dev_observation_leaf *leaves,
+    size_t leaf_count, struct zcl_dev_coverage_inspect *out)
+{
+    out->observed_total = leaf_count;
+    for (size_t i = 0; i < leaf_count; i++) {
+        if (!leaves[i].eligible) continue;
+        out->observed_eligible++;
+        uint64_t seen = leaves[i].leaf.observed_unix;
+        if (out->oldest_observed_unix == 0 || seen < out->oldest_observed_unix)
+            out->oldest_observed_unix = seen;
+        if (seen > out->newest_observed_unix)
+            out->newest_observed_unix = seen;
+    }
+}
+
+/* Classify every manifest row against the projection: covered, missing
+ * (named, capped) or conflict. */
+static bool cov_inspect_rows(const struct zcl_dev_observation_leaf *leaves,
+    size_t leaf_count, const uint8_t *blob, size_t blob_len,
+    uint32_t row_count,
+    const uint8_t coverage_root[ZCL_DEV_PROOF_ROOT_BYTES],
+    struct zcl_dev_coverage_inspect *out, char *why, size_t why_len)
+{
+    struct zcl_dev_coverage_log_row *rows = NULL;
+    const uint8_t (**listed)[ZCL_DEV_PROOF_ROOT_BYTES] = NULL;
+    size_t *n_listed = NULL;
+    if (!cov_verify_rows_extract(blob, blob_len, row_count, coverage_root,
+                                 &rows, &listed, &n_listed, why, why_len))
+        return false;
+    uint8_t (*pass_roots)[ZCL_DEV_PROOF_ROOT_BYTES] =
+        zcl_malloc(ZCL_DEV_COVERAGE_MAX_ROW_ROOTS * 32u,
+                   "dev-coverage-inspect-roots");
+    if (!pass_roots) {
+        free(n_listed);
+        free(listed);
+        free(rows);
+        return cov_fail(why, why_len, ZCL_DEV_COVERAGE_WHY_STORE_INCOMPLETE);
+    }
+    for (uint32_t r = 0; r < row_count; r++) {
+        size_t n_pass = 0;
+        char row_why[160] = {0};
+        bool covered = cov_classify(leaves, leaf_count, rows[r].key,
+                                    rows[r].group_len, rows[r].group,
+                                    listed[r], n_listed[r], pass_roots,
+                                    &n_pass, row_why, sizeof(row_why));
+        if (covered) {
+            out->covered++;
+            continue;
+        }
+        if (strcmp(row_why, ZCL_DEV_COVERAGE_WHY_CONFLICT) == 0) {
+            out->conflicts++;
+            continue;
+        }
+        out->missing++;
+        if (out->missing_named < ZCL_DEV_COVERAGE_INSPECT_MAX_MISSING) {
+            size_t gl = rows[r].group_len;
+            (void)memcpy(out->missing_groups[out->missing_named], rows[r].group,
+                         gl);
+            out->missing_groups[out->missing_named][gl] = 0;
+            out->missing_named++;
+        }
+    }
+    free(pass_roots);
+    free(n_listed);
+    free(listed);
+    free(rows);
+    return true;
+}
+
+bool zcl_dev_coverage_inspect(const char *store_root,
+    const uint8_t *envelope_wire, size_t envelope_len,
+    const uint8_t *blob, size_t blob_len,
+    const struct zcl_dev_coverage_binding *binding,
+    struct zcl_dev_coverage_inspect *out, char *why, size_t why_len)
+{
+    if (!binding || !out)
+        return cov_fail(why, why_len, ZCL_DEV_COVERAGE_WHY_ARGUMENTS);
+    memset(out, 0, sizeof(*out));
+    if (envelope_len != ZCL_DEV_COVERAGE_WIRE_BYTES)
+        return cov_fail(why, why_len, ZCL_DEV_COVERAGE_WHY_MANIFEST_INVALID);
+
+    uint32_t row_count = 0, want_blob_len = 0;
+    uint8_t coverage_root[ZCL_DEV_PROOF_ROOT_BYTES] = {0};
+    if (!cov_envelope_framing(envelope_wire, &row_count, &want_blob_len,
+                              coverage_root, why, why_len))
+        return false;
+    if (want_blob_len != blob_len || (blob_len && !blob))
+        return cov_fail(why, why_len, ZCL_DEV_COVERAGE_WHY_BLOB_INVALID);
+    out->binding_mismatch =
+        !cov_envelope_binding(envelope_wire, binding, NULL, 0);
+    if (!cov_envelope_verify_signature(envelope_wire, out->signer_why,
+                                       sizeof(out->signer_why)) &&
+        !out->signer_why[0])
+        (void)snprintf(out->signer_why, sizeof(out->signer_why), "%s",
+                       ZCL_DEV_COVERAGE_WHY_MANIFEST_INVALID);
+
+    /* The observation projection and its age range are reported whether
+     * or not the manifest rows resolve: the query answers both "does this
+     * pair carry coverage" and "what has this box seen". */
+    struct zcl_dev_observation_leaf *leaves = NULL;
+    size_t leaf_count = 0;
+    bool present = false;
+    if (!zcl_dev_observation_enumerate(store_root, &leaves, &leaf_count,
+                                       &present, why, why_len))
+        return cov_fail(why, why_len, ZCL_DEV_COVERAGE_WHY_STORE_INCOMPLETE);
+    cov_inspect_stats(leaves, leaf_count, out);
+
+    out->row_count = row_count;
+    bool ok = row_count == 0 ||
+              cov_inspect_rows(leaves, leaf_count, blob, blob_len, row_count,
+                               coverage_root, out, why, why_len);
+    zcl_dev_observation_release(leaves);
+    if (ok && why && why_len) why[0] = 0;
+    return ok;
+}

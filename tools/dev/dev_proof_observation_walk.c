@@ -116,6 +116,19 @@ static bool obs_enumerate_shards(const char *store_root, char *objects_path,
     if (snprintf(objects_path, objects_path_cap, "%s/%s", store_root,
                  OBS_OBJECTS_SUBDIR) >= (int)objects_path_cap)
         return obs_fail(why, why_len, ZCL_DEV_VERDICT_WHY_ARGUMENTS);
+    /* A store root that exists but never held leaves (a pair whose test
+     * dimension ran zero groups, a freshly ensured directory) enumerates
+     * empty; only a present-but-unreadable objects dir is incomplete. */
+    enum platform_directory_probe_result objects_probe =
+        platform_directory_probe_real(objects_path);
+    if (objects_probe == PLATFORM_DIRECTORY_PROBE_REFUSED)
+        return obs_fail(why, why_len, "observation_store_incomplete");
+    if (objects_probe == PLATFORM_DIRECTORY_PROBE_MISSING) {
+        *leaves = NULL;
+        *count = 0;
+        if (why && why_len) why[0] = 0;
+        return true;
+    }
     struct platform_directory_list shards = {0};
     if (!platform_directory_list_real_sorted(objects_path, &shards))
         return obs_fail(why, why_len, "observation_store_incomplete");

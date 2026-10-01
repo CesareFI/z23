@@ -120,6 +120,35 @@ bool zcl_dev_coverage_envelope_blob_len(const uint8_t *envelope_wire,
                                         size_t envelope_len,
                                         uint32_t *blob_len_out);
 
+/* ── Query mode (the lifecycle query interface) ─────────────────────────
+ * Reports coverage without admitting anything. Parses and verifies the
+ * manifest (binding and signature), classifies every row against the
+ * store, and summarizes. Structural problems refuse by name; a manifest
+ * that parses but misses coverage, mismatches its binding, carries an
+ * untrusted signature, or preserves a conflict is reported through the
+ * struct — those are answers, not refusals. */
+#define ZCL_DEV_COVERAGE_INSPECT_MAX_MISSING 8u
+struct zcl_dev_coverage_inspect {
+    uint32_t row_count;
+    uint32_t covered;
+    uint32_t missing;      /* rows with no eligible PASS coverage */
+    uint32_t conflicts;    /* rows with an eligible PASS/FAIL contradiction */
+    bool binding_mismatch;
+    char signer_why[32];   /* empty when the signature verifies */
+    uint64_t observed_total;    /* leaves in the store projection */
+    uint64_t observed_eligible;
+    uint64_t oldest_observed_unix; /* 0 when the store is empty */
+    uint64_t newest_observed_unix;
+    uint32_t missing_named; /* groups copied into missing_groups */
+    char missing_groups[ZCL_DEV_COVERAGE_INSPECT_MAX_MISSING]
+                       [ZCL_DEV_VERDICT_LEAF_GROUP_BYTES];
+};
+bool zcl_dev_coverage_inspect(const char *store_root,
+    const uint8_t *envelope_wire, size_t envelope_len,
+    const uint8_t *blob, size_t blob_len,
+    const struct zcl_dev_coverage_binding *binding,
+    struct zcl_dev_coverage_inspect *out, char *why, size_t why_len);
+
 /* Receiver side: verify a stored manifest (the fixed envelope wire and its
  * canonical blob) against the binding and a complete local enumeration of
  * the same observation CAS. Refuses by name; never aborts. */
