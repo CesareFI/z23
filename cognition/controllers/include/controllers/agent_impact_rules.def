@@ -227,6 +227,7 @@ AGENT_IMPACT_RULE("core/modules/sync/src/reducer_stage_profile.c|core/modules/sy
  * node_health_service are the two consumers that read memory through
  * this seam. */
 AGENT_IMPACT_RULE("platform/modules/platform/src/os_proc.c|platform/modules/platform/src/os_proc_mem.c|platform/modules/platform/include/platform/os_proc.h|tests/harness/src/test_os_proc.c", "os_proc mem_pressure node_health_service make_lint_gates")
+AGENT_IMPACT_RULE("platform/modules/platform/include/platform/resident_capability_image.h|platform/modules/platform/src/resident_capability_image.c|tests/harness/src/test_resident_capability_image.c", "resident_capability_image make_lint_gates")
 AGENT_IMPACT_RULE("tests/harness/src/test_canary_sentinel_watch.c", "canary_sentinel_watch os_proc make_lint_gates")
 AGENT_IMPACT_RULE("platform/modules/util/src/mem_pressure.c|platform/modules/util/include/util/mem_pressure.h|tests/harness/src/test_mem_pressure.c|engine/composition/src/boot_mem_pressure.c|engine/conditions/src/memory_pressure_high.c|engine/conditions/include/conditions/memory_pressure_high.h|tools/lint/check_proc_self_shim.sh|tools/lint/proc_self_shim_baseline.txt", "mem_pressure sticky_conditions os_proc supervisor condition_engine make_lint_gates")
 /* platform/modules/base is the in-tree dependency sink (log macros, log-level filter,

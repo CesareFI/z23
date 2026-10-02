@@ -1420,6 +1420,7 @@ ZCL_TEST_GROUP(watcher_lease)
  * launch/cancel cycle that leaves neither descriptors nor children behind.
  * Windows asserts the named platform refusal. */
 ZCL_TEST_GROUP(resident_launch)
+ZCL_TEST_GROUP(resident_capability_image)
 /* Product acceptance contract for the resident-launch CONSUMER, driven
  * against C's landed app.invoke.package slice: installs REAL packages
  * (C's shipped ztasks from its repo bytes, plus a parking candidate)
