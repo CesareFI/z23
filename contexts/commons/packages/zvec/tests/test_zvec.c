@@ -16,11 +16,13 @@
 struct test_alloc {
     size_t mallocs, frees;
     size_t fail_after; /* fail when mallocs reaches this; SIZE_MAX = never */
+    size_t max_size, last_size;
 };
 static void *ta_malloc(void *ctx, size_t size)
 {
     struct test_alloc *t = ctx;
-    if (t->mallocs >= t->fail_after) return NULL;
+    t->last_size = size;
+    if (t->mallocs >= t->fail_after || size > t->max_size) return NULL;
     t->mallocs++;
     return malloc(size);
 }
@@ -34,7 +36,61 @@ static zvec_alloc ta(struct test_alloc *t, size_t fail_after)
 {
     t->mallocs = t->frees = 0;
     t->fail_after = fail_after;
+    t->max_size = SIZE_MAX;
+    t->last_size = 0;
     return (zvec_alloc){ ta_malloc, ta_free, t };
+}
+
+static void test_capacity_overflow(void)
+{
+    size_t limit = SIZE_MAX / sizeof(void *);
+    size_t capacities[] = {limit + 1, limit + 2, SIZE_MAX};
+    for (size_t i = 0; i < sizeof(capacities) / sizeof(capacities[0]); i++) {
+        struct test_alloc t;
+        zvec_alloc alloc = ta(&t, SIZE_MAX);
+        t.max_size = 1024; /* A broken guard must not exhaust the test host. */
+        zvec *v = zvec_with_capacity(capacities[i], alloc);
+        bool rejected = v == NULL;
+        zvec_destroy(v); /* Safe cleanup even if the constructor admits it. */
+        CHECK(rejected);
+        CHECK(t.mallocs == 0 && t.frees == 0 && t.last_size == 0);
+    }
+}
+
+static void test_capacity_limit(void)
+{
+    size_t limit = SIZE_MAX / sizeof(void *);
+    for (size_t offset = 0; offset < 2; offset++) {
+        size_t capacity = limit - offset;
+        struct test_alloc t;
+        zvec_alloc alloc = ta(&t, SIZE_MAX);
+        t.max_size = 1024; /* Record, then refuse the representable huge size. */
+        zvec *v = zvec_with_capacity(capacity, alloc);
+        CHECK(v == NULL);
+        CHECK(t.last_size == capacity * sizeof(void *));
+        CHECK(t.mallocs == 1 && t.frees == 1);
+    }
+}
+
+static void test_capacity_controls(void)
+{
+    struct test_alloc t;
+    zvec *v = zvec_with_capacity(0, ta(&t, SIZE_MAX));
+    CHECK(v != NULL && zvec_capacity(v) == 0);
+    CHECK(t.mallocs == 1);
+    zvec_destroy(v);
+    CHECK(t.frees == 1);
+
+    int value = 7;
+    v = zvec_with_capacity(1, ta(&t, SIZE_MAX));
+    CHECK(v != NULL && zvec_capacity(v) == 1);
+    CHECK(zvec_push(v, &value) && zvec_get(v, 0) == &value);
+    CHECK(t.mallocs == 2);
+    zvec_destroy(v);
+    CHECK(t.frees == 2);
+
+    CHECK(zvec_with_capacity(4, ta(&t, 1)) == NULL);
+    CHECK(t.mallocs == 1 && t.frees == 1);
 }
 
 static void test_basic(void)
@@ -232,6 +288,9 @@ static void test_stress_vs_model(void)
 
 int main(void)
 {
+    test_capacity_overflow();
+    test_capacity_limit();
+    test_capacity_controls();
     test_basic();
     test_insert_remove();
     test_index_of();

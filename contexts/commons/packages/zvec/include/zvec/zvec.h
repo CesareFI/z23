@@ -30,7 +30,8 @@ typedef struct zvec zvec;
  * hosted malloc/free. Returns NULL on allocation failure. */
 zvec *zvec_create(zvec_alloc alloc);
 
-/* Create with at least `initial_capacity` slots reserved. */
+/* Create with at least `initial_capacity` slots reserved. Returns NULL if
+ * its byte size is unrepresentable or an allocation fails. */
 zvec *zvec_with_capacity(size_t initial_capacity, zvec_alloc alloc);
 
 /* Free the array, not the values. NULL-safe. */
