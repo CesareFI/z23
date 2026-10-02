@@ -418,6 +418,52 @@ static bool fmc_dirs(char *steerdir, size_t cap)
     return true;
 }
 
+/* Admission reads existing authenticated state. Never initialize or repair
+ * it, even for a refused credential. Preserve the directory policy used by
+ * the mutating path; unavailable or non-private state fails closed. */
+static bool fmc_dirs_read(char *steerdir, size_t cap)
+{
+    char root[4096];
+    uintptr_t retained = 0;
+    if (!platform_state_root_existing(root, sizeof(root)))
+        return false;
+    int n = snprintf(steerdir, cap, "%s/steer", root);
+    if (n <= 0 || (size_t)n >= cap ||
+        !platform_private_directory_open_validated_traverse(steerdir, &retained))
+        return false;
+    platform_private_directory_close(retained);
+    return true;
+}
+
+static bool fmc_admission_dirs(const char *scope, char *steerdir, size_t cap)
+{
+    bool observe = strcmp(scope, "brief") == 0 || strcmp(scope, "evidence") == 0;
+    return observe ? fmc_dirs_read(steerdir, cap) : fmc_dirs(steerdir, cap);
+}
+
+/* Status leaves may legitimately render an absent store as empty for their
+ * own CLI. A fleet snapshot must retain that absence instead of qualifying
+ * it as an observation of an idle fleet. This check never opens for write. */
+static const char *fmc_snapshot_source(const char *relative, bool directory)
+{
+    char root[4096], path[4096 + 64];
+    struct stat st;
+    if (!platform_state_root_existing(root, sizeof(root)))
+        return "existing_state_unavailable";
+    int n = snprintf(path, sizeof(path), "%s/%s", root, relative);
+    if (n <= 0 || (size_t)n >= sizeof(path)) return "source_path_too_long";
+#if defined(_WIN32)
+    int result = stat(path, &st);
+#else
+    int result = lstat(path, &st);
+#endif
+    if (result != 0)
+        return errno == ENOENT ? "source_missing" : "source_unavailable";
+    if (directory ? !S_ISDIR(st.st_mode) : !S_ISREG(st.st_mode))
+        return "sibling_refused";
+    return NULL;
+}
+
 static bool fmc_append_line(const char *path, const char *line, size_t len)
 {
     int fd;
@@ -617,7 +663,7 @@ static const char *fmc_grant_check_row(const char *grant, const char *scope,
         return "STEER_GRANT_SCOPE";
     if (strlen(grant) != 32)
         return "STEER_GRANT_UNKNOWN";
-    if (!fmc_dirs(steerdir, sizeof(steerdir)))
+    if (!fmc_admission_dirs(scope, steerdir, sizeof(steerdir)))
         return "STEER_GRANT_STORE";
     n = snprintf(path, sizeof(path), "%s/grants.jsonl", steerdir);
     if (n <= 0 || (size_t)n >= sizeof(path))
@@ -3119,6 +3165,11 @@ static long long fmc_brief_mail(const struct zcl_command_request *req,
     view->cursor_token[0] = '\0';
     view->truncated = false;
     view->dropped = 0;
+    fail = fmc_snapshot_source("mail", true);
+    if (fail) {
+        fmc_note_missing(missing, "dev.agent.mail", fail, 0);
+        return -1;
+    }
     if (!fmc_sent_path_read(c->sent_path, sizeof(c->sent_path)))
         c->sent_path[0] = '\0';
     resume_state = fmc_brief_resume(req, resume, sizeof(resume));
@@ -3370,6 +3421,12 @@ static void fmc_brief_queue(const struct zcl_command_request *req,
     view->pool_total = view->pool_free = -1;
     (void)snprintf(view->reason, sizeof(view->reason), "%s",
                    "unknown_sibling");
+    const char *unavailable = fmc_snapshot_source("queue/queue.jsonl", false);
+    if (unavailable) {
+        (void)snprintf(view->reason, sizeof(view->reason), "%s", unavailable);
+        fmc_note_missing(missing, "dev.agent.queue", unavailable, 0);
+        if (strcmp(unavailable, "source_missing") != 0) return;
+    }
     fmc_sub_begin(&sub, "zcl.agent_queue.v1", req, "dev.agent.queue");
     if (!sub.valid) {
         fmc_note_missing(missing, "dev.agent.queue", view->reason, 0);
@@ -3395,13 +3452,16 @@ static void fmc_brief_queue(const struct zcl_command_request *req,
         fmc_sub_end(&sub);
         return;
     }
-    view->known = true;
-    view->reason[0] = '\0';
-    zcl_fmc_cand_source_ok(cand, ZCL_FMC_CAND_SRC_QUEUE);
+    view->known = unavailable == NULL;
+    if (!unavailable) {
+        view->reason[0] = '\0';
+        zcl_fmc_cand_source_ok(cand, ZCL_FMC_CAND_SRC_QUEUE);
+    }
     fmc_queue_rows(&sub, work, cand, view);
     long long now = (long long)platform_time_wall_unix();
     if (!zcl_fmc_tasks_queue(tasks, &sub.reply.data, now, now))
         fmc_note_missing(missing, "dev.agent.queue", "task_source_malformed", 0);
+    if (unavailable) tasks->queue_ok = false;
     fmc_queue_outcomes(&sub, blockers, outcomes_keep, view);
     fmc_cand_from_outcomes(cand, outcomes_keep);
     fmc_queue_pool(&sub, view);
@@ -3589,14 +3649,37 @@ static void fmc_brief_board(const struct zcl_command_request *req,
  * Chain counts and replica staleness only — row contents never leave the
  * ledger leaf, and they do not leave through this one either. */
 
+struct fmc_ledger_view {
+    long long boxes, rows, max_age, unknown_ages, overflow;
+};
+
+static void fmc_ledger_ages(const struct json_value *data,
+                           struct fmc_ledger_view *view)
+{
+    const struct json_value *chains = json_get(data, "chains");
+    const struct json_value *overflow = json_get(data, "index_overflow_rows");
+    if (overflow && overflow->type == JSON_INT && json_get_int(overflow) >= 0)
+        view->overflow = json_get_int(overflow);
+    if (!chains || chains->type != JSON_ARR) return;
+    view->unknown_ages = 0;
+    for (size_t i = 0; i < json_size(chains); i++) {
+        const struct json_value *age = json_get(json_at(chains, i), "age_s");
+        if (!age || age->type != JSON_INT || json_get_int(age) < 0) {
+            view->unknown_ages++;
+            continue;
+        }
+        long long value = json_get_int(age);
+        if (value > view->max_age) view->max_age = value;
+    }
+}
+
 static void fmc_brief_ledger(const struct zcl_command_request *req,
                              struct json_value *missing,
-                             long long *boxes, long long *rows)
+                             struct fmc_ledger_view *view)
 {
     struct fmc_sub sub;
     int64_t t0, t1;
-    *boxes = -1;
-    *rows = -1;
+    *view = (struct fmc_ledger_view){-1, -1, -1, -1, -1};
     fmc_sub_begin(&sub, "zcl.fleet_ledger_status.v1", req, "fleet.ledger.status");
     if (!sub.valid) {
         fmc_note_missing(missing, "fleet.ledger", "unknown_sibling", 0);
@@ -3618,8 +3701,9 @@ static void fmc_brief_ledger(const struct zcl_command_request *req,
         fmc_sub_end(&sub);
         return;
     }
-    *boxes = fmc_sub_int(&sub, "boxes", -1);
-    *rows = fmc_sub_int(&sub, "rows_loaded", -1);
+    view->boxes = fmc_sub_int(&sub, "boxes", -1);
+    view->rows = fmc_sub_int(&sub, "rows_loaded", -1);
+    fmc_ledger_ages(&sub.reply.data, view);
     fmc_sub_end(&sub);
 }
 
@@ -3674,9 +3758,15 @@ static void fmc_apply_completed(struct json_value *changes,
 /* Read the owning status leaves exactly once. Status only: never step,
  * ensure, wait, retry, reap or take a scheduler lock while rendering. */
 static bool fmc_land_read(const struct zcl_command_request *req,
-    struct fmc_sub *sub, struct json_value *missing)
+    struct fmc_sub *sub, struct json_value *missing, bool *complete)
 {
     fmc_sub_begin(sub, "zcl.dev_land.v1", req, "dev.land");
+    const char *unavailable = fmc_snapshot_source("land/queue.jsonl", false);
+    if (complete) *complete = unavailable == NULL;
+    if (unavailable) {
+        fmc_note_missing(missing, "dev.land", unavailable, 0);
+        if (strcmp(unavailable, "source_missing") != 0) return false;
+    }
     if (sub->valid && fmc_sub_input(sub, "{\"action\":\"status\",\"json\":true}")) {
         zcl_native_handle_dev_land(&sub->request, &sub->reply);
         sub->ran = true;
@@ -3720,11 +3810,13 @@ static void fmc_brief_land(const struct zcl_command_request *req,
 {
     struct fmc_sub sub;
     struct json_value proof = {0};
-    if (fmc_land_read(req, &sub, missing)) {
+    bool complete = false;
+    if (fmc_land_read(req, &sub, missing, &complete)) {
         fmc_land_proof(req, json_get(&sub.reply.data, "in_flight"), &proof, missing);
         long long now = (long long)platform_time_wall_unix();
         if (!zcl_fmc_tasks_land(tasks, &sub.reply.data, &proof, now, now))
             fmc_note_missing(missing, "dev.land", "task_source_malformed", 0);
+        if (!complete) tasks->land_ok = false;
     }
     json_free(&proof);
     fmc_sub_end(&sub);
@@ -3767,7 +3859,9 @@ static long long fmc_trim_member(struct json_value *data, const char *key)
     if (!arr || arr->type != JSON_ARR)
         return 0;
     while (arr->num_children > 0 &&
-           json_write(data, NULL, 0) > FMC_REPLY_SOFT_BUDGET) {
+           /* Reserve the bounded truncation object and final task counts
+            * that are appended after trimming. */
+           json_write(data, NULL, 0) > FMC_REPLY_SOFT_BUDGET - 512u) {
         json_free(&arr->children[arr->num_children - 1]);
         arr->num_children--;
         dropped++;
@@ -3839,14 +3933,19 @@ static void fmc_lists_free(struct fmc_brief_lists *l)
 
 static void fmc_brief_evidence(struct fmc_brief_lists *l,
                                const struct fmc_mail_view *mv,
-                               long long mail_cursor, long long boxes,
-                               long long rows, long long now)
+                               long long mail_cursor,
+                               const struct fmc_ledger_view *ledger, long long now)
 {
     char ts[32];
     (void)json_push_kv_int(&l->evidence, "mail_cursor", mail_cursor);
     (void)json_push_kv_int(&l->evidence, "mail_count", mv->count);
-    (void)json_push_kv_int(&l->evidence, "ledger_boxes", boxes);
-    (void)json_push_kv_int(&l->evidence, "ledger_rows", rows);
+    fmc_put_int(&l->evidence, "ledger_boxes", ledger->boxes);
+    fmc_put_int(&l->evidence, "ledger_rows", ledger->rows);
+    fmc_put_int(&l->evidence, "ledger_max_age_s", ledger->max_age);
+    fmc_put_int(&l->evidence, "ledger_age_unknown_boxes", ledger->unknown_ages);
+    fmc_put_int(&l->evidence, "ledger_index_overflow_rows", ledger->overflow);
+    (void)json_push_kv_str(&l->evidence, "ledger_age_basis",
+        "last signed statement; snapshot observed_at is not replica freshness");
     (void)json_push_kv(&l->evidence, "post_ids", &l->post_ids);
     (void)json_push_kv_int(&l->evidence, "queued_stale_after_s",
                            FMC_QUEUED_STALE_S);
@@ -3929,7 +4028,8 @@ static void fmc_do_brief(const struct zcl_command_request *req,
     struct fmc_roster ro;
     struct fmc_local lo;
     struct fmc_emit_ctx ec;
-    long long mail_cursor, boxes, rows, tmp;
+    struct fmc_ledger_view ledger;
+    long long mail_cursor, tmp;
     if (!fmc_roster_init(&ro)) {
         fmc_roster_free(&ro);
         fmc_fail(reply, "STEER_BRIEF_ALLOC", "cannot allocate the worker "
@@ -3960,10 +4060,10 @@ static void fmc_do_brief(const struct zcl_command_request *req,
     fmc_brief_land(req, &l.tasks, &l.missing);
     fmc_brief_board(req, &l.agents, &l.blockers, &l.cand, &l.missing,
                     &l.post_ids, observation_deadline_ms);
-    fmc_brief_ledger(req, &l.missing, &boxes, &rows);
+    fmc_brief_ledger(req, &l.missing, &ledger);
     fmc_apply_completed(&l.changes, &l.outcomes);
     fmc_capacity_emit(&l.capacity, &qv);
-    fmc_brief_evidence(&l, &mv, mail_cursor, boxes, rows, mc.now);
+    fmc_brief_evidence(&l, &mv, mail_cursor, &ledger, mc.now);
     lo.worker_lock = fmc_lock_state("queue", "worker.lock");
     lo.receive_lock = fmc_lock_state("receive", "receive.lock");
     lo.mail_ok = mv.ok;
@@ -4713,7 +4813,7 @@ static void fmc_evidence_land(const struct zcl_command_request *req,
     struct fmc_sub sub;
     struct json_value missing = {0}, proof = {0};
     json_set_array(&missing);
-    if (!fmc_land_read(req, &sub, &missing)) {
+    if (!fmc_land_read(req, &sub, &missing, NULL)) {
         fmc_fail(reply, "EVIDENCE_UNAVAILABLE", "landing status did not answer", "dev.land");
         goto done;
     }

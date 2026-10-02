@@ -19,6 +19,10 @@
 #include "test/test_core.h"
 
 #include "command/native_command.h"
+#include "base/hex.h"
+#include "chainlog/chainlog.h"
+#include "crypto/ed25519.h"
+#include "fleetledger/fleet_ledger.h"
 #include "command/native_devagent.h"
 #include "command/native_fleet.h"
 #include "config/command_catalog.h"
@@ -29,6 +33,7 @@
 #include "platform/private_directory.h"
 #include "platform/private_file.h"
 #include "platform/time_compat.h"
+#include "sha3/sha3.h"
 #include "../../../tools/dev/dev_proof_receipt.h"
 #include "../../../tools/dev/dev_proof.h"
 
@@ -697,6 +702,15 @@ static int fmx_t_brief_empty(void)
         ASSERT(json_get(&b.reply.data, "evidence") != NULL);
         /* No node here: the board must be reported missing, never empty. */
         ASSERT(fmx_missing_has(&b, "fleet.board"));
+#if !defined(_WIN32)
+        ASSERT(lstat(untouched, &st) != 0 && errno == ENOENT);
+#endif
+        fmx_end(&b);
+        /* Bearer admission must not initialize a missing authenticated
+         * store, including when the presented credential is unknown. */
+        fmx_brief(&b, "0123456789abcdef0123456789abcdef", 0);
+        ASSERT(fmx_run(&b, zcl_native_handle_fleet_steer_brief));
+        ASSERT(!fmx_ok(&b));
 #if !defined(_WIN32)
         ASSERT(lstat(untouched, &st) != 0 && errno == ENOENT);
 #endif
@@ -2291,6 +2305,7 @@ static int fmx_t_capacity_unknown(void)
         fmx_end(&b);
         /* A readable queue reports real numbers and known:true. */
         ASSERT(rmdir(dir) == 0);
+        fmx_state_file("queue", "queue.jsonl", "", false);
         fmx_brief(&b, NULL, 0);
         ASSERT(fmx_run(&b, zcl_native_handle_fleet_steer_brief));
         ASSERT(fmx_ok(&b));
@@ -2599,6 +2614,7 @@ static int fmx_t_process_not_work(void)
         bool named = false;
         fmx_isolate("process_not_work");
         fmx_prime_mail();
+        fmx_state_file("queue", "queue.jsonl", "", false);
         /* A correspondent that never answered as a receiver: a name in
          * agents[], and no worker. */
         fmx_seed_inbox("chatty", "2026-09-16T00:00:00Z", 3, "chatty",
@@ -4232,6 +4248,7 @@ static int fmx_t_receiver_down(void)
 #endif
         fmx_isolate("receiver_down");
         fmx_prime_mail();
+        fmx_state_file("queue", "queue.jsonl", "", false);
         /* A directive this host sent, still queued: the incident is about
          * the receiver, and the directive stays visible beside it. */
         fmx_seed_inbox("self", "2026-01-01T00:00:00Z", 9, FMX_SENDER,
@@ -4303,6 +4320,202 @@ _test_next:;
 }
 
 #if !defined(_WIN32)
+static bool fmx_snapshot_file(const char *path, struct sha3_256_ctx *hash)
+{
+    unsigned char bytes[4096];
+    FILE *file = fopen(path, "rb");
+    if (!file) return false;
+    size_t count;
+    while ((count = fread(bytes, 1, sizeof(bytes), file)) != 0)
+        sha3_256_write(hash, bytes, count);
+    bool ok = !ferror(file);
+    return fclose(file) == 0 && ok;
+}
+
+/* Bind the entire fixture namespace, contents and persistent metadata.
+ * Access time is deliberately excluded: reading can update it on a normal
+ * filesystem. No observed source may change bytes, modes or timestamps. */
+static bool fmx_snapshot_walk(const char *path, struct sha3_256_ctx *hash)
+{
+    struct stat st;
+    char metadata[256];
+    if (lstat(path, &st) != 0) return false;
+#if defined(__APPLE__)
+    long mtime_ns = st.st_mtimespec.tv_nsec, ctime_ns = st.st_ctimespec.tv_nsec;
+#else
+    long mtime_ns = st.st_mtim.tv_nsec, ctime_ns = st.st_ctim.tv_nsec;
+#endif
+    int n = snprintf(metadata, sizeof(metadata), "%s:%ju:%ju:%jd:%jd:%ld:%jd:%ld",
+        strrchr(path, '/') + 1, (uintmax_t)st.st_mode, (uintmax_t)st.st_ino,
+        (intmax_t)st.st_size, (intmax_t)st.st_mtime, mtime_ns,
+        (intmax_t)st.st_ctime, ctime_ns);
+    if (n < 0 || (size_t)n >= sizeof(metadata)) return false;
+    sha3_256_write(hash, (const unsigned char *)metadata, (size_t)n);
+    if (S_ISREG(st.st_mode)) return fmx_snapshot_file(path, hash);
+    if (!S_ISDIR(st.st_mode)) return false;
+    struct dirent **entries = NULL;
+    int count = scandir(path, &entries, NULL, alphasort);
+    if (count < 0) return false;
+    bool ok = true;
+    for (int i = 0; i < count; i++) {
+        char child[1600];
+        if (strcmp(entries[i]->d_name, ".") && strcmp(entries[i]->d_name, "..")) {
+            n = snprintf(child, sizeof(child), "%s/%s", path, entries[i]->d_name);
+            ok = n > 0 && (size_t)n < sizeof(child) &&
+                fmx_snapshot_walk(child, hash) && ok;
+        }
+        free(entries[i]);
+    }
+    free(entries);
+    return ok;
+}
+
+static bool fmx_snapshot(unsigned char out[32])
+{
+    struct sha3_256_ctx hash;
+    sha3_256_init(&hash);
+    if (!fmx_snapshot_walk(g_fmx_state, &hash)) return false;
+    sha3_256_finalize(&hash, out);
+    return true;
+}
+
+/* Inert signed peer history with an old statement and a second empty
+ * chain. Creation is fixture setup; only the following brief is observed. */
+static bool fmx_seed_ledger_peer(unsigned char tag, bool empty)
+{
+    char dir[1200], path[1400], hex[65];
+    struct zcl_fleet_row row = {0};
+    unsigned char seed[32], secret[32], stream[32], wire[ZCL_FLEET_ROW_MAX_BYTES];
+    memset(seed, tag, sizeof(seed));
+    memset(row.box_id, tag, sizeof(row.box_id));
+    zcl_ed25519_keypair(row.signer, secret, seed);
+    zcl_hex_encode(row.box_id, sizeof(row.box_id), hex);
+    (void)snprintf(dir, sizeof(dir), "%s/fleet_ledger", g_fmx_state);
+    if (!platform_private_directory_ensure(dir)) return false;
+    (void)snprintf(dir, sizeof(dir), "%s/fleet_ledger/peer", g_fmx_state);
+    if (!platform_private_directory_ensure(dir)) return false;
+    (void)snprintf(path, sizeof(path), "%s/%s.chainlog", dir, hex);
+    struct sha3_256_ctx hash;
+    sha3_256_init(&hash);
+    sha3_256_write(&hash, (const unsigned char *)"zcl.fleet_ledger.chain.v1",
+                   sizeof("zcl.fleet_ledger.chain.v1"));
+    sha3_256_write(&hash, row.box_id, sizeof(row.box_id));
+    sha3_256_finalize(&hash, stream);
+    struct zcl_chainlog_report report;
+    struct zcl_chainlog *log = zcl_chainlog_open(path, stream, &report);
+    if (!log) return false;
+    bool ok = true;
+    if (!empty) {
+        row.version = ZCL_FLEET_ROW_VERSION;
+        row.seq = 1;
+        row.ts_unix = (int64_t)platform_time_wall_unix() - 7200;
+        row.kind = ZCL_FLEET_KIND_USAGE;
+        row.subject = ZCL_FLEET_PROVIDER_GROK;
+        row.pair_count = 1;
+        row.pair[0] = (struct zcl_fleet_pair){ZCL_FLEET_PAIR_TOKENS_IN, 1};
+        ok = zcl_fleet_row_sign(&row, seed) == ZCL_FLEET_OK;
+        size_t size = zcl_fleet_row_encode(&row, wire, sizeof(wire));
+        ok = ok && size && zcl_chainlog_append(log, 1, wire, size, NULL, NULL) == ZCL_CHAINLOG_OK;
+    }
+    zcl_chainlog_close(log);
+    return ok;
+}
+
+static int fmx_t_ledger_age(void)
+{
+    int failures = 0;
+    TEST("steer: old signed ledger state keeps age and unknown-age coverage without writes") {
+        fmx_isolate("ledger_age");
+        ASSERT(fmx_seed_ledger_peer(1, false));
+        ASSERT(fmx_seed_ledger_peer(2, true));
+        unsigned char before[32], after[32];
+        ASSERT(fmx_snapshot(before));
+        pid_t child = fork();
+        ASSERT(child >= 0);
+        if (child == 0) {
+            alarm(5);
+            zcl_native_bridge_bind_rpc(g_fmx_state, 0);
+            struct fmx_call brief;
+            fmx_brief(&brief, NULL, 0);
+            bool ok = fmx_run(&brief, zcl_native_handle_fleet_steer_brief) && fmx_ok(&brief);
+            const struct json_value *evidence = fmx_get(&brief, "evidence");
+            ok = ok && fmx_wint(evidence, "ledger_max_age_s") >= 7200 &&
+                fmx_wint(evidence, "ledger_age_unknown_boxes") == 1 &&
+                fmx_wint(evidence, "ledger_index_overflow_rows") == 0;
+            fmx_end(&brief);
+            _exit(ok ? 0 : 1);
+        }
+        int status;
+        ASSERT(waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0);
+        ASSERT(fmx_snapshot(after) && memcmp(before, after, 32) == 0);
+        PASS();
+    }
+_test_next:;
+    fmx_restore();
+    return failures;
+}
+
+static int fmx_t_snapshot_readonly(void)
+{
+    int failures = 0;
+    TEST("steer: authenticated snapshot preserves existing read-only and locked state") {
+        struct fmx_call brief;
+        char grant[64], path[1400];
+        unsigned char before[32], after[32];
+        fmx_isolate("readonly_snapshot");
+        ASSERT(fmx_mint("brief", grant, sizeof(grant)));
+        /* An existing grant store is not evidence that the observation
+         * stores exist, or that an absent queue is idle. */
+        ASSERT(fmx_snapshot(before));
+        fmx_brief(&brief, grant, 0);
+        ASSERT(fmx_run(&brief, zcl_native_handle_fleet_steer_brief) && fmx_ok(&brief));
+        ASSERT(fmx_missing_has(&brief, "dev.agent.mail"));
+        ASSERT(fmx_missing_has(&brief, "dev.agent.queue"));
+        ASSERT(fmx_missing_has(&brief, "dev.land"));
+        ASSERT(!json_get_bool(json_get(fmx_get(&brief, "capacity"), "known")));
+        fmx_end(&brief);
+        ASSERT(fmx_snapshot(after) && memcmp(before, after, 32) == 0);
+        fmx_state_file("mail", "outbox.jsonl", "", false);
+        fmx_state_file("queue", "queue.jsonl",
+            "{\"seq\":1,\"ts\":\"2026-09-15T00:00:00Z\",\"kind\":\"file\","
+            "\"name\":\"snapshot-job\",\"group\":\"fleet_steer\",\"path\":\"p\","
+            "\"brief\":\"\",\"model\":\"\",\"attempt\":1,\"state\":\"queued\","
+            "\"worktree\":\"\",\"pid_or_unit\":\"\",\"started\":0}\n", false);
+        fmx_state_file("queue", "outcomes.jsonl", "", false);
+        fmx_state_file("land", "queue.jsonl", "", false);
+        fmx_state_file("receive", "receive.lock", "", false);
+        (void)snprintf(path, sizeof(path), "%s/z23/dev/receive/receive.lock", g_fmx_state);
+        int locked = open(path, O_RDONLY);
+        ASSERT(locked >= 0 && flock(locked, LOCK_EX | LOCK_NB) == 0);
+        (void)snprintf(path, sizeof(path), "%s/z23/dev/queue/queue.jsonl", g_fmx_state);
+        ASSERT(chmod(path, 0400) == 0);
+        (void)snprintf(path, sizeof(path), "%s/z23/dev/steer/grants.jsonl", g_fmx_state);
+        ASSERT(chmod(path, 0400) == 0);
+        ASSERT(fmx_snapshot(before));
+        fmx_brief(&brief, grant, 0);
+        ASSERT(fmx_run(&brief, zcl_native_handle_fleet_steer_brief) && fmx_ok(&brief));
+        ASSERT(fmx_missing_has(&brief, "fleet.board"));
+        ASSERT(fmx_wint(fmx_get(&brief, "capacity"), "queued") == 1);
+        fmx_end(&brief);
+        ASSERT(fmx_snapshot(after) && memcmp(before, after, 32) == 0);
+        ASSERT(close(locked) == 0);
+        /* A non-private directory is unavailable; a read must not repair
+         * its permissions to obtain admission. */
+        (void)snprintf(path, sizeof(path), "%s/z23/dev/steer", g_fmx_state);
+        ASSERT(chmod(path, 0500) == 0 && fmx_snapshot(before));
+        fmx_brief(&brief, grant, 0);
+        ASSERT(fmx_run(&brief, zcl_native_handle_fleet_steer_brief) && !fmx_ok(&brief));
+        ASSERT_STR_EQ(brief.reply.error.code, "STEER_GRANT_STORE");
+        fmx_end(&brief);
+        ASSERT(fmx_snapshot(after) && memcmp(before, after, 32) == 0);
+        ASSERT(chmod(path, 0700) == 0);
+        PASS();
+    }
+_test_next:;
+    fmx_restore();
+    return failures;
+}
+
 /* Fixture setup seals inert simulated receipts under this group's isolated
  * identity. The observation handlers must only read those exact bytes. */
 static int fmx_t_ledger_contention(void)
@@ -4436,6 +4649,14 @@ static int fmx_t_proof_transitions(void)
             }
             ASSERT_STR_EQ(observed.local_commit, head);
             ASSERT_STR_EQ(observed.remote_base, base);
+            unsigned char before[32], after[32];
+            struct fmx_call brief;
+            ASSERT(fmx_snapshot(before));
+            fmx_brief(&brief, NULL, 0);
+            ASSERT(fmx_run(&brief, zcl_native_handle_fleet_steer_brief) && fmx_ok(&brief));
+            ASSERT(json_size(fmx_arr(&brief, "tasks")) > 0);
+            fmx_end(&brief);
+            ASSERT(fmx_snapshot(after) && memcmp(before, after, 32) == 0);
         }
         printf("steer transition fixture=%s\n", g_fmx_state);
         fmx_restore();
@@ -4456,6 +4677,8 @@ int test_fleet_steer(void)
     node_rpc_client_set_test_hook(fmx_no_node);
     failures += fmx_task_projection_checks();
 #if !defined(_WIN32)
+    failures += fmx_t_ledger_age();
+    failures += fmx_t_snapshot_readonly();
     failures += fmx_t_ledger_contention();
     failures += fmx_t_proof_transitions();
 #endif

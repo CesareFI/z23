@@ -727,6 +727,20 @@ static int gw_t_handshake(void)
         ASSERT(gw_body_has(b, "\"name\":\"steer_brief\""));
         ASSERT(gw_body_has(b, "\"name\":\"steer_send\""));
         ASSERT(gw_body_has(b, "\"name\":\"steer_evidence\""));
+        struct json_value catalog = {0};
+        ASSERT(json_read(&catalog, b, strlen(b)));
+        const struct json_value *tools = json_get(json_get(&catalog, "result"), "tools");
+        ASSERT(tools && json_size(tools) == 3);
+        const struct json_value *brief = json_at(tools, 0);
+        ASSERT_STR_EQ(json_get_str(json_get(brief, "name")), "steer_brief");
+        const struct json_value *annotations = json_get(brief, "annotations");
+        ASSERT(annotations && json_get_bool(json_get(annotations, "readOnlyHint")));
+        ASSERT(!json_get_bool(json_get(annotations, "destructiveHint")));
+        ASSERT(json_get_bool(json_get(annotations, "idempotentHint")));
+        ASSERT(json_get_bool(json_get(annotations, "openWorldHint")));
+        ASSERT(json_get(json_at(tools, 1), "annotations") == NULL);
+        ASSERT(json_get(json_at(tools, 2), "annotations") == NULL);
+        json_free(&catalog);
         /* A schema-driven client only sends what the schema names: a
          * remote agent answering its directive needs `kind` advertised,
          * as the same closed set the steer leaf enforces. */
@@ -851,6 +865,48 @@ _test_next:;
     return failures;
 }
 
+struct gw_store_snapshot {
+    struct stat metadata;
+    unsigned char bytes[4096];
+    size_t size;
+};
+
+static bool gw_store_read(const char *path, struct gw_store_snapshot *out)
+{
+    if (stat(path, &out->metadata) != 0) return false;
+    FILE *file = fopen(path, "rb");
+    if (!file) return false;
+    out->size = fread(out->bytes, 1, sizeof(out->bytes), file);
+    bool ok = !ferror(file) && out->size < sizeof(out->bytes);
+    return fclose(file) == 0 && ok;
+}
+
+static bool gw_store_unchanged(const char *path, const struct gw_store_snapshot *before)
+{
+    struct gw_store_snapshot after;
+    if (!gw_store_read(path, &after)) return false;
+    return before->metadata.st_mode == after.metadata.st_mode &&
+        before->metadata.st_size == after.metadata.st_size &&
+        before->metadata.st_ino == after.metadata.st_ino &&
+        before->metadata.st_mtime == after.metadata.st_mtime &&
+        before->metadata.st_ctime == after.metadata.st_ctime &&
+        before->size == after.size && memcmp(before->bytes, after.bytes, before->size) == 0;
+}
+
+static bool gw_observation_stores_absent(void)
+{
+    const char *const stores[] = {"mail", "queue", "land", "engine", "receive"};
+    for (size_t i = 0; i < sizeof(stores) / sizeof(stores[0]); i++) {
+        char path[1024];
+        struct stat st;
+        int n = snprintf(path, sizeof(path), "%s/z23/dev/%s",
+                         getenv("XDG_STATE_HOME"), stores[i]);
+        if (n <= 0 || (size_t)n >= sizeof(path) ||
+            lstat(path, &st) == 0 || errno != ENOENT) return false;
+    }
+    return true;
+}
+
 static int gw_t_calls(void)
 {
     int failures = 0;
@@ -861,6 +917,12 @@ static int gw_t_calls(void)
         char *b;
         int st = 0, sn;
         ASSERT(gw_mint(node, "brief,send,evidence", gid));
+        char store[1024];
+        struct gw_store_snapshot before;
+        ASSERT(snprintf(store, sizeof(store), "%s/z23/dev/steer/grants.jsonl",
+                        getenv("XDG_STATE_HOME")) > 0);
+        ASSERT(chmod(store, 0400) == 0 && gw_store_read(store, &before));
+        ASSERT(gw_observation_stores_absent());
         sn = snprintf(args, sizeof(args),
                       "{\"jsonrpc\":\"2.0\",\"id\":10,\"method\":\"tools/"
                       "call\",\"params\":{\"name\":\"steer_brief\","
@@ -871,6 +933,9 @@ static int gw_t_calls(void)
         ASSERT(b != NULL);
         ASSERT(gw_body_has(b, "\"isError\":false"));
         ASSERT(gw_body_has(b, "agents"));
+        ASSERT(gw_store_unchanged(store, &before));
+        ASSERT(gw_observation_stores_absent());
+        ASSERT(chmod(store, 0600) == 0);
         /* The board read stays inside the rig: the shard's private datadir
          * has no RPC cookie, so no node outside this test answers it. */
         ASSERT(gw_body_has(b, "fleet.board\\\",\\\"reason\\\":\\\""

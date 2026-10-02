@@ -928,7 +928,7 @@ struct gw_tool {
 
 static const struct gw_tool gw_tools[] = {
     {"steer_brief", "brief",
-     "Fleet situation: agents, work, blockers, capacity, candidates, evidence refs, changes since a cursor. "
+     "Read-only fleet snapshot from existing authenticated state: agents, work, blockers, capacity, candidates, evidence refs, changes since a cursor. Missing and stale observations remain explicit. "
      "Preferred: pass the reply's cursor_token string as since to resume every stream exactly once. "
      "An integer is a legacy global floor that hides independently-numbered streams. "
      "A refused token names dev.agent.mail in missing[]; replay from the start.",
@@ -1104,6 +1104,12 @@ static void gw_reply_tools_list(struct gw_buf *b, const struct json_value *id)
         gw_buf_json_str(b, gw_tools[i].desc);
         gw_buf_str(b, ",\"inputSchema\":");
         gw_buf_str(b, gw_tools[i].schema);
+        /* Only brief has been qualified as a read-only snapshot. It can
+         * observe the private fleet board, so its world is not closed. */
+        if (strcmp(gw_tools[i].verb, "brief") == 0)
+            gw_buf_str(b, ",\"annotations\":{\"readOnlyHint\":true,"
+                          "\"destructiveHint\":false,\"idempotentHint\":true,"
+                          "\"openWorldHint\":true}");
         gw_buf_put(b, "}", 1);
     }
     gw_buf_str(b, "]}}");
