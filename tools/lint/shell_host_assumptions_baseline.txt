@@ -82,7 +82,6 @@ stat	tools/lint/check_zcc_epoch_object.sh	1
 stat	tools/scripts/binary_size.sh	1
 stat	tools/scripts/build_bench.sh	3
 stat	tools/scripts/build_drift_probe.sh	1
-stat	tools/scripts/check_reproducible_build.sh	3
 stat	tools/scripts/ci_install_gate.sh	1
 stat	tools/scripts/cold_start_test.sh	4
 stat	tools/scripts/cold_start_to_tip_probe.sh	5

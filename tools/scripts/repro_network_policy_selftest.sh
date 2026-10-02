@@ -120,6 +120,14 @@ fi
     fail 'release profile did not report the compiler-expanded CFLAGS'
 [[ "$check_output" != *'$('* ]] ||
     fail 'release profile retained an unresolved Make expression'
+# The fake node is a symlink named zclassic23. The report must measure its
+# target bytes, as hashing and cmp do, rather than the three-byte link text.
+payload_size="$(printf 'repro-network-policy-fixture\n' | wc -c | awk '{print $1}')"
+reported_sizes="$(printf '%s\n' "$check_output" | grep -Fc "size=$payload_size" || true)"
+[[ "$reported_sizes" == 2 ]] ||
+    fail "release profile reported link length instead of target size"
+[[ "$check_output" == *"size       : $payload_size bytes"* ]] ||
+    fail 'release profile summary reported the wrong executable size'
 
 # The different-path gate snapshots a tiny synthetic source and lets the same
 # fake make produce its two equal artifacts.

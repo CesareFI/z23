@@ -57,6 +57,11 @@ die()  { printf '\033[31m[repro] ERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 info() { printf '\033[36m[repro]\033[0m %s\n' "$*"; }
 ok()   { printf '\033[32m[repro]\033[0m %s\n' "$*"; }
 
+# The Make target may be a short symlink to the built executable. `stat`
+# reports the link length on Linux, while hashing and cmp follow the link.
+# Read the same bytes those checks observe, on Linux and macOS alike.
+file_size() { wc -c < "$1" | awk '{print $1}'; }
+
 # --- config ------------------------------------------------------------------
 BINARY="${BINARY:-zclassic23}"          # which Makefile binary target to compare
 KEEP="${KEEP:-0}"                       # 1 = keep the two build dirs for forensics
@@ -124,7 +129,7 @@ build_once() {
     fi
     t1=$(date +%s)
     [ -f "$bdir/bin/$BINARY" ] || die "Build $label finished but $bdir/bin/$BINARY not found"
-    info "Build $label done in $((t1 - t0))s ($(stat -c%s "$bdir/bin/$BINARY" 2>/dev/null || stat -f%z "$bdir/bin/$BINARY") bytes)"
+    info "Build $label done in $((t1 - t0))s ($(file_size "$bdir/bin/$BINARY") bytes)"
 }
 
 build_once A "$BUILD_A"
@@ -133,8 +138,8 @@ build_once B "$BUILD_B"
 # --- compare -----------------------------------------------------------------
 HASH_A="$(hash_bin "$BIN_A")"
 HASH_B="$(hash_bin "$BIN_B")"
-SIZE_A=$(stat -c%s "$BIN_A" 2>/dev/null || stat -f%z "$BIN_A")
-SIZE_B=$(stat -c%s "$BIN_B" 2>/dev/null || stat -f%z "$BIN_B")
+SIZE_A=$(file_size "$BIN_A")
+SIZE_B=$(file_size "$BIN_B")
 
 info "Build A: $hash_algo=$HASH_A  size=$SIZE_A"
 info "Build B: $hash_algo=$HASH_B  size=$SIZE_B"
