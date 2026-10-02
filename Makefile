@@ -13957,6 +13957,11 @@ check-no-stale-pinned-facts:
 	@echo "══ LINT: no stale pinned facts (binary size / live-state height) ══"
 	@./tools/lint/check_no_stale_pinned_facts.sh
 
+# The binary-size helper is the live source of truth cited by that docs gate.
+# Keep its symlink behavior covered without requiring a built node binary.
+check-binary-size-helper:
+	@./tools/scripts/binary_size_selftest.sh
+
 # No UNCITED victory claim in the one live-state page (HARD). This repo shipped
 # 9+ "cured / at tip / fully synced" claims in six weeks, every one later false
 # (~103 "wedge FIXED" -> re-wedge cycles). A paragraph in docs/HANDOFF.md that
@@ -14748,6 +14753,7 @@ LINT_GATES := \
     check-doc-counts \
     check-orient-facts \
     check-no-stale-pinned-facts \
+    check-binary-size-helper \
     check-no-uncited-victory \
     check-doc-claims \
     check-error-doc-refs \

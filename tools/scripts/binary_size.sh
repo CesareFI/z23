@@ -47,7 +47,10 @@ if [[ ! -f "$bin" ]]; then
     exit 1
 fi
 
-size_bytes=$(stat -c%s "$bin" 2>/dev/null || stat -f%z "$bin")
+# Read the target bytes, as callers of the executable do. `stat` reports a
+# short symlink's length on Linux, not the binary's size.
+size_bytes=$(wc -c < "$bin")
+size_bytes=${size_bytes//[[:space:]]/}
 if (( bytes_only )); then
     printf '%s\n' "$size_bytes"
     exit 0
