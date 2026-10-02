@@ -3,6 +3,15 @@
 
 #include <string.h>
 
+static bool text_metadata_valid(const zcl_payment_request *request)
+{
+    if (!request->has_label && request->label_len != 0)
+        return false;
+    if (!request->has_message && request->message_len != 0)
+        return false;
+    return true;
+}
+
 /* UI adapter packet v1: version, presence flags, 35 address bytes, LE amount,
  * two LE 16-bit UTF-8 lengths, then the label and message. No native struct
  * bytes or padding are serialized. This is not a Zclassic wire format. */
@@ -11,6 +20,8 @@ jbyteArray zcl_jni_payment_record(JNIEnv *env, const zcl_payment_request *reques
     if (request == NULL)
         return NULL;
     if (request->label_len > 200 || request->message_len > 200)
+        return NULL;
+    if (!text_metadata_valid(request))
         return NULL;
     uint8_t record[449] = {0};
     record[0] = 1;

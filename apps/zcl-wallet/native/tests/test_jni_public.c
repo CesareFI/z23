@@ -231,9 +231,17 @@ static void invalid_cases(void)
 
 static void payment_record_refusals(void)
 {
+    zcl_payment_request inconsistent = {0};
     calls = 0;
     pending = false;
     CHECK(zcl_jni_payment_record(&vm, NULL) == NULL);
+    CHECK(calls == 0 && !pending);
+    inconsistent.label_len = 1;
+    CHECK(zcl_jni_payment_record(&vm, &inconsistent) == NULL);
+    CHECK(calls == 0 && !pending);
+    inconsistent.label_len = 0;
+    inconsistent.message_len = 1;
+    CHECK(zcl_jni_payment_record(&vm, &inconsistent) == NULL);
     CHECK(calls == 0 && !pending);
 }
 
