@@ -147,13 +147,12 @@ check() {
         exit 1
     fi
 
-    ident="$(compiler_id)"
-
     if probe_std c23; then
         printf 'check-toolchain: ok — %s accepts -std=c23\n' "$CC"
         exit 0
     fi
     c23_err="$PROBE_ERR"
+    ident="$(compiler_id)"
 
     if probe_std c2x; then
         diagnosis="this compiler accepts -std=c2x but not -std=c23. It is too old for this project."
@@ -317,6 +316,10 @@ EOF
     : > "$work/record"
     CC="$work/record-cc" "$SCRIPT" >/dev/null 2>&1
     CC="$work/record-cc" "$SCRIPT" >/dev/null 2>&1
+    if grep -Fq -- '--version' "$work/record" || grep -Fq -- '| -v' "$work/record"; then
+        printf 'check-toolchain --selftest: FAIL — successful probes queried unused compiler version text\n' >&2
+        exit 1
+    fi
     local first second
     first="$(grep -- "-std=c23" "$work/record" | sed -n 1p)"
     second="$(grep -- "-std=c23" "$work/record" | sed -n 2p)"
