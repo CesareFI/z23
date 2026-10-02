@@ -191,10 +191,15 @@ ZCL_USE_CCACHE ?= 1
 # to install, and fall back to a host cache only if the in-tree one cannot be
 # built here. This is a parse-time $(shell) because $(CC) is fixed before the
 # first recipe runs; see tools/dev/zcc_bootstrap.sh for why and what it costs.
+ifeq ($(MAKECMDGOALS),t-list)
+# The standalone catalog listing needs no compiler or compile cache.
+ZCL_CCACHE_BIN :=
+else
 ZCL_CCACHE_BIN := $(shell if [ "$(ZCL_USE_CCACHE)" != "0" ]; then \
                               $(CURDIR)/tools/dev/zcc_bootstrap.sh 2>/dev/null \
                               || command -v sccache 2>/dev/null \
                               || command -v ccache 2>/dev/null; fi)
+endif
 ifneq ($(ZCL_CCACHE_BIN),)
 ifeq ($(filter zcc sccache ccache,$(notdir $(firstword $(CC)))),)
 CC := $(ZCL_CCACHE_BIN) $(CC)
@@ -365,7 +370,7 @@ VENDOR_REPAIR_REQUESTED := $(filter $(VENDOR_REPAIR_GOALS),$(MAKECMDGOALS))
 ZCL_WINDOWS_LAUNCHER_GOALS := windows-headless-run windows-headless-run-selftest \
 	build/bin/z23-headless-run.exe
 # Build queries and game-only goals need no node vendor configure.
-ZCL_BUILD_QUERY_GOALS := print-node-c23-srcs help doctor doctor-build timings agent-dev-status print-CFLAGS print-DEV-CFLAGS print-LDFLAGS print-DEV-LDFLAGS print-build-flags
+ZCL_BUILD_QUERY_GOALS := print-node-c23-srcs help doctor doctor-build timings agent-dev-status print-CFLAGS print-DEV-CFLAGS print-LDFLAGS print-DEV-LDFLAGS print-build-flags t-list
 ZCL_BOOTSTRAP_HELPER_ONLY := $(if $(strip $(MAKECMDGOALS)),$(if $(strip $(filter-out $(ZCL_WINDOWS_LAUNCHER_GOALS) $(ZCL_TOR_PROVENANCE_GOALS) $(ZCL_BUILD_QUERY_GOALS) check-capability-inventory-generated docs-proof-tools game game-check game-platform-probe,$(MAKECMDGOALS))),,1),)
 ifneq ($(ZCL_STANDALONE_CLEAN),1)
 ifneq ($(ZCL_WORKTREE_PRIME_ONLY),1)

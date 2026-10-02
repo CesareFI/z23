@@ -174,11 +174,14 @@ check() {
 check_t_list_lean() {
     local work="$1"
     "$REPO_ROOT/tools/dev/test-group-list.sh" > "$work/catalog.out"
-    if ! make -s --no-print-directory -C "$REPO_ROOT" \
-            ZCL_USE_CCACHE=0 CC=/nonexistent t-list \
+    if ! env ZCL_BIN_DIR="$work/ccache-bin" ZCL_BOOTSTRAP_CC=/nonexistent \
+            ZCL_VENDOR_OFFLINE=1 make -s --no-print-directory -C "$REPO_ROOT" \
+            ZCL_USE_CCACHE=1 CC=/nonexistent \
+            ZCL_VENDOR_LIB="$work/no-vendor" t-list \
             > "$work/t-list.out" 2> "$work/t-list.err" ||
-       ! cmp -s "$work/catalog.out" "$work/t-list.out"; then
-        printf 'check-toolchain --selftest: FAIL — t-list required a compiler or changed the catalog\n' >&2
+       ! cmp -s "$work/catalog.out" "$work/t-list.out" ||
+       [[ -e "$work/ccache-bin" || -e "$work/no-vendor" ]]; then
+        printf 'check-toolchain --selftest: FAIL — t-list built inputs or changed the catalog\n' >&2
         cat "$work/t-list.err" >&2
         return 1
     fi
@@ -361,7 +364,7 @@ EOF
         exit 1
     fi
 
-    check_t_list_lean "$work"
+    check_t_list_lean "$work" || exit 1
 
     printf 'check-toolchain --selftest: PASS\n'
     exit 0
