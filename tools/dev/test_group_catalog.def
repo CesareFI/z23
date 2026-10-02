@@ -1458,6 +1458,14 @@ ZCL_TEST_GROUP(astro)
  * standalone `make fbsh` artifact, deliberately not a prerequisite of
  * the test binaries) and skips when it is absent. */
 ZCL_TEST_GROUP(freebsd_sh)
+/* inspect_html build-check helper regressions (tools/inspect_html.c ->
+ * build/bin/inspect_html): an empty --count pattern counts zero matches
+ * instead of spinning forever (strstr(p, "") == p, so the old
+ * advance-by-nlen loop never progressed), and ordinary --count/--has keep
+ * their contracts. The binary is a standalone tool artifact; the group
+ * self-skips when it is absent, and the proof's prefork step builds it
+ * through the test_freebsd_sh-shaped BUILD_NEED row below. */
+ZCL_TEST_GROUP(inspect_html)
 /* Snapshot exporter: exact public tables, literal paths and read-only source
  * attachment, live WAL visibility, and argument refusal before output deletion.
  * The required helper is built through the declared BUILD_NEED; absence fails. */
