@@ -143,6 +143,7 @@ bool peer_set_state_checked(uint32_t peer_id, _Atomic enum peer_state *current,
         int n = snprintf(buf, sizeof(buf), "ILLEGAL %s->%s: %s",
                          peer_state_name(old), peer_state_name(new_state),
                          reason ? reason : "");
+        if (n >= (int)sizeof(buf)) n = (int)sizeof(buf) - 1;
         event_emit(EV_PEER_STATE_CHANGE, peer_id, buf, (uint32_t)(n > 0 ? n : 0));
         fprintf(stderr, "BUG: peer %u illegal transition %s -> %s (%s)\n",
                 peer_id, peer_state_name(old),
@@ -159,6 +160,7 @@ bool peer_set_state_checked(uint32_t peer_id, _Atomic enum peer_state *current,
     int n = snprintf(buf, sizeof(buf), "%s->%s: %s",
                      peer_state_name(old), peer_state_name(new_state),
                      reason ? reason : "");
+    if (n >= (int)sizeof(buf)) n = (int)sizeof(buf) - 1;
     event_emit(EV_PEER_STATE_CHANGE, peer_id, buf, (uint32_t)(n > 0 ? n : 0));
     return true;
 }

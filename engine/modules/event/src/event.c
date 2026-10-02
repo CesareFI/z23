@@ -339,6 +339,12 @@ void event_emitf(enum event_type type, uint32_t peer_id,
     int n = vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
     if (n < 0) n = 0;
+    /* vsnprintf reports the would-be length, which can exceed the buffer
+     * (the buffer itself is truncated and NUL-terminated). Clamp so the
+     * ring copy, the synchronous observers, and the async queue all
+     * describe bytes that are actually in buf -- registered observers
+     * scan payload[i] for i < payload_len. */
+    if (n >= (int)sizeof(buf)) n = (int)sizeof(buf) - 1;
     event_emit(type, peer_id, buf, (uint32_t)n);
 }
 

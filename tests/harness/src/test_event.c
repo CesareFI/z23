@@ -901,11 +901,59 @@ static int test_error_ring_dump_json_tiny_buffer(void)
     return failures;
 }
 
+/* Regression: event_emitf must clamp the vsnprintf would-be length to the
+ * stack buffer before synchronous observers run. Pre-fix it passed the
+ * raw n (> 255 possible) to notify_observers, and the registered
+ * length-scanning observers (prometheus parse_peer_kind,
+ * consensus_reject_index cri_parse_payload) walked payload[i] for
+ * i < payload_len -- an OOB read past the 256-byte buffer. The observer
+ * here scans exactly like those consumers do. */
+static uint32_t g_emitf_seen_len;
+static uint8_t g_emitf_scan_sum;
+
+static void emitf_len_observer(enum event_type type, uint32_t peer_id,
+                               const void *payload, uint32_t payload_len,
+                               void *ctx)
+{
+    const uint8_t *p = payload;
+    (void)type;
+    (void)peer_id;
+    (void)ctx;
+    g_emitf_seen_len = payload_len;
+    g_emitf_scan_sum = 0;
+    for (uint32_t i = 0; i < payload_len; i++)
+        g_emitf_scan_sum = (uint8_t)(g_emitf_scan_sum + p[i]);
+}
+
+static int test_emitf_clamps_observer_length(void)
+{
+    int failures = 0;
+
+    TEST("event_emitf clamps a >255-byte format to the payload buffer") {
+        event_log_init();
+        event_clear_all_observers();
+        g_emitf_seen_len = 0;
+        g_emitf_scan_sum = 0;
+        ASSERT(event_observe(EV_TCP_CONNECTED, emitf_len_observer, NULL));
+
+        /* 300 digits plus text: vsnprintf reports a would-be length well
+         * over EVENT_PAYLOAD_SIZE while truncating the buffer. */
+        event_emitf(EV_TCP_CONNECTED, 7, "reject reason overflow %0300d", 42);
+
+        ASSERT(g_emitf_seen_len > 0);
+        ASSERT(g_emitf_seen_len <= EVENT_PAYLOAD_SIZE - 1);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
 int test_event(void)
 {
     int failures = 0;
 
     failures += test_emit_dump_roundtrip();
+    failures += test_emitf_clamps_observer_length();
     failures += test_dump_count();
     failures += test_peer_state_legal();
     failures += test_peer_state_snapshot_takeover();
