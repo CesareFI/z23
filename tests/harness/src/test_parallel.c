@@ -2596,6 +2596,8 @@ int main(int argc, char **argv)
             }
             fprintf(stderr, "test_parallel: cache probe failed (open or "
                             "alloc) — running every group uncached\n");
+            free(probes);
+            probes = NULL;
             cache_mode = CACHE_OFF;
         } else {
         /* CACHE_ON: a provable stored PASS at the current key means the group
