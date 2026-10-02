@@ -504,11 +504,12 @@ static int cyc_code_char(struct cyc_lx *lx, const struct cyc_emit *em,
  * preprocessor directives onto the next line; anything else resets them. */
 static void cyc_eol(struct cyc_lx *lx, const char *line, ssize_t n)
 {
-    int bs = 0;
-    if (n >= 2 && line[n - 1] == '\n')
-        bs = line[n - 2] == '\\';
-    else if (n >= 1 && line[n - 1] != '\n')
-        bs = line[n - 1] == '\\';
+    if (n > 0 && line[n - 1] == '\n') {
+        n--;
+        if (n > 0 && line[n - 1] == '\r')
+            n--;
+    }
+    int bs = n > 0 && line[n - 1] == '\\';
     if (lx->state == LX_LINE && !bs)
         lx->state = LX_CODE;
     if (lx->state == LX_CODE || lx->state == LX_LINE)
@@ -1220,10 +1221,37 @@ static int cyc_st_pp_desync(void)
     return 1;
 }
 
+/* CRLF must preserve the same macro/comment splices and decisions as LF. */
+static int cyc_st_pp_splice(void)
+{
+    static const char text[] =
+        "#if ENABLED\n"
+        "int splice(int x)\n{\n"
+        "#define BODY do { \\\n"
+        "    if (x) { } \\\n"
+        "} while (0)\n"
+        "    // continued comment \\\n"
+        "    if (x) return 99;\n"
+        "    if (x) return 1;\n"
+        "    return 0;\n}\n"
+        "#else\n#define UNAVAILABLE 1\n#endif\n"
+        "int splice_tail(int y) { if (y) return 1; return 0; }\n";
+    char crlf[2 * sizeof text];
+    size_t j = 0;
+    for (size_t i = 0; i < sizeof text - 1; i++) {
+        if (text[i] == '\n')
+            crlf[j++] = '\r';
+        crlf[j++] = text[i];
+    }
+    crlf[j] = '\0';
+    return cyc_st_two(text, "splice", 2, "splice_tail", 2)
+        | cyc_st_two(crlf, "splice", 2, "splice_tail", 2);
+}
+
 static int cyc_st_metric(void)
 {
     int bad = cyc_st_logic_ops() | cyc_st_pp_cond() | cyc_st_pp_hidden()
-        | cyc_st_pp_desync();
+        | cyc_st_pp_desync() | cyc_st_pp_splice();
     /* exactly at the cap passes the cap: 14 decision points -> M=15 */
     bad |= cyc_st_one("int cap15(int x)\n{\n"
                       "    int r = 0;\n"
