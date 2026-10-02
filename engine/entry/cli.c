@@ -7,6 +7,7 @@
 #include "rpc/client.h"
 #include "json/json.h"
 #include "platform/socket_compat.h"
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -97,10 +98,26 @@ static void base64_encode(const char *in, size_t len, char *out)
     out[j] = 0;
 }
 
-/* Send JSON-RPC request and return response body.
- * Caller must free() the returned string. */
-static char *rpc_call(const char *body, size_t body_len)
+/* True when the composed request length is exact and fits the buffer it
+ * was composed into. snprintf truncates on overflow and reports the
+ * would-have-written length; sending that length would read past the
+ * buffer and publish a Content-Length the truncated body cannot satisfy. */
+static bool rpc_request_fits(size_t body_cap, int blen)
 {
+    return blen >= 0 && (size_t)blen < body_cap;
+}
+
+/* Send JSON-RPC request and return response body.
+ * Caller must free() the returned string. The composed length is validated
+ * against the buffer before anything is sent: a truncated body must never
+ * reach the wire with the would-have-written length. */
+static char *rpc_call(const char *body, size_t body_cap, int composed_len)
+{
+    if (!rpc_request_fits(body_cap, composed_len)) {
+        fprintf(stderr, "request too large\n");
+        return NULL;
+    }
+    size_t body_len = (size_t)composed_len;
     platform_socket_t sock = platform_socket_open(AF_INET, SOCK_STREAM, 0,
                                                   true, false);
     if (sock == PLATFORM_SOCKET_INVALID) {
@@ -257,7 +274,7 @@ int main(int argc, char **argv)
         "{\"jsonrpc\":\"1.0\",\"id\":\"cli\",\"method\":\"%s\",\"params\":%s}",
         method, params_buf);
 
-    char *response = rpc_call(body, (size_t)blen);
+    char *response = rpc_call(body, sizeof(body), blen);
     if (!response) {
         fprintf(stderr, "RPC call failed\n");
         return 1;

@@ -1901,10 +1901,20 @@ static char *cli_rpc_call_internal(const char *body, size_t body_len,
     return cli_rpc_call_internal_ex(body, body_len, quiet, NULL);
 }
 
-static char *cli_rpc_call_ex(const char *body, size_t body_len,
+/* Outcome-reporting wrapper around cli_rpc_call_internal_ex. Validates the
+ * composed length against the request buffer before anything is sent: a
+ * truncated body must never reach the wire with the would-have-written
+ * length, which would read past the buffer and publish a Content-Length
+ * the truncated body cannot satisfy. */
+static char *cli_rpc_call_ex(const char *body, size_t body_cap, int blen,
                              enum cli_rpc_outcome *outcome)
 {
-    return cli_rpc_call_internal_ex(body, body_len, false, outcome);
+    if (blen < 0 || (size_t)blen >= body_cap) {
+        fprintf(stderr, "error=REQUEST_TOO_LARGE detail=composed JSON-RPC "
+                        "request does not fit the client request buffer\n");
+        return NULL;
+    }
+    return cli_rpc_call_internal_ex(body, (size_t)blen, false, outcome);
 }
 
 static char *cli_rpc_call(const char *body, size_t body_len)
@@ -2612,7 +2622,7 @@ int cli_main(int argc, char **argv)
         method, pbuf);
 
     enum cli_rpc_outcome rpc_outcome = CLI_RPC_OK;
-    char *resp = cli_rpc_call_ex(body, (size_t)blen, &rpc_outcome);
+    char *resp = cli_rpc_call_ex(body, sizeof(body), blen, &rpc_outcome);
     if (!resp) {
         /* cli_rpc_call_internal_ex already printed the specific
          * error=<TAXONOMY> line; just map it to the matching documented
