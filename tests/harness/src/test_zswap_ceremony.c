@@ -105,6 +105,66 @@ static void zsc_pattern32(uint8_t out[32], uint8_t base)
     for (size_t i = 0; i < 32; i++) out[i] = (uint8_t)(base + i);
 }
 
+static void zsc_put_u32le(uint8_t *p, uint32_t v)
+{
+    p[0] = (uint8_t)v;
+    p[1] = (uint8_t)(v >> 8);
+    p[2] = (uint8_t)(v >> 16);
+    p[3] = (uint8_t)(v >> 24);
+}
+
+static void zsc_put_u64le(uint8_t *p, uint64_t v)
+{
+    for (int i = 0; i < 8; i++)
+        p[i] = (uint8_t)(v >> (8 * i));
+}
+
+/* Hand-roll a zswap_accept.v1 wire whose single input carries a
+ * script_len of 200 — beyond ZSWAP_MAX_INPUT_SCRIPT_BYTES (128). The
+ * decoder must refuse it as a wire-size error. Pre-fix it memcpy'd
+ * script_len bytes into the 128-byte script_pub_key field (up to 255
+ * bytes, 127 out of bounds) before the post-decode validator's cap
+ * could run — reachable from any peer's zswapaccept P2P message or the
+ * seller HTTP accept endpoint. Returns the failure count. */
+static int zsc_accept_wire_oversize_script_len(void)
+{
+    int failures = 0;
+    uint8_t atk[ZSWAP_ACCEPT_WIRE_MAX_BYTES];
+    size_t ao = 0;
+    static const uint8_t amagic[8] = {'Z','S','W','A','C','P','\r','\n'};
+    struct zswap_accept_v1 back;
+
+    memcpy(atk + ao, amagic, sizeof(amagic));
+    ao += sizeof(amagic);
+    atk[ao++] = 0x01;
+    atk[ao++] = 0x00;           /* schema_version = 1 (u16le) */
+    zsc_pattern32(atk + ao, 0x5a);
+    ao += 32;                   /* quote_root */
+    atk[ao++] = 0x01;           /* num_inputs */
+    zsc_pattern32(atk + ao, 0x5b);
+    ao += 32;                   /* txid */
+    zsc_put_u32le(atk + ao, 0);
+    ao += 4;                    /* vout */
+    zsc_put_u64le(atk + ao, 1000);
+    ao += 8;                    /* value */
+    atk[ao++] = 200u;           /* script_len: over the 128-byte cap */
+    memset(atk + ao, 0xab, 200);
+    ao += 200;
+    memset(atk + ao, 'T', ZSWAP_ADDRESS_FIELD_BYTES);
+    ao += ZSWAP_ADDRESS_FIELD_BYTES;
+    memset(atk + ao, 'C', ZSWAP_ADDRESS_FIELD_BYTES);
+    ao += ZSWAP_ADDRESS_FIELD_BYTES;
+    zsc_put_u64le(atk + ao, 10);
+    ao += 8;                    /* fee */
+    zsc_put_u64le(atk + ao, 2000000000);
+    ao += 8;                    /* deadline */
+
+    ZSC_CHECK("wire: accept oversize input script_len refused",
+              zswap_accept_decode(atk, ao, &back) ==
+                  ZSWAP_CEREMONY_ERR_WIRE_SIZE);
+    return failures;
+}
+
 /* The P2PKH scriptPubKey paying key's hash160: 76 a9 14 <20> 88 ac. */
 static size_t zsc_p2pkh_script(const struct privkey *key, uint8_t out[25])
 {
@@ -578,6 +638,7 @@ static int t_wire_negatives(void)
     ZSC_CHECK("wire: accept bad version rejected",
               zswap_accept_decode(bad, wire_len, &back) ==
                   ZSWAP_CEREMONY_ERR_VERSION);
+    failures += zsc_accept_wire_oversize_script_len();
 
     /* partial: build a real one, then attack the wire. */
     struct privkey seller_key;

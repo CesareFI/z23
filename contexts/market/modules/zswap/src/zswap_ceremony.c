@@ -128,6 +128,13 @@ static enum zswap_ceremony_error take_input(const uint8_t *wire,
         return ZSWAP_CEREMONY_ERR_ACCEPT;
     in->value_sats = (int64_t)value;
     in->script_len = script_len;
+    /* Refuse a script larger than the destination field before copying:
+     * script_len is a wire-controlled u8 (0..255) while script_pub_key is
+     * ZSWAP_MAX_INPUT_SCRIPT_BYTES (128) — the validator's identical cap
+     * in zswap_assembly.c runs only after this decode finishes, and this
+     * decoder is reachable from any peer's zswapaccept message. */
+    if (script_len > ZSWAP_MAX_INPUT_SCRIPT_BYTES)
+        return ZSWAP_CEREMONY_ERR_WIRE_SIZE;
     if (!take_bytes(wire, wire_len, off, in->script_pub_key, script_len))
         return ZSWAP_CEREMONY_ERR_WIRE_SIZE;
     return ZSWAP_CEREMONY_OK;
