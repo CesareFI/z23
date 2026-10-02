@@ -4,6 +4,7 @@
 
 #include "base/hex.h"
 #include "base/safe_alloc.h"
+#include "services/zcode_c23_corpus_service.h"
 #include "vcs/zcode_c23_corpus.h"
 
 #include <stdlib.h>
@@ -373,10 +374,149 @@ static int test_productivity_receipt(void)
     return failures;
 }
 
+static void status_checkpoint(
+    struct vcs_zcode_c23_corpus_checkpoint_v1 *checkpoint,
+    struct vcs_zcode_c23_checkpoint_shard_v1 *binding,
+    uint64_t total, uint64_t durable)
+{
+    memset(binding, 0, sizeof(*binding));
+    fill(binding->shard_root, 0x61);
+    ordered_root(binding->first_lineage_root, 1);
+    ordered_root(binding->last_lineage_root, 1);
+    binding->entry_count = 1;
+    binding->production_loc = total;
+    binding->durable_loc = durable;
+    binding->physical_lines = total;
+    binding->unique_semantic_units = total;
+    memset(checkpoint, 0, sizeof(*checkpoint));
+    checkpoint->schema_version = 1;
+    checkpoint->flags = VCS_ZCODE_C23_CORPUS_REQUIRED_FLAGS;
+    checkpoint->sequence = 1;
+    checkpoint->cutoff_height = 1;
+    checkpoint->cutoff_mtp = 1;
+    checkpoint->total_entries = 1;
+    checkpoint->production_loc = total;
+    checkpoint->durable_loc = durable;
+    checkpoint->physical_lines = total;
+    checkpoint->unique_semantic_units = total;
+    checkpoint->shards = binding;
+    checkpoint->shard_count = 1;
+    fill(checkpoint->rules_root, 0x41);
+    fill(checkpoint->family_policy_root, 0x42);
+    fill(checkpoint->moderation_set_root, 0x43);
+    fill(checkpoint->replication_evidence_root, 0x44);
+}
+
+static int test_status_remaining(void)
+{
+    int failures = 0;
+    TEST("signed corpus status preserves thresholds and explains remaining LOC") {
+        const struct {
+            uint64_t total;
+            uint64_t durable;
+            const char *stage;
+            const char *next;
+            const char *remaining;
+        } cases[] = {
+            {0, 0, "below_50m", "zcode package guide", "; 50000000 LOC remaining"},
+            {49999999, 49999999, "below_50m", "zcode package guide", "; 1 LOC remaining"},
+            {50000000, 49999999, "hosting_incomplete", "zcode storage status", NULL},
+            {50000000, 50000000, "durable_50m_lower_bound", "zcode package guide", "; 50000000 LOC remaining"},
+            {50000001, 50000001, "durable_50m_lower_bound", "zcode package guide", "; 49999999 LOC remaining"},
+            {99999999, 99999999, "durable_50m_lower_bound", "zcode package guide", "; 1 LOC remaining"},
+            {100000000, 100000000, "durable_100m_lower_bound", "zcode commons impact status", NULL},
+            {100000001, 100000001, "durable_100m_lower_bound", "zcode commons impact status", NULL},
+            {UINT64_MAX, UINT64_MAX, "durable_100m_lower_bound", "zcode commons impact status", NULL},
+            {UINT64_MAX, UINT64_MAX - 1u, "hosting_incomplete", "zcode storage status", NULL},
+        };
+        const struct zcode_c23_corpus_service_v1 *service =
+            zcode_c23_corpus_service_builtin();
+        uint8_t seed[32]; fill(seed, 0x67);
+        for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+            struct vcs_zcode_c23_checkpoint_shard_v1 binding;
+            struct vcs_zcode_c23_corpus_checkpoint_v1 checkpoint;
+            status_checkpoint(&checkpoint, &binding, cases[i].total, cases[i].durable);
+            ASSERT_EQ(vcs_zcode_c23_corpus_checkpoint_v1_sign(&checkpoint, seed),
+                      VCS_ZCODE_C23_OK);
+            struct zcode_c23_corpus_status_result_v1 status;
+            memset(&status, 0xa5, sizeof(status));
+            ASSERT(service->render_status(&checkpoint, &status));
+            ASSERT(status.projection_ready && status.lower_bound_checkpoint_present);
+            ASSERT(!status.global_completeness_claimed);
+            ASSERT_EQ(status.admitted_production_loc, cases[i].total);
+            ASSERT_EQ(status.admitted_test_loc, 0);
+            ASSERT_EQ(status.admitted_total_loc, cases[i].total);
+            ASSERT_EQ(status.durably_hosted_loc, cases[i].durable);
+            ASSERT_EQ(status.physical_lines, cases[i].total);
+            ASSERT_EQ(status.unique_semantic_units, cases[i].total);
+            ASSERT(strcmp(status.progress_stage, cases[i].stage) == 0);
+            ASSERT(strcmp(status.next_command, cases[i].next) == 0);
+            ASSERT(memchr(status.blocker, '\0', sizeof(status.blocker)) != NULL);
+            if (cases[i].remaining)
+                ASSERT(strstr(status.blocker, cases[i].remaining) != NULL);
+            else
+                ASSERT(strstr(status.blocker, "remaining") == NULL);
+        }
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_status_invalid(void)
+{
+    int failures = 0;
+    TEST("missing and invalid checkpoints cannot expose admitted counts") {
+        const struct zcode_c23_corpus_service_v1 *service =
+            zcode_c23_corpus_service_builtin();
+        struct zcode_c23_corpus_status_result_v1 status;
+        ASSERT(service->render_status(NULL, &status));
+        ASSERT(!status.projection_ready && !status.lower_bound_checkpoint_present);
+        ASSERT(strstr(status.blocker, "checkpoint_missing") != NULL);
+        ASSERT(strcmp(status.progress_stage, "checkpoint_missing") == 0);
+        ASSERT(strstr(status.next_command, "zcode commons corpus show --root=") ==
+               status.next_command);
+        ASSERT(!service->render_status(NULL, NULL));
+        uint8_t seed[32]; fill(seed, 0x67);
+        for (unsigned fault = 0; fault < 4; fault++) {
+            struct vcs_zcode_c23_checkpoint_shard_v1 binding;
+            struct vcs_zcode_c23_corpus_checkpoint_v1 checkpoint;
+            status_checkpoint(&checkpoint, &binding, 10, 10);
+            ASSERT_EQ(vcs_zcode_c23_corpus_checkpoint_v1_sign(&checkpoint, seed),
+                      VCS_ZCODE_C23_OK);
+            if (fault == 0) checkpoint.signature[0] ^= 1u;
+            if (fault == 1) memset(checkpoint.rules_root, 0, 32);
+            if (fault == 2) checkpoint.production_loc++;
+            if (fault == 3) {
+                checkpoint.production_loc = UINT64_MAX;
+                checkpoint.test_loc = 1;
+                binding.production_loc = UINT64_MAX;
+                binding.test_loc = 1;
+            }
+            if (fault != 0)
+                ASSERT(vcs_zcode_c23_corpus_checkpoint_v1_sign(&checkpoint, seed) !=
+                       VCS_ZCODE_C23_OK);
+            memset(&status, 0xa5, sizeof(status));
+            ASSERT(service->render_status(&checkpoint, &status));
+            ASSERT(!status.projection_ready && !status.lower_bound_checkpoint_present);
+            ASSERT(!status.global_completeness_claimed);
+            ASSERT_EQ(status.admitted_total_loc, 0);
+            ASSERT_EQ(status.admitted_production_loc, 0);
+            ASSERT_EQ(status.admitted_test_loc, 0);
+            ASSERT_EQ(status.durably_hosted_loc, 0);
+            ASSERT(strcmp(status.progress_stage, "checkpoint_invalid") == 0);
+            ASSERT(strcmp(status.next_command, "zcode commons corpus verify") == 0);
+            ASSERT(strstr(status.blocker, "remaining") == NULL);
+        }
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_zcode_c23_corpus_projection(void)
 {
     int failures = test_shard_codec_and_pages() + test_shard_maximum() +
-                   test_checkpoint_chain() + test_productivity_receipt();
+                   test_checkpoint_chain() + test_productivity_receipt() +
+                   test_status_remaining() + test_status_invalid();
     printf("=== zcode_c23_corpus_projection: %d failures ===\n", failures);
     return failures;
 }

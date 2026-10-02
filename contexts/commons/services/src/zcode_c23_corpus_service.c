@@ -109,8 +109,10 @@ static bool render_status(
                        ZCODE_C23_CORPUS_NEXT_CREATE);
         (void)snprintf(out->blocker, sizeof(out->blocker),
             "verified lower bound is %" PRIu64
-            " LOC; next milestone requires %" PRIu64 " LOC",
-            total, (uint64_t)VCS_ZCODE_C23_FIRST_MILESTONE_LOC);
+            " LOC; next milestone requires %" PRIu64
+            " LOC; %" PRIu64 " LOC remaining",
+            total, (uint64_t)VCS_ZCODE_C23_FIRST_MILESTONE_LOC,
+            (uint64_t)VCS_ZCODE_C23_FIRST_MILESTONE_LOC - total);
     } else if (checkpoint->durable_loc < total) {
         (void)snprintf(out->progress_stage, sizeof(out->progress_stage), "%s",
                        ZCODE_C23_CORPUS_STAGE_HOSTING);
@@ -127,8 +129,10 @@ static bool render_status(
                        ZCODE_C23_CORPUS_NEXT_CREATE);
         (void)snprintf(out->blocker, sizeof(out->blocker),
             "verified durable lower bound is %" PRIu64
-            " LOC; next milestone requires %" PRIu64 " LOC",
-            total, (uint64_t)VCS_ZCODE_C23_SECOND_MILESTONE_LOC);
+            " LOC; next milestone requires %" PRIu64
+            " LOC; %" PRIu64 " LOC remaining",
+            total, (uint64_t)VCS_ZCODE_C23_SECOND_MILESTONE_LOC,
+            (uint64_t)VCS_ZCODE_C23_SECOND_MILESTONE_LOC - total);
     } else {
         (void)snprintf(out->progress_stage, sizeof(out->progress_stage), "%s",
                        ZCODE_C23_CORPUS_STAGE_DURABLE_100M);
