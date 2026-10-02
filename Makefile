@@ -3014,6 +3014,7 @@ $(filter-out $(ZCL_VENDOR_LIB)/libsecp256k1.a,$(VENDOR_LIBS)):
         check-api-reference-generated check-describe-budget \
         check-no-new-repair-rung \
         check-no-bare-tmp-fixture \
+        check-network-tool-hardening \
         check-sqlite-cursor-lifetime \
         fuzz-ci-leaks \
         soak-smoke soak-7day soak-ci test-crash-bootstrap \
@@ -4274,9 +4275,9 @@ AGENT_SHA3_SRCS := tools/agent/agent_sha3.c platform/modules/sha3/src/sha3.c
 agent-sha3: $(BIN_DIR)/agent_sha3
 $(BIN_DIR)/agent_sha3: $(AGENT_SHA3_SRCS)
 	@mkdir -p $(dir $@)
-	$(CC) -std=c23 -O2 -Wall -Wextra -Werror \
+	$(CC) -std=c23 -O2 -Wall -Wextra -Werror $(HARDEN_CFLAGS) \
 	    -Iplatform/modules/sha3/include -Icore/modules/crypto/include -Iplatform/modules/support/include -Iplatform/modules/base/include \
-	    -o $@ $(AGENT_SHA3_SRCS)
+	    -o $@ $(AGENT_SHA3_SRCS) $(HARDEN_LDFLAGS)
 
 # Permanent node-free acceptance for `z23 dev fleet`: one isolated origin,
 # three attached worktrees, exact remote heads, dirty/unpublished source, and
@@ -6081,6 +6082,7 @@ LINTC_SRCS = tools/lint/lintc/lib.c tools/lint/lintc/gate_boot_wiring.c tools/li
     tools/lint/lintc/gate_raw_malloc.c \
     tools/lint/lintc/gate_no_new_repair_rung.c \
     tools/lint/lintc/gate_no_bare_tmp_fixture.c \
+    tools/lint/lintc/gate_network_tool_hardening.c \
     tools/lint/lintc/gate_tor_full_default.c \
     tools/lint/lintc/gate_installed_acceptance_tools.c \
     tools/lint/lintc/gate_hotswap_denied_leaves.c \
@@ -6223,6 +6225,7 @@ LINT_LAND_EXTRA_GATES := \
     check-service-result-convergence \
     check-file-purpose \
     check-no-bare-tmp-fixture \
+    check-network-tool-hardening \
     check-no-retired-agent-protocol \
     check-proc-self-shim \
     check-no-hardlink-seeding \
@@ -6667,7 +6670,8 @@ ACME_WORKER_INCLUDES = -Iplatform/modules/base/include -Iplatform/modules/json/i
 	-Iplatform/modules/platform/include -Iplatform/modules/util/include -Itools/acme \
 	$(ZCL_VENDOR_INC_FLAGS)
 ACME_WORKER_CFLAGS = -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
-	-D_POSIX_C_SOURCE=200809L $(ZCL_PLATFORM_CPPFLAGS) $(ACME_WORKER_INCLUDES)
+	-D_POSIX_C_SOURCE=200809L $(ZCL_PLATFORM_CPPFLAGS) $(ACME_WORKER_INCLUDES) \
+	$(HARDEN_CFLAGS)
 # The renewal worker's own selftest needs a private scratch directory, and it
 # used to call mkdtemp(3) for one. That is a POSIX-only symbol the mingw CRT
 # does not export, so the four platform TUs above are what replace it:
@@ -6678,7 +6682,15 @@ ACME_WORKER_CFLAGS = -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
 # worker's bytes on Linux for no reason here. Only what the Windows cross link
 # cannot do without — the static preference that keeps libssp-0.dll out (see
 # LDFLAGS above) and clang's MinGW linker.
-ACME_WORKER_LDFLAGS = $(if $(ZCL_CROSS_TRIPLE),-static $(ZCL_WINDOWS_CLANG_LINKER),)
+# Deliberately YES $(HARDEN_CFLAGS)/$(HARDEN_LDFLAGS): this worker is a TLS
+# client to the public Internet, and its mitigations (PIE, RELRO, BIND_NOW,
+# NX stack, stack protector, fortify, CET) must come from the tree's own
+# declaration, never from a distro compiler's ambient defaults — which are
+# exactly what check-network-tool-hardening now verifies. On Darwin and
+# Windows both HARDEN variables are defined empty above, so this is a no-op
+# there. check-network-tool-hardening refuses a regression.
+ACME_WORKER_LDFLAGS = $(HARDEN_LDFLAGS) \
+	$(if $(ZCL_CROSS_TRIPLE),-static $(ZCL_WINDOWS_CLANG_LINKER),)
 ACME_WORKER_LIBS = $(ZCL_VENDOR_LIB)/libssl.a $(ZCL_VENDOR_LIB)/libcrypto.a \
 	$(if $(ZCL_HOST_WINDOWS),-l:libwinpthread.a,-lpthread) -lm \
 	$(if $(ZCL_HOST_WINDOWS),-lws2_32 -lbcrypt -lcrypt32 -ladvapi32 -luserenv,)
@@ -7672,7 +7684,7 @@ $(BIN_DIR)/z23-clang-manifest-root-fixture $(BIN_DIR)/z23-clang-manifest: $(CLAN
 	rm -f $$probe $$probe.c; \
 	echo "clang-manifest: clang_getTypePrettyPrinted exported: $$pretty"; \
 	echo "$(CC) -DCM_TYPE_PRETTY_PRINTED=$$pretty ... -o $@"; \
-	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
+	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic $(HARDEN_CFLAGS) \
 	    $(ZCL_WARN_STRINGOP_OVERFLOW) -DCM_TYPE_PRETTY_PRINTED=$$pretty \
 	    $(CLANG_MANIFEST_RESOURCE_CPPFLAG) \
 	    -D_POSIX_C_SOURCE=200809L $(ZCL_PLATFORM_CPPFLAGS) \
@@ -7682,7 +7694,7 @@ $(BIN_DIR)/z23-clang-manifest-root-fixture $(BIN_DIR)/z23-clang-manifest: $(CLAN
 	    -Iplatform/modules/base/include -Iplatform/modules/util/include \
 	    -Iplatform/modules/sha3/include -Iplatform/modules/support/include -Ivendor/include \
 	    -o $@ $(CLANG_MANIFEST_SRCS) \
-	    $(CLANG_MANIFEST_LIB_ARG) $(CLANG_MANIFEST_RPATH_ARG)
+	    $(CLANG_MANIFEST_LIB_ARG) $(CLANG_MANIFEST_RPATH_ARG) $(HARDEN_LDFLAGS)
 
 # make clang-facts: the semantic manifest, with the facts extension, of every
 # TU of ONE component (default engine/modules/hotswap), written by the libclang
@@ -13676,6 +13688,14 @@ check-no-bare-tmp-fixture: $(LINTC_TOOL)
 	@echo "══ LINT: no new bare /tmp fixture literal ══"
 	@./tools/lint/check_no_bare_tmp_fixture.sh --selftest && ./tools/lint/check_no_bare_tmp_fixture.sh
 
+# Gate — network tool hardening. The Internet-facing standalone tools must
+# carry the ELF mitigations the tree declares through HARDEN_CFLAGS /
+# HARDEN_LDFLAGS (PIE, GNU_RELRO, BIND_NOW, NX stack). Host-bound: UNOBSERVED
+# off Linux, UNPROVEN without readelf.
+check-network-tool-hardening: $(LINTC_TOOL)
+	@echo "══ LINT: network tools carry declared ELF mitigations ══"
+	@./tools/lint/check_network_tool_hardening.sh --selftest && ./tools/lint/check_network_tool_hardening.sh
+
 # Gate — sqlite cursor lifetime. A stepped sqlite3_stmt must be
 # sqlite3_finalize/sqlite3_reset'd BEFORE any returning error macro
 # (LOG_FAIL/LOG_ERR/LOG_NULL/LOG_RETURN/GUARD*) fires in the same function:
@@ -14867,6 +14887,7 @@ LINT_GATES := \
     check-consensus-parity \
     check-no-new-repair-rung \
     check-no-bare-tmp-fixture \
+    check-network-tool-hardening \
     check-no-new-borrowed-seed \
     check-no-new-coin-backfill-caller \
     check-route-command-parity \

@@ -210,6 +210,8 @@ static const struct lint_gate k_gates[] = {
       check_no_new_repair_rung_selftest },
     { "check-no-bare-tmp-fixture", check_no_bare_tmp_fixture_run,
       check_no_bare_tmp_fixture_selftest },
+    { "check-network-tool-hardening", check_network_tool_hardening_run,
+      check_network_tool_hardening_selftest },
     { "check-tor-full-default", check_tor_full_default_run,
       check_tor_full_default_selftest },
     { "check-installed-acceptance-tools", check_installed_acceptance_tools_run,
