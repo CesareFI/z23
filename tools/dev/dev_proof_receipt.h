@@ -97,7 +97,10 @@ struct zcl_dev_verdict_leaf_v1 {
  * same dimension identity, so its receipts cannot establish this claim.
  * Policy 5 additionally qualifies the running producer's complete compiled
  * source identity before planning, selection, or receipt reuse. Policy 4
- * admitted candidate executables but could select with stale producer code. */
+ * admitted candidate executables but could select with stale producer code.
+ * Optional coverage codecs and receiver-index queries do not change receipt
+ * admission. A later coverage policy requires both producer and verifier
+ * integration before its version can be stamped or accepted. */
 #define ZCL_DEV_PROOF_POLICY_VERSION 5u
 
 enum zcl_dev_proof_dimension_id {

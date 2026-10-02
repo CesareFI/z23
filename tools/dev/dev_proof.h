@@ -73,9 +73,19 @@ bool zcl_dev_proof_producer_source_qualified(const char *candidate_source,
 /* make, --no-print-directory, -jN, the 8 helper targets, proof-lint-prebuild
  * and the NULL terminator: 13 slots, exactly. */
 #define PROOF_PREFORK_ARGV_CAP 13u
-/* make, --no-print-directory, -jN, up to eight distinct test-need targets
- * and the NULL terminator. */
-#define PROOF_TEST_NEEDS_ARGV_CAP 12u
+/* Every BUILD row is a conservative upper bound on distinct helper targets.
+ * Derive it from the same platform-qualified catalog the selector reads;
+ * duplicate and already-provided targets still disappear during argv fill. */
+enum {
+    ZCL_DEV_PROOF_TEST_BUILD_NEED_ROWS = 0
+#define ZCL_TEST_GROUP_NEED(id_, kind_, value_)
+#define ZCL_TEST_GROUP_BUILD_NEED(id_, value_, target_) + 1
+#include "test_group_host_needs.def"
+#undef ZCL_TEST_GROUP_BUILD_NEED
+#undef ZCL_TEST_GROUP_NEED
+};
+/* make, --no-print-directory, -jN, bounded targets and NULL terminator. */
+#define PROOF_TEST_NEEDS_ARGV_CAP (ZCL_DEV_PROOF_TEST_BUILD_NEED_ROWS + 4u)
 
 /* Room for the `host_gated=` line of the test-selection note: every group the
  * universal selector left out because this tree cannot meet its declared host

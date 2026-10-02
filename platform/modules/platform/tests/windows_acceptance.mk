@@ -29,6 +29,7 @@ ZCL_WINDOWS_ACCEPTANCE_TESTS := \
 	directory_compat \
 	directory_transaction \
 	disk_space \
+	export_snapshot \
 	file_metadata \
 	file_ops_copy \
 	file_service_transport \
@@ -188,6 +189,20 @@ ZCL_WINDOWS_ACCEPTANCE_database_lifetime_LIBDEPS := \
 	$(ZCL_WINDOWS_ACCEPTANCE_SQLITE)
 ZCL_WINDOWS_ACCEPTANCE_database_lifetime_LIBS := \
 	$(ZCL_WINDOWS_ACCEPTANCE_SQLITE) $(ZCL_WINDOWS_ACCEPTANCE_PTHREAD_LIB)
+
+# This main-bearing fixture stays outside the harness src wildcard on every
+# platform. The exporter is included, so track it without compiling it twice.
+ZCL_WINDOWS_ACCEPTANCE_export_snapshot_SOURCES := \
+	tests/harness/fixtures/export_snapshot_windows_acceptance.c \
+	platform/modules/platform/src/clock.c \
+	platform/modules/base/src/log_level.c
+ZCL_WINDOWS_ACCEPTANCE_export_snapshot_LIBDEPS := \
+	tools/export_snapshot.c \
+	platform/modules/platform/include/platform/time_compat.h \
+	platform/modules/platform/include/platform/windows_path.h \
+	$(ZCL_WINDOWS_ACCEPTANCE_SQLITE)
+ZCL_WINDOWS_ACCEPTANCE_export_snapshot_LIBS := \
+	$(ZCL_WINDOWS_ACCEPTANCE_SQLITE) $(ZCL_WINDOWS_ACCEPTANCE_PTHREAD_LIB) -lshell32
 
 ZCL_WINDOWS_ACCEPTANCE_codeindex_freshness_SOURCES := \
 	tests/harness/src/codeindex_freshness_windows_acceptance.c \

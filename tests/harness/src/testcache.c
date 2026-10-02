@@ -500,6 +500,12 @@ static bool group_reads_external_inputs(const char *name)
          * refuses nor binds that script. */
         "dev_orient",
         "dev_platform",                   /* reads tests/harness/fixtures source */
+        /* The request-size fixture delegates real CLI execution through a
+         * variable filename; the per-group rail does not bind those bytes. */
+        "rpc",
+        /* Delegated host capture executes export_snapshot outside the
+         * group's scanned closure; its executable bytes are not bound. */
+        "export_snapshot",
         /* execv zclassic23-package-verify next to the test image.
          * That verifier's link is outside the group's forward C closure. */
         "fastobj_carrier",
@@ -556,6 +562,9 @@ static bool group_reads_external_inputs(const char *name)
          * hash no checker bytes. The whole-test receipt still binds the
          * checker through its BUILD_NEED row; only this group key is denied. */
         "p2_invariant_check",
+        /* The stdin adapter executes jsonq outside the entry-file scanner.
+         * BUILD_NEED binds the whole proof, but no per-group artifact key. */
+        "jsonq",
         /* Trusted host capture runs sqlq without a scanner-visible exec
          * call in the fixture. Refuse reuse until its bytes are bound. */
         "sqlq",

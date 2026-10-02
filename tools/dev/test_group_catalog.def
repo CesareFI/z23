@@ -1017,6 +1017,11 @@ ZCL_TEST_GROUP(dev_proof_observation_env)
  * by name. Not yet wired into the proof worker or the pre-push hook.
  * See tools/dev/dev_proof_coverage.c. */
 ZCL_TEST_GROUP(dev_proof_coverage)
+/* The box-level receiver index folds each pair's durable signed
+ * observations into one verified, sorted, contradiction-preserving basis
+ * under the state root; reuse classification and coverage queries read it.
+ * See tools/dev/dev_proof_observation_index.c. */
+ZCL_TEST_GROUP(dev_proof_observation_index)
 ZCL_TEST_GROUP(test_group_selector)
 ZCL_TEST_GROUP(metaverse_catalog)
 ZCL_TEST_GROUP(node_character)
@@ -1447,6 +1452,10 @@ ZCL_TEST_GROUP(astro)
  * standalone `make fbsh` artifact, deliberately not a prerequisite of
  * the test binaries) and skips when it is absent. */
 ZCL_TEST_GROUP(freebsd_sh)
+/* Snapshot exporter: exact public tables, literal paths and read-only source
+ * attachment, live WAL visibility, and argument refusal before output deletion.
+ * The required helper is built through the declared BUILD_NEED; absence fails. */
+ZCL_TEST_GROUP(export_snapshot)
 /* sqlq read-only sqlite query CLI regressions (tools/sqlq.c ->
  * build/bin/sqlq): TSV rows, NULL/BLOB spelling, and the read-only refusal
  * contract. The binary is a standalone `make sqlq` artifact; the group
@@ -1459,6 +1468,9 @@ ZCL_TEST_GROUP(sqlq)
  * paths. The binary is a standalone `make p2_invariant_check` artifact;
  * the group skips when absent. */
 ZCL_TEST_GROUP(p2_invariant_check)
+/* Execute the actual stdin JSON query helper, including binary stdin and
+ * direct-member count/keys contracts. A missing helper fails the group. */
+ZCL_TEST_GROUP(jsonq)
 /* beta6 bootstrap serve lane: the zclassicd v2.1.2-beta6 snapshot server this
  * node offers legacy clients. The manifest cases compare against byte vectors
  * written out from the beta6 C++ serializer definitions rather than captured

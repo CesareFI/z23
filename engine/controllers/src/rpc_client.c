@@ -417,6 +417,30 @@ bool node_rpc_port_listening(int rpc_port, long connect_ms)
     return rc == 0;
 }
 
+/* Compose the JSON-RPC POST body into a fixed caller-supplied buffer.
+ * Returns the exact composed length on success, or -1 when the composed
+ * request does not fit. A truncated body must never be sent: snprintf
+ * reports the would-have-written length, and feeding that length to send()
+ * would read past the buffer and publish a Content-Length the truncated
+ * body cannot satisfy. Callers refuse before connecting. */
+static int rpc_compose_request_body(char *body, size_t body_cap,
+                                    const char *method,
+                                    const char *params_json)
+{
+    int blen;
+    if (params_json && params_json[0])
+        blen = snprintf(body, body_cap,
+            "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"%s\",\"params\":%s}",
+            method, params_json);
+    else
+        blen = snprintf(body, body_cap,
+            "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"%s\",\"params\":[]}",
+            method);
+    if (blen < 0 || (size_t)blen >= body_cap)
+        return -1; /* raw-return-ok:compose-size signal, named by caller */
+    return blen;
+}
+
 /* What one call may spend. A relative budget (`absolute == false`) starts its
  * `total_ms` clock after the cookie read, exactly as the env-defaulted callers
  * always did. An absolute budget carries the caller's `deadline_ms` from entry
@@ -536,15 +560,13 @@ static char *node_rpc_call_http_impl(const char *method,
     }
 
     char body[8192];
-    int blen;
-    if (params_json && params_json[0])
-        blen = snprintf(body, sizeof(body),
-            "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"%s\",\"params\":%s}",
-            method, params_json);
-    else
-        blen = snprintf(body, sizeof(body),
-            "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"%s\",\"params\":[]}",
-            method);
+    int blen = rpc_compose_request_body(body, sizeof(body), method,
+                                        params_json);
+    if (blen < 0) {
+        memset(cookie, 0, sizeof(cookie));
+        return rpc_transport_error("JSON-RPC request too large — pass "
+                                   "smaller parameters");
+    }
 
     const int64_t deadline_ms = budget.absolute
         ? budget.deadline_ms

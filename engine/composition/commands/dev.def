@@ -816,6 +816,77 @@ ZCL_COMMAND_DEV_READ(
     "push-proof signer identity requires the dev binary",
     "z23-dev dev proof signer")
 
+ZCL_COMMAND_DEV_READ(
+    "dev.proof.coverage", "dev.proof", "",
+    "Query one pair's canonical coverage manifest",
+    "Reports what the pair's signed coverage manifest binds (child-set "
+    "root, impact policy, executed groups with their exact input keys), "
+    "which rows carry eligible PASS observation coverage, which are "
+    "missing or in conflict, which executed without a reusable "
+    "observation (unqualified, named as its own state), and the "
+    "observation projection this box has seen (totals, eligibility, "
+    "oldest and newest observation age). Read-only: it admits nothing "
+    "and changes nothing. A pair without an admitted receipt or manifest "
+    "stays an explicit non-passing state.", 0,
+    "dev,proof,coverage,manifest,receipt,observation",
+    "zcl.dev_proof_input.v1", "zcl.dev_proof_coverage.v1",
+    "root,local_commit,remote_base", "",
+    "z23-dev dev proof coverage",
+    ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_INSTANT, ZCL_COMMAND_COST_TINY,
+    ZCL_COMMAND_LANE_LOCAL, ZCL_COMMAND_CAP_DEV_STATE_READ,
+    ZCL_COMMAND_TRAIT_IDEMPOTENT | ZCL_COMMAND_TRAIT_DEV_ONLY,
+    zcl_native_handle_dev_verify_change,
+    "coverage queries require the dev binary",
+    "z23-dev dev proof status")
+
+ZCL_COMMAND_DEV_READ(
+    "dev.proof.observations", "dev.proof", "",
+    "Query this box's receiver observation index",
+    "Reports what this box has observed across every proved pair: totals, "
+    "signature eligibility, the observed age range, and per (group, "
+    "exact input key) the newest eligible verdict with its observation "
+    "time and count. Eligible PASS/FAIL contradictions are preserved and "
+    "named, never collapsed. An empty index is a legitimate empty answer; "
+    "corrupt bytes refuse by name. Optional group input scopes every "
+    "count to one exact group. Read-only.", 0,
+    "dev,proof,observations,index,reuse,receiver",
+    "zcl.dev_proof_observations_input.v1", "zcl.dev_observations.v1",
+    "group", "",
+    "z23-dev dev proof observations",
+    ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_INSTANT, ZCL_COMMAND_COST_TINY,
+    ZCL_COMMAND_LANE_LOCAL, ZCL_COMMAND_CAP_DEV_STATE_READ,
+    ZCL_COMMAND_TRAIT_IDEMPOTENT | ZCL_COMMAND_TRAIT_DEV_ONLY,
+    zcl_native_handle_dev_verify_change,
+    "observation queries require the dev binary",
+    "z23-dev dev proof status")
+
+ZCL_COMMAND_DEV_COMMAND(
+    "dev.proof.observations.fold", "dev.proof", "",
+    "Fold one pair's durable observations into the box index",
+    "Merges the pair's durable signed-observation CAS into this box's "
+    "verified, sorted, contradiction-preserving observation index, so the "
+    "receiver basis grows as pairs prove. The pair must carry an admitted "
+    "receipt, exactly like the coverage query. Every merged row is "
+    "self-verifying: corrupt bytes refuse by name and nothing partial is "
+    "written. Re-folding the same pair is a union, so the command is "
+    "idempotent; it writes no admission state. Read the result back with "
+    "dev proof observations.", 0,
+    "dev,proof,observations,fold,index,reuse,receiver",
+    "zcl.dev_proof_input.v1", "zcl.dev_observations_fold.v1",
+    "local_commit,remote_base", "",
+    "z23-dev dev proof observations fold",
+    ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_DEV_MUTATION,
+    ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_MODE_SYNC, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_LOW, ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL, ZCL_COMMAND_CAP_DEV_STATE_WRITE,
+    ZCL_COMMAND_TRAIT_IDEMPOTENT | ZCL_COMMAND_TRAIT_DEV_ONLY,
+    zcl_native_handle_dev_verify_change,
+    "observation folds require the dev binary",
+    "z23-dev dev proof observations")
+
 ZCL_COMMAND_READY_READ(
     "dev.test.plan", "dev.test", "", "Map changed files to mandatory proof groups",
     "A deterministic mapping of the given file list to mandatory proof "

@@ -23,16 +23,16 @@ sha3=${ZCL_AGENT_SHA3:-$repo_root/build/bin/agent_sha3}
 evaluator=${ZCL_RETRIEVAL_EVAL:-$repo_root/build/bin/retrieval-eval}
 tmp=''
 
-readonly benchmark_keys='record,schema,corpus_id,mode,publishable,publication_admission,promotion_authorized,driver_commit,driver_commit_semantics,observed_origin_main,driver_clean,driver_status_sha3,tasks_declared,tasks_evaluated,tasks_unsupported,source_epoch_kind,source_root_basis,relevance_judgment,query_strata,commit_subject_only,same_commit_unordered,evaluated_query_strata,commit_subject_only,same_commit_unordered,original_prompts_available,canonical_task_roots_available,ranking_may_read_relevance,rank_binary_sha3,capture_binary_sha3,evaluator_binary_sha3,jsonq_binary_sha3,sha3_helper_binary_sha3,corpus_checker_script_sha3,corpus_sha3,runner_sha3,evaluator_batch_bytes,evaluator_batch_encoding,evaluator_batch_base64,evaluator_batch_root_sha3,identifier_graph_evaluator_batch_bytes,identifier_graph_evaluator_batch_encoding,identifier_graph_evaluator_batch_base64,identifier_graph_evaluator_batch_root_sha3'
-readonly observed_task_v4_keys='record,schema,id,status,expected_vcs_root,shared_codeindex_source_root_sha3,membership_tree_root_sha3,membership_join_basis,pages,ranking_compute,elapsed_us,budget_ms,budget_exceeded,all_pages,wall_us,single_process,buffered_before_write,literal,retained_files,ranking_complete,ranking_root_sha3,projected_context_bytes_at_5,approximate_tokens_at_5,bm25,retained_files,ranking_complete,ranking_root_sha3,projected_context_bytes_at_5,approximate_tokens_at_5,identifier_graph,retained_files,ranking_complete,ranking_root_sha3,projected_context_bytes_at_5,approximate_tokens_at_5,basis,identifier_seed_symbols,observed_reverse_ref_files,query_lookup_saturated,index_scan_completeness,graph_evidence_kind,evidence_available,fallback_reason,vector_evidence,candidate_set,scope_available,scope_basis,scope_interpretation,scope_classifier_epoch,files_read_observed,reuse_success_available,unique_loc_avoided_available'
+readonly benchmark_keys='record,schema,corpus_id,mode,publishable,publication_admission,promotion_authorized,driver_commit,driver_commit_semantics,observed_origin_main,driver_clean,driver_status_sha3,tasks_declared,tasks_evaluated,tasks_unsupported,source_epoch_kind,source_root_basis,relevance_judgment,query_strata,evaluated_query_strata,original_prompts_available,canonical_task_roots_available,ranking_may_read_relevance,rank_binary_sha3,capture_binary_sha3,evaluator_binary_sha3,jsonq_binary_sha3,sha3_helper_binary_sha3,corpus_checker_script_sha3,corpus_sha3,runner_sha3,evaluator_batch_bytes,evaluator_batch_encoding,evaluator_batch_base64,evaluator_batch_root_sha3,identifier_graph_evaluator_batch_bytes,identifier_graph_evaluator_batch_encoding,identifier_graph_evaluator_batch_base64,identifier_graph_evaluator_batch_root_sha3'
+readonly observed_task_v4_keys='record,schema,id,status,expected_vcs_root,shared_codeindex_source_root_sha3,membership_tree_root_sha3,membership_join_basis,pages,ranking_compute,all_pages,literal,bm25,identifier_graph,scope_available,scope_basis,scope_interpretation,scope_classifier_epoch,files_read_observed,reuse_success_available,unique_loc_avoided_available'
 readonly unsupported_task_keys='record,schema,id,status,reason,expected_vcs_root,membership_tree_root_sha3,membership_absence_observed,literal,bm25,identifier_graph'
 readonly arm_keys='retained_files,ranking_complete,ranking_root_sha3,projected_context_bytes_at_5,approximate_tokens_at_5'
 readonly graph_arm_keys='retained_files,ranking_complete,ranking_root_sha3,projected_context_bytes_at_5,approximate_tokens_at_5,basis,identifier_seed_symbols,observed_reverse_ref_files,query_lookup_saturated,index_scan_completeness,graph_evidence_kind,evidence_available,fallback_reason,vector_evidence,candidate_set'
 readonly metric_keys='available,basis_points'
-readonly eval_arm_keys='recall_at_5,available,basis_points,recall_at_20,available,basis_points,mrr,available,basis_points,task_unique_file_selections_at_5,projected_context_bytes_at_5,approximate_tokens_at_5,wrong_scope_at_5,available,basis_points'
-readonly eval_base_keys='schema,tasks_evaluated,aggregation_kind,tasks_denominator,eligible_relevance_judgments,binding_kind,context_cost_kind,token_basis,literal,recall_at_5,available,basis_points,recall_at_20,available,basis_points,mrr,available,basis_points,task_unique_file_selections_at_5,projected_context_bytes_at_5,approximate_tokens_at_5,wrong_scope_at_5,available,basis_points,bm25,recall_at_5,available,basis_points,recall_at_20,available,basis_points,mrr,available,basis_points,task_unique_file_selections_at_5,projected_context_bytes_at_5,approximate_tokens_at_5,wrong_scope_at_5,available,basis_points'
-readonly eval_keys="$eval_base_keys,identifier_graph,$eval_arm_keys"
-readonly aggregate_keys="record,schema,metrics,$eval_keys,files_read_observed,observed_token_count_available,wrong_scope_basis,wrong_scope_interpretation,wrong_scope_classifier_epoch,wrong_scope_aggregation_kind,wrong_scope_denominator_kind,reuse_success_available,duplicate_avoidance_available,new_unique_loc_avoided_available"
+readonly eval_arm_keys='recall_at_5,recall_at_20,mrr,task_unique_file_selections_at_5,projected_context_bytes_at_5,approximate_tokens_at_5,wrong_scope_at_5'
+readonly eval_base_keys='schema,tasks_evaluated,aggregation_kind,tasks_denominator,eligible_relevance_judgments,binding_kind,context_cost_kind,token_basis,literal,bm25'
+readonly eval_keys="$eval_base_keys,identifier_graph"
+readonly aggregate_keys="record,schema,metrics,files_read_observed,observed_token_count_available,wrong_scope_basis,wrong_scope_interpretation,wrong_scope_classifier_epoch,wrong_scope_aggregation_kind,wrong_scope_denominator_kind,reuse_success_available,duplicate_avoidance_available,new_unique_loc_avoided_available"
 
 fail() { printf 'retrieval-gold-identifier-graph-receipt-check: FAIL — %s\n' "$*" >&2; exit 1; }
 
@@ -143,7 +143,14 @@ validate_eval_arm() {
 
 validate_eval_replay_envelope() {
     local document=$1 label=$2
+    local arm metric
     keys_exact "$document" . "$eval_base_keys"
+    for arm in literal bm25; do
+        keys_exact "$document" "$arm" "$eval_arm_keys"
+        for metric in recall_at_5 recall_at_20 mrr wrong_scope_at_5; do
+            keys_exact "$document" "$arm.$metric" "$metric_keys"
+        done
+    done
     [[ $(field "$document" schema) = zcl.retrieval_eval_batch_result.v3 &&
        $(uint_field "$document" tasks_evaluated 32) -eq 9 &&
        $(field "$document" aggregation_kind) = macro_equal_task_weight &&
@@ -789,6 +796,22 @@ selftest() {
     local graph_tsv="$tmp/graph-contract-graph.tsv"
     local groups="$tmp/graph-contract.groups"
     "$0" --semantic-fixture "$receipt" >/dev/null
+    # Direct-member key checks must keep nested unknown/duplicate refusals.
+    bad="$tmp/nested-stratum-key.jsonl"
+    sed '1s/"query_strata":{/"query_strata":{"unexpected":0,/' "$receipt" >"$bad"
+    expect_semantic_refusal nested-stratum-key "$bad"; mutations=$((mutations + 1))
+    bad="$tmp/nested-stratum-duplicate.jsonl"
+    sed '1s/"query_strata":{/"query_strata":{"commit_subject_only":1,/' "$receipt" >"$bad"
+    expect_semantic_refusal nested-stratum-duplicate "$bad"; mutations=$((mutations + 1))
+    bad="$tmp/nested-timing-key.jsonl"
+    sed '2s/"ranking_compute":{/"ranking_compute":{"unexpected":0,/' "$receipt" >"$bad"
+    expect_semantic_refusal nested-timing-key "$bad"; mutations=$((mutations + 1))
+    bad="$tmp/nested-arm-key.jsonl"
+    sed '2s/"literal":{/"literal":{"unexpected":0,/' "$receipt" >"$bad"
+    expect_semantic_refusal nested-arm-key "$bad"; mutations=$((mutations + 1))
+    bad="$tmp/nested-arm-duplicate.jsonl"
+    sed '2s/"literal":{/"literal":{"retained_files":0,/' "$receipt" >"$bad"
+    expect_semantic_refusal nested-arm-duplicate "$bad"; mutations=$((mutations + 1))
     benchmark=$(head -n 1 "$receipt")
     decode_sealed_batch "$benchmark" evaluator_batch 73408 \
         abd5b8845eaa99ab67966d0050e962df1c44598e8c35e6613a397818ff21c250 \

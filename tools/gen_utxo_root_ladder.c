@@ -109,6 +109,13 @@
 #define DEFAULT_OUT_C "core/modules/chain/src/utxo_root_ladder.c"
 #define DEFAULT_STRIDE 100000
 #define MAX_ENTRIES 128   /* generous: ~3.1M/100000 strides + 1 checkpoint rung */
+/* A best-chain height above this is not a bigger chain, it is a corrupt or
+ * wrong db: at the protocol's 150-second block spacing even 100,000,000
+ * blocks is ~475 years past the ~3.1M-height anchor this table exists to
+ * serve. Unrefused, such a value reaches the stride loop and, within one
+ * stride of INT32_MAX, its `h += stride` wraps negative and the loop never
+ * terminates (two sqlite queries per wrapped iteration, forever). */
+#define MAX_SANE_HEIGHT 100000000
 
 /* Independently re-stated from core/modules/chain/src/checkpoints.c
  * (get_sha3_utxo_checkpoint's g_sha3_checkpoint) so this standalone tool
@@ -241,17 +248,31 @@ static bool attach_kernel_db(sqlite3 *db, const char *path, bool immutable)
     return true;
 }
 
-static bool db_max_height(sqlite3 *db, int32_t *out)
+/* Reads the source db's best-chain height. On refusal, *why names the
+ * exact reason for main to print (never a bare false). A height outside
+ * [0, MAX_SANE_HEIGHT] means the db is corrupt or is not a node.db copy
+ * at all. */
+static bool db_max_height(sqlite3 *db, int32_t *out, const char **why)
 {
+    *why = "source db has no best-chain blocks (blocks.status>=3)";
     sqlite3_stmt *s = NULL;
     if (sqlite3_prepare_v2(db, "SELECT MAX(height) FROM blocks WHERE status>=3",
-                           -1, &s, NULL) != SQLITE_OK)
+                           -1, &s, NULL) != SQLITE_OK) {
+        *why = "source db query failed (missing blocks table? not a node.db "
+               "copy)";
         return false;
+    }
     bool ok = false;
     if (sqlite3_step(s) == SQLITE_ROW) {  // raw-sql-ok:standalone-dev-tool
         if (sqlite3_column_type(s, 0) != SQLITE_NULL) {
-            *out = sqlite3_column_int(s, 0);
-            ok = true;
+            sqlite3_int64 v = sqlite3_column_int64(s, 0);
+            if (v >= 0 && v <= MAX_SANE_HEIGHT) {
+                *out = (int32_t)v;
+                ok = true;
+            } else {
+                *why = "refusing source db: best-chain height is outside "
+                       "[0, MAX_SANE_HEIGHT] (corrupt or wrong db)";
+            }
         }
     }
     sqlite3_finalize(s);
@@ -634,9 +655,9 @@ int main(int argc, char **argv)
     }
 
     int32_t src_max = -1;
-    if (!db_max_height(src, &src_max)) {
-        fprintf(stderr, "[gen_utxo_root_ladder] source db has no best-chain "
-                        "blocks (blocks.status>=3)\n");
+    const char *max_why = NULL;
+    if (!db_max_height(src, &src_max, &max_why)) {
+        fprintf(stderr, "[gen_utxo_root_ladder] %s\n", max_why);
         sqlite3_close(src);
         if (snd) sqlite3_close(snd);
         return 1;
@@ -645,7 +666,8 @@ int main(int argc, char **argv)
     if (max_h > src_max) max_h = src_max;
     if (snd) {
         int32_t snd_max = -1;
-        db_max_height(snd, &snd_max);
+        const char *snd_why = NULL;
+        db_max_height(snd, &snd_max, &snd_why);
         printf("[gen_utxo_root_ladder] second-db max_height=%d\n", snd_max);
     }
 
@@ -657,46 +679,51 @@ int main(int argc, char **argv)
     int divergences = 0;
     int32_t last_stride_height_recorded = -1;
 
-    for (int32_t h = 0; h <= max_h; h += c.stride) {
+    /* h is int64 so `h += stride` can never wrap: with a best-chain height
+     * near INT32_MAX (corrupt db, or --max-height=...), the int32 loop
+     * overflowed to a negative height, the `h <= max_h` test stayed true,
+     * and the loop never terminated. */
+    for (int64_t h = 0; h <= max_h; h += c.stride) {
         uint8_t bh[32], ur[32];
-        if (!db_block_hash_at(src, h, bh)) {
-            printf("[gen_utxo_root_ladder] h=%d: no best-chain block hash in "
-                   "source — skipping rung\n", h);
+        if (!db_block_hash_at(src, (int32_t)h, bh)) {
+            printf("[gen_utxo_root_ladder] h=%lld: no best-chain block hash in "
+                   "source — skipping rung\n", (long long)h);
             continue;
         }
-        if (!db_boundary_root_at(src, src_has_kdb, h, ur)) {
-            printf("[gen_utxo_root_ladder] h=%d: no boundary utxo_root recorded "
+        if (!db_boundary_root_at(src, src_has_kdb, (int32_t)h, ur)) {
+            printf("[gen_utxo_root_ladder] h=%lld: no boundary utxo_root recorded "
                    "in source (coins_kv_boundary_root_set never ran here) — "
-                   "skipping rung\n", h);
+                   "skipping rung\n", (long long)h);
             continue;
         }
 
         uint8_t provenance = PROV_SINGLE;
         if (snd) {
             uint8_t bh2[32], ur2[32];
-            bool have2 = db_block_hash_at(snd, h, bh2) &&
-                        db_boundary_root_at(snd, snd_has_kdb, h, ur2);
+            bool have2 = db_block_hash_at(snd, (int32_t)h, bh2) &&
+                        db_boundary_root_at(snd, snd_has_kdb, (int32_t)h, ur2);
             if (!have2) {
-                printf("[gen_utxo_root_ladder] h=%d: second-db has no data yet "
-                       "(still folding) — single-source rung\n", h);
+                printf("[gen_utxo_root_ladder] h=%lld: second-db has no data yet "
+                       "(still folding) — single-source rung\n", (long long)h);
             } else if (memcmp(bh, bh2, 32) != 0) {
                 char hx1[65], hx2[65];
                 zcl_hex_encode(bh, 32, hx1); zcl_hex_encode(bh2, 32, hx2);
-                fprintf(stderr, "[gen_utxo_root_ladder] DIVERGENCE h=%d: "
+                fprintf(stderr, "[gen_utxo_root_ladder] DIVERGENCE h=%lld: "
                                 "block_hash source=%s second=%s (DIFFERENT CHAINS)\n",
-                        h, hx1, hx2);
+                        (long long)h, hx1, hx2);
                 divergences++;
             } else if (memcmp(ur, ur2, 32) != 0) {
                 char hx1[65], hx2[65];
                 zcl_hex_encode(ur, 32, hx1); zcl_hex_encode(ur2, 32, hx2);
-                fprintf(stderr, "[gen_utxo_root_ladder] DIVERGENCE h=%d: "
+                fprintf(stderr, "[gen_utxo_root_ladder] DIVERGENCE h=%lld: "
                                 "SAME block_hash, utxo_root source=%s second=%s "
                                 "(state-wrong-coin class)\n",
-                        h, hx1, hx2);
+                        (long long)h, hx1, hx2);
                 divergences++;
             } else {
                 provenance = PROV_DUAL;
-                printf("[gen_utxo_root_ladder] h=%d: DUAL-SOURCE confirmed\n", h);
+                printf("[gen_utxo_root_ladder] h=%lld: DUAL-SOURCE confirmed\n",
+                       (long long)h);
             }
         }
 
@@ -705,12 +732,12 @@ int main(int argc, char **argv)
                     MAX_ENTRIES);
             break;
         }
-        entries[n].height = h;
+        entries[n].height = (int32_t)h;
         memcpy(entries[n].block_hash, bh, 32);
         memcpy(entries[n].utxo_root, ur, 32);
         entries[n].provenance = provenance;
         n++;
-        last_stride_height_recorded = h;
+        last_stride_height_recorded = (int32_t)h;
     }
 
     /* Checkpoint rung: the one zclassicd-verified anchor. Always included

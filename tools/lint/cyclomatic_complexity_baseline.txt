@@ -1713,7 +1713,7 @@ engine/controllers/src/repair_controller_rebuild.c:rebuild_recent_fetch_and_conn
 engine/controllers/src/repair_controller_rebuild.c:rebuild_recent_resolve_range:21
 engine/controllers/src/repair_controller_rebuild.c:rebuild_recent_run:20
 engine/controllers/src/rom_fetch_controller.c:zcl_native_handle_rom_fetch_bundle:40
-engine/controllers/src/rpc_client.c:node_rpc_call_http_impl:46
+engine/controllers/src/rpc_client.c:node_rpc_call_http_impl:45
 engine/controllers/src/snapshot_controller_import.c:import_block_index_thread:37
 engine/controllers/src/snapshot_controller_txindex.c:build_tx_index_thread:54
 engine/controllers/src/snapshot_controller_txindex.c:snapshot_tx_index_build_from_block_files:16
@@ -2409,9 +2409,10 @@ platform/modules/platform/src/private_file.c:platform_private_file_link_no_clobb
 platform/modules/platform/src/private_file.c:platform_private_path_resolve:49
 platform/modules/platform/src/process_lifecycle.c:append_arg:20
 platform/modules/platform/src/process_lifecycle.c:environment_block:16
-platform/modules/platform/src/process_lifecycle.c:platform_process_capture_stdout:53
+platform/modules/platform/src/process_lifecycle.c:platform_process_capture_stdout:1
+platform/modules/platform/src/process_lifecycle.c:process_capture_stdout_stdio:53
 platform/modules/platform/src/process_lifecycle.c:platform_process_start_hidden#2:34
-platform/modules/platform/src/process_lifecycle.c:process_start_hidden_with_stdout:46
+platform/modules/platform/src/process_lifecycle.c:process_start_hidden_with_stdout:44
 platform/modules/platform/src/ram_scratch.c:platform_ram_scratch_reserve:18
 platform/modules/platform/src/safe_root_read.c:platform_safe_root_read:38
 platform/modules/platform/src/safe_root_read.c:platform_safe_root_read#2:24
@@ -2443,7 +2444,7 @@ platform/modules/platform/tests/private_directory_windows_acceptance.c:main:39
 platform/modules/platform/tests/private_file_path_swap_acceptance.c:main:24
 platform/modules/platform/tests/private_file_windows_acceptance.c:main:64
 platform/modules/platform/tests/process_lifecycle_windows_acceptance.c:child_mode:28
-platform/modules/platform/tests/process_lifecycle_windows_acceptance.c:main:103
+platform/modules/platform/tests/process_lifecycle_windows_acceptance.c:main:99
 platform/modules/platform/tests/read_mapping_windows_acceptance.c:main:16
 platform/modules/platform/tests/socket_compat_windows_acceptance.c:main:26
 platform/modules/platform/tests/state_root_windows_acceptance.c:main:40
@@ -3918,7 +3919,7 @@ tools/gen_utxo_root_ladder.c:main:35
 tools/gen_utxo_root_ladder.c:parse_cli:22
 tools/install/z23_bootstrap.c:bootstrap_main#2:39
 tools/install/z23_bootstrap.c:dns_attestation:16
-tools/jsonq.c:main:23
+tools/jsonq.c:main:21
 tools/jsonq.c:parse_path:21
 tools/jsonq.c:walk:25
 tools/land/land_main.c:cmd_gate_run:22

@@ -147,9 +147,34 @@ fail:
     free(items); return NULL;
 }
 
+static bool process_inheritable_handle(HANDLE handle)
+{
+    DWORD flags = 0;
+    return GetHandleInformation(handle, &flags) &&
+           (flags & HANDLE_FLAG_INHERIT);
+}
+
+static bool process_stdio_handles(HANDLE *handles, HANDLE stdout_handle,
+                                  HANDLE stdin_handle, bool capture_stdout,
+                                  bool file_stdin)
+{
+    bool ok = true;
+    if (capture_stdout) {
+        handles[1] = stdout_handle;
+        ok = process_inheritable_handle(stdout_handle);
+    }
+    if (file_stdin) {
+        handles[1u + (size_t)capture_stdout] = stdin_handle;
+        ok = ok && stdin_handle != stdout_handle &&
+             process_inheritable_handle(stdin_handle);
+    }
+    return ok;
+}
+
 static bool process_start_hidden_with_stdout(
     struct platform_process *process,
-    const struct platform_process_options *options, HANDLE stdout_handle)
+    const struct platform_process_options *options, HANDLE stdout_handle,
+    HANDLE stdin_handle)
 {
     if (!process || process->native != UINTPTR_MAX || !options ||
         !options->image || !options->argv || !options->argv[0] || !options->env ||
@@ -168,25 +193,21 @@ static bool process_start_hidden_with_stdout(
         FILE_SHARE_READ | FILE_SHARE_WRITE, &security, OPEN_EXISTING, 0, NULL);
     if (null_handle == INVALID_HANDLE_VALUE) goto done;
     bool capture_stdout = stdout_handle && stdout_handle != INVALID_HANDLE_VALUE;
-    size_t handle_count = options->inherited_count + 1u +
-                          (capture_stdout ? 1u : 0u);
+    bool file_stdin = stdin_handle && stdin_handle != INVALID_HANDLE_VALUE;
+    size_t handle_count = options->inherited_count + 1u + (size_t)file_stdin +
+                          (size_t)capture_stdout;
     HANDLE *handles = zcl_calloc(handle_count, sizeof(*handles),
                                  "process-inherited-handles");
     if (!handles) { CloseHandle(null_handle); goto done; }
     handles[0] = null_handle;
-    bool handles_ok = true;
-    if (capture_stdout) {
-        DWORD flags = 0;
-        handles[1] = stdout_handle;
-        if (!GetHandleInformation(stdout_handle, &flags) ||
-            !(flags & HANDLE_FLAG_INHERIT))
-            handles_ok = false;
-    }
+    bool handles_ok = process_stdio_handles(handles, stdout_handle,
+                                            stdin_handle, capture_stdout,
+                                            file_stdin);
     for (size_t i = 0; i < options->inherited_count; i++) {
         DWORD flags = 0;
-        size_t at = i + 1u + (capture_stdout ? 1u : 0u);
+        size_t at = i + 1u + (size_t)capture_stdout + (size_t)file_stdin;
         handles[at] = (HANDLE)options->inherited[i];
-        if (handles[at] == stdout_handle ||
+        if (handles[at] == stdout_handle || handles[at] == stdin_handle ||
             !GetHandleInformation(handles[at], &flags) ||
             !(flags & HANDLE_FLAG_INHERIT)) handles_ok = false;
         for (size_t j = 0; j < i; j++)
@@ -199,7 +220,7 @@ static bool process_start_hidden_with_stdout(
     startup.StartupInfo.cb = sizeof(startup);
     startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
     startup.StartupInfo.wShowWindow = SW_HIDE;
-    startup.StartupInfo.hStdInput = null_handle;
+    startup.StartupInfo.hStdInput = file_stdin ? stdin_handle : null_handle;
     startup.StartupInfo.hStdOutput = capture_stdout ? stdout_handle : null_handle;
     startup.StartupInfo.hStdError = null_handle;
     startup.lpAttributeList = zcl_malloc(attribute_size,
@@ -259,7 +280,7 @@ done:
 bool platform_process_start_hidden(struct platform_process *process,
                                    const struct platform_process_options *options)
 {
-    return process_start_hidden_with_stdout(process, options, NULL);
+    return process_start_hidden_with_stdout(process, options, NULL, NULL);
 }
 
 /* process_lifecycle_internal.h: the confined launch reuses these exact
@@ -444,9 +465,10 @@ void platform_process_close(struct platform_process *process)
  * declared once in process_lifecycle.h and called from other translation
  * units, so each keeps exactly one non-static definition; the platform
  * difference is folded into the body instead of duplicated per arm. */
-bool platform_process_capture_stdout(
+static bool process_capture_stdout_stdio(
     const struct platform_process_options *options, char *out, size_t out_size,
-    uint32_t timeout_ms, struct platform_process_capture_result *result)
+    uint32_t timeout_ms, struct platform_process_capture_result *result,
+    uintptr_t stdin_native)
 {
 #if defined(_WIN32)
     if (out && out_size) out[0] = 0;
@@ -468,7 +490,7 @@ bool platform_process_capture_stdout(
     struct platform_process process;
     platform_process_init(&process);
     bool started = process_start_hidden_with_stdout(
-        &process, options, write_handle);
+        &process, options, write_handle, (HANDLE)stdin_native);
     CloseHandle(write_handle);
     write_handle = NULL;
     if (!started) {
@@ -584,7 +606,7 @@ bool platform_process_capture_stdout(
     CloseHandle(read_handle);
     return ok;
 #else
-    (void)options; (void)timeout_ms;
+    (void)options; (void)timeout_ms; (void)stdin_native;
     if (out && out_size) out[0] = 0;
     if (result)
         *result = (struct platform_process_capture_result){0};
@@ -592,6 +614,62 @@ bool platform_process_capture_stdout(
 #endif
 }
 
+bool platform_process_capture_stdout(
+    const struct platform_process_options *options, char *out, size_t out_size,
+    uint32_t timeout_ms, struct platform_process_capture_result *result)
+{
+    return process_capture_stdout_stdio(options, out, out_size, timeout_ms,
+                                         result, 0);
+}
+
+#if defined(_WIN32)
+static HANDLE process_open_stdin_file(const char *stdin_path)
+{
+    wchar_t *wide = NULL;
+    if (!utf16(stdin_path, &wide)) return INVALID_HANDLE_VALUE;
+    bool absolute = absolute_image(wide) && wide[1] == L':';
+    if (!absolute) { free(wide); return INVALID_HANDLE_VALUE; }
+    SECURITY_ATTRIBUTES security = {
+        .nLength = sizeof(security), .bInheritHandle = TRUE};
+    HANDLE input = CreateFileW(wide, GENERIC_READ, FILE_SHARE_READ, &security,
+        OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+    free(wide);
+    return input;
+}
+
+static bool process_stdin_file_regular(HANDLE input)
+{
+    BY_HANDLE_FILE_INFORMATION info = {0};
+    return GetFileType(input) == FILE_TYPE_DISK &&
+        GetFileInformationByHandle(input, &info) &&
+        !(info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY |
+                                  FILE_ATTRIBUTE_REPARSE_POINT)) &&
+        info.nFileSizeHigh == 0 &&
+        info.nFileSizeLow <= PLATFORM_PROCESS_CAPTURE_STDIN_MAX;
+}
+#endif
+
+bool platform_process_capture_stdout_file_input(
+    const struct platform_process_options *options, const char *stdin_path,
+    char *out, size_t out_size, uint32_t timeout_ms,
+    struct platform_process_capture_result *result)
+{
+    if (out && out_size) out[0] = 0;
+    if (result) *result = (struct platform_process_capture_result){0};
+#if defined(_WIN32)
+    if (!options || !stdin_path || !out || out_size == 0 ||
+        timeout_ms == 0 || !result) return false;
+    HANDLE input = process_open_stdin_file(stdin_path);
+    if (input == INVALID_HANDLE_VALUE) return false;
+    bool ok = process_stdin_file_regular(input) && process_capture_stdout_stdio(options, out, out_size,
+        timeout_ms, result, (uintptr_t)input);
+    CloseHandle(input);
+    return ok;
+#else
+    (void)options; (void)stdin_path; (void)timeout_ms;
+    return false;
+#endif
+}
 bool platform_process_detach(struct platform_process *process)
 {
 #if defined(_WIN32)

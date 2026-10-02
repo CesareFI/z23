@@ -70,5 +70,7 @@ int test_rpc(void) {
     failures += check_rpc_http_tls_inactive();
     failures += check_rpc_tls_start_self_signed();
     failures += check_rpc_tls_without_env_and_port_oracle();
+    failures += check_rpc_node_client_rejects_oversized_request();
+    failures += check_rpc_node_client_sends_max_sized_request();
     return failures;
 }

@@ -1901,10 +1901,20 @@ static char *cli_rpc_call_internal(const char *body, size_t body_len,
     return cli_rpc_call_internal_ex(body, body_len, quiet, NULL);
 }
 
-static char *cli_rpc_call_ex(const char *body, size_t body_len,
+/* Outcome-reporting wrapper around cli_rpc_call_internal_ex. Validates the
+ * composed length against the request buffer before anything is sent: a
+ * truncated body must never reach the wire with the would-have-written
+ * length, which would read past the buffer and publish a Content-Length
+ * the truncated body cannot satisfy. */
+static char *cli_rpc_call_ex(const char *body, size_t body_cap, int blen,
                              enum cli_rpc_outcome *outcome)
 {
-    return cli_rpc_call_internal_ex(body, body_len, false, outcome);
+    if (blen < 0 || (size_t)blen >= body_cap) {
+        fprintf(stderr, "error=REQUEST_TOO_LARGE detail=composed JSON-RPC "
+                        "request does not fit the client request buffer\n");
+        return NULL;
+    }
+    return cli_rpc_call_internal_ex(body, (size_t)blen, false, outcome);
 }
 
 static char *cli_rpc_call(const char *body, size_t body_len)
@@ -2319,6 +2329,26 @@ enum { CLI_MAX_PARAMS = 128 };
 /* Forward decl: defined below alongside is_cli_mode (the pair is easiest to
  * read together); cli_main is defined above that point in the file. */
 static int cli_validate_client_argv(int argc, char **argv);
+/* Keep serialization's would-have-written length, so partial parameters
+ * never reach the outer body composer or the loopback socket. */
+static bool cli_compose_rpc_params(const char *method, const char **params,
+                                   size_t nparams, char *buf, size_t cap)
+{
+    struct json_value value;
+    if (!rpc_convert_values(method, params, nparams, &value)) {
+        fprintf(stderr, "Bad parameters\n");
+        return false;
+    }
+    size_t needed = json_write(&value, buf, cap);
+    json_free(&value);
+    if (needed >= cap) {
+        fprintf(stderr, "error=REQUEST_TOO_LARGE detail=serialized JSON-RPC "
+                        "parameters do not fit the client parameter buffer\n");
+        return false;
+    }
+    return true;
+}
+
 int cli_main(int argc, char **argv)
 {
     /* Strict operator-target-flag validation FIRST — before datadir/home
@@ -2595,16 +2625,11 @@ int cli_main(int argc, char **argv)
     bool auto_all_fields = !field_csv && zcl_brief_on && !saw_format_json &&
                            strcmp(method, "dumpstate") == 0;
 
-    struct json_value jp;
-    if (!rpc_convert_values(method, rpc_params_storage,
-                            (size_t)rpc_nparams, &jp)) {
-        fprintf(stderr, "Bad parameters\n");
+    char pbuf[32768];
+    if (!cli_compose_rpc_params(method, rpc_params_storage,
+                                (size_t)rpc_nparams, pbuf, sizeof(pbuf))) {
         return 1;
     }
-
-    char pbuf[32768];
-    json_write(&jp, pbuf, sizeof(pbuf));
-    json_free(&jp);
 
     char body[65536];
     int blen = snprintf(body, sizeof(body),
@@ -2612,7 +2637,7 @@ int cli_main(int argc, char **argv)
         method, pbuf);
 
     enum cli_rpc_outcome rpc_outcome = CLI_RPC_OK;
-    char *resp = cli_rpc_call_ex(body, (size_t)blen, &rpc_outcome);
+    char *resp = cli_rpc_call_ex(body, sizeof(body), blen, &rpc_outcome);
     if (!resp) {
         /* cli_rpc_call_internal_ex already printed the specific
          * error=<TAXONOMY> line; just map it to the matching documented

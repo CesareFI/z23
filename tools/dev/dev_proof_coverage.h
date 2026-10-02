@@ -140,4 +140,37 @@ bool zcl_dev_coverage_manifest_verify(const char *store_root,
     const struct zcl_dev_coverage_binding *binding, uint32_t expected_rows,
     char *why, size_t why_len);
 
+/* ── Query mode (the lifecycle query interface) ─────────────────────────
+ * Reports coverage without admitting anything. Parses and verifies the
+ * manifest's framing and signature, classifies every row against the
+ * store, and summarizes. Structural problems refuse by name; a manifest
+ * that parses but misses coverage, mismatches its binding, carries an
+ * untrusted signature, or preserves a conflict is reported through the
+ * struct — those are answers, not refusals. Unqualified rows (executed
+ * groups with no reusable observation) are counted as their own state,
+ * never as missing; an unqualified group whose CAS retains an eligible
+ * FAIL is reported as a conflict. */
+#define ZCL_DEV_COVERAGE_INSPECT_MAX_MISSING 8u
+struct zcl_dev_coverage_inspect {
+    uint32_t row_count;
+    uint32_t covered;
+    uint32_t unqualified;  /* executed rows with no reusable observation */
+    uint32_t missing;      /* keyed rows with no eligible PASS coverage */
+    uint32_t conflicts;    /* rows with an eligible PASS/FAIL contradiction */
+    bool binding_mismatch;
+    char signer_why[32];   /* empty when the signature verifies */
+    uint64_t observed_total;    /* leaves in the store projection */
+    uint64_t observed_eligible;
+    uint64_t oldest_observed_unix; /* 0 when the store is empty */
+    uint64_t newest_observed_unix;
+    uint32_t missing_named; /* groups copied into missing_groups */
+    char missing_groups[ZCL_DEV_COVERAGE_INSPECT_MAX_MISSING]
+                       [ZCL_DEV_VERDICT_LEAF_GROUP_BYTES];
+};
+bool zcl_dev_coverage_inspect(const char *store_root,
+    const uint8_t *envelope_wire, size_t envelope_len,
+    const uint8_t *blob, size_t blob_len,
+    const struct zcl_dev_coverage_binding *binding,
+    struct zcl_dev_coverage_inspect *out, char *why, size_t why_len);
+
 #endif

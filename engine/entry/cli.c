@@ -7,6 +7,7 @@
 #include "rpc/client.h"
 #include "json/json.h"
 #include "platform/socket_compat.h"
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -97,10 +98,42 @@ static void base64_encode(const char *in, size_t len, char *out)
     out[j] = 0;
 }
 
-/* Send JSON-RPC request and return response body.
- * Caller must free() the returned string. */
-static char *rpc_call(const char *body, size_t body_len)
+/* True when the composed request length is exact and fits the buffer it
+ * was composed into. snprintf truncates on overflow and reports the
+ * would-have-written length; sending that length would read past the
+ * buffer and publish a Content-Length the truncated body cannot satisfy. */
+static bool rpc_request_fits(size_t body_cap, int blen)
 {
+    return blen >= 0 && (size_t)blen < body_cap;
+}
+
+/* json_write reports the required size even when the buffer truncates.
+ * Refuse partial parameters before composing or sending a request. */
+static bool rpc_compose_params(const char *method, const char **params,
+                                size_t nparams, char *buf, size_t cap)
+{
+    struct json_value value;
+    if (!rpc_convert_values(method, params, nparams, &value)) {
+        fprintf(stderr, "Failed to parse parameters\n");
+        return false;
+    }
+    size_t needed = json_write(&value, buf, cap);
+    json_free(&value);
+    if (needed >= cap) {
+        fprintf(stderr, "request too large: serialized parameters do not fit\n");
+        return false;
+    }
+    return true;
+}
+
+/* Send only a complete JSON-RPC body. Caller frees the response. */
+static char *rpc_call(const char *body, size_t body_cap, int composed_len)
+{
+    if (!rpc_request_fits(body_cap, composed_len)) {
+        fprintf(stderr, "request too large\n");
+        return NULL;
+    }
+    size_t body_len = (size_t)composed_len;
     platform_socket_t sock = platform_socket_open(AF_INET, SOCK_STREAM, 0,
                                                   true, false);
     if (sock == PLATFORM_SOCKET_INVALID) {
@@ -241,23 +274,20 @@ int main(int argc, char **argv)
     int nparams = argc - arg_start - 1;
 
     /* Convert string params to proper JSON types using the convert table */
-    struct json_value json_params;
-    if (!rpc_convert_values(method, params, (size_t)nparams, &json_params)) {
-        fprintf(stderr, "Failed to parse parameters\n");
+    char params_buf[32768];
+    if (!rpc_compose_params(method, params, (size_t)nparams,
+                            params_buf, sizeof(params_buf))) {
         return 1;
     }
 
     /* Build JSON-RPC request */
-    char params_buf[32768];
-    json_write(&json_params, params_buf, sizeof(params_buf));
-    json_free(&json_params);
 
     char body[65536];
     int blen = snprintf(body, sizeof(body),
         "{\"jsonrpc\":\"1.0\",\"id\":\"cli\",\"method\":\"%s\",\"params\":%s}",
         method, params_buf);
 
-    char *response = rpc_call(body, (size_t)blen);
+    char *response = rpc_call(body, sizeof(body), blen);
     if (!response) {
         fprintf(stderr, "RPC call failed\n");
         return 1;

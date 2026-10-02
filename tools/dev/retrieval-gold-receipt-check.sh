@@ -20,15 +20,15 @@ sha3=${ZCL_AGENT_SHA3:-$repo_root/build/bin/agent_sha3}
 evaluator=${ZCL_RETRIEVAL_EVAL:-$repo_root/build/bin/retrieval-eval}
 tmp=''
 
-readonly benchmark_keys='record,schema,corpus_id,mode,publishable,publication_admission,promotion_authorized,driver_commit,driver_commit_semantics,observed_origin_main,driver_clean,driver_status_sha3,tasks_declared,tasks_evaluated,tasks_unsupported,source_epoch_kind,source_root_basis,relevance_judgment,query_strata,commit_subject_only,same_commit_unordered,evaluated_query_strata,commit_subject_only,same_commit_unordered,original_prompts_available,canonical_task_roots_available,ranking_may_read_relevance,rank_binary_sha3,capture_binary_sha3,evaluator_binary_sha3,jsonq_binary_sha3,sha3_helper_binary_sha3,corpus_checker_script_sha3,corpus_sha3,runner_sha3,evaluator_batch_bytes,evaluator_batch_encoding,evaluator_batch_base64,evaluator_batch_root_sha3'
-readonly observed_task_v1_keys='record,schema,id,status,expected_vcs_root,shared_codeindex_source_root_sha3,membership_tree_root_sha3,membership_join_basis,pages,page0,elapsed_us,wall_us,budget_ms,budget_exceeded,all_pages,elapsed_us,wall_us,any_budget_exceeded,literal,retained_files,ranking_complete,ranking_root_sha3,projected_context_bytes_at_5,approximate_tokens_at_5,bm25,retained_files,ranking_complete,ranking_root_sha3,projected_context_bytes_at_5,approximate_tokens_at_5,scope_available,files_read_observed,reuse_success_available,unique_loc_avoided_available'
-readonly observed_task_v2_keys='record,schema,id,status,expected_vcs_root,shared_codeindex_source_root_sha3,membership_tree_root_sha3,membership_join_basis,pages,ranking_compute,elapsed_us,budget_ms,budget_exceeded,all_pages,wall_us,single_process,buffered_before_write,literal,retained_files,ranking_complete,ranking_root_sha3,projected_context_bytes_at_5,approximate_tokens_at_5,bm25,retained_files,ranking_complete,ranking_root_sha3,projected_context_bytes_at_5,approximate_tokens_at_5,scope_available,files_read_observed,reuse_success_available,unique_loc_avoided_available'
+readonly benchmark_keys='record,schema,corpus_id,mode,publishable,publication_admission,promotion_authorized,driver_commit,driver_commit_semantics,observed_origin_main,driver_clean,driver_status_sha3,tasks_declared,tasks_evaluated,tasks_unsupported,source_epoch_kind,source_root_basis,relevance_judgment,query_strata,evaluated_query_strata,original_prompts_available,canonical_task_roots_available,ranking_may_read_relevance,rank_binary_sha3,capture_binary_sha3,evaluator_binary_sha3,jsonq_binary_sha3,sha3_helper_binary_sha3,corpus_checker_script_sha3,corpus_sha3,runner_sha3,evaluator_batch_bytes,evaluator_batch_encoding,evaluator_batch_base64,evaluator_batch_root_sha3'
+readonly observed_task_v1_keys='record,schema,id,status,expected_vcs_root,shared_codeindex_source_root_sha3,membership_tree_root_sha3,membership_join_basis,pages,page0,all_pages,literal,bm25,scope_available,files_read_observed,reuse_success_available,unique_loc_avoided_available'
+readonly observed_task_v2_keys='record,schema,id,status,expected_vcs_root,shared_codeindex_source_root_sha3,membership_tree_root_sha3,membership_join_basis,pages,ranking_compute,all_pages,literal,bm25,scope_available,files_read_observed,reuse_success_available,unique_loc_avoided_available'
 readonly unsupported_task_keys='record,schema,id,status,reason,expected_vcs_root,membership_tree_root_sha3,membership_absence_observed,literal,bm25'
 readonly arm_keys='retained_files,ranking_complete,ranking_root_sha3,projected_context_bytes_at_5,approximate_tokens_at_5'
 readonly metric_keys='available,basis_points'
-readonly eval_arm_keys='recall_at_5,available,basis_points,recall_at_20,available,basis_points,mrr,available,basis_points,task_unique_file_selections_at_5,projected_context_bytes_at_5,approximate_tokens_at_5,wrong_scope_at_5,available,basis_points'
-readonly eval_keys='schema,tasks_evaluated,aggregation_kind,tasks_denominator,eligible_relevance_judgments,binding_kind,context_cost_kind,token_basis,literal,recall_at_5,available,basis_points,recall_at_20,available,basis_points,mrr,available,basis_points,task_unique_file_selections_at_5,projected_context_bytes_at_5,approximate_tokens_at_5,wrong_scope_at_5,available,basis_points,bm25,recall_at_5,available,basis_points,recall_at_20,available,basis_points,mrr,available,basis_points,task_unique_file_selections_at_5,projected_context_bytes_at_5,approximate_tokens_at_5,wrong_scope_at_5,available,basis_points'
-readonly aggregate_keys="record,schema,metrics,$eval_keys,files_read_observed,observed_token_count_available,wrong_scope_basis,reuse_success_available,duplicate_avoidance_available,new_unique_loc_avoided_available"
+readonly eval_arm_keys='recall_at_5,recall_at_20,mrr,task_unique_file_selections_at_5,projected_context_bytes_at_5,approximate_tokens_at_5,wrong_scope_at_5'
+readonly eval_keys='schema,tasks_evaluated,aggregation_kind,tasks_denominator,eligible_relevance_judgments,binding_kind,context_cost_kind,token_basis,literal,bm25'
+readonly aggregate_keys="record,schema,metrics,files_read_observed,observed_token_count_available,wrong_scope_basis,reuse_success_available,duplicate_avoidance_available,new_unique_loc_avoided_available"
 
 fail() { printf 'retrieval-gold-receipt-check: FAIL — %s\n' "$*" >&2; exit 1; }
 
@@ -494,6 +494,22 @@ expect_semantic_refusal() {
 selftest() {
     local bad mutations=0
     "$0" --semantic-fixture "$receipt" >/dev/null
+    # Direct-member key checks must keep nested unknown/duplicate refusals.
+    bad="$tmp/nested-stratum-key.jsonl"
+    sed '1s/"query_strata":{/"query_strata":{"unexpected":0,/' "$receipt" >"$bad"
+    expect_semantic_refusal nested-stratum-key "$bad"; mutations=$((mutations + 1))
+    bad="$tmp/nested-stratum-duplicate.jsonl"
+    sed '1s/"query_strata":{/"query_strata":{"commit_subject_only":1,/' "$receipt" >"$bad"
+    expect_semantic_refusal nested-stratum-duplicate "$bad"; mutations=$((mutations + 1))
+    bad="$tmp/nested-timing-key.jsonl"
+    sed '2s/"page0":{/"page0":{"unexpected":0,/' "$receipt" >"$bad"
+    expect_semantic_refusal nested-timing-key "$bad"; mutations=$((mutations + 1))
+    bad="$tmp/nested-arm-key.jsonl"
+    sed '2s/"literal":{/"literal":{"unexpected":0,/' "$receipt" >"$bad"
+    expect_semantic_refusal nested-arm-key "$bad"; mutations=$((mutations + 1))
+    bad="$tmp/nested-arm-duplicate.jsonl"
+    sed '2s/"literal":{/"literal":{"retained_files":0,/' "$receipt" >"$bad"
+    expect_semantic_refusal nested-arm-duplicate "$bad"; mutations=$((mutations + 1))
     bad="$tmp/wrong-path.jsonl"; sed 's/"publishable":true/"publishable":false/' "$receipt" >"$bad"
     [[ $(hash_file "$bad") != "$receipt_sha3" ]] || fail "whole-file KAT mutation did not change hash"
     expect_semantic_refusal publishable "$bad"; mutations=$((mutations + 1))

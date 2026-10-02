@@ -31,9 +31,9 @@ keep=${ZCL_RETRIEVAL_BENCH_KEEP:-0}
 mode=${1:---run-local}
 publishable=false
 scope_selftest=false
-readonly eval_arm_keys='recall_at_5,available,basis_points,recall_at_20,available,basis_points,mrr,available,basis_points,task_unique_file_selections_at_5,projected_context_bytes_at_5,approximate_tokens_at_5,wrong_scope_at_5,available,basis_points'
-readonly eval_base_result_keys="schema,tasks_evaluated,aggregation_kind,tasks_denominator,eligible_relevance_judgments,binding_kind,context_cost_kind,token_basis,literal,$eval_arm_keys,bm25,$eval_arm_keys"
-readonly eval_result_keys="$eval_base_result_keys,identifier_graph,$eval_arm_keys"
+readonly eval_arm_keys='recall_at_5,recall_at_20,mrr,task_unique_file_selections_at_5,projected_context_bytes_at_5,approximate_tokens_at_5,wrong_scope_at_5'
+readonly eval_base_result_keys="schema,tasks_evaluated,aggregation_kind,tasks_denominator,eligible_relevance_judgments,binding_kind,context_cost_kind,token_basis,literal,bm25"
+readonly eval_result_keys="$eval_base_result_keys,identifier_graph"
 
 . "$repo_root/tools/dev/dev_lib.sh" # json_escape
 . "$repo_root/tools/scripts/source_identity_lib.sh" # zcl_is_sha256
@@ -245,6 +245,15 @@ validate_eval_arm() {
 
 validate_eval_result_envelope() {
     local document=$1 expected_tasks=$2 expected_judgments=$3 label=$4
+    local arm metric
+    # jsonq keys reports direct members. Validate each nested object explicitly.
+    keys_exact "$document" . "$eval_base_result_keys"
+    for arm in literal bm25; do
+        keys_exact "$document" "$arm" "$eval_arm_keys"
+        for metric in recall_at_5 recall_at_20 mrr wrong_scope_at_5; do
+            keys_exact "$document" "$arm.$metric" available,basis_points
+        done
+    done
     [[ $(field "$document" schema) = zcl.retrieval_eval_batch_result.v3 &&
        $(field "$document" aggregation_kind) = macro_equal_task_weight &&
        $(uint_field "$document" tasks_evaluated 32) -eq $expected_tasks &&
@@ -572,6 +581,14 @@ run_scope_selftest() {
         fail "scope selftest evaluator refused identifier-graph fixture"
     validate_eval_result_envelope "$output" 1 2 scope-baseline
     validate_eval_result_envelope "$graph_output" 1 2 scope-identifier-graph
+    bad=${output/\"literal\":\{/\"literal\":\{\"unexpected\":0,}
+    if (validate_eval_result_envelope "$bad" 1 2 unknown-arm-key >/dev/null 2>&1); then
+        fail "scope selftest accepted an unknown nested arm key"
+    fi
+    bad=${output/\"recall_at_5\":\{/\"recall_at_5\":\{\"available\":true,}
+    if (validate_eval_result_envelope "$bad" 1 2 duplicate-metric-key >/dev/null 2>&1); then
+        fail "scope selftest accepted a duplicate nested metric key"
+    fi
     for arm in literal bm25; do
         [[ $(bool_field "$output" "$arm.wrong_scope_at_5.available") = true &&
            $(uint_field "$output" "$arm.wrong_scope_at_5.basis_points" 10000) -eq 5000 ]] ||

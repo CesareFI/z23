@@ -51,6 +51,21 @@ bool platform_process_start_hidden(struct platform_process *process,
 bool platform_process_capture_stdout(
     const struct platform_process_options *options, char *out, size_t out_size,
     uint32_t timeout_ms, struct platform_process_capture_result *result);
+
+/* Trusted Windows host-test capture with a private file as stdin. This is not
+ * package/agent execution qualification. stdin_path must be a drive-absolute
+ * regular file (no final reparse point/device/directory), at most 64 KiB, opened
+ * read-only with writers/deletion excluded for the capture lifetime. The
+ * existing explicit environment, handle allowlist, timeout, output limit and
+ * Job Object cleanup apply unchanged. NULL/missing/oversized input refuses
+ * before launch; empty input is valid. This validates the opened object, not
+ * ancestor containment or a local-only filesystem. The trusted caller owns
+ * the fixture. Non-Windows currently refuses. */
+#define PLATFORM_PROCESS_CAPTURE_STDIN_MAX (64u * 1024u)
+bool platform_process_capture_stdout_file_input(
+    const struct platform_process_options *options, const char *stdin_path,
+    char *out, size_t out_size, uint32_t timeout_ms,
+    struct platform_process_capture_result *result);
 bool platform_process_open_existing(struct platform_process *process,
                                     uint64_t pid,
                                     const char *expected_image);

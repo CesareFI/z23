@@ -2022,6 +2022,10 @@ static bool tc_external_exec_denied(void)
     static const char *const names[] = {
         "test_anchor_peers",
         "test_dev_orient",
+        "test_rpc",
+        "rpc",
+        "test_export_snapshot",
+        "export_snapshot",
         "test_fastobj_carrier",
         /* Restored holes: exec through code the rail does not scan. */
         "test_freebsd_sh",
@@ -2031,6 +2035,8 @@ static bool tc_external_exec_denied(void)
         "onion_pair_watch_live",
         "test_p2_invariant_check",
         "p2_invariant_check",
+        "test_jsonq",
+        "jsonq",
         "test_resident_launch_contract",
         "test_self_folded_anchor_heavy",
         "self_folded_anchor_heavy",

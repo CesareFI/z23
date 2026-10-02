@@ -132,6 +132,75 @@ declare -A DARWIN_EXEMPT=(
     [fuzz_semantic_manifest]="host lacks libclang_rt.fuzzer_osx.a (standalone CLT ships no libFuzzer runtime)"
 )
 
+# A missing X11 runtime can excuse only the link, never the strict compile.
+# Derive the command from the actual Make rule so compiler wrappers, command
+# line overrides, platform flags and future rule changes cannot silently drift.
+# Status: 0 = linkable, 1 = confirmed absent with strict object coverage,
+# 2 = unproven (temporary storage, compiler, recipe or other linker failure).
+x11_runtime_linkable() (
+    local dir recipe flags missing=0 line
+    dir="$(mktemp -d "${TMPDIR:-/tmp}/zcl-x11-probe.XXXXXX")" || return 2
+    trap 'rm -rf -- "$dir"' EXIT
+    recipe="$(awk '
+        /^\$\(NATIVE_UI_DRIVER_BIN\):/ { rule=1; next }
+        rule && /^\t/ {
+            if ($0 ~ /^\t\$\(CC\)/) command=1
+            if (command) { sub(/^\t[ \t]*/, ""); print }
+            next
+        }
+        rule { exit }
+    ' Makefile)" || return 2
+    # Refuse unfamiliar recipes instead of approximating their strictness.
+    recipe="${recipe//$'\\\n'/ }"
+    [[ "$recipe" == '$(CC) '* &&
+       "$recipe" == *' -o $@ $< -Wl,-l:libX11.so.6' ]] || return 2
+    flags="${recipe%' -o $@ $< -Wl,-l:libX11.so.6'}"
+    # Native execution validates the selected compiler's target as well as
+    # its ability to compile and link without X11. DISPLAY is never consulted.
+    printf '#ifndef __linux__\n#error native Linux compiler required\n#endif\nint main(void){return 0;}\n' > "$dir/probe.c" || return 2
+    {
+        printf '.PHONY: zcl-x11-baseline zcl-x11-cover\n'
+        printf 'zcl-x11-baseline:\n'
+        printf '\t%s -o "$$z23_x11_probe_dir/probe" "$$z23_x11_probe_dir/probe.c" && printf ok >"$$z23_x11_probe_dir/compiled" || exit 1\n' "$flags"
+        printf '\t"$$z23_x11_probe_dir/probe" && printf ok >"$$z23_x11_probe_dir/ran" || exit 1\n'
+        printf '\t@if %s -o "$$z23_x11_probe_dir/x11" "$$z23_x11_probe_dir/probe.c" -Wl,-l:libX11.so.6 >"$$z23_x11_probe_dir/link.log" 2>&1; then printf present >"$$z23_x11_probe_dir/state"; else printf failed >"$$z23_x11_probe_dir/state"; fi\n' "$flags"
+        printf 'zcl-x11-cover:\n'
+        printf '\t%s -c tools/native_ui_driver.c -o "$$z23_x11_probe_dir/native_ui_driver.o" && printf ok >"$$z23_x11_probe_dir/covered" || exit 1\n' "$flags"
+    } > "$dir/probe.mk" || return 2
+    export z23_x11_probe_dir="$dir"
+    if ! LC_ALL=C make --no-print-directory -s -f Makefile -f "$dir/probe.mk" zcl-x11-baseline >&2; then
+        return 2
+    fi
+    # Make may inherit -i/--ignore-errors (also through GNUMAKEFLAGS), or
+    # a non-execution mode. Require success recorded by each actual shell
+    # command, independently of Make's status and any partial compiler output.
+    # Retain Make's legitimate CC/wrapper/platform overrides unchanged.
+    [[ -s "$dir/probe" && -s "$dir/state" &&
+       -s "$dir/compiled" && -s "$dir/ran" ]] || return 2
+    [[ "$(cat "$dir/state")" != present ]] || return 0
+    # Only the named SONAME's absence is an exemption. A second diagnostic,
+    # wrong architecture, missing compiler or generic link error is unproven.
+    while IFS= read -r line; do
+        case "$line" in
+            *'ld: cannot find -l:libX11.so.6: No such file or directory' | \
+            *'ld.lld: error: unable to find library -l:libX11.so.6')
+                missing=$((missing + 1)) ;;
+            'collect2: error: ld returned 1 exit status' | \
+            'clang: error: linker command failed with exit code 1 (use -v to see invocation)') ;;
+            *) cat "$dir/link.log" >&2; return 2 ;;
+        esac
+    done < "$dir/link.log"
+    (( missing == 1 )) || { cat "$dir/link.log" >&2; return 2; }
+    [[ -s vendor/x11/include/X11/Xlib.h &&
+       -s vendor/x11/include/X11/Xutil.h &&
+       -s vendor/x11/include/X11/keysym.h ]] || return 2
+    if ! LC_ALL=C make --no-print-directory -s -f Makefile -f "$dir/probe.mk" zcl-x11-cover >&2; then
+        return 2
+    fi
+    [[ -s "$dir/native_ui_driver.o" && -s "$dir/covered" ]] || return 2
+    return 1
+)
+
 # ── Windows-only tools (exempt on every host that is NOT Windows) ────────
 # The mirror of DARWIN_EXEMPT, and a different mechanism: not "this host is
 # missing the primitive underneath the tool", but "on this host the Makefile
@@ -275,6 +344,21 @@ for name in $(printf '%s\n' "${!TOOLS[@]}" | sort); do
         echo "[check_standalone_tools_link] darwin-exempt $name: ${DARWIN_EXEMPT[$name]}" >&2
         continue
     fi
+    # Probe only this Linux tool. Inherited X11_PROBE_DONE/X11_RUNTIME_OK
+    # variables cannot qualify or manufacture an exemption.
+    if [[ "$GATE_HOST_OS" == Linux && "$name" == native_ui_driver ]]; then
+        if x11_runtime_linkable; then
+            : # The normal target still links the actual driver.
+        else
+            x11_rc=$?
+            if (( x11_rc != 1 )); then
+                echo "check-standalone-tools-link: FATAL - X11 runtime qualification failed" >&2
+                exit 2
+            fi
+            echo "[check_standalone_tools_link] no-x11-runtime-exempt $name: SONAME absent; canonical strict object compiled" >&2
+            continue
+        fi
+    fi
     # Windows-only tools: skipped everywhere the Makefile writes no rule for
     # them, i.e. every host that is not MSYS/MinGW (Makefile line 28 spells
     # ZCL_HOST_WINDOWS as `filter MINGW% MSYS%` over uname -s, and this must
@@ -380,6 +464,18 @@ else
     printf '%s\n' "$helper_selftest" >>"$build_log"
     failed+=("gate-receipt fresh agent_sha3 helper")
     violations=$((violations + 1))
+fi
+
+# The receipt-helper selftest above does not exercise the X11 exemption.
+# Run its focused failure regressions in the normal Linux verdict dimension.
+if [[ "$BUILD_ONLY" == 0 && "$GATE_HOST_OS" == Linux ]]; then
+    if x11_selftest="$(tools/lint/selftest_standalone_tools_x11.sh 2>&1)"; then
+        printf '%s\n' "$x11_selftest"
+    else
+        printf '%s\n' "$x11_selftest" >&2
+        failed+=("X11 runtime qualification selftest")
+        violations=$((violations + 1))
+    fi
 fi
 
 # Parallelism. MEASURED, not guessed: this one gate was 191 s of a 199 s lint

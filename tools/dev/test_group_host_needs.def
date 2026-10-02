@@ -101,6 +101,18 @@ ZCL_TEST_GROUP_NEED("test_self_folded_anchor_heavy", ZCL_HOST_NEED_ENV,
 ZCL_TEST_GROUP_BUILD_NEED("test_engine", "build/bin/zclassic23-engine-unit",
                          "engine-unit")
 
+/* Request-boundary acceptance executes both real CLI entry points. */
+ZCL_TEST_GROUP_BUILD_NEED("test_rpc", "build/bin/zclassic-cli", "zclassic-cli")
+ZCL_TEST_GROUP_BUILD_NEED("test_rpc", "build/bin/zclassic23", "zclassic23")
+
+/* tests/harness/src/test_utxo_root_ladder.c execs the one-shot generator
+ * build/bin/gen_utxo_root_ladder against a crafted source db. No default
+ * test prerequisite builds it; a proof that selects the group builds
+ * `make tools/gen_utxo_root_ladder` in its generation. */
+ZCL_TEST_GROUP_BUILD_NEED("test_utxo_root_ladder",
+                          "build/bin/gen_utxo_root_ladder",
+                          "tools/gen_utxo_root_ladder")
+
 /* tests/harness/src/test_semantic_manifest.c (group semantic_sensor),
  * test_semantic_facts_live.c, test_semantic_consumer_live.c and
  * test_semantic_facts_fuzz.c exec the optional libclang sensor
@@ -160,6 +172,11 @@ ZCL_TEST_GROUP_BUILD_NEED("test_importblockindex_cli_dispatch",
  * selection, so only a local run needs this row. */
 ZCL_TEST_GROUP_BUILD_NEED("test_freebsd_sh", "build/bin/fbsh", "fbsh")
 
+/* The registered snapshot acceptance requires this exact locally built helper;
+ * it fails when absent. A selected proof builds it before either dimension. */
+ZCL_TEST_GROUP_BUILD_NEED("test_export_snapshot", "build/bin/export_snapshot",
+                          "export_snapshot")
+
 /* tests/harness/src/test_sqlq.c requires build/bin/sqlq.
  * The proof's prefork step builds sqlq only when this group
  * is selected; a local run builds it via the same row. */
@@ -170,6 +187,9 @@ ZCL_TEST_GROUP_BUILD_NEED("test_sqlq", "build/bin/sqlq", "sqlq")
  * selected. */
 ZCL_TEST_GROUP_BUILD_NEED("test_p2_invariant_check",
                           "build/bin/p2_invariant_check", "p2_invariant_check")
+
+/* The registered fixture executes this exact host artifact; absence fails. */
+ZCL_TEST_GROUP_BUILD_NEED("test_jsonq", "build/bin/jsonq", "jsonq")
 
 /* tests/harness/src/test_process_group_exec.c execs the fixture launcher
  * build/bin/process-group-exec for both its arms. No default target builds

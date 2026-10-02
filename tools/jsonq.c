@@ -28,6 +28,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if defined(_WIN32)
+#include <fcntl.h>
+#include <io.h>
+#endif
 
 enum {
     MAX_INPUT = 16 << 20,
@@ -240,7 +244,10 @@ static bool is_scalar_event(const zjsonp_event *ev)
            ev->kind == ZJRP_BOOL || ev->kind == ZJRP_NULL;
 }
 
-/* Prints the element count of an array or the key count of an object. */
+/* Prints the element count of an array or the key count of an object.
+ * Only DIRECT members count: a nested container is one member for an
+ * array, and its keys are never members of the surrounding object, so
+ * every nested container is skipped whole. */
 static int count_container(zjsonp *p, const zjsonp_event *open,
                            unsigned open_depth)
 {
@@ -256,20 +263,23 @@ static int count_container(zjsonp *p, const zjsonp_event *open,
             printf("%d\n", n);
             return 0;
         }
-        if (open->kind == ZJRP_OBJ_OPEN) {
-            if (ev.kind == ZJRP_KEY)
-                n++;
-        } else if (ev.kind == ZJRP_OBJ_OPEN || ev.kind == ZJRP_ARR_OPEN) {
-            n++;
+        if (ev.kind == ZJRP_OBJ_OPEN || ev.kind == ZJRP_ARR_OPEN) {
+            if (open->kind == ZJRP_ARR_OPEN)
+                n++; /* the container itself is one array element */
             if (skip_container(p, p->depth) != 0)
                 return 2;
+        } else if (open->kind == ZJRP_OBJ_OPEN) {
+            if (ev.kind == ZJRP_KEY)
+                n++; /* a member key; its value events are not members */
         } else if (is_scalar_event(&ev)) {
             n++;
         }
     }
 }
 
-/* Prints each key of an object, one per line. */
+/* Prints each key of an object, one per line. Keys of nested containers
+ * are not keys of the selected object, so nested containers are skipped
+ * whole. */
 static int keys_container(zjsonp *p, const char *text,
                           const zjsonp_event *open, unsigned open_depth)
 {
@@ -282,6 +292,11 @@ static int keys_container(zjsonp *p, const char *text,
             return 2;
         if (is_close_event(p, &ev, open_depth))
             return 0;
+        if (ev.kind == ZJRP_OBJ_OPEN || ev.kind == ZJRP_ARR_OPEN) {
+            if (skip_container(p, p->depth) != 0)
+                return 2;
+            continue;
+        }
         if (ev.kind == ZJRP_KEY) {
             size_t kn = 0;
             if (!decode_key(text, &ev, g_decode, sizeof g_decode, &kn))
@@ -512,6 +527,26 @@ static int cmd_unwrap(const char *text, size_t len)
     return walk(text, len, CMD_RAW, NULL);
 }
 
+static bool read_document(size_t *len)
+{
+#if defined(_WIN32)
+    if (_setmode(_fileno(stdin), _O_BINARY) == -1) {
+        fputs("jsonq: cannot select binary stdin\n", stderr);
+        return false;
+    }
+#endif
+    *len = fread(g_input, 1, sizeof g_input, stdin);
+    if (ferror(stdin) || !feof(stdin)) {
+        fprintf(stderr, "jsonq: read error or input over %d bytes\n", MAX_INPUT);
+        return false;
+    }
+    if (!valid_document(g_input, *len)) {
+        fputs("jsonq: input is not exactly one JSON document\n", stderr);
+        return false;
+    }
+    return true;
+}
+
 int main(int argc, char **argv)
 {
     if (argc < 2) {
@@ -560,16 +595,8 @@ int main(int argc, char **argv)
         return 2;
     }
 
-    size_t len = fread(g_input, 1, sizeof g_input, stdin);
-    if (ferror(stdin) || !feof(stdin)) {
-        fprintf(stderr, "jsonq: read error or input over %d bytes\n",
-                MAX_INPUT);
-        return 2;
-    }
-    if (!valid_document(g_input, len)) {
-        fputs("jsonq: input is not exactly one JSON document\n", stderr);
-        return 2;
-    }
+    size_t len = 0;
+    if (!read_document(&len)) return 2;
     if (cmd == CMD_UNWRAP)
         return cmd_unwrap(g_input, len);
     if (parse_path(path) != 0)

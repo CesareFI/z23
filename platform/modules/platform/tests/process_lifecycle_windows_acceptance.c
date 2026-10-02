@@ -141,18 +141,161 @@ static int child_mode(int argc, char **argv)
     return ok ? 0 : 24;
 }
 
-int main(int argc, char **argv)
+/* File-input cases use this driver's trusted self image and private fixture. */
+
+static int capture_file_stdin_child(void)
 {
-    if (argc == 2 && strcmp(argv[1], "--tree-child") == 0)
-        return tree_child_mode();
-    if (argc == 3 && strcmp(argv[1], "--tree-parent") == 0)
-        return tree_parent_mode(argv[2]);
+    BOOL in_job = FALSE;
+    HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
+    HANDLE output = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (GetConsoleWindow() != NULL || !getenv("Z23_PROCESS_TEST") ||
+        strcmp(getenv("Z23_PROCESS_TEST"), "controlled") != 0 ||
+        !IsProcessInJob(GetCurrentProcess(), NULL, &in_job) || !in_job ||
+        GetPriorityClass(GetCurrentProcess()) != BELOW_NORMAL_PRIORITY_CLASS ||
+        GetFileType(input) != FILE_TYPE_DISK)
+        return 60;
+    DWORD written = 0;
+    /* The child receives no write authority over its input fixture. */
+    if (WriteFile(input, "x", 1, &written, NULL)) return 61;
+    char bytes[4096];
+    for (;;) {
+        DWORD received = 0;
+        if (!ReadFile(input, bytes, sizeof(bytes), &received, NULL)) return 62;
+        if (received == 0) break;
+        if (!WriteFile(output, bytes, received, &written, NULL) ||
+            written != received) return 63;
+    }
+    return 7;
+}
+
+static bool capture_file_stdin_write(const char *path, const char *bytes,
+                                      size_t length)
+{
+    FILE *file = fopen(path, "wb");
+    if (!file) return false;
+    bool written = fwrite(bytes, 1, length, file) == length;
+    int closed = fclose(file);
+    return written && closed == 0;
+}
+
+static bool capture_file_stdin_exact(const struct platform_process_options *options,
+                                     const char *path, const char *bytes,
+                                     size_t length)
+{
+    char output[65537];
+    struct platform_process_capture_result result = {0};
+    return capture_file_stdin_write(path, bytes, length) &&
+        platform_process_capture_stdout_file_input(options, path, output,
+            sizeof(output), 1000u, &result) && result.exit_code == 7u &&
+        !result.timed_out && !result.output_truncated &&
+        strlen(output) == length && memcmp(output, bytes, length) == 0;
+}
+
+static bool capture_file_stdin_oversized(const struct platform_process_options *options,
+                                         const char *path, const char *payload,
+                                         size_t length)
+{
+    char output[65537];
+    struct platform_process_capture_result result = {0};
+    DWORD handles_before = 0, handles_after = 0;
+    bool measured = GetProcessHandleCount(GetCurrentProcess(), &handles_before);
+    bool oversized = capture_file_stdin_write(path, payload, length);
+    for (size_t i = 0; i < 16u; i++) {
+        oversized = oversized && !platform_process_capture_stdout_file_input(
+            options, path, output, sizeof(output), 1000u, &result);
+    }
+    measured = measured && GetProcessHandleCount(GetCurrentProcess(), &handles_after);
+    return oversized && measured && handles_before == handles_after;
+}
+
+static bool capture_file_stdin_refusals(const struct platform_process_options *options,
+                                        const char *input_path, const char *missing_path)
+{
+    char output[65537];
+    struct platform_process_capture_result result = {0};
+    bool ok = !platform_process_capture_stdout_file_input(options,
+        "relative.in", output, sizeof(output), 1000u, &result);
+    ok = ok && !platform_process_capture_stdout_file_input(options,
+        missing_path, output, sizeof(output), 1000u, &result);
+    ok = ok && !platform_process_capture_stdout_file_input(options,
+        options->cwd, output, sizeof(output), 1000u, &result);
+    struct platform_process_options bad = *options;
+    bad.image = "relative.exe";
+    ok = ok && !platform_process_capture_stdout_file_input(&bad,
+        input_path, output, sizeof(output), 1000u, &result);
+    return ok && !platform_process_capture_stdout_file_input(options,
+        input_path, output, sizeof(output), 0u, &result);
+}
+
+static bool capture_file_stdin_timeout(const struct platform_process_options *options,
+                                       const char *input_path)
+{
+    char output[65537];
+    struct platform_process_capture_result result = {0};
+    const char *const sleep_argv[] = {options->image, "--tree-child", NULL};
+    struct platform_process_options sleeping = *options;
+    sleeping.argv = sleep_argv;
+    return platform_process_capture_stdout_file_input(&sleeping,
+        input_path, output, sizeof(output), 100u, &result) && result.timed_out;
+}
+
+static bool capture_file_stdin_paths(const char *cwd, char input_path[32768],
+                                     char missing_path[32768])
+{
+    int n = snprintf(input_path, 32768, "%s/capture-stdin.in", cwd);
+    if (n <= 0 || n >= 32768) return false;
+    n = snprintf(missing_path, 32768, "%s/capture-stdin-missing.in", cwd);
+    return n > 0 && n < 32768;
+}
+
+static bool capture_file_stdin_cases(const char *image, const char *cwd,
+                                     const char *const *env)
+{
+    char input_path[32768], missing_path[32768];
+    static char payload[PLATFORM_PROCESS_CAPTURE_STDIN_MAX + 1u];
+    if (!capture_file_stdin_paths(cwd, input_path, missing_path)) return false;
+    const char *const argv[] = {image, "--capture-file-stdin", NULL};
+    struct platform_process_options options = {
+        .image = image, .argv = argv, .cwd = cwd, .env = env};
+    const char document[] = "{\"a\":1,\"b\":{\"x\":2}}\n";
+    memset(payload, 'a', sizeof(payload));
+    bool ok = capture_file_stdin_exact(&options, input_path, document, sizeof(document)-1u) &&
+        capture_file_stdin_exact(&options, input_path, "", 0) &&
+        capture_file_stdin_exact(&options, input_path, payload, PLATFORM_PROCESS_CAPTURE_STDIN_MAX) &&
+        capture_file_stdin_oversized(&options, input_path, payload, sizeof(payload)) &&
+        capture_file_stdin_write(input_path, document, sizeof(document)-1u) &&
+        capture_file_stdin_refusals(&options, input_path, missing_path) &&
+        capture_file_stdin_timeout(&options, input_path);
+    /* Reopening for exclusive write and removing the file checks that the
+     * parent and child have released the read-only stdin handle. */
+    FILE *exclusive = fopen(input_path, "wb");
+    bool released = exclusive != NULL;
+    if (exclusive && fclose(exclusive) != 0) released = false;
+    bool removed = remove(input_path) == 0;
+    return ok && released && removed;
+}
+
+static int capture_mode(int argc, char **argv)
+{
+    if (argc == 2 && strcmp(argv[1], "--capture-file-stdin") == 0)
+        return capture_file_stdin_child();
     if (argc > 1 && strcmp(argv[1], "--capture-child") == 0)
         return capture_child_mode(argc, argv);
     if (argc == 2 && strcmp(argv[1], "--capture-large") == 0)
         return capture_large_mode();
     if (argc == 2 && strcmp(argv[1], "--capture-tree") == 0)
         return capture_tree_mode();
+    return -1;
+}
+
+int main(int argc, char **argv)
+{
+    int capture_code = capture_mode(argc, argv);
+    if (capture_code >= 0) return capture_code;
+    if (argc == 2 && strcmp(argv[1], "--tree-child") == 0)
+        return tree_child_mode();
+    if (argc == 3 && strcmp(argv[1], "--tree-parent") == 0)
+        return tree_parent_mode(argv[2]);
     if (argc > 1 && strcmp(argv[1], "--child") == 0)
         return child_mode(argc, argv);
     wchar_t image_w[32768], temp_w[32768];
@@ -366,6 +509,7 @@ int main(int argc, char **argv)
     platform_process_close(&detached);
     ok = ok && tree_reported && tree_reaped && detached_released &&
         detached_parent_exited && detached_tree_reaped;
+    ok = ok && capture_file_stdin_cases(image, cwd, child_env);
     (void)DeleteFileW(proof);
     (void)RemoveDirectoryW(temp_w);
     (void)SetEnvironmentVariableW(L"Z23_PROCESS_UNEXPECTED", NULL);

@@ -483,6 +483,7 @@ static bool dps_put_lint_child(const char *dir,
            dps_write(path, child, sizeof(child), 0600);
 }
 
+
 static int test_dps_hook_admission(void)
 {
     int failures = 0;
@@ -545,8 +546,20 @@ static int test_dps_hook_admission(void)
         ASSERT(dps_run(dir, argv, tuple, out, sizeof(out)) != 0);
         ASSERT(strstr(out, "status=receipt_lint_required") != NULL);
 
-        /* And the genuine article passes, so the refusals above are the
-         * signature talking and not the fixture being wrong. */
+        /* A trusted signer cannot invent a newer admission policy. The
+         * coverage codec is optional until producer and verifier integrate. */
+        ASSERT(ZCL_DEV_PROOF_POLICY_VERSION == 5u);
+        ASSERT(receipt.policy_version == 5u);
+        struct zcl_dev_acceptance_receipt_v1 newer = receipt;
+        newer.policy_version = 6u;
+        ASSERT(zcl_dev_proof_receipt_seal(&newer));
+        ASSERT(zcl_dev_proof_receipt_serialize(&newer, wire));
+        ASSERT(dps_put_receipt(dir, local, base, wire, sizeof(wire)));
+        ASSERT(dps_run(dir, argv, tuple, out, sizeof(out)) != 0);
+        ASSERT(strstr(out, "status=receipt_schema_newer_than_this_build") != NULL);
+
+        /* The genuine policy-5 article passes without an optional coverage
+         * sidecar; all signature, child and lint admission remains required. */
         ASSERT(zcl_dev_proof_receipt_serialize(&receipt, wire));
         ASSERT(dps_put_receipt(dir, local, base, wire, sizeof(wire)));
         ASSERT(dps_run(dir, argv, tuple, out, sizeof(out)) == 0);
@@ -816,7 +829,7 @@ static bool dps_measure_observation_lookup(
                                    domain, 1, &result);
     clock_t cpu_end = clock();
     if (clock_gettime(CLOCK_MONOTONIC, &wall_end) != 0 ||
-        result.result != ZCL_DEV_OBSERVATION_CONFLICT) return false;
+        result.result != ZCL_DEV_OBSERVATION_CONFLICT_EVIDENCE) return false;
     uint64_t wall_ns = (uint64_t)(
         (int64_t)(wall_end.tv_sec - wall_start.tv_sec) * 1000000000 +
         (int64_t)(wall_end.tv_nsec - wall_start.tv_nsec));
@@ -869,7 +882,7 @@ static int test_dps_local_observation_lookup(void)
                                     &domain, &query));
         zcl_dev_observation_lookup(&query, objects, 2, true,
                                    &domain, 1, &result);
-        ASSERT(result.result == ZCL_DEV_OBSERVATION_CONFLICT);
+        ASSERT(result.result == ZCL_DEV_OBSERVATION_CONFLICT_EVIDENCE);
         ASSERT(result.pass_count == 1 && result.fail_count == 1);
         ASSERT(result.pass_root_indices[0] == 0 &&
                result.fail_root_indices[0] == 1);
@@ -920,7 +933,7 @@ static bool dps_measure_observation_cas(
                                           true, domain, 1, &result);
     clock_t cpu_end = clock();
     if (clock_gettime(CLOCK_MONOTONIC, &wall_end) != 0 ||
-        result.result != ZCL_DEV_OBSERVATION_CONFLICT) return false;
+        result.result != ZCL_DEV_OBSERVATION_CONFLICT_EVIDENCE) return false;
     uint64_t wall_ns = (uint64_t)(
         (int64_t)(wall_end.tv_sec - wall_start.tv_sec) * 1000000000 +
         (int64_t)(wall_end.tv_nsec - wall_start.tv_nsec));
@@ -955,7 +968,7 @@ static int test_dps_local_observation_cas(void)
         zcl_dev_observation_lookup_local(g_dps_state, &query,
                                           (const uint8_t (*)[32])roots,
                                           2, true, &domain, 1, &result);
-        ASSERT(result.result == ZCL_DEV_OBSERVATION_CONFLICT);
+        ASSERT(result.result == ZCL_DEV_OBSERVATION_CONFLICT_EVIDENCE);
         ASSERT(dps_measure_observation_cas(&query,
                                             (const uint8_t (*)[32])roots,
                                             &domain));

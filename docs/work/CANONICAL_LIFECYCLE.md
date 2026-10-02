@@ -131,8 +131,11 @@ requires complete qualified coverage, while `--cold-audit --collect-observations
 reports reviewed external-input denylisted groups as UNQUALIFIED with missing
 coverage. Other closure, execution, signing or CAS errors remain fatal. The
 output-store control can separate signed durable leaves from unsigned verdict
-scratch. Automatic proof-worker emission is deferred until the mandatory input
-closures qualify: its default remains exact `--no-cache
+scratch (`proof_observation_env_open()` points the two at per-pair private
+directories under the proof state: `<state>/testcache.<key>` scratch, removed
+with the proof, `<state>/observations.<key>` durable). Automatic proof-worker
+emission is deferred until the mandatory input closures qualify: its default
+remains exact `--no-cache
 --activate-proof-contracts`, and the signed whole-cycle pair receipt remains
 admission. Authenticated partial leaves do not establish complete admission.
 The coverage manifest codec exists (`tools/dev/dev_proof_coverage.c`,
@@ -144,10 +147,31 @@ neither. Verification re-checks the receipt's executed-group count and the
 store, and refuses missing coverage, a preserved eligible PASS/FAIL conflict,
 and an unqualified group for which the store retains an eligible FAIL. It is
 not yet called by the proof worker or the pre-push hook, and it changes no
-admission. A box-level observation index, receiver-side
-proof-set conflict admission and canonical proof-set publication remain
-separate integration work. A codec alone does not establish a complete input
-closure.
+admission: receipts remain policy 5. A newer coverage policy requires coherent
+producer and verifier integration; signed policy-6 receipts currently refuse
+as newer than this build. The receiver-side half of cross-candidate reuse now exists as a
+box-level observation index (`tools/dev/dev_proof_observation_index.c`,
+registered group `dev_proof_observation_index`): an explicit observation run
+can merge its durable per-pair CAS into one verified, sorted,
+contradiction-preserving basis under the state root, preserving
+contradictions and classifying through the receiver-local lookup — the
+eligibility basis reuse consults once a qualified verifier set exists;
+until then the check machinery's named `test-reuse: unqualified` refusal
+stands unchanged. Operators and agents maintain and query this machinery:
+`z23-dev dev proof observations fold` folds one proved pair's durable
+CAS into the box index (idempotent union, self-verifying rows, no
+admission state). The command requires an admitted receipt, revalidates its
+exact pair binding, and ensures an owner-private index directory on first use;
+an invalid directory or corrupt object refuses without replacing the index.
+`z23-dev dev proof coverage` reports a pair's manifest
+binding, per-row coverage (covered, missing, conflict, or unqualified as
+its own state) and the observation age range this box has seen;
+`z23-dev dev proof observations` reports the box-level index itself —
+per-(group, key) verdicts, observation counts, preserved conflicts and
+age bounds, with an optional exact `group` filter. Automatic worker-side
+folding, receiver-side proof-set conflict admission and canonical
+proof-set publication remain separate integration work. A codec alone
+does not establish a complete input closure.
 
 The existing Commons evaluator in
 `engine/services/src/build_fabric_evidence.c` now retains verified failures

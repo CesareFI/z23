@@ -650,6 +650,34 @@ static int test_ic_large_plan_preserves_groups(void)
     return failures;
 }
 
+static bool ic_needs_have(const struct zcl_test_group_host_need *needs,
+                          size_t n, const char *target, const char *artifact);
+
+static int test_ic_jsonq_exec_contract(void)
+{
+    int failures = 0;
+    TEST("impact composition: jsonq source and adapter require real query execution") {
+        const char *paths[] = {
+            "tools/jsonq.c", "tests/harness/src/test_jsonq.c",
+            "tests/harness/include/test/jsonq_fixture_adapter.h"
+        };
+        for (size_t i = 0; i < sizeof(paths) / sizeof(paths[0]); i++) {
+            struct zcl_devloop_plan plan;
+            ASSERT(zcl_devloop_plan_files(&paths[i], 1, &plan));
+            ASSERT(ic_planned(&plan, "jsonq"));
+            ASSERT(ic_planned(&plan, "make_lint_gates"));
+        }
+        struct zcl_test_group_host_need needs[16];
+        size_t n = 0;
+        ASSERT(zcl_test_selection_build_needs("test_jsonq", false, NULL,
+                                              needs, 16, &n));
+        ASSERT(n == 1);
+        ASSERT(ic_needs_have(needs, n, "jsonq", "build/bin/jsonq"));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_ic_command_latency_scope_is_precise(void)
 {
     int failures = 0;
@@ -1621,6 +1649,28 @@ static int test_ic_sqlq_proof_mapping(void)
             "tests/harness/src/test_sqlq.c", &fixture);
         ASSERT(ic_acc_has_group(&tool, "sqlq"));
         ASSERT(ic_acc_has_group(&fixture, "sqlq"));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static bool ic_pr72_rpc_maps(const char *path, const char *group)
+{
+    struct agent_impact_acc acc = {0};
+    (void)agent_impact_apply_shared_rules(path, &acc);
+    return ic_acc_has_group(&acc, group);
+}
+
+static int test_ic_pr72_rpc_routes(void)
+{
+    int failures = 0;
+    TEST("request-size helper and both CLI entrypoints retain RPC acceptance") {
+        ASSERT(ic_pr72_rpc_maps("tests/harness/src/test_rpc_request_size.c", "rpc"));
+        ASSERT(ic_pr72_rpc_maps("engine/entry/cli.c", "rpc"));
+        ASSERT(ic_pr72_rpc_maps("engine/entry/main_cli_modes.c", "rpc"));
+        ASSERT(ic_pr72_rpc_maps("engine/entry/main_cli_modes.c", "cli_auth_robust"));
+        ASSERT(ic_pr72_rpc_maps("engine/entry/main_cli_modes.c", "cli_argv_strict"));
+        ASSERT(!ic_pr72_rpc_maps("tests/harness/src/unknown_request_size.c", "rpc"));
         PASS();
     } _test_next:;
     return failures;
@@ -7540,6 +7590,63 @@ static bool ic_needs_have(const struct zcl_test_group_host_need *needs,
     return false;
 }
 
+/* A universal proof must fit every declared helper, not just the old eight
+ * target allowance. Exercise the producer's argv seam, including exclusions. */
+static int test_ic_proof_test_needs_whole_catalog(void)
+{
+    int failures = 0;
+    TEST("proof test needs: whole catalog has its exact helper closure and refuses truncation") {
+        static char selector[ZCL_DEVLOOP_MAX_PLAN_SELECTIONS *
+                             (ZCL_TEST_GROUP_FULL_MAX + 1)];
+        size_t used = 0;
+        for (size_t i = 0; i < zcl_test_group_catalog_count(); i++) {
+            int n = snprintf(selector + used, sizeof(selector) - used,
+                             "%s%s", i ? "," : "",
+                             zcl_test_group_catalog_at(i));
+            ASSERT(n > 0 && (size_t)n < sizeof(selector) - used);
+            used += (size_t)n;
+        }
+        const char *argv[PROOF_TEST_NEEDS_ARGV_CAP];
+        size_t targets = 99;
+        static const char *const expected[] = {
+            "zclassic-cli", "tools/gen_utxo_root_ladder", "clang-manifest",
+            "fleet-gateway", "export_snapshot", "sqlq", "p2_invariant_check",
+            "jsonq", "process-group-exec", "tools/consensus_rule_sweep",
+        };
+        const size_t expected_count = sizeof(expected) / sizeof(expected[0]);
+        ASSERT(zcl_dev_proof_test_needs_argv("-j4", selector, argv,
+                                           PROOF_TEST_NEEDS_ARGV_CAP, &targets));
+        ASSERT(targets == expected_count);
+        ASSERT(strcmp(argv[0], "make") == 0);
+        ASSERT(strcmp(argv[1], "--no-print-directory") == 0);
+        ASSERT(strcmp(argv[2], "-j4") == 0);
+        ASSERT(argv[targets + 3] == NULL);
+        for (size_t i = 0; i < expected_count; i++) {
+            ASSERT(ic_argv_has(argv, expected[i]));
+            for (size_t j = i + 1; j < targets; j++)
+                ASSERT(strcmp(argv[i + 3], argv[j + 3]) != 0);
+        }
+        ASSERT(!ic_argv_has(argv, "dev-bin"));
+        ASSERT(!ic_argv_has(argv, "dev-package-verifier-ensure"));
+        ASSERT(!ic_argv_has(argv, "zclassic23"));
+        ASSERT(!ic_argv_has(argv, "engine-unit"));
+        ASSERT(!ic_argv_has(argv, "fbsh"));
+        ASSERT(zcl_dev_proof_test_needs_argv("-j4", selector, argv,
+                                           expected_count + 4, &targets));
+        ASSERT(targets == expected_count && argv[targets + 3] == NULL);
+        int repeated = snprintf(selector + used, sizeof(selector) - used,
+                                ",test_rpc,test_jsonq,test_semantic_sensor");
+        ASSERT(repeated > 0 && (size_t)repeated < sizeof(selector) - used);
+        ASSERT(zcl_dev_proof_test_needs_argv("-j4", selector, argv,
+                                           expected_count + 4, &targets));
+        ASSERT(targets == expected_count && argv[targets + 3] == NULL);
+        ASSERT(!zcl_dev_proof_test_needs_argv("-j4", selector, argv,
+                                            expected_count + 3, &targets));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static bool ic_gate_everything(const char *group)
 {
     (void)group;
@@ -7592,6 +7699,27 @@ static int test_ic_pr69_sensor_routes(void)
         ASSERT(ic_pr69_sensor_maps("tests/harness/src/semantic_sensor_session.c", "semantic_sensor"));
         ASSERT(ic_pr69_sensor_maps("tests/harness/src/semantic_sensor_session.c", "semantic_manifest"));
         ASSERT(!ic_pr69_sensor_maps("tests/harness/src/unknown_sensor_probe.c", "semantic_sensor"));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static bool ic_tool_path_maps(const char *path, const char *group)
+{
+    struct agent_impact_acc acc = {0};
+    if (!agent_impact_apply_shared_rules(path, &acc)) return false;
+    for (size_t i = 0; i < acc.groups_len; i++)
+        if (strcmp(acc.groups[i], group) == 0) return true;
+    return false;
+}
+
+static int test_ic_snapshot_tool_routes(void)
+{
+    int failures = 0;
+    TEST("snapshot tool source and acceptance have an explicit group route") {
+        ASSERT(ic_tool_path_maps("tools/export_snapshot.c", "export_snapshot"));
+        ASSERT(ic_tool_path_maps("tests/harness/src/test_export_snapshot.c", "export_snapshot"));
+        ASSERT(!ic_tool_path_maps("tools/unknown_snapshot_tool.c", "export_snapshot"));
         PASS();
     } _test_next:;
     return failures;
@@ -7706,7 +7834,7 @@ static int test_ic_local_selection_build_needs(void)
         n = 99;
         ASSERT(zcl_test_selection_build_needs(NULL, false, NULL, needs, 16,
                                               &n));
-        ASSERT(n == 10 + verifier_needs);
+        ASSERT(n == 14 + verifier_needs);
         ASSERT(ic_needs_have(needs, n, "dev-package-verifier-ensure",
                              "build/bin/zclassic23-package-verify-dev") ==
                (verifier_needs != 0));
@@ -7720,12 +7848,36 @@ static int test_ic_local_selection_build_needs(void)
                              "build/bin/process-group-exec"));
         ASSERT(ic_needs_have(needs, n, "p2_invariant_check",
                              "build/bin/p2_invariant_check"));
+        ASSERT(ic_needs_have(needs, n, "zclassic-cli", "build/bin/zclassic-cli"));
+        ASSERT(ic_needs_have(needs, n, "tools/gen_utxo_root_ladder",
+                             "build/bin/gen_utxo_root_ladder"));
+        ASSERT(ic_needs_have(needs, n, "export_snapshot",
+                             "build/bin/export_snapshot"));
+        ASSERT(ic_needs_have(needs, n, "jsonq", "build/bin/jsonq"));
         ASSERT(ic_needs_have(needs, n, "sqlq", "build/bin/sqlq"));
+        n = 99;
+        ASSERT(zcl_test_selection_build_needs("test_export_snapshot", true,
+                                              NULL, needs, 16, &n));
+        ASSERT(n == 1);
+        ASSERT(ic_needs_have(needs, n, "export_snapshot",
+                             "build/bin/export_snapshot"));
         n = 99;
         ASSERT(zcl_test_selection_build_needs("test_sqlq", true, NULL,
                                               needs, 16, &n));
         ASSERT(n == 1);
         ASSERT(ic_needs_have(needs, n, "sqlq", "build/bin/sqlq"));
+        n = 99;
+        ASSERT(zcl_test_selection_build_needs("test_rpc", true, NULL,
+                                              needs, 16, &n));
+        ASSERT(n == 2);
+        ASSERT(ic_needs_have(needs, n, "zclassic-cli", "build/bin/zclassic-cli"));
+        ASSERT(ic_needs_have(needs, n, "zclassic23", "build/bin/zclassic23"));
+        n = 99;
+        ASSERT(zcl_test_selection_build_needs("test_utxo_root_ladder", true,
+                                              NULL, needs, 16, &n));
+        ASSERT(n == 1);
+        ASSERT(ic_needs_have(needs, n, "tools/gen_utxo_root_ladder",
+                             "build/bin/gen_utxo_root_ladder"));
         n = 99;
         ASSERT(zcl_test_selection_build_needs(NULL, false, ic_gate_everything,
                                               needs, 16, &n));
@@ -10836,6 +10988,7 @@ int test_impact_composition(void)
     failures += test_ic_closure_capacity_follows_corpus();
     failures += test_ic_large_plan_preserves_groups();
     failures += test_ic_command_latency_scope_is_precise();
+    failures += test_ic_jsonq_exec_contract();
     failures += test_ic_registry_def_has_dependents();
     failures += test_ic_macro_only_header_has_dependents();
     failures += test_ic_incomplete_dimension_refuses_proof();
@@ -10848,6 +11001,7 @@ int test_impact_composition(void)
     failures += test_ic_dimension_applicability_and_exact_execution();
     failures += test_ic_lint_token_selects_every_shard();
     failures += test_ic_snapshot_overlays_current_symbols();
+    failures += test_ic_pr72_rpc_routes();
     failures += test_ic_sqlq_proof_mapping();
     failures += test_ic_code_capsule_stays_with_code_owner();
     failures += test_ic_generated_inventory_stays_focused();
@@ -10909,7 +11063,9 @@ int test_impact_composition(void)
     failures += test_ic_proof_lint_and_test_share_admitted_executables();
     failures += test_ic_proof_test_needs_build_the_sensor();
     failures += test_ic_proof_test_needs_leave_provided_tools();
+    failures += test_ic_proof_test_needs_whole_catalog();
     failures += test_ic_build_need_umbrella_fold();
+    failures += test_ic_snapshot_tool_routes();
     failures += test_ic_pr69_sensor_routes();
     failures += test_ic_local_selection_build_needs();
     failures += test_ic_proof_prefork_builds_the_shared_targets();

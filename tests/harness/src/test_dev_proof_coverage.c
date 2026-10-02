@@ -679,9 +679,143 @@ static int test_dpc_unqualified_rows(void)
     return failures;
 }
 
+static int test_dpc_inspect(void)
+{
+    int failures = 0;
+    char root[4096], store[4096], log_path[4096], empty_store[4096];
+    test_make_tmpdir(root, sizeof(root), "dev_proof_coverage", "inspect");
+    dpc_isolate("inspect");
+    (void)snprintf(store, sizeof(store), "%s/store", root);
+    (void)snprintf(empty_store, sizeof(empty_store), "%s/empty", root);
+    (void)snprintf(log_path, sizeof(log_path), "%s/test.log", root);
+    uint8_t emitted[DPC_GROUPS][32];
+    struct zcl_dev_coverage_binding binding;
+    (void)dpc_binding(&binding); /* fixed valid fixture OIDs; cannot fail */
+    TEST_CASE("dev_proof_coverage: inspect reports coverage, binding and age") {
+        ASSERT(dpc_fixture(store, log_path, emitted));
+        char why[160] = {0};
+        uint8_t envelope[ZCL_DEV_COVERAGE_WIRE_BYTES];
+        uint8_t *blob = NULL;
+        size_t blob_len = 0;
+        ASSERT(dpc_derive(store, log_path, &binding, DPC_GROUPS, envelope,
+                          &blob, &blob_len, why, sizeof(why)));
+
+        struct zcl_dev_coverage_inspect report = {0};
+        ASSERT(zcl_dev_coverage_inspect(store, envelope, sizeof(envelope),
+                                        blob, blob_len, &binding, &report,
+                                        why, sizeof(why)));
+        ASSERT(report.row_count == DPC_GROUPS);
+        ASSERT(report.covered == DPC_GROUPS);
+        ASSERT(report.unqualified == 0);
+        ASSERT(report.missing == 0 && report.conflicts == 0);
+        ASSERT(!report.binding_mismatch);
+        ASSERT(report.signer_why[0] == '\0');
+        ASSERT(report.observed_total == DPC_GROUPS);
+        ASSERT(report.observed_eligible == DPC_GROUPS);
+        ASSERT(report.oldest_observed_unix != 0);
+        ASSERT(report.newest_observed_unix >= report.oldest_observed_unix);
+
+        /* A wrong binding is reported, not fatal: the rows still
+         * classify against what the box actually observed. */
+        struct zcl_dev_coverage_binding other = binding;
+        other.child_set_root[0] ^= 0xff;
+        memset(&report, 0, sizeof(report));
+        ASSERT(zcl_dev_coverage_inspect(store, envelope, sizeof(envelope),
+                                        blob, blob_len, &other, &report,
+                                        why, sizeof(why)));
+        ASSERT(report.binding_mismatch);
+        ASSERT(report.covered == DPC_GROUPS);
+
+        /* A bad signature names its signer refusal and still reports. */
+        envelope[ZCL_DEV_COVERAGE_WIRE_BYTES - 1] ^= 0xff;
+        memset(&report, 0, sizeof(report));
+        ASSERT(zcl_dev_coverage_inspect(store, envelope, sizeof(envelope),
+                                        blob, blob_len, &binding, &report,
+                                        why, sizeof(why)));
+        ASSERT(strcmp(report.signer_why,
+                      ZCL_DEV_PROOF_SIGNER_WHY_SIGNATURE_INVALID) == 0);
+        envelope[ZCL_DEV_COVERAGE_WIRE_BYTES - 1] ^= 0xff;
+
+        /* A preserved contradiction lands in the conflicts count. */
+        uint8_t alpha_key[32], fail_root[32];
+        dpc_key(alpha_key, 1);
+        ASSERT(dpc_record(store, alpha_key, "test_coverage_alpha",
+                          ZCL_DEV_VERDICT_LEAF_FAIL, 99, fail_root));
+        memset(&report, 0, sizeof(report));
+        ASSERT(zcl_dev_coverage_inspect(store, envelope, sizeof(envelope),
+                                        blob, blob_len, &binding, &report,
+                                        why, sizeof(why)));
+        ASSERT(report.conflicts == 1);
+        ASSERT(report.covered == DPC_GROUPS - 1);
+
+        /* The same manifest against a store that never saw the groups
+         * answers "incomplete" with the missing group names. */
+        ASSERT(platform_directory_ensure(empty_store, 0700));
+        memset(&report, 0, sizeof(report));
+        ASSERT(zcl_dev_coverage_inspect(empty_store, envelope,
+                                        sizeof(envelope), blob, blob_len,
+                                        &binding, &report, why,
+                                        sizeof(why)));
+        ASSERT(report.row_count == DPC_GROUPS);
+        ASSERT(report.missing == DPC_GROUPS && report.covered == 0);
+        ASSERT(report.missing_named == DPC_GROUPS);
+        ASSERT(report.observed_total == 0);
+        free(blob);
+
+        /* One keyed PASS row and one denylisted group that executed
+         * without a reusable observation: unqualified, never missing. */
+        ASSERT(platform_directory_ensure(store, 0700));
+        uint8_t uq_key[32], uq_pass_root[32];
+        dpc_key(uq_key, 1);
+        ASSERT(dpc_record(store, uq_key, "test_coverage_keyed",
+                          ZCL_DEV_VERDICT_LEAF_PASS, 1, uq_pass_root));
+        FILE *uq_f = fopen(log_path, "w");
+        ASSERT(uq_f != NULL);
+        ASSERT(dpc_log_line(uq_f, "test_coverage_keyed", uq_key, uq_pass_root));
+        ASSERT(dpc_unqualified_line(uq_f, "test_coverage_external", "missing"));
+        (void)fclose(uq_f);
+
+        char uq_why[160] = {0};
+        uint8_t uq_envelope[ZCL_DEV_COVERAGE_WIRE_BYTES];
+        uint8_t *uq_blob = NULL;
+        size_t uq_blob_len = 0;
+        ASSERT(dpc_derive(store, log_path, &binding, 2, uq_envelope,
+                          &uq_blob, &uq_blob_len, uq_why, sizeof(uq_why)));
+        struct zcl_dev_coverage_inspect uq_report = {0};
+        ASSERT(zcl_dev_coverage_inspect(store, uq_envelope,
+                                        sizeof(uq_envelope), uq_blob,
+                                        uq_blob_len, &binding, &uq_report,
+                                        uq_why, sizeof(uq_why)));
+        ASSERT(uq_report.row_count == 2);
+        ASSERT(uq_report.covered == 1 && uq_report.unqualified == 1);
+        ASSERT(uq_report.missing == 0 && uq_report.conflicts == 0);
+
+        /* A retained eligible FAIL for the unqualified group is the
+         * preserved contradiction verify() refuses: a conflict answer. */
+        uint8_t ext_key[32], ext_fail[32];
+        dpc_key(ext_key, 2);
+        ASSERT(dpc_record(store, ext_key, "test_coverage_external",
+                          ZCL_DEV_VERDICT_LEAF_FAIL, 2, ext_fail));
+        memset(&uq_report, 0, sizeof(uq_report));
+        ASSERT(zcl_dev_coverage_inspect(store, uq_envelope,
+                                        sizeof(uq_envelope), uq_blob,
+                                        uq_blob_len, &binding, &uq_report,
+                                        uq_why, sizeof(uq_why)));
+        ASSERT(uq_report.conflicts == 1);
+        ASSERT(uq_report.unqualified == 0);
+        ASSERT(uq_report.covered == 1);
+        free(uq_blob);
+    }
+    TEST_END
+    dpc_restore();
+    (void)test_rm_rf_recursive(root);
+    return failures;
+}
+
 int test_dev_proof_coverage(void)
 {
     int failures = 0;
+    failures += test_dpc_inspect();
     failures += test_dpc_real_log_shape();
     failures += test_dpc_unqualified_rows();
     failures += test_dpc_round_trip();
