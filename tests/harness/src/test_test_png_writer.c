@@ -438,9 +438,12 @@ int test_test_png_writer(void)
         if (bexpected) free(bexpected);
 
         /* (C) Degenerate 0x0 image: filtered_len == 0 forces the
-         * "num_blocks == 0 -> forced to 1" fallback in build_idat. */
+         * "num_blocks == 0 -> forced to 1" fallback in build_idat. A real
+         * (non-NULL) pixel pointer keeps the row loop's zero-length
+         * memcpys clear of the C standard's invalid-argument corner. */
         size_t zlen = 0;
-        uint8_t *zidat = build_idat_channels(NULL, 0, 0, 3u, &zlen);
+        static const uint8_t zpx[1] = {0};
+        uint8_t *zidat = build_idat_channels(zpx, 0, 0, 3u, &zlen);
         PNGW_CHECK("build_idat: 0x0 image still returns non-NULL", zidat != NULL);
         if (zidat) {
             PNGW_CHECK("build_idat: 0x0 image idat_len == 2+5+0+4 == 11", zlen == 11);
@@ -495,6 +498,23 @@ int test_test_png_writer(void)
         PNGW_CHECK("png_write_rgb: unopenable path (missing directory) returns false",
                    !pngw_under_test_write_rgb("/nonexistent_dir_zzz_png_writer_test/out.png",
                                   one_px, 1, 1));
+
+        /* Overflow guard: dimensions whose filtered byte size wraps size_t
+         * must be refused before any allocation or pixel read. Pre-fix,
+         * build_idat_channels computed filtered_len = h * (1 + w*channels)
+         * unchecked, the wrapped malloc "succeeded", and the row loop
+         * memcpy'd billions of bytes out of the caller's pixel buffer. */
+        size_t scratch_len = 77;
+        PNGW_CHECK("build_idat_channels: UINT32_MAX x UINT32_MAX RGBA refuses",
+                   build_idat_channels(one_px, UINT32_MAX, UINT32_MAX, 4u,
+                                       &scratch_len) == NULL);
+        PNGW_CHECK("build_idat_channels: 2^31-1 x 2^31+1 RGBA refuses",
+                   build_idat_channels(one_px, 0x7FFFFFFFu, 0x80000001u,
+                                       4u, &scratch_len) == NULL);
+        PNGW_CHECK("png_write_rgba: overflow dimensions return false",
+                   !pngw_under_test_write_rgba(
+                       "/nonexistent_dir_zzz_png_writer_test/out.png",
+                       one_px, 0x7FFFFFFFu, 0x80000001u));
 
         size_t encoded_len = 0;
         uint8_t encoded[72] = {0};
