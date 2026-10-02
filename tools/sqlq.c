@@ -22,6 +22,48 @@
 #include <string.h>
 #include <strings.h>
 
+/* SQLite prepares one statement at a time. Parse the remainder, but never
+ * step it: comments and whitespace are fine; a second statement is not. */
+static int sqlq_tail_is_empty(sqlite3 *db, const char *tail)
+{
+    sqlite3_stmt *extra = NULL;
+    int rc = sqlite3_prepare_v2(db, tail, -1, &extra, NULL);
+    if (rc != SQLITE_OK)
+        fprintf(stderr, "sqlq: trailing SQL invalid: %s\n", sqlite3_errmsg(db));
+    else if (extra)
+        fprintf(stderr, "sqlq: trailing statement refused\n");
+    int empty = rc == SQLITE_OK && extra == NULL;
+    int finalize_rc = sqlite3_finalize(extra);
+    if (finalize_rc != SQLITE_OK) {
+        fprintf(stderr, "sqlq: trailing statement cleanup failed: %s\n",
+                sqlite3_errstr(finalize_rc));
+        empty = 0;
+    }
+    return empty;
+}
+
+static void sqlq_print_row(sqlite3_stmt *st)
+{
+    int n = sqlite3_column_count(st);
+    for (int i = 0; i < n; i++) {
+        if (i) fputc('\t', stdout);
+        switch (sqlite3_column_type(st, i)) {
+        case SQLITE_NULL:
+            fputs("NULL", stdout);
+            break;
+        case SQLITE_BLOB: {
+            const unsigned char *b = sqlite3_column_blob(st, i);
+            int len = sqlite3_column_bytes(st, i);
+            for (int j = 0; j < len; j++) printf("%02x", b[j]);
+            break;
+        }
+        default:
+            fputs((const char *)sqlite3_column_text(st, i), stdout);
+        }
+    }
+    fputc('\n', stdout);
+}
+
 int main(int argc, char **argv)
 {
     if (argc != 3) {
@@ -46,33 +88,21 @@ int main(int argc, char **argv)
     sqlite3_busy_timeout(db, 2000);
 
     sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK) {
+    const char *tail = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &st, &tail) != SQLITE_OK) {
         fprintf(stderr, "sqlq: prepare failed: %s\n", sqlite3_errmsg(db));
+        sqlite3_close(db);
+        return 1;
+    }
+    if (!sqlq_tail_is_empty(db, tail)) {
+        sqlite3_finalize(st);
         sqlite3_close(db);
         return 1;
     }
 
     int rc;
-    while ((rc = sqlite3_step(st)) == SQLITE_ROW) { // raw-sql-ok:read-only-diagnostic-cli
-        int n = sqlite3_column_count(st);
-        for (int i = 0; i < n; i++) {
-            if (i) fputc('\t', stdout);
-            switch (sqlite3_column_type(st, i)) {
-            case SQLITE_NULL:
-                fputs("NULL", stdout);
-                break;
-            case SQLITE_BLOB: {
-                const unsigned char *b = sqlite3_column_blob(st, i);
-                int len = sqlite3_column_bytes(st, i);
-                for (int j = 0; j < len; j++) printf("%02x", b[j]);
-                break;
-            }
-            default:
-                fputs((const char *)sqlite3_column_text(st, i), stdout);
-            }
-        }
-        fputc('\n', stdout);
-    }
+    while ((rc = sqlite3_step(st)) == SQLITE_ROW) // raw-sql-ok:read-only-diagnostic-cli
+        sqlq_print_row(st);
     int ok = (rc == SQLITE_DONE);
     if (!ok)
         fprintf(stderr, "sqlq: step failed: %s\n", sqlite3_errmsg(db));

@@ -99,6 +99,18 @@ static int test_sqlq_refusals(void)
         ASSERT(strcmp(buf, "0" SQLQ_EOL) == 0);
         /* Syntax errors refuse after prepare, not as a crash. */
         ASSERT(sqlq_run(db, "SELECT FROM WHERE", buf, sizeof(buf)) == 1);
+        /* SQLite prepares only the first statement by default. A query with
+         * ignored trailing SQL must not report a partial answer as success. */
+        ASSERT(sqlq_run(db, "SELECT COUNT(*) FROM t; SELECT 99",
+                        buf, sizeof(buf)) == 1);
+        ASSERT(buf[0] == '\0');
+        ASSERT(sqlq_run(db, "SELECT COUNT(*) FROM t; garbage",
+                        buf, sizeof(buf)) == 1);
+        ASSERT(buf[0] == '\0');
+        /* A comment after the sole statement remains valid. */
+        ASSERT(sqlq_run(db, "SELECT COUNT(*) FROM t; -- explanation",
+                        buf, sizeof(buf)) == 0);
+        ASSERT(strcmp(buf, "2" SQLQ_EOL) == 0);
         /* A missing database file is exit 1, never creation. */
         int n = snprintf(missing, sizeof(missing), "%s/missing.db", dir);
         ASSERT(n > 0 && (size_t)n < sizeof(missing));
