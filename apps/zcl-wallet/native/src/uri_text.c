@@ -48,6 +48,26 @@ static zcl_status decoded_byte(const uint8_t *raw, size_t remaining,
     return ZCL_OK;
 }
 
+static zcl_status decode_bytes(const uint8_t *raw, size_t raw_len,
+                               uint8_t decoded[ZCL_PAYMENT_TEXT_MAX], size_t *length)
+{
+    size_t position = 0;
+    size_t count = 0;
+    while (position < raw_len) {
+        if (count == ZCL_PAYMENT_TEXT_MAX)
+            return ZCL_OUT_OF_RANGE;
+        size_t consumed = 0;
+        zcl_status status = decoded_byte(raw + position, raw_len - position,
+                                         decoded + count, &consumed);
+        if (status != ZCL_OK)
+            return status;
+        ++count;
+        position += consumed;
+    }
+    *length = count;
+    return ZCL_OK;
+}
+
 zcl_status zcl_uri_decode_field(const uint8_t *raw, size_t raw_len,
                                uint8_t *output, size_t capacity, size_t *length)
 {
@@ -55,21 +75,14 @@ zcl_status zcl_uri_decode_field(const uint8_t *raw, size_t raw_len,
         return ZCL_INVALID_ARGUMENT;
     if (raw_len > ZCL_PAYMENT_TEXT_MAX)
         return ZCL_OUT_OF_RANGE;
-    uint8_t temporary[200] = {0};
-    size_t position = 0, count = 0;
-    while (position < raw_len) {
-        if (count == sizeof(temporary))
-            return ZCL_OUT_OF_RANGE;
-        size_t consumed = 0;
-        zcl_status status = decoded_byte(raw + position, raw_len - position, temporary + count, &consumed);
-        if (status != ZCL_OK)
-            return status;
-        ++count;
-        position += consumed;
-    }
+    uint8_t temporary[ZCL_PAYMENT_TEXT_MAX] = {0};
+    size_t count = 0;
+    zcl_status status = decode_bytes(raw, raw_len, temporary, &count);
+    if (status != ZCL_OK)
+        return status;
     if (count > capacity)
         return ZCL_BUFFER_TOO_SMALL;
-    zcl_status status = zcl_utf8_visible_text(temporary, count);
+    status = zcl_utf8_visible_text(temporary, count);
     if (status != ZCL_OK)
         return status;
     memcpy(output, temporary, count);

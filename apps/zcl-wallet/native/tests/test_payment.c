@@ -76,6 +76,20 @@ static bool field_and_argument_bounds(void)
     return true;
 }
 
+static bool decode_failures_preserve_output(void)
+{
+    uint8_t output[8];
+    uint8_t before[sizeof(output)];
+    size_t length = SIZE_MAX;
+    memset(output, 0xa5, sizeof(output));
+    memcpy(before, output, sizeof(before));
+    CHECK(zcl_uri_decode_field(TEXT("bad%"), output, sizeof(output), &length) == ZCL_INVALID_ENCODING);
+    CHECK(memcmp(output, before, sizeof(output)) == 0 && length == SIZE_MAX);
+    CHECK(zcl_uri_decode_field(TEXT("%E2%80%AE"), output, sizeof(output), &length) == ZCL_INVALID_ENCODING);
+    CHECK(memcmp(output, before, sizeof(output)) == 0 && length == SIZE_MAX);
+    return true;
+}
+
 static size_t encode_codepoint(uint32_t code, uint8_t *bytes, size_t capacity)
 {
     if (capacity < 4 || code > 0x10ffff)
@@ -195,8 +209,9 @@ int main(void)
 {
     if (!preserves_ascii_visibility() || !preserves_range_boundaries() ||
         !accepts_public_requests() || !rejects_unsafe_requests() || !field_and_argument_bounds() ||
+        !decode_failures_preserve_output() ||
         !rejects_unicode_format_characters() || !rejects_layout_separators() ||
         !preserves_visible_unicode_neighbors())
         return 1;
-    return puts("wallet-core: 8 payment test groups passed") == EOF ? 1 : 0;
+    return puts("wallet-core: 9 payment test groups passed") == EOF ? 1 : 0;
 }
