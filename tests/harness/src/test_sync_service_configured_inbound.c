@@ -40,6 +40,7 @@
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
 
+#include <inttypes.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdlib.h>
@@ -1992,7 +1993,7 @@ static int test_configured_inbound_no_anchor_window_stays_honest(void)
         struct body_history_verdict v;
         ASSERT(body_history_get_verdict(&v));
         ASSERT(v.status != BODY_HISTORY_COMPLETE);
-        printf("[configured-inbound no anchor] verdict=%d missing=%d — "
+        printf("[configured-inbound no anchor] verdict=%d missing=%" PRId64 " — "
                "honestly unmeasured, no earned PASS\n",
                (int)v.status, v.missing_count);
 

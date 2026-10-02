@@ -823,7 +823,7 @@ static bool dlx_exact_submit_mid_rebase_refused(void)
         goto done;
     }
     dlx_submit(&c, &rig, rig.tip);
-    ok = dlx_run(&c) && !dlx_ok(&c) && c.reply.error.code &&
+    ok = dlx_run(&c) && !dlx_ok(&c) && c.reply.error.code[0] != '\0' &&
          strcmp(c.reply.error.code, "WORKTREE_BUSY") == 0;
     dlx_end(&c);
     ok = ok && dlx_queue_empty();
@@ -845,7 +845,7 @@ static bool dlx_submit_marker_refused(struct dlx_rig *rig, const char *mark)
         return false;
     struct dlx_call c;
     dlx_submit(&c, rig, rig->tip);
-    bool ok = dlx_run(&c) && !dlx_ok(&c) && c.reply.error.code &&
+    bool ok = dlx_run(&c) && !dlx_ok(&c) && c.reply.error.code[0] != '\0' &&
         strcmp(c.reply.error.code, "WORKTREE_BUSY") == 0;
     dlx_end(&c);
     if (unlink(path) != 0)

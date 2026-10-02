@@ -7574,6 +7574,29 @@ static int test_ic_build_need_umbrella_fold(void)
     return failures;
 }
 
+static bool ic_pr69_sensor_maps(const char *path, const char *group)
+{
+    struct agent_impact_acc acc = {0};
+    if (!agent_impact_apply_shared_rules(path, &acc)) return false;
+    for (size_t i = 0; i < acc.groups_len; i++)
+        if (strcmp(acc.groups[i], group) == 0) return true;
+    return false;
+}
+
+static int test_ic_pr69_sensor_routes(void)
+{
+    int failures = 0;
+    TEST("semantic sensor helper changes retain their registered runtime floor") {
+        ASSERT(ic_pr69_sensor_maps("tests/harness/src/semantic_sensor_probe.c", "semantic_sensor"));
+        ASSERT(ic_pr69_sensor_maps("tests/harness/src/semantic_sensor_identity.c", "semantic_sensor"));
+        ASSERT(ic_pr69_sensor_maps("tests/harness/src/semantic_sensor_session.c", "semantic_sensor"));
+        ASSERT(ic_pr69_sensor_maps("tests/harness/src/semantic_sensor_session.c", "semantic_manifest"));
+        ASSERT(!ic_pr69_sensor_maps("tests/harness/src/unknown_sensor_probe.c", "semantic_sensor"));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_ic_local_selection_build_needs(void)
 {
     int failures = 0;
@@ -10887,6 +10910,7 @@ int test_impact_composition(void)
     failures += test_ic_proof_test_needs_build_the_sensor();
     failures += test_ic_proof_test_needs_leave_provided_tools();
     failures += test_ic_build_need_umbrella_fold();
+    failures += test_ic_pr69_sensor_routes();
     failures += test_ic_local_selection_build_needs();
     failures += test_ic_proof_prefork_builds_the_shared_targets();
     failures += test_ic_generation_docs_tools_builds_the_checker_binaries();
