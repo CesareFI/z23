@@ -14040,6 +14040,7 @@ API_REFERENCE_TOOL = $(BIN_DIR)/gen_api_reference
 
 $(API_REFERENCE_TOOL): tools/gen_api_reference.c \
                        engine/modules/kernel/include/kernel/command_registry.h \
+                       platform/modules/json/include/json/json.h \
                        $(wildcard engine/composition/commands/*.def) \
                        $(wildcard engine/composition/commands/*/*.def)
 	@mkdir -p $(dir $@)
