@@ -14,7 +14,7 @@
  *
  * INPUT (zcl.land_input.v1)
  *   action    string, required: submit | attach | attach_publish | status |
- *             step | drive | cancel; also the first positional.
+ *             step | drive | cancel | fence_replace; also the first positional.
  *   tip       submit only, required: a commit-ish resolved in the submitting
  *             checkout; the row stores the full 40-hex commit id.
  *   worktree  submit only, optional: the checkout that holds the tip.
@@ -692,6 +692,10 @@ struct dl_row {
     char dimension[48];
     char log_path[4096];
     char detail[256];
+    /* A possible send without durable diagnostics forbids another send.
+     * Remote observation remains authoritative, including after a crash. */
+    bool push_diagnostic_pending;
+    long long fence_peer;
     /* The origin main this queued row was last replayed onto by the
      * queued-row conflict precheck, so a fresh step process does not
      * replay it again until main moves. A cache, never authority: empty or
@@ -718,6 +722,11 @@ static bool dl_row_json_ok(const char *line, long long *priority,
         if (ok)
             *priority = json_get_int(field);
     }
+    field = ok ? json_get(&doc, "push_diagnostic_pending") : NULL;
+    if (field)
+        ok = field->type == JSON_INT && json_get_int(field) >= 0 && json_get_int(field) <= 1;
+    field = ok ? json_get(&doc, "fence_peer") : NULL;
+    if (field) ok = field->type == JSON_INT && json_get_int(field) >= 0;
     json_free(&doc);
     return ok;
 }
@@ -729,6 +738,7 @@ static bool dl_row_state_ok(const struct dl_row *r)
            strcmp(r->state, "landed") == 0 ||
            strcmp(r->state, "failed") == 0 ||
            strcmp(r->state, "conflict") == 0 ||
+           strcmp(r->state, "fenced") == 0 ||
            strcmp(r->state, "cancelled") == 0;
 }
 
@@ -803,6 +813,9 @@ static void dl_publication_clear(struct dl_row *r)
 
 static bool dl_row_semantics_ok(const struct dl_row *r)
 {
+    if (strcmp(r->state, "fenced") == 0 && (!r->publication_signature[0] ||
+        !dl_sha_ok(r->base) || !dl_sha_ok(r->local) || !dl_sha_ok(r->tree)))
+        return false;
     return dl_row_state_ok(r) && dl_row_phase_ok(r) && dl_row_pair_ok(r) &&
            dl_publication_shape_ok(r) && dl_remote_receipt_shape_ok(r);
 }
@@ -832,6 +845,16 @@ static void dl_prechecked_parse(const char *line, struct dl_row *r)
         r->uncertain_main[0] = '\0';
         r->uncertain_tries = 0;
     }
+}
+
+static bool dl_parse_dispatch_fields(const char *line, struct dl_row *r)
+{
+    long long pending = 0;
+    (void)dl_line_int(line, "push_diagnostic_pending", &pending);
+    r->push_diagnostic_pending = pending != 0;
+    (void)dl_line_int(line, "fence_peer", &r->fence_peer);
+    return r->fence_peer >= 0 &&
+        (strcmp(r->state, "fenced") != 0 || r->fence_peer > 0);
 }
 
 static bool dl_parse_row(const char *line, struct dl_row *r)
@@ -889,7 +912,7 @@ static bool dl_parse_row(const char *line, struct dl_row *r)
     (void)dl_line_str(line, "log_path", r->log_path, sizeof(r->log_path));
     (void)dl_line_str(line, "detail", r->detail, sizeof(r->detail));
     dl_prechecked_parse(line, r);
-    return dl_row_semantics_ok(r);
+    return dl_parse_dispatch_fields(line, r) && dl_row_semantics_ok(r);
 }
 
 static bool dl_escape_proof_fields(const struct dl_row *r,
@@ -981,7 +1004,8 @@ static bool dl_encode_row(const struct dl_row *r, char *out, size_t cap,
                  "\"dimension\":\"%s\",\"log_path\":\"%s\","
                  "\"prechecked_main\":\"%s\","
                  "\"precheck_uncertain_main\":\"%s\","
-                 "\"precheck_uncertain\":%lld,\"detail\":\"%s\"}\n",
+                 "\"precheck_uncertain\":%lld,\"detail\":\"%s\","
+                 "\"push_diagnostic_pending\":%d,\"fence_peer\":%lld}\n",
                  r->seq, r->priority_seq, e_ts, e_tip, e_wt, e_note, e_state, e_phase,
                  r->attempt, r->started, e_base, e_local, e_tree, e_intent,
                  e_pushed, p.target, p.proof, p.bundle, p.signer, p.signature,
@@ -990,7 +1014,8 @@ static bool dl_encode_row(const struct dl_row *r, char *out, size_t cap,
                  /* Unescaped on purpose: dl_prechecked_parse() and the
                   * precheck admit only a 40-hex commit id or "". */
                  e_dim, e_log, r->prechecked, r->uncertain_main,
-                 r->uncertain_tries, e_detail);
+                 r->uncertain_tries, e_detail, r->push_diagnostic_pending ? 1 : 0,
+                 r->fence_peer);
     if (w <= 0 || (size_t)w >= cap)
         return false;
     if (len_out)
@@ -2316,6 +2341,17 @@ static const char *dl_allow_unsigned(void)
 
 /* ── submit ────────────────────────────────────────────────────────────── */
 
+static bool dl_fence_reserve(const struct dl_dirs *d, long long *seq);
+static bool dl_fence_blocks(const struct dl_dirs *d, long long seq);
+static bool dl_cancel_fence_guard(const struct dl_dirs *d, long long seq,
+                                  struct zcl_command_reply *reply)
+{
+    if (!dl_fence_blocks(d, seq)) return false;
+    dl_fail(reply, "FENCE_ACTIVE", "cancel",
+             "a paired fence must be reconciled without ordinary cancellation", d->land);
+    return true;
+}
+
 static bool dl_submit_next_seq(const struct dl_dirs *d,
                                const struct dl_row *rows, size_t nrows,
                                long long *seq, const char **why)
@@ -2334,6 +2370,10 @@ static bool dl_submit_next_seq(const struct dl_dirs *d,
             return false;
         }
         if (rows[i].seq >= *seq) *seq = rows[i].seq + 1;
+    }
+    if (!dl_fence_reserve(d, seq)) {
+        *why = "fenced replacement journal malformed or sequence exhausted";
+        return false;
     }
     return true;
 }
@@ -2606,6 +2646,22 @@ static bool dl_push_pair_same(const struct dl_row *a, const struct dl_row *b);
 
 /* ── cancel ────────────────────────────────────────────────────────────── */
 
+static int dl_cancel_acquire(const struct dl_dirs *d, const char *qpath,
+                              long long seq, struct dl_row *settled,
+                              bool *push_settled, struct zcl_command_reply *reply)
+{
+    memset(settled, 0, sizeof(*settled));
+    if (dl_cancel_fence_guard(d, seq, reply)) return -1;
+    *push_settled = dl_cancel_push_settled(d, qpath, seq, settled);
+    int lock = dl_rows_lock(d->land);
+    if (lock < 0) {
+        dl_fail(reply, "QUEUE_READ_FAILED", "cancel", "cannot take the queue lock", qpath);
+        return -1;
+    }
+    if (dl_cancel_fence_guard(d, seq, reply)) { dl_unlock(lock); return -1; }
+    return lock;
+}
+
 static void dl_cancel(const struct zcl_command_request *req,
                       struct zcl_command_reply *reply)
 {
@@ -2637,14 +2693,9 @@ static void dl_cancel(const struct zcl_command_request *req,
         return;
     }
     struct dl_row settled;
-    memset(&settled, 0, sizeof(settled));
-    bool push_settled = dl_cancel_push_settled(&d, qpath, seq, &settled);
-    lock = dl_rows_lock(d.land);
-    if (lock < 0) {
-        dl_fail(reply, "QUEUE_READ_FAILED", "cancel",
-                "cannot take the queue lock", qpath);
-        return;
-    }
+    bool push_settled = false;
+    lock = dl_cancel_acquire(&d, qpath, seq, &settled, &push_settled, reply);
+    if (lock < 0) return;
     char queue_why[128] = {0};
     if (!dl_load_rows(qpath, &rows, &nrows, queue_why,
                       sizeof(queue_why))) {
@@ -3415,6 +3466,16 @@ static bool dl_push_inflight(struct json_value *obj, const struct dl_row *r,
            dl_push_proof_action(obj, r, proof_root);
 }
 
+static bool dl_push_fence_disposition(struct json_value *item, const struct dl_row *r)
+{
+    return json_push_kv_str(item, "acceptance_state", "unknown") &&
+        json_push_kv_int(item, "fence_peer", r->fence_peer) &&
+        json_push_kv_str(item, "historical_git_acceptance",
+                         strcmp(r->state, "landed") == 0 ? "verified" : "unknown") &&
+        json_push_kv_str(item, "future_dispatch",
+                         strcmp(r->state, "fenced") == 0 ? "fenced" : "complete");
+}
+
 static bool dl_push_outcome_row(struct json_value *arr,
                                 const struct dl_row *r)
 {
@@ -3426,7 +3487,7 @@ static bool dl_push_outcome_row(struct json_value *arr,
          json_push_kv_str(&item, "ts", r->ts) &&
          json_push_kv_str(&item, "tip", r->tip) &&
          json_push_kv_str(&item, "state", r->state) &&
-         json_push_kv_str(&item, "acceptance_state", "unknown") &&
+         dl_push_fence_disposition(&item, r) &&
          json_push_kv_int(&item, "attempt", r->attempt) &&
          json_push_kv_str(&item, "tip_pushed", r->pushed) &&
          json_push_kv_str(&item, "remote_tip", r->remote_tip) &&
@@ -6208,10 +6269,62 @@ static void dl_step_start(const struct dl_dirs *d, struct dl_row *row,
 
 /* The lease adds an expected-old-value comparison; it never grants history
  * replacement. Verify the exact proven pair's fast-forward ancestry first. */
+/* Publication diagnostics are evidence, never acceptance authority. Binary
+ * merged capture preserves exit/EOF/overflow separately; protocol Git reads
+ * continue through dl_git's stdout-only seam. An incomplete diagnostic leaves
+ * the durable pending checkpoint armed and forbids another unrecorded send. */
+static bool dl_push_diagnostic(const struct dl_dirs *d, const struct dl_row *row,
+                               const struct zcl_spawn_binary_observation *o,
+                               char *output)
+{
+#if defined(_WIN32)
+    (void)d; (void)row; (void)o; (void)output;
+    return false; /* Native landing mutations require POSIX private-file semantics. */
+#else
+    char path[4096 + 96];
+    if (snprintf(path, sizeof(path), "%s/push-%lld-a%lld.diagnostic",
+                 d->logs, row->seq, row->attempt) >= (int)sizeof(path))
+        return false;
+    int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW,
+                   0600);
+    if (fd < 0) return false;
+    FILE *f = fdopen(fd, "wb");
+    if (!f) { (void)close(fd); return false; }
+    for (size_t i = 0; i < o->output_len; ++i) {
+        unsigned char byte = (unsigned char)output[i];
+        if (byte != '\n' && byte != '\t' && (byte < 32 || byte > 126))
+            output[i] = '?';
+    }
+    bool ok = fprintf(f,
+        "publication diagnostic v1\nseq=%lld attempt=%lld target=%s\n"
+        "base=%s head=%s\nargv=git -C <owned-worktree> push "
+        "--force-with-lease=refs/heads/main:%s origin %s:refs/heads/main\n"
+        "exit_observed=%d exit_code=%d timed_out=%d eof=%d overflow=%d bytes=%zu\n",
+        row->seq, row->attempt, row->publication_target, row->base, row->local,
+        row->base, row->local, o->exit_observed, o->exit_code, o->timed_out,
+        o->eof, o->overflow, o->output_len) > 0 &&
+        fwrite(output, 1, o->output_len, f) == o->output_len &&
+        fputs("\nEND publication diagnostic\n", f) >= 0 &&
+        dl_queue_file_flush(f);
+    if (fclose(f) != 0) ok = false;
+    return ok && dl_queue_parent_flush(d->logs);
+#endif
+}
+
+static bool dl_publication_target(const struct dl_dirs *d, char out[65]);
+
+static bool dl_push_receiver_bound(const struct dl_dirs *d, const struct dl_row *row)
+{
+    char target[65];
+    return !row->publication_signature[0] ||
+        (dl_publication_target(d, target) && strcmp(target, row->publication_target) == 0);
+}
+
 static bool dl_push_proven_pair(const struct dl_dirs *d,
                                 const struct dl_row *row,
-                                char *out, size_t out_cap)
+                                char *out, size_t out_cap, bool *recorded)
 {
+    *recorded = false;
     const char *ancestry[] = { "--no-replace-objects", "merge-base",
         "--is-ancestor", row->base, row->local, NULL };
     int rc = dl_git(d->wt, ancestry, out, out_cap, DL_GIT_TIMEOUT_MS);
@@ -6232,8 +6345,21 @@ static bool dl_push_proven_pair(const struct dl_dirs *d,
             "publication refused: exact ref arguments exceed bounded capacity");
         return false;
     }
-    const char *push[] = { "push", lease, "origin", refspec, NULL };
-    return dl_git(d->wt, push, out, out_cap, DL_GIT_TIMEOUT_MS) == 0;
+    /* Re-read the complete expanded receiver set immediately before dispatch,
+     * after checkpoint/barrier work; a changed receiver never gets a send. */
+    if (!dl_push_receiver_bound(d, row)) {
+        (void)snprintf(out, out_cap, "%s", "publication refused: signed receiver changed before dispatch");
+        return false;
+    }
+    const char *push[] = { "git", "-C", d->wt, "push", lease, "origin",
+                           refspec, NULL };
+    struct zcl_spawn_binary_observation observation = {0};
+    (void)zcl_spawn_capture_binary_merged(push, out, out_cap - 1,
+                                         DL_GIT_TIMEOUT_MS, &observation);
+    out[observation.output_len] = '\0';
+    *recorded = dl_push_diagnostic(d, row, &observation, out);
+    return observation.exit_observed && observation.exit_code == 0 &&
+           !observation.timed_out;
 }
 
 /* Git landing has its own local publication intent. It binds the existing
@@ -6270,19 +6396,37 @@ static bool dl_publication_file_sha256(const char *path, uint64_t max_bytes,
     return true;
 }
 
+static bool dl_single_url_line(char *out, size_t length)
+{
+    if (!length || memchr(out, '\0', length)) return false;
+    /* Remove one protocol terminator only. A second empty URL is still a
+     * second receiver entry and must not disappear through whitespace trim. */
+    if (out[length - 1] == '\n') --length;
+    out[length] = '\0';
+    return length > 0 && !memchr(out, '\n', length) && !memchr(out, '\r', length);
+}
+
+static bool dl_single_origin_url(const char *wt, bool push, char *out, size_t cap)
+{
+    const char *fetch[] = { "git", "-C", wt, "remote", "get-url", "--all", "origin", NULL };
+    const char *send[] = { "git", "-C", wt, "remote", "get-url", "--all", "--push", "origin", NULL };
+    struct zcl_spawn_binary_observation o = {0};
+    if (cap < 2) return false;
+    (void)zcl_spawn_capture_binary(push ? send : fetch, out, cap - 1,
+                                   DL_GIT_TIMEOUT_MS, &o);
+    return o.exit_observed && o.exit_code == 0 && !o.overflow && o.eof && !o.timed_out &&
+        dl_single_url_line(out, o.output_len);
+}
+
 static bool dl_publication_target(const struct dl_dirs *d, char out[65])
 {
     char fetch[4096], push[4096];
-    const char *fetch_args[] = { "remote", "get-url", "origin", NULL };
-    const char *push_args[] = { "remote", "get-url", "--push", "origin", NULL };
     static const char domain[] = "zcl.dev_land.git_target.v1\nrefs/heads/main\n";
     struct sha256_ctx hash;
     uint8_t digest[32];
-    if (dl_git(d->wt, fetch_args, fetch, sizeof(fetch), DL_GIT_TIMEOUT_MS) != 0 ||
-        dl_git(d->wt, push_args, push, sizeof(push), DL_GIT_TIMEOUT_MS) != 0)
+    if (!dl_single_origin_url(d->wt, false, fetch, sizeof(fetch)) ||
+        !dl_single_origin_url(d->wt, true, push, sizeof(push)))
         return false;
-    dl_trim(fetch);
-    dl_trim(push);
     if (!fetch[0] || strcmp(fetch, push) != 0 ||
         strchr(fetch, '\n') || strchr(fetch, '\r'))
         return false;
@@ -6509,6 +6653,16 @@ static bool dl_publication_fetched_objects_check(const char *scratch,
 
 /* Fetch into a new object store: neither the lander's tracking ref nor its
  * local object database is evidence that the remote contains these bytes. */
+[[maybe_unused]] static bool dl_observer_receiver_same(const char *scratch, const char *locator)
+{
+    char effective[4096], output[2048];
+    const char *add[] = { "remote", "add", "origin", locator, NULL };
+    if (dl_git(scratch, add, output, sizeof(output), DL_GIT_TIMEOUT_MS) != 0)
+        return false;
+    return dl_single_origin_url(scratch, false, effective, sizeof(effective)) &&
+        strcmp(effective, locator) == 0;
+}
+
 static bool dl_publication_remote_observe(const struct dl_dirs *d,
                                            const struct dl_row *row,
                                            char tip[65], char source[65])
@@ -6528,17 +6682,16 @@ static bool dl_publication_remote_observe(const struct dl_dirs *d,
                  d->land, row->seq) >= (int)sizeof(scratch) ||
         !mkdtemp(scratch))
         return false;
-    const char *remote[] = { "remote", "get-url", "origin", NULL };
     const char *init[] = { "init", "--bare", "--quiet", NULL };
-    if (dl_git(d->wt, remote, locator, sizeof(locator), DL_GIT_TIMEOUT_MS) != 0)
+    if (!dl_single_origin_url(d->wt, false, locator, sizeof(locator)))
         goto done;
-    dl_trim(locator);
-    if (!locator[0] || locator[0] == '-' || strchr(locator, '\n'))
+    if (locator[0] == '-')
         goto done;
     const char *fetch[] = { "fetch", "--quiet", "--no-tags", "--refmap=",
                            "--", locator, "refs/heads/main", NULL };
     const char *fetched[] = { "rev-parse", "--verify", "FETCH_HEAD", NULL };
     if (dl_git(scratch, init, output, sizeof(output), DL_GIT_TIMEOUT_MS) != 0 ||
+        !dl_observer_receiver_same(scratch, locator) ||
         dl_git(scratch, fetch, output, sizeof(output), DL_GIT_TIMEOUT_MS) != 0 ||
         dl_git(scratch, fetched, output, sizeof(output), DL_GIT_TIMEOUT_MS) != 0)
         goto done;
@@ -6780,6 +6933,7 @@ static bool dl_push_redispatch_allowed(const struct dl_row *row,
                                        const char *observed_main)
 {
     return row->publication_signature[0] && observed_main &&
+           !row->push_diagnostic_pending &&
            dl_sha_ok(observed_main) && dl_sha_ok(row->base) &&
            strcmp(observed_main, row->base) == 0 &&
            row->attempt < DL_ATTEMPT_MAX;
@@ -6861,6 +7015,7 @@ static void dl_step_push(const struct dl_dirs *d, struct dl_row *row,
     /* Reflush even when a prior attempt left phase=push: a failed directory
      * sync can leave the renamed row visible without proving its durability. */
     (void)snprintf(row->phase, sizeof(row->phase), "push");
+    row->push_diagnostic_pending = true;
     if (!dl_commit_row(d, row, false)) {
         dl_log(row, "pre-push checkpoint failed; remote untouched\n");
         (void)json_push_kv_str(&reply->data, "leaf", DL_LEAF);
@@ -6883,7 +7038,20 @@ static void dl_step_push(const struct dl_dirs *d, struct dl_row *row,
          * obtained for (local, base) at
          * .cache/zcl-dev-proof/receipts/<local>-<base>.receipt, so the hook
          * admits in seconds instead of re-running the proof. */
-        if (!dl_push_proven_pair(d, row, buf, sizeof(buf))) {
+        bool recorded = false;
+        bool acknowledged = dl_push_proven_pair(d, row, buf, sizeof(buf),
+                                                 &recorded);
+        if (recorded) {
+            row->push_diagnostic_pending = false;
+            if (!dl_commit_row(d, row, false)) {
+                /* The previous durable checkpoint still forbids redispatch.
+                 * Continue independent observation: a real landing must keep
+                 * the established landed-with-persist-failed recovery path. */
+                (void)json_push_kv_str(&reply->data,
+                                       "push_diagnostic_checkpoint", "pending");
+            }
+        }
+        if (!acknowledged) {
             /* A failed client acknowledgement does not prove rejection.
              * Reconcile before consuming the final attempt or discarding
              * the durable request. An unavailable remote leaves it intact. */
@@ -7926,6 +8094,603 @@ static bool dl_test_pick_barrier(void)
 }
 #endif
 
+/* A compound fence owns singleflight until BOTH outcomes are durably sealed.
+ * The immutable anchor retains the old attempt history. A fenced disposition
+ * says only that future base-CAS sends are disabled; historical acceptance
+ * remains unknown. No ordinary refused/cancelled/successor path is involved. */
+struct dl_fence {
+    struct dl_row anchor, old, next;
+    long long stage; /* 0: live, 1: paired settlement, 2: projected */
+    bool dispatched;
+    char observed[80], policy[65];
+};
+
+static bool dl_fence_anchor_same(const struct dl_row *a, const struct dl_row *b);
+
+#define DL_FENCE_CAP (4u * DL_LINE_CAP)
+
+static bool dl_fence_path(const struct dl_dirs *d, char path[4192])
+{
+    return snprintf(path, 4192, "%s/fence.jsonl", d->land) < 4192;
+}
+
+[[maybe_unused]] static bool dl_fence_prefix(const struct dl_fence *f, char *text, size_t *len)
+{
+    int written = snprintf(text, DL_FENCE_CAP,
+        "{\"kind\":\"zcl.land.fence.v1\",\"stage\":%lld,\"dispatched\":%d,"
+        "\"observed\":\"%s\",\"policy\":\"%s\"}\n",
+        f->stage, f->dispatched ? 1 : 0, f->observed, f->policy);
+    if (written <= 0 || written >= (int)DL_LINE_CAP) return false;
+    *len = (size_t)written;
+    const struct dl_row *rows[] = { &f->anchor, &f->old, &f->next };
+    for (size_t i = 0; i < 3; ++i) {
+        size_t n = 0;
+        if (!dl_encode_row(rows[i], text + *len, DL_FENCE_CAP - *len, &n))
+            return false;
+        *len += n;
+    }
+    return true;
+}
+
+static bool dl_fence_write(const struct dl_dirs *d, const struct dl_fence *f)
+{
+#if (defined(ZCL_DEV_BUILD) || defined(ZCL_TESTING)) && !defined(_WIN32)
+    char path[4192], tmp[4192 + 8], signer_hex[65], signature_hex[129];
+    char *text = zcl_malloc(DL_FENCE_CAP, "dev.land.fence");
+    uint8_t signer[32], signature[64];
+    const char *why = NULL;
+    size_t len = 0;
+    bool ok = text && dl_fence_path(d, path) &&
+        snprintf(tmp, sizeof(tmp), "%s.tmp", path) < (int)sizeof(tmp) &&
+        dl_fence_prefix(f, text, &len) &&
+        zcl_dev_proof_signer_sign((const uint8_t *)text, len, signer,
+                                   signature, &why);
+    if (!ok) { free(text); return false; }
+    zcl_hex_encode(signer, sizeof(signer), signer_hex);
+    zcl_hex_encode(signature, sizeof(signature), signature_hex);
+    int n = snprintf(text + len, DL_FENCE_CAP - len,
+                      "{\"signer\":\"%s\",\"signature\":\"%s\"}\n",
+                      signer_hex, signature_hex);
+    if (n <= 0 || (size_t)n >= DL_FENCE_CAP - len) {
+        free(text); return false;
+    }
+    len += (size_t)n;
+    int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC | O_NOFOLLOW,
+                   0600);
+    FILE *stream = fd < 0 ? NULL : fdopen(fd, "wb");
+    if (!stream) { if (fd >= 0) (void)close(fd); free(text); return false; }
+    ok = fwrite(text, 1, len, stream) == len && dl_queue_file_flush(stream);
+    if (fclose(stream) != 0) ok = false;
+    free(text);
+    return ok && rename(tmp, path) == 0 && dl_queue_parent_flush(d->land);
+#else
+    (void)d; (void)f;
+    return false;
+#endif
+}
+
+[[maybe_unused]] static bool dl_fence_header_decode(const char *line, struct dl_fence *f)
+{
+    char kind[64]; long long dispatched = 0;
+    bool ok = dl_line_str(line, "kind", kind, sizeof(kind)) &&
+        strcmp(kind, "zcl.land.fence.v1") == 0 &&
+        dl_line_int(line, "stage", &f->stage) && f->stage >= 0 && f->stage <= 2 &&
+        dl_line_int(line, "dispatched", &dispatched) && (dispatched == 0 || dispatched == 1) &&
+        dl_line_str(line, "observed", f->observed, sizeof(f->observed)) && dl_sha_ok(f->observed) &&
+        dl_line_str(line, "policy", f->policy, sizeof(f->policy)) && dl_hex_ok(f->policy, 64);
+    f->dispatched = dispatched != 0;
+    return ok;
+}
+
+[[maybe_unused]] static bool dl_fence_rows_decode(char *const lines[5], struct dl_fence *f,
+                                                   char signer[65], char signature[129])
+{
+    return dl_parse_row(lines[1], &f->anchor) && dl_parse_row(lines[2], &f->old) &&
+        dl_parse_row(lines[3], &f->next) && dl_line_str(lines[4], "signer", signer, 65) &&
+        dl_line_str(lines[4], "signature", signature, 129);
+}
+
+[[maybe_unused]] static bool dl_fence_geometry_ok(const struct dl_fence *f)
+{
+    return f->old.seq == f->anchor.seq && f->next.seq > f->old.seq &&
+        dl_fence_anchor_same(&f->old, &f->anchor) &&
+        strcmp(f->anchor.state, "inflight") == 0 && strcmp(f->anchor.phase, "push") == 0 &&
+        strcmp(f->old.base, f->next.base) == 0 && strcmp(f->old.tree, f->next.tree) == 0 &&
+        strcmp(f->old.local, f->next.local) != 0 &&
+        strcmp(f->old.publication_target, f->next.publication_target) == 0 &&
+        f->next.fence_peer == f->old.seq;
+}
+
+#if defined(ZCL_DEV_BUILD) || defined(ZCL_TESTING)
+static bool dl_fence_seal_ok(const char *text, size_t len,
+                              const char *signer_hex, const char *signature_hex)
+{
+    uint8_t signer[32], signature[64]; const char *why = NULL;
+    return zcl_hex_decode_lower(signer_hex, signer, sizeof(signer)) &&
+        zcl_hex_decode_lower(signature_hex, signature, sizeof(signature)) &&
+        zcl_dev_proof_signer_verify((const uint8_t *)text, len, signer, signature, &why);
+}
+#endif
+
+/* 0 absent, 1 verified, -1 corrupt/unavailable. A torn record is a block. */
+static int dl_fence_read(const struct dl_dirs *d, struct dl_fence *f)
+{
+#if defined(ZCL_DEV_BUILD) || defined(ZCL_TESTING)
+    char path[4192], signer_hex[65], signature_hex[129];
+    char *text = zcl_malloc(DL_FENCE_CAP, "dev.land.fence.read");
+    size_t len = 0;
+    if (!text || !dl_fence_path(d, path)) { free(text); return -1; }
+    if (!dl_read_file(path, text, DL_FENCE_CAP, &len)) {
+        int rc = errno == ENOENT ? 0 : -1; free(text); return rc;
+    }
+    char *lines[5], *cursor = text; size_t signed_len = 0; bool ok = true;
+    for (size_t i = 0; i < 5; ++i) {
+        lines[i] = cursor;
+        char *end = strchr(cursor, '\n');
+        if (!end) { ok = false; break; }
+        if (i == 4) signed_len = (size_t)(cursor - text);
+        *end = '\0'; cursor = end + 1;
+    }
+    memset(f, 0, sizeof(*f));
+    ok = ok && *cursor == '\0' && dl_fence_header_decode(lines[0], f) &&
+        dl_fence_rows_decode(lines, f, signer_hex, signature_hex) && dl_fence_geometry_ok(f);
+    if (ok) {
+        /* Restore the exact sealed bytes, never a re-encoding. */
+        for (size_t i = 0; i < 4; ++i) lines[i][strlen(lines[i])] = '\n';
+        ok = dl_fence_seal_ok(text, signed_len, signer_hex, signature_hex);
+    }
+    free(text); return ok ? 1 : -1;
+#else
+    (void)d; (void)f; return 0;
+#endif
+}
+
+static bool dl_fence_reserve(const struct dl_dirs *d, long long *seq)
+{
+    struct dl_fence *f = zcl_malloc(sizeof(*f), "dev.land.fence.reserve");
+    if (!f) return false;
+    int rc = dl_fence_read(d, f);
+    bool ok = rc >= 0 && (rc == 0 || f->next.seq < LLONG_MAX);
+    if (ok && rc == 1 && *seq <= f->next.seq) *seq = f->next.seq + 1;
+    free(f);
+    return ok;
+}
+
+static bool dl_fence_blocks(const struct dl_dirs *d, long long seq)
+{
+    struct dl_fence *f = zcl_malloc(sizeof(*f), "dev.land.fence.block");
+    if (!f) return true;
+    int rc = dl_fence_read(d, f);
+    bool blocked = rc < 0 || (rc == 1 && f->stage < 2 &&
+        (seq == 0 || seq == f->old.seq || seq == f->next.seq));
+    free(f);
+    return blocked;
+}
+
+static bool dl_fence_repo_byte(char c)
+{
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+        (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.';
+}
+
+static bool dl_fence_repo_name_ok(const char *name)
+{
+    size_t length = strlen(name); unsigned slashes = 0;
+    for (size_t i = 0; i < length; ++i) {
+        if (name[i] == '/') {
+            ++slashes;
+            if (i == 0 || i + 1 == length) return false;
+        } else if (!dl_fence_repo_byte(name[i])) return false;
+    }
+    return slashes == 1;
+}
+
+static bool dl_fence_origin_repo(const char *origin, char name[256])
+{
+    const char *repository = NULL;
+    if (strncmp(origin, "git@github.com:", 15) == 0) repository = origin + 15;
+    if (strncmp(origin, "https://github.com/", 19) == 0) repository = origin + 19;
+    if (!repository || strlen(repository) >= 256) return false;
+    (void)snprintf(name, 256, "%s", repository);
+    size_t length = strlen(name);
+    if (length > 4 && strcmp(name + length - 4, ".git") == 0) name[length - 4] = '\0';
+    return dl_fence_repo_name_ok(name);
+}
+
+static bool dl_fence_policy_json(const char *bytes, size_t len, char digest[65])
+{
+    struct json_value policy; json_init(&policy);
+    bool ok = json_read(&policy, bytes, len) && policy.type == JSON_OBJ;
+    const char *keys[] = { "allow_force_pushes", "allow_deletions", "enforce_admins" };
+    for (size_t i = 0; ok && i < 3; ++i) {
+        const struct json_value *object = json_get(&policy, keys[i]);
+        const struct json_value *enabled = object ? json_get(object, "enabled") : NULL;
+        ok = enabled && enabled->type == JSON_BOOL && json_get_bool(enabled) == (i == 2);
+    }
+    if (ok) {
+        struct sha256_ctx hash; uint8_t raw[32];
+        sha256_init(&hash); sha256_write(&hash, (const uint8_t *)bytes, len);
+        sha256_finalize(&hash, raw); zcl_hex_encode(raw, sizeof(raw), digest);
+    }
+    json_free(&policy); return ok;
+}
+
+static bool dl_fence_policy_fetch(const char *endpoint, char digest[65])
+{
+    char bytes[32768];
+    const char *argv[] = { "gh", "api", "--hostname", "github.com", endpoint, NULL };
+    struct zcl_spawn_binary_observation o = {0};
+    (void)zcl_spawn_capture_binary(argv, bytes, sizeof(bytes), 10000, &o);
+    return o.exit_observed && o.exit_code == 0 && o.eof && !o.overflow && !o.timed_out &&
+        dl_fence_policy_json(bytes, o.output_len, digest);
+}
+
+/* Current enforced-admin main protection grants prospective fencing only;
+ * multiple effective receivers and unsupported servers are refused. */
+static bool dl_fence_policy(const struct dl_dirs *d, char digest[65])
+{
+#if defined(ZCL_TESTING)
+    const char *fixture = getenv("ZCL_LAND_TEST_FENCE_POLICY");
+    if (fixture && getenv("ZCL_DEVLOOP_TEST_PROCESS")) {
+        if (strcmp(fixture, "monotonic") != 0) return false;
+        memset(digest, 'a', 64); digest[64] = '\0'; return true;
+    }
+#endif
+    char origin[4096], name[256], endpoint[512];
+    if (!dl_single_origin_url(d->wt, true, origin, sizeof(origin)) ||
+        !dl_fence_origin_repo(origin, name) || snprintf(endpoint, sizeof(endpoint),
+            "repos/%s/branches/main/protection", name) >= (int)sizeof(endpoint)) return false;
+    return dl_fence_policy_fetch(endpoint, digest);
+}
+
+static int dl_fence_ancestor(const struct dl_dirs *d, const char *head,
+                              const char *remote)
+{
+    char output[512];
+    const char *args[] = { "--no-replace-objects", "merge-base", "--is-ancestor",
+                           head, remote, NULL };
+    return dl_git(d->wt, args, output, sizeof(output), DL_GIT_TIMEOUT_MS);
+}
+
+static bool dl_fence_linear_range(const struct dl_dirs *d, const char *range)
+{
+    const char *argv[] = { "git", "-C", d->wt, "--no-replace-objects", "rev-list",
+                           "--min-parents=2", range, NULL };
+    char merges[256]; struct zcl_spawn_binary_observation o = {0};
+    (void)zcl_spawn_capture_binary(argv, merges, sizeof(merges), DL_GIT_TIMEOUT_MS, &o);
+    return o.exit_observed && o.exit_code == 0 && !o.overflow && o.eof &&
+        !o.timed_out && o.output_len == 0;
+}
+
+static bool dl_fence_all_signed(const struct dl_dirs *d, const struct dl_row *row)
+{
+    char range[176], signatures[65536];
+    if (snprintf(range, sizeof(range), "%s..%s", row->base, row->local) >=
+        (int)sizeof(range)) return false;
+    if (!dl_fence_linear_range(d, range)) return false;
+    const char *argv[] = { "git", "-C", d->wt, "--no-replace-objects", "log",
+                           "--format=%G?", range, NULL };
+    struct zcl_spawn_binary_observation o = {0};
+    (void)zcl_spawn_capture_binary(argv, signatures, sizeof(signatures),
+                                   DL_GIT_TIMEOUT_MS, &o);
+    if (!o.exit_observed || o.exit_code != 0 || o.overflow || !o.eof ||
+        o.timed_out || !o.output_len || o.output_len % 2) return false;
+    for (size_t i = 0; i < o.output_len; i += 2)
+        if (signatures[i] != 'G' || signatures[i + 1] != '\n') return false;
+    return true;
+}
+
+static bool dl_fence_publication_same(const struct dl_row *a, const struct dl_row *b)
+{
+    return strcmp(a->publication_target, b->publication_target) == 0 &&
+        strcmp(a->publication_proof, b->publication_proof) == 0 &&
+        strcmp(a->publication_bundle, b->publication_bundle) == 0 &&
+        strcmp(a->publication_signer, b->publication_signer) == 0;
+}
+
+static bool dl_fence_anchor_same(const struct dl_row *a, const struct dl_row *b)
+{
+    return dl_push_pair_same(a, b) && a->attempt == b->attempt &&
+        a->seq == b->seq && a->priority_seq == b->priority_seq && a->started == b->started &&
+        a->push_diagnostic_pending == b->push_diagnostic_pending &&
+        strcmp(a->ts, b->ts) == 0 && strcmp(a->worktree, b->worktree) == 0 &&
+        strcmp(a->tip, b->tip) == 0 && strcmp(a->tree, b->tree) == 0 &&
+        strcmp(a->note, b->note) == 0 &&
+        dl_fence_publication_same(a, b) &&
+        strcmp(a->proof_intent, b->proof_intent) == 0;
+}
+
+static bool dl_fence_current_anchor(const struct dl_dirs *d, const struct dl_fence *f)
+{
+    char path[4192];
+    struct dl_row *rows = NULL;
+    size_t count = 0;
+    if (snprintf(path, sizeof(path), "%s/queue.jsonl", d->land) >= (int)sizeof(path))
+        return false;
+    int lock = dl_rows_lock(d->land);
+    if (lock < 0) return false;
+    bool ok = dl_load_rows(path, &rows, &count, NULL, 0), found = false;
+    for (size_t i = 0; ok && i < count; ++i) {
+        if (rows[i].seq == f->anchor.seq) {
+            found = true; ok = dl_fence_anchor_same(&rows[i], &f->anchor);
+        }
+        if (rows[i].seq == f->next.seq) ok = false;
+    }
+    if (ok && !found && f->stage == 1) {
+        bool old_seen = false, new_seen = false; long long high_water = 0;
+        ok = dl_scan_outcomes(d, &f->old, NULL, &old_seen, &high_water) &&
+            dl_scan_outcomes(d, &f->next, NULL, &new_seen, &high_water) && old_seen && new_seen;
+    } else if (!found) ok = false;
+    free(rows); dl_unlock(lock);
+    return ok;
+}
+
+static void dl_fence_test_crash(const char *point)
+{
+#if defined(ZCL_TESTING) && !defined(_WIN32)
+    const char *wanted = getenv("ZCL_LAND_TEST_FENCE_CRASH");
+    if (wanted && getenv("ZCL_DEVLOOP_TEST_PROCESS") && strcmp(wanted, point) == 0)
+        _exit(87);
+#else
+    (void)point;
+#endif
+}
+
+static bool dl_fence_row_equal(const struct dl_row *a, const struct dl_row *b)
+{
+    char *left = zcl_malloc(DL_LINE_CAP, "dev.land.fence.equal.left");
+    char *right = zcl_malloc(DL_LINE_CAP, "dev.land.fence.equal.right");
+    size_t left_len = 0, right_len = 0;
+    bool equal = left && right && dl_encode_row(a, left, DL_LINE_CAP, &left_len) &&
+        dl_encode_row(b, right, DL_LINE_CAP, &right_len) && left_len == right_len &&
+        memcmp(left, right, left_len) == 0;
+    free(left); free(right); return equal;
+}
+
+/* Unlike ordinary historical lookup, paired replay must never substitute a
+ * loosely matching terminal row for the sealed journal's intended outcome. */
+static bool dl_fence_record_outcome(const struct dl_dirs *d, struct dl_row *row)
+{
+    struct dl_row prior; bool present = false; long long high_water = 0;
+    if (!dl_scan_outcomes(d, row, &prior, &present, &high_water)) return false;
+    if (present) return dl_fence_row_equal(row, &prior) && dl_outbox(d, row, "outcome");
+    return dl_record_outcome(d, row);
+}
+
+static bool dl_fence_outcomes_project(const struct dl_dirs *d, struct dl_fence *f)
+{
+    struct dl_row *winner = strcmp(f->old.state, "landed") == 0 ? &f->old : &f->next;
+    struct dl_row *loser = winner == &f->old ? &f->next : &f->old;
+    if (strcmp(winner->state, "landed") || strcmp(loser->state, "fenced") ||
+        !dl_publication_receipt_verify(winner) || !dl_fence_record_outcome(d, &f->old))
+        return false;
+    dl_fence_test_crash("old_projection");
+    return dl_fence_record_outcome(d, &f->next);
+}
+
+/* Paired sealed journal precedes any terminal projection. Both outcome appends
+ * and the single whole-queue rewrite are replayable while step.lock stays held.
+ * A failed/one-sided projection cannot release singleflight. */
+static bool dl_fence_project(const struct dl_dirs *d, struct dl_fence *f)
+{
+    char qpath[4192];
+    struct dl_row *rows = NULL;
+    size_t count = 0, kept = 0;
+    if (f->stage != 1 || snprintf(qpath, sizeof(qpath), "%s/queue.jsonl", d->land) >=
+        (int)sizeof(qpath)) return false;
+    int lock = dl_rows_lock(d->land);
+    if (lock < 0) return false;
+    bool ok = dl_load_rows(qpath, &rows, &count, NULL, 0);
+    for (size_t i = 0; ok && i < count; ++i) {
+        if (rows[i].seq == f->anchor.seq) {
+            ok = dl_fence_anchor_same(&rows[i], &f->anchor);
+            continue;
+        }
+        if (rows[i].seq == f->next.seq) { ok = false; break; }
+        rows[kept++] = rows[i];
+    }
+    ok = ok && dl_fence_outcomes_project(d, f) &&
+        dl_rewrite_rows(d->land, qpath, rows, kept);
+    free(rows);
+    if (ok) { f->stage = 2; ok = dl_fence_write(d, f); }
+    dl_unlock(lock);
+    return ok;
+}
+
+static void dl_fence_blocked(struct zcl_command_reply *reply, const char *code,
+                              const struct dl_fence *f)
+{
+    dl_fail(reply, code, "fence_replace",
+             "paired fence retained; no ordinary settlement or queue advancement",
+             f ? f->observed : "fence.jsonl unavailable");
+    if (f) {
+        (void)json_push_kv_int(&reply->data, "old_seq", f->anchor.seq);
+        (void)json_push_kv_int(&reply->data, "replacement_seq", f->next.seq);
+        (void)json_push_kv_str(&reply->data, "historical_git_acceptance", "unknown");
+    }
+}
+
+static bool dl_fence_hooks_admitted(const char *wt)
+{
+    if (!dl_wt_hooks_ready(wt) || !dl_wt_hooks_fresh(wt)) return false;
+#if defined(ZCL_TESTING)
+    const char *fixture = dl_hooks_stub_dir();
+    if (fixture && getenv("ZCL_DEVLOOP_TEST_PROCESS") && dl_stub()) {
+        char configured[4096];
+        const char *get[] = { "config", "--worktree", "--get", "core.hooksPath", NULL };
+        if (dl_git(wt, get, configured, sizeof(configured), 10000) != 0) return false;
+        dl_trim(configured);
+        return strcmp(configured, fixture) == 0;
+    }
+#endif
+    /* The normal canonical gate validates hook identity, scripts and freshness.
+     * No installation/repair is authorized by this check-only fence route. */
+    const char *argv[] = { "make", "-C", wt, "check-git-hooks-installed", NULL };
+    char output[8192]; bool timeout = false;
+    return zcl_spawn_capture_merged_observed(argv, output, sizeof(output),
+                                             DL_GIT_TIMEOUT_MS, &timeout) == 0 && !timeout;
+}
+
+static bool dl_fence_identity_ok(const struct dl_dirs *d,
+                                  const struct dl_dirs *next_dirs, const struct dl_fence *f)
+{
+    return dl_fence_current_anchor(d, f) && dl_publication_verify(d, &f->anchor) &&
+        dl_publication_verify(next_dirs, &f->next) && dl_fence_all_signed(next_dirs, &f->next) &&
+        dl_fence_hooks_admitted(next_dirs->wt);
+}
+
+static bool dl_fence_observation_ok(const struct dl_dirs *next_dirs, const struct dl_fence *f,
+                                     const char *observed, int old_contains, int new_contains)
+{
+    return (old_contains == 0 || old_contains == 1) &&
+        (new_contains == 0 || new_contains == 1) &&
+        !(old_contains == 0 && new_contains == 0) &&
+        dl_fence_ancestor(next_dirs, f->observed, observed) == 0;
+}
+
+static void dl_fence_replay(const struct dl_dirs *d, struct dl_fence *f,
+                             int old_contains, int new_contains, struct zcl_command_reply *reply)
+{
+    bool matches = (old_contains == 0 && strcmp(f->old.state, "landed") == 0) ||
+        (new_contains == 0 && strcmp(f->next.state, "landed") == 0);
+    if (!matches) dl_fence_blocked(reply, "FENCE_OBSERVATION_INCONSISTENT", f);
+    else if (!dl_fence_project(d, f)) dl_fence_blocked(reply, "FENCE_PROJECT_PENDING", f);
+    else dl_step_reply(reply, &f->next, f->next.state);
+}
+
+static void dl_fence_settle(const struct dl_dirs *d, const struct dl_dirs *next_dirs,
+                             struct dl_fence *f, int old_contains, struct zcl_command_reply *reply)
+{
+    char policy[65];
+        struct dl_row *winner = old_contains == 0 ? &f->old : &f->next;
+        struct dl_row *loser = old_contains == 0 ? &f->next : &f->old;
+        const struct dl_dirs *winner_dirs = old_contains == 0 ? d : next_dirs;
+        if (!dl_publication_remote_observe(winner_dirs, winner,
+                winner->remote_tip, winner->remote_source) ||
+            strcmp(winner->remote_tip, f->observed) != 0 ||
+            !dl_publication_receipt_seal(winner) ||
+            !dl_publication_receipt_verify(winner) ||
+            !dl_fence_policy(next_dirs, policy)) {
+            dl_fence_blocked(reply, "FENCE_WINNER_RECEIPT_UNAVAILABLE", f); return;
+        }
+        (void)snprintf(winner->state, sizeof(winner->state), "landed");
+        (void)snprintf(winner->pushed, sizeof(winner->pushed), "%s", winner->local);
+        winner->phase[0] = '\0';
+        (void)snprintf(loser->state, sizeof(loser->state), "fenced");
+        /* Retain phase, attempts, pair and intent on the losing checkpoint. */
+        loser->fence_peer = winner->seq;
+        winner->fence_peer = loser->seq;
+        f->stage = 1;
+        if (!dl_fence_write(d, f)) {
+            dl_fence_blocked(reply, "FENCE_PROJECT_PENDING", f); return;
+        }
+        dl_fence_test_crash("paired");
+        if (!dl_fence_project(d, f)) {
+            dl_fence_blocked(reply, "FENCE_PROJECT_PENDING", f); return;
+        }
+        dl_step_reply(reply, &f->next, f->next.state);
+        return;
+}
+
+static bool dl_fence_checkout_send_ok(const struct dl_dirs *d, const struct dl_dirs *next_dirs,
+                                      struct dl_fence *f, struct zcl_command_reply *reply)
+{
+    char current[80], output[1024];
+    const char *clean[] = { "status", "--porcelain", "--untracked-files=no", NULL };
+    if (dl_submit_tip_resolve(next_dirs->wt, "HEAD", current, reply) &&
+        strcmp(current, f->next.local) == 0 &&
+        dl_git(next_dirs->wt, clean, output, sizeof(output), 10000) == 0 && !output[0] &&
+        dl_fence_hooks_admitted(next_dirs->wt)) return true;
+    /* No Git send occurred. Retain the fence for independent reconciliation. */
+    f->next.push_diagnostic_pending = false;
+    if (!dl_fence_write(d, f)) {
+        dl_fence_blocked(reply, "FENCE_DISPATCH_PERSIST_FAILED", f); return false;
+    }
+    dl_fence_blocked(reply, "FENCE_WORKTREE_INVALID", f);
+    return false;
+}
+
+static void dl_fence_send(const struct dl_dirs *d, const struct dl_dirs *next_dirs,
+                           struct dl_fence *f, struct zcl_command_reply *reply)
+{
+    if (f->next.push_diagnostic_pending ||
+        (f->dispatched && f->next.attempt >= DL_ATTEMPT_MAX)) {
+        dl_fence_blocked(reply, "FENCE_PUSH_OUTCOME_UNKNOWN", f); return;
+    }
+    if (f->dispatched) ++f->next.attempt;
+    f->dispatched = true;
+    f->next.push_diagnostic_pending = true;
+    if (!dl_fence_write(d, f)) {
+        dl_fence_blocked(reply, "FENCE_DISPATCH_PERSIST_FAILED", f); return;
+    }
+    dl_fence_test_crash("before_dispatch");
+#if defined(ZCL_TESTING) && !defined(_WIN32)
+    if (!dl_test_pick_barrier()) {
+        dl_fence_blocked(reply, "FENCE_PUSH_OUTCOME_UNKNOWN", f); return;
+    }
+#endif
+    if (!dl_fence_checkout_send_ok(d, next_dirs, f, reply)) return;
+    char *output = zcl_malloc(DL_GIT_CAP, "dev.land.fence.push");
+    if (!output) { dl_fence_blocked(reply, "FENCE_PUSH_OUTCOME_UNKNOWN", f); return; }
+    bool recorded = false;
+    (void)dl_push_proven_pair(next_dirs, &f->next, output, DL_GIT_CAP, &recorded);
+    free(output);
+    dl_fence_test_crash("after_dispatch");
+    if (recorded) {
+        f->next.push_diagnostic_pending = false;
+        if (!dl_fence_write(d, f)) {
+            dl_fence_blocked(reply, "FENCE_DIAGNOSTIC_PERSIST_FAILED", f); return;
+        }
+    }
+    /* One send per call, even with missing diagnostics. Next beat observes. */
+    dl_fence_blocked(reply, "FENCE_PUSH_OUTCOME_UNKNOWN", f);
+}
+
+/* Caller holds step.lock. Definitive answers for both heads precede settlement. */
+static void dl_fence_drive(const struct dl_dirs *d, struct dl_fence *f,
+                            struct zcl_command_reply *reply)
+{
+    struct dl_dirs next_dirs = *d;
+    (void)snprintf(next_dirs.wt, sizeof(next_dirs.wt), "%s", f->next.worktree);
+    char policy[65], observed[80];
+    if (!dl_fence_identity_ok(d, &next_dirs, f)) {
+        dl_fence_blocked(reply, "FENCE_IDENTITY_INVALID", f); return;
+    }
+    if (!dl_fence_policy(&next_dirs, policy) || !dl_fetch_remote_main(next_dirs.wt, observed)) {
+        dl_fence_blocked(reply, "FENCE_EVIDENCE_UNAVAILABLE", f); return;
+    }
+    int old_contains = dl_fence_ancestor(&next_dirs, f->anchor.local, observed);
+    int new_contains = dl_fence_ancestor(&next_dirs, f->next.local, observed);
+    if (!dl_fence_observation_ok(&next_dirs, f, observed, old_contains, new_contains)) {
+        dl_fence_blocked(reply, "FENCE_OBSERVATION_INCONSISTENT", f); return;
+    }
+    if (f->stage == 1) {
+        dl_fence_replay(d, f, old_contains, new_contains, reply); return;
+    }
+    (void)snprintf(f->observed, sizeof(f->observed), "%s", observed);
+    (void)snprintf(f->policy, sizeof(f->policy), "%s", policy);
+    if (old_contains == 0 || new_contains == 0) {
+        dl_fence_settle(d, &next_dirs, f, old_contains, reply); return;
+    }
+    if (strcmp(observed, f->anchor.base) != 0) {
+        (void)dl_fence_write(d, f);
+        dl_fence_blocked(reply, "FENCE_NO_VERIFIED_WINNER", f); return;
+    }
+    dl_fence_send(d, &next_dirs, f, reply);
+}
+
+static bool dl_fence_step(const struct dl_dirs *d, struct zcl_command_reply *reply)
+{
+    struct dl_fence *f = zcl_malloc(sizeof(*f), "dev.land.fence.step");
+    if (!f) { dl_fence_blocked(reply, "FENCE_READ_FAILED", NULL); return true; }
+    int rc = dl_fence_read(d, f);
+    bool handled = rc < 0 || (rc == 1 && f->stage < 2);
+    if (rc < 0) dl_fence_blocked(reply, "FENCE_READ_FAILED", NULL);
+    else if (rc == 1 && f->stage < 2) dl_fence_drive(d, f, reply);
+    free(f);
+    return handled;
+}
+
 static void dl_step(const struct zcl_command_request *req,
                     struct zcl_command_reply *reply)
 {
@@ -7971,6 +8736,10 @@ static void dl_step(const struct zcl_command_request *req,
     slot = dl_step_lock(d.land);
     if (slot < 0) {
         dl_step_busy(reply, d.land);
+        return;
+    }
+    if (dl_fence_step(&d, reply)) {
+        dl_unlock(slot);
         return;
     }
     /* A finished attempt's generation is swept here, once the lock proves
@@ -8676,6 +9445,11 @@ static void dl_attach_once(const struct zcl_command_request *req,
     }
     slot = dl_step_lock(d.land);
     if (slot < 0) { dl_step_busy(reply, d.land); return; }
+    if (dl_fence_blocks(&d, target.explicit_seq ? target.seq : 0)) {
+        dl_fail(reply, "FENCE_ACTIVE", "attach",
+                "paired fence owns publication until paired settlement", d.land);
+        goto done;
+    }
     if (!dl_load_rows(qpath, &rows, &count, NULL, 0)) {
         dl_fail(reply, "QUEUE_READ_FAILED", "attach",
                 "cannot read the existing landing queue", qpath);
@@ -8764,6 +9538,241 @@ static void dl_attach(const struct zcl_command_request *req,
     }
 }
 
+static void dl_fence_status(struct zcl_command_reply *reply)
+{
+    struct dl_dirs d;
+    if (!dl_dirs_resolve(&d, false)) return;
+    struct dl_fence *f = zcl_malloc(sizeof(*f), "dev.land.fence.status");
+    if (!f) return;
+    int rc = dl_fence_read(&d, f);
+    if (rc != 0) {
+        struct json_value info;
+        json_init(&info); json_set_object(&info);
+        (void)json_push_kv_str(&info, "state", rc < 0 ? "unavailable" :
+            f->stage == 2 ? "projected" : f->stage == 1 ? "settlement_pending" : "unknown");
+        if (rc == 1) {
+            (void)json_push_kv_int(&info, "old_seq", f->anchor.seq);
+            (void)json_push_kv_int(&info, "replacement_seq", f->next.seq);
+            (void)json_push_kv_str(&info, "old_head", f->anchor.local);
+            (void)json_push_kv_str(&info, "replacement_head", f->next.local);
+            (void)json_push_kv_str(&info, "historical_git_acceptance",
+                                   strcmp(f->old.state, "landed") == 0 ? "verified" : "unknown");
+            (void)json_push_kv_str(&info, "future_dispatch",
+                                   strcmp(f->old.state, "fenced") == 0 ? "fenced" : "unknown");
+            (void)json_push_kv_str(&info, "observed_main", f->observed);
+            (void)json_push_kv_str(&info, "policy_digest", f->policy);
+        }
+        (void)json_push_kv(&reply->data, "fence", &info);
+        json_free(&info);
+    }
+    free(f);
+}
+
+#if !defined(_WIN32)
+static bool dl_fence_archive(const struct dl_dirs *d, const struct dl_fence *f, struct zcl_command_reply *reply)
+{
+    {
+        char path[4192], archive[4192];
+        if (!dl_fence_path(d, path) || snprintf(archive, sizeof(archive),
+                "%s/fence-%lld.jsonl", d->land, f->anchor.seq) >= (int)sizeof(archive)) {
+            dl_fence_blocked(reply, "FENCE_ARCHIVE_FAILED", f); return false;
+        }
+        bool archived = link(path, archive) == 0;
+        if (!archived && errno == EEXIST) {
+            char current_hash[65], archive_hash[65];
+            archived = dl_publication_file_sha256(path, DL_FENCE_CAP, current_hash) &&
+                dl_publication_file_sha256(archive, DL_FENCE_CAP, archive_hash) &&
+                strcmp(current_hash, archive_hash) == 0;
+        }
+        if (!archived || !dl_queue_parent_flush(d->land)) {
+            dl_fence_blocked(reply, "FENCE_ARCHIVE_FAILED", f); return false;
+        }
+    }
+    return true;
+}
+
+static bool dl_fence_workspace(const struct dl_dirs *d, struct dl_dirs *next_dirs, const char *worktree, const char *tip, struct zcl_command_reply *reply)
+{
+    char current[80];
+    *next_dirs = *d;
+    if (!realpath(worktree, next_dirs->wt) || strcmp(next_dirs->wt, d->wt) == 0 ||
+        !dl_submit_tip_resolve(next_dirs->wt, tip, current, reply) ||
+        strcmp(current, tip) != 0 || !dl_rev_parse(next_dirs->wt, "HEAD", current) ||
+        strcmp(current, tip) != 0 || !dl_fence_hooks_admitted(next_dirs->wt)) {
+        dl_fail(reply, "FENCE_WORKTREE_INVALID", "fence_replace",
+                 "replacement must be an isolated prepared checkout at its exact tip",
+                 worktree); return false;
+    }
+    return true;
+}
+
+static bool dl_fence_old_load(const struct dl_dirs *d, struct dl_row *rows, size_t count, long long seq, const char *base, const char *head, struct dl_row **found, struct zcl_command_reply *reply)
+{
+    struct dl_row *old = NULL;
+    for (size_t i = 0; i < count; ++i) {
+        if (rows[i].seq == seq) old = &rows[i];
+        else if (strcmp(rows[i].state, "inflight") == 0) return false;
+    }
+    if (!old || strcmp(old->state, "inflight") || strcmp(old->phase, "push") ||
+        strcmp(old->base, base) || strcmp(old->local, head) ||
+        !dl_publication_verify(d, old)) {
+        dl_fail(reply, "FENCE_OLD_INTENT_CHANGED", "fence_replace",
+                 "old sequence, pair and signed intent must match under native locks",
+                 "locked queue identity");
+        return false;
+    }
+    *found = old;
+    return true;
+}
+
+static bool dl_fence_new_qualify(const struct dl_dirs *next_dirs, struct dl_row *next, const struct dl_row *old, const char *base, const char *tip, struct zcl_command_reply *reply)
+{
+    if (!dl_proof_intent_bind(next_dirs, next) || strcmp(next->tree, old->tree) ||
+        dl_fence_ancestor(next_dirs, base, tip) != 0 ||
+        !dl_fence_all_signed(next_dirs, next) ||
+        !dl_publication_proof_digest(next_dirs, next, next->publication_proof) ||
+        !dl_publication_target(next_dirs, next->publication_target) ||
+        strcmp(next->publication_target, old->publication_target) ||
+        !dl_publication_bundle_make(next_dirs, next, next->publication_bundle) ||
+        !dl_publication_sign(next) || !dl_publication_verify(next_dirs, next)) {
+        dl_fail(reply, "FENCE_NEW_PAIR_UNQUALIFIED", "fence_replace",
+                 "same tree still requires all-signed range and its own exact proof/intent",
+                 tip); return false;
+    }
+    return true;
+}
+
+static bool dl_fence_contract(const struct dl_dirs *next_dirs, struct dl_fence *f, const char *base, const char *tip, struct zcl_command_reply *reply)
+{
+    char output[1024];
+    const char *clean[] = { "status", "--porcelain", "--untracked-files=no", NULL };
+    if (dl_git(next_dirs->wt, clean, output, sizeof(output), 10000) != 0 || output[0] ||
+        !dl_fence_policy(next_dirs, f->policy) ||
+        !dl_fetch_remote_main(next_dirs->wt, f->observed) ||
+        strcmp(f->observed, base)) {
+        dl_fail(reply, "FENCE_CONTRACT_UNAVAILABLE", "fence_replace",
+                 "clean exact checkout, current enforced no-rewind policy and unchanged base required",
+                 tip); return false;
+    }
+    return true;
+}
+
+static bool dl_fence_input(const struct zcl_command_request *req, long long *seq,
+                            const char *base, const char *head, const char *tip,
+                            const char *worktree, struct zcl_command_reply *reply)
+{
+    if (!dl_seq_in(req, seq) || !dl_sha_ok(base) || !dl_sha_ok(head) ||
+        !dl_sha_ok(tip) || strcmp(head, tip) == 0 || !worktree ||
+        !dl_worktree_shape_ok(worktree)) {
+        dl_fail(reply, "BAD_INPUT", "fence_replace",
+                 "seq/base/head pins, distinct exact tip and isolated worktree required",
+                 "input.seq/base/head/tip/worktree"); return false;
+    }
+    return true;
+}
+
+static bool dl_fence_existing(int existing, const struct dl_fence *f, long long seq,
+                               const char *base, const char *head, const char *tip,
+                               const char *worktree, struct zcl_command_reply *reply)
+{
+    if (existing < 0) { dl_fence_blocked(reply, "FENCE_READ_FAILED", NULL); return true; }
+    if (existing == 1 && f->anchor.seq == seq) {
+        if (strcmp(f->anchor.base, base) || strcmp(f->anchor.local, head) ||
+            strcmp(f->next.local, tip) || strcmp(f->next.worktree, worktree)) {
+            dl_fence_blocked(reply, "FENCE_IDENTITY_FROZEN", f); return true;
+        }
+        (void)json_push_kv_int(&reply->data, "replacement_seq", f->next.seq);
+        dl_step_reply(reply, &f->next, f->stage == 2 ? f->next.state : "fence_armed");
+        return true; /* Idempotent attachment is never an implicit dispatch. */
+    }
+    if (existing == 1 && f->stage != 2) {
+        dl_fence_blocked(reply, "FENCE_ACTIVE", f); return true;
+    }
+    return false;
+}
+
+static bool dl_fence_locked_queue(const struct dl_dirs *d, char qpath[4192],
+                                   int *lock, struct dl_row **rows, size_t *count)
+{
+    if (snprintf(qpath, 4192, "%s/queue.jsonl", d->land) >= 4192) return false;
+    *lock = dl_rows_lock(d->land);
+    return *lock >= 0 && dl_load_rows(qpath, rows, count, NULL, 0);
+}
+
+static bool dl_fence_initialize(const struct dl_dirs *d, const struct dl_dirs *next_dirs,
+                                  struct dl_fence *f, const struct dl_row *old,
+                                  struct dl_row *rows, size_t count, const char *base, const char *tip)
+{
+    f->anchor = *old;
+    f->old = *old;
+    struct dl_row *next = &f->next;
+    next->seq = 1;
+    const char *why = NULL;
+    if (!dl_submit_next_seq(d, rows, count, &next->seq, &why)) return false;
+    next->priority_seq = next->seq; next->attempt = 1;
+    next->fence_peer = old->seq;
+    dl_now_iso(next->ts);
+    (void)snprintf(next->state, sizeof(next->state), "inflight");
+    (void)snprintf(next->phase, sizeof(next->phase), "push");
+    (void)snprintf(next->base, sizeof(next->base), "%s", base);
+    (void)snprintf(next->tip, sizeof(next->tip), "%s", tip);
+    (void)snprintf(next->local, sizeof(next->local), "%s", tip);
+    (void)snprintf(next->worktree, sizeof(next->worktree), "%s", next_dirs->wt);
+    return true;
+}
+
+#endif
+
+static void dl_fence_replace(const struct zcl_command_request *req,
+                              struct zcl_command_reply *reply)
+{
+#if defined(_WIN32)
+    (void)req;
+    dl_fail(reply, "FENCE_WINDOWS_UNAVAILABLE", "fence_replace",
+             "paired fencing requires POSIX native locks", "step.lock");
+#else
+    long long seq = 0;
+    const char *base = dl_str(req, "base"), *head = dl_str(req, "head");
+    const char *tip = dl_str(req, "tip"), *worktree = dl_str(req, "worktree");
+    if (!dl_fence_input(req, &seq, base, head, tip, worktree, reply)) return;
+    struct dl_dirs d, next_dirs;
+    if (!dl_dirs_make(&d)) {
+        dl_fail(reply, "STATE_DIR_FAILED", "fence_replace",
+                 "private landing root unavailable", "platform_state_root"); return;
+    }
+    int slot = dl_step_lock(d.land);
+    if (slot < 0) { dl_step_busy(reply, d.land); return; }
+    struct dl_fence *f = zcl_malloc(sizeof(*f), "dev.land.fence.create");
+    struct dl_row *rows = NULL;
+    size_t count = 0;
+    int lock = -1;
+    char qpath[4192];
+    if (!f) { dl_fence_blocked(reply, "FENCE_READ_FAILED", NULL); goto done; }
+    int existing = dl_fence_read(&d, f);
+    if (dl_fence_existing(existing, f, seq, base, head, tip, worktree, reply)) goto done;
+    if (existing == 1 && !dl_fence_archive(&d, f, reply)) goto done;
+    memset(f, 0, sizeof(*f));
+    if (!dl_fence_workspace(&d, &next_dirs, worktree, tip, reply)) goto done;
+    if (!dl_fence_locked_queue(&d, qpath, &lock, &rows, &count)) goto unavailable;
+    struct dl_row *old = NULL;
+    if (!dl_fence_old_load(&d, rows, count, seq, base, head, &old, reply)) goto done;
+    if (!dl_fence_initialize(&d, &next_dirs, f, old, rows, count, base, tip)) goto unavailable;
+    struct dl_row *next = &f->next;
+    if (!dl_fence_new_qualify(&next_dirs, next, old, base, tip, reply)) goto done;
+    if (!dl_fence_contract(&next_dirs, f, base, tip, reply)) goto done;
+    dl_log_path(&next_dirs, next);
+    if (!dl_fence_write(&d, f)) goto unavailable;
+    dl_fence_test_crash("after_record");
+    (void)json_push_kv_int(&reply->data, "replacement_seq", next->seq);
+    dl_step_reply(reply, next, "fence_armed");
+    goto done;
+unavailable:
+    dl_fence_blocked(reply, "FENCE_PERSIST_FAILED", NULL);
+done:
+    free(rows); free(f); dl_unlock(lock); dl_unlock(slot);
+#endif
+}
+
 void zcl_native_handle_dev_land(const struct zcl_command_request *request,
                                 struct zcl_command_reply *reply)
 {
@@ -8772,19 +9781,23 @@ void zcl_native_handle_dev_land(const struct zcl_command_request *request,
         return;
     if (!request || !request->input) {
         dl_fail(reply, "BAD_INPUT", "route",
-                "dev land needs an action: submit|attach|attach_publish|status|step|drive|cancel",
+                "dev land needs an action: submit|attach|attach_publish|status|step|drive|cancel|fence_replace",
                 "request.input was missing");
         return;
     }
     action = dl_str(request, "action");
     if (!action) {
         dl_fail(reply, "BAD_INPUT", "route",
-                "dev land needs an action: submit|attach|attach_publish|status|step|drive|cancel",
+                "dev land needs an action: submit|attach|attach_publish|status|step|drive|cancel|fence_replace",
                 "input.action missing or empty");
         return;
     }
     if (strcmp(action, "submit") == 0) {
         dl_submit(request, reply);
+        return;
+    }
+    if (strcmp(action, "fence_replace") == 0) {
+        dl_fence_replace(request, reply);
         return;
     }
     if (strcmp(action, "attach") == 0) {
@@ -8797,6 +9810,7 @@ void zcl_native_handle_dev_land(const struct zcl_command_request *request,
     }
     if (strcmp(action, "status") == 0) {
         dl_status(request, reply);
+        dl_fence_status(reply);
         return;
     }
     if (strcmp(action, "step") == 0) {
@@ -8812,6 +9826,6 @@ void zcl_native_handle_dev_land(const struct zcl_command_request *request,
         return;
     }
     dl_fail(reply, "UNKNOWN_ACTION", "route",
-            "action is one of submit|attach|attach_publish|status|step|drive|cancel",
+            "action is one of submit|attach|attach_publish|status|step|drive|cancel|fence_replace",
             "input.action unknown");
 }

@@ -1340,6 +1340,10 @@ Z23_FLAG("ZCL_LAND_SUBMITTER", "env_build", "-", "-",
           "undocumented; first use tools/dev/land.sh:auto")
 Z23_FLAG("ZCL_LAND_TEST_DIR_SYNC_FAIL", "env_test", "-", "-",
           "inject failed parent-directory sync after the landing queue rename; first use tools/command/native_dev_land.c:auto")
+Z23_FLAG("ZCL_LAND_TEST_FENCE_POLICY", "env_test", "-", "-",
+          "ZCL_TESTING-only isolated receiver policy fixture; requires test process marker; first use tools/command/native_dev_land.c:auto")
+Z23_FLAG("ZCL_LAND_TEST_FENCE_CRASH", "env_test", "-", "-",
+          "ZCL_TESTING-only crash at paired fence persistence boundaries; requires test process marker; first use tools/command/native_dev_land.c:auto")
 Z23_FLAG("ZCL_LAND_TEST_DIE_AFTER_OUTCOME", "env_test", "-", "-",
           "test-only crash after terminal outcome append; first use tools/command/native_dev_land.c:auto")
 Z23_FLAG("ZCL_LAND_TEST_DIE_AFTER_PROOF", "env_test", "-", "-",

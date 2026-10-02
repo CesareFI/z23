@@ -7647,11 +7647,725 @@ static int test_dev_land_status_observation(void)
 }
 #endif
 
+#if !defined(_WIN32)
+/* Real local bare receiver and independently signed, same-tree successor.
+ * The proof stub hashes each distinct pair: equal trees do not share proof. */
+static bool dlx_fence_prepare(struct dlx_rig *rig, const char *tag,
+                               char base[64], char wt[1400], char successor[64])
+{
+    char marker[1400], tree[64];
+    if (!dlx_signed_push_lossy(rig, tag, base, wt, marker, NULL)) return false;
+    struct dlx_call c;
+    dlx_begin(&c, "step");
+    bool ok = dlx_run(&c) && !dlx_ok(&c) &&
+        strcmp(dlx_err_code(&c), "PUSH_OUTCOME_UNKNOWN") == 0;
+    dlx_end(&c);
+    const char *lookup[] = { "rev-parse", "HEAD^{tree}", NULL };
+    const char *restore[] = { "config", "--unset", "remote.origin.receivepack", NULL };
+    if (!ok || !dlx_sign_arm(rig->clone, tag) ||
+        dlx_git(rig->clone, restore) != 0 ||
+        dlx_git_out(rig->clone, lookup, tree, sizeof(tree)) != 0) return false;
+    const char *create[] = { "commit-tree", "-S", tree, "-p", base,
+                             "-m", "qualified fence successor", NULL };
+    if (dlx_git_out(rig->clone, create, successor, 64) != 0) return false;
+    const char *checkout[] = { "checkout", "--quiet", "-B", "fence-successor",
+                               successor, NULL };
+    const char *hooks[] = { "config", "--worktree", "core.hooksPath",
+                            g_dlx_hooks_ok, NULL };
+    setenv("ZCL_DEVLOOP_TEST_PROCESS", "1", 1);
+    setenv("ZCL_LAND_TEST_FENCE_POLICY", "monotonic", 1);
+    return dlx_git(rig->clone, checkout) == 0 && dlx_git(rig->clone, hooks) == 0;
+}
+
+static void dlx_fence_call(struct dlx_call *c, const struct dlx_rig *rig,
+                           const char *base, const char *head, const char *tip)
+{
+    dlx_begin(c, "fence_replace");
+    (void)json_push_kv_int(&c->input, "seq", 1);
+    (void)json_push_kv_str(&c->input, "base", base);
+    (void)json_push_kv_str(&c->input, "head", head);
+    (void)json_push_kv_str(&c->input, "tip", tip);
+    (void)json_push_kv_str(&c->input, "worktree", rig->clone);
+}
+
+static bool dlx_fence_crash_step(const char *point)
+{
+    pid_t child = fork();
+    if (child == 0) {
+        setenv("ZCL_LAND_TEST_FENCE_CRASH", point, 1);
+        struct dlx_call call;
+        dlx_begin(&call, "step");
+        (void)dlx_run(&call);
+        dlx_end(&call);
+        _exit(88);
+    }
+    int status = 0;
+    return child > 0 && waitpid(child, &status, 0) == child &&
+        WIFEXITED(status) && WEXITSTATUS(status) == 87;
+}
+
+struct dlx_fence_case {
+    unsigned scenario; bool stop;
+    struct dlx_rig rig; struct dlx_call c;
+    char tag[64], base[64], wt[1400], successor[64], remote[64], land[1200];
+    char before[32768], after[32768]; size_t before_len, after_len;
+};
+
+static int dlx_fence_case_admission(struct dlx_fence_case *t)
+{
+    int failures = 0;
+    TEST("land: fenced admission") {
+            /* Historical old acceptance/reversion before current protection.
+             * The fence must leave that history unknown rather than refused. */
+            if (t->scenario == 2) {
+                char ref[160];
+                (void)snprintf(ref, sizeof(ref), "%s:refs/heads/main", t->rig.tip);
+                const char *fetch[] = { "fetch", "--quiet", t->rig.clone, ref, NULL };
+                const char *revert[] = { "update-ref", "refs/heads/main", t->base,
+                                         t->rig.tip, NULL };
+                ASSERT(dlx_git(t->rig.bare, fetch) == 0);
+                ASSERT(dlx_git(t->rig.bare, revert) == 0);
+            }
+            const char *deny_rewinds[] = { "config", "receive.denyNonFastForwards", "true", NULL };
+            ASSERT(dlx_git(t->rig.bare, deny_rewinds) == 0);
+            /* Missing policy and wrong pins leave original checkpoint exact. */
+            setenv("ZCL_LAND_TEST_FENCE_POLICY", "unavailable", 1);
+            dlx_fence_call(&t->c, &t->rig, t->base, t->rig.tip, t->successor);
+            ASSERT(dlx_run(&t->c) && !dlx_ok(&t->c));
+            ASSERT_STR_EQ(dlx_err_code(&t->c), "FENCE_CONTRACT_UNAVAILABLE");
+            dlx_end(&t->c);
+            ASSERT(dlx_queue_bytes(t->after, sizeof(t->after), &t->after_len));
+            ASSERT(t->before_len == t->after_len && memcmp(t->before, t->after, t->before_len) == 0);
+            setenv("ZCL_LAND_TEST_FENCE_POLICY", "monotonic", 1);
+            dlx_fence_call(&t->c, &t->rig, t->base, t->base, t->successor);
+            ASSERT(dlx_run(&t->c) && !dlx_ok(&t->c));
+            ASSERT_STR_EQ(dlx_err_code(&t->c), "FENCE_OLD_INTENT_CHANGED");
+            dlx_end(&t->c);
+            dlx_fence_call(&t->c, &t->rig, t->base, t->rig.tip, t->successor);
+            ASSERT(dlx_run(&t->c) && dlx_ok(&t->c));
+            ASSERT_STR_EQ(dlx_str(&t->c, "state"), "fence_armed");
+            ASSERT(dlx_int(&t->c, "replacement_seq") == 2);
+            dlx_end(&t->c);
+            /* Idempotence allocates no second replacement or dispatch. */
+            dlx_fence_call(&t->c, &t->rig, t->base, t->rig.tip, t->successor);
+            ASSERT(dlx_run(&t->c) && dlx_ok(&t->c));
+            ASSERT(dlx_int(&t->c, "replacement_seq") == 2);
+            dlx_end(&t->c);
+            dlx_begin(&t->c, "cancel"); (void)json_push_kv_int(&t->c.input, "seq", 1);
+            ASSERT(dlx_run(&t->c) && !dlx_ok(&t->c));
+            ASSERT_STR_EQ(dlx_err_code(&t->c), "FENCE_ACTIVE"); dlx_end(&t->c);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int dlx_fence_case_lossy(struct dlx_fence_case *t)
+{
+    int failures = 0;
+    TEST("land: fenced lossy") {
+            if (t->scenario == 7 || t->scenario == 8) {
+                char wrapper[1400], marker[1400], script[3000], diagnostic[1400];
+                dlx_landdir(t->land, sizeof(t->land));
+                (void)snprintf(wrapper, sizeof(wrapper), "%s/reject-new", t->land);
+                (void)snprintf(marker, sizeof(marker), "%s/new-attempts", t->land);
+                (void)snprintf(script, sizeof(script),
+                    "#!/bin/sh\nprintf 'sent\\n' >> '%s'\nprintf 'stderr-only-refusal\\033[31m\\n' >&2\nexit 91\n", marker);
+                ASSERT(dlx_write(wrapper, script)); ASSERT(chmod(wrapper, 0700) == 0);
+                const char *intercept[] = { "config", "--worktree", "remote.origin.receivepack", wrapper, NULL };
+                ASSERT(dlx_git(t->rig.clone, intercept) == 0);
+                if (t->scenario == 7) {
+                    (void)snprintf(diagnostic, sizeof(diagnostic), "%s/logs/push-2-a1.diagnostic", t->land);
+                    ASSERT(mkdir(diagnostic, 0700) == 0); /* Durable-storage refusal. */
+                }
+                for (unsigned beat = 0; beat < 4; ++beat) {
+                    dlx_begin(&t->c, "step"); ASSERT(dlx_run(&t->c) && !dlx_ok(&t->c));
+                    ASSERT_STR_EQ(dlx_err_code(&t->c), "FENCE_PUSH_OUTCOME_UNKNOWN"); dlx_end(&t->c);
+                }
+                size_t count = 0; char sends[128], transcript[4096];
+                ASSERT(dlx_slurp(marker, sends, sizeof(sends), &count));
+                ASSERT(count == strlen("sent\n") * (t->scenario == 7 ? 1 : 3));
+                ASSERT(dlx_origin_main(&t->rig, t->remote)); ASSERT_STR_EQ(t->remote, t->base);
+                if (t->scenario == 8) {
+                    (void)snprintf(diagnostic, sizeof(diagnostic), "%s/logs/push-2-a1.diagnostic", t->land);
+                    ASSERT(dlx_slurp(diagnostic, transcript, sizeof(transcript) - 1, &count));
+                    transcript[count] = '\0';
+                    ASSERT(strstr(transcript, "stderr-only-refusal?") != NULL);
+                    ASSERT(strstr(transcript, "exit_observed=1") != NULL);
+                    ASSERT(strstr(transcript, "END publication diagnostic") != NULL);
+                }
+                ASSERT(dlx_queue_bytes(t->after, sizeof(t->after), &t->after_len));
+                ASSERT(t->before_len == t->after_len && memcmp(t->before, t->after, t->before_len) == 0);
+                unsetenv("ZCL_LAND_TEST_FENCE_POLICY"); unsetenv("ZCL_DEVLOOP_TEST_PROCESS");
+                dlx_restore(); t->stop = true; return failures;
+            }
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int dlx_fence_case_both_heads(struct dlx_fence_case *t)
+{
+    int failures = 0;
+    TEST("land: fenced both_heads") {
+            if (t->scenario == 9) {
+                char tree[64], combined[64], ref[160];
+                const char *lookup[] = { "rev-parse", "HEAD^{tree}", NULL };
+                ASSERT(dlx_git_out(t->rig.clone, lookup, tree, sizeof(tree)) == 0);
+                const char *merge[] = { "commit-tree", "-S", tree, "-p", t->rig.tip,
+                                        "-p", t->successor, "-m", "contains both", NULL };
+                ASSERT(dlx_git_out(t->rig.clone, merge, combined, sizeof(combined)) == 0);
+                (void)snprintf(ref, sizeof(ref), "%s:refs/heads/main", combined);
+                const char *fetch[] = { "fetch", "--quiet", t->rig.clone, ref, NULL };
+                ASSERT(dlx_git(t->rig.bare, fetch) == 0);
+                dlx_begin(&t->c, "step"); ASSERT(dlx_run(&t->c) && !dlx_ok(&t->c));
+                ASSERT_STR_EQ(dlx_err_code(&t->c), "FENCE_OBSERVATION_INCONSISTENT"); dlx_end(&t->c);
+                ASSERT(dlx_queue_bytes(t->after, sizeof(t->after), &t->after_len));
+                ASSERT(t->before_len == t->after_len && memcmp(t->before, t->after, t->before_len) == 0);
+                unsetenv("ZCL_LAND_TEST_FENCE_POLICY"); unsetenv("ZCL_DEVLOOP_TEST_PROCESS");
+                dlx_restore(); t->stop = true; return failures;
+            }
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int dlx_fence_case_dispatch(struct dlx_fence_case *t)
+{
+    int failures = 0;
+    TEST("land: fenced dispatch") {
+            if (t->scenario == 1) {
+                char ref[160];
+                (void)snprintf(ref, sizeof(ref), "%s:refs/heads/main", t->rig.tip);
+                const char *fetch[] = { "fetch", "--quiet", t->rig.clone, ref, NULL };
+                ASSERT(dlx_git(t->rig.bare, fetch) == 0);
+            } else if (t->scenario == 3) {
+                ASSERT(dlx_fence_crash_step("before_dispatch"));
+                dlx_begin(&t->c, "step");
+                ASSERT(dlx_run(&t->c) && !dlx_ok(&t->c));
+                ASSERT_STR_EQ(dlx_err_code(&t->c), "FENCE_PUSH_OUTCOME_UNKNOWN"); dlx_end(&t->c);
+                ASSERT(dlx_origin_main(&t->rig, t->remote)); ASSERT_STR_EQ(t->remote, t->base);
+                /* A checkpointed send cannot be changed to another identity. */
+                dlx_fence_call(&t->c, &t->rig, t->base, t->rig.tip, t->base);
+                ASSERT(dlx_run(&t->c) && !dlx_ok(&t->c));
+                ASSERT_STR_EQ(dlx_err_code(&t->c), "FENCE_IDENTITY_FROZEN"); dlx_end(&t->c);
+                unsetenv("ZCL_LAND_TEST_FENCE_POLICY");
+                unsetenv("ZCL_DEVLOOP_TEST_PROCESS"); dlx_restore(); t->stop = true; return failures;
+            } else if (t->scenario == 4) {
+                ASSERT(dlx_fence_crash_step("after_dispatch"));
+            } else {
+                dlx_begin(&t->c, "step");
+                ASSERT(dlx_run(&t->c) && !dlx_ok(&t->c));
+                ASSERT_STR_EQ(dlx_err_code(&t->c), "FENCE_PUSH_OUTCOME_UNKNOWN"); dlx_end(&t->c);
+            }
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int dlx_fence_case_rewind(struct dlx_fence_case *t)
+{
+    int failures = 0;
+    TEST("land: fenced rewind") {
+            ASSERT(dlx_queue_bytes(t->after, sizeof(t->after), &t->after_len));
+            ASSERT(t->before_len == t->after_len && memcmp(t->before, t->after, t->before_len) == 0);
+            if (t->scenario == 5) ASSERT(dlx_fence_crash_step("paired"));
+            if (t->scenario == 6) ASSERT(dlx_fence_crash_step("old_projection"));
+            if (t->scenario == 10) {
+                ASSERT(dlx_fence_crash_step("paired"));
+                /* External administrative policy violation t->after observation:
+                 * force a rewind through fixture update-ref, not receive-pack. */
+                const char *rewind[] = { "update-ref", "refs/heads/main", t->base, t->successor, NULL };
+                ASSERT(dlx_git(t->rig.bare, rewind) == 0);
+                dlx_begin(&t->c, "step"); ASSERT(dlx_run(&t->c) && !dlx_ok(&t->c));
+                ASSERT_STR_EQ(dlx_err_code(&t->c), "FENCE_OBSERVATION_INCONSISTENT"); dlx_end(&t->c);
+                ASSERT(dlx_queue_bytes(t->after, sizeof(t->after), &t->after_len));
+                ASSERT(t->before_len == t->after_len && memcmp(t->before, t->after, t->before_len) == 0);
+                unsetenv("ZCL_LAND_TEST_FENCE_POLICY"); unsetenv("ZCL_DEVLOOP_TEST_PROCESS");
+                dlx_restore(); t->stop = true; return failures;
+            }
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int dlx_fence_case_settlement(struct dlx_fence_case *t)
+{
+    int failures = 0;
+    TEST("land: fenced settlement") {
+            dlx_begin(&t->c, "step");
+            ASSERT(dlx_run(&t->c));
+            if (!dlx_ok(&t->c)) printf("fence scenario=%u error=%s ", t->scenario, dlx_err_code(&t->c));
+            ASSERT(dlx_ok(&t->c));
+            ASSERT_STR_EQ(dlx_str(&t->c, "state"), t->scenario == 1 ? "fenced" : "landed");
+            dlx_end(&t->c);
+            dlx_begin(&t->c, "status");
+            ASSERT(dlx_run(&t->c) && dlx_ok(&t->c));
+            const struct json_value *outcomes = dlx_arr(&t->c, "outcomes");
+            ASSERT(outcomes && outcomes->num_children == 2);
+            const struct json_value *old = &outcomes->children[0];
+            const struct json_value *next = &outcomes->children[1];
+            ASSERT_STR_EQ(json_get_str(json_get(old, "state")), t->scenario == 1 ? "landed" : "fenced");
+            ASSERT_STR_EQ(json_get_str(json_get(old, "historical_git_acceptance")),
+                           t->scenario == 1 ? "verified" : "unknown");
+            ASSERT_STR_EQ(json_get_str(json_get(old, "future_dispatch")),
+                           t->scenario == 1 ? "complete" : "fenced");
+            ASSERT_STR_EQ(json_get_str(json_get(next, "state")), t->scenario == 1 ? "fenced" : "landed");
+            ASSERT(json_get_int(json_get(old, "fence_peer")) == 2);
+            ASSERT(json_get_int(json_get(next, "fence_peer")) == 1);
+            const struct json_value *winner = t->scenario == 1 ? old : next;
+            ASSERT(strlen(json_get_str(json_get(winner, "remote_signature"))) == 128);
+            ASSERT_STR_EQ(json_get_str(json_get(old, "tip")), t->rig.tip);
+            ASSERT(json_get_int(json_get(old, "attempt")) == 1);
+            dlx_end(&t->c);
+            ASSERT(dlx_origin_main(&t->rig, t->remote));
+            ASSERT_STR_EQ(t->remote, t->scenario == 1 ? t->rig.tip : t->successor);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int dlx_fence_case_delayed(struct dlx_fence_case *t)
+{
+    int failures = 0;
+    TEST("land: fenced delayed") {
+            /* A delayed competing exact-base CAS cannot undo the winner. */
+            char lease[128], competing[128];
+            (void)snprintf(lease, sizeof(lease), "--force-with-lease=refs/heads/main:%s", t->base);
+            (void)snprintf(competing, sizeof(competing), "%s:refs/heads/main",
+                           t->scenario == 1 ? t->successor : t->rig.tip);
+            const char *delayed[] = { "push", lease, "origin", competing, NULL };
+            const char *restore[] = { "config", "--worktree", "--unset", "remote.origin.receivepack", NULL };
+            (void)dlx_git(t->wt, restore);
+            ASSERT(dlx_git(t->scenario == 1 ? t->rig.clone : t->wt, delayed) != 0);
+            ASSERT(dlx_origin_main(&t->rig, t->remote));
+            ASSERT_STR_EQ(t->remote, t->scenario == 1 ? t->rig.tip : t->successor);
+            dlx_begin(&t->c, "step"); ASSERT(dlx_run(&t->c) && dlx_ok(&t->c));
+            ASSERT_STR_EQ(dlx_str(&t->c, "state"), "empty"); dlx_end(&t->c);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int dlx_fence_case_run(unsigned scenario)
+{
+    int failures = 0;
+    struct dlx_fence_case t = {0};
+    t.scenario = scenario;
+    (void)snprintf(t.tag, sizeof(t.tag), "fence_%u", scenario);
+    dlx_isolate(t.tag);
+    TEST("land: compound same-tree fenced case") {
+        ASSERT(dlx_fence_prepare(&t.rig, t.tag, t.base, t.wt, t.successor));
+        ASSERT(dlx_queue_bytes(t.before, sizeof(t.before), &t.before_len));
+        ASSERT(dlx_fence_case_admission(&t) == 0);
+        if (t.stop) goto _test_next;
+        ASSERT(dlx_fence_case_lossy(&t) == 0);
+        if (t.stop) goto _test_next;
+        ASSERT(dlx_fence_case_both_heads(&t) == 0);
+        if (t.stop) goto _test_next;
+        ASSERT(dlx_fence_case_dispatch(&t) == 0);
+        if (t.stop) goto _test_next;
+        ASSERT(dlx_fence_case_rewind(&t) == 0);
+        if (t.stop) goto _test_next;
+        ASSERT(dlx_fence_case_settlement(&t) == 0);
+        if (t.stop) goto _test_next;
+        ASSERT(dlx_fence_case_delayed(&t) == 0);
+        if (t.stop) goto _test_next;
+        PASS();
+    } _test_next:;
+    unsetenv("ZCL_LAND_TEST_FENCE_POLICY"); unsetenv("ZCL_LAND_TEST_FENCE_CRASH");
+    unsetenv("ZCL_DEVLOOP_TEST_PROCESS"); dlx_restore();
+    return failures;
+}
+
+static int dlx_fence_cases(void)
+{
+    int failures = 0;
+    for (unsigned scenario = 0; scenario < 11; ++scenario)
+        failures += dlx_fence_case_run(scenario);
+    return failures;
+}
+
+static void dlx_fence_race_child(unsigned old_wins, int ready[2], int release[2],
+                                  struct dlx_rig *rig, const char *base, const char *wt)
+{
+    struct dlx_call call; char lease[128], ref[128];
+                (void)close(ready[0]); (void)close(release[1]);
+                if (old_wins) {
+                    dlx_begin(&call, "step");
+                    bool ok = dlx_run(&call) && !dlx_ok(&call) &&
+                        strcmp(dlx_err_code(&call), "FENCE_PUSH_OUTCOME_UNKNOWN") == 0;
+                    dlx_end(&call); _exit(ok ? 0 : 89);
+                }
+                char byte;
+                if (write(ready[1], "R", 1) != 1 || read(release[0], &byte, 1) != 1 || byte != 'G')
+                    _exit(90);
+                (void)snprintf(lease, sizeof(lease), "--force-with-lease=refs/heads/main:%s", base);
+                (void)snprintf(ref, sizeof(ref), "%s:refs/heads/main", rig->tip);
+                const char *push[] = { "push", lease, "origin", ref, NULL };
+                _exit(dlx_git(wt, push) != 0 ? 0 : 91);
+}
+
+static int dlx_fence_race_parent(unsigned old_wins, struct dlx_rig *rig,
+                                  struct dlx_call *call, const char *base, const char *wt, const char *tip)
+{
+    int failures = 0; char lease[128], ref[128];
+    TEST("land: fenced race parent") {
+            if (old_wins) {
+                dlx_fence_call(call, rig, base, rig->tip, tip);
+                ASSERT(dlx_run(call) && !dlx_ok(call));
+                ASSERT_STR_EQ(dlx_err_code(call), "STEP_BUSY"); dlx_end(call);
+                (void)snprintf(lease, sizeof(lease), "--force-with-lease=refs/heads/main:%s", base);
+                (void)snprintf(ref, sizeof(ref), "%s:refs/heads/main", rig->tip);
+                const char *push[] = { "push", lease, "origin", ref, NULL };
+                ASSERT(dlx_git(wt, push) == 0);
+            } else {
+                dlx_begin(call, "step"); ASSERT(dlx_run(call) && !dlx_ok(call));
+                ASSERT_STR_EQ(dlx_err_code(call), "FENCE_PUSH_OUTCOME_UNKNOWN"); dlx_end(call);
+            }
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int dlx_fence_concurrent_case(unsigned old_wins)
+{
+    int failures = 0;
+    int ready[2] = {-1, -1}, release[2] = {-1, -1};
+    pid_t child = -1;
+    TEST("land: competing delayed exact-base CAS and concurrent replacement respect the single compound owner") {
+            struct dlx_rig rig; struct dlx_call call;
+            char base[64], wt[1400], tip[64], remote[64];
+            dlx_isolate(old_wins ? "fence_old_race" : "fence_new_race");
+            ASSERT(dlx_fence_prepare(&rig, old_wins ? "fence_old_race" : "fence_new_race", base, wt, tip));
+            dlx_fence_call(&call, &rig, base, rig.tip, tip);
+            ASSERT(dlx_run(&call) && dlx_ok(&call)); dlx_end(&call);
+            ASSERT(dlx_pick_barrier_open(ready, release));
+            if (old_wins) zcl_native_dev_land_test_pick_barrier(ready[1], release[0]);
+            child = fork(); ASSERT(child >= 0);
+            if (child == 0) dlx_fence_race_child(old_wins, ready, release, &rig, base, wt);
+            (void)close(ready[1]); ready[1] = -1;
+            (void)close(release[0]); release[0] = -1;
+            char byte; ASSERT(read(ready[0], &byte, 1) == 1 && byte == 'R');
+            zcl_native_dev_land_test_pick_barrier(-1, -1);
+            ASSERT(dlx_fence_race_parent(old_wins, &rig, &call, base, wt, tip) == 0);
+            ASSERT(write(release[1], "G", 1) == 1);
+            (void)close(release[1]); release[1] = -1;
+            int status = 0;
+            ASSERT(waitpid(child, &status, 0) == child);
+            child = -1; ASSERT(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+            (void)close(ready[0]); ready[0] = -1;
+            dlx_begin(&call, "step"); ASSERT(dlx_run(&call) && dlx_ok(&call));
+            ASSERT_STR_EQ(dlx_str(&call, "state"), old_wins ? "fenced" : "landed"); dlx_end(&call);
+            ASSERT(dlx_origin_main(&rig, remote)); ASSERT_STR_EQ(remote, old_wins ? rig.tip : tip);
+            unsetenv("ZCL_LAND_TEST_FENCE_POLICY"); unsetenv("ZCL_DEVLOOP_TEST_PROCESS"); dlx_restore();
+        PASS();
+    } _test_next:;
+    zcl_native_dev_land_test_pick_barrier(-1, -1);
+    for (size_t i = 0; i < 2; ++i) {
+        if (ready[i] >= 0) (void)close(ready[i]);
+        if (release[i] >= 0) (void)close(release[i]);
+    }
+    if (child > 0) { int status = 0; (void)waitpid(child, &status, 0); }
+    unsetenv("ZCL_LAND_TEST_FENCE_POLICY"); unsetenv("ZCL_DEVLOOP_TEST_PROCESS"); dlx_restore();
+    return failures;
+}
+static bool dlx_fence_expect(struct dlx_fence_case *t, const char *action, const char *code)
+{
+    if (strcmp(action, "fence_replace") == 0)
+        dlx_fence_call(&t->c, &t->rig, t->base, t->rig.tip, t->successor);
+    else dlx_begin(&t->c, action);
+    bool ok = dlx_run(&t->c) && !dlx_ok(&t->c) && strcmp(dlx_err_code(&t->c), code) == 0;
+    if (!ok) printf("fence negative expected=%s actual=%s ", code, dlx_err_code(&t->c));
+    dlx_end(&t->c);
+    return ok;
+}
+
+static bool dlx_fence_same_queue(struct dlx_fence_case *t)
+{
+    return dlx_queue_bytes(t->after, sizeof(t->after), &t->after_len) &&
+        t->before_len == t->after_len && memcmp(t->before, t->after, t->before_len) == 0;
+}
+
+static bool dlx_fence_bad_hook(struct dlx_fence_case *t)
+{
+    char hooks[1400];
+    if (!dlx_hooks_dir(hooks, sizeof(hooks), "fence_unrelated_noop", 0)) return false;
+    const char *set[] = { "config", "--worktree", "core.hooksPath", hooks, NULL };
+    return dlx_git(t->rig.clone, set) == 0 &&
+        dlx_fence_expect(t, "fence_replace", "FENCE_WORKTREE_INVALID");
+}
+
+/* All configuration changes are confined to fresh isolated throwaway rigs. */
+static bool dlx_fence_receiver_config(struct dlx_fence_case *t, unsigned kind)
+{
+    char other[1400], key[1600];
+    (void)snprintf(other, sizeof(other), "%s.other", t->rig.bare);
+    const char *init[] = { "init", "--bare", "--quiet", other, NULL };
+    if (dlx_git(NULL, init) != 0) return false;
+    if (kind == 1) {
+        const char *add[] = { "config", "--worktree", "--add", "remote.origin.url", other, NULL };
+        return dlx_git(t->rig.clone, add) == 0;
+    }
+    if (kind == 2) {
+        const char *first[] = { "config", "--worktree", "--add", "remote.origin.pushurl", t->rig.bare, NULL };
+        const char *second[] = { "config", "--worktree", "--add", "remote.origin.pushurl", other, NULL };
+        return dlx_git(t->rig.clone, first) == 0 && dlx_git(t->rig.clone, second) == 0;
+    }
+    if (kind == 3) {
+        const char *single[] = { "config", "--worktree", "remote.origin.pushurl", other, NULL };
+        return dlx_git(t->rig.clone, single) == 0;
+    }
+    if (kind == 6) {
+        const char *first[] = { "config", "--worktree", "--add", "remote.origin.pushurl", t->rig.bare, NULL };
+        const char *empty[] = { "config", "--worktree", "--add", "remote.origin.pushurl", "", NULL };
+        return dlx_git(t->rig.clone, first) == 0 && dlx_git(t->rig.clone, empty) == 0;
+    }
+    if (kind == 5) {
+        (void)snprintf(key, sizeof(key), "url.%s.insteadOf", other);
+        const char *rewrite[] = { "config", "--worktree", key, t->rig.bare, NULL };
+        return dlx_git(t->rig.clone, rewrite) == 0;
+    }
+    (void)snprintf(key, sizeof(key), "url.%s.pushInsteadOf", other);
+    const char *rewrite[] = { "config", "--worktree", key, t->rig.bare, NULL };
+    return dlx_git(t->rig.clone, rewrite) == 0;
+}
+
+static int dlx_fence_negative_receiver(unsigned kind, bool after_arm)
+{
+    int failures = 0; struct dlx_fence_case t = {0};
+    (void)snprintf(t.tag, sizeof(t.tag), "fence_receiver_%u_%u", kind, after_arm);
+    dlx_isolate(t.tag);
+    TEST("land: complete effective receiver set refuses before arming or dispatch") {
+        ASSERT(dlx_fence_prepare(&t.rig, t.tag, t.base, t.wt, t.successor));
+        ASSERT(dlx_queue_bytes(t.before, sizeof(t.before), &t.before_len));
+        if (after_arm) {
+            dlx_fence_call(&t.c, &t.rig, t.base, t.rig.tip, t.successor);
+            ASSERT(dlx_run(&t.c) && dlx_ok(&t.c)); dlx_end(&t.c);
+        }
+        ASSERT(dlx_fence_receiver_config(&t, kind));
+        ASSERT(dlx_fence_expect(&t, after_arm ? "step" : "fence_replace",
+                               after_arm ? "FENCE_IDENTITY_INVALID" : "FENCE_NEW_PAIR_UNQUALIFIED"));
+        ASSERT(dlx_fence_same_queue(&t));
+        ASSERT(dlx_origin_main(&t.rig, t.remote)); ASSERT_STR_EQ(t.remote, t.base);
+        char other[1400]; (void)snprintf(other, sizeof(other), "%s.other", t.rig.bare);
+        const char *head[] = { "rev-parse", "--verify", "refs/heads/main", NULL };
+        ASSERT(dlx_git(other, head) != 0);
+        PASS();
+    } _test_next:;
+    unsetenv("ZCL_LAND_TEST_FENCE_POLICY"); unsetenv("ZCL_DEVLOOP_TEST_PROCESS"); dlx_restore();
+    return failures;
+}
+
+static bool dlx_fence_stale_hook(struct dlx_fence_case *t)
+{
+    if (!dlx_write_dep(t->rig.clone, "build/bin/z23-git-hook", "current canonical fixture binary\n")) return false;
+    char installed[1400];
+    (void)snprintf(installed, sizeof(installed), "%s/z23-git-hook", g_dlx_hooks_ok);
+    return dlx_write(installed, "stale installed fixture binary\n") &&
+        dlx_fence_expect(t, "fence_replace", "FENCE_WORKTREE_INVALID");
+}
+
+static bool dlx_fence_signed_merge(struct dlx_fence_case *t)
+{
+    char tree[64], merge[64];
+    const char *lookup[] = { "rev-parse", "HEAD^{tree}", NULL };
+    if (dlx_git_out(t->rig.clone, lookup, tree, sizeof(tree)) != 0) return false;
+    const char *make[] = { "commit-tree", "-S", tree, "-p", t->rig.tip, "-p", t->successor,
+                           "-m", "signed merge rejected", NULL };
+    if (dlx_git_out(t->rig.clone, make, merge, sizeof(merge)) != 0) return false;
+    (void)snprintf(t->successor, sizeof(t->successor), "%s", merge);
+    const char *checkout[] = { "checkout", "--quiet", "-B", "merge-proposal", merge, NULL };
+    return dlx_git(t->rig.clone, checkout) == 0 &&
+        dlx_fence_expect(t, "fence_replace", "FENCE_NEW_PAIR_UNQUALIFIED");
+}
+
+static int dlx_fence_negative_admission(unsigned kind)
+{
+    int failures = 0; struct dlx_fence_case t = {0};
+    (void)snprintf(t.tag, sizeof(t.tag), "fence_admission_%u", kind);
+    dlx_isolate(t.tag);
+    TEST("land: stale unrelated executable hook and signed merge are inadmissible") {
+        ASSERT(dlx_fence_prepare(&t.rig, t.tag, t.base, t.wt, t.successor));
+        ASSERT(dlx_queue_bytes(t.before, sizeof(t.before), &t.before_len));
+        ASSERT(kind == 0 ? dlx_fence_bad_hook(&t) :
+               kind == 1 ? dlx_fence_signed_merge(&t) : dlx_fence_stale_hook(&t));
+        ASSERT(dlx_fence_same_queue(&t));
+        ASSERT(dlx_origin_main(&t.rig, t.remote)); ASSERT_STR_EQ(t.remote, t.base);
+        PASS();
+    } _test_next:;
+    unsetenv("ZCL_LAND_TEST_FENCE_POLICY"); unsetenv("ZCL_DEVLOOP_TEST_PROCESS"); dlx_restore();
+    return failures;
+}
+
+static bool dlx_fence_conflicting_outcome(struct dlx_fence_case *t)
+{
+    char path[1400], content[65536]; size_t len = 0;
+    dlx_landdir(t->land, sizeof(t->land));
+    (void)snprintf(path, sizeof(path), "%s/fence.jsonl", t->land);
+    if (!dlx_slurp(path, content, sizeof(content) - 1, &len)) return false;
+    content[len] = '\0';
+    char *row = strchr(content, '\n'); if (!row) return false;
+    row = strchr(row + 1, '\n'); if (!row) return false; ++row;
+    char *end = strchr(row, '\n'); if (!end) return false; *end = '\0';
+    char *peer = strstr(row, "\"fence_peer\":2"); if (!peer) return false;
+    peer[strlen("\"fence_peer\":")] = '9';
+    (void)snprintf(path, sizeof(path), "%s/outcomes.jsonl", t->land);
+    return dlx_write(path, row);
+}
+
+static int dlx_fence_negative_replay(void)
+{
+    int failures = 0; struct dlx_fence_case t = {0};
+    dlx_isolate("fence_conflicting_outcome");
+    TEST("land: contradictory prior terminal peer never replaces sealed paired outcome") {
+        ASSERT(dlx_fence_prepare(&t.rig, "fence_conflicting_outcome", t.base, t.wt, t.successor));
+        ASSERT(dlx_queue_bytes(t.before, sizeof(t.before), &t.before_len));
+        dlx_fence_call(&t.c, &t.rig, t.base, t.rig.tip, t.successor);
+        ASSERT(dlx_run(&t.c) && dlx_ok(&t.c)); dlx_end(&t.c);
+        ASSERT(dlx_fence_expect(&t, "step", "FENCE_PUSH_OUTCOME_UNKNOWN"));
+        ASSERT(dlx_fence_crash_step("paired"));
+        ASSERT(dlx_fence_conflicting_outcome(&t));
+        ASSERT(dlx_fence_expect(&t, "step", "FENCE_PROJECT_PENDING"));
+        ASSERT(dlx_fence_same_queue(&t));
+        ASSERT(dlx_fence_expect(&t, "step", "FENCE_PROJECT_PENDING"));
+        ASSERT(dlx_fence_same_queue(&t));
+        PASS();
+    } _test_next:;
+    unsetenv("ZCL_LAND_TEST_FENCE_POLICY"); unsetenv("ZCL_DEVLOOP_TEST_PROCESS"); dlx_restore();
+    return failures;
+}
+
+static int dlx_fence_observer_rewrite(void)
+{
+    int failures = 0; struct dlx_fence_case t = {0};
+    char config[1400], key[1600], other[1400];
+    const char *prior = getenv("GIT_CONFIG_GLOBAL");
+    char *saved = prior ? strdup(prior) : NULL;
+    dlx_isolate("fence_observer_rewrite");
+    TEST("land: observer-only rewrite cannot substitute the signed receiver") {
+        ASSERT(dlx_fence_prepare(&t.rig, "fence_observer_rewrite", t.base, t.wt, t.successor));
+        ASSERT(dlx_queue_bytes(t.before, sizeof(t.before), &t.before_len));
+        dlx_fence_call(&t.c, &t.rig, t.base, t.rig.tip, t.successor);
+        ASSERT(dlx_run(&t.c) && dlx_ok(&t.c)); dlx_end(&t.c);
+        ASSERT(dlx_fence_expect(&t, "step", "FENCE_PUSH_OUTCOME_UNKNOWN"));
+        dlx_landdir(t.land, sizeof(t.land));
+        (void)snprintf(config, sizeof(config), "%s/observer.gitconfig", t.land);
+        (void)snprintf(other, sizeof(other), "%s.other", t.rig.bare);
+        const char *init[] = { "init", "--bare", "--quiet", other, NULL };
+        ASSERT(dlx_git(NULL, init) == 0);
+        /* Global shorter-prefix rewrite applies only to the fresh observer;
+         * the source checkout's longer identity mapping preserves its URL. */
+        char prefix[1400]; (void)snprintf(prefix, sizeof(prefix), "%s", t.rig.bare);
+        char *slash = strrchr(prefix, '/'); ASSERT(slash != NULL); slash[1] = '\0';
+        (void)snprintf(key, sizeof(key), "url.%s.insteadOf", other);
+        const char *global[] = { "config", "--file", config, key, prefix, NULL };
+        ASSERT(dlx_git(NULL, global) == 0);
+        (void)snprintf(key, sizeof(key), "url.%s.insteadOf", t.rig.bare);
+        const char *local[] = { "config", key, t.rig.bare, NULL };
+        ASSERT(dlx_git(t.rig.clone, local) == 0);
+        setenv("GIT_CONFIG_GLOBAL", config, 1);
+        ASSERT(dlx_fence_expect(&t, "step", "FENCE_WINNER_RECEIPT_UNAVAILABLE"));
+        ASSERT(dlx_fence_same_queue(&t));
+        PASS();
+    } _test_next:;
+    if (saved) setenv("GIT_CONFIG_GLOBAL", saved, 1); else unsetenv("GIT_CONFIG_GLOBAL");
+    free(saved);
+    unsetenv("ZCL_LAND_TEST_FENCE_POLICY"); unsetenv("ZCL_DEVLOOP_TEST_PROCESS"); dlx_restore();
+    return failures;
+}
+
+static int dlx_fence_dispatch_receiver_race(void)
+{
+    int failures = 0; struct dlx_fence_case t = {0};
+    int ready[2] = {-1, -1}, release[2] = {-1, -1}; pid_t child = -1;
+    dlx_isolate("fence_dispatch_receiver_race");
+    TEST("land: receiver changes after checkpoint still refuse before actual send") {
+        ASSERT(dlx_fence_prepare(&t.rig, "fence_dispatch_receiver_race", t.base, t.wt, t.successor));
+        dlx_fence_call(&t.c, &t.rig, t.base, t.rig.tip, t.successor);
+        ASSERT(dlx_run(&t.c) && dlx_ok(&t.c)); dlx_end(&t.c);
+        ASSERT(dlx_pick_barrier_open(ready, release));
+        zcl_native_dev_land_test_pick_barrier(ready[1], release[0]);
+        child = fork(); ASSERT(child >= 0);
+        if (child == 0) dlx_fence_race_child(1, ready, release, &t.rig, t.base, t.wt);
+        (void)close(ready[1]); ready[1] = -1;
+        (void)close(release[0]); release[0] = -1;
+        char marker; ASSERT(read(ready[0], &marker, 1) == 1 && marker == 'R');
+        zcl_native_dev_land_test_pick_barrier(-1, -1);
+        ASSERT(dlx_fence_receiver_config(&t, 2));
+        ASSERT(write(release[1], "G", 1) == 1);
+        (void)close(release[1]); release[1] = -1;
+        int status = 0; ASSERT(waitpid(child, &status, 0) == child); child = -1;
+        ASSERT(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+        ASSERT(dlx_origin_main(&t.rig, t.remote)); ASSERT_STR_EQ(t.remote, t.base);
+        char other[1400]; (void)snprintf(other, sizeof(other), "%s.other", t.rig.bare);
+        const char *head[] = { "rev-parse", "--verify", "refs/heads/main", NULL };
+        ASSERT(dlx_git(other, head) != 0);
+        PASS();
+    } _test_next:;
+    zcl_native_dev_land_test_pick_barrier(-1, -1);
+    for (size_t i = 0; i < 2; ++i) {
+        if (ready[i] >= 0) (void)close(ready[i]);
+        if (release[i] >= 0) (void)close(release[i]);
+    }
+    if (child > 0) { int status = 0; (void)waitpid(child, &status, 0); }
+    unsetenv("ZCL_LAND_TEST_FENCE_POLICY"); unsetenv("ZCL_DEVLOOP_TEST_PROCESS"); dlx_restore();
+    return failures;
+}
+
+static int dlx_fence_checkout_drift(bool dirty)
+{
+    int failures = 0; struct dlx_fence_case t = {0};
+    (void)snprintf(t.tag, sizeof(t.tag), "fence_checkout_drift_%u", dirty);
+    dlx_isolate(t.tag);
+    TEST("land: armed replacement checkout drift refuses new send") {
+        ASSERT(dlx_fence_prepare(&t.rig, t.tag, t.base, t.wt, t.successor));
+        ASSERT(dlx_queue_bytes(t.before, sizeof(t.before), &t.before_len));
+        dlx_fence_call(&t.c, &t.rig, t.base, t.rig.tip, t.successor);
+        ASSERT(dlx_run(&t.c) && dlx_ok(&t.c)); dlx_end(&t.c);
+        if (dirty) {
+            const char *modify[] = { "config", "--worktree", "core.filemode", "true", NULL };
+            ASSERT(dlx_git(t.rig.clone, modify) == 0);
+            const char *remove[] = { "rm", "-r", "--cached", ".", NULL };
+            ASSERT(dlx_git(t.rig.clone, remove) == 0);
+        } else {
+            const char *switch_head[] = { "checkout", "--detach", t.base, NULL };
+            ASSERT(dlx_git(t.rig.clone, switch_head) == 0);
+        }
+        ASSERT(dlx_fence_expect(&t, "step", "FENCE_WORKTREE_INVALID"));
+        ASSERT(dlx_fence_same_queue(&t));
+        ASSERT(dlx_origin_main(&t.rig, t.remote)); ASSERT_STR_EQ(t.remote, t.base);
+        PASS();
+    } _test_next:;
+    unsetenv("ZCL_LAND_TEST_FENCE_POLICY"); unsetenv("ZCL_DEVLOOP_TEST_PROCESS"); dlx_restore();
+    return failures;
+}
+
+static int dlx_fence_negative_cases(void)
+{
+    int failures = dlx_fence_negative_admission(0) + dlx_fence_negative_admission(1) + dlx_fence_negative_admission(2) +
+        dlx_fence_negative_replay() + dlx_fence_observer_rewrite() + dlx_fence_dispatch_receiver_race() +
+        dlx_fence_checkout_drift(false) + dlx_fence_checkout_drift(true);
+    for (unsigned kind = 1; kind <= 6; ++kind) {
+        failures += dlx_fence_negative_receiver(kind, false);
+        failures += dlx_fence_negative_receiver(kind, true);
+    }
+    return failures;
+}
+
+static int dlx_fence_concurrent(void)
+{
+    return dlx_fence_concurrent_case(0) + dlx_fence_concurrent_case(1);
+}
+#endif
+
 int test_dev_land(void)
 {
     int failures = 0;
     failures += test_dev_land_signed_intent();
 #if !defined(_WIN32)
+    failures += dlx_fence_cases();
+    failures += dlx_fence_concurrent();
+    failures += dlx_fence_negative_cases();
     failures += test_dev_land_status_observation();
 #endif
     failures += test_dev_land_signed_tamper();
