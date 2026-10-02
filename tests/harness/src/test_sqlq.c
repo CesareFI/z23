@@ -128,6 +128,26 @@ static int test_sqlq_refusals(void)
     return failures;
 }
 
+static int test_sqlq_blob_chunk_boundary(void)
+{
+    int failures = 0;
+    char buf[4102] = {0};
+    TEST("sqlq: BLOB hex stays exact across the output chunk boundary") {
+        ASSERT(sqlq_run(":memory:", "SELECT zeroblob(0)",
+                        buf, sizeof(buf)) == 0);
+        ASSERT(strcmp(buf, SQLQ_EOL) == 0);
+        ASSERT(sqlq_run(":memory:", "SELECT zeroblob(1)",
+                        buf, sizeof(buf)) == 0);
+        ASSERT(strcmp(buf, "00" SQLQ_EOL) == 0);
+        ASSERT(sqlq_run(":memory:", "SELECT zeroblob(2049)",
+                        buf, sizeof(buf)) == 0);
+        for (size_t i = 0; i < 4098; i++) ASSERT(buf[i] == '0');
+        ASSERT(strcmp(buf + 4098, SQLQ_EOL) == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_sqlq(void)
 {
     int failures = 0;
@@ -138,5 +158,6 @@ int test_sqlq(void)
     }
     failures += test_sqlq_rows_and_typing();
     failures += test_sqlq_refusals();
+    failures += test_sqlq_blob_chunk_boundary();
     return failures;
 }

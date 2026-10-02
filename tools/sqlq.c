@@ -17,6 +17,8 @@
  * BLOBs as lowercase hex. Exit 0 on success, 1 on usage/open/SQL error.
  */
 
+#include "base/hex.h"
+
 #include <sqlite3.h>
 #include <stdio.h>
 #include <string.h>
@@ -42,7 +44,31 @@ static int sqlq_tail_is_empty(sqlite3 *db, const char *tail)
     return empty;
 }
 
-static void sqlq_print_row(sqlite3_stmt *st)
+/* Borrow SQLite's BLOB only until the next step/finalize. The fixed stack
+ * buffer bounds formatting work regardless of the column length. */
+static int sqlq_print_blob_hex(const unsigned char *blob, int len)
+{
+    char out[4097];
+    if (len < 0 || (len > 0 && !blob)) {
+        fprintf(stderr, "sqlq: BLOB column unavailable\n");
+        return 0;
+    }
+    size_t remaining = (size_t)len;
+    while (remaining) {
+        size_t capacity = (sizeof(out) - 1) / 2;
+        size_t count = remaining < capacity ? remaining : capacity;
+        zcl_hex_encode(blob, count, out);
+        if (fwrite(out, 1, 2 * count, stdout) != 2 * count) {
+            fprintf(stderr, "sqlq: BLOB output failed\n");
+            return 0;
+        }
+        blob += count;
+        remaining -= count;
+    }
+    return 1;
+}
+
+static int sqlq_print_row(sqlite3_stmt *st)
 {
     int n = sqlite3_column_count(st);
     for (int i = 0; i < n; i++) {
@@ -54,7 +80,7 @@ static void sqlq_print_row(sqlite3_stmt *st)
         case SQLITE_BLOB: {
             const unsigned char *b = sqlite3_column_blob(st, i);
             int len = sqlite3_column_bytes(st, i);
-            for (int j = 0; j < len; j++) printf("%02x", b[j]);
+            if (!sqlq_print_blob_hex(b, len)) return 0;
             break;
         }
         default:
@@ -62,6 +88,20 @@ static void sqlq_print_row(sqlite3_stmt *st)
         }
     }
     fputc('\n', stdout);
+    return 1;
+}
+
+static int sqlq_print_rows(sqlite3 *db, sqlite3_stmt *st)
+{
+    int rc;
+    while ((rc = sqlite3_step(st)) == SQLITE_ROW) { // raw-sql-ok:read-only-diagnostic-cli
+        if (!sqlq_print_row(st)) return 0;
+    }
+    if (rc != SQLITE_DONE) {
+        fprintf(stderr, "sqlq: step failed: %s\n", sqlite3_errmsg(db));
+        return 0;
+    }
+    return 1;
 }
 
 int main(int argc, char **argv)
@@ -100,12 +140,7 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    int rc;
-    while ((rc = sqlite3_step(st)) == SQLITE_ROW) // raw-sql-ok:read-only-diagnostic-cli
-        sqlq_print_row(st);
-    int ok = (rc == SQLITE_DONE);
-    if (!ok)
-        fprintf(stderr, "sqlq: step failed: %s\n", sqlite3_errmsg(db));
+    int ok = sqlq_print_rows(db, st);
     sqlite3_finalize(st);
     sqlite3_close(db);
     return ok ? 0 : 1;
