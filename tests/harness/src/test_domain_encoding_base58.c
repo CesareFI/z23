@@ -95,9 +95,96 @@ static bool check_roundtrip_ok(const unsigned char *data, size_t data_len)
     return dec_len == data_len && memcmp(dec, data, data_len) == 0;
 }
 
-int test_domain_encoding_base58(void)
+/* Independent oracle: divide a base256 magnitude by 58 repeatedly, rather
+ * than multiplying a base58 magnitude by 256 like the production encoder.
+ * Fixtures are synthetic; all arrays are owned by this call. */
+static size_t encode_division_reference(const unsigned char *data, size_t length,
+                                        char text[1415])
+{
+    static const char alphabet[] =
+        "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+    unsigned char scratch[1024];
+    char reversed[1414];
+    if (length > sizeof scratch)
+        return 0;
+    memcpy(scratch, data, length);
+    size_t zeroes = 0;
+    while (zeroes < length && scratch[zeroes] == 0)
+        zeroes++;
+    size_t start = zeroes, digits = 0;
+    while (start < length) {
+        unsigned carry = 0;
+        for (size_t i = start; i < length; i++) {
+            carry = carry * 256u + scratch[i];
+            scratch[i] = (unsigned char)(carry / 58u);
+            carry %= 58u;
+        }
+        if (digits >= sizeof reversed)
+            return 0;
+        reversed[digits++] = alphabet[carry];
+        while (start < length && scratch[start] == 0)
+            start++;
+    }
+    if (zeroes + digits >= 1415)
+        return 0;
+    memset(text, '1', zeroes);
+    for (size_t i = 0; i < digits; i++)
+        text[zeroes + i] = reversed[digits - i - 1];
+    text[zeroes + digits] = '\0';
+    return zeroes + digits;
+}
+
+static bool encode_capacity_case(const unsigned char *data, size_t length,
+                                 const char *expected, size_t needed, size_t capacity)
+{
+    char output[1416], guard[1416];
+    memset(output, 0x5a, sizeof output);
+    memcpy(guard, output, sizeof guard);
+    size_t actual = 9999;
+    bool ok = domain_encoding_base58_encode(data, length, output + 1, capacity, &actual);
+    if (actual != needed)
+        return false;
+    if (capacity <= needed)
+        return !ok && memcmp(output, guard, sizeof output) == 0;
+    memcpy(guard + 1, expected, needed + 1);
+    return ok && memcmp(output, guard, sizeof output) == 0;
+}
+
+static bool encode_boundary_case(size_t length, size_t zeroes, unsigned char value)
+{
+    unsigned char data[1024], original[1024];
+    char expected[1415];
+    memset(data, value, sizeof data);
+    memset(data, 0, zeroes);
+    memcpy(original, data, sizeof data);
+    size_t needed = encode_division_reference(data, length, expected);
+    if (length != 0 && needed == 0)
+        return false;
+    const size_t capacities[] = {0, needed, needed + 1, sizeof expected};
+    for (size_t i = 0; i < sizeof capacities / sizeof capacities[0]; i++) {
+        if (!encode_capacity_case(data, length, expected, needed, capacities[i]))
+            return false;
+    }
+    return memcmp(data, original, sizeof data) == 0;
+}
+
+static int test_encode_significant_digits(void)
 {
     int failures = 0;
+    const size_t lengths[] = {0, 1, 2, 25, 37, 82, 256, 740, 1023, 1024};
+    for (size_t i = 0; i < sizeof lengths / sizeof lengths[0]; i++) {
+        size_t length = lengths[i];
+        B58_CHECK("encode carry growth and capacity guards", encode_boundary_case(length, 0, 0xff));
+        B58_CHECK("encode internal zero digits", encode_boundary_case(length, 0, 0x3a));
+        B58_CHECK("encode all leading zeroes", encode_boundary_case(length, length, 0));
+        B58_CHECK("encode long zero prefix", encode_boundary_case(length, length / 2, 1));
+    }
+    return failures;
+}
+
+int test_domain_encoding_base58(void)
+{
+    int failures = test_encode_significant_digits();
 
     /* (1) Contract: empty input round-trips through encode/decode. */
     {

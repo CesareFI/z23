@@ -42,6 +42,20 @@ static_assert(B58_DECODE_BUF >= B58_DECODE_MAX_INPUT * 733u / 1000u + 1u,
 static_assert(B58_CHECK_BUF >= B58_CHECK_MAX_INPUT + 4u,
               "base58check scratch must cover payload + 4-byte checksum");
 
+/* Borrow a bounded initialized suffix; the caller owns and erases the full
+ * scratch. Its size depends only on bytes consumed, not on their values. */
+static bool base58_encode_byte(unsigned char *digits, size_t size,
+                               unsigned char byte)
+{
+    int carry = byte;
+    for (size_t i = size; i > 0; i--) {
+        carry += 256 * digits[i - 1];
+        digits[i - 1] = carry % 58;
+        carry /= 58;
+    }
+    return carry == 0;
+}
+
 bool domain_encoding_base58_encode(const unsigned char *data, size_t data_len,
                                    char *out, size_t out_size, size_t *out_len)
 {
@@ -67,13 +81,11 @@ bool domain_encoding_base58_encode(const unsigned char *data, size_t data_len,
     unsigned char b58[B58_ENCODE_BUF];
     memset(b58, 0, b58_size);
 
+    size_t processed = 0;
     while (pbegin != pend) {
-        int carry = *pbegin;
-        for (size_t i = b58_size; i > 0; i--) {
-            carry += 256 * b58[i - 1];
-            b58[i - 1] = carry % 58;
-            carry /= 58;
-        }
+        /* Reuse the full-input bound for the prefix processed so far. This
+         * grows monotonically to b58_size; the unvisited prefix is zero. */
+        size_t active = ++processed * 138 / 100 + 1;
         /* Total function on purpose: every address, WIF, xpub/xprv and
          * explorer URL segment the node accepts reaches this codec, and
          * assert() is live in release builds (-DNDEBUG is not set for the
@@ -81,7 +93,7 @@ bool domain_encoding_base58_encode(const unsigned char *data, size_t data_len,
          * whole process. b58_size is derived from the input length, so a
          * non-zero carry can only mean that derivation is wrong — fail the
          * call instead of the node. */
-        if (carry != 0) {
+        if (!base58_encode_byte(b58 + b58_size - active, active, *pbegin)) {
             memory_cleanse(b58, b58_size);
             return false;
         }
