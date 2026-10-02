@@ -3367,16 +3367,20 @@ TMPL_TOOL = $(BIN_DIR)/gen_templates
 TMPL_TOOL_SRCS := tools/gen_templates.c \
 	platform/modules/base/src/safe_alloc.c \
 	platform/modules/platform/src/path_replace.c
+TMPL_TOOL_HEADERS := platform/modules/base/include/base/safe_alloc.h \
+	platform/modules/util/include/util/safe_alloc.h \
+	platform/modules/platform/include/platform/path_replace.h
+TMPL_TOOL_INPUTS := $(TMPL_TOOL_SRCS) $(TMPL_TOOL_HEADERS)
 SITE_CSS_GEN = contexts/explorer/views/include/views/site_css.h
 SITE_CSS_SRC = contexts/explorer/views/src/site.css
 INSTALL_SH_GEN = contexts/commons/views/include/views/install_script_gen.h
 INSTALL_SH_SRC = platform/packaging/install/install_from_source.sh
 VIEW_GEN_HEADERS = $(VIEW_GEN_HEADERS_EARLY)
 
-$(TMPL_TOOL): $(TMPL_TOOL_SRCS)
+$(TMPL_TOOL): $(TMPL_TOOL_INPUTS)
 	@mkdir -p $(dir $@) build/identity
 	$(CC) -std=c23 -O2 -Wall -Wextra -Iplatform/modules/base/include \
-		-Iplatform/modules/util/include -Iplatform/modules/platform/include -o $@ $^
+		-Iplatform/modules/util/include -Iplatform/modules/platform/include -o $@ $(TMPL_TOOL_SRCS)
 
 $(BIN_DIR)/inspect_html: tools/inspect_html.c platform/modules/base/src/safe_alloc.c
 	@mkdir -p $(dir $@)
@@ -3390,13 +3394,13 @@ $(BIN_DIR)/inspect_html: tools/inspect_html.c platform/modules/base/src/safe_all
 # target whose stdout is meant to be a machine-readable list. The echo is
 # suppressed; nothing is lost, because gen_templates itself reports what it
 # did (file counts, byte counts, "unchanged") on stderr either way.
-$(TMPL_GEN): $(TMPL_SRC) $(TMPL_TOOL_SRCS) | $(TMPL_TOOL)
+$(TMPL_GEN): $(TMPL_SRC) $(TMPL_TOOL_INPUTS) | $(TMPL_TOOL)
 	@$(TMPL_TOOL) $(TMPL_DIR) $@ $(TMPL_CSS_DIR)
 
-$(SITE_CSS_GEN): $(SITE_CSS_SRC) $(TMPL_TOOL_SRCS) | $(TMPL_TOOL)
+$(SITE_CSS_GEN): $(SITE_CSS_SRC) $(TMPL_TOOL_INPUTS) | $(TMPL_TOOL)
 	@$(TMPL_TOOL) --single-css $< $@ site_css SITE_CSS_H
 
-$(INSTALL_SH_GEN): $(INSTALL_SH_SRC) $(TMPL_TOOL_SRCS) | $(TMPL_TOOL)
+$(INSTALL_SH_GEN): $(INSTALL_SH_SRC) $(TMPL_TOOL_INPUTS) | $(TMPL_TOOL)
 	@mkdir -p $(dir $@)
 	@$(TMPL_TOOL) --single-text $< $@ INSTALL_FROM_SOURCE_SH ZCL_VIEWS_INSTALL_SCRIPT_GEN_H
 
