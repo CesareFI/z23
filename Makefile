@@ -6077,6 +6077,15 @@ LINTC_SRCS = tools/lint/lintc/lib.c tools/lint/lintc/gate_boot_wiring.c tools/li
     $(LINTC_PREMISE_SRCS) \
     tools/lint/lintc/main.c
 LINTC_OBJS = $(LINTC_SRCS:tools/lint/lintc/%.c=build/lintc-obj/%.o)
+# The standalone lint executable needs the headers read by its own objects,
+# independently of the node/test profile depfile selection above.
+-include $(LINTC_OBJS:.o=.d) $(LINTC_NODE_OBJS:.o=.d)
+# Existing object trees predate these depfiles. Rebuild them once so their
+# first post-upgrade invocation cannot silently reuse header-stale objects.
+LINTC_DEPFILE_STAMP = build/lintc-obj/.header-depfiles-v1
+$(LINTC_DEPFILE_STAMP):
+	@mkdir -p $(dir $@)
+	@touch $@
 # Apple Clang enables -Wunused-but-set-variable under -Wextra -Werror for
 # patterns (e.g. an increment-only counter) that gcc's -Wextra does not
 # flag, so a lint-runtime source that builds clean here can refuse on
@@ -14141,17 +14150,17 @@ $(EQUIHASH_FACT_TOOL): $(EQUIHASH_FACT_SRCS)
 	    -Icore/modules/sapling/include -Icontexts/wallet/modules/keys/include -Iengine/modules/event/include \
 	    -o $@ $(EQUIHASH_FACT_SRCS)
 
-build/lintc-obj/%.o: tools/lint/lintc/%.c tools/lint/lintc/lintc.h
+build/lintc-obj/%.o: tools/lint/lintc/%.c tools/lint/lintc/lintc.h $(LINTC_DEPFILE_STAMP)
 	@mkdir -p $(dir $@)
-	$(CC) $(LINTC_CFLAGS) -c -o $@ $<
+	$(CC) $(LINTC_CFLAGS) -MMD -MP -c -o $@ $<
 	$(if $(LINTC_CLANG),$(LINTC_CLANG) $(LINTC_CFLAGS) -Wunused-but-set-variable -Wunused-variable -fsyntax-only $<,echo "lintc: clang not on PATH; Apple Clang strictness UNOBSERVED for $<")
 
 $(LINTC_PREMISE_SRCS:tools/lint/lintc/%.c=build/lintc-obj/%.o) build/lintc-obj/main.o: \
 	tools/lint/lintc/premise.h tools/lint/lintc/selection_gates.def
 
-build/lintc-obj/node/%.o: %.c
+build/lintc-obj/node/%.o: %.c $(LINTC_DEPFILE_STAMP)
 	@mkdir -p $(dir $@)
-	$(CC) $(LINTC_CFLAGS) -c -o $@ $<
+	$(CC) $(LINTC_CFLAGS) -MMD -MP -c -o $@ $<
 
 $(LINTC_TOOL): $(LINTC_OBJS) $(LINTC_NODE_OBJS)
 	@mkdir -p $(dir $@)
