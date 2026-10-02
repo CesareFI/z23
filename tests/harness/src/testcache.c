@@ -551,6 +551,11 @@ static bool group_reads_external_inputs(const char *name)
         "onion_bootstrap_slice",
         /* fork/execs tools/scripts/onion_pair_watch.sh and the node binary. */
         "onion_pair_watch_live",
+        /* Runs build/bin/p2_invariant_check through zcl_spawn_* wrappers the
+         * rail's exec tokens do not recognize, so this per-group key would
+         * hash no checker bytes. The whole-test receipt still binds the
+         * checker through its BUILD_NEED row; only this group key is denied. */
+        "p2_invariant_check",
         "replay_canary_verdict",
         /* package_lifecycle_commit spawns zclassic23-package-verify-dev from
          * engine code the rail does not scan — the entry file's literals are

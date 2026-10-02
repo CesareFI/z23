@@ -2029,6 +2029,8 @@ static bool tc_external_exec_denied(void)
         "test_metaverse_agent_broker",
         "test_onion_pair_watch_live",
         "onion_pair_watch_live",
+        "test_p2_invariant_check",
+        "p2_invariant_check",
         "test_resident_launch_contract",
         "test_self_folded_anchor_heavy",
         "self_folded_anchor_heavy",
@@ -2222,6 +2224,7 @@ static int tc_rail_pin_refused(struct testcache *tc)
         "test_codeindex_incremental", /* popen()s two tools/ scripts */
         "test_dev_proof_signer", /* rail: self re-exec of the test image */
         "test_engine",           /* system() runs tools/lint/check_no_api_keys.sh */
+        "test_p2_invariant_check", /* zcl_spawn_* exec of the checker: denylist */
         "test_sem_replay",       /* rail: execs make (the delegated tool build) */
         "test_test_group_selector", /* popen() re-execs the test image */
         "test_verify_receiver",  /* execve()s argv[0]: the test image */
