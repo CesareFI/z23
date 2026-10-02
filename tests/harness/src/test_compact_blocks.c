@@ -3,8 +3,160 @@
 #include "test/test_core.h"
 #include "net/compact_blocks.h"
 #include "core/hash.h"
+#include "chain/chainparams.h"
+#include "consensus/validation.h"
+#include "core/arith_uint256.h"
+#include "net/msg_internal.h"
+#include "net/msgprocessor.h"
+#include "net/net.h"
+#include "net/peer_scoring.h"
+#include "primitives/block.h"
+#include "primitives/transaction.h"
+#include "util/safe_alloc.h"
+#include "validation/txmempool.h"
 #include <string.h>
 #include <stdio.h>
+
+/* Drive process_cmpctblock() with a partially-reconstructing compact block
+ * while the per-peer pending-block stash allocation is faulted out. Pre-fix
+ * the handler built a getblocktxn request from node->compact_missing_indices
+ * (NULL, stash failed) with num_missing > 0, and block_txn_request_serialize
+ * dereferenced NULL[0] — a crash under genuine memory exhaustion; the heap
+ * missing-index list leaked too. Post-fix the handler frees the partial
+ * block and the index list and skips the doomed request. The second pass,
+ * unfaulted, proves the valid partial path still stashes exactly one miss. */
+static int test_process_cmpctblock_oom_pending_stash(void)
+{
+    int failures = 0;
+    printf("process_cmpctblock: OOM on the pending stash frees and does not "
+           "deref NULL... ");
+
+    const struct chain_params *params = chain_params_get();
+    peer_scoring_init();
+
+    struct net_manager nm;
+    net_manager_init(&nm);
+    struct tx_mempool pool;
+    tx_mempool_init(&pool, 0);
+
+    /* A params copy whose powLimit accepts any header: process_cmpctblock
+     * gates on CheckProofOfWork before reconstructing, and a fabricated
+     * header cannot satisfy the real network target (mirrors test_chain.c's
+     * custom consensus_params with powLimit = all-0xff). */
+    struct chain_params local_params = *params;
+    memset(local_params.consensus.powLimit.data, 0xff, 32);
+
+    struct msg_processor mp;
+    memset(&mp, 0, sizeof(mp));
+    mp.params = &local_params;
+    mp.net_mgr = &nm;
+    mp.mempool = &pool;
+
+    struct p2p_node node;
+    memset(&node, 0, sizeof(node));
+    node.id = 91;
+    snprintf(node.addr_name, sizeof(node.addr_name), "cmpct-oom-peer");
+    /* Non-localhost so the PoW-gate scoring path treats it as an ordinary
+     * peer (mirrors test_msg_handlers.c's setup_node()). */
+    node.addr.svc.addr.ip[10] = 0xff;
+    node.addr.svc.addr.ip[11] = 0xff;
+    node.addr.svc.addr.ip[12] = 198;
+    node.addr.svc.addr.ip[13] = 51;
+    node.addr.svc.addr.ip[14] = 100;
+    node.addr.svc.addr.ip[15] = 91;
+
+    /* Block with 2 txs: coinbase (prefilled by compact_block_from_block) +
+     * one regular tx whose short txid resolves against the empty mempool to
+     * exactly one missing index. */
+    struct block blk;
+    block_init(&blk);
+    blk.header.nVersion = 4;
+    blk.header.nTime = 1700000200;
+    /* An easy target (test_chain.c's derivation): 0x2100ffff compact means
+     * a target near 2^256, so the fabricated header's hash passes
+     * CheckProofOfWork against the all-0xff powLimit below. */
+    struct arith_uint256 easy_target;
+    arith_uint256_set_compact(&easy_target, 0x2100ffffu, NULL, NULL);
+    blk.header.nBits = arith_uint256_get_compact(&easy_target, false);
+    blk.header.nNonce.data[0] = 33;
+    blk.num_vtx = 2;
+    blk.vtx = calloc(2, sizeof(struct transaction));
+    for (int i = 0; i < 2; i++) {
+        transaction_init(&blk.vtx[i]);
+        blk.vtx[i].version = 4;
+        blk.vtx[i].overwintered = true;
+        blk.vtx[i].version_group_id = SAPLING_VERSION_GROUP_ID;
+        memset(blk.vtx[i].hash.data, (uint8_t)(i + 1), 32);
+    }
+    blk.vtx[0].num_vin = 1;
+    blk.vtx[0].vin = calloc(1, sizeof(struct tx_in));
+    tx_in_init(&blk.vtx[0].vin[0]);
+
+    struct compact_block_msg cb;
+    struct byte_stream s;
+    stream_init(&s, 1024);
+    struct uint256 hash;
+    block_get_hash(&blk, &hash);
+    bool built = compact_block_from_block(&cb, &blk, 7) &&
+                 compact_block_msg_serialize(&cb, &s);
+
+    if (!built) {
+        printf("FAIL (fixture build)\n");
+        failures++;
+    } else {
+        /* Pass 1: fault the stash allocation. */
+        block_clear_seen(&hash);
+        s.read_pos = 0;
+        zcl_alloc_fault_fail_next("compact_pending_block");
+        bool rc = process_cmpctblock(&mp, &node, &s);
+        zcl_alloc_fault_clear();
+        if (!rc || node.compact_pending_block != NULL ||
+            node.compact_missing_indices != NULL ||
+            node.compact_num_missing != 0) {
+            printf("FAIL (oom pass: rc=%d pending=%p indices=%p n=%zu)\n",
+                   rc, (void *)node.compact_pending_block,
+                   (void *)node.compact_missing_indices,
+                   node.compact_num_missing);
+            failures++;
+        }
+
+        /* Pass 2: unfaulted — the valid partial path must stash one miss. */
+        block_clear_seen(&hash);
+        s.read_pos = 0;
+        bool rc2 = process_cmpctblock(&mp, &node, &s);
+        if (!rc2 || node.compact_pending_block == NULL ||
+            node.compact_missing_indices == NULL ||
+            node.compact_num_missing != 1) {
+            printf("FAIL (clean pass: rc=%d pending=%p indices=%p n=%zu)\n",
+                   rc2, (void *)node.compact_pending_block,
+                   (void *)node.compact_missing_indices,
+                   node.compact_num_missing);
+            failures++;
+        }
+        if (failures == 0)
+            printf("OK\n");
+    }
+
+    /* compact_pending_clear() is static to msg_compact.c; mirror it for the
+     * teardown (pass 1 leaves nothing stashed, pass 2 leaves the moved block
+     * and the index list). */
+    if (node.compact_pending_block) {
+        block_free(node.compact_pending_block);
+        free(node.compact_pending_block);
+        node.compact_pending_block = NULL;
+    }
+    free(node.compact_missing_indices);
+    node.compact_missing_indices = NULL;
+    node.compact_num_missing = 0;
+    node.compact_request_time = 0;
+    memset(&node.compact_pending_hash, 0, sizeof(node.compact_pending_hash));
+    stream_free(&s);
+    compact_block_msg_free(&cb);
+    block_free(&blk);
+    tx_mempool_free(&pool);
+    net_manager_free(&nm);
+    return failures;
+}
 
 int test_compact_blocks(void)
 {
@@ -568,6 +720,8 @@ int test_compact_blocks(void)
         compact_block_msg_free(&cb);
         block_free(&blk);
     }
+
+    failures += test_process_cmpctblock_oom_pending_stash();
 
     return failures;
 }

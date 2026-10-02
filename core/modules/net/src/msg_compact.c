@@ -224,27 +224,38 @@ bool process_cmpctblock(struct msg_processor *mp, struct p2p_node *node,
             node->compact_num_missing = num_missing;
             node->compact_request_time = (int64_t)platform_time_wall_time_t();
             missing_indices = NULL; /* ownership transferred */
+
+            /* Send getblocktxn for the missing transactions. Only a
+             * stashed peer can complete the reply, so the request is
+             * built here, inside the stash-success branch; pre-fix it
+             * ran unconditionally and read NULL indices when the
+             * stash allocation above failed. */
+            struct block_txn_request req;
+            block_txn_request_init(&req);
+            req.block_hash = block_hash;
+            req.indices = node->compact_missing_indices;
+            req.num_indices = num_missing;
+
+            struct byte_stream rs;
+            stream_init(&rs, 256);
+            if (block_txn_request_serialize(&req, &rs)) {
+                p2p_node_begin_message(node, "getblocktxn",
+                                       mp->params->pchMessageStart);
+                p2p_node_write_message_data(node, rs.data, rs.size);
+                p2p_node_end_message(node);
+            }
+            stream_free(&rs);
+            /* Don't free req — indices are owned by
+             * node->compact_missing_indices */
         } else {
-            /* Alloc failed — fall back to just freeing */
+            /* Stash allocation failed: there is no pending state a
+             * blocktxn reply could complete, so no request is sent.
+             * Free the partial block; the function-tail free of
+             * missing_indices below handles the index list (pre-fix the
+             * tail was unreachable here because the unconditional
+             * request build dereferenced the NULL indices first). */
             block_free(&out_block);
         }
-
-        /* Send getblocktxn for missing transactions */
-        struct block_txn_request req;
-        block_txn_request_init(&req);
-        req.block_hash = block_hash;
-        req.indices = node->compact_missing_indices;
-        req.num_indices = num_missing;
-
-        struct byte_stream rs;
-        stream_init(&rs, 256);
-        if (block_txn_request_serialize(&req, &rs)) {
-            p2p_node_begin_message(node, "getblocktxn", mp->params->pchMessageStart);
-            p2p_node_write_message_data(node, rs.data, rs.size);
-            p2p_node_end_message(node);
-        }
-        stream_free(&rs);
-        /* Don't free req — indices are owned by node->compact_missing_indices */
     } else {
         block_free(&out_block);
     }
