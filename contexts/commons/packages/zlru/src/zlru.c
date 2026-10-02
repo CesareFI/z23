@@ -6,8 +6,8 @@
 
 typedef struct zlru_node {
   struct zlru_node *prev, *next; /* MRU ... LRU */
-  char *key;                     /* node-owned copy */
   void *value;
+  char key[];                    /* node-owned trailing copy */
 } zlru_node;
 
 struct zlru {
@@ -42,8 +42,20 @@ static void push_head(zlru *c, zlru_node *n) {
 }
 
 static void free_node(zlru *c, zlru_node *n) {
-  c->alloc.dealloc(c->alloc.ctx, n->key);
   c->alloc.dealloc(c->alloc.ctx, n);
+}
+
+static zlru_node *create_node(zlru *c, const char *key, void *value) {
+  size_t klen = strlen(key);
+  if (klen > SIZE_MAX - sizeof(zlru_node) - 1)
+    return NULL;
+  zlru_node *n = c->alloc.alloc(c->alloc.ctx, sizeof(*n) + klen + 1);
+  if (!n)
+    return NULL;
+  /* The node keeps its key alive after zmap releases its independent copy. */
+  memcpy(n->key, key, klen + 1);
+  n->value = value;
+  return n;
 }
 
 zlru *zlru_create(size_t capacity, zlru_destroy_fn destroy_fn,
@@ -120,17 +132,9 @@ bool zlru_put(zlru *c, const char *key, void *value) {
     return true;
   }
 
-  size_t klen = strlen(key);
-  n = c->alloc.alloc(c->alloc.ctx, sizeof(*n));
+  n = create_node(c, key, value);
   if (!n)
     return false;
-  n->key = c->alloc.alloc(c->alloc.ctx, klen + 1);
-  if (!n->key) {
-    c->alloc.dealloc(c->alloc.ctx, n);
-    return false;
-  }
-  memcpy(n->key, key, klen + 1);
-  n->value = value;
   if (!zmap_put(c->map, key, n, NULL)) {
     free_node(c, n);
     return false; /* map unchanged */

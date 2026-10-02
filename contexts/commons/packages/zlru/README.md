@@ -15,6 +15,9 @@ get and put both count as use. It layers a recency list over
   10,000 mixed operations.
 - No global mutable state; each cache carries its own allocator
   (forwarded to zmap).
+- Each list node and its key share one checked allocation. The map retains
+  its own key copy, so eviction callbacks can still borrow the node's key
+  after removal from the map. Replacement requires no allocation.
 - `zlru_visit_mru_first` walks entries in recency order without
   promoting them — for diagnostics and serialization.
 
@@ -60,7 +63,8 @@ cc -std=c23 -O1 -g -fsanitize=address,undefined \
 
 Tests cover eviction order, replace promotion, erase paths, capacity 1,
 visit order and early stop, injected allocation failure (cache
-unchanged), NULL safety, and a 10k-operation churn with exact
+unchanged), node/key ownership, empty and long keys, map-growth allocation
+failures, NULL safety, and a 10k-operation churn with exact
 destructor accounting.
 
 ## License

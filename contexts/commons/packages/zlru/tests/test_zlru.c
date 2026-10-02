@@ -182,6 +182,7 @@ static void test_visit_early_stop(void) {
 /* Allocator that fails after a fixed number of allocations. */
 typedef struct {
   size_t remaining;
+  size_t live;
 } fail_ctx;
 
 static void *fail_alloc(void *ctx, size_t size) {
@@ -190,25 +191,32 @@ static void *fail_alloc(void *ctx, size_t size) {
     return NULL;
   f->remaining--;
   void *p = calloc(1, size);
+  if (p)
+    f->live++;
   return p;
 }
 
 static void fail_dealloc(void *ctx, void *ptr) {
-  (void)ctx;
+  fail_ctx *f = ctx;
+  if (ptr) {
+    CHECK(f->live > 0);
+    f->live--;
+  }
   free(ptr);
 }
 
 static void test_alloc_failure(void) {
   /* create fails when the map allocation is denied. */
   {
-    fail_ctx f = {1}; /* cache struct only */
+    fail_ctx f = {.remaining = 1}; /* cache struct only */
     zmap_alloc a = {&f, fail_alloc, fail_dealloc};
     zlru *c = zlru_create(4, NULL, NULL, a);
     CHECK(c == NULL);
+    CHECK(f.live == 0);
   }
   /* put fails cleanly when the node allocation is denied. */
   {
-    fail_ctx f = {64};
+    fail_ctx f = {.remaining = 64};
     zmap_alloc a = {&f, fail_alloc, fail_dealloc};
     zlru *c = zlru_create(4, record_destroy, NULL, a);
     CHECK(c);
@@ -221,9 +229,129 @@ static void test_alloc_failure(void) {
     CHECK(zlru_get(c, "a") == VP(1)); /* still intact */
     CHECK(destroyed_len == 0);
     zlru_destroy(c);
+    CHECK(f.live == 0);
   }
   /* create with capacity 0 is rejected. */
   CHECK(zlru_create(0, NULL, NULL, (zmap_alloc){0}) == NULL);
+}
+
+static void check_owned_key(void *ctx, const char *key, void *value) {
+  CHECK(strcmp(key, ctx) == 0);
+  CHECK(value == VP(7));
+  destroyed_calls++;
+}
+
+static bool visit_owned_key(void *ctx, const char *key, void *value) {
+  CHECK(strcmp(key, ctx) == 0);
+  CHECK(value == VP(7));
+  return true;
+}
+
+static void test_entry_key_lifetime(void) {
+  fail_ctx f = {.remaining = 64};
+  char expected[] = "copied";
+  char source[] = "copied";
+  zmap_alloc a = {&f, fail_alloc, fail_dealloc};
+  zlru *c = zlru_create(2, check_owned_key, expected, a);
+  CHECK(c != NULL);
+  if (!c) return;
+  size_t before = f.live;
+  f.remaining = 2; /* One node/key allocation plus the independent map key. */
+  destroyed_calls = 0;
+  CHECK(zlru_put(c, source, VP(7)));
+  CHECK(f.remaining == 0 && f.live == before + 2);
+  memset(source, 'x', sizeof(source) - 1);
+  CHECK(zlru_get(c, expected) == VP(7));
+  zlru_visit_mru_first(c, visit_owned_key, expected);
+  zlru_erase(c, expected); /* Callback's key survives the map key's free. */
+  CHECK(destroyed_calls == 1 && f.live == before);
+  zlru_destroy(c);
+  CHECK(f.live == 0);
+}
+
+static void test_entry_allocation_failures(void) {
+  for (size_t budget = 0; budget < 2; budget++) {
+    fail_ctx f = {.remaining = 64};
+    zmap_alloc a = {&f, fail_alloc, fail_dealloc};
+    zlru *c = zlru_create(1, record_destroy, NULL, a);
+    CHECK(c != NULL);
+    if (!c) return;
+    CHECK(zlru_put(c, "kept", VP(1)));
+    size_t before = f.live;
+    destroyed_calls = 0;
+    f.remaining = budget;
+    CHECK(!zlru_put(c, "refused", VP(2)));
+    CHECK(zlru_size(c) == 1 && zlru_get(c, "kept") == VP(1));
+    CHECK(zlru_get(c, "refused") == NULL);
+    CHECK(f.live == before && destroyed_calls == 0);
+    f.remaining = 2;
+    CHECK(zlru_put(c, "replacement", VP(3)));
+    CHECK(zlru_get(c, "kept") == NULL && destroyed_calls == 1);
+    zlru_destroy(c);
+    CHECK(f.live == 0 && destroyed_calls == 2);
+  }
+}
+
+static bool check_growth_entry(void *ctx, const char *key, void *value) {
+  int *expected = ctx;
+  CHECK(*expected > 0);
+  if (*expected <= 0) return false;
+  char wanted[2] = {(char)('a' + *expected - 1), '\0'};
+  CHECK(strcmp(key, wanted) == 0);
+  CHECK(value == VP(*expected));
+  (*expected)--;
+  return true;
+}
+
+static void test_growth_allocation_failures(void) {
+  for (size_t budget = 0; budget < 3; budget++) {
+    fail_ctx f = {.remaining = 100};
+    zmap_alloc a = {&f, fail_alloc, fail_dealloc};
+    zlru *c = zlru_create(11, record_destroy, NULL, a);
+    CHECK(c != NULL);
+    if (!c) return;
+    for (int i = 0; i < 11; i++) {
+      char key[2] = {(char)('a' + i), '\0'};
+      CHECK(zlru_put(c, key, VP(i + 1)));
+    }
+    size_t before = f.live;
+    destroyed_calls = 0;
+    f.remaining = budget;
+    CHECK(!zlru_put(c, "grow", VP(12)));
+    CHECK(zlru_size(c) == 11 && f.live == before);
+    CHECK(zlru_get(c, "grow") == NULL && destroyed_calls == 0);
+    int expected = 11;
+    zlru_visit_mru_first(c, check_growth_entry, &expected);
+    CHECK(expected == 0); /* A refused put cannot reorder or lose entries. */
+    for (int i = 0; i < 11; i++) {
+      char key[2] = {(char)('a' + i), '\0'};
+      CHECK(zlru_get(c, key) == VP(i + 1));
+    } /* Ascending lookups leave the original recency order in place. */
+    f.remaining = 3;
+    CHECK(zlru_put(c, "grow", VP(12)));
+    CHECK(zlru_get(c, "a") == NULL && destroyed_calls == 1);
+    CHECK(zlru_get(c, "grow") == VP(12));
+    zlru_destroy(c);
+    CHECK(f.live == 0 && destroyed_calls == 12);
+  }
+}
+
+static void test_key_sizes(void) {
+  static char long_key[4097];
+  memset(long_key, 'k', sizeof(long_key) - 1);
+  fail_ctx f = {.remaining = 64};
+  zmap_alloc a = {&f, fail_alloc, fail_dealloc};
+  zlru *c = zlru_create(2, NULL, NULL, a);
+  CHECK(c != NULL);
+  if (!c) return;
+  CHECK(zlru_put(c, "", VP(1)));
+  CHECK(zlru_put(c, long_key, VP(2)));
+  f.remaining = 0;
+  CHECK(zlru_put(c, long_key, VP(3))); /* Existing keys need no allocation. */
+  CHECK(zlru_get(c, "") == VP(1));
+  CHECK(zlru_get(c, long_key) == VP(3));
+  zlru_destroy(c);
+  CHECK(f.live == 0);
 }
 
 static void test_null_safety(void) {
@@ -290,6 +418,10 @@ int main(void) {
   test_visit_order();
   test_visit_early_stop();
   test_alloc_failure();
+  test_entry_key_lifetime();
+  test_entry_allocation_failures();
+  test_growth_allocation_failures();
+  test_key_sizes();
   test_null_safety();
   test_stress();
   if (failures) {
