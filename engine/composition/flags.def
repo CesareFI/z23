@@ -2051,8 +2051,12 @@ Z23_FLAG("ZCL_RPC_BIN", "env_build", "build/bin/zcl-rpc", "-",
           "first use platform/deploy/zclassic23-cutover.sh:auto; documented at docs/work/mvp-live-gate.md:37: ZCL_RPC_BIN — c23 client (default build/bin/zcl-rpc)")
 Z23_FLAG("ZCL_RPCCONNECT", "env_build", "-", "-",
           "first use tools/mvp_gate.sh:auto; documented at docs/BUILD.md:817: ZCL_RPCCONNECT: it derives the loopback RPC endpoint from the canonical")
+Z23_FLAG("ZCL_RPC_CONNECT_MS", "env_runtime", "2000", "-",
+          "first use engine/controllers/src/rpc_client.c:auto; bounds how long the env-defaulted loopback node RPC client waits for connect() to finish (1..60000 ms; a non-numeric or out-of-range value falls back to the default); explicit-deadline callers do not read it.")
 Z23_FLAG("ZCL_RPC_COOKIE_ROTATE_SEC", "env_runtime", "-", "-",
           "first use engine/modules/rpc/src/httpserver_auth.c:auto; documented at docs/RUNBOOK.md:596: echo 'Rotation interval: ${ZCL_RPC_COOKIE_ROTATE_SEC:-86400}s'")
+Z23_FLAG("ZCL_RPC_DEADLINE_MS", "env_runtime", "10000", "-",
+          "first use engine/controllers/src/rpc_client.c:auto; bounds the overall connect/send/receive allowance of one env-defaulted loopback node RPC call after cookie loading and request formatting (1..600000 ms; a non-numeric or out-of-range value falls back to the default); explicit-deadline callers do not read it.")
 Z23_FLAG("ZCL_RPCPORT", "env_runtime", "18232", "-",
           "first use engine/entry/main_cli_modes.c:auto; documented at docs/BENCHMARKS_LOG.md:34: | 2026-06-04 | 671fd79e3 | #6 soak-ci proxy (make soak-ci, 180s --ci-proxy) | machinery...")
 Z23_FLAG("ZCL_RPC_MAX_TIME_SECS", "env_runtime", "30", "-",

@@ -2919,6 +2919,12 @@ bool zcl_native_fleet_board_post_note(const char *text, char *why,
 void zcl_native_handle_fleet_board_list(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+/* Read-only composition helper. Uses an absolute monotonic deadline in ms;
+ * expired/nonpositive deadlines refuse without a request. Only this helper
+ * is capped to FAST; ordinary board leaves retain their generic timeouts. */
+void zcl_native_fleet_board_list_until(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply, int64_t deadline_ms);
 void zcl_native_handle_fleet_board_show(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);

@@ -35,12 +35,11 @@
 #define RPC_CONNECT_MS_DEFAULT 2000
 #define RPC_TOTAL_MS_DEFAULT   10000
 
-static long rpc_env_ms(const char *name, long def, long lo, long hi)
+static long rpc_env_ms(const char *value, long def, long lo, long hi)
 {
-    const char *v = getenv(name);
-    if (v && v[0]) {
+    if (value && value[0]) {
         char *end = NULL;
-        long parsed = strtol(v, &end, 10);
+        long parsed = strtol(value, &end, 10);
         if (end && *end == 0 && parsed >= lo && parsed <= hi)
             return parsed;
     }
@@ -49,12 +48,12 @@ static long rpc_env_ms(const char *name, long def, long lo, long hi)
 
 static long rpc_connect_ms(void)
 {
-    return rpc_env_ms("ZCL_RPC_CONNECT_MS", RPC_CONNECT_MS_DEFAULT, 1, 60000);
+    return rpc_env_ms(getenv("ZCL_RPC_CONNECT_MS"), RPC_CONNECT_MS_DEFAULT, 1, 60000);
 }
 
 static long rpc_total_ms(void)
 {
-    return rpc_env_ms("ZCL_RPC_DEADLINE_MS", RPC_TOTAL_MS_DEFAULT, 1, 600000);
+    return rpc_env_ms(getenv("ZCL_RPC_DEADLINE_MS"), RPC_TOTAL_MS_DEFAULT, 1, 600000);
 }
 
 /* Callers that pass explicit deadlines (e.g. the ~250ms status front door)
@@ -68,35 +67,150 @@ static long rpc_clamp_ms(long v, long lo, long hi)
     return v;
 }
 
+#ifdef ZCL_TESTING
+/* Test-only seam: a script replaces the clock and the connect/writable/
+ * readable results the deadline loops see, so readiness and EINTR schedules
+ * drive the production connect/send/receive code. Every socket call and any
+ * wait past the script is real. See struct node_rpc_test_script. */
+static struct node_rpc_test_script *g_script;
+
+void node_rpc_test_set_script(struct node_rpc_test_script *script)
+{
+    g_script = script;
+}
+
+/* Next scripted wait result (-1 EINTR, 0 timeout, 1 ready) or -2 for a real
+ * wait; logs the wait argument and advances the fake clock by the step. Step
+ * 'q' first really waits until bytes are queued, then reports ready. */
+static int rpc_script_wait(platform_socket_t sock, const struct node_rpc_test_step *steps,
+                           int *calls, int *log, int wait_ms)
+{
+    if (*calls < 8)
+        log[*calls] = wait_ms;
+    const struct node_rpc_test_step step = *calls < 3 ? steps[*calls]
+                                                      : (struct node_rpc_test_step){0};
+    (*calls)++;
+    if (!step.kind)
+        return -2;
+    if (step.kind == 'q')
+        (void)platform_socket_wait_readable(sock, 1000);
+    g_script->now += step.adv_ms;
+    errno = EINTR;
+    return step.kind == 'i' ? -1 : step.kind != 'z';
+}
+#endif
+
 static int64_t rpc_now_ms(void)
 {
+#ifdef ZCL_TESTING
+    if (g_script) {
+        const int64_t scripted = g_script->iseq < 6 ? g_script->seq[g_script->iseq] : 0;
+        if (scripted) {
+            g_script->iseq++;
+            return scripted;
+        }
+        return g_script->now;
+    }
+#endif
     return platform_time_monotonic_ms();
 }
 
-/* Non-blocking connect bounded by `budget_ms`. Returns 0 on success, or a
- * negative code the caller maps to a typed error body: -1 refused, -2 timed
- * out, -3 other. The socket remains nonblocking on success so every later
- * send and receive can be governed by the same hard outer deadline. */
-static int rpc_connect_deadline(platform_socket_t sock,
-                                const struct sockaddr_in *addr,
-                                long budget_ms)
+static int rpc_wait_writable(platform_socket_t sock, int wait_ms)
+{
+#ifdef ZCL_TESTING
+    if (g_script) {
+        int r = rpc_script_wait(sock, g_script->w, &g_script->nw, g_script->ww, wait_ms);
+        if (r != -2)
+            return r;
+    }
+#endif
+    return platform_socket_wait_writable(sock, wait_ms);
+}
+
+static int rpc_wait_readable(platform_socket_t sock, int wait_ms)
+{
+#ifdef ZCL_TESTING
+    if (g_script) {
+        int r = rpc_script_wait(sock, g_script->r, &g_script->nr, g_script->wr, wait_ms);
+        if (r != -2)
+            return r;
+    }
+#endif
+    return platform_socket_wait_readable(sock, wait_ms);
+}
+
+static int rpc_connect_start(platform_socket_t sock,
+                             const struct sockaddr_in *addr)
 {
     int rc = platform_socket_connect(sock, (const struct sockaddr *)addr,
                                      sizeof(*addr));
+#ifdef ZCL_TESTING
+    if (g_script && g_script->pending) {
+        errno = EINPROGRESS; /* the connect did run: only the report changes */
+        return -1; /* raw-return-ok:test-seam-pending-connect */
+    }
+    if (g_script && rc != 0 && platform_socket_wait_writable(sock, 1000) > 0)
+        return 0;
+#endif
+    return rc;
+}
+
+static int64_t rpc_deadline_after(int64_t now_ms, int64_t delta_ms)
+{
+    int64_t sum;
+    if (__builtin_add_overflow(now_ms, delta_ms, &sum))
+        return delta_ms > 0 ? INT64_MAX : INT64_MIN;
+    return sum;
+}
+
+/* The difference of two int64 values is formed in uint64, where it is exact
+ * once deadline > now, so no pair of readings can overflow. */
+static int rpc_deadline_remaining_ms(int64_t now_ms, int64_t deadline_ms)
+{
+    if (deadline_ms <= now_ms)
+        return 0;
+    uint64_t left = (uint64_t)deadline_ms - (uint64_t)now_ms;
+    return left > INT32_MAX ? INT32_MAX : (int)left;
+}
+
+static int64_t rpc_phase_deadline_ms(int64_t now_ms, int64_t deadline_ms,
+                                   int64_t phase_ms)
+{
+    int64_t phase_end = rpc_deadline_after(now_ms, phase_ms);
+    return deadline_ms < phase_end ? deadline_ms : phase_end;
+}
+
+/* Non-blocking connect that may wait until the absolute `until_ms`. Returns 0
+ * on success, or a negative code the caller maps to a typed error body: -1
+ * refused, -2 timed out, -3 other. The wait is recomputed from the clock after
+ * every interrupted, zero-timeout or readiness wake, so a signal storm cannot
+ * restart the original allowance. Readiness that is only observed at or after
+ * `until_ms` is a timeout, not a success, so the connect phase never outlives
+ * its own deadline. The socket remains nonblocking on success so every later
+ * send and receive is governed by the same outer deadline. */
+static int rpc_connect_until(platform_socket_t sock,
+                             const struct sockaddr_in *addr, int64_t until_ms)
+{
+    int rc = rpc_connect_start(sock, addr);
     if (rc == 0) return 0;
     int error = platform_socket_last_error();
     if (!platform_socket_error_in_progress(error))
         return platform_socket_error_refused(error) ? -1 : -3;
 
-    int pr;
-    do {
-        pr = platform_socket_wait_writable(sock, (int)budget_ms);
-    } while (pr < 0 && platform_socket_error_interrupted(
-                         platform_socket_last_error()));
-    if (pr == 0)
-        return -2; /* connect timed out */
-    if (pr < 0)
-        return -3;
+    for (;;) {
+        int wait_ms = rpc_deadline_remaining_ms(rpc_now_ms(), until_ms);
+        if (wait_ms == 0)
+            return -2; /* connect timed out */
+        int pr = rpc_wait_writable(sock, wait_ms);
+        if (pr > 0) {
+            if (rpc_deadline_remaining_ms(rpc_now_ms(), until_ms) == 0)
+                return -2;
+            break;
+        }
+        if (pr < 0 && !platform_socket_error_interrupted(
+                          platform_socket_last_error()))
+            return -3;
+    }
 
     int soerr = 0;
     if (platform_socket_pending_error(sock, &soerr) < 0)
@@ -107,22 +221,29 @@ static int rpc_connect_deadline(platform_socket_t sock,
     return 0;
 }
 
-static bool rpc_send_deadline(platform_socket_t sock, const void *data,
-                              size_t size, int64_t deadline_ms)
+/* Returns RPC_SEND_OK, RPC_SEND_FAILED, or RPC_SEND_EXPIRED when the deadline
+ * passed before this call put a single byte on the wire. The deadline is
+ * re-checked after every writable wake and immediately before each send, so
+ * no byte is transmitted after an expired wait. */
+enum { RPC_SEND_OK = 1, RPC_SEND_FAILED = 0, RPC_SEND_EXPIRED = -1 };
+
+static int rpc_send_deadline(platform_socket_t sock, const void *data,
+                             size_t size, int64_t deadline_ms)
 {
     const unsigned char *bytes = data;
     size_t sent = 0;
     while (sent < size) {
-        int64_t remaining = deadline_ms - rpc_now_ms();
-        if (remaining <= 0) return false;
-        int wait_ms = remaining > INT32_MAX ? INT32_MAX : (int)remaining;
-        int ready = platform_socket_wait_writable(sock, wait_ms);
-        if (ready == 0) return false;
+        int wait_ms = rpc_deadline_remaining_ms(rpc_now_ms(), deadline_ms);
+        if (wait_ms == 0) return sent ? RPC_SEND_FAILED : RPC_SEND_EXPIRED;
+        int ready = rpc_wait_writable(sock, wait_ms);
+        if (ready == 0) continue;
         if (ready < 0) {
             if (platform_socket_error_interrupted(platform_socket_last_error()))
                 continue;
-            return false;
+            return RPC_SEND_FAILED;
         }
+        if (rpc_deadline_remaining_ms(rpc_now_ms(), deadline_ms) == 0)
+            return sent ? RPC_SEND_FAILED : RPC_SEND_EXPIRED;
         size_t chunk = size - sent;
         int part = chunk > INT32_MAX ? INT32_MAX : (int)chunk;
 #if defined(_WIN32)
@@ -141,9 +262,9 @@ static bool rpc_send_deadline(platform_socket_t sock, const void *data,
                 platform_socket_error_would_block(error))
                 continue;
         }
-        return false;
+        return RPC_SEND_FAILED;
     }
-    return true;
+    return RPC_SEND_OK;
 }
 
 static char *rpc_transport_error(const char *reason)
@@ -165,6 +286,27 @@ static node_rpc_test_fn g_test_rpc_hook;
 void node_rpc_client_set_test_hook(node_rpc_test_fn fn)
 {
     g_test_rpc_hook = fn;
+}
+
+int64_t node_rpc_test_deadline_after(int64_t now_ms, int64_t delta_ms)
+{
+    return rpc_deadline_after(now_ms, delta_ms);
+}
+
+int node_rpc_test_deadline_remaining_ms(int64_t now_ms, int64_t deadline_ms)
+{
+    return rpc_deadline_remaining_ms(now_ms, deadline_ms);
+}
+
+int64_t node_rpc_test_phase_deadline_ms(int64_t now_ms, int64_t deadline_ms,
+                                        int64_t phase_ms)
+{
+    return rpc_phase_deadline_ms(now_ms, deadline_ms, phase_ms);
+}
+
+int node_rpc_test_client_port(void)
+{
+    return g_port;
 }
 #endif
 
@@ -269,31 +411,129 @@ bool node_rpc_port_listening(int rpc_port, long connect_ms)
         platform_socket_close(sock);
         return false;
     }
-    int rc = rpc_connect_deadline(sock, &addr,
-                                  rpc_clamp_ms(connect_ms, 1, 60000));
+    int rc = rpc_connect_until(sock, &addr, rpc_deadline_after(
+        rpc_now_ms(), rpc_clamp_ms(connect_ms, 1, 60000)));
     platform_socket_close(sock);
     return rc == 0;
 }
 
-/* Shared implementation behind both the env-defaulted node_rpc_call_http
- * and the explicit-deadline node_rpc_call_http_deadline. `connect_ms`/
- * `total_ms` are already-resolved budgets (env defaults or a caller's tight
- * front-door budget) — clamped here to the same sane floor/ceiling either
- * way so no caller can accidentally request an unbounded wait. */
+/* What one call may spend. A relative budget (`absolute == false`) starts its
+ * `total_ms` clock after the cookie read, exactly as the env-defaulted callers
+ * always did. An absolute budget carries the caller's `deadline_ms` from entry
+ * and refuses to issue a request once it has passed. */
+struct rpc_budget {
+    long connect_ms;
+    long total_ms;
+    int64_t deadline_ms;
+    bool absolute;
+};
+
+static bool rpc_budget_expired(const struct rpc_budget *budget)
+{
+    return budget->absolute && rpc_deadline_remaining_ms(
+        rpc_now_ms(), budget->deadline_ms) == 0;
+}
+
+/* The caller's deadline passed before any request byte was sent. */
+static char *rpc_deadline_expired_body(const char *phase)
+{
+    char *out = zcl_malloc(512, "rpc deadline expired json");
+    if (!out)
+        return NULL;
+    snprintf(out, 512,
+        "{\"error\":{\"code\":%d,\"message\":\"RPC deadline expired %s; no "
+        "request was sent\"}}", NODE_RPC_DEADLINE_EXPIRED, phase);
+    return out;
+}
+
+/* Double the response buffer. False on allocation failure (buffer freed). */
+static bool rpc_receive_grow(char **bufp, size_t *capp)
+{
+    char *tmp = zcl_realloc(*bufp, *capp * 2, "rpc response buf");
+    if (!tmp) { free(*bufp); *bufp = NULL; return false; }
+    *bufp = tmp;
+    *capp *= 2;
+#ifdef ZCL_TESTING
+    if (g_script) {
+        g_script->now += g_script->alloc_adv_ms; /* a slow allocation moves the clock */
+        if (!g_script->grown_at)
+            g_script->grown_at = g_script->nr;
+    }
+#endif
+    return true;
+}
+
+/* Read until EOF, error or the absolute deadline. The wait is measured after
+ * any buffer growth, so a slow allocation cannot leave a stale allowance, and
+ * readiness seen at or after the deadline is a timeout: queued bytes are not
+ * read. A would-block/EINTR after readiness is a spurious wake: it re-checks
+ * the same absolute deadline, which alone bounds the call (there is no
+ * arbitrary wake-count cutoff). Returns false only on allocation failure. */
+static bool rpc_receive_until(platform_socket_t sock, int64_t deadline_ms,
+                              char **bufp, size_t *lenp, size_t *capp,
+                              bool *timed_out)
+{
+    for (;;) {
+        if (*lenp + 4096 > *capp && !rpc_receive_grow(bufp, capp))
+            return false;
+        int wait_ms = rpc_deadline_remaining_ms(rpc_now_ms(), deadline_ms);
+        if (wait_ms == 0) { *timed_out = true; return true; }
+        int ready = rpc_wait_readable(sock, wait_ms);
+        if (ready == 0) continue;
+        if (ready < 0) {
+            if (platform_socket_error_interrupted(platform_socket_last_error()))
+                continue;
+            return true;
+        }
+        if (rpc_deadline_remaining_ms(rpc_now_ms(), deadline_ms) == 0) {
+            *timed_out = true;
+            return true;
+        }
+        int n = platform_socket_receive(sock, *bufp + *lenp,
+                                        *capp - *lenp - 1);
+        if (n > 0) { *lenp += (size_t)n; continue; }
+        if (n == 0) return true;
+        /* A real read error ends the request; a partial read yields a bogus
+         * reply, so surface a timeout rather than parse garbage. */
+        int error = platform_socket_last_error();
+        if (platform_socket_error_would_block(error) ||
+            platform_socket_error_interrupted(error)) {
+            continue;
+        }
+        if (platform_socket_error_timed_out(error)) {
+            *timed_out = true;
+        }
+        return true;
+    }
+}
+
+/* Shared implementation behind the env-defaulted node_rpc_call_http, the
+ * relative-deadline node_rpc_call_http_deadline and the absolute-deadline
+ * node_rpc_call_*_until. A relative `total_ms` is clamped here to the same
+ * sane floor/ceiling either way so no caller can accidentally request an
+ * unbounded wait. */
 static char *node_rpc_call_http_impl(const char *method,
                                      const char *params_json,
-                                     long connect_ms, long total_ms,
+                                     struct rpc_budget budget,
                                      const char *datadir, int rpc_port)
 {
-    connect_ms = rpc_clamp_ms(connect_ms, 1, 60000);
-    total_ms = rpc_clamp_ms(total_ms, 1, 600000);
+    budget.connect_ms = rpc_clamp_ms(budget.connect_ms, 1, 60000);
+    budget.total_ms = rpc_clamp_ms(budget.total_ms, 1, 600000);
+
+    if (rpc_budget_expired(&budget))
+        return rpc_deadline_expired_body("before the cookie read");
 
     /* Fail fast with an actionable message rather than sending an empty
-     * credential that the node would reject with a cryptic 401. */
+     * credential that the node would reject with a cryptic 401. The read is
+     * blocking file I/O and cannot be preempted by the deadline checks. */
     char cookie[256];
     if (!datadir || !datadir[0] || !read_cookie_at(
             datadir, cookie, sizeof(cookie)))
         return cookie_error_body(datadir);
+    if (rpc_budget_expired(&budget)) {
+        memset(cookie, 0, sizeof(cookie));
+        return rpc_deadline_expired_body("during the cookie read");
+    }
 
     char body[8192];
     int blen;
@@ -306,7 +546,9 @@ static char *node_rpc_call_http_impl(const char *method,
             "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"%s\",\"params\":[]}",
             method);
 
-    const int64_t deadline_ms = rpc_now_ms() + total_ms;
+    const int64_t deadline_ms = budget.absolute
+        ? budget.deadline_ms
+        : rpc_deadline_after(rpc_now_ms(), budget.total_ms);
 
     platform_socket_t sock = platform_socket_open(AF_INET, SOCK_STREAM, 0,
                                                    true, true);
@@ -322,17 +564,24 @@ static char *node_rpc_call_http_impl(const char *method,
         platform_socket_close(sock);
         return rpc_transport_error("invalid loopback address");
     }
+    if (rpc_budget_expired(&budget)) {
+        platform_socket_close(sock);
+        memset(cookie, 0, sizeof(cookie));
+        return rpc_deadline_expired_body("before connect");
+    }
 
     /* Bound the connect so a firewalled/hung local port cannot block the whole
-     * command. Never wait past the overall deadline. */
-    long connect_budget = connect_ms;
-    long remaining = (long)(deadline_ms - rpc_now_ms());
-    if (remaining < 1)
-        remaining = 1;
-    if (connect_budget > remaining)
-        connect_budget = remaining;
-    int crc = rpc_connect_deadline(sock, &addr, connect_budget);
+     * command: min(overall deadline, connect phase), recomputed after every
+     * interrupted or readiness wake. */
+    const int64_t now_ms = rpc_now_ms();
+    int64_t connect_until = rpc_phase_deadline_ms(
+        now_ms, deadline_ms, budget.connect_ms);
+    /* A relative budget always granted the connect at least 1ms. */
+    if (!budget.absolute && connect_until <= now_ms)
+        connect_until = rpc_deadline_after(now_ms, 1);
+    int crc = rpc_connect_until(sock, &addr, connect_until);
     if (crc != 0) {
+        memset(cookie, 0, sizeof(cookie));
         platform_socket_close(sock);
         if (crc == -1)
             return rpc_transport_error(
@@ -358,11 +607,22 @@ static char *node_rpc_call_http_impl(const char *method,
         "Content-Length: %d\r\n"
         "Connection: close\r\n\r\n", auth_b64, blen);
 
+    if (rpc_budget_expired(&budget)) {
+        platform_socket_close(sock);
+        return rpc_deadline_expired_body("before transmit");
+    }
+
     /* MSG_NOSIGNAL: a peer reset mid-send must return EPIPE, not raise
      * SIGPIPE and kill the caller. Treat any short/failed write as
      * fatal for this request — a truncated POST yields a bogus reply. */
-    if (!rpc_send_deadline(sock, header, (size_t)hlen, deadline_ms) ||
-        !rpc_send_deadline(sock, body, (size_t)blen, deadline_ms)) {
+    int sent = rpc_send_deadline(sock, header, (size_t)hlen, deadline_ms);
+    if (sent == RPC_SEND_EXPIRED && budget.absolute) {
+        platform_socket_close(sock);
+        return rpc_deadline_expired_body("before transmit");
+    }
+    if (sent != RPC_SEND_OK ||
+        rpc_send_deadline(sock, body, (size_t)blen, deadline_ms) !=
+            RPC_SEND_OK) {
         platform_socket_close(sock);
         return strdup("{\"error\":{\"code\":-32603,"
                       "\"message\":\"failed to send request to node\"}}");
@@ -372,45 +632,11 @@ static char *node_rpc_call_http_impl(const char *method,
     char *buf = zcl_malloc(cap, "rpc response buf");
     if (!buf) { platform_socket_close(sock); return NULL; }
     bool timed_out = false;
-    for (;;) {
-        if (rpc_now_ms() >= deadline_ms) {
-            timed_out = true;
-            break;
-        }
-        if (len + 4096 > cap) {
-            size_t newcap = cap * 2;
-            char *tmp = zcl_realloc(buf, newcap, "rpc response buf");
-            if (!tmp) { free(buf); platform_socket_close(sock); return NULL; }
-            buf = tmp;
-            cap = newcap;
-        }
-        int64_t wait_remaining = deadline_ms - rpc_now_ms();
-        if (wait_remaining <= 0) { timed_out = true; break; }
-        int wait_ms = wait_remaining > INT32_MAX ? INT32_MAX :
-                      (int)wait_remaining;
-        int ready = platform_socket_wait_readable(sock, wait_ms);
-        if (ready == 0) { timed_out = true; break; }
-        if (ready < 0) {
-            if (platform_socket_error_interrupted(platform_socket_last_error()))
-                continue;
-            break;
-        }
-        int n = platform_socket_receive(sock, buf + len, cap - len - 1);
-        if (n < 0) {
-            /* SO_RCVTIMEO fired (EAGAIN/EWOULDBLOCK) or a real read error —
-             * either way this request is done; a partial read yields a bogus
-             * reply, so surface a timeout rather than parse garbage. */
-            int error = platform_socket_last_error();
-            if (platform_socket_error_would_block(error) ||
-                platform_socket_error_timed_out(error) ||
-                platform_socket_error_interrupted(error))
-                timed_out = true;
-            break;
-        }
-        if (n == 0) break;
-        len += (size_t)n;
-    }
+    bool alloc_ok = rpc_receive_until(sock, deadline_ms, &buf, &len, &cap,
+                                      &timed_out);
     platform_socket_close(sock);
+    if (!alloc_ok)
+        return NULL;
 
     if (timed_out && len == 0) {
         free(buf);
@@ -503,8 +729,25 @@ static char *node_rpc_call_http_impl(const char *method,
  * defaults (ZCL_RPC_CONNECT_MS / ZCL_RPC_DEADLINE_MS). */
 char *node_rpc_call_http(const char *method, const char *params_json)
 {
-    return node_rpc_call_http_impl(method, params_json, rpc_connect_ms(),
-                                   rpc_total_ms(), g_datadir, g_port);
+    struct rpc_budget budget = {
+        .connect_ms = rpc_connect_ms(), .total_ms = rpc_total_ms()
+    };
+    return node_rpc_call_http_impl(method, params_json, budget, g_datadir,
+                                   g_port);
+}
+
+static struct rpc_budget rpc_relative_budget(long connect_ms, long total_ms)
+{
+    return (struct rpc_budget){ .connect_ms = connect_ms,
+                                .total_ms = total_ms };
+}
+
+static struct rpc_budget rpc_absolute_budget(long connect_ms,
+                                             int64_t deadline_ms)
+{
+    return (struct rpc_budget){ .connect_ms = connect_ms,
+                                .deadline_ms = deadline_ms,
+                                .absolute = true };
 }
 
 /* Same HTTP backend, but with the caller's own connect/total budget instead
@@ -514,8 +757,8 @@ char *node_rpc_call_http(const char *method, const char *params_json)
 char *node_rpc_call_http_deadline(const char *method, const char *params_json,
                                   long connect_ms, long total_ms)
 {
-    return node_rpc_call_http_impl(method, params_json, connect_ms, total_ms,
-                                   g_datadir, g_port);
+    return node_rpc_call_http_impl(method, params_json,
+        rpc_relative_budget(connect_ms, total_ms), g_datadir, g_port);
 }
 
 char *node_rpc_call_at_deadline(const char *datadir, int rpc_port,
@@ -526,8 +769,27 @@ char *node_rpc_call_at_deadline(const char *datadir, int rpc_port,
     if (g_test_rpc_hook)
         return g_test_rpc_hook(method, params_json);
 #endif
-    return node_rpc_call_http_impl(method, params_json, connect_ms, total_ms,
-                                   datadir, rpc_port);
+    return node_rpc_call_http_impl(method, params_json,
+        rpc_relative_budget(connect_ms, total_ms), datadir, rpc_port);
+}
+
+char *node_rpc_call_at_until(const char *datadir, int rpc_port,
+                             const char *method, const char *params_json,
+                             long connect_ms, int64_t deadline_ms)
+{
+#ifdef ZCL_TESTING
+    if (g_test_rpc_hook)
+        return g_test_rpc_hook(method, params_json);
+#endif
+    return node_rpc_call_http_impl(method, params_json,
+        rpc_absolute_budget(connect_ms, deadline_ms), datadir, rpc_port);
+}
+
+char *node_rpc_call_until(const char *method, const char *params_json,
+                          long connect_ms, int64_t deadline_ms)
+{
+    return node_rpc_call_at_until(g_datadir, g_port, method, params_json,
+                                  connect_ms, deadline_ms);
 }
 
 /* Public entry every controller and the diagnostics dumper call. Routes to

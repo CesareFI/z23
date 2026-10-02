@@ -262,6 +262,8 @@
 #define FMC_ALIVE_WINDOW_S 900LL
 #define FMC_QUEUED_STALE_S 120LL
 #define FMC_REPLY_SOFT_BUDGET 49152u
+/* Leave time after board observation for local projection/serialization. */
+#define FMC_BRIEF_FINISH_RESERVE_MS 50
 /* Sessions: A, B, C, D always, plus other presence-<label> roles, at most
  * FMC_SESSION_TRACK tracked and FMC_SESSION_CAP emitted. */
 #define FMC_SESSION_TRACK 16u
@@ -3502,6 +3504,8 @@ static const char *fmc_board_refusal(const struct fmc_sub *sub)
 {
     if (!sub)
         return "sibling_refused";
+    if (strcmp(sub->reply.error.code, "BOARD_OBSERVATION_BUDGET_EXHAUSTED") == 0)
+        return "observation_budget_exhausted";
     if (sub->reply.error.code[0] &&
         strstr(sub->reply.error.code, "NODE_UNAVAILABLE"))
         return "node_unavailable";
@@ -3548,7 +3552,7 @@ static void fmc_brief_board(const struct zcl_command_request *req,
                             struct json_value *blockers,
                             struct zcl_fmc_cand_reg *cand,
                             struct json_value *missing,
-                            struct json_value *post_ids)
+                            struct json_value *post_ids, int64_t deadline_ms)
 {
     struct fmc_sub sub;
     const struct json_value *posts;
@@ -3564,9 +3568,9 @@ static void fmc_brief_board(const struct zcl_command_request *req,
         fmc_sub_end(&sub);
         return;
     }
-    t0 = clock_now_wall_ms();
-    zcl_native_handle_fleet_board_list(&sub.request, &sub.reply);
-    t1 = clock_now_wall_ms();
+    t0 = platform_time_monotonic_ms();
+    zcl_native_fleet_board_list_until(&sub.request, &sub.reply, deadline_ms);
+    t1 = platform_time_monotonic_ms();
     sub.ran = true;
     if (!fmc_sub_ok(&sub)) {
         fmc_note_missing(missing, "fleet.board",
@@ -3916,6 +3920,8 @@ static void fmc_receiver_down_incident(struct json_value *blockers,
 static void fmc_do_brief(const struct zcl_command_request *req,
                          struct zcl_command_reply *reply)
 {
+    const int64_t observation_deadline_ms = platform_time_monotonic_ms() +
+        ZCL_COMMAND_LATENCY_BUDGET_FAST_MS - FMC_BRIEF_FINISH_RESERVE_MS;
     struct fmc_brief_lists l;
     struct fmc_mail_ctx mc;
     struct fmc_mail_view mv;
@@ -3953,7 +3959,7 @@ static void fmc_do_brief(const struct zcl_command_request *req,
                     &qv, &l.outcomes, &l.tasks);
     fmc_brief_land(req, &l.tasks, &l.missing);
     fmc_brief_board(req, &l.agents, &l.blockers, &l.cand, &l.missing,
-                    &l.post_ids);
+                    &l.post_ids, observation_deadline_ms);
     fmc_brief_ledger(req, &l.missing, &boxes, &rows);
     fmc_apply_completed(&l.changes, &l.outcomes);
     fmc_capacity_emit(&l.capacity, &qv);

@@ -19,6 +19,7 @@
 #include "controllers/rpc_client.h"
 #include "json/json.h"
 #include "kernel/command_registry.h"
+#include "platform/time_compat.h"
 #include "rpc/protocol.h"
 
 #include <stdio.h>
@@ -112,10 +113,34 @@ static void fb_rpc_unsupported(struct zcl_command_reply *reply,
  * transport-shaped error. Split out of fb_call so that call stays under the
  * complexity cap — this one decision (which of the two distinct refusals
  * applies) lives in exactly one place. */
+static void fb_budget_exhausted(struct zcl_command_reply *reply)
+{
+    fb_fail(reply, ZCL_COMMAND_STATUS_BLOCKED, ZCL_COMMAND_EXIT_TRANSIENT,
+        "BOARD_OBSERVATION_BUDGET_EXHAUSTED", "dispatch", true,
+        "the brief's board observation budget is exhausted; board evidence "
+        "remains unknown", "fleet.board");
+}
+
+/* The transport's own enveloped refusal: the absolute deadline passed before
+ * any request byte was sent. A node's answer arrives unwrapped, never in this
+ * shape. */
+static bool fb_deadline_expired(const struct json_value *body)
+{
+    const struct json_value *err = json_get(body, "error");
+    const struct json_value *code =
+        err && err->type == JSON_OBJ ? json_get(err, "code") : NULL;
+    return code && code->type == JSON_INT &&
+           json_get_int(code) == NODE_RPC_DEADLINE_EXPIRED;
+}
+
 static void fb_handle_no_answer(struct zcl_command_reply *reply,
                                 const struct json_value *body)
 {
     char node_message[320];
+    if (fb_deadline_expired(body)) {
+        fb_budget_exhausted(reply);
+        return;
+    }
     if (fb_method_not_found(body, node_message, sizeof(node_message)))
         fb_rpc_unsupported(reply, node_message);
     else
@@ -152,10 +177,81 @@ static void fb_board_refusal(struct zcl_command_reply *reply,
             "fleet.board");
 }
 
+#ifdef ZCL_TESTING
+/* Lets a registered test model a slow endpoint bootstrap, which is otherwise
+ * too fast to observe consuming an allowance. NULL restores the real one. */
+static void (*g_fb_bootstrap_hook)(void);
+
+void zcl_native_fleet_board_test_set_bootstrap(void (*fn)(void))
+{
+    g_fb_bootstrap_hook = fn;
+}
+#endif
+
+static void fb_bootstrap(void)
+{
+#ifdef ZCL_TESTING
+    if (g_fb_bootstrap_hook) {
+        g_fb_bootstrap_hook();
+        return;
+    }
+#endif
+    zcl_native_bridge_ensure_rpc();
+}
+
+/* A composed observation may spend only its remaining monotonic budget.
+ * Zero retains the direct board leaf's ordinary RPC timeout. No global RPC
+ * state or environment is changed, and an exhausted observation does no I/O.
+ * The observation is capped to FAST once, here, so the one absolute deadline
+ * handed to the transport is not pushed later by endpoint bootstrap. */
+static bool fb_observation_deadline(struct zcl_command_reply *reply,
+                                    int64_t deadline_ms, int64_t *until_ms)
+{
+    *until_ms = 0;
+    if (deadline_ms == 0)
+        return true;
+    int64_t now = platform_time_monotonic_ms();
+    if (deadline_ms <= now) {
+        fb_budget_exhausted(reply);
+        return false;
+    }
+    int64_t cap;
+    if (__builtin_add_overflow(now, ZCL_COMMAND_LATENCY_BUDGET_FAST_MS, &cap))
+        cap = INT64_MAX;
+    *until_ms = deadline_ms < cap ? deadline_ms : cap;
+    return true;
+}
+
+static char *fb_rpc_call(struct zcl_command_reply *reply, const char *params,
+                         int64_t deadline_ms)
+{
+    int64_t until_ms;
+    /* Expired observations must not initialize or contact the endpoint. */
+    if (!fb_observation_deadline(reply, deadline_ms, &until_ms))
+        return NULL;
+    fb_bootstrap();
+    char *raw;
+    if (deadline_ms == 0) {
+        raw = node_rpc_call("fleet_board", params);
+    } else if (until_ms <= platform_time_monotonic_ms()) {
+        /* Bootstrap consumed the whole allowance: no request at all. */
+        fb_budget_exhausted(reply);
+        return NULL;
+    } else {
+        /* The transport re-checks the same deadline around the cookie read
+         * and before connect/transmit rather than restarting it. */
+        raw = node_rpc_call_until("fleet_board", params,
+                                  ZCL_COMMAND_LATENCY_BUDGET_FAST_MS, until_ms);
+    }
+    if (!raw)
+        fb_no_node(reply);
+    return raw;
+}
+
 /* One round trip. On success `body` holds the node's reply object and the
  * caller owns it; on failure the reply is already filled in. */
 static bool fb_call(struct zcl_command_reply *reply, struct json_value *in,
-                    struct json_value *body)
+                    struct json_value *body, int64_t deadline_ms)
 {
     char params[FLEET_BOARD_RPC_PARAMS_MAX];
     if (!fb_params(in, params, sizeof(params))) {
@@ -165,12 +261,9 @@ static bool fb_call(struct zcl_command_reply *reply, struct json_value *in,
                 "capped at 16 KiB and a post at 2 KiB", "fleet.board");
         return false;
     }
-    zcl_native_bridge_ensure_rpc();
-    char *raw = node_rpc_call("fleet_board", params);
-    if (!raw) {
-        fb_no_node(reply);
+    char *raw = fb_rpc_call(reply, params, deadline_ms);
+    if (!raw)
         return false;
-    }
     if (!json_read(body, raw, strlen(raw)) || body->type != JSON_OBJ) {
         json_free(body);
         free(raw);
@@ -363,7 +456,7 @@ bool zcl_native_fleet_board_post_note(const char *text, char *why,
     zcl_command_reply_init(&reply, "zcl.fleet_triggers_board_post.v1");
     struct json_value body;
     json_init(&body);
-    bool ok = fb_call(&reply, &out, &body);
+    bool ok = fb_call(&reply, &out, &body, 0);
     json_free(&out);
     if (ok)
         json_free(&body);
@@ -405,7 +498,7 @@ void zcl_native_handle_fleet_board_post(
 
     struct json_value body;
     json_init(&body);
-    bool ok = fb_call(reply, &out, &body);
+    bool ok = fb_call(reply, &out, &body, 0);
     json_free(&out);
     if (!ok)
         return;
@@ -414,9 +507,8 @@ void zcl_native_handle_fleet_board_post(
 }
 
 /* ── fleet board list ───────────────────────────────────────────────── */
-void zcl_native_handle_fleet_board_list(
-    const struct zcl_command_request *request,
-    struct zcl_command_reply *reply)
+static void fb_list(const struct zcl_command_request *request,
+                     struct zcl_command_reply *reply, int64_t deadline_ms)
 {
     const struct json_value *in = request->input;
     struct json_value out;
@@ -436,7 +528,7 @@ void zcl_native_handle_fleet_board_list(
 
     struct json_value body;
     json_init(&body);
-    bool ok = fb_call(reply, &out, &body);
+    bool ok = fb_call(reply, &out, &body, deadline_ms);
     json_free(&out);
     if (!ok)
         return;
@@ -445,6 +537,21 @@ void zcl_native_handle_fleet_board_list(
     (void)zcl_command_reply_add_next(
         reply, "fleet.board.show", "{}",
         "read one post whole, including its receipt");
+}
+
+void zcl_native_handle_fleet_board_list(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply)
+{
+    fb_list(request, reply, 0);
+}
+
+void zcl_native_fleet_board_list_until(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply, int64_t deadline_ms)
+{
+    /* Unlike the direct leaf, this entry must never select generic defaults. */
+    fb_list(request, reply, deadline_ms > 0 ? deadline_ms : -1);
 }
 
 /* ── fleet board show ───────────────────────────────────────────────── */
@@ -467,7 +574,7 @@ void zcl_native_handle_fleet_board_show(
 
     struct json_value body;
     json_init(&body);
-    bool ok = fb_call(reply, &out, &body);
+    bool ok = fb_call(reply, &out, &body, 0);
     json_free(&out);
     if (!ok)
         return;
@@ -488,7 +595,7 @@ void zcl_native_handle_fleet_board_status(
 
     struct json_value body;
     json_init(&body);
-    bool ok = fb_call(reply, &out, &body);
+    bool ok = fb_call(reply, &out, &body, 0);
     json_free(&out);
     if (!ok)
         return;
@@ -526,7 +633,7 @@ void zcl_native_handle_fleet_wiki_write(
 
     struct json_value body;
     json_init(&body);
-    bool ok = fb_call(reply, &out, &body);
+    bool ok = fb_call(reply, &out, &body, 0);
     json_free(&out);
     if (!ok)
         return;
@@ -554,7 +661,7 @@ void zcl_native_handle_fleet_wiki_read(
 
     struct json_value body;
     json_init(&body);
-    bool ok = fb_call(reply, &out, &body);
+    bool ok = fb_call(reply, &out, &body, 0);
     json_free(&out);
     if (!ok)
         return;
@@ -575,7 +682,7 @@ void zcl_native_handle_fleet_wiki_list(
 
     struct json_value body;
     json_init(&body);
-    bool ok = fb_call(reply, &out, &body);
+    bool ok = fb_call(reply, &out, &body, 0);
     json_free(&out);
     if (!ok)
         return;
@@ -605,7 +712,7 @@ void zcl_native_handle_fleet_wiki_history(
 
     struct json_value body;
     json_init(&body);
-    bool ok = fb_call(reply, &out, &body);
+    bool ok = fb_call(reply, &out, &body, 0);
     json_free(&out);
     if (!ok)
         return;

@@ -27,8 +27,19 @@
 #include <openssl/ssl.h>
 #include <openssl/x509.h>
 #include "platform/socket_compat.h"
+#include "platform/time_compat.h"
+#include "command/native_command.h"
+#include "config/command_catalog.h"
+#include "kernel/command_registry.h"
+#include <fcntl.h>
+#include <pthread.h>
+#include <signal.h>
+#include <stdatomic.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include "test/test_rpc_priv.h"
+/* ZCL_TESTING seam in tools/command/native_fleet_board_command.c. */
+void zcl_native_fleet_board_test_set_bootstrap(void (*fn)(void));
 
 
 static void rpc_test_tmpdir(char *buf, size_t n, const char *tag)
@@ -948,6 +959,478 @@ int check_rpc_tls_start_self_signed(void)
     return failures;
 }
 
+/* ── absolute-deadline RPC transport and optional board observation ───────
+ * Synthetic cookies, private fixture dirs and loopback listeners only; hooks,
+ * env, the client endpoint and SIGUSR1 are restored when the suite returns. */
+#define RT_BODY "{\"ok\":true,\"posts\":[{\"id\":\"synthetic\",\"kind\":" \
+    "\"need\",\"agent\":\"test-observer\",\"text\":\"retained\"}]}"
+#define RT_ENVELOPE "{\"result\":" RT_BODY ",\"error\":null,\"id\":1}"
+
+#define RT_BIG_LEN 66000 /* just past the client's 64 KiB first buffer: growth comes with a few KB still unread */
+enum rt_mode { RT_STALL, RT_HEALTHY, RT_DRIP, RT_BIG };
+struct rt_server {
+    platform_socket_t listener;
+    uint16_t port;
+    enum rt_mode mode;
+    int delay_ms;
+    atomic_bool stop;
+    atomic_int requests;
+    pthread_t thread;
+};
+static int g_rt_failures;
+static int64_t rt_now(void) { return platform_time_monotonic_ms(); }
+static bool rt_has(const char *body, const char *needle) { return body && strstr(body, needle); }
+static void rt_expect(bool ok, const char *name, int64_t ms, int requests)
+{
+    printf("  %s: %s (ms=%lld requests=%d)\n", name, ok ? "OK" : "FAIL", (long long)ms, requests);
+    g_rt_failures += !ok;
+}
+static bool rt_sleep(struct rt_server *s, int ms)
+{
+    for (int w = 0; w < ms && !atomic_load(&s->stop); w += 5) platform_sleep_ms(5);
+    return !atomic_load(&s->stop);
+}
+
+/* Count one request once its headers and Content-Length body have arrived. */
+static void rt_read_request(struct rt_server *s, platform_socket_t conn)
+{
+    char buf[4096];
+    size_t len = 0;
+    while (len < sizeof(buf) - 1 && !atomic_load(&s->stop)) {
+        if (platform_socket_wait_readable(conn, 20) <= 0) continue;
+        int n = platform_socket_receive(conn, buf + len, sizeof(buf) - 1 - len);
+        if (n <= 0) return;
+        buf[len += (size_t)n] = '\0';
+        const char *end = strstr(buf, "\r\n\r\n"), *cl = strstr(buf, "Content-Length:");
+        if (end && cl && len >= (size_t)(end - buf) + 4 + strtoul(cl + 15, NULL, 10)) {
+            atomic_fetch_add(&s->requests, 1);
+            return;
+        }
+    }
+}
+
+static void *rt_serve(void *arg)
+{
+    struct rt_server *s = arg;
+    static char big[RT_BIG_LEN + 128], reply[RT_BIG_LEN + 256]; /* one server runs at a time */
+    const char *env = RT_ENVELOPE;
+    if (s->mode == RT_BIG) { /* a valid envelope padded past the first buffer, forcing growth */
+        int n = snprintf(big, sizeof(big), "{\"result\":{\"pad\":\"");
+        memset(big + n, 'x', RT_BIG_LEN), env = big;
+        snprintf(big + n + RT_BIG_LEN, 64, "\",\"t\":\"retained\"},\"error\":null,\"id\":1}");
+    }
+    int rlen = snprintf(reply, sizeof(reply), "HTTP/1.1 200 OK\r\nContent-Length: "
+        "%zu\r\nConnection: close\r\n\r\n%s", strlen(env), env);
+    while (!atomic_load(&s->stop)) {
+        if (platform_socket_wait_readable(s->listener, 20) <= 0) continue;
+        struct sockaddr_in peer;
+        size_t peer_len = sizeof(peer);
+        platform_socket_t conn = platform_socket_accept(s->listener, (struct sockaddr *)&peer, &peer_len);
+        if (conn == PLATFORM_SOCKET_INVALID) continue;
+        rt_read_request(s, conn);
+        if (s->mode == RT_STALL) {
+            while (rt_sleep(s, 10)) {}
+        } else if (rt_sleep(s, s->delay_ms)) { /* healthy: one write; drip: a byte per 20ms */
+            size_t step = s->mode == RT_DRIP ? 1 : (size_t)rlen;
+            for (size_t off = 0; off < (size_t)rlen; off += step)
+                if (send(conn, reply + off, step, MSG_NOSIGNAL) <= 0 ||
+                    (s->mode == RT_DRIP && !rt_sleep(s, 20))) break;
+        }
+        platform_socket_close(conn);
+    }
+    return NULL;
+}
+
+static bool rt_listen(platform_socket_t *fd, uint16_t *port, int backlog)
+{
+    *fd = platform_socket_open(AF_INET, SOCK_STREAM, 0, true, false);
+    struct sockaddr_in a = { .sin_family = AF_INET, .sin_addr.s_addr = htonl(INADDR_LOOPBACK) };
+    size_t len = sizeof(a);
+    if (*fd == PLATFORM_SOCKET_INVALID || platform_socket_bind(*fd, (struct sockaddr *)&a, sizeof(a)) != 0 ||
+        platform_socket_listen(*fd, backlog) != 0 ||
+        platform_socket_local_address(*fd, (struct sockaddr *)&a, &len) != 0)
+        return false;
+    *port = ntohs(a.sin_port);
+    return true;
+}
+static bool rt_server_start(struct rt_server *s, enum rt_mode mode, int delay_ms)
+{
+    memset(s, 0, sizeof(*s));
+    s->mode = mode, s->delay_ms = delay_ms;
+    return rt_listen(&s->listener, &s->port, 4) && pthread_create(&s->thread, NULL, rt_serve, s) == 0;
+}
+static int rt_server_stop(struct rt_server *s)
+{
+    atomic_store(&s->stop, true);
+    pthread_join(s->thread, NULL);
+    platform_socket_close(s->listener);
+    return atomic_load(&s->requests);
+}
+
+/* A cookie file, or a FIFO filled after 300ms (a blocking read nothing preempts). */
+enum rt_cookie { RT_NO_COOKIE, RT_FILE_COOKIE, RT_FIFO_COOKIE };
+struct rt_fifo_writer { char path[640]; pthread_t thread; };
+static void *rt_fifo_write(void *arg)
+{
+    struct rt_fifo_writer *w = arg;
+    platform_sleep_ms(300);
+    for (int64_t until = rt_now() + 3000; rt_now() < until; platform_sleep_ms(5)) {
+        int fd = open(w->path, O_WRONLY | O_NONBLOCK);
+        if (fd < 0) continue;
+        (void)!write(fd, "user:pass\n", 10);
+        close(fd);
+        break;
+    }
+    return NULL;
+}
+
+static bool rt_fixture(char *dir, size_t n, const char *tag, enum rt_cookie kind, struct rt_fifo_writer *w)
+{
+    char path[640];
+    rpc_test_tmpdir(dir, n, tag);
+    snprintf(path, sizeof(path), "%s/.cookie", dir);
+    if (kind == RT_FILE_COOKIE) {
+        FILE *f = fopen(path, "w");
+        if (!f) return false;
+        fputs("user:pass\n", f);
+        fclose(f);
+    } else if (kind == RT_FIFO_COOKIE) {
+        snprintf(w->path, sizeof(w->path), "%s", path);
+        return mkfifo(path, 0600) == 0 && pthread_create(&w->thread, NULL, rt_fifo_write, w) == 0;
+    }
+    return true;
+}
+
+/* The RPC env knobs and process endpoint, saved once and restored at suite end. */
+static struct { char *knob[2], *datadir; int port; } g_rt_saved;
+static const char *const rt_env_names[2] = {"ZCL_RPC_CONNECT_MS", "ZCL_RPC_DEADLINE_MS"};
+static void rt_knob(int i, const char *v) /* NULL unsets */
+{
+    if (v) setenv(rt_env_names[i], v, 1);
+    else unsetenv(rt_env_names[i]);
+}
+static void rt_save(void)
+{
+    for (int i = 0; i < 2; i++)
+        g_rt_saved.knob[i] = getenv(rt_env_names[i]) ? strdup(getenv(rt_env_names[i])) : NULL;
+    g_rt_saved.datadir = strdup(node_rpc_client_datadir()), g_rt_saved.port = node_rpc_test_client_port();
+}
+static void rt_restore(void)
+{
+    rt_knob(0, g_rt_saved.knob[0]), rt_knob(1, g_rt_saved.knob[1]);
+    node_rpc_client_init(g_rt_saved.datadir ? g_rt_saved.datadir : "", g_rt_saved.port);
+    free(g_rt_saved.knob[0]), free(g_rt_saved.knob[1]), free(g_rt_saved.datadir);
+}
+
+/* {now, deadline, want remaining}: zero, equal-now, 1ms and INT64 bounds. */
+static void rt_case_arithmetic(void)
+{
+    static const struct { int64_t now, deadline; int want; } rem[] = {
+        {0, 0, 0}, {100, 100, 0}, {100, 99, 0}, {100, 101, 1}, {1, 0, 0}, {INT64_MIN, INT64_MAX, INT32_MAX},
+        {INT64_MAX, INT64_MIN, 0}, {INT64_MIN, INT64_MIN, 0}, {0, INT64_MAX, INT32_MAX}, {-5, 5, 10},
+        {INT64_MAX - 1, INT64_MAX, 1}, {INT64_MIN, 0, INT32_MAX} };
+    bool ok = node_rpc_test_deadline_after(INT64_MAX, 1) == INT64_MAX && node_rpc_test_deadline_after(5, 10) == 15 &&
+        node_rpc_test_deadline_after(INT64_MIN, -1) == INT64_MIN && node_rpc_test_deadline_after(INT64_MAX, INT64_MIN) == -1;
+    for (size_t i = 0; i < sizeof(rem) / sizeof(rem[0]); i++)
+        ok = ok && node_rpc_test_deadline_remaining_ms(rem[i].now, rem[i].deadline) == rem[i].want;
+    ok = ok && node_rpc_test_phase_deadline_ms(0, 40, 2000) == 40 && /* min(deadline, now + phase), saturating */
+        node_rpc_test_phase_deadline_ms(0, INT64_MAX, 250) == 250 && node_rpc_test_phase_deadline_ms(30, 40, 250) == 40 &&
+        node_rpc_test_phase_deadline_ms(INT64_MAX - 10, INT64_MAX, INT64_MAX) == INT64_MAX &&
+        node_rpc_test_phase_deadline_ms(0, INT64_MIN, 250) == INT64_MIN;
+    rt_expect(ok, "deadline arithmetic: zero/equal/1ms/INT64 bounds, saturation", 0, 0);
+}
+
+/* Calls under test; rt_board answers "PASSED" or the error code (arg > 0 = observation). */
+typedef char *(*rt_call_fn)(const char *dir, int port, int64_t arg);
+static char *rt_until(const char *d, int p, int64_t ms) { return node_rpc_call_at_until(d, p, "fleet_board", "[]", 2000, rt_now() + ms); }
+static char *rt_until_at(const char *d, int p, int64_t at) { return node_rpc_call_at_until(d, p, "fleet_board", "[]", 2000, at); }
+static char *rt_direct(const char *d, int p, int64_t unused) { (void)unused; return node_rpc_call_at_deadline(d, p, "fleet_board", "[]", 2000, 10000); }
+static char *rt_relative40(const char *d, int p, int64_t unused) { (void)unused; return node_rpc_call_at_deadline(d, p, "fleet_board", "[]", 40, 40); }
+/* "identical" when the absolute and the direct call return the same payload. */
+static char *rt_same(const char *d, int p, int64_t unused)
+{
+    char *a = rt_until(d, p, 2000), *b = rt_direct(d, p, unused);
+    char *out = strdup(a && b && !strcmp(a, b) && rt_has(a, "retained") ? "identical" : "differs");
+    free(a), free(b);
+    return out;
+}
+/* A port nothing listens on: the call never reaches the server `rt_run` started. */
+static char *rt_refused(const char *d, int p, int64_t unused)
+{
+    platform_socket_t lf;
+    uint16_t dead = 0;
+    (void)p, (void)unused;
+    if (!rt_listen(&lf, &dead, 1)) return NULL;
+    platform_socket_close(lf);
+    return rt_until(d, dead, 2000);
+}
+static char *rt_env_default(const char *d, int p, int64_t unused) /* the endpoint `rt_run` set */
+{ (void)unused, (void)d, (void)p; return node_rpc_call_http("fleet_board", "[]"); }
+static char *rt_board(const char *d, int p, int64_t ms)
+{
+    struct json_value input;
+    const char *text = "{\"open\":true,\"limit\":20}";
+    char *out = NULL;
+    (void)d, (void)p;
+    if (json_read(&input, text, strlen(text))) {
+        struct zcl_command_request request = { .input = &input, .view = "normal",
+            .spec = zcl_command_registry_find(zcl_command_catalog(), "fleet.board.list", NULL) };
+        struct zcl_command_reply reply;
+        zcl_command_reply_init(&reply, "zcl.fleet_board_list.v1");
+        if (ms > 0) zcl_native_fleet_board_list_until(&request, &reply, rt_now() + ms);
+        else zcl_native_handle_fleet_board_list(&request, &reply);
+        out = strdup(reply.status == ZCL_COMMAND_STATUS_PASSED ? "PASSED" : reply.error.code);
+        zcl_command_reply_free(&reply);
+        json_free(&input);
+    }
+    return out;
+}
+struct rt_run { char *body; int64_t ms; int req; };
+/* One call against a fresh loopback server; reports body, time, requests. */
+static struct rt_run rt_run(enum rt_mode mode, int delay, const char *dir, rt_call_fn call, int64_t arg)
+{
+    struct rt_server s;
+    struct rt_run r = {0};
+    if (!rt_server_start(&s, mode, delay)) return r;
+    int64_t t0 = rt_now();
+    node_rpc_client_init(dir, s.port);
+    r.body = call(dir, s.port, arg), r.ms = rt_now() - t0;
+    r.req = rt_server_stop(&s);
+    return r;
+}
+static void rt_done(struct rt_run *r, bool ok, const char *name)
+{
+    rt_expect(ok && r->body, name, r->ms, r->req);
+    free(r->body);
+}
+static void rt_slow_bootstrap(void) { platform_sleep_ms(300); }
+static void rt_no_bootstrap(void) {}
+
+/* A real-socket row: want/forbid substrings, time window (max 0 = none), request
+ * count (-1 = unchecked), env knobs (default 60s), board bootstrap, cookie kind. */
+struct rt_real {
+    const char *name, *want, *forbid, *env;
+    enum rt_mode mode;
+    int delay, min_ms, max_ms, req;
+    rt_call_fn call;
+    int64_t arg;
+    void (*boot)(void);
+    bool nodir, fifo;
+};
+#define RT_EXH "BOARD_OBSERVATION_BUDGET_EXHAUSTED"
+static const struct rt_real rt_real_cases[] = {
+    { .name = "1ms deadline ends promptly without an answer", .want = "error", .forbid = "retained",
+      .max_ms = 150, .req = -1, .call = rt_until, .arg = 1 },
+    { .name = "INT64_MAX deadline: no overflow, healthy answer", .want = "retained", .mode = RT_HEALTHY,
+      .max_ms = 500, .req = 1, .call = rt_until_at, .arg = INT64_MAX },
+    { .name = "healthy: absolute and direct payloads identical", .want = "identical", .mode = RT_HEALTHY, .req = 2, .call = rt_same },
+    { .name = "refused port: typed connection-refused error", .want = "connection refused", .req = 0, .call = rt_refused },
+    { .name = "direct healthy reply delayed 300ms unchanged", .want = "retained", .mode = RT_HEALTHY,
+      .delay = 300, .min_ms = 280, .req = 1, .call = rt_direct },
+    { .name = "stall: 200ms absolute ignores 60s env", .want = "did not answer",
+      .min_ms = 185, .max_ms = 450, .req = 1, .call = rt_until, .arg = 200 },
+    { .name = "drip: bounded by the absolute deadline", .want = "error", .forbid = "retained",
+      .mode = RT_DRIP, .min_ms = 105, .max_ms = 350, .req = 1, .call = rt_until, .arg = 120 },
+    { .name = "missing cookie: unknown, no request", .want = "auth cookie", .mode = RT_HEALTHY,
+      .max_ms = 100, .req = 0, .call = rt_until, .arg = 2000, .nodir = true },
+    { .name = "oversized env falls back: direct default path healthy", .want = "retained",
+      .env = "99999999999999999999", .mode = RT_HEALTHY, .req = 1, .call = rt_env_default },
+    { .name = "40ms + 300ms cookie: no request after expiry (limit: ~300ms cookie read)",
+      .want = "during the cookie read", .min_ms = 250, .max_ms = 1500, .req = 0, .call = rt_until, .arg = 40, .fifo = true },
+    { .name = "control: relative 40ms + 300ms cookie still sends", .want = "", .min_ms = 250, .req = 1, .call = rt_relative40, .fifo = true },
+    { .name = "board observation: healthy data", .want = "PASSED", .mode = RT_HEALTHY, .req = 1, .call = rt_board, .arg = 2000 },
+    { .name = "direct board: healthy reply delayed 300ms unchanged", .want = "PASSED", .mode = RT_HEALTHY, .delay = 300, .min_ms = 280, .req = 1, .call = rt_board },
+    { .name = "board observation: 300ms reply honestly unknown at FAST cap", .want = "NODE_UNAVAILABLE",
+      .mode = RT_HEALTHY, .delay = 300, .min_ms = 230, .max_ms = 450, .req = 1, .call = rt_board, .arg = 2000 },
+    { .name = "board: bootstrap 300ms exhausts 40ms with 0 RPC", .want = RT_EXH, .min_ms = 280,
+      .max_ms = 1000, .req = 0, .call = rt_board, .arg = 40, .boot = rt_slow_bootstrap },
+    { .name = "board observation: missing cookie unknown, no request", .want = "NODE_UNAVAILABLE", .max_ms = 100, .req = 0, .call = rt_board, .arg = 2000, .nodir = true },
+    { .name = "board observation: 40ms + 300ms cookie, 0 RPC", .want = RT_EXH, .min_ms = 250,
+      .max_ms = 1500, .req = 0, .call = rt_board, .arg = 40, .fifo = true },
+};
+static bool rt_real_ok(const struct rt_real *c, const struct rt_run *r)
+{
+    return rt_has(r->body, c->want) && !(c->forbid && rt_has(r->body, c->forbid)) &&
+           r->ms >= c->min_ms && (!c->max_ms || r->ms < c->max_ms) && (c->req < 0 || r->req == c->req);
+}
+
+static void rt_case_real(const char *dir, const char *nodir)
+{
+    zcl_native_fleet_board_test_set_bootstrap(rt_no_bootstrap); /* never the real bridge */
+    for (size_t i = 0; i < sizeof(rt_real_cases) / sizeof(rt_real_cases[0]); i++) {
+        const struct rt_real *c = &rt_real_cases[i];
+        struct rt_fifo_writer w;
+        char fifo[512];
+        const char *d = c->nodir ? nodir : dir;
+        if (c->fifo && !rt_fixture(fifo, sizeof(fifo), "fifo", RT_FIFO_COOKIE, &w)) {
+            rt_expect(false, "fifo setup", 0, 0);
+            continue;
+        }
+        rt_knob(0, c->env ? c->env : "60000"), rt_knob(1, c->env ? c->env : "60000");
+        zcl_native_fleet_board_test_set_bootstrap(c->boot ? c->boot : rt_no_bootstrap);
+        struct rt_run r = rt_run(c->mode, c->delay, c->fifo ? fifo : d, c->call, c->arg);
+        zcl_native_fleet_board_test_set_bootstrap(rt_no_bootstrap);
+        if (c->fifo) pthread_join(w.thread, NULL), test_rm_rf(fifo);
+        rt_done(&r, rt_real_ok(c, &r), c->name);
+    }
+    zcl_native_fleet_board_test_set_bootstrap(NULL);
+}
+static void rt_noop_signal(int sig) { (void)sig; }
+/* Ten SIGUSR1s, 20ms apart, aimed at the thread that is connecting. */
+static void *rt_signal_loop(void *target)
+{
+    for (int i = 0; i < 10; i++) { /* real-clock: signal cadence, not a verdict deadline */
+        platform_sleep_ms(20); /* real-clock: signal cadence, not a verdict deadline */
+        pthread_kill(*(pthread_t *)target, SIGUSR1);
+    }
+    return NULL;
+}
+
+/* Ten real SIGUSR1s during a backlog-full connect must not restart the 40ms allowance. */
+static void rt_case_connect_eintr(const char *dir)
+{
+    platform_socket_t listener, fill[16];
+    uint16_t port = 0;
+    size_t filled = 0;
+    bool pending = false;
+    if (!rt_listen(&listener, &port, 1)) { rt_expect(false, "eintr setup", 0, 0); return; }
+    struct sockaddr_in a = { .sin_family = AF_INET, .sin_port = htons(port), .sin_addr.s_addr = htonl(INADDR_LOOPBACK) };
+    while (filled < 16 && !pending) { /* fill the accept backlog until a connect stays pending */
+        platform_socket_t c = fill[filled++] = platform_socket_open(AF_INET, SOCK_STREAM, 0, true, true);
+        if (c == PLATFORM_SOCKET_INVALID) break;
+        (void)platform_socket_connect(c, (struct sockaddr *)&a, sizeof(a));
+        pending = platform_socket_wait_writable(c, 30) == 0;
+    }
+    if (!pending) printf("  connect EINTR: SKIP (loopback backlog did not fill; no verdict)\n");
+    struct sigaction act = { .sa_handler = rt_noop_signal }, old;
+    sigemptyset(&act.sa_mask);
+    sigaction(SIGUSR1, &act, &old);
+    for (int pass = 0; pass < 2 && pending; pass++) {
+        pthread_t self = pthread_self(), signaler;
+        int64_t t0 = rt_now();
+        pthread_create(&signaler, NULL, rt_signal_loop, &self);
+        char *b = pass ? rt_relative40(dir, port, 0) : rt_until(dir, port, 40);
+        int64_t ms = rt_now() - t0;
+        pthread_join(signaler, NULL);
+        rt_expect(rt_has(b, "connect timed out") && ms >= 35 && ms < 150,
+                  pass ? "same for the relative-deadline entry"
+                       : "40ms + 10 signals*20ms: connect keeps original deadline", ms, 0);
+        free(b);
+    }
+    sigaction(SIGUSR1, &old, NULL);
+    for (size_t i = 0; i < filled; i++) platform_socket_close(fill[i]);
+    platform_socket_close(listener);
+}
+
+/* Scripted transport (node_rpc_test_script): fake clock and polls drive the production
+ * loops; `ww`/`wr` = first writable/readable wait arguments expected (0 = unchecked). */
+struct rt_io_case {
+    const char *name;
+    enum rt_mode mode;
+    int64_t until;
+    long connect_ms; /* 0 = 2000 */
+    struct node_rpc_test_script s; /* s.now 0 = 1000 */
+    const char *want;
+    int req, ww[5], wr[5];
+    bool grow_stops; /* no readable wait follows the buffer growth */
+};
+static bool rt_waits_match(const int *want, const int *got, int calls)
+{
+    for (int i = 0; i < 5 && want[i]; i++) if (i >= calls || i >= 8 || got[i] != want[i]) return false;
+    return true;
+}
+static void rt_case_scripted(const char *dir, const struct rt_io_case *c)
+{
+    struct rt_server srv;
+    struct node_rpc_test_script sc = c->s; /* a copy: the loops advance its clock and counters */
+    if (!rt_server_start(&srv, c->mode, 0)) { rt_expect(false, c->name, 0, 0); return; }
+    if (!sc.now) sc.now = 1000;
+    node_rpc_test_set_script(&sc);
+    int64_t t0 = rt_now();
+    char *b = node_rpc_call_at_until(dir, srv.port, "fleet_board", "[]", c->connect_ms ? c->connect_ms : 2000, c->until);
+    node_rpc_test_set_script(NULL);
+    int64_t ms = rt_now() - t0;
+    /* Give the server time to read whatever the client sent before counting. */
+    for (int64_t end = rt_now() + (c->req ? 1000 : 60); rt_now() < end && (!c->req || atomic_load(&srv.requests) < c->req);)
+        platform_sleep_ms(2);
+    int req = rt_server_stop(&srv);
+    rt_expect(rt_has(b, c->want) && req == c->req && rt_waits_match(c->ww, sc.ww, sc.nw) &&
+              rt_waits_match(c->wr, sc.wr, sc.nr) && (!c->grow_stops || (sc.grown_at && sc.nr == sc.grown_at)), c->name, ms, req);
+    free(b);
+}
+
+#define H RT_HEALTHY
+#define RT_NOCOOKIE(nm, at) { nm, .until = at, .want = "before the cookie read" }
+static const struct rt_io_case rt_io_cases[] = {
+    RT_NOCOOKIE("deadline zero: no request", 0),
+    RT_NOCOOKIE("deadline INT64_MIN: no request", INT64_MIN),
+    RT_NOCOOKIE("deadline equal to now: no request", 1000),
+    { "clock reaches the deadline before the cookie read", .until = 1100, .s.seq = {1100}, .want = "before the cookie read" },
+    { "clock crosses the deadline during the cookie read", .until = 1100, .s.seq = {1000, 1100}, .want = "during the cookie read" },
+    { "deadline passes before connect", .until = 1100, .s.seq = {1000, 1000, 1100}, .want = "before connect" },
+    { "deadline passes before transmit", .until = 1100, .s.seq = {1000, 1000, 1000, 1000, 1100}, .want = "before transmit" },
+    { "connect EINTR storm keeps the original deadline", .until = 1040, .s.pending = true,
+      .s.w = {{'i', 20}, {'i', 20}}, .want = "connect timed out", .ww = {40, 20} },
+    { "connect readiness after the phase deadline is a timeout", .until = 1200, .connect_ms = 30,
+      .s.pending = true, .s.w = {{'r', 31}}, .s.r = {{'r', 500}}, .want = "connect timed out", .ww = {30} },
+    { "connect readiness at the phase deadline is a timeout", .until = 1200, .connect_ms = 30,
+      .s.pending = true, .s.w = {{'r', 30}}, .s.r = {{'r', 500}}, .want = "connect timed out", .ww = {30} },
+    { "connect readiness 1ms inside the phase deadline succeeds", H, .until = 1200, .connect_ms = 30,
+      .s.pending = true, .s.w = {{'r', 29}}, .want = "retained", .req = 1, .ww = {30, 171, 171}, .wr = {171} },
+    { "connect zero-timeout wake then readiness, one deadline", H, .until = 1100, .s.pending = true,
+      .s.w = {{'z', 10}, {'r', 0}}, .want = "retained", .req = 1, .ww = {100, 90, 90, 90}, .wr = {90} },
+    { "send readiness after the deadline: no byte", .until = 1100, .s.w = {{'r', 200}},
+      .want = "before transmit", .ww = {100} },
+    { "send EINTR storm then healthy answer", H, .until = 1100, .s.w = {{'i', 20}, {'i', 20}},
+      .want = "retained", .req = 1, .ww = {100, 80, 60, 60}, .wr = {60} },
+    { "send EINTR to the deadline: no byte", .until = 1040, .s.w = {{'i', 20}, {'i', 25}},
+      .want = "before transmit", .ww = {40, 20} },
+    { "receive spurious readiness keeps the deadline", .until = 1040, .s.r = {{'r', 15}, {'r', 15}, {'r', 15}},
+      .want = "did not answer", .req = 1, .wr = {40, 25, 10} },
+    { "receive EINTR then healthy answer", H, .until = 1100, .s.r = {{'i', 10}},
+      .want = "retained", .req = 1, .wr = {100, 90} },
+    { "receive readiness after the deadline, bytes queued: not read", H, .until = 1100,
+      .s.r = {{'q', 200}}, .want = "did not answer", .req = 1, .wr = {100} },
+    { "receive readiness at the deadline, bytes queued: not read", H, .until = 1100,
+      .s.r = {{'q', 100}}, .want = "did not answer", .req = 1, .wr = {100} },
+    { "receive readiness 1ms before the deadline, bytes queued: read", H, .until = 1100,
+      .s.r = {{'q', 99}}, .want = "retained", .req = 1, .wr = {100, 1} },
+    { "receive buffer growth keeps the deadline when the allocation is not slow", .mode = RT_BIG,
+      .until = 1100, .want = "retained", .req = 1, .wr = {100} },
+    { "receive buffer growth: a slow allocation stops the wait at zero", .mode = RT_BIG, .until = 1100,
+      .s.alloc_adv_ms = 100, .want = "truncated reply", .req = 1, .wr = {100}, .grow_stops = true },
+    { "receive buffer growth: a slow allocation that stays inside the deadline", .mode = RT_BIG,
+      .until = 1100, .s.alloc_adv_ms = 49, .want = "retained", .req = 1, .wr = {100} },
+    { "INT64_MIN..INT64_MAX: every wait saturates to INT32_MAX", H, .until = INT64_MAX, .s.now = INT64_MIN,
+      .want = "retained", .req = 1, .ww = {INT32_MAX, INT32_MAX}, .wr = {INT32_MAX} },
+    { "INT64_MAX-5: connect phase saturates, readiness keeps 5ms", H, .until = INT64_MAX, .connect_ms = 60000,
+      .s.now = INT64_MAX - 5, .s.pending = true, .s.w = {{'r', 0}}, .want = "retained", .req = 1,
+      .ww = {5, 5, 5}, .wr = {5} },
+};
+#undef H
+
+static int check_rpc_absolute_deadline_suite(void)
+{
+    char dir[512] = "", nodir[512] = "";
+    printf("rpc absolute deadline transport and board observation:\n");
+    g_rt_failures = 0, rt_save();
+    node_rpc_client_set_test_hook(NULL), node_rpc_test_set_script(NULL);
+    if (!rt_fixture(dir, sizeof(dir), "abs", RT_FILE_COOKIE, NULL) ||
+        !rt_fixture(nodir, sizeof(nodir), "absno", RT_NO_COOKIE, NULL))
+        rt_expect(false, "fixture setup", 0, 0);
+    else {
+        rt_case_arithmetic();
+        rt_case_real(dir, nodir);
+        rt_case_connect_eintr(dir);
+        for (size_t i = 0; i < sizeof(rt_io_cases) / sizeof(rt_io_cases[0]); i++)
+            rt_case_scripted(dir, &rt_io_cases[i]);
+    }
+    test_rm_rf(dir), test_rm_rf(nodir);
+    node_rpc_client_set_test_hook(NULL), node_rpc_test_set_script(NULL);
+    rt_restore();
+    return g_rt_failures;
+}
+
 int check_rpc_tls_without_env_and_port_oracle(void)
 {
     int failures = 0;
@@ -1010,6 +1493,7 @@ int check_rpc_tls_without_env_and_port_oracle(void)
         }
     }
 
+    failures += check_rpc_absolute_deadline_suite();
     return failures;
 }
 
