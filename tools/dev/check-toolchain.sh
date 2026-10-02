@@ -19,8 +19,9 @@
 # the build at a newer one.
 #
 # Exit: 0 if $CC accepts -std=c23, non-zero otherwise.
-#   --selftest  prove a gcc-13-shaped wrapper is refused and a usable
-#               compiler is accepted. Does not require gcc 13 to be installed.
+#   --selftest  prove a gcc-13-shaped wrapper is refused, a usable compiler
+#               is accepted, and read-only Make queries need no compiler.
+#               Does not require gcc 13 to be installed.
 
 set -euo pipefail
 
@@ -166,6 +167,52 @@ check() {
         printf '%s\n' "$c23_err" | sed 's/^/    /' >&2
     fi
     exit 1
+}
+
+# These targets only render tracked metadata. They must not run compiler,
+# cache or vendor bootstraps; adding a build goal must retain preflight.
+check_read_only_queries() {
+    local work="$1" goal source_tool
+    for goal in help t-list; do
+        case "$goal" in
+            help) source_tool="$REPO_ROOT/tools/scripts/make_help.sh" ;;
+            t-list) source_tool="$REPO_ROOT/tools/dev/test-group-list.sh" ;;
+        esac
+        if ! "$source_tool" > "$work/$goal.direct" ||
+           [[ ! -s "$work/$goal.direct" ]]; then
+            printf 'check-toolchain --selftest: FAIL — %s direct output unavailable\n' "$goal" >&2
+            return 1
+        fi
+        if ! env ZCL_BIN_DIR="$work/$goal-cache" ZCL_BOOTSTRAP_CC=/nonexistent \
+                ZCL_VENDOR_OFFLINE=1 make -s --no-print-directory -C "$REPO_ROOT" \
+                ZCL_USE_CCACHE=1 CC=/nonexistent \
+                ZCL_VENDOR_LIB="$work/$goal-vendor" "$goal" \
+                > "$work/$goal.make" 2> "$work/$goal.err" ||
+           ! cmp -s "$work/$goal.direct" "$work/$goal.make" ||
+           [[ -e "$work/$goal-cache" || -e "$work/$goal-vendor" ]]; then
+            printf 'check-toolchain --selftest: FAIL — %s built inputs or changed output\n' "$goal" >&2
+            cat "$work/$goal.err" >&2
+            return 1
+        fi
+    done
+    cat "$work/help.direct" "$work/t-list.direct" > "$work/combined.direct"
+    if ! make -s --no-print-directory -C "$REPO_ROOT" \
+            ZCL_USE_CCACHE=0 CC=/nonexistent help t-list \
+            > "$work/combined.make" 2> "$work/combined.err" ||
+       ! cmp -s "$work/combined.direct" "$work/combined.make"; then
+        echo 'check-toolchain --selftest: FAIL — combined queries changed output' >&2
+        cat "$work/combined.err" >&2
+        return 1
+    fi
+    if make -s --no-print-directory -C "$REPO_ROOT" \
+            ZCL_USE_CCACHE=0 CC=/nonexistent help t-list z23 \
+            > "$work/mixed.out" 2> "$work/mixed.err" ||
+       ! grep -Fq 'C23 toolchain check failed' "$work/mixed.err"; then
+        echo 'check-toolchain --selftest: FAIL — mixed build skipped compiler preflight' >&2
+        cat "$work/mixed.err" >&2
+        return 1
+    fi
+    return 0
 }
 
 # ── --selftest ────────────────────────────────────────────────────────────
@@ -335,6 +382,8 @@ EOF
         printf '%s\n' "$first" >&2
         exit 1
     fi
+
+    check_read_only_queries "$work" || exit 1
 
     printf 'check-toolchain --selftest: PASS\n'
     exit 0
