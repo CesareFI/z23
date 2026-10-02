@@ -8,6 +8,8 @@
  * bytes or padding are serialized. This is not a Zclassic wire format. */
 jbyteArray zcl_jni_payment_record(JNIEnv *env, const zcl_payment_request *request)
 {
+    if (request == NULL)
+        return NULL;
     if (request->label_len > 200 || request->message_len > 200)
         return NULL;
     uint8_t record[449] = {0};

@@ -229,10 +229,18 @@ static void invalid_cases(void)
     }
 }
 
+static void payment_record_refusals(void)
+{
+    calls = 0;
+    pending = false;
+    CHECK(zcl_jni_payment_record(&vm, NULL) == NULL);
+    CHECK(calls == 0 && !pending);
+}
+
 #ifndef ZCL_JNI_PUBLIC_FUZZ
 int main(void)
 {
-    valid_cases(); invalid_cases();
+    valid_cases(); invalid_cases(); payment_record_refusals();
     puts("Public QR/payment JNI projection, bounds and VM fault checks passed");
     return 0;
 }
