@@ -15187,6 +15187,7 @@ $(BIN_DIR)/postmortem_to_scenario: tools/postmortem_to_scenario.c \
 	    -Wno-format-truncation \
 	    -Iengine/modules/sim/include -Iplatform/modules/platform/include -Iplatform/modules/base/include -Iplatform/modules/util/include \
 	    -Iplatform/modules/json/include \
+	    -Ivendor/include \
 	    -D_POSIX_C_SOURCE=200809L $(ZCL_PLATFORM_CPPFLAGS) \
 	    -o $@ $^ -Lvendor/lib vendor/lib/libz.a -lpthread -lm
 
