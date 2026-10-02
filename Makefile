@@ -522,7 +522,7 @@ else ifneq ($(filter dev-tsan z23-dev-tsan zclassic23-dev-tsan,$(ZCL_EPOCH_SINGL
 ZCL_EPOCH_PROFILES := dev-tsan
 else ifneq ($(filter coverage coverage-locked,$(ZCL_EPOCH_SINGLE_GOAL)),)
 ZCL_EPOCH_PROFILES := coverage
-else ifneq ($(filter lint-fast lint-land check-cyclomatic-complexity watcher-safety-gates check-dev-loop-profiles dev-loop-profile-flags print-dev-profile-dirs dev-failure-execution-id t-changed fast-changed-compile fast-rebuild rebuild-fast dev-rebuild hot-rebuild super-rebuild fast-ci agent-fast-ci dev-ci agent-plan agent-loop agent-dev-loop pre-push-ci t-list templates site-css explorer-css,$(ZCL_EPOCH_SINGLE_GOAL)),)
+else ifneq ($(filter lint-fast lint-land check-cyclomatic-complexity check-architecture-tree watcher-safety-gates check-dev-loop-profiles dev-loop-profile-flags print-dev-profile-dirs dev-failure-execution-id t-changed fast-changed-compile fast-rebuild rebuild-fast dev-rebuild hot-rebuild super-rebuild fast-ci agent-fast-ci dev-ci agent-plan agent-loop agent-dev-loop pre-push-ci t-list templates site-css explorer-css,$(ZCL_EPOCH_SINGLE_GOAL)),)
 ZCL_EPOCH_PROFILES :=
 endif
 endif
@@ -1915,7 +1915,7 @@ else ifneq ($(filter coverage coverage-locked,$(ZCL_DEPFILE_SINGLE_GOAL)),)
 ZCL_DEPFILE_PROFILES := coverage
 else ifneq ($(filter fuzz fuzz-ci fuzz-ci-leaks fuzz-replay fuzz_block fuzz_script fuzz_p2p fuzz_http fuzz_compactblock fuzz_snapshot fuzz_tx_bundle fuzz_rom_manifest fuzz_overlay fuzz_ecdsa fuzz_mesh_status_proto,$(ZCL_DEPFILE_SINGLE_GOAL)),)
 ZCL_DEPFILE_PROFILES := fuzz
-else ifneq ($(filter lint lint-fast lint-land check-cyclomatic-complexity lint-preflight watcher-safety-gates check-dev-loop-profiles dev-loop-profile-flags print-dev-profile-dirs dev-failure-execution-id ff t-changed fast-changed-compile fast-rebuild rebuild-fast dev-rebuild hot-rebuild super-rebuild fast-ci agent-fast-ci dev-ci agent-plan agent-loop agent-dev-loop pre-push-ci,$(ZCL_DEPFILE_SINGLE_GOAL)),)
+else ifneq ($(filter lint lint-fast lint-land check-cyclomatic-complexity check-architecture-tree lint-preflight watcher-safety-gates check-dev-loop-profiles dev-loop-profile-flags print-dev-profile-dirs dev-failure-execution-id ff t-changed fast-changed-compile fast-rebuild rebuild-fast dev-rebuild hot-rebuild super-rebuild fast-ci agent-fast-ci dev-ci agent-plan agent-loop agent-dev-loop pre-push-ci,$(ZCL_DEPFILE_SINGLE_GOAL)),)
 ZCL_DEPFILE_PROFILES :=
 endif
 endif
