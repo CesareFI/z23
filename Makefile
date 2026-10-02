@@ -4403,13 +4403,23 @@ test-group-weights: $(TEST_GROUP_WEIGHTS_BIN)
 $(TEST_GROUP_WEIGHTS_BIN): tools/dev/test_group_weights.c \
 		tools/dev/test_group_weights_main.c tools/dev/test_group_catalog.c \
 		platform/modules/json/src/json.c \
-		platform/modules/base/src/safe_alloc.c
+		platform/modules/base/src/safe_alloc.c \
+		tools/dev/test_group_weights.h tools/dev/test_group_catalog.h \
+		platform/modules/json/include/json/json.h \
+		platform/modules/base/include/base/safe_alloc.h \
+		platform/modules/platform/include/platform/glob_match.h \
+		tools/dev/test_group_catalog.def \
+		tools/dev/test_semantic_leaves.def \
+		tools/dev/test_proof_families.def \
+		tools/dev/test_group_umbrellas.def \
+		tools/dev/test_integration_only.def \
+		tools/dev/test_proof_contracts.def
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic $(ZCL_PLATFORM_CPPFLAGS) \
 	    -D_POSIX_C_SOURCE=200809L -Itools/dev \
 	    -Iplatform/modules/json/include -Iplatform/modules/base/include \
 	    -Iplatform/modules/platform/include \
-	    -o $@ $^ -lpthread
+	    -o $@ $(filter %.c,$^) -lpthread
 test-group-weights-regen: $(TEST_GROUP_WEIGHTS_BIN)
 	$(TEST_GROUP_WEIGHTS_BIN) --timing=$(TEST_GROUP_WEIGHTS_TIMING) \
 	    --out=tools/dev/test_group_weights.tsv
