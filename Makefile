@@ -522,7 +522,7 @@ else ifneq ($(filter dev-tsan z23-dev-tsan zclassic23-dev-tsan,$(ZCL_EPOCH_SINGL
 ZCL_EPOCH_PROFILES := dev-tsan
 else ifneq ($(filter coverage coverage-locked,$(ZCL_EPOCH_SINGLE_GOAL)),)
 ZCL_EPOCH_PROFILES := coverage
-else ifneq ($(filter zcl-rpc z23-mvp-ledger test-group-weights,$(ZCL_EPOCH_SINGLE_GOAL)),)
+else ifneq ($(filter zcl-rpc z23-mvp-ledger test-group-weights sqlq jsonq,$(ZCL_EPOCH_SINGLE_GOAL)),)
 # These goals link standalone tools directly, not epoch-owned node objects.
 # The RPC helper keeps FORCE; the other tools track their listed inputs.
 ZCL_EPOCH_PROFILES :=
@@ -1919,7 +1919,7 @@ else ifneq ($(filter coverage coverage-locked,$(ZCL_DEPFILE_SINGLE_GOAL)),)
 ZCL_DEPFILE_PROFILES := coverage
 else ifneq ($(filter fuzz fuzz-ci fuzz-ci-leaks fuzz-replay fuzz_block fuzz_script fuzz_p2p fuzz_http fuzz_compactblock fuzz_snapshot fuzz_tx_bundle fuzz_rom_manifest fuzz_overlay fuzz_ecdsa fuzz_mesh_status_proto,$(ZCL_DEPFILE_SINGLE_GOAL)),)
 ZCL_DEPFILE_PROFILES := fuzz
-else ifneq ($(filter zcl-rpc z23-mvp-ledger test-group-weights,$(ZCL_DEPFILE_SINGLE_GOAL)),)
+else ifneq ($(filter zcl-rpc z23-mvp-ledger test-group-weights sqlq jsonq,$(ZCL_DEPFILE_SINGLE_GOAL)),)
 # These standalone links do not read profile object depfiles.
 ZCL_DEPFILE_PROFILES :=
 else ifneq ($(filter lint lint-fast lint-land lint-preflight watcher-safety-gates check-dev-loop-profiles dev-loop-profile-flags print-dev-profile-dirs dev-failure-execution-id ff t-changed fast-changed-compile fast-rebuild rebuild-fast dev-rebuild hot-rebuild super-rebuild fast-ci agent-fast-ci dev-ci agent-plan agent-loop agent-dev-loop pre-push-ci,$(ZCL_DEPFILE_SINGLE_GOAL)),)
