@@ -698,6 +698,85 @@ static int test_async_dispatch_lifecycle(void)
     return failures;
 }
 
+/* Overflow regression: the async ring must refuse (not silently overwrite)
+ * when a burst outruns the dispatcher. The observer gates on a condition
+ * until every event is emitted, so production deterministically fills the
+ * ring while the dispatcher is parked. Pre-fix, writes past the 4096 slot
+ * ring overwrote unconsumed slots: the dispatcher then read 5000 slots,
+ * delivering the newest events twice and never delivering 0..903. Post-fix,
+ * the producer drops the overflow with accounting and the oldest 4096
+ * events survive intact. */
+static pthread_mutex_t g_gate_mtx = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_gate_cond = PTHREAD_COND_INITIALIZER;
+static _Atomic bool g_gate_open;
+static _Atomic uint32_t g_ovf_calls;
+static _Atomic uint32_t g_ovf_first;
+static _Atomic uint32_t g_ovf_last;
+
+static void overflow_observer(enum event_type type, uint32_t peer_id,
+                              const void *payload, uint32_t payload_len,
+                              void *ctx)
+{
+    (void)type;
+    (void)peer_id;
+    (void)ctx;
+    if (!atomic_load_explicit(&g_gate_open, memory_order_acquire)) {
+        pthread_mutex_lock(&g_gate_mtx);
+        while (!atomic_load_explicit(&g_gate_open, memory_order_acquire))
+            pthread_cond_wait(&g_gate_cond, &g_gate_mtx);
+        pthread_mutex_unlock(&g_gate_mtx);
+    }
+    if (payload_len < sizeof(uint32_t) || !payload)
+        return;
+    uint32_t seq;
+    memcpy(&seq, payload, sizeof(seq));
+    uint32_t first = atomic_load(&g_ovf_first);
+    while (seq < first &&
+           !atomic_compare_exchange_weak(&g_ovf_first, &first, seq))
+        ;
+    uint32_t last = atomic_load(&g_ovf_last);
+    while (seq > last &&
+           !atomic_compare_exchange_weak(&g_ovf_last, &last, seq))
+        ;
+    atomic_fetch_add(&g_ovf_calls, 1u);
+}
+
+static int test_async_queue_overflow_accounting(void)
+{
+    int failures = 0;
+    enum { OVERFLOW_TOTAL = 5000, RING = 4096 };
+
+    TEST("event async queue refuses overflow, keeping the oldest events") {
+        event_log_init();
+        event_clear_all_observers();
+        atomic_store_explicit(&g_gate_open, false, memory_order_release);
+        atomic_store(&g_ovf_calls, 0);
+        atomic_store(&g_ovf_first, UINT32_MAX);
+        atomic_store(&g_ovf_last, 0);
+
+        ASSERT(event_observe_async(EV_NODE_READY, overflow_observer, NULL));
+        ASSERT(event_async_start());
+
+        for (uint32_t i = 0; i < OVERFLOW_TOTAL; i++)
+            event_emit(EV_NODE_READY, 7, &i, sizeof(i));
+
+        pthread_mutex_lock(&g_gate_mtx);
+        atomic_store_explicit(&g_gate_open, true, memory_order_release);
+        pthread_cond_broadcast(&g_gate_cond);
+        pthread_mutex_unlock(&g_gate_mtx);
+
+        event_async_stop();
+
+        ASSERT(atomic_load(&g_ovf_calls) == RING);
+        ASSERT(atomic_load(&g_ovf_first) == 0);
+        ASSERT(atomic_load(&g_ovf_last) == RING - 1);
+        ASSERT(event_async_dropped() == OVERFLOW_TOTAL - RING);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
 /* Crash-handler output must survive a fully-buffered stderr and _exit():
  * fork a child, redirect its stderr to a temp file, install the crash
  * handler, raise(SIGABRT), and assert the file has BOTH the header literal
@@ -906,6 +985,7 @@ int test_event(void)
     int failures = 0;
 
     failures += test_emit_dump_roundtrip();
+    failures += test_async_queue_overflow_accounting();
     failures += test_dump_count();
     failures += test_peer_state_legal();
     failures += test_peer_state_snapshot_takeover();

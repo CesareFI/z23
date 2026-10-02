@@ -368,6 +368,12 @@ bool event_observe_async(enum event_type type, event_observer_fn fn, void *ctx);
 bool event_async_start(void);
 void event_async_stop(void);
 
+/* Events refused because the async ring was full when they were emitted
+ * (the ring is bounded so producers never block on diagnostics; a burst
+ * that outruns the dispatcher is counted here instead of being silently
+ * overwritten). Reset by event_async_start(). */
+uint64_t event_async_dropped(void);
+
 /* ── Error accumulator ─────────────────────────────────── */
 
 /* Captures last N errors for instant health queries.
