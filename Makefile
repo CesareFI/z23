@@ -4368,13 +4368,25 @@ $(MVP_LEDGER_BIN): tools/dev/mvp_ledger.c tools/dev/mvp_ledger_tsv.c \
 		platform/modules/json/src/json.c \
 		platform/modules/base/src/safe_alloc.c \
 		platform/modules/platform/src/directory_compat.c \
-		platform/modules/platform/src/clock.c
+		platform/modules/platform/src/clock.c \
+		tools/dev/mvp_ledger.h tools/dev/mvp_ledger_internal.h \
+		tools/dev/fleet_observe.h \
+		platform/modules/json/include/json/json.h \
+		platform/modules/base/include/base/safe_alloc.h \
+		platform/modules/base/include/base/format_attribute.h \
+		platform/modules/base/include/base/log_level.h \
+		platform/modules/base/include/base/log_macros.h \
+		platform/modules/base/include/base/utc_tm.h \
+		platform/modules/platform/include/platform/clock.h \
+		platform/modules/platform/include/platform/directory_compat.h \
+		platform/modules/platform/include/platform/time_compat.h \
+		platform/modules/util/include/util/log_macros.h
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic $(ZCL_PLATFORM_CPPFLAGS) \
 	    -D_POSIX_C_SOURCE=200809L -Itools/dev \
 	    -Iplatform/modules/json/include -Iplatform/modules/base/include \
 	    -Iplatform/modules/platform/include -Iplatform/modules/util/include \
-	    -o $@ $^
+	    -o $@ $(filter %.c,$^)
 
 # test-group-weights: regenerates tools/dev/test_group_weights.tsv, the
 # expected wall seconds that make test_parallel dispatch longest-first. The
