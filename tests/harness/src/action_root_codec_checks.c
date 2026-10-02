@@ -13,6 +13,7 @@
 #include "test/action_root_codec_checks.h"
 
 #include "base/safe_alloc.h"
+#include "base/serialize_le.h"
 #include "vcs/build_action.h"
 
 #include <stdbool.h>
@@ -499,6 +500,191 @@ static void test_codec_refusals(void)
 }
 
 
+/* Public v2 framing only: MAGIC followed by u8 tag, u32le size, payload.
+ * Record boundaries of the valid fixture; do not parse payload semantics. */
+struct codec_wire_field {
+    size_t start;
+    size_t size;
+};
+
+static bool codec_wire_fields(const uint8_t *bytes, size_t len,
+                              struct codec_wire_field fields[14])
+{
+    size_t off = sizeof(VCS_ACTION_PREIMAGE_V2_MAGIC);
+    if (len < off || memcmp(bytes, VCS_ACTION_PREIMAGE_V2_MAGIC, off) != 0)
+        return false;
+    for (unsigned tag = 1; tag < VCS_ACTION_FIELD_V2_COUNT; tag++) {
+        if (len - off < 5 || bytes[off] != tag)
+            return false;
+        size_t size = zcl_read_u32_le(bytes + off + 1);
+        if (size > len - off - 5)
+            return false;
+        fields[tag] = (struct codec_wire_field){ off, size };
+        off += 5 + size;
+    }
+    return off == len;
+}
+
+/* Call both APIs even if one unexpectedly accepts. The decoded owner is
+ * initialized and always freed, including a partially decoded failure. */
+static bool codec_wire_refused(const uint8_t *bytes, size_t len)
+{
+    struct vcs_action_preimage_v2_decoded d = {0};
+    uint8_t root[32];
+    char decode_why[256] = {0}, root_why[256] = {0};
+    bool decoded = vcs_action_preimage_v2_decode(bytes, len, &d,
+                                                decode_why, sizeof(decode_why));
+    bool rooted = vcs_action_root_v2_from_bytes(bytes, len, root,
+                                               root_why, sizeof(root_why));
+    vcs_action_preimage_v2_decoded_free(&d);
+    if (decoded || rooted)
+        printf("    malformed wire accepted: decode=%d root=%d len=%zu\n",
+               decoded, rooted, len);
+    return !decoded && !rooted;
+}
+
+static void codec_wire_tags(const uint8_t *bytes, size_t len, uint8_t *mut,
+                            const struct codec_wire_field fields[14])
+{
+    static const uint8_t extra[] = {14, 15, 255};
+    for (size_t i = 0; i < sizeof(extra); i++) {
+        memcpy(mut, bytes, len);
+        mut[len] = extra[i];
+        zcl_write_u32_le(mut + len + 1, 32);
+        memset(mut + len + 5, 0x5a, 32);
+        char name[96];
+        (void)snprintf(name, sizeof(name), "wire tag %u appended: both APIs refuse",
+                       extra[i]);
+        AR_CHECK(name, codec_wire_refused(mut, len + 37));
+    }
+    for (unsigned tag = 1; tag < VCS_ACTION_FIELD_V2_COUNT; tag++) {
+        size_t at = fields[tag].start, size = 5 + fields[tag].size;
+        memcpy(mut, bytes, len);
+        mut[at] = tag == 1 ? 2 : (uint8_t)(tag - 1);
+        AR_CHECK("replaced/duplicate expected tag: both APIs refuse",
+                 codec_wire_refused(mut, len));
+        memcpy(mut, bytes, at);
+        memcpy(mut + at, bytes + at + size, len - at - size);
+        AR_CHECK("missing required field: both APIs refuse",
+                 codec_wire_refused(mut, len - size));
+    }
+    /* Swap complete adjacent frames, preserving their payloads and sizes. */
+    size_t at = fields[1].start, first = 5 + fields[1].size;
+    size_t second = 5 + fields[2].size;
+    memcpy(mut, bytes, len);
+    memcpy(mut + at, bytes + at + first, second);
+    memcpy(mut + at + second, bytes + at, first);
+    AR_CHECK("reordered complete fields: both APIs refuse",
+             codec_wire_refused(mut, len));
+    /* A complete repeated frame, rather than only a changed tag byte. */
+    memcpy(mut, bytes, len);
+    memcpy(mut + len, bytes + fields[11].start, 37);
+    AR_CHECK("duplicate complete root field: both APIs refuse",
+             codec_wire_refused(mut, len + 37));
+}
+
+static void codec_wire_sizes(const uint8_t *bytes, size_t len, uint8_t *mut,
+                             const struct codec_wire_field fields[14])
+{
+    for (unsigned tag = 1; tag < VCS_ACTION_FIELD_V2_COUNT; tag++) {
+        memcpy(mut, bytes, len);
+        zcl_write_u32_le(mut + fields[tag].start + 1, UINT32_MAX);
+        AR_CHECK("UINT32_MAX field payload size: both APIs refuse",
+                 codec_wire_refused(mut, len));
+    }
+    /* SOURCE and FLAGS begin with a list count; STAGE begins with text. */
+    static const unsigned counted[] = { VCS_ACTION_FIELD_V2_SOURCE,
+                                         VCS_ACTION_FIELD_V2_FLAGS };
+    for (size_t i = 0; i < sizeof(counted) / sizeof(counted[0]); i++) {
+        memcpy(mut, bytes, len);
+        zcl_write_u32_le(mut + fields[counted[i]].start + 5, UINT32_MAX);
+        AR_CHECK("UINT32_MAX list count: both APIs refuse",
+                 codec_wire_refused(mut, len));
+    }
+    memcpy(mut, bytes, len);
+    zcl_write_u32_le(mut + fields[1].start + 5, UINT32_MAX);
+    AR_CHECK("UINT32_MAX text size: both APIs refuse",
+             codec_wire_refused(mut, len));
+    bool truncated = true;
+    for (size_t n = 0; n < len; n++) {
+        bool refused = codec_wire_refused(bytes, n);
+        truncated = refused && truncated;
+    }
+    printf("    malformed wire: %zu truncations checked by both APIs\n", len);
+    AR_CHECK("every fixture truncation: both APIs refuse", truncated);
+}
+
+static void codec_wire_payloads(const uint8_t *bytes, size_t len, uint8_t *mut,
+                                const struct codec_wire_field fields[14])
+{
+    memcpy(mut, bytes, len);
+    /* STAGE text follows its u32le length. Keep the original length. */
+    mut[fields[1].start + 5 + 4] = 0;
+    AR_CHECK("embedded NUL in required text: both APIs refuse",
+             codec_wire_refused(mut, len));
+    memcpy(mut, bytes, len);
+    /* SYSROOT starts with the absent/present sysroot marker. */
+    mut[fields[VCS_ACTION_FIELD_V2_SYSROOT].start + 5] = 2;
+    AR_CHECK("flag 2: both APIs refuse", codec_wire_refused(mut, len));
+    for (unsigned tag = VCS_ACTION_FIELD_V2_HARNESS;
+         tag <= VCS_ACTION_FIELD_V2_POLICY; tag++) {
+        size_t end = fields[tag].start + 5 + fields[tag].size;
+        memcpy(mut, bytes, end);
+        mut[end] = 0x5a;
+        memcpy(mut + end + 1, bytes + end, len - end);
+        zcl_write_u32_le(mut + fields[tag].start + 1,
+                         (uint32_t)fields[tag].size + 1);
+        AR_CHECK("extra optional-root payload byte with matching size: both APIs refuse",
+                 codec_wire_refused(mut, len + 1));
+    }
+}
+
+static void test_codec_wire_refusals(void)
+{
+    struct codec_fixture f;
+    codec_fixture_init(&f);
+    uint8_t root[32];
+    uint8_t *bytes = NULL;
+    size_t len = 0;
+    struct codec_wire_field fields[14] = {0};
+    bool ready = codec_root(&f.p, root, &bytes, &len) &&
+                 len < VCS_ACTION_PREIMAGE_V2_MAX_BYTES - 37 &&
+                 codec_wire_fields(bytes, len, fields) &&
+                 fields[VCS_ACTION_FIELD_V2_STAGE].size >= 5 &&
+                 fields[VCS_ACTION_FIELD_V2_SOURCE].size >= 4 &&
+                 fields[VCS_ACTION_FIELD_V2_FLAGS].size >= 4 &&
+                 fields[VCS_ACTION_FIELD_V2_SYSROOT].size >= 1 &&
+                 fields[VCS_ACTION_FIELD_V2_HARNESS].size == 32;
+    uint8_t *mut = ready ? zcl_malloc(len + 37, "malformed wire fixture") : NULL;
+    AR_CHECK("bounded valid fixture has checked public wire boundaries", ready && mut);
+    if (mut) {
+        codec_wire_tags(bytes, len, mut, fields);
+        codec_wire_sizes(bytes, len, mut, fields);
+        codec_wire_payloads(bytes, len, mut, fields);
+    }
+    free(mut);
+    free(bytes);
+}
+
+static void test_codec_wire_semantic_control(void)
+{
+    struct codec_fixture f;
+    codec_fixture_init(&f);
+    uint8_t before[32], after[32];
+    bool ok = codec_root(&f.p, before, NULL, NULL);
+    f.p.stage_version++;
+    uint8_t *bytes = NULL;
+    size_t len = 0;
+    struct vcs_action_preimage_v2_decoded d = {0};
+    ok = codec_root(&f.p, after, &bytes, &len) && ok;
+    bool decoded = bytes && vcs_action_preimage_v2_decode(bytes, len, &d, NULL, 0);
+    AR_CHECK("legitimate stage change decodes and re-roots",
+             ok && decoded && d.view.stage_version == f.p.stage_version &&
+                 memcmp(before, after, 32) != 0);
+    vcs_action_preimage_v2_decoded_free(&d);
+    free(bytes);
+}
+
 /* Every single-bit flip of a stored preimage is refused or re-roots. */
 /* ---- v2 -> vcs_build_input_closure_v1 -------------------------------- */
 
@@ -626,6 +812,8 @@ int action_root_codec_checks(void)
     test_codec_field_table();
     test_codec_empty_is_not_zero();
     test_codec_refusals();
+    test_codec_wire_refusals();
+    test_codec_wire_semantic_control();
     test_codec_input_closure();
     test_codec_tamper();
     return g_failures;
