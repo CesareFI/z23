@@ -7664,11 +7664,13 @@ static int test_ic_local_selection_build_needs(void)
         ASSERT(n == 0);
 
         /* The whole catalog lists every declared target once; a gate that
-         * leaves every group out lists none. */
+         * leaves every group out lists none. test_utxo_root_ladder's
+         * generator is declared since that group execs the one-shot
+         * ladder tool. */
         n = 99;
         ASSERT(zcl_test_selection_build_needs(NULL, false, NULL, needs, 16,
                                               &n));
-        ASSERT(n == 8 + verifier_needs);
+        ASSERT(n == 9 + verifier_needs);
         ASSERT(ic_needs_have(needs, n, "dev-package-verifier-ensure",
                              "build/bin/zclassic23-package-verify-dev") ==
                (verifier_needs != 0));
@@ -7680,6 +7682,8 @@ static int test_ic_local_selection_build_needs(void)
                              "build/bin/consensus_rule_sweep"));
         ASSERT(ic_needs_have(needs, n, "process-group-exec",
                              "build/bin/process-group-exec"));
+        ASSERT(ic_needs_have(needs, n, "tools/gen_utxo_root_ladder",
+                             "build/bin/gen_utxo_root_ladder"));
         n = 99;
         ASSERT(zcl_test_selection_build_needs(NULL, false, ic_gate_everything,
                                               needs, 16, &n));

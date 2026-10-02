@@ -101,6 +101,14 @@ ZCL_TEST_GROUP_NEED("test_self_folded_anchor_heavy", ZCL_HOST_NEED_ENV,
 ZCL_TEST_GROUP_BUILD_NEED("test_engine", "build/bin/zclassic23-engine-unit",
                          "engine-unit")
 
+/* tests/harness/src/test_utxo_root_ladder.c execs the one-shot generator
+ * build/bin/gen_utxo_root_ladder against a crafted source db. No default
+ * test prerequisite builds it; a proof that selects the group builds
+ * `make tools/gen_utxo_root_ladder` in its generation. */
+ZCL_TEST_GROUP_BUILD_NEED("test_utxo_root_ladder",
+                          "build/bin/gen_utxo_root_ladder",
+                          "tools/gen_utxo_root_ladder")
+
 /* tests/harness/src/test_semantic_manifest.c (group semantic_sensor),
  * test_semantic_facts_live.c, test_semantic_consumer_live.c and
  * test_semantic_facts_fuzz.c exec the optional libclang sensor

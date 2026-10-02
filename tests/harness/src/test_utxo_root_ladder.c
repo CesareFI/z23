@@ -18,9 +18,123 @@
 #include "storage/coins_kv.h"
 #include "storage/progress_store.h"
 
+#include <sqlite3.h>
+
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+
+#if !defined(_WIN32)
+#include <errno.h>
+#include <signal.h>
+#include <time.h>
+#include <unistd.h>
+#include <sys/wait.h>
+#endif
+
+#if !defined(_WIN32)
+/* Craft the malformed source db: one best-chain block at height
+ * 2147483600, within one default stride of INT32_MAX. */
+static bool test_ladder_huge_fixture(const char *db_path)
+{
+    sqlite3 *db = NULL;
+    bool ok = sqlite3_open(db_path, &db) == SQLITE_OK &&
+              sqlite3_exec(db,
+                      "CREATE TABLE blocks(height INTEGER PRIMARY KEY,"
+                      " hash BLOB, status INTEGER);"
+                      "INSERT INTO blocks(height,hash,status)"
+                      " VALUES(2147483600, zeroblob(32), 3);",
+                      NULL, NULL, NULL) == SQLITE_OK;
+    if (db)
+        sqlite3_close(db);
+    return ok;
+}
+
+/* Exec the generator against the crafted huge-height source db.
+ * Pre-fix the tool's stride loop overflowed `h += stride` to a negative
+ * height and never terminated; the fixed tool must refuse with a named
+ * message and a nonzero exit, well inside the 20 s budget. Returns the
+ * failure count and prints OK/FAIL itself. */
+static int test_generator_refuses_huge_height(void)
+{
+    int failures = 0;
+    char dir[256];
+    test_make_tmpdir(dir, sizeof(dir), "utxo_root_ladder_huge", "main");
+    char db_path[300];
+    char kdb_arg[320];
+    snprintf(db_path, sizeof(db_path), "%s/node.db", dir);
+    snprintf(kdb_arg, sizeof(kdb_arg), "--source-kernel-db=%s", db_path);
+
+    if (!test_ladder_huge_fixture(db_path)) {
+        printf("FAIL (crafted fixture db could not be created at %s)\n",
+               db_path);
+        test_rm_rf_recursive(dir);
+        return 1;
+    }
+
+    int cerr_pipe[2];
+    if (pipe(cerr_pipe) != 0) {
+        printf("FAIL (pipe: %s)\n", strerror(errno));
+        test_rm_rf_recursive(dir);
+        return 1;
+    }
+    pid_t pid = fork();
+    if (pid == 0) {
+        close(cerr_pipe[0]);
+        dup2(cerr_pipe[1], STDERR_FILENO);
+        close(cerr_pipe[1]);
+        execl("build/bin/gen_utxo_root_ladder",
+              "gen_utxo_root_ladder", db_path,
+              kdb_arg, "--stride=100000", NULL);
+        _exit(127);
+    }
+    close(cerr_pipe[1]);
+
+    int status = 0;
+    bool reaped = false;
+    bool timed_out = false;
+    const struct timespec tick = {0, 50 * 1000 * 1000};
+    for (int i = 0; i < 400 && !reaped; i++) { /* 20 s budget */
+        pid_t r = waitpid(pid, &status, WNOHANG);
+        if (r == pid)
+            reaped = true;
+        else if (i == 399) {
+            kill(pid, SIGKILL);
+            waitpid(pid, &status, 0);
+            timed_out = true;
+        } else {
+            /* real-clock: hang watchdog only; the graded verdicts are the
+             * child's exit code and stderr text, never elapsed wall time —
+             * the pre-fix defect is an infinite loop this deadline exists
+             * to catch, not a load-graded assertion. */
+            nanosleep(&tick, NULL); /* real-clock: deadline tick, see above */
+        }
+    }
+    char err[2048];
+    ssize_t n = read(cerr_pipe[0], err, sizeof(err) - 1);
+    close(cerr_pipe[0]);
+    if (n < 0)
+        n = 0;
+    err[n] = 0;
+    test_rm_rf_recursive(dir);
+
+    if (!reaped || timed_out) {
+        printf("FAIL (generator hung past the 20s budget — stride-loop "
+               "overflow)\n");
+        return failures + 1;
+    }
+    if (!(WIFEXITED(status) && WEXITSTATUS(status) != 0)) {
+        printf("FAIL (exit=%d, want nonzero refusal)\n", status);
+        return failures + 1;
+    }
+    if (!strstr(err, "refusing")) {
+        printf("FAIL (stderr lacks the named refusal, saw: %.160s)\n", err);
+        return failures + 1;
+    }
+    printf("OK\n");
+    return failures;
+}
+#endif /* !_WIN32 */
 
 int test_utxo_root_ladder(void)
 {
@@ -188,7 +302,26 @@ int test_utxo_root_ladder(void)
         printf("OK\n");
     }
 
-    /* (6) NIGHTLY ADDITION: recompute mmb_root() from a REAL
+    /* (6) The generator tool must REFUSE a source db whose best-chain
+     * height sits within one stride of INT32_MAX: pre-fix, the stride
+     * loop's final `h += c.stride` overflowed to a negative height, the
+     * `h <= max_h` test stayed true, and the loop never terminated (two
+     * sqlite queries per wrapped iteration, climbing and wrapping
+     * forever). The crafted db below carries one best-chain block at
+     * height 2147483600 with default stride 100000; the tool is exec'd
+     * against it with a hard timeout and must exit nonzero with a named
+     * refusal well inside the budget. */
+#if !defined(_WIN32)
+    printf("utxo_root_ladder: generator refuses a near-INT32_MAX source "
+           "height instead of looping forever... ");
+    failures += test_generator_refuses_huge_height();
+#else
+    printf("utxo_root_ladder: generator refuses a near-INT32_MAX source "
+           "height instead of looping forever... skipped on Windows "
+           "(fork/exec harness)\n");
+#endif
+
+    /* (7) NIGHTLY ADDITION: recompute mmb_root() from a REAL
      * mmb_leaves.bin copy
      * (millions of leaves) and confirm it reproduces the locked dense
      * anchor bit-for-bit — opt-in, mirrors test_self_folded_anchor.c's
