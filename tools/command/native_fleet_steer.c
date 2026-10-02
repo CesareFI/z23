@@ -134,7 +134,7 @@
  * Muse `workers`. Mail `from` is the box's Unix user, so a session is
  * known only from its own `note` row under ref presence-<ROLE> carrying
  * the strict presence.v1 line documented at the sessions section below.
- * state is live within FMC_ALIVE_WINDOW_S of that row's ts, stale past it
+ * state is presence freshness: live within FMC_ALIVE_WINDOW_S of that row's ts, stale past it
  * (with age_s), and UNKNOWN when no row exists; a missing or refused
  * field is the string "UNKNOWN". Linked workers are named, never copied;
  * `muse_spend` sums the workers' receipt tokens, and reservations stay
@@ -2432,6 +2432,31 @@ static const char *fmc_session_state(const struct fmc_session *s,
     return state;
 }
 
+/* Presence freshness does not establish an executing turn. Only explicit
+ * recognized phases count as reported activity; absent or unfamiliar phases
+ * stay unknown. Stale reports cannot establish current activity. */
+static const char *fmc_session_activity(const struct fmc_session *s,
+                                       long long age)
+{
+    const char *phase = "";
+    size_t i;
+    if (!s->seen || !s->parsed || age < 0)
+        return "UNKNOWN";
+    if (age > FMC_ALIVE_WINDOW_S)
+        return "stale";
+    for (i = 0; i < FMC_PKEYS; i++)
+        if (strcmp(fmc_pkeys[i].key, "phase") == 0)
+            phase = s->val[i];
+    if (strcmp(phase, "completed") == 0)
+        return "completed";
+    if (strcmp(phase, "blocked") == 0)
+        return "blocked";
+    if (strcmp(phase, "active") == 0 || strcmp(phase, "running") == 0 ||
+        strcmp(phase, "build") == 0 || strcmp(phase, "test") == 0)
+        return "active";
+    return "UNKNOWN";
+}
+
 /* The parsed whitelist, each field its value or "UNKNOWN". */
 static void fmc_session_fields(struct json_value *o,
                                const struct fmc_session *s)
@@ -2495,6 +2520,7 @@ static void fmc_session_emit(struct json_value *arr,
     json_set_object(&o);
     (void)json_push_kv_str(&o, "role", s->role);
     (void)json_push_kv_str(&o, "state", state);
+    (void)json_push_kv_str(&o, "activity", fmc_session_activity(s, age));
     (void)json_push_kv_str(&o, "reason", why);
     fmc_put_known(&o, "format", s->seen ? (s->parsed ? FMC_PRESENCE_TAG
                                                      : "unparsed")
@@ -2551,17 +2577,26 @@ static void fmc_sessions_emit(struct json_value *data,
                               const struct fmc_roster *ro, long long now)
 {
     struct json_value arr;
-    size_t i;
+    size_t i, active = 0;
     json_init(&arr);
     json_set_array(&arr);
-    for (i = 0; ro->ss && i < ro->nss && i < FMC_SESSION_CAP; i++)
+    for (i = 0; ro->ss && i < ro->nss && i < FMC_SESSION_CAP; i++) {
         fmc_session_emit(&arr, &ro->ss[i], ro, now);
+        if (strcmp(fmc_session_activity(&ro->ss[i],
+                       fmc_age_s(now, ro->ss[i].ts)), "active") == 0)
+            active++;
+    }
     (void)json_push_kv(data, "sessions", &arr);
     (void)json_push_kv_int(data, "sessions_total",
                            (long long)(ro->nss + ro->ss_untracked));
     (void)json_push_kv_bool(data, "sessions_truncated",
                             ro->nss + ro->ss_untracked > json_size(&arr));
     (void)json_push_kv_str(data, "presence_format", FMC_PRESENCE_TAG);
+    (void)json_push_kv_int(data, "sessions_active_reported", (long long)active);
+    (void)json_push_kv_str(data, "sessions_active_basis",
+                           "first bounded session rows before reply trimming, "
+                           "with fresh recognized active phases; self-reports, "
+                           "not model-turn proof or a complete fleet count");
     json_free(&arr);
     fmc_spend_emit(data, ro);
 }

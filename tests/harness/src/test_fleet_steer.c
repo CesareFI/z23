@@ -25,6 +25,7 @@
 #include "controllers/rpc_client.h"
 #include "json/json.h"
 #include "kernel/command_registry.h"
+#include "platform/clock.h"
 #include "platform/private_directory.h"
 #include "platform/private_file.h"
 #include "platform/time_compat.h"
@@ -2791,9 +2792,231 @@ static bool fmx_arr_has(const struct json_value *arr, const char *s)
     return false;
 }
 
+/* Freeze wall time only; fixture timeout accounting keeps the real monotonic
+ * clock. The process-local default is restored even after an assertion fails. */
+static int64_t fmx_activity_wall_ms(void *self)
+{
+    (void)self;
+    return INT64_C(1789905600000);
+}
+
+static int64_t fmx_activity_monotonic_ns(void *self)
+{
+    const clock_iface_t *saved = self;
+    return saved->now_monotonic_ns(saved->self);
+}
+
+static int fmx_t_session_edges(void)
+{
+    int failures = 0;
+    const clock_iface_t *saved_clock = clock_default();
+    clock_iface_t fixed_clock = {fmx_activity_monotonic_ns,
+                                 fmx_activity_wall_ms, (void *)saved_clock};
+    clock_set_default(&fixed_clock);
+
+    TEST("steer: activity uses the inclusive 900-second freshness boundary") {
+        struct fmx_call b;
+        const struct json_value *s;
+        fmx_isolate("activity_boundary");
+        fmx_prime_mail();
+        fmx_seed_presence("A", "box-a", 900, 1);
+        fmx_seed_presence("B", "box-b", 901, 2);
+        /* Pin inherited clock-skew semantics without strengthening the claim:
+         * a future row has age zero and remains only a reported activity. */
+        fmx_seed_presence("C", "box-c", -3600, 3);
+        fmx_brief(&b, NULL, 0);
+        ASSERT(fmx_run(&b, zcl_native_handle_fleet_steer_brief));
+        ASSERT(fmx_ok(&b));
+        s = fmx_session(&b, "A");
+        ASSERT(fmx_wint(s, "age_s") == 900);
+        ASSERT_STR_EQ(fmx_wstr(s, "state"), "live");
+        ASSERT_STR_EQ(fmx_wstr(s, "activity"), "active");
+        s = fmx_session(&b, "B");
+        ASSERT(fmx_wint(s, "age_s") == 901);
+        ASSERT_STR_EQ(fmx_wstr(s, "state"), "stale");
+        ASSERT_STR_EQ(fmx_wstr(s, "activity"), "stale");
+        s = fmx_session(&b, "C");
+        ASSERT(fmx_wint(s, "age_s") == 0);
+        ASSERT_STR_EQ(fmx_wstr(s, "activity"), "active");
+        ASSERT(fmx_int(&b, "sessions_active_reported") == 2);
+        ASSERT(strstr(fmx_str(&b, "sessions_active_basis"),
+                      "not model-turn proof") != NULL);
+        fmx_end(&b);
+        fmx_restore();
+        PASS();
+    }
+
+    TEST("steer: malformed, missing, refused and invalid-time activity is unknown") {
+        static const struct {
+            const char *body;
+            const char *ts;
+            const char *state;
+            const char *activity;
+        } cases[] = {
+            {"not presence.v1; phase=active", "2026-09-20T11:59:30Z", "live", "UNKNOWN"},
+            {"not presence.v1; phase=active", "2026-09-20T11:00:00Z", "stale", "UNKNOWN"},
+            {"presence.v1; host=box-a", "2026-09-20T11:59:30Z", "live", "UNKNOWN"},
+            {"presence.v1; phase=Active", "2026-09-20T11:59:30Z", "live", "UNKNOWN"},
+            {"presence.v1; phase=hunter2password", "2026-09-20T11:59:30Z", "live", "UNKNOWN"},
+            {"presence.v1; phase=active", "invalid-time", "UNKNOWN", "UNKNOWN"},
+            {"presence.v1; phase=blocked", "2026-09-20T11:44:59Z", "stale", "stale"}
+        };
+        size_t i;
+        for (i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+            struct fmx_call b;
+            const struct json_value *s;
+            fmx_isolate("activity_unknown");
+            fmx_prime_mail();
+            fmx_seed_inbox("peer", cases[i].ts, 1, "box-user", "*", "note",
+                           cases[i].body, "presence-A");
+            fmx_brief(&b, NULL, 0);
+            ASSERT(fmx_run(&b, zcl_native_handle_fleet_steer_brief));
+            ASSERT(fmx_ok(&b));
+            s = fmx_session(&b, "A");
+            ASSERT(fmx_wint(s, "mail_seq") == 1);
+            ASSERT_STR_EQ(fmx_wstr(s, "state"), cases[i].state);
+            ASSERT_STR_EQ(fmx_wstr(s, "activity"), cases[i].activity);
+            ASSERT(fmx_int(&b, "sessions_active_reported") == 0);
+            ASSERT(!fmx_reply_has(&b, "hunter2password"));
+            fmx_end(&b);
+            fmx_restore();
+        }
+        PASS();
+    }
+
+    TEST("steer: latest terminal presence supersedes active across streams") {
+        static const char *const terminal[] = {"completed", "blocked"};
+        size_t i;
+        for (i = 0; i < sizeof(terminal) / sizeof(terminal[0]); i++) {
+            struct fmx_call b;
+            const struct json_value *s;
+            char body[96];
+            fmx_isolate("activity_latest");
+            fmx_prime_mail();
+            fmx_seed_inbox("older", "2026-09-20T11:59:00Z", 99,
+                           "box-user", "*", "note",
+                           "presence.v1; phase=active", "presence-A");
+            (void)snprintf(body, sizeof(body), "presence.v1; phase=%s", terminal[i]);
+            /* Sequence numbers belong to their own streams, not a fleet clock. */
+            fmx_seed_inbox("newer", "2026-09-20T11:59:30Z", 1,
+                           "box-user", "*", "note", body, "presence-A");
+            fmx_brief(&b, NULL, 0);
+            ASSERT(fmx_run(&b, zcl_native_handle_fleet_steer_brief));
+            ASSERT(fmx_ok(&b));
+            s = fmx_session(&b, "A");
+            ASSERT_STR_EQ(fmx_wstr(s, "state"), "live");
+            ASSERT_STR_EQ(fmx_wstr(s, "activity"), terminal[i]);
+            ASSERT_STR_EQ(fmx_wstr(s, "phase"), terminal[i]);
+            ASSERT(fmx_wint(s, "mail_seq") == 1);
+            ASSERT(fmx_int(&b, "sessions_active_reported") == 0);
+            fmx_end(&b);
+            fmx_restore();
+        }
+        PASS();
+    }
+
+    TEST("steer: multiple active roles retain the 12-row cap through reply trimming") {
+        struct fmx_call b;
+        char role[16], ts[32], quotes[301];
+        const struct json_value *cut;
+        size_t i;
+        fmx_isolate("activity_cap");
+        fmx_prime_mail();
+        for (i = 0; i < 16; i++) {
+            if (i < 4)
+                (void)snprintf(role, sizeof(role), "%c", (int)('A' + i));
+            else
+                (void)snprintf(role, sizeof(role), "extra-%02zu", i);
+            fmx_seed_presence(role, "box-a", 30, (long long)i + 1);
+        }
+        for (i = 0; i < 150; i++)
+            memcpy(quotes + i * 2, "\\\"", 2);
+        quotes[300] = '\0';
+        fmx_ts_ago(10, ts, sizeof(ts));
+        for (i = 0; i < 100; i++) {
+            (void)snprintf(role, sizeof(role), "padding-%02zu", i);
+            fmx_seed_inbox("peer", ts, (long long)i + 100, "padding",
+                           FMX_SENDER, "note", quotes, role);
+        }
+        fmx_brief_opt(&b, NULL, NULL, 100);
+        ASSERT(fmx_run(&b, zcl_native_handle_fleet_steer_brief));
+        ASSERT(fmx_ok(&b));
+        ASSERT(fmx_int(&b, "sessions_total") == 16);
+        ASSERT(fmx_bool(&b, "sessions_truncated"));
+        ASSERT(json_size(fmx_arr(&b, "sessions")) == 12);
+        ASSERT(fmx_int(&b, "sessions_active_reported") == 12);
+        for (i = 0; i < json_size(fmx_arr(&b, "sessions")); i++)
+            ASSERT_STR_EQ(fmx_wstr(json_at(fmx_arr(&b, "sessions"), i),
+                                   "activity"), "active");
+        cut = fmx_get(&b, "budget_truncated");
+        ASSERT(fmx_wint(cut, "changes") > 0);
+        ASSERT(strstr(fmx_str(&b, "sessions_active_basis"),
+                      "before reply trimming") != NULL);
+        ASSERT(strstr(fmx_str(&b, "sessions_active_basis"),
+                      "not model-turn proof or a complete fleet count") != NULL);
+        ASSERT(json_write(&b.reply.data, NULL, 0) <= 49152u);
+        fmx_end(&b);
+        fmx_restore();
+        PASS();
+    }
+
+_test_next:;
+    clock_set_default(saved_clock);
+    fmx_restore();
+    return failures;
+}
+
 static int fmx_t_sessions(void)
 {
     int failures = 0;
+
+    TEST("steer: freshness never counts completed or unknown turns as active") {
+        static const struct {
+            const char *phase;
+            long long ago;
+            const char *state;
+            const char *activity;
+            long long active;
+        } cases[] = {
+            {"active", 30, "live", "active", 1},
+            {"running", 30, "live", "active", 1},
+            {"build", 30, "live", "active", 1},
+            {"test", 30, "live", "active", 1},
+            {"completed", 30, "live", "completed", 0},
+            {"blocked", 30, "live", "blocked", 0},
+            {"active", 7200, "stale", "stale", 0},
+            {"completed", 7200, "stale", "stale", 0},
+            {"unrecognized", 30, "live", "UNKNOWN", 0},
+            {"", 30, "live", "UNKNOWN", 0}
+        };
+        size_t i;
+        for (i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+            struct fmx_call b;
+            const struct json_value *s;
+            char ts[32], body[256];
+            fmx_isolate("session_activity");
+            fmx_prime_mail();
+            fmx_ts_ago(cases[i].ago, ts, sizeof(ts));
+            (void)snprintf(body, sizeof(body),
+                           "presence.v1; host=box-a.lan; phase=%s",
+                           cases[i].phase);
+            fmx_seed_inbox("peer", ts, 1, "box-user", "*", "note",
+                           body, "presence-A");
+            fmx_brief(&b, NULL, 0);
+            ASSERT(fmx_run(&b, zcl_native_handle_fleet_steer_brief));
+            ASSERT(fmx_ok(&b));
+            s = fmx_session(&b, "A");
+            ASSERT(s != NULL);
+            ASSERT_STR_EQ(fmx_wstr(s, "state"), cases[i].state);
+            ASSERT_STR_EQ(fmx_wstr(s, "activity"), cases[i].activity);
+            ASSERT(fmx_int(&b, "sessions_active_reported") == cases[i].active);
+            ASSERT_STR_EQ(fmx_wstr(fmx_session(&b, "D"), "activity"),
+                          "UNKNOWN");
+            fmx_end(&b);
+            fmx_restore();
+        }
+        PASS();
+    }
 
     TEST("steer: a fresh presence row is a live session with its fields") {
         struct fmx_call b;
@@ -2807,6 +3030,7 @@ static int fmx_t_sessions(void)
         s = fmx_session(&b, "A");
         ASSERT(s != NULL);
         ASSERT_STR_EQ(fmx_wstr(s, "state"), "live");
+        ASSERT_STR_EQ(fmx_wstr(s, "activity"), "active");
         ASSERT_STR_EQ(fmx_wstr(s, "format"), "presence.v1");
         ASSERT_STR_EQ(fmx_wstr(s, "host"), "box-a.lan");
         ASSERT_STR_EQ(fmx_wstr(s, "session"), "sess-A-1");
@@ -2838,6 +3062,7 @@ static int fmx_t_sessions(void)
         s = fmx_session(&b, "B");
         ASSERT(s != NULL);
         ASSERT_STR_EQ(fmx_wstr(s, "state"), "stale");
+        ASSERT_STR_EQ(fmx_wstr(s, "activity"), "stale");
         ASSERT(fmx_wint(s, "age_s") >= 7200);
         ASSERT(strstr(fmx_wstr(s, "reason"), "older than") != NULL);
         ASSERT_STR_EQ(fmx_wstr(s, "host"), "box-b.lan");
@@ -2862,6 +3087,7 @@ static int fmx_t_sessions(void)
         s = fmx_session(&b, "D");
         ASSERT(s != NULL);
         ASSERT_STR_EQ(fmx_wstr(s, "state"), "UNKNOWN");
+        ASSERT_STR_EQ(fmx_wstr(s, "activity"), "UNKNOWN");
         ASSERT_STR_EQ(fmx_wstr(s, "format"), "UNKNOWN");
         ASSERT_STR_EQ(fmx_wstr(s, "host"), "UNKNOWN");
         ASSERT_STR_EQ(fmx_wstr(s, "pid"), "UNKNOWN");
@@ -4261,6 +4487,7 @@ int test_fleet_steer(void)
     failures += fmx_t_process_not_work();
     failures += fmx_t_large_history();
     failures += fmx_t_sessions();
+    failures += fmx_t_session_edges();
     failures += fmx_t_reply_correlation();
     failures += fmx_t_remote_round_trip();
     failures += fmx_t_pool_unmeasured();
