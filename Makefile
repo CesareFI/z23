@@ -222,6 +222,8 @@ ZCL_ZERO_SHA256 = 00000000000000000000000000000000000000000000000000000000000000
 # stamps and links nothing at all, so every parse-time input this set skips is
 # input it could not consume. It is the first command an agent types about the
 # loop, so it has to answer in ~2 s, not ~13 s.
+# `t-list` likewise reads only the registered test catalog; it builds nothing
+# and cannot consume a compiler, vendor archive, or source-identity record.
 # GUI packages: zhello is the template of record and is tracked; every app the
 # scaffolder creates (`make new-app NAME=…`) appends itself to
 # contexts/commons/apps/local_gui_apps.mk instead. That file is gitignored — a scaffolded app is
@@ -250,7 +252,7 @@ ZCL_GUI_APP_GOALS := $(foreach a,$(GUI_APPS),$(a) $(a)-selftest $(a)-clean \
 # Its standalone compile must not recurse into the readiness check it serves.
 ZCL_TOR_PROVENANCE_GOALS := build/bin/z23-tor-provenance \
 	tools/tor-provenance z23-tor-provenance
-ZCL_HOTSWAP_LOOP_GOALS := hotswap-try hotswap-apply hotswap c3-mutex-probe c3-speed-bench c3-tip-seam build/bin/c3-mutex-probe.so \
+ZCL_HOTSWAP_LOOP_GOALS := hotswap-try hotswap-apply hotswap t-list c3-mutex-probe c3-speed-bench c3-tip-seam build/bin/c3-mutex-probe.so \
 	$(ZCL_TOR_PROVENANCE_GOALS) \
 	presentation-lib presentation-demo presentation-relaunch \
 	presentation-desktop-install presentation-portability \

@@ -19,8 +19,9 @@
 # the build at a newer one.
 #
 # Exit: 0 if $CC accepts -std=c23, non-zero otherwise.
-#   --selftest  prove a gcc-13-shaped wrapper is refused and a usable
-#               compiler is accepted. Does not require gcc 13 to be installed.
+#   --selftest  prove a gcc-13-shaped wrapper is refused, a usable compiler
+#               is accepted, and the read-only t-list needs no compiler.
+#               Does not require gcc 13 to be installed.
 
 set -euo pipefail
 
@@ -166,6 +167,30 @@ check() {
         printf '%s\n' "$c23_err" | sed 's/^/    /' >&2
     fi
     exit 1
+}
+
+# The registry-list command is read-only and needs no compiler; mixed goals
+# must retain the ordinary preflight. Compare the exact registered output.
+check_t_list_lean() {
+    local work="$1"
+    "$REPO_ROOT/tools/dev/test-group-list.sh" > "$work/catalog.out"
+    if ! make -s --no-print-directory -C "$REPO_ROOT" \
+            ZCL_USE_CCACHE=0 CC=/nonexistent t-list \
+            > "$work/t-list.out" 2> "$work/t-list.err" ||
+       ! cmp -s "$work/catalog.out" "$work/t-list.out"; then
+        printf 'check-toolchain --selftest: FAIL — t-list required a compiler or changed the catalog\n' >&2
+        cat "$work/t-list.err" >&2
+        return 1
+    fi
+    if make -s --no-print-directory -C "$REPO_ROOT" \
+            ZCL_USE_CCACHE=0 CC=/nonexistent t-list z23 \
+            > "$work/mixed.out" 2> "$work/mixed.err" ||
+       ! grep -Fq 'C23 toolchain check failed' "$work/mixed.err"; then
+        printf 'check-toolchain --selftest: FAIL — a mixed build skipped compiler preflight\n' >&2
+        cat "$work/mixed.err" >&2
+        return 1
+    fi
+    return 0
 }
 
 # ── --selftest ────────────────────────────────────────────────────────────
@@ -335,6 +360,8 @@ EOF
         printf '%s\n' "$first" >&2
         exit 1
     fi
+
+    check_t_list_lean "$work"
 
     printf 'check-toolchain --selftest: PASS\n'
     exit 0
