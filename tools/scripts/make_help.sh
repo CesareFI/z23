@@ -97,6 +97,32 @@ if [ "${1:-}" = "--self-test" ]; then
         exit 1
     fi
 
+    work="$(mktemp -d -t zcl-make-help.XXXXXX)"
+    trap 'rm -rf -- "$work"' EXIT
+    if ! "$ROOT/tools/scripts/make_help.sh" > "$work/direct.out" ||
+       [[ ! -s "$work/direct.out" ]]; then
+        echo 'make_help selftest: FAIL — direct help output was unavailable' >&2
+        exit 1
+    fi
+    if ! env ZCL_BIN_DIR="$work/ccache-bin" ZCL_BOOTSTRAP_CC=/nonexistent \
+            ZCL_VENDOR_OFFLINE=1 make -s --no-print-directory -C "$ROOT" \
+            ZCL_USE_CCACHE=1 CC=/nonexistent ZCL_VENDOR_LIB="$work/no-vendor" help \
+            > "$work/make.out" 2> "$work/make.err" ||
+       ! cmp -s "$work/direct.out" "$work/make.out" ||
+       [[ -e "$work/ccache-bin" || -e "$work/no-vendor" ]]; then
+        echo 'make_help selftest: FAIL — standalone help built inputs or changed output' >&2
+        cat "$work/make.err" >&2
+        exit 1
+    fi
+    if env ZCL_VENDOR_OFFLINE=1 make -s --no-print-directory -C "$ROOT" \
+            ZCL_USE_CCACHE=0 CC=/nonexistent help z23 \
+            > "$work/mixed.out" 2> "$work/mixed.err" ||
+       ! grep -Fq 'C23 toolchain check failed' "$work/mixed.err"; then
+        echo 'make_help selftest: FAIL — mixed build skipped compiler preflight' >&2
+        cat "$work/mixed.err" >&2
+        exit 1
+    fi
+
     echo "make_help selftest: PASS — $(grep -c . <<<"$ENTRIES") documented targets all exist"
     exit 0
 fi

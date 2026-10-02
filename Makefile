@@ -191,10 +191,15 @@ ZCL_USE_CCACHE ?= 1
 # to install, and fall back to a host cache only if the in-tree one cannot be
 # built here. This is a parse-time $(shell) because $(CC) is fixed before the
 # first recipe runs; see tools/dev/zcc_bootstrap.sh for why and what it costs.
+ifeq ($(MAKECMDGOALS),help)
+# Help only reads this Makefile; it needs no compiler or compile cache.
+ZCL_CCACHE_BIN :=
+else
 ZCL_CCACHE_BIN := $(shell if [ "$(ZCL_USE_CCACHE)" != "0" ]; then \
                               $(CURDIR)/tools/dev/zcc_bootstrap.sh 2>/dev/null \
                               || command -v sccache 2>/dev/null \
                               || command -v ccache 2>/dev/null; fi)
+endif
 ifneq ($(ZCL_CCACHE_BIN),)
 ifeq ($(filter zcc sccache ccache,$(notdir $(firstword $(CC)))),)
 CC := $(ZCL_CCACHE_BIN) $(CC)
@@ -250,7 +255,7 @@ ZCL_GUI_APP_GOALS := $(foreach a,$(GUI_APPS),$(a) $(a)-selftest $(a)-clean \
 # Its standalone compile must not recurse into the readiness check it serves.
 ZCL_TOR_PROVENANCE_GOALS := build/bin/z23-tor-provenance \
 	tools/tor-provenance z23-tor-provenance
-ZCL_HOTSWAP_LOOP_GOALS := hotswap-try hotswap-apply hotswap c3-mutex-probe c3-speed-bench c3-tip-seam build/bin/c3-mutex-probe.so \
+ZCL_HOTSWAP_LOOP_GOALS := hotswap-try hotswap-apply hotswap help c3-mutex-probe c3-speed-bench c3-tip-seam build/bin/c3-mutex-probe.so \
 	$(ZCL_TOR_PROVENANCE_GOALS) \
 	presentation-lib presentation-demo presentation-relaunch \
 	presentation-desktop-install presentation-portability \
