@@ -95,6 +95,65 @@ static bool check_roundtrip_ok(const unsigned char *data, size_t data_len)
     return dec_len == data_len && memcmp(dec, data, data_len) == 0;
 }
 
+static bool decode_span_roundtrip(size_t length, size_t zeroes)
+{
+    unsigned char input[740], output[742];
+    char encoded[1024];
+    memset(input, 0xff, length);
+    memset(input, 0, zeroes);
+    memset(output, 0xa5, sizeof(output));
+    size_t written = 0;
+    if (!domain_encoding_base58_encode(input, length, encoded, sizeof(encoded), NULL))
+        return false;
+    if (!domain_encoding_base58_decode(encoded, output + 1, length, &written))
+        return false;
+    return written == length && memcmp(input, output + 1, length) == 0 &&
+           output[0] == 0xa5 && output[length + 1] == 0xa5;
+}
+
+static bool decode_refusal_preserves_output(const char *text, size_t capacity,
+                                            size_t expected_length)
+{
+    unsigned char output[752], original[752];
+    memset(output, 0xa5, sizeof(output));
+    memcpy(original, output, sizeof(output));
+    size_t written = 12345;
+    bool ok = domain_encoding_base58_decode(text, output + 1, capacity, &written);
+    return !ok && written == expected_length &&
+           memcmp(output, original, sizeof(output)) == 0;
+}
+
+static int test_decode_active_span(void)
+{
+    int failures = 0;
+    const size_t lengths[] = {1, 2, 25, 37, 82, 255, 256, 740};
+    for (size_t i = 0; i < sizeof(lengths) / sizeof(lengths[0]); ++i) {
+        B58_CHECK("carry growth through all-ff magnitude", decode_span_roundtrip(lengths[i], 0));
+        B58_CHECK("leading zero and carry growth", decode_span_roundtrip(lengths[i], 1));
+    }
+    B58_CHECK("size refusal leaves output intact", decode_refusal_preserves_output("5Q", 0, 1));
+    B58_CHECK("invalid digit after valid prefix leaves output intact",
+              decode_refusal_preserves_output("a3gV0", 64, 12345));
+    B58_CHECK("embedded whitespace leaves output intact",
+              decode_refusal_preserves_output("a3gV 2", 64, 12345));
+    B58_CHECK("high-bit digit leaves output intact",
+              decode_refusal_preserves_output("a3gV\xff", 64, 12345));
+    char text[1025];
+    unsigned char output[752];
+    memset(text, 'z', 1023);
+    text[1023] = '\0';
+    memset(output, 0xa5, sizeof(output));
+    size_t written = 0;
+    B58_CHECK("maximum digit count fits bounded output",
+              domain_encoding_base58_decode(text, output + 1, 750, &written) &&
+              written == 750 && output[0] == 0xa5 && output[751] == 0xa5);
+    text[1023] = 'z';
+    text[1024] = '\0';
+    B58_CHECK("over-limit text leaves output intact",
+              decode_refusal_preserves_output(text, 750, 12345));
+    return failures;
+}
+
 int test_domain_encoding_base58(void)
 {
     int failures = 0;
@@ -265,5 +324,5 @@ int test_domain_encoding_base58(void)
         B58_CHECK("decode rejects embedded whitespace tail", !ok);
     }
 
-    return failures;
+    return failures + test_decode_active_span();
 }

@@ -2363,7 +2363,6 @@ engine/services/src/zclassicd_oracle_service.c:zclassicd_oracle_init:17
 platform/adapters/outbound/persistence/src/block_log_file.c:blf_append:18
 platform/adapters/outbound/persistence/src/db_maintenance_sqlite.c:dbm_wal_checkpoint:16
 platform/adapters/outbound/persistence/src/hodl_history_sqlite.c:hh_next_fill_height:19
-platform/domain/encoding/src/base58.c:domain_encoding_base58_decode:17
 platform/modules/astro/src/astro_chart.c:astro_chart_compute:26
 platform/modules/astro/src/astro_exact.c:astro_exact_format:23
 platform/modules/codec/tests/test_codec.c:main:32
