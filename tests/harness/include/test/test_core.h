@@ -26,6 +26,9 @@
 #include <dirent.h>
 #include <unistd.h>
 #include <errno.h>
+#if defined(_WIN32)
+#include <direct.h>
+#endif
 
 /* Only ever used through a pointer here — the definition stays in
  * consensus/params.h for the callers that fill one in. */
@@ -88,8 +91,9 @@ static inline void test_fmt_tmpdir(char *buf, size_t n,
 static inline bool test_ensure_tmproot(void)
 {
 #if defined(_WIN32)
-    /* The MSVCRT mkdir() takes no mode argument. */
-    if (mkdir("test-tmp") == 0) return true;
+    /* Use the CRT spelling directly; the test shim maps POSIX mkdir(path,
+     * mode) to this one-argument function. */
+    if (_mkdir("test-tmp") == 0) return true;
 #else
     if (mkdir("test-tmp", 0700) == 0) return true;
 #endif

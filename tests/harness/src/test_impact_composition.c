@@ -1611,6 +1611,21 @@ static bool ic_acc_has_group(const struct agent_impact_acc *acc,
     return false;
 }
 
+static int test_ic_sqlq_proof_mapping(void)
+{
+    int failures = 0;
+    TEST("impact composition: sqlq source and fixture select sqlq proof") {
+        struct agent_impact_acc tool = {0}, fixture = {0};
+        (void)agent_impact_apply_shared_rules("tools/sqlq.c", &tool);
+        (void)agent_impact_apply_shared_rules(
+            "tests/harness/src/test_sqlq.c", &fixture);
+        ASSERT(ic_acc_has_group(&tool, "sqlq"));
+        ASSERT(ic_acc_has_group(&fixture, "sqlq"));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_ic_code_capsule_stays_with_code_owner(void)
 {
     int failures = 0;
@@ -7668,7 +7683,7 @@ static int test_ic_local_selection_build_needs(void)
         n = 99;
         ASSERT(zcl_test_selection_build_needs(NULL, false, NULL, needs, 16,
                                               &n));
-        ASSERT(n == 9 + verifier_needs);
+        ASSERT(n == 10 + verifier_needs);
         ASSERT(ic_needs_have(needs, n, "dev-package-verifier-ensure",
                              "build/bin/zclassic23-package-verify-dev") ==
                (verifier_needs != 0));
@@ -7682,6 +7697,12 @@ static int test_ic_local_selection_build_needs(void)
                              "build/bin/process-group-exec"));
         ASSERT(ic_needs_have(needs, n, "p2_invariant_check",
                              "build/bin/p2_invariant_check"));
+        ASSERT(ic_needs_have(needs, n, "sqlq", "build/bin/sqlq"));
+        n = 99;
+        ASSERT(zcl_test_selection_build_needs("test_sqlq", true, NULL,
+                                              needs, 16, &n));
+        ASSERT(n == 1);
+        ASSERT(ic_needs_have(needs, n, "sqlq", "build/bin/sqlq"));
         n = 99;
         ASSERT(zcl_test_selection_build_needs(NULL, false, ic_gate_everything,
                                               needs, 16, &n));
@@ -10804,6 +10825,7 @@ int test_impact_composition(void)
     failures += test_ic_dimension_applicability_and_exact_execution();
     failures += test_ic_lint_token_selects_every_shard();
     failures += test_ic_snapshot_overlays_current_symbols();
+    failures += test_ic_sqlq_proof_mapping();
     failures += test_ic_code_capsule_stays_with_code_owner();
     failures += test_ic_generated_inventory_stays_focused();
     failures += test_ic_fleet_task_projection_keeps_proof_owner();

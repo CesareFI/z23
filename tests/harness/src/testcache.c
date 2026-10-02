@@ -556,6 +556,9 @@ static bool group_reads_external_inputs(const char *name)
          * hash no checker bytes. The whole-test receipt still binds the
          * checker through its BUILD_NEED row; only this group key is denied. */
         "p2_invariant_check",
+        /* Trusted host capture runs sqlq without a scanner-visible exec
+         * call in the fixture. Refuse reuse until its bytes are bound. */
+        "sqlq",
         "replay_canary_verdict",
         /* package_lifecycle_commit spawns zclassic23-package-verify-dev from
          * engine code the rail does not scan — the entry file's literals are

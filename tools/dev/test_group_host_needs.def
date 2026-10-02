@@ -160,6 +160,10 @@ ZCL_TEST_GROUP_BUILD_NEED("test_importblockindex_cli_dispatch",
  * selection, so only a local run needs this row. */
 ZCL_TEST_GROUP_BUILD_NEED("test_freebsd_sh", "build/bin/fbsh", "fbsh")
 
+/* tests/harness/src/test_sqlq.c requires build/bin/sqlq.
+ * The proof's prefork step builds sqlq only when this group
+ * is selected; a local run builds it via the same row. */
+ZCL_TEST_GROUP_BUILD_NEED("test_sqlq", "build/bin/sqlq", "sqlq")
 /* tests/harness/src/test_p2_invariant_check.c execs
  * build/bin/p2_invariant_check and self-skips where it is absent. The
  * proof's prefork step builds p2_invariant_check only when this group is
