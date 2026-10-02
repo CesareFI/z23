@@ -12466,7 +12466,9 @@ FILE_SIZE_POLICY_SRCS = tools/file_size_policy.c \
     platform/modules/platform/src/directory_compat.c platform/modules/base/src/safe_alloc.c
 .PHONY: tools/file_size_policy
 tools/file_size_policy: $(FILE_SIZE_POLICY_BIN)
-$(FILE_SIZE_POLICY_BIN): $(FILE_SIZE_POLICY_SRCS)
+$(FILE_SIZE_POLICY_BIN): $(FILE_SIZE_POLICY_SRCS) \
+	platform/modules/platform/include/platform/directory_compat.h \
+	platform/modules/base/include/base/safe_alloc.h
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
 	    $(ZCL_PLATFORM_CPPFLAGS) \
