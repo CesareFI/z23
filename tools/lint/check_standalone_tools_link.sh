@@ -132,6 +132,41 @@ declare -A DARWIN_EXEMPT=(
     [fuzz_semantic_manifest]="host lacks libclang_rt.fuzzer_osx.a (standalone CLT ships no libFuzzer runtime)"
 )
 
+# ── No-X11-runtime exemption (any host whose linker cannot see
+#    libX11.so.6) ─────────────────────────────────────────────────────────
+# native_ui_driver exists to drive a PHYSICAL workstation display (see the
+# rule's own comment: it links the stable runtime SONAME directly and is
+# never shipped). A headless Linux box with no X11 runtime has no porting
+# path to that link at all — the same missing-primitive class as the Darwin
+# exemption above, detected by probing the linker rather than by naming the
+# OS, so a desktop Linux host with the runtime keeps building the tool
+# exactly as before.
+declare -A NO_X11_RUNTIME_EXEMPT=(
+    [native_ui_driver]="physical-acceptance X11 UI driver; links -Wl,-l:libX11.so.6, and this host has no X11 runtime in the linker search path"
+)
+NO_X11_RUNTIME_PROBE_DIR=""
+x11_runtime_linkable() {
+    local dir rc=0
+    dir="$(mktemp -d "${TMPDIR:-/tmp}/zcl-x11-probe.XXXXXX")" || return 1
+    printf 'int main(void){return 0;}\n' > "$dir/probe.c"
+    # Exactly the link the rule performs: no -L, no headers, only the SONAME
+    # the physical runner requires. If this cannot resolve, the tool's link
+    # cannot run here no matter what the source looks like.
+    "${CC:-cc}" "$dir/probe.c" -o "$dir/probe" -Wl,-l:libX11.so.6 \
+        > /dev/null 2>&1 || rc=1
+    rm -rf "$dir"
+    return $rc
+}
+# Replacement check, same doctrine as WINDOWS_ONLY_COVER below: an exemption
+# with no check that still compiles the source is the rot this gate exists
+# to stop. The vendored vendor/x11/include headers give the source a full
+# syntax surface without the runtime, so the compile half of the rule stays
+# proven on every host even where the link half cannot run.
+x11_runtime_cover_ok() {
+    "${CC:-cc}" -std=c23 -fsyntax-only -Wall -Wextra \
+        -Ivendor/x11/include tools/native_ui_driver.c > /dev/null 2>&1
+}
+
 # ── Windows-only tools (exempt on every host that is NOT Windows) ────────
 # The mirror of DARWIN_EXEMPT, and a different mechanism: not "this host is
 # missing the primitive underneath the tool", but "on this host the Makefile
@@ -273,6 +308,28 @@ for name in $(printf '%s\n' "${!TOOLS[@]}" | sort); do
     # check is real, and refuses outright when it is not.
     if [[ "$GATE_HOST_OS" == Darwin && -n "${DARWIN_EXEMPT[$name]:-}" ]]; then
         echo "[check_standalone_tools_link] darwin-exempt $name: ${DARWIN_EXEMPT[$name]}" >&2
+        continue
+    fi
+    # Physical-acceptance X11 driver: where the linker cannot resolve
+    # libX11.so.6 there is no link to prove on this host, exactly the
+    # missing-primitive class of the tables above. The exemption is
+    # fail-closed the same way as WINDOWS_ONLY_EXEMPT: the source must
+    # still syntax-compile against the vendored X11 headers, or this is
+    # rot and the gate refuses (exit 2) instead of skipping.
+    if [[ -z "${X11_PROBE_DONE:-}" ]]; then
+        X11_PROBE_DONE=1
+        if x11_runtime_linkable; then X11_RUNTIME_OK=1; else X11_RUNTIME_OK=0; fi
+    fi
+    if [[ "$X11_RUNTIME_OK" == 0 && -n "${NO_X11_RUNTIME_EXEMPT[$name]:-}" ]]; then
+        if ! x11_runtime_cover_ok; then
+            echo "check-standalone-tools-link: FATAL — $name is exempt from" >&2
+            echo "  the link on this host because no X11 runtime is linkable," >&2
+            echo "  but tools/native_ui_driver.c no longer syntax-compiles" >&2
+            echo "  against vendor/x11/include. An exemption whose source" >&2
+            echo "  coverage is gone is the rot this gate exists to stop." >&2
+            exit 2
+        fi
+        echo "[check_standalone_tools_link] no-x11-runtime-exempt $name: ${NO_X11_RUNTIME_EXEMPT[$name]}" >&2
         continue
     fi
     # Windows-only tools: skipped everywhere the Makefile writes no rule for
