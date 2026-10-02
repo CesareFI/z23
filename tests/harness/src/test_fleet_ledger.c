@@ -30,6 +30,7 @@
 #include "command/native_command.h"
 #include "crypto/ed25519.h"
 #include "fleetledger/fleet_ledger.h"
+#include "platform/private_file.h"
 #include "json/json.h"
 #include "kernel/command_registry.h"
 #include "models/mesh_pairing.h"
@@ -340,6 +341,19 @@ static int test_fleet_ledger_observation(void)
         ledger = zcl_fleet_ledger_open(dir, id, signer, &report);
         ASSERT(ledger && stat(dir, &info) == 0 && (info.st_mode & 0777) == 0700);
         zcl_fleet_ledger_close(ledger); ledger = NULL;
+        struct platform_private_file held;
+        platform_private_file_init(&held);
+        ASSERT(platform_private_file_open_locked_wait(self, &held));
+        ledger = zcl_fleet_ledger_open_readonly(dir, id, signer, &report);
+        ASSERT(!ledger);
+        ASSERT(report.status == ZCL_FLEET_IO);
+        platform_private_file_close(&held);
+        ASSERT(geteuid() != 0);
+        ASSERT(chmod(self, 0400) == 0);
+        ledger = zcl_fleet_ledger_open_readonly(dir, id, signer, &report);
+        ASSERT(ledger);
+        zcl_fleet_ledger_close(ledger); ledger = NULL;
+        ASSERT(chmod(self, 0600) == 0);
         FILE *file = fopen(self, "ab");
         ASSERT(file != NULL);
         size_t written = fwrite("torn", 1, 4, file);

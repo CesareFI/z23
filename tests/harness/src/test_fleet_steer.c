@@ -26,6 +26,7 @@
 #include "json/json.h"
 #include "kernel/command_registry.h"
 #include "platform/private_directory.h"
+#include "platform/private_file.h"
 #include "platform/time_compat.h"
 #include "../../../tools/dev/dev_proof_receipt.h"
 #include "../../../tools/dev/dev_proof.h"
@@ -4078,6 +4079,59 @@ _test_next:;
 #if !defined(_WIN32)
 /* Fixture setup seals inert simulated receipts under this group's isolated
  * identity. The observation handlers must only read those exact bytes. */
+static int fmx_t_ledger_contention(void)
+{
+    int failures = 0;
+    struct platform_private_file held;
+    platform_private_file_init(&held);
+    char ledger[1200], peer[1400], chain[1600];
+    TEST("steer: held peer chain refuses ledger while retaining task rows") {
+        fmx_isolate("ledger_contention");
+        fmx_state_file("land", "queue.jsonl",
+            "{\"seq\":390,\"attempt\":2,\"tip\":\"1111111111111111111111111111111111111111\","
+            "\"state\":\"inflight\",\"phase\":\"prove\",\"local\":\"1111111111111111111111111111111111111111\","
+            "\"base\":\"2222222222222222222222222222222222222222\",\"started\":1}\n", false);
+        (void)snprintf(ledger, sizeof(ledger), "%s/fleet_ledger", g_fmx_state);
+        (void)snprintf(peer, sizeof(peer), "%s/peer", ledger);
+        (void)snprintf(chain, sizeof(chain), "%s/1111111111111111111111111111111111111111111111111111111111111111.chainlog", peer);
+        ASSERT(platform_private_directory_ensure(ledger));
+        ASSERT(platform_private_directory_ensure(peer));
+        ASSERT(platform_private_file_open_locked_create_wait(chain, &held));
+        ASSERT(platform_private_file_write_at(&held, "partial", 7, 0));
+        ASSERT(platform_private_file_flush(&held));
+        struct stat before, after;
+        ASSERT(stat(chain, &before) == 0);
+        pid_t child = fork();
+        ASSERT(child >= 0);
+        if (child == 0) {
+            alarm(5);
+            zcl_native_bridge_bind_rpc(g_fmx_state, 0);
+            node_rpc_client_set_test_hook(fmx_no_node);
+            struct fmx_call brief;
+            fmx_brief(&brief, NULL, 0);
+            bool ok = fmx_run(&brief, zcl_native_handle_fleet_steer_brief) &&
+                fmx_ok(&brief) && fmx_missing_has(&brief, "fleet.ledger");
+            const struct json_value *tasks = fmx_arr(&brief, "tasks");
+            ok = ok && tasks && json_size(tasks) > 0;
+            fmx_end(&brief);
+            _exit(ok ? 0 : 1);
+        }
+        int status = 0;
+        ASSERT(waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0);
+        ASSERT(stat(chain, &after) == 0 && before.st_size == after.st_size &&
+            before.st_mtime == after.st_mtime && before.st_ctime == after.st_ctime &&
+            before.st_mode == after.st_mode && before.st_ino == after.st_ino);
+        uint8_t bytes[7];
+        ASSERT(platform_private_file_read_at(&held, bytes, sizeof(bytes), 0) &&
+            memcmp(bytes, "partial", sizeof(bytes)) == 0);
+        PASS();
+    }
+_test_next:;
+    platform_private_file_close(&held);
+    fmx_restore();
+    return failures;
+}
+
 static int fmx_t_proof_transitions(void)
 {
     int failures = 0;
@@ -4176,6 +4230,7 @@ int test_fleet_steer(void)
     node_rpc_client_set_test_hook(fmx_no_node);
     failures += fmx_task_projection_checks();
 #if !defined(_WIN32)
+    failures += fmx_t_ledger_contention();
     failures += fmx_t_proof_transitions();
 #endif
     failures += fmx_t_register();

@@ -285,7 +285,7 @@ static struct zcl_chainlog *chainlog_open(const char *path,
     log->read_only = read_only;
     memcpy(log->stream, stream, ZCL_CHAINLOG_STREAM_BYTES);
 
-    if (!(read_only ? platform_private_file_open_locked_wait(path, &log->file)
+    if (!(read_only ? platform_private_file_open_observation(path, &log->file)
                     : platform_private_file_open_locked_create_wait(path, &log->file))) {
         report->status = ZCL_CHAINLOG_IO;
         goto fail;

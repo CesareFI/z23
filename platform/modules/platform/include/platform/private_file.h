@@ -35,6 +35,10 @@ bool platform_private_file_open_locked_wait(const char *path,
                                             struct platform_private_file *file);
 bool platform_private_file_open_locked_create_wait(
     const char *path, struct platform_private_file *file);
+/* Existing regular file, read access only, immediate shared scan lock.
+ * Interoperates with waiting exclusive writers; never creates or retries. */
+bool platform_private_file_open_observation(const char *path,
+                                           struct platform_private_file *file);
 void platform_private_file_close(struct platform_private_file *file);
 bool platform_private_file_size(struct platform_private_file *file,
                                 uint64_t *size);

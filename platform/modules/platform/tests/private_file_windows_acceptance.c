@@ -26,6 +26,40 @@ static bool join_path(char *out, size_t capacity, const char *root,
   return true;
 }
 
+static bool pf_test_hold_writer(const char *path,
+                                struct platform_private_file *held) {
+  if (!platform_private_file_open_locked_create_wait(path, held))
+    return false;
+  struct platform_private_file observer;
+  platform_private_file_init(&observer);
+  if (platform_private_file_open_observation(path, &observer)) {
+    platform_private_file_close(&observer);
+    return fail("observation acquired held exclusive writer lock") == 0;
+  }
+  return true;
+}
+
+static bool pf_test_readonly_shared(const char *path) {
+  struct platform_private_file observer;
+  platform_private_file_init(&observer);
+  wchar_t observation_path[4 * MAX_PATH];
+  if (!MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1,
+                           observation_path, 4 * MAX_PATH) ||
+      !SetFileAttributesW(observation_path, FILE_ATTRIBUTE_READONLY))
+    return fail("read-only observation fixture") == 0;
+  if (!platform_private_file_open_observation(path, &observer))
+    return fail("observation of read-only file refused") == 0;
+  struct platform_private_file second_observer;
+  platform_private_file_init(&second_observer);
+  if (!platform_private_file_open_observation(path, &second_observer))
+    return fail("shared observers do not coexist") == 0;
+  platform_private_file_close(&second_observer);
+  platform_private_file_close(&observer);
+  if (!SetFileAttributesW(observation_path, FILE_ATTRIBUTE_NORMAL))
+    return fail("restore fixture attributes") == 0;
+  return true;
+}
+
 struct wait_lock_context {
   const char *path;
   bool acquired;
@@ -41,6 +75,10 @@ static DWORD WINAPI wait_lock_thread(LPVOID opaque) {
   if (!context->acquired)
     context->error = GetLastError();
   platform_private_file_close(&file);
+  if (context->acquired && !pf_test_readonly_shared(context->path)) {
+    context->acquired = false;
+    context->error = GetLastError();
+  }
   return 0;
 }
 
@@ -117,7 +155,7 @@ int main(void) {
    * access requested by pf_open(), including DELETE, is shared. */
   struct platform_private_file held;
   platform_private_file_init(&held);
-  if (!platform_private_file_open_locked_create_wait(wait_lock, &held))
+  if (!pf_test_hold_writer(wait_lock, &held))
     return fail("waiting lock create");
   struct wait_lock_context wait_context = {.path = wait_lock};
   HANDLE waiter = CreateThread(NULL, 0, wait_lock_thread, &wait_context, 0,

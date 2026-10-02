@@ -40,6 +40,12 @@
 
 #include "base/safe_alloc.h"
 #include "chainlog/chainlog.h"
+#include "platform/private_file.h"
+#if !defined(_WIN32)
+#include <sys/stat.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -625,6 +631,78 @@ static int case_surface(void)
     return failures;
 }
 
+static int case_observation_lock(void)
+{
+    int failures = 0;
+    char dir[256], path[320];
+    test_make_tmpdir(dir, sizeof(dir), "chainlog", "observation_lock");
+    (void)snprintf(path, sizeof(path), "%s/log", dir);
+    struct zcl_chainlog_report report;
+#if !defined(_WIN32)
+    char invalid[320];
+    (void)snprintf(invalid, sizeof(invalid), "%s/pipe", dir);
+    struct platform_private_file refused;
+    platform_private_file_init(&refused);
+    CL_CHECK("FIFO fixture", mkfifo(invalid, 0600) == 0);
+    CL_CHECK("non-regular observation refuses without waiting",
+        !platform_private_file_open_observation(invalid, &refused));
+    platform_private_file_close(&refused);
+    CL_CHECK("remove FIFO fixture", unlink(invalid) == 0);
+    CL_CHECK("symlink fixture", symlink("log", invalid) == 0);
+    CL_CHECK("observation refuses symlink",
+        !platform_private_file_open_observation(invalid, &refused));
+    platform_private_file_close(&refused);
+    CL_CHECK("remove symlink fixture", unlink(invalid) == 0);
+#endif
+    CL_CHECK("lock fixture", build_log(path, k_stream_a, 1, NULL));
+    struct platform_private_file held;
+    platform_private_file_init(&held);
+    CL_CHECK("exclusive writer held", platform_private_file_open_locked_wait(path, &held));
+#if !defined(_WIN32)
+    pid_t child = fork();
+    if (child == 0) {
+        alarm(2);
+        struct zcl_chainlog *observed = zcl_chainlog_open_readonly(path, k_stream_a, &report);
+        zcl_chainlog_close(observed);
+        _exit(!observed && report.status == ZCL_CHAINLOG_IO ? 0 : 1);
+    }
+    int status = 0;
+    CL_CHECK("observer refuses before writer releases",
+        child > 0 && waitpid(child, &status, 0) == child &&
+        WIFEXITED(status) && WEXITSTATUS(status) == 0);
+#else
+    struct zcl_chainlog *busy = zcl_chainlog_open_readonly(path, k_stream_a, &report);
+    CL_CHECK("observer refuses held writer", !busy && report.status == ZCL_CHAINLOG_IO);
+    zcl_chainlog_close(busy);
+#endif
+    uint64_t size = 0;
+    CL_CHECK("writer fixture size", platform_private_file_size(&held, &size));
+    CL_CHECK("partial append under writer lock",
+        platform_private_file_write_at(&held, "torn", 4, size) &&
+        platform_private_file_flush(&held));
+    struct zcl_chainlog *log = zcl_chainlog_open_readonly(path, k_stream_a, &report);
+    CL_CHECK("partial writer still unavailable", !log && report.status == ZCL_CHAINLOG_IO);
+    zcl_chainlog_close(log);
+    platform_private_file_close(&held);
+#if !defined(_WIN32)
+    CL_CHECK("unprivileged observation identity", geteuid() != 0);
+    CL_CHECK("read-access fixture mode", chmod(path, 0400) == 0);
+#endif
+    log = zcl_chainlog_open_readonly(path, k_stream_a, &report);
+    CL_CHECK("read-only access preserves torn tail",
+        log && report.records == 1 && report.torn_bytes == 4 && file_size(path) == (long)(size + 4));
+    CL_CHECK("observation rejects append", zcl_chainlog_append(log, 1, "x", 1, NULL, NULL) == ZCL_CHAINLOG_ARGUMENT);
+    zcl_chainlog_close(log);
+#if !defined(_WIN32)
+    CL_CHECK("restore fixture write access", chmod(path, 0600) == 0);
+#endif
+    log = zcl_chainlog_open(path, k_stream_a, &report);
+    CL_CHECK("writer recovery unchanged", log && report.torn_bytes == 4 && file_size(path) == (long)size);
+    zcl_chainlog_close(log);
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
 static int case_readonly(void)
 {
     int failures = 0;
@@ -667,6 +745,7 @@ int test_chainlog(void);
 int test_chainlog(void)
 {
     int failures = 0;
+    failures += case_observation_lock();
     failures += case_readonly();
     failures += case_roundtrip();
     failures += case_restart_invisible();
