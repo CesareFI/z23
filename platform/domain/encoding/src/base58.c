@@ -42,6 +42,23 @@ static_assert(B58_DECODE_BUF >= B58_DECODE_MAX_INPUT * 733u / 1000u + 1u,
 static_assert(B58_CHECK_BUF >= B58_CHECK_MAX_INPUT + 4u,
               "base58check scratch must cover payload + 4-byte checksum");
 
+/* The untouched prefix remains zero. Multiply only the significant suffix,
+ * extending it while carry remains; retain the full-span overflow bound. */
+static unsigned radix_step(unsigned char *digits, size_t size, size_t *used,
+                           unsigned multiplier, unsigned radix, unsigned carry)
+{
+    size_t count = 0;
+    while (count < size && (carry != 0 || count < *used)) {
+        const size_t index = size - 1 - count;
+        carry += multiplier * digits[index];
+        digits[index] = (unsigned char)(carry % radix);
+        carry /= radix;
+        ++count;
+    }
+    *used = count;
+    return carry;
+}
+
 bool domain_encoding_base58_encode(const unsigned char *data, size_t data_len,
                                    char *out, size_t out_size, size_t *out_len)
 {
@@ -66,14 +83,10 @@ bool domain_encoding_base58_encode(const unsigned char *data, size_t data_len,
         return false; /* unreachable given the cap above; fail, never overflow */
     unsigned char b58[B58_ENCODE_BUF];
     memset(b58, 0, b58_size);
+    size_t used = 0;
 
     while (pbegin != pend) {
-        int carry = *pbegin;
-        for (size_t i = b58_size; i > 0; i--) {
-            carry += 256 * b58[i - 1];
-            b58[i - 1] = carry % 58;
-            carry /= 58;
-        }
+        unsigned carry = radix_step(b58, b58_size, &used, 256, 58, *pbegin);
         /* Total function on purpose: every address, WIF, xpub/xprv and
          * explorer URL segment the node accepts reaches this codec, and
          * assert() is live in release builds (-DNDEBUG is not set for the
@@ -88,9 +101,7 @@ bool domain_encoding_base58_encode(const unsigned char *data, size_t data_len,
         pbegin++;
     }
 
-    size_t skip = 0;
-    while (skip < b58_size && b58[skip] == 0)
-        skip++;
+    size_t skip = b58_size - used;
 
     size_t result_len = zeroes + (b58_size - skip);
     if (out_len)
@@ -136,6 +147,7 @@ bool domain_encoding_base58_decode(const char *psz,
         return false; /* unreachable given the cap above; fail, never overflow */
     unsigned char b256[B58_DECODE_BUF];
     memset(b256, 0, b256_size);
+    size_t used = 0;
 
     const char *p = psz;
     while (*p && !isspace((unsigned char)*p)) {
@@ -146,12 +158,8 @@ bool domain_encoding_base58_decode(const char *psz,
             memory_cleanse(b256, b256_size);
             return false;
         }
-        int carry = (int)(ch - base58_chars);
-        for (size_t i = b256_size; i > 0; i--) {
-            carry += 58 * b256[i - 1];
-            b256[i - 1] = carry % 256;
-            carry /= 256;
-        }
+        unsigned carry = radix_step(b256, b256_size, &used, 58, 256,
+                                    (unsigned)(ch - base58_chars));
         /* Same reasoning as the encode side: this is the decode path for
          * every attacker-supplied address / key string, so a carry overflow
          * fails the call (cleansing the partially decoded secret) rather
@@ -170,9 +178,7 @@ bool domain_encoding_base58_decode(const char *psz,
         return false;
     }
 
-    size_t skip = 0;
-    while (skip < b256_size && b256[skip] == 0)
-        skip++;
+    size_t skip = b256_size - used;
 
     size_t result_len = zeroes + (b256_size - skip);
     if (out_len)

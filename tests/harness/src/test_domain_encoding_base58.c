@@ -95,9 +95,11 @@ static bool check_roundtrip_ok(const unsigned char *data, size_t data_len)
     return dec_len == data_len && memcmp(dec, data, data_len) == 0;
 }
 
+int base58_span_cases(void);
+
 int test_domain_encoding_base58(void)
 {
-    int failures = 0;
+    int failures = base58_span_cases();
 
     /* (1) Contract: empty input round-trips through encode/decode. */
     {
