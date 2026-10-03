@@ -8145,3 +8145,19 @@ Key-scratch and xprv exact proofs are being prepared independently under the sam
 bounded non-root environment. UPSTREAM_PUBLICATION.md records identities and
 local evidence locators. No test/policy/host permission was weakened. No fork
 push or PR exists while the explicit main-only hook conflict remains unresolved.
+
+### Publication integration limits and authority boundary
+
+The qualified copies now use short actual host paths, visible to detached queue
+workers as well as their private test namespaces. Gateway/socket/reflex controls
+pass. Full suites under the shared test UID must be serialized because gateway
+unit names are shared; the overlapping key/xprv runs were stopped safely.
+Fresh native generations still omit required reflex fixtures, so no new native
+PASS is claimed for mnemonic/key/xprv. Canonical strict builds independently
+refuse two unchanged upstream test files under existing `-Werror`. The mnemonic
+all-registry fast run finished with1/1241 failures and5 explicit self-skips:
+the only failure uses an unsupported Clang18 C23 frontend, already named by the
+repository's host-capability policy. Do not rerun that unavailable configuration
+or weaken it. No owned job remains active. Full details and evidence locators
+are in UPSTREAM_PUBLICATION.md. Two candidates have complete native receipts;
+the fork-only hook exception is still pending, with no PR/CI/reviewer request.

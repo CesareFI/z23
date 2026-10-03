@@ -283,3 +283,46 @@ without its Git identity. This setup refusal was corrected without source edits.
 No branch has been pushed through a hook exception, and no PR, CI run or reviewer
 request exists. The only open publication authority decision remains the
 main-only push hook versus this mission's fork-branch-only requirement.
+
+### Remaining integration findings
+
+The namespace-only short-path attempt finished with four gateway-shard failures:
+detached user-manager workers could not use that private pathname. All three
+copies now use short, actual host paths, restored at the same path inside each
+private mount namespace. The gateway, broker-socket and reflex controls pass in
+each. The ignored root-locator files and runner helper were updated accordingly.
+
+Fresh native generations still omit `build/fixtures/reflex_runner` after their
+prefork and test-needs stages. The required image exists in each submitting
+checkout and its canonical reflex group passes. The first full non-root attempt
+already reproduced the missing-image failure; later attempts were stopped after
+the same missing-input preflight, without repeating the whole suite. This is an
+open proof-preparation limitation, not a wallet regression or a PASS receipt.
+
+Canonical strict `test-parallel` also refuses two files unchanged from upstream:
+`test_addrman_integrity.c:191` ignores a checked `truncate` result, and
+`test_agent_posture_trylock.c:214` contains a nested comment. GCC's existing
+`-Werror` rejects both. No warning policy or unrelated source was changed.
+
+Additional full runtime evidence uses canonical `t-fast-exact`, the complete
+exact ID list from `make t-list`, and `--no-cache --activate-proof-contracts`.
+This is explicitly fast-profile evidence; it cannot be promoted to a strict
+build or native receipt. Serialize these full suites under the shared test UID:
+gateway fixtures use fixed task names, and detached systemd unit names derive
+from the task name, attempt and queue sequence. The overlapping key/xprv runs
+were stopped; no detached gateway fixture units remained. The mnemonic full
+run completed:1241 groups,1 failed,5 self-skips,631.4s. Its only failing group was
+`test_semantic_facts_fuzz`: the fallback Clang18 compiler rejected generated
+C23 `constexpr` inputs. The existing `test_group_host_needs.def` explicitly
+declares that unavailable capability and the native universal selector gates it.
+The five self-skips name heavy/live fixtures; no production fixture was supplied
+to force them to run. This is not an all-green suite result. The queued key/xprv
+runs did not start after that failure; repeating the same unavailable toolchain
+would add no evidence. All owned validation jobs are now stopped or complete.
+
+Current publication state: two exact native PASS receipts (storage and Base58),
+three focused-green candidates with the integration limitations above, and no
+publication push or PR. All five signed candidate heads remain unchanged and
+all five have passing215-gate lint plus their recorded compiler/sanitizer/mutation
+evidence. Resolve the fork-only hook exception before publication; it must not be
+interpreted as permission to waive the remaining validation limitations.
