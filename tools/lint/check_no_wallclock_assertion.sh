@@ -379,13 +379,18 @@ scan_counts() {
         FNR == 1 {
             if (NR > 1) emit()
             path = FILENAME; count = 0; first_line = 0
-            inblk = 0; curfn = ""
+            inblk = 0; curfn = ""; has_clock = 0; has_assert = 0
             reset_file()
         }
         {
-            line[nlines] = strip($0); lineno[nlines] = FNR; nlines++
+            line[nlines] = $0; lineno[nlines] = FNR; nlines++
+            if (index($0, "clock") || index($0, "time")) has_clock = 1
+            if ($0 ~ /ASSERT|EXPECT|REQUIRE|CHECK/) has_assert = 1
         }
-        function emit() {
+        function emit(   i) {
+            # Both names must occur; raw matches only add work, not scan-set files.
+            if (!has_clock || !has_assert) return
+            for (i = 0; i < nlines; i++) line[i] = strip(line[i])
             fixpoint()
             find_assertions()
             if (path != "" && count > 0)
@@ -578,6 +583,7 @@ FIXTURE
     }
 
     expect fail "a plain 'elapsed < literal' assertion was reported CLEAN" "$plain"
+    expect fail "a difftime-only reader escaped the scan" $'time_t t0 = time(NULL);\ntime_t t1 = time(NULL);\nASSERT(difftime(t1, t0) < 2.0);'
     expect fail "the same violation wrapped across lines, behind a local helper and an out-parameter clock read, escaped the gate" "$wrapped"
     expect pass "a clean file (virtual time, CPU time, a REPORTED duration, an 'elapsed' message) was reported as a violation" "$clean"
 
