@@ -2,6 +2,7 @@
 #include "jni_support.h"
 #include "zcl_change_reservation.h"
 #include "zcl_storage.h"
+#include "change_custody_internal.h"
 
 /* Private JNI transport: one status byte; on success one pending byte and
  * the validated ciphertext record. This is not a disk or network format. */
@@ -66,7 +67,8 @@ Java_org_zclassic_wallet_core_NativeCore_createFreshWalletStorage(JNIEnv *env, j
     if (status == ZCL_OK)
         status = zcl_jni_read_bytes(env, entropy_input, entropy, sizeof(entropy), &entropy_len);
     if (status == ZCL_OK)
-        status = zcl_wallet_change_create(path, path_len, record, record_len, entropy, entropy_len);
+        status = zcl_wallet_change_create_owned(path, path_len, record, record_len,
+            entropy, entropy_len, sizeof(entropy));
     /* A VM read can partially write before throwing. Clear the complete native
      * secret span on every exit, without clearing the pending VM exception. */
     zcl_secure_zero(entropy, sizeof(entropy));

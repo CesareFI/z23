@@ -4702,3 +4702,31 @@ strict Clang/GCC, for both source profiles. Native release-archive fixtures and
 JNI entry points directly and checks exact-maximum publication. ARM64 Linux
 UBSan and Linux MSan pass; Android ARM64 compilation/alignment only. Full APK
 source-only reproduction matches. Existing custody/TLS/chain limits hold.
+
+## Retire creation entropy before public filesystem work — 2026-10-03
+
+Fresh-storage JNI now transfers its private32-byte entropy scratch to an
+internal consuming C adapter. The existing borrowed public API keeps its
+contract. Both share preparation and initial authenticated-record encoding;
+only the consuming adapter clears the admitted full span before storage.
+The final JNI wipe remains for partial VM exceptions and all admission failures.
+No key derivation, recovery words, record bytes or storage ordering changes.
+
+| Hazard | Review |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access | Private adapter admits exactly32 bytes; NULL/other capacities refuse without access. JNI owns that complete fixed array. Tests cover0/31/33/SIZE_MAX capacities and untouched canaries. Existing entropy/header length admission precedes derivation. |
+| Integer overflow/underflow; signed/unsigned conversions | No new production arithmetic or casts. Fixed capacity comparison and existing size_t lengths; SIZE_MAX entropy length refuses and wipes the admitted32-byte span. |
+| Use-after-free; double-free; leaks; dangling pointers | No allocation added. The borrowed entropy pointer is detached after the last crypto use, before the owned wipe; only public copied record/state reach storage. Both adapters retain one cleanup path. Caller originals remain borrowed/unchanged; only invocation-private mutable scratch is consumed. |
+| NULL dereferences; uninitialized memory | Existing zero-initialized custody/state and checked preparation status remain. Owned NULL refuses before use. All32 scratch bytes are wiped on private-work failure, including provider failure after writing. |
+| Pointer arithmetic | No production pointer arithmetic added. Test observers inspect only live admitted32-byte JNI scratch, retire its identity at the final JNI wipe, and retain only boolean observations afterward. |
+| Format strings; secret leakage | Constant diagnostics contain no entropy/record data. Public nonzero fixture detects partial or delayed wipes. Existing scalar/seed/blinding retirement inside encoding remains; entropy now retires before potentially blocking public IO. |
+| Stack usage; allocation limits | Existing bounded custody and80-byte record remain automatic; new adapter adds no buffer/allocation. Strict4096-byte frame limits pass host and both Android ABIs. |
+| Malformed serialization/network input | Existing record/identity/entropy and cryptographic validation unchanged. Tests cover length mismatch, incorrect entropy and partial random-provider failure; no files created on those failures. No network/TLS changes. |
+| Races; resource exhaustion | Scratch is invocation-owned and nonoverlapping by the private contract. No new global state, lock or retained reference. Storage still owns no-overwrite, fsync and paired-record publication. Repeated creation refuses without rewriting and with entropy already retired. |
+
+Deterministic RED observes nonzero JNI entropy on entry to storage; GREEN
+observes complete erasure. Delayed-wipe and missing-wipe mutations fail both
+strict sanitizer compilers; controls pass. Full native safety, existing borrowed
+API failure tests, Android execution, supplemental MSan/ARM64 Linux UBSan and
+source-only APK reproduction pass; see PROGRESS for exact scope and evidence.
+TLS quarantine and physical-device custody qualification remain unchanged.

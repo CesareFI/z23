@@ -481,8 +481,10 @@ if(NOT ANDROID AND NOT ZCL_TLS_REVIEW AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
             tests/storage_fixture.c src/jni_storage.c src/jni_support.c)
         target_include_directories(jni_storage_tests PRIVATE src ${zcl_test_jni_headers})
         target_link_libraries(jni_storage_tests PRIVATE zcl_wallet_core)
+        target_link_options(jni_storage_tests PRIVATE
+            -Wl,--wrap=zcl_storage_create_with_change -Wl,--wrap=zcl_random_bytes)
         target_compile_definitions(jni_storage_tests PRIVATE
-            zcl_secure_zero=zcl_jni_storage_test_zero zcl_wallet_change_create=zcl_jni_storage_test_create)
+            zcl_secure_zero=zcl_jni_storage_test_zero zcl_wallet_change_create_owned=zcl_jni_storage_test_create)
         target_compile_options(jni_storage_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
             -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
         add_test(NAME wallet_jni_storage COMMAND jni_storage_tests)

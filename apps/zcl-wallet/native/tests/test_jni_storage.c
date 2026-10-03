@@ -1,10 +1,11 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #define _POSIX_C_SOURCE 200809L
 #undef zcl_secure_zero
-#undef zcl_wallet_change_create
+#undef zcl_wallet_change_create_owned
 #include "jni_support.h"
 #include "change_storage_fixture.h"
 #include "zcl_change_reservation.h"
+#include "change_custody_internal.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <stdlib.h>
@@ -25,6 +26,9 @@ static const change_storage_data *expected;
 static void *secret_pointer;
 static size_t vm_calls, fail_call, core_calls, zero_calls;
 static bool pending, fail_core, mutate_record;
+static bool live_entropy_at_storage;
+static bool live_entropy_after_core, fail_random;
+static unsigned storage_calls;
 /* Native spans are observed while live; only numeric identities survive a VM
  * call. Bits: path=1, record=2, entropy=4, publication packet=8. */
 static uintptr_t identities[4];
@@ -32,6 +36,32 @@ static unsigned cleared, fail_new;
 static bool fail_set;
 static uint8_t published[142];
 static fake_array publication;
+
+zcl_status __real_zcl_storage_create_with_change(const uint8_t *, size_t,
+    const uint8_t *, size_t, const uint8_t *, size_t);
+zcl_status __wrap_zcl_storage_create_with_change(const uint8_t *, size_t,
+    const uint8_t *, size_t, const uint8_t *, size_t);
+zcl_status __real_zcl_random_bytes(uint8_t *, size_t);
+zcl_status __wrap_zcl_random_bytes(uint8_t *, size_t);
+
+zcl_status __wrap_zcl_random_bytes(uint8_t *output, size_t length)
+{
+    if (!fail_random) return __real_zcl_random_bytes(output, length);
+    memset(output, 0x42, length); /* Provider may fill before reporting failure. */
+    return ZCL_CRYPTO_FAILURE;
+}
+
+zcl_status __wrap_zcl_storage_create_with_change(const uint8_t *path, size_t path_len,
+    const uint8_t *record, size_t record_len, const uint8_t *state, size_t state_len)
+{
+    if (secret_pointer != NULL) {
+        ++storage_calls;
+        const uint8_t *secret = secret_pointer; /* JNI-owned span is still live. */
+        for (size_t i = 0; i < 32; ++i)
+            if (secret[i] != 0) live_entropy_at_storage = true;
+    }
+    return __real_zcl_storage_create_with_change(path, path_len, record, record_len, state, state_len);
+}
 
 static bool vm_fault(void)
 {
@@ -124,15 +154,20 @@ static void JNICALL set_bytes(JNIEnv *env, jbyteArray output, jsize start, jsize
 }
 
 zcl_status zcl_jni_storage_test_create(const uint8_t *path, size_t path_len,
-    const uint8_t *record, size_t record_len, const uint8_t *entropy, size_t entropy_len)
+    const uint8_t *record, size_t record_len, uint8_t *entropy, size_t entropy_len, size_t capacity)
 {
     REQUIRE(!pending && core_calls == 0);
     ++core_calls;
     REQUIRE(path != path_array.bytes && record != record_array.bytes && entropy != entropy_array.bytes);
     REQUIRE(record_len == expected->wallet_len && memcmp(record, expected->wallet, record_len) == 0);
     REQUIRE(entropy_len == (size_t)entropy_array.length && entropy == secret_pointer);
+    REQUIRE(capacity == 32);
     if (fail_core) return ZCL_CRYPTO_FAILURE;
-    return zcl_wallet_change_create(path, path_len, record, record_len, entropy, entropy_len);
+    const zcl_status status = zcl_wallet_change_create_owned(path, path_len, record, record_len,
+        entropy, entropy_len, capacity);
+    for (size_t i = 0; i < capacity; ++i)
+        if (entropy[i] != 0) live_entropy_after_core = true;
+    return status;
 }
 
 #if defined(__ANDROID__)
@@ -161,6 +196,9 @@ static void reset(const storage_fixture *fixture, const change_storage_data *dat
     expected = data;
     vm_calls = fail_call = core_calls = zero_calls = 0;
     pending = fail_core = mutate_record = false;
+    live_entropy_at_storage = false;
+    live_entropy_after_core = fail_random = false;
+    storage_calls = 0;
 }
 
 static int no_files(const storage_fixture *fixture)
@@ -399,6 +437,22 @@ static int full_entropy_data(change_storage_data *data, const uint8_t *entropy, 
     return 0;
 }
 
+static int entropy_creation_attempt(const storage_fixture *fixture, const change_storage_data *data,
+    const uint8_t entropy[32], unsigned fault, zcl_status wanted)
+{
+    reset(fixture, data);
+    memcpy(entropy_bytes, entropy, 32);
+    entropy_array.length = fault == 1 ? 16 : 32;
+    if (fault == 2) entropy_bytes[0] ^= 1;
+    fail_random = fault == 3;
+    const jint status = create(&fake_env, (jbyteArray)&path_array, (jbyteArray)&record_array,
+        (jbyteArray)&entropy_array);
+    CHECK(status == (jint)wanted && !live_entropy_after_core && !live_entropy_at_storage);
+    CHECK(storage_calls == (fault == 0 ? 1u : 0u));
+    CHECK(core_calls == 1 && vm_calls == 6 && zero_calls == 1 && !pending);
+    return 0;
+}
+
 static int full_entropy_cleared(void)
 {
     /* Public, inert fixture. Every byte is nonzero so a truncated native wipe
@@ -409,21 +463,22 @@ static int full_entropy_cleared(void)
     CHECK(full_entropy_data(&data, entropy, sizeof(entropy)) == 0);
     storage_fixture fixture;
     CHECK(fixture_open(&fixture) == 0);
-    reset(&fixture, &data);
-    memcpy(entropy_bytes, entropy, sizeof(entropy));
-    entropy_array.length = (jsize)sizeof(entropy);
-    const jint status = create(&fake_env, (jbyteArray)&path_array, (jbyteArray)&record_array,
-        (jbyteArray)&entropy_array);
-    expected = NULL; /* The callback no longer borrows this local record. */
-    CHECK(status == ZCL_OK);
-    CHECK(core_calls == 1 && vm_calls == 6 && zero_calls == 1);
+    int result = entropy_creation_attempt(&fixture, &data, entropy, 1, ZCL_OUT_OF_RANGE);
+    if (result == 0) result = entropy_creation_attempt(&fixture, &data, entropy, 2, ZCL_INVALID_ENCODING);
+    if (result == 0) result = entropy_creation_attempt(&fixture, &data, entropy, 3, ZCL_CRYPTO_FAILURE);
+    if (result == 0) result = no_files(&fixture);
+    if (result == 0) result = entropy_creation_attempt(&fixture, &data, entropy, 0, ZCL_OK);
+    if (result == 0) result = entropy_creation_attempt(&fixture, &data, entropy, 0, ZCL_ALREADY_EXISTS);
+    expected = NULL;
     CHECK(memcmp(entropy_bytes, entropy, sizeof(entropy)) == 0);
-    CHECK(change_bytes(&fixture, data.state[0], 80, 0) == 0);
-    CHECK(read_matches(&fixture, &data, false) == 0);
+    if (result == 0) result = change_bytes(&fixture, data.state[0], 80, 0);
+    if (result == 0) result = read_matches(&fixture, &data, false);
     expected = NULL;
     zcl_secure_zero(entropy, sizeof(entropy));
     zcl_secure_zero(entropy_bytes, sizeof(entropy_bytes));
-    return fixture_close(&fixture);
+    const int closed = fixture_close(&fixture);
+    CHECK(closed == 0 && result == 0);
+    return 0;
 }
 
 static int read_environment_refusal(void)
@@ -439,11 +494,30 @@ static int read_environment_refusal(void)
     return 0;
 }
 
+static int owned_span_refusals(const change_storage_data *data)
+{
+    uint8_t entropy[32];
+    memset(entropy, 0x42, sizeof(entropy));
+    const size_t capacities[] = {0, 31, 33, SIZE_MAX};
+    for (size_t i = 0; i < sizeof(capacities) / sizeof(capacities[0]); ++i) {
+        CHECK(zcl_wallet_change_create_owned(NULL, 0, data->wallet, data->wallet_len,
+            entropy, 16, capacities[i]) == ZCL_INVALID_ARGUMENT);
+        for (size_t j = 0; j < sizeof(entropy); ++j) CHECK(entropy[j] == 0x42);
+    }
+    CHECK(zcl_wallet_change_create_owned(NULL, 0, data->wallet, data->wallet_len,
+        NULL, 16, 32) == ZCL_INVALID_ARGUMENT);
+    CHECK(zcl_wallet_change_create_owned(NULL, 0, data->wallet, data->wallet_len,
+        entropy, SIZE_MAX, sizeof(entropy)) == ZCL_OUT_OF_RANGE);
+    for (size_t i = 0; i < sizeof(entropy); ++i) CHECK(entropy[i] == 0);
+    return 0;
+}
+
 int main(void)
 {
     CHECK(read_environment_refusal() == 0);
     change_storage_data data = {0};
     CHECK(change_data_init(&data) == 0);
+    CHECK(owned_span_refusals(&data) == 0);
     CHECK(vm_failures(&data) == 0 && null_arguments(&data) == 0);
     CHECK(length_arguments(&data) == 0 && core_outcomes(&data) == 0);
     CHECK(full_entropy_cleared() == 0);

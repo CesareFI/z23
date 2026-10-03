@@ -217,3 +217,9 @@ validated components while retaining the separate authorization gates for send.
    and no access to spending keys, signing or consensus authority.
 
 No phase is considered complete merely because a build or narrow test passes.
+
+The 2026-10-03 creation boundary now retires JNI-owned entropy after private
+initial-record encoding and before public filesystem work, with independent
+failure/mutation coverage. The borrowed C creation API retains caller ownership.
+Continue independent secret/JNI/storage hardening from the signed checkpoints
+in PROGRESS; no physical-custody or authenticated-chain gate is closed by this.

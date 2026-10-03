@@ -8018,3 +8018,40 @@ ART API30/35/36, ARM64 Linux and MSan observations remain those recorded for
 SSH verification of that checkpoint succeeds with the configured signing key's
 public counterpart. Pending wallet-creation entropy work remains a separate
 slice; next validate retirement before public filesystem operations.
+
+## Production continuation: early creation entropy retirement — 2026-10-03
+
+Fee endpoint checkpoint `3d76b3aab589c18c5391230bb62196896dd15bfc` is signed,
+pushed to the owned backup branch, and verified equal to its remote SHA.
+Upstream remains `3a93e60ebf922af3d119b9facc1d95803f42844b`.
+
+RED observes nonzero native entropy when fresh-wallet creation enters public
+storage. JNI now calls an internal consuming adapter that clears its complete
+32-byte scratch immediately after private preparation/encoding, before storage.
+The public borrowed C API remains unchanged. Final JNI erasure still handles
+partial VM reads/exceptions. No derivation,12-word recovery, authenticated record,
+no-overwrite or durability predicate changes.
+
+Tests check nonzero full-span retirement on successful creation and repeated
+creation refusal, incorrect entropy, wrong entropy length, and random-provider
+failure after writing. No file is created on private failures; exact initial
+record and ciphertext persist on success/retry. NULL/invalid capacities refuse
+without access; SIZE_MAX entropy length wipes an admitted span. Caller originals
+remain unchanged. Delaying the wipe until after storage and removing it each
+fail deterministic controls under Clang and GCC; unchanged controls pass.
+
+The complete canonical safety gate passes Clang145/145 in26.85s and GCC140/140
+in40.69s, including analyzers, provider hashes and production/test complexity.
+Android JVM/unit, debug/release builds, lint,16KiB alignment and fixture isolation
+pass (154 tasks). Release-archive native fixture plus six storage-admission ART
+tests pass each API30/35/36 x86_64; API35 uses16KiB pages. Existing qualified
+ARM64 Linux QEMU/UBSan JNI+reservation failure tests pass2/2 in6.79s; existing
+qualified MSan fixture passes0.13s. Android ARM64 compile/alignment is not physical
+execution or hardware custody proof. Fresh source-only release APK matches:
+`19cdfd353a82f2c4a5ee1c43e27e830f8870471115959787fc4cddf53fe17458`.
+Evidence: ignored `.cache/create-secret-retirement/` and
+`.cache/reproduce-create-secret-retirement/`; manual hazard review appended.
+JNI storage fuzzing completes31348 cases in31s without a finding. Architecture,
+document-count and diff gates pass. Continue independent secret-retirement and
+JNI/storage work; hardware-backed custody, TLS and authenticated-chain acceptance
+remain explicitly open.

@@ -12,19 +12,40 @@ static zcl_status read_index(const zcl_change_custody *wallet, const zcl_change_
     return status;
 }
 
-zcl_status zcl_wallet_change_create(const uint8_t *directory, size_t directory_len,
-    const uint8_t *wallet_record, size_t wallet_len, const uint8_t *entropy, size_t entropy_len)
+static zcl_status create_wallet(const uint8_t *directory, size_t directory_len,
+    const uint8_t *wallet_record, size_t wallet_len, const uint8_t *entropy, size_t entropy_len,
+    uint8_t *owned_entropy, size_t owned_capacity)
 {
     zcl_change_custody wallet = {0};
     uint8_t initial[80] = {0};
     zcl_status status = zcl_change_custody_prepare(wallet_record, wallet_len, entropy, entropy_len, &wallet);
     if (status == ZCL_OK) status = zcl_change_custody_encode(&wallet, 0, initial);
+    /* Authentication/derivation is complete. Only public ciphertext and the
+     * authenticated initial record are needed during filesystem operations. */
+    wallet.entropy = NULL;
+    wallet.entropy_len = 0;
+    if (owned_entropy != NULL) zcl_secure_zero(owned_entropy, owned_capacity);
     if (status == ZCL_OK)
         status = zcl_storage_create_with_change(directory, directory_len,
             wallet.record, wallet.record_len, initial, sizeof(initial));
     zcl_secure_zero(initial, sizeof(initial));
     zcl_change_custody_clear(&wallet);
     return status;
+}
+
+zcl_status zcl_wallet_change_create(const uint8_t *directory, size_t directory_len,
+    const uint8_t *wallet_record, size_t wallet_len, const uint8_t *entropy, size_t entropy_len)
+{
+    return create_wallet(directory, directory_len, wallet_record, wallet_len,
+        entropy, entropy_len, NULL, 0);
+}
+
+zcl_status zcl_wallet_change_create_owned(const uint8_t *directory, size_t directory_len,
+    const uint8_t *wallet_record, size_t wallet_len, uint8_t *entropy, size_t entropy_len, size_t capacity)
+{
+    if (entropy == NULL || capacity != 32) return ZCL_INVALID_ARGUMENT;
+    return create_wallet(directory, directory_len, wallet_record, wallet_len,
+        entropy, entropy_len, entropy, capacity);
 }
 
 zcl_status zcl_wallet_change_reserve(const uint8_t *directory, size_t directory_len,

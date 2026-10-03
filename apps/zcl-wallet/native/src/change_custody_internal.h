@@ -26,4 +26,13 @@ zcl_status zcl_change_custody_decode(const zcl_change_custody *wallet,
     const uint8_t *state, size_t state_len, uint32_t *index);
 zcl_status zcl_change_custody_address(const zcl_change_custody *wallet,
     uint32_t index, uint8_t *address, size_t capacity);
+
+/* Private adapter variant: caller transfers a writable nonoverlapping32-byte
+ * entropy scratch span for this call. A NULL span or capacity other than32
+ * refuses without access. An admitted span is fully wiped after private work,
+ * including crypto/record refusal, and before any public storage operation.
+ * Caller still clears its own original entropy and handles invalid-span refusal.
+ * All authentication/fresh-wallet/storage prerequisites of the borrowed API hold. */
+zcl_status zcl_wallet_change_create_owned(const uint8_t *directory, size_t directory_len,
+    const uint8_t *wallet_record, size_t wallet_len, uint8_t *entropy, size_t entropy_len, size_t capacity);
 #endif
