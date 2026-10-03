@@ -8074,7 +8074,9 @@ $(BIN_DIR)/export_snapshot: tools/export_snapshot.c \
 # independent of chainstate_legacy_reader.c, as an orthogonal ground truth.
 .PHONY: verify_anchor_completeness
 verify_anchor_completeness: $(BIN_DIR)/verify_anchor_completeness
-$(BIN_DIR)/verify_anchor_completeness: tools/verify_anchor_completeness.c
+$(BIN_DIR)/verify_anchor_completeness: tools/verify_anchor_completeness.c \
+		vendor/include/leveldb/c.h vendor/include/sqlite3.h \
+		vendor/lib/libleveldb.a vendor/lib/libsqlite3.a
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -Ivendor/include -o $@ $< -Lvendor/lib vendor/lib/libleveldb.a vendor/lib/libsqlite3.a -lstdc++ -lpthread -lm -ldl
 
