@@ -11,6 +11,7 @@
 #include "base/hex.h"
 #include "base/safe_alloc.h"
 #include "base/log_level.h"
+#include "platform/os_proc.h"
 #include "platform/positioned_file.h"
 #if defined(_WIN32)
 #include "platform/private_file.h"
@@ -506,15 +507,30 @@ static bool marker_read(const char *path, char *out, size_t cap)
     return true;
 }
 
-/* A current-generation lease names its holder as "token pid started"; the
- * legacy pre-lease marker is just "pid started". */
+/* New leases add the kernel process-birth token after the wall-clock start.
+ * Existing three-field leases and older two-field running markers remain
+ * readable while their already-running workers finish. */
 static bool marker_parse(const char *text, bool lease, long long *pid,
-                         long long *started)
+                         long long *started, uint64_t *birth)
 {
     char token[128];
-    int fields = lease ? sscanf(text, "%127s %lld %lld", token, pid, started)
-                       : sscanf(text, "%lld %lld", pid, started);
-    return fields == (lease ? 3 : 2) && *pid > 1 && *started > 0;
+    char extra = 0;
+    unsigned long long parsed_birth = 0;
+    if (!lease) {
+        *birth = 0;
+        return sscanf(text, "%lld %lld %c", pid, started, &extra) == 2 &&
+               *pid > 1 && *started > 0;
+    }
+    int fields = sscanf(text, "%127s %lld %lld %llu %c", token, pid,
+                        started, &parsed_birth, &extra);
+    if (fields == 3 && sscanf(text, "%127s %lld %lld %c", token, pid,
+                              started, &extra) != 3)
+        return false;
+    if ((fields != 3 && fields != 4) ||
+        (fields == 4 && parsed_birth == 0) || *pid <= 1 || *started <= 0)
+        return false;
+    *birth = fields == 4 ? (uint64_t)parsed_birth : 0;
+    return true;
 }
 
 static bool marker_pid_alive(long long pid)
@@ -535,8 +551,11 @@ static bool marker_alive(const char *path, bool lease, int64_t *started)
 {
     char text[192];
     long long pid = 0, began = 0;
+    uint64_t birth = 0, observed = 0;
     if (!marker_read(path, text, sizeof(text)) ||
-        !marker_parse(text, lease, &pid, &began) ||
+        !marker_parse(text, lease, &pid, &began, &birth) ||
+        (birth && os_proc_pid_start_token((uint64_t)pid, &observed) &&
+         observed != birth) ||
         !marker_pid_alive(pid))
         return false;
     *started = (int64_t)began;

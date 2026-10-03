@@ -986,20 +986,50 @@ static bool proof_private_regular(const char *path)
            !S_ISLNK(st.st_mode) && (st.st_mode & (S_IWGRP | S_IWOTH)) == 0;
 }
 
-static bool proof_lease_read(const char *path, char *token, size_t token_len,
-                             int64_t *pid_out, int64_t *started_out)
+static int proof_lease_fields(const char *text, char *parsed, long long *pid,
+                              long long *started, unsigned long long *birth)
 {
-    char text[384], parsed[192];
+    char extra = 0;
+    int fields = sscanf(text, "%191s %lld %lld %llu %c", parsed, pid,
+                        started, birth, &extra);
+    if (fields == 3 &&
+        sscanf(text, "%191s %lld %lld %c", parsed, pid, started,
+               &extra) != 3)
+        return 0;
+    if ((fields != 3 && fields != 4) || (fields == 4 && *birth == 0))
+        return 0;
+    return fields;
+}
+
+static bool proof_lease_parse(const char *text, char *token,
+                              size_t token_len, int64_t *pid_out,
+                              int64_t *started_out, uint64_t *birth_out)
+{
+    char parsed[192];
     long long pid = 0, started = 0;
-    if (!token || token_len == 0 || !proof_private_regular(path) ||
-        !proof_read_text(path, text, sizeof(text)) ||
-        sscanf(text, "%191s %lld %lld", parsed, &pid, &started) != 3 ||
-        strlen(parsed) >= token_len || pid <= 1 || started <= 0)
+    unsigned long long birth = 0;
+    if (!text || !token || token_len == 0)
+        return false;
+    int fields = proof_lease_fields(text, parsed, &pid, &started, &birth);
+    if (fields == 0 || strlen(parsed) >= token_len ||
+        pid <= 1 || (long long)(pid_t)pid != pid || started <= 0)
         return false;
     (void)snprintf(token, token_len, "%s", parsed);
     if (pid_out) *pid_out = (int64_t)pid;
     if (started_out) *started_out = (int64_t)started;
+    if (birth_out) *birth_out = fields == 4 ? (uint64_t)birth : 0;
     return true;
+}
+
+static bool proof_lease_read(const char *path, char *token, size_t token_len,
+                             int64_t *pid_out, int64_t *started_out,
+                             uint64_t *birth_out)
+{
+    char text[384];
+    return proof_private_regular(path) &&
+           proof_read_text(path, text, sizeof(text)) &&
+           proof_lease_parse(text, token, token_len, pid_out, started_out,
+                             birth_out);
 }
 
 static bool proof_lease_running(const char *path, int64_t *pid_out,
@@ -1007,7 +1037,11 @@ static bool proof_lease_running(const char *path, int64_t *pid_out,
 {
     char token[192];
     int64_t pid = 0;
-    if (!proof_lease_read(path, token, sizeof(token), &pid, started_out) ||
+    uint64_t birth = 0, observed = 0;
+    if (!proof_lease_read(path, token, sizeof(token), &pid, started_out,
+                          &birth) ||
+        (birth && os_proc_pid_start_token((uint64_t)pid, &observed) &&
+         birth != observed) ||
         (kill((pid_t)pid, 0) != 0 && errno != EPERM))
         return false;
     if (pid_out) *pid_out = pid;
@@ -1468,11 +1502,15 @@ static bool proof_attempt_paths_prepare(const struct proof_paths *pair,
 static bool proof_lease_publish(const struct proof_paths *paths)
 {
     char body[320];
-    int n = paths
-        ? snprintf(body, sizeof(body), "%s %ld %lld\n",
-                   paths->attempt_token, (long)paths->attempt_worker,
-                   (long long)platform_time_wall_unix())
-        : -1;
+    uint64_t birth = 0;
+    if (!paths || paths->attempt_worker <= 1 ||
+        !os_proc_pid_start_token((uint64_t)paths->attempt_worker, &birth) ||
+        birth == 0)
+        return false;
+    int n = snprintf(body, sizeof(body), "%s %ld %lld %llu\n",
+                     paths->attempt_token, (long)paths->attempt_worker,
+                     (long long)platform_time_wall_unix(),
+                     (unsigned long long)birth);
     return n > 0 && n < (int)sizeof(body) &&
            write_atomic_durable(paths->lease, body, (size_t)n, 0600);
 }
@@ -1481,10 +1519,14 @@ static bool proof_lease_current(const struct proof_paths *paths)
 {
     char token[192];
     int64_t pid = 0;
+    uint64_t birth = 0, observed = 0;
     return paths && paths->attempt_token[0] && paths->attempt_worker > 1 &&
-        proof_lease_read(paths->lease, token, sizeof(token), &pid, NULL) &&
+        proof_lease_read(paths->lease, token, sizeof(token), &pid, NULL,
+                         &birth) &&
         strcmp(token, paths->attempt_token) == 0 &&
-        pid == (int64_t)paths->attempt_worker;
+        pid == (int64_t)paths->attempt_worker &&
+        (!birth || (os_proc_pid_start_token((uint64_t)pid, &observed) &&
+                    observed == birth));
 }
 
 static int proof_queue_lock_acquire(const struct proof_paths *paths)
@@ -11753,8 +11795,12 @@ static bool dp_retry_worker_settled(const char *path, bool lease)
     int64_t pid = 0;
     if (lease) {
         char token[192];
-        if (!proof_lease_read(path, token, sizeof(token), &pid, NULL))
+        uint64_t birth = 0, observed = 0;
+        if (!proof_lease_read(path, token, sizeof(token), &pid, NULL,
+                              &birth))
             return false;
+        if (birth && os_proc_pid_start_token((uint64_t)pid, &observed))
+            return observed != birth;
     } else {
         char body[128];
         long long parsed_pid = 0, started = 0;

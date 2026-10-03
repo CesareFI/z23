@@ -11837,6 +11837,7 @@ GIT_HOOK_SRCS = tools/dev/z23_git_hook.c tools/dev/dev_proof_coverage.c \
 	platform/modules/base/src/cleanse.c platform/modules/base/src/log_level.c \
 	platform/modules/base/src/safe_alloc.c \
 	platform/modules/platform/src/directory_compat.c \
+	platform/modules/platform/src/os_proc.c \
 	platform/modules/platform/src/positioned_file.c \
 	platform/modules/platform/src/private_directory.c \
 	platform/modules/platform/src/private_file.c \
@@ -11846,7 +11847,8 @@ GIT_HOOK_SRCS = tools/dev/z23_git_hook.c tools/dev/dev_proof_coverage.c \
 # hook binary that refuses current receipts as newer than itself.
 GIT_HOOK_HDRS = tools/dev/dev_proof_coverage.h \
 	tools/dev/dev_proof_observation_walk.h tools/dev/dev_proof_receipt.h \
-	tools/dev/dev_proof_signer.h
+	tools/dev/dev_proof_signer.h \
+	platform/modules/platform/include/platform/os_proc.h
 GIT_HOOK_LIBS =
 ifeq ($(ZCL_HOST_WINDOWS),1)
 GIT_HOOK_SRCS += platform/modules/platform/src/private_acl_internal.c \

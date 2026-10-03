@@ -18,6 +18,7 @@
 #include "dev_proof_receipt.h"
 #include "dev_proof_signer.h"
 #include "sha3/sha3.h"
+#include "platform/os_proc.h"
 #include "platform/state_root.h"
 #include "vcs/vcs_object.h"
 
@@ -606,6 +607,26 @@ static int test_dps_hook_running_eta(void)
         ASSERT(dps_run(dir, argv, tuple, out, sizeof(out)) != 0);
         ASSERT(strstr(out, "status=running") != NULL);
         ASSERT(strstr(out, "eta_ms=0 local=") == NULL);
+
+        /* A later process can reuse a live PID. The kernel birth token in
+         * a new-format lease must defeat that stale claim in the hook. */
+        uint64_t birth = 0;
+        ASSERT(os_proc_pid_start_token((uint64_t)getpid(), &birth));
+        ASSERT(birth > 0 && birth < UINT64_MAX);
+        n = snprintf(body, sizeof(body), "hooktest %ld %ld %llu\n",
+                     (long)getpid(), (long)time(NULL),
+                     (unsigned long long)(birth + 1));
+        ASSERT(n > 0 && (size_t)n < sizeof(body));
+        ASSERT(dps_write(marker, body, strlen(body), 0600));
+        ASSERT(dps_run(dir, argv, tuple, out, sizeof(out)) != 0);
+        ASSERT(strstr(out, "status=receipt-missing") != NULL);
+        n = snprintf(body, sizeof(body), "hooktest %ld %ld %llu\n",
+                     (long)getpid(), (long)time(NULL),
+                     (unsigned long long)birth);
+        ASSERT(n > 0 && (size_t)n < sizeof(body));
+        ASSERT(dps_write(marker, body, strlen(body), 0600));
+        ASSERT(dps_run(dir, argv, tuple, out, sizeof(out)) != 0);
+        ASSERT(strstr(out, "status=running") != NULL);
 
         /* The holder is gone: no authority, no running claim. */
         n = snprintf(body, sizeof(body), "hooktest 999999 %ld\n",

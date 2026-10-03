@@ -64,6 +64,7 @@
 #include "json/json.h"
 #include "platform/disk_space.h"
 #include "platform/file_clone.h"
+#include "platform/os_proc.h"
 #include "platform/ram_scratch.h"
 #include "platform/time_compat.h"
 #include "kernel/command_registry.h"
@@ -2341,6 +2342,24 @@ static int test_ic_proof_retry(void)
         ASSERT((size_t)snprintf(relative, sizeof(relative), "leases/%s.lease", key) < sizeof(relative));
         ASSERT((size_t)snprintf(marker, sizeof(marker), "%s/%s", state, relative) < sizeof(marker));
         ASSERT((size_t)snprintf(marker_body, sizeof(marker_body), "prior %ld 1700000000\n", (long)getpid()) < sizeof(marker_body));
+        ASSERT(ic_proof_private_write(state, relative, marker_body));
+        uint64_t birth = 0;
+        ASSERT(os_proc_pid_start_token((uint64_t)getpid(), &birth));
+        ASSERT(birth > 0 && birth < UINT64_MAX);
+        ASSERT((size_t)snprintf(marker_body, sizeof(marker_body),
+                "prior %ld 1700000000 %llu\n", (long)getpid(),
+                (unsigned long long)(birth + 1)) < sizeof(marker_body));
+        ASSERT(ic_proof_private_write(state, relative, marker_body));
+        ASSERT(zcl_dev_proof_status_read(root, local, base, &status));
+        ASSERT(status.state == ZCL_DEV_PROOF_STATE_FAILED);
+        ASSERT((size_t)snprintf(marker_body, sizeof(marker_body),
+                "prior %ld 1700000000 %llu\n", (long)getpid(),
+                (unsigned long long)birth) < sizeof(marker_body));
+        ASSERT(ic_proof_private_write(state, relative, marker_body));
+        ASSERT(zcl_dev_proof_status_read(root, local, base, &status));
+        ASSERT(status.state == ZCL_DEV_PROOF_STATE_RUNNING);
+        ASSERT((size_t)snprintf(marker_body, sizeof(marker_body),
+                "prior %ld 1700000000\n", (long)getpid()) < sizeof(marker_body));
         ASSERT(ic_proof_private_write(state, relative, marker_body));
         ASSERT(!zcl_dev_proof_retry(root, local, base, &status));
         ASSERT(status.state == ZCL_DEV_PROOF_STATE_RUNNING);
