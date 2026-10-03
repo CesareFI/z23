@@ -81,6 +81,18 @@ static int vcs_grep_file(const char *path, const char *top, const regex_t *re,
     FILE *f = fopen(path, "r");
     if (!f)
         return vcs_grep_fail(path, errno, top, err);
+    struct stat st;
+    if (fstat(fileno(f), &st) != 0) {
+        int e = errno;
+        fclose(f);
+        return vcs_grep_fail(path, e, top, err);
+    }
+    /* Root can open mode-000 files. Refuse the same input a normal worker
+     * could not read, using the mode of the opened inode rather than path. */
+    if ((st.st_mode & (S_IRUSR | S_IRGRP | S_IROTH)) == 0) {
+        fclose(f);
+        return vcs_grep_fail(path, EACCES, top, err);
+    }
     char *line = NULL;
     size_t cap = 0;
     ssize_t n;
