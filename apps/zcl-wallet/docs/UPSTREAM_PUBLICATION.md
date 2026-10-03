@@ -188,3 +188,56 @@ work remains preserved and outside every publication candidate.
   adaptations use existing upstream owners; the remaining C/D rows name the
   missing consumer, different policy/format, completed upstream invariant, or
   sealed authority that makes wholesale transfer inappropriate.
+
+## Expanded owner audit and exact-proof qualification
+
+The first53-entry date filter covered Android application paths. A subsequent
+all-ref audit of the existing upstream wallet/encoding owners found three further
+relevant development commits: `89926c0bdb2e5c98fb25431c07d67442fe11584f`,
+`a16546e797bd4c1a75df27f03e05ee89d8e852b1`, and
+`01e045fc9e14c58c2688df3a93cf48096e103266`. These are existing native Z23 work,
+not new Android research. Their unchanged production algorithms are directly
+reusable (A), with current-base test/inventory integration (B).
+
+- Supersede the unsubmitted Base58 candidate `987d226c3` with signed
+  `be78a2bf9f530f08d57e6bb1a2be62d83c9c8f75`, branch
+  `agent/upstream-wallet-base58-prefix-20261003`. It ports both existing native
+  commits. The encoder uses consumed-input bounds instead of adding a
+  value-dependent inner-loop bound. Original checkpoint remains preserved.
+  Four files,+211/-37. Canonical fast/ASan groups, both compiler sanitizer
+  controls, four runtime mutations,16,788 reference cases,168,047 fuzz runs,
+  repeated benchmarks and structural/compiler gates pass. Native publication
+  proof remains pending; do not transfer the superseded candidate's full-lint
+  result to this different source.
+- Add signed `d95e540be3f67352a0bbc602ff57f0537075157a`, branch
+  `agent/upstream-wallet-xprv-retirement-20261003`, ported from `01e045fc9`.
+  Six files,+209/-67. Both compilers reproduce five failures in the original
+  functions; ported controls return0, zero-length-wipe mutants return7. Canonical
+  HD-key fast/ASan and structural/compiler gates pass. Native publication proof
+  remains pending. The redundant serializer copy and three decoder refusal
+  leaks are independent of the master-key scratch candidate.
+
+The selected publication set is now five slices: mnemonic, master-key scratch,
+Base58 prefix conversion, storage descriptor tests, and xprv retirement.
+The additional ports and descriptions live in sibling checkout
+`z23-wallet-reuse-publication-20261003`; its ignored evidence uses the same
+`.cache/wallet-publication/` convention.
+
+An exact native `dev proof step` is a separate publication requirement from
+focused tests and lint. The storage candidate `b25e546ba` now has a verified
+PASS receipt against base `3a93e60e`: all215 lint gates and20/20 impacted test
+groups, no skips. The mnemonic candidate's root execution passed lint but failed
+17/1236 runtime groups. This is NOT a passing proof. Diagnostics establish an
+identity mismatch for multiple tests: chainlog requires `geteuid()!=0`, and
+verifier custody refuses signer UID0 even in its test fixture. DAC-capability
+removal qualifies permission-negative lint probes but does not make UID0 an
+unprivileged runtime identity.
+
+The existing `worldstreamproof` service identity was verified as UID1000. A fresh
+isolated copy contains the five exact candidate refs; its location is recorded
+locally in publication `unprivileged-proof-root.txt`. Its setup is complete, and
+canonical chainlog/verifier-store controls are running before broader native
+proof retries. No root-directory permissions, test assertions, policy files or
+publication hooks were weakened. Remaining failures must be diagnosed from that
+qualified environment; no claim that every root failure has already been resolved.
+The explicit fork-hook decision is still pending; no PR has been opened.

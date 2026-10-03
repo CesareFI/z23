@@ -8120,3 +8120,15 @@ recheck open PRs, then publish the four exact candidate branches to CesareFI/z23
 and open separate z23c/z23 PRs, requesting verified reviewer RhettCreighton.
 Do not rerun completed tests without changed source or a new validation reason.
 The unfinished native storage-limit test remains dirty and excluded throughout.
+
+### Publication continuation: broader inventory and proof identity
+
+The owner-path audit found three existing native commits missed by the initial
+app-path inventory. The selected set is now five independent slices; Base58
+`987d226c3` is preserved but superseded by `be78a2bf9` (consumed-prefix encoder),
+and `d95e540be` ports existing xprv retirement. Focused validation is recorded in
+UPSTREAM_PUBLICATION.md. Do not claim publication readiness from earlier lint
+alone: the storage candidate has its exact native PASS receipt; the root-run
+mnemonic universal proof failed17/1236 groups, including explicit non-root UID
+requirements. An isolated copy under existing UID1000 is being qualified before
+retrying broader proofs. The fork-only hook exception remains unresolved.
