@@ -6091,6 +6091,9 @@ LINTC_CLANG := $(shell command -v clang 2>/dev/null)
 # and optional Clang syntax-checker identity. An empty/default or known node-
 # only goal never builds this tool, so it need not pay for this fingerprint.
 override LINTC_CONFIG_SKIP := $(if $(strip $(MAKECMDGOALS)),,1)
+ifeq ($(ZCL_STANDALONE_CLEAN),1)
+override LINTC_CONFIG_SKIP := 1
+endif
 ifeq ($(words $(MAKECMDGOALS)),1)
 ifneq ($(filter z23 zclassic23 z23-dev zclassic23-dev dev install-hooks,$(MAKECMDGOALS)),)
 override LINTC_CONFIG_SKIP := 1
