@@ -45,7 +45,12 @@ quantile() {
 }
 
 # API-local foreground spans do not depend on synchronized host clocks.
+: >"$scratch/reproduction_actions"
 for file in "${results[@]}"; do
+    if grep -q '"reproduction_action_id"' "$file"; then
+        reproduction="$(sed -n 's/.*"reproduction_action_id":"\([^"]*\)".*/\1/p' "$file")"
+        printf '%s\n' "${reproduction:-invalid}" >>"$scratch/reproduction_actions"
+    fi
     for key in foreground_request_creation_us durable_action_lookup_dedup_us \
                local_submit_us local_first_feedback_us live_rpc_admission_us \
                live_rpc_request_bytes live_rpc_response_bytes; do
@@ -57,7 +62,15 @@ done
 # Every lifecycle log carries action=<immutable root>, stage=<projection>, and
 # at_unix_us=<observation>. Cross-host deltas are valid when the campaign's
 # clocks are synchronized; local durations remain valid independently.
-awk -v out="$scratch" '
+awk -v out="$scratch" -v reproduction_file="$scratch/reproduction_actions" '
+BEGIN {
+    while ((getline action < reproduction_file) > 0) {
+        if (length(action)!=64 || action !~ /^[0-9a-f]+$/)
+            invalid_reproduction_records++
+        else reproduction[action]=1
+    }
+    close(reproduction_file)
+}
 function field(name,    i,prefix) {
     prefix=name "="
     for (i=1;i<=NF;i++) if (index($i,prefix)==1) return substr($i,length(prefix)+1)
@@ -111,9 +124,11 @@ index($0,"[zcode.proof_perf]") {
         emit("worker_projection_us",field("projection_us"))
         emit("worker_input_bytes",field("input_bytes"))
         emit("worker_output_bytes",field("output_bytes"))
-        emit("worker_processes",field("processes"))
-        emit("compiler_processes",field("compiler_processes"))
-        emit("test_processes",field("test_processes"))
+        emit("worker_host_processes",field("host_processes"))
+        emit("worker_host_executor_launches",field("host_executor_launches"))
+        emit("child_reported_processes_unverified",field("child_reported_processes_unverified"))
+        emit("child_reported_compiler_processes_unverified",field("child_reported_compiler_processes_unverified"))
+        emit("child_reported_test_processes_unverified",field("child_reported_test_processes_unverified"))
         output_bytes[action]+=field("output_bytes")+0
         if (field("cache_hit")=="1") worker_cache_hits++
         else if (field("cache_hit")!="0") worker_cache_unmeasured++
@@ -148,15 +163,25 @@ END {
         publish=at[action SUBSEP "worker_result_publish"]
         result=at[action SUBSEP "requester_result"]
         ready=at[action SUBSEP "acceptance_ready"]
-        delta("foreground_to_dispatch_us",foreground,dispatch)
+        if (reproduction[action] && !foreground) {
+            print action >> (out "/reproduction_without_foreground_actions")
+            reproduction_without_foreground++
+        } else {
+            delta("foreground_to_dispatch_us",foreground,dispatch)
+            delta("background_total_precise_us",foreground,ready)
+        }
         delta("dispatch_to_admission_us",dispatch,admission)
         delta("admission_to_lease_us",admission,lease)
         delta("result_transport_precise_us",publish,result)
         delta("result_to_acceptance_us",result,ready)
-        delta("background_total_precise_us",foreground,ready)
         payload=context_transfer[action]+request_bytes[action]+progress_bytes[action]+result_bytes[action]+output_bytes[action]
         if (payload > 0) emit("network_payload_lower_bound_bytes",payload)
     }
+    for (action in reproduction)
+        if (!(action in actions)) unobserved_reproduction_actions++
+    print reproduction_without_foreground+0 > (out "/reproduction_without_foreground_total")
+    print unobserved_reproduction_actions+0 > (out "/unobserved_reproduction_actions_total")
+    print invalid_reproduction_records+0 > (out "/invalid_reproduction_records_total")
     print retries+0 > (out "/retry_dispatches_total")
     print context_cache_hits+0 > (out "/context_cache_hits_total")
     print context_cache_samples+0 > (out "/context_cache_samples_total")
@@ -172,11 +197,22 @@ printf 'schema=zcl.async_proof_perf_report.v1\n'
 printf 'artifact=%s\n' "$root"
 printf 'clock_note=cross-host deltas require synchronized realtime clocks; local spans do not\n'
 printf 'sample_note=missing and invalid observations are counted, never zero-filled; incomplete metrics are telemetry, not acceptance\n'
+printf 'process_note=host launches are observed; child process counts are child-reported and unverified\n'
 printf 'lifecycle_records=%s invalid_lifecycle_records=%s\n' \
     "$(cat "$scratch/lifecycle_records_total")" \
     "$(cat "$scratch/invalid_lifecycle_records_total")"
 incomplete=0
 [ "$(cat "$scratch/invalid_lifecycle_records_total")" -eq 0 ] || incomplete=1
+printf 'reproduction_without_foreground=%s unobserved_reproduction_actions=%s invalid_reproduction_records=%s\n' \
+    "$(cat "$scratch/reproduction_without_foreground_total")" \
+    "$(cat "$scratch/unobserved_reproduction_actions_total")" \
+    "$(cat "$scratch/invalid_reproduction_records_total")"
+if [ -f "$scratch/reproduction_without_foreground_actions" ]; then
+    sort -u "$scratch/reproduction_without_foreground_actions" |
+        sed 's/^/reproduction_without_foreground_action=/'
+fi
+[ "$(cat "$scratch/unobserved_reproduction_actions_total")" -eq 0 ] || incomplete=1
+[ "$(cat "$scratch/invalid_reproduction_records_total")" -eq 0 ] || incomplete=1
 for metric in foreground_request_creation_us durable_action_lookup_dedup_us \
               local_submit_us local_first_feedback_us live_rpc_admission_us \
               foreground_to_dispatch_us context_prepare_us peer_selection_us \
@@ -195,8 +231,11 @@ done
 for metric in live_rpc_request_bytes live_rpc_response_bytes \
               context_prepared_bytes context_transferred_bytes \
               worker_input_bytes worker_output_bytes \
-              network_payload_lower_bound_bytes worker_processes \
-              compiler_processes test_processes; do
+              network_payload_lower_bound_bytes worker_host_processes \
+              worker_host_executor_launches \
+              child_reported_processes_unverified \
+              child_reported_compiler_processes_unverified \
+              child_reported_test_processes_unverified; do
     if ! quantile "$metric" "$scratch/$metric" count; then incomplete=1; fi
 done
 

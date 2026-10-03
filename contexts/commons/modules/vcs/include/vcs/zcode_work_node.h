@@ -78,6 +78,12 @@ bool vcs_zcode_work_node_peer_capability(
 size_t vcs_zcode_work_node_capable_peers(
     struct vcs_zcode_work_node *node, int64_t now, uint64_t *peers,
     struct vcs_zcode_work_capability_v1 *capabilities, size_t max);
+/* Read the signed worker identity bound to one exact outbound request.
+ * The binding survives a dropped transport session until its tombstone is
+ * evicted; a peer ID by itself is not a physical worker identity. */
+bool vcs_zcode_work_node_outbound_signer(
+    struct vcs_zcode_work_node *node, uint64_t peer, uint64_t request_id,
+    const uint8_t action_root[32], uint8_t signer_out[32]);
 
 /* Requester coordination. No automatic peer selection exists: the requester
  * chooses one advertised peer and owns its deadline, cancellation, and quorum. */

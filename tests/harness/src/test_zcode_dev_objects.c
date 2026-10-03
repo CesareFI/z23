@@ -1866,12 +1866,21 @@ static int test_zd_work_node_duplicate_sessions(void)
         ASSERT(vcs_zcode_work_node_peer_capability(
             requester, 12, 1000, &effective));
         ASSERT_EQ(effective.queue_headroom, 0);
+        ASSERT(vcs_zcode_work_node_peer_add(requester, 13));
         vcs_zcode_work_node_peer_drop(requester, 11);
         ASSERT(vcs_zcode_work_node_peer_capability(
             requester, 12, 1000, &effective));
         ASSERT_EQ(effective.queue_headroom, 0);
         request.request_id = 601;
         zd_root(request.action_root, 70);
+        uint8_t bound_signer[32];
+        ASSERT(vcs_zcode_work_node_outbound_signer(
+            requester, 11, retry.request_id, retry.action_root,
+            bound_signer));
+        ASSERT(memcmp(bound_signer, worker_key, 32) == 0);
+        ASSERT(!vcs_zcode_work_node_outbound_signer(
+            requester, 11, retry.request_id, request.action_root,
+            bound_signer));
         ASSERT(vcs_zcode_work_request_seal(
             &request, requester_secret, requester_key));
         ASSERT_EQ(vcs_zcode_work_node_submit(requester, 12, &request, 1000),
@@ -1880,6 +1889,48 @@ static int test_zd_work_node_duplicate_sessions(void)
         ASSERT(vcs_zcode_work_node_peer_capability(
             requester, 12, 1100, &effective));
         ASSERT_EQ(effective.queue_headroom, 1);
+
+        /* The expired lease belongs to one signer even when that worker has
+         * a second transport session. Prefer an independent signer for the
+         * exact retry; retain same-worker reconnect as the final fallback. */
+        uint8_t independent_seed[32], independent_secret[32];
+        uint8_t independent_key[32];
+        zd_root(independent_seed, 71);
+        ed25519_keypair(independent_key, independent_secret,
+                        independent_seed);
+        struct vcs_zcode_work_capability_v1 independent = capability;
+        memcpy(independent.signer_pubkey, independent_key, 32);
+        ASSERT(vcs_zcode_work_capability_seal(
+            &independent, independent_secret, independent_key));
+        struct vcs_zcode_work_swarm_message advert = {
+            .type = VCS_ZCODE_WORK_SWARM_CAPABILITY,
+            .body.capability = independent,
+        };
+        ASSERT(vcs_zcode_work_swarm_serialize(
+            &advert, frame, sizeof(frame), &frame_len));
+        ASSERT_EQ(vcs_zcode_work_node_handle_frame(
+            requester, 13, frame, frame_len, 1100),
+            VCS_ZCODE_WORK_NODE_OK);
+        struct db_build_proof_event event = {0};
+        (void)snprintf(event.state, sizeof(event.state), "RUNNING");
+        zcl_hex_encode(retry.action_root, 32, event.action_id);
+        event.peer_id = 11;
+        event.request_id = retry.request_id;
+        event.deadline_at = 1100;
+        struct db_build_job job = {0};
+        zcl_hex_encode(capability.toolchain_capsule_root, 32,
+                       job.toolchain_sha3);
+        uint64_t selected = 0;
+        struct vcs_zcode_work_capability_v1 chosen;
+        ASSERT(boot_zcode_async_select_peer(
+            requester, &event, &job, VCS_ZCODE_WORK_BUILD, 1100,
+            &selected, &chosen));
+        ASSERT_EQ(selected, 13u);
+        vcs_zcode_work_node_peer_drop(requester, 13);
+        ASSERT(boot_zcode_async_select_peer(
+            requester, &event, &job, VCS_ZCODE_WORK_BUILD, 1100,
+            &selected, &chosen));
+        ASSERT_EQ(selected, 12u);
 
         /* A lost result and capacity-refresh frame leave the alternate
          * worker's last signed headroom at zero.  Once the original exact

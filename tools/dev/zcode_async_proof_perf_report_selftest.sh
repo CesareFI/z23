@@ -15,7 +15,7 @@ check() {
     }
 }
 worker() {
-    printf '[zcode.proof_perf] action=%064d stage=worker_execute at_unix_us=1000005 %s child_cpu_us=0 sandbox_prepare_us=1 execution_us=2 output_cas_us=3 receipt_sign_us=4 lookup_us=5 input_reconstruction_us=6 output_verify_us=7 revalidation_us=8 projection_us=9 input_bytes=10 output_bytes=11 processes=1 compiler_processes=1 test_processes=0 cache_hit=0\n' "$1" "$2" >>"$scratch/node/node.log"
+    printf '[zcode.proof_perf] action=%064d stage=worker_execute at_unix_us=1000005 %s child_cpu_us=0 sandbox_prepare_us=1 execution_us=2 output_cas_us=3 receipt_sign_us=4 lookup_us=5 input_reconstruction_us=6 output_verify_us=7 revalidation_us=8 projection_us=9 input_bytes=10 output_bytes=11 host_processes=1 host_executor_launches=1 child_reported_processes_unverified=2 child_reported_compiler_processes_unverified=1 child_reported_test_processes_unverified=0 cache_hit=0\n' "$1" "$2" >>"$scratch/node/node.log"
 }
 for i in 1 2 3; do
     printf '{"foreground_request_creation_us":1,"durable_action_lookup_dedup_us":2,"local_submit_us":3,"local_first_feedback_us":4,"live_rpc_admission_us":5,"live_rpc_request_bytes":6,"live_rpc_response_bytes":7}\n' >"$scratch/async-submit-$i-result.json"
@@ -29,7 +29,38 @@ worker 3 total_us=10000001
 bash "$report" "$scratch" >"$scratch/report"
 check '^remote_execution_us n=3 p50_us=10000000 p95_us=10000001 mean_us=10000000 max_us=10000001'
 check '^remote_cpu_us n=3 p50_us=0 p95_us=0 mean_us=0 max_us=0 expected=3 missing=0 invalid=0 complete=true$'
+check '^worker_host_processes n=3 .* expected=3 missing=0 invalid=0 complete=true$'
+check '^child_reported_compiler_processes_unverified n=3 .* expected=3 missing=0 invalid=0 complete=true$'
 check '^worker_cache_hits=0/3$'
+
+# A second signed reproduction action shares the original work submission.
+# Its missing foreground is allowed only when the result names that exact ID.
+reproduction_action="$(printf '%064d' 3)"
+cp "$scratch/node/node.log" "$scratch/complete-node.log"
+cp "$scratch/async-submit-3-result.json" "$scratch/complete-result.json"
+grep -vF "action=$reproduction_action stage=foreground_return" \
+    "$scratch/complete-node.log" >"$scratch/node/node.log"
+sed "s/}$/,\"reproduction_action_id\":\"$reproduction_action\"}/" \
+    "$scratch/complete-result.json" >"$scratch/async-submit-3-result.json"
+bash "$report" "$scratch" >"$scratch/report"
+check '^reproduction_without_foreground=1 unobserved_reproduction_actions=0 invalid_reproduction_records=0$'
+check "^reproduction_without_foreground_action=$reproduction_action$"
+check '^background_total_precise_us n=2 .* expected=2 missing=0 invalid=0 complete=true$'
+cp "$scratch/complete-result.json" "$scratch/async-submit-3-result.json"
+if bash "$report" "$scratch" >"$scratch/report"; then
+    printf 'proof-perf selftest: unmarked missing foreground did not refuse\n' >&2
+    exit 1
+fi
+check '^background_total_precise_us n=2 .* expected=3 missing=1 invalid=0 complete=false$'
+sed 's/}$/,"reproduction_action_id":"invalid"}/' \
+    "$scratch/complete-result.json" >"$scratch/async-submit-3-result.json"
+if bash "$report" "$scratch" >"$scratch/report"; then
+    printf 'proof-perf selftest: invalid reproduction identity did not refuse\n' >&2
+    exit 1
+fi
+check '^reproduction_without_foreground=0 unobserved_reproduction_actions=0 invalid_reproduction_records=1$'
+cp "$scratch/complete-result.json" "$scratch/async-submit-3-result.json"
+cp "$scratch/complete-node.log" "$scratch/node/node.log"
 
 # A structurally valid result with one requested metric absent is incomplete,
 # while every other field remains measured and valid.

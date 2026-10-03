@@ -112,6 +112,23 @@ zap_submit_capture() {
     )
 }
 
+zap_accept_work() {
+    local node="$1" work="$2" workspace="${3:-$ZAP_PROJECT}"
+    local shown identity accepted
+    shown="$(dht_native "${DDS[$node]}" "${RPCS[$node]}" zcode work show \
+        --input="{\"workspace\":\"$workspace\",\"work\":\"$work\",\"datadir\":\"${DDS[$node]}\",\"details\":true}" || true)"
+    identity="$(printf '%s' "$shown" | zap_field data.confirmation_identity '' 2>/dev/null || true)"
+    [ "$(printf '%s' "$shown" | zap_field data.confirmation_ready False 2>/dev/null || true)" = True ] &&
+    [ "${#identity}" -eq 64 ] ||
+        dht_die "work $work did not offer an exact acceptance decision: $shown"
+    accepted="$(dht_native "${DDS[$node]}" "${RPCS[$node]}" zcode work accept \
+        --input="{\"workspace\":\"$workspace\",\"work\":\"$work\",\"datadir\":\"${DDS[$node]}\",\"confirmation_identity\":\"$identity\",\"details\":true}" || true)"
+    [ "$(printf '%s' "$accepted" | zap_field ok False 2>/dev/null || true)" = True ] &&
+    [ "$(printf '%s' "$accepted" | zap_field data.state '' 2>/dev/null || true)" = PROVEN ] &&
+    [ "$(printf '%s' "$accepted" | zap_field data.confirmation_identity_checked False 2>/dev/null || true)" = True ] ||
+        dht_die "exact work $work was not accepted after its proof: $accepted"
+}
+
 zap_wait_executor_running() {
     local node="$1" action="$2" deadline state
     ZAP_WAIT_ACTION_STATE=missing
@@ -689,6 +706,7 @@ zap_assert_responsive "$ZAP_A" "before-standard-reproduction"
 dht_note "async proof: B imports inert bytes while C and D reproduce one standard candidate"
 zap_submit "$ZAP_A" 6 "Change x to six for independent reproduction" 600 standard
 STANDARD_ACTION="$ZAP_ACTION"; STANDARD_REPRO_ACTION="$ZAP_REPRO_ACTION"
+STANDARD_WORK="$ZAP_WORK"
 STANDARD_MS="$ZAP_FOREGROUND_MS"
 if [ -n "${ZAP_PROGRESS_OBSERVER:-}" ]; then
     declare -F "$ZAP_PROGRESS_OBSERVER" >/dev/null ||
@@ -745,6 +763,7 @@ zap_assert_receipt_bindings "$ZAP_A" "$ZAP_D" "$D_STANDARD_ACTION"
 zap_assert_requester_did_not_execute "$ZAP_A" "$STANDARD_ACTION"
 zap_assert_requester_did_not_execute "$ZAP_A" "$STANDARD_REPRO_ACTION"
 zap_assert_db_lifetime_clean "$ZAP_A" "four-node package reproduction"
+zap_accept_work "$ZAP_A" "$STANDARD_WORK"
 
 # Exercise worker-owned one-slot admission with two independent requesters.
 # Both initially see B's signed headroom hint. B atomically grants one action,
@@ -753,8 +772,8 @@ zap_assert_db_lifetime_clean "$ZAP_A" "four-node package reproduction"
 for node in "$ZAP_A" "$ZAP_B" "$ZAP_C" "$ZAP_D"; do
     dht_kill_group "${PIDS[$node]:-}"; PIDS[$node]=""
 done
-# Retained discovery is deliberately isolated for all four cleanly stopped
-# nodes. `-connect` does not disable the C23 reachability dialer, so leaving
+# Retained discovery is deliberately isolated for the four race roles and a
+# chain-only relay. `-connect` does not disable the C23 reachability dialer, so leaving
 # even one node's old projection in place creates an undeclared edge and makes
 # worker choice depend on fixture history. Identity, worker key, package CAS,
 # chain, node database, and canonical listener addresses remain untouched.
@@ -784,16 +803,30 @@ zap_restore_discovery() {
 }
 
 RACE_DISCOVERY_QUARANTINE="$DHT_WORK/async-admission-discovery"
-for node in "$ZAP_A" "$ZAP_B" "$ZAP_C" "$ZAP_D"; do
+ZAP_CHAIN_RELAY=""
+for node in 0 1 2 3 4 5 6; do
+    if [ "$node" != "$ZAP_A" ] && [ "$node" != "$ZAP_B" ] &&
+       [ "$node" != "$ZAP_C" ] && [ "$node" != "$ZAP_D" ]; then
+        ZAP_CHAIN_RELAY="$node"
+        break
+    fi
+done
+[ -n "$ZAP_CHAIN_RELAY" ] || dht_die "one-slot race has no chain-only relay"
+for node in "$ZAP_A" "$ZAP_B" "$ZAP_C" "$ZAP_D" "$ZAP_CHAIN_RELAY"; do
     zap_quarantine_discovery "$node" "$RACE_DISCOVERY_QUARANTINE/$node"
 done
-zap_start_node "$ZAP_B"
-zap_start_node "$ZAP_D"
 SAVED_BUILDWORKERS="$DHT_BUILDWORKERS"
 DHT_BUILDWORKERS=0
-zap_start_node "$ZAP_A"
-zap_start_node "$ZAP_C"
+zap_start_node "$ZAP_CHAIN_RELAY"
 DHT_BUILDWORKERS="$SAVED_BUILDWORKERS"
+zap_start_node "$ZAP_B" "$ZAP_A"
+zap_start_node "$ZAP_D" "$ZAP_CHAIN_RELAY"
+DHT_BUILDWORKERS=0
+zap_start_node "$ZAP_A" "$ZAP_B"
+zap_start_node "$ZAP_C" "$ZAP_B"
+DHT_BUILDWORKERS="$SAVED_BUILDWORKERS"
+zap_wait_chain_tip "$ZAP_B"
+zap_wait_chain_tip "$ZAP_D"
 # This is an explicit clean phase transition, so the new resident process and
 # its new SQLite sidecar generation become the race phase's ownership
 # baseline.  Keeping the prior phase's inode/PID would falsely report the
@@ -804,6 +837,13 @@ ZAP_A_DB_IDENTITIES="$(zap_db_identity "$ZAP_A" || true)"
     dht_die "A did not expose stable database identities for one-slot race"
 RACE_A="$DHT_WORK/async-admission-race-a.txt"
 RACE_C="$DHT_WORK/async-admission-race-c.txt"
+# Both requesters need live, overlapping actions. Give C independent source
+# ownership so canonical write-scope coordination stays enforced for each.
+RACE_C_PROJECT="$DHT_WORK/async-race-c-project"
+mkdir -p "$RACE_C_PROJECT"
+cp -a "$ZAP_PROJECT"/LICENSE "$ZAP_PROJECT"/zcode-package.json \
+      "$ZAP_PROJECT"/src "$ZAP_PROJECT"/include "$ZAP_PROJECT"/tests \
+      "$RACE_C_PROJECT/"
 # Candidate/action creation is requester-local factory work.  Keep it outside
 # concurrent processes: two processes deriving the same checkout's mutable
 # code-index/VCS projections would test shared-workspace tooling, not atomic
@@ -813,6 +853,7 @@ RACE_C="$DHT_WORK/async-admission-race-c.txt"
 zap_connect "$ZAP_C" "$ZAP_B"
 zap_submit_capture "$ZAP_A" 21 "One-slot race from requester A" "$RACE_A" 1800 1
 RACE_A_ACTION="$(sed -n '1p' "$RACE_A")"
+RACE_A_WORK="$(sed -n '2p' "$RACE_A")"
 [ "${#RACE_A_ACTION}" -eq 64 ] ||
     dht_die "one-slot race did not create A's immutable action"
 RACE_STARTED_MS="$(date +%s%3N)"
@@ -823,8 +864,10 @@ RACE_STARTED_MS="$(date +%s%3N)"
 zap_connect "$ZAP_A" "$ZAP_B"
 zap_wait_executor_running "$ZAP_B" "$RACE_A_ACTION" ||
     dht_die "B never durably entered RUNNING for its granted slot (last_state=$ZAP_WAIT_ACTION_STATE)"
-zap_submit_capture "$ZAP_C" 22 "One-slot race from requester C" "$RACE_C" 1800 1
+ZAP_PROJECT="$RACE_C_PROJECT" zap_submit_capture "$ZAP_C" 22 \
+    "One-slot race from requester C" "$RACE_C" 1800 1
 RACE_C_ACTION="$(sed -n '1p' "$RACE_C")"
+RACE_C_WORK="$(sed -n '2p' "$RACE_C")"
 [ "${#RACE_C_ACTION}" -eq 64 ] && [ "$RACE_A_ACTION" != "$RACE_C_ACTION" ] ||
     dht_die "one-slot race did not create C's distinct immutable action"
 printf 'A=%s B=%s C=%s D=%s\nA_action=%s\nC_action=%s\n' \
@@ -865,17 +908,20 @@ printf 'race_started_ms=%s\nadmission_reroute_max_ms=%s\nB_executions=%s\nD_exec
     >"$DHT_WORK/async-admission-race-metrics.txt"
 zap_assert_responsive "$ZAP_A" "one-slot-race-complete"
 zap_assert_responsive "$ZAP_C" "one-slot-race-complete"
+zap_accept_work "$ZAP_A" "$RACE_A_WORK"
+zap_accept_work "$ZAP_C" "$RACE_C_WORK" "$RACE_C_PROJECT"
 
 # Restart the original quick-profile sequence with every executor enabled.
-for node in "$ZAP_A" "$ZAP_B" "$ZAP_C" "$ZAP_D"; do
+for node in "$ZAP_A" "$ZAP_B" "$ZAP_C" "$ZAP_D" "$ZAP_CHAIN_RELAY"; do
     dht_kill_group "${PIDS[$node]:-}"; PIDS[$node]=""
 done
-for node in "$ZAP_A" "$ZAP_B" "$ZAP_C" "$ZAP_D"; do
+for node in "$ZAP_A" "$ZAP_B" "$ZAP_C" "$ZAP_D" "$ZAP_CHAIN_RELAY"; do
     zap_restore_discovery "$node" "$RACE_DISCOVERY_QUARANTINE/$node"
 done
-zap_start_node "$ZAP_B"
+zap_start_node "$ZAP_B" "$ZAP_A"
 zap_start_node "$ZAP_A" "$ZAP_B"
 zap_connect "$ZAP_A" "$ZAP_B"
+zap_wait_chain_tip "$ZAP_B"
 A_ORIGINAL_PID="${PIDS[$ZAP_A]}"
 ZAP_A_DB_IDENTITIES="$(zap_db_identity "$ZAP_A" || true)"
 [ -n "$ZAP_A_DB_IDENTITIES" ] ||
@@ -899,12 +945,14 @@ zap_assert_same_action_identity "$ZAP_A" "$ZAP_B" "$FIRST_ACTION"
 zap_assert_evidence "$ZAP_A" "$FIRST_ACTION"
 zap_assert_receipt_bindings "$ZAP_A" "$ZAP_B" "$FIRST_ACTION"
 zap_assert_exact_reuse "$ZAP_A" "$ZAP_B" "$FIRST_ACTION" "$FIRST_WORK"
+zap_accept_work "$ZAP_A" "$FIRST_WORK"
 
 dht_note "async proof: A remains the same process while C executes another action"
 dht_kill_group "${PIDS[$ZAP_B]}"; PIDS[$ZAP_B]=""
 sleep 2
-zap_start_node "$ZAP_C"
+zap_start_node "$ZAP_C" "$ZAP_A"
 zap_connect "$ZAP_A" "$ZAP_C"
+zap_wait_chain_tip "$ZAP_C"
 [ "${PIDS[$ZAP_A]}" = "$A_ORIGINAL_PID" ] &&
     kill -0 "-$A_ORIGINAL_PID" 2>/dev/null ||
     dht_die "A did not continue operating while executor roles changed"
@@ -927,25 +975,29 @@ zap_assert_same_action_identity "$ZAP_A" "$ZAP_C" "$SECOND_ACTION"
 zap_assert_evidence "$ZAP_A" "$SECOND_ACTION"
 zap_assert_receipt_bindings "$ZAP_A" "$ZAP_C" "$SECOND_ACTION"
 zap_assert_db_lifetime_clean "$ZAP_A" "B-to-C executor replacement"
+zap_accept_work "$ZAP_A" "$SECOND_WORK"
 
 dht_note "async proof: B dies after started_at; lease retry moves exact work to C"
 dht_kill_group "${PIDS[$ZAP_C]}"; PIDS[$ZAP_C]=""
 sleep 2
-zap_start_node "$ZAP_B"
+zap_start_node "$ZAP_B" "$ZAP_A"
 zap_connect "$ZAP_A" "$ZAP_B"
+zap_wait_chain_tip "$ZAP_B"
 # Lease recovery is the boundary under test.  Thirty aggregate CPU-seconds
 # keeps the measured ~12-second cold candidate clear of the former 10-second
 # compilation cliff while retaining a real lease expiry inside the hook's
 # bounded observation window.
 zap_submit "$ZAP_A" 4 "Change x to four with lease recovery" 30
-RETRY_ACTION="$ZAP_ACTION"; RETRY_MS="$ZAP_FOREGROUND_MS"
+RETRY_ACTION="$ZAP_ACTION"; RETRY_WORK="$ZAP_WORK"
+RETRY_MS="$ZAP_FOREGROUND_MS"
 STALE_B_WORKER="$(zap_sql_value "$ZAP_B" "SELECT worker_id FROM build_workers WHERE approved=1 AND revoked=0 AND capabilities LIKE '%c23.package.recipe.v1%' ORDER BY last_seen_at DESC LIMIT 1")"
 [ "${#STALE_B_WORKER}" -eq 64 ] || dht_die "B's stale worker identity was not durable"
 zap_stop_executor_mid_action "$ZAP_B" ||
     dht_die "B did not spawn the fixed package action before the death probe"
 zap_assert_responsive "$ZAP_A" "B-hard-stopped-mid-action"
-zap_start_node "$ZAP_C"
+zap_start_node "$ZAP_C" "$ZAP_A"
 zap_connect "$ZAP_A" "$ZAP_C"
+zap_wait_chain_tip "$ZAP_C"
 zap_wait_ready "$ZAP_A" "$RETRY_ACTION" || {
     kill -CONT "-${PIDS[$ZAP_B]}" 2>/dev/null || true
     zap_dump_failure "$ZAP_A" "$RETRY_ACTION"
@@ -994,6 +1046,7 @@ fi
 zap_assert_evidence "$ZAP_A" "$RETRY_ACTION"
 zap_assert_receipt_bindings "$ZAP_A" "$ZAP_C" "$RETRY_ACTION"
 zap_assert_db_lifetime_clean "$ZAP_A" "lease loss, C takeover, and stale-B refusal"
+zap_accept_work "$ZAP_A" "$RETRY_WORK"
 
 # A is only a task role. Kill it, then use the unchanged full-node code on B
 # to originate and C to execute one final request.
@@ -1001,9 +1054,11 @@ dht_note "async proof: kill A; B originates through the same full-node path"
 zap_assert_db_lifetime_clean "$ZAP_A" "complete A requester lifecycle"
 dht_kill_group "${PIDS[$ZAP_A]}"; PIDS[$ZAP_A]=""
 sleep 2
-zap_connect "$ZAP_B" "$ZAP_C"
+zap_connect "$ZAP_C" "$ZAP_B"
+zap_wait_chain_tip "$ZAP_C"
 zap_submit "$ZAP_B" 5 "Change x to five after A disappears"
-FINAL_ACTION="$ZAP_ACTION"; FINAL_MS="$ZAP_FOREGROUND_MS"
+FINAL_ACTION="$ZAP_ACTION"; FINAL_WORK="$ZAP_WORK"
+FINAL_MS="$ZAP_FOREGROUND_MS"
 zap_wait_ready "$ZAP_B" "$FINAL_ACTION" ||
     { zap_dump_failure "$ZAP_B" "$FINAL_ACTION";
       dht_die "B did not originate successfully after A disappeared"; }
@@ -1013,10 +1068,16 @@ zap_assert_requester_did_not_execute "$ZAP_B" "$FINAL_ACTION"
 zap_assert_same_action_identity "$ZAP_B" "$ZAP_C" "$FINAL_ACTION"
 zap_assert_evidence "$ZAP_B" "$FINAL_ACTION"
 zap_assert_receipt_bindings "$ZAP_B" "$ZAP_C" "$FINAL_ACTION"
+zap_accept_work "$ZAP_B" "$FINAL_WORK"
 
 "$SCRIPT_DIR/zcode_async_proof_perf_report.sh" "$DHT_WORK" \
     >"$DHT_WORK/async-proof-performance-report.txt" ||
     dht_die "async proof performance report was incomplete"
+grep -q '^reproduction_without_foreground=1 unobserved_reproduction_actions=0 invalid_reproduction_records=0$' \
+    "$DHT_WORK/async-proof-performance-report.txt" &&
+grep -q "^reproduction_without_foreground_action=$STANDARD_REPRO_ACTION$" \
+    "$DHT_WORK/async-proof-performance-report.txt" ||
+    dht_die "performance report did not bind its missing foreground to the independent reproduction action"
 PERF_CANDIDATES="$(printf '%s\n' "$STANDARD_ACTION" \
     "$RACE_A_ACTION" "$RACE_C_ACTION" "$FIRST_ACTION" "$SECOND_ACTION" \
     "$RETRY_ACTION" "$FINAL_ACTION" | sort -u | wc -l)"

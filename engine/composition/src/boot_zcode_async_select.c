@@ -45,6 +45,73 @@ bool boot_zcode_async_needs_retry(
         boot_zcode_async_session_lost(work, event);
 }
 
+static bool async_expired_worker_signer(
+    struct vcs_zcode_work_node *work,
+    const struct db_build_proof_event *event, int64_t now,
+    uint8_t signer_out[32])
+{
+    uint8_t action_root[32];
+    return event->peer_id != 0 && event->deadline_at > 0 &&
+        now >= event->deadline_at &&
+        zcl_hex_decode_lower(event->action_id, action_root, 32) &&
+        vcs_zcode_work_node_outbound_signer(
+            work, event->peer_id, event->request_id, action_root,
+            signer_out);
+}
+
+static bool async_retry_candidate_allows(
+    const struct db_build_proof_event *event,
+    const struct db_build_job *job, uint8_t work_kind,
+    uint64_t peer, const struct vcs_zcode_work_capability_v1 *capability,
+    bool retry, bool known_signer, const uint8_t expired_signer[32],
+    size_t pass)
+{
+    if (retry && peer == event->peer_id)
+        return false;
+    bool same_worker = known_signer &&
+        memcmp(capability->signer_pubkey, expired_signer, 32) == 0;
+    if (known_signer && ((pass < 2) == same_worker))
+        return false;
+    struct vcs_zcode_work_capability_v1 probe = *capability;
+    if (retry && (pass & 1u) != 0 && probe.queue_headroom == 0)
+        probe.queue_headroom = 1;
+    return async_capability_allows(&probe, job, work_kind);
+}
+
+static bool async_select_from_pool(
+    struct vcs_zcode_work_node *work,
+    const struct db_build_proof_event *event,
+    const struct db_build_job *job, uint8_t work_kind, int64_t now,
+    bool retry, uint64_t *peer_out,
+    struct vcs_zcode_work_capability_v1 *capability_out)
+{
+    uint64_t peers[VCS_ZCODE_WORK_NODE_MAX_PEERS];
+    struct vcs_zcode_work_capability_v1 capabilities[
+        VCS_ZCODE_WORK_NODE_MAX_PEERS];
+    size_t count = vcs_zcode_work_node_capable_peers(
+        work, now, peers, capabilities, VCS_ZCODE_WORK_NODE_MAX_PEERS);
+    uint8_t expired_signer[32] = {0};
+    bool known_signer = async_expired_worker_signer(
+        work, event, now, expired_signer);
+    size_t passes = retry ? (known_signer ? 4 : 2) : 1;
+    for (size_t pass = 0; pass < passes; pass++) {
+        for (size_t i = 0; i < count; i++) {
+            /* Expired leases prefer another signer across all sessions.
+             * Same-worker reconnect remains the fallback. Signed zero
+             * headroom is probed only on the second pass of each tier;
+             * the receiving worker still controls exact admission. */
+            if (!async_retry_candidate_allows(
+                    event, job, work_kind, peers[i], &capabilities[i],
+                    retry, known_signer, expired_signer, pass))
+                continue;
+            *peer_out = peers[i];
+            *capability_out = capabilities[i];
+            return true;
+        }
+    }
+    return false;
+}
+
 bool boot_zcode_async_select_peer(
     struct vcs_zcode_work_node *work,
     const struct db_build_proof_event *event,
@@ -69,37 +136,9 @@ bool boot_zcode_async_select_peer(
             return true;
         }
     }
-    uint64_t peers[VCS_ZCODE_WORK_NODE_MAX_PEERS];
-    struct vcs_zcode_work_capability_v1 capabilities[
-        VCS_ZCODE_WORK_NODE_MAX_PEERS];
-    size_t count = vcs_zcode_work_node_capable_peers(
-        work, now, peers, capabilities, VCS_ZCODE_WORK_NODE_MAX_PEERS);
-    size_t passes = retry ? 2 : 1;
-    for (size_t pass = 0; pass < passes; pass++) {
-        for (size_t i = 0; i < count; i++) {
-            /* An expired request must move to a different physical worker:
-             * the prior worker may have finished and lost its RESULT, while
-             * its in-memory track intentionally retains no result bytes to
-             * replay. */
-            if (retry && peers[i] == event->peer_id)
-                continue;
-            /* Prefer signed free headroom.  On the second pass, a different
-             * peer may be probed despite stale signed zero headroom.  This
-             * grants no work authority: the receiving worker independently
-             * admits, returns BUSY, or refuses the exact request. */
-            uint16_t headroom = capabilities[i].queue_headroom;
-            if (retry && pass == 1 && headroom == 0)
-                capabilities[i].queue_headroom = 1;
-            bool eligible = async_capability_allows(
-                &capabilities[i], job, work_kind);
-            capabilities[i].queue_headroom = headroom;
-            if (!eligible) continue;
-            *peer_out = peers[i];
-            *capability_out = capabilities[i];
-            return true;
-        }
-    }
-    return false;
+    return async_select_from_pool(
+        work, event, job, work_kind, now, retry, peer_out,
+        capability_out);
 }
 
 const char *boot_zcode_async_log_no_peer(

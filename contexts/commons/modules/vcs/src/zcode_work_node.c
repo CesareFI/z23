@@ -368,6 +368,22 @@ static struct work_track *work_find_track(struct vcs_zcode_work_node *node,
     return NULL;
 }
 
+bool vcs_zcode_work_node_outbound_signer(
+    struct vcs_zcode_work_node *node, uint64_t peer, uint64_t request_id,
+    const uint8_t action_root[32], uint8_t signer_out[32])
+{
+    if (!node || !peer || !request_id || !action_root || !signer_out)
+        return false;
+    pthread_mutex_lock(&node->lock);
+    struct work_track *track = work_find_track(
+        node, peer, request_id, false);
+    bool found = track &&
+        memcmp(track->request.action_root, action_root, 32) == 0;
+    if (found) memcpy(signer_out, track->worker_signer, 32);
+    pthread_mutex_unlock(&node->lock);
+    return found;
+}
+
 static bool work_event_matches(
     const struct work_track *track, uint64_t peer, uint64_t request_id)
 {
