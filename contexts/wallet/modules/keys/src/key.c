@@ -168,6 +168,8 @@ void ext_key_decode(struct ext_key *ek,
     memcpy(ek->key.vch, code + 42, 32);
     ek->key.fValid = secp256k1_ec_seckey_verify(secp256k1_ctx_sign, ek->key.vch);
     ek->key.fCompressed = true;
+    if (!ek->key.fValid)
+        memory_cleanse(ek, sizeof(*ek));
 }
 
 bool ext_key_derive(const struct ext_key *ek, struct ext_key *out,

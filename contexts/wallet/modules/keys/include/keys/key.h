@@ -82,7 +82,8 @@ bool privkey_derive(const struct privkey *k, struct privkey *child,
 
 /* Serialize / parse the 74-byte BIP32 extended-private-key body (depth,
  * parent fingerprint, child index, chaincode, and the 32-byte key with its
- * leading zero pad). ext_key_decode revalidates the key against secp256k1. */
+ * leading zero pad). ext_key_decode revalidates the key against secp256k1 and
+ * wipes the complete output if the decoded scalar is invalid. */
 void ext_key_encode(const struct ext_key *ek,
                     unsigned char code[BIP32_EXTKEY_SIZE]);
 void ext_key_decode(struct ext_key *ek,
