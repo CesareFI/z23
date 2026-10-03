@@ -194,6 +194,7 @@ void ext_key_set_master(struct ext_key *ek, const unsigned char *seed,
     hmac_sha512_init(&hmac, hashkey, sizeof(hashkey));
     hmac_sha512_write(&hmac, seed, nSeedLen);
     hmac_sha512_finalize(&hmac, out);
+    memory_cleanse(&hmac, sizeof(hmac));
     memcpy(ek->key.vch, out, 32);
     ek->key.fValid = secp256k1_ec_seckey_verify(secp256k1_ctx_sign, ek->key.vch);
     ek->key.fCompressed = true;
@@ -201,7 +202,7 @@ void ext_key_set_master(struct ext_key *ek, const unsigned char *seed,
     ek->nDepth = 0;
     ek->nChild = 0;
     memset(ek->vchFingerprint, 0, sizeof(ek->vchFingerprint));
-    memset(out, 0, sizeof(out));
+    memory_cleanse(out, sizeof(out));
 }
 
 void ext_key_neuter(const struct ext_key *ek, struct ext_pubkey *epk)
@@ -238,7 +239,7 @@ void ecc_start(void)
         abort(); // abort-ok: no entropy; wrapper logged, void return blocks propagation, and an unblinded context leaks key material via side channels
     bool ret = secp256k1_context_randomize(ctx, seed);
     assert(ret); // abort-ok: unrandomized signing context, side-channel blinding is not in force
-    memset(seed, 0, sizeof(seed));
+    memory_cleanse(seed, sizeof(seed));
     secp256k1_ctx_sign = ctx;
 }
 
