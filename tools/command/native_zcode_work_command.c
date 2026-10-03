@@ -83,6 +83,7 @@ uint64_t zwork_source_bytes(const struct vcs_package_prepared *prepared);
  * owner-unsafe directories refuse, so a restart cannot silently switch the
  * ledger or candidate bytes it will accept. */
 #if !defined(_WIN32)
+#define ZWORK_LEGACY_ROOT "/tmp/zclassic23-zcode-workspaces"
 static bool zwork_task_path_probe(const char *path, bool legacy,
                                   bool *present)
 {
@@ -93,7 +94,7 @@ static bool zwork_task_path_probe(const char *path, bool legacy,
             (found.st_mode & 0777) == 0700;
     if (errno == ENOENT) return true;
     if (!legacy || errno != EACCES) return false;
-    if (lstat("/tmp/zclassic23-zcode-workspaces", &root) != 0)
+    if (lstat(ZWORK_LEGACY_ROOT, &root) != 0)
         return false;
     return root.st_uid != geteuid();
 }
@@ -122,7 +123,7 @@ static bool zwork_task_posix_paths(char legacy[ZWORK_PATH_MAX],
     const char *tail = xdg && xdg[0] ? "" : "/.local/state";
     if (!base || base[0] != '/') return false;
     int a = snprintf(legacy, ZWORK_PATH_MAX,
-                     "/tmp/zclassic23-zcode-workspaces/%lu/%.64s",
+                     ZWORK_LEGACY_ROOT "/%lu/%.64s",
                      (unsigned long)getuid(), task);
     int b = snprintf(current, ZWORK_PATH_MAX,
                      "%s%s/z23/dev/zcode-workspaces/%.64s",
