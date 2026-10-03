@@ -1082,6 +1082,54 @@ static int expand_template(FILE *tpl, FILE *out, const char *tpl_path)
     return rc;
 }
 
+/* An unchanged generated page must retain its inode and source-mutation
+ * record. Compare bounded chunks after the stage has been closed. */
+static int stage_matches_destination(const char *stage_path,
+                                     const char *destination)
+{
+    FILE *stage = fopen(stage_path, "rb");
+    if (!stage) {
+        fprintf(stderr, "gen_api_reference: cannot read stage: %s\n",
+                strerror(errno));
+        return -1;
+    }
+    FILE *old = fopen(destination, "rb");
+    if (!old) {
+        if (fclose(stage) != 0) {
+            fprintf(stderr, "gen_api_reference: cannot close stage: %s\n",
+                    strerror(errno));
+            return -1;
+        }
+        return 0;
+    }
+
+    unsigned char staged[4096], previous[4096];
+    int match = 1;
+    for (;;) {
+        size_t staged_len = fread(staged, 1, sizeof staged, stage);
+        size_t previous_len = fread(previous, 1, sizeof previous, old);
+        if (ferror(stage) || ferror(old)) {
+            match = -1;
+            break;
+        }
+        if (staged_len != previous_len ||
+            memcmp(staged, previous, staged_len) != 0) {
+            match = 0;
+            break;
+        }
+        if (staged_len < sizeof staged)
+            break;
+    }
+    if (fclose(stage) != 0)
+        match = -1;
+    if (fclose(old) != 0)
+        match = -1;
+    if (match < 0)
+        fprintf(stderr, "gen_api_reference: comparison read failed for '%s'\n",
+                destination);
+    return match;
+}
+
 /* Close every stream before publication; a failed write leaves the old
  * destination untouched. The stage is removed on every refused publish. */
 static int publish_stage(FILE *out, const char *stage_path,
@@ -1093,6 +1141,19 @@ static int publish_stage(FILE *out, const char *stage_path,
     if (write_failed) {
         fprintf(stderr, "gen_api_reference: write failed for '%s'\n", destination);
         rc = 1;
+    }
+    if (rc == 0) {
+        int match = stage_matches_destination(stage_path, destination);
+        if (match < 0)
+            rc = 1;
+        if (match == 1) {
+            if (remove(stage_path) != 0) {
+                fprintf(stderr, "gen_api_reference: cannot remove stage: %s\n",
+                        strerror(errno));
+                return 1;
+            }
+            return 0;
+        }
     }
     if (rc == 0 && platform_path_replace(stage_path, destination) != 0) {
         fprintf(stderr, "gen_api_reference: cannot publish '%s': %s\n",

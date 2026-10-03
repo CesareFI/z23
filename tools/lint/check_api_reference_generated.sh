@@ -262,6 +262,29 @@ if ! diff -u "$DOC" "$TMP/expected.md" > "$TMP/diff.txt" 2>&1; then
     exit 1
 fi
 
+# A no-change regeneration must leave the tracked output's timestamp alone.
+# A deliberately old mtime makes the test independent of clock granularity;
+# changed input is the positive control that publication still happens.
+cp "$TMP/expected.md" "$TMP/repeated.md"
+touch -t 200001010000 "$TMP/repeated.md"
+touch -t 200101010000 "$TMP/cutoff"
+if ! "$TMP/gen_api_reference" "$TEMPLATE" "$TMP/repeated.md" \
+        > "$TMP/repeat.log" 2>&1 ||
+        [ "$TMP/repeated.md" -nt "$TMP/cutoff" ] ||
+        ! cmp -s "$DOC" "$TMP/repeated.md"; then
+    echo "check_api_reference_generated: FAIL — unchanged output was rewritten" >&2
+    exit 1
+fi
+awk 'BEGIN { print "fixture edited" } { print }' "$TEMPLATE" \
+    > "$TMP/changed.md.in"
+if ! "$TMP/gen_api_reference" "$TMP/changed.md.in" "$TMP/repeated.md" \
+        > "$TMP/changed.log" 2>&1 ||
+        [ ! "$TMP/repeated.md" -nt "$TMP/cutoff" ] ||
+        cmp -s "$DOC" "$TMP/repeated.md"; then
+    echo "check_api_reference_generated: FAIL — changed output was not published" >&2
+    exit 1
+fi
+
 echo "check_api_reference_generated: clean — $DOC matches the generator over" \
      "$def_count .def catalog(s) / $entries entries"
 exit 0
