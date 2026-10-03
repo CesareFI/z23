@@ -4757,3 +4757,33 @@ back after verification reproduces RED under both Clang/GCC; controls pass.
 Existing deterministic-provider comparisons, independent OpenSSL oracle, failure
 injection and bounded fuzzing validate unchanged signature semantics. Full
 safety, Android native and supplemental runtime scope are recorded in PROGRESS.
+
+## Upstream WKS1 failed-decrypt retirement — 2026-10-03
+
+Candidate `e5a1d446c6b29da8d5544acecdabb88f38f17d99`, based on upstream
+`3a93e60ebf922af3d119b9facc1d95803f42844b`, changes the existing Z23 keystore
+owner only. EVP update can emit tentative plaintext before GCM authentication.
+The shared failure cleanup now erases the admitted ciphertext-length span.
+
+- Bounds: the existing header inspector establishes the minimum envelope size
+  before subtraction; output-capacity admission precedes all writes/wipes.
+  Canary tests verify bytes beyond the admitted span stay unchanged. No new
+  allocation, unchecked addition, persistent pointer or shared state is added.
+- Lifetime: the output remains live throughout cleanup. The existing derived-key
+  cleanse and EVP context release retain every success/failure path. Malformed
+  arguments, header/capacity refusal and pre-AEAD failures do not touch output.
+  Authentication failure preserves the existing output-length sentinel.
+- Semantics: successful decryption, encrypted format, KDF, authentication,
+  monetary/consensus rules and transparent/shielded validity remain unchanged.
+  The small EVP-update helper preserves call order and removes the decryptor's
+  old complexity exemption; no suppression is added. No concurrency change
+  warrants a new TSan lane.
+- Evidence: canonical three-case RED, final fast/ASan GREEN; strict optimized
+  Clang20/GCC14 ASan/UBSan/LSan controls0, zero-length-wipe mutants3 each.
+  Final GCC scope and215 lint gates pass; diff security scan CLEAN. No secret
+  or mnemonic bytes are logged. Exact native proof remains separate acceptance.
+
+A subsequent oversized-length probe identified an independent envelope-size
+wrap/conversion defect in the unchanged encryptor. Its isolated sanitizer RED
+is preserved for a separate bounds candidate; this cleanup slice does not claim
+that broader range boundary is repaired.

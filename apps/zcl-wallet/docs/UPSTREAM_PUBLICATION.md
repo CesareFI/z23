@@ -468,3 +468,30 @@ Additional read-only reuse review: the wallet-owned child-derivation digest is
 already retired on all returns. Its remaining HMAC-context lifetime belongs to
 sealed `core/math/src/hash.c`; no core edit or duplicate caller-side algorithm
 was introduced. This is ownership evidence, not a demonstrated runtime defect.
+
+### Additional reusable candidate: refused-keystore plaintext retirement
+
+Class A/B: Android failure-retirement invariant applied to Z23's existing WKS1
+owner. Branch `agent/upstream-wallet-keystore-refusal-wipe-20261003`, signed head
+`e5a1d446c6b29da8d5544acecdabb88f38f17d99`, upstream
+`3a93e60ebf922af3d119b9facc1d95803f42844b`. Five files,+61/-26: keystore C/header,
+existing regression, generated inventory and removal of the old complexity pin.
+
+RED: canonical keystore group fails exactly three output-retirement assertions
+for wrong passphrase, altered ciphertext and altered tag. GREEN: final canonical
+fast and ASan groups pass with zero skips. Output canaries and length sentinels
+prove exact-span retirement; malformed-header/capacity refusal preserves output.
+Optimized strict Clang20/GCC14 ASan/UBSan/LSan control0 and wipe-length mutant3
+per compiler. Final GCC sweep2,433 translation units, all5 paths clean. All215
+lint gates PASS (128.645s), complexity cap15 and diff security scan CLEAN.
+
+Existing wallet_decrypt_blob frees on refusal without its own wipe, confirming
+why this belongs in the lowest shared owner. API format, crypto and accepted
+successes are unchanged. Hazard review is recorded in C_SAFETY_REVIEW.md.
+The exact native proof and PR artifacts are being prepared independently of the
+preserved mnemonic/key/xprv trees. No additional fork push has been attempted.
+
+The follow-on bounds hypothesis now has isolated sanitizer RED: an overflowing
+plaintext length passes the encryptor's envelope-capacity check even with zero
+output capacity. No real wallet data was used. Keep this as a separate candidate
+and establish a safe bounded regression before fixing its admission owner.
