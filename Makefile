@@ -7152,6 +7152,59 @@ $(BIN_DIR)/gen_sha3_windows: tools/gen_sha3_windows.c \
 # checkpoint/shard/evidence/report set under corpus/. Standalone build: the
 # pure census core plus the vcs evidence objects it drives — no DB, no Tor.
 .PHONY: tools/corpus-census
+CORPUS_CENSUS_HEADERS = \
+	contexts/commons/modules/vcs/include/vcs/package_build.h \
+	contexts/commons/modules/vcs/include/vcs/package_manifest.h \
+	contexts/commons/modules/vcs/include/vcs/package_recipe.h \
+	contexts/commons/modules/vcs/include/vcs/package_release.h \
+	contexts/commons/modules/vcs/include/vcs/package_reproduce.h \
+	contexts/commons/modules/vcs/include/vcs/package_score.h \
+	contexts/commons/modules/vcs/include/vcs/signed_evidence.h \
+	contexts/commons/modules/vcs/include/vcs/vcs_object.h \
+	contexts/commons/modules/vcs/include/vcs/zcode_c23_corpus.h \
+	contexts/commons/modules/vcs/include/vcs/zcode_c23_corpus_census.h \
+	contexts/commons/modules/vcs/include/vcs/zcode_commons.h \
+	contexts/commons/modules/vcs/include/vcs/zcode_family_admission.h \
+	contexts/commons/modules/vcs/include/vcs/zcode_sovereignty_policy.h \
+	contexts/commons/modules/vcs/src/vcs_priv.h \
+	core/modules/crypto/include/crypto/common.h \
+	core/modules/crypto/include/crypto/ed25519.h \
+	core/modules/crypto/include/crypto/random_secret.h \
+	core/modules/crypto/include/crypto/sha3.h \
+	core/modules/crypto/include/crypto/sha512.h \
+	platform/modules/base/include/base/bytes.h \
+	platform/modules/base/include/base/checked.h \
+	platform/modules/base/include/base/cleanse.h \
+	platform/modules/base/include/base/format_attribute.h \
+	platform/modules/base/include/base/hex.h \
+	platform/modules/base/include/base/log_level.h \
+	platform/modules/base/include/base/log_macros.h \
+	platform/modules/base/include/base/safe_alloc.h \
+	platform/modules/base/include/base/serialize_le.h \
+	platform/modules/base/include/base/stdio_lock.h \
+	platform/modules/base/include/base/utc_tm.h \
+	platform/modules/codec/include/codec/cursor.h \
+	platform/modules/json/include/json/json.h \
+	platform/modules/platform/include/platform/clock.h \
+	platform/modules/platform/include/platform/directory_compat.h \
+	platform/modules/platform/include/platform/file_metadata.h \
+	platform/modules/platform/include/platform/file_sync.h \
+	platform/modules/platform/include/platform/os_proc.h \
+	platform/modules/platform/include/platform/positioned_file.h \
+	platform/modules/platform/include/platform/private_directory.h \
+	platform/modules/platform/include/platform/private_file.h \
+	platform/modules/platform/include/platform/read_mapping.h \
+	platform/modules/platform/include/platform/rename_compat.h \
+	platform/modules/platform/include/platform/rng.h \
+	platform/modules/platform/include/platform/time_compat.h \
+	platform/modules/platform/include/platform/windows_path.h \
+	platform/modules/platform/src/private_acl_internal.h \
+	platform/modules/platform/src/windows_path_internal.h \
+	platform/modules/sha3/include/sha3/sha3.h \
+	platform/modules/support/include/support/cleanse.h \
+	platform/modules/util/include/util/log_macros.h \
+	platform/modules/util/include/util/safe_alloc.h
+
 tools/corpus-census: $(BIN_DIR)/corpus-census
 $(BIN_DIR)/corpus-census: tools/corpus_census.c \
 		tools/corpus_census_defs.c \
@@ -7184,7 +7237,8 @@ $(BIN_DIR)/corpus-census: tools/corpus_census.c \
 		platform/modules/platform/src/private_acl_internal.c \
 		platform/modules/platform/src/file_metadata.c \
 		platform/modules/platform/src/directory_compat.c \
-		platform/modules/platform/src/os_proc.c
+		platform/modules/platform/src/os_proc.c \
+		$(CORPUS_CENSUS_HEADERS) $(NODE_SECP_ARCHIVE)
 	@mkdir -p $(dir $@)
 	# --gc-sections: ed25519's batch-verify path (never called here) pulls
 	# zcl_random_secret_bytes -> sealed-tree random.c; the collector drops it.
@@ -7196,7 +7250,7 @@ $(BIN_DIR)/corpus-census: tools/corpus_census.c \
 	    -Icore/modules/crypto/include -Iplatform/modules/sha3/include -Iplatform/modules/codec/include \
 	    -Iplatform/modules/json/include -Iplatform/modules/platform/include -Iplatform/modules/support/include \
 	    -Icore/modules/core/include -Ivendor/include \
-	    -o $@ $^ -Lvendor/lib $(NODE_SECP_ARCHIVE) -lpthread -lm
+	    -o $@ $(filter %.c,$^) -Lvendor/lib $(NODE_SECP_ARCHIVE) -lpthread -lm
 
 # Run the corpus census. The default is a SMOKE run into build/corpus-census/
 # (unsigned, cutoff 1, quality unattested) so it can never overwrite the
