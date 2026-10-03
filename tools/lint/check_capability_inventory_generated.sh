@@ -166,6 +166,7 @@ if [ "${1:-}" = "--selftest" ]; then
         echo "check_capability_inventory_generated selftest: FAIL — a hand edit passed" >&2
         exit 1
     fi
+    ./tools/lint/check_capability_inventory_noop.sh "$GEN"
     echo "check_capability_inventory_generated selftest: PASS — clean output passes and a hand edit fails"
     echo "check_capability_inventory_generated: clean — $capabilities capabilities; $roots_found registered roots resolved"
     exit 0

@@ -25,6 +25,9 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#else
+#include <fcntl.h>
+#include <sys/stat.h>
 #endif
 
 static int sync_output(FILE *out)
@@ -54,6 +57,78 @@ static int publish_output(const char *temporary, const char *destination)
     return 0;
 #else
     return rename(temporary, destination);
+#endif
+}
+
+/* Compare bounded chunks only after the staged report has been closed. */
+#if !defined(_WIN32)
+static int streams_equal(FILE *staged, FILE *previous)
+{
+    unsigned char new_bytes[4096], old_bytes[4096];
+    for (;;) {
+        size_t new_len = fread(new_bytes, 1, sizeof(new_bytes), staged);
+        size_t old_len = fread(old_bytes, 1, sizeof(old_bytes), previous);
+        if (ferror(staged) || ferror(previous))
+            return -1;
+        if (new_len != old_len || memcmp(new_bytes, old_bytes, new_len) != 0)
+            return 0;
+        if (new_len < sizeof(new_bytes))
+            return 1;
+    }
+}
+#endif
+
+/* Existing non-regular paths keep the old replacement behavior. Windows also
+ * retains that behavior until a no-follow regular-file rail is available. */
+static int stage_matches_destination(const char *stage, const char *destination)
+{
+#if defined(_WIN32)
+    (void)stage;
+    (void)destination;
+    return 0;
+#else
+    int fd = open(destination, O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
+    if (fd < 0)
+        return 0;
+    struct stat state;
+    if (fstat(fd, &state) != 0) {
+        int saved = errno;
+        close(fd);
+        errno = saved;
+        return -1;
+    }
+    if (!S_ISREG(state.st_mode) || state.st_nlink != 1) {
+        close(fd);
+        return 0;
+    }
+    FILE *previous = fdopen(fd, "rb");
+    if (!previous) {
+        int saved = errno;
+        close(fd);
+        errno = saved;
+        return -1;
+    }
+    FILE *staged = fopen(stage, "rb");
+    if (!staged) {
+        int saved = errno;
+        fclose(previous);
+        errno = saved;
+        return -1;
+    }
+    int match = streams_equal(staged, previous);
+    int saved = errno;
+    int staged_close = fclose(staged);
+    int staged_close_errno = errno;
+    int previous_close = fclose(previous);
+    if (staged_close != 0) {
+        errno = staged_close_errno;
+        return -1;
+    }
+    if (previous_close != 0)
+        return -1;
+    if (match < 0)
+        errno = saved ? saved : EIO;
+    return match;
 #endif
 }
 
@@ -335,6 +410,46 @@ static bool render_report(FILE *out, const struct ci_inventory_report *report)
     return !ferror(out);
 }
 
+static bool finish_output(FILE *out, bool rendered, const char *temp,
+                          const char *output)
+{
+    bool ok = rendered && fflush(out) == 0 && sync_output(out) == 0;
+    if (fclose(out) != 0)
+        ok = false;
+    int match = 0;
+    if (ok) {
+        match = stage_matches_destination(temp, output);
+        if (match < 0) ok = false;
+        else if (match > 0) ok = unlink(temp) == 0;
+        else ok = publish_output(temp, output) == 0;
+    }
+    if (!ok) {
+        int saved = errno ? errno : EIO;
+        unlink(temp);
+        fprintf(stderr, "gen_capability_inventory: %s %s failed: %s\n",
+                match < 0 ? "compare" : "write", output, strerror(saved));
+    }
+    return ok;
+}
+
+static bool write_inventory(const char *output,
+                            const struct ci_inventory_report *report)
+{
+    char temp[4096];
+    int n = snprintf(temp, sizeof(temp), "%s.tmp.%ld", output, (long)getpid());
+    if (n <= 0 || (size_t)n >= sizeof(temp)) {
+        fprintf(stderr, "gen_capability_inventory: output path too long\n");
+        return false;
+    }
+    FILE *out = fopen(temp, "wb");
+    if (!out) {
+        fprintf(stderr, "gen_capability_inventory: cannot stage %s: %s\n",
+                output, strerror(errno));
+        return false;
+    }
+    return finish_output(out, render_report(out, report), temp, output);
+}
+
 int main(int argc, char **argv)
 {
     if (argc < 2 || argc > 3) {
@@ -348,24 +463,8 @@ int main(int argc, char **argv)
         fprintf(stderr, "gen_capability_inventory: analysis failed for %s\n", root);
         return 1;
     }
-    char temp[4096];
-    int n = snprintf(temp, sizeof(temp), "%s.tmp.%ld", output, (long)getpid());
-    if (n <= 0 || (size_t)n >= sizeof(temp)) {
-        codeindex_inventory_free(report);
-        fprintf(stderr, "gen_capability_inventory: output path too long\n");
-        return 1;
-    }
-    FILE *out = fopen(temp, "wb");
-    bool ok = out && render_report(out, report) && fflush(out) == 0 &&
-        sync_output(out) == 0;
-    if (out && fclose(out) != 0) ok = false;
-    if (ok && publish_output(temp, output) != 0) ok = false;
-    if (!ok) {
-        int saved = errno;
-        unlink(temp);
-        fprintf(stderr, "gen_capability_inventory: write %s failed: %s\n",
-                output, strerror(saved));
-    } else {
+    bool ok = write_inventory(output, report);
+    if (ok) {
         fprintf(stderr,
                 "gen_capability_inventory: %d capabilities, %d symbols, %d duplicate candidates, %d untested invariants -> %s\n",
                 report->capability_count, report->symbol_count,
