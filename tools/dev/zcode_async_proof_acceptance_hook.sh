@@ -472,6 +472,23 @@ zap_start_node() {
         dht_die "async proof node $node failed to start"
 }
 
+zap_wait_chain_tip() {
+    local node="$1" deadline state="" height="" status
+    deadline=$(( $(date +%s) + DHT_WAIT ))
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        # Brief defaults to prose; request the typed JSON snapshot explicitly.
+        status="$(dht_native "${DDS[$node]}" "${RPCS[$node]}" \
+            core status brief --format=json || true)"
+        state="$(printf '%s' "$status" | zap_field data.sync_state '' 2>/dev/null || true)"
+        height="$(printf '%s' "$status" | zap_field data.hstar '' 2>/dev/null || true)"
+        if [ "$state" = at_tip ] && [ "$height" = 129 ]; then
+            return 0
+        fi
+        sleep 1
+    done
+    dht_die "async proof worker $node did not reach the fixture chain tip: sync_state=$state hstar=$height"
+}
+
 zap_cancel_find_capability() {
     local node="$1" lookup_id="$2" owner_token="$3" result ok code
     [ "${#lookup_id}" -eq 32 ] && [ "${#owner_token}" -eq 32 ] ||
@@ -654,11 +671,15 @@ SAVED_BUILDWORKERS="$DHT_BUILDWORKERS"
 DHT_BUILDWORKERS=0
 zap_start_node "$ZAP_B"
 DHT_BUILDWORKERS="$SAVED_BUILDWORKERS"
-zap_start_node "$ZAP_C"
-zap_start_node "$ZAP_D"
+# Worker admission requires chain sync at the tip. An inbound Noise edge
+# authenticates the overlay but does not establish an outbound chain frontier.
+zap_start_node "$ZAP_C" "$ZAP_A"
+zap_start_node "$ZAP_D" "$ZAP_A"
 zap_start_node "$ZAP_A" "$ZAP_C"
 zap_connect "$ZAP_A" "$ZAP_D"
 zap_connect "$ZAP_A" "$ZAP_B"
+zap_wait_chain_tip "$ZAP_C"
+zap_wait_chain_tip "$ZAP_D"
 A_ORIGINAL_PID="${PIDS[$ZAP_A]}"
 ZAP_A_DB_IDENTITIES="$(zap_db_identity "$ZAP_A" || true)"
 [ -n "$ZAP_A_DB_IDENTITIES" ] ||
