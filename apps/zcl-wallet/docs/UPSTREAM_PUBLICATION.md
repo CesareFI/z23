@@ -612,8 +612,21 @@ combined paths clean. All215 lint gates PASS (123.085s), complexity cap15 and
 security scan CLEAN. The existing failed-auth plaintext retirement and its
 exact receipt remain unchanged in the first signed commit.
 
+The exact combined-head native proof independently reports PASS from preserved
+copy `/tmp/wd.g8GgrV/repo`: all215 lint gates pass (219.793s native lint;
+230.453s proof lint phase), exact impacted runtime228/228 passes (318.0s), and
+there are zero failures, skips, unobserved outcomes or load-flaky outcomes.
+Total proof time is564.421s. The signed receipt
+`c78e1483e74061b6208063aec76e9ecde2e1782d-3a93e60ebf922af3d119b9facc1d95803f42844b.receipt`
+has SHA256
+`f8ea7015fb63d2c9d761f9ce7a5b808166f1801bab2f3f0544f38bb148ed918f`.
+An independent status check confirms branch
+`agent/wallet-keystore-decrypt-proof-20261004`, exact HEAD c78e1483 and no
+tracked differences.
+
 This combined decrypt-safety series supersedes the single-commit retirement
 branch for eventual review, without deleting its branch, bundle, receipt or
-qualified source tree. PR body/bundle preparation and exact combined-head proof
-remain. The independently qualified encryption-length branch03bfa7e5 stays a
-separate API-admission proposal.
+qualified source tree. PR body and offline artifacts are complete. The
+independently qualified encryption-length branch03bfa7e5 stays a separate
+API-admission proposal. No publication push was attempted under the recorded
+hook boundary.

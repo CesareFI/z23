@@ -4831,4 +4831,7 @@ complexity cap15, final GCC scope and the security diff pass.
 No allocation, persistent pointer, secret copy or concurrency state is added.
 Header, output and length canaries stay unchanged on refusal. Valid decryption,
 authentication, output wiping, KDF policy, encrypted bytes and all wallet or
-consensus rules are unchanged. Exact native proof remains the final acceptance.
+consensus rules are unchanged. Exact native proof passes all215 lint gates and
+228/228 impacted groups with zero skips, unobserved or flaky outcomes; receipt
+SHA256 is
+`f8ea7015fb63d2c9d761f9ce7a5b808166f1801bab2f3f0544f38bb148ed918f`.

@@ -8247,5 +8247,10 @@ preserved and no blocked external action was retried.
 Candidate c78e1483 adds bounded decrypt admission atop qualified e5a1d446.
 Canonical and dual-compiler RED2→GREEN0, bound-removal mutant2, focused
 fast/ASan, GCC2,433-TU scope, all215 lint, complexity and security gates pass.
-The exact combined-head proof is next. Encryption-length03bfa7e5 remains a
-separate qualified proposal. No external safety restriction was bypassed.
+The exact combined-head proof passes from preserved copy `/tmp/wd.g8GgrV/repo`:
+all215 lint gates,228/228 exact impacted groups, zero skips/unobserved/flaky,
+and receipt SHA256
+`f8ea7015fb63d2c9d761f9ce7a5b808166f1801bab2f3f0544f38bb148ed918f`.
+Independent git status binds the clean proof tree to c78e1483/base3a93e60e.
+Encryption-length03bfa7e5 remains a separate qualified proposal. No external
+safety restriction was bypassed.
