@@ -4334,11 +4334,17 @@ else
 Z23_BOUNDED_RUN_PLATFORM_FLAGS = -D_POSIX_C_SOURCE=200809L
 endif
 $(BIN_DIR)/z23_bounded_run: tools/dev/z23_bounded_run.c \
-		platform/modules/base/src/safe_alloc.c
+		platform/modules/base/src/safe_alloc.c \
+		platform/modules/base/include/base/safe_alloc.h
 	@mkdir -p $(dir $@)
+	@set -eu; \
+	tmp="$$(mktemp "$@.link.XXXXXX")"; \
+	trap 'rm -f "$$tmp"' EXIT HUP INT TERM; \
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
 	    -Iplatform/modules/base/include \
-	    $(Z23_BOUNDED_RUN_PLATFORM_FLAGS) -o $@ $^
+	    $(Z23_BOUNDED_RUN_PLATFORM_FLAGS) -o "$$tmp" $(filter %.c,$^); \
+	mv -f -- "$$tmp" "$@"; \
+	trap - EXIT HUP INT TERM
 
 # z23-fleet-observe: generates engine/composition/fleet_observations.def from
 # the experiment ledger. tools/dev/fleet_observe.c carries no main() (so the
