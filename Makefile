@@ -4214,7 +4214,11 @@ worktree-gc:
 
 AGENT_SHA3_SRCS := tools/agent/agent_sha3.c platform/modules/sha3/src/sha3.c
 agent-sha3: $(BIN_DIR)/agent_sha3
-$(BIN_DIR)/agent_sha3: $(AGENT_SHA3_SRCS)
+$(BIN_DIR)/agent_sha3: $(AGENT_SHA3_SRCS) \
+    platform/modules/base/include/base/hex.h \
+    platform/modules/base/include/base/serialize_le.h \
+    platform/modules/sha3/include/sha3/sha3.h \
+    core/modules/crypto/include/crypto/sha3.h
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror \
 	    -Iplatform/modules/sha3/include -Icore/modules/crypto/include -Iplatform/modules/support/include -Iplatform/modules/base/include \
