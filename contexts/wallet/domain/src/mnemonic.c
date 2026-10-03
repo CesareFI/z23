@@ -2315,6 +2315,7 @@ static struct zcl_result mnemonic_decode_core(
     uint8_t data[33];                            /* packed 11-bit groups  */
     uint8_t entropy[32];                         /* recovered entropy     */
     uint8_t hash[32];                            /* checksum SHA-256       */
+    int indices[DOMAIN_WALLET_BIP39_MAX_WORDS] = {0}; /* recoverable phrase */
     memset(buf, 0, sizeof(buf));
     memset(data, 0, sizeof(data));
     memset(entropy, 0, sizeof(entropy));
@@ -2341,7 +2342,6 @@ static struct zcl_result mnemonic_decode_core(
         }
     }
 
-    int indices[DOMAIN_WALLET_BIP39_MAX_WORDS];
     int word_count = 0;
 
     char *saveptr = NULL;
@@ -2421,6 +2421,7 @@ cleanup:
     memory_cleanse(data, sizeof(data));
     memory_cleanse(entropy, sizeof(entropy));
     memory_cleanse(hash, sizeof(hash));
+    memory_cleanse(indices, sizeof(indices));
     return result;
 }
 

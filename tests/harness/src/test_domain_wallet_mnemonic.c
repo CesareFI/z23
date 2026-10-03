@@ -111,9 +111,11 @@ static uint8_t lcg_byte(void)
     return (uint8_t)(lcg_state >> 24);
 }
 
+int wallet_mnemonic_retirement_cases(void);
+
 int test_domain_wallet_mnemonic(void)
 {
-    int failures = 0;
+    int failures = wallet_mnemonic_retirement_cases();
 
     /* ── Layer 1: contract / null-edge ────────────────────────────── */
 
