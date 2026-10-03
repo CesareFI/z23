@@ -186,15 +186,19 @@ ZCL_WARN_MAYBE_UNINITIALIZED = -Wno-maybe-uninitialized
 ZCL_TEST_STACK_SETUP = ulimit -s unlimited
 endif
 ZCL_USE_CCACHE ?= 1
+# A standalone test-catalog listing never compiles anything. In a fresh
+# worktree, invoking the cache bootstrap here would compile zcc before the
+# t-list recipe can print a single name. Mixed goals keep the normal cache.
+ZCL_T_LIST_ONLY := $(if $(filter t-list,$(MAKECMDGOALS)),$(if $(filter-out t-list,$(MAKECMDGOALS)),,1),)
 # The compile cache ships in-tree (tools/zcc.c). Prefer it over any installed
 # sccache/ccache so every developer gets the same fast rebuilds with nothing
 # to install, and fall back to a host cache only if the in-tree one cannot be
 # built here. This is a parse-time $(shell) because $(CC) is fixed before the
 # first recipe runs; see tools/dev/zcc_bootstrap.sh for why and what it costs.
-ZCL_CCACHE_BIN := $(shell if [ "$(ZCL_USE_CCACHE)" != "0" ]; then \
+ZCL_CCACHE_BIN := $(if $(ZCL_T_LIST_ONLY),,$(shell if [ "$(ZCL_USE_CCACHE)" != "0" ]; then \
                               $(CURDIR)/tools/dev/zcc_bootstrap.sh 2>/dev/null \
                               || command -v sccache 2>/dev/null \
-                              || command -v ccache 2>/dev/null; fi)
+                              || command -v ccache 2>/dev/null; fi))
 ifneq ($(ZCL_CCACHE_BIN),)
 ifeq ($(filter zcc sccache ccache,$(notdir $(firstword $(CC)))),)
 CC := $(ZCL_CCACHE_BIN) $(CC)
@@ -250,7 +254,9 @@ ZCL_GUI_APP_GOALS := $(foreach a,$(GUI_APPS),$(a) $(a)-selftest $(a)-clean \
 # Its standalone compile must not recurse into the readiness check it serves.
 ZCL_TOR_PROVENANCE_GOALS := build/bin/z23-tor-provenance \
 	tools/tor-provenance z23-tor-provenance
-ZCL_HOTSWAP_LOOP_GOALS := hotswap-try hotswap-apply hotswap c3-mutex-probe c3-speed-bench c3-tip-seam build/bin/c3-mutex-probe.so \
+# t-list only reads the registered test catalog; it needs no node inputs or
+# source identity, just like the other standalone read-only commands here.
+ZCL_HOTSWAP_LOOP_GOALS := t-list hotswap-try hotswap-apply hotswap c3-mutex-probe c3-speed-bench c3-tip-seam build/bin/c3-mutex-probe.so \
 	$(ZCL_TOR_PROVENANCE_GOALS) \
 	presentation-lib presentation-demo presentation-relaunch \
 	presentation-desktop-install presentation-portability \
@@ -363,7 +369,7 @@ VENDOR_REPAIR_REQUESTED := $(filter $(VENDOR_REPAIR_GOALS),$(MAKECMDGOALS))
 ZCL_WINDOWS_LAUNCHER_GOALS := windows-headless-run windows-headless-run-selftest \
 	build/bin/z23-headless-run.exe
 # Build queries and game-only goals need no node vendor configure.
-ZCL_BUILD_QUERY_GOALS := print-node-c23-srcs help doctor doctor-build timings agent-dev-status print-CFLAGS print-DEV-CFLAGS print-LDFLAGS print-DEV-LDFLAGS print-build-flags
+ZCL_BUILD_QUERY_GOALS := t-list print-node-c23-srcs help doctor doctor-build timings agent-dev-status print-CFLAGS print-DEV-CFLAGS print-LDFLAGS print-DEV-LDFLAGS print-build-flags
 ZCL_BOOTSTRAP_HELPER_ONLY := $(if $(strip $(MAKECMDGOALS)),$(if $(strip $(filter-out $(ZCL_WINDOWS_LAUNCHER_GOALS) $(ZCL_TOR_PROVENANCE_GOALS) $(ZCL_BUILD_QUERY_GOALS) check-capability-inventory-generated docs-proof-tools game game-check game-platform-probe,$(MAKECMDGOALS))),,1),)
 ifneq ($(ZCL_STANDALONE_CLEAN),1)
 ifneq ($(ZCL_WORKTREE_PRIME_ONLY),1)
