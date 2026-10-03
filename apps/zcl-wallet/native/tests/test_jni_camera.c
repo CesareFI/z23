@@ -28,6 +28,7 @@ static bool pending, allocation_failure;
 static unsigned fault, calls, allocations, new_arrays;
 static uint8_t *owned;
 static size_t owned_length, allocation_bytes, failure_prefix, read_failure_prefix;
+static size_t byte_reads;
 
 void *zcl_jni_camera_test_malloc(size_t size);
 void zcl_jni_camera_test_free(void *pointer);
@@ -80,7 +81,8 @@ static void JNICALL get_bytes(JNIEnv *env, jbyteArray array, jsize offset, jsize
 {
     (void)env;
     CHECK(array == (jbyteArray)&input && offset == 0 && count >= 0);
-    CHECK((size_t)count <= input.capacity && bytes != NULL);
+    CHECK(count <= input.length && (size_t)count <= input.capacity && bytes != NULL);
+    byte_reads += (size_t)count;
     if (vm_failure()) {
         const size_t prefix = (size_t)count < read_failure_prefix ? (size_t)count : read_failure_prefix;
         memcpy(bytes, input.bytes, prefix); /* Partial VM read must still clear. */
@@ -164,6 +166,7 @@ static void reset(operation op, unsigned selected_fault)
     CHECK(owned == NULL);
     pending = false; allocation_failure = false;
     fault = selected_fault; calls = 0; allocations = 0; allocation_bytes = 0; new_arrays = 0;
+    byte_reads = 0;
     failure_prefix = 6;
     read_failure_prefix = 1;
     input = op == PACKET ? (fake_array){(jsize)packet_length, sizeof(packet), packet}
@@ -211,9 +214,32 @@ static void check_success(operation op, jbyteArray output)
     for (size_t i = (size_t)result.length; i < result.capacity; ++i) CHECK(result.bytes[i] == 0xa5);
 }
 
+static void padded_scan(void)
+{
+    static uint8_t padded[ZCL_SCAN_INPUT_MAX + 1]; /* Public, fixed bounded backing. */
+    memset(padded, 0x5a, sizeof(padded));
+    memcpy(padded, image, image_length);
+    reset(SCAN, 0);
+    input = (fake_array){(jsize)ZCL_SCAN_INPUT_MAX, sizeof(padded), padded};
+    check_success(SCAN, dispatch(SCAN, &environment, (jobject)&input));
+    printf("Padded JNI scan: input=%d allocated=%zu copied=%zu used=%zu\n",
+        input.length, allocation_bytes, byte_reads, image_length);
+    fflush(stdout);
+    CHECK(allocation_bytes == image_length && byte_reads == image_length && owned == NULL);
+    CHECK(memcmp(padded, image, image_length) == 0);
+    for (size_t i = image_length; i < sizeof(padded); ++i) CHECK(padded[i] == 0x5a);
+    const jsize invalid[] = {(jsize)image_length - 1, (jsize)sizeof(padded)};
+    for (size_t i = 0; i < sizeof(invalid) / sizeof(invalid[0]); ++i) {
+        reset(SCAN, 0);
+        input = (fake_array){invalid[i], sizeof(padded), padded};
+        CHECK(dispatch(SCAN, &environment, (jobject)&input) == NULL);
+        CHECK(!pending && allocations == 0 && byte_reads == 0 && owned == NULL);
+    }
+}
+
 static void exception_and_allocation_faults(operation op)
 {
-    const unsigned vm_calls = op == PACK ? 4 : 5;
+    const unsigned vm_calls = op == PACKET ? 5 : 4;
     for (unsigned selected = 0; selected <= vm_calls; ++selected) {
         reset(op, selected);
         const jbyteArray output = invoke(op, &environment, (jobject)&input);
@@ -451,6 +477,28 @@ static void fuzz_camera_case(const uint8_t data[13])
     if (result.length == expected && fault == 0 && (data[10] & 31U) == 0) CHECK(written == expected);
 }
 
+static void fuzz_scan_case(const uint8_t data[13])
+{
+    const fuzz_plane plane = prepare_fuzz_plane(data);
+    reset(SCAN, data[9] % 5U);
+    bind_fuzz_plane(&plane);
+    allocation_failure = (data[10] & 1U) != 0;
+    const zcl_qr_image layout = {(size_t)plane.width, (size_t)plane.height,
+        (size_t)plane.row, (size_t)plane.pixel};
+    const zcl_status bounds = zcl_scan_image_bounds(plane.backing, &layout);
+    size_t needed = 0;
+    if (bounds == ZCL_OK)
+        needed = (layout.height - 1) * layout.row_stride + (layout.width - 1) * layout.pixel_stride + 1;
+    read_failure_prefix = plane.backing / 2;
+    const jbyteArray output = API(scanQr)(&environment, NULL, (jbyteArray)&input,
+        plane.width, plane.height, plane.row, plane.pixel, 0);
+    /* Uniform public pixels contain no QR code, even for an admitted layout. */
+    CHECK(output == NULL && new_arrays == 0 && owned == NULL && calls <= 2);
+    CHECK(allocations == 0 || (bounds == ZCL_OK && allocation_bytes == needed));
+    CHECK(byte_reads == 0 || byte_reads == needed);
+    for (size_t i = 0; i < plane.backing; ++i) CHECK(fuzz_pixels[i] == data[11]);
+}
+
 /* Four controls followed by actual packet bytes. The fake array advertises
  * only its real backing span. This C decoder is a transport/result oracle;
  * independent pixel/QR behavior remains covered by the C camera/QR fuzzers. */
@@ -550,6 +598,7 @@ static void decoder_regressions(void)
 static void regressions(void)
 {
     initialize();
+    padded_scan();
     sizing_refusals();
     destination_refusals();
     for (operation op = PACK; op <= SCAN; ++op) {
@@ -566,7 +615,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 {
     static bool initialized;
     if (!initialized) { regressions(); initialized = true; }
-    if (size == 13) fuzz_camera_case(data);
+    if (size == 13) { fuzz_camera_case(data); fuzz_scan_case(data); }
     else if (size >= 4 && size <= ZCL_CAMERA_PACKET_MAX + 4) fuzz_decode_case(data, size);
     return 0;
 }
@@ -582,6 +631,7 @@ int main(void)
             memset(data, 0, sizeof(data));
             data[field] = values[value];
             fuzz_camera_case(data);
+            fuzz_scan_case(data);
         }
     }
     puts("JNI camera/scan pending exceptions, exact public results and cleared allocations passed");

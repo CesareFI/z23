@@ -4,6 +4,8 @@
 #include "zcl_keys.h"
 #include <stdlib.h>
 
+_Static_assert(ZCL_SCAN_INPUT_MAX <= INT32_MAX, "Scan regions fit JNI lengths");
+
 static zcl_status read_layout(JNIEnv *env, jbyteArray input, jint width, jint height,
                                jint row_stride, jint pixel_stride, zcl_qr_image *layout,
                                size_t *length)
@@ -14,8 +16,14 @@ static zcl_status read_layout(JNIEnv *env, jbyteArray input, jint width, jint he
     if ((*env)->ExceptionCheck(env) || count < 0)
         return ZCL_INVALID_ARGUMENT;
     *layout = (zcl_qr_image){(size_t)width, (size_t)height, (size_t)row_stride, (size_t)pixel_stride};
-    *length = (size_t)count;
-    return zcl_scan_image_bounds(*length, layout);
+    const zcl_status status = zcl_scan_image_bounds((size_t)count, layout);
+    /* The C bounds predicate proves positive dimensions <=1024, pixel stride
+     * <=4, row stride <=8192 and this last addressed byte within the array.
+     * Ignore only trailing padding; retain every row/interleaving byte. */
+    if (status == ZCL_OK)
+        *length = (layout->height - 1) * layout->row_stride +
+            (layout->width - 1) * layout->pixel_stride + 1;
+    return status;
 }
 
 static jbyteArray scan_copy(JNIEnv *env, jbyteArray input, size_t length,
@@ -26,10 +34,12 @@ static jbyteArray scan_copy(JNIEnv *env, jbyteArray input, size_t length,
     uint8_t *image = malloc(length);
     if (image == NULL)
         return NULL;
-    size_t copied = 0;
     zcl_payment_request request = {0};
-    zcl_status status = zcl_jni_read_bytes(env, input, image, length, &copied);
-    if (status == ZCL_OK) status = zcl_scan_qr(image, copied, layout, network, &request);
+    /* Java array lengths are immutable; read_layout already admitted this
+     * exact prefix. Copy no unused trailing pixels into native ownership. */
+    (*env)->GetByteArrayRegion(env, input, 0, (jsize)length, (jbyte *)image);
+    const zcl_status status = (*env)->ExceptionCheck(env) ? ZCL_INVALID_ARGUMENT
+        : zcl_scan_qr(image, length, layout, network, &request);
     /* Decoding has consumed the pixels. Retire this native copy before the
      * public result needs a VM allocation or transfer. */
     zcl_secure_zero(image, length);

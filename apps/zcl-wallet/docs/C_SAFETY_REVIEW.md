@@ -4483,3 +4483,29 @@ public creation, and cleans its exact fixture even if the observer refuses.
 Clang/GCC ASan/UBSan/LSan, both analyzers and native API 30/35/36 x86_64 runs pass.
 Android ARM64 compilation and 16 KiB ELF alignment pass; physical hardware remains
 unqualified. Production storage, binaries and consensus semantics are unchanged.
+
+## Raw QR JNI copies only the admitted image span — 2026-10-03
+
+Scope: `jni_scan.c`, its existing camera/JNI fault fixture and one Android
+instrumentation case. The existing C image-bounds predicate still admits the
+full array length and layout. Only after success does JNI calculate and copy
+through the last addressed pixel. Row/pixel strides and total-array limits are
+unchanged. The isolated camera packet path is unchanged.
+
+| Hazard | Review |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access | C admission proves positive dimensions <=1024, pixel stride 1..4, row stride <=8192, nonoverlapping rows and the last addressed pixel within the Java array. Copy includes that last byte. Short input and oversized backing still refuse before allocation. |
+| Integer overflow/underflow; signed/unsigned conversions | Negative jint fields refuse before conversion. Products/subtractions occur only after C bounds admission; the span fits the existing 8 MiB cap. A static assertion proves the JNI region length fits INT32_MAX. |
+| Use-after-free; double-free; leaks; dangling pointers | Exactly one invocation-owned image allocation remains. It is wiped and freed before result allocation; no pixel pointer escapes decoding. Failure and partial-transfer tests observe complete erasure before free. |
+| NULL dereferences; uninitialized memory | Existing env/input checks and checked allocation remain. Every region call is followed by ExceptionCheck; partial/failed reads skip decoding. The entire allocation is retired on all paths. |
+| Pointer arithmetic | The adapter only calculates a validated span. The authoritative C decoder retains its existing bounded strided indexing. Trailing unused bytes are excluded; inter-row padding stays present. |
+| Format strings; secret leakage | No product diagnostic added. Fixture counters and public synthetic QR requests contain no wallet material. Managed input remains caller-owned and unchanged. |
+| Stack usage; allocation limits | No new production buffer or owner. Measured padded fixture drops allocation/copy from 8388608 to 21609 bytes. Large backing arrays exist only in bounded tests. Strict frame/complexity checks pass. |
+| Malformed serialization/network input | Network/layout/total length checks remain authoritative. Golden independent ZXing decoding, metadata and refusal behavior pass. Full-array-copy, short-prefix and oversized-admission mutations fail independently under both compilers. |
+| Races; resource exhaustion | Java length and copied C layout are immutable during the synchronous operation, so a second length query is unnecessary. No pins, global production state or new concurrency. Fuzzing exercises layout bounds, allocation refusal and partial VM transfers under unchanged limits. |
+
+Clang/GCC ASan/UBSan/LSan, analyzers and the JNI fuzzer pass. Native fixture plus
+12 ART tests pass on each API 30/35/36 x86_64, including the padded/interleaved
+8192-row-stride case and actual 16 KiB API 35. Android ARM64 builds/alignment
+only. The minified release APK reproduces byte for byte. No latency, physical
+camera or hardware-custody claim is inferred from these memory observations.

@@ -7746,3 +7746,32 @@ Evidence: `.cache/storage-exec/` (ignored). Product source/APK are unchanged fro
 `356fb2586`. Full previous safety, JVM, ART and release reproduction evidence
 remains applicable. Continue native custody/lifetime and storage restart review;
 no upstream write, real wallet, TLS activation or production node operation.
+
+## Production continuation: bound raw QR JNI copy to used pixels — 2026-10-03
+
+RED measured 8388608 bytes allocated/copied for a valid padded QR image whose
+layout uses 21609 bytes. The raw `ScanQr` JNI adapter now copies through the last
+addressed pixel after the existing C predicate validates the complete array and
+layout. Row/pixel strides, maximum input length and decode semantics remain
+unchanged. The fixture verifies the same request, zeroized allocation, unchanged
+input and refusal of a one-byte-short or oversized array. This is a measured
+reduction in native copying for padded raw images, not a camera latency claim;
+the separate isolated camera packet path is unchanged.
+
+Full Clang/GCC safety passes 144/139 groups (58.05s/57.73s), including
+ASan/UBSan/LSan, analyzers, provider hashes and complexity caps. Independent
+mutants that restore whole-array copying, omit the last pixel or bypass the
+maximum array length all fail under both compilers. JNI camera fuzzing now also
+covers raw scan layouts, allocation faults and partial transfers; 5181 runs/31s
+complete without a finding. API 30/35/36 x86_64 pass the native fixture and 12 ART
+QR/camera-output/service-retirement tests each. The new independent ZXing case
+uses an 8 MiB backing array, row stride 8192 and pixel stride 4; the entire input
+remains unchanged. API 35 uses 16 KiB pages; Android ARM64 builds/alignment only.
+
+Android JVM, minified release, lint, fixture isolation and alignment gates pass
+(154 tasks). Source-only reproduction matches APK SHA-256
+`0f8e3b9e2bd91383046252dd2961e8687a881264945bd953d33ef39881d1bbf3`.
+Architecture/docs/diff gates and explicit native hazard review pass. Ignored
+evidence: `.cache/scan-prefix/`, `.cache/reproduce-scan-prefix/`. Continue safe
+native/platform ownership and recovery work; no real-wallet, TLS or production
+node authority has changed.

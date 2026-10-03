@@ -5,6 +5,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.qrcode.QRCodeWriter
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -15,6 +16,29 @@ import org.zclassic.wallet.core.Zatoshi
 
 @RunWith(AndroidJUnit4::class)
 class ScanQrInstrumentedTest {
+    @Test fun paddedInterleavedImageKeepsExactBoundsAndPixels() {
+        val address = "t1T8yaLVhNqxA5KJcmiqqFN88e8DNp2PBfF"
+        val side = 205
+        val row = 8192
+        val pixel = 4
+        val used = (side - 1) * row + (side - 1) * pixel + 1
+        val matrix = QRCodeWriter().encode(address, BarcodeFormat.QR_CODE, side, side)
+        val pixels = ByteArray(8_388_608) { 42 }
+        for (y in 0 until side) for (x in 0 until side)
+            pixels[y * row + x * pixel] = if (matrix[x, y]) 0 else -1
+        val before = pixels.copyOf()
+        try {
+            val request = ScanQr.decode(pixels, side, side, row, pixel, Network.MAINNET)
+            assertEquals(address, request?.address?.encoded)
+            assertArrayEquals(before, pixels)
+            assertNull(ScanQr.decode(pixels.copyOf(used - 1), side, side, row, pixel, Network.MAINNET))
+            assertNull(ScanQr.decode(pixels.copyOf(pixels.size + 1), side, side, row, pixel, Network.MAINNET))
+        } finally {
+            pixels.fill(0)
+            before.fill(0)
+        }
+    }
+
     @Test fun unicodeLayoutSeparatorsCannotEnterARequestThroughQrDecoding() {
         val address = "t1T8yaLVhNqxA5KJcmiqqFN88e8DNp2PBfF"
         var accepted = 0
