@@ -204,6 +204,15 @@ ZCL_TEST_GROUP(soak_harness)
  * binary; absence fails. The selected runner and
  * proof build it through the BUILD_NEED row in test_group_host_needs.def. */
 ZCL_TEST_GROUP(crash_recovery)
+/* Soak runner CLI regressions (tools/soak/main.c ->
+ * build/bin/soak_runner): an over-long --log/--node-datadir/--connect
+ * argument is refused with exit 2 naming the flag instead of silently
+ * truncating into a fixed buffer (the truncated --log filename is exactly
+ * NAME_MAX so fopen succeeds and the soak logs to a stranger's file; the
+ * truncated datadir/connect reach the spawned node). Self-skips when the
+ * binary is absent; the proof prefork builds it through the BUILD_NEED row
+ * below. */
+ZCL_TEST_GROUP(soak_runner)
 ZCL_TEST_GROUP(event)
 ZCL_TEST_GROUP(download)
 ZCL_TEST_GROUP(download_contention)
