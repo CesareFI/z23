@@ -9354,6 +9354,25 @@ static int test_ic_proof_enqueue_requires_commit_objects(void)
         ASSERT(zcl_dev_proof_ensure(f.root, local, base, &status));
         ASSERT_EQ(status.state, ZCL_DEV_PROOF_STATE_RUNNING);
         ASSERT_STR_EQ(status.detail, "resident_proof_request_queued");
+        /* A post-rename durability refusal leaves the exact request visible,
+         * but must never acknowledge a newly queued request as durable. */
+        ASSERT(setenv("ZCL_DEV_PROOF_TEST_PARENT_FLUSH_FAIL", "1", 1) == 0);
+        bool queued = zcl_dev_proof_ensure(f.root, other, base, &status);
+        char first_refusal[sizeof(status.detail)];
+        (void)snprintf(first_refusal, sizeof(first_refusal), "%s", status.detail);
+        bool repeated = zcl_dev_proof_ensure(f.root, other, base, &status);
+        ASSERT(unsetenv("ZCL_DEV_PROOF_TEST_PARENT_FLUSH_FAIL") == 0);
+        ASSERT(!queued);
+        ASSERT_STR_EQ(first_refusal, "resident_proof_enqueue_failed");
+        ASSERT(!repeated);
+        ASSERT_EQ(status.state, ZCL_DEV_PROOF_STATE_INVALID);
+        ASSERT_STR_EQ(status.detail, "proof_request_durability_unknown");
+        ASSERT(snprintf(request, sizeof(request),
+                        "%s/.cache/zcl-dev-proof/requests/%s-%s.request",
+                        f.root, other, base) < (int)sizeof(request));
+        ASSERT(access(request, F_OK) == 0);
+        ASSERT(zcl_dev_proof_ensure(f.root, other, base, &status));
+        ASSERT_EQ(status.state, ZCL_DEV_PROOF_STATE_RUNNING);
         ASSERT(unsetenv("ZCL_DEVLOOP_TEST_PROCESS") == 0);
         ASSERT(test_rm_rf_recursive(f.parent) == 0);
         PASS();

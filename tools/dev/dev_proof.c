@@ -26,6 +26,7 @@
 #include "base/serialize_le.h"
 #include "json/json.h"
 #include "platform/directory_compat.h"
+#include "platform/directory_transaction.h"
 #include "platform/disk_space.h"
 #include "platform/file_clone.h"
 #include "platform/logical_cpu.h"
@@ -649,6 +650,33 @@ static bool proof_state_prepare(const struct proof_paths *paths)
            platform_private_directory_ensure(paths->leases);
 }
 
+/* A visible renamed proof name is durable only after its private parent has
+ * flushed. A failed flush leaves the name in place for an exact retry. */
+static bool write_atomic_parent_flush(const char *path)
+{
+    const char *slash = path ? strrchr(path, '/') : NULL;
+    if (!slash || slash == path) return false;
+    size_t len = (size_t)(slash - path);
+    if (len >= PATH_MAX) return false;
+    char parent[PATH_MAX];
+    memcpy(parent, path, len);
+    parent[len] = '\0';
+    struct platform_directory_transaction dir;
+    platform_directory_transaction_init(&dir);
+    if (!platform_directory_transaction_open(&dir, parent)) return false;
+#ifdef ZCL_TESTING
+    const char *inject = getenv("ZCL_DEV_PROOF_TEST_PARENT_FLUSH_FAIL");
+    if (inject && strcmp(inject, "1") == 0) {
+        platform_directory_transaction_close(&dir);
+        errno = EIO;
+        return false;
+    }
+#endif
+    bool ok = platform_directory_transaction_flush(&dir);
+    platform_directory_transaction_close(&dir);
+    return ok;
+}
+
 static bool process_ok(const struct zcl_devloop_process_result *result)
 {
     return result && !result->timed_out && !result->output_truncated &&
@@ -1177,6 +1205,41 @@ static bool proof_failure_attempt_logs(const struct proof_paths *paths,
     return true;
 }
 
+/* -1 means a visible request still lacks a durable directory observation,
+ * 0 means no request, and 1 means the status has been filled. */
+static int proof_status_request(const struct proof_paths *paths,
+                                const char *local, const char *base,
+                                struct zcl_dev_proof_status *out)
+{
+    if (proof_request_matches_pair(paths->request, local, base)) {
+        if (!write_atomic_parent_flush(paths->request)) {
+            out->state = ZCL_DEV_PROOF_STATE_INVALID;
+            (void)snprintf(out->detail, sizeof(out->detail), "%s",
+                           "proof_request_durability_unknown");
+            return -1;
+        }
+        out->state = ZCL_DEV_PROOF_STATE_RUNNING;
+        out->eta_ms = zcl_dev_proof_ceiling_ms();
+        (void)snprintf(out->detail, sizeof(out->detail), "%s",
+                       "resident_proof_request_queued");
+        /* A still-queued request reports how long no worker has claimed it. */
+        struct stat request_st;
+        if (stat(paths->request, &request_st) == 0) {
+            int64_t now = platform_time_wall_unix();
+            int64_t written = (int64_t)request_st.st_mtime;
+            out->request_age_s = now > written ? now - written : 0;
+        }
+        return 1;
+    }
+    if (proof_private_regular(paths->request)) {
+        out->state = ZCL_DEV_PROOF_STATE_FAILED;
+        (void)snprintf(out->detail, sizeof(out->detail), "%s",
+                       "proof_request_invalid");
+        return 1;
+    }
+    return 0;
+}
+
 static bool proof_status_read_platform(const char *repo_root,
                                        const char *local_commit,
                                        const char *remote_base,
@@ -1206,6 +1269,12 @@ static bool proof_status_read_platform(const char *repo_root,
     (void)snprintf(out->log_dir, sizeof(out->log_dir), "%s", paths.logs);
     struct zcl_dev_acceptance_receipt_v1 receipt;
     if (receipt_load(&paths, local, base, &receipt, why, sizeof(why))) {
+        if (!write_atomic_parent_flush(paths.receipt)) {
+            out->state = ZCL_DEV_PROOF_STATE_INVALID;
+            (void)snprintf(out->detail, sizeof(out->detail), "%s",
+                           "proof_receipt_durability_unknown");
+            return false;
+        }
         out->state = ZCL_DEV_PROOF_STATE_PASSED;
         /* The compile step's own sidecar says what it reused in one line;
          * fall back to the fixed status word only when there is none (an
@@ -1231,31 +1300,8 @@ static bool proof_status_read_platform(const char *repo_root,
                        "background_verification_running");
         return true;
     }
-    if (proof_request_matches_pair(paths.request, local, base)) {
-        out->state = ZCL_DEV_PROOF_STATE_RUNNING;
-        out->eta_ms = zcl_dev_proof_ceiling_ms();
-        (void)snprintf(out->detail, sizeof(out->detail), "%s",
-                       "resident_proof_request_queued");
-        /* The request is still in the queue directory, so no worker ever
-         * claimed it (a claim renames it into the attempt directory). Age
-         * since its write is the honest "how long has nothing consumed
-         * this" number — the difference between a freshly queued request
-         * and one that has sat for hours behind a silent resident, which
-         * the RUNNING state alone cannot express. */
-        struct stat request_st;
-        if (stat(paths.request, &request_st) == 0) {
-            int64_t now = platform_time_wall_unix();
-            int64_t written = (int64_t)request_st.st_mtime;
-            out->request_age_s = now > written ? now - written : 0;
-        }
-        return true;
-    }
-    if (proof_private_regular(paths.request)) {
-        out->state = ZCL_DEV_PROOF_STATE_FAILED;
-        (void)snprintf(out->detail, sizeof(out->detail), "%s",
-                       "proof_request_invalid");
-        return true;
-    }
+    int request = proof_status_request(&paths, local, base, out);
+    if (request != 0) return request > 0;
     if (dp_failure_record_read(paths.failure, out)) {
         out->state = ZCL_DEV_PROOF_STATE_FAILED;
         (void)proof_failure_attempt_logs(&paths, out->log_dir,
@@ -1313,6 +1359,8 @@ static bool write_all(int fd, const void *data, size_t size)
     return true;
 }
 
+/* Scratch writes replace the destination atomically. Authority-bearing proof
+ * state adds a parent-directory flush through write_atomic_durable below. */
 static bool write_atomic(const char *path, const void *data, size_t size,
                          mode_t mode)
 {
@@ -1330,6 +1378,15 @@ static bool write_atomic(const char *path, const void *data, size_t size,
         (void)unlink(temp);
     }
     return ok;
+}
+
+/* Keep the destination visible on an uncertain parent flush so a retry can
+ * inspect its exact bytes. Only owner-private proof state uses this path. */
+static bool write_atomic_durable(const char *path, const void *data,
+                                 size_t size, mode_t mode)
+{
+    return write_atomic(path, data, size, mode) &&
+           write_atomic_parent_flush(path);
 }
 
 static bool proof_request_body(const char *local, const char *base,
@@ -1401,7 +1458,7 @@ static bool proof_lease_publish(const struct proof_paths *paths)
                    (long long)platform_time_wall_unix())
         : -1;
     return n > 0 && n < (int)sizeof(body) &&
-           write_atomic(paths->lease, body, (size_t)n, 0600);
+           write_atomic_durable(paths->lease, body, (size_t)n, 0600);
 }
 
 static bool proof_lease_current(const struct proof_paths *paths)
@@ -1438,8 +1495,11 @@ static bool proof_write_if_current(const struct proof_paths *paths,
 {
     int fd = proof_queue_lock_acquire(paths);
     if (fd < 0) return false;
+    bool durable = strcmp(target, paths->receipt) == 0 ||
+                   strcmp(target, paths->failure) == 0;
     bool ok = proof_lease_current(paths) &&
-              write_atomic(target, data, size, mode);
+              (durable ? write_atomic_durable(target, data, size, mode)
+                       : write_atomic(target, data, size, mode));
     proof_queue_lock_release(fd);
     return ok;
 }
@@ -8263,6 +8323,29 @@ static void test_receipt_bind_helpers(
     sha3_256_finalize(&receipt, test->receipt_root);
 }
 
+static bool receipt_store_child(const struct proof_paths *paths,
+                                enum zcl_dev_proof_dimension_id id,
+                                struct zcl_dev_proof_dimension *dimension)
+{
+    uint8_t child[ZCL_DEV_PROOF_CHILD_WIRE_BYTES];
+    if (!zcl_dev_proof_child_receipt_create(id, dimension, child))
+        return false;
+    char root[65], path[PATH_MAX];
+    zcl_hex_encode(dimension->receipt_root, ZCL_DEV_PROOF_ROOT_BYTES, root);
+    if (snprintf(path, sizeof(path), "%s/%s.child", paths->children,
+                 root) >= (int)sizeof(path))
+        return false;
+    struct stat st;
+    if (lstat(path, &st) == 0) {
+        uint8_t existing[ZCL_DEV_PROOF_CHILD_WIRE_BYTES];
+        return read_exact_file(path, existing, sizeof(existing)) &&
+               memcmp(existing, child, sizeof(child)) == 0 &&
+               write_atomic_parent_flush(path);
+    }
+    return errno == ENOENT &&
+           write_atomic_durable(path, child, sizeof(child), 0400);
+}
+
 static bool receipt_store(const struct proof_paths *paths,
                           struct zcl_dev_acceptance_receipt_v1 *receipt)
 {
@@ -8271,25 +8354,9 @@ static bool receipt_store(const struct proof_paths *paths,
     for (size_t i = 0; i < ZCL_DEV_PROOF_DIMENSIONS; i++) {
         struct zcl_dev_proof_dimension *dimension = &receipt->dimensions[i];
         if (!dimension->selected) continue;
-        uint8_t child[ZCL_DEV_PROOF_CHILD_WIRE_BYTES];
-        if (!zcl_dev_proof_child_receipt_create(
-                (enum zcl_dev_proof_dimension_id)i, dimension, child))
+        if (!receipt_store_child(paths,
+                (enum zcl_dev_proof_dimension_id)i, dimension))
             return false;
-        char root[65], path[PATH_MAX];
-        zcl_hex_encode(dimension->receipt_root, ZCL_DEV_PROOF_ROOT_BYTES, root);
-        if (snprintf(path, sizeof(path), "%s/%s.child", paths->children,
-                     root) >= (int)sizeof(path))
-            return false;
-        struct stat st;
-        if (lstat(path, &st) == 0) {
-            uint8_t existing[ZCL_DEV_PROOF_CHILD_WIRE_BYTES];
-            if (!read_exact_file(path, existing, sizeof(existing)) ||
-                memcmp(existing, child, sizeof(child)) != 0)
-                return false;
-        } else if (errno != ENOENT ||
-                   !write_atomic(path, child, sizeof(child), 0400)) {
-            return false;
-        }
     }
     return proof_lease_current(paths) &&
            zcl_dev_proof_receipt_child_set_root(
@@ -11611,7 +11678,7 @@ static bool proof_ensure_platform(const char *repo_root,
     char body[320];
     size_t body_len = 0;
     if (!proof_request_body(local, base, body, &body_len) ||
-        !write_atomic(paths.request, body, body_len, 0600)) {
+        !write_atomic_durable(paths.request, body, body_len, 0600)) {
         out->state = ZCL_DEV_PROOF_STATE_INVALID;
         (void)snprintf(out->detail, sizeof(out->detail), "%s",
                        "resident_proof_enqueue_failed");
@@ -11716,7 +11783,7 @@ static bool dp_retry_locked(const struct proof_paths *paths,
     char body[320];
     size_t body_len = 0;
     if (!proof_request_body(local, base, body, &body_len) ||
-        !write_atomic(paths->request, body, body_len, 0600)) {
+        !write_atomic_durable(paths->request, body, body_len, 0600)) {
         proof_why(out->detail, sizeof(out->detail), "resident_proof_enqueue_failed");
         return false;
     }
