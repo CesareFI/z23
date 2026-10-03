@@ -142,7 +142,7 @@ static void cleanup_test_db(void)
 {
     char cmd[512];
     snprintf(cmd, sizeof(cmd), "rm -rf %s", g_tmpdir);
-    (void)system(cmd);
+    ZCL_IGNORE_WUR(system(cmd), "fixture command; the assertions below prove the state");
     wallet_view_init(NULL);
 }
 

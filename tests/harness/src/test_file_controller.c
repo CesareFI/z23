@@ -67,7 +67,7 @@ static void cleanup_manifest_test_dir(const char *dir)
 {
     char cmd[512];
     snprintf(cmd, sizeof(cmd), "rm -rf %s", dir);
-    system(cmd);
+    ZCL_IGNORE_WUR(system(cmd), "fixture command; the assertions below prove the state");
 }
 
 static void cleanup_file_controller_test_dir(const char *dir)

@@ -341,7 +341,7 @@ static bool dvx_one_verdict(const char *body, char *out, size_t cap)
     if (!getcwd(here, sizeof(here)))
         return false;
     if (!dvx_verdict(body, table[0], out, cap)) {
-        (void)chdir(here);
+        ZCL_IGNORE_WUR(chdir(here), "restore cwd before the early-out");
         return false;
     }
     for (i = 1; i < n; i++) {

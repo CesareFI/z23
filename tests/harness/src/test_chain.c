@@ -411,7 +411,7 @@ int test_chain(void)
         const char *tmpdir = tmpbuf;
         char cmd[600];
         snprintf(cmd, sizeof(cmd), "mkdir -p %s/blocks", tmpdir);
-        (void)system(cmd);
+        ZCL_IGNORE_WUR(system(cmd), "fixture command; the assertions below prove the state");
 
         struct block b;
         block_init(&b);

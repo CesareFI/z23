@@ -72,7 +72,10 @@ static bool cc_fixture(const char *dir)
     return ok;
 }
 
-static void cc_reset(void) { system("rm -rf " CC_FIX); }
+static void cc_reset(void) {
+    ZCL_IGNORE_WUR(system("rm -rf " CC_FIX),
+                   "fixture reset; the assertions below prove the tree state");
+}
 
 static bool cc_seal_dir(struct ci_merkle *m, const char *domain,
                         const char *dir, struct zcl_sha3_digest *out,

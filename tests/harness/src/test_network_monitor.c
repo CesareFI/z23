@@ -100,7 +100,7 @@ static int test_observation_model(void)
 
     char cmd[384];
     snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);
-    (void)system(cmd);
+    ZCL_IGNORE_WUR(system(cmd), "fixture command; the assertions below prove the state");
     return failures;
 }
 

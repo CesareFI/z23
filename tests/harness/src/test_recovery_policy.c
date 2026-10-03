@@ -288,7 +288,9 @@ static int t_operator_prompt_accepts(void)
     /* Ack file must exist and contain the reason. */
     FILE *f = fopen(ack, "r");
     char buf[256] = {0};
-    if (f) { fread(buf, 1, sizeof(buf) - 1, f); fclose(f); }
+    if (f) { ZCL_IGNORE_WUR(fread(buf, 1, sizeof(buf) - 1, f),
+                          "content probe; the comparison below decides");
+            fclose(f); }
 
     bool ok = d == POLICY_ALLOW &&
               atomic_load(&g_ev_allow) == 1 &&

@@ -737,7 +737,7 @@ static int wrc_g_kill_restart_baseline(struct wallet *owner,
     {
         char cmd[512];
         snprintf(cmd, sizeof(cmd), "rm -rf %s", gdir);
-        (void)system(cmd);
+        ZCL_IGNORE_WUR(system(cmd), "fixture command; the assertions below prove the state");
     }
 #endif
     return failures;
@@ -1039,7 +1039,7 @@ int test_wallet_rescan_coverage(void)
     {
         char cmd[512];
         snprintf(cmd, sizeof(cmd), "rm -rf %s", datadir);
-        (void)system(cmd);
+        ZCL_IGNORE_WUR(system(cmd), "fixture command; the assertions below prove the state");
     }
 #endif
 

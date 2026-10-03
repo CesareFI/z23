@@ -360,7 +360,7 @@ int test_code_have(void)
     }
 
     /* ── 2, 3, 6, 7: the hermetic fixture ─────────────────────────────── */
-    system("rm -rf " HAVE_FIX);
+    ZCL_IGNORE_WUR(system("rm -rf " HAVE_FIX), "fixture reset; the assertions below prove the tree state");
     if (!ch_write_fixture(false)) {
         printf("  code_have: write_fixture... FAIL\n");
         return failures + 1;
@@ -453,6 +453,6 @@ int test_code_have(void)
         if (after) codeindex_close(after);
     }
 
-    system("rm -rf " HAVE_FIX);
+    ZCL_IGNORE_WUR(system("rm -rf " HAVE_FIX), "fixture reset; the assertions below prove the tree state");
     return failures;
 }

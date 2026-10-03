@@ -128,7 +128,9 @@ static int mr_failures_evidence(int fault)
     MR_CHECK("durable replacement verdict", mr_evidence_write(path, next) == (fault == 0));
     MR_CHECK("flush/close/rename/parent order", mr_evidence_order == (fault == 0 ? 4 : fault == 3 ? 3 : 2));
     FILE *f = fopen(path, "rb");
-    if (f) { (void)fread(bytes, 1, sizeof(bytes) - 1, f); (void)fclose(f); }
+    if (f) { ZCL_IGNORE_WUR(fread(bytes, 1, sizeof(bytes) - 1, f),
+                             "fixture written in this process; the byte-exact strcmp below proves the read");
+             (void)fclose(f); }
     MR_CHECK("exact retained or installed bytes", strcmp(bytes, fault == 1 || fault == 2 ? old : next) == 0);
     mr_evidence_fault = 0;
     MR_CHECK("remove receipt", unlink(path) == 0);
@@ -2222,7 +2224,8 @@ static void mr_memory_max_child(int wr, const char *dir)
     free(evidence);
     n = snprintf(buf, sizeof(buf), "%d %s %s\n", rc, r.verdict, r.reason);
     if (n > 0)
-        (void)write(wr, buf, (size_t)n);
+        ZCL_IGNORE_WUR(write(wr, buf, (size_t)n),
+               "drain captured bytes to the parent before _exit");
     _exit(0);
 }
 

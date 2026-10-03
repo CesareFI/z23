@@ -47,6 +47,16 @@
 #include <process.h>
 #endif
 
+/* Stated-reason discard for write(2)'s warn_unused_result: a `(void)`
+ * cast does not silence glibc's __wur, so bind then drop. */
+static inline void devloop_discard_write_(ssize_t rc) { (void)rc; }
+#define DEVLOOP_IGNORE_WRITE(call, reason)                               \
+    do {                                                               \
+        static_assert(sizeof("" reason) > 1,                           \
+                      "DEVLOOP_IGNORE_WRITE requires a reason");       \
+        devloop_discard_write_(call);                                  \
+    } while (0)
+
 #if defined(ZCL_DEV_BUILD) || defined(ZCL_TESTING)
 
 #if defined(_WIN32)
@@ -4370,7 +4380,8 @@ static bool watch_sealer_test_child_started(void *opaque)
     int *fd = opaque;
     if (*fd >= 0) {
         pid_t pids[2] = {getpid(), 0};
-        (void)write(*fd, pids, sizeof(pids));
+        DEVLOOP_IGNORE_WRITE(write(*fd, pids, sizeof(pids)),
+                         "pid snapshot for the watchdog");
         (void)close(*fd);
         *fd = -1;
     }
@@ -4396,7 +4407,8 @@ static void watch_sealer_test_orphan_worker(const char *root, int started_fd,
     }
     bool ran = zcl_devloop_process_run(root, argv, 5000, &result);
     char verdict = result.cancelled && (ran != preexec) ? 'c' : 't';
-    (void)write(report_fd, &verdict, 1);
+    DEVLOOP_IGNORE_WRITE(write(report_fd, &verdict, 1),
+                         "verdict byte for the parent");
     _exit(0);
 }
 

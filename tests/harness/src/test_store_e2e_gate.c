@@ -108,7 +108,7 @@ static void p11_5_cleanup_datadir(const char *datadir)
 {
     char cmd[512];
     snprintf(cmd, sizeof(cmd), "rm -rf %s", datadir ? datadir : "");
-    (void)system(cmd);
+    ZCL_IGNORE_WUR(system(cmd), "fixture command; the assertions below prove the state");
 }
 
 static bool p11_5_fetch_csrf_token(const char *datadir,

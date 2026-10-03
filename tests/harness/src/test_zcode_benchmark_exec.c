@@ -102,7 +102,7 @@ static void zbex_teardown(struct node_db *ndb, const char *dir)
     char cmd[ZBEX_DIR_CAP + 16];
     int n = snprintf(cmd, sizeof(cmd), "rm -rf '%s'", dir);
     if (n > 0 && (size_t)n < sizeof(cmd))
-        (void)system(cmd);
+        ZCL_IGNORE_WUR(system(cmd), "fixture command; the assertions below prove the state");
 }
 
 /* The shop surface receives a node datadir and resolves its science

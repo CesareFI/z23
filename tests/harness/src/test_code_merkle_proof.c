@@ -115,7 +115,7 @@ static bool cmp_fixture(const char *dir)
 
 static void cmp_reset(void)
 {
-    system("rm -rf " CMP_FIX);
+    ZCL_IGNORE_WUR(system("rm -rf " CMP_FIX), "fixture reset; the assertions below prove the tree state");
 }
 
 /* Prove `path` and check the proof against the tree's own root through the

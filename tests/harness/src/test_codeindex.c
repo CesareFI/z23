@@ -753,7 +753,7 @@ static int test_codeindex_platform_arm(void)
                  "contexts/commons/packages/zbuf/tests/test_zbuf.c") &&
              codeindex_path_is_production("cognition/modules/codeindex/src/codeindex.c"));
 
-    system("rm -rf " FIX);
+    ZCL_IGNORE_WUR(system("rm -rf " FIX), "fixture reset; the assertions below prove the tree state");
     if (!write_fixture()) {
         printf("  codeindex: write_fixture... FAIL\n");
         return failures + 1;
@@ -1233,7 +1233,7 @@ static int test_codeindex_platform_arm(void)
 
     /* ── 3: rebuild-from-scratch identity ── */
     codeindex_close(ci);
-    system("rm -rf " FIX "/.codeindex");
+    ZCL_IGNORE_WUR(system("rm -rf " FIX "/.codeindex"), "fixture reset; the assertions below prove the tree state");
     codeindex_test_reset_exact_bytes_read();
     ci = codeindex_open(FIX);
     uint64_t scratch_exact_bytes = codeindex_test_exact_bytes_read();
@@ -1511,7 +1511,7 @@ static int test_codeindex_platform_arm(void)
              "int ci_concurrent_32(void){return 5;}\n");
     CI_CHECK("32-way cold-open fixture writes",
              mk_write(FIX, "core/modules/net/src/foo.c", source_current));
-    system("rm -rf " FIX "/.codeindex");
+    ZCL_IGNORE_WUR(system("rm -rf " FIX "/.codeindex"), "fixture reset; the assertions below prove the tree state");
     CI_CHECK("32 concurrent cold opens all adopt one complete generation",
              concurrent_open_32("ci_concurrent_32"));
     CI_CHECK("32-way publication leaves no staging files", no_staging_files());
@@ -1596,7 +1596,7 @@ static int test_codeindex_platform_arm(void)
      * A dedicated clean fixture: the shared FIX foo.c has been mutated by the
      * staleness/crash cases above, so use CG_FIX for deterministic joins. */
     {
-        system("rm -rf " CG_FIX);
+        ZCL_IGNORE_WUR(system("rm -rf " CG_FIX), "fixture reset; the assertions below prove the tree state");
         CI_CHECK("call-graph fixture writes", write_cg_fixture());
         struct codeindex *cg = codeindex_open(CG_FIX);
         CI_CHECK("call-graph fixture opens", cg != NULL);
@@ -1693,14 +1693,14 @@ static int test_codeindex_platform_arm(void)
             CI_CHECK("call graph intact after migration rebuild", ne == 2);
             codeindex_close(migr);
         }
-        system("rm -rf " CG_FIX);
+        ZCL_IGNORE_WUR(system("rm -rf " CG_FIX), "fixture reset; the assertions below prove the tree state");
     }
 
     /* ── 12: impact closure (F3, proof-DAG from symbol closure) ──
      * cl_a -> cl_b -> cl_c across three files; changing cl_c.c's file must
      * impact cl_b.c and cl_a.c too. Deterministic, depth-bounded, cap-honoured. */
     {
-        system("rm -rf " CL_FIX);
+        ZCL_IGNORE_WUR(system("rm -rf " CL_FIX), "fixture reset; the assertions below prove the tree state");
         CI_CHECK("closure fixture writes", write_cl_fixture());
         struct codeindex *cl = codeindex_open(CL_FIX);
         CI_CHECK("closure fixture opens", cl != NULL);
@@ -1783,12 +1783,12 @@ static int test_codeindex_platform_arm(void)
 
             codeindex_close(cl);
         }
-        system("rm -rf " CL_FIX);
+        ZCL_IGNORE_WUR(system("rm -rf " CL_FIX), "fixture reset; the assertions below prove the tree state");
     }
 
     /* ── code.index.metrics: schema, receipt parity, stale without rebuild ── */
     {
-        system("rm -rf " MET_FIX);
+        ZCL_IGNORE_WUR(system("rm -rf " MET_FIX), "fixture reset; the assertions below prove the tree state");
         CI_CHECK("metrics fixture writes",
                  mk_write(MET_FIX, "core/modules/net/src/metrics_fix.c",
                           "/* core/modules/net/src/metrics_fix.c — metrics "
@@ -1843,7 +1843,7 @@ static int test_codeindex_platform_arm(void)
                      cold_ms);
         zcl_command_reply_free(&reply);
         json_free(&input);
-        system("rm -rf " MET_FIX);
+        ZCL_IGNORE_WUR(system("rm -rf " MET_FIX), "fixture reset; the assertions below prove the tree state");
     }
 
     return failures;

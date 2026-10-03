@@ -231,10 +231,10 @@ int test_chain_state_validator(void)
         snprintf(pdir, sizeof(pdir), "/tmp/zcl_csv_fin_%d", (int)getpid());
         char rmcmd[160];
         snprintf(rmcmd, sizeof(rmcmd), "rm -rf '%s'", pdir);
-        (void)system(rmcmd);
+        ZCL_IGNORE_WUR(system(rmcmd), "fixture reset; the assertions below prove the tree state");
         char mkcmd[160];
         snprintf(mkcmd, sizeof(mkcmd), "mkdir -p '%s'", pdir);
-        (void)system(mkcmd);
+        ZCL_IGNORE_WUR(system(mkcmd), "fixture command; the assertions below prove the state");
 
         struct main_state ms;
         memset(&ms, 0, sizeof(ms));
@@ -281,7 +281,7 @@ int test_chain_state_validator(void)
         coins_view_cache_free(&cache);
         block_map_free(&ms.map_block_index);
         progress_store_close();
-        (void)system(rmcmd);
+        ZCL_IGNORE_WUR(system(rmcmd), "fixture reset; the assertions below prove the tree state");
     }
 
     /* ── 6. Coins not in index, chain > 1000 → reset coins cursor ── */

@@ -414,7 +414,7 @@ static int test_fh_recent_missing_inputs(void)
 int test_code_firsthour(void)
 {
     int failures = 0;
-    (void)system("rm -rf " FH_FIX);
+    ZCL_IGNORE_WUR(system("rm -rf " FH_FIX), "fixture reset; the assertions below prove the tree state");
     if (!write_fh_fixture()) {
         printf("  code_firsthour: fixture write... FAIL\n");
         return 1;

@@ -17,6 +17,8 @@
 #define _POSIX_C_SOURCE 200809L
 #endif
 
+#include "test/ignore_wur.h"
+
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
@@ -463,8 +465,9 @@ static void test_leaf_preimage(void)
     FILE *f = fopen("leaf.c", "wb");
     CS_CHECK("scratch file", f != NULL);
     if (!f) {
-        (void)chdir(oldcwd);
-        (void)rmdir(dir);
+        ZCL_IGNORE_WUR(chdir(oldcwd),
+                       "restore cwd on the failure path");
+        ZCL_IGNORE_WUR(rmdir(dir), "cleanup; the assertion above failed");
         return;
     }
     (void)fwrite(payload, 1, plen, f);
@@ -538,8 +541,8 @@ static void test_leaf_preimage(void)
     (void)unlink("link.c");
     (void)unlink("target.c");
     (void)unlink("leaf.c");
-    (void)chdir(oldcwd);
-    (void)rmdir(dir);
+    ZCL_IGNORE_WUR(chdir(oldcwd), "restore cwd after the seal walk");
+    ZCL_IGNORE_WUR(rmdir(dir), "fixture cleanup; the seal check decided");
 }
 
 /* ── 9. sections localise a change ────────────────────────────────────── */
