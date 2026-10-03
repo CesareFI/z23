@@ -7880,14 +7880,21 @@ $(BIN_DIR)/gen_utxo_root_ladder: tools/gen_utxo_root_ladder.c \
 .PHONY: tools/rom_two_builder_compare
 tools/rom_two_builder_compare: $(BIN_DIR)/rom_two_builder_compare
 $(BIN_DIR)/rom_two_builder_compare: tools/rom_two_builder_compare.c \
-		platform/modules/sha3/src/sha3.c core/modules/crypto/src/keccak_x4.c core/modules/crypto/src/simd_dispatch.c platform/modules/base/src/cleanse.c
+		platform/modules/sha3/src/sha3.c core/modules/crypto/src/keccak_x4.c core/modules/crypto/src/simd_dispatch.c platform/modules/base/src/cleanse.c \
+		core/modules/crypto/include/crypto/sha3.h \
+		core/modules/crypto/include/crypto/simd_dispatch.h \
+		core/modules/crypto/src/keccak_x4_internal.h \
+		platform/modules/base/include/base/cleanse.h \
+		platform/modules/base/include/base/serialize_le.h \
+		platform/modules/sha3/include/sha3/sha3.h \
+		vendor/include/sqlite3.h vendor/lib/libsqlite3.a
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
 	    $(ZCL_WARN_STRINGOP_OVERFLOW) \
 	    -Iplatform/modules/sha3/include -Icore/modules/crypto/include -Iplatform/modules/support/include -Iplatform/modules/base/include \
 	    -Ivendor/include \
 	    -D_POSIX_C_SOURCE=200809L $(ZCL_PLATFORM_CPPFLAGS) \
-	    -o $@ $^ -Lvendor/lib vendor/lib/libsqlite3.a -lpthread -lm
+	    -o $@ $(filter %.c,$^) -Lvendor/lib vendor/lib/libsqlite3.a -lpthread -lm
 
 # checkpoint_rung_export: the ladder RUNG generator. Reads a consensus-state
 # bundle and emits the complete-state rung at its height as BOTH a binary
