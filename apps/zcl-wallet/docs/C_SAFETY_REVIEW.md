@@ -4319,3 +4319,24 @@ The fixture now selects Android's JNI table tag using the same conditional alias
 as neighboring camera/race tests. Native fault injection runs onAPI30/35/36 and
 both host compilers; real ART sync tests remain separate. ARM64 build evidence
 is not physical-device or hardware-custody proof. TLS quarantine remains intact.
+
+## JNI snapshot late-failure qualification — 2026-10-03
+
+Test-only scope: `test_jni_sync.c` and its two CMake definitions. Production
+source is unchanged from the preceding reviewed complete-only publication fix.
+
+| Hazard | Review |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access | Uses the existing fixed fake arrays and maximum16-entry history fixture. Exact156-word comparison follows validated maximum-length snapshots; no new packet layout or input span. |
+| Integer overflow/underflow; signed/unsigned conversions | Fault selection is bounded0..7; existing fixed packet sizes and unsigned mode bits retain their range. No input-sized arithmetic. |
+| Use-after-free; double-free; leaks; dangling pointers | Existing fake-VM references own the before/after observations until comparison and fixture cleanup. Real mutex unlock occurs exactly once; no test mutex remains locked. |
+| NULL dereferences; uninitialized memory | Returned arrays are checked before status reads. The one-shot flag initializes false and must be consumed before fixture retirement. |
+| Pointer arithmetic | Only existing fixed-array indexing and a bounded full-packet comparison. No external pointer or borrowed registry watch escapes. |
+| Format strings; secret leakage | Fixed existing assertion messages only; public synthetic reports, no secret or production wallet. Whole native snapshot/output retirement assertions remain active. |
+| Stack usage; allocation limits | No large local buffer, recursion or VLA. One additional fuzz snapshot uses the existing32-reference bounded owner; strict4096-byte frame checks pass. |
+| Malformed serialization/network input | Fuzzing now combines seven projection faults, success, late unlock uncertainty and both packet profiles. Deterministic full-history controls preserve every report word after refusal. |
+| Races; resource exhaustion | Interposition applies only to the single-threaded fixture/fuzzer translation units; real production/race-target synchronization is untouched. It models a reported unlock error after an actual successful release, not an OS mutex-failure recovery guarantee. All campaigns are bounded. |
+
+Independent mutations removing balance clearing or history error-length reset
+fail under both compilers. API30/35/36 native fixture execution passes; ARM64
+build-only evidence remains explicitly separate from device/custody acceptance.

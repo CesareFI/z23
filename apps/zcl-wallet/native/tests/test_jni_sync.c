@@ -6,10 +6,13 @@
 #undef zcl_secure_zero
 #undef zcl_sync_watch_snapshot
 #undef zcl_sync_watch_request
+#undef pthread_mutex_unlock
 #include "jni_support.h"
 #include "sync_fixture.h"
 #include "zcl_sync_watch.h"
 #include "zcl_keys.h"
+#include <errno.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -53,11 +56,24 @@ static unsigned opening_reads, address_clears, source_clears;
 static unsigned fail_open_get;
 static uintptr_t address_identity, source_identity;
 static unsigned frame_allocations, byte_regions;
+static bool fail_unlock;
 
 zcl_status zcl_jni_sync_test_snapshot(zcl_sync_watch *watch, uint64_t now, zcl_sync_snapshot *snapshot);
 void zcl_jni_sync_test_zero(void *buffer, size_t length);
 zcl_status zcl_jni_sync_test_request(zcl_sync_watch *watch, uint64_t token, uint64_t now,
     uint8_t *output, size_t capacity, size_t *length);
+int zcl_jni_sync_test_unlock(pthread_mutex_t *mutex);
+
+/* Release the real test mutex, then model an uncertain reported outcome.
+ * Never leave the fixture locked or change production synchronization. */
+int zcl_jni_sync_test_unlock(pthread_mutex_t *mutex)
+{
+    const int status = pthread_mutex_unlock(mutex);
+    if (!fail_unlock) return status;
+    fail_unlock = false;
+    CHECK(status == 0);
+    return EIO;
+}
 
 zcl_status zcl_jni_sync_test_request(zcl_sync_watch *watch, uint64_t token, uint64_t now,
     uint8_t *output, size_t capacity, size_t *length)
@@ -191,6 +207,7 @@ static jbyteArray bytes(const uint8_t *data, size_t length)
 
 static void release_references(void)
 {
+    CHECK(!fail_unlock);
     CHECK(owned_frame == NULL);
     CHECK(!opening && address_identity == 0 && source_identity == 0);
     address_clears = source_clears = opening_reads = 0;
@@ -718,6 +735,19 @@ static size_t maximum_history(char *frame, size_t capacity)
     return used + 2;
 }
 
+static void snapshot_unlock_refusals(jlong id, const jlong expected[156])
+{
+    for (unsigned history = 0; history < 2; ++history) {
+        fail_unlock = true;
+        const fake_array *result = (const fake_array *)read_snapshot(
+            &environment, NULL, id, 7, history != 0);
+        CHECK(!fail_unlock && result != NULL && !pending_exception);
+        CHECK(result->data.numbers[0] == ZCL_IO_UNCERTAIN);
+        const jlong *state = history_snapshot(id, 7);
+        CHECK(memcmp(state, expected, 156 * sizeof(*state)) == 0);
+    }
+}
+
 static void history_packet_and_owner_replacement(void)
 {
     const jlong id = open_owner_mode(true);
@@ -741,6 +771,7 @@ static void history_packet_and_owner_replacement(void)
         for (size_t word = 0; word < 7; ++word) CHECK(state[12 + i * 9 + word] == UINT32_MAX);
         CHECK(state[19 + i * 9] == (jlong)i && state[20 + i * 9] == (i % 2 == 0 ? 0 : -1));
     }
+    snapshot_unlock_refusals(id, state);
     CHECK(history_snapshot(id, 60007)[1] == ZCL_BALANCE_STALE);
     CHECK(API(closeSyncOwner)(&environment, NULL, id) == ZCL_OK);
     release_references();
@@ -810,6 +841,17 @@ static void inspect_fuzz_owner(jlong id, bool history, unsigned step)
     if (complete[10] != 0) CHECK(history && step == 7 && complete[11] == 2);
 }
 
+static void fuzz_snapshot_projection(jlong id, jlong now, uint8_t mode)
+{
+    snapshot_fault = (mode >> 1) % 8;
+    fail_unlock = (mode & 0x80) != 0;
+    const fake_array *result = (const fake_array *)read_snapshot(
+        &environment, NULL, id, now, (mode & 1) != 0);
+    CHECK(result != NULL && !pending_exception && !fail_unlock);
+    CHECK(result->data.numbers[0] >= ZCL_OK && result->data.numbers[0] <= ZCL_TLS_FAILURE);
+    snapshot_fault = 0;
+}
+
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t length)
 {
     if (length == 0 || length > ZCL_ELECTRUM_FRAME_MAX + 1) return 0;
@@ -830,6 +872,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t length)
         pending_exception = false; fail_get = false; fail_frame = false;
     }
     refuse_pending_snapshots(id, INT64_MAX);
+    fuzz_snapshot_projection(id, (jlong)step, data[0]);
     inspect_fuzz_owner(id, history, step);
     fuzz_snapshot_failure(id, (jlong)step, data[0]);
     CHECK(API(closeSyncOwner)(&environment, NULL, id) == ZCL_OK);

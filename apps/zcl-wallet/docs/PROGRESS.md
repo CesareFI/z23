@@ -7541,3 +7541,28 @@ Reproduction inputs/hashes: `.cache/reproduce-snapshot-error/` (ignored).
 Next: extend failure qualification to uncertainty after successful projection,
 including full history packets; retain status-only errors, fixed packet lengths
 and complete native retirement. Hardware custody and TLS remain separate gates.
+
+## Production continuation: late snapshot failure qualification — 2026-10-03
+
+A test-only mutex adapter now releases the real fixture lock, then can report
+one synthetic uncertain outcome. This exercises refusal after successful native
+projection without leaving a locked test resource or changing production locks.
+With a complete16-entry report, both snapshot profiles must publish status-only
+errors, and the following history packet must match all156 original words.
+Native snapshot/output retirement assertions remain active.
+
+Removing balance payload clearing or history error-length reset independently
+fails the new regression under Clang and GCC; unchanged controls pass. Focused
+strict ASan/UBSan/LSan builds, both static analyzers and the test complexity cap
+pass. The JNI fuzzer now combines projection corruption, unlock uncertainty and
+both packet profiles; it completes6,793 executions in31s without a finding.
+The real fuzz-profile manifest mutation gate passes55.61s and its deadline
+contract passes1.20s. Native fixtures pass API30/35/36 x86_64 including16KiB;
+ARM64 compiles only. Production source and APK bytes are unchanged, so preceding
+ART/release/reproduction evidence remains applicable. No new concurrency claim:
+TSan covers the separate unchanged production race target from the prior slice.
+Evidence: `.cache/snapshot-unlock*` (ignored).
+
+Next: continue custody/platform failure and restart review. Preserve the tested
+JNI error boundary, exact12-word recovery, TLS quarantine and physical-device
+custody gate; no production wallet/data or node activity is authorized.
