@@ -8181,12 +8181,18 @@ chaos-clean:
 tools/sim/simnet_trace_query: $(BIN_DIR)/simnet_trace_query
 $(BIN_DIR)/simnet_trace_query: tools/sim/simnet_trace_query.c \
 		platform/modules/json/src/json.c \
-		platform/modules/base/src/safe_alloc.c platform/modules/base/src/log_level.c
+		platform/modules/base/src/safe_alloc.c platform/modules/base/src/log_level.c \
+		platform/modules/json/include/json/json.h \
+		platform/modules/base/include/base/format_attribute.h \
+		platform/modules/base/include/base/log_level.h \
+		platform/modules/base/include/base/safe_alloc.h \
+		platform/modules/base/include/base/stdio_lock.h \
+		platform/modules/base/include/base/utc_tm.h
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
 	    -Iplatform/modules/json/include -Iplatform/modules/base/include -Iplatform/modules/util/include \
 	    -D_POSIX_C_SOURCE=200809L $(ZCL_PLATFORM_CPPFLAGS) \
-	    -o $@ $^ -lpthread -lm
+	    -o $@ $(filter %.c,$^) -lpthread -lm
 
 # ── wire_sweep: nightly seed-fuzzing runner for the simnet_wire harness ───
 # (Step F, docs/work/wire-next-wave-specs.md §3). Standalone binary, same
