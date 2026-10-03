@@ -92,6 +92,12 @@ static int tfd_read(const char *path, char *buf, size_t cap, size_t *outn)
     FILE *f = fopen(path, "r");
     if (!f)
         return errno == ENOENT ? TFD_MISSING : tfd_cannot_open(path);
+    struct stat opened;
+    if (fstat(fileno(f), &opened) != 0 ||
+        (opened.st_mode & (S_IRUSR | S_IRGRP | S_IROTH)) == 0) {
+        fclose(f);
+        return tfd_cannot_open(path);
+    }
     size_t n = fread(buf, 1, cap - 1, f);
     if (n == cap - 1) {
         char extra;

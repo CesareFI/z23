@@ -116,6 +116,12 @@ static int fru_scan(const char *path, int line, const char *name, int *hit,
     FILE *f = fopen(path, "r");
     if (!f)
         return -1;
+    struct stat opened;
+    if (fstat(fileno(f), &opened) != 0 ||
+        (opened.st_mode & (S_IRUSR | S_IRGRP | S_IROTH)) == 0) {
+        fclose(f);
+        return -1;
+    }
     char *l = NULL;
     size_t cap = 0;
     ssize_t nread;
