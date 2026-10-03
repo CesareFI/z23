@@ -75,6 +75,40 @@ if cmp -s "$tmp/aggregate-expected.h" "$aggregate"; then
     fail "changed aggregate retained stale output"
 fi
 
+mkdir "$tmp/distinct" "$tmp/collision" "$tmp/css-collision"
+printf 'upper\n' > "$tmp/collision/A.chtml"
+printf 'lower\n' > "$tmp/collision/a.chtml"
+printf 'first\n' > "$tmp/distinct/a.chtml"
+printf 'second\n' > "$tmp/distinct/b.chtml"
+"$tool" "$tmp/distinct" "$tmp/distinct.h" > "$tmp/run.log" 2>&1 ||
+    fail "distinct template names were rejected"
+grep -Fq '#define TMPL_PARTIAL_COUNT 2' "$tmp/distinct.h" ||
+    fail "distinct template control did not emit both inputs"
+if [ "$(cat "$tmp/collision/A.chtml")" = upper ]; then
+    echo 'gen_templates_input_selftest: collision fixture active' >&2
+    printf 'keep existing header\n' > "$tmp/collision.h"
+    if "$tool" "$tmp/collision" "$tmp/collision.h" > "$tmp/run.log" 2>&1; then
+        fail "colliding template symbols were accepted"
+    fi
+    grep -Fq 'duplicate TMPL symbol' "$tmp/run.log" ||
+        fail "template collision lacked a diagnostic"
+    printf 'keep existing header\n' | cmp -s - "$tmp/collision.h" ||
+        fail "template collision changed the existing header"
+
+    printf 'A {}\n' > "$tmp/css-collision/A.ccss"
+    printf 'a {}\n' > "$tmp/css-collision/a.ccss"
+    if "$tool" "$tmp/distinct" "$tmp/collision.h" "$tmp/css-collision" \
+        > "$tmp/run.log" 2>&1; then
+        fail "colliding CSS symbols were accepted"
+    fi
+    grep -Fq 'duplicate CSS symbol' "$tmp/run.log" ||
+        fail "CSS collision lacked a diagnostic"
+    printf 'keep existing header\n' | cmp -s - "$tmp/collision.h" ||
+        fail "CSS collision changed the existing header"
+else
+    echo 'gen_templates_input_selftest: collision fixture unavailable on case-insensitive filesystem' >&2
+fi
+
 if [ "$(uname -s)" = Linux ]; then
     cc -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
         -Iplatform/modules/base/include -Iplatform/modules/util/include \

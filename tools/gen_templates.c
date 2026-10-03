@@ -598,6 +598,37 @@ static bool has_extension(const char *name, const char *ext, size_t ext_len,
            strcmp(name + *name_len - ext_len, ext) == 0;
 }
 
+/* Valid basenames contain only letters, digits and hyphens. After the
+ * generator uppercases them, two names with equal folded bytes emit the
+ * same C symbol (hyphens become underscores in both). */
+static bool same_symbol_name(const char *a, const char *b, size_t length) {
+    for (size_t i = 0; i < length; i++) {
+        if (toupper((unsigned char)a[i]) != toupper((unsigned char)b[i]))
+            return false;
+    }
+    return true;
+}
+
+static bool unique_symbols(char names[MAX_TEMPLATES][256], size_t count,
+                           size_t ext_len, const char *prefix) {
+    for (size_t i = 0; i < count; i++) {
+        size_t base_len = strlen(names[i]) - ext_len;
+        if (!valid_filename(names[i], base_len)) {
+            fprintf(stderr, "gen_templates: invalid name: %s\n", names[i]);
+            return false;
+        }
+        for (size_t j = 0; j < i; j++) {
+            if (strlen(names[j]) - ext_len == base_len &&
+                same_symbol_name(names[i], names[j], base_len)) {
+                fprintf(stderr, "gen_templates: duplicate %s symbol: %s and %s\n",
+                        prefix, names[j], names[i]);
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 /* Clear errno for each readdir call so NULL distinguishes EOF from failure. */
 static struct dirent *read_next_entry(DIR *dir) {
     errno = 0;
@@ -656,18 +687,13 @@ static int process_dir(const char *dir, const char *ext, const char *prefix,
         return -1;
     }
     qsort(names, n_names, sizeof(names[0]), name_cmp);
+    if (!unique_symbols(names, n_names, ext_len, prefix)) return -1;
 
     for (size_t ni = 0; ni < n_names; ni++) {
         const char *d_name = names[ni];
         size_t nlen = strlen(d_name);
 
         size_t base_len = nlen - ext_len;
-        if (!valid_filename(d_name, base_len)) {
-            fprintf(stderr, "gen_templates: invalid name: %s\n",
-                d_name);
-            return -1;
-        }
-
         char path[1024];
         int plen = snprintf(path, sizeof(path), "%s/%s", dir, d_name);
         if (plen < 0 || (size_t)plen >= sizeof(path)) {
