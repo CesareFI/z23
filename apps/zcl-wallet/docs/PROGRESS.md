@@ -8280,6 +8280,9 @@ Signed upstream candidate c5daeca1 extends the already qualified key-scratch
 series without changing key generation or verification. The startup ECC sanity
 check now wipes its private-key object after the final verification use.
 Canonical RED→GREEN, focused ASan, dual-compiler sanitizer/mutation, GCC2,433-TU,
-complexity, architecture, inventory, seal and consensus evidence passes. Local
-publication artifacts verify; exact combined-head proof preparation continues
-in `/tmp/wk.Bq1CX4/repo`.
+complexity, architecture, inventory, seal and consensus evidence passes. The
+preserved combined proof passes 215/215 lint gates and 1,236/1,236 impacted
+groups with zero failures, skips, unobserved or load-flaky outcomes. Receipt
+SHA256 is
+`6377828bf1c3e9ff2a43031aa71508da209ad2a96f2c08ec3fdbbf1b6e1358ba`.
+Local publication artifacts verify.

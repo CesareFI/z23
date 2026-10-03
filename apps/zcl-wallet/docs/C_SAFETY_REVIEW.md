@@ -4882,4 +4882,7 @@ context lifetime and every caller-visible result remain unchanged. The change
 does not alter consensus, monetary policy, PoW, upgrades, transparent or
 shielded validity, recovery, storage or TLS behavior. Focused fast/ASan,
 GCC2,433-TU scope, cap15 complexity, architecture, inventory, seals and
-consensus gates pass. Exact combined-head proof is still pending.
+consensus gates pass. Exact combined-head proof passes all 215 lint gates and
+all 1,236 impacted groups with zero failures, skips, unobserved or load-flaky
+outcomes. Receipt SHA256 is
+`6377828bf1c3e9ff2a43031aa71508da209ad2a96f2c08ec3fdbbf1b6e1358ba`.
