@@ -8161,3 +8161,17 @@ repository's host-capability policy. Do not rerun that unavailable configuration
 or weaken it. No owned job remains active. Full details and evidence locators
 are in UPSTREAM_PUBLICATION.md. Two candidates have complete native receipts;
 the fork-only hook exception is still pending, with no PR/CI/reviewer request.
+
+### Publication resumed: PR73 and PR74
+
+User authorized the narrow command-local fork-routing exception. Storage
+`b25e546ba` and Base58 `be78a2bf9` passed the unchanged native hook's signed
+receipt admission, were pushed only to their CesareFI/z23 development branches,
+and each remote SHA matched the local head. Independent upstream PR73 andPR74
+are open against3a93e60e with maintainer modification enabled. Security CI was
+queued at submission. Formal RhettCreighton review requests returned404 once
+per PR; descriptions retain prepared-for-maintainer-review wording. No policy,
+validation, signature or remote protection was bypassed. Mnemonic/key/xprv
+publication remains pending their integration prerequisites; next work checks
+the missing reflex-fixture preparation. Android dirty storage-limit work stays
+preserved and excluded. Full identities/evidence are in UPSTREAM_PUBLICATION.md.

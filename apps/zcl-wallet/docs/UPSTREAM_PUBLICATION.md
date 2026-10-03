@@ -326,3 +326,37 @@ publication push or PR. All five signed candidate heads remain unchanged and
 all five have passing215-gate lint plus their recorded compiler/sanitizer/mutation
 evidence. Resolve the fork-only hook exception before publication; it must not be
 interpreted as permission to waive the remaining validation limitations.
+
+### Fork publication authorized and first two PRs submitted
+
+The user authorized a command-local exception solely to the local hook's
+main-only routing rule. The ignored adapter allowlists exact fork/branch/head
+pairs, refuses main/master and existing remote branches, verifies commit
+signatures and current upstream identity, and calls the unchanged native hook
+on the exact candidate/upstream proof pair. Native signed-receipt, ancestry and
+child-receipt validation remain active. No tracked hook, GitHub permission,
+remote protection, sealed-core rule or acceptance gate changed.
+
+Both PRs target `z23c/z23:main` at
+`3a93e60ebf922af3d119b9facc1d95803f42844b`, with maintainer modification enabled:
+
+- [PR73](https://github.com/z23c/z23/pull/73): branch
+  `agent/upstream-wallet-storage-descriptors-20261003`, local and remote head
+  `b25e546bab0658f9d283fb487674f592d1dd15e7`. Two files,43 additions/1 deletion:
+  `test_wallet_backup.c` and generated capability inventory. Native proof20/20
+  groups and215 lint gates PASS; focused Clang/GCC sanitizer and flag-removal
+  mutation evidence is in the PR description.
+- [PR74](https://github.com/z23c/z23/pull/74): branch
+  `agent/upstream-wallet-base58-prefix-20261003`, local and remote head
+  `be78a2bf9f530f08d57e6bb1a2be62d83c9c8f75`. Four files,211 additions/37
+  deletions: Base58 codec, its regression, generated inventory and removal of
+  the obsolete complexity-baseline row. Native proof35/35 groups and215 lint
+  gates PASS, with focused dual-compiler sanitizer/mutation, fuzz and measured
+  performance evidence in the PR description.
+
+Existing PRs were checked before creation. At submission both security-review
+CI jobs were queued, not passing. GitHub returned HTTP404 to one formal
+`RhettCreighton` reviewer request per PR; neither review was successfully
+requested. The verified identity was not repeatedly tagged; both descriptions
+state they are prepared for maintainer review. The three secret-retirement
+candidates remain local pending the documented integration prerequisites.
