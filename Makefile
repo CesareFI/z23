@@ -14076,10 +14076,35 @@ CAPABILITY_INVENTORY_SRCS = tools/gen_capability_inventory.c \
 	cognition/modules/codeindex/src/codeindex_scan_doc.c \
 	platform/modules/base/src/safe_alloc.c platform/modules/base/src/log_level.c platform/modules/sha3/src/sha3.c \
 	$(CAPABILITY_INVENTORY_PLATFORM_SRCS)
+CAPABILITY_INVENTORY_HEADERS = \
+	cognition/modules/codeindex/include/codeindex/codeindex.h \
+	cognition/modules/codeindex/include/codeindex/codeindex_inventory.h \
+	cognition/modules/codeindex/src/codeindex_inventory_internal.h \
+	cognition/modules/codeindex/src/codeindex_priv.h \
+	cognition/modules/codeindex/src/codeindex_scan_internal.h \
+	core/modules/crypto/include/crypto/sha3.h \
+	platform/modules/base/include/base/checked.h \
+	platform/modules/base/include/base/format_attribute.h \
+	platform/modules/base/include/base/hex.h \
+	platform/modules/base/include/base/log_level.h \
+	platform/modules/base/include/base/log_macros.h \
+	platform/modules/base/include/base/safe_alloc.h \
+	platform/modules/base/include/base/serialize_le.h \
+	platform/modules/base/include/base/stdio_lock.h \
+	platform/modules/base/include/base/text_fit.h \
+	platform/modules/base/include/base/utc_tm.h \
+	platform/modules/platform/include/platform/directory_transaction.h \
+	platform/modules/sha3/include/sha3/sha3.h \
+	platform/modules/util/include/util/log_macros.h \
+	platform/modules/util/include/util/safe_alloc.h
+CAPABILITY_INVENTORY_PLATFORM_HEADERS = $(if $(ZCL_HOST_WINDOWS), \
+	platform/modules/platform/include/platform/directory_compat.h \
+	platform/modules/platform/include/platform/positioned_file.h \
+	platform/modules/platform/include/platform/windows_path.h \
+	platform/modules/platform/src/windows_path_internal.h,)
 
 $(CAPABILITY_INVENTORY_TOOL): $(CAPABILITY_INVENTORY_SRCS) \
-	cognition/modules/codeindex/include/codeindex/codeindex_inventory.h \
-	cognition/modules/codeindex/src/codeindex_inventory_internal.h
+	$(CAPABILITY_INVENTORY_HEADERS) $(CAPABILITY_INVENTORY_PLATFORM_HEADERS)
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -D_POSIX_C_SOURCE=200809L $(ZCL_PLATFORM_CPPFLAGS) \
 	    -O2 -Wall -Wextra -Werror \
