@@ -571,3 +571,25 @@ wallet/recovery keypair callers wipe private-key scratch on failure as well as
 success. No additional demonstrated lifetime defect was found in these paths;
 no speculative patch or repeated completed regression was added. PR73/74 CI
 remains queued for an unassigned self-hosted scanner at the latest checkpoint.
+
+### Keystore encryption-length exact qualification complete
+
+Head `03bfa7e51773b2a0284845563d4e391d03167f1a`, upstream
+`3a93e60ebf922af3d119b9facc1d95803f42844b`: native proof PASS and independent
+exact-pair status PASS. Receipt SHA256:
+`3e244e02a8da87e35d9b6511fde257ad8fce525fb0680a11bdb98fb132b2eaf2`.
+The range root locator identifies the preserved copy; receipt name:
+`03bfa7e51773b2a0284845563d4e391d03167f1a-3a93e60ebf922af3d119b9facc1d95803f42844b.receipt`.
+
+All215 lint gates PASS (184.668s umbrella;194.958s native step). Exact impacted
+runtime228/228 PASS (279.8s), zero failures, skips, unobserved or flaky outcomes.
+Total proof528.026s. GCC14.2.0 default / Clang20.1.2 secondary. The focused
+RED/GREEN, sanitizer, mutation, final compiler and hazard-review evidence applies
+to the same signed bytes. PR body, patch series, bundle and SHA256 manifests are
+complete. No publication push was attempted under the recorded hook boundary.
+
+A separate bounded decrypt-length probe now has dual-compiler RED2: oversized
+envelope lengths reach the qualified failing KDF wrapper instead of refusing at
+the API boundary. No huge allocation, payload access or external target is used.
+This is a new candidate on upstream main; keep it separate from the two qualified
+keystore slices.

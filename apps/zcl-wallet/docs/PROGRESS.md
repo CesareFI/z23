@@ -8231,3 +8231,13 @@ RED→GREEN, two compiler sanitizer/mutation lanes and215 lint gates passed.
 Prior validated copies remain unchanged. Additional storage/BIP44 caller review
 found existing cleanup adequate in the inspected paths. UPSTREAM_PUBLICATION
 records exact receipts, compilers, artifacts and the unchanged publication boundary.
+
+### Keystore length qualified; decrypt preflight RED
+
+Range03bfa7e5/base3a93e60e exact native proof and independent status PASS:
+215 lint gates,228/228 impacted groups, zero skips/flakiness. Receipt digest and
+timings are in UPSTREAM_PUBLICATION.md; its PR artifacts are complete. The next
+independent bounds slice has bounded Clang/GCC RED2 showing oversized decrypt
+lengths reach KDF work. It uses synthetic buffers and a qualified provider-fault
+control, with no large allocation or payload read. All qualified trees remain
+preserved and no blocked external action was retried.
