@@ -495,3 +495,28 @@ The follow-on bounds hypothesis now has isolated sanitizer RED: an overflowing
 plaintext length passes the encryptor's envelope-capacity check even with zero
 output capacity. No real wallet data was used. Keep this as a separate candidate
 and establish a safe bounded regression before fixing its admission owner.
+
+### Four priority candidates qualification-complete; key receipt verified
+
+Key-scratch candidate `951f4cefb80c0acec81b329c1872ad3648c0ff1c`, base
+`3a93e60ebf922af3d119b9facc1d95803f42844b`: native `dev proof step` PASS and
+independent `dev proof status` PASS. Receipt SHA256:
+`cd20309b5250777a187a63f88b91987d284728c5fab12be9e368c3fea2b8e194`.
+The key root locator identifies the preserved qualified copy; receipt name:
+`951f4cefb80c0acec81b329c1872ad3648c0ff1c-3a93e60ebf922af3d119b9facc1d95803f42844b.receipt`.
+
+All215 lint gates PASS (210.441s umbrella;221.678s native lint step).
+Runtime1236/1236 selected groups PASS (651.113s body), zero failures, skips,
+unobserved or load-flaky outcomes. Total proof874.933s. Existing universal host
+gates remain explicit; no excluded capability is claimed. GCC14.2.0 default,
+Clang20.1.2 secondary. Final GCC sweep2,433 translation units, all9 paths clean.
+Original optimized dual-compiler sanitizer controls0 and six digest/HMAC/entropy
+mutants1 remain valid for the byte-unchanged wallet production/regression code.
+
+Storage and Base58 are published as PR73/74. Mnemonic, key-scratch and the
+additional xprv candidate have complete exact qualification and finalized PR
+bodies; their signed bundles verify against the recorded base. They remain local
+under the previously recorded normal-hook publication boundary. No routine
+permission question or repeated refused push is needed. The new keystore
+retirement candidate has its own isolated proof copy; all earlier source trees
+and receipts remain preserved. Continue with its proof and separate range fix.

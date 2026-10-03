@@ -8209,3 +8209,15 @@ Key951f4cef is the remaining active proof; its source tree stays preserved.
 Mnemonic and xprv PR artifacts are ready under the documented publication
 boundary. Child-derivation cleanup audit found the wallet digest already wiped;
 the remaining HMAC owner is sealed core and was not edited.
+
+### Priority qualification complete; next keystore safety slice
+
+All four priority candidates now have exact native PASS receipts. Latest:
+key951f4cef/base3a93e60e,215 lint gates and1236/1236 groups, zero skips/flakiness.
+Mnemonic/key/xprv PR drafts and signed bundles are ready; storage PR73 andBase58
+PR74 remain published. Further normal fork routing is blocked as documented.
+Keystore refusal-wipe e5a1d446 is signed with final focused tests, dual-compiler
+sanitizer/mutation, full lint and clean security evidence. A new isolated copy
+prepares its exact proof without changing prior qualified trees. A separate
+zero-capacity/oversized-length sanitizer RED is preserved for the next bounds
+candidate. See UPSTREAM_PUBLICATION and C_SAFETY_REVIEW for exact scope.
