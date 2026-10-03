@@ -615,7 +615,7 @@ int check_wallet_view_send_review_with_valid_address_shows_checksum(void)
     }
 
     /* Dump pages to disk for manual inspection */
-    system("mkdir -p .zcl_test_render");
+    ZCL_IGNORE_WUR(system("mkdir -p .zcl_test_render"), "fixture setup; the assertions below prove the tree state");
     {
         const char *routes[][3] = {
             {"GET", "/wallet", "dashboard.html"},

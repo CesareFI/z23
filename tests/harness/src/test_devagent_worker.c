@@ -823,7 +823,8 @@ static pid_t wtx_post_later(const char *name, int delay_ms, int post_fd)
         platform_sleep_ms(delay_ms);
         wtx_queue_post(name);
         posted_ms = (long long)platform_time_monotonic_ms();
-        (void)write(post_fd, &posted_ms, sizeof(posted_ms));
+        ZCL_IGNORE_WUR(write(post_fd, &posted_ms, sizeof(posted_ms)),
+               "wakeup post; a short read below reads as absent");
         (void)close(post_fd);
         _exit(0);
     }

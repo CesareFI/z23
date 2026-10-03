@@ -176,7 +176,7 @@ int test_boot_flight_recorder(void)
     blocker_clear("boot.stage_regression");
 
     /* ── Below max(5s, 4x median): no regression. median now includes the
-    /* median now includes the 6000ms outlier row, so seed a FRESH stage name
+     * 6000ms outlier row, so seed a FRESH stage name
      * with a clean, larger history. */
     BFR_CHECK("seed phase_d epoch 2001", bfr_insert_history_row(ndb.db, 2001, "phase_d", 2000));
     BFR_CHECK("seed phase_d epoch 2002", bfr_insert_history_row(ndb.db, 2002, "phase_d", 2000));

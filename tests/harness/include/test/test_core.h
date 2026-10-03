@@ -21,6 +21,8 @@
 #include <inttypes.h>
 #include <limits.h>
 #include <sys/time.h>
+
+#include "test/ignore_wur.h"
 #include <sys/stat.h>
 #include <sqlite3.h>
 #include <dirent.h>

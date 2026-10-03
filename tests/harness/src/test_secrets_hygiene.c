@@ -232,11 +232,15 @@ static int test_check_no_secret_printf_script(void)
             failures++;
             /* Re-run with output so the diff is visible. */
 #if defined(_WIN32)
-            (void)system("sh -c \"tools/scripts/check_no_secret_printf.sh"
-                         " 2>&1 | head -40\"");
+            ZCL_IGNORE_WUR(
+                system("sh -c \"tools/scripts/check_no_secret_printf.sh"
+                       " 2>&1 | head -40\""),
+                "diagnostic re-run; its exit status is reported above");
 #else
-            (void)system("tools/scripts/check_no_secret_printf.sh 2>&1 "
-                         "| head -40");
+            ZCL_IGNORE_WUR(
+                system("tools/scripts/check_no_secret_printf.sh 2>&1 "
+                       "| head -40"),
+                "diagnostic re-run; its exit status is reported above");
 #endif
             goto _test_next;
         }

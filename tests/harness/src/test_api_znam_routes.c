@@ -151,7 +151,7 @@ int api_znam_routes_focused_tests(void)
 
         char cmd[384];
         snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);
-        system(cmd);
+        ZCL_IGNORE_WUR(system(cmd), "fixture command; the assertions below prove the state");
 
     if (ok) printf("OK\n");
     else { printf("FAIL\n"); failures++; }
@@ -812,7 +812,7 @@ int api_znam_routes_focused_tests(void)
             node_db_close(&ndb);
         char cmd[384];
         snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);
-        system(cmd);
+        ZCL_IGNORE_WUR(system(cmd), "fixture command; the assertions below prove the state");
 
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }

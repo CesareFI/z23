@@ -166,7 +166,7 @@ static bool zr_fixture_init(struct zr_fixture *f, const char *tag,
     mkdir("./test-tmp", 0755);
     char rm[512];
     snprintf(rm, sizeof(rm), "rm -rf %s", f->datadir);
-    (void)system(rm);
+    ZCL_IGNORE_WUR(system(rm), "fixture reset; the assertions below prove the tree state");
     if (mkdir(f->datadir, 0755) != 0)
         return false;
     memset(f->seed, seed_fill, 32);
@@ -179,7 +179,7 @@ static void zr_fixture_free(struct zr_fixture *f)
 {
     char rm[512];
     snprintf(rm, sizeof(rm), "rm -rf %s", f->datadir);
-    (void)system(rm);
+    ZCL_IGNORE_WUR(system(rm), "fixture reset; the assertions below prove the tree state");
 }
 
 /* Sign one release into <datadir>/zcode/releases. Returns a malloc'd

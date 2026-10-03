@@ -8,6 +8,7 @@
 #ifndef ZCL_TEST_MUSE_FAKE_HOST_H
 #define ZCL_TEST_MUSE_FAKE_HOST_H
 
+#include "test/ignore_wur.h"
 #include "services/muse_session.h"
 #include "json/json.h"
 #if !defined(_WIN32)
@@ -63,8 +64,10 @@ static void fake_note(const char *fmt, const char *a, const char *b)
     char buf[1024];
     int n = snprintf(buf, sizeof(buf), fmt, a ? a : "", b ? b : "");
     if (n > 0) {
-        (void)write(s_evidence_fd, buf, (size_t)n);
-        (void)write(s_evidence_fd, "\n", 1);
+        ZCL_IGNORE_WUR(write(s_evidence_fd, buf, (size_t)n),
+                   "evidence sink; a lost line only loses debug output");
+        ZCL_IGNORE_WUR(write(s_evidence_fd, "\n", 1),
+                   "evidence sink; a lost line only loses debug output");
     }
 }
 

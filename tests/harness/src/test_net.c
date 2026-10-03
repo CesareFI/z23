@@ -1990,7 +1990,7 @@ static int test_net_net_manager_ban_unban_clear(void)
             net_manager_free(&nm);
             char cmd[256];
             snprintf(cmd, sizeof(cmd), "rm -rf %s", tmpdir);
-            (void)system(cmd);
+            ZCL_IGNORE_WUR(system(cmd), "fixture command; the assertions below prove the state");
         }
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }

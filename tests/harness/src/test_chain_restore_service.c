@@ -1237,7 +1237,7 @@ static int test_seed_anchor_backing_requires_exact_provenance(void) {
 
         char rm_cmd[512];
         snprintf(rm_cmd, sizeof(rm_cmd), "rm -rf %s", tmpdir);
-        (void)system(rm_cmd);
+        ZCL_IGNORE_WUR(system(rm_cmd), "fixture reset; the assertions below prove the tree state");
         PASS();
     } _test_next:;
     return failures;
@@ -1315,7 +1315,7 @@ static int test_rebuild_active_chain_scans_block_files_for_canonical_positions(v
 
         char rm_cmd[512];
         snprintf(rm_cmd, sizeof(rm_cmd), "rm -rf %s", tmpdir);
-        (void)system(rm_cmd);
+        ZCL_IGNORE_WUR(system(rm_cmd), "fixture reset; the assertions below prove the tree state");
         PASS();
     } _test_next:;
     return failures;
@@ -1373,7 +1373,7 @@ static int test_backfill_nbits_reads_from_block_file(void) {
 
         char rm_cmd[512];
         snprintf(rm_cmd, sizeof(rm_cmd), "rm -rf %s", tmpdir);
-        (void)system(rm_cmd);
+        ZCL_IGNORE_WUR(system(rm_cmd), "fixture reset; the assertions below prove the tree state");
         PASS();
     } _test_next:;
     return failures;
@@ -1455,7 +1455,7 @@ static int test_backfill_nbits_recomputes_chainwork_by_height(void) {
 
         char rm_cmd[512];
         snprintf(rm_cmd, sizeof(rm_cmd), "rm -rf %s", tmpdir);
-        (void)system(rm_cmd);
+        ZCL_IGNORE_WUR(system(rm_cmd), "fixture reset; the assertions below prove the tree state");
         PASS();
     } _test_next:;
     return failures;
@@ -1505,7 +1505,7 @@ static int test_connect_tip_hydrates_placeholder_from_disk(void) {
 
         char rm_cmd[512];
         snprintf(rm_cmd, sizeof(rm_cmd), "rm -rf %s", tmpdir);
-        (void)system(rm_cmd);
+        ZCL_IGNORE_WUR(system(rm_cmd), "fixture reset; the assertions below prove the tree state");
         PASS();
     } _test_next:;
     return failures;
@@ -1541,7 +1541,7 @@ static int test_backfill_nbits_skips_synthetic_anchor(void) {
 
         char rm_cmd[512];
         snprintf(rm_cmd, sizeof(rm_cmd), "rm -rf %s", tmpdir);
-        (void)system(rm_cmd);
+        ZCL_IGNORE_WUR(system(rm_cmd), "fixture reset; the assertions below prove the tree state");
         PASS();
     } _test_next:;
     return failures;
@@ -1850,7 +1850,7 @@ static int test_rebuild_active_chain_is_o_chain_not_delta(void) {
         char rm_cmd[900];
         snprintf(rm_cmd, sizeof(rm_cmd), "rm -rf %s %s %s",
                  short_dir, tall_dir, fp_dir);
-        (void)system(rm_cmd);
+        ZCL_IGNORE_WUR(system(rm_cmd), "fixture reset; the assertions below prove the tree state");
         boot_scan_reset_for_testing();
         PASS();
     } _test_next:;
@@ -1983,7 +1983,7 @@ static int test_unclean_restart_recovery_is_o_delta(void) {
         char rm_cmd[1400];
         snprintf(rm_cmd, sizeof(rm_cmd), "rm -rf %s %s %s %s",
                  ref_dir, fix_dir, tall_dir, tall_ref_dir);
-        (void)system(rm_cmd);
+        ZCL_IGNORE_WUR(system(rm_cmd), "fixture reset; the assertions below prove the tree state");
         boot_scan_reset_for_testing();
         PASS();
     } _test_next:;
@@ -2082,7 +2082,7 @@ static int test_chain_restore_walks_abort_on_shutdown(void) {
         char rm_cmd[900];
         snprintf(rm_cmd, sizeof(rm_cmd), "rm -rf %s %s %s",
                  dir, dir2, dir3);
-        (void)system(rm_cmd);
+        ZCL_IGNORE_WUR(system(rm_cmd), "fixture reset; the assertions below prove the tree state");
         PASS();
     } _test_next:;
     return failures;

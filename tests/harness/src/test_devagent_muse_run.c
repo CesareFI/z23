@@ -2147,7 +2147,8 @@ static void mr_memory_max_child(int wr, const char *dir)
     free(evidence);
     n = snprintf(buf, sizeof(buf), "%d %s %s\n", rc, r.verdict, r.reason);
     if (n > 0)
-        (void)write(wr, buf, (size_t)n);
+        ZCL_IGNORE_WUR(write(wr, buf, (size_t)n),
+               "drain captured bytes to the parent before _exit");
     _exit(0);
 }
 

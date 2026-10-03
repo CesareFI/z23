@@ -210,7 +210,6 @@ static int case_background_validation_height_populates(void)
     return failures;
 }
 
-/* Status collection holds sqlite3_db_mutex to stay non-blocking. A stale
 /* Status collection holds sqlite3_db_mutex to stay non-blocking. It must not
  * run the mutating CEC loader (which would auto-clear a stale freeze and
  * persist repairs through db_service, whose worker waits on that mutex: a

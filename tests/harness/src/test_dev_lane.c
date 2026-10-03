@@ -197,7 +197,7 @@ static void dln_call(const char *root, struct json_value *input,
     }
     zcl_native_handle_dev_lane_new(&request, reply);
     if (chdir(saved) != 0)
-        (void)chdir("/");
+        ZCL_IGNORE_WUR(chdir("/"), "last-resort cwd when the restore failed");
 }
 
 int test_dev_lane(void);

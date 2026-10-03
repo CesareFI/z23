@@ -188,7 +188,7 @@ static bool setup_wallet(int64_t t_sat, int64_t z_sat,
 static void teardown(void) {
     char cmd[512];
     snprintf(cmd, sizeof(cmd), "rm -rf %s", g_dir);
-    (void)system(cmd);
+    ZCL_IGNORE_WUR(system(cmd), "fixture command; the assertions below prove the state");
     wallet_view_init(NULL);
 }
 

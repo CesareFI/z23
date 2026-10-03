@@ -580,7 +580,7 @@ int api_health_gate_focused_tests(void)
         net_manager_free(&cm.manager);
         char cmd[384];
         snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);
-        system(cmd);
+        ZCL_IGNORE_WUR(system(cmd), "fixture command; the assertions below prove the state");
         agent_security_posture_test_override_review_required(-1);
 
         if (ok) printf("OK\n");
@@ -652,7 +652,7 @@ int api_health_gate_focused_tests(void)
 
         char cmd[384];
         snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);
-        system(cmd);
+        ZCL_IGNORE_WUR(system(cmd), "fixture command; the assertions below prove the state");
 
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
@@ -758,7 +758,7 @@ int api_health_gate_focused_tests(void)
 
         char cmd[384];
         snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);
-        system(cmd);
+        ZCL_IGNORE_WUR(system(cmd), "fixture command; the assertions below prove the state");
 
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }

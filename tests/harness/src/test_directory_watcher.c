@@ -39,7 +39,7 @@ static int directory_watcher_probe(const char *root)
     HANDLE f=CreateFileA(first,GENERIC_WRITE,0,NULL,CREATE_NEW,FILE_ATTRIBUTE_NORMAL,NULL);
     if(f==INVALID_HANDLE_VALUE) return 1; DWORD wrote=0; (void)WriteFile(f,"x",1,&wrote,NULL); CloseHandle(f);
 #else
-    int f=open(first,O_CREAT|O_EXCL|O_WRONLY,0600); if(f<0) return 1; (void)write(f,"x",1); close(f);
+    int f=open(first,O_CREAT|O_EXCL|O_WRONLY,0600); if(f<0) return 1; ZCL_IGNORE_WUR(write(f,"x",1), "create the watch target's one byte"); close(f);
 #endif
     if(platform_directory_watcher_wait(&watcher,2000,NULL,NULL)!=PLATFORM_DIRECTORY_WATCH_CHANGED) return 1;
 #if defined(_WIN32)

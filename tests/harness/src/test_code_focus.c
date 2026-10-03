@@ -160,7 +160,7 @@ static int test_focus_missing_run(void)
 {
     int failures = 0;
     TEST("code_focus: missing last-run.json is no run recorded, not clean") {
-        system("rm -rf " FOCUS_FIX);
+        ZCL_IGNORE_WUR(system("rm -rf " FOCUS_FIX), "fixture reset; the assertions below prove the tree state");
         ASSERT(write_focus_fixture());
         struct specialist_focus_evidence ev;
         specialist_focus_evidence_clear(&ev);
@@ -179,7 +179,7 @@ static int test_focus_missing_run(void)
         ASSERT(strstr(buf, "\"source\":\".cache/test-timing/last-run.json\"")
                != NULL);
         zcl_command_reply_free(&reply);
-        system("rm -rf " FOCUS_FIX);
+        ZCL_IGNORE_WUR(system("rm -rf " FOCUS_FIX), "fixture reset; the assertions below prove the tree state");
         PASS();
     } _test_next:;
     return failures;
@@ -189,7 +189,7 @@ static int test_focus_lint_gates(void)
 {
     int failures = 0;
     TEST("code_focus: failed owned lint gate scores territory with a cited reason") {
-        system("rm -rf " FOCUS_FIX);
+        ZCL_IGNORE_WUR(system("rm -rf " FOCUS_FIX), "fixture reset; the assertions below prove the tree state");
         ASSERT(write_focus_fixture());
         ASSERT(focus_mk_write(FOCUS_FIX, ".cache/lint-timing/last-run.json",
             "{\"schema\":\"zcl.lint_timing.v1\",\"gates\":["
@@ -255,7 +255,7 @@ static int test_focus_lint_gates(void)
         struct specialist_focus_evidence bad;
         specialist_focus_evidence_clear(&bad);
         ASSERT(!specialist_focus_load_failed_gates(FOCUS_FIX, &bad));
-        system("rm -rf " FOCUS_FIX);
+        ZCL_IGNORE_WUR(system("rm -rf " FOCUS_FIX), "fixture reset; the assertions below prove the tree state");
         PASS();
     } _test_next:;
     return failures;
@@ -279,7 +279,7 @@ static int test_focus_work_cap(void)
 {
     int failures = 0;
     TEST("code_focus: late failed-group file survives a full work set") {
-        system("rm -rf " FOCUS_FIX);
+        ZCL_IGNORE_WUR(system("rm -rf " FOCUS_FIX), "fixture reset; the assertions below prove the tree state");
         char rel[512];
         bool ok = true;
         /* WORK_CAP + 1 in-territory candidates: the unrouted fillers fill
@@ -322,7 +322,7 @@ static int test_focus_work_cap(void)
         ASSERT(strcmp(hits[1].path, "core/modules/net/src/g000.c") == 0);
         ASSERT(strcmp(hits[2].path, "core/modules/net/src/g001.c") == 0);
         codeindex_close(ci);
-        system("rm -rf " FOCUS_FIX);
+        ZCL_IGNORE_WUR(system("rm -rf " FOCUS_FIX), "fixture reset; the assertions below prove the tree state");
         PASS();
     } _test_next:;
     return failures;
@@ -332,7 +332,7 @@ static int test_focus_recorded_run(void)
 {
     int failures = 0;
     TEST("code_focus: a real mini last-run.json records failures it names") {
-        system("rm -rf " FOCUS_FIX);
+        ZCL_IGNORE_WUR(system("rm -rf " FOCUS_FIX), "fixture reset; the assertions below prove the tree state");
         ASSERT(write_focus_fixture());
         /* Byte-shape of tests/harness/src/test_parallel.c output, trimmed
          * to the rows the loader reads. test_net failed; download passed;
@@ -392,7 +392,7 @@ static int test_focus_recorded_run(void)
         ASSERT(sum && strstr(sum, "gates: no run recorded") != NULL);
         ASSERT(strstr(sum, "tests: no run recorded") == NULL);
         zcl_command_reply_free(&reply);
-        system("rm -rf " FOCUS_FIX);
+        ZCL_IGNORE_WUR(system("rm -rf " FOCUS_FIX), "fixture reset; the assertions below prove the tree state");
         PASS();
     } _test_next:;
     return failures;
@@ -402,7 +402,7 @@ static int test_focus_rank(void)
 {
     int failures = 0;
     TEST("code_focus: fixture ranking order, tie-break, and reason sources") {
-        system("rm -rf " FOCUS_FIX);
+        ZCL_IGNORE_WUR(system("rm -rf " FOCUS_FIX), "fixture reset; the assertions below prove the tree state");
         ASSERT(write_focus_fixture());
         struct codeindex *ci = codeindex_open_source_view(FOCUS_FIX);
         ASSERT(ci != NULL);
@@ -458,7 +458,7 @@ static int test_focus_rank(void)
         ASSERT(strcmp(hits[0].reason, first) == 0);
 
         codeindex_close(ci);
-        system("rm -rf " FOCUS_FIX);
+        ZCL_IGNORE_WUR(system("rm -rf " FOCUS_FIX), "fixture reset; the assertions below prove the tree state");
         PASS();
     } _test_next:;
     return failures;

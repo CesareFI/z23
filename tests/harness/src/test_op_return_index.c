@@ -733,7 +733,7 @@ static void e2e_fixture_free(struct e2e_fixture *f)
     node_db_close(&f->ndb);
     char cmd[512];
     snprintf(cmd, sizeof(cmd), "rm -rf %s", f->datadir);
-    (void)system(cmd);
+    ZCL_IGNORE_WUR(system(cmd), "fixture command; the assertions below prove the state");
 }
 
 static int test_backfill_e2e(void)

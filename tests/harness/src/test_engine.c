@@ -2310,7 +2310,7 @@ static int case_engine_unit_state_e2e(void)
         "--worktree %s --state-dir %s --fixture-reply %s --turns 2 "
         ">%s/run.log 2>&1",
         ENGINE_UNIT_BIN, task_path, worktree, state_dir, reply_path, dir);
-    (void)system(cmd); /* verdict is read from the files it wrote, not this */
+    ZCL_IGNORE_WUR(system(cmd), "fixture command; the assertions below prove the state"); /* verdict is read from the files it wrote, not this */
 
     char state_txt[512] = {0};
     char prompt_txt[64 * 1024] = {0};
@@ -2388,7 +2388,7 @@ static int case_engine_unit_state_e2e(void)
                    "git branch -D engine/unit >/dev/null 2>&1; "
                    "git worktree prune >/dev/null 2>&1",
                    worktree);
-    (void)system(cleanup_cmd);
+    ZCL_IGNORE_WUR(system(cleanup_cmd), "fixture command; the assertions below prove the state");
 
     return failures;
 }
@@ -2523,7 +2523,7 @@ static int case_engine_unit_grok_projection_e2e(void)
             "--yes-dispatch --turns 2 --worktree %s --state-dir %s "
             ">%s 2>&1", q_bin, q_counter, q_first, q_second, ENGINE_UNIT_BIN,
             q_task, q_worktree, q_state, q_log);
-        (void)system(command); /* durable receipts are the evidence */
+        ZCL_IGNORE_WUR(system(command), "fixture command; the assertions below prove the state"); /* durable receipts are the evidence */
     }
 
     char receipt[8192] = {0};

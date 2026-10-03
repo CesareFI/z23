@@ -161,7 +161,8 @@ static void os_proc_preserved_report_child(int report[2], int high)
     bool high_closed = fcntl(high, F_GETFD) == -1 && errno == EBADF;
     bool report_open = fcntl(report[1], F_GETFD) >= 0;
     char result = scrubbed && high_closed && report_open ? 'Y' : 'N';
-    (void)write(report[1], &result, 1);
+    ZCL_IGNORE_WUR(write(report[1], &result, 1),
+               "single-byte report for the parent");
     _exit(result == 'Y' ? 0 : 1);
 }
 

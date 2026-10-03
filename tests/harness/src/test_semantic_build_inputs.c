@@ -299,9 +299,10 @@ static int sbit_t_bare_dir(void)
     return failures;
 }
 
-/* (b, $(wildcard $(VAR)/*.ext)): a variable holding a bare directory, used
- * inside $(wildcard ...) to build the glob. Confirms the macro-expansion
- * path already widens this common generated-header pattern. */
+/* (b, $(wildcard ...) over a bare directory variable): a variable holding
+ * a bare directory, used inside $(wildcard ...) to build the *.ext glob.
+ * Confirms the macro-expansion path already widens this common
+ * generated-header pattern. */
 static int sbit_t_wildcard_var(void)
 {
     int failures = 0;

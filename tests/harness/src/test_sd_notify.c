@@ -166,7 +166,7 @@ static void *sdn_blocked_wait_main(void *opaque)
     struct pollfd pfd = {.fd = wait->read_fd, .events = POLLIN};
     if (poll(&pfd, 1, 400) > 0) {
         char byte;
-        (void)read(wait->read_fd, &byte, 1);
+        ZCL_IGNORE_WUR(read(wait->read_fd, &byte, 1), "drain the wake byte");
     }
     thread_bounded_wait_end(&wait->lease);
     return NULL;
@@ -540,7 +540,7 @@ static int test_sd_notify_platform_arm(void)
             bounded_active &&
             boot_sd_watchdog_test_pillar_alive(false, false, bounded_active));
         if (bounded_started) {
-            (void)write(pipe_fd[1], "x", 1);
+            ZCL_IGNORE_WUR(write(pipe_fd[1], "x", 1), "unstick byte");
             (void)pthread_join(bounded_thread, NULL);
         }
 
@@ -561,7 +561,7 @@ static int test_sd_notify_platform_arm(void)
             wedged_armed && !wedged_active &&
             !boot_sd_watchdog_test_pillar_alive(false, false, wedged_active));
         if (wedged_started) {
-            (void)write(pipe_fd[1], "x", 1);
+            ZCL_IGNORE_WUR(write(pipe_fd[1], "x", 1), "unstick byte");
             (void)pthread_join(wedged_thread, NULL);
         }
         if (pipe_ok) {

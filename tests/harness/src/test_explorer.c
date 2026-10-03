@@ -260,7 +260,7 @@ int test_explorer(void)
 
         char cmd[384];
         snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);
-        system(cmd);
+        ZCL_IGNORE_WUR(system(cmd), "fixture command; the assertions below prove the state");
 
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
@@ -317,7 +317,7 @@ int test_explorer(void)
 
         char cmd[384];
         snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);
-        system(cmd);
+        ZCL_IGNORE_WUR(system(cmd), "fixture command; the assertions below prove the state");
 
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
@@ -385,7 +385,7 @@ int test_explorer(void)
 
         char cmd[384];
         snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);
-        system(cmd);
+        ZCL_IGNORE_WUR(system(cmd), "fixture command; the assertions below prove the state");
 
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
@@ -499,7 +499,7 @@ int test_explorer(void)
 
         char cmd[448];
         snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);
-        system(cmd);
+        ZCL_IGNORE_WUR(system(cmd), "fixture command; the assertions below prove the state");
 
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
@@ -541,7 +541,7 @@ int test_explorer(void)
 
         char cmd[384];
         snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);
-        system(cmd);
+        ZCL_IGNORE_WUR(system(cmd), "fixture command; the assertions below prove the state");
 
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
@@ -708,7 +708,7 @@ int test_explorer(void)
 
         char cmd[384];
         snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);
-        system(cmd);
+        ZCL_IGNORE_WUR(system(cmd), "fixture command; the assertions below prove the state");
 
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }

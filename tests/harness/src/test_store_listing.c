@@ -1080,7 +1080,7 @@ static int t_live_lease_lists_through_node(void)
 #else
     if (child > 0 && done[1] >= 0) {
         char d = 'D';
-        (void)write(done[1], &d, 1);
+        ZCL_IGNORE_WUR(write(done[1], &d, 1), "done marker for the parent");
         int status = 0;
         SL_CHECK("live lease: child released",
                  waitpid(child, &status, 0) == child && WIFEXITED(status) &&

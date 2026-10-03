@@ -614,7 +614,7 @@ static int dvx_pool_cases(void)
             v = dvx_ok(&k) && strcmp(dvx_str(&k, "state"), "running") == 0
                     ? 'r'
                     : 'n';
-            (void)write(fds[1], &v, 1);
+            ZCL_IGNORE_WUR(write(fds[1], &v, 1), "sync byte for the parent");
             _exit(dvx_ok(&k) ? 0 : 1);
         }
         b = fork();
@@ -628,7 +628,7 @@ static int dvx_pool_cases(void)
             v = dvx_ok(&k) && strcmp(dvx_str(&k, "state"), "running") == 0
                     ? 'r'
                     : 'n';
-            (void)write(fds[1], &v, 1);
+            ZCL_IGNORE_WUR(write(fds[1], &v, 1), "sync byte for the parent");
             _exit(dvx_ok(&k) ? 0 : 1);
         }
         unsetenv("DVX_HOLD");

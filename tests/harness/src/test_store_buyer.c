@@ -1223,7 +1223,7 @@ int test_store_buyer(void)
     if (failures == 0) {
         char cmd[640];
         (void)snprintf(cmd, sizeof(cmd), "rm -rf %s", datadir);
-        (void)system(cmd);
+        ZCL_IGNORE_WUR(system(cmd), "fixture command; the assertions below prove the state");
     } else {
         printf("store_buyer: debug datadir kept: %s\n", datadir);
     }

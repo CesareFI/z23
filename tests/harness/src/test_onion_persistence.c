@@ -318,7 +318,6 @@ static int test_onion_persist_args_parse(void)
     return failures;
 }
 
-/* A fleet member that pins its peers by .onion address needs its OWN onion
 /* A node that pins peers by .onion address needs its OWN onion fixed too:
  * -tor + at least one -addnode=<x>.onion defaults -onion-persist ON, a plain
  * -tor node keeps the ephemeral default, and an explicit -onion-persist=0

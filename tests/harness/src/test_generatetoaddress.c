@@ -143,7 +143,6 @@ int test_generatetoaddress(void)
     want.type = DEST_KEY_ID;
     want.id.key = kid;
 
-    /* A mainnet-prefixed address, minted BEFORE switching to regtest, for the
     /* A mainnet-prefixed address, minted before switching to regtest. */
     chain_params_select(CHAIN_MAIN);
     char mainnet_addr[128] = {0};

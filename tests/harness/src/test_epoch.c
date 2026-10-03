@@ -150,7 +150,7 @@ static bool ep_fixture_init(struct ep_fixture *f, const char *tag)
     mkdir("./test-tmp", 0755);
     char rm[512];
     snprintf(rm, sizeof(rm), "rm -rf %s", f->datadir);
-    (void)system(rm);
+    ZCL_IGNORE_WUR(system(rm), "fixture reset; the assertions below prove the tree state");
     if (mkdir(f->datadir, 0755) != 0)
         return false;
     snprintf(f->dbpath, sizeof(f->dbpath), "%s/node.db", f->datadir);
@@ -185,7 +185,7 @@ static void ep_fixture_free(struct ep_fixture *f)
     ep_fixture_seal(f);
     char rm[512];
     snprintf(rm, sizeof(rm), "rm -rf %s", f->datadir);
-    (void)system(rm);
+    ZCL_IGNORE_WUR(system(rm), "fixture reset; the assertions below prove the tree state");
 }
 
 /* Plant a catalog cursor: the chain declares [base_height, height]. */

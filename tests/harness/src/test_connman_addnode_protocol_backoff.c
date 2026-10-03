@@ -342,7 +342,7 @@ int check_connman_addnode_onion_seed_last_resort(void)
         connman_free(&cm);
         char cmd[256];
         snprintf(cmd, sizeof(cmd), "rm -rf %s", tmpdir);
-        (void)system(cmd);
+        ZCL_IGNORE_WUR(system(cmd), "fixture command; the assertions below prove the state");
 
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }

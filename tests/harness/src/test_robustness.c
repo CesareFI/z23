@@ -33,7 +33,8 @@ static void cleanup_robustness_datadir(void)
 {
     char cmd[512];
     snprintf(cmd, sizeof(cmd), "rm -rf %s", test_datadir);
-    system(cmd);
+    ZCL_IGNORE_WUR(system(cmd),
+                   "fixture reset; the assertions below prove the tree state");
 }
 
 static uint16_t reserve_test_port(void)
@@ -815,7 +816,8 @@ int test_robustness(void)
         f = fopen(pidfile, "r");
         if (f) {
             char buf[32] = {0};
-            fread(buf, 1, sizeof(buf) - 1, f);
+            ZCL_IGNORE_WUR(fread(buf, 1, sizeof(buf) - 1, f),
+                       "content probe; the comparison below decides");
             fclose(f);
             long pid = strtol(buf, NULL, 10);
             ok = ok && (pid == (long)getpid());

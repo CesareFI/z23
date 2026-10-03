@@ -234,7 +234,7 @@ static int test_code_impact_hub(void)
     int failures = 0;
     TEST("code_impact: hub file closure = {itself, 3 direct callers, 1 "
          "transitive caller}, sorted, untruncated, direct_callers == 3") {
-        system("rm -rf " CI_IMPACT_FIX);
+        ZCL_IGNORE_WUR(system("rm -rf " CI_IMPACT_FIX), "fixture reset; the assertions below prove the tree state");
         ASSERT(write_ci_impact_fixture());
 
         struct zcl_command_reply reply;
@@ -289,7 +289,7 @@ static int test_code_impact_hub(void)
         ASSERT(n > 0 && n < sizeof(buf) && n <= ZCL_COMMAND_LIST_BUDGET);
 
         zcl_command_reply_free(&reply);
-        system("rm -rf " CI_IMPACT_FIX);
+        ZCL_IGNORE_WUR(system("rm -rf " CI_IMPACT_FIX), "fixture reset; the assertions below prove the tree state");
         PASS();
     } _test_next:;
     return failures;
@@ -300,7 +300,7 @@ static int test_code_impact_leaf(void)
 {
     int failures = 0;
     TEST("code_impact: leaf file with no callers closes over itself only") {
-        system("rm -rf " CI_IMPACT_FIX);
+        ZCL_IGNORE_WUR(system("rm -rf " CI_IMPACT_FIX), "fixture reset; the assertions below prove the tree state");
         ASSERT(write_ci_impact_fixture());
 
         struct zcl_command_reply reply;
@@ -315,7 +315,7 @@ static int test_code_impact_leaf(void)
         ASSERT(json_get_int(json_get(&reply.data, "direct_includes")) == 0);
 
         zcl_command_reply_free(&reply);
-        system("rm -rf " CI_IMPACT_FIX);
+        ZCL_IGNORE_WUR(system("rm -rf " CI_IMPACT_FIX), "fixture reset; the assertions below prove the tree state");
         PASS();
     } _test_next:;
     return failures;
@@ -345,7 +345,7 @@ static int test_code_impact_unknown_path(void)
     int failures = 0;
     TEST("code_impact: a path absent from the index is not an error — "
          "closure is itself only, mirroring codeindex_impact_closure") {
-        system("rm -rf " CI_IMPACT_FIX);
+        ZCL_IGNORE_WUR(system("rm -rf " CI_IMPACT_FIX), "fixture reset; the assertions below prove the tree state");
         ASSERT(write_ci_impact_fixture());
 
         struct zcl_command_reply reply;
@@ -360,7 +360,7 @@ static int test_code_impact_unknown_path(void)
                      "core/modules/net/src/ci_does_not_exist.c");
 
         zcl_command_reply_free(&reply);
-        system("rm -rf " CI_IMPACT_FIX);
+        ZCL_IGNORE_WUR(system("rm -rf " CI_IMPACT_FIX), "fixture reset; the assertions below prove the tree state");
         PASS();
     } _test_next:;
     return failures;
@@ -370,7 +370,7 @@ static int test_code_room_route_storage(void)
 {
     int failures = 0;
     TEST("code_room: summary retains its caller-owned route after command lookup") {
-        system("rm -rf " CI_IMPACT_FIX);
+        ZCL_IGNORE_WUR(system("rm -rf " CI_IMPACT_FIX), "fixture reset; the assertions below prove the tree state");
         ASSERT(write_ci_impact_fixture());
 
         for (int i = 0; i < 16; i++) {
@@ -396,7 +396,7 @@ static int test_code_room_route_storage(void)
             zcl_command_reply_free(&reply);
         }
 
-        system("rm -rf " CI_IMPACT_FIX);
+        ZCL_IGNORE_WUR(system("rm -rf " CI_IMPACT_FIX), "fixture reset; the assertions below prove the tree state");
         PASS();
     } _test_next:;
     return failures;
@@ -476,7 +476,7 @@ static int test_code_context_map_complete_pages(void)
     int failures = 0;
     TEST("code_context_map: coupling crosses the 256-edge page boundary and "
          "proves an exact short-page end") {
-        system("rm -rf " CI_IMPACT_FIX);
+        ZCL_IGNORE_WUR(system("rm -rf " CI_IMPACT_FIX), "fixture reset; the assertions below prove the tree state");
         ASSERT(write_context_paging_fixture());
 
         struct codeindex *index = codeindex_open(CI_IMPACT_FIX);
@@ -523,7 +523,7 @@ static int test_code_context_map_complete_pages(void)
                                      "edge_count")) ==
                CI_CONTEXT_PAGE_EDGES);
         zcl_command_reply_free(&reply);
-        system("rm -rf " CI_IMPACT_FIX);
+        ZCL_IGNORE_WUR(system("rm -rf " CI_IMPACT_FIX), "fixture reset; the assertions below prove the tree state");
         PASS();
     } _test_next:;
     return failures;
@@ -533,7 +533,7 @@ static int test_code_context_map_shape_overflow(void)
 {
     int failures = 0;
     TEST("code_context_map: shape overflow fails typed instead of claiming completeness") {
-        system("rm -rf " CI_IMPACT_FIX);
+        ZCL_IGNORE_WUR(system("rm -rf " CI_IMPACT_FIX), "fixture reset; the assertions below prove the tree state");
         ASSERT(write_shape_overflow_fixture());
         struct zcl_command_reply reply;
         ci_context_map_call(CI_IMPACT_FIX, &reply);
@@ -541,7 +541,7 @@ static int test_code_context_map_shape_overflow(void)
         ASSERT_STR_EQ(reply.error.code, "SHAPE_TAXONOMY_OVERFLOW");
         ASSERT(reply.error.message[0]);
         zcl_command_reply_free(&reply);
-        system("rm -rf " CI_IMPACT_FIX);
+        ZCL_IGNORE_WUR(system("rm -rf " CI_IMPACT_FIX), "fixture reset; the assertions below prove the tree state");
         PASS();
     } _test_next:;
     return failures;
@@ -572,7 +572,7 @@ static int test_code_context_map_warm_follows_generation(void)
     int failures = 0;
     TEST("code_context_map: a warm map follows a depfile-only edit and a "
          "same-count rename instead of serving the previous generation") {
-        system("rm -rf " CI_CONTEXT_WARM_FIX);
+        ZCL_IGNORE_WUR(system("rm -rf " CI_CONTEXT_WARM_FIX), "fixture reset; the assertions below prove the tree state");
         ASSERT(ci_impact_mk_write(CI_CONTEXT_WARM_FIX,
             "contexts/commons/modules/vcs/src/warm_a.c",
             "int warm_a(void) { return 1; }\n"));
@@ -640,7 +640,7 @@ static int test_code_context_map_warm_follows_generation(void)
         ASSERT(json_get_int(json_get(&reply.data,
                                      "cross_context_include_edges")) == 1);
         zcl_command_reply_free(&reply);
-        system("rm -rf " CI_CONTEXT_WARM_FIX);
+        ZCL_IGNORE_WUR(system("rm -rf " CI_CONTEXT_WARM_FIX), "fixture reset; the assertions below prove the tree state");
         PASS();
     } _test_next:;
     return failures;
@@ -661,7 +661,7 @@ static int test_code_room_command_feature(void)
 {
     int failures = 0;
     TEST("code_room: command feature root joins exact handlers and proof surface") {
-        system("rm -rf " CI_IMPACT_FIX);
+        ZCL_IGNORE_WUR(system("rm -rf " CI_IMPACT_FIX), "fixture reset; the assertions below prove the tree state");
         ASSERT(write_ci_impact_fixture());
         struct zcl_command_reply incomplete;
         ci_room_call("app.messaging", CI_IMPACT_FIX, &incomplete);
@@ -670,7 +670,7 @@ static int test_code_room_command_feature(void)
         ASSERT(!json_get_bool(json_get(
             &incomplete.data, "shared_handler_file_command_count_complete")));
         zcl_command_reply_free(&incomplete);
-        system("rm -rf " CI_IMPACT_FIX);
+        ZCL_IGNORE_WUR(system("rm -rf " CI_IMPACT_FIX), "fixture reset; the assertions below prove the tree state");
 
         static const char *const roots[] = {
             "core.wallet", "app.names", "app.market", "app.messaging",
@@ -860,7 +860,7 @@ static int ci_narrow_one(const char *name, const char *src, const char *dep,
     int failures = 0;
     char dir[256];
     snprintf(dir, sizeof dir, CI_NARROW_FIX "/%s", name);
-    system("rm -rf " CI_NARROW_FIX);
+    ZCL_IGNORE_WUR(system("rm -rf " CI_NARROW_FIX), "fixture reset; the assertions below prove the tree state");
     bool ready = true;
     if (strcmp(name, "quoted") == 0)
         ready = ci_impact_mk_write(dir, "core/modules/net/include/net/extra.h",
@@ -928,7 +928,7 @@ static int test_code_impact_unsafe_narrow(void)
                               "core/modules/net/include/net/real.h", true);
     failures += ci_narrow_one("stale-header", src_plain, dep_clean,
                               "core/modules/net/include/net/real.h", false);
-    system("rm -rf " CI_NARROW_FIX);
+    ZCL_IGNORE_WUR(system("rm -rf " CI_NARROW_FIX), "fixture reset; the assertions below prove the tree state");
     return failures;
 }
 
@@ -950,7 +950,7 @@ static int ci_unsafe_cause_run(const char *name, const char *dep,
     int failures = 0;
     char dir[256];
     snprintf(dir, sizeof dir, CI_NARROW_FIX "/cause_%s", name);
-    system("rm -rf " CI_NARROW_FIX);
+    ZCL_IGNORE_WUR(system("rm -rf " CI_NARROW_FIX), "fixture reset; the assertions below prove the tree state");
     bool ready = ci_narrow_base(dir, src, dep);
     if (ready && foreign)
         ready = ci_impact_mk_write(dir, CI_FOREIGN_DEP, foreign);
@@ -1019,7 +1019,7 @@ static int test_code_impact_unsafe_cause(void)
         "foreign-missing", dep_missing, NULL, dep_foreign,
         "prereq_not_regular build/obj/narrow.d -> "
         "core/modules/net/include/net/missing.h");
-    system("rm -rf " CI_NARROW_FIX);
+    ZCL_IGNORE_WUR(system("rm -rf " CI_NARROW_FIX), "fixture reset; the assertions below prove the tree state");
     return failures;
 }
 
@@ -1037,7 +1037,7 @@ static int test_code_impact_hotfork_cache_scope(void)
     static const char stale[] =
         "build/hotswap-fast/x.o: build/hotswap-fast/.resident-gone.c "
         "core/modules/net/include/net/real.h\n";
-    system("rm -rf " CI_NARROW_FIX);
+    ZCL_IGNORE_WUR(system("rm -rf " CI_NARROW_FIX), "fixture reset; the assertions below prove the tree state");
     bool ready = ci_narrow_base(dir, src, dep) &&
         ci_impact_mk_write(dir, "build/hotswap-fast/x.hotfork.d", stale) &&
         ci_impact_mk_write(dir, "build/hotswap-fast/y.c.d", stale);
@@ -1060,7 +1060,7 @@ static int test_code_impact_hotfork_cache_scope(void)
         ASSERT(strcmp(sibling, "complete") != 0);
         PASS();
     } _test_next:;
-    system("rm -rf " CI_NARROW_FIX);
+    ZCL_IGNORE_WUR(system("rm -rf " CI_NARROW_FIX), "fixture reset; the assertions below prove the tree state");
     return failures;
 }
 
@@ -1107,12 +1107,12 @@ static int test_code_impact_deleted_unlisted_input_ext(const char *extension)
 static int test_code_impact_deleted_unlisted_input(void)
 {
     int failures = 0;
-    system("rm -rf " CI_NARROW_FIX);
+    ZCL_IGNORE_WUR(system("rm -rf " CI_NARROW_FIX), "fixture reset; the assertions below prove the tree state");
     failures += test_code_impact_deleted_unlisted_input_ext("h");
     failures += test_code_impact_deleted_unlisted_input_ext("def");
     failures += test_code_impact_deleted_unlisted_input_ext("inc");
     failures += test_code_impact_deleted_unlisted_input_ext("txt");
-    system("rm -rf " CI_NARROW_FIX);
+    ZCL_IGNORE_WUR(system("rm -rf " CI_NARROW_FIX), "fixture reset; the assertions below prove the tree state");
     return failures;
 }
 
@@ -1128,7 +1128,7 @@ static int test_code_impact_incremental_include(void)
     static const char *const src1 =
         "/* narrow */\n#include \"net/real.h\"\n#include \"net/extra.h\"\n"
         "int ci_narrow(void){return 2;}\n";
-    system("rm -rf " CI_NARROW_FIX);
+    ZCL_IGNORE_WUR(system("rm -rf " CI_NARROW_FIX), "fixture reset; the assertions below prove the tree state");
     bool ready = ci_impact_mk_write(dir, "core/modules/net/include/net/extra.h",
                                     "int ci_narrow_extra(void);\n") &&
                  ci_narrow_base(dir, src0, dep);
@@ -1156,7 +1156,7 @@ static int test_code_impact_incremental_include(void)
         ASSERT(strcmp(added, "complete") == 0 && added_count >= 1);
         PASS();
     } _test_next:;
-    system("rm -rf " CI_NARROW_FIX);
+    ZCL_IGNORE_WUR(system("rm -rf " CI_NARROW_FIX), "fixture reset; the assertions below prove the tree state");
     return failures;
 }
 
@@ -1242,7 +1242,7 @@ static int test_code_impact_conditional_include_edge(void)
 {
     int failures = 0;
     const char *dir = CI_COND_FIX "/edge";
-    system("rm -rf " CI_COND_FIX);
+    ZCL_IGNORE_WUR(system("rm -rf " CI_COND_FIX), "fixture reset; the assertions below prove the tree state");
     bool ready = ci_cond_fixture(dir, ci_cond_dep);
     char inc_dim[64] = "", def_dim[64] = "", real_dim[64] = "";
     bool inc_has = false, def_has = false, real_has = false;
@@ -1266,7 +1266,7 @@ static int test_code_impact_conditional_include_edge(void)
         ASSERT(real_has);
         PASS();
     } _test_next:;
-    system("rm -rf " CI_COND_FIX);
+    ZCL_IGNORE_WUR(system("rm -rf " CI_COND_FIX), "fixture reset; the assertions below prove the tree state");
     return failures;
 }
 
@@ -1276,7 +1276,7 @@ static int ci_cond_hazard(const char *name, const char *dep,
     int failures = 0;
     char dir[256];
     snprintf(dir, sizeof dir, CI_COND_FIX "/%s", name);
-    system("rm -rf " CI_COND_FIX);
+    ZCL_IGNORE_WUR(system("rm -rf " CI_COND_FIX), "fixture reset; the assertions below prove the tree state");
     bool ready = ci_cond_fixture(dir, dep);
     if (ready && touch)
         ci_narrow_touch_rel(dir, touch, delta);
@@ -1306,7 +1306,7 @@ static int test_code_impact_conditional_hazards(void)
     failures += ci_cond_hazard("incomplete", dep_incomplete, NULL, 0);
     failures += ci_cond_hazard("stale", ci_cond_dep, CI_COND_UNIT, 5);
     failures += ci_cond_hazard("stale-header", ci_cond_dep, CI_COND_REAL, 5);
-    system("rm -rf " CI_COND_FIX);
+    ZCL_IGNORE_WUR(system("rm -rf " CI_COND_FIX), "fixture reset; the assertions below prove the tree state");
     return failures;
 }
 
@@ -1324,7 +1324,7 @@ static int ci_long_include_line_case(size_t padding, bool over_bound)
     int wrote = snprintf(src + offset, sizeof(src) - offset,
                          "#include \"narrow_win.inc\"\n#endif\n"
                          "#include \"net/real.h\"\n");
-    system("rm -rf " CI_COND_FIX);
+    ZCL_IGNORE_WUR(system("rm -rf " CI_COND_FIX), "fixture reset; the assertions below prove the tree state");
     bool ready = wrote > 0 && (size_t)wrote < sizeof(src) - offset &&
                  ci_cond_fixture(dir, ci_cond_dep) &&
                  ci_impact_mk_write(dir, CI_COND_UNIT, src) &&
@@ -1346,7 +1346,7 @@ static int ci_long_include_line_case(size_t padding, bool over_bound)
             ASSERT(strcmp(dim, "complete") == 0 && has);
         PASS();
     } _test_next:;
-    system("rm -rf " CI_COND_FIX);
+    ZCL_IGNORE_WUR(system("rm -rf " CI_COND_FIX), "fixture reset; the assertions below prove the tree state");
     return failures;
 }
 
@@ -1371,7 +1371,7 @@ static int test_code_impact_conditional_incremental(void)
         "/* narrow */\n#include \"net/real.h\"\n#ifdef _WIN32\n"
         "#include \"narrow_win.inc\"\n#include \"net/extra.h\"\n#endif\n"
         "int ci_narrow(void){return 3;}\n";
-    system("rm -rf " CI_COND_FIX);
+    ZCL_IGNORE_WUR(system("rm -rf " CI_COND_FIX), "fixture reset; the assertions below prove the tree state");
     bool ready = ci_impact_mk_write(dir, "core/modules/net/include/net/extra.h",
                                     "int ci_narrow_extra(void);\n") &&
                  ci_cond_fixture(dir, ci_cond_dep);
@@ -1399,7 +1399,7 @@ static int test_code_impact_conditional_incremental(void)
         ASSERT(strcmp(third, "complete") == 0 && has_third);
         PASS();
     } _test_next:;
-    system("rm -rf " CI_COND_FIX);
+    ZCL_IGNORE_WUR(system("rm -rf " CI_COND_FIX), "fixture reset; the assertions below prove the tree state");
     return failures;
 }
 
@@ -1423,7 +1423,7 @@ static int test_code_impact_dotdot_include_edge(void)
     static const char *const dep =
         "build/obj/narrow.o: " CI_COND_UNIT " " CI_COND_REAL " "
         "core/modules/net/src/../../../../" CI_DOT_REG "\n";
-    system("rm -rf " CI_COND_FIX);
+    ZCL_IGNORE_WUR(system("rm -rf " CI_COND_FIX), "fixture reset; the assertions below prove the tree state");
     bool ready = ci_impact_mk_write(dir, CI_DOT_REG, "DOT_ROW(1)\n") &&
                  ci_impact_mk_write(dir, CI_DOT_WIN, "int ci_dot_win;\n") &&
                  ci_narrow_base(dir, src, dep);
@@ -1444,7 +1444,7 @@ static int test_code_impact_dotdot_include_edge(void)
         ASSERT(win_has);
         PASS();
     } _test_next:;
-    system("rm -rf " CI_COND_FIX);
+    ZCL_IGNORE_WUR(system("rm -rf " CI_COND_FIX), "fixture reset; the assertions below prove the tree state");
     return failures;
 }
 
@@ -1477,7 +1477,7 @@ static int test_code_impact_rootless_index_rebuilds(void)
     static const char *const src_body =
         "/* narrow */\n#include \"net/real.h\"\n#ifdef _WIN32\n"
         "#include \"narrow_win.inc\"\n#endif\nint ci_narrow(void){return 2;}\n";
-    system("rm -rf " CI_COND_FIX);
+    ZCL_IGNORE_WUR(system("rm -rf " CI_COND_FIX), "fixture reset; the assertions below prove the tree state");
     bool ready = ci_cond_fixture(dir, ci_cond_dep);
     char first[64] = "", second[64] = "";
     bool has_first = false, has_second = false;
@@ -1496,7 +1496,7 @@ static int test_code_impact_rootless_index_rebuilds(void)
         ASSERT(strcmp(second, "complete") == 0 && has_second);
         PASS();
     } _test_next:;
-    system("rm -rf " CI_COND_FIX);
+    ZCL_IGNORE_WUR(system("rm -rf " CI_COND_FIX), "fixture reset; the assertions below prove the tree state");
     return failures;
 }
 
