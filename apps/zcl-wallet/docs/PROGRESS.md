@@ -7473,3 +7473,34 @@ Architecture/docs/diff checks pass. Raw proof remains in `.cache/storage-benchma
 Next: continue native/platform failure and lifetime review using these measured
 limits; keep storage durability and correctness authoritative. No production
 node/data, real wallet, consensus predicate, TLS scope or Worldstream work changed.
+
+## Production continuation: fuzz large sync-clock transitions — 2026-10-03
+
+The read-only watch fuzzer previously advanced at most128 byte-sized steps, so
+its main state machine could not naturally explore the60-second freshness span
+or uint64 clock boundaries. It now preserves ordinary short steps and adds
+freshness-sized advances, saturation, near/max clocks and an arbitrary eight-byte
+clock. Independent invariants require a successful deadline to be later than
+now and report age not to exceed elapsed time since clock zero. Five deterministic
+replays cover complete balance/history reports, expiry, rollback and large clocks.
+
+The new strict replay target exposed optimized GCC test frames of5200/4736 bytes.
+Large public fixtures now use explicitly reset, bounded storage within the
+single-threaded harness; the4096-byte gate remains unchanged. This is test storage
+only, with no production global or lifetime change. Deliberate deadline-overflow
+and rollback-check mutations fail with both Clang and GCC; unchanged controls
+pass. An initial overflow mutation did not compile due to an unused parameter;
+it was corrected without disabling a warning and is not counted as RED evidence.
+
+The final seeded ASan/UBSan fuzz campaign completes18,028 executions in31s without
+a finding. Clang and optimized GCC each pass the watch/replay and two deadline
+contract groups (4/4); static analyzers and complexity caps pass. The real fuzz
+profile/manifest mutation gate passes in55.45s. Strict release-archive replays
+pass API30/35/36 x86_64, including16KiB API35; ARM64 compiles/alignment only.
+Architecture/docs/diff gates pass. Application source, cryptography, APK behavior
+and the preceding JVM/instrumentation qualification remain unchanged. Evidence:
+`.cache/sync-clock*` (ignored).
+
+Next: continue safe native malformed-input/resource-failure and Android lifetime
+review. The measured storage baseline does not authorize removing fsync or
+validation. Physical custody and TLS review remain open, separate boundaries.

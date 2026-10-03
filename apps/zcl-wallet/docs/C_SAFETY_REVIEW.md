@@ -4272,3 +4272,25 @@ implementation changed.
 Host sanitizer/static/complexity checks and API30/35/36 public-fixture execution
 qualify the tool. ARM64 compilation/alignment is not physical-device timing or
 custody proof. Source behavior and exact measurement limits are in WALLET_RECORD.
+
+## Sync clock boundary fuzzing — 2026-10-03
+
+Test-only changes add saturating clock advances, maximum/near-maximum times,
+an eight-byte arbitrary clock, and a deterministic replay target. Existing
+production watch, deadline, freshness and cancellation code is unchanged.
+
+| Hazard | Review |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access | The fuzz entry retains its nonempty/16384-byte input bound. Arbitrary-clock parsing reads exactly the final eight bytes only when size>=8; all indices stay in the supplied span. |
+| Integer overflow/underflow; signed/unsigned conversions | Eight big-endian bytes assemble into uint64 without a ninth shift. Advance subtraction precedes addition and saturates at UINT64_MAX. Successful attempt deadlines must exceed now; reported age cannot exceed elapsed time since clock zero. Enum/op conversions retain existing bounds. |
+| Use-after-free; double-free; leaks; dangling pointers | Adds no allocation or retained external pointer. Per-input watch/fixture storage resets before initialization, and close still retires the watch afterward. |
+| NULL dereferences; uninitialized memory | Existing libFuzzer input contract is unchanged. Large public fixtures and before/after observations explicitly reset; no stale previous-input data is used as an oracle. |
+| Pointer arithmetic | The new eight-byte offset is formed only after the size guard. Existing reply subspans remain size-i with i<size. |
+| Format strings; secret leakage | No new formatting or secret inputs. Synthetic public network responses and clocks only; no wallet, key or network connection. |
+| Stack usage; allocation limits | Strict optimized GCC initially observed5200/4736-byte test frames. Large public fixtures moved to bounded single-threaded static storage with explicit resets;4096-byte frame enforcement remains enabled and passes. No recursion/VLA or heap growth. |
+| Malformed serialization/network input | Existing response mutations, checked complete reports and wakeup assertions remain active. Five retained seeds combine complete balance/history replies, expiry, rollback and arbitrary/max clocks. Overflow and rollback mutations fail both compilers. |
+| Races; resource exhaustion | Harness/replay execution is single-threaded and non-reentrant; no production global state is added. Operations remain capped at128, replay at five cases, and fuzz/replay runs have explicit deadlines. |
+
+Final host sanitizer, analyzer, complexity, manifest and Android release-archive
+results are in the matching progress entry. TSan remains relevant to the separate
+registry race fixture; this harness introduces no threads.

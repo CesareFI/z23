@@ -750,6 +750,13 @@ if(NOT ANDROID)
         -Wconversion -Wsign-conversion)
     add_test(NAME wallet_sync_watch COMMAND sync_watch_tests)
     set_tests_properties(wallet_sync_watch PROPERTIES TIMEOUT 15)
+    add_executable(sync_clock_regression_tests tests/fuzz_sync_watch.c tests/sync_fixture.c)
+    target_link_libraries(sync_clock_regression_tests PRIVATE zcl_wallet_core)
+    target_compile_definitions(sync_clock_regression_tests PRIVATE ZCL_SYNC_CLOCK_REGRESSION=1)
+    target_compile_options(sync_clock_regression_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+        -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+    add_test(NAME wallet_sync_clock_regression COMMAND sync_clock_regression_tests)
+    set_tests_properties(wallet_sync_clock_regression PROPERTIES TIMEOUT 15)
     add_executable(sync_owner_tests tests/test_sync_owners.c tests/sync_fixture.c)
     target_link_libraries(sync_owner_tests PRIVATE zcl_wallet_core)
     target_compile_options(sync_owner_tests PRIVATE -Wall -Wextra -Wpedantic -Werror

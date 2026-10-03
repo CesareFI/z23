@@ -23,8 +23,13 @@ static void inspect_wakeup(const zcl_sync_watch *watch, uint64_t now, const zcl_
     /* A relative delay requires no absolute addition in production. Bound this
      * fixture's future timestamps explicitly before exercising both sides. */
     if (now > UINT64_MAX - delay) return;
-    zcl_sync_watch copy = *watch;
-    zcl_sync_snapshot before = {0}, after = {0};
+    /* Single-threaded fixture storage keeps optimized/inlined sanitizer frames
+     * bounded. Every observation starts from the supplied watch and empty views. */
+    static zcl_sync_watch copy;
+    static zcl_sync_snapshot before, after;
+    copy = *watch;
+    memset(&before, 0, sizeof(before));
+    memset(&after, 0, sizeof(after));
     if (zcl_sync_watch_snapshot(&copy, now + delay - 1, &before) != ZCL_OK) abort();
     if (!same_state(&before, report)) abort();
     if (before.next_change_ms != 1) abort();
@@ -54,6 +59,7 @@ static void inspect(zcl_sync_watch *watch, uint64_t now)
 {
     zcl_sync_snapshot report;
     if (zcl_sync_watch_snapshot(watch, now, &report) != ZCL_OK) abort();
+    if (report.age_ms > now) abort(); /* Elapsed age cannot predate clock zero. */
     inspect_wakeup(watch, now, &report);
     if (report.freshness == ZCL_BALANCE_UNAVAILABLE) {
         const zcl_sync_report empty = {0};
@@ -109,24 +115,42 @@ static void initialize(zcl_sync_watch *watch, const zcl_sync *fixture, bool hist
     if (status != ZCL_OK) abort();
 }
 
+static uint64_t clock_step(uint64_t now, uint8_t op, const uint8_t *data, size_t size)
+{
+    if (op == 0) return 0;
+    if (op == 255) return UINT64_MAX;
+    if (op == 254) return UINT64_MAX - ZCL_SYNC_TIMEOUT_MAX_MS;
+    if (op == 253 && size >= 8) {
+        uint64_t clock = 0;
+        for (size_t i = size - 8; i < size; ++i) clock = (clock << 8) | data[i];
+        return clock;
+    }
+    const uint64_t advance = op == 252 ? ZCL_SYNC_FRESH_MS : (uint64_t)op;
+    return now > UINT64_MAX - advance ? UINT64_MAX : now + advance;
+}
+
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 {
     if (size == 0 || size > ZCL_ELECTRUM_FRAME_MAX) return 0;
-    zcl_sync fixture;
+    /* No concurrent calls within this fuzz process; no production global state.
+     * Reset both public fixtures for each input, including after corpus replay. */
+    static zcl_sync fixture;
+    static zcl_sync_watch watch;
+    memset(&fixture, 0, sizeof(fixture));
+    memset(&watch, 0, sizeof(watch));
     sync_fixture_start(&fixture, (data[0] & 8) == 0 ? ZCL_MAINNET : ZCL_TESTNET, 1);
-    zcl_sync_watch watch;
     initialize(&watch, &fixture, (data[0] & 4) != 0);
     uint64_t token = 0, old = 0, now = 0;
     const size_t operations = size < 128 ? size : 128;
     for (size_t i = 0; i < operations; ++i) {
         const uint8_t op = data[i];
-        if (op == 0) now = 0;
-        else if (now <= UINT64_MAX - op) now += op;
+        now = clock_step(now, op, data, size);
         const uint64_t chosen = (op & 128) == 0 ? token : old;
         switch (op % 6) {
         case 0: {
             uint64_t next = 0;
             if (zcl_sync_watch_begin(&watch, now, (uint64_t)op + 20, 1, &next) == ZCL_OK) {
+                if (watch.deadline_ms <= now) abort();
                 old = token;
                 token = next;
             }
@@ -153,3 +177,20 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     zcl_sync_watch_close(&watch);
     return 0;
 }
+
+#ifdef ZCL_SYNC_CLOCK_REGRESSION
+int main(void)
+{
+    static const uint8_t overflow[] = {255, 252};
+    static const uint8_t near_end[] = {254, 6, 1, 2, 3, 0, 6, 1, 2};
+    static const uint8_t age[] = {0, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 252, 1, 2, 255, 0};
+    static const uint8_t history[] = {12, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 252, 255};
+    static const uint8_t arbitrary[] = {253, 6, 1, 2, 3, 0, 253, 1, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef};
+    (void)LLVMFuzzerTestOneInput(overflow, sizeof(overflow));
+    (void)LLVMFuzzerTestOneInput(near_end, sizeof(near_end));
+    (void)LLVMFuzzerTestOneInput(age, sizeof(age));
+    (void)LLVMFuzzerTestOneInput(history, sizeof(history));
+    (void)LLVMFuzzerTestOneInput(arbitrary, sizeof(arbitrary));
+    return 0;
+}
+#endif
