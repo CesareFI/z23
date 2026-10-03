@@ -64,8 +64,8 @@ ssize_t __wrap_read(int fd, void *buffer, size_t length)
     return failed_io(mode, length);
 }
 
-#if defined(__GLIBC__)
-/* Optimized glibc calls can use fortified entry points. Keep their original
+#if defined(__GLIBC__) || defined(__ANDROID__)
+/* Optimized glibc/Bionic calls can use fortified entry points. Keep their original
  * object bound even when injecting a short read; never bypass a bounds trap. */
 ssize_t __real___read_chk(int fd, void *buffer, size_t length, size_t capacity);
 ssize_t __wrap___read_chk(int fd, void *buffer, size_t length, size_t capacity);
@@ -105,6 +105,24 @@ ssize_t __wrap_write(int fd, const void *buffer, size_t length)
         return __real_write(fd, buffer, length / 2);
     return failed_io(mode, length);
 }
+
+#if defined(__ANDROID__)
+ssize_t __real___write_chk(int fd, const void *buffer, size_t length, size_t capacity);
+ssize_t __wrap___write_chk(int fd, const void *buffer, size_t length, size_t capacity);
+
+ssize_t __wrap___write_chk(int fd, const void *buffer, size_t length, size_t capacity)
+{
+    if (length > capacity) return __real___write_chk(fd, buffer, length, capacity);
+    io_mode mode = next_fault(&storage_write_fault);
+    if (mode == IO_NORMAL) return __real___write_chk(fd, buffer, length, capacity);
+    if (mode == IO_SHORT)
+        return __real___write_chk(fd, buffer, length > 1 ? 1 : length, capacity);
+    if (mode == IO_PARTIAL_ERROR && storage_write_fault.calls ==
+        (storage_write_fault.at == 0 ? 1 : storage_write_fault.at))
+        return __real___write_chk(fd, buffer, length / 2, capacity);
+    return failed_io(mode, length);
+}
+#endif
 
 ssize_t __wrap_pread(int fd, void *buffer, size_t length, off_t offset)
 {

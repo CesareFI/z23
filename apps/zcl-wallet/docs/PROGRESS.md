@@ -7630,3 +7630,31 @@ cannot prove power-loss persistence, and promotion here does not authenticate
 GCM. Next: continue safe storage/restart failure coverage and custody/native
 ownership review, with physical custody, authenticated chain state and TLS
 quarantine preserved.
+
+## Production continuation: exercise fortified Android storage failures — 2026-10-03
+
+The shared storage fault injector handled fortified reads only under glibc and
+had no Bionic fortified-write adapter. The unchanged fixture against the Android
+release archive reproduced the gap: a requested one-byte write sequence was
+bypassed and its exact call-count assertion failed. The test helper now covers
+Bionic __read_chk/__pread_chk/__write_chk, retaining original capacity refusal
+and real fortified forwarding. Product source and release artifacts are unchanged.
+
+Nine dependent storage/change fault/retirement groups pass strict Clang and GCC
+ASan/UBSan/LSan (1.67s/2.72s). Both host analyzers, Android ARM64-target analyzer,
+complexity and architecture/docs/diff gates pass. Three actual release-archive
+executables (wallet storage faults, change storage faults and recovery probe
+faults) pass API30/35/36 x86_64, including16KiB API35. Coverage includes short and
+interrupted I/O, partial append preservation, every probe stat/close failure,
+changed file size, descriptor cleanup, retry limits and durable recovery. ARM64
+compiles/alignment only. A deliberately wrong fortified partial-write length
+fails the Android regression; unchanged controls pass. Invocation-recorded
+fixture paths are cleaned on both RED and GREEN. Evidence:
+`.cache/storage-fortify*` (ignored).
+
+When manually linking these NDK fixtures, retain the ordinary syscall wraps and
+add `--wrap=__read_chk`, `--wrap=__pread_chk`, `--wrap=__write_chk`; the crash
+fixture independently needs its fortified-write wrap. Do not disable fortification
+to reach a hook. Existing production fuzz/ART/reproduction evidence remains
+applicable. Next: continue safe native/platform ownership and restart review;
+physical-device custody, authenticated-chain admission and TLS remain gated.

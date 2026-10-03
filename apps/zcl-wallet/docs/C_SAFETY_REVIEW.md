@@ -4388,3 +4388,25 @@ Both compilers reject a missing recovery-file fsync that the preceding crash
 fixture accepted. API30/35/36 execute against actual release archives with Bionic
 fortification retained; ARM64 compiles only. These are process-exit observations,
 not proof of physical power-loss persistence or hardware-backed authentication.
+
+## Bionic fortified storage fault injection — 2026-10-03
+
+Test-only scope: `storage_faults.c`. The existing glibc read/pread adapters also
+cover Bionic, and an Android-only fortified write adapter mirrors the established
+bounded fault modes. Production storage and platform fortification are unchanged.
+
+| Hazard | Review |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access | Every fortified adapter forwards an original length>capacity directly to the real checked entry point. Short/partial operations retain the original object capacity and never enlarge the requested span. |
+| Integer overflow/underflow; signed/unsigned conversions | Existing bounded length and fault-counter rules remain; partial writes use length/2. Existing synthetic oversized results are limited to small fixture calls. No new offset conversion. |
+| Use-after-free; double-free; leaks; dangling pointers | Forwarders borrow caller spans synchronously and retain no pointer or descriptor. Existing fixture ownership and cleanup remain authoritative. |
+| NULL dereferences; uninitialized memory | No new dereference or local buffer. Pointer/length/capacity pass to the existing libc entry point; original native tests supply validated public fixtures. |
+| Pointer arithmetic | No new pointer arithmetic. Positional reads preserve the exact offset and capacity. |
+| Format strings; secret leakage | No added product logging or secret data. Device fixtures use public vectors/inert ciphertext, and mutation cleanup uses only paths recorded by that invocation. |
+| Stack usage; allocation limits | Only scalar locals, no heap, VLA, recursion or new retained state. Strict host/NDK frame limits and test complexity cap pass. |
+| Malformed serialization/network input | Fault outcomes remain identical across ordinary and fortified paths. Real release-archive tests assert retry counts, partial-file lengths, output canaries and exact recovery observations. A wrong partial-write prefix mutation fails on Android. |
+| Races; resource exhaustion | Test controls remain single-threaded/process-local. No production interposition or concurrency changes. Nine dependent host groups and three bounded Android fixture executables retain their existing deadlines. |
+
+Clang/GCC sanitizer and analyzer evidence plus Android-target static analysis
+pass. API30/35/36 exercise actual fortified release archives, including16KiB
+API35. ARM64 compiles only; this does not qualify physical storage or custody.
