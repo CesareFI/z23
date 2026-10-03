@@ -668,10 +668,15 @@ static bool snap_write_fixed_fields(struct snapshot_writer *w,
 static bool snap_write_script(struct snapshot_writer *w,
                               const struct db_utxo *u)
 {
-    /* Compact size for script length */
+    /* Compact size for script length. The record must carry the FULL
+     * script: the export commitment (snap_feed_sha3) hashes script_len plus
+     * every script byte, the canonical commitment recomputed on import
+     * hashes the full script, and the fetch-side parser reads this varint
+     * generically. A 520 clamp here produced snapshots whose commitment
+     * can never verify on import for any UTXO whose scriptPubKey is
+     * 521..10000 bytes (consensus-valid; the model admits 10000). */
     uint8_t buf[2];
     size_t slen = u->script_len;
-    if (slen > 520) slen = 520;
     if (slen < 253) {
         uint8_t b = (uint8_t)slen;
         if (!snap_write(w, &b, 1))

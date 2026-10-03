@@ -1387,6 +1387,8 @@ int main(int argc, char **argv)
     failures += test_block_source_policy_status_json();
     failures += test_snapshot_sync_service();
     failures += test_snapshot_serve_loopback();
+    { extern int test_snapshot_script_roundtrip(void);
+      failures += test_snapshot_script_roundtrip(); }
     failures += test_block_swarm_loopback();
     failures += test_file_controller();
     failures += test_file_ops();
