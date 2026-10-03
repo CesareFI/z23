@@ -2,6 +2,7 @@
 #include "support/cleanse.h"
 #include "crypto/hmac_sha512.h"
 #include "crypto/random_secret.h"
+#include "keys/key.h"
 #include <secp256k1.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -9,7 +10,7 @@
 
 /* Observe only live spans, forwarding every wipe to the production primitive.
  * Size tags distinguish the entropy, digest and HMAC-context temporaries. */
-static unsigned retired_seed, retired_digest, retired_hmac;
+static unsigned retired_seed, retired_digest, retired_hmac, retired_private;
 static bool erased = true, refuse_scalar;
 static void observe_key_cleanse(void *bytes, size_t length)
 {
@@ -24,6 +25,7 @@ static void observe_key_cleanse(void *bytes, size_t length)
     if (length == 32) ++retired_seed;
     if (length == 64) ++retired_digest;
     if (length == sizeof(struct hmac_sha512_ctx)) ++retired_hmac;
+    if (length == sizeof(struct privkey)) ++retired_private;
 }
 
 static bool fixture_random(unsigned char *bytes, size_t length, const char *label)
@@ -62,6 +64,9 @@ static int fixture_scalar(const secp256k1_context *context, const unsigned char 
 
 static_assert(sizeof(struct hmac_sha512_ctx) != 32 && sizeof(struct hmac_sha512_ctx) != 64,
               "retirement observer has distinct span sizes");
+static_assert(sizeof(struct privkey) != 32 && sizeof(struct privkey) != 64 &&
+              sizeof(struct privkey) != sizeof(struct hmac_sha512_ctx),
+              "private-key retirement has a distinct span size");
 
 static bool master_scratch(bool refuse)
 {
@@ -79,6 +84,12 @@ static bool master_scratch(bool refuse)
     return okay;
 }
 
+static bool sanity_key_scratch(void)
+{
+    retired_private = 0;
+    return retirement_ecc_init_sanity_check() && retired_private == 1 && erased;
+}
+
 int wallet_key_retirement_cases(void);
 int wallet_key_retirement_cases(void)
 {
@@ -86,6 +97,7 @@ int wallet_key_retirement_cases(void)
     erased = true;
     retirement_ecc_start();
     bool okay = retired_seed == 1 && erased;
+    okay = sanity_key_scratch() && okay;
     okay = master_scratch(false) && okay;
     okay = master_scratch(true) && okay;
     retirement_ecc_stop();

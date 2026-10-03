@@ -220,7 +220,9 @@ bool ecc_init_sanity_check(void)
     privkey_make_new(&k, true);
     struct pubkey pk;
     privkey_get_pubkey(&k, &pk);
-    return privkey_verify_pubkey(&k, &pk);
+    bool verified = privkey_verify_pubkey(&k, &pk);
+    memory_cleanse(&k, sizeof(k));
+    return verified;
 }
 
 /* The assertions in ecc_start guard the process-wide SIGNING context's
