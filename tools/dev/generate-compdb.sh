@@ -109,6 +109,12 @@ extract_compile_rows()
 parse_selftest()
 {
     local dir raw rows n
+    [ "$(json_escape 'a\b"c')" = 'a\\b\"c' ] ||
+        fail 'JSON escaping changed for backslash and quote'
+    [ "$(json_escape $'line\nnext')" = 'line\nnext' ] ||
+        fail 'JSON escaping changed for embedded newline'
+    [ "$(json_escape $'last\n')" = 'last\n' ] ||
+        fail 'JSON escaping dropped a trailing newline'
     dir="$(mktemp -d "${TMPDIR:-/tmp}/zcl-compdb-selftest.XXXXXX")" ||
         fail 'could not create parser selftest directory'
     raw="$dir/dry-run.txt"
@@ -148,10 +154,11 @@ parse_selftest()
 
 json_escape()
 {
-    printf '%s' "$1" | sed \
-        -e 's/\\/\\\\/g' \
-        -e 's/"/\\"/g' \
-        -e ':a;N;$!ba;s/\n/\\n/g'
+    local value="$1"
+    value="${value//\\/\\\\}"
+    value="${value//\"/\\\"}"
+    value="${value//$'\n'/\\n}"
+    printf '%s' "$value"
 }
 
 hash_file()
