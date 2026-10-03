@@ -68,7 +68,8 @@ static zcl_status opening_arguments(JNIEnv *env, jbyteArray draft, jobjectArray 
 {
     if (env == NULL || draft == NULL || previous == NULL) return ZCL_INVALID_ARGUMENT;
     if ((*env)->ExceptionCheck(env)) return ZCL_INVALID_ARGUMENT;
-    if (fee < 0 || now < 0 || now > INT64_MAX - (jlong)ZCL_REVIEW_LIFETIME_MS)
+    if (fee < 0 || (uint64_t)fee > ZCL_MAX_MONEY ||
+        now < 0 || now > INT64_MAX - (jlong)ZCL_REVIEW_LIFETIME_MS)
         return ZCL_OUT_OF_RANGE;
     return zcl_jni_network(chain, network);
 }

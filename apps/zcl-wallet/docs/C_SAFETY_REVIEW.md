@@ -4674,3 +4674,31 @@ actual native fixtures and16 selected ART tests pass per API30/35/36 x86_64.
 ARM64 Linux UBSan/QEMU and Linux MSan pass; Android ARM64 builds/alignment only.
 The source-only release build matches the full APK byte for byte. Existing
 physical custody, TLS quarantine and authenticated-chain limits remain intact.
+
+## Review fee admission before JNI copies — 2026-10-03
+
+`jni_review.c` now applies the existing core MAX_MONEY bound to the maximum-fee
+argument at JNI entry, alongside its negative-fee and time checks. The C
+assessment repeats its original bound. No money constant or validity rule
+changes. Out-of-range fees now refuse before locking, source copies or active
+owner lookup; pending VM exceptions still take precedence. The exact maximum
+remains accepted for both narrow and full-source review.
+
+| Hazard | Review |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access | No new buffer operation. Invalid fee stops before draft/source reads; deterministic native counters verify zero copied bytes and allocation. |
+| Integer overflow/underflow; signed/unsigned conversions | Short-circuit fee<0 refusal precedes uint64_t conversion. Compare against the existing uint64 money constant, without arithmetic in production. Tests cover -1, MAX_MONEY+1, INT64_MAX and exact MAX_MONEY. |
+| Use-after-free; double-free; leaks; dangling pointers | No new owner/pointer/allocation. Refusal acquires no review mutex or handle; existing valid-owner cleanup remains unchanged. JVM positive-bound handle cancels in finally. |
+| NULL dereferences; uninitialized memory | Existing JNI pointer/exception checks precede scalar validation. Tests initialize public fixture arrays and retain native scratch-reset checks. |
+| Pointer arithmetic | None added. |
+| Format strings; secret leakage | Constant diagnostics print only allocation/copy counts. Public synthetic fixture data; no secret-bearing path changes. |
+| Stack usage; allocation limits | One scalar comparison. Invalid narrow/full requests avoid observed17472/204000-byte allocations; stack/frame limits remain unchanged. |
+| Malformed serialization/network input | C MoneyRange remains authoritative; this repeats its maximum-fee guard before transport work. It does not widen transaction/source, chain, signing or custody admission. |
+| Races; resource exhaustion | Invalid fees never enter the shared mutex or disturb an existing owner. Normal busy/cancellation/replacement tests remain. No new global state or scheduling. |
+
+Removing only the upper fee guard restores the allocation regression under
+strict Clang/GCC, for both source profiles. Native release-archive fixtures and
+16 selected ART tests pass API30/35/36 x86_64; a real JVM test also calls both
+JNI entry points directly and checks exact-maximum publication. ARM64 Linux
+UBSan and Linux MSan pass; Android ARM64 compilation/alignment only. Full APK
+source-only reproduction matches. Existing custody/TLS/chain limits hold.

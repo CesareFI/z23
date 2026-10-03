@@ -456,7 +456,7 @@ static void setup(void)
     java_inputs();
 }
 
-static jlong open_review(jlong now)
+static jlong open_review_fee(jlong now, jlong fee)
 {
     last_allocation_size = byte_reads = 0;
     source_clears = draft_clears = 0;
@@ -465,11 +465,31 @@ static jlong open_review(jlong now)
         ? API(prepareFullSourceReview)(&vm, NULL, (jobjectArray)java_previous, (jobjectArray)java_destinations,
             (jlongArray)java_parameters, (jint)ZCL_MAINNET, now)
         : full_sources
-        ? API(openFullSourceReview)(&vm, NULL, (jbyteArray)java_draft, (jobjectArray)java_previous, (jint)ZCL_MAINNET, 500, now)
-        : API(openReview)(&vm, NULL, (jbyteArray)java_draft, (jobjectArray)java_previous, (jint)ZCL_MAINNET, 500, now);
+        ? API(openFullSourceReview)(&vm, NULL, (jbyteArray)java_draft, (jobjectArray)java_previous, (jint)ZCL_MAINNET, fee, now)
+        : API(openReview)(&vm, NULL, (jbyteArray)java_draft, (jobjectArray)java_previous, (jint)ZCL_MAINNET, fee, now);
     if (full_sources) CHECK(source_clears == draft_clears && borrowed == 0 && owned_inputs == NULL);
     if (result == -(jlong)ZCL_BUSY) CHECK(source_clears == 0 && draft_clears == 0 && request_clears == 0);
     return result;
+}
+
+static jlong open_review(jlong now) { return open_review_fee(now, 500); }
+
+static void fee_admission(void)
+{
+    setup();
+    for (size_t i = 0; i < fixture.spending.input_count; ++i)
+        java_previous->data.objects[i]->length = (jsize)(full_sources ? ZCL_V4_SOURCE_MAX : ZCL_TX_WIRE_MAX);
+    const jlong fees[] = {-1, (jlong)ZCL_MAX_MONEY + 1, INT64_MAX};
+    for (size_t i = 0; i < sizeof(fees) / sizeof(fees[0]); ++i) {
+        CHECK(open_review_fee(100, fees[i]) == -(jlong)ZCL_OUT_OF_RANGE);
+        fprintf(stderr, "Rejected fee: allocated=%zu copied=%zu\n", last_allocation_size, byte_reads);
+        CHECK(last_allocation_size == 0 && byte_reads == 0 && !pending);
+    }
+    release_references();
+    setup();
+    const jlong id = open_review_fee(100, (jlong)ZCL_MAX_MONEY);
+    CHECK(id > 0 && API(cancelReview)(&vm, NULL, id) == ZCL_OK);
+    release_references();
 }
 
 static void hash_matches(const jlong *words, const uint8_t *expected, size_t length)
@@ -879,6 +899,7 @@ static void preparation_arguments(void)
 
 static void profile_regressions(void)
 {
+    fee_admission();
     golden_and_lifetime(); opening_failures(); publication_failures();
     argument_failures(); maximum_packet(); publication_races();
 }

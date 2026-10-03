@@ -24,6 +24,28 @@ class UnsignedReviewTest {
         return sha.digest(sha.digest(bytes)).reversedArray().joinToString("") { "%02x".format(it.toInt() and 255) }
     }
 
+    @Test fun nativeOpeningRefusesOutOfRangeFeeAndAcceptsExactMaximum() {
+        val draft = fixture("draft")
+        val sources = previous()
+        for (entry in listOf(NativeCore::openReview, NativeCore::openFullSourceReview)) {
+            for (fee in listOf(-1L, Zatoshi.MAX_VALUE + 1, Long.MAX_VALUE)) {
+                val result = entry(draft, sources, 0, fee, 100)
+                if (result > 0) NativeCore.cancelReview(result)
+                assertEquals(-CoreStatus.OUT_OF_RANGE.code.toLong(), result)
+            }
+            val handle = entry(draft, sources, 0, Zatoshi.MAX_VALUE, 100)
+            assertTrue(handle > 0)
+            try {
+                val snapshot = UnsignedReview.decode(checkNotNull(NativeCore.reviewSnapshot(handle, 100)))
+                assertEquals(Zatoshi.MAX_VALUE, snapshot.maximumFee.value)
+            } finally {
+                assertEquals(CoreStatus.OK.code, NativeCore.cancelReview(handle))
+            }
+        }
+        assertContentEquals(fixture("draft"), draft)
+        previous().zip(sources).forEach { (expected, actual) -> assertContentEquals(expected, actual) }
+    }
+
     @Test fun copiesExactPublicContextAndAccounting() {
         val draft = fixture("draft")
         val sources = previous()

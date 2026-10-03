@@ -7949,3 +7949,50 @@ The complete canonical safety gate passes Clang145/145 in58.40s and GCC140/140
 in74.11s, including both analyzers, provider hashes, complexity and unchanged
 fuzz-profile deadlines. Architecture/document/diff gates pass. Continue from
 this baseline with TLS, physical custody and authenticated-chain gates intact.
+
+## Production continuation: refuse invalid review fee before transport — 2026-10-03
+
+Both review-opening JNI entry points now enforce the existing core maximum-fee
+money bound before locking or copying inputs. RED invalid upper fees allocated
+17472 bytes/copied4027 in the narrow profile and allocated204000/copied204177
+with two full-size sources. GREEN allocates/copies0. No money constant or C
+assessment predicate changed; exact MAX_MONEY still opens both profiles.
+Out-of-range fee now takes precedence over an active-owner/source-content error;
+pending JNI exceptions still take precedence and existing owner state is untouched.
+
+Deterministic regressions cover negative, MAX+1, INT64_MAX and exact MAX; both
+compiler guard-removal mutations restore the resource failure. Native exception,
+cleanup, lifecycle and fuzz checks pass (16355 cases/31s). JVM direct-entry
+boundary tests and Android unit/build/lint/release/alignment/fixture isolation
+pass (154 tasks). Actual native fixtures and16 ART tests pass each API30/35/36
+x86_64, including16KiB API35. ARM64 Linux UBSan0.81s and MSan0.39s pass; Android
+ARM64 compile/alignment only. Fresh source-only complete release APK matches:
+`648a91c7d3e56d876be6a8344e4d6789844706039bf12ad4e5ead68bacd5420d`.
+Evidence: ignored `.cache/review-fee-admission/`, `.cache/review-fee-admission-full/`
+and `.cache/reproduce-review-fee-admission/`. Physical custody, TLS and
+fresh authenticated-chain acceptance remain open.
+Clang passes all144 other groups but its manifest mutation check initially hits
+the unchanged inner60s deadline; isolated retry passes58.49s. GCC passes all139
+other groups in43.82s, then its isolated manifest check also times out. The
+separate validated `d9dbb710a` checkpoint below removes redundant mutation work;
+unchanged canonical manifest gates now pass9.97s/9.95s, completing145/140 groups.
+Both analyzers, provider hashes, complexity and repository gates pass.
+
+## Production continuation: bounded manifest-mutation validation — 2026-10-03
+
+Checkpoint `d9dbb710a` preserves the complete emitted-command verification,
+checker predicates, all flag/quoting/opt-out/classification mutation assertions,
+full no-harness/empty/unrelated-scope checks and every deadline. Each local
+flag mutation now consists of its exact emitted entry plus actual valid core
+and fuzz-harness controls. The same selected command and expected refusal are
+checked without reparsing hundreds of unrelated entries per mutation. Controls
+are independently accepted and remain present even when mutating their source,
+so other good entries cannot mask a bad command. No production source change.
+
+Measured RED is recurrent inner60s expiry, including an isolated GCC run;
+an isolated old Clang pass took58.49s. GREEN complete canonical profile checks
+take9.97s/9.95s. Architecture/docs/diff gates pass. Evidence is ignored
+`.cache/manifest-mutation-cost/` plus the preceding failure logs. This is test
+work reduction, not a sanitizer exemption or weaker instrumentation check.
+Continue native wallet hardening with the current validated fee/draft admission,
+release reproduction and platform limitations preserved.
