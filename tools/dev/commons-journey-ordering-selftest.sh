@@ -412,11 +412,11 @@ fi
 LIFECYCLE="$SELF_DIR/node_lifecycle.sh"
 [ -r "$LIFECYCLE" ] || { fail "cannot read $LIFECYCLE"; exit 2; }
 
-# stop_case NAME CHILD_SCRIPT SIG GRACE -> sets STOP_OUT and STOP_SECS.
+# stop_case NAME CHILD_SCRIPT SIG GRACE -> sets STOP_OUT, STOP_SECS, STOP_RC.
 stop_case() {
     local name="$1" child="$2" sig="$3" grace="$4" t0
     t0="$SECONDS"
-    STOP_OUT="$(
+    if STOP_OUT="$(
         set +e
         # shellcheck source=/dev/null
         source "$LIFECYCLE"
@@ -428,7 +428,7 @@ stop_case() {
         dht_kill_group "$pgid" $sig 2>&1
         if kill -0 "-$pgid" 2>/dev/null; then echo "STILL-ALIVE"; fi
         echo "unclean-count=$DHT_UNCLEAN_STOPS"
-    )" || true
+    )"; then STOP_RC=0; else STOP_RC=$?; fi
     STOP_SECS=$((SECONDS - t0))
     : "$name"
 }
@@ -437,8 +437,8 @@ stop_case() {
 stop_case slow-clean \
     'trap "sleep 2; exit 0" TERM; while :; do sleep 0.1; done' "" 6
 if grep -q 'unclean stop' <<<"$STOP_OUT" || grep -q STILL-ALIVE <<<"$STOP_OUT" ||
-   ! grep -q 'unclean-count=0' <<<"$STOP_OUT"; then
-    fail "a group that exits within the grace was reported unclean: $STOP_OUT"
+   ! grep -q 'unclean-count=0' <<<"$STOP_OUT" || [ "$STOP_RC" -ne 0 ]; then
+    fail "a group that exits within the grace was reported unclean (rc=$STOP_RC): $STOP_OUT"
 elif [ "$STOP_SECS" -ge 6 ]; then
     fail "a clean exit did not return promptly (${STOP_SECS}s)"
 else
@@ -450,8 +450,8 @@ stop_case ignores-term \
     'trap "" TERM; while :; do sleep 0.1; done' "" 3
 if ! grep -q 'unclean stop: killed after [3-9]s' <<<"$STOP_OUT" ||
    grep -q STILL-ALIVE <<<"$STOP_OUT" ||
-   ! grep -q 'unclean-count=1' <<<"$STOP_OUT"; then
-    fail "a TERM-ignoring group was not killed loudly after the grace: $STOP_OUT"
+   ! grep -q 'unclean-count=1' <<<"$STOP_OUT" || [ "$STOP_RC" -ne 2 ]; then
+    fail "a TERM-ignoring group was not refused after the grace (rc=$STOP_RC): $STOP_OUT"
 elif [ "$STOP_SECS" -lt 3 ]; then
     fail "the TERM-ignoring group was killed before the grace (${STOP_SECS}s)"
 else
@@ -463,10 +463,25 @@ stop_case hard-kill \
     'trap "" TERM; while :; do sleep 0.1; done' KILL 60
 if ! grep -q 'hard kill (deliberate)' <<<"$STOP_OUT" ||
    grep -q 'unclean stop' <<<"$STOP_OUT" ||
-   grep -q STILL-ALIVE <<<"$STOP_OUT" || [ "$STOP_SECS" -ge 10 ]; then
-    fail "a deliberate hard kill was not immediate and labelled: $STOP_OUT"
+   grep -q STILL-ALIVE <<<"$STOP_OUT" || [ "$STOP_SECS" -ge 10 ] ||
+   [ "$STOP_RC" -ne 0 ]; then
+    fail "a deliberate hard kill was not immediate and labelled (rc=$STOP_RC): $STOP_OUT"
 else
     pass "a deliberate hard kill is immediate and labelled"
+fi
+
+# Some acceptances call cleanup before the EXIT trap. A second cleanup must
+# retain the earlier unclean verdict, even after every process is gone.
+if (
+    # shellcheck source=/dev/null
+    source "$LIFECYCLE"
+    DHT_UNCLEAN_STOPS=1
+    dht_cleanup >/dev/null 2>&1 || true
+    exit 0
+) >/dev/null 2>&1; then
+    fail "a repeated cleanup erased its earlier unclean stop"
+else
+    pass "an unclean stop survives explicit cleanup and the EXIT trap"
 fi
 
 # ── remote orphan fixture supervision (runtime, scaled) ──────────────────

@@ -715,7 +715,7 @@ if [ -n "$DHT_AFTER_SPARSE_HOOK" ]; then
 fi
 
 if ! dht_cleanup; then
-    dht_die "owned process groups did not terminate during success cleanup"
+    dht_die "owned process cleanup was unclean or incomplete"
 fi
 dht_assert_no_owned_processes
 dht_assert_ports_rebindable

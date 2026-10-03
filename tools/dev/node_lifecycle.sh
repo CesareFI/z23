@@ -391,7 +391,10 @@ dht_assert_ports_rebindable() {
 }
 
 dht_cleanup() {
-    [ "$DHT_CLEANED" = 1 ] && return 0
+    if [ "$DHT_CLEANED" = 1 ]; then
+        [ "$DHT_UNCLEAN_STOPS" -eq 0 ]
+        return $?
+    fi
     DHT_CLEANED=1
     local pgid failed=0
     for pgid in "${!DHT_OWNED_PGIDS[@]}"; do
@@ -425,7 +428,7 @@ dht_cleanup() {
             *) dht_note "WARN refusing to remove non-scratch $DHT_WORK" ;;
         esac
     fi
-    [ "$failed" -eq 0 ]
+    [ "$failed" -eq 0 ] && [ "$DHT_UNCLEAN_STOPS" -eq 0 ]
 }
 
 dht_exit() {
