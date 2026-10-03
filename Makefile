@@ -189,7 +189,7 @@ ZCL_USE_CCACHE ?= 1
 # These read-only front doors need no compiler. In a fresh worktree, cache
 # bootstrap would compile zcc before any report can answer. Mixed goals
 # retain the normal compiler cache and full build preparation.
-ZCL_READ_ONLY_ENTRY_GOALS := help t-list print-node-c23-srcs doctor doctor-build timings
+ZCL_READ_ONLY_ENTRY_GOALS := help t-list print-includes print-node-c23-srcs doctor doctor-build timings
 ZCL_READ_ONLY_ENTRY_ONLY := $(if $(strip $(MAKECMDGOALS)),$(if $(filter-out $(ZCL_READ_ONLY_ENTRY_GOALS),$(MAKECMDGOALS)),,1),)
 # The compile cache ships in-tree (tools/zcc.c). Prefer it over any installed
 # sccache/ccache so every developer gets the same fast rebuilds with nothing
