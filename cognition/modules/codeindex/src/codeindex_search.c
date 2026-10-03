@@ -169,6 +169,11 @@ static int story_file_cmp(const void *left, const void *right)
                   ((const struct ci_file *)right)->path);
 }
 
+static void story_files_sort(struct ci_file *files, size_t count)
+{
+    if (count > 1) qsort(files, count, sizeof(*files), story_file_cmp);
+}
+
 static bool story_collect_files(struct codeindex *ci, struct ci_file **out,
                                 size_t *count)
 {
@@ -205,12 +210,13 @@ static bool story_collect_files(struct codeindex *ci, struct ci_file **out,
             all = grown;
             cap = next;
         }
-        memcpy(all + used, files, file_count * sizeof(*files));
+        if (file_count > 0)
+            memcpy(all + used, files, file_count * sizeof(*files));
         used += file_count;
         free(files);
     }
     free(groups);
-    qsort(all, used, sizeof(*all), story_file_cmp);
+    story_files_sort(all, used);
     for (size_t i = 1; i < used; i++) {
         if (strcmp(all[i - 1u].path, all[i].path) == 0) {
             free(all);
