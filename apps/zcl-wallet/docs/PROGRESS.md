@@ -7602,3 +7602,31 @@ preserve completed address vectors, output canaries and device evidence. Physica
 hardware custody, chain/unspentness admission and TLS security review remain
 explicit separate boundaries. No real wallet, production data or consensus
 behavior changed.
+
+## Production continuation: interrupt recovery promotion and durable retries — 2026-10-03
+
+The storage crash fixture now interrupts pending-record promotion after file
+flush, pending-directory flush and rename, plus committed-record retries after
+file and directory flush. Every resumed owner must observe the exact record and
+expected pending state, finish promotion, and continue refusing overwrite. Output
+tails retain canaries. Five creation interruptions and twelve competing creators
+remain active; all fixtures contain only public vectors and inert ciphertext.
+
+A missing recovery-file fsync mutation passes the previous crash executable and
+fails the expanded executable under both Clang and GCC. Controls pass with strict
+ASan/UBSan/LSan, both static analyzers and the test complexity cap. The initial
+analyzer command incorrectly included a linker-only flag; flags were separated
+without suppressing its warning. API30/35/36 initially exposed that Bionic's
+fortified __write_chk bypassed the write hook. The fixture now interposes both
+entry points and forwards original invalid bounds to the real fortified call.
+No production fortification was disabled. Final release-archive crash fixtures
+pass all three x86_64 APIs, including 16KiB API35; ARM64 builds/alignment only.
+Host CTest remains within its unchanged 30-second deadline. Architecture/docs/diff
+checks pass. Evidence: `.cache/storage-promotion-crash*` (ignored).
+
+No product source, APK, parser or cryptographic code changed; preceding fuzz,
+ART and release reproduction evidence remains applicable. Process termination
+cannot prove power-loss persistence, and promotion here does not authenticate
+GCM. Next: continue safe storage/restart failure coverage and custody/native
+ownership review, with physical custody, authenticated chain state and TLS
+quarantine preserved.

@@ -4365,3 +4365,26 @@ This shortens a secret lifetime; it is not a cryptographic algorithm or performa
 optimization. Same-toolchain source-only APK reproduction, API30/35/36 native
 fault execution and actual ART public-fixture flows pass. Hardware custody/TLS
 remain unqualified and quarantined respectively; ARM64 evidence is compile-only.
+
+## Interrupted wallet promotion regression — 2026-10-03
+
+Test-only scope: `test_storage_crash.c`. Adds three pending-record promotion
+interruptions and two already-committed durability-retry interruptions. Existing
+creation crash cases and competing creators remain active.
+
+| Hazard | Review |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access | Uses the existing validated public record and fixed 140-byte output. Exact length/content and untouched tail are checked before retry. Android fortified-write forwarding preserves the original capacity refusal before partial-write injection. |
+| Integer overflow/underflow; signed/unsigned conversions | Crash points use a bounded enum loop; partial count is length/2. Successful write comparisons first establish nonnegative ssize_t. Child exit status uses WIFEXITED before WEXITSTATUS. |
+| Use-after-free; double-free; leaks; dangling pointers | Each parent owns one isolated fixture through final cleanup. Forked children intentionally exit inside storage operations; the OS retires their descriptors. Every child is reaped before subsequent access. No heap or retained pointer is added. |
+| NULL dereferences; uninitialized memory | Fixture initialization and creation outcomes are checked. Read buffer and observation fields start with explicit canaries; only successful output is interpreted. |
+| Pointer arithmetic | No new production pointer arithmetic. Tail inspection starts at the already validated record length and stops at the fixed capacity. |
+| Format strings; secret leakage | Fixed existing assertion contexts only. Public zero-entropy vector with inert ciphertext; no GCM authentication, private wallet or production-path claim. |
+| Stack usage; allocation limits | Fixed small fixture/read locals, no recursion, VLA or input-sized allocation. Strict frame and test complexity caps pass. |
+| Malformed serialization/network input | Storage still validates the exact record. Tests check pending/committed state after interruption, retry completion, exact bytes and continued no-overwrite. No network input or parser change. |
+| Races; resource exhaustion | Five new sequential child interruptions; existing twelve-creator competition remains bounded. The 30-second CTest deadline is unchanged. Mutable crash flags are process-local after fork, never shared threads. Mutation cleanup touches only invocation-recorded fixture paths and fixed names. |
+
+Both compilers reject a missing recovery-file fsync that the preceding crash
+fixture accepted. API30/35/36 execute against actual release archives with Bionic
+fortification retained; ARM64 compiles only. These are process-exit observations,
+not proof of physical power-loss persistence or hardware-backed authentication.
