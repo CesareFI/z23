@@ -346,6 +346,33 @@ static int test_null_passphrase(void)
     return failures;
 }
 
+static int test_encrypt_length_bounds(void)
+{
+    int failures = 0;
+    TEST("wallet_keystore: oversized payloads refuse before output writes") {
+        const size_t oversized[] = {
+            (size_t)INT_MAX + 1, SIZE_MAX - WKS_HEADER_LEN,
+            SIZE_MAX - WKS_HEADER_LEN + 1, SIZE_MAX
+        };
+        uint8_t out[128], expected[128];
+        memset(expected, 0xa5, sizeof(expected));
+        ASSERT(wks_envelope_size(0) == WKS_HEADER_LEN);
+        ASSERT(wks_envelope_size(INT_MAX) == (size_t)INT_MAX + WKS_HEADER_LEN);
+        for (size_t i = 0; i < sizeof(oversized) / sizeof(oversized[0]); ++i) {
+            /* Check admission before passing an intentionally oversized span. */
+            ASSERT(wks_envelope_size(oversized[i]) == 0);
+            memset(out, 0xa5, sizeof(out));
+            size_t out_len = 99;
+            ASSERT(!wks_encrypt(k_secret_key, oversized[i], k_passphrase,
+                                TEST_ITERS, out, 0, &out_len));
+            ASSERT(out_len == 99);
+            ASSERT(memcmp(out, expected, sizeof(out)) == 0);
+        }
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── At-rest creation policy ─────────────────────────────────── */
 
 static int test_at_rest_creation_policy(void)
@@ -651,6 +678,7 @@ int test_wallet_keystore(void)
     failures += test_empty_plaintext();
     failures += test_long_plaintext();
     failures += test_null_passphrase();
+    failures += test_encrypt_length_bounds();
     failures += test_wallet_lock_register();
     failures += test_wallet_lock_boot_credential();
     failures += test_keystore_secure_erase();

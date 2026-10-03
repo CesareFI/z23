@@ -70,18 +70,32 @@ static bool derive_key(const char *passphrase, const uint8_t salt[WKS_SALT_LEN],
 
 /* ── Encrypt ────────────────────────────────────────────────── */
 
+static bool encrypt_input_valid(const uint8_t *plaintext, size_t plen,
+                                  const char *passphrase, uint8_t *out,
+                                  size_t out_cap, const size_t *out_len)
+{
+    if (!plaintext && plen > 0) return false;
+    if (!passphrase || !out || !out_len) return false;
+    size_t envelope_len = wks_envelope_size(plen);
+    return envelope_len != 0 && out_cap >= envelope_len;
+}
+
+static uint32_t encrypt_iterations(uint32_t iterations)
+{
+    if (iterations == 0) iterations = wks_default_iterations();
+    if (iterations < WKS_MIN_ITERS) iterations = WKS_MIN_ITERS;
+    if (iterations > WKS_MAX_ITERS) iterations = WKS_MAX_ITERS;
+    return iterations;
+}
+
 bool wks_encrypt(const uint8_t *plaintext, size_t plen,
                   const char *passphrase,
                   uint32_t kdf_iterations,
                   uint8_t *out, size_t out_cap, size_t *out_len)
 {
-    if (!plaintext && plen > 0) return false;
-    if (!passphrase) return false;
-    if (!out || !out_len) return false;
-    if (out_cap < wks_envelope_size(plen)) return false;
-    if (kdf_iterations == 0) kdf_iterations = wks_default_iterations();
-    if (kdf_iterations < WKS_MIN_ITERS) kdf_iterations = WKS_MIN_ITERS;
-    if (kdf_iterations > WKS_MAX_ITERS) kdf_iterations = WKS_MAX_ITERS;
+    if (!encrypt_input_valid(plaintext, plen, passphrase, out, out_cap, out_len))
+        return false;
+    kdf_iterations = encrypt_iterations(kdf_iterations);
 
     uint8_t salt[WKS_SALT_LEN];
     uint8_t nonce[WKS_NONCE_LEN];

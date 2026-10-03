@@ -67,6 +67,7 @@
 #define ZCL_WALLET_KEYSTORE_AT_REST_H
 
 #include <stdbool.h>
+#include <limits.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -86,9 +87,10 @@ extern "C" {
 #define WKS_MIN_ITERS      10000
 #define WKS_MAX_ITERS      10000000
 
-/* Compute the envelope size for a given plaintext length. */
+/* Compute the envelope size, or zero if EVP cannot represent the payload. */
 static inline size_t wks_envelope_size(size_t plaintext_len)
 {
+    if (plaintext_len > (size_t)INT_MAX) return 0;
     return WKS_HEADER_LEN + plaintext_len;
 }
 
