@@ -1686,6 +1686,12 @@ if(NOT ANDROID)
             -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
         add_test(NAME wallet_storage_fixture COMMAND storage_fixture_tests)
         set_tests_properties(wallet_storage_fixture PROPERTIES TIMEOUT 15)
+        # Explicit verified timing tool; no runtime performance threshold.
+        add_executable(bench_wallet_storage EXCLUDE_FROM_ALL
+            tests/bench_wallet_storage.c tests/storage_fixture.c)
+        target_link_libraries(bench_wallet_storage PRIVATE zcl_wallet_core)
+        target_compile_options(bench_wallet_storage PRIVATE -Wall -Wextra -Wpedantic -Werror
+            -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
         add_executable(storage_link_tests tests/test_storage_links.c tests/storage_fixture.c)
         target_link_libraries(storage_link_tests PRIVATE zcl_wallet_core)
         target_compile_options(storage_link_tests PRIVATE -Wall -Wextra -Wpedantic -Werror

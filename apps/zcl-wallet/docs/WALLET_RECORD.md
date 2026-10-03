@@ -210,3 +210,38 @@ input record and other arrays unchanged; malformed calls are followed by a
 successful authenticated recovery. A structurally valid record with a changed
 tag still parses and must then fail provider authentication. This in-memory test
 uses public vectors and opens no wallet directory or Keystore alias.
+
+## Verified storage timing tool
+
+From `apps/zcl-wallet`, build and run the explicit Linux host target:
+
+```sh
+cmake -S native -B native/build/storage-benchmark-clang \
+  -DCMAKE_C_COMPILER=clang-20 -DCMAKE_BUILD_TYPE=Release \
+  -DZCL_SANITIZE=OFF -DZCL_FUZZ=OFF -DZCL_TLS_REVIEW=OFF
+cmake --build native/build/storage-benchmark-clang --target bench_wallet_storage -j4
+timeout 60s native/build/storage-benchmark-clang/bench_wallet_storage
+```
+
+Use a separate build directory for GCC or sanitizer observations. The tool takes
+no path arguments. It creates exclusively owned temporary stores, uses the
+existing public 12-word vector with inert ciphertext, and removes only its own
+fixed fixture files/directories. It neither loads a wallet nor claims GCM or
+hardware authentication. It is excluded from the default build and introduces
+no application/JNI route.
+
+Five profiles measure empty, pending and committed reads, idempotent committed
+promotion plus readback, and fresh wallet-only creation plus readback. Every
+operation checks status, exact record bytes/length, pending state and unchanged
+failure outputs. Each profile has one warm-up batch and five reported batches.
+Read/promotion batches perform128 operations across eight stores; creation uses
+eight fresh stores exactly once. Fixture preparation, public-vector derivation,
+report formatting and cleanup are outside timing. Verification overhead remains
+inside. The tool separately reports monotonic wall and thread CPU microseconds.
+
+These are filesystem/cache-dependent observations, not cold-start, flash,
+power-loss, paired-change-state, Keystore, GUI or production latency guarantees.
+All normal metadata checks, locks, parsing and fsync calls remain enabled. No
+performance threshold is part of acceptance; correctness and crash/recovery
+fixtures remain authoritative. Exact measured environments/results belong in
+`PROGRESS.md`.

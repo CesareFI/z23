@@ -4251,3 +4251,24 @@ The first macro-based injection was bypassed by optimized GCC's fortified libc
 open alias. Linker wrapping, already used by adjacent storage tests, now observes
 the actual call under both compilers and Android. No fortification or acceptance
 assertion was disabled. Final RED/control and validation are in PROGRESS.md.
+
+## Verified storage benchmark — 2026-10-03
+
+Scope: `bench_wallet_storage.c` and optional host CMake wiring. No production
+implementation changed.
+
+| Hazard | Review |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access | Uses eight fixed fixture slots and140-byte record buffers. Successful reads must equal the fixture's validated length before comparisons; untouched output tails are checked. Profile labels have exactly PROFILE_COUNT slots, indexed by the bounded main loop. |
+| Integer overflow/underflow; signed/unsigned conversions | Counts are8/128 and pool indexing uses modulo8. Cleanup decrements only a positive count. Clock seconds/nanoseconds convert to double before subtraction; invalid measured spans refuse. Format specifiers match types. |
+| Use-after-free; double-free; leaks; dangling pointers | Each successful fixture open transfers ownership to the pool before any population failure. One cleanup path visits all opened slots in reverse order. No benchmark heap or escaped reference is introduced; reused crypto setup retains its existing provider cleanup. |
+| NULL dereferences; uninitialized memory | All records, pools and clock samples initialize; clocks are used only after successful calls. Required fixture calls and every measured operation are checked. |
+| Pointer arithmetic | Tail comparison follows exact length verification against the bounded public fixture. All borrowed records and paths remain live and stable for synchronous calls. |
+| Format strings; secret leakage | Fixed profile/error formats only. Public vector and inert ciphertext are local test data. No path arguments, credentials, real wallet, OS entropy or network source. |
+| Stack usage; allocation limits | Fixed eight-store pool and small local output arrays; strict4096-byte frame checks. No recursion, VLA, input-sized allocation or persistent benchmark cache. |
+| Malformed serialization/network input | Native owners retain complete validation. Deliberate wrong-byte, pending-flag and failed-output mutations all make the tool refuse. No claim that timing proves record authenticity. |
+| Races; resource exhaustion | One thread, fixed batches and bounded stores. Separate output directories isolate builds; release timing runs serially. External60s execution bound. Test-only ownership audit confirms all240 control directories and all failed-run directories retire. |
+
+Host sanitizer/static/complexity checks and API30/35/36 public-fixture execution
+qualify the tool. ARM64 compilation/alignment is not physical-device timing or
+custody proof. Source behavior and exact measurement limits are in WALLET_RECORD.

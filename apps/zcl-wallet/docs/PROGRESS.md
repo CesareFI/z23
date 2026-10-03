@@ -7428,3 +7428,48 @@ fuzz build pointed at a corpus directory, was diagnosed and replaced with a
 separate configured build. No generated artifacts or temporary directories enter
 Git. Next: establish a bounded, verified native storage/startup timing baseline
 before considering any write-path optimization. Durability checks remain intact.
+
+## Production continuation: verified native storage baseline — 2026-10-03
+
+Added the explicit, default-build-excluded `bench_wallet_storage` host tool.
+It reuses the public 12-word fixture and isolated storage helper, verifies every
+read/status/record/pending flag, and retains normal locks, validation and fsync.
+No application storage or cryptographic implementation changed. The tool covers
+empty/pending/committed startup reads, committed promotion plus readback, and
+fresh wallet-only creation plus readback. Documentation and exact commands are
+in `WALLET_RECORD.md`; it accepts no caller-selected path.
+
+Five samples follow one warm-up batch per profile. Reads/promotion use128 calls
+across eight stores; creation uses eight fresh stores once each. Preparation,
+public-vector derivation and cleanup are untimed. The following medians are
+microseconds per verified operation on Linux x86_64, AMD EPYC7402P, `/tmp` on
+ext4, Clang20.1.2/GCC14.2.0 Release profiles. Runs were serialized; no CPU/cache
+isolation or physical-device performance claim is made.
+
+| Profile | Clang wall µs | Clang CPU µs | GCC wall µs | GCC CPU µs |
+| --- | ---: | ---: | ---: | ---: |
+| Empty read | 277.684 | 58.385 | 284.124 | 61.367 |
+| Pending read | 291.584 | 74.035 | 290.101 | 65.568 |
+| Committed read | 268.446 | 66.248 | 282.829 | 69.572 |
+| Promotion + read | 724.870 | 90.273 | 791.440 | 157.715 |
+| Creation + read | 1661.970 | 239.889 | 1881.239 | 402.619 |
+
+These observations establish a baseline only; compiler differences and wall/CPU
+gaps are not isolated optimization effects. No durability or validation removal
+follows from them. Three deliberate read-result mutations (record byte, pending
+flag, failed-output length) are rejected. A separate test-only acquisition audit
+verifies retirement of all240 control directories and all56/56/8 directories from
+the failed cases. The benchmark's own complete cleanup path runs on each refusal.
+
+Clang/GCC ASan/UBSan/LSan executions complete all25 reported samples, and both
+static analyzers and test complexity caps pass. The actual fuzz-profile/manifest
+mutation gate passes in55.63s with unchanged deadlines. Strict NDK builds cover
+both ABIs; all profiles execute successfully on API30/35/36 x86_64, including
+16KiB API35. Those are runtime correctness observations, not physical flash or
+ARM64 timing evidence. Minified release, alignment and fixture-isolation gates
+pass; complete APK comparison with the preceding reproduced release passes.
+Architecture/docs/diff checks pass. Raw proof remains in `.cache/storage-benchmark*`.
+
+Next: continue native/platform failure and lifetime review using these measured
+limits; keep storage durability and correctness authoritative. No production
+node/data, real wallet, consensus predicate, TLS scope or Worldstream work changed.
