@@ -7356,3 +7356,43 @@ JVM, lint and full native-core evidence remains applicable because this slice
 changes only the host/native fixture. Evidence remains in `.cache/sync-race*`.
 Next: continue the independent native storage/restart and resource review;
 physical custody and TLS quarantine remain separate unchanged gates.
+
+## Production continuation: seal entropy retires before public readback — 2026-10-03
+
+The seal path retained entropy while committing and rereading the public record,
+then derived the receive address afterward. A new actual-worker/ART fixture
+observed nonzero restored entropy at the post-encryption storage-admission clock
+on unchanged source. Its one-shot observation cannot be overwritten by a later
+UI-clock read. The fixture uses only a nonzero public 12-word entropy vector,
+a fixed public software cipher and an exclusively created temporary directory.
+It does not qualify or bypass production Keystore authentication.
+
+The thin platform owner now finishes C receive-address derivation before storage.
+Restored entropy is cleared before admission because restoration persists only
+ciphertext and must not initialize change history. Fresh creation retains entropy
+through C's required initial authenticated change-state commit, then clears it
+and setup before the public record-verification read. Finally cleanup still
+covers encryption, derivation, admission, persistence and readback failures.
+Derivation failure now precedes any persistence. Native cryptography, recovery
+outputs, record bytes, storage durability and authentication policy are unchanged.
+
+RED fails the explicit plaintext-lifetime assertion; GREEN passes. The combined
+setup-seal, session-close and unlock-output suites pass 29/29 without skips on
+API30/35/36 x86_64 (1.015/0.785/0.818s), including API35 with16KiB pages. Existing
+controls cover creation and restoration, GCM failures, expired admission,
+background close during provider work, delayed delivery and exact persisted
+record/address behavior. Offline JVM tests, debug/test, both-ABI minified release,
+debug/release lint, fixture isolation and16KiB alignment pass (154 tasks).
+Native implementation is unchanged; the preceding native safety evidence applies.
+Architecture, documentation-count and whitespace gates pass.
+
+A fresh source-only archive of `6b893dd81` plus the two exact changed files,
+with no project caches/build outputs copied and build caching disabled, executes
+all57 release tasks in25s. Complete unsigned APK `cmp` passes across the two
+paths; SHA256 is
+`2cf6ac1c15e3d0c1068fe9387dca2617bb07d7ac702bde9444ae3859c3bb971d`.
+This is same-host/toolchain unsigned reproduction, not independent-host,
+signed-release or physical-device custody evidence. Raw proof remains ignored
+under `.cache/seal-retirement-*` and `.cache/reproduce-seal-retirement/`.
+Next: continue bounded native storage/startup failure review and measured
+resource work. No Worldstream, consensus, production data or TLS change occurred.

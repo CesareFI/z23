@@ -64,6 +64,7 @@ class SetupSealInstrumentedTest {
         val entropy = ByteArray(16) { 0x61 } // Nonzero public marker makes erasure observable.
         val words = WalletKeys.recoveryPhrase(entropy)
         val clock = AtomicLong(100)
+        var beforeClockRead: (() -> Unit)? = null
         var failure: WalletProblem? = null
         var address: TransparentAddress? = null
         private val setupField = WalletPlatformSession::class.java.getDeclaredField("setup").apply { isAccessible = true }
@@ -76,7 +77,10 @@ class SetupSealInstrumentedTest {
             val prepared = PreparedWalletAction(action, cipher, Network.TESTNET)
             val type = WalletPlatformSession::class.java.declaredClasses.single { it.simpleName == "Setup" }
             val constructor = type.declaredConstructors.single { it.parameterCount == 4 }.apply { isAccessible = true }
-            setupField.set(session, constructor.newInstance(prepared, SetupWindow(clock::get),
+            setupField.set(session, constructor.newInstance(prepared, SetupWindow {
+                beforeClockRead?.invoke()
+                clock.get()
+            },
                 if (action == WalletAction.CREATE) entropy else null,
                 WalletRecord.createHeader(entropy, Network.TESTNET)))
         }
@@ -289,6 +293,28 @@ class SetupSealInstrumentedTest {
             assertEquals(CoreStatus.OK, fixture.storage.read().status)
             fixture.assertCleared()
             fixture.assertErasedBeforeDispatch()
+        }
+    }
+
+    @Test fun restoredEntropyRetiresBeforeStorageAdmission() {
+        Fixture(permitsStorage = true, action = WalletAction.RESTORE).use { fixture ->
+            val expected = WalletKeys.receivingAddress(fixture.entropy, Network.TESTNET)
+            var observed = false
+            var erased = false
+            fixture.calls.afterFinal = {
+                fixture.beforeClockRead = {
+                    fixture.beforeClockRead = null
+                    observed = true
+                    erased = checkNotNull(fixture.calls.input).all { it == 0.toByte() }
+                }
+            }
+            fixture.submit()
+            assertTrue("Storage admission was not observed", observed)
+            assertTrue("Restored entropy survived its last cryptographic use", erased)
+            assertNull(fixture.failure)
+            assertEquals(expected, fixture.address)
+            fixture.assertStored(checkNotNull(fixture.storage.read().record))
+            fixture.assertCleared()
         }
     }
 

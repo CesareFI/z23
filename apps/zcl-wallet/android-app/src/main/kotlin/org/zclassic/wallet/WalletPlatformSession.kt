@@ -209,6 +209,11 @@ internal class WalletPlatformSession(
             check(parameters.tLen == 128 && parameters.iv.size == 12)
             cipher.updateAAD(header)
             val encoded = WalletRecord.pack(header, parameters.iv, cipher.doFinal(entropy))
+            // Finish the public result before persistence. Restoration writes
+            // ciphertext only; fresh creation still needs entropy to establish
+            // its authenticated initial change state in C.
+            val address = WalletKeys.receivingAddress(entropy, current.prepared.network)
+            if (current.prepared.action == WalletAction.RESTORE) entropy.fill(0)
             // Expiry or foreground closure during provider work must refuse
             // new persistence. The closed-state read is its admission point;
             // closure afterward lets C finish its bounded durability protocol.
@@ -217,13 +222,14 @@ internal class WalletPlatformSession(
             check(commitPreparedWallet(storage, current.prepared.action, encoded, entropy) == CoreStatus.OK) {
                 "Wallet commit requires recovery"
             }
+            // No plaintext is needed by record readback or UI delivery.
+            entropy.fill(0)
+            clearSetup()
             val stored = storage.read()
             check(stored.status == CoreStatus.OK && !stored.pending && encoded.contentEquals(stored.record)) {
                 "Stored wallet requires verification"
             }
-            // Fresh creation uses entropy we generated/confirmed in this
-            // session. Stored-wallet unlock below requires GCM decryption first.
-            return WalletKeys.receivingAddress(entropy, current.prepared.network)
+            return address
         } finally {
             // Restored entropy is local to restore(), outside Setup. Retire
             // both forms here before the public result reaches UI scheduling.
