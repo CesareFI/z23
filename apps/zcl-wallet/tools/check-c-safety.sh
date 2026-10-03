@@ -148,6 +148,7 @@ fi
 build_dir=native/build/safety-active
 if [[ "$tls_review" == ON ]]; then build_dir=native/build/safety-tls-review; fi
 cmake -S native -B "$build_dir" -DCMAKE_C_COMPILER="$clang_bin" -DZCL_SANITIZE=ON \
+    "-DZCL_TEST_JNI_INCLUDE_DIRS=$jdk_root/include;$jdk_root/include/linux" \
     -DZCL_TLS_REVIEW="$tls_review" -DCMAKE_BUILD_TYPE=Debug
 cmake --build "$build_dir" -j4
 ctest --test-dir "$build_dir" --output-on-failure
@@ -160,6 +161,7 @@ if [[ "$tls_review" == ON ]]; then gcc_build_dir=native/build/safety-gcc-tls-rev
 cmake -S native -B "$gcc_build_dir" -DCMAKE_C_COMPILER="$gcc_bin" \
     -DCMAKE_BUILD_TYPE=Debug '-DCMAKE_C_FLAGS_DEBUG=-O2 -g' \
     -DZCL_SANITIZE=ON -DZCL_FUZZ=OFF -DZCL_JNI=OFF -DZCL_ORACLE=OFF \
+    "-DZCL_TEST_JNI_INCLUDE_DIRS=$jdk_root/include;$jdk_root/include/linux" \
     -DZCL_TLS_REVIEW="$tls_review" -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 cmake --build "$gcc_build_dir" -j4
 ctest --test-dir "$gcc_build_dir" --output-on-failure

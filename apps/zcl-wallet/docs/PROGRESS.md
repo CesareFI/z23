@@ -7775,3 +7775,38 @@ Architecture/docs/diff gates and explicit native hazard review pass. Ignored
 evidence: `.cache/scan-prefix/`, `.cache/reproduce-scan-prefix/`. Continue safe
 native/platform ownership and recovery work; no real-wallet, TLS or production
 node authority has changed.
+
+## Production continuation: canonical ARM64 Linux JNI execution — 2026-10-03
+
+The CMake fake-VM test block can now use explicit target-compatible JNI headers
+without requiring JVM discovery. `ZCL_TEST_JNI_INCLUDE_DIRS` applies only to
+those existing fixtures; it does not set JNI_FOUND or alter the shipped bridge.
+The README records the complete UBSan/QEMU configuration and its limits.
+
+RED: the old configuration ignores the explicit test-header setting and
+registers no JNI groups when JVM discovery is disabled; `--no-tests=error`
+refuses. GREEN: all 13 registered JNI groups execute as AArch64 through QEMU 8.2.2
+with GCC 13.3 and UBSan, passing in 6.63s under unchanged deadlines. This includes
+secret-output retirement, camera bounds, wallet storage faults, sync concurrency,
+review ownership, address and draft handling. An independent signed-overflow
+negative control triggers UBSan. ELF inspection confirms 13 AArch64 executables
+and no JVM dependency. Initial manual four-fixture qualification is preserved
+in `.cache/arm64-jni/`; canonical evidence is `.cache/arm64-jni-cmake/`.
+
+Default host discovery still passes all 13 groups under Clang/GCC
+ASan/UBSan/LSan (1.81s/1.76s). Android release/alignment/fixture-isolation checks
+pass (131 tasks); its complete APK remains identical to `58c8b8d81` and the
+previous source-only reproduction. No native C, product behavior or deadline
+changed. ARM64 Linux emulation remains separate from Android ARM64 compilation,
+ART, physical custody and the earlier incomplete broad ASan/LSan qualification.
+Continue safe native and lifecycle work from this exact development branch.
+The normal safety script now explicitly passes its already detected analysis
+headers to both compiler configurations, removing JVM-library discovery as a
+reason to omit native JNI fixtures. The repository documentation gate initially
+misread an unqualified fixture count as a global node test count; the wording
+now states its JNI scope, and the unchanged gate passes.
+The updated canonical safety script passes its complete Clang/GCC suites:
+144/139 groups in 57.80s/58.88s, including analyzers, sanitizers, provider hashes,
+complexity and the unchanged fuzz-profile deadline. The documented ARM64 profile
+also completes the full strict build; only its selected JNI runtime set is
+claimed as passing here.

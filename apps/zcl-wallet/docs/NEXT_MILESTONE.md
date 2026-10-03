@@ -58,7 +58,12 @@ failure, authentication failure notification survives cancellation errors, and
 bounded public-fixture sync and verified-storage benchmarks are available.
 JNI sync errors now publish status only, with partial/late-failure regressions.
 Setup retires entropy before public storage readback; native address derivation
-retires its owned seed before final public conversion. The current unsigned
+retires its owned seed before final public conversion. Full-source preparation
+now admits scalar parameters before allocating source bytes; raw QR JNI copies
+only the validated image span. Storage crash coverage observes descriptor
+retirement across exec. The native JNI fixtures also have an explicit-header
+ARM64 Linux UBSan/QEMU profile, separate from Android ARM64 compilation and
+physical-device acceptance. The current unsigned
 release has been reproduced from a fresh source-only directory on the same
 host/toolchain. Exact evidence and continuation are in the latest `PROGRESS.md` entries.
 TLS quarantine remains untouched; do not resume its review as an implicit next

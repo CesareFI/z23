@@ -59,6 +59,43 @@ JNI/storage/QR tests also pass on an API35 x86_64 16 KiB emulator; the preserved
 4 KiB library fails to load there. This does not qualify arm64 hardware or
 hardware-authenticated custody. Runtime details are in the work log.
 
+### ARM64 Linux native JNI fixtures
+
+The C failure fixtures use a fake VM and need JNI C headers, not a JVM library.
+`ZCL_TEST_JNI_INCLUDE_DIRS` supplies explicit, target-compatible header paths for
+these tests; default host discovery is unchanged. It does not enable the shipped
+JNI bridge or qualify a real VM. The normal safety script supplies the same JDK
+headers it already uses for analysis, so JVM-library discovery cannot silently
+omit these fixtures. With cross GCC, the ARM64 Linux sysroot, QEMU
+user emulation and JDK 17 headers installed, run from this directory:
+
+```sh
+cmake -S native -B native/build/arm64-jni \
+  -DCMAKE_SYSTEM_NAME=Linux -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
+  -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc \
+  '-DCMAKE_CROSSCOMPILING_EMULATOR=/usr/bin/qemu-aarch64;-L;/usr/aarch64-linux-gnu' \
+  -DCMAKE_BUILD_TYPE=Debug '-DCMAKE_C_FLAGS_DEBUG=-O2 -g' \
+  '-DCMAKE_C_FLAGS=-fsanitize=undefined -fno-sanitize-recover=all -fno-omit-frame-pointer' \
+  -DCMAKE_EXE_LINKER_FLAGS=-fsanitize=undefined \
+  -DZCL_SANITIZE=OFF -DZCL_FUZZ=OFF -DZCL_JNI=OFF \
+  -DZCL_ORACLE=OFF -DZCL_TLS_REVIEW=OFF \
+  -DCMAKE_DISABLE_FIND_PACKAGE_JNI=TRUE \
+  '-DZCL_TEST_JNI_INCLUDE_DIRS=/usr/lib/jvm/java-17-openjdk-amd64/include;/usr/lib/jvm/java-17-openjdk-amd64/include/linux'
+cmake --build native/build/arm64-jni -j8
+ctest --test-dir native/build/arm64-jni -R '^wallet_jni_' \
+  --no-tests=error --output-on-failure -j4
+```
+
+The measured JDK Linux header selects its scalar layout using the target
+compiler's `_LP64`; it does not load the host JVM. Adjust explicit paths for
+the local installation. These flags instrument the C core and providers with
+UBSan, while leaving the combined ASan/UBSan option off. All 13 selected JNI
+fixtures passed under GCC 13.3/QEMU 8.2.2 with their original deadlines. This
+is ARM64 Linux C execution evidence, separate from Android ARM64 compilation,
+ART, physical hardware, ASan/LSan and hardware custody. Continue to run the
+normal host safety gates and Android acceptance separately; the broader QEMU
+native suite has recorded timeout and sanitizer limitations in PROGRESS.
+
 ### Unsigned release reproduction
 
 Android native compilation maps the checkout root to `.` in debug information

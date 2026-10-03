@@ -4509,3 +4509,26 @@ Clang/GCC ASan/UBSan/LSan, analyzers and the JNI fuzzer pass. Native fixture plu
 8192-row-stride case and actual 16 KiB API 35. Android ARM64 builds/alignment
 only. The minified release APK reproduces byte for byte. No latency, physical
 camera or hardware-custody claim is inferred from these memory observations.
+
+## Explicit headers for native fake-JNI qualification — 2026-10-03
+
+Build/test scope only: `ZCL_TEST_JNI_INCLUDE_DIRS` selects headers for existing
+Linux fake-VM fixtures. It does not set JNI_FOUND, change shipped JNI includes,
+link a JVM, alter C code or activate TLS. Default discovery is preserved. Review
+of buffer overflow/underflow, out-of-bounds access, integer overflow/underflow,
+signed/unsigned conversion, NULL and uninitialized access, pointer arithmetic,
+format strings and stack limits finds no changed native operation or type rule.
+The selected Linux JDK header uses the target compiler's LP64 definition; all
+13 outputs are verified AArch64 ELF executables. Ownership, use-after-free,
+double-free, leaks, dangling pointers, allocation bounds, malformed-input
+admission, races, resource limits and secret retirement retain the existing
+fixtures and assertions; their deadlines are unchanged.
+
+RED: with JVM discovery disabled, the previous configuration yields no JNI
+tests and `ctest --no-tests=error` fails. GREEN: the explicit-header ARM64 Linux
+UBSan/QEMU profile passes all 13 registered JNI groups in 6.63s. A separate
+signed-overflow negative control confirms active UBSan; no JVM library is
+linked. Default Clang/GCC ASan/UBSan/LSan discovery passes the same 13 groups.
+The Android release APK remains byte-identical, with alignment and fixture
+isolation gates passing. This is C adapter execution under emulation, not ART,
+Android ARM64 runtime, physical-device or full ARM sanitizer qualification.
