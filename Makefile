@@ -7136,7 +7136,25 @@ $(BIN_DIR)/gen_sha3_windows: tools/gen_sha3_windows.c \
 		core/modules/chain/src/sha3_windows.c \
 		platform/modules/sha3/src/sha3.c core/modules/crypto/src/keccak_x4.c core/modules/crypto/src/simd_dispatch.c platform/modules/encoding/src/utilstrencodings.c \
 		platform/modules/json/src/json.c platform/modules/platform/src/clock.c \
-		platform/modules/base/src/safe_alloc.c platform/modules/base/src/cleanse.c
+		platform/modules/base/src/safe_alloc.c platform/modules/base/src/cleanse.c \
+		core/modules/chain/include/chain/sha3_windows.h \
+		core/modules/crypto/include/crypto/sha3.h \
+		core/modules/crypto/include/crypto/simd_dispatch.h \
+		core/modules/crypto/src/keccak_x4_internal.h \
+		platform/modules/base/include/base/cleanse.h \
+		platform/modules/base/include/base/format_attribute.h \
+		platform/modules/base/include/base/hex.h \
+		platform/modules/base/include/base/log_level.h \
+		platform/modules/base/include/base/log_macros.h \
+		platform/modules/base/include/base/safe_alloc.h \
+		platform/modules/base/include/base/serialize_le.h \
+		platform/modules/base/include/base/utc_tm.h \
+		platform/modules/encoding/include/encoding/utilstrencodings.h \
+		platform/modules/json/include/json/json.h \
+		platform/modules/platform/include/platform/clock.h \
+		platform/modules/platform/include/platform/time_compat.h \
+		platform/modules/sha3/include/sha3/sha3.h \
+		platform/modules/util/include/util/log_macros.h
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O3 -march=native -Wall -Wextra -Werror -pedantic \
 	    $(ZCL_WARN_STRINGOP_OVERFLOW) \
@@ -7144,7 +7162,7 @@ $(BIN_DIR)/gen_sha3_windows: tools/gen_sha3_windows.c \
 	    -Iplatform/modules/json/include -Iplatform/modules/platform/include -Iplatform/modules/base/include -Iplatform/modules/util/include \
 	    -Iplatform/modules/support/include \
 	    -D_POSIX_C_SOURCE=200809L $(ZCL_PLATFORM_CPPFLAGS) \
-	    -o $@ $^ -pthread
+	    -o $@ $(filter %.c,$^) -pthread
 
 # corpus-census: offline driver for the C23 corpus odometer (slice 1b).
 # Reads contexts/commons/corpus/scopes.def, enumerates scopes via git ls-files, binds every
