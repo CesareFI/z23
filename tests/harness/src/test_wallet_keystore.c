@@ -66,9 +66,15 @@ static int test_wrong_passphrase_rejected(void)
                            env, sizeof(env), &env_len));
 
         uint8_t plain[64];
-        size_t plain_len = 0;
+        memset(plain, 0xa5, sizeof(plain));
+        uint8_t expected[64];
+        memset(expected, 0xa5, sizeof(expected));
+        memset(expected, 0, sizeof(k_secret_key));
+        size_t plain_len = 99;
         ASSERT(!wks_decrypt(env, env_len, k_wrong_pass,
                             plain, sizeof(plain), &plain_len));
+        ASSERT(plain_len == 99);
+        ASSERT(memcmp(plain, expected, sizeof(plain)) == 0);
         PASS();
     } _test_next:;
     return failures;
@@ -88,9 +94,15 @@ static int test_tampered_ciphertext_rejected(void)
         env[WKS_HEADER_LEN + 5] ^= 0x01;
 
         uint8_t plain[64];
-        size_t plain_len = 0;
+        memset(plain, 0xa5, sizeof(plain));
+        uint8_t expected[64];
+        memset(expected, 0xa5, sizeof(expected));
+        memset(expected, 0, sizeof(k_secret_key));
+        size_t plain_len = 99;
         ASSERT(!wks_decrypt(env, env_len, k_passphrase,
                             plain, sizeof(plain), &plain_len));
+        ASSERT(plain_len == 99);
+        ASSERT(memcmp(plain, expected, sizeof(plain)) == 0);
         PASS();
     } _test_next:;
     return failures;
@@ -109,9 +121,15 @@ static int test_tampered_tag_rejected(void)
         env[44] ^= 0x80;  /* tag offset */
 
         uint8_t plain[64];
-        size_t plain_len = 0;
+        memset(plain, 0xa5, sizeof(plain));
+        uint8_t expected[64];
+        memset(expected, 0xa5, sizeof(expected));
+        memset(expected, 0, sizeof(k_secret_key));
+        size_t plain_len = 99;
         ASSERT(!wks_decrypt(env, env_len, k_passphrase,
                             plain, sizeof(plain), &plain_len));
+        ASSERT(plain_len == 99);
+        ASSERT(memcmp(plain, expected, sizeof(plain)) == 0);
         PASS();
     } _test_next:;
     return failures;
@@ -241,9 +259,20 @@ static int test_bad_magic(void)
         env[0] = 'X';  /* clobber the magic */
 
         uint8_t plain[64];
-        size_t plain_len = 0;
+        memset(plain, 0xa5, sizeof(plain));
+        uint8_t expected[64];
+        memset(expected, 0xa5, sizeof(expected));
+        size_t plain_len = 99;
         ASSERT(!wks_decrypt(env, env_len, k_passphrase,
                             plain, sizeof(plain), &plain_len));
+        ASSERT(plain_len == 99);
+        ASSERT(memcmp(plain, expected, sizeof(plain)) == 0);
+
+        env[0] = WKS_MAGIC[0];
+        ASSERT(!wks_decrypt(env, env_len, k_passphrase,
+                            plain, sizeof(k_secret_key) - 1, &plain_len));
+        ASSERT(plain_len == 99);
+        ASSERT(memcmp(plain, expected, sizeof(plain)) == 0);
         PASS();
     } _test_next:;
     return failures;
