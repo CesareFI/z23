@@ -1127,6 +1127,45 @@ static int t_rotation_counts_enc(void)
 
 /* ── Aggregator ─────────────────────────────────────────────── */
 
+#if !defined(_WIN32)
+static bool wb_descriptor_retired(struct platform_private_file *file)
+{
+    const int fd = (int)file->native;
+    const int flags = fcntl(fd, F_GETFD);
+    platform_private_file_close(file);
+    errno = 0;
+    const int after = fcntl(fd, F_GETFD);
+    return flags >= 0 && (flags & FD_CLOEXEC) != 0 && after == -1 &&
+        errno == EBADF && file->native == (uintptr_t)-1 && !file->locked;
+}
+
+static int t_private_descriptor_lifetime(void)
+{
+    int failures = 0;
+    const char *scratch = wb_enc_ensure_scratch();
+    char path[640];
+    snprintf(path, sizeof(path), "%s/wbfd_%d.bin", scratch, (int)getpid());
+    bool (*const openers[])(const char *, struct platform_private_file *) = {
+        platform_private_file_create,
+        platform_private_file_open_locked,
+        platform_private_file_open_locked_create,
+        platform_private_file_open_locked_wait,
+        platform_private_file_open_locked_create_wait,
+        platform_private_file_open_observation,
+    };
+    for (size_t i = 0; i < sizeof(openers) / sizeof(openers[0]); ++i) {
+        struct platform_private_file file;
+        platform_private_file_init(&file);
+        bool opened = openers[i](path, &file);
+        bool retired = opened && wb_descriptor_retired(&file);
+        platform_private_file_close(&file);
+        WB_RUN("wallet private descriptors carry CLOEXEC and retire", retired);
+    }
+    (void)unlink(path);
+    return failures;
+}
+#endif
+
 static int t_authority_sync_backend(void)
 {
     int failures = 0;
@@ -1163,6 +1202,9 @@ int test_wallet_backup(void)
 {
     printf("\n=== wallet_backup tests ===\n");
     int failures = 0;
+#if !defined(_WIN32)
+    failures += t_private_descriptor_lifetime();
+#endif
     failures += t_authority_sync_backend();
     failures += t_happy();
     failures += t_missing_dir_created();
