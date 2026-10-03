@@ -51,25 +51,51 @@ static bool valid_filename(const char *name, size_t base_len) {
     return base_len > 0 && base_len <= MAX_KEY_LEN;
 }
 
+/* The size came from a seekable file; a short read cannot produce a header. */
+static char *read_exact_bytes(FILE *f, size_t expected, size_t *len_out) {
+    if (expected > MAX_FILE_SIZE) return NULL;
+    char *buf = zcl_malloc(expected + 1, "gen_templates read_file buf");
+    if (!buf) return NULL;
+    size_t nread = fread(buf, 1, expected, f);
+    if (nread != expected) { free(buf); return NULL; }
+    buf[expected] = '\0';
+    /* Binary file protection: reject NUL bytes */
+    for (size_t i = 0; i < expected; i++) {
+        if (buf[i] == '\0') { free(buf); return NULL; }
+    }
+    *len_out = expected;
+    return buf;
+}
+
 /* Read file into malloc'd buffer with NUL termination. Returns NULL on error. */
 static char *read_file(const char *path, size_t *len_out) {
-    FILE *f = fopen(path, "r");
+    FILE *f = fopen(path, "rb");
     if (!f) return NULL;
     fseek(f, 0, SEEK_END);
     long fsize = ftell(f);
     fseek(f, 0, SEEK_SET);
     if (fsize <= 0 || fsize > MAX_FILE_SIZE) { fclose(f); return NULL; }
-    char *buf = zcl_malloc((size_t)fsize + 1, "gen_templates read_file buf");
-    if (!buf) { fclose(f); return NULL; }
-    size_t nread = fread(buf, 1, (size_t)fsize, f);
-    buf[nread] = '\0';
+    char *buf = read_exact_bytes(f, (size_t)fsize, len_out);
     fclose(f);
-    /* Binary file protection: reject NUL bytes */
-    for (size_t i = 0; i < nread; i++) {
-        if (buf[i] == '\0') { free(buf); return NULL; }
-    }
-    *len_out = nread;
     return buf;
+}
+
+static int read_exact_selftest(void) {
+    FILE *f = tmpfile();
+    if (!f) return 1;
+    bool written = fwrite("abc", 1, 3, f) == 3 && fseek(f, 0, SEEK_SET) == 0;
+    size_t length = 123;
+    char *short_bytes = written ? read_exact_bytes(f, 4, &length) : NULL;
+    bool refused = written && short_bytes == NULL && length == 123;
+    free(short_bytes);
+    bool rewound = fseek(f, 0, SEEK_SET) == 0;
+    char *full_bytes = rewound ? read_exact_bytes(f, 3, &length) : NULL;
+    bool accepted = full_bytes && length == 3 && memcmp(full_bytes, "abc", 3) == 0;
+    free(full_bytes);
+    bool closed = fclose(f) == 0;
+    bool ok = refused && accepted && closed;
+    fprintf(stderr, "gen_templates: exact-read selftest %s\n", ok ? "PASS" : "FAIL");
+    return ok ? 0 : 1;
 }
 
 /* Write a C string literal (escaped).
@@ -644,28 +670,7 @@ static int process_dir(const char *dir, const char *ext, const char *prefix,
     return count;
 }
 
-int main(int argc, char **argv) {
-    if (argc == 2 && strcmp(argv[1], "--selftest-staging") == 0)
-        return staging_selftest();
-    if (argc >= 2 && strcmp(argv[1], "--single-css") == 0) {
-        if (argc != 6) {
-            fprintf(stderr,
-                "Usage: %s --single-css <input.css> <output.h> <symbol> <guard>\n",
-                argv[0]);
-            return 1;
-        }
-        return write_single_css_header(argv[2], argv[3], argv[4], argv[5]);
-    }
-    if (argc >= 2 && strcmp(argv[1], "--single-text") == 0) {
-        if (argc != 6) {
-            fprintf(stderr,
-                "Usage: %s --single-text <input> <output.h> <symbol> <guard>\n",
-                argv[0]);
-            return 1;
-        }
-        return write_single_text_header(argv[2], argv[3], argv[4], argv[5]);
-    }
-
+static int write_template_directory_header(int argc, char **argv) {
     if (argc < 3 || argc > 4) {
         fprintf(stderr, "Usage: %s <template_dir> <output.h> [css_dir]\n",
             argv[0]);
@@ -723,4 +728,28 @@ int main(int argc, char **argv) {
     fprintf(stderr, "gen_templates: %d .chtml + %d .ccss files -> %s (%s)\n",
         tmpl_count, css_count, out_path, changed ? "updated" : "unchanged");
     return 0;
+}
+
+int main(int argc, char **argv) {
+    if (argc == 2 && strcmp(argv[1], "--selftest-staging") == 0)
+        return staging_selftest() || read_exact_selftest();
+    if (argc >= 2 && strcmp(argv[1], "--single-css") == 0) {
+        if (argc != 6) {
+            fprintf(stderr,
+                "Usage: %s --single-css <input.css> <output.h> <symbol> <guard>\n",
+                argv[0]);
+            return 1;
+        }
+        return write_single_css_header(argv[2], argv[3], argv[4], argv[5]);
+    }
+    if (argc >= 2 && strcmp(argv[1], "--single-text") == 0) {
+        if (argc != 6) {
+            fprintf(stderr,
+                "Usage: %s --single-text <input> <output.h> <symbol> <guard>\n",
+                argv[0]);
+            return 1;
+        }
+        return write_single_text_header(argv[2], argv[3], argv[4], argv[5]);
+    }
+    return write_template_directory_header(argc, argv);
 }
