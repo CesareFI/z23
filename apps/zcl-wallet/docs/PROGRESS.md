@@ -8055,3 +8055,35 @@ JNI storage fuzzing completes31348 cases in31s without a finding. Architecture,
 document-count and diff gates pass. Continue independent secret-retirement and
 JNI/storage work; hardware-backed custody, TLS and authenticated-chain acceptance
 remain explicitly open.
+
+## Production continuation: retire signing context before public work — 2026-10-03
+
+Creation-retirement checkpoint `4c6c41cfbc6a59a49ba98c9c6a39d1e455c1e6c1` is
+signed and backed up with exact local/remote SHA equality. Upstream remains
+`3a93e60ebf922af3d119b9facc1d95803f42844b`. Wallet-record JNI inspection finds
+bounded local references and intact secret retirement; no defect/change there.
+
+RED signing fault fixture reaches first public normalization with the randomized
+context still allocated. The single context teardown now runs immediately after
+signing/scalar erasure. Public encode/verify use the pinned provider's immutable
+static context; private operations retain the randomized context and constructor
+self-test. No change to signature bytes, nonce bounds, verification or authority.
+The regression checks freed/erased allocation and static context at normalization.
+Delaying teardown restores failure on both strict sanitizer compilers; controls
+pass. Existing20 provider/allocation/nonce failure modes still preserve outputs.
+
+Canonical native safety passes Clang145/145 in24.61s, GCC140/140 in53.02s;
+provider hashes, analyzers and complexity caps pass. Existing deterministic
+signature comparisons and independent OpenSSL oracle pass. Fuzzing completes
+12522 cases/31s without a finding. Android unit/JVM, builds, lint,16KiB alignment
+and fixture isolation pass (154 tasks). Qualified MSan signature/failure fixtures
+pass2/2 in0.16s; ARM64 Linux QEMU/UBSan passes2/2 in1.77s. Android ARM64 remains
+compile/alignment evidence only. This is earlier retirement, not a measured
+throughput or peak-memory optimization. Evidence is ignored
+`.cache/sign-context-retirement/`; manual C hazard review appended.
+Actual release-archive signature and fault fixtures pass API30/35/36 x86_64,
+including the16KiB API35 image. Source-only release reproduction matches the
+unchanged full APK `19cdfd353a82f2c4a5ee1c43e27e830f8870471115959787fc4cddf53fe17458`;
+this internal signing primitive still has no exposed send path. Architecture,
+document and diff gates pass. Continue with independent storage interruption and
+resource handling; custody, fresh-chain authorization and TLS gates remain open.

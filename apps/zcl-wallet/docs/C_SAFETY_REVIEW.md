@@ -4730,3 +4730,30 @@ strict sanitizer compilers; controls pass. Full native safety, existing borrowed
 API failure tests, Android execution, supplemental MSan/ARM64 Linux UBSan and
 source-only APK reproduction pass; see PROGRESS for exact scope and evidence.
 TLS quarantine and physical-device custody qualification remain unchanged.
+
+## Retire randomized signing context before public work — 2026-10-03
+
+`signature.c` destroys its owned randomized context immediately after signing
+and scalar erasure. Public normalization, serialization, parsing and verification
+use the pinned provider's static context. Its API permits every selected public
+operation; private pubkey generation/signing still use the randomized context.
+The successful preallocated constructor already runs the provider self-test.
+
+| Hazard | Review |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access | No new buffer operation or change to bounded signature/public-key encodings. All existing provider length and output-canary assertions remain. |
+| Integer overflow/underflow; signed/unsigned conversions | No new arithmetic or conversion. |
+| Use-after-free; double-free; leaks; dangling pointers | Move the single zcl_ec_end earlier; do not duplicate it. Every post-signature operation now obtains the static context, never the retired work.context. Fault wrapper verifies erasure before free, allocation/release equality and NULL owner before first public normalization. |
+| NULL dereferences; uninitialized memory | Existing zero initialization and status-dependent stages remain. Context teardown accepts partially initialized/failed construction. Public stages run only after successful private stages, using a non-NULL provider constant. |
+| Pointer arithmetic | None added. |
+| Format strings; secret leakage | No new logging. RNG blinding and copied scalar already retire early; randomized provider storage now retires before public work too. The static context contains no per-invocation key or blinding. |
+| Stack usage; allocation limits | No additional stack or allocation. Same one bounded context allocation, with shorter lifetime; no throughput/peak-memory improvement claimed. |
+| Malformed serialization/network input | Exact RFC6979 nonce policy, signature bytes, low-S checks, DER lengths and independent verification remain. Provider failures still preserve every output byte. No network/JNI entry or authorization change. |
+| Races; resource exhaustion | Static context is immutable and allowed for concurrent public operations. No global mutation or scheduling change. Existing per-call signing context remains private until retirement. |
+
+RED faults at first normalization with the owned context still live. GREEN
+requires it erased/freed and the static context selected. Moving only destruction
+back after verification reproduces RED under both Clang/GCC; controls pass.
+Existing deterministic-provider comparisons, independent OpenSSL oracle, failure
+injection and bounded fuzzing validate unchanged signature semantics. Full
+safety, Android native and supplemental runtime scope are recorded in PROGRESS.

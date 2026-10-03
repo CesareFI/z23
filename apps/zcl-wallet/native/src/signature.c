@@ -34,7 +34,7 @@ static zcl_status sign_material(signature_work *work)
 
 static zcl_status encode_material(signature_work *work)
 {
-    const secp256k1_context *context = work->context.handle;
+    const secp256k1_context *context = secp256k1_context_static;
     if (secp256k1_ecdsa_signature_normalize(context, NULL, &work->signature) != 0) return ZCL_CRYPTO_FAILURE;
     size_t length = sizeof(work->result.public_key);
     if (secp256k1_ec_pubkey_serialize(context, work->result.public_key, &length, &work->key,
@@ -50,7 +50,7 @@ static zcl_status encode_material(signature_work *work)
 
 static zcl_status verify_material(signature_work *work)
 {
-    const secp256k1_context *context = work->context.handle;
+    const secp256k1_context *context = secp256k1_context_static;
     if (secp256k1_ec_pubkey_parse(context, &work->parsed_key, work->result.public_key,
         sizeof(work->result.public_key)) != 1) return ZCL_CRYPTO_FAILURE;
     if (secp256k1_ec_pubkey_cmp(context, &work->key, &work->parsed_key) != 0) return ZCL_CRYPTO_FAILURE;
@@ -80,15 +80,17 @@ zcl_status zcl_signature_create(const uint8_t *secret, size_t secret_len,
     memcpy(work.digest, digest, 32);
     status = zcl_random_bytes(work.blinding, sizeof(work.blinding));
     if (status == ZCL_OK) status = zcl_ec_begin(&work.context, work.blinding, sizeof(work.blinding));
-    /* Context initialization consumed these bytes; its owned state remains
-     * live until zcl_ec_end. Public encoding/verification need no raw key. */
+    /* Context initialization consumed these bytes. Signing is the last
+     * consumer of the owned randomized context and private scalar. */
     zcl_secure_zero(work.blinding, sizeof(work.blinding));
     if (status == ZCL_OK) status = sign_material(&work);
     zcl_secure_zero(work.secret, sizeof(work.secret));
+    zcl_ec_end(&work.context);
+    /* Context construction already ran the provider self-test. Remaining
+     * encoding/verification is public-only and accepts its static context. */
     if (status == ZCL_OK) status = encode_material(&work);
     if (status == ZCL_OK) status = verify_material(&work);
     if (status == ZCL_OK) memcpy(output, &work.result, sizeof(work.result));
-    zcl_ec_end(&work.context);
     zcl_secure_zero(&work, sizeof(work));
     return status;
 }

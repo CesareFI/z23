@@ -172,6 +172,7 @@ int secp256k1_ecdsa_signature_normalize(const secp256k1_context *context, secp25
     const unsigned stage = calls == 2 ? 3 : 9;
     enter(stage); CHECK(context != NULL && output == NULL && input != NULL);
     CHECK(secret_wipes == 1 && spans[1] == NULL);
+    CHECK(owned == NULL && allocations == releases && context == secp256k1_context_static);
     return failure == stage ? 1 : 0;
 }
 
