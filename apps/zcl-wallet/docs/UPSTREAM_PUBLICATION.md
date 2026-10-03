@@ -360,3 +360,38 @@ CI jobs were queued, not passing. GitHub returned HTTP404 to one formal
 requested. The verified identity was not repeatedly tagged; both descriptions
 state they are prepared for maintainer review. The three secret-retirement
 candidates remain local pending the documented integration prerequisites.
+
+### Missing proof prerequisites repaired; combined wallet heads pending proof
+
+The reproducible missing-reflex-image limitation has a narrow source fix:
+`e926b75dfc6bd173969c99869f9570683f5d9945` on
+`agent/upstream-wallet-proof-fixtures-20261003`. Existing BUILD needs now declare
+15 Linux fixtures plus2 x86_64 pure fixtures. The unchanged proof lifecycle
+builds and hashes them from its own source. A shared declaration-derived bound
+also replaces the local runner's insufficient16-entry buffer. No selection,
+assertion, signature or admission threshold is weakened.
+
+RED: canonical impact-composition regression fails because zero reflex helpers
+are declared; the initial declaration-only fix then reproduces the local
+runner's capacity refusal. GREEN: both impact-composition and real reflex
+runner groups pass,2/2 with zero skips (83.0s). Strict Clang20/GCC14 ASan/UBSan/
+LSan probes pass; deleting one declaration makes both fail (expected17,
+observed16). GCC checks2,433 translation units with changed paths diagnostic-free.
+All215 lint gates pass (143.206s), including Clang, complexity, architecture and
+doc-counts; the diff security scanner is CLEAN. Six files,+97/-17, including
+one regenerated inventory row. Native exact proof is running under the already
+qualified non-root identity; its generation now builds the missing fixtures.
+A receipt PASS has not yet been established for this new source.
+
+Each remaining wallet branch retains its original signed fix and adds the
+prerequisite in a separate signed commit; production wallet code is unchanged:
+
+- Mnemonic: `994070f632e382123f14464a7c39e50bcbd6d408` (original58619c85).
+- Key scratch: `951f4cefb80c0acec81b329c1872ad3648c0ff1c` (originalc9eb0270).
+- Xprv: `57f7df67d3ed18aa5bcb6a7d8eae1611b83af7b5` (originald95e540b).
+
+The isolated copies retain their existing root-locator files. The mnemonic copy
+currently runs the prerequisite-only proof; xprv/key copies carry their combined
+heads. Serialize universal runtime proofs under the shared test identity;
+independent builds in separate copies may run in parallel. All three combined
+wallet proofs remain pending. No extra branch or PR has been published yet.

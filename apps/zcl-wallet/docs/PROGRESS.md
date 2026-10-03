@@ -8175,3 +8175,15 @@ validation, signature or remote protection was bypassed. Mnemonic/key/xprv
 publication remains pending their integration prerequisites; next work checks
 the missing reflex-fixture preparation. Android dirty storage-limit work stays
 preserved and excluded. Full identities/evidence are in UPSTREAM_PUBLICATION.md.
+
+### Publication prerequisite fix
+
+The missing reflex inputs are now declared as mandatory source-built helpers;
+shared bounds also fix the local runner's16-entry refusal. Signed checkpoint
+e926b75d has RED→GREEN regression, dual-compiler sanitizer/mutation evidence,
+all215 lint gates and a clean security scan. Exact native proof is running;
+its generation now builds the fixtures. Remaining wallet heads append this
+prerequisite without changing their production fixes: mnemonic994070f6,
+key951f4cef, xprv57f7df67. Each still needs its own native proof before publication.
+PR73/74 remain open; CI is queued. Detailed identities and continuation are in
+UPSTREAM_PUBLICATION.md. No authority or validation requirement was relaxed.
