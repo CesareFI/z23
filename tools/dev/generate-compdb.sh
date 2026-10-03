@@ -106,6 +106,51 @@ extract_compile_rows()
     ' | LC_ALL=C sort -t $'\t' -k1,1 -u > "$rows"
 }
 
+status_inventory_selftest()
+{
+    local dir="$1/status" root="$1/status/repo"
+    local db="$root/compile_commands.json" metadata="$dir/status.json"
+    local input_hash db_hash before missing restored newer
+    mkdir -p "$root"/{core,engine,contexts,cognition,platform,tools/dev,vendor/include}
+    printf 'all:\n\t@true\n' > "$root/Makefile"
+    printf '#!/bin/sh\n' > "$root/tools/dev/generate-compdb.sh"
+    printf 'int kept;\n' > "$root/core/keep.c"
+    touch -t 200001010000 "$root/Makefile" \
+        "$root/tools/dev/generate-compdb.sh" "$root/core/keep.c"
+    printf '[]\n' > "$db"
+    ROOT="$root" write_input_manifest "$dir/inputs.manifest"
+    grep -q 'core/keep.c' "$dir/inputs.manifest" ||
+        fail 'status fixture omitted its source file' || return 1
+    input_hash="$(hash_file "$dir/inputs.manifest")"
+    db_hash="$(hash_file "$db")"
+    printf '{"schema":"zcl.agent_index_status.v1","compilation_database":"%s","compdb_sha256":"%s","input_manifest_sha256":"%s","entry_count":1}\n' \
+        "$(json_escape "$db")" "$db_hash" "$input_hash" > "$metadata"
+    before="$(ZCL_AGENT_INDEX_ROOT="$root" \
+        ZCL_AGENT_INDEX_STATUS_PATH="$metadata" \
+        bash "$SCRIPT_DIR/generate-compdb.sh" --status)"
+    [[ "$before" == *'"fresh":true'* ]] ||
+        fail 'unchanged status fixture was not fresh' || return 1
+    mv "$root/core/keep.c" "$dir/keep.removed"
+    missing="$(ZCL_AGENT_INDEX_ROOT="$root" \
+        ZCL_AGENT_INDEX_STATUS_PATH="$metadata" \
+        bash "$SCRIPT_DIR/generate-compdb.sh" --status)"
+    [[ "$missing" == *'"freshness":"stale_source_inventory"'* ]] ||
+        fail 'removed source left the compilation database fresh' || return 1
+    mv "$dir/keep.removed" "$root/core/keep.c"
+    touch -t 200001010000 "$root/core/keep.c"
+    restored="$(ZCL_AGENT_INDEX_ROOT="$root" \
+        ZCL_AGENT_INDEX_STATUS_PATH="$metadata" \
+        bash "$SCRIPT_DIR/generate-compdb.sh" --status)"
+    [[ "$restored" == *'"fresh":true'* ]] ||
+        fail 'restored identical inventory remained stale' || return 1
+    touch "$root/core/keep.c"
+    newer="$(ZCL_AGENT_INDEX_ROOT="$root" \
+        ZCL_AGENT_INDEX_STATUS_PATH="$metadata" \
+        bash "$SCRIPT_DIR/generate-compdb.sh" --status)"
+    [[ "$newer" == *'"freshness":"stale_source_inputs"'* ]] ||
+        fail 'newer source escaped the existing freshness check' || return 1
+}
+
 parse_selftest()
 {
     local dir raw rows n escaped
@@ -151,6 +196,10 @@ parse_selftest()
         fail "parser missed the legacy compile-epoch-object.sh dep recipe ($n rows)"
     fi
 
+    if ! status_inventory_selftest "$dir"; then
+        rm -rf "$dir"
+        return 1
+    fi
     rm -rf "$dir"
     log 'parser selftest PASS (native zcc and legacy epoch-object recipes)'
 }
@@ -254,6 +303,7 @@ emit_runtime_status()
 {
     local database="$OUTPUT" metadata_present=false database_present=false
     local metadata_valid=false recorded_hash="" actual_hash="" entry_count=0
+    local recorded_input_hash="" actual_input_hash="" input_hash_matches=false
     local generated_at="" clangd_available=false clangd_status="unknown"
     local source_newer=false newer_path="" freshness="missing"
     local database_size=0 database_mtime=0 hash_matches=false
@@ -266,6 +316,7 @@ emit_runtime_status()
         database="$(json_string_field "$STATUS_FILE" compilation_database)"
         [ -n "$database" ] || database="$OUTPUT"
         recorded_hash="$(json_string_field "$STATUS_FILE" compdb_sha256)"
+        recorded_input_hash="$(json_string_field "$STATUS_FILE" input_manifest_sha256)"
         entry_count="$(json_uint_field "$STATUS_FILE" entry_count)"
         [ -n "$entry_count" ] || entry_count=0
         generated_at="$(json_string_field "$STATUS_FILE" generated_at_utc)"
@@ -280,6 +331,14 @@ emit_runtime_status()
         actual_hash="$(hash_file "$database")"
         if [ -n "$recorded_hash" ] && [ "$recorded_hash" = "$actual_hash" ]; then
             hash_matches=true
+        fi
+        # A newer-file search cannot see a removed or renamed input. Compare
+        # the inventory already recorded when the database was generated.
+        if [ -n "$recorded_input_hash" ]; then
+            actual_input_hash="$(write_input_manifest /dev/stdout | hash_file -)" ||
+                actual_input_hash=""
+            [ "$actual_input_hash" = "$recorded_input_hash" ] &&
+                input_hash_matches=true
         fi
         newer_path="$({
             [ "$ROOT/Makefile" -nt "$database" ] && printf '%s\n' Makefile
@@ -299,6 +358,8 @@ emit_runtime_status()
             freshness="content_hash_mismatch"
         elif [ "$source_newer" = true ]; then
             freshness="stale_source_inputs"
+        elif [ "$input_hash_matches" != true ]; then
+            freshness="stale_source_inventory"
         else
             freshness="fresh"
         fi
@@ -316,6 +377,7 @@ emit_runtime_status()
         "$entry_count" "$recorded_hash" "$actual_hash"
     printf '"content_hash_matches":%s,"source_inputs_newer":%s,' \
         "$hash_matches" "$source_newer"
+    printf '"input_manifest_hash_matches":%s,' "$input_hash_matches"
     printf '"newer_input":"%s","fresh":%s,"freshness":"%s",' \
         "$(json_escape "$newer_path")" \
         "$([ "$freshness" = fresh ] && printf true || printf false)" "$freshness"
