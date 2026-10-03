@@ -6,10 +6,12 @@ set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/z23-observability-scan.XXXXXX")
 fixture="$tmp/case.c"
+first="$tmp/first.c"
 log="$tmp/output"
 : > "$fixture"
+: > "$first"
 : > "$log"
-trap 'rm "$fixture" "$log" "$tmp/check" 2>/dev/null || :; rmdir "$tmp"' EXIT
+trap 'rm "$fixture" "$first" "$log" "$tmp/check" 2>/dev/null || :; rmdir "$tmp"' EXIT
 
 if [ "$#" -eq 0 ]; then
     cc -std=c23 -O2 -Wall -Wextra -Werror \
@@ -52,5 +54,13 @@ awk 'BEGIN { for (i = 0; i < 4096; i++) printf "x"; print "" }' > "$fixture"
 expect_rc 2
 printf '/* prefix\000 */\n' > "$fixture"
 expect_rc 2
+
+# The static buffer is reused, but a short second file must see only its row.
+awk 'BEGIN { for (i = 1; i <= 4096; i++) print "// filler" }' > "$first"
+printf '%s\n' '// second file is clean' > "$fixture"
+"$scanner" "$first" "$fixture" > "$log" 2>&1 || {
+    cat "$log" >&2
+    exit 1
+}
 
 printf '%s\n' 'observability scanner bounds: PASS'

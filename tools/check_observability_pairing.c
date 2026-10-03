@@ -114,7 +114,7 @@ static int check_file(const char *path)
     }
 
     static char lines[MAX_LINES][LINE_LEN];
-    memset(lines, 0, sizeof(lines));
+    /* read_scan_line terminates every populated row; count bounds all reads. */
     size_t count = 0;
     int read_rc = 0;
     while (count < MAX_LINES &&
