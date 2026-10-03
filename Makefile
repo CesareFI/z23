@@ -3443,6 +3443,7 @@ templates-no-touch-selftest: $(VIEW_GEN_HEADERS)
 	    echo "templates-no-touch-selftest: source-root stage leaked" >&2; \
 	    exit 1; \
 	}; \
+	./tools/dev/gen_templates_input_selftest.sh "$(TMPL_TOOL)"; \
 	after="$$(tools/dev/source-identity.sh capture-record)"; \
 	[ "$$before" = "$$after" ] || { \
 	    echo "templates-no-touch-selftest: source metadata changed on no-op regeneration" >&2; \

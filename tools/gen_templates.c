@@ -530,7 +530,10 @@ static int name_cmp(const void *a, const void *b)
 static int process_dir(const char *dir, const char *ext, const char *prefix,
                        bool minify, FILE *out) {
     DIR *d = opendir(dir);
-    if (!d) return 0;
+    if (!d) {
+        fprintf(stderr, "gen_templates: cannot open directory: %s\n", dir);
+        return -1;
+    }
 
     int count = 0;
     size_t ext_len = strlen(ext);
@@ -555,15 +558,16 @@ static int process_dir(const char *dir, const char *ext, const char *prefix,
             strcmp(ent->d_name + nlen - ext_len, ext) != 0)
             continue;
         if (nlen >= sizeof(names[0])) {
-            fprintf(stderr, "gen_templates: skipping over-long name: %s\n",
+            fprintf(stderr, "gen_templates: over-long name: %s\n",
                 ent->d_name);
-            continue;
+            (void)closedir(d);
+            return -1;
         }
         if (n_names >= MAX_TEMPLATES) {
             fprintf(stderr, "gen_templates: FATAL more than %d '%s' files in "
                 "%s — raise MAX_TEMPLATES\n", MAX_TEMPLATES, ext, dir);
-            closedir(d);
-            exit(1);
+            (void)closedir(d);
+            return -1;
         }
         memcpy(names[n_names], ent->d_name, nlen + 1);
         n_names++;
@@ -577,24 +581,24 @@ static int process_dir(const char *dir, const char *ext, const char *prefix,
 
         size_t base_len = nlen - ext_len;
         if (!valid_filename(d_name, base_len)) {
-            fprintf(stderr, "gen_templates: skipping invalid name: %s\n",
+            fprintf(stderr, "gen_templates: invalid name: %s\n",
                 d_name);
-            continue;
+            return -1;
         }
 
         char path[1024];
         int plen = snprintf(path, sizeof(path), "%s/%s", dir, d_name);
         if (plen < 0 || (size_t)plen >= sizeof(path)) {
-            fprintf(stderr, "gen_templates: skipping over-long path: %s/%s\n",
+            fprintf(stderr, "gen_templates: over-long path: %s/%s\n",
                 dir, d_name);
-            continue;
+            return -1;
         }
 
         size_t flen = 0;
         char *buf = read_file(path, &flen);
         if (!buf) {
-            fprintf(stderr, "gen_templates: skipping %s\n", d_name);
-            continue;
+            fprintf(stderr, "gen_templates: cannot read: %s\n", path);
+            return -1;
         }
 
         /* Convert filename to C identifier */
@@ -623,7 +627,10 @@ static int process_dir(const char *dir, const char *ext, const char *prefix,
             size_t min_len = 0;
             char *minified = minify_css(buf, flen, &min_len);
             free(buf);
-            if (!minified) continue;
+            if (!minified) {
+                fprintf(stderr, "gen_templates: cannot minify: %s\n", path);
+                return -1;
+            }
             /* Split large CSS into multiple arrays to avoid
              * -Woverlength-strings (C99 requires support for 4095). */
             int chunks = 0;
@@ -697,8 +704,13 @@ static int write_template_directory_header(int argc, char **argv) {
     int tmpl_count = process_dir(tmpl_dir, ".chtml", "TMPL", false, out);
 
     int css_count = 0;
-    if (css_dir)
+    if (tmpl_count >= 0 && css_dir)
         css_count = process_dir(css_dir, ".ccss", "CSS", true, out);
+    if (tmpl_count < 0 || css_count < 0) {
+        (void)fclose(out);
+        (void)remove(tmp_path);
+        return 1;
+    }
 
     /* Generate partial registry for {{> name}} lookups */
     fprintf(out, "#include \"util/template.h\"\n\n");
