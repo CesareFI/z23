@@ -7685,3 +7685,42 @@ process inspection and the broader ASan run encounters multiple unchanged
 execution deadlines. These are partial supplemental observations, not completed
 ARM64 sanitizer, Android or physical-custody acceptance. Do not weaken deadlines
 or substitute emulation for device proof. Continue safe independent engineering.
+
+## Production continuation: admit parameters before full-source copies — 2026-10-03
+
+RED measured an 816000-byte native allocation and 816000-byte JNI copy before
+full-source preparation rejected a malformed scalar packet. The lowest owner,
+`jni_full_prepare.c`, now checks the immutable previous-array count and existing
+bounded parameter decoder first. Wrong packet shapes and invalid scalar ranges
+allocate/copy zero source bytes. Valid source capture, exact draft construction,
+review ownership/deadlines and cleanup remain unchanged. Multiple malformed
+arguments can now report the scalar refusal before a source-element refusal.
+No transaction acceptance, monetary rule or cryptographic semantics changed.
+
+Strict Clang/GCC safety suites pass 144/139 groups (58.36s/57.90s), with
+ASan/UBSan/LSan, analyzers, provider hashes and complexity caps. The JNI review
+fuzzer completes 18869 runs/31s. The native fault fixture and 15 ART
+review/preparation/lifecycle tests pass on each API 30/35/36 x86_64, including
+16 KiB API 35. ARM64 Android compiles/alignment only. Android JVM/minified/lint,
+fixture isolation and alignment gates pass (154 tasks). Source-only independent
+release reproduction matches APK SHA-256
+`e86ebd175558be59078ea5bfbff26acce0829023a7e6f379d0e5d838d7bd95f3`.
+Ignored evidence: `.cache/prepare-admission/`, `.cache/reproduce-prepare-admission/`.
+No latency or valid-request speedup is claimed; the measured improvement is
+rejected-request allocation/copy work. Native hazard review is recorded.
+
+The separate ARM64 Linux QEMU qualification at source `c82ce8748` is finished:
+UBSan passes 119/120 runtime groups in 95.76s; corrupt change recovery also hits
+its unchanged 30-second limit in isolation. Static non-PIE ASan+UBSan with LSan
+disabled passes 62/120 groups, with 58 deadline failures, in 583.86s. Dynamic ASan
+fails its startup probe; static ASan detects a deliberate heap overflow. LSan
+reports unsupported process inspection. This is partial supplemental emulation
+evidence, not a full sanitizer pass or Android/hardware acceptance. Host LSan
+acceptance remains green; no deadlines were weakened. Evidence is retained in
+`.cache/arm64-runtime/`. Continue safe independent native ownership/resource and
+restart work; TLS and physical custody remain separately gated.
+The admission-order mutation restores the original 816000-byte allocation/copy
+and fails the new resource assertion under both compilers; unchanged controls
+pass. Initial standalone validation commands omitted provider include/config
+flags; corrected commands reuse the actual configured provider settings without
+suppressing warnings. No product change was needed for those harness errors.

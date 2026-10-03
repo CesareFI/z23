@@ -48,6 +48,7 @@ static unsigned fail_new, fail_length, fail_element, fail_region;
 static void (*allocation_hook)(void);
 static void *owned_inputs;
 static size_t owned_size, last_allocation_size;
+static size_t byte_reads;
 static bool full_sources;
 static bool preparing, fail_construction;
 static unsigned request_clears, transaction_clears, parameter_clears, address_clears;
@@ -309,6 +310,7 @@ static void JNICALL get_bytes(JNIEnv *env, jbyteArray input, jsize offset, jsize
 {
     (void)env;
     fake_array *array = region(input, offset, count, BYTES);
+    byte_reads += (size_t)count;
     if (fails(&fail_region)) {
         if (count > 0) output[0] = 42; /* Partially written scratch must still clear. */
         return;
@@ -383,7 +385,12 @@ static void JNICALL set_bytes(JNIEnv *env, jbyteArray input, jsize offset, jsize
     if (fail_set) { fail_set = false; pending = true; }
 }
 
-static const struct JNINativeInterface_ vm_table = {
+#ifdef __ANDROID__
+typedef struct JNINativeInterface review_jni_interface;
+#else
+typedef struct JNINativeInterface_ review_jni_interface;
+#endif
+static const review_jni_interface vm_table = {
     .ExceptionCheck = exception_check, .GetArrayLength = array_length,
     .GetObjectArrayElement = get_element, .DeleteLocalRef = delete_reference,
     .GetByteArrayRegion = get_bytes, .NewLongArray = new_numbers,
@@ -449,6 +456,7 @@ static void setup(void)
 
 static jlong open_review(jlong now)
 {
+    last_allocation_size = byte_reads = 0;
     source_clears = draft_clears = 0;
     request_clears = transaction_clears = parameter_clears = address_clears = 0;
     const jlong result = preparing
@@ -548,7 +556,7 @@ static void golden_and_lifetime(void)
 
 static void opening_failures(void)
 {
-    const unsigned counts[2][4] = {{4, 2, 3, 1}, {7, 4, 5, 1}};
+    const unsigned counts[2][4] = {{4, 2, 3, 1}, {8, 4, 5, 1}};
     for (unsigned kind = 0; kind < 4; ++kind) {
         const unsigned maximum = counts[preparing ? 1 : 0][kind];
         for (unsigned point = 1; point <= maximum; ++point) {
@@ -738,10 +746,10 @@ static void source_bounds(void)
     java_previous->length = (jsize)ZCL_TX_INPUT_MAX;
     for (size_t i = 0; i < ZCL_TX_INPUT_MAX; ++i)
         java_previous->data.objects[i] = array_new((jsize)ZCL_V4_SOURCE_MAX, BYTES);
-    /* Copy the exact maximum aggregate before the current two-input draft
-     * refuses the eight source rows. Every byte still retires before free. */
+    /* Opening copies the maximum aggregate before rejecting its draft shape;
+     * preparation can reject its mismatched parameter count before copying. */
     CHECK(open_review(100) == -(jlong)ZCL_INVALID_ARGUMENT);
-    CHECK(last_allocation_size == ZCL_TX_INPUT_MAX * ZCL_V4_SOURCE_MAX);
+    CHECK(last_allocation_size == (preparing ? 0 : ZCL_TX_INPUT_MAX * ZCL_V4_SOURCE_MAX));
     CHECK(source_clears == 1 && draft_clears == 1 && borrowed == 0 && owned_inputs == NULL);
     release_references();
 }
@@ -794,17 +802,40 @@ static void preparation_fields(void)
         setup();
         java_parameters->data.numbers[field] = edge == 0 ? INT64_MIN : INT64_MAX;
         CHECK(open_review(100) == -(jlong)ZCL_OUT_OF_RANGE && transaction_clears == 0);
+        CHECK(last_allocation_size == 0 && byte_reads == 0);
         release_references();
     }
     for (jsize length = 1; length <= (jsize)ZCL_DRAFT_PARAMETER_MAX; ++length) {
         if (length == 9) continue;
         setup(); java_parameters->length = length;
         CHECK(open_review(100) == -(jlong)ZCL_INVALID_ARGUMENT && parameter_clears == 0);
+        CHECK(last_allocation_size == 0 && byte_reads == 0);
         release_references();
     }
     setup(); java_parameters->data.numbers[2] = 499;
     CHECK(open_review(100) == -(jlong)ZCL_OUT_OF_RANGE);
     release_references();
+}
+
+static void preparation_admission(void)
+{
+    for (unsigned malformed = 0; malformed < 2; ++malformed) {
+        setup();
+        java_previous->length = (jsize)ZCL_TX_INPUT_MAX;
+        fake_array *source = java_previous->data.objects[0];
+        source->length = (jsize)ZCL_V4_SOURCE_MAX;
+        for (size_t i = 0; i < ZCL_TX_INPUT_MAX; ++i) java_previous->data.objects[i] = source;
+        if (malformed != 0) {
+            java_parameters->length = (jsize)(3 + 2 * ZCL_TX_INPUT_MAX + 2);
+            java_parameters->data.numbers[0] = -1;
+        }
+        const jlong expected = malformed == 0 ? -(jlong)ZCL_INVALID_ARGUMENT : -(jlong)ZCL_OUT_OF_RANGE;
+        CHECK(open_review(100) == expected);
+        fprintf(stderr, "Rejected parameters: allocated=%zu copied=%zu\n", last_allocation_size, byte_reads);
+        CHECK(last_allocation_size == 0 && byte_reads == 0);
+        CHECK(!pending && owned_inputs == NULL && borrowed == 0 && request_clears == 1);
+        release_references();
+    }
 }
 
 static void preparation_arguments(void)
@@ -840,6 +871,7 @@ static void regressions(void)
     full_sources = true;
     profile_regressions(); captured_sources(); source_bounds(); exceptional_reference();
     preparing = true;
+    preparation_admission();
     golden_and_lifetime(); opening_failures(); publication_failures(); publication_races();
     maximum_packet(); captured_sources(); source_bounds(); exceptional_reference();
     prepared_copy_lifetime(); preparation_fields(); preparation_arguments();

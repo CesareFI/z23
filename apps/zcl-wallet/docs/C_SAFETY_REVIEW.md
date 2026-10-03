@@ -4431,3 +4431,31 @@ short/zero/error injection cannot bypass a smaller declared libc object bound.
 Clang/GCC ASan/UBSan/LSan, analyzers and API30/35/36 native tests pass. The same
 fixture also executes under ARM64 Linux UBSan emulation; that is distinct from
 Android ARM64 compilation, physical hardware and hardware-backed custody.
+
+## Full-source preparation parameter admission — 2026-10-03
+
+Scope: `jni_full_prepare.c` and the existing fake-JNI regression. Check the
+immutable previous-array count and bounded scalar packet before capturing or
+allocating source bytes. Destination parsing, source capture, construction and
+review authority retain their existing owners. If multiple inputs are malformed,
+the scalar error can now precede a source-element error; no accepted transaction
+or consensus predicate changes.
+
+| Hazard | Review |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access | Existing count and field helpers bound inputs/outputs and the scalar packet before indexing. Source capture independently checks every element and its aggregate. Java array lengths cannot change between the two count reads. |
+| Integer overflow/underflow; signed/unsigned conversions | Existing checked count conversions and money/u32 field admission are reused. No arithmetic limit changes. Test byte counters cover bounded public inputs and reset per invocation. |
+| Use-after-free; double-free; leaks; dangling pointers | Parameters become C-owned scalars before source capture. The existing capture owns local references through allocation and releases them before construction; descriptors and allocation still have one cleanup path. |
+| NULL dereferences; uninitialized memory | Public JNI admission and shared count helper reject NULL. Request/source/wire scratch starts zeroed. Failed scalar reads retain pending exceptions and skip source JNI calls. |
+| Pointer arithmetic | No new production pointer arithmetic; source binding still uses the bounded captured count and owned spans. |
+| Format strings; secret leakage | No product logs or secret data introduced. The fixture reports allocation/copy counts for public synthetic transactions only. All existing request, parameter, wire and source wipes remain. |
+| Stack usage; allocation limits | No additional buffer, heap owner or recursion. Rejected scalar packets avoid a measured 816000-byte allocation and copy; valid operations retain the same maximum. Strict frame and complexity limits pass. |
+| Malformed serialization/network input | Existing field decoder remains authoritative. Wrong packet lengths and every negative/oversized field refuse before byte reads. Independent transaction vectors, source retargeting, provider/VM failures and output comparisons still pass. |
+| Races; resource exhaustion | The existing review mutex still serializes preparation. Java length immutability permits the early count; mutable elements are still captured exactly once before allocation. No lock, lifetime, timeout or owner-publication rule changes. |
+
+Full Clang/GCC ASan/UBSan/LSan and analyzer gates pass; the review fuzzer completed
+18869 runs in 31 seconds. API 30/35/36 execute the native failure fixture and
+15 ART review/preparation/lifecycle tests each, including API 35 with 16 KiB pages.
+Android ARM64 builds only; no physical custody claim. Reverting admission order
+is tested separately from the unchanged control. The release APK reproduces from
+a separate source-only checkout.
