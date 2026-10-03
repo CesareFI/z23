@@ -374,6 +374,64 @@ static bool parse_u64(const char *s, uint64_t *out)
     return true;
 }
 
+/* Copy a --flag=PATH argument into its fixed buffer, refusing truncation
+ * with exit status 2. snprintf discards the tail silently when the source
+ * outgrows the buffer; an unchecked copy then reaches fopen or the spawned
+ * node chopped (a 255-byte truncated --log filename is exactly NAME_MAX, so
+ * the open even succeeds — against a stranger's file). */
+static int soak_copy_path(const char *flag, char *dst, size_t cap,
+                          const char *src)
+{
+    if (snprintf(dst, cap, "%s", src) >= (int)cap) {
+        dst[0] = '\0';
+        fprintf(stderr, "path argument too long: %s (max %zu characters)\n",
+                flag, cap - 1);
+        return 2;
+    }
+    return 0;
+}
+
+/* Post-parse validation the argument loop defers to: copy the three
+ * path arguments under refusal-on-truncation, then the checks that used
+ * to live inline in main. Returns 0, or the process exit status. */
+static int soak_validate_args(uint64_t interval_sec, soak_thresholds_t *cfg,
+                              struct spawn_cfg *sp, const char *log_src,
+                              const char *datadir_src, const char *connect_src,
+                              char *log_path, size_t log_cap)
+{
+    int rc;
+    if (log_src) {
+        rc = soak_copy_path("--log", log_path, log_cap, log_src);
+        if (rc) return rc;
+    }
+    if (datadir_src) {
+        rc = soak_copy_path("--node-datadir", sp->datadir,
+                            sizeof(sp->datadir), datadir_src);
+        if (rc) return rc;
+    }
+    if (connect_src) {
+        rc = soak_copy_path("--connect", sp->connect,
+                            sizeof(sp->connect), connect_src);
+        if (rc) return rc;
+    }
+    if (interval_sec == 0 || interval_sec > cfg->min_duration_sec) {
+        fprintf(stderr, "interval-sec (%" PRIu64 ") out of range\n",
+                interval_sec);
+        return 2;
+    }
+    if (sp->enabled) {
+        if (sp->rpcport <= 0) {
+            fprintf(stderr, "spawn mode: --rpcport is required with "
+                            "--node-datadir\n");
+            return 2;
+        }
+        if (sp->p2p_port <= 0)  sp->p2p_port  = sp->rpcport - 1;
+        if (sp->fs_port <= 0)   sp->fs_port   = sp->rpcport + 1;
+        if (sp->https_port <= 0)sp->https_port= sp->rpcport + 2;
+    }
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     soak_thresholds_t cfg;
@@ -384,7 +442,9 @@ int main(int argc, char **argv)
     const char *rpc_bin   = "build/bin/zcl-rpc";
     char log_path[256] = {0};
     default_log_path(log_path, sizeof(log_path));
-
+    /* Path arguments are recorded here and copied under truncation
+     * refusal by soak_validate_args after the loop. */
+    const char *log_src = NULL, *datadir_src = NULL, *connect_src = NULL;
     struct spawn_cfg sp;
     memset(&sp, 0, sizeof(sp));
 
@@ -405,7 +465,7 @@ int main(int argc, char **argv)
         if (strncmp(a, "--service=", 10) == 0) { service = a + 10; continue; }
         if (strncmp(a, "--rpc=",      6) == 0) { rpc_bin = a + 6;  continue; }
         if (strncmp(a, "--log=",      6) == 0) {
-            snprintf(log_path, sizeof(log_path), "%s", a + 6); continue;
+            log_src = a + 6; continue;
         }
         if (strncmp(a, "--stall-sec=", 12) == 0) {
             parse_u64(a + 12, &cfg.max_tip_stall_sec); continue;
@@ -421,7 +481,9 @@ int main(int argc, char **argv)
         }
         /* ── Spawn-mode (hermetic CI-proxy) flags ── */
         if (strncmp(a, "--node-datadir=", 15) == 0) {
-            snprintf(sp.datadir, sizeof(sp.datadir), "%s", a + 15);
+            /* The copy into sp.datadir is deferred to soak_validate_args
+             * so truncation is refused instead of silently chopping. */
+            datadir_src = a + 15;
             sp.enabled = true; continue;
         }
         if (strncmp(a, "--rpcport=", 10) == 0)   { sp.rpcport    = atoi(a + 10); continue; }
@@ -429,7 +491,7 @@ int main(int argc, char **argv)
         if (strncmp(a, "--fs-port=", 10) == 0)   { sp.fs_port    = atoi(a + 10); continue; }
         if (strncmp(a, "--https-port=", 13) == 0){ sp.https_port = atoi(a + 13); continue; }
         if (strncmp(a, "--connect=", 10) == 0) {
-            snprintf(sp.connect, sizeof(sp.connect), "%s", a + 10); continue;
+            connect_src = a + 10; continue;
         }
         if (strncmp(a, "--load=generate:", 16) == 0) {
             sp.load_interval = atoi(a + 16); continue;
@@ -439,22 +501,13 @@ int main(int argc, char **argv)
         return 2;
     }
 
-    if (interval_sec == 0 || interval_sec > cfg.min_duration_sec) {
-        fprintf(stderr, "interval-sec (%" PRIu64 ") out of range\n", interval_sec);
-        return 2;
-    }
-
-    /* Spawn-mode validation: a datadir REQUIRES a real isolated rpcport
-     * so a misconfigured invocation can never fall through to live. */
-    if (sp.enabled) {
-        if (sp.rpcport <= 0) {
-            fprintf(stderr, "spawn mode: --rpcport is required with "
-                            "--node-datadir\n");
-            return 2;
-        }
-        if (sp.p2p_port <= 0)  sp.p2p_port  = sp.rpcport - 1;
-        if (sp.fs_port <= 0)   sp.fs_port   = sp.rpcport + 1;
-        if (sp.https_port <= 0)sp.https_port= sp.rpcport + 2;
+    /* Deferred copies (refuse truncation) plus the interval and spawn-mode
+     * checks that used to live inline here. */
+    {
+        int vrc = soak_validate_args(interval_sec, &cfg, &sp, log_src,
+                                     datadir_src, connect_src, log_path,
+                                     sizeof(log_path));
+        if (vrc) return vrc;
     }
 
     signal(SIGINT,  on_signal);

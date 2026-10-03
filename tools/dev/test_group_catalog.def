@@ -195,6 +195,15 @@ ZCL_TEST_GROUP(simnet_shielded_wallet_e2e)
 ZCL_TEST_GROUP(store_e2e_gate)
 ZCL_TEST_GROUP(store_e2e_shielded)
 ZCL_TEST_GROUP(soak_harness)
+/* Soak runner CLI regressions (tools/soak/main.c ->
+ * build/bin/soak_runner): an over-long --log/--node-datadir/--connect
+ * argument is refused with exit 2 naming the flag instead of silently
+ * truncating into a fixed buffer (the truncated --log filename is exactly
+ * NAME_MAX so fopen succeeds and the soak logs to a stranger's file; the
+ * truncated datadir/connect reach the spawned node). Self-skips when the
+ * binary is absent; the proof prefork builds it through the BUILD_NEED row
+ * below. */
+ZCL_TEST_GROUP(soak_runner)
 ZCL_TEST_GROUP(event)
 ZCL_TEST_GROUP(download)
 ZCL_TEST_GROUP(download_contention)

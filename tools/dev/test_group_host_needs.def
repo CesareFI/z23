@@ -198,6 +198,10 @@ ZCL_TEST_GROUP_BUILD_NEED("test_p2_invariant_check",
 
 /* The registered fixture executes this exact host artifact; absence fails. */
 ZCL_TEST_GROUP_BUILD_NEED("test_jsonq", "build/bin/jsonq", "jsonq")
+/* tests/harness/src/test_soak_runner.c execs the soak runner it
+ * regresses; the group self-skips without it, and the proof's prefork
+ * builds it through this row. */
+ZCL_TEST_GROUP_BUILD_NEED("test_soak_runner", "build/bin/soak_runner", "soak_runner")
 
 /* tests/harness/src/test_process_group_exec.c execs the fixture launcher
  * build/bin/process-group-exec for both its arms. No default target builds
