@@ -4509,6 +4509,32 @@ check-capability-closure:
 	@./tools/lint/check_capability_closure.sh
 print-zcode-monolith-lib-sources:
 	@printf '%s\n' $(LIB_SRCS)
+ZCODE_PACKAGE_REGISTRY_CHECK_HEADERS = \
+	contexts/commons/modules/vcs/include/vcs/package_capsule.h \
+	contexts/commons/modules/vcs/include/vcs/package_deps.h \
+	contexts/commons/modules/vcs/include/vcs/package_manifest.h \
+	contexts/commons/modules/vcs/include/vcs/package_prepare.h \
+	contexts/commons/modules/vcs/include/vcs/package_recipe.h \
+	contexts/commons/modules/vcs/include/vcs/package_release.h \
+	contexts/commons/modules/vcs/src/package_prepare_internal.h \
+	contexts/commons/modules/vcs/src/vcs_priv.h \
+	core/modules/crypto/include/crypto/sha3.h \
+	platform/modules/base/include/base/checked.h \
+	platform/modules/base/include/base/format_attribute.h \
+	platform/modules/base/include/base/hex.h \
+	platform/modules/base/include/base/log_level.h \
+	platform/modules/base/include/base/log_macros.h \
+	platform/modules/base/include/base/safe_alloc.h \
+	platform/modules/base/include/base/serialize_le.h \
+	platform/modules/base/include/base/stdio_lock.h \
+	platform/modules/base/include/base/utc_tm.h \
+	platform/modules/codec/include/codec/cursor.h \
+	platform/modules/json/include/json/json.h \
+	platform/modules/platform/include/platform/clock.h \
+	platform/modules/platform/include/platform/directory_compat.h \
+	platform/modules/sha3/include/sha3/sha3.h \
+	platform/modules/util/include/util/log_macros.h \
+	platform/modules/util/include/util/safe_alloc.h
 $(ZCODE_PACKAGE_REGISTRY_CHECK_BIN): tools/zcode_package_registry_check.c \
         engine/composition/zcode_package_registry.def \
 		engine/composition/zcode_c23_commons_app.def \
@@ -4518,7 +4544,8 @@ $(ZCODE_PACKAGE_REGISTRY_CHECK_BIN): tools/zcode_package_registry_check.c \
 		contexts/commons/modules/vcs/src/package_capsule.c contexts/commons/modules/vcs/src/package_release.c \
 		platform/modules/json/src/json.c platform/modules/codec/src/cursor.c platform/modules/sha3/src/sha3.c \
 		platform/modules/base/src/safe_alloc.c platform/modules/base/src/log_level.c \
-		platform/modules/platform/src/clock.c platform/modules/platform/src/directory_compat.c
+		platform/modules/platform/src/clock.c platform/modules/platform/src/directory_compat.c \
+		$(ZCODE_PACKAGE_REGISTRY_CHECK_HEADERS) $(NODE_SECP_ARCHIVE)
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -D_GNU_SOURCE $(ZCL_PLATFORM_CPPFLAGS) \
 	    -O0 -Wall -Wextra -Werror -pedantic \
