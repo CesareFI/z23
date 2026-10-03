@@ -4,8 +4,56 @@
 #include "storage_faults.h"
 
 #include <fcntl.h>
+#include <signal.h>
 #include <string.h>
+#include <sys/resource.h>
+#include <sys/wait.h>
 #include <unistd.h>
+
+#if defined(__GLIBC__) || defined(__ANDROID__)
+ssize_t __wrap___read_chk(int, void *, size_t, size_t);
+ssize_t __wrap___pread_chk(int, void *, size_t, off_t, size_t);
+#if defined(__ANDROID__)
+ssize_t __wrap___write_chk(int, const void *, size_t, size_t);
+#endif
+
+static int fortified_refusal(unsigned operation, io_mode mode)
+{
+    const pid_t child = fork();
+    CHECK(child >= 0);
+    if (child == 0) {
+        const struct rlimit no_core = {0, 0};
+        if (setrlimit(RLIMIT_CORE, &no_core) != 0) _exit(81);
+        uint8_t bytes[2] = {0};
+        storage_read_fault.mode = storage_pread_fault.mode = storage_write_fault.mode = mode;
+        /* Deliberately smaller declared object bound. Even a short/zero/error
+         * injection must reach libc's refusal before changing this request. */
+        if (operation == 0) (void)__wrap___read_chk(-1, bytes, 2, 1);
+        if (operation == 1) (void)__wrap___pread_chk(-1, bytes, 2, 0, 1);
+#if defined(__ANDROID__)
+        if (operation == 2) (void)__wrap___write_chk(-1, bytes, 2, 1);
+#endif
+        _exit(79);
+    }
+    int status = 0;
+    CHECK(waitpid(child, &status, 0) == child);
+    CHECK(WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT);
+    return 0;
+}
+
+static int fortified_bounds(void)
+{
+    static const io_mode modes[] = {IO_SHORT, IO_ZERO, IO_ERROR};
+    for (size_t i = 0; i < sizeof(modes) / sizeof(modes[0]); ++i) {
+        CHECK(fortified_refusal(0, modes[i]) == 0);
+        CHECK(fortified_refusal(1, modes[i]) == 0);
+#if defined(__ANDROID__)
+        CHECK(fortified_refusal(2, modes[i]) == 0);
+#endif
+    }
+    return 0;
+}
+#endif
 
 static int confirm_record(const storage_fixture *fixture, const uint8_t *record, size_t length, bool expected_pending)
 {
@@ -190,6 +238,9 @@ static int kernel_collision(const uint8_t *record, size_t length)
 
 int main(void)
 {
+#if defined(__GLIBC__) || defined(__ANDROID__)
+    CHECK(fortified_bounds() == 0);
+#endif
     uint8_t record[140] = {0};
     size_t length = 0;
     CHECK(fixture_record(record, sizeof(record), &length) == 0);

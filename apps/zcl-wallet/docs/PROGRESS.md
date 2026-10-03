@@ -7658,3 +7658,30 @@ fixture independently needs its fortified-write wrap. Do not disable fortificati
 to reach a hook. Existing production fuzz/ART/reproduction evidence remains
 applicable. Next: continue safe native/platform ownership and restart review;
 physical-device custody, authenticated-chain admission and TLS remain gated.
+
+## Production continuation: fault injection must retain fortification — 2026-10-03
+
+The storage fault test now calls the actual fortified entry points with a
+smaller declared capacity under short/zero/error injection. Each isolated child
+must receive libc's SIGABRT; returning an injected result is a failure. Real
+buffers remain large enough and descriptor-1 prevents file access if a guard
+regresses. Every child disables core files and is reaped before continuing.
+
+Removing read or positional-read bounds admission fails under both compilers;
+removing the fortified-write guard fails on Android. Unchanged controls pass.
+Strict Clang/GCC ASan/UBSan/LSan and analyzer checks, complexity and native
+API30/35/36 x86_64 runs pass. The original30-second CTest limit remains unchanged
+(host0.86/0.87s). ARM64 Android builds/alignment only; the Linux ARM64 UBSan
+emulator additionally executes this fixture successfully in1.05s. No production
+source, Android artifact or cryptographic semantics changed. Evidence:
+`.cache/storage-fortify-bounds*` (ignored).
+
+Separate ARM64 runtime qualification is underway at sourcec82ce8748 in
+`.cache/arm64-runtime/`, using cross GCC13.3 and QEMU8.2.2. The UBSan profile
+passes119/120 runtime groups; corruption recovery exceeds its30-second deadline
+also in isolation. Dynamic ASan fails its minimal startup probe; static ASan
+with non-PIE fixtures detects a deliberate overflow, but LSan reports unsupported
+process inspection and the broader ASan run encounters multiple unchanged
+execution deadlines. These are partial supplemental observations, not completed
+ARM64 sanitizer, Android or physical-custody acceptance. Do not weaken deadlines
+or substitute emulation for device proof. Continue safe independent engineering.

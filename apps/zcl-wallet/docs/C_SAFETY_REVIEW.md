@@ -4410,3 +4410,24 @@ bounded fault modes. Production storage and platform fortification are unchanged
 Clang/GCC sanitizer and analyzer evidence plus Android-target static analysis
 pass. API30/35/36 exercise actual fortified release archives, including16KiB
 API35. ARM64 compiles only; this does not qualify physical storage or custody.
+
+## Fault adapters retain libc bounds refusal — 2026-10-03
+
+Test-only scope: `test_storage_faults.c`. Forked negative controls prove that
+short/zero/error injection cannot bypass a smaller declared libc object bound.
+
+| Hazard | Review |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access | A real two-byte local is paired deliberately with a one-byte declared capacity. Checked libc must abort before I/O. Descriptor-1 ensures a faulty short forwarder cannot access a file; tests never depend on an actual memory overrun. |
+| Integer overflow/underflow; signed/unsigned conversions | Fixed lengths2/1 and three bounded fault modes. Parent reads WTERMSIG only after WIFSIGNALED; no new size or offset arithmetic. |
+| Use-after-free; double-free; leaks; dangling pointers | Each short-lived child owns its stack until abort; parent waits for that exact child before proceeding. No pointer, heap object or descriptor is transferred. |
+| NULL dereferences; uninitialized memory | Local arrays, rlimit and wait status initialize. Fork/setrlimit/wait outcomes are checked; no nullable owner is added. |
+| Pointer arithmetic | No new pointer arithmetic or unbounded span. Negative controls call existing test forwarders with explicit fixed sizes. |
+| Format strings; secret leakage | Fixed existing diagnostics and public zero bytes only. Child core-file limits are zero. Tests run before wallet fixture creation and cannot touch production paths. |
+| Stack usage; allocation limits | Two-byte scratch and small scalar structures; no heap, recursion or VLA. Strict host/NDK frame and complexity gates pass. |
+| Malformed serialization/network input | The regression exercises libc call admission only. It neither changes parser acceptance nor suppresses the genuine bounds trap. Independent read/pread/write guard removals are detected. |
+| Races; resource exhaustion | Six glibc or nine Bionic children run sequentially and are reaped; original test deadline remains30s. Child fault mutations do not alter parent state. Existing storage fixture cases still run afterward. |
+
+Clang/GCC ASan/UBSan/LSan, analyzers and API30/35/36 native tests pass. The same
+fixture also executes under ARM64 Linux UBSan emulation; that is distinct from
+Android ARM64 compilation, physical hardware and hardware-backed custody.
