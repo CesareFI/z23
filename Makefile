@@ -7901,14 +7901,29 @@ $(BIN_DIR)/rom_two_builder_compare: tools/rom_two_builder_compare.c \
 tools/checkpoint_rung_export: $(BIN_DIR)/checkpoint_rung_export
 $(BIN_DIR)/checkpoint_rung_export: tools/checkpoint_rung_export.c \
 		engine/modules/storage/src/checkpoint_rung.c platform/modules/base/src/log_level.c \
-		platform/modules/sha3/src/sha3.c core/modules/crypto/src/keccak_x4.c core/modules/crypto/src/simd_dispatch.c platform/modules/base/src/cleanse.c
+		platform/modules/sha3/src/sha3.c core/modules/crypto/src/keccak_x4.c core/modules/crypto/src/simd_dispatch.c platform/modules/base/src/cleanse.c \
+		core/modules/crypto/include/crypto/sha3.h \
+		core/modules/crypto/include/crypto/simd_dispatch.h \
+		core/modules/crypto/src/keccak_x4_internal.h \
+		engine/modules/storage/include/storage/checkpoint_rung.h \
+		platform/modules/base/include/base/cleanse.h \
+		platform/modules/base/include/base/format_attribute.h \
+		platform/modules/base/include/base/hex.h \
+		platform/modules/base/include/base/log_level.h \
+		platform/modules/base/include/base/log_macros.h \
+		platform/modules/base/include/base/serialize_le.h \
+		platform/modules/base/include/base/stdio_lock.h \
+		platform/modules/base/include/base/utc_tm.h \
+		platform/modules/sha3/include/sha3/sha3.h \
+		platform/modules/util/include/util/log_macros.h \
+		vendor/include/sqlite3.h vendor/lib/libsqlite3.a
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
 	    $(ZCL_WARN_STRINGOP_OVERFLOW) \
 	    -Iengine/modules/storage/include -Iplatform/modules/sha3/include -Icore/modules/crypto/include -Iplatform/modules/base/include -Iplatform/modules/util/include \
 	    -Iplatform/modules/support/include -Ivendor/include \
 	    -D_POSIX_C_SOURCE=200809L $(ZCL_PLATFORM_CPPFLAGS) \
-	    -o $@ $^ -Lvendor/lib vendor/lib/libsqlite3.a -lpthread -lm
+	    -o $@ $(filter %.c,$^) -Lvendor/lib vendor/lib/libsqlite3.a -lpthread -lm
 
 # consensus_rule_sweep: the FORWARD-facing consensus check. Every past-facing
 # check we own (deterministic rebuild, replay to tip, historical UTXO-root
