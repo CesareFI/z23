@@ -346,6 +346,33 @@ static int test_null_passphrase(void)
     return failures;
 }
 
+static int test_decrypt_length_bounds(void)
+{
+    int failures = 0;
+    TEST("wallet_keystore: oversized ciphertext refuses before KDF/output") {
+        uint8_t env[WKS_HEADER_LEN] = {0};
+        memcpy(env, WKS_MAGIC, WKS_MAGIC_LEN);
+        env[7] = 1;
+        env[10] = (uint8_t)(TEST_ITERS >> 8);
+        env[11] = (uint8_t)TEST_ITERS;
+        uint8_t out[64], expected[64];
+        memset(out, 0xa5, sizeof(out));
+        memset(expected, 0xa5, sizeof(expected));
+        const size_t lengths[] = {
+            (size_t)WKS_HEADER_LEN + (size_t)INT_MAX + 1, SIZE_MAX
+        };
+        for (size_t i = 0; i < sizeof(lengths) / sizeof(lengths[0]); ++i) {
+            size_t out_len = 99;
+            ASSERT(!wks_decrypt(env, lengths[i], k_passphrase,
+                                out, SIZE_MAX, &out_len));
+            ASSERT(out_len == 99);
+            ASSERT(memcmp(out, expected, sizeof(out)) == 0);
+        }
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── At-rest creation policy ─────────────────────────────────── */
 
 static int test_at_rest_creation_policy(void)
@@ -651,6 +678,7 @@ int test_wallet_keystore(void)
     failures += test_empty_plaintext();
     failures += test_long_plaintext();
     failures += test_null_passphrase();
+    failures += test_decrypt_length_bounds();
     failures += test_wallet_lock_register();
     failures += test_wallet_lock_boot_credential();
     failures += test_keystore_secure_erase();
