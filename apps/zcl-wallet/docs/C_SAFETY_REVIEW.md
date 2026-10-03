@@ -4532,3 +4532,31 @@ linked. Default Clang/GCC ASan/UBSan/LSan discovery passes the same 13 groups.
 The Android release APK remains byte-identical, with alignment and fixture
 isolation gates passing. This is C adapter execution under emulation, not ART,
 Android ARM64 runtime, physical-device or full ARM sanitizer qualification.
+
+## QR provider resize ownership failure coverage — 2026-10-03
+
+Test-only scope: `test_scan_failures.c` and its private provider header path.
+The pinned provider and its hashes are unchanged. The new cases retain a marked
+64x64 public frame, then shrink, keep size or grow under each allocation failure
+and success. The existing free observer requires every retired allocation to be
+zero. Failed resize must preserve the original live frame and dimensions;
+success preserves only the copied prefix and zero-initializes the added area.
+
+| Hazard | Review |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access | Private test dimensions are 21, 64 and 80. Observed dimensions are checked before pixel reads; allocation observers retain the exact sizes. |
+| Integer overflow/underflow; signed/unsigned conversions | Dimensions are positive constants, at most 80, before size_t products. Failure ordinals 1..3 and the pinned two-allocation resize profile are explicit. |
+| Use-after-free; double-free; leaks; dangling pointers | Only an integer identity of the previous frame survives resize. Pixel spans are reacquired through the still-owned decoder. Existing tracked free checks complete erasure before release; live allocation count must return to zero. |
+| NULL dereferences; uninitialized memory | Every decoder/image allocation result is checked. Grow checks the calloc-initialized suffix; old pixel bytes use a fixed public marker. Provider ownership structures are not inspected through expired pointers. |
+| Pointer arithmetic | Test loops stay within checked current dimensions; no new production arithmetic. |
+| Format strings; secret leakage | Constant diagnostics and public synthetic image data only. No frame content is logged. Removing either resize wipe is detected before the affected allocation is freed. |
+| Stack usage; allocation limits | Small scalars and a three-element dimension array; frames remain checked provider allocations. At most five tracked allocations coexist, below the existing eight-slot observer bound. No recursion or new large automatic object. |
+| Malformed serialization/network input | Existing real QR/provider failure cases still run after resize cases. No parser, serialization or accepted input changes. |
+| Races; resource exhaustion | The fixture remains single-threaded with bounded loops and its original ten-second deadline. No production caching or decoder reuse is introduced. |
+
+Both host sanitizer/analyzer profiles pass. The same fixture executes under
+ARM64 Linux UBSan and against actual release archives on API 30/35/36 x86_64,
+including 16 KiB API 35. Android ARM64 builds only. Independent failed-copy and
+old-frame wipe removals pass the prior fixture but fail the expanded one under
+both compilers. This qualifies the provider contract, not a new runtime reuse
+optimization or physical camera/custody behavior.

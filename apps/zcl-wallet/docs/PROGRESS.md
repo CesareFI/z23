@@ -7810,3 +7810,21 @@ The updated canonical safety script passes its complete Clang/GCC suites:
 complexity and the unchanged fuzz-profile deadline. The documented ARM64 profile
 also completes the full strict build; only its selected JNI runtime set is
 claimed as passing here.
+
+## Production continuation: observe private pixels during failed resize — 2026-10-03
+
+QR provider allocation tests now begin resize with an existing marked public
+frame, covering shrink, same-size and grow operations. Both resize allocation
+failures must preserve the live frame/dimensions and retire any temporary copy;
+success must clear the replaced allocation and preserve only the copied prefix.
+The existing free observer checks every byte before release. Production still
+uses one decoder per scan; this adds no cache or provider change.
+
+RED: removing the failed-copy wipe or old-frame wipe independently passes the
+prior fixture but fails the expanded test under both compilers. GREEN: strict
+Clang/GCC ASan/UBSan/LSan and both analyzers pass, as do complexity and unchanged
+provider hashes. Focused Clang CTest takes 0.08s; ARM64 Linux UBSan executes the
+fixture in 0.22s under the original ten-second deadline. Actual release-archive
+fixtures pass API 30/35/36 x86_64, including 16 KiB API 35; Android ARM64 builds
+and alignment only. Existing production fuzz/JVM/ART/reproduction evidence
+remains applicable. Ignored evidence: `.cache/scan-resize/`.

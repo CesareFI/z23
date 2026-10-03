@@ -1,5 +1,6 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #include "scan_fixture.h"
+#include "quirc.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -69,8 +70,47 @@ void __wrap_free(void *pointer)
     abort(); /* Unowned pointer or second free. */
 }
 
+static void check_retained_frame(struct quirc *decoder, int expected_width,
+    int expected_height, uintptr_t previous, bool failed)
+{
+    int width = 0, height = 0;
+    const uint8_t *pixels = quirc_begin(decoder, &width, &height);
+    CHECK(pixels != NULL && width == expected_width && height == expected_height);
+    if (failed) CHECK((uintptr_t)pixels == previous);
+    const size_t length = (size_t)width * (size_t)height; /* Checked fixture dimensions <=80. */
+    for (size_t i = 0; i < length; ++i) CHECK(pixels[i] == (i < 64 * 64 ? 0x42 : 0));
+}
+
+static void reused_resize(int width, int height, size_t failure)
+{
+    CHECK(!active && live == 0);
+    active = true;
+    fail_at = SIZE_MAX;
+    calls = 0;
+    struct quirc *decoder = quirc_new();
+    CHECK(decoder != NULL && quirc_resize(decoder, 64, 64) == 0 && live == 3);
+    uint8_t *pixels = quirc_begin(decoder, NULL, NULL);
+    CHECK(pixels != NULL);
+    memset(pixels, 0x42, 64 * 64);
+    const uintptr_t previous = (uintptr_t)pixels;
+    pixels = NULL; /* A successful resize may retire this frame. */
+    calls = 0;
+    fail_at = failure;
+    const int status = quirc_resize(decoder, width, height);
+    const bool failed = failure <= 2; /* Pinned provider aliases pixels to image. */
+    CHECK(status == (failed ? -1 : 0) && calls == (failed ? failure : 2) && live == 3);
+    check_retained_frame(decoder, failed ? 64 : width, failed ? 64 : height, previous, failed);
+    quirc_destroy(decoder);
+    CHECK(live == 0);
+    active = false;
+}
+
 int main(void)
 {
+    const int dimensions[] = {21, 64, 80};
+    for (size_t i = 0; i < sizeof(dimensions) / sizeof(dimensions[0]); ++i)
+        for (size_t failure = 1; failure <= 3; ++failure)
+            reused_resize(dimensions[i], dimensions[i], failure);
     static const uint8_t address[] = "t1T8yaLVhNqxA5KJcmiqqFN88e8DNp2PBfF";
     zcl_qr_image layout = {0};
     size_t size = 0;
