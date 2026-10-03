@@ -36,6 +36,17 @@ struct zcl_test_group_host_need {
     const char *target; /* BUILD only: the Make target; NULL otherwise */
 };
 
+/* Platform-qualified BUILD rows bound distinct targets for both runners.
+ * Deduplication can reduce this count; no valid declaration can exceed it. */
+enum {
+    ZCL_TEST_GROUP_BUILD_NEED_ROWS = 0
+#define ZCL_TEST_GROUP_NEED(id_, kind_, value_)
+#define ZCL_TEST_GROUP_BUILD_NEED(id_, value_, target_) + 1
+#include "test_group_host_needs.def"
+#undef ZCL_TEST_GROUP_BUILD_NEED
+#undef ZCL_TEST_GROUP_NEED
+};
+
 /* Every declared row names a registered catalog group with a known kind and
  * a non-empty value. A group declares at most one host gate and may also
  * declare distinct BUILD targets. A violation is named on stderr and

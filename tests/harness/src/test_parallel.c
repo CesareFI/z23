@@ -2066,7 +2066,7 @@ static bool exact_selection_valid(bool exact, const char *only)
     return false;
 }
 
-#define BUILD_NEEDS_MAX 16u
+#define BUILD_NEEDS_MAX ZCL_TEST_GROUP_BUILD_NEED_ROWS
 
 /* --list-build-needs: print `<make-target> <path>` per BUILD need of the
  * groups this selector would dispatch (zcl_test_selection_build_needs, under
