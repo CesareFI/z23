@@ -4229,3 +4229,25 @@ below the strict frame cap, with no VLA or recursion. Malformed public input is
 intentionally never read for an old token. Two joined workers and bounded loops
 limit resources; TSan qualifies the fixture and full linked core/provider/JNI
 path. No production source, custody, disk or serialization contract changes.
+
+## Storage fixture acquisition failure — 2026-10-03
+
+Scope is the isolated native test helper, its regression and host registration.
+Production storage is unchanged.
+
+| Hazard | Review |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access | Reuses the fixed path array and existing compile-time template bound. Adds no copying or array indexing. |
+| Integer overflow/underflow; signed/unsigned conversions | Saves errno as int; diagnostic uses %d. Test counters have small fixed call counts and add no narrowing or unchecked arithmetic. |
+| Use-after-free; double-free; leaks; dangling pointers | Failed open leaves no descriptor. The helper removes only the empty directory just created by its successful mkdtemp. Successful descriptor ownership and normal fixture_close remain unchanged. Cleanup refusal is reported rather than hidden; the fault test then removes its own retained directory. |
+| NULL dereferences; uninitialized memory | Existing fixture initialization precedes syscalls. Test stat buffers initialize; metadata is used only after successful lookup. No new nullable owner is introduced. |
+| Pointer arithmetic | No new pointer arithmetic. Removal uses the same bounded, terminated invocation-owned path. |
+| Format strings; secret leakage | Fixed error contexts and numeric errno only. Fixtures contain public synthetic records; no production path, key or recovery material enters this regression. |
+| Stack usage; allocation limits | Small fixed fixture/stat locals, no allocation, recursion, VLA or input-sized storage. Strict frame limits pass. |
+| Malformed serialization/network input | No parser, format, network or application input changes. The regression injects syscall outcomes in its own executable. |
+| Races; resource exhaustion | The test is single-threaded; wrappers and counters are test-only. Synthetic EMFILE does not exhaust host descriptors. A separate live fixture stays intact, and original errno survives a simulated cleanup refusal. |
+
+The first macro-based injection was bypassed by optimized GCC's fortified libc
+open alias. Linker wrapping, already used by adjacent storage tests, now observes
+the actual call under both compilers and Android. No fortification or acceptance
+assertion was disabled. Final RED/control and validation are in PROGRESS.md.

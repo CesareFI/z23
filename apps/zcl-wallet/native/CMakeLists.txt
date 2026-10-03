@@ -1679,6 +1679,13 @@ if(NOT ANDROID)
         target_compile_options(storage_tests PRIVATE -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion)
         add_test(NAME wallet_storage COMMAND storage_tests)
         set_tests_properties(wallet_storage PROPERTIES TIMEOUT 30)
+        add_executable(storage_fixture_tests tests/test_storage_fixture.c tests/storage_fixture.c)
+        target_link_libraries(storage_fixture_tests PRIVATE zcl_wallet_core)
+        target_link_options(storage_fixture_tests PRIVATE -Wl,--wrap=open -Wl,--wrap=rmdir)
+        target_compile_options(storage_fixture_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+            -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+        add_test(NAME wallet_storage_fixture COMMAND storage_fixture_tests)
+        set_tests_properties(wallet_storage_fixture PROPERTIES TIMEOUT 15)
         add_executable(storage_link_tests tests/test_storage_links.c tests/storage_fixture.c)
         target_link_libraries(storage_link_tests PRIVATE zcl_wallet_core)
         target_compile_options(storage_link_tests PRIVATE -Wall -Wextra -Wpedantic -Werror

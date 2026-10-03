@@ -7396,3 +7396,35 @@ signed-release or physical-device custody evidence. Raw proof remains ignored
 under `.cache/seal-retirement-*` and `.cache/reproduce-seal-retirement/`.
 Next: continue bounded native storage/startup failure review and measured
 resource work. No Worldstream, consensus, production data or TLS change occurred.
+
+## Production continuation: storage fixture acquisition cleanup — 2026-10-03
+
+Review before storage measurements found that the shared native fixture helper
+leaked its newly created temporary directory when descriptor open failed. The
+new regression injects EMFILE without exhausting real descriptors. The old
+helper fails the directory-retirement assertion; the corrected helper removes
+its own fresh empty directory and preserves the original error. A secondary
+rmdir refusal is reported, keeps that directory available for diagnosis and
+still preserves EMFILE. The test cleans its invocation-owned RED/refused residue
+and verifies a separate active fixture is unaffected.
+
+Initial Clang RED was valid, but optimized GCC bypassed macro interposition via
+its fortified open alias. The final regression uses existing linker-wrap practice
+and passes both compilers without weakening libc protection. The final fixture
+also fails against the unchanged old helper and passes against the fixed one.
+The C hazard review covers the helper, wrappers and ownership boundaries.
+
+All 28 registered storage/change groups sharing the helper pass with Clang and
+optimized GCC ASan/UBSan/LSan (5.52/18.21s). Both deadline-contract gates, static
+analyzers and test complexity cap pass; no function exceeds15. The real fuzz
+profile/manifest mutation gate passes in54.82s with unchanged deadlines. Storage
+fuzzing completes33,664 executions in21s without a finding. Release-archive
+regressions pass on API30/35/36 x86_64, including API35 with16384-byte pages;
+ARM64 compiles/alignment only. Architecture/docs/diff gates pass. This test-only
+change leaves the validated application, cryptography, custody and APK unchanged.
+
+Evidence remains ignored under `.cache/storage-fixture*`; an initial attempted
+fuzz build pointed at a corpus directory, was diagnosed and replaced with a
+separate configured build. No generated artifacts or temporary directories enter
+Git. Next: establish a bounded, verified native storage/startup timing baseline
+before considering any write-path optimization. Durability checks remain intact.

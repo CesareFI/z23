@@ -24,7 +24,15 @@ int fixture_open(storage_fixture *fixture)
     memcpy(fixture->path, fixture_template, sizeof(fixture_template));
     CHECK(mkdtemp(fixture->path) != NULL);
     fixture->directory = open(fixture->path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
-    CHECK(fixture->directory >= 0);
+    if (fixture->directory < 0) {
+        const int cause = errno;
+        /* mkdtemp transferred this fresh empty directory before open failed.
+         * No descriptor exists for fixture_close; retire only this path now. */
+        if (rmdir(fixture->path) != 0) perror("storage fixture directory cleanup");
+        fprintf(stderr, "storage fixture directory open failed: %d\n", cause);
+        errno = cause;
+        return 1;
+    }
     return 0;
 }
 
