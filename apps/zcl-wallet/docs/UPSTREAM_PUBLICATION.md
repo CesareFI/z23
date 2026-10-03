@@ -395,3 +395,14 @@ currently runs the prerequisite-only proof; xprv/key copies carry their combined
 heads. Serialize universal runtime proofs under the shared test identity;
 independent builds in separate copies may run in parallel. All three combined
 wallet proofs remain pending. No extra branch or PR has been published yet.
+
+Prerequisite-only native result:195/196 groups pass; the sole failure is the
+previously documented Clang18 semantic-fuzz capability (402.2s runtime). Reflex
+execution passes with its source-built images. The exact plan deliberately does
+not apply universal host gating, so no standalone PASS or publication is claimed.
+Do not repeat that unsupported run or change selection rules to obtain green.
+The original wallet additions already select the universal plan; their combined
+heads must qualify under that unchanged plan and report its explicit host gates.
+Xprv57f7df67 is now running its native proof; mnemonic994070f6 and key951f4cef
+have rebuilt their development binaries and await serialized runtime proofs.
+The shared prerequisite remains a separate commit in each proposed wallet PR.
