@@ -13188,6 +13188,7 @@ check-fuzz-artifact-ledger:
 check-standalone-tools-link:
 	@echo "→ Gate: standalone_tools_link (every tool rule still builds)"
 	@./tools/lint/check_standalone_tools_link.sh
+	@./tools/lint/check_postmortem_tool_deps.sh
 
 # tools/scripts/make_app_bundle.sh must be a pure function of its input: two
 # bundle runs over identical binaries into two temp dirs must be
@@ -15189,7 +15190,25 @@ $(BIN_DIR)/postmortem_to_scenario: tools/postmortem_to_scenario.c \
 		platform/modules/util/src/signal_handler.c platform/modules/util/src/clientversion.c \
 		platform/modules/util/src/async_safe_write.c \
 		platform/modules/base/src/safe_alloc.c platform/modules/base/src/log_level.c \
-		platform/modules/json/src/json.c
+		platform/modules/json/src/json.c \
+		engine/modules/sim/include/sim/postmortem.h \
+		engine/modules/sim/include/sim/seed_tape.h \
+		engine/modules/sim/src/postmortem_internal.h \
+		platform/modules/base/include/base/format_attribute.h \
+		platform/modules/base/include/base/log_level.h \
+		platform/modules/base/include/base/log_macros.h \
+		platform/modules/base/include/base/safe_alloc.h \
+		platform/modules/base/include/base/stdio_lock.h \
+		platform/modules/base/include/base/utc_tm.h \
+		platform/modules/json/include/json/json.h \
+		platform/modules/platform/include/platform/clock.h \
+		platform/modules/platform/include/platform/rng.h \
+		platform/modules/util/include/util/async_safe_write.h \
+		platform/modules/util/include/util/clientversion.h \
+		platform/modules/util/include/util/log_macros.h \
+		platform/modules/util/include/util/safe_alloc.h \
+		platform/modules/util/include/util/signal_handler.h \
+		vendor/include/zconf.h vendor/include/zlib.h vendor/lib/libz.a
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
 	    -Wno-format-truncation \
@@ -15197,7 +15216,7 @@ $(BIN_DIR)/postmortem_to_scenario: tools/postmortem_to_scenario.c \
 	    -Iplatform/modules/json/include \
 	    -Ivendor/include \
 	    -D_POSIX_C_SOURCE=200809L $(ZCL_PLATFORM_CPPFLAGS) \
-	    -o $@ $^ -Lvendor/lib vendor/lib/libz.a -lpthread -lm
+	    -o $@ $(filter %.c,$^) -Lvendor/lib vendor/lib/libz.a -lpthread -lm
 
 .PHONY: postmortem-to-scenario
 postmortem-to-scenario: tools/postmortem_to_scenario
