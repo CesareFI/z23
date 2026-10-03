@@ -4835,3 +4835,51 @@ consensus rules are unchanged. Exact native proof passes all215 lint gates and
 228/228 impacted groups with zero skips, unobserved or flaky outcomes; receipt
 SHA256 is
 `f8ea7015fb63d2c9d761f9ce7a5b808166f1801bab2f3f0544f38bb148ed918f`.
+
+## Upstream extended-key failure retirement — 2026-10-04
+
+Signed commits `72546d92ee4e1d92e20aaf5160f4c7cb65975be4` and
+`d796d73ae29f04cd06ecc16b7d500d5900e2aade`, base3a93e60e, retire the entire
+`struct ext_key` output when child derivation fails or when master/decode scalar
+validation fails. Wiping includes private scalar, chain code and metadata. The
+zeroed validity flag preserves refusal; successful bytes and BIP32 operations
+are unchanged.
+
+The regression compiles the actual owner with qualified deterministic
+secp256k1 fault shims and observes only the live output span passed to
+`memory_cleanse`. Canonical owner tests show distinct RED→GREEN behavior. Child,
+master and decode cleanup-removal mutants fail independently under Clang20 and
+GCC14 optimized ASan/UBSan/LSan; controls pass. Final fast/ASan and2,433-TU GCC
+scope pass. Complexity initially rejected M=18; helper extraction brings every
+changed function under cap15 without a pin or suppression. Architecture,
+generated inventory, core seals, consensus parity and sensitive-pattern scans
+pass.
+
+No allocation, output alias, persistent pointer, format, derivation arithmetic,
+retry rule or concurrency behavior changes. Consensus, monetary policy, PoW,
+upgrade rules, transparent/shielded validity, recovery, storage and TLS remain
+unchanged. Tests contain only fixed synthetic bytes. Exact proof for the first
+commit passes all 215 lint gates and all 1,236 impacted groups with zero skips
+or final unobserved outcomes; one shared-pool load-flaky group passed clean
+alone. Receipt SHA256 is
+`9b9044d691bed0e29e0ae1981584457b4a1510793d1e79b77d052b17c6ec781d`.
+Combined-head d796d73a proof separately passes all 215 lint gates and all 1,236
+impacted groups with zero failures, skips, unobserved or load-flaky outcomes.
+Receipt SHA256 is
+`2e30a6b682e51ea47b80904cad00cb6b1fb6dda0861dad935404aeb4532fa092`.
+
+## Upstream ECC sanity-key retirement — 2026-10-04
+
+Signed commit `c5daeca1c25334fd7dca37943378308b683ecf89` retires the
+`struct privkey` created only for the startup sign/verify sanity check. The wipe
+occurs after the last verification read and before every normal return. The
+actual-source observer proves the live object was populated and that the full
+object was erased; removing the cleanse fails under strict optimized Clang20
+and GCC14 ASan/UBSan/LSan while controls pass.
+
+Key generation, RNG refusal, signing, public-key verification, process-wide
+context lifetime and every caller-visible result remain unchanged. The change
+does not alter consensus, monetary policy, PoW, upgrades, transparent or
+shielded validity, recovery, storage or TLS behavior. Focused fast/ASan,
+GCC2,433-TU scope, cap15 complexity, architecture, inventory, seals and
+consensus gates pass. Exact combined-head proof is still pending.

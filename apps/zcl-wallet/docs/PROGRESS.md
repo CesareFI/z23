@@ -8254,3 +8254,32 @@ and receipt SHA256
 Independent git status binds the clean proof tree to c78e1483/base3a93e60e.
 Encryption-length03bfa7e5 remains a separate qualified proposal. No external
 safety restriction was bypassed.
+
+### Extended-key refusal outputs retired
+
+Signed72546d92 adds owner-level retirement for failed child and invalid-master
+extended-key outputs. Signed follow-up d796d73a covers invalid decoded scalars.
+Each defect has canonical RED→GREEN and a cleanup-removal mutant; final focused
+fast/ASan, strict Clang20/GCC14 ASan/UBSan/LSan, GCC2,433-TU, complexity,
+architecture, generated-doc, seal and consensus gates pass. The first exact
+proof in preserved copy `/tmp/we.mspu1F/repo` passes 215/215 lint gates and
+1,236/1,236 impacted groups with zero skips or final unobserved outcomes. One
+load-flaky onion-bootstrap group passed clean alone; receipt SHA256 is
+`9b9044d691bed0e29e0ae1981584457b4a1510793d1e79b77d052b17c6ec781d`.
+The combined d796d73a proof independently passes 215/215 lint gates and
+1,236/1,236 impacted groups with zero failures, skips, unobserved or load-flaky
+outcomes; receipt SHA256 is
+`2e30a6b682e51ea47b80904cad00cb6b1fb6dda0861dad935404aeb4532fa092`.
+A root-only lint attempt remains invalid environment evidence because
+permission selftests cannot qualify under UID0. No gate or repository
+protection was bypassed.
+
+### Startup sanity private-key scratch retired
+
+Signed upstream candidate c5daeca1 extends the already qualified key-scratch
+series without changing key generation or verification. The startup ECC sanity
+check now wipes its private-key object after the final verification use.
+Canonical RED→GREEN, focused ASan, dual-compiler sanitizer/mutation, GCC2,433-TU,
+complexity, architecture, inventory, seal and consensus evidence passes. Local
+publication artifacts verify; exact combined-head proof preparation continues
+in `/tmp/wk.Bq1CX4/repo`.

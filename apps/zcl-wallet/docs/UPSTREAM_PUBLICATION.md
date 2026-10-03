@@ -630,3 +630,50 @@ qualified source tree. PR body and offline artifacts are complete. The
 independently qualified encryption-length branch03bfa7e5 stays a separate
 API-admission proposal. No publication push was attempted under the recorded
 hook boundary.
+
+### Extended-key refusal retirement candidates signed
+
+Branch `agent/upstream-wallet-extkey-failure-retirement-20261004`, signed head
+`72546d92ee4e1d92e20aaf5160f4c7cb65975be4`, base
+`3a93e60ebf922af3d119b9facc1d95803f42844b`, places failure cleanup in the
+portable BIP32 owner. Failed child derivation and an invalid master scalar now
+wipe the complete extended-key output. The registered actual-source observer is
+canonical RED before the fix and GREEN afterward; distinct child/master
+cleanup-removal mutants exit1 under strict optimized Clang20/GCC14
+ASan/UBSan/LSan while controls exit0. Focused fast/ASan, cap15 complexity,
+architecture, generated inventory, core seals, consensus parity,2,433-TU GCC
+scope and sensitive-pattern scans pass. Its preserved exact proof copy
+`/tmp/we.mspu1F/repo` passes all 215 lint gates and all 1,236 impacted groups
+with zero skips or final unobserved outcomes. One onion-bootstrap group was
+load-flaky under the shared pool and passed clean alone. Receipt SHA256 is
+`9b9044d691bed0e29e0ae1981584457b4a1510793d1e79b77d052b17c6ec781d`.
+Two earlier generation-prerequisite refusals are retained as environment
+evidence and were repaired only with their documented build targets.
+
+Signed follow-up `d796d73ae29f04cd06ecc16b7d500d5900e2aade` on branch
+`agent/upstream-wallet-extkey-refusal-retirement-20261004` also wipes the
+complete decoded extended-key output when secp256k1 rejects its scalar.
+Canonical invalid-decode RED becomes GREEN; removing only that cleanup yields
+mutant1 under both compilers. The test helpers were split after the complexity
+gate rejected M=18; final functions pass the normal cap without a suppression.
+The combined two-commit review is five files,+170/-11. Its preserved exact
+proof passes all 215 lint gates and all 1,236 impacted groups with zero
+failures, skips, unobserved or load-flaky outcomes in 937.773s. Receipt SHA256
+is `2e30a6b682e51ea47b80904cad00cb6b1fb6dda0861dad935404aeb4532fa092`.
+Its PR body, signed patch series, complete bundle and SHA256 manifest are
+prepared. The single-commit branch/tree/artifacts stay preserved.
+
+### Signing-key scratch completion candidate signed
+
+Branch `agent/upstream-wallet-key-scratch-complete-20261004`, signed head
+`c5daeca1c25334fd7dca37943378308b683ecf89`, base3a93e60e, extends the
+qualified key-scratch series by retiring the generated private key used by the
+startup ECC sanity check after its final verification use. The new production
+commit changes only `key.c`, its actual-source retirement regression and the
+generated capability inventory. Canonical RED becomes focused and ASan GREEN;
+strict optimized Clang20/GCC14 sanitizer controls exit0 and removal of the new
+cleanse exits1 under both compilers. GCC2,433-TU scope, cap15 complexity,
+architecture, inventory, seals, consensus parity, no-Python and sensitive-data
+gates pass. Signed bundle, patch series and PR body are prepared. The combined
+exact proof copy `/tmp/wk.Bq1CX4/repo` is being built independently; no exact
+combined-head PASS is claimed yet.
