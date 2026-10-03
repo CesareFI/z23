@@ -19,6 +19,34 @@ import org.zclassic.wallet.core.Zatoshi
 /** Public local fixtures only. No endpoint, socket, wallet record or Keystore. */
 @RunWith(AndroidJUnit4::class)
 class ReadOnlySyncInstrumentedTest {
+    @Test fun retiredReplyBurstCannotExpireOrPoisonTheCurrentAttempt() {
+        val assets = InstrumentationRegistry.getInstrumentation().context.assets
+        val frame = ByteArray(16384) { 42 } // Public bytes, never parsed for a retired token.
+        for (network in Network.entries) for (history in listOf(false, true)) {
+            val address = TransparentAddress.fromPublicKeyHash(ByteArray(20), network)
+            val now = AtomicLong(100)
+            val sync = if (history) ReadOnlySync.withHistory(address, ByteArray(32) { 1 }, now::get)
+                else ReadOnlySync(address, ByteArray(32) { 1 }, now::get)
+            sync.use {
+                val old = sync.begin(100)
+                assertEquals(CoreStatus.CANCELLED, old.fail())
+                val current = sync.begin(100)
+                assertTrue(current.request().isNotEmpty())
+                val before = sync.snapshot()
+                now.set(Long.MAX_VALUE)
+                repeat(64) { assertEquals(CoreStatus.CANCELLED, old.reply(frame)) }
+                now.set(100)
+                assertEquals(before, sync.snapshot())
+                assertTrue(frame.all { it == 42.toByte() })
+                val name = if (network == Network.MAINNET) "mainnet" else "testnet"
+                val version = assets.open("sync/$name-1.json").use { it.readBytes() }
+                now.set(101)
+                assertEquals(CoreStatus.OK, current.reply(version))
+                assertTrue(current.request().isNotEmpty())
+            }
+        }
+    }
+
     @Test fun signedPendingAmountsUseCheckedNativeFormatting() {
         val cases = mapOf(0L to "0", -7L to "-0.00000007", 7L to "+0.00000007",
             Zatoshi.MAX_VALUE to "+21000000", -Zatoshi.MAX_VALUE to "-21000000",

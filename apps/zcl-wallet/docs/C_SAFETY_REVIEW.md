@@ -4180,3 +4180,29 @@ adapting their old insertion points. TLS remains outside the enabled scope.
 Host validation of these candidates does not qualify physical-device custody,
 real camera interoperability, TLS, or production readiness. The preservation
 entry in PROGRESS.md records the checks actually run for this snapshot.
+
+## Retired read-only sync reply preflight — 2026-10-03
+
+Reviewed the preserved continuation in `sync_watch.c`, `jni_sync.c`, the public
+watch declaration and host/ART regressions. The existing token predicate now
+has a read-only entry point. JNI calls it while retaining the registry mutex,
+before acquiring a frame buffer or reading Java bytes. Current replies still
+pass the complete existing parser, clock and deadline checks.
+
+| Hazard | Review |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access | Preflight reads only initialized watch fields. The existing fixed 16384-byte frame owner and bounded JNI copy remain authoritative for admitted replies. |
+| Integer overflow/underflow; signed/unsigned conversions | Existing positive token and nonnegative time checks precede casts. The new predicate compares uint64 values without arithmetic or narrowing. |
+| Use-after-free; double-free; leaks; dangling pointers | The registry lock protects the borrowed watch through preflight and reply. Retired tokens allocate nothing. Admitted frames retain the existing single wipe/free path. |
+| NULL dereferences; uninitialized memory | The C predicate rejects null or uninitialized watches. JNI checks its environment and pending exception before registry entry; failed lookups never borrow a watch. |
+| Pointer arithmetic | No new production pointer arithmetic is introduced. Test comparisons use complete fixed-size snapshot arrays. |
+| Format strings; secret leakage | Test diagnostics use fixed formats and unsigned counters. Sync data and fixture arrays are public. Existing frame retirement remains intact; no key/entropy route changes. |
+| Stack usage; allocation limits | No new production arrays, heap owners, recursion or VLA. Retired callbacks avoid the existing bounded frame allocation; active callbacks keep the same limits and failure semantics. |
+| Malformed serialization/network input | Preflight grants no reply or time validity. Current-token frames still undergo all existing length, parsing, request/reply and freshness checks. Old-token frames cannot advance the current clock. |
+| Races; resource exhaustion | The same exclusive registry lock spans token check, frame use and watch mutation, preventing a check/use lifetime gap. The public C API documents exclusive owner access. Work per retired callback is bounded and allocation-free. |
+
+RED evidence observes 64 allocations and 64 byte-region reads for 64 retired
+callbacks; GREEN observes zero, with unchanged current snapshots and successful
+current-reply controls. Sanitizer, analyzer, complexity, fuzz, TSan and Android
+results are recorded in the corresponding progress entry. No TLS, consensus,
+wallet-record or custody admission changes are included.

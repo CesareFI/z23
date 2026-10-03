@@ -90,6 +90,7 @@ static uint64_t begin(zcl_sync_watch *watch, uint64_t now, uint64_t timeout)
     uint64_t token = 0;
     CHECK(zcl_sync_watch_begin(watch, now, timeout, UINT32_MAX - 5, &token) == ZCL_OK);
     CHECK(token != 0);
+    CHECK(zcl_sync_watch_check_attempt(watch, token) == ZCL_OK);
     return token;
 }
 
@@ -117,6 +118,7 @@ static void late(zcl_sync_watch *watch, uint64_t token)
     size_t written = 99;
     uint8_t request[256] = {0xa5};
     /* Even a late callback with a nonsensical clock cannot poison a new owner attempt. */
+    CHECK(zcl_sync_watch_check_attempt(watch, token) == ZCL_CANCELLED);
     CHECK(zcl_sync_watch_request(watch, token, UINT64_MAX, request, sizeof(request), &written) == ZCL_CANCELLED);
     CHECK(zcl_sync_watch_reply(watch, token, 0, (const uint8_t *)"{}", 2) == ZCL_CANCELLED);
     CHECK(zcl_sync_watch_fail(watch, token, ZCL_IO_FAILURE) == ZCL_CANCELLED);
@@ -227,6 +229,8 @@ static void arguments_and_malformed(void)
     memset(&output, 0xa5, sizeof(output));
     memcpy(&before, &output, sizeof(before));
     zcl_sync_watch_close(&watch);
+    CHECK(zcl_sync_watch_check_attempt(&watch, token) == ZCL_INVALID_ARGUMENT);
+    CHECK(zcl_sync_watch_check_attempt(NULL, token) == ZCL_INVALID_ARGUMENT);
     CHECK(zcl_sync_watch_snapshot(&watch, 2, &output) == ZCL_INVALID_ARGUMENT);
     CHECK(memcmp(&output, &before, sizeof(output)) == 0);
     CHECK(zcl_sync_watch_init(&watch, NULL, 0, ZCL_MAINNET, NULL, 0) == ZCL_INVALID_ARGUMENT);

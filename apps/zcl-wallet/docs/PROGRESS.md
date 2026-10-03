@@ -7290,3 +7290,42 @@ under `.cache/submit-primary-*` and `.cache/reproduce-submit-primary/`.
 TLS quarantine and existing physical-device/root-lint limits remain unchanged.
 Next: inspect read-only JNI snapshot allocation and measurement opportunities,
 keeping normal validation authoritative and avoiding speculative optimization.
+
+## Production continuation: retired sync replies avoid frame ownership — 2026-10-03
+
+Resumed the six-file pending Android sync continuation on `b4d5d6a8f`, after
+fetching upstream and reconciling the intervening committed preservation work.
+The retained RED fixture counted 64 native frame allocations and 64 Java byte
+region reads for 64 replies from an already retired attempt. C already rejected
+these tokens without changing the current attempt, but JNI copied their frames
+first. The existing C token predicate is now a documented read-only adapter
+preflight, called under the same registry lock before frame allocation/copy.
+Current replies retain all prior parsing, time, deadline and retirement checks.
+
+GREEN checks zero allocations/copies for unissued, cancelled and superseded
+tokens in balance/history modes, unchanged snapshots despite a future callback
+time, and normal allocation/copy plus progress for an admitted current reply.
+This is an exact operation-count improvement; no latency or battery claim is
+made. Existing exception and allocation-failure checks remain intact.
+
+Retained completed validation for these unchanged sources passes Clang142/GCC137
+native groups with ASan/UBSan/LSan, provider digests, both analyzers and complexity
+caps; the JNI sync fuzzer completes3514 runs in21s without a finding. Offline
+Android/JVM, debug/test, both-ABI minified release, both lint variants, fixture
+isolation and16KiB alignment pass (154 tasks). A fresh fully TSan-instrumented
+core/provider/JNI race fixture passes. SHA256 records the six source/test files.
+
+Fresh public-fixture instrumentation passes all three read-only sync tests with
+no skips on API30/35/36 x86_64 (0.041/0.074/0.048s). API35 reports a16384-byte
+page size. The initial reused API35 profile was credential-locked after boot,
+and Android refused to launch the test process; its state and policy were left
+intact. A new isolated public-fixture AVD supplied the successful API35 run.
+This establishes emulator/JNI behavior, not physical ARM64 or hardware custody.
+Architecture, documentation-count and whitespace gates pass. Evidence remains
+ignored under `.cache/sync-retired-*`; no generated artifact is committed.
+
+The explicit C hazard review is in `C_SAFETY_REVIEW.md`. TLS remains quarantined;
+no consensus, recovery format, wallet state or production data changed. Next:
+strengthen concurrent late-reply coverage against replacement attempts under
+TSan, then continue independent native storage/restart review. Worldstream and
+production operations remain outside this mission.
