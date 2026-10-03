@@ -8059,12 +8059,20 @@ $(ZCL_NODECTL_BIN): tools/zcl-nodectl.c platform/modules/util/include/util/rpc_p
 .PHONY: export_snapshot
 export_snapshot: $(BIN_DIR)/export_snapshot
 $(BIN_DIR)/export_snapshot: tools/export_snapshot.c \
+		platform/modules/util/include/util/log_macros.h \
+		platform/modules/base/include/base/format_attribute.h \
+		platform/modules/base/include/base/log_level.h \
+		platform/modules/base/include/base/log_macros.h \
+		platform/modules/base/include/base/stdio_lock.h \
+		platform/modules/base/include/base/utc_tm.h \
+		platform/modules/platform/include/platform/clock.h \
+		platform/modules/platform/include/platform/time_compat.h \
 		platform/modules/platform/src/clock.c platform/modules/base/src/log_level.c
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -Ivendor/include \
 	    -Iplatform/modules/platform/include -Iplatform/modules/base/include -Iplatform/modules/util/include \
 	    -D_POSIX_C_SOURCE=200809L $(ZCL_PLATFORM_CPPFLAGS) \
-	    -o $@ $^ -Lvendor/lib vendor/lib/libsqlite3.a -lpthread -lm \
+	    -o $@ $(filter %.c,$^) -Lvendor/lib vendor/lib/libsqlite3.a -lpthread -lm \
 	    $(if $(ZCL_HOST_WINDOWS),-lshell32,)
 
 # verify_anchor_completeness: cross-checks a zclassicd chainstate LevelDB copy
