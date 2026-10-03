@@ -4603,3 +4603,29 @@ UBSan emulation. Actual release-archive fixtures pass API 30/35/36 x86_64,
 including 16 KiB API 35; Android ARM64 compiles with 16 KiB alignment only.
 This observes descriptor exhaustion, not systemwide ENFILE, disk exhaustion,
 physical-device custody or every process scheduling outcome.
+
+## Android change-journal crash-hook coverage — 2026-10-03
+
+Test-only `test_change_storage_crash.c`. The existing ordinary write interposer
+missed Bionic's fortified entry point in the actual release archive. The added
+Android adapter applies the same interruption/partial-write selection and
+retains the real checked call. Production/provider code is unchanged.
+
+| Hazard | Review |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access | Original length exceeding object capacity goes directly to libc before test injection. Partial writes only halve the original length and preserve capacity. A child negative control requires SIGABRT for a two-byte request with a one-byte declared bound. |
+| Integer overflow/underflow; signed/unsigned conversions | Halving size_t cannot overflow. A nonnegative ssize_t result is checked before conversion and compared with the exact requested prefix. Existing fixed interruption counters remain bounded. |
+| Use-after-free; double-free; leaks; dangling pointers | No new allocation or retained pointers. The existing fork/fixture ownership remains; external runs record and clean only invocation-owned fixture paths on RED and GREEN. |
+| NULL dereferences; uninitialized memory | Public two-byte control is initialized; stop counters are reset in the child. Original syscall pointers/capacity pass through unchanged. |
+| Pointer arithmetic | None added. |
+| Format strings; secret leakage | Constant diagnostics; synthetic public records only. Core dumps disabled in the bounds-control child. No real wallet material. |
+| Stack usage; allocation limits | Scalar adapter and a two-byte control; 4096-byte frame checks unchanged. One additional child is reaped before the original matrix. |
+| Malformed serialization/network input | No serialization change. This repairs test-path interception, not a production validity predicate. |
+| Races; resource exhaustion | Test process-local counters, no threaded use. Existing 30-second deadline retained; 26 interruptions and 12 competing appenders still run. |
+
+RED release-archive execution misses the first expected write interruption.
+GREEN reaches all cases on API 30/35/36 x86_64. Removing the fortified bounds
+guard independently fails the SIGABRT assertion on Android. Both host sanitizer
+profiles, MSan, ARM64 Linux UBSan, host analyzers and the Android ARM64-target
+analyzer pass; test complexity remains <=15. Android ARM64 compiles/alignment
+only. No physical power-loss, flash durability or custody qualification implied.

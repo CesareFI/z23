@@ -3,7 +3,9 @@
 #include "change_storage_fixture.h"
 #include <errno.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <string.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -28,14 +30,54 @@ static bool stopping(stop_kind kind)
     return selected == kind && calls[kind] == selected_at;
 }
 
+static ssize_t after_write(bool stop, size_t wanted, ssize_t result)
+{
+    if (stop) _exit(result >= 0 && (size_t)result == wanted ? 77 : 78);
+    return result;
+}
+
 ssize_t __wrap_write(int fd, const void *bytes, size_t length)
 {
     bool stop = stopping(STOP_WRITE);
     size_t wanted = stop && partial ? length / 2 : length;
-    ssize_t result = __real_write(fd, bytes, wanted);
-    if (stop) _exit(result >= 0 && (size_t)result == wanted ? 77 : 78);
-    return result;
+    return after_write(stop, wanted, __real_write(fd, bytes, wanted));
 }
+
+#if defined(__ANDROID__)
+ssize_t __real___write_chk(int, const void *, size_t, size_t);
+ssize_t __wrap___write_chk(int, const void *, size_t, size_t);
+
+ssize_t __wrap___write_chk(int fd, const void *bytes, size_t length, size_t capacity)
+{
+    /* Preserve Bionic's original bounds refusal before partial-write injection.
+     * The release archive may use this entry point instead of ordinary write. */
+    if (length > capacity) return __real___write_chk(fd, bytes, length, capacity);
+    const bool stop = stopping(STOP_WRITE);
+    const size_t wanted = stop && partial ? length / 2 : length;
+    return after_write(stop, wanted, __real___write_chk(fd, bytes, wanted, capacity));
+}
+
+static int fortified_bounds(void)
+{
+    const pid_t child = fork();
+    CHECK(child >= 0);
+    if (child == 0) {
+        const struct rlimit no_core = {0, 0};
+        if (setrlimit(RLIMIT_CORE, &no_core) != 0) _exit(81);
+        selected = STOP_WRITE;
+        selected_at = 1;
+        partial = true;
+        memset(calls, 0, sizeof(calls));
+        const uint8_t bytes[2] = {0};
+        (void)__wrap___write_chk(-1, bytes, sizeof(bytes), 1);
+        _exit(79);
+    }
+    int status = 0;
+    CHECK(waitpid(child, &status, 0) == child);
+    CHECK(WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT);
+    return 0;
+}
+#endif
 
 int __wrap_fsync(int fd)
 {
@@ -174,6 +216,9 @@ static int concurrent_append(const change_storage_data *data)
 
 int main(void)
 {
+#if defined(__ANDROID__)
+    CHECK(fortified_bounds() == 0);
+#endif
     change_storage_data data = {0};
     CHECK(change_data_init(&data) == 0);
     for (size_t at = 1; at <= 2; ++at) {

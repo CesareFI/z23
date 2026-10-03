@@ -7868,3 +7868,22 @@ GCC passes all 139 other groups but the unchanged fuzz-manifest mutation inner
 60-second deadline expires under concurrent validation. Its isolated retry
 passes in 57.81s, completing all 140 GCC groups without changing a deadline or
 assertion. Provider hashes, analyzers, complexity and repository gates pass.
+
+## Production continuation: Android change-journal interruption coverage — 2026-10-03
+
+The independent change-storage crash fixture also needed Bionic __write_chk
+interposition: actual release-archive RED missed its first write interruption.
+The repaired test now reaches all 26 create/append interruption boundaries and
+12 competing appenders on API 30/35/36 x86_64, including 16 KiB API 35. Original
+bounds violations reach libc before partial-write selection; a deliberate guard
+removal fails the new SIGABRT control. Production C and archives are unchanged.
+
+Clang/GCC sanitizer fixtures pass in 0.28s/0.32s; supplemental MSan 0.37s and
+ARM64 Linux UBSan/QEMU 0.89s. Host and Android ARM64-target analyzers, strict
+compilers, complexity and repository gates pass. Android ARM64 compile/alignment
+only. Manual linking retains ordinary wrappers and adds --wrap=__write_chk.
+RED/GREEN cleanup uses only invocation-recorded fixture paths. Ignored evidence:
+`.cache/change-crash-fortify/` and `.cache/change-crash-fortify-mutant/`.
+The preceding complete safety/release baseline remains applicable; this does not
+establish physical power-loss durability. Continue safe native restart/lifecycle
+work without enabling TLS, signing authority or production wallets.
