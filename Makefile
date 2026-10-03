@@ -8095,13 +8095,24 @@ $(BIN_DIR)/ldb_verify_c23: tools/ldb_verify_c23.c \
 		engine/modules/storage/src/ldb_reader_api.c \
 		platform/modules/util/src/crc32c.c platform/modules/base/src/safe_alloc.c \
 		platform/modules/platform/src/positioned_file.c \
-		platform/modules/platform/src/read_mapping.c
+		platform/modules/platform/src/read_mapping.c \
+		engine/modules/storage/include/storage/ldb_reader.h \
+		engine/modules/storage/src/ldb_reader_internal.h \
+		platform/modules/base/include/base/format_attribute.h \
+		platform/modules/base/include/base/safe_alloc.h \
+		platform/modules/platform/include/platform/positioned_file.h \
+		platform/modules/platform/include/platform/read_mapping.h \
+		platform/modules/platform/include/platform/windows_path.h \
+		platform/modules/platform/src/windows_path_internal.h \
+		platform/modules/util/include/util/crc32c.h \
+		platform/modules/util/include/util/safe_alloc.h \
+		vendor/include/leveldb/c.h vendor/lib/libleveldb.a
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
 	    -D_POSIX_C_SOURCE=200809L $(ZCL_PLATFORM_CPPFLAGS) \
 	    -Ivendor/include -Iplatform/modules/base/include -Iplatform/modules/util/include \
 	    -Iengine/modules/storage/include -Iplatform/modules/platform/include \
-	    -o $@ $^ -Lvendor/lib vendor/lib/libleveldb.a -lstdc++ -lpthread -lm -ldl
+	    -o $@ $(filter %.c,$^) -Lvendor/lib vendor/lib/libleveldb.a -lstdc++ -lpthread -lm -ldl
 
 .PHONY: zcl-blog
 zcl-blog: $(BIN_DIR)/zcl-blog
