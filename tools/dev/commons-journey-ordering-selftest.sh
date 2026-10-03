@@ -159,6 +159,61 @@ else
     pass "matching remote platform passes preflight"
 fi
 
+# SSH aliases can name the same running kernel. A physical three-host verdict
+# needs three distinct boot identities before it allocates remote scratch.
+kernel_guard="$(awk '/^cj_require_distinct_running_kernels\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$JOURNEY")"
+kernel_at="$(printf '%s\n' "$setup" | grep -nF 'cj_require_distinct_running_kernels "${hosts[@]}"' | head -1 | cut -d: -f1 || true)"
+if [ -z "$kernel_guard" ] || [ -z "$kernel_at" ] ||
+   [ "$kernel_at" -ge "$scratch_at" ] || [ "$kernel_at" -ge "$ship_at" ]; then
+    fail "distinct running kernels must be checked before remote scratch and SCP"
+else
+    eval "$kernel_guard"
+    if [ "$(uname -s)" = Darwin ]; then
+        fixture_boot_a=11111111-1111-4111-8111-111111111111
+        sysctl() { printf '%s\n' "$fixture_boot_a"; }
+    else
+        fixture_boot_a="$(cat /proc/sys/kernel/random/boot_id)"
+    fi
+    fixture_boot_b=22222222-2222-4222-8222-222222222222
+    fixture_boot_c=33333333-3333-4333-8333-333333333333
+    ssh() {
+        case "$*" in
+            *fixture-b*) printf '%s\n' "$fixture_boot_b" ;;
+            *fixture-c*) printf '%s\n' "$fixture_boot_c" ;;
+            *) return 1 ;;
+        esac
+    }
+    if cj_require_distinct_running_kernels fixture-b fixture-c; then
+        pass "three distinct running kernels pass physical-host preflight"
+    else
+        fail "three distinct running kernels were refused"
+    fi
+    fixture_boot_c="$fixture_boot_b"
+    if duplicate="$(cj_require_distinct_running_kernels fixture-b fixture-c 2>&1)"; then
+        fail "two aliases for one remote kernel passed physical-host preflight"
+    elif ! grep -qF 'HOST_KERNEL_DUPLICATE' <<<"$duplicate"; then
+        fail "duplicate remote kernel lacked a named refusal: $duplicate"
+    else
+        pass "two aliases for one remote kernel refuse by name"
+    fi
+    fixture_boot_b="$fixture_boot_a"
+    if duplicate="$(cj_require_distinct_running_kernels fixture-b 2>&1)"; then
+        fail "requester and worker sharing one kernel passed preflight"
+    elif ! grep -qF 'HOST_KERNEL_DUPLICATE' <<<"$duplicate"; then
+        fail "duplicate requester kernel lacked a named refusal: $duplicate"
+    else
+        pass "requester and worker sharing one kernel refuse by name"
+    fi
+    fixture_boot_b=unreadable
+    if invalid="$(cj_require_distinct_running_kernels fixture-b 2>&1)"; then
+        fail "unreadable remote boot identity passed physical-host preflight"
+    elif ! grep -qF 'HOST_KERNEL_UNREADABLE' <<<"$invalid"; then
+        fail "unreadable remote boot identity lacked a named refusal: $invalid"
+    else
+        pass "unreadable remote boot identity refuses by name"
+    fi
+fi
+
 # The carried-cache rebuild on host C is judged by the toolchain capsule each
 # node reports, never by the cc banner. A physical three-host run had host B
 # and host C print the same `cc --version` and `as --version` banners while

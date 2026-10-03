@@ -244,6 +244,42 @@ cj_require_compatible_binary_host() {
         { cj_die "HOST_BINARY_INCOMPATIBLE: $host is $remote_os/$remote_arch; local binaries are $local_os/$local_arch"; return 1; }
 }
 
+# Destination strings do not identify machines: two SSH aliases may reach one
+# running kernel. Require distinct boot identities before creating remote
+# scratch or shipping bytes. The local plumbing shim deliberately uses one
+# kernel for every simulated host, so this applies only to real SSH routes.
+cj_require_distinct_running_kernels() {
+    [ "$DHT_SSH" = ssh ] || return 0
+    local os host id prior i
+    local -a probe ids=() labels=()
+    os="$(uname -s)" || { cj_die "HOST_KERNEL_UNREADABLE: requester OS"; return 1; }
+    case "$os" in
+        Linux) probe=(cat /proc/sys/kernel/random/boot_id) ;;
+        Darwin) probe=(sysctl -n kern.bootsessionuuid) ;;
+        *) cj_die "HOST_KERNEL_UNREADABLE: unsupported requester OS $os"; return 1 ;;
+    esac
+    for host in requester "$@"; do
+        if [ "$host" = requester ]; then
+            id="$("${probe[@]}" 2>/dev/null)" ||
+                { cj_die "HOST_KERNEL_UNREADABLE: requester boot identity"; return 1; }
+        else
+            id="$("$DHT_SSH" -o BatchMode=yes -o ConnectTimeout=5 \
+                "$host" -- "${probe[@]}" 2>/dev/null)" ||
+                { cj_die "HOST_KERNEL_UNREADABLE: $host boot identity"; return 1; }
+        fi
+        [[ "$id" =~ ^[[:xdigit:]]{8}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{12}$ ]] ||
+            { cj_die "HOST_KERNEL_UNREADABLE: malformed boot identity from $host"; return 1; }
+        id="${id,,}"
+        for i in "${!ids[@]}"; do
+            prior="${ids[$i]}"
+            [ "$id" != "$prior" ] ||
+                { cj_die "HOST_KERNEL_DUPLICATE: $host and ${labels[$i]} share a running kernel"; return 1; }
+        done
+        ids+=("$id")
+        labels+=("$host")
+    done
+}
+
 cj_multihost_setup() {
     if [ "$CJ_MULTIHOST" != 1 ] && [ "$CJ_TWOHOST" != 1 ]; then
         CJ_PEER_ADDR_A=127.0.0.1; CJ_PEER_ADDR_B=127.0.0.1; CJ_PEER_ADDR_C=127.0.0.1
@@ -282,6 +318,7 @@ cj_multihost_setup() {
             cj_die "cannot reach $host (BatchMode ssh); multi-host acceptance fails closed"
         cj_require_compatible_binary_host "$host"
     done
+    cj_require_distinct_running_kernels "${hosts[@]}"
     CJ_RDIR_B="$("$DHT_SSH" -o BatchMode=yes "$CJ_HOST_B" -- 'mktemp -d /tmp/z23-mh-XXXXXXXX')" ||
         cj_die "no scratch dir on $CJ_HOST_B"
     local destinations=("$CJ_HOST_B:$CJ_RDIR_B")
