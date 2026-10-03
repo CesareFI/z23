@@ -319,20 +319,15 @@ ship_local_release_layout() {
         "$home/.local/lib/z23/releases/"*)
             # Root can write a mode-555 directory. Keep a frozen release
             # classified as such even when this process has that privilege.
-            case "$(uname -s)" in
-                Darwin) mode="$(stat -f %Lp "$dir" 2>/dev/null)" || mode="" ;;
-                Linux)  mode="$(stat -c %a "$dir" 2>/dev/null)" || mode="" ;;
-            esac
+            # ls -ld presents POSIX rwx positions on Linux and macOS.
+            # Check the three write positions before -w, which root can
+            # report true even for a mode-555 directory.
+            mode="$(LC_ALL=C ls -ld "$dir" 2>/dev/null)" || mode=""
+            mode="${mode%% *}"
             case "$mode" in
-                [0-7][0-7][0-7]|[0-7][0-7][0-7][0-7])
-                    # In each of the last three octal digits, 2/3/6/7
-                    # indicates a write bit. POSIX sh runs the remote leg.
-                    case "$mode" in
-                        *[2367][0-7][0-7]|*[0-7][2367][0-7]|*[0-7][0-7][2367])
-                            if [ -w "$dir" ]; then printf 'writable\n'
-                            else printf 'release\n'; fi ;;
-                        *) printf 'release\n' ;;
-                    esac ;;
+                ??w*|?????w*|????????w*)
+                    if [ -w "$dir" ]; then printf 'writable\n'
+                    else printf 'release\n'; fi ;;
                 *) printf 'release\n' ;;
             esac
             ;;
