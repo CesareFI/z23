@@ -39,6 +39,13 @@
 #define ZCL_DEV_OBSERVATION_INDEX_WHY_ARGUMENTS "observation_index_arguments"
 #define ZCL_DEV_OBSERVATION_INDEX_WHY_INVALID "observation_index_invalid"
 #define ZCL_DEV_OBSERVATION_INDEX_WHY_TOO_MANY "observation_index_too_many"
+#define ZCL_DEV_OBSERVATION_INDEX_WHY_DURABILITY_UNKNOWN \
+    "observation_index_durability_unknown"
+
+#ifdef ZCL_TESTING
+/* Model a failed parent-directory flush after the new index is visible. */
+void zcl_dev_observation_index_test_fail_parent_flush(bool fail);
+#endif
 
 /* Merge every leaf of one per-pair observation CAS into the box index.
  * Read-modify-write under an exclusive lock; existing rows are verified

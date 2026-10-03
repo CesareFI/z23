@@ -506,9 +506,47 @@ static int test_dpoi_query(void)
     return failures;
 }
 
+static int test_dpoi_parent_flush_failure(void)
+{
+    int failures = 0;
+    char root[4096], store[4096], index_path[4096];
+    test_make_tmpdir(root, sizeof(root), "dev_proof_obs_index", "flush");
+    dpoi_isolate("flush");
+    (void)snprintf(store, sizeof(store), "%s/store", root);
+    (void)snprintf(index_path, sizeof(index_path), "%s/index", root);
+    char why[128] = {0};
+    TEST_CASE("dev_proof_obs_index: post-rename flush failure is uncertain and retryable") {
+        uint8_t emitted[32];
+        ASSERT(platform_directory_ensure(store, 0700));
+        ASSERT(dpoi_record(store, 1, "test_obs_index_flush", emitted));
+        zcl_dev_observation_index_test_fail_parent_flush(true);
+        bool merged = zcl_dev_observation_index_merge(index_path, store,
+                                                       why, sizeof(why));
+        zcl_dev_observation_index_test_fail_parent_flush(false);
+        ASSERT(!merged);
+        ASSERT(strcmp(why,
+            ZCL_DEV_OBSERVATION_INDEX_WHY_DURABILITY_UNKNOWN) == 0);
+        struct zcl_dev_observation_leaf *leaves = NULL;
+        size_t count = 0;
+        bool present = false;
+        ASSERT(zcl_dev_observation_index_load(index_path, &leaves, &count,
+                                              &present, why, sizeof(why)));
+        ASSERT(present && count == 1);
+        zcl_dev_observation_release(leaves);
+        ASSERT(zcl_dev_observation_index_merge(index_path, store,
+                                               why, sizeof(why)));
+        ASSERT(why[0] == '\0');
+    }
+    TEST_END
+    dpoi_restore();
+    (void)test_rm_rf_recursive(root);
+    return failures;
+}
+
 int test_dev_proof_observation_index(void)
 {
     int failures = 0;
+    failures += test_dpoi_parent_flush_failure();
     failures += test_dpoi_merge_and_load();
     failures += test_dpoi_union_at_cap();
     failures += test_dpoi_refusals();

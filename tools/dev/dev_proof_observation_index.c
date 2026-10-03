@@ -20,6 +20,15 @@
 #define INDEX_OFF_VERSION 8u
 #define INDEX_OFF_COUNT 12u
 
+#ifdef ZCL_TESTING
+static bool g_oi_fail_parent_flush;
+
+void zcl_dev_observation_index_test_fail_parent_flush(bool fail)
+{
+    g_oi_fail_parent_flush = fail;
+}
+#endif
+
 static bool oi_fail(char *why, size_t cap, const char *token)
 {
     if (why && cap) (void)snprintf(why, cap, "%s", token);
@@ -162,6 +171,27 @@ static bool oi_read(const char *index_path, uint8_t **rows_out,
     return true;
 }
 
+static bool oi_flush_parent(const char *index_path)
+{
+    char parent[4096];
+    const char *slash = strrchr(index_path, '/');
+    size_t len = slash ? (size_t)(slash - index_path) : 1u;
+    if (len == 0) len = 1u;
+    if (len >= sizeof(parent)) return false;
+    if (!slash) parent[0] = '.';
+    else (void)memcpy(parent, index_path, len);
+    parent[len] = '\0';
+    int fd = open(parent, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (fd < 0) return false;
+#ifdef ZCL_TESTING
+    bool ok = !g_oi_fail_parent_flush && fsync(fd) == 0;
+#else
+    bool ok = fsync(fd) == 0;
+#endif
+    if (close(fd) != 0) ok = false;
+    return ok;
+}
+
 static bool oi_write_atomic(const char *index_path, const uint8_t *rows,
     uint32_t count, char *why, size_t why_len)
 {
@@ -187,6 +217,9 @@ static bool oi_write_atomic(const char *index_path, const uint8_t *rows,
         (void)unlink(tmp);
         return oi_fail(why, why_len, ZCL_DEV_OBSERVATION_INDEX_WHY_INVALID);
     }
+    if (!oi_flush_parent(index_path))
+        return oi_fail(why, why_len,
+                       ZCL_DEV_OBSERVATION_INDEX_WHY_DURABILITY_UNKNOWN);
     return true;
 }
 
