@@ -24,7 +24,8 @@ This ledger stays on the wallet development branch; PRs carry concise provenance
   branch history is rebased, reset or overwritten.
 
 Date-filtered inventory uses `--since-as-filter` across all known refs because
-commit dates are nonmonotonic. It finds53 relevant commits since2026-09-26.
+commit dates are nonmonotonic. It finds53 relevant Android-path commits since
+2026-09-26 plus three native-owner commits recorded in the expanded audit below.
 The full preserved Android ancestry has256 application commits; older prerequisites
 are included in suitability assessment instead of silently excluded by date.
 
@@ -51,7 +52,8 @@ material. Candidate heads and the publication boundary are recorded below.
 | Crash/process interruption and partial IO fixtures | C | Android injected write/rename checkpoints name its authenticated journal and exact record layout. Upstream wallet_backup and wallet_backup_port already test backup encryption, restoration and authority barriers. Transfer descriptor invariants separately; the format-specific crash harness is not an independent upstream component. |
 | BIP39/12-word recovery / normalization / deterministic seeds | B | Existing domain/wallet/mnemonic and wallet wrapper. Preserve upstream accepted formats and canonical bytes; never change12-word creation/recovery guarantees. |
 | Prepared HMAC/PBKDF2 reuse | D | Upstream already has its own crypto implementation in sealed core. No duplicate provider or unseal authority; only report existing parity and owner constraints. |
-| Base58 bounded significant-digit work (`e805c8a06`, `32e58fad9`) | B | The significant-span candidate adapts both optimizations to platform/domain/encoding/base58 with measured speedup, exact reference comparisons and unchanged cleanup. |
+| Base58 bounded conversion (`e805c8a06`, `32e58fad9`, `89926c0bd`, `a16546e79`) | A/B | The selected prefix candidate ports the existing native encoder/decoder optimizations with current-base tests, measured speedup, reference comparisons and unchanged cleanup. |
+| Native xprv scratch retirement (`01e045fc9`) | A/B | Port existing serializer copy elimination and decoder refusal cleanup into the existing HD-key owner; adapt regression registration and required inventory to current main. |
 | Payment URI/text parser and RPC string fast paths | C | These optimizations target Android payment metadata and the read-only mobile Electrum JSON schema. Replacing upstream native command/RPC policy or adding an unused duplicate parser is outside a small adaptation. |
 | Platform-neutral QR/camera stride/pixel bounds | C | Upstream owns QR generation through qrcodegen, not Android camera-plane decoding. There is no matching camera consumer for stride/pixel APIs; retain the validated bounds as reference rather than introduce an unused decoder stack. |
 | JNI camera minimum copy / VM references/exceptions | C | Android transport only; documents required admitted-span/caller-ownership semantics. |
@@ -77,8 +79,9 @@ concrete ownership reasons in the inventory, rather than becoming a duplicate st
 A portable source file alone is not sufficient reason to submit it. Each B item
 must gain an exact upstream owner and bounded diff or receive a concrete final
 non-publication reason. Every submitted PR records base/head, tests, CI and review
-request status here. Four independent upstream candidates are signed and validated;
-publication remains subject to the explicit hook conflict described below.
+request status here. Five independent upstream candidates are signed and have
+focused validation; exact publication-proof status is separate below. Publication
+also remains subject to the explicit hook conflict described below.
 
 ## Date-filtered source provenance
 
@@ -146,12 +149,14 @@ not a stack of Android history:
 | --- | --- | --- |
 | `agent/upstream-wallet-secret-lifetime-20261003` | `58619c85baf74c4a8a1c2c49573a89396291b9e5` | Mnemonic decoded-index retirement; focused RED/GREEN, Clang/GCC wipe-removal mutations and ASan/UBSan/LSan; all215 lint gates PASS; PR security scan PASS.4files,+116/-8. |
 | `agent/upstream-wallet-key-scratch-20261003` | `c9eb0270abfaf787703f3fb794a3a0f709c61f27` | Master digest/HMAC-context and signing entropy retirement; focused RED/GREEN, six compiler/mutant failures, Clang/GCC ASan/UBSan/LSan; all215 lint gates PASS; PR security scan PASS.4files,+107/-9. |
-| `agent/upstream-wallet-base58-span-20261003` | `987d226c3cc937c28ad6a2a0f374782332749153` | Bounded significant-digit conversion; independent16,788-case corpus, Clang/GCC sanitizers and mutations,268,723 fuzz runs, measured speedup; all215 lint gates PASS; PR scanner PASS.5files,+122/-22. |
+| `agent/upstream-wallet-base58-prefix-20261003` | `be78a2bf9f530f08d57e6bb1a2be62d83c9c8f75` | Existing native consumed-prefix encoder and active-byte decoder;16,788 reference cases, compiler sanitizers and mutations,168,047 fuzz runs, measured speedup. Exact native proof PASS:35/35 selected groups, all215 lint gates, no skips.4files,+211/-37. |
 | `agent/upstream-wallet-storage-descriptors-20261003` | `b25e546bab0658f9d283fb487674f592d1dd15e7` | Test-only six-opener CLOEXEC/close contract; mutation RED then restored GREEN, both compiler sanitizers, backup groups2/2; all215 lint gates PASS; PR scanner PASS.2files,+43/-1. |
+| `agent/upstream-wallet-xprv-retirement-20261003` | `d95e540be3f67352a0bbc602ff57f0537075157a` | Existing native scratch-retirement port; old functions RED5, port GREEN0, zero-length-wipe mutants RED7 on both compilers; fast/ASan, both compiler lanes and all215 lint gates PASS. Exact native proof pending.6files,+209/-67. |
 
 Prepared descriptions are ignored local files `pr-mnemonic.md`, `pr-key.md`,
-`pr-base58.md` and `pr-storage.md`
-under publication `.cache/wallet-publication/`. They include WHY/WHAT/REUSE/SAFETY/
+and `pr-storage.md` in the first publication checkout; `pr-base58-prefix.md` and
+`pr-xprv.md` are in the second. Each uses `.cache/wallet-publication/`.
+They include WHY/WHAT/REUSE/SAFETY/
 EVIDENCE/PORTABILITY/SCOPE/COMMITS. No new third-party dependency or consensus edit.
 
 The normal fork-branch push of the first signed candidate was refused by
@@ -162,7 +167,7 @@ An explicit user decision on a per-command exception for validated fork branches
 is pending. No PR exists yet; CI and reviewer requests therefore have not run.
 Do not treat local security scans or validated commits as submitted PRs.
 
-All four selected adaptations are prepared. Their parent is the same fetched
+All five selected adaptations are prepared. Their parent is the same fetched
 upstream main; none depends on another candidate. Android dirty storage-limit
 work remains preserved and outside every publication candidate.
 
@@ -241,3 +246,40 @@ proof retries. No root-directory permissions, test assertions, policy files or
 publication hooks were weakened. Remaining failures must be diagnosed from that
 qualified environment; no claim that every root failure has already been resolved.
 The explicit fork-hook decision is still pending; no PR has been opened.
+
+### Qualified proof progress
+
+All five selected candidates now have passing full215-gate lint results. The
+new xprv port passed in467.047s. Base58 prefix `be78a2bf9` additionally has its
+exact native PASS receipt:35/35 selected groups, zero skips/unobserved results,
+all215 lint gates (230.329s), total480.868s. Native status independently verified
+both this receipt and the earlier storage20/20 receipt.
+
+Non-root qualification requires more than changing UID. The existing service
+identity's chainlog and verifier-store controls passed. The proof runner also
+requires a writable delegated memory scope; an existing user-manager scope
+provides it with the scheduler's CPU/memory limits retained. A private mount
+namespace supplies writable temporary storage without changing host permissions.
+The SQLite source was checked against its pinned hash and the required docs-proof
+tools were built before proof admission. No gate was disabled.
+
+The first full UID1000 mnemonic attempt passed all215 lint gates and1234/1236
+runtime groups. Its two failures were missing reflex-runner fixture images in
+the isolated generation and a109-byte socket path exceeding the108-byte limit.
+Both focused groups pass on unchanged upstream main through a short isolated
+path. The short-path mnemonic retry has the reflex fixture present and lint
+passing; its terminal runtime result is still pending. This is not yet a PASS
+receipt. The xprv UID0 attempt was stopped after its planner widened to the
+universal suite, whose non-root requirement was already established.
+
+Independent non-root key-scratch and xprv copies are prepared for exact proofs.
+Local locations are recorded in `key-proof-root.txt` in the first publication
+checkout and `xprv-proof-root.txt` in the second. The first checkout's ignored
+`run-proof-scope.sh` records the bounded namespace/user-manager invocation.
+Initialize the pinned Tor submodule before copying verified archives into a
+fresh clone; the source-identity guard correctly refuses a populated gitlink
+without its Git identity. This setup refusal was corrected without source edits.
+
+No branch has been pushed through a hook exception, and no PR, CI run or reviewer
+request exists. The only open publication authority decision remains the
+main-only push hook versus this mission's fork-branch-only requirement.

@@ -8132,3 +8132,16 @@ alone: the storage candidate has its exact native PASS receipt; the root-run
 mnemonic universal proof failed17/1236 groups, including explicit non-root UID
 requirements. An isolated copy under existing UID1000 is being qualified before
 retrying broader proofs. The fork-only hook exception remains unresolved.
+
+### Publication proof checkpoint
+
+All five selected slices now pass full215-gate lint. Base58 prefix `be78a2bf9`
+has its exact native PASS receipt (35/35 groups, zero skips), alongside storage
+`b25e546ba` (20/20). Non-root mnemonic qualification reduced the universal run
+from17 failures to2: absent reflex fixture images and an overlong socket path.
+Both groups pass on unchanged upstream through a short isolated path; the
+short-path retry has its fixture present and lint passing, with runtime pending.
+Key-scratch and xprv exact proofs are being prepared independently under the same
+bounded non-root environment. UPSTREAM_PUBLICATION.md records identities and
+local evidence locators. No test/policy/host permission was weakened. No fork
+push or PR exists while the explicit main-only hook conflict remains unresolved.
