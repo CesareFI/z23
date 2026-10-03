@@ -7724,3 +7724,25 @@ and fails the new resource assertion under both compilers; unchanged controls
 pass. Initial standalone validation commands omitted provider include/config
 flags; corrected commands reuse the actual configured provider settings without
 suppressing warnings. No product change was needed for those harness errors.
+
+## Production continuation: observe descriptor retirement across exec — 2026-10-03
+
+The existing storage crash fixture now forks an owner that opens the actual
+store and execs its own test binary while the directory and lock are live. The
+new process observes EBADF for both descriptors; the parent reaps, reacquires
+through public creation and cleans only its own fixture. Existing commit and
+promotion interruption cases and twelve competing creators still run afterward.
+This observes the existing close-on-exec contract without changing production.
+
+RED: independently removing O_CLOEXEC from directory or lock passes the prior
+crash fixture but fails the new observer under Clang and GCC. Unchanged controls
+pass with ASan/UBSan/LSan; focused CTest takes 0.16s/0.15s under the unchanged
+30-second deadline. Both analyzers, strict frame/warning/complexity gates and
+architecture/docs/diff checks pass. Actual release-archive fixtures pass API
+30/35/36 x86_64, including 16 KiB API 35; Android ARM64 compiles/alignment only.
+No new physical-device, cross-emulator exec or power-loss claim is made.
+
+Evidence: `.cache/storage-exec/` (ignored). Product source/APK are unchanged from
+`356fb2586`. Full previous safety, JVM, ART and release reproduction evidence
+remains applicable. Continue native custody/lifetime and storage restart review;
+no upstream write, real wallet, TLS activation or production node operation.

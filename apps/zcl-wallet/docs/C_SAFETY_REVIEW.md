@@ -4459,3 +4459,27 @@ Full Clang/GCC ASan/UBSan/LSan and analyzer gates pass; the review fuzzer comple
 Android ARM64 builds only; no physical custody claim. Reverting admission order
 is tested separately from the unchanged control. The release APK reproduces from
 a separate source-only checkout.
+
+## Storage descriptors retire across exec — 2026-10-03
+
+Test-only scope: the existing Linux/Android storage crash fixture and its private
+header include path. A forked child opens the real store, then executes its own
+fixture binary while the directory and lock are live. The new process verifies
+both descriptor numbers are closed. The parent reaps it, reacquires storage via
+public creation, and cleans its exact fixture even if the observer refuses.
+
+| Hazard | Review |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access | Two fixed 32-byte decimal buffers use snprintf with checked lengths. The exec observer checks argc before reading arguments. |
+| Integer overflow/underflow; signed/unsigned conversions | strtol checks errno, full consumption and 0..INT_MAX before the descriptor cast. Positive snprintf lengths are checked before conversion. |
+| Use-after-free; double-free; leaks; dangling pointers | No heap ownership. The child owns its opened store; successful exec closes descriptors in the kernel, failed exec closes explicitly before exit. The parent reaps before fixture cleanup. |
+| NULL dereferences; uninitialized memory | Store starts at {-1,-1}; descriptor arguments are supplied by the checked child formatter. Parser end pointer and wait result initialize. No retained pointer crosses exec. |
+| Pointer arithmetic | No added span arithmetic; only checked fixed argument positions. |
+| Format strings; secret leakage | Constant diagnostic/decimal formats. Arguments contain only descriptor numbers. Existing public zero-entropy/inert-ciphertext fixtures remain isolated; no keys, paths or secrets are exported through exec arguments. |
+| Stack usage; allocation limits | Small fixed arrays and scalars, no VLA, recursion or new allocation. Strict host/NDK frame and test complexity gates pass. |
+| Malformed serialization/network input | No product parser or wire change. The private observer rejects malformed descriptor arguments. Removing either close-on-exec flag fails the new test and passes the prior fixture. |
+| Races; resource exhaustion | One child is added and reaped under the existing 30-second test deadline. No test threads or shared production state. /proc/self/exe is deliberately Linux/Android-specific; no general cross-emulator exec capability is claimed. |
+
+Clang/GCC ASan/UBSan/LSan, both analyzers and native API 30/35/36 x86_64 runs pass.
+Android ARM64 compilation and 16 KiB ELF alignment pass; physical hardware remains
+unqualified. Production storage, binaries and consensus semantics are unchanged.

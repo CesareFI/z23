@@ -1,7 +1,12 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #define _POSIX_C_SOURCE 200809L
 #include "storage_fixture.h"
+#include "storage_internal.h"
 
+#include <errno.h>
+#include <fcntl.h>
+#include <limits.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -177,11 +182,57 @@ static int promotion_crash(const uint8_t *record, size_t length,
     return fixture_close(&fixture);
 }
 
-int main(void)
+static int descriptor_closed(const char *text)
 {
+    char *end = NULL;
+    errno = 0;
+    const long value = strtol(text, &end, 10);
+    CHECK(errno == 0 && end != text && *end == '\0' && value >= 0 && value <= INT_MAX);
+    errno = 0;
+    CHECK(fcntl((int)value, F_GETFD) == -1 && errno == EBADF);
+    return 0;
+}
+
+static void exec_owner(const storage_fixture *fixture)
+{
+    zcl_store store = {-1, -1};
+    const zcl_status status = zcl_store_open((const uint8_t *)fixture->path, fixture_path_len(), &store);
+    if (status == ZCL_OK) {
+        char directory[32], lock[32];
+        const int first = snprintf(directory, sizeof(directory), "%d", store.directory);
+        const int second = snprintf(lock, sizeof(lock), "%d", store.lock);
+        if (first > 0 && (size_t)first < sizeof(directory) && second > 0 && (size_t)second < sizeof(lock))
+            execl("/proc/self/exe", "storage_crash_tests", "--after-exec", directory, lock, (char *)NULL);
+    }
+    (void)zcl_store_close(&store, status);
+    _exit(79); /* Exec must replace the process while both descriptors are live. */
+}
+
+static int exec_retirement(const uint8_t *record, size_t length)
+{
+    storage_fixture fixture;
+    CHECK(fixture_open(&fixture) == 0);
+    const pid_t child = fork();
+    if (child == 0) exec_owner(&fixture);
+    int exit_code = 0;
+    const int waited = child < 0 ? 1 : wait_for(child, &exit_code);
+    /* Reacquire through the public operation after the exec observer exits.
+     * Clean only this fixture, including when the observer rejects a mutation. */
+    const zcl_status created = fixture_create(&fixture, record, length);
+    const int closed = fixture_close(&fixture);
+    CHECK(waited == 0 && exit_code == 77 && created == ZCL_OK && closed == 0);
+    return 0;
+}
+
+int main(int argc, char **argv)
+{
+    if (argc == 4 && strcmp(argv[1], "--after-exec") == 0)
+        return descriptor_closed(argv[2]) == 0 && descriptor_closed(argv[3]) == 0 ? 77 : 78;
+    CHECK(argc == 1);
     uint8_t record[140] = {0};
     size_t length = 0;
     CHECK(fixture_record(record, sizeof(record), &length) == 0);
+    CHECK(exec_retirement(record, length) == 0);
     for (unsigned point = CRASH_PARTIAL; point <= CRASH_RENAME; ++point)
         CHECK(crash_case(record, length, (crash_point)point) == 0);
     for (unsigned point = CRASH_FILE_SYNC; point <= CRASH_RENAME; ++point) {
@@ -189,6 +240,6 @@ int main(void)
         if (point != CRASH_RENAME) CHECK(promotion_crash(record, length, (crash_point)point, true) == 0);
     }
     CHECK(competing_creators(record, length) == 0);
-    puts("storage processes: five commit and five promotion interruptions; twelve competing creators passed");
+    puts("storage processes: exec retirement; five commit and five promotion interruptions; twelve competing creators passed");
     return 0;
 }
