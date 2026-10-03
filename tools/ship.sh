@@ -328,11 +328,21 @@ ship_checkout_has_real_tor_archives() {
 # Epoch candidates are enumerated too, so a STALE epoch — bytes no live
 # alias holds — is still refused.
 ship_dev_artifact_paths() {
-    printf '%s\n' \
-        "${1:-.}/build/bin/z23.dev" \
-        "${1:-.}/build/bin/z23-dev" \
-        "${1:-.}/build/bin/zclassic23-dev"
-    ls -1 "${1:-.}"/build/bin/dev/epochs/*/zclassic23-dev 2>/dev/null || true
+    # A reader may close the pipe early — ship_dev_artifact_reach returns on
+    # the first alias that matches by inode or sha, and any consumer of this
+    # enumeration is entitled to break early too. SIGPIPE is therefore
+    # ignored inside the producer: with set -o pipefail a fatal SIGPIPE here
+    # kills the shell mid-selftest (observed in the proof pipeline as
+    # "line 331: printf: write error: Broken pipe" + selftest FAILED), while
+    # the ignored-signal write error is noise we already treat as optional.
+    (
+        trap '' PIPE
+        printf '%s\n' \
+            "${1:-.}/build/bin/z23.dev" \
+            "${1:-.}/build/bin/z23-dev" \
+            "${1:-.}/build/bin/zclassic23-dev"
+        ls -1 "${1:-.}"/build/bin/dev/epochs/*/zclassic23-dev 2>/dev/null || true
+    ) 2>/dev/null || true
 }
 
 # Echo the reach and return 0 when $1 IS the dev artifact under any of those
@@ -634,6 +644,21 @@ if [ "${1:-}" = "--selftest" ] || [ "${1:-}" = "--selftest-dev-guard" ]; then
         ln -sfn z23.release "$bin/z23"
         refute ship_dev_artifact_reach "$bin/z23" "$g"
         refute ship_dev_artifact_reach "$bin/absent" "$g"
+        # An early-closing reader must never kill the enumeration producer:
+        # ship_dev_artifact_reach returns on the first alias that matches by
+        # inode or sha, closing the pipe mid-write. Under set -o pipefail a
+        # fatal SIGPIPE there took the whole selftest down in the proof
+        # pipeline ("printf: write error: Broken pipe" + FAILED). Assert the
+        # pipeline SUCCEEDS — these run under a context where set -e is
+        # inactive, so a bare pipeline failure would be silently swallowed.
+        if ( sleep 0.1; ship_dev_artifact_paths "$g" ) | head -c 0 >/dev/null &&
+           ship_dev_artifact_paths "$g" | while IFS= read -r _alias; do
+               break
+           done; then
+            say '  early-close readers: enumeration producer survives broken pipes'
+        else
+            die 'enumeration producer died on an early-closing reader'
+        fi
     }
     if [ "${1:-}" = "--selftest-dev-guard" ]; then
         devguard_root="$(mktemp -d "$(ship_scratch_root)/z23-ship-selftest.XXXXXX")"
