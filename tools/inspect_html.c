@@ -35,6 +35,8 @@ static char *read_file(const char *path, size_t *len_out) {
 static int count_pattern(const char *hay, const char *needle) {
     int n = 0;
     size_t nlen = strlen(needle);
+    /* No non-overlapping match can advance past an empty pattern. */
+    if (nlen == 0) return 0;
     const char *p = hay;
     while ((p = strstr(p, needle)) != NULL) { n++; p += nlen; }
     return n;

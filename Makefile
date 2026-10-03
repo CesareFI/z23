@@ -3518,6 +3518,10 @@ explorer-css: site-css
 tools/gen_templates: $(TMPL_TOOL)
 tools/inspect_html: $(BIN_DIR)/inspect_html
 
+.PHONY: inspect-html-count-selftest
+inspect-html-count-selftest: $(BIN_DIR)/inspect_html
+	@./tools/dev/inspect_html_count_selftest.sh "$(BIN_DIR)/inspect_html"
+
 # Build a tool/test binary that links against the full node library stack
 # (Tor, OpenSSL, libevent, GTK, WebKit). Used by 8 binaries to keep the
 # recipe in one place — a new tool becomes one $(eval $(call ...)) line and
