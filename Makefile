@@ -8634,13 +8634,28 @@ DETERMINISM_LIB_SRCS = \
     engine/modules/determinism/src/receipt.c
 DETERMINISM_DEP_SRCS = \
     platform/modules/codec/src/cursor.c platform/modules/sha3/src/sha3.c platform/modules/base/src/log_level.c
+DETERMINISM_DEP_HEADERS = \
+    engine/modules/determinism/include/determinism/classify.h \
+    engine/modules/determinism/include/determinism/perturbation.h \
+    engine/modules/determinism/include/determinism/receipt.h \
+    engine/modules/determinism/include/determinism/verdict.h \
+    platform/modules/base/include/base/checked.h \
+    platform/modules/base/include/base/format_attribute.h \
+    platform/modules/base/include/base/hex.h \
+    platform/modules/base/include/base/log_level.h \
+    platform/modules/base/include/base/log_macros.h \
+    platform/modules/base/include/base/serialize_le.h \
+    platform/modules/base/include/base/stdio_lock.h \
+    platform/modules/base/include/base/utc_tm.h \
+    platform/modules/codec/include/codec/cursor.h \
+    platform/modules/sha3/include/sha3/sha3.h
 DETERMINISM_CPPFLAGS = -Iengine/modules/determinism/include -Iplatform/modules/codec/include \
     -Iplatform/modules/sha3/include -Iplatform/modules/base/include -Itools/dev
 DETERMINISM_SCAN_BIN = $(BIN_DIR)/determinism_scan
 .PHONY: determinism-scan determinism-receipt-abi
 determinism-scan: $(DETERMINISM_SCAN_BIN)
 $(DETERMINISM_SCAN_BIN): tools/determinism_scan.c $(DETERMINISM_LIB_SRCS) \
-    $(DETERMINISM_DEP_SRCS) tools/dev/test_group_catalog.def
+    $(DETERMINISM_DEP_SRCS) $(DETERMINISM_DEP_HEADERS) tools/dev/test_group_catalog.def
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
 	    -D_POSIX_C_SOURCE=200809L $(ZCL_PLATFORM_CPPFLAGS) \
