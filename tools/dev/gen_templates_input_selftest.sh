@@ -48,4 +48,24 @@ grep -Fq 'static const char TMPL_OK[]' "$output" ||
     fail "valid template was not emitted"
 grep -Fq '#define TMPL_PARTIAL_COUNT 1' "$output" ||
     fail "valid template was not registered"
+
+if [ "$(uname -s)" = Linux ]; then
+    cc -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
+        -Iplatform/modules/base/include -Iplatform/modules/util/include \
+        -Iplatform/modules/platform/include -o "$tmp/readdir_fault" \
+        tests/harness/fixtures/gen_templates_readdir_fault.c \
+        platform/modules/base/src/safe_alloc.c \
+        platform/modules/platform/src/path_replace.c ||
+        fail "cannot compile readdir fault shim"
+    cp "$output" "$tmp/expected.h"
+    printf 'second template\n' > "$tmp/templates/more.chtml"
+    if "$tmp/readdir_fault" "$tmp/templates" "$output" \
+        > "$tmp/run.log" 2>&1; then
+        fail "readdir error published an incomplete header"
+    fi
+    grep -Fq 'gen_templates_readdir_fault: injected EIO' "$tmp/run.log" ||
+        fail "readdir fault instrumentation was not exercised"
+    cmp -s "$tmp/expected.h" "$output" ||
+        fail "readdir error changed the existing header"
+fi
 echo "gen_templates_input_selftest: PASS"

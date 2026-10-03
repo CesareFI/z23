@@ -527,6 +527,19 @@ static int name_cmp(const void *a, const void *b)
     return strcmp((const char *)a, (const char *)b);
 }
 
+static bool has_extension(const char *name, const char *ext, size_t ext_len,
+                          size_t *name_len) {
+    *name_len = strlen(name);
+    return *name_len > ext_len &&
+           strcmp(name + *name_len - ext_len, ext) == 0;
+}
+
+/* Clear errno for each readdir call so NULL distinguishes EOF from failure. */
+static struct dirent *read_next_entry(DIR *dir) {
+    errno = 0;
+    return readdir(dir);
+}
+
 static int process_dir(const char *dir, const char *ext, const char *prefix,
                        bool minify, FILE *out) {
     DIR *d = opendir(dir);
@@ -552,10 +565,9 @@ static int process_dir(const char *dir, const char *ext, const char *prefix,
     static char names[MAX_TEMPLATES][256];
     size_t n_names = 0;
     struct dirent *ent;
-    while ((ent = readdir(d)) != NULL) {
-        size_t nlen = strlen(ent->d_name);
-        if (nlen <= ext_len ||
-            strcmp(ent->d_name + nlen - ext_len, ext) != 0)
+    while ((ent = read_next_entry(d)) != NULL) {
+        size_t nlen = 0;
+        if (!has_extension(ent->d_name, ext, ext_len, &nlen))
             continue;
         if (nlen >= sizeof(names[0])) {
             fprintf(stderr, "gen_templates: over-long name: %s\n",
@@ -572,7 +584,13 @@ static int process_dir(const char *dir, const char *ext, const char *prefix,
         memcpy(names[n_names], ent->d_name, nlen + 1);
         n_names++;
     }
-    closedir(d);
+    int read_error = errno;
+    (void)closedir(d);
+    if (read_error != 0) {
+        fprintf(stderr, "gen_templates: cannot list directory: %s: %s\n",
+            dir, strerror(read_error));
+        return -1;
+    }
     qsort(names, n_names, sizeof(names[0]), name_cmp);
 
     for (size_t ni = 0; ni < n_names; ni++) {
