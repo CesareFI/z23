@@ -7845,3 +7845,26 @@ Clang/GCC safety gate. Evidence is ignored `.cache/msan-probe/`; this qualifies
 neither Android/JVM execution nor race, bounds, leak or every possible
 uninitialized path. Existing production APK/reproduction and Android evidence
 remain applicable. Continue independent native robustness work on this branch.
+
+## Production continuation: real descriptor pressure during storage — 2026-10-03
+
+Added twelve bounded kernel EMFILE/recovery cases for wallet create, read and
+pending promotion. Each isolated child leaves exactly 0..3 descriptors available
+under its own 64-descriptor limit. Failed reads retain all output sentinels;
+operations restore descriptor count. After child exit the parent verifies exact
+public fixture contents and retries without resetting/erasing wallet state.
+Production C and custody semantics are unchanged.
+
+RED: an EMFILE-specific cleanup leak passes the old storage fault fixture but
+fails the new regression under both compilers. GREEN: host Clang/GCC sanitizers,
+static analyzers and test complexity cap pass; supplemental MSan takes 0.12s
+and ARM64 Linux UBSan/QEMU 0.31s. Release-archive fixtures pass API 30/35/36
+x86_64; Android ARM64 builds/alignment only. Release, 16 KiB alignment and fixture
+isolation pass (131 tasks). The complete release APK remains byte-identical to
+`58c8b8d81` / the prior source-only reproduction. No new ART, physical-device,
+ENFILE or disk-exhaustion claim. Ignored evidence: `.cache/storage-limits/`.
+Full canonical safety gates: Clang passes 145/145 native/script groups in 61.34s;
+GCC passes all 139 other groups but the unchanged fuzz-manifest mutation inner
+60-second deadline expires under concurrent validation. Its isolated retry
+passes in 57.81s, completing all 140 GCC groups without changing a deadline or
+assertion. Provider hashes, analyzers, complexity and repository gates pass.

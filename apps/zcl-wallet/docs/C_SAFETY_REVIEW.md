@@ -4573,3 +4573,33 @@ memory hazard review above; the other hazard reviews and ASan/UBSan/LSan/TSan,
 Android and physical-device limitations remain unchanged. Four script/build
 contracts run in the normal safety profile, not this native runtime selection.
 Reproduction commands are in README; ignored evidence is `.cache/msan-probe/`.
+
+## Kernel descriptor exhaustion and subsequent recovery — 2026-10-03
+
+Test-only `test_storage_limits.c`, registered as `wallet_storage_limits`. The
+production core is unchanged. Each child lowers its own RLIMIT_NOFILE to 64,
+uses checked duplicate descriptors until the kernel returns EMFILE, and leaves
+exactly zero, one, two or three slots for create, read or pending promotion.
+Failed reads preserve caller bytes and metadata; every operation returns the
+expected refusal/success and restores the number of open descriptors. The
+parent verifies exact public fixture bytes and performs the subsequent retry.
+
+| Hazard | Review |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access | Fixed 140-byte public records and 64 descriptor owners. A successful bounded fixture encoder supplies record length. Owner count is checked before subtraction; both output content and unused suffix are checked. |
+| Integer overflow/underflow; signed/unsigned conversions | Loops stop at 64 descriptors, three operations and four headroom values. Descriptor IDs remain int; rlimit constants are representable. No untrusted arithmetic. |
+| Use-after-free; double-free; leaks; dangling pointers | No heap allocation or retained pointers. Only child-owned filler descriptors are explicitly closed. Before/after fcntl enumeration needs no spare descriptor. Process exit retires any mutation-induced leak; the parent owns and removes the exact fixture after waiting, including child refusal. |
+| NULL dereferences; uninitialized memory | Public fixture and candidate arrays are initialized; valid pointers are supplied by the fixture. Output length/pending sentinels and entire output are checked on refusal. All syscall results are checked. |
+| Pointer arithmetic | Only suffix comparison within the successfully encoded 140-byte record buffer. No product changes. |
+| Format strings; secret leakage | Constant diagnostics and published synthetic record only; no real ciphertext/keys or production directories. |
+| Stack usage; allocation limits | At most 64 int descriptors and two 140-byte arrays per helper; strict 4096-byte frame gate. Twelve forked cases execute sequentially. |
+| Malformed serialization/network input | No parser/consensus change. Existing public valid record exercises kernel pressure independently of injected IO failures. |
+| Races; resource exhaustion | Child-only rlimit, inherited fixture descriptor, no concurrent fixture users. All children are waited for before parent verification/cleanup. CTest has a 30-second deadline; no process-wide parent limit or production resource policy changes. |
+
+A deliberate EMFILE-specific cleanup leak passes the older fault fixture but
+fails this descriptor observation under Clang and GCC. The unchanged core
+passes both sanitizer profiles, supplemental MemorySanitizer and ARM64 Linux
+UBSan emulation. Actual release-archive fixtures pass API 30/35/36 x86_64,
+including 16 KiB API 35; Android ARM64 compiles with 16 KiB alignment only.
+This observes descriptor exhaustion, not systemwide ENFILE, disk exhaustion,
+physical-device custody or every process scheduling outcome.
