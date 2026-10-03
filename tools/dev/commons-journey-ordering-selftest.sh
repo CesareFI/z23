@@ -10,9 +10,8 @@
 # wait burns its whole budget and dies, every run, for a reason that has
 # nothing to do with the product.
 #
-# This is a STATIC check of the script's control flow. It starts no nodes and
-# proves no runtime behaviour: a fixture may test harness ordering, it cannot
-# substitute for real acceptance.
+# This checks control-flow order and uses local command fixtures for route
+# probes. It starts no nodes; it cannot substitute for physical acceptance.
 set -euo pipefail
 
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -104,7 +103,7 @@ if [ -z "$delegate_c" ] || [ -z "$empty_c" ] || [ -z "$stop_publisher" ] || [ -z
 elif [ "$delegate_c" -ge "$empty_c" ] || [ "$empty_c" -ge "$stop_publisher" ] || [ "$stop_publisher" -ge "$restart_c" ]; then
     fail "two-host publisher must exit after delegation and before survivor redial"
 else
-    pass "two-host latecomer changes peer only after anchored delegation and publisher exit"
+pass "two-host latecomer changes peer only after anchored delegation and publisher exit"
 fi
 grep -qF 'intervention=latecomer-restart-toward-survivor-after-requester-exit' <<<"$survival" ||
     fail "latecomer route-switch intervention is no longer recorded"
@@ -157,6 +156,124 @@ if ! cj_require_compatible_binary_host fixture-host; then
     fail "matching host OS and architecture was refused"
 else
     pass "matching remote platform passes preflight"
+fi
+
+# A physical dispatch needs each directed machine route, including B<->C.
+# The acceptance harness must check those routes before shipping any binary.
+route_guard="$(awk '/^cj_require_pairwise_routes\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$JOURNEY")"
+route_token="$(awk '/^cj_route_token_safe\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$JOURNEY")"
+route_at="$(printf '%s\n' "$setup" | grep -nF 'cj_require_pairwise_routes' | head -1 | cut -d: -f1 || true)"
+if [ -z "$route_guard" ] || [ -z "$route_token" ] || [ -z "$route_at" ] ||
+   [ "$route_at" -ge "$ship_at" ]; then
+    fail "all directed host routes must be checked before binary shipment"
+else
+    eval "$route_token"
+    eval "$route_guard"
+    route_log="$(mktemp)"
+    cj_route_probe() { printf '%s>%s\n' "$1" "$3" >>"$route_log"; }
+    CJ_HOST_A=fixture-a CJ_HOST_B=fixture-b CJ_HOST_C=fixture-c
+    CJ_RDIR_B=/tmp/z23-mh-fixtureb CJ_RDIR_C=/tmp/z23-mh-fixturec
+    DHT_WORK="$(mktemp -d /tmp/z23-route-fixture-XXXXXXXX)"
+    DHT_SSH=ssh CJ_TWOHOST=0
+    if cj_require_pairwise_routes; then
+        expected=$'a>b\nb>a\na>c\nc>a\nb>c\nc>b'
+        observed="$(cat "$route_log")"
+        if [ "$observed" = "$expected" ]; then
+            pass "all six directed physical host routes are checked"
+        else
+            fail "pairwise route coverage differs: $observed"
+        fi
+    else
+        fail "pairwise route preflight refused a complete fixture"
+    fi
+    : >"$route_log"
+    CJ_TWOHOST=1
+    if cj_require_pairwise_routes && [ "$(cat "$route_log")" = $'a>b\nb>a' ]; then
+        pass "two-host preflight checks both directions only"
+    else
+        fail "two-host route preflight missed a direction"
+    fi
+    CJ_HOST_A=""
+    if missing="$(cj_require_pairwise_routes 2>&1)"; then
+        fail "missing requester reverse alias passed physical preflight"
+    elif grep -qF HOST_ROUTE_MISSING <<<"$missing"; then
+        pass "missing requester reverse alias refuses by name"
+    else
+        fail "missing requester reverse alias lacked named refusal: $missing"
+    fi
+    rm -f "$route_log"
+    rm -f "$DHT_WORK/route-probe"
+    rmdir "$DHT_WORK"
+fi
+
+# Exercise the exact-byte check with local SSH/SCP stand-ins. Each fake host
+# has its own scratch directory, and the nested command path really copies a
+# random file. A mismatch must refuse even after the copy reports success.
+route_probe_fn="$(awk '/^cj_route_probe\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$JOURNEY")"
+if [ -z "$route_probe_fn" ]; then
+    fail "pairwise route byte verifier missing"
+else
+    eval "$route_probe_fn"
+    route_root="$(mktemp -d /tmp/z23-route-bytes-XXXXXXXX)"
+    DHT_WORK="$route_root/a" CJ_RDIR_B="$route_root/b" CJ_RDIR_C="$route_root/c"
+    mkdir -p "$DHT_WORK" "$CJ_RDIR_B" "$CJ_RDIR_C"
+    CJ_HOST_A=fixture-a CJ_HOST_B=fixture-b CJ_HOST_C=fixture-c
+    DHT_SSH=ssh DHT_SCP=scp CJ_TWOHOST=0
+    ssh() {
+        while [ "$1" = -o ]; do shift 2; done
+        local fixture_host="$1"; shift
+        [ "$1" = -- ] || return 2
+        shift
+        case "$1" in
+            true) [ "${ROUTE_COMMAND_FAIL:-0}" != 1 ] ;;
+            ssh) shift; ssh "$@" ;;
+            scp) shift; scp "$@" ;;
+            openssl) command "$@" ;;
+            *) fail "unexpected route command from $fixture_host: $*"; return 2 ;;
+        esac
+    }
+    scp() {
+        while [ "$1" = -o ]; do shift 2; done
+        [ "${ROUTE_TRANSFER_FAIL:-0}" != 1 ] || return 1
+        local fixture_source="$1" fixture_target="${2#*:}"
+        cp -- "$fixture_source" "$fixture_target" || return 1
+        [ "${ROUTE_TAMPER:-0}" != 1 ] || printf x >>"$fixture_target"
+    }
+    if cj_require_pairwise_routes; then
+        pass "six mocked routes transfer and verify the exact random bytes"
+    else
+        fail "complete mocked routes refused exact bytes"
+    fi
+    expected="$(openssl dgst -sha3-256 "$DHT_WORK/route-probe" | awk '{print $NF}')"
+    if changed="$(ROUTE_TAMPER=1 cj_route_probe a "$DHT_WORK" b "$CJ_RDIR_B" \
+        "" "$CJ_HOST_B" "$expected" 2>&1)"; then
+        fail "altered route bytes passed verification"
+    elif grep -qF HOST_ROUTE_BYTES <<<"$changed"; then
+        pass "altered transferred bytes refuse by name"
+    else
+        fail "altered route bytes lacked named refusal: $changed"
+    fi
+    if refused="$(ROUTE_COMMAND_FAIL=1 cj_route_probe b "$CJ_RDIR_B" a \
+        "$DHT_WORK" "$CJ_HOST_B" "$CJ_HOST_A" "$expected" 2>&1)"; then
+        fail "failed reverse command route passed"
+    elif grep -qF HOST_ROUTE_COMMAND <<<"$refused"; then
+        pass "failed reverse command route refuses by name"
+    else
+        fail "failed reverse command lacked named refusal: $refused"
+    fi
+    if refused="$(ROUTE_TRANSFER_FAIL=1 cj_route_probe b "$CJ_RDIR_B" a \
+        "$DHT_WORK" "$CJ_HOST_B" "$CJ_HOST_A" "$expected" 2>&1)"; then
+        fail "failed reverse transfer passed"
+    elif grep -qF HOST_ROUTE_TRANSFER <<<"$refused"; then
+        pass "failed reverse transfer refuses by name"
+    else
+        fail "failed reverse transfer lacked named refusal: $refused"
+    fi
+    rm -f "$DHT_WORK/route-probe" "$DHT_WORK/route-from-b" \
+        "$DHT_WORK/route-from-c" "$CJ_RDIR_B/route-probe" \
+        "$CJ_RDIR_B/route-from-c" "$CJ_RDIR_C/route-probe" \
+        "$CJ_RDIR_C/route-from-b"
+    rmdir "$DHT_WORK" "$CJ_RDIR_B" "$CJ_RDIR_C" "$route_root"
 fi
 
 # The carried-cache rebuild on host C is judged by the toolchain capsule each
