@@ -120,6 +120,10 @@ int main(int argc, char **argv) {
             print_text(html);
         } else if (strcmp(argv[i], "--unresolved") == 0) {
             if (check_unresolved(html)) rc = 1;
+        } else {
+            fprintf(stderr, "Unknown or incomplete check: %s\n", argv[i]);
+            rc = 2;
+            break;
         }
     }
 

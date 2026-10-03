@@ -22,4 +22,20 @@ fi
     echo "inspect_html_count_selftest: empty count failed" >&2
     exit 1
 }
+
+expect_bad_check() {
+    local status=0
+    "$tool" "$tmp/input.html" "$1" > "$tmp/stdout" 2> "$tmp/stderr" || status=$?
+    [ "$status" = 2 ] && [ -s "$tmp/stderr" ] || {
+        echo "inspect_html_count_selftest: invalid check was accepted: $1" >&2
+        exit 1
+    }
+}
+
+expect_bad_check --bogus
+expect_bad_check --count
+expect_bad_check --has
+expect_bad_check --no
+"$tool" "$tmp/input.html" --has aa >/dev/null
+"$tool" "$tmp/input.html" --no missing >/dev/null
 echo "inspect_html_count_selftest: PASS"
