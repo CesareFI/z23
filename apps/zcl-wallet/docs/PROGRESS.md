@@ -7329,3 +7329,30 @@ no consensus, recovery format, wallet state or production data changed. Next:
 strengthen concurrent late-reply coverage against replacement attempts under
 TSan, then continue independent native storage/restart review. Worldstream and
 production operations remain outside this mission.
+
+## Production continuation: concurrent retired replies — 2026-10-03
+
+Extended the existing JNI registry race fixture with two reply threads while a
+replacement attempt remains active, followed by repeated attempt replacement
+and owner closure. Across 16 rounds, 10,240 old-token replies must return
+CANCELLED without reading their thread-owned public byte arrays. Current
+requests and snapshots retain their exact admission/state assertions. A barrier
+holds the first replacement active throughout the first reply phase, making
+wrong-sequence admission detectable independently of scheduling.
+
+The unchanged control passes. Removing JNI preflight fails the zero-read
+assertion; removing the C sequence match fails cancellation/state assertions.
+An initial test setup incorrectly expected the previous cancellation to disappear
+on begin. The documented behavior retains it while refreshing; the fixture was
+corrected, leaving existing assertions and production code unchanged. Its
+initial failure is retained separately and is not counted as product RED evidence.
+
+Focused Clang ASan/UBSan/LSan, optimized GCC sanitizer and fully instrumented
+TSan runs pass. Clang and GCC static analyzers and the unchanged test complexity
+cap pass (no function above15). Strict NDK release-archive fixtures pass on
+API30/35/36 x86_64, including API35 with16384-byte pages; owned temporary device
+paths are removed. ARM64 compiles with16KiB alignment only. The preceding APK,
+JVM, lint and full native-core evidence remains applicable because this slice
+changes only the host/native fixture. Evidence remains in `.cache/sync-race*`.
+Next: continue the independent native storage/restart and resource review;
+physical custody and TLS quarantine remain separate unchanged gates.

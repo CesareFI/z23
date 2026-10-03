@@ -4206,3 +4206,26 @@ callbacks; GREEN observes zero, with unchanged current snapshots and successful
 current-reply controls. Sanitizer, analyzer, complexity, fuzz, TSan and Android
 results are recorded in the corresponding progress entry. No TLS, consensus,
 wallet-record or custody admission changes are included.
+
+## Concurrent retired-reply fixture — 2026-10-03
+
+Test-only review of `test_jni_sync_races.c`: two workers own separate fixed
+public input arrays and thread-local VM results/read counters. Shared IDs are
+published before thread creation and never changed; barriers synchronize phases,
+and joins precede barrier destruction and stack-owner retirement. The first
+phase holds a replacement attempt active until both reply workers finish, so
+wrong-token admission cannot hide behind scheduling. Existing closure/replacement
+assertions remain intact.
+
+Buffer overflow/underflow and out-of-bounds access remain checked by the fake
+VM region helper; the new input is one byte. Counter increments and loop bounds
+are small fixed unsigned values, with no size multiplication, integer wrap or
+signed/unsigned narrowing added. No new allocation, free or retained input
+pointer is introduced, preventing new leaks, double-free, use-after-free or
+dangling references. Checked thread/barrier results and initialized locals avoid
+null/uninitialized reads. Pointer arithmetic stays in the existing checked copy
+helper. Fixed diagnostic formats contain no secrets. Fixed stack arrays remain
+below the strict frame cap, with no VLA or recursion. Malformed public input is
+intentionally never read for an old token. Two joined workers and bounded loops
+limit resources; TSan qualifies the fixture and full linked core/provider/JNI
+path. No production source, custody, disk or serialization contract changes.
