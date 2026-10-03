@@ -8045,8 +8045,16 @@ zcl-nodectl: $(ZCL_NODECTL_BIN)
 # so a host-built binary cannot pass the timestamp check into the ABI audit
 # (see C23_PORTABLE_RELINK at the top of this file).
 $(ZCL_NODECTL_BIN): tools/zcl-nodectl.c platform/modules/util/include/util/rpc_paths.h \
+		platform/modules/util/include/util/log_macros.h \
+		platform/modules/base/include/base/format_attribute.h \
+		platform/modules/base/include/base/log_level.h \
+		platform/modules/base/include/base/log_macros.h \
+		platform/modules/base/include/base/stdio_lock.h \
+		platform/modules/base/include/base/utc_tm.h \
+		platform/modules/platform/include/platform/clock.h \
 		platform/modules/platform/include/platform/os_binary_slots.h \
 		platform/modules/platform/include/platform/process_compat.h \
+		platform/modules/platform/include/platform/time_compat.h \
 		platform/modules/platform/src/os_binary_slots.c platform/modules/platform/src/clock.c \
 		platform/modules/base/src/log_level.c $(C23_PORTABLE_RELINK)
 	@mkdir -p $(dir $@)
