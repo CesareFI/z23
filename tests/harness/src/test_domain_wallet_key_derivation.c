@@ -62,9 +62,11 @@ static bool ext_key_bytes_equal(const struct ext_key *a, const struct ext_key *b
     return true;
 }
 
+int wallet_ext_key_failure_retirement_cases(void);
+
 int test_domain_wallet_key_derivation(void)
 {
-    int failures = 0;
+    int failures = wallet_ext_key_failure_retirement_cases();
 
     /* ── Layer 1: contract / null-edge ────────────────────────────── */
 
