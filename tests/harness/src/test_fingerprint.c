@@ -191,6 +191,20 @@ static const struct fp_candidate *fx_find(const struct fp_candidate *c, long n,
     return NULL;
 }
 
+static int fx_wait_error_selftest(void)
+{
+#if defined(_WIN32)
+    puts("fingerprint process-wait selftest: not applicable to Windows");
+    return 0;
+#else
+    int rc = system("tools/dev/fpscan_wait_selftest.sh");
+    if (rc == 0)
+        return 0;
+    fprintf(stderr, "fingerprint process-wait selftest failed: status=%d\n", rc);
+    return 1;
+#endif
+}
+
 int test_fingerprint(void)
 {
     int failures = 0;
@@ -447,5 +461,6 @@ int test_fingerprint(void)
         test_cleanup_tmpdir(dir);
     }
 
+    failures += fx_wait_error_selftest();
     return failures;
 }

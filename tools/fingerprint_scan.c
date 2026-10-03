@@ -114,7 +114,17 @@ static int fp_split(char *s, char **argv, int at, int cap)
 static int fp_wait(pid_t pid)
 {
     int status = 0;
-    while (waitpid(pid, &status, 0) < 0) { }
+    if (pid <= 0) {
+        fprintf(stderr, "fpscan: cannot wait for invalid child pid\n");
+        exit(2);
+    }
+    while (waitpid(pid, &status, 0) < 0) {
+        if (errno == EINTR)
+            continue;
+        fprintf(stderr, "fpscan: waitpid failed: %s\n", strerror(errno));
+        /* Without a child status, no compile or probe result is trustworthy. */
+        exit(2);
+    }
     if (WIFEXITED(status))
         return WEXITSTATUS(status);
     return 128 + (WIFSIGNALED(status) ? WTERMSIG(status) : 0);
