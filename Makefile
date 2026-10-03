@@ -8058,7 +8058,8 @@ $(ZCL_NODECTL_BIN): tools/zcl-nodectl.c platform/modules/util/include/util/rpc_p
 
 .PHONY: export_snapshot
 export_snapshot: $(BIN_DIR)/export_snapshot
-$(BIN_DIR)/export_snapshot: tools/export_snapshot.c \
+$(BIN_DIR)/export_snapshot: tools/export_snapshot.c vendor/include/sqlite3.h \
+		vendor/lib/libsqlite3.a \
 		platform/modules/util/include/util/log_macros.h \
 		platform/modules/base/include/base/format_attribute.h \
 		platform/modules/base/include/base/log_level.h \
