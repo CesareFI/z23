@@ -326,6 +326,20 @@ static int supervise_leased(const struct lease_spec *lease, char **child_argv)
     }
 }
 
+/* Keep the caller's PID as the private group ID.  A leader whose setsid()
+ * fails cannot get isolation from setpgid(0, 0): that call is a no-op and
+ * any siblings would remain in the group later signalled by the caller. */
+static int create_private_group(void)
+{
+    if (setsid() >= 0)
+        return 0;
+    if (getpgrp() == getpid()) {
+        errno = EPERM;
+        return -1;
+    }
+    return setpgid(0, 0);
+}
+
 int main(int argc, char **argv)
 {
     int die_with_parent = 0;
@@ -367,7 +381,7 @@ int main(int argc, char **argv)
         }
     }
 
-    if (setsid() < 0 && setpgid(0, 0) < 0) {
+    if (create_private_group() < 0) {
         fprintf(stderr, "process-group-exec: cannot create process group: %s\n",
                 strerror(errno));
         return 126;

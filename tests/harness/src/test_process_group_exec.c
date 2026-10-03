@@ -201,6 +201,55 @@ static int test_plain_setsid_survives(void)
     return failures;
 }
 
+/* Put a live sibling into the launcher's group before it execs.  A leader's
+ * setsid() then fails; setpgid(0, 0) must not be mistaken for isolation.
+ * Cleanup is by the exact child-created group, never the harness group. */
+static int pge_existing_group_result(const char *launcher, int *exit_code,
+                                     bool *sibling_alive)
+{
+    pid_t leader = fork();
+    if (leader < 0) return 0;
+    if (leader == 0) {
+        if (setpgid(0, 0) != 0) _exit(90);
+        pid_t sibling = fork();
+        if (sibling < 0) _exit(91);
+        if (sibling == 0)
+            for (;;) pause();
+        execl(launcher, launcher, "/bin/sh", "-c", "exit 0", (char *)NULL);
+        _exit(92);
+    }
+
+    int status = 0;
+    pid_t waited;
+    do {
+        waited = waitpid(leader, &status, 0);
+    } while (waited < 0 && errno == EINTR);
+    *sibling_alive = kill(-leader, 0) == 0 || errno == EPERM;
+    if (*sibling_alive) (void)kill(-leader, SIGTERM);
+    if (waited != leader || !WIFEXITED(status)) return 0;
+    *exit_code = WEXITSTATUS(status);
+    return 1;
+}
+
+static int test_existing_group_refuses(void)
+{
+    int failures = 0;
+    TEST("process-group-exec: an existing group leader refuses to inherit "
+         "a sibling's group") {
+        const char *launcher = pge_launcher();
+        int exit_code = -1;
+        bool sibling_alive = false;
+        ASSERT(launcher != NULL);
+        ASSERT(pge_existing_group_result(launcher, &exit_code,
+                                         &sibling_alive));
+        ASSERT(sibling_alive);
+        ASSERT_EQ(exit_code, 126);
+        PASS();
+    }
+    _test_next:;
+    return failures;
+}
+
 /* ── --die-with-lease: remote-leg supervision ─────────────────────────── */
 
 #include <fcntl.h>
@@ -517,6 +566,7 @@ int test_process_group_exec(void)
     int failures = 0;
     failures += test_die_with_parent_reaps_fixture();
     failures += test_plain_setsid_survives();
+    failures += test_existing_group_refuses();
     failures += test_lease_stale_reaps_group();
     failures += test_lease_fresh_survives_and_cleanup_terminates();
     failures += test_lease_missing_reaps();
