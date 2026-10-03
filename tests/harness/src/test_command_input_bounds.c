@@ -85,6 +85,20 @@ static bool cib_accepts_int(const char *path, const char *key, int64_t value)
     return ok;
 }
 
+static bool cib_accepts_wire(const char *path, const char *wire)
+{
+    const struct zcl_command_spec *spec =
+        zcl_command_registry_find(zcl_command_catalog(), path, NULL);
+    if (!spec) return false;
+    struct json_value input;
+    json_init(&input);
+    bool built = json_read(&input, wire, strlen(wire));
+    bool ok = built && zcl_command_registry_input_validate(
+        spec, &input, NULL, 0);
+    json_free(&input);
+    return ok;
+}
+
 enum cib_fleet_type { CIB_FLEET_INT, CIB_FLEET_STRING, CIB_FLEET_BOOL,
                       CIB_FLEET_REAL };
 
@@ -1108,6 +1122,50 @@ static int t_policy_fact_types(void)
     return failures;
 }
 
+/* A dev.land integer rule for `seq` must not make the signed descriptor and
+ * endpoint commands' documented decimal-string inputs uncallable. The two
+ * record handlers accept either shape; malformed strings must still refuse
+ * before they can fall back to a default sequence or validity window. */
+static int t_signed_record_numeric_input(void)
+{
+    int failures = 0;
+    const char *endpoint = "zcode.endpoint.publish";
+    const char *descriptor = "zcode.desc.publish";
+    CIB_CHECK("endpoint admits documented decimal-string seq",
+              cib_accepts_wire(endpoint,
+                  "{\"seed_file\":\"seed\",\"seq\":\"1\"}"));
+    CIB_CHECK("descriptor admits documented decimal-string seq",
+              cib_accepts_wire(descriptor,
+                  "{\"onion\":\"a.onion\",\"seq\":\"1\"}"));
+    CIB_CHECK("endpoint retains numeric seq compatibility",
+              cib_accepts_wire(endpoint,
+                  "{\"seed_file\":\"seed\",\"seq\":1}"));
+    CIB_CHECK("endpoint refuses malformed decimal-string seq",
+              !cib_accepts_wire(endpoint,
+                  "{\"seed_file\":\"seed\",\"seq\":\"abc\"}"));
+    CIB_CHECK("endpoint refuses overflowing decimal-string seq",
+              !cib_accepts_wire(endpoint,
+                  "{\"seed_file\":\"seed\",\"seq\":\"9223372036854775808\"}"));
+    CIB_CHECK("descriptor admits documented string validity inputs",
+              cib_accepts_wire(descriptor,
+                  "{\"onion\":\"a.onion\",\"not_before\":\"1791043000\",\"expiry\":\"1791302200\",\"now\":\"1791043000\"}"));
+    CIB_CHECK("endpoint retains numeric validity compatibility",
+              cib_accepts_wire(endpoint,
+                  "{\"seed_file\":\"seed\",\"not_before\":1791043000,\"expiry\":1791302200,\"now\":1791043000}"));
+    CIB_CHECK("dev.land still requires integer seq",
+              cib_accepts_wire("dev.land", "{\"action\":\"cancel\",\"seq\":1}") &&
+              !cib_accepts_wire("dev.land", "{\"action\":\"cancel\",\"seq\":\"1\"}"));
+    CIB_CHECK("fleet evidence still requires integer seq",
+              cib_accepts_wire("fleet.steer.evidence",
+                  "{\"type\":\"queue\",\"ref\":\"one\",\"seq\":1}") &&
+              !cib_accepts_wire("fleet.steer.evidence",
+                  "{\"type\":\"queue\",\"ref\":\"one\",\"seq\":\"1\"}"));
+    CIB_CHECK("release signing still requires integer seq",
+              cib_accepts_wire("zcode.release.sign", "{\"seq\":1}") &&
+              !cib_accepts_wire("zcode.release.sign", "{\"seq\":\"1\"}"));
+    return failures;
+}
+
 int test_command_input_bounds(void)
 {
     printf("\n=== command_input_bounds: per-key input length rules ===\n");
@@ -1133,6 +1191,7 @@ int test_command_input_bounds(void)
     failures += t_local_acceptance_boolean();
     failures += t_resident_binding_types();
     failures += t_policy_fact_types();
+    failures += t_signed_record_numeric_input();
     printf("=== command_input_bounds complete: %d failure(s) ===\n", failures);
     return failures;
 }

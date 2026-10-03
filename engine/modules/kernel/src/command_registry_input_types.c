@@ -31,6 +31,50 @@ static bool cr_int_range(const struct json_value *value, int64_t lo, int64_t hi)
            json_get_int(value) <= hi;
 }
 
+static bool cr_decimal_string_range(const struct json_value *value,
+                                    int64_t lo, int64_t hi)
+{
+    const char *at = json_get_str(value);
+    if (value->type != JSON_STR || !at || !at[0] || strlen(at) > 19u)
+        return false;
+    int64_t number = 0;
+    for (; *at; at++) {
+        if (*at < '0' || *at > '9') return false;
+        int64_t digit = *at - '0';
+        if (number > (hi - digit) / 10) return false;
+        number = number * 10 + digit;
+    }
+    return number >= lo;
+}
+
+/* These two signed-record leaves already parse decimal strings in their
+ * handlers and document that wire shape. The global integer rules for seq,
+ * now and validity bounds otherwise intercept the keys before the handlers.
+ * Keep the numeric shape those rules previously admitted as well. */
+static bool cr_match_signed_record_numbers(const struct zcl_command_spec *spec,
+    const char *key, const struct json_value *value, bool *type_ok)
+{
+    const char *path = spec && spec->path ? spec->path : "";
+    if (strcmp(path, "zcode.endpoint.publish") != 0 &&
+        strcmp(path, "zcode.desc.publish") != 0)
+        return false;
+    int64_t lo;
+    if (strcmp(key, "seq") == 0 || strcmp(key, "not_before") == 0 ||
+        strcmp(key, "expiry") == 0)
+        lo = 1;
+    else if (strcmp(key, "now") == 0)
+        lo = 0;
+    else
+        return false;
+    if (value->type == JSON_STR)
+        *type_ok = cr_decimal_string_range(value, lo, INT64_MAX);
+    else if (strcmp(key, "seq") == 0)
+        *type_ok = command_registry_devagent_input_seq_ok(value);
+    else
+        *type_ok = cr_int_range(value, lo, INT64_MAX);
+    return true;
+}
+
 static bool cr_nonempty_str(const struct json_value *value, size_t max_len)
 {
     const char *text = json_get_str(value);
@@ -519,6 +563,8 @@ bool command_registry_input_value_type_ok(const struct zcl_command_spec *spec,
     if (!type_ok || !key || !value)
         return false;
     *type_ok = false;
+    if (cr_match_signed_record_numbers(spec, key, value, type_ok))
+        return true;
     if (cr_match_shaped(key, value, type_ok))
         return true;
     if (cr_match_int_table(key, value, type_ok))

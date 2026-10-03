@@ -32,6 +32,32 @@ dht_probe_read_report() {
     printf -v "$start_name" '%s' "$probe_start"
 }
 
+dht_publish_endpoint_one() {
+    local i="$1" seed_file="$2" published
+    if ! published="$(dht_native "${DDS[$i]}" "${RPCS[$i]}" zcode endpoint publish \
+        --input="{\"ipv4\":\"127.0.0.1\",\"ipv4_port\":\"${PORTS[$i]}\",\"seed_file\":\"$seed_file\",\"seq\":\"1\",\"height\":129}")"; then
+        dht_die "endpoint publish $i command failed: $published"
+    fi
+    [ "$(printf '%s' "$published" | dht_jget ok)" = True ] ||
+        dht_die "endpoint publish $i failed: $published"
+    DOCS[$i]="$(printf '%s' "$published" | dht_jget data.doc_hex)"
+}
+
+dht_endpoint_publish_selftest() {
+    local report="$DHT_WORK/endpoint-command-refusal.log"
+    if (
+        DHT_WORK=""
+        DDS=(unused); RPCS=(29211); PORTS=(20022); DOCS=()
+        dht_native() { printf '%s\n' '{"ok":true,"data":{"doc_hex":"aabb"}}'; return 7; }
+        dht_publish_endpoint_one 0 /unused
+    ) >"$report" 2>&1; then
+        dht_die "endpoint publish accepted a failed native command"
+    fi
+    grep -Fq 'FATAL: endpoint publish 0 command failed:' "$report" ||
+        dht_die "endpoint publish did not name the failed native command"
+    dht_note "PASS endpoint command exit remains load-bearing beside its JSON body"
+}
+
 dht_lifecycle_probe_child() {
     local report="${DHT_PROBE_REPORT:?}" release="${DHT_PROBE_RELEASE:?}"
     local outcome="${DHT_PROBE_OUTCOME:?}" listener="" listener_port
@@ -62,6 +88,7 @@ dht_lifecycle_selftest() {
     local one_pid one_port one_start two_pid two_port two_start
     local three_pid three_port three_start signal_pid signal_port signal_start
     dht_make_work zcl23-dhtprobe
+    dht_endpoint_publish_selftest
 
     dht_spawn_owned_command one_shell "$DHT_WORK/one.log" env \
         DHT_LIFECYCLE_MODE=probe DHT_PROBE_OUTCOME=success \
@@ -497,11 +524,7 @@ for i in 0 1 2 3 4 5 6; do
     elif [ "$i" -eq 1 ]; then
         seed_file="$DHT_WORK/master-b.hex"
     fi
-    published="$(dht_native "${DDS[$i]}" "${RPCS[$i]}" zcode endpoint publish \
-        --input="{\"ipv4\":\"127.0.0.1\",\"ipv4_port\":\"${PORTS[$i]}\",\"seed_file\":\"$seed_file\",\"seq\":\"1\",\"height\":129}")"
-    [ "$(printf '%s' "$published" | dht_jget ok)" = True ] ||
-        dht_die "endpoint publish $i failed: $published"
-    DOCS[$i]="$(printf '%s' "$published" | dht_jget data.doc_hex)"
+    dht_publish_endpoint_one "$i" "$seed_file"
 done
 
 # Choose a deterministic XOR-progress path ending at node 6. Only neighbours
