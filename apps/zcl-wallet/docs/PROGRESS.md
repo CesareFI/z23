@@ -7887,3 +7887,34 @@ RED/GREEN cleanup uses only invocation-recorded fixture paths. Ignored evidence:
 The preceding complete safety/release baseline remains applicable; this does not
 establish physical power-loss durability. Continue safe native restart/lifecycle
 work without enabling TLS, signing authority or production wallets.
+
+## Production continuation: instrumented uninitialized-read fuzzing — 2026-10-03
+
+At `fe8fb311b`, a separate Clang 20.1.2 MSan/origin-tracking build adds libFuzzer
+coverage to every linked native library. All 87 core/provider compile commands
+carry both flags, covering every expected library target; all seven archives
+contain MSan and coverage references. Existing harnesses are linked manually
+with libFuzzer/MSan. The normal ASan/UBSan fuzz admission gate stays unchanged.
+An initialized control passes; deliberate uninitialized heap return fails with
+MSan's expected diagnostic through the same libFuzzer runtime.
+
+| Existing harness | Runs / duration | Fuzzer seed |
+| --- | --- | --- |
+| Recovery phrase decode/encode/confirm | 652,009 / 31s | 611006066 |
+| Transparent transaction/script codec | 571,801 / 31s | 610678423 |
+| QR scanner with public rotated/address/payment seeds | 11,096 / 31s | 618810317 |
+| Electrum replies/framing with public network/history/max-frame seeds | 49,135 / 31s | 2801117472 |
+
+No findings. The first three run concurrently with an initial unseeded Electrum
+campaign (278,398 cases); the final Electrum campaign adds its intended corpus
+and permits the full 16,385-byte frame. Other mutation lengths cap at 16,384.
+The seed writer requires a corpus working directory; its initially misplaced
+public fixtures were moved by exact filename into ignored evidence. The tracked
+workspace is clean apart from this documentation. No secrets or generated
+artifacts are committed. README preserves the manual profile; ignored evidence
+and source identity are in `.cache/msan-fuzz/`.
+
+These are bounded Linux x86_64 campaigns, not complete parser/cryptographic
+proof, Android/physical execution or address/leak/race qualification. No C,
+provider, APK or acceptance gate changed. Continue native robustness work from
+the current development branch; prior full safety/release evidence still applies.

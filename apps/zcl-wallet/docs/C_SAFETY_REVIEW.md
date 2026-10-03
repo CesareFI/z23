@@ -4629,3 +4629,16 @@ guard independently fails the SIGABRT assertion on Android. Both host sanitizer
 profiles, MSan, ARM64 Linux UBSan, host analyzers and the Android ARM64-target
 analyzer pass; test complexity remains <=15. Android ARM64 compiles/alignment
 only. No physical power-loss, flash durability or custody qualification implied.
+
+## Supplemental MSan fuzz coverage — 2026-10-03
+
+No native changes. Existing recovery-phrase, transparent transaction, QR and
+Electrum harnesses execute under a separate Clang 20.1.2 MSan/libFuzzer profile
+at `fe8fb311b`. All 87 core/provider compilation commands include MSan and fuzz
+coverage; all seven archives expose both instrumentations. Positive and
+intentional uninitialized heap-read controls verify runtime behavior. Bounded
+31-second public-corpus campaigns pass without findings; exact counts/seeds are
+in PROGRESS and the manual recipe is in README. This adds uninitialized-path
+sampling, not a substitute for the existing 18-hazard review, ASan/UBSan/LSan,
+TSan, consensus vectors, Android or physical-device acceptance. TLS stays off;
+normal fuzz-profile admission is unchanged.

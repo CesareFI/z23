@@ -124,6 +124,33 @@ deliberate uninitialized heap-read control confirmed the runtime. Exact scope
 and evidence are recorded in PROGRESS. This does not provide Android runtime,
 race, address-bounds, leak or complete uninitialized-path coverage.
 
+For supplemental libFuzzer/MSan runs, repeat that configuration in
+`native/build/msan-fuzz` with `-fsanitize=memory,fuzzer-no-link` in both global
+flag settings. Keep `ZCL_FUZZ=OFF`: the normal registered fuzz profile requires
+ASan/UBSan, and its admission check is unchanged. Build the instrumented core
+and manually link an existing harness with the MSan libFuzzer runtime:
+
+```sh
+cmake --build native/build/msan-fuzz --target zcl_wallet_core -j8
+msan_build=native/build/msan-fuzz
+clang-20 -std=c17 -O1 -g -I native/include -fPIE -pie \
+  -fsanitize=fuzzer,memory -fsanitize-memory-track-origins=2 -fno-omit-frame-pointer \
+  native/tests/fuzz_mnemonic.c "$msan_build/libzcl_wallet_core.a" \
+  "$msan_build/libzcl_hash_provider.a" "$msan_build/libzcl_blake2_provider.a" \
+  "$msan_build/secp256k1/lib/libsecp256k1.a" "$msan_build/libzcl_qr_provider.a" \
+  "$msan_build/libzcl_scan_provider.a" "$msan_build/libzcl_json_provider.a" \
+  -lm -o "$msan_build/fuzz_mnemonic"
+mkdir -p "$msan_build/corpus"
+timeout 50 "$msan_build/fuzz_mnemonic" "$msan_build/corpus" \
+  -max_total_time=30 -timeout=5 -max_len=16384 -print_funcs=0 \
+  -artifact_prefix="$msan_build/"
+```
+
+Check emitted core/provider commands for both MSan and coverage instrumentation,
+not just harness flags. Use only public fixture corpora. `seed_scan_qr` accepts
+an explicit directory; `seed_electrum` must run with the corpus as its working
+directory. Measured public-seed campaigns and runtime controls are in PROGRESS.
+
 ### Unsigned release reproduction
 
 Android native compilation maps the checkout root to `.` in debug information
