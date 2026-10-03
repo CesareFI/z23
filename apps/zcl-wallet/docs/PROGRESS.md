@@ -7828,3 +7828,20 @@ fixture in 0.22s under the original ten-second deadline. Actual release-archive
 fixtures pass API 30/35/36 x86_64, including 16 KiB API 35; Android ARM64 builds
 and alignment only. Existing production fuzz/JVM/ART/reproduction evidence
 remains applicable. Ignored evidence: `.cache/scan-resize/`.
+
+## Production continuation: native MemorySanitizer qualification — 2026-10-03
+
+At source `1c0075d71`, a separate Clang 20.1.2 Linux x86_64 PIE build instruments
+the core, all six provider archives and native fixtures with MemorySanitizer
+and heap-origin tracking. The deliberate uninitialized heap-read control fails
+with the expected diagnostic; initialized startup controls pass. All 135 native
+executable tests pass in 17.41s under unchanged deadlines, including the 13 JNI
+fixtures and storage exec/decoder resize regressions. Archive symbol inspection
+confirms instrumentation in all seven archives. No wallet finding or C change.
+
+README preserves the exact profile. Four script/build contracts are excluded
+from this supplementary runtime selection and remain covered by the normal
+Clang/GCC safety gate. Evidence is ignored `.cache/msan-probe/`; this qualifies
+neither Android/JVM execution nor race, bounds, leak or every possible
+uninitialized path. Existing production APK/reproduction and Android evidence
+remain applicable. Continue independent native robustness work on this branch.

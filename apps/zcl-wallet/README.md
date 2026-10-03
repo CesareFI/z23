@@ -96,6 +96,34 @@ ART, physical hardware, ASan/LSan and hardware custody. Continue to run the
 normal host safety gates and Android acceptance separately; the broader QEMU
 native suite has recorded timeout and sanitizer limitations in PROGRESS.
 
+### Additional uninitialized-read checks
+
+Clang MemorySanitizer supplements the normal ASan/UBSan/LSan gates on Linux
+x86_64. Use a separate build so the core, providers and native fixtures all
+receive the same instrumentation; OpenSSL/libsodium differential tests and the
+real JVM are excluded from this profile. From this directory:
+
+```sh
+cmake -S native -B native/build/msan -DCMAKE_C_COMPILER=clang-20 \
+  -DCMAKE_BUILD_TYPE=Debug '-DCMAKE_C_FLAGS_DEBUG=-O1 -g' \
+  '-DCMAKE_C_FLAGS=-fsanitize=memory -fsanitize-memory-track-origins=2 -fno-omit-frame-pointer -fPIE' \
+  '-DCMAKE_EXE_LINKER_FLAGS=-fsanitize=memory -fsanitize-memory-track-origins=2 -pie' \
+  -DZCL_SANITIZE=OFF -DZCL_FUZZ=OFF -DZCL_JNI=OFF \
+  -DZCL_ORACLE=OFF -DZCL_TLS_REVIEW=OFF \
+  '-DZCL_TEST_JNI_INCLUDE_DIRS=/usr/lib/jvm/java-17-openjdk-amd64/include;/usr/lib/jvm/java-17-openjdk-amd64/include/linux'
+cmake --build native/build/msan -j8
+ctest --test-dir native/build/msan --no-tests=error --output-on-failure -j4 \
+  -E '^wallet_(fuzz_profile|test_deadline_contract|test_deadlines|tls_quarantine)$'
+```
+
+The four excluded entries are script/build contracts exercised by the normal
+safety gate; this run selects native executables. Keep existing test deadlines
+and report sanitizer startup failures separately from wallet findings. The
+measured Clang 20.1.2 run passed after initialized startup controls and a
+deliberate uninitialized heap-read control confirmed the runtime. Exact scope
+and evidence are recorded in PROGRESS. This does not provide Android runtime,
+race, address-bounds, leak or complete uninitialized-path coverage.
+
 ### Unsigned release reproduction
 
 Android native compilation maps the checkout root to `.` in debug information

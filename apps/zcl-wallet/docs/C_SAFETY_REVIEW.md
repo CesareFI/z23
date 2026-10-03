@@ -4560,3 +4560,16 @@ including 16 KiB API 35. Android ARM64 builds only. Independent failed-copy and
 old-frame wipe removals pass the prior fixture but fail the expanded one under
 both compilers. This qualifies the provider contract, not a new runtime reuse
 optimization or physical camera/custody behavior.
+
+## Supplemental uninitialized-read qualification — 2026-10-03
+
+No native source, ownership, bounds, provider or product change. A separate
+Clang 20.1.2 MemorySanitizer/origin-tracking PIE build of `1c0075d71` covers all
+135 native executable fixtures on Linux x86_64. The core and six providers
+carry instrumentation; a deliberate uninitialized heap read is detected while
+initialized startup controls pass. Existing deadlines and TLS quarantine hold.
+The complete selected run passes in 17.41s. This supplements the uninitialized
+memory hazard review above; the other hazard reviews and ASan/UBSan/LSan/TSan,
+Android and physical-device limitations remain unchanged. Four script/build
+contracts run in the normal safety profile, not this native runtime selection.
+Reproduction commands are in README; ignored evidence is `.cache/msan-probe/`.
