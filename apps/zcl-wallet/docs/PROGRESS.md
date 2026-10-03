@@ -8187,3 +8187,15 @@ prerequisite without changing their production fixes: mnemonic994070f6,
 key951f4cef, xprv57f7df67. Each still needs its own native proof before publication.
 PR73/74 remain open; CI is queued. Detailed identities and continuation are in
 UPSTREAM_PUBLICATION.md. No authority or validation requirement was relaxed.
+
+### Xprv qualified; mnemonic proof active
+
+Exact xprv57f7df67/base3a93e60e native receipt PASS, independently verified:
+all215 lint gates and1236/1236 runtime groups, zero final skips/unobserved.
+One Tor bootstrap load-flaky observation resolved in the runner's isolated
+retry and remains disclosed. Receipt digest, timings, compilers and unchanged
+host exclusions are recorded in UPSTREAM_PUBLICATION.md. Mnemonic994070f6 proof
+is active; key951f4cef follows. Final GCC combined-diff lanes pass for all three.
+PR artifacts are prepared. Under the latest no-hook-bypass instruction, further
+normal fork publication remains blocked by the main-only hook; no extra push
+was attempted. Continue qualification without reopening that authority question.

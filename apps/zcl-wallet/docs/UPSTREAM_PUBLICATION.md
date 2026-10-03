@@ -406,3 +406,37 @@ heads must qualify under that unchanged plan and report its explicit host gates.
 Xprv57f7df67 is now running its native proof; mnemonic994070f6 and key951f4cef
 have rebuilt their development binaries and await serialized runtime proofs.
 The shared prerequisite remains a separate commit in each proposed wallet PR.
+
+### Xprv exact qualification complete
+
+Candidate `57f7df67d3ed18aa5bcb6a7d8eae1611b83af7b5`, upstream base
+`3a93e60ebf922af3d119b9facc1d95803f42844b`: native `dev proof step` PASS,
+independently verified with `dev proof status` on the same exact pair. Receipt
+SHA256: `8e5f7dff2eb1e7be359c284be9180d97d61ac6d88bf0e635e9855d50e44f41f9`.
+The xprv root locator identifies the qualified copy; its receipt filename is
+`57f7df67d3ed18aa5bcb6a7d8eae1611b83af7b5-3a93e60ebf922af3d119b9facc1d95803f42844b.receipt`.
+
+All215 lint gates pass (188.475s lint umbrella;198.428s native lint step).
+Runtime1236/1236 selected groups pass (642.746s), zero final skips/unobserved,
+with one explicitly recorded load-flaky Tor bootstrap observation: its initial
+network window was unobserved and the canonical isolated retry passed. Total
+native proof860.404s. Universal selection reports the unchanged heavy-anchor,
+live-onion-pair and bound-C23-toolchain host exclusions; no policy was edited.
+
+Default compiler is GCC14.2.0; secondary Clang20.1.2. Final combined GCC scope
+checks2,434 translation units with all11 changed paths diagnostic-free. Original
+xprv Clang/GCC ASan/UBSan/LSan RED5→GREEN0 and cleanup-length mutant7 evidence
+still applies to the byte-unchanged wallet production/regression code. The final
+diff security scan is CLEAN. The final two-commit patch series and exact signed
+commit bundle have SHA256 manifests in the ignored publication artifacts folder.
+
+Mnemonic994070f6 now runs its exact proof; key951f4cef follows. Their final
+combined GCC sweeps also pass (2,433 translation units each). Preserve each
+source tree during proof; do not repeat already-green runs without a new reason.
+
+The latest user instruction prohibits hook bypass. Standard pre-push still
+refuses every non-main ref at `tools/dev/z23_git_hook.c:644`; the documented
+normal loop supplies no fork route. No further publication push was attempted
+under that instruction. PR73/74 remain published from the earlier explicitly
+authorized routing exception. Preserve qualified candidates and complete PR
+artifacts while continuing independent qualification and reuse work.
