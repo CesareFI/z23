@@ -12,6 +12,7 @@
 #define ZCL_NATIVE_ZCODE_WORK_PRIV_H
 
 #include "command/native_command.h"
+#include "native_zcode_work_paths.h"
 #include "json/json.h"
 #include "models/build_fabric.h"
 #include "models/build_proof_event.h"
@@ -85,8 +86,6 @@ struct zwork_peer_inventory {
  * path, the bounded JSON accessors of the HOT_FORK input core, the two
  * build-ledger openers, the compact failure reply, the canonical task
  * resolver and the bounded continuation writer. */
-bool zwork_task_path(char out[ZWORK_PATH_MAX], const char *task,
-                     const char *suffix);
 const char *zwork_str(const struct json_value *input, const char *key);
 bool zwork_bool(const struct json_value *input, const char *key);
 int64_t zwork_int(const struct json_value *input, const char *key,

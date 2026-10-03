@@ -9,19 +9,16 @@
 #include "models/database.h"
 #include "platform/directory_compat.h"
 #include "platform/private_directory.h"
-#include "platform/state_root.h"
 #include "platform/time_compat.h"
 #include "presentation/model.h"
 #include "services/build_fabric_service.h"
 #include "util/log_macros.h"
 #include "vcs/zcode_dev.h"
+#include "native_zcode_work_paths.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#if !defined(_WIN32)
-#include <unistd.h>
-#endif
 
 #define NPRC_LEAF "app.presentation.release-confirm"
 #define NPRC_PATH_MAX 4400
@@ -184,25 +181,10 @@ static bool nprc_evidence_datadir(const char *requested, const char *task,
                                                sizeof(canonical)))
             return false;
     } else {
-#if defined(_WIN32)
-        char private_root[NPRC_PATH_MAX];
-        int n = platform_state_root(private_root, sizeof(private_root))
-            ? snprintf(candidate, sizeof(candidate),
-                       "%s/zcode-workspaces/%.64s/zbuild", private_root, task)
-            : -1;
-        if (n <= 0 || (size_t)n >= sizeof(candidate) ||
+        if (!zwork_task_path(candidate, task, "/zbuild") ||
             !platform_directory_canonical_real(candidate, canonical,
                                                sizeof(canonical)))
             return false;
-#else
-        int n = snprintf(candidate, sizeof(candidate),
-                         "/tmp/zclassic23-zcode-workspaces/%lu/%.64s/zbuild",
-                         (unsigned long)getuid(), task);
-        if (n <= 0 || (size_t)n >= sizeof(candidate) ||
-            !platform_directory_canonical_real(candidate, canonical,
-                                               sizeof(canonical)))
-            return false;
-#endif
     }
 #if defined(_WIN32)
     uintptr_t directory = 0;

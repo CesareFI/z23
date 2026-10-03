@@ -58,6 +58,7 @@
 #include <limits.h>
 #include <stdlib.h>
 #if !defined(_WIN32)
+#include <errno.h>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -78,20 +79,74 @@ uint64_t zwork_source_bytes(const struct vcs_package_prepared *prepared);
 #endif
 
 #ifndef ZCL_HOTFORK_ZWORK_INPUT_CORE
+/* Existing private task directories keep their original path. Ambiguous or
+ * owner-unsafe directories refuse, so a restart cannot silently switch the
+ * ledger or candidate bytes it will accept. */
+#if !defined(_WIN32)
+static bool zwork_task_path_probe(const char *path, bool legacy,
+                                  bool *present)
+{
+    struct stat found = {0}, root = {0};
+    *present = lstat(path, &found) == 0;
+    if (*present)
+        return S_ISDIR(found.st_mode) && found.st_uid == geteuid() &&
+            (found.st_mode & 0777) == 0700;
+    if (errno == ENOENT) return true;
+    if (!legacy || errno != EACCES) return false;
+    if (lstat("/tmp/zclassic23-zcode-workspaces", &root) != 0)
+        return false;
+    return root.st_uid != geteuid();
+}
+
+bool zwork_task_path_select(char out[ZWORK_PATH_MAX],
+                            const char *legacy, const char *current,
+                            const char *suffix)
+{
+    if (!out || !legacy || !current) return false;
+    bool old_present = false, now_present = false;
+    if (!zwork_task_path_probe(legacy, true, &old_present) ||
+        !zwork_task_path_probe(current, false, &now_present) ||
+        (old_present && now_present)) return false;
+    int n = snprintf(out, ZWORK_PATH_MAX, "%s%s",
+                     old_present ? legacy : current, suffix ? suffix : "");
+    return n > 0 && n < ZWORK_PATH_MAX;
+}
+
+static bool zwork_task_posix_paths(char legacy[ZWORK_PATH_MAX],
+                                   char current[ZWORK_PATH_MAX],
+                                   const char *task)
+{
+    const char *xdg = getenv("XDG_STATE_HOME");
+    const char *home = getenv("HOME");
+    const char *base = xdg && xdg[0] ? xdg : home;
+    const char *tail = xdg && xdg[0] ? "" : "/.local/state";
+    if (!base || base[0] != '/') return false;
+    int a = snprintf(legacy, ZWORK_PATH_MAX,
+                     "/tmp/zclassic23-zcode-workspaces/%lu/%.64s",
+                     (unsigned long)getuid(), task);
+    int b = snprintf(current, ZWORK_PATH_MAX,
+                     "%s%s/z23/dev/zcode-workspaces/%.64s",
+                     base, tail, task);
+    return a > 0 && a < ZWORK_PATH_MAX &&
+        b > 0 && b < ZWORK_PATH_MAX;
+}
+#endif
+
 bool zwork_task_path(char out[ZWORK_PATH_MAX], const char *task,
                      const char *suffix)
 {
+    if (!out || !task || !task[0]) return false;
 #if defined(_WIN32)
     char state[ZWORK_PATH_MAX];
     int n = platform_state_root(state, sizeof(state))
         ? snprintf(out, ZWORK_PATH_MAX, "%s/zcode-workspaces/%.64s%s",
                    state, task, suffix ? suffix : "") : -1;
-#else
-    int n = snprintf(out, ZWORK_PATH_MAX,
-                     "/tmp/zclassic23-zcode-workspaces/%lu/%.64s%s",
-                     (unsigned long)getuid(), task, suffix ? suffix : "");
-#endif
     return n > 0 && n < ZWORK_PATH_MAX;
+#else
+    char legacy[ZWORK_PATH_MAX], modern[ZWORK_PATH_MAX];
+    if (!zwork_task_posix_paths(legacy, modern, task)) return false;
+    return zwork_task_path_select(out, legacy, modern, suffix);
+#endif
 }
 
 #endif

@@ -9,6 +9,8 @@
 #include "config/runtime.h"
 #include "json/json.h"
 #include "platform/directory_compat.h"
+#include "platform/private_directory.h"
+#include "platform/state_root.h"
 #include "platform/time_compat.h"
 #include "models/build_proof_event.h"
 #include "models/database.h"
@@ -43,6 +45,7 @@
 #include <unistd.h>
 
 #include "native_zcode_work_run_priv.h"
+#include "native_zcode_work_paths.h"
 
 const char *run_str(const struct json_value *input, const char *key)
 {
@@ -256,6 +259,27 @@ static bool run_candidate_has_behavior_change(
     return diff.changed;
 }
 
+#if !defined(_WIN32)
+static bool run_workspace_parent_ready(const char *parent)
+{
+    const char *legacy = "/tmp/zclassic23-zcode-workspaces/";
+    if (strncmp(parent, legacy, strlen(legacy)) != 0) {
+        char state[ZWORK_RUN_PATH_MAX], workspaces[ZWORK_RUN_PATH_MAX];
+        if (!platform_state_root(state, sizeof(state))) return false;
+        int n = snprintf(workspaces, sizeof(workspaces),
+                         "%s/zcode-workspaces", state);
+        if (n <= 0 || (size_t)n >= sizeof(workspaces) ||
+            !platform_private_directory_ensure(workspaces) ||
+            !platform_private_directory_ensure(parent)) return false;
+    }
+    uintptr_t task_directory = 0;
+    if (!platform_private_directory_open_validated(parent, &task_directory))
+        return false;
+    platform_private_directory_close(task_directory);
+    return true;
+}
+#endif
+
 bool run_candidate_workspace(const char *store,
                              const struct vcs_zcode_task_v1 *task,
                              const char *task_hex, uint32_t attempt,
@@ -271,17 +295,14 @@ bool run_candidate_workspace(const char *store,
     return false;
 #else
     char parent[ZWORK_RUN_PATH_MAX];
-    int n = snprintf(parent, sizeof(parent),
-                     "/tmp/zclassic23-zcode-workspaces/%lu/%.64s",
-                     (unsigned long)getuid(), task_hex);
-    if (n <= 0 || (size_t)n >= sizeof(parent)) return false;
-    struct zcl_result made = zcl_mkdir_p(parent, 0700);
+    if (!zwork_task_path(parent, task_hex, "")) return false;
+    if (!run_workspace_parent_ready(parent)) return false;
     char canonical_parent[ZWORK_RUN_PATH_MAX];
-    if (!made.ok || !platform_directory_canonical_real(
+    if (!platform_directory_canonical_real(
             parent, canonical_parent, sizeof(canonical_parent))) return false;
     /* Keep run, persisted handoff, and acceptance on the same host path.
      * In particular, Darwin resolves /tmp beneath /private. */
-    n = snprintf(out, ZWORK_RUN_PATH_MAX, "%s/attempt-%u", canonical_parent, attempt);
+    int n = snprintf(out, ZWORK_RUN_PATH_MAX, "%s/attempt-%u", canonical_parent, attempt);
     if (n <= 0 || (size_t)n >= ZWORK_RUN_PATH_MAX) return false;
     if (mkdir(out, 0700) == 0) {
         *created = true;

@@ -12,6 +12,7 @@
 #include "command/native_zcode_discovery.h"
 #include "command/native_zcode_join.h"
 #include "command/native_zcode_work_map.h"
+#include "command/native_zcode_work_paths.h"
 #include "sha3/sha3.h"
 #include "config/command_catalog.h"
 #include "config/boot_zcode_async_proof.h"
@@ -23,6 +24,7 @@
 #include "platform/directory_compat.h"
 #include "platform/environment_compat.h"
 #include "platform/state_root.h"
+#include "platform/temp_directory.h"
 #include "platform/time_compat.h"
 #include "services/build_fabric_service.h"
 #include "services/build_fabric_worker.h"
@@ -55,6 +57,7 @@
 #include "vcs/zcode_work_pull_receipt.h"
 
 #include <secp256k1.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -3783,19 +3786,9 @@ static bool zpd_compact_default_continuation(
     json_init(&expanded);
     char wire[1024], expected[4400], canonical[4400];
     size_t compact = json_write(next, wire, sizeof(wire));
-#if defined(_WIN32)
-    char state[4400];
-    int n = platform_state_root(state, sizeof(state))
-        ? snprintf(expected, sizeof(expected), "%s/zcode-workspaces/%.64s/zbuild",
-                   state, task_hex) : -1;
-#else
-    int n = snprintf(expected, sizeof(expected),
-                     "/tmp/zclassic23-zcode-workspaces/%lu/%.64s/zbuild",
-                     (unsigned long)getuid(), task_hex);
-#endif
     bool ok = json_get(next, "datadir") == NULL &&
         compact > 0 && compact < sizeof(((struct zcl_command_next *)0)->input_json) &&
-        n > 0 && (size_t)n < sizeof(expected) &&
+        zwork_task_path(expected, task_hex, "/zbuild") &&
         platform_directory_canonical_real(expected, canonical, sizeof(canonical)) &&
         strcmp(canonical, datadir) == 0 &&
         json_read(&expanded, wire, compact) &&
@@ -3883,10 +3876,98 @@ static bool zpd_custom_ledger_cases(
         zpd_custom_ledger_continuation(accept_input, datadir, long_dir, job, false);
 }
 
+#if !defined(_WIN32)
+static bool zpd_select_new_and_legacy(const char *old, const char *current)
+{
+    char selected[4400], expected[4400];
+    int n = snprintf(expected, sizeof(expected), "%s/zbuild", current);
+    if (n <= 0 || (size_t)n >= sizeof(expected) ||
+        !zwork_task_path_select(selected, old, current, "/zbuild") ||
+        strcmp(selected, expected) != 0 || mkdir(old, 0700) != 0)
+        return false;
+    n = snprintf(expected, sizeof(expected), "%s/zbuild", old);
+    return n > 0 && (size_t)n < sizeof(expected) &&
+        zwork_task_path_select(selected, old, current, "/zbuild") &&
+        strcmp(selected, expected) == 0;
+}
+
+static bool zpd_select_refuses_ambiguous_and_unsafe(const char *old,
+                                                     const char *current)
+{
+    char selected[4400];
+    if (mkdir(current, 0700) != 0 ||
+        zwork_task_path_select(selected, old, current, "/zbuild") ||
+        rmdir(current) != 0 || chmod(old, 0755) != 0 ||
+        zwork_task_path_select(selected, old, current, "/zbuild") ||
+        chmod(old, 0700) != 0 || rmdir(old) != 0 ||
+        symlink(current, old) != 0)
+        return false;
+    return !zwork_task_path_select(selected, old, current, "/zbuild");
+}
+
+static bool zpd_task_path_selection(void)
+{
+    char fixture[PLATFORM_TEMP_PATH_MAX];
+    if (!platform_temp_directory_create("zpd-zwork-select-", fixture,
+                                        sizeof(fixture))) return false;
+    char old[4400], current[4400];
+    int a = snprintf(old, sizeof(old), "%s/legacy", fixture);
+    int b = snprintf(current, sizeof(current), "%s/current", fixture);
+    bool ok = a > 0 && (size_t)a < sizeof(old) &&
+        b > 0 && (size_t)b < sizeof(current) &&
+        zpd_select_new_and_legacy(old, current) &&
+        zpd_select_refuses_ambiguous_and_unsafe(old, current);
+    struct zcl_result removed = zcl_tree_remove(fixture);
+    return ok && removed.ok;
+}
+
+static bool zpd_new_owner_path_matches(const char *state)
+{
+    char task[65], actual[4400], expected[4400], z23[4400];
+    int task_len = snprintf(task, sizeof(task), "%064lx",
+                            (unsigned long)getpid());
+    int path_len = snprintf(expected, sizeof(expected),
+                            "%s/z23/dev/zcode-workspaces/%s/zbuild",
+                            state, task);
+    int root_len = snprintf(z23, sizeof(z23), "%s/z23", state);
+    struct stat unused;
+    return task_len == 64 &&
+        path_len > 0 && (size_t)path_len < sizeof(expected) &&
+        root_len > 0 && (size_t)root_len < sizeof(z23) &&
+        zwork_task_path(actual, task, "/zbuild") &&
+        strcmp(actual, expected) == 0 &&
+        lstat(z23, &unused) != 0 && errno == ENOENT;
+}
+
+static bool zpd_new_owner_workspace_path(void)
+{
+    char state[PLATFORM_TEMP_PATH_MAX];
+    if (!platform_temp_directory_create("zpd-zwork-owner-", state,
+                                        sizeof(state))) return false;
+    const char *prior = getenv("XDG_STATE_HOME");
+    char *saved = prior ? strdup(prior) : NULL;
+    if (prior && !saved) {
+        (void)rmdir(state);
+        return false;
+    }
+    bool ok = setenv("XDG_STATE_HOME", state, 1) == 0 &&
+        zpd_new_owner_path_matches(state);
+    int restored = prior ? setenv("XDG_STATE_HOME", saved, 1)
+                         : unsetenv("XDG_STATE_HOME");
+    free(saved);
+    struct zcl_result removed = zcl_tree_remove(state);
+    return ok && restored == 0 && removed.ok;
+}
+#endif
+
 static __attribute__((unused)) int zpd_test_work_start(void)
 {
     int failures = 0;
     TEST("zcode work start: goal and profile compose existing task owners") {
+#if !defined(_WIN32)
+        ASSERT(zpd_task_path_selection());
+        ASSERT(zpd_new_owner_workspace_path());
+#endif
         char root[512];
         /* The workspace path is a FIXED-LENGTH absolute /tmp path, not a
          * path under the checkout. The continuation's 512-byte compaction
@@ -6269,9 +6350,49 @@ static int zpd_run_rows(const struct zpd_keys *keys, unsigned shard)
     return failures;
 }
 
+#if !defined(_WIN32)
+struct zpd_state_scope {
+    char root[PLATFORM_TEMP_PATH_MAX];
+    char *saved;
+    bool had;
+};
+
+static bool zpd_state_scope_start(struct zpd_state_scope *scope)
+{
+    memset(scope, 0, sizeof(*scope));
+    const char *prior = getenv("XDG_STATE_HOME");
+    scope->had = prior != NULL;
+    scope->saved = prior ? strdup(prior) : NULL;
+    if (prior && !scope->saved) return false;
+    if (!platform_temp_directory_create("zpd-state-", scope->root,
+                                        sizeof(scope->root))) {
+        free(scope->saved);
+        return false;
+    }
+    if (setenv("XDG_STATE_HOME", scope->root, 1) == 0) return true;
+    (void)rmdir(scope->root);
+    free(scope->saved);
+    return false;
+}
+
+static bool zpd_state_scope_finish(struct zpd_state_scope *scope)
+{
+    int restored = scope->had
+        ? setenv("XDG_STATE_HOME", scope->saved, 1)
+        : unsetenv("XDG_STATE_HOME");
+    struct zcl_result removed = zcl_tree_remove(scope->root);
+    free(scope->saved);
+    return restored == 0 && removed.ok;
+}
+#endif
+
 /* One run: the partition, a private signing context, the owned rows. */
 static int zpd_run_shard(unsigned shard)
 {
+#if !defined(_WIN32)
+    struct zpd_state_scope state_scope;
+    if (!zpd_state_scope_start(&state_scope)) return 1;
+#endif
     struct zpd_keys keys = {0};
     int failures = zpd_partition_check();
     keys.ctx = secp256k1_context_create(SECP256K1_CONTEXT_SIGN |
@@ -6279,10 +6400,16 @@ static int zpd_run_shard(unsigned shard)
     keys.secret[31] = 1;
     if (!keys.ctx || !zpd_pubkey(keys.ctx, keys.secret, keys.pubkey)) {
         if (keys.ctx) secp256k1_context_destroy(keys.ctx);
+#if !defined(_WIN32)
+        (void)zpd_state_scope_finish(&state_scope);
+#endif
         return failures + 1;
     }
     failures += zpd_run_rows(&keys, shard);
     secp256k1_context_destroy(keys.ctx);
+#if !defined(_WIN32)
+    if (!zpd_state_scope_finish(&state_scope)) failures++;
+#endif
     return failures;
 }
 
@@ -6357,7 +6484,6 @@ int test_zcode_package_dev_shard_03(void)
 #include "services/package_local.h"
 #include "platform/private_directory.h"
 #include "platform/private_file.h"
-#include "platform/temp_directory.h"
 #include "vcs/package_store.h"
 #include "vcs/package_transport.h"
 #if !defined(_WIN32)

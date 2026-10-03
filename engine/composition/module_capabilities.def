@@ -1254,7 +1254,7 @@ ZCL_MODULE_CAPABILITY("tools/command/native_zcode_source_bundle_command.c", CAP_
 ZCL_MODULE_CAPABILITY("tools/command/native_zcode_swarm_command.c", CAP_FS_READ, "")
 ZCL_MODULE_CAPABILITY("tools/command/native_zcode_task_transport_command.c", CAP_FS_WRITE, "")
 ZCL_MODULE_CAPABILITY("tools/command/native_zcode_toolchain_command.c", CAP_FS_READ, "")
-ZCL_MODULE_CAPABILITY("tools/command/native_zcode_work_command.c", CAP_FS_WRITE, "")
+ZCL_MODULE_CAPABILITY("tools/command/native_zcode_work_command.c", CAP_FS_READ|CAP_FS_WRITE, "probes owner-private existing task directories before choosing the restart path")
 ZCL_MODULE_CAPABILITY("tools/command/native_zcode_work_accept.c", CAP_NONE, "moves the acceptance lane only; every ledger, task-index and publication write is mediated by the classified owners it calls")
 ZCL_MODULE_CAPABILITY("tools/command/native_zcode_work_evidence.c", CAP_FS_WRITE, "")
 ZCL_MODULE_CAPABILITY("tools/command/native_zcode_work_reuse.c", CAP_NONE, "reads reusable-package facts through the classified package index, recipe and release owners; opens no file itself")
