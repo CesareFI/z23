@@ -12586,10 +12586,17 @@ CORE_SEAL_PATHS := core/ \
     core/modules/validation/include/validation/connect_block.h \
     core/modules/validation/include/validation/chainstate.h
 CORE_SEAL_SRCS := tools/core_seal.c platform/modules/sha3/src/sha3.c core/modules/crypto/src/keccak_x4.c core/modules/crypto/src/simd_dispatch.c platform/modules/base/src/cleanse.c
+CORE_SEAL_HEADERS := platform/modules/base/include/base/hex.h \
+    platform/modules/base/include/base/serialize_le.h \
+    core/modules/crypto/include/crypto/sha3.h \
+    platform/modules/sha3/include/sha3/sha3.h \
+    core/modules/crypto/src/keccak_x4_internal.h \
+    core/modules/crypto/include/crypto/simd_dispatch.h \
+    platform/modules/base/include/base/cleanse.h
 
 .PHONY: tools/core_seal
 tools/core_seal: $(BIN_DIR)/core_seal
-$(BIN_DIR)/core_seal: $(CORE_SEAL_SRCS)
+$(BIN_DIR)/core_seal: $(CORE_SEAL_SRCS) $(CORE_SEAL_HEADERS)
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror \
 	    $(ZCL_PLATFORM_CPPFLAGS) \
