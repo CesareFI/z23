@@ -8087,3 +8087,16 @@ unchanged full APK `19cdfd353a82f2c4a5ee1c43e27e830f8870471115959787fc4cddf53fe1
 this internal signing primitive still has no exposed send path. Architecture,
 document and diff gates pass. Continue with independent storage interruption and
 resource handling; custody, fresh-chain authorization and TLS gates remain open.
+
+## Priority switch: publish reusable C work upstream — 2026-10-03
+
+User replaced autonomous Android hardening with small upstream PR publication.
+Current signed/backed-up Android HEAD is
+`6fdcb046825504684133b8cffe3fd952ae986183` (exact remote equality verified).
+The unfinished file-size-limit fixture remains uncommitted and preserved; only
+its initial Clang test passed. Do not resume that independent research while
+publication slices remain. Inventory, classifications and source provenance are
+in UPSTREAM_PUBLICATION.md. Publication uses isolated current-main worktrees,
+CesareFI/z23 branches and PRs to z23c/z23:main. Reviewer identity verified as
+RhettCreighton. Initial upstream open-PR list is empty. No PR yet; first candidate
+adapts mnemonic temporary retirement to the existing upstream wallet owner.
