@@ -4345,10 +4345,10 @@ $(BIN_DIR)/z23_bounded_run: tools/dev/z23_bounded_run.c \
 # test harness links it directly); fleet_observe_main.c is the CLI shim, kept
 # out of DEVLOOP_ALL_SRCS via DEV_STANDALONE_SRCS below.
 $(BIN_DIR)/z23-fleet-observe: tools/dev/fleet_observe.c \
-		tools/dev/fleet_observe_main.c
+		tools/dev/fleet_observe_main.c tools/dev/fleet_observe.h
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic -D_POSIX_C_SOURCE=200809L \
-	    -Itools/dev -o $@ $^
+	    -Itools/dev -o $@ $(filter %.c,$^)
 
 # z23-mvp-ledger: measures the 144-loop MVP experiment (agents.tsv,
 # loops.tsv, snapshots.tsv, kpi.tsv, the progress render). Same shape as
