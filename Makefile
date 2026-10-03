@@ -8712,7 +8712,9 @@ FP_PROBE_LDFLAGS = $(LDFLAGS)
 fpscan: $(FPSCAN_BIN)
 $(FPSCAN_BIN): $(FP_SRCS) \
     cognition/modules/fingerprint/include/fingerprint/fingerprint.h \
-    cognition/modules/fingerprint/include/fingerprint/fp_runtime.h
+    cognition/modules/fingerprint/include/fingerprint/fp_runtime.h \
+    cognition/modules/fingerprint/src/fp_priv.h \
+    platform/modules/base/include/base/safe_alloc.h
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
 	    -D_POSIX_C_SOURCE=200809L $(ZCL_PLATFORM_CPPFLAGS) \
