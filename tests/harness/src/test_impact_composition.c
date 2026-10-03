@@ -7574,6 +7574,23 @@ static int test_ic_proof_test_needs_leave_provided_tools(void)
             argv, PROOF_TEST_NEEDS_ARGV_CAP, &targets));
         ASSERT(targets == 0);
         ASSERT(argv[0] == NULL);
+        /* Reflex images must be built in the isolated generation even when
+         * its test executable is admitted without linking again. */
+#if defined(__linux__)
+#if defined(__x86_64__)
+        const size_t reflex_targets = 17;
+#else
+        const size_t reflex_targets = 15;
+#endif
+        ASSERT(zcl_dev_proof_test_needs_argv(
+            jobs, "test_reflex_runner,test_reflex_runner", argv,
+            PROOF_TEST_NEEDS_ARGV_CAP, &targets));
+        ASSERT(targets == reflex_targets);
+        ASSERT(ic_argv_has(argv,
+            "build/fixtures/reflex_runner/zcl_reflex_fixture_green.so"));
+        ASSERT(!zcl_dev_proof_test_needs_argv(jobs, "test_reflex_runner",
+            argv, reflex_targets + 3, &targets));
+#endif
         PASS();
     } _test_next:;
     return failures;
@@ -7612,6 +7629,27 @@ static int test_ic_proof_test_needs_whole_catalog(void)
             "zclassic-cli", "tools/gen_utxo_root_ladder", "clang-manifest",
             "fleet-gateway", "export_snapshot", "sqlq", "p2_invariant_check",
             "jsonq", "process-group-exec", "tools/consensus_rule_sweep",
+#if defined(__linux__)
+            "build/fixtures/reflex_runner/zcl_reflex_fixture_canary.so",
+            "build/fixtures/reflex_runner/zcl_reflex_fixture_green.so",
+            "build/fixtures/reflex_runner/zcl_reflex_fixture_regress.so",
+            "build/fixtures/reflex_runner/zcl_reflex_fixture_loop.so",
+            "build/fixtures/reflex_runner/zcl_reflex_fixture_segv.so",
+            "build/fixtures/reflex_runner/zcl_reflex_fixture_socket.so",
+            "build/fixtures/reflex_runner/zcl_reflex_fixture_wx.so",
+            "build/fixtures/reflex_runner/zcl_reflex_fixture_pidfd.so",
+            "build/fixtures/reflex_runner/zcl_reflex_fixture_killparent.so",
+            "build/fixtures/reflex_runner/zcl_reflex_fixture_forkctor.so",
+            "build/fixtures/reflex_runner/zcl_reflex_fixture_forkstory.so",
+            "build/fixtures/reflex_runner/zcl_reflex_fixture_execctor.so",
+            "build/fixtures/reflex_runner/zcl_reflex_fixture_execstory.so",
+            "build/fixtures/reflex_runner/zcl_reflex_fixture_dupframe.so",
+            "build/fixtures/reflex_runner/zcl_reflex_fixture_reapclose.so",
+#if defined(__x86_64__)
+            "build/fixtures/reflex_runner/zcl_reflex_pure_1.so",
+            "build/fixtures/reflex_runner/zcl_reflex_pure_2.so",
+#endif
+#endif
         };
         const size_t expected_count = sizeof(expected) / sizeof(expected[0]);
         ASSERT(zcl_dev_proof_test_needs_argv("-j4", selector, argv,
@@ -7730,7 +7768,7 @@ static int test_ic_local_selection_build_needs(void)
     int failures = 0;
     TEST("local build needs: a selection lists exactly its groups' BUILD "
          "targets once; an ordinary selection lists none") {
-        struct zcl_test_group_host_need needs[16];
+        struct zcl_test_group_host_need needs[ZCL_TEST_GROUP_BUILD_NEED_ROWS];
         size_t n = 99;
 #if defined(_WIN32)
         /* The ensure target is a no-op where no verifier is qualified. */
@@ -7832,9 +7870,15 @@ static int test_ic_local_selection_build_needs(void)
         /* The whole catalog lists every declared target once; a gate that
          * leaves every group out lists none. */
         n = 99;
-        ASSERT(zcl_test_selection_build_needs(NULL, false, NULL, needs, 16,
-                                              &n));
+        ASSERT(zcl_test_selection_build_needs(NULL, false, NULL, needs,
+                                              ZCL_TEST_GROUP_BUILD_NEED_ROWS, &n));
+#if defined(__linux__) && defined(__x86_64__)
+        ASSERT(n == 31 + verifier_needs);
+#elif defined(__linux__)
+        ASSERT(n == 29 + verifier_needs);
+#else
         ASSERT(n == 14 + verifier_needs);
+#endif
         ASSERT(ic_needs_have(needs, n, "dev-package-verifier-ensure",
                              "build/bin/zclassic23-package-verify-dev") ==
                (verifier_needs != 0));
