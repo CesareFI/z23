@@ -7504,3 +7504,40 @@ and the preceding JVM/instrumentation qualification remain unchanged. Evidence:
 Next: continue safe native malformed-input/resource-failure and Android lifetime
 review. The measured storage baseline does not authorize removing fsync or
 validation. Physical custody and TLS review remain open, separate boundaries.
+
+## Production continuation: complete-only JNI sync errors — 2026-10-03
+
+An active-attempt regression reproduced partial error publication: history
+projection wrote refreshing/deadline metadata before rejecting an invalid history
+count or availability flag. Kotlin already rejects the status; no erroneous UI
+balance or secret disclosure is claimed. Both native snapshot entry points now
+clear payload on any error after registry unlock, with fixed10/12-word error
+packets. Successful packets, owner lifetime and authoritative clock updates stay
+unchanged. A common fake-VM assertion checks every returned error packet; the
+regression also proves the active attempt retains its original deadline.
+
+RED on unchanged production fails the zero-payload assertion; GREEN passes.
+Deliberately removing clearing fails Clang and GCC controls independently.
+Full C safety passes144 Clang and139 optimized GCC groups with ASan/UBSan/LSan,
+provider hashes, static analysis and complexity caps. The final portable fixture
+also passes both focused host groups and analyzers. TSan sync races pass.
+The first fuzz run completed only3 inputs because coverage-function symbolization
+took90s; a bounded run disabling only that progress output completes7,805 inputs
+in31s without a finding. No validation predicate or timeout was weakened.
+
+NDK initially rejected the OpenJDK-only fixture table tag. The existing adjacent
+Android/OpenJDK alias pattern fixes the test portability boundary. Native fault
+regressions and all3 actual ART sync tests pass each ofAPI30/35/36 x86_64,
+including16KiB API35. ARM64 compiles/alignment only. Android JVM/debug/test and
+both-ABI minified release, lint, fixture isolation and alignment pass154 tasks.
+Architecture/docs/diff gates pass. Evidence: `.cache/snapshot-error*` (ignored).
+
+A fresh source-only build at351fe3a88 plus the two exact changed C files,
+without project/build caches, executes all57 release tasks in21s. Full unsigned
+APK bytes match SHA256
+`84e6edf572e0aaf9f0ff90118406dbc864afbc59b6a968fbff4cdd57d3311fee`.
+Reproduction inputs/hashes: `.cache/reproduce-snapshot-error/` (ignored).
+
+Next: extend failure qualification to uncertainty after successful projection,
+including full history packets; retain status-only errors, fixed packet lengths
+and complete native retirement. Hardware custody and TLS remain separate gates.

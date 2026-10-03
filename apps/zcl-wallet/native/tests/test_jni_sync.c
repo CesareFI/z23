@@ -292,7 +292,12 @@ static void JNICALL set_longs(JNIEnv *env, jlongArray input, jsize offset, jsize
     if (fail_set) { fail_set = false; pending_exception = true; }
 }
 
-static const struct JNINativeInterface_ table = {
+#if defined(__ANDROID__)
+typedef struct JNINativeInterface sync_jni_interface;
+#else
+typedef struct JNINativeInterface_ sync_jni_interface;
+#endif
+static const sync_jni_interface table = {
     .ExceptionCheck = exception_check, .GetArrayLength = array_length,
     .GetByteArrayRegion = get_bytes, .SetByteArrayRegion = set_bytes,
     .NewByteArray = new_bytes, .NewLongArray = new_longs, .SetLongArrayRegion = set_longs
@@ -322,6 +327,13 @@ static jbyteArray checked_request(JNIEnv *env, jclass type, jlong id, jlong toke
     return result;
 }
 
+static void check_snapshot_error(const fake_array *result, bool history)
+{
+    if (result == NULL || result->data.numbers[0] == ZCL_OK) return;
+    CHECK(result->length == (history ? 12 : 10));
+    for (jsize i = 1; i < result->length; ++i) CHECK(result->data.numbers[i] == 0);
+}
+
 static jlongArray read_snapshot(JNIEnv *env, jclass type, jlong id, jlong now, bool history)
 {
     CHECK(output_capacity == 0 && output_identity == 0);
@@ -333,6 +345,7 @@ static jlongArray read_snapshot(JNIEnv *env, jclass type, jlong id, jlong now, b
     CHECK(output_clears == before + expected && output_identity == 0);
     CHECK(snapshot_identity == 0 && snapshot_calls == snapshot_clears);
     output_capacity = 0;
+    check_snapshot_error((const fake_array *)result, history);
     return result;
 }
 
@@ -439,6 +452,7 @@ static void snapshot_projection_refusals(void)
 {
     for (unsigned mode = 1; mode <= 7; ++mode) {
         const jlong id = open_owner_mode(true);
+        CHECK(API(beginSyncAttempt)(&environment, NULL, id, 0, 100, 1) > 0);
         snapshot_fault = mode;
         fake_array *result = (fake_array *)checked_history(&environment, NULL, id, 0);
         const jlong expected = mode == 1 || mode == 7 ? ZCL_INVALID_ENCODING : ZCL_OUT_OF_RANGE;
@@ -448,7 +462,8 @@ static void snapshot_projection_refusals(void)
             CHECK(result != NULL && result->length == 10 && result->data.numbers[0] == expected);
         }
         snapshot_fault = 0;
-        CHECK(snapshot(id, 0)[0] == ZCL_OK);
+        const jlong *state = snapshot(id, 0);
+        CHECK(state[0] == ZCL_OK && state[2] == 1 && state[9] == 100);
         CHECK(API(closeSyncOwner)(&environment, NULL, id) == ZCL_OK);
         release_references();
     }

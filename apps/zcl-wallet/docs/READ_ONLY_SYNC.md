@@ -352,6 +352,11 @@ publication decisions remain in C. Report history is null when no query was
 included, an empty list for an empty assertion, or at most 16 public entries.
 None of these states supplies an inclusion proof or spending authority.
 
+JNI snapshot errors publish only their status: the remaining words are zero,
+with ten words for balance or twelve for history. Partial projection cannot
+publish refreshing, balance, age or history metadata alongside an error. Native
+clock/deadline updates remain authoritative even if Java publication fails.
+
 Android BalancePresentation owns one sync lifetime, coalesces worker signals
 into at most one pending UI redraw, and samples the snapshot at actual delivery.
 Create/close/render belong to the same UI thread. Close cancels pending reads,

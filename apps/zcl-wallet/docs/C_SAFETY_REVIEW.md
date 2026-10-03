@@ -4294,3 +4294,28 @@ production watch, deadline, freshness and cancellation code is unchanged.
 Final host sanitizer, analyzer, complexity, manifest and Android release-archive
 results are in the matching progress entry. TSan remains relevant to the separate
 registry race fixture; this harness introduces no threads.
+
+## Complete-only JNI sync error packets — 2026-10-03
+
+Scope: `jni_sync.c` error publication and the existing fake-VM regression. The
+history adapter previously projected common metadata before rejecting malformed
+history. Both snapshot entry points now normalize any failure after unlocking:
+status only, fixed error length, zero payload. Kotlin already checks status;
+this is native boundary hardening, not evidence of a displayed erroneous balance.
+
+| Hazard | Review |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access | Clears exactly each fixed local array. History errors reset length to12; ordinary snapshots stay10. Existing successful156-word maximum and checked projection bounds remain. |
+| Integer overflow/underflow; signed/unsigned conversions | No new arithmetic or narrowing. Test loop indices use bounded jsize lengths; error status conversion is unchanged. |
+| Use-after-free; double-free; leaks; dangling pointers | No new ownership/allocation. Snapshot sampling remains under the registry lock; Java allocation remains after unlocking. Owner replacement and pending-exception controls remain active. |
+| NULL dereferences; uninitialized memory | Existing environment/exception admission remains first. Local arrays initialize and are explicitly normalized on failure. Test error inspection guards NULL. |
+| Pointer arithmetic | Only fixed-array indexing in the regression; production memset uses the complete array size. No borrowed pointer escapes. |
+| Format strings; secret leakage | No new formatting or secret data. These are public sync observations. Existing non-elidable whole-buffer retirement remains after Java publication, including failure. |
+| Stack usage; allocation limits | No new local array, VLA, recursion or allocation. Strict4096-byte frame limits pass. Existing bounded VM allocation is unchanged. |
+| Malformed serialization/network input | Injected snapshot failures/range faults and malformed history metadata cannot publish partial fields. Mutation removing clearing fails both compilers. Protocol parsing and accepted successful packet formats are unchanged. |
+| Races; resource exhaustion | Registry locking and clock advancement remain unchanged. Active-attempt regression confirms its deadline survives projection refusal. Existing timeout/publication/replacement tests and TSan race fixture pass. No retries or new work queues. |
+
+The fixture now selects Android's JNI table tag using the same conditional alias
+as neighboring camera/race tests. Native fault injection runs onAPI30/35/36 and
+both host compilers; real ART sync tests remain separate. ARM64 build evidence
+is not physical-device or hardware-custody proof. TLS quarantine remains intact.

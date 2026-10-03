@@ -4,6 +4,7 @@
 #include "zcl_keys.h"
 #include <pthread.h>
 #include <stdlib.h>
+#include <string.h>
 
 /* The JNI adapter explicitly owns this one bounded process registry. Its four
  * slots contain PUBLIC sync data only, no keys, sockets or Java references.
@@ -280,6 +281,10 @@ Java_org_zclassic_wallet_core_NativeCore_syncHistorySnapshot(JNIEnv *env, jclass
     zcl_status status = now < 0 ? ZCL_OUT_OF_RANGE : enter_owner(id, &watch);
     if (status == ZCL_OK)
         status = unlock_registry(history_snapshot_numbers(watch, (uint64_t)now, values, &length));
+    if (status != ZCL_OK) {
+        memset(values, 0, sizeof(values));
+        length = 12;
+    }
     values[0] = (jlong)status;
     jlongArray result = new_snapshot_numbers(env, values, length);
     zcl_secure_zero(values, sizeof(values));
@@ -295,6 +300,7 @@ Java_org_zclassic_wallet_core_NativeCore_syncSnapshot(JNIEnv *env, jclass type, 
     zcl_sync_watch *watch = NULL;
     zcl_status status = now < 0 ? ZCL_OUT_OF_RANGE : enter_owner(id, &watch);
     if (status == ZCL_OK) status = unlock_registry(snapshot_numbers(watch, (uint64_t)now, values));
+    if (status != ZCL_OK) memset(values, 0, sizeof(values));
     values[0] = (jlong)status;
     jlongArray result = new_snapshot_numbers(env, values, 10);
     zcl_secure_zero(values, sizeof(values));
