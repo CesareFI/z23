@@ -97,6 +97,12 @@ gate_require_scanned "${#IS_MODULE_DIR[@]}" 20 check_doc_inline_paths \
 # ("unused label"), which left every "../" path unresolved and failed the
 # gate on phantom drift.
 norm() {
+    # Most recorded paths have no segment for sed to rewrite. Avoid a child
+    # process for those paths while keeping the portable sed rule for the rest.
+    case "$1" in
+        ./*|*/../*) ;;
+        *) printf '%s' "$1"; return ;;
+    esac
     printf '%s' "$1" | sed -E -e 's#^\./##' -e ':a' -e 's#(^|/)[^/]+/\.\./#\1#' -e 'ta'
 }
 
