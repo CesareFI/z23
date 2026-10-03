@@ -11,7 +11,18 @@ foreach(index RANGE 0 ${last})
     string(JSON command_${index} GET "${entry}" command)
     string(JSON source_${index} GET "${entry}" file)
     string(JSON output_${index} GET "${entry}" output)
+    set(entry_${index} "${entry}")
+    if(NOT DEFINED core_control AND output_${index} MATCHES "^CMakeFiles/zcl_wallet_core\\.dir/")
+        set(core_control "${entry}")
+    endif()
+    if(NOT DEFINED harness_control AND source_${index} MATCHES "/native/tests/" AND
+        output_${index} MATCHES "^CMakeFiles/fuzz_[^/]+\\.dir/")
+        set(harness_control "${entry}")
+    endif()
 endforeach()
+if(NOT DEFINED core_control OR NOT DEFINED harness_control)
+    message(FATAL_ERROR "Mutation fixtures require actual core and fuzz-harness controls")
+endif()
 
 function(check_manifest label content reason)
     set(path "${OUTPUT_DIRECTORY}/${label}.json")
@@ -54,10 +65,18 @@ function(replace_flag target flag replacement reason)
     endif()
     string(REPLACE "\\" "\\\\" escaped "${changed}")
     string(REPLACE "\"" "\\\"" escaped "${escaped}")
-    string(JSON mutant SET "${commands}" ${selected} command "\"${escaped}\"")
+    string(JSON mutated_entry SET "${entry_${selected}}" command "\"${escaped}\"")
+    # The parent gate already checks the COMPLETE emitted manifest. A local
+    # flag mutation needs its exact emitted entry plus valid core/harness
+    # controls, not hundreds of unrelated compilations reparsed on every case.
+    # Retain controls even if the target is one of them: other valid entries
+    # must not conceal a malformed/incorrectly classified mutated command.
+    set(mutant "[${core_control},${harness_control},${mutated_entry}]")
     string(MAKE_C_IDENTIFIER "${target}_${source_filter}_${flag}_${replacement}" label)
     check_manifest("${label}" "${mutant}" "${reason}")
 endfunction()
+
+check_manifest(mutation_controls "[${core_control},${harness_control}]" "")
 
 foreach(target zcl_wallet_core zcl_hash_provider zcl_blake2_provider zcl_qr_provider
     zcl_scan_provider zcl_json_provider secp256k1 secp256k1_precomputed)
