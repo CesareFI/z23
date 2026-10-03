@@ -306,7 +306,7 @@ cj_route_probe() {
             ssh "${opts[@]}" "$to_host" -- true >/dev/null 2>&1 ||
             { cj_die "HOST_ROUTE_COMMAND: $from>$to"; return 1; }
         "$DHT_SSH" "${opts[@]}" "$from_host" -- \
-            scp "${opts[@]}" "$source" "$to_host:$target" >/dev/null 2>&1 ||
+            "$DHT_SCP" "${opts[@]}" "$source" "$to_host:$target" >/dev/null 2>&1 ||
             { cj_die "HOST_ROUTE_TRANSFER: $from>$to"; return 1; }
     fi
     if [ "$to" = a ]; then
@@ -328,6 +328,8 @@ cj_require_pairwise_routes() {
     local host path expected probe="$DHT_WORK/route-probe"
     [ -n "$CJ_HOST_A" ] ||
         { cj_die "HOST_ROUTE_MISSING: requester alias on B/C"; return 1; }
+    { cj_route_token_safe "$DHT_SCP" && [[ "$DHT_SCP" != -* ]]; } ||
+        { cj_die "HOST_ROUTE_UNSAFE: transfer command"; return 1; }
     for host in "$CJ_HOST_A" "$CJ_HOST_B" "$CJ_HOST_C"; do
         [ -z "$host" ] ||
             { cj_route_token_safe "$host" && [[ "$host" != -* ]]; } ||

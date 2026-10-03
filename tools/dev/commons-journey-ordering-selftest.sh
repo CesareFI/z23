@@ -229,7 +229,7 @@ else
     CJ_HOST_A=fixture-a CJ_HOST_B=fixture-b CJ_HOST_C=fixture-c
     CJ_RDIR_B=/tmp/z23-mh-fixtureb CJ_RDIR_C=/tmp/z23-mh-fixturec
     DHT_WORK="$(mktemp -d /tmp/z23-route-fixture-XXXXXXXX)"
-    DHT_SSH=ssh CJ_TWOHOST=0
+    DHT_SSH=ssh DHT_SCP=scp CJ_TWOHOST=0
     if cj_require_pairwise_routes; then
         expected=$'a>b\nb>a\na>c\nc>a\nb>c\nc>b'
         observed="$(cat "$route_log")"
