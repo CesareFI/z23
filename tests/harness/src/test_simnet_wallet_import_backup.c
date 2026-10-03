@@ -41,6 +41,7 @@
 #include "sim/simnet.h"
 
 #include "controllers/wallet_controller.h"
+#include "controllers/wallet_controller_internal.h"
 #include "controllers/wallet_helpers.h"
 
 #include "models/database.h"
@@ -239,11 +240,31 @@ static void ib_ensure_rpc_warmup_finished(void)
         set_rpc_warmup_finished();
 }
 
+static bool ib_secret_result_retires_copy(void)
+{
+    char secret_copy[128];
+    memset(secret_copy, 0x5a, sizeof(secret_copy));
+    memcpy(secret_copy, "synthetic-wif", sizeof("synthetic-wif"));
+    struct json_value result;
+    json_init(&result);
+    wallet_rpc_set_secret_string(&result, secret_copy, sizeof(secret_copy));
+    bool retired = true;
+    for (size_t i = 0; i < sizeof(secret_copy); i++)
+        if (secret_copy[i] != 0) retired = false;
+    bool copied = result.type == JSON_STR &&
+        strcmp(json_get_str(&result), "synthetic-wif") == 0;
+    json_free(&result);
+    return copied && retired;
+}
+
 static __attribute__((noinline)) int part1_import_rescan_spend(void)
 {
     int failures = 0;
     printf("\n-- Part 1: dumpprivkey / importprivkey / rescan / spend --\n");
     ib_ensure_rpc_warmup_finished();
+
+    IB_CHECK("dumpprivkey: response copy retires mutable WIF span",
+             ib_secret_result_retires_copy());
 
     const int64_t FAUCET_AMOUNT = COIN_VALUE + 10000;
     const int64_t FUND_VALUE    = COIN_VALUE;
