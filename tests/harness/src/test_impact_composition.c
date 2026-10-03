@@ -9351,6 +9351,18 @@ static int test_ic_proof_enqueue_requires_commit_objects(void)
                         "%s/.cache/zcl-dev-proof/requests/%s-%s.request",
                         f.root, local, missing_base) < (int)sizeof(request));
         ASSERT(access(request, F_OK) != 0);
+        /* A new proof-state tree cannot acknowledge work until its parent
+         * directory names have survived the durability barrier. */
+        ASSERT(setenv("ZCL_DEV_PROOF_TEST_STATE_FLUSH_FAIL", "1", 1) == 0);
+        bool unflushed = zcl_dev_proof_ensure(f.root, local, base, &status);
+        ASSERT(unsetenv("ZCL_DEV_PROOF_TEST_STATE_FLUSH_FAIL") == 0);
+        ASSERT(!unflushed);
+        ASSERT_EQ(status.state, ZCL_DEV_PROOF_STATE_INVALID);
+        ASSERT_STR_EQ(status.detail, "proof_state_unavailable");
+        ASSERT(snprintf(request, sizeof(request),
+                        "%s/.cache/zcl-dev-proof/requests/%s-%s.request",
+                        f.root, local, base) < (int)sizeof(request));
+        ASSERT(access(request, F_OK) != 0);
         ASSERT(zcl_dev_proof_ensure(f.root, local, base, &status));
         ASSERT_EQ(status.state, ZCL_DEV_PROOF_STATE_RUNNING);
         ASSERT_STR_EQ(status.detail, "resident_proof_request_queued");

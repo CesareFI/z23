@@ -32,6 +32,7 @@
 #include "platform/logical_cpu.h"
 #include "platform/os_proc.h"
 #include "platform/private_directory.h"
+#include "platform/private_file.h"
 #include "platform/ram_scratch.h"
 #include "platform/time_compat.h"
 #include "util/spawn.h"
@@ -640,7 +641,7 @@ static bool proof_paths_fill(const char *repo_root, const char *local,
 
 static bool proof_state_prepare(const struct proof_paths *paths)
 {
-    return paths && platform_private_directory_ensure(paths->cache) &&
+    bool ready = paths && platform_private_directory_ensure(paths->cache) &&
            platform_private_directory_ensure(paths->state) &&
            platform_private_directory_ensure(paths->receipts) &&
            platform_private_directory_ensure(paths->children) &&
@@ -648,6 +649,20 @@ static bool proof_state_prepare(const struct proof_paths *paths)
            platform_private_directory_ensure(paths->requests) &&
            platform_private_directory_ensure(paths->attempts) &&
            platform_private_directory_ensure(paths->leases);
+    if (!ready) return false;
+#ifdef ZCL_TESTING
+    const char *inject = getenv("ZCL_DEV_PROOF_TEST_STATE_FLUSH_FAIL");
+    if (inject && strcmp(inject, "1") == 0) {
+        errno = EIO;
+        return false;
+    }
+#endif
+    /* On a fresh checkout, a durable request name is insufficient if .cache
+     * or a nested proof directory can disappear after a crash. Flush the
+     * three directory levels that received new child names. */
+    return platform_private_parent_flush(paths->root) &&
+           platform_private_parent_flush(paths->cache) &&
+           platform_private_parent_flush(paths->state);
 }
 
 /* A visible renamed proof name is durable only after its private parent has
