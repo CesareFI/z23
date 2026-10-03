@@ -59,6 +59,10 @@ bool qr_matrix_encode(const char *payload, struct qr_matrix *out,
     }
     size_t count = (size_t)width * (size_t)width;
     uint8_t *modules = zcl_malloc(count, "qr.matrix.modules");
+    if (!modules) {
+        qr_error(error, error_cap, "QR matrix allocation failed");
+        return false;
+    }
     for (uint32_t y = 0; y < width; y++) {
         for (uint32_t x = 0; x < width; x++) {
             modules[(size_t)y * width + x] =
@@ -79,14 +83,22 @@ void qr_matrix_free(struct qr_matrix *matrix)
     matrix->width = 0;
 }
 
+/* Argument gate + out-param hygiene for qr_matrix_render_rgb. */
+static bool qr_render_args_valid(const struct qr_matrix *matrix,
+                                 uint32_t scale, uint32_t quiet_modules,
+                                 uint8_t **pixels, uint32_t *side)
+{
+    if (pixels) *pixels = NULL;
+    if (side) *side = 0;
+    return matrix && matrix->modules && matrix->width != 0 && pixels &&
+           side && scale != 0 && scale <= 64u && quiet_modules <= 32u;
+}
+
 bool qr_matrix_render_rgb(const struct qr_matrix *matrix, uint32_t scale,
                           uint32_t quiet_modules, uint8_t **pixels,
                           uint32_t *side, char *error, size_t error_cap)
 {
-    if (pixels) *pixels = NULL;
-    if (side) *side = 0;
-    if (!matrix || !matrix->modules || matrix->width == 0 || !pixels ||
-        !side || scale == 0 || scale > 64u || quiet_modules > 32u) {
+    if (!qr_render_args_valid(matrix, scale, quiet_modules, pixels, side)) {
         qr_error(error, error_cap, "invalid QR render arguments");
         return false;
     }
@@ -98,6 +110,10 @@ bool qr_matrix_render_rgb(const struct qr_matrix *matrix, uint32_t scale,
         return false;
     }
     uint8_t *rgb = zcl_malloc((size_t)bytes, "qr.render.rgb");
+    if (!rgb) {
+        qr_error(error, error_cap, "QR render allocation failed");
+        return false;
+    }
     memset(rgb, 0xff, (size_t)bytes);
     uint32_t out_side = (uint32_t)image_side;
     for (uint32_t my = 0; my < matrix->width; my++) {

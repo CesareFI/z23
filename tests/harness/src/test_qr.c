@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
 #include "encoding/qr.h"
+#include "base/safe_alloc.h"
 #include "command/native_command.h"
 #include "json/json.h"
 #include "presentation/canvas.h"
@@ -27,6 +28,35 @@ int *qr_failures_ptr(void)
     static int failures;
     return &failures;
 }
+
+/* Allocation failure used to crash both QR paths: zcl_malloc's NULL went
+ * straight into the module-copy loop / the render memset. Both must refuse
+ * with the function's false-and-error contract instead. */
+static void qr_case_alloc_failure_refuses(void)
+{
+    char err[128];
+    struct qr_matrix m;
+
+    zcl_alloc_fault_fail_next("qr.matrix.modules");
+    bool refused = !qr_matrix_encode("hello", &m, err, sizeof err);
+    zcl_alloc_fault_clear();
+    QR_CHECK("QR encode refuses allocation failure", refused);
+
+    if (!qr_matrix_encode("hello", &m, err, sizeof err)) {
+        QR_CHECK("QR render refuses allocation failure (matrix setup)", false);
+        return;
+    }
+    uint8_t *pixels = NULL;
+    uint32_t side = 0;
+    zcl_alloc_fault_fail_next("qr.render.rgb");
+    refused = !qr_matrix_render_rgb(&m, 2, 2, &pixels, &side, err,
+                                    sizeof err);
+    zcl_alloc_fault_clear();
+    QR_CHECK("QR render refuses allocation failure",
+             refused && pixels == NULL && side == 0);
+    qr_matrix_free(&m);
+}
+
 int test_qr(void)
 {
     printf("\n=== qr ===\n");
@@ -35,6 +65,7 @@ int test_qr(void)
     if (!qr_matrix_backend_available()) return (*qr_failures_ptr());
 
     if (!qr_case_payment_uri_encode_and_finders()) return (*qr_failures_ptr());
+    qr_case_alloc_failure_refuses();
     qr_case_zclassic_window_icon();
     qr_case_canvas_primitives();
     qr_case_chart_scale_maximum();

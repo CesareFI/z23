@@ -503,7 +503,6 @@ contexts/commons/modules/vcs/src/zcode_c23_corpus_shard.c:vcs_zcode_c23_corpus_s
 contexts/commons/modules/vcs/src/zcode_candidate_bundle.c:bundle_parse_parts:17
 contexts/commons/modules/vcs/src/zcode_candidate_bundle.c:bundle_validate_authority:18
 contexts/commons/modules/vcs/src/zcode_candidate_bundle.c:vcs_zcode_candidate_bundle_export:27
-contexts/commons/modules/vcs/src/zcode_candidate_bundle.c:vcs_zcode_candidate_bundle_import:14
 contexts/commons/modules/vcs/src/zcode_candidate_tree.c:vcs_zcode_candidate_tree_import:37
 contexts/commons/modules/vcs/src/zcode_claim_epoch.c:vcs_zcode_claim_epoch_decode:16
 contexts/commons/modules/vcs/src/zcode_claim_epoch.c:vcs_zcode_claim_epoch_from_selection:18
@@ -1859,7 +1858,6 @@ engine/models/src/schema_migration.c:schema_migration_run_pending:17
 engine/models/src/shared_validators.c:zcl_validate_zcl_address:20
 engine/models/src/zid_domain.c:zid_domain_replace_leaves:19
 engine/modules/chainlog/src/chainlog.c:scan:16
-engine/modules/chainlog/src/chainlog.c:zcl_chainlog_open:1
 engine/modules/chainlog/src/chainlog.c:zcl_chainlog_read:17
 engine/modules/determinism/src/classify.c:zcl_det_classify:21
 engine/modules/determinism/src/receipt.c:zcl_det_receipt_check:16
@@ -1894,7 +1892,6 @@ engine/modules/fleetledger/src/fleet_ledger.c:chain_load:17
 engine/modules/fleetledger/src/fleet_ledger.c:index_row:17
 engine/modules/fleetledger/src/fleet_ledger.c:zcl_fleet_ledger_append:27
 engine/modules/fleetledger/src/fleet_ledger.c:zcl_fleet_ledger_experiment_stats:42
-engine/modules/fleetledger/src/fleet_ledger.c:zcl_fleet_ledger_open:1
 engine/modules/fleetledger/src/fleet_ledger.c:zcl_fleet_ledger_query:30
 engine/modules/fleetledger/src/fleet_ledger.c:zcl_fleet_ledger_replicate:29
 engine/modules/fleetledger/src/fleet_ledger_row.c:zcl_fleet_row_decode:20
@@ -2360,7 +2357,6 @@ platform/adapters/outbound/persistence/src/hodl_history_sqlite.c:hh_next_fill_he
 platform/modules/astro/src/astro_chart.c:astro_chart_compute:26
 platform/modules/astro/src/astro_exact.c:astro_exact_format:23
 platform/modules/codec/tests/test_codec.c:main:32
-platform/modules/encoding/src/qr.c:qr_matrix_render_rgb:20
 platform/modules/encoding/src/utilstrencodings.c:ParseFixedPoint:45
 platform/modules/install/src/front_door_dns_txt.c:fd_dns_txt_parse:22
 platform/modules/json/src/json.c:json_escape_str:18
@@ -3978,11 +3974,9 @@ tools/wallet_check.c:main:22
 tools/wallet_dump.c:dump_text:29
 tools/z23_gpu_miner.c:hash_meets_target:16
 tools/z23_gpu_miner.c:main:35
-tools/zcc.c:deps_scan:4
 tools/zcc.c:epoch_authority_current:16
 tools/zcc.c:epoch_authority_open:23
 tools/zcc.c:epoch_compile_publish:22
-tools/zcc.c:manifest_verify:6
 tools/zcc.c:plan_build:41
 tools/zcc.c:preprocess:26
 tools/zcc.c:scan_entries:27
