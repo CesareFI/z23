@@ -108,13 +108,16 @@ extract_compile_rows()
 
 parse_selftest()
 {
-    local dir raw rows n
+    local dir raw rows n escaped
     [ "$(json_escape 'a\b"c')" = 'a\\b\"c' ] ||
         fail 'JSON escaping changed for backslash and quote'
     [ "$(json_escape $'line\nnext')" = 'line\nnext' ] ||
         fail 'JSON escaping changed for embedded newline'
     [ "$(json_escape $'last\n')" = 'last\n' ] ||
         fail 'JSON escaping dropped a trailing newline'
+    json_escape_into escaped $'last\n'
+    [ "$escaped" = 'last\n' ] ||
+        fail 'direct JSON escaping dropped a trailing newline'
     dir="$(mktemp -d "${TMPDIR:-/tmp}/zcl-compdb-selftest.XXXXXX")" ||
         fail 'could not create parser selftest directory'
     raw="$dir/dry-run.txt"
@@ -152,13 +155,20 @@ parse_selftest()
     log 'parser selftest PASS (native zcc and legacy epoch-object recipes)'
 }
 
-json_escape()
+json_escape_into()
 {
-    local value="$1"
+    local value="$2"
     value="${value//\\/\\\\}"
     value="${value//\"/\\\"}"
     value="${value//$'\n'/\\n}"
-    printf '%s' "$value"
+    printf -v "$1" '%s' "$value"
+}
+
+json_escape()
+{
+    local escaped
+    json_escape_into escaped "$1"
+    printf '%s' "$escaped"
 }
 
 hash_file()
@@ -322,6 +332,9 @@ emit_compdb()
 {
     local rows="$1" destination="$2" first=1
     local source object command
+    local json_root json_source json_object json_command
+
+    json_escape_into json_root "$ROOT"
 
     printf '[\n' > "$destination"
     while IFS=$'\t' read -r source object command; do
@@ -330,11 +343,12 @@ emit_compdb()
             printf ',\n' >> "$destination"
         fi
         first=0
+        json_escape_into json_source "$source"
+        json_escape_into json_object "$object"
+        json_escape_into json_command "$command"
         printf '  {"directory":"%s","file":"%s","output":"%s","command":"%s"}' \
-            "$(json_escape "$ROOT")" \
-            "$(json_escape "$source")" \
-            "$(json_escape "$object")" \
-            "$(json_escape "$command")" >> "$destination"
+            "$json_root" "$json_source" "$json_object" "$json_command" \
+            >> "$destination"
     done < "$rows"
     printf '\n]\n' >> "$destination"
 }
