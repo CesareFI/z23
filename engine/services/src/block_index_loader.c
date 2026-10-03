@@ -242,6 +242,64 @@ void save_block_index_flat_if_mutated(const char *datadir,
         save_block_index_flat(datadir, ms);
 }
 
+enum bil_flat_admit {
+    BIL_FLAT_ADMIT_CLAIMED = 1,
+    BIL_FLAT_ADMIT_DUPLICATE = 0,
+    BIL_FLAT_ADMIT_FULL = -1,
+};
+
+/* Bulk-insert probe carrying the same cap block_map_insert_internal has:
+ * the resident table can already occupy every bucket when an earlier rung
+ * (rebuild-from-log) populated the map and then failed without clearing it,
+ * and an uncapped probe over a full table with no duplicate never
+ * terminates — the boot watchdog kills every retry and the node never
+ * serves. CLAIMED writes the bucket (key, index, occupied, size++). */
+static enum bil_flat_admit bil_flat_probe_claim(struct block_map *bm,
+                                                const uint8_t hash[32],
+                                                struct block_index *pindex)
+{
+    uint64_t h;
+    memcpy(&h, hash, 8);
+    size_t slot = h & (bm->capacity - 1);
+    for (size_t probe = 0; probe < bm->capacity; probe++) {
+        if (!bm->buckets[slot].occupied) {
+            memcpy(bm->buckets[slot].hash.data, hash, 32);
+            bm->buckets[slot].index = pindex;
+            bm->buckets[slot].occupied = true;
+            bm->size++;
+            return BIL_FLAT_ADMIT_CLAIMED;
+        }
+        if (uint256_eq(&bm->buckets[slot].hash,
+                       (const struct uint256 *)hash))
+            return BIL_FLAT_ADMIT_DUPLICATE;
+        slot = (slot + 1) & (bm->capacity - 1);
+    }
+    return BIL_FLAT_ADMIT_FULL;
+}
+
+/* Copy one flat row into its arena block_index (Option A: phashBlock points
+ * at per-node storage; the bucket keeps its own key copy). */
+static void bil_flat_fill_pindex(struct block_index *pindex,
+                                 const struct block_index_flat *row)
+{
+    block_index_init(pindex);
+    memcpy(pindex->hashBlock.data, row->hash, 32);
+    pindex->phashBlock = &pindex->hashBlock;
+    pindex->nHeight = row->height;
+    pindex->nBits = row->n_bits;
+    pindex->nTime = row->n_time;
+    pindex->nVersion = row->n_version;
+    pindex->nStatus = row->n_status;
+    pindex->nFile = row->n_file;
+    pindex->nDataPos = row->n_data_pos;
+    pindex->nUndoPos = row->n_undo_pos;
+    pindex->nTx = row->n_tx;
+    pindex->nChainTx = row->n_chain_tx;
+    memcpy(pindex->nChainWork.pn, row->chain_work, 32);
+    pindex->nCachedBranchId = row->n_cached_branch_id;
+    memcpy(pindex->hashFinalSaplingRoot.data, row->sapling_root, 32);
+}
+
 struct zcl_result load_block_index_flat(const char *datadir, struct main_state *ms)
 {
     /* Identity is authority for bounded projection startup. Invalidate it
@@ -388,43 +446,20 @@ struct zcl_result load_block_index_flat(const char *datadir, struct main_state *
         }
 
         struct block_index *pindex = &arena[i];
-        block_index_init(pindex);
-
-        uint64_t h;
-        memcpy(&h, entries[i].hash, 8);
-        size_t slot = h & (bm->capacity - 1);
-        bool duplicate = false;
-        while (bm->buckets[slot].occupied) {
-            if (uint256_eq(&bm->buckets[slot].hash,
-                           (const struct uint256 *)entries[i].hash)) {
-                duplicate = true;
-                break;
-            }
-            slot = (slot + 1) & (bm->capacity - 1);
+        enum bil_flat_admit admit =
+            bil_flat_probe_claim(bm, entries[i].hash, pindex);
+        if (admit == BIL_FLAT_ADMIT_FULL) {
+            flat_read_mapping_close(&mapping, fd);
+            free(arena);
+            return ZCL_ERR(-11, "block_index_flat: hash table full "
+                           "(capacity=%zu, resident=%zu) inserting row %u — "
+                           "an earlier rung left no headroom; refusing "
+                           "instead of probing forever",
+                           bm->capacity, bm->size, i);
         }
-        if (duplicate) continue;
-        memcpy(bm->buckets[slot].hash.data, entries[i].hash, 32);
-        bm->buckets[slot].index = pindex;
-        bm->buckets[slot].occupied = true;
-        bm->size++;
-
-        /* Option A: point phashBlock at per-node storage, not the bucket.
-         * The bucket keeps its own .hash key (memcpy above) for lookups. */
-        memcpy(pindex->hashBlock.data, entries[i].hash, 32);
-        pindex->phashBlock = &pindex->hashBlock;
-        pindex->nHeight = entries[i].height;
-        pindex->nBits = entries[i].n_bits;
-        pindex->nTime = entries[i].n_time;
-        pindex->nVersion = entries[i].n_version;
-        pindex->nStatus = entries[i].n_status;
-        pindex->nFile = entries[i].n_file;
-        pindex->nDataPos = entries[i].n_data_pos;
-        pindex->nUndoPos = entries[i].n_undo_pos;
-        pindex->nTx = entries[i].n_tx;
-        pindex->nChainTx = entries[i].n_chain_tx;
-        memcpy(pindex->nChainWork.pn, entries[i].chain_work, 32);
-        pindex->nCachedBranchId = entries[i].n_cached_branch_id;
-        memcpy(pindex->hashFinalSaplingRoot.data, entries[i].sapling_root, 32);
+        if (admit == BIL_FLAT_ADMIT_DUPLICATE)
+            continue;
+        bil_flat_fill_pindex(pindex, &entries[i]);
 
         /* Reconcile the persisted FAILED verdict against the ROM checkpoint
          * before the forward pass runs (so a stripped/demoted entry does not

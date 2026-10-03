@@ -309,6 +309,37 @@ static int bil_union_boot_case(void)
     return failures;
 }
 
+/* Arena-fill a fresh map to 100% occupancy the way repeated flat/rebuild
+ * rungs can leave it in production: every bucket occupied by a distinct
+ * tag-tagged hash, size == capacity. The fill mimics the loader's own
+ * bulk inserts (direct bucket writes, no growth trigger). *arena_out
+ * receives the backing allocation for the caller to free after
+ * block_map_free (the map frees buckets only). */
+static bool bil_fill_map_to_capacity(struct main_state *ms, uint8_t tag,
+                                     struct block_index **arena_out)
+{
+    if (!block_map_reserve(&ms->map_block_index, 2048))
+        return false;
+    struct block_map *bm = &ms->map_block_index;
+    struct block_index *arena = calloc(bm->capacity, sizeof(*arena));
+    if (!arena)
+        return false;
+    for (size_t i = 0; i < bm->capacity; i++) {
+        struct block_index *pi = &arena[i];
+        block_index_init(pi);
+        pi->hashBlock.data[0] = (uint8_t)(i & 0xFF);
+        pi->hashBlock.data[1] = (uint8_t)((i >> 8) & 0xFF);
+        pi->hashBlock.data[3] = tag;
+        pi->phashBlock = &pi->hashBlock;
+        bm->buckets[i].hash = pi->hashBlock;
+        bm->buckets[i].index = pi;
+        bm->buckets[i].occupied = true;
+    }
+    bm->size = bm->capacity;
+    *arena_out = arena;
+    return true;
+}
+
 int test_block_index_loader(void)
 {
     printf("\n=== block index loader tests ===\n");
@@ -2105,6 +2136,50 @@ int test_block_index_loader(void)
         }
         checkpoints_reset_rom_state_override_for_test();
         block_map_free(&ms.map_block_index);
+    }
+
+    /* ── Flat load into a 100%-occupied map must refuse, not hang. The
+     * rebuild rung can leave the map populated when it fails mid-way; the
+     * flat rung then bulk-inserts without headroom. Pre-fix the linear
+     * probe at block_index_loader.c span forever (no empty slot, no
+     * duplicate, no cap) and the boot watchdog killed the node on every
+     * retry. Rows here carry the 0xAA tag from build_synthetic_chain while
+     * the resident table is 0xBB-tagged, so no probe can hit a duplicate. */
+    {
+        struct main_state src;
+        memset(&src, 0, sizeof(src));
+        block_map_init(&src.map_block_index);
+        active_chain_init(&src.chain_active);
+        build_synthetic_chain(&src, 100);
+
+        char tmpdir[256];
+        snprintf(tmpdir, sizeof(tmpdir), "./test-tmp/%d_bil_full", getpid());
+        mkdir("./test-tmp", 0755);
+        mkdir(tmpdir, 0755);
+        save_block_index_flat(tmpdir, &src);
+
+        struct main_state ms2;
+        memset(&ms2, 0, sizeof(ms2));
+        block_map_init(&ms2.map_block_index);
+        active_chain_init(&ms2.chain_active);
+        struct block_index *resident_arena = NULL;
+        bool filled = bil_fill_map_to_capacity(&ms2, 0xBB, &resident_arena);
+        size_t resident = ms2.map_block_index.size;
+
+        struct zcl_result r = {0};
+        bool refused = filled &&
+            !(r = load_block_index_flat(tmpdir, &ms2), r.ok) &&
+            ms2.map_block_index.size == resident;
+        BIL_CHECK("bil: flat load into a full map refuses cleanly "
+                  "(no infinite probe)", filled && refused);
+
+        char path[512];
+        snprintf(path, sizeof(path), "%s/block_index.bin", tmpdir);
+        unlink(path);
+        rmdir(tmpdir);
+        block_map_free(&src.map_block_index);
+        block_map_free(&ms2.map_block_index);
+        free(resident_arena);
     }
 
     printf("=== block index loader: %d failures ===\n", failures);

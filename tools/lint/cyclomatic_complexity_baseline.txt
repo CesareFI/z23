@@ -2133,7 +2133,7 @@ engine/services/src/block_index_flat_anchor.c:block_index_flat_anchor_encode:19
 engine/services/src/block_index_integrity.c:bii_repair_post_activation_anchor:21
 engine/services/src/block_index_integrity.c:block_index_repair_heights_range:43
 engine/services/src/block_index_integrity.c:block_index_repair_pprev:44
-engine/services/src/block_index_loader.c:load_block_index_flat:38
+engine/services/src/block_index_loader.c:load_block_index_flat:37
 engine/services/src/block_index_loader_rebuild.c:block_index_loader_seed_stages_from_cold_import:33
 engine/services/src/block_index_loader_rebuild.c:block_index_loader_seed_tip_from_finalized:33
 engine/services/src/block_index_loader_rebuild.c:load_block_index_from_projection:18
@@ -2569,7 +2569,7 @@ tests/harness/src/test_bip44.c:test_bip44:75
 tests/harness/src/test_blake2b_batch_parity.c:test_blake2b_batch_parity:22
 tests/harness/src/test_blake3_kat.c:test_blake3_kat:17
 tests/harness/src/test_blob_read_bounds.c:test_blob_read_bounds:24
-tests/harness/src/test_block_index_loader.c:test_block_index_loader:300
+tests/harness/src/test_block_index_loader.c:test_block_index_loader:303
 tests/harness/src/test_block_index_node_db_topup.c:test_block_index_node_db_topup:42
 tests/harness/src/test_block_index_projection.c:run_bound_dirty_delta:22
 tests/harness/src/test_block_index_rebuild.c:run_rebuild_n_headers:19
