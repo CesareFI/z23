@@ -14047,12 +14047,17 @@ check-describe-budget: $(LINTC_TOOL)
 API_REFERENCE_TOOL = $(BIN_DIR)/gen_api_reference
 
 $(API_REFERENCE_TOOL): tools/gen_api_reference.c \
+                       platform/modules/platform/src/path_replace.c \
+                       platform/modules/platform/include/platform/path_replace.h \
+                       platform/modules/platform/src/windows_path_internal.h \
+                       platform/modules/platform/include/platform/windows_path.h \
                        engine/modules/kernel/include/kernel/command_registry.h \
                        $(wildcard engine/composition/commands/*.def) \
                        $(wildcard engine/composition/commands/*/*.def)
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Iengine/modules/kernel/include -Iplatform/modules/json/include \
-	    -o $@ tools/gen_api_reference.c
+	    -Iplatform/modules/platform/include \
+	    -o $@ tools/gen_api_reference.c platform/modules/platform/src/path_replace.c
 
 .PHONY: tools/gen_api_reference docs-api-reference
 tools/gen_api_reference: $(API_REFERENCE_TOOL)

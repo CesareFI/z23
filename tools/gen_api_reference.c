@@ -26,11 +26,20 @@
  */
 
 #include "kernel/command_registry.h"
+#include "platform/path_replace.h"
 
+#include <errno.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if defined(_WIN32)
+#include <direct.h>
+#include <process.h>
+#else
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 
 struct row {
     const char *path;
@@ -981,6 +990,124 @@ static bool marker_name(const char *line, char *out, size_t out_len)
     return true;
 }
 
+/* Keep transient output outside tracked source roots. Each process owns an
+ * exclusive stage; failed template validation never opens the destination. */
+static FILE *open_stage(char *path, size_t path_cap)
+{
+    static unsigned int sequence;
+#if defined(_WIN32)
+    if (_mkdir("build") != 0 && errno != EEXIST)
+        return NULL;
+    if (_mkdir("build/identity") != 0 && errno != EEXIST)
+        return NULL;
+    const long pid = (long)_getpid();
+#else
+    if (mkdir("build", 0700) != 0 && errno != EEXIST)
+        return NULL;
+    if (mkdir("build/identity", 0700) != 0 && errno != EEXIST)
+        return NULL;
+    const long pid = (long)getpid();
+#endif
+    for (unsigned int attempt = 0; attempt < 256u; attempt++) {
+        int n = snprintf(path, path_cap,
+                         "build/identity/.gen_api_reference-stage.%ld.%u",
+                         pid, ++sequence);
+        if (n < 0 || (size_t)n >= path_cap) {
+            errno = ENAMETOOLONG;
+            return NULL;
+        }
+        FILE *out = fopen(path, "wx");
+        if (out)
+            return out;
+        if (errno != EEXIST)
+            return NULL;
+    }
+    errno = EEXIST;
+    return NULL;
+}
+
+static int expand_template(FILE *tpl, FILE *out, const char *tpl_path)
+{
+    fputs("<!-- GENERATED FILE — DO NOT EDIT BY HAND.\n"
+          "     Source of truth: engine/composition/commands/*.def\n"
+          "     Template (editorial prose): docs/API_REFERENCE.md.in\n"
+          "     Generator: tools/gen_api_reference.c\n"
+          "     Regenerate: make docs-api-reference\n"
+          "     Gate: tools/lint/check_api_reference_generated.sh "
+          "(check-api-reference-generated) -->\n",
+          out);
+
+    char line[8192];
+    char name[128];
+    size_t expanded = 0;
+    bool emitted[sizeof(g_blocks) / sizeof(g_blocks[0])] = {false};
+    int rc = 0;
+    while (fgets(line, (int)sizeof(line), tpl) != NULL) {
+        if (!marker_name(line, name, sizeof(name))) {
+            fputs(line, out);
+            continue;
+        }
+        const struct block *hit = NULL;
+        for (size_t i = 0; i < sizeof(g_blocks) / sizeof(g_blocks[0]); i++) {
+            if (strcmp(g_blocks[i].name, name) == 0) {
+                hit = &g_blocks[i];
+                break;
+            }
+        }
+        if (hit == NULL) {
+            fprintf(stderr,
+                    "gen_api_reference: unknown generation marker '%s' in %s\n",
+                    name, tpl_path);
+            rc = 1;
+            break;
+        }
+        size_t block_index = (size_t)(hit - g_blocks);
+        if (emitted[block_index]) {
+            fprintf(stderr, "gen_api_reference: duplicate generation marker '%s' in %s\n",
+                    name, tpl_path);
+            rc = 1;
+            break;
+        }
+        emitted[block_index] = true;
+        hit->emit(out);
+        expanded++;
+    }
+    if (rc == 0 && expanded != sizeof(g_blocks) / sizeof(g_blocks[0])) {
+        fprintf(stderr,
+                "gen_api_reference: template expanded %zu of %zu generated "
+                "blocks — a marker is missing from %s\n",
+                expanded, sizeof(g_blocks) / sizeof(g_blocks[0]), tpl_path);
+        rc = 1;
+    }
+    return rc;
+}
+
+/* Close every stream before publication; a failed write leaves the old
+ * destination untouched. The stage is removed on every refused publish. */
+static int publish_stage(FILE *out, const char *stage_path,
+                         const char *destination, int rc)
+{
+    bool write_failed = ferror(out) != 0;
+    if (fclose(out) != 0)
+        write_failed = true;
+    if (write_failed) {
+        fprintf(stderr, "gen_api_reference: write failed for '%s'\n", destination);
+        rc = 1;
+    }
+    if (rc == 0 && platform_path_replace(stage_path, destination) != 0) {
+        fprintf(stderr, "gen_api_reference: cannot publish '%s': %s\n",
+                destination, strerror(errno));
+        rc = 1;
+    }
+    if (rc != 0) {
+        if (remove(stage_path) != 0)
+            fprintf(stderr, "gen_api_reference: cannot remove stage: %s\n",
+                    strerror(errno));
+        return 1;
+    }
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     if (argc != 3) {
@@ -998,64 +1125,25 @@ int main(int argc, char **argv)
                 argv[1]);
         return 1;
     }
-    FILE *out = fopen(argv[2], "w");
+    char stage_path[160];
+    FILE *out = open_stage(stage_path, sizeof(stage_path));
     if (out == NULL) {
-        fprintf(stderr, "gen_api_reference: cannot write '%s'\n", argv[2]);
+        fprintf(stderr, "gen_api_reference: cannot stage '%s': %s\n",
+                argv[2], strerror(errno));
         fclose(tpl);
         return 1;
     }
 
-    fputs("<!-- GENERATED FILE — DO NOT EDIT BY HAND.\n"
-          "     Source of truth: engine/composition/commands/*.def\n"
-          "     Template (editorial prose): docs/API_REFERENCE.md.in\n"
-          "     Generator: tools/gen_api_reference.c\n"
-          "     Regenerate: make docs-api-reference\n"
-          "     Gate: tools/lint/check_api_reference_generated.sh "
-          "(check-api-reference-generated) -->\n",
-          out);
-
-    char line[8192];
-    char name[128];
-    size_t expanded = 0;
-    int rc = 0;
-    while (fgets(line, (int)sizeof(line), tpl) != NULL) {
-        if (!marker_name(line, name, sizeof(name))) {
-            fputs(line, out);
-            continue;
-        }
-        const struct block *hit = NULL;
-        for (size_t i = 0; i < sizeof(g_blocks) / sizeof(g_blocks[0]); i++) {
-            if (strcmp(g_blocks[i].name, name) == 0) {
-                hit = &g_blocks[i];
-                break;
-            }
-        }
-        if (hit == NULL) {
-            fprintf(stderr,
-                    "gen_api_reference: unknown generation marker '%s' in %s\n",
-                    name, argv[1]);
-            rc = 1;
-            break;
-        }
-        hit->emit(out);
-        expanded++;
-    }
-
-    fclose(tpl);
-    if (fclose(out) != 0) {
-        fprintf(stderr, "gen_api_reference: write failed for '%s'\n", argv[2]);
+    int rc = expand_template(tpl, out, argv[1]);
+    bool read_failed = ferror(tpl) != 0;
+    if (fclose(tpl) != 0)
+        read_failed = true;
+    if (read_failed) {
+        fprintf(stderr, "gen_api_reference: read failed for '%s'\n", argv[1]);
         rc = 1;
     }
-    if (rc != 0) {
-        return rc;
-    }
-    if (expanded != sizeof(g_blocks) / sizeof(g_blocks[0])) {
-        fprintf(stderr,
-                "gen_api_reference: template expanded %zu of %zu generated "
-                "blocks — a marker is missing from %s\n",
-                expanded, sizeof(g_blocks) / sizeof(g_blocks[0]), argv[1]);
+    if (publish_stage(out, stage_path, argv[2], rc) != 0)
         return 1;
-    }
     fprintf(stderr, "gen_api_reference: %zu catalog entries -> %s\n",
             (size_t)ROW_COUNT, argv[2]);
     return 0;

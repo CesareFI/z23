@@ -68,7 +68,10 @@ run_selftest() {
     mkdir -p "$sandbox"
     # Hardlink-free copy of just what the gate reads.
     mkdir -p "$sandbox/tools/lint" "$sandbox/docs" "$sandbox/$DEF_DIR" \
-             "$sandbox/engine/modules/kernel/include/kernel" "$sandbox/platform/modules/json/include/json"
+             "$sandbox/engine/modules/kernel/include/kernel" \
+             "$sandbox/platform/modules/json/include/json" \
+             "$sandbox/platform/modules/platform/include/platform" \
+             "$sandbox/platform/modules/platform/src"
     cp "$GEN_SRC" "$sandbox/tools/"
     cp "$SCRIPT_DIR/check_api_reference_generated.sh" "$sandbox/tools/lint/"
     cp "$SCRIPT_DIR/gate_lib.sh" "$sandbox/tools/lint/"
@@ -83,6 +86,14 @@ run_selftest() {
     cp engine/modules/kernel/include/kernel/command_registry.h \
        "$sandbox/engine/modules/kernel/include/kernel/"
     cp platform/modules/json/include/json/json.h "$sandbox/platform/modules/json/include/json/"
+    cp platform/modules/platform/include/platform/path_replace.h \
+       "$sandbox/platform/modules/platform/include/platform/"
+    cp platform/modules/platform/src/path_replace.c \
+       "$sandbox/platform/modules/platform/src/"
+    cp platform/modules/platform/src/windows_path_internal.h \
+       "$sandbox/platform/modules/platform/src/"
+    cp platform/modules/platform/include/platform/windows_path.h \
+       "$sandbox/platform/modules/platform/include/platform/"
 
     out="$tmp/clean.log"
     if ! (cd "$sandbox" && bash tools/lint/check_api_reference_generated.sh) \
@@ -191,7 +202,9 @@ trap 'rm -rf "$TMP"' EXIT HUP INT TERM
 CC_BIN="${CC:-cc}"
 if ! "$CC_BIN" -std=c23 -O0 -Wall -Wextra -Werror \
         -Iengine/modules/kernel/include -Iplatform/modules/json/include \
-        -o "$TMP/gen_api_reference" "$GEN_SRC" 2> "$TMP/cc.log"; then
+        -Iplatform/modules/platform/include \
+        -o "$TMP/gen_api_reference" "$GEN_SRC" \
+        platform/modules/platform/src/path_replace.c 2> "$TMP/cc.log"; then
     echo "check_api_reference_generated: FATAL — $GEN_SRC does not compile:" >&2
     sed 's/^/    /' "$TMP/cc.log" >&2
     exit 2
@@ -203,6 +216,31 @@ if ! "$TMP/gen_api_reference" "$TEMPLATE" "$TMP/expected.md" \
     sed 's/^/    /' "$TMP/gen.log" >&2
     exit 2
 fi
+
+# A rejected template must not truncate the existing generated document.
+# Replacing schemas with counts also proves a duplicate cannot hide a missing
+# block behind the old total-marker count.
+sed 's/<!-- ZCL-GEN:counts -->/<!-- ZCL-GEN:unknown -->/' \
+    "$TEMPLATE" > "$TMP/unknown.md.in"
+sed '/^<!-- ZCL-GEN:schemas -->$/d' "$TEMPLATE" > "$TMP/missing.md.in"
+sed 's/<!-- ZCL-GEN:schemas -->/<!-- ZCL-GEN:counts -->/' \
+    "$TEMPLATE" > "$TMP/duplicate.md.in"
+for kind in unknown missing duplicate; do
+    if cmp -s "$TEMPLATE" "$TMP/$kind.md.in"; then
+        echo "check_api_reference_generated: FATAL — $kind fixture did not change" >&2
+        exit 2
+    fi
+    printf 'preserved\n' > "$TMP/preserved.md"
+    if "$TMP/gen_api_reference" "$TMP/$kind.md.in" "$TMP/preserved.md" \
+            > "$TMP/$kind.log" 2>&1; then
+        echo "check_api_reference_generated: FAIL — $kind template accepted" >&2
+        exit 1
+    fi
+    if ! printf 'preserved\n' | cmp -s - "$TMP/preserved.md"; then
+        echo "check_api_reference_generated: FAIL — $kind template changed output" >&2
+        exit 1
+    fi
+done
 
 entries="$(sed -n 's/^gen_api_reference: \([0-9]\{1,\}\) catalog entries.*/\1/p' \
     "$TMP/gen.log" | head -1)"
