@@ -58,12 +58,30 @@ class FullSourceReviewInstrumentedTest {
             UnsignedReview.openFullSources(fixture("draft"), previous, Network.MAINNET, Zatoshi.of(500)) { 100L }.close()
         }
         refused(CoreStatus.RESOURCE_EXHAUSTED) {
-            UnsignedReview.openFullSources(fixture("draft"), arrayOf(ByteArray(102001)), Network.MAINNET, Zatoshi.of(500)) { 100L }.close()
+            UnsignedReview.openFullSources(fixture("draft"), arrayOf(ByteArray(102001), fixture("previous1")), Network.MAINNET, Zatoshi.of(500)) { 100L }.close()
         }
         refused(CoreStatus.OUT_OF_RANGE) {
             UnsignedReview.open(fixture("draft"), sources(), Network.MAINNET, Zatoshi.of(500)) { 100L }.close()
         }
         open().use { assertEquals(500L, it.snapshot().fee.value) }
+    }
+
+    @Test fun malformedDraftAndMismatchedSourceCountRefuseBeforeReviewOwnership() {
+        val draft = fixture("draft")
+        val before = draft.copyOf()
+        val oversizedAggregate = Array(8) { ByteArray(102000) }
+        refused(CoreStatus.INVALID_ARGUMENT) {
+            UnsignedReview.openFullSources(draft, oversizedAggregate, Network.MAINNET, Zatoshi.of(500)) { 100L }.close()
+        }
+        assertArrayEquals(before, draft)
+        oversizedAggregate.forEach { assertTrue(it.all { byte -> byte == 0.toByte() }) }
+        val unsupported = draft.copyOf().also { it[0] = (it[0].toInt() xor 1).toByte() }
+        for (invalid in arrayOf(ByteArray(0), draft.copyOf(draft.size - 1), unsupported)) {
+            refused(if (invalid === unsupported) CoreStatus.UNSUPPORTED else CoreStatus.INVALID_ENCODING) {
+                UnsignedReview.openFullSources(invalid, Array(2) { ByteArray(102000) }, Network.MAINNET, Zatoshi.of(500)) { 100L }.close()
+            }
+            open().use { assertArrayEquals(before, it.unsignedBytes()) }
+        }
     }
 
     @Test fun expiryAndCrossProfileReplacementKeepTheSameLifetimeRules() {

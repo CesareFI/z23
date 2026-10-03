@@ -30,6 +30,10 @@ typedef struct {
 zcl_status zcl_jni_full_sources_copy(JNIEnv *env, jobjectArray previous, zcl_jni_full_sources *copy);
 void zcl_jni_full_sources_clear(zcl_jni_full_sources *copy);
 
+/* Caller owns the copied draft and holds the review mutex. Parse/count refusal
+ * precedes source capture; success grants no review, funding or chain authority. */
+zcl_status zcl_jni_review_admit(JNIEnv *env, jobjectArray previous, const uint8_t *wire, size_t length);
+
 /* Caller checked JNI arguments and holds the single review mutex throughout.
  * No source/ref/pointer survives; failure preserves owner/id and JNI exception. */
 zcl_status zcl_jni_open_full_review(JNIEnv *env, zcl_review_owner *owner,

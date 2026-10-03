@@ -7918,3 +7918,34 @@ These are bounded Linux x86_64 campaigns, not complete parser/cryptographic
 proof, Android/physical execution or address/leak/race qualification. No C,
 provider, APK or acceptance gate changed. Continue native robustness work from
 the current development branch; prior full safety/release evidence still applies.
+
+## Production continuation: admit full-review draft before source copy — 2026-10-03
+
+Full-source review opening now checks its owned draft with the unchanged C codec
+and compares the immutable source count before capture/allocation. RED: two
+inputs with eight maximum sources allocated816000 bytes and copied816177.
+GREEN: allocation0, copy177 (draft only). Unsupported/empty/truncated drafts also
+refuse before source copying. Existing full assessment and owner/publication
+rules still run; accepted requests add one <=1925-byte parse. No valid-path
+latency claim. Multiple invalid fields may now report draft/count refusal before
+an uncaptured source-element error; no acceptance predicate is weakened.
+
+Strict GCC/Android initially rejected compiler-inlined frames of4976/4544 bytes.
+The admission helper now has its own small C translation unit, preserving the
+4096-byte frame limit without suppressions. Late-admission mutations fail both
+compilers; all VM exception ordinals, parsed-scratch retirement, exact owned
+review bytes and subsequent valid reopening pass. The oversized-source ART case
+now uses a matching source count so it still independently exercises the original
+size refusal; a separate test covers mismatched count and malformed drafts.
+
+Android JVM/unit, builds, lint, release/alignment and fixture isolation pass
+(154 tasks). Actual native fixtures and16 ART tests pass each API30/35/36
+x86_64, including16KiB API35. ARM64 Linux UBSan/QEMU0.67s; MSan0.27s; Android
+ARM64 compile/alignment only. JNI review fuzzing completes18549 cases in31s.
+Fresh source-only release reproduction matches the complete APK:
+`2838fc7b3d16ff782ff20ed20387fdeed898cf2ab38018849cb0d1c5a5fd8973`.
+Ignored evidence: `.cache/open-admission/`, `.cache/reproduce-open-admission/`.
+The complete canonical safety gate passes Clang145/145 in58.40s and GCC140/140
+in74.11s, including both analyzers, provider hashes, complexity and unchanged
+fuzz-profile deadlines. Architecture/document/diff gates pass. Continue from
+this baseline with TLS, physical custody and authenticated-chain gates intact.

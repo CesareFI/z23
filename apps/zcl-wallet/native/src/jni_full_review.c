@@ -91,6 +91,10 @@ zcl_status zcl_jni_open_full_review(JNIEnv *env, zcl_review_owner *owner,
     size_t length = 0;
     zcl_jni_full_sources copy = {0};
     zcl_status status = zcl_jni_read_bytes(env, draft, wire, sizeof(wire), &length);
+    /* Admit the owned draft and immutable source-array count before a source
+     * allocation. The existing C codec owns every wire predicate; full review
+     * still revalidates and assesses the same owned bytes after source capture. */
+    if (status == ZCL_OK) status = zcl_jni_review_admit(env, previous, wire, length);
     if (status == ZCL_OK) status = zcl_jni_full_sources_copy(env, previous, &copy);
     if (status == ZCL_OK)
         status = zcl_review_open_full_sources(owner, wire, length, network,

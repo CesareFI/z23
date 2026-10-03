@@ -59,7 +59,8 @@ bounded public-fixture sync and verified-storage benchmarks are available.
 JNI sync errors now publish status only, with partial/late-failure regressions.
 Setup retires entropy before public storage readback; native address derivation
 retires its owned seed before final public conversion. Full-source preparation
-now admits scalar parameters before allocating source bytes; raw QR JNI copies
+now admits scalar parameters before allocating source bytes; full-source opening
+also checks the owned draft and source count before allocation. Raw QR JNI copies
 only the validated image span. Storage crash coverage observes descriptor
 retirement across exec. The native JNI fixtures also have an explicit-header
 ARM64 Linux UBSan/QEMU profile, separate from Android ARM64 compilation and

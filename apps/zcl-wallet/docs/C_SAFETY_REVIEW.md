@@ -4642,3 +4642,35 @@ in PROGRESS and the manual recipe is in README. This adds uninitialized-path
 sampling, not a substitute for the existing 18-hazard review, ASan/UBSan/LSan,
 TSan, consensus vectors, Android or physical-device acceptance. TLS stays off;
 normal fuzz-profile admission is unchanged.
+
+## Full-source opening admission before allocation — 2026-10-03
+
+`jni_review_admission.c` checks the immutable Java source-array count, parses the
+already owned draft through the unchanged C transaction codec, and compares
+input count before source capture/allocation. Full review still revalidates and
+assesses the owned draft and captured sources. This is resource admission only.
+A valid request incurs one extra bounded (<=1925-byte) parse; no valid-path
+latency improvement is claimed. Malformed draft/count now takes precedence over
+errors in source elements that are never captured, including their VM faults.
+
+| Hazard | Review |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access | Existing JNI draft copy bounds at1925 and existing C codec apply. Source count uses the bounded JNI helper (1..8). No direct wire indexing or new input reads. |
+| Integer overflow/underflow; signed/unsigned conversions | Existing helper validates jsize before size_t conversion. Compare two bounded size_t counts; no added product or offset arithmetic. |
+| Use-after-free; double-free; leaks; dangling pointers | Only one automatic parsed transaction. It is cleared before source capture. Existing source/reference allocation and single cleanup owner remain unchanged; no new retained Java reference or pointer. |
+| NULL dereferences; uninitialized memory | Internal caller preconditions remain checked at JNI entry; candidate/count initialize to zero. Parse/VM failure is checked before reading transaction.input_count. Native fixture observes candidate erasure on every admission exit. |
+| Pointer arithmetic | None added; owned wire remains stable throughout both parses and full assessment. |
+| Format strings; secret leakage | Constant test diagnostics with allocation/copy counts only; transaction/source data is public. No signing/key/custody path changes. |
+| Stack usage; allocation limits | The first same-file helper inlined into a4976-byte GCC /4544-byte ARM64 frame and was rejected. A separate C admission translation unit keeps both frames within the unchanged4096-byte gate; no noinline/suppression/heap workaround. Mismatched maximum sources now allocate0 instead of816000 bytes. |
+| Malformed serialization/network input | Unsupported, empty and truncated drafts refuse before source copying. All core canonical/script/value/expiry predicates remain unchanged. Successful preflight grants no source validity, chain freshness or review/signing authority. |
+| Races; resource exhaustion | Caller retains existing review mutex; Java array length cannot change. Element references still use existing capture/lifetime rules. Extra length-query exception is deterministically tested. Busy owner refuses before admission; malformed input cannot allocate the aggregate source buffer. |
+
+RED copies816177 bytes including177-byte draft and allocates816000 for a two-input
+draft paired with eight sources. GREEN copies only177 and allocates0. Moving
+admission after source capture independently restores the failure under strict
+Clang/GCC sanitizers. Both analyzers and complexity pass; native exception,
+ownership/replacement and malformed-draft tests pass. Android builds/lint/JVM,
+actual native fixtures and16 selected ART tests pass per API30/35/36 x86_64.
+ARM64 Linux UBSan/QEMU and Linux MSan pass; Android ARM64 builds/alignment only.
+The source-only release build matches the full APK byte for byte. Existing
+physical custody, TLS quarantine and authenticated-chain limits remain intact.

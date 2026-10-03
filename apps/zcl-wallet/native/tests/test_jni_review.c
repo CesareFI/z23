@@ -98,6 +98,7 @@ zcl_status zcl_jni_review_test_full_open(zcl_review_owner *owner, const uint8_t 
 {
     CHECK(full_sources && borrowed == 0 && owned_inputs != NULL);
     CHECK(source_clears == 0 && draft_clears == 0 && count > 0 && count <= ZCL_TX_INPUT_MAX);
+    CHECK(transaction_clears == 1);
     size_t used = 0;
     for (size_t i = 0; i < count; ++i) {
         CHECK(sources[i].wire == (const uint8_t *)owned_inputs + used);
@@ -133,6 +134,7 @@ static bool preparation_clear(void *buffer, size_t length)
 static bool input_scratch_clear(void *buffer, size_t length)
 {
     if (preparing && preparation_clear(buffer, length)) return true;
+    if (full_sources && length == sizeof(zcl_transparent_tx)) { CHECK(transaction_clears++ == 0); return true; }
     if (full_sources && length == sizeof(zcl_jni_full_sources)) { CHECK(source_clears++ == 0 && borrowed == 0); return true; }
     if (full_sources && length == ZCL_TX_WIRE_MAX) { CHECK(draft_clears++ == 0); return true; }
     return false;
@@ -556,9 +558,9 @@ static void golden_and_lifetime(void)
 
 static void opening_failures(void)
 {
-    const unsigned counts[2][4] = {{4, 2, 3, 1}, {8, 4, 5, 1}};
+    const unsigned counts[3][4] = {{4, 2, 3, 1}, {5, 2, 3, 1}, {8, 4, 5, 1}};
     for (unsigned kind = 0; kind < 4; ++kind) {
-        const unsigned maximum = counts[preparing ? 1 : 0][kind];
+        const unsigned maximum = counts[preparing ? 2 : full_sources ? 1 : 0][kind];
         for (unsigned point = 1; point <= maximum; ++point) {
             setup();
             if (kind == 0) fail_length = point;
@@ -746,10 +748,10 @@ static void source_bounds(void)
     java_previous->length = (jsize)ZCL_TX_INPUT_MAX;
     for (size_t i = 0; i < ZCL_TX_INPUT_MAX; ++i)
         java_previous->data.objects[i] = array_new((jsize)ZCL_V4_SOURCE_MAX, BYTES);
-    /* Opening copies the maximum aggregate before rejecting its draft shape;
-     * preparation can reject its mismatched parameter count before copying. */
+    /* Draft/source count mismatch must refuse before copying any source. */
     CHECK(open_review(100) == -(jlong)ZCL_INVALID_ARGUMENT);
-    CHECK(last_allocation_size == (preparing ? 0 : ZCL_TX_INPUT_MAX * ZCL_V4_SOURCE_MAX));
+    fprintf(stderr, "Rejected source count: allocated=%zu copied=%zu\n", last_allocation_size, byte_reads);
+    CHECK(last_allocation_size == 0 && byte_reads == (preparing ? 0 : draft_length));
     CHECK(source_clears == 1 && draft_clears == 1 && borrowed == 0 && owned_inputs == NULL);
     release_references();
 }
@@ -764,6 +766,22 @@ static void exceptional_reference(void)
         CHECK(open_review(100) == -(jlong)ZCL_INVALID_ARGUMENT);
         CHECK(pending && borrowed == 0 && owned_inputs == NULL);
         pending = false;
+        release_references();
+    }
+}
+
+static void draft_admission(void)
+{
+    for (unsigned malformed = 0; malformed < 3; ++malformed) {
+        setup();
+        for (size_t i = 0; i < fixture.spending.input_count; ++i)
+            java_previous->data.objects[i]->length = (jsize)ZCL_V4_SOURCE_MAX;
+        if (malformed == 0) java_draft->data.bytes[0] ^= 1;
+        else java_draft->length = malformed == 1 ? 0 : (jsize)draft_length - 1;
+        const zcl_status expected = malformed == 0 ? ZCL_UNSUPPORTED : ZCL_INVALID_ENCODING;
+        CHECK(open_review(100) == -(jlong)expected);
+        CHECK(last_allocation_size == 0 && byte_reads == (size_t)java_draft->length);
+        CHECK(transaction_clears == 1 && !pending && borrowed == 0 && owned_inputs == NULL);
         release_references();
     }
 }
@@ -869,7 +887,7 @@ static void regressions(void)
 {
     profile_regressions();
     full_sources = true;
-    profile_regressions(); captured_sources(); source_bounds(); exceptional_reference();
+    profile_regressions(); captured_sources(); source_bounds(); exceptional_reference(); draft_admission();
     preparing = true;
     preparation_admission();
     golden_and_lifetime(); opening_failures(); publication_failures(); publication_races();
