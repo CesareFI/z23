@@ -1461,7 +1461,8 @@ static bool proof_attempt_paths_prepare(const struct proof_paths *pair,
                  attempt->attempt) >= (int)sizeof(attempt->phases) ||
         !platform_private_directory_ensure(attempt->logs))
         return false;
-    return true;
+    return write_atomic_parent_flush(attempt->attempt) &&
+           write_atomic_parent_flush(attempt->logs);
 }
 
 static bool proof_lease_publish(const struct proof_paths *paths)
@@ -11424,6 +11425,44 @@ static bool dp_queue_select_exact(const char *root, const char *requested_local,
            proof_request_matches_pair(selected, local, base);
 }
 
+/* A claim moves one durable request across two private directories. If a
+ * post-rename barrier is uncertain, restore the exact name and flush both
+ * parents before allowing another claim to try. */
+static bool dp_claim_move_durable(const char *selected, const char *claimed,
+                                  bool *restored)
+{
+    *restored = false;
+    if (rename(selected, claimed) != 0) {
+        *restored = true;
+        return false;
+    }
+    bool durable = write_atomic_parent_flush(selected);
+#ifdef ZCL_TESTING
+    const char *inject = getenv("ZCL_DEV_PROOF_TEST_CLAIM_FLUSH_FAIL");
+    if (inject && strcmp(inject, "1") == 0) {
+        durable = false;
+        errno = EIO;
+    }
+#endif
+    if (durable) durable = write_atomic_parent_flush(claimed);
+    if (durable) return true;
+    if (rename(claimed, selected) == 0) {
+        bool destination_flushed = write_atomic_parent_flush(claimed);
+        bool source_flushed = write_atomic_parent_flush(selected);
+        *restored = destination_flushed && source_flushed;
+    }
+    return false;
+}
+
+static void dp_claim_abandon(const struct proof_paths *attempt, bool restored)
+{
+    if (proof_lease_current(attempt) && unlink(attempt->lease) == 0)
+        (void)write_atomic_parent_flush(attempt->lease);
+    if (!restored) return;
+    if (rmdir(attempt->logs) == 0 && rmdir(attempt->attempt) == 0)
+        (void)write_atomic_parent_flush(attempt->attempt);
+}
+
 /* Everything the queue lock protects, in one step: pick the oldest pending
  * request, build its paths, publish a lease, move the request into this
  * attempt, and fold away the requests it supersedes. Returns 0 when the
@@ -11445,12 +11484,14 @@ static int dp_queue_claim_locked(const char *repo_root, const char *requests,
     char claimed[PATH_MAX];
     bool prepared = proof_paths_fill(repo_root, local, base, pair) &&
         proof_state_prepare(pair) &&
+        write_atomic_parent_flush(selected) &&
         proof_attempt_paths_prepare(pair, attempt) &&
         snprintf(claimed, sizeof(claimed), "%s/request", attempt->attempt) <
             (int)sizeof(claimed) && proof_lease_publish(attempt);
-    if (prepared && rename(selected, claimed) != 0) {
-        if (proof_lease_current(attempt)) (void)unlink(attempt->lease);
-        prepared = false;
+    if (prepared) {
+        bool restored = false;
+        prepared = dp_claim_move_durable(selected, claimed, &restored);
+        if (!prepared) dp_claim_abandon(attempt, restored);
     }
     if (!prepared) return -1;
     if (!requested_local)

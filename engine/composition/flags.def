@@ -672,6 +672,8 @@ Z23_FLAG("ZCL_DEV_PROOF_TEST_LINK_ERRNO", "env_runtime", "-", "-",
           "undocumented; first use tools/dev/dev_proof.c:auto")
 Z23_FLAG("ZCL_DEV_PROOF_TEST_PARENT_FLUSH_FAIL", "env_test", "-", "-",
           "test-only post-rename directory flush refusal; first use tools/dev/dev_proof.c:auto")
+Z23_FLAG("ZCL_DEV_PROOF_TEST_CLAIM_FLUSH_FAIL", "env_test", "-", "-",
+          "test-only post-claim directory flush refusal; first use tools/dev/dev_proof.c:auto")
 Z23_FLAG("ZCL_DEV_PROOF_TEST_STATE_FLUSH_FAIL", "env_test", "-", "-",
           "test-only proof-state directory flush refusal; first use tools/dev/dev_proof.c:auto")
 Z23_FLAG("ZCL_DEV_PROOF_WARM", "env_test", "-", "-",

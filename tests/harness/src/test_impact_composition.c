@@ -9159,6 +9159,12 @@ static int test_ic_landing_proof_defers_preparation(void)
         ASSERT_EQ(claimed, 0);
         ASSERT_STR_EQ(why, "proof_landing_preparation_busy");
         ASSERT(unchanged);
+        ASSERT(setenv("ZCL_DEV_PROOF_TEST_CLAIM_FLUSH_FAIL", "1", 1) == 0);
+        claimed = zcl_dev_proof_queue_run_next(f.root, why, sizeof(why));
+        ASSERT(unsetenv("ZCL_DEV_PROOF_TEST_CLAIM_FLUSH_FAIL") == 0);
+        ASSERT_EQ(claimed, -1);
+        ASSERT_STR_EQ(why, "proof_queue_claim_failed");
+        ASSERT(ic_landing_request_unchanged(&f));
         ASSERT_EQ(zcl_dev_proof_queue_run_next(f.root, why, sizeof(why)), 1);
         ASSERT(access(f.request, F_OK) != 0);
         ASSERT(access(f.failure, F_OK) == 0);
