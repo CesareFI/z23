@@ -87,6 +87,7 @@ CJ_MULTIHOST="${ZCL_COMMONS_MULTIHOST:-0}"
 CJ_TWOHOST=0
 CJ_HOST_B="${CJ_HOST_B:-}"   # ssh destination of the reproducer/onward provider
 CJ_HOST_C="${CJ_HOST_C:-}"   # ssh destination of the latecomer
+CJ_HOST_A="${CJ_HOST_A:-}"   # alias B and C use to reach the requester
 # The P2P addresses nodes dial. Local runs keep loopback; in multi-host mode
 # these are the LAN addresses of the driver (A), B and C. B's and C's default
 # to their ssh host part when unset.
@@ -280,6 +281,80 @@ cj_require_distinct_running_kernels() {
     done
 }
 
+# A route probe is test glue, not package or deployment authority. Keep every
+# value passed through a remote shell to one unambiguous, safe token.
+cj_route_token_safe() {
+    [[ "$1" =~ ^[A-Za-z0-9_./@-]+$ ]] && [[ "$1" != *..* ]]
+}
+
+cj_route_probe() {
+    local from="$1" from_dir="$2" to="$3" to_dir="$4"
+    local from_host="$5" to_host="$6" expected="$7" got source target
+    local -a opts=(-o BatchMode=yes -o ConnectTimeout=5
+                   -o ConnectionAttempts=1 -o ServerAliveInterval=5
+                   -o ServerAliveCountMax=1)
+    source="$from_dir/route-probe"
+    target="$to_dir/route-from-$from"
+    [ "$from" != a ] || target="$to_dir/route-probe"
+    if [ "$from" = a ]; then
+        "$DHT_SSH" "${opts[@]}" "$to_host" -- true >/dev/null 2>&1 ||
+            { cj_die "HOST_ROUTE_COMMAND: $from>$to"; return 1; }
+        "$DHT_SCP" "${opts[@]}" "$source" "$to_host:$target" >/dev/null 2>&1 ||
+            { cj_die "HOST_ROUTE_TRANSFER: $from>$to"; return 1; }
+    else
+        "$DHT_SSH" "${opts[@]}" "$from_host" -- \
+            ssh "${opts[@]}" "$to_host" -- true >/dev/null 2>&1 ||
+            { cj_die "HOST_ROUTE_COMMAND: $from>$to"; return 1; }
+        "$DHT_SSH" "${opts[@]}" "$from_host" -- \
+            scp "${opts[@]}" "$source" "$to_host:$target" >/dev/null 2>&1 ||
+            { cj_die "HOST_ROUTE_TRANSFER: $from>$to"; return 1; }
+    fi
+    if [ "$to" = a ]; then
+        got="$(openssl dgst -sha3-256 "$target" | awk '{print $NF}')" ||
+            { cj_die "HOST_ROUTE_VERIFY: $from>$to"; return 1; }
+    else
+        got="$("$DHT_SSH" "${opts[@]}" "$to_host" -- \
+            openssl dgst -sha3-256 "$target" | awk '{print $NF}')" ||
+            { cj_die "HOST_ROUTE_VERIFY: $from>$to"; return 1; }
+    fi
+    [ "$got" = "$expected" ] ||
+        { cj_die "HOST_ROUTE_BYTES: $from>$to"; return 1; }
+}
+
+# A physical run needs commands and exact transferred bytes in both directions
+# for every host pair. The local plumbing shim remains a same-kernel fixture.
+cj_require_pairwise_routes() {
+    [ "$DHT_SSH" = ssh ] || return 0
+    local host path expected probe="$DHT_WORK/route-probe"
+    [ -n "$CJ_HOST_A" ] ||
+        { cj_die "HOST_ROUTE_MISSING: requester alias on B/C"; return 1; }
+    for host in "$CJ_HOST_A" "$CJ_HOST_B" "$CJ_HOST_C"; do
+        [ -z "$host" ] ||
+            { cj_route_token_safe "$host" && [[ "$host" != -* ]]; } ||
+            { cj_die "HOST_ROUTE_UNSAFE: ssh alias"; return 1; }
+    done
+    for path in "$DHT_WORK" "$CJ_RDIR_B" "$CJ_RDIR_C"; do
+        [ -z "$path" ] ||
+            { cj_route_token_safe "$path" && [[ "$path" = /* ]]; } ||
+            { cj_die "HOST_ROUTE_UNSAFE: scratch path"; return 1; }
+    done
+    openssl rand -out "$probe" 32 ||
+        { cj_die "HOST_ROUTE_PROBE: create random object"; return 1; }
+    chmod 600 "$probe" ||
+        { cj_die "HOST_ROUTE_PROBE: private random object"; return 1; }
+    expected="$(openssl dgst -sha3-256 "$probe" | awk '{print $NF}')" ||
+        { cj_die "HOST_ROUTE_PROBE: hash random object"; return 1; }
+    [[ "$expected" =~ ^[0-9a-f]{64}$ ]] ||
+        { cj_die "HOST_ROUTE_PROBE: invalid digest"; return 1; }
+    cj_route_probe a "$DHT_WORK" b "$CJ_RDIR_B" "" "$CJ_HOST_B" "$expected" || return 1
+    cj_route_probe b "$CJ_RDIR_B" a "$DHT_WORK" "$CJ_HOST_B" "$CJ_HOST_A" "$expected" || return 1
+    [ "$CJ_TWOHOST" != 1 ] || return 0
+    cj_route_probe a "$DHT_WORK" c "$CJ_RDIR_C" "" "$CJ_HOST_C" "$expected" || return 1
+    cj_route_probe c "$CJ_RDIR_C" a "$DHT_WORK" "$CJ_HOST_C" "$CJ_HOST_A" "$expected" || return 1
+    cj_route_probe b "$CJ_RDIR_B" c "$CJ_RDIR_C" "$CJ_HOST_B" "$CJ_HOST_C" "$expected" || return 1
+    cj_route_probe c "$CJ_RDIR_C" b "$CJ_RDIR_B" "$CJ_HOST_C" "$CJ_HOST_B" "$expected"
+}
+
 cj_multihost_setup() {
     if [ "$CJ_MULTIHOST" != 1 ] && [ "$CJ_TWOHOST" != 1 ]; then
         CJ_PEER_ADDR_A=127.0.0.1; CJ_PEER_ADDR_B=127.0.0.1; CJ_PEER_ADDR_C=127.0.0.1
@@ -321,12 +396,15 @@ cj_multihost_setup() {
     cj_require_distinct_running_kernels "${hosts[@]}"
     CJ_RDIR_B="$("$DHT_SSH" -o BatchMode=yes "$CJ_HOST_B" -- 'mktemp -d /tmp/z23-mh-XXXXXXXX')" ||
         cj_die "no scratch dir on $CJ_HOST_B"
+    dht_register_remote_node "$B_RPC" "$CJ_HOST_B" "$CJ_RDIR_B"
     local destinations=("$CJ_HOST_B:$CJ_RDIR_B")
     if [ "$CJ_TWOHOST" != 1 ]; then
         CJ_RDIR_C="$("$DHT_SSH" -o BatchMode=yes "$CJ_HOST_C" -- 'mktemp -d /tmp/z23-mh-XXXXXXXX')" ||
             cj_die "no scratch dir on $CJ_HOST_C"
+        dht_register_remote_node "$C_RPC" "$CJ_HOST_C" "$CJ_RDIR_C"
         destinations+=("$CJ_HOST_C:$CJ_RDIR_C")
     fi
+    cj_require_pairwise_routes
     for host in "${destinations[@]}"; do
         rdir="${host#*:}"; host="${host%%:*}"
         "$DHT_SSH" -o BatchMode=yes "$host" -- "mkdir -p '$rdir/bin' '$rdir/cred' '$rdir/no-zk-params' && chmod 700 '$rdir/cred'" ||
@@ -350,10 +428,6 @@ cj_multihost_setup() {
                 cj_die "$bin on $host is not the local build's bytes"
         done
     done
-    dht_register_remote_node "$B_RPC" "$CJ_HOST_B" "$CJ_RDIR_B"
-    if [ -n "$CJ_RDIR_C" ]; then
-        dht_register_remote_node "$C_RPC" "$CJ_HOST_C" "$CJ_RDIR_C"
-    fi
     if [ "$DHT_SSH" != ssh ]; then
         # Shimmed plumbing: every "host" is this kernel, so peers dial loopback.
         [ -n "$CJ_PEER_ADDR_B" ] || CJ_PEER_ADDR_B=127.0.0.1
