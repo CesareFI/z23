@@ -10,6 +10,9 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
+#if !defined(_WIN32)
+#include <sys/stat.h>
+#endif
 
 /* The build/ subdirectories this scan treats as dependency rooms. One table,
  * read by the walk below and by zcl_dependency_build_room_path(), so a warm
@@ -56,15 +59,32 @@ static const char *relative_path(const struct dependency_scan *scan,
     return *relative == '/' ? relative + 1 : relative;
 }
 
+static bool directory_walkable(struct dependency_scan *scan, const char *path)
+{
+    if (platform_directory_probe_real(path) != PLATFORM_DIRECTORY_PROBE_OK)
+        return refuse(scan, "directory_not_real:%s",
+                      relative_path(scan, path));
+#if !defined(_WIN32)
+    /* Privileged processes can walk a mode-000 fixture. Keep the scan's
+     * refusal independent of the invoking user's privilege. */
+    struct stat directory = {0};
+    if (stat(path, &directory) != 0)
+        return refuse(scan, "cannot walk %s: %s", path, strerror(errno));
+    if ((directory.st_mode & (S_IRUSR | S_IRGRP | S_IROTH)) == 0 ||
+        (directory.st_mode & (S_IXUSR | S_IXGRP | S_IXOTH)) == 0)
+        return refuse(scan, "cannot walk %s: %s", path, strerror(EACCES));
+#endif
+    return true;
+}
+
 static bool scan_directory(struct dependency_scan *scan, const char *path,
                            unsigned depth)
 {
     if (depth > ZCL_DEPENDENCY_LINK_DEPTH_MAX)
         return refuse(scan, "traversal_depth_exceeded:%s",
                       relative_path(scan, path));
-    if (platform_directory_probe_real(path) != PLATFORM_DIRECTORY_PROBE_OK)
-        return refuse(scan, "directory_not_real:%s",
-                      relative_path(scan, path));
+    if (!directory_walkable(scan, path))
+        return false;
 
     struct platform_directory_list directories = {0}, files = {0};
     if (!platform_directory_list_children_sorted(path, &directories, &files)) {

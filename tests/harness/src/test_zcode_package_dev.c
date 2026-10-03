@@ -3990,6 +3990,10 @@ static __attribute__((unused)) int zpd_test_work_start(void)
         char ws_a[131], ws_b[131];
         memset(ws_a, 'w', sizeof(ws_a) - 1); ws_a[sizeof(ws_a) - 1] = '\0';
         memset(ws_b, 'w', sizeof(ws_b) - 1); ws_b[sizeof(ws_b) - 1] = '\0';
+        /* Keep the measured length while giving each run its own parent.
+         * A fixed parent left by another UID can be private mode 0700. */
+        char *parent_tag = ws_a + sizeof(ws_a) - 1u - 20u;
+        ASSERT(snprintf(parent_tag, 21, "%020ld", (long)getpid()) == 20);
         (void)snprintf(root, sizeof(root), "/tmp/%s/%s-%ld", ws_a, ws_b,
                        (long)getpid());
         {   /* directory_create is one level; zpd_fixture must create root itself */

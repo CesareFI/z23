@@ -342,23 +342,34 @@ static int tss_text_file(const char *path, FILE *f)
  * diagnostic once per probe, no records. A binary file keeps the
  * coverage verdict but yields no rows, plus grep's stderr note when the
  * spawn ERE matches. */
+static int tss_unproven_file(const char *path, int e)
+{
+    fprintf(stderr, "%s: UNPROVEN — %s exists but cannot be\n"
+            "  read (%s). A silently unreadable file in the scan\n"
+            "  set would read as zero spawn sites, hiding a\n"
+            "  genuinely unaccounted thread behind a permission\n"
+            "  bit. Restore its permissions and re-run.\n",
+            k_tss_name, path, strerror(e));
+    return 2;
+}
+
 static int tss_scan_file(const char *path)
 {
     FILE *f = fopen(path, "r");
     if (!f) {
         int e = errno;
-        if (e == EACCES) {
-            fprintf(stderr, "%s: UNPROVEN — %s exists but cannot be\n"
-                    "  read (%s). A silently unreadable file in the scan\n"
-                    "  set would read as zero spawn sites, hiding a\n"
-                    "  genuinely unaccounted thread behind a permission\n"
-                    "  bit. Restore its permissions and re-run.\n",
-                    k_tss_name, path, strerror(e));
-            return 2;
-        }
+        if (e == EACCES)
+            return tss_unproven_file(path, e);
         tss_grep_diag(path, e);
         tss_grep_diag(path, e);
         return 0;
+    }
+    struct stat st;
+    int stat_rc = fstat(fileno(f), &st);
+    if (stat_rc != 0 || (st.st_mode & (S_IRUSR | S_IRGRP | S_IROTH)) == 0) {
+        int e = stat_rc != 0 ? errno : EACCES;
+        fclose(f);
+        return tss_unproven_file(path, e);
     }
     int binary = 0;
     int rc = tss_has_nul(f, &binary);

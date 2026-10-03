@@ -211,6 +211,15 @@ static int ntf_scan_file(const char *path, struct ntf_set *s)
                 path);
         return 2;
     }
+    struct stat st;
+    if (fstat(fileno(f), &st) != 0
+        || (st.st_mode & (S_IRUSR | S_IRGRP | S_IROTH)) == 0) {
+        fclose(f);
+        fprintf(stderr,
+                "check-no-bare-tmp-fixture: UNPROVEN — cannot read %s\n",
+                path);
+        return 2;
+    }
     struct ntf_cs cs = {0};
     char *line = NULL;
     size_t cap = 0;

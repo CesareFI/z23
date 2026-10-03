@@ -131,6 +131,31 @@ static bool hardlink_repair_one(const char *relative_path, uint64_t links,
                 relative_path);
         return false;
     }
+#if !defined(_WIN32)
+    /* Root can write a mode-0500 directory. Preserve the same read-only
+     * refusal a normal worker gets before creating the temporary copy. */
+    char *separator = strrchr(full, '/');
+    if (!separator) {
+        fprintf(stderr, "hardlink-seeding: repair FAILED: %s: no_parent\n",
+                relative_path);
+        return false;
+    }
+    *separator = '\0';
+    struct stat parent = {0};
+    int parent_rc = stat(full, &parent);
+    int parent_errno = errno;
+    *separator = '/';
+    if (parent_rc != 0) {
+        fprintf(stderr, "hardlink-seeding: repair FAILED: %s: parent_stat: %s\n",
+                relative_path, strerror(parent_errno));
+        return false;
+    }
+    if ((parent.st_mode & (S_IWUSR | S_IWGRP | S_IWOTH)) == 0) {
+        fprintf(stderr, "hardlink-seeding: repair FAILED: %s: read_only_parent\n",
+                relative_path);
+        return false;
+    }
+#endif
     int wrote = snprintf(tmp, sizeof(tmp), "%s.dedupe.tmp", full);
     if (wrote <= 0 || (size_t)wrote >= sizeof(tmp)) {
         fprintf(stderr,

@@ -1,0 +1,3 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ * Source-owned capability declaration for dependency_links.c. */
+ZCL_MODULE_CAPABILITY("tools/dev/dependency_links.c", CAP_FS_READ, "checks directory mode before walking dependency paths so privileged workers refuse unreadable fixtures")

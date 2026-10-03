@@ -322,10 +322,11 @@ tu_cache_include_digest() {
 # root (never the real repo tree, never /tmp for anything durable):
 #   (1) a path present when `find` snapshots the tree but gone by the time
 #       sha256sum reads it is DROPPED — the digest still succeeds;
-#   (2) a path that stays present but is genuinely unreadable (chmod 000)
-#       FAILS the digest loudly and NAMES the file — never silently omitted.
+#   (2) a path that stays present but is genuinely unreadable FAILS loudly
+#       and NAMES the file. A privileged reader that can read mode 000 must
+#       instead bind those exact bytes, including a later content change.
 tu_cache_include_digest_selftest() {
-    local base d out rc
+    local base d out rc readable normal changed
     base="$(mktemp -d)" || { echo "FAIL: mktemp failed" >&2; return 2; }
     d="$base/root"
     mkdir -p "$d" "$base/scratch1" "$base/scratch2"
@@ -349,26 +350,36 @@ tu_cache_include_digest_selftest() {
 
     printf '#define D 1\n' > "$d/d.h"
     chmod 000 "$d/d.h"
+    readable=0
+    [ -r "$d/d.h" ] && readable=1
     out="$(tu_cache_include_digest "$base/scratch2" "$d" 2>"$base/stderr.txt")"
     rc=$?
     chmod 644 "$d/d.h"
-    if [ "$rc" -eq 0 ]; then
-        echo "FAIL: tu_cache_include_digest_selftest — an unreadable file" >&2
-        echo "  (chmod 000, never removed) did not fail the digest; a real" >&2
-        echo "  unreadable header would be silently missing from every" >&2
-        echo "  cache key it should have busted" >&2
-        rm -rf "$base"; return 2
-    fi
-    if ! grep -qF "d.h" "$base/stderr.txt" 2>/dev/null; then
-        echo "FAIL: tu_cache_include_digest_selftest — the digest failure" >&2
-        echo "  did not name the unreadable file:" >&2
-        sed 's/^/    /' "$base/stderr.txt" >&2
-        rm -rf "$base"; return 2
+    if [ "$readable" = 1 ]; then
+        normal="$(tu_cache_include_digest "$base/scratch2" "$d")" || normal=""
+        printf '#define D 2\n' > "$d/d.h"
+        changed="$(tu_cache_include_digest "$base/scratch2" "$d")" || changed=""
+        if [ "$rc" -ne 0 ] || [ -z "$out" ] || [ -z "$changed" ] ||
+           [ "$out" != "$normal" ] || [ "$out" = "$changed" ]; then
+            echo "FAIL: tu_cache_include_digest_selftest — privileged reader did not bind mode-000 header bytes and their change" >&2
+            rm -rf "$base"; return 2
+        fi
+    else
+        if [ "$rc" -eq 0 ]; then
+            echo "FAIL: tu_cache_include_digest_selftest — an unreadable file silently passed the digest" >&2
+            rm -rf "$base"; return 2
+        fi
+        if ! grep -qF "d.h" "$base/stderr.txt" 2>/dev/null; then
+            echo "FAIL: tu_cache_include_digest_selftest — the digest failure" >&2
+            echo "  did not name the unreadable file:" >&2
+            sed 's/^/    /' "$base/stderr.txt" >&2
+            rm -rf "$base"; return 2
+        fi
     fi
 
     rm -rf "$base"
     echo "  OK: tu_cache_include_digest selftest — a vanished path is dropped" \
-         "(digest still succeeds), an unreadable file fails loudly and is named"
+         "(digest still succeeds), a mode-000 file is bound or refuses by name"
     return 0
 }
 # Keep the newest N generations under <gate-root>, drop the rest whole. A

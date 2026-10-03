@@ -314,10 +314,22 @@ ship_exe_live_of() {
 # manually-repaired layout). Pure text in, one token out, so the selftest
 # pins it against fixture paths without a live systemd service.
 ship_local_release_layout() {
-    local dir="$1" home="$2"
+    local dir="$1" home="$2" mode=""
     case "$dir/" in
         "$home/.local/lib/z23/releases/"*)
-            if [ -w "$dir" ]; then printf 'writable\n'; else printf 'release\n'; fi
+            # Root can write a mode-555 directory. Keep a frozen release
+            # classified as such even when this process has that privilege.
+            # ls -ld presents POSIX rwx positions on Linux and macOS.
+            # Check the three write positions before -w, which root can
+            # report true even for a mode-555 directory.
+            mode="$(LC_ALL=C ls -ld "$dir" 2>/dev/null)" || mode=""
+            mode="${mode%% *}"
+            case "$mode" in
+                ??w*|?????w*|????????w*)
+                    if [ -w "$dir" ]; then printf 'writable\n'
+                    else printf 'release\n'; fi ;;
+                *) printf 'release\n' ;;
+            esac
             ;;
         *) printf 'writable\n' ;;
     esac
