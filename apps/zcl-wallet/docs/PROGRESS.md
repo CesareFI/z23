@@ -8100,3 +8100,23 @@ in UPSTREAM_PUBLICATION.md. Publication uses isolated current-main worktrees,
 CesareFI/z23 branches and PRs to z23c/z23:main. Reviewer identity verified as
 RhettCreighton. Initial upstream open-PR list is empty. No PR yet; first candidate
 adapts mnemonic temporary retirement to the existing upstream wallet owner.
+
+## 2026-10-03 — reusable C upstream candidates prepared
+
+Publication priority supersedes further Android research. The four independently
+signed candidates, exact upstream base, inventories and source provenance are in
+UPSTREAM_PUBLICATION.md. Each candidate passed all215 repository lint gates,
+focused canonical tests, compiler lanes and applicable sanitizer/mutation proofs.
+Base58 also has fresh host measurements and bounded fuzz evidence; descriptor
+coverage is a test-only port, not a change to upstream durability policy.
+
+Publication is pending one authority decision: the installed upstream hook refuses
+fork branches with `remote-ref-not-main`, while this mission forbids main pushes
+and bypassing checks. The normal push was refused; no override, policy edit or
+alternate publication transport was used. No PR/CI/reviewer request exists yet.
+Descriptions and exact evidence remain in the isolated sibling publication
+checkout. Resume by resolving that explicit hook conflict, fetch current main,
+recheck open PRs, then publish the four exact candidate branches to CesareFI/z23
+and open separate z23c/z23 PRs, requesting verified reviewer RhettCreighton.
+Do not rerun completed tests without changed source or a new validation reason.
+The unfinished native storage-limit test remains dirty and excluded throughout.

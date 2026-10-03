@@ -32,29 +32,30 @@ are included in suitability assessment instead of silently excluded by date.
 
 A = directly reusable; B = reusable with adaptation to an existing upstream owner;
 C = Android/JNI reference only; D = not appropriate for this upstream submission.
-Disposition below is preliminary until the destination implementation is checked.
+The reviewed disposition below separates publication candidates from reference-only
+material. Candidate heads and the publication boundary are recorded below.
 
 | Item / source surface | Class | Upstream destination or concrete constraint |
 | --- | --- | --- |
 | C wallet core as one library / status APIs | D | Upstream already owns wallet, crypto, codecs and persistence. Importing another complete stack duplicates authorities and is not a small reviewable change. Port individual invariants below. |
-| Optimizer-resistant secret wiping and last-use retirement | B | Existing support/cleanse and wallet key/mnemonic owners; inspect for uncovered temporary state. Keep upstream primitive, provider and caller ownership. |
+| Optimizer-resistant secret wiping and last-use retirement | B | Mnemonic-index and master-key/context scratch candidates use the existing support/cleanse and wallet owners. Keep upstream primitive, provider and caller ownership. |
 | Derived scalar, chain-code and failure cleanup (`bip32`, `receive_key`) | B | Existing keys/key and domain/wallet/key_derivation. Reuse failure-atomic/retirement regression methods, preserve exact BIP32 derivation. |
-| Entropy/random-source failure handling | B | Existing crypto/random_secret adapter and wallet mnemonic generation. No alternate RNG/provider. |
+| Entropy/random-source failure handling | D | Upstream GetRandBytes already aborts on entropy failure, and random_secret rejects/clears failed secret output. Its stale header narrative does not establish a production defect. No duplicate RNG or provider is appropriate. |
 | Signing-context retirement (`6fdcb0468`) | C | Android owns a context per call; upstream deliberately owns a process-wide signing context. Do not transplant per-call destruction into that lifecycle. Failure/publication tests can inform appropriate existing APIs. |
 | Consuming creation entropy (`4c6c41cfb`) | C | Applies to private JNI scratch and Android authenticated initial journal creation; no equivalent upstream record/API. Keep reference evidence. |
-| Transaction review/signing identity, change and monetary bounds | B | Adapt only to an existing matching wallet review/send owner. Do not import bounded unsigned-only codec or invent a second consensus/transaction authority. |
+| Transaction review/signing identity, change and monetary bounds | C | Upstream vault-intent payloads already bind effects/fees and rebuild against current inputs. Android offline review tokens and unsigned-only codec have no equivalent consumer; importing them would create a second authority. JNI scalar admission is not an upstream C API. No consensus or fee-policy change is proposed. |
 | JNI fee/draft early admission (`91db31c76`, `98ea5c2fe`, `356fb2586`) | C | No JNI API upstream. Preserve tests as reference for scalar-before-copy and ownership admission; upstream C monetary checks stay authoritative. |
-| Fixed-record storage durability, no-overwrite, restart/recovery | B | Existing wallet backup/recovery services and persistence adapter. Reuse syscall ordering/failure invariants where formats and contracts match; never replace upstream SQLite/AR custody storage with Android files. |
+| Fixed-record storage durability, no-overwrite, restart/recovery | D | Upstream backup uses private-file authority barriers, atomic replacement and parent flush; no-clobber publication already exists separately. Android fixed-record files have a different format and overwrite contract from SQLite/AR backup. Do not port the format or replace the owner. |
 | Authenticated change journal and bounded suffix repair | D | App-specific format/key derivation and caller custody prerequisites; no compatible upstream consumer. Import would require new migration/recovery policy rather than small adaptation. |
-| Descriptor retirement / CLOEXEC / kernel pressure | B | Port tests and missing flags to corresponding upstream backup/recovery descriptors; existing12-case fixture is format-specific. |
-| Crash/process interruption and partial IO fixtures | B | Adapt fixture isolation and exact-record assertions to upstream backup/restore lifecycle. Keep actual kernel/control probes and no-overwrite semantics. |
+| Descriptor retirement / CLOEXEC / kernel pressure | B | The test-only candidate verifies all six upstream private-file openers. Their flags were already correct; Android kernel-pressure and journal fixtures remain format-specific. |
+| Crash/process interruption and partial IO fixtures | C | Android injected write/rename checkpoints name its authenticated journal and exact record layout. Upstream wallet_backup and wallet_backup_port already test backup encryption, restoration and authority barriers. Transfer descriptor invariants separately; the format-specific crash harness is not an independent upstream component. |
 | BIP39/12-word recovery / normalization / deterministic seeds | B | Existing domain/wallet/mnemonic and wallet wrapper. Preserve upstream accepted formats and canonical bytes; never change12-word creation/recovery guarantees. |
 | Prepared HMAC/PBKDF2 reuse | D | Upstream already has its own crypto implementation in sealed core. No duplicate provider or unseal authority; only report existing parity and owner constraints. |
-| Base58 bounded significant-digit work (`e805c8a06`, `32e58fad9`) | B | Existing platform/domain/encoding/base58; port only after local vectors and before/after measurements justify unchanged outputs/failure/cleansing. |
-| Payment URI/text parser and RPC string fast paths | B | Check existing URI/RPC owners before porting; app request schema/Unicode policy cannot silently replace upstream behavior. |
-| Platform-neutral QR/camera stride/pixel bounds | B | Useful C algorithms but require a matching consumer; do not add an unused camera stack/provider merely because code is portable. |
+| Base58 bounded significant-digit work (`e805c8a06`, `32e58fad9`) | B | The significant-span candidate adapts both optimizations to platform/domain/encoding/base58 with measured speedup, exact reference comparisons and unchanged cleanup. |
+| Payment URI/text parser and RPC string fast paths | C | These optimizations target Android payment metadata and the read-only mobile Electrum JSON schema. Replacing upstream native command/RPC policy or adding an unused duplicate parser is outside a small adaptation. |
+| Platform-neutral QR/camera stride/pixel bounds | C | Upstream owns QR generation through qrcodegen, not Android camera-plane decoding. There is no matching camera consumer for stride/pixel APIs; retain the validated bounds as reference rather than introduce an unused decoder stack. |
 | JNI camera minimum copy / VM references/exceptions | C | Android transport only; documents required admitted-span/caller-ownership semantics. |
-| Shielded address envelopes | B | Compare existing Z23 Sapling codecs and vectors; preserve exact network/wire validity, no claim of spending/proof support. |
+| Shielded address envelopes | D | Upstream already owns Sapling address serialization/deserialization and deterministic seed/address vectors. Android envelope-only handling does not add spending/proof support. Do not create a second codec or change sealed validity rules. |
 | Read-only Electrum / freshness / owner replay logic | D | Unverified mobile presentation state is not a full-node authenticated-chain authority. No alternate freshness or spending policy. |
 | Native fuzz harnesses, mutations and deterministic regressions | B | Port relevant cases with each production slice using canonical upstream test registration. Do not bring whole CMake registry or duplicate gate runner. |
 | ASan/UBSan/LSan, qualified MSan/TSan and compiler evidence | B | Rerun on each port. Android observations support source provenance only; no claim they validate adapted upstream bytes. |
@@ -68,13 +69,16 @@ Disposition below is preliminary until the destination implementation is checked
 1. Secret-bearing temporary retirement in existing wallet C owners, with live-span
    observation and mutation controls derived from Android native safety fixtures.
 2. Corresponding storage/backup descriptor, durability and recovery invariants.
-3. Existing transaction/recovery boundaries that need the proven C invariants.
-4. Measured reusable codec improvements and their deterministic/fuzz coverage.
+3. Measured reusable codec improvement and its deterministic/fuzz coverage.
+
+Transaction/JNI and format-specific recovery APIs remain reference-only for the
+concrete ownership reasons in the inventory, rather than becoming a duplicate stack.
 
 A portable source file alone is not sufficient reason to submit it. Each B item
 must gain an exact upstream owner and bounded diff or receive a concrete final
 non-publication reason. Every submitted PR records base/head, tests, CI and review
-request status here. No PR has been submitted yet.
+request status here. Four independent upstream candidates are signed and validated;
+publication remains subject to the explicit hook conflict described below.
 
 ## Date-filtered source provenance
 
@@ -131,3 +135,56 @@ f4c27fcf580e45f7e078c04c61fcb7153b4a7725 2026-09-26 test(wallet): cover direct J
 4a4b5dad1b271c2d6a9fb1b35e74a349579ee002 2026-09-26 perf(wallet): size active reply buffers to bounded input
 454199d24850e25c7a87e6158354226c23159233 2026-09-26 perf(wallet): reject retired sync replies before copying frames
 666e84a57883060117d7ebd56be140e8ce39cd0c 2026-09-26 test(wallet): enforce header acceptance and corruption contracts
+
+## Prepared upstream candidates and publication boundary
+
+The isolated sibling publication checkout is `z23-wallet-publication-20261003`.
+These are independent ports from upstream `3a93e60ebf922af3d119b9facc1d95803f42844b`,
+not a stack of Android history:
+
+| Branch | Signed head | Scope / evidence |
+| --- | --- | --- |
+| `agent/upstream-wallet-secret-lifetime-20261003` | `58619c85baf74c4a8a1c2c49573a89396291b9e5` | Mnemonic decoded-index retirement; focused RED/GREEN, Clang/GCC wipe-removal mutations and ASan/UBSan/LSan; all215 lint gates PASS; PR security scan PASS.4files,+116/-8. |
+| `agent/upstream-wallet-key-scratch-20261003` | `c9eb0270abfaf787703f3fb794a3a0f709c61f27` | Master digest/HMAC-context and signing entropy retirement; focused RED/GREEN, six compiler/mutant failures, Clang/GCC ASan/UBSan/LSan; all215 lint gates PASS; PR security scan PASS.4files,+107/-9. |
+| `agent/upstream-wallet-base58-span-20261003` | `987d226c3cc937c28ad6a2a0f374782332749153` | Bounded significant-digit conversion; independent16,788-case corpus, Clang/GCC sanitizers and mutations,268,723 fuzz runs, measured speedup; all215 lint gates PASS; PR scanner PASS.5files,+122/-22. |
+| `agent/upstream-wallet-storage-descriptors-20261003` | `b25e546bab0658f9d283fb487674f592d1dd15e7` | Test-only six-opener CLOEXEC/close contract; mutation RED then restored GREEN, both compiler sanitizers, backup groups2/2; all215 lint gates PASS; PR scanner PASS.2files,+43/-1. |
+
+Prepared descriptions are ignored local files `pr-mnemonic.md`, `pr-key.md`,
+`pr-base58.md` and `pr-storage.md`
+under publication `.cache/wallet-publication/`. They include WHY/WHAT/REUSE/SAFETY/
+EVIDENCE/PORTABILITY/SCOPE/COMMITS. No new third-party dependency or consensus edit.
+
+The normal fork-branch push of the first signed candidate was refused by
+`tools/dev/z23_git_hook.c:644`: `remote-ref-not-main`. The hook admits only
+`refs/heads/main`, while this mission forbids main pushes and check bypasses.
+No hook or policy was changed and no alternate transport bypass was attempted.
+An explicit user decision on a per-command exception for validated fork branches
+is pending. No PR exists yet; CI and reviewer requests therefore have not run.
+Do not treat local security scans or validated commits as submitted PRs.
+
+All four selected adaptations are prepared. Their parent is the same fetched
+upstream main; none depends on another candidate. Android dirty storage-limit
+work remains preserved and outside every publication candidate.
+
+### Final mapping of adaptable work
+
+- Secret wiping and deterministic recovery: mnemonic-index candidate and key-
+  scratch candidate. Upstream `domain_wallet_derive_path` already clears both
+  current and next derived private-key/chain-code structures on failure and
+  clears intermediates on success; do not duplicate that completed behavior.
+- Signing-context ownership stays unchanged. Per-call Android teardown and JNI
+  consuming-entropy handoffs remain C/reference because the node has different
+  caller ownership and context lifetime.
+- Storage descriptors: test-only candidate covers all six private-file openers,
+  observed CLOEXEC flags, kernel close results and retired wrapper state. This
+  does not claim execution of Android's post-exec observer in upstream.
+- Base58: measured significant-span candidate ports both source optimizations,
+  preserves full scratch cleansing and all admitted/output behavior, and adds
+  an independent reference corpus. No PBKDF2/HMAC core rewrite is proposed.
+- Fuzz/mutation/sanitizer/compiler evidence: adapted per candidate and rerun on
+  the actual port. Do not import the Android CMake registry, generated fixtures,
+  APK runtime infrastructure, or its long progress documents into upstream.
+- No item is classified A merely because it compiles as C. These selected B
+  adaptations use existing upstream owners; the remaining C/D rows name the
+  missing consumer, different policy/format, completed upstream invariant, or
+  sealed authority that makes wholesale transfer inappropriate.
