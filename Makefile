@@ -6100,6 +6100,16 @@ EQUIHASH_FACT_SRCS = tools/equihash_params_fact.c \
     core/params/src/upgrades.c core/consensus/src/upgrades.c \
     core/math/src/uint256.c platform/modules/encoding/src/utilstrencodings.c \
     platform/modules/base/src/log_level.c platform/modules/base/src/result.c
+EQUIHASH_FACT_OBJS = $(patsubst %.c,build/equihash-fact-obj/%.o,$(EQUIHASH_FACT_SRCS))
+-include $(EQUIHASH_FACT_OBJS:.o=.d)
+EQUIHASH_FACT_CFLAGS = -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
+    -D_POSIX_C_SOURCE=200809L $(ZCL_PLATFORM_CPPFLAGS) \
+    -Icore/chainparams/include -Icore/params/include -Icore/math/include \
+    -Icore/consensus/include -Icore/modules/chain/include -Iplatform/modules/base/include \
+    -Iplatform/modules/util/include -Icore/modules/core/include -Icore/modules/crypto/include \
+    -Iplatform/modules/codec/include -Icore/modules/primitives/include -Iplatform/modules/support/include \
+    -Iplatform/modules/encoding/include -Icore/modules/script/include -Iplatform/modules/json/include \
+    -Icore/modules/sapling/include -Icontexts/wallet/modules/keys/include -Iengine/modules/event/include
 
 LINT_FAST_GATES := \
     check-no-stray-untracked-source \
@@ -14138,17 +14148,13 @@ check-generated-artifact-contradictions: $(LINTC_TOOL)
 # height-selected 192,7 since Bubbles, and a reader who believes the flat
 # claim sizes a solution buffer wrongly. Fix a failure with
 # `make docs-equihash-params`, never by editing the generated page.
-$(EQUIHASH_FACT_TOOL): $(EQUIHASH_FACT_SRCS)
+build/equihash-fact-obj/%.o: %.c
 	@mkdir -p $(dir $@)
-	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
-	    -D_POSIX_C_SOURCE=200809L $(ZCL_PLATFORM_CPPFLAGS) \
-	    -Icore/chainparams/include -Icore/params/include -Icore/math/include \
-	    -Icore/consensus/include -Icore/modules/chain/include -Iplatform/modules/base/include \
-	    -Iplatform/modules/util/include -Icore/modules/core/include -Icore/modules/crypto/include \
-	    -Iplatform/modules/codec/include -Icore/modules/primitives/include -Iplatform/modules/support/include \
-	    -Iplatform/modules/encoding/include -Icore/modules/script/include -Iplatform/modules/json/include \
-	    -Icore/modules/sapling/include -Icontexts/wallet/modules/keys/include -Iengine/modules/event/include \
-	    -o $@ $(EQUIHASH_FACT_SRCS)
+	$(CC) $(EQUIHASH_FACT_CFLAGS) -MMD -MP -c -o $@ $<
+
+$(EQUIHASH_FACT_TOOL): $(EQUIHASH_FACT_OBJS)
+	@mkdir -p $(dir $@)
+	$(CC) $(EQUIHASH_FACT_CFLAGS) -o $@ $(EQUIHASH_FACT_OBJS)
 
 build/lintc-obj/%.o: tools/lint/lintc/%.c tools/lint/lintc/lintc.h $(LINTC_DEPFILE_STAMP)
 	@mkdir -p $(dir $@)
