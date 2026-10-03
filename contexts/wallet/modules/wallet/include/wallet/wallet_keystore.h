@@ -113,6 +113,7 @@ bool wks_encrypt(const uint8_t *plaintext, size_t plen,
  *   - bad magic / unsupported version
  *   - too-small envelope
  *   - too-small output buffer
+ *   - ciphertext longer than the signed length admitted by OpenSSL EVP
  *   - wrong passphrase (GCM tag fails)
  *   - tampered ciphertext (GCM tag fails)
  */

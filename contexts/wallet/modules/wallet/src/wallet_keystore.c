@@ -8,6 +8,7 @@
 #include <openssl/evp.h>
 #include <openssl/rand.h>
 
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -195,7 +196,7 @@ bool wks_decrypt(const uint8_t *envelope, size_t env_len,
     const uint8_t *tag   = envelope + 44;
 
     size_t ct_len = env_len - WKS_HEADER_LEN;
-    if (out_cap < ct_len) return false;
+    if (ct_len > (size_t)INT_MAX || out_cap < ct_len) return false;
 
     uint8_t key[WKS_KEY_LEN];
     if (!derive_key(passphrase, salt, iters, key)) {
