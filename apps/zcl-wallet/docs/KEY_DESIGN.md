@@ -25,6 +25,11 @@ secret-producing call has one cleanup path that clears scratch storage on both
 success and failure. The caller must clear its input/output secret buffers when
 finished. An unsuccessful call leaves caller output unchanged.
 
+Entropy-based receive/change derivation retires its owned seed before final
+public-key conversion, then clears the derived private scalar and chain code
+before public hashing and address encoding. Internal seed-based calls borrow
+their caller's seed; those callers retain responsibility for its retirement.
+
 Key derivation uses SHA-512/HMAC/PBKDF2 and libsecp256k1 primitives. No new curve,
 signature algorithm or arithmetic implementation is introduced. A preallocated,
 per-operation secp256k1 context has a checked storage bound and independent RNG

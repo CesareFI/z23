@@ -7566,3 +7566,39 @@ Evidence: `.cache/snapshot-unlock*` (ignored).
 Next: continue custody/platform failure and restart review. Preserve the tested
 JNI error boundary, exact12-word recovery, TLS quarantine and physical-device
 custody gate; no production wallet/data or node activity is authorized.
+
+## Production continuation: retire owned address seed before public conversion — 2026-10-03
+
+The entropy-based receive/change wrapper retained its local64-byte seed while
+final public-key conversion and address hashing ran. A live-lifetime regression
+reproduces this on unchanged production. The wrapper now derives the final key,
+clears the seed, then uses a shared bounded public conversion/encoding helper.
+The existing private scalar/chain-code wipe still precedes public hashes.
+Borrowed seed/context APIs, BIP39/BIP32 paths and output/failure semantics stay
+unchanged; this is custody hardening with no performance claim.
+
+Both external and internal address profiles pass success plus injected master,
+final public-key and public-hash failures. Moving the seed wipe back after
+encoding fails independently under Clang and GCC, while controls pass. Full
+native safety passes144 Clang and139 optimized GCC groups with ASan/UBSan/LSan,
+independent address oracle, provider hashes, static analyzers, complexity caps
+and unchanged deadline/manifest gates. A first fuzz command selected an oracle-
+only target absent from that build; the applicable JNI-key target instead
+completes15,924 executions in31s without a finding. No gate was weakened.
+
+The native secret-failure fixture and32 actual ART key/setup/unlock/close tests
+pass each ofAPI30/35/36 x86_64, including16KiB API35. ARM64 compiles/alignment
+only. Android JVM/debug/test/both-ABI minified release/lints/fixture isolation and
+alignment pass154 tasks. Architecture/docs/diff checks pass. Evidence:
+`.cache/receive-seed*` (ignored).
+
+A fresh source-only build atffe0a7b6b plus the three exact changed native files,
+without project/build caches, executes all57 release tasks in19s. Full APK bytes
+match SHA256 `19c50e6b987f74c0f06052d83764d931537ebe1b7dd5faec0b68a334541e853f`.
+Inputs/hashes are in `.cache/reproduce-receive-seed/` (ignored).
+
+Next: continue secret-provider ownership and platform restart/failure review;
+preserve completed address vectors, output canaries and device evidence. Physical
+hardware custody, chain/unspentness admission and TLS security review remain
+explicit separate boundaries. No real wallet, production data or consensus
+behavior changed.

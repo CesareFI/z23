@@ -4340,3 +4340,28 @@ source is unchanged from the preceding reviewed complete-only publication fix.
 Independent mutations removing balance clearing or history error-length reset
 fail under both compilers. API30/35/36 native fixture execution passes; ARM64
 build-only evidence remains explicitly separate from device/custody acceptance.
+
+## Retire owned address seed before public conversion — 2026-10-03
+
+Scope: `receive_key.c`, secret-failure fixture and its master-derivation linker
+wrapper. Entropy-based receive/change derivation now obtains the final private
+key, retires its locally owned64-byte seed, then converts/encodes the public
+address. A shared bounded helper retains private scalar/chain-code retirement
+before public hashes. Borrowed seed/context APIs retain their existing ownership.
+
+| Hazard | Review |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access | Existing entropy/index/network/address bounds remain first. Helper uses fixed33-byte public key and the same checked hash/address encoder. Complete64-byte seed and extended-private object clears use sizeof. |
+| Integer overflow/underflow; signed/unsigned conversions | No derivation arithmetic, path selection or format conversion changed. Fixture fault positions come from successful provider-call counts and explicit positive bounds. |
+| Use-after-free; double-free; leaks; dangling pointers | The wrapper owns seed, derived key and context through one exit path. Seed retires before final public conversion; key retires before hashing, with unconditional final cleanup on earlier failures. No borrowed seed is cleared and no context is released twice. |
+| NULL dereferences; uninitialized memory | Admission checks precede work; key/seed/context/public scratch initialize. The private helper is called only after successful key/context preparation. Failed derivation skips public conversion. |
+| Pointer arithmetic | No new production pointer arithmetic. Test observation stores integer identities and reads only live wipe/provider spans, avoiding stale-stack reads if wiping regresses. |
+| Format strings; secret leakage | No new logs or serialized fields. Regression uses public12-word-vector entropy and fixed test blinding. Delayed-seed-wipe mutations fail before public conversion under both compilers. |
+| Stack usage; allocation limits | One bounded extended-private local replaces the previous nested owner; no heap, VLA, recursion or retained cache. Strict4096-byte frames and complexity10 production/15 tests pass. |
+| Malformed serialization/network input | Existing error ordering, accepted entropy sizes, path/index and complete-only outputs remain. Master/public-provider/public-hash faults preserve output canaries and lengths. Independent address oracle, JNI failures and fuzzing pass. |
+| Races; resource exhaustion | Production changes only invocation-local state. Shared context APIs remain borrowed and synchronous; no new thread/global state. Test flags belong only to the single-threaded fault executable. KDF rounds, RNG admission and bounded provider lifecycle are unchanged. |
+
+This shortens a secret lifetime; it is not a cryptographic algorithm or performance
+optimization. Same-toolchain source-only APK reproduction, API30/35/36 native
+fault execution and actual ART public-fixture flows pass. Hardware custody/TLS
+remain unqualified and quarantined respectively; ARM64 evidence is compile-only.

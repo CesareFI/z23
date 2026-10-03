@@ -1999,7 +1999,7 @@ if(NOT ANDROID)
             -Wl,--wrap=mbedtls_sha512_starts -Wl,--wrap=mbedtls_sha512_update
             -Wl,--wrap=mbedtls_sha512_finish -Wl,--wrap=mbedtls_sha256 -Wl,--wrap=mbedtls_ripemd160
             -Wl,--wrap=mbedtls_platform_zeroize -Wl,--wrap=zcl_entropy_seed -Wl,--wrap=zcl_seed_address
-            -Wl,--wrap=zcl_ec_public -Wl,--wrap=zcl_ec_end)
+            -Wl,--wrap=zcl_ec_public -Wl,--wrap=zcl_ec_end -Wl,--wrap=zcl_bip32_master)
         add_test(NAME wallet_secret_failures COMMAND secret_failure_tests)
         add_executable(random_tests tests/test_random.c)
         target_link_libraries(random_tests PRIVATE zcl_wallet_core)

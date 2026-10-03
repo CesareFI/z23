@@ -93,6 +93,22 @@ zcl_status zcl_seed_private(const uint8_t *seed, size_t seed_len, zcl_network ne
     return address_path(seed, seed_len, network, chain, index, context, output);
 }
 
+/* Consumes this invocation's derived key before public hashing/encoding. */
+static zcl_status encode_owned_key(zcl_extended_private *key,
+    const secp256k1_context *context, zcl_network network,
+    uint8_t *address, size_t capacity, size_t *length)
+{
+    uint8_t public_key[33] = {0};
+    zcl_status status = zcl_ec_public(context, key->secret, sizeof(key->secret), public_key, sizeof(public_key));
+    /* Hashing and address encoding consume only the public key. Retire both
+     * the private scalar and chain code before entering those providers. */
+    zcl_secure_zero(key, sizeof(*key));
+    if (status == ZCL_OK)
+        status = encode_public_address(public_key, sizeof(public_key), network, address, capacity, length);
+    zcl_secure_zero(public_key, sizeof(public_key));
+    return status;
+}
+
 zcl_status zcl_seed_address(const uint8_t *seed, size_t seed_len, zcl_network network,
     uint32_t chain, uint32_t index, const secp256k1_context *context,
     uint8_t *address, size_t capacity, size_t *length)
@@ -101,17 +117,11 @@ zcl_status zcl_seed_address(const uint8_t *seed, size_t seed_len, zcl_network ne
     zcl_status status = seed_address_bounds(seed, seed_len, network, chain, index);
     if (status != ZCL_OK) return status;
     if (capacity < 35) return ZCL_BUFFER_TOO_SMALL;
-    uint8_t public_key[33] = {0};
     zcl_extended_private key = {0};
     status = zcl_seed_private(seed, seed_len, network, chain, index, context, &key);
     if (status == ZCL_OK)
-        status = zcl_ec_public(context, key.secret, sizeof(key.secret), public_key, sizeof(public_key));
-    /* Hashing and address encoding consume only the public key. Retire both
-     * the private scalar and chain code before entering those providers. */
+        status = encode_owned_key(&key, context, network, address, capacity, length);
     zcl_secure_zero(&key, sizeof(key));
-    if (status == ZCL_OK)
-        status = encode_public_address(public_key, sizeof(public_key), network, address, capacity, length);
-    zcl_secure_zero(public_key, sizeof(public_key));
     return status;
 }
 
@@ -126,17 +136,19 @@ static zcl_status address_from_entropy(const uint8_t *entropy, size_t entropy_le
     if (status != ZCL_OK)
         return status;
     uint8_t seed[64] = {0};
+    zcl_extended_private key = {0};
     zcl_ec_context context = {0};
     status = zcl_ec_begin(&context, blinding, blinding_len);
-    if (status != ZCL_OK)
-        goto cleanup;
-    status = zcl_entropy_seed(entropy, entropy_len, seed, sizeof(seed));
-    if (status != ZCL_OK)
-        goto cleanup;
-    status = zcl_seed_address(seed, sizeof(seed), network, chain, index, context.handle,
-        address, address_capacity, address_len);
-cleanup:
+    if (status == ZCL_OK)
+        status = zcl_entropy_seed(entropy, entropy_len, seed, sizeof(seed));
+    if (status == ZCL_OK)
+        status = zcl_seed_private(seed, sizeof(seed), network, chain, index, context.handle, &key);
+    /* This seed is owned here and no longer needed by the final public-key
+     * provider, hashes or encoding. Borrowed seed APIs retain their ownership. */
     zcl_secure_zero(seed, sizeof(seed));
+    if (status == ZCL_OK)
+        status = encode_owned_key(&key, context.handle, network, address, address_capacity, address_len);
+    zcl_secure_zero(&key, sizeof(key));
     zcl_ec_end(&context);
     return status;
 }

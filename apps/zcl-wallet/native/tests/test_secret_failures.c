@@ -33,6 +33,9 @@ static size_t short_address;
 static bool watch_address_key, fail_address_public;
 static uintptr_t address_key_identity;
 static size_t public_calls, address_key_wipes;
+static bool watch_owned_seed;
+static uintptr_t owned_seed_identity;
+static size_t owned_seed_wipes, owned_seed_master_calls;
 
 void __real_mbedtls_sha512_init(mbedtls_sha512_context *);
 void __real_mbedtls_sha512_free(mbedtls_sha512_context *);
@@ -48,6 +51,7 @@ zcl_status __real_zcl_seed_address(const uint8_t *, size_t, zcl_network, uint32_
     const secp256k1_context *, uint8_t *, size_t, size_t *);
 zcl_status __real_zcl_ec_public(const secp256k1_context *, const uint8_t *, size_t, uint8_t *, size_t);
 void __real_zcl_ec_end(zcl_ec_context *);
+zcl_status __real_zcl_bip32_master(const uint8_t *, size_t, zcl_extended_private *);
 
 static void require(bool condition, const char *message)
 {
@@ -62,6 +66,17 @@ static void require_zero(const void *buffer, size_t length)
     const uint8_t *bytes = buffer;
     for (size_t i = 0; i < length; ++i)
         require(bytes[i] == 0, "live scratch was not fully erased");
+}
+
+zcl_status __wrap_zcl_bip32_master(const uint8_t *seed, size_t length, zcl_extended_private *output)
+{
+    if (watch_owned_seed) {
+        require(seed != NULL && length == 64 && owned_seed_identity == 0,
+            "owned receive seed must enter master derivation once");
+        owned_seed_identity = (uintptr_t)seed;
+        owned_seed_master_calls = calls;
+    }
+    return __real_zcl_bip32_master(seed, length, output);
 }
 
 zcl_status __wrap_zcl_entropy_seed(const uint8_t *entropy, size_t length, uint8_t *seed, size_t capacity)
@@ -127,6 +142,9 @@ zcl_status __wrap_zcl_ec_public(const secp256k1_context *context, const uint8_t 
     size_t secret_len, uint8_t *output, size_t capacity)
 {
     if (watch_address_key && ++public_calls == 3) {
+        if (watch_owned_seed)
+            require(owned_seed_identity == 0 && owned_seed_wipes == 1,
+                "owned seed survived into final public key generation");
         /* Fixed BIP44 path: two nonhardened child inputs, then the final key.
          * Keep only its identity; inspect through the later live wipe span. */
         require(secret != NULL && secret_len == 32 && address_key_identity == 0,
@@ -269,6 +287,12 @@ int __wrap_mbedtls_ripemd160(const unsigned char *input, size_t length, unsigned
 void __wrap_mbedtls_platform_zeroize(void *buffer, size_t length)
 {
     __real_mbedtls_platform_zeroize(buffer, length);
+    if (watch_owned_seed && owned_seed_identity != 0 && (uintptr_t)buffer == owned_seed_identity) {
+        require(length == 64, "owned receive seed wipe must cover all64 bytes");
+        require_zero(buffer, length);
+        owned_seed_identity = 0;
+        ++owned_seed_wipes;
+    }
     observe_anchor_wipe(buffer, length);
     require_zero(buffer, length);
     observe_seed_wipe(buffer, length);
@@ -548,11 +572,40 @@ static int address_key_retirement(void)
     return 0;
 }
 
+static int owned_seed_retirement(void)
+{
+    const uint8_t entropy[16] = {0}, blinding[32] = {1};
+    uint8_t output[35], before[35];
+    size_t total = 0;
+    for (unsigned chain = 0; chain < 2; ++chain) {
+        for (unsigned failure = 0; failure < 4; ++failure) {
+            inject(failure == 2 ? owned_seed_master_calls + 1 : failure == 3 ? total - 3 : SIZE_MAX);
+            watch_owned_seed = watch_address_key = true;
+            fail_address_public = failure == 1;
+            public_calls = address_key_wipes = owned_seed_wipes = 0;
+            memset(output, 0xa5, sizeof(output)); memcpy(before, output, sizeof(before));
+            size_t length = 777;
+            const zcl_status status = chain == 0
+                ? zcl_receive_from_entropy(entropy, sizeof(entropy), ZCL_TESTNET, 19,
+                    blinding, sizeof(blinding), output, sizeof(output), &length)
+                : zcl_change_from_entropy(entropy, sizeof(entropy), ZCL_TESTNET, 19,
+                    blinding, sizeof(blinding), output, sizeof(output), &length);
+            require(owned_seed_identity == 0 && owned_seed_wipes == 1 && address_key_identity == 0,
+                "owned seed or final address key escaped retirement");
+            watch_owned_seed = watch_address_key = false;
+            CHECK(status == (failure == 0 ? ZCL_OK : ZCL_CRYPTO_FAILURE));
+            if (failure == 0) { CHECK(length == 35 && calls > 4); total = calls; }
+            else CHECK(length == 777 && memcmp(output, before, sizeof(output)) == 0);
+        }
+    }
+    return 0;
+}
+
 int main(void)
 {
     if (hmac_failures() || pbkdf2_failures() || mnemonic_failures() || address_provider_failures()
         || recovered_seed_failures(16) || recovered_seed_failures(32) || recovered_binding_failures()
-        || address_key_retirement())
+        || address_key_retirement() || owned_seed_retirement())
         return 1;
     puts("secret failures: provider errors preserve output; all contexts and KDF scratch are erased");
     return 0;

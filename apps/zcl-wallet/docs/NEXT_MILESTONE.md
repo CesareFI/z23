@@ -55,9 +55,12 @@ The current permitted continuation covers wallet/platform lifecycle reliability,
 read-only processing measurement and release quality while physical custody
 qualification remains open. Executor draining now survives a queued cleanup
 failure, authentication failure notification survives cancellation errors, and
-a bounded public-fixture sync benchmark is available. The current unsigned
+bounded public-fixture sync and verified-storage benchmarks are available.
+JNI sync errors now publish status only, with partial/late-failure regressions.
+Setup retires entropy before public storage readback; native address derivation
+retires its owned seed before final public conversion. The current unsigned
 release has been reproduced from a fresh source-only directory on the same
-host/toolchain. Exact evidence and the next concrete task are in `PROGRESS.md`.
+host/toolchain. Exact evidence and continuation are in the latest `PROGRESS.md` entries.
 TLS quarantine remains untouched; do not resume its review as an implicit next
 step or substitute weaker platform policy for unavailable hardware evidence.
 
