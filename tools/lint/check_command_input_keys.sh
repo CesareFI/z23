@@ -490,11 +490,33 @@ $1 == "LEAF" {
     next
 }
 END {
+    # Only functions reachable from a bound handler can affect a leaf input
+    # contract. Build that set first so unrelated indexed C does not
+    # consume a closure round on every full-lint run.
+    for (n = 1; n <= nleaf; n++) {
+        h = LH[n]
+        if ((h in K) && !(h in reachable)) {
+            reachable[h] = 1
+            active[++nactive] = h
+        }
+    }
+    for (i = 1; i <= nactive; i++) {
+        fn = active[i]
+        m = split(C[fn], a, " ")
+        for (j = 1; j <= m; j++) {
+            cal = a[j]
+            if ((cal in K) && !(cal in reachable)) {
+                reachable[cal] = 1
+                active[++nactive] = cal
+            }
+        }
+    }
     changed = 1; rounds = 0
     while (changed && rounds < 64) {
         changed = 0; rounds++
         for (i = 1; i <= nfns; i++) {
             fn = FNS[i]
+            if (!(fn in reachable)) continue
             m = split(C[fn], a, " ")
             for (j = 1; j <= m; j++) {
                 cal = a[j]
