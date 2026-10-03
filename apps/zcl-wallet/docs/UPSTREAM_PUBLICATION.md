@@ -520,3 +520,28 @@ under the previously recorded normal-hook publication boundary. No routine
 permission question or repeated refused push is needed. The new keystore
 retirement candidate has its own isolated proof copy; all earlier source trees
 and receipts remain preserved. Continue with its proof and separate range fix.
+
+### Additional reusable candidate: keystore encryption length admission
+
+Class A/B: bounded-admission invariant applied to the existing Z23 WKS1 owner.
+Branch `agent/upstream-wallet-keystore-length-bounds-20261003`, signed head
+`03bfa7e51773b2a0284845563d4e391d03167f1a`, base
+`3a93e60ebf922af3d119b9facc1d95803f42844b`. Five files,+54/-11: C/header,
+existing regression, generated inventory and obsolete encryptor complexity pin.
+The envelope-size helper now refuses payloads outside EVP's representable range;
+encryption refuses its zero sentinel before provider work or output writes.
+
+Canonical RED at the new size assertion; final fast/ASan GREEN, zero skips.
+Optimized strict Clang20/GCC14 ASan/UBSan/LSan bounded provider probes: RED5,
+GREEN0, zero-sentinel mutants8 and integer-bound mutants3 each. A valid-call
+control qualifies the provider fault wrapper. Zero/INT_MAX boundaries are
+checked without claiming multi-gigabyte runtime encryption. Final GCC sweep2,433
+translation units, all5 paths clean. All215 lint gates PASS (135.834s), complexity
+cap15 and security diff CLEAN. Hazard review, PR body and signed patch/bundle
+artifacts are prepared. Exact proof awaits its separate copy's build.
+
+Keystore retirement e5a1d446 now runs its exact proof. The first copy preparation
+refused unavailable alternate Git objects inside the private namespace, then an
+unconfigured hooks path. Self-contained object repacking and canonical
+`make install-hooks` repaired those prerequisites without changing source or
+policy. Those setup refusals are not product failures or PASS receipts.

@@ -4787,3 +4787,27 @@ A subsequent oversized-length probe identified an independent envelope-size
 wrap/conversion defect in the unchanged encryptor. Its isolated sanitizer RED
 is preserved for a separate bounds candidate; this cleanup slice does not claim
 that broader range boundary is repaired.
+
+## Upstream WKS1 encryption length admission — 2026-10-03
+
+Signed `03bfa7e51773b2a0284845563d4e391d03167f1a`, base3a93e60e, bounds the
+existing envelope-size helper to EVP's signed-int payload range. The helper
+returns zero outside it; encryption explicitly refuses that sentinel before
+randomness, derivation, copying or provider conversion. On supported32/64-bit
+hosts, admitted INT_MAX plus the60-byte header fits size_t.
+
+No allocation, retained pointer or shared state is added. Caller output and
+length are untouched on preflight failure; canary tests observe live buffers.
+Argument and iteration-clamping helpers retain existing validation and KDF
+policy, and remove the old encryptor complexity exemption. Successful envelope
+bytes, entropy sources, key wiping, authentication and wallet validity remain
+unchanged. Decryption and passphrase-length admission are outside this slice.
+
+Canonical RED occurs at the size assertion before invoking oversized crypto.
+Final fast/ASan pass. Bounded actual-source provider probes validate their fault
+wrapper with a valid call, then cover four oversized lengths at two capacities:
+Clang20/GCC14 ASan/UBSan/LSan RED5→GREEN0; zero-sentinel mutants8 and integer-bound
+mutants3. The initial real-provider sanitizer crash is retained as defect evidence,
+not repeated as a runtime control or promoted to a production exploitation claim.
+All215 lint gates and final GCC scope pass; security diff CLEAN. Exact native
+qualification remains a separate pending acceptance.
