@@ -13,6 +13,8 @@
 #include <string.h>
 #include <stdio.h>
 
+int hd_xprv_retirement_tests(void);
+
 /* BIP32 test vector 1 seed (from https://github.com/bitcoin/bips/blob/master/bip-0032.mediawiki) */
 static const unsigned char tv1_seed[] = {
     0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
@@ -392,5 +394,5 @@ int test_hd_keychain(void)
         else { printf("FAIL (len=%zu/%zu)\n", xpub_len, xprv_len); failures++; }
     }
 
-    return failures;
+    return failures + hd_xprv_retirement_tests();
 }
