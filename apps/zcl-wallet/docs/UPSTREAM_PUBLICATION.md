@@ -680,3 +680,20 @@ with zero failures, skips, unobserved or load-flaky outcomes in 822.162s.
 Receipt SHA256 is
 `6377828bf1c3e9ff2a43031aa71508da209ad2a96f2c08ec3fdbbf1b6e1358ba`.
 Signed bundle, patch series and PR body are prepared.
+
+### Exported WIF scratch-retirement candidate signed
+
+Branch `agent/upstream-wallet-wif-retirement-20261004`, signed head
+`ddb074dd743d195782d4308bd0b84967ab267998`, base3a93e60e, retires the
+128-byte `dumpprivkey` WIF stack buffer immediately after `json_set_str` makes
+its independently owned response copy. The returned WIF and key-export rules
+are unchanged. A behavior-preserving helper extraction produces canonical RED;
+the single cleanse makes the registered simnet dump/import/rescan/spend plus
+backup/restore group GREEN. Its ASan/UBSan lane also passes with zero skips,
+unobserved or load-flaky outcomes. All215 lint gates, GCC14 across2,433 TUs,
+cap15 complexity, architecture, generated inventory, core seals, consensus
+parity, no-Python and credential scans pass. Bundle, patch, PR draft and SHA256
+manifest verify. Exact proof copy `/tmp/ww.q4fYTp/repo` passes all 215 lint
+gates and all 38 impacted groups with zero failures, skips, unobserved or
+load-flaky outcomes in 503.951s. Receipt SHA256 is
+`217d26822b5f1a522eeb2771681cfdf35fb85731d8b9ba94b7d4a84ae18fe0fd`.

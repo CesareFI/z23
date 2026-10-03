@@ -8286,3 +8286,16 @@ groups with zero failures, skips, unobserved or load-flaky outcomes. Receipt
 SHA256 is
 `6377828bf1c3e9ff2a43031aa71508da209ad2a96f2c08ec3fdbbf1b6e1358ba`.
 Local publication artifacts verify.
+
+### Exported WIF stack copy retired
+
+Signed upstream candidate ddb074dd adds a wallet-controller helper that copies
+a mutable secret string into its JSON result and then wipes the complete source
+span. `dumpprivkey` uses it for its 128-byte stack WIF. Canonical RED→GREEN,
+focused ASan/UBSan, all215 lint, GCC14 2,433-TU, complexity, architecture,
+inventory, seal and consensus gates pass. Exact proof passes 215/215 lint gates
+and 38/38 impacted groups with zero failures, skips, unobserved or load-flaky
+outcomes; receipt SHA256 is
+`217d26822b5f1a522eeb2771681cfdf35fb85731d8b9ba94b7d4a84ae18fe0fd`.
+Local publication artifacts verify. Generic RPC transport response-buffer
+retirement remains explicitly outside this slice.

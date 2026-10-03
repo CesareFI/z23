@@ -4886,3 +4886,25 @@ consensus gates pass. Exact combined-head proof passes all 215 lint gates and
 all 1,236 impacted groups with zero failures, skips, unobserved or load-flaky
 outcomes. Receipt SHA256 is
 `6377828bf1c3e9ff2a43031aa71508da209ad2a96f2c08ec3fdbbf1b6e1358ba`.
+
+## Upstream exported-WIF scratch retirement — 2026-10-04
+
+Signed commit `ddb074dd743d195782d4308bd0b84967ab267998` moves the
+`dumpprivkey` response copy and temporary retirement into one owner helper.
+`json_set_str` first allocates and copies the NUL-terminated WIF; only then does
+`memory_cleanse` overwrite the complete 128-byte caller-owned stack span. This
+ordering preserves the response while removing the redundant private-key copy
+at its last use, including JSON allocation refusal.
+
+The registered simnet test uses a fixed synthetic string to verify both the
+independent result copy and complete source-span erasure. The production helper
+without the cleanse is canonical RED; the final focused and ASan/UBSan runs are
+GREEN with zero skips, unobserved or load-flaky outcomes. All215 lint gates,
+GCC14 across2,433 TUs, cap15 complexity, architecture, generated inventory,
+core seals and consensus parity pass. WIF encoding, prefixes, authorization,
+returned bytes, key lookup, consensus, monetary policy, PoW, upgrades,
+transparent/shielded validity, recovery, storage and TLS are unchanged. Generic
+RPC transport buffers are outside this slice. Exact proof passes all 215 lint
+gates and all 38 impacted groups with zero failures, skips, unobserved or
+load-flaky outcomes. Receipt SHA256 is
+`217d26822b5f1a522eeb2771681cfdf35fb85731d8b9ba94b7d4a84ae18fe0fd`.
