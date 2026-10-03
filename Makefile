@@ -6086,6 +6086,32 @@ LINTC_OBJS = $(LINTC_SRCS:tools/lint/lintc/%.c=build/lintc-obj/%.o)
 # check only -- gcc still produces the object -- and it must never be
 # silently skipped: when clang is absent the recipe says so explicitly.
 LINTC_CLANG := $(shell command -v clang 2>/dev/null)
+# The standalone lint tool does not use the node's compile epochs. Bind its
+# objects to the same complete compiler identity plus its own effective flags
+# and optional Clang syntax-checker identity. An empty/default or known node-
+# only goal never builds this tool, so it need not pay for this fingerprint.
+override LINTC_CONFIG_SKIP := $(if $(strip $(MAKECMDGOALS)),,1)
+ifeq ($(words $(MAKECMDGOALS)),1)
+ifneq ($(filter z23 zclassic23 z23-dev zclassic23-dev dev install-hooks,$(MAKECMDGOALS)),)
+override LINTC_CONFIG_SKIP := 1
+endif
+endif
+ifneq ($(LINTC_CONFIG_SKIP),1)
+override LINTC_CONFIG_KEY := $(strip $(shell \
+  cc_id='$(BUILD_COMPILER_ID)'; \
+  if [ "$$cc_id" = '$(ZCL_ZERO_SHA256)' ]; then \
+    cc_id="$$( $(BUILD_EPOCH_KEY_TOOL) compiler-id '$(CC)' '$(CC)' '$(CURDIR)' )" || exit 1; \
+  fi; \
+  clang_id=none; \
+  if [ -n '$(LINTC_CLANG)' ]; then \
+    clang_id="$$( $(BUILD_EPOCH_KEY_TOOL) compiler-id '$(LINTC_CLANG)' '$(LINTC_CLANG)' '$(CURDIR)' )" || exit 1; \
+  fi; \
+  $(BUILD_EPOCH_KEY_TOOL) key "$$cc_id" lintc-v1 '$(strip $(LINTC_CFLAGS))' "$$clang_id" '$(ZCL_ZERO_SHA256)' ))
+ifeq ($(LINTC_CONFIG_KEY),)
+$(error lintc compiler/flags fingerprint failed; refusing stale lint objects)
+endif
+endif
+LINTC_CONFIG_STAMP = $(if $(LINTC_CONFIG_KEY),build/lintc-obj/.config-$(LINTC_CONFIG_KEY))
 EQUIHASH_FACT_SRCS = tools/equihash_params_fact.c \
     core/chainparams/src/chainparams.c core/chainparams/src/chainparamsbase.c \
     core/params/src/upgrades.c core/consensus/src/upgrades.c \
@@ -14146,6 +14172,17 @@ build/lintc-obj/%.o: tools/lint/lintc/%.c tools/lint/lintc/lintc.h
 	$(CC) $(LINTC_CFLAGS) -c -o $@ $<
 	$(if $(LINTC_CLANG),$(LINTC_CLANG) $(LINTC_CFLAGS) -Wunused-but-set-variable -Wunused-variable -fsyntax-only $<,echo "lintc: clang not on PATH; Apple Clang strictness UNOBSERVED for $<")
 
+# Keep one active key: a compiler/flags switch-back must not reuse objects
+# written under the intervening configuration merely because an old stamp
+# still exists. The repository contract permits one writer per component.
+build/lintc-obj/.config-%:
+	@mkdir -p $(dir $@)
+	@rm -f build/lintc-obj/.config-*
+	@printf '%s\n' '$*' > '$@'
+
+.SECONDEXPANSION:
+$(LINTC_OBJS) $(LINTC_NODE_OBJS): $$(LINTC_CONFIG_STAMP)
+
 $(LINTC_PREMISE_SRCS:tools/lint/lintc/%.c=build/lintc-obj/%.o) build/lintc-obj/main.o: \
 	tools/lint/lintc/premise.h tools/lint/lintc/selection_gates.def
 
@@ -14156,6 +14193,11 @@ build/lintc-obj/node/%.o: %.c
 $(LINTC_TOOL): $(LINTC_OBJS) $(LINTC_NODE_OBJS)
 	@mkdir -p $(dir $@)
 	$(CC) $(LINTC_CFLAGS) -o $@ $(LINTC_OBJS) $(LINTC_NODE_OBJS)
+
+.PHONY: check-lintc-build-config
+check-lintc-build-config:
+	@tools/dev/checkout-lock.sh foreground build/.checkout.lock -- \
+	  tools/dev/check-lintc-build-config.sh
 
 .PHONY: tools/equihash-params-fact docs-equihash-params equihash-facts equihash-facts-check
 tools/equihash-params-fact: $(EQUIHASH_FACT_TOOL)
