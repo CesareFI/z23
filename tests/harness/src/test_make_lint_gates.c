@@ -294,6 +294,7 @@ static const struct lint_gate_entry g_lint_gate_entries[] = {
     S_(t_coins_guard_gate_fails_loud_on_no_lookup_surface),
     S_(t_observability_fixture_trips_gate),
     S_(t_observability_positive_controls_pass),
+    S_(t_observability_scan_bounds_refused),
     S_(t_raw_malloc_fixture_trips_gate),
     S_(t_raw_malloc_zcl_fixture_passes),
     S_(t_raw_malloc_gate_recovers),

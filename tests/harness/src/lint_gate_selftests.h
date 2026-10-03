@@ -360,6 +360,7 @@ int run_check_service_tip_mutation_gate(void);
 int run_check_deleted_engine_names(void);
 int t_observability_fixture_trips_gate(void);
 int t_observability_positive_controls_pass(void);
+int t_observability_scan_bounds_refused(void);
 int t_baseline_passes(void);
 int t_fixture_trips_gate(void);
 int t_node_db_exec_fixture_trips_gate(void);

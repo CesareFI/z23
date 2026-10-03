@@ -86,6 +86,25 @@ static bool observability_line_allowed(char lines[][LINE_LEN], size_t count,
     return false;
 }
 
+/* A partial line can hide a diagnostic or its context. Refuse it instead of
+ * scanning a prefix and reporting a clean file. */
+static int read_scan_line(FILE *fp, char line[LINE_LEN])
+{
+    size_t len = 0;
+    int ch;
+    while ((ch = fgetc(fp)) != EOF) {
+        if (ch == '\0' || len + 1 >= LINE_LEN)
+            return -1;
+        line[len++] = (char)ch;
+        if (ch == '\n')
+            break;
+    }
+    if (ferror(fp))
+        return -1;
+    line[len] = '\0';
+    return len != 0;
+}
+
 static int check_file(const char *path)
 {
     FILE *fp = fopen(path, "rb");
@@ -97,12 +116,17 @@ static int check_file(const char *path)
     static char lines[MAX_LINES][LINE_LEN];
     memset(lines, 0, sizeof(lines));
     size_t count = 0;
-    while (count < MAX_LINES && fgets(lines[count], sizeof(lines[count]), fp))
+    int read_rc = 0;
+    while (count < MAX_LINES &&
+           (read_rc = read_scan_line(fp, lines[count])) > 0)
         count++;
+    if (count == MAX_LINES && fgetc(fp) != EOF)
+        read_rc = -1;
 
-    if (ferror(fp)) {
+    if (read_rc < 0 || ferror(fp)) {
         fclose(fp);
-        fprintf(stderr, "check_observability_pairing: read failed: %s\n", path);
+        fprintf(stderr, "check_observability_pairing: unreadable or oversized file: %s\n",
+                path);
         return -1;
     }
     fclose(fp);

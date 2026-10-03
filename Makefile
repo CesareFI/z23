@@ -12437,6 +12437,7 @@ $(BIN_DIR)/check_observability_pairing: tools/check_observability_pairing.c
 
 check-observability-pairing: tools/check_observability_pairing
 	@echo "══ LINT: observable stderr diagnostics ══"
+	@tools/lint/selftest_observability_pairing.sh "$(BIN_DIR)/check_observability_pairing"
 	@$(BIN_DIR)/check_observability_pairing
 
 HARDLINK_SEEDING_SRCS = tools/check_no_hardlink_seeding.c \

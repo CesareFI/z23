@@ -317,6 +317,17 @@ int t_observability_positive_controls_pass(void)
     return failures;
 }
 
+int t_observability_scan_bounds_refused(void)
+{
+    int failures = 0;
+    TEST("[lint-gate] complete-file bounds selftest uses the production scanner") {
+        ASSERT(run_gate_script("tools/lint/selftest_observability_pairing.sh",
+                               NULL) == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int t_baseline_passes(void)
 {
     int failures = 0;
