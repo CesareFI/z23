@@ -593,3 +593,27 @@ envelope lengths reach the qualified failing KDF wrapper instead of refusing at
 the API boundary. No huge allocation, payload access or external target is used.
 This is a new candidate on upstream main; keep it separate from the two qualified
 keystore slices.
+
+### Decrypt signed-length candidate GREEN and signed
+
+The bounded decrypt finding is now a small signed follow-up on the existing
+plaintext-retirement commit: branch
+`agent/upstream-wallet-keystore-decrypt-safety-20261003`, head
+`c78e1483e74061b6208063aec76e9ecde2e1782d`, base
+`3a93e60ebf922af3d119b9facc1d95803f42844b`. The second commit changes four
+files,+32/-2; the combined two-commit review changes five files,+92/-27.
+
+Canonical RED shows two oversized lengths reach KDF work. GREEN refuses both
+before KDF/output, while a valid small span and exact `INT_MAX` boundary still
+reach the qualified KDF fault control once. Strict optimized Clang20/GCC14
+ASan/UBSan/LSan RED2→GREEN0; removing the bound yields mutant2 each. Focused
+fast/ASan pass with zero skips. Final GCC sweep2,433 translation units, all5
+combined paths clean. All215 lint gates PASS (123.085s), complexity cap15 and
+security scan CLEAN. The existing failed-auth plaintext retirement and its
+exact receipt remain unchanged in the first signed commit.
+
+This combined decrypt-safety series supersedes the single-commit retirement
+branch for eventual review, without deleting its branch, bundle, receipt or
+qualified source tree. PR body/bundle preparation and exact combined-head proof
+remain. The independently qualified encryption-length branch03bfa7e5 stays a
+separate API-admission proposal.

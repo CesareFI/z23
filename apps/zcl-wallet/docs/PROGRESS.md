@@ -8241,3 +8241,11 @@ independent bounds slice has bounded Clang/GCC RED2 showing oversized decrypt
 lengths reach KDF work. It uses synthetic buffers and a qualified provider-fault
 control, with no large allocation or payload read. All qualified trees remain
 preserved and no blocked external action was retried.
+
+### Decrypt signed-length follow-up signed
+
+Candidate c78e1483 adds bounded decrypt admission atop qualified e5a1d446.
+Canonical and dual-compiler RED2→GREEN0, bound-removal mutant2, focused
+fast/ASan, GCC2,433-TU scope, all215 lint, complexity and security gates pass.
+The exact combined-head proof is next. Encryption-length03bfa7e5 remains a
+separate qualified proposal. No external safety restriction was bypassed.

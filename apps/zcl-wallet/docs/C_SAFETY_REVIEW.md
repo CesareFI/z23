@@ -4811,3 +4811,24 @@ mutants3. The initial real-provider sanitizer crash is retained as defect eviden
 not repeated as a runtime control or promoted to a production exploitation claim.
 All215 lint gates and final GCC scope pass; security diff CLEAN. Exact native
 qualification remains a separate pending acceptance.
+
+## Upstream WKS1 decrypt signed-length admission — 2026-10-04
+
+Signed follow-up `c78e1483e74061b6208063aec76e9ecde2e1782d` extends the
+qualified plaintext-retirement candidate `e5a1d446c6b29da8d5544acecdabb88f38f17d99`.
+The decryptor now refuses a ciphertext span larger than `INT_MAX` before KDF,
+EVP context allocation, output access or the existing failure cleanup. The
+minimum envelope check remains owned by `wks_envelope_iterations`, so the
+header subtraction cannot underflow.
+
+The boundary probe uses a live synthetic header and canary output. Its wrapped
+KDF is qualified by a valid small call and by an exact-`INT_MAX` ciphertext
+call, both of which reach it once. `INT_MAX + 1` and `SIZE_MAX` reach it zero
+times. Clang20/GCC14 ASan/UBSan/LSan show RED2→GREEN0; removing only the new
+bound restores mutant2. Canonical fast/ASan groups pass. All215 lint gates,
+complexity cap15, final GCC scope and the security diff pass.
+
+No allocation, persistent pointer, secret copy or concurrency state is added.
+Header, output and length canaries stay unchanged on refusal. Valid decryption,
+authentication, output wiping, KDF policy, encrypted bytes and all wallet or
+consensus rules are unchanged. Exact native proof remains the final acceptance.
