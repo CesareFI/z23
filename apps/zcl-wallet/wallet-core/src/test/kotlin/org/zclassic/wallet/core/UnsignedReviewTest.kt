@@ -28,7 +28,7 @@ class UnsignedReviewTest {
         val draft = fixture("draft")
         val sources = previous()
         for (entry in listOf(NativeCore::openReview, NativeCore::openFullSourceReview)) {
-            for (fee in listOf(-1L, Zatoshi.MAX_VALUE + 1, Long.MAX_VALUE)) {
+            for (fee in listOf(Long.MIN_VALUE, -1L, Zatoshi.MAX_VALUE + 1, Long.MAX_VALUE)) {
                 val result = entry(draft, sources, 0, fee, 100)
                 if (result > 0) NativeCore.cancelReview(result)
                 assertEquals(-CoreStatus.OUT_OF_RANGE.code.toLong(), result)

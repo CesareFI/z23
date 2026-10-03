@@ -7996,3 +7996,25 @@ take9.97s/9.95s. Architecture/docs/diff gates pass. Evidence is ignored
 work reduction, not a sanitizer exemption or weaker instrumentation check.
 Continue native wallet hardening with the current validated fee/draft admission,
 release reproduction and platform limitations preserved.
+
+## Production continuation: complete JNI fee endpoints — 2026-10-03
+
+The signed production fix `91db31c76` is retained unchanged. Both native review
+profiles now explicitly test INT64_MIN in addition to -1, MAX_MONEY+1 and
+INT64_MAX, with zero allocation/copy on refusal. A valid synthetic transaction
+with its 500-zatoshi fee returned to the first output opens with maximum fee0;
+exact MAX_MONEY also opens. Existing deadline tests retain the last accepted
+start (INT64_MAX-90000), first overflowing start, final live millisecond and
+expiry. Exception handling, native retirement and owner lifecycle coverage pass.
+The JVM direct-entry test additionally refuses Long.MIN_VALUE on both APIs.
+
+Focused strict Clang/GCC ASan/UBSan/LSan JNI tests pass (0.20s/0.43s), JVM
+UnsignedReviewTest passes, and independent guard-removal controls fail both
+compilers while their unchanged controls pass. Both fixture analyzers,
+production/test complexity caps, architecture, document counts and diff checks
+pass. Evidence: ignored `.cache/review-fee-boundaries/`. Existing release,
+ART API30/35/36, ARM64 Linux and MSan observations remain those recorded for
+`91db31c76`; this test-only extension makes no new platform/release claim.
+SSH verification of that checkpoint succeeds with the configured signing key's
+public counterpart. Pending wallet-creation entropy work remains a separate
+slice; next validate retirement before public filesystem operations.

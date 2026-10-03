@@ -479,7 +479,7 @@ static void fee_admission(void)
     setup();
     for (size_t i = 0; i < fixture.spending.input_count; ++i)
         java_previous->data.objects[i]->length = (jsize)(full_sources ? ZCL_V4_SOURCE_MAX : ZCL_TX_WIRE_MAX);
-    const jlong fees[] = {-1, (jlong)ZCL_MAX_MONEY + 1, INT64_MAX};
+    const jlong fees[] = {INT64_MIN, -1, (jlong)ZCL_MAX_MONEY + 1, INT64_MAX};
     for (size_t i = 0; i < sizeof(fees) / sizeof(fees[0]); ++i) {
         CHECK(open_review_fee(100, fees[i]) == -(jlong)ZCL_OUT_OF_RANGE);
         fprintf(stderr, "Rejected fee: allocated=%zu copied=%zu\n", last_allocation_size, byte_reads);
@@ -489,6 +489,11 @@ static void fee_admission(void)
     setup();
     const jlong id = open_review_fee(100, (jlong)ZCL_MAX_MONEY);
     CHECK(id > 0 && API(cancelReview)(&vm, NULL, id) == ZCL_OK);
+    release_references();
+    fixture.spending.outputs[0].value += 500;
+    java_inputs();
+    const jlong zero_fee_id = open_review_fee(100, 0);
+    CHECK(zero_fee_id > 0 && API(cancelReview)(&vm, NULL, zero_fee_id) == ZCL_OK);
     release_references();
 }
 
