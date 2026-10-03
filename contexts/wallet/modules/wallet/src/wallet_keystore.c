@@ -147,22 +147,37 @@ done:
 
 /* ── Decrypt ────────────────────────────────────────────────── */
 
+/* EVP update writes tentative plaintext; the caller authenticates or wipes it. */
+static bool decrypt_update(EVP_CIPHER_CTX *ctx, const uint8_t *envelope,
+                            const uint8_t key[WKS_KEY_LEN], size_t ct_len,
+                            uint8_t *out)
+{
+    if (EVP_DecryptInit_ex(ctx, EVP_aes_256_gcm(), NULL, NULL, NULL) != 1)
+        return false;
+    if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_IVLEN,
+                             WKS_NONCE_LEN, NULL) != 1)
+        return false;
+    if (EVP_DecryptInit_ex(ctx, NULL, NULL, key, envelope + 32) != 1)
+        return false;
+    int outl = 0;
+    if (ct_len > 0 &&
+        (EVP_DecryptUpdate(ctx, out, &outl, envelope + WKS_HEADER_LEN,
+                           (int)ct_len) != 1 || (size_t)outl != ct_len))
+        return false;
+    return true;
+}
+
 bool wks_decrypt(const uint8_t *envelope, size_t env_len,
                   const char *passphrase,
                   uint8_t *out, size_t out_cap, size_t *out_len)
 {
-    if (!envelope || env_len < WKS_HEADER_LEN) return false;
     if (!passphrase) return false;
     if (!out || !out_len) return false;
 
-    if (memcmp(envelope, WKS_MAGIC, WKS_MAGIC_LEN) != 0) return false;
-    uint32_t version = get_u32_be(envelope + 4);
-    if (version != 1) return false;
-    uint32_t iters = get_u32_be(envelope + 8);
+    uint32_t iters = wks_envelope_iterations(envelope, env_len);
     if (iters < WKS_MIN_ITERS || iters > WKS_MAX_ITERS) return false;
 
     const uint8_t *salt  = envelope + 16;
-    const uint8_t *nonce = envelope + 32;
     const uint8_t *tag   = envelope + 44;
 
     size_t ct_len = env_len - WKS_HEADER_LEN;
@@ -181,20 +196,7 @@ bool wks_decrypt(const uint8_t *envelope, size_t env_len,
     }
 
     bool ok = false;
-    int outl = 0;
-
-    if (EVP_DecryptInit_ex(ctx, EVP_aes_256_gcm(), NULL, NULL, NULL) != 1) goto done;
-    if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_IVLEN,
-                             WKS_NONCE_LEN, NULL) != 1) goto done;
-    if (EVP_DecryptInit_ex(ctx, NULL, NULL, key, nonce) != 1) goto done;
-
-    if (ct_len > 0) {
-        if (EVP_DecryptUpdate(ctx,
-                               out, &outl,
-                               envelope + WKS_HEADER_LEN, (int)ct_len) != 1)
-            goto done;
-        if ((size_t)outl != ct_len) goto done;
-    }
+    if (!decrypt_update(ctx, envelope, key, ct_len, out)) goto done;
 
     /* Set the expected tag, then finalise.  GCM verification happens
      * inside EVP_DecryptFinal_ex; a non-1 return means tamper / wrong
@@ -214,6 +216,8 @@ bool wks_decrypt(const uint8_t *envelope, size_t env_len,
 done:
     EVP_CIPHER_CTX_free(ctx);
     OPENSSL_cleanse(key, sizeof(key));
+    /* GCM update can write tentative plaintext before final authentication. */
+    if (!ok) OPENSSL_cleanse(out, ct_len);
     return ok;
 }
 
