@@ -49,6 +49,32 @@ grep -Fq 'static const char TMPL_OK[]' "$output" ||
 grep -Fq '#define TMPL_PARTIAL_COUNT 1' "$output" ||
     fail "valid template was not registered"
 
+# Two individually valid inputs may produce a header larger than one input's
+# 256 KiB cap. The publication comparison must remain bounded and accept it.
+mkdir "$tmp/aggregate"
+dd if=/dev/zero bs=1024 count=140 2>/dev/null | tr '\000' a > "$tmp/aggregate/a.chtml"
+dd if=/dev/zero bs=1024 count=140 2>/dev/null | tr '\000' b > "$tmp/aggregate/b.chtml"
+aggregate="$tmp/aggregate.h"
+"$tool" "$tmp/aggregate" "$aggregate" > "$tmp/run.log" 2>&1 ||
+    fail "valid aggregate header was rejected"
+[ "$(wc -c < "$aggregate")" -gt $((256 * 1024)) ] ||
+    fail "aggregate fixture did not exceed the per-input cap"
+cp "$aggregate" "$tmp/aggregate-expected.h"
+"$tool" "$tmp/aggregate" "$aggregate" > "$tmp/run.log" 2>&1 ||
+    fail "aggregate no-op regeneration failed"
+grep -Fq '(unchanged)' "$tmp/run.log" ||
+    fail "aggregate no-op was not recognized"
+cmp -s "$tmp/aggregate-expected.h" "$aggregate" ||
+    fail "aggregate no-op changed output"
+printf c | dd of="$tmp/aggregate/b.chtml" bs=1 count=1 conv=notrunc 2>/dev/null
+"$tool" "$tmp/aggregate" "$aggregate" > "$tmp/run.log" 2>&1 ||
+    fail "changed aggregate failed to regenerate"
+grep -Fq '(updated)' "$tmp/run.log" ||
+    fail "changed aggregate was not published"
+if cmp -s "$tmp/aggregate-expected.h" "$aggregate"; then
+    fail "changed aggregate retained stale output"
+fi
+
 if [ "$(uname -s)" = Linux ]; then
     cc -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
         -Iplatform/modules/base/include -Iplatform/modules/util/include \

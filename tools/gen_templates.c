@@ -264,6 +264,38 @@ static FILE *open_staged(const char *out_path, char *tmp_path, size_t tmp_cap)
     return NULL;
 }
 
+/* Read the entire stage, even when the old header differs, so a stage read
+ * failure cannot publish unverified bytes. Each input retains its separate
+ * MAX_FILE_SIZE bound; the combined header need not fit in that buffer. */
+static int staged_matches_existing(const char *stage_path, const char *old_path)
+{
+    FILE *stage = fopen(stage_path, "rb");
+    if (!stage) return -1;
+    FILE *old = fopen(old_path, "rb");
+    bool same = old != NULL;
+    bool saw_bytes = false;
+    unsigned char stage_buf[1024], old_buf[1024];
+    int result = 0;
+    for (;;) {
+        size_t n = fread(stage_buf, 1, sizeof(stage_buf), stage);
+        if (ferror(stage)) { result = -1; break; }
+        if ((!saw_bytes && n == 0) || memchr(stage_buf, '\0', n)) {
+            result = -1;
+            break;
+        }
+        saw_bytes = true;
+        if (same) {
+            size_t old_n = fread(old_buf, 1, sizeof(old_buf), old);
+            same = !ferror(old) && old_n == n &&
+                   memcmp(stage_buf, old_buf, n) == 0;
+        }
+        if (n < sizeof(stage_buf)) break;
+    }
+    if (old) (void)fclose(old);
+    if (fclose(stage) != 0) return -1;
+    return result < 0 ? -1 : (same ? 1 : 0);
+}
+
 /* Close the staged file and move it over out_path only if the contents
  * changed. Returns 0 on success, 1 on I/O failure. */
 static int commit_staged(FILE *out, const char *tmp_path, const char *out_path,
@@ -271,18 +303,9 @@ static int commit_staged(FILE *out, const char *tmp_path, const char *out_path,
 {
     *out_changed = false;
     if (fclose(out) != 0) { remove(tmp_path); return 1; }
-
-    size_t new_len = 0, old_len = 0;
-    char *new_buf = read_file(tmp_path, &new_len);
-    if (!new_buf) { remove(tmp_path); return 1; }
-    char *old_buf = read_file(out_path, &old_len);
-
-    bool same = old_buf && new_len == old_len &&
-                memcmp(new_buf, old_buf, new_len) == 0;
-    free(new_buf);
-    free(old_buf);
-
-    if (same) {
+    int same = staged_matches_existing(tmp_path, out_path);
+    if (same < 0) { remove(tmp_path); return 1; }
+    if (same > 0) {
         remove(tmp_path);
         return 0;
     }
@@ -292,6 +315,26 @@ static int commit_staged(FILE *out, const char *tmp_path, const char *out_path,
     }
     *out_changed = true;
     return 0;
+}
+
+static bool stage_refusal_selftest(const char *destination,
+                                  const char *bytes, size_t length)
+{
+    char stage_path[256];
+    FILE *out = open_staged(destination, stage_path, sizeof(stage_path));
+    if (!out) return false;
+    if (length && fwrite(bytes, 1, length, out) != length) {
+        (void)fclose(out);
+        (void)remove(stage_path);
+        return false;
+    }
+    bool changed = false;
+    int rc = commit_staged(out, stage_path, destination, &changed);
+    FILE *published = fopen(destination, "rb");
+    bool absent = published == NULL;
+    if (published) (void)fclose(published);
+    (void)remove(destination);
+    return rc != 0 && !changed && absent;
 }
 
 /* Deterministic KAT for the race that a timing-only parallel test can miss:
@@ -348,6 +391,27 @@ static int staging_selftest(void)
          read_file(stage_b, &length) == NULL;
     (void)remove(destination);
     fprintf(stderr, "gen_templates: staging selftest %s\n", ok ? "PASS" : "FAIL");
+    return ok ? 0 : 1;
+}
+
+static int stage_content_selftest(void)
+{
+    char destination[256];
+#if defined(_WIN32)
+    const long process_id = (long)_getpid();
+#else
+    const long process_id = (long)getpid();
+#endif
+    int n = snprintf(destination, sizeof(destination),
+                     "build/identity/.gen_templates-content-selftest.%ld",
+                     process_id);
+    if (n < 0 || (size_t)n >= sizeof(destination)) return 1;
+    (void)remove(destination);
+    bool empty_refused = stage_refusal_selftest(destination, "", 0);
+    bool nul_refused = stage_refusal_selftest(destination, "A\0B", 3);
+    bool ok = empty_refused && nul_refused;
+    fprintf(stderr, "gen_templates: stage-content selftest %s\n",
+            ok ? "PASS" : "FAIL");
     return ok ? 0 : 1;
 }
 
@@ -762,7 +826,8 @@ static int write_template_directory_header(int argc, char **argv) {
 
 int main(int argc, char **argv) {
     if (argc == 2 && strcmp(argv[1], "--selftest-staging") == 0)
-        return staging_selftest() || read_exact_selftest();
+        return staging_selftest() || read_exact_selftest() ||
+               stage_content_selftest();
     if (argc >= 2 && strcmp(argv[1], "--single-css") == 0) {
         if (argc != 6) {
             fprintf(stderr,
