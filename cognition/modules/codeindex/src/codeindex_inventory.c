@@ -337,10 +337,10 @@ static bool inv_build_capabilities(const struct inv_scan *scan,
             arm_keys[arm_key_count].kind = scan->occurrences[i].symbol.kind;
             arm_keys[arm_key_count++].name = scan->occurrences[i].symbol.name;
         }
-    qsort(defs, (size_t)def_count, sizeof(*defs), inv_def_order_cmp);
-    qsort(bodies, (size_t)scan->body_count, sizeof(*bodies),
+    inv_sort_records(defs, (size_t)def_count, sizeof(*defs), inv_def_order_cmp);
+    inv_sort_records(bodies, (size_t)scan->body_count, sizeof(*bodies),
           inv_body_name_order_cmp);
-    qsort(arm_keys, (size_t)arm_key_count, sizeof(*arm_keys),
+    inv_sort_records(arm_keys, (size_t)arm_key_count, sizeof(*arm_keys),
           inv_arm_key_cmp);
 
     int ci = 0, si = 0, occ_begin = 0;
@@ -505,7 +505,7 @@ static bool inv_derive_duplicates(const struct inv_scan *scan,
             order[count].index = i;
             order[count++].body = &scan->bodies[i];
         }
-    qsort(order, (size_t)count, sizeof(*order), inv_body_exact_cmp);
+    inv_sort_records(order, (size_t)count, sizeof(*order), inv_body_exact_cmp);
     for (int i = 0; i < count;) {
         int end = i + 1;
         while (end < count && inv_digest_cmp(order[end].body->exact_sha3,
@@ -525,7 +525,7 @@ static bool inv_derive_duplicates(const struct inv_scan *scan,
             order[count].index = i;
             order[count++].body = &scan->bodies[i];
         }
-    qsort(order, (size_t)count, sizeof(*order), inv_body_shape_cmp);
+    inv_sort_records(order, (size_t)count, sizeof(*order), inv_body_shape_cmp);
     for (int i = 0; i < count;) {
         int end = i + 1;
         while (end < count && inv_digest_cmp(order[end].body->shape_sha3,
@@ -544,7 +544,7 @@ static bool inv_derive_duplicates(const struct inv_scan *scan,
         i = end;
     }
     free(order);
-    qsort(report->duplicates, (size_t)report->duplicate_count,
+    inv_sort_records(report->duplicates, (size_t)report->duplicate_count,
           sizeof(*report->duplicates), inv_duplicate_value_cmp);
     return true;
 }
@@ -694,7 +694,7 @@ static bool inv_derive_invariants(const struct inv_scan *scan,
         const_bodies[const_body_count].name = body->name;
         const_bodies[const_body_count++].body = body;
     }
-    qsort(const_bodies, (size_t)const_body_count, sizeof(*const_bodies),
+    inv_sort_records(const_bodies, (size_t)const_body_count, sizeof(*const_bodies),
           inv_const_body_order_cmp);
     for (int c = 0; c < report->capability_count; c++) {
         const struct ci_inventory_capability *cap = &report->capabilities[c];
@@ -719,7 +719,7 @@ static bool inv_derive_invariants(const struct inv_scan *scan,
         }
     }
     free(const_bodies);
-    qsort(report->invariants, (size_t)report->invariant_count,
+    inv_sort_records(report->invariants, (size_t)report->invariant_count,
           sizeof(*report->invariants), inv_invariant_value_cmp);
     return true;
 }
@@ -817,7 +817,7 @@ static bool inv_derive_definition_arms(const struct inv_scan *scan,
                          symbol->name);
         }
     }
-    qsort(report->definition_arms, (size_t)report->definition_arm_count,
+    inv_sort_records(report->definition_arms, (size_t)report->definition_arm_count,
           sizeof(*report->definition_arms), inv_definition_arm_value_cmp);
     return true;
 }

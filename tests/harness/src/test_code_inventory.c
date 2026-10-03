@@ -727,9 +727,41 @@ static void ci_semantic_known_answers(
     fp_index_free(fingerprint_index);
 }
 
+/* Sparse C23 workspaces legitimately have no refs, bodies or duplicates.
+ * Under UBSan, passing their NULL/zero arrays to qsort is observable UB. */
+static void ci_sparse_inventory_test(void)
+{
+    static const char root[] = "test-tmp/code-inventory-sparse";
+    bool prepared = system("rm -rf test-tmp/code-inventory-sparse && "
+                           "mkdir -p test-tmp/code-inventory-sparse/include "
+                           "test-tmp/code-inventory-sparse/tools/dev "
+                           "test-tmp/code-inventory-sparse/tools/lint") == 0 &&
+        ci_write("test-tmp/code-inventory-sparse/include/example.h",
+                 "int example(void);\n") &&
+        ci_write("test-tmp/code-inventory-sparse/tools/dev/test_group_catalog.def",
+                 "ZCL_TEST_GROUP(example)\n") &&
+        ci_write("test-tmp/code-inventory-sparse/tools/lint/arm_symbol_single_baseline.txt",
+                 "# z23-generated-artifact: zcl.generated_artifact.v1\n"
+                 "# artifact-id: zcl.arm_symbol_single_baseline.v1\n"
+                 "# asserts: multi_arm_definition(path,symbol)\n"
+                 "# generated-by: tools/lint/check_arm_symbol_single.sh\n"
+                 "# regenerate: ZCL_LINT_MODE=UPDATE tools/lint/check_arm_symbol_single.sh\n");
+    CI_ASSERT(prepared);
+    if (prepared) {
+        struct ci_inventory_report *sparse = codeindex_inventory_analyze(root);
+        CI_ASSERT(sparse != NULL);
+        if (sparse) {
+            CI_ASSERT(sparse->files_scanned >= 1);
+            codeindex_inventory_free(sparse);
+        }
+    }
+    CI_ASSERT(system("rm -rf test-tmp/code-inventory-sparse") == 0);
+}
+
 int test_code_inventory(void)
 {
     ci_failures = 0;
+    ci_sparse_inventory_test();
     CI_ASSERT(ci_fixture());
     struct ci_inventory_report *first = codeindex_inventory_analyze(CI_FIX);
     CI_ASSERT(first != NULL);

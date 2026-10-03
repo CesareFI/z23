@@ -10,6 +10,16 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
+
+/* qsort's base must remain valid even when an inventory has no rows. A zero-
+ * or one-element collection is already sorted and may have a NULL base. */
+static inline void inv_sort_records(void *base, size_t count, size_t width,
+                                    int (*compare)(const void *, const void *))
+{
+    if (count > 1)
+        qsort(base, count, width, compare);
+}
 
 struct inv_path {
     char path[256];

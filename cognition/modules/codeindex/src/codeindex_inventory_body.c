@@ -428,7 +428,7 @@ static bool inv_guard_index_build(struct inv_scan *s, int file_index,
         keys[k].order = k;
         k++;
     }
-    qsort(keys, (size_t)k, sizeof(*keys), inv_guard_key_cmp);
+    inv_sort_records(keys, (size_t)k, sizeof(*keys), inv_guard_key_cmp);
     *out_keys = keys;
     *out_count = k;
     return true;
