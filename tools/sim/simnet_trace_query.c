@@ -43,6 +43,13 @@ struct stq_filter {
     int64_t seq;
 };
 
+struct stq_reader {
+    FILE *fp;
+    unsigned char chunk[4096];
+    size_t pos;
+    size_t len;
+};
+
 static void usage(const char *argv0)
 {
     fprintf(stderr,
@@ -86,6 +93,95 @@ static bool stq_line_matches(const struct json_value *v,
             return false;
     }
     return true;
+}
+
+/* Borrow reader and line. Consume a whole physical record even when it
+ * cannot fit, so its tail can never become another JSON object. */
+static int stq_read_line(struct stq_reader *reader, char *line, size_t *len_out)
+{
+    size_t len = 0;
+    bool invalid = false;
+    bool saw_data = false;
+    for (;;) {
+        if (reader->pos == reader->len) {
+            reader->len = fread(reader->chunk, 1, sizeof(reader->chunk),
+                                reader->fp);
+            reader->pos = 0;
+            if (reader->len == 0) {
+                if (ferror(reader->fp))
+                    return -1;
+                if (!saw_data)
+                    return 0;
+                break;
+            }
+        }
+        const unsigned char *start = reader->chunk + reader->pos;
+        size_t avail = reader->len - reader->pos;
+        const unsigned char *newline = memchr(start, '\n', avail);
+        size_t span = newline ? (size_t)(newline - start) : avail;
+        saw_data = true;
+        if (!invalid) {
+            if (memchr(start, '\0', span) || span > STQ_MAX_LINE - 1 - len)
+                invalid = true;
+            else {
+                memcpy(line + len, start, span);
+                len += span;
+            }
+        }
+        reader->pos += span + (newline != NULL);
+        if (newline)
+            break;
+    }
+    line[len] = '\0';
+    *len_out = len;
+    return invalid ? 2 : 1;
+}
+
+static int stq_query(FILE *fp, char *line, const struct stq_filter *filter)
+{
+    struct stq_reader reader = {.fp = fp};
+    size_t total = 0;
+    size_t matched = 0;
+    for (;;) {
+        size_t len = 0;
+        int status = stq_read_line(&reader, line, &len);
+        if (status == 0)
+            break;
+        if (status < 0) {
+            fprintf(stderr, "simnet_trace_query: read failed: %s\n",
+                    strerror(errno));
+            return 1;
+        }
+        while (len > 0 && line[len - 1] == '\r')
+            line[--len] = '\0';
+        if (len == 0 && status == 1)
+            continue;
+        total++;
+        if (status == 2) {
+            fprintf(stderr,
+                    "simnet_trace_query: skipping malformed line %zu\n",
+                    total);
+            continue;
+        }
+
+        struct json_value v;
+        json_init(&v);
+        if (!json_read(&v, line, len)) {
+            fprintf(stderr,
+                    "simnet_trace_query: skipping malformed line %zu\n",
+                    total);
+            json_free(&v);
+            continue;
+        }
+        if (stq_line_matches(&v, filter)) {
+            matched++;
+            printf("%s\n", line);
+        }
+        json_free(&v);
+    }
+    fprintf(stderr, "simnet_trace_query: %zu/%zu lines matched\n", matched,
+            total);
+    return 0;
 }
 
 int main(int argc, char **argv)
@@ -141,35 +237,8 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    size_t total = 0;
-    size_t matched = 0;
-    while (fgets(line, (int)STQ_MAX_LINE, fp)) {
-        size_t len = strlen(line);
-        while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r'))
-            line[--len] = '\0';
-        if (len == 0)
-            continue;
-        total++;
-
-        struct json_value v;
-        json_init(&v);
-        if (!json_read(&v, line, len)) {
-            fprintf(stderr,
-                    "simnet_trace_query: skipping malformed line %zu\n",
-                    total);
-            json_free(&v);
-            continue;
-        }
-        if (stq_line_matches(&v, &filter)) {
-            matched++;
-            printf("%s\n", line);
-        }
-        json_free(&v);
-    }
-
+    int rc = stq_query(fp, line, &filter);
     free(line);
     fclose(fp);
-    fprintf(stderr, "simnet_trace_query: %zu/%zu lines matched\n", matched,
-            total);
-    return 0;
+    return rc;
 }

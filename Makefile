@@ -13188,6 +13188,7 @@ check-fuzz-artifact-ledger:
 check-standalone-tools-link:
 	@echo "→ Gate: standalone_tools_link (every tool rule still builds)"
 	@./tools/lint/check_standalone_tools_link.sh
+	@./tools/sim/simnet_trace_query_selftest.sh
 
 # tools/scripts/make_app_bundle.sh must be a pure function of its input: two
 # bundle runs over identical binaries into two temp dirs must be
