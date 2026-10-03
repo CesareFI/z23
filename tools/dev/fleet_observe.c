@@ -65,21 +65,10 @@ static bool digits(const char *s, int n, int *out)
 /* Days from the civil epoch (1970-01-01) to (y, m, d), Howard Hinnant's
  * days_from_civil — exact, no libc timegm() dependency.
  *
- * CONVERGENCE NOTE: contexts/commons/packages/ztime already ships this exact
- * primitive (ztime_days_from_civil, ztime/ztime.h:42) plus a stricter whole-
- * timestamp parser (ztime_parse, ztime/ztime.h:54, which is what
- * fo_parse_iso8601() below duplicates and rejects leap seconds ":60" that
- * this file currently lets through). ztime.c has zero dependencies beyond
- * <stdio.h>/<string.h>, so pulling it in would not widen tools/dev's link
- * graph the way engine_rule_score would — but ztime is not wired into any
- * Makefile target yet (it lives under a "packages" directory, not one of
- * the "modules" directories the DEVLOOP_ALL_SRCS and LIB_SRCS wildcards
- * scan), so using it here would be the first integration point for a
- * currently-orphaned package. That is a deliberate build-graph decision,
- * not a side effect of a lint-fixing pass, so it is left named here rather
- * than done: converge
- * fo_parse_iso8601/days_from_civil onto ztime_parse/ztime_days_from_civil
- * the next time this file is touched for another reason. */
+ * The reusable ztime parser has a different input grammar and rejects :60,
+ * which this ledger parser has historically accepted. Moving to ztime also
+ * changes the standalone and test-harness link graph. Keep this calendar
+ * check local until that broader behavior change is qualified separately. */
 static int64_t days_from_civil(int64_t y, int m, int d)
 {
     y -= (m <= 2);
@@ -90,18 +79,43 @@ static int64_t days_from_civil(int64_t y, int m, int d)
     return era * 146097 + doe - 719468;
 }
 
+static bool calendar_day_valid(int year, int month, int day)
+{
+    static const unsigned char month_days[12] = {
+        31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31,
+    };
+    if (month < 1 || month > 12) return false;
+    int max_day = month_days[month - 1];
+    if (month == 2 && year % 4 == 0 &&
+        (year % 100 != 0 || year % 400 == 0))
+        max_day++;
+    return day >= 1 && day <= max_day;
+}
+
+/* The caller has already established an exactly 20-byte UTC timestamp. */
+static bool parse_calendar_date(const char *s, int *year, int *month, int *day)
+{
+    return digits(s, 4, year) && s[4] == '-' &&
+           digits(s + 5, 2, month) && s[7] == '-' &&
+           digits(s + 8, 2, day) &&
+           calendar_day_valid(*year, *month, *day);
+}
+
+static bool parse_clock_time(const char *s, int *hour, int *minute, int *second)
+{
+    return s[10] == 'T' && digits(s + 11, 2, hour) &&
+           s[13] == ':' && digits(s + 14, 2, minute) &&
+           s[16] == ':' && digits(s + 17, 2, second) && s[19] == 'Z' &&
+           *hour <= 23 && *minute <= 59 && *second <= 60;
+}
+
 bool fo_parse_iso8601(const char *s, int64_t *out)
 {
     int y, mo, d, h, mi, se;
 
-    if (!s || !out || strlen(s) != 20)
-        return false;
-    if (!digits(s, 4, &y) || s[4] != '-' || !digits(s + 5, 2, &mo) ||
-        s[7] != '-' || !digits(s + 8, 2, &d) || s[10] != 'T' ||
-        !digits(s + 11, 2, &h) || s[13] != ':' || !digits(s + 14, 2, &mi) ||
-        s[16] != ':' || !digits(s + 17, 2, &se) || s[19] != 'Z')
-        return false;
-    if (mo < 1 || mo > 12 || d < 1 || d > 31 || h > 23 || mi > 59 || se > 60)
+    if (!s || !out || strlen(s) != 20 ||
+        !parse_calendar_date(s, &y, &mo, &d) ||
+        !parse_clock_time(s, &h, &mi, &se))
         return false;
     *out = days_from_civil(y, mo, d) * 86400 + h * 3600 + mi * 60 + se;
     return true;

@@ -301,6 +301,45 @@ _test_next:;
 
 /* ── --check drift detection ──────────────────────────────────────────── */
 
+static int test_fleet_observe_calendar(void)
+{
+    int failures = 0;
+    int64_t stamp = 0;
+
+    TEST("calendar: real leap days and existing leap-second syntax remain valid") {
+        ASSERT(fo_parse_iso8601("2024-02-29T09:00:00Z", &stamp));
+        ASSERT(fo_parse_iso8601("2000-02-29T09:00:00Z", &stamp));
+        ASSERT(fo_parse_iso8601("2026-12-31T23:59:60Z", &stamp));
+        PASS();
+    }
+
+    TEST("calendar: impossible month days are refused") {
+        ASSERT(!fo_parse_iso8601("2026-02-31T09:00:00Z", &stamp));
+        ASSERT(!fo_parse_iso8601("2025-02-29T09:00:00Z", &stamp));
+        ASSERT(!fo_parse_iso8601("1900-02-29T09:00:00Z", &stamp));
+        ASSERT(!fo_parse_iso8601("2026-04-31T09:00:00Z", &stamp));
+        ASSERT(!fo_parse_iso8601("2026-01-00T09:00:00Z", &stamp));
+        PASS();
+    }
+
+    TEST("calendar: invalid ledger timestamp names its row") {
+        struct fo_row row;
+        char err[128];
+        const char *line =
+            "2026-02-31T09:00:00Z\tresult\tnode1\tt1\tverify\tstory\t"
+            "grok\tgrok-cli-queue\tgrok-4.6\thigh\t1\t1\t1\t0\t1\t1\t1\t"
+            "LAND\t0\t0\t0\tnote";
+
+        ASSERT(!fo_parse_line(line, 47, &row, err, sizeof(err)));
+        ASSERT(strstr(err, "47") != NULL);
+        ASSERT(strstr(err, "ISO-8601") != NULL);
+        PASS();
+    }
+
+_test_next:;
+    return failures;
+}
+
 static int test_fleet_observe_check(void)
 {
     int failures = 0;
@@ -400,6 +439,7 @@ int test_fleet_observe(void)
     failures += test_fleet_observe_classify();
     failures += test_fleet_observe_ready_accounting();
     failures += test_fleet_observe_parse();
+    failures += test_fleet_observe_calendar();
     failures += test_fleet_observe_check();
     failures += test_fleet_observe_dev_know();
     return failures;
