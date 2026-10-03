@@ -545,3 +545,29 @@ refused unavailable alternate Git objects inside the private namespace, then an
 unconfigured hooks path. Self-contained object repacking and canonical
 `make install-hooks` repaired those prerequisites without changing source or
 policy. Those setup refusals are not product failures or PASS receipts.
+
+### Keystore plaintext-retirement exact qualification complete
+
+Head `e5a1d446c6b29da8d5544acecdabb88f38f17d99`, upstream
+`3a93e60ebf922af3d119b9facc1d95803f42844b`: native proof PASS, independently
+verified with exact-pair status. Receipt SHA256:
+`561c0e246e402fdfdd7c9e458454a7f96e8f4749f8041b676c8e14fec8e13fe7`.
+The keystore root locator identifies the preserved copy; receipt name:
+`e5a1d446c6b29da8d5544acecdabb88f38f17d99-3a93e60ebf922af3d119b9facc1d95803f42844b.receipt`.
+
+All215 lint gates PASS (182.734s umbrella;192.449s native step). Exact impacted
+runtime228/228 PASS (293.961s), zero failures, skips, unobserved or flaky outcomes.
+Total proof540.184s. GCC14.2.0 default / Clang20.1.2 secondary; prior focused
+sanitizer/mutation and final compiler evidence applies to the same signed source.
+No common proof-prerequisite commit is needed in this slice. PR body, patch series,
+commit bundle and SHA256 manifests are complete; publication remains subject to
+the previously recorded hook boundary. The separate length candidate03bfa7e5
+now runs exact proof. Its source tree and all prior qualified trees are preserved.
+
+Additional storage/BIP44 caller audit: inspected POSIX directory opens already
+use CLOEXEC and close retained descriptors; private-file close invalidates its
+handle. Identity-retirement callers retain explicit close ownership. Inspected
+wallet/recovery keypair callers wipe private-key scratch on failure as well as
+success. No additional demonstrated lifetime defect was found in these paths;
+no speculative patch or repeated completed regression was added. PR73/74 CI
+remains queued for an unassigned self-hosted scanner at the latest checkpoint.

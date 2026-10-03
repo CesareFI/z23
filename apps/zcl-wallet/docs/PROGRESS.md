@@ -8221,3 +8221,13 @@ sanitizer/mutation, full lint and clean security evidence. A new isolated copy
 prepares its exact proof without changing prior qualified trees. A separate
 zero-capacity/oversized-length sanitizer RED is preserved for the next bounds
 candidate. See UPSTREAM_PUBLICATION and C_SAFETY_REVIEW for exact scope.
+
+### Keystore retirement qualified; range proof active
+
+Signed e5a1d446/base3a93e60e has exact native PASS and independently verified
+receipt:215 lint gates,228/228 impacted groups, zero skips/flakiness. Its PR
+artifacts are complete. Range03bfa7e5 now runs exact proof after final focused
+RED→GREEN, two compiler sanitizer/mutation lanes and215 lint gates passed.
+Prior validated copies remain unchanged. Additional storage/BIP44 caller review
+found existing cleanup adequate in the inspected paths. UPSTREAM_PUBLICATION
+records exact receipts, compilers, artifacts and the unchanged publication boundary.
