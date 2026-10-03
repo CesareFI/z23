@@ -8199,3 +8199,13 @@ is active; key951f4cef follows. Final GCC combined-diff lanes pass for all three
 PR artifacts are prepared. Under the latest no-hook-bypass instruction, further
 normal fork publication remains blocked by the main-only hook; no extra push
 was attempted. Continue qualification without reopening that authority question.
+
+### Mnemonic qualified; key-scratch proof active
+
+Mnemonic994070f6/base3a93e60e exact native proof and independent status PASS:
+215 lint gates,1236/1236 selected groups, zero skips/unobserved/flaky retries.
+Receipt digest and exact compiler/timing evidence are in UPSTREAM_PUBLICATION.md.
+Key951f4cef is the remaining active proof; its source tree stays preserved.
+Mnemonic and xprv PR artifacts are ready under the documented publication
+boundary. Child-derivation cleanup audit found the wallet digest already wiped;
+the remaining HMAC owner is sealed core and was not edited.

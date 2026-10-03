@@ -440,3 +440,31 @@ normal loop supplies no fork route. No further publication push was attempted
 under that instruction. PR73/74 remain published from the earlier explicitly
 authorized routing exception. Preserve qualified candidates and complete PR
 artifacts while continuing independent qualification and reuse work.
+
+### Mnemonic exact qualification complete
+
+Candidate `994070f632e382123f14464a7c39e50bcbd6d408`, base
+`3a93e60ebf922af3d119b9facc1d95803f42844b`: native `dev proof step` PASS,
+independently verified by `dev proof status` for that exact pair. Receipt SHA256:
+`6b64b2fde12950baae95ec72f69138ec80e860e9e8b15ed8db959cd5bc847651`.
+The mnemonic root locator identifies the preserved qualified copy; receipt name:
+`994070f632e382123f14464a7c39e50bcbd6d408-3a93e60ebf922af3d119b9facc1d95803f42844b.receipt`.
+
+All215 lint gates pass (239.147s umbrella;248.792s native lint step), including
+architecture, documentation counts, strict Clang and complexity. Runtime1236/1236
+selected groups pass (696.805s body), zero failures, skips, unobserved or
+load-flaky outcomes. The unchanged universal host gates still apply; this is not
+execution evidence for excluded host capabilities. Total native proof976.467s.
+Compiler GCC14.2.0; secondary Clang20.1.2. Final GCC sweep2,433 translation units,
+all9 changed paths diagnostic-free. The prior actual-source Clang/GCC
+ASan/UBSan/LSan control0 and remove-cleanse mutant2 evidence applies unchanged.
+
+The two signed commits, bundle, patch series and PR draft remain prepared and
+unpublished under the recorded main-only hook boundary. Key-scratch951f4cef now
+runs its exact proof after a fresh fetch confirmed the same upstream base.
+Do not mutate that proof tree or repeat the completed mnemonic/xprv proofs.
+
+Additional read-only reuse review: the wallet-owned child-derivation digest is
+already retired on all returns. Its remaining HMAC-context lifetime belongs to
+sealed `core/math/src/hash.c`; no core edit or duplicate caller-side algorithm
+was introduced. This is ownership evidence, not a demonstrated runtime defect.
