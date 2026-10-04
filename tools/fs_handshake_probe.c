@@ -50,6 +50,7 @@
 #include "platform/socket_compat.h"
 #include "platform/time_compat.h"
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -145,8 +146,10 @@ int main(int argc, char **argv)
     long budget_ms = PROBE_DEFAULT_BUDGET_MS;
     if (argc == 4) {
         char *end = NULL;
+        errno = 0;
         budget_ms = strtol(argv[3], &end, 10);
-        if (end == argv[3] || *end != '\0' || budget_ms <= 0) {
+        if (errno == ERANGE || end == argv[3] || *end != '\0' ||
+            budget_ms <= 0) {
             fprintf(stderr, "fs_handshake_probe: invalid budget_ms '%s'\n",
                     argv[3]);
             return PROBE_RC_USAGE;

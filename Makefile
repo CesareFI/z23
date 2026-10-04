@@ -13189,6 +13189,9 @@ check-standalone-tools-link:
 	@echo "→ Gate: standalone_tools_link (every tool rule still builds)"
 	@./tools/lint/check_standalone_tools_link.sh
 
+check-fs-handshake-probe-args: $(BIN_DIR)/fs_handshake_probe
+	@tools/scripts/fs_handshake_probe_args_selftest.sh $(BIN_DIR)/fs_handshake_probe
+
 # tools/scripts/make_app_bundle.sh must be a pure function of its input: two
 # bundle runs over identical binaries into two temp dirs must be
 # byte-identical, embedded signature included (codesign embeds it in the
@@ -14826,6 +14829,7 @@ LINT_GATES := \
     check-live-datadir-isolation \
     check-installed-acceptance-tools \
     check-standalone-tools-link \
+    check-fs-handshake-probe-args \
     check-arena-view-stub \
     check-hotfork-stories \
     check-app-bundle-reproducible \
@@ -14865,6 +14869,7 @@ LINT_BUILT_PREREQS = tools/core_seal tools/check_observability_pairing \
 	$(BIN_DIR)/z23-fleet-observe \
 	$(TOR_PROVENANCE_BIN) $(GIT_HOOK_BIN) $(HOTSWAP_ACTION_PLAN) \
 	$(PROCESS_GROUP_EXEC_BIN) $(BIN_DIR)/arena_product_journey_c23
+LINT_BUILT_PREREQS += $(BIN_DIR)/fs_handshake_probe
 # tor-provenance-ready runs BEFORE the lint driver ever forks a gate script:
 # run_lint.sh (both the parallel dispatcher above and the serial LINT_GATES
 # chain below) executes gate SCRIPTS directly, not Make recipes, so a
