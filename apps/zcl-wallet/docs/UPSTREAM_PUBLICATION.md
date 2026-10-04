@@ -1314,3 +1314,43 @@ the exact lint/test/phase/status logs, `pr-wallet-sensitive-read-cloexec.md`,
 `wallet-sensitive-read-cloexec-qualification.txt` and
 `wallet-sensitive-read-cloexec-final.sha256` verify in the candidate worktree's
 ignored evidence directory. No external publication action was attempted.
+
+### LevelDB Sapling-seed allocation retirement qualified
+
+Branch `agent/upstream-wallet-leveldb-seed-retirement-20261004`, signed head
+`ec8a020c1d8b6d9860efd6fc85717f31e57f0807`, base
+`3a93e60ebf922af3d119b9facc1d95803f42844b`, cleanses the exact database-owned
+heap span before releasing a valid or malformed Sapling-seed record. Accepted
+32-byte records still copy the same bytes into caller-owned output; malformed
+records still fail and leave caller output unchanged. The review is four files,
++115/-8, including the deterministic production-source harness and generated
+capability inventory. LevelDB format, recovery, derivation, wallet encryption,
+consensus and sealed-core code are unchanged.
+
+Canonical RED observes nonzero seed bytes at the old release boundary. Replacing
+only the new cleanse call with a compile-valid no-op reproduces the
+`secret_all_zero` failure on the shared-pool attempt and isolated retry. The
+restored focused group passes with zero skips and passes ASan/UBSan. Uncached
+GCC 14.2.0 and Clang 20.1.2 each check all 2,433 production translation units
+with no new diagnostic sites. Architecture, documentation-count, generated-
+inventory, file-size, core-seal, consensus-parity and cap-15 complexity gates
+pass; the complexity scan covers 68,755 functions in 4,681 files.
+
+The first exact-proof attempt stopped during bundle construction after disk
+fallback exhausted free space; it reached neither lint nor tests and makes no
+product claim. The prescribed retry used the documented private RAM-scratch
+root with the 6 GiB reservation, 8 GiB remaining-free floor, 24 GiB process
+limit and every proof gate retained. The policy-5 receipt passes all 215 lint
+gates and all 1,236 selected test groups: 1,236 run, zero failures, skips or
+reused results. Lint took 199.096s, tests 564.469s and the receipt records
+741.334s total. Native status independently reports `passed`; receipt SHA256 is
+`19173a1b9a6d7f66092e587eab0907064527b9696143035b144749d6a7e5ccb7`.
+
+Local artifacts `wallet-leveldb-seed-retirement.bundle`,
+`wallet-leveldb-seed-retirement.mbox`,
+`wallet-leveldb-seed-retirement.receipt`, exact phase/status evidence,
+`pr-wallet-leveldb-seed-retirement.md`,
+`wallet-leveldb-seed-retirement-qualification.txt` and
+`wallet-leveldb-seed-retirement-final.sha256` verify in the candidate
+worktree's ignored evidence directory. No external publication action was
+attempted.
