@@ -1053,3 +1053,39 @@ Local artifacts `keystore-header-validation.bundle`,
 `header-validation-exact-status.log` and
 `keystore-header-validation-final.sha256` verify in the candidate worktree's
 ignored evidence directory. No external publication action was attempted.
+
+### Passphrase snapshot lifetime qualified
+
+Branch `agent/upstream-wallet-passphrase-snapshot-20261004`, signed head
+`df4f1ee9c4913f549f94334dba2138a33d5aa7e9`, base
+`3a93e60ebf922af3d119b9facc1d95803f42844b`, removes the public borrowed
+pointer into the process-global wallet passphrase. Callers now either query
+availability or copy the passphrase under the lock into a bounded,
+operation-owned buffer. Legacy WKS1 SQLite encrypt/decrypt paths cleanse the
+snapshot on every return and cleanse tentative output on failure. The review
+is eight files, +68/-56; formats, algorithms and locking admission are
+unchanged.
+
+Deterministic RED retains the old borrowed pointer across the existing
+one-second auto-lock and fails at the lifetime assertion while the other 18
+wallet-keystore cases pass. Final `wallet_keystore` passes 19/19,
+`wallet_sqlite_enc` passes 14/14 and `wallet_metadata_encryption` passes; all
+three pass ASan/UBSan. The timer-bearing keystore group passes TSan after the
+test joins the completed registry-owned timer. GCC 14.2.0 and Clang 20.1.2
+each check all 2,433 translation units with no new diagnostic sites.
+Architecture, generated inventory, documentation counts, file-size and
+cap-15 cyclomatic-complexity gates pass.
+
+The unprivileged private-tmpfs proof passes the exact head/base pair: the
+receipt records the full lint dimension and all 126 selected impacted groups,
+with zero failures, skips or reused results. Native status independently
+reports `passed`; lint took 192.405s, tests 284.500s, the receipt records
+532.938s total and the foreground step returned after 536.788s. Receipt SHA256
+is `9b401c74c39cb80d6199f95d75e07d36ab56d7c0f60112a5e44e2e201ed81e11`.
+The optional coverage manifest is absent, so no coverage claim is made.
+
+Local artifacts `passphrase-snapshot.bundle`, `passphrase-snapshot.mbox`,
+`passphrase-snapshot-exact-proof.receipt`,
+`passphrase-snapshot-exact-status.log`, `pr-passphrase-snapshot.md` and
+`passphrase-snapshot-final.sha256` verify in the candidate worktree's ignored
+evidence directory. No external publication action was attempted.
