@@ -120,6 +120,40 @@ static int find_rolling_anchor_snapshot(struct supervisor_snapshot *out,
     return found;
 }
 
+static int test_rolling_anchor_restart_collisions(void)
+{
+    int failures = 0;
+    char collision_dir[256];
+    test_make_tmpdir(collision_dir, sizeof(collision_dir),
+                     "rolling_anchor", "restart-collisions");
+    bool staged = true;
+    for (unsigned i = 0; i < 64 && staged; i++) {
+        char path[512];
+        (void)snprintf(path, sizeof(path),
+                       "%s/sha3_windows_runtime.dat.tmp.%u",
+                       collision_dir, i);
+        struct platform_private_file file;
+        platform_private_file_init(&file);
+        staged = platform_private_file_create(path, &file);
+        platform_private_file_close(&file);
+    }
+    RA_CHECK("persistence: restart collision fixture is complete", staged);
+
+    rolling_anchor_reset_for_test();
+    struct zcl_result initialized = rolling_anchor_init(collision_dir, NULL);
+    int32_t start = (int32_t)(g_sha3_windows_count * SHA3_WINDOW_SIZE);
+    uint8_t hash[32];
+    memset(hash, 0x5a, sizeof(hash));
+    struct zcl_result committed = rolling_anchor_test_commit_window(start,
+                                                                    hash);
+    RA_CHECK("persistence: stale sequence names do not block restart",
+             initialized.ok && committed.ok);
+
+    rolling_anchor_reset_for_test();
+    test_cleanup_tmpdir(collision_dir);
+    return failures;
+}
+
 int test_rolling_anchor_service(void)
 {
     printf("\n=== rolling_anchor_service tests ===\n");
@@ -272,6 +306,11 @@ int test_rolling_anchor_service(void)
 #endif
         test_cleanup_tmpdir(persist_dir);
     }
+
+    /* A restart resets the writer's sequence counter. Crash-orphan staging
+     * files from earlier processes must not exhaust the bounded collision
+     * search and block a healthy durable commit. */
+    failures += test_rolling_anchor_restart_collisions();
 
     /* rolling_anchor_window_hash_ending_at — success + one failure envelope
      * (E2 migration to struct zcl_result; no prior direct coverage). */

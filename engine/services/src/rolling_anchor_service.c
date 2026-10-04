@@ -52,6 +52,7 @@
 #define RA_FILE_NAME       "sha3_windows_runtime.dat"
 #define RA_RECORD_SIZE     36u            /* i32 + 32 bytes hash */
 #define RA_TICK_SECS       60              /* periodic extend cadence */
+#define RA_STAGING_CREATE_ATTEMPTS 1024u
 /* §4d row-8: after this many CONSECUTIVE read failures at/below the sealed
  * input prefix, page a human (a corrupt block frame in the sealed domain is
  * unrecoverable by re-fetch). Above the prefix, a read failure is normal
@@ -118,7 +119,8 @@ static bool ra_persist_locked(void)
     struct platform_private_file staging;
     platform_private_file_init(&staging);
     bool created = false;
-    for (unsigned int attempt = 0; attempt < 16 && !created; attempt++) {
+    for (unsigned int attempt = 0;
+         attempt < RA_STAGING_CREATE_ATTEMPTS && !created; attempt++) {
         uint64_t sequence = atomic_fetch_add_explicit(
             &tmp_sequence, 1, memory_order_relaxed);
         int n = snprintf(tmp, sizeof(tmp), "%s.tmp.%" PRIu64,
@@ -126,6 +128,8 @@ static bool ra_persist_locked(void)
         if (n <= 0 || (size_t)n >= sizeof(tmp))
             return false;
         created = platform_private_file_create(tmp, &staging);
+        if (!created && errno != EEXIST)
+            break;
     }
     if (!created) {
         fprintf(stderr, "[rolling_anchor] persist: cannot create private staging file\n");
