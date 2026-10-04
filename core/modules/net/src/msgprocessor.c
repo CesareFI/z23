@@ -2781,18 +2781,20 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
          * This is critical: legacy zclassicd sends at most 2000 headers per
          * getheaders response — for a 3M block chain, we need ~1500 rounds. */
 
-        /* Use fallback (inbound peers) during header stall */
-        if (header_stall) {
-            bool ok = syncsvc_should_request_headers_with_fallback(
-                node, our_height, now_send, true);
-            if (ok && !snapshot_active) {
-                should_sync = true;
-                syncsvc_note_headers_requested(node, now_send);
-            }
-        }
         if (!snapshot_active) {
             syncsvc_plan_periodic_getheaders(&periodic, node, our_height,
                                              now_send);
+            /* The ordinary planner intentionally excludes inbound peers.
+             * During a header stall they are the recovery fallback, so carry
+             * that admitted request as a real action instead of merely
+             * publishing its timestamp and then executing an empty plan. */
+            if (!periodic.should_send && header_stall &&
+                syncsvc_should_request_headers_with_fallback(
+                    node, our_height, now_send, true)) {
+                periodic.should_send = true;
+                periodic.anchor = SYNC_HEADER_REQUEST_TIP;
+                periodic.should_log = true;
+            }
             if (periodic.should_send) {
                 should_sync = true;
                 syncsvc_note_headers_requested(node, now_send);

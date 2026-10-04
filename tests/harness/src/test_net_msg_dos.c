@@ -595,6 +595,50 @@ static int dos_keepalive_send_failure_retry(struct msg_processor *mp,
     return failures;
 }
 
+static int dos_inbound_header_fallback_sends(struct msg_processor *mp,
+                                             struct net_manager *nm)
+{
+    int failures = 0;
+    struct download_manager *dm = get_download_mgr();
+    (void)dl_drain_for_backpressure(dm);
+    enum sync_state saved_sync = sync_get_state();
+    sync_set_state(SYNC_IDLE, "inbound fallback test");
+
+    struct uint256 body_request;
+    memset(body_request.data, 0x7b, sizeof(body_request.data));
+    int32_t body_height = 1;
+    DOS_CHECK("inbound fallback: body recovery held inactive",
+              dl_queue_blocks(dm, &body_request, &body_height, 1) == 1);
+
+    struct net_address peer_addr;
+    net_address_init(&peer_addr);
+    unsigned char peer_ip[4] = {203, 0, 113, 88};
+    net_addr_set_ipv4(&peer_addr.svc.addr, peer_ip);
+    peer_addr.svc.port = 8033;
+    struct p2p_node *node = p2p_node_create(
+        nm, ZCL_INVALID_SOCKET, &peer_addr, "inbound-header-fallback", true);
+    DOS_CHECK("inbound fallback: node created", node != NULL);
+    if (node) {
+        node->state = PEER_ACTIVE;
+        node->version = PROTOCOL_VERSION;
+        node->starting_height = 1000;
+
+        bool tick_ok = msg_send_messages(mp, node, false);
+        int64_t noted = atomic_load(&node->last_getheaders_time);
+        size_t frames = dos_wire_command_frames(node, "getheaders");
+
+        DOS_CHECK("inbound fallback: send tick survives", tick_ok);
+        DOS_CHECK("inbound fallback: request timestamp published", noted > 0);
+        DOS_CHECK("inbound fallback: planned request reaches wire queue",
+                  frames == 1);
+
+        p2p_node_free(node);
+    }
+    sync_set_state(saved_sync, "inbound fallback test restore");
+    (void)dl_drain_for_backpressure(dm);
+    return failures;
+}
+
 static bool dos_hashes_in_flight(struct download_manager *dm,
                                  const struct uint256 *hashes, size_t count)
 {
@@ -1577,6 +1621,10 @@ int test_net_msg_dos(void)
     /* ── R. Publish keepalive timeout state only after the ping is
      * queued; otherwise a local failure can fabricate a pong timeout. */
     failures += dos_keepalive_send_failure_retry(&mp, &nm);
+
+    /* ── S. With no outbound peer, the admitted inbound fallback must
+     * carry the getheaders action it just published as requested. */
+    failures += dos_inbound_header_fallback_sends(&mp, &nm);
 
     net_manager_free(&nm);
     sync_set_state(sync0, "net_msg_dos restore");
