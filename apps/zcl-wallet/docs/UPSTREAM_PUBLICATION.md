@@ -1743,3 +1743,47 @@ phase/lint/test evidence, `pr-wallet-lock-path-bounds.md`,
 `wallet-lock-path-bounds-qualification.txt` and
 `wallet-lock-path-bounds-final.sha256` verify in the candidate worktree's
 ignored evidence directory. No external publication action was attempted.
+
+### Wallet-restore writer serialization qualified
+
+Branch `agent/upstream-wallet-restore-writer-lock-20261004`, signed head
+`9e9e0b428ab4e81f705231c7d75ed5dc9774dd6d`, base
+`3a93e60ebf922af3d119b9facc1d95803f42844b`, makes the public restore service
+hold the existing per-datadir `wallet-recovery.lock` before any restore-owned
+target access. Two restores, or restore and mnemonic recovery, can no longer
+pass their initial probes together and write the same target wallet
+concurrently. The guard covers commit and current dry-run behavior and is
+released after every target handle closes. Consensus, monetary rules, wallet
+formats, backup bytes, derivation and collision policy are unchanged. The
+review is five files, +135/-65; helper extraction reduces
+`wallet_restore_run()` complexity from 26 to the repository cap of 15.
+
+Canonical RED on the prior production source held the recovery lock while the
+public restore API still created `node.db`, failing exactly the lock-refusal
+and no-target-creation assertions. Replacing only lock acquisition with
+`ZCL_OK` reproduced those two failures. The restored focused and
+ASan/UBSan/LSan lanes pass 1/1 with zero skips and leak detection enabled.
+Uncached GCC 14.2.0 and Clang 20.1.2 each check all 2,433 translation units
+with no new diagnostics. MinGW checks all 2,399 Windows translation units and
+cross-links 74 strict C23 acceptance programs; native Windows runtime remains
+unobserved. Architecture, documentation-count, generated-inventory,
+PR-security and cap-15 complexity gates pass.
+
+Two exact-proof prerequisite attempts refused before lint or tests: one was
+outside a delegated user-manager memory scope and one lacked that user's
+runtime bus environment. The prescribed user scope, runtime bus and private
+RAM root repaired only the prerequisite. The fresh policy-5 proof then passes
+all 215 lint gates and all 66 impact-selected groups cold, with zero failures,
+skips, reused results, unobserved cases or load-flaky outcomes. The receipt
+records 508.356s total, `receipt_reused=false`, and normal retirement of the
+private RAM generation. Receipt SHA256 is
+`c0ee1248e8f6d85e63a00e38573a5f406fc58220f3829c0705965c5a752feacb`.
+The optional coverage manifest is absent, so no coverage claim is made.
+
+Local artifacts `wallet-restore-writer-lock.bundle`,
+`wallet-restore-writer-lock.mbox`, `wallet-restore-writer-lock.receipt`, exact
+phase/lint/test evidence, `pr-wallet-restore-writer-lock.md`,
+`wallet-restore-writer-lock-qualification.txt` and
+`wallet-restore-writer-lock-final.sha256` verify in the candidate worktree's
+ignored evidence directory. Node-start coordination with this lock is a
+separate follow-up. No external publication action was attempted.
