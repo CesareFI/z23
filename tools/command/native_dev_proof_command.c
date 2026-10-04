@@ -410,11 +410,17 @@ static void proof_ensure(
             status.detail[0] ? status.detail : "proof_worker_unavailable");
         return;
     }
-    bool queue_ready = existing_only ? proof_existing_queue_owner(&status, reply)
-        : proof_start_queue_owner(request, status.root, reply);
-    if (!queue_ready) {
-        proof_emit_status(reply, &status, false);
-        return;
+    /* A settled pair needs no queue owner. In particular, reading an exact
+     * passed receipt must not start a resident watcher just to reuse it. */
+    if (status.state != ZCL_DEV_PROOF_STATE_PASSED &&
+        status.state != ZCL_DEV_PROOF_STATE_FAILED) {
+        bool queue_ready = existing_only
+            ? proof_existing_queue_owner(&status, reply)
+            : proof_start_queue_owner(request, status.root, reply);
+        if (!queue_ready) {
+            proof_emit_status(reply, &status, false);
+            return;
+        }
     }
     if (!zcl_dev_proof_ensure(
             proof_source_root(request),
