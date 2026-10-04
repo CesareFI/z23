@@ -56,17 +56,20 @@ bool boot_crashonly_clear_reindex_request_if_covered(const char *datadir,
      * was reset to "attempt 1/3" on every restart — a bounded budget that could
      * never be spent, so the bound never terminated anything.
      *
+     * A nonzero class written by a newer binary is equally protected: this
+     * older binary cannot prove that derived coins cover its recovery reason.
+     *
      * An UNSPECIFIED request (legacy file, boot-storage episode, or a pure
      * tip-above-extent wedge with no link damage) keeps the historical
      * behaviour: coins coverage still retires it, because there a from-genesis
      * replay really would only wipe a healthy near-tip coins set. */
     int reason = boot_auto_reindex_reason_of(datadir);
-    if (reason == BOOT_AUTO_REINDEX_REASON_INDEX_INTEGRITY) {
+    if (reason != BOOT_AUTO_REINDEX_REASON_UNSPECIFIED) {
         fprintf(stderr,
                 "[boot] crash-only recovery: KEEPING auto-reindex request "
                 "anchor=%d count=%d reason=%s despite derived coins-best h=%d "
                 "covering the anchor — coins-best is derived transparent state "
-                "and cannot witness a block-index link mismatch. Only the "
+                "and cannot witness this recovery class. Only the "
                 "reindex (or the exhausted budget) retires this request.\n",
                 (int)anchor, count, boot_auto_reindex_reason_name(reason),
                 coins_best_height);

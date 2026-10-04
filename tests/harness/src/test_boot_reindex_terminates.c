@@ -63,6 +63,32 @@ static int check_malformed_marker(void)
     return failures;
 }
 
+static int check_unknown_reason_preserved(void)
+{
+    int failures = 0;
+    char dir[256];
+    test_fmt_tmpdir(dir, sizeof(dir), "boot_reindex_term", "unknown_reason");
+    mkdir_p_br(dir);
+
+    char path[512];
+    (void)snprintf(path, sizeof(path), "%s/auto_reindex_request", dir);
+    FILE *f = fopen(path, "w");
+    bool wrote = f && fprintf(f, "4321 1 99\n") > 0;
+    if (f) fclose(f);
+
+    BR_CHECK("unknown reason: newer class remains visible",
+             wrote && boot_auto_reindex_pending(dir) &&
+                 strcmp(boot_auto_reindex_reason_name(
+                            boot_auto_reindex_reason_of(dir)),
+                        "unrecognised") == 0);
+    BR_CHECK("unknown reason: coins coverage cannot downgrade and clear it",
+             !boot_crashonly_clear_reindex_request_if_covered(
+                 dir, 4321, true) && boot_auto_reindex_pending(dir));
+
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
 int test_boot_reindex_terminates(void);
 int test_boot_reindex_terminates(void)
 {
@@ -534,6 +560,7 @@ int test_boot_reindex_terminates(void)
      * before the coins gate and may clear an otherwise recoverable UTXO set.
      * ───────────────────────────────────────────────────────────────── */
     failures += check_malformed_marker();
+    failures += check_unknown_reason_preserved();
 
     /* ─────────────────────────────────────────────────────────────────
      * (J) THE HOLES-ONLY RESTART LOOP. An identical post-restore finding
