@@ -1222,6 +1222,14 @@ static int test_block_swarm_manifest_republish(void)
             &refreshed));
         ASSERT(msg_processor_publish_block_manifest(&refreshed,
                                                     seed.end_height));
+
+        zcl_alloc_fault_fail_next("send_segment");
+        mp_snapshot_send_tick(&seed.mp, node);
+        ASSERT(zcl_alloc_fault_armed_label() == NULL);
+        ASSERT(node->blk_manifest_sent_version == first_version);
+        ASSERT(bs_queue_depth(sent) == 0);
+        zcl_alloc_fault_clear();
+
         mp_snapshot_send_tick(&seed.mp, node);
         ASSERT(node->blk_manifest_sent_version > first_version);
         ASSERT(bs_queue_depth(sent) == 1);

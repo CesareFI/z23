@@ -478,6 +478,39 @@ void push_manifest(struct msg_processor *mp, struct p2p_node *node)
            node->addr_name, m.height, m.num_chunks);
 }
 
+static void push_block_manifest_copy(struct msg_processor *mp,
+                                     struct p2p_node *node,
+                                     const struct block_piece_manifest *m,
+                                     uint64_t copied_version)
+{
+    struct byte_stream s;
+    size_t hashes_len = (size_t)m->num_pieces * 32;
+    stream_init(&s, 4 + 4 + 4 + 32 + 32 + hashes_len);
+    stream_write_i32_le(&s, m->start_height);
+    stream_write_i32_le(&s, m->end_height);
+    stream_write_u32_le(&s, m->num_pieces);
+    stream_write_bytes(&s, m->tip_hash, 32);
+    stream_write_bytes(&s, m->merkle_root, 32);
+    for (uint32_t i = 0; i < m->num_pieces; i++)
+        stream_write_bytes(&s, m->piece_hashes[i], 32);
+
+    bool sent = false;
+    if (!s.error &&
+        p2p_node_begin_message(node, MSG_BLOCK_MANIFEST,
+                               mp->params->pchMessageStart)) {
+        p2p_node_write_message_data(node, s.data, s.size);
+        sent = p2p_node_end_message(node);
+    }
+    stream_free(&s);
+    if (!sent)
+        return;
+
+    node->blk_manifest_sent = true;
+    node->blk_manifest_sent_version = copied_version;
+    printf("Peer %s: sent block manifest (h=%d..%d, %u pieces)\n",
+           node->addr_name, m->start_height, m->end_height, m->num_pieces);
+}
+
 /* Send our block piece manifest to a ZCL23 peer.
  * SAFETY: never call this for legacy peers — they will ignore it,
  * but we avoid sending unknown messages to be a good network citizen. */
@@ -504,32 +537,8 @@ void push_block_manifest(struct msg_processor *mp,
         return;
     }
 
-    int32_t start_height = m.start_height;
-    int32_t end_height = m.end_height;
-    uint32_t num_pieces = m.num_pieces;
-
-    struct byte_stream s;
-    size_t hashes_len = (size_t)m.num_pieces * 32;
-    stream_init(&s, 4 + 4 + 4 + 32 + 32 + hashes_len);
-    stream_write_i32_le(&s, m.start_height);
-    stream_write_i32_le(&s, m.end_height);
-    stream_write_u32_le(&s, m.num_pieces);
-    stream_write_bytes(&s, m.tip_hash, 32);
-    stream_write_bytes(&s, m.merkle_root, 32);
-    for (uint32_t i = 0; i < m.num_pieces; i++)
-        stream_write_bytes(&s, m.piece_hashes[i], 32);
-
-    p2p_node_begin_message(node, MSG_BLOCK_MANIFEST,
-                            mp->params->pchMessageStart);
-    p2p_node_write_message_data(node, s.data, s.size);
-    p2p_node_end_message(node);
-    stream_free(&s);
+    push_block_manifest_copy(mp, node, &m, copied_version);
     block_piece_manifest_free(&m);
-
-    node->blk_manifest_sent = true;
-    node->blk_manifest_sent_version = copied_version;
-    printf("Peer %s: sent block manifest (h=%d..%d, %u pieces)\n",
-           node->addr_name, start_height, end_height, num_pieces);
 }
 
 void push_block_manifest_if_ready(struct msg_processor *mp,
