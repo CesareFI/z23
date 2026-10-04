@@ -2411,6 +2411,7 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
     }
 
     msg_version_request_addr_if_needed(mp, node);
+    (void)msg_tx_maybe_request_mempool(mp, node);
 
     /* Answer the one getheaders this peer's serve window deferred, if its
      * window has rolled — a legacy client has no retry timer and would

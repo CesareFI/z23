@@ -1040,6 +1040,47 @@ static int test_mempool_requested_once_for_relay_peer(void)
     return failures;
 }
 
+static int test_unsent_mempool_request_remains_retryable(void)
+{
+    int failures = 0;
+    TEST("mempool sync-on-connect: an unsent request remains retryable") {
+        struct hs_fixture f;
+        ASSERT(hs_fixture_setup(&f, true));
+        hs_force_sync_idle();
+
+        struct byte_stream version_payload;
+        hs_build_version_payload_relay(&version_payload, PROTOCOL_VERSION,
+                                       0xBEEFBEEFBEEFBEEFULL, "/test:0.1/",
+                                       true /* relay */);
+        ASSERT(hs_drive_message(&f.mp, &f.node, "version", &version_payload));
+        stream_free(&version_payload);
+
+        struct hs_capture drain;
+        hs_capture_sent(f.peer_fd, &drain);
+        struct byte_stream empty;
+        stream_init(&empty, 0);
+        zcl_alloc_fault_fail_next("send_segment");
+        ASSERT(hs_drive_message(&f.mp, &f.node, "verack", &empty));
+        ASSERT(zcl_alloc_fault_armed_label() == NULL);
+        zcl_alloc_fault_clear();
+        ASSERT(!f.node.mempool_requested);
+        struct hs_capture first;
+        hs_capture_sent(f.peer_fd, &first);
+        ASSERT(!hs_captured_has_command(&first, "mempool"));
+
+        ASSERT(msg_tx_maybe_request_mempool(&f.mp, &f.node));
+        ASSERT(f.node.mempool_requested);
+        struct hs_capture retry;
+        hs_capture_sent(f.peer_fd, &retry);
+        ASSERT(hs_captured_has_command(&retry, "mempool"));
+
+        stream_free(&empty);
+        hs_fixture_teardown(&f);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── 11. A peer whose version explicitly declares relay=false never gets
  * an outbound "mempool" pull. */
 
@@ -1449,6 +1490,7 @@ int test_net_handshake_adversarial(void)
     failures += test_outbound_version_after_transport_bytes();
     failures += test_outbound_version_queue_failure_retries();
     failures += test_mempool_requested_once_for_relay_peer();
+    failures += test_unsent_mempool_request_remains_retryable();
     failures += test_mempool_not_requested_for_non_relay_peer();
     failures += test_mempool_not_requested_during_ibd();
     failures += test_published_build_identity_is_the_baked_source_id();
