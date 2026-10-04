@@ -781,3 +781,87 @@ Local review artifacts `key-export-scratch.bundle`,
 combined candidate supersedes the unpublished WIF-only draft for review while
 preserving its branch, proof and artifacts. No external publication action was
 attempted in this slice.
+
+### Native command key-export copy retirement qualified
+
+Branch `agent/upstream-wallet-native-command-secret-retirement-20261004`,
+signed head `8027ce839681e1864d7ddd43d08bc1559fb3f903`, extends the qualified
+transparent and Sapling HTTP response-retirement series through the native
+command boundary. The key-export command declares an explicit secret-output
+trait; the registry, serializer, field-selection, prose and final CLI owners
+wipe their mutable copies after last use. The successful caller-owned output
+remains unchanged and under caller retirement ownership. Combined review from
+base `3a93e60ebf922af3d119b9facc1d95803f42844b`: 24 files,+558/-255,
+including generated registry and capability inventory updates.
+
+Deterministic RED independently catches the absent recursive JSON cleanser and
+absent key-export trait. Final JSON/JSONQ, native API and 22-case RPC response
+groups pass; their registered ASan/UBSan lanes pass with zero skips. Strict
+GCC14 and Clang20 each accept all 2,433 translation units with no new diagnostic
+sites. Focused lint passes all 215 gates, including complexity, architecture,
+generated inventory, Windows cross-link, seals and consensus parity.
+
+The preserved unprivileged proof copy `/tmp/wn.mmgOK7/repo` passes the exact
+head/base proof: all 215 lint gates in 213.857s and all 1,236 selected runtime
+groups in 624.112s, with zero failures, skips, unobserved or load-flaky
+outcomes. The foreground step returned after 803.221s. Native status
+independently re-verifies the exact pair. Receipt SHA256 is
+`8ab232ae3a2296c021a02bc526629bde98f5db370bb5a895457af0f1c9fa3a73`.
+
+All three commit signatures verify. Local artifacts
+`native-command-secret.bundle`, `native-command-secret.mbox`,
+`native-command-secret.receipt`, `pr-native-command-secret-retirement.md` and
+`native-command-secret-final.sha256` verify. This cumulative candidate
+supersedes the unpublished HTTP-only response-copy draft while preserving its
+branch, receipt and artifacts. No external publication action was attempted.
+
+### Standalone JSON parse-failure retirement qualified
+
+The cumulative command-boundary follow-up
+`5fd85ade93a7994b7ec3e18e36e4d6cf746145fa` first demonstrated that the
+shared JSON reader freed partial decoded strings, keys and nested trees without
+retiring their initialized bytes after malformed input or allocation failure.
+Its preserved unprivileged proof against base
+`3a93e60ebf922af3d119b9facc1d95803f42844b` passed all 215 lint gates and
+all 1,236 selected runtime groups with zero failures, skips, unobserved or
+load-flaky outcomes. Lint took 199.739s, tests 611.365s and the foreground step
+791.400s. Receipt SHA256 is
+`ef3f403bec61a9a4a30e3dd999e7567eacbce1221d877a31798953eaba2ccf1f`.
+That cumulative head spans four commits and 27 files, so it is retained as
+proof evidence rather than proposed as a small independent review.
+
+Branch `agent/upstream-json-failure-retirement-standalone-20261004`, signed
+head `dfed177a602d3c0ccb5bb780f9870ac3f2346909`, isolates the invariant
+directly on the same upstream base. It uses a private failure-cleanup helper in
+the existing JSON owner instead of depending on the unpublished cumulative
+JSON API. Failure cleanup wipes the initialized partial-string span, completed
+keys including their terminators, and owned strings/keys in partial child
+trees before ordinary free. Successful parse ownership and the allocation-free
+`json_valid` path are unchanged. The standalone review is 10 files,+260/-35;
+most non-parser changes are direct-link dependency lists and generated package
+roots/inventory.
+
+The prior production source is deterministic RED: the actual-source observer
+compiles and exits 1 with `cleanse=0 marked=0 zeroed=0`. Removing final root
+cleanup from the candidate produces the same mutation RED. Canonical JSON
+fast and ASan lanes pass 2/2 groups each. Strict optimized GCC14 and Clang20
+ASan/UBSan/LSan controls pass injected string, child-array and key-array
+allocation failures. Package registry 1/1, swarm-network 5/5 executed shards
+and score-receipt 7/7 pass with zero skips. Both compiler lanes accept all
+2,433 translation units with no new diagnostics, and the exact candidate tree
+passes all 215 lint gates, including cap15 complexity, architecture, generated
+inventory, Windows cross-link, sealed-core and consensus-parity checks.
+
+The retained proof copy `/tmp/wn.mmgOK7/repo` independently passes the exact
+head/base pair: all 215 lint gates in 200.691s and all 1,236 selected runtime
+groups in 617.224s, with zero failures, skips, unobserved or load-flaky
+outcomes. Total foreground time is 798.180s and native status re-verifies the
+fresh receipt. Receipt SHA256 is
+`0d9d1246626e56555ca864523208d82752375f26dc9c18da87a0ea93cd53a945`.
+
+Local review artifacts `json-failure-standalone.bundle`,
+`json-failure-standalone.mbox`, `json-failure-standalone.receipt`,
+`pr-json-failure-retirement.md` and
+`json-failure-standalone-final.sha256` verify. The cumulative branch and all
+prior artifacts remain preserved. No external publication, hook bypass or
+protection change was attempted.
