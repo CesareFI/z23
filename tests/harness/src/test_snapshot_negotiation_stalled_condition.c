@@ -6,6 +6,7 @@
 #include "framework/condition.h"
 #include "net/snapshot_sync_contract.h"
 #include "platform/clock.h"
+#include "sync/sync_state.h"
 
 #include <stdatomic.h>
 #include <string.h>
@@ -75,6 +76,27 @@ static void cleanup_sns(void)
     clock_reset_default();
 }
 
+static bool enter_stalled_negotiation_sync_state(void)
+{
+    if (sync_get_state() != SYNC_IDLE)
+        return false;
+    return sync_set_state(SYNC_SNAPSHOT_RECEIVE,
+                          "test stalled negotiation");
+}
+
+static bool negotiation_sync_resumed(void)
+{
+    return sync_get_state() == SYNC_HEADERS_DOWNLOAD;
+}
+
+static void cleanup_negotiation_sync_state(void)
+{
+    if (sync_get_state() == SYNC_SNAPSHOT_RECEIVE)
+        sync_set_state(SYNC_HEADERS_DOWNLOAD, "test cleanup");
+    if (sync_get_state() == SYNC_HEADERS_DOWNLOAD)
+        sync_set_state(SYNC_IDLE, "test cleanup");
+}
+
 int test_snapshot_negotiation_stalled_condition(void)
 {
     printf("\n=== snapshot_negotiation_stalled condition tests ===\n");
@@ -94,11 +116,13 @@ int test_snapshot_negotiation_stalled_condition(void)
         svc.start_time_us =
             snapsync_now_us_internal() -
             ((int64_t)SNAPSYNC_NEGOTIATION_TIMEOUT_SECS + 1) * 1000000LL;
+        ok &= enter_stalled_negotiation_sync_state();
 
         condition_engine_tick();
         ok = ok && snapshot_negotiation_stalled_test_remedy_calls() == 1;
         ok = ok && svc.state == SNAPSYNC_IDLE;
         ok = ok && snapsync_is_peer_blacklisted(&svc, 11);
+        ok &= negotiation_sync_resumed();
         /* Honest witness (Law 7): the remedy reset + blacklisted the dead
          * peer, but the symptom has not yet MOVED — no fresh negotiation is
          * advancing, so the condition stays active (unwitnessed). The reset's
@@ -111,6 +135,7 @@ int test_snapshot_negotiation_stalled_condition(void)
         condition_engine_tick();
         ok = ok && condition_engine_get_active_count() == 0;
         SNS_CHECK("stalled negotiation resets and blacklists peer", ok);
+        cleanup_negotiation_sync_state();
         cleanup_sns();
     }
 

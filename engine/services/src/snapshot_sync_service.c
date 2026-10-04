@@ -528,6 +528,13 @@ bool snapsync_check_negotiation_stall(void)
                 (unsigned long long)st.offered_utxos);
     snapsync_blacklist_peer(svc, st.serving_peer_id);
     snapsync_reset(svc);
+    snapsync_service_lock_internal();
+    bool reset_idle = svc->state == SNAPSYNC_IDLE;
+    snapsync_service_unlock_internal();
+    if (reset_idle)
+        (void)sync_try_transition(SYNC_SNAPSHOT_RECEIVE,
+                                  SYNC_HEADERS_DOWNLOAD,
+                                  "snapshot negotiation stall reset");
     return true;
 }
 
@@ -666,4 +673,3 @@ void snapsync_get_status_snapshot(const struct snapshot_sync_service *svc,
     out->staged_row_count = snapsync_staging_count_internal(svc->ndb);
     snapsync_service_unlock_internal();
 }
-
