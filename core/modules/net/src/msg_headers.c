@@ -1059,6 +1059,14 @@ void msg_headers_get_stats(struct msg_headers_stats *out)
         atomic_load(&g_getheaders_served_requests);
 }
 
+static void note_getheaders_served(bool sent, int count)
+{
+    if (!sent)
+        return;
+    atomic_fetch_add(&g_getheaders_served_requests, 1);
+    atomic_fetch_add(&g_headers_served_total, (uint64_t)count);
+}
+
 bool process_getheaders(struct msg_processor *mp, struct p2p_node *node,
                         struct byte_stream *s)
 {
@@ -1189,14 +1197,15 @@ bool process_getheaders(struct msg_processor *mp, struct p2p_node *node,
 
     p2p_node_begin_message(node, "headers", mp->params->pchMessageStart);
     p2p_node_write_message_data(node, headers.data, headers.size);
-    p2p_node_end_message(node);
+    bool sent = p2p_node_end_message(node);
     stream_free(&headers);
 
     /* Serve-side accounting: one answered request, and the headers it
      * carried (a 0-header reply still counts as a request — that asymmetry
-     * is the point, see net/msgprocessor.h). */
-    atomic_fetch_add(&g_getheaders_served_requests, 1);
-    atomic_fetch_add(&g_headers_served_total, (uint64_t)count);
+     * is the point, see net/msgprocessor.h).  Publish only after the framed
+     * reply joined the send stream: a local queue allocation failure answered
+     * nothing and must not masquerade as peer-visible progress. */
+    note_getheaders_served(sent, count);
     return true;
 }
 

@@ -249,6 +249,35 @@ static int64_t pd_queued_headers_count(struct p2p_node *node)
     return ok ? (int64_t)n : -1;
 }
 
+/* A locally failed reply was never served: it must not appear on the wire or
+ * in the serve-side amplification counters.  The request itself remains
+ * handled so a transient local allocation failure cannot punish the peer. */
+static bool pd_failed_reply_not_published(struct msg_processor *mp,
+                                          struct byte_stream *req,
+                                          node_id_t node_id)
+{
+    struct p2p_node node;
+    pd_setup_node(&node);
+    node.id = node_id;
+
+    struct msg_headers_stats before, after;
+    msg_headers_get_stats(&before);
+    req->read_pos = 0;
+    zcl_alloc_fault_fail_next("send_segment");
+    bool handled = process_getheaders(mp, &node, req);
+    bool fault_consumed = zcl_alloc_fault_armed_label() == NULL;
+    zcl_alloc_fault_clear();
+    msg_headers_get_stats(&after);
+
+    bool unpublished = handled && fault_consumed &&
+        pd_queued_headers_count(&node) < 0 &&
+        after.getheaders_served_requests == before.getheaders_served_requests &&
+        after.headers_served_total == before.headers_served_total;
+    pd_drain_send_queue(&node);
+    pd_clear_fixture_disconnect(&node);
+    return unpublished;
+}
+
 /* Serialize a getheaders payload into the caller-owned writable stream `buf`:
  * locator (version + hashes) then hash_stop. The caller wraps buf->data in a
  * read view for process_getheaders and stream_free()s `buf`. */
@@ -766,6 +795,8 @@ int test_getheaders_serve_pow_dedup(void)
                      req_delta == 1);
             PD_CHECK("C: the two counters are not the same number "
                      "(3 headers, 1 request)", served_delta != req_delta);
+            PD_CHECK("C1: a reply that fails to queue is not published as served",
+                     pd_failed_reply_not_published(&mp, &req, node.id + 1));
             stream_free(&req);
             stream_free(&buf);
             pd_drain_send_queue(&node);
