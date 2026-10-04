@@ -5,8 +5,10 @@
 #include "config/boot_datadir_lock.h"
 #include "config/boot_error.h"
 
+#include <fcntl.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/file.h>
 #include <sys/stat.h>
 #if !defined(_WIN32)
 #include <sys/wait.h>
@@ -67,9 +69,225 @@ static bool bdl_write_file(const char *path, const char *text)
     return fclose(f) == 0;
 }
 
+static bool bdl_recovery_writer_excludes_node(void)
+{
+    char dir[256];
+    char recovery_path[512];
+    char pid_path[512];
+    test_make_tmpdir(dir, sizeof(dir), "boot_datadir_lock", "recovery_writer");
+    snprintf(recovery_path, sizeof(recovery_path), "%s/wallet-recovery.lock",
+             dir);
+    snprintf(pid_path, sizeof(pid_path), "%s/zclassic23.pid", dir);
+
+    int recovery_fd = open(recovery_path,
+                           O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600);
+    bool held = recovery_fd >= 0 &&
+                flock(recovery_fd, LOCK_EX | LOCK_NB) == 0;
+    boot_error_reset_for_testing();
+    bool admitted = held && boot_datadir_lock_acquire(dir);
+    bool refused = held && !admitted &&
+                   bdl_render_is_typed_block("BOOT_DATADIR_RECOVERY_ACTIVE",
+                                             "datadir_lock") &&
+                   bdl_render_has("wallet-recovery.lock") &&
+                   access(pid_path, F_OK) != 0;
+    if (admitted)
+        boot_datadir_lock_release();
+    if (held)
+        (void)flock(recovery_fd, LOCK_UN);
+    if (recovery_fd >= 0)
+        (void)close(recovery_fd);
+
+    bool acquired_after = boot_datadir_lock_acquire(dir);
+    if (acquired_after)
+        boot_datadir_lock_release();
+    test_rm_rf_recursive(dir);
+    return refused && acquired_after;
+}
+
+static bool bdl_node_excludes_recovery_writer(void)
+{
+    char dir[256];
+    char recovery_path[512];
+    test_make_tmpdir(dir, sizeof(dir), "boot_datadir_lock", "node_writer");
+    snprintf(recovery_path, sizeof(recovery_path), "%s/wallet-recovery.lock",
+             dir);
+
+    bool node_held = boot_datadir_lock_acquire(dir);
+    int recovery_fd = open(recovery_path,
+                           O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600);
+    bool writer_blocked = false;
+    if (node_held && recovery_fd >= 0) {
+        writer_blocked = flock(recovery_fd, LOCK_EX | LOCK_NB) != 0 &&
+                         (errno == EWOULDBLOCK || errno == EAGAIN);
+    }
+    boot_datadir_lock_release();
+    bool writer_admitted = recovery_fd >= 0 &&
+                           flock(recovery_fd, LOCK_EX | LOCK_NB) == 0;
+    if (writer_admitted)
+        (void)flock(recovery_fd, LOCK_UN);
+    if (recovery_fd >= 0)
+        (void)close(recovery_fd);
+    test_rm_rf_recursive(dir);
+    return node_held && writer_blocked && writer_admitted;
+}
+
+static bool bdl_try_exclusive_lock(const char *path)
+{
+    int fd = open(path, O_RDWR | O_CLOEXEC | O_NOFOLLOW);
+    if (fd < 0)
+        return false;
+    bool locked = flock(fd, LOCK_EX | LOCK_NB) == 0;
+    if (locked)
+        (void)flock(fd, LOCK_UN);
+    (void)close(fd);
+    return locked;
+}
+
+static void bdl_exec_lock_child(int exec_pipe[2], int hold_pipe[2])
+{
+    (void)close(exec_pipe[0]);
+    (void)close(hold_pipe[1]);
+    if (dup2(hold_pipe[0], STDIN_FILENO) < 0)
+        _exit(126);
+    (void)close(hold_pipe[0]);
+    execl("/bin/cat", "cat", (char *)NULL);
+    _exit(127);
+}
+
+static void bdl_close_fd(int *fd)
+{
+    if (*fd >= 0)
+        (void)close(*fd);
+    *fd = -1;
+}
+
+static bool bdl_exec_pipes_open(int exec_pipe[2], int hold_pipe[2])
+{
+    if (pipe(exec_pipe) != 0)
+        return false;
+    if (pipe(hold_pipe) != 0) {
+        bdl_close_fd(&exec_pipe[0]);
+        bdl_close_fd(&exec_pipe[1]);
+        return false;
+    }
+    if (fcntl(exec_pipe[1], F_SETFD, FD_CLOEXEC) == 0)
+        return true;
+    bdl_close_fd(&exec_pipe[0]);
+    bdl_close_fd(&exec_pipe[1]);
+    bdl_close_fd(&hold_pipe[0]);
+    bdl_close_fd(&hold_pipe[1]);
+    return false;
+}
+
+static bool bdl_exec_observed(int fd)
+{
+    char byte = 0;
+    ssize_t got;
+    do {
+        got = read(fd, &byte, 1);
+    } while (got < 0 && errno == EINTR);
+    return got == 0;
+}
+
+static bool bdl_child_clean(pid_t child)
+{
+    int status = 0;
+    return waitpid(child, &status, 0) == child && WIFEXITED(status) &&
+           WEXITSTATUS(status) == 0;
+}
+
+static bool bdl_exec_retires_lock_descriptors(void)
+{
+    char dir[256];
+    char recovery_path[512];
+    char pid_path[512];
+    test_make_tmpdir(dir, sizeof(dir), "boot_datadir_lock", "exec_retirement");
+    snprintf(recovery_path, sizeof(recovery_path), "%s/wallet-recovery.lock",
+             dir);
+    snprintf(pid_path, sizeof(pid_path), "%s/zclassic23.pid", dir);
+
+    if (!boot_datadir_lock_acquire(dir)) {
+        test_rm_rf_recursive(dir);
+        return false;
+    }
+    int exec_pipe[2] = {-1, -1};
+    int hold_pipe[2] = {-1, -1};
+    if (!bdl_exec_pipes_open(exec_pipe, hold_pipe)) {
+        boot_datadir_lock_release();
+        test_rm_rf_recursive(dir);
+        return false;
+    }
+
+    pid_t child = fork();
+    if (child == 0)
+        bdl_exec_lock_child(exec_pipe, hold_pipe);
+    if (child < 0) {
+        boot_datadir_lock_release();
+        bdl_close_fd(&exec_pipe[0]);
+        bdl_close_fd(&exec_pipe[1]);
+        bdl_close_fd(&hold_pipe[0]);
+        bdl_close_fd(&hold_pipe[1]);
+        test_rm_rf_recursive(dir);
+        return false;
+    }
+
+    bdl_close_fd(&exec_pipe[1]);
+    bdl_close_fd(&hold_pipe[0]);
+    bool exec_observed = bdl_exec_observed(exec_pipe[0]);
+    bdl_close_fd(&exec_pipe[0]);
+    boot_datadir_lock_release();
+    bool locks_retired = bdl_try_exclusive_lock(recovery_path) &&
+                         bdl_try_exclusive_lock(pid_path);
+    bdl_close_fd(&hold_pipe[1]);
+    bool child_clean = bdl_child_clean(child);
+    test_rm_rf_recursive(dir);
+    return exec_observed && locks_retired && child_clean;
+}
+
+static bool bdl_recovery_guard_shape_refused(bool hardlink)
+{
+    char dir[256];
+    char recovery_path[512];
+    char target_path[512];
+    char pid_path[512];
+    char content[64];
+    test_make_tmpdir(dir, sizeof(dir), "boot_datadir_lock",
+                     hardlink ? "recovery_hardlink" : "recovery_symlink");
+    snprintf(recovery_path, sizeof(recovery_path), "%s/wallet-recovery.lock",
+             dir);
+    snprintf(target_path, sizeof(target_path), "%s/not-a-guard", dir);
+    snprintf(pid_path, sizeof(pid_path), "%s/zclassic23.pid", dir);
+
+    bool built = bdl_write_file(target_path, "do-not-touch\n");
+    built = built && (hardlink ? link(target_path, recovery_path)
+                               : symlink(target_path, recovery_path)) == 0;
+    boot_error_reset_for_testing();
+    bool refused = built && !boot_datadir_lock_acquire(dir);
+    const char *code = hardlink ? "BOOT_DATADIR_RECOVERY_LOCK_NOT_PRIVATE"
+                                : "BOOT_DATADIR_RECOVERY_LOCK_OPEN_FAILED";
+    bool typed = refused && bdl_render_is_typed_block(code, "datadir_lock");
+    bool unchanged = bdl_read_file(target_path, content, sizeof(content)) &&
+                     strcmp(content, "do-not-touch\n") == 0;
+    bool no_pidfile = access(pid_path, F_OK) != 0;
+    boot_datadir_lock_release();
+    test_rm_rf_recursive(dir);
+    return typed && unchanged && no_pidfile;
+}
+
 static int test_boot_datadir_lock_platform_arm(void)
 {
     int failures = 0;
+
+    BDL_CHECK("active wallet recovery excludes node before pidfile creation",
+              bdl_recovery_writer_excludes_node());
+    BDL_CHECK("node excludes wallet writers until datadir lock release",
+              bdl_node_excludes_recovery_writer());
+    BDL_CHECK("exec does not inherit either datadir lock descriptor",
+              bdl_exec_retires_lock_descriptors());
+    BDL_CHECK("symlink wallet writer guard is refused without target access",
+              bdl_recovery_guard_shape_refused(false));
+    BDL_CHECK("hard-linked wallet writer guard is refused before pidfile creation",
+              bdl_recovery_guard_shape_refused(true));
 
     {
         char dir[256];

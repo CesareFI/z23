@@ -25,6 +25,7 @@
 #include <unistd.h>
 
 #define BDL_PIDFILE "zclassic23.pid"
+#define BDL_RECOVERY_LOCKFILE "wallet-recovery.lock"
 #define BDL_PHASE   "datadir_lock"
 
 #if defined(_WIN32)
@@ -134,6 +135,7 @@ void boot_datadir_lock_release(void)
 #else
 
 static int g_pidfile_fd = -1;
+static int g_recovery_fd = -1;
 
 static bool write_all(int fd, const char *buf, size_t len)
 {
@@ -174,6 +176,169 @@ static long lock_holder_pid(int fd)
 static const char *const k_second_instance_reason =
     "a second node instance needs its OWN data directory; two processes "
     "writing one datadir corrupt the SQLite and LevelDB stores";
+
+static void report_node_contention(int fd, const char *datadir)
+{
+    long holder = lock_holder_pid(fd);
+    char ps[128], ls[1100];
+    (void)snprintf(ps, sizeof(ps), "ps -o pid,lstart,cmd -p %ld", holder);
+    (void)snprintf(ls, sizeof(ls), "ls -l %s/%s", datadir, BDL_PIDFILE);
+    if (holder > 0) {
+        const struct boot_error_next next[] = {
+            { ps, "identify the process that holds the lock before stopping "
+                  "anything; it is normally the node service for this datadir" },
+            { "zclassic23 -datadir=/path/to/other/datadir",
+              k_second_instance_reason },
+        };
+        boot_error_report(BOOT_ERROR_FATAL, "BOOT_DATADIR_LOCKED", BDL_PHASE,
+                          "another process already holds this data directory",
+                          next, 2,
+                          "datadir=%s holder_pid=%ld lockfile=%s", datadir,
+                          holder, BDL_PIDFILE);
+        return;
+    }
+
+    const struct boot_error_next next[] = {
+        { ls, "the lock file records the owning PID but was empty or "
+              "unparseable here; its mtime still dates the holder's start" },
+        { "zclassic23 -datadir=/path/to/other/datadir",
+          k_second_instance_reason },
+    };
+    boot_error_report(BOOT_ERROR_FATAL, "BOOT_DATADIR_LOCKED", BDL_PHASE,
+                      "another process already holds this data directory and "
+                      "did not record a readable PID",
+                      next, 2, "datadir=%s holder_pid=unknown lockfile=%s",
+                      datadir, BDL_PIDFILE);
+}
+
+static bool report_node_if_pidfile_locked(int dir_fd, const char *datadir)
+{
+    int fd = openat(dir_fd, BDL_PIDFILE,
+                    O_RDWR | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+    if (fd < 0)
+        return false;
+
+    struct stat st;
+    bool regular = fstat(fd, &st) == 0 && S_ISREG(st.st_mode) &&
+                   st.st_nlink == 1;
+    if (!regular) {
+        (void)close(fd);
+        return false;
+    }
+
+    if (flock(fd, LOCK_EX | LOCK_NB) == 0) {
+        (void)flock(fd, LOCK_UN);
+        (void)close(fd);
+        return false;
+    }
+    int e = errno;
+    if (e == EWOULDBLOCK || e == EAGAIN)
+        report_node_contention(fd, datadir);
+    (void)close(fd);
+    return e == EWOULDBLOCK || e == EAGAIN;
+}
+
+static void recovery_lock_release(int fd)
+{
+    if (fd < 0)
+        return;
+    if (flock(fd, LOCK_UN) != 0) {
+        fprintf(stderr, "[boot] Cannot explicitly unlock wallet writer guard: %s\n",
+                strerror(errno));
+    }
+    if (close(fd) != 0) {
+        fprintf(stderr, "[boot] Cannot close wallet writer guard descriptor: %s\n",
+                strerror(errno));
+    }
+}
+
+static int recovery_lock_acquire(int dir_fd, const char *datadir)
+{
+    int fd = openat(dir_fd, BDL_RECOVERY_LOCKFILE,
+                    O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK,
+                    0600);
+    if (fd < 0) {
+        int e = errno;
+        char ls[1100];
+        (void)snprintf(ls, sizeof(ls), "ls -li %s/%s", datadir,
+                       BDL_RECOVERY_LOCKFILE);
+        const struct boot_error_next next[] = {
+            { ls, "inspect the wallet writer guard; symbolic links and "
+                  "unreadable files are refused" },
+        };
+        boot_error_report(BOOT_ERROR_FATAL,
+                          "BOOT_DATADIR_RECOVERY_LOCK_OPEN_FAILED", BDL_PHASE,
+                          "the wallet writer guard could not be opened or created",
+                          next, 1, "datadir=%s lockfile=%s open_errno=%s",
+                          datadir, BDL_RECOVERY_LOCKFILE, strerror(e));
+        return -1;
+    }
+
+    struct stat st;
+    int stat_rc = fstat(fd, &st);
+    if (stat_rc != 0 || !S_ISREG(st.st_mode) || st.st_nlink != 1) {
+        int e = stat_rc != 0 ? errno : EINVAL;
+        unsigned long mode = stat_rc == 0 ? (unsigned long)st.st_mode : 0;
+        unsigned long links = stat_rc == 0 ? (unsigned long)st.st_nlink : 0;
+        (void)close(fd);
+        boot_error_report(BOOT_ERROR_FATAL,
+                          "BOOT_DATADIR_RECOVERY_LOCK_NOT_PRIVATE", BDL_PHASE,
+                          "the wallet writer guard is not a private regular file",
+                          NULL, 0,
+                          "datadir=%s lockfile=%s st_mode=0%lo nlink=%lu "
+                          "stat_errno=%s",
+                          datadir, BDL_RECOVERY_LOCKFILE, mode, links,
+                          strerror(e));
+        return -1;
+    }
+
+    if (flock(fd, LOCK_EX | LOCK_NB) == 0)
+        return fd;
+
+    int e = errno;
+    long holder = lock_holder_pid(fd);
+    bool node_reported = (e == EWOULDBLOCK || e == EAGAIN) &&
+                         report_node_if_pidfile_locked(dir_fd, datadir);
+    (void)close(fd);
+    if (node_reported)
+        return -1;
+    if (e == EWOULDBLOCK || e == EAGAIN) {
+        char ls[1100];
+        (void)snprintf(ls, sizeof(ls), "ls -l %s/%s", datadir,
+                       BDL_RECOVERY_LOCKFILE);
+        const struct boot_error_next next[] = {
+            { ls, "inspect the writer guard owner and mtime, then wait for "
+                  "the active node, restore, or recovery to finish" },
+        };
+        boot_error_report(BOOT_ERROR_FATAL, "BOOT_DATADIR_RECOVERY_ACTIVE",
+                          BDL_PHASE,
+                          "another authorized writer currently owns this data directory",
+                          next, 1,
+                          "datadir=%s holder_pid=%ld lockfile=%s",
+                          datadir, holder, BDL_RECOVERY_LOCKFILE);
+    } else {
+        boot_error_report(BOOT_ERROR_FATAL,
+                          "BOOT_DATADIR_RECOVERY_LOCK_FAILED", BDL_PHASE,
+                          "the wallet writer guard could not be locked",
+                          NULL, 0, "datadir=%s lockfile=%s flock_errno=%s",
+                          datadir, BDL_RECOVERY_LOCKFILE, strerror(e));
+    }
+    return -1;
+}
+
+static bool pidfile_record(int fd, int dir_fd)
+{
+    char pid_text[32];
+    int pid_len = snprintf(pid_text, sizeof(pid_text), "%ld\n",
+                           (long)getpid());
+    if (pid_len <= 0 || (size_t)pid_len >= sizeof(pid_text)) {
+        errno = EOVERFLOW;
+        return false;
+    }
+    return ftruncate(fd, 0) == 0 && lseek(fd, 0, SEEK_SET) == 0 &&
+           write_all(fd, pid_text, (size_t)pid_len) && fsync(fd) == 0 &&
+           fsync(dir_fd) == 0;
+}
 
 bool boot_datadir_lock_acquire(const char *datadir)
 {
@@ -325,12 +490,19 @@ bool boot_datadir_lock_acquire(const char *datadir)
         return false;
     }
 
+    int recovery_fd = recovery_lock_acquire(dir_fd, datadir);
+    if (recovery_fd < 0) {
+        (void)close(dir_fd);
+        return false;
+    }
+
     int fd = openat(dir_fd, BDL_PIDFILE,
                     O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK,
                     0600);
     if (fd < 0) {
         int e = errno;
-        close(dir_fd);
+        recovery_lock_release(recovery_fd);
+        (void)close(dir_fd);
         char ls[1100];
         (void)snprintf(ls, sizeof(ls), "ls -l %s/%s", datadir, BDL_PIDFILE);
         const struct boot_error_next next[] = {
@@ -355,8 +527,9 @@ bool boot_datadir_lock_acquire(const char *datadir)
         int e = stat_rc != 0 ? errno : EINVAL;
         unsigned long mode = stat_rc == 0 ? (unsigned long)st.st_mode : 0;
         unsigned long links = stat_rc == 0 ? (unsigned long)st.st_nlink : 0;
-        close(fd);
-        close(dir_fd);
+        (void)close(fd);
+        recovery_lock_release(recovery_fd);
+        (void)close(dir_fd);
         char ls[1100];
         (void)snprintf(ls, sizeof(ls), "ls -li %s/%s", datadir, BDL_PIDFILE);
         const struct boot_error_next next[] = {
@@ -377,47 +550,8 @@ bool boot_datadir_lock_acquire(const char *datadir)
 
     if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
         int e = errno;
-        long holder = lock_holder_pid(fd);
-        close(fd);
-        close(dir_fd);
         if (e == EWOULDBLOCK || e == EAGAIN) {
-            char ps[128], ls[1100];
-            (void)snprintf(ps, sizeof(ps), "ps -o pid,lstart,cmd -p %ld",
-                           holder);
-            (void)snprintf(ls, sizeof(ls), "ls -l %s/%s", datadir,
-                           BDL_PIDFILE);
-            if (holder > 0) {
-                const struct boot_error_next next[] = {
-                    { ps, "identify the process that holds the lock before "
-                          "stopping anything; it is normally the node service "
-                          "for this datadir" },
-                    { "zclassic23 -datadir=/path/to/other/datadir",
-                      k_second_instance_reason },
-                };
-                boot_error_report(BOOT_ERROR_FATAL, "BOOT_DATADIR_LOCKED",
-                                  BDL_PHASE,
-                                  "another process already holds this data "
-                                  "directory",
-                                  next, 2,
-                                  "datadir=%s holder_pid=%ld lockfile=%s",
-                                  datadir, holder, BDL_PIDFILE);
-            } else {
-                const struct boot_error_next next[] = {
-                    { ls, "the lock file records the owning PID but was empty "
-                          "or unparseable here; its mtime still dates the "
-                          "holder's start" },
-                    { "zclassic23 -datadir=/path/to/other/datadir",
-                      k_second_instance_reason },
-                };
-                boot_error_report(BOOT_ERROR_FATAL, "BOOT_DATADIR_LOCKED",
-                                  BDL_PHASE,
-                                  "another process already holds this data "
-                                  "directory and did not record a readable "
-                                  "PID",
-                                  next, 2,
-                                  "datadir=%s holder_pid=unknown lockfile=%s",
-                                  datadir, BDL_PIDFILE);
-            }
+            report_node_contention(fd, datadir);
         } else {
             char stfs[1100];
             (void)snprintf(stfs, sizeof(stfs), "stat -f -c %%T %s", datadir);
@@ -433,24 +567,18 @@ bool boot_datadir_lock_acquire(const char *datadir)
                               next, 1, "datadir=%s flock_errno=%s",
                               datadir, strerror(e));
         }
+        (void)close(fd);
+        recovery_lock_release(recovery_fd);
+        (void)close(dir_fd);
         return false;
     }
 
-    char pid_text[32];
-    int pid_len = snprintf(pid_text, sizeof(pid_text), "%ld\n",
-                           (long)getpid());
-    bool pid_fits = pid_len > 0 && (size_t)pid_len < sizeof(pid_text);
-    if (!pid_fits)
-        errno = EOVERFLOW;
-    bool recorded = pid_fits && ftruncate(fd, 0) == 0 &&
-                    lseek(fd, 0, SEEK_SET) == 0 &&
-                    write_all(fd, pid_text, (size_t)pid_len) && fsync(fd) == 0 &&
-                    fsync(dir_fd) == 0;
-    if (!recorded) {
+    if (!pidfile_record(fd, dir_fd)) {
         int e = errno ? errno : EIO;
         (void)flock(fd, LOCK_UN);
-        close(fd);
-        close(dir_fd);
+        (void)close(fd);
+        recovery_lock_release(recovery_fd);
+        (void)close(dir_fd);
         char df[1100];
         (void)snprintf(df, sizeof(df), "df -h %s", datadir);
         const struct boot_error_next next[] = {
@@ -466,7 +594,8 @@ bool boot_datadir_lock_acquire(const char *datadir)
         return false;
     }
 
-    close(dir_fd);
+    (void)close(dir_fd);
+    g_recovery_fd = recovery_fd;
     g_pidfile_fd = fd;
     /* Publish before the storage probes: bootwait must not observe a stale
      * serving beacon during their potentially long startup measurement. */
@@ -495,19 +624,22 @@ bool boot_datadir_lock_acquire(const char *datadir)
 
 void boot_datadir_lock_release(void)
 {
-    if (g_pidfile_fd < 0)
-        return;
-
     int fd = g_pidfile_fd;
+    int recovery_fd = g_recovery_fd;
     g_pidfile_fd = -1;
-    if (flock(fd, LOCK_UN) != 0) {
-        fprintf(stderr, "[boot] Cannot explicitly unlock data directory: %s\n",
-                strerror(errno));
+    g_recovery_fd = -1;
+    if (fd >= 0) {
+        if (flock(fd, LOCK_UN) != 0) {
+            fprintf(stderr,
+                    "[boot] Cannot explicitly unlock data directory: %s\n",
+                    strerror(errno));
+        }
+        if (close(fd) != 0) {
+            fprintf(stderr, "[boot] Cannot close datadir lock descriptor: %s\n",
+                    strerror(errno));
+        }
     }
-    if (close(fd) != 0) {
-        fprintf(stderr, "[boot] Cannot close datadir lock descriptor: %s\n",
-                strerror(errno));
-    }
+    recovery_lock_release(recovery_fd);
 }
 
 #endif
