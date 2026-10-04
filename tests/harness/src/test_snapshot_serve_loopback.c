@@ -191,6 +191,20 @@ static bool lb_retry_offer_after_send_failure(
         struct snapshot_sync_service *receiver_svc,
         const struct snapshot_offer *offer)
 {
+    zcl_alloc_fault_fail_next("send_segment");
+    send_snapshot_offer_msg(offer_sender, offer,
+                            receiver_mp->params->pchMessageStart);
+    bool offer_failure_retriable =
+        zcl_alloc_fault_armed_label() == NULL &&
+        offer_sentinel->next == NULL &&
+        offer_sender->zsync_offered_height == 0 &&
+        offer_sender->zsync_offered_count == 0 &&
+        offer_sender->zsync_offer_version == 0 &&
+        offer_sender->zsync_snapshot_version == 0;
+    zcl_alloc_fault_clear();
+    if (!offer_failure_retriable)
+        return false;
+
     send_snapshot_offer_msg(offer_sender, offer,
                             receiver_mp->params->pchMessageStart);
     zcl_alloc_fault_fail_next("stream_data");

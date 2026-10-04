@@ -384,14 +384,16 @@ static bool msg_processor_copy_block_manifest(struct block_piece_manifest *out,
  *       num_utxos(8) + total_bytes(8) + mmb_root(32) = 148 bytes.
  * V2 appends protocol/schema/peer_tip/chainwork. Older ZCL23 nodes read
  * 116 or 148 bytes and ignore the trailing fields. */
-void send_snapshot_offer_msg(struct p2p_node *node,
+bool send_snapshot_offer_msg(struct p2p_node *node,
                              const struct snapshot_offer *offer,
                              const unsigned char *msg_start)
 {
+    if (!node || !offer || !msg_start)
+        return false;
+
     uint64_t offer_version = msg_processor_offer_cache_version();
     uint64_t snapshot_version = fast_sync_snapshot_cache_version();
 
-    p2p_node_begin_message(node, MSG_SNAPSHOT_OFFER, msg_start);
     struct byte_stream os;
     stream_init(&os, 192);
     stream_write_i32_le(&os, offer->height);
@@ -400,14 +402,21 @@ void send_snapshot_offer_msg(struct p2p_node *node,
     stream_write_bytes(&os, offer->mmr_root, 32);
     stream_write_u64_le(&os, offer->num_utxos);
     stream_write_u64_le(&os, offer->total_bytes);
-    stream_write_bytes(&os, offer->mmb_root, 32); /* appended: backward compat */
+    stream_write_bytes(&os, offer->mmb_root, 32);
     stream_write_u32_le(&os, offer->protocol_version);
     stream_write_u32_le(&os, offer->snapshot_schema_version);
     stream_write_i32_le(&os, offer->peer_tip_height);
     stream_write_bytes(&os, offer->chain_work, 32);
-    p2p_node_write_message_data(node, os.data, os.size);
-    p2p_node_end_message(node);
+    bool encoded = !os.error;
+    bool sent = false;
+    if (encoded &&
+        p2p_node_begin_message(node, MSG_SNAPSHOT_OFFER, msg_start)) {
+        p2p_node_write_message_data(node, os.data, os.size);
+        sent = p2p_node_end_message(node);
+    }
     stream_free(&os);
+    if (!sent)
+        return false;
 
     memcpy(node->zsync_offered_root, offer->utxo_root, 32);
     memcpy(node->zsync_offered_mmr, offer->mmr_root, 32);
@@ -416,6 +425,7 @@ void send_snapshot_offer_msg(struct p2p_node *node,
     node->zsync_offered_count = offer->num_utxos;
     node->zsync_offer_version = offer_version;
     node->zsync_snapshot_version = snapshot_version;
+    return true;
 }
 
 /* Send our manifest to a ZCL23 peer. Called after version/verack handshake. */
@@ -646,8 +656,8 @@ void mp_serve_snapshot_req(struct msg_processor *mp, struct p2p_node *node,
                        (unsigned long long)offer.num_utxos,
                        (unsigned long long)current_offer_version,
                        (unsigned long long)current_snapshot_version);
-                send_snapshot_offer_msg(node, &offer,
-                                        mp->params->pchMessageStart);
+                (void)send_snapshot_offer_msg(
+                    node, &offer, mp->params->pchMessageStart);
                 break;
             }
             struct snapsync_serve_start serve = {0};
