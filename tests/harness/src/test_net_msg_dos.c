@@ -459,6 +459,63 @@ static int dos_inv_getdata_serialize_failure_rollback(
     return failures;
 }
 
+static int dos_inv_truncated_prefix_rollback(struct msg_processor *mp,
+                                             struct net_manager *nm)
+{
+    int failures = 0;
+    struct download_manager *dm = get_download_mgr();
+    (void)dl_drain_for_backpressure(dm);
+
+    struct block_index *tip = active_chain_tip(&mp->main_state->chain_active);
+    uint32_t saved_tip_time = tip ? tip->nTime : 0;
+    if (tip)
+        tip->nTime = (uint32_t)platform_time_wall_time_t();
+
+    struct net_address addr;
+    net_address_init(&addr);
+    unsigned char ip[4] = {203, 0, 113, 84};
+    net_addr_set_ipv4(&addr.svc.addr, ip);
+    addr.svc.port = 8033;
+    struct p2p_node *node = p2p_node_create(
+        nm, ZCL_INVALID_SOCKET, &addr, "inv-truncated-prefix", true);
+    DOS_CHECK("inv truncated prefix: node created", node != NULL);
+    if (node) {
+        node->state = PEER_ACTIVE;
+        node->version = PROTOCOL_VERSION;
+
+        struct uint256 wanted;
+        memset(wanted.data, 0x79, sizeof(wanted.data));
+        struct inv_item inv;
+        inv_item_init_typed(&inv, MSG_BLOCK, &wanted);
+        struct byte_stream s;
+        stream_init(&s, 64);
+        bool built = stream_write_compact_size(&s, 2) &&
+                     inv_item_serialize(&inv, &s) &&
+                     stream_write_u32_le(&s, MSG_BLOCK);
+        DOS_CHECK("inv truncated prefix: malformed batch built", built);
+
+        bool handled = built && process_inv(mp, node, &s);
+        bool released = !dl_is_in_flight(dm, &wanted);
+        struct uint256 reassigned;
+        bool immediately_reassignable =
+            dl_assign_to_peer(dm, (uint32_t)node->id + 1,
+                              &reassigned, 1) == 1 &&
+            uint256_eq(&reassigned, &wanted);
+
+        DOS_CHECK("inv truncated prefix: handler rejects batch", !handled);
+        DOS_CHECK("inv truncated prefix: unsent ownership released", released);
+        DOS_CHECK("inv truncated prefix: block immediately reassignable",
+                  immediately_reassignable);
+
+        stream_free(&s);
+        p2p_node_free(node);
+    }
+    if (tip)
+        tip->nTime = saved_tip_time;
+    (void)dl_drain_for_backpressure(dm);
+    return failures;
+}
+
 int test_net_msg_dos(void);
 int test_net_msg_dos(void)
 {
@@ -1283,6 +1340,10 @@ int test_net_msg_dos(void)
     /* ── N. Batch serialization failure is transactional per item:
      * keep the valid prefix, release only the item that never serialized. */
     failures += dos_inv_getdata_serialize_failure_rollback(&mp, &nm);
+
+    /* ── O. A malformed suffix aborts the batch before getdata is sent.
+     * Release block ownership acquired from the valid prefix immediately. */
+    failures += dos_inv_truncated_prefix_rollback(&mp, &nm);
 
     net_manager_free(&nm);
     sync_set_state(sync0, "net_msg_dos restore");

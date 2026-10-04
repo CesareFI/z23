@@ -247,6 +247,7 @@ bool process_inv(struct msg_processor *mp, struct p2p_node *node,
     for (uint64_t i = 0; i < count; i++) {
         struct inv_item inv;
         if (!inv_item_deserialize(&inv, s)) {
+            (void)msg_tx_requeue_unsent_blocks(node, &getdata);
             stream_free(&getdata);
             LOG_FAIL("net", "failed to deserialize inv[%llu] from %s",
                      (unsigned long long)i, node->addr_name);
