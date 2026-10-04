@@ -17,6 +17,7 @@
 #include <sqlite3.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #define SA_CHECK(name, expr) do {                                      \
@@ -113,10 +114,42 @@ static bool sa_flip_body_byte(const char *path)
     return ok;
 }
 
+static int sa_snapshot_tmp_link_case(void)
+{
+    int failures = 0;
+    char dir[256], snap[512], tmp[520], victim[512];
+    test_make_tmpdir(dir, sizeof(dir), "snapshot_apply_coins_kv", "tmp_link");
+    snprintf(snap, sizeof(snap), "%s/anchor.snapshot", dir);
+    snprintf(tmp, sizeof(tmp), "%s.tmp", snap);
+    snprintf(victim, sizeof(victim), "%s/victim", dir);
+    FILE *f = fopen(victim, "w");
+    if (f) {
+        fputs("keep-me\n", f);
+        fclose(f);
+    }
+    bool linked = symlink(victim, tmp) == 0;
+    uint8_t root[32];
+    uint64_t count = 0;
+    bool wrote = linked && sa_write_snapshot(snap, root, &count);
+    char buf[32] = {0};
+    f = fopen(victim, "r");
+    size_t n = f ? fread(buf, 1, sizeof(buf) - 1, f) : 0;
+    if (f)
+        fclose(f);
+    struct stat st;
+    bool ok = wrote && lstat(snap, &st) == 0 && S_ISREG(st.st_mode) &&
+              n == strlen("keep-me\n") &&
+              memcmp(buf, "keep-me\n", n) == 0;
+    SA_CHECK("snapshot publication preserves linked temp target", ok);
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
 int test_snapshot_apply_coins_kv(void)
 {
     printf("\n=== snapshot_apply_coins_kv ===\n");
     int failures = 0;
+    failures += sa_snapshot_tmp_link_case();
 
     char dir[256];
     test_make_tmpdir(dir, sizeof(dir), "snapshot_apply_coins_kv", "main");

@@ -25,6 +25,7 @@
 #include "util/safe_alloc.h"
 
 #include <sqlite3.h>
+#include <fcntl.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -46,6 +47,31 @@ static void le64(uint8_t b[8], uint64_t v)
 /* Inline-buffer cap for the per-record serialise (real ZCL scripts fit; an
  * oversized script falls back to a heap buffer). */
 enum { SNAP_SCRIPT_INLINE_CAP = 1024 };
+
+/* Create the streamed snapshot beside its destination under an exclusive,
+ * private name.  A fixed <out>.tmp leaf lets a stale or hostile symlink turn
+ * snapshot generation into an arbitrary-file truncation before rename. */
+static FILE *snapshot_staging_open(const char *out_path, char *tmp_path,
+                                   size_t tmp_cap)
+{
+    int n = snprintf(tmp_path, tmp_cap, "%s.tmp.XXXXXX", out_path);
+    if (n < 0 || (size_t)n >= tmp_cap)
+        return NULL;
+    int fd = mkstemp(tmp_path);
+    if (fd < 0)
+        return NULL;
+    if (fcntl(fd, F_SETFD, FD_CLOEXEC) != 0) {
+        close(fd);
+        unlink(tmp_path);
+        return NULL;
+    }
+    FILE *out = fdopen(fd, "wb");
+    if (!out) {
+        close(fd);
+        unlink(tmp_path);
+    }
+    return out;
+}
 
 /* Stream every coins row in canonical (txid,vout) order to BOTH `out` and the
  * SHA3 sponge `ctx`, using the SAME per-record encoder as coins_kv_commitment,
@@ -233,16 +259,10 @@ bool coins_kv_snapshot_write(sqlite3 *db, const char *out_path,
 
     uint32_t snap_version = snapshot_version_for(shielded_or_null);
 
-    char tmp_path[1100];
-    int np = snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", out_path);
-    if (np < 0 || (size_t)np >= sizeof(tmp_path)) {
-        LOG_WARN("coins_kv", "snapshot_write: out_path too long");
-        return false;
-    }
-
-    FILE *out = fopen(tmp_path, "wb");
+    char tmp_path[1200];
+    FILE *out = snapshot_staging_open(out_path, tmp_path, sizeof(tmp_path));
     if (!out) {
-        LOG_WARN("coins_kv", "snapshot_write: fopen(%s) failed", tmp_path);
+        LOG_WARN("coins_kv", "snapshot_write: staging create failed");
         return false;
     }
 

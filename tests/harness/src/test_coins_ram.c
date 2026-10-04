@@ -28,8 +28,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <pthread.h>
+#include <unistd.h>
 
 #define CR_CHECK(name, expr) do {                                       \
     if (expr) { printf("  coins_ram: %s... OK\n", (name)); }            \
@@ -53,6 +55,40 @@ static int64_t cr_scalar_i64(sqlite3 *db, const char *sql)
         sqlite3_finalize(s);
     }
     return out;
+}
+
+static int cr_snapshot_tmp_link_case(const char *dir,
+                                     const uint8_t expected_root[32])
+{
+    int failures = 0;
+    char snap[512], tmp[520], victim[512];
+    snprintf(snap, sizeof(snap), "%s/overlay.snapshot", dir);
+    snprintf(tmp, sizeof(tmp), "%s.tmp", snap);
+    snprintf(victim, sizeof(victim), "%s/snapshot-victim", dir);
+    FILE *vf = fopen(victim, "w");
+    if (vf) {
+        fputs("keep-me\n", vf);
+        fclose(vf);
+    }
+    bool linked = symlink(victim, tmp) == 0;
+    uint8_t snap_root[32] = {0};
+    uint64_t snap_count = 0;
+    int64_t snap_supply = 0;
+    bool wrote = linked && coins_ram_snapshot_write(
+        snap, 15, NULL, NULL, snap_root, &snap_count, &snap_supply);
+    char preserved[16] = {0};
+    vf = fopen(victim, "r");
+    size_t preserved_len =
+        vf ? fread(preserved, 1, sizeof(preserved) - 1, vf) : 0;
+    if (vf)
+        fclose(vf);
+    struct stat st;
+    CR_CHECK("snapshot: linked fixed temp target preserved",
+             wrote && lstat(snap, &st) == 0 && S_ISREG(st.st_mode) &&
+             preserved_len == strlen("keep-me\n") &&
+             memcmp(preserved, "keep-me\n", preserved_len) == 0 &&
+             snap_count == 4 && memcmp(snap_root, expected_root, 32) == 0);
+    return failures;
 }
 
 /* One logical mutation in a deterministic fold script. */
@@ -228,6 +264,9 @@ int test_coins_ram(void)
     uint8_t ov_root2[32] = {0};
     CR_CHECK("ov: commitment stable", coins_kv_commitment(db, ov_root2) == 0 &&
              memcmp(ov_root, ov_root2, 32) == 0);
+
+    /* Snapshot publication must ignore a stale/hostile fixed .tmp leaf. */
+    failures += cr_snapshot_tmp_link_case(dir, ov_root);
 
     /* Read semantics over the effective set (before any flush): */
     int64_t v = 0; size_t sl = 0; uint8_t sbuf[16] = {0};

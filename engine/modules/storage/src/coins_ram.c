@@ -20,6 +20,7 @@
 
 #include <sqlite3.h>
 #include <assert.h>
+#include <fcntl.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdint.h>
@@ -96,6 +97,30 @@ bool coins_ram_enabled(void)
 }
 
 bool coins_ram_active(void) { return G.active && G.slots != NULL; }
+
+/* Match the durable writer's exclusive adjacent staging contract.  A fixed
+ * <out>.tmp leaf must never be followed or truncated. */
+static FILE *snapshot_staging_open(const char *out_path, char *tmp_path,
+                                   size_t tmp_cap)
+{
+    int n = snprintf(tmp_path, tmp_cap, "%s.tmp.XXXXXX", out_path);
+    if (n < 0 || (size_t)n >= tmp_cap)
+        return NULL;
+    int fd = mkstemp(tmp_path);
+    if (fd < 0)
+        return NULL;
+    if (fcntl(fd, F_SETFD, FD_CLOEXEC) != 0) {
+        close(fd);
+        unlink(tmp_path);
+        return NULL;
+    }
+    FILE *out = fdopen(fd, "wb");
+    if (!out) {
+        close(fd);
+        unlink(tmp_path);
+    }
+    return out;
+}
 
 /* TLS counter confines the lock-free overlay to the reducer fold thread. */
 static _Thread_local int t_writer_depth = 0;
@@ -796,15 +821,10 @@ bool coins_ram_snapshot_write(const char *out_path, int32_t height,
     if (!build_effective_sorted(&recs, &n, &scr_pool))
         return false;
 
-    char tmp_path[1100];
-    int np = snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", out_path);
-    if (np < 0 || (size_t)np >= sizeof(tmp_path)) {
-        free(recs); free(scr_pool);
-        LOG_FAIL("coins_ram", "snapshot_write: path too long");
-    }
-    FILE *out = fopen(tmp_path, "wb");
+    char tmp_path[1200];
+    FILE *out = snapshot_staging_open(out_path, tmp_path, sizeof(tmp_path));
     if (!out) { free(recs); free(scr_pool);
-        LOG_FAIL("coins_ram", "snapshot_write: fopen(%s) failed", tmp_path); }
+        LOG_FAIL("coins_ram", "snapshot_write: staging create failed"); }
 
     /* 104-byte header reserved, rewritten at the end (same layout as
      * coins_kv_snapshot_write). */
