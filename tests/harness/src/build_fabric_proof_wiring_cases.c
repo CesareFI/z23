@@ -1010,6 +1010,46 @@ _test_next:
     }
     return failures;
 }
+
+/* A failed incremental sync leaves the old receiver in memory. A later
+ * attach still succeeds, but proof may not decide from that stale view. */
+static int pw_case_receiver_sync_fault(void)
+{
+    int failures = 0;
+    struct pw p;
+    struct pw_worker a;
+    pw_worker_init(&a, 74);
+    memset(&p, 0, sizeof(p));
+    TEST("build_fabric proof wiring: failed receiver sync closes shadow") {
+        ASSERT(pw_open(&p, "receiver_sync_fault"));
+        ASSERT(pw_approve(&p, &a));
+        ASSERT(pw_proof_open(&p, &a));
+        uint8_t root[32];
+        build_fabric_proof_test_fault(BUILD_FABRIC_PROOF_FAULT_RECEIVER_SYNC);
+        bool ran = pw_run_unit(&p, &a, 501, root);
+        build_fabric_proof_test_fault(BUILD_FABRIC_PROOF_FAULT_NONE);
+        ASSERT(ran);
+        struct build_fabric_proof_stats before = pw_stats(&a);
+        ASSERT_STR_EQ(before.receiver_state,
+                      BUILD_FABRIC_PROOF_STATE_SYNC_REFUSED);
+        ASSERT(pw_attach_unchanged(&p, &a, root));
+        struct build_fabric_proof_stats after = pw_stats(&a);
+        ASSERT_EQ(after.attach_hit, before.attach_hit + 1u);
+        ASSERT_EQ(after.shadow_unavailable, before.shadow_unavailable + 1u);
+        ASSERT_EQ(after.shadow_decisions, before.shadow_decisions);
+        ASSERT_STR_EQ(after.last_ticket_reason, "receiver_not_ready");
+        pw_proof_close(&a);
+        node_db_close(&p.ndb);
+        PASS();
+    }
+    if (0) {
+_test_next:
+        build_fabric_proof_test_fault(BUILD_FABRIC_PROOF_FAULT_NONE);
+        pw_proof_close(&a);
+        node_db_close(&p.ndb);
+    }
+    return failures;
+}
 #endif
 
 int bf_proof_wiring_cases(void);
@@ -1030,6 +1070,7 @@ int bf_proof_wiring_cases(void)
     failures += pw_case_issue_fault(BUILD_FABRIC_PROOF_FAULT_ISSUE_FINALIZE);
     failures += pw_case_open_fault();
     failures += pw_case_shadow_fault();
+    failures += pw_case_receiver_sync_fault();
 #endif
     return failures;
 }

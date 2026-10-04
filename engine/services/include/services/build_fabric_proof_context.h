@@ -174,6 +174,7 @@ enum build_fabric_proof_fault {
     BUILD_FABRIC_PROOF_FAULT_ISSUE_STAGE,
     BUILD_FABRIC_PROOF_FAULT_ISSUE_TICKET_PUT,
     BUILD_FABRIC_PROOF_FAULT_ISSUE_FINALIZE,
+    BUILD_FABRIC_PROOF_FAULT_RECEIVER_SYNC,
     BUILD_FABRIC_PROOF_FAULT_SHADOW_DECIDE,
 };
 void build_fabric_proof_test_fault(enum build_fabric_proof_fault fault);

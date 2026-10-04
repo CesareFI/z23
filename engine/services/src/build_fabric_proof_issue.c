@@ -182,8 +182,9 @@ static void bfpi_receiver_sync(struct build_fabric_proof_context *ctx,
     if (!ctx->receiver) return;
     const uint8_t *delta[1] = { p->ticket_wire };
     size_t lens[1] = { sizeof(p->ticket_wire) };
-    struct vcs_proof_sync_report report;
-    bool synced = vcs_proof_receiver_sync(ctx->receiver, p->checkpoint_wire,
+    struct vcs_proof_sync_report report = {0};
+    bool synced = !BFPC_FAULT(BUILD_FABRIC_PROOF_FAULT_RECEIVER_SYNC) &&
+                  vcs_proof_receiver_sync(ctx->receiver, p->checkpoint_wire,
                                           sizeof(p->checkpoint_wire), delta,
                                           lens, 1, &report) &&
                   (report.outcome == VCS_PROOF_SYNC_ADVANCED ||
@@ -192,7 +193,7 @@ static void bfpi_receiver_sync(struct build_fabric_proof_context *ctx,
         atomic_store(&ctx->live.receiver_state,
                      BUILD_FABRIC_PROOF_STATE_SYNC_REFUSED);
         LOG_ERROR(BFPI_LOG, "proof receiver refused own ticket: %s",
-                  report.reason ? report.reason : "unknown");
+                  report.reason ? report.reason : "receiver_sync_unavailable");
     }
     atomic_store(&ctx->live.receiver_tickets,
                  vcs_proof_receiver_ticket_count(ctx->receiver));

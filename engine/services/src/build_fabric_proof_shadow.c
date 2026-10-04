@@ -95,6 +95,9 @@ static const char *bfps_decide(struct build_fabric_proof_context *ctx,
                                struct vcs_proof_reuse_decision *decision)
 {
     if (!ctx->receiver) return "receiver_unavailable";
+    if (strcmp(atomic_load(&ctx->live.receiver_state),
+               BUILD_FABRIC_PROOF_STATE_READY) != 0)
+        return "receiver_not_ready";
     int64_t now = (int64_t)platform_time_wall_unix();
     struct bfpc_trust trust;
     if (BFPC_FAULT(BUILD_FABRIC_PROOF_FAULT_SHADOW_DECIDE) ||
