@@ -361,6 +361,12 @@ int swarm_sync_progress(const struct swarm_sync *ss);
 /* Handle timeout: re-assign inflight chunks older than timeout_secs */
 void swarm_sync_handle_timeouts(struct swarm_sync *ss, int timeout_secs);
 
+/* Requeue only if peer_id still owns this in-flight chunk. Stale per-peer
+ * request slots must not revoke work that a timeout reassigned elsewhere. */
+bool swarm_sync_requeue_chunk_for_peer(struct swarm_sync *ss,
+                                       uint32_t chunk_index,
+                                       int peer_id);
+
 /* Release snapshot chunks owned by a peer that disconnected so another peer
  * can claim them immediately instead of waiting for the timeout sweep. */
 size_t swarm_sync_peer_disconnected(struct swarm_sync *ss, int peer_id);

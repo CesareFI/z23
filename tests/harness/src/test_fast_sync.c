@@ -645,6 +645,35 @@ static int test_swarm_request_time_is_monotonic(void)
     return failures;
 }
 
+static int test_swarm_stale_owner(void)
+{
+    int failures = 0;
+    TEST("swarm_sync stale owner cannot revoke reassigned chunk") {
+        uint8_t hashes[1][32] = {{0}};
+        struct sync_manifest manifest = {
+            .num_chunks = 1,
+            .chunk_size = SYNC_CHUNK_SIZE,
+            .chunk_hashes = hashes
+        };
+        struct swarm_sync ss;
+        ASSERT(swarm_sync_init(&ss, &manifest, NULL));
+        ASSERT(swarm_sync_assign_chunk(&ss, 11) == 0);
+        ss.chunk_request_time[0] -= 60;
+        swarm_sync_handle_timeouts(&ss, 30);
+        ASSERT(swarm_sync_assign_chunk(&ss, 22) == 0);
+
+        ASSERT(!swarm_sync_requeue_chunk_for_peer(&ss, 0, 11));
+        ASSERT(ss.chunk_states[0] == CHUNK_INFLIGHT);
+        ASSERT(ss.chunk_peer[0] == 22);
+        ASSERT(ss.chunks_inflight == 1);
+        ASSERT(swarm_sync_requeue_chunk_for_peer(&ss, 0, 22));
+
+        swarm_sync_free(&ss);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_swarm_late_duplicate_is_idempotent(void)
 {
     int failures = 0;
@@ -1965,6 +1994,7 @@ int test_fast_sync(void)
     failures += test_swarm_init_assign();
     failures += test_swarm_timeout_reassign();
     failures += test_swarm_request_time_is_monotonic();
+    failures += test_swarm_stale_owner();
     failures += test_swarm_late_duplicate_is_idempotent();
     failures += test_swarm_disconnect_requeues_owned_chunks();
 

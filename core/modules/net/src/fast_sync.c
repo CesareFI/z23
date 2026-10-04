@@ -1450,6 +1450,24 @@ void swarm_sync_handle_timeouts(struct swarm_sync *ss, int timeout_secs)
     }
 }
 
+bool swarm_sync_requeue_chunk_for_peer(struct swarm_sync *ss,
+                                       uint32_t chunk_index,
+                                       int peer_id)
+{
+    if (!ss || !ss->chunk_states || !ss->chunk_peer ||
+        !ss->chunk_request_time ||
+        chunk_index >= ss->manifest.num_chunks ||
+        ss->chunk_states[chunk_index] != CHUNK_INFLIGHT ||
+        ss->chunk_peer[chunk_index] != peer_id)
+        return false;
+    ss->chunk_states[chunk_index] = CHUNK_NEEDED;
+    ss->chunk_peer[chunk_index] = -1;
+    ss->chunk_request_time[chunk_index] = 0;
+    if (ss->chunks_inflight > 0)
+        ss->chunks_inflight--;
+    return true;
+}
+
 size_t swarm_sync_peer_disconnected(struct swarm_sync *ss, int peer_id)
 {
     if (!ss || !ss->chunk_states || !ss->chunk_peer)

@@ -407,31 +407,14 @@ static void release_failed_snapshot_followup(
 }
 
 /* Caller holds g_swarm_mutex. */
-static bool requeue_owned_chunk(struct swarm_sync *ss, uint32_t chunk_index,
-                                int peer_id)
-{
-    if (!ss || !ss->chunk_states || !ss->chunk_peer ||
-        !ss->chunk_request_time ||
-        chunk_index >= ss->manifest.num_chunks ||
-        ss->chunk_states[chunk_index] != CHUNK_INFLIGHT ||
-        ss->chunk_peer[chunk_index] != peer_id)
-        return false;
-    ss->chunk_states[chunk_index] = CHUNK_NEEDED;
-    ss->chunk_peer[chunk_index] = -1;
-    ss->chunk_request_time[chunk_index] = 0;
-    if (ss->chunks_inflight > 0)
-        ss->chunks_inflight--;
-    return true;
-}
-
-/* Caller holds g_swarm_mutex. */
 static void push_assigned_chunk_locked(struct msg_processor *mp,
                                        struct p2p_node *node,
                                        uint32_t chunk_index)
 {
     if (push_index_request(mp, node, MSG_CHUNK_REQ, chunk_index))
         return;
-    bool released = requeue_owned_chunk(&g_swarm, chunk_index, node->id);
+    bool released = swarm_sync_requeue_chunk_for_peer(
+        &g_swarm, chunk_index, node->id);
     if (released) {
         node->swarm_inflight_chunk = -1;
         node->swarm_chunk_req_time = 0;
@@ -451,7 +434,8 @@ static void push_assigned_chunk(struct msg_processor *mp,
         return;
     bool released = false;
     if (swarm_mutex_lock()) {
-        released = requeue_owned_chunk(&g_swarm, chunk_index, node->id);
+        released = swarm_sync_requeue_chunk_for_peer(
+            &g_swarm, chunk_index, node->id);
         swarm_mutex_unlock();
     }
     if (released) {
@@ -1893,16 +1877,13 @@ void mp_snapshot_send_tick(struct msg_processor *mp,
             int64_t now_sw = (int64_t)platform_time_wall_time_t();
             if (now_sw - node->swarm_chunk_req_time > SWARM_CHUNK_TIMEOUT_SECS) {
                 uint32_t ci = (uint32_t)node->swarm_inflight_chunk;
-                if (ci < g_swarm.manifest.num_chunks &&
-                    g_swarm.chunk_states[ci] == CHUNK_INFLIGHT) {
-                    g_swarm.chunk_states[ci] = CHUNK_NEEDED;
-                    g_swarm.chunk_peer[ci] = -1;
-                    if (g_swarm.chunks_inflight > 0)
-                        g_swarm.chunks_inflight--;
+                if (swarm_sync_requeue_chunk_for_peer(
+                        &g_swarm, ci, node->id)) {
                     printf("Peer %s: chunk %u timed out, re-queuing\n",
                            node->addr_name, ci);
                 }
                 node->swarm_inflight_chunk = -1;
+                node->swarm_chunk_req_time = 0;
             }
         }
 
