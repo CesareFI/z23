@@ -34,7 +34,7 @@ int test_wallet_metadata_encryption(void)
         wallet_lock_note_encrypted_at_rest();
         ASSERT(wallet_lock_unlock(NULL, NULL, "metadata-test-pass").ok);
 
-        const uint8_t aad[32] = {0x42};
+        const uint8_t aad[WALLET_METADATA_AAD_LEN] = {0x42};
         const uint8_t plaintext[] =
             "zs1-secret-recipient|invoice-body|private-memo";
         uint8_t first[256], second[256], opened[256];
@@ -74,6 +74,38 @@ int test_wallet_metadata_encryption(void)
             first_len, opened, sizeof(opened), &opened_len));
         wallet_lock_lock(NULL);
         ASSERT(wallet_lock_unlock(NULL, NULL, "metadata-test-pass").ok);
+
+        uint8_t aad_wide[WALLET_METADATA_AAD_LEN + 1] = {0x42};
+        uint8_t refused[256];
+        memset(refused, 0xa5, sizeof(refused));
+        size_t refused_len = SIZE_MAX;
+        ASSERT(!wallet_metadata_encrypt(&ndb, aad, sizeof(aad) - 1,
+            plaintext, sizeof(plaintext) - 1, refused, sizeof(refused),
+            &refused_len));
+        ASSERT_EQ(refused_len, 0);
+        refused_len = SIZE_MAX;
+        ASSERT(!wallet_metadata_encrypt(&ndb, aad_wide, sizeof(aad_wide),
+            plaintext, sizeof(plaintext) - 1, refused, sizeof(refused),
+            &refused_len));
+        ASSERT_EQ(refused_len, 0);
+        refused_len = SIZE_MAX;
+        ASSERT(!wallet_metadata_encrypt(&ndb, aad, SIZE_MAX, plaintext,
+            sizeof(plaintext) - 1, refused, sizeof(refused), &refused_len));
+        ASSERT_EQ(refused_len, 0);
+        refused_len = SIZE_MAX;
+        ASSERT(!wallet_metadata_decrypt(&ndb, aad, sizeof(aad) - 1, first,
+            first_len, refused, sizeof(refused), &refused_len));
+        ASSERT_EQ(refused_len, 0);
+        refused_len = SIZE_MAX;
+        ASSERT(!wallet_metadata_decrypt(&ndb, aad_wide, sizeof(aad_wide),
+            first, first_len, refused, sizeof(refused), &refused_len));
+        ASSERT_EQ(refused_len, 0);
+        refused_len = SIZE_MAX;
+        ASSERT(!wallet_metadata_decrypt(&ndb, aad, SIZE_MAX, first,
+            first_len, refused, sizeof(refused), &refused_len));
+        ASSERT_EQ(refused_len, 0);
+        for (size_t i = 0; i < sizeof(refused); i++)
+            ASSERT_EQ(refused[i], 0xa5);
 
         first[first_len - 1] ^= 1;
         ASSERT(!wallet_metadata_decrypt(&ndb, aad, sizeof(aad), first,
