@@ -893,6 +893,95 @@ static int dos_inv_truncated_prefix_rollback(struct msg_processor *mp,
     return failures;
 }
 
+static bool dos_one_notfound_matches(const struct p2p_node *node,
+                                     const struct inv_item *wanted)
+{
+    if (!node || !node->send_head || node->send_head->next ||
+        node->send_head->size <= MSG_HEADER_SIZE)
+        return false;
+    const struct msg_header *hdr =
+        (const struct msg_header *)(const void *)node->send_head->data;
+    struct byte_stream payload;
+    stream_init_from_data(&payload,
+        node->send_head->data + MSG_HEADER_SIZE,
+        node->send_head->size - MSG_HEADER_SIZE);
+    uint64_t count = 0;
+    struct inv_item got;
+    bool matches = strcmp(hdr->pchCommand, "notfound") == 0 &&
+                   stream_read_compact_size(&payload, &count) && count == 1 &&
+                   inv_item_deserialize(&got, &payload) &&
+                   got.type == wanted->type &&
+                   uint256_eq(&got.hash, &wanted->hash);
+    stream_free(&payload);
+    return matches;
+}
+
+static int dos_getdata_reply_send_failure_notfound(struct msg_processor *mp,
+                                                    struct net_manager *nm)
+{
+    int failures = 0;
+    struct tx_mempool pool;
+    tx_mempool_init(&pool, 0);
+
+    struct transaction tx;
+    transaction_init(&tx);
+    bool built = transaction_alloc(&tx, 1, 1);
+    if (built) {
+        tx.vin[0].sequence = 0xffffffff;
+        tx.vout[0].value = COIN;
+        transaction_compute_hash(&tx);
+    }
+    struct mempool_entry entry;
+    memset(&entry, 0, sizeof(entry));
+    bool entry_initialized = false;
+    if (built) {
+        mempool_entry_init(&entry, &tx, 0, 0, 0.0, 0, true, false, 0);
+        entry_initialized = true;
+        built = tx_mempool_add_unchecked(&pool, &tx.hash, &entry);
+    }
+    DOS_CHECK("getdata reply failure: mempool fixture built", built);
+
+    struct net_address addr;
+    net_address_init(&addr);
+    unsigned char ip[4] = {203, 0, 113, 86};
+    net_addr_set_ipv4(&addr.svc.addr, ip);
+    addr.svc.port = 8033;
+    struct p2p_node *node = p2p_node_create(
+        nm, ZCL_INVALID_SOCKET, &addr, "getdata-reply-failure", true);
+    DOS_CHECK("getdata reply failure: node created", node != NULL);
+
+    struct byte_stream request;
+    stream_init(&request, 64);
+    struct inv_item wanted;
+    inv_item_init_typed(&wanted, MSG_TX, &tx.hash);
+    built = built && stream_write_compact_size(&request, 1) &&
+            inv_item_serialize(&wanted, &request);
+    DOS_CHECK("getdata reply failure: request built", built);
+
+    struct tx_mempool *saved_pool = mp->mempool;
+    mp->mempool = &pool;
+    zcl_alloc_fault_fail_next("send_segment");
+    bool handled = node && built && process_getdata(mp, node, &request);
+    bool fault_consumed = zcl_alloc_fault_armed_label() == NULL;
+    zcl_alloc_fault_clear();
+    mp->mempool = saved_pool;
+
+    bool notfound = dos_one_notfound_matches(node, &wanted);
+    DOS_CHECK("getdata reply failure: handler survives local queue failure",
+              handled && fault_consumed);
+    DOS_CHECK("getdata reply failure: unsent item is reported notfound",
+              notfound);
+
+    stream_free(&request);
+    if (node)
+        p2p_node_free(node);
+    if (entry_initialized)
+        mempool_entry_free(&entry);
+    transaction_free(&tx);
+    tx_mempool_free(&pool);
+    return failures;
+}
+
 int test_net_msg_dos(void);
 int test_net_msg_dos(void)
 {
@@ -1745,6 +1834,10 @@ int test_net_msg_dos(void)
     /* ── U. Reject-probe continuation obeys the same publication rule:
      * a locally failed probe remains immediately eligible for retry. */
     failures += dos_reject_probe_send_failure_retry(&mp, &nm);
+
+    /* ── V. A getdata item is served only after its reply joins the send
+     * stream.  A local queue failure must report it notfound, not go silent. */
+    failures += dos_getdata_reply_send_failure_notfound(&mp, &nm);
 
     net_manager_free(&nm);
     sync_set_state(sync0, "net_msg_dos restore");

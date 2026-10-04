@@ -160,6 +160,16 @@ static void msg_blocks_continue_after_hash_continue(
         node->hash_continue = more[n - 1].hash;
 }
 
+static bool msg_blocks_finish_block_reply(struct msg_processor *mp,
+                                          struct p2p_node *node,
+                                          struct block_index *served)
+{
+    bool sent = p2p_node_end_message(node);
+    if (sent)
+        msg_blocks_continue_after_hash_continue(mp, node, served);
+    return sent;
+}
+
 bool process_getblocks(struct msg_processor *mp, struct p2p_node *node,
                        struct byte_stream *s)
 {
@@ -311,9 +321,7 @@ bool process_getdata(struct msg_processor *mp, struct p2p_node *node,
                                                mp->params->pchMessageStart);
                         p2p_node_write_message_data(node, blk_data.data,
                                                     blk_data.size);
-                        p2p_node_end_message(node);
-                        sent = true;
-                        msg_blocks_continue_after_hash_continue(mp, node, bi);
+                        sent = msg_blocks_finish_block_reply(mp, node, bi);
                     }
                     stream_free(&blk_data);
                 }
@@ -332,9 +340,8 @@ bool process_getdata(struct msg_processor *mp, struct p2p_node *node,
                 p2p_node_begin_message(node, "tx",
                                        mp->params->pchMessageStart);
                 p2p_node_write_message_data(node, tx_data.data, tx_data.size);
-                p2p_node_end_message(node);
+                sent = p2p_node_end_message(node);
                 stream_free(&tx_data);
-                sent = true;
             }
             transaction_free(&tx);
         }
