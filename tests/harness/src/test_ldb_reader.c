@@ -367,9 +367,23 @@ static bool lr_copy(const char *src, const char *dst)
     return r.ok;
 }
 
+static int lr_test_empty_log_fragment(void)
+{
+    printf("ldb_reader: empty log fragment... ");
+    uint8_t data = 0;
+    size_t len = SIZE_MAX;
+    size_t cap = SIZE_MAX;
+    bool allocated = true;
+    bool ok = ldbr_test_log_scratch_append(&data, 0, &len, &cap,
+                                           &allocated);
+    ok = ok && len == 0 && cap == 0 && !allocated;
+    printf(ok ? "OK\n" : "FAIL\n");
+    return ok ? 0 : 1;
+}
+
 int test_ldb_reader(void)
 {
-    int failures = 0;
+    int failures = lr_test_empty_log_fragment();
     char src[512], cxx[512], c23[512], dmg[512];
 
     mkdir("test-tmp", 0755);

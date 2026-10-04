@@ -454,10 +454,28 @@ static bool scratch_append(struct ldb_log_reader *r, const uint8_t *p, size_t n)
         r->scratch = ns;
         r->scratch_cap = cap;
     }
-    memcpy(r->scratch + r->scratch_len, p, n);
+    if (n)
+        memcpy(r->scratch + r->scratch_len, p, n);
     r->scratch_len = want;
     return true;
 }
+
+#ifdef ZCL_TESTING
+bool ldbr_test_log_scratch_append(const uint8_t *data, size_t len,
+                                  size_t *out_len, size_t *out_cap,
+                                  bool *out_allocated)
+{
+    if (!out_len || !out_cap || !out_allocated)
+        return false;
+    struct ldb_log_reader r = {0};
+    bool ok = scratch_append(&r, data, len);
+    *out_len = r.scratch_len;
+    *out_cap = r.scratch_cap;
+    *out_allocated = r.scratch != NULL;
+    ldb_log_reader_free(&r);
+    return ok;
+}
+#endif
 
 /* Reads one physical record. Returns 0 on success, 1 on clean end of file
  * (including a truncated tail, which LevelDB also drops), -1 on a checksum
