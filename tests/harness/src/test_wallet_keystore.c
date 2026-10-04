@@ -278,6 +278,33 @@ static int test_bad_magic(void)
     return failures;
 }
 
+static int test_reserved_field_rejected(void)
+{
+    int failures = 0;
+    TEST("wallet_keystore: rejects nonzero reserved field") {
+        uint8_t env[256];
+        size_t env_len = 0;
+        ASSERT(wks_encrypt(k_secret_key, sizeof(k_secret_key),
+                           k_passphrase, TEST_ITERS,
+                           env, sizeof(env), &env_len));
+        env[15] = 1;  /* Last byte of the reserved uint32 field. */
+
+        uint8_t plain[sizeof(k_secret_key)];
+        memset(plain, 0xa5, sizeof(plain));
+        size_t plain_len = 73;
+        bool decrypted = wks_decrypt(env, env_len, k_passphrase,
+                                     plain, sizeof(plain), &plain_len);
+        uint32_t iters = wks_envelope_iterations(env, env_len);
+        ASSERT(!decrypted);
+        ASSERT(iters == 0);
+        ASSERT(plain_len == 73);
+        for (size_t i = 0; i < sizeof(plain); i++)
+            ASSERT(plain[i] == 0xa5);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_empty_plaintext(void)
 {
     int failures = 0;
@@ -702,6 +729,7 @@ int test_wallet_keystore(void)
     failures += test_default_iters_env();
     failures += test_envelope_too_short();
     failures += test_bad_magic();
+    failures += test_reserved_field_rejected();
     failures += test_empty_plaintext();
     failures += test_long_plaintext();
     failures += test_null_passphrase();
