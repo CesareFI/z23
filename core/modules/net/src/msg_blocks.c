@@ -423,6 +423,8 @@ static bool msg_block_retryable_needs_redownload(
         "p2p-block-intake-full",
         "p2p-block-clone-failed",
         "p2p-block-submit-unavailable",
+        "bad-txnmrklroot",
+        "bad-txns-duplicate",
     };
     for (size_t i = 0; i < sizeof(reasons) / sizeof(reasons[0]); i++) {
         if (strcmp(state->reject_reason, reasons[i]) == 0)
@@ -470,18 +472,41 @@ static void msg_block_log_retryable(const struct uint256 *hash,
              (unsigned long long)suppressed);
 }
 
-void msg_block_retry_discarded_body(
+bool msg_block_retry_discarded_body(
         struct msg_processor *mp,
         const struct uint256 *hash,
         const struct validation_state *state)
 {
     if (!mp || !mp->main_state || !hash ||
         !msg_block_retryable_needs_redownload(state))
-        return;
+        return false;
     struct block_index *bi = block_map_find(
         &mp->main_state->map_block_index, hash);
     int32_t height = bi ? bi->nHeight : -1;
     dl_requeue_discarded_body(get_download_mgr(), hash, height);
+    return true;
+}
+
+static void msg_block_handle_rejected_body(
+        struct msg_processor *mp,
+        const struct uint256 *hash,
+        const struct validation_state *state,
+        bool self_suspect,
+        const char *hex)
+{
+    if (msg_block_retry_discarded_body(mp, hash, state)) {
+        LOG_WARN("net",
+                 "re-requesting block %s after peer supplied a body that "
+                 "does not match its requested header", hex);
+        return;
+    }
+    if (!self_suspect) {
+        block_mark_seen(hash);
+        return;
+    }
+    LOG_WARN("net",
+             "holding block %s retryable (self-suspected local reject) — "
+             "not dedup'ing so it reprocesses after heal", hex);
 }
 
 /* ── Self-suspicion gate for the block-reject ban path ──────────────────
@@ -797,25 +822,11 @@ bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
                     "hash=%s reason=%s", hex,
                     state.reject_reason[0] ? state.reject_reason : "unknown");
 
-        if (!self_suspect) {
-            /* rejected blocks: mark seen so the dedup ring
-             * short-circuits subsequent deliveries of the same bad block
-             * from other peers. Only the "received but skipped connect"
-             * case (SKIP_ALREADY_RUNNING, etc.) must stay UN-marked so
-             * it can retry; that path is validation_state_is_valid ==
-             * true but with no tip advance, handled below. */
-            block_mark_seen(&hash);
-        } else {
-            /* Body-valid more-work block we reject on LOCAL state: do NOT
-             * dedup it. Marking it seen would short-circuit every future
-             * delivery (block_already_seen at intake) and silently wedge
-             * the node below it forever. Leaving it out of the ring means
-             * the next delivery reprocesses it once our state heals. */
-            LOG_WARN("net",
-                     "holding block %s retryable (self-suspected local "
-                     "reject) — not dedup'ing so it reprocesses after heal",
-                     hex);
-        }
+        /* A header hash does not identify the peer-supplied transaction
+         * vector. Re-fetch body-substitution rejects from another peer;
+         * dedup all other peer faults, while local self-suspicion stays
+         * retryable as before. */
+        msg_block_handle_rejected_body(mp, &hash, &state, self_suspect, hex);
 
         /* When a block fails validation during IBD (likely a fork block),
          * re-request headers from this peer starting at our current tip.

@@ -508,6 +508,76 @@ static int test_process_block_msg_runtime_unwired_requeues_body(void)
     return failures;
 }
 
+static bool submit_bad_merkle_block(struct block *block,
+                                    struct validation_state *out,
+                                    void *ctx)
+{
+    (void)block;
+    int *calls = ctx;
+    (*calls)++;
+    return validation_state_invalid(out, true, REJECT_INVALID,
+                                    "bad-txnmrklroot", NULL);
+}
+
+static int test_process_block_msg_bad_merkle_requeues_body(void)
+{
+    int failures = 0;
+    TEST("msg_handlers: bad-merkle body leaves its header request retryable") {
+        struct download_manager *dm = get_download_mgr();
+        (void)dl_drain_for_backpressure(dm);
+        test_msg_sync_to_blocks_download();
+        ASSERT(sync_try_transition(SYNC_BLOCKS_DOWNLOAD, SYNC_AT_TIP,
+                                   "bad-merkle body fixture"));
+
+        struct block blk;
+        block_init(&blk);
+        blk.header.nVersion = 4;
+        blk.header.nTime = 1700000531u;
+        blk.header.nBits = 0x1f00ffffu;
+        blk.header.nNonce.data[0] = 31;
+        struct uint256 hash;
+        block_get_hash(&blk, &hash);
+        block_clear_seen(&hash);
+
+        struct p2p_node node;
+        unreq_setup_node(&node, 531);
+        ASSERT(dl_mark_requested(dm, &hash, 83, (uint32_t)node.id));
+
+        int submit_calls = 0;
+        struct main_state ms;
+        main_state_init(&ms);
+        struct net_manager nm;
+        memset(&nm, 0, sizeof(nm));
+        struct msg_processor mp;
+        memset(&mp, 0, sizeof(mp));
+        mp.main_state = &ms;
+        mp.net_mgr = &nm;
+        mp.params = chain_params_get();
+        mp.block_submit = submit_bad_merkle_block;
+        mp.block_submit_ctx = &submit_calls;
+
+        struct byte_stream s;
+        stream_init(&s, 256);
+        ASSERT(block_serialize(&blk, &s));
+        ASSERT(process_block_msg(&mp, &node, &s));
+        ASSERT(submit_calls == 1);
+
+        struct uint256 reassigned_hash;
+        ASSERT(dl_assign_to_peer(dm, 532, &reassigned_hash, 1) == 1);
+        ASSERT(uint256_eq(&reassigned_hash, &hash));
+        ASSERT(!block_already_seen(&hash));
+
+        (void)dl_drain_for_backpressure(dm);
+        block_clear_seen(&hash);
+        stream_free(&s);
+        block_free(&blk);
+        main_state_free(&ms);
+        PASS();
+    } _test_next:;
+    test_msg_sync_to_idle();
+    return failures;
+}
+
 static int test_process_block_msg_reducer_pending_stays_retryable(void)
 {
     int failures = 0;
@@ -1490,6 +1560,18 @@ static bool submit_async_runtime_unwired(struct block *block,
     return validation_state_error(out, "reducer-body-runtime-unwired");
 }
 
+static bool submit_async_bad_merkle(struct block *block,
+                                    struct validation_state *out,
+                                    void *ctx)
+{
+    (void)block;
+    struct async_block_submit_ctx *submit_ctx = ctx;
+    atomic_fetch_add_explicit(&submit_ctx->entered, 1,
+                              memory_order_release);
+    return validation_state_invalid(out, true, REJECT_INVALID,
+                                    "bad-txnmrklroot", NULL);
+}
+
 static int test_async_runtime_unwired_requeues_body(void)
 {
     int failures = 0;
@@ -1538,6 +1620,66 @@ static int test_async_runtime_unwired_requeues_body(void)
 
         struct uint256 reassigned_hash;
         ASSERT(dl_assign_to_peer(dm, 530, &reassigned_hash, 1) == 1);
+        ASSERT(uint256_eq(&reassigned_hash, &hash));
+
+        (void)dl_drain_for_backpressure(dm);
+        stream_free(&s);
+        block_free(&blk);
+        main_state_free(&ms);
+        test_msg_sync_to_idle();
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_async_bad_merkle_requeues_body(void)
+{
+    int failures = 0;
+    TEST("msg_handlers: async bad-merkle body leaves header retryable") {
+        test_msg_sync_to_blocks_download();
+        struct download_manager *dm = get_download_mgr();
+        (void)dl_drain_for_backpressure(dm);
+
+        struct block blk;
+        block_init(&blk);
+        blk.header.nVersion = 4;
+        blk.header.nTime = 1700000533u;
+        blk.header.nBits = 0x1f00ffffu;
+        blk.header.nNonce.data[0] = 33;
+        struct uint256 hash;
+        block_get_hash(&blk, &hash);
+        block_clear_seen(&hash);
+
+        struct p2p_node node;
+        unreq_setup_node(&node, 533);
+        ASSERT(dl_mark_requested(dm, &hash, 84, (uint32_t)node.id));
+
+        struct main_state ms;
+        main_state_init(&ms);
+        struct msg_processor mp;
+        memset(&mp, 0, sizeof(mp));
+        mp.main_state = &ms;
+        mp.params = chain_params_get();
+        struct async_block_submit_ctx submit_ctx = {0};
+        mp.block_submit = submit_async_bad_merkle;
+        mp.block_submit_ctx = &submit_ctx;
+
+        struct byte_stream s;
+        stream_init(&s, 256);
+        ASSERT(block_serialize(&blk, &s));
+        ASSERT(process_block_msg(&mp, &node, &s));
+        for (int i = 0; i < 200 &&
+             atomic_load_explicit(&submit_ctx.entered,
+                                  memory_order_acquire) == 0; i++) {
+            test_msg_sleep_ms(1);
+        }
+        ASSERT(atomic_load_explicit(&submit_ctx.entered,
+                                    memory_order_acquire) == 1);
+        msg_processor_stop_block_intake(&mp);
+        ASSERT(!block_already_seen(&hash));
+
+        struct uint256 reassigned_hash;
+        ASSERT(dl_assign_to_peer(dm, 534, &reassigned_hash, 1) == 1);
         ASSERT(uint256_eq(&reassigned_hash, &hash));
 
         (void)dl_drain_for_backpressure(dm);
@@ -1972,6 +2114,7 @@ int test_msg_handlers(void)
     failures += test_block_validation_retryable_classifier();
     failures += test_process_block_msg_intake_full_requeues_body();
     failures += test_process_block_msg_runtime_unwired_requeues_body();
+    failures += test_process_block_msg_bad_merkle_requeues_body();
     failures += test_process_block_msg_reducer_pending_stays_retryable();
     failures += test_process_block_msg_scores_unrequested();
     failures += test_process_block_msg_no_score_when_requested();
@@ -1990,6 +2133,7 @@ int test_msg_handlers(void)
     failures += test_process_block_msg_no_score_during_shutdown();
     failures += test_process_block_msg_queues_reducer_during_catchup();
     failures += test_async_runtime_unwired_requeues_body();
+    failures += test_async_bad_merkle_requeues_body();
     failures += test_msg_block_intake_full_stays_retryable();
     failures += test_msg_block_intake_duplicate_reuses_slot();
     failures += test_msg_process_messages_yields_after_bounded_batch();

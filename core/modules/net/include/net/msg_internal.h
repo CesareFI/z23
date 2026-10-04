@@ -447,7 +447,7 @@ struct active_chain;
 struct block_index;
 struct validation_state;
 bool msg_block_validation_is_retryable(const struct validation_state *state);
-void msg_block_retry_discarded_body(struct msg_processor *mp,
+bool msg_block_retry_discarded_body(struct msg_processor *mp,
                                     const struct uint256 *hash,
                                     const struct validation_state *state);
 bool msg_processor_enqueue_p2p_block(struct msg_processor *mp,
