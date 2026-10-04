@@ -1135,7 +1135,7 @@ contexts/wallet/services/src/wallet_backup_run.c:wbs_run_once_impl:35
 contexts/wallet/services/src/wallet_backup_service.c:wbs_hash_regular_file:23
 contexts/wallet/services/src/wallet_money_service.c:wallet_money_snapshot_build:35
 contexts/wallet/services/src/wallet_recovery_service.c:wallet_recovery_run:46
-contexts/wallet/services/src/wallet_restore_service.c:wallet_restore_run:22
+contexts/wallet/services/src/wallet_restore_service.c:wallet_restore_run:15
 contexts/wallet/services/src/wallet_restore_service.c:wrs_summarize:16
 contexts/wallet/services/src/wallet_scan_service.c:wallet_scan_pass2_nonempty:18
 contexts/wallet/services/src/wallet_scan_service.c:wallet_scan_store_results:17

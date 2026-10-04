@@ -25,6 +25,7 @@
  * And the refusals, each one its own assertion:
  *   - a datadir held by another writer (the pidfile flock)
  *   - a held pidfile whose valid datadir path exceeds the probe buffer
+ *   - a datadir held by another wallet restore (the recovery-lock flock)
  *   - a backup path that does not exist
  *   - a file that is not a SQLite database
  *   - a SQLite database holding none of the wallet tables
@@ -279,6 +280,7 @@ static void wr_rmdir_datadir(const char *dir)
     snprintf(p, sizeof(p), "%s/node.db-wal", dir);  unlink(p);
     snprintf(p, sizeof(p), "%s/node.db-shm", dir);  unlink(p);
     snprintf(p, sizeof(p), "%s/zclassic23.pid", dir); unlink(p);
+    snprintf(p, sizeof(p), "%s/wallet-recovery.lock", dir); unlink(p);
     rmdir(dir);
 }
 
@@ -336,6 +338,41 @@ static int wr_test_long_datadir_lock(void)
             break;
         *slash = '\0';
     }
+    return failures;
+}
+
+/* Prove the public restore API participates in the recovery writer lock. */
+static int wr_test_restore_refuses_recovery_lock(const char *backup_path)
+{
+    int failures = 0;
+    char locked_target[256], locked_db[320];
+    snprintf(locked_target, sizeof(locked_target), "%s/wr_%d_locked",
+             wr_dir(), (int)getpid());
+    snprintf(locked_db, sizeof(locked_db), "%s/node.db", locked_target);
+    wr_rmdir_datadir(locked_target);
+    platform_directory_create(locked_target, 0700);
+    struct stat locked_st;
+    WR_CHECK("test can create the recovery-lock target",
+             stat(locked_target, &locked_st) == 0 &&
+             S_ISDIR(locked_st.st_mode));
+
+    struct wallet_restore_datadir_lock held = { .fd = -1 };
+    struct zcl_result hr = wallet_restore_datadir_hold(locked_target, &held);
+    WR_CHECK("test can hold the wallet recovery lock", hr.ok);
+    if (hr.ok) {
+        struct wallet_restore_request req = {
+            .backup_path = backup_path,
+            .datadir = locked_target,
+            .dry_run = false
+        };
+        struct wallet_restore_report rep;
+        struct zcl_result result = wallet_restore_run(&req, &rep);
+        WR_CHECK("restore refuses a held wallet recovery lock", !result.ok);
+        WR_CHECK("held recovery lock prevents target database creation",
+                 access(locked_db, F_OK) != 0);
+    }
+    wallet_restore_datadir_release(&held);
+    wr_rmdir_datadir(locked_target);
     return failures;
 }
 
@@ -518,6 +555,7 @@ int test_wallet_restore(void)
              wr_count_in_file(backup_path, "wallet_sapling_notes") == 2);
 
     failures += wr_test_target_path_truncation(backup_path);
+    failures += wr_test_restore_refuses_recovery_lock(backup_path);
 
     /* ---- refusals, before any successful restore ---- */
     struct wallet_restore_request req = {0};
