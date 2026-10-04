@@ -276,35 +276,122 @@ bool msgprocessor_test_should_ignore_snapshot_offer(
                                             peer_state, peer_id, sync_state);
 }
 
-/* Send a chunk request to a peer. */
-static void push_chunk_request(struct msg_processor *mp,
+static bool push_index_request(struct msg_processor *mp,
+                               struct p2p_node *node,
+                               const char *command,
+                               uint32_t index)
+{
+    struct byte_stream s;
+    stream_init(&s, 4);
+    bool sent = stream_write_u32_le(&s, index) &&
+                p2p_node_begin_message(node, command,
+                                       mp->params->pchMessageStart);
+    if (sent) {
+        p2p_node_write_message_data(node, s.data, s.size);
+        sent = p2p_node_end_message(node);
+    }
+    stream_free(&s);
+    return sent;
+}
+
+/* Caller holds g_swarm_mutex. */
+static bool requeue_owned_chunk(struct swarm_sync *ss, uint32_t chunk_index,
+                                int peer_id)
+{
+    if (!ss || !ss->chunk_states || !ss->chunk_peer ||
+        !ss->chunk_request_time ||
+        chunk_index >= ss->manifest.num_chunks ||
+        ss->chunk_states[chunk_index] != CHUNK_INFLIGHT ||
+        ss->chunk_peer[chunk_index] != peer_id)
+        return false;
+    ss->chunk_states[chunk_index] = CHUNK_NEEDED;
+    ss->chunk_peer[chunk_index] = -1;
+    ss->chunk_request_time[chunk_index] = 0;
+    if (ss->chunks_inflight > 0)
+        ss->chunks_inflight--;
+    return true;
+}
+
+/* Caller holds g_swarm_mutex. */
+static void push_assigned_chunk_locked(struct msg_processor *mp,
+                                       struct p2p_node *node,
+                                       uint32_t chunk_index)
+{
+    if (push_index_request(mp, node, MSG_CHUNK_REQ, chunk_index))
+        return;
+    bool released = requeue_owned_chunk(&g_swarm, chunk_index, node->id);
+    if (released) {
+        node->swarm_inflight_chunk = -1;
+        node->swarm_chunk_req_time = 0;
+    }
+    LOG_WARN("net",
+             "snapshot chunk request send failed peer=%s chunk=%u "
+             "released=%s",
+             node->addr_name, chunk_index,
+             released ? "true" : "false");
+}
+
+static void push_assigned_chunk(struct msg_processor *mp,
                                 struct p2p_node *node,
                                 uint32_t chunk_index)
 {
-    struct byte_stream s;
-    stream_init(&s, 4);
-    stream_write_u32_le(&s, chunk_index);
-
-    p2p_node_begin_message(node, MSG_CHUNK_REQ, mp->params->pchMessageStart);
-    p2p_node_write_message_data(node, s.data, s.size);
-    p2p_node_end_message(node);
-    stream_free(&s);
+    if (push_index_request(mp, node, MSG_CHUNK_REQ, chunk_index))
+        return;
+    bool released = false;
+    if (swarm_mutex_lock()) {
+        released = requeue_owned_chunk(&g_swarm, chunk_index, node->id);
+        swarm_mutex_unlock();
+    }
+    if (released) {
+        node->swarm_inflight_chunk = -1;
+        node->swarm_chunk_req_time = 0;
+    }
+    LOG_WARN("net",
+             "snapshot chunk request send failed peer=%s chunk=%u "
+             "released=%s",
+             node->addr_name, chunk_index,
+             released ? "true" : "false");
 }
 
-/* Send a block piece request to a peer. */
-static void push_block_piece_request(struct msg_processor *mp,
-                                      struct p2p_node *node,
-                                      uint32_t piece_index)
+/* Caller holds g_block_swarm_mutex on entry and return. */
+static int32_t assign_and_push_block_piece_locked(
+        struct msg_processor *mp, struct p2p_node *node, int pipeline_index,
+        int64_t request_time)
 {
-    struct byte_stream s;
-    stream_init(&s, 4);
-    stream_write_u32_le(&s, piece_index);
+    int32_t header_cap = block_swarm_local_header_cap(mp);
+    int32_t assignment_cap =
+        block_swarm_contiguous_window_cap(&g_block_swarm, header_cap);
+    int32_t piece_index = block_swarm_assign_piece_for_peer(
+        &g_block_swarm, node->id, node->blk_bitmap,
+        node->blk_bitmap_len, assignment_cap,
+        block_swarm_peer_manifest_end(node));
+    if (piece_index < 0)
+        return -1;
 
-    p2p_node_begin_message(node, MSG_BLOCK_REQ,
-                            mp->params->pchMessageStart);
-    p2p_node_write_message_data(node, s.data, s.size);
-    p2p_node_end_message(node);
-    stream_free(&s);
+    node->blk_pipeline[pipeline_index].piece_index = piece_index;
+    node->blk_pipeline[pipeline_index].request_time = request_time;
+    pthread_mutex_unlock(&g_block_swarm_mutex);
+    bool sent = push_index_request(mp, node, MSG_BLOCK_REQ,
+                                   (uint32_t)piece_index);
+    pthread_mutex_lock(&g_block_swarm_mutex);
+    if (sent)
+        return piece_index;
+
+    bool released = false;
+    if (g_block_swarm.piece_states && g_block_swarm.piece_peer &&
+        (uint32_t)piece_index < g_block_swarm.manifest.num_pieces &&
+        g_block_swarm.piece_states[piece_index] == CHUNK_INFLIGHT &&
+        g_block_swarm.piece_peer[piece_index] == node->id) {
+        released = block_swarm_requeue_piece(
+            &g_block_swarm, (uint32_t)piece_index);
+    }
+    node->blk_pipeline[pipeline_index].piece_index = -1;
+    node->blk_pipeline[pipeline_index].request_time = 0;
+    LOG_WARN("net",
+             "block piece request send failed peer=%s piece=%d released=%s",
+             node->addr_name, piece_index,
+             released ? "true" : "false");
+    return -1;
 }
 
 static bool parse_block_piece_payload_refs(
@@ -1118,8 +1205,8 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                                 }
                                 swarm_mutex_unlock();
                                 if (first_chunk >= 0)
-                                    push_chunk_request(mp, node,
-                                                       (uint32_t)first_chunk);
+                                    push_assigned_chunk(
+                                        mp, node, (uint32_t)first_chunk);
                             }
                         }
                         /* swarm_sync_init deep-copies the hash array, so
@@ -1733,7 +1820,7 @@ void mp_snapshot_send_tick(struct msg_processor *mp,
             if (ci >= 0) {
                 node->swarm_inflight_chunk = ci;
                 node->swarm_chunk_req_time = (int64_t)platform_time_wall_time_t();
-                push_chunk_request(mp, node, (uint32_t)ci);
+                push_assigned_chunk_locked(mp, node, (uint32_t)ci);
             }
         }
 
@@ -1801,22 +1888,10 @@ void mp_snapshot_send_tick(struct msg_processor *mp,
             if (node->blk_pipeline[pi].piece_index >= 0)
                 continue; /* slot occupied */
 
-            int32_t header_cap = block_swarm_local_header_cap(mp);
-            int32_t assignment_cap =
-                block_swarm_contiguous_window_cap(&g_block_swarm, header_cap);
-            int32_t pidx = block_swarm_assign_piece_for_peer(
-                &g_block_swarm, node->id, node->blk_bitmap,
-                node->blk_bitmap_len, assignment_cap,
-                block_swarm_peer_manifest_end(node));
+            int32_t pidx = assign_and_push_block_piece_locked(
+                mp, node, pi, now_bs);
             if (pidx < 0)
-                break; /* no more pieces to assign */
-
-            node->blk_pipeline[pi].piece_index = pidx;
-            node->blk_pipeline[pi].request_time = now_bs;
-
-            pthread_mutex_unlock(&g_block_swarm_mutex);
-            push_block_piece_request(mp, node, (uint32_t)pidx);
-            pthread_mutex_lock(&g_block_swarm_mutex);
+                break; /* none available, or send failed and was rolled back */
         }
 
         /* Progress display (rate-limited) */

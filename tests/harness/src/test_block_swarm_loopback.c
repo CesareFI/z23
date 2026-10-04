@@ -362,6 +362,25 @@ static size_t bs_queue_depth(const struct send_segment *sentinel)
     return n;
 }
 
+static size_t bs_malformed_block_request_count(
+        const struct send_segment *sentinel)
+{
+    size_t malformed = 0;
+    for (const struct send_segment *seg = sentinel->next; seg;
+         seg = seg->next) {
+        if (seg->size < MSG_HEADER_SIZE) {
+            malformed++;
+            continue;
+        }
+        const struct msg_header *hdr =
+            (const struct msg_header *)(const void *)seg->data;
+        if (strcmp(hdr->pchCommand, MSG_BLOCK_REQ) == 0 &&
+            seg->size != MSG_HEADER_SIZE + sizeof(uint32_t))
+            malformed++;
+    }
+    return malformed;
+}
+
 /* Drop everything queued behind the sentinel WITHOUT delivering it — models a
  * peer that received our requests and then vanished. */
 static void bs_drop_queue(struct p2p_node *from, struct send_segment *sentinel)
@@ -647,6 +666,14 @@ static int test_block_swarm_disconnect_requeue(void)
         /* p1 grabs its window of pieces (CHUNK_INFLIGHT, owned by p1), then goes
          * dark: its zblkreq segments are dropped and never served. */
         bs_drop_queue(p1, sent_p1);                    /* isolate this tick     */
+        zcl_alloc_fault_fail_next("stream_data");
+        mp_snapshot_send_tick(&mp_b, p1);
+        ASSERT(zcl_alloc_fault_armed_label() == NULL);
+        ASSERT(bs_queue_depth(sent_p1) == 0);
+        ASSERT(bs_malformed_block_request_count(sent_p1) == 0);
+        ASSERT(mp_block_swarm_peer_disconnected((uint32_t)p1->id) == 0);
+
+        /* A later healthy tick can claim the released work immediately. */
         mp_snapshot_send_tick(&mp_b, p1);
         size_t p1_reqs = bs_queue_depth(sent_p1);
         printf("(dead peer held %zu in-flight pieces) ", p1_reqs);
