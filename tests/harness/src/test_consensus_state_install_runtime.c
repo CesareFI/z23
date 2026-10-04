@@ -356,6 +356,34 @@ static int case_symlink_durable_request(void)
     return failures;
 }
 
+static int case_symlink_read_request(void)
+{
+    int failures = 0;
+    char dir[256];
+    test_make_tmpdir(dir, sizeof(dir), "csir_request", "symlink_read");
+
+    char victim[512];
+    char request[512];
+    snprintf(victim, sizeof(victim), "%s/external-request", dir);
+    snprintf(request, sizeof(request), "%s/install_bundle_request", dir);
+    FILE *f = fopen(victim, "w");
+    bool seeded = f &&
+                  fputs("0\n/some/where/external-bundle.sqlite\n", f) >= 0;
+    if (f) fclose(f);
+    seeded = seeded && chmod(victim, 0600) == 0;
+    bool linked = seeded && symlink("external-request", request) == 0;
+
+    char bundle[512] = "not-empty";
+    CSIR_CHECK("symlinked external request is not pending authority",
+               linked && !boot_install_bundle_pending(dir));
+    CSIR_CHECK("symlinked external request cannot be consumed",
+               !boot_install_bundle_consume(dir, bundle, sizeof(bundle)) &&
+                   bundle[0] == '\0');
+
+    test_rm_rf_recursive(dir);
+    return failures;
+}
+
 /* (d) boot_post_install_fold_span_check — the post-install "catch the tail"
  * wiring. Synthetic block_index construction mirrors
  * test_refold_body_span_contiguous.c's bsc_install: heights are inserted via
@@ -952,6 +980,7 @@ int test_consensus_state_install_runtime(void)
     failures += case_durable_request();
     failures += case_malformed_durable_request();
     failures += case_symlink_durable_request();
+    failures += case_symlink_read_request();
     failures += case_post_install_fold_span_check();
     failures += case_post_install_drop_borrowed_have_data();
     failures += case_checkpoint_header_ready();

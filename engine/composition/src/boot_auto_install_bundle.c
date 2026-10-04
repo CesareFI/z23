@@ -29,6 +29,7 @@
 #include "config/boot_consensus_bundle_marker.h"
 #include "config/rom_fetch_orphan_sweep.h"      /* once-per-boot stale-partial sweep */
 #include "net/checkpoint_header_fetch.h"       /* pre-arm compiled-checkpoint capture */
+#include "platform/positioned_file.h"
 #include "platform/private_file.h"
 #include "conditions/no_state_source.h"        /* LOUD no-state-source signage */
 #include "jobs/reducer_frontier.h"             /* reducer_frontier_provable_tip_cached */
@@ -286,6 +287,31 @@ static void ibr_path(const char *datadir, char *out, size_t n)
 
 static _Atomic uint64_t g_ibr_staging_sequence;
 
+static bool ibr_parse(char *raw, int *attempts, char *bundle_out, size_t cap)
+{
+    int a = 0;
+    int used = 0;
+    if (sscanf(raw, "%d%n", &a, &used) != 1 || used < 0 ||
+        raw[used] != '\n')
+        return false;
+    char *bundle = raw + used + 1;
+    char *newline = strchr(bundle, '\n');
+    if (newline)
+        *newline = '\0';
+    size_t len = strlen(bundle);
+    while (len > 0 && bundle[len - 1] == '\r')
+        bundle[--len] = '\0';
+    if (len == 0)
+        return false; /* a request must carry its bundle path */
+    if (bundle_out) {
+        if (len >= cap)
+            return false;
+        memcpy(bundle_out, bundle, len + 1);
+    }
+    *attempts = a;
+    return true;
+}
+
 /* Read the on-disk (attempts, path). Returns true iff a well-formed request was
  * read (a numeric attempts line + a non-empty path line). On any miss *attempts
  * is 0 and bundle_out is empty. When bundle_out is provided the path must fit in
@@ -296,37 +322,30 @@ static bool ibr_read(const char *path, int *attempts, char *bundle_out,
     *attempts = 0;
     if (bundle_out && cap)
         bundle_out[0] = '\0';
-    FILE *r = fopen(path, "r");
-    if (!r)
-        return false;
-    int a = 0;
-    if (fscanf(r, "%d", &a) != 1) {
-        fclose(r);
-        return false;
-    }
-    int sep = fgetc(r); /* consume the single separating newline */
-    if (sep != '\n') {
-        fclose(r);
+    struct platform_positioned_file file;
+    struct platform_positioned_file_snapshot before, after;
+    platform_positioned_file_init(&file);
+    if (!platform_positioned_file_open(&file, path) ||
+        !platform_positioned_file_snapshot(&file, &before) ||
+        !platform_positioned_file_is_private(&file)) {
+        platform_positioned_file_close(&file);
         return false;
     }
-    char buf[PATH_MAX];
-    if (!fgets(buf, sizeof(buf), r)) {
-        fclose(r);
+    char raw[PATH_MAX + 32];
+    if (before.size == 0 || before.size >= sizeof(raw)) {
+        platform_positioned_file_close(&file);
         return false;
     }
-    fclose(r);
-    size_t len = strlen(buf);
-    while (len > 0 && (buf[len - 1] == '\n' || buf[len - 1] == '\r'))
-        buf[--len] = '\0';
-    if (len == 0)
-        return false; /* a request must carry its bundle path */
-    if (bundle_out) {
-        if (len >= cap)
-            return false;
-        memcpy(bundle_out, buf, len + 1);
-    }
-    *attempts = a;
-    return true;
+    int64_t got = platform_positioned_file_read(
+        &file, raw, (size_t)before.size, 0);
+    bool stable = got == (int64_t)before.size &&
+                  platform_positioned_file_snapshot(&file, &after) &&
+                  platform_positioned_file_snapshot_equal(&before, &after);
+    platform_positioned_file_close(&file);
+    if (!stable)
+        return false;
+    raw[before.size] = '\0';
+    return ibr_parse(raw, attempts, bundle_out, cap);
 }
 
 /* fsync-durable write of "<attempts>\n<bundle_path>\n". Returns true on success. */
