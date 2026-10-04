@@ -10387,10 +10387,18 @@ bench-sync: zclassic23 bench_fresh_sync
 .PHONY: bench_fresh_sync
 bench_fresh_sync: $(BIN_DIR)/bench_fresh_sync
 $(BIN_DIR)/bench_fresh_sync: tools/bench_fresh_sync.c \
-		platform/modules/platform/src/clock.c platform/modules/base/src/log_level.c
+		platform/modules/platform/src/clock.c platform/modules/base/src/log_level.c \
+		platform/modules/platform/include/platform/time_compat.h \
+		platform/modules/platform/include/platform/clock.h \
+		platform/modules/util/include/util/log_macros.h \
+		platform/modules/base/include/base/utc_tm.h \
+		platform/modules/base/include/base/log_macros.h \
+		platform/modules/base/include/base/format_attribute.h \
+		platform/modules/base/include/base/log_level.h \
+		platform/modules/base/include/base/stdio_lock.h
 	@mkdir -p $(dir $@)
 	$(CC) -O2 -Iplatform/modules/platform/include -Iplatform/modules/base/include -Iplatform/modules/util/include \
-	    -D_DEFAULT_SOURCE -o $@ $^
+	    -D_DEFAULT_SOURCE -o $@ $(filter %.c,$^)
 
 # Per-ISA-tier crypto microbenchmark (tools/simd_bench.c). Drives the SAME
 # input through EVERY ISA tier of each primitive (generic / SHA-NI / AVX2 /
