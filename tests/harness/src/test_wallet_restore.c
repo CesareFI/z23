@@ -28,6 +28,7 @@
  *   - a file that is not a SQLite database
  *   - a SQLite database holding none of the wallet tables
  *   - an encrypted backup with no password available
+ *   - a target path that cannot be represented without truncation
  */
 
 #include "platform/directory_compat.h"
@@ -332,6 +333,59 @@ static int wr_test_rescan_reports_missing_bodies(void)
 
 /* ── the group ──────────────────────────────────────────────── */
 
+/* A valid datadir can be longer than the fixed report field.  The restore
+ * must refuse it before the truncated report path can become the pathname
+ * of a different database. */
+static int wr_test_target_path_truncation(const char *backup_path)
+{
+    int failures = 0;
+    char datadir[1100];
+    char truncated_db[1024];
+    size_t root_len;
+    size_t target_len = sizeof(truncated_db) - 6;
+
+    snprintf(datadir, sizeof(datadir), "%s", wr_dir());
+    root_len = strlen(datadir);
+    if ((target_len - root_len) % 17 == 1)
+        target_len++;
+    while (strlen(datadir) < target_len) {
+        size_t used = strlen(datadir);
+        size_t remaining = target_len - used;
+        size_t component = remaining > 17 ? 16 : remaining - 1;
+        datadir[used++] = '/';
+        memset(datadir + used, 'd', component);
+        datadir[used + component] = '\0';
+        if (mkdir(datadir, 0700) != 0)
+            break;
+    }
+
+    WR_CHECK("built a valid datadir longer than the report target",
+             strlen(datadir) == target_len);
+    (void)snprintf(truncated_db, sizeof(truncated_db), "%s/node.db", datadir);
+
+    struct wallet_restore_request req = {
+        .backup_path = backup_path,
+        .datadir = datadir,
+        .dry_run = true,
+    };
+    struct wallet_restore_report rep;
+    struct zcl_result r = wallet_restore_run(&req, &rep);
+    WR_CHECK("refuses a target path that cannot be represented exactly",
+             !r.ok && r.code == -59);
+    WR_CHECK("does not create a database at the truncated target path",
+             access(truncated_db, F_OK) != 0);
+
+    unlink(truncated_db);
+    while (strlen(datadir) > root_len) {
+        (void)rmdir(datadir);
+        char *slash = strrchr(datadir, '/');
+        if (!slash || (size_t)(slash - datadir) < root_len)
+            break;
+        *slash = '\0';
+    }
+    return failures;
+}
+
 int test_wallet_restore(void)
 {
 #if defined(_WIN32)
@@ -404,6 +458,8 @@ int test_wallet_restore(void)
              wr_count_in_file(backup_path, "wallet_seed") == 1);
     WR_CHECK("backup captured the sapling notes",
              wr_count_in_file(backup_path, "wallet_sapling_notes") == 2);
+
+    failures += wr_test_target_path_truncation(backup_path);
 
     /* ---- refusals, before any successful restore ---- */
     struct wallet_restore_request req = {0};
