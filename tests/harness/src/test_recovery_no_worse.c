@@ -62,6 +62,32 @@ static int nw_count(struct node_db *ndb, const char *sql)
     return n;
 }
 
+static int check_malformed_refold_marker(void)
+{
+    int failures = 0;
+    char dir[256];
+    test_make_tmpdir(dir, sizeof(dir), "recovery_no_worse",
+                     "refold_malformed");
+
+    char path[512];
+    snprintf(path, sizeof(path), "%s/auto_refold_request", dir);
+    FILE *f = fopen(path, "w");
+    bool wrote = f && fprintf(f, "interrupted-write\n") > 0;
+    if (f) fclose(f);
+
+    int32_t anchor = 99;
+    int count = 99;
+    NW_CHECK("D3: malformed marker has no readable status",
+             wrote && !boot_auto_refold_status(dir, &anchor, &count));
+    NW_CHECK("D3: malformed marker is not pending recovery authority",
+             !boot_auto_refold_pending(dir));
+    NW_CHECK("D3: boot refuses to consume malformed recovery intent",
+             !boot_auto_refold_consume(dir));
+
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
 int test_recovery_no_worse(void);
 int test_recovery_no_worse(void)
 {
@@ -214,6 +240,10 @@ int test_recovery_no_worse(void)
 
         test_cleanup_tmpdir(dir);
     }
+
+    /* A malformed marker must not hold the escalator in its pending-respawn
+     * path when boot cannot consume that same marker. */
+    failures += check_malformed_refold_marker();
 
     if (failures == 0)
         printf("=== recovery_no_worse: ALL PASS ===\n\n");

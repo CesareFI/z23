@@ -154,9 +154,9 @@ bool boot_auto_refold_pending(const char *datadir)
         return false;
     int32_t a = 0;
     int c = 0;
-    if (arf_read(path, &a, &c) && c == BOOT_AUTO_REFOLD_TERMINAL)
-        return false;  /* terminal: present-but-not-pending */
-    return true;
+    if (!arf_read(path, &a, &c))
+        return false;
+    return c != BOOT_AUTO_REFOLD_TERMINAL;
 }
 
 bool boot_auto_refold_consume(const char *datadir)
