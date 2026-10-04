@@ -28,15 +28,19 @@
 #include "services/recovery_policy.h"
 
 #include "event/event.h"
+#include "platform/private_file.h"
 
 #include <errno.h>
 #include <stdio.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>  /* strcasecmp */
 
 #include "util/log_macros.h"
 #include "util/parse_num.h"
+
+static _Atomic uint64_t g_prompt_staging_sequence;
 
 /* ── Decision names ─────────────────────────────────────────────── */
 const char *policy_decision_name(enum policy_decision d)
@@ -144,16 +148,69 @@ static void emit_prompt(const char *op, int64_t amount, const char *reason,
  * file is overwritten on every call, so an operator always sees the
  * most recent request. Returns true on success; failure is non-fatal
  * (we still return POLICY_PROMPT_OPERATOR — the caller should stop). */
-static bool write_prompt_ack_file(const char *path, const char *op,
-                                    int64_t amount, const char *reason)
+static bool write_prompt_piece(struct platform_private_file *file,
+                               uint64_t *offset, const char *text)
 {
-    if (!path || !*path) return false;
-    FILE *f = fopen(path, "w");
-    if (!f) return false;
-    fprintf(f, "op=%s\namount=%lld\nreason=%s\n",
-            op, (long long)amount, reason ? reason : "");
-    fclose(f);
+    size_t len = strlen(text);
+    if (UINT64_MAX - *offset < len ||
+        !platform_private_file_write_at(file, text, len, *offset))
+        return false;
+    *offset += len;
     return true;
+}
+
+static bool write_prompt_contents(struct platform_private_file *file,
+                                  int64_t amount, const char *op,
+                                  const char *reason, uint64_t *size_out)
+{
+    char amount_buf[32];
+    int n = snprintf(amount_buf, sizeof(amount_buf), "%lld",
+                     (long long)amount);
+    uint64_t offset = 0;
+    bool ok = n > 0 && (size_t)n < sizeof(amount_buf) &&
+              write_prompt_piece(file, &offset, "op=") &&
+              write_prompt_piece(file, &offset, op) &&
+              write_prompt_piece(file, &offset, "\namount=") &&
+              write_prompt_piece(file, &offset, amount_buf) &&
+              write_prompt_piece(file, &offset, "\nreason=") &&
+              write_prompt_piece(file, &offset, reason ? reason : "") &&
+              write_prompt_piece(file, &offset, "\n");
+    *size_out = offset;
+    return ok;
+}
+
+static bool write_prompt_ack_file(const char *path, const char *op,
+                                  int64_t amount, const char *reason)
+{
+    if (!path || !*path)
+        return false;
+    char resolved[4096], parent[4096], staging[4192];
+    if (!platform_private_destination_resolve(
+            path, resolved, sizeof(resolved), parent, sizeof(parent)))
+        return false;
+    struct platform_private_file file;
+    platform_private_file_init(&file);
+    bool created = false;
+    for (unsigned attempt = 0; attempt < 1024 && !created; attempt++) {
+        uint64_t seq = atomic_fetch_add_explicit(
+            &g_prompt_staging_sequence, 1, memory_order_relaxed);
+        int n = snprintf(staging, sizeof(staging), "%s.tmp.%llu", resolved,
+                         (unsigned long long)seq);
+        if (n <= 0 || (size_t)n >= sizeof(staging))
+            break;
+        created = platform_private_file_create(staging, &file);
+    }
+    uint64_t size = 0;
+    bool ok = created && write_prompt_contents(&file, amount, op, reason,
+                                                &size) &&
+              platform_private_file_truncate(&file, size) &&
+              platform_private_file_flush(&file) &&
+              platform_private_file_replace(&file, staging, resolved) &&
+              platform_private_parent_flush(parent);
+    platform_private_file_close(&file);
+    if (created && !ok)
+        (void)platform_private_file_unlink_missing_ok(staging);
+    return ok;
 }
 
 /* ── Core decision engine ───────────────────────────────────────── */

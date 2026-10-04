@@ -506,6 +506,39 @@ static int t_hook_not_called_under_cap(void)
     return failures;
 }
 
+static int t_prompt_does_not_follow_link(void)
+{
+    int failures = 0;
+    rp_install_observer();
+    struct recovery_policy p;
+    policy_set_defaults(&p);
+    char ack[512], victim[512];
+    rp_ack_path(ack, sizeof(ack), "linked");
+    rp_ack_path(victim, sizeof(victim), "linked_victim");
+    unlink(ack);
+    unlink(victim);
+    FILE *f = fopen(victim, "w");
+    if (f) {
+        fputs("keep-me\n", f);
+        fclose(f);
+    }
+    bool linked = symlink(victim, ack) == 0;
+    p.operator_ack_file = ack;
+    (void)policy_check_utxo_wipe(&p, 5000, "test.linked_ack");
+
+    char buf[32] = {0};
+    f = fopen(victim, "r");
+    size_t n = f ? fread(buf, 1, sizeof(buf) - 1, f) : 0;
+    if (f)
+        fclose(f);
+    RP_RUN("rp: prompt publication leaves linked target unchanged",
+           linked && n == strlen("keep-me\n") &&
+           memcmp(buf, "keep-me\n", n) == 0);
+    unlink(ack);
+    unlink(victim);
+    return failures;
+}
+
 /* ── Aggregator ─────────────────────────────────────────────── */
 
 int test_recovery_policy(void)
@@ -533,6 +566,7 @@ int test_recovery_policy(void)
     failures += t_decision_names();
     failures += t_dry_run_event();
     failures += t_hook_not_called_under_cap();
+    failures += t_prompt_does_not_follow_link();
 
     /* Clean up observers so subsequent test groups see an empty table. */
     event_clear_observers(EV_RECOVERY_POLICY_ALLOW);
