@@ -139,7 +139,10 @@ static void state_write(struct zcl_param_fetch *s)
      * that looks structurally valid. */
     char tmp[1300];
     snprintf(tmp, sizeof(tmp), "%s.new", s->state_path);
-    FILE *f = fopen(tmp, "wb");
+    /* A crashed writer may leave this hint behind. Remove only the staging
+     * leaf and recreate it exclusively so a link is never followed. */
+    (void)unlink(tmp);
+    FILE *f = fopen(tmp, "wbx");
     if (!f)
         return;
     const struct zcl_param_pin *p = &zcl_param_pins[s->file_idx];

@@ -76,6 +76,19 @@ static void cleanup_scratch(void)
     rmdir(g_dir);
 }
 
+static bool file_has_bytes(const char *path, const void *want, size_t want_len)
+{
+    uint8_t got[16];
+    if (want_len > sizeof(got))
+        return false;
+    FILE *f = fopen(path, "rb");
+    if (!f)
+        return false;
+    size_t n = fread(got, 1, sizeof(got), f);
+    bool ok = fclose(f) == 0;
+    return ok && n == want_len && memcmp(got, want, want_len) == 0;
+}
+
 /* Deterministic pseudo-random filler so a "correct" body is reproducible
  * across runs without shipping a blob. */
 static void fill_pattern(uint8_t *buf, size_t len, uint32_t seed)
@@ -381,6 +394,47 @@ static int test_manifest_rejection(void)
 }
 
 /* ── 4. Session: correct fetch, bad chunks, resume, atomic install ──── */
+
+static int test_state_staging_link(void)
+{
+    int failures = 0;
+    size_t len = 0;
+    uint8_t *body = load_real_param(3, &len);
+    uint32_t count = 0;
+    uint8_t *manifest = body ? build_manifest(3, body, &count) : NULL;
+    char victim[900], staging[900], state[900], part[900];
+    snprintf(victim, sizeof(victim), "%s/state-victim", g_dir);
+    snprintf(state, sizeof(state), "%s/%s.zpart", g_dir,
+             zcl_param_pins[3].name);
+    snprintf(staging, sizeof(staging), "%s.new", state);
+    snprintf(part, sizeof(part), "%s/%s.part", g_dir,
+             zcl_param_pins[3].name);
+
+    FILE *f = fopen(victim, "wb");
+    bool prepared = f && fwrite("keep-me\n", 8, 1, f) == 1;
+    if (f)
+        prepared = fclose(f) == 0 && prepared;
+    prepared = prepared && symlink(victim, staging) == 0;
+    struct zcl_param_fetch *s = prepared
+        ? zcl_param_fetch_open(g_dir, 3) : NULL;
+    bool accepted = s && manifest &&
+                    zcl_param_fetch_set_manifest(s, manifest, count);
+    if (s)
+        zcl_param_fetch_close(s);
+
+    struct stat st;
+    CHECK(accepted && file_has_bytes(victim, "keep-me\n", 8) &&
+              lstat(state, &st) == 0 && S_ISREG(st.st_mode),
+          "resume-state publication preserves a linked staging target");
+
+    unlink(staging);
+    unlink(state);
+    unlink(part);
+    unlink(victim);
+    free(manifest);
+    free(body);
+    return failures;
+}
 
 static int test_session_roundtrip(void)
 {
@@ -963,6 +1017,7 @@ int test_params_fetch(void)
     failures += test_transport_boundaries();
     failures += test_merkle();
     failures += test_manifest_rejection();
+    failures += test_state_staging_link();
     failures += test_session_roundtrip();
     failures += test_resume();
     failures += test_resume_rejects_corrupt_part();
