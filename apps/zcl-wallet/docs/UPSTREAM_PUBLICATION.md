@@ -1272,3 +1272,45 @@ Local artifacts `wallet-scan-cloexec.bundle`, `wallet-scan-cloexec.mbox`,
 `pr-wallet-scan-cloexec.md` and `wallet-scan-cloexec-final.sha256` verify in
 the candidate worktree's ignored evidence directory. No external publication
 action was attempted.
+
+### Sensitive wallet read-stream inheritance qualified
+
+Branch `agent/upstream-wallet-sensitive-read-cloexec-20261004`, signed head
+`4a71914b1fdf9847e9c58e389bde964485f14147`, base
+`3a93e60ebf922af3d119b9facc1d95803f42844b`, adds one platform C23 read-stream
+primitive and routes six wallet credential, configuration and Tor
+onion-hostname reads through it. The primitive requests `O_CLOEXEC` before
+`fdopen` on POSIX and `_O_NOINHERIT | _O_BINARY` before `_fdopen` on Windows;
+it closes its owned descriptor if stream conversion fails. File contents,
+parsing, path selection, failure returns, wallet custody semantics and process
+launch policy are unchanged. The review is eight files, +98/-14, including the
+generated inventory and the explicit `CAP_FS_READ` declaration.
+
+Canonical RED removes only `O_CLOEXEC`: the new Linux runtime assertion then
+observes the admitted stream descriptor without `FD_CLOEXEC`, while the
+independent wallet-view port group remains green. The restored candidate passes
+both focused groups and both groups under ASan/UBSan with zero skips. Uncached
+GCC 14.2.0 and Clang 20.1.2 each check all 2,434 translation units with no new
+diagnostic sites. The Linux-hosted MinGW lane passes the focused helper compile,
+all 2,400 Windows cross-syntax translation units and 74 strict C23 acceptance
+cross-links; native Windows runtime remains unobserved. Architecture,
+documentation-count, generated-inventory, file-size, core-seal,
+consensus-parity and cap-15 complexity gates pass without a baseline increase.
+
+The first exact proof ran all 1,236 selected groups successfully but correctly
+refused the candidate on two lint gates: the new regression used a bare `/tmp`
+fixture and the new source lacked its filesystem-read capability declaration.
+Signed follow-up `4a71914b1fdf9847e9c58e389bde964485f14147` uses the repository-scoped
+fixture helper and declares the authority. The final unprivileged private-tmpfs
+proof passes all 215 lint gates and all 1,236 selected groups with zero failures,
+skips, cached results or reused receipt. Lint took 192.857s, tests 602.372s and
+the proof command returned after 833.729s. Native status independently reports
+`passed`; receipt SHA256 is
+`9f7dbb34b64ce8665e786b5ed7eaad9537a6c0c0e71a7f2e941b567ed0661992`.
+
+Local artifacts `wallet-sensitive-read-cloexec.bundle`,
+`wallet-sensitive-read-cloexec.mbox`, `wallet-sensitive-read-cloexec.receipt`,
+the exact lint/test/phase/status logs, `pr-wallet-sensitive-read-cloexec.md`,
+`wallet-sensitive-read-cloexec-qualification.txt` and
+`wallet-sensitive-read-cloexec-final.sha256` verify in the candidate worktree's
+ignored evidence directory. No external publication action was attempted.
