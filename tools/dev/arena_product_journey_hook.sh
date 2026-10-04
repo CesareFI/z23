@@ -114,6 +114,10 @@ git -C "$C23_BETA_FIXTURE_SOURCE" archive 2b00c4c2b^ \
         packages/zprng packages/zdogfight packages/zdogdrone |
     tar -x -C "$APJ_DEPENDENCY_AUTHOR" --strip-components=1
 [ -f "$APJ_AUTHOR/src/zdogace.c" ] || apj_die "old zdogace source was not materialized"
+# The task owns its acceptance tests. Seal the desired steering contract in
+# the base before work start; the candidate may change only implementation.
+"$DHT_ACCEPTANCE_C23" zdogace-contract "$APJ_AUTHOR" ||
+    apj_die "native Arena steering contract could not be prepared"
 
 APJ_KEY="$DHT_WORK/arena-author.key"
 APJ_PUB="$($C23_BETA_INSTALL_BIN/zclassic23-package-sign --generate "$APJ_KEY")"
@@ -156,16 +160,6 @@ apj_create_dir() {
     [ "$APJ_CREATE_ROOT" = "$expected" ] ||
         apj_die "$label root drifted: $APJ_CREATE_ROOT expected $expected"
 }
-
-# The three unchanged dependencies are publisher inputs only. Every other
-# role receives them through the authenticated provider route below.
-apj_note "publisher derives the three unchanged Arena dependencies"
-apj_create_dir zprng "$APJ_DEPENDENCY_AUTHOR/zprng" 1 1 "$APJ_ZPRNG_ROOT"
-APJ_ZPRNG_TRANSPORT="$APJ_CREATE_TRANSPORT"
-apj_create_dir zdogfight "$APJ_DEPENDENCY_AUTHOR/zdogfight" 2 8 "$APJ_FIGHT_ROOT"
-APJ_FIGHT_TRANSPORT="$APJ_CREATE_TRANSPORT"
-apj_create_dir zdogdrone "$APJ_DEPENDENCY_AUTHOR/zdogdrone" 3 15 "$APJ_DRONE_ROOT"
-APJ_DRONE_TRANSPORT="$APJ_CREATE_TRANSPORT"
 
 apj_use() {
     local role="$1" root="$2" plan plan_id commit now
@@ -213,16 +207,33 @@ apj_publish_package() {
     apj_publish_record "$1" pointer "$2" "$3" 1
     apj_publish_record "$1" provider "$2" "$3" 1
 }
+
+# The three unchanged dependencies are publisher inputs only. Every other
+# role receives them through the authenticated provider route below. Publish
+# each one before creating the next publisher sequence: publication reimports
+# its signed carrier, and an older sequence must remain stale after a newer
+# release has advanced the store's cursor. Restart A between creation and
+# use to prove that each release and its build evidence survive a cold open.
+apj_note "publisher derives the three unchanged Arena dependencies"
+apj_create_dir zprng "$APJ_DEPENDENCY_AUTHOR/zprng" 1 1 "$APJ_ZPRNG_ROOT"
+APJ_ZPRNG_TRANSPORT="$APJ_CREATE_TRANSPORT"
 apj_restart "$APJ_A" "$APJ_C"
-# A is about to publish the three dependency pointers, and the gate requires
-# the evidence in A's own store first: install the exact DAG (receipt one
-# per root), then file the distinct rebuild receipt per published root.
-apj_use "$APJ_A" "$APJ_DRONE_ROOT"
+apj_use "$APJ_A" "$APJ_ZPRNG_ROOT"
 apj_reproduce "$APJ_A" "$APJ_ZPRNG_ROOT"
-apj_reproduce "$APJ_A" "$APJ_FIGHT_ROOT"
-apj_reproduce "$APJ_A" "$APJ_DRONE_ROOT"
 apj_publish_package "$APJ_A" "$APJ_ZPRNG_ROOT" "$APJ_ZPRNG_TRANSPORT"
+
+apj_create_dir zdogfight "$APJ_DEPENDENCY_AUTHOR/zdogfight" 2 8 "$APJ_FIGHT_ROOT"
+APJ_FIGHT_TRANSPORT="$APJ_CREATE_TRANSPORT"
+apj_restart "$APJ_A" "$APJ_C"
+apj_use "$APJ_A" "$APJ_FIGHT_ROOT"
+apj_reproduce "$APJ_A" "$APJ_FIGHT_ROOT"
 apj_publish_package "$APJ_A" "$APJ_FIGHT_ROOT" "$APJ_FIGHT_TRANSPORT"
+
+apj_create_dir zdogdrone "$APJ_DEPENDENCY_AUTHOR/zdogdrone" 3 15 "$APJ_DRONE_ROOT"
+APJ_DRONE_TRANSPORT="$APJ_CREATE_TRANSPORT"
+apj_restart "$APJ_A" "$APJ_C"
+apj_use "$APJ_A" "$APJ_DRONE_ROOT"
+apj_reproduce "$APJ_A" "$APJ_DRONE_ROOT"
 apj_publish_package "$APJ_A" "$APJ_DRONE_ROOT" "$APJ_DRONE_TRANSPORT"
 
 apj_pin() {
@@ -235,8 +246,22 @@ apj_pin() {
         --input="{\"root\":\"$root\",\"mode\":\"commit\",\"plan_token\":\"$token\"}")"
     apj_ok "role $role pin commit $root" "$commit"
 }
+apj_wait_provider_record() {
+    local role="$1" transport="$2" deadline out count
+    deadline=$(( $(date +%s) + ${C23_BETA_RECORD_WAIT:-120} ))
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        out="$(apj_native "$role" zcode network records \
+            --input="{\"kind\":\"provider\",\"namespace\":\"$APJ_NAMESPACE\",\"transport_root\":\"$transport\"}" || true)"
+        count="$(printf '%s' "$out" | apj_jget data.count 2>/dev/null || true)"
+        [ "${count:-0}" -ge 1 ] 2>/dev/null && return 0
+        sleep 1
+    done
+    return 1
+}
 apj_fetch() {
     local role="$1" semantic="$2" transport="$3" out deadline complete=False
+    apj_wait_provider_record "$role" "$transport" ||
+        apj_die "role $role never discovered a provider record for $transport"
     out="$(apj_native "$role" zcode package fetch \
         --input="{\"root\":\"$transport\",\"namespace\":\"$APJ_NAMESPACE\",\"maximum_bytes\":268435456}" || true)"
     apj_ok "role $role fetch $transport" "$out"
@@ -268,6 +293,9 @@ for apj_role in "$APJ_A" "$APJ_B"; do zap_allow_context_policy "$apj_role"; done
 # C and D need the dependency DAG before they can independently reproduce the
 # candidate. B deliberately remains an inert, package-empty consumer.
 for apj_role in "$APJ_C" "$APJ_D"; do
+    zap_connect "$apj_role" "$APJ_A"
+done
+for apj_role in "$APJ_C" "$APJ_D"; do
     apj_fetch "$apj_role" "$APJ_ZPRNG_ROOT" "$APJ_ZPRNG_TRANSPORT"
     apj_fetch "$apj_role" "$APJ_FIGHT_ROOT" "$APJ_FIGHT_TRANSPORT"
     apj_fetch "$apj_role" "$APJ_DRONE_ROOT" "$APJ_DRONE_TRANSPORT"
@@ -285,9 +313,10 @@ DHT_PGID_A=""; DHT_PGID_B=""
 SAVED_BUILDWORKERS="$DHT_BUILDWORKERS"
 DHT_BUILDWORKERS=0; zap_start_node "$APJ_B"
 DHT_BUILDWORKERS="$SAVED_BUILDWORKERS"
-zap_start_node "$APJ_C"; zap_start_node "$APJ_D"
+zap_start_node "$APJ_C" "$APJ_A"; zap_start_node "$APJ_D" "$APJ_A"
 zap_start_node "$APJ_A" "$APJ_C"
 zap_connect "$APJ_A" "$APJ_D"; zap_connect "$APJ_A" "$APJ_B"
+zap_wait_chain_tip "$APJ_C"; zap_wait_chain_tip "$APJ_D"
 
 apj_note "native intent: Red Ace should turn toward its target rather than away"
 APJ_START="$(apj_native "$APJ_A" zcode work start \
@@ -302,6 +331,9 @@ APJ_CANDIDATE_WORKSPACE="$(printf '%s' "$APJ_HANDOFF" | apj_jget data.candidate_
 
 "$DHT_ACCEPTANCE_C23" zdogace-correct "$APJ_CANDIDATE_WORKSPACE" ||
     apj_die "native C23 sign correction could not be applied exactly"
+cmp -s "$APJ_AUTHOR/tests/test_zdogace.c" \
+    "$APJ_CANDIDATE_WORKSPACE/tests/test_zdogace.c" ||
+    apj_die "candidate changed the task's acceptance test bytes"
 
 apj_build_red_direct() {
     local source="$1" out="$2" dd="${DDS[$APJ_A]}"
@@ -309,6 +341,15 @@ apj_build_red_direct() {
         -I"$source/include" -I"$dd/zcode/installed/$APJ_FIGHT_ROOT/include" \
         -I"$dd/zcode/installed/$APJ_ZPRNG_ROOT/include" \
         "$source/app/main.c" "$source/src/zdogace.c" \
+        "$dd/zcode/installed/$APJ_FIGHT_ROOT/lib/libzdogfight.a" \
+        "$dd/zcode/installed/$APJ_ZPRNG_ROOT/lib/libzprng.a" -o "$out"
+}
+apj_build_contract_test() {
+    local source="$1" out="$2" dd="${DDS[$APJ_A]}"
+    cc -std=c23 -O1 -static -fno-omit-frame-pointer -D_POSIX_C_SOURCE=200809L \
+        -I"$source/include" -I"$dd/zcode/installed/$APJ_FIGHT_ROOT/include" \
+        -I"$dd/zcode/installed/$APJ_ZPRNG_ROOT/include" \
+        "$source/tests/test_zdogace.c" "$source/src/zdogace.c" \
         "$dd/zcode/installed/$APJ_FIGHT_ROOT/lib/libzdogfight.a" \
         "$dd/zcode/installed/$APJ_ZPRNG_ROOT/lib/libzprng.a" -o "$out"
 }
@@ -369,6 +410,15 @@ apj_build_installed_pilot "$APJ_A" "$APJ_DRONE_ROOT" zdogdrone \
     "$APJ_BLUE_CHECKOUT" "$DHT_WORK/author-blue"
 apj_build_red_direct "$APJ_AUTHOR" "$DHT_WORK/red-before"
 apj_build_red_direct "$APJ_CANDIDATE_WORKSPACE" "$DHT_WORK/red-candidate"
+apj_build_contract_test "$APJ_AUTHOR" "$DHT_WORK/contract-before"
+apj_build_contract_test "$APJ_CANDIDATE_WORKSPACE" "$DHT_WORK/contract-candidate"
+if "$DHT_WORK/contract-before" >"$DHT_WORK/contract-before.out" 2>&1; then
+    apj_die "base unexpectedly passed the sealed steering contract"
+fi
+grep -Fq 'FAIL ' "$DHT_WORK/contract-before.out" ||
+    apj_die "base contract failed without an assertion: $(<"$DHT_WORK/contract-before.out")"
+"$DHT_WORK/contract-candidate" >"$DHT_WORK/contract-candidate.out" 2>&1 ||
+    apj_die "candidate failed the sealed steering contract: $(<"$DHT_WORK/contract-candidate.out")"
 apj_run_match "$DHT_WORK/red-before" "$DHT_WORK/author-blue" \
     "$DHT_WORK/before.replay" "$DHT_WORK/before.out"
 apj_run_match "$DHT_WORK/red-candidate" "$DHT_WORK/author-blue" \

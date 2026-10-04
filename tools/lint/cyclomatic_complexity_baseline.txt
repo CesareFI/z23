@@ -3480,7 +3480,7 @@ tools/arena_product_journey_c23.c:attack_deltas:25
 tools/arena_product_journey_c23.c:burst_proof:27
 tools/arena_product_journey_c23.c:cold_proof:23
 tools/arena_product_journey_c23.c:find_check:20
-tools/arena_product_journey_c23.c:main:22
+tools/arena_product_journey_c23.c:main:21
 tools/arena_product_journey_c23.c:sparse_proof:20
 tools/arena_runner.c:ar_run_match:23
 tools/arena_runner.c:ar_verify_replay:19

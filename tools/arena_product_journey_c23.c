@@ -286,22 +286,38 @@ static bool edit_file(const char*path,const char*const*old,const char*const*new,
 static int zdogace_correct(int argc,char **argv)
 {
     if(argc!=3)return 2;
-    char src[4096],test[4096];if(snprintf(src,sizeof(src),"%s/src/zdogace.c",argv[2])<1||snprintf(test,sizeof(test),"%s/tests/test_zdogace.c",argv[2])<1)return 1;
+    char src[4096];if(snprintf(src,sizeof(src),"%s/src/zdogace.c",argv[2])<1)return 1;
     const char*so[]={"    /* cross > 0: enemy to the right -> bank right (positive roll). */","    out->roll = clamp15(2 * cross);","    /* Elevation error: normalized rel_y minus own pitch sine. */","    int32_t ep = ryq - zdog_sin16(obs->pitch);\n    out->pitch = clamp15(2 * ep);"};
     const char*sn[]={"    /* cross = sin(yaw - bearing): cross < 0 means the enemy is to the\n     * RIGHT (bearing > yaw), and the sim turns right (yaw increases)\n     * when roll is POSITIVE — so steer roll opposite to cross. */","    out->roll = clamp15(-2 * cross);","    /* Elevation: the sim's forward vertical component is -sin(pitch),\n     * so steer pitch toward -(normalized rel_y + sin(own pitch)). */","    int32_t ep = ryq + zdog_sin16(obs->pitch);\n    out->pitch = clamp15(-2 * ep);"};
+    return edit_file(src,so,sn,4)?0:1;
+}
+static int zdogace_contract(int argc,char **argv)
+{
+    if(argc!=3)return 2;
+    char test[4096];if(snprintf(test,sizeof(test),"%s/tests/test_zdogace.c",argv[2])<1)return 1;
     const char*to[]={"    /* Lateral error steers: enemy off to one side gives a non-zero\n     * roll, and the mirror-image bearing gives the exact opposite roll.\n     * (The absolute sign is pinned against the sim's roll->yaw\n     * convention by the arena integration match, not here.) */","    CHECK(a.roll != 0);","    CHECK(b.roll == (int16_t)-a.roll || b.roll == (int16_t)(-a.roll + 1) ||\n          b.roll == (int16_t)(-a.roll - 1));","    /* Enemy above: pitch up. */","    CHECK(a.pitch > 0);"};
     const char*tn[]={"    /* Lateral steering, sign pinned against the sim convention\n     * (positive roll increases yaw, rotating forward from +z toward\n     * +x): enemy at +x while facing +z is to the RIGHT -> roll > 0;\n     * the mirror bearing gives the mirror control. */","    CHECK(a.roll > 0);","    CHECK(b.roll < 0);","    /* Elevation, sign pinned against the sim (forward vertical\n     * component is -sin(pitch)): enemy above -> pitch < 0 (climb). */","    CHECK(a.pitch < 0);"};
-    return edit_file(src,so,sn,4)&&edit_file(test,to,tn,5)?0:1;
+    return edit_file(test,to,tn,5)?0:1;
 }
 static int zdogace_tamper(int argc,char **argv)
 {if(argc!=3)return 2;uint8_t*p=NULL;size_t n=0;if(!read_file(argv[2],&p,&n))return 1;char*s=zcl_malloc(n+1, "arena_product_journey_tamper");if(!s){free(p);return 1;}memcpy(s,p,n);s[n]='\0';free(p);const char*a="clamp15(-2 * cross)",*b="clamp15(2 * cross)";const char*o=strstr(s,a)?a:b,*q=o==a?b:a;bool ok=replace_once(&s,&n,o,q)&&write_file(argv[2],(uint8_t*)s,n);free(s);return ok?0:1;}
 static int flip_byte(int argc,char **argv)
 {if(argc!=4)return 2;int fd=open(argv[2],O_RDWR|O_CLOEXEC|O_NOFOLLOW);if(fd<0)return 1;struct stat st;if(fstat(fd,&st)||!S_ISREG(st.st_mode)||st.st_size<1){close(fd);return 1;}off_t off=!strcmp(argv[3],"last")?st.st_size-1:(off_t)strtoll(argv[3],NULL,10);uint8_t b;if(off<0||off>=st.st_size||pread(fd,&b,1,off)!=1){close(fd);return 1;}b^=1;bool ok=pwrite(fd,&b,1,off)==1&&fsync(fd)==0&&close(fd)==0;return ok?0:1;}
 
+static int zdogace_mode(int argc,char **argv)
+{
+    if(!strcmp(argv[1],"zdogace-correct"))return zdogace_correct(argc,argv);
+    if(!strcmp(argv[1],"zdogace-contract"))return zdogace_contract(argc,argv);
+    if(!strcmp(argv[1],"zdogace-tamper"))return zdogace_tamper(argc,argv);
+    return -1;
+}
+
 static int usage(const char*p){fprintf(stderr,"usage: %s MODE ...\n",p);return 2;}
 int main(int argc,char **argv)
 {
     if(argc<2)return usage(argv[0]);
+    int edit_result=zdogace_mode(argc,argv);
+    if(edit_result>=0)return edit_result;
     if(!strcmp(argv[1],"json-get"))return json_get_mode(argc,argv);
     if(!strcmp(argv[1],"rpc-result"))return rpc_result();
     if(!strcmp(argv[1],"ids-distinct"))return ids_distinct(argc,argv);
@@ -319,8 +335,6 @@ int main(int argc,char **argv)
     if(!strcmp(argv[1],"burst-proof"))return burst_proof(argc,argv);
     if(!strcmp(argv[1],"cold-proof"))return cold_proof(argc,argv);
     if(!strcmp(argv[1],"evidence-check"))return evidence_check(argc,argv);
-    if(!strcmp(argv[1],"zdogace-correct"))return zdogace_correct(argc,argv);
-    if(!strcmp(argv[1],"zdogace-tamper"))return zdogace_tamper(argc,argv);
     if(!strcmp(argv[1],"flip-byte"))return flip_byte(argc,argv);
     return usage(argv[0]);
 }
