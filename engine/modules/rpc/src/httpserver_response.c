@@ -32,6 +32,14 @@ static void rpc_http_cleanse_json_strings(struct json_value *value)
     }
 }
 
+static bool rpc_http_method_returns_key_material(const char *method)
+{
+    if (!method) return false;
+    return strcmp(method, "dumpprivkey") == 0 ||
+           strcmp(method, "z_exportkey") == 0 ||
+           strcmp(method, "z_exportviewingkey") == 0;
+}
+
 /* Upper bound on a single serialized JSON-RPC response body. Generous
  * enough for the largest legitimate responses (gettxoutsetinfo, a full
  * listunspent / getrawmempool true) while bounding the one-shot
@@ -141,7 +149,7 @@ void rpc_http_retire_response_copies(const char *method,
                                      struct json_value *response,
                                      char *serialized, size_t serialized_size)
 {
-    if (!method || strcmp(method, "dumpprivkey") != 0)
+    if (!rpc_http_method_returns_key_material(method))
         return;
     rpc_http_cleanse_json_strings(rpc_result);
     rpc_http_cleanse_json_strings(response);
