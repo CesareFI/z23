@@ -45,6 +45,25 @@ run_make "$header" >/dev/null
 original="$(header_digest)"
 expect_query 'settled input' 0
 
+actual=0
+run_make VIEW_INPUT_KEY_TOOL=false help >/dev/null 2>&1 || actual=$?
+if [ "$actual" -ne 0 ]; then
+    echo 'generated view input: help required unrelated view fingerprints' >&2
+    exit 1
+fi
+actual=0
+run_make -q VIEW_INPUT_KEY_TOOL=false "$header" >/dev/null 2>&1 || actual=$?
+if [ "$actual" -ne 2 ]; then
+    echo 'generated view input: view goal skipped fingerprint validation' >&2
+    exit 1
+fi
+actual=0
+run_make -q VIEW_INPUT_KEY_TOOL=false help "$header" >/dev/null 2>&1 || actual=$?
+if [ "$actual" -ne 2 ]; then
+    echo 'generated view input: mixed goal skipped fingerprint validation' >&2
+    exit 1
+fi
+
 printf 'body{color:blue}\n' > "$source"
 touch -r "$scratch/original.css" "$source"
 expect_query 'changed bytes with old mtime' 1

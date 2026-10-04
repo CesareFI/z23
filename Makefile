@@ -3395,8 +3395,10 @@ VIEW_INPUT_KEY_TOOL = bash tools/dev/generated-view-input-key.sh
 TMPL_INPUT_KEY_FILE = build/identity/wallet-templates.inputs
 SITE_CSS_INPUT_KEY_FILE = build/identity/site-css.inputs
 INSTALL_SH_INPUT_KEY_FILE = build/identity/install-script.inputs
+# Help does not consume generated views; mixed goals still need their keys.
+ZCL_HELP_EXACT_GOAL := $(if $(word 2,$(MAKECMDGOALS)),,$(filter help,$(MAKECMDGOALS)))
 ifneq ($(ZCL_STANDALONE_CLEAN),1)
-ifeq ($(ZCL_STANDALONE_EXACT_GOAL),)
+ifeq ($(strip $(ZCL_STANDALONE_EXACT_GOAL) $(ZCL_HELP_EXACT_GOAL)),)
 TMPL_INPUT_KEY := $(shell $(VIEW_INPUT_KEY_TOOL) $(TMPL_SRC) $(VIEW_KEY_INPUTS))
 SITE_CSS_INPUT_KEY := $(shell $(VIEW_INPUT_KEY_TOOL) $(SITE_CSS_SRC) $(VIEW_KEY_INPUTS))
 INSTALL_SH_INPUT_KEY := $(shell $(VIEW_INPUT_KEY_TOOL) $(INSTALL_SH_SRC) $(VIEW_KEY_INPUTS))
