@@ -174,6 +174,10 @@ void ldbr_env_destroy(ldbr_env_t *env);
 size_t ldbr_stat_table_count(const ldbr_t *db);
 size_t ldbr_stat_memtable_entries(const ldbr_t *db);
 
+#ifdef ZCL_TESTING
+bool ldbr_test_internal_key_size(size_t key_len, size_t *out_size);
+#endif
+
 #ifdef __cplusplus
 }
 #endif

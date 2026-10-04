@@ -367,9 +367,79 @@ static bool lr_copy(const char *src, const char *dst)
     return r.ok;
 }
 
+static int lr_test_internal_key_size_bounds(void)
+{
+    printf("ldb_reader: internal-key size bounds... ");
+    size_t size = SIZE_MAX;
+    bool ok = ldbr_test_internal_key_size(0, &size) && size == 8;
+    ok = ok && ldbr_test_internal_key_size(SIZE_MAX - 8, &size) &&
+         size == SIZE_MAX;
+    size = SIZE_MAX;
+    ok = ok && !ldbr_test_internal_key_size(SIZE_MAX - 7, &size) && size == 0;
+    size = SIZE_MAX;
+    ok = ok && !ldbr_test_internal_key_size(SIZE_MAX, &size) && size == 0;
+    if (ok)
+        printf("OK\n");
+    else
+        printf("FAIL\n");
+    return ok ? 0 : 1;
+}
+
+static int lr_test_extreme_key_length_refusals(const char *dir)
+{
+    printf("ldb_reader: extreme point/seek key lengths fail closed... ");
+    char *err = NULL;
+    ldbr_options_t *o = ldbr_options_create();
+    if (!o) {
+        printf("FAIL\n");
+        return 1;
+    }
+    ldbr_options_set_create_if_missing(o, 0);
+    ldbr_t *db = ldbr_open(o, dir, &err);
+    ldbr_options_destroy(o);
+    if (!db) {
+        free(err);
+        printf("FAIL\n");
+        return 1;
+    }
+
+    ldbr_readoptions_t *ro = ldbr_readoptions_create();
+    if (!ro) {
+        ldbr_close(db);
+        printf("FAIL\n");
+        return 1;
+    }
+    char key = 0;
+    size_t value_len = SIZE_MAX;
+    char *value = ldbr_get(db, ro, &key, SIZE_MAX, &value_len, &err);
+    bool get_refused = !value && value_len == 0 && err &&
+                       strstr(err, "could not build a lookup key");
+    free(value);
+    free(err);
+    err = NULL;
+
+    ldbr_iterator_t *it = ldbr_create_iterator(db, ro);
+    if (!it) {
+        ldbr_readoptions_destroy(ro);
+        ldbr_close(db);
+        printf("FAIL\n");
+        return 1;
+    }
+    ldbr_iter_seek(it, &key, SIZE_MAX);
+    ldbr_iter_get_error(it, &err);
+    bool seek_refused = err && strstr(err, "could not build a seek key");
+    free(err);
+    ldbr_iter_destroy(it);
+    ldbr_readoptions_destroy(ro);
+    ldbr_close(db);
+    bool ok = get_refused && seek_refused;
+    printf(ok ? "OK\n" : "FAIL\n");
+    return ok ? 0 : 1;
+}
+
 int test_ldb_reader(void)
 {
-    int failures = 0;
+    int failures = lr_test_internal_key_size_bounds();
     char src[512], cxx[512], c23[512], dmg[512];
 
     mkdir("test-tmp", 0755);
@@ -421,6 +491,8 @@ int test_ldb_reader(void)
             printf("OK (%ld records identical)\n", n);
         }
     }
+
+    failures += lr_test_extreme_key_length_refusals(c23);
 
     /* The C23 side read a tree the C++ library never recovered, so matching
      * it proves the write-ahead log was replayed. */

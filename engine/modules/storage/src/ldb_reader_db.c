@@ -523,8 +523,9 @@ bool ldbr_db_get_internal(struct ldbr_db *db, const uint8_t *ukey, size_t klen,
     uint8_t stack[512];
     uint8_t *lookup = stack;
     uint8_t *heap = NULL;
-    if (klen + 8 > sizeof(stack)) {
-        heap = zcl_malloc(klen + 8, "ldb_lookup_key");
+    size_t lookup_cap = ldb_ikey_size(klen);
+    if (lookup_cap > sizeof(stack)) {
+        heap = zcl_malloc(lookup_cap, "ldb_lookup_key");
         if (!heap) {
             *err = ldb_strdup("ldb: out of memory");
             return false;
@@ -532,7 +533,7 @@ bool ldbr_db_get_internal(struct ldbr_db *db, const uint8_t *ukey, size_t klen,
         lookup = heap;
     }
     size_t lookup_len = 0;
-    if (!ldb_ikey_build(lookup, klen + 8, ukey, klen, LDB_MAX_SEQUENCE,
+    if (!ldb_ikey_build(lookup, lookup_cap, ukey, klen, LDB_MAX_SEQUENCE,
                         LDB_TYPE_VALUE, &lookup_len)) {
         free(heap);
         *err = ldb_strdup("ldb: could not build a lookup key");
@@ -728,10 +729,16 @@ void ldbr_iter_seek(struct ldbr_iterator *it, const char *k, size_t klen)
 {
     if (!it || !it->inner_open || it->err)
         return;
-    if (klen + 8 > it->seek_cap) {
+    size_t required = ldb_ikey_size(klen);
+    if (required > it->seek_cap) {
         size_t cap = it->seek_cap ? it->seek_cap : 64;
-        while (cap < klen + 8)
+        while (cap < required) {
+            if (cap > SIZE_MAX / 2) {
+                cap = required;
+                break;
+            }
             cap *= 2;
+        }
         uint8_t *nb = zcl_realloc(it->seek_buf, cap, "ldb_iter_seek_buf");
         if (!nb) {
             it->err = ldb_strdup("ldb: out of memory");
