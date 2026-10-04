@@ -1399,3 +1399,44 @@ evidence, `pr-db-iterator-scratch-retirement.md`,
 `db-iterator-scratch-retirement-final.sha256` verify in the candidate
 worktree's ignored evidence directory. No external publication action was
 attempted.
+
+### LevelDB iterator allocation-growth bound qualified
+
+Branch `agent/upstream-db-iterator-growth-bound-20261004`, signed head
+`0fbae3bf859ace48422a95939a91f9b425b61f00`, base
+`3a93e60ebf922af3d119b9facc1d95803f42844b`, checks the shared storage
+iterator's `value_len + 256` growth before allocation. Lengths through
+`SIZE_MAX - 256` preserve the existing capacity rule; larger lengths now log
+and fail before allocation while retaining the iterator's current reusable
+buffer. Database bytes, XOR deobfuscation, representable allocation sizes,
+wallet formats, consensus and sealed-core code are unchanged. The review is
+four files, +54/-5, including the generated inventory and a test-only boundary
+hook.
+
+Canonical RED routes the old unchecked addition through the testable helper:
+`SIZE_MAX - 255` and `SIZE_MAX` wrap and `test_rpc` fails on both the shared-
+pool attempt and isolated retry while the other six selected groups pass. The
+minimal range check makes all seven groups pass with zero skips; ASan/UBSan
+passes the same seven. GCC 14.2.0 and Clang 20.1.2 each check all 2,433
+translation units with no new diagnostic sites. The initial root-capable
+compiler invocations correctly failed their unreadable-file control probe;
+running under the established DAC capability drop made that probe meaningful.
+The MinGW lane checks 2,399 Windows translation units with zero new failures
+and cross-links all 74 strict C23 acceptance programs; native Windows runtime
+remains unobserved. Architecture, documentation-count, generated-inventory,
+file-size, core-seal, consensus-parity, PR-security and cap-15 complexity gates
+pass; the complexity scan covers 68,757 functions in 4,681 files.
+
+The policy-5 private-RAM-scratch proof passes the exact head/base pair: all 215
+lint gates and all 258 impact-selected groups complete, with 258 tests run and
+zero failures, skips or reused test results. Lint took 202.825s, tests 279.134s
+and the signed receipt records 522.346s total. Native status independently
+reports `passed` with `receipt_reused=false`; receipt SHA256 is
+`29cf9cf356889bc21bd5a6986f939cbdfaf51093eb532233017af29c83c34533`.
+
+Local artifacts `db-iterator-growth-bound.bundle`,
+`db-iterator-growth-bound.mbox`, `db-iterator-growth-bound.receipt`, exact
+phase/status evidence, `pr-db-iterator-growth-bound.md` and
+`db-iterator-growth-bound-qualification.txt` verify in the candidate
+worktree's ignored evidence directory. No external publication action was
+attempted.
