@@ -1354,3 +1354,48 @@ Local artifacts `wallet-leveldb-seed-retirement.bundle`,
 `wallet-leveldb-seed-retirement-final.sha256` verify in the candidate
 worktree's ignored evidence directory. No external publication action was
 attempted.
+
+### LevelDB iterator plaintext-buffer retirement qualified
+
+Branch `agent/upstream-db-iterator-scratch-retirement-20261004`, signed head
+`99f0e7bb87307a9a86651d03ea7f8deb4bb38238`, base
+`3a93e60ebf922af3d119b9facc1d95803f42844b`, cleanses the shared storage
+iterator's complete deobfuscation allocation before buffer growth and teardown.
+Wallet private keys and Sapling expanded spending keys traverse this generic
+C23 boundary. Database bytes, XOR deobfuscation, iterator ordering, admitted
+lengths, allocation sizing, wallet formats, consensus and sealed-core code are
+unchanged. The review is four files, +81/-10, including the generated inventory
+and a test-only per-iterator observer.
+
+Canonical RED uses real LevelDB values under a one-byte obfuscation key, grows
+the plaintext buffer from a 2-byte value to a 300-byte value and then destroys
+the iterator. Without the production cleanse, `test_rpc` fails on the shared-
+pool attempt and isolated retry while the other six selected groups pass.
+Adding only the existing optimizer-resistant cleanse include and call makes all
+seven groups pass with zero skips; ASan/UBSan passes the same seven. Uncached
+GCC 14.2.0 and Clang 20.1.2 each check all 2,433 production translation units
+with no new diagnostic sites. The MinGW lane checks 2,399 Windows translation
+units with zero new failures and cross-links all 74 strict C23 acceptance
+programs; native Windows runtime remains unobserved. Architecture,
+documentation-count, generated-inventory, file-size, core-seal,
+consensus-parity, PR-security and cap-15 complexity gates pass.
+
+The first exact-proof request refused because the isolated checkout still had
+the preceding candidate at HEAD. After checking out the exact commit, the next
+request refused a `z23-dev` producer built from the preceding source. Both are
+fail-closed prerequisite evidence and make no product claim. The prescribed
+exact-source `make dev-bin`, `dev proof retry` and `dev proof step` then pass all
+215 lint gates and all 258 impact-selected groups: 258 run, zero failures,
+skips or reused results. Lint took 198.504s, tests 277.319s and the receipt
+records 526.945s total. Native status independently reports `passed`; receipt
+SHA256 is
+`275ef299da366f5ca0917cbed8ec4fef057005a8f731d319cfbd2ba65ef30c7f`.
+
+Local artifacts `db-iterator-scratch-retirement.bundle`,
+`db-iterator-scratch-retirement.mbox`,
+`db-iterator-scratch-retirement.receipt`, exact prerequisite/phase/status
+evidence, `pr-db-iterator-scratch-retirement.md`,
+`db-iterator-scratch-retirement-qualification.txt` and
+`db-iterator-scratch-retirement-final.sha256` verify in the candidate
+worktree's ignored evidence directory. No external publication action was
+attempted.
