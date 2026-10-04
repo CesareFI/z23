@@ -91,11 +91,7 @@ static void *scan_file_thread(void *arg)
         LOG_NULL("wallet_scan", "path too long for blk%05d.dat",
                  a->file_num);
     }
-    int flags = O_RDONLY;
-#ifdef O_BINARY
-    flags |= O_BINARY;
-#endif
-    int fd = open(path, flags);
+    int fd = wallet_scan_block_file_open(path);
     if (fd < 0) { a->result = false; LOG_NULL("wallet_scan", "open failed for blk%05d.dat", a->file_num); }
     struct stat st;
     if (fstat(fd, &st) != 0) { close(fd); a->result = false; LOG_NULL("wallet_scan", "fstat failed for blk%05d.dat", a->file_num); }

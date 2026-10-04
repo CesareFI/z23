@@ -29,6 +29,9 @@
 #include <stdbool.h>
 #include <time.h>
 
+/* Open one canonical block file for mapping without granting write access. */
+int wallet_scan_block_file_open(const char *path);
+
 /* Run Pass 2 of the wallet block scan.
  *
  * ndb:            our SQLite database for storing results (must be open)

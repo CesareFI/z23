@@ -30,6 +30,31 @@
 
 int boot_block_scan_test_worker_count(int nfiles, uint32_t cpus);
 
+static int test_scan_block_descriptor_cloexec(void)
+{
+#ifdef _WIN32
+    return 0; /* Windows CRT descriptors have no POSIX exec boundary. */
+#else
+    printf("GIVEN a wallet block file WHEN opened for scanning "
+           "THEN its descriptor is close-on-exec... ");
+    char dir[256], path[320];
+    test_make_tmpdir(dir, sizeof(dir), "block_scan", "cloexec");
+    snprintf(path, sizeof(path), "%s/blk00000.dat", dir);
+    int seed = open(path, O_CREAT | O_WRONLY | O_TRUNC | O_CLOEXEC, 0600);
+    bool ok = seed >= 0 && write(seed, "x", 1) == 1;
+    if (seed >= 0)
+        close(seed);
+    int fd = ok ? wallet_scan_block_file_open(path) : -1;
+    ok = fd >= 0 && (fcntl(fd, F_GETFD) & FD_CLOEXEC) != 0;
+    if (fd >= 0)
+        close(fd);
+    (void)test_rm_rf_recursive(dir);
+    if (ok) { printf("OK\n"); return 0; }
+    printf("FAIL\n");
+    return 1;
+#endif
+}
+
 static int test_scan_storage_concurrency(void)
 {
     int failures = 0;
@@ -596,6 +621,7 @@ int test_block_scan(void)
 
     printf("\n=== Block Scan & Chain Propagation Tests ===\n");
 
+    failures += test_scan_block_descriptor_cloexec();
     failures += test_scan_storage_concurrency();
     failures += test_cmp_height();
     failures += test_failed_child_propagation();
