@@ -201,6 +201,34 @@ struct snapshot_sync_service *msg_snapshot_sync_ensure(
     return snapsync_global();
 }
 
+static void reconcile_idle_snapshot_peer(
+        enum snapshot_sync_state service_state, struct p2p_node *node)
+{
+    if (service_state != SNAPSYNC_IDLE ||
+        node->state != PEER_SNAPSHOT_RECEIVING)
+        return;
+    if (peer_set_state_checked((uint32_t)node->id, &node->state,
+                               PEER_ACTIVE,
+                               "snapshot service reset to idle")) {
+        LOG_INFO("snapsync",
+                 "released stale snapshot peer state for %s after reset",
+                 node->addr_name);
+    }
+}
+
+void mp_snapshot_reconcile_peer_state(struct msg_processor *mp,
+                                      struct p2p_node *node)
+{
+    if (!node)
+        return;
+    struct snapshot_sync_service *svc = msg_snapshot_sync(mp);
+    if (!svc)
+        return;
+    struct snapsync_status status = {0};
+    snapsync_get_status_snapshot(svc, &status);
+    reconcile_idle_snapshot_peer(status.state, node);
+}
+
 /* ── Block swarm: parallel block download coordinator ───────── */
 /* Manages BitTorrent-style block piece download across multiple
  * ZCL23 peers. Legacy peers contribute blocks via normal getdata/block
@@ -775,6 +803,7 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                     if (svc)
                         snapsync_get_status_snapshot(svc, &snap_status);
                 }
+                reconcile_idle_snapshot_peer(snap_status.state, node);
 
                 /* Additional gate: once snapshot sync already owns the
                  * receiver lifecycle, duplicate offers should be ignored in

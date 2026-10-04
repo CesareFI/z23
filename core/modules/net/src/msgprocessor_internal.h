@@ -135,6 +135,11 @@ bool mp_snapshot_check_stall(void);
  * snapsync_is_active() and exposed here purely for symmetry. */
 bool mp_snapshot_is_active(void);
 
+/* Release a stale per-peer receive marker after the snapshot service has
+ * already reset to IDLE. Safe to call on every per-peer send tick. */
+void mp_snapshot_reconcile_peer_state(struct msg_processor *mp,
+                                      struct p2p_node *node);
+
 /* Is the parallel UTXO swarm currently coordinating chunk downloads?
  * Production path equivalent of msgprocessor_test_swarm_is_active —
  * used by the header-stall logic in msg_send_messages to suppress

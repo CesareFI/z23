@@ -202,6 +202,11 @@ static bool lb_retry_offer_after_send_failure(
     if (!released)
         return false;
 
+    /* Model the independent watchdog boundary: it can reset the service and
+     * global sync state, but it has no owning p2p_node pointer with which to
+     * clear this per-peer lifecycle marker. The next offer must reconcile
+     * the stale marker rather than remain ignored forever. */
+    receiver->state = PEER_SNAPSHOT_RECEIVING;
     send_snapshot_offer_msg(offer_sender, offer,
                             receiver_mp->params->pchMessageStart);
     return lb_pump(offer_sender, offer_sentinel, receiver_mp, receiver,

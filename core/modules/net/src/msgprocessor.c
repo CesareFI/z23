@@ -2380,6 +2380,7 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
 bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
 {
     struct msg_processor *mp = (struct msg_processor *)ctx;
+    mp_snapshot_reconcile_peer_state(mp, node);
     bool snapshot_active = mp_snapshot_is_active();
 
     /* Outbound nodes: send version to initiate handshake */
