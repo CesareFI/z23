@@ -27,8 +27,8 @@
 #
 # CONTRACT
 # --------
-#  * Discovers every contexts/commons/packages/*/zcode-package.json, whether
-#    or not that package has a registry .def row. A tracked manifest omitted
+#  * Discovers every maintained package/module zcode-package.json, whether or
+#    not that package has a registry .def row. A tracked manifest omitted
 #    from the scan is a coverage failure, never a clean result.
 #  * Derives from actual on-disk content. It cannot manufacture a pass: every
 #    root written here is one the C23 checker independently recomputes.
@@ -71,7 +71,11 @@ require_manifest_coverage() { # $1 = repository root, remaining = discovered
     local root="$1"; shift
     local tracked candidate found
     mapfile -t tracked < <(
-        git -C "$root" ls-files -- "$CORPUS_MANIFEST_ROOT/*/zcode-package.json" |
+        git -C "$root" ls-files -- \
+            ':(glob)contexts/commons/packages/*/zcode-package.json' \
+            ':(glob)contexts/*/modules/*/zcode-package.json' \
+            ':(glob)core/modules/*/zcode-package.json' \
+            ':(glob)platform/modules/*/zcode-package.json' |
             LC_ALL=C sort
     )
     [ "${#tracked[@]}" -gt 0 ] || {
@@ -94,7 +98,12 @@ require_manifest_coverage() { # $1 = repository root, remaining = discovered
 
 discover_package_manifests() { # $1 = repository root
     local root="$1" path
-    local found=("$root"/$CORPUS_MANIFEST_ROOT/*/zcode-package.json)
+    local found=(
+        "$root"/contexts/commons/packages/*/zcode-package.json
+        "$root"/contexts/*/modules/*/zcode-package.json
+        "$root"/core/modules/*/zcode-package.json
+        "$root"/platform/modules/*/zcode-package.json
+    )
     PACKAGE_MANIFESTS=()
     for path in "${found[@]}"; do
         [ -f "$path" ] || continue
@@ -265,21 +274,25 @@ fixture_derive() { # selftest-only deterministic stand-in for --derive-dir
 
 run_selftest() {
     local tmp rounds i old_leaf old_consumer new_leaf new_consumer
+    local consumer_manifest top_manifest
     tmp=$(mktemp -d)
     trap "rm -rf '$tmp'" EXIT
     old_leaf=$(printf '%064d' 0 | tr '0' 'a')
     old_consumer=$(printf '%064d' 0 | tr '0' 'b')
     new_leaf=$(printf '%064d' 0 | tr '0' '1')
     new_consumer=$(printf '%064d' 0 | tr '0' '2')
-    mkdir -p "$tmp/$CORPUS_MANIFEST_ROOT"/{zprng,consumer,top}
+    mkdir -p "$tmp/$CORPUS_MANIFEST_ROOT"/{zprng,top} \
+             "$tmp/contexts/commons/modules/consumer"
+    consumer_manifest="$tmp/contexts/commons/modules/consumer/zcode-package.json"
+    top_manifest="$tmp/$CORPUS_MANIFEST_ROOT/top/zcode-package.json"
     printf '{\n  "schema": 1,\n  "name": "zprng/zprng",\n  "dependencies": []\n}\n' \
         > "$tmp/$CORPUS_MANIFEST_ROOT/zprng/zcode-package.json"
     printf '{\n  "schema": 1,\n  "name": "fixture/consumer",\n  "dependencies": [\n    {\n      "name": "zprng/zprng",\n      "root": "%s"\n    }\n  ]\n}\n' \
-        "$old_leaf" > "$tmp/$CORPUS_MANIFEST_ROOT/consumer/zcode-package.json"
+        "$old_leaf" > "$consumer_manifest"
     printf '{\n  "schema": 1,\n  "name": "fixture/top",\n  "dependencies": [\n    {\n      "root": "%s",\n      "name": "fixture/consumer"\n    }\n  ]\n}\n' \
-        "$old_consumer" > "$tmp/$CORPUS_MANIFEST_ROOT/top/zcode-package.json"
+        "$old_consumer" > "$top_manifest"
     git -C "$tmp" init -q
-    git -C "$tmp" add "$CORPUS_MANIFEST_ROOT"
+    git -C "$tmp" add contexts
 
     discover_package_manifests "$tmp"
     [ "${#PACKAGE_MANIFESTS[@]}" -eq 3 ] || return 1
@@ -308,9 +321,9 @@ run_selftest() {
         echo "SELFTEST FAILED: leaf-to-top propagation took $rounds rounds" >&2
         return 1
     }
-    grep -q "$new_leaf" "$tmp/$CORPUS_MANIFEST_ROOT/consumer/zcode-package.json"
-    grep -q "$new_consumer" "$tmp/$CORPUS_MANIFEST_ROOT/top/zcode-package.json"
-    if grep -qr -e "$old_leaf" -e "$old_consumer" "$tmp/$CORPUS_MANIFEST_ROOT"; then
+    grep -q "$new_leaf" "$consumer_manifest"
+    grep -q "$new_consumer" "$top_manifest"
+    if grep -qr -e "$old_leaf" -e "$old_consumer" "$tmp/contexts"; then
         echo "SELFTEST FAILED: an old dependency root survived the fixpoint" >&2
         return 1
     fi

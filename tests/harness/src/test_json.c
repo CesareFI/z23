@@ -64,6 +64,45 @@ static int json_valid_case(void)
     return 1;
 }
 
+static bool json_span_is_zero(const char *span, size_t size)
+{
+    if (!span)
+        return false;
+    for (size_t i = 0; i < size; i++)
+        if (span[i] != 0)
+            return false;
+    return true;
+}
+
+static int json_cleanse_case(void)
+{
+    const char *encoded =
+        "{\"private\":\"synthetic-wif\",\"nested\":[{\"view\":\"synthetic-viewing-key\"}]}";
+    struct json_value v;
+    bool ok = json_read(&v, encoded, strlen(encoded));
+    char *outer_key = ok ? v.keys[0] : NULL;
+    char *secret = ok ? v.children[0].val.s : NULL;
+    struct json_value *inner = ok ? &v.children[1].children[0] : NULL;
+    char *inner_key = inner ? inner->keys[0] : NULL;
+    char *viewing = inner ? inner->children[0].val.s : NULL;
+    size_t outer_key_len = outer_key ? strlen(outer_key) + 1 : 0;
+    size_t secret_len = secret ? strlen(secret) + 1 : 0;
+    size_t inner_key_len = inner_key ? strlen(inner_key) + 1 : 0;
+    size_t viewing_len = viewing ? strlen(viewing) + 1 : 0;
+    json_cleanse_strings(&v);
+    ok = ok && json_span_is_zero(outer_key, outer_key_len) &&
+         json_span_is_zero(secret, secret_len) &&
+         json_span_is_zero(inner_key, inner_key_len) &&
+         json_span_is_zero(viewing, viewing_len);
+    json_free(&v);
+    if (ok) {
+        printf("OK\n");
+        return 0;
+    }
+    printf("FAIL\n");
+    return 1;
+}
+
 int test_json(void)
 {
     int failures = 0;
@@ -406,6 +445,9 @@ int test_json(void)
         json_free(&arr);
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
+
+    printf("json cleanse retires nested string values and object keys... ");
+    failures += json_cleanse_case();
 
 
     printf("json_valid is json_read's grammar with no allocation... ");

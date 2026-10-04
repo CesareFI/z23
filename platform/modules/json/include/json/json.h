@@ -3,9 +3,12 @@
 #ifndef ZCL_JSON_H
 #define ZCL_JSON_H
 
+#include "base/cleanse.h"
+
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 enum json_type {
     JSON_NULL,
@@ -38,6 +41,22 @@ struct json_value {
  * memory is undefined and can crash. */
 void json_init(struct json_value *v);
 void json_free(struct json_value *v);
+
+/* Overwrite every owned string value and object key in place without changing
+ * the tree shape. Call immediately before json_free() for secret-bearing
+ * documents whose storage has reached its last use. */
+static inline void json_cleanse_strings(struct json_value *v)
+{
+    if (!v)
+        return;
+    if (v->type == JSON_STR && v->val.s)
+        memory_cleanse(v->val.s, strlen(v->val.s) + 1);
+    for (size_t i = 0; i < v->num_children; i++) {
+        json_cleanse_strings(&v->children[i]);
+        if (v->keys && v->keys[i])
+            memory_cleanse(v->keys[i], strlen(v->keys[i]) + 1);
+    }
+}
 
 void json_set_null(struct json_value *v);
 void json_set_bool(struct json_value *v, bool b);
