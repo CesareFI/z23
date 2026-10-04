@@ -622,8 +622,9 @@ static int test_process_block_msg_reducer_pending_stays_retryable(void)
 /* ── PEER_OFFENCE_UNREQUESTED wiring ─────────────────────────────────
  *
  * process_block_msg() (msg_blocks.c) scores PEER_OFFENCE_UNREQUESTED when
- * dl_mark_received() returns UINT32_MAX (no in-flight slot) for the delivered
- * hash from any peer: a "block" message is only a getdata response here.
+ * peer-matched download settlement returns UINT32_MAX when the delivering
+ * peer does not own the hash: a "block" message is only a getdata response
+ * here.
  * Pinned: scored when never requested, not scored when requested, not scored
  * inside the drain/timeout grace window (see
  * tests/harness/src/test_download.c::test_dl_last_forced_settle_time). */
@@ -732,6 +733,73 @@ static int test_process_block_msg_no_score_when_requested(void)
         ASSERT(process_block_msg(&mp, &node, &s));
         ASSERT(atomic_load(&node.misbehavior) == 0);
 
+        stream_free(&s);
+        block_free(&blk);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static bool test_snapshot_active(void *ctx)
+{
+    (void)ctx;
+    return true;
+}
+
+static int test_process_block_msg_late_peer_preserves_reassigned_owner(void)
+{
+    int failures = 0;
+    TEST("msg_handlers: late block body cannot settle reassigned peer owner") {
+        peer_scoring_init();
+        struct download_manager *dm = get_download_mgr();
+        dl_init(dm);
+
+        struct block blk;
+        block_init(&blk);
+        blk.header.nVersion = 4;
+        blk.header.nTime = 1700000015u;
+        blk.header.nBits = 0x1f00ffffu;
+        blk.header.nNonce.data[0] = 26;
+
+        struct uint256 hash;
+        block_get_hash(&blk, &hash);
+        block_clear_seen(&hash);
+
+        struct p2p_node late_peer;
+        unreq_setup_node(&late_peer, 505);
+        ASSERT(dl_mark_requested(dm, &hash, 2, (uint32_t)late_peer.id));
+
+        int64_t now = (int64_t)time(NULL);
+        zcl_mutex_lock(&dm->cs);
+        for (size_t i = 0; i < dm->num_slots; i++) {
+            if (dm->slots[i].active && uint256_eq(&dm->slots[i].hash, &hash))
+                dm->slots[i].request_time = now - dl_get_request_timeout_secs();
+        }
+        zcl_mutex_unlock(&dm->cs);
+        ASSERT(dl_check_timeouts(dm, now) == 1);
+
+        struct uint256 reassigned;
+        ASSERT(dl_assign_to_peer(dm, 506, &reassigned, 1) == 1);
+        ASSERT(uint256_eq(&reassigned, &hash));
+
+        struct byte_stream s;
+        stream_init(&s, 256);
+        ASSERT(block_serialize(&blk, &s));
+
+        struct net_manager nm;
+        memset(&nm, 0, sizeof(nm));
+        struct msg_processor mp;
+        memset(&mp, 0, sizeof(mp));
+        mp.net_mgr = &nm;
+        mp.snapshot_active = test_snapshot_active;
+
+        ASSERT(process_block_msg(&mp, &late_peer, &s));
+        ASSERT(dl_is_in_flight(dm, &hash));
+        uint64_t owner_received = 0;
+        dl_peer_body_progress(dm, 506, NULL, &owner_received, NULL);
+        ASSERT(owner_received == 0);
+
+        (void)dl_drain_for_backpressure(dm);
         stream_free(&s);
         block_free(&blk);
         PASS();
@@ -2118,6 +2186,7 @@ int test_msg_handlers(void)
     failures += test_process_block_msg_reducer_pending_stays_retryable();
     failures += test_process_block_msg_scores_unrequested();
     failures += test_process_block_msg_no_score_when_requested();
+    failures += test_process_block_msg_late_peer_preserves_reassigned_owner();
     failures += test_process_block_msg_malformed_releases_owned_requests();
     failures += test_process_blocktxn_malformed_retries_full_body();
     failures += test_process_blocktxn_bad_fill_retries_full_body();

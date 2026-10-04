@@ -730,8 +730,8 @@ bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
      * block fast-relay path (BIP152 "sendcmpct"/"cmpctblock") is the
      * one place a peer legitimately pushes block data unsolicited, and
      * that goes through process_cmpctblock() in msg_compact.c, never
-     * here. So requester_id == UINT32_MAX (no in-flight slot for this hash, from
-     * ANY peer) is normally a provable unsolicited push.
+     * here. So requester_id == UINT32_MAX (this peer does not own the
+     * in-flight slot for this hash) is normally a provable unsolicited push.
      *
      * Two honest sources can produce the exact same "requester_id == UINT32_MAX"
      * signal though, so this is NOT simply "never in-flight == ban":
@@ -746,7 +746,8 @@ bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
      * (ample time for an already-in-transit reply to land) rather than
      * risk banning an honest-but-slow peer. */
     struct download_manager *dm = get_download_mgr();
-    uint32_t requester_id = dl_mark_received(dm, &hash);
+    uint32_t requester_id = dl_mark_received_from_peer(
+        dm, &hash, (uint32_t)node->id);
     if (requester_id == UINT32_MAX) {
         int64_t now_s = (int64_t)platform_time_wall_time_t();
         int64_t last_settle = dl_last_forced_settle_time(dm);
