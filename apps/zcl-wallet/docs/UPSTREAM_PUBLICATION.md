@@ -1787,3 +1787,53 @@ phase/lint/test evidence, `pr-wallet-restore-writer-lock.md`,
 `wallet-restore-writer-lock-final.sha256` verify in the candidate worktree's
 ignored evidence directory. Node-start coordination with this lock is a
 separate follow-up. No external publication action was attempted.
+
+### Node-start and wallet-writer coordination qualified
+
+Branch `agent/upstream-node-recovery-lock-20261004`, signed head
+`2fbf4fb5e1a070bd222b50c55c1c5b170b4b4163`, base
+`3a93e60ebf922af3d119b9facc1d95803f42844b`, makes POSIX node startup acquire
+the existing `wallet-recovery.lock` before the pidfile lock and retain both
+until shutdown. Mnemonic recovery, the separately prepared restore writer
+guard, and node startup therefore share one datadir writer admission point.
+All failures after recovery-guard acquisition release it. The established
+second-node diagnostic is preserved by a read-only pidfile lock probe; that
+probe does not decide admission. Consensus, monetary rules, wallet contents,
+database formats, recovery derivation and the Windows lock implementation are
+unchanged. The review is five files, +430/-78; helper extraction reduces the
+main POSIX acquisition function's complexity from 42 to 35.
+
+Canonical RED on the upstream base held `wallet-recovery.lock` and observed
+the node still start, failing the new exclusion assertion. Replacing only the
+recovery `flock()` with descriptor success makes both mutual-exclusion
+assertions fail while legacy lock cases remain green. Focused, ASan/UBSan/LSan
+and TSan lanes each pass 1/1 groups with zero skips, including runtime checks
+for recovery-to-node and node-to-recovery exclusion, `O_CLOEXEC` retirement of
+both lock descriptors, symlink refusal and hard-link refusal. The adjacent
+`wallet_recovery_safety` group also passes 1/1 with zero skips.
+
+Uncached unprivileged GCC 14.2.0 and Clang 20.1.2 each check all 2,433
+translation units with no new diagnostics. MinGW checks all 2,399
+Windows-visible translation units clean; native Windows runtime remains
+unobserved. All 33 fast lint gates, architecture, documentation counts,
+generated inventory and the cap-15 complexity gate pass. The PR security scan
+has one review-only medium finding for the test's fixed `/bin/cat` exec, which
+takes no external input and exists to prove descriptor closure across exec.
+
+The first exact-proof request refused before lint or tests because it inherited
+a root-owned scheduler scope. The prescribed explicit retry followed by the
+proof user's own delegated manager scope repaired only that prerequisite. The
+fresh policy-5 proof then passes all 215 lint gates and all 29 impact-selected
+groups cold, with zero failures, skips, reused results, unobserved cases or
+load-flaky outcomes. Lint takes 198.195s, tests 206.769s and the receipt records
+459.389s total. The private-RAM generation retires normally and reports
+`receipt_reused=false`; receipt SHA256 is
+`a280b4ab0a92a8c27d7b2296a69a2979efc7d0f3cccb1a3be5a04094f4f97e04`.
+
+Local artifacts `node-recovery-lock.bundle`, `node-recovery-lock.mbox`,
+`node-recovery-lock.receipt`, exact phase/lint/test/status evidence,
+`pr-node-recovery-lock.md`, `node-recovery-lock-qualification.txt` and the
+47-entry `node-recovery-lock-final.sha256` manifest verify in the candidate
+worktree's ignored evidence directory. Manifest SHA256 is
+`2e93d85faac2ef031ed3952d7753abbfaa6b62e96f633a827ca66253105a1c8d`.
+No external publication or reviewer-request action was attempted.
