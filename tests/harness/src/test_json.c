@@ -107,6 +107,10 @@ int test_json(void)
 {
     int failures = 0;
 
+    printf("json parse failures retire copied strings and partial trees... ");
+    extern int json_failure_retirement_case(void);
+    failures += json_failure_retirement_case();
+
     printf("json parse integer... ");
     {
         struct json_value v;
