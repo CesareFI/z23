@@ -378,7 +378,7 @@ bool process_blocktxn(struct msg_processor *mp, struct p2p_node *node,
     if (age > 30) {
         LOG_WARN("compact", "peer %s: blocktxn %s — stale response (%lld sec), discarding",
                  node->addr_name, hex, (long long)age);
-        compact_pending_clear(node);
+        compact_pending_retry_full_body(node);
         block_txn_response_free(&resp);
         return true;
     }
