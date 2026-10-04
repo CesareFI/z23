@@ -10409,16 +10409,44 @@ SIMD_BENCH_SRCS = tools/simd_bench.c \
 	core/modules/sapling/src/bn254_accel.c core/modules/sapling/src/fr_avx512.c \
 	platform/modules/base/src/cleanse.c platform/modules/base/src/log_level.c platform/modules/base/src/safe_alloc.c \
 	platform/modules/platform/src/clock.c platform/modules/support/src/log_throttle.c
+SIMD_BENCH_HEADERS = \
+	core/modules/crypto/include/crypto/blake2b.h \
+	core/modules/crypto/include/crypto/chacha20poly1305.h \
+	core/modules/crypto/include/crypto/common.h \
+	core/modules/crypto/include/crypto/sha256.h \
+	core/modules/crypto/include/crypto/sha3.h \
+	core/modules/crypto/include/crypto/sha512.h \
+	core/modules/crypto/include/crypto/simd_dispatch.h \
+	core/modules/crypto/src/keccak_x4_internal.h \
+	core/modules/sapling/include/sapling/bn254_accel.h \
+	core/modules/sapling/include/sapling/fr.h \
+	core/modules/sapling/include/sapling/fr_accel.h \
+	core/modules/sapling/src/mont_adx.h \
+	platform/modules/base/include/base/cleanse.h \
+	platform/modules/base/include/base/format_attribute.h \
+	platform/modules/base/include/base/log_level.h \
+	platform/modules/base/include/base/log_macros.h \
+	platform/modules/base/include/base/safe_alloc.h \
+	platform/modules/base/include/base/serialize_le.h \
+	platform/modules/base/include/base/stdio_lock.h \
+	platform/modules/base/include/base/utc_tm.h \
+	platform/modules/platform/include/platform/clock.h \
+	platform/modules/platform/include/platform/time_compat.h \
+	platform/modules/sha3/include/sha3/sha3.h \
+	platform/modules/support/include/support/cleanse.h \
+	platform/modules/support/include/support/log_throttle.h \
+	platform/modules/util/include/util/log_macros.h \
+	platform/modules/util/include/util/safe_alloc.h
 
 .PHONY: simd_bench
 simd_bench: $(BIN_DIR)/simd_bench
-$(BIN_DIR)/simd_bench: $(SIMD_BENCH_SRCS)
+$(BIN_DIR)/simd_bench: $(SIMD_BENCH_SRCS) $(SIMD_BENCH_HEADERS)
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O3 $(ZCL_ARCH_CFLAGS) \
 	    -Wall -Wextra -Werror -pedantic -pthread \
 	    -Iplatform/modules/sha3/include -Icore/modules/crypto/include -Icore/modules/sapling/include -Iplatform/modules/base/include \
 	    -Iplatform/modules/util/include -Iplatform/modules/platform/include -Iplatform/modules/support/include \
-	    -D_POSIX_C_SOURCE=200809L $(ZCL_PLATFORM_CPPFLAGS) -o $@ $^
+	    -D_POSIX_C_SOURCE=200809L $(ZCL_PLATFORM_CPPFLAGS) -o $@ $(filter %.c,$^)
 
 # Run it. REPS= and CPU= override the defaults. Linux CPU= selects and reports
 # an L3/CCD domain; Darwin reports affinity unavailable and relies on paired
