@@ -33,7 +33,7 @@ uint32_t wks_default_iterations(void)
     if (!e || !*e) return WKS_DEFAULT_ITERS;
     char *end = NULL;
     long v = strtol(e, &end, 10);
-    if (end == e) return WKS_DEFAULT_ITERS;
+    if (end == e || *end != '\0') return WKS_DEFAULT_ITERS;
     if (v < (long)WKS_MIN_ITERS) return WKS_MIN_ITERS;
     if (v > (long)WKS_MAX_ITERS) return WKS_MAX_ITERS;
     return (uint32_t)v;

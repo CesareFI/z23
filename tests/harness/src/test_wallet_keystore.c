@@ -207,6 +207,9 @@ static int test_default_iters_env(void)
         setenv("ZCL_WALLET_KDF_ITERS", "100000000", 1);  /* above MAX */
         ASSERT(wks_default_iterations() == WKS_MAX_ITERS);
 
+        setenv("ZCL_WALLET_KDF_ITERS", "10000oops", 1);
+        ASSERT(wks_default_iterations() == WKS_DEFAULT_ITERS);
+
         unsetenv("ZCL_WALLET_KDF_ITERS");
         ASSERT(wks_default_iterations() == WKS_DEFAULT_ITERS);
         PASS();
