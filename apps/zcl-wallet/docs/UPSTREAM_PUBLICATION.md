@@ -1695,3 +1695,51 @@ Local artifacts `wallet-restore-path-bounds.bundle`,
 `wallet-restore-path-bounds-qualification.txt` and
 `wallet-restore-path-bounds-final.sha256` verify in the candidate worktree's
 ignored evidence directory. No external publication action was attempted.
+
+### Wallet-restore node-lock pathname admission qualified
+
+Branch `agent/upstream-wallet-lock-path-bounds-20261004`, signed head
+`3816edfc784c9e4fe7d3f54232db67925f94ba8f`, base
+`3a93e60ebf922af3d119b9facc1d95803f42844b`, refuses
+`wallet_restore_datadir_free()` when the exact `<datadir>/zclassic23.pid`
+pathname does not fit its fixed probe buffer. The refusal occurs before any
+filesystem call, so an overlong valid datadir cannot be truncated into a
+different lock path and reported free while the real node pidfile remains
+locked. Representable paths, restore merge behavior, wallet formats,
+consensus, monetary rules and sealed-core code are unchanged. The review is
+four files, +70/-5, including the generated capability inventory and one
+deterministic long-path regression.
+
+Canonical RED on the prior production code locks the exact long pidfile and
+fails only `long datadir never bypasses the held pidfile`. Changing the final
+capacity guard from `>=` to `>` reproduces that exact failure. The restored
+focused and ASan/UBSan/LSan lanes pass 1/1 with zero skips and leak detection
+enabled. Uncached GCC 14.2.0 and Clang 20.1.2 each check all 2,433 translation
+units with no new diagnostics. MinGW checks all 2,399 Windows translation
+units clean and cross-links all 74 strict C23 acceptance programs; native
+Windows runtime remains unobserved. Architecture, documentation-count,
+generated-inventory, PR-security and cap-15 complexity gates pass; the
+complexity scan covers 68,755 functions in 4,681 files.
+
+Two exact-proof prerequisite attempts refused before lint or tests: the first
+was outside a delegated user-manager memory scope, and the second selected the
+default RAM root owned by another uid. The prescribed retry used the qualified
+user scope and explicit private RAM root. The fresh policy-5 proof then passes
+all 215 lint gates and all 66 impact-selected groups cold, with zero failures,
+skips, reused results, unobserved cases or load-flaky outcomes. Lint takes
+196.495s, tests 261.175s and the receipt records 510.633s total. The RAM
+generation retires normally; receipt SHA256 is
+`d0199dd64b36f03d30c825ce06399d856a71d70cf108d2037d849d627693cd5c`.
+The optional coverage manifest is absent, so no coverage claim is made.
+
+A fresh compiler-clone setup attempted public dependency fetches before the
+offline flag was applied and was stopped immediately; it is retained only as
+environment evidence and makes no qualification claim. The successful
+compiler lanes used checksum-matched local caches with offline mode enabled.
+
+Local artifacts `wallet-lock-path-bounds.bundle`,
+`wallet-lock-path-bounds.mbox`, `wallet-lock-path-bounds.receipt`, exact
+phase/lint/test evidence, `pr-wallet-lock-path-bounds.md`,
+`wallet-lock-path-bounds-qualification.txt` and
+`wallet-lock-path-bounds-final.sha256` verify in the candidate worktree's
+ignored evidence directory. No external publication action was attempted.
