@@ -935,3 +935,44 @@ The xprv artifacts reside in `z23-wallet-reuse-publication-20261003`; the
 keystore and extended-key artifacts reside in
 `z23-wallet-publication-20261003`. All remain local under the current
 no-external-action boundary.
+
+### Keystore reserved-field admission qualified
+
+Branch `agent/upstream-wallet-keystore-reserved-field-20261004`, signed head
+`53bd0693c5d85cbb6e93bfa1ff46cef42a1b647b`, base
+`3a93e60ebf922af3d119b9facc1d95803f42844b`, enforces the documented WKS1
+requirement that reserved header bytes 12..15 are zero. Decryption refuses a
+nonzero value before KDF/provider work or caller-output mutation, and the
+header-inspection helper reports the envelope as malformed. Valid version-1
+envelopes and cryptographic operations are unchanged. The review is three
+files, +36/-5.
+
+Canonical RED shows that the prior implementation decrypted a nonzero-reserved
+envelope. Removing only the new reserved-field comparison reproduces mutation
+RED; the restored focused and ASan/UBSan groups pass with zero skips. Strict
+GCC14 and Clang20 each check all 2,433 translation units with no new diagnostic
+sites. MinGW checks 2,399 translation units with no new failures after the
+isolated worktree's missing generated zlib headers are restored from the local
+validated dependency tree. Architecture, generated inventory, documentation,
+consensus-parity and complexity gates pass; the helper score is 2 and the
+pre-existing decrypt score remains 22.
+
+The preserved unprivileged proof copy `/tmp/wn.mmgOK7/repo` passes the exact
+head/base pair through the qualified private-tmpfs/user-manager scope: all 215
+lint gates in 192.336s and all 99 selected impacted groups in 279.693s, with
+zero failures, skips, unobserved results, load-flaky outcomes or cached groups.
+Total foreground time is 469.031s. Native status independently re-verifies the
+pair. Receipt SHA256 is
+`baceec198bf831b018ff182fd2be0c4e8da36edc5568d469495f212f9fe4a513`.
+The optional coverage manifest is absent, so no coverage claim is made; the
+policy-5 exact receipt remains valid.
+
+Local artifacts `keystore-reserved-field.bundle`,
+`keystore-reserved-field.mbox`, `keystore-reserved-field.receipt`,
+`pr-keystore-reserved-field.md`, `keystore-reserved-exact-status.log` and
+`keystore-reserved-field-final.sha256` verify in the candidate worktree's
+ignored evidence directory. An earlier proof attempt is retained as environment
+RED: the host's global `/tmp` mode 0755 made unrelated unprivileged fixtures
+fail. The successful retry used the already-qualified private tmpfs wrapper;
+global permissions, gates and repository policy were unchanged. No external
+publication action was attempted.
