@@ -257,10 +257,14 @@ PRE_VENDOR_CAPTURE="$(ssn_local zcode.workspace.source.capture \
     --input="{\"workspace\":\"$SSN_SOURCE/zclassic23\"}")"
 ssn_require_ok "publisher pre-vendor source capture" "$PRE_VENDOR_CAPTURE"
 PRE_VENDOR_ROOT="$(ssn_json "$PRE_VENDOR_CAPTURE" data.source_root)"
-if ! PATH="$SSN_NO_GIT_BIN:$PATH" \
-    ZCL_SOVEREIGN_SOURCE_ROOT="$PRE_VENDOR_ROOT" \
-    ZCL_SOVEREIGN_VERIFY_BIN="$NODE_BIN" ZCL_VENDOR_OFFLINE=1 \
-    make -C "$SSN_SOURCE/zclassic23" -j"$(nproc)" vendor \
+[ "${#PRE_VENDOR_ROOT}" -eq 64 ] ||
+    ssn_die "publisher pre-vendor source root is incomplete"
+# Run the pinned vendor builder directly. `make vendor` reparses after writing
+# archives and would compare the changed preflight tree to PRE_VENDOR_ROOT;
+# that root describes the inputs before the generated archives exist.
+if ! (cd "$SSN_SOURCE/zclassic23" && \
+    PATH="$SSN_NO_GIT_BIN:$PATH" ZCL_VENDOR_OFFLINE=1 JOBS="$(nproc)" \
+    tools/scripts/build_vendor.sh) \
     >"$DHT_WORK/publisher-vendor-build.log" 2>&1; then
     ssn_die "publisher could not prepare pinned vendor inputs offline"
 fi
