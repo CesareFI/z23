@@ -2095,6 +2095,10 @@ static bool nc_dev_events_emit_line(const struct json_value *line, int *rc,
     char encoded[20000];
     size_t encoded_len = ok ? json_write(line, encoded, sizeof(encoded) - 2)
                             : 0;
+    /* json_write returns the would-be length even on truncation; a line
+     * that does not fit is a failed encode, never an over-read fwrite. */
+    if (encoded_len >= sizeof(encoded) - 2)
+        encoded_len = 0;
     if (!encoded_len || fwrite(encoded, 1, encoded_len, stdout) !=
                             encoded_len ||
         fputc('\n', stdout) == EOF || fflush(stdout) != 0) {
