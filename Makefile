@@ -10452,10 +10452,38 @@ SERIAL_BENCH_SRCS = tools/serial_bench.c \
 	core/modules/crypto/src/sha256.c core/modules/crypto/src/sha512.c core/modules/crypto/src/ripemd160.c \
 	core/modules/crypto/src/hmac_sha512.c platform/modules/encoding/src/utilstrencodings.c \
 	platform/modules/base/src/cleanse.c platform/modules/base/src/safe_alloc.c platform/modules/base/src/log_level.c
+SERIAL_BENCH_HEADERS = \
+	core/math/include/core/hash.h \
+	core/math/include/core/serialize.h \
+	core/math/include/core/uint256.h \
+	core/modules/bloom/include/bloom/merkle.h \
+	core/modules/core/include/core/amount.h \
+	core/modules/crypto/include/crypto/common.h \
+	core/modules/crypto/include/crypto/hmac_sha512.h \
+	core/modules/crypto/include/crypto/ripemd160.h \
+	core/modules/crypto/include/crypto/sha256.h \
+	core/modules/crypto/include/crypto/sha512.h \
+	core/modules/primitives/include/primitives/block.h \
+	core/modules/primitives/include/primitives/transaction.h \
+	core/modules/sapling/include/sapling/constants.h \
+	core/modules/script/include/script/script.h \
+	platform/modules/base/include/base/cleanse.h \
+	platform/modules/base/include/base/format_attribute.h \
+	platform/modules/base/include/base/hex.h \
+	platform/modules/base/include/base/log_level.h \
+	platform/modules/base/include/base/log_macros.h \
+	platform/modules/base/include/base/safe_alloc.h \
+	platform/modules/base/include/base/serialize_le.h \
+	platform/modules/base/include/base/stdio_lock.h \
+	platform/modules/base/include/base/utc_tm.h \
+	platform/modules/encoding/include/encoding/utilstrencodings.h \
+	platform/modules/support/include/support/cleanse.h \
+	platform/modules/util/include/util/log_macros.h \
+	platform/modules/util/include/util/safe_alloc.h
 
 .PHONY: serial_bench
 serial_bench: $(BIN_DIR)/serial_bench
-$(BIN_DIR)/serial_bench: $(SERIAL_BENCH_SRCS)
+$(BIN_DIR)/serial_bench: $(SERIAL_BENCH_SRCS) $(SERIAL_BENCH_HEADERS)
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O3 $(ZCL_ARCH_CFLAGS) \
 	    -Wall -Wextra -Werror -pedantic \
@@ -10463,7 +10491,7 @@ $(BIN_DIR)/serial_bench: $(SERIAL_BENCH_SRCS)
 	    -Icore/modules/crypto/include -Iplatform/modules/encoding/include -Iplatform/modules/base/include \
 	    -Iplatform/modules/util/include -Iplatform/modules/support/include -Icore/modules/sapling/include \
 	    -Icontexts/wallet/modules/keys/include -Icore/modules/core/include $(CORE_INCLUDES) \
-	    -D_POSIX_C_SOURCE=200809L $(ZCL_PLATFORM_CPPFLAGS) -o $@ $^
+	    -D_POSIX_C_SOURCE=200809L $(ZCL_PLATFORM_CPPFLAGS) -o $@ $(filter %.c,$^)
 
 .PHONY: bench-serial
 bench-serial: $(BIN_DIR)/serial_bench
