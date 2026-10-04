@@ -1016,3 +1016,40 @@ candidate's producer. Invoking the unchanged wrapper through its Bash
 interpreter, rebuilding the exact candidate-bound producer, and following the
 native retry path resolved those conditions without weakening any gate or host
 permission. No external publication action was attempted.
+
+### Combined WKS1 header validation qualified
+
+Branch `agent/upstream-wallet-keystore-header-iterations-20261004`, signed head
+`aaf00c1471892008e2142dfd72781afb9f4cc970`, base
+`3a93e60ebf922af3d119b9facc1d95803f42844b`, combines the reserved-field
+admission at `53bd0693c5d85cbb6e93bfa1ff46cef42a1b647b` with a second small commit
+that makes `wks_envelope_iterations()` reject counts outside the same interval
+accepted by decryption and a third test-only commit proving both comparisons.
+The three-commit diff is three files, +53/-6. This is the preferred publication
+package for WKS1 header validation; the earlier candidate heads and receipts
+remain preserved for provenance.
+
+Deterministic RED shows the prior inspection helper returned
+`WKS_MIN_ITERS - 1` and `WKS_MAX_ITERS + 1` from malformed headers instead of
+its documented zero sentinel. Removing only the lower comparison reproduces
+the below-minimum failure; removing only the upper comparison reproduces the
+excessive-value failure. The restored focused group passes all 20 cases and its
+ASan/UBSan profile also passes. Uncached GCC 14.2.0 and Clang 20.1.2 sweeps each
+re-read all 2,433 translation units: GCC reports zero diagnostic sites and
+Clang reports the eight existing baseline sites with no new sites.
+Architecture, generated inventory, documentation counts, consensus parity and
+cyclomatic complexity gates pass.
+
+The unprivileged private-tmpfs proof passes the exact combined head/base pair:
+all 215 lint gates in 229.832s and all 99 exact impacted groups in 344.435s,
+with zero failures, skips, unobserved results, load-flaky outcomes or cached
+groups. Total foreground time is 530.013s; native status independently reports
+`passed`. Receipt SHA256 is
+`22beca0ac231b0cbedad8d81091b6e1c9b651a422625411002f96659db900f20`.
+
+Local artifacts `keystore-header-validation.bundle`,
+`keystore-header-validation.mbox`, `keystore-header-validation.receipt`,
+`pr-keystore-header-validation-final.md`,
+`header-validation-exact-status.log` and
+`keystore-header-validation-final.sha256` verify in the candidate worktree's
+ignored evidence directory. No external publication action was attempted.
