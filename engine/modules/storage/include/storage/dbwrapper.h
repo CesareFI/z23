@@ -35,12 +35,21 @@ struct db_batch {
     void *batch;
 };
 
+#ifdef ZCL_TESTING
+typedef void (*db_iter_retire_test_hook)(const char *data, size_t len,
+                                         void *context);
+#endif
+
 struct db_iterator {
     void *iter;
     uint8_t obfuscate_key[32];
     size_t obfuscate_key_len;
     char *deobf_buf;
     size_t deobf_cap;
+#ifdef ZCL_TESTING
+    db_iter_retire_test_hook retire_test_hook;
+    void *retire_test_context;
+#endif
 };
 
 bool db_wrapper_open(struct db_wrapper *w, const char *path,
@@ -78,6 +87,12 @@ void db_iter_seek(struct db_iterator *it, const char *key, size_t keylen);
 void db_iter_next(struct db_iterator *it);
 const char *db_iter_key(struct db_iterator *it, size_t *keylen);
 const char *db_iter_value(struct db_iterator *it, size_t *vallen);
+
+#ifdef ZCL_TESTING
+void db_iter_test_set_retire_hook(struct db_iterator *it,
+                                  db_iter_retire_test_hook hook,
+                                  void *context);
+#endif
 
 /* Surface any LevelDB iterator status (CRC / missing SST / I/O error) after a
  * scan. Returns true if the iteration was clean, false if an error was

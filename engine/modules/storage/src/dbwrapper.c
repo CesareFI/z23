@@ -6,6 +6,7 @@
 #include "storage/dbwrapper.h"
 #include "storage/ldb_c_api.h"
 #include "platform/directory_compat.h"
+#include "support/cleanse.h"
 #include "util/util.h"
 #include "util/log_macros.h"
 #include <stdio.h>
@@ -362,7 +363,38 @@ void db_iter_init(struct db_iterator *it, struct db_wrapper *w)
     it->obfuscate_key_len = w->obfuscate_key_len;
     it->deobf_buf = NULL;
     it->deobf_cap = 0;
+#ifdef ZCL_TESTING
+    it->retire_test_hook = NULL;
+    it->retire_test_context = NULL;
+#endif
 }
+
+static void db_iter_retire_deobf_buf(struct db_iterator *it)
+{
+    if (!it || !it->deobf_buf)
+        return;
+    memory_cleanse(it->deobf_buf, it->deobf_cap);
+#ifdef ZCL_TESTING
+    if (it->retire_test_hook)
+        it->retire_test_hook(it->deobf_buf, it->deobf_cap,
+                             it->retire_test_context);
+#endif
+    free(it->deobf_buf);
+    it->deobf_buf = NULL;
+    it->deobf_cap = 0;
+}
+
+#ifdef ZCL_TESTING
+void db_iter_test_set_retire_hook(struct db_iterator *it,
+                                  db_iter_retire_test_hook hook,
+                                  void *context)
+{
+    if (!it)
+        return;
+    it->retire_test_hook = hook;
+    it->retire_test_context = context;
+}
+#endif
 
 /* Returns true if the iterator finished cleanly (no LevelDB error), false if
  * leveldb_iter_get_error reported a status (a block-level CRC mismatch, a
@@ -387,10 +419,8 @@ bool db_iter_check_error(struct db_iterator *it)
 void db_iter_free(struct db_iterator *it)
 {
     if (it->iter) leveldb_iter_destroy(it->iter);
-    free(it->deobf_buf);
+    db_iter_retire_deobf_buf(it);
     it->iter = NULL;
-    it->deobf_buf = NULL;
-    it->deobf_cap = 0;
 }
 
 bool db_iter_valid(struct db_iterator *it)
@@ -426,7 +456,7 @@ const char *db_iter_value(struct db_iterator *it, size_t *vallen)
 
     /* Deobfuscate into a reusable buffer */
     if (*vallen > it->deobf_cap) {
-        free(it->deobf_buf);
+        db_iter_retire_deobf_buf(it);
         it->deobf_cap = *vallen + 256;
         it->deobf_buf = zcl_malloc(it->deobf_cap, "dbwrapper_deobf_buf");
         if (!it->deobf_buf) {

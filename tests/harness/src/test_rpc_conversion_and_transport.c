@@ -164,6 +164,23 @@ int check_rpc_dbwrapper_open_write_read(void)
     return failures;
 }
 
+struct rpc_db_iter_retire_probe {
+    size_t calls;
+    size_t nonzero_calls;
+};
+
+static void rpc_db_iter_retire_observe(const char *data, size_t len,
+                                       void *context)
+{
+    struct rpc_db_iter_retire_probe *probe = context;
+    bool all_zero = true;
+    for (size_t i = 0; i < len; i++)
+        all_zero = all_zero && data[i] == 0;
+    probe->calls++;
+    if (!all_zero)
+        probe->nonzero_calls++;
+}
+
 int check_rpc_dbwrapper_batch_and_iterator(void)
 {
     int failures = 0;
@@ -202,20 +219,30 @@ int check_rpc_dbwrapper_batch_and_iterator(void)
         bool ok = db_wrapper_open(&db, dbdir, 1024 * 1024,
                                   false, true);
         if (ok) {
+            char large_value[300];
+            memset(large_value, 0xa5, sizeof(large_value));
+            db.obfuscate_key[0] = 0x5a;
+            db.obfuscate_key_len = 1;
             db_write(&db, "x", 1, "10", 2, false);
-            db_write(&db, "y", 1, "20", 2, false);
+            db_write(&db, "y", 1, large_value, sizeof(large_value), false);
             db_write(&db, "z", 1, "30", 2, false);
 
             struct db_iterator it;
             db_iter_init(&it, &db);
+            struct rpc_db_iter_retire_probe probe = {0};
+            db_iter_test_set_retire_hook(&it, rpc_db_iter_retire_observe,
+                                         &probe);
             db_iter_seek_to_first(&it);
             int count = 0;
             while (db_iter_valid(&it)) {
+                size_t value_len = 0;
+                ok = ok && db_iter_value(&it, &value_len) != NULL;
                 count++;
                 db_iter_next(&it);
             }
             ok = ok && count == 3;
             db_iter_free(&it);
+            ok = ok && probe.calls >= 2 && probe.nonzero_calls == 0;
             db_wrapper_close(&db);
         }
         test_rm_rf(dbdir);
@@ -1496,4 +1523,3 @@ int check_rpc_tls_without_env_and_port_oracle(void)
     failures += check_rpc_absolute_deadline_suite();
     return failures;
 }
-
