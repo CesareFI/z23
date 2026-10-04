@@ -17,7 +17,10 @@
  * BLOBs as lowercase hex. Exit 0 on success, 1 on usage/open/SQL error.
  */
 
+#include "base/hex.h"
+
 #include <sqlite3.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
 #include <strings.h>
@@ -30,6 +33,28 @@ static int finish_output(int ok)
         return 0;
     fputs("sqlq: stdout write failed\n", stderr);
     return 1;
+}
+
+/* Keep BLOB conversion bounded and use the repository's one hex codec. */
+static bool print_blob_hex(const unsigned char *bytes, int len)
+{
+    enum { CHUNK_BYTES = 2048 };
+    char out[2 * CHUNK_BYTES + 1];
+    if (len < 0 || (len > 0 && !bytes)) {
+        fputs("sqlq: blob value unavailable\n", stderr);
+        return false;
+    }
+    for (int offset = 0; offset < len;) {
+        size_t remaining = (size_t)(len - offset);
+        size_t chunk = remaining < CHUNK_BYTES ? remaining : CHUNK_BYTES;
+        zcl_hex_encode(bytes + offset, chunk, out);
+        if (fwrite(out, 1, 2 * chunk, stdout) != 2 * chunk) {
+            fputs("sqlq: stdout write failed\n", stderr);
+            return false;
+        }
+        offset += (int)chunk;
+    }
+    return true;
 }
 
 int main(int argc, char **argv)
@@ -63,6 +88,7 @@ int main(int argc, char **argv)
     }
 
     int rc;
+    int output_ok = 1;
     while ((rc = sqlite3_step(st)) == SQLITE_ROW) { // raw-sql-ok:read-only-diagnostic-cli
         int n = sqlite3_column_count(st);
         for (int i = 0; i < n; i++) {
@@ -74,7 +100,8 @@ int main(int argc, char **argv)
             case SQLITE_BLOB: {
                 const unsigned char *b = sqlite3_column_blob(st, i);
                 int len = sqlite3_column_bytes(st, i);
-                for (int j = 0; j < len; j++) printf("%02x", b[j]);
+                if (!print_blob_hex(b, len))
+                    output_ok = 0;
                 break;
             }
             default:
@@ -88,5 +115,5 @@ int main(int argc, char **argv)
         fprintf(stderr, "sqlq: step failed: %s\n", sqlite3_errmsg(db));
     sqlite3_finalize(st);
     sqlite3_close(db);
-    return finish_output(ok);
+    return finish_output(ok && output_ok);
 }
