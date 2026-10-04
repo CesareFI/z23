@@ -1440,3 +1440,87 @@ phase/status evidence, `pr-db-iterator-growth-bound.md` and
 `db-iterator-growth-bound-qualification.txt` verify in the candidate
 worktree's ignored evidence directory. No external publication action was
 attempted.
+
+### LevelDB internal-key capacity bound qualified
+
+Branch `agent/upstream-ldb-key-capacity-bound-20261004`, signed head
+`68546b2d3e63c7b5f278348e6a7ab7f5c984a5e5`, base
+`3a93e60ebf922af3d119b9facc1d95803f42844b`, checks the eight-byte
+sequence/type trailer before sizing any internal LevelDB key. Point lookup,
+WAL replay and iterator seek use the checked size; iterator growth selects the
+exact representable requirement before doubling could overflow. Existing
+lookup, seek and build refusals remain the public failure behavior. Internal-
+key bytes, comparison order, WAL replay, wallet formats, consensus and sealed-
+core code are unchanged. The review is seven files, +117/-12, including the
+generated inventory and deterministic boundary tests.
+
+Canonical RED observes the old `user_key_length + 8` calculation admit
+overflowing values while the 5,135-record differential corpus, WAL replay and
+five damaged-input refusals remain green. Removing only the new guard makes the
+boundary assertion fail and the public extreme point/seek test terminate with
+signal 11. The restored focused and ASan/UBSan groups pass with zero skips.
+GCC 14.2.0 and Clang 20.1.2 each check all 2,433 translation units with no new
+diagnostic sites. The MinGW lane checks 2,399 Windows translation units and
+cross-links all 74 strict C23 acceptance programs; native Windows runtime
+remains unobserved. Architecture, documentation-count, generated-inventory,
+file-size, core-seal, consensus-parity, PR-security and cap-15 complexity gates
+pass; the complexity scan covers 68,758 functions in 4,681 files.
+
+Three attempts that lacked the explicit private RAM-scratch environment fell
+back to a nearly full disk. The first failed while writing unrelated test
+fixtures; the next two were stopped after the fallback was observed. They make
+no product claim. The C23 reservation control then acquired and released the
+private 6 GiB lease, and the proof ran with the root explicitly inherited by
+the bounded scope. The exact policy-5 receipt passes all 215 lint gates and all
+17 impact-selected groups: 17 run, zero failures, skips or reused results. Lint
+took 189.639s, tests 197.239s, the receipt records 450.697s and the foreground
+step returned after 452.306s. The RAM generation retired normally; receipt
+SHA256 is
+`736760414408ad8c315ad50ec1cd29d1852e4c66cab18f3299f9d2dcfaad4101`.
+
+Local artifacts `ldb-key-capacity-bound.bundle`,
+`ldb-key-capacity-bound.mbox`, `ldb-key-capacity-bound.receipt`, exact phase
+evidence, `pr-ldb-key-capacity-bound.md` and
+`ldb-key-capacity-bound-qualification.txt` verify in the candidate worktree's
+ignored evidence directory. No external publication action was attempted.
+
+### LevelDB log arithmetic bounds qualified
+
+Branch `agent/upstream-ldb-log-bounds-20261004`, signed head
+`35e595f6a353d737acee2286b29da03db6cef8ab`, base
+`3a93e60ebf922af3d119b9facc1d95803f42844b`, checks physical-record header,
+payload and trailer spans before advancing the LevelDB log cursor. Fragmented-
+record accumulation validates its current length/capacity invariant, checks
+the append addition and selects the exact representable requirement before
+capacity doubling could overflow. Existing framing, CRC, torn-tail and clean-
+EOF behavior is preserved. WAL bytes, database records, wallet formats,
+consensus and sealed-core code are unchanged. The review is four files,
++153/-13, including the generated inventory and deterministic boundary tests.
+
+Canonical RED routes the old unchecked arithmetic through the test helpers:
+`test_ldb_reader` fails only the arithmetic-bound case while its 5,135-record
+differential corpus, 1,850-entry WAL replay and five damaged-input refusals
+remain green. Separately removing the span guard and scratch-addition guard
+makes the canonical group fail; restoring both makes the focused and
+ASan/UBSan lanes pass with zero skips. GCC 14.2.0 and Clang 20.1.2 each check
+all 2,433 production translation units with no new diagnostic sites. The
+MinGW lane checks 2,399 Windows translation units and cross-links all 74
+strict C23 acceptance programs; native Windows runtime remains unobserved.
+Architecture, documentation-count, generated-inventory, file-size, core-seal,
+consensus-parity, PR-security and cap-15 complexity gates pass; the complexity
+scan covers 68,764 functions in 4,681 files.
+
+The exact policy-5 private-RAM-scratch proof passes the exact head/base pair:
+all 215 lint gates and all 17 impact-selected groups complete, with 17 tests
+run and zero failures, skips or reused test results. Lint took 196.965s, tests
+204.472s and the signed receipt records 456.248s total. The foreground step
+returned after 458.092s. Native status under the producing identity reports
+`passed` with `receipt_reused=false`; the RAM generation retired normally and
+receipt SHA256 is
+`e89bbb5bbca15e38eeb44df940f9aca2f2c9ee632b954f406727c18f73e9e1a8`.
+
+Local artifacts `ldb-log-bounds.bundle`, `ldb-log-bounds.mbox`,
+`ldb-log-bounds.receipt`, exact phase/test/lint/status evidence,
+`pr-ldb-log-bounds.md` and `ldb-log-bounds-qualification.txt` verify in the
+candidate worktree's ignored evidence directory. No external publication
+action was attempted.
