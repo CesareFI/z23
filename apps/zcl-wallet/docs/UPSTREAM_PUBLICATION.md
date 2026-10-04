@@ -865,3 +865,39 @@ Local review artifacts `json-failure-standalone.bundle`,
 `json-failure-standalone-final.sha256` verify. The cumulative branch and all
 prior artifacts remain preserved. No external publication, hook bypass or
 protection change was attempted.
+
+### Four-candidate review artifacts sealed
+
+The originally requested mnemonic, key-scratch, Base58 active-span and storage
+descriptor candidates now each have a candidate-specific thin bundle anchored
+to upstream `3a93e60ebf922af3d119b9facc1d95803f42844b`, a signed patch series, the
+sealed exact-proof receipt, a maintainer-facing PR body and a SHA256 manifest.
+Every commit signature and bundle prerequisite was re-verified; the manifests
+verify all four review artifacts. No source or proof result changed and no
+completed expensive test was repeated.
+
+- Mnemonic head `994070f632e382123f14464a7c39e50bcbd6d408`:
+  `mnemonic-qualified.bundle`, `mnemonic-qualified.mbox`,
+  `mnemonic-qualified.receipt`, `pr-mnemonic-qualified.md`, and
+  `mnemonic-qualified-final.sha256`. Receipt SHA256
+  `6b64b2fde12950baae95ec72f69138ec80e860e9e8b15ed8db959cd5bc847651`.
+- Key-scratch head `951f4cefb80c0acec81b329c1872ad3648c0ff1c`:
+  `key-qualified.bundle`, `key-qualified.mbox`, `key-qualified.receipt`,
+  `pr-key-qualified.md`, and `key-qualified-final.sha256`. Receipt SHA256
+  `cd20309b5250777a187a63f88b91987d284728c5fab12be9e368c3fea2b8e194`.
+- Base58 head `be78a2bf9f530f08d57e6bb1a2be62d83c9c8f75`:
+  `base58-prefix.bundle`, `base58-prefix.mbox`, `base58-prefix.receipt`,
+  `pr-base58-prefix.md`, and `base58-prefix-final.sha256`. Receipt SHA256
+  `7dfc04f8aa509e98ee19f907543632e2a2089974b2e8e001a1109a2291c10f46`.
+- Storage descriptor head `b25e546bab0658f9d283fb487674f592d1dd15e7`:
+  `storage-descriptors.bundle`, `storage-descriptors.mbox`,
+  `storage-descriptors.receipt`, `pr-storage.md`, and
+  `storage-descriptors-final.sha256`. Receipt SHA256
+  `1e66459c1ed70e3b3c78a0f50a36db7c7c238cbf82ab32308dfee77830ac9a21`.
+
+Mnemonic, key-scratch and Base58 artifacts are under the ignored evidence
+folder in `z23-wallet-reuse-publication-20261003`; storage artifacts are in the
+corresponding folder in `z23-wallet-publication-20261003`. PR73/74 remain the
+already-published storage/Base58 submissions recorded above. The two secret-
+retirement candidates remain locally prepared under the current no-external-
+action boundary.
