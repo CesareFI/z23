@@ -353,7 +353,8 @@ int test_utxo_commitment(void)
         block_swarm_init(&bs, &m, "/tmp");
 
         block_swarm_assign_piece(&bs, 1, NULL, 0);
-        bs.piece_request_time[0] = (int64_t)platform_time_wall_time_t() - 60;
+        bs.piece_request_time[0] =
+            platform_time_monotonic_us() / 1000000 - 60;
 
         block_swarm_handle_timeouts(&bs, 30);
         bool ok = (bs.piece_states[0] == CHUNK_NEEDED);
