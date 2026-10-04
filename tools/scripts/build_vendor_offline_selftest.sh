@@ -220,7 +220,7 @@ for goal in windows-headless-run windows-headless-run-selftest \
     probe_bootstrap skip "$goal"
     probe_bootstrap require "$goal" z23
 done
-for goal in print-node-c23-srcs doctor \
+for goal in print-node-c23-srcs \
     print-CFLAGS print-DEV-CFLAGS print-LDFLAGS print-DEV-LDFLAGS print-build-flags; do
     probe_bootstrap query "$goal"
     probe_bootstrap require "$goal" z23
@@ -234,6 +234,8 @@ probe_bootstrap skip agent-dev-status
 probe_bootstrap require agent-dev-status z23
 probe_bootstrap skip doctor-build
 probe_bootstrap require doctor-build z23
+probe_bootstrap skip doctor
+probe_bootstrap require doctor z23
 probe_bootstrap skip windows-headless-run windows-headless-run-selftest
 probe_bootstrap require z23
 probe_bootstrap require
@@ -294,6 +296,27 @@ if env ZCL_VENDOR_OFFLINE=1 make -s --no-print-directory -C "$ROOT" \
         > "$SANDBOX/doctor-mixed.out" 2> "$SANDBOX/doctor-mixed.err" ||
    ! grep -Fq 'C23 toolchain check failed' "$SANDBOX/doctor-mixed.err"; then
     fail 'mixed doctor-build skipped compiler preflight'
+fi
+
+# The prerequisite doctor must diagnose a host before the configured build
+# compiler works, while a mixed node build still requires that compiler.
+if ! env ZCL_BIN_DIR="$SANDBOX/prereq-cache" ZCL_BOOTSTRAP_CC=/nonexistent \
+        ZCL_VENDOR_OFFLINE=1 make -s --no-print-directory -C "$ROOT" \
+        ZCL_USE_CCACHE=1 CC=/nonexistent ZCL_VENDOR_LIB="$SANDBOX/prereq-vendor" \
+        doctor > "$SANDBOX/prereq-make.out" 2> "$SANDBOX/prereq-make.err"; then
+    cat "$SANDBOX/prereq-make.err" >&2
+    fail 'exact doctor required the configured build compiler'
+fi
+"$ROOT/tools/scripts/doctor.sh" > "$SANDBOX/prereq-direct.out"
+cmp -s "$SANDBOX/prereq-make.out" "$SANDBOX/prereq-direct.out" ||
+    fail 'exact doctor changed the prerequisite report'
+[ ! -e "$SANDBOX/prereq-cache" ] && [ ! -e "$SANDBOX/prereq-vendor" ] ||
+    fail 'exact doctor built cache or vendor inputs'
+if env ZCL_VENDOR_OFFLINE=1 make -s --no-print-directory -C "$ROOT" \
+        ZCL_USE_CCACHE=0 CC=/nonexistent doctor z23 \
+        > "$SANDBOX/prereq-mixed.out" 2> "$SANDBOX/prereq-mixed.err" ||
+   ! grep -Fq 'C23 toolchain check failed' "$SANDBOX/prereq-mixed.err"; then
+    fail 'mixed doctor skipped compiler preflight'
 fi
 
 printf '%s\n' \

@@ -193,7 +193,7 @@ ZCL_USE_CCACHE ?= 1
 # first recipe runs; see tools/dev/zcc_bootstrap.sh for why and what it costs.
 # These exact read-only reports need neither a compiler nor a compile cache.
 # Mixed goals retain the ordinary build preflight.
-ZCL_READ_ONLY_QUERY_ONLY := $(if $(filter help timings agent-dev-status doctor-build,$(MAKECMDGOALS)),$(if $(word 2,$(MAKECMDGOALS)),,1),)
+ZCL_READ_ONLY_QUERY_ONLY := $(if $(filter help timings agent-dev-status doctor-build doctor,$(MAKECMDGOALS)),$(if $(word 2,$(MAKECMDGOALS)),,1),)
 ifeq ($(ZCL_READ_ONLY_QUERY_ONLY),1)
 ZCL_CCACHE_BIN :=
 else
@@ -266,7 +266,7 @@ ZCL_STANDALONE_VENDOR_GOALS := sqlq build/bin/sqlq
 # A mixed invocation keeps the ordinary full parse, even when both goals are
 # individually standalone. This also leaves default and unknown goals alone.
 ZCL_STANDALONE_EXACT_GOAL := $(if $(word 2,$(MAKECMDGOALS)),,$(filter $(ZCL_STANDALONE_NO_VENDOR_GOALS) $(ZCL_STANDALONE_VENDOR_GOALS),$(MAKECMDGOALS)))
-ZCL_HOTSWAP_LOOP_GOALS := hotswap-try hotswap-apply hotswap help timings agent-dev-status doctor-build c3-mutex-probe c3-speed-bench c3-tip-seam build/bin/c3-mutex-probe.so \
+ZCL_HOTSWAP_LOOP_GOALS := hotswap-try hotswap-apply hotswap help timings agent-dev-status doctor-build doctor c3-mutex-probe c3-speed-bench c3-tip-seam build/bin/c3-mutex-probe.so \
 	$(ZCL_TOR_PROVENANCE_GOALS) \
 	presentation-lib presentation-demo presentation-relaunch \
 	presentation-desktop-install presentation-portability \
