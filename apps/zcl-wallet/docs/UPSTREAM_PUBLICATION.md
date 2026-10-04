@@ -1566,3 +1566,44 @@ Local artifacts `ldb-empty-fragment.bundle`, `ldb-empty-fragment.mbox`,
 `pr-ldb-empty-fragment.md` and
 `ldb-empty-fragment-qualification.txt` verify in the candidate worktree's
 ignored evidence directory. No external publication action was attempted.
+
+### Wallet-backup plaintext retirement qualified
+
+Branch `agent/upstream-wallet-backup-plain-retirement-20261004`, signed head
+`66f45311df40379cc4dd5962b4bc34d0f6208976`, base
+`3a93e60ebf922af3d119b9facc1d95803f42844b`, wipes the exact admitted SQLite
+wallet plaintext span before freeing it after encrypted-output allocation
+fails. The same helper owns normal plaintext retirement, so both exits share
+one auditable cleanup path. Backup format, PBKDF2 parameters, password
+ownership, storage behavior, recovery policy, consensus and sealed-core code
+are unchanged. The review is three files, +87/-7, including the generated
+inventory and a deterministic test-only retirement observer.
+
+Canonical RED injects failure at `wallet_backup encrypt_buf` after reading a
+257-byte nonzero plaintext fixture and fails only the new retirement
+assertion; the platform-port group remains green. Removing only the cleanse
+call reproduces that failure. The restored focused and ASan/UBSan lanes pass
+2/2 groups with zero skips. GCC 14.2.0 and Clang 20.1.2 each check all 2,433
+production translation units with no new diagnostic sites. The MinGW lane
+checks all 2,399 Windows translation units clean and cross-links all 74 strict
+C23 acceptance programs; native Windows runtime remains unobserved.
+Architecture, documentation-count, generated-inventory, file-size, core-seal,
+consensus-parity, PR-security and cap-15 complexity gates pass; the complexity
+scan covers 68,759 functions in 4,681 files.
+
+The exact policy-5 private-RAM-scratch proof passes the exact head/base pair:
+all 215 lint gates and all 43 impact-selected groups complete, with 43 tests
+run and zero failures, skips or reused test results. Lint took 190.801s, tests
+210.971s and the signed receipt records 423.774s total. The foreground step
+returned after 425.410s. Native status under the producing identity reports
+`passed` with `receipt_reused=false`; the RAM generation retired normally and
+receipt SHA256 is
+`7fda44eaea420b212c759dd1423246a86bd1eeae0b1ebe65eb48e609e303d374`.
+
+Local artifacts `wallet-backup-plain-retirement.bundle`,
+`wallet-backup-plain-retirement.mbox`,
+`wallet-backup-plain-retirement.receipt`, exact phase/test/lint/status
+evidence, `pr-wallet-backup-plain-retirement.md` and
+`wallet-backup-plain-retirement-qualification.txt` verify in the candidate
+worktree's ignored evidence directory. No external publication action was
+attempted.
