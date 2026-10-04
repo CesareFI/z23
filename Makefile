@@ -7955,13 +7955,19 @@ $(BIN_DIR)/consensus_rule_sweep: tools/consensus_rule_sweep.c \
 .PHONY: tools/rom_bundle_sha3
 tools/rom_bundle_sha3: $(BIN_DIR)/rom_bundle_sha3
 $(BIN_DIR)/rom_bundle_sha3: tools/rom_bundle_sha3.c \
-		platform/modules/sha3/src/sha3.c core/modules/crypto/src/keccak_x4.c core/modules/crypto/src/simd_dispatch.c platform/modules/base/src/cleanse.c
+		platform/modules/sha3/src/sha3.c core/modules/crypto/src/keccak_x4.c core/modules/crypto/src/simd_dispatch.c platform/modules/base/src/cleanse.c \
+		core/modules/crypto/include/crypto/sha3.h \
+		core/modules/crypto/include/crypto/simd_dispatch.h \
+		core/modules/crypto/src/keccak_x4_internal.h \
+		platform/modules/base/include/base/cleanse.h \
+		platform/modules/base/include/base/serialize_le.h \
+		platform/modules/sha3/include/sha3/sha3.h
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
 	    $(ZCL_WARN_STRINGOP_OVERFLOW) \
 	    -Iplatform/modules/sha3/include -Icore/modules/crypto/include -Iplatform/modules/support/include -Iplatform/modules/base/include \
 	    -D_POSIX_C_SOURCE=200809L $(ZCL_PLATFORM_CPPFLAGS) \
-	    -o $@ $^ -lm
+	    -o $@ $(filter %.c,$^) -lm
 
 # fs_handshake_probe: the C3 stopwatch's PRE-FLIGHT fixture-compatibility
 # probe (tools/scripts/cold_start_to_tip_stopwatch.sh). Performs the CLIENT
