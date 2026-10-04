@@ -539,10 +539,8 @@ void push_block_manifest(struct msg_processor *mp,
         return; /* guard: only send to ZCL23 peers */
 
     uint64_t copied_version = 0;
-    if (!msg_processor_copy_block_manifest(&m, NULL, &copied_version)) {
-        node->blk_manifest_sent_version = current_version;
+    if (!msg_processor_copy_block_manifest(&m, NULL, &copied_version))
         return;
-    }
     if (node->blk_manifest_sent &&
         node->blk_manifest_sent_version == copied_version) {
         block_piece_manifest_free(&m);
