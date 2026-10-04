@@ -1925,3 +1925,56 @@ candidate's ignored evidence directory. Manifest SHA256 is
 This candidate is stacked on descriptor candidate `18b366f...` and is prepared
 for retargeting to `z23c/z23:main` after that prerequisite is present. No
 external publication action was attempted.
+
+### Standalone whole-file short-read retirement exact qualification complete
+
+Branch `agent/upstream-file-io-short-read-standalone-20261005`, signed head
+`57f0d83781793ebb8fb4e6ab360e1187b318d7f7`, applies the short-read cleanup
+directly to upstream base `3a93e60ebf922af3d119b9facc1d95803f42844b`.
+It has no descriptor-candidate prerequisite. On binary or text `fread`
+shortfall, the shared platform-neutral C23 readers wipe their entire live
+owned allocations (`n` or the already overflow-checked `n + 1`) before the
+existing free. Output initialization, close order, logging, successful bytes,
+caller ownership, wallet formats, consensus, monetary policy, PoW, upgrade
+rules and transparent and shielded validity are unchanged. The review is four
+files, +134/-5, including the generated capability inventory and deterministic
+actual-source observer.
+
+Canonical RED on the prior source fails the injected short-read retirement
+assertion. Removing only both wipes from the final source reproduces that
+failure, while restoring production source SHA256
+`6164e3335d13c0b634abb579631a97528f48f3b28830ea940d25cb7b2163b8c4`
+makes focused and ASan/UBSan/LSan lanes pass with zero skips. Uncached GCC 14
+checks all 2,433 translation units with no diagnostics; Clang 20 checks the
+same set with eight existing diagnostic sites and no new ones. MinGW checks
+all 2,399 Windows-visible translation units and links 74 strict C23 programs;
+native Windows runtime remains unobserved. Architecture, generated inventory,
+80-package anatomy, 152 documentation claims and cap-15 complexity gates pass;
+the complexity scan covers 68,761 functions.
+
+The first proof request refused before lint or tests because it was outside a
+qualified user-manager memory scope. The second reached exact-root and plan
+preparation but refused the pre-existing root-owned `/dev/shm/z23p` pool. The
+documented retry ran in the proof user's manager scope with that user's
+existing private RAM root; neither prerequisite refusal changed a gate or
+assertion. The final cold proof passes all 215 lint gates (197.325s proof
+phase) and all 1,236 executed runtime groups (549.377s proof step), with five
+runner-gated groups and zero failures, skips, cache hits, unobserved cases or
+load-flaky outcomes. The foreground proof completes in 722.085s with no
+eligible donor and `receipt_reused=false`. A root-identity status diagnostic
+correctly rejects the proof account's signer; same-user native status then
+independently verifies PASS without changing any signer allow-list. Receipt
+SHA256 is
+`8d045796e347a051f7874d7eb3a0cde1e78cc42bfd875cdbc29fbb7ada29d007`.
+The preserved proof checkout is
+`/home/worldstreamproof/z23-wallet-file-io-short-read-standalone-proof-full-20261005`.
+
+Local review artifacts `file-io-short-read-standalone-57f0d8378.bundle`,
+`file-io-short-read-standalone-57f0d8378.mbox`,
+`file-io-short-read-standalone-proof.receipt`, exact proof evidence, the C
+safety review, `pr-file-io-short-read-standalone.md`,
+`file-io-short-read-standalone-qualification.txt` and the 33-entry
+`file-io-short-read-standalone-57f0d8378-final.sha256` manifest verify in the
+candidate's ignored evidence directory. Manifest SHA256 is
+`2f75060f996033577caf466ba9bfad78b3dc3c11a971e2531cc65d37af40cc6c`.
+No external publication or reviewer-request action was attempted.
