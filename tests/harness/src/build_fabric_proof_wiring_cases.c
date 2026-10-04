@@ -1039,6 +1039,17 @@ static int pw_case_receiver_sync_fault(void)
         ASSERT_EQ(after.shadow_decisions, before.shadow_decisions);
         ASSERT_STR_EQ(after.last_ticket_reason, "receiver_not_ready");
         pw_proof_close(&a);
+        ASSERT(pw_reopen(&p));
+        ASSERT(pw_proof_open(&p, &a));
+        struct build_fabric_proof_stats recovered = pw_stats(&a);
+        ASSERT_STR_EQ(recovered.receiver_state,
+                      BUILD_FABRIC_PROOF_STATE_READY);
+        ASSERT_EQ(recovered.receiver_tickets, 1u);
+        ASSERT(pw_attach_unchanged(&p, &a, root));
+        struct build_fabric_proof_stats resumed = pw_stats(&a);
+        ASSERT_EQ(resumed.shadow_decisions, recovered.shadow_decisions + 1u);
+        ASSERT_EQ(resumed.shadow_unavailable, recovered.shadow_unavailable);
+        pw_proof_close(&a);
         node_db_close(&p.ndb);
         PASS();
     }
