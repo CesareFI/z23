@@ -1573,15 +1573,14 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
             int64_t last_probe = atomic_load_explicit(
                 &node->last_reject_probe_time, memory_order_relaxed);
             if (syncsvc_should_probe_after_reject(now_s, last_probe)) {
-                atomic_store_explicit(&node->last_reject_probe_time, now_s,
-                                      memory_order_relaxed);
                 int best_h = mp->main_state->pindex_best_header
                     ? mp->main_state->pindex_best_header->nHeight : -1;
                 printf("Peer %s: all-rejected batch (bad-prevblk) — probing "
                        "with getheaders from our best header h=%d\n",
                        node->addr_name, best_h);
-                push_getheaders_from(mp, node,
-                                     mp->main_state->pindex_best_header);
+                bool sent = push_getheaders_from(
+                    mp, node, mp->main_state->pindex_best_header);
+                msg_processor_note_reject_probe_sent(node, now_s, sent);
             }
         }
 

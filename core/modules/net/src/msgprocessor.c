@@ -944,6 +944,15 @@ static void msg_processor_note_headers_sent(struct p2p_node *node,
         syncsvc_note_headers_requested(node, now_seconds);
 }
 
+void msg_processor_note_reject_probe_sent(struct p2p_node *node,
+                                          int64_t now_seconds,
+                                          bool sent)
+{
+    if (sent)
+        atomic_store_explicit(&node->last_reject_probe_time, now_seconds,
+                              memory_order_relaxed);
+}
+
 /* ── Tip-stall watchdog observers ──────────────────────────── */
 
 /* feed tip-advance signals into the watchdog. Both
@@ -2818,13 +2827,12 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
          * again (any accepted header disarms it). */
         if (!snapshot_active &&
             syncsvc_should_fire_reject_probe(node, now_send)) {
-            atomic_store_explicit(&node->last_reject_probe_time, now_send,
-                                  memory_order_relaxed);
             printf("Peer %s: reject-probe pending — re-probing with "
                    "getheaders from our best header h=%d\n",
                    node->addr_name, best_header_height);
-            push_getheaders_from(mp, node,
-                                 mp->main_state->pindex_best_header);
+            bool sent = push_getheaders_from(
+                mp, node, mp->main_state->pindex_best_header);
+            msg_processor_note_reject_probe_sent(node, now_send, sent);
         }
         if (should_sync && !snapshot_active) {
             struct block_index *tip = active_chain_tip(

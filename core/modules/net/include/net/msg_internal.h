@@ -290,6 +290,9 @@ bool push_getheaders(struct msg_processor *mp, struct p2p_node *node);
 bool push_getheaders_from(struct msg_processor *mp,
                           struct p2p_node *node,
                           struct block_index *from);
+void msg_processor_note_reject_probe_sent(struct p2p_node *node,
+                                          int64_t now_seconds,
+                                          bool sent);
 bool exec_getheaders_action(struct msg_processor *mp,
                             struct p2p_node *node,
                             const struct sync_getheaders_action *action);
