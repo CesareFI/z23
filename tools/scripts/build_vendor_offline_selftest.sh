@@ -220,7 +220,7 @@ for goal in windows-headless-run windows-headless-run-selftest \
     probe_bootstrap skip "$goal"
     probe_bootstrap require "$goal" z23
 done
-for goal in print-node-c23-srcs doctor doctor-build agent-dev-status \
+for goal in print-node-c23-srcs doctor doctor-build \
     print-CFLAGS print-DEV-CFLAGS print-LDFLAGS print-DEV-LDFLAGS print-build-flags; do
     probe_bootstrap query "$goal"
     probe_bootstrap require "$goal" z23
@@ -230,9 +230,48 @@ probe_bootstrap skip help
 probe_bootstrap require help z23
 probe_bootstrap skip timings
 probe_bootstrap require timings z23
+probe_bootstrap skip agent-dev-status
+probe_bootstrap require agent-dev-status z23
 probe_bootstrap skip windows-headless-run windows-headless-run-selftest
 probe_bootstrap require z23
 probe_bootstrap require
+
+# The real status recipe is read-only even without a compiler. Isolate every
+# dev-lane path so this fixture cannot inspect an operator's active service.
+status_env=(
+    ZCL_AGENT_DEV_UNIT=z23-query-fixture-nonexistent.service
+    ZCL_AGENT_DEV_DATADIR="$SANDBOX/no-datadir"
+    ZCL_AGENT_DEV_BIN="$SANDBOX/no-bin"
+    ZCL_AGENT_SRC_BIN="$SANDBOX/no-src"
+    ZCL_AGENT_JSONQ="$SANDBOX/no-jsonq"
+    ZCL_DEV_GENERATION_ROOT="$SANDBOX/no-generations"
+    ZCL_DEV_WATCH_STATE_DIR="$SANDBOX/no-watch"
+    ZCL_QUALITY_STATE_DIR="$SANDBOX/no-quality"
+    ZCL_AGENT_INDEX_STATUS_PATH="$SANDBOX/no-index"
+    ZCL_DEV_BENCH_OUTPUT="$SANDBOX/no-bench"
+    ZCL_BIN_DIR="$SANDBOX/no-ccache"
+    ZCL_BOOTSTRAP_CC=/nonexistent
+    ZCL_VENDOR_OFFLINE=1
+)
+if ! env "${status_env[@]}" make -s --no-print-directory -C "$ROOT" \
+        ZCL_USE_CCACHE=1 CC=/nonexistent \
+        ZCL_VENDOR_LIB="$SANDBOX/no-vendor" agent-dev-status ARGS=--json \
+        > "$SANDBOX/status-make.json" 2> "$SANDBOX/status-make.err"; then
+    cat "$SANDBOX/status-make.err" >&2
+    fail 'exact agent-dev-status required a compiler'
+fi
+env "${status_env[@]}" "$ROOT/tools/dev/agent-dev-status.sh" --json \
+    > "$SANDBOX/status-direct.json"
+cmp -s "$SANDBOX/status-make.json" "$SANDBOX/status-direct.json" ||
+    fail 'exact agent-dev-status changed the report'
+[ ! -e "$SANDBOX/no-ccache" ] && [ ! -e "$SANDBOX/no-vendor" ] ||
+    fail 'exact agent-dev-status built cache or vendor inputs'
+if env "${status_env[@]}" make -s --no-print-directory -C "$ROOT" \
+        ZCL_USE_CCACHE=0 CC=/nonexistent agent-dev-status z23 ARGS=--json \
+        > "$SANDBOX/status-mixed.out" 2> "$SANDBOX/status-mixed.err" ||
+   ! grep -Fq 'C23 toolchain check failed' "$SANDBOX/status-mixed.err"; then
+    fail 'mixed agent-dev-status build skipped compiler preflight'
+fi
 
 printf '%s\n' \
     'build_vendor_offline_selftest: PASS downloader_contacted=false cache_miss_refused=true launcher_vendor_and_tor_skipped=true source_query_vendor_and_tor_skipped=true mixed_goals_bootstrap=true'
