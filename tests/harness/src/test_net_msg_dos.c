@@ -31,6 +31,7 @@
  * from p2p_node_create (mutex-initialized). */
 
 #include "test/test_core.h"
+#include "util/safe_alloc.h"
 #include "util/util.h"
 
 #include "mining/miner.h"
@@ -205,6 +206,68 @@ static int dos_getblocks_have_data_plan(struct msg_processor *mp,
     n = msg_blocks_plan_getblocks_inv(mp, loc, &stop, planned,
                                       GETBLOCKS_INV_LIMIT);
     DOS_CHECK("getblocks plan: dropping HAVE_DATA stops announce", n == 0);
+    return failures;
+}
+
+static int dos_getdata_oom_rollback(struct msg_processor *mp,
+                                    struct net_manager *nm)
+{
+    int failures = 0;
+    struct download_manager *dm = get_download_mgr();
+    (void)dl_drain_for_backpressure(dm);
+
+    struct uint256 wanted;
+    memset(wanted.data, 0x6c, sizeof(wanted.data));
+    int32_t wanted_height = 1;
+    DOS_CHECK("getdata OOM rollback: block queued",
+              dl_queue_blocks(dm, &wanted, &wanted_height, 1) == 1);
+
+    struct net_address addr;
+    net_address_init(&addr);
+    unsigned char ip[4] = {203, 0, 113, 81};
+    net_addr_set_ipv4(&addr.svc.addr, ip);
+    addr.svc.port = 8033;
+    struct p2p_node *node = p2p_node_create(
+        nm, ZCL_INVALID_SOCKET, &addr, "getdata-oom", true);
+    DOS_CHECK("getdata OOM rollback: node created", node != NULL);
+    if (node) {
+        node->state = PEER_ACTIVE;
+        node->version = PROTOCOL_VERSION;
+        node->starting_height = 1;
+
+        zcl_alloc_fault_fail_next("stream_data");
+        bool tick_ok = msg_send_messages(mp, node, false);
+        bool fault_consumed = zcl_alloc_fault_armed_label() == NULL;
+        size_t getdata_frames = 0;
+        for (struct send_segment *seg = node->send_head; seg;
+             seg = seg->next) {
+            if (seg->size < MSG_HEADER_SIZE)
+                continue;
+            const struct msg_header *hdr =
+                (const struct msg_header *)(const void *)seg->data;
+            if (strcmp(hdr->pchCommand, "getdata") == 0)
+                getdata_frames++;
+        }
+        bool released = !dl_is_in_flight(dm, &wanted);
+        struct uint256 reassigned;
+        bool immediately_reassignable =
+            dl_assign_to_peer(dm, (uint32_t)node->id + 1,
+                              &reassigned, 1) == 1 &&
+            uint256_eq(&reassigned, &wanted);
+        zcl_alloc_fault_clear();
+
+        DOS_CHECK("getdata OOM rollback: send tick survives", tick_ok);
+        DOS_CHECK("getdata OOM rollback: injected serializer fault consumed",
+                  fault_consumed && getdata_frames == 0);
+        DOS_CHECK("getdata OOM rollback: unsent ownership released",
+                  released);
+        DOS_CHECK("getdata OOM rollback: block immediately reassignable",
+                  immediately_reassignable);
+
+        p2p_node_free(node);
+    }
+    zcl_alloc_fault_clear();
+    (void)dl_drain_for_backpressure(dm);
     return failures;
 }
 
@@ -1016,6 +1079,13 @@ int test_net_msg_dos(void)
             p2p_node_free(node);
         }
     }
+
+    /* ── L. getdata serialization failure: assignment is transactional.
+     * The download manager transfers queue ownership to this peer before the
+     * wire message is built. A local allocation failure must put the exact
+     * batch back immediately; no request reached the peer, so waiting for the
+     * normal timeout would strand forward progress for the whole interval. */
+    failures += dos_getdata_oom_rollback(&mp, &nm);
 
     net_manager_free(&nm);
     sync_set_state(sync0, "net_msg_dos restore");

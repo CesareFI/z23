@@ -808,6 +808,24 @@ static void msg_processor_log_block_intake_backpressure(
              (unsigned long long)suppressed);
 }
 
+static bool msg_processor_send_getdata(struct msg_processor *mp,
+                                       struct p2p_node *node,
+                                       const struct uint256 *hashes,
+                                       size_t count)
+{
+    struct byte_stream msg;
+    stream_init(&msg, count * 36 + 8);
+    bool sent = getdata_blocks_serialize(&msg, hashes, count) &&
+                p2p_node_begin_message(node, "getdata",
+                                       mp->params->pchMessageStart);
+    if (sent) {
+        p2p_node_write_message_data(node, msg.data, msg.size);
+        sent = p2p_node_end_message(node);
+    }
+    stream_free(&msg);
+    return sent;
+}
+
 /* ── Tip-stall watchdog observers ──────────────────────────── */
 
 /* feed tip-advance signals into the watchdog. Both
@@ -2776,28 +2794,26 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
                                            assign_room, our_height);
             }
             if (batch.assigned > 0) {
-                struct byte_stream getdata_msg;
-                stream_init(&getdata_msg, batch.assigned * 36 + 8);
-                if (getdata_blocks_serialize(&getdata_msg, assign_hashes,
-                                             batch.assigned)) {
-                    p2p_node_begin_message(node, "getdata",
-                                           mp->params->pchMessageStart);
-                    p2p_node_write_message_data(node, getdata_msg.data,
-                                                getdata_msg.size);
-                    p2p_node_end_message(node);
-                }
-                stream_free(&getdata_msg);
-
-                {
+                bool sent = msg_processor_send_getdata(
+                    mp, node, assign_hashes, batch.assigned);
+                if (!sent) {
+                    size_t released = dl_requeue_unsent(
+                        dm, (uint32_t)node->id, assign_hashes,
+                        batch.assigned);
+                    LOG_WARN("net",
+                             "getdata send failed for %s: released=%zu/%zu "
+                             "unsent block assignments",
+                             node->addr_name, released, batch.assigned);
+                } else {
                     char hex[65];
                     uint256_get_hex(&assign_hashes[0], hex);
                     printf("getdata: %zu blocks to %s (first=%s)\n",
                            batch.assigned, node->addr_name, hex);
+                    event_emitf(EV_BLOCK_REQUESTED, (uint32_t)node->id,
+                                "assigned=%zu inflight=%zu",
+                                batch.assigned,
+                                batch.in_flight_before + batch.assigned);
                 }
-                event_emitf(EV_BLOCK_REQUESTED, (uint32_t)node->id,
-                            "assigned=%zu inflight=%zu",
-                            batch.assigned,
-                            batch.in_flight_before + batch.assigned);
             }
 
             /* Stall detection: if queue is empty, in-flight is zero,

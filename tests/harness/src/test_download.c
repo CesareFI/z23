@@ -584,6 +584,52 @@ static int test_dl_peer_disconnected(void)
     return failures;
 }
 
+static int test_dl_requeue_unsent_batch(void)
+{
+    int failures = 0;
+    TEST("dl_requeue_unsent releases only the named peer-owned batch") {
+        struct download_manager dm;
+        dl_init(&dm);
+
+        struct uint256 h1 = make_hash(1);
+        struct uint256 h2 = make_hash(2);
+        struct uint256 h3 = make_hash(3);
+        struct uint256 h4 = make_hash(4);
+        ASSERT(dl_mark_requested(&dm, &h1, 100, 7));
+        ASSERT(dl_mark_requested(&dm, &h2, 101, 7));
+        ASSERT(dl_mark_requested(&dm, &h3, 102, 7));
+        ASSERT(dl_mark_requested(&dm, &h4, 103, 8));
+
+        /* h4 is named but belongs to another peer; h3 belongs to this peer
+         * but is not part of the failed send batch. Neither may be touched. */
+        struct uint256 unsent[] = {h1, h2, h4};
+        ASSERT(dl_requeue_unsent(&dm, 7, unsent, 3) == 2);
+        ASSERT(!dl_is_in_flight(&dm, &h1));
+        ASSERT(!dl_is_in_flight(&dm, &h2));
+        ASSERT(dl_is_in_flight(&dm, &h3));
+        ASSERT(dl_is_in_flight(&dm, &h4));
+        ASSERT(dl_requeue_unsent(&dm, 7, unsent, 3) == 0);
+
+        struct dl_diagnostics diag;
+        dl_get_diagnostics(&dm, &diag);
+        ASSERT(diag.total_orphaned == 2);
+        ASSERT(diag.accounting_drift == 0);
+
+        /* Local send failure is not evidence against the peer: the same peer
+         * can take the batch again immediately, without an avoid cooldown. */
+        struct uint256 reassigned[2];
+        ASSERT(dl_assign_to_peer(&dm, 7, reassigned, 2) == 2);
+        ASSERT((uint256_eq(&reassigned[0], &h1) &&
+                uint256_eq(&reassigned[1], &h2)) ||
+               (uint256_eq(&reassigned[0], &h2) &&
+                uint256_eq(&reassigned[1], &h1)));
+
+        dl_free(&dm);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* `notfound` names ONE block: it must not cost the peer its whole in-flight
  * window (as dl_peer_disconnected() routing would). */
 static int test_dl_mark_notfound_settles_only_named_block(void)
@@ -2085,6 +2131,7 @@ int test_download(void)
     failures += test_dl_assignment_parking_is_per_peer();
     failures += test_dl_assignment_peer_cache_capacity_and_reuse();
     failures += test_dl_peer_disconnected();
+    failures += test_dl_requeue_unsent_batch();
     failures += test_dl_mark_notfound_settles_only_named_block();
     failures += test_dl_settle_accounting();
     failures += test_dl_check_timeouts();

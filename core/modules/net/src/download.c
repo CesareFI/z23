@@ -791,6 +791,41 @@ size_t dl_peer_disconnected(struct download_manager *dm, uint32_t peer_id)
     return requeued;
 }
 
+size_t dl_requeue_unsent(struct download_manager *dm, uint32_t peer_id,
+                         const struct uint256 *hashes, size_t count)
+{
+    if (!dm || (!hashes && count > 0))
+        return 0;
+
+    zcl_mutex_lock(&dm->cs);
+    size_t requeued = 0;
+    bool queue_changed = false;
+    for (size_t i = 0; i < count; i++) {
+        struct dl_in_flight *s = find_slot(dm, &hashes[i], false);
+        if (!s || !s->active || s->peer_id != peer_id)
+            continue;
+
+        /* The request never reached the peer. Retry immediately without the
+         * timeout/notfound avoidance applied when a peer actually failed to
+         * deliver. Queue bounding may decline a high non-frontier item after
+         * concurrent producers refill the just-vacated room; gap discovery
+         * will rediscover it after the lower-height queue drains. */
+        if (dl_queue_push(dm, &s->hash, s->height, 0, 0, s->work_class))
+            queue_changed = true;
+        s->active = false;
+        dm->num_active--;
+        dm->total_orphaned++;
+        requeued++;
+    }
+
+    if (queue_changed)
+        dl_generation_advance(&dm->queue_generation);
+    if (requeued > 0)
+        dl_generation_advance(&dm->capacity_generation);
+    zcl_mutex_unlock(&dm->cs);
+    return requeued;
+}
+
 /* One-block counterpart to dl_peer_disconnected — see the rationale and the
  * measured orphan numbers on the declaration in net/download.h. Settles ONLY
  * the named hash and leaves the rest of this peer's in-flight window alone;

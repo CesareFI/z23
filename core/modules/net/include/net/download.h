@@ -383,6 +383,15 @@ void dl_peer_body_staleness(struct download_manager *dm, uint32_t peer_id,
  * Call from connman when a peer is disconnected. Returns count re-queued. */
 size_t dl_peer_disconnected(struct download_manager *dm, uint32_t peer_id);
 
+/* Roll back an assigned batch that never reached the wire. Only live slots
+ * owned by `peer_id` AND named in `hashes` are released and offered back to
+ * the bounded queue; other work owned by the peer is untouched. The retry is
+ * immediate and carries no peer-avoidance cooldown because local
+ * serialization/send failure is not evidence that the peer lacks the block.
+ * Returns the number of ownership slots released. */
+size_t dl_requeue_unsent(struct download_manager *dm, uint32_t peer_id,
+                         const struct uint256 *hashes, size_t count);
+
 /* Settle ONE named block that a peer answered `notfound`, re-queueing just
  * that hash (with the usual per-peer avoid deadline so the same peer is not
  * immediately re-asked for it). Returns 1 if a matching active slot was
