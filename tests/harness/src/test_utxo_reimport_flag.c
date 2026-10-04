@@ -48,6 +48,12 @@ static bool urf_file_exists(const char *path)
     return stat(path, &st) == 0;
 }
 
+static bool urf_is_regular_file(const char *path)
+{
+    struct stat st;
+    return lstat(path, &st) == 0 && S_ISREG(st.st_mode);
+}
+
 static void urf_write_byte(const char *path, char c)
 {
     FILE *f = fopen(path, "w");
@@ -55,6 +61,18 @@ static void urf_write_byte(const char *path, char c)
         fputc(c, f);
         fclose(f);
     }
+}
+
+static bool urf_file_equals(const char *path, const char *expected)
+{
+    char buf[32] = {0};
+    FILE *f = fopen(path, "r");
+    if (!f)
+        return false;
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    bool closed = fclose(f) == 0;
+    return closed && n == strlen(expected) &&
+           memcmp(buf, expected, n) == 0;
 }
 
 int test_utxo_reimport_flag(void)
@@ -143,6 +161,36 @@ int test_utxo_reimport_flag(void)
         bool r2 = utxo_reimport_flag_set(NULL);
         URF_CHECK("NULL datadir check → false", !r1);
         URF_CHECK("NULL datadir set → false", !r2);
+    }
+
+    /* ── 6. set replaces a hostile link leaf, not its target ──── */
+    {
+        char dir[PATH_MAX];
+        if (!urf_make_tmpdir(dir, sizeof(dir))) {
+            printf("urf: mkdtemp FAIL\n");
+            return 1;
+        }
+        char flag[PATH_MAX];
+        char victim[PATH_MAX];
+        snprintf(flag, sizeof(flag), "%s/needs_reimport", dir);
+        snprintf(victim, sizeof(victim), "%s/victim", dir);
+
+        FILE *f = fopen(victim, "w");
+        if (f) {
+            fputs("keep-me\n", f);
+            fclose(f);
+        }
+        bool linked = symlink(victim, flag) == 0;
+        bool wrote = linked && utxo_reimport_flag_set(dir);
+
+        URF_CHECK("set replaces link leaf",
+                  wrote && urf_is_regular_file(flag));
+        URF_CHECK("set leaves link target unchanged",
+                  urf_file_equals(victim, "keep-me\n"));
+
+        unlink(flag);
+        unlink(victim);
+        rmdir(dir);
     }
 
     if (failures == 0)
