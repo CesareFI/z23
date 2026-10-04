@@ -39,6 +39,15 @@ static void compact_pending_clear(struct p2p_node *node)
     memset(&node->compact_pending_hash, 0, sizeof(node->compact_pending_hash));
 }
 
+static void compact_pending_retry_full_body(struct p2p_node *node)
+{
+    if (!node->compact_pending_block)
+        return;
+    (void)dl_mark_notfound(get_download_mgr(), (uint32_t)node->id,
+                           &node->compact_pending_hash);
+    compact_pending_clear(node);
+}
+
 /* ── Helper: feed a completed block into normal validation ─────── */
 
 static void compact_submit_block(struct msg_processor *mp,
@@ -345,6 +354,7 @@ bool process_blocktxn(struct msg_processor *mp, struct p2p_node *node,
     struct block_txn_response resp;
     if (!block_txn_response_deserialize(&resp, s)) {
         peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_INVALID_PAYLOAD, "invalid blocktxn");
+        compact_pending_retry_full_body(node);
         LOG_FAIL("compact", "failed to deserialize blocktxn from %s", node->addr_name);
     }
 
