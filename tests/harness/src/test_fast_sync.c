@@ -717,6 +717,48 @@ static int test_swarm_late_duplicate_is_idempotent(void)
     return failures;
 }
 
+static int test_swarm_stale_invalid_response_preserves_owner(void)
+{
+    int failures = 0;
+    TEST("swarm_sync stale invalid response preserves reassigned owner") {
+        struct utxo_chunk *bad =
+            zcl_calloc(1, sizeof(*bad), "stale_invalid_swarm_chunk");
+        uint8_t hashes[1][32];
+        memset(hashes[0], 0xA5, sizeof(hashes[0]));
+        struct sync_manifest manifest = {
+            .num_chunks = 1,
+            .chunk_size = SYNC_CHUNK_SIZE,
+            .chunk_hashes = hashes
+        };
+        struct swarm_sync ss;
+        ASSERT(bad != NULL);
+        ASSERT(swarm_sync_init(&ss, &manifest, NULL));
+        ASSERT(swarm_sync_assign_chunk(&ss, 11) == 0);
+        ss.chunk_request_time[0] -= 60;
+        swarm_sync_handle_timeouts(&ss, 30);
+        ASSERT(swarm_sync_assign_chunk(&ss, 22) == 0);
+
+        ASSERT(!swarm_sync_receive_chunk(&ss, bad, 11));
+        ASSERT(ss.chunk_states[0] == CHUNK_INFLIGHT);
+        ASSERT(ss.chunk_peer[0] == 22);
+        ASSERT(ss.chunks_inflight == 1);
+        ASSERT(ss.chunk_retries[0] == 0);
+
+        /* Validation remains strict for the actual owner: its bad response
+         * releases the request and consumes exactly one retry. */
+        ASSERT(!swarm_sync_receive_chunk(&ss, bad, 22));
+        ASSERT(ss.chunk_states[0] == CHUNK_NEEDED);
+        ASSERT(ss.chunk_peer[0] == -1);
+        ASSERT(ss.chunks_inflight == 0);
+        ASSERT(ss.chunk_retries[0] == 1);
+
+        swarm_sync_free(&ss);
+        free(bad);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_swarm_disconnect_requeues_owned_chunks(void)
 {
     int failures = 0;
@@ -1996,6 +2038,7 @@ int test_fast_sync(void)
     failures += test_swarm_request_time_is_monotonic();
     failures += test_swarm_stale_owner();
     failures += test_swarm_late_duplicate_is_idempotent();
+    failures += test_swarm_stale_invalid_response_preserves_owner();
     failures += test_swarm_disconnect_requeues_owned_chunks();
 
     /* Block swarm */

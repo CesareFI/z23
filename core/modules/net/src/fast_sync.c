@@ -1356,6 +1356,26 @@ int32_t swarm_sync_assign_chunk(struct swarm_sync *ss, int peer_id)
     LOG_RETURN(-1, "sync", "assign_chunk: no chunks available for peer %d", peer_id);
 }
 
+static void swarm_sync_fail_chunk_for_peer(struct swarm_sync *ss,
+                                            uint32_t chunk_index,
+                                            int peer_id)
+{
+    if (ss->chunk_states[chunk_index] != CHUNK_INFLIGHT ||
+        ss->chunk_peer[chunk_index] != peer_id)
+        return;
+
+    ss->chunk_retries[chunk_index]++;
+    if (ss->chunk_retries[chunk_index] >= 5) {
+        ss->chunk_states[chunk_index] = CHUNK_FAILED;
+        ss->chunks_failed++;
+    } else {
+        ss->chunk_states[chunk_index] = CHUNK_NEEDED;
+    }
+    ss->chunk_peer[chunk_index] = -1;
+    if (ss->chunks_inflight > 0)
+        ss->chunks_inflight--;
+}
+
 bool swarm_sync_receive_chunk(struct swarm_sync *ss,
                                 const struct utxo_chunk *chunk,
                                 int peer_id)
@@ -1380,17 +1400,7 @@ bool swarm_sync_receive_chunk(struct swarm_sync *ss,
      * would commit attacker-controlled rows into the utxos table and the
      * only signal would be the end-of-sync Merkle root mismatch. */
     if (!fast_sync_verify_chunk(chunk, ss->manifest.chunk_hashes[idx])) {
-        ss->chunk_retries[idx]++;
-        /* Reset to NEEDED so another peer can retry — unless max retries */
-        if (ss->chunk_retries[idx] >= 5) {
-            ss->chunk_states[idx] = CHUNK_FAILED;
-            ss->chunks_failed++;
-        } else {
-            ss->chunk_states[idx] = CHUNK_NEEDED;
-        }
-        ss->chunk_peer[idx] = -1;
-        if (ss->chunks_inflight > 0)
-            ss->chunks_inflight--;
+        swarm_sync_fail_chunk_for_peer(ss, idx, peer_id);
         LOG_FAIL("sync", "receive_chunk: chunk %u hash mismatch from peer %d (retry %d/5)",
                  idx, peer_id, ss->chunk_retries[idx]);
     }
@@ -1398,16 +1408,7 @@ bool swarm_sync_receive_chunk(struct swarm_sync *ss,
     /* Apply chunk to database */
     if (ss->datadir) {
         if (!fast_sync_apply_chunk(ss->datadir, chunk)) {
-            ss->chunk_retries[idx]++;
-            if (ss->chunk_retries[idx] >= 5) {
-                ss->chunk_states[idx] = CHUNK_FAILED;
-                ss->chunks_failed++;
-            } else {
-                ss->chunk_states[idx] = CHUNK_NEEDED;
-            }
-            ss->chunk_peer[idx] = -1;
-            if (ss->chunks_inflight > 0)
-                ss->chunks_inflight--;
+            swarm_sync_fail_chunk_for_peer(ss, idx, peer_id);
             LOG_FAIL("sync", "receive_chunk: chunk %u apply failed (retry %d/5)",
                      idx, ss->chunk_retries[idx]);
         }
