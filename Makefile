@@ -191,10 +191,15 @@ ZCL_USE_CCACHE ?= 1
 # to install, and fall back to a host cache only if the in-tree one cannot be
 # built here. This is a parse-time $(shell) because $(CC) is fixed before the
 # first recipe runs; see tools/dev/zcc_bootstrap.sh for why and what it costs.
+ifeq ($(MAKECMDGOALS),help)
+# Help only reads this Makefile; it needs no compiler or compile cache.
+ZCL_CCACHE_BIN :=
+else
 ZCL_CCACHE_BIN := $(shell if [ "$(ZCL_USE_CCACHE)" != "0" ]; then \
                               $(CURDIR)/tools/dev/zcc_bootstrap.sh 2>/dev/null \
                               || command -v sccache 2>/dev/null \
                               || command -v ccache 2>/dev/null; fi)
+endif
 ifneq ($(ZCL_CCACHE_BIN),)
 ifeq ($(filter zcc sccache ccache,$(notdir $(firstword $(CC)))),)
 CC := $(ZCL_CCACHE_BIN) $(CC)
@@ -259,7 +264,7 @@ ZCL_STANDALONE_VENDOR_GOALS := sqlq build/bin/sqlq
 # A mixed invocation keeps the ordinary full parse, even when both goals are
 # individually standalone. This also leaves default and unknown goals alone.
 ZCL_STANDALONE_EXACT_GOAL := $(if $(word 2,$(MAKECMDGOALS)),,$(filter $(ZCL_STANDALONE_NO_VENDOR_GOALS) $(ZCL_STANDALONE_VENDOR_GOALS),$(MAKECMDGOALS)))
-ZCL_HOTSWAP_LOOP_GOALS := hotswap-try hotswap-apply hotswap c3-mutex-probe c3-speed-bench c3-tip-seam build/bin/c3-mutex-probe.so \
+ZCL_HOTSWAP_LOOP_GOALS := hotswap-try hotswap-apply hotswap help c3-mutex-probe c3-speed-bench c3-tip-seam build/bin/c3-mutex-probe.so \
 	$(ZCL_TOR_PROVENANCE_GOALS) \
 	presentation-lib presentation-demo presentation-relaunch \
 	presentation-desktop-install presentation-portability \
