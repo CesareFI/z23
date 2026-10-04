@@ -244,9 +244,9 @@ bool boot_auto_reindex_pending(const char *datadir)
     int32_t a = 0;
     int c = 0;
     int r = BOOT_AUTO_REINDEX_REASON_UNSPECIFIED;
-    if (ar_read(path, &a, &c, &r) && c == BOOT_AUTO_REINDEX_TERMINAL)
+    if (!ar_read(path, &a, &c, &r))
         return false;
-    return true;
+    return c != BOOT_AUTO_REINDEX_TERMINAL;
 }
 
 bool boot_auto_reindex_status(const char *datadir, int32_t *anchor,

@@ -37,6 +37,32 @@ static int mkdir_p_br(const char *p)
     return (errno == EEXIST) ? 0 : -1;
 }
 
+static int check_malformed_marker(void)
+{
+    int failures = 0;
+    char dir[256];
+    test_fmt_tmpdir(dir, sizeof(dir), "boot_reindex_term", "malformed");
+    mkdir_p_br(dir);
+
+    char path[512];
+    (void)snprintf(path, sizeof(path), "%s/auto_reindex_request", dir);
+    FILE *f = fopen(path, "w");
+    bool wrote = f && fprintf(f, "interrupted-write\n") > 0;
+    if (f) fclose(f);
+
+    int32_t anchor = 99;
+    int count = 99;
+    BR_CHECK("malformed: status rejects the marker",
+             wrote && !boot_auto_reindex_status(dir, &anchor, &count));
+    BR_CHECK("malformed: marker is not pending recovery authority",
+             !boot_auto_reindex_pending(dir));
+    BR_CHECK("malformed: boot does not consume it as -reindex-chainstate",
+             !boot_crashonly_consume_reindex_request(dir));
+
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
 int test_boot_reindex_terminates(void);
 int test_boot_reindex_terminates(void)
 {
@@ -503,6 +529,13 @@ int test_boot_reindex_terminates(void)
 
 
     /* ──────────────────────────────────────────────────────────────────
+     * A malformed marker is not recovery authority. In particular, mere path
+     * presence must not enable -reindex-chainstate: boot consumes that flag
+     * before the coins gate and may clear an otherwise recoverable UTXO set.
+     * ───────────────────────────────────────────────────────────────── */
+    failures += check_malformed_marker();
+
+    /* ─────────────────────────────────────────────────────────────────
      * (J) THE HOLES-ONLY RESTART LOOP. An identical post-restore finding
      * (tip_window_holes, mismatches>0, zero_nbits=0) repeated across restarts
      * must ADVANCE toward the cap whatever happens to
