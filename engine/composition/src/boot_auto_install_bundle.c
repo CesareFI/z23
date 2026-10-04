@@ -29,6 +29,7 @@
 #include "config/boot_consensus_bundle_marker.h"
 #include "config/rom_fetch_orphan_sweep.h"      /* once-per-boot stale-partial sweep */
 #include "net/checkpoint_header_fetch.h"       /* pre-arm compiled-checkpoint capture */
+#include "platform/private_file.h"
 #include "conditions/no_state_source.h"        /* LOUD no-state-source signage */
 #include "jobs/reducer_frontier.h"             /* reducer_frontier_provable_tip_cached */
 #include "storage/boot_auto_refold.h"          /* A1: consume the escalator's armed refold */
@@ -130,6 +131,7 @@ void boot_select_state_source(struct node_db *ndb, struct main_state *ms,
 #include <fcntl.h>
 #include <limits.h>
 #include <stdint.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -282,6 +284,8 @@ static void ibr_path(const char *datadir, char *out, size_t n)
     snprintf(out, n, "%s/install_bundle_request", datadir);
 }
 
+static _Atomic uint64_t g_ibr_staging_sequence;
+
 /* Read the on-disk (attempts, path). Returns true iff a well-formed request was
  * read (a numeric attempts line + a non-empty path line). On any miss *attempts
  * is 0 and bundle_out is empty. When bundle_out is provided the path must fit in
@@ -334,26 +338,40 @@ static bool ibr_write(const char *datadir, const char *path, int attempts,
     if (len < 0 || len >= (int)sizeof(buf))
         return false;
 
-    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
-    if (fd < 0) {
-        LOG_WARN(ICB_SUBSYS, "install_bundle_request: open(%s) failed: %s", path,
-                 strerror(errno));
+    char resolved[PATH_MAX], parent[PATH_MAX], staging_path[PATH_MAX];
+    if (!platform_private_destination_resolve(
+            path, resolved, sizeof(resolved), parent, sizeof(parent)))
         return false;
+
+    struct platform_private_file staged;
+    platform_private_file_init(&staged);
+    bool created = false;
+    for (unsigned attempt = 0; attempt < 1024 && !created; attempt++) {
+        uint64_t seq = atomic_fetch_add_explicit(
+            &g_ibr_staging_sequence, 1, memory_order_relaxed);
+        int n = snprintf(staging_path, sizeof(staging_path),
+                         "%s.tmp.%llu.%llu", resolved,
+                         (unsigned long long)getpid(),
+                         (unsigned long long)seq);
+        if (n <= 0 || (size_t)n >= sizeof(staging_path))
+            break;
+        created = platform_private_file_create(staging_path, &staged);
     }
-    ssize_t w = write(fd, buf, (size_t)len);
-    int sync_rc = fsync(fd); /* the budget MUST survive a crash mid-install */
-    int close_rc = close(fd);
-    if (w != (ssize_t)len || sync_rc != 0 || close_rc != 0) {
-        LOG_WARN(ICB_SUBSYS, "install_bundle_request: write/fsync(%s) failed", path);
-        return false;
+    bool ok = created &&
+              platform_private_file_write_at(&staged, buf, (size_t)len, 0) &&
+              platform_private_file_truncate(&staged, (uint64_t)len) &&
+              platform_private_file_flush(&staged) &&
+              platform_private_file_replace(&staged, staging_path, resolved) &&
+              platform_private_parent_flush(parent);
+    platform_private_file_close(&staged);
+    if (!ok) {
+        if (created)
+            (void)platform_private_file_unlink_missing_ok(staging_path);
+        LOG_WARN(ICB_SUBSYS,
+                 "install_bundle_request: durable replace(%s) failed", path);
     }
-    /* fsync the directory so the file's existence is durable across a crash. */
-    int dfd = open(datadir, O_RDONLY | O_DIRECTORY);
-    if (dfd >= 0) {
-        (void)fsync(dfd);
-        close(dfd);
-    }
-    return true;
+    (void)datadir;
+    return ok;
 }
 
 int boot_install_bundle_request(const char *datadir, const char *bundle_path)

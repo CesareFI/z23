@@ -321,6 +321,41 @@ static int case_malformed_durable_request(void)
     return failures;
 }
 
+static int case_symlink_durable_request(void)
+{
+    int failures = 0;
+    char dir[256];
+    test_make_tmpdir(dir, sizeof(dir), "csir_request", "symlink");
+
+    char victim[512];
+    char request[512];
+    snprintf(victim, sizeof(victim), "%s/victim", dir);
+    snprintf(request, sizeof(request), "%s/install_bundle_request", dir);
+    FILE *f = fopen(victim, "w");
+    bool seeded = f && fputs("keep-me\n", f) >= 0;
+    if (f) fclose(f);
+    bool linked = seeded && symlink("victim", request) == 0;
+
+    int rc = boot_install_bundle_request(
+        dir, "/some/where/produced-bundle-3056758.sqlite");
+    struct stat request_st;
+    bool request_private = lstat(request, &request_st) == 0 &&
+                           S_ISREG(request_st.st_mode);
+    char observed[32] = {0};
+    f = fopen(victim, "r");
+    bool read_back = f && fgets(observed, sizeof(observed), f) != NULL;
+    if (f) fclose(f);
+
+    CSIR_CHECK("symlink leaf is replaced by the private request marker",
+               linked && rc == 1 && request_private &&
+                   boot_install_bundle_pending(dir));
+    CSIR_CHECK("symlink-safe publication leaves its target untouched",
+               read_back && strcmp(observed, "keep-me\n") == 0);
+
+    test_rm_rf_recursive(dir);
+    return failures;
+}
+
 /* (d) boot_post_install_fold_span_check — the post-install "catch the tail"
  * wiring. Synthetic block_index construction mirrors
  * test_refold_body_span_contiguous.c's bsc_install: heights are inserted via
@@ -916,6 +951,7 @@ int test_consensus_state_install_runtime(void)
     failures += case_runtime_returns();
     failures += case_durable_request();
     failures += case_malformed_durable_request();
+    failures += case_symlink_durable_request();
     failures += case_post_install_fold_span_check();
     failures += case_post_install_drop_borrowed_have_data();
     failures += case_checkpoint_header_ready();
