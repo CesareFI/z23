@@ -20,6 +20,7 @@
 #include "net/puzzle.h"
 #include "crypto/sha3.h"
 #include "net/msgprocessor.h"
+#include "net/msg_internal.h"
 #include "net/connman.h"
 #include "net/peer_strategy.h"
 #include "net/peer_liveness.h"
@@ -3316,6 +3317,33 @@ static int test_net_parallel_sync_bad_proof_fails_verification(const char *test_
     return failures;
 }
 
+static bool manifest_send_failure_preserves_retry(void)
+{
+    struct net_manager nm;
+    struct net_address addr;
+    struct msg_processor mp = {0};
+    net_manager_init(&nm);
+    net_address_init(&addr);
+    unsigned char ip4[4] = {127, 0, 0, 91};
+    net_addr_set_ipv4(&addr.svc.addr, ip4);
+    addr.svc.port = 8033;
+    struct p2p_node *node = p2p_node_create(
+        &nm, ZCL_INVALID_SOCKET, &addr, "manifest-send-failure", true);
+    bool ok = node != NULL;
+    mp.params = chain_params_get();
+    if (node) {
+        zcl_alloc_fault_fail_next("send_segment");
+        push_manifest(&mp, node);
+        ok = ok && zcl_alloc_fault_armed_label() == NULL;
+        ok = ok && !node->swarm_manifest_sent;
+        ok = ok && node->send_head == NULL;
+        zcl_alloc_fault_clear();
+        p2p_node_free(node);
+    }
+    net_manager_free(&nm);
+    return ok;
+}
+
 static int test_net_parallel_sync_manifest_cache_publishes_stable(void)
 {
     int failures = 0;
@@ -3344,6 +3372,9 @@ static int test_net_parallel_sync_manifest_cache_publishes_stable(void)
         ok = ok && header.num_utxos == 654;
         ok = ok && header.chunk_size == SYNC_CHUNK_SIZE;
         ok = ok && header.chunk_hashes == NULL;
+
+        ok = ok && manifest_send_failure_preserves_retry();
+
         msg_processor_invalidate_manifest();
         ok = ok && !msg_processor_get_manifest_header(&header);
         boot_snapshot_offer_test_set_trust_override(-1);

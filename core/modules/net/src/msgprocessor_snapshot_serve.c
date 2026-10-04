@@ -428,6 +428,39 @@ bool send_snapshot_offer_msg(struct p2p_node *node,
     return true;
 }
 
+static void push_manifest_copy(struct msg_processor *mp,
+                               struct p2p_node *node,
+                               const struct sync_manifest *m,
+                               const uint8_t (*hashes)[32])
+{
+    struct byte_stream s;
+    stream_init(&s, 116 + (size_t)m->num_chunks * 32);
+    stream_write_i32_le(&s, m->height);
+    stream_write_bytes(&s, m->block_hash, 32);
+    stream_write_u64_le(&s, m->num_utxos);
+    stream_write_u32_le(&s, m->num_chunks);
+    stream_write_u32_le(&s, m->chunk_size);
+    stream_write_bytes(&s, m->merkle_root, 32);
+    stream_write_bytes(&s, m->utxo_sha3, 32);
+    for (uint32_t i = 0; i < m->num_chunks; i++)
+        stream_write_bytes(&s, hashes[i], 32);
+
+    bool sent = false;
+    if (!s.error &&
+        p2p_node_begin_message(node, MSG_MANIFEST,
+                               mp->params->pchMessageStart)) {
+        p2p_node_write_message_data(node, s.data, s.size);
+        sent = p2p_node_end_message(node);
+    }
+    stream_free(&s);
+    if (!sent)
+        return;
+
+    node->swarm_manifest_sent = true;
+    printf("Peer %s: sent manifest (h=%d, %u chunks)\n",
+           node->addr_name, m->height, m->num_chunks);
+}
+
 /* Send our manifest to a ZCL23 peer. Called after version/verack handshake. */
 void push_manifest(struct msg_processor *mp, struct p2p_node *node)
 {
@@ -451,31 +484,10 @@ void push_manifest(struct msg_processor *mp, struct p2p_node *node)
         return;
     }
 
-    struct byte_stream s;
-    stream_init(&s, 116 + (size_t)m.num_chunks * 32);
-    stream_write_i32_le(&s, m.height);
-    stream_write_bytes(&s, m.block_hash, 32);
-    stream_write_u64_le(&s, m.num_utxos);
-    stream_write_u32_le(&s, m.num_chunks);
-    stream_write_u32_le(&s, m.chunk_size);
-    stream_write_bytes(&s, m.merkle_root, 32);
-    stream_write_bytes(&s, m.utxo_sha3, 32);
-    /* per-chunk SHA3-256 hashes so the receiver can reject a
-     * corrupt or attacker-substituted chunk before it lands in the
-     * utxos table. The receiver Merkle-reconstructs merkle_root from
-     * these hashes and bans the peer on mismatch. */
-    for (uint32_t i = 0; i < m.num_chunks; i++)
-        stream_write_bytes(&s, hashes[i], 32);
-
-    p2p_node_begin_message(node, MSG_MANIFEST, mp->params->pchMessageStart);
-    p2p_node_write_message_data(node, s.data, s.size);
-    p2p_node_end_message(node);
-    stream_free(&s);
+    /* Per-chunk SHA3-256 hashes let the receiver reject a corrupt or
+     * substituted chunk before it lands in the UTXO table. */
+    push_manifest_copy(mp, node, &m, (const uint8_t (*)[32])hashes);
     free(hashes);
-
-    node->swarm_manifest_sent = true;
-    printf("Peer %s: sent manifest (h=%d, %u chunks)\n",
-           node->addr_name, m.height, m.num_chunks);
 }
 
 static void push_block_manifest_copy(struct msg_processor *mp,
