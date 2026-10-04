@@ -321,6 +321,31 @@ static int case_malformed_durable_request(void)
     return failures;
 }
 
+static int case_invalid_durable_budget(void)
+{
+    int failures = 0;
+    char dir[256];
+    test_make_tmpdir(dir, sizeof(dir), "csir_request", "invalid_budget");
+
+    char path[512];
+    snprintf(path, sizeof(path), "%s/install_bundle_request", dir);
+    FILE *f = fopen(path, "w");
+    bool wrote = f &&
+                  fputs("-2\n/some/where/external-bundle.sqlite\n", f) >= 0;
+    if (f) fclose(f);
+    wrote = wrote && chmod(path, 0600) == 0;
+
+    char bundle[512] = "not-empty";
+    CSIR_CHECK("invalid request budget is not pending authority",
+               wrote && !boot_install_bundle_pending(dir));
+    CSIR_CHECK("invalid request budget cannot authorize an install",
+               !boot_install_bundle_consume(dir, bundle, sizeof(bundle)) &&
+                   bundle[0] == '\0');
+
+    test_rm_rf_recursive(dir);
+    return failures;
+}
+
 static int case_symlink_durable_request(void)
 {
     int failures = 0;
@@ -979,6 +1004,7 @@ int test_consensus_state_install_runtime(void)
     failures += case_runtime_returns();
     failures += case_durable_request();
     failures += case_malformed_durable_request();
+    failures += case_invalid_durable_budget();
     failures += case_symlink_durable_request();
     failures += case_symlink_read_request();
     failures += case_post_install_fold_span_check();

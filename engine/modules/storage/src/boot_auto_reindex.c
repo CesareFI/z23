@@ -91,7 +91,8 @@ static bool ar_read(const char *path, int32_t *anchor, int *count, int *reason)
         int fields = sscanf(buf, "%d %d %d", anchor, count, reason);
         if (fields == 2)
             *reason = BOOT_AUTO_REINDEX_REASON_UNSPECIFIED;
-        ok = fields >= 2;
+        ok = fields >= 2 &&
+             (*count > 0 || *count == BOOT_AUTO_REINDEX_TERMINAL);
     }
     if (!ok) {
         *anchor = 0;

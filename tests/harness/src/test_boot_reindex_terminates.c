@@ -89,6 +89,31 @@ static int check_unknown_reason_preserved(void)
     return failures;
 }
 
+static int check_invalid_reindex_budget(void)
+{
+    int failures = 0;
+    char dir[256];
+    test_fmt_tmpdir(dir, sizeof(dir), "boot_reindex_term", "invalid_budget");
+    mkdir_p_br(dir);
+
+    char path[512];
+    (void)snprintf(path, sizeof(path), "%s/auto_reindex_request", dir);
+    FILE *f = fopen(path, "w");
+    bool wrote = f && fprintf(f, "4321 -2 0\n") > 0;
+    if (f) fclose(f);
+
+    int32_t anchor = 99;
+    int count = 99;
+    BR_CHECK("invalid budget: status rejects count below TERMINAL",
+             wrote && !boot_auto_reindex_status(dir, &anchor, &count));
+    BR_CHECK("invalid budget: cannot authorize -reindex-chainstate",
+             !boot_auto_reindex_pending(dir) &&
+                 !boot_crashonly_consume_reindex_request(dir));
+
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
 int test_boot_reindex_terminates(void);
 int test_boot_reindex_terminates(void)
 {
@@ -561,6 +586,7 @@ int test_boot_reindex_terminates(void)
      * ───────────────────────────────────────────────────────────────── */
     failures += check_malformed_marker();
     failures += check_unknown_reason_preserved();
+    failures += check_invalid_reindex_budget();
 
     /* ─────────────────────────────────────────────────────────────────
      * (J) THE HOLES-ONLY RESTART LOOP. An identical post-restore finding

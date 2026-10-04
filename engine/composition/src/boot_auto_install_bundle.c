@@ -292,7 +292,8 @@ static bool ibr_parse(char *raw, int *attempts, char *bundle_out, size_t cap)
     int a = 0;
     int used = 0;
     if (sscanf(raw, "%d%n", &a, &used) != 1 || used < 0 ||
-        raw[used] != '\n')
+        raw[used] != '\n' ||
+        (a < 0 && a != BOOT_INSTALL_BUNDLE_TERMINAL))
         return false;
     char *bundle = raw + used + 1;
     char *newline = strchr(bundle, '\n');

@@ -27,6 +27,13 @@ static void arf_path(const char *datadir, char *out, size_t n)
     snprintf(out, n, "%s/auto_refold_request", datadir);
 }
 
+static bool arf_parse_fields(const char *raw, int32_t *anchor, int *count)
+{
+    if (sscanf(raw, "%d %d", anchor, count) != 2)
+        return false;
+    return *count >= 0 || *count == BOOT_AUTO_REFOLD_TERMINAL;
+}
+
 /* Read the on-disk (anchor, count). Returns true iff a well-formed request was
  * read. On any read/parse miss, *anchor=0 and *count=0. */
 static bool arf_read(const char *path, int32_t *anchor, int *count)
@@ -60,7 +67,7 @@ static bool arf_read(const char *path, int32_t *anchor, int *count)
     if (!stable)
         return false;
     raw[before.size] = '\0';
-    bool ok = sscanf(raw, "%d %d", anchor, count) == 2;
+    bool ok = arf_parse_fields(raw, anchor, count);
     if (!ok) {
         *anchor = 0;
         *count = 0;
