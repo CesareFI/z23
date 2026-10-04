@@ -459,14 +459,21 @@ static int test_lease_bad_spec_fails_closed(void)
         ASSERT(snprintf(lease, sizeof(lease), "%s/lease", dir) > 0);
         /* Specs derived from this run's own scratch dir — every malformed
          * shape the parser must refuse, with no bare /tmp literal. */
-        char specs[6][340];
+        char specs[8][340];
         ASSERT(snprintf(specs[0], sizeof(specs[0]), "%s/no-colon-here", dir) > 0);
         ASSERT(snprintf(specs[1], sizeof(specs[1]), "%s:0", lease) > 0);
         ASSERT(snprintf(specs[2], sizeof(specs[2]), "%s:abc", lease) > 0);
         ASSERT(snprintf(specs[3], sizeof(specs[3]), "%s:5:x", lease) > 0);
         ASSERT(snprintf(specs[4], sizeof(specs[4]), "%s:5:6:7", lease) > 0);
         ASSERT(snprintf(specs[5], sizeof(specs[5]), ":5") > 0);
-        for (size_t i = 0; i < 6; i++) {
+        /* strtol clamps out-of-range fields to LONG_MAX with errno=ERANGE;
+         * the parser must refuse both the clamp and any in-range value
+         * that would overflow reap_leased_group's grace_s * 5. */
+        ASSERT(snprintf(specs[6], sizeof(specs[6]), "%s:5:99999999999999999999",
+                        lease) > 0);
+        ASSERT(snprintf(specs[7], sizeof(specs[7]), "%s:5:9223372036854775807",
+                        lease) > 0);
+        for (size_t i = 0; i < 8; i++) {
             char line[1024];
             int n = snprintf(line, sizeof(line),
                              "'%s' --die-with-lease='%s' sleep 60 2>&1",

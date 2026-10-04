@@ -149,6 +149,7 @@ int main(int argc, char **argv)
 
 #define _POSIX_C_SOURCE 200809L
 #include <errno.h>
+#include <limits.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -176,6 +177,20 @@ struct lease_spec {
     long grace_s;
 };
 
+/* Parse one whole-positive seconds field (the caller splits on colons
+ * first, so the field must run to the NUL). Returns false on any
+ * malformation, including strtol's out-of-range clamp (errno=ERANGE). */
+static bool lease_field_seconds(const char *text, long *out)
+{
+    char *end = NULL;
+    errno = 0;
+    long v = strtol(text, &end, 10);
+    if (errno == ERANGE || end == text || *end != 0 || v < 1)
+        return false;
+    *out = v;
+    return true;
+}
+
 static int lease_parse(const char *spec, struct lease_spec *out)
 {
     /* FILE:STALE[:GRACE], colon-separated; every field must be present and
@@ -185,17 +200,25 @@ static int lease_parse(const char *spec, struct lease_spec *out)
     if (!c1)
         return 0;
     const char *c2 = strchr(c1 + 1, ':');
-    char *end = NULL;
-    long stale = strtol(c1 + 1, &end, 10);
-    /* With a grace field, stale's digits end at the second colon. */
-    if (!end || (*end != 0 && *end != ':') || end == c1 + 1 || stale < 1)
+    /* With a grace field, stale's digits end at the second colon, so the
+     * field is copied out to be validated whole. Any field longer than
+     * 31 digits is absurd for a seconds value; refuse it. */
+    char stale_buf[32];
+    size_t stale_len = c2 ? (size_t)(c2 - (c1 + 1)) : strlen(c1 + 1);
+    if (stale_len == 0 || stale_len >= sizeof(stale_buf))
+        return 0;
+    memcpy(stale_buf, c1 + 1, stale_len);
+    stale_buf[stale_len] = 0;
+    long stale = 0;
+    if (!lease_field_seconds(stale_buf, &stale))
         return 0;
     long grace = 30;
     if (c2) {
         if (strchr(c2 + 1, ':'))
             return 0;
-        grace = strtol(c2 + 1, &end, 10);
-        if (!end || *end != 0 || end == c2 + 1 || grace < 1)
+        /* reap_leased_group computes grace_s * 5; refuse values that
+         * would overflow it. */
+        if (!lease_field_seconds(c2 + 1, &grace) || grace > LONG_MAX / 5)
             return 0;
     }
     size_t file_len = (size_t)(c1 - spec);
