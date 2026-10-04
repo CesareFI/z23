@@ -215,6 +215,18 @@ static size_t buf_puts_trunc(struct buf *b, const char *s, size_t cols)
                 seqlen = 3;
             else if ((*p & 0xF8) == 0xF0)
                 seqlen = 4;
+            /* A truncated sequence at the string end must not make buf_putn
+             * copy through the NUL: emit the lead byte alone. Production
+             * reachability of that shape is blocked anyway (dwidth counts
+             * non-continuation bytes, so reaching a lead at code-point
+             * index k requires k < cols-1 while truncation requires
+             * dwidth > cols >= k+1); this is belt-and-braces, the same
+             * guard command_chunk_bytes applies to value chunks. */
+            for (size_t k = 1; k < seqlen; k++)
+                if (p[k] == '\0') {
+                    seqlen = 1;
+                    break;
+                }
         }
         buf_putn(b, (const char *)p, seqlen);
         p += seqlen;
@@ -298,6 +310,8 @@ static void emit_kv_command_n(struct buf *b,
     buf_puts(b, "  ");
     size_t klen = strlen(key);
     char kpadded[64];
+    if (klen >= sizeof(kpadded))
+        klen = sizeof(kpadded) - 1; /* snprintf truncated; pad within it */
     (void)snprintf(kpadded, sizeof(kpadded), "%s", key);
     while (klen < kw && klen < sizeof(kpadded) - 1)
         kpadded[klen++] = ' ';
@@ -337,6 +351,26 @@ static void emit_kv_command(struct buf *b,
                       value ? strlen(value) : 0);
 }
 
+/* One non-final header cell: truncated to the 64-byte buffer, padded to the
+ * column width, bold. Extracted from emit_table so the width-fit loop stays
+ * under the complexity cap. */
+static void emit_table_header_cell(struct buf *b,
+                                   const struct zcl_cli_render_env *e,
+                                   const char *header, size_t wcol)
+{
+    char hdr[64];
+    size_t hn = snprintf(hdr, sizeof(hdr), "%s", header);
+    if (hn >= sizeof(hdr))
+        hn = sizeof(hdr) - 1; /* would-be length; content truncated */
+    size_t pad = wcol > hn ? wcol - hn : 0;
+    if (hn + pad >= sizeof(hdr))
+        pad = sizeof(hdr) - 1 - hn;
+    memset(hdr + hn, ' ', pad);
+    hdr[hn + pad] = '\0';
+    ansi_bold(b, e, hdr);
+    buf_puts(b, "  ");
+}
+
 /* A table: headers[ncols], cells row-major rows*ncols (borrowed pointers).
  * When the natural widths exceed the terminal, the widest column yields one
  * column at a time (floor 6) until everything fits — the long
@@ -347,6 +381,8 @@ static void emit_table(struct buf *b, const struct zcl_cli_render_env *e,
                        const char *const *cells, size_t rows)
 {
     size_t w[8] = {0};
+    if (ncols > 8)
+        ncols = 8; /* w[] extent; callers pass <= 8 by contract */
     for (int c = 0; c < ncols && c < 8; c++) {
         w[c] = dwidth(headers[c]);
         for (size_t r = 0; r < rows; r++) {
@@ -378,15 +414,7 @@ static void emit_table(struct buf *b, const struct zcl_cli_render_env *e,
             ansi_bold(b, e, headers[c]);
             break;
         }
-        char hdr[64];
-        size_t hn = snprintf(hdr, sizeof(hdr), "%s", headers[c]);
-        size_t pad = w[c] > hn ? w[c] - hn : 0;
-        if (hn + pad >= sizeof(hdr))
-            pad = sizeof(hdr) - 1 - hn;
-        memset(hdr + hn, ' ', pad);
-        hdr[hn + pad] = '\0';
-        ansi_bold(b, e, hdr);
-        buf_puts(b, "  ");
+        emit_table_header_cell(b, e, headers[c], w[c]);
     }
     buf_putc(b, '\n');
 

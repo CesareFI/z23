@@ -3488,7 +3488,7 @@ tools/bot.c:main:35
 tools/check_describe_budget.c:main:30
 tools/check_no_hardlink_seeding.c:selftest:74
 tools/checkpoint_rung_export.c:main:22
-tools/command/cli_render.c:emit_table:23
+tools/command/cli_render.c:emit_table:22
 tools/command/cli_render.c:emit_tree_array:20
 tools/command/cli_render.c:next_as_shell:20
 tools/command/cli_render.c:render_error:41
