@@ -226,5 +226,7 @@ uint32_t wks_envelope_iterations(const uint8_t *envelope, size_t env_len)
     if (!envelope || env_len < WKS_HEADER_LEN) return 0;
     if (memcmp(envelope, WKS_MAGIC, WKS_MAGIC_LEN) != 0) return 0;
     if (!header_version_supported(envelope)) return 0;
-    return get_u32_be(envelope + 8);
+    uint32_t iters = get_u32_be(envelope + 8);
+    if (iters < WKS_MIN_ITERS || iters > WKS_MAX_ITERS) return 0;
+    return iters;
 }
