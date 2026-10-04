@@ -104,7 +104,7 @@ struct beta6_session_slot {
 
 static struct beta6_listener g_listener;
 static zcl_mutex_t g_session_lock;
-static bool g_session_lock_ready;
+static zcl_once_t g_session_lock_once = ZCL_ONCE_INIT;
 static struct beta6_session_slot g_sessions[BETA6_MAX_SESSIONS];
 
 /* Supervisor liveness: one contract for the accept loop, one shared by the
@@ -113,12 +113,14 @@ static struct beta6_session_slot g_sessions[BETA6_MAX_SESSIONS];
 static struct thread_liveness_child g_accept_liveness = { .id = SUPERVISOR_INVALID_ID };
 static struct thread_liveness_child g_session_liveness = { .id = SUPERVISOR_INVALID_ID };
 
+static void session_lock_init(void)
+{
+    zcl_mutex_init(&g_session_lock);
+}
+
 static void session_lock_init_once(void)
 {
-    if (!g_session_lock_ready) {
-        zcl_mutex_init(&g_session_lock);
-        g_session_lock_ready = true;
-    }
+    (void)zcl_once_call(&g_session_lock_once, session_lock_init);
 }
 
 /* ── framing ─────────────────────────────────────────────────────────── */
@@ -586,7 +588,11 @@ struct zcl_result beta6_bs_listen_start(const char *bind_ip, uint16_t port,
                                         const unsigned char magic[4],
                                         const char *network, const char *params_dir)
 {
-    if (g_listener.running)
+    session_lock_init_once();
+    LOCK(g_session_lock);
+    bool running = g_listener.running;
+    UNLOCK(g_session_lock);
+    if (running)
         return ZCL_ERR(BETA6_BS_ERR_REFUSED,
                        "the beta6 bootstrap listener is already running");
     struct zcl_result armed = beta6_bs_status();
@@ -596,7 +602,9 @@ struct zcl_result beta6_bs_listen_start(const char *bind_ip, uint16_t port,
         return ZCL_ERR(BETA6_BS_ERR_REFUSED,
                        "the beta6 bootstrap listener needs an address and network");
 
+    LOCK(g_session_lock);
     memset(&g_listener, 0, sizeof(g_listener));
+    UNLOCK(g_session_lock);
     memcpy(g_listener.magic, magic, 4);
     snprintf(g_listener.network, sizeof(g_listener.network), "%s", network);
     snprintf(g_listener.params_dir, sizeof(g_listener.params_dir), "%s",
@@ -611,13 +619,16 @@ struct zcl_result beta6_bs_listen_start(const char *bind_ip, uint16_t port,
         return bound;
     }
 
-    session_lock_init_once();
     register_liveness();
+    LOCK(g_session_lock);
     g_listener.running = true;
+    UNLOCK(g_session_lock);
     // supervised:beta6-bs-accept (g_accept_liveness, registered just above)
     if (thread_registry_spawn("beta6-bs-accept", accept_thread, NULL,
                               &g_listener.thread) != 0) {
+        LOCK(g_session_lock);
         g_listener.running = false;
+        UNLOCK(g_session_lock);
         platform_socket_close(g_listener.socket);
         free(g_listener.manifest_bytes);
         g_listener.manifest_bytes = NULL;
@@ -633,7 +644,11 @@ struct zcl_result beta6_bs_listen_start(const char *bind_ip, uint16_t port,
 
 void beta6_bs_listen_stop(void)
 {
-    if (!g_listener.running)
+    session_lock_init_once();
+    LOCK(g_session_lock);
+    bool running = g_listener.running;
+    UNLOCK(g_session_lock);
+    if (!running)
         return;
     g_listener.stopping = true;
     platform_socket_shutdown_both(g_listener.socket);
@@ -644,13 +659,19 @@ void beta6_bs_listen_stop(void)
     thread_liveness_retire(&g_session_liveness);
     free(g_listener.manifest_bytes);
     g_listener.manifest_bytes = NULL;
+    LOCK(g_session_lock);
     g_listener.running = false;
+    UNLOCK(g_session_lock);
     g_listener.stopping = false;
 }
 
 struct zcl_result beta6_bs_listen_status(void)
 {
-    if (!g_listener.running)
+    session_lock_init_once();
+    LOCK(g_session_lock);
+    bool running = g_listener.running;
+    UNLOCK(g_session_lock);
+    if (!running)
         return ZCL_ERR(BETA6_BS_ERR_REFUSED,
                        "the beta6 bootstrap listener is not running");
     return ZCL_OK;
@@ -658,5 +679,9 @@ struct zcl_result beta6_bs_listen_status(void)
 
 uint16_t beta6_bs_listen_port(void)
 {
-    return g_listener.running ? g_listener.port : 0;
+    session_lock_init_once();
+    LOCK(g_session_lock);
+    uint16_t port = g_listener.running ? g_listener.port : 0;
+    UNLOCK(g_session_lock);
+    return port;
 }
