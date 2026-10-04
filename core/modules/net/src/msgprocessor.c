@@ -826,6 +826,35 @@ static bool msg_processor_send_getdata(struct msg_processor *mp,
     return sent;
 }
 
+static bool msg_processor_send_inventory(struct msg_processor *mp,
+                                         struct p2p_node *node,
+                                         const struct inv_item *items,
+                                         size_t count)
+{
+    struct byte_stream inv_msg;
+    stream_init(&inv_msg, 256);
+    bool sent = true;
+    for (size_t i = 0; i < count; i++) {
+        if (!inv_item_serialize(&items[i], &inv_msg)) {
+            sent = false;
+            break;
+        }
+    }
+
+    struct byte_stream msg;
+    stream_init(&msg, inv_msg.size + 8);
+    sent = sent && stream_write_compact_size(&msg, count) &&
+           stream_write(&msg, inv_msg.data, inv_msg.size) &&
+           p2p_node_begin_message(node, "inv", mp->params->pchMessageStart);
+    if (sent) {
+        p2p_node_write_message_data(node, msg.data, msg.size);
+        sent = p2p_node_end_message(node);
+    }
+    stream_free(&msg);
+    stream_free(&inv_msg);
+    return sent;
+}
+
 /* ── Tip-stall watchdog observers ──────────────────────────── */
 
 /* feed tip-advance signals into the watchdog. Both
@@ -3003,47 +3032,25 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
     if (send_trickle) {
         zcl_mutex_lock(&node->cs_inventory);
         if (node->inventory_to_send_count > 0) {
-            struct byte_stream inv_msg;
-            stream_init(&inv_msg, 256);
-            uint64_t count = 0;
-
             /* Wire-protocol clamp: one inv message carries at most
              * MAX_INV_SZ items. Anything beyond that stays queued — the
              * next tick drains the remainder — instead of emitting a
              * single oversized frame peers may drop wholesale. */
             size_t emit = node->inventory_to_send_count;
-            bool retained = false;
-            if (emit > MAX_INV_SZ) {
+            if (emit > MAX_INV_SZ)
                 emit = MAX_INV_SZ;
-                retained = true;
-            }
-            for (size_t i = 0; i < emit; i++) {
-                inv_item_serialize(&node->inventory_to_send[i], &inv_msg);
-                count++;
-            }
-
-            if (count > 0) {
-                struct byte_stream msg;
-                stream_init(&msg, inv_msg.size + 8);
-                stream_write_compact_size(&msg, count);
-                stream_write(&msg, inv_msg.data, inv_msg.size);
-
-                p2p_node_begin_message(node, "inv",
-                                       mp->params->pchMessageStart);
-                p2p_node_write_message_data(node, msg.data, msg.size);
-                p2p_node_end_message(node);
-                stream_free(&msg);
-            }
-            stream_free(&inv_msg);
-
-            if (!retained) {
-                node->inventory_to_send_count = 0;
-            } else {
-                memmove(&node->inventory_to_send[0],
-                        &node->inventory_to_send[emit],
-                        (node->inventory_to_send_count - emit) *
-                            sizeof(node->inventory_to_send[0]));
+            bool sent = msg_processor_send_inventory(
+                mp, node, node->inventory_to_send, emit);
+            if (sent) {
+                size_t remaining = node->inventory_to_send_count - emit;
+                if (remaining > 0)
+                    memmove(&node->inventory_to_send[0],
+                            &node->inventory_to_send[emit],
+                            remaining * sizeof(node->inventory_to_send[0]));
                 node->inventory_to_send_count -= emit;
+            } else {
+                LOG_WARN("net", "inv relay send failed for %s: retaining "
+                         "%zu announcement(s)", node->addr_name, emit);
             }
         }
         zcl_mutex_unlock(&node->cs_inventory);

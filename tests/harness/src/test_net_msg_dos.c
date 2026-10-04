@@ -374,6 +374,83 @@ static bool dos_getdata_wire_exact(const struct p2p_node *node,
     return exact && frames == expected_frames && items == expected_items;
 }
 
+static size_t dos_inv_wire_items(const struct p2p_node *node,
+                                 size_t *out_frames)
+{
+    size_t frames = 0;
+    size_t items = 0;
+    for (const struct send_segment *seg = node->send_head; seg;
+         seg = seg->next) {
+        if (seg->size <= MSG_HEADER_SIZE)
+            continue;
+        const struct msg_header *hdr =
+            (const struct msg_header *)(const void *)seg->data;
+        if (strcmp(hdr->pchCommand, "inv") != 0)
+            continue;
+        struct byte_stream payload;
+        stream_init_from_data(&payload, seg->data + MSG_HEADER_SIZE,
+                              seg->size - MSG_HEADER_SIZE);
+        uint64_t count = 0;
+        if (stream_read_compact_size(&payload, &count))
+            items += (size_t)count;
+        frames++;
+        stream_free(&payload);
+    }
+    if (out_frames)
+        *out_frames = frames;
+    return items;
+}
+
+static int dos_inv_trickle_send_failure_retry(struct msg_processor *mp,
+                                              struct net_manager *nm)
+{
+    int failures = 0;
+    struct net_address addr;
+    net_address_init(&addr);
+    unsigned char ip[4] = {203, 0, 113, 85};
+    net_addr_set_ipv4(&addr.svc.addr, ip);
+    addr.svc.port = 8033;
+    struct p2p_node *node = p2p_node_create(
+        nm, ZCL_INVALID_SOCKET, &addr, "inv-trickle-send-failure", true);
+    DOS_CHECK("inv trickle retry: node created", node != NULL);
+    if (node) {
+        node->state = PEER_HANDSHAKE_COMPLETE;
+        node->version = PROTOCOL_VERSION;
+
+        struct uint256 hash;
+        memset(hash.data, 0x7a, sizeof(hash.data));
+        struct inv_item inv;
+        inv_item_init_typed(&inv, MSG_TX, &hash);
+        p2p_node_push_inventory(node, &inv);
+        DOS_CHECK("inv trickle retry: announcement queued",
+                  node->inventory_to_send_count == 1);
+
+        zcl_alloc_fault_fail_next("send_segment");
+        bool first_ok = msg_send_messages(mp, node, true);
+        bool fault_consumed = zcl_alloc_fault_armed_label() == NULL;
+        zcl_alloc_fault_clear();
+        size_t first_frames = 0;
+        size_t first_items = dos_inv_wire_items(node, &first_frames);
+        bool retained = node->inventory_to_send_count == 1;
+
+        bool retry_ok = msg_send_messages(mp, node, true);
+        size_t final_frames = 0;
+        size_t final_items = dos_inv_wire_items(node, &final_frames);
+
+        DOS_CHECK("inv trickle retry: send tick survives", first_ok);
+        DOS_CHECK("inv trickle retry: injected queue failure consumed",
+                  fault_consumed && first_frames == 0 && first_items == 0);
+        DOS_CHECK("inv trickle retry: unsent announcement retained", retained);
+        DOS_CHECK("inv trickle retry: next tick sends announcement once",
+                  retry_ok && final_frames == 1 && final_items == 1 &&
+                  node->inventory_to_send_count == 0);
+
+        p2p_node_free(node);
+    }
+    zcl_alloc_fault_clear();
+    return failures;
+}
+
 static bool dos_hashes_in_flight(struct download_manager *dm,
                                  const struct uint256 *hashes, size_t count)
 {
@@ -1344,6 +1421,10 @@ int test_net_msg_dos(void)
     /* ── O. A malformed suffix aborts the batch before getdata is sent.
      * Release block ownership acquired from the valid prefix immediately. */
     failures += dos_inv_truncated_prefix_rollback(&mp, &nm);
+
+    /* ── P. A locally failed relay-inventory enqueue retains the exact
+     * announcement for the next trickle tick instead of dropping it. */
+    failures += dos_inv_trickle_send_failure_retry(&mp, &nm);
 
     net_manager_free(&nm);
     sync_set_state(sync0, "net_msg_dos restore");
