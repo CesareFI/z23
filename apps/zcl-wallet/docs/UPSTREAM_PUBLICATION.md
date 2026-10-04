@@ -976,3 +976,43 @@ RED: the host's global `/tmp` mode 0755 made unrelated unprivileged fixtures
 fail. The successful retry used the already-qualified private tmpfs wrapper;
 global permissions, gates and repository policy were unchanged. No external
 publication action was attempted.
+
+### Keystore KDF-iteration parsing qualified
+
+Branch `agent/upstream-wallet-kdf-iteration-parse-20261004`, signed head
+`3000cb9ca6280d3dcf8f6fb1429b587b03b1d2b3`, base
+`3a93e60ebf922af3d119b9facc1d95803f42844b`, makes the platform-neutral C23
+wallet-keystore parser require complete consumption of
+`ZCL_WALLET_KDF_ITERS`. The prior parser admitted `10000oops` as 10,000
+iterations; malformed text now retains the existing 200,000-iteration default.
+Fully numeric values preserve the existing minimum and maximum clamping. The
+review is three files, +5/-2; cryptography, envelope format, monetary behavior
+and consensus are unchanged.
+
+The registered wallet-keystore group provides deterministic RED for the old
+behavior and passes all 19 cases after the one-predicate fix. Removing only the
+complete-consumption predicate reproduces RED; restoring it returns GREEN.
+The focused ASan/UBSan group also passes. GCC 14.2.0 checks all 2,433
+translation units with zero diagnostic sites; Clang 20.1.2 checks the same
+2,433 units with the eight existing baseline sites and no new sites.
+Architecture, generated inventory, documentation counts, consensus parity and
+cyclomatic complexity gates pass.
+
+The preserved unprivileged proof copy `/tmp/wn.mmgOK7/repo` independently
+passes the exact head/base pair through the private-tmpfs/user-manager scope:
+all 215 lint gates in 193.264s and all 99 exact impacted groups in 280.654s,
+with zero failures, skips, unobserved results, load-flaky outcomes or cached
+groups. Total foreground time is 519.207s and native status independently
+reports `passed`. Receipt SHA256 is
+`901cb75ab475713aa1673dc46459283805217fa27ab0e56c0638b6e54fad1810`.
+
+Local artifacts `kdf-iteration-parse.bundle`, `kdf-iteration-parse.mbox`,
+`kdf-iteration-parse.receipt`, `pr-kdf-iteration-parse.md`,
+`kdf-iteration-exact-status.log` and `kdf-iteration-parse-final.sha256` verify
+in the candidate worktree's ignored evidence directory. Two prerequisite
+refusals are retained as environment evidence: direct wrapper execution was
+not permitted, and the preserved proof checkout initially held the previous
+candidate's producer. Invoking the unchanged wrapper through its Bash
+interpreter, rebuilding the exact candidate-bound producer, and following the
+native retry path resolved those conditions without weakening any gate or host
+permission. No external publication action was attempted.
