@@ -60,6 +60,10 @@
 #define O_CLOEXEC 0
 #endif
 
+/* Narrow ZCL_TESTING seam implemented by wallet_backup_crypto.c. */
+void wallet_backup_test_plain_retirement_reset(void);
+bool wallet_backup_test_plain_retirement_snapshot(size_t *retired_len);
+
 /* ── Event observer ────────────────────────────────────────── */
 
 static _Atomic int g_wb_ok;
@@ -860,6 +864,43 @@ static int t_encrypt_roundtrip(void)
     return failures;
 }
 
+static int t_encrypt_output_oom_retires_plaintext(void)
+{
+    int failures = 0;
+    const char *scratch = wb_enc_ensure_scratch();
+    uint8_t plain[257];
+    memset(plain, 0xa5, sizeof(plain));
+
+    char src[256], enc[256];
+    snprintf(src, sizeof(src), "%s/wbenc_%d_oom_src.bin", scratch,
+             (int)getpid());
+    snprintf(enc, sizeof(enc), "%s/wbenc_%d_oom_enc.bin", scratch,
+             (int)getpid());
+    bool fixture_ok = wb_write_blob(src, plain, sizeof(plain));
+    WB_RUN("wbenc: output OOM retirement fixture is written", fixture_ok);
+    if (!fixture_ok) {
+        unlink(src);
+        return failures;
+    }
+
+    wallet_backup_test_plain_retirement_reset();
+    zcl_alloc_fault_fail_next("wallet_backup encrypt_buf");
+    struct zcl_result result = wallet_backup_encrypt_file(src, enc, "pw");
+    size_t retired_len = 0;
+    bool retired_zero =
+        wallet_backup_test_plain_retirement_snapshot(&retired_len);
+
+    WB_RUN("wbenc: output OOM retires the complete plaintext allocation",
+           !result.ok && result.code == -3 &&
+           retired_len == sizeof(plain) && retired_zero &&
+           zcl_alloc_fault_armed_label() == NULL);
+
+    zcl_alloc_fault_clear();
+    unlink(src);
+    unlink(enc);
+    return failures;
+}
+
 static int t_encrypt_wrong_password(void)
 {
     int failures = 0;
@@ -1220,6 +1261,7 @@ int test_wallet_backup(void)
     failures += t_stop_safe();
     failures += t_roundtrip_verify();
     failures += t_encrypt_roundtrip();
+    failures += t_encrypt_output_oom_retires_plaintext();
     failures += t_encrypt_wrong_password();
     failures += t_encrypt_tamper_detected();
     failures += t_encrypted_service_run();
