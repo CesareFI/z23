@@ -263,6 +263,12 @@ fi
 
 mkdir -p "$TOR_BUILD_DIR"
 
+# config.status records CC=cc, but not which cc PATH resolved. Reusing a host
+# configure result with the portable old-glibc wrapper can falsely retain
+# HAVE_STRLCPY/HAVE_STRLCAT from the host and then fail to compile Tor. The
+# compiler identity is cache metadata, kept under Tor's ignored .cache tree;
+# a missing or changed identity forces a clean configure and object rebuild.
+configure_cc_stamp="$TOR_BUILD_DIR/.cache/zcl-configure-compiler-id"
 configure_args=""
 if [ -x "$TOR_BUILD_DIR/config.status" ]; then
     configure_args="$($TOR_BUILD_DIR/config.status --config 2>/dev/null || true)"
@@ -274,12 +280,31 @@ for option in "${configure_opts[@]}"; do
         *) configured=false ;;
     esac
 done
+if [ "$configured" = true ]; then
+    effective_cc="$(zcl_tor_effective_cc "$TOR_BUILD_DIR" "$VENDOR_TARGET")"
+    configure_cc_id="$(zcl_tor_compiler_identity_for_cc "$ROOT" "$effective_cc")" || {
+        echo "tor-full: could not identify configure compiler $effective_cc" >&2
+        exit 1
+    }
+    [ "$(cat "$configure_cc_stamp" 2>/dev/null || true)" = "$configure_cc_id" ] ||
+        configured=false
+fi
 
 if [ "$configured" != true ]; then
+    if [ -f "$TOR_BUILD_DIR/Makefile" ]; then
+        make -C "$TOR_BUILD_DIR" clean
+    fi
     (cd "$TOR_BUILD_DIR" && \
         ac_cv_lib_cap_cap_init=no ac_cv_func_cap_set_proc=no \
         env ${tor_cross_env[@]+"${tor_cross_env[@]}"} \
         "$TOR_SRC_DIR/configure" "${configure_opts[@]}")
+    effective_cc="$(zcl_tor_effective_cc "$TOR_BUILD_DIR" "$VENDOR_TARGET")"
+    configure_cc_id="$(zcl_tor_compiler_identity_for_cc "$ROOT" "$effective_cc")" || {
+        echo "tor-full: could not identify configured compiler $effective_cc" >&2
+        exit 1
+    }
+    mkdir -p "${configure_cc_stamp%/*}"
+    printf '%s\n' "$configure_cc_id" > "$configure_cc_stamp"
 fi
 
 jobs="${ZCL_TOR_JOBS:-$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)}"

@@ -4763,8 +4763,10 @@ zcode-async-proof-acceptance: zclassic23 zcl-rpc \
 # checkout, then composes the existing authenticated seven-node/DHT owner with
 # the accepted-work, publication, package, and Arena authorities.  It is
 # deliberately opt-in: real isolated daemons and confined build workers run.
+# The installed-product wrapper calls sub-makes. Keep jobserver descriptors
+# open, while the no-exec guard prevents -n/-q/-t from starting the journey.
 arena-product-journey:
-	@bash tools/dev/arena_product_journey.sh
+	+@test -n '$(ZCL_MAKE_NO_EXEC)' || bash tools/dev/arena_product_journey.sh
 
 # One browser-free product proof for the AI-controlled native C23 UI. The two
 # exact semantic owners prove model sensitivity, provenance labels, bounded
@@ -4798,7 +4800,7 @@ native-agent-ui-alpha:
 	  ONLY='test_qr,test_syncdiag_rpc,test_zcode_publish,test_zcode_swarm_net_shard_03'
 	@$(MAKE) --no-print-directory zcode-c23-commons-alpha
 	@$(MAKE) --no-print-directory native-ui-driver
-	@C23_BETA_NATIVE_UI_JOURNEY=1 \
+	+@test -n '$(ZCL_MAKE_NO_EXEC)' || C23_BETA_NATIVE_UI_JOURNEY=1 \
 	  C23_BETA_NATIVE_UI_DRIVER="$(CURDIR)/$(NATIVE_UI_DRIVER_BIN)" \
 	  bash tools/dev/c23_commons_beta_acceptance.sh
 	@printf '%s\n' '{"schema":"zcl.c23_commons_beta_acceptance.v1","verdict":"PASS","alpha_regression_floor":true,"installed_stranger_journey":true,"corrupt_provider_bytes_rejected":true,"alternate_provider_exact_root_repair":true,"interrupted_download_resumes_same_graph":true,"verified_objects_retransmitted_after_restart":0}'
@@ -6864,15 +6866,14 @@ $(ZCLASSIC23_BIN_ALIAS): $(ZCLASSIC23_BIN)
 # Release portability is an explicit, reproducible build input rather than an
 # accidental property of the maintainer's workstation. This path downloads a
 # checksum-pinned Debian 11 glibc 2.31 sysroot, then uses the ordinary host C23
-# compiler for every linked archive and the node. No container, sudo, Zig, or
-# alternate language toolchain is involved. The portable baseline deliberately
-# selects the default Tor stub so an optional host-built full-Tor archive cannot
-# leak a newer host ABI into the artifact.
+# compiler for every linked archive, real Tor, and the node. No container,
+# sudo, Zig, or alternate language toolchain is involved. The release script
+# calls sub-makes; preserve the jobserver without executing it in -n/-q/-t.
 c23-portable-toolchain:
 	@tools/scripts/c23_portable_sysroot.sh verify
 
 c23-portable-release:
-	@tools/scripts/build_c23_portable_release.sh
+	+@test -n '$(ZCL_MAKE_NO_EXEC)' || tools/scripts/build_c23_portable_release.sh
 
 # Short, memorable release front door. Keep the explicit name above for
 # scripts and old documentation; operators should only need `make portable`.
@@ -8959,7 +8960,7 @@ test-science-acceptance: test-zcode-dht-acceptance
 # outside-tree package graph.  Opt-in: seven real daemons; no production
 # datadir, wallet key, or live port.
 c23-commons-installed-acceptance: zcode-c23-commons-alpha
-	@bash tools/dev/c23_commons_beta_acceptance.sh
+	+@test -n '$(ZCL_MAKE_NO_EXEC)' || bash tools/dev/c23_commons_beta_acceptance.sh
 	@printf '%s\n' '{"schema":"zcl.c23_commons_beta_acceptance.v1","verdict":"PASS","alpha_regression_floor":true,"installed_stranger_journey":true,"corrupt_provider_bytes_rejected":true,"alternate_provider_exact_root_repair":true,"interrupted_download_resumes_same_graph":true,"verified_objects_retransmitted_after_restart":0}'
 
 # Four-role, real-process sovereign source acceptance. It composes the proven
