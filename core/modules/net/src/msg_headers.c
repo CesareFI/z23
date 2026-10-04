@@ -1262,8 +1262,9 @@ bool push_verified_header_announcement(struct msg_processor *mp,
     return true;
 }
 
-static void headers_retire_malformed_body_owner(struct p2p_node *node)
+static void headers_retire_malformed_peer_work(struct p2p_node *node)
 {
+    (void)header_range_scheduler_peer_disconnected(node->id);
     if (dl_peer_in_flight(get_download_mgr(), (uint32_t)node->id) == 0)
         return;
     (void)p2p_node_request_disconnect(
@@ -1296,7 +1297,7 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
 
     uint64_t count;
     if (!stream_read_compact_size(s, &count)) {
-        headers_retire_malformed_body_owner(node);
+        headers_retire_malformed_peer_work(node);
         LOG_FAIL("net", "failed to read headers count from %s",
                  node->addr_name);
     }
@@ -1345,7 +1346,7 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
                         (unsigned long long)i, node->addr_name);
             peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_FLOOD,
                                 "malformed header");
-            headers_retire_malformed_body_owner(node);
+            headers_retire_malformed_peer_work(node);
             LOG_FAIL("net", "malformed header[%llu] from %s",
                      (unsigned long long)i, node->addr_name);
         }
@@ -1354,7 +1355,7 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
         if (!stream_read_compact_size(s, &dummy)) {
             peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_FLOOD,
                                 "truncated header tx count");
-            headers_retire_malformed_body_owner(node);
+            headers_retire_malformed_peer_work(node);
             LOG_FAIL("net", "truncated header tx count at header[%llu] from %s",
                      (unsigned long long)i, node->addr_name);
         }

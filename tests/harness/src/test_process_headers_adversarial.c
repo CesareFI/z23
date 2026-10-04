@@ -28,6 +28,7 @@
 #include "net/msg_internal.h"
 #include "net/msgprocessor.h"
 #include "net/peer_scoring.h"
+#include "services/header_range_scheduler.h"
 #include "validation/chainstate.h"
 #include "validation/process_block.h"  /* accept_block_header */
 
@@ -166,6 +167,39 @@ static int ph_test_truncated_header(struct msg_processor *mp,
     return failures;
 }
 
+static int ph_test_truncated_header_releases_span(struct msg_processor *mp,
+                                                   struct p2p_node *node)
+{
+    int failures = 0;
+    ph_setup_node(node);
+    node->id = 19;
+
+    header_range_scheduler_reset_for_testing();
+    struct header_range_scheduler *sched = header_range_scheduler_global();
+    int64_t now_us = 1000 * 1000000LL;
+    hrs_plan(sched, 0, 100000, NULL, 0);
+    bool assigned = hrs_assign(sched, node->id, now_us) >= 0;
+    PH_CHECK("truncated span: range assigned",
+             assigned && hrs_peer_span(sched, node->id, now_us, NULL, NULL));
+
+    struct byte_stream s;
+    stream_init(&s, 64);
+    bool built = stream_write_compact_size(&s, 1);
+    unsigned char garbage[20];
+    memset(garbage, 0xbc, sizeof(garbage));
+    built = built && stream_write_bytes(&s, garbage, sizeof(garbage));
+    bool ret = built && process_headers(mp, node, &s);
+    PH_CHECK("truncated span: malformed reply rejected", !ret);
+    PH_CHECK("truncated span: ownership released immediately",
+             !hrs_peer_span(sched, node->id, now_us, NULL, NULL));
+    PH_CHECK("truncated span: healthy peer can take range immediately",
+             hrs_assign(sched, node->id + 1, now_us) >= 0);
+
+    stream_free(&s);
+    header_range_scheduler_reset_for_testing();
+    return failures;
+}
+
 int test_process_headers_adversarial(void);
 int test_process_headers_adversarial(void)
 {
@@ -231,6 +265,10 @@ int test_process_headers_adversarial(void)
     /* ── 2. truncated mid-header: clean failure, no partial accept ── */
     if (gen)
         failures += ph_test_truncated_header(&mp, &node, &ms);
+
+    /* A range-only peer has no block-body ownership to trigger disconnect
+     * cleanup. Its rejected malformed reply must still free the span now. */
+    failures += ph_test_truncated_header_releases_span(&mp, &node);
 
     /* ── 3. valid 2-header batch + trailing garbage ── */
     struct block_header h1, h2;
