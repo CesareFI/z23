@@ -39,9 +39,10 @@ expect_query()
 printf '#!/usr/bin/env bash\nexec cc "$@"\n' > "$scratch/compiler"
 chmod +x "$scratch/compiler"
 
-for tool in jsonq sqlq inspect_html; do
+for tool in jsonq sqlq inspect_html gen_templates; do
     goal="$tool"
     [ "$tool" != inspect_html ] || goal=tools/inspect_html
+    [ "$tool" != gen_templates ] || goal=tools/gen_templates
     run_make CC=cc "$goal"
     test -x "$output/bin/$tool"
     expect_query "$tool unchanged" 0 CC=cc "$goal"
@@ -53,13 +54,20 @@ for tool in jsonq sqlq inspect_html; do
     run_make CC="$scratch/compiler" "$goal"
     expect_query "$tool compiler unchanged" 0 CC="$scratch/compiler" "$goal"
     expect_query "$tool compiler restored" 1 CC=cc "$goal"
-    if [ "$tool" = inspect_html ]; then
-        expect_query "$tool flags changed" 1 CC="$scratch/compiler" \
-            INSPECT_HTML_COMPILE_FLAGS='-std=c23 -O2 -Wall -Wextra -DSTANDALONE_TOOL_KEY_SELFTEST=1 -Iplatform/modules/base/include -Iplatform/modules/util/include' "$goal"
-    else
-        expect_query "$tool flags changed" 1 CC="$scratch/compiler" \
-            ZCL_PLATFORM_CPPFLAGS=-DSTANDALONE_TOOL_KEY_SELFTEST=1 "$goal"
-    fi
+    case "$tool" in
+        inspect_html)
+            expect_query "$tool flags changed" 1 CC="$scratch/compiler" \
+                INSPECT_HTML_COMPILE_FLAGS='-std=c23 -O2 -Wall -Wextra -DSTANDALONE_TOOL_KEY_SELFTEST=1 -Iplatform/modules/base/include -Iplatform/modules/util/include' "$goal"
+            ;;
+        gen_templates)
+            expect_query "$tool flags changed" 1 CC="$scratch/compiler" \
+                TMPL_COMPILE_FLAGS='-std=c23 -O2 -Wall -Wextra -DSTANDALONE_TOOL_KEY_SELFTEST=1 -Iplatform/modules/base/include -Iplatform/modules/util/include -Iplatform/modules/platform/include' "$goal"
+            ;;
+        *)
+            expect_query "$tool flags changed" 1 CC="$scratch/compiler" \
+                ZCL_PLATFORM_CPPFLAGS=-DSTANDALONE_TOOL_KEY_SELFTEST=1 "$goal"
+            ;;
+    esac
 
     mv "$output/bin/$tool.build-key" "$scratch/$tool.saved-key"
     expect_query "$tool missing key" 1 CC="$scratch/compiler" "$goal"

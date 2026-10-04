@@ -253,7 +253,8 @@ ZCL_TOR_PROVENANCE_GOALS := build/bin/z23-tor-provenance \
 # Exact standalone/query goals do not consume node epochs, generated views,
 # object depfiles, or Tor. SQLQ still needs the vendored SQLite bootstrap.
 ZCL_STANDALONE_NO_VENDOR_GOALS := t-list jsonq build/bin/jsonq \
-	tools/inspect_html build/bin/inspect_html zcl-rpc
+	tools/inspect_html build/bin/inspect_html \
+	tools/gen_templates build/bin/gen_templates zcl-rpc
 ZCL_STANDALONE_VENDOR_GOALS := sqlq build/bin/sqlq
 # A mixed invocation keeps the ordinary full parse, even when both goals are
 # individually standalone. This also leaves default and unknown goals alone.
@@ -3386,13 +3387,13 @@ $(TMPL_TOOL): tools/gen_templates.c platform/modules/base/src/safe_alloc.c \
 		platform/modules/base/include/base/safe_alloc.h \
 		platform/modules/platform/include/platform/path_replace.h
 	@mkdir -p $(dir $@) build/identity
-	$(CC) -std=c23 -O2 -Wall -Wextra -Iplatform/modules/base/include \
-		-Iplatform/modules/util/include -Iplatform/modules/platform/include -o $@ $(filter %.c,$^)
+	$(CC) $(TMPL_COMPILE_FLAGS) -o $@ $(filter %.c,$^)
+	@printf '%s\n' '$(TMPL_BUILD_KEY)' > '$@.build-key'
 
 # Standalone tools compile outside object epochs. Bind each binary to the
 # complete compiler/build-system identity and its effective flags; a missing
 # or mismatched sidecar forces a rebuild.
-STANDALONE_TOOL_KEYED := $(if $(or $(strip $(ZCL_EPOCH_PROFILES)),$(filter jsonq build/bin/jsonq sqlq build/bin/sqlq tools/inspect_html build/bin/inspect_html,$(ZCL_STANDALONE_EXACT_GOAL))),1,)
+STANDALONE_TOOL_KEYED := $(if $(or $(strip $(ZCL_EPOCH_PROFILES)),$(filter jsonq build/bin/jsonq sqlq build/bin/sqlq tools/inspect_html build/bin/inspect_html tools/gen_templates build/bin/gen_templates,$(ZCL_STANDALONE_EXACT_GOAL))),1,)
 ifeq ($(STANDALONE_TOOL_KEYED),1)
 STANDALONE_TOOL_COMPILER_ID := $(if $(filter $(ZCL_ZERO_SHA256),$(BUILD_COMPILER_ID)),$(strip $(shell $(BUILD_EPOCH_KEY_TOOL) compiler-id "$(CC)" "$(CXX)" "$(CURDIR)")),$(BUILD_COMPILER_ID))
 STANDALONE_TOOL_SYSTEM_ID := $(if $(filter $(ZCL_ZERO_SHA256),$(BUILD_SYSTEM_ID)),$(strip $(shell $(BUILD_EPOCH_KEY_TOOL) build-system-id)),$(BUILD_SYSTEM_ID))
@@ -3404,6 +3405,18 @@ define standalone_tool_key
 $(strip $(shell $(BUILD_EPOCH_KEY_TOOL) key "$(STANDALONE_TOOL_COMPILER_ID)" "$(1)" "$(strip $($(2)))" "$(strip $($(3)))" "$(STANDALONE_TOOL_SYSTEM_ID)"))
 endef
 endif
+
+TMPL_COMPILE_FLAGS = -std=c23 -O2 -Wall -Wextra -Iplatform/modules/base/include -Iplatform/modules/util/include -Iplatform/modules/platform/include
+TMPL_LINK_FLAGS = no-extra-link-flags
+TMPL_BUILD_KEY := $(if $(STANDALONE_TOOL_KEYED),$(call standalone_tool_key,standalone-gen-templates-v1,TMPL_COMPILE_FLAGS,TMPL_LINK_FLAGS),)
+ifeq ($(STANDALONE_TOOL_KEYED),1)
+ifneq ($(shell printf '%s\n' '$(TMPL_BUILD_KEY)' | awk '/^[0-9a-f]{64}$$/ { print "yes" }'),yes)
+$(error standalone gen_templates build-key derivation failed)
+endif
+endif
+TMPL_CONFIG_MATCH := $(if $(TMPL_BUILD_KEY),$(shell printf '%s\n' '$(TMPL_BUILD_KEY)' | cmp -s - '$(TMPL_TOOL).build-key' && printf yes),)
+TMPL_CONFIG_FORCE := $(if $(TMPL_CONFIG_MATCH),,FORCE)
+$(TMPL_TOOL): $(TMPL_CONFIG_FORCE)
 
 INSPECT_HTML_COMPILE_FLAGS = -std=c23 -O2 -Wall -Wextra -Iplatform/modules/base/include -Iplatform/modules/util/include
 INSPECT_HTML_LINK_FLAGS = no-extra-link-flags
@@ -3462,7 +3475,7 @@ templates: $(VIEW_GEN_HEADERS)
 # to catch edit/revert ABA, so this fast check guards the exact contract the
 # build-twice reproducibility gate relies on.
 .PHONY: templates-no-touch-selftest
-templates-no-touch-selftest: $(VIEW_GEN_HEADERS)
+templates-no-touch-selftest: $(VIEW_GEN_HEADERS) | $(TMPL_TOOL)
 	@set -eu; \
 	before="$$(tools/dev/source-identity.sh capture-record)"; \
 	$(TMPL_TOOL) --selftest-staging >/dev/null; \
