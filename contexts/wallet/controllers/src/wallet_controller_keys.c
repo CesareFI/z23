@@ -8,11 +8,12 @@
 
 #include "controllers/wallet_controller_internal.h"
 
-void wallet_rpc_set_secret_string(struct json_value *result, char *secret,
-                                  size_t secret_size)
+bool wallet_rpc_set_secret_string(struct json_value *result, char *secret,
+                                  size_t secret_size, bool encoded)
 {
-    json_set_str(result, secret);
+    if (encoded) json_set_str(result, secret);
     memory_cleanse(secret, secret_size);
+    return encoded;
 }
 
 bool rpc_dumpprivkey(const struct json_value *params, bool help,
@@ -56,12 +57,11 @@ bool rpc_dumpprivkey(const struct json_value *params, bool help,
     bool ok = encode_secret(&key, sec_pfx, sec_pfx_len, wif, sizeof(wif));
     memory_cleanse(key.vch, 32);
 
-    if (!ok) {
+    if (!wallet_rpc_set_secret_string(result, wif, sizeof(wif), ok)) {
         json_set_str(result, "Encoding failed");
         LOG_FAIL("wallet", "dumpprivkey: WIF encoding failed for %s", addr_str);
     }
 
-    wallet_rpc_set_secret_string(result, wif, sizeof(wif));
     return true;
 }
 
