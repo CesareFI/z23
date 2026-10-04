@@ -95,6 +95,7 @@ static ssize_t pc_send(int fd, const void *buf, size_t len, int flags)
 } while (0)
 
 int file_io_stream_retirement_cases(void);
+int file_io_short_read_retirement_cases(void);
 
 static bool write_small_file(const char *path, const char *body)
 {
@@ -166,6 +167,7 @@ int test_path_check(void)
 {
     printf("\n=== path_check tests ===\n");
     int failures = file_io_stream_retirement_cases();
+    failures += file_io_short_read_retirement_cases();
 
     /* ── fs_arg: rejects NULL / empty / over-length ──────────── */
     PC_CHECK("fs_arg(NULL) rejected",
