@@ -51,4 +51,17 @@ struct zcl_result wbs_ensure_backup_dir(const char *dir);
  * empty `out`) for a closed handle or an in-memory database. */
 struct zcl_result wbs_source_path(struct node_db *db, char *out, size_t cap);
 
+/* Copy a caller-owned config into service state. An encryption password is
+ * copied at full length into the supplied ownership slot. The matching
+ * retire function wipes that complete allocation before release. Callers
+ * serialize both operations with the wallet-backup service mutex. */
+struct zcl_result wbs_config_install(
+    const struct wallet_backup_config *source,
+    struct wallet_backup_config *destination,
+    char **owned_password,
+    size_t *owned_password_cap);
+void wbs_config_retire_password(struct wallet_backup_config *cfg,
+                                char **owned_password,
+                                size_t *owned_password_cap);
+
 #endif /* ZCL_SERVICES_WALLET_BACKUP_INTERNAL_H */

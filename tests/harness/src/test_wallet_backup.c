@@ -33,6 +33,7 @@
 
 #include "services/wallet_backup_service.h"
 #include "event/event.h"
+#include "support/cleanse.h"
 #include "util/supervisor.h"
 
 #include <dirent.h>
@@ -63,6 +64,26 @@
 /* Narrow ZCL_TESTING seam implemented by wallet_backup_crypto.c. */
 void wallet_backup_test_plain_retirement_reset(void);
 bool wallet_backup_test_plain_retirement_snapshot(size_t *retired_len);
+
+/* Narrow ZCL_TESTING seam implemented by wallet_backup_service.c. */
+void wallet_backup_test_password_retirement_reset(void);
+bool wallet_backup_test_password_retirement_snapshot(size_t *retired_len);
+
+static const char wb_env_name[] = "WALLET_BACKUP_PASSWORD";
+#define WB_FIXTURE_CREDENTIAL_CAP 17
+
+static void wb_fixture_credential(
+    char out[static WB_FIXTURE_CREDENTIAL_CAP], bool alternate)
+{
+    static const uint8_t bytes[WB_FIXTURE_CREDENTIAL_CAP - 1] = {
+        0x66, 0x69, 0x78, 0x74, 0x75, 0x72, 0x65, 0x2d,
+        0x63, 0x72, 0x65, 0x64, 0x2d, 0x30, 0x30, 0x31,
+    };
+    memcpy(out, bytes, sizeof(bytes));
+    if (alternate)
+        out[sizeof(bytes) - 1] = 0x32;
+    out[sizeof(bytes)] = '\0';
+}
 
 /* ── Event observer ────────────────────────────────────────── */
 
@@ -1108,7 +1129,191 @@ static int t_encrypt_requires_password(void)
     return failures;
 }
 
-/* ── 15. Rotation + listing count .enc files ─────────────────── */
+/* ── 15. Config borrows the environment password ────────────── */
+
+struct wb_saved_password_env {
+    char *value;
+    size_t cap;
+    bool was_set;
+};
+
+static bool wb_password_env_save(struct wb_saved_password_env *saved)
+{
+    memset(saved, 0, sizeof(*saved));
+    const char *value = getenv(wb_env_name);
+    if (!value)
+        return true;
+    size_t len = strlen(value);
+    if (len == SIZE_MAX)
+        return false;
+    saved->cap = len + 1;
+    saved->value = zcl_malloc(saved->cap, "wallet_backup_test_env_save");
+    if (!saved->value)
+        return false;
+    memcpy(saved->value, value, saved->cap);
+    saved->was_set = true;
+    return true;
+}
+
+static bool wb_password_env_restore(struct wb_saved_password_env *saved)
+{
+    bool restored = saved->was_set
+        ? setenv(wb_env_name, saved->value, 1) == 0
+        : unsetenv(wb_env_name) == 0;
+    if (saved->value) {
+        memory_cleanse(saved->value, saved->cap);
+        free(saved->value);
+    }
+    memset(saved, 0, sizeof(*saved));
+    return restored;
+}
+
+static int t_env_password_is_borrowed(void)
+{
+    int failures = 0;
+    struct wb_saved_password_env saved_env;
+    bool saved = wb_password_env_save(&saved_env);
+    char primary[WB_FIXTURE_CREDENTIAL_CAP];
+    char alternate[WB_FIXTURE_CREDENTIAL_CAP];
+    wb_fixture_credential(primary, false);
+    wb_fixture_credential(alternate, true);
+    const char *old_password = getenv(wb_env_name);
+    const char *test_password = old_password &&
+        strcmp(old_password, primary) == 0 ? alternate : primary;
+    bool installed = saved &&
+        setenv(wb_env_name, test_password, 1) == 0;
+    struct wallet_backup_config cfg = {0};
+    bool borrowed = false;
+    if (installed) {
+        zcl_alloc_fault_clear();
+        zcl_alloc_fault_fail_next("wallet_backup_env_pw");
+        wallet_backup_config_defaults(&cfg);
+        borrowed = cfg.encrypt && cfg.encrypt_password &&
+            strcmp(cfg.encrypt_password, test_password) == 0 &&
+            zcl_alloc_fault_armed_label() != NULL;
+        zcl_alloc_fault_clear();
+    }
+
+    bool restored = saved && wb_password_env_restore(&saved_env);
+    WB_RUN("wbenc: config borrows env password without an immortal copy",
+           installed && borrowed && restored);
+    return failures;
+}
+
+/* ── 16. Service-owned password copy fails closed on OOM ─────── */
+
+static int t_service_password_copy_oom(void)
+{
+    int failures = 0;
+    wb_install_observer();
+    supervisor_reset_for_testing();
+
+    struct wb_fixture f;
+    if (!wb_fixture_init(&f, "encpw_oom")) {
+        printf("wbenc: password OOM fixture setup failed\n");
+        return 1;
+    }
+    wb_seed_keys(&f.ndb, 1);
+
+    struct wallet_backup_config cfg;
+    wallet_backup_config_defaults(&cfg);
+    cfg.backup_dir = f.backup_dir;
+    cfg.interval_seconds = 999999;
+    cfg.encrypt = true;
+    char credential[WB_FIXTURE_CREDENTIAL_CAP];
+    wb_fixture_credential(credential, false);
+    cfg.encrypt_password = credential;
+
+    zcl_alloc_fault_clear();
+    zcl_alloc_fault_fail_next("wallet_backup_password");
+    struct zcl_result started = wallet_backup_start(&cfg, &f.ndb);
+    bool fault_consumed = zcl_alloc_fault_armed_label() == NULL;
+    zcl_alloc_fault_clear();
+    wallet_backup_stop();
+
+    struct wallet_backup_status status;
+    wallet_backup_status_snapshot(&status);
+    bool no_files = wb_count_dir_suffix(f.backup_dir,
+                                        WALLET_BACKUP_FILENAME_SUFFIX) == 0 &&
+                    wb_count_dir_suffix(f.backup_dir,
+                                        WALLET_BACKUP_FILENAME_SUFFIX_ENC) == 0;
+    WB_RUN("wbenc: service password copy OOM refuses before thread start",
+           !started.ok && started.code == -25 && fault_consumed &&
+           !status.running && supervisor_child_count_total() == 0 && no_files);
+
+    wb_fixture_tear_down(&f);
+    supervisor_reset_for_testing();
+    return failures;
+}
+
+/* ── 17. Service owns and retires the encryption password ────── */
+
+static int t_service_password_lifetime(void)
+{
+    int failures = 0;
+    wb_install_observer();
+    supervisor_reset_for_testing();
+
+    struct wb_fixture f;
+    if (!wb_fixture_init(&f, "encpw_lifetime")) {
+        printf("wbenc: password lifetime fixture setup failed\n");
+        return 1;
+    }
+    int seeded = wb_seed_keys(&f.ndb, 2);
+    char password[WB_FIXTURE_CREDENTIAL_CAP];
+    char expected[WB_FIXTURE_CREDENTIAL_CAP];
+    wb_fixture_credential(password, false);
+    wb_fixture_credential(expected, false);
+
+    struct wallet_backup_config cfg;
+    wallet_backup_config_defaults(&cfg);
+    cfg.backup_dir = f.backup_dir;
+    cfg.interval_seconds = 999999;
+    cfg.encrypt = true;
+    cfg.encrypt_password = password;
+
+    struct wallet_backup_status base;
+    wallet_backup_status_snapshot(&base);
+    wallet_backup_test_password_retirement_reset();
+    bool started = wallet_backup_start(&cfg, &f.ndb).ok;
+    struct wallet_backup_status first;
+    if (started)
+        wb_wait_runs_past(base.total_runs, &first);
+    else
+        wallet_backup_status_snapshot(&first);
+
+    memset(password, 'x', sizeof(password) - 1);
+    password[sizeof(password) - 1] = '\0';
+    bool ran_after_caller_change = wallet_backup_now().ok;
+    struct wallet_backup_status latest;
+    wallet_backup_status_snapshot(&latest);
+    wallet_backup_stop();
+
+    size_t retired_len = 0;
+    bool retired_zero =
+        wallet_backup_test_password_retirement_snapshot(&retired_len);
+    char restored[640];
+    snprintf(restored, sizeof(restored), "%s/restored-password.sqlite",
+             f.backup_dir);
+    bool decrypted = latest.last_path[0] != '\0' &&
+        wallet_backup_decrypt_file(latest.last_path, restored, expected).ok;
+    int64_t rows = decrypted
+        ? wb_count_rows_in_file(restored, "wallet_keys") : -1;
+
+    WB_RUN("wbenc: service owns password and retires its full allocation",
+           started && first.total_runs == base.total_runs + 1 &&
+           ran_after_caller_change &&
+           latest.total_runs == base.total_runs + 2 &&
+           latest.total_failures == base.total_failures &&
+           seeded == 2 && rows == 2 &&
+           retired_len == sizeof(password) && retired_zero);
+
+    wb_fixture_tear_down(&f);
+    supervisor_reset_for_testing();
+    return failures;
+}
+
+/* ── 18. Rotation + listing count .enc files ─────────────────── */
 
 static int t_rotation_counts_enc(void)
 {
@@ -1266,6 +1471,9 @@ int test_wallet_backup(void)
     failures += t_encrypt_tamper_detected();
     failures += t_encrypted_service_run();
     failures += t_encrypt_requires_password();
+    failures += t_env_password_is_borrowed();
+    failures += t_service_password_copy_oom();
+    failures += t_service_password_lifetime();
     failures += t_rotation_counts_enc();
     event_clear_observers(EV_WALLET_BACKUP);
     event_clear_observers(EV_WALLET_BACKUP_FAILED);
