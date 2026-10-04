@@ -40,6 +40,22 @@
 #include <fcntl.h>
 #include <unistd.h>
 
+int wallet_scan_block_file_open(const char *path)
+{
+    if (!path)
+        return -1;
+    int flags = O_RDONLY;
+#ifdef O_BINARY
+    flags |= O_BINARY;
+#endif
+#ifdef _WIN32
+    flags |= _O_NOINHERIT;
+#else
+    flags |= O_CLOEXEC;
+#endif
+    return open(path, flags);
+}
+
 static void wallet_scan_rollback_best_effort(struct node_db *ndb,
                                              const char *label)
 {
@@ -260,7 +276,7 @@ static int wallet_scan_pass2_nonempty(struct node_db *ndb,
             char path[512];
             snprintf(path, sizeof(path), "%s/blocks/blk%05d.dat",
                      datadir, pi->nFile);
-            int fd = open(path, O_RDONLY);
+            int fd = wallet_scan_block_file_open(path);
             if (fd < 0) continue;
             struct stat st;
             if (fstat(fd, &st) != 0) { close(fd); continue; }
