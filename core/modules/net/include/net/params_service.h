@@ -127,6 +127,12 @@ void param_service_end_fetch(void);
  * one zparaminfo. Cheap and idempotent; safe to call for every peer. */
 void param_service_offer_peer(struct msg_processor *mp, struct p2p_node *node);
 
+/* Release every outstanding chunk request and the waste-accounting slot
+ * owned by a disconnected peer. This makes the chunks immediately eligible
+ * for another peer and keeps the fixed accounting table bounded by live
+ * connections rather than process-lifetime connection count. */
+size_t param_service_peer_disconnected(int32_t peer_id);
+
 /* Expire requests whose deadline passed, returning those chunks to the
  * missing set so the next peer to answer a zparaminfo is asked for them.
  *

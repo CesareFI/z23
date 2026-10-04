@@ -216,6 +216,34 @@ static int test_transport_boundaries(void)
     return failures;
 }
 
+static int test_peer_disconnect_releases_requests(void)
+{
+    int failures = 0;
+    printf("  [transport] disconnected peer releases request ownership\n");
+
+    param_service_test_peer_guard_reset();
+    CHECK(param_service_test_mark_requested(7, 11),
+          "first request is owned by the departing peer");
+    CHECK(param_service_test_mark_requested(7, 12),
+          "second request is owned by the departing peer");
+    CHECK(param_service_test_mark_requested(8, 13),
+          "another peer owns an independent request");
+    param_service_test_charge_peer(7, PARAM_PEER_WASTE_BUDGET_BYTES);
+
+    CHECK(param_service_peer_disconnected(7) == 2,
+          "disconnect immediately releases every owned request");
+    CHECK(param_service_test_chunk_admitted(8, 13),
+          "disconnect preserves another peer's request");
+    CHECK(param_service_test_mark_requested(7, 14) &&
+              param_service_test_chunk_admitted(7, 14),
+          "disconnect reclaims the peer accounting slot");
+    CHECK(param_service_peer_disconnected(7) == 1,
+          "reconnected peer request can be released");
+    CHECK(param_service_peer_disconnected(7) == 0,
+          "disconnect cleanup is idempotent");
+    return failures;
+}
+
 /* ── 1. The pin table is internally consistent ─────────────────────── */
 
 static int test_pins_consistent(void)
@@ -1015,6 +1043,7 @@ int test_params_fetch(void)
 
     failures += test_pins_consistent();
     failures += test_transport_boundaries();
+    failures += test_peer_disconnect_releases_requests();
     failures += test_merkle();
     failures += test_manifest_rejection();
     failures += test_state_staging_link();

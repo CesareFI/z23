@@ -25,6 +25,7 @@
 #include "net/addrman_integrity.h"
 #include "net/download.h"
 #include "net/fast_sync.h"
+#include "net/params_service.h"
 #include "net/tor_integration.h"
 #include "net/onion_service.h"
 #include "net/onion_stream.h"
@@ -1726,14 +1727,16 @@ static void *thread_socket_handler(void *arg)
                 peer_lifecycle_note_disconnected(
                     node, p2p_disconnect_reason_name(reason));
 
-                /* Re-queue every in-flight body owned by this peer: legacy
-                 * blocks, snapshot chunks, and parallel block pieces. */
+                /* Release every in-flight request owned by this peer: legacy
+                 * blocks, snapshot chunks, parallel block pieces, header
+                 * spans, and parameter chunks. */
                 {
                     dl_peer_disconnected(msg_get_download_mgr(),
                                           (uint32_t)node->id);
                     mp_swarm_peer_disconnected((uint32_t)node->id);
                     mp_block_swarm_peer_disconnected((uint32_t)node->id);
                     header_range_scheduler_peer_disconnected(node->id);
+                    param_service_peer_disconnected(node->id);
                 }
 
                 /* Force disconnect — bypass transition validator since this

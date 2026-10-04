@@ -487,6 +487,26 @@ void param_service_offer_peer(struct msg_processor *mp, struct p2p_node *node)
     push_msg(mp, node, MSG_PARAM_INFO_REQ, NULL, 0);
 }
 
+size_t param_service_peer_disconnected(int32_t peer_id)
+{
+    size_t released = 0;
+    pthread_mutex_lock(&g_fetch_lock);
+    for (size_t i = 0; i < sizeof(g_fetch.inflight) / sizeof(g_fetch.inflight[0]); i++) {
+        if (g_fetch.inflight[i].used && g_fetch.inflight[i].id == peer_id) {
+            g_fetch.inflight[i].used = false;
+            released++;
+        }
+    }
+    for (size_t i = 0; i < sizeof(g_fetch.waste) / sizeof(g_fetch.waste[0]); i++) {
+        if (g_fetch.waste[i].used && g_fetch.waste[i].id == peer_id) {
+            memset(&g_fetch.waste[i], 0, sizeof(g_fetch.waste[i]));
+            break;
+        }
+    }
+    pthread_mutex_unlock(&g_fetch_lock);
+    return released;
+}
+
 /* A peer's answer to zparaminfo. Every field is a hint, and a hint that
  * disagrees with the compiled-in pin means we simply do not ask this peer —
  * it is never a reason to change what we believe the file is. */
