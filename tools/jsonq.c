@@ -547,6 +547,16 @@ static bool read_document(size_t *len)
     return true;
 }
 
+static int finish_output(int result)
+{
+    if (result != 0)
+        return result;
+    if (fflush(stdout) == 0 && !ferror(stdout))
+        return 0;
+    fputs("jsonq: stdout write failed\n", stderr);
+    return 2;
+}
+
 int main(int argc, char **argv)
 {
     if (argc < 2) {
@@ -598,8 +608,8 @@ int main(int argc, char **argv)
     size_t len = 0;
     if (!read_document(&len)) return 2;
     if (cmd == CMD_UNWRAP)
-        return cmd_unwrap(g_input, len);
+        return finish_output(cmd_unwrap(g_input, len));
     if (parse_path(path) != 0)
         return 2;
-    return walk(g_input, len, cmd, eq);
+    return finish_output(walk(g_input, len, cmd, eq));
 }

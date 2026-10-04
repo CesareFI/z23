@@ -112,6 +112,36 @@ static int test_jsonq_unwrap(void)
     return failures;
 }
 
+#if defined(__linux__)
+static int test_jsonq_output_failure(void)
+{
+    int failures = 0;
+    char out[512] = {0};
+    struct stat sink_stat;
+    const char *const sink_probe[] = {
+        "sh", "-c", "printf x >/dev/full", NULL};
+    const char *const scalar[] = {
+        "sh", "-c", "printf '{\"v\":7}' | " JSONQ_FIXTURE_BIN
+        " get v >/dev/full", NULL};
+    const char *const container[] = {
+        "sh", "-c", "printf '{\"result\":[1,2]}' | " JSONQ_FIXTURE_BIN
+        " unwrap >/dev/full", NULL};
+    const char *const no_output[] = {
+        "sh", "-c", "printf '{\"v\":7}' | " JSONQ_FIXTURE_BIN
+        " has v >/dev/full", NULL};
+    TEST("jsonq: failed stdout is not reported as success") {
+        ASSERT(stat("/dev/full", &sink_stat) == 0);
+        ASSERT(S_ISCHR(sink_stat.st_mode));
+        ASSERT(zcl_spawn_capture(sink_probe, out, sizeof out, 5000) > 0);
+        ASSERT(zcl_spawn_capture(scalar, out, sizeof out, 5000) == 2);
+        ASSERT(zcl_spawn_capture(container, out, sizeof out, 5000) == 2);
+        ASSERT(zcl_spawn_capture(no_output, out, sizeof out, 5000) == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+#endif
+
 int test_jsonq(void)
 {
     int failures = 0;
@@ -129,5 +159,8 @@ int test_jsonq(void)
     failures += test_jsonq_count_and_keys();
     failures += test_jsonq_scalar_paths();
     failures += test_jsonq_unwrap();
+#if defined(__linux__)
+    failures += test_jsonq_output_failure();
+#endif
     return failures;
 }
