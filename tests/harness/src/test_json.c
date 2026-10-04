@@ -287,6 +287,10 @@ int test_json(void)
         json_heap_accounting_cases() + json_cleanse_case() +
         cgo_decoder_tests() + cgo_passive_tests() + cga_goal_tests();
 
+    printf("json parse failures retire copied strings and partial trees... ");
+    extern int json_failure_retirement_case(void);
+    failures += json_failure_retirement_case();
+
     printf("json parse integer... ");
     {
         struct json_value v;

@@ -3026,7 +3026,7 @@ $(filter-out $(ZCL_VENDOR_LIB)/libsecp256k1.a,$(VENDOR_LIBS)):
         install-slo-probe slo-probe-status slo-probe-selftest \
         install-tip-agreement tip-agreement-status tip-agreement-selftest
 
-CLI_SRCS = engine/modules/rpc/src/client.c platform/modules/json/src/json.c platform/modules/encoding/src/utilstrencodings.c platform/modules/base/src/log_level.c
+CLI_SRCS = engine/modules/rpc/src/client.c platform/modules/json/src/json.c platform/modules/encoding/src/utilstrencodings.c platform/modules/base/src/cleanse.c platform/modules/base/src/log_level.c
 ZCL_ADAPTER_RUNNER_TARGET = zclassic23-zcode-adapter-runner
 ifneq ($(ZCL_HOST_WINDOWS),)
 # Windows has no Landlock-equivalent backend in tree. Do not ship an
@@ -4426,6 +4426,7 @@ $(MVP_LEDGER_BIN): tools/dev/mvp_ledger.c tools/dev/mvp_ledger_tsv.c \
 		tools/dev/fleet_observe.c \
 		contexts/commons/packages/zutf8/src/zutf8.c \
 		platform/modules/json/src/json.c \
+		platform/modules/base/src/cleanse.c \
 		platform/modules/base/src/safe_alloc.c \
 		platform/modules/platform/src/directory_compat.c \
 		platform/modules/platform/src/clock.c
@@ -4452,6 +4453,7 @@ test-group-weights: $(TEST_GROUP_WEIGHTS_BIN)
 $(TEST_GROUP_WEIGHTS_BIN): tools/dev/test_group_weights.c \
 		tools/dev/test_group_weights_main.c tools/dev/test_group_catalog.c \
 		platform/modules/json/src/json.c \
+		platform/modules/base/src/cleanse.c \
 		platform/modules/base/src/safe_alloc.c
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic $(ZCL_PLATFORM_CPPFLAGS) \
@@ -4578,7 +4580,7 @@ $(ZCODE_PACKAGE_REGISTRY_CHECK_BIN): tools/zcode_package_registry_check.c \
 		contexts/commons/modules/vcs/src/package_recipe.c contexts/commons/modules/vcs/src/package_deps.c \
 		contexts/commons/modules/vcs/src/package_capsule.c contexts/commons/modules/vcs/src/package_release.c \
 		platform/modules/json/src/json.c platform/modules/codec/src/cursor.c platform/modules/sha3/src/sha3.c \
-		platform/modules/base/src/safe_alloc.c platform/modules/base/src/log_level.c \
+		platform/modules/base/src/cleanse.c platform/modules/base/src/safe_alloc.c platform/modules/base/src/log_level.c \
 		platform/modules/platform/src/clock.c platform/modules/platform/src/directory_compat.c
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -D_GNU_SOURCE $(ZCL_PLATFORM_CPPFLAGS) \
@@ -6651,6 +6653,7 @@ ACME_WORKER_SRCS = \
 	core/modules/net/src/acme_renewal.c \
 	core/modules/net/src/acme_selfsigned.c \
 	platform/modules/json/src/json.c \
+	platform/modules/base/src/cleanse.c \
 	platform/modules/base/src/log_level.c \
 	platform/modules/base/src/safe_alloc.c \
 	platform/modules/platform/src/clock.c \
@@ -6855,7 +6858,8 @@ $(BIN_DIR)/zclassic23-zcode-adapter-runner: $(BUILD_IDENTITY_STAMP) \
 # Measurement-only Codex app-server client. It exposes no command or external
 # tool surface and drives exactly one candidate-rooted thread over JSON-RPC.
 ZCODE_APP_SERVER_BENCHMARK_SRCS = tools/zcode_app_server_benchmark.c \
-	platform/modules/json/src/json.c platform/modules/base/src/safe_alloc.c platform/modules/platform/src/clock.c
+	platform/modules/json/src/json.c platform/modules/base/src/cleanse.c \
+	platform/modules/base/src/safe_alloc.c platform/modules/platform/src/clock.c
 .PHONY: zcode-app-server-benchmark
 zcode-app-server-benchmark: $(BIN_DIR)/zclassic23-zcode-app-server-benchmark
 $(BIN_DIR)/zclassic23-zcode-app-server-benchmark: $(BUILD_IDENTITY_STAMP) \
@@ -6875,7 +6879,8 @@ $(BIN_DIR)/zclassic23-zcode-app-server-benchmark: $(BUILD_IDENTITY_STAMP) \
 # market acceptance.  The shell harness retains process-group orchestration;
 # all JSON interpretation and content hashing stays in this bounded binary.
 MARKET_ACCEPTANCE_HELPER_SRCS = tools/market_acceptance_helper.c \
-	platform/modules/json/src/json.c platform/modules/base/src/safe_alloc.c platform/modules/sha3/src/sha3.c
+	platform/modules/json/src/json.c platform/modules/base/src/cleanse.c \
+	platform/modules/base/src/safe_alloc.c platform/modules/sha3/src/sha3.c
 .PHONY: market-acceptance-helper test-market-acceptance-helper
 market-acceptance-helper: $(BIN_DIR)/zclassic23-market-acceptance-helper
 $(BIN_DIR)/zclassic23-market-acceptance-helper: \
@@ -7331,7 +7336,7 @@ tools/arena-runner: $(BIN_DIR)/arena_runner
 tools/arena-product-journey-c23: $(BIN_DIR)/arena_product_journey_c23
 $(BIN_DIR)/arena_product_journey_c23: tools/arena_product_journey_c23.c \
 		platform/modules/json/src/json.c platform/modules/base/src/safe_alloc.c \
-		platform/modules/base/src/log_level.c
+		platform/modules/base/src/cleanse.c platform/modules/base/src/log_level.c
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
 	    $(ZCL_WARN_STRINGOP_OVERFLOW) -D_POSIX_C_SOURCE=200809L $(ZCL_PLATFORM_CPPFLAGS) \
@@ -8242,7 +8247,8 @@ chaos-clean:
 tools/sim/simnet_trace_query: $(BIN_DIR)/simnet_trace_query
 $(BIN_DIR)/simnet_trace_query: tools/sim/simnet_trace_query.c \
 		platform/modules/json/src/json.c \
-		platform/modules/base/src/safe_alloc.c platform/modules/base/src/log_level.c
+		platform/modules/base/src/cleanse.c platform/modules/base/src/safe_alloc.c \
+		platform/modules/base/src/log_level.c
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
 	    -Iplatform/modules/json/include -Iplatform/modules/base/include -Iplatform/modules/util/include \
@@ -8523,7 +8529,8 @@ $(JSONQ_BIN): tools/jsonq.c \
 .PHONY: fleet-board-bridge
 fleet-board-bridge: $(BIN_DIR)/fleet-board-bridge
 $(BIN_DIR)/fleet-board-bridge: tools/fleet_board_bridge.c \
-    platform/modules/json/src/json.c platform/modules/base/src/safe_alloc.c \
+    platform/modules/json/src/json.c platform/modules/base/src/cleanse.c \
+    platform/modules/base/src/safe_alloc.c \
     platform/modules/platform/src/clock.c \
     platform/modules/base/src/log_level.c \
     platform/modules/json/include/json/json.h \
@@ -8551,7 +8558,8 @@ FLEET_GATEWAY_BIN = $(BIN_DIR)/z23-fleet-gateway
 .PHONY: fleet-gateway
 fleet-gateway: $(FLEET_GATEWAY_BIN)
 $(FLEET_GATEWAY_BIN): tools/fleet_gateway.c \
-    platform/modules/json/src/json.c platform/modules/base/src/safe_alloc.c \
+    platform/modules/json/src/json.c platform/modules/base/src/cleanse.c \
+    platform/modules/base/src/safe_alloc.c \
     platform/modules/platform/src/os_proc.c \
     platform/modules/platform/src/clock.c \
     platform/modules/base/src/log_level.c core/modules/crypto/src/sha256.c \
@@ -8858,7 +8866,8 @@ $(NATIVE_UI_DRIVER_BIN): tools/native_ui_driver.c
 .PHONY: crash_recovery_test
 crash_recovery_test: $(CRASH_RECOVERY_TEST_BIN)
 CRASH_RECOVERY_TEST_SRCS = tools/crash_recovery_test.c platform/modules/platform/src/clock.c \
-    platform/modules/json/src/json.c platform/modules/base/src/safe_alloc.c
+    platform/modules/json/src/json.c platform/modules/base/src/cleanse.c \
+    platform/modules/base/src/safe_alloc.c
 $(CRASH_RECOVERY_TEST_BIN): $(CRASH_RECOVERY_TEST_SRCS) platform/modules/json/include/json/json.h engine/modules/storage/include/storage/consensus_db.h
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pthread \
@@ -12606,6 +12615,7 @@ ENGINE_UNIT_SRCS = tools/engine_unit.c \
 	platform/modules/json/src/json.c \
 	platform/modules/sha3/src/sha3.c \
 	platform/modules/util/src/spawn.c \
+	platform/modules/base/src/cleanse.c \
 	platform/modules/base/src/log_level.c \
 	platform/modules/base/src/result.c \
 	platform/modules/base/src/safe_alloc.c \
@@ -15253,7 +15263,8 @@ $(BIN_DIR)/postmortem_to_scenario: tools/postmortem_to_scenario.c \
 		platform/modules/platform/src/clock.c platform/modules/platform/src/rng.c \
 		platform/modules/util/src/signal_handler.c platform/modules/util/src/clientversion.c \
 		platform/modules/util/src/async_safe_write.c \
-		platform/modules/base/src/safe_alloc.c platform/modules/base/src/log_level.c \
+		platform/modules/base/src/cleanse.c platform/modules/base/src/safe_alloc.c \
+		platform/modules/base/src/log_level.c \
 		platform/modules/json/src/json.c
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
