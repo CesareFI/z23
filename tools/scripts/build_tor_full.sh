@@ -132,10 +132,7 @@ fi
 # every host, and matches the repo rule that third-party input is an
 # exact pinned archive rather than whatever the host offers.
 #
-# libevent and zlib are NOT pinned the same way: vendor/include has no
-# event2/ headers, so Tor still resolves libevent from the host while
-# the node links vendor/lib/libevent.a. That is the same latent skew,
-# still open, and it needs the headers vendored before it can be closed.
+# libevent and zlib also have pinned headers and archives under vendor/.
 configure_opts=(
     --with-openssl-dir="$VENDOR_ROOT_DIR"
     --disable-asciidoc
@@ -225,6 +222,9 @@ fi
 needs_vendored_deps=false
 case "$HOST_OS" in Darwin|MINGW*|MSYS*) needs_vendored_deps=true ;; esac
 case "$VENDOR_TARGET" in *mingw*|*windows*|*darwin*) needs_vendored_deps=true ;; esac
+# A pinned host compiler can target an older libc than the host. Its Tor
+# configure probe must link the same vendored archives as the final node.
+if [ -n "${VENDOR_CC:-}" ]; then needs_vendored_deps=true; fi
 if $needs_vendored_deps; then
     vendor_missing=""
     for required in \

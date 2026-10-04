@@ -6615,8 +6615,11 @@ ACME_WORKER_CFLAGS = -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
 # cannot do without — the static preference that keeps libssp-0.dll out (see
 # LDFLAGS above) and clang's MinGW linker.
 ACME_WORKER_LDFLAGS = $(if $(ZCL_CROSS_TRIPLE),-static $(ZCL_WINDOWS_CLANG_LINKER),)
+# Pinned older glibc keeps dlopen/dlsym in libdl. Host libc may provide them
+# directly, so only the portable Linux link exposes a missing -ldl here.
 ACME_WORKER_LIBS = $(ZCL_VENDOR_LIB)/libssl.a $(ZCL_VENDOR_LIB)/libcrypto.a \
 	$(if $(ZCL_HOST_WINDOWS),-l:libwinpthread.a,-lpthread) -lm \
+	$(if $(filter Linux,$(ZCL_HOST_OS)),-ldl,) \
 	$(if $(ZCL_HOST_WINDOWS),-lws2_32 -lbcrypt -lcrypt32 -ladvapi32 -luserenv,)
 
 # ── The landing queue ─────────────────────────────────────────────────────

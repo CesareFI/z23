@@ -64,15 +64,18 @@ case "$MODE" in acquire|recover|check|verify) ;; *) fail "unknown mode: $MODE" ;
 
 find_make_owner()
 {
-    local candidate comm parent owner="" depth=0
+    local candidate comm parent depth=0
     candidate="$(process_parent "$$")"
     candidate="${candidate//[[:space:]]/}"
     while [[ "$candidate" =~ ^[1-9][0-9]*$ ]] && [ "$depth" -lt 16 ]; do
         comm="$(process_comm "$candidate")"
         comm="${comm##*/}"
         comm="${comm//[[:space:]]/}"
+        # The nearest Make owns this recipe's parse-time source record. An
+        # outer Make can hold an older record while a nested Make prepares
+        # fresh inputs (the portable release does exactly that).
         case "$comm" in
-        make|gmake) owner="$candidate" ;;
+        make|gmake) printf '%s\n' "$candidate"; return 0 ;;
         esac
         parent="$(process_parent "$candidate")"
         parent="${parent//[[:space:]]/}"
@@ -80,8 +83,7 @@ find_make_owner()
         candidate="$parent"
         depth=$((depth + 1))
     done
-    [ -n "$owner" ] || return 1
-    printf '%s\n' "$owner"
+    return 1
 }
 
 process_parent()

@@ -715,7 +715,10 @@ if [ -n "${BLOCK_SOURCE:-}" ] && [ "$2" = "$BLOCK_SOURCE" ] &&
 fi
 read -r actual_source actual_complete actual_mutation < "$STATE_FILE"
 [ "$2" = "$actual_source" ] && [ "$3" = "$actual_complete" ] &&
-    [ "$4" = "$actual_mutation" ]
+    [ "$4" = "$actual_mutation" ] || exit 1
+if [ -n "${OWNER_TOKEN_FILE:-}" ]; then
+    printf '%s\n' "${ZCL_SOURCE_IDENTITY_SESSION:-}" > "$OWNER_TOKEN_FILE"
+fi
 VERIFY_EOF
 chmod +x "$VERIFY"
 
@@ -723,6 +726,48 @@ set_state()
 {
     printf '%s %s %s\n' "$1" 1 "$2" > "$STATE"
 }
+
+phase nested-make-source-record-owner
+# A nested Make captures a fresh source record after the outer Make has
+# prepared inputs. The session verifier must use the inner Make's cache, not
+# the outer process's earlier cache. Keep both ancestors alive during the
+# probe so the old outermost-owner selection deterministically fails.
+NESTED_MAKEFILE="$WORK/nested-owner.mk"
+cat > "$NESTED_MAKEFILE" <<'NESTED_MAKE_EOF'
+.PHONY: outer inner
+OWNER_PID := $(shell ps -o ppid= -p $$$$ | tr -d ' ')
+outer:
+	@printf '%s\n' '$(OWNER_PID)' > '$(NESTED_WORK)/outer.pid'
+	@$(MAKE) --no-print-directory -f '$(NESTED_MAKEFILE)' inner
+inner:
+	@printf '%s\n' '$(OWNER_PID)' > '$(NESTED_WORK)/inner.pid'
+	@'$(NESTED_START_TOOL)' '$(OWNER_PID)' > '$(NESTED_WORK)/inner.start'
+	@OWNER_TOKEN_FILE='$(NESTED_WORK)/verified.token' STATE_FILE='$(NESTED_STATE)' \
+	  '$(NESTED_SESSION_TOOL)' acquire \
+	  '$(NESTED_WORK)/nested/epochs/$(NESTED_EPOCH)/.build-session' \
+	  '$(NESTED_WORK)/nested/epochs/$(NESTED_EPOCH)/.leases/owner' \
+	  '$(NESTED_WORK)/nested' '$(NESTED_WORK)/nested-candidates' 5 \
+	  '$(NESTED_SOURCE)' 1 '$(NESTED_MUTATION)' '$(NESTED_COMPILER)' \
+	  '$(NESTED_EPOCH)' '$(NESTED_PROFILE)' '$(NESTED_CFLAGS)' \
+	  '$(NESTED_LFLAGS)' '$(NESTED_CC)' '$(NESTED_CXX)' '$(OWNER_PID)' \
+	  '$(NESTED_VERIFY)' >/dev/null
+NESTED_MAKE_EOF
+set_state "$SOURCE_A" "$MUTATION_A1"
+NESTED_WORK="$WORK" NESTED_MAKEFILE="$NESTED_MAKEFILE" \
+NESTED_STATE="$STATE" NESTED_SESSION_TOOL="$SESSION_TOOL" \
+NESTED_START_TOOL="$SELF_DIR/process-start-token.sh" \
+NESTED_SOURCE="$SOURCE_A" NESTED_MUTATION="$MUTATION_A1" \
+NESTED_COMPILER="$COMPILER_ID" NESTED_EPOCH="$EPOCH_MAIN" \
+NESTED_PROFILE="$PROFILE" NESTED_CFLAGS="$COMPILE_FLAGS" \
+NESTED_LFLAGS="$LINK_FLAGS" NESTED_CC="$CC_COMMAND" \
+NESTED_CXX="$CXX_COMMAND" NESTED_VERIFY="$VERIFY" \
+    make --no-print-directory -f "$NESTED_MAKEFILE" outer ||
+    fail 'nested Make source-record owner probe failed'
+[ "$(cat "$WORK/verified.token")" = \
+  "$(cat "$WORK/inner.pid"):$(cat "$WORK/inner.start")" ] ||
+    fail 'nested Make verifier did not use the inner Make source-record owner'
+[ "$(cat "$WORK/inner.pid")" != "$(cat "$WORK/outer.pid")" ] ||
+    fail 'nested Make owner probe did not create distinct Make processes'
 
 phase session-lifecycle
 # Every Make invocation re-acquires its session (the lease is an order-only
