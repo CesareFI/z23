@@ -116,6 +116,31 @@ static int test_sqlq_refusals(void)
     return failures;
 }
 
+#if defined(__linux__)
+static int test_sqlq_output_failure(void)
+{
+    int failures = 0;
+    char out[256] = {0};
+    struct stat sink_stat;
+    const char *const sink_probe[] = {
+        "sh", "-c", "printf x >/dev/full", NULL};
+    const char *const row[] = {
+        "sh", "-c", SQLQ_BIN " ':memory:' 'SELECT 1' >/dev/full", NULL};
+    const char *const empty[] = {
+        "sh", "-c", SQLQ_BIN " ':memory:' 'SELECT 1 WHERE 0' >/dev/full",
+        NULL};
+    TEST("sqlq: a failed output sink cannot report a successful query") {
+        ASSERT(stat("/dev/full", &sink_stat) == 0);
+        ASSERT(S_ISCHR(sink_stat.st_mode));
+        ASSERT(test_host_tool_capture(sink_probe, out, sizeof out, 5000) > 0);
+        ASSERT(test_host_tool_capture(row, out, sizeof out, 5000) == 1);
+        ASSERT(test_host_tool_capture(empty, out, sizeof out, 5000) == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+#endif
+
 int test_sqlq(void)
 {
     int failures = 0;
@@ -126,5 +151,8 @@ int test_sqlq(void)
     }
     failures += test_sqlq_rows_and_typing();
     failures += test_sqlq_refusals();
+#if defined(__linux__)
+    failures += test_sqlq_output_failure();
+#endif
     return failures;
 }

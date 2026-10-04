@@ -22,6 +22,16 @@
 #include <string.h>
 #include <strings.h>
 
+static int finish_output(int ok)
+{
+    if (!ok)
+        return 1;
+    if (fflush(stdout) == 0 && !ferror(stdout))
+        return 0;
+    fputs("sqlq: stdout write failed\n", stderr);
+    return 1;
+}
+
 int main(int argc, char **argv)
 {
     if (argc != 3) {
@@ -78,5 +88,5 @@ int main(int argc, char **argv)
         fprintf(stderr, "sqlq: step failed: %s\n", sqlite3_errmsg(db));
     sqlite3_finalize(st);
     sqlite3_close(db);
-    return ok ? 0 : 1;
+    return finish_output(ok);
 }
