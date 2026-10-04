@@ -499,6 +499,33 @@ static int ps_test_projection_scan_rebuild(const char *dir, const char *armed)
     return failures;
 }
 
+static int ps_test_projection_linked_quarantine_refused(void)
+{
+    int failures = 0;
+    char dir[256], fpath[512], armed[544], victim[512];
+    test_make_tmpdir(dir, sizeof(dir), "progress_store", "proj_link_quar");
+    snprintf(fpath, sizeof(fpath), "%s/progress.kv", dir);
+    snprintf(armed, sizeof(armed), "%s.quarantine", fpath);
+    snprintf(victim, sizeof(victim), "%s/unrelated", dir);
+    PS_CHECK("proj linked quarantine: seed healthy store",
+             ps_seed_projection_without_receipt(dir, fpath));
+    FILE *f = fopen(victim, "w");
+    if (f) {
+        fputs("unrelated\n", f);
+        fclose(f);
+    }
+    PS_CHECK("proj linked quarantine: plant link leaf",
+             symlink(victim, armed) == 0);
+    PS_CHECK("proj linked quarantine: healthy store opens",
+             projection_store_open(dir));
+    PS_CHECK("proj linked quarantine: healthy file is not quarantined",
+             ps_count_corrupt_projection(dir) == 0 &&
+             ps_projection_marker_present());
+    projection_store_close();
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
 /* A corrupt store found by the BACKGROUND scan must reach the same end state
  * as the synchronous gate: writes refused at once, the file renamed aside, a
  * fresh empty store in its place, projections re-derived. */
@@ -1504,6 +1531,7 @@ int test_progress_store(void)
     failures += ps_test_projection_scan_unfinished();
     failures += ps_test_projection_scan_after_close();
     failures += ps_test_projection_scan_quarantine();
+    failures += ps_test_projection_linked_quarantine_refused();
     failures += ps_test_projection_receipt_reader_blocked();
 
     printf("progress_store: %d failures\n", failures);

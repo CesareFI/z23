@@ -56,6 +56,10 @@
 #define PROJECTION_QUARANTINE_ARM_SUFFIX ".quarantine"
 #define PROJECTION_CLEAN_RECEIPT_MAGIC "ZCLPROJCLEAN"
 #define PROJECTION_CLEAN_RECEIPT_VERSION 2
+#ifndef _WIN32
+static const char PROJECTION_QUARANTINE_ARM_BODY[] =
+    "projection_store quarantine armed\n";
+#endif
 
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t g_tx_lock;
@@ -406,15 +410,37 @@ static void projection_integrity_publish(enum projection_integrity_plan plan,
 /* Honour a quarantine a previous run's background scan armed. Runs before
  * anything is opened, which is the whole reason the verdict was written to
  * disk instead of acted on live: here the rename is safe. */
+#ifndef _WIN32
+static bool projection_quarantine_arm_open(
+    const char *armed, struct platform_private_file *file,
+    struct platform_private_file_identity *identity)
+{
+    uint64_t size = 0;
+    char body[sizeof(PROJECTION_QUARANTINE_ARM_BODY) - 1];
+    platform_private_file_init(file);
+    if (!platform_private_file_open_locked(armed, file) ||
+        !platform_private_file_identity(file, identity) ||
+        !platform_private_file_size(file, &size) || size != sizeof(body) ||
+        !platform_private_file_read_at(file, body, sizeof(body), 0) ||
+        memcmp(body, PROJECTION_QUARANTINE_ARM_BODY, sizeof(body)) != 0) {
+        platform_private_file_close(file);
+        return false;
+    }
+    return true;
+}
+#endif
+
 static void projection_quarantine_if_armed(const char *path)
 {
 #ifdef _WIN32
     (void)path;
 #else
     char armed[PROJECTION_STORE_PATH_MAX + 24];
+    struct platform_private_file marker;
+    struct platform_private_file_identity identity;
     if (!projection_sidecar_path(armed, sizeof(armed), path,
                                  PROJECTION_QUARANTINE_ARM_SUFFIX) ||
-        access(armed, F_OK) != 0)
+        !projection_quarantine_arm_open(armed, &marker, &identity))
         return;
     fprintf(stderr,  // obs-ok:projection-store-lifecycle
             "[projection_store] armed quarantine found for %s — a background "
@@ -422,7 +448,14 @@ static void projection_quarantine_if_armed(const char *path)
             path);
     sqlite_integrity_quarantine_corrupt(path, "projection_store",
                                         "projection_store_quarantine");
-    (void)unlink(armed);
+    if (platform_private_file_retire_if_identity(&marker, armed, &identity)) {
+        char resolved[PROJECTION_STORE_PATH_MAX + 24];
+        char parent[PROJECTION_STORE_PATH_MAX + 24];
+        if (platform_private_path_resolve(armed, resolved, sizeof(resolved),
+                                          parent, sizeof(parent)))
+            (void)platform_private_parent_flush(parent);
+    }
+    platform_private_file_close(&marker);
 #endif
 }
 
@@ -435,15 +468,16 @@ static bool projection_quarantine_arm_write(const char *armed)
     (void)armed;
     return false;
 #else
-    static const char body[] = "projection_store quarantine armed\n";
     (void)platform_private_file_unlink_missing_ok(armed);
     struct platform_private_file staged;
     platform_private_file_init(&staged);
     if (!platform_private_file_create(armed, &staged))
         return false;
-    bool ok = platform_private_file_write_at(&staged, body, sizeof(body) - 1,
-                                             0) &&
-              platform_private_file_truncate(&staged, sizeof(body) - 1) &&
+    bool ok = platform_private_file_write_at(
+                  &staged, PROJECTION_QUARANTINE_ARM_BODY,
+                  sizeof(PROJECTION_QUARANTINE_ARM_BODY) - 1, 0) &&
+              platform_private_file_truncate(
+                  &staged, sizeof(PROJECTION_QUARANTINE_ARM_BODY) - 1) &&
               platform_private_file_flush(&staged);
     platform_private_file_close(&staged);
     char resolved[PROJECTION_STORE_PATH_MAX + 24];
