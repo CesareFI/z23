@@ -441,9 +441,15 @@ static bool cost_push(struct cost_table *t, const char *tu, double cpu)
         t->v = v;
         t->cap = cap;
     }
-    t->v[t->n].tu = zcl_strdup(tu, "sem_replay_cost_tu");
+    char *dup = zcl_strdup(tu, "sem_replay_cost_tu");
+    if (dup == NULL) {
+        fprintf(stderr, "sem-replay: out of memory in the cost table\n");
+        return false;
+    }
+    t->v[t->n].tu = dup;
     t->v[t->n].cpu = cpu;
-    return t->v[t->n++].tu != NULL;
+    t->n++;
+    return true;
 }
 
 static bool cost_load(struct cost_table *t, const char *path)

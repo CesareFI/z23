@@ -262,7 +262,10 @@ bool sr_snap_load(struct sr_snap *s, const char *path)
     fclose(fp);
     if (!ok)
         fprintf(stderr, "sem-replay: malformed snapshot %s\n", path);
-    qsort(s->v, s->n, sizeof(*s->v), cmp_obj);
+    /* An epoch-only or empty snapshot leaves v == NULL: qsort's base is
+     * declared nonnull, so the n <= 1 guard is UB insurance, not style. */
+    if (s->n > 1)
+        qsort(s->v, s->n, sizeof(*s->v), cmp_obj);
     return ok;
 }
 

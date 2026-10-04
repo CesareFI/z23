@@ -633,6 +633,38 @@ _test_next:;
     return failures;
 }
 
+/* A state dir whose last.snap carries only the epoch line (no object rows)
+ * is what a drifted or partially-written state looks like. sr_snap_load
+ * must not hand qsort a NULL base (it is declared nonnull — UBSan:
+ * "null pointer passed as argument 1", sem_replay_build.c), and the step
+ * must otherwise proceed normally. Red (pre-fix): UBSan runtime error at
+ * qsort under a sanitized binary; plain glibc silently tolerates the UB. */
+static int srt_drifted_snapshot_case(const struct srt_fx *fx)
+{
+    int failures = 0;
+    char state[PATH_MAX], commit[PATH_MAX], text[80];
+
+    TEST("a drifted state with an epoch-only last.snap steps cleanly") {
+        snprintf(state, sizeof state, "%s/state-drift", fx->root);
+        snprintf(commit, sizeof commit, "%s/last.commit", state);
+        snprintf(text, sizeof text, "%s\n", fx->p);
+        ASSERT(srt_mkdir_p(state) && srt_write(state, "last.snap",
+                                               "epoch\t" SRT_EPOCH "\n") &&
+               srt_write(state, "last.commit", text));
+        int rc = srt_step(fx, "fx-planner-narrows", fx->c1, "9", state);
+        if (rc != 0)
+            printf("(step output: %s) ", g_srt_out);
+        ASSERT_EQ(rc, 0);
+        ASSERT(strstr(g_srt_out, "runtime error") == NULL);
+        PASS();
+    }
+
+    if (0) {
+    _test_next:;
+    }
+    return failures;
+}
+
 #endif /* !_WIN32 */
 
 int test_sem_replay(void)
@@ -851,6 +883,8 @@ int test_sem_replay(void)
         ASSERT(srt_file_has(path, "\nfw_plain\tsrc/b.c\n"));
         PASS();
     }
+
+    failures += srt_drifted_snapshot_case(&fx);
 
 _test_next:;
     if (fx.root[0])

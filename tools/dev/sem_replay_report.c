@@ -50,8 +50,12 @@ static bool price_push(struct prices *p, const char *tu, double cpu)
         p->v = v;
         p->cap = cap;
     }
-    p->v[p->n] = (struct price_row){.tu = zcl_strdup(tu, "sem_replay_price_tu"), .cpu = cpu, .n = 1};
-    return p->v[p->n++].tu != NULL;
+    char *dup = zcl_strdup(tu, "sem_replay_price_tu");
+    if (dup == NULL)
+        return false;
+    p->v[p->n] = (struct price_row){.tu = dup, .cpu = cpu, .n = 1};
+    p->n++;
+    return true;
 }
 
 /* Rows "TU<TAB>cpu..." averaged per TU, sorted for lookup. */
