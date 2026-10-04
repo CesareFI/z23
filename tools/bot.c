@@ -97,6 +97,24 @@ static double elapsed_ms(void) {
 static double rpc_t, rpc_z, rpc_total;
 static int rpc_height, rpc_peers;
 
+/* Point at the value of the key whose match is at `hit`: past the colon,
+ * any whitespace, and one optional opening quote. Correct for both the
+ * mock's quoted strings and real zclassicd's bare JSON numbers — the
+ * previous quote-hunt only worked for the former, so every cross-check
+ * against a real daemon silently saw garbage. */
+static const char *rpc_value_after_key(const char *hit)
+{
+    const char *colon = strchr(hit, ':');
+    if (!colon)
+        return NULL;
+    colon++;
+    while (*colon == ' ' || *colon == '\t')
+        colon++;
+    if (*colon == '"')
+        colon++;
+    return colon;
+}
+
 static int query_rpc(void) {
     char buf[4096] = "";
     if (wv_rpc_call("z_gettotalbalance", "[]", buf, sizeof(buf)) <= 0)
@@ -105,9 +123,9 @@ static int query_rpc(void) {
     const char *z = strstr(buf, "\"private\"");
     const char *tot = strstr(buf, "\"total\"");
     if (!t || !z || !tot) return 0;
-    t = strchr(t + 13, '"'); if (t) t++;
-    z = strchr(z + 9, '"'); if (z) z++;
-    tot = strchr(tot + 7, '"'); if (tot) tot++;
+    t = rpc_value_after_key(t);
+    z = rpc_value_after_key(z);
+    tot = rpc_value_after_key(tot);
     if (!t || !z || !tot) return 0;
     rpc_t = strtod(t, NULL);
     rpc_z = strtod(z, NULL);
