@@ -16,6 +16,7 @@
 #include <stdint.h>
 
 #include "platform/time_compat.h"
+#include "platform/file_stream.h"
 #include "models/database.h"
 #include "controllers/explorer_controller.h"
 #include "controllers/wallet_view_controller.h"
@@ -388,7 +389,7 @@ static void init_controllers(const char *datadir) {
         explorer_set_state(NULL, NULL, NULL, &ndb, datadir);
         char cookie_path[1024], cookie[256] = "";
         snprintf(cookie_path, sizeof(cookie_path), "%s/.cookie", datadir);
-        FILE *f = fopen(cookie_path, "r");
+        FILE *f = platform_file_stream_open_read(cookie_path);
         if (f) {
             if (fgets(cookie, sizeof(cookie), f)) {
                 char *nl = strchr(cookie, '\n'); if (nl) *nl = '\0';
