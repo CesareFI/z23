@@ -522,6 +522,10 @@ else ifneq ($(filter dev-tsan z23-dev-tsan zclassic23-dev-tsan,$(ZCL_EPOCH_SINGL
 ZCL_EPOCH_PROFILES := dev-tsan
 else ifneq ($(filter coverage coverage-locked,$(ZCL_EPOCH_SINGLE_GOAL)),)
 ZCL_EPOCH_PROFILES := coverage
+# The direct lintc gate links only build/lintc-obj; it reads no node/dev/test
+# compile epoch. Mixed goals keep the conservative all-profile fallback.
+else ifeq ($(ZCL_EPOCH_SINGLE_GOAL),check-cyclomatic-complexity)
+ZCL_EPOCH_PROFILES :=
 else ifneq ($(filter lint-fast lint-land watcher-safety-gates check-dev-loop-profiles dev-loop-profile-flags print-dev-profile-dirs dev-failure-execution-id t-changed fast-changed-compile fast-rebuild rebuild-fast dev-rebuild hot-rebuild super-rebuild fast-ci agent-fast-ci dev-ci agent-plan agent-loop agent-dev-loop pre-push-ci t-list templates site-css explorer-css,$(ZCL_EPOCH_SINGLE_GOAL)),)
 ZCL_EPOCH_PROFILES :=
 endif
@@ -1913,6 +1917,9 @@ else ifneq ($(filter dev-tsan z23-dev-tsan zclassic23-dev-tsan,$(ZCL_DEPFILE_SIN
 ZCL_DEPFILE_PROFILES := dev-tsan
 else ifneq ($(filter coverage coverage-locked,$(ZCL_DEPFILE_SINGLE_GOAL)),)
 ZCL_DEPFILE_PROFILES := coverage
+# The direct complexity gate builds lintc-owned objects with their own inputs.
+else ifeq ($(ZCL_DEPFILE_SINGLE_GOAL),check-cyclomatic-complexity)
+ZCL_DEPFILE_PROFILES :=
 else ifneq ($(filter fuzz fuzz-ci fuzz-ci-leaks fuzz-replay fuzz_block fuzz_script fuzz_p2p fuzz_http fuzz_compactblock fuzz_snapshot fuzz_tx_bundle fuzz_rom_manifest fuzz_overlay fuzz_ecdsa fuzz_mesh_status_proto,$(ZCL_DEPFILE_SINGLE_GOAL)),)
 ZCL_DEPFILE_PROFILES := fuzz
 else ifneq ($(filter lint lint-fast lint-land lint-preflight watcher-safety-gates check-dev-loop-profiles dev-loop-profile-flags print-dev-profile-dirs dev-failure-execution-id ff t-changed fast-changed-compile fast-rebuild rebuild-fast dev-rebuild hot-rebuild super-rebuild fast-ci agent-fast-ci dev-ci agent-plan agent-loop agent-dev-loop pre-push-ci,$(ZCL_DEPFILE_SINGLE_GOAL)),)
