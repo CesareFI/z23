@@ -4936,3 +4936,29 @@ zero failures or skips; receipt SHA256 is
 Authorization, returned WIF bytes, key lookup, monetary/consensus behavior,
 transparent/shielded validity, recovery, storage and TLS are unchanged. Socket
 or kernel copies outside native ownership are not claimed retired.
+
+## Upstream Sapling key-export HTTP retirement — 2026-10-04
+
+Signed follow-up `1d3f8f26c05e5fb4e426fa4c9f13d4023e49e15a` classifies the
+existing `z_exportkey` and `z_exportviewingkey` methods as key-bearing responses
+at the already qualified synchronous HTTP retirement boundary. It adds no new
+wipe implementation, allocation, pointer lifetime or shared state. The exact
+method predicate prevents unrelated responses from changing lifetime.
+
+Both Sapling methods return fixed controller-owned string results inside the
+fixed response envelope, so the prior bounded-tree and exact serialized-span
+analysis applies unchanged. Wiping a viewing key is intentionally conservative:
+it cannot authorize spending but exposes wallet transaction privacy. Spending
+and viewing-key bytes remain live until synchronous transmission completes and
+are returned byte-for-byte unchanged.
+
+Canonical RED fails only the two Sapling retirement assertions; transparent
+and ordinary-response controls remain green. Final focused and ASan/UBSan runs
+pass22/22 with zero skips, unobserved or load-flaky outcomes. All215 lint gates,
+strict Clang20/GCC14 across2,433 TUs, cap15 complexity, architecture and
+inventory gates pass. Exact combined proof passes215 lint gates and87/87
+impacted groups with zero failures or skips; receipt SHA256 is
+`12ae9da0a8cdf6f36486443f079faf3422fd2e4b5855963fd9e9d6caae6a00a8`.
+Authorization, encodings, wallet state, consensus, monetary policy, PoW,
+upgrades, transparent/shielded validity, recovery, storage and TLS remain
+unchanged. Client-side native-command copies are outside this transport slice.

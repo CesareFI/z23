@@ -8313,3 +8313,15 @@ SHA256 is
 `43663e435c472cd473567a47f7e99a5010c4c0f265964dea628fcb375720b455`.
 Complete local review artifacts verify. Shielded key-export transport methods
 are a separate follow-up hypothesis and are not claimed by this candidate.
+
+### Sapling key-export HTTP copies retired
+
+Signed follow-up1d3f8f26 extends the qualified post-send cleanse to Sapling
+spending and viewing-key export results. Deterministic RED2 becomes focused and
+ASan/UBSan GREEN22/22 while transparent and ordinary-response controls remain
+green. All215 lint, strict Clang20/GCC14 2,433-TU, complexity, architecture and
+inventory gates pass. The preserved combined proof passes215/215 lint and
+87/87 impacted groups with zero failures or skips in455.607s; receipt SHA256 is
+`12ae9da0a8cdf6f36486443f079faf3422fd2e4b5855963fd9e9d6caae6a00a8`.
+Combined local review artifacts verify. The earlier transparent-only branch and
+receipt remain preserved.

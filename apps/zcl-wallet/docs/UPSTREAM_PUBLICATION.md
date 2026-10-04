@@ -721,3 +721,24 @@ re-verifies the exact pair. Receipt SHA256 is
 `43663e435c472cd473567a47f7e99a5010c4c0f265964dea628fcb375720b455`.
 Complete signed bundle, patch series, PR body and SHA256 manifest are prepared
 locally. No external publication action or protection bypass was attempted.
+
+### Sapling key-export response retirement qualified
+
+Signed follow-up `1d3f8f26c05e5fb4e426fa4c9f13d4023e49e15a` on branch
+`agent/upstream-wallet-shielded-rpc-secret-retirement-20261004` extends the
+same post-send retirement boundary to `z_exportkey` spending-key results and
+`z_exportviewingkey` viewing-key results. Canonical RED fails exactly those two
+new assertions while transparent and ordinary-response controls pass. Final
+focused and ASan/UBSan groups pass22/22 with zero skips, unobserved or
+load-flaky outcomes. All215 lint gates pass in98.892s; strict Clang20/GCC14
+each check2,433 TUs; complexity, architecture and generated inventory pass.
+
+The preserved combined-head proof copy `/tmp/ws.GRk4hI/repo` passes all215
+lint gates and87/87 impacted groups with zero failures or skips. Lint took
+210.001s, tests211.971s and total proof455.607s. Native status independently
+re-verifies head1d3f8f26/base3a93e60e. Receipt SHA256 is
+`12ae9da0a8cdf6f36486443f079faf3422fd2e4b5855963fd9e9d6caae6a00a8`.
+The two-commit combined review is five files,+125/-6 and supersedes the
+unpublished transparent-only PR draft without deleting its branch, receipt or
+artifacts. Complete bundle, patch series, updated PR body and SHA256 manifest
+verify locally. No external publication action was attempted.
