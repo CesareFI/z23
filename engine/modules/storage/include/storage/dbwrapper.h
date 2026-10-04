@@ -79,6 +79,10 @@ void db_iter_next(struct db_iterator *it);
 const char *db_iter_key(struct db_iterator *it, size_t *keylen);
 const char *db_iter_value(struct db_iterator *it, size_t *vallen);
 
+#ifdef ZCL_TESTING
+bool db_iter_test_growth_capacity(size_t value_len, size_t *out_capacity);
+#endif
+
 /* Surface any LevelDB iterator status (CRC / missing SST / I/O error) after a
  * scan. Returns true if the iteration was clean, false if an error was
  * reported. A caller treating the iterated range as a COMPLETE set MUST abort

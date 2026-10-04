@@ -355,6 +355,26 @@ bool db_write_batch(struct db_wrapper *w, struct db_batch *b, bool sync)
 
 /* --- Iterator --- */
 
+#define DB_ITER_VALUE_GROWTH_PAD 256u
+
+static bool db_iter_growth_capacity(size_t value_len, size_t *out_capacity)
+{
+    if (!out_capacity)
+        return false;
+    *out_capacity = 0;
+    if (value_len > SIZE_MAX - DB_ITER_VALUE_GROWTH_PAD)
+        return false;
+    *out_capacity = value_len + DB_ITER_VALUE_GROWTH_PAD;
+    return true;
+}
+
+#ifdef ZCL_TESTING
+bool db_iter_test_growth_capacity(size_t value_len, size_t *out_capacity)
+{
+    return db_iter_growth_capacity(value_len, out_capacity);
+}
+#endif
+
 void db_iter_init(struct db_iterator *it, struct db_wrapper *w)
 {
     it->iter = leveldb_create_iterator(w->db, w->iter_options);
@@ -426,8 +446,13 @@ const char *db_iter_value(struct db_iterator *it, size_t *vallen)
 
     /* Deobfuscate into a reusable buffer */
     if (*vallen > it->deobf_cap) {
+        size_t new_capacity = 0;
+        if (!db_iter_growth_capacity(*vallen, &new_capacity)) {
+            LogPrintf("LevelDB iterator value length exceeds allocation range\n");
+            return NULL;
+        }
         free(it->deobf_buf);
-        it->deobf_cap = *vallen + 256;
+        it->deobf_cap = new_capacity;
         it->deobf_buf = zcl_malloc(it->deobf_cap, "dbwrapper_deobf_buf");
         if (!it->deobf_buf) {
             it->deobf_cap = 0;

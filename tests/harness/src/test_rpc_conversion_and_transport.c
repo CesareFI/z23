@@ -164,9 +164,30 @@ int check_rpc_dbwrapper_open_write_read(void)
     return failures;
 }
 
+static int check_rpc_dbwrapper_iterator_growth_bounds(void)
+{
+    printf("dbwrapper iterator growth bounds... ");
+    size_t capacity = SIZE_MAX;
+    bool ok = db_iter_test_growth_capacity(0, &capacity) &&
+              capacity == 256 &&
+              db_iter_test_growth_capacity(SIZE_MAX - 256, &capacity) &&
+              capacity == SIZE_MAX;
+    capacity = SIZE_MAX;
+    ok = ok && !db_iter_test_growth_capacity(SIZE_MAX - 255, &capacity) &&
+         capacity == 0;
+    capacity = SIZE_MAX;
+    ok = ok && !db_iter_test_growth_capacity(SIZE_MAX, &capacity) &&
+         capacity == 0;
+    if (ok)
+        printf("OK\n");
+    else
+        printf("FAIL\n");
+    return ok ? 0 : 1;
+}
+
 int check_rpc_dbwrapper_batch_and_iterator(void)
 {
-    int failures = 0;
+    int failures = check_rpc_dbwrapper_iterator_growth_bounds();
 
     printf("dbwrapper batch... ");
     {
@@ -1496,4 +1517,3 @@ int check_rpc_tls_without_env_and_port_oracle(void)
     failures += check_rpc_absolute_deadline_suite();
     return failures;
 }
-
