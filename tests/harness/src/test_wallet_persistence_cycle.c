@@ -876,9 +876,11 @@ static int test_boot_opens_node_db_before_wallet(void)
     return failures;
 }
 
+int wallet_db_seed_retirement_cases(void);
+
 int test_wallet_persistence_cycle(void)
 {
-    int failures = 0;
+    int failures = wallet_db_seed_retirement_cases();
     failures += test_boot_opens_node_db_before_wallet();
     failures += test_open_empty_schema_ok();
     failures += test_self_test_passes();

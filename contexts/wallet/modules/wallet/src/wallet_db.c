@@ -18,6 +18,14 @@
 #define PREFIX_ZKEY   "zkey"
 #define PREFIX_CSCRIPT "cscript"
 
+static void wallet_db_free_secret(char *value, size_t length)
+{
+    if (!value)
+        return;
+    memory_cleanse(value, length);
+    free(value);
+}
+
 bool wallet_db_open(struct wallet_db *wdb, const char *path)
 {
     memset(wdb, 0, sizeof(*wdb));
@@ -162,11 +170,11 @@ bool wallet_db_read_sapling_seed(struct wallet_db *wdb, uint8_t seed[32])
     if (!db_read(&wdb->db, PREFIX_ZSEED, 5, &val, &vlen))
         return false;
     if (vlen != 32) {
-        free(val);
+        wallet_db_free_secret(val, vlen);
         return false;
     }
     memcpy(seed, val, 32);
-    free(val);
+    wallet_db_free_secret(val, vlen);
     return true;
 }
 
@@ -267,4 +275,3 @@ bool wallet_db_read_scripts(struct wallet_db *wdb, struct wallet *w)
     db_iter_free(&it);
     return true;
 }
-
