@@ -1089,3 +1089,35 @@ Local artifacts `passphrase-snapshot.bundle`, `passphrase-snapshot.mbox`,
 `passphrase-snapshot-exact-status.log`, `pr-passphrase-snapshot.md` and
 `passphrase-snapshot-final.sha256` verify in the candidate worktree's ignored
 evidence directory. No external publication action was attempted.
+
+### Metadata row-identity AAD bound qualified
+
+Branch `agent/upstream-wallet-metadata-aad-bound-20261004`, signed head
+`3fc2f0dd5aa4ee76a6f88f8fc73cdca8cb5c1365`, base
+`3a93e60ebf922af3d119b9facc1d95803f42844b`, makes the platform-neutral C23
+metadata API require the exact 32-byte plan identity already used by every
+production caller. Invalid lengths are refused before key access, randomness
+or output writes; reported output length becomes zero and caller output stays
+unchanged. Production callers share the public width constant. The review is
+six files, +56/-13, including the required generated inventory update.
+
+Deterministic RED shows the prior API admitted a 31-byte AAD. The final test
+covers 31 bytes, 33 bytes and `SIZE_MAX` for encrypt and decrypt. Removing the
+exact encrypt predicate reproduces RED; the restored focused and ASan/UBSan
+groups pass. GCC 14.2.0 and Clang 20.1.2 each check all 2,433 translation
+units with no new diagnostic sites. Architecture, documentation counts,
+generated inventory, file-size, core-seal, consensus-parity and cap-15
+complexity gates pass. The sealed AEAD implementation is unchanged.
+
+The unprivileged private-tmpfs proof passes the exact head/base pair: all 215
+lint gates and all 55 selected impacted groups complete with zero failures,
+skips or reused results. Lint took 316.686s, tests 368.772s, the receipt records
+632.988s total and the foreground step returned after 636.196s. Native status
+independently reports `passed`; receipt SHA256 is
+`644cf51e98a843b0249e2c7f587bd5b77a06e1827df0f85f3d301e5ecfc6cd5c`.
+
+Local artifacts `metadata-aad-bound.bundle`, `metadata-aad-bound.mbox`,
+`metadata-aad-bound.receipt`, `metadata-aad-exact-status.log`,
+`pr-metadata-aad-bound.md` and `metadata-aad-bound-final.sha256` verify in the
+candidate worktree's ignored evidence directory. No external publication
+action was attempted.
