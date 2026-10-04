@@ -2727,8 +2727,9 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
              * band — so existing behavior is a strict regression-safe
              * fallback. Validation and band closure are unchanged; this
              * only changes WHICH peer is asked for WHICH range. */
-            if (!msg_try_range_parallel_getheaders(mp, node, our_height,
-                                                   now_send))
+            if (!msg_try_range_parallel_getheaders(
+                    mp, node, our_height,
+                    platform_time_monotonic_us() / 1000000))
                 exec_getheaders_action(mp, node, &periodic);
         }
 

@@ -2181,7 +2181,8 @@ static bool hrs_resolve_anchor_hash(struct msg_processor *mp, int32_t height,
 
 bool msg_try_range_parallel_getheaders(struct msg_processor *mp,
                                        struct p2p_node *node,
-                                       int our_height, int64_t now_seconds)
+                                       int our_height,
+                                       int64_t now_monotonic_seconds)
 {
     if (!mp || !node || !mp->main_state || !mp->net_mgr || !mp->params)
         return false;
@@ -2237,7 +2238,7 @@ bool msg_try_range_parallel_getheaders(struct msg_processor *mp,
     struct header_range_scheduler *sched = header_range_scheduler_global();
     hrs_plan(sched, (int32_t)our_height, target, anchors, n_anchors);
 
-    int64_t now_us = now_seconds * 1000000;
+    int64_t now_us = now_monotonic_seconds * 1000000;
 
     /* Advance completions from our current header frontier so already-synced
      * spans free their peer slots before we (re)assign. */
