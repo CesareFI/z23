@@ -25,6 +25,7 @@
 #include "controllers/name_resolver.h"
 #include "controllers/name_gateway_controller.h"
 #include "views/name_gateway_view.h"
+#include "views/name_view.h"
 #include "models/znam.h"
 #include "models/database.h"
 #include "rpc/server.h"
@@ -973,6 +974,48 @@ static int t_profile_record_window(void)
  * The over-window case pins the number-free shape rather than an exact
  * count because the render can stop under its own buffer headroom
  * before the row window is exhausted. */
+/* Regression: a card that truncates must never push `off` past the body.
+ * Pre-fix name_view_index added snprintf's would-be length raw, so one
+ * oversized card (reachable remotely: ZNAM registrations are permissionless
+ * OP_RETURN, and escaped name/value/owner fields can exceed the loop's
+ * 512-byte headroom) stepped `off` past char body[36864]; the next snprintf
+ * wrote the footer OUT OF BOUNDS with a wrapped size, and the response copy
+ * read stack bytes beyond the body into the HTTP reply (CWE-787/200).
+ * The ASan+UBSan lane is the detector; the assert pins the bounded output. */
+
+static int t_index_card_truncation_stays_in_bounds(void)
+{
+    int failures = 0;
+    printf("znam site: index card truncation stays in bounds... ");
+    /* Exact overshoot inputs found by the ASan sweep harness (see commit):
+     * 63-char plain name, a value whose first 64 chars are '<' (each
+     * escapes to 4 bytes), 35-char owner, 40 rows. The ~890-byte cards
+     * walk the 36864-byte body so one card starts with less than its
+     * would-be length remaining — pre-fix that truncated snprintf's
+     * would-be return pushed `off` 21 bytes past `body`, and the footer
+     * write went out of bounds. */
+    struct znam_entry entries[40];
+    memset(entries, 0, sizeof(entries));
+    for (int i = 0; i < 40; i++) {
+        memset(entries[i].name, 'a' + (i % 26), sizeof(entries[i].name) - 1);
+        for (int k = 0; k < 64; k++)
+            entries[i].target_value[k] = '<';
+        memset(entries[i].owner_address, 'O', 35);
+        entries[i].target_type = ZNAM_TYPE_TADDR;
+        entries[i].reg_height = 800000;
+    }
+    uint8_t resp[65536];
+    size_t got = name_view_index(entries, 40, 40, resp, sizeof(resp));
+    /* The page is truncated (40 maximal cards exceed the body) — that is
+     * fine and by design; what must hold is a bounded, well-formed
+     * response. ASan+UBSan silence is the real regression check. */
+    bool ok = got > 0 && got <= sizeof(resp) &&
+        memcmp(resp, "HTTP/1.1 ", 9) == 0;
+    if (ok) printf("OK\n");
+    else { printf("FAIL (got=%zu)\n", got); failures++; }
+    return failures;
+}
+
 static int t_index_total_honesty(void)
 {
     int failures = 0;
@@ -1038,6 +1081,7 @@ int test_znam_site(void)
     failures += t_pow_gate_single_use();
     failures += t_profile_record_window();
     failures += t_index_total_honesty();
+    failures += t_index_card_truncation_stays_in_bounds();
     failures += t_name_records_rpc();
     failures += t_error_taxonomy();
     failures += t_resolve_rpc_taxonomy();
