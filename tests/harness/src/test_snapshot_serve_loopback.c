@@ -182,6 +182,32 @@ static bool lb_pump(struct p2p_node *from, struct send_segment *sentinel,
     return true;
 }
 
+static bool lb_retry_offer_after_send_failure(
+        struct p2p_node *offer_sender, struct send_segment *offer_sentinel,
+        struct msg_processor *receiver_mp, struct p2p_node *receiver,
+        struct send_segment *receiver_sentinel,
+        struct snapshot_sync_service *receiver_svc,
+        const struct snapshot_offer *offer)
+{
+    send_snapshot_offer_msg(offer_sender, offer,
+                            receiver_mp->params->pchMessageStart);
+    zcl_alloc_fault_fail_next("stream_data");
+    bool released = lb_pump(offer_sender, offer_sentinel, receiver_mp,
+                            receiver, receiver_mp->params->pchMessageStart) &&
+                    zcl_alloc_fault_armed_label() == NULL &&
+                    receiver_svc->state == SNAPSYNC_IDLE &&
+                    receiver->state == PEER_ACTIVE &&
+                    sync_get_state() == SYNC_HEADERS_DOWNLOAD &&
+                    receiver_sentinel->next == NULL;
+    if (!released)
+        return false;
+
+    send_snapshot_offer_msg(offer_sender, offer,
+                            receiver_mp->params->pchMessageStart);
+    return lb_pump(offer_sender, offer_sentinel, receiver_mp, receiver,
+                   receiver_mp->params->pchMessageStart);
+}
+
 /* Reproduces mp_snapshot_send_tick()'s snapshot-serving loop from PUBLIC
  * primitives only — see the file header "shortcut 2" for why. */
 static void lb_drive_serve_tick(struct msg_processor *mp, struct p2p_node *node)
@@ -407,14 +433,17 @@ static int test_snapshot_serve_loopback_impl(bool corrupt_chunk)
                 cache_copy, (int64_t)snap_buf.size, sha3_root, utxo_count));
         }
 
-        send_snapshot_offer_msg(node_a_side, &offer, mp_a.params->pchMessageStart);
-
-        /* ── Step 2: pump A->B, real receive dispatch. Accepts the offer,
-         * transitions NEGOTIATING, auto-queues a real zfcchallenge on
-         * node_b_side (harmlessly no-op'd by A below — mp_a.flyclient_proof
-         * is unset, exactly like a peer with no MMB data). */
-        ASSERT(lb_pump(node_a_side, sentinel_a, &mp_b, node_b_side,
-                      params->pchMessageStart));
+        /* ── Step 2: the first real offer injects a challenge-buffer
+         * allocation failure. The receiver must release service, peer, and
+         * global sync ownership immediately and queue no malformed frame;
+         * the helper then retries the same offer without waiting for the
+         * 120-second negotiation watchdog. The healthy retry transitions
+         * NEGOTIATING and queues a real zfcchallenge on node_b_side
+         * (harmlessly no-op'd by A below — mp_a.flyclient_proof is unset,
+         * exactly like a peer with no MMB data). */
+        ASSERT(lb_retry_offer_after_send_failure(
+            node_a_side, sentinel_a, &mp_b, node_b_side, sentinel_b,
+            &svc_b, &offer));
         ASSERT(svc_b.state == SNAPSYNC_NEGOTIATING);
 
         /* ── Step 3 (documented FlyClient bypass — file header shortcut 1):

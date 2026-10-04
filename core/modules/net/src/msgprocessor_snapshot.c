@@ -294,6 +294,90 @@ static bool push_index_request(struct msg_processor *mp,
     return sent;
 }
 
+static bool push_snapshot_payload(struct msg_processor *mp,
+                                  struct p2p_node *node,
+                                  const char *command,
+                                  const struct byte_stream *payload)
+{
+    if (!p2p_node_begin_message(node, command,
+                                mp->params->pchMessageStart))
+        return false;
+    p2p_node_write_message_data(node, payload->data, payload->size);
+    return p2p_node_end_message(node);
+}
+
+static bool push_fc_challenge(struct msg_processor *mp,
+                              struct p2p_node *node,
+                              struct snapshot_sync_service *svc)
+{
+    struct byte_stream fc;
+    stream_init(&fc, 72);
+    struct zcl_result result = snapsync_write_fc_challenge(svc, &fc);
+    bool sent = result.ok &&
+                push_snapshot_payload(mp, node, MSG_FC_CHALLENGE, &fc);
+    if (!result.ok) {
+        LOG_WARN("snapsync",
+                 "fc challenge encode failed for %s: code=%d %s",
+                 node->addr_name, result.code, result.message);
+    } else if (!sent) {
+        LOG_WARN("snapsync", "fc challenge send failed for %s",
+                 node->addr_name);
+    }
+    stream_free(&fc);
+    if (sent)
+        printf("[snapsync] Sent FlyClient challenge to %s\n",
+               node->addr_name);
+    return sent;
+}
+
+static bool push_snapshot_request(struct msg_processor *mp,
+                                  struct p2p_node *node,
+                                  int32_t our_height)
+{
+    struct byte_stream request;
+    stream_init(&request, 52);
+    struct zcl_result result = snapsync_write_snapshot_request(
+        &request, our_height, node->addr.svc.addr.ip);
+    bool sent = result.ok &&
+                push_snapshot_payload(mp, node, MSG_SNAPSHOT_REQ, &request);
+    if (!result.ok) {
+        LOG_WARN("snapsync",
+                 "snapshot request encode failed for %s: code=%d %s",
+                 node->addr_name, result.code, result.message);
+    } else if (!sent) {
+        LOG_WARN("snapsync", "snapshot request send failed for %s",
+                 node->addr_name);
+    }
+    stream_free(&request);
+    return sent;
+}
+
+static void release_failed_snapshot_followup(
+        struct snapshot_sync_service *svc, struct p2p_node *node)
+{
+    struct snapsync_status status = {0};
+    snapsync_reset(svc);
+    snapsync_get_status_snapshot(svc, &status);
+    if (status.state != SNAPSYNC_IDLE) {
+        LOG_WARN("snapsync",
+                 "snapshot followup send failed for %s; reset retained "
+                 "state=%s",
+                 node->addr_name, snapsync_state_name(status.state));
+        return;
+    }
+    if (node->state == PEER_SNAPSHOT_RECEIVING) {
+        (void)peer_set_state_checked((uint32_t)node->id, &node->state,
+                                     PEER_ACTIVE,
+                                     "snapshot followup send failed");
+    }
+    (void)sync_try_transition(SYNC_SNAPSHOT_RECEIVE,
+                              SYNC_HEADERS_DOWNLOAD,
+                              "snapshot followup send failed");
+    LOG_WARN("snapsync",
+             "snapshot followup send failed for %s; session released",
+             node->addr_name);
+}
+
 /* Caller holds g_swarm_mutex. */
 static bool requeue_owned_chunk(struct swarm_sync *ss, uint32_t chunk_index,
                                 int peer_id)
@@ -772,43 +856,15 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                             snapsync_build_offer_followup(&followup, svc);
                             if (followup.action ==
                                 SNAPSYNC_FOLLOWUP_SEND_FC_CHALLENGE) {
-                                /* Send FlyClient challenge — verify chain
-                                 * before requesting snapshot data */
-                                /* Serialise BEFORE opening the message, so a
-                                 * failed encode cannot put a truncated
-                                 * challenge on the wire. */
-                                struct byte_stream fc;
-                                stream_init(&fc, 72);
-                                struct zcl_result fcw =
-                                    snapsync_write_fc_challenge(svc, &fc);
-                                if (!fcw.ok) {
-                                    LOG_WARN("snapsync",
-                                        "fc challenge encode failed for %s: code=%d %s",
-                                        node->addr_name, fcw.code, fcw.message);
-                                    stream_free(&fc);
-                                } else {
-                                    p2p_node_begin_message(node, MSG_FC_CHALLENGE,
-                                        mp->params->pchMessageStart);
-                                    p2p_node_write_message_data(node, fc.data, fc.size);
-                                    p2p_node_end_message(node);
-                                    stream_free(&fc);
-                                    printf("[snapsync] Sent FlyClient challenge to %s\n",
-                                           node->addr_name);
-                                }
+                                if (!push_fc_challenge(mp, node, svc))
+                                    release_failed_snapshot_followup(svc,
+                                                                      node);
                             } else if (followup.action ==
                                        SNAPSYNC_FOLLOWUP_SEND_SNAPSHOT_REQ) {
-                                /* No MMB — send zsnapreq directly */
-                                struct byte_stream rq;
-                                stream_init(&rq, 52);
-                                if (snapsync_write_snapshot_request(
-                                        &rq, params.our_height,
-                                        node->addr.svc.addr.ip).ok) {
-                                    p2p_node_begin_message(node, MSG_SNAPSHOT_REQ,
-                                        mp->params->pchMessageStart);
-                                    p2p_node_write_message_data(node, rq.data, rq.size);
-                                    p2p_node_end_message(node);
-                                }
-                                stream_free(&rq);
+                                if (!push_snapshot_request(mp, node,
+                                                          params.our_height))
+                                    release_failed_snapshot_followup(svc,
+                                                                      node);
                             }
                             break;
                         }
@@ -1058,16 +1114,8 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                     /* FlyClient passed — now send zsnapreq */
                     int our_h = active_chain_height(
                         &mp->main_state->chain_active);
-                    struct byte_stream rq;
-                    stream_init(&rq, 52);
-                    if (snapsync_write_snapshot_request(
-                            &rq, our_h, node->addr.svc.addr.ip).ok) {
-                        p2p_node_begin_message(node, MSG_SNAPSHOT_REQ,
-                            mp->params->pchMessageStart);
-                        p2p_node_write_message_data(node, rq.data, rq.size);
-                        p2p_node_end_message(node);
-                    }
-                    stream_free(&rq);
+                    if (!push_snapshot_request(mp, node, our_h))
+                        release_failed_snapshot_followup(svc, node);
                 } else {
                     peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_INVALID_PROOF,
                         "FlyClient chain verification failed");
