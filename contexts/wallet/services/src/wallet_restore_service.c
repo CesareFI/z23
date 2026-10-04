@@ -198,6 +198,31 @@ void wallet_restore_datadir_release(struct wallet_restore_datadir_lock *lock)
 
 /* ── helpers ────────────────────────────────────────────────── */
 
+/* target_db is also consumed as a filesystem path below.  Refuse a request
+ * unless it fits exactly: silently truncating it can make the restore create
+ * or modify a different file. */
+static struct zcl_result wrs_prepare_paths(
+    const struct wallet_restore_request *req,
+    struct wallet_restore_report *out)
+{
+    if (!req || !req->backup_path || !req->backup_path[0] ||
+        !req->datadir || !req->datadir[0]) {
+        LOG_WARN(WRS_TAG, "restore: backup_path and datadir are both required");
+        return ZCL_ERR(-31, "restore: backup_path and datadir are required");
+    }
+
+    snprintf(out->backup_path, sizeof(out->backup_path), "%s",
+             req->backup_path);
+    int n = snprintf(out->target_db, sizeof(out->target_db), "%s/node.db",
+                     req->datadir);
+    if (n <= 0 || (size_t)n >= sizeof(out->target_db)) {
+        out->target_db[0] = '\0';
+        LOG_WARN(WRS_TAG, "restore: target path exceeds report capacity");
+        return ZCL_ERR(-59, "restore: target path is too long");
+    }
+    return ZCL_OK;
+}
+
 #ifndef _WIN32
 static void wrs_warn(struct wallet_restore_report *rep, const char *what)
 {
@@ -310,11 +335,9 @@ struct zcl_result wallet_restore_run(const struct wallet_restore_request *req,
     if (!out)
         return ZCL_ERR(-30, "restore: report argument is required");
     memset(out, 0, sizeof(*out));
-    if (!req || !req->backup_path || !req->backup_path[0] ||
-        !req->datadir || !req->datadir[0]) {
-        LOG_WARN(WRS_TAG, "restore: backup_path and datadir are both required");
-        return ZCL_ERR(-31, "restore: backup_path and datadir are required");
-    }
+    struct zcl_result path_r = wrs_prepare_paths(req, out);
+    if (!path_r.ok)
+        return path_r;
 #ifdef _WIN32
     return ZCL_ERR(-58,
                    "native Windows wallet restore is disabled until the "
@@ -331,10 +354,6 @@ struct zcl_result wallet_restore_run(const struct wallet_restore_request *req,
     }
     out->n_tables = n_tables;
     out->dry_run = req->dry_run;
-    snprintf(out->backup_path, sizeof(out->backup_path), "%s",
-             req->backup_path);
-    snprintf(out->target_db, sizeof(out->target_db), "%s/node.db",
-             req->datadir);
 
     struct stat st;
     if (stat(req->backup_path, &st) != 0 || !S_ISREG(st.st_mode)) {
