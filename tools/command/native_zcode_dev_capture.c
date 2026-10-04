@@ -209,16 +209,21 @@ static void zdev_live_apply_failure(
     const char *fallback_code, const char *fallback_phase,
     const char *evidence)
 {
-    const char *code = json_get_str(json_get(body, "code"));
-    const char *phase = json_get_str(json_get(body, "phase"));
-    const char *message = json_get_str(json_get(body, "message"));
-    const char *remote_evidence = json_get_str(json_get(body, "evidence"));
+    /* The RPC client returns JSON-RPC failures as {"error":{...}} while
+     * canonical command refusals put their fields directly in the body. */
+    const struct json_value *error = json_get(body, "error");
+    const struct json_value *failure =
+        error && error->type == JSON_OBJ ? error : body;
+    const char *code = json_get_str(json_get(failure, "code"));
+    const char *phase = json_get_str(json_get(failure, "phase"));
+    const char *message = json_get_str(json_get(failure, "message"));
+    const char *remote_evidence = json_get_str(json_get(failure, "evidence"));
     zcl_command_reply_fail(
         reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_FAILED,
         code && code[0] ? code : fallback_code,
         phase && phase[0] ? phase : fallback_phase,
-        json_get_bool(json_get(body, "retryable")),
-        json_get_bool(json_get(body, "mutated")),
+        json_get_bool(json_get(failure, "retryable")),
+        json_get_bool(json_get(failure, "mutated")),
         message && message[0] ? message :
             "the selected full node refused canonical admission",
         remote_evidence && remote_evidence[0] ? remote_evidence : evidence);

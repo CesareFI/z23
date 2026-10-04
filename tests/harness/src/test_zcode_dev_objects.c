@@ -10563,6 +10563,18 @@ static int test_zd_publish_routes_to_store_owner(void)
         ASSERT_STR_EQ(refused.error.code, "LANE_NOT_ACCEPTED");
         zcl_command_reply_free(&refused);
 
+        /* The RPC client returns transport failures inside an error object.
+         * Keep its exact message when forwarding to the live store owner. */
+        zd_route_answer =
+            "{\"error\":{\"code\":-32603,\"message\":"
+            "\"cannot read RPC cookie at selected datadir\"}}";
+        struct zcl_command_reply transport;
+        zd_route_run(false, &input, &transport);
+        ASSERT(transport.exit_code != ZCL_COMMAND_EXIT_OK);
+        ASSERT_STR_EQ(transport.error.message,
+                      "cannot read RPC cookie at selected datadir");
+        zcl_command_reply_free(&transport);
+
         /* An unreachable owner is a transport refusal, not a fallback. */
         zd_route_answer = NULL;
         struct zcl_command_reply unreachable;
