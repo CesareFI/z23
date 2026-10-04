@@ -16,7 +16,7 @@
 
 #define WMETA_MAGIC "MDE1"
 #define WMETA_NONCE_LEN 12
-#define WMETA_PASS_MAX 512
+#define WMETA_PASS_MAX WALLET_LOCK_PASSPHRASE_MAX
 
 struct wallet_metadata_key_row {
     int64_t id;

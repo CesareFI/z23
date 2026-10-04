@@ -139,9 +139,11 @@ backward compatibility. `wallet_sqlite_key_crypto.c` owns the wrapped DEK,
 WKD1 AEAD, and migration transaction. A wallet may therefore be mixed during
 an interrupted upgrade without any row being mistaken for zero or deleted.
 
-The passphrase is resolved in one place,
-`wallet_lock_effective_passphrase()` (`contexts/wallet/modules/wallet/src/wallet_lock.c`), in this
-order:
+The passphrase is resolved in one place inside `wallet_lock.c`. Callers can
+query availability with `wallet_lock_has_passphrase()` or take a bounded,
+operation-owned snapshot with `wallet_lock_copy_passphrase()`; no borrowed
+pointer to the shared cleansable buffer crosses the module boundary. Resolution
+uses this order:
 
 1. force-locked (explicit `lock`) → NULL, wins over everything
 2. runtime passphrase (explicit stdin `unlock`, or the one boot credential)

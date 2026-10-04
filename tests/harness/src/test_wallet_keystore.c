@@ -7,6 +7,8 @@
 #include "wallet/wallet_lock.h"
 #include "wallet/keystore.h"   /* basic_keystore + keystore_wipe_private_keys */
 #include "config/boot.h"   /* wallet_at_rest_boot_decision + operator lanes */
+#include "support/cleanse.h"
+#include "util/thread_registry.h"
 
 #include <fcntl.h>
 #include <stdio.h>
@@ -573,7 +575,7 @@ static int test_wallet_lock_register(void)
         ASSERT(!wallet_lock_encrypted_at_rest());
         ASSERT(wallet_lock_is_unlocked());
         ASSERT(wallet_lock_spend_guard().ok);
-        ASSERT(wallet_lock_effective_passphrase() == NULL);
+        ASSERT(!wallet_lock_has_passphrase());
 
         /* Once the wallet is known encrypted, no passphrase => locked. */
         wallet_lock_note_encrypted_at_rest();
@@ -585,8 +587,9 @@ static int test_wallet_lock_register(void)
         /* Register-only unlock (no wallet/ws) accepts a non-empty pass. */
         struct zcl_result u = wallet_lock_unlock(NULL, NULL, k_passphrase);
         ASSERT(u.ok);
-        const char *eff = wallet_lock_effective_passphrase();
-        ASSERT(eff != NULL && strcmp(eff, k_passphrase) == 0);
+        char snapshot[WALLET_LOCK_PASSPHRASE_MAX + 1];
+        ASSERT(wallet_lock_copy_passphrase(snapshot, sizeof(snapshot)));
+        ASSERT(strcmp(snapshot, k_passphrase) == 0);
         ASSERT(wallet_lock_is_unlocked());
         ASSERT(wallet_lock_spend_guard().ok);
 
@@ -594,8 +597,14 @@ static int test_wallet_lock_register(void)
         ASSERT(wallet_lock_arm_timeout(NULL, 1).ok);
         struct timespec wait = { .tv_sec = 1, .tv_nsec = 200000000 };
         while (nanosleep(&wait, &wait) != 0) { }
-        ASSERT(wallet_lock_effective_passphrase() == NULL);
+        ASSERT(!wallet_lock_has_passphrase());
         ASSERT(!wallet_lock_is_unlocked());
+        ASSERT(thread_registry_join_all(2) == 0);
+
+        /* An operation-owned snapshot remains stable after auto-lock; the
+         * caller controls its retirement. */
+        ASSERT(strcmp(snapshot, k_passphrase) == 0);
+        memory_cleanse(snapshot, sizeof(snapshot));
 
         ASSERT(wallet_lock_unlock(NULL, NULL, k_passphrase).ok);
         ASSERT(!wallet_lock_arm_timeout(NULL, 0).ok);
@@ -603,7 +612,7 @@ static int test_wallet_lock_register(void)
 
         /* Lock scrubs it: encrypted + no pass => locked again. */
         wallet_lock_lock(NULL);
-        ASSERT(wallet_lock_effective_passphrase() == NULL);
+        ASSERT(!wallet_lock_has_passphrase());
         ASSERT(!wallet_lock_is_unlocked());
         ASSERT(!wallet_lock_spend_guard().ok);
 
@@ -612,11 +621,10 @@ static int test_wallet_lock_register(void)
         wallet_lock_note_encrypted_at_rest();
         ASSERT(!wallet_lock_is_unlocked());
         setenv("ZCL_WALLET_PASSPHRASE", "env-secret", 1);
-        eff = wallet_lock_effective_passphrase();
-        ASSERT(eff == NULL);
+        ASSERT(!wallet_lock_has_passphrase());
         ASSERT(!wallet_lock_is_unlocked());
         wallet_lock_lock(NULL);
-        ASSERT(wallet_lock_effective_passphrase() == NULL);
+        ASSERT(!wallet_lock_has_passphrase());
         ASSERT(!wallet_lock_is_unlocked());
         unsetenv("ZCL_WALLET_PASSPHRASE");
 
@@ -651,7 +659,7 @@ static int test_wallet_lock_boot_credential(void)
         wallet_lock_reset_for_test();
         setenv("CREDENTIALS_DIRECTORY", dir, 1);
         ASSERT(wallet_lock_register_boot_credential().ok);
-        ASSERT(wallet_lock_effective_passphrase() == NULL);
+        ASSERT(!wallet_lock_has_passphrase());
 
         int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
         ASSERT(fd >= 0);
@@ -659,14 +667,17 @@ static int test_wallet_lock_boot_credential(void)
                (ssize_t)strlen(k_passphrase));
         ASSERT(close(fd) == 0);
         ASSERT(wallet_lock_register_boot_credential().ok);
-        ASSERT(wallet_lock_effective_passphrase() != NULL);
-        ASSERT(strcmp(wallet_lock_effective_passphrase(), k_passphrase) == 0);
+        ASSERT(wallet_lock_has_passphrase());
+        char pass[WALLET_LOCK_PASSPHRASE_MAX + 1];
+        ASSERT(wallet_lock_copy_passphrase(pass, sizeof(pass)));
+        ASSERT(strcmp(pass, k_passphrase) == 0);
+        memory_cleanse(pass, sizeof(pass));
 
         wallet_lock_reset_for_test();
         ASSERT(chmod(path, 0644) == 0);
         struct zcl_result unsafe = wallet_lock_register_boot_credential();
         ASSERT(!unsafe.ok && unsafe.code == WLK_CREDENTIAL_MODE);
-        ASSERT(wallet_lock_effective_passphrase() == NULL);
+        ASSERT(!wallet_lock_has_passphrase());
         PASS();
     } _test_next:;
 

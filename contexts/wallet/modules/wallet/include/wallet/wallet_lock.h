@@ -60,11 +60,11 @@ enum wallet_lock_err {
     WLK_CREDENTIAL_MODE = -208,
 };
 
-/* The passphrase the persistence layer must decrypt/encrypt with, per the
- * resolution order above.  Reentrant.  The returned pointer is owned by the
- * module and stays valid until the next lock/unlock call; copy it if you must
- * hold it across one.  Returns NULL when locked or when no passphrase is set. */
-const char *wallet_lock_effective_passphrase(void);
+#define WALLET_LOCK_PASSPHRASE_MAX 512U
+
+/* True when the lock register currently contains a passphrase. The secret
+ * itself never escapes as a borrowed pointer. */
+bool wallet_lock_has_passphrase(void);
 
 /* Copy the active passphrase while holding the lock. Prefer this for an
  * operation that must remain safe if the auto-lock timer fires concurrently.
