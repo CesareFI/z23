@@ -193,6 +193,31 @@ int test_utxo_reimport_flag(void)
         rmdir(dir);
     }
 
+    /* ── 7. check refuses a marker redirected through a link ─── */
+    {
+        char dir[PATH_MAX];
+        if (!urf_make_tmpdir(dir, sizeof(dir))) {
+            printf("urf: mkdtemp FAIL\n");
+            return 1;
+        }
+        char flag[PATH_MAX];
+        char victim[PATH_MAX];
+        snprintf(flag, sizeof(flag), "%s/needs_reimport", dir);
+        snprintf(victim, sizeof(victim), "%s/victim", dir);
+        urf_write_byte(victim, '1');
+
+        bool linked = symlink(victim, flag) == 0;
+        bool found = linked && utxo_reimport_flag_check_and_clear(dir);
+
+        URF_CHECK("linked marker is not authoritative", !found);
+        URF_CHECK("linked marker target remains unchanged",
+                  urf_file_equals(victim, "1"));
+
+        unlink(flag);
+        unlink(victim);
+        rmdir(dir);
+    }
+
     if (failures == 0)
         printf("=== utxo_reimport_flag tests: ALL PASS ===\n\n");
     else

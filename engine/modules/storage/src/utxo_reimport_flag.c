@@ -47,28 +47,52 @@ static bool urf_replace(const char *flag_path)
     return ok;
 }
 
+static bool urf_read_and_clear(const char *path, const char *parent,
+                               bool *was_set)
+{
+    *was_set = false;
+    struct platform_private_file file;
+    struct platform_private_file_identity identity;
+    platform_private_file_init(&file);
+    if (!platform_private_file_open_locked(path, &file) ||
+        !platform_private_file_identity(&file, &identity)) {
+        platform_private_file_close(&file);
+        return false;
+    }
+
+    char marker = '\0';
+    bool set = platform_private_file_read_at(&file, &marker, 1, 0) &&
+               marker == '1';
+    bool cleared = platform_private_file_retire_if_identity(
+        &file, path, &identity);
+    platform_private_file_close(&file);
+    if (!cleared)
+        return false;
+    (void)platform_private_parent_flush(parent);
+    *was_set = set;
+    return true;
+}
+
 bool utxo_reimport_flag_check_and_clear(const char *datadir)
 {
     if (!datadir)
         return false;
 
-    char flag_path[512];
-    snprintf(flag_path, sizeof(flag_path),
-             "%s/needs_reimport", datadir);
-
-    FILE *flag = fopen(flag_path, "r");
-    if (!flag)
+    char flag_path[512], resolved[512], parent[512];
+    int path_len = snprintf(flag_path, sizeof(flag_path),
+                            "%s/needs_reimport", datadir);
+    if (path_len < 0 || (size_t)path_len >= sizeof(flag_path) ||
+        !platform_private_destination_resolve(
+            flag_path, resolved, sizeof(resolved), parent, sizeof(parent)))
         return false;
 
-    char buf[8] = {0};
-    size_t n = fread(buf, 1, sizeof(buf) - 1, flag);
-    (void)n;  /* tolerate short / empty reads — content drives the bool */
-    fclose(flag);
     /* Unconditional clear: even if the byte was not '1' we remove the
      * marker so a malformed write cannot loop forever. */
-    remove(flag_path);
+    bool set = false;
+    if (!urf_read_and_clear(resolved, parent, &set))
+        return false;
 
-    if (buf[0] == '1') {
+    if (set) {
         fprintf(stderr,  // obs-ok:storage-primitive-info
                 "[storage] utxo_reimport_flag: set — cleared "
                 "and signalling reimport (datadir=%s)\n", datadir);
