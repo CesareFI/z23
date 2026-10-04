@@ -397,9 +397,9 @@ bool boot_install_bundle_pending(const char *datadir)
         return false;
     int a = 0;
     char b[PATH_MAX];
-    if (ibr_read(path, &a, b, sizeof(b)) && a == BOOT_INSTALL_BUNDLE_TERMINAL)
-        return false; /* terminal: present-but-not-pending */
-    return true;
+    if (!ibr_read(path, &a, b, sizeof(b)))
+        return false;
+    return a != BOOT_INSTALL_BUNDLE_TERMINAL;
 }
 
 bool boot_install_bundle_consume(const char *datadir, char *out_path,
