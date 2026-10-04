@@ -236,8 +236,13 @@ bool process_cmpctblock(struct msg_processor *mp, struct p2p_node *node,
             node->compact_request_time = (int64_t)platform_time_wall_time_t();
             missing_indices = NULL; /* ownership transferred */
         } else {
-            /* Alloc failed — fall back to just freeing */
+            /* Without storage for the partial block there is nothing a
+             * blocktxn response could complete. Retry the full body and do
+             * not serialize a request whose index array has no owner. */
+            (void)dl_mark_notfound(get_download_mgr(), (uint32_t)node->id,
+                                   &block_hash);
             block_free(&out_block);
+            goto compact_cleanup;
         }
 
         /* Send getblocktxn for missing transactions */
@@ -260,6 +265,7 @@ bool process_cmpctblock(struct msg_processor *mp, struct p2p_node *node,
         block_free(&out_block);
     }
 
+compact_cleanup:
     free(missing_indices);
 
     /* Clean up mempool tx copies */

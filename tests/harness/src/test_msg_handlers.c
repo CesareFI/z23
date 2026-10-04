@@ -848,6 +848,78 @@ static int test_process_cmpctblock_replacement_retries_old_body(void)
     return failures;
 }
 
+static int test_process_cmpctblock_pending_alloc_failure_retries_body(void)
+{
+    int failures = 0;
+    TEST("msg_handlers: compact pending allocation failure requeues body") {
+        struct download_manager *dm = get_download_mgr();
+        (void)dl_drain_for_backpressure(dm);
+        chain_params_select(CHAIN_REGTEST);
+        const struct chain_params *cp = chain_params_get();
+
+        struct compact_block_msg cb;
+        compact_block_msg_init(&cb);
+        bool setup_ok = make_missing_compact_test_block(&cb, cp);
+        struct uint256 hash;
+        block_header_get_hash(&cb.header, &hash);
+        struct byte_stream s;
+        stream_init(&s, 4096);
+        setup_ok = setup_ok && compact_block_msg_serialize(&cb, &s);
+
+        struct tx_mempool pool;
+        tx_mempool_init(&pool, 0);
+        struct net_manager nm;
+        memset(&nm, 0, sizeof(nm));
+        struct msg_processor mp;
+        memset(&mp, 0, sizeof(mp));
+        mp.params = cp;
+        mp.mempool = &pool;
+        mp.net_mgr = &nm;
+
+        struct p2p_node node;
+        unreq_setup_node(&node, 515);
+        node.socket = PLATFORM_SOCKET_INVALID;
+        zcl_mutex_init(&node.cs_send);
+        setup_ok = setup_ok &&
+                   dl_mark_requested(dm, &hash, 75, (uint32_t)node.id);
+
+        zcl_alloc_fault_fail_next("compact_pending_block");
+        bool handled = setup_ok && process_cmpctblock(&mp, &node, &s);
+        bool fault_consumed = zcl_alloc_fault_armed_label() == NULL;
+        bool released = !dl_is_in_flight(dm, &hash);
+        struct uint256 reassigned_hash;
+        bool reassigned =
+            dl_assign_to_peer(dm, 516, &reassigned_hash, 1) == 1 &&
+            uint256_eq(&reassigned_hash, &hash);
+
+        zcl_alloc_fault_clear();
+        if (node.compact_pending_block) {
+            block_free(node.compact_pending_block);
+            free(node.compact_pending_block);
+        }
+        free(node.compact_missing_indices);
+        while (node.send_head) {
+            struct send_segment *seg = node.send_head;
+            node.send_head = seg->next;
+            send_segment_free(seg);
+        }
+        zcl_mutex_destroy(&node.cs_send);
+        tx_mempool_free(&pool);
+        stream_free(&s);
+        compact_block_msg_free(&cb);
+        (void)dl_drain_for_backpressure(dm);
+        chain_params_select(CHAIN_MAIN);
+
+        ASSERT(setup_ok);
+        ASSERT(handled);
+        ASSERT(fault_consumed);
+        ASSERT(released);
+        ASSERT(reassigned);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_process_block_msg_no_score_when_requested_from_peer_zero(void)
 {
     int failures = 0;
@@ -1469,6 +1541,7 @@ int test_msg_handlers(void)
     failures += test_process_blocktxn_bad_fill_retries_full_body();
     failures += test_process_blocktxn_stale_retries_full_body();
     failures += test_process_cmpctblock_replacement_retries_old_body();
+    failures += test_process_cmpctblock_pending_alloc_failure_retries_body();
     failures += test_process_block_msg_no_score_when_requested_from_peer_zero();
     failures += test_process_block_msg_no_score_within_settle_grace();
     failures += test_process_block_msg_no_score_during_shutdown();
