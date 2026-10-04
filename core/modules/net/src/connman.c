@@ -1725,13 +1725,12 @@ static void *thread_socket_handler(void *arg)
                 peer_lifecycle_note_disconnected(
                     node, p2p_disconnect_reason_name(reason));
 
-                /* Re-queue any in-flight blocks from this peer — both the
-                 * legacy download manager AND the parallel block swarm.
-                 * (g_block_swarm requeue is event-driven here; otherwise a
-                 * dead peer's pieces sit until the 8 s BLOCK_PIECE_TIMEOUT.) */
+                /* Re-queue every in-flight body owned by this peer: legacy
+                 * blocks, snapshot chunks, and parallel block pieces. */
                 {
                     dl_peer_disconnected(msg_get_download_mgr(),
                                           (uint32_t)node->id);
+                    mp_swarm_peer_disconnected((uint32_t)node->id);
                     mp_block_swarm_peer_disconnected((uint32_t)node->id);
                 }
 

@@ -1449,6 +1449,26 @@ void swarm_sync_handle_timeouts(struct swarm_sync *ss, int timeout_secs)
     }
 }
 
+size_t swarm_sync_peer_disconnected(struct swarm_sync *ss, int peer_id)
+{
+    if (!ss || !ss->chunk_states || !ss->chunk_peer)
+        return 0;
+
+    size_t requeued = 0;
+    for (uint32_t i = 0; i < ss->manifest.num_chunks; i++) {
+        if (ss->chunk_states[i] != CHUNK_INFLIGHT ||
+            ss->chunk_peer[i] != peer_id)
+            continue;
+        ss->chunk_states[i] = CHUNK_NEEDED;
+        ss->chunk_peer[i] = -1;
+        ss->chunk_request_time[i] = 0;
+        if (ss->chunks_inflight > 0)
+            ss->chunks_inflight--;
+        requeued++;
+    }
+    return requeued;
+}
+
 /* ── Block swarm: BitTorrent-style parallel block download ──── */
 
 void block_piece_hash(const uint8_t (*block_hashes)[32], uint32_t count,

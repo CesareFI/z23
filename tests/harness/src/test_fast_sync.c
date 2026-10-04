@@ -651,6 +651,43 @@ static int test_swarm_late_duplicate_is_idempotent(void)
     return failures;
 }
 
+static int test_swarm_disconnect_requeues_owned_chunks(void)
+{
+    int failures = 0;
+    TEST("swarm_sync disconnect releases only the departed peer's chunks") {
+        uint8_t hashes[4][32] = {{0}};
+        struct sync_manifest manifest;
+        memset(&manifest, 0, sizeof(manifest));
+        manifest.num_chunks = 4;
+        manifest.chunk_size = SYNC_CHUNK_SIZE;
+        manifest.chunk_hashes = hashes;
+
+        struct swarm_sync ss;
+        ASSERT(swarm_sync_init(&ss, &manifest, NULL));
+        ASSERT(swarm_sync_assign_chunk(&ss, 11) == 0);
+        ASSERT(swarm_sync_assign_chunk(&ss, 22) == 1);
+        ASSERT(swarm_sync_assign_chunk(&ss, 11) == 2);
+        ss.chunk_states[3] = CHUNK_COMPLETE;
+        ss.chunk_peer[3] = 11;
+        ss.chunks_complete = 1;
+
+        ASSERT(swarm_sync_peer_disconnected(&ss, 11) == 2);
+        ASSERT(ss.chunks_inflight == 1);
+        ASSERT(ss.chunk_states[0] == CHUNK_NEEDED);
+        ASSERT(ss.chunk_states[1] == CHUNK_INFLIGHT);
+        ASSERT(ss.chunk_peer[1] == 22);
+        ASSERT(ss.chunk_states[2] == CHUNK_NEEDED);
+        ASSERT(ss.chunk_states[3] == CHUNK_COMPLETE);
+        ASSERT(ss.chunks_complete == 1);
+        ASSERT(swarm_sync_peer_disconnected(&ss, 11) == 0);
+        ASSERT(swarm_sync_assign_chunk(&ss, 33) == 0);
+
+        swarm_sync_free(&ss);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── Block swarm tests ───────────────────────────────────── */
 
 static int test_block_swarm_rarest_first(void)
@@ -1856,6 +1893,7 @@ int test_fast_sync(void)
     failures += test_swarm_init_assign();
     failures += test_swarm_timeout_reassign();
     failures += test_swarm_late_duplicate_is_idempotent();
+    failures += test_swarm_disconnect_requeues_owned_chunks();
 
     /* Block swarm */
     failures += test_block_swarm_rarest_first();

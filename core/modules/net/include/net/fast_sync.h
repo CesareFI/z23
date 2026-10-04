@@ -361,6 +361,10 @@ int swarm_sync_progress(const struct swarm_sync *ss);
 /* Handle timeout: re-assign inflight chunks older than timeout_ms */
 void swarm_sync_handle_timeouts(struct swarm_sync *ss, int timeout_secs);
 
+/* Release snapshot chunks owned by a peer that disconnected so another peer
+ * can claim them immediately instead of waiting for the timeout sweep. */
+size_t swarm_sync_peer_disconnected(struct swarm_sync *ss, int peer_id);
+
 /* ── Block swarm: BitTorrent-style parallel block download ──── */
 /* Groups blocks into independently hashable/verifiable pieces. Each piece is
  * independently hashable and verifiable. Legacy peers contribute

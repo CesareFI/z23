@@ -518,6 +518,21 @@ size_t mp_block_swarm_peer_disconnected(uint32_t peer_id)
     return requeued;
 }
 
+size_t mp_swarm_peer_disconnected(uint32_t peer_id)
+{
+    if (!atomic_load(&g_swarm_active))
+        return 0;
+
+    pthread_mutex_lock(&g_swarm_mutex);
+    size_t requeued =
+        swarm_sync_peer_disconnected(&g_swarm, (int)peer_id);
+    pthread_mutex_unlock(&g_swarm_mutex);
+    if (requeued)
+        LOG_INFO("net", "snapshot swarm: requeued %zu chunk(s) from "
+                        "disconnected peer %u", requeued, peer_id);
+    return requeued;
+}
+
 bool mp_snapshot_check_stall(void)
 {
     return snapsync_check_stall();
