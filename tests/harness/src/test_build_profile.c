@@ -172,6 +172,13 @@ int test_build_profile(void)
         PASS();
     }
 
+    TEST("standalone tool build keys reject compiler changes") {
+        ASSERT(slurp_cmd("bash tools/dev/standalone-tool-build-key-selftest.sh --quick",
+                         guard, sizeof guard));
+        ASSERT(strstr(guard, "standalone tool build-key selftest PASS") != NULL);
+        PASS();
+    }
+
 _test_next:
     return failures;
 }

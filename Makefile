@@ -8444,31 +8444,69 @@ $(P2_INVARIANT_CHECK_BIN): tools/p2_invariant_check.c vendor/include/sqlite3.h v
 # Read-only SQL query CLI over any sqlite db (progress.kv, node.db, fixture
 # datadirs). Python is banned and the host has no sqlite3 CLI; this is the
 # shell-side diagnostic primitive (the native `sql` command covers node.db).
+# These small tools compile outside the object epochs. Bind their build-key
+# sidecars to the same complete compiler identity, effective flags, and build
+# system as the epochs. A compiler switch must invalidate an otherwise newer
+# binary; a missing or interrupted sidecar must fail toward recompilation.
+# Exact standalone goals derive the identity here; other build goals reuse the
+# one already derived for their selected object epoch. A goal with neither
+# authority always recompiles if it reaches either binary rule.
+STANDALONE_TOOL_KEYED := $(if $(or $(strip $(ZCL_EPOCH_PROFILES)),$(filter jsonq build/bin/jsonq sqlq build/bin/sqlq,$(ZCL_STANDALONE_EXACT_GOAL))),1,)
+ifeq ($(STANDALONE_TOOL_KEYED),1)
+STANDALONE_TOOL_COMPILER_ID := $(if $(filter $(ZCL_ZERO_SHA256),$(BUILD_COMPILER_ID)),$(strip $(shell $(BUILD_EPOCH_KEY_TOOL) compiler-id "$(CC)" "$(CXX)" "$(CURDIR)")),$(BUILD_COMPILER_ID))
+STANDALONE_TOOL_SYSTEM_ID := $(if $(filter $(ZCL_ZERO_SHA256),$(BUILD_SYSTEM_ID)),$(strip $(shell $(BUILD_EPOCH_KEY_TOOL) build-system-id)),$(BUILD_SYSTEM_ID))
+ifeq ($(shell printf '%s\n' '$(STANDALONE_TOOL_COMPILER_ID)' '$(STANDALONE_TOOL_SYSTEM_ID)' | awk '/^[0-9a-f]{64}$$/ { n++ } END { print n }'),2)
+else
+$(error standalone tool compiler/build-system fingerprint failed)
+endif
+define standalone_tool_key
+$(strip $(shell $(BUILD_EPOCH_KEY_TOOL) key "$(STANDALONE_TOOL_COMPILER_ID)" "$(1)" "$(strip $($(2)))" "$(strip $($(3)))" "$(STANDALONE_TOOL_SYSTEM_ID)"))
+endef
+endif
+SQLQ_COMPILE_FLAGS = -std=c23 -O2 -Wall -Wextra -Werror -pedantic -D_POSIX_C_SOURCE=200809L $(ZCL_PLATFORM_CPPFLAGS) -Ivendor/include
+SQLQ_LINK_FLAGS = -Lvendor/lib vendor/lib/libsqlite3.a -lpthread -ldl -lm
 SQLQ_BIN = $(BIN_DIR)/sqlq
+SQLQ_BUILD_KEY := $(if $(STANDALONE_TOOL_KEYED),$(call standalone_tool_key,standalone-sqlq-v1,SQLQ_COMPILE_FLAGS,SQLQ_LINK_FLAGS),)
+ifeq ($(STANDALONE_TOOL_KEYED),1)
+ifneq ($(shell printf '%s\n' '$(SQLQ_BUILD_KEY)' | awk '/^[0-9a-f]{64}$$/ { print "yes" }'),yes)
+$(error standalone sqlq build-key derivation failed)
+endif
+endif
+SQLQ_CONFIG_MATCH := $(if $(SQLQ_BUILD_KEY),$(shell printf '%s\n' '$(SQLQ_BUILD_KEY)' | cmp -s - '$(SQLQ_BIN).build-key' && printf yes),)
+SQLQ_CONFIG_FORCE := $(if $(SQLQ_CONFIG_MATCH),,FORCE)
 .PHONY: sqlq
 sqlq: $(SQLQ_BIN)
-$(SQLQ_BIN): tools/sqlq.c vendor/include/sqlite3.h vendor/lib/libsqlite3.a
+$(SQLQ_BIN): tools/sqlq.c vendor/include/sqlite3.h vendor/lib/libsqlite3.a $(SQLQ_CONFIG_FORCE)
 	@mkdir -p $(dir $@)
-	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
-	    -D_POSIX_C_SOURCE=200809L $(ZCL_PLATFORM_CPPFLAGS) -Ivendor/include \
+	$(CC) $(SQLQ_COMPILE_FLAGS) \
 	    -o $@ tools/sqlq.c \
-	    -Lvendor/lib vendor/lib/libsqlite3.a -lpthread -ldl -lm
+	    $(SQLQ_LINK_FLAGS)
+	@printf '%s\n' '$(SQLQ_BUILD_KEY)' > '$@.build-key'
 
 # Nested JSON path query for operator scripts. Python is banned; grep/sed
 # covers flat RPC fields, and this C23 walker covers nested envelopes.
 JSONQ_BIN = $(BIN_DIR)/jsonq
+JSONQ_COMPILE_FLAGS = -std=c23 -O2 -Wall -Wextra -Werror -pedantic -D_POSIX_C_SOURCE=200809L $(ZCL_PLATFORM_CPPFLAGS) -Icontexts/commons/packages/zjsonp/include -Icontexts/commons/packages/zutf8/include
+JSONQ_LINK_FLAGS = no-extra-link-flags
+JSONQ_BUILD_KEY := $(if $(STANDALONE_TOOL_KEYED),$(call standalone_tool_key,standalone-jsonq-v1,JSONQ_COMPILE_FLAGS,JSONQ_LINK_FLAGS),)
+ifeq ($(STANDALONE_TOOL_KEYED),1)
+ifneq ($(shell printf '%s\n' '$(JSONQ_BUILD_KEY)' | awk '/^[0-9a-f]{64}$$/ { print "yes" }'),yes)
+$(error standalone jsonq build-key derivation failed)
+endif
+endif
+JSONQ_CONFIG_MATCH := $(if $(JSONQ_BUILD_KEY),$(shell printf '%s\n' '$(JSONQ_BUILD_KEY)' | cmp -s - '$(JSONQ_BIN).build-key' && printf yes),)
+JSONQ_CONFIG_FORCE := $(if $(JSONQ_CONFIG_MATCH),,FORCE)
 .PHONY: jsonq
 jsonq: $(JSONQ_BIN)
 $(JSONQ_BIN): tools/jsonq.c \
     contexts/commons/packages/zjsonp/src/zjsonp.c contexts/commons/packages/zutf8/src/zutf8.c \
     contexts/commons/packages/zjsonp/include/zjsonp/zjsonp.h \
-    contexts/commons/packages/zutf8/include/zutf8/zutf8.h
+    contexts/commons/packages/zutf8/include/zutf8/zutf8.h $(JSONQ_CONFIG_FORCE)
 	@mkdir -p $(dir $@)
-	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
-	    -D_POSIX_C_SOURCE=200809L $(ZCL_PLATFORM_CPPFLAGS) \
-	    -Icontexts/commons/packages/zjsonp/include -Icontexts/commons/packages/zutf8/include \
+	$(CC) $(JSONQ_COMPILE_FLAGS) \
 	    -o $@ tools/jsonq.c contexts/commons/packages/zjsonp/src/zjsonp.c \
 	    contexts/commons/packages/zutf8/src/zutf8.c
+	@printf '%s\n' '$(JSONQ_BUILD_KEY)' > '$@.build-key'
 
 # Native bridge over the existing private fleet JSONL projection.
 .PHONY: fleet-board-bridge
