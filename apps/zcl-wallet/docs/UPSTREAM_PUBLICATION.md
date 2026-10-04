@@ -1524,3 +1524,45 @@ Local artifacts `ldb-log-bounds.bundle`, `ldb-log-bounds.mbox`,
 `pr-ldb-log-bounds.md` and `ldb-log-bounds-qualification.txt` verify in the
 candidate worktree's ignored evidence directory. No external publication
 action was attempted.
+
+### LevelDB empty-fragment null-copy fix qualified
+
+Branch `agent/upstream-ldb-empty-fragment-20261004`, signed head
+`bf7a60ee79005ed24f8728962260202e831ab84a`, base
+`3a93e60ebf922af3d119b9facc1d95803f42844b`, avoids passing the initially null
+fragment scratch destination to `memcpy` when an admitted LevelDB FIRST, MIDDLE
+or LAST fragment has length zero. Empty fragments continue to succeed without
+allocation and leave scratch length/capacity zero; every nonempty fragment is
+copied exactly as before. Framing, CRC, fragmented-record assembly, torn-tail
+handling, WAL replay, database bytes, wallet formats, consensus and sealed-core
+code are unchanged. The review is four files, +41/-3, including the generated
+inventory and a narrow test seam.
+
+A standalone Clang 20 ASan/UBSan control first detects the exact zero-length
+null-destination call. Canonical sanitized RED then fails `test_ldb_reader`
+with the same `null pointer passed as argument 1` diagnostic while exercising
+an empty FIRST fragment. Removing only the new nonzero-length guard reproduces
+the failure. The restored focused and ASan/UBSan groups pass 1/1 with zero
+skips, including the 5,135-record differential corpus, 1,850 WAL entries,
+missing-CURRENT behavior and five corruption refusals. GCC 14.2.0 and Clang
+20.1.2 each check all 2,433 production translation units with no new diagnostic
+sites. The MinGW lane checks all 2,399 Windows translation units clean and
+cross-links all 74 strict C23 acceptance programs; native Windows runtime
+remains unobserved. Architecture, documentation-count, generated-inventory,
+file-size, core-seal, consensus-parity, PR-security and cap-15 complexity gates
+pass; the complexity scan covers 68,756 functions in 4,681 files.
+
+The exact policy-5 private-RAM-scratch proof passes the exact head/base pair:
+all 215 lint gates and all 17 impact-selected groups complete, with 17 tests
+run and zero failures, skips or reused test results. Lint took 198.516s, tests
+206.830s and the signed receipt records 450.638s total. The foreground step
+returned after 452.272s. Native status under the producing identity reports
+`passed` with `receipt_reused=false`; the RAM generation retired normally and
+receipt SHA256 is
+`96bd71db6bb8244ed5274847b0a89a3b7c1d24c78f53984eb90dd55bab0f7077`.
+
+Local artifacts `ldb-empty-fragment.bundle`, `ldb-empty-fragment.mbox`,
+`ldb-empty-fragment.receipt`, exact phase/test/lint/status evidence,
+`pr-ldb-empty-fragment.md` and
+`ldb-empty-fragment-qualification.txt` verify in the candidate worktree's
+ignored evidence directory. No external publication action was attempted.
