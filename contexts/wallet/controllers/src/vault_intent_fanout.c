@@ -118,7 +118,7 @@ static bool vif_preflight(struct wallet_rpc_context *ctx, const char *scope,
                   mr.ok ? money.reason : mr.message);
         return false;
     }
-    if (fee < 0 || outputs_total_zat > INT64_MAX - fee) {
+    if (!MoneyRange(fee) || outputs_total_zat > MAX_MONEY - fee) {
         vif_error(result, "FEE_INVALID", "wallet fanout fee is invalid");
         return false;
     }
