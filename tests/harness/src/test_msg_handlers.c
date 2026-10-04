@@ -537,6 +537,57 @@ static int test_process_block_msg_no_score_when_requested(void)
     return failures;
 }
 
+static int test_process_block_msg_malformed_releases_owned_requests(void)
+{
+    int failures = 0;
+    TEST("msg_handlers: malformed block disconnects its request owner for "
+         "immediate takeover") {
+        peer_scoring_init();
+        struct download_manager *dm = get_download_mgr();
+        dl_init(dm);
+
+        struct p2p_node node;
+        unreq_setup_node(&node, 505);
+        node.endpoint_generation = 17;
+
+        struct uint256 h1 = make_test_hash(0x51);
+        struct uint256 h2 = make_test_hash(0x52);
+        ASSERT(dl_mark_requested(dm, &h1, 51, (uint32_t)node.id));
+        ASSERT(dl_mark_requested(dm, &h2, 52, (uint32_t)node.id));
+
+        struct net_manager nm;
+        memset(&nm, 0, sizeof(nm));
+        struct msg_processor mp;
+        memset(&mp, 0, sizeof(mp));
+        mp.net_mgr = &nm;
+
+        /* A complete wire frame can still carry a truncated block payload.
+         * The handler cannot name either owned hash from this one byte, so
+         * it must enter the normal peer-disconnect lifecycle; that sweep is
+         * what releases every request owned by this failed source. */
+        const uint8_t truncated_payload = 0;
+        struct byte_stream s;
+        stream_init_from_data(&s, &truncated_payload, 1);
+
+        ASSERT(!process_block_msg(&mp, &node, &s));
+        ASSERT(node.disconnect);
+        ASSERT(atomic_load(&node.disconnect_reason) ==
+               P2P_DISCONNECT_MESSAGE_PARSE);
+        ASSERT(atomic_load(&node.disconnect_source) ==
+               P2P_DISCONNECT_SOURCE_MESSAGE_HANDLER);
+
+        /* Model the already-covered connman disconnect sweep and prove the
+         * two bodies are immediately available to a healthy peer. */
+        ASSERT(dl_peer_disconnected(dm, (uint32_t)node.id) == 2);
+        struct uint256 reassigned[2];
+        ASSERT(dl_assign_to_peer(dm, 506, reassigned, 2) == 2);
+
+        stream_free(&s);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_process_block_msg_no_score_when_requested_from_peer_zero(void)
 {
     int failures = 0;
@@ -1153,6 +1204,7 @@ int test_msg_handlers(void)
     failures += test_process_block_msg_reducer_pending_stays_retryable();
     failures += test_process_block_msg_scores_unrequested();
     failures += test_process_block_msg_no_score_when_requested();
+    failures += test_process_block_msg_malformed_releases_owned_requests();
     failures += test_process_block_msg_no_score_when_requested_from_peer_zero();
     failures += test_process_block_msg_no_score_within_settle_grace();
     failures += test_process_block_msg_no_score_during_shutdown();

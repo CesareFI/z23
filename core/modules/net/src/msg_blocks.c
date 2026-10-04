@@ -666,6 +666,14 @@ bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
         event_emitf(EV_MSG_DESERIALIZATION_FAIL, (uint32_t)node->id, "block");
         peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_FLOOD,
                             "malformed block");
+        /* A complete frame with a truncated/malformed block body cannot name
+         * the request it was meant to answer.  Retire this source through the
+         * normal disconnect sweep so every body it owns is released for
+         * immediate takeover instead of waiting for the per-block timeout. */
+        (void)p2p_node_request_disconnect(
+            node, P2P_DISCONNECT_MESSAGE_PARSE,
+            P2P_DISCONNECT_SOURCE_MESSAGE_HANDLER,
+            node->endpoint_generation);
         block_free(&blk);
         LOG_FAIL("net", "failed to deserialize block from %s",
                  node->addr_name);
