@@ -47,16 +47,13 @@
  *      this test DOES send (zsnapshot, zsnapreq, zsnapdata, zsnapend) is
  *      real wire traffic dispatched by the real handler.
  *
- *   2. mp_snapshot_send_tick() itself (the per-peer serve-tick scheduler)
- *      lives in core/modules/net/src/msgprocessor_internal.h, a private header not
- *      on the test include path (LIB_INCLUDES only exposes lib/<name>/include).
- *      lb_drive_serve_tick() below reproduces its snapshot-serving loop
- *      verbatim from PUBLIC primitives only (snapsync_prepare_serve_step,
- *      fast_sync_get_snapshot_buf, p2p_node_begin/write/end_message,
- *      MSG_SNAPSHOT_DATA/END) — the same primitives
- *      net/snapshot_sync_contract.h exports specifically so a caller can
- *      drive this loop. Calling the real msg_send_messages() instead was
- *      evaluated and rejected: it is a kitchen-sink per-peer tick (header
+ *   2. The golden transfer uses lb_drive_serve_tick() below, which reproduces
+ *      the snapshot-serving loop from public primitives only. The queue-
+ *      failure case separately calls the real focused
+ *      mp_snapshot_send_tick_serve() entry point, so its cursor transaction
+ *      is production code rather than a model. Calling the broader real
+ *      msg_send_messages() was evaluated and rejected: it is a kitchen-sink
+ *      per-peer tick (header
  *      sync, download-manager assignment, IBD stall/eviction, ping) built
  *      for a live chain with real headers, and running it against a
  *      two-block fixture chain risks exercising unrelated machinery this
@@ -103,6 +100,11 @@
 #include <unistd.h>
 
 #define LB_ENTRY_COUNT 3
+
+/* Focused entry point from msgprocessor_snapshot_serve.c. The production
+ * scheduler calls this only while the peer is in PEER_SNAPSHOT_SERVING. */
+bool mp_snapshot_send_tick_serve(struct msg_processor *mp,
+                                 struct p2p_node *node);
 
 /* ── Fixture: a tiny, deterministic 3-UTXO "snapshot" ────────────────── */
 
@@ -245,6 +247,26 @@ static void lb_drive_serve_tick(struct msg_processor *mp, struct p2p_node *node)
                                     step.chunk_len);
         p2p_node_end_message(node);
     }
+}
+
+static bool lb_failed_snapshot_queue_keeps_cursor(
+        struct msg_processor *mp, struct p2p_node *node,
+        const struct send_segment *sentinel)
+{
+    int64_t file_offset = node->zsync_file_offset;
+    uint64_t offset = node->zsync_offset;
+    uint64_t sent = node->zsync_sent;
+
+    zcl_alloc_fault_fail_next("send_segment");
+    bool early_return = mp_snapshot_send_tick_serve(mp, node);
+    bool fault_consumed = zcl_alloc_fault_armed_label() == NULL;
+    zcl_alloc_fault_clear();
+
+    return !early_return && fault_consumed &&
+           node->state == PEER_SNAPSHOT_SERVING &&
+           node->zsync_file_offset == file_offset &&
+           node->zsync_offset == offset && node->zsync_sent == sent &&
+           sentinel->next == NULL;
 }
 
 static int64_t lb_count_rows(sqlite3 *db, const char *table)
@@ -497,6 +519,12 @@ static int test_snapshot_serve_loopback_impl(bool corrupt_chunk)
         ASSERT(census_after.offered == census_before.offered + 1);
         ASSERT(census_after.first_sight + census_after.duplicates ==
                census_after.offered);
+
+        /* A local queue allocation failure means no zsnapdata reached the
+         * peer. The serving cursor must remain on that exact chunk so the
+         * next tick retries it; no later chunk or end marker may be queued. */
+        ASSERT(lb_failed_snapshot_queue_keeps_cursor(
+            &mp_a, node_a_side, sentinel_a));
 
         /* ── Step 5 (documented send-tick substitution — shortcut 2):
          * streams both real zsnapdata chunks + zsnapend from the real
