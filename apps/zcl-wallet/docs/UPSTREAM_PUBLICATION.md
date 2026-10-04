@@ -1607,3 +1607,48 @@ evidence, `pr-wallet-backup-plain-retirement.md` and
 `wallet-backup-plain-retirement-qualification.txt` verify in the candidate
 worktree's ignored evidence directory. No external publication action was
 attempted.
+
+### Wallet-backup service-password retirement qualified
+
+Branch `agent/upstream-wallet-backup-password-retirement-20261004`, signed head
+`148902ca223231b83c35502f183bbd1b1bc2606f`, base
+`3a93e60ebf922af3d119b9facc1d95803f42844b`, replaces the backup service's
+borrowed password pointer and process-lifetime environment-password cache with
+one service-owned allocation. Startup copies the enabled password before the
+worker can run and refuses an allocation failure. Stop and spawn-failure exits
+wipe the exact allocation, including its terminator, before release; disabled
+encryption retains no password. Backup bytes, format, scheduling, restore,
+cryptography, consensus and sealed-core code are unchanged. The review is seven
+files, +386/-93, including generated inventory and deterministic retirement
+tests. Extracting start preflight reduced `wallet_backup_start()` complexity
+from its legacy pin of 19 to 11 and removed the pin.
+
+Canonical RED injects the existing `wallet_backup_password` allocation failure:
+the old service ignored it, started the worker and failed the new assertion;
+the platform-port group remained green. Removing only the new cleanse makes the
+full-span retirement assertion fail while the port group passes. The restored
+focused and ASan/UBSan lanes pass 2/2 groups with zero skips. GCC 14.2.0 and
+Clang 20.1.2 each check all 2,433 production translation units uncached with no
+new diagnostic sites. The MinGW lane checks all 2,399 Windows translation units
+clean and cross-links all 74 strict C23 acceptance programs; native Windows
+runtime remains unobserved. Architecture, documentation-count, generated-
+inventory, file-size, core-seal, consensus-parity, PR-security and cap-15
+complexity gates pass; the complexity scan covers 68,765 functions in 4,681
+files.
+
+The exact policy-5 private-RAM-scratch proof passes the exact head/base pair:
+all 215 lint gates and all 108 impact-selected groups complete cold, with 108
+tests run and zero failures, skips or reused test results. Lint took 181.361s,
+tests 253.112s and the signed receipt records 504.664s total. The RAM generation
+retired normally; receipt SHA256 is
+`c8ea9fcef73d838e8386114df72fe06009802aa47a35f3c9dc4446b338f883a0`.
+The local `origin/main` reference advanced after this proof, so this evidence is
+explicitly limited to the pinned base above.
+
+Local artifacts `wallet-backup-password-retirement.bundle`,
+`wallet-backup-password-retirement.mbox`,
+`wallet-backup-password-retirement.receipt`, exact phase/test/lint evidence,
+`pr-wallet-backup-password-retirement.md` and
+`wallet-backup-password-retirement-qualification.txt` verify in the candidate
+worktree's ignored evidence directory. No external publication action was
+attempted.
