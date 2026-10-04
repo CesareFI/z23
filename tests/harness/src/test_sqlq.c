@@ -81,6 +81,31 @@ static int test_sqlq_rows_and_typing(void)
     return failures;
 }
 
+static bool sqlq_zero_blob_row(int bytes, char *buf, size_t cap)
+{
+    char sql[64];
+    int n = snprintf(sql, sizeof sql, "SELECT zeroblob(%d)", bytes);
+    if (n <= 0 || (size_t)n >= sizeof sql ||
+        sqlq_run(":memory:", sql, buf, cap) != 0)
+        return false;
+    size_t digits = (size_t)bytes * 2;
+    return strspn(buf, "0") == digits && strcmp(buf + digits, SQLQ_EOL) == 0;
+}
+
+static int test_sqlq_blob_chunk_edges(void)
+{
+    int failures = 0;
+    char buf[5000] = {0};
+    TEST("sqlq: BLOB hex stays exact around a 4096-byte output chunk") {
+        ASSERT(sqlq_zero_blob_row(0, buf, sizeof buf));
+        ASSERT(sqlq_zero_blob_row(2047, buf, sizeof buf));
+        ASSERT(sqlq_zero_blob_row(2048, buf, sizeof buf));
+        ASSERT(sqlq_zero_blob_row(2049, buf, sizeof buf));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_sqlq_refusals(void)
 {
     int failures = 0;
@@ -126,6 +151,9 @@ static int test_sqlq_output_failure(void)
         "sh", "-c", "printf x >/dev/full", NULL};
     const char *const row[] = {
         "sh", "-c", SQLQ_BIN " ':memory:' 'SELECT 1' >/dev/full", NULL};
+    const char *const blob[] = {
+        "sh", "-c", SQLQ_BIN " ':memory:' 'SELECT zeroblob(4096)' >/dev/full",
+        NULL};
     const char *const empty[] = {
         "sh", "-c", SQLQ_BIN " ':memory:' 'SELECT 1 WHERE 0' >/dev/full",
         NULL};
@@ -134,6 +162,7 @@ static int test_sqlq_output_failure(void)
         ASSERT(S_ISCHR(sink_stat.st_mode));
         ASSERT(test_host_tool_capture(sink_probe, out, sizeof out, 5000) > 0);
         ASSERT(test_host_tool_capture(row, out, sizeof out, 5000) == 1);
+        ASSERT(test_host_tool_capture(blob, out, sizeof out, 5000) == 1);
         ASSERT(test_host_tool_capture(empty, out, sizeof out, 5000) == 0);
         PASS();
     } _test_next:;
@@ -150,6 +179,7 @@ int test_sqlq(void)
         return 1;
     }
     failures += test_sqlq_rows_and_typing();
+    failures += test_sqlq_blob_chunk_edges();
     failures += test_sqlq_refusals();
 #if defined(__linux__)
     failures += test_sqlq_output_failure();

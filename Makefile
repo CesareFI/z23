@@ -8435,10 +8435,12 @@ $(P2_INVARIANT_CHECK_BIN): tools/p2_invariant_check.c vendor/include/sqlite3.h v
 SQLQ_BIN = $(BIN_DIR)/sqlq
 .PHONY: sqlq
 sqlq: $(SQLQ_BIN)
-$(SQLQ_BIN): tools/sqlq.c vendor/include/sqlite3.h vendor/lib/libsqlite3.a
+$(SQLQ_BIN): tools/sqlq.c platform/modules/base/include/base/hex.h \
+		vendor/include/sqlite3.h vendor/lib/libsqlite3.a
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
-	    -D_POSIX_C_SOURCE=200809L $(ZCL_PLATFORM_CPPFLAGS) -Ivendor/include \
+	    -D_POSIX_C_SOURCE=200809L $(ZCL_PLATFORM_CPPFLAGS) \
+	    -Iplatform/modules/base/include -Ivendor/include \
 	    -o $@ tools/sqlq.c \
 	    -Lvendor/lib vendor/lib/libsqlite3.a -lpthread -ldl -lm
 
