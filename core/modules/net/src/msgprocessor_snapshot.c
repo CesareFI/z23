@@ -128,6 +128,30 @@ static void block_pipeline_clear_completed_piece(
     zcl_mutex_unlock(&mp->net_mgr->cs_nodes);
 }
 
+static void swarm_peer_clear_completed_chunk(
+    struct msg_processor *mp, struct p2p_node *source,
+    uint32_t chunk_index, bool completed)
+{
+    if (source &&
+        source->swarm_inflight_chunk == (int32_t)chunk_index) {
+        source->swarm_inflight_chunk = -1;
+        source->swarm_chunk_req_time = 0;
+    }
+    if (!completed || !mp || !mp->net_mgr)
+        return;
+
+    zcl_mutex_lock(&mp->net_mgr->cs_nodes);
+    for (size_t i = 0; i < mp->net_mgr->num_nodes; i++) {
+        struct p2p_node *peer = mp->net_mgr->nodes[i];
+        if (peer && peer != source &&
+            peer->swarm_inflight_chunk == (int32_t)chunk_index) {
+            peer->swarm_inflight_chunk = -1;
+            peer->swarm_chunk_req_time = 0;
+        }
+    }
+    zcl_mutex_unlock(&mp->net_mgr->cs_nodes);
+}
+
 /* The end height of the manifest this peer advertised and we anchored, or
  * -1 when none arrived: the reach its piece requests must stay within. */
 static int32_t block_swarm_peer_manifest_end(const struct p2p_node *node)
@@ -271,6 +295,22 @@ void msgprocessor_test_swarm_release(void)
 bool msgprocessor_test_swarm_is_active(void)
 {
     return atomic_load(&g_swarm_active);
+}
+
+bool msgprocessor_test_swarm_seed(const struct sync_manifest *manifest,
+                                  int peer_id)
+{
+    if (!manifest || !swarm_mutex_lock())
+        return false;
+    swarm_sync_free(&g_swarm);
+    bool initialized = swarm_sync_init(&g_swarm, manifest, NULL);
+    bool assigned = initialized &&
+                    swarm_sync_assign_chunk(&g_swarm, peer_id) >= 0;
+    atomic_store(&g_swarm_active, assigned);
+    if (!assigned)
+        swarm_sync_free(&g_swarm);
+    swarm_mutex_unlock();
+    return assigned;
 }
 
 static bool msg_should_ignore_snapshot_offer(enum snapshot_sync_state snapsync_state,
@@ -1335,7 +1375,6 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                         }
                         bool verified = swarm_sync_receive_chunk(
                             &g_swarm, chunk, node->id);
-                        node->swarm_inflight_chunk = -1;
 
                         if (!verified) {
                             swarm_mutex_unlock();
@@ -1383,6 +1422,8 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                         } else {
                             swarm_mutex_unlock();
                         }
+                        swarm_peer_clear_completed_chunk(
+                            mp, node, chunk_index, verified);
                     } else {
                         printf("Peer %s: truncated zchunkdata\n",
                                node->addr_name);

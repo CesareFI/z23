@@ -557,6 +557,8 @@ void msgprocessor_test_fc_rate_reset(void);
 bool msgprocessor_test_swarm_try_claim(void);
 void msgprocessor_test_swarm_release(void);
 bool msgprocessor_test_swarm_is_active(void);
+bool msgprocessor_test_swarm_seed(const struct sync_manifest *manifest,
+                                  int peer_id);
 
 /* test hook (D1): drive the swarm's aggregate SHA3 UTXO-snapshot verify
  * + reaction (peer offence + typed blocker on mismatch) directly,

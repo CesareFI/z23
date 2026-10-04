@@ -46,6 +46,10 @@
 
 /* Internal send-tick seam used only to pin manifest retry scheduling. */
 void mp_snapshot_send_tick(struct msg_processor *mp, struct p2p_node *node);
+bool mp_handle_zcl23_sync(struct msg_processor *mp,
+                          struct p2p_node *node,
+                          struct byte_stream *s,
+                          const char *cmd);
 
 static int test_onion_peer_discover(const char *datadir,
                                     struct onion_peer *out,
@@ -6332,6 +6336,79 @@ static int test_net_swarm_cas_reset_cycle_re_arms_the_next_cas(void)
     return failures;
 }
 
+static int test_net_swarm_completion_clears_reassigned_peer_slot(void)
+{
+    int failures = 0;
+    printf("swarm_sync: completion clears reassigned peer slot... ");
+    struct net_manager nm;
+    struct msg_processor mp = {0};
+    struct net_address addr;
+    net_manager_init(&nm);
+    net_address_init(&addr);
+    unsigned char ip4[4] = {127, 0, 0, 71};
+    net_addr_set_ipv4(&addr.svc.addr, ip4);
+    addr.svc.port = 8033;
+    struct p2p_node *old_peer = p2p_node_create(
+        &nm, ZCL_INVALID_SOCKET, &addr, "swarm-old-source", true);
+    ip4[3] = 72;
+    net_addr_set_ipv4(&addr.svc.addr, ip4);
+    struct p2p_node *new_peer = p2p_node_create(
+        &nm, ZCL_INVALID_SOCKET, &addr, "swarm-new-owner", true);
+    bool ok = old_peer && new_peer;
+
+    if (ok) {
+        nm.nodes = zcl_calloc(2, sizeof(*nm.nodes), "swarm_test_nodes");
+        ok = nm.nodes != NULL;
+    }
+    if (ok) {
+        nm.nodes[0] = old_peer;
+        nm.nodes[1] = new_peer;
+        nm.num_nodes = 2;
+        nm.nodes_cap = 2;
+        mp.params = chain_params_get();
+        mp.net_mgr = &nm;
+
+        struct utxo_chunk empty = {.chunk_index = 0, .num_entries = 0};
+        uint8_t hashes[1][32];
+        fast_sync_chunk_hash(&empty, hashes[0]);
+        struct sync_manifest manifest = {
+            .num_chunks = 1,
+            .chunk_size = SYNC_CHUNK_SIZE,
+            .chunk_hashes = hashes
+        };
+        ok = msgprocessor_test_swarm_seed(&manifest, new_peer->id);
+        old_peer->swarm_inflight_chunk = 0;
+        old_peer->swarm_chunk_req_time = 111;
+        new_peer->swarm_inflight_chunk = 0;
+        new_peer->swarm_chunk_req_time = 222;
+
+        struct byte_stream payload;
+        stream_init(&payload, 16);
+        ok = ok && stream_write_u32_le(&payload, 0) &&
+             stream_write_u32_le(&payload, 0);
+        payload.read_pos = 0;
+        ok = ok && mp_handle_zcl23_sync(
+            &mp, old_peer, &payload, MSG_CHUNK_DATA);
+        ok = ok && old_peer->swarm_inflight_chunk == -1 &&
+             old_peer->swarm_chunk_req_time == 0 &&
+             new_peer->swarm_inflight_chunk == -1 &&
+             new_peer->swarm_chunk_req_time == 0;
+        stream_free(&payload);
+    }
+
+    msgprocessor_test_swarm_release();
+    if (!nm.nodes) {
+        if (old_peer)
+            p2p_node_free(old_peer);
+        if (new_peer)
+            p2p_node_free(new_peer);
+    }
+    net_manager_free(&nm);
+    if (ok) printf("OK\n");
+    else { printf("FAIL\n"); failures++; }
+    return failures;
+}
+
 /* ── peer_strategy tests ─────────────────────────────── */
 static int test_net_peer_strategy_transport_selection_basics(void)
 {
@@ -6761,6 +6838,7 @@ static int test_net_parallel_sync_and_swarm_fixture(void)
     failures += test_net_fc_rate_flood_registers_ban_score_exactly_onc();
     failures += test_net_fc_rate_and_swarm_cas_race_checks();
     failures += test_net_swarm_cas_reset_cycle_re_arms_the_next_cas();
+    failures += test_net_swarm_completion_clears_reassigned_peer_slot();
 
     /* Clean up test database */
     sqlite3_close(test_db);
