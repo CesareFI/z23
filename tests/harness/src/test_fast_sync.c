@@ -608,6 +608,49 @@ static int test_swarm_timeout_reassign(void)
     return failures;
 }
 
+static int test_swarm_late_duplicate_is_idempotent(void)
+{
+    int failures = 0;
+    TEST("swarm_sync late response after reassignment is counted once") {
+        struct utxo_chunk *chunk =
+            zcl_calloc(1, sizeof(*chunk), "late_swarm_chunk");
+        uint8_t hashes[2][32];
+        struct sync_manifest manifest;
+        memset(&manifest, 0, sizeof(manifest));
+        ASSERT(chunk != NULL);
+        chunk->chunk_index = 0;
+        fast_sync_chunk_hash(chunk, hashes[0]);
+        chunk->chunk_index = 1;
+        fast_sync_chunk_hash(chunk, hashes[1]);
+        chunk->chunk_index = 0;
+        manifest.num_chunks = 2;
+        manifest.chunk_size = SYNC_CHUNK_SIZE;
+        manifest.chunk_hashes = hashes;
+
+        struct swarm_sync ss;
+        ASSERT(swarm_sync_init(&ss, &manifest, NULL));
+        ASSERT(swarm_sync_assign_chunk(&ss, 11) == 0);
+        ss.chunk_request_time[0] -= 60;
+        swarm_sync_handle_timeouts(&ss, 30);
+        ASSERT(swarm_sync_assign_chunk(&ss, 22) == 0);
+
+        /* The old source races the replacement. Both carry the same bytes
+         * committed by the manifest, but one chunk may complete only once. */
+        ASSERT(swarm_sync_receive_chunk(&ss, chunk, 11));
+        ASSERT(ss.chunks_complete == 1);
+        ASSERT(!swarm_sync_is_complete(&ss));
+        ASSERT(swarm_sync_receive_chunk(&ss, chunk, 22));
+        ASSERT(ss.chunks_complete == 1);
+        ASSERT(ss.chunk_states[1] == CHUNK_NEEDED);
+        ASSERT(!swarm_sync_is_complete(&ss));
+
+        swarm_sync_free(&ss);
+        free(chunk);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── Block swarm tests ───────────────────────────────────── */
 
 static int test_block_swarm_rarest_first(void)
@@ -1812,6 +1855,7 @@ int test_fast_sync(void)
     /* Swarm coordinator */
     failures += test_swarm_init_assign();
     failures += test_swarm_timeout_reassign();
+    failures += test_swarm_late_duplicate_is_idempotent();
 
     /* Block swarm */
     failures += test_block_swarm_rarest_first();

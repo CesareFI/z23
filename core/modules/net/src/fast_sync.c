@@ -1367,6 +1367,12 @@ bool swarm_sync_receive_chunk(struct swarm_sync *ss,
         LOG_FAIL("sync", "receive_chunk: chunk_index %u >= num_chunks %u",
                  idx, ss->manifest.num_chunks);
 
+    /* A timed-out source can race the peer that replaced it. Keep duplicate
+     * delivery idempotent, but still verify it against the manifest so a bad
+     * duplicate is rejected without disturbing the completed chunk. */
+    if (ss->chunk_states[idx] == CHUNK_COMPLETE)
+        return fast_sync_verify_chunk(chunk, ss->manifest.chunk_hashes[idx]);
+
     /* verify SHA3-256 of the received chunk against the per-chunk
      * hash the peer advertised in the swarm manifest BEFORE handing any
      * bytes to fast_sync_apply_chunk — otherwise the AR_STEP_WRITE writer
