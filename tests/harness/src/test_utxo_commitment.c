@@ -47,6 +47,45 @@ static int test_block_swarm_peer_manifest_cap(void)
     return failures;
 }
 
+static int test_block_swarm_stale_owner(void)
+{
+    printf("block_swarm stale owner cannot revoke reassigned piece... ");
+    struct block_piece_manifest m = {
+        .start_height = 1, .end_height = 128,
+        .num_pieces = 1,
+        .piece_hashes = zcl_calloc(1, 32, "test_piece_hashes")
+    };
+    struct block_swarm bs;
+    bool ok = block_swarm_init(&bs, &m, "/tmp");
+
+    int32_t piece = ok ? block_swarm_assign_piece(&bs, 1, NULL, 0) : -1;
+    ok = ok && piece == 0;
+    ok = ok && block_swarm_requeue_piece(&bs, 0);
+    ok = ok && block_swarm_assign_piece(&bs, 2, NULL, 0) == 0;
+
+    /* Model peer 1's stale pipeline timeout after peer 2 acquired the piece. */
+    bool stale_requeued = ok &&
+        block_swarm_requeue_piece_for_peer(&bs, 0, 1);
+    ok = ok && !stale_requeued;
+    ok = ok && bs.piece_states[0] == CHUNK_INFLIGHT;
+    ok = ok && bs.piece_peer[0] == 2;
+    ok = ok && bs.pieces_inflight == 1;
+    ok = ok && block_swarm_requeue_piece_for_peer(&bs, 0, 2);
+
+    int state = bs.piece_states ? (int)bs.piece_states[0] : -1;
+    int owner = bs.piece_peer ? bs.piece_peer[0] : -1;
+    uint32_t inflight = bs.pieces_inflight;
+    block_swarm_free(&bs);
+    free(m.piece_hashes);
+    if (ok) {
+        printf("OK\n");
+        return 0;
+    }
+    printf("FAIL (stale_requeued=%d state=%d owner=%d inflight=%u)\n",
+           stale_requeued, state, owner, inflight);
+    return 1;
+}
+
 int test_utxo_commitment(void)
 {
     int failures = 0;
@@ -521,5 +560,6 @@ int test_utxo_commitment(void)
     }
 
     failures += test_block_swarm_peer_manifest_cap();
+    failures += test_block_swarm_stale_owner();
     return failures;
 }

@@ -1966,11 +1966,8 @@ void mp_snapshot_send_tick(struct msg_processor *mp,
             if (pidx >= 0 &&
                 now_bs - node->blk_pipeline[pi].request_time >
                     BLOCK_PIECE_TIMEOUT_SECS) {
-                if ((uint32_t)pidx < g_block_swarm.manifest.num_pieces &&
-                    g_block_swarm.piece_states[pidx] == CHUNK_INFLIGHT) {
-                    (void)block_swarm_requeue_piece(
-                        &g_block_swarm, (uint32_t)pidx);
-                }
+                (void)block_swarm_requeue_piece_for_peer(
+                    &g_block_swarm, (uint32_t)pidx, node->id);
                 node->blk_pipeline[pi].piece_index = -1;
             }
         }
