@@ -109,6 +109,25 @@ static void block_pipeline_clear_piece(struct p2p_node *node,
     }
 }
 
+static void block_pipeline_clear_completed_piece(
+    struct msg_processor *mp, struct p2p_node *source,
+    uint32_t piece_index, bool completed)
+{
+    if (!completed)
+        return;
+    block_pipeline_clear_piece(source, piece_index);
+    if (!mp || !mp->net_mgr)
+        return;
+
+    zcl_mutex_lock(&mp->net_mgr->cs_nodes);
+    for (size_t i = 0; i < mp->net_mgr->num_nodes; i++) {
+        struct p2p_node *peer = mp->net_mgr->nodes[i];
+        if (peer && peer != source)
+            block_pipeline_clear_piece(peer, piece_index);
+    }
+    zcl_mutex_unlock(&mp->net_mgr->cs_nodes);
+}
+
 /* The end height of the manifest this peer advertised and we anchored, or
  * -1 when none arrived: the reach its piece requests must stay within. */
 static int32_t block_swarm_peer_manifest_end(const struct p2p_node *node)
@@ -1420,6 +1439,7 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                     struct block_piece_payload_ref *block_refs = NULL;
                     struct block_swarm_abandonment integrity_abandoned = {0};
                     bool did_abandon_integrity = false;
+                    bool completed_piece = false;
                     if (!parse_block_piece_payload_refs(
                             s, (const uint8_t (*)[32])blk_hashes,
                             block_count, &block_refs)) {
@@ -1490,6 +1510,7 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                     }
 
                     if (verified && payloads_accepted) {
+                        completed_piece = true;
                         if (g_block_swarm.piece_states[piece_index] ==
                             CHUNK_COMPLETE) {
                             /* Duplicate delivery: a piece re-requested on
@@ -1501,13 +1522,11 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                              * complete swarm (the live tail wedge: 67 pieces
                              * credited-but-never-delivered). Clear the stale
                              * pipeline slot but never double-count. */
-                            block_pipeline_clear_piece(node, piece_index);
                         } else {
                             block_swarm_receive_piece(&g_block_swarm,
                                                       piece_index, node->id);
                             g_block_swarm.last_complete_unix =
                                 (int64_t)platform_time_wall_time_t();
-                            block_pipeline_clear_piece(node, piece_index);
 
                             if (block_swarm_is_complete(&g_block_swarm)) {
                                 printf("Block swarm complete: %u/%u pieces\n",
@@ -1543,6 +1562,8 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                             &integrity_abandoned);
                     }
                     pthread_mutex_unlock(&g_block_swarm_mutex);
+                    block_pipeline_clear_completed_piece(
+                        mp, node, piece_index, completed_piece);
                     if (did_abandon_integrity) {
                         mp_block_swarm_report_integrity_abandon(
                             mp, node, piece_index, &integrity_abandoned);

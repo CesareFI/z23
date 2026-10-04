@@ -905,10 +905,26 @@ static int test_block_swarm_duplicate_delivery(void)
         size_t kept_n = bs_steal_queue(a_node, sent_a, kept, 4);
         ASSERT(kept_n == 2);
 
+        /* Reachable timeout-reassignment state: the old source can still
+         * deliver while a replacement peer owns the same piece in its bounded
+         * pipeline. Completion must release both slots, not just the source's
+         * stale entry. */
+        struct p2p_node *replacement = bs_make_peer(&nm_b, 3);
+        ASSERT(replacement != NULL);
+        replacement->blk_pipeline[0].piece_index = 0;
+        nm_b.nodes = zcl_realloc(nm_b.nodes, 2 * sizeof(*nm_b.nodes),
+                                 "swarm_reassigned_nodes");
+        ASSERT(nm_b.nodes != NULL);
+        nm_b.nodes[0] = b_node;
+        nm_b.nodes[1] = replacement;
+        nm_b.num_nodes = 2;
+        nm_b.nodes_cap = 2;
+
         /* Deliver piece 0, then a DUPLICATE of piece 0 (the timeout
          * re-request answered twice). The duplicate must not complete the
          * swarm: piece 1 has never been delivered. */
         ASSERT(bs_deliver(&mp_b, b_node, &kept[0], params->pchMessageStart));
+        ASSERT(replacement->blk_pipeline[0].piece_index == -1);
         ASSERT(mp_block_swarm_is_active());
         ASSERT(bs_deliver(&mp_b, b_node, &kept[0], params->pchMessageStart));
         ASSERT(mp_block_swarm_is_active());   /* would be freed on double-credit */
@@ -927,7 +943,6 @@ static int test_block_swarm_duplicate_delivery(void)
         a_node->send_head = a_node->send_tail = NULL;
         b_node->send_head = b_node->send_tail = NULL;
         p2p_node_free(a_node);
-        p2p_node_free(b_node);
         net_manager_free(&nm_b);
         coins_view_cache_free(&coins_b);
         tx_mempool_free(&mempool_b);
