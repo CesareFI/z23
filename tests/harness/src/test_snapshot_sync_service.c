@@ -22,6 +22,7 @@
 #include "storage/nullifier_kv.h"
 #include "storage/progress_store.h"
 #include "util/blocker.h"
+#include "util/safe_alloc.h"
 #include "validation/main_state.h"
 #include <string.h>
 #include <pthread.h>
@@ -515,6 +516,20 @@ static int test_snapshot_sync_service_stream_helpers(void)
         stream_free(&offer);
         stream_free(&challenge);
         stream_free(&request);
+
+        zcl_alloc_fault_fail_next("stream_data");
+        stream_init(&challenge, 72);
+        ASSERT(!snapsync_write_fc_challenge(&svc, &challenge).ok);
+        ASSERT(zcl_alloc_fault_armed_label() == NULL);
+        ASSERT(challenge.size == 0);
+        stream_free(&challenge);
+
+        zcl_alloc_fault_fail_next("stream_data");
+        stream_init(&request, 52);
+        ASSERT(!snapsync_write_snapshot_request(&request, 88, ip).ok);
+        ASSERT(zcl_alloc_fault_armed_label() == NULL);
+        ASSERT(request.size == 0);
+        stream_free(&request);
         PASS();
     } _test_next:;
 
@@ -653,6 +668,13 @@ static int test_snapshot_sync_service_fc_roundtrip(void)
         ASSERT(parsed.samples[0].proof.mmb_size == 99);
         ASSERT(parsed.samples[0].leaf.block_hash[0] == 0x41);
         ASSERT(parsed.samples[0].proof.siblings[0][0] == 0x45);
+        stream_free(&s);
+
+        zcl_alloc_fault_fail_next("stream_data");
+        stream_init(&s, 512);
+        ASSERT(!snapsync_write_fc_response(&s, &resp).ok);
+        ASSERT(zcl_alloc_fault_armed_label() == NULL);
+        ASSERT(s.size == 0);
         stream_free(&s);
         PASS();
     } _test_next:;
