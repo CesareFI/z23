@@ -11,7 +11,9 @@ This ledger stays on the wallet development branch; PRs carry concise provenance
 - Upstream/origin: https://github.com/z23c/z23.git, main
   `3a93e60ebf922af3d119b9facc1d95803f42844b` (fetched under both remote-tracking names).
 - Android branch: `agent/android-jni-secret-retirement-20260915`, HEAD
-  `6fdcb046825504684133b8cffe3fd952ae986183`; signed and exact backup-SHA verified.
+  `cd1a152116e55a907ed31dd4eb8d7c08c38e37d7`; signed locally. The last
+  exact backup-SHA verification predates the later local publication-evidence
+  commits; no current remote-equality claim is made.
 - Backup: https://github.com/CesareFI/zclassic-android-wallet.git.
 - Other development backup: https://github.com/CesareFI/zclassic-node-development.git.
 - Publication fork: https://github.com/CesareFI/z23.git; verified writable and
@@ -147,11 +149,11 @@ not a stack of Android history:
 
 | Branch | Signed head | Scope / evidence |
 | --- | --- | --- |
-| `agent/upstream-wallet-secret-lifetime-20261003` | `58619c85baf74c4a8a1c2c49573a89396291b9e5` | Mnemonic decoded-index retirement; focused RED/GREEN, Clang/GCC wipe-removal mutations and ASan/UBSan/LSan; all215 lint gates PASS; PR security scan PASS.4files,+116/-8. |
-| `agent/upstream-wallet-key-scratch-20261003` | `c9eb0270abfaf787703f3fb794a3a0f709c61f27` | Master digest/HMAC-context and signing entropy retirement; focused RED/GREEN, six compiler/mutant failures, Clang/GCC ASan/UBSan/LSan; all215 lint gates PASS; PR security scan PASS.4files,+107/-9. |
+| `agent/upstream-wallet-secret-lifetime-20261003` | `994070f632e382123f14464a7c39e50bcbd6d408` | Mnemonic decoded-index retirement plus the shared isolated-proof prerequisite; exact native proof PASS with all215 lint gates and all20 selected groups, zero skips. Sealed receipt and review artifacts are recorded below. |
+| `agent/upstream-wallet-key-scratch-20261003` | `951f4cefb80c0acec81b329c1872ad3648c0ff1c` | Master digest/HMAC-context and signing entropy retirement plus the shared isolated-proof prerequisite; exact native proof PASS with all215 lint gates and all22 selected groups, zero skips. Sealed receipt and review artifacts are recorded below. |
 | `agent/upstream-wallet-base58-prefix-20261003` | `be78a2bf9f530f08d57e6bb1a2be62d83c9c8f75` | Existing native consumed-prefix encoder and active-byte decoder;16,788 reference cases, compiler sanitizers and mutations,168,047 fuzz runs, measured speedup. Exact native proof PASS:35/35 selected groups, all215 lint gates, no skips.4files,+211/-37. |
 | `agent/upstream-wallet-storage-descriptors-20261003` | `b25e546bab0658f9d283fb487674f592d1dd15e7` | Test-only six-opener CLOEXEC/close contract; mutation RED then restored GREEN, both compiler sanitizers, backup groups2/2; all215 lint gates PASS; PR scanner PASS.2files,+43/-1. |
-| `agent/upstream-wallet-xprv-retirement-20261003` | `d95e540be3f67352a0bbc602ff57f0537075157a` | Existing native scratch-retirement port; old functions RED5, port GREEN0, zero-length-wipe mutants RED7 on both compilers; fast/ASan, both compiler lanes and all215 lint gates PASS. Exact native proof pending.6files,+209/-67. |
+| `agent/upstream-wallet-xprv-retirement-20261003` | `57f7df67d3ed18aa5bcb6a7d8eae1611b83af7b5` | Existing native scratch-retirement port plus the shared isolated-proof prerequisite; old functions RED5, port GREEN0 and zero-length-wipe mutants RED7 on both compilers. Exact native proof PASS with all215 lint gates and all1,236 selected groups, zero final skips or unobserved results. Sealed receipt and review artifacts are recorded below. |
 
 Prepared descriptions are ignored local files `pr-mnemonic.md`, `pr-key.md`,
 and `pr-storage.md` in the first publication checkout; `pr-base58-prefix.md` and
@@ -163,9 +165,10 @@ The normal fork-branch push of the first signed candidate was refused by
 `tools/dev/z23_git_hook.c:644`: `remote-ref-not-main`. The hook admits only
 `refs/heads/main`, while this mission forbids main pushes and check bypasses.
 No hook or policy was changed and no alternate transport bypass was attempted.
-An explicit user decision on a per-command exception for validated fork branches
-is pending. No PR exists yet; CI and reviewer requests therefore have not run.
-Do not treat local security scans or validated commits as submitted PRs.
+Later compliant publication evidence is recorded below. Under the current
+no-external-action boundary, remaining local candidates stay sealed and no
+remote-equality, CI or reviewer-request claim is made for them. Do not treat
+local security scans or validated commits as submitted PRs.
 
 All five selected adaptations are prepared. Their parent is the same fetched
 upstream main; none depends on another candidate. Android dirty storage-limit
