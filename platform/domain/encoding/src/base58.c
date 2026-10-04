@@ -42,6 +42,20 @@ static_assert(B58_DECODE_BUF >= B58_DECODE_MAX_INPUT * 733u / 1000u + 1u,
 static_assert(B58_CHECK_BUF >= B58_CHECK_MAX_INPUT + 4u,
               "base58check scratch must cover payload + 4-byte checksum");
 
+/* Borrow a bounded initialized suffix; the caller owns and erases the full
+ * scratch. Its size depends only on bytes consumed, not on their values. */
+static bool base58_encode_byte(unsigned char *digits, size_t size,
+                               unsigned char byte)
+{
+    int carry = byte;
+    for (size_t i = size; i > 0; i--) {
+        carry += 256 * digits[i - 1];
+        digits[i - 1] = carry % 58;
+        carry /= 58;
+    }
+    return carry == 0;
+}
+
 bool domain_encoding_base58_encode(const unsigned char *data, size_t data_len,
                                    char *out, size_t out_size, size_t *out_len)
 {
@@ -67,13 +81,11 @@ bool domain_encoding_base58_encode(const unsigned char *data, size_t data_len,
     unsigned char b58[B58_ENCODE_BUF];
     memset(b58, 0, b58_size);
 
+    size_t processed = 0;
     while (pbegin != pend) {
-        int carry = *pbegin;
-        for (size_t i = b58_size; i > 0; i--) {
-            carry += 256 * b58[i - 1];
-            b58[i - 1] = carry % 58;
-            carry /= 58;
-        }
+        /* Reuse the full-input bound for the prefix processed so far. This
+         * grows monotonically to b58_size; the unvisited prefix is zero. */
+        size_t active = ++processed * 138 / 100 + 1;
         /* Total function on purpose: every address, WIF, xpub/xprv and
          * explorer URL segment the node accepts reaches this codec, and
          * assert() is live in release builds (-DNDEBUG is not set for the
@@ -81,7 +93,7 @@ bool domain_encoding_base58_encode(const unsigned char *data, size_t data_len,
          * whole process. b58_size is derived from the input length, so a
          * non-zero carry can only mean that derivation is wrong — fail the
          * call instead of the node. */
-        if (carry != 0) {
+        if (!base58_encode_byte(b58 + b58_size - active, active, *pbegin)) {
             memory_cleanse(b58, b58_size);
             return false;
         }
@@ -112,6 +124,42 @@ bool domain_encoding_base58_encode(const unsigned char *data, size_t data_len,
     return true;
 }
 
+/* Borrowed, zero-initialized scratch. Multiplication by 58 grows the
+ * significant suffix by at most one byte; carry <= 57 throughout. The
+ * caller retains ownership and cleanses the entire initialized span. */
+static bool base58_decode_digit(unsigned char *bytes, size_t size,
+                                size_t *used, int carry)
+{
+    size_t span = *used < size ? *used + 1 : *used;
+    size_t start = size - span;
+    for (size_t i = size; i > start; i--) {
+        carry += 58 * bytes[i - 1];
+        bytes[i - 1] = carry % 256;
+        carry /= 256;
+    }
+    if (carry != 0)
+        return false;
+    if (bytes[start] != 0)
+        *used = span;
+    return true;
+}
+
+static bool base58_decode_digits(const char **text, unsigned char *bytes,
+                                 size_t size, size_t *used)
+{
+    const char *p = *text;
+    while (*p && !isspace((unsigned char)*p)) {
+        const char *ch = strchr(base58_chars, *p);
+        if (ch == NULL)
+            return false;
+        if (!base58_decode_digit(bytes, size, used, (int)(ch - base58_chars)))
+            return false;
+        p++;
+    }
+    *text = p;
+    return true;
+}
+
 bool domain_encoding_base58_decode(const char *psz,
                                    unsigned char *out, size_t out_size, size_t *out_len)
 {
@@ -138,29 +186,12 @@ bool domain_encoding_base58_decode(const char *psz,
     memset(b256, 0, b256_size);
 
     const char *p = psz;
-    while (*p && !isspace((unsigned char)*p)) {
-        const char *ch = strchr(base58_chars, *p);
-        if (ch == NULL) {
-            /* b256 may already hold partial secret-derived bytes
-             * (base58check_decode of an xprv/privkey). */
-            memory_cleanse(b256, b256_size);
-            return false;
-        }
-        int carry = (int)(ch - base58_chars);
-        for (size_t i = b256_size; i > 0; i--) {
-            carry += 58 * b256[i - 1];
-            b256[i - 1] = carry % 256;
-            carry /= 256;
-        }
-        /* Same reasoning as the encode side: this is the decode path for
-         * every attacker-supplied address / key string, so a carry overflow
-         * fails the call (cleansing the partially decoded secret) rather
-         * than aborting the node under a live assert. */
-        if (carry != 0) {
-            memory_cleanse(b256, b256_size);
-            return false;
-        }
-        p++;
+    size_t used = 0;
+    if (!base58_decode_digits(&p, b256, b256_size, &used)) {
+        /* Reject invalid digits or overflow without publishing a partial
+         * result; scratch may contain secret-derived bytes. */
+        memory_cleanse(b256, b256_size);
+        return false;
     }
 
     while (isspace((unsigned char)*p))
@@ -170,9 +201,7 @@ bool domain_encoding_base58_decode(const char *psz,
         return false;
     }
 
-    size_t skip = 0;
-    while (skip < b256_size && b256[skip] == 0)
-        skip++;
+    size_t skip = b256_size - used;
 
     size_t result_len = zeroes + (b256_size - skip);
     if (out_len)
