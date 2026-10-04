@@ -2171,6 +2171,18 @@ int msg_get_height(void *ctx)
     return active_chain_height(&mp->main_state->chain_active);
 }
 
+static void msg_retire_bad_checksum_body_owner(struct p2p_node *node,
+                                               const char *command)
+{
+    if (strcmp(command, "block") != 0 ||
+        dl_peer_in_flight(get_download_mgr(), (uint32_t)node->id) == 0)
+        return;
+    (void)p2p_node_request_disconnect(
+        node, P2P_DISCONNECT_MESSAGE_PARSE,
+        P2P_DISCONNECT_SOURCE_MESSAGE_HANDLER,
+        node->endpoint_generation);
+}
+
 /* ── msg_process_messages: dispatch loop ─────────────────────── */
 
 bool msg_process_messages(void *ctx, struct p2p_node *node)
@@ -2221,6 +2233,7 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
             LOG_WARN("net", "peer %s: checksum mismatch on '%s' (size=%u exp=%08x got=%08x)",
                      node->addr_name, ccmd, msg.hdr.nMessageSize,
                      expected, msg.hdr.nChecksum);
+            msg_retire_bad_checksum_body_owner(node, ccmd);
             net_message_free(&msg);
             continue;
         }

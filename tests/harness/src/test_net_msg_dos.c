@@ -34,6 +34,7 @@
 #include "util/util.h"
 
 #include "mining/miner.h"
+#include "net/download.h"
 #include "net/msg_internal.h"
 #include "net/msgprocessor.h"
 #include "net/peer_scoring.h"
@@ -684,6 +685,46 @@ int test_net_msg_dos(void)
                      ping_loop_ok && node->recv_msg_count == 0 &&
                      !node->disconnect &&
                      atomic_load(&node->misbehavior) == 0);
+
+            /* The same tolerant framing rule must not let the source that
+             * owns block-body requests strand them until timeout. A corrupt
+             * block cannot reach process_block_msg(), so typed disconnect is
+             * the only normal path that releases all work owned by it. */
+            struct download_manager *dm = get_download_mgr();
+            struct uint256 owned1, owned2;
+            memset(owned1.data, 0x61, sizeof(owned1.data));
+            memset(owned2.data, 0x62, sizeof(owned2.data));
+            DOS_CHECK("checksum: peer owns two pending block bodies",
+                     dl_mark_requested(dm, &owned1, 61,
+                                       (uint32_t)node->id) &&
+                     dl_mark_requested(dm, &owned2, 62,
+                                       (uint32_t)node->id));
+
+            const unsigned char truncated_block = 0;
+            struct msg_header block_hdr;
+            msg_header_init_full(&block_hdr, magic, "block", 1);
+            block_hdr.nChecksum = 0; /* not hash256({0}) */
+            unsigned char block_buf[MSG_HEADER_SIZE + 1];
+            memcpy(block_buf, &block_hdr, MSG_HEADER_SIZE);
+            block_buf[MSG_HEADER_SIZE] = truncated_block;
+
+            bool block_recv_ok = p2p_node_receive_bytes(
+                node, (const char *)block_buf, sizeof(block_buf), magic);
+            DOS_CHECK("checksum: corrupt owned block frame queued",
+                     block_recv_ok && node->recv_msg_count == 1);
+            bool block_loop_ok = msg_process_messages(&mp, node);
+            DOS_CHECK("checksum: corrupt block owner enters disconnect "
+                     "lifecycle",
+                     block_loop_ok && node->recv_msg_count == 0 &&
+                     node->disconnect &&
+                     atomic_load(&node->misbehavior) == 0);
+            DOS_CHECK("checksum: disconnect sweep releases both bodies",
+                     dl_peer_disconnected(dm, (uint32_t)node->id) == 2);
+            struct uint256 reassigned[2];
+            DOS_CHECK("checksum: healthy peer takes both bodies immediately",
+                     dl_assign_to_peer(dm, (uint32_t)node->id + 1,
+                                       reassigned, 2) == 2);
+            (void)dl_drain_for_backpressure(dm);
 
             p2p_node_free(node);
         }
