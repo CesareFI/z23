@@ -122,7 +122,10 @@ struct zcl_result wallet_restore_datadir_hold(
     const char *datadir, struct wallet_restore_datadir_lock *lock);
 void wallet_restore_datadir_release(struct wallet_restore_datadir_lock *lock);
 
-/* Merge `req->backup_path` into `req->datadir`. Fills `out` (required) on
+/* Merge `req->backup_path` into `req->datadir`. The service holds
+ * <datadir>/wallet-recovery.lock across every restore-owned target access,
+ * including a dry run because the current rehearsal opens or creates the
+ * target schema before rolling back wallet rows. Fills `out` (required) on
  * both success and failure — a failed run still reports whatever it learned
  * about the backup file, which is what the user needs to decide the next
  * move. Returns ZCL_OK only when the merge (or, for a dry run, the counted

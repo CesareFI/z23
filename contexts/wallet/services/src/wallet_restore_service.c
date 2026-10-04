@@ -9,14 +9,15 @@
  *
  *   1. prove the datadir is free      — before anything is opened, because
  *                                       opening node.db is itself a write
- *   2. decrypt if the file is WBE1    — into a 0600 temp beside the target,
+ *   2. hold the recovery writer lock  — until every target handle is closed
+ *   3. decrypt if the file is WBE1    — into a 0600 temp beside the target,
  *                                       unlinked on every exit path
- *   3. inspect the backup             — read-only; refuse a file that holds
+ *   4. inspect the backup             — read-only; refuse a file that holds
  *                                       none of the wallet tables before
  *                                       the target is touched at all
- *   4. open the target via node_db_open — the schema path, so every wallet
+ *   5. open the target via node_db_open — the schema path, so every wallet
  *                                       table has its real keys/constraints
- *   5. merge in ONE transaction       — dry runs roll it back and still
+ *   6. merge in ONE transaction       — dry runs roll it back and still
  *                                       report exact counts
  */
 
@@ -304,6 +305,77 @@ static struct zcl_result wrs_materialize(const char *src, const char *password,
 }
 #endif
 
+/* Run while the caller holds <datadir>/wallet-recovery.lock. Keeping the
+ * guard in wallet_restore_run() gives every return below one release path. */
+#ifndef _WIN32
+static struct zcl_result wrs_run_held(
+    const struct wallet_restore_request *req,
+    struct wallet_restore_report *out,
+    const char *const *tables,
+    size_t n_tables)
+{
+    struct stat st;
+    out->target_created = stat(out->target_db, &st) != 0;
+
+    /* (3) Decrypt if needed. */
+    char tmp[1200];
+    struct zcl_result mr = wrs_materialize(req->backup_path, req->password,
+                                           tmp, sizeof(tmp), out);
+    if (!mr.ok)
+        return mr;
+    const char *source = tmp[0] ? tmp : req->backup_path;
+
+    struct wallet_restore_store_sqlite_ctx ctx;
+    struct wallet_restore_store_port port = {0};
+    (void)wallet_restore_store_sqlite_bind(&ctx, NULL, &port);
+
+    /* (4) Inspect read-only; refuse a file that is not a wallet backup
+     * before the target database is touched at all. */
+    char err[ZCL_RESULT_MSG_MAX] = "";
+    enum wallet_restore_store_status is =
+        port.inspect_backup(port.self, source, tables, n_tables,
+                            out->tables, err, sizeof(err));
+    if (is != WR_STORE_OK) {
+        if (tmp[0]) (void)unlink(tmp);
+        LOG_WARN(WRS_TAG, "inspect failed: %s", err);
+        return ZCL_ERR(-35, "%s", err[0] ? err : "cannot read backup file");
+    }
+    wrs_summarize(out);
+    if (out->tables_in_backup == 0) {
+        if (tmp[0]) (void)unlink(tmp);
+        LOG_WARN(WRS_TAG, "%s holds none of the %zu wallet tables",
+                 req->backup_path, n_tables);
+        return ZCL_ERR(-36,
+            "%s holds none of the %zu wallet tables — not a wallet backup",
+            req->backup_path, n_tables);
+    }
+
+    /* (5) Open the TARGET through the schema path. */
+    struct node_db ndb;
+    if (!node_db_open(&ndb, out->target_db)) {
+        if (tmp[0]) (void)unlink(tmp);
+        LOG_WARN(WRS_TAG, "cannot open target %s", out->target_db);
+        return ZCL_ERR(-37, "cannot open target database %s", out->target_db);
+    }
+
+    /* (6) Merge in one transaction; a dry run rolls it back. */
+    (void)wallet_restore_store_sqlite_bind(&ctx, ndb.db, &port);
+    enum wallet_restore_store_status ms =
+        port.merge_into_target(port.self, source, tables, n_tables,
+                               req->dry_run, out->tables, err, sizeof(err));
+    node_db_close(&ndb);
+    if (tmp[0]) (void)unlink(tmp);
+
+    wrs_summarize(out);
+
+    if (ms != WR_STORE_OK) {
+        LOG_WARN(WRS_TAG, "merge into %s failed: %s", out->target_db, err);
+        return ZCL_ERR(-38, "%s", err[0] ? err : "restore merge failed");
+    }
+    return ZCL_OK;
+}
+#endif
+
 struct zcl_result wallet_restore_run(const struct wallet_restore_request *req,
                                      struct wallet_restore_report *out)
 {
@@ -342,8 +414,6 @@ struct zcl_result wallet_restore_run(const struct wallet_restore_request *req,
         return ZCL_ERR(-33, "backup %s is not a readable file",
                        req->backup_path);
     }
-    out->target_created = stat(out->target_db, &st) != 0;
-
     /* Restoring onto a rebuilt machine means the datadir may not exist yet.
      * Create it 0700 — a directory that does not exist cannot be held by a
      * node, so this cannot race the single-writer proof below. */
@@ -366,61 +436,20 @@ struct zcl_result wallet_restore_run(const struct wallet_restore_request *req,
         return ZCL_ERR(-34, "%s", lock_r.message);
     }
 
-    /* (2) Decrypt if needed. */
-    char tmp[1200];
-    struct zcl_result mr = wrs_materialize(req->backup_path, req->password,
-                                           tmp, sizeof(tmp), out);
-    if (!mr.ok)
-        return mr;
-    const char *source = tmp[0] ? tmp : req->backup_path;
-
-    struct wallet_restore_store_sqlite_ctx ctx;
-    struct wallet_restore_store_port port = {0};
-    (void)wallet_restore_store_sqlite_bind(&ctx, NULL, &port);
-
-    /* (3) Inspect read-only; refuse a file that is not a wallet backup
-     * before the target datadir is touched at all. */
-    char err[ZCL_RESULT_MSG_MAX] = "";
-    enum wallet_restore_store_status is =
-        port.inspect_backup(port.self, source, tables, n_tables,
-                            out->tables, err, sizeof(err));
-    if (is != WR_STORE_OK) {
-        if (tmp[0]) (void)unlink(tmp);
-        LOG_WARN(WRS_TAG, "inspect failed: %s", err);
-        return ZCL_ERR(-35, "%s", err[0] ? err : "cannot read backup file");
-    }
-    wrs_summarize(out);
-    if (out->tables_in_backup == 0) {
-        if (tmp[0]) (void)unlink(tmp);
-        LOG_WARN(WRS_TAG, "%s holds none of the %zu wallet tables",
-                 req->backup_path, n_tables);
-        return ZCL_ERR(-36,
-            "%s holds none of the %zu wallet tables — not a wallet backup",
-            req->backup_path, n_tables);
+    /* (2) Serialize every restore-owned target interaction. This includes a
+     * dry run: it rolls back wallet rows, but currently opens (and may
+     * create) the target schema before doing so. */
+    struct wallet_restore_datadir_lock wlock = { .fd = -1 };
+    struct zcl_result hold_r =
+        wallet_restore_datadir_hold(req->datadir, &wlock);
+    if (!hold_r.ok) {
+        LOG_WARN(WRS_TAG, "refusing restore: %s", hold_r.message);
+        return ZCL_ERR(-34, "%s", hold_r.message);
     }
 
-    /* (4) Open the TARGET through the schema path. */
-    struct node_db ndb;
-    if (!node_db_open(&ndb, out->target_db)) {
-        if (tmp[0]) (void)unlink(tmp);
-        LOG_WARN(WRS_TAG, "cannot open target %s", out->target_db);
-        return ZCL_ERR(-37, "cannot open target database %s", out->target_db);
-    }
-
-    /* (5) Merge in one transaction; a dry run rolls it back. */
-    (void)wallet_restore_store_sqlite_bind(&ctx, ndb.db, &port);
-    enum wallet_restore_store_status ms =
-        port.merge_into_target(port.self, source, tables, n_tables,
-                               req->dry_run, out->tables, err, sizeof(err));
-    node_db_close(&ndb);
-    if (tmp[0]) (void)unlink(tmp);
-
-    wrs_summarize(out);
-
-    if (ms != WR_STORE_OK) {
-        LOG_WARN(WRS_TAG, "merge into %s failed: %s", out->target_db, err);
-        return ZCL_ERR(-38, "%s", err[0] ? err : "restore merge failed");
-    }
-    return ZCL_OK;
+    struct zcl_result result =
+        wrs_run_held(req, out, tables, n_tables);
+    wallet_restore_datadir_release(&wlock);
+    return result;
 #endif
 }
