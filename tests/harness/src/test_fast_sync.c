@@ -608,6 +608,43 @@ static int test_swarm_timeout_reassign(void)
     return failures;
 }
 
+static int test_swarm_request_time_is_monotonic(void)
+{
+    int failures = 0;
+    TEST("swarm_sync request ownership uses monotonic time") {
+        uint8_t hash[1][32] = {{0}};
+        struct sync_manifest manifest;
+        memset(&manifest, 0, sizeof(manifest));
+        manifest.num_chunks = 1;
+        manifest.chunk_size = SYNC_CHUNK_SIZE;
+        manifest.chunk_hashes = hash;
+
+        struct swarm_sync ss;
+        ASSERT(swarm_sync_init(&ss, &manifest, NULL));
+        int64_t before = platform_time_monotonic_us() / 1000000;
+        ASSERT(swarm_sync_assign_chunk(&ss, 7) == 0);
+        int64_t after = platform_time_monotonic_us() / 1000000;
+
+        /* The global ownership timestamp must share the same clock as the
+         * per-peer timeout. A wall-clock stamp can move backwards and strand
+         * an orphaned CHUNK_INFLIGHT entry until real time catches up. */
+        ASSERT(ss.chunk_request_time[0] >= before);
+        ASSERT(ss.chunk_request_time[0] <= after);
+        swarm_sync_handle_timeouts(&ss, 30);
+        ASSERT(ss.chunk_states[0] == CHUNK_INFLIGHT);
+        ASSERT(ss.chunks_inflight == 1);
+
+        ss.chunk_request_time[0] = before - 31;
+        swarm_sync_handle_timeouts(&ss, 30);
+        ASSERT(ss.chunk_states[0] == CHUNK_NEEDED);
+        ASSERT(ss.chunks_inflight == 0);
+
+        swarm_sync_free(&ss);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_swarm_late_duplicate_is_idempotent(void)
 {
     int failures = 0;
@@ -1892,6 +1929,7 @@ int test_fast_sync(void)
     /* Swarm coordinator */
     failures += test_swarm_init_assign();
     failures += test_swarm_timeout_reassign();
+    failures += test_swarm_request_time_is_monotonic();
     failures += test_swarm_late_duplicate_is_idempotent();
     failures += test_swarm_disconnect_requeues_owned_chunks();
 

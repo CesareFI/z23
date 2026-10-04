@@ -329,7 +329,7 @@ struct swarm_sync {
     struct sync_manifest manifest;
     enum chunk_state *chunk_states;    /* array[num_chunks] */
     int *chunk_peer;                   /* which peer has each inflight chunk */
-    int64_t *chunk_request_time;       /* when each chunk was requested (ms) */
+    int64_t *chunk_request_time;       /* monotonic seconds at request */
     int *chunk_retries;                /* retry count per chunk (max 5) */
     uint32_t chunks_complete;
     uint32_t chunks_inflight;
@@ -358,7 +358,7 @@ bool swarm_sync_is_complete(const struct swarm_sync *ss);
 /* Get progress as percentage (0-100) */
 int swarm_sync_progress(const struct swarm_sync *ss);
 
-/* Handle timeout: re-assign inflight chunks older than timeout_ms */
+/* Handle timeout: re-assign inflight chunks older than timeout_secs */
 void swarm_sync_handle_timeouts(struct swarm_sync *ss, int timeout_secs);
 
 /* Release snapshot chunks owned by a peer that disconnected so another peer
