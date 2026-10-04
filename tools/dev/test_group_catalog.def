@@ -863,6 +863,7 @@ ZCL_TEST_GROUP(action_root)
  * exact. The replay itself is a reporting tool no gate runs. */
 ZCL_TEST_GROUP(sem_replay)
 ZCL_TEST_GROUP(codeindex)
+ZCL_TEST_GROUP(codeindex_stale)
 ZCL_TEST_GROUP(codeindex_scale)
 ZCL_TEST_GROUP(codeindex_projection_integrity)
 ZCL_TEST_GROUP(codeindex_incremental)
