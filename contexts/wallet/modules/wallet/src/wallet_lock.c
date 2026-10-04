@@ -24,7 +24,7 @@
 /* Bound the cached passphrase so it lives in a fixed, cleansable buffer
  * (no heap copy of the secret to chase). 512 bytes is far past any real
  * passphrase and still fits the WKS PBKDF2 input. */
-#define WLK_MAX_PASS 512
+#define WLK_MAX_PASS WALLET_LOCK_PASSPHRASE_MAX
 
 static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
 
@@ -90,12 +90,12 @@ static void *wallet_lock_timer_main(void *opaque)
     return NULL;
 }
 
-const char *wallet_lock_effective_passphrase(void)
+bool wallet_lock_has_passphrase(void)
 {
     pthread_mutex_lock(&g_mu);
-    const char *p = effective_pass_locked();
+    bool available = effective_pass_locked() != NULL;
     pthread_mutex_unlock(&g_mu);
-    return p;
+    return available;
 }
 
 bool wallet_lock_copy_passphrase(char *out, size_t out_size)
@@ -159,7 +159,7 @@ struct zcl_result wallet_lock_unlock(struct wallet *w, struct wallet_sqlite *ws,
         return ZCL_ERR(WLK_EMPTY_PASS, "unlock: passphrase is empty");
     if (plen > WLK_MAX_PASS)
         return ZCL_ERR(WLK_PASS_TOO_LONG,
-                       "unlock: passphrase exceeds %d bytes", WLK_MAX_PASS);
+                       "unlock: passphrase exceeds %u bytes", WLK_MAX_PASS);
 
     /* A new unlock attempt must never reuse a DEK cached under an older or
      * wrong passphrase. The wrapper is authenticated again below. */
@@ -185,9 +185,8 @@ struct zcl_result wallet_lock_unlock(struct wallet *w, struct wallet_sqlite *ws,
     }
 
     /* Reload transparent + Sapling keys from disk under the new passphrase.
-     * read_keys_r decrypts WKS1/WKD1 via wallet_lock_effective_passphrase
-     * (now the just-cached value); a wrong passphrase drops every encrypted
-     * row and loads zero keys. */
+     * read_keys_r decrypts WKS1/WKD1 from a bounded passphrase snapshot; a
+     * wrong passphrase drops every encrypted row and loads zero keys. */
     struct wallet_sqlite_health before = wallet_sqlite_get_health(ws, 0);
     int rows = before.row_count;
 

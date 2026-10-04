@@ -25,7 +25,7 @@
 #define WKEY_NONCE_LEN 12
 #define WKEY_TAG_LEN 16
 #define WKEY_VERSION 1U
-#define WKEY_PASS_MAX 512
+#define WKEY_PASS_MAX WALLET_LOCK_PASSPHRASE_MAX
 
 static pthread_mutex_t g_key_crypto_mu = PTHREAD_MUTEX_INITIALIZER;
 static sqlite3 *g_key_crypto_db;
@@ -385,7 +385,7 @@ struct zcl_result wallet_sqlite_migrate_transparent_keys_r(
     if (!ws->open)
         return wkey_scrub_fail(ws, ZCL_ERR(WSQL_DB_NOT_OPEN,
             "key migration: wallet_sqlite is not open"));
-    if (!wallet_lock_effective_passphrase() ||
+    if (!wallet_lock_has_passphrase() ||
         !wkey_transparent_migration_needed(ws->db))
         return ZCL_OK;
     if (!wallet_sqlite_key_crypto_prepare(ws->db))
@@ -583,7 +583,7 @@ struct zcl_result wallet_sqlite_scrub_plaintext_r(struct wallet_sqlite *ws)
     if (!ws->open)
         return wkey_scrub_fail(ws, ZCL_ERR(WSQL_DB_NOT_OPEN,
             "scrub: wallet_sqlite is not open"));
-    if (!wallet_lock_effective_passphrase())
+    if (!wallet_lock_has_passphrase())
         return ZCL_OK;
     if (!wallet_sqlite_key_crypto_prepare(ws->db))
         return wkey_scrub_fail(ws, ZCL_ERR(WSQL_WRITE_FAIL,

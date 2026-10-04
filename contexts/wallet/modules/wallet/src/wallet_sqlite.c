@@ -93,14 +93,6 @@ int wallet_sqlite_read_keys_corrupt_count(void)
  * state through the health struct. */
 /* ── Wallet-at-rest encryption helpers ────────────────────────── */
 
-/* Returns the effective wallet passphrase, or NULL when the wallet is locked
- * or plaintext. Runtime unlock is the only secret source: environment
- * variables never auto-unlock a live wallet. */
-static const char *wallet_passphrase(void)
-{
-    return wallet_lock_effective_passphrase();
-}
-
 /* Detect a WKS1 envelope header in a blob.  Safe with NULL.  A hit means
  * this wallet stores key material encrypted at rest — record that so the
  * lock subsystem treats it as lockable even when booted without a passphrase
@@ -123,16 +115,20 @@ static bool wallet_encrypt_blob(const uint8_t *plain, size_t plen,
 {
     *out = NULL;
     *out_len = 0;
-    const char *pass = wallet_passphrase();
-    if (!pass) return false;
+    char pass[WALLET_LOCK_PASSPHRASE_MAX + 1];
+    if (!wallet_lock_copy_passphrase(pass, sizeof(pass)))
+        return false;
 
     size_t cap = wks_envelope_size(plen);
     uint8_t *buf = zcl_malloc(cap, "wallet_encrypt_buf");
-    if (!buf) return false;
+    if (!buf) { memory_cleanse(pass, sizeof(pass)); return false; }
 
     size_t elen = 0;
-    if (!wks_encrypt(plain, plen, pass, wks_default_iterations(),
-                     buf, cap, &elen)) {
+    bool encrypted = wks_encrypt(plain, plen, pass, wks_default_iterations(),
+                                 buf, cap, &elen);
+    memory_cleanse(pass, sizeof(pass));
+    if (!encrypted) {
+        memory_cleanse(buf, cap);
         free(buf);
         return false;
     }
@@ -152,15 +148,19 @@ static bool wallet_decrypt_blob(const uint8_t *envelope, size_t env_len,
 {
     *out = NULL;
     *out_len = 0;
-    const char *pass = wallet_passphrase();
-    if (!pass) return false;
+    char pass[WALLET_LOCK_PASSPHRASE_MAX + 1];
+    if (!wallet_lock_copy_passphrase(pass, sizeof(pass)))
+        return false;
 
     /* Plaintext can never be longer than the envelope. */
     uint8_t *buf = zcl_malloc(env_len, "wallet_decrypt_buf");
-    if (!buf) return false;
+    if (!buf) { memory_cleanse(pass, sizeof(pass)); return false; }
 
     size_t plen = 0;
-    if (!wks_decrypt(envelope, env_len, pass, buf, env_len, &plen)) {
+    bool decrypted = wks_decrypt(envelope, env_len, pass, buf, env_len, &plen);
+    memory_cleanse(pass, sizeof(pass));
+    if (!decrypted) {
+        memory_cleanse(buf, env_len);
         free(buf);
         return false;
     }
@@ -571,7 +571,7 @@ struct zcl_result wallet_sqlite_write_key_r(struct wallet_sqlite *ws,
     uint8_t enc_blob[WSQL_KEY_ENVELOPE_OVERHEAD + 32];
     size_t enc_len = 0;
     bool encryption_required =
-        wallet_lock_effective_passphrase() != NULL ||
+        wallet_lock_has_passphrase() ||
         wallet_lock_encrypted_at_rest();
     bool encrypted = encryption_required && wallet_sqlite_key_encrypt(
         ws->db, kid.id.data, key->vch, 32, enc_blob, sizeof(enc_blob),
@@ -1325,7 +1325,7 @@ static struct zcl_result wallet_sqlite_flush_scope_r(
 
     /* Create/load the wallet DEK before BEGIN. Creating it inside this
      * transaction and later rolling back would leave a cached orphan key. */
-    if ((wallet_lock_effective_passphrase() != NULL ||
+    if ((wallet_lock_has_passphrase() ||
          wallet_lock_encrypted_at_rest()) &&
         !wallet_sqlite_key_crypto_prepare(ws->db))
         return wsql_fail(ws, ZCL_ERR(WSQL_WRITE_FAIL,
