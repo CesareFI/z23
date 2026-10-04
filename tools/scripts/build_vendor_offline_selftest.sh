@@ -154,6 +154,9 @@ probe_mk="$SANDBOX/bootstrap.mk"
     awk '/^ZCL_TOR_PROVENANCE_GOALS :=/ { copying=1 }
          copying { print }
          /^ZCL_HOTSWAP_LOOP_ONLY :=/ { copying=0 }' "$ROOT/Makefile"
+    awk '/^ZCL_PORTABLE_FRONTDOOR_GOALS :=/ { copying=1 }
+         /^# Refuse a compiler/ { copying=0 }
+         copying { print }' "$ROOT/Makefile"
     awk '/^VENDOR_BOOTSTRAP_MK :=/ { copying=1 }
          /^# Generated view headers/ { copying=0 }
          copying { print }' "$ROOT/Makefile"
@@ -164,7 +167,7 @@ probe_mk="$SANDBOX/bootstrap.mk"
     cat <<'MAKE'
 .DEFAULT_GOAL := z23
 .PHONY: z23 windows-headless-run windows-headless-run-selftest
-z23 print-node-c23-srcs help doctor doctor-build timings agent-dev-status \
+z23 print-node-c23-srcs help doctor doctor-build doctor-env timings agent-dev-status \
 print-CFLAGS print-DEV-CFLAGS print-LDFLAGS print-DEV-LDFLAGS print-build-flags \
 windows-headless-run windows-headless-run-selftest build/bin/z23-headless-run.exe $(ZCL_TOR_PROVENANCE_GOALS):
 	@printf 'lean=%s\n' '$(ZCL_HOTSWAP_LOOP_ONLY)'
@@ -236,6 +239,8 @@ probe_bootstrap skip doctor-build
 probe_bootstrap require doctor-build z23
 probe_bootstrap skip doctor
 probe_bootstrap require doctor z23
+probe_bootstrap skip doctor-env
+probe_bootstrap require doctor-env z23
 probe_bootstrap skip windows-headless-run windows-headless-run-selftest
 probe_bootstrap require z23
 probe_bootstrap require
@@ -317,6 +322,13 @@ if env ZCL_VENDOR_OFFLINE=1 make -s --no-print-directory -C "$ROOT" \
         > "$SANDBOX/prereq-mixed.out" 2> "$SANDBOX/prereq-mixed.err" ||
    ! grep -Fq 'C23 toolchain check failed' "$SANDBOX/prereq-mixed.err"; then
     fail 'mixed doctor skipped compiler preflight'
+fi
+
+if env ZCL_VENDOR_OFFLINE=1 make -s --no-print-directory -C "$ROOT" \
+        ZCL_USE_CCACHE=0 CC=/nonexistent doctor-env z23 \
+        > "$SANDBOX/doctor-env-mixed.out" 2> "$SANDBOX/doctor-env-mixed.err" ||
+   ! grep -Fq 'C23 toolchain check failed' "$SANDBOX/doctor-env-mixed.err"; then
+    fail 'mixed doctor-env skipped compiler preflight'
 fi
 
 printf '%s\n' \

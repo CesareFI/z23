@@ -266,7 +266,9 @@ ZCL_STANDALONE_VENDOR_GOALS := sqlq build/bin/sqlq
 # A mixed invocation keeps the ordinary full parse, even when both goals are
 # individually standalone. This also leaves default and unknown goals alone.
 ZCL_STANDALONE_EXACT_GOAL := $(if $(word 2,$(MAKECMDGOALS)),,$(filter $(ZCL_STANDALONE_NO_VENDOR_GOALS) $(ZCL_STANDALONE_VENDOR_GOALS),$(MAKECMDGOALS)))
-ZCL_HOTSWAP_LOOP_GOALS := hotswap-try hotswap-apply hotswap help timings agent-dev-status doctor-build doctor c3-mutex-probe c3-speed-bench c3-tip-seam build/bin/c3-mutex-probe.so \
+# doctor-env compiles only its standalone, project-header-free diagnostic with
+# plain cc; it has no node epoch or source-record input to capture.
+ZCL_HOTSWAP_LOOP_GOALS := hotswap-try hotswap-apply hotswap help timings agent-dev-status doctor-build doctor doctor-env c3-mutex-probe c3-speed-bench c3-tip-seam build/bin/c3-mutex-probe.so \
 	$(ZCL_TOR_PROVENANCE_GOALS) \
 	presentation-lib presentation-demo presentation-relaunch \
 	presentation-desktop-install presentation-portability \
